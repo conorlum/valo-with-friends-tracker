@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## This is the private sister-repo
+
+This repo (`valomaths-private`) is a **private**, personal-use-only fork of the public `ValorantIGLTutor`/valomaths repo. It exists because the public repo is being groomed for Riot API production access (it serves `/riot.txt` for Riot's domain-verification check) and shouldn't also display scraped third-party (tracker.gg) data.
+
+- `git remote -v` here has `origin` = this private GitHub repo, and `public` = the original `ValorantIGLTutor` repo. Pull new public-site features in with `git fetch public && git merge public/main`.
+- Runs **local-only** — no cloud deployment. Keep private-only changes additive (new files) rather than editing shared files, so future merges from `public` stay clean.
+- **Docker Compose gotcha**: both this repo's `webapp/` folder and the original repo's `webapp/` folder are literally both named `webapp`, so Docker Compose's default project name (derived from the folder name) collides between the two repos — running plain `docker compose up -d` here can recreate/repoint the *other* repo's Postgres container. Always bring this repo's Postgres up with an explicit project name: `docker compose -p valomaths-private up -d`. It's mapped to host port **5433** (not 5432, which the original repo's Postgres uses) — see `.env`.
+- `app/adapters/trackergg_browserstate_source.py` + `scripts/ingest_trackergg_player.py` — the tracker.gg ingestion pipeline (see below). Not present in the public repo.
+
 ## What this is
 
 A Valorant match-analytics project. The primary, forward-looking piece is `webapp/` — a FastAPI + SQLAlchemy + Postgres site that stores match/round/kill-event data in a source-agnostic schema and computes a custom per-player, per-round "Impact" score based on kill order, economy state, post-plant timing, and trade windows.
@@ -29,12 +38,25 @@ A FastAPI + SQLAlchemy 2.0 + Alembic + Postgres project, independent of the root
 
 ```
 cd webapp
-docker compose up -d                        # start local Postgres
-.\.venv\Scripts\python.exe -m alembic upgrade head   # apply migrations
+docker compose -p valomaths-private up -d            # start local Postgres on port 5433 (see gotcha above)
+.\.venv\Scripts\python.exe -m alembic upgrade head    # apply migrations
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
-A `.venv` with `requirements.txt` installed already exists in `webapp/`. Copy `.env.example` to `.env` if you need to override `DATABASE_URL`.
+A `.venv` with `requirements.txt` installed already exists in `webapp/` (includes `playwright`, used by the tracker.gg pipeline below). `.env` already points `DATABASE_URL` at port 5433.
+
+## tracker.gg ingestion pipeline (private-only)
+
+tracker.gg has no usable public API for Valorant match data, so this pulls data the same way a human browsing the site would: a dedicated Chrome profile with remote debugging enabled, attached to via Playwright's CDP connection. No independent/autonomous HTTP scraping, no fingerprint spoofing.
+
+```
+webapp\scripts\launch_trackergg_chrome.ps1                          # one-time per session: opens a dedicated Chrome profile with --remote-debugging-port=9222
+.\.venv\Scripts\python.exe scripts\ingest_trackergg_player.py "RiotName#TAG" --count 5
+```
+
+- `scripts/ingest_trackergg_player.py` — given a Riot ID, discovers their N most recent matches via their public tracker.gg match-history page, skips any whose tracker.gg match ID (`matches.external_id`) is already in the DB, and ingests the rest with human-paced delays (5-12s) between matches.
+- `app/adapters/trackergg_browserstate_source.py` — maps tracker.gg's own internal match-detail API response (`api.tracker.gg/api/v2/valorant/standard/matches/<id>`, observed via the attached browser's network traffic — never called directly) into the same schema `demo_match_source.py` populates. Also computes `ImpactScore` rows via `app/scoring/impact.py`'s existing `compute_impact_for_match`, which `demo_match_source.py`'s own callers don't always do.
+- Works for any player's Riot ID, not just your own — tracker.gg profile/match pages are public, no login required.
 
 ## `matchDataPipeline.py` — local match-data import utility
 

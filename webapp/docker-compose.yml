@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: valorant
       POSTGRES_DB: valorant_igl_tutor
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
