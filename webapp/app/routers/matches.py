@@ -64,6 +64,17 @@ def match_detail(request: Request, external_id: str, db: Session = Depends(get_d
             for p in summary.players
         },
     }
+    team_chart_data = {
+        "labels": summary.round_numbers,
+        "series": [
+            {
+                "label": "Team 1" if ts.team == "team-1" else "Team 2",
+                "team": ts.team,
+                "data": [ts.impact_by_round.get(r, 0.0) for r in summary.round_numbers],
+            }
+            for ts in summary.team_summaries
+        ],
+    }
     team1_win_graph, team2_win_graph = build_match_round_win_diagrams(match)
     return templates.TemplateResponse(
         request,
@@ -73,6 +84,7 @@ def match_detail(request: Request, external_id: str, db: Session = Depends(get_d
             "summary": summary,
             "chart_data": chart_data,
             "highlights_chart_data": highlights_chart_data,
+            "team_chart_data": team_chart_data,
             "team1_win_graph": team1_win_graph,
             "team2_win_graph": team2_win_graph,
         },

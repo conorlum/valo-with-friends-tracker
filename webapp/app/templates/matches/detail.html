@@ -80,6 +80,27 @@
   </div>
 </div>
 
+<div class="card">
+  <h2>Team Impact</h2>
+  <div class="stat-grid">
+    {% for ts in summary.team_summaries %}
+    <div class="stat-tile">
+      <div class="stat-label">{{ 'Team 1' if ts.team == 'team-1' else 'Team 2' }} Total Impact</div>
+      <div class="stat-value">{{ ts.total_impact | round | int }}</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-label">{{ 'Team 1' if ts.team == 'team-1' else 'Team 2' }} Avg Impact / Round</div>
+      <div class="stat-value">{{ ts.average_impact_per_round | round | int }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="chart-scroll">
+    <div id="team-impact-chart-sizer">
+      <canvas id="team-impact-chart" height="90"></canvas>
+    </div>
+  </div>
+</div>
+
 {% if team1_win_graph.nodes or team2_win_graph.nodes %}
 <div class="card">
   <h2>Round win rate by game state</h2>
@@ -259,6 +280,50 @@
           position: "bottom",
           labels: { color: "#c3c2b7", usePointStyle: true, boxWidth: 8 },
         },
+      },
+      scales: {
+        x: {
+          title: { display: true, text: "Round", color: "#898781" },
+          ticks: { color: "#898781" },
+          grid: { display: false },
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { color: "#898781" },
+          grid: { color: "#2c2c2a" },
+        },
+      },
+    },
+  });
+</script>
+
+<script>
+  const teamChartData = {{ team_chart_data | tojson }};
+  const TEAM_COLORS = { "team-1": "#3987e5", "team-2": "#d95926" };
+  const teamPxPerRound = 100;
+
+  const teamImpactChartSizer = document.getElementById("team-impact-chart-sizer");
+  teamImpactChartSizer.style.width = Math.max(teamChartData.labels.length * teamPxPerRound, 300) + "px";
+  teamImpactChartSizer.style.height = "320px";
+
+  new Chart(document.getElementById("team-impact-chart"), {
+    type: "bar",
+    data: {
+      labels: teamChartData.labels,
+      datasets: teamChartData.series.map((s) => ({
+        label: s.label,
+        data: s.data,
+        backgroundColor: TEAM_COLORS[s.team],
+        borderRadius: 2,
+        borderSkipped: false,
+      })),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { position: "bottom", labels: { color: "#c3c2b7", usePointStyle: true, boxWidth: 8 } },
       },
       scales: {
         x: {

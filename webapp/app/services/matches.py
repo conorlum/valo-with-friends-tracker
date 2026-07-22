@@ -54,10 +54,21 @@ class PlayerSummary:
 
 
 @dataclass
+class TeamSummary:
+    team: str
+    total_impact: float
+    average_impact_per_round: float
+    total_kill_impact: float
+    total_death_impact: float
+    impact_by_round: dict[int, float]
+
+
+@dataclass
 class MatchSummary:
     players: list[PlayerSummary]
     round_numbers: list[int]
     round_outcomes: dict[int, str | None]
+    team_summaries: list[TeamSummary]
 
 
 def get_match_summary(db: Session, match: Match) -> MatchSummary:
@@ -144,10 +155,37 @@ def get_match_summary(db: Session, match: Match) -> MatchSummary:
         r.round_number: r.outcome
         for r in db.query(Round).filter_by(match_id=match.id).all()
     }
+    sorted_rounds = sorted(round_numbers)
+
+    team_impact_by_round: dict[str, dict[int, float]] = {}
+    team_kill_totals: dict[str, float] = {}
+    team_death_totals: dict[str, float] = {}
+    for p in by_player.values():
+        bucket = team_impact_by_round.setdefault(p.team, {})
+        for rn, impact in p.impact_by_round.items():
+            bucket[rn] = bucket.get(rn, 0.0) + impact
+        team_kill_totals[p.team] = team_kill_totals.get(p.team, 0.0) + sum(p.kill_impact_by_round.values())
+        team_death_totals[p.team] = team_death_totals.get(p.team, 0.0) + sum(p.death_impact_by_round.values())
+
+    team_summaries = [
+        TeamSummary(
+            team=team,
+            total_impact=sum(team_impact_by_round[team].values()),
+            average_impact_per_round=(
+                sum(team_impact_by_round[team].values()) / len(sorted_rounds) if sorted_rounds else 0.0
+            ),
+            total_kill_impact=team_kill_totals[team],
+            total_death_impact=team_death_totals[team],
+            impact_by_round=team_impact_by_round[team],
+        )
+        for team in sorted(team_impact_by_round)
+    ]
+
     return MatchSummary(
         players=players,
-        round_numbers=sorted(round_numbers),
+        round_numbers=sorted_rounds,
         round_outcomes=round_outcomes,
+        team_summaries=team_summaries,
     )
 
 
@@ -173,6 +211,14 @@ class RoundPlayerImpact:
 
 
 @dataclass
+class RoundTeamTotal:
+    team: str
+    kill_impact: float
+    death_impact: float
+    impact: float
+
+
+@dataclass
 class RoundDetail:
     round_number: int
     outcome: str | None
@@ -183,6 +229,7 @@ class RoundDetail:
     defuse_time: float | None
     kills: list[KillLogEntry]
     player_impacts: list[RoundPlayerImpact]
+    team_totals: list[RoundTeamTotal]
 
 
 def get_round_detail(db: Session, match: Match, round_number: int) -> RoundDetail:
@@ -242,6 +289,16 @@ def get_round_detail(db: Session, match: Match, round_number: int) -> RoundDetai
         )
     player_impacts.sort(key=lambda p: p.impact, reverse=True)
 
+    totals: dict[str, RoundTeamTotal] = {}
+    for p in player_impacts:
+        t = totals.setdefault(
+            p.team, RoundTeamTotal(team=p.team, kill_impact=0.0, death_impact=0.0, impact=0.0)
+        )
+        t.kill_impact += p.kill_impact
+        t.death_impact += p.death_impact
+        t.impact += p.impact
+    team_totals = [totals[t] for t in sorted(totals)]
+
     return RoundDetail(
         round_number=round_row.round_number,
         outcome=round_row.outcome,
@@ -252,4 +309,5 @@ def get_round_detail(db: Session, match: Match, round_number: int) -> RoundDetai
         defuse_time=round_row.defuse_time,
         kills=kills,
         player_impacts=player_impacts,
+        team_totals=team_totals,
     )

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Session {{ session.index }} - ValoMaths{% endblock %}
+
+{% block content %}
+<h1>Session &mdash; {{ session.started_at.strftime("%b %d, %Y") }}</h1>
+<p class="page-meta">
+  {{ session.started_at.strftime("%I:%M %p") }} &ndash; {{ session.ended_at.strftime("%I:%M %p") }}
+  <span class="sep">&middot;</span>
+  {{ session.matches | length }} match{{ "es" if session.matches | length != 1 else "" }}
+  {% if session.is_multi_match %}
+  <span class="sep">&middot;</span>
+  <span class="badge badge-score">{{ session.wins }} &ndash; {{ session.losses }}</span>
+  {% endif %}
+</p>
+
+<div class="card">
+  <h2>Roster</h2>
+  <p>{{ session.roster_display_names | sort | join(", ") }}</p>
+  {% if session.is_multi_match and session.core_display_names %}
+  <p class="page-meta">Played every match: {{ session.core_display_names | sort | join(", ") }}</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Matches</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Match</th>
+        <th>Score</th>
+        <th>Team 1 Impact</th>
+        <th>Team 2 Impact</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for match in session.matches %}
+      {% set match_summary = session.match_summaries[match.id] %}
+      <tr class="clickable-row" onclick="window.location='/matches/{{ match.external_id }}'">
+        <td><a href="/matches/{{ match.external_id }}">{{ match_label(match) }}</a></td>
+        <td><span class="badge badge-score">{{ match.team1_rounds_won }} &ndash; {{ match.team2_rounds_won }}</span></td>
+        {% for ts in match_summary.team_summaries %}
+        <td>{{ ts.total_impact | round | int }}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

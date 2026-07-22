@@ -34,6 +34,15 @@
 </table>
 
 <div class="card">
+<div class="stat-grid">
+  {% for t in detail.team_totals %}
+  <div class="stat-tile">
+    <div class="stat-label">{{ 'Team 1' if t.team == 'team-1' else 'Team 2' }} Impact</div>
+    <div class="stat-value {{ 'impact-positive' if t.impact >= 0 else 'impact-negative' }}">{{ t.impact | round | int }}</div>
+    <div class="stat-sub">Kill {{ t.kill_impact | round | int }} / Death {{ t.death_impact | round | int }}</div>
+  </div>
+  {% endfor %}
+</div>
 {% set max_abs_impact = (detail.player_impacts | map(attribute='impact') | map('abs') | list | max) if detail.player_impacts else 0 %}
 <table>
   <thead>
