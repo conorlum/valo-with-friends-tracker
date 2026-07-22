@@ -63,11 +63,31 @@ _KILL_ORDER_GRAPH.add_weighted_edges_from(
 )
 
 
+FORCE_THRESHOLD = 3250
+FULL_BUY_THRESHOLD = 4200
+WIN_BONUS = 3000
+SURVIVE_LOSS_BONUS = 1000  # documented for completeness; see _econ_swing_risk_factor
+KILL_REWARD = 200
+PLANT_BONUS = 300
+
+# Relative importance of each factor when combining them into kill_impact/death_impact.
+# Equal weights would reproduce a plain average; these are a starting proposal, not a
+# final tuning -- adjust freely.
+FACTOR_WEIGHTS = {
+    "econ": 1.0,
+    "time": 1.0,
+    "swing": 1.0,
+}
+_FACTOR_WEIGHT_TOTAL = sum(FACTOR_WEIGHTS.values())
+
+
 def _categorize_econ(loadout: int) -> int:
     if loadout < 1000:
         return 8  # SAVE
-    if loadout < 3300:
+    if loadout < FORCE_THRESHOLD:
         return 6  # ECON
+    if loadout < FULL_BUY_THRESHOLD:
+        return 5  # FORCE
     return 4  # FULL BUY
 
 
@@ -182,12 +202,24 @@ def _min_next_round_econ_bonus(round_outcomes: dict[int, str], round_number: int
     return 2900
 
 
+def _attacking_team(round_number: int) -> Team | None:
+    # Confirmed against the demo matches: team-1 attacks rounds 1-12, team-2
+    # attacks rounds 13-24. No attacking-side data is stored in the schema, so
+    # this is a documented convention, not derived from a stored fact.
+    if round_number <= 12:
+        return Team.TEAM_1
+    if round_number <= 24:
+        return Team.TEAM_2
+    return None  # OT: already treated as economy-neutral below
+
+
 def _econ_swing_risk_factor(
     round_outcomes: dict[int, str],
     round_player_stats: dict[int, dict[int, dict]],
     match_players: dict[int, MatchPlayer],
     round_number: int,
     team: Team,
+    round_row: Round,
 ) -> float:
     if round_number in (1, 13):
         return 1.5
@@ -196,9 +228,10 @@ def _econ_swing_risk_factor(
     if round_number > 24:
         return 1
 
-    loadout_threshold = 3400
+    loadout_threshold = FULL_BUY_THRESHOLD
     vandal_cost = 2900
     econ_bonus = _min_next_round_econ_bonus(round_outcomes, round_number, team)
+    plant_bonus = PLANT_BONUS if round_row.planted and _attacking_team(round_number) == team else 0
 
     cant_buy_next = 0
     can_buy_next = 0
@@ -212,7 +245,12 @@ def _econ_swing_risk_factor(
         if match_players[match_player_id].team != team:
             continue
 
-        remaining = stat["remaining"]
+        # Kill reward and plant bonus are paid out between rounds, so they're
+        # already-known money this player will have next round on top of
+        # whatever's left in "remaining" -- unlike the win/loss bonus, which
+        # depends on next round's still-undecided outcome.
+        known_next_round_extra = stat["kills"] * KILL_REWARD + plant_bonus
+        remaining = stat["remaining"] + known_next_round_extra
         need_to_buy_next += 1 if stat["deaths"] > 0 else 0
         current_loadout = stat["loadout"]
 
@@ -220,12 +258,12 @@ def _econ_swing_risk_factor(
             cant_buy_next += 1
         if remaining + econ_bonus >= loadout_threshold:
             can_buy_next += 1
-        if remaining + 3000 >= loadout_threshold:
+        if remaining + WIN_BONUS >= loadout_threshold:
             can_buy_if_win += 1
         if remaining + econ_bonus >= loadout_threshold + vandal_cost:
             can_buy_next -= 1
             can_buy_double += 1
-        if remaining + 3000 >= loadout_threshold + vandal_cost:
+        if remaining + WIN_BONUS >= loadout_threshold + vandal_cost:
             can_buy_if_win -= 1
             can_buy_if_win_double += 1
         if current_loadout >= loadout_threshold:
@@ -250,6 +288,45 @@ def _econ_swing_risk_factor(
         )
 
     return 1
+
+
+def _realized_econ_swing_factor(
+    round_player_stats: dict[int, dict[int, dict]],
+    match_players: dict[int, MatchPlayer],
+    round_number: int,
+    team: Team,
+) -> float:
+    # Valorant resets economy at halftime, so there's no real next-round link to
+    # check out of the last round of a half, or past the modeled OT boundary.
+    if round_number in (12, 24) or round_number > 24:
+        return 1.0
+
+    next_round_stats = round_player_stats.get(round_number + 1)
+    if not next_round_stats:
+        return 1.0
+
+    denied_count = 0
+    for match_player_id, stat in next_round_stats.items():
+        if match_players[match_player_id].team != team:
+            continue
+        if stat["loadout"] < FULL_BUY_THRESHOLD:
+            denied_count += 1
+
+    # Symmetric to _econ_swing_risk_factor's ~0.5-1.5 range: 0 denied -> 0.5 (team
+    # recovered fully), 5 denied -> 1.5 (fully denied), 2.5 -> neutral midpoint.
+    return round(0.5 + 0.2 * denied_count, 2)
+
+
+def _combine_swing_factors(swing: float, realized: float) -> float:
+    # Only trust a combined signal when the pre-round prediction and the actual
+    # next-round outcome agree on direction (both fragile or both safe) -- if they
+    # disagree, neither claim survives, so treat the round as neutral. Realized is
+    # ground truth, so when they do agree, take whichever magnitude is larger.
+    swing_above = swing > 1
+    realized_above = realized > 1
+    if swing == 1 or realized == 1 or swing_above != realized_above:
+        return 1.0
+    return max(swing, realized, key=lambda x: abs(x - 1))
 
 
 def compute_impact_for_match(db: Session, match_id: int) -> None:
@@ -342,11 +419,15 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
         team2_kill_index = 5
 
         team1_swing = _econ_swing_risk_factor(
-            round_outcomes, round_player_stats, match_players, round_number, Team.TEAM_1
+            round_outcomes, round_player_stats, match_players, round_number, Team.TEAM_1, round_row
         )
         team2_swing = _econ_swing_risk_factor(
-            round_outcomes, round_player_stats, match_players, round_number, Team.TEAM_2
+            round_outcomes, round_player_stats, match_players, round_number, Team.TEAM_2, round_row
         )
+        team1_realized_swing = _realized_econ_swing_factor(round_player_stats, match_players, round_number, Team.TEAM_1)
+        team2_realized_swing = _realized_econ_swing_factor(round_player_stats, match_players, round_number, Team.TEAM_2)
+        team1_combined_swing = _combine_swing_factors(team1_swing, team1_realized_swing)
+        team2_combined_swing = _combine_swing_factors(team2_swing, team2_realized_swing)
 
         for kill_index, kill in enumerate(kills):
             killer_id = kill["killer_match_player_id"]
@@ -354,7 +435,7 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
             self_kill = killer_id == death_id
             killer_team = match_players[killer_id].team
 
-            econ_swing_risk_factor = team1_swing if killer_team == Team.TEAM_2 else team2_swing
+            combined_swing_factor = team1_combined_swing if killer_team == Team.TEAM_2 else team2_combined_swing
             kill_order_bonus = _kill_order_bonus(team1_kill_index, team2_kill_index, killer_team, self_kill)
 
             kill["kill_order_bonus"] = kill_order_bonus if not self_kill else 0
@@ -364,7 +445,7 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
             kill["kill_order_bonus_x_time"] = (
                 kill_order_bonus * _time_factor(round_row, kill["event_time_seconds"]) if not self_kill else 0
             )
-            kill["kill_order_bonus_x_swing"] = kill_order_bonus * econ_swing_risk_factor if not self_kill else 0
+            kill["kill_order_bonus_x_swing"] = kill_order_bonus * combined_swing_factor if not self_kill else 0
 
             death_order_bonus = kill_order_bonus * _traded_factor(kills, kill, self_kill)
             kill["death_order_bonus"] = death_order_bonus
@@ -372,6 +453,8 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
             if self_kill:
                 if kill["econ_differential_factor"] == 4:
                     death_econ_factor = 0.9
+                elif kill["econ_differential_factor"] == 5:
+                    death_econ_factor = 0.85
                 elif kill["econ_differential_factor"] == 6:
                     death_econ_factor = 0.75
                 else:
@@ -383,7 +466,7 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
             kill["death_order_bonus_x_time"] = death_order_bonus * _time_factor(
                 round_row, kill["event_time_seconds"], for_death=True
             )
-            kill["death_order_bonus_x_swing"] = death_order_bonus * econ_swing_risk_factor
+            kill["death_order_bonus_x_swing"] = death_order_bonus * combined_swing_factor
 
             killer_own_alive = team1_kill_index if killer_team == Team.TEAM_1 else team2_kill_index
             killer_opp_alive = team2_kill_index if killer_team == Team.TEAM_1 else team1_kill_index
@@ -463,10 +546,20 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
             damages = round(damage_and_assists * kill_factor * 1.25)
             kill_impact = round(
                 damages
-                + (kill_order_bonus_x_econ_sum + kill_order_bonus_x_time_sum + kill_order_bonus_x_swing_sum) / 3
+                + (
+                    FACTOR_WEIGHTS["econ"] * kill_order_bonus_x_econ_sum
+                    + FACTOR_WEIGHTS["time"] * kill_order_bonus_x_time_sum
+                    + FACTOR_WEIGHTS["swing"] * kill_order_bonus_x_swing_sum
+                )
+                / _FACTOR_WEIGHT_TOTAL
             )
             death_impact = round(
-                (death_order_bonus_x_econ_sum + death_order_bonus_x_time_sum + death_order_bonus_x_swing_sum) / 3
+                (
+                    FACTOR_WEIGHTS["econ"] * death_order_bonus_x_econ_sum
+                    + FACTOR_WEIGHTS["time"] * death_order_bonus_x_time_sum
+                    + FACTOR_WEIGHTS["swing"] * death_order_bonus_x_swing_sum
+                )
+                / _FACTOR_WEIGHT_TOTAL
             )
             impact = kill_impact - death_impact
 
