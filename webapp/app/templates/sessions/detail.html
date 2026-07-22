@@ -76,10 +76,10 @@
 {% endif %}
 
 {% set fun = stats.fun_stats %}
-{% if fun.biggest_multi_kill or fun.longest_kill_streak or fun.most_multi_kills or fun.most_kills_on_enemy_top_frag or fun.most_deaths_to_enemy_bottom_frag or fun.most_clutches or fun.round_mvp or fun.eco_frags or fun.op_crutch or fun.most_trades_made or fun.most_traded or fun.most_deaths_to_eco_on_force or fun.most_deaths_to_eco_on_full_buy or fun.most_deaths_to_save_on_force or fun.most_deaths_to_save_on_full_buy %}
+{% if fun.biggest_multi_kill or fun.longest_kill_streak or fun.most_multi_kills or fun.most_kills_on_enemy_top_frag or fun.most_deaths_to_enemy_bottom_frag or fun.most_clutches or fun.round_mvp or fun.eco_frags or fun.op_crutch or fun.most_trades_made or fun.most_traded or fun.most_econ_upset_deaths or fun.most_round_changer or fun.most_xvx_kills or fun.most_spike_deaths or fun.post_plant_menace or fun.most_ghost_rounds %}
 <div class="card">
   <h2>Fun Stats</h2>
-  <div class="stat-grid">
+  <div class="stat-grid stat-grid--cols4">
     {% if fun.biggest_multi_kill %}
     <div class="stat-tile">
       <div class="stat-label">Biggest multi-kill</div>
@@ -141,6 +141,20 @@
       <div class="stat-sub">{{ fun.eco_frags.display_name | strip_tag }}</div>
     </div>
     {% endif %}
+    {% if fun.most_econ_upset_deaths %}
+    <div class="stat-tile">
+      <div class="stat-label">Most deaths to a lesser economy</div>
+      <div class="stat-value">{{ fun.most_econ_upset_deaths.value }}</div>
+      <div class="stat-sub">{{ fun.most_econ_upset_deaths.display_name | strip_tag }}</div>
+    </div>
+    {% endif %}
+    {% if fun.post_plant_menace %}
+    <div class="stat-tile">
+      <div class="stat-label">Post-plant menace</div>
+      <div class="stat-value">{{ fun.post_plant_menace.value }}</div>
+      <div class="stat-sub">{{ fun.post_plant_menace.display_name | strip_tag }}</div>
+    </div>
+    {% endif %}
     {% if fun.op_crutch %}
     <div class="stat-tile">
       <div class="stat-label">OP crutch</div>
@@ -162,32 +176,32 @@
       <div class="stat-sub">{{ fun.most_traded.display_name | strip_tag }}</div>
     </div>
     {% endif %}
-    {% if fun.most_deaths_to_eco_on_force %}
+    {% if fun.most_round_changer %}
     <div class="stat-tile">
-      <div class="stat-label">Most deaths to an eco (on force buy)</div>
-      <div class="stat-value">{{ fun.most_deaths_to_eco_on_force.value }}</div>
-      <div class="stat-sub">{{ fun.most_deaths_to_eco_on_force.display_name | strip_tag }}</div>
+      <div class="stat-label">Biggest round changer</div>
+      <div class="stat-value">{{ fun.most_round_changer.value }}</div>
+      <div class="stat-sub">{{ fun.most_round_changer.display_name | strip_tag }}</div>
     </div>
     {% endif %}
-    {% if fun.most_deaths_to_eco_on_full_buy %}
+    {% if fun.most_xvx_kills %}
     <div class="stat-tile">
-      <div class="stat-label">Most deaths to an eco (on full buy)</div>
-      <div class="stat-value">{{ fun.most_deaths_to_eco_on_full_buy.value }}</div>
-      <div class="stat-sub">{{ fun.most_deaths_to_eco_on_full_buy.display_name | strip_tag }}</div>
+      <div class="stat-label">Most kills in an even fight (XvX)</div>
+      <div class="stat-value">{{ fun.most_xvx_kills.value }}</div>
+      <div class="stat-sub">{{ fun.most_xvx_kills.display_name | strip_tag }}</div>
     </div>
     {% endif %}
-    {% if fun.most_deaths_to_save_on_force %}
+    {% if fun.most_spike_deaths %}
     <div class="stat-tile">
-      <div class="stat-label">Most deaths to a save (on force buy)</div>
-      <div class="stat-value">{{ fun.most_deaths_to_save_on_force.value }}</div>
-      <div class="stat-sub">{{ fun.most_deaths_to_save_on_force.display_name | strip_tag }}</div>
+      <div class="stat-label">Most deaths to the Spike</div>
+      <div class="stat-value">{{ fun.most_spike_deaths.value }}</div>
+      <div class="stat-sub">{{ fun.most_spike_deaths.display_name | strip_tag }}</div>
     </div>
     {% endif %}
-    {% if fun.most_deaths_to_save_on_full_buy %}
+    {% if fun.most_ghost_rounds %}
     <div class="stat-tile">
-      <div class="stat-label">Most deaths to a save (on full buy)</div>
-      <div class="stat-value">{{ fun.most_deaths_to_save_on_full_buy.value }}</div>
-      <div class="stat-sub">{{ fun.most_deaths_to_save_on_full_buy.display_name | strip_tag }}</div>
+      <div class="stat-label">Most ghost rounds (survived, 0 impact)</div>
+      <div class="stat-value">{{ fun.most_ghost_rounds.value }}</div>
+      <div class="stat-sub">{{ fun.most_ghost_rounds.display_name | strip_tag }}</div>
     </div>
     {% endif %}
   </div>
