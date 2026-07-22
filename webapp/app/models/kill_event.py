@@ -18,7 +18,7 @@ class KillEvent(Base):
     weapon: Mapped[str] = mapped_column(String(32), nullable=False)
     event_time_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     # Source-specific extras that don't warrant their own column yet,
-    # e.g. the scraper's per-kill ACS_Bonus.
+    # e.g. the tracker.gg adapter's per-kill assistants list.
     source_meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     round: Mapped["Round"] = relationship(

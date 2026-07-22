@@ -217,7 +217,6 @@ def load_match(db: Session, filename: str) -> Match:
                     death_match_player_id=match_players[death_username].id if death_username else None,
                     weapon=event["killWeapon"],
                     event_time_seconds=event["eventTime"],
-                    source_meta={"acs_bonus": event["ACS_Bonus"]},
                 )
             )
 

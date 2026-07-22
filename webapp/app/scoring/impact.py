@@ -353,7 +353,11 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
 
     round_kills: dict[int, list[dict]] = defaultdict(list)
     for kill in (
-        db.query(KillEvent).join(Round).filter(Round.match_id == match_id).order_by(KillEvent.id).all()
+        db.query(KillEvent)
+        .join(Round)
+        .filter(Round.match_id == match_id)
+        .order_by(KillEvent.event_time_seconds, KillEvent.id)
+        .all()
     ):
         round_number = round_number_by_round_id[kill.round_id]
         round_kills[round_number].append(
@@ -361,7 +365,6 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
                 "killer_match_player_id": kill.killer_match_player_id,
                 "death_match_player_id": kill.death_match_player_id,
                 "event_time_seconds": kill.event_time_seconds,
-                "acs_bonus": (kill.source_meta or {}).get("acs_bonus", 0),
             }
         )
 
@@ -415,6 +418,10 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
     # Kill-order bonuses, decorated per kill.
     for round_number, kills in round_kills.items():
         round_row = rounds_by_number[round_number]
+        # Despite the names, team1_kill_index tracks TEAM_2's alive count and
+        # team2_kill_index tracks TEAM_1's -- each decrements when the *other*
+        # team lands a kill against it. Fixed for the whole round regardless of
+        # which team is killing on a given kill (see the decrement below).
         team1_kill_index = 5
         team2_kill_index = 5
 
@@ -434,6 +441,14 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
             death_id = kill["death_match_player_id"]
             self_kill = killer_id == death_id
             killer_team = match_players[killer_id].team
+
+            # Valorant's own combat-score kill-order bonus: 150 for a kill against a
+            # still-full 5-player enemy team, decrementing 20 per further kill landed
+            # against that same team this round, regardless of the killer's own losses.
+            # This has nothing to do with our kill_order_bonus graph below -- it has to
+            # be backed out of the raw ACS number so damages reflects pure damage+assists.
+            victim_team_alive = team1_kill_index if killer_team == Team.TEAM_1 else team2_kill_index
+            kill["acs_bonus"] = 0 if self_kill else max(0, 150 - 20 * (5 - victim_team_alive))
 
             combined_swing_factor = team1_combined_swing if killer_team == Team.TEAM_2 else team2_combined_swing
             kill_order_bonus = _kill_order_bonus(team1_kill_index, team2_kill_index, killer_team, self_kill)
@@ -468,8 +483,8 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
             )
             kill["death_order_bonus_x_swing"] = death_order_bonus * combined_swing_factor
 
-            killer_own_alive = team1_kill_index if killer_team == Team.TEAM_1 else team2_kill_index
-            killer_opp_alive = team2_kill_index if killer_team == Team.TEAM_1 else team1_kill_index
+            killer_own_alive = team2_kill_index if killer_team == Team.TEAM_1 else team1_kill_index
+            killer_opp_alive = team1_kill_index if killer_team == Team.TEAM_1 else team2_kill_index
             kill["killer_clutch"] = not self_kill and _clutch_bucket(killer_own_alive, killer_opp_alive)
             kill["victim_clutch"] = not self_kill and _clutch_bucket(killer_opp_alive, killer_own_alive)
 
@@ -499,7 +514,6 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
             kill_order_bonus_x_econ_sum = 0.0
             kill_order_bonus_x_time_sum = 0.0
             kill_order_bonus_x_swing_sum = 0.0
-            kill_factor_sum = 0.0
             kills_in_round = 0
             clutch_kill_sum = 0.0
             post_plant_kill_sum = 0.0
@@ -508,7 +522,6 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
             for kill in kills:
                 if kill["killer_match_player_id"] == match_player_id:
                     acs -= kill["acs_bonus"]
-                    kill_factor_sum += kill["econ_differential_factor"]
                     kills_in_round += 1
                     kill_order_bonus_x_econ_sum += kill["kill_order_bonus_x_econ"]
                     kill_order_bonus_x_time_sum += kill["kill_order_bonus_x_time"]
@@ -522,7 +535,6 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
 
             adjust_acs_for_multikill = -50 * kills_in_round if kills_in_round > 1 else 0
             damage_and_assists = acs - adjust_acs_for_multikill
-            kill_factor_average = kill_factor_sum / (kills_in_round if kills_in_round else 1)
 
             death_order_bonus_x_econ_sum = 0.0
             death_order_bonus_x_time_sum = 0.0
@@ -542,8 +554,7 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
                     if kill["econ_mismatch"]:
                         econ_mismatch_death_sum += kill["death_order_bonus_x_econ"]
 
-            kill_factor = kill_factor_average if kill_factor_average != 0 else 1
-            damages = round(damage_and_assists * kill_factor * 1.25)
+            damages = round(damage_and_assists * 1.25)
             kill_impact = round(
                 damages
                 + (
