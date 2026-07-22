@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Player, Round, RoundPlayerStat
-from app.scoring.impact import FORCE_THRESHOLD
+from app.scoring.impact import FORCE_THRESHOLD, econ_tier_name
 from app.services.player_graphs import StateDiagram, build_session_round_win_diagram
 from app.services.sessions import SessionSummary
 
@@ -69,6 +69,10 @@ class SessionFunStats:
     op_crutch: FunStatEntry | None = None
     most_trades_made: FunStatEntry | None = None
     most_traded: FunStatEntry | None = None
+    most_deaths_to_eco_on_force: FunStatEntry | None = None
+    most_deaths_to_eco_on_full_buy: FunStatEntry | None = None
+    most_deaths_to_save_on_force: FunStatEntry | None = None
+    most_deaths_to_save_on_full_buy: FunStatEntry | None = None
 
 
 @dataclass
@@ -236,6 +240,12 @@ def _build_fun_stats(
     )
     round_mvp = _build_round_mvp(db, match_ids, our_mp_to_player, players_by_id)
     most_trades_made, most_traded = _build_trade_stats(db, our_mp_to_player, players_by_id)
+    (
+        most_deaths_to_eco_on_force,
+        most_deaths_to_eco_on_full_buy,
+        most_deaths_to_save_on_force,
+        most_deaths_to_save_on_full_buy,
+    ) = _build_econ_upset_stats(db, match_ids, our_mp_to_player, players_by_id)
 
     return SessionFunStats(
         biggest_multi_kill=biggest_multi_kill,
@@ -249,6 +259,10 @@ def _build_fun_stats(
         op_crutch=op_crutch,
         most_trades_made=most_trades_made,
         most_traded=most_traded,
+        most_deaths_to_eco_on_force=most_deaths_to_eco_on_force,
+        most_deaths_to_eco_on_full_buy=most_deaths_to_eco_on_full_buy,
+        most_deaths_to_save_on_force=most_deaths_to_save_on_force,
+        most_deaths_to_save_on_full_buy=most_deaths_to_save_on_full_buy,
     )
 
 
@@ -474,4 +488,68 @@ def _build_trade_stats(
     return (
         _top_entry(traded_teammate_totals, players_by_id),
         _top_entry(traded_by_teammate_totals, players_by_id),
+    )
+
+
+# (killer's econ tier, victim's econ tier) -> bucket name, for "upset" deaths where a
+# cheaper-buying enemy killed one of our players on a pricier buy.
+_ECON_UPSET_BUCKETS = {
+    ("ECO", "FORCE"): "eco_force",
+    ("ECO", "FULL_BUY"): "eco_full_buy",
+    ("SAVE", "FORCE"): "save_force",
+    ("SAVE", "FULL_BUY"): "save_full_buy",
+}
+
+
+def _build_econ_upset_stats(
+    db: Session,
+    match_ids: list[int],
+    our_mp_to_player: dict[int, int],
+    players_by_id: dict[int, str],
+) -> tuple[FunStatEntry | None, FunStatEntry | None, FunStatEntry | None, FunStatEntry | None]:
+    """Counts deaths of our players to a cheaper-buying enemy: killer on
+    eco/save, victim (one of ours) on force/full buy -- the "upset" death.
+    """
+    KillerStat = aliased(RoundPlayerStat)
+    VictimStat = aliased(RoundPlayerStat)
+
+    rows = (
+        db.query(
+            KillEvent.death_match_player_id,
+            KillerStat.loadout,
+            VictimStat.loadout,
+        )
+        .join(Round, Round.id == KillEvent.round_id)
+        .join(
+            VictimStat,
+            (VictimStat.round_id == KillEvent.round_id)
+            & (VictimStat.match_player_id == KillEvent.death_match_player_id),
+        )
+        .join(
+            KillerStat,
+            (KillerStat.round_id == KillEvent.round_id)
+            & (KillerStat.match_player_id == KillEvent.killer_match_player_id),
+        )
+        .filter(
+            Round.match_id.in_(match_ids),
+            KillEvent.death_match_player_id.in_(our_mp_to_player.keys()),
+            KillEvent.killer_match_player_id.isnot(None),
+            KillEvent.killer_match_player_id != KillEvent.death_match_player_id,
+        )
+        .all()
+    )
+
+    bucket_counts: dict[str, dict[int, int]] = {name: {} for name in _ECON_UPSET_BUCKETS.values()}
+    for death_mp_id, killer_loadout, victim_loadout in rows:
+        bucket = _ECON_UPSET_BUCKETS.get((econ_tier_name(killer_loadout), econ_tier_name(victim_loadout)))
+        if bucket is None:
+            continue
+        player_id = our_mp_to_player[death_mp_id]
+        bucket_counts[bucket][player_id] = bucket_counts[bucket].get(player_id, 0) + 1
+
+    return (
+        _top_entry(bucket_counts["eco_force"], players_by_id),
+        _top_entry(bucket_counts["eco_full_buy"], players_by_id),
+        _top_entry(bucket_counts["save_force"], players_by_id),
+        _top_entry(bucket_counts["save_full_buy"], players_by_id),
     )

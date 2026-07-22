@@ -76,7 +76,7 @@
 {% endif %}
 
 {% set fun = stats.fun_stats %}
-{% if fun.biggest_multi_kill or fun.longest_kill_streak or fun.most_multi_kills or fun.most_kills_on_enemy_top_frag or fun.most_deaths_to_enemy_bottom_frag or fun.most_clutches or fun.round_mvp or fun.eco_frags or fun.op_crutch or fun.most_trades_made or fun.most_traded %}
+{% if fun.biggest_multi_kill or fun.longest_kill_streak or fun.most_multi_kills or fun.most_kills_on_enemy_top_frag or fun.most_deaths_to_enemy_bottom_frag or fun.most_clutches or fun.round_mvp or fun.eco_frags or fun.op_crutch or fun.most_trades_made or fun.most_traded or fun.most_deaths_to_eco_on_force or fun.most_deaths_to_eco_on_full_buy or fun.most_deaths_to_save_on_force or fun.most_deaths_to_save_on_full_buy %}
 <div class="card">
   <h2>Fun Stats</h2>
   <div class="stat-grid">
@@ -160,6 +160,34 @@
       <div class="stat-label">Most traded</div>
       <div class="stat-value">{{ fun.most_traded.value }}</div>
       <div class="stat-sub">{{ fun.most_traded.display_name | strip_tag }}</div>
+    </div>
+    {% endif %}
+    {% if fun.most_deaths_to_eco_on_force %}
+    <div class="stat-tile">
+      <div class="stat-label">Most deaths to an eco (on force buy)</div>
+      <div class="stat-value">{{ fun.most_deaths_to_eco_on_force.value }}</div>
+      <div class="stat-sub">{{ fun.most_deaths_to_eco_on_force.display_name | strip_tag }}</div>
+    </div>
+    {% endif %}
+    {% if fun.most_deaths_to_eco_on_full_buy %}
+    <div class="stat-tile">
+      <div class="stat-label">Most deaths to an eco (on full buy)</div>
+      <div class="stat-value">{{ fun.most_deaths_to_eco_on_full_buy.value }}</div>
+      <div class="stat-sub">{{ fun.most_deaths_to_eco_on_full_buy.display_name | strip_tag }}</div>
+    </div>
+    {% endif %}
+    {% if fun.most_deaths_to_save_on_force %}
+    <div class="stat-tile">
+      <div class="stat-label">Most deaths to a save (on force buy)</div>
+      <div class="stat-value">{{ fun.most_deaths_to_save_on_force.value }}</div>
+      <div class="stat-sub">{{ fun.most_deaths_to_save_on_force.display_name | strip_tag }}</div>
+    </div>
+    {% endif %}
+    {% if fun.most_deaths_to_save_on_full_buy %}
+    <div class="stat-tile">
+      <div class="stat-label">Most deaths to a save (on full buy)</div>
+      <div class="stat-value">{{ fun.most_deaths_to_save_on_full_buy.value }}</div>
+      <div class="stat-sub">{{ fun.most_deaths_to_save_on_full_buy.display_name | strip_tag }}</div>
     </div>
     {% endif %}
   </div>

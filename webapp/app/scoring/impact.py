@@ -81,14 +81,21 @@ FACTOR_WEIGHTS = {
 _FACTOR_WEIGHT_TOTAL = sum(FACTOR_WEIGHTS.values())
 
 
-def _categorize_econ(loadout: int) -> int:
+_ECON_TIER_CODES = {"SAVE": 8, "ECO": 6, "FORCE": 5, "FULL_BUY": 4}
+
+
+def econ_tier_name(loadout: int) -> str:
     if loadout < 1000:
-        return 8  # SAVE
+        return "SAVE"
     if loadout < FORCE_THRESHOLD:
-        return 6  # ECON
+        return "ECO"
     if loadout < FULL_BUY_THRESHOLD:
-        return 5  # FORCE
-    return 4  # FULL BUY
+        return "FORCE"
+    return "FULL_BUY"
+
+
+def _categorize_econ(loadout: int) -> int:
+    return _ECON_TIER_CODES[econ_tier_name(loadout)]
 
 
 def _kill_order_bonus(team1_kill_index: int, team2_kill_index: int, kill_team: Team, self_kill: bool) -> float:
