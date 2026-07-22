@@ -471,11 +471,8 @@ def calculateRoundImpact(playersRoundInfo):
 			killOrderBonusXEconSwingRiskFactorSum = player["RoundInfo"][roundIndex]["killOrderBonus*EconSwingRiskFactorSum"]
 			deathOrderBonusXEconSwingRiskFactorSum = player["RoundInfo"][roundIndex]["deathOrderBonus*EconSwingRiskFactorSum"]
 
-			killFactorAverage = player["RoundInfo"][roundIndex]["EconomyDifferentialFactorAverage"]
-			if killFactorAverage == 0:
-				killFactorAverage = 1
 			ACS_Scalor = 1.25
-			damages = round(ACS*killFactorAverage*ACS_Scalor)
+			damages = round(ACS*ACS_Scalor)
 			killImpact = round(damages + ((killOrderBonusXEconFactorSum + killOrderBonusXTimeFactorSum + killOrderBonusXEconSwingRiskFactorSum) / 3))
 
 			deathImpact = round((deathOrderBonusXEconFactorSum + deathOrderBonusXTimeFactorSum + deathOrderBonusXEconSwingRiskFactorSum) / 3)
@@ -499,7 +496,6 @@ def calculateDamageAndAssists_KillOrderSum_KillFactorAverage(playersRoundInfo, r
 		for roundIndex in range(0,len(player["RoundInfo"])):
 			ACS = player["RoundInfo"][roundIndex]["Score"]
 			killOrderBonus = 0
-			killFactorAverage = 0
 			killOrderBonusXEconFactorSum = 0
 			killOrderBonusXTimeFactorSum = 0
 			killOrderBonusXEconSwingRiskFactor = 0
@@ -511,7 +507,6 @@ def calculateDamageAndAssists_KillOrderSum_KillFactorAverage(playersRoundInfo, r
 					if killLog["killerTeam"] == team and killLog["killerCharacter"] == agent:
 						ACS -= killLog["ACS_Bonus"]
 						killOrderBonus += killLog["killOrderBonus"]
-						killFactorAverage += killLog["EconomyDifferentialFactor"]
 						killsInRound += 1
 						killOrderBonusXEconFactorSum += killLog["killOrderBonus*EconFactor"]
 						killOrderBonusXTimeFactorSum += killLog["killOrderBonus*TimeFactor"]
@@ -526,11 +521,6 @@ def calculateDamageAndAssists_KillOrderSum_KillFactorAverage(playersRoundInfo, r
 			player["RoundInfo"][roundIndex]["killOrderBonus*EconFactorSum"] = killOrderBonusXEconFactorSum
 			player["RoundInfo"][roundIndex]["killOrderBonus*TimeFactorSum"] = killOrderBonusXTimeFactorSum
 			player["RoundInfo"][roundIndex]["killOrderBonus*EconSwingRiskFactorSum"] = killOrderBonusXEconSwingRiskFactor
-
-			
-			if killsInRound == 0:
-				killsInRound = 1
-			player["RoundInfo"][roundIndex]["EconomyDifferentialFactorAverage"] = killFactorAverage/killsInRound
 
 		for roundIndex in range(0,len(player["RoundInfo"])):
 			deathOrderBonusXEconFactorSum = 0
