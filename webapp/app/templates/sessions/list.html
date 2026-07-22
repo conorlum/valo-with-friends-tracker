@@ -25,7 +25,7 @@
         </a>
       </td>
       <td>{{ session.matches | length }}</td>
-      <td>{{ session.roster_display_names | sort | join(", ") }}</td>
+      <td>{% for name in session.roster_ordered %}{% if name in session.core_display_names %}<strong>{{ name }}</strong>{% else %}{{ name }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td>
       <td>{% if session.is_multi_match %}{{ session.wins }}-{{ session.losses }}{% else %}&ndash;{% endif %}</td>
     </tr>
     {% else %}

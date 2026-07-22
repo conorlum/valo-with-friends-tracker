@@ -16,11 +16,148 @@
 
 <div class="card">
   <h2>Roster</h2>
-  <p>{{ session.roster_display_names | sort | join(", ") }}</p>
+  <p>
+    {% for name in session.roster_ordered %}{% if name in session.core_display_names %}<strong>{{ name }}</strong>{% else %}{{ name }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+  </p>
   {% if session.is_multi_match and session.core_display_names %}
   <p class="page-meta">Played every match: {{ session.core_display_names | sort | join(", ") }}</p>
   {% endif %}
 </div>
+
+{% if stats.leaderboard %}
+<div class="card">
+  <h2>Impact Leaderboard</h2>
+  <p class="page-meta">Average Impact per round across every match in this session.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Player</th>
+        <th>Avg Impact</th>
+        <th>Rounds</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in stats.leaderboard %}
+      <tr>
+        <td>{{ entry.display_name }}</td>
+        <td class="{{ 'impact-positive' if entry.average_impact >= 0 else 'impact-negative' }}">{{ entry.average_impact | round | int }}</td>
+        <td>{{ entry.rounds_played }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if session.team_by_match and stats.round_win_diagram.nodes %}
+<div class="card">
+  <h2>Round win rate by game state</h2>
+  <p class="page-meta">Win rate of rounds this session's roster reached at each man-advantage state (own side v opponent side), combined across every match.</p>
+  <div class="chart-scroll">
+    <svg viewBox="{{ stats.round_win_diagram.view_box }}" style="width: 100%; max-width: 620px; height: auto; display: block; margin: 0 auto;">
+      {% for edge in stats.round_win_diagram.edges %}
+      <line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="{{ edge.stroke }}" stroke-width="{{ edge.stroke_width }}" />
+      {% endfor %}
+      {% for node in stats.round_win_diagram.nodes %}
+      <g>
+        <title>{{ node.label }} &mdash; {{ node.sublabel }}</title>
+        <circle cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.radius }}" fill="{{ node.fill }}" stroke="#0d0d0d" stroke-width="1.5" />
+        <text x="{{ node.x }}" y="{{ node.y - 3 }}" text-anchor="middle" font-size="11" font-weight="700" fill="{{ node.text_fill }}">{{ node.label }}</text>
+        {% if node.short_label %}
+        <text x="{{ node.x }}" y="{{ node.y + 9 }}" text-anchor="middle" font-size="9" fill="{{ node.text_fill }}">{{ node.short_label }}</text>
+        {% endif %}
+      </g>
+      {% endfor %}
+    </svg>
+  </div>
+</div>
+{% endif %}
+
+{% set fun = stats.fun_stats %}
+{% if fun.biggest_multi_kill or fun.longest_kill_streak or fun.most_multi_kills or fun.most_kills_on_enemy_top_frag or fun.most_deaths_to_enemy_bottom_frag %}
+<div class="card">
+  <h2>Fun Stats</h2>
+  <div class="stat-grid">
+    {% if fun.biggest_multi_kill %}
+    <div class="stat-tile">
+      <div class="stat-label">Biggest multi-kill</div>
+      <div class="stat-value">{{ fun.biggest_multi_kill.value }}</div>
+      <div class="stat-sub">
+        {{ fun.biggest_multi_kill.display_name }}
+        {% if fun.biggest_multi_kill.match_id in matches_by_id %}
+        &middot; {{ match_label(matches_by_id[fun.biggest_multi_kill.match_id]) }}, Round {{ fun.biggest_multi_kill.round_number }}
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+    {% if fun.longest_kill_streak %}
+    <div class="stat-tile">
+      <div class="stat-label">Longest kill streak w/o dying</div>
+      <div class="stat-value">{{ fun.longest_kill_streak.value }}</div>
+      <div class="stat-sub">{{ fun.longest_kill_streak.display_name }}</div>
+    </div>
+    {% endif %}
+    {% if fun.most_multi_kills %}
+    <div class="stat-tile">
+      <div class="stat-label">Most multi-kills (3+)</div>
+      <div class="stat-value">{{ fun.most_multi_kills.value }}</div>
+      <div class="stat-sub">{{ fun.most_multi_kills.display_name }}</div>
+    </div>
+    {% endif %}
+    {% if fun.most_kills_on_enemy_top_frag %}
+    <div class="stat-tile">
+      <div class="stat-label">Most kills on enemy top frag</div>
+      <div class="stat-value">{{ fun.most_kills_on_enemy_top_frag.value }}</div>
+      <div class="stat-sub">
+        {{ fun.most_kills_on_enemy_top_frag.display_name }}
+        {% if fun.most_kills_on_enemy_top_frag.opponent_display_name %}&middot; vs {{ fun.most_kills_on_enemy_top_frag.opponent_display_name }}{% endif %}
+      </div>
+    </div>
+    {% endif %}
+    {% if fun.most_deaths_to_enemy_bottom_frag %}
+    <div class="stat-tile">
+      <div class="stat-label">Most deaths to enemy bottom frag</div>
+      <div class="stat-value">{{ fun.most_deaths_to_enemy_bottom_frag.value }}</div>
+      <div class="stat-sub">
+        {{ fun.most_deaths_to_enemy_bottom_frag.display_name }}
+        {% if fun.most_deaths_to_enemy_bottom_frag.opponent_display_name %}&middot; vs {{ fun.most_deaths_to_enemy_bottom_frag.opponent_display_name }}{% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if stats.kda_rows %}
+<div class="card">
+  <h2>KDA by match</h2>
+  <p class="page-meta">Kills/Deaths/Assists per match &mdash; blank if a player didn't play that match.</p>
+  <div class="chart-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>Player</th>
+        {% for match in session.matches %}
+        <th><a href="/matches/{{ match.external_id }}">{{ match_label(match) }}</a></th>
+        {% endfor %}
+        <th>Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in stats.kda_rows %}
+      <tr>
+        <td>{{ row.display_name }}</td>
+        {% for match in session.matches %}
+        <td>{% if match.id in row.by_match %}{{ row.by_match[match.id].label }}{% else %}&mdash;{% endif %}</td>
+        {% endfor %}
+        <td>{{ row.total_label }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
 
 <div class="card">
   <h2>Matches</h2>

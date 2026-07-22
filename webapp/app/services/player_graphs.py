@@ -229,6 +229,53 @@ def build_match_round_win_diagrams(match: Match) -> tuple[StateDiagram, StateDia
     return _round_win_diagram(win_stats[Team.TEAM_1]), _round_win_diagram(win_stats[Team.TEAM_2])
 
 
+def build_session_round_win_diagram(
+    matches: list[Match], team_by_match: dict[int, str]
+) -> StateDiagram:
+    """Combined round-win-by-game-state diagram for a session's tracked team.
+
+    Same replay as build_match_round_win_diagrams's per-team pass, but merges
+    every match in the session into one win_stats dict from that match's
+    "our team" side (team_by_match), so a session covering several matches
+    against different opponents reads as one combined diagram. Matches with
+    no resolvable side (team_by_match missing an entry) are skipped.
+    """
+    win_stats: dict[str, dict[str, int]] = {}
+
+    for match in matches:
+        own_team_str = team_by_match.get(match.id)
+        if own_team_str is None:
+            continue
+        own_team = Team(own_team_str)
+        opp_team = Team.TEAM_2 if own_team == Team.TEAM_1 else Team.TEAM_1
+        sizes = _team_sizes(match.match_players)
+        team_of = {mp.id: mp.team for mp in match.match_players}
+
+        for round_row in match.rounds:
+            alive = {Team.TEAM_1: sizes[Team.TEAM_1], Team.TEAM_2: sizes[Team.TEAM_2]}
+            winner = _winner_team(round_row.outcome)
+            events = sorted(round_row.kill_events, key=lambda e: e.event_time_seconds)
+
+            for event in events:
+                own_alive, opp_alive = alive[own_team], alive[opp_team]
+                if own_alive >= 1 and opp_alive >= 1 and winner is not None:
+                    state = f"{own_alive}v{opp_alive}"
+                    bucket = win_stats.setdefault(state, {"win": 0, "total": 0})
+                    bucket["total"] += 1
+                    if winner == own_team:
+                        bucket["win"] += 1
+
+                if event.death_match_player_id is not None:
+                    dead_team = team_of.get(event.death_match_player_id)
+                    if dead_team is not None and alive[dead_team] > 0:
+                        alive[dead_team] -= 1
+
+                if alive[Team.TEAM_1] <= 0 or alive[Team.TEAM_2] <= 0:
+                    break
+
+    return _round_win_diagram(win_stats)
+
+
 def _round_win_diagram(win_stats: dict[str, dict[str, int]]) -> StateDiagram:
     raw_nodes = {
         f"{a}v{b}": _pos(a, b, ROUND_WIN_X_STEP, ROUND_WIN_Y_STEP) for a in range(1, 6) for b in range(1, 6)

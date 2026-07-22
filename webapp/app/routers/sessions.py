@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.services.session_stats import get_session_stats
 from app.services.sessions import get_session_or_404, list_sessions
 from app.templates import templates
 
@@ -17,4 +18,10 @@ def session_list(request: Request, db: Session = Depends(get_db)):
 @router.get("/{session_index}")
 def session_detail(request: Request, session_index: int, db: Session = Depends(get_db)):
     session = get_session_or_404(db, session_index)
-    return templates.TemplateResponse(request, "sessions/detail.html", {"session": session})
+    stats = get_session_stats(db, session)
+    matches_by_id = {m.id: m for m in session.matches}
+    return templates.TemplateResponse(
+        request,
+        "sessions/detail.html",
+        {"session": session, "stats": stats, "matches_by_id": matches_by_id},
+    )

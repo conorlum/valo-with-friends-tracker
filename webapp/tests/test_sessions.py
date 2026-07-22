@@ -54,10 +54,13 @@ def test_two_matches_close_together_with_shared_roster_merge():
     session = sessions[0]
     assert [m.id for m in session.matches] == [1, 2]
     assert session.is_multi_match is True
-    assert session.core_player_ids == {1, 2, 3, 5}
-    assert session.roster_player_ids == {1, 2, 3, 4, 5, 6}
-    # Core roster (1,2,3 on team-1, 5 on team-2) overlaps more with team-1 in both
-    # matches, and team-1 won both.
+    # Provisional cross-match core (1,2,3 on team-1, 5 on team-2) overlaps more
+    # with team-1 in both matches, so team-1 is "our" team: roster and core are
+    # restricted to team-1's players (1,2,3), excluding opponents 4/5/6 even
+    # though 5 persisted across both matches on the other side.
+    assert session.core_player_ids == {1, 2, 3}
+    assert session.roster_player_ids == {1, 2, 3}
+    # Team-1 won both.
     assert session.wins == 2
     assert session.losses == 0
     assert session.ambiguous_match_ids == []

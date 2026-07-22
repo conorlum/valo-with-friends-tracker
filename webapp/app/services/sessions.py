@@ -31,6 +31,7 @@ class RosterSession:
     losses: int
     ambiguous_match_ids: list[int] = field(default_factory=list)
     is_multi_match: bool = False
+    team_by_match: dict[int, str] = field(default_factory=dict)
 
 
 def group_matches_into_sessions(
@@ -71,12 +72,60 @@ def _build_roster_session(
 ) -> RosterSession:
     per_match_ids = [{mp.player_id for mp in match_players_by_match.get(m.id, [])} for m in run]
 
+    # Used only to tell which side is "our" team per match: since consecutive
+    # matches in a run are grouped by overlapping *full* (both-team) rosters,
+    # intersecting those full rosters across the run still isolates mostly our
+    # persistent players (opponents differ match to match).
+    provisional_core_ids = set(per_match_ids[0]) if per_match_ids else set()
+    for ids in per_match_ids[1:]:
+        provisional_core_ids &= ids
+
+    is_multi_match = len(run) > 1
+    wins = 0
+    losses = 0
+    ambiguous_match_ids: list[int] = []
+    per_match_our_ids: list[set[int]] = []
+    team_by_match: dict[int, str] = {}
+
+    if is_multi_match:
+        for m, all_ids in zip(run, per_match_ids):
+            team1_ids = {
+                mp.player_id for mp in match_players_by_match.get(m.id, []) if mp.team == "team-1"
+            }
+            team2_ids = {
+                mp.player_id for mp in match_players_by_match.get(m.id, []) if mp.team == "team-2"
+            }
+            overlap1 = len(team1_ids & provisional_core_ids)
+            overlap2 = len(team2_ids & provisional_core_ids)
+            if overlap1 == overlap2:
+                # Can't tell which side is ours for this match; fall back to
+                # including everyone so we don't silently drop real teammates.
+                ambiguous_match_ids.append(m.id)
+                per_match_our_ids.append(all_ids)
+                continue
+            our_team = "team-1" if overlap1 > overlap2 else "team-2"
+            team_by_match[m.id] = our_team
+            per_match_our_ids.append(team1_ids if our_team == "team-1" else team2_ids)
+            our_won = (
+                m.team1_rounds_won > m.team2_rounds_won
+                if our_team == "team-1"
+                else m.team2_rounds_won > m.team1_rounds_won
+            )
+            if our_won:
+                wins += 1
+            else:
+                losses += 1
+    else:
+        # A single match has no other match in the session to compare
+        # rosters against, so which side is "ours" can't be determined.
+        per_match_our_ids = list(per_match_ids)
+
     roster_player_ids: set[int] = set()
-    for ids in per_match_ids:
+    for ids in per_match_our_ids:
         roster_player_ids |= ids
 
-    core_player_ids = set(per_match_ids[0]) if per_match_ids else set()
-    for ids in per_match_ids[1:]:
+    core_player_ids = set(per_match_our_ids[0]) if per_match_our_ids else set()
+    for ids in per_match_our_ids[1:]:
         core_player_ids &= ids
 
     display_name_by_id: dict[int, str] = {}
@@ -91,35 +140,6 @@ def _build_roster_session(
         display_name_by_id[pid] for pid in core_player_ids if pid in display_name_by_id
     }
 
-    is_multi_match = len(run) > 1
-    wins = 0
-    losses = 0
-    ambiguous_match_ids: list[int] = []
-
-    if is_multi_match:
-        for m in run:
-            team1_ids = {
-                mp.player_id for mp in match_players_by_match.get(m.id, []) if mp.team == "team-1"
-            }
-            team2_ids = {
-                mp.player_id for mp in match_players_by_match.get(m.id, []) if mp.team == "team-2"
-            }
-            overlap1 = len(team1_ids & core_player_ids)
-            overlap2 = len(team2_ids & core_player_ids)
-            if overlap1 == overlap2:
-                ambiguous_match_ids.append(m.id)
-                continue
-            our_team = "team-1" if overlap1 > overlap2 else "team-2"
-            our_won = (
-                m.team1_rounds_won > m.team2_rounds_won
-                if our_team == "team-1"
-                else m.team2_rounds_won > m.team1_rounds_won
-            )
-            if our_won:
-                wins += 1
-            else:
-                losses += 1
-
     return RosterSession(
         matches=run,
         roster_player_ids=roster_player_ids,
@@ -132,6 +152,7 @@ def _build_roster_session(
         losses=losses,
         ambiguous_match_ids=ambiguous_match_ids,
         is_multi_match=is_multi_match,
+        team_by_match=team_by_match,
     )
 
 
@@ -150,6 +171,8 @@ class SessionSummary:
     losses: int
     ambiguous_match_ids: list[int]
     is_multi_match: bool
+    team_by_match: dict[int, str] = field(default_factory=dict)
+    roster_ordered: list[str] = field(default_factory=list)
 
 
 def list_sessions(db: Session) -> list[SessionSummary]:
@@ -178,6 +201,8 @@ def list_sessions(db: Session) -> list[SessionSummary]:
     sessions = []
     for i, rs in enumerate(roster_sessions):
         match_summaries = {m.id: get_match_summary(db, m) for m in rs.matches}
+        others = rs.roster_display_names - rs.core_display_names
+        roster_ordered = sorted(rs.core_display_names) + sorted(others)
         sessions.append(
             SessionSummary(
                 index=i,
@@ -193,6 +218,8 @@ def list_sessions(db: Session) -> list[SessionSummary]:
                 losses=rs.losses,
                 ambiguous_match_ids=rs.ambiguous_match_ids,
                 is_multi_match=rs.is_multi_match,
+                team_by_match=rs.team_by_match,
+                roster_ordered=roster_ordered,
             )
         )
     return sessions
