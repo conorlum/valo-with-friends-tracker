@@ -8,6 +8,8 @@ the JSON response the page's own client-side code requests while rendering.
 Companion piece to app/adapters/demo_match_source.py, same target schema.
 """
 
+import random
+import time
 from datetime import datetime
 
 from playwright.sync_api import Page
@@ -15,10 +17,14 @@ from sqlalchemy.orm import Session
 
 from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.models.match import MatchSource, Team
+from app.scoring.impact import compute_impact_for_match
 
 MATCH_URL_TMPL = "https://tracker.gg/valorant/match/{match_id}"
 MATCH_API_MARKER_TMPL = "api.tracker.gg/api/v2/valorant/standard/matches/{match_id}"
 HISTORY_URL_TMPL = "https://tracker.gg/valorant/profile/riot/{riot_id}/matches"
+
+MIN_MATCH_DELAY_SECONDS = 5
+MAX_MATCH_DELAY_SECONDS = 12
 
 
 class ProfilePrivateError(RuntimeError):
@@ -28,8 +34,10 @@ class ProfilePrivateError(RuntimeError):
 
 def discover_recent_match_ids(page: Page, riot_id: str, count: int) -> list[str]:
     """Navigates to a player's public match-history page and returns the
-    tracker.gg match IDs (UUIDs) for their `count` most recent matches, most
-    recent first. No login required -- these pages are public, unless the
+    tracker.gg match IDs (UUIDs) for their `count` most recent Competitive
+    matches, most recent first -- other modes (Deathmatch, Swiftplay, etc.)
+    are filtered out since the Impact scoring is meant to reflect competitive
+    play only. No login required -- these pages are public, unless the
     player has opted their profile to private (see ProfilePrivateError)."""
     url = HISTORY_URL_TMPL.format(riot_id=riot_id.replace("#", "%23"))
     page.goto(url, wait_until="load", timeout=60_000)
@@ -50,7 +58,8 @@ def discover_recent_match_ids(page: Page, riot_id: str, count: int) -> list[str]
         return []
 
     matches = profile_matches[0].get("matches") or []
-    return [m["attributes"]["id"] for m in matches[:count]]
+    competitive = [m for m in matches if m.get("metadata", {}).get("modeName") == "Competitive"]
+    return [m["attributes"]["id"] for m in competitive[:count]]
 
 
 def fetch_match_json(page: Page, match_id: str) -> dict:
@@ -211,3 +220,35 @@ def load_match(db: Session, match_json: dict) -> Match:
 
     db.commit()
     return match
+
+
+def ingest_recent_matches(db: Session, page: Page, riot_id: str, count: int) -> None:
+    """Discovers a player's `count` most recent matches, skips any already in
+    the DB (dedup by tracker.gg's own match ID, so the same match is never
+    double-ingested even when reached via a different player's history), and
+    ingests+scores the rest with a human pace between requests."""
+    try:
+        match_ids = discover_recent_match_ids(page, riot_id, count)
+    except ProfilePrivateError as e:
+        print(f"skipping {riot_id}: {e}")
+        return
+    print(f"discovered {len(match_ids)} recent match(es) for {riot_id}")
+
+    new_ids = []
+    for match_id in match_ids:
+        if db.query(Match).filter_by(external_id=match_id).one_or_none() is not None:
+            print(f"  {match_id}: already ingested, skipping")
+        else:
+            new_ids.append(match_id)
+
+    for i, match_id in enumerate(new_ids):
+        print(f"[{i + 1}/{len(new_ids)}] capturing {match_id}")
+        match_json = fetch_match_json(page, match_id)
+        match = load_match(db, match_json)
+        compute_impact_for_match(db, match.id)
+        print(f"  ingested {match.map_name} ({match_id})")
+
+        if i < len(new_ids) - 1:
+            delay = random.uniform(MIN_MATCH_DELAY_SECONDS, MAX_MATCH_DELAY_SECONDS)
+            print(f"  waiting {delay:.1f}s before next match...")
+            time.sleep(delay)

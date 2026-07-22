@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.services.player_graphs import build_state_diagrams
 from app.services.players import get_player_or_404, get_player_profile, list_players
-from app.templates import templates
+from app.templates import match_label, templates
 
 router = APIRouter(prefix="/players", tags=["players"])
 
@@ -20,7 +20,7 @@ def player_detail(request: Request, display_name: str, db: Session = Depends(get
     player = get_player_or_404(db, display_name)
     profile = get_player_profile(db, player)
     chart_data = {
-        "labels": [m.match.external_id for m in profile.matches],
+        "labels": [match_label(m.match) for m in profile.matches],
         "kill_impact": [m.average_kill_impact for m in profile.matches],
         "death_impact": [m.average_death_impact for m in profile.matches],
     }
