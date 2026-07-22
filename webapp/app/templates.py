@@ -52,6 +52,17 @@ def match_label(match) -> str:
 
 templates.env.globals["match_label"] = match_label
 
+
+def strip_tag(display_name: str | None) -> str:
+    """Drops the "#Tag" suffix from a Riot ID for display -- the full name
+    (used for player lookups/links) is kept wherever it's needed for that."""
+    if not display_name:
+        return display_name
+    return display_name.split("#", 1)[0]
+
+
+templates.env.filters["strip_tag"] = strip_tag
+
 _STYLE_CSS_PATH = Path(__file__).resolve().parent / "static" / "css" / "style.css"
 
 

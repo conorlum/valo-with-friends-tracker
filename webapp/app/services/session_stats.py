@@ -3,10 +3,14 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Player, Round, RoundPlayerStat
+from app.scoring.impact import FORCE_THRESHOLD
 from app.services.player_graphs import StateDiagram, build_session_round_win_diagram
 from app.services.sessions import SessionSummary
 
 MULTI_KILL_THRESHOLD = 3
+# Operator (4700) + at minimum light shields (400): a round where the player
+# clearly bought (and presumably played) an Operator.
+OP_LOADOUT_THRESHOLD = 5100
 
 
 @dataclass
@@ -15,6 +19,8 @@ class LeaderboardEntry:
     display_name: str
     average_impact: float
     rounds_played: int
+    rounds_won: int = 0
+    rounds_lost: int = 0
 
 
 @dataclass
@@ -48,7 +54,6 @@ class FunStatEntry:
     value: int
     match_id: int | None = None
     round_number: int | None = None
-    opponent_display_name: str | None = None
 
 
 @dataclass
@@ -58,6 +63,12 @@ class SessionFunStats:
     most_multi_kills: FunStatEntry | None = None
     most_kills_on_enemy_top_frag: FunStatEntry | None = None
     most_deaths_to_enemy_bottom_frag: FunStatEntry | None = None
+    most_clutches: FunStatEntry | None = None
+    round_mvp: FunStatEntry | None = None
+    eco_frags: FunStatEntry | None = None
+    op_crutch: FunStatEntry | None = None
+    most_trades_made: FunStatEntry | None = None
+    most_traded: FunStatEntry | None = None
 
 
 @dataclass
@@ -92,7 +103,7 @@ def get_session_stats(db: Session, session: SessionSummary) -> SessionStats:
     # match_player_id -> player_id, restricted to this session's roster.
     our_mp_to_player: dict[int, int] = {mp.id: mp.player_id for mp in our_match_players}
 
-    leaderboard = _build_leaderboard(db, our_mp_to_player, players_by_id)
+    leaderboard = _build_leaderboard(db, our_mp_to_player, players_by_id, session.team_by_match)
     kda_rows = _build_kda_rows(db, match_ids, our_mp_to_player, players_by_id)
     fun_stats = _build_fun_stats(db, session, our_mp_to_player, players_by_id)
 
@@ -104,18 +115,43 @@ def get_session_stats(db: Session, session: SessionSummary) -> SessionStats:
     )
 
 
+def _winner_side(outcome: str | None) -> str | None:
+    if not outcome:
+        return None
+    if outcome.startswith("Team A"):
+        return "team-1"
+    if outcome.startswith("Team B"):
+        return "team-2"
+    return None
+
+
 def _build_leaderboard(
-    db: Session, our_mp_to_player: dict[int, int], players_by_id: dict[int, str]
+    db: Session,
+    our_mp_to_player: dict[int, int],
+    players_by_id: dict[int, str],
+    team_by_match: dict[int, str],
 ) -> list[LeaderboardEntry]:
     rows = (
-        db.query(ImpactScore.match_player_id, ImpactScore.impact)
+        db.query(ImpactScore.match_player_id, ImpactScore.impact, Round.match_id, Round.outcome)
+        .join(Round, Round.id == ImpactScore.round_id)
         .filter(ImpactScore.match_player_id.in_(our_mp_to_player.keys()))
         .all()
     )
-    totals: dict[int, list[float]] = {}
-    for match_player_id, impact in rows:
+    impacts: dict[int, list[float]] = {}
+    wins: dict[int, int] = {}
+    losses: dict[int, int] = {}
+    for match_player_id, impact, match_id, outcome in rows:
         player_id = our_mp_to_player[match_player_id]
-        totals.setdefault(player_id, []).append(impact)
+        impacts.setdefault(player_id, []).append(impact)
+
+        our_side = team_by_match.get(match_id)
+        winner = _winner_side(outcome)
+        if our_side is None or winner is None:
+            continue
+        if winner == our_side:
+            wins[player_id] = wins.get(player_id, 0) + 1
+        else:
+            losses[player_id] = losses.get(player_id, 0) + 1
 
     entries = [
         LeaderboardEntry(
@@ -123,8 +159,10 @@ def _build_leaderboard(
             display_name=players_by_id.get(player_id, "?"),
             average_impact=sum(values) / len(values),
             rounds_played=len(values),
+            rounds_won=wins.get(player_id, 0),
+            rounds_lost=losses.get(player_id, 0),
         )
-        for player_id, values in totals.items()
+        for player_id, values in impacts.items()
     ]
     entries.sort(key=lambda e: e.average_impact, reverse=True)
     return entries
@@ -175,6 +213,13 @@ def _build_kda_rows(
     return kda_rows
 
 
+def _top_entry(counts: dict[int, int], players_by_id: dict[int, str]) -> FunStatEntry | None:
+    if not counts:
+        return None
+    best_player_id = max(counts, key=lambda pid: counts[pid])
+    return FunStatEntry(display_name=players_by_id.get(best_player_id, "?"), value=counts[best_player_id])
+
+
 def _build_fun_stats(
     db: Session,
     session: SessionSummary,
@@ -183,13 +228,49 @@ def _build_fun_stats(
 ) -> SessionFunStats:
     match_ids = [m.id for m in session.matches]
 
-    # --- Per-round kill counts for our players (multi-kill stats) ---
-    round_stat_rows = (
+    biggest_multi_kill, most_multi_kills, eco_frags, op_crutch = _build_round_kill_stats(
+        db, match_ids, our_mp_to_player, players_by_id
+    )
+    longest_kill_streak, most_kills_on_enemy_top_frag, most_deaths_to_enemy_bottom_frag, most_clutches = (
+        _build_replay_stats(db, session, our_mp_to_player, players_by_id)
+    )
+    round_mvp = _build_round_mvp(db, match_ids, our_mp_to_player, players_by_id)
+    most_trades_made, most_traded = _build_trade_stats(db, our_mp_to_player, players_by_id)
+
+    return SessionFunStats(
+        biggest_multi_kill=biggest_multi_kill,
+        longest_kill_streak=longest_kill_streak,
+        most_multi_kills=most_multi_kills,
+        most_kills_on_enemy_top_frag=most_kills_on_enemy_top_frag,
+        most_deaths_to_enemy_bottom_frag=most_deaths_to_enemy_bottom_frag,
+        most_clutches=most_clutches,
+        round_mvp=round_mvp,
+        eco_frags=eco_frags,
+        op_crutch=op_crutch,
+        most_trades_made=most_trades_made,
+        most_traded=most_traded,
+    )
+
+
+def _build_round_kill_stats(
+    db: Session,
+    match_ids: list[int],
+    our_mp_to_player: dict[int, int],
+    players_by_id: dict[int, str],
+) -> tuple[FunStatEntry | None, FunStatEntry | None, FunStatEntry | None, FunStatEntry | None]:
+    """Per-round kill counts (+ that round's loadout) for our players.
+
+    Drives: biggest single-round multi-kill, count of 3+ kill rounds, kills
+    landed while on an eco/save buy, and kills landed while carrying an
+    Operator-tier loadout.
+    """
+    rows = (
         db.query(
             RoundPlayerStat.match_player_id,
             Round.match_id,
             Round.round_number,
             RoundPlayerStat.kills,
+            RoundPlayerStat.loadout,
         )
         .join(Round, Round.id == RoundPlayerStat.round_id)
         .filter(
@@ -201,8 +282,12 @@ def _build_fun_stats(
 
     biggest_multi_kill: FunStatEntry | None = None
     multi_kill_counts: dict[int, int] = {}
-    for match_player_id, match_id, round_number, kills in round_stat_rows:
+    eco_kill_counts: dict[int, int] = {}
+    op_kill_counts: dict[int, int] = {}
+
+    for match_player_id, match_id, round_number, kills, loadout in rows:
         player_id = our_mp_to_player[match_player_id]
+
         if kills >= MULTI_KILL_THRESHOLD:
             multi_kill_counts[player_id] = multi_kill_counts.get(player_id, 0) + 1
         if biggest_multi_kill is None or kills > biggest_multi_kill.value:
@@ -213,19 +298,33 @@ def _build_fun_stats(
                 round_number=round_number,
             )
 
-    most_multi_kills = None
-    if multi_kill_counts:
-        best_player_id = max(multi_kill_counts, key=lambda pid: multi_kill_counts[pid])
-        most_multi_kills = FunStatEntry(
-            display_name=players_by_id.get(best_player_id, "?"),
-            value=multi_kill_counts[best_player_id],
-        )
+        if loadout < FORCE_THRESHOLD:
+            eco_kill_counts[player_id] = eco_kill_counts.get(player_id, 0) + kills
+        if loadout >= OP_LOADOUT_THRESHOLD:
+            op_kill_counts[player_id] = op_kill_counts.get(player_id, 0) + kills
 
-    # --- Per-match opponent top/bottom frag, and streaks across the session ---
+    return (
+        biggest_multi_kill,
+        _top_entry(multi_kill_counts, players_by_id),
+        _top_entry(eco_kill_counts, players_by_id),
+        _top_entry(op_kill_counts, players_by_id),
+    )
+
+
+def _build_replay_stats(
+    db: Session,
+    session: SessionSummary,
+    our_mp_to_player: dict[int, int],
+    players_by_id: dict[int, str],
+) -> tuple[FunStatEntry | None, FunStatEntry | None, FunStatEntry | None, FunStatEntry | None]:
+    """Replays every round's kill feed in order to derive stats that depend on
+    who was alive when: no-death kill streaks, kills on/deaths to each
+    match's enemy top/bottom fragger, and clutches (won a round while down to
+    1 or 2 alive against an equal-or-larger enemy side).
+    """
     kills_on_top_frag: dict[int, int] = {}
     deaths_to_bottom_frag: dict[int, int] = {}
-    top_frag_opponent_name: dict[int, str] = {}
-    bottom_frag_opponent_name: dict[int, str] = {}
+    clutch_counts: dict[int, int] = {}
 
     current_streak: dict[int, int] = {}
     max_streak: dict[int, int] = {}
@@ -237,31 +336,34 @@ def _build_fun_stats(
         team_by_mp: dict[int, str] = {
             mp.id: (mp.team.value if hasattr(mp.team, "value") else mp.team) for mp in match_players
         }
+        own_mp_ids = {mp.id for mp in match_players if mp.id in our_mp_to_player}
+        opp_mp_ids = {mp.id for mp in match_players if mp.id not in our_mp_to_player}
 
         opp_top_frag_mp_id: int | None = None
         opp_bottom_frag_mp_id: int | None = None
-        if our_side is not None:
-            opp_side = "team-2" if our_side == "team-1" else "team-1"
-            opp_mp_ids = [mp.id for mp in match_players if team_by_mp[mp.id] == opp_side]
-            if opp_mp_ids:
-                opp_totals: dict[int, int] = {}
-                for mp_id, kills in (
-                    db.query(RoundPlayerStat.match_player_id, RoundPlayerStat.kills)
-                    .join(Round, Round.id == RoundPlayerStat.round_id)
-                    .filter(Round.match_id == match.id, RoundPlayerStat.match_player_id.in_(opp_mp_ids))
-                    .all()
-                ):
-                    opp_totals[mp_id] = opp_totals.get(mp_id, 0) + kills
-                if opp_totals:
-                    opp_top_frag_mp_id = max(opp_totals, key=lambda mp_id: (opp_totals[mp_id], -mp_id))
-                    opp_bottom_frag_mp_id = min(opp_totals, key=lambda mp_id: (opp_totals[mp_id], mp_id))
-
-        mp_to_player_name = {
-            mp.id: players_by_id.get(mp.player_id, "?") for mp in match_players
-        }
+        if our_side is not None and opp_mp_ids:
+            opp_totals: dict[int, int] = {}
+            for mp_id, kills in (
+                db.query(RoundPlayerStat.match_player_id, RoundPlayerStat.kills)
+                .join(Round, Round.id == RoundPlayerStat.round_id)
+                .filter(Round.match_id == match.id, RoundPlayerStat.match_player_id.in_(opp_mp_ids))
+                .all()
+            ):
+                opp_totals[mp_id] = opp_totals.get(mp_id, 0) + kills
+            if opp_totals:
+                opp_top_frag_mp_id = max(opp_totals, key=lambda mp_id: (opp_totals[mp_id], -mp_id))
+                opp_bottom_frag_mp_id = min(opp_totals, key=lambda mp_id: (opp_totals[mp_id], mp_id))
 
         rounds = db.query(Round).filter_by(match_id=match.id).order_by(Round.round_number).all()
         for round_row in rounds:
+            round_won_by_us = our_side is not None and _winner_side(round_row.outcome) == our_side
+            alive_own = set(own_mp_ids)
+            alive_opp = set(opp_mp_ids)
+            # Most extreme (own_count, opp_count, alive-own-snapshot) reached while
+            # outnumbered-or-even at 1 or 2 alive -- the clutch situation, if any,
+            # this round resolved from.
+            clutch_state: tuple[int, int, frozenset[int]] | None = None
+
             events = (
                 db.query(KillEvent)
                 .filter_by(round_id=round_row.id)
@@ -280,7 +382,6 @@ def _build_fun_stats(
 
                     if opp_top_frag_mp_id is not None and death_id == opp_top_frag_mp_id:
                         kills_on_top_frag[player_id] = kills_on_top_frag.get(player_id, 0) + 1
-                        top_frag_opponent_name[player_id] = mp_to_player_name.get(opp_top_frag_mp_id, "?")
 
                 if death_id is not None and death_id in our_mp_to_player:
                     player_id = our_mp_to_player[death_id]
@@ -288,39 +389,89 @@ def _build_fun_stats(
 
                     if opp_bottom_frag_mp_id is not None and killer_id == opp_bottom_frag_mp_id:
                         deaths_to_bottom_frag[player_id] = deaths_to_bottom_frag.get(player_id, 0) + 1
-                        bottom_frag_opponent_name[player_id] = mp_to_player_name.get(
-                            opp_bottom_frag_mp_id, "?"
-                        )
 
-    longest_kill_streak = None
-    if max_streak:
-        best_player_id = max(max_streak, key=lambda pid: max_streak[pid])
-        longest_kill_streak = FunStatEntry(
-            display_name=players_by_id.get(best_player_id, "?"), value=max_streak[best_player_id]
+                alive_own.discard(death_id)
+                alive_opp.discard(death_id)
+
+                own_count, opp_count = len(alive_own), len(alive_opp)
+                if own_count in (1, 2) and opp_count >= own_count:
+                    if clutch_state is None or own_count < clutch_state[0]:
+                        clutch_state = (own_count, opp_count, frozenset(alive_own))
+
+                if own_count == 0 or opp_count == 0:
+                    break
+
+            if round_won_by_us and clutch_state is not None:
+                _, _, alive_snapshot = clutch_state
+                for mp_id in alive_snapshot:
+                    player_id = our_mp_to_player[mp_id]
+                    clutch_counts[player_id] = clutch_counts.get(player_id, 0) + 1
+
+    return (
+        _top_entry(max_streak, players_by_id),
+        _top_entry(kills_on_top_frag, players_by_id),
+        _top_entry(deaths_to_bottom_frag, players_by_id),
+        _top_entry(clutch_counts, players_by_id),
+    )
+
+
+def _build_round_mvp(
+    db: Session,
+    match_ids: list[int],
+    our_mp_to_player: dict[int, int],
+    players_by_id: dict[int, str],
+) -> FunStatEntry | None:
+    """Counts, for every round in the session (both teams), how often one of
+    our players had the single highest Impact score of anyone in that round.
+    """
+    rows = (
+        db.query(ImpactScore.round_id, ImpactScore.match_player_id, ImpactScore.impact)
+        .join(Round, Round.id == ImpactScore.round_id)
+        .filter(Round.match_id.in_(match_ids))
+        .all()
+    )
+    best_by_round: dict[int, tuple[int, float]] = {}
+    for round_id, match_player_id, impact in rows:
+        current = best_by_round.get(round_id)
+        if current is None or impact > current[1]:
+            best_by_round[round_id] = (match_player_id, impact)
+
+    mvp_counts: dict[int, int] = {}
+    for match_player_id, _impact in best_by_round.values():
+        player_id = our_mp_to_player.get(match_player_id)
+        if player_id is not None:
+            mvp_counts[player_id] = mvp_counts.get(player_id, 0) + 1
+
+    return _top_entry(mvp_counts, players_by_id)
+
+
+def _build_trade_stats(
+    db: Session,
+    our_mp_to_player: dict[int, int],
+    players_by_id: dict[int, str],
+) -> tuple[FunStatEntry | None, FunStatEntry | None]:
+    """Sums the impact scorer's traded_teammate/traded_by_teammate breakdown
+    counts across the session: who avenged a teammate's death most (traded
+    the most), and who got avenged the most (got traded the most).
+    """
+    rows = (
+        db.query(ImpactScore.match_player_id, ImpactScore.breakdown)
+        .filter(ImpactScore.match_player_id.in_(our_mp_to_player.keys()))
+        .all()
+    )
+    traded_teammate_totals: dict[int, int] = {}
+    traded_by_teammate_totals: dict[int, int] = {}
+    for match_player_id, breakdown in rows:
+        player_id = our_mp_to_player[match_player_id]
+        breakdown = breakdown or {}
+        traded_teammate_totals[player_id] = traded_teammate_totals.get(player_id, 0) + breakdown.get(
+            "traded_teammate", 0
         )
+        traded_by_teammate_totals[player_id] = traded_by_teammate_totals.get(
+            player_id, 0
+        ) + breakdown.get("traded_by_teammate", 0)
 
-    most_kills_on_enemy_top_frag = None
-    if kills_on_top_frag:
-        best_player_id = max(kills_on_top_frag, key=lambda pid: kills_on_top_frag[pid])
-        most_kills_on_enemy_top_frag = FunStatEntry(
-            display_name=players_by_id.get(best_player_id, "?"),
-            value=kills_on_top_frag[best_player_id],
-            opponent_display_name=top_frag_opponent_name.get(best_player_id),
-        )
-
-    most_deaths_to_enemy_bottom_frag = None
-    if deaths_to_bottom_frag:
-        best_player_id = max(deaths_to_bottom_frag, key=lambda pid: deaths_to_bottom_frag[pid])
-        most_deaths_to_enemy_bottom_frag = FunStatEntry(
-            display_name=players_by_id.get(best_player_id, "?"),
-            value=deaths_to_bottom_frag[best_player_id],
-            opponent_display_name=bottom_frag_opponent_name.get(best_player_id),
-        )
-
-    return SessionFunStats(
-        biggest_multi_kill=biggest_multi_kill,
-        longest_kill_streak=longest_kill_streak,
-        most_multi_kills=most_multi_kills,
-        most_kills_on_enemy_top_frag=most_kills_on_enemy_top_frag,
-        most_deaths_to_enemy_bottom_frag=most_deaths_to_enemy_bottom_frag,
+    return (
+        _top_entry(traded_teammate_totals, players_by_id),
+        _top_entry(traded_by_teammate_totals, players_by_id),
     )

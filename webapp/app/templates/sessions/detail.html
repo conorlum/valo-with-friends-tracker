@@ -17,10 +17,10 @@
 <div class="card">
   <h2>Roster</h2>
   <p>
-    {% for name in session.roster_ordered %}{% if name in session.core_display_names %}<strong>{{ name }}</strong>{% else %}{{ name }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+    {% for name in session.roster_ordered %}{% if name in session.core_display_names %}<strong>{{ name | strip_tag }}</strong>{% else %}{{ name | strip_tag }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
   </p>
   {% if session.is_multi_match and session.core_display_names %}
-  <p class="page-meta">Played every match: {{ session.core_display_names | sort | join(", ") }}</p>
+  <p class="page-meta">Played every match: {{ session.core_display_names | sort | map("strip_tag") | join(", ") }}</p>
   {% endif %}
 </div>
 
@@ -34,14 +34,16 @@
         <th>Player</th>
         <th>Avg Impact</th>
         <th>Rounds</th>
+        <th>Rounds Won &ndash; Lost</th>
       </tr>
     </thead>
     <tbody>
       {% for entry in stats.leaderboard %}
       <tr>
-        <td>{{ entry.display_name }}</td>
+        <td>{{ entry.display_name | strip_tag }}</td>
         <td class="{{ 'impact-positive' if entry.average_impact >= 0 else 'impact-negative' }}">{{ entry.average_impact | round | int }}</td>
         <td>{{ entry.rounds_played }}</td>
+        <td><span class="badge badge-score">{{ entry.rounds_won }} &ndash; {{ entry.rounds_lost }}</span></td>
       </tr>
       {% endfor %}
     </tbody>
@@ -74,7 +76,7 @@
 {% endif %}
 
 {% set fun = stats.fun_stats %}
-{% if fun.biggest_multi_kill or fun.longest_kill_streak or fun.most_multi_kills or fun.most_kills_on_enemy_top_frag or fun.most_deaths_to_enemy_bottom_frag %}
+{% if fun.biggest_multi_kill or fun.longest_kill_streak or fun.most_multi_kills or fun.most_kills_on_enemy_top_frag or fun.most_deaths_to_enemy_bottom_frag or fun.most_clutches or fun.round_mvp or fun.eco_frags or fun.op_crutch or fun.most_trades_made or fun.most_traded %}
 <div class="card">
   <h2>Fun Stats</h2>
   <div class="stat-grid">
@@ -83,7 +85,7 @@
       <div class="stat-label">Biggest multi-kill</div>
       <div class="stat-value">{{ fun.biggest_multi_kill.value }}</div>
       <div class="stat-sub">
-        {{ fun.biggest_multi_kill.display_name }}
+        {{ fun.biggest_multi_kill.display_name | strip_tag }}
         {% if fun.biggest_multi_kill.match_id in matches_by_id %}
         &middot; {{ match_label(matches_by_id[fun.biggest_multi_kill.match_id]) }}, Round {{ fun.biggest_multi_kill.round_number }}
         {% endif %}
@@ -94,34 +96,70 @@
     <div class="stat-tile">
       <div class="stat-label">Longest kill streak w/o dying</div>
       <div class="stat-value">{{ fun.longest_kill_streak.value }}</div>
-      <div class="stat-sub">{{ fun.longest_kill_streak.display_name }}</div>
+      <div class="stat-sub">{{ fun.longest_kill_streak.display_name | strip_tag }}</div>
     </div>
     {% endif %}
     {% if fun.most_multi_kills %}
     <div class="stat-tile">
       <div class="stat-label">Most multi-kills (3+)</div>
       <div class="stat-value">{{ fun.most_multi_kills.value }}</div>
-      <div class="stat-sub">{{ fun.most_multi_kills.display_name }}</div>
+      <div class="stat-sub">{{ fun.most_multi_kills.display_name | strip_tag }}</div>
     </div>
     {% endif %}
     {% if fun.most_kills_on_enemy_top_frag %}
     <div class="stat-tile">
       <div class="stat-label">Most kills on enemy top frag</div>
       <div class="stat-value">{{ fun.most_kills_on_enemy_top_frag.value }}</div>
-      <div class="stat-sub">
-        {{ fun.most_kills_on_enemy_top_frag.display_name }}
-        {% if fun.most_kills_on_enemy_top_frag.opponent_display_name %}&middot; vs {{ fun.most_kills_on_enemy_top_frag.opponent_display_name }}{% endif %}
-      </div>
+      <div class="stat-sub">{{ fun.most_kills_on_enemy_top_frag.display_name | strip_tag }}</div>
     </div>
     {% endif %}
     {% if fun.most_deaths_to_enemy_bottom_frag %}
     <div class="stat-tile">
       <div class="stat-label">Most deaths to enemy bottom frag</div>
       <div class="stat-value">{{ fun.most_deaths_to_enemy_bottom_frag.value }}</div>
-      <div class="stat-sub">
-        {{ fun.most_deaths_to_enemy_bottom_frag.display_name }}
-        {% if fun.most_deaths_to_enemy_bottom_frag.opponent_display_name %}&middot; vs {{ fun.most_deaths_to_enemy_bottom_frag.opponent_display_name }}{% endif %}
-      </div>
+      <div class="stat-sub">{{ fun.most_deaths_to_enemy_bottom_frag.display_name | strip_tag }}</div>
+    </div>
+    {% endif %}
+    {% if fun.most_clutches %}
+    <div class="stat-tile">
+      <div class="stat-label">Most clutches (1vX / 2vX)</div>
+      <div class="stat-value">{{ fun.most_clutches.value }}</div>
+      <div class="stat-sub">{{ fun.most_clutches.display_name | strip_tag }}</div>
+    </div>
+    {% endif %}
+    {% if fun.round_mvp %}
+    <div class="stat-tile">
+      <div class="stat-label">Most Round MVPs</div>
+      <div class="stat-value">{{ fun.round_mvp.value }}</div>
+      <div class="stat-sub">{{ fun.round_mvp.display_name | strip_tag }}</div>
+    </div>
+    {% endif %}
+    {% if fun.eco_frags %}
+    <div class="stat-tile">
+      <div class="stat-label">Most eco frags</div>
+      <div class="stat-value">{{ fun.eco_frags.value }}</div>
+      <div class="stat-sub">{{ fun.eco_frags.display_name | strip_tag }}</div>
+    </div>
+    {% endif %}
+    {% if fun.op_crutch %}
+    <div class="stat-tile">
+      <div class="stat-label">OP crutch</div>
+      <div class="stat-value">{{ fun.op_crutch.value }}</div>
+      <div class="stat-sub">{{ fun.op_crutch.display_name | strip_tag }}</div>
+    </div>
+    {% endif %}
+    {% if fun.most_trades_made %}
+    <div class="stat-tile">
+      <div class="stat-label">Most teammates traded for</div>
+      <div class="stat-value">{{ fun.most_trades_made.value }}</div>
+      <div class="stat-sub">{{ fun.most_trades_made.display_name | strip_tag }}</div>
+    </div>
+    {% endif %}
+    {% if fun.most_traded %}
+    <div class="stat-tile">
+      <div class="stat-label">Most traded</div>
+      <div class="stat-value">{{ fun.most_traded.value }}</div>
+      <div class="stat-sub">{{ fun.most_traded.display_name | strip_tag }}</div>
     </div>
     {% endif %}
   </div>
@@ -137,20 +175,20 @@
     <thead>
       <tr>
         <th>Player</th>
+        <th>Total</th>
         {% for match in session.matches %}
         <th><a href="/matches/{{ match.external_id }}">{{ match_label(match) }}</a></th>
         {% endfor %}
-        <th>Total</th>
       </tr>
     </thead>
     <tbody>
       {% for row in stats.kda_rows %}
       <tr>
-        <td>{{ row.display_name }}</td>
+        <td>{{ row.display_name | strip_tag }}</td>
+        <td>{{ row.total_label }}</td>
         {% for match in session.matches %}
         <td>{% if match.id in row.by_match %}{{ row.by_match[match.id].label }}{% else %}&mdash;{% endif %}</td>
         {% endfor %}
-        <td>{{ row.total_label }}</td>
       </tr>
       {% endfor %}
     </tbody>
