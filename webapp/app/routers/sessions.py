@@ -11,7 +11,7 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 @router.get("")
 def session_list(request: Request, db: Session = Depends(get_db)):
-    sessions = list(reversed(list_sessions(db)))
+    sessions = [s for s in reversed(list_sessions(db)) if s.is_multi_match]
     return templates.TemplateResponse(request, "sessions/list.html", {"sessions": sessions})
 
 

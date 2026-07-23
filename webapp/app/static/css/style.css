@@ -452,6 +452,11 @@ tr.row-team-2:hover td {
   background: color-mix(in srgb, var(--team-2) 26%, transparent);
 }
 
+tr.row-event td {
+  font-style: italic;
+  color: var(--ink-muted);
+}
+
 .badge-score {
   color: var(--ink);
   background: var(--surface-raised);

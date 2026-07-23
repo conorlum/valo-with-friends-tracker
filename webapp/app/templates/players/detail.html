@@ -138,30 +138,60 @@
 
 <div class="card">
   <h2>Agents played</h2>
-  {% set max_count = profile.agent_counts.most_common(1)[0][1] if profile.agent_counts else 0 %}
   <table>
     <thead>
-      <tr><th>Agent</th><th>Times played</th></tr>
+      <tr><th>Agent</th><th>Matches</th><th>Win %</th><th>Avg Impact</th><th>Avg Kill Impact</th><th>Avg Death Impact</th></tr>
     </thead>
     <tbody>
-      {% for agent, count in profile.agent_counts.most_common() %}
-      {% set icon = agent_icon_slug(agent) %}
+      {% for s in profile.agent_stats %}
+      {% set icon = agent_icon_slug(s.key) %}
       <tr>
         <td>
           {% if icon %}
-          <img class="agent-icon" src="/static/img/agents/{{ icon }}.png" alt="{{ agent }}" title="{{ agent }}">
+          <img class="agent-icon" src="/static/img/agents/{{ icon }}.png" alt="{{ s.key }}" title="{{ s.key }}">
           {% else %}
-          {{ agent }}
+          {{ s.key }}
           {% endif %}
         </td>
+        <td>{{ s.matches_played }}</td>
         <td>
-          <div class="meter-cell">
-            <span class="meter-value">{{ count }}</span>
-            <div class="meter-track">
-              <div class="meter-fill" style="width: {{ (count / max_count * 100) if max_count else 0 }}%"></div>
-            </div>
-          </div>
+          {% if s.win_rate is not none %}
+          {{ (s.win_rate * 100) | round | int }}% <span class="badge badge-score">{{ s.wins }}-{{ s.losses }}</span>
+          {% else %}
+          &ndash;
+          {% endif %}
         </td>
+        <td class="{{ 'impact-positive' if s.average_impact >= 0 else 'impact-negative' }}">{{ s.average_impact | round | int }}</td>
+        <td>{{ s.average_kill_impact | round | int }}</td>
+        <td>{{ s.average_death_impact | round | int }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Maps</h2>
+  <p class="page-meta">Impact and match record by map, across every agent played.</p>
+  <table>
+    <thead>
+      <tr><th>Map</th><th>Matches</th><th>Win %</th><th>Avg Impact</th><th>Avg Kill Impact</th><th>Avg Death Impact</th></tr>
+    </thead>
+    <tbody>
+      {% for s in profile.map_stats %}
+      <tr>
+        <td>{{ s.key }}</td>
+        <td>{{ s.matches_played }}</td>
+        <td>
+          {% if s.win_rate is not none %}
+          {{ (s.win_rate * 100) | round | int }}% <span class="badge badge-score">{{ s.wins }}-{{ s.losses }}</span>
+          {% else %}
+          &ndash;
+          {% endif %}
+        </td>
+        <td class="{{ 'impact-positive' if s.average_impact >= 0 else 'impact-negative' }}">{{ s.average_impact | round | int }}</td>
+        <td>{{ s.average_kill_impact | round | int }}</td>
+        <td>{{ s.average_death_impact | round | int }}</td>
       </tr>
       {% endfor %}
     </tbody>

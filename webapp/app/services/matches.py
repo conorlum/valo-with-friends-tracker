@@ -190,13 +190,14 @@ def get_match_summary(db: Session, match: Match) -> MatchSummary:
 
 
 @dataclass
-class KillLogEntry:
-    killer_display_name: str | None
-    killer_agent: str | None
-    death_display_name: str | None
-    death_agent: str | None
-    weapon: str
+class RoundLogEntry:
     event_time_seconds: float
+    kind: str  # "kill", "plant", or "defuse"
+    killer_display_name: str | None = None
+    killer_agent: str | None = None
+    death_display_name: str | None = None
+    death_agent: str | None = None
+    weapon: str | None = None
 
 
 @dataclass
@@ -227,7 +228,7 @@ class RoundDetail:
     exploded: bool
     defused: bool
     defuse_time: float | None
-    kills: list[KillLogEntry]
+    events: list[RoundLogEntry]
     player_impacts: list[RoundPlayerImpact]
     team_totals: list[RoundTeamTotal]
 
@@ -260,17 +261,23 @@ def get_round_detail(db: Session, match: Match, round_number: int) -> RoundDetai
         .order_by(KillEvent.event_time_seconds)
         .all()
     )
-    kills = [
-        KillLogEntry(
+    events: list[RoundLogEntry] = [
+        RoundLogEntry(
+            event_time_seconds=k.event_time_seconds,
+            kind="kill",
             killer_display_name=_display_name(k.killer_match_player_id),
             killer_agent=_agent(k.killer_match_player_id),
             death_display_name=_display_name(k.death_match_player_id),
             death_agent=_agent(k.death_match_player_id),
             weapon=k.weapon,
-            event_time_seconds=k.event_time_seconds,
         )
         for k in kill_events
     ]
+    if round_row.planted and round_row.plant_time is not None:
+        events.append(RoundLogEntry(event_time_seconds=round_row.plant_time, kind="plant"))
+    if round_row.defused and round_row.defuse_time is not None:
+        events.append(RoundLogEntry(event_time_seconds=round_row.defuse_time, kind="defuse"))
+    events.sort(key=lambda e: e.event_time_seconds)
 
     impact_scores = db.query(ImpactScore).filter_by(round_id=round_row.id).all()
     player_impacts = []
@@ -307,7 +314,7 @@ def get_round_detail(db: Session, match: Match, round_number: int) -> RoundDetai
         exploded=round_row.exploded,
         defused=round_row.defused,
         defuse_time=round_row.defuse_time,
-        kills=kills,
+        events=events,
         player_impacts=player_impacts,
         team_totals=team_totals,
     )

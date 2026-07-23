@@ -67,6 +67,22 @@ class MatchBreakdown:
     average_impact: float
     average_kill_impact: float
     average_death_impact: float
+    win: bool | None
+
+
+@dataclass
+class GroupedStat:
+    """Match-level win/loss + impact breakdown grouped by some key (an agent
+    name or a map name)."""
+
+    key: str
+    matches_played: int
+    wins: int
+    losses: int
+    win_rate: float | None
+    average_impact: float
+    average_kill_impact: float
+    average_death_impact: float
 
 
 @dataclass
@@ -75,6 +91,8 @@ class PlayerProfile:
     overall_average_impact: float
     matches: list[MatchBreakdown]
     agent_counts: Counter = field(default_factory=Counter)
+    agent_stats: list[GroupedStat] = field(default_factory=list)
+    map_stats: list[GroupedStat] = field(default_factory=list)
     avg_econ_kill: float = 0.0
     avg_econ_death: float = 0.0
     avg_clutch_kill: float = 0.0
@@ -85,6 +103,52 @@ class PlayerProfile:
     avg_traded_by_teammate: float = 0.0
     top_traded_teammate: list[tuple[str, int]] = field(default_factory=list)
     top_traded_by_teammate: list[tuple[str, int]] = field(default_factory=list)
+
+
+def _match_win(match: Match, team: str) -> bool | None:
+    """None for a tie (or missing round data) -- excluded from win-rate math
+    rather than counted as a loss."""
+    if match.team1_rounds_won == match.team2_rounds_won:
+        return None
+    team1_won = match.team1_rounds_won > match.team2_rounds_won
+    return team1_won if team == "team-1" else not team1_won
+
+
+def _grouped_stats(matches: list[MatchBreakdown], key_fn) -> list[GroupedStat]:
+    groups: dict[str, dict] = {}
+    for m in matches:
+        key = key_fn(m)
+        if key is None:
+            continue
+        g = groups.setdefault(
+            key, {"count": 0, "wins": 0, "losses": 0, "impact": 0.0, "kill": 0.0, "death": 0.0}
+        )
+        g["count"] += 1
+        if m.win is True:
+            g["wins"] += 1
+        elif m.win is False:
+            g["losses"] += 1
+        g["impact"] += m.average_impact
+        g["kill"] += m.average_kill_impact
+        g["death"] += m.average_death_impact
+
+    stats = []
+    for key, g in groups.items():
+        decided = g["wins"] + g["losses"]
+        stats.append(
+            GroupedStat(
+                key=key,
+                matches_played=g["count"],
+                wins=g["wins"],
+                losses=g["losses"],
+                win_rate=(g["wins"] / decided) if decided else None,
+                average_impact=g["impact"] / g["count"],
+                average_kill_impact=g["kill"] / g["count"],
+                average_death_impact=g["death"] / g["count"],
+            )
+        )
+    stats.sort(key=lambda s: s.matches_played, reverse=True)
+    return stats
 
 
 def get_player_profile(db: Session, player: Player) -> PlayerProfile:
@@ -121,14 +185,16 @@ def get_player_profile(db: Session, player: Player) -> PlayerProfile:
         death_impacts = [score.death_impact for score in scores]
 
         match = db.get(Match, match_player.match_id)
+        team = match_player.team.value if hasattr(match_player.team, "value") else match_player.team
         matches.append(
             MatchBreakdown(
                 match=match,
                 agent=match_player.agent,
-                team=match_player.team.value if hasattr(match_player.team, "value") else match_player.team,
+                team=team,
                 average_impact=sum(impacts) / len(impacts),
                 average_kill_impact=sum(kill_impacts) / len(kill_impacts),
                 average_death_impact=sum(death_impacts) / len(death_impacts),
+                win=_match_win(match, team),
             )
         )
         all_impacts.extend(impacts)
@@ -172,6 +238,8 @@ def get_player_profile(db: Session, player: Player) -> PlayerProfile:
         overall_average_impact=overall_average,
         matches=matches,
         agent_counts=agent_counts,
+        agent_stats=_grouped_stats(matches, lambda m: m.agent),
+        map_stats=_grouped_stats(matches, lambda m: m.match.map_name),
         avg_econ_kill=_avg(total_econ_kill),
         avg_econ_death=_avg(total_econ_death),
         avg_clutch_kill=_avg(total_clutch_kill),

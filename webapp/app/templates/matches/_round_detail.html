@@ -10,25 +10,37 @@
     <tr><th>Time</th><th>Killer</th><th>Weapon</th><th>Victim</th></tr>
   </thead>
   <tbody>
-    {% for kill in detail.kills %}
-    {% set killer_icon = agent_icon_slug(kill.killer_agent) %}
-    {% set victim_icon = agent_icon_slug(kill.death_agent) %}
-    <tr>
-      <td>{{ kill.event_time_seconds }}s</td>
-      <td class="agent-cell">
-        {% if killer_icon %}<img class="agent-icon" src="/static/img/agents/{{ killer_icon }}.png" alt="{{ kill.killer_agent }}" title="{{ kill.killer_agent }}">{% endif %}
-        {% if kill.killer_display_name %}<a href="/players/{{ kill.killer_display_name | urlencode }}">{{ kill.killer_display_name | strip_tag }}</a>{% else %}?{% endif %}
-        {% if not killer_icon %}({{ kill.killer_agent or "?" }}){% endif %}
-      </td>
-      <td>{{ kill.weapon }}</td>
-      <td class="agent-cell">
-        {% if victim_icon %}<img class="agent-icon" src="/static/img/agents/{{ victim_icon }}.png" alt="{{ kill.death_agent }}" title="{{ kill.death_agent }}">{% endif %}
-        {% if kill.death_display_name %}<a href="/players/{{ kill.death_display_name | urlencode }}">{{ kill.death_display_name | strip_tag }}</a>{% else %}?{% endif %}
-        {% if not victim_icon %}({{ kill.death_agent or "?" }}){% endif %}
-      </td>
+    {% for event in detail.events %}
+    {% if event.kind == "plant" %}
+    <tr class="row-event">
+      <td>{{ event.event_time_seconds }}s</td>
+      <td colspan="3">Spike planted</td>
+    </tr>
+    {% elif event.kind == "defuse" %}
+    <tr class="row-event">
+      <td>{{ event.event_time_seconds }}s</td>
+      <td colspan="3">Spike defused</td>
     </tr>
     {% else %}
-    <tr><td colspan="4">No kills this round.</td></tr>
+    {% set killer_icon = agent_icon_slug(event.killer_agent) %}
+    {% set victim_icon = agent_icon_slug(event.death_agent) %}
+    <tr>
+      <td>{{ event.event_time_seconds }}s</td>
+      <td class="agent-cell">
+        {% if killer_icon %}<img class="agent-icon" src="/static/img/agents/{{ killer_icon }}.png" alt="{{ event.killer_agent }}" title="{{ event.killer_agent }}">{% endif %}
+        {% if event.killer_display_name %}<a href="/players/{{ event.killer_display_name | urlencode }}">{{ event.killer_display_name | strip_tag }}</a>{% else %}?{% endif %}
+        {% if not killer_icon %}({{ event.killer_agent or "?" }}){% endif %}
+      </td>
+      <td>{{ event.weapon }}</td>
+      <td class="agent-cell">
+        {% if victim_icon %}<img class="agent-icon" src="/static/img/agents/{{ victim_icon }}.png" alt="{{ event.death_agent }}" title="{{ event.death_agent }}">{% endif %}
+        {% if event.death_display_name %}<a href="/players/{{ event.death_display_name | urlencode }}">{{ event.death_display_name | strip_tag }}</a>{% else %}?{% endif %}
+        {% if not victim_icon %}({{ event.death_agent or "?" }}){% endif %}
+      </td>
+    </tr>
+    {% endif %}
+    {% else %}
+    <tr><td colspan="4">No events this round.</td></tr>
     {% endfor %}
   </tbody>
 </table>
