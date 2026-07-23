@@ -40,7 +40,7 @@
     <tbody>
       {% for entry in stats.leaderboard %}
       <tr>
-        <td>{{ entry.display_name | strip_tag }}</td>
+        <td><a href="/players/{{ entry.display_name | urlencode }}">{{ entry.display_name | strip_tag }}</a></td>
         <td class="{{ 'impact-positive' if entry.average_impact >= 0 else 'impact-negative' }}">{{ entry.average_impact | round | int }}</td>
         <td>{{ entry.rounds_played }}</td>
         <td><span class="badge badge-score">{{ entry.rounds_won }} &ndash; {{ entry.rounds_lost }}</span></td>
@@ -178,7 +178,7 @@
     {% endif %}
     {% if fun.most_round_changer %}
     <div class="stat-tile">
-      <div class="stat-label">Biggest round changer</div>
+      <div class="stat-label">Most round-changing kills (outnumbered)</div>
       <div class="stat-value">{{ fun.most_round_changer.value }}</div>
       <div class="stat-sub">{{ fun.most_round_changer.display_name | strip_tag }}</div>
     </div>

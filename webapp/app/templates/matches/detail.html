@@ -27,7 +27,7 @@
       {% for p in summary.players %}
       {% set icon = agent_icon_slug(p.agent) %}
       <tr class="row-{{ p.team }}">
-        <td><a class="player-link" href="/players/{{ p.display_name | urlencode }}">{{ p.display_name }}</a></td>
+        <td><a class="player-link" href="/players/{{ p.display_name | urlencode }}">{{ p.display_name | strip_tag }}</a></td>
         <td data-sort-value="{{ p.agent }}">
           {% if icon %}
           <img class="agent-icon" src="/static/img/agents/{{ icon }}.png" alt="{{ p.agent }}" title="{{ p.agent }}">
@@ -51,7 +51,7 @@
   <p class="page-meta">Match-summed impact by category, split into kill impact and death impact.</p>
   <div class="tab-row" role="tablist">
     {% for p in summary.players %}
-    <button type="button" class="tab-btn tab-btn-{{ p.team }}{{ ' active' if loop.first else '' }}" data-player-tab="{{ p.match_player_id }}">{{ p.display_name }}</button>
+    <button type="button" class="tab-btn tab-btn-{{ p.team }}{{ ' active' if loop.first else '' }}" data-player-tab="{{ p.match_player_id }}">{{ p.display_name | strip_tag }}</button>
     {% endfor %}
   </div>
   <div style="max-width: 620px; height: 320px; margin: 0 auto;">

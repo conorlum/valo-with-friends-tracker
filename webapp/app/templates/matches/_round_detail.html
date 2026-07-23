@@ -17,13 +17,13 @@
       <td>{{ kill.event_time_seconds }}s</td>
       <td class="agent-cell">
         {% if killer_icon %}<img class="agent-icon" src="/static/img/agents/{{ killer_icon }}.png" alt="{{ kill.killer_agent }}" title="{{ kill.killer_agent }}">{% endif %}
-        {% if kill.killer_display_name %}<a href="/players/{{ kill.killer_display_name | urlencode }}">{{ kill.killer_display_name }}</a>{% else %}?{% endif %}
+        {% if kill.killer_display_name %}<a href="/players/{{ kill.killer_display_name | urlencode }}">{{ kill.killer_display_name | strip_tag }}</a>{% else %}?{% endif %}
         {% if not killer_icon %}({{ kill.killer_agent or "?" }}){% endif %}
       </td>
       <td>{{ kill.weapon }}</td>
       <td class="agent-cell">
         {% if victim_icon %}<img class="agent-icon" src="/static/img/agents/{{ victim_icon }}.png" alt="{{ kill.death_agent }}" title="{{ kill.death_agent }}">{% endif %}
-        {% if kill.death_display_name %}<a href="/players/{{ kill.death_display_name | urlencode }}">{{ kill.death_display_name }}</a>{% else %}?{% endif %}
+        {% if kill.death_display_name %}<a href="/players/{{ kill.death_display_name | urlencode }}">{{ kill.death_display_name | strip_tag }}</a>{% else %}?{% endif %}
         {% if not victim_icon %}({{ kill.death_agent or "?" }}){% endif %}
       </td>
     </tr>
@@ -51,7 +51,7 @@
   <tbody>
     {% for p in detail.player_impacts %}
     <tr>
-      <td><a href="/players/{{ p.display_name | urlencode }}">{{ p.display_name }}</a></td>
+      <td><a href="/players/{{ p.display_name | urlencode }}">{{ p.display_name | strip_tag }}</a></td>
       <td>{{ p.agent }}</td>
       <td>{{ p.kill_impact | round | int }}</td>
       <td>{{ p.death_impact | round | int }}</td>
