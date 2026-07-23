@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.services.player_graphs import build_state_diagrams
+from app.services.player_graphs import build_state_diagrams, top_kill_order_differentials
 from app.services.players import get_player_or_404, get_player_profile, list_players
 from app.templates import match_label, templates
 
@@ -35,6 +35,7 @@ def player_detail(request: Request, display_name: str, db: Session = Depends(get
         "death_impact": [s.average_death_impact for s in profile.map_stats],
     }
     round_win_graph, kill_order_graph = build_state_diagrams(db, player)
+    top_kill_differentials, top_death_differentials = top_kill_order_differentials(kill_order_graph)
     return templates.TemplateResponse(
         request,
         "players/detail.html",
@@ -45,5 +46,7 @@ def player_detail(request: Request, display_name: str, db: Session = Depends(get
             "map_chart_data": map_chart_data,
             "round_win_graph": round_win_graph,
             "kill_order_graph": kill_order_graph,
+            "top_kill_differentials": top_kill_differentials,
+            "top_death_differentials": top_death_differentials,
         },
     )

@@ -75,6 +75,25 @@
 </div>
 {% endif %}
 
+{% macro fun_stat_tile(label, stat) %}
+<div class="stat-tile">
+  <div class="stat-label">{{ label }}</div>
+  <div class="stat-numbers">
+    <div class="stat-pair">
+      <span class="stat-value">{{ stat.value }}</span>
+      <span class="stat-name">{{ stat.display_name | strip_tag }}</span>
+    </div>
+    {% if stat.runner_up %}
+    <span class="stat-sep">/</span>
+    <div class="stat-pair stat-pair--runner-up">
+      <span class="stat-value">{{ stat.runner_up.value }}</span>
+      <span class="stat-name">{{ stat.runner_up.display_name | strip_tag }}</span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}
+
 {% set fun = stats.fun_stats %}
 {% if fun.biggest_multi_kill or fun.longest_kill_streak or fun.most_multi_kills or fun.most_kills_on_enemy_top_frag or fun.most_deaths_to_enemy_bottom_frag or fun.most_clutches or fun.round_mvp or fun.eco_frags or fun.op_crutch or fun.most_trades_made or fun.most_traded or fun.most_econ_upset_deaths or fun.most_round_changer or fun.most_xvx_kills or fun.most_spike_deaths or fun.post_plant_menace or fun.most_ghost_rounds %}
 <div class="card">
@@ -93,116 +112,52 @@
     </div>
     {% endif %}
     {% if fun.longest_kill_streak %}
-    <div class="stat-tile">
-      <div class="stat-label">Longest kill streak w/o dying</div>
-      <div class="stat-value">{{ fun.longest_kill_streak.value }}</div>
-      <div class="stat-sub">{{ fun.longest_kill_streak.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Longest kill streak w/o dying", fun.longest_kill_streak) }}
     {% endif %}
     {% if fun.most_multi_kills %}
-    <div class="stat-tile">
-      <div class="stat-label">Most multi-kills (3+)</div>
-      <div class="stat-value">{{ fun.most_multi_kills.value }}</div>
-      <div class="stat-sub">{{ fun.most_multi_kills.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Most multi-kills (3+)", fun.most_multi_kills) }}
     {% endif %}
     {% if fun.most_kills_on_enemy_top_frag %}
-    <div class="stat-tile">
-      <div class="stat-label">Most kills on enemy top frag</div>
-      <div class="stat-value">{{ fun.most_kills_on_enemy_top_frag.value }}</div>
-      <div class="stat-sub">{{ fun.most_kills_on_enemy_top_frag.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Most kills on enemy top frag", fun.most_kills_on_enemy_top_frag) }}
     {% endif %}
     {% if fun.most_deaths_to_enemy_bottom_frag %}
-    <div class="stat-tile">
-      <div class="stat-label">Most deaths to enemy bottom frag</div>
-      <div class="stat-value">{{ fun.most_deaths_to_enemy_bottom_frag.value }}</div>
-      <div class="stat-sub">{{ fun.most_deaths_to_enemy_bottom_frag.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Most deaths to enemy bottom frag", fun.most_deaths_to_enemy_bottom_frag) }}
     {% endif %}
     {% if fun.most_clutches %}
-    <div class="stat-tile">
-      <div class="stat-label">Most clutches (1vX / 2vX)</div>
-      <div class="stat-value">{{ fun.most_clutches.value }}</div>
-      <div class="stat-sub">{{ fun.most_clutches.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Most clutches (1vX / 2vX)", fun.most_clutches) }}
     {% endif %}
     {% if fun.round_mvp %}
-    <div class="stat-tile">
-      <div class="stat-label">Most Round MVPs</div>
-      <div class="stat-value">{{ fun.round_mvp.value }}</div>
-      <div class="stat-sub">{{ fun.round_mvp.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Most Round MVPs", fun.round_mvp) }}
     {% endif %}
     {% if fun.eco_frags %}
-    <div class="stat-tile">
-      <div class="stat-label">Most eco frags</div>
-      <div class="stat-value">{{ fun.eco_frags.value }}</div>
-      <div class="stat-sub">{{ fun.eco_frags.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Most eco frags", fun.eco_frags) }}
     {% endif %}
     {% if fun.most_econ_upset_deaths %}
-    <div class="stat-tile">
-      <div class="stat-label">Most deaths to a lesser economy</div>
-      <div class="stat-value">{{ fun.most_econ_upset_deaths.value }}</div>
-      <div class="stat-sub">{{ fun.most_econ_upset_deaths.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Most deaths to a lesser economy", fun.most_econ_upset_deaths) }}
     {% endif %}
     {% if fun.post_plant_menace %}
-    <div class="stat-tile">
-      <div class="stat-label">Post-plant menace</div>
-      <div class="stat-value">{{ fun.post_plant_menace.value }}</div>
-      <div class="stat-sub">{{ fun.post_plant_menace.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Post-plant menace", fun.post_plant_menace) }}
     {% endif %}
     {% if fun.op_crutch %}
-    <div class="stat-tile">
-      <div class="stat-label">OP crutch</div>
-      <div class="stat-value">{{ fun.op_crutch.value }}</div>
-      <div class="stat-sub">{{ fun.op_crutch.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("OP crutch", fun.op_crutch) }}
     {% endif %}
     {% if fun.most_trades_made %}
-    <div class="stat-tile">
-      <div class="stat-label">Most teammates traded for</div>
-      <div class="stat-value">{{ fun.most_trades_made.value }}</div>
-      <div class="stat-sub">{{ fun.most_trades_made.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Most teammates traded for", fun.most_trades_made) }}
     {% endif %}
     {% if fun.most_traded %}
-    <div class="stat-tile">
-      <div class="stat-label">Most traded</div>
-      <div class="stat-value">{{ fun.most_traded.value }}</div>
-      <div class="stat-sub">{{ fun.most_traded.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Most traded", fun.most_traded) }}
     {% endif %}
     {% if fun.most_round_changer %}
-    <div class="stat-tile">
-      <div class="stat-label">Most round-changing kills (outnumbered)</div>
-      <div class="stat-value">{{ fun.most_round_changer.value }}</div>
-      <div class="stat-sub">{{ fun.most_round_changer.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Most round-changing kills (outnumbered)", fun.most_round_changer) }}
     {% endif %}
     {% if fun.most_xvx_kills %}
-    <div class="stat-tile">
-      <div class="stat-label">Most kills in an even fight (XvX)</div>
-      <div class="stat-value">{{ fun.most_xvx_kills.value }}</div>
-      <div class="stat-sub">{{ fun.most_xvx_kills.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Most kills in an even fight (XvX)", fun.most_xvx_kills) }}
     {% endif %}
     {% if fun.most_spike_deaths %}
-    <div class="stat-tile">
-      <div class="stat-label">Most deaths to the Spike</div>
-      <div class="stat-value">{{ fun.most_spike_deaths.value }}</div>
-      <div class="stat-sub">{{ fun.most_spike_deaths.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Most deaths to the Spike", fun.most_spike_deaths) }}
     {% endif %}
     {% if fun.most_ghost_rounds %}
-    <div class="stat-tile">
-      <div class="stat-label">Most AFK rounds (survived, 0 impact)</div>
-      <div class="stat-value">{{ fun.most_ghost_rounds.value }}</div>
-      <div class="stat-sub">{{ fun.most_ghost_rounds.display_name | strip_tag }}</div>
-    </div>
+    {{ fun_stat_tile("Most AFK rounds (survived, 0 impact)", fun.most_ghost_rounds) }}
     {% endif %}
   </div>
 </div>

@@ -54,6 +54,7 @@ class FunStatEntry:
     value: int
     match_id: int | None = None
     round_number: int | None = None
+    runner_up: "FunStatEntry | None" = None
 
 
 @dataclass
@@ -220,10 +221,20 @@ def _build_kda_rows(
 
 
 def _top_entry(counts: dict[int, int], players_by_id: dict[int, str]) -> FunStatEntry | None:
+    """Top entry for a per-player count, with the runner-up (2nd place)
+    attached so the template can show both.
+    """
     if not counts:
         return None
-    best_player_id = max(counts, key=lambda pid: counts[pid])
-    return FunStatEntry(display_name=players_by_id.get(best_player_id, "?"), value=counts[best_player_id])
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], players_by_id.get(kv[0], "?")))
+    best_player_id, best_value = ranked[0]
+    entry = FunStatEntry(display_name=players_by_id.get(best_player_id, "?"), value=best_value)
+    if len(ranked) > 1:
+        runner_up_player_id, runner_up_value = ranked[1]
+        entry.runner_up = FunStatEntry(
+            display_name=players_by_id.get(runner_up_player_id, "?"), value=runner_up_value
+        )
+    return entry
 
 
 def _build_fun_stats(

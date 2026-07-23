@@ -133,6 +133,46 @@
       {% endfor %}
     </svg>
   </div>
+  {% if top_kill_differentials or top_death_differentials %}
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem;">
+    <div>
+      <h3>Biggest swing kills</h3>
+      <table>
+        <thead>
+          <tr><th>Transition</th><th>Net</th></tr>
+        </thead>
+        <tbody>
+          {% for edge in top_kill_differentials %}
+          <tr>
+            <td>{{ edge.source }} &rarr; {{ edge.target }}</td>
+            <td class="impact-positive">+{{ edge.weight }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="2">No data</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <h3>Biggest swing deaths</h3>
+      <table>
+        <thead>
+          <tr><th>Transition</th><th>Net</th></tr>
+        </thead>
+        <tbody>
+          {% for edge in top_death_differentials %}
+          <tr>
+            <td>{{ edge.source }} &rarr; {{ edge.target }}</td>
+            <td class="impact-negative">{{ edge.weight }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="2">No data</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
 </div>
 {% endif %}
 

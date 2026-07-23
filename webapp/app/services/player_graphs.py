@@ -327,6 +327,22 @@ def _round_win_diagram(win_stats: dict[str, dict[str, int]]) -> StateDiagram:
     return StateDiagram(nodes=nodes, edges=edges, view_box=view_box)
 
 
+def top_kill_order_differentials(
+    diagram: StateDiagram, top_n: int = 5
+) -> tuple[list[GraphEdge], list[GraphEdge]]:
+    """Splits a kill-order diagram's edges into the top_n most positive and
+    top_n most negative man-advantage-state transitions (net kills minus
+    deaths for that specific transition), skipping untouched (weight == 0)
+    edges. Since each transition's shape fixes its sign (an opponent-count
+    drop is always a kill, an own-count drop always a death), this is
+    equivalent to the biggest-swing kills and the biggest-swing deaths.
+    """
+    nonzero = [e for e in diagram.edges if e.weight != 0]
+    positives = sorted((e for e in nonzero if e.weight > 0), key=lambda e: e.weight, reverse=True)[:top_n]
+    negatives = sorted((e for e in nonzero if e.weight < 0), key=lambda e: e.weight)[:top_n]
+    return positives, negatives
+
+
 def _fixed_kill_order_edges() -> list[tuple[str, str]]:
     """Reproduces playerTrends.py's createKillOrderGraph(): the full 25-state diamond
     (own/opponent alive counts 1..5) plus the 10 terminal 0-states, with every state's

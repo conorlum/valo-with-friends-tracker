@@ -406,6 +406,55 @@ a {
   margin-top: 0.15rem;
 }
 
+.stat-numbers {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-top: 0.1rem;
+}
+
+.stat-pair {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+}
+
+.stat-pair--runner-up {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.stat-pair .stat-value {
+  font-size: 1.65rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-pair .stat-name {
+  color: var(--ink-secondary);
+  font-size: 0.85rem;
+  margin-top: 0.15rem;
+}
+
+.stat-pair--runner-up .stat-value {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+.stat-pair--runner-up .stat-name {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+.stat-sep {
+  color: var(--ink-muted);
+  font-size: 1.1rem;
+  padding-bottom: 0.25rem;
+}
+
 /* Badges */
 .badge {
   display: inline-flex;
