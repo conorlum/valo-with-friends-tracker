@@ -484,16 +484,17 @@ a {
 }
 
 /* Shoutouts */
-.shoutout-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
+.shoutout-rows {
+  display: flex;
+  flex-direction: column;
   gap: 0.75rem;
 }
 
-@media (max-width: 700px) {
-  .shoutout-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
+.shoutout-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
 }
 
 .shoutout-card {
@@ -501,6 +502,14 @@ a {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1rem 1.25rem;
+  flex: 0 1 calc((100% - 3 * 0.75rem) / 4);
+  min-width: 200px;
+}
+
+@media (max-width: 700px) {
+  .shoutout-card {
+    flex-basis: calc((100% - 0.75rem) / 2);
+  }
 }
 
 .shoutout-name a {

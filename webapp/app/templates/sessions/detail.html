@@ -55,12 +55,16 @@
 <div class="card">
   <h2>Shoutouts</h2>
   <p class="page-meta">One highlight for every player in this session.</p>
-  <div class="shoutout-grid">
-    {% for shoutout in stats.shoutouts %}
-    <div class="shoutout-card">
-      <div class="shoutout-name"><a href="/players/{{ shoutout.display_name | urlencode }}">{{ shoutout.display_name | strip_tag }}</a></div>
-      <div class="shoutout-headline">{{ shoutout.headline }}</div>
-      <div class="shoutout-detail">{{ shoutout.detail }}</div>
+  <div class="shoutout-rows">
+    {% for row in stats.shoutouts | balanced_rows %}
+    <div class="shoutout-row">
+      {% for shoutout in row %}
+      <div class="shoutout-card">
+        <div class="shoutout-name"><a href="/players/{{ shoutout.display_name | urlencode }}">{{ shoutout.display_name | strip_tag }}</a></div>
+        <div class="shoutout-headline">{{ shoutout.headline }}</div>
+        <div class="shoutout-detail">{{ shoutout.detail }}</div>
+      </div>
+      {% endfor %}
     </div>
     {% endfor %}
   </div>

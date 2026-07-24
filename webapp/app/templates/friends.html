@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block title %}Friends - ValoMaths{% endblock %}
+
+{% block content %}
+<h1>Friends</h1>
+<p class="page-meta">Shoutouts on session and match pages only show your friends (and you) once you're logged in.</p>
+
+<div class="card">
+  <h2>Friends</h2>
+  {% if friends %}
+  <table>
+    <thead>
+      <tr><th>Player</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for player in friends %}
+      <tr>
+        <td><a class="player-link" href="/players/{{ player.display_name | urlencode }}">{{ player.display_name | strip_tag }}</a></td>
+        <td>
+          <form action="/friends/remove" method="post" class="inline-form">
+            <input type="hidden" name="display_name" value="{{ player.display_name }}">
+            <button type="submit" class="link-button">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="page-meta">You haven't added any friends yet.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Add a friend</h2>
+  <form class="player-picker" action="/friends/add" method="post">
+    <select name="display_name" required>
+      <option value="" disabled selected>Choose a player&hellip;</option>
+      {% for player in all_players %}
+      <option value="{{ player.display_name }}">{{ player.display_name }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Add friend</button>
+  </form>
+</div>
+
+{% if acquaintances %}
+<div class="card">
+  <h2>Acquaintances</h2>
+  <p class="page-meta">Players you've shared 2+ matches with, but haven't added as a friend yet.</p>
+  <table>
+    <thead>
+      <tr><th>Player</th><th>Shared matches</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for acquaintance in acquaintances %}
+      <tr>
+        <td><a class="player-link" href="/players/{{ acquaintance.player.display_name | urlencode }}">{{ acquaintance.player.display_name | strip_tag }}</a></td>
+        <td>{{ acquaintance.shared_matches }}</td>
+        <td>
+          <form action="/friends/add" method="post" class="inline-form">
+            <input type="hidden" name="display_name" value="{{ acquaintance.player.display_name }}">
+            <button type="submit" class="link-button">Add as friend</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

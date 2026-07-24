@@ -76,6 +76,30 @@ def strip_tag(display_name: str | None) -> str:
 
 templates.env.filters["strip_tag"] = strip_tag
 
+
+def balanced_rows(items: list, max_per_row: int = 4) -> list[list]:
+    """Splits items into the fewest rows possible without exceeding
+    max_per_row, with row sizes as even as possible (extra items go to the
+    earliest rows) -- so a card grid's last row is never a lonely leftover,
+    e.g. 7 items become rows of [4, 3] rather than [4, 4, ...-1] or a
+    half-empty final row of [4, 4, 4] padding.
+    """
+    n = len(items)
+    if n == 0:
+        return []
+    num_rows = -(-n // max_per_row)  # ceil division
+    base, remainder = divmod(n, num_rows)
+    rows = []
+    index = 0
+    for row_index in range(num_rows):
+        size = base + 1 if row_index < remainder else base
+        rows.append(items[index : index + size])
+        index += size
+    return rows
+
+
+templates.env.filters["balanced_rows"] = balanced_rows
+
 _STYLE_CSS_PATH = Path(__file__).resolve().parent / "static" / "css" / "style.css"
 
 

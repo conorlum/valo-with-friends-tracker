@@ -4,7 +4,9 @@ from sqlalchemy.orm import Session, aliased
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Player, Round, RoundPlayerStat
 from app.scoring.impact import FORCE_THRESHOLD, econ_tier_name
+from app.services.friends import list_friend_ids
 from app.services.player_graphs import StateDiagram, build_session_round_win_diagram
+from app.services.shoutouts import PlayerShoutout, assign_shoutouts
 from app.services.sessions import SessionSummary
 
 MULTI_KILL_THRESHOLD = 3
@@ -87,19 +89,6 @@ class SessionFunStats:
 
 
 @dataclass
-class PlayerShoutout:
-    """A single flattering, individual callout for one player -- distinct
-    from Fun Stats, which only ever crowns one session-wide winner per
-    category. Every roster player gets exactly one of these.
-    """
-
-    player_id: int
-    display_name: str
-    headline: str
-    detail: str
-
-
-@dataclass
 class SessionStats:
     leaderboard: list[LeaderboardEntry]
     kda_rows: list[KdaRow]
@@ -108,7 +97,9 @@ class SessionStats:
     shoutouts: list[PlayerShoutout]
 
 
-def get_session_stats(db: Session, session: SessionSummary) -> SessionStats:
+def get_session_stats(
+    db: Session, session: SessionSummary, viewer_player_id: int | None = None
+) -> SessionStats:
     match_ids = [m.id for m in session.matches]
     roster_player_ids = session.roster_player_ids
 
@@ -138,6 +129,9 @@ def get_session_stats(db: Session, session: SessionSummary) -> SessionStats:
     biggest_multi_kill, raw_counts = _compute_raw_session_counts(db, session, our_mp_to_player, players_by_id)
     fun_stats = _build_fun_stats(db, session, our_mp_to_player, players_by_id, biggest_multi_kill, raw_counts)
     shoutouts = _build_shoutouts(raw_counts, leaderboard, players_by_id)
+    if viewer_player_id is not None:
+        friend_ids = list_friend_ids(db, viewer_player_id) | {viewer_player_id}
+        shoutouts = [s for s in shoutouts if s.player_id in friend_ids]
 
     return SessionStats(
         leaderboard=leaderboard,
@@ -909,37 +903,6 @@ def _build_ghost_stats(
     return _top_entry(ghost_round_counts, players_by_id)
 
 
-def _plural(value: int) -> str:
-    return "" if value == 1 else "s"
-
-
-# (raw-counts field name, headline, detail template) -- ordered flashiest/most
-# specific first, so a player's most distinctive achievement wins out over a
-# more generic one when they'd otherwise qualify for both. "Round MVP" sits
-# near the bottom since it's the closest in spirit to the Impact Leaderboard
-# directly above this section.
-_SHOUTOUT_CATEGORIES: list[tuple[str, str, str]] = [
-    ("entry_kill_counts", "Entry Fragger", "{v} first blood{s} this session"),
-    ("clutch_counts", "Clutch Gene", "{v} clutch round{s} won"),
-    ("post_plant_kill_counts", "Post-Plant Menace", "{v} kill{s} defending the plant"),
-    ("multi_kill_counts", "Multi-Kill Machine", "{v} round{s} with 3+ kills"),
-    ("max_streak", "On A Heater", "a {v}-kill streak without dying"),
-    ("round_changer_kill_counts", "Round Changer", "{v} kill{s} while outnumbered"),
-    ("xvx_kill_counts", "Even-Fight Specialist", "{v} kill{s} in even-numbered fights"),
-    ("kills_on_top_frag", "Shut Down Their Star", "{v} kill{s} on the enemy's top fragger"),
-    ("late_kill_counts", "Closer", "{v} kill{s} after the 1-minute mark"),
-    ("op_kill_counts", "Worth The Credits", "{v} kill{s} with the Operator"),
-    ("eco_kill_counts", "Does More With Less", "{v} kill{s} on an eco/force buy"),
-    ("traded_teammate_totals", "Avenger", "traded for a teammate {v} time{s}"),
-    ("traded_by_teammate_totals", "Never Alone", "avenged by a teammate {v} time{s}"),
-    ("mvp_counts", "Round MVP", "highest-Impact player in {v} round{s}"),
-]
-
-# How many rank-depths (1st place, 2nd place, ...) to try per category before
-# moving on -- bounded so the assignment pass can't run away on a huge roster.
-_SHOUTOUT_MAX_DEPTH = 4
-
-
 def _build_shoutouts(
     raw: _RawSessionCounts,
     leaderboard: list[LeaderboardEntry],
@@ -947,16 +910,9 @@ def _build_shoutouts(
 ) -> list[PlayerShoutout]:
     """Gives every player on the session roster exactly one flattering,
     individual callout -- unlike Fun Stats, which only ever names a single
-    session-wide winner per category.
-
-    Pass 1 walks the category catalog rank-by-rank (every category's outright
-    leader first, then runners-up, ...) so each player's most distinctive
-    achievement gets first claim, and no two players share a category where
-    avoidable. Anyone left over falls back to their single best-Impact round
-    of the session, then (for at most one player) to leading the session in
-    average Impact. A player who still has nothing after all of that means
-    the category catalog missed something real -- that's surfaced loudly
-    rather than papered over, so it gets fixed instead of going unnoticed.
+    session-wide winner per category. See `app.services.shoutouts` for the
+    assignment algorithm; this just adapts the session's raw counts and
+    leaderboard into the shape it expects.
     """
     raw_dicts: dict[str, dict[int, int]] = {
         "entry_kill_counts": raw.entry_kill_counts,
@@ -974,70 +930,16 @@ def _build_shoutouts(
         "traded_by_teammate_totals": raw.traded_by_teammate_totals,
         "mvp_counts": raw.mvp_counts,
     }
-    ranked_by_category: dict[str, list[tuple[int, int]]] = {
-        key: sorted(
-            ((pid, v) for pid, v in counts.items() if v > 0),
-            key=lambda kv: (-kv[1], players_by_id.get(kv[0], "?")),
-        )
-        for key, counts in raw_dicts.items()
-    }
+    best_single_round_impact = {pid: impact for pid, (impact, _match_id, _round_number) in raw.best_round_impact.items()}
 
-    assigned: dict[int, PlayerShoutout] = {}
-    used_categories: set[str] = set()
-
-    for depth in range(_SHOUTOUT_MAX_DEPTH):
-        for raw_key, headline, template in _SHOUTOUT_CATEGORIES:
-            if raw_key in used_categories:
-                continue
-            ranked = ranked_by_category[raw_key]
-            if depth >= len(ranked):
-                continue
-            player_id, value = ranked[depth]
-            if player_id in assigned:
-                continue
-            assigned[player_id] = PlayerShoutout(
-                player_id=player_id,
-                display_name=players_by_id.get(player_id, "?"),
-                headline=headline,
-                detail=template.format(v=value, s=_plural(value)),
-            )
-            used_categories.add(raw_key)
-
-    # Fallback 1: best single round of the session, strongest first.
-    for player_id, (impact, _match_id, _round_number) in sorted(
-        raw.best_round_impact.items(), key=lambda kv: -kv[1][0]
-    ):
-        if player_id in assigned:
-            continue
-        assigned[player_id] = PlayerShoutout(
-            player_id=player_id,
-            display_name=players_by_id.get(player_id, "?"),
-            headline="Highlight Reel",
-            detail=f"{round(impact)} Impact in a single round",
-        )
-
-    # Fallback 2: highest average Impact of the session -- only ever the #1
-    # leaderboard entry, so this claims at most one remaining player.
-    if leaderboard and leaderboard[0].player_id not in assigned:
+    anchor = None
+    if leaderboard:
         leader = leaderboard[0]
-        assigned[leader.player_id] = PlayerShoutout(
-            player_id=leader.player_id,
-            display_name=players_by_id.get(leader.player_id, "?"),
-            headline="Anchor of the Session",
-            detail=f"led the roster with {round(leader.average_impact)} avg Impact per round",
+        anchor = (
+            leader.player_id,
+            "Anchor of the Session",
+            f"led the roster with {round(leader.average_impact)} avg Impact per round",
         )
 
-    shoutouts: list[PlayerShoutout] = []
-    for entry in leaderboard:
-        if entry.player_id in assigned:
-            shoutouts.append(assigned[entry.player_id])
-        else:
-            shoutouts.append(
-                PlayerShoutout(
-                    player_id=entry.player_id,
-                    display_name=players_by_id.get(entry.player_id, "?"),
-                    headline="UH OH",
-                    detail="Conor fucked up, fix this",
-                )
-            )
-    return shoutouts
+    roster = [(entry.player_id, players_by_id.get(entry.player_id, "?")) for entry in leaderboard]
+    return assign_shoutouts(roster, raw_dicts, best_single_round_impact, anchor)
