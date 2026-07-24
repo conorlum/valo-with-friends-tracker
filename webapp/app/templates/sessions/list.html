@@ -20,8 +20,8 @@
     <tr class="clickable-row" onclick="window.location='/sessions/{{ session.index }}'">
       <td>
         <a href="/sessions/{{ session.index }}">
-          {{ session.started_at.strftime("%b %d, %Y %I:%M %p") }}
-          {% if session.is_multi_match %} &ndash; {{ session.ended_at.strftime("%I:%M %p") }}{% endif %}
+          {{ session.started_at | local_strftime("%b %d, %Y %I:%M %p") }}
+          {% if session.is_multi_match %} &ndash; {{ session.ended_at | local_strftime("%I:%M %p") }}{% endif %}
         </a>
       </td>
       <td>{{ session.matches | length }}</td>

@@ -44,6 +44,7 @@ def match_label(match) -> str:
     played = match.played_at
     if not played:
         return name
+    played = played.astimezone()
     date_str = played.strftime("%m/%d/%y")
     hour = played.strftime("%I").lstrip("0") or "12"
     time_str = f"{hour}:{played.strftime('%M %p')}"
@@ -51,6 +52,18 @@ def match_label(match) -> str:
 
 
 templates.env.globals["match_label"] = match_label
+
+
+def local_strftime(dt, fmt: str) -> str:
+    """Formats a tz-aware datetime in the local system timezone -- stored
+    timestamps are UTC, and this app runs local-only, so "local" is
+    unambiguous."""
+    if dt is None:
+        return ""
+    return dt.astimezone().strftime(fmt)
+
+
+templates.env.filters["local_strftime"] = local_strftime
 
 
 def strip_tag(display_name: str | None) -> str:

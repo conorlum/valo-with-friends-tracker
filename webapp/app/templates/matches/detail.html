@@ -8,7 +8,7 @@
   <span class="badge badge-score">{{ match.team1_rounds_won }} &ndash; {{ match.team2_rounds_won }}</span>
   <span class="sep">&middot;</span>
   {{ match.external_id }}
-  {% if match.played_at %}<span class="sep">&middot;</span> {{ match.played_at.strftime("%b %d, %Y %I:%M %p") }}{% endif %}
+  {% if match.played_at %}<span class="sep">&middot;</span> {{ match.played_at | local_strftime("%b %d, %Y %I:%M %p") }}{% endif %}
 </p>
 
 <div class="card">

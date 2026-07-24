@@ -3,9 +3,9 @@
 {% block title %}Session {{ session.index }} - ValoMaths{% endblock %}
 
 {% block content %}
-<h1>Session &mdash; {{ session.started_at.strftime("%b %d, %Y") }}</h1>
+<h1>Session &mdash; {{ session.started_at | local_strftime("%b %d, %Y") }}</h1>
 <p class="page-meta">
-  {{ session.started_at.strftime("%I:%M %p") }} &ndash; {{ session.ended_at.strftime("%I:%M %p") }}
+  {{ session.started_at | local_strftime("%I:%M %p") }} &ndash; {{ session.ended_at | local_strftime("%I:%M %p") }}
   <span class="sep">&middot;</span>
   {{ session.matches | length }} match{{ "es" if session.matches | length != 1 else "" }}
   {% if session.is_multi_match %}
@@ -51,6 +51,22 @@
 </div>
 {% endif %}
 
+{% if session.matches | length >= 3 and stats.shoutouts %}
+<div class="card">
+  <h2>Shoutouts</h2>
+  <p class="page-meta">One highlight for every player in this session.</p>
+  <div class="shoutout-grid">
+    {% for shoutout in stats.shoutouts %}
+    <div class="shoutout-card">
+      <div class="shoutout-name"><a href="/players/{{ shoutout.display_name | urlencode }}">{{ shoutout.display_name | strip_tag }}</a></div>
+      <div class="shoutout-headline">{{ shoutout.headline }}</div>
+      <div class="shoutout-detail">{{ shoutout.detail }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {% if session.team_by_match and stats.round_win_diagram.nodes %}
 <div class="card">
   <h2>Round win rate by game state</h2>
@@ -75,12 +91,12 @@
 </div>
 {% endif %}
 
-{% macro fun_stat_tile(label, stat) %}
+{% macro fun_stat_tile(label, stat, unit) %}
 <div class="stat-tile">
   <div class="stat-label">{{ label }}</div>
   <div class="stat-numbers">
     <div class="stat-pair">
-      <span class="stat-value">{{ stat.value }}</span>
+      <span class="stat-value-row"><span class="stat-value">{{ stat.value }}</span><span class="stat-unit">{{ unit }}</span></span>
       <span class="stat-name">{{ stat.display_name | strip_tag }}</span>
     </div>
     {% if stat.runner_up %}
@@ -95,14 +111,14 @@
 {% endmacro %}
 
 {% set fun = stats.fun_stats %}
-{% if fun.biggest_multi_kill or fun.longest_kill_streak or fun.most_multi_kills or fun.most_kills_on_enemy_top_frag or fun.most_deaths_to_enemy_bottom_frag or fun.most_clutches or fun.round_mvp or fun.eco_frags or fun.op_crutch or fun.most_trades_made or fun.most_traded or fun.most_econ_upset_deaths or fun.most_round_changer or fun.most_xvx_kills or fun.most_spike_deaths or fun.post_plant_menace or fun.most_ghost_rounds %}
+{% if fun.biggest_multi_kill or fun.longest_kill_streak or fun.most_multi_kills or fun.most_kills_on_enemy_top_frag or fun.most_deaths_to_enemy_bottom_frag or fun.most_clutches or fun.round_mvp or fun.eco_frags or fun.op_crutch or fun.most_trades_made or fun.most_traded or fun.most_econ_upset_deaths or fun.most_round_changer or fun.most_xvx_kills or fun.most_spike_deaths or fun.post_plant_menace or fun.most_ghost_rounds or fun.most_entry_kills or fun.most_late_round_kills or fun.most_first_deaths_in_losses or fun.most_last_alive_in_wipes %}
 <div class="card">
   <h2>Fun Stats</h2>
-  <div class="stat-grid stat-grid--cols4">
+  <div class="stat-grid stat-grid--cols3">
     {% if fun.biggest_multi_kill %}
     <div class="stat-tile">
       <div class="stat-label">Biggest multi-kill</div>
-      <div class="stat-value">{{ fun.biggest_multi_kill.value }}</div>
+      <div class="stat-value">{{ fun.biggest_multi_kill.value }}<span class="stat-unit">kills</span></div>
       <div class="stat-sub">
         {{ fun.biggest_multi_kill.display_name | strip_tag }}
         {% if fun.biggest_multi_kill.match_id in matches_by_id %}
@@ -112,52 +128,69 @@
     </div>
     {% endif %}
     {% if fun.longest_kill_streak %}
-    {{ fun_stat_tile("Longest kill streak w/o dying", fun.longest_kill_streak) }}
+    {{ fun_stat_tile("Longest kill streak w/o dying", fun.longest_kill_streak, "kills") }}
     {% endif %}
     {% if fun.most_multi_kills %}
-    {{ fun_stat_tile("Most multi-kills (3+)", fun.most_multi_kills) }}
+    {{ fun_stat_tile("Most multi-kills (3+)", fun.most_multi_kills, "rounds") }}
     {% endif %}
     {% if fun.most_kills_on_enemy_top_frag %}
-    {{ fun_stat_tile("Most kills on enemy top frag", fun.most_kills_on_enemy_top_frag) }}
+    {{ fun_stat_tile("Most kills on enemy top frag", fun.most_kills_on_enemy_top_frag, "kills") }}
     {% endif %}
     {% if fun.most_deaths_to_enemy_bottom_frag %}
-    {{ fun_stat_tile("Most deaths to enemy bottom frag", fun.most_deaths_to_enemy_bottom_frag) }}
+    {{ fun_stat_tile("Most deaths to enemy bottom frag", fun.most_deaths_to_enemy_bottom_frag, "deaths") }}
     {% endif %}
     {% if fun.most_clutches %}
-    {{ fun_stat_tile("Most clutches (1vX / 2vX)", fun.most_clutches) }}
+    {{ fun_stat_tile("Most clutches (1vX / 2vX)", fun.most_clutches, "clutches") }}
     {% endif %}
     {% if fun.round_mvp %}
-    {{ fun_stat_tile("Most Round MVPs", fun.round_mvp) }}
+    {{ fun_stat_tile("Most Round MVPs", fun.round_mvp, "rounds") }}
     {% endif %}
     {% if fun.eco_frags %}
-    {{ fun_stat_tile("Most eco frags", fun.eco_frags) }}
+    {{ fun_stat_tile("Most eco frags", fun.eco_frags, "kills") }}
     {% endif %}
     {% if fun.most_econ_upset_deaths %}
-    {{ fun_stat_tile("Most deaths to a lesser economy", fun.most_econ_upset_deaths) }}
+    {{ fun_stat_tile("Most deaths to a lesser economy", fun.most_econ_upset_deaths, "deaths") }}
     {% endif %}
     {% if fun.post_plant_menace %}
-    {{ fun_stat_tile("Post-plant menace", fun.post_plant_menace) }}
+    {{ fun_stat_tile("Post-plant menace", fun.post_plant_menace, "kills") }}
     {% endif %}
     {% if fun.op_crutch %}
-    {{ fun_stat_tile("OP crutch", fun.op_crutch) }}
+    {{ fun_stat_tile("OP crutch", fun.op_crutch, "kills") }}
     {% endif %}
     {% if fun.most_trades_made %}
-    {{ fun_stat_tile("Most teammates traded for", fun.most_trades_made) }}
+    {{ fun_stat_tile("Most teammates traded for", fun.most_trades_made, "trades") }}
     {% endif %}
     {% if fun.most_traded %}
-    {{ fun_stat_tile("Most traded", fun.most_traded) }}
+    {{ fun_stat_tile("Most traded", fun.most_traded, "times") }}
     {% endif %}
     {% if fun.most_round_changer %}
-    {{ fun_stat_tile("Most round-changing kills (outnumbered)", fun.most_round_changer) }}
+    {{ fun_stat_tile("Most round-changing kills (outnumbered)", fun.most_round_changer, "kills") }}
     {% endif %}
     {% if fun.most_xvx_kills %}
-    {{ fun_stat_tile("Most kills in an even fight (XvX)", fun.most_xvx_kills) }}
+    {{ fun_stat_tile("Most kills in an even fight (XvX)", fun.most_xvx_kills, "kills") }}
     {% endif %}
     {% if fun.most_spike_deaths %}
-    {{ fun_stat_tile("Most deaths to the Spike", fun.most_spike_deaths) }}
+    {{ fun_stat_tile("Most deaths to the Spike", fun.most_spike_deaths, "deaths") }}
+    {% else %}
+    <div class="stat-tile">
+      <div class="stat-label">Most deaths to the Spike</div>
+      <div class="stat-empty">No spike diers</div>
+    </div>
     {% endif %}
     {% if fun.most_ghost_rounds %}
-    {{ fun_stat_tile("Most AFK rounds (survived, 0 impact)", fun.most_ghost_rounds) }}
+    {{ fun_stat_tile("Most AFK rounds (survived, 0 impact)", fun.most_ghost_rounds, "rounds") }}
+    {% endif %}
+    {% if fun.most_entry_kills %}
+    {{ fun_stat_tile("Most kills in the first 20s", fun.most_entry_kills, "kills") }}
+    {% endif %}
+    {% if fun.most_late_round_kills %}
+    {{ fun_stat_tile("Most kills after the 1-minute mark", fun.most_late_round_kills, "kills") }}
+    {% endif %}
+    {% if fun.most_first_deaths_in_losses %}
+    {{ fun_stat_tile("Most first-deaths in a loss", fun.most_first_deaths_in_losses, "deaths") }}
+    {% endif %}
+    {% if fun.most_last_alive_in_wipes %}
+    {{ fun_stat_tile("Last alive in a full wipe", fun.most_last_alive_in_wipes, "rounds") }}
     {% endif %}
   </div>
 </div>
@@ -181,7 +214,7 @@
     <tbody>
       {% for row in stats.kda_rows %}
       <tr>
-        <td>{{ row.display_name | strip_tag }}</td>
+        <td><a href="/players/{{ row.display_name | urlencode }}">{{ row.display_name | strip_tag }}</a></td>
         <td>{{ row.total_label }}</td>
         {% for match in session.matches %}
         <td>{% if match.id in row.by_match %}{{ row.by_match[match.id].label }}{% else %}&mdash;{% endif %}</td>

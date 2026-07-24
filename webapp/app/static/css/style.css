@@ -374,8 +374,13 @@ a {
   grid-template-columns: repeat(4, 1fr);
 }
 
+.stat-grid--cols3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
 @media (max-width: 700px) {
-  .stat-grid--cols4 {
+  .stat-grid--cols4,
+  .stat-grid--cols3 {
     grid-template-columns: repeat(2, 1fr);
   }
 }
@@ -391,6 +396,8 @@ a {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   font-weight: 600;
+  line-height: 1.3rem;
+  min-height: 2.6rem;
   margin-bottom: 0.35rem;
 }
 
@@ -398,6 +405,13 @@ a {
   font-size: 1.65rem;
   font-weight: 700;
   letter-spacing: -0.01em;
+}
+
+.stat-tile .stat-empty {
+  color: var(--ink-muted);
+  font-size: 0.95rem;
+  font-style: italic;
+  margin-top: 0.5rem;
 }
 
 .stat-tile .stat-sub {
@@ -453,6 +467,59 @@ a {
   color: var(--ink-muted);
   font-size: 1.1rem;
   padding-bottom: 0.25rem;
+}
+
+.stat-value-row {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.stat-unit {
+  color: var(--ink-muted);
+  font-size: 0.7rem;
+  font-weight: 500;
+  margin-left: 0.3rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Shoutouts */
+.shoutout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.shoutout-card {
+  background: var(--surface);
+  padding: 1rem 1.25rem;
+}
+
+.shoutout-name a {
+  color: var(--ink);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.shoutout-name a:hover {
+  color: var(--brand);
+}
+
+.shoutout-headline {
+  color: var(--brand);
+  font-weight: 700;
+  font-size: 1.05rem;
+  margin: 0.3rem 0 0.2rem;
+  letter-spacing: -0.01em;
+}
+
+.shoutout-detail {
+  color: var(--ink-secondary);
+  font-size: 0.88rem;
 }
 
 /* Badges */
