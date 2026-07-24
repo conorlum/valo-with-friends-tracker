@@ -486,16 +486,20 @@ a {
 /* Shoutouts */
 .shoutout-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 1px;
-  background: var(--border);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+}
+
+@media (max-width: 700px) {
+  .shoutout-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 .shoutout-card {
   background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   padding: 1rem 1.25rem;
 }
 
