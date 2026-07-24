@@ -498,12 +498,25 @@ a {
 }
 
 .shoutout-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--surface-raised) 0%, var(--surface) 65%);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  padding: 1rem 1.25rem;
+  padding: 1.35rem 1rem 1.1rem;
   flex: 0 1 calc((100% - 3 * 0.75rem) / 4);
   min-width: 200px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.shoutout-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, var(--brand) 30%, var(--brand) 70%, transparent);
 }
 
 @media (max-width: 700px) {
@@ -512,9 +525,45 @@ a {
   }
 }
 
+.shoutout-portrait-frame {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 0.65rem;
+}
+
+.shoutout-portrait {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--page);
+  border: 2px solid var(--brand);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 16%, transparent), 0 0 20px color-mix(in srgb, var(--brand) 30%, transparent);
+}
+
+.shoutout-portrait--fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-muted);
+  font-weight: 700;
+  font-size: 1.6rem;
+  letter-spacing: -0.02em;
+}
+
+.shoutout-agent {
+  color: var(--ink-muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 0.3rem;
+}
+
 .shoutout-name a {
   color: var(--ink);
   font-weight: 700;
+  font-size: 1.02rem;
   text-decoration: none;
 }
 
@@ -525,14 +574,18 @@ a {
 .shoutout-headline {
   color: var(--brand);
   font-weight: 700;
-  font-size: 1.05rem;
-  margin: 0.3rem 0 0.2rem;
-  letter-spacing: -0.01em;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0.75rem 0 0.3rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
 }
 
 .shoutout-detail {
   color: var(--ink-secondary);
-  font-size: 0.88rem;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Badges */

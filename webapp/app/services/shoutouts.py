@@ -10,6 +10,7 @@ class PlayerShoutout:
 
     player_id: int
     display_name: str
+    agent: str
     headline: str
     detail: str
 
@@ -48,7 +49,7 @@ _MAX_DEPTH = 5
 
 
 def assign_shoutouts(
-    roster: list[tuple[int, str]],
+    roster: list[tuple[int, str, str]],
     raw_dicts: dict[str, dict[int, int]],
     best_single_round_impact: dict[int, float],
     anchor: tuple[int, str, str] | None = None,
@@ -74,8 +75,11 @@ def assign_shoutouts(
     the category catalog missed something real -- that's surfaced loudly
     rather than papered over, so it gets fixed instead of going unnoticed.
 
-    `roster`: (player_id, display_name) pairs, in the order shoutouts should
-    be returned.
+    `roster`: (player_id, display_name, agent) triples, in the order
+    shoutouts should be returned. `agent` is whatever single agent best
+    represents the player for this scope (e.g. the one they played in a
+    single match, or their most-played across a multi-match session) --
+    resolving that is the caller's job, since it depends on the scope.
     `raw_dicts`: player_id -> count, keyed by the category names in
     SHOUTOUT_CATEGORIES. Missing keys are treated as empty.
     `best_single_round_impact`: player_id -> their best single-round Impact,
@@ -83,8 +87,9 @@ def assign_shoutouts(
     `anchor`: (player_id, headline, detail) used as a last-resort fallback
     for one player (typically whoever leads in average Impact), or None.
     """
-    players_by_id = dict(roster)
-    player_ids = [player_id for player_id, _display_name in roster]
+    players_by_id = {player_id: display_name for player_id, display_name, _agent in roster}
+    agent_by_player = {player_id: agent for player_id, _display_name, agent in roster}
+    player_ids = [player_id for player_id, _display_name, _agent in roster]
     player_index = {player_id: i for i, player_id in enumerate(player_ids)}
 
     # Per category, candidates ranked best-first (value > 0 only), capped at
@@ -151,6 +156,7 @@ def assign_shoutouts(
         assigned[player_id] = PlayerShoutout(
             player_id=player_id,
             display_name=players_by_id.get(player_id, "?"),
+            agent=agent_by_player.get(player_id, ""),
             headline=headline,
             detail=template.format(v=value, s=_plural(value)),
         )
@@ -162,6 +168,7 @@ def assign_shoutouts(
         assigned[player_id] = PlayerShoutout(
             player_id=player_id,
             display_name=players_by_id.get(player_id, "?"),
+            agent=agent_by_player.get(player_id, ""),
             headline="Highlight Reel",
             detail=f"{round(impact)} Impact in a single round",
         )
@@ -173,12 +180,13 @@ def assign_shoutouts(
             assigned[anchor_player_id] = PlayerShoutout(
                 player_id=anchor_player_id,
                 display_name=players_by_id.get(anchor_player_id, "?"),
+                agent=agent_by_player.get(anchor_player_id, ""),
                 headline=anchor_headline,
                 detail=anchor_detail,
             )
 
     shoutouts: list[PlayerShoutout] = []
-    for player_id, display_name in roster:
+    for player_id, display_name, agent in roster:
         if player_id in assigned:
             shoutouts.append(assigned[player_id])
         else:
@@ -186,6 +194,7 @@ def assign_shoutouts(
                 PlayerShoutout(
                     player_id=player_id,
                     display_name=display_name,
+                    agent=agent,
                     headline="UH OH",
                     detail="Conor fucked up, fix this",
                 )

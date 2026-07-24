@@ -54,8 +54,19 @@
     {% for row in shoutouts | balanced_rows %}
     <div class="shoutout-row">
       {% for shoutout in row %}
+      {% set icon = agent_icon_slug(shoutout.agent) %}
       <div class="shoutout-card">
+        <div class="shoutout-portrait-frame">
+          {% if icon %}
+          <img class="shoutout-portrait" src="/static/img/agents/{{ icon }}.png" alt="{{ shoutout.agent }}">
+          {% else %}
+          <div class="shoutout-portrait shoutout-portrait--fallback">{{ (shoutout.agent or "?")[:1] }}</div>
+          {% endif %}
+        </div>
         <div class="shoutout-name"><a href="/players/{{ shoutout.display_name | urlencode }}">{{ shoutout.display_name | strip_tag }}</a></div>
+        {% if shoutout.agent %}
+        <div class="shoutout-agent">{{ shoutout.agent }}</div>
+        {% endif %}
         <div class="shoutout-headline">{{ shoutout.headline }}</div>
         <div class="shoutout-detail">{{ shoutout.detail }}</div>
       </div>

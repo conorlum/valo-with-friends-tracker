@@ -1,3 +1,4 @@
+from collections import Counter
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session, aliased
@@ -124,11 +125,18 @@ def get_session_stats(
     # match_player_id -> player_id, restricted to this session's roster.
     our_mp_to_player: dict[int, int] = {mp.id: mp.player_id for mp in our_match_players}
 
+    # Most-played agent per player across the session -- a player can swap
+    # agents match to match, so this is a mode, not a lookup.
+    agent_tally: dict[int, Counter] = {}
+    for mp in our_match_players:
+        agent_tally.setdefault(mp.player_id, Counter())[mp.agent] += 1
+    agent_by_player = {player_id: tally.most_common(1)[0][0] for player_id, tally in agent_tally.items()}
+
     leaderboard = _build_leaderboard(db, our_mp_to_player, players_by_id, session.team_by_match)
     kda_rows = _build_kda_rows(db, match_ids, our_mp_to_player, players_by_id)
     biggest_multi_kill, raw_counts = _compute_raw_session_counts(db, session, our_mp_to_player, players_by_id)
     fun_stats = _build_fun_stats(db, session, our_mp_to_player, players_by_id, biggest_multi_kill, raw_counts)
-    shoutouts = _build_shoutouts(raw_counts, leaderboard, players_by_id)
+    shoutouts = _build_shoutouts(raw_counts, leaderboard, players_by_id, agent_by_player)
     if viewer_player_id is not None:
         friend_ids = list_friend_ids(db, viewer_player_id) | {viewer_player_id}
         shoutouts = [s for s in shoutouts if s.player_id in friend_ids]
@@ -907,6 +915,7 @@ def _build_shoutouts(
     raw: _RawSessionCounts,
     leaderboard: list[LeaderboardEntry],
     players_by_id: dict[int, str],
+    agent_by_player: dict[int, str],
 ) -> list[PlayerShoutout]:
     """Gives every player on the session roster exactly one flattering,
     individual callout -- unlike Fun Stats, which only ever names a single
@@ -941,5 +950,8 @@ def _build_shoutouts(
             f"led the roster with {round(leader.average_impact)} avg Impact per round",
         )
 
-    roster = [(entry.player_id, players_by_id.get(entry.player_id, "?")) for entry in leaderboard]
+    roster = [
+        (entry.player_id, players_by_id.get(entry.player_id, "?"), agent_by_player.get(entry.player_id, ""))
+        for entry in leaderboard
+    ]
     return assign_shoutouts(roster, raw_dicts, best_single_round_impact, anchor)

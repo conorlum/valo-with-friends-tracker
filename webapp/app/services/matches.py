@@ -442,7 +442,7 @@ def get_match_shoutouts(
             f"led the match with {round(leader.average_impact)} avg Impact per round",
         )
 
-    roster = [(p.match_player_id, p.display_name) for p in summary.players]
+    roster = [(p.match_player_id, p.display_name, p.agent) for p in summary.players]
     shoutouts = assign_shoutouts(roster, raw_dicts, best_round_impact, anchor)
 
     if viewer_player_id is not None:
