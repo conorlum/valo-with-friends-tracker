@@ -8,13 +8,41 @@
   <p>Real Riot Sign-On isn't available yet (needs Riot's production API approval) -- pick a player from the sample data to preview a personalized view in the meantime.</p>
 </div>
 
-<form class="player-picker" action="/login" method="post">
-  <select name="display_name" required>
-    <option value="" disabled selected>Choose a player&hellip;</option>
-    {% for p in players %}
-    <option value="{{ p.display_name }}">{{ p.display_name }}</option>
-    {% endfor %}
-  </select>
-  <button type="submit">Log in as this player</button>
-</form>
+<div class="player-picker">
+  <input type="text" id="player-search" class="player-search" placeholder="Search players&hellip;" autocomplete="off" autofocus>
+  <form action="/login" method="post">
+    <ul class="player-list" id="player-list">
+      {% for p in players %}
+      <li><button type="submit" name="display_name" value="{{ p.display_name }}">{{ p.display_name }}</button></li>
+      {% endfor %}
+    </ul>
+  </form>
+  <p class="not-found" id="player-no-matches" hidden>No players match.</p>
+</div>
+
+<script>
+(() => {
+  const input = document.getElementById("player-search");
+  const items = Array.from(document.querySelectorAll("#player-list li"));
+  const noMatches = document.getElementById("player-no-matches");
+
+  input.addEventListener("input", () => {
+    const q = input.value.trim().toLowerCase();
+    let visible = 0;
+    items.forEach((li) => {
+      const match = li.textContent.trim().toLowerCase().includes(q);
+      li.hidden = !match;
+      if (match) visible++;
+    });
+    noMatches.hidden = visible !== 0;
+  });
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const firstVisible = items.find((li) => !li.hidden);
+    if (firstVisible) firstVisible.querySelector("button").click();
+  });
+})();
+</script>
 {% endblock %}
