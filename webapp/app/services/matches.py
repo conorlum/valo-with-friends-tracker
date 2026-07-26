@@ -41,6 +41,20 @@ def list_matches_for_player(db: Session, player_id: int) -> list[Match]:
     )
 
 
+def list_matches_for_players(db: Session, player_ids: list[int]) -> list[Match]:
+    """Any match at least one of `player_ids` was in -- `.distinct()` since
+    a match with two+ of them (e.g. you and a friend in the same game)
+    would otherwise join-duplicate."""
+    return (
+        db.query(Match)
+        .join(MatchPlayer, MatchPlayer.match_id == Match.id)
+        .filter(MatchPlayer.player_id.in_(player_ids))
+        .distinct()
+        .order_by(Match.played_at.desc().nullslast(), Match.id.desc())
+        .all()
+    )
+
+
 def get_match_or_404(db: Session, external_id: str) -> Match:
     match = db.query(Match).filter_by(external_id=external_id).one_or_none()
     if match is None:

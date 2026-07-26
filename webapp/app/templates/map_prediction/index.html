@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block title %}Map Prediction - ValoMaths{% endblock %}
+
+{% block content %}
+<h1>Map Prediction</h1>
+<p class="page-meta">
+  Pick up to 4 other known players in your queue party. Estimates a probability per map for your
+  next Competitive match, based on each known player's most recent map (see
+  scripts/analyze_map_diversity.py for how this was fitted) -- not a guaranteed prediction, since
+  the other lobby slots are unknown until match-found.
+</p>
+
+<div class="card">
+  <h2>Party</h2>
+  <form class="player-picker" action="/map-prediction" method="get">
+    {% if friends %}
+    <div class="stat-grid">
+      {% for friend in friends %}
+      <label>
+        <input type="checkbox" name="teammate" value="{{ friend.display_name }}"
+          {% if friend.display_name in selected_names %}checked{% endif %}>
+        {{ friend.display_name }}
+      </label>
+      {% endfor %}
+    </div>
+    <p class="page-meta">Choose up to 4 -- any beyond that are ignored.</p>
+    <button type="submit">Predict</button>
+    {% else %}
+    <p class="page-meta">
+      You don't have any friends added yet -- add some on the <a href="/friends">Friends</a> page
+      first so you can pick them here.
+    </p>
+    {% endif %}
+  </form>
+</div>
+
+{% if predictions %}
+<div class="card">
+  <h2>Next map probabilities</h2>
+  <canvas id="map-prediction-chart" height="120"></canvas>
+  <table>
+    <thead>
+      <tr><th>Map</th><th>Probability</th></tr>
+    </thead>
+    <tbody>
+      {% for p in predictions %}
+      <tr>
+        <td>{{ p.map_name }}</td>
+        <td>{{ "%.1f"|format(p.probability * 100) }}%</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+  const predictionChartData = {{ predictions | map(attribute="map_name") | list | tojson }};
+  const predictionChartValues = {{ predictions | map(attribute="probability") | list | tojson }};
+
+  new Chart(document.getElementById("map-prediction-chart"), {
+    type: "bar",
+    data: {
+      labels: predictionChartData,
+      datasets: [
+        {
+          label: "Probability",
+          data: predictionChartValues.map((v) => v * 100),
+          backgroundColor: "#0ca30c",
+          borderRadius: 3,
+          borderSkipped: false,
+          barPercentage: 0.7,
+          categoryPercentage: 0.6,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: {
+          ticks: { color: "#c3c2b7", callback: (v) => v + "%" },
+          grid: { color: "rgba(195, 194, 183, 0.15)" },
+        },
+        x: {
+          ticks: { color: "#c3c2b7" },
+          grid: { display: false },
+        },
+      },
+    },
+  });
+</script>
+{% elif selected_names %}
+<div class="card">
+  <p class="page-meta">No current-act map data available yet -- run the data crawl first.</p>
+</div>
+{% endif %}
+{% endblock %}

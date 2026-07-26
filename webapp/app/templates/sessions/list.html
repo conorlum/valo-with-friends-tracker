@@ -5,6 +5,13 @@
 {% block content %}
 <h1>Sessions</h1>
 <p class="page-meta">Matches grouped by consecutive play with a shared roster (at least 3 of 5 players, within a same-night window).</p>
+<p class="page-meta">
+  {% if friends_enabled %}
+    Showing your sessions and your friends'. <a href="/sessions?friends=0">Show just mine</a>
+  {% else %}
+    Showing just your own sessions. <a href="/sessions?friends=1">Include friends</a>
+  {% endif %}
+</p>
 <div class="card">
 <table>
   <thead>
@@ -17,9 +24,9 @@
   </thead>
   <tbody>
     {% for session in sessions %}
-    <tr class="clickable-row" onclick="window.location='/sessions/{{ session.index }}'">
+    <tr class="clickable-row" onclick="window.location='/sessions/{{ session.index }}?friends={{ 1 if friends_enabled else 0 }}'">
       <td>
-        <a href="/sessions/{{ session.index }}">
+        <a href="/sessions/{{ session.index }}?friends={{ 1 if friends_enabled else 0 }}">
           {{ session.started_at | local_strftime("%b %d, %Y %I:%M %p") }}
           {% if session.is_multi_match %} &ndash; {{ session.ended_at | local_strftime("%I:%M %p") }}{% endif %}
         </a>

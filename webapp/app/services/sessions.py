@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models import Match, MatchPlayer, Player
-from app.services.matches import MatchSummary, get_match_summary, list_matches
+from app.services.matches import MatchSummary, get_match_summary, list_matches, list_matches_for_players
 
 DEFAULT_OVERLAP_THRESHOLD = 3
 DEFAULT_MAX_GAP = timedelta(hours=6)
@@ -175,8 +175,14 @@ class SessionSummary:
     roster_ordered: list[str] = field(default_factory=list)
 
 
-def list_sessions(db: Session) -> list[SessionSummary]:
-    matches = [m for m in list_matches(db) if m.played_at is not None]
+def list_sessions(db: Session, player_ids: list[int] | None = None) -> list[SessionSummary]:
+    """Scoped to matches at least one of `player_ids` was in, when given --
+    without it, this would group every match in the whole DB (including
+    every crawled snowball opponent who has nothing to do with this
+    player) into sessions, which is both wrong and, at thousands of
+    matches, slow."""
+    all_matches = list_matches_for_players(db, player_ids) if player_ids else list_matches(db)
+    matches = [m for m in all_matches if m.played_at is not None]
     match_ids = [m.id for m in matches]
 
     match_players_by_match: dict[int, list[SessionMatchPlayer]] = {}
@@ -225,8 +231,8 @@ def list_sessions(db: Session) -> list[SessionSummary]:
     return sessions
 
 
-def get_session_or_404(db: Session, session_index: int) -> SessionSummary:
-    sessions = list_sessions(db)
+def get_session_or_404(db: Session, session_index: int, player_ids: list[int] | None = None) -> SessionSummary:
+    sessions = list_sessions(db, player_ids)
     if not (0 <= session_index < len(sessions)):
         raise HTTPException(status_code=404, detail=f"No session {session_index}")
     return sessions[session_index]

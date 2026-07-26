@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .venv/
 captured_state/
+scripts/.dumps/

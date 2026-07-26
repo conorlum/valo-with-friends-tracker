@@ -10,15 +10,20 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings
 from app.db import get_db
-from app.routers import auth, friends, matches, players, sessions
+from app.routers import auth, friends, map_prediction, matches, players, sessions
 from app.services.auth import get_current_player
 from app.templates import templates
 
 app = FastAPI(title="ValoMaths")
-app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.session_secret,
+    https_only=settings.session_cookie_https_only,
+)
 app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "static")), name="static")
 app.include_router(auth.router)
 app.include_router(friends.router)
+app.include_router(map_prediction.router)
 app.include_router(matches.router)
 app.include_router(players.router)
 app.include_router(sessions.router)
@@ -38,7 +43,8 @@ def health(db: Session = Depends(get_db)):
     return {"status": "ok"}
 
 
-@app.get("/riot.txt")
-@app.get("//riot.txt")
-def riot_verification():
-    return PlainTextResponse("f212a992-ace0-402a-838d-cad406c48fe2")
+if settings.enable_riot_txt:
+    @app.get("/riot.txt")
+    @app.get("//riot.txt")
+    def riot_verification():
+        return PlainTextResponse("f212a992-ace0-402a-838d-cad406c48fe2")

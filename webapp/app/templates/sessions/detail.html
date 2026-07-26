@@ -13,6 +13,13 @@
   <span class="badge badge-score">{{ session.wins }} &ndash; {{ session.losses }}</span>
   {% endif %}
 </p>
+<p class="page-meta">
+  <a href="/sessions?friends={{ 1 if friends_enabled else 0 }}">&larr; Back to Sessions</a>
+  ({{ "showing friends" if friends_enabled else "just mine" }} --
+  <a href="/sessions/{{ session.index }}?friends={{ 0 if friends_enabled else 1 }}">
+    {{ "show just mine" if friends_enabled else "include friends" }}
+  </a>)
+</p>
 
 <div class="card">
   <h2>Roster</h2>
