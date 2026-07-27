@@ -1,22 +1,24 @@
-databases:
-  - name: valomaths-db
-    plan: free
-    postgresMajorVersion: "16"
-
 services:
   - type: web
-    name: valomaths
+    name: donttellriottracker
     runtime: python
     plan: free
     rootDir: webapp
-    buildCommand: pip install -r requirements.txt && alembic upgrade head && python scripts/load_seed_data.py
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+      alembic upgrade head
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.13.4
       - key: DATABASE_URL
-        fromDatabase:
-          name: valomaths-db
-          property: connectionString
+        sync: false  # set manually in the Render dashboard to your Neon connection string
       - key: SESSION_SECRET
         generateValue: true
+      - key: PYTHON_VERSION
+        value: "3.13.5"
+      - key: ENABLE_RIOT_TXT
+        value: "false"
+      - key: SESSION_COOKIE_HTTPS_ONLY
+        value: "true"

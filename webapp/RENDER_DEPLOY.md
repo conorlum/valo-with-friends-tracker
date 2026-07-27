@@ -19,9 +19,10 @@ loss).
    `docker-compose.yml`'s `postgres:16`). Copy the connection string it gives
    you — it'll look like `postgresql://user:pass@ep-xxx.neon.tech/dbname?sslmode=require`.
 2. **Render**: in the dashboard, **New → Blueprint**, connect the
-   `valomaths-private` GitHub repo, point it at `webapp/render.yaml`. This
-   creates the web service (`donttellriottracker`) — there's no `databases:`
-   block anymore, so Render won't try to provision its own Postgres.
+   `valomaths-private` GitHub repo. Render auto-detects `render.yaml` at the
+   repo root. This creates the web service (`donttellriottracker`) — there's
+   no `databases:` block anymore, so Render won't try to provision its own
+   Postgres.
 3. On the web service's **Environment** tab, set `DATABASE_URL` to the Neon
    connection string from step 1 (the blueprint leaves it as `sync: false` on
    purpose so the real value only lives in the dashboard, never in a committed
