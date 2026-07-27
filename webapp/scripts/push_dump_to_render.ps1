@@ -1,18 +1,18 @@
 <#
 Dumps the local docker-compose Postgres (project "valomaths-private") and restores
-it into a target database -- typically a Render Postgres instance's *external*
-connection string, copied fresh from the Render dashboard.
+it into a target database -- e.g. a Neon project's connection string (the
+DontTellRiotTracker deploy's DB lives on Neon, not Render, since Render's free
+tier only allows one free Postgres per account).
 
-Reusable both for the initial data load onto a brand-new Render Postgres, and for
-every subsequent refresh (re-run after ingesting new matches locally) or ~30-day
-free-tier recreate (after creating a new Render Postgres instance).
+Reusable both for the initial data load and every subsequent refresh (re-run
+after ingesting new matches locally) -- just pass the same target URL each time.
 
 Requires: Docker Desktop running, and the local Postgres already up
 (docker compose -p valomaths-private up -d). Does NOT require pg_dump/psql/pg_restore
 installed locally -- both run inside postgres:16 containers.
 
 Usage:
-  .\push_dump_to_render.ps1 -TargetDatabaseUrl "postgresql://user:pass@host/db"
+  .\push_dump_to_render.ps1 -TargetDatabaseUrl "postgresql://user:pass@host/db?sslmode=require"
   .\push_dump_to_render.ps1 -TargetDatabaseUrl "..." -DryRun    # dump only, skip restore
 #>
 
@@ -42,9 +42,16 @@ New-Item -ItemType Directory -Force -Path $dumpsDir | Out-Null
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $dumpFile = Join-Path $dumpsDir "valomaths-$stamp.dump"
 
+$containerId = (docker compose -p valomaths-private ps -q postgres).Trim()
+if (-not $containerId) { throw "Could not resolve the local postgres container." }
+
 Write-Host "Dumping local DB ($LocalDbName)..."
-docker compose -p valomaths-private exec -T postgres pg_dump -U $LocalDbUser -d $LocalDbName --format=custom --no-owner --no-privileges > $dumpFile
+# Dump to a file *inside* the container, then docker cp it out -- piping binary
+# pg_dump output through PowerShell's `>` redirection corrupts it (text reinterpretation).
+docker exec $containerId pg_dump -U $LocalDbUser -d $LocalDbName --format=custom --no-owner --no-privileges -f /tmp/dump.dump
 if ($LASTEXITCODE -ne 0) { throw "pg_dump failed." }
+docker cp "${containerId}:/tmp/dump.dump" $dumpFile
+if ($LASTEXITCODE -ne 0) { throw "docker cp of dump file failed." }
 Write-Host "Dump saved to $dumpFile"
 
 if ($DryRun) {
