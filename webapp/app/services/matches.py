@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.scoring.impact import FORCE_THRESHOLD
@@ -278,7 +278,13 @@ def get_match_shoutouts(
     xvx_kill_counts: dict[int, int] = {}
     round_changer_kill_counts: dict[int, int] = {}
 
-    rounds = db.query(Round).filter_by(match_id=match.id).order_by(Round.round_number).all()
+    rounds = (
+        db.query(Round)
+        .filter_by(match_id=match.id)
+        .options(selectinload(Round.kill_events))
+        .order_by(Round.round_number)
+        .all()
+    )
     for round_row in rounds:
         winner_side = _winner_side(round_row.outcome)
         alive_by_team: dict[str, set[int]] = {team: set(ids) for team, ids in mp_ids_by_team.items()}
@@ -289,12 +295,7 @@ def get_match_shoutouts(
             team: None for team in mp_ids_by_team
         }
 
-        events = (
-            db.query(KillEvent)
-            .filter_by(round_id=round_row.id)
-            .order_by(KillEvent.event_time_seconds)
-            .all()
-        )
+        events = sorted(round_row.kill_events, key=lambda e: (e.event_time_seconds, e.id))
         for event in events:
             killer_id = event.killer_match_player_id
             death_id = event.death_match_player_id
@@ -521,7 +522,10 @@ def get_round_detail(db: Session, match: Match, round_number: int) -> RoundDetai
     match_players = {
         mp.id: mp for mp in db.query(MatchPlayer).filter_by(match_id=match.id).all()
     }
-    players_by_id = {p.id: p for p in db.query(Player).all()}
+    player_ids = {mp.player_id for mp in match_players.values()}
+    players_by_id = {
+        p.id: p for p in db.query(Player).filter(Player.id.in_(player_ids)).all()
+    }
 
     def _display_name(match_player_id: int | None) -> str | None:
         if match_player_id is None:

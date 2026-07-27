@@ -40,6 +40,17 @@ def list_players(db: Session) -> list[PlayerListEntry]:
     return entries
 
 
+def list_player_display_names(db: Session) -> list[str]:
+    """Cheap alternative to list_players() for UI pickers that only need names
+    (the login page, the friends 'add' dropdown) -- skips the MatchPlayer/
+    ImpactScore join those don't render, just to build a matches/impact stat
+    those pages never use.
+    """
+    names = [name for (name,) in db.query(Player.display_name).all()]
+    names.sort(key=str.lower)
+    return names
+
+
 def get_player_or_404(db: Session, display_name: str) -> Player:
     player = db.query(Player).filter_by(display_name=display_name).one_or_none()
     if player is None:

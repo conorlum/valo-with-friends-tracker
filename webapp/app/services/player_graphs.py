@@ -155,7 +155,7 @@ def build_state_diagrams(db: Session, player: Player) -> tuple[StateDiagram, Sta
             alive = {Team.TEAM_1: sizes[Team.TEAM_1], Team.TEAM_2: sizes[Team.TEAM_2]}
             winner = _winner_team(round_row.outcome)
             player_alive = True
-            events = sorted(round_row.kill_events, key=lambda e: e.event_time_seconds)
+            events = sorted(round_row.kill_events, key=lambda e: (e.event_time_seconds, e.id))
 
             for event in events:
                 own_alive, opp_alive = alive[own_team], alive[opp_team]
@@ -262,7 +262,7 @@ def build_session_round_win_diagram(
         for round_row in match.rounds:
             alive = {Team.TEAM_1: sizes[Team.TEAM_1], Team.TEAM_2: sizes[Team.TEAM_2]}
             winner = _winner_team(round_row.outcome)
-            events = sorted(round_row.kill_events, key=lambda e: e.event_time_seconds)
+            events = sorted(round_row.kill_events, key=lambda e: (e.event_time_seconds, e.id))
 
             for event in events:
                 own_alive, opp_alive = alive[own_team], alive[opp_team]

@@ -206,14 +206,20 @@ def list_sessions(db: Session, player_ids: list[int] | None = None) -> list[Sess
 
     sessions = []
     for i, rs in enumerate(roster_sessions):
-        match_summaries = {m.id: get_match_summary(db, m) for m in rs.matches}
+        # match_summaries is deliberately left empty here -- it's only used by the
+        # single-session detail page (sessions/detail.html), which fills it in for
+        # just that session's matches in get_session_or_404 below. Computing it here
+        # for every session's matches would mean list_sessions() -- called by both
+        # the session list page (which never reads match_summaries at all) and every
+        # single-session detail lookup -- pays the cost of summarizing every match
+        # the viewer has ever played, every time.
         others = rs.roster_display_names - rs.core_display_names
         roster_ordered = sorted(rs.core_display_names) + sorted(others)
         sessions.append(
             SessionSummary(
                 index=i,
                 matches=rs.matches,
-                match_summaries=match_summaries,
+                match_summaries={},
                 roster_player_ids=rs.roster_player_ids,
                 roster_display_names=rs.roster_display_names,
                 core_player_ids=rs.core_player_ids,
@@ -235,4 +241,6 @@ def get_session_or_404(db: Session, session_index: int, player_ids: list[int] | 
     sessions = list_sessions(db, player_ids)
     if not (0 <= session_index < len(sessions)):
         raise HTTPException(status_code=404, detail=f"No session {session_index}")
-    return sessions[session_index]
+    session = sessions[session_index]
+    session.match_summaries = {m.id: get_match_summary(db, m) for m in session.matches}
+    return session

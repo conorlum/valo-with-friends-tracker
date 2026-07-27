@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.services.auth import SESSION_KEY
-from app.services.players import find_player_by_search_query, get_player_or_404, list_players
+from app.services.players import find_player_by_search_query, get_player_or_404, list_player_display_names
 from app.templates import templates
 
 router = APIRouter(tags=["auth"])
@@ -12,7 +12,7 @@ router = APIRouter(tags=["auth"])
 
 @router.get("/login")
 def login_form(request: Request, db: Session = Depends(get_db)):
-    players = sorted(list_players(db), key=lambda p: p.display_name.lower())
+    players = list_player_display_names(db)
     return templates.TemplateResponse(request, "login.html", {"players": players})
 
 

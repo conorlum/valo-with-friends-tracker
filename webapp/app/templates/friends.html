@@ -38,7 +38,7 @@
     <select name="display_name" required>
       <option value="" disabled selected>Choose a player&hellip;</option>
       {% for player in all_players %}
-      <option value="{{ player.display_name }}">{{ player.display_name }}</option>
+      <option value="{{ player }}">{{ player }}</option>
       {% endfor %}
     </select>
     <button type="submit">Add friend</button>

@@ -1,7 +1,7 @@
 from collections import Counter
 from dataclasses import dataclass
 
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session, aliased, selectinload
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Player, Round, RoundPlayerStat
 from app.scoring.impact import FORCE_THRESHOLD, econ_tier_name
@@ -115,7 +115,10 @@ def get_session_stats(
             shoutouts=[],
         )
 
-    players_by_id = {p.id: p.display_name for p in db.query(Player).all()}
+    players_by_id = {
+        p.id: p.display_name
+        for p in db.query(Player).filter(Player.id.in_(roster_player_ids)).all()
+    }
 
     our_match_players = (
         db.query(MatchPlayer)
@@ -527,7 +530,13 @@ def _build_replay_stats(
                 opp_top_frag_mp_id = max(opp_totals, key=lambda mp_id: (opp_totals[mp_id], -mp_id))
                 opp_bottom_frag_mp_id = min(opp_totals, key=lambda mp_id: (opp_totals[mp_id], mp_id))
 
-        rounds = db.query(Round).filter_by(match_id=match.id).order_by(Round.round_number).all()
+        rounds = (
+            db.query(Round)
+            .filter_by(match_id=match.id)
+            .options(selectinload(Round.kill_events))
+            .order_by(Round.round_number)
+            .all()
+        )
         for round_row in rounds:
             round_won_by_us = our_side is not None and _winner_side(round_row.outcome) == our_side
             alive_own = set(own_mp_ids)
@@ -538,12 +547,7 @@ def _build_replay_stats(
             clutch_state: tuple[int, int, frozenset[int]] | None = None
             first_own_death_id: int | None = None
 
-            events = (
-                db.query(KillEvent)
-                .filter_by(round_id=round_row.id)
-                .order_by(KillEvent.event_time_seconds)
-                .all()
-            )
+            events = sorted(round_row.kill_events, key=lambda e: (e.event_time_seconds, e.id))
             for event in events:
                 killer_id = event.killer_match_player_id
                 death_id = event.death_match_player_id

@@ -13,7 +13,7 @@
   <form action="/login" method="post">
     <ul class="player-list" id="player-list">
       {% for p in players %}
-      <li><button type="submit" name="display_name" value="{{ p.display_name }}">{{ p.display_name }}</button></li>
+      <li><button type="submit" name="display_name" value="{{ p }}">{{ p }}</button></li>
       {% endfor %}
     </ul>
   </form>
