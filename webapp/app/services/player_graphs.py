@@ -1,9 +1,9 @@
 import math
 from dataclasses import dataclass, field
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from app.models import Match, MatchPlayer, Player
+from app.models import Match, MatchPlayer, Player, Round
 from app.models.match import Team
 
 # Round-win diamond: compact, with larger nodes since there's no edge label to make room for.
@@ -131,7 +131,15 @@ def build_state_diagrams(db: Session, player: Player) -> tuple[StateDiagram, Sta
     team, to recover the man-advantage state ("<own>v<opponent>") the player
     experienced at each kill. Aggregated across every match the player appears in.
     """
-    match_players = db.query(MatchPlayer).filter_by(player_id=player.id).all()
+    match_players = (
+        db.query(MatchPlayer)
+        .filter_by(player_id=player.id)
+        .options(
+            selectinload(MatchPlayer.match).selectinload(Match.match_players),
+            selectinload(MatchPlayer.match).selectinload(Match.rounds).selectinload(Round.kill_events),
+        )
+        .all()
+    )
 
     win_stats: dict[str, dict[str, int]] = {}
     kill_order_weights: dict[tuple[str, str], int] = {}

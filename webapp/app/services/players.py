@@ -2,7 +2,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models import ImpactScore, Match, MatchPlayer, Player, Round
 
@@ -156,9 +156,29 @@ def get_player_profile(db: Session, player: Player) -> PlayerProfile:
         db.query(MatchPlayer)
         .filter_by(player_id=player.id)
         .join(Match, Match.id == MatchPlayer.match_id)
+        .options(joinedload(MatchPlayer.match))
         .order_by(Match.played_at.nullslast(), Match.id)
         .all()
     )
+
+    match_player_ids = [mp.id for mp in match_players]
+    match_ids = [mp.match_id for mp in match_players]
+
+    scores_by_match_player: dict[int, list[ImpactScore]] = {}
+    if match_player_ids:
+        for score in db.query(ImpactScore).filter(ImpactScore.match_player_id.in_(match_player_ids)).all():
+            scores_by_match_player.setdefault(score.match_player_id, []).append(score)
+
+    teammates_by_match: dict[int, list[MatchPlayer]] = {}
+    if match_ids:
+        all_teammates = (
+            db.query(MatchPlayer)
+            .filter(MatchPlayer.match_id.in_(match_ids))
+            .options(joinedload(MatchPlayer.player))
+            .all()
+        )
+        for mp in all_teammates:
+            teammates_by_match.setdefault(mp.match_id, []).append(mp)
 
     matches: list[MatchBreakdown] = []
     all_impacts: list[float] = []
@@ -176,7 +196,7 @@ def get_player_profile(db: Session, player: Player) -> PlayerProfile:
     traded_by_teammate_totals: dict[str, int] = {}
 
     for match_player in match_players:
-        scores = db.query(ImpactScore).filter_by(match_player_id=match_player.id).all()
+        scores = scores_by_match_player.get(match_player.id, [])
         if not scores:
             continue
 
@@ -184,7 +204,7 @@ def get_player_profile(db: Session, player: Player) -> PlayerProfile:
         kill_impacts = [score.kill_impact for score in scores]
         death_impacts = [score.death_impact for score in scores]
 
-        match = db.get(Match, match_player.match_id)
+        match = match_player.match
         team = match_player.team.value if hasattr(match_player.team, "value") else match_player.team
         matches.append(
             MatchBreakdown(
@@ -202,7 +222,7 @@ def get_player_profile(db: Session, player: Player) -> PlayerProfile:
 
         teammate_names = {
             mp.id: mp.player.display_name
-            for mp in db.query(MatchPlayer).filter_by(match_id=match_player.match_id).all()
+            for mp in teammates_by_match.get(match_player.match_id, [])
         }
 
         for score in scores:
