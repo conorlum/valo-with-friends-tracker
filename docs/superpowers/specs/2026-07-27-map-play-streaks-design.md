@@ -51,26 +51,43 @@ stay in the pool across the act boundary, regardless of what else changed.
    - A map can have multiple disjoint windows over the site's history (e.g.
      in the pool for acts 1-2, dropped for act 3, back for act 4 -- that's
      two separate windows, never bridged).
-4. **Per window, find the gap.** Take the target player's own matches
+4. **Per window, find two numbers.** Take the target player's own matches
    (`played_at` not null), chronologically ordered, restricted to the
-   window's date range. Scan them, tracking the longest run of consecutive
+   window's date range. Scan them, tracking a running count of consecutive
    matches where the map wasn't played (a play of the map resets the running
-   count to 0; a match on any other map -- pool or not -- increments it). A
-   trailing run that reaches the end of an open window (`end is None`) is
-   flagged `ongoing`.
+   count to 0; a match on any other map -- pool or not -- increments it).
+   Record two values from the scan: `best` (the highest the running count
+   ever reached anywhere in the window) and `trailing` (the running count's
+   final value, i.e. the live streak counted from the last play up through
+   the player's most recent match in the window).
    - If the player has zero matches in a window, that window contributes no
      data point (skip it -- nothing to measure).
-   - If the player never played the map at all within a window, the gap for
-     that window is simply the count of all their matches in that window
-     (still flagged `ongoing` if the window is open).
-5. **Per map, report two numbers:**
-   - **Current gap** -- the value from the window that contains the current
-     act (if the map has no such window... it can't, since the map is in the
-     current pool by construction, so it always has a window touching now).
-   - **Record gap** -- the max value across *all* of that map's windows
+   - If the player never played the map at all within a window, `best` and
+     `trailing` are both simply the count of all their matches in that
+     window.
+5. **Per map, report two numbers -- `current` and `record` are genuinely
+   different quantities, not just two labels on the same scan result:**
+   - **Current gap** -- `trailing` from the window that contains the current
+     act (every current-pool map has exactly one such window, since it's in
+     the pool by construction). This is deliberately the *live* number --
+     "how long has it been since I played this map" -- not necessarily that
+     window's historical `best`. Earlier drafts of this design conflated the
+     two (labeling `best` as "current"), which silently mislabeled a closed,
+     already-surpassed historical run as if it were still accruing; caught
+     during implementation review by running the real algorithm against real
+     match data, where it produced exactly that on 6 of 7 rows.
+   - **Record gap** -- the max `best` across *all* of that map's windows
      (including the current one), with the act-label range of whichever
-     window produced it. If the record and current window are the same
-     window, don't show the record line twice (see UI section).
+     window produced it. Flagged `ongoing` only when that maximizing window
+     is the current (open) one *and* its `best == trailing` -- i.e. the
+     all-time record is the live streak itself, still capable of growing.
+   - `record_is_current` is true iff the record's window is the current
+     window *and* `record.gap == current.gap` (equivalently: the current
+     window's `best` equals its own `trailing`). This can be false even when
+     the record technically "lives" in the current window, if that window
+     also contains an earlier, larger, already-closed run -- in which case
+     both numbers should render (see UI section), since they mean different
+     things.
 
 ## New module: `app/services/map_streaks.py`
 
@@ -109,14 +126,19 @@ a magnitude comparison):
 
 | Map | Current gap | Record gap |
 |---|---|---|
-| Ascent | 12 matches (ongoing, since V26:A4) | 12 matches (ongoing, since V26:A4) |
+| Ascent | 12 matches (ongoing, since V26:A4) | -- |
 | Bind | 3 matches (since V26:A4) | 9 matches (V26:A2-A3) |
 
-- "Current gap" always shown.
+Act-label ranges collapse to first/last (`V26:A2-A3`, not every act in
+between) rather than printing every merged act's label -- a map that's
+stayed in the pool across many consecutive acts would otherwise print a
+long chain in one table cell.
+
+- "Current gap" always shown -- this is the live number (see `trailing`
+  above), not necessarily that window's best-ever run.
 - "Record gap" column only rendered with its own act-range text when it
   differs from the current window (`record_is_current == False`); otherwise
-  render something like "same as current" or simply leave the cell as
-  `--` to avoid showing the identical number twice.
+  leave the cell as `--` to avoid showing the identical number twice.
 - Empty state (player has no matches in the current pool's window for any
   map -- e.g. brand new tracked player): render the existing site's
   `page-meta` empty-state paragraph style, matching how
