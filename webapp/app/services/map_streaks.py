@@ -133,3 +133,44 @@ def _build_map_streaks(
         )
 
     return streaks
+
+
+def _load_acts() -> list[Act]:
+    if not SEASON_ACTS_PATH.exists():
+        return []
+    acts_raw = sorted(
+        json.loads(SEASON_ACTS_PATH.read_text(encoding="utf-8")), key=lambda a: a["start_time"]
+    )
+    acts: list[Act] = []
+    for i, a in enumerate(acts_raw):
+        start = datetime.fromisoformat(a["start_time"])
+        end = datetime.fromisoformat(acts_raw[i + 1]["start_time"]) if i + 1 < len(acts_raw) else None
+        acts.append(Act(label=a["label"], start=start, end=end))
+    return acts
+
+
+def compute_map_streaks(db: Session, player_id: int) -> list[MapStreak]:
+    """For every map in the current competitive pool, the player's current
+    and all-time-record longest run of consecutive matches without playing
+    it -- see app/services/map_streaks.py module docstring / design doc at
+    docs/superpowers/specs/2026-07-27-map-play-streaks-design.md for the
+    per-map windowing rationale (map pool rotates 2-3 maps per act, so
+    continuity is checked per map, not per whole pool)."""
+    acts = _load_acts()
+    if not acts:
+        return []
+
+    population_matches = list(
+        db.query(Match.map_name, Match.played_at).filter(Match.played_at.isnot(None)).all()
+    )
+    act_pools = _act_pools(acts, population_matches)
+
+    player_matches = list(
+        db.query(Match.map_name, Match.played_at)
+        .join(MatchPlayer, MatchPlayer.match_id == Match.id)
+        .filter(MatchPlayer.player_id == player_id, Match.played_at.isnot(None))
+        .order_by(Match.played_at)
+        .all()
+    )
+
+    return _build_map_streaks(acts, act_pools, player_matches)
