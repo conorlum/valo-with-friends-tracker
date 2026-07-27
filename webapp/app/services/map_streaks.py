@@ -48,8 +48,19 @@ def _map_windows(map_name: str, acts: list[Act], act_pools: list[set[str]]) -> l
     return windows
 
 
-def _act_pools(*args, **kwargs):
-    raise NotImplementedError
+def _act_pools(acts: list[Act], population_matches: list[tuple[str, datetime]]) -> list[set[str]]:
+    """Population-wide map pool per act -- same MIN_POOL_MATCHES rule as
+    map_prediction.get_current_map_pool, applied to every act instead of
+    just the latest one."""
+    counts_per_act: list[dict[str, int]] = [dict() for _ in acts]
+    for map_name, played_at in population_matches:
+        if map_name is None or played_at is None:
+            continue
+        for i, act in enumerate(acts):
+            if played_at >= act.start and (act.end is None or played_at < act.end):
+                counts_per_act[i][map_name] = counts_per_act[i].get(map_name, 0) + 1
+                break
+    return [{m for m, c in counts.items() if c >= MIN_POOL_MATCHES} for counts in counts_per_act]
 
 
 def _gap_in_window(*args, **kwargs):

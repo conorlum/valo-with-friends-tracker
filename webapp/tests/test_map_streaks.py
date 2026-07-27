@@ -48,3 +48,31 @@ def test_map_windows_map_never_in_pool():
     act_pools = [{"Ascent"}]
 
     assert _map_windows("Bind", acts, act_pools) == []
+
+
+def test_act_pools_counts_population_matches_per_act_window():
+    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00"), ("A2", "2026-03-01T00:00:00+00:00")])
+    population_matches = [
+        ("Bind", datetime.fromisoformat("2026-01-05T00:00:00+00:00")),
+        ("Bind", datetime.fromisoformat("2026-01-10T00:00:00+00:00")),
+        ("Bind", datetime.fromisoformat("2026-01-15T00:00:00+00:00")),  # 3rd Bind match in A1 -> meets MIN_POOL_MATCHES
+        ("Haven", datetime.fromisoformat("2026-01-20T00:00:00+00:00")),  # only 1 Haven match in A1 -> below threshold
+        ("Ascent", datetime.fromisoformat("2026-03-05T00:00:00+00:00")),
+        ("Ascent", datetime.fromisoformat("2026-03-06T00:00:00+00:00")),
+        ("Ascent", datetime.fromisoformat("2026-03-07T00:00:00+00:00")),  # 3rd Ascent match in A2
+    ]
+
+    pools = _act_pools(acts, population_matches)
+
+    assert pools == [{"Bind"}, {"Ascent"}]
+
+
+def test_act_pools_ignores_matches_outside_all_act_windows():
+    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00"), ("A2", "2026-03-01T00:00:00+00:00")])
+    population_matches = [
+        ("Bind", datetime.fromisoformat("2025-12-01T00:00:00+00:00")),  # before A1 starts
+    ] * 5
+
+    pools = _act_pools(acts, population_matches)
+
+    assert pools == [set(), set()]
