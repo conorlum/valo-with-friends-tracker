@@ -68,13 +68,12 @@ def _gap_in_window(
     window_end: datetime | None,
     map_name: str,
     player_matches: list[tuple[str, datetime]],
-) -> tuple[int, bool] | None:
-    """Longest run of consecutive matches (within [window_start, window_end))
-    that aren't `map_name`. Returns None if the player has no matches in
-    range at all -- nothing to measure. `ongoing` is True only when the
-    window is still open (`window_end is None`) and the longest run found is
-    the trailing one (i.e. it's still accruing, not already closed off by a
-    later play of the map)."""
+) -> tuple[int, int] | None:
+    """Returns (best, trailing): `best` is the longest run of consecutive
+    matches without playing `map_name` anywhere in the window; `trailing` is
+    the run counted from the last play of the map (or window start) up to
+    the most recent match -- the live, still-accruing streak. Returns None
+    if the player has no matches in range at all -- nothing to measure."""
     in_window = [
         (m, t) for m, t in player_matches if t >= window_start and (window_end is None or t < window_end)
     ]
@@ -90,8 +89,7 @@ def _gap_in_window(
             running += 1
             best = max(best, running)
 
-    ongoing = window_end is None and running == best and best > 0
-    return best, ongoing
+    return best, running
 
 
 def _build_map_streaks(
@@ -107,27 +105,34 @@ def _build_map_streaks(
     streaks: list[MapStreak] = []
 
     for map_name in sorted(current_pool):
-        window_results: list[tuple[int, MapStreakWindow]] = []
+        # (window end act-index, best, trailing, act_labels)
+        window_results: list[tuple[int, int, int, list[str]]] = []
         for w_start, w_end in _map_windows(map_name, acts, act_pools):
             outcome = _gap_in_window(acts[w_start].start, acts[w_end].end, map_name, player_matches)
             if outcome is None:
                 continue
-            gap, ongoing = outcome
+            best, trailing = outcome
             act_labels = [acts[i].label for i in range(w_start, w_end + 1)]
-            window_results.append((w_end, MapStreakWindow(act_labels=act_labels, gap=gap, ongoing=ongoing)))
+            window_results.append((w_end, best, trailing, act_labels))
 
-        current_result = next((w for idx, w in window_results if idx == current_act_index), None)
-        if current_result is None:
+        current_entry = next((w for w in window_results if w[0] == current_act_index), None)
+        if current_entry is None:
             continue  # no matches yet in the current act -- omit (page-level empty state covers this)
 
-        record_idx, record_result = max(window_results, key=lambda pair: pair[1].gap)
-        record_is_current = record_idx == current_act_index and record_result.gap == current_result.gap
+        _, _, current_trailing, current_labels = current_entry
+        current = MapStreakWindow(act_labels=current_labels, gap=current_trailing, ongoing=True)
+
+        record_idx, record_best, record_trailing, record_labels = max(window_results, key=lambda w: w[1])
+        record_ongoing = record_idx == current_act_index and record_best == record_trailing and record_best > 0
+        record = MapStreakWindow(act_labels=record_labels, gap=record_best, ongoing=record_ongoing)
+
+        record_is_current = record_idx == current_act_index and record.gap == current.gap
 
         streaks.append(
             MapStreak(
                 map_name=map_name,
-                current=current_result,
-                record=record_result,
+                current=current,
+                record=record,
                 record_is_current=record_is_current,
             )
         )
@@ -152,7 +157,7 @@ def _load_acts() -> list[Act]:
 def compute_map_streaks(db: Session, player_id: int) -> list[MapStreak]:
     """For every map in the current competitive pool, the player's current
     and all-time-record longest run of consecutive matches without playing
-    it -- see app/services/map_streaks.py module docstring / design doc at
+    it -- see the design doc at
     docs/superpowers/specs/2026-07-27-map-play-streaks-design.md for the
     per-map windowing rationale (map pool rotates 2-3 maps per act, so
     continuity is checked per map, not per whole pool)."""
