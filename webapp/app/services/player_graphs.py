@@ -1,7 +1,7 @@
 import math
 from dataclasses import dataclass, field
 
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, object_session, selectinload
 
 from app.models import Match, MatchPlayer, Player, Round
 from app.models.match import Team
@@ -206,6 +206,15 @@ def build_match_round_win_diagrams(match: Match) -> tuple[StateDiagram, StateDia
     perspectives simultaneously (unlike the player version, there's no player_alive gate --
     a team's own_alive count already tells you whether it's still in the round).
     """
+    db = object_session(match)
+    if db is not None:
+        # Populates match.match_players / match.rounds / round.kill_events in bulk
+        # (a few queries total) instead of one lazy-load per relationship per round.
+        db.query(Match).filter_by(id=match.id).options(
+            selectinload(Match.match_players),
+            selectinload(Match.rounds).selectinload(Round.kill_events),
+        ).one()
+
     sizes = _team_sizes(match.match_players)
     team_of = {mp.id: mp.team for mp in match.match_players}
 
@@ -249,6 +258,16 @@ def build_session_round_win_diagram(
     no resolvable side (team_by_match missing an entry) are skipped.
     """
     win_stats: dict[str, dict[str, int]] = {}
+
+    if matches:
+        db = object_session(matches[0])
+        if db is not None:
+            # Populates every match's match_players / rounds / kill_events in bulk
+            # up front instead of one lazy-load per relationship per round per match.
+            db.query(Match).filter(Match.id.in_([m.id for m in matches])).options(
+                selectinload(Match.match_players),
+                selectinload(Match.rounds).selectinload(Round.kill_events),
+            ).all()
 
     for match in matches:
         own_team_str = team_by_match.get(match.id)
