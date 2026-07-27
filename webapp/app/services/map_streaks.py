@@ -63,8 +63,35 @@ def _act_pools(acts: list[Act], population_matches: list[tuple[str, datetime]]) 
     return [{m for m, c in counts.items() if c >= MIN_POOL_MATCHES} for counts in counts_per_act]
 
 
-def _gap_in_window(*args, **kwargs):
-    raise NotImplementedError
+def _gap_in_window(
+    window_start: datetime,
+    window_end: datetime | None,
+    map_name: str,
+    player_matches: list[tuple[str, datetime]],
+) -> tuple[int, bool] | None:
+    """Longest run of consecutive matches (within [window_start, window_end))
+    that aren't `map_name`. Returns None if the player has no matches in
+    range at all -- nothing to measure. `ongoing` is True only when the
+    window is still open (`window_end is None`) and the longest run found is
+    the trailing one (i.e. it's still accruing, not already closed off by a
+    later play of the map)."""
+    in_window = [
+        (m, t) for m, t in player_matches if t >= window_start and (window_end is None or t < window_end)
+    ]
+    if not in_window:
+        return None
+
+    best = 0
+    running = 0
+    for m, _ in in_window:
+        if m == map_name:
+            running = 0
+        else:
+            running += 1
+            best = max(best, running)
+
+    ongoing = window_end is None and running == best and best > 0
+    return best, ongoing
 
 
 def _build_map_streaks(*args, **kwargs):
