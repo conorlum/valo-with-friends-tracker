@@ -142,3 +142,79 @@ def test_gap_in_window_respects_closed_window_end():
 
     assert gap == 1
     assert ongoing is False  # closed window (end is not None) is never "ongoing"
+
+
+def test_build_map_streaks_merged_window_no_reset_at_act_boundary():
+    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00"), ("A2", "2026-03-01T00:00:00+00:00")])
+    act_pools = [{"Bind"}, {"Bind"}]
+    player_matches = [
+        ("Bind", datetime.fromisoformat("2026-01-05T00:00:00+00:00")),
+        ("Haven", datetime.fromisoformat("2026-01-10T00:00:00+00:00")),  # A1
+        ("Haven", datetime.fromisoformat("2026-03-05T00:00:00+00:00")),  # A2 -- must chain onto the A1 gap
+    ]
+
+    streaks = _build_map_streaks(acts, act_pools, player_matches)
+
+    bind = next(s for s in streaks if s.map_name == "Bind")
+    assert bind.current.gap == 2  # both Haven matches, spanning the act boundary
+    assert bind.current.act_labels == ["A1", "A2"]
+    assert bind.current.ongoing is True
+
+
+def test_build_map_streaks_disjoint_windows_record_does_not_bridge():
+    acts = make_acts(
+        [
+            ("A1", "2026-01-01T00:00:00+00:00"),
+            ("A2", "2026-03-01T00:00:00+00:00"),
+            ("A3", "2026-05-01T00:00:00+00:00"),
+        ]
+    )
+    act_pools = [{"Bind"}, {"Ascent"}, {"Bind"}]  # Bind drops out for A2, returns in A3
+    player_matches = [
+        ("Haven", datetime.fromisoformat("2026-01-05T00:00:00+00:00")),
+        ("Haven", datetime.fromisoformat("2026-01-10T00:00:00+00:00")),
+        ("Haven", datetime.fromisoformat("2026-01-15T00:00:00+00:00")),  # 3-match gap in A1 window
+        ("Ascent", datetime.fromisoformat("2026-03-05T00:00:00+00:00")),  # A2 -- Bind not in pool, no window
+        ("Haven", datetime.fromisoformat("2026-05-05T00:00:00+00:00")),  # A3 window starts fresh
+    ]
+
+    streaks = _build_map_streaks(acts, act_pools, player_matches)
+
+    bind = next(s for s in streaks if s.map_name == "Bind")
+    assert bind.record.gap == 3
+    assert bind.record.act_labels == ["A1"]
+    assert bind.current.gap == 1  # only the A3 window counts as "current"
+    assert bind.current.act_labels == ["A3"]
+    assert bind.record_is_current is False
+
+
+def test_build_map_streaks_record_equals_current_when_same_window():
+    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00")])
+    act_pools = [{"Bind"}]
+    player_matches = [("Haven", datetime.fromisoformat("2026-01-05T00:00:00+00:00"))]
+
+    streaks = _build_map_streaks(acts, act_pools, player_matches)
+
+    bind = next(s for s in streaks if s.map_name == "Bind")
+    assert bind.record_is_current is True
+    assert bind.record.gap == bind.current.gap == 1
+
+
+def test_build_map_streaks_omits_map_with_no_current_window_matches():
+    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00")])
+    act_pools = [{"Bind"}]
+    player_matches: list[tuple[str, datetime]] = []  # player has no matches at all this act
+
+    streaks = _build_map_streaks(acts, act_pools, player_matches)
+
+    assert streaks == []
+
+
+def test_build_map_streaks_only_covers_current_pool_maps():
+    acts = make_acts([("A1", "2026-01-01T00:00:00+00:00"), ("A2", "2026-03-01T00:00:00+00:00")])
+    act_pools = [{"Bind"}, {"Ascent"}]  # Bind was in A1's pool but not A2's (current) pool
+    player_matches = [("Ascent", datetime.fromisoformat("2026-03-05T00:00:00+00:00"))]
+
+    streaks = _build_map_streaks(acts, act_pools, player_matches)
+
+    assert [s.map_name for s in streaks] == ["Ascent"]  # Bind not in current pool -- not shown at all

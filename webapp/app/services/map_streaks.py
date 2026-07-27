@@ -94,5 +94,42 @@ def _gap_in_window(
     return best, ongoing
 
 
-def _build_map_streaks(*args, **kwargs):
-    raise NotImplementedError
+def _build_map_streaks(
+    acts: list[Act],
+    act_pools: list[set[str]],
+    player_matches: list[tuple[str, datetime]],
+) -> list[MapStreak]:
+    if not acts:
+        return []
+
+    current_pool = act_pools[-1]
+    current_act_index = len(acts) - 1
+    streaks: list[MapStreak] = []
+
+    for map_name in sorted(current_pool):
+        window_results: list[tuple[int, MapStreakWindow]] = []
+        for w_start, w_end in _map_windows(map_name, acts, act_pools):
+            outcome = _gap_in_window(acts[w_start].start, acts[w_end].end, map_name, player_matches)
+            if outcome is None:
+                continue
+            gap, ongoing = outcome
+            act_labels = [acts[i].label for i in range(w_start, w_end + 1)]
+            window_results.append((w_end, MapStreakWindow(act_labels=act_labels, gap=gap, ongoing=ongoing)))
+
+        current_result = next((w for idx, w in window_results if idx == current_act_index), None)
+        if current_result is None:
+            continue  # no matches yet in the current act -- omit (page-level empty state covers this)
+
+        record_idx, record_result = max(window_results, key=lambda pair: pair[1].gap)
+        record_is_current = record_idx == current_act_index and record_result.gap == current_result.gap
+
+        streaks.append(
+            MapStreak(
+                map_name=map_name,
+                current=current_result,
+                record=record_result,
+                record_is_current=record_is_current,
+            )
+        )
+
+    return streaks
