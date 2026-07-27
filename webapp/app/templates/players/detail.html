@@ -241,6 +241,45 @@
 </div>
 
 <div class="card">
+  <h2>Map streaks</h2>
+  <p class="page-meta">
+    For each map in the current pool, the longest run of matches played without landing on
+    that map -- only counted while the map was actually in the pool (a per-map streak never
+    bridges an act where the map was dropped).
+  </p>
+  {% if map_streaks %}
+  <table>
+    <thead>
+      <tr><th>Map</th><th>Current gap</th><th>Record gap</th></tr>
+    </thead>
+    <tbody>
+      {% for s in map_streaks %}
+      <tr>
+        <td>{{ s.map_name }}</td>
+        <td>
+          {{ s.current.gap }} match{{ "es" if s.current.gap != 1 else "" }}
+          {% if s.current.ongoing %}<span class="badge badge-score">ongoing</span>{% endif %}
+          <div class="stat-sub">{{ s.current.act_labels | join(" &ndash; ") | safe }}</div>
+        </td>
+        <td>
+          {% if s.record_is_current %}
+          &ndash;
+          {% else %}
+          {{ s.record.gap }} match{{ "es" if s.record.gap != 1 else "" }}
+          {% if s.record.ongoing %}<span class="badge badge-score">ongoing</span>{% endif %}
+          <div class="stat-sub">{{ s.record.act_labels | join(" &ndash; ") | safe }}</div>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="page-meta">No current-act match data yet for {{ profile.player.display_name }}.</p>
+  {% endif %}
+</div>
+
+<div class="card">
   <h2>Matches</h2>
   <table>
     <thead>
