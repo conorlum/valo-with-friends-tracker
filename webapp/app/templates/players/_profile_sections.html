@@ -237,7 +237,7 @@
   <h2>Matches</h2>
   <table>
     <thead>
-      <tr><th>Match</th><th>Agent</th><th>Avg Impact</th></tr>
+      <tr><th>Match</th><th>Agent</th><th>KDA</th><th>Avg Impact</th></tr>
     </thead>
     <tbody>
       {% for m in profile.matches %}
@@ -251,6 +251,7 @@
           {{ m.agent }}
           {% endif %}
         </td>
+        <td>{{ m.kills }}/{{ m.deaths }}/{{ m.assists }}</td>
         <td class="{{ 'impact-positive' if m.average_impact >= 0 else 'impact-negative' }}">
           {{ m.average_impact | round | int }}
         </td>
