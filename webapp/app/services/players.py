@@ -147,15 +147,23 @@ def _grouped_stats(matches: list[MatchBreakdown], key_fn) -> list[GroupedStat]:
     return stats
 
 
-def get_player_profile(db: Session, player: Player) -> PlayerProfile:
-    match_players = (
+def get_player_profile(db: Session, player: Player, match_limit: int | None = None) -> PlayerProfile:
+    query = (
         db.query(MatchPlayer)
         .filter_by(player_id=player.id)
         .join(Match, Match.id == MatchPlayer.match_id)
         .options(joinedload(MatchPlayer.match))
-        .order_by(Match.played_at.nullslast(), Match.id)
-        .all()
     )
+    if match_limit is not None:
+        match_players = list(
+            reversed(
+                query.order_by(Match.played_at.desc().nullsfirst(), Match.id.desc())
+                .limit(match_limit)
+                .all()
+            )
+        )
+    else:
+        match_players = query.order_by(Match.played_at.nullslast(), Match.id).all()
 
     match_player_ids = [mp.id for mp in match_players]
     match_ids = [mp.match_id for mp in match_players]
