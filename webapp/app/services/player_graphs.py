@@ -359,19 +359,40 @@ def _round_win_diagram(win_stats: dict[str, dict[str, int]]) -> StateDiagram:
     return StateDiagram(nodes=nodes, edges=edges, view_box=view_box)
 
 
-def top_kill_order_differentials(
+def top_kill_order_state_deltas(
     diagram: StateDiagram, top_n: int = 5
-) -> tuple[list[GraphEdge], list[GraphEdge]]:
-    """Splits a kill-order diagram's edges into the top_n most positive and
-    top_n most negative man-advantage-state transitions (net kills minus
-    deaths for that specific transition), skipping untouched (weight == 0)
-    edges. Since each transition's shape fixes its sign (an opponent-count
-    drop is always a kill, an own-count drop always a death), this is
-    equivalent to the biggest-swing kills and the biggest-swing deaths.
+) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+    """Every game state in the diamond has exactly two outgoing edges: a kill
+    (opponent count drops -- e.g. 5v5 -> 5v4) and a death (own count drops --
+    e.g. 5v5 -> 4v5). Each edge's weight is already signed by construction
+    (kill-edge weights only ever accumulate +1 per kill at that state, so
+    they're always >= 0; death-edge weights only ever accumulate -1 per death,
+    so they're always <= 0) -- so delta = kill_edge.weight + death_edge.weight
+    is the true net swing AT that specific state (kills minus deaths), not a
+    single edge's own magnitude. (Subtracting would be wrong here: since
+    death_edge.weight is already negative, kill - death can never go negative,
+    which would make the "biggest swing deaths" list structurally always
+    empty.) Returns (top_n biggest positive deltas, top_n biggest negative
+    deltas) as (state_label, delta) pairs, skipping states where delta == 0
+    (no signal).
     """
-    nonzero = [e for e in diagram.edges if e.weight != 0]
-    positives = sorted((e for e in nonzero if e.weight > 0), key=lambda e: e.weight, reverse=True)[:top_n]
-    negatives = sorted((e for e in nonzero if e.weight < 0), key=lambda e: e.weight)[:top_n]
+    by_source: dict[str, dict[str, GraphEdge]] = {}
+    for edge in diagram.edges:
+        by_source.setdefault(edge.source, {})[edge.target] = edge
+
+    deltas: list[tuple[str, int]] = []
+    for state, targets in by_source.items():
+        a, b = (int(part) for part in state.split("v"))
+        kill_edge = targets.get(f"{a}v{b - 1}")
+        death_edge = targets.get(f"{a - 1}v{b}")
+        if kill_edge is None or death_edge is None:
+            continue
+        delta = kill_edge.weight + death_edge.weight
+        if delta != 0:
+            deltas.append((state, delta))
+
+    positives = sorted((d for d in deltas if d[1] > 0), key=lambda d: d[1], reverse=True)[:top_n]
+    negatives = sorted((d for d in deltas if d[1] < 0), key=lambda d: d[1])[:top_n]
     return positives, negatives
 
 

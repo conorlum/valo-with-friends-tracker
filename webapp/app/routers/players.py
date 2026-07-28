@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Player
 from app.services.map_streaks import compute_map_streaks
-from app.services.player_graphs import build_state_diagrams, top_kill_order_differentials
+from app.services.player_graphs import build_state_diagrams, top_kill_order_state_deltas
 from app.services.players import get_player_or_404, get_player_profile, list_players
 from app.templates import match_label, templates
 
@@ -32,7 +32,7 @@ def _build_profile_context(db: Session, player: Player, match_limit: int | None,
         "death_impact": [s.average_death_impact for s in profile.map_stats],
     }
     round_win_graph, kill_order_graph = build_state_diagrams(db, player, match_limit=match_limit)
-    top_kill_differentials, top_death_differentials = top_kill_order_differentials(kill_order_graph)
+    top_kill_differentials, top_death_differentials = top_kill_order_state_deltas(kill_order_graph)
     return {
         "profile": profile,
         "chart_data": chart_data,
