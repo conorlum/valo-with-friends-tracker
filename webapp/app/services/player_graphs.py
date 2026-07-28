@@ -143,7 +143,7 @@ def build_state_diagrams(
         )
     )
     if match_limit is not None:
-        query = query.order_by(Match.played_at.desc().nullsfirst()).limit(match_limit)
+        query = query.order_by(Match.played_at.desc().nullsfirst(), Match.id.desc()).limit(match_limit)
     match_players = query.all()
 
     win_stats: dict[str, dict[str, int]] = {}

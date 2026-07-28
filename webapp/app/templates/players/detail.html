@@ -102,6 +102,14 @@
     }
   });
 
+  document.body.addEventListener("htmx:responseError", handleCareerFetchError);
+  document.body.addEventListener("htmx:sendError", handleCareerFetchError);
+  function handleCareerFetchError(e) {
+    if (e.detail.elt.id !== "career-sections") return;
+    document.getElementById("career-sections").innerHTML =
+      '<p class="page-meta">Couldn\'t load career stats. Reload the page to try again.</p>';
+  }
+
   document.querySelectorAll(".scope-toggle-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".scope-toggle-btn").forEach((b) => b.classList.remove("active"));
