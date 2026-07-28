@@ -40,7 +40,6 @@
         <td>{{ s.map_name }}</td>
         <td>
           {{ s.current.gap }} match{{ "es" if s.current.gap != 1 else "" }}
-          {% if s.current.ongoing %}<span class="badge badge-score">ongoing</span>{% endif %}
         </td>
         <td>
           {% if s.record_is_current %}
@@ -48,7 +47,6 @@
           <span class="badge badge-score">record breaking</span>
           {% else %}
           {{ s.record.gap }} match{{ "es" if s.record.gap != 1 else "" }}
-          {% if s.record.ongoing %}<span class="badge badge-score">ongoing</span>{% endif %}
           <div class="stat-sub">{{ s.record.act_labels[0] }}{% if s.record.act_labels | length > 1 %} &ndash; {{ s.record.act_labels[-1] }}{% endif %}</div>
           {% endif %}
         </td>
