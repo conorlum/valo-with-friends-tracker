@@ -8,6 +8,8 @@ from app.templates import match_label, templates
 
 router = APIRouter(prefix="/players", tags=["players"])
 
+RECENT_MATCH_LIMIT = 30
+
 
 @router.get("")
 def player_list(request: Request, db: Session = Depends(get_db)):
@@ -18,7 +20,7 @@ def player_list(request: Request, db: Session = Depends(get_db)):
 @router.get("/{display_name}")
 def player_detail(request: Request, display_name: str, db: Session = Depends(get_db)):
     player = get_player_or_404(db, display_name)
-    profile = get_player_profile(db, player)
+    profile = get_player_profile(db, player, match_limit=RECENT_MATCH_LIMIT)
     chart_data = {
         "labels": [match_label(m.match) for m in profile.matches],
         "kill_impact": [m.average_kill_impact for m in profile.matches],
@@ -34,7 +36,7 @@ def player_detail(request: Request, display_name: str, db: Session = Depends(get
         "kill_impact": [s.average_kill_impact for s in profile.map_stats],
         "death_impact": [s.average_death_impact for s in profile.map_stats],
     }
-    round_win_graph, kill_order_graph = build_state_diagrams(db, player)
+    round_win_graph, kill_order_graph = build_state_diagrams(db, player, match_limit=RECENT_MATCH_LIMIT)
     top_kill_differentials, top_death_differentials = top_kill_order_differentials(kill_order_graph)
     return templates.TemplateResponse(
         request,
@@ -48,5 +50,6 @@ def player_detail(request: Request, display_name: str, db: Session = Depends(get
             "kill_order_graph": kill_order_graph,
             "top_kill_differentials": top_kill_differentials,
             "top_death_differentials": top_death_differentials,
+            "scope": "recent",
         },
     )
