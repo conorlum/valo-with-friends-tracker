@@ -73,7 +73,7 @@
       options: {
         responsive: true,
         interaction: { mode: "index", intersect: false },
-        plugins: { legend: { position: "bottom", labels: { color: "#c3c2b7", usePointStyle: true, boxWidth: 8, generateLabels: () => [ { text: "Avg Kill Impact", fillStyle: "#0ca30c", strokeStyle: "#0ca30c", pointStyle: "circle", fontColor: "#c3c2b7", color: "#c3c2b7" }, { text: "Avg Death Impact", fillStyle: "#e0554f", strokeStyle: "#e0554f", pointStyle: "circle", fontColor: "#c3c2b7", color: "#c3c2b7" } ] }, }, tooltip: { callbacks: { afterBody: (items) => `Avg Death Impact: ${Math.round(impact.death_impact[items[0].dataIndex])}` } } },
+        plugins: { legend: { position: "bottom", labels: { color: "#c3c2b7", usePointStyle: true, boxWidth: 8, generateLabels: () => [ { text: "Avg Kill Impact", fillStyle: "#0ca30c", strokeStyle: "#0ca30c", pointStyle: "circle", fontColor: "#c3c2b7", color: "#c3c2b7" }, { text: "Avg Death Impact", fillStyle: "#e0554f", strokeStyle: "#e0554f", pointStyle: "circle", fontColor: "#c3c2b7", color: "#c3c2b7" }, { text: "Overall Avg Impact", fillStyle: "#4a90e2", strokeStyle: "#4a90e2", pointStyle: "line", fontColor: "#c3c2b7", color: "#c3c2b7" } ] }, }, tooltip: { callbacks: { afterBody: (items) => `Avg Death Impact: ${Math.round(impact.death_impact[items[0].dataIndex])}` } } },
         scales: { x: { title: { display: true, text: "Match", color: "#898781" }, ticks: { color: "#898781" }, grid: { display: false } }, y: { beginAtZero: true, ticks: { color: "#898781" }, grid: { color: "#2c2c2a" } } },
       },
       plugins: [
