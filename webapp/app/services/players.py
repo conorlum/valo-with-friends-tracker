@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import ImpactScore, Match, MatchPlayer, Player, Round
+from app.models import ImpactScore, Match, MatchPlayer, Player, Round, RoundPlayerStat
 
 
 @dataclass
@@ -64,6 +64,9 @@ class MatchBreakdown:
     average_kill_impact: float
     average_death_impact: float
     win: bool | None
+    kills: int
+    deaths: int
+    assists: int
 
 
 @dataclass
@@ -173,6 +176,21 @@ def get_player_profile(db: Session, player: Player, match_limit: int | None = No
         for score in db.query(ImpactScore).filter(ImpactScore.match_player_id.in_(match_player_ids)).all():
             scores_by_match_player.setdefault(score.match_player_id, []).append(score)
 
+    kda_by_match_player: dict[int, tuple[int, int, int]] = {}
+    if match_player_ids:
+        for mp_id, k, d, a in (
+            db.query(
+                RoundPlayerStat.match_player_id,
+                func.sum(RoundPlayerStat.kills),
+                func.sum(RoundPlayerStat.deaths),
+                func.sum(RoundPlayerStat.assists),
+            )
+            .filter(RoundPlayerStat.match_player_id.in_(match_player_ids))
+            .group_by(RoundPlayerStat.match_player_id)
+            .all()
+        ):
+            kda_by_match_player[mp_id] = (k or 0, d or 0, a or 0)
+
     teammates_by_match: dict[int, list[MatchPlayer]] = {}
     if match_ids:
         all_teammates = (
@@ -210,6 +228,7 @@ def get_player_profile(db: Session, player: Player, match_limit: int | None = No
 
         match = match_player.match
         team = match_player.team.value if hasattr(match_player.team, "value") else match_player.team
+        kills, deaths, assists = kda_by_match_player.get(match_player.id, (0, 0, 0))
         matches.append(
             MatchBreakdown(
                 match=match,
@@ -219,6 +238,9 @@ def get_player_profile(db: Session, player: Player, match_limit: int | None = No
                 average_kill_impact=sum(kill_impacts) / len(kill_impacts),
                 average_death_impact=sum(death_impacts) / len(death_impacts),
                 win=_match_win(match, team),
+                kills=kills,
+                deaths=deaths,
+                assists=assists,
             )
         )
         all_impacts.extend(impacts)
@@ -257,13 +279,22 @@ def get_player_profile(db: Session, player: Player, match_limit: int | None = No
     def _top4(totals: dict[str, int]) -> list[tuple[str, int]]:
         return sorted(totals.items(), key=lambda item: item[1], reverse=True)[:4]
 
+    agent_stats = _grouped_stats(matches, lambda m: m.agent)
+    map_stats = _grouped_stats(matches, lambda m: m.match.map_name)
+    # Win rate first (undecided-only maps sink to the bottom via the -1 sentinel,
+    # since win_rate is always in [0, 1]), matches played as the tiebreak among
+    # maps with identical win rates. _grouped_stats' own default sort
+    # (matches-played-only) stays as-is for agent_stats -- this override is
+    # map_stats-specific.
+    map_stats.sort(key=lambda s: (s.win_rate if s.win_rate is not None else -1, s.matches_played), reverse=True)
+
     return PlayerProfile(
         player=player,
         overall_average_impact=overall_average,
         matches=matches,
         agent_counts=agent_counts,
-        agent_stats=_grouped_stats(matches, lambda m: m.agent),
-        map_stats=_grouped_stats(matches, lambda m: m.match.map_name),
+        agent_stats=agent_stats,
+        map_stats=map_stats,
         avg_econ_kill=_avg(total_econ_kill),
         avg_econ_death=_avg(total_econ_death),
         avg_clutch_kill=_avg(total_clutch_kill),
