@@ -257,13 +257,22 @@ def get_player_profile(db: Session, player: Player, match_limit: int | None = No
     def _top4(totals: dict[str, int]) -> list[tuple[str, int]]:
         return sorted(totals.items(), key=lambda item: item[1], reverse=True)[:4]
 
+    agent_stats = _grouped_stats(matches, lambda m: m.agent)
+    map_stats = _grouped_stats(matches, lambda m: m.match.map_name)
+    # Win rate first (undecided-only maps sink to the bottom via the -1 sentinel,
+    # since win_rate is always in [0, 1]), matches played as the tiebreak among
+    # maps with identical win rates. _grouped_stats' own default sort
+    # (matches-played-only) stays as-is for agent_stats -- this override is
+    # map_stats-specific.
+    map_stats.sort(key=lambda s: (s.win_rate if s.win_rate is not None else -1, s.matches_played), reverse=True)
+
     return PlayerProfile(
         player=player,
         overall_average_impact=overall_average,
         matches=matches,
         agent_counts=agent_counts,
-        agent_stats=_grouped_stats(matches, lambda m: m.agent),
-        map_stats=_grouped_stats(matches, lambda m: m.match.map_name),
+        agent_stats=agent_stats,
+        map_stats=map_stats,
         avg_econ_kill=_avg(total_econ_kill),
         avg_econ_death=_avg(total_econ_death),
         avg_clutch_kill=_avg(total_clutch_kill),
