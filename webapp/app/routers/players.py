@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models import Player
 from app.services.map_streaks import compute_map_streaks
 from app.services.player_graphs import build_state_diagrams, top_kill_order_differentials
 from app.services.players import get_player_or_404, get_player_profile, list_players
@@ -9,17 +10,11 @@ from app.templates import match_label, templates
 
 router = APIRouter(prefix="/players", tags=["players"])
 
-
-@router.get("")
-def player_list(request: Request, db: Session = Depends(get_db)):
-    players = list_players(db)
-    return templates.TemplateResponse(request, "players/list.html", {"players": players})
+RECENT_MATCH_LIMIT = 30
 
 
-@router.get("/{display_name}")
-def player_detail(request: Request, display_name: str, db: Session = Depends(get_db)):
-    player = get_player_or_404(db, display_name)
-    profile = get_player_profile(db, player)
+def _build_profile_context(db: Session, player: Player, match_limit: int | None, scope: str) -> dict:
+    profile = get_player_profile(db, player, match_limit=match_limit)
     chart_data = {
         "labels": [match_label(m.match) for m in profile.matches],
         "kill_impact": [m.average_kill_impact for m in profile.matches],
@@ -35,21 +30,41 @@ def player_detail(request: Request, display_name: str, db: Session = Depends(get
         "kill_impact": [s.average_kill_impact for s in profile.map_stats],
         "death_impact": [s.average_death_impact for s in profile.map_stats],
     }
-    round_win_graph, kill_order_graph = build_state_diagrams(db, player)
+    round_win_graph, kill_order_graph = build_state_diagrams(db, player, match_limit=match_limit)
     top_kill_differentials, top_death_differentials = top_kill_order_differentials(kill_order_graph)
-    map_streaks = compute_map_streaks(db, player.id)
-    return templates.TemplateResponse(
-        request,
-        "players/detail.html",
-        {
-            "profile": profile,
-            "chart_data": chart_data,
-            "highlights_chart_data": highlights_chart_data,
-            "map_chart_data": map_chart_data,
-            "round_win_graph": round_win_graph,
-            "kill_order_graph": kill_order_graph,
-            "top_kill_differentials": top_kill_differentials,
-            "top_death_differentials": top_death_differentials,
-            "map_streaks": map_streaks,
-        },
-    )
+    return {
+        "profile": profile,
+        "chart_data": chart_data,
+        "highlights_chart_data": highlights_chart_data,
+        "map_chart_data": map_chart_data,
+        "round_win_graph": round_win_graph,
+        "kill_order_graph": kill_order_graph,
+        "top_kill_differentials": top_kill_differentials,
+        "top_death_differentials": top_death_differentials,
+        "scope": scope,
+    }
+
+
+@router.get("")
+def player_list(request: Request, db: Session = Depends(get_db)):
+    players = list_players(db)
+    return templates.TemplateResponse(request, "players/list.html", {"players": players})
+
+
+@router.get("/{display_name}")
+def player_detail(request: Request, display_name: str, db: Session = Depends(get_db)):
+    player = get_player_or_404(db, display_name)
+    context = _build_profile_context(db, player, match_limit=RECENT_MATCH_LIMIT, scope="recent")
+    # Map streaks aren't scoped by match_limit (their own windowing logic already
+    # bounds itself to the current pool era) and aren't part of the recent/career
+    # toggle -- computed once here rather than in the shared context builder so the
+    # career fragment endpoint below doesn't redundantly recompute it.
+    context["map_streaks"] = compute_map_streaks(db, player.id)
+    return templates.TemplateResponse(request, "players/detail.html", context)
+
+
+@router.get("/{display_name}/career")
+def player_career_fragment(request: Request, display_name: str, db: Session = Depends(get_db)):
+    player = get_player_or_404(db, display_name)
+    context = _build_profile_context(db, player, match_limit=None, scope="career")
+    return templates.TemplateResponse(request, "players/_profile_sections.html", context)

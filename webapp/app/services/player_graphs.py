@@ -122,7 +122,9 @@ def _team_sizes(match_players: list[MatchPlayer]) -> dict[Team, int]:
     return sizes
 
 
-def build_state_diagrams(db: Session, player: Player) -> tuple[StateDiagram, StateDiagram]:
+def build_state_diagrams(
+    db: Session, player: Player, match_limit: int | None = None
+) -> tuple[StateDiagram, StateDiagram]:
     """Rebuilds playerTrends.py's round-win and kill-order diagrams from the DB.
 
     The scraper's `playersOnTeam` field (alive count on each side at the moment
@@ -131,15 +133,18 @@ def build_state_diagrams(db: Session, player: Player) -> tuple[StateDiagram, Sta
     team, to recover the man-advantage state ("<own>v<opponent>") the player
     experienced at each kill. Aggregated across every match the player appears in.
     """
-    match_players = (
+    query = (
         db.query(MatchPlayer)
         .filter_by(player_id=player.id)
+        .join(Match, Match.id == MatchPlayer.match_id)
         .options(
             selectinload(MatchPlayer.match).selectinload(Match.match_players),
             selectinload(MatchPlayer.match).selectinload(Match.rounds).selectinload(Round.kill_events),
         )
-        .all()
     )
+    if match_limit is not None:
+        query = query.order_by(Match.played_at.desc().nullsfirst(), Match.id.desc()).limit(match_limit)
+    match_players = query.all()
 
     win_stats: dict[str, dict[str, int]] = {}
     kill_order_weights: dict[tuple[str, str], int] = {}

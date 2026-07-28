@@ -2,6 +2,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import ImpactScore, Match, MatchPlayer, Player, Round
@@ -11,33 +12,17 @@ from app.models import ImpactScore, Match, MatchPlayer, Player, Round
 class PlayerListEntry:
     display_name: str
     matches_played: int
-    average_impact: float
 
 
 def list_players(db: Session) -> list[PlayerListEntry]:
     rows = (
-        db.query(Player.display_name, MatchPlayer.match_id, ImpactScore.impact)
+        db.query(Player.display_name, func.count(MatchPlayer.id))
         .join(MatchPlayer, MatchPlayer.player_id == Player.id)
-        .join(ImpactScore, ImpactScore.match_player_id == MatchPlayer.id)
+        .group_by(Player.display_name)
+        .order_by(func.count(MatchPlayer.id).desc())
         .all()
     )
-
-    impacts: dict[str, list[float]] = {}
-    match_ids: dict[str, set[int]] = {}
-    for display_name, match_id, impact in rows:
-        impacts.setdefault(display_name, []).append(impact)
-        match_ids.setdefault(display_name, set()).add(match_id)
-
-    entries = [
-        PlayerListEntry(
-            display_name=name,
-            matches_played=len(match_ids[name]),
-            average_impact=sum(values) / len(values),
-        )
-        for name, values in impacts.items()
-    ]
-    entries.sort(key=lambda e: e.average_impact, reverse=True)
-    return entries
+    return [PlayerListEntry(display_name=name, matches_played=cnt) for name, cnt in rows]
 
 
 def list_player_display_names(db: Session) -> list[str]:
@@ -162,15 +147,23 @@ def _grouped_stats(matches: list[MatchBreakdown], key_fn) -> list[GroupedStat]:
     return stats
 
 
-def get_player_profile(db: Session, player: Player) -> PlayerProfile:
-    match_players = (
+def get_player_profile(db: Session, player: Player, match_limit: int | None = None) -> PlayerProfile:
+    query = (
         db.query(MatchPlayer)
         .filter_by(player_id=player.id)
         .join(Match, Match.id == MatchPlayer.match_id)
         .options(joinedload(MatchPlayer.match))
-        .order_by(Match.played_at.nullslast(), Match.id)
-        .all()
     )
+    if match_limit is not None:
+        match_players = list(
+            reversed(
+                query.order_by(Match.played_at.desc().nullsfirst(), Match.id.desc())
+                .limit(match_limit)
+                .all()
+            )
+        )
+    else:
+        match_players = query.order_by(Match.played_at.nullslast(), Match.id).all()
 
     match_player_ids = [mp.id for mp in match_players]
     match_ids = [mp.match_id for mp in match_players]

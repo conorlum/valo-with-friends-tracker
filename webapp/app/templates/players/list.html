@@ -10,7 +10,6 @@
     <tr>
       <th>Player</th>
       <th>Matches</th>
-      <th>Avg Impact</th>
     </tr>
   </thead>
   <tbody>
@@ -18,12 +17,9 @@
     <tr class="clickable-row" onclick="window.location='/players/{{ p.display_name | urlencode }}'">
       <td><a href="/players/{{ p.display_name | urlencode }}">{{ p.display_name }}</a></td>
       <td>{{ p.matches_played }}</td>
-      <td class="{{ 'impact-positive' if p.average_impact >= 0 else 'impact-negative' }}">
-        {{ p.average_impact | round | int }}
-      </td>
     </tr>
     {% else %}
-    <tr><td colspan="3">No players yet.</td></tr>
+    <tr><td colspan="2">No players yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>
