@@ -240,7 +240,7 @@
       <tr><th>Match</th><th>Agent</th><th>KDA</th><th>Avg Impact</th></tr>
     </thead>
     <tbody>
-      {% for m in profile.matches %}
+      {% for m in profile.matches | reverse %}
       {% set icon = agent_icon_slug(m.agent) %}
       <tr>
         <td><a href="/matches/{{ m.match.external_id }}">{{ match_label(m.match) }}</a></td>
