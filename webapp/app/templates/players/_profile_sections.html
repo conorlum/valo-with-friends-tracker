@@ -132,13 +132,13 @@
       <h3>Biggest swing kills</h3>
       <table>
         <thead>
-          <tr><th>Transition</th><th>Net</th></tr>
+          <tr><th>State</th><th>Delta</th></tr>
         </thead>
         <tbody>
-          {% for edge in top_kill_differentials %}
+          {% for state, delta in top_kill_differentials %}
           <tr>
-            <td>{{ edge.source }} &rarr; {{ edge.target }}</td>
-            <td class="impact-positive">+{{ edge.weight }}</td>
+            <td>{{ state }}</td>
+            <td class="impact-positive">+{{ delta }}</td>
           </tr>
           {% else %}
           <tr><td colspan="2">No data</td></tr>
@@ -150,13 +150,13 @@
       <h3>Biggest swing deaths</h3>
       <table>
         <thead>
-          <tr><th>Transition</th><th>Net</th></tr>
+          <tr><th>State</th><th>Delta</th></tr>
         </thead>
         <tbody>
-          {% for edge in top_death_differentials %}
+          {% for state, delta in top_death_differentials %}
           <tr>
-            <td>{{ edge.source }} &rarr; {{ edge.target }}</td>
-            <td class="impact-negative">{{ edge.weight }}</td>
+            <td>{{ state }}</td>
+            <td class="impact-negative">{{ delta }}</td>
           </tr>
           {% else %}
           <tr><td colspan="2">No data</td></tr>
@@ -237,7 +237,7 @@
   <h2>Matches</h2>
   <table>
     <thead>
-      <tr><th>Match</th><th>Agent</th><th>Avg Impact</th></tr>
+      <tr><th>Match</th><th>Agent</th><th>KDA</th><th>Avg Impact</th></tr>
     </thead>
     <tbody>
       {% for m in profile.matches %}
@@ -251,6 +251,7 @@
           {{ m.agent }}
           {% endif %}
         </td>
+        <td>{{ m.kills }}/{{ m.deaths }}/{{ m.assists }}</td>
         <td class="{{ 'impact-positive' if m.average_impact >= 0 else 'impact-negative' }}">
           {{ m.average_impact | round | int }}
         </td>
