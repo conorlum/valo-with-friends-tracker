@@ -5,7 +5,115 @@
 {% block content %}
 <h1>{{ profile.player.display_name }}</h1>
 
+<div class="scope-toggle">
+  <button type="button" class="scope-toggle-btn active" data-scope="recent">Recent 30</button>
+  <button type="button" class="scope-toggle-btn" data-scope="career">Career</button>
+</div>
+
 <div id="recent-sections">
   {% include "players/_profile_sections.html" %}
 </div>
+
+<div id="career-sections" style="display:none;"
+     hx-get="/players/{{ profile.player.display_name | urlencode }}/career"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+  <p class="page-meta htmx-indicator">Loading career stats&hellip;</p>
+</div>
+
+<script>
+  function renderProfileCharts(scope) {
+    const dataEl = document.getElementById("chart-data-" + scope);
+    if (!dataEl) return;
+    const { impact, highlights, map } = JSON.parse(dataEl.textContent);
+
+    new Chart(document.getElementById("player-impact-chart-" + scope), {
+      type: "bar",
+      data: { labels: impact.labels, datasets: [{ label: "Avg Kill Impact", data: impact.kill_impact, backgroundColor: "#0ca30c", borderRadius: 3, borderSkipped: false, barPercentage: 0.7, categoryPercentage: 0.6 }] },
+      options: {
+        responsive: true,
+        interaction: { mode: "index", intersect: false },
+        plugins: { legend: { position: "bottom", labels: { color: "#c3c2b7", usePointStyle: true, boxWidth: 8, generateLabels: () => [ { text: "Avg Kill Impact", fillStyle: "#0ca30c", strokeStyle: "#0ca30c", pointStyle: "circle", fontColor: "#c3c2b7", color: "#c3c2b7" }, { text: "Avg Death Impact", fillStyle: "#e0554f", strokeStyle: "#e0554f", pointStyle: "circle", fontColor: "#c3c2b7", color: "#c3c2b7" } ] }, }, tooltip: { callbacks: { afterBody: (items) => `Avg Death Impact: ${Math.round(impact.death_impact[items[0].dataIndex])}` } } },
+        scales: { x: { title: { display: true, text: "Match", color: "#898781" }, ticks: { color: "#898781" }, grid: { display: false } }, y: { beginAtZero: true, ticks: { color: "#898781" }, grid: { color: "#2c2c2a" } } },
+      },
+      plugins: [{
+        id: "deathOverlay",
+        afterDatasetsDraw(chart) {
+          const { ctx } = chart;
+          const meta = chart.getDatasetMeta(0);
+          const yScale = chart.scales.y;
+          const zeroY = yScale.getPixelForValue(0);
+          ctx.save();
+          ctx.fillStyle = "#e0554f";
+          meta.data.forEach((bar, i) => {
+            const value = impact.death_impact[i];
+            if (value == null) return;
+            const top = yScale.getPixelForValue(value);
+            const left = bar.x - bar.width / 2;
+            const height = zeroY - top;
+            ctx.beginPath();
+            ctx.roundRect(left, top, bar.width, height, 3);
+            ctx.fill();
+          });
+          ctx.restore();
+        },
+      }],
+    });
+
+    new Chart(document.getElementById("player-highlights-chart-" + scope), {
+      type: "bar",
+      data: { labels: highlights.labels, datasets: [ { label: "Kill Impact", data: highlights.kill, backgroundColor: "#0ca30c", borderRadius: 0 }, { label: "Death Impact", data: highlights.death, backgroundColor: "#e0554f", borderRadius: 0 } ] },
+      options: { responsive: true, maintainAspectRatio: false, categoryPercentage: 0.6, barPercentage: 1.0, plugins: { legend: { position: "bottom", labels: { color: "#c3c2b7", usePointStyle: true, boxWidth: 8 } } }, scales: { x: { ticks: { color: "#898781" }, grid: { display: false } }, y: { beginAtZero: true, ticks: { color: "#898781" }, grid: { color: "#2c2c2a" } } } },
+    });
+
+    const radarCanvas = document.getElementById("player-map-radar-chart-" + scope);
+    if (radarCanvas && map.labels.length >= 3) {
+      new Chart(radarCanvas, {
+        type: "radar",
+        data: { labels: map.labels, datasets: [ { label: "Avg Kill Impact", data: map.kill_impact, borderColor: "#0ca30c", backgroundColor: "rgba(12, 163, 12, 0.25)", pointBackgroundColor: "#0ca30c", borderWidth: 2 }, { label: "Avg Death Impact", data: map.death_impact, borderColor: "#e0554f", backgroundColor: "rgba(224, 85, 79, 0.25)", pointBackgroundColor: "#e0554f", borderWidth: 2 } ] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom", labels: { color: "#c3c2b7", usePointStyle: true, boxWidth: 8 } } }, scales: { r: { beginAtZero: true, angleLines: { color: "#2c2c2a" }, grid: { color: "#2c2c2a" }, pointLabels: { color: "#c3c2b7", font: { size: 12 } }, ticks: { color: "#898781", backdropColor: "transparent" } } } },
+      });
+    }
+  }
+
+  renderProfileCharts("recent");
+
+  let careerChartsRendered = false;
+  function maybeRenderCareerCharts() {
+    if (careerChartsRendered) return;
+    if (!document.getElementById("chart-data-career")) return; // career fetch hasn't landed yet
+    renderProfileCharts("career");
+    careerChartsRendered = true;
+  }
+
+  document.body.addEventListener("htmx:afterSwap", (e) => {
+    if (e.detail.target.id !== "career-sections") return;
+    // Only construct the career charts here if the section is already visible (user
+    // switched to Career and is waiting on the spinner) -- constructing Chart.js
+    // canvases while their container is display:none gives them a broken 0-width
+    // initial layout that does NOT reliably self-correct later (confirmed by hand
+    // in a real browser: the "Kill impact vs death impact by match" bar chart --
+    // 136 categories, no explicit container width -- rendered as a single collapsed
+    // data point and stayed that way indefinitely after toggling to Career, while
+    // the other two charts happened to survive it). If the section is still hidden
+    // at this point, defer to the toggle click handler below instead.
+    if (document.getElementById("career-sections").style.display !== "none") {
+      maybeRenderCareerCharts();
+    }
+  });
+
+  document.querySelectorAll(".scope-toggle-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".scope-toggle-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("recent-sections").style.display = btn.dataset.scope === "recent" ? "" : "none";
+      document.getElementById("career-sections").style.display = btn.dataset.scope === "career" ? "" : "none";
+      // Construct the career charts here (container is now visible, correct sizing)
+      // if the background fetch already landed and they haven't been built yet.
+      // No-ops harmlessly if the fetch hasn't landed (chart-data-career doesn't
+      // exist yet) or if they were already built on a previous toggle.
+      if (btn.dataset.scope === "career") maybeRenderCareerCharts();
+    });
+  });
+</script>
 {% endblock %}

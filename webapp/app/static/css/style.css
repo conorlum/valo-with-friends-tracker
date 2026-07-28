@@ -789,3 +789,17 @@ footer {
   color: var(--ink-muted);
   font-size: 0.8rem;
 }
+
+.htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
+.htmx-request.htmx-indicator, .htmx-request .htmx-indicator { opacity: 1; }
+
+.scope-toggle { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+.scope-toggle-btn {
+  padding: 0.4rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--gridline);
+  background: transparent;
+  color: var(--ink-secondary);
+  cursor: pointer;
+}
+.scope-toggle-btn.active { background: var(--good); color: #ffffff; border-color: var(--good); }
