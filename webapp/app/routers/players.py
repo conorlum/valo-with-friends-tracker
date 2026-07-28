@@ -19,6 +19,7 @@ def _build_profile_context(db: Session, player: Player, match_limit: int | None,
         "labels": [match_label(m.match) for m in profile.matches],
         "kill_impact": [m.average_kill_impact for m in profile.matches],
         "death_impact": [m.average_death_impact for m in profile.matches],
+        "avg_impact": profile.overall_average_impact,
     }
     highlights_chart_data = {
         "labels": ["Econ", "Clutch / High-Impact", "Post-Plant"],
