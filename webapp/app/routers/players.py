@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Player
+from app.services.map_streaks import compute_map_streaks
 from app.services.player_graphs import build_state_diagrams, top_kill_order_differentials
 from app.services.players import get_player_or_404, get_player_profile, list_players
 from app.templates import match_label, templates
@@ -54,6 +55,11 @@ def player_list(request: Request, db: Session = Depends(get_db)):
 def player_detail(request: Request, display_name: str, db: Session = Depends(get_db)):
     player = get_player_or_404(db, display_name)
     context = _build_profile_context(db, player, match_limit=RECENT_MATCH_LIMIT, scope="recent")
+    # Map streaks aren't scoped by match_limit (their own windowing logic already
+    # bounds itself to the current pool era) and aren't part of the recent/career
+    # toggle -- computed once here rather than in the shared context builder so the
+    # career fragment endpoint below doesn't redundantly recompute it.
+    context["map_streaks"] = compute_map_streaks(db, player.id)
     return templates.TemplateResponse(request, "players/detail.html", context)
 
 
