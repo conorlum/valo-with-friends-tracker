@@ -7,8 +7,8 @@ Postgres. This only ever ADDS matches Neon doesn't already have; it is
 never a destructive replace (contrast with push_dump_to_render.ps1, which
 drops and replaces everything).
 
-Requires webapp/.env.neon to exist (gitignored, never committed) with one
-line:
+Requires webapp/.env.neon to exist (tracked in git on this machine's copy
+of the repo) with one line:
     DATABASE_URL=<your Neon connection string>
 
 Also launches the dedicated tracker.gg Chrome profile
