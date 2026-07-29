@@ -15,10 +15,11 @@ RECENT_MATCH_LIMIT = 30
 
 def _build_profile_context(db: Session, player: Player, match_limit: int | None, scope: str) -> dict:
     profile = get_player_profile(db, player, match_limit=match_limit)
+    recent_first_matches = list(reversed(profile.matches))
     chart_data = {
-        "labels": [match_label(m.match) for m in profile.matches],
-        "kill_impact": [m.average_kill_impact for m in profile.matches],
-        "death_impact": [m.average_death_impact for m in profile.matches],
+        "labels": [match_label(m.match) for m in recent_first_matches],
+        "kill_impact": [m.average_kill_impact for m in recent_first_matches],
+        "death_impact": [m.average_death_impact for m in recent_first_matches],
         "avg_impact": profile.overall_average_impact,
     }
     highlights_chart_data = {
