@@ -1,10 +1,16 @@
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 from app.db import SessionLocal
 from app.services.auth import get_current_player
+
+# Fixed display timezone -- the server (Render) runs in UTC, so relying on
+# the OS's local timezone (as `datetime.astimezone()` with no args does)
+# shows UTC instead of the user's actual timezone once deployed.
+DISPLAY_TZ = ZoneInfo("America/Los_Angeles")
 
 
 def _inject_current_player(request: Request) -> dict:
@@ -44,7 +50,7 @@ def match_label(match) -> str:
     played = match.played_at
     if not played:
         return name
-    played = played.astimezone()
+    played = played.astimezone(DISPLAY_TZ)
     date_str = played.strftime("%m/%d/%y")
     hour = played.strftime("%I").lstrip("0") or "12"
     time_str = f"{hour}:{played.strftime('%M %p')}"
@@ -55,12 +61,10 @@ templates.env.globals["match_label"] = match_label
 
 
 def local_strftime(dt, fmt: str) -> str:
-    """Formats a tz-aware datetime in the local system timezone -- stored
-    timestamps are UTC, and this app runs local-only, so "local" is
-    unambiguous."""
+    """Formats a tz-aware datetime in DISPLAY_TZ -- stored timestamps are UTC."""
     if dt is None:
         return ""
-    return dt.astimezone().strftime(fmt)
+    return dt.astimezone(DISPLAY_TZ).strftime(fmt)
 
 
 templates.env.filters["local_strftime"] = local_strftime
