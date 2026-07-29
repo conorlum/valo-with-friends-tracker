@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: donttellriottracker
+    name: valowithfriendstracker
     runtime: python
     plan: free
     rootDir: webapp

@@ -1,4 +1,4 @@
-# Deploying to Render — DontTellRiotTracker.com
+# Deploying to Render — ValoWithFriendsTracker.com
 
 This deploys `webapp/` as its own site, separate from the public repo's future
 Riot-application domain. Deliberately zero-auth (anyone with the URL can pick
@@ -20,7 +20,7 @@ loss).
    you — it'll look like `postgresql://user:pass@ep-xxx.neon.tech/dbname?sslmode=require`.
 2. **Render**: in the dashboard, **New → Blueprint**, connect the
    `valomaths-private` GitHub repo. Render auto-detects `render.yaml` at the
-   repo root. This creates the web service (`donttellriottracker`) — there's
+   repo root. This creates the web service (`valowithfriendstracker`) — there's
    no `databases:` block anymore, so Render won't try to provision its own
    Postgres.
 3. On the web service's **Environment** tab, set `DATABASE_URL` to the Neon
@@ -38,7 +38,7 @@ loss).
 6. Verify: `https://<render-service>.onrender.com/health` should return
    `{"status": "ok"}`. Log in as a seeded player and spot-check a sessions page.
 7. Custom domain: web service → **Settings → Custom Domains** → add
-   `DontTellRiotTracker.com` (and `www.DontTellRiotTracker.com`). Render will
+   `ValoWithFriendsTracker.com` (and `www.ValoWithFriendsTracker.com`). Render will
    show the DNS records to add (typically an ALIAS/ANAME or A record for the
    apex, CNAME for `www`) — add them at wherever the domain is registered/DNS
    is managed. Render auto-provisions a TLS cert once DNS resolves; this can

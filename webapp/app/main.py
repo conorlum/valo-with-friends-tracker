@@ -14,7 +14,7 @@ from app.routers import auth, friends, map_prediction, matches, players, session
 from app.services.auth import get_current_player
 from app.templates import templates
 
-app = FastAPI(title="ValoMaths")
+app = FastAPI(title="ValoWithFriendsTracker")
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.session_secret,

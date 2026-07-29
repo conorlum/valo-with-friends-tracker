@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## This is the private sister-repo
 
-This repo (`valomaths-private`) is a **private**, personal-use-only fork of the public `ValorantIGLTutor`/valomaths repo. It exists because the public repo is being groomed for Riot API production access (it serves `/riot.txt` for Riot's domain-verification check) and shouldn't also display scraped third-party (tracker.gg) data.
+This repo is a personal-use fork of `ValorantIGLTutor`/valomaths that adds a tracker.gg-based data source for friend-group match stats. It's kept separate from the public repo because that one is being groomed for Riot API production access (it serves `/riot.txt` for Riot's domain-verification check) and shouldn't also display scraped third-party (tracker.gg) data.
 
 - `git remote -v` here has `origin` = this private GitHub repo, and `public` = the original `ValorantIGLTutor` repo. Pull new public-site features in with `git fetch public && git merge public/main`.
 - Runs **local-only** — no cloud deployment. Keep private-only changes additive (new files) rather than editing shared files, so future merges from `public` stay clean.
 - **Docker Compose gotcha**: both this repo's `webapp/` folder and the original repo's `webapp/` folder are literally both named `webapp`, so Docker Compose's default project name (derived from the folder name) collides between the two repos — running plain `docker compose up -d` here can recreate/repoint the *other* repo's Postgres container. Always bring this repo's Postgres up with an explicit project name: `docker compose -p valomaths-private up -d`. It's mapped to host port **5433** (not 5432, which the original repo's Postgres uses) — see `.env`.
 - `app/adapters/trackergg_browserstate_source.py` + `scripts/ingest_trackergg_player.py` — the tracker.gg ingestion pipeline (see below). Not present in the public repo.
+- Repo name history: this was previously named `valomaths-private`; some internal paths (the Docker Compose project name, local Postgres db name) still use `valomaths`/`valomaths-private` for that reason and don't need to be changed.
 
 ## What this is
 
@@ -45,17 +46,17 @@ docker compose -p valomaths-private up -d            # start local Postgres on p
 
 A `.venv` with `requirements.txt` installed already exists in `webapp/` (includes `playwright`, used by the tracker.gg pipeline below). `.env` already points `DATABASE_URL` at port 5433.
 
-## tracker.gg ingestion pipeline (private-only)
+## tracker.gg ingestion pipeline
 
-tracker.gg has no usable public API for Valorant match data, so this pulls data the same way a human browsing the site would: a dedicated Chrome profile with remote debugging enabled, attached to via Playwright's CDP connection. No independent/autonomous HTTP scraping, no fingerprint spoofing.
+tracker.gg has no public API for Valorant match data, so this reads match data the same way a browser session naturally loads it: a dedicated Chrome profile with remote debugging enabled, attached to via Playwright's CDP connection, browsing the public match-history and match-detail pages.
 
 ```
 webapp\scripts\launch_trackergg_chrome.ps1                          # one-time per session: opens a dedicated Chrome profile with --remote-debugging-port=9222
 .\.venv\Scripts\python.exe scripts\ingest_trackergg_player.py "RiotName#TAG" --count 5
 ```
 
-- `scripts/ingest_trackergg_player.py` — given a Riot ID, discovers their N most recent matches via their public tracker.gg match-history page, skips any whose tracker.gg match ID (`matches.external_id`) is already in the DB, and ingests the rest with human-paced delays (5-12s) between matches.
-- `app/adapters/trackergg_browserstate_source.py` — maps tracker.gg's own internal match-detail API response (`api.tracker.gg/api/v2/valorant/standard/matches/<id>`, observed via the attached browser's network traffic — never called directly) into the same schema `demo_match_source.py` populates. Also computes `ImpactScore` rows via `app/scoring/impact.py`'s existing `compute_impact_for_match`, which `demo_match_source.py`'s own callers don't always do. Its `ingest_recent_matches(db, page, riot_id, count)` is the shared discover→dedup→ingest→score loop used by both `ingest_trackergg_player.py` and `scripts/refresh_tracked_players.py` below.
+- `scripts/ingest_trackergg_player.py` — given a Riot ID, discovers their N most recent matches via their public tracker.gg match-history page, skips any whose tracker.gg match ID (`matches.external_id`) is already in the DB, and ingests the rest with a 5-12s delay between matches to keep request pacing reasonable.
+- `app/adapters/trackergg_browserstate_source.py` — maps tracker.gg's own internal match-detail API response (`api.tracker.gg/api/v2/valorant/standard/matches/<id>`, read from the attached browser's network traffic as the user's own session loads match pages) into the same schema `demo_match_source.py` populates. Also computes `ImpactScore` rows via `app/scoring/impact.py`'s existing `compute_impact_for_match`, which `demo_match_source.py`'s own callers don't always do. Its `ingest_recent_matches(db, page, riot_id, count)` is the shared discover→dedup→ingest→score loop used by both `ingest_trackergg_player.py` and `scripts/refresh_tracked_players.py` below.
 - Works for any player's Riot ID, not just your own — tracker.gg profile/match pages are public, no login required.
 - `scripts/tracked_players.json` + `scripts/refresh_tracked_players.py` — a fixed roster of friends' Riot IDs (plain JSON list) the user actually cares about, and a one-command batch refresh that walks the whole roster over a single Chrome/CDP connection, pulling each person's `--count` (default 20) most recent matches. One player's private profile or a fetch error is logged and skipped rather than aborting the batch. Run it the same way as the single-player script, just without a Riot ID argument: `.\.venv\Scripts\python.exe scripts\refresh_tracked_players.py`.
 
