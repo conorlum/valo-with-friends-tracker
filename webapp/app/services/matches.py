@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerStat
+from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD
 from app.services.friends import list_friend_ids
 from app.services.shoutouts import PlayerShoutout, assign_shoutouts
@@ -71,6 +72,7 @@ class PlayerSummary:
     average_impact: float
     average_kill_impact: float
     average_death_impact: float
+    average_round_win_impact: float
     impact_by_round: dict[int, float]
     kill_impact_by_round: dict[int, float]
     death_impact_by_round: dict[int, float]
@@ -142,6 +144,7 @@ def get_match_summary(db: Session, match: Match) -> MatchSummary:
                 average_impact=0.0,
                 average_kill_impact=0.0,
                 average_death_impact=0.0,
+                average_round_win_impact=0.0,
                 impact_by_round={},
                 kill_impact_by_round={},
                 death_impact_by_round={},
@@ -177,6 +180,11 @@ def get_match_summary(db: Session, match: Match) -> MatchSummary:
             if mp_id in by_player
         }
 
+    round_outcomes = {
+        r.round_number: r.outcome
+        for r in db.query(Round).filter_by(match_id=match.id).all()
+    }
+
     for summary in by_player.values():
         values = summary.impact_by_round.values()
         summary.average_impact = sum(values) / len(values) if values else 0.0
@@ -185,11 +193,19 @@ def get_match_summary(db: Session, match: Match) -> MatchSummary:
         death_values = summary.death_impact_by_round.values()
         summary.average_death_impact = sum(death_values) / len(death_values) if death_values else 0.0
 
+        # Only counts a round's kill_impact toward the player if their team actually won
+        # that round -- death_impact still counts regardless. Surfaces players/teams whose
+        # kills came in rounds that mattered, rather than padding stats in rounds they lost.
+        round_win_impact_values = [
+            (summary.kill_impact_by_round[rn] if _winner_side(round_outcomes.get(rn)) == summary.team else 0.0)
+            - summary.death_impact_by_round[rn]
+            for rn in summary.impact_by_round
+        ]
+        summary.average_round_win_impact = (
+            sum(round_win_impact_values) / len(round_win_impact_values) if round_win_impact_values else 0.0
+        )
+
     players = sorted(by_player.values(), key=lambda p: p.average_impact, reverse=True)
-    round_outcomes = {
-        r.round_number: r.outcome
-        for r in db.query(Round).filter_by(match_id=match.id).all()
-    }
     sorted_rounds = sorted(round_numbers)
 
     team_impact_by_round: dict[str, dict[int, float]] = {}
@@ -431,6 +447,38 @@ def get_match_shoutouts(
     ):
         late_kill_counts[killer_mp_id] = late_kill_counts.get(killer_mp_id, 0) + 1
 
+    agent_by_mp: dict[int, str] = {mp.id: mp.agent for mp in match_players}
+    round_outcomes: dict[int, str] = {r.round_number: r.outcome for r in rounds}
+    planted_by_round: dict[int, bool] = {r.round_number: r.planted for r in rounds}
+    stats_by_round: dict[int, dict[int, RoundStat]] = {}
+    for match_player_id, round_number, kills, deaths, loadout, remaining in (
+        db.query(
+            RoundPlayerStat.match_player_id,
+            Round.round_number,
+            RoundPlayerStat.kills,
+            RoundPlayerStat.deaths,
+            RoundPlayerStat.loadout,
+            RoundPlayerStat.remaining,
+        )
+        .join(Round, Round.id == RoundPlayerStat.round_id)
+        .filter(Round.match_id == match.id)
+        .all()
+    ):
+        stats_by_round.setdefault(round_number, {})[match_player_id] = RoundStat(
+            kills=kills, deaths=deaths, loadout=loadout, remaining=remaining
+        )
+    credit_events = compute_round_credit_events(
+        round_outcomes, planted_by_round, stats_by_round, agent_by_mp, team_of_mp
+    )
+    sugar_daddy_credits: dict[int, int] = {}
+    scavenger_credits: dict[int, int] = {}
+    for round_events in credit_events.values():
+        for match_player_id, (sugar_daddy, scavenger) in round_events.items():
+            if sugar_daddy:
+                sugar_daddy_credits[match_player_id] = sugar_daddy_credits.get(match_player_id, 0) + sugar_daddy
+            if scavenger:
+                scavenger_credits[match_player_id] = scavenger_credits.get(match_player_id, 0) + scavenger
+
     raw_dicts: dict[str, dict[int, int]] = {
         "entry_kill_counts": entry_kill_counts,
         "clutch_counts": clutch_counts,
@@ -443,6 +491,8 @@ def get_match_shoutouts(
         "late_kill_counts": late_kill_counts,
         "op_kill_counts": op_kill_counts,
         "eco_kill_counts": eco_kill_counts,
+        "sugar_daddy_credits": sugar_daddy_credits,
+        "scavenger_credits": scavenger_credits,
         "traded_teammate_totals": traded_teammate_totals,
         "traded_by_teammate_totals": traded_by_teammate_totals,
         "mvp_counts": mvp_counts,

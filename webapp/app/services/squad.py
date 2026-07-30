@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import ImpactScore, Match, MatchPlayer, Player, Round, RoundPlayerStat
+from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.services.friends import list_friend_ids
 from app.services.shoutouts import PlayerShoutout, assign_shoutouts
 
@@ -19,6 +20,8 @@ SQUAD_SHOUTOUT_CATEGORIES: list[tuple[str, str, str]] = [
     ("traded_together", "Trade Partner", "traded for each other {v} time{s}"),
     ("rounds_together", "Ride or Die", "{v} round{s} played together"),
     ("kill_differential_together", "Lethal Combo", "outkilled opponents by {v} combined, together"),
+    ("sugar_daddy_credits_together", "Sugar Daddy", "gave away {v} credits worth of guns together"),
+    ("scavenger_credits_together", "Scavenger", "salvaged {v} credits worth of gear together"),
 ]
 
 
@@ -43,7 +46,10 @@ class SharedRound:
     version this mirrors). `clutch` is True if either the viewer or this
     friend resolved a clutch (1-or-2-alive win) this round while teammates.
     `traded` is the combined count of the viewer trading for the friend plus
-    the friend trading for the viewer this round.
+    the friend trading for the viewer this round. `sugar_daddy_credits`/
+    `scavenger_credits` are the viewer's + this friend's own combined
+    Sugar Daddy/Scavenger credit values for this round -- see
+    app.scoring.credit_events for the per-round math.
     """
 
     match_id: int
@@ -56,6 +62,8 @@ class SharedRound:
     viewer_deaths: int
     friend_kills: int
     friend_deaths: int
+    sugar_daddy_credits: int
+    scavenger_credits: int
 
 
 @dataclass
@@ -70,6 +78,8 @@ class PairStats:
     clutches_together: int
     traded_together: int
     kill_differential_together: int
+    sugar_daddy_credits_together: int
+    scavenger_credits_together: int
 
 
 @dataclass
@@ -98,6 +108,8 @@ def _aggregate_pair(
     kills = sum(r.viewer_kills + r.friend_kills for r in shared_rounds)
     deaths = sum(r.viewer_deaths + r.friend_deaths for r in shared_rounds)
     top_agent = agent_counts.most_common(1)[0][0] if agent_counts else ""
+    sugar_daddy_credits = sum(r.sugar_daddy_credits for r in shared_rounds)
+    scavenger_credits = sum(r.scavenger_credits for r in shared_rounds)
 
     return PairStats(
         friend_player_id=friend_player_id,
@@ -110,6 +122,8 @@ def _aggregate_pair(
         clutches_together=clutches,
         traded_together=traded,
         kill_differential_together=kills - deaths,
+        sugar_daddy_credits_together=sugar_daddy_credits,
+        scavenger_credits_together=scavenger_credits,
     )
 
 
@@ -146,6 +160,8 @@ def build_squad_overview(
             "traded_together": {p.friend_player_id: p.traded_together for p in eligible},
             "rounds_together": {p.friend_player_id: p.rounds_together for p in eligible},
             "kill_differential_together": {p.friend_player_id: p.kill_differential_together for p in eligible},
+            "sugar_daddy_credits_together": {p.friend_player_id: p.sugar_daddy_credits_together for p in eligible},
+            "scavenger_credits_together": {p.friend_player_id: p.scavenger_credits_together for p in eligible},
         }
         shoutouts = assign_shoutouts(roster, raw_dicts, {}, categories=SQUAD_SHOUTOUT_CATEGORIES)
 
@@ -292,6 +308,19 @@ def get_squad_overview(db: Session, viewer_player_id: int, match_limit: int | No
             (stat.match_player_id, round_number): stat for stat, round_number in kda_rows
         }
 
+        agent_by_mp = {viewer_mp.id: viewer_mp.agent, **{mp.id: mp.agent for mp in friend_mps}}
+        team_by_mp = {mp_id: viewer_team for mp_id in own_mp_ids}
+        round_outcomes = {rn: r.outcome for rn, r in rounds_by_number.items()}
+        planted_by_round = {rn: r.planted for rn, r in rounds_by_number.items()}
+        stats_by_round: dict[int, dict[int, RoundStat]] = {}
+        for (mp_id, round_number), stat in kda_by_mp_and_round.items():
+            stats_by_round.setdefault(round_number, {})[mp_id] = RoundStat(
+                kills=stat.kills, deaths=stat.deaths, loadout=stat.loadout, remaining=stat.remaining
+            )
+        credit_events = compute_round_credit_events(
+            round_outcomes, planted_by_round, stats_by_round, agent_by_mp, team_by_mp
+        )
+
         for friend_mp in friend_mps:
             for round_number, round_row in rounds_by_number.items():
                 viewer_score = impact_by_mp_and_round.get((viewer_mp.id, round_number))
@@ -314,6 +343,10 @@ def get_squad_overview(db: Session, viewer_player_id: int, match_limit: int | No
                 viewer_kda = kda_by_mp_and_round.get((viewer_mp.id, round_number))
                 friend_kda = kda_by_mp_and_round.get((friend_mp.id, round_number))
 
+                round_events = credit_events.get(round_number, {})
+                viewer_sugar_daddy, viewer_scavenger = round_events.get(viewer_mp.id, (0, 0))
+                friend_sugar_daddy, friend_scavenger = round_events.get(friend_mp.id, (0, 0))
+
                 pair_shared_rounds.setdefault(friend_mp.player_id, []).append(
                     SharedRound(
                         match_id=match_id,
@@ -326,6 +359,8 @@ def get_squad_overview(db: Session, viewer_player_id: int, match_limit: int | No
                         viewer_deaths=viewer_kda.deaths if viewer_kda else 0,
                         friend_kills=friend_kda.kills if friend_kda else 0,
                         friend_deaths=friend_kda.deaths if friend_kda else 0,
+                        sugar_daddy_credits=viewer_sugar_daddy + friend_sugar_daddy,
+                        scavenger_credits=viewer_scavenger + friend_scavenger,
                     )
                 )
             friend_agent_counts.setdefault(friend_mp.player_id, Counter())[friend_mp.agent] += 1

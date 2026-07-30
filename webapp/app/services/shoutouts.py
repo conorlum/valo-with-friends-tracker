@@ -36,6 +36,8 @@ SHOUTOUT_CATEGORIES: list[tuple[str, str, str]] = [
     ("late_kill_counts", "Closer", "{v} kill{s} after the 1-minute mark"),
     ("op_kill_counts", "Worth The Credits", "{v} kill{s} with the Operator"),
     ("eco_kill_counts", "Does More With Less", "{v} kill{s} on an eco/force buy"),
+    ("sugar_daddy_credits", "Sugar Daddy", "gave away {v} credits worth of guns"),
+    ("scavenger_credits", "Scavenger", "salvaged {v} credits worth of gear"),
     ("traded_teammate_totals", "Avenger", "traded for a teammate {v} time{s}"),
     ("traded_by_teammate_totals", "Never Alone", "avenged by a teammate {v} time{s}"),
     ("mvp_counts", "Round MVP", "highest-Impact player in {v} round{s}"),

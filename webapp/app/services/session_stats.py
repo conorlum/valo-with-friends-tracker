@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Player, Round, RoundPlayerStat
+from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD, econ_tier_name
 from app.services.friends import list_friend_ids
 from app.services.player_graphs import StateDiagram, build_session_round_win_diagram
@@ -25,6 +26,8 @@ class LeaderboardEntry:
     player_id: int
     display_name: str
     average_impact: float
+    average_round_win_impact: float
+    average_death_impact: float
     rounds_played: int
     rounds_won: int = 0
     rounds_lost: int = 0
@@ -170,20 +173,37 @@ def _build_leaderboard(
     team_by_match: dict[int, str],
 ) -> list[LeaderboardEntry]:
     rows = (
-        db.query(ImpactScore.match_player_id, ImpactScore.impact, Round.match_id, Round.outcome)
+        db.query(
+            ImpactScore.match_player_id,
+            ImpactScore.impact,
+            ImpactScore.kill_impact,
+            ImpactScore.death_impact,
+            Round.match_id,
+            Round.outcome,
+        )
         .join(Round, Round.id == ImpactScore.round_id)
         .filter(ImpactScore.match_player_id.in_(our_mp_to_player.keys()))
         .all()
     )
     impacts: dict[int, list[float]] = {}
+    death_impacts: dict[int, list[float]] = {}
+    round_win_impacts: dict[int, list[float]] = {}
     wins: dict[int, int] = {}
     losses: dict[int, int] = {}
-    for match_player_id, impact, match_id, outcome in rows:
+    for match_player_id, impact, kill_impact, death_impact, match_id, outcome in rows:
         player_id = our_mp_to_player[match_player_id]
         impacts.setdefault(player_id, []).append(impact)
+        death_impacts.setdefault(player_id, []).append(death_impact)
 
         our_side = team_by_match.get(match_id)
         winner = _winner_side(outcome)
+        # Only counts this round's kill_impact if our side actually won it --
+        # death_impact still counts regardless. See app.services.matches's
+        # average_round_win_impact for the match-page counterpart.
+        round_win_impacts.setdefault(player_id, []).append(
+            (kill_impact if our_side is not None and winner == our_side else 0.0) - death_impact
+        )
+
         if our_side is None or winner is None:
             continue
         if winner == our_side:
@@ -196,6 +216,8 @@ def _build_leaderboard(
             player_id=player_id,
             display_name=players_by_id.get(player_id, "?"),
             average_impact=sum(values) / len(values),
+            average_round_win_impact=sum(round_win_impacts[player_id]) / len(round_win_impacts[player_id]),
+            average_death_impact=sum(death_impacts[player_id]) / len(death_impacts[player_id]),
             rounds_played=len(values),
             rounds_won=wins.get(player_id, 0),
             rounds_lost=losses.get(player_id, 0),
@@ -293,6 +315,74 @@ class _RawSessionCounts:
     post_plant_kill_counts: dict[int, int]
     entry_kill_counts: dict[int, int]
     late_kill_counts: dict[int, int]
+    sugar_daddy_credits: dict[int, int]
+    scavenger_credits: dict[int, int]
+
+
+def _build_credit_event_stats(
+    db: Session,
+    session: SessionSummary,
+    our_mp_to_player: dict[int, int],
+) -> tuple[dict[int, int], dict[int, int]]:
+    """Sums Sugar Daddy (credits spent buying a gun for someone else) and
+    Scavenger (credits worth of free-picked-up gear) across the whole
+    session -- see app.scoring.credit_events for the per-round math.
+    """
+    sugar_daddy_credits: dict[int, int] = {}
+    scavenger_credits: dict[int, int] = {}
+
+    for match in session.matches:
+        our_side = session.team_by_match.get(match.id)
+        if our_side is None:
+            continue
+
+        our_mp_ids_here = {
+            mp.id
+            for mp in db.query(MatchPlayer).filter_by(match_id=match.id).all()
+            if mp.id in our_mp_to_player
+        }
+        agent_by_mp = {
+            mp.id: mp.agent
+            for mp in db.query(MatchPlayer).filter(MatchPlayer.id.in_(our_mp_ids_here)).all()
+        }
+        team_by_mp = {mp_id: our_side for mp_id in agent_by_mp}
+
+        rounds = db.query(Round).filter_by(match_id=match.id).all()
+        round_outcomes = {r.round_number: r.outcome for r in rounds}
+        planted_by_round = {r.round_number: r.planted for r in rounds}
+
+        stats_by_round: dict[int, dict[int, RoundStat]] = {}
+        for match_player_id, round_number, kills, deaths, loadout, remaining in (
+            db.query(
+                RoundPlayerStat.match_player_id,
+                Round.round_number,
+                RoundPlayerStat.kills,
+                RoundPlayerStat.deaths,
+                RoundPlayerStat.loadout,
+                RoundPlayerStat.remaining,
+            )
+            .join(Round, Round.id == RoundPlayerStat.round_id)
+            .filter(Round.match_id == match.id, RoundPlayerStat.match_player_id.in_(our_mp_ids_here))
+            .all()
+        ):
+            stats_by_round.setdefault(round_number, {})[match_player_id] = RoundStat(
+                kills=kills, deaths=deaths, loadout=loadout, remaining=remaining
+            )
+
+        credit_events = compute_round_credit_events(
+            round_outcomes, planted_by_round, stats_by_round, agent_by_mp, team_by_mp
+        )
+        for round_events in credit_events.values():
+            for match_player_id, (sugar_daddy, scavenger) in round_events.items():
+                player_id = our_mp_to_player.get(match_player_id)
+                if player_id is None:
+                    continue
+                if sugar_daddy:
+                    sugar_daddy_credits[player_id] = sugar_daddy_credits.get(player_id, 0) + sugar_daddy
+                if scavenger:
+                    scavenger_credits[player_id] = scavenger_credits.get(player_id, 0) + scavenger
+
+    return sugar_daddy_credits, scavenger_credits
 
 
 def _compute_raw_session_counts(
@@ -325,6 +415,7 @@ def _compute_raw_session_counts(
     post_plant_kill_counts = _build_post_plant_menace_stats(db, match_ids, our_mp_to_player, players_by_id)
     entry_kill_counts = _build_entry_kill_stats(db, match_ids, our_mp_to_player, players_by_id)
     late_kill_counts = _build_late_kill_stats(db, match_ids, our_mp_to_player, players_by_id)
+    sugar_daddy_credits, scavenger_credits = _build_credit_event_stats(db, session, our_mp_to_player)
 
     return biggest_multi_kill, _RawSessionCounts(
         multi_kill_counts=multi_kill_counts,
@@ -345,6 +436,8 @@ def _compute_raw_session_counts(
         post_plant_kill_counts=post_plant_kill_counts,
         entry_kill_counts=entry_kill_counts,
         late_kill_counts=late_kill_counts,
+        sugar_daddy_credits=sugar_daddy_credits,
+        scavenger_credits=scavenger_credits,
     )
 
 
@@ -939,6 +1032,8 @@ def _build_shoutouts(
         "late_kill_counts": raw.late_kill_counts,
         "op_kill_counts": raw.op_kill_counts,
         "eco_kill_counts": raw.eco_kill_counts,
+        "sugar_daddy_credits": raw.sugar_daddy_credits,
+        "scavenger_credits": raw.scavenger_credits,
         "traded_teammate_totals": raw.traded_teammate_totals,
         "traded_by_teammate_totals": raw.traded_by_teammate_totals,
         "mvp_counts": raw.mvp_counts,
