@@ -1,0 +1,87 @@
+<p class="page-meta">
+  {% if scope == 'recent' %}Stats below are over your last 30 matches.{% else %}Stats below are over your full match history.{% endif %}
+</p>
+
+<div class="stat-grid">
+  <div class="stat-tile">
+    <div class="stat-label">Squad size</div>
+    <div class="stat-value">{{ overview.squad_size }}</div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-label">Matches{% if scope == 'recent' %} (last 30){% endif %}</div>
+    <div class="stat-value">{{ overview.total_matches_together }}</div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-label">Rounds played with friends</div>
+    <div class="stat-value">{{ overview.total_rounds_together }}</div>
+  </div>
+</div>
+
+{% if overview.shoutouts %}
+<div class="card">
+  <h2>Shoutouts</h2>
+  <p class="page-meta">One highlight per friend with at least 20 rounds played together.</p>
+  <div class="shoutout-rows">
+    {% for row in overview.shoutouts | balanced_rows %}
+    <div class="shoutout-row">
+      {% for shoutout in row %}
+      {% set icon = agent_icon_slug(shoutout.agent) %}
+      <div class="shoutout-card">
+        <div class="shoutout-portrait-frame">
+          {% if icon %}
+          <img class="shoutout-portrait" src="/static/img/agents/{{ icon }}.png" alt="{{ shoutout.agent }}">
+          {% else %}
+          <div class="shoutout-portrait shoutout-portrait--fallback">{{ (shoutout.agent or "?")[:1] }}</div>
+          {% endif %}
+        </div>
+        <div class="shoutout-name"><a href="/players/{{ shoutout.display_name | urlencode }}">{{ shoutout.display_name | strip_tag }}</a></div>
+        {% if shoutout.agent %}
+        <div class="shoutout-agent">{{ shoutout.agent }}</div>
+        {% endif %}
+        <div class="shoutout-headline">{{ shoutout.headline }}</div>
+        <div class="shoutout-detail">{{ shoutout.detail }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Your friends, ranked</h2>
+  {% if overview.pairs %}
+  <table>
+    <thead>
+      <tr>
+        <th data-sort="string">Player</th>
+        <th data-sort="number" aria-sort="descending">Matches Together</th>
+        <th data-sort="number">Rounds Together</th>
+        <th data-sort="number">Win Rate Together</th>
+        <th data-sort="number">Avg Round-Win Impact Together</th>
+        <th data-sort="number">Clutches Together</th>
+        <th data-sort="number">Traded Together</th>
+        <th data-sort="number">Kill Differential Together</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in overview.pairs %}
+      <tr>
+        <td><a href="/players/{{ p.display_name | urlencode }}">{{ p.display_name | strip_tag }}</a></td>
+        <td data-sort-value="{{ p.matches_together }}">{{ p.matches_together }}</td>
+        <td data-sort-value="{{ p.rounds_together }}">{{ p.rounds_together }}</td>
+        <td data-sort-value="{{ p.win_rate_together }}">{{ (p.win_rate_together * 100) | round | int }}%</td>
+        <td data-sort-value="{{ p.avg_round_win_impact_together }}" class="{{ 'impact-positive' if p.avg_round_win_impact_together >= 0 else 'impact-negative' }}">
+          {{ p.avg_round_win_impact_together | round | int }}
+        </td>
+        <td data-sort-value="{{ p.clutches_together }}">{{ p.clutches_together }}</td>
+        <td data-sort-value="{{ p.traded_together }}">{{ p.traded_together }}</td>
+        <td data-sort-value="{{ p.kill_differential_together }}">{{ p.kill_differential_together }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="page-meta">No shared matches with friends yet{% if scope == 'recent' %} in your last 30 matches{% endif %}.</p>
+  {% endif %}
+</div>

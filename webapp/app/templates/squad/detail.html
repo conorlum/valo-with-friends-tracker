@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}Squad - ValoWithFriendsTracker{% endblock %}
+
+{% block content %}
+<h1>Squad</h1>
+<p class="page-meta">Who you play with most, and who you play best with -- scoped to your friends list.</p>
+
+<div class="scope-toggle">
+  <button type="button" class="scope-toggle-btn active" data-scope="recent">Recent 30</button>
+  <button type="button" class="scope-toggle-btn" data-scope="career">Career</button>
+</div>
+
+<div id="recent-sections">
+  {% include "squad/_squad_sections.html" %}
+</div>
+
+<div id="career-sections" style="display:none;"
+     hx-get="/squad/career"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+  <p class="page-meta htmx-indicator">Loading career stats&hellip;</p>
+</div>
+
+<script>
+  document.querySelectorAll(".scope-toggle-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".scope-toggle-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("recent-sections").style.display = btn.dataset.scope === "recent" ? "" : "none";
+      document.getElementById("career-sections").style.display = btn.dataset.scope === "career" ? "" : "none";
+    });
+  });
+</script>
+{% endblock %}
