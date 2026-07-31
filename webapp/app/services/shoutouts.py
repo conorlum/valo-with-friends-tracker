@@ -36,6 +36,8 @@ SHOUTOUT_CATEGORIES: list[tuple[str, str, str]] = [
     ("late_kill_counts", "Closer", "{v} kill{s} after the 1-minute mark"),
     ("op_kill_counts", "Worth The Credits", "{v} kill{s} with the Operator"),
     ("eco_kill_counts", "Does More With Less", "{v} kill{s} on an eco/force buy"),
+    ("sugar_daddy_credits", "Sugar Daddy", "gave away {v} credits worth of guns"),
+    ("scavenger_credits", "Scavenger", "salvaged {v} credits worth of gear"),
     ("traded_teammate_totals", "Avenger", "traded for a teammate {v} time{s}"),
     ("traded_by_teammate_totals", "Never Alone", "avenged by a teammate {v} time{s}"),
     ("mvp_counts", "Round MVP", "highest-Impact player in {v} round{s}"),
@@ -53,6 +55,7 @@ def assign_shoutouts(
     raw_dicts: dict[str, dict[int, int]],
     best_single_round_impact: dict[int, float],
     anchor: tuple[int, str, str] | None = None,
+    categories: list[tuple[str, str, str]] = SHOUTOUT_CATEGORIES,
 ) -> list[PlayerShoutout]:
     """Gives every player in `roster` exactly one flattering, individual
     callout, in roster order.
@@ -95,7 +98,7 @@ def assign_shoutouts(
     # Per category, candidates ranked best-first (value > 0 only), capped at
     # _MAX_DEPTH, as (player_index, rank, value).
     category_candidates: list[list[tuple[int, int, int]]] = []
-    for raw_key, _headline, _template in SHOUTOUT_CATEGORIES:
+    for raw_key, _headline, _template in categories:
         ranked = sorted(
             (
                 (player_index[pid], v)
@@ -150,7 +153,7 @@ def assign_shoutouts(
     assigned: dict[int, PlayerShoutout] = {}
     for player_index_, category_i in category_of_player.items():
         player_id = player_ids[player_index_]
-        _raw_key, headline, template = SHOUTOUT_CATEGORIES[category_i]
+        _raw_key, headline, template = categories[category_i]
         rank_by_player = {pi: (rank, v) for pi, rank, v in category_candidates[category_i]}
         _rank, value = rank_by_player[player_index_]
         assigned[player_id] = PlayerShoutout(

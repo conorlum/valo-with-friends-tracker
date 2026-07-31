@@ -3,7 +3,20 @@
 {% block title %}{{ profile.player.display_name }} - ValoWithFriendsTracker{% endblock %}
 
 {% block content %}
-<h1>{{ profile.player.display_name }}</h1>
+<h1>
+  {{ profile.player.display_name }}
+  {% if current_player and not is_own_profile %}
+  {% if is_friend %}
+  <span class="badge badge-score">Friends</span>
+  {% else %}
+  <form action="/friends/add" method="post" class="inline-form">
+    <input type="hidden" name="display_name" value="{{ profile.player.display_name }}">
+    <input type="hidden" name="next" value="/players/{{ profile.player.display_name | urlencode }}">
+    <button type="submit">Friend</button>
+  </form>
+  {% endif %}
+  {% endif %}
+</h1>
 
 <div class="scope-toggle">
   <button type="button" class="scope-toggle-btn active" data-scope="recent">Recent 30</button>

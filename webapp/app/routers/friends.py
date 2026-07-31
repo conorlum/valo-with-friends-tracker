@@ -33,15 +33,25 @@ def friends_page(request: Request, db: Session = Depends(get_db)):
     )
 
 
+def _safe_next(next: str | None) -> str:
+    """Only allow redirecting back to a local path (never an absolute URL,
+    to avoid becoming an open redirect)."""
+    if next and next.startswith("/") and not next.startswith("//"):
+        return next
+    return "/friends"
+
+
 @router.post("/add")
-def add_friend_route(request: Request, display_name: str = Form(...), db: Session = Depends(get_db)):
+def add_friend_route(
+    request: Request, display_name: str = Form(...), next: str | None = Form(None), db: Session = Depends(get_db)
+):
     current_player = get_current_player(request, db)
     if current_player is None:
         return RedirectResponse(url="/login", status_code=303)
 
     friend = get_player_or_404(db, display_name)
     add_friend(db, current_player.id, friend.id)
-    return RedirectResponse(url="/friends", status_code=303)
+    return RedirectResponse(url=_safe_next(next), status_code=303)
 
 
 @router.post("/remove")

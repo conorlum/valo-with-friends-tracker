@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Player
+from app.services.auth import get_current_player
+from app.services.friends import list_friend_ids
 from app.services.map_streaks import compute_map_streaks
 from app.services.player_graphs import build_state_diagrams, top_kill_order_state_deltas
 from app.services.players import get_player_or_404, get_player_profile, list_players
@@ -62,6 +64,14 @@ def player_detail(request: Request, display_name: str, db: Session = Depends(get
     # toggle -- computed once here rather than in the shared context builder so the
     # career fragment endpoint below doesn't redundantly recompute it.
     context["map_streaks"] = compute_map_streaks(db, player.id)
+
+    current_player = get_current_player(request, db)
+    context["is_own_profile"] = current_player is not None and current_player.id == player.id
+    context["is_friend"] = (
+        current_player is not None
+        and current_player.id != player.id
+        and player.id in list_friend_ids(db, current_player.id)
+    )
     return templates.TemplateResponse(request, "players/detail.html", context)
 
 
