@@ -92,6 +92,13 @@ nav {
   display: inline;
 }
 
+h1 .inline-form,
+h1 .badge-score {
+  vertical-align: middle;
+  margin-left: 0.75rem;
+  font-size: 1rem;
+}
+
 .link-button {
   background: none;
   border: none;
