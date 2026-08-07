@@ -40,6 +40,8 @@
       <tr>
         <th>Player</th>
         <th>Avg Impact</th>
+        <th>Avg Round Win Impact</th>
+        <th>Avg Death Impact</th>
         <th>Rounds</th>
         <th>Rounds Won &ndash; Lost</th>
       </tr>
@@ -49,6 +51,8 @@
       <tr>
         <td><a href="/players/{{ entry.display_name | urlencode }}">{{ entry.display_name | strip_tag }}</a></td>
         <td class="{{ 'impact-positive' if entry.average_impact >= 0 else 'impact-negative' }}">{{ entry.average_impact | round | int }}</td>
+        <td class="{{ 'impact-positive' if entry.average_round_win_impact >= 0 else 'impact-negative' }}">{{ entry.average_round_win_impact | round | int }}</td>
+        <td>{{ entry.average_death_impact | round | int }}</td>
         <td>{{ entry.rounds_played }}</td>
         <td><span class="badge badge-score">{{ entry.rounds_won }} &ndash; {{ entry.rounds_lost }}</span></td>
       </tr>

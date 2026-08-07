@@ -10,7 +10,7 @@ This repo is a personal-use fork of `ValorantIGLTutor`/valomaths that adds a tra
 - Runs **local-only** — no cloud deployment. Keep private-only changes additive (new files) rather than editing shared files, so future merges from `public` stay clean.
 - **Docker Compose gotcha**: both this repo's `webapp/` folder and the original repo's `webapp/` folder are literally both named `webapp`, so Docker Compose's default project name (derived from the folder name) collides between the two repos — running plain `docker compose up -d` here can recreate/repoint the *other* repo's Postgres container. Always bring this repo's Postgres up with an explicit project name: `docker compose -p valomaths-private up -d`. It's mapped to host port **5433** (not 5432, which the original repo's Postgres uses) — see `.env`.
 - `app/adapters/trackergg_browserstate_source.py` + `scripts/ingest_trackergg_player.py` — the tracker.gg ingestion pipeline (see below). Not present in the public repo.
-- Repo name history: this was previously named `valomaths-private`; some internal paths (the Docker Compose project name, local Postgres db name) still use `valomaths`/`valomaths-private` for that reason and don't need to be changed.
+- Repo name history: this was previously named `valomaths-private` (both on GitHub and as the local folder name). The GitHub repo is now `valo-with-friends-tracker`, and the local folder was renamed to match. Some internal paths (the Docker Compose project name, local Postgres db name) intentionally still use `valomaths`/`valomaths-private` — they're independent of the folder name and don't need to be changed.
 
 ## What this is
 

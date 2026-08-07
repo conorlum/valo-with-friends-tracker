@@ -1,4 +1,7 @@
 {% set top_agent = profile.agent_counts.most_common(1) %}
+<p class="page-meta">
+  {% if scope == 'recent' %}Stats below are over this player's last 30 matches.{% else %}Stats below are over this player's full match history.{% endif %}
+</p>
 <div class="stat-grid">
   <div class="stat-tile">
     <div class="stat-label">Overall avg impact</div>
@@ -7,7 +10,17 @@
     </div>
   </div>
   <div class="stat-tile">
-    <div class="stat-label">Matches played</div>
+    <div class="stat-label">Avg round win impact</div>
+    <div class="stat-value {{ 'impact-positive' if profile.overall_average_round_win_impact >= 0 else 'impact-negative' }}">
+      {{ profile.overall_average_round_win_impact | round | int }}
+    </div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-label">Avg death impact</div>
+    <div class="stat-value">{{ profile.overall_average_death_impact | round | int }}</div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-label">Matches played{% if scope == 'recent' %} (last 30){% endif %}</div>
     <div class="stat-value">{{ profile.matches | length }}</div>
   </div>
   <div class="stat-tile">

@@ -19,7 +19,7 @@ loss).
    `docker-compose.yml`'s `postgres:16`). Copy the connection string it gives
    you — it'll look like `postgresql://user:pass@ep-xxx.neon.tech/dbname?sslmode=require`.
 2. **Render**: in the dashboard, **New → Blueprint**, connect the
-   `valomaths-private` GitHub repo. Render auto-detects `render.yaml` at the
+   `valo-with-friends-tracker` GitHub repo. Render auto-detects `render.yaml` at the
    repo root. This creates the web service (`valowithfriendstracker`) — there's
    no `databases:` block anymore, so Render won't try to provision its own
    Postgres.
