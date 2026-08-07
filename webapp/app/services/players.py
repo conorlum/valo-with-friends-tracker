@@ -43,6 +43,16 @@ def get_player_or_404(db: Session, display_name: str) -> Player:
     return player
 
 
+def _winner_side(outcome: str | None) -> str | None:
+    if not outcome:
+        return None
+    if outcome.startswith("Team A"):
+        return "team-1"
+    if outcome.startswith("Team B"):
+        return "team-2"
+    return None
+
+
 def find_player_by_search_query(db: Session, query: str) -> Player | None:
     """Looks up a player from a "Name#Tag" search box.
 
@@ -88,6 +98,8 @@ class GroupedStat:
 class PlayerProfile:
     player: Player
     overall_average_impact: float
+    overall_average_round_win_impact: float
+    overall_average_death_impact: float
     matches: list[MatchBreakdown]
     agent_counts: Counter = field(default_factory=Counter)
     agent_stats: list[GroupedStat] = field(default_factory=list)
@@ -202,8 +214,19 @@ def get_player_profile(db: Session, player: Player, match_limit: int | None = No
         for mp in all_teammates:
             teammates_by_match.setdefault(mp.match_id, []).append(mp)
 
+    round_ids_needed = {
+        score.round_id for scores in scores_by_match_player.values() for score in scores
+    }
+    round_outcome_by_id: dict[int, str | None] = {}
+    if round_ids_needed:
+        round_outcome_by_id = dict(
+            db.query(Round.id, Round.outcome).filter(Round.id.in_(round_ids_needed)).all()
+        )
+
     matches: list[MatchBreakdown] = []
     all_impacts: list[float] = []
+    all_round_win_impacts: list[float] = []
+    all_death_impacts: list[float] = []
     agent_counts: Counter = Counter()
 
     total_econ_kill = 0.0
@@ -228,6 +251,14 @@ def get_player_profile(db: Session, player: Player, match_limit: int | None = No
 
         match = match_player.match
         team = match_player.team.value if hasattr(match_player.team, "value") else match_player.team
+        # Only counts a round's kill_impact if this player's team actually won that round --
+        # death_impact still counts regardless. See app.services.matches's
+        # average_round_win_impact for the match-page counterpart.
+        round_win_impacts = [
+            (score.kill_impact if _winner_side(round_outcome_by_id.get(score.round_id)) == team else 0.0)
+            - score.death_impact
+            for score in scores
+        ]
         kills, deaths, assists = kda_by_match_player.get(match_player.id, (0, 0, 0))
         matches.append(
             MatchBreakdown(
@@ -244,6 +275,8 @@ def get_player_profile(db: Session, player: Player, match_limit: int | None = No
             )
         )
         all_impacts.extend(impacts)
+        all_round_win_impacts.extend(round_win_impacts)
+        all_death_impacts.extend(death_impacts)
         agent_counts[match_player.agent] += 1
 
         teammate_names = {
@@ -271,6 +304,12 @@ def get_player_profile(db: Session, player: Player, match_limit: int | None = No
                     traded_by_teammate_totals[name] = traded_by_teammate_totals.get(name, 0) + count
 
     overall_average = sum(all_impacts) / len(all_impacts) if all_impacts else 0.0
+    overall_average_round_win_impact = (
+        sum(all_round_win_impacts) / len(all_round_win_impacts) if all_round_win_impacts else 0.0
+    )
+    overall_average_death_impact = (
+        sum(all_death_impacts) / len(all_death_impacts) if all_death_impacts else 0.0
+    )
     matches_played = len(matches)
 
     def _avg(total: float) -> float:
@@ -291,6 +330,8 @@ def get_player_profile(db: Session, player: Player, match_limit: int | None = No
     return PlayerProfile(
         player=player,
         overall_average_impact=overall_average,
+        overall_average_round_win_impact=overall_average_round_win_impact,
+        overall_average_death_impact=overall_average_death_impact,
         matches=matches,
         agent_counts=agent_counts,
         agent_stats=agent_stats,

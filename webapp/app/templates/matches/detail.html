@@ -21,6 +21,7 @@
         <th data-sort="number">Avg Kill Impact</th>
         <th data-sort="number">Avg Death Impact</th>
         <th data-sort="number" aria-sort="descending">Avg Impact</th>
+        <th data-sort="number">Avg Round Win Impact</th>
       </tr>
     </thead>
     <tbody>
@@ -39,6 +40,9 @@
         <td data-sort-value="{{ p.average_death_impact }}">{{ p.average_death_impact | round | int }}</td>
         <td data-sort-value="{{ p.average_impact }}" class="{{ 'impact-positive' if p.average_impact >= 0 else 'impact-negative' }}">
           {{ p.average_impact | round | int }}
+        </td>
+        <td data-sort-value="{{ p.average_round_win_impact }}" class="{{ 'impact-positive' if p.average_round_win_impact >= 0 else 'impact-negative' }}">
+          {{ p.average_round_win_impact | round | int }}
         </td>
       </tr>
       {% endfor %}
