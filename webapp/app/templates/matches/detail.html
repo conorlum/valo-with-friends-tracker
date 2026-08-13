@@ -147,7 +147,7 @@
   <div id="econ-matrix-1">
     <table>
       <thead>
-        <tr><th>Buy vs. enemy</th><th>Record</th><th>Win Rate</th></tr>
+        <tr><th>Buy vs. enemy</th><th>Record</th><th>Win Rate</th><th>Avg. Loadout Share</th></tr>
       </thead>
       <tbody>
         {% for row in team1_econ_matrix.rows %}
@@ -161,6 +161,13 @@
             <span class="stat-empty">No data</span>
             {% endif %}
           </td>
+          <td>
+            {% if row.avg_loadout_ratio is not none %}
+            <span class="page-meta" title="Own loadout as a share of both teams' combined loadout, averaged across these rounds">{{ (row.avg_loadout_ratio * 100) | round | int }}%</span>
+            {% else %}
+            <span class="stat-empty">&ndash;</span>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
@@ -169,7 +176,7 @@
   <div id="econ-matrix-2" style="display: none;">
     <table>
       <thead>
-        <tr><th>Buy vs. enemy</th><th>Record</th><th>Win Rate</th></tr>
+        <tr><th>Buy vs. enemy</th><th>Record</th><th>Win Rate</th><th>Avg. Loadout Share</th></tr>
       </thead>
       <tbody>
         {% for row in team2_econ_matrix.rows %}
@@ -181,6 +188,13 @@
             <span class="pill" style="background-color: {{ row.fill }};">{{ (row.win_pct * 100) | round | int }}%</span>
             {% else %}
             <span class="stat-empty">No data</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if row.avg_loadout_ratio is not none %}
+            <span class="page-meta" title="Own loadout as a share of both teams' combined loadout, averaged across these rounds">{{ (row.avg_loadout_ratio * 100) | round | int }}%</span>
+            {% else %}
+            <span class="stat-empty">&ndash;</span>
             {% endif %}
           </td>
         </tr>
