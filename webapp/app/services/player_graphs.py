@@ -251,6 +251,55 @@ def build_match_round_win_diagrams(match: Match) -> tuple[StateDiagram, StateDia
     return _round_win_diagram(win_stats[Team.TEAM_1]), _round_win_diagram(win_stats[Team.TEAM_2])
 
 
+def _own_team_win_stats_for_match(match: Match, own_team: Team) -> dict[str, dict[str, int]]:
+    """Replays one match's rounds from a single team's perspective, returning
+    the raw win/total counts per man-advantage state that _round_win_diagram
+    turns into a diagram. Shared by the session-combined and per-match
+    session diagram builders below.
+    """
+    win_stats: dict[str, dict[str, int]] = {}
+    opp_team = Team.TEAM_2 if own_team == Team.TEAM_1 else Team.TEAM_1
+    sizes = _team_sizes(match.match_players)
+    team_of = {mp.id: mp.team for mp in match.match_players}
+
+    for round_row in match.rounds:
+        alive = {Team.TEAM_1: sizes[Team.TEAM_1], Team.TEAM_2: sizes[Team.TEAM_2]}
+        winner = _winner_team(round_row.outcome)
+        events = sorted(round_row.kill_events, key=lambda e: (e.event_time_seconds, e.id))
+
+        for event in events:
+            own_alive, opp_alive = alive[own_team], alive[opp_team]
+            if own_alive >= 1 and opp_alive >= 1 and winner is not None:
+                state = f"{own_alive}v{opp_alive}"
+                bucket = win_stats.setdefault(state, {"win": 0, "total": 0})
+                bucket["total"] += 1
+                if winner == own_team:
+                    bucket["win"] += 1
+
+            if event.death_match_player_id is not None:
+                dead_team = team_of.get(event.death_match_player_id)
+                if dead_team is not None and alive[dead_team] > 0:
+                    alive[dead_team] -= 1
+
+            if alive[Team.TEAM_1] <= 0 or alive[Team.TEAM_2] <= 0:
+                break
+
+    return win_stats
+
+
+def _preload_session_matches(matches: list[Match]) -> None:
+    if not matches:
+        return
+    db = object_session(matches[0])
+    if db is not None:
+        # Populates every match's match_players / rounds / kill_events in bulk
+        # up front instead of one lazy-load per relationship per round per match.
+        db.query(Match).filter(Match.id.in_([m.id for m in matches])).options(
+            selectinload(Match.match_players),
+            selectinload(Match.rounds).selectinload(Round.kill_events),
+        ).all()
+
+
 def build_session_round_win_diagram(
     matches: list[Match], team_by_match: dict[int, str]
 ) -> StateDiagram:
@@ -262,50 +311,40 @@ def build_session_round_win_diagram(
     against different opponents reads as one combined diagram. Matches with
     no resolvable side (team_by_match missing an entry) are skipped.
     """
+    _preload_session_matches(matches)
+
     win_stats: dict[str, dict[str, int]] = {}
-
-    if matches:
-        db = object_session(matches[0])
-        if db is not None:
-            # Populates every match's match_players / rounds / kill_events in bulk
-            # up front instead of one lazy-load per relationship per round per match.
-            db.query(Match).filter(Match.id.in_([m.id for m in matches])).options(
-                selectinload(Match.match_players),
-                selectinload(Match.rounds).selectinload(Round.kill_events),
-            ).all()
-
     for match in matches:
         own_team_str = team_by_match.get(match.id)
         if own_team_str is None:
             continue
-        own_team = Team(own_team_str)
-        opp_team = Team.TEAM_2 if own_team == Team.TEAM_1 else Team.TEAM_1
-        sizes = _team_sizes(match.match_players)
-        team_of = {mp.id: mp.team for mp in match.match_players}
-
-        for round_row in match.rounds:
-            alive = {Team.TEAM_1: sizes[Team.TEAM_1], Team.TEAM_2: sizes[Team.TEAM_2]}
-            winner = _winner_team(round_row.outcome)
-            events = sorted(round_row.kill_events, key=lambda e: (e.event_time_seconds, e.id))
-
-            for event in events:
-                own_alive, opp_alive = alive[own_team], alive[opp_team]
-                if own_alive >= 1 and opp_alive >= 1 and winner is not None:
-                    state = f"{own_alive}v{opp_alive}"
-                    bucket = win_stats.setdefault(state, {"win": 0, "total": 0})
-                    bucket["total"] += 1
-                    if winner == own_team:
-                        bucket["win"] += 1
-
-                if event.death_match_player_id is not None:
-                    dead_team = team_of.get(event.death_match_player_id)
-                    if dead_team is not None and alive[dead_team] > 0:
-                        alive[dead_team] -= 1
-
-                if alive[Team.TEAM_1] <= 0 or alive[Team.TEAM_2] <= 0:
-                    break
+        for state, bucket in _own_team_win_stats_for_match(match, Team(own_team_str)).items():
+            merged = win_stats.setdefault(state, {"win": 0, "total": 0})
+            merged["win"] += bucket["win"]
+            merged["total"] += bucket["total"]
 
     return _round_win_diagram(win_stats)
+
+
+def build_session_round_win_diagrams_by_match(
+    matches: list[Match], team_by_match: dict[int, str]
+) -> dict[int, StateDiagram]:
+    """Same replay as build_session_round_win_diagram, but keeping each
+    match's diagram separate (match_id -> StateDiagram) instead of merging
+    them, so a session's round-win-by-game-state chart can be viewed one map
+    at a time. Matches with no resolvable side (team_by_match missing an
+    entry) are omitted from the result.
+    """
+    _preload_session_matches(matches)
+
+    diagrams: dict[int, StateDiagram] = {}
+    for match in matches:
+        own_team_str = team_by_match.get(match.id)
+        if own_team_str is None:
+            continue
+        diagrams[match.id] = _round_win_diagram(_own_team_win_stats_for_match(match, Team(own_team_str)))
+
+    return diagrams
 
 
 def _round_win_diagram(win_stats: dict[str, dict[str, int]]) -> StateDiagram:

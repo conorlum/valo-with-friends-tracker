@@ -1,5 +1,5 @@
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session, aliased, selectinload
 
@@ -7,7 +7,7 @@ from app.models import ImpactScore, KillEvent, MatchPlayer, Player, Round, Round
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD, econ_tier_name
 from app.services.friends import list_friend_ids
-from app.services.player_graphs import StateDiagram, build_session_round_win_diagram
+from app.services.player_graphs import StateDiagram, build_session_round_win_diagram, build_session_round_win_diagrams_by_match
 from app.services.shoutouts import PlayerShoutout, assign_shoutouts
 from app.services.sessions import SessionSummary
 
@@ -31,6 +31,7 @@ class LeaderboardEntry:
     rounds_played: int
     rounds_won: int = 0
     rounds_lost: int = 0
+    agents: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -52,6 +53,7 @@ class KdaRow:
     total_kills: int = 0
     total_deaths: int = 0
     total_assists: int = 0
+    agents: list[str] = field(default_factory=list)
 
     @property
     def total_label(self) -> str:
@@ -97,6 +99,7 @@ class SessionStats:
     leaderboard: list[LeaderboardEntry]
     kda_rows: list[KdaRow]
     round_win_diagram: StateDiagram
+    round_win_diagrams_by_match: dict[int, StateDiagram]
     fun_stats: SessionFunStats
     shoutouts: list[PlayerShoutout]
 
@@ -108,12 +111,14 @@ def get_session_stats(
     roster_player_ids = session.roster_player_ids
 
     round_win_diagram = build_session_round_win_diagram(session.matches, session.team_by_match)
+    round_win_diagrams_by_match = build_session_round_win_diagrams_by_match(session.matches, session.team_by_match)
 
     if not match_ids or not roster_player_ids:
         return SessionStats(
             leaderboard=[],
             kda_rows=[],
             round_win_diagram=round_win_diagram,
+            round_win_diagrams_by_match=round_win_diagrams_by_match,
             fun_stats=SessionFunStats(),
             shoutouts=[],
         )
@@ -137,12 +142,21 @@ def get_session_stats(
     for mp in our_match_players:
         agent_tally.setdefault(mp.player_id, Counter())[mp.agent] += 1
     agent_by_player = {player_id: tally.most_common(1)[0][0] for player_id, tally in agent_tally.items()}
+    games_played_by_player = {player_id: sum(tally.values()) for player_id, tally in agent_tally.items()}
+    # Every distinct agent a player played this session, most-played first --
+    # unlike agent_by_player's single mode, this is for display columns that
+    # want to show every agent once even if it spanned multiple matches.
+    agents_by_player = {player_id: [agent for agent, _n in tally.most_common()] for player_id, tally in agent_tally.items()}
 
     leaderboard = _build_leaderboard(db, our_mp_to_player, players_by_id, session.team_by_match)
     kda_rows = _build_kda_rows(db, match_ids, our_mp_to_player, players_by_id)
+    for entry in leaderboard:
+        entry.agents = agents_by_player.get(entry.player_id, [])
+    for row in kda_rows:
+        row.agents = agents_by_player.get(row.player_id, [])
     biggest_multi_kill, raw_counts = _compute_raw_session_counts(db, session, our_mp_to_player, players_by_id)
     fun_stats = _build_fun_stats(db, session, our_mp_to_player, players_by_id, biggest_multi_kill, raw_counts)
-    shoutouts = _build_shoutouts(raw_counts, leaderboard, players_by_id, agent_by_player)
+    shoutouts = _build_shoutouts(raw_counts, leaderboard, players_by_id, agent_by_player, games_played_by_player)
     if viewer_player_id is not None:
         friend_ids = list_friend_ids(db, viewer_player_id) | {viewer_player_id}
         shoutouts = [s for s in shoutouts if s.player_id in friend_ids]
@@ -151,6 +165,7 @@ def get_session_stats(
         leaderboard=leaderboard,
         kda_rows=kda_rows,
         round_win_diagram=round_win_diagram,
+        round_win_diagrams_by_match=round_win_diagrams_by_match,
         fun_stats=fun_stats,
         shoutouts=shoutouts,
     )
@@ -1013,6 +1028,7 @@ def _build_shoutouts(
     leaderboard: list[LeaderboardEntry],
     players_by_id: dict[int, str],
     agent_by_player: dict[int, str],
+    games_played_by_player: dict[int, int],
 ) -> list[PlayerShoutout]:
     """Gives every player on the session roster exactly one flattering,
     individual callout -- unlike Fun Stats, which only ever names a single
@@ -1020,6 +1036,17 @@ def _build_shoutouts(
     assignment algorithm; this just adapts the session's raw counts and
     leaderboard into the shape it expects.
     """
+    # Operator kills need at least a 1-per-game average to earn "Worth The
+    # Credits" -- a couple of op kills scattered across many games isn't a
+    # standout Operator performance, it's noise. Filtered here (rather than
+    # in the generic assign_shoutouts) since only this raw count is rate-
+    # sensitive against games played.
+    op_kill_counts = {
+        player_id: v
+        for player_id, v in raw.op_kill_counts.items()
+        if v >= games_played_by_player.get(player_id, 1)
+    }
+
     raw_dicts: dict[str, dict[int, int]] = {
         "entry_kill_counts": raw.entry_kill_counts,
         "clutch_counts": raw.clutch_counts,
@@ -1030,7 +1057,7 @@ def _build_shoutouts(
         "xvx_kill_counts": raw.xvx_kill_counts,
         "kills_on_top_frag": raw.kills_on_top_frag,
         "late_kill_counts": raw.late_kill_counts,
-        "op_kill_counts": raw.op_kill_counts,
+        "op_kill_counts": op_kill_counts,
         "eco_kill_counts": raw.eco_kill_counts,
         "sugar_daddy_credits": raw.sugar_daddy_credits,
         "scavenger_credits": raw.scavenger_credits,

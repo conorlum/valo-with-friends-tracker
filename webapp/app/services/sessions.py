@@ -237,6 +237,23 @@ def list_sessions(db: Session, player_ids: list[int] | None = None) -> list[Sess
     return sessions
 
 
+def find_session_index_containing_match(sessions: list[SessionSummary], match_id: int) -> int | None:
+    """Finds the index of the session in `sessions` that contains `match_id`,
+    or None if it isn't in any of them.
+
+    Used to translate a session viewed under one friends-scope into the
+    equivalent session under a different scope -- a session's index is only
+    valid within the player_ids list it was built from (list_sessions can
+    group matches differently, and assign different positions, depending on
+    which players are in scope), so a session_index from one scope can't be
+    reused directly as a link into another.
+    """
+    for s in sessions:
+        if any(m.id == match_id for m in s.matches):
+            return s.index
+    return None
+
+
 def get_session_or_404(db: Session, session_index: int, player_ids: list[int] | None = None) -> SessionSummary:
     sessions = list_sessions(db, player_ids)
     if not (0 <= session_index < len(sessions)):
