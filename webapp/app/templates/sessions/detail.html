@@ -202,7 +202,7 @@
   <p class="page-meta">How often this session's roster won a round based on whether they outbought, matched, or underbought the enemy's loadout that round, combined across every match in the session.</p>
   <table>
     <thead>
-      <tr><th>Buy vs. enemy</th><th>Record</th><th>Win Rate</th></tr>
+      <tr><th>Buy vs. enemy</th><th>Record</th><th>Win Rate</th><th>Avg. Loadout Share</th></tr>
     </thead>
     <tbody>
       {% for row in stats.econ_matrix.rows %}
@@ -214,6 +214,13 @@
           <span class="pill" style="background-color: {{ row.fill }};">{{ (row.win_pct * 100) | round | int }}%</span>
           {% else %}
           <span class="stat-empty">No data</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if row.avg_loadout_ratio is not none %}
+          <span class="page-meta" title="Own loadout as a share of both teams' combined loadout, averaged across these rounds">{{ (row.avg_loadout_ratio * 100) | round | int }}%</span>
+          {% else %}
+          <span class="stat-empty">&ndash;</span>
           {% endif %}
         </td>
       </tr>

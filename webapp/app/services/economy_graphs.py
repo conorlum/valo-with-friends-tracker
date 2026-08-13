@@ -7,14 +7,39 @@ from app.models.match import Team
 from app.scoring.impact import econ_tier_name
 from app.services.player_graphs import NO_DATA_FILL, win_color
 
-TIERS = ["SAVE", "ECO", "FORCE", "FULL_BUY"]
-TIER_LABELS = {"SAVE": "Save", "ECO": "Eco", "FORCE": "Force", "FULL_BUY": "Full Buy"}
+TIERS = ["PISTOL", "ECO", "FORCE", "FULL_BUY"]
+TIER_LABELS = {"PISTOL": "Pistol", "ECO": "Eco", "FORCE": "Force", "FULL_BUY": "Full Buy"}
+# Buy-quality tiers only -- PISTOL is a forced-reset round, not a quality
+# choice on the same scale, so it's excluded from the ranked gradient below.
+# econ_tier_name's SAVE and ECO are folded together here: with SAVE folded in
+# there wasn't enough round volume in a single match/session to fill a 4-tier
+# grid, and the SAVE/ECO line didn't track a meaningfully different decision
+# anyway.
+_BUY_TIERS = ["ECO", "FORCE", "FULL_BUY"]
 # Reuses the same red->green scale as round-win-rate coloring, applied across
-# the tier order instead of a win percentage -- SAVE is "worst" (red), FULL_BUY
-# "best" (green), so a buy-type badge reads with the same visual language as
-# every win-rate graph elsewhere on the site.
-TIER_COLOR = {tier: win_color(i / (len(TIERS) - 1)) for i, tier in enumerate(TIERS)}
-_TIER_RANK = {tier: i for i, tier in enumerate(TIERS)}
+# the buy-tier order instead of a win percentage -- ECO is "worst" (red),
+# FULL_BUY "best" (green), so a buy-type badge reads with the same visual
+# language as every win-rate graph elsewhere on the site.
+TIER_COLOR = {tier: win_color(i / (len(_BUY_TIERS) - 1)) for i, tier in enumerate(_BUY_TIERS)}
+TIER_COLOR["PISTOL"] = "#5b6bd6"
+_TIER_RANK = {"PISTOL": 0, **{tier: i + 1 for i, tier in enumerate(_BUY_TIERS)}}
+
+# Same pistol-round convention as compute_round_credit_events in
+# app/scoring/credit_events.py: rounds 1 and 13 are the economy-reset rounds,
+# regardless of what was actually spent.
+PISTOL_ROUNDS = {1, 13}
+
+
+def _tier_for(loadout: int, round_number: int) -> str:
+    if round_number in PISTOL_ROUNDS:
+        return "PISTOL"
+    tier = econ_tier_name(loadout)
+    return "ECO" if tier == "SAVE" else tier
+
+
+def _loadout_ratio(own_loadout: int, enemy_loadout: int) -> float | None:
+    total = own_loadout + enemy_loadout
+    return own_loadout / total if total else None
 
 
 def _winner_team(outcome: str | None) -> Team | None:
@@ -90,8 +115,8 @@ class EconRoundRow:
 
 
 def _econ_round_row(round_number: int, team1_loadout: int, team2_loadout: int, winner: Team | None) -> EconRoundRow:
-    team1_tier = econ_tier_name(team1_loadout)
-    team2_tier = econ_tier_name(team2_loadout)
+    team1_tier = _tier_for(team1_loadout, round_number)
+    team2_tier = _tier_for(team2_loadout, round_number)
     return EconRoundRow(
         round_number=round_number,
         team1_loadout=team1_loadout,
@@ -120,11 +145,13 @@ class EconSample:
     own_tier: str
     enemy_tier: str
     own_won: bool
+    own_loadout: int
+    enemy_loadout: int
 
 
 def _samples_from_raw(raw: dict[int, tuple[int, int, Team | None]], own_team: Team) -> list[EconSample]:
     samples = []
-    for team1_loadout, team2_loadout, winner in raw.values():
+    for round_number, (team1_loadout, team2_loadout, winner) in raw.items():
         if winner is None:
             continue
         own_loadout, enemy_loadout = (
@@ -132,9 +159,11 @@ def _samples_from_raw(raw: dict[int, tuple[int, int, Team | None]], own_team: Te
         )
         samples.append(
             EconSample(
-                own_tier=econ_tier_name(own_loadout),
-                enemy_tier=econ_tier_name(enemy_loadout),
+                own_tier=_tier_for(own_loadout, round_number),
+                enemy_tier=_tier_for(enemy_loadout, round_number),
                 own_won=winner == own_team,
+                own_loadout=own_loadout,
+                enemy_loadout=enemy_loadout,
             )
         )
     return samples
@@ -193,6 +222,7 @@ class TierMatrixCell:
     total: int
     win_pct: float | None
     fill: str
+    avg_loadout_ratio: float | None
 
 
 @dataclass
@@ -207,12 +237,18 @@ def build_tier_matrix(samples: list[EconSample]) -> TierMatrix:
     """Full own-tier x enemy-tier win-rate grid -- needs a lot of rounds to
     fill in all 16 cells, so this is only used where the sample is large
     (a player's whole match history), not a single match or session."""
-    buckets: dict[tuple[str, str], dict[str, int]] = {}
+    buckets: dict[tuple[str, str], dict[str, float]] = {}
     for s in samples:
-        bucket = buckets.setdefault((s.own_tier, s.enemy_tier), {"win": 0, "total": 0})
+        bucket = buckets.setdefault(
+            (s.own_tier, s.enemy_tier), {"win": 0, "total": 0, "ratio_sum": 0.0, "ratio_count": 0}
+        )
         bucket["total"] += 1
         if s.own_won:
             bucket["win"] += 1
+        ratio = _loadout_ratio(s.own_loadout, s.enemy_loadout)
+        if ratio is not None:
+            bucket["ratio_sum"] += ratio
+            bucket["ratio_count"] += 1
 
     cells: dict[tuple[str, str], TierMatrixCell] = {}
     for own_tier in TIERS:
@@ -220,6 +256,7 @@ def build_tier_matrix(samples: list[EconSample]) -> TierMatrix:
             bucket = buckets.get((own_tier, enemy_tier))
             total = bucket["total"] if bucket else 0
             win_pct = bucket["win"] / total if total else None
+            avg_ratio = bucket["ratio_sum"] / bucket["ratio_count"] if bucket and bucket["ratio_count"] else None
             cells[(own_tier, enemy_tier)] = TierMatrixCell(
                 own_tier=own_tier,
                 enemy_tier=enemy_tier,
@@ -227,6 +264,7 @@ def build_tier_matrix(samples: list[EconSample]) -> TierMatrix:
                 total=total,
                 win_pct=win_pct,
                 fill=win_color(win_pct) if win_pct is not None else NO_DATA_FILL,
+                avg_loadout_ratio=avg_ratio,
             )
     return TierMatrix(tiers=TIERS, tier_labels=TIER_LABELS, cells=cells, total_rounds=len(samples))
 
@@ -260,6 +298,7 @@ class FavorOutcomeRow:
     total: int
     win_pct: float | None
     fill: str
+    avg_loadout_ratio: float | None
 
 
 @dataclass
@@ -269,18 +308,23 @@ class FavorOutcomeMatrix:
 
 
 def build_favor_outcome_matrix(samples: list[EconSample]) -> FavorOutcomeMatrix:
-    buckets = {key: {"win": 0, "total": 0} for key in FAVOR_LABELS}
+    buckets = {key: {"win": 0, "total": 0, "ratio_sum": 0.0, "ratio_count": 0} for key in FAVOR_LABELS}
     for s in samples:
         bucket = buckets[_favor_key(s.own_tier, s.enemy_tier)]
         bucket["total"] += 1
         if s.own_won:
             bucket["win"] += 1
+        ratio = _loadout_ratio(s.own_loadout, s.enemy_loadout)
+        if ratio is not None:
+            bucket["ratio_sum"] += ratio
+            bucket["ratio_count"] += 1
 
     rows = []
     for key, label in FAVOR_LABELS.items():
         bucket = buckets[key]
         total = bucket["total"]
         win_pct = bucket["win"] / total if total else None
+        avg_ratio = bucket["ratio_sum"] / bucket["ratio_count"] if bucket["ratio_count"] else None
         rows.append(
             FavorOutcomeRow(
                 key=key,
@@ -290,6 +334,7 @@ def build_favor_outcome_matrix(samples: list[EconSample]) -> FavorOutcomeMatrix:
                 total=total,
                 win_pct=win_pct,
                 fill=win_color(win_pct) if win_pct is not None else NO_DATA_FILL,
+                avg_loadout_ratio=avg_ratio,
             )
         )
     return FavorOutcomeMatrix(rows=rows, total_rounds=len(samples))

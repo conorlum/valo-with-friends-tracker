@@ -125,6 +125,9 @@
           <td>
             {% if cell.win_pct is not none %}
             <span class="pill" style="background-color: {{ cell.fill }};" title="{{ cell.wins }}/{{ cell.total }} rounds won">{{ (cell.win_pct * 100) | round | int }}%</span>
+            {% if cell.avg_loadout_ratio is not none %}
+            <br><span class="page-meta" style="display: inline-block; margin-top: 0.2rem;" title="Own loadout as a share of both teams' combined loadout, averaged across these rounds">{{ (cell.avg_loadout_ratio * 100) | round | int }}% of buy</span>
+            {% endif %}
             {% else %}
             <span class="stat-empty">&ndash;</span>
             {% endif %}
