@@ -105,7 +105,7 @@
 {% if kill_order_graph.nodes %}
 <div class="card">
   <h2>Kill order graph</h2>
-  <p class="page-meta">How often {{ profile.player.display_name }}'s kills and deaths moved the round from one game state to the next. Green = kills, red = deaths.</p>
+  <p class="page-meta">Each dot is a round state (your players alive vs. their players alive), arranged so 5v5 sits at the top, 0v0 at the bottom, and lopsided states fan out to the sides. Every kill or death moves {{ profile.player.display_name }} one step along an arrow to the next state, and the number on the arrow is how many times that exact move happened (green = kills, red = deaths).</p>
   <div class="chart-scroll">
     <svg viewBox="{{ kill_order_graph.view_box }}" style="width: 100%; max-width: 620px; height: auto; display: block; margin: 0 auto;">
       <defs>
@@ -142,7 +142,7 @@
   {% if top_kill_differentials or top_death_differentials %}
   <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem;">
     <div>
-      <h3>Biggest swing kills</h3>
+      <h3>Biggest swing kills (when you should take fights)</h3>
       <table>
         <thead>
           <tr><th>State</th><th>Delta</th></tr>
@@ -160,7 +160,7 @@
       </table>
     </div>
     <div>
-      <h3>Biggest swing deaths</h3>
+      <h3>Biggest swing deaths (when you shouldn't take fights)</h3>
       <table>
         <thead>
           <tr><th>State</th><th>Delta</th></tr>
