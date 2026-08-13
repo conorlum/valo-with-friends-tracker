@@ -147,12 +147,12 @@
   {% endif %}
   <p class="page-meta" id="session-win-graph-meta">Win rate of rounds this session's roster reached at each man-advantage state (own side v opponent side), combined across every match.</p>
   <div class="chart-scroll">
-    <div id="session-win-graph-combined">
+    <div class="session-win-graph" id="session-win-graph-combined">
       {{ round_win_svg(stats.round_win_diagram) }}
     </div>
     {% for match in session.matches %}
     {% if match.id in stats.round_win_diagrams_by_match %}
-    <div id="session-win-graph-{{ match.id }}" style="display: none;">
+    <div class="session-win-graph" id="session-win-graph-{{ match.id }}" style="display: none;">
       {{ round_win_svg(stats.round_win_diagrams_by_match[match.id]) }}
     </div>
     {% endif %}
@@ -166,7 +166,7 @@
     btn.addEventListener("click", () => {
       const tab = btn.dataset.sessionWinTab;
       document.querySelectorAll(".tab-btn[data-session-win-tab]").forEach((b) => b.classList.toggle("active", b === btn));
-      document.querySelectorAll("[id^='session-win-graph-']").forEach((el) => {
+      document.querySelectorAll(".session-win-graph").forEach((el) => {
         el.style.display = el.id === `session-win-graph-${tab}` ? "" : "none";
       });
       document.getElementById("session-win-graph-meta").textContent =
