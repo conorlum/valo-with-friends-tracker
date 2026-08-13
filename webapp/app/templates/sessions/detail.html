@@ -196,7 +196,13 @@
 </div>
 {% endmacro %}
 
-{% if stats.econ_matrix.total_rounds %}
+{% if stats.econ_tier_matrix %}
+{% set econ_tier_matrix = stats.econ_tier_matrix %}
+{% set econ_pistol_stats = stats.econ_pistol_stats %}
+{% set econ_tier_heading = "Economy win rate by buy tier" %}
+{% set econ_tier_description = "Win rate of rounds where this session's roster bought at each tier (rows), split by what the enemy bought that same round (columns), combined across every match in the session." %}
+{% include "_econ_tier_matrix.html" %}
+{% elif stats.econ_favor_matrix.total_rounds %}
 <div class="card">
   <h2>Economy vs. round outcome</h2>
   <p class="page-meta">How often this session's roster won a round based on whether they outbought, matched, or underbought the enemy's loadout that round, combined across every match in the session.</p>
@@ -205,7 +211,7 @@
       <tr><th>Buy vs. enemy</th><th>Record</th><th>Win Rate</th><th>Avg. Loadout Share</th></tr>
     </thead>
     <tbody>
-      {% for row in stats.econ_matrix.rows %}
+      {% for row in stats.econ_favor_matrix.rows %}
       <tr>
         <td>{{ row.label }}</td>
         <td>{% if row.total %}{{ row.wins }}-{{ row.losses }}{% else %}&ndash;{% endif %}</td>

@@ -6,11 +6,24 @@ from sqlalchemy.orm import Session, aliased, selectinload
 from app.models import ImpactScore, KillEvent, MatchPlayer, Player, Round, RoundPlayerStat
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD, econ_tier_name
-from app.services.economy_graphs import FavorOutcomeMatrix, build_favor_outcome_matrix, session_econ_samples
+from app.services.economy_graphs import (
+    FavorOutcomeMatrix,
+    PistolStats,
+    TierMatrix,
+    build_favor_outcome_matrix,
+    build_pistol_stats,
+    build_tier_matrix,
+    session_econ_samples,
+)
 from app.services.friends import list_friend_ids
 from app.services.player_graphs import StateDiagram, build_session_round_win_diagram, build_session_round_win_diagrams_by_match
 from app.services.shoutouts import PlayerShoutout, assign_shoutouts
 from app.services.sessions import SessionSummary
+
+# Below this many matches, a session's round count is too small to fill in a
+# 3x3 buy-tier grid usefully -- fall back to the coarser favored/even/unfavored
+# breakdown instead.
+TIER_MATRIX_MIN_MATCHES = 3
 
 MULTI_KILL_THRESHOLD = 3
 # Operator (4700) + at minimum light shields (400): a round where the player
@@ -101,7 +114,9 @@ class SessionStats:
     kda_rows: list[KdaRow]
     round_win_diagram: StateDiagram
     round_win_diagrams_by_match: dict[int, StateDiagram]
-    econ_matrix: FavorOutcomeMatrix
+    econ_favor_matrix: FavorOutcomeMatrix | None
+    econ_tier_matrix: TierMatrix | None
+    econ_pistol_stats: PistolStats | None
     fun_stats: SessionFunStats
     shoutouts: list[PlayerShoutout]
 
@@ -116,7 +131,15 @@ def get_session_stats(
     round_win_diagrams_by_match = build_session_round_win_diagrams_by_match(session.matches, session.team_by_match)
     # team_by_match is only populated for multi-match sessions (see sessions.py),
     # so this is naturally empty -- same gating the round-win diagram above relies on.
-    econ_matrix = build_favor_outcome_matrix(session_econ_samples(session.matches, session.team_by_match))
+    econ_samples = session_econ_samples(session.matches, session.team_by_match)
+    if len(session.matches) >= TIER_MATRIX_MIN_MATCHES:
+        econ_favor_matrix = None
+        econ_tier_matrix = build_tier_matrix(econ_samples)
+        econ_pistol_stats = build_pistol_stats(econ_samples)
+    else:
+        econ_favor_matrix = build_favor_outcome_matrix(econ_samples)
+        econ_tier_matrix = None
+        econ_pistol_stats = None
 
     if not match_ids or not roster_player_ids:
         return SessionStats(
@@ -124,7 +147,9 @@ def get_session_stats(
             kda_rows=[],
             round_win_diagram=round_win_diagram,
             round_win_diagrams_by_match=round_win_diagrams_by_match,
-            econ_matrix=econ_matrix,
+            econ_favor_matrix=econ_favor_matrix,
+            econ_tier_matrix=econ_tier_matrix,
+            econ_pistol_stats=econ_pistol_stats,
             fun_stats=SessionFunStats(),
             shoutouts=[],
         )
@@ -172,7 +197,9 @@ def get_session_stats(
         kda_rows=kda_rows,
         round_win_diagram=round_win_diagram,
         round_win_diagrams_by_match=round_win_diagrams_by_match,
-        econ_matrix=econ_matrix,
+        econ_favor_matrix=econ_favor_matrix,
+        econ_tier_matrix=econ_tier_matrix,
+        econ_pistol_stats=econ_pistol_stats,
         fun_stats=fun_stats,
         shoutouts=shoutouts,
     )

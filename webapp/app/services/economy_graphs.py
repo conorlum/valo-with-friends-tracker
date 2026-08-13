@@ -7,7 +7,6 @@ from app.models.match import Team
 from app.scoring.impact import econ_tier_name
 from app.services.player_graphs import NO_DATA_FILL, win_color
 
-TIERS = ["PISTOL", "ECO", "FORCE", "FULL_BUY"]
 TIER_LABELS = {"PISTOL": "Pistol", "ECO": "Eco", "FORCE": "Force", "FULL_BUY": "Full Buy"}
 # Buy-quality tiers only -- PISTOL is a forced-reset round, not a quality
 # choice on the same scale, so it's excluded from the ranked gradient below.
@@ -234,11 +233,20 @@ class TierMatrix:
 
 
 def build_tier_matrix(samples: list[EconSample]) -> TierMatrix:
-    """Full own-tier x enemy-tier win-rate grid -- needs a lot of rounds to
-    fill in all 16 cells, so this is only used where the sample is large
-    (a player's whole match history), not a single match or session."""
+    """Own-tier x enemy-tier win-rate grid over the ranked buy tiers (Eco/
+    Force/Full Buy) -- needs a lot of rounds to fill in all 9 cells, so this
+    is only used where the sample is large (a player's whole match history,
+    or a multi-match session), not a single match.
+
+    Pistol rounds are excluded: a pistol round is always PISTOL vs PISTOL
+    (both teams reset on the same round number), so folding it into this
+    grid would only ever populate one row/column and leave the rest of that
+    row/column empty. build_pistol_stats covers pistol rounds separately.
+    """
     buckets: dict[tuple[str, str], dict[str, float]] = {}
     for s in samples:
+        if s.own_tier == "PISTOL" or s.enemy_tier == "PISTOL":
+            continue
         bucket = buckets.setdefault(
             (s.own_tier, s.enemy_tier), {"win": 0, "total": 0, "ratio_sum": 0.0, "ratio_count": 0}
         )
@@ -251,10 +259,12 @@ def build_tier_matrix(samples: list[EconSample]) -> TierMatrix:
             bucket["ratio_count"] += 1
 
     cells: dict[tuple[str, str], TierMatrixCell] = {}
-    for own_tier in TIERS:
-        for enemy_tier in TIERS:
+    total_rounds = 0
+    for own_tier in _BUY_TIERS:
+        for enemy_tier in _BUY_TIERS:
             bucket = buckets.get((own_tier, enemy_tier))
             total = bucket["total"] if bucket else 0
+            total_rounds += total
             win_pct = bucket["win"] / total if total else None
             avg_ratio = bucket["ratio_sum"] / bucket["ratio_count"] if bucket and bucket["ratio_count"] else None
             cells[(own_tier, enemy_tier)] = TierMatrixCell(
@@ -266,7 +276,38 @@ def build_tier_matrix(samples: list[EconSample]) -> TierMatrix:
                 fill=win_color(win_pct) if win_pct is not None else NO_DATA_FILL,
                 avg_loadout_ratio=avg_ratio,
             )
-    return TierMatrix(tiers=TIERS, tier_labels=TIER_LABELS, cells=cells, total_rounds=len(samples))
+    return TierMatrix(tiers=_BUY_TIERS, tier_labels=TIER_LABELS, cells=cells, total_rounds=total_rounds)
+
+
+@dataclass
+class PistolStats:
+    wins: int
+    losses: int
+    total: int
+    win_pct: float | None
+    fill: str
+    avg_loadout_ratio: float | None
+
+
+def build_pistol_stats(samples: list[EconSample]) -> PistolStats:
+    """Pistol-round win rate/loadout share, pulled out of the tier matrix
+    grid above since pistol rounds don't vary by buy tier."""
+    pistol_samples = [s for s in samples if s.own_tier == "PISTOL"]
+    total = len(pistol_samples)
+    wins = sum(1 for s in pistol_samples if s.own_won)
+    win_pct = wins / total if total else None
+    ratios = [
+        r for r in (_loadout_ratio(s.own_loadout, s.enemy_loadout) for s in pistol_samples) if r is not None
+    ]
+    avg_ratio = sum(ratios) / len(ratios) if ratios else None
+    return PistolStats(
+        wins=wins,
+        losses=total - wins,
+        total=total,
+        win_pct=win_pct,
+        fill=win_color(win_pct) if win_pct is not None else NO_DATA_FILL,
+        avg_loadout_ratio=avg_ratio,
+    )
 
 
 # Coarser than the tier matrix: whether a team's buy out-ranked, matched, or

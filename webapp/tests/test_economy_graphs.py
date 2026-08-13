@@ -3,7 +3,13 @@ import pytest
 from app.models import Match, MatchPlayer, Round
 from app.models.match import MatchSource, Team
 from app.models.round import RoundPlayerStat
-from app.services.economy_graphs import EconSample, build_favor_outcome_matrix, build_tier_matrix, match_econ_rounds
+from app.services.economy_graphs import (
+    EconSample,
+    build_favor_outcome_matrix,
+    build_pistol_stats,
+    build_tier_matrix,
+    match_econ_rounds,
+)
 
 
 def _match_player(id_, team):
@@ -76,12 +82,48 @@ def test_tier_matrix_computes_win_pct_per_matchup():
     assert other.win_pct == 0.0
     assert other.avg_loadout_ratio == 500 / (500 + 4500)
 
-    # Every tier pair is present even with zero samples.
-    empty = matrix.cells[("PISTOL", "FORCE")]
+    # Every buy-tier pair is present even with zero samples.
+    empty = matrix.cells[("ECO", "FORCE")]
     assert empty.total == 0
     assert empty.win_pct is None
     assert empty.avg_loadout_ratio is None
     assert matrix.total_rounds == 4
+    # Only the ranked buy tiers form the grid -- no PISTOL row/column.
+    assert matrix.tiers == ["ECO", "FORCE", "FULL_BUY"]
+    assert ("PISTOL", "PISTOL") not in matrix.cells
+
+
+def test_tier_matrix_excludes_pistol_samples_from_totals():
+    samples = [
+        EconSample(own_tier="FULL_BUY", enemy_tier="ECO", own_won=True, own_loadout=4500, enemy_loadout=2000),
+        EconSample(own_tier="PISTOL", enemy_tier="PISTOL", own_won=True, own_loadout=900, enemy_loadout=950),
+    ]
+    matrix = build_tier_matrix(samples)
+    assert matrix.total_rounds == 1
+
+
+def test_build_pistol_stats_computes_win_pct_and_loadout_share():
+    samples = [
+        EconSample(own_tier="PISTOL", enemy_tier="PISTOL", own_won=True, own_loadout=900, enemy_loadout=950),
+        EconSample(own_tier="PISTOL", enemy_tier="PISTOL", own_won=False, own_loadout=800, enemy_loadout=1000),
+        # Non-pistol samples are ignored.
+        EconSample(own_tier="ECO", enemy_tier="FULL_BUY", own_won=False, own_loadout=1500, enemy_loadout=4500),
+    ]
+    stats = build_pistol_stats(samples)
+    assert stats.wins == 1
+    assert stats.losses == 1
+    assert stats.total == 2
+    assert stats.win_pct == 0.5
+    assert stats.avg_loadout_ratio == pytest.approx((900 / 1850 + 800 / 1800) / 2)
+
+
+def test_build_pistol_stats_with_no_pistol_rounds_has_no_win_pct():
+    stats = build_pistol_stats(
+        [EconSample(own_tier="ECO", enemy_tier="FULL_BUY", own_won=False, own_loadout=1500, enemy_loadout=4500)]
+    )
+    assert stats.total == 0
+    assert stats.win_pct is None
+    assert stats.avg_loadout_ratio is None
 
 
 def test_favor_outcome_matrix_buckets_by_relative_tier_not_absolute():
