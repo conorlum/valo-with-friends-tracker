@@ -102,6 +102,42 @@
 </div>
 {% endif %}
 
+{% if econ_tier_matrix.total_rounds %}
+<div class="card">
+  <h2>Economy win rate by buy tier</h2>
+  <p class="page-meta">Win rate of rounds where {{ profile.player.display_name }}'s team bought at each tier (rows), split by what the enemy bought that same round (columns).</p>
+  <div class="chart-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Your buy \ Enemy buy</th>
+          {% for enemy_tier in econ_tier_matrix.tiers %}
+          <th>{{ econ_tier_matrix.tier_labels[enemy_tier] }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for own_tier in econ_tier_matrix.tiers %}
+        <tr>
+          <td>{{ econ_tier_matrix.tier_labels[own_tier] }}</td>
+          {% for enemy_tier in econ_tier_matrix.tiers %}
+          {% set cell = econ_tier_matrix.cells[(own_tier, enemy_tier)] %}
+          <td>
+            {% if cell.win_pct is not none %}
+            <span class="pill" style="background-color: {{ cell.fill }};" title="{{ cell.wins }}/{{ cell.total }} rounds won">{{ (cell.win_pct * 100) | round | int }}%</span>
+            {% else %}
+            <span class="stat-empty">&ndash;</span>
+            {% endif %}
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 {% if kill_order_graph.nodes %}
 <div class="card">
   <h2>Kill order graph</h2>
