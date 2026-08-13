@@ -327,7 +327,7 @@
       </tr>
     </thead>
     <tbody>
-      {% for match in session.matches %}
+      {% for match in session.matches | reverse %}
       {% set match_summary = session.match_summaries[match.id] %}
       {% set our_team = session.team_by_match.get(match.id) %}
       {% set our_score, enemy_score = (match.team1_rounds_won, match.team2_rounds_won) if our_team != 'team-2' else (match.team2_rounds_won, match.team1_rounds_won) %}
