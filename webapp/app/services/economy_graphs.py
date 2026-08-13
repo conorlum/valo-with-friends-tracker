@@ -48,22 +48,32 @@ def _preload_matches(matches: list[Match]) -> None:
 
 
 def _match_raw_econ_rounds(match: Match) -> dict[int, tuple[int, int, Team | None]]:
-    """round_number -> (team1_loadout, team2_loadout, winner), summed from
-    each round's per-player loadout. Rounds with no recorded loadout stats
-    (e.g. not yet ingested) are omitted."""
+    """round_number -> (team1_loadout, team2_loadout, winner), averaged
+    across each round's per-player loadout -- econ_tier_name's thresholds
+    are calibrated against a single player's buy, so a team-total sum would
+    push almost every round into FULL_BUY. Rounds with no recorded loadout
+    stats (e.g. not yet ingested) are omitted."""
     team_of = {mp.id: mp.team for mp in match.match_players}
     rows: dict[int, tuple[int, int, Team | None]] = {}
     for round_row in match.rounds:
-        loadout = {Team.TEAM_1: 0, Team.TEAM_2: 0}
-        has_stats = False
+        loadout_sum = {Team.TEAM_1: 0, Team.TEAM_2: 0}
+        player_count = {Team.TEAM_1: 0, Team.TEAM_2: 0}
         for stat in round_row.player_stats:
             team = team_of.get(stat.match_player_id)
             if team is not None:
-                loadout[team] += stat.loadout
-                has_stats = True
-        if not has_stats:
+                loadout_sum[team] += stat.loadout
+                player_count[team] += 1
+        if not player_count[Team.TEAM_1] and not player_count[Team.TEAM_2]:
             continue
-        rows[round_row.round_number] = (loadout[Team.TEAM_1], loadout[Team.TEAM_2], _winner_team(round_row.outcome))
+        avg_loadout = {
+            team: (loadout_sum[team] // player_count[team] if player_count[team] else 0)
+            for team in (Team.TEAM_1, Team.TEAM_2)
+        }
+        rows[round_row.round_number] = (
+            avg_loadout[Team.TEAM_1],
+            avg_loadout[Team.TEAM_2],
+            _winner_team(round_row.outcome),
+        )
     return rows
 
 
@@ -95,8 +105,9 @@ def _econ_round_row(round_number: int, team1_loadout: int, team2_loadout: int, w
 
 
 def match_econ_rounds(match: Match) -> dict[int, EconRoundRow]:
-    """Per-round team loadouts/buy-tiers for one match, keyed by round_number
-    -- what each team bought that round, for a raw round-by-round table."""
+    """Per-round average-per-player team loadouts/buy-tiers for one match,
+    keyed by round_number -- what each team bought that round, for a raw
+    round-by-round table."""
     _preload_match(match)
     return {
         round_number: _econ_round_row(round_number, team1_loadout, team2_loadout, winner)
