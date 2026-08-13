@@ -10,7 +10,15 @@
 $profileDir = "$env:LOCALAPPDATA\ValoMathsScraper\ChromeProfile"
 New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
 
-$chromePath = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+$chromeCandidates = @(
+    "C:\Program Files\Google\Chrome\Application\chrome.exe",
+    "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+)
+$chromePath = $chromeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $chromePath) {
+    throw "Couldn't find chrome.exe in any of: $($chromeCandidates -join ', ')"
+}
 
 & $chromePath `
     "--remote-debugging-port=9222" `
