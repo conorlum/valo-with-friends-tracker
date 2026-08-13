@@ -678,6 +678,20 @@ tr.row-event td {
   font-variant-numeric: tabular-nums;
 }
 
+/* Solid-color pill for a computed value (buy-tier badges, econ win-rate) --
+   unlike .badge, background is set inline per-instance rather than by a
+   fixed class, so no dot/currentColor styling here. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #ffffff;
+  white-space: nowrap;
+}
+
 /* Meters (proportional bars, e.g. impact magnitude / agent counts) */
 .meter-cell {
   display: flex;

@@ -136,6 +136,74 @@
   </div>
 </div>
 
+{% if team1_econ_matrix.total_rounds or team2_econ_matrix.total_rounds %}
+<div class="card">
+  <h2>Economy vs. round outcome</h2>
+  <div class="tab-row" role="tablist">
+    <button type="button" class="tab-btn active" data-econ-team-tab="1">Team 1</button>
+    <button type="button" class="tab-btn" data-econ-team-tab="2">Team 2</button>
+  </div>
+  <p class="page-meta" id="econ-matrix-meta">How often Team 1 won a round based on whether they outbought, matched, or underbought the enemy's loadout that round.</p>
+  <div id="econ-matrix-1">
+    <table>
+      <thead>
+        <tr><th>Buy vs. enemy</th><th>Record</th><th>Win Rate</th></tr>
+      </thead>
+      <tbody>
+        {% for row in team1_econ_matrix.rows %}
+        <tr>
+          <td>{{ row.label }}</td>
+          <td>{% if row.total %}{{ row.wins }}-{{ row.losses }}{% else %}&ndash;{% endif %}</td>
+          <td>
+            {% if row.win_pct is not none %}
+            <span class="pill" style="background-color: {{ row.fill }};">{{ (row.win_pct * 100) | round | int }}%</span>
+            {% else %}
+            <span class="stat-empty">No data</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div id="econ-matrix-2" style="display: none;">
+    <table>
+      <thead>
+        <tr><th>Buy vs. enemy</th><th>Record</th><th>Win Rate</th></tr>
+      </thead>
+      <tbody>
+        {% for row in team2_econ_matrix.rows %}
+        <tr>
+          <td>{{ row.label }}</td>
+          <td>{% if row.total %}{{ row.wins }}-{{ row.losses }}{% else %}&ndash;{% endif %}</td>
+          <td>
+            {% if row.win_pct is not none %}
+            <span class="pill" style="background-color: {{ row.fill }};">{{ (row.win_pct * 100) | round | int }}%</span>
+            {% else %}
+            <span class="stat-empty">No data</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll(".tab-btn[data-econ-team-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const team = btn.dataset.econTeamTab;
+      document.querySelectorAll(".tab-btn[data-econ-team-tab]").forEach((b) => b.classList.toggle("active", b === btn));
+      document.getElementById("econ-matrix-1").style.display = team === "1" ? "" : "none";
+      document.getElementById("econ-matrix-2").style.display = team === "2" ? "" : "none";
+      document.getElementById("econ-matrix-meta").textContent =
+        `How often Team ${team} won a round based on whether they outbought, matched, or underbought the enemy's loadout that round.`;
+    });
+  });
+</script>
+{% endif %}
+
 {% if team1_win_graph.nodes or team2_win_graph.nodes %}
 <div class="card">
   <h2>Round win rate by game state</h2>
@@ -187,11 +255,12 @@
   <h2>Rounds</h2>
   <table>
     <thead>
-      <tr><th>Round</th><th>Outcome</th></tr>
+      <tr><th>Round</th><th>Outcome</th><th>Team 1 Buy</th><th>Team 2 Buy</th></tr>
     </thead>
     <tbody>
       {% for round_number in summary.round_numbers %}
       {% set outcome = summary.round_outcomes.get(round_number) %}
+      {% set econ = econ_by_round.get(round_number) %}
       {% set winner_row_class = 'row-team-1' if outcome and outcome.startswith('Team A') else 'row-team-2' if outcome and outcome.startswith('Team B') else '' %}
       <tr class="clickable-row {{ winner_row_class }}"
           hx-get="/matches/{{ match.external_id }}/rounds/{{ round_number }}"
@@ -201,6 +270,22 @@
         <td>
           {% if outcome %}
           {{ outcome.replace('Team A ', '').replace('Team B ', '') }}
+          {% else %}
+          &ndash;
+          {% endif %}
+        </td>
+        <td>
+          {% if econ %}
+          <span class="pill" style="background-color: {{ econ.team1_tier_color }};">{{ econ.team1_tier_label }}</span>
+          <span class="page-meta" style="display: inline; margin-left: 0.3rem;">{{ econ.team1_loadout }}</span>
+          {% else %}
+          &ndash;
+          {% endif %}
+        </td>
+        <td>
+          {% if econ %}
+          <span class="pill" style="background-color: {{ econ.team2_tier_color }};">{{ econ.team2_tier_label }}</span>
+          <span class="page-meta" style="display: inline; margin-left: 0.3rem;">{{ econ.team2_loadout }}</span>
           {% else %}
           &ndash;
           {% endif %}

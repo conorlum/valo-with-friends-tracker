@@ -21,7 +21,7 @@ PADDING = 36
 
 _CRITICAL = (0xE0, 0x55, 0x4F)
 _GOOD = (0x0C, 0xA3, 0x0C)
-_NO_DATA_FILL = "#2c2c2a"
+NO_DATA_FILL = "#2c2c2a"
 
 
 @dataclass
@@ -98,7 +98,7 @@ def _edge_midpoint(x1: float, y1: float, x2: float, y2: float) -> tuple[float, f
     return (x1 + x2) / 2, (y1 + y2) / 2
 
 
-def _win_color(win_pct: float) -> str:
+def win_color(win_pct: float) -> str:
     r = round(_CRITICAL[0] + (_GOOD[0] - _CRITICAL[0]) * win_pct)
     g = round(_CRITICAL[1] + (_GOOD[1] - _CRITICAL[1]) * win_pct)
     b = round(_CRITICAL[2] + (_GOOD[2] - _CRITICAL[2]) * win_pct)
@@ -364,7 +364,7 @@ def _round_win_diagram(win_stats: dict[str, dict[str, int]]) -> StateDiagram:
                     id=state, x=x, y=y, label=state,
                     sublabel=f"{bucket['win']}/{total} rounds won ({win_pct:.0%})",
                     short_label=f"{win_pct:.0%}",
-                    fill=_win_color(win_pct), text_fill="#ffffff",
+                    fill=win_color(win_pct), text_fill="#ffffff",
                     radius=ROUND_WIN_NODE_RADIUS,
                 )
             )
@@ -372,7 +372,7 @@ def _round_win_diagram(win_stats: dict[str, dict[str, int]]) -> StateDiagram:
             nodes.append(
                 GraphNode(
                     id=state, x=x, y=y, label=state, sublabel="No data", short_label=None,
-                    fill=_NO_DATA_FILL, text_fill="#898781",
+                    fill=NO_DATA_FILL, text_fill="#898781",
                     radius=ROUND_WIN_NODE_RADIUS,
                 )
             )
