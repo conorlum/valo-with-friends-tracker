@@ -5,7 +5,6 @@ from app.models.match import MatchSource, Team
 from app.models.round import RoundPlayerStat
 from app.services.economy_graphs import (
     EconSample,
-    build_favor_outcome_matrix,
     build_pistol_stats,
     build_tier_matrix,
     match_econ_rounds,
@@ -83,13 +82,13 @@ def test_tier_matrix_computes_win_pct_per_matchup():
     assert other.avg_loadout_ratio == 500 / (500 + 4500)
 
     # Every buy-tier pair is present even with zero samples.
-    empty = matrix.cells[("ECO", "FORCE")]
+    empty = matrix.cells[("FULL_BUY", "FULL_BUY")]
     assert empty.total == 0
     assert empty.win_pct is None
     assert empty.avg_loadout_ratio is None
     assert matrix.total_rounds == 4
     # Only the ranked buy tiers form the grid -- no PISTOL row/column.
-    assert matrix.tiers == ["ECO", "FORCE", "FULL_BUY"]
+    assert matrix.tiers == ["ECO", "FULL_BUY"]
     assert ("PISTOL", "PISTOL") not in matrix.cells
 
 
@@ -124,40 +123,3 @@ def test_build_pistol_stats_with_no_pistol_rounds_has_no_win_pct():
     assert stats.total == 0
     assert stats.win_pct is None
     assert stats.avg_loadout_ratio is None
-
-
-def test_favor_outcome_matrix_buckets_by_relative_tier_not_absolute():
-    samples = [
-        # Favored: bought a higher tier than the enemy.
-        EconSample(own_tier="FULL_BUY", enemy_tier="ECO", own_won=True, own_loadout=4500, enemy_loadout=2000),
-        EconSample(own_tier="FORCE", enemy_tier="ECO", own_won=False, own_loadout=3500, enemy_loadout=1500),
-        # Even: same tier both sides, regardless of which tier.
-        EconSample(own_tier="ECO", enemy_tier="ECO", own_won=False, own_loadout=1500, enemy_loadout=1500),
-        EconSample(own_tier="FULL_BUY", enemy_tier="FULL_BUY", own_won=True, own_loadout=4500, enemy_loadout=4500),
-        # Unfavored: bought a lower tier than the enemy.
-        EconSample(own_tier="ECO", enemy_tier="FULL_BUY", own_won=False, own_loadout=1500, enemy_loadout=4500),
-    ]
-    matrix = build_favor_outcome_matrix(samples)
-    by_key = {row.key: row for row in matrix.rows}
-
-    assert by_key["favored"].total == 2
-    assert by_key["favored"].wins == 1
-    assert by_key["even"].total == 2
-    assert by_key["even"].wins == 1
-    assert by_key["unfavored"].total == 1
-    assert by_key["unfavored"].wins == 0
-    assert matrix.total_rounds == 5
-
-    # Own team's average share of the two teams' combined loadout.
-    assert by_key["even"].avg_loadout_ratio == 0.5
-    assert by_key["unfavored"].avg_loadout_ratio == 1500 / (1500 + 4500)
-
-
-def test_favor_outcome_matrix_row_with_no_samples_has_no_win_pct():
-    matrix = build_favor_outcome_matrix(
-        [EconSample(own_tier="FULL_BUY", enemy_tier="ECO", own_won=True, own_loadout=4500, enemy_loadout=2000)]
-    )
-    by_key = {row.key: row for row in matrix.rows}
-    assert by_key["unfavored"].total == 0
-    assert by_key["unfavored"].win_pct is None
-    assert by_key["unfavored"].avg_loadout_ratio is None

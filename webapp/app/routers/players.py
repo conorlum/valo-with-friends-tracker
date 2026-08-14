@@ -4,7 +4,12 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Player
 from app.services.auth import get_current_player
-from app.services.economy_graphs import build_pistol_stats, build_tier_matrix, player_econ_samples
+from app.services.economy_graphs import (
+    build_loadout_win_scatter,
+    build_pistol_stats,
+    build_tier_matrix,
+    player_econ_samples,
+)
 from app.services.friends import list_friend_ids
 from app.services.map_streaks import compute_map_streaks
 from app.services.player_graphs import build_state_diagrams, top_kill_order_state_deltas
@@ -40,6 +45,7 @@ def _build_profile_context(db: Session, player: Player, match_limit: int | None,
     econ_samples = player_econ_samples(db, player, match_limit=match_limit)
     econ_tier_matrix = build_tier_matrix(econ_samples)
     econ_pistol_stats = build_pistol_stats(econ_samples)
+    econ_loadout_scatter = build_loadout_win_scatter(econ_samples)
     return {
         "profile": profile,
         "chart_data": chart_data,
@@ -51,6 +57,7 @@ def _build_profile_context(db: Session, player: Player, match_limit: int | None,
         "top_death_differentials": top_death_differentials,
         "econ_tier_matrix": econ_tier_matrix,
         "econ_pistol_stats": econ_pistol_stats,
+        "econ_loadout_scatter": econ_loadout_scatter,
         "scope": scope,
     }
 

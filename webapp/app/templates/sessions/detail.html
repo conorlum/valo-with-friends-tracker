@@ -196,45 +196,13 @@
 </div>
 {% endmacro %}
 
-{% if stats.econ_tier_matrix %}
 {% set econ_tier_matrix = stats.econ_tier_matrix %}
 {% set econ_pistol_stats = stats.econ_pistol_stats %}
+{% set econ_loadout_scatter = stats.econ_loadout_scatter %}
 {% set econ_tier_heading = "Economy win rate by buy tier" %}
 {% set econ_tier_description = "Win rate of rounds where this session's roster bought at each tier (rows), split by what the enemy bought that same round (columns), combined across every match in the session." %}
+{% set econ_pistol_label = "Pistol rounds:" %}
 {% include "_econ_tier_matrix.html" %}
-{% elif stats.econ_favor_matrix.total_rounds %}
-<div class="card">
-  <h2>Economy vs. round outcome</h2>
-  <p class="page-meta">How often this session's roster won a round based on whether they outbought, matched, or underbought the enemy's loadout that round, combined across every match in the session.</p>
-  <table>
-    <thead>
-      <tr><th>Buy vs. enemy</th><th>Record</th><th>Win Rate</th><th>Avg. Loadout Share</th></tr>
-    </thead>
-    <tbody>
-      {% for row in stats.econ_favor_matrix.rows %}
-      <tr>
-        <td>{{ row.label }}</td>
-        <td>{% if row.total %}{{ row.wins }}-{{ row.losses }}{% else %}&ndash;{% endif %}</td>
-        <td>
-          {% if row.win_pct is not none %}
-          <span class="pill" style="background-color: {{ row.fill }};">{{ (row.win_pct * 100) | round | int }}%</span>
-          {% else %}
-          <span class="stat-empty">No data</span>
-          {% endif %}
-        </td>
-        <td>
-          {% if row.avg_loadout_ratio is not none %}
-          <span class="page-meta" title="Own loadout as a share of both teams' combined loadout, averaged across these rounds">{{ (row.avg_loadout_ratio * 100) | round | int }}%</span>
-          {% else %}
-          <span class="stat-empty">&ndash;</span>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% endif %}
 
 {% set fun = stats.fun_stats %}
 {% if fun.biggest_multi_kill or fun.longest_kill_streak or fun.most_multi_kills or fun.most_kills_on_enemy_top_frag or fun.most_deaths_to_enemy_bottom_frag or fun.most_clutches or fun.round_mvp or fun.eco_frags or fun.op_crutch or fun.most_trades_made or fun.most_traded or fun.most_econ_upset_deaths or fun.most_round_changer or fun.most_xvx_kills or fun.most_spike_deaths or fun.post_plant_menace or fun.most_ghost_rounds or fun.most_entry_kills or fun.most_late_round_kills or fun.most_first_deaths_in_losses or fun.most_last_alive_in_wipes %}

@@ -136,71 +136,25 @@
   </div>
 </div>
 
-{% if team1_econ_matrix.total_rounds or team2_econ_matrix.total_rounds %}
+{% if team1_econ_tier_matrix.total_rounds or team2_econ_tier_matrix.total_rounds %}
 <div class="card">
-  <h2>Economy vs. round outcome</h2>
+  <h2>Economy win rate by buy tier</h2>
   <div class="tab-row" role="tablist">
     <button type="button" class="tab-btn active" data-econ-team-tab="1">Team 1</button>
     <button type="button" class="tab-btn" data-econ-team-tab="2">Team 2</button>
   </div>
-  <p class="page-meta" id="econ-matrix-meta">How often Team 1 won a round based on whether they outbought, matched, or underbought the enemy's loadout that round.</p>
+  <p class="page-meta" id="econ-matrix-meta">Win rate of rounds where Team 1 bought at each tier (rows), split by what the enemy bought that same round (columns).</p>
   <div id="econ-matrix-1">
-    <table>
-      <thead>
-        <tr><th>Buy vs. enemy</th><th>Record</th><th>Win Rate</th><th>Avg. Loadout Share</th></tr>
-      </thead>
-      <tbody>
-        {% for row in team1_econ_matrix.rows %}
-        <tr>
-          <td>{{ row.label }}</td>
-          <td>{% if row.total %}{{ row.wins }}-{{ row.losses }}{% else %}&ndash;{% endif %}</td>
-          <td>
-            {% if row.win_pct is not none %}
-            <span class="pill" style="background-color: {{ row.fill }};">{{ (row.win_pct * 100) | round | int }}%</span>
-            {% else %}
-            <span class="stat-empty">No data</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if row.avg_loadout_ratio is not none %}
-            <span class="page-meta" title="Own loadout as a share of both teams' combined loadout, averaged across these rounds">{{ (row.avg_loadout_ratio * 100) | round | int }}%</span>
-            {% else %}
-            <span class="stat-empty">&ndash;</span>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    {% set econ_tier_matrix = team1_econ_tier_matrix %}
+    {% set econ_pistol_stats = team1_econ_pistol_stats %}
+    {% set econ_pistol_label = "Pistol rounds:" %}
+    {% include "_econ_tier_matrix_body.html" %}
   </div>
   <div id="econ-matrix-2" style="display: none;">
-    <table>
-      <thead>
-        <tr><th>Buy vs. enemy</th><th>Record</th><th>Win Rate</th><th>Avg. Loadout Share</th></tr>
-      </thead>
-      <tbody>
-        {% for row in team2_econ_matrix.rows %}
-        <tr>
-          <td>{{ row.label }}</td>
-          <td>{% if row.total %}{{ row.wins }}-{{ row.losses }}{% else %}&ndash;{% endif %}</td>
-          <td>
-            {% if row.win_pct is not none %}
-            <span class="pill" style="background-color: {{ row.fill }};">{{ (row.win_pct * 100) | round | int }}%</span>
-            {% else %}
-            <span class="stat-empty">No data</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if row.avg_loadout_ratio is not none %}
-            <span class="page-meta" title="Own loadout as a share of both teams' combined loadout, averaged across these rounds">{{ (row.avg_loadout_ratio * 100) | round | int }}%</span>
-            {% else %}
-            <span class="stat-empty">&ndash;</span>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    {% set econ_tier_matrix = team2_econ_tier_matrix %}
+    {% set econ_pistol_stats = team2_econ_pistol_stats %}
+    {% set econ_pistol_label = "Pistol rounds:" %}
+    {% include "_econ_tier_matrix_body.html" %}
   </div>
 </div>
 
@@ -212,7 +166,7 @@
       document.getElementById("econ-matrix-1").style.display = team === "1" ? "" : "none";
       document.getElementById("econ-matrix-2").style.display = team === "2" ? "" : "none";
       document.getElementById("econ-matrix-meta").textContent =
-        `How often Team ${team} won a round based on whether they outbought, matched, or underbought the enemy's loadout that round.`;
+        `Win rate of rounds where Team ${team} bought at each tier (rows), split by what the enemy bought that same round (columns).`;
     });
   });
 </script>

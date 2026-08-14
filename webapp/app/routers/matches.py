@@ -11,7 +11,7 @@ from app.services.matches import (
     list_matches,
     list_matches_for_player,
 )
-from app.services.economy_graphs import build_favor_outcome_matrix, match_econ_rounds, match_econ_samples
+from app.services.economy_graphs import build_pistol_stats, build_tier_matrix, match_econ_rounds, match_econ_samples
 from app.services.player_graphs import build_match_round_win_diagrams
 from app.templates import templates
 
@@ -82,8 +82,10 @@ def match_detail(request: Request, external_id: str, db: Session = Depends(get_d
     team1_win_graph, team2_win_graph = build_match_round_win_diagrams(match)
     econ_by_round = match_econ_rounds(match)
     team1_econ_samples, team2_econ_samples = match_econ_samples(match)
-    team1_econ_matrix = build_favor_outcome_matrix(team1_econ_samples)
-    team2_econ_matrix = build_favor_outcome_matrix(team2_econ_samples)
+    team1_econ_tier_matrix = build_tier_matrix(team1_econ_samples)
+    team2_econ_tier_matrix = build_tier_matrix(team2_econ_samples)
+    team1_econ_pistol_stats = build_pistol_stats(team1_econ_samples)
+    team2_econ_pistol_stats = build_pistol_stats(team2_econ_samples)
     return templates.TemplateResponse(
         request,
         "matches/detail.html",
@@ -97,8 +99,10 @@ def match_detail(request: Request, external_id: str, db: Session = Depends(get_d
             "team1_win_graph": team1_win_graph,
             "team2_win_graph": team2_win_graph,
             "econ_by_round": econ_by_round,
-            "team1_econ_matrix": team1_econ_matrix,
-            "team2_econ_matrix": team2_econ_matrix,
+            "team1_econ_tier_matrix": team1_econ_tier_matrix,
+            "team2_econ_tier_matrix": team2_econ_tier_matrix,
+            "team1_econ_pistol_stats": team1_econ_pistol_stats,
+            "team2_econ_pistol_stats": team2_econ_pistol_stats,
         },
     )
 
