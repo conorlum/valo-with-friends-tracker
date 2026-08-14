@@ -7,10 +7,8 @@ from app.models import ImpactScore, KillEvent, MatchPlayer, Player, Round, Round
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD, econ_tier_name
 from app.services.economy_graphs import (
-    LoadoutWinScatter,
     PistolStats,
     TierMatrix,
-    build_loadout_win_scatter,
     build_pistol_stats,
     build_tier_matrix,
     session_econ_samples,
@@ -111,7 +109,6 @@ class SessionStats:
     round_win_diagrams_by_match: dict[int, StateDiagram]
     econ_tier_matrix: TierMatrix | None
     econ_pistol_stats: PistolStats | None
-    econ_loadout_scatter: LoadoutWinScatter | None
     fun_stats: SessionFunStats
     shoutouts: list[PlayerShoutout]
 
@@ -129,7 +126,6 @@ def get_session_stats(
     econ_samples = session_econ_samples(session.matches, session.team_by_match)
     econ_tier_matrix = build_tier_matrix(econ_samples)
     econ_pistol_stats = build_pistol_stats(econ_samples)
-    econ_loadout_scatter = build_loadout_win_scatter(econ_samples)
 
     if not match_ids or not roster_player_ids:
         return SessionStats(
@@ -139,7 +135,6 @@ def get_session_stats(
             round_win_diagrams_by_match=round_win_diagrams_by_match,
             econ_tier_matrix=econ_tier_matrix,
             econ_pistol_stats=econ_pistol_stats,
-            econ_loadout_scatter=econ_loadout_scatter,
             fun_stats=SessionFunStats(),
             shoutouts=[],
         )
@@ -189,7 +184,6 @@ def get_session_stats(
         round_win_diagrams_by_match=round_win_diagrams_by_match,
         econ_tier_matrix=econ_tier_matrix,
         econ_pistol_stats=econ_pistol_stats,
-        econ_loadout_scatter=econ_loadout_scatter,
         fun_stats=fun_stats,
         shoutouts=shoutouts,
     )

@@ -311,7 +311,7 @@ def build_pistol_stats(samples: list[EconSample]) -> PistolStats:
 # Fixed pixel layout for the chart below -- unlike the diamond state diagrams
 # elsewhere, this has a real fixed x/y axis pair, so the geometry is
 # hardcoded once here rather than computed per dataset.
-_SCATTER_WIDTH = 640
+_SCATTER_WIDTH = 960
 _SCATTER_HEIGHT = 320
 _SCATTER_PLOT_LEFT = 56
 _SCATTER_PLOT_RIGHT = _SCATTER_WIDTH - 24
@@ -322,11 +322,13 @@ _SCATTER_PLOT_BOTTOM = _SCATTER_HEIGHT - 44
 # by its exact value would put ~1 round in almost every group -- not enough
 # to average. 5-point-wide buckets (20 across the 0-100% range) are coarse
 # enough that a full player history (30 matches, ~13-20+ rounds each, so
-# 400-600+ rounds) puts a meaningful sample behind most buckets.
+# 400-600+ rounds) puts a meaningful sample behind most buckets. A session's
+# handful of matches doesn't clear that bar, so callers with too little data
+# (sessions) skip this chart entirely rather than rendering a noisy one.
 _BUCKET_WIDTH_PCT = 5
 _NUM_BUCKETS = 100 // _BUCKET_WIDTH_PCT
-_MIN_POINT_RADIUS = 3.0
-_MAX_POINT_RADIUS = 9.0
+_MIN_POINT_RADIUS = 2.0
+_MAX_POINT_RADIUS = 16.0
 
 
 @dataclass
@@ -405,7 +407,7 @@ def build_loadout_win_scatter(samples: list[EconSample]) -> LoadoutWinScatter:
         win_pct = bucket["win"] / total
         cx = x_for(idx * _BUCKET_WIDTH_PCT + _BUCKET_WIDTH_PCT / 2)
         cy = y_for(win_pct)
-        radius = _MIN_POINT_RADIUS + (_MAX_POINT_RADIUS - _MIN_POINT_RADIUS) * (total / max_total) ** 0.5
+        radius = _MIN_POINT_RADIUS + (_MAX_POINT_RADIUS - _MIN_POINT_RADIUS) * (total / max_total)
         low, high = idx * _BUCKET_WIDTH_PCT, (idx + 1) * _BUCKET_WIDTH_PCT
         points.append(
             BuyBucketPoint(
