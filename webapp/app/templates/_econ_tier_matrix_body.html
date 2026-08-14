@@ -1,0 +1,69 @@
+{# Expects in context: econ_tier_matrix (TierMatrix), and optionally
+   econ_pistol_stats (PistolStats | None), econ_pistol_label (str, defaults
+   below), and econ_loadout_scatter (LoadoutWinScatter | None). Caller is
+   responsible for the outer card/heading/description and for guarding on
+   whether there's any data at all. #}
+{% if econ_pistol_stats and econ_pistol_stats.total %}
+<p class="page-meta">
+  {{ econ_pistol_label | default("Pistol rounds (round 1 & 13, buy tier doesn't apply):") }}
+  <span class="pill" style="background-color: {{ econ_pistol_stats.fill }};" title="{{ econ_pistol_stats.wins }}/{{ econ_pistol_stats.total }} rounds won">{{ (econ_pistol_stats.win_pct * 100) | round | int }}%</span>
+  {% if econ_pistol_stats.avg_loadout_ratio is not none %}
+  <span style="margin-left: 0.4rem;" title="Own loadout as a share of both teams' combined loadout, averaged across these rounds">{{ (econ_pistol_stats.avg_loadout_ratio * 100) | round | int }}% of buy</span>
+  {% endif %}
+</p>
+{% endif %}
+{% if econ_tier_matrix.total_rounds %}
+<div class="chart-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>Your buy \ Enemy buy</th>
+        {% for enemy_tier in econ_tier_matrix.tiers %}
+        <th>{{ econ_tier_matrix.tier_labels[enemy_tier] }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for own_tier in econ_tier_matrix.tiers %}
+      <tr>
+        <td>{{ econ_tier_matrix.tier_labels[own_tier] }}</td>
+        {% for enemy_tier in econ_tier_matrix.tiers %}
+        {% set cell = econ_tier_matrix.cells[(own_tier, enemy_tier)] %}
+        <td>
+          {% if cell.win_pct is not none %}
+          <span class="pill" style="background-color: {{ cell.fill }};" title="{{ cell.wins }}/{{ cell.total }} rounds won">{{ (cell.win_pct * 100) | round | int }}%</span>
+          {% if cell.avg_loadout_ratio is not none %}
+          <br><span class="page-meta" style="display: inline-block; margin-top: 0.2rem;" title="Own loadout as a share of both teams' combined loadout, averaged across these rounds">{{ (cell.avg_loadout_ratio * 100) | round | int }}% of buy</span>
+          {% endif %}
+          {% else %}
+          <span class="stat-empty">&ndash;</span>
+          {% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% if econ_loadout_scatter and econ_loadout_scatter.points %}
+<p class="page-meta" style="margin-top: 1rem;">Own loadout share vs. round outcome, one dot per round.</p>
+<div class="chart-scroll">
+  <svg viewBox="{{ econ_loadout_scatter.view_box }}" style="width: 100%; max-width: 640px; height: auto; display: block; margin: 0 auto;">
+    <line x1="{{ econ_loadout_scatter.plot_left }}" y1="{{ econ_loadout_scatter.plot_top }}" x2="{{ econ_loadout_scatter.plot_left }}" y2="{{ econ_loadout_scatter.plot_bottom }}" stroke="var(--border)" stroke-width="1" />
+    <line x1="{{ econ_loadout_scatter.plot_left }}" y1="{{ econ_loadout_scatter.plot_bottom }}" x2="{{ econ_loadout_scatter.plot_right }}" y2="{{ econ_loadout_scatter.plot_bottom }}" stroke="var(--border)" stroke-width="1" />
+    {% for tick in econ_loadout_scatter.y_ticks %}
+    <line x1="{{ econ_loadout_scatter.plot_left }}" y1="{{ tick.y }}" x2="{{ econ_loadout_scatter.plot_right }}" y2="{{ tick.y }}" stroke="var(--border)" stroke-width="1" stroke-opacity="0.35" />
+    <text x="{{ econ_loadout_scatter.plot_left - 8 }}" y="{{ tick.y + 4 }}" text-anchor="end" font-size="11" fill="var(--ink-secondary)">{{ tick.label }}</text>
+    {% endfor %}
+    {% for column in econ_loadout_scatter.columns %}
+    <text x="{{ column.x }}" y="{{ econ_loadout_scatter.plot_bottom + 24 }}" text-anchor="middle" font-size="12" fill="var(--ink-secondary)">{{ column.label }}</text>
+    {% endfor %}
+    {% for point in econ_loadout_scatter.points %}
+    <circle cx="{{ point.cx }}" cy="{{ point.cy }}" r="4" fill="{{ point.fill }}" fill-opacity="0.55">
+      <title>{{ point.title }}</title>
+    </circle>
+    {% endfor %}
+  </svg>
+</div>
+{% endif %}

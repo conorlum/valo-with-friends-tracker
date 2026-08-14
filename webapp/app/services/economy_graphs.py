@@ -1,3 +1,4 @@
+import random
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session, object_session, selectinload
@@ -7,21 +8,20 @@ from app.models.match import Team
 from app.scoring.impact import econ_tier_name
 from app.services.player_graphs import NO_DATA_FILL, win_color
 
-TIER_LABELS = {"PISTOL": "Pistol", "ECO": "Eco", "FORCE": "Force", "FULL_BUY": "Full Buy"}
+TIER_LABELS = {"PISTOL": "Pistol", "ECO": "Eco", "FULL_BUY": "Full Buy"}
 # Buy-quality tiers only -- PISTOL is a forced-reset round, not a quality
 # choice on the same scale, so it's excluded from the ranked gradient below.
-# econ_tier_name's SAVE and ECO are folded together here: with SAVE folded in
-# there wasn't enough round volume in a single match/session to fill a 4-tier
-# grid, and the SAVE/ECO line didn't track a meaningfully different decision
-# anyway.
-_BUY_TIERS = ["ECO", "FORCE", "FULL_BUY"]
+# econ_tier_name's SAVE, ECO, and FORCE are all folded together here: there
+# wasn't enough round volume in a single match/session to fill a 3-tier grid
+# (let alone 4), and the finer distinctions didn't track a meaningfully
+# different decision anyway -- just eco vs. full buy.
+_BUY_TIERS = ["ECO", "FULL_BUY"]
 # Reuses the same red->green scale as round-win-rate coloring, applied across
 # the buy-tier order instead of a win percentage -- ECO is "worst" (red),
 # FULL_BUY "best" (green), so a buy-type badge reads with the same visual
 # language as every win-rate graph elsewhere on the site.
 TIER_COLOR = {tier: win_color(i / (len(_BUY_TIERS) - 1)) for i, tier in enumerate(_BUY_TIERS)}
 TIER_COLOR["PISTOL"] = "#5b6bd6"
-_TIER_RANK = {"PISTOL": 0, **{tier: i + 1 for i, tier in enumerate(_BUY_TIERS)}}
 
 # Same pistol-round convention as compute_round_credit_events in
 # app/scoring/credit_events.py: rounds 1 and 13 are the economy-reset rounds,
@@ -32,8 +32,7 @@ PISTOL_ROUNDS = {1, 13}
 def _tier_for(loadout: int, round_number: int) -> str:
     if round_number in PISTOL_ROUNDS:
         return "PISTOL"
-    tier = econ_tier_name(loadout)
-    return "ECO" if tier == "SAVE" else tier
+    return "FULL_BUY" if econ_tier_name(loadout) == "FULL_BUY" else "ECO"
 
 
 def _loadout_ratio(own_loadout: int, enemy_loadout: int) -> float | None:
@@ -310,72 +309,95 @@ def build_pistol_stats(samples: list[EconSample]) -> PistolStats:
     )
 
 
-# Coarser than the tier matrix: whether a team's buy out-ranked, matched, or
-# under-ranked the enemy's, crossed with round outcome. Fits a single
-# match's or session's round count without leaving cells empty the way the
-# full 4x4 grid would.
-FAVOR_LABELS = {
-    "favored": "Favored (bought more)",
-    "even": "Even",
-    "unfavored": "Unfavored (bought less)",
-}
-
-
-def _favor_key(own_tier: str, enemy_tier: str) -> str:
-    own_rank, enemy_rank = _TIER_RANK[own_tier], _TIER_RANK[enemy_tier]
-    if own_rank > enemy_rank:
-        return "favored"
-    if own_rank < enemy_rank:
-        return "unfavored"
-    return "even"
+# Fixed pixel layout for the scatter chart below -- unlike the diamond state
+# diagrams elsewhere, this has a real fixed x/y axis pair, so the geometry is
+# hardcoded once here rather than computed per dataset.
+_SCATTER_WIDTH = 640
+_SCATTER_HEIGHT = 320
+_SCATTER_PLOT_LEFT = 56
+_SCATTER_PLOT_RIGHT = _SCATTER_WIDTH - 24
+_SCATTER_PLOT_TOP = 20
+_SCATTER_PLOT_BOTTOM = _SCATTER_HEIGHT - 44
+_SCATTER_JITTER = 90.0
+_SCATTER_LOSS_X = _SCATTER_PLOT_LEFT + (_SCATTER_PLOT_RIGHT - _SCATTER_PLOT_LEFT) * 0.28
+_SCATTER_WIN_X = _SCATTER_PLOT_LEFT + (_SCATTER_PLOT_RIGHT - _SCATTER_PLOT_LEFT) * 0.72
 
 
 @dataclass
-class FavorOutcomeRow:
-    key: str
-    label: str
-    wins: int
-    losses: int
-    total: int
-    win_pct: float | None
+class ScatterPoint:
+    cx: float
+    cy: float
     fill: str
-    avg_loadout_ratio: float | None
+    title: str
 
 
 @dataclass
-class FavorOutcomeMatrix:
-    rows: list[FavorOutcomeRow]
-    total_rounds: int
+class ScatterTick:
+    y: float
+    label: str
 
 
-def build_favor_outcome_matrix(samples: list[EconSample]) -> FavorOutcomeMatrix:
-    buckets = {key: {"win": 0, "total": 0, "ratio_sum": 0.0, "ratio_count": 0} for key in FAVOR_LABELS}
+@dataclass
+class ScatterColumn:
+    x: float
+    label: str
+
+
+@dataclass
+class LoadoutWinScatter:
+    points: list[ScatterPoint]
+    y_ticks: list[ScatterTick]
+    columns: list[ScatterColumn]
+    view_box: str
+    plot_left: float
+    plot_right: float
+    plot_top: float
+    plot_bottom: float
+
+
+def build_loadout_win_scatter(samples: list[EconSample]) -> LoadoutWinScatter:
+    """One dot per round: own loadout share (y) against whether the round was
+    won or lost (x) -- a finer-grained companion to the tier matrix above it,
+    showing the actual spread of buy shares behind each tier's win rate
+    instead of just the cell averages. Points are horizontally jittered
+    (fixed seed, so the layout is stable across reloads) since x only takes
+    two values. Pistol rounds are excluded, same rationale as the tier
+    matrix: buy tier doesn't meaningfully apply to a forced-reset round.
+    """
+    rng = random.Random(1337)
+    column_x = {False: _SCATTER_LOSS_X, True: _SCATTER_WIN_X}
+    points: list[ScatterPoint] = []
     for s in samples:
-        bucket = buckets[_favor_key(s.own_tier, s.enemy_tier)]
-        bucket["total"] += 1
-        if s.own_won:
-            bucket["win"] += 1
+        if s.own_tier == "PISTOL":
+            continue
         ratio = _loadout_ratio(s.own_loadout, s.enemy_loadout)
-        if ratio is not None:
-            bucket["ratio_sum"] += ratio
-            bucket["ratio_count"] += 1
-
-    rows = []
-    for key, label in FAVOR_LABELS.items():
-        bucket = buckets[key]
-        total = bucket["total"]
-        win_pct = bucket["win"] / total if total else None
-        avg_ratio = bucket["ratio_sum"] / bucket["ratio_count"] if bucket["ratio_count"] else None
-        rows.append(
-            FavorOutcomeRow(
-                key=key,
-                label=label,
-                wins=bucket["win"],
-                losses=total - bucket["win"],
-                total=total,
-                win_pct=win_pct,
-                fill=win_color(win_pct) if win_pct is not None else NO_DATA_FILL,
-                avg_loadout_ratio=avg_ratio,
+        if ratio is None:
+            continue
+        cy = _SCATTER_PLOT_BOTTOM - ratio * (_SCATTER_PLOT_BOTTOM - _SCATTER_PLOT_TOP)
+        cx = column_x[s.own_won] + rng.uniform(-_SCATTER_JITTER, _SCATTER_JITTER)
+        points.append(
+            ScatterPoint(
+                cx=cx,
+                cy=cy,
+                fill=win_color(1.0 if s.own_won else 0.0),
+                title=f"{'Won' if s.own_won else 'Lost'} round -- {round(ratio * 100)}% of buy",
             )
         )
-    return FavorOutcomeMatrix(rows=rows, total_rounds=len(samples))
+    y_ticks = [
+        ScatterTick(
+            y=_SCATTER_PLOT_BOTTOM - pct / 100 * (_SCATTER_PLOT_BOTTOM - _SCATTER_PLOT_TOP),
+            label=f"{pct}%",
+        )
+        for pct in (0, 25, 50, 75, 100)
+    ]
+    columns = [ScatterColumn(x=_SCATTER_LOSS_X, label="Loss"), ScatterColumn(x=_SCATTER_WIN_X, label="Win")]
+    return LoadoutWinScatter(
+        points=points,
+        y_ticks=y_ticks,
+        columns=columns,
+        view_box=f"0 0 {_SCATTER_WIDTH} {_SCATTER_HEIGHT}",
+        plot_left=_SCATTER_PLOT_LEFT,
+        plot_right=_SCATTER_PLOT_RIGHT,
+        plot_top=_SCATTER_PLOT_TOP,
+        plot_bottom=_SCATTER_PLOT_BOTTOM,
+    )
