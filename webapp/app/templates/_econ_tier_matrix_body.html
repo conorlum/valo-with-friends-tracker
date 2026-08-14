@@ -49,7 +49,7 @@
 {% if econ_loadout_scatter and econ_loadout_scatter.points %}
 <p class="page-meta" style="margin-top: 1rem;">Win rate by own buy share, in 5-point buckets ({{ econ_loadout_scatter.total_rounds }} rounds). Dot size reflects each bucket's sample size.</p>
 <div class="chart-scroll">
-  <svg viewBox="{{ econ_loadout_scatter.view_box }}" style="width: 100%; max-width: 640px; height: auto; display: block; margin: 0 auto;">
+  <svg viewBox="{{ econ_loadout_scatter.view_box }}" style="width: 100%; max-width: 960px; height: auto; display: block; margin: 0 auto;">
     <line x1="{{ econ_loadout_scatter.plot_left }}" y1="{{ econ_loadout_scatter.plot_top }}" x2="{{ econ_loadout_scatter.plot_left }}" y2="{{ econ_loadout_scatter.plot_bottom }}" stroke="var(--border)" stroke-width="1" />
     <line x1="{{ econ_loadout_scatter.plot_left }}" y1="{{ econ_loadout_scatter.plot_bottom }}" x2="{{ econ_loadout_scatter.plot_right }}" y2="{{ econ_loadout_scatter.plot_bottom }}" stroke="var(--border)" stroke-width="1" />
     {% for tick in econ_loadout_scatter.y_ticks %}
