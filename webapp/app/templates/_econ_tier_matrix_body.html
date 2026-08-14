@@ -47,20 +47,25 @@
 </div>
 {% endif %}
 {% if econ_loadout_scatter and econ_loadout_scatter.points %}
-<p class="page-meta" style="margin-top: 1rem;">Own loadout share vs. round outcome, one dot per round.</p>
+<p class="page-meta" style="margin-top: 1rem;">Win rate by own buy share, in 5-point buckets ({{ econ_loadout_scatter.total_rounds }} rounds). Dot size reflects each bucket's sample size.</p>
 <div class="chart-scroll">
   <svg viewBox="{{ econ_loadout_scatter.view_box }}" style="width: 100%; max-width: 640px; height: auto; display: block; margin: 0 auto;">
     <line x1="{{ econ_loadout_scatter.plot_left }}" y1="{{ econ_loadout_scatter.plot_top }}" x2="{{ econ_loadout_scatter.plot_left }}" y2="{{ econ_loadout_scatter.plot_bottom }}" stroke="var(--border)" stroke-width="1" />
     <line x1="{{ econ_loadout_scatter.plot_left }}" y1="{{ econ_loadout_scatter.plot_bottom }}" x2="{{ econ_loadout_scatter.plot_right }}" y2="{{ econ_loadout_scatter.plot_bottom }}" stroke="var(--border)" stroke-width="1" />
     {% for tick in econ_loadout_scatter.y_ticks %}
-    <line x1="{{ econ_loadout_scatter.plot_left }}" y1="{{ tick.y }}" x2="{{ econ_loadout_scatter.plot_right }}" y2="{{ tick.y }}" stroke="var(--border)" stroke-width="1" stroke-opacity="0.35" />
-    <text x="{{ econ_loadout_scatter.plot_left - 8 }}" y="{{ tick.y + 4 }}" text-anchor="end" font-size="11" fill="var(--ink-secondary)">{{ tick.label }}</text>
+    <line x1="{{ econ_loadout_scatter.plot_left }}" y1="{{ tick.pos }}" x2="{{ econ_loadout_scatter.plot_right }}" y2="{{ tick.pos }}" stroke="var(--border)" stroke-width="1" stroke-opacity="0.35" />
+    <text x="{{ econ_loadout_scatter.plot_left - 8 }}" y="{{ tick.pos + 4 }}" text-anchor="end" font-size="11" fill="var(--ink-secondary)">{{ tick.label }}</text>
     {% endfor %}
-    {% for column in econ_loadout_scatter.columns %}
-    <text x="{{ column.x }}" y="{{ econ_loadout_scatter.plot_bottom + 24 }}" text-anchor="middle" font-size="12" fill="var(--ink-secondary)">{{ column.label }}</text>
+    {% for tick in econ_loadout_scatter.x_ticks %}
+    <text x="{{ tick.pos }}" y="{{ econ_loadout_scatter.plot_bottom + 20 }}" text-anchor="middle" font-size="11" fill="var(--ink-secondary)">{{ tick.label }}</text>
     {% endfor %}
+    <text x="{{ (econ_loadout_scatter.plot_left + econ_loadout_scatter.plot_right) / 2 }}" y="{{ econ_loadout_scatter.plot_bottom + 36 }}" text-anchor="middle" font-size="11" fill="var(--ink-secondary)">Own buy share</text>
+    <line x1="{{ econ_loadout_scatter.plot_left }}" y1="{{ econ_loadout_scatter.reference_line_y }}" x2="{{ econ_loadout_scatter.plot_right }}" y2="{{ econ_loadout_scatter.reference_line_y }}" stroke="var(--ink-secondary)" stroke-width="1" stroke-dasharray="3 3" stroke-opacity="0.5" />
+    {% if econ_loadout_scatter.line_path %}
+    <path d="{{ econ_loadout_scatter.line_path }}" fill="none" stroke="var(--ink-secondary)" stroke-width="1.5" stroke-opacity="0.4" />
+    {% endif %}
     {% for point in econ_loadout_scatter.points %}
-    <circle cx="{{ point.cx }}" cy="{{ point.cy }}" r="4" fill="{{ point.fill }}" fill-opacity="0.55">
+    <circle cx="{{ point.cx }}" cy="{{ point.cy }}" r="{{ point.r }}" fill="{{ point.fill }}" fill-opacity="0.75">
       <title>{{ point.title }}</title>
     </circle>
     {% endfor %}

@@ -5,6 +5,7 @@ from app.models.match import MatchSource, Team
 from app.models.round import RoundPlayerStat
 from app.services.economy_graphs import (
     EconSample,
+    build_loadout_win_scatter,
     build_pistol_stats,
     build_tier_matrix,
     match_econ_rounds,
@@ -123,3 +124,34 @@ def test_build_pistol_stats_with_no_pistol_rounds_has_no_win_pct():
     assert stats.total == 0
     assert stats.win_pct is None
     assert stats.avg_loadout_ratio is None
+
+
+def test_build_loadout_win_scatter_buckets_rounds_by_five_point_buy_share():
+    samples = [
+        # 20-25% buy share (1000/4200), both losses.
+        EconSample(own_tier="ECO", enemy_tier="FULL_BUY", own_won=False, own_loadout=1000, enemy_loadout=3200),
+        EconSample(own_tier="ECO", enemy_tier="FULL_BUY", own_won=False, own_loadout=1000, enemy_loadout=3200),
+        # 70-75% buy share (700/1000), a win -- falls in a different bucket
+        # even though it's a much smaller absolute loadout.
+        EconSample(own_tier="FULL_BUY", enemy_tier="ECO", own_won=True, own_loadout=700, enemy_loadout=300),
+        # Pistol rounds are excluded regardless of their ratio.
+        EconSample(own_tier="PISTOL", enemy_tier="PISTOL", own_won=True, own_loadout=900, enemy_loadout=900),
+    ]
+
+    chart = build_loadout_win_scatter(samples)
+
+    assert chart.total_rounds == 3
+    titles = {p.title for p in chart.points}
+    assert any(t.startswith("20-25% of buy -- 0/2 rounds won") for t in titles)
+    assert any(t.startswith("70-75% of buy -- 1/1 rounds won") for t in titles)
+    # Only two buckets have data, so they're connected by a two-point line.
+    assert chart.line_path.count(" L ") == 1
+
+
+def test_build_loadout_win_scatter_ignores_pistol_only_samples():
+    chart = build_loadout_win_scatter(
+        [EconSample(own_tier="PISTOL", enemy_tier="PISTOL", own_won=True, own_loadout=900, enemy_loadout=900)]
+    )
+    assert chart.points == []
+    assert chart.line_path == ""
+    assert chart.total_rounds == 0

@@ -1,4 +1,3 @@
-import random
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session, object_session, selectinload
@@ -309,8 +308,8 @@ def build_pistol_stats(samples: list[EconSample]) -> PistolStats:
     )
 
 
-# Fixed pixel layout for the scatter chart below -- unlike the diamond state
-# diagrams elsewhere, this has a real fixed x/y axis pair, so the geometry is
+# Fixed pixel layout for the chart below -- unlike the diamond state diagrams
+# elsewhere, this has a real fixed x/y axis pair, so the geometry is
 # hardcoded once here rather than computed per dataset.
 _SCATTER_WIDTH = 640
 _SCATTER_HEIGHT = 320
@@ -318,86 +317,120 @@ _SCATTER_PLOT_LEFT = 56
 _SCATTER_PLOT_RIGHT = _SCATTER_WIDTH - 24
 _SCATTER_PLOT_TOP = 20
 _SCATTER_PLOT_BOTTOM = _SCATTER_HEIGHT - 44
-_SCATTER_JITTER = 90.0
-_SCATTER_LOSS_X = _SCATTER_PLOT_LEFT + (_SCATTER_PLOT_RIGHT - _SCATTER_PLOT_LEFT) * 0.28
-_SCATTER_WIN_X = _SCATTER_PLOT_LEFT + (_SCATTER_PLOT_RIGHT - _SCATTER_PLOT_LEFT) * 0.72
+
+# Own buy share is a near-continuous ratio of two credit totals, so grouping
+# by its exact value would put ~1 round in almost every group -- not enough
+# to average. 5-point-wide buckets (20 across the 0-100% range) are coarse
+# enough that a full player history (30 matches, ~13-20+ rounds each, so
+# 400-600+ rounds) puts a meaningful sample behind most buckets.
+_BUCKET_WIDTH_PCT = 5
+_NUM_BUCKETS = 100 // _BUCKET_WIDTH_PCT
+_MIN_POINT_RADIUS = 3.0
+_MAX_POINT_RADIUS = 9.0
 
 
 @dataclass
-class ScatterPoint:
+class BuyBucketPoint:
     cx: float
     cy: float
+    r: float
     fill: str
     title: str
 
 
 @dataclass
-class ScatterTick:
-    y: float
-    label: str
-
-
-@dataclass
-class ScatterColumn:
-    x: float
+class AxisTick:
+    pos: float
     label: str
 
 
 @dataclass
 class LoadoutWinScatter:
-    points: list[ScatterPoint]
-    y_ticks: list[ScatterTick]
-    columns: list[ScatterColumn]
+    points: list[BuyBucketPoint]
+    line_path: str
+    x_ticks: list[AxisTick]
+    y_ticks: list[AxisTick]
+    reference_line_y: float
     view_box: str
     plot_left: float
     plot_right: float
     plot_top: float
     plot_bottom: float
+    total_rounds: int
+
+
+def _bucket_index(ratio: float) -> int:
+    return min(int(ratio * 100 // _BUCKET_WIDTH_PCT), _NUM_BUCKETS - 1)
 
 
 def build_loadout_win_scatter(samples: list[EconSample]) -> LoadoutWinScatter:
-    """One dot per round: own loadout share (y) against whether the round was
-    won or lost (x) -- a finer-grained companion to the tier matrix above it,
-    showing the actual spread of buy shares behind each tier's win rate
-    instead of just the cell averages. Points are horizontally jittered
-    (fixed seed, so the layout is stable across reloads) since x only takes
-    two values. Pistol rounds are excluded, same rationale as the tier
-    matrix: buy tier doesn't meaningfully apply to a forced-reset round.
+    """Win rate by own buy share, bucketed into 5-point-wide bins (0-5%,
+    5-10%, ..., 95-100%) instead of plotted per round -- own buy share is a
+    near-continuous ratio, so an exact-value grouping would mostly be groups
+    of one, and the resulting "average" would just restate each round's own
+    win/loss. Point radius scales with each bucket's round count so a
+    bucket's position reads with the confidence its sample size deserves.
+    Pistol rounds are excluded, same rationale as the tier matrix: buy tier
+    doesn't meaningfully apply to a forced-reset round.
     """
-    rng = random.Random(1337)
-    column_x = {False: _SCATTER_LOSS_X, True: _SCATTER_WIN_X}
-    points: list[ScatterPoint] = []
+
+    def x_for(pct: float) -> float:
+        return _SCATTER_PLOT_LEFT + pct / 100 * (_SCATTER_PLOT_RIGHT - _SCATTER_PLOT_LEFT)
+
+    def y_for(win_pct: float) -> float:
+        return _SCATTER_PLOT_BOTTOM - win_pct * (_SCATTER_PLOT_BOTTOM - _SCATTER_PLOT_TOP)
+
+    buckets: dict[int, dict[str, int]] = {}
     for s in samples:
         if s.own_tier == "PISTOL":
             continue
         ratio = _loadout_ratio(s.own_loadout, s.enemy_loadout)
         if ratio is None:
             continue
-        cy = _SCATTER_PLOT_BOTTOM - ratio * (_SCATTER_PLOT_BOTTOM - _SCATTER_PLOT_TOP)
-        cx = column_x[s.own_won] + rng.uniform(-_SCATTER_JITTER, _SCATTER_JITTER)
+        bucket = buckets.setdefault(_bucket_index(ratio), {"win": 0, "total": 0})
+        bucket["total"] += 1
+        if s.own_won:
+            bucket["win"] += 1
+
+    max_total = max((b["total"] for b in buckets.values()), default=0)
+    points: list[BuyBucketPoint] = []
+    line_coords: list[str] = []
+    total_rounds = 0
+    for idx in range(_NUM_BUCKETS):
+        bucket = buckets.get(idx)
+        if not bucket:
+            continue
+        total = bucket["total"]
+        total_rounds += total
+        win_pct = bucket["win"] / total
+        cx = x_for(idx * _BUCKET_WIDTH_PCT + _BUCKET_WIDTH_PCT / 2)
+        cy = y_for(win_pct)
+        radius = _MIN_POINT_RADIUS + (_MAX_POINT_RADIUS - _MIN_POINT_RADIUS) * (total / max_total) ** 0.5
+        low, high = idx * _BUCKET_WIDTH_PCT, (idx + 1) * _BUCKET_WIDTH_PCT
         points.append(
-            ScatterPoint(
+            BuyBucketPoint(
                 cx=cx,
                 cy=cy,
-                fill=win_color(1.0 if s.own_won else 0.0),
-                title=f"{'Won' if s.own_won else 'Lost'} round -- {round(ratio * 100)}% of buy",
+                r=radius,
+                fill=win_color(win_pct),
+                title=f"{low}-{high}% of buy -- {bucket['win']}/{total} rounds won ({round(win_pct * 100)}%)",
             )
         )
-    y_ticks = [
-        ScatterTick(
-            y=_SCATTER_PLOT_BOTTOM - pct / 100 * (_SCATTER_PLOT_BOTTOM - _SCATTER_PLOT_TOP),
-            label=f"{pct}%",
-        )
-        for pct in (0, 25, 50, 75, 100)
-    ]
-    columns = [ScatterColumn(x=_SCATTER_LOSS_X, label="Loss"), ScatterColumn(x=_SCATTER_WIN_X, label="Win")]
+        line_coords.append(f"{cx},{cy}")
+
+    x_ticks = [AxisTick(pos=x_for(pct), label=f"{pct}%") for pct in (0, 20, 40, 60, 80, 100)]
+    y_ticks = [AxisTick(pos=y_for(pct / 100), label=f"{pct}%") for pct in (0, 25, 50, 75, 100)]
+
     return LoadoutWinScatter(
         points=points,
+        line_path=("M " + " L ".join(line_coords)) if len(line_coords) > 1 else "",
+        x_ticks=x_ticks,
         y_ticks=y_ticks,
-        columns=columns,
+        reference_line_y=y_for(0.5),
         view_box=f"0 0 {_SCATTER_WIDTH} {_SCATTER_HEIGHT}",
         plot_left=_SCATTER_PLOT_LEFT,
         plot_right=_SCATTER_PLOT_RIGHT,
         plot_top=_SCATTER_PLOT_TOP,
         plot_bottom=_SCATTER_PLOT_BOTTOM,
+        total_rounds=total_rounds,
     )
