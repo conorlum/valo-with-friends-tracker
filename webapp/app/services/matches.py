@@ -264,8 +264,14 @@ def get_match_shoutouts(
     eco_kill_counts: dict[int, int] = {}
     op_kill_counts: dict[int, int] = {}
     kill_totals: dict[int, int] = {}
-    for match_player_id, kills, loadout in (
-        db.query(RoundPlayerStat.match_player_id, RoundPlayerStat.kills, RoundPlayerStat.loadout)
+    active_round_counts: dict[int, int] = {}
+    for match_player_id, kills, assists, loadout in (
+        db.query(
+            RoundPlayerStat.match_player_id,
+            RoundPlayerStat.kills,
+            RoundPlayerStat.assists,
+            RoundPlayerStat.loadout,
+        )
         .join(Round, Round.id == RoundPlayerStat.round_id)
         .filter(Round.match_id == match.id)
         .all()
@@ -277,6 +283,8 @@ def get_match_shoutouts(
             eco_kill_counts[match_player_id] = eco_kill_counts.get(match_player_id, 0) + kills
         if loadout >= _OP_LOADOUT_THRESHOLD:
             op_kill_counts[match_player_id] = op_kill_counts.get(match_player_id, 0) + kills
+        if kills > 0 or assists > 0:
+            active_round_counts[match_player_id] = active_round_counts.get(match_player_id, 0) + 1
 
     # Each team's own top fragger, for "kills on the enemy's top fragger" --
     # computed per-team (not "ours vs theirs") since a single match has no
@@ -496,6 +504,7 @@ def get_match_shoutouts(
         "traded_teammate_totals": traded_teammate_totals,
         "traded_by_teammate_totals": traded_by_teammate_totals,
         "mvp_counts": mvp_counts,
+        "active_round_counts": active_round_counts,
     }
 
     anchor = None

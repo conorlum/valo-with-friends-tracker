@@ -41,6 +41,7 @@ SHOUTOUT_CATEGORIES: list[tuple[str, str, str]] = [
     ("traded_teammate_totals", "Avenger", "traded for a teammate {v} time{s}"),
     ("traded_by_teammate_totals", "Never Alone", "avenged by a teammate {v} time{s}"),
     ("mvp_counts", "Round MVP", "highest-Impact player in {v} round{s}"),
+    ("active_round_counts", "Most Active", "{v} round{s} with a kill or assist"),
 ]
 
 # How many rank-depths (1st place, 2nd place, ...) of each category are even
