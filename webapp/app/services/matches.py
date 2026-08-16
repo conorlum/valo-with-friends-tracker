@@ -7,7 +7,7 @@ from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD
 from app.services.friends import list_friend_ids
-from app.services.shoutouts import PlayerShoutout, assign_shoutouts
+from app.services.shoutouts import SCAVENGER_MIN_AVG_PER_ROUND, PlayerShoutout, assign_shoutouts
 
 # Kept in sync with the same-named constants in app.services.session_stats
 # (not imported from there -- sessions.py already imports from this module,
@@ -486,6 +486,22 @@ def get_match_shoutouts(
                 sugar_daddy_credits[match_player_id] = sugar_daddy_credits.get(match_player_id, 0) + sugar_daddy
             if scavenger:
                 scavenger_credits[match_player_id] = scavenger_credits.get(match_player_id, 0) + scavenger
+
+    # Scavenger needs at least a 500-credit-per-round average (total scavenged
+    # over rounds actually played) to earn the shoutout -- a couple of stray
+    # dropped Classics over a whole match isn't a standout scavenging
+    # performance, it's noise. Filtered here (rather than in the generic
+    # assign_shoutouts) since only this raw count is rate-sensitive against
+    # rounds played.
+    rounds_played_by_mp: dict[int, int] = {}
+    for round_stats in stats_by_round.values():
+        for match_player_id in round_stats:
+            rounds_played_by_mp[match_player_id] = rounds_played_by_mp.get(match_player_id, 0) + 1
+    scavenger_credits = {
+        match_player_id: v
+        for match_player_id, v in scavenger_credits.items()
+        if v / rounds_played_by_mp.get(match_player_id, 1) >= SCAVENGER_MIN_AVG_PER_ROUND
+    }
 
     raw_dicts: dict[str, dict[int, int]] = {
         "entry_kill_counts": entry_kill_counts,

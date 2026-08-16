@@ -50,6 +50,16 @@ SHOUTOUT_CATEGORIES: list[tuple[str, str, str]] = [
 # something is better served by a different category, or a fallback.
 _MAX_DEPTH = 5
 
+# A player is only Scavenger-eligible if their total scavenged credits,
+# averaged over the rounds they actually played, clears this rate --
+# otherwise picking up a stray dropped Classic every round adds up to a
+# total that outranks a player with a couple of genuinely notable scavenging
+# rounds. Applied by callers when building the scavenger_credits raw dict
+# (see app.services.matches and app.services.session_stats), not by
+# assign_shoutouts itself, since it's a rate filter on the input rather than
+# a property of the ranking.
+SCAVENGER_MIN_AVG_PER_ROUND = 500
+
 
 def assign_shoutouts(
     roster: list[tuple[int, str, str]],

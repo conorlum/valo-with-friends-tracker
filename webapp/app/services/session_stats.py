@@ -15,7 +15,7 @@ from app.services.economy_graphs import (
 )
 from app.services.friends import list_friend_ids
 from app.services.player_graphs import StateDiagram, build_session_round_win_diagram, build_session_round_win_diagrams_by_match
-from app.services.shoutouts import PlayerShoutout, assign_shoutouts
+from app.services.shoutouts import SCAVENGER_MIN_AVG_PER_ROUND, PlayerShoutout, assign_shoutouts
 from app.services.sessions import SessionSummary
 
 MULTI_KILL_THRESHOLD = 3
@@ -1071,6 +1071,17 @@ def _build_shoutouts(
         if v >= games_played_by_player.get(player_id, 1)
     }
 
+    # Scavenger needs at least a 500-credit-per-round average (total scavenged
+    # over rounds actually played across the session) to earn the shoutout --
+    # a couple of stray dropped Classics scattered across many rounds isn't a
+    # standout scavenging performance, it's noise.
+    rounds_played_by_player = {e.player_id: e.rounds_played for e in leaderboard}
+    scavenger_credits = {
+        player_id: v
+        for player_id, v in raw.scavenger_credits.items()
+        if v / rounds_played_by_player.get(player_id, 1) >= SCAVENGER_MIN_AVG_PER_ROUND
+    }
+
     raw_dicts: dict[str, dict[int, int]] = {
         "entry_kill_counts": raw.entry_kill_counts,
         "clutch_counts": raw.clutch_counts,
@@ -1084,7 +1095,7 @@ def _build_shoutouts(
         "op_kill_counts": op_kill_counts,
         "eco_kill_counts": raw.eco_kill_counts,
         "sugar_daddy_credits": raw.sugar_daddy_credits,
-        "scavenger_credits": raw.scavenger_credits,
+        "scavenger_credits": scavenger_credits,
         "traded_teammate_totals": raw.traded_teammate_totals,
         "traded_by_teammate_totals": raw.traded_by_teammate_totals,
         "mvp_counts": raw.mvp_counts,
