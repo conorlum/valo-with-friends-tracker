@@ -24,6 +24,7 @@ from app.services.shoutouts import (
     SUGAR_DADDY_MIN_AVG_PER_ROUND,
     PlayerShoutout,
     assign_shoutouts,
+    display_most_active_as_percentage,
 )
 from app.services.sessions import SessionSummary
 
@@ -1190,4 +1191,6 @@ def _build_shoutouts(
         (entry.player_id, players_by_id.get(entry.player_id, "?"), agent_by_player.get(entry.player_id, ""))
         for entry in leaderboard
     ]
-    return assign_shoutouts(roster, raw_dicts, best_single_round_impact, anchor)
+    shoutouts = assign_shoutouts(roster, raw_dicts, best_single_round_impact, anchor)
+    display_most_active_as_percentage(shoutouts, raw.active_round_counts, rounds_played_by_player)
+    return shoutouts
