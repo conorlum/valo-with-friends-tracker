@@ -7,7 +7,7 @@ from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD
 from app.services.friends import list_friend_ids
-from app.services.shoutouts import PlayerShoutout, assign_shoutouts
+from app.services.shoutouts import SCAVENGER_MIN_AVG_PER_ROUND, PlayerShoutout, assign_shoutouts
 
 # Kept in sync with the same-named constants in app.services.session_stats
 # (not imported from there -- sessions.py already imports from this module,
@@ -264,8 +264,14 @@ def get_match_shoutouts(
     eco_kill_counts: dict[int, int] = {}
     op_kill_counts: dict[int, int] = {}
     kill_totals: dict[int, int] = {}
-    for match_player_id, kills, loadout in (
-        db.query(RoundPlayerStat.match_player_id, RoundPlayerStat.kills, RoundPlayerStat.loadout)
+    active_round_counts: dict[int, int] = {}
+    for match_player_id, kills, assists, loadout in (
+        db.query(
+            RoundPlayerStat.match_player_id,
+            RoundPlayerStat.kills,
+            RoundPlayerStat.assists,
+            RoundPlayerStat.loadout,
+        )
         .join(Round, Round.id == RoundPlayerStat.round_id)
         .filter(Round.match_id == match.id)
         .all()
@@ -277,6 +283,8 @@ def get_match_shoutouts(
             eco_kill_counts[match_player_id] = eco_kill_counts.get(match_player_id, 0) + kills
         if loadout >= _OP_LOADOUT_THRESHOLD:
             op_kill_counts[match_player_id] = op_kill_counts.get(match_player_id, 0) + kills
+        if kills > 0 or assists > 0:
+            active_round_counts[match_player_id] = active_round_counts.get(match_player_id, 0) + 1
 
     # Each team's own top fragger, for "kills on the enemy's top fragger" --
     # computed per-team (not "ours vs theirs") since a single match has no
@@ -479,6 +487,22 @@ def get_match_shoutouts(
             if scavenger:
                 scavenger_credits[match_player_id] = scavenger_credits.get(match_player_id, 0) + scavenger
 
+    # Scavenger needs at least a 500-credit-per-round average (total scavenged
+    # over rounds actually played) to earn the shoutout -- a couple of stray
+    # dropped Classics over a whole match isn't a standout scavenging
+    # performance, it's noise. Filtered here (rather than in the generic
+    # assign_shoutouts) since only this raw count is rate-sensitive against
+    # rounds played.
+    rounds_played_by_mp: dict[int, int] = {}
+    for round_stats in stats_by_round.values():
+        for match_player_id in round_stats:
+            rounds_played_by_mp[match_player_id] = rounds_played_by_mp.get(match_player_id, 0) + 1
+    scavenger_credits = {
+        match_player_id: v
+        for match_player_id, v in scavenger_credits.items()
+        if v / rounds_played_by_mp.get(match_player_id, 1) >= SCAVENGER_MIN_AVG_PER_ROUND
+    }
+
     raw_dicts: dict[str, dict[int, int]] = {
         "entry_kill_counts": entry_kill_counts,
         "clutch_counts": clutch_counts,
@@ -496,6 +520,7 @@ def get_match_shoutouts(
         "traded_teammate_totals": traded_teammate_totals,
         "traded_by_teammate_totals": traded_by_teammate_totals,
         "mvp_counts": mvp_counts,
+        "active_round_counts": active_round_counts,
     }
 
     anchor = None

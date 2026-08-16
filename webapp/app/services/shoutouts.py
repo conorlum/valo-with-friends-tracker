@@ -41,6 +41,7 @@ SHOUTOUT_CATEGORIES: list[tuple[str, str, str]] = [
     ("traded_teammate_totals", "Avenger", "traded for a teammate {v} time{s}"),
     ("traded_by_teammate_totals", "Never Alone", "avenged by a teammate {v} time{s}"),
     ("mvp_counts", "Round MVP", "highest-Impact player in {v} round{s}"),
+    ("active_round_counts", "Most Active", "{v} round{s} with a kill or assist"),
 ]
 
 # How many rank-depths (1st place, 2nd place, ...) of each category are even
@@ -48,6 +49,16 @@ SHOUTOUT_CATEGORIES: list[tuple[str, str, str]] = [
 # hand someone a shoutout for a barely-there number. A player who's rank 5+ in
 # something is better served by a different category, or a fallback.
 _MAX_DEPTH = 5
+
+# A player is only Scavenger-eligible if their total scavenged credits,
+# averaged over the rounds they actually played, clears this rate --
+# otherwise picking up a stray dropped Classic every round adds up to a
+# total that outranks a player with a couple of genuinely notable scavenging
+# rounds. Applied by callers when building the scavenger_credits raw dict
+# (see app.services.matches and app.services.session_stats), not by
+# assign_shoutouts itself, since it's a rate filter on the input rather than
+# a property of the ranking.
+SCAVENGER_MIN_AVG_PER_ROUND = 500
 
 
 def assign_shoutouts(

@@ -15,7 +15,7 @@ from app.services.economy_graphs import (
 )
 from app.services.friends import list_friend_ids
 from app.services.player_graphs import StateDiagram, build_session_round_win_diagram, build_session_round_win_diagrams_by_match
-from app.services.shoutouts import PlayerShoutout, assign_shoutouts
+from app.services.shoutouts import SCAVENGER_MIN_AVG_PER_ROUND, PlayerShoutout, assign_shoutouts
 from app.services.sessions import SessionSummary
 
 MULTI_KILL_THRESHOLD = 3
@@ -350,6 +350,7 @@ class _RawSessionCounts:
     late_kill_counts: dict[int, int]
     sugar_daddy_credits: dict[int, int]
     scavenger_credits: dict[int, int]
+    active_round_counts: dict[int, int]
 
 
 def _build_credit_event_stats(
@@ -430,8 +431,8 @@ def _compute_raw_session_counts(
     """
     match_ids = [m.id for m in session.matches]
 
-    biggest_multi_kill, multi_kill_counts, eco_kill_counts, op_kill_counts = _build_round_kill_stats(
-        db, match_ids, our_mp_to_player, players_by_id
+    biggest_multi_kill, multi_kill_counts, eco_kill_counts, op_kill_counts, active_round_counts = (
+        _build_round_kill_stats(db, match_ids, our_mp_to_player, players_by_id)
     )
     (
         max_streak,
@@ -471,6 +472,7 @@ def _compute_raw_session_counts(
         late_kill_counts=late_kill_counts,
         sugar_daddy_credits=sugar_daddy_credits,
         scavenger_credits=scavenger_credits,
+        active_round_counts=active_round_counts,
     )
 
 
@@ -518,14 +520,14 @@ def _build_round_kill_stats(
     match_ids: list[int],
     our_mp_to_player: dict[int, int],
     players_by_id: dict[int, str],
-) -> tuple[FunStatEntry | None, dict[int, int], dict[int, int], dict[int, int]]:
-    """Per-round kill counts (+ that round's loadout) for our players.
+) -> tuple[FunStatEntry | None, dict[int, int], dict[int, int], dict[int, int], dict[int, int]]:
+    """Per-round kill counts (+ that round's loadout/assists) for our players.
 
     Drives: biggest single-round multi-kill (returned directly, since it needs
     the tie-handling in `_build_biggest_multi_kill_entry`), plus raw per-player
-    counts of 3+ kill rounds, kills landed while on an eco/save buy, and kills
-    landed while carrying an Operator-tier loadout (returned raw so the
-    Shoutouts builder can also draw from them).
+    counts of 3+ kill rounds, kills landed while on an eco/save buy, kills
+    landed while carrying an Operator-tier loadout, and rounds with a kill or
+    assist (returned raw so the Shoutouts builder can also draw from them).
     """
     rows = (
         db.query(
@@ -533,6 +535,7 @@ def _build_round_kill_stats(
             Round.match_id,
             Round.round_number,
             RoundPlayerStat.kills,
+            RoundPlayerStat.assists,
             RoundPlayerStat.loadout,
         )
         .join(Round, Round.id == RoundPlayerStat.round_id)
@@ -548,8 +551,9 @@ def _build_round_kill_stats(
     multi_kill_counts: dict[int, int] = {}
     eco_kill_counts: dict[int, int] = {}
     op_kill_counts: dict[int, int] = {}
+    active_round_counts: dict[int, int] = {}
 
-    for match_player_id, match_id, round_number, kills, loadout in rows:
+    for match_player_id, match_id, round_number, kills, assists, loadout in rows:
         player_id = our_mp_to_player[match_player_id]
 
         if kills >= MULTI_KILL_THRESHOLD:
@@ -564,10 +568,12 @@ def _build_round_kill_stats(
             eco_kill_counts[player_id] = eco_kill_counts.get(player_id, 0) + kills
         if loadout >= OP_LOADOUT_THRESHOLD:
             op_kill_counts[player_id] = op_kill_counts.get(player_id, 0) + kills
+        if kills > 0 or assists > 0:
+            active_round_counts[player_id] = active_round_counts.get(player_id, 0) + 1
 
     biggest_multi_kill = _build_biggest_multi_kill_entry(best_kill_count, best_kill_rows, players_by_id)
 
-    return (biggest_multi_kill, multi_kill_counts, eco_kill_counts, op_kill_counts)
+    return (biggest_multi_kill, multi_kill_counts, eco_kill_counts, op_kill_counts, active_round_counts)
 
 
 def _build_biggest_multi_kill_entry(
@@ -1065,6 +1071,17 @@ def _build_shoutouts(
         if v >= games_played_by_player.get(player_id, 1)
     }
 
+    # Scavenger needs at least a 500-credit-per-round average (total scavenged
+    # over rounds actually played across the session) to earn the shoutout --
+    # a couple of stray dropped Classics scattered across many rounds isn't a
+    # standout scavenging performance, it's noise.
+    rounds_played_by_player = {e.player_id: e.rounds_played for e in leaderboard}
+    scavenger_credits = {
+        player_id: v
+        for player_id, v in raw.scavenger_credits.items()
+        if v / rounds_played_by_player.get(player_id, 1) >= SCAVENGER_MIN_AVG_PER_ROUND
+    }
+
     raw_dicts: dict[str, dict[int, int]] = {
         "entry_kill_counts": raw.entry_kill_counts,
         "clutch_counts": raw.clutch_counts,
@@ -1078,10 +1095,11 @@ def _build_shoutouts(
         "op_kill_counts": op_kill_counts,
         "eco_kill_counts": raw.eco_kill_counts,
         "sugar_daddy_credits": raw.sugar_daddy_credits,
-        "scavenger_credits": raw.scavenger_credits,
+        "scavenger_credits": scavenger_credits,
         "traded_teammate_totals": raw.traded_teammate_totals,
         "traded_by_teammate_totals": raw.traded_by_teammate_totals,
         "mvp_counts": raw.mvp_counts,
+        "active_round_counts": raw.active_round_counts,
     }
     best_single_round_impact = {pid: impact for pid, (impact, _match_id, _round_number) in raw.best_round_impact.items()}
 
