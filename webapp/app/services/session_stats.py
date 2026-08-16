@@ -15,7 +15,12 @@ from app.services.economy_graphs import (
 )
 from app.services.friends import list_friend_ids
 from app.services.player_graphs import StateDiagram, build_session_round_win_diagram, build_session_round_win_diagrams_by_match
-from app.services.shoutouts import SCAVENGER_MIN_AVG_PER_ROUND, PlayerShoutout, assign_shoutouts
+from app.services.shoutouts import (
+    SCAVENGER_MIN_AVG_PER_ROUND,
+    PlayerShoutout,
+    assign_shoutouts,
+    display_most_active_as_percentage,
+)
 from app.services.sessions import SessionSummary
 
 MULTI_KILL_THRESHOLD = 3
@@ -1116,4 +1121,6 @@ def _build_shoutouts(
         (entry.player_id, players_by_id.get(entry.player_id, "?"), agent_by_player.get(entry.player_id, ""))
         for entry in leaderboard
     ]
-    return assign_shoutouts(roster, raw_dicts, best_single_round_impact, anchor)
+    shoutouts = assign_shoutouts(roster, raw_dicts, best_single_round_impact, anchor)
+    display_most_active_as_percentage(shoutouts, raw.active_round_counts, rounds_played_by_player)
+    return shoutouts

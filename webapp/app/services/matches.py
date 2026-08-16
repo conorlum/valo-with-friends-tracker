@@ -7,7 +7,12 @@ from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD
 from app.services.friends import list_friend_ids
-from app.services.shoutouts import SCAVENGER_MIN_AVG_PER_ROUND, PlayerShoutout, assign_shoutouts
+from app.services.shoutouts import (
+    SCAVENGER_MIN_AVG_PER_ROUND,
+    PlayerShoutout,
+    assign_shoutouts,
+    display_most_active_as_percentage,
+)
 
 # Kept in sync with the same-named constants in app.services.session_stats
 # (not imported from there -- sessions.py already imports from this module,
@@ -534,6 +539,7 @@ def get_match_shoutouts(
 
     roster = [(p.match_player_id, p.display_name, p.agent) for p in summary.players]
     shoutouts = assign_shoutouts(roster, raw_dicts, best_round_impact, anchor)
+    display_most_active_as_percentage(shoutouts, active_round_counts, rounds_played_by_mp)
 
     if viewer_player_id is not None:
         player_id_by_mp: dict[int, int] = {mp.id: mp.player_id for mp in match_players}

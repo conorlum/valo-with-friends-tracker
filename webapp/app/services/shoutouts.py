@@ -214,3 +214,25 @@ def assign_shoutouts(
                 )
             )
     return shoutouts
+
+
+def display_most_active_as_percentage(
+    shoutouts: list[PlayerShoutout],
+    active_round_counts: dict[int, int],
+    rounds_played: dict[int, int],
+) -> None:
+    """Rewrites the "Most Active" shoutout's detail text, in place, from a
+    raw round count into a percentage of rounds played. Cosmetic only --
+    assign_shoutouts still selects and ranks "Most Active" candidates by raw
+    active_round_counts like every other category, so who wins the category
+    is unaffected by how many rounds they played.
+    """
+    for shoutout in shoutouts:
+        if shoutout.headline != "Most Active":
+            continue
+        played = rounds_played.get(shoutout.player_id)
+        if not played:
+            continue
+        count = active_round_counts.get(shoutout.player_id, 0)
+        pct = round(100 * count / played)
+        shoutout.detail = f"{pct}% of rounds with a kill or assist"
