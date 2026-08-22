@@ -824,3 +824,82 @@ footer {
   cursor: pointer;
 }
 .scope-toggle-btn.active { background: var(--good); color: #ffffff; border-color: var(--good); }
+
+/* Fight-EV diamond: two segmented toggles (side, benchmark) */
+.fight-ev-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  margin-bottom: 1.1rem;
+}
+
+.toggle-group {
+  display: inline-flex;
+  background: var(--page);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.toggle-group-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.4rem 0.85rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.toggle-group-btn:hover { color: var(--ink-secondary); }
+
+.toggle-group-btn.active {
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.toggle-group-btn:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.fight-ev-legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 0.9rem 1.5rem;
+  margin: 1.4rem 0 1.1rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border);
+}
+
+.legend-item {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+  font-size: 0.78rem;
+  color: var(--ink-secondary);
+  line-height: 1.4;
+}
+
+.legend-item b { color: var(--ink); }
+
+.legend-badge {
+  flex: none;
+  min-width: 44px;
+  text-align: center;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 0.15rem 0.4rem;
+  border-radius: 5px;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.fight-ev-svg text { font-variant-numeric: tabular-nums; }

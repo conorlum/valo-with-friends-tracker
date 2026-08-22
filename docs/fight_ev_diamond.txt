@@ -1,0 +1,550 @@
+Fight-EV Diamond implementation handoff
+
+Status: approved for implementation  
+Target repository inspected at: `ce44c23` (`migrate-db-to-neon`)  
+Product name: **Fight-EV Diamond**
+
+This handoff is self-contained. Treat the mathematical design as complete. Do not reopen the metric unless implementation evidence shows that the required data cannot represent it.
+
+## 1. Outcome to ship
+
+Add a third 5-by-5 state diamond to each player page. For every non-terminal state `s = (a, b)`, side `c`, and teammate benchmark, display:
+
+```text
+L_c(s) = W_c(a, b-1) - W_c(a-1, b)
+M_c(s) = (p_player,c(s) - p_teammates,c(s)) * L_c(s)
+```
+
+Store and calculate probabilities as values from `0.0` to `1.0`. Multiply `M` by 100 only when formatting it as round-win percentage points per resolved duel.
+
+Definitions:
+
+- `W_c(a,b)` is the target player's team's observed round-win rate over every valid state-entry occurrence in the target player's matches. It is team-level and must not be gated on whether the target player was alive.
+- `p_player,c(s)` is the target player's kills divided by kills plus deaths in valid opponent duels that resolved while their team was at `s`.
+- `p_teammates,c(s)` is one pooled, volume-weighted rate: total teammate kills divided by total teammate kills plus deaths. Never average per-teammate rates.
+- `c` is `attacking` or `defending`. Every term in a node must use the same side.
+- The metric is conditional on a valid opponent duel resolving. It is descriptive, not causal and not a recommendation to take more or fewer fights.
+
+The page must support four views:
+
+1. attacking / tracked-roster teammates
+2. attacking / all teammates
+3. defending / tracked-roster teammates
+4. defending / all teammates
+
+## 2. One repository mismatch to resolve first
+
+The accepted design refers to these as existing code:
+
+- `app/adapters/trackergg_browserstate_source.py`
+- `app/services/surrender_rounds.py`
+- `_own_team_win_stats_for_match`
+
+None exists at the inspected commit. The current importer is `webapp/app/adapters/demo_match_source.py`, and the current graph replay is entirely in `webapp/app/services/player_graphs.py`.
+
+Before coding, confirm whether another unmerged branch contains those files. If it does, integrate that branch first and adapt the file map below. If it does not, implement the missing behavior in this branch and do not assume surrender placeholders are already excluded.
+
+This is repository drift, not a reason to redesign `M`.
+
+## 3. Non-negotiable data semantics
+
+### 3.1 Valid rounds
+
+A valid round has:
+
+- a winner that maps unambiguously to `Team.TEAM_1` or `Team.TEAM_2`;
+- recoverable team membership and initial team sizes;
+- no explicit source marker identifying it as a surrender placeholder; and
+- enough event information to replay it without guessing.
+
+A valid round with no kills still contributes one initial state entry and no duel observations. Do not infer surrender from “no kills” or all-zero combat stats; an objective-only round can legitimately have no kills. Use an explicit source outcome/marker.
+
+When a round is ambiguous, exclude the whole round from both `W` and `p` and increment a diagnostic reason counter. Do not include it in one component but not the other.
+
+### 3.2 Side
+
+For the current scraped dataset, reuse the convention already documented in `app/scoring/impact.py`:
+
+- rounds 1–12: team 1 attacks;
+- rounds 13–24: team 2 attacks;
+- rounds after 24: side is unknown in the current schema.
+
+Exclude overtime rounds from the MVP unless the source supplies the attacking team for each round. Do not guess the overtime alternation. A future importer should persist round side explicitly.
+
+### 3.3 State-entry sampling
+
+Record exactly one observation when a state is entered:
+
+- the initial state of every valid round;
+- the state after each valid alive-count-changing event; and
+- repeated entries into the same `(a,b)` label if a resurrection causes the round to leave and later re-enter it.
+
+Attach the eventual outcome to every entry. Attach terminal cause/time to the final existing entry; do not create a duplicate state entry merely because the round ended. Weight entries equally, never by dwell time.
+
+Keep plant phase and entry time on the internal occurrence object even though phase is not an MVP display context. Do not create a same-count entry at plant time in the side-only MVP. Plant becomes its own state transition only when phase is added to the estimand later.
+
+### 3.4 State transitions and resolved duels are different predicates
+
+Implement separate pure functions:
+
+```python
+is_valid_state_transition(event) -> bool
+is_valid_resolved_duel(event, team_by_match_player) -> bool
+```
+
+A self-kill or environmental casualty may change alive counts and therefore affect `W`, but it is not an opponent duel and must not affect either `p` rate.
+
+A resolved duel requires:
+
+- known killer and victim;
+- different match-player IDs;
+- opposite teams; and
+- an event classification that represents a permanent combat casualty rather than a duplicate row or pseudo-death.
+
+### 3.5 Round-decision truncation
+
+Never process post-decision kills into `W` or `p`.
+
+- defuse: terminal at `Round.defuse_time`;
+- detonation: terminal at `Round.plant_time + 45`;
+- time win: terminal at the confirmed action-phase expiry;
+- elimination: terminal at the valid permanent casualty that removes the losing side's last player.
+
+For an objective terminal time, discard kills at or after that time unless the source provides a trustworthy ordering that proves the kill occurred first. If equal-time ordering is ambiguous, exclude the affected round from both estimands.
+
+The elimination casualty itself counts as a duel and creates the terminal rail entry. Events after it do not count.
+
+Do not stop merely because either alive count reaches zero. In a post-plant round, all attackers can be dead while defenders still need to defuse, so `(0,b)` attacking and `(b,0)` defending are real estimated-rail observations.
+
+### 3.6 Resurrection and pseudo-death policy
+
+The current schema stores kills but no explicit revive/down event. A repeated death or an event performed by an already-dead player is evidence of an ambiguous life-cycle, not enough information to locate the resurrection precisely.
+
+Perform a source audit before replay implementation:
+
+- Does the raw payload contain a stable source event sequence?
+- Does it contain explicit Clove/Sage revive events?
+- Does it distinguish KAY/O downing from permanent death?
+- Does it supply terminal events/times and per-round side?
+
+If explicit life-cycle events are available, normalize and replay them as `-1` and `+1` transitions. If they are not available, the MVP fallback is to exclude every round with an ambiguous life-cycle from both `W` and `p`. Do not infer an exact revive time from the next kill-feed appearance.
+
+Only a source-identifiable duplicate may be discarded as a duplicate. Field equality alone is a diagnostic heuristic, not proof.
+
+The zero-alive rail assumptions remain provisional until the game/source behavior around last-player resurrection is verified. A counterexample invalidates the assumptions; an empty query alone does not prove them.
+
+## 4. Boundary values
+
+The side-only MVP pools pre-plant and post-plant observations. Therefore, only one rail per side is definitional:
+
+```text
+attacking: W_ATK(a,0) = 1       W_ATK(0,b) is estimated
+defending: W_DEF(0,b) = 0       W_DEF(a,0) is estimated
+```
+
+Use the constants only after the zero-alive semantics above are verified. Estimate the other rails from state entries exactly like interior cells. Never hard-code all four rails.
+
+The two estimated rails should be complementary when calculated from the same underlying events:
+
+```text
+W_DEF(a,0) = 1 - W_ATK(0,a)
+```
+
+Treat this as an exact implementation check only when the samples are the same paired occurrences.
+
+## 5. Project-native benchmark definition
+
+The design says “tracked roster” but does not name a database predicate. In this repository, use the existing one-directional `Friendship` list owned by the target player:
+
+- tracked-roster pool: same-side duel participants whose `Player.id` is in `list_friend_ids(db, target_player.id)`;
+- all-teammates pool: every same-side duel participant except the target player;
+- always restrict both pools to people who were teammates in that match;
+- never include the target player in `p_teammates`;
+- never include an opponent just because they are on the friendship list.
+
+If the intended roster is not the player's `Friendship` list, this predicate must be replaced before launch. Keep the pool construction behind one function so that change is local.
+
+Zero roster teammate duels is a valid no-data result, not a reason to fall back silently to all teammates.
+
+## 6. Recommended code structure
+
+Keep replay and statistics independent from SVG rendering.
+
+### New: `webapp/app/services/state_replay.py`
+
+Create a pure canonical replay engine shared by the new metric and, where practical, the existing diamonds.
+
+Recommended immutable records:
+
+```python
+@dataclass(frozen=True)
+class StateEntryOccurrence:
+    match_id: int
+    round_id: int
+    sequence: int
+    event_time_seconds: float
+    team1_alive_ids: frozenset[int]
+    team2_alive_ids: frozenset[int]
+    post_plant: bool
+    winner: Team
+    terminal_cause: TerminalCause | None = None
+
+@dataclass(frozen=True)
+class DuelOccurrence:
+    match_id: int
+    round_id: int
+    sequence: int
+    event_time_seconds: float
+    team1_alive_before: frozenset[int]
+    team2_alive_before: frozenset[int]
+    killer_match_player_id: int
+    victim_match_player_id: int
+
+@dataclass
+class ReplayDiagnostics:
+    accepted_rounds: int = 0
+    excluded_rounds_by_reason: Counter[str] = field(default_factory=Counter)
+    post_decision_events: int = 0
+    ambiguous_lifecycle_rounds: int = 0
+    equal_time_ambiguities: int = 0
+```
+
+The replay input should be normalized Python records, not ORM objects deep inside the loop. Load data once, normalize it, then run a pure function. This makes every edge case unit-testable without a database.
+
+Sort events by `(event_time_seconds, source_sequence)`. Use `KillEvent.id` as the fallback sequence only after confirming that the importer inserts source rows in source order. Document that contract.
+
+### New: `webapp/app/services/fight_ev.py`
+
+Responsibilities:
+
+- load all target-player matches in bounded queries;
+- load the target player's friendship IDs;
+- call the replay once per match;
+- convert occurrences into per-match sufficient statistics;
+- aggregate point estimates for both sides and both benchmarks;
+- bootstrap by match; and
+- return view-independent result dataclasses.
+
+Suggested keys and counts:
+
+```python
+StateKey = tuple[Side, int, int]
+
+@dataclass
+class WinCounts:
+    wins: int = 0
+    entries: int = 0
+
+@dataclass
+class DuelCounts:
+    kills: int = 0
+    deaths: int = 0
+
+@dataclass
+class MatchFightEvBlock:
+    match_id: int
+    wins: dict[StateKey, WinCounts]
+    player_duels: dict[StateKey, DuelCounts]
+    roster_duels: dict[StateKey, DuelCounts]
+    all_teammate_duels: dict[StateKey, DuelCounts]
+```
+
+For each duel, use the target team's pre-duel state. Attribute one outcome to the target team participant:
+
+- target team got the kill: a kill for the killer;
+- target team suffered the death: a death for the victim.
+
+Then place that outcome in exactly one actor bucket: target player, tracked-roster teammate, or other teammate. The all-teammates bucket receives both teammate categories.
+
+For each state entry, add one `W` observation from the target player's team's perspective, even when the target player is dead.
+
+### Modify: `webapp/app/services/player_graphs.py`
+
+Do not add Fight-EV arithmetic to the existing `GraphNode`. Add a separate `FightEvNode`/`FightEvDiagram` model because the new node needs:
+
+- point estimate;
+- player and teammate rates and denominators;
+- leverage;
+- interval status and bounds;
+- four contributing-match counts;
+- defined bootstrap fraction;
+- display classification; and
+- an on-face interval bar with a zero tick.
+
+Reuse `_pos` and `_layout` where useful, but use separate Fight-EV spacing/radius constants. Existing 28-pixel nodes cannot legibly hold the required information.
+
+If the old graph replay is refactored onto `state_replay.py`, preserve the existing public functions and meanings:
+
+- player round-win graph remains player-alive-gated;
+- match/session round-win graphs remain team-level;
+- kill-order edges count valid player duel transitions.
+
+Add regression tests before changing those paths.
+
+### Modify: `webapp/app/routers/players.py`
+
+Call one top-level function such as:
+
+```python
+fight_ev_views = build_fight_ev_views(db, player)
+```
+
+Build all four views in one request. Pass them to the template as serializable data. Do not run a separate database/replay/bootstrap pass for each toggle.
+
+### Modify: `webapp/app/templates/players/detail.html`
+
+Add the third card after the existing round-win and kill-order diamonds. Render all four views from the one result and switch them client-side with two accessible controls:
+
+- side: attacking / defending;
+- benchmark: tracked roster / all teammates.
+
+The active benchmark must also appear in the legend. A toggle may change the meaning, not only styling.
+
+### Modify: `webapp/app/static/css/style.css`
+
+Add classes for the controls, four display states, interval bar, zero tick, and responsive horizontal scrolling. Prefer a blue/orange diverging palette to avoid action-oriented red/green semantics.
+
+### New: `webapp/scripts/validate_fight_ev.py`
+
+Create a CLI report that accepts a player name and prints or writes JSON containing:
+
+- replay exclusion counts by reason;
+- all 25 cells per side and benchmark;
+- monotonicity violations with cell support;
+- boundary checks and estimated rails;
+- weak cross-side complement differences;
+- guarded closure diagnostics;
+- all-teammates reconstruction differences;
+- surrender leakage count;
+- contributing-match distributions; and
+- bootstrap defined-draw fractions.
+
+This is the debug/validation view required by the design. Do not expose it on the player-facing page.
+
+## 7. Point-estimate algorithm
+
+For each target-player match:
+
+1. Resolve the target player's `MatchPlayer` and team.
+2. Resolve that team's side for each round; exclude rounds with unknown side.
+3. Replay every valid round once.
+4. Add every target-team state entry to the match's `WinCounts`.
+5. Add every target-team resolved-duel outcome to the appropriate actor counts.
+6. Retain the match as one cluster, including rounds/cells with no observations.
+
+For each displayed `(side,a,b)`:
+
+1. Calculate `p_y` and `p_m` from aggregated kills and deaths.
+2. Look up `W_u = W(side,a,b-1)` and `W_d = W(side,a-1,b)`.
+3. Supply the verified definitional rail as a constant where applicable; estimate the other rail.
+4. If either rate or successor value is undefined, return `NO_DATA`; never return `0.0`.
+5. Calculate `L = W_u - W_d`.
+6. If `L <= 0`, return a flagged `NON_POSITIVE_LEVERAGE` node and do not color its sign.
+7. Otherwise calculate `M = (p_y - p_m) * L`.
+
+Do not use `W(a,b)` in `M`. Compute and retain it only for diagnostics.
+
+## 8. Bootstrap implementation
+
+Use a percentile cluster bootstrap over matches. A practical default is 2,000 draws; make the draw count configurable.
+
+On every draw:
+
+1. sample the target player's matches with replacement, preserving the original match count;
+2. sum the sampled `MatchFightEvBlock` counts;
+3. recompute `p_y`, `p_m`, `W_u`, `W_d`, `L`, and `M`; and
+4. record `M` only if all required non-definitional inputs exist.
+
+Resampling precomputed per-match sufficient statistics is equivalent to replaying every selected match again because replay is deterministic. It satisfies “recompute the entire statistic” without making a page request replay raw events 2,000 times.
+
+Use the same sampled match indices for both teammate benchmarks in a draw. Use a deterministic seed derived from the target player and a calculation-version constant so an unchanged page does not jitter between requests. Tests must be able to inject a seed and draw count.
+
+Track separately for every cell:
+
+- matches contributing to `p_player`;
+- matches contributing to `p_teammates`;
+- matches contributing to estimated `W_u`;
+- matches contributing to estimated `W_d`; and
+- fraction of draws where `M` was defined.
+
+Before finalizing interval-validity thresholds, run the validation script over the real data and inspect these distributions. Put the selected values in named constants with a comment recording the report used. Until that calibration is done, a safe node state is `INTERVAL_NOT_ESTIMABLE`, not a fabricated confidence interval.
+
+Do not interpret a zero-width interval from a handful of clusters as high precision.
+
+## 9. Node and UI contract
+
+Each displayed node must include, without requiring a tooltip:
+
+- state label;
+- `M` in round-win percentage points per duel;
+- player rate and `n`;
+- teammate rate and `n`;
+- 95% interval or `interval not estimable`;
+- a visible interval bar with a marked zero; and
+- enough nearby detail to expose leverage and contributing matches.
+
+Display states are mutually exclusive:
+
+```text
+NO_DATA                   a required rate or W value is undefined
+NON_POSITIVE_LEVERAGE     L <= 0; sign is uninterpretable
+INTERVAL_NOT_ESTIMABLE    point estimate exists, interval validation failed
+UNRESOLVED                valid interval includes zero
+POSITIVE                  valid interval is entirely above zero
+NEGATIVE                  valid interval is entirely below zero
+```
+
+Rules:
+
+- `NO_DATA` is never formatted as `0.0`.
+- `INTERVAL_NOT_ESTIMABLE` and `UNRESOLVED` both use neutral fill but distinct text.
+- Color direction is applied only for `POSITIVE`/`NEGATIVE`, never from the raw sign alone.
+- Node size increases monotonically with precision: narrower valid interval means equal or larger node. Invalid/no-data nodes use one fixed neutral size.
+- Do not size by leverage; `M` already contains leverage.
+- State explicitly that intervals are exploratory and unadjusted across nodes.
+- Use “converts better/worse than teammates,” not “fight more/less.”
+- Never show `p*` on the player page.
+
+## 10. Validation requirements
+
+Run these before accepting any displayed number.
+
+### Monotonicity report
+
+For each side, report where observed `W` decreases as own survivors increase or increases as opponents increase. This is diagnostic only; raw observational `W` is not guaranteed monotone.
+
+### Boundary sanity
+
+After decision truncation and life-cycle handling:
+
+```text
+W_ATK(a,0) == 1
+W_DEF(0,b) == 0
+```
+
+Report, do not assert, the two estimated rails. Classify every residual boundary violation rather than attributing it automatically to resurrection.
+
+### Cross-side complement
+
+Report large deviations from:
+
+```text
+W_ATK(a,b) ~= 1 - W_DEF(b,a)
+```
+
+This is a weak smoke alarm, not a gate.
+
+### Closure diagnostic
+
+For debug output only, compare the population duel rate with:
+
+```text
+p_star = (W(a,b) - W(a-1,b)) / L
+```
+
+Skip when `L == 0` and mark unstable below a named leverage threshold. A discrepancy is not proof of a bug.
+
+### All-teammates reconstruction
+
+For the duel population only, combine `p_player` and all-teammates counts. Their count-weighted rate must equal the target team's overall resolved-duel rate at the same state and side. Do not run this assertion for the tracked-roster pool.
+
+### Surrender exclusion
+
+Assert that no explicitly identified surrender-placeholder round contributes any state or duel observation.
+
+## 11. Required tests
+
+Add focused tests under `webapp/tests/`; avoid relying only on the production dataset.
+
+### `test_state_replay.py`
+
+- no-kill objective round records one initial entry and no duel;
+- ordinary elimination records initial and every post-casualty entry exactly once;
+- elimination casualty counts as a duel and later events do not;
+- defuse discards kills at and after `defuse_time`;
+- detonation discards kills at and after `plant_time + 45`;
+- confirmed time expiry discards later kills;
+- post-plant all-attackers-dead state remains observable until objective resolution;
+- self/environmental casualty changes state but not duel counts;
+- opponent duel changes state and creates one duel observation per team perspective;
+- equal-time ambiguity follows the chosen source-order/exclusion rule;
+- repeated state label after an explicit revive creates a second entry occurrence;
+- ambiguous life-cycle round is excluded when revive events are unavailable;
+- explicit surrender placeholder is excluded, while a valid no-kill round is retained;
+- overtime without side data is excluded.
+
+### `test_fight_ev.py`
+
+- exact hand-calculated `L` and `M` fixture;
+- rates are volume-weighted pooled counts, not means of teammate rates;
+- target player is excluded from both teammate pools;
+- roster pool uses only target-owned friendship IDs who were teammates;
+- opponents on the friendship list are excluded;
+- ungated `W` includes entries after the target player dies;
+- definitional and estimated rails are selected correctly per side;
+- missing input produces `NO_DATA`, not zero;
+- `L <= 0` produces `NON_POSITIVE_LEVERAGE`;
+- all-teammates reconstruction is exact from integer counts;
+- bootstrap is deterministic with a fixed seed;
+- each draw recomputes all inputs from the same sampled matches;
+- undefined draws lower the defined-draw fraction;
+- insufficient clusters produce `INTERVAL_NOT_ESTIMABLE`;
+- a narrower valid interval never produces a smaller precision encoding.
+
+### Route/template regression tests
+
+- player detail returns all four Fight-EV views;
+- both toggles switch labels and node data consistently;
+- interval and zero marker are visible without hover;
+- no-data and measured zero render differently;
+- page copy contains no `p*`, “fight more,” or “fight less” language;
+- existing player, match, and session diamonds still render.
+
+## 12. Implementation order
+
+Use small commits in this order:
+
+1. **Data-contract audit:** document source ordering, round side, terminal-time, resurrection/down-event, and surrender-marker availability.
+2. **Replay fixtures and engine:** write failing replay tests, then implement `state_replay.py` and diagnostics.
+3. **Per-match aggregates:** implement player/team/benchmark counts and validation checks.
+4. **Metric and bootstrap:** implement point estimates, cluster intervals, interval-validity reporting, and deterministic seeds.
+5. **Empirical calibration:** run the validation CLI, regenerate every provisional figure, and choose interval-validity constants from contributing-match distributions.
+6. **Presentation model:** create Fight-EV-specific diagram nodes and display classifications.
+7. **Player page:** add the third diamond, both toggles, on-face intervals, and legend.
+8. **Regression pass:** run all tests and compare existing diamonds before/after replay refactoring.
+
+Do not begin UI work before replay diagnostics and all-teammates reconstruction pass.
+
+## 13. Definition of done
+
+The feature is complete when:
+
+- the source/data audit is committed and every unresolved source fact has a conservative exclusion path;
+- state replay records state-entry occurrences, not pre-kill samples;
+- post-decision and ambiguous life-cycle events cannot leak into either `W` or `p`;
+- side-only rails are handled correctly;
+- both teammate pools are available and volume-weighted;
+- all four displayed views use context-consistent inputs;
+- every bootstrap draw recomputes the full metric from sampled match blocks;
+- sparse/undefined intervals are labeled honestly;
+- all validation checks run and the reconstruction assertion passes;
+- all provisional figures from the old replay have been regenerated;
+- UI wording remains descriptive and intervals are visible without interaction;
+- existing graph and session tests pass; and
+- the implementation contains no `p*` or fight-volume recommendation on the player-facing path.
+
+## 14. Explicitly out of scope
+
+- trade adjustment;
+- plant-phase or time-remaining context;
+- causal allocation claims;
+- risk-set-restricted teammate comparison;
+- role, weapon, economy, map, site, position, health, or utility controls;
+- hierarchical partial pooling;
+- isotonic smoothing;
+- multiplicity-adjusted or simultaneous intervals; and
+- space-creation credit.
+
+Final product interpretation:
+
+> A historical leverage-weighted comparison between two selected, observed duel populations, conditional on a valid opponent duel resolving.

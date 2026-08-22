@@ -1,0 +1,611 @@
+"""Fight-EV Diamond: a leverage-weighted comparison of a player's duel
+conversion rate against a teammate benchmark, at every 5-by-5 man-advantage
+state, split by side and by two teammate pools (tracked roster / everyone).
+
+See docs/fight_ev_diamond.txt for the full design. This module implements
+sections 5-8 of that handoff: per-match aggregation, point estimates, and
+the cluster bootstrap. Presentation (FightEvNode/FightEvDiagram, the SVG
+diamond, the player-page route) is a separate, not-yet-implemented layer on
+top of the pure functions here -- see build_fight_ev_views's docstring.
+"""
+
+from __future__ import annotations
+
+import enum
+import random
+from dataclasses import dataclass, field
+from typing import Literal
+
+from sqlalchemy.orm import Session, selectinload
+
+from app.models import Match, MatchPlayer, Player, Round
+from app.models.match import Team
+from app.services.friends import list_friend_ids
+from app.services.state_replay import (
+    DuelOccurrence,
+    KillEventInput,
+    MatchInput,
+    ReplayDiagnostics,
+    RoundInput,
+    StateEntryOccurrence,
+    attacking_team_for_round,
+    replay_match,
+)
+
+Side = Literal["attacking", "defending"]
+StateKey = tuple[Side, int, int]
+
+TeammatePool = Literal["tracked_roster", "all_teammates"]
+
+# Bumping this constant invalidates every previously-served bootstrap seed --
+# use it to force a reshuffle if the replay/aggregation logic changes in a
+# way that should not be silently blended with old draws.
+CALCULATION_VERSION = 1
+
+DEFAULT_BOOTSTRAP_DRAWS = 2000
+
+# Lower draw count used for the live player page (both the synchronous
+# "recent" render and the async "career" htmx fragment) -- keeps a page
+# load in the single-digit seconds on this local-only site instead of the
+# ~40s four-view/2000-draw run scripts/validate_fight_ev.py uses offline.
+# CI width shrinks with more draws, so this trades a slightly coarser
+# interval for responsiveness; bump it if that tradeoff stops being worth it.
+PAGE_BOOTSTRAP_DRAWS = 800
+
+# Provisional interval-validity thresholds. Section 8 of the handoff requires
+# these to come from running scripts/validate_fight_ev.py over real data and
+# choosing values from the observed contributing-match/defined-draw
+# distributions -- that calibration pass has not been run yet, so these are
+# deliberately conservative placeholders. Until recalibrated, cells that
+# don't clear them report INTERVAL_NOT_ESTIMABLE rather than a fabricated CI.
+MIN_DEFINED_DRAW_FRACTION = 0.5
+MIN_CONTRIBUTING_MATCHES = 5
+
+
+@dataclass
+class WinCounts:
+    wins: int = 0
+    entries: int = 0
+
+
+@dataclass
+class DuelCounts:
+    kills: int = 0
+    deaths: int = 0
+
+
+@dataclass
+class MatchFightEvBlock:
+    match_id: int
+    wins: dict[StateKey, WinCounts] = field(default_factory=dict)
+    player_duels: dict[StateKey, DuelCounts] = field(default_factory=dict)
+    roster_duels: dict[StateKey, DuelCounts] = field(default_factory=dict)
+    all_teammate_duels: dict[StateKey, DuelCounts] = field(default_factory=dict)
+
+
+class DisplayState(str, enum.Enum):
+    NO_DATA = "NO_DATA"
+    NON_POSITIVE_LEVERAGE = "NON_POSITIVE_LEVERAGE"
+    INTERVAL_NOT_ESTIMABLE = "INTERVAL_NOT_ESTIMABLE"
+    UNRESOLVED = "UNRESOLVED"
+    POSITIVE = "POSITIVE"
+    NEGATIVE = "NEGATIVE"
+
+
+@dataclass
+class BootstrapResult:
+    ci_low: float | None
+    ci_high: float | None
+    defined_draw_fraction: float
+    contributing_matches_player: int
+    contributing_matches_teammates: int
+    contributing_matches_w_u: int
+    contributing_matches_w_d: int
+
+
+@dataclass
+class FightEvCell:
+    side: Side
+    a: int
+    b: int
+    p_player: float | None
+    n_player: int
+    p_teammates: float | None
+    n_teammates: int
+    w_u: float | None
+    w_d: float | None
+    leverage: float | None
+    m: float | None
+    bootstrap: BootstrapResult | None
+    display_state: DisplayState
+
+
+def _team_perspective(
+    team1_value: frozenset[int], team2_value: frozenset[int], target_team: Team
+) -> frozenset[int]:
+    return team1_value if target_team == Team.TEAM_1 else team2_value
+
+
+def _opponent_perspective(
+    team1_value: frozenset[int], team2_value: frozenset[int], target_team: Team
+) -> frozenset[int]:
+    return team2_value if target_team == Team.TEAM_1 else team1_value
+
+
+def build_match_fight_ev_block(
+    match_id: int,
+    entries: list[StateEntryOccurrence],
+    duels: list[DuelOccurrence],
+    round_side_by_round_id: dict[int, Side | None],
+    target_team: Team,
+    target_match_player_id: int,
+    match_player_team: dict[int, Team],
+    match_player_to_player_id: dict[int, int],
+    roster_player_ids: set[int],
+) -> MatchFightEvBlock:
+    block = MatchFightEvBlock(match_id=match_id)
+
+    for entry in entries:
+        side = round_side_by_round_id.get(entry.round_id)
+        if side is None:
+            continue
+        own_alive = _team_perspective(entry.team1_alive_ids, entry.team2_alive_ids, target_team)
+        opp_alive = _opponent_perspective(entry.team1_alive_ids, entry.team2_alive_ids, target_team)
+        key: StateKey = (side, len(own_alive), len(opp_alive))
+        counts = block.wins.setdefault(key, WinCounts())
+        counts.entries += 1
+        if entry.winner == target_team:
+            counts.wins += 1
+
+    for duel in duels:
+        side = round_side_by_round_id.get(duel.round_id)
+        if side is None:
+            continue
+        killer_team = match_player_team.get(duel.killer_match_player_id)
+        victim_team = match_player_team.get(duel.victim_match_player_id)
+        if killer_team is None or victim_team is None:
+            continue
+        if killer_team != target_team and victim_team != target_team:
+            continue
+
+        own_before = _team_perspective(duel.team1_alive_before, duel.team2_alive_before, target_team)
+        opp_before = _opponent_perspective(duel.team1_alive_before, duel.team2_alive_before, target_team)
+        key = (side, len(own_before), len(opp_before))
+
+        is_kill = killer_team == target_team
+        actor_match_player_id = duel.killer_match_player_id if is_kill else duel.victim_match_player_id
+
+        def _add(bucket: dict[StateKey, DuelCounts]) -> None:
+            counts = bucket.setdefault(key, DuelCounts())
+            if is_kill:
+                counts.kills += 1
+            else:
+                counts.deaths += 1
+
+        if actor_match_player_id == target_match_player_id:
+            _add(block.player_duels)
+            continue
+
+        _add(block.all_teammate_duels)
+        actor_player_id = match_player_to_player_id.get(actor_match_player_id)
+        if actor_player_id is not None and actor_player_id in roster_player_ids:
+            _add(block.roster_duels)
+
+    return block
+
+
+def _sum_blocks(blocks: list[MatchFightEvBlock]) -> MatchFightEvBlock:
+    summed = MatchFightEvBlock(match_id=-1)
+    for block in blocks:
+        for key, counts in block.wins.items():
+            total = summed.wins.setdefault(key, WinCounts())
+            total.wins += counts.wins
+            total.entries += counts.entries
+        for attr in ("player_duels", "roster_duels", "all_teammate_duels"):
+            src = getattr(block, attr)
+            dst = getattr(summed, attr)
+            for key, counts in src.items():
+                total = dst.setdefault(key, DuelCounts())
+                total.kills += counts.kills
+                total.deaths += counts.deaths
+    return summed
+
+
+def win_rate(wins: dict[StateKey, WinCounts], side: Side, a: int, b: int) -> float | None:
+    if a < 0 or b < 0:
+        return None
+    if side == "attacking" and b == 0:
+        return 1.0
+    if side == "defending" and a == 0:
+        return 0.0
+    counts = wins.get((side, a, b))
+    if counts is None or counts.entries == 0:
+        return None
+    return counts.wins / counts.entries
+
+
+def duel_rate(duels: dict[StateKey, DuelCounts], key: StateKey) -> tuple[float | None, int]:
+    counts = duels.get(key)
+    if counts is None:
+        return None, 0
+    denom = counts.kills + counts.deaths
+    if denom == 0:
+        return None, 0
+    return counts.kills / denom, denom
+
+
+def _teammate_bucket_name(pool: TeammatePool) -> str:
+    return "roster_duels" if pool == "tracked_roster" else "all_teammate_duels"
+
+
+def _percentile(sorted_values: list[float], pct: float) -> float:
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    rank = (pct / 100) * (len(sorted_values) - 1)
+    low = int(rank)
+    high = min(low + 1, len(sorted_values) - 1)
+    frac = rank - low
+    return sorted_values[low] + (sorted_values[high] - sorted_values[low]) * frac
+
+
+def _bootstrap_seed(player_id: int, side: Side, a: int, b: int, pool: TeammatePool) -> int:
+    # Deterministic across requests for the same player/version so the page
+    # doesn't jitter between loads; varies by cell/benchmark so cells aren't
+    # accidentally correlated. Section 8 requires the SAME sampled match
+    # indices across the two teammate benchmarks for a given draw -- since
+    # index generation is a pure function of (player_id, version, side, a, b)
+    # and not of `pool`, callers must NOT fold `pool` into the seed itself.
+    del pool
+    return hash((player_id, CALCULATION_VERSION, side, a, b)) & 0xFFFFFFFF
+
+
+def compute_point_estimate(
+    wins: dict[StateKey, WinCounts],
+    player_duels: dict[StateKey, DuelCounts],
+    teammate_duels: dict[StateKey, DuelCounts],
+    side: Side,
+    a: int,
+    b: int,
+) -> FightEvCell:
+    key: StateKey = (side, a, b)
+    p_y, n_y = duel_rate(player_duels, key)
+    p_m, n_m = duel_rate(teammate_duels, key)
+    w_u = win_rate(wins, side, a, b - 1)
+    w_d = win_rate(wins, side, a - 1, b)
+
+    if p_y is None or p_m is None or w_u is None or w_d is None:
+        return FightEvCell(side, a, b, p_y, n_y, p_m, n_m, w_u, w_d, None, None, None, DisplayState.NO_DATA)
+
+    leverage = w_u - w_d
+    if leverage <= 0:
+        return FightEvCell(
+            side, a, b, p_y, n_y, p_m, n_m, w_u, w_d, leverage, None, None, DisplayState.NON_POSITIVE_LEVERAGE
+        )
+
+    m = (p_y - p_m) * leverage
+    return FightEvCell(side, a, b, p_y, n_y, p_m, n_m, w_u, w_d, leverage, m, None, DisplayState.POSITIVE)
+
+
+def _rail_rate(side: Side, rail_a: int, rail_b: int, wins: int, entries: int) -> float | None:
+    """Same semantics as win_rate, but operating on already-summed win/entries
+    totals for one specific rail cell -- used by bootstrap_cell's inner draw
+    loop, which resamples raw per-match scalars rather than whole dicts."""
+    if rail_a < 0 or rail_b < 0:
+        return None
+    if side == "attacking" and rail_b == 0:
+        return 1.0
+    if side == "defending" and rail_a == 0:
+        return 0.0
+    return (wins / entries) if entries > 0 else None
+
+
+def bootstrap_cell(
+    blocks: list[MatchFightEvBlock],
+    side: Side,
+    a: int,
+    b: int,
+    teammate_pool: TeammatePool,
+    seed: int,
+    draws: int = DEFAULT_BOOTSTRAP_DRAWS,
+) -> BootstrapResult:
+    teammate_attr = _teammate_bucket_name(teammate_pool)
+    key: StateKey = (side, a, b)
+    key_u: StateKey = (side, a, b - 1)
+    key_d: StateKey = (side, a - 1, b)
+
+    # Pull out just the scalars this cell needs from every match block once,
+    # up front -- resampling these small tuples in the draw loop below is far
+    # cheaper than re-summing whole per-match dicts 2,000 times (which is
+    # what naively calling _sum_blocks per draw did originally: minutes per
+    # cell against the real dataset instead of a fraction of a second).
+    per_block = []
+    teammate_dict_attr = teammate_attr
+    for blk in blocks:
+        pc = blk.player_duels.get(key)
+        tc = getattr(blk, teammate_dict_attr).get(key)
+        wu = blk.wins.get(key_u)
+        wd = blk.wins.get(key_d)
+        per_block.append(
+            (
+                pc.kills if pc else 0,
+                pc.deaths if pc else 0,
+                tc.kills if tc else 0,
+                tc.deaths if tc else 0,
+                wu.wins if wu else 0,
+                wu.entries if wu else 0,
+                wd.wins if wd else 0,
+                wd.entries if wd else 0,
+            )
+        )
+
+    contributing_player = sum(1 for row in per_block if row[0] + row[1] > 0)
+    contributing_teammates = sum(1 for row in per_block if row[2] + row[3] > 0)
+
+    def _contributing_win(rail_key: StateKey, entries_index: int) -> int:
+        rail_side, rail_a, rail_b = rail_key
+        if rail_a < 0 or rail_b < 0:
+            return 0
+        if rail_side == "attacking" and rail_b == 0:
+            return len(blocks)  # definitional constant, not data-dependent
+        if rail_side == "defending" and rail_a == 0:
+            return len(blocks)
+        return sum(1 for row in per_block if row[entries_index] > 0)
+
+    contributing_w_u = _contributing_win(key_u, 5)
+    contributing_w_d = _contributing_win(key_d, 7)
+
+    n = len(blocks)
+    rng = random.Random(seed)
+    defined_values: list[float] = []
+
+    for _ in range(draws):
+        pk = pd = tk = td = wu_w = wu_e = wd_w = wd_e = 0
+        for _ in range(n):
+            row = per_block[rng.randrange(n)]
+            pk += row[0]
+            pd += row[1]
+            tk += row[2]
+            td += row[3]
+            wu_w += row[4]
+            wu_e += row[5]
+            wd_w += row[6]
+            wd_e += row[7]
+
+        p_y = pk / (pk + pd) if (pk + pd) > 0 else None
+        p_m = tk / (tk + td) if (tk + td) > 0 else None
+        w_u = _rail_rate(side, a, b - 1, wu_w, wu_e)
+        w_d = _rail_rate(side, a - 1, b, wd_w, wd_e)
+        if p_y is None or p_m is None or w_u is None or w_d is None:
+            continue
+        leverage = w_u - w_d
+        if leverage <= 0:
+            continue
+        defined_values.append((p_y - p_m) * leverage)
+
+    defined_fraction = len(defined_values) / draws if draws else 0.0
+    if not defined_values:
+        return BootstrapResult(
+            None, None, defined_fraction, contributing_player, contributing_teammates, contributing_w_u, contributing_w_d
+        )
+
+    defined_values.sort()
+    return BootstrapResult(
+        ci_low=_percentile(defined_values, 2.5),
+        ci_high=_percentile(defined_values, 97.5),
+        defined_draw_fraction=defined_fraction,
+        contributing_matches_player=contributing_player,
+        contributing_matches_teammates=contributing_teammates,
+        contributing_matches_w_u=contributing_w_u,
+        contributing_matches_w_d=contributing_w_d,
+    )
+
+
+def _is_interval_estimable(bootstrap: BootstrapResult) -> bool:
+    if bootstrap.defined_draw_fraction < MIN_DEFINED_DRAW_FRACTION:
+        return False
+    return (
+        bootstrap.contributing_matches_player >= MIN_CONTRIBUTING_MATCHES
+        and bootstrap.contributing_matches_teammates >= MIN_CONTRIBUTING_MATCHES
+    )
+
+
+def classify_cell(cell: FightEvCell, bootstrap: BootstrapResult) -> FightEvCell:
+    """Combines a point estimate with its bootstrap result into the final
+    display classification (section 9). Only called for cells that already
+    have a defined `m` (i.e. display_state is still POSITIVE, the
+    provisional placeholder compute_point_estimate leaves it in)."""
+    if cell.display_state != DisplayState.POSITIVE:
+        return cell
+    if not _is_interval_estimable(bootstrap):
+        return FightEvCell(
+            cell.side, cell.a, cell.b, cell.p_player, cell.n_player, cell.p_teammates, cell.n_teammates,
+            cell.w_u, cell.w_d, cell.leverage, cell.m, bootstrap, DisplayState.INTERVAL_NOT_ESTIMABLE,
+        )
+    if bootstrap.ci_low is None or bootstrap.ci_high is None:
+        display_state = DisplayState.INTERVAL_NOT_ESTIMABLE
+    elif bootstrap.ci_low > 0:
+        display_state = DisplayState.POSITIVE
+    elif bootstrap.ci_high < 0:
+        display_state = DisplayState.NEGATIVE
+    else:
+        display_state = DisplayState.UNRESOLVED
+    return FightEvCell(
+        cell.side, cell.a, cell.b, cell.p_player, cell.n_player, cell.p_teammates, cell.n_teammates,
+        cell.w_u, cell.w_d, cell.leverage, cell.m, bootstrap, display_state,
+    )
+
+
+def compute_fight_ev_view(
+    blocks: list[MatchFightEvBlock],
+    side: Side,
+    teammate_pool: TeammatePool,
+    player_id: int,
+    draws: int = DEFAULT_BOOTSTRAP_DRAWS,
+) -> list[FightEvCell]:
+    """All 25 cells (a,b in 1..5) for one (side, teammate_pool) view."""
+    aggregate = _sum_blocks(blocks)
+    teammate_attr = _teammate_bucket_name(teammate_pool)
+
+    cells = []
+    for a in range(1, 6):
+        for b in range(1, 6):
+            cell = compute_point_estimate(aggregate.wins, aggregate.player_duels, getattr(aggregate, teammate_attr), side, a, b)
+            if cell.display_state == DisplayState.POSITIVE:
+                seed = _bootstrap_seed(player_id, side, a, b, teammate_pool)
+                bootstrap = bootstrap_cell(blocks, side, a, b, teammate_pool, seed, draws)
+                cell = classify_cell(cell, bootstrap)
+            cells.append(cell)
+    return cells
+
+
+@dataclass
+class FightEvViews:
+    attacking_tracked_roster: list[FightEvCell]
+    attacking_all_teammates: list[FightEvCell]
+    defending_tracked_roster: list[FightEvCell]
+    defending_all_teammates: list[FightEvCell]
+
+
+def _serialize_cell(cell: FightEvCell) -> dict:
+    """JSON-friendly projection of one cell -- just the fields the
+    player-page's client-side renderer needs (app/templates/players/detail.html).
+    Keeping node layout/color/text-formatting in JS (ported from the approved
+    design mockup) instead of pre-rendering all 4 views x 25 tiles of SVG
+    server-side keeps the page's DOM light -- the earlier all-SSR version
+    quadrupled the SVG node count for no benefit, since only one view is ever
+    visible at a time.
+    """
+    return {
+        "a": cell.a,
+        "b": cell.b,
+        "display_state": cell.display_state.value,
+        "m": cell.m,
+        "p_player": cell.p_player,
+        "n_player": cell.n_player,
+        "p_teammates": cell.p_teammates,
+        "n_teammates": cell.n_teammates,
+        "bootstrap": None
+        if cell.bootstrap is None
+        else {
+            "ci_low": cell.bootstrap.ci_low,
+            "ci_high": cell.bootstrap.ci_high,
+            "contributing_matches_player": cell.bootstrap.contributing_matches_player,
+            "contributing_matches_teammates": cell.bootstrap.contributing_matches_teammates,
+        },
+    }
+
+
+def serialize_fight_ev_views(views: FightEvViews) -> dict:
+    return {
+        "attacking_tracked_roster": [_serialize_cell(c) for c in views.attacking_tracked_roster],
+        "attacking_all_teammates": [_serialize_cell(c) for c in views.attacking_all_teammates],
+        "defending_tracked_roster": [_serialize_cell(c) for c in views.defending_tracked_roster],
+        "defending_all_teammates": [_serialize_cell(c) for c in views.defending_all_teammates],
+    }
+
+
+def _round_side_map(round_inputs: list[RoundInput], target_team: Team) -> dict[int, Side | None]:
+    mapping: dict[int, Side | None] = {}
+    for round_input in round_inputs:
+        attacking_team = attacking_team_for_round(round_input.round_number)
+        if attacking_team is None:
+            mapping[round_input.round_id] = None
+        else:
+            mapping[round_input.round_id] = "attacking" if attacking_team == target_team else "defending"
+    return mapping
+
+
+def load_match_fight_ev_blocks(
+    db: Session, player: Player, match_limit: int | None = None
+) -> tuple[list[MatchFightEvBlock], ReplayDiagnostics]:
+    """Loads matches `player` appears in and replays each one once via
+    app.services.state_replay, returning one MatchFightEvBlock per match plus
+    the merged replay diagnostics (exclusion reasons, ambiguous-lifecycle and
+    equal-time-ambiguity counts, etc.) across all of them. Shared by
+    build_fight_ev_views (the four displayed views) and
+    scripts/validate_fight_ev.py (which needs the raw diagnostics and blocks,
+    not just the final cells).
+
+    `match_limit` mirrors app.services.player_graphs.build_state_diagrams's
+    parameter of the same name -- None loads full history (the "career" view
+    on the player page), otherwise the `match_limit` most recent matches (the
+    "recent" view, and also what keeps the bootstrap's O(draws * matches) cost
+    small enough for a synchronous page load; full-history "career" is loaded
+    async via the existing htmx fragment).
+    """
+    roster_player_ids = list_friend_ids(db, player.id)
+    diagnostics = ReplayDiagnostics()
+
+    query = (
+        db.query(MatchPlayer)
+        .filter_by(player_id=player.id)
+        .join(Match, Match.id == MatchPlayer.match_id)
+        .options(
+            selectinload(MatchPlayer.match).selectinload(Match.match_players),
+            selectinload(MatchPlayer.match).selectinload(Match.rounds).selectinload(Round.kill_events),
+        )
+    )
+    if match_limit is not None:
+        query = query.order_by(Match.played_at.desc().nullsfirst(), Match.id.desc()).limit(match_limit)
+    match_players = query.all()
+
+    blocks: list[MatchFightEvBlock] = []
+    for match_player in match_players:
+        match = match_player.match
+        target_team = match_player.team
+        team1_ids = frozenset(mp.id for mp in match.match_players if mp.team == Team.TEAM_1)
+        team2_ids = frozenset(mp.id for mp in match.match_players if mp.team == Team.TEAM_2)
+        match_player_team = {mp.id: mp.team for mp in match.match_players}
+        match_player_to_player_id = {mp.id: mp.player_id for mp in match.match_players}
+
+        round_inputs = [
+            RoundInput(
+                round_id=r.id,
+                round_number=r.round_number,
+                outcome=r.outcome,
+                planted=r.planted,
+                plant_time=r.plant_time,
+                exploded=r.exploded,
+                defused=r.defused,
+                defuse_time=r.defuse_time,
+                kill_events=tuple(
+                    KillEventInput(
+                        id=k.id,
+                        killer_match_player_id=k.killer_match_player_id,
+                        death_match_player_id=k.death_match_player_id,
+                        event_time_seconds=k.event_time_seconds,
+                    )
+                    for k in r.kill_events
+                ),
+            )
+            for r in match.rounds
+        ]
+        match_input = MatchInput(match_id=match.id, team1_player_ids=team1_ids, team2_player_ids=team2_ids, rounds=tuple(round_inputs))
+        entries, duels, _ = replay_match(match_input, diagnostics)
+        round_side = _round_side_map(round_inputs, target_team)
+
+        blocks.append(
+            build_match_fight_ev_block(
+                match.id, entries, duels, round_side, target_team, match_player.id,
+                match_player_team, match_player_to_player_id, roster_player_ids,
+            )
+        )
+
+    return blocks, diagnostics
+
+
+def build_fight_ev_views(
+    db: Session, player: Player, match_limit: int | None = None, draws: int = DEFAULT_BOOTSTRAP_DRAWS
+) -> FightEvViews:
+    """Returns all four displayed views in a single pass (one DB/replay/
+    bootstrap cost per request, per section 6's router contract). See
+    load_match_fight_ev_blocks for what `match_limit` does.
+    """
+    blocks, _diagnostics = load_match_fight_ev_blocks(db, player, match_limit)
+
+    return FightEvViews(
+        attacking_tracked_roster=compute_fight_ev_view(blocks, "attacking", "tracked_roster", player.id, draws),
+        attacking_all_teammates=compute_fight_ev_view(blocks, "attacking", "all_teammates", player.id, draws),
+        defending_tracked_roster=compute_fight_ev_view(blocks, "defending", "tracked_roster", player.id, draws),
+        defending_all_teammates=compute_fight_ev_view(blocks, "defending", "all_teammates", player.id, draws),
+    )

@@ -185,6 +185,65 @@
 </div>
 {% endif %}
 
+{% if fight_ev_data %}
+<div class="card fight-ev-card" data-scope="{{ scope }}">
+  <h2>Fight-EV: converting duels into round-win leverage</h2>
+  <p class="page-meta" id="fight-ev-meta-{{ scope }}">
+    How often {{ profile.player.display_name }} wins a duel at each game state, compared to how often
+    <b id="fight-ev-pool-label-{{ scope }}">all teammates</b> do, weighted by how much that state actually swings
+    the round &mdash; on <b id="fight-ev-side-label-{{ scope }}">attacking</b> rounds. Colors are dulled until
+    there's enough data to be confident in a direction; a real +/&minus;pp value is always shown either way.
+  </p>
+
+  <div class="fight-ev-controls">
+    <div class="toggle-group" data-fight-ev-toggle="side">
+      <button type="button" class="toggle-group-btn active" data-side="attacking">Attacking</button>
+      <button type="button" class="toggle-group-btn" data-side="defending">Defending</button>
+    </div>
+    <div class="toggle-group" data-fight-ev-toggle="pool">
+      <button type="button" class="toggle-group-btn" data-pool="tracked_roster">Tracked roster</button>
+      <button type="button" class="toggle-group-btn active" data-pool="all_teammates">All teammates</button>
+    </div>
+  </div>
+
+  <script type="application/json" id="fight-ev-data-{{ scope }}">{{ fight_ev_data | tojson }}</script>
+
+  <div class="chart-scroll">
+    <svg id="fight-ev-svg-{{ scope }}" class="fight-ev-svg" style="width: 100%; max-width: 720px; height: auto; display: block; margin: 0 auto;"></svg>
+  </div>
+
+  <div class="legend fight-ev-legend">
+    <div class="legend-item">
+      <span class="legend-badge" style="background:#0ca30c;color:#fff;">&#9650; +pp</span>
+      <span><b>Converts better</b> &mdash; interval entirely above zero.</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-badge" style="background:#155c17;color:#fff;">&#9650; +pp</span>
+      <span><b>Leans better</b> &mdash; real value, not yet confident.</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-badge" style="background:#e0554f;color:#fff;">&#9660; &minus;pp</span>
+      <span><b>Converts worse</b> &mdash; interval entirely below zero.</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-badge" style="background:#7a332e;color:#fff;">&#9660; &minus;pp</span>
+      <span><b>Leans worse</b> &mdash; real value, not yet confident.</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-badge" style="background:#3a3b42;color:#fff;">0pp</span>
+      <span><b>No leverage here</b> &mdash; winning a duel at this state historically doesn't swing the round.</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-badge" style="background:#0d0d0d;color:var(--ink-muted);">&ndash;</span>
+      <span><b>No data</b> &mdash; zero duels have resolved at this exact state.</span>
+    </div>
+  </div>
+  <p class="page-meta">
+    This is exploratory and unadjusted across states &mdash; not a recommendation to take more or fewer fights.
+  </p>
+</div>
+{% endif %}
+
 <div class="card">
   <h2>Agents played</h2>
   <table>

@@ -8,6 +8,7 @@ from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD
 from app.services.friends import list_friend_ids
 from app.services.shoutouts import SCAVENGER_MIN_AVG_PER_ROUND, PlayerShoutout, assign_shoutouts
+from app.services.surrender_rounds import NOT_A_SURRENDER_ROUND
 
 # Kept in sync with the same-named constants in app.services.session_stats
 # (not imported from there -- sessions.py already imports from this module,
@@ -274,6 +275,7 @@ def get_match_shoutouts(
         )
         .join(Round, Round.id == RoundPlayerStat.round_id)
         .filter(Round.match_id == match.id)
+        .filter(NOT_A_SURRENDER_ROUND)
         .all()
     ):
         kill_totals[match_player_id] = kill_totals.get(match_player_id, 0) + kills
@@ -305,6 +307,7 @@ def get_match_shoutouts(
     rounds = (
         db.query(Round)
         .filter_by(match_id=match.id)
+        .filter(NOT_A_SURRENDER_ROUND)
         .options(selectinload(Round.kill_events))
         .order_by(Round.round_number)
         .all()
@@ -470,6 +473,7 @@ def get_match_shoutouts(
         )
         .join(Round, Round.id == RoundPlayerStat.round_id)
         .filter(Round.match_id == match.id)
+        .filter(NOT_A_SURRENDER_ROUND)
         .all()
     ):
         stats_by_round.setdefault(round_number, {})[match_player_id] = RoundStat(

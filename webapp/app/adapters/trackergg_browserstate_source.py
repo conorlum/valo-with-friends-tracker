@@ -188,6 +188,11 @@ def _team_for(team_id: str) -> Team:
     return Team.TEAM_1 if team_id == "Red" else Team.TEAM_2
 
 
+# tracker.gg's roundResult value for the placeholder rounds it appends to a
+# surrendered match. Filtered out at ingest -- see the round loop in load_match.
+SURRENDERED_ROUND_RESULT = "Surrendered"
+
+
 def _outcome_string(winning_team_id: str, round_result: str) -> str:
     # app/scoring/impact.py's _did_team_win parses "Team A"/"Team B" out of
     # this string (a convention inherited from the original HTML scraper) --
@@ -248,6 +253,16 @@ def load_match(db: Session, match_json: dict) -> Match:
 
     rounds_by_number: dict[int, Round] = {}
     for rs in round_summaries:
+        # tracker.gg pads a surrendered match out to its notional length with
+        # placeholder rounds: no kill events, and every player's stats row is
+        # all zeros. Nobody played them, so ingesting them silently inflates
+        # every "per round played" denominator (Most Active %, the Scavenger
+        # credits-per-round threshold) and dilutes average Impact with zeros.
+        # Skip them here -- the player-stat and kill-event loops below already
+        # skip anything whose round is missing from rounds_by_number.
+        if rs["stats"]["roundResult"]["value"] == SURRENDERED_ROUND_RESULT:
+            continue
+
         round_number = rs["attributes"]["round"]
         plant = rs["metadata"].get("plant")
         exploded = rs["metadata"].get("exploded")

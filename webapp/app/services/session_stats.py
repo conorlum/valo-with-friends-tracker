@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Player, Round, RoundPlayerStat
+from app.services.surrender_rounds import NOT_A_SURRENDER_ROUND
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD, econ_tier_name
 from app.services.economy_graphs import (
@@ -216,6 +217,7 @@ def _build_leaderboard(
         )
         .join(Round, Round.id == ImpactScore.round_id)
         .filter(ImpactScore.match_player_id.in_(our_mp_to_player.keys()))
+        .filter(NOT_A_SURRENDER_ROUND)
         .all()
     )
     impacts: dict[int, list[float]] = {}
@@ -795,6 +797,7 @@ def _build_round_mvp(
         )
         .join(Round, Round.id == ImpactScore.round_id)
         .filter(Round.match_id.in_(match_ids))
+        .filter(NOT_A_SURRENDER_ROUND)
         .all()
     )
     best_by_round: dict[int, tuple[int, float]] = {}
