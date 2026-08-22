@@ -1,7 +1,9 @@
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.models import Player
 from app.services.auth import get_current_player
 from app.services.economy_graphs import (
@@ -22,8 +24,47 @@ router = APIRouter(prefix="/players", tags=["players"])
 RECENT_MATCH_LIMIT = 30
 
 
-def _build_profile_context(db: Session, player: Player, match_limit: int | None, scope: str) -> dict:
-    profile = get_player_profile(db, player, match_limit=match_limit)
+def _run_in_own_session(fn, *args, **kwargs):
+    """Runs `fn(session, *args, **kwargs)` on a fresh session/connection of its
+    own. The independent queries this backs (player profile, state diagrams,
+    econ samples, fight-EV, map streaks) don't share any mutable state, so
+    giving each its own connection lets them go out over the wire concurrently
+    instead of paying round-trip latency to the DB one at a time -- on a
+    latency-heavy connection (e.g. Neon from a dev machine) that serial chain
+    of ~20 queries dominates page load far more than any of the CPU work."""
+    session = SessionLocal()
+    try:
+        return fn(session, *args, **kwargs)
+    finally:
+        session.close()
+
+
+def _build_profile_context(
+    db: Session, player: Player, match_limit: int | None, scope: str, *, include_map_streaks: bool = False
+) -> dict:
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        profile_future = executor.submit(
+            _run_in_own_session, get_player_profile, player, match_limit=match_limit
+        )
+        diagrams_future = executor.submit(
+            _run_in_own_session, build_state_diagrams, player, match_limit=match_limit
+        )
+        econ_future = executor.submit(
+            _run_in_own_session, player_econ_samples, player, match_limit=match_limit
+        )
+        fight_ev_future = executor.submit(
+            _run_in_own_session, build_fight_ev_views, player, match_limit=match_limit, draws=PAGE_BOOTSTRAP_DRAWS
+        )
+        map_streaks_future = (
+            executor.submit(_run_in_own_session, compute_map_streaks, player.id) if include_map_streaks else None
+        )
+
+        profile = profile_future.result()
+        round_win_graph, kill_order_graph = diagrams_future.result()
+        econ_samples = econ_future.result()
+        fight_ev_views = fight_ev_future.result()
+        map_streaks = map_streaks_future.result() if map_streaks_future is not None else None
+
     recent_first_matches = list(reversed(profile.matches))
     chart_data = {
         "labels": [match_label(m.match) for m in recent_first_matches],
@@ -41,17 +82,13 @@ def _build_profile_context(db: Session, player: Player, match_limit: int | None,
         "kill_impact": [s.average_kill_impact for s in profile.map_stats],
         "death_impact": [s.average_death_impact for s in profile.map_stats],
     }
-    round_win_graph, kill_order_graph = build_state_diagrams(db, player, match_limit=match_limit)
     top_kill_differentials, top_death_differentials = top_kill_order_state_deltas(kill_order_graph)
-    econ_samples = player_econ_samples(db, player, match_limit=match_limit)
     econ_tier_matrix = build_tier_matrix(econ_samples)
     econ_pistol_stats = build_pistol_stats(econ_samples)
     econ_loadout_scatter = build_loadout_win_scatter(econ_samples)
-
-    fight_ev_views = build_fight_ev_views(db, player, match_limit=match_limit, draws=PAGE_BOOTSTRAP_DRAWS)
     fight_ev_data = serialize_fight_ev_views(fight_ev_views)
 
-    return {
+    context = {
         "profile": profile,
         "chart_data": chart_data,
         "highlights_chart_data": highlights_chart_data,
@@ -66,6 +103,9 @@ def _build_profile_context(db: Session, player: Player, match_limit: int | None,
         "fight_ev_data": fight_ev_data,
         "scope": scope,
     }
+    if include_map_streaks:
+        context["map_streaks"] = map_streaks
+    return context
 
 
 @router.get("")
@@ -77,12 +117,11 @@ def player_list(request: Request, db: Session = Depends(get_db)):
 @router.get("/{display_name}")
 def player_detail(request: Request, display_name: str, db: Session = Depends(get_db)):
     player = get_player_or_404(db, display_name)
-    context = _build_profile_context(db, player, match_limit=RECENT_MATCH_LIMIT, scope="recent")
     # Map streaks aren't scoped by match_limit (their own windowing logic already
     # bounds itself to the current pool era) and aren't part of the recent/career
-    # toggle -- computed once here rather than in the shared context builder so the
-    # career fragment endpoint below doesn't redundantly recompute it.
-    context["map_streaks"] = compute_map_streaks(db, player.id)
+    # toggle -- computed here (rather than always in the shared context builder)
+    # so the career fragment endpoint below doesn't redundantly recompute it.
+    context = _build_profile_context(db, player, match_limit=RECENT_MATCH_LIMIT, scope="recent", include_map_streaks=True)
 
     current_player = get_current_player(request, db)
     context["is_own_profile"] = current_player is not None and current_player.id == player.id
