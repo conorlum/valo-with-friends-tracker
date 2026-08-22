@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.models.match import MatchSource, Team
 from app.scoring.impact import compute_impact_for_match
+from app.services.player_view_cache import find_cached_player_ids_for_match, invalidate_player_cache
 
 MATCH_URL_TMPL = "https://tracker.gg/valorant/match/{match_id}"
 MATCH_API_MARKER_TMPL = "api.tracker.gg/api/v2/valorant/standard/matches/{match_id}"
@@ -327,11 +328,16 @@ def load_match(db: Session, match_json: dict) -> Match:
     return match
 
 
-def _dedup_and_ingest(db: Session, page: Page, match_ids: list[str]) -> None:
+def _dedup_and_ingest(db: Session, page: Page, match_ids: list[str]) -> set[int]:
     """Shared tail end of both ingestion entry points below: skip anything
     already in the DB (dedup by tracker.gg's own match ID, so the same match
     is never double-ingested even when reached via a different player's
-    history), then ingest+score the rest with a human pace between requests."""
+    history), then ingest+score the rest with a human pace between requests.
+
+    Returns the union of player IDs whose player_view_cache rows were
+    invalidated -- callers batch a deferred pre-warm over this set rather than
+    recomputing per match (a player appearing in N ingested matches would
+    otherwise be recomputed N times)."""
     new_ids = []
     for match_id in match_ids:
         if db.query(Match).filter_by(external_id=match_id).one_or_none() is not None:
@@ -339,11 +345,24 @@ def _dedup_and_ingest(db: Session, page: Page, match_ids: list[str]) -> None:
         else:
             new_ids.append(match_id)
 
+    dirty: set[int] = set()
     for i, match_id in enumerate(new_ids):
         print(f"[{i + 1}/{len(new_ids)}] capturing {match_id}")
         match_json = fetch_match_json(page, match_id)
-        match = load_match(db, match_json)
-        compute_impact_for_match(db, match.id)
+        match = load_match(db, match_json)            # commits internally
+
+        # Invalidate BETWEEN load_match's commit and impact scoring, not after
+        # both: load_match's commit makes the match row permanent and
+        # dedup-skipped on every future run, so if compute_impact_for_match
+        # then raises, invalidating first still leaves the cache empty
+        # (recomputes live on next visit) rather than permanently stale.
+        cached_ids = find_cached_player_ids_for_match(db, match.id)
+        if cached_ids:
+            invalidate_player_cache(db, cached_ids)    # DELETE, no commit
+            db.commit()                                # invalidation visible
+            dirty |= cached_ids
+
+        compute_impact_for_match(db, match.id)         # commits internally
         print(f"  ingested {match.map_name} ({match_id})")
 
         if i < len(new_ids) - 1:
@@ -351,17 +370,20 @@ def _dedup_and_ingest(db: Session, page: Page, match_ids: list[str]) -> None:
             print(f"  waiting {delay:.1f}s before next match...")
             time.sleep(delay)
 
+    return dirty
 
-def ingest_recent_matches(db: Session, page: Page, riot_id: str, count: int) -> None:
+
+def ingest_recent_matches(db: Session, page: Page, riot_id: str, count: int) -> set[int]:
     """Discovers a player's `count` most recent matches (current act only)
-    and ingests+scores the ones not already in the DB."""
+    and ingests+scores the ones not already in the DB. Returns the player IDs
+    whose cache rows were invalidated (see _dedup_and_ingest)."""
     try:
         match_ids = discover_recent_match_ids(page, riot_id, count)
     except ProfilePrivateError as e:
         print(f"skipping {riot_id}: {e}")
-        return
+        return set()
     print(f"discovered {len(match_ids)} recent match(es) for {riot_id}")
-    _dedup_and_ingest(db, page, match_ids)
+    return _dedup_and_ingest(db, page, match_ids)
 
 
 def ingest_full_history(
@@ -370,19 +392,22 @@ def ingest_full_history(
     riot_id: str,
     max_matches: int | None = None,
     max_acts: int | None = None,
-) -> None:
+) -> set[int]:
     """Like `ingest_recent_matches`, but pages back through every Episode/Act
     (via `discover_all_competitive_match_ids`) to pull as much of a player's
     Competitive history as tracker.gg exposes, rather than just the current
     act. Used by the map-diversity data crawl (Phase B) -- deep per-player
     history is what lets us reconstruct each player's map-history state
-    before any given match."""
+    before any given match. Returns the invalidated player IDs, same as
+    ingest_recent_matches (scripts/crawl_map_diversity_data.py intentionally
+    ignores this return value -- pre-warming mid-crawl would be wasted work;
+    run scripts/recompute_player_views.py after a crawl instead)."""
     try:
         match_ids = discover_all_competitive_match_ids(
             page, riot_id, max_matches=max_matches, max_acts=max_acts
         )
     except ProfilePrivateError as e:
         print(f"skipping {riot_id}: {e}")
-        return
+        return set()
     print(f"discovered {len(match_ids)} total Competitive match(es) for {riot_id}")
-    _dedup_and_ingest(db, page, match_ids)
+    return _dedup_and_ingest(db, page, match_ids)

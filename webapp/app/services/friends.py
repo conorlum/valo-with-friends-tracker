@@ -23,9 +23,12 @@ def list_friends(db: Session, owner_player_id: int) -> list[Player]:
     )
 
 
-def add_friend(db: Session, owner_player_id: int, friend_player_id: int) -> None:
+def add_friend(db: Session, owner_player_id: int, friend_player_id: int) -> bool:
+    """Returns whether anything changed. Does NOT commit -- the caller
+    commits, so the mutation and the cache invalidation that must
+    accompany it land in one transaction."""
     if owner_player_id == friend_player_id:
-        return
+        return False
     exists = (
         db.query(Friendship)
         .filter_by(owner_player_id=owner_player_id, friend_player_id=friend_player_id)
@@ -33,14 +36,18 @@ def add_friend(db: Session, owner_player_id: int, friend_player_id: int) -> None
     )
     if exists is None:
         db.add(Friendship(owner_player_id=owner_player_id, friend_player_id=friend_player_id))
-        db.commit()
+        return True
+    return False
 
 
-def remove_friend(db: Session, owner_player_id: int, friend_player_id: int) -> None:
-    db.query(Friendship).filter_by(
-        owner_player_id=owner_player_id, friend_player_id=friend_player_id
-    ).delete()
-    db.commit()
+def remove_friend(db: Session, owner_player_id: int, friend_player_id: int) -> bool:
+    """Returns whether anything changed. Does NOT commit -- see add_friend."""
+    deleted = (
+        db.query(Friendship)
+        .filter_by(owner_player_id=owner_player_id, friend_player_id=friend_player_id)
+        .delete()
+    )
+    return bool(deleted)
 
 
 @dataclass

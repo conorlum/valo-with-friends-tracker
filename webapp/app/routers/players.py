@@ -1,3 +1,4 @@
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Depends, Request
@@ -12,16 +13,19 @@ from app.services.economy_graphs import (
     build_tier_matrix,
     player_econ_samples,
 )
-from app.services.fight_ev import PAGE_BOOTSTRAP_DRAWS, build_fight_ev_views, serialize_fight_ev_views
+from app.services.fight_ev import PAGE_BOOTSTRAP_DRAWS, serialize_fight_ev_views
 from app.services.friends import list_friend_ids
 from app.services.map_streaks import compute_map_streaks
-from app.services.player_graphs import build_state_diagrams, top_kill_order_state_deltas
+from app.services.player_data import RECENT_MATCH_LIMIT
+from app.services.player_graphs import build_state_diagrams_from_aggregates, top_kill_order_state_deltas
+from app.services.player_view_cache import get_cached_views, store_player_views
+from app.services.player_views import PlayerViews, compute_player_views
 from app.services.players import get_player_or_404, get_player_profile, list_players
 from app.templates import match_label, templates
 
 router = APIRouter(prefix="/players", tags=["players"])
 
-RECENT_MATCH_LIMIT = 30
+logger = logging.getLogger(__name__)
 
 
 def _run_in_own_session(fn, *args, **kwargs):
@@ -42,28 +46,45 @@ def _run_in_own_session(fn, *args, **kwargs):
 def _build_profile_context(
     db: Session, player: Player, match_limit: int | None, scope: str, *, include_map_streaks: bool = False
 ) -> dict:
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    cached = get_cached_views(db, player.id, scope)
+    computed: PlayerViews | None = None
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
         profile_future = executor.submit(
             _run_in_own_session, get_player_profile, player, match_limit=match_limit
         )
-        diagrams_future = executor.submit(
-            _run_in_own_session, build_state_diagrams, player, match_limit=match_limit
-        )
         econ_future = executor.submit(
             _run_in_own_session, player_econ_samples, player, match_limit=match_limit
-        )
-        fight_ev_future = executor.submit(
-            _run_in_own_session, build_fight_ev_views, player, match_limit=match_limit, draws=PAGE_BOOTSTRAP_DRAWS
         )
         map_streaks_future = (
             executor.submit(_run_in_own_session, compute_map_streaks, player.id) if include_map_streaks else None
         )
 
+        if cached is not None:
+            round_win_graph = cached.round_win_graph
+            kill_order_graph = cached.kill_order_graph
+            fight_ev_data = cached.fight_ev_data
+        else:
+            # Cache miss: full live compute on this thread, overlapped with
+            # the futures above.
+            computed = compute_player_views(db, player, match_limit, PAGE_BOOTSTRAP_DRAWS)
+            round_win_graph, kill_order_graph = build_state_diagrams_from_aggregates(
+                computed.win_stats, computed.kill_order_weights
+            )
+            fight_ev_data = serialize_fight_ev_views(computed.fight_ev)
+
         profile = profile_future.result()
-        round_win_graph, kill_order_graph = diagrams_future.result()
         econ_samples = econ_future.result()
-        fight_ev_views = fight_ev_future.result()
         map_streaks = map_streaks_future.result() if map_streaks_future is not None else None
+
+    if computed is not None:
+        # Opportunistic write-through on its OWN session: committing the
+        # request session here would expire `player` and every other ORM
+        # object the caller still uses. Failure is non-fatal.
+        try:
+            _run_in_own_session(store_player_views, player.id, {scope: computed})
+        except Exception:
+            logger.exception("Cache write-through failed for player %s (%s)", player.id, scope)
 
     recent_first_matches = list(reversed(profile.matches))
     chart_data = {
@@ -86,7 +107,6 @@ def _build_profile_context(
     econ_tier_matrix = build_tier_matrix(econ_samples)
     econ_pistol_stats = build_pistol_stats(econ_samples)
     econ_loadout_scatter = build_loadout_win_scatter(econ_samples)
-    fight_ev_data = serialize_fight_ev_views(fight_ev_views)
 
     context = {
         "profile": profile,
