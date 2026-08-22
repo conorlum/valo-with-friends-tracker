@@ -146,6 +146,7 @@
   }
 
   renderProfileCharts("recent");
+  renderFightEvCard("recent");
 
   let careerChartsRendered = false;
   function maybeRenderCareerCharts() {
@@ -169,6 +170,9 @@
     if (document.getElementById("career-sections").style.display !== "none") {
       maybeRenderCareerCharts();
     }
+    // SVG viewBox rendering (unlike Chart.js canvases) doesn't care whether its
+    // container is display:none, so this can render unconditionally on swap.
+    renderFightEvCard("career");
   });
 
   document.body.addEventListener("htmx:responseError", handleCareerFetchError);
@@ -191,6 +195,205 @@
       // exist yet) or if they were already built on a previous toggle.
       if (btn.dataset.scope === "career") maybeRenderCareerCharts();
     });
+  });
+
+  // Fight-EV diamond: built client-side from a JSON payload (fight-ev-data-{scope})
+  // instead of pre-rendering all 4 views x 25 tiles server-side -- keeps the DOM
+  // light since only one view is ever visible at a time. Layout/color/text-format
+  // logic mirrors the approved design mockup exactly.
+  const FIGHT_EV_X_STEP = 132, FIGHT_EV_Y_STEP = 108;
+  const FIGHT_EV_BASE_W = 118, FIGHT_EV_BASE_H = 76;
+  const FIGHT_EV_MAX_W = 142, FIGHT_EV_MAX_H = 92;
+  const FIGHT_EV_PADDING = 30;
+
+  function fightEvPos(a, b) {
+    return { x: (a - b) * FIGHT_EV_X_STEP / 2, y: (10 - (a + b)) * FIGHT_EV_Y_STEP };
+  }
+
+  function fightEvFmtPct(x) {
+    return x === null || x === undefined ? "–" : Math.round(x * 100) + "%";
+  }
+
+  function fightEvFmtPp(m) {
+    if (m === null || m === undefined) return "–";
+    const pp = m * 100;
+    if (pp > 0.005) return "▲ +" + pp.toFixed(2) + "pp";
+    if (pp < -0.005) return "▼ −" + Math.abs(pp).toFixed(2) + "pp";
+    return "0.00pp";
+  }
+
+  function fightEvTileColor(c) {
+    const s = c.display_state;
+    if (s === "POSITIVE") return "#0ca30c";
+    if (s === "NEGATIVE") return "#e0554f";
+    if (s === "UNRESOLVED" || s === "INTERVAL_NOT_ESTIMABLE") return (c.m || 0) >= 0 ? "#155c17" : "#7a332e";
+    if (s === "NON_POSITIVE_LEVERAGE") return "#3a3b42";
+    return "#0d0d0d"; // NO_DATA
+  }
+
+  function fightEvPrecisionSize(c) {
+    const s = c.display_state;
+    if (s !== "POSITIVE" && s !== "NEGATIVE" && s !== "UNRESOLVED") return [FIGHT_EV_BASE_W, FIGHT_EV_BASE_H];
+    if (!c.bootstrap || c.bootstrap.ci_low === null || c.bootstrap.ci_high === null) return [FIGHT_EV_BASE_W, FIGHT_EV_BASE_H];
+    const width = c.bootstrap.ci_high - c.bootstrap.ci_low;
+    const t = Math.max(0, Math.min(1, 1 - (width - 0.02) / 0.12));
+    return [FIGHT_EV_BASE_W + (FIGHT_EV_MAX_W - FIGHT_EV_BASE_W) * t, FIGHT_EV_BASE_H + (FIGHT_EV_MAX_H - FIGHT_EV_BASE_H) * t];
+  }
+
+  function fightEvContributingMatches(c) {
+    if (!c.bootstrap) return null;
+    return Math.min(c.bootstrap.contributing_matches_player, c.bootstrap.contributing_matches_teammates);
+  }
+
+  function fightEvSvgEl(tag, attrs) {
+    const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  function fightEvText(g, x, y, text, fill, fontSize, fontWeight) {
+    const t = fightEvSvgEl("text", { x, y, "text-anchor": "middle", fill, "font-size": fontSize, "font-weight": fontWeight });
+    t.textContent = text;
+    g.appendChild(t);
+  }
+
+  function renderFightEvDiamond(svg, cells) {
+    svg.innerHTML = "";
+    if (!cells) return;
+
+    const positions = {};
+    cells.forEach((c) => { positions[c.a + "v" + c.b] = fightEvPos(c.a, c.b); });
+    const pad = FIGHT_EV_MAX_W / 2 + FIGHT_EV_PADDING;
+    const xs = Object.values(positions).map((p) => p.x);
+    const ys = Object.values(positions).map((p) => p.y);
+    const minX = Math.min(...xs) - pad, maxX = Math.max(...xs) + pad;
+    const minY = Math.min(...ys) - pad, maxY = Math.max(...ys) + pad + 20;
+    svg.setAttribute("viewBox", `0 0 ${maxX - minX} ${maxY - minY}`);
+    const shiftX = -minX, shiftY = -minY;
+
+    const lattice = fightEvSvgEl("g", {});
+    cells.forEach((c) => {
+      [[c.a - 1, c.b], [c.a, c.b - 1]].forEach(([na, nb]) => {
+        const key = na + "v" + nb;
+        if (positions[key]) {
+          const p1 = positions[c.a + "v" + c.b], p2 = positions[key];
+          lattice.appendChild(
+            fightEvSvgEl("line", {
+              x1: p1.x + shiftX, y1: p1.y + shiftY, x2: p2.x + shiftX, y2: p2.y + shiftY,
+              stroke: "var(--gridline)", "stroke-width": 1.25,
+            })
+          );
+        }
+      });
+    });
+    svg.appendChild(lattice);
+
+    let domain = 0.01;
+    cells.forEach((c) => {
+      if (c.bootstrap && c.bootstrap.ci_low !== null) domain = Math.max(domain, Math.abs(c.bootstrap.ci_low), Math.abs(c.bootstrap.ci_high));
+    });
+
+    cells.forEach((c) => {
+      const p = positions[c.a + "v" + c.b];
+      const [w, h] = fightEvPrecisionSize(c);
+      const cx = p.x + shiftX, cy = p.y + shiftY;
+      const fill = fightEvTileColor(c);
+      const textColor = "#ffffff";
+      const top = cy - h / 2;
+
+      const g = fightEvSvgEl("g", {});
+      g.appendChild(fightEvSvgEl("rect", { x: cx - w / 2, y: top, width: w, height: h, rx: 9, fill, stroke: "var(--border-strong)", "stroke-width": 1 }));
+      fightEvText(g, cx - w / 2 + 8, top + 13, c.a + "v" + c.b, textColor, 9, 700);
+
+      if (c.display_state === "NO_DATA") {
+        fightEvText(g, cx, cy + 4, "No data", "var(--ink-muted)", 8.5, 600);
+        svg.appendChild(g);
+        return;
+      }
+
+      const playerLine = "You " + fightEvFmtPct(c.p_player) + " (" + c.n_player + ")";
+      const teammateLine = "Team " + fightEvFmtPct(c.p_teammates) + " (" + c.n_teammates + ")";
+
+      if (c.display_state === "NON_POSITIVE_LEVERAGE") {
+        fightEvText(g, cx, top + 30, "0pp", textColor, 15, 700);
+        fightEvText(g, cx, top + 40, "no leverage here", "var(--ink-muted)", 7.5, 600);
+        fightEvText(g, cx, top + 53, playerLine, "var(--ink-secondary)", 8, 400);
+        fightEvText(g, cx, top + 64, teammateLine, "var(--ink-secondary)", 8, 400);
+        svg.appendChild(g);
+        return;
+      }
+
+      const matches = fightEvContributingMatches(c);
+      const mLabel = fightEvFmtPp(c.m);
+
+      if (c.display_state === "INTERVAL_NOT_ESTIMABLE") {
+        const n = matches !== null ? matches : c.n_player;
+        fightEvText(g, cx, top + 30, mLabel, textColor, 15, 700);
+        fightEvText(g, cx, top + 43, playerLine, textColor, 8, 400);
+        fightEvText(g, cx, top + 54, teammateLine, textColor, 8, 400);
+        fightEvText(g, cx, cy + h / 2 - 6, "only " + n + " match" + (n !== 1 ? "es" : "") + " — not confident yet", "rgba(255,255,255,0.7)", 7.5, 600);
+        svg.appendChild(g);
+        return;
+      }
+
+      fightEvText(g, cx, top + 30, mLabel, textColor, 15, 700);
+      fightEvText(g, cx, top + 43, playerLine, textColor, 8, 400);
+      fightEvText(g, cx, top + 54, teammateLine, textColor, 8, 400);
+
+      const barW = w - 16, barX = cx - barW / 2, barY = cy + h / 2 - 16, barH = 6;
+      g.appendChild(fightEvSvgEl("rect", { x: barX, y: barY, width: barW, height: barH, rx: 3, fill: "rgba(255,255,255,0.08)" }));
+      const scale = (v) => barX + barW / 2 + (v / domain) * (barW / 2);
+      const zeroX = scale(0);
+      g.appendChild(fightEvSvgEl("line", { x1: zeroX, y1: barY - 2, x2: zeroX, y2: barY + barH + 2, stroke: "var(--border-strong)", "stroke-width": 1 }));
+      const ciLow = Math.max(-domain, c.bootstrap.ci_low), ciHigh = Math.min(domain, c.bootstrap.ci_high);
+      const lo = scale(ciLow), hi = scale(ciHigh);
+      g.appendChild(fightEvSvgEl("rect", { x: Math.min(lo, hi), y: barY, width: Math.max(1, Math.abs(hi - lo)), height: barH, rx: 3, fill: "rgba(255,255,255,0.55)" }));
+      const pointX = scale(c.m || 0);
+      g.appendChild(fightEvSvgEl("circle", { cx: pointX, cy: barY + barH / 2, r: 2.4, fill: textColor }));
+
+      if (matches !== null) {
+        fightEvText(g, cx, cy + h / 2 - 3, matches + " match" + (matches !== 1 ? "es" : ""), "rgba(255,255,255,0.7)", 7, 600);
+      }
+
+      svg.appendChild(g);
+    });
+  }
+
+  function fightEvActiveSelection(card) {
+    const side = card.querySelector('[data-fight-ev-toggle="side"] .active').dataset.side;
+    const pool = card.querySelector('[data-fight-ev-toggle="pool"] .active').dataset.pool;
+    return { side, pool, key: side + "_" + pool };
+  }
+
+  function renderFightEvCard(scope) {
+    const dataEl = document.getElementById("fight-ev-data-" + scope);
+    const card = document.querySelector('.fight-ev-card[data-scope="' + scope + '"]');
+    const svg = document.getElementById("fight-ev-svg-" + scope);
+    if (!dataEl || !card || !svg) return;
+    const data = JSON.parse(dataEl.textContent);
+    const { key } = fightEvActiveSelection(card);
+    renderFightEvDiamond(svg, data[key]);
+  }
+
+  // Delegated on document.body -- not bound per-card -- so it keeps working
+  // once the career fragment's copy of the card is swapped in by htmx.
+  document.body.addEventListener("click", (e) => {
+    const btn = e.target.closest(".fight-ev-card .toggle-group-btn");
+    if (!btn) return;
+    const card = btn.closest(".fight-ev-card");
+    const group = btn.closest("[data-fight-ev-toggle]").dataset.fightEvToggle;
+
+    card.querySelectorAll(`[data-fight-ev-toggle="${group}"] .toggle-group-btn`).forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+
+    const scope = card.dataset.scope;
+    const { side, pool } = fightEvActiveSelection(card);
+    const sideLabel = document.getElementById(`fight-ev-side-label-${scope}`);
+    const poolLabel = document.getElementById(`fight-ev-pool-label-${scope}`);
+    if (sideLabel) sideLabel.textContent = side;
+    if (poolLabel) poolLabel.textContent = pool === "tracked_roster" ? "tracked-roster teammates" : "all teammates";
+
+    renderFightEvCard(scope);
   });
 </script>
 {% endblock %}
