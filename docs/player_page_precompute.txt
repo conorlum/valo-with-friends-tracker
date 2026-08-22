@@ -1,0 +1,1500 @@
+Player page pre-compute and shared-replay -- implementation handoff
+
+Status: ready for implementation (pending the decisions in section 10)
+Inspected at: `1a6a133` (`fight-ev-perf-and-tile-sizing`)
+Revision: 5 (rev 4 re-audited revision 3 against the actual code; rev 5
+folds in external review feedback -- see section 0 for both sets of
+changes and why)
+
+This document is self-contained. An implementing agent should be able to
+work from it without re-deriving the design, but MUST re-read the four
+files it patches most heavily before editing them:
+`app/services/player_graphs.py`, `app/services/fight_ev.py`,
+`app/services/state_replay.py`, `app/routers/players.py`.
+
+Two changes that compose into one solution:
+
+  A. Pre-compute the expensive per-player views at ingestion time and
+     serve them from a cache table, so a player page load reads cached
+     JSON instead of re-deriving everything on every request.
+
+  B. Stop duplicating data loading and round replay between
+     build_state_diagrams and build_fight_ev_views, cutting per-player
+     compute cost -- which matters for A's ingestion-time pre-compute,
+     A's live-compute fallback, and the batch recompute script.
+
+
+========================================================================
+0. Corrections applied since revision 3
+========================================================================
+
+0.A -- Code-audit corrections (revision 4)
+------------------------------------------
+
+Everything below was checked against the code at `1a6a133`. These are
+the places revision 3 was wrong, incomplete, or would not have compiled.
+Each is already folded into the body of this document; they are listed
+here so the reviewer can see what moved.
+
+C1. THE CAREER QUERY HAS NO ORDER BY. Revision 3's single-load
+    optimization takes `per_match_results[:RECENT_MATCH_LIMIT]` and
+    claims "the match_players query returns results ordered by
+    Match.played_at.desc()". It does not: both today's
+    `build_state_diagrams` (player_graphs.py:145-147) and
+    `load_match_fight_ev_blocks` (fight_ev.py:564-566) apply
+    `.order_by(...)` ONLY inside `if match_limit is not None`. With
+    match_limit=None the rows come back in unspecified DB order, so the
+    slice would have cached an arbitrary 30 matches as "recent".
+    This is harmless today (career aggregation is order-independent) and
+    only becomes a bug under the new subsetting.
+    Fix: `load_player_match_data` always applies the ORDER BY and applies
+    LIMIT only when match_limit is not None. Section 3.3.
+
+C2. `replay_match` RETURNS A 3-TUPLE. Revision 3 section 2.2 destructures
+    four values (`entries, duels, transitions, _`). Adding the
+    transitions output is an arity change to `replay_match` and a field
+    addition to `RoundReplayResult`, with one production caller
+    (fight_ev.py:600) to update. Spelled out in section 4.1.
+
+C3. "NON-FINAL ENTRY" IS NOT IDENTIFIABLE BY POSITION. `replay_match`
+    concatenates every round's entries into one flat list, so you cannot
+    drop "the last entry" per round by index. Use the invariant that
+    `terminal_cause is not None` marks exactly one entry per accepted
+    round and it is always that round's last entry (state_replay.py:344-
+    348 sets it on the elimination event, and 350-366 sets it on
+    entries[-1] for every other cause; `cause` is guaranteed non-None by
+    the check at 233-236). Section 4.2, and it gets its own test.
+
+C4. PHASE 1 NEEDS A PER-MATCH STATE ACCUMULATOR THAT DOES NOT EXIST.
+    The single-load optimization needs per-match win_stats/kill-order
+    contributions, but `build_state_diagrams` is one monolithic loop over
+    all match_players. Its inner body has to be extracted into a
+    per-match function before the scope subsetting can work. Section 3.4.
+
+C5. IMPORT CYCLE ON THE FRIENDSHIP HOOK. `app/services/fight_ev.py`
+    imports `app.services.friends` at module level, so
+    `friends.py -> player_view_cache.py -> player_views.py ->
+    fight_ev.py -> friends.py` is a cycle. The friendship invalidation
+    therefore goes in `app/routers/friends.py`, not in
+    `app/services/friends.py`. Section 3.9.
+
+C6. `_round_win_diagram` / `_kill_order_diagram` ARE PRIVATE. The route
+    should not reach through the underscore. Add one public
+    `build_state_diagrams_from_aggregates()` in player_graphs.py.
+    Section 3.4.
+
+C7. `RECENT_MATCH_LIMIT` LIVES IN THE ROUTER (`app/routers/players.py:24`).
+    A service importing it from there would invert the layering. Move it
+    to `app/services/player_data.py` (see C18). Note `app/routers/squad.py:12` has
+    its own independent constant of the same name -- leave it alone.
+
+C8. USE `sa.JSON`, NOT `JSONB`. Every existing JSON column in this repo
+    is `sa.JSON` (`kill_events.source_meta`, `impact_scores.breakdown`,
+    and 0001_initial_schema.py:107,123). Nothing queries inside the blob,
+    so JSONB buys nothing here, and `sa.JSON` keeps the model usable on
+    SQLite if a test harness is ever added.
+
+C9. `ingest_full_history` ALSO GOES THROUGH `_dedup_and_ingest`, and its
+    caller is `scripts/crawl_map_diversity_data.py:110`. Revision 3
+    mentions neither. Both need the signature change; the crawl script
+    deliberately ignores the returned IDs (section 3.8).
+
+C10. NO DB TEST HARNESS EXISTS. `tests/` has no conftest.py and no
+    session/engine fixture -- all eight test modules are pure unit tests
+    over dataclasses. Revision 3's section 5.1/5.3/5.4/5.5 silently
+    assumes a DB-backed harness. Section 6 re-scopes testing and section
+    10.1 asks the user to decide whether to build one.
+
+C11. STATE-TRANSITION OCCURRENCES SHOULD CARRY COUNTS, NOT FROZENSETS.
+    The kill-order derivation only needs per-team alive COUNTS plus the
+    killer/victim IDs. Four `int`s instead of four `frozenset`s avoids
+    four extra frozenset allocations per kill event on a path that
+    processes ~15k events for a heavy player. Section 4.1.
+
+C12. THE `_bootstrap_seed` FIX CHANGES EVERY SERVED CI. Revision 3 is
+    right that `hash()` is PYTHONHASHSEED-randomized (the tuple contains
+    the `side` string), so the web server and any script disagree -- a
+    real bug that must be fixed before caching, or a cached blob and a
+    live recompute would differ. But the fix also reshuffles the draws,
+    which is exactly what `CALCULATION_VERSION` documents itself as
+    being for. Bump it to 3. Section 3.5.
+
+C13. TWO DIFFERENT AGGREGATES COME OFF THE SAME `entries` LIST.
+    `build_match_fight_ev_block` counts EVERY entry into `wins`
+    (fight_ev.py:152-162 -- team-level, deliberately not gated on the
+    player being alive, per docs/fight_ev_diamond.txt section 1).
+    `win_stats` counts only non-final entries where the target player is
+    alive. They are not the same aggregate and must not be "unified".
+
+C14. MISSING OPERATIONAL COSTS AND ESCAPE HATCHES. The deferred pre-warm
+    adds a full career recompute per affected player to the end of every
+    refresh run (~12 tracked players x several seconds each). Both
+    ingest scripts get a `--no-prewarm` flag, and the cost is stated up
+    front. Section 3.10.
+
+C15. THE STALE-WRITE RACE IS THE MIRROR OF THE STALE-READ RACE. Revision
+    3's operational assumption covers a page reading a stale cache row
+    during ingestion, but not a page whose live compute started before an
+    ingest commits and whose write-through then stores a stale blob after
+    it. Same assumption, stated for both directions. Section 5.
+
+C16. IMPACT RECOMPUTES DO NOT INVALIDATE THIS CACHE. Neither cached
+    product reads `impact_scores` -- those feed `get_player_profile`,
+    which stays uncached. `scripts/recompute_impact.py` and
+    `compute_impact_for_match` need no hook. Stated so nobody adds one.
+
+C17. THE WRITE-THROUGH SHOULD NOT COMMIT THE REQUEST SESSION. A
+    `db.commit()` on the request session expires every ORM object loaded
+    in it (including `player`, still used by the caller). Run the
+    write-through on its own session via the existing
+    `_run_in_own_session` helper. Section 3.7.
+
+
+0.B -- Review corrections (revision 5)
+--------------------------------------
+
+C18. REVISION 4 REINTRODUCED A CYCLE IT HAD JUST DIAGNOSED. Rev 4 merged
+    the shared loader into `player_views.py` alongside the orchestration.
+    But the backwards-compatible wrappers `build_state_diagrams` (in
+    player_graphs) and `load_match_fight_ev_blocks` (in fight_ev) both
+    need the loader, so both would import `player_views`, which imports
+    them: a genuine cycle, not a hypothetical. Revision 3's original
+    layout was right. `load_player_match_data` and `RECENT_MATCH_LIMIT`
+    go in a NEUTRAL LEAF module, `app/services/player_data.py`, importing
+    only `app.models`. Section 3.1/3.3.
+
+C19. INVALIDATE BETWEEN `load_match` AND `compute_impact_for_match`, NOT
+    AFTER BOTH. Rev 4 invalidated after impact scoring. But `load_match`
+    commits the match row first, and `_dedup_and_ingest` skips any match
+    whose `external_id` is already present -- so if
+    `compute_impact_for_match` then raises, the match is permanently in
+    the DB, permanently skipped by dedup, and the stale cache rows are
+    never invalidated by any future run. Invalidating immediately after
+    `load_match`'s commit makes the failure mode "cache empty, page
+    recomputes live" instead of "cache silently wrong forever". Applies
+    to the tracker.gg and demo paths alike. Section 3.9.
+
+C20. `CALCULATION_VERSION` MUST BE PART OF CACHE VALIDITY. It feeds
+    `_bootstrap_seed`, so bumping it changes every stored CI -- but rev 4
+    treated it as orthogonal to the cache and listed the cache bump as a
+    manual, remember-to-do-it step. Make it mechanical: the persisted
+    `version` column is a COMPOSITE of the cache schema version and
+    `CALCULATION_VERSION`, so a calculation bump cannot fail to
+    invalidate. Section 3.7.
+
+C21. TRANSACTION CONTRADICTION IN `store_player_views`. Rev 4 defined it
+    as "encode + upsert + commit" while also promising
+    `recompute_player_views` writes both scopes in ONE commit. Both
+    cannot hold. Split into a non-committing `_upsert_cache` and a
+    batch `store_player_views(db, player_id, views_by_scope)` that
+    upserts every given scope and commits once. Section 3.7.
+
+C22. FRIENDSHIP MUTATION AND INVALIDATION MUST BE ONE TRANSACTION. Rev 4
+    left `add_friend`/`remove_friend` committing internally and had the
+    router invalidate afterwards -- so a crash in between leaves the
+    friendship changed and the cache stale, and the fight-EV roster
+    benchmark is then wrong until something else invalidates. Drop the
+    internal commits and commit both together in the router. Verified
+    safe: `app/routers/friends.py:53,64` are the ONLY callers of either
+    function. Section 3.9.
+
+C23. THE `nullsfirst()` ORDERING IS AN UNDOCUMENTED SEMANTIC CHOICE.
+    `Match.played_at` is nullable (models/match.py:27), and every
+    player-scoped recent-window query uses
+    `.desc().nullsfirst()` -- players.py:175, economy_graphs.py:205,
+    fight_ev.py:565, player_graphs.py:146 -- i.e. an unknown-date match
+    counts as NEWEST and permanently occupies a slot in every "recent"
+    window. CORRECTION TO THE REVIEW: these four already agree with each
+    other, so there is no live inconsistency to fix on the player page,
+    and flipping them to `nullslast()` would silently change which
+    matches every existing recent view covers. The right action is to
+    make the choice explicit and pin it as an invariant the cache
+    depends on. (`app/services/matches.py:33,41,55` does use
+    `nullslast()` for the match-list pages -- a real divergence, but a
+    different feature and out of scope here.) Section 3.3.
+
+C24. DECODE MUST VALIDATE THE FIGHT-EV SHAPE, NOT JUST PARSE IT. Rev 4
+    caught KeyError/TypeError/ValueError, which a structurally-wrong but
+    JSON-valid blob sails straight through -- a missing view key or a
+    cell missing `display_state` reaches the client renderer and breaks
+    the page, which is exactly the 500-equivalent the fallback exists to
+    prevent. Validate all four view keys and every cell's key set against
+    a single shared source of truth so the serializer and validator
+    cannot drift. Section 3.7.
+
+
+========================================================================
+1. Problem statement
+========================================================================
+
+The player detail page (`/players/{display_name}`) runs five independent
+computations concurrently via `ThreadPoolExecutor(max_workers=5)` in
+`_build_profile_context` (app/routers/players.py:45-66):
+
+  1. get_player_profile       (players.py)        -- ImpactScore/KDA aggregation
+  2. build_state_diagrams     (player_graphs.py)  -- round-win + kill-order diamonds
+  3. player_econ_samples      (economy_graphs.py) -- econ tier/loadout data
+  4. build_fight_ev_views     (fight_ev.py)       -- fight-EV diamond (bootstrap CI)
+  5. compute_map_streaks      (map_streaks.py)    -- per-map win/loss streaks
+
+For a heavily-tracked player (~100+ matches, ~2400+ rounds, ~15000+ kill
+events), tasks #2 and #4 dominate:
+
+  - Each independently loads the full Match -> Round -> KillEvent ORM
+    graph via selectinload, hydrating ~15k+ KillEvent objects TWICE (they
+    run in separate sessions with separate identity maps, so there is no
+    shared cache between them).
+  - Each independently replays every round to reconstruct alive-count
+    state transitions. `build_state_diagrams` does it with a manual
+    Python loop (player_graphs.py:159-202); `load_match_fight_ev_blocks`
+    delegates to `state_replay.replay_match`, a stricter, more featureful
+    replay producing frozen dataclasses.
+  - `build_fight_ev_views` then runs a numpy cluster bootstrap (800 draws
+    x 4 views x up to 25 cells) on top of the replay output.
+
+The GIL serializes the CPU-bound work across the thread pool (numpy ops
+and DB waits do release it), so wall time for the CPU-bound portion is
+roughly the SUM of the tasks, not the max. Profiling against the live
+Neon DB (the standard test environment here) shows ~7-8s for the career
+view of the most-active tracked player, with ORM hydration and the replay
+loops as the top cost centres.
+
+Tasks #1, #3 and #5 are comparatively light -- different, smaller tables
+or aggregate queries -- and are not cached here (see section 10.2).
+
+
+========================================================================
+2. Decisions already made -- do not reopen
+========================================================================
+
+  - Cache the raw STATISTICAL AGGREGATES for the state diagrams
+    (`win_stats`, `kill_order_weights`), not the rendered `StateDiagram`
+    dataclasses. Rebuilding the dataclasses from aggregates is
+    microseconds of pure arithmetic, needs no custom (de)serializer for
+    GraphNode/GraphEdge, and means layout/color/radius changes take
+    effect without a cache bump.
+  - Cache fight-EV in its ALREADY-SERIALIZED form
+    (`serialize_fight_ev_views()` output). Here the expensive thing IS
+    the computation, and the serialized shape is already the template's
+    contract (`{{ fight_ev_data | tojson }}`).
+  - ONE version integer covering both products in one row. They are
+    always computed and consumed together; independent versioning would
+    add bookkeeping for no benefit, and the shared cost (hydration +
+    replay) is paid either way when one of them changes.
+  - Two scopes only: `recent` (match_limit=RECENT_MATCH_LIMIT=30) and
+    `career` (match_limit=None). Two rows per player.
+  - Best-effort everywhere. A failed pre-warm, a corrupt blob, a stale
+    version, or a missing row all degrade to today's live compute. The
+    cache is never load-bearing for correctness.
+
+
+========================================================================
+3. Phase 1 -- cache table, shared load, hooks
+========================================================================
+
+--- 3.1 New module layout ---
+
+New files:
+
+  app/models/player_view_cache.py       PlayerViewCache model
+  app/services/player_data.py           NEUTRAL LEAF: RECENT_MATCH_LIMIT
+                                        and load_player_match_data.
+                                        Imports app.models and nothing
+                                        else from app.services.
+  app/services/player_views.py          the orchestration that produces
+                                        both products from one load
+  app/services/player_view_cache.py     versioning, (de)serialization,
+                                        read/upsert/invalidate/pre-warm
+  alembic/versions/0003_player_view_cache.py
+  scripts/recompute_player_views.py
+
+Import direction, "X <- Y" meaning Y imports X (verify before committing):
+
+  models            <- player_data, player_graphs, fight_ev,
+                       player_views, player_view_cache
+  player_data       <- player_graphs, fight_ev, player_views,
+                       player_view_cache, routers/players
+  friends           <- fight_ev
+  player_graphs     <- player_views, player_view_cache
+  fight_ev          <- player_views
+  player_views      <- player_view_cache, routers/players
+  player_view_cache <- routers/players, routers/friends, adapters, scripts
+
+TWO CYCLES TO STAY OUT OF:
+
+  - `player_data` is a LEAF and must stay one (C18). Both
+    `build_state_diagrams` and `load_match_fight_ev_blocks` keep their
+    current query-based signatures as wrappers, and both need the loader.
+    If the loader lived in `player_views` -- which imports both of those
+    modules -- that is a cycle. Do not "tidy" player_data.py back into
+    player_views.py.
+  - `app/services/friends.py` must NOT import `player_view_cache`:
+    `fight_ev` already imports `friends`, so
+    `friends -> player_view_cache -> player_views -> fight_ev -> friends`
+    (C5). The friendship invalidation lives in `app/routers/friends.py`.
+
+
+--- 3.2 Model and migration ---
+
+app/models/player_view_cache.py, in the repo's SQLAlchemy 2 style:
+
+  from datetime import datetime
+
+  from sqlalchemy import (
+      JSON, CheckConstraint, DateTime, ForeignKey, String,
+      UniqueConstraint, func,
+  )
+  from sqlalchemy.orm import Mapped, mapped_column
+
+  from app.db import Base
+
+
+  class PlayerViewCache(Base):
+      """One pre-computed (state-diagram aggregates + fight-EV) payload per
+      (player, scope). Purely derived data -- safe to truncate at any time;
+      the player page recomputes live on a miss."""
+
+      __tablename__ = "player_view_cache"
+      __table_args__ = (
+          UniqueConstraint("player_id", "scope", name="uq_player_view_cache_scope"),
+          CheckConstraint("scope IN ('recent', 'career')", name="ck_player_view_cache_scope"),
+      )
+
+      id: Mapped[int] = mapped_column(primary_key=True)
+      player_id: Mapped[int] = mapped_column(
+          ForeignKey("players.id", ondelete="CASCADE"), nullable=False
+      )
+      scope: Mapped[str] = mapped_column(String(16), nullable=False)
+      data: Mapped[dict] = mapped_column(JSON, nullable=False)
+      version: Mapped[int] = mapped_column(nullable=False)
+      updated_at: Mapped[datetime] = mapped_column(
+          DateTime(timezone=True), server_default=func.now(), nullable=False
+      )
+
+  # NOTE: no onupdate=func.now(). SQLAlchemy's onupdate does not fire on
+  # PostgreSQL INSERT ... ON CONFLICT DO UPDATE, so _upsert_cache sets
+  # updated_at explicitly in its conflict clause.
+
+Add `PlayerViewCache` to `app/models/__init__.py` (both the import and
+`__all__`) -- alembic/env.py:8 imports `app.models` to register metadata.
+
+alembic/versions/0003_player_view_cache.py, following 0001/0002's shape
+(`revision = "0003"`, `down_revision = "0002"`):
+
+  def upgrade() -> None:
+      op.create_table(
+          "player_view_cache",
+          sa.Column("id", sa.Integer(), primary_key=True),
+          sa.Column("player_id", sa.Integer(),
+                    sa.ForeignKey("players.id", ondelete="CASCADE"), nullable=False),
+          sa.Column("scope", sa.String(length=16), nullable=False),
+          sa.Column("data", sa.JSON(), nullable=False),
+          sa.Column("version", sa.Integer(), nullable=False),
+          sa.Column("updated_at", sa.DateTime(timezone=True),
+                    server_default=sa.func.now(), nullable=False),
+          sa.UniqueConstraint("player_id", "scope", name="uq_player_view_cache_scope"),
+          sa.CheckConstraint("scope IN ('recent', 'career')", name="ck_player_view_cache_scope"),
+      )
+
+  def downgrade() -> None:
+      op.drop_table("player_view_cache")
+
+The unique constraint is the lookup index; no separate index is needed.
+
+
+--- 3.3 Shared data loading (B1) ---
+
+Today `build_state_diagrams` (player_graphs.py:137-147) and
+`load_match_fight_ev_blocks` (fight_ev.py:553-566) issue the SAME query.
+Extract it once into app/services/player_data.py -- a leaf module that
+imports only `app.models`, so player_graphs, fight_ev, player_views and
+the router can all use it without a cycle (C18):
+
+  RECENT_MATCH_LIMIT = 30   # moved here from app/routers/players.py:24
+
+  def load_player_match_data(
+      db: Session, player: Player, match_limit: int | None = None
+  ) -> list[MatchPlayer]:
+      """Every MatchPlayer row for `player`, most recent match first, with
+      the whole Match -> match_players / rounds -> kill_events graph eagerly
+      loaded. Shared by the state-diagram and fight-EV builders so a page
+      load or a recompute hydrates the ~15k KillEvent objects once instead
+      of once per product.
+
+      The ORDER BY is applied even when match_limit is None: callers rely on
+      list[:RECENT_MATCH_LIMIT] being exactly the "recent" scope of the same
+      career load (see recompute_player_views).
+      """
+      query = (
+          db.query(MatchPlayer)
+          .filter_by(player_id=player.id)
+          .join(Match, Match.id == MatchPlayer.match_id)
+          .options(
+              selectinload(MatchPlayer.match).selectinload(Match.match_players),
+              selectinload(MatchPlayer.match)
+              .selectinload(Match.rounds)
+              .selectinload(Round.kill_events)
+              .defer(KillEvent.source_meta),
+          )
+          .order_by(Match.played_at.desc().nullsfirst(), Match.id.desc())
+      )
+      if match_limit is not None:
+          query = query.limit(match_limit)
+      return query.all()
+
+C1: the unconditional ORDER BY is the correctness precondition for the
+single-load optimization in 3.6. Do not "optimize" it back out.
+
+THE ORDERING IS A PINNED INVARIANT (C23). `Match.played_at` is nullable
+(models/match.py:27), and `.desc().nullsfirst()` means A MATCH WITH NO
+KNOWN DATE COUNTS AS THE NEWEST and therefore permanently occupies a slot
+in every "recent" window. That is the existing, deliberate-looking
+behaviour: all four player-scoped recent-window queries already use it --
+
+    app/services/players.py:175          (get_player_profile)
+    app/services/economy_graphs.py:205   (player_econ_samples)
+    app/services/fight_ev.py:565
+    app/services/player_graphs.py:146
+
+-- and both of the follow-up ascending sorts (players.py:181,
+squad.py:243) use `nullslast()` ascending, which is the same
+"unknown = newest" convention read the other way. Keep it, and record the
+decision here rather than flipping it: changing to `nullslast()` would
+silently change which matches every existing recent view covers, for a
+case the two adapters do not currently produce.
+
+What the cache actually depends on is CONSISTENCY, not direction:
+`load_player_match_data`, `get_player_profile` and `player_econ_samples`
+must select the SAME 30 matches, or a cached "recent" fight-EV diamond
+describes a different match set than the profile chart next to it on the
+same page. Treat the ordering clause as a shared contract:
+
+  - Put a comment on the ORDER BY in player_data.py naming the other two
+    call sites.
+  - Section 6.1 has a test asserting the three clauses are identical.
+  - If the ordering is ever changed, change all three together and bump
+    PLAYER_VIEW_CACHE_SCHEMA_VERSION.
+
+(`app/services/matches.py:33,41,55` uses `nullslast()` for the match-list
+pages -- a genuine divergence in the codebase, but a different feature
+and out of scope here.)
+
+
+--- 3.4 player_graphs.py changes ---
+
+Split `build_state_diagrams` into three pieces, keeping the existing
+public signature working:
+
+  def accumulate_match_state_stats(
+      match_player: MatchPlayer,
+      win_stats: dict[str, dict[str, int]],
+      kill_order_weights: dict[tuple[str, str], int],
+  ) -> None:
+      """The body of build_state_diagrams's per-match loop, verbatim
+      (player_graphs.py:153-202), accumulating into caller-owned dicts."""
+
+  def build_state_aggregates_from_data(
+      match_players: list[MatchPlayer],
+  ) -> tuple[dict[str, dict[str, int]], dict[tuple[str, str], int]]:
+      """Fold accumulate_match_state_stats over pre-loaded rows."""
+
+  def build_state_diagrams_from_aggregates(
+      win_stats: dict[str, dict[str, int]],
+      kill_order_weights: dict[tuple[str, str], int],
+  ) -> tuple[StateDiagram, StateDiagram]:
+      return _round_win_diagram(win_stats), _kill_order_diagram(kill_order_weights)
+
+  def build_state_diagrams(db, player, match_limit=None):
+      """Unchanged signature -- now a thin wrapper over the three above."""
+
+`build_state_diagrams_from_aggregates` is what the cache-hit path calls;
+it exists so no caller reaches through the private `_*_diagram` helpers
+(C6). Do NOT touch the other builders in this module
+(`build_match_round_win_diagrams`, `_own_team_win_stats_for_match`,
+`build_session_*`) -- they are the match/session pages and are out of
+scope for both phases.
+
+
+--- 3.5 fight_ev.py changes ---
+
+(a) Split the loader the same way, keeping the public entry points:
+
+  def load_match_fight_ev_blocks_from_data(
+      db: Session,                       # still needed for list_friend_ids
+      match_players: list[MatchPlayer],
+      player: Player,
+  ) -> tuple[list[MatchFightEvBlock], ReplayDiagnostics]:
+      """fight_ev.py:568-610's loop body, over pre-loaded rows.
+      INVARIANT: returns exactly one block per input match_player, in the
+      same order. recompute_player_views slices this list by scope."""
+
+  def build_fight_ev_views_from_blocks(
+      blocks: list[MatchFightEvBlock], player_id: int, draws: int
+  ) -> FightEvViews:
+      """fight_ev.py:622-627's four compute_fight_ev_view calls."""
+
+  def load_match_fight_ev_blocks(db, player, match_limit=None):   # wrapper
+  def build_fight_ev_views(db, player, match_limit=None, draws=...):  # wrapper
+
+  `scripts/validate_fight_ev.py:271` calls `load_match_fight_ev_blocks`
+  and must keep working unchanged.
+
+(b) Fix `_bootstrap_seed` (fight_ev.py:245-253). `hash()` over a tuple
+    containing the `side` string is PYTHONHASHSEED-randomized, so the web
+    server and a recompute script produce different seeds for the same
+    cell -- which, once results are cached, means a cached blob and a
+    live recompute disagree for no legitimate reason:
+
+      import hashlib
+      import struct
+
+      def _bootstrap_seed(player_id: int, side: Side, a: int, b: int, pool: TeammatePool) -> int:
+          # Process-stable digest, NOT hash(): PYTHONHASHSEED randomizes
+          # str hashing per process, so the old version gave the web server
+          # and the recompute script different seeds for the same cell.
+          # `pool` is still deliberately excluded -- section 8 of the handoff
+          # requires the same sampled match indices across both teammate
+          # benchmarks for a given draw.
+          del pool
+          raw = struct.pack(
+              ">iiBBB", player_id, CALCULATION_VERSION, a, b,
+              0 if side == "attacking" else 1,
+          )
+          return int.from_bytes(hashlib.sha256(raw).digest()[:4], "big")
+
+(c) Bump `CALCULATION_VERSION` from 2 to 3 with a `# v3:` comment
+    explaining the seed-source change (C12). Its existing docstring says
+    it exists exactly for this.
+
+(d) Leave `PAGE_BOOTSTRAP_DRAWS = 800` as the draw count for BOTH the
+    cached pre-compute and the live fallback, so a cache hit and a cache
+    miss render the same numbers. See section 10.3.
+
+
+--- 3.6 The orchestration: app/services/player_views.py ---
+
+This module owns only the "one load, both products" orchestration. The
+loader and RECENT_MATCH_LIMIT live in player_data.py (3.3); import them
+from there.
+
+  @dataclass
+  class PlayerViews:
+      win_stats: dict[str, dict[str, int]]
+      kill_order_weights: dict[tuple[str, str], int]
+      fight_ev: FightEvViews
+
+  def compute_player_views(
+      db: Session, player: Player, match_limit: int | None,
+      draws: int = PAGE_BOOTSTRAP_DRAWS,
+  ) -> PlayerViews:
+      """One load, both products. Phase 1 still runs two replay passes over
+      the shared rows; phase 2 collapses them into one."""
+      match_players = load_player_match_data(db, player, match_limit)
+      win_stats, ko_weights = build_state_aggregates_from_data(match_players)
+      blocks, _diag = load_match_fight_ev_blocks_from_data(db, match_players, player)
+      return PlayerViews(
+          win_stats, ko_weights,
+          build_fight_ev_views_from_blocks(blocks, player.id, draws),
+      )
+
+  def compute_player_views_by_scope(
+      db: Session, player: Player, draws: int = PAGE_BOOTSTRAP_DRAWS,
+  ) -> dict[str, PlayerViews]:
+      """Both scopes off ONE career load. `recent` is the first
+      RECENT_MATCH_LIMIT rows of the career load -- which is only correct
+      because load_player_match_data always orders most-recent-first.
+      ORM hydration and round replay happen once; only the bootstrap (which
+      genuinely differs per match subset) runs per scope."""
+      match_players = load_player_match_data(db, player, match_limit=None)
+      per_match = []
+      for mp in match_players:
+          ws: dict[str, dict[str, int]] = {}
+          ko: dict[tuple[str, str], int] = {}
+          accumulate_match_state_stats(mp, ws, ko)
+          per_match.append((ws, ko))
+      blocks, _diag = load_match_fight_ev_blocks_from_data(db, match_players, player)
+      assert len(blocks) == len(match_players)   # slicing below depends on it
+
+      views: dict[str, PlayerViews] = {}
+      for scope, limit in (("recent", RECENT_MATCH_LIMIT), ("career", None)):
+          n = len(match_players) if limit is None else limit
+          win_stats, ko_weights = _merge_state_aggregates(per_match[:n])
+          views[scope] = PlayerViews(
+              win_stats, ko_weights,
+              build_fight_ev_views_from_blocks(blocks[:n], player.id, draws),
+          )
+      return views
+
+`_merge_state_aggregates` sums the per-match dicts: `win`/`total` added
+per state key, kill-order weights added per (src, dst) key.
+
+A player with zero matches is a valid input at every step: the loader
+returns [], the aggregates are empty dicts, `bootstrap_cell` short-
+circuits on `n > 0`, and the diagrams render as "No data". Cache the
+empty payload like any other.
+
+
+--- 3.7 app/services/player_view_cache.py ---
+
+  from app.services.fight_ev import CALCULATION_VERSION
+
+  PLAYER_VIEW_CACHE_SCHEMA_VERSION = 1
+  # Bump when ANY of these change:
+  #   - replay semantics (round exclusion rules, event filtering)
+  #   - win_stats / kill_order_weights accumulation logic
+  #   - PAGE_BOOTSTRAP_DRAWS, or the draw count used for the cache
+  #   - MIN_DEFINED_DRAW_FRACTION / MIN_CONTRIBUTING_MATCHES
+  #   - point-estimate or display classification logic
+  #   - the shape of the stored blob (keys added/removed/renamed)
+  #   - the friendship-dependent teammate pool logic
+  #   - the recent-window ORDER BY contract (see 3.3)
+  # Both products share one row, so a bump recomputes both even when only
+  # one changed. That is fine: the cost is dominated by hydration+replay,
+  # which they share.
+
+  def cache_version() -> int:
+      """The value persisted in and checked against player_view_cache.version.
+
+      CALCULATION_VERSION is folded in MECHANICALLY rather than documented as
+      a remember-to-also-bump step (C20): it feeds _bootstrap_seed, so every
+      stored confidence interval depends on it, and a bump that did not
+      invalidate the cache would leave the site serving intervals from the
+      previous seed sequence indefinitely. Composite rather than hashed so the
+      stored value stays readable -- 1003 is schema 1, calculation 3.
+      """
+      return PLAYER_VIEW_CACHE_SCHEMA_VERSION * 1000 + CALCULATION_VERSION
+
+  Everything else on the bump list above is a semantic change with no
+  numeric constant to key off, so it stays a manual
+  PLAYER_VIEW_CACHE_SCHEMA_VERSION bump. `assert CALCULATION_VERSION < 1000`
+  at module scope so the composite can never collide.
+
+Stored blob shape:
+
+  {
+    "state_aggregates": {
+      "win_stats": {"5v5": {"win": 12, "total": 30}, ...},
+      "kill_order_weights": [["5v5", "5v4", 7], ["5v5", "4v5", -9], ...]
+    },
+    "fight_ev": <serialize_fight_ev_views() output>
+  }
+
+`kill_order_weights` is a dict with TUPLE keys in Python and therefore
+cannot round-trip as a JSON object -- the triple list is the encoding
+(C5). `win_stats` keys are already strings and survive as-is.
+
+Public API:
+
+  @dataclass
+  class CachedPlayerViews:
+      round_win_graph: StateDiagram
+      kill_order_graph: StateDiagram
+      fight_ev_data: dict
+
+  def get_cached_views(db, player_id: int, scope: str) -> CachedPlayerViews | None
+      """Cache miss, version mismatch, or any validation/decode failure ->
+      None (the caller then computes live). Failures are logged, never
+      raised: a corrupt blob must not turn into a 500, and must not reach
+      the template either. Rebuilds the StateDiagrams via
+      build_state_diagrams_from_aggregates so presentation changes never
+      need a cache bump."""
+
+  def store_player_views(db, player_id: int, views_by_scope: dict[str, PlayerViews]) -> None
+      """Encode and upsert EVERY given scope, then commit ONCE (C21).
+      recompute_player_views passes both scopes so a mid-way failure can
+      never leave one scope cached and the other empty; the route's
+      write-through passes a single-entry dict. The underlying
+      _upsert_cache does not commit."""
+
+  def invalidate_player_cache(db, player_ids: set[int]) -> None
+      """DELETE FROM player_view_cache WHERE player_id IN (...).
+      Does NOT commit -- the caller commits, so the delete lands in the same
+      transaction as whatever mutation triggered it."""
+
+  def find_cached_player_ids_for_match(db, match_id: int) -> set[int]
+      """The players in `match_id` who ALREADY have cache rows. Targets only
+      those -- not the tracked_players.json roster (a separate concept from
+      the Friendship table fight-EV's list_friend_ids uses), and not every
+      opponent who ever appeared in a match."""
+
+  def recompute_player_views(db, player_id: int) -> None
+      """compute_player_views_by_scope, then one store_player_views call
+      with both scopes -- a single commit."""
+
+  def prewarm_player_cache(db, player_ids: set[int]) -> None
+      """Best-effort, per player:
+          try: recompute_player_views(db, pid)
+          except Exception:
+              db.rollback()
+              logger.exception("Cache pre-warm failed for player %s; next "
+                               "page visit will recompute", pid)
+      One player's failure never aborts the batch."""
+
+DECODE VALIDATION (C24). Catching exceptions is not enough -- a blob that
+is valid JSON but structurally wrong (a truncated write, a payload from a
+half-finished refactor, a hand-edited row) decodes without raising and
+then breaks the client-side renderer, which is exactly the failure the
+live-compute fallback exists to prevent. Validate before returning:
+
+  In app/services/fight_ev.py, make the shape declarative so the
+  serializer and the validator cannot drift:
+
+      FIGHT_EV_VIEW_KEYS = (
+          "attacking_tracked_roster", "attacking_all_teammates",
+          "defending_tracked_roster", "defending_all_teammates",
+      )
+      FIGHT_EV_CELL_KEYS = frozenset({
+          "a", "b", "display_state", "m", "p_player", "n_player",
+          "p_teammates", "n_teammates", "bootstrap",
+      })
+
+  Build `serialize_fight_ev_views`'s dict from FIGHT_EV_VIEW_KEYS, and add
+  a test asserting `_serialize_cell(...).keys() == FIGHT_EV_CELL_KEYS` so
+  a future field addition fails loudly instead of silently invalidating
+  every cached blob's validation.
+
+  The validator (returns False -> treat as a cache miss and log):
+    - the blob is a dict with exactly the keys "state_aggregates" and
+      "fight_ev";
+    - `fight_ev` is a dict containing all four FIGHT_EV_VIEW_KEYS;
+    - each view is a list of 25 dicts, each with key set exactly
+      FIGHT_EV_CELL_KEYS;
+    - each cell's `display_state` is a valid `DisplayState` value, `a` and
+      `b` are ints in 1..5, and `bootstrap` is None or a dict with the
+      four keys `_serialize_cell` emits;
+    - `state_aggregates.win_stats` is a dict of "<int>v<int>" -> {"win":
+      int, "total": int} with win <= total;
+    - `state_aggregates.kill_order_weights` is a list of 3-element
+      [str, str, int] triples.
+
+  Keep it one function, `_validate_blob(blob) -> bool`, called from
+  `get_cached_views` before decoding. Log which check failed -- a
+  validation failure is silent-by-design at runtime, so the log line is
+  the only way anyone finds out the pre-compute is producing garbage.
+  This is cheap (a few hundred dict lookups) against a page load that
+  otherwise costs seconds.
+
+The upsert (Postgres-specific; this is why it cannot be exercised by a
+SQLite test harness -- see C10):
+
+  from sqlalchemy import func
+  from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+  def _upsert_cache(db, player_id, scope, data) -> None:
+      """Does NOT commit -- store_player_views commits once for all scopes."""
+      version = cache_version()
+      stmt = (
+          pg_insert(PlayerViewCache.__table__)
+          .values(player_id=player_id, scope=scope, data=data,
+                  version=version, updated_at=func.now())
+          .on_conflict_do_update(
+              index_elements=[PlayerViewCache.player_id, PlayerViewCache.scope],
+              set_={"data": data, "version": version, "updated_at": func.now()},
+          )
+      )
+      db.execute(stmt)
+
+ON CONFLICT DO UPDATE is also what makes two simultaneous cache-miss
+write-throughs for the same player safe (last writer wins; both wrote the
+same thing).
+
+
+--- 3.8 Route changes (app/routers/players.py) ---
+
+Restructure `_build_profile_context` so the cheap I/O-bound futures are
+launched FIRST in both branches and the heavy work (when it happens at
+all) runs on the request thread while they are in flight:
+
+  def _build_profile_context(db, player, match_limit, scope, *, include_map_streaks=False) -> dict:
+      cached = get_cached_views(db, player.id, scope)
+      computed: PlayerViews | None = None
+
+      with ThreadPoolExecutor(max_workers=3) as executor:
+          profile_future = executor.submit(
+              _run_in_own_session, get_player_profile, player, match_limit=match_limit)
+          econ_future = executor.submit(
+              _run_in_own_session, player_econ_samples, player, match_limit=match_limit)
+          map_streaks_future = (
+              executor.submit(_run_in_own_session, compute_map_streaks, player.id)
+              if include_map_streaks else None
+          )
+
+          if cached is not None:
+              round_win_graph = cached.round_win_graph
+              kill_order_graph = cached.kill_order_graph
+              fight_ev_data = cached.fight_ev_data
+          else:
+              # Cache miss: full live compute on this thread, overlapped with
+              # the three futures above.
+              computed = compute_player_views(db, player, match_limit, PAGE_BOOTSTRAP_DRAWS)
+              round_win_graph, kill_order_graph = build_state_diagrams_from_aggregates(
+                  computed.win_stats, computed.kill_order_weights)
+              fight_ev_data = serialize_fight_ev_views(computed.fight_ev)
+
+          profile = profile_future.result()
+          econ_samples = econ_future.result()
+          map_streaks = map_streaks_future.result() if map_streaks_future is not None else None
+
+      if computed is not None:
+          # Opportunistic write-through on its OWN session: committing the
+          # request session here would expire `player` and every other ORM
+          # object the caller still uses. Failure is non-fatal.
+          try:
+              _run_in_own_session(store_player_views, player.id, {scope: computed})
+          except Exception:
+              logger.exception("Cache write-through failed for player %s (%s)", player.id, scope)
+
+      # ... rest of the function unchanged (chart_data, highlights_chart_data,
+      # map_chart_data, top_kill_order_state_deltas, econ_*, context dict) ...
+
+Notes:
+  - `top_kill_order_state_deltas(kill_order_graph)` operates on the
+    rendered diagram and works identically on both branches.
+  - `include_map_streaks` behaviour is unchanged (only the initial render
+    passes it; the `/career` fragment does not).
+  - `RECENT_MATCH_LIMIT` now comes from `app.services.player_views`;
+    delete the router's own copy at line 24 (C7).
+  - `build_state_diagrams` and `build_fight_ev_views` are no longer
+    imported by this router.
+  - This router has no logger today; add a module-level
+    `logger = logging.getLogger(__name__)`. Same for
+    `app/services/player_view_cache.py`.
+
+Expected result: a cache hit reduces the page to `get_player_profile` +
+`player_econ_samples` (+ map streaks), all I/O-bound and concurrent.
+
+
+--- 3.9 Invalidation hooks ---
+
+Ingestion, in `_dedup_and_ingest`
+(app/adapters/trackergg_browserstate_source.py:329-354). `load_match` and
+`compute_impact_for_match` both commit internally, so a truly atomic
+invalidation would require changing their contracts. Take the narrow-
+window option instead (a crash between the two commits is a millisecond
+window on a local-only, manually-triggered pipeline) -- but invalidate
+IMMEDIATELY AFTER `load_match`, BEFORE impact scoring:
+
+      match = load_match(db, match_json)           # commits internally
+      cached_ids = find_cached_player_ids_for_match(db, match.id)
+      if cached_ids:
+          invalidate_player_cache(db, cached_ids)   # DELETE, no commit
+          db.commit()                               # invalidation visible
+          dirty |= cached_ids
+      compute_impact_for_match(db, match.id)        # commits internally
+
+ORDER MATTERS HERE (C19), and it is not a stylistic preference. Once
+`load_match` commits, the match row exists and `_dedup_and_ingest`'s
+`external_id` check (trackergg_browserstate_source.py:334-338) will skip
+that match on EVERY future run. So if the invalidation sits after impact
+scoring and scoring raises, the stale cache rows survive and nothing will
+ever invalidate them again -- the page serves views that silently omit a
+match that is in the database. Invalidating first makes a scoring failure
+degrade to "cache empty, page recomputes live", which is the same
+failure mode as everything else in this design.
+
+The cost of the swap is a redundant recompute if scoring fails and is
+re-run later. That is strictly better than permanent silent staleness.
+
+`_dedup_and_ingest` returns the accumulated `dirty: set[int]`;
+`ingest_recent_matches` and `ingest_full_history` both return it too
+(returning `set()` on the `ProfilePrivateError` early-out). The re-warm
+is deliberately NOT done per match: `_dedup_and_ingest` ingests N matches
+and a player appearing in all N would otherwise have their full career
+recomputed N times -- quadratic over a 12-player x 20-match refresh. See
+3.10.
+
+Demo adapter (`scripts/ingest_demo_match.py`, `scripts/seed_demo_matches.py`).
+`demo_match_source.load_match` (demo_match_source.py:108-223) deletes the
+existing match's children and recreates them, committing once at the end,
+so the OLD roster must be captured BEFORE the call:
+
+      old_ids = set()
+      existing = db.query(Match).filter_by(external_id=filename).one_or_none()
+      if existing is not None:
+          old_ids = {pid for (pid,) in
+                     db.query(MatchPlayer.player_id).filter_by(match_id=existing.id).all()}
+      match = load_match(db, filename)             # commits internally
+      new_ids = {pid for (pid,) in
+                 db.query(MatchPlayer.player_id).filter_by(match_id=match.id).all()}
+      affected = filter_cached_player_ids(db, old_ids | new_ids)
+      if affected:
+          invalidate_player_cache(db, affected)
+          db.commit()
+      compute_impact_for_match(db, match.id)       # commits internally
+
+Same ordering rule as the tracker.gg path (C19): invalidate between
+`load_match`'s commit and impact scoring, not after both.
+
+`filter_cached_player_ids(db, player_ids) -> set[int]` is the sibling of
+`find_cached_player_ids_for_match` that narrows an arbitrary ID set to
+those with cache rows; implement `find_cached_player_ids_for_match` in
+terms of it. Do not invalidate rows that do not exist.
+
+Friendship changes. Fight-EV's `tracked_roster` benchmark uses
+`list_friend_ids(db, player.id)` -- the PROFILE OWNER's friend list -- so
+adding/removing a friend invalidates only the owner's two rows, never the
+friend's.
+
+The mutation and the invalidation must land in ONE transaction (C22).
+`add_friend`/`remove_friend` (app/services/friends.py:26-43) currently
+commit internally, which would put the invalidation in a second
+transaction and leave a window where the friend list has changed but the
+cache still describes the old roster. Change both to flush instead of
+commit and let the caller own the transaction boundary:
+
+  app/services/friends.py:
+      def add_friend(db, owner_player_id, friend_player_id) -> bool:
+          """Returns whether anything changed. Does NOT commit -- the caller
+          commits, so the mutation and the cache invalidation that must
+          accompany it land in one transaction."""
+          ...
+          db.add(Friendship(...))
+          return True
+
+      def remove_friend(db, owner_player_id, friend_player_id) -> bool:
+          deleted = db.query(Friendship).filter_by(...).delete()
+          return bool(deleted)
+
+  app/routers/friends.py:
+      if add_friend(db, current_player.id, friend.id):
+          invalidate_player_cache(db, {current_player.id})
+      db.commit()
+
+Verified safe: app/routers/friends.py:53 and :64 are the ONLY callers of
+either function in the repo -- re-grep before committing.
+
+The hook itself stays in the ROUTER, not in `app/services/friends.py`,
+because of the import cycle in C5.
+
+Do NOT pre-warm here -- a synchronous career recompute would block the
+POST's redirect for several seconds. The next page load recomputes live
+and writes through.
+
+Future `RiotAPISource`: the same two calls after each match commit. The
+invalidation API reads only `MatchPlayer` and `PlayerViewCache`, nothing
+adapter-specific.
+
+NOT a trigger: `compute_impact_for_match` / `scripts/recompute_impact.py`.
+Neither cached product reads `impact_scores` (C16).
+
+
+--- 3.10 Deferred batch pre-warm and the recompute script ---
+
+Callers union the dirty IDs and pre-warm once per player at the very end:
+
+  scripts/ingest_trackergg_player.py:
+      dirty = ingest_recent_matches(db, page, riot_id, count)
+      if dirty and not args.no_prewarm:
+          prewarm_player_cache(db, dirty)
+
+  scripts/refresh_tracked_players.py:
+      all_dirty = set()
+      for riot_id in roster:
+          try:
+              all_dirty |= ingest_recent_matches(db, page, riot_id, count)
+          except Exception as e:
+              print(f"  error ingesting {riot_id}, skipping: {e}")
+      if all_dirty and not args.no_prewarm:
+          prewarm_player_cache(db, all_dirty)
+
+  scripts/crawl_map_diversity_data.py:110 keeps ignoring the return value
+  -- it is a bulk history crawl, and pre-warming mid-crawl would be
+  wasted work. Run scripts/recompute_player_views.py after a crawl.
+
+Both ingest scripts get `--no-prewarm`. State the cost in their
+docstrings: a career recompute is several seconds per player, so a full
+roster refresh gains roughly (number of players with new matches) x that.
+
+scripts/recompute_player_views.py, modelled on scripts/recompute_impact.py:
+
+    .venv\Scripts\python.exe scripts\recompute_player_views.py
+    .venv\Scripts\python.exe scripts\recompute_player_views.py --cached-only
+
+  Default: every player with at least one MatchPlayer row.
+  `--cached-only`: only players who already have cache rows.
+  Print progress per player; keep going past individual failures.
+
+  Run it after: bumping PLAYER_VIEW_CACHE_SCHEMA_VERSION, a bulk import
+  (`ingest_full_history`, the map-diversity crawl), or any manual DB
+  fixup that touches match/round/kill_event/player rows -- including a
+  player-row merge after a Riot ID rename.
+
+
+========================================================================
+4. Phase 2 -- migrate the state diagrams to strict replay semantics
+========================================================================
+
+THIS IS A DELIBERATE BEHAVIOUR CHANGE, NOT A REFACTOR. Ship it as its own
+PR, after phase 1 is verified.
+
+Today the two paths disagree about which rounds and events are real:
+
+  build_state_diagrams (the manual loop) imposes NO exclusions -- it
+  processes overtime rounds, equal-time kill events, ambiguous lifecycle
+  (a victim already dead), unrecognized outcomes, rounds with missing
+  terminal timing, and events after a terminal point.
+
+  state_replay.replay_match excludes every one of those, plus surrender
+  placeholder rounds.
+
+Migrating the state diagrams onto `replay_match` will change node totals,
+percentages and edge weights. That is the intent:
+
+  - The old loop's permissiveness was not a design decision; it predates
+    the rigorous `state_replay` module. Strict replay is more correct
+    (it does not credit a kill to an already-dead killer, and does not
+    include overtime rounds whose attacking side is unrecoverable).
+  - It makes the two diamonds agree on which rounds are valid -- today
+    they can disagree on the same page, which is a latent bug.
+  - It is the only route to a single replay pass. Preserving the old
+    semantics while also using `replay_match` would mean running both
+    replays anyway, which defeats the point.
+
+
+--- 4.1 StateTransitionOccurrence ---
+
+`DuelOccurrence` alone cannot reproduce the kill-order graph. It requires
+a cross-team killer/victim pair (state_replay.py:181-196), so it misses
+ENVIRONMENTAL / UNKNOWN-KILLER DEATHS of the target player -- events with
+`killer_match_player_id is None`, which the old loop records as
+`delta = -1`. (Self-kills are a non-issue either way: `is_kill` and
+`is_death` are both true, so `delta == 0`.)
+
+Add to app/services/state_replay.py:
+
+  @dataclass(frozen=True)
+  class StateTransitionOccurrence:
+      """Every accepted state-changing event, whether or not it resolved as
+      a duel -- opponent duels, self-kills, same-team casualties and
+      environmental deaths alike. Carries per-team alive COUNTS rather than
+      ID sets: the only consumer needs counts, and four extra frozenset
+      allocations per kill event is real cost on a ~15k-event replay. The ID
+      sets are still recoverable from the surrounding StateEntryOccurrences."""
+      match_id: int
+      round_id: int
+      sequence: int
+      event_time_seconds: float
+      team1_alive_before: int
+      team2_alive_before: int
+      team1_alive_after: int
+      team2_alive_after: int
+      killer_match_player_id: int | None
+      victim_match_player_id: int
+
+Emit one in `replay_round` at the point the victim is removed
+(state_replay.py:340-342) -- i.e. only for events that survived the
+post-decision, terminal-time and ambiguous-lifecycle gates. Do NOT emit
+for revive events (nothing produces them today, and a revive is not a
+kill-order transition).
+
+Plumbing (C2):
+  - `RoundReplayResult` gains
+    `transitions: list[StateTransitionOccurrence] = field(default_factory=list)`
+    AFTER `exclusion_reason`, so the existing positional constructions
+    `RoundReplayResult([], [], "surrendered")` still work.
+  - `replay_match` returns `(entries, duels, transitions, diagnostics)`.
+  - Update its one production caller, fight_ev.py:600, and grep for
+    others before committing (`tests/test_state_replay.py` currently
+    calls `replay_round`, not `replay_match`).
+
+
+--- 4.2 win_stats from StateEntryOccurrence ---
+
+  def accumulate_win_stats_from_entries(
+      entries, target_team, target_match_player_id, win_stats
+  ) -> None:
+      for entry in entries:
+          if entry.terminal_cause is not None:
+              continue          # per-round FINAL entry -- see the invariant below
+          own = entry.team1_alive_ids if target_team is Team.TEAM_1 else entry.team2_alive_ids
+          opp = entry.team2_alive_ids if target_team is Team.TEAM_1 else entry.team1_alive_ids
+          if target_match_player_id not in own or not own or not opp:
+              continue
+          bucket = win_stats.setdefault(f"{len(own)}v{len(opp)}", {"win": 0, "total": 0})
+          bucket["total"] += 1
+          if entry.winner == target_team:
+              bucket["win"] += 1
+
+INVARIANT (C3): in an accepted round, exactly one entry has a non-None
+`terminal_cause`, and it is always that round's last entry. This is what
+makes the flat cross-round list from `replay_match` safe to filter by
+attribute rather than by position. Assert it in a test.
+
+Why this reproduces the old semantics: the old loop samples the state
+BEFORE each event; `replay_round` snapshots the initial state plus one
+entry AFTER each accepted transition, so for N transitions there are N+1
+entries and entries[0..N-1] are exactly the N pre-event states. The
+`target player is alive` gate maps to membership in the own-team alive
+set, and the old loop's `own_alive >= 1 and opp_alive >= 1` guard is kept.
+
+WARNING (C13): this is NOT the same aggregate as the `wins` dict inside
+`build_match_fight_ev_block`, which deliberately counts EVERY entry and is
+NOT gated on the target player being alive (it is a team-level win rate --
+see docs/fight_ev_diamond.txt section 1). Both are derived from the same
+`entries` list on purpose. Do not merge them.
+
+
+--- 4.3 kill_order_weights from StateTransitionOccurrence ---
+
+  def accumulate_kill_order_from_transitions(
+      transitions, target_team, target_match_player_id, weights
+  ) -> None:
+      for t in transitions:
+          is_kill = t.killer_match_player_id == target_match_player_id
+          is_death = t.victim_match_player_id == target_match_player_id
+          if not (is_kill or is_death):
+              continue
+          if target_team is Team.TEAM_1:
+              before = f"{t.team1_alive_before}v{t.team2_alive_before}"
+              after = f"{t.team1_alive_after}v{t.team2_alive_after}"
+          else:
+              before = f"{t.team2_alive_before}v{t.team1_alive_before}"
+              after = f"{t.team2_alive_after}v{t.team1_alive_after}"
+          delta = (1 if is_kill else 0) - (1 if is_death else 0)
+          weights[(before, after)] = weights.get((before, after), 0) + delta
+
+The old loop's `player_alive` gate has no counterpart here and needs none:
+strict replay excludes the whole round the moment a dead match-player
+appears as a killer or victim (state_replay.py:313-324), so the
+duplicate-kill-feed artefact that gate existed to suppress cannot reach
+this function.
+
+`_kill_order_diagram` only renders the fixed lattice from
+`_KILL_ORDER_EDGES`, so any transition outside it is dropped at render
+time -- unchanged from today. A zero-weight entry (self-kill) is
+indistinguishable from a missing one at render time; also unchanged.
+
+
+--- 4.4 Collapsing to one replay pass ---
+
+Rewrite `compute_player_views` (3.6) to replay each match ONCE, feeding
+all three accumulations from the same output. Keep the per-match
+granularity that `compute_player_views_by_scope` needs:
+
+      roster_player_ids = list_friend_ids(db, player.id)
+      diagnostics = ReplayDiagnostics()
+      for match_player in match_players:
+          ...build round_inputs / match_input exactly as fight_ev.py:571-599...
+          entries, duels, transitions, _ = replay_match(match_input, diagnostics)
+          blocks.append(build_match_fight_ev_block(...))              # unchanged
+          accumulate_win_stats_from_entries(entries, own_team, match_player.id, ws)
+          accumulate_kill_order_from_transitions(transitions, own_team, match_player.id, ko)
+
+`accumulate_match_state_stats` (the old manual loop) is then dead on the
+player-page path. Delete it and fold `build_state_diagrams` into the new
+derivation, or keep it only if another caller still needs the old
+semantics -- grep first.
+
+
+--- 4.5 Required with this change ---
+
+  - Bump `PLAYER_VIEW_CACHE_SCHEMA_VERSION` to 2 and run
+    scripts/recompute_player_views.py.
+  - Say so plainly in the commit message and PR body:
+    "State diagrams now use the same strict replay semantics as fight-EV.
+    This excludes overtime rounds, ambiguous-lifecycle rounds,
+    equal-time-ambiguity rounds, unrecognized outcomes, surrender
+    placeholder rounds, and rounds with missing terminal timing, and skips
+    post-terminal events. Node totals and percentages will change."
+  - Capture before/after node totals for the heaviest tracked player
+    (section 6.4) and put the diff in the PR body.
+  - Add the regression fixtures in 6.2.
+
+
+========================================================================
+5. Cache invalidation triggers
+========================================================================
+
+  1. A new match including the player is ingested.
+     -> `find_cached_player_ids_for_match` + `invalidate_player_cache`,
+        committed right after the ingest (3.9); deferred batch pre-warm
+        rebuilds (3.10). A failed pre-warm leaves an empty row, which is
+        safe -- the next visit computes live.
+
+  2. A match is deleted or replaced (demo adapter's delete-and-recreate).
+     -> invalidate the union of the old and new player sets (3.9).
+
+  3. `cache_version()` changes -- i.e. either
+     `PLAYER_VIEW_CACHE_SCHEMA_VERSION` or `fight_ev.CALCULATION_VERSION`
+     is bumped (C20).
+     -> the version check in `get_cached_views` turns every stale row into
+        a miss; `scripts/recompute_player_views.py` rebuilds proactively.
+
+  4. A friendship is added or removed.
+     -> invalidate the OWNER's rows only (3.9). State aggregates do not use
+        friend data, but both products share one row, so the whole row goes.
+
+  5. The "recent" sliding window shifts.
+     -> not a separate trigger. The window is "this player's N most recent
+        matches", which only moves when a match for that player is
+        ingested, i.e. trigger 1.
+
+OPERATIONAL ASSUMPTION (C15): pages are not normally loaded while
+ingestion is running. This design does not close every cross-process
+race, in EITHER direction:
+  - a request can read a cache row that an in-flight ingest is about to
+    delete; and
+  - a request whose live compute started before an ingest commits can
+    write a stale blob through after it.
+Both windows are seconds on a single-user, local-only, manually-triggered
+site, and both self-heal on the next ingest or version bump. A
+revision/CAS scheme would close them and is not warranted here. Revisit
+if ingestion ever becomes concurrent or webhook-driven.
+
+
+========================================================================
+6. Testing
+========================================================================
+
+6.1 What can be tested automatically today
+
+  `tests/` has NO database harness -- no conftest.py, no engine/session
+  fixture; all eight modules are pure unit tests over dataclasses (C10).
+  The Postgres-specific upsert cannot run on SQLite either. So unless the
+  user picks option (b) in 10.1, the automated tests are the pure ones:
+
+  - Blob round-trip: encode(win_stats, kill_order_weights) -> JSON text ->
+    decode reproduces the exact dicts, including the tuple keys.
+  - Blob validation (C24), one case per rule in 3.7: a dropped view key, a
+    view with 24 cells, a cell missing `display_state`, a cell with an
+    extra key, an unknown `display_state` string, `win` > `total`, and a
+    2-element kill-order triple must each be rejected. Plus the happy
+    path: a real `serialize_fight_ev_views` output validates.
+  - Serializer/validator drift guard: assert
+    `_serialize_cell(...).keys() == FIGHT_EV_CELL_KEYS` and that
+    `serialize_fight_ev_views(...).keys() == set(FIGHT_EV_VIEW_KEYS)`.
+  - Decode robustness: missing key, wrong type, and truncated blob each
+    return None from the decode path rather than raising.
+  - Version gate: a row whose `version` != `cache_version()` is treated as
+    a miss (test the pure predicate, not the query), AND `cache_version()`
+    changes when `CALCULATION_VERSION` changes -- monkeypatch it and
+    assert the composite moves (C20).
+  - Ordering contract (C23): the ORDER BY clause compiled by
+    `load_player_match_data` is string-identical to the ones in
+    `get_player_profile` and `player_econ_samples`. Compare via
+    `str(query.statement.compile())` or extract the clause into one shared
+    expression and assert all three use it.
+  - Seed stability (C12): `_bootstrap_seed` returns the same value from a
+    subprocess launched with a different PYTHONHASHSEED. Run the
+    subprocess with `sys.executable`.
+  - Scope slicing: given a synthetic ordered list, `recent` is exactly the
+    first RECENT_MATCH_LIMIT entries and `career` is all of them.
+
+6.2 Phase 2 replay-semantics fixtures (extend tests/test_state_replay.py,
+    which already has `make_round` / `kill` / `replay` helpers)
+
+  One fixture per category, asserting the NEW behaviour is correct -- not
+  that it matches the old behaviour:
+  - overtime round (round_number > 24): excluded
+  - equal-time kill events in one round: round excluded
+  - ambiguous lifecycle (victim already dead): round excluded
+  - unrecognized round outcome: excluded
+  - missing terminal time for defuse/detonation: excluded
+  - surrender placeholder round: excluded
+  - post-terminal kill events: skipped inside an otherwise accepted round
+  - environmental / unknown-killer death of the target: a
+    StateTransitionOccurrence is emitted and kill_order_weights records
+    delta = -1
+  - self-kill: delta == 0
+  - THE INVARIANT (C3): for every accepted round, exactly one entry has a
+    non-None terminal_cause and it is `entries[-1]`.
+  - transitions and entries stay consistent: for each transition, the
+    before/after counts match the surrounding entries' set sizes.
+
+6.3 Manual verification (the DB-touching half)
+
+  Write these down as a checklist in the PR body and actually run them:
+  - Fresh DB, empty cache: player page renders identically to today.
+  - Second visit: page is served from cache; confirm via timing and by
+    checking `player_view_cache` has two rows for that player.
+  - Ingest a new match for a cached player -> their rows disappear;
+    after the batch pre-warm they exist again with a newer `updated_at`;
+    the page reflects the new match.
+  - Scoring-failure ordering (C19): temporarily raise inside
+    `compute_impact_for_match`, ingest a match for a cached player, and
+    confirm the cache rows are ALREADY gone -- then re-run and confirm
+    dedup skips the match while the cache stays empty (not stale).
+  - Corrupt a row's `data` by hand -> the page still renders (live
+    fallback) and logs the decode failure.
+  - Bump PLAYER_VIEW_CACHE_SCHEMA_VERSION in a scratch edit -> both scopes miss.
+  - Add and remove a friend -> only the owner's rows disappear.
+  - Ingest 5 matches sharing one player -> that player is recomputed ONCE,
+    at the end (count the log lines).
+
+6.4 Phase 2 numeric diff
+
+  Before merging phase 2, snapshot `win_stats` and `kill_order_weights`
+  for the heaviest tracked player under both the old and new derivations
+  and record the delta in the PR body. Expected direction: totals drop
+  (overtime and excluded rounds fall out); percentages move slightly.
+  An INCREASE in any node total means something is wrong.
+
+
+========================================================================
+7. Migration and rollback
+========================================================================
+
+  - 0003 creates an empty table; there is no data migration. The first
+    visit to each player populates it via the write-through, or run
+    scripts/recompute_player_views.py to pre-warm.
+  - Backwards compatible: with an empty table the page behaves exactly as
+    it does today, just slower. Removing the ingestion hook only means the
+    cache stops being invalidated; the version check still catches
+    code-level changes.
+  - ROLLBACK ORDER MATTERS: deploy the cache-unaware code FIRST, then
+    `alembic downgrade`. Dropping the table while cache-aware code is
+    live produces DB errors on every player page, not graceful
+    degradation.
+  - Local verification (see CLAUDE.md):
+        cd webapp
+        docker compose -p valomaths-private up -d
+        .\.venv\Scripts\python.exe -m alembic upgrade head
+        .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+    ALWAYS pass `-p valomaths-private`; the bare `docker compose up` can
+    repoint the sibling public repo's Postgres.
+  - If `docker` is unavailable in the working environment, `.env.neon`
+    points at the live Neon DB. Running `alembic upgrade head` there
+    mutates real data -- confirm with the user before doing it, and never
+    run the invalidation/recompute scripts against Neon unprompted.
+
+
+========================================================================
+8. Files touched
+========================================================================
+
+New:
+  app/models/player_view_cache.py             model
+  app/services/player_data.py                 LEAF: RECENT_MATCH_LIMIT,
+                                              load_player_match_data
+  app/services/player_views.py                PlayerViews,
+                                              compute_player_views,
+                                              compute_player_views_by_scope
+  app/services/player_view_cache.py           PLAYER_VIEW_CACHE_SCHEMA_VERSION,
+                                              cache_version,
+                                              get_cached_views,
+                                              store_player_views,
+                                              invalidate_player_cache,
+                                              find_cached_player_ids_for_match,
+                                              filter_cached_player_ids,
+                                              recompute_player_views,
+                                              prewarm_player_cache
+  alembic/versions/0003_player_view_cache.py  migration
+  scripts/recompute_player_views.py           batch recompute CLI
+
+Modified (phase 1):
+  app/models/__init__.py                      export PlayerViewCache
+  app/services/player_graphs.py               per-match accumulator +
+                                              from_data / from_aggregates
+                                              variants
+  app/services/fight_ev.py                    _from_data / _from_blocks
+                                              variants; _bootstrap_seed
+                                              digest fix; CALCULATION_VERSION 3
+  app/routers/players.py                      cache read, restructured
+                                              fallback, write-through;
+                                              RECENT_MATCH_LIMIT removed
+  app/services/friends.py                     add_friend/remove_friend no
+                                              longer commit; both return
+                                              whether anything changed
+  app/routers/friends.py                      commit the friendship change
+                                              and the owner's invalidation
+                                              in one transaction
+  app/adapters/trackergg_browserstate_source.py
+                                              invalidation in
+                                              _dedup_and_ingest; return dirty
+                                              IDs from it and from both
+                                              ingest_* entry points
+  scripts/ingest_trackergg_player.py          deferred pre-warm, --no-prewarm
+  scripts/refresh_tracked_players.py          deferred pre-warm, --no-prewarm
+  scripts/ingest_demo_match.py                invalidation hook
+  scripts/seed_demo_matches.py                invalidation hook
+  scripts/crawl_map_diversity_data.py         (verify it still compiles
+                                              against the new return type;
+                                              intentionally ignores it)
+  CLAUDE.md and AGENTS.md                     document the cache table and
+                                              scripts/recompute_player_views.py
+                                              alongside the other scripts
+
+Modified (phase 2):
+  app/services/state_replay.py                StateTransitionOccurrence;
+                                              RoundReplayResult.transitions;
+                                              replay_match 4-tuple
+  app/services/player_graphs.py               derivations from replay output
+  app/services/player_views.py                single replay pass
+  app/services/fight_ev.py                    replay_match unpack at :600
+  tests/test_state_replay.py                  fixtures from 6.2
+
+
+========================================================================
+9. Definition of done
+========================================================================
+
+Phase 1:
+  - `alembic upgrade head` creates player_view_cache; `downgrade` drops it.
+  - A cache hit renders the player page without issuing the
+    Round.kill_events hydration query at all (verify in the SQL log --
+    the RoundPlayerStat query from player_econ_samples still runs).
+  - A cache miss renders identically to today and leaves a populated row.
+  - Corrupt blob, structurally-invalid blob, stale version and missing row
+    all fall back to live compute -- never a 500, and never a malformed
+    payload reaching the template.
+  - `cache_version()` moves when `CALCULATION_VERSION` moves.
+  - The three recent-window ORDER BY clauses are identical, and the
+    decision that an unknown `played_at` counts as newest is written down
+    at the call site.
+  - Ingestion invalidates between `load_match` and impact scoring, so a
+    scoring failure leaves an empty cache rather than a stale one.
+  - A friendship change and its invalidation commit together; no caller of
+    `add_friend`/`remove_friend` relies on the removed internal commit.
+  - Ingesting a match deletes the affected cached players' rows in the
+    same commit; the roster refresh pre-warms each affected player exactly
+    once, at the end.
+  - `--no-prewarm` skips the pre-warm on both ingest scripts.
+  - `_bootstrap_seed` is process-stable; `CALCULATION_VERSION` is 3.
+  - `scripts/validate_fight_ev.py` still runs unchanged.
+  - Career page load for the heaviest tracked player is under 1s on a
+    cache hit; measured before/after numbers are in the PR body.
+  - `pytest` passes.
+
+Phase 2:
+  - Every fixture in 6.2 passes, including the terminal_cause invariant.
+  - The player page runs ONE replay pass per match.
+  - PLAYER_VIEW_CACHE_SCHEMA_VERSION bumped and the recompute script run.
+  - The before/after node-total diff for the heaviest player is in the PR
+    body, with no node total increasing.
+
+
+========================================================================
+10. Open decisions for the user
+========================================================================
+
+10.1 How much DB-backed testing? (C10)
+     (a) RECOMMENDED: keep automated tests pure (6.1), cover the DB
+         lifecycle with the manual checklist in 6.3. Cheapest, and matches
+         how every other service here is tested.
+     (b) Build a Postgres-backed pytest fixture against the local
+         docker-compose DB. Only this can exercise the real upsert,
+         cascade delete, and the invalidation hooks -- at the cost of the
+         repo's first test-infrastructure dependency.
+     SQLite is not an option: the upsert is Postgres-dialect-specific.
+
+10.2 Should `player_econ_samples` be cached too?
+     It walks Match -> Round -> RoundPlayerStat (~2400 rows for a heavy
+     player) -- lighter than 15k KillEvents but not free; the downstream
+     math is cheap. Caching it would cut roughly 0.5-1s more off a cache
+     MISS, and nothing off a hit. RECOMMENDATION: leave it out of phase 1
+     and reconsider once the pattern has proven itself.
+
+10.3 Bootstrap draws for cached values.
+     This plan uses PAGE_BOOTSTRAP_DRAWS (800) everywhere, so a hit and a
+     miss show the same CIs. Once virtually every load is a hit, the
+     cached blob could be computed with DEFAULT_BOOTSTRAP_DRAWS (2000) for
+     tighter intervals -- at the cost of the rare miss disagreeing with
+     the cache, and a PLAYER_VIEW_CACHE_SCHEMA_VERSION bump. RECOMMENDATION: 800
+     for now, revisit as a follow-up.
+
+10.4 Does phase 2 ship at all?
+     It changes numbers already on screen. It is the right change (4.0),
+     but it is a judgement call about a personal-use site, and phase 1
+     delivers the entire user-facing speedup on its own. Phase 1 is
+     independently shippable; phase 2 should be a separate PR with the
+     numeric diff attached.

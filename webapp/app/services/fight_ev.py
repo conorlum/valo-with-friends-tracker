@@ -12,15 +12,18 @@ top of the pure functions here -- see build_fight_ev_views's docstring.
 from __future__ import annotations
 
 import enum
+import hashlib
+import struct
 from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
-from app.models import KillEvent, Match, MatchPlayer, Player, Round
+from app.models import MatchPlayer, Player
 from app.models.match import Team
 from app.services.friends import list_friend_ids
+from app.services.player_data import load_player_match_data
 from app.services.state_replay import (
     DuelOccurrence,
     KillEventInput,
@@ -44,7 +47,24 @@ TeammatePool = Literal["tracked_roster", "all_teammates"]
 # numpy's Generator (a vectorized draws-array is what made the page-load-time
 # fix possible) -- same statistical procedure, different pseudorandom
 # sequence, so old seeds must not be blended with new draws.
-CALCULATION_VERSION = 2
+# v3: _bootstrap_seed switched from Python's hash() (PYTHONHASHSEED-randomized
+# per process, since the tuple contains the `side` string -- meaning the web
+# server and a recompute script produced different seeds for the same cell)
+# to a process-stable SHA-256 digest. Required before caching: a cached blob
+# and a live recompute must agree on every seed.
+CALCULATION_VERSION = 3
+
+# Also part of the player-view cache's validity contract (app.services.
+# player_view_cache._validate_blob) -- a decoded blob must contain exactly
+# these four view keys and every cell must have exactly this key set.
+FIGHT_EV_VIEW_KEYS = (
+    "attacking_tracked_roster", "attacking_all_teammates",
+    "defending_tracked_roster", "defending_all_teammates",
+)
+FIGHT_EV_CELL_KEYS = frozenset({
+    "a", "b", "display_state", "m", "p_player", "n_player",
+    "p_teammates", "n_teammates", "bootstrap",
+})
 
 DEFAULT_BOOTSTRAP_DRAWS = 2000
 
@@ -243,14 +263,18 @@ def _teammate_bucket_name(pool: TeammatePool) -> str:
 
 
 def _bootstrap_seed(player_id: int, side: Side, a: int, b: int, pool: TeammatePool) -> int:
-    # Deterministic across requests for the same player/version so the page
-    # doesn't jitter between loads; varies by cell/benchmark so cells aren't
-    # accidentally correlated. Section 8 requires the SAME sampled match
-    # indices across the two teammate benchmarks for a given draw -- since
-    # index generation is a pure function of (player_id, version, side, a, b)
-    # and not of `pool`, callers must NOT fold `pool` into the seed itself.
+    # Process-stable digest, NOT hash(): PYTHONHASHSEED randomizes
+    # str hashing per process, so the old version gave the web server
+    # and the recompute script different seeds for the same cell.
+    # `pool` is still deliberately excluded -- section 8 of the handoff
+    # requires the same sampled match indices across both teammate
+    # benchmarks for a given draw.
     del pool
-    return hash((player_id, CALCULATION_VERSION, side, a, b)) & 0xFFFFFFFF
+    raw = struct.pack(
+        ">iiBBB", player_id, CALCULATION_VERSION, a, b,
+        0 if side == "attacking" else 1,
+    )
+    return int.from_bytes(hashlib.sha256(raw).digest()[:4], "big")
 
 
 def compute_point_estimate(
@@ -511,10 +535,8 @@ def _serialize_cell(cell: FightEvCell) -> dict:
 
 def serialize_fight_ev_views(views: FightEvViews) -> dict:
     return {
-        "attacking_tracked_roster": [_serialize_cell(c) for c in views.attacking_tracked_roster],
-        "attacking_all_teammates": [_serialize_cell(c) for c in views.attacking_all_teammates],
-        "defending_tracked_roster": [_serialize_cell(c) for c in views.defending_tracked_roster],
-        "defending_all_teammates": [_serialize_cell(c) for c in views.defending_all_teammates],
+        view_key: [_serialize_cell(c) for c in getattr(views, view_key)]
+        for view_key in FIGHT_EV_VIEW_KEYS
     }
 
 
@@ -529,41 +551,23 @@ def _round_side_map(round_inputs: list[RoundInput], target_team: Team) -> dict[i
     return mapping
 
 
-def load_match_fight_ev_blocks(
-    db: Session, player: Player, match_limit: int | None = None
+def load_match_fight_ev_blocks_from_data(
+    db: Session,
+    match_players: list[MatchPlayer],
+    player: Player,
 ) -> tuple[list[MatchFightEvBlock], ReplayDiagnostics]:
-    """Loads matches `player` appears in and replays each one once via
-    app.services.state_replay, returning one MatchFightEvBlock per match plus
-    the merged replay diagnostics (exclusion reasons, ambiguous-lifecycle and
-    equal-time-ambiguity counts, etc.) across all of them. Shared by
-    build_fight_ev_views (the four displayed views) and
-    scripts/validate_fight_ev.py (which needs the raw diagnostics and blocks,
-    not just the final cells).
+    """Replays each pre-loaded match_player's match once via
+    app.services.state_replay, returning one MatchFightEvBlock per input row
+    (same order) plus the merged replay diagnostics (exclusion reasons,
+    ambiguous-lifecycle and equal-time-ambiguity counts, etc.) across all of
+    them. `db` is still needed for list_friend_ids.
 
-    `match_limit` mirrors app.services.player_graphs.build_state_diagrams's
-    parameter of the same name -- None loads full history (the "career" view
-    on the player page), otherwise the `match_limit` most recent matches (the
-    "recent" view, and also what keeps the bootstrap's O(draws * matches) cost
-    small enough for a synchronous page load; full-history "career" is loaded
-    async via the existing htmx fragment).
+    INVARIANT: returns exactly one block per input match_player, in the same
+    order. app.services.player_views.compute_player_views_by_scope slices
+    this list by scope.
     """
     roster_player_ids = list_friend_ids(db, player.id)
     diagnostics = ReplayDiagnostics()
-
-    query = (
-        db.query(MatchPlayer)
-        .filter_by(player_id=player.id)
-        .join(Match, Match.id == MatchPlayer.match_id)
-        .options(
-            selectinload(MatchPlayer.match).selectinload(Match.match_players),
-            selectinload(MatchPlayer.match).selectinload(Match.rounds).selectinload(Round.kill_events).defer(
-                KillEvent.source_meta
-            ),
-        )
-    )
-    if match_limit is not None:
-        query = query.order_by(Match.played_at.desc().nullsfirst(), Match.id.desc()).limit(match_limit)
-    match_players = query.all()
 
     blocks: list[MatchFightEvBlock] = []
     for match_player in match_players:
@@ -610,6 +614,36 @@ def load_match_fight_ev_blocks(
     return blocks, diagnostics
 
 
+def build_fight_ev_views_from_blocks(
+    blocks: list[MatchFightEvBlock], player_id: int, draws: int = DEFAULT_BOOTSTRAP_DRAWS
+) -> FightEvViews:
+    return FightEvViews(
+        attacking_tracked_roster=compute_fight_ev_view(blocks, "attacking", "tracked_roster", player_id, draws),
+        attacking_all_teammates=compute_fight_ev_view(blocks, "attacking", "all_teammates", player_id, draws),
+        defending_tracked_roster=compute_fight_ev_view(blocks, "defending", "tracked_roster", player_id, draws),
+        defending_all_teammates=compute_fight_ev_view(blocks, "defending", "all_teammates", player_id, draws),
+    )
+
+
+def load_match_fight_ev_blocks(
+    db: Session, player: Player, match_limit: int | None = None
+) -> tuple[list[MatchFightEvBlock], ReplayDiagnostics]:
+    """Loads matches `player` appears in and replays each one once. Shared by
+    build_fight_ev_views (the four displayed views) and
+    scripts/validate_fight_ev.py (which needs the raw diagnostics and blocks,
+    not just the final cells).
+
+    `match_limit` mirrors app.services.player_graphs.build_state_diagrams's
+    parameter of the same name -- None loads full history (the "career" view
+    on the player page), otherwise the `match_limit` most recent matches (the
+    "recent" view, and also what keeps the bootstrap's O(draws * matches) cost
+    small enough for a synchronous page load; full-history "career" is loaded
+    async via the existing htmx fragment).
+    """
+    match_players = load_player_match_data(db, player, match_limit)
+    return load_match_fight_ev_blocks_from_data(db, match_players, player)
+
+
 def build_fight_ev_views(
     db: Session, player: Player, match_limit: int | None = None, draws: int = DEFAULT_BOOTSTRAP_DRAWS
 ) -> FightEvViews:
@@ -618,10 +652,4 @@ def build_fight_ev_views(
     load_match_fight_ev_blocks for what `match_limit` does.
     """
     blocks, _diagnostics = load_match_fight_ev_blocks(db, player, match_limit)
-
-    return FightEvViews(
-        attacking_tracked_roster=compute_fight_ev_view(blocks, "attacking", "tracked_roster", player.id, draws),
-        attacking_all_teammates=compute_fight_ev_view(blocks, "attacking", "all_teammates", player.id, draws),
-        defending_tracked_roster=compute_fight_ev_view(blocks, "defending", "tracked_roster", player.id, draws),
-        defending_all_teammates=compute_fight_ev_view(blocks, "defending", "all_teammates", player.id, draws),
-    )
+    return build_fight_ev_views_from_blocks(blocks, player.id, draws)

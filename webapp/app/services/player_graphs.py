@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session, object_session, selectinload
 
 from app.models import KillEvent, Match, MatchPlayer, Player, Round
 from app.models.match import Team
+from app.services.player_data import load_player_match_data
 
 # Round-win diamond: compact, with larger nodes since there's no edge label to make room for.
 ROUND_WIN_X_STEP = 56
@@ -122,86 +123,98 @@ def _team_sizes(match_players: list[MatchPlayer]) -> dict[Team, int]:
     return sizes
 
 
+def accumulate_match_state_stats(
+    match_player: MatchPlayer,
+    win_stats: dict[str, dict[str, int]],
+    kill_order_weights: dict[tuple[str, str], int],
+) -> None:
+    """Replays one match's rounds, accumulating round-win and kill-order stats
+    into the caller-owned dicts. The scraper's `playersOnTeam` field (alive
+    count on each side at the moment of a kill) isn't stored -- kill_events
+    only has who/what/when. So each round's kills are replayed in time order
+    here, tracking alive counts per team, to recover the man-advantage state
+    ("<own>v<opponent>") the player experienced at each kill.
+    """
+    match = match_player.match
+    own_team = match_player.team
+    opp_team = Team.TEAM_2 if own_team == Team.TEAM_1 else Team.TEAM_1
+    sizes = _team_sizes(match.match_players)
+    team_of = {mp.id: mp.team for mp in match.match_players}
+
+    for round_row in match.rounds:
+        alive = {Team.TEAM_1: sizes[Team.TEAM_1], Team.TEAM_2: sizes[Team.TEAM_2]}
+        winner = _winner_team(round_row.outcome)
+        player_alive = True
+        events = sorted(round_row.kill_events, key=lambda e: (e.event_time_seconds, e.id))
+
+        for event in events:
+            own_alive, opp_alive = alive[own_team], alive[opp_team]
+            state = f"{own_alive}v{opp_alive}"
+
+            if player_alive and own_alive >= 1 and opp_alive >= 1 and winner is not None:
+                bucket = win_stats.setdefault(state, {"win": 0, "total": 0})
+                bucket["total"] += 1
+                if winner == own_team:
+                    bucket["win"] += 1
+
+            # Gated on player_alive: a dead player can't rack up further kills or
+            # deaths -- the raw kill feed sometimes logs a duplicate entry
+            # for an already-dead player, which would otherwise show up here as a
+            # bogus zero-length self-loop edge.
+            is_kill = player_alive and event.killer_match_player_id == match_player.id
+            is_death = player_alive and event.death_match_player_id == match_player.id
+
+            if event.death_match_player_id is not None:
+                dead_team = team_of.get(event.death_match_player_id)
+                if dead_team is not None and alive[dead_team] > 0:
+                    alive[dead_team] -= 1
+
+            if is_kill or is_death:
+                after_state = f"{alive[own_team]}v{alive[opp_team]}"
+                key = (state, after_state)
+                delta = (1 if is_kill else 0) - (1 if is_death else 0)
+                kill_order_weights[key] = kill_order_weights.get(key, 0) + delta
+
+            if is_death:
+                player_alive = False
+
+            if alive[Team.TEAM_1] <= 0 or alive[Team.TEAM_2] <= 0:
+                # Round is definitionally over -- stop replaying. Guards against
+                # the raw feed occasionally double-logging a death (the
+                # same artifact the import pipeline's resurrection check filters),
+                # which would otherwise clamp a team's alive count to 0 early and
+                # produce a bogus zero-length self-loop edge on later events.
+                break
+
+
+def build_state_aggregates_from_data(
+    match_players: list[MatchPlayer],
+) -> tuple[dict[str, dict[str, int]], dict[tuple[str, str], int]]:
+    """Fold accumulate_match_state_stats over pre-loaded rows."""
+    win_stats: dict[str, dict[str, int]] = {}
+    kill_order_weights: dict[tuple[str, str], int] = {}
+    for match_player in match_players:
+        accumulate_match_state_stats(match_player, win_stats, kill_order_weights)
+    return win_stats, kill_order_weights
+
+
+def build_state_diagrams_from_aggregates(
+    win_stats: dict[str, dict[str, int]],
+    kill_order_weights: dict[tuple[str, str], int],
+) -> tuple[StateDiagram, StateDiagram]:
+    return _round_win_diagram(win_stats), _kill_order_diagram(kill_order_weights)
+
+
 def build_state_diagrams(
     db: Session, player: Player, match_limit: int | None = None
 ) -> tuple[StateDiagram, StateDiagram]:
     """Rebuilds playerTrends.py's round-win and kill-order diagrams from the DB.
-
-    The scraper's `playersOnTeam` field (alive count on each side at the moment
-    of a kill) isn't stored -- kill_events only has who/what/when. So each
-    round's kills are replayed in time order here, tracking alive counts per
-    team, to recover the man-advantage state ("<own>v<opponent>") the player
-    experienced at each kill. Aggregated across every match the player appears in.
-    """
-    query = (
-        db.query(MatchPlayer)
-        .filter_by(player_id=player.id)
-        .join(Match, Match.id == MatchPlayer.match_id)
-        .options(
-            selectinload(MatchPlayer.match).selectinload(Match.match_players),
-            selectinload(MatchPlayer.match).selectinload(Match.rounds).selectinload(Round.kill_events).defer(KillEvent.source_meta),
-        )
-    )
-    if match_limit is not None:
-        query = query.order_by(Match.played_at.desc().nullsfirst(), Match.id.desc()).limit(match_limit)
-    match_players = query.all()
-
-    win_stats: dict[str, dict[str, int]] = {}
-    kill_order_weights: dict[tuple[str, str], int] = {}
-
-    for match_player in match_players:
-        match = match_player.match
-        own_team = match_player.team
-        opp_team = Team.TEAM_2 if own_team == Team.TEAM_1 else Team.TEAM_1
-        sizes = _team_sizes(match.match_players)
-        team_of = {mp.id: mp.team for mp in match.match_players}
-
-        for round_row in match.rounds:
-            alive = {Team.TEAM_1: sizes[Team.TEAM_1], Team.TEAM_2: sizes[Team.TEAM_2]}
-            winner = _winner_team(round_row.outcome)
-            player_alive = True
-            events = sorted(round_row.kill_events, key=lambda e: (e.event_time_seconds, e.id))
-
-            for event in events:
-                own_alive, opp_alive = alive[own_team], alive[opp_team]
-                state = f"{own_alive}v{opp_alive}"
-
-                if player_alive and own_alive >= 1 and opp_alive >= 1 and winner is not None:
-                    bucket = win_stats.setdefault(state, {"win": 0, "total": 0})
-                    bucket["total"] += 1
-                    if winner == own_team:
-                        bucket["win"] += 1
-
-                # Gated on player_alive: a dead player can't rack up further kills or
-                # deaths -- the raw kill feed sometimes logs a duplicate entry
-                # for an already-dead player, which would otherwise show up here as a
-                # bogus zero-length self-loop edge.
-                is_kill = player_alive and event.killer_match_player_id == match_player.id
-                is_death = player_alive and event.death_match_player_id == match_player.id
-
-                if event.death_match_player_id is not None:
-                    dead_team = team_of.get(event.death_match_player_id)
-                    if dead_team is not None and alive[dead_team] > 0:
-                        alive[dead_team] -= 1
-
-                if is_kill or is_death:
-                    after_state = f"{alive[own_team]}v{alive[opp_team]}"
-                    key = (state, after_state)
-                    delta = (1 if is_kill else 0) - (1 if is_death else 0)
-                    kill_order_weights[key] = kill_order_weights.get(key, 0) + delta
-
-                if is_death:
-                    player_alive = False
-
-                if alive[Team.TEAM_1] <= 0 or alive[Team.TEAM_2] <= 0:
-                    # Round is definitionally over -- stop replaying. Guards against
-                    # the raw feed occasionally double-logging a death (the
-                    # same artifact the import pipeline's resurrection check filters),
-                    # which would otherwise clamp a team's alive count to 0 early and
-                    # produce a bogus zero-length self-loop edge on later events.
-                    break
-
-    return _round_win_diagram(win_stats), _kill_order_diagram(kill_order_weights)
+    Thin wrapper over the shared loader + the three functions above -- kept for
+    callers that only need this one product (e.g. match/session pages elsewhere
+    in this module still use their own independent replay, unaffected)."""
+    match_players = load_player_match_data(db, player, match_limit)
+    win_stats, kill_order_weights = build_state_aggregates_from_data(match_players)
+    return build_state_diagrams_from_aggregates(win_stats, kill_order_weights)
 
 
 def build_match_round_win_diagrams(match: Match) -> tuple[StateDiagram, StateDiagram]:

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.services.auth import get_current_player
 from app.services.friends import add_friend, list_acquaintances, list_friends, remove_friend
+from app.services.player_view_cache import invalidate_player_cache
 from app.services.players import get_player_or_404, list_player_display_names
 from app.templates import templates
 
@@ -50,7 +51,9 @@ def add_friend_route(
         return RedirectResponse(url="/login", status_code=303)
 
     friend = get_player_or_404(db, display_name)
-    add_friend(db, current_player.id, friend.id)
+    if add_friend(db, current_player.id, friend.id):
+        invalidate_player_cache(db, {current_player.id})
+    db.commit()
     return RedirectResponse(url=_safe_next(next), status_code=303)
 
 
@@ -61,5 +64,7 @@ def remove_friend_route(request: Request, display_name: str = Form(...), db: Ses
         return RedirectResponse(url="/login", status_code=303)
 
     friend = get_player_or_404(db, display_name)
-    remove_friend(db, current_player.id, friend.id)
+    if remove_friend(db, current_player.id, friend.id):
+        invalidate_player_cache(db, {current_player.id})
+    db.commit()
     return RedirectResponse(url="/friends", status_code=303)
