@@ -18,7 +18,7 @@ from typing import Literal
 import numpy as np
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import Match, MatchPlayer, Player, Round
+from app.models import KillEvent, Match, MatchPlayer, Player, Round
 from app.models.match import Team
 from app.services.friends import list_friend_ids
 from app.services.state_replay import (
@@ -556,7 +556,9 @@ def load_match_fight_ev_blocks(
         .join(Match, Match.id == MatchPlayer.match_id)
         .options(
             selectinload(MatchPlayer.match).selectinload(Match.match_players),
-            selectinload(MatchPlayer.match).selectinload(Match.rounds).selectinload(Round.kill_events),
+            selectinload(MatchPlayer.match).selectinload(Match.rounds).selectinload(Round.kill_events).defer(
+                KillEvent.source_meta
+            ),
         )
     )
     if match_limit is not None:

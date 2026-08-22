@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session, object_session, selectinload
 
-from app.models import Match, MatchPlayer, Player, Round
+from app.models import KillEvent, Match, MatchPlayer, Player, Round
 from app.models.match import Team
 
 # Round-win diamond: compact, with larger nodes since there's no edge label to make room for.
@@ -139,7 +139,7 @@ def build_state_diagrams(
         .join(Match, Match.id == MatchPlayer.match_id)
         .options(
             selectinload(MatchPlayer.match).selectinload(Match.match_players),
-            selectinload(MatchPlayer.match).selectinload(Match.rounds).selectinload(Round.kill_events),
+            selectinload(MatchPlayer.match).selectinload(Match.rounds).selectinload(Round.kill_events).defer(KillEvent.source_meta),
         )
     )
     if match_limit is not None:
@@ -217,7 +217,7 @@ def build_match_round_win_diagrams(match: Match) -> tuple[StateDiagram, StateDia
         # (a few queries total) instead of one lazy-load per relationship per round.
         db.query(Match).filter_by(id=match.id).options(
             selectinload(Match.match_players),
-            selectinload(Match.rounds).selectinload(Round.kill_events),
+            selectinload(Match.rounds).selectinload(Round.kill_events).defer(KillEvent.source_meta),
         ).one()
 
     sizes = _team_sizes(match.match_players)
@@ -296,7 +296,7 @@ def _preload_session_matches(matches: list[Match]) -> None:
         # up front instead of one lazy-load per relationship per round per match.
         db.query(Match).filter(Match.id.in_([m.id for m in matches])).options(
             selectinload(Match.match_players),
-            selectinload(Match.rounds).selectinload(Round.kill_events),
+            selectinload(Match.rounds).selectinload(Round.kill_events).defer(KillEvent.source_meta),
         ).all()
 
 

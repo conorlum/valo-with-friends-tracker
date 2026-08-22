@@ -201,8 +201,7 @@
   // light since only one view is ever visible at a time. Layout/color/text-format
   // logic mirrors the approved design mockup exactly.
   const FIGHT_EV_X_STEP = 132, FIGHT_EV_Y_STEP = 108;
-  const FIGHT_EV_BASE_W = 118, FIGHT_EV_BASE_H = 76;
-  const FIGHT_EV_MAX_W = 142, FIGHT_EV_MAX_H = 92;
+  const FIGHT_EV_TILE_W = 118, FIGHT_EV_TILE_H = 76;
   const FIGHT_EV_PADDING = 30;
 
   function fightEvPos(a, b) {
@@ -230,15 +229,6 @@
     return "#0d0d0d"; // NO_DATA
   }
 
-  function fightEvPrecisionSize(c) {
-    const s = c.display_state;
-    if (s !== "POSITIVE" && s !== "NEGATIVE" && s !== "UNRESOLVED") return [FIGHT_EV_BASE_W, FIGHT_EV_BASE_H];
-    if (!c.bootstrap || c.bootstrap.ci_low === null || c.bootstrap.ci_high === null) return [FIGHT_EV_BASE_W, FIGHT_EV_BASE_H];
-    const width = c.bootstrap.ci_high - c.bootstrap.ci_low;
-    const t = Math.max(0, Math.min(1, 1 - (width - 0.02) / 0.12));
-    return [FIGHT_EV_BASE_W + (FIGHT_EV_MAX_W - FIGHT_EV_BASE_W) * t, FIGHT_EV_BASE_H + (FIGHT_EV_MAX_H - FIGHT_EV_BASE_H) * t];
-  }
-
   function fightEvContributingMatches(c) {
     if (!c.bootstrap) return null;
     return Math.min(c.bootstrap.contributing_matches_player, c.bootstrap.contributing_matches_teammates);
@@ -262,7 +252,7 @@
 
     const positions = {};
     cells.forEach((c) => { positions[c.a + "v" + c.b] = fightEvPos(c.a, c.b); });
-    const pad = FIGHT_EV_MAX_W / 2 + FIGHT_EV_PADDING;
+    const pad = FIGHT_EV_TILE_W / 2 + FIGHT_EV_PADDING;
     const xs = Object.values(positions).map((p) => p.x);
     const ys = Object.values(positions).map((p) => p.y);
     const minX = Math.min(...xs) - pad, maxX = Math.max(...xs) + pad;
@@ -294,7 +284,7 @@
 
     cells.forEach((c) => {
       const p = positions[c.a + "v" + c.b];
-      const [w, h] = fightEvPrecisionSize(c);
+      const w = FIGHT_EV_TILE_W, h = FIGHT_EV_TILE_H;
       const cx = p.x + shiftX, cy = p.y + shiftY;
       const fill = fightEvTileColor(c);
       const textColor = "#ffffff";
