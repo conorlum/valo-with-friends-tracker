@@ -12,10 +12,10 @@ top of the pure functions here -- see build_fight_ev_views's docstring.
 from __future__ import annotations
 
 import enum
-import random
 from dataclasses import dataclass, field
 from typing import Literal
 
+import numpy as np
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import Match, MatchPlayer, Player, Round
@@ -40,7 +40,11 @@ TeammatePool = Literal["tracked_roster", "all_teammates"]
 # Bumping this constant invalidates every previously-served bootstrap seed --
 # use it to force a reshuffle if the replay/aggregation logic changes in a
 # way that should not be silently blended with old draws.
-CALCULATION_VERSION = 1
+# v2: switched bootstrap_cell's resampling from Python's random.Random to
+# numpy's Generator (a vectorized draws-array is what made the page-load-time
+# fix possible) -- same statistical procedure, different pseudorandom
+# sequence, so old seeds must not be blended with new draws.
+CALCULATION_VERSION = 2
 
 DEFAULT_BOOTSTRAP_DRAWS = 2000
 
@@ -238,16 +242,6 @@ def _teammate_bucket_name(pool: TeammatePool) -> str:
     return "roster_duels" if pool == "tracked_roster" else "all_teammate_duels"
 
 
-def _percentile(sorted_values: list[float], pct: float) -> float:
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    rank = (pct / 100) * (len(sorted_values) - 1)
-    low = int(rank)
-    high = min(low + 1, len(sorted_values) - 1)
-    frac = rank - low
-    return sorted_values[low] + (sorted_values[high] - sorted_values[low]) * frac
-
-
 def _bootstrap_seed(player_id: int, side: Side, a: int, b: int, pool: TeammatePool) -> int:
     # Deterministic across requests for the same player/version so the page
     # doesn't jitter between loads; varies by cell/benchmark so cells aren't
@@ -297,6 +291,23 @@ def _rail_rate(side: Side, rail_a: int, rail_b: int, wins: int, entries: int) ->
     if side == "defending" and rail_a == 0:
         return 0.0
     return (wins / entries) if entries > 0 else None
+
+
+def _rail_rate_vectorized(
+    side: Side, rail_a: int, rail_b: int, wins: np.ndarray, entries: np.ndarray, draws: int
+) -> np.ndarray:
+    """Vectorized counterpart to _rail_rate, used by bootstrap_cell's
+    numpy draw arrays. The degenerate a==0/b==0 rails are a constant for
+    every draw (not data-dependent), so those short-circuit without
+    touching `wins`/`entries` at all."""
+    if rail_a < 0 or rail_b < 0:
+        return np.full(draws, np.nan)
+    if side == "attacking" and rail_b == 0:
+        return np.full(draws, 1.0)
+    if side == "defending" and rail_a == 0:
+        return np.full(draws, 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(entries > 0, wins / entries, np.nan)
 
 
 def bootstrap_cell(
@@ -355,43 +366,46 @@ def bootstrap_cell(
     contributing_w_d = _contributing_win(key_d, 7)
 
     n = len(blocks)
-    rng = random.Random(seed)
-    defined_values: list[float] = []
+    per_block_arr = np.array(per_block, dtype=np.int64).reshape(n, 8)
+    defined_fraction = 0.0
+    ci_low = ci_high = None
 
-    for _ in range(draws):
-        pk = pd = tk = td = wu_w = wu_e = wd_w = wd_e = 0
-        for _ in range(n):
-            row = per_block[rng.randrange(n)]
-            pk += row[0]
-            pd += row[1]
-            tk += row[2]
-            td += row[3]
-            wu_w += row[4]
-            wu_e += row[5]
-            wd_w += row[6]
-            wd_e += row[7]
+    # Resample all `draws` cluster-bootstrap iterations at once instead of a
+    # Python-level double loop (draws x n). That loop -- re-picking one of n
+    # match blocks at a time via random.randrange and accumulating 8 scalars
+    # per pick -- was the actual cost of a player-page load (see profiling in
+    # the PR that added this): with n ~= 30 matches and draws=800, it's ~2.2M
+    # randrange calls for a single cell, and there are up to 100 cells (4
+    # views x 25 states) on one page. Gathering the same picks as a
+    # numpy index array and summing along the match axis does the identical
+    # sampling-with-replacement in compiled code instead of the interpreter.
+    if n > 0 and draws > 0:
+        rng = np.random.default_rng(seed)
+        indices = rng.integers(0, n, size=(draws, n))
+        # per_block_arr[indices] : (draws, n, 8) -> sum over the n axis -> (draws, 8)
+        sums = per_block_arr[indices].sum(axis=1)
+        pk, pd, tk, td, wu_w, wu_e, wd_w, wd_e = (sums[:, i] for i in range(8))
 
-        p_y = pk / (pk + pd) if (pk + pd) > 0 else None
-        p_m = tk / (tk + td) if (tk + td) > 0 else None
-        w_u = _rail_rate(side, a, b - 1, wu_w, wu_e)
-        w_d = _rail_rate(side, a - 1, b, wd_w, wd_e)
-        if p_y is None or p_m is None or w_u is None or w_d is None:
-            continue
-        leverage = w_u - w_d
-        if leverage <= 0:
-            continue
-        defined_values.append((p_y - p_m) * leverage)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            p_y = np.where(pk + pd > 0, pk / (pk + pd), np.nan)
+            p_m = np.where(tk + td > 0, tk / (tk + td), np.nan)
+            w_u = _rail_rate_vectorized(side, a, b - 1, wu_w, wu_e, draws)
+            w_d = _rail_rate_vectorized(side, a - 1, b, wd_w, wd_e, draws)
 
-    defined_fraction = len(defined_values) / draws if draws else 0.0
-    if not defined_values:
-        return BootstrapResult(
-            None, None, defined_fraction, contributing_player, contributing_teammates, contributing_w_u, contributing_w_d
-        )
+            leverage = w_u - w_d
+            values = (p_y - p_m) * leverage
 
-    defined_values.sort()
+        valid = np.isfinite(values) & (leverage > 0)
+        defined_values = values[valid]
+
+        defined_fraction = len(defined_values) / draws
+        if len(defined_values) > 0:
+            ci_low = float(np.percentile(defined_values, 2.5))
+            ci_high = float(np.percentile(defined_values, 97.5))
+
     return BootstrapResult(
-        ci_low=_percentile(defined_values, 2.5),
-        ci_high=_percentile(defined_values, 97.5),
+        ci_low=ci_low,
+        ci_high=ci_high,
         defined_draw_fraction=defined_fraction,
         contributing_matches_player=contributing_player,
         contributing_matches_teammates=contributing_teammates,
