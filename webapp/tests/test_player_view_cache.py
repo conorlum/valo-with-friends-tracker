@@ -95,7 +95,11 @@ def _sample_econ_aggregates() -> dict:
 
 
 def _sample_pistol_match_stats() -> dict:
-    return {"single_total": 3, "single_wins": 2, "double_total": 1, "double_wins": 1}
+    return {
+        "lost_both_total": 4, "lost_both_wins": 1,
+        "won_one_total": 3, "won_one_wins": 2,
+        "won_both_total": 1, "won_both_wins": 1,
+    }
 
 
 def _sample_views(player_id: int = 1) -> PlayerViews:
@@ -174,12 +178,15 @@ def test_blob_round_trip_reproduces_pistol_match_stats():
     blob = _encode(views)
     decoded = _decode(blob, player=Player(id=1, display_name="Foo#123"))
 
-    assert decoded.pistol_match_stats.single_total == 3
-    assert decoded.pistol_match_stats.single_wins == 2
-    assert decoded.pistol_match_stats.double_total == 1
-    assert decoded.pistol_match_stats.double_wins == 1
-    assert decoded.pistol_match_stats.single_win_pct == 2 / 3
-    assert decoded.pistol_match_stats.double_win_pct == 1.0
+    assert decoded.pistol_match_stats.lost_both_total == 4
+    assert decoded.pistol_match_stats.lost_both_wins == 1
+    assert decoded.pistol_match_stats.won_one_total == 3
+    assert decoded.pistol_match_stats.won_one_wins == 2
+    assert decoded.pistol_match_stats.won_both_total == 1
+    assert decoded.pistol_match_stats.won_both_wins == 1
+    assert decoded.pistol_match_stats.lost_both_win_pct == 1 / 4
+    assert decoded.pistol_match_stats.won_one_win_pct == 2 / 3
+    assert decoded.pistol_match_stats.won_both_win_pct == 1.0
 
 
 def test_happy_path_blob_validates():
@@ -338,19 +345,19 @@ def test_validation_rejects_malformed_agent_counts_pair():
 
 def test_validation_rejects_missing_pistol_match_stats_key():
     blob = _encode(_sample_views())
-    del blob["pistol_match_stats"]["single_wins"]
+    del blob["pistol_match_stats"]["won_one_wins"]
     assert _validate_blob(blob) is False
 
 
 def test_validation_rejects_pistol_match_stats_wins_greater_than_total():
     blob = _encode(_sample_views())
-    blob["pistol_match_stats"]["double_wins"] = 99
+    blob["pistol_match_stats"]["won_both_wins"] = 99
     assert _validate_blob(blob) is False
 
 
 def test_validation_rejects_negative_pistol_match_stats_count():
     blob = _encode(_sample_views())
-    blob["pistol_match_stats"]["single_total"] = -1
+    blob["pistol_match_stats"]["lost_both_total"] = -1
     assert _validate_blob(blob) is False
 
 

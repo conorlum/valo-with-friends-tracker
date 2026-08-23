@@ -114,17 +114,20 @@ PISTOL_ROUND_NUMBERS = (1, 13)
 
 
 def compute_pistol_match_stats(match_players: list[MatchPlayer]) -> dict[str, int]:
-    """Canonical aggregate behind the "pistol round win -> match win" and
-    "won both pistols -> match win" stats -- {single_total, single_wins,
-    double_total, double_wins}. single_total/single_wins count each PISTOL
-    ROUND this player's team won (a match where both pistols were won
-    contributes to both categories -- that's the standard way trackers
-    present this stat, not a bug); double_total/double_wins count MATCHES
-    where the team won both pistol rounds. Ties (match_win returns None)
-    are excluded from every denominator, same as match_win's own contract
-    elsewhere in this module -- a round with no/unparseable outcome is
-    likewise excluded rather than counted as a loss."""
-    single_total = single_wins = double_total = double_wins = 0
+    """Canonical aggregate behind the "pistols won -> match win" stat --
+    three MUTUALLY EXCLUSIVE buckets by how many of the two pistol rounds
+    (round 1 and round 13) this player's team won in a match: lost_both (0),
+    won_one (1), won_both (2). Each bucket is {*_total, *_wins}, tallying
+    whether the match itself was won.
+
+    A match only lands in a bucket when BOTH pistol rounds have a resolved
+    outcome -- unlike counting each pistol round independently, a single
+    missing/unparseable outcome makes the bucket AMBIGUOUS (not just
+    incomplete) since there are only two rounds to place, so the whole match
+    is excluded rather than guessed at. Ties (match_win returns None) are
+    excluded from every denominator too, same as match_win's own contract
+    elsewhere in this module."""
+    buckets = {n: {"total": 0, "wins": 0} for n in range(len(PISTOL_ROUND_NUMBERS) + 1)}
     for mp in match_players:
         match = mp.match
         team = mp.team.value if hasattr(mp.team, "value") else mp.team
@@ -136,26 +139,23 @@ def compute_pistol_match_stats(match_players: list[MatchPlayer]) -> dict[str, in
         pistol_results = []
         for round_number in PISTOL_ROUND_NUMBERS:
             r = rounds_by_number.get(round_number)
-            if r is None:
-                continue
-            winner = _winner_side(r.outcome)
+            winner = _winner_side(r.outcome) if r is not None else None
             if winner is None:
-                continue
+                pistol_results = None
+                break
             pistol_results.append(winner == team)
+        if pistol_results is None:
+            continue
 
-        for won_pistol in pistol_results:
-            if won_pistol:
-                single_total += 1
-                if won_match:
-                    single_wins += 1
-        if len(pistol_results) == len(PISTOL_ROUND_NUMBERS) and all(pistol_results):
-            double_total += 1
-            if won_match:
-                double_wins += 1
+        bucket = buckets[sum(pistol_results)]
+        bucket["total"] += 1
+        if won_match:
+            bucket["wins"] += 1
 
     return {
-        "single_total": single_total, "single_wins": single_wins,
-        "double_total": double_total, "double_wins": double_wins,
+        "lost_both_total": buckets[0]["total"], "lost_both_wins": buckets[0]["wins"],
+        "won_one_total": buckets[1]["total"], "won_one_wins": buckets[1]["wins"],
+        "won_both_total": buckets[2]["total"], "won_both_wins": buckets[2]["wins"],
     }
 
 

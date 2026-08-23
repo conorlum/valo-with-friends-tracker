@@ -55,7 +55,7 @@ from app.services.player_views import PlayerViews, compute_player_views_by_scope
 
 logger = logging.getLogger(__name__)
 
-PLAYER_VIEW_CACHE_SCHEMA_VERSION = 3
+PLAYER_VIEW_CACHE_SCHEMA_VERSION = 4
 # Bump when ANY of these change:
 #   - replay semantics (round exclusion rules, event filtering)
 #   - win_stats / kill_order_weights accumulation logic
@@ -86,6 +86,11 @@ PLAYER_VIEW_CACHE_SCHEMA_VERSION = 3
 # v3: added pistol_match_stats (the "pistol round win -> match win" /
 # "double pistol win -> match win" stats) to the blob -- a new canonical
 # aggregate, not a recompute of anything already stored.
+# v4: reshaped pistol_match_stats from two overlapping counters (single/
+# double, where a both-pistols-won match counted toward both) into three
+# mutually-exclusive buckets by pistols won (lost_both/won_one/won_both) --
+# same underlying replay/round data, different aggregation, so only the
+# blob's key names changed.
 
 assert CALCULATION_VERSION < 1000  # keeps the composite below collision-free
 assert IMPACT_CALCULATION_VERSION < 1000
@@ -232,7 +237,10 @@ def _validate_econ_aggregates(econ: object) -> bool:
     return True
 
 
-_PISTOL_MATCH_STATS_KEYS = frozenset({"single_total", "single_wins", "double_total", "double_wins"})
+_PISTOL_MATCH_STATS_BUCKET_PREFIXES = ("lost_both", "won_one", "won_both")
+_PISTOL_MATCH_STATS_KEYS = frozenset(
+    f"{prefix}_{suffix}" for prefix in _PISTOL_MATCH_STATS_BUCKET_PREFIXES for suffix in ("total", "wins")
+)
 
 
 def _validate_pistol_match_stats(stats: object) -> bool:
@@ -240,7 +248,9 @@ def _validate_pistol_match_stats(stats: object) -> bool:
         return False
     if not all(_is_nonneg_int(stats[k]) for k in _PISTOL_MATCH_STATS_KEYS):
         return False
-    return stats["single_wins"] <= stats["single_total"] and stats["double_wins"] <= stats["double_total"]
+    return all(
+        stats[f"{prefix}_wins"] <= stats[f"{prefix}_total"] for prefix in _PISTOL_MATCH_STATS_BUCKET_PREFIXES
+    )
 
 
 _MATCH_SUMMARY_KEYS = frozenset({
