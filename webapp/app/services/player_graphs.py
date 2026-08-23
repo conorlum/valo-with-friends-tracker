@@ -6,6 +6,20 @@ from sqlalchemy.orm import Session, object_session, selectinload
 from app.models import KillEvent, Match, MatchPlayer, Player, Round
 from app.models.match import Team
 from app.services.player_data import load_player_match_data
+from app.services.state_replay import DuelOccurrence, StateEntryOccurrence
+
+# Bumping this invalidates every previously-cached round-win/kill-order
+# diamond -- folded MECHANICALLY into app.services.player_view_cache.
+# cache_version() (Step 8, docs/player_page_render_speed.txt), the same
+# pattern as app.services.fight_ev.CALCULATION_VERSION and
+# app.scoring.impact.IMPACT_CALCULATION_VERSION. v1 was
+# accumulate_match_state_stats' manual walk (no exclusion rules beyond a
+# same-team-double-death early break); v2 is accumulate_state_stats_from_
+# replay, built on state_replay's stricter round-exclusion rules (surrender,
+# overtime, ambiguous lifecycle, equal-time ambiguity, unresolved winner,
+# post-terminal-time events) -- see that function's docstring for the exact
+# list of behavior changes this represents.
+STATE_DIAGRAM_CALCULATION_VERSION = 2
 
 # Round-win diamond: compact, with larger nodes since there's no edge label to make room for.
 ROUND_WIN_X_STEP = 56
@@ -195,6 +209,109 @@ def build_state_aggregates_from_data(
     kill_order_weights: dict[tuple[str, str], int] = {}
     for match_player in match_players:
         accumulate_match_state_stats(match_player, win_stats, kill_order_weights)
+    return win_stats, kill_order_weights
+
+
+def accumulate_state_stats_from_replay(
+    entries: list[StateEntryOccurrence],
+    duels: list[DuelOccurrence],
+    target_team: Team,
+    target_match_player_id: int,
+    win_stats: dict[str, dict[str, int]],
+    kill_order_weights: dict[tuple[str, str], int],
+) -> None:
+    """Step 8 (docs/player_page_render_speed.txt): derives the round-win/
+    kill-order diamonds' aggregates from app.services.state_replay's
+    ALREADY-COMPUTED entries/duels for one match -- the SAME replay_match()
+    output app.services.fight_ev's block-builder consumes, walked once
+    rather than a second independent pass over Match.rounds/kill_events (see
+    accumulate_match_state_stats above, which this supersedes on the live
+    write path but does not replace -- see that function's docstring).
+
+    Adopting state_replay's stricter semantics is a deliberate, validated
+    behavior change from accumulate_match_state_stats, not a like-for-like
+    port -- see the Step 8 section of the doc for the before/after diff this
+    was checked against. Concretely:
+      - surrender rounds, overtime (round_number > 24), ambiguous-lifecycle
+        rounds (an event references an already-dead match player) and
+        equal-time-ambiguity rounds (two deaths at the identical timestamp)
+        are excluded ENTIRELY here, where the old code had no such guards
+        (beyond the specific double-death artifact its early-break covered).
+      - events after a round's terminal time (post-defuse/detonation) are
+        excluded here; the old code had no terminal-time concept at all.
+      - a round with an unresolved winner is excluded ENTIRELY here (both
+        win_stats and kill_order_weights); the old code only skipped
+        win_stats for that specific kill's snapshot, while still recording
+        it in kill_order_weights.
+    Self-kills and environmental deaths are STILL counted as a kill_order_
+    weights loss for the target player (matching the old code): state_replay
+    creates a StateEntryOccurrence for any state-changing event regardless
+    of whether it was a genuine cross-team duel, so a "target player left
+    the alive set" transition is detected from consecutive entries, not
+    solely from DuelOccurrence (which only covers genuine opponent duels and
+    would otherwise silently drop these).
+    """
+    by_round: dict[int, list[StateEntryOccurrence]] = {}
+    for entry in entries:
+        by_round.setdefault(entry.round_id, []).append(entry)
+
+    def _own_opp(e: StateEntryOccurrence) -> tuple[frozenset[int], frozenset[int]]:
+        if target_team == Team.TEAM_1:
+            return e.team1_alive_ids, e.team2_alive_ids
+        return e.team2_alive_ids, e.team1_alive_ids
+
+    for round_entries in by_round.values():
+        round_entries.sort(key=lambda e: e.sequence)
+
+        for entry in round_entries:
+            own_alive, opp_alive = _own_opp(entry)
+            if target_match_player_id not in own_alive:
+                continue  # target already dead (or never on this side) at this snapshot
+            if not opp_alive:
+                continue  # matches accumulate_match_state_stats' own_alive>=1/opp_alive>=1
+                # guard -- also moot for rendering either way, since _round_win_diagram
+                # only ever lays out 1v1..5v5 nodes and would silently ignore an "Xv0" entry.
+            state = f"{len(own_alive)}v{len(opp_alive)}"
+            bucket = win_stats.setdefault(state, {"win": 0, "total": 0})
+            bucket["total"] += 1
+            if entry.winner == target_team:
+                bucket["win"] += 1
+
+        for before, after in zip(round_entries, round_entries[1:]):
+            before_own, before_opp = _own_opp(before)
+            if target_match_player_id not in before_own:
+                continue  # target was already dead before this transition -- not theirs
+            after_own, after_opp = _own_opp(after)
+            if target_match_player_id in after_own:
+                continue  # target survived this transition -- their kill is credited via duels below
+            before_state = f"{len(before_own)}v{len(before_opp)}"
+            after_state = f"{len(after_own)}v{len(after_opp)}"
+            key = (before_state, after_state)
+            kill_order_weights[key] = kill_order_weights.get(key, 0) - 1
+
+    for duel in duels:
+        if duel.killer_match_player_id != target_match_player_id:
+            continue
+        before_own = duel.team1_alive_before if target_team == Team.TEAM_1 else duel.team2_alive_before
+        before_opp = duel.team2_alive_before if target_team == Team.TEAM_1 else duel.team1_alive_before
+        before_state = f"{len(before_own)}v{len(before_opp)}"
+        after_state = f"{len(before_own)}v{len(before_opp) - 1}"
+        key = (before_state, after_state)
+        kill_order_weights[key] = kill_order_weights.get(key, 0) + 1
+
+
+def build_state_aggregates_from_replays(
+    replays: list[tuple[MatchPlayer, list[StateEntryOccurrence], list[DuelOccurrence]]],
+) -> tuple[dict[str, dict[str, int]], dict[tuple[str, str], int]]:
+    """Fold accumulate_state_stats_from_replay over a list of
+    (match_player, entries, duels) -- one per match, from app.services.
+    player_views' shared replay pass (Step 8)."""
+    win_stats: dict[str, dict[str, int]] = {}
+    kill_order_weights: dict[tuple[str, str], int] = {}
+    for match_player, entries, duels in replays:
+        accumulate_state_stats_from_replay(
+            entries, duels, match_player.team, match_player.id, win_stats, kill_order_weights
+        )
     return win_stats, kill_order_weights
 
 
