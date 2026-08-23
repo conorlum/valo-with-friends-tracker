@@ -38,7 +38,11 @@ from app.services.fight_ev import (
     DisplayState,
     serialize_fight_ev_views,
 )
-from app.services.player_graphs import StateDiagram, build_state_diagrams_from_aggregates
+from app.services.player_graphs import (
+    STATE_DIAGRAM_CALCULATION_VERSION,
+    StateDiagram,
+    build_state_diagrams_from_aggregates,
+)
 from app.services.player_profile_types import (
     CachedMatchRef,
     MatchBreakdown,
@@ -70,27 +74,37 @@ PLAYER_VIEW_CACHE_SCHEMA_VERSION = 2
 # profile added to the blob; IMPACT_CALCULATION_VERSION folded into
 # cache_version() (Step 3b), since profile/econ are now derived from
 # ImpactScore rows this cache previously never read at all.
+# Step 8: STATE_DIAGRAM_CALCULATION_VERSION folded in too -- the round-win/
+# kill-order diamonds now come from a shared replay pass with fight-EV
+# (app.services.player_graphs.accumulate_state_stats_from_replay) instead of
+# their own independent walk, adopting state_replay's stricter round-
+# exclusion semantics. See that function's docstring for the validated
+# before/after diff this represents.
 
 assert CALCULATION_VERSION < 1000  # keeps the composite below collision-free
 assert IMPACT_CALCULATION_VERSION < 1000
+assert STATE_DIAGRAM_CALCULATION_VERSION < 1000
 
 
 def cache_version() -> int:
     """The value persisted in and checked against player_view_cache.version.
 
-    CALCULATION_VERSION and IMPACT_CALCULATION_VERSION are folded in
-    MECHANICALLY rather than documented as remember-to-also-bump steps:
-    CALCULATION_VERSION feeds _bootstrap_seed (every stored confidence
-    interval depends on it), and IMPACT_CALCULATION_VERSION versions the
-    ImpactScore rows the profile/econ aggregates are now derived from (Step
-    3b) -- a rescoring that didn't invalidate this cache would leave the
-    site serving profile/econ numbers computed from the PREVIOUS scoring
-    run indefinitely. Composite rather than hashed so the stored value stays
-    readable -- 2003001 is schema 2, fight-EV calculation 3, impact
+    CALCULATION_VERSION, IMPACT_CALCULATION_VERSION and STATE_DIAGRAM_
+    CALCULATION_VERSION are folded in MECHANICALLY rather than documented as
+    remember-to-also-bump steps: CALCULATION_VERSION feeds _bootstrap_seed
+    (every stored confidence interval depends on it), IMPACT_CALCULATION_
+    VERSION versions the ImpactScore rows the profile/econ aggregates are
+    derived from (Step 3b), and STATE_DIAGRAM_CALCULATION_VERSION versions
+    the round-win/kill-order replay semantics (Step 8) -- any of these
+    changing without invalidating this cache would leave the site serving
+    numbers computed under the PREVIOUS rules indefinitely. Composite rather
+    than hashed so the stored value stays readable -- 2_002_003_001 is
+    schema 2, state-diagram calculation 2, fight-EV calculation 3, impact
     calculation 1.
     """
     return (
-        PLAYER_VIEW_CACHE_SCHEMA_VERSION * 1_000_000
+        PLAYER_VIEW_CACHE_SCHEMA_VERSION * 1_000_000_000
+        + STATE_DIAGRAM_CALCULATION_VERSION * 1_000_000
         + CALCULATION_VERSION * 1000
         + IMPACT_CALCULATION_VERSION
     )

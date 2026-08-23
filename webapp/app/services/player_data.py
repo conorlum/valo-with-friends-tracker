@@ -9,6 +9,8 @@ all import from here without creating an import cycle.
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round
+from app.models.match import Team
+from app.services.state_replay import KillEventInput, MatchInput, RoundInput
 
 RECENT_MATCH_LIMIT = 30
 
@@ -93,3 +95,39 @@ def load_impact_scores_for_match_players(
     for score in db.query(ImpactScore).filter(ImpactScore.match_player_id.in_(match_player_ids)).all():
         scores_by_match_player.setdefault(score.match_player_id, []).append(score)
     return scores_by_match_player
+
+
+def match_input_from_data(match_player: MatchPlayer) -> MatchInput:
+    """Converts one already-hydrated MatchPlayer's match into
+    app.services.state_replay's MatchInput shape -- the ORM-to-replay-input
+    adapter shared by fight-EV and (since Step 8, docs/
+    player_page_render_speed.txt) the round-win/kill-order diamonds, so both
+    walk the output of the SAME replay_match() call for a given match
+    instead of each doing their own separate pass over
+    Match.rounds/kill_events."""
+    match = match_player.match
+    team1_ids = frozenset(mp.id for mp in match.match_players if mp.team == Team.TEAM_1)
+    team2_ids = frozenset(mp.id for mp in match.match_players if mp.team == Team.TEAM_2)
+    round_inputs = tuple(
+        RoundInput(
+            round_id=r.id,
+            round_number=r.round_number,
+            outcome=r.outcome,
+            planted=r.planted,
+            plant_time=r.plant_time,
+            exploded=r.exploded,
+            defused=r.defused,
+            defuse_time=r.defuse_time,
+            kill_events=tuple(
+                KillEventInput(
+                    id=k.id,
+                    killer_match_player_id=k.killer_match_player_id,
+                    death_match_player_id=k.death_match_player_id,
+                    event_time_seconds=k.event_time_seconds,
+                )
+                for k in r.kill_events
+            ),
+        )
+        for r in match.rounds
+    )
+    return MatchInput(match_id=match.id, team1_player_ids=team1_ids, team2_player_ids=team2_ids, rounds=round_inputs)
