@@ -610,21 +610,120 @@ STEP 9 -- SHELL-FIRST / PROGRESSIVE RENDER.  (only if the target is unmet)
   wall-clock start timestamps, per 1.5. Also record median statement latency L
   for 2.1.)
 
-  step | scenario           | player  | req    |  S |  C |  K |   W
-  -----+--------------------+---------+--------+----+----+----+------
-   0   | warm hit           | light   | recent |    |    |    |
-   0   | warm hit           | heavy   | recent |    |    |    |
-   0   | warm hit           | heavy   | career |    |    |    |
-   0   | cold hit           | heavy   | recent |    |    |    |
-   0   | warm miss          | heavy   | recent |    |    |    |
-   0   | cold miss          | heavy   | career |    |    |    |
-   ...
+  Measured 2026-08-22 against Neon (not local Postgres), via the Step 0
+  instrumentation landed in app/services/request_trace.py, one uvicorn
+  process per "cold" row, unauthenticated (no session cookie -- Q3/Q4 and the
+  _inject_current_player context-processor query, see 1.2 correction below,
+  are all 0 in every row here; a logged-in run would add up to 2 more
+  statements). Heavy = NPrightdolphin#NA1 (181 matches, the tracked roster's
+  heaviest). Light = ternstyle#GIGI (29 matches). Player IDs and cache rows
+  restored afterward via `DATABASE_URL=<neon> .venv\Scripts\python.exe
+  scripts\recompute_player_views.py --cached-only` (approved by the user
+  before any Neon mutation, per the SAFETY note above).
 
-  Predicted trajectory for a warm recent hit (to be confirmed, not asserted):
-      now       S=16  C=9
-      Step 1    S=14  C=7
-      Step 2    S=4   C~3
-      Step 4    S=3   C~2
+  step | scenario           | player  | req    |  S |    C   |  K |    W
+  -----+--------------------+---------+--------+----+--------+----+---------
+   0   | warm hit           | light   | recent | 14 | 0.896s |  0 | 0.900s
+   0   | warm hit           | heavy   | recent | 14 | 0.754s |  0 | 0.757s
+   0   | warm hit           | heavy   | career | 12 | 1.909s |  0 | 1.923s
+   0   | cold hit           | heavy   | recent | 14 | 1.624s |  3 | 1.630s
+   0   | warm miss          | heavy   | recent | 21 | 1.561s |  0 | 1.566s
+   0   | cold miss          | heavy   | career | 19 | 4.785s |  2 | 4.795s
+
+  A second warm-hit/heavy/recent sample landed at S=14 C=0.903s K=0 W=0.907s
+  -- consistent with the row above within run-to-run noise.
+
+  Median per-statement latency to Neon, L, from the four warm-HIT samples
+  above (pool already established, no connection cost mixed in):
+      L ~= 87ms   (sorted per-request medians: 77ms, 86ms, 88ms, 89ms)
+
+  1.5 settled: epoch_start timestamps confirm the career fragment's request
+  never overlaps the initial route's -- it starts only after the prior
+  response's trace already finished (log_trace() runs in the route's
+  `finally`, strictly before the browser could have fired the htmx request
+  that produced the next line). Matches the doc's corrected 1.5 exactly.
+
+  1.6 settled: K was 0, 2, or 3 in every row -- never above pool_size=5, no
+  overflow observed even on a fresh process. The "~4 per request" prediction
+  came out slightly high in practice (a fresh process's very first request,
+  to the unrelated /players list route used as a startup check, ate one of
+  the 3-4 expected NEW connects for the subsequent traced request by leaving
+  a connection already in the pool) -- a benchmarking artifact of how the
+  probe was sequenced, not evidence the app itself needs fewer connections.
+
+  UNPREDICTED FINDING (correction to 1.2's static inventory): every render
+  makes a get_current_player call twice -- once explicitly in the router
+  (feeds is_own_profile/is_friend), and once more inside
+  app/templates.py's _inject_current_player context processor (feeds the
+  `current_player` template global that base.html's nav and detail.html's
+  Friend button both use), each on its OWN SessionLocal(). Invisible in every
+  row above because none of these benchmark requests carried a session
+  cookie -- get_current_player short-circuits on a None session player_id
+  without touching the DB. A LOGGED-IN request pays this twice: S+1, C+1 (a
+  new, always-serial "auth_render" phase after "render" begins, since it's
+  inside the context processor invoked at TemplateResponse() construction).
+  Not in scope to fix in Step 0 -- flagging it here as a real, previously
+  undocumented cost Step 1's "combine Q3+Q4" work should also fold this into,
+  or at minimum note as a known-remaining gap if it doesn't.
+
+  WARM-HIT DOMINATED BY THREADS A/B, NOT INFRASTRUCTURE: on every warm-HIT
+  row, executor:profile (thread A, get_player_profile) and executor:econ
+  (thread B, player_econ_samples) are already the two largest phase
+  durations -- e.g. heavy/recent warm: pre_executor 0.186s, map_streaks
+  0.290s, profile 0.499s, econ 0.562s. The state-diagram/fight-EV cache from
+  PR #29 already eliminated ITS OWN queries from the hit path; profile/econ
+  are NOT cached yet (that's exactly Step 2's job) and are the actual
+  bottleneck today, well ahead of connection overhead. This is the single
+  strongest piece of evidence in this baseline that Step 2 -- not Steps 6/7's
+  connection-level settings -- is where the win lives.
+
+  CACHE-MISS COST IS REAL AND CONCENTRATED: warm-miss/heavy/recent's
+  executor:main_thread_live_compute alone (1.179s) very nearly equals the
+  ENTIRE warm-hit/heavy/recent wall time (0.757s) plus profile+econ
+  (0.499+0.562=1.061s combined) -- i.e. one cache miss on the recent scope
+  costs about as much extra time as a second full warm-hit render. On the
+  CAREER scope it is far worse: cold-miss/heavy/career's live_compute alone
+  is 4.408s out of a 4.795s total request -- the full-history bootstrap
+  (Step 8's "two replay passes" territory) dominates completely. This is
+  what the plan's Step 8 promotion note anticipates ("promote it above Steps
+  5-7 if Step 0 shows misses or ingest prewarms are the actual pain") --
+  misses ARE the actual pain on the career scope specifically.
+
+  POOL WAIT ON A FRESH PROCESS IS NOT NEGLIGIBLE: cold-hit/heavy/recent spent
+  0.780s of its 1.630s total (48%) on pool_wait spans (new physical
+  connect+TLS+auth, K=3) -- more than the entire warm-hit wall time. This
+  does not move Step 6/7 earlier (Step 2's projected win is still larger and
+  the doc's ordering rationale -- tune the pool once, against final
+  concurrency -- still holds), but it does mean the very first page view
+  after a deploy/restart pays a real, separate cost from everything else in
+  this table, worth remembering when Steps 6/7 are eventually reached.
+
+2.1 FLOOR, computed from the measured L ~= 87ms (this session's actual
+    number, not the doc's 60ms/250ms illustrative examples):
+        W_floor ~= C x L + render
+    Post-Step-1-and-4 (C ~= 2):   W_floor ~= 2 x 0.087 + ~0.01  ~= 0.18s
+    Post-Step-2-only (C ~= 3):    W_floor ~= 3 x 0.087 + ~0.01  ~= 0.27s
+    (render measured 5-12ms warm across the samples above; the 87ms cold-hit
+    render figure and the 68ms cold-miss one both carry extra first-touch
+    connection cost from _inject_current_player's own SessionLocal() and are
+    excluded from this estimate.)
+
+    This floor sits close to the doc's optimistic 60ms/120ms illustration,
+    not its pessimistic 250ms/500ms one: Neon's per-statement RTT from this
+    dev machine is NOT the "geographically distant" case 2.1 warned about.
+    Steps 1+2 alone (both already in scope for this work) should take
+    warm-hit/heavy/recent from today's measured ~0.75-0.90s to roughly
+    0.35-0.40s (pre_executor merges and roughly halves per Step 1; A/B
+    disappear per Step 2; map_streaks' ~0.29s is UNCHANGED until Step 4).
+    Step 4 alone (not in this scope) would then close most of the remaining
+    gap to the ~0.18-0.27s floor above.
+
+    CONCLUSION: the target is very likely reachable with Steps 1-4. Steps
+    6-7's connection-level settings and Step 9's progressive render are NOT
+    needed to hit a "feels fast" (sub-300-400ms warm) target on today's
+    numbers -- they would only become relevant if Neon round-trip latency
+    were materially worse than what this session measured, or if the user's
+    target (7.1, still open) is more aggressive than ~200ms.
 
 
 7. OPEN QUESTIONS FOR THE USER

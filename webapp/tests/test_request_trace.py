@@ -1,6 +1,7 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from sqlalchemy import create_engine
 
 from app.services import request_trace as rt
@@ -96,7 +97,11 @@ def test_executor_phases_contribute_max_not_sum_to_C():
     summary = rt.summarize(trace)
     phases = summary["phase_duration"]
     expected_C = phases["pre_executor"] + max(phases["executor:fast"], phases["executor:slow"]) + phases["post_query"]
-    assert summary["C"] == round(expected_C, 4)
+    # phase_duration's entries are themselves already rounded to 4dp, so
+    # re-summing them and rounding again can land a float ulp away from
+    # summary["C"] (computed once from the unrounded raw durations) --
+    # compare with a tolerance rather than exact equality.
+    assert summary["C"] == pytest.approx(expected_C, abs=1e-3)
     # The concurrent block genuinely overlapped, so the serial reconstruction
     # (C) must be meaningfully less than just summing every phase -- that sum
     # would double-count the overlap between the two workers.
