@@ -11,7 +11,7 @@ from app.models import ImpactScore, Match, MatchPlayer, Player, Round
 from app.models.match import MatchSource, Team
 from app.models.round import RoundPlayerStat
 from app.services.economy_graphs import compute_econ_aggregates, econ_samples_from_data
-from app.services.player_profile_types import build_player_profile_from_match_data
+from app.services.player_profile_types import build_player_profile_from_match_data, compute_pistol_match_stats
 
 
 def _build_one_match_two_players():
@@ -131,3 +131,95 @@ def test_compute_econ_aggregates_buckets_by_tier_pair_and_pistol():
     total_tier_rounds = sum(b["total"] for b in aggregates["tier_pairs"].values())
     assert total_tier_rounds == 1
     assert aggregates["pistol"]["total"] == 0  # round 3 isn't a pistol round
+
+
+# ---------------------------------------------------------------------------
+# compute_pistol_match_stats
+# ---------------------------------------------------------------------------
+
+def _match_player_with_pistol_rounds(
+    *, round1_won: bool | None, round13_won: bool | None, team1_rounds_won: int, team2_rounds_won: int,
+) -> MatchPlayer:
+    """A single team-1 MatchPlayer in a match with a round 1 and a round 13
+    whose outcomes are controlled independently -- None means "no outcome
+    recorded" (excluded from the pistol sample), matching _winner_side's own
+    contract. Only what compute_pistol_match_stats reads (match.rounds'
+    round_number/outcome, match.team1_rounds_won/team2_rounds_won,
+    match_player.team) is populated."""
+    match = Match(
+        id=1, external_id="ext-1", source=MatchSource.SCRAPED,
+        team1_rounds_won=team1_rounds_won, team2_rounds_won=team2_rounds_won,
+    )
+
+    def _outcome(won: bool | None) -> str | None:
+        if won is None:
+            return None
+        return "Team A Wins" if won else "Team B Wins"
+
+    match.rounds = [
+        Round(id=1, match_id=1, round_number=1, outcome=_outcome(round1_won)),
+        Round(id=2, match_id=1, round_number=13, outcome=_outcome(round13_won)),
+    ]
+    mp = MatchPlayer(id=1, match_id=1, player_id=100, agent="Jett", team=Team.TEAM_1)
+    mp.match = match
+    return mp
+
+
+def test_pistol_match_stats_counts_a_single_pistol_win_into_a_match_win():
+    mp = _match_player_with_pistol_rounds(
+        round1_won=True, round13_won=False, team1_rounds_won=13, team2_rounds_won=7,
+    )
+
+    stats = compute_pistol_match_stats([mp])
+
+    assert stats == {"single_total": 1, "single_wins": 1, "double_total": 0, "double_wins": 0}
+
+
+def test_pistol_match_stats_counts_double_pistol_win_into_a_match_win():
+    mp = _match_player_with_pistol_rounds(
+        round1_won=True, round13_won=True, team1_rounds_won=13, team2_rounds_won=7,
+    )
+
+    stats = compute_pistol_match_stats([mp])
+
+    assert stats == {"single_total": 2, "single_wins": 2, "double_total": 1, "double_wins": 1}
+
+
+def test_pistol_match_stats_counts_a_pistol_win_followed_by_a_match_loss():
+    mp = _match_player_with_pistol_rounds(
+        round1_won=True, round13_won=False, team1_rounds_won=7, team2_rounds_won=13,
+    )
+
+    stats = compute_pistol_match_stats([mp])
+
+    assert stats == {"single_total": 1, "single_wins": 0, "double_total": 0, "double_wins": 0}
+
+
+def test_pistol_match_stats_excludes_a_tied_match():
+    mp = _match_player_with_pistol_rounds(
+        round1_won=True, round13_won=True, team1_rounds_won=12, team2_rounds_won=12,
+    )
+
+    stats = compute_pistol_match_stats([mp])
+
+    assert stats == {"single_total": 0, "single_wins": 0, "double_total": 0, "double_wins": 0}
+
+
+def test_pistol_match_stats_excludes_a_pistol_round_with_no_outcome():
+    mp = _match_player_with_pistol_rounds(
+        round1_won=True, round13_won=None, team1_rounds_won=13, team2_rounds_won=7,
+    )
+
+    stats = compute_pistol_match_stats([mp])
+
+    assert stats == {"single_total": 1, "single_wins": 1, "double_total": 0, "double_wins": 0}
+
+
+def test_pistol_match_stats_does_not_double_count_a_losing_pistol_round():
+    mp = _match_player_with_pistol_rounds(
+        round1_won=False, round13_won=True, team1_rounds_won=13, team2_rounds_won=7,
+    )
+
+    stats = compute_pistol_match_stats([mp])
+
+    assert stats == {"single_total": 1, "single_wins": 1, "double_total": 0, "double_wins": 0}

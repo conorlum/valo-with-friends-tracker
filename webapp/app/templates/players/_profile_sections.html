@@ -105,6 +105,31 @@
 {% set econ_tier_description = "Win rate of rounds where " ~ profile.player.display_name ~ "'s team bought at each tier (rows), split by what the enemy bought that same round (columns)." %}
 {% include "_econ_tier_matrix.html" %}
 
+{% if pistol_match_stats.single_total or pistol_match_stats.double_total %}
+<div class="card">
+  <h2>Pistol rounds into match wins</h2>
+  <p class="page-meta">How often winning a pistol round (round 1 or 13) turned into winning the match, for {{ profile.player.display_name }}.</p>
+  <p class="page-meta">
+    Won a pistol round &rarr; won the match:
+    {% if pistol_match_stats.single_total %}
+    <span class="pill" style="background-color: {{ pistol_match_stats.single_fill }};" title="{{ pistol_match_stats.single_wins }}/{{ pistol_match_stats.single_total }} matches won">{{ (pistol_match_stats.single_win_pct * 100) | round | int }}%</span>
+    <span style="margin-left: 0.4rem;">({{ pistol_match_stats.single_wins }}/{{ pistol_match_stats.single_total }})</span>
+    {% else %}
+    <span class="stat-empty">&ndash;</span>
+    {% endif %}
+  </p>
+  <p class="page-meta">
+    Won both pistol rounds &rarr; won the match:
+    {% if pistol_match_stats.double_total %}
+    <span class="pill" style="background-color: {{ pistol_match_stats.double_fill }};" title="{{ pistol_match_stats.double_wins }}/{{ pistol_match_stats.double_total }} matches won">{{ (pistol_match_stats.double_win_pct * 100) | round | int }}%</span>
+    <span style="margin-left: 0.4rem;">({{ pistol_match_stats.double_wins }}/{{ pistol_match_stats.double_total }})</span>
+    {% else %}
+    <span class="stat-empty">&ndash;</span>
+    {% endif %}
+  </p>
+</div>
+{% endif %}
+
 {% if kill_order_graph.nodes %}
 <div class="card">
   <h2>Kill order graph</h2>

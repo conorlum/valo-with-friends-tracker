@@ -11,6 +11,7 @@ from app.models import Player
 from app.services.auth import SESSION_KEY
 from app.services.economy_graphs import (
     build_loadout_win_scatter_from_aggregates,
+    build_pistol_match_stats_from_aggregates,
     build_pistol_stats_from_aggregates,
     build_tier_matrix_from_aggregates,
 )
@@ -106,6 +107,7 @@ def _build_profile_context(
             econ_tier_matrix = cached.econ_tier_matrix
             econ_pistol_stats = cached.econ_pistol_stats
             econ_loadout_scatter = cached.econ_loadout_scatter
+            pistol_match_stats = cached.pistol_match_stats
         else:
             # Cache miss: full live compute on this thread, overlapped with
             # the future(s) above. Tagged as an "executor:" phase (even
@@ -125,6 +127,7 @@ def _build_profile_context(
                 econ_loadout_scatter = build_loadout_win_scatter_from_aggregates(
                     computed.econ_aggregates["loadout_buckets"]
                 )
+                pistol_match_stats = build_pistol_match_stats_from_aggregates(computed.pistol_match_stats)
 
         extra_result: _T | None = None
         if extra_work is not None:
@@ -176,6 +179,7 @@ def _build_profile_context(
         "econ_tier_matrix": econ_tier_matrix,
         "econ_pistol_stats": econ_pistol_stats,
         "econ_loadout_scatter": econ_loadout_scatter,
+        "pistol_match_stats": pistol_match_stats,
         "fight_ev_data": fight_ev_data,
         "scope": scope,
     }

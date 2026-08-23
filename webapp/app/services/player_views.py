@@ -34,7 +34,11 @@ from app.services.player_data import (
     match_input_from_data,
 )
 from app.services.player_graphs import accumulate_state_stats_from_replay
-from app.services.player_profile_types import PlayerProfile, build_player_profile_from_match_data
+from app.services.player_profile_types import (
+    PlayerProfile,
+    build_player_profile_from_match_data,
+    compute_pistol_match_stats,
+)
 from app.services.state_replay import (
     DuelOccurrence,
     MatchInput,
@@ -51,6 +55,7 @@ class PlayerViews:
     fight_ev: FightEvViews
     profile: PlayerProfile
     econ_aggregates: dict
+    pistol_match_stats: dict[str, int]
 
 
 def _replay_all_matches(
@@ -90,17 +95,18 @@ def _merge_state_aggregates(
 
 def _build_profile_and_econ(
     player: Player, match_players_newest_first: list[MatchPlayer], scores_by_match_player: dict,
-) -> tuple[PlayerProfile, dict]:
+) -> tuple[PlayerProfile, dict, dict]:
     """match_players_newest_first is load_player_match_data's own order (or
     a newest-first SLICE of it, per scope); build_player_profile_from_match_data
     needs oldest-first (get_player_profile's convention, which the router's
     chart_data/template rely on), so this reverses just for that call. Econ
-    aggregation is order-independent."""
+    aggregation and pistol-match aggregation are both order-independent."""
     oldest_first = list(reversed(match_players_newest_first))
     profile = build_player_profile_from_match_data(player, oldest_first, scores_by_match_player)
     econ_samples = econ_samples_from_data(match_players_newest_first)
     econ_aggregates = compute_econ_aggregates(econ_samples)
-    return profile, econ_aggregates
+    pistol_match_stats = compute_pistol_match_stats(match_players_newest_first)
+    return profile, econ_aggregates, pistol_match_stats
 
 
 def compute_player_views(
@@ -121,12 +127,14 @@ def compute_player_views(
 
     match_player_ids = [mp.id for mp in match_players]
     scores_by_match_player = load_impact_scores_for_match_players(db, match_player_ids)
-    profile, econ_aggregates = _build_profile_and_econ(player, match_players, scores_by_match_player)
+    profile, econ_aggregates, pistol_match_stats = _build_profile_and_econ(
+        player, match_players, scores_by_match_player
+    )
 
     return PlayerViews(
         win_stats, kill_order_weights,
         build_fight_ev_views_from_blocks(blocks, player.id, draws),
-        profile, econ_aggregates,
+        profile, econ_aggregates, pistol_match_stats,
     )
 
 
@@ -164,11 +172,13 @@ def compute_player_views_by_scope(
 
         scope_ids = {mp.id for mp in scope_match_players}
         scope_scores = {mid: s for mid, s in scores_by_match_player.items() if mid in scope_ids}
-        profile, econ_aggregates = _build_profile_and_econ(player, scope_match_players, scope_scores)
+        profile, econ_aggregates, pistol_match_stats = _build_profile_and_econ(
+            player, scope_match_players, scope_scores
+        )
 
         views[scope] = PlayerViews(
             win_stats, ko_weights,
             build_fight_ev_views_from_blocks(blocks[:n], player.id, draws),
-            profile, econ_aggregates,
+            profile, econ_aggregates, pistol_match_stats,
         )
     return views

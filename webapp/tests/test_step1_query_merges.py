@@ -37,6 +37,7 @@ def _sample_blob() -> dict:
     views = PlayerViews(
         win_stats={}, kill_order_weights={}, fight_ev=fight_ev,
         profile=profile, econ_aggregates={"tier_pairs": {}, "pistol": {"win": 0, "total": 0, "ratio_sum": 0.0, "ratio_count": 0}, "loadout_buckets": {}},
+        pistol_match_stats={"single_total": 0, "single_wins": 0, "double_total": 0, "double_wins": 0},
     )
     return _encode(views)
 

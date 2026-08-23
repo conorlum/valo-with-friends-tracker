@@ -94,13 +94,17 @@ def _sample_econ_aggregates() -> dict:
     }
 
 
+def _sample_pistol_match_stats() -> dict:
+    return {"single_total": 3, "single_wins": 2, "double_total": 1, "double_wins": 1}
+
+
 def _sample_views(player_id: int = 1) -> PlayerViews:
     fight_ev = build_fight_ev_views_from_blocks([], player_id, draws=10)
     win_stats = {"5v5": {"win": 12, "total": 30}, "5v4": {"win": 3, "total": 4}}
     kill_order_weights = {("5v5", "5v4"): 7, ("5v5", "4v5"): -9}
     return PlayerViews(
         win_stats, kill_order_weights, fight_ev,
-        _sample_profile(player_id), _sample_econ_aggregates(),
+        _sample_profile(player_id), _sample_econ_aggregates(), _sample_pistol_match_stats(),
     )
 
 
@@ -163,6 +167,19 @@ def test_blob_round_trip_reproduces_profile():
     assert profile.agent_stats[0].key == "Jett"
     assert profile.agent_stats[0].matches_played == 2
     assert profile.map_stats[0].key == "Haven"
+
+
+def test_blob_round_trip_reproduces_pistol_match_stats():
+    views = _sample_views()
+    blob = _encode(views)
+    decoded = _decode(blob, player=Player(id=1, display_name="Foo#123"))
+
+    assert decoded.pistol_match_stats.single_total == 3
+    assert decoded.pistol_match_stats.single_wins == 2
+    assert decoded.pistol_match_stats.double_total == 1
+    assert decoded.pistol_match_stats.double_wins == 1
+    assert decoded.pistol_match_stats.single_win_pct == 2 / 3
+    assert decoded.pistol_match_stats.double_win_pct == 1.0
 
 
 def test_happy_path_blob_validates():
@@ -312,6 +329,34 @@ def test_validation_rejects_malformed_top_traded_pair():
 def test_validation_rejects_malformed_agent_counts_pair():
     blob = _encode(_sample_views())
     blob["profile"]["agent_counts"] = [["Jett", "not-a-count"]]
+    assert _validate_blob(blob) is False
+
+
+# ---------------------------------------------------------------------------
+# pistol_match_stats validation
+# ---------------------------------------------------------------------------
+
+def test_validation_rejects_missing_pistol_match_stats_key():
+    blob = _encode(_sample_views())
+    del blob["pistol_match_stats"]["single_wins"]
+    assert _validate_blob(blob) is False
+
+
+def test_validation_rejects_pistol_match_stats_wins_greater_than_total():
+    blob = _encode(_sample_views())
+    blob["pistol_match_stats"]["double_wins"] = 99
+    assert _validate_blob(blob) is False
+
+
+def test_validation_rejects_negative_pistol_match_stats_count():
+    blob = _encode(_sample_views())
+    blob["pistol_match_stats"]["single_total"] = -1
+    assert _validate_blob(blob) is False
+
+
+def test_validation_rejects_missing_pistol_match_stats_top_level_key():
+    blob = _encode(_sample_views())
+    del blob["pistol_match_stats"]
     assert _validate_blob(blob) is False
 
 
