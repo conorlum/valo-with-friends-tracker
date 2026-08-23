@@ -353,30 +353,43 @@ def build_pistol_stats(samples: list[EconSample]) -> PistolStats:
 
 @dataclass
 class PistolMatchStats:
-    """Presentation for "pistol round win -> match win" and "won both
-    pistols -> match win", built from app.services.player_profile_types.
-    compute_pistol_match_stats's canonical aggregate."""
+    """Presentation for the "pistols won -> match win" stat -- three
+    mutually-exclusive buckets by how many of the two pistol rounds this
+    player's team won in a match (0/1/2), built from app.services.
+    player_profile_types.compute_pistol_match_stats's canonical aggregate."""
 
-    single_wins: int
-    single_total: int
-    single_win_pct: float | None
-    single_fill: str
-    double_wins: int
-    double_total: int
-    double_win_pct: float | None
-    double_fill: str
+    lost_both_wins: int
+    lost_both_total: int
+    lost_both_win_pct: float | None
+    lost_both_fill: str
+    won_one_wins: int
+    won_one_total: int
+    won_one_win_pct: float | None
+    won_one_fill: str
+    won_both_wins: int
+    won_both_total: int
+    won_both_win_pct: float | None
+    won_both_fill: str
+
+
+def _pistol_match_bucket_fields(agg: dict[str, int], prefix: str) -> tuple[int, int, float | None, str]:
+    total, wins = agg[f"{prefix}_total"], agg[f"{prefix}_wins"]
+    pct = wins / total if total else None
+    fill = win_color(pct) if pct is not None else NO_DATA_FILL
+    return wins, total, pct, fill
 
 
 def build_pistol_match_stats_from_aggregates(agg: dict[str, int]) -> PistolMatchStats:
-    single_total, single_wins = agg["single_total"], agg["single_wins"]
-    double_total, double_wins = agg["double_total"], agg["double_wins"]
-    single_pct = single_wins / single_total if single_total else None
-    double_pct = double_wins / double_total if double_total else None
+    lost_both_wins, lost_both_total, lost_both_pct, lost_both_fill = _pistol_match_bucket_fields(agg, "lost_both")
+    won_one_wins, won_one_total, won_one_pct, won_one_fill = _pistol_match_bucket_fields(agg, "won_one")
+    won_both_wins, won_both_total, won_both_pct, won_both_fill = _pistol_match_bucket_fields(agg, "won_both")
     return PistolMatchStats(
-        single_wins=single_wins, single_total=single_total, single_win_pct=single_pct,
-        single_fill=win_color(single_pct) if single_pct is not None else NO_DATA_FILL,
-        double_wins=double_wins, double_total=double_total, double_win_pct=double_pct,
-        double_fill=win_color(double_pct) if double_pct is not None else NO_DATA_FILL,
+        lost_both_wins=lost_both_wins, lost_both_total=lost_both_total,
+        lost_both_win_pct=lost_both_pct, lost_both_fill=lost_both_fill,
+        won_one_wins=won_one_wins, won_one_total=won_one_total,
+        won_one_win_pct=won_one_pct, won_one_fill=won_one_fill,
+        won_both_wins=won_both_wins, won_both_total=won_both_total,
+        won_both_win_pct=won_both_pct, won_both_fill=won_both_fill,
     )
 
 

@@ -165,24 +165,54 @@ def _match_player_with_pistol_rounds(
     return mp
 
 
-def test_pistol_match_stats_counts_a_single_pistol_win_into_a_match_win():
+_EMPTY_PISTOL_MATCH_STATS = {
+    "lost_both_total": 0, "lost_both_wins": 0,
+    "won_one_total": 0, "won_one_wins": 0,
+    "won_both_total": 0, "won_both_wins": 0,
+}
+
+
+def test_pistol_match_stats_buckets_a_lost_both_win_into_lost_both():
+    mp = _match_player_with_pistol_rounds(
+        round1_won=False, round13_won=False, team1_rounds_won=13, team2_rounds_won=7,
+    )
+
+    stats = compute_pistol_match_stats([mp])
+
+    assert stats == {**_EMPTY_PISTOL_MATCH_STATS, "lost_both_total": 1, "lost_both_wins": 1}
+
+
+def test_pistol_match_stats_buckets_a_single_pistol_win_into_won_one():
     mp = _match_player_with_pistol_rounds(
         round1_won=True, round13_won=False, team1_rounds_won=13, team2_rounds_won=7,
     )
 
     stats = compute_pistol_match_stats([mp])
 
-    assert stats == {"single_total": 1, "single_wins": 1, "double_total": 0, "double_wins": 0}
+    assert stats == {**_EMPTY_PISTOL_MATCH_STATS, "won_one_total": 1, "won_one_wins": 1}
 
 
-def test_pistol_match_stats_counts_double_pistol_win_into_a_match_win():
+def test_pistol_match_stats_buckets_the_other_single_pistol_win_into_won_one_too():
+    """round13_won=True, round1_won=False should land in the SAME bucket as
+    round1_won=True, round13_won=False -- won_one only counts HOW MANY
+    pistols were won, not which one."""
+    mp = _match_player_with_pistol_rounds(
+        round1_won=False, round13_won=True, team1_rounds_won=13, team2_rounds_won=7,
+    )
+
+    stats = compute_pistol_match_stats([mp])
+
+    assert stats == {**_EMPTY_PISTOL_MATCH_STATS, "won_one_total": 1, "won_one_wins": 1}
+
+
+def test_pistol_match_stats_buckets_a_double_pistol_win_into_won_both():
     mp = _match_player_with_pistol_rounds(
         round1_won=True, round13_won=True, team1_rounds_won=13, team2_rounds_won=7,
     )
 
     stats = compute_pistol_match_stats([mp])
 
-    assert stats == {"single_total": 2, "single_wins": 2, "double_total": 1, "double_wins": 1}
+    assert stats == {**_EMPTY_PISTOL_MATCH_STATS, "won_both_total": 1, "won_both_wins": 1}
 
 
 def test_pistol_match_stats_counts_a_pistol_win_followed_by_a_match_loss():
@@ -192,7 +222,17 @@ def test_pistol_match_stats_counts_a_pistol_win_followed_by_a_match_loss():
 
     stats = compute_pistol_match_stats([mp])
 
-    assert stats == {"single_total": 1, "single_wins": 0, "double_total": 0, "double_wins": 0}
+    assert stats == {**_EMPTY_PISTOL_MATCH_STATS, "won_one_total": 1, "won_one_wins": 0}
+
+
+def test_pistol_match_stats_counts_a_lost_both_pistols_match_loss():
+    mp = _match_player_with_pistol_rounds(
+        round1_won=False, round13_won=False, team1_rounds_won=7, team2_rounds_won=13,
+    )
+
+    stats = compute_pistol_match_stats([mp])
+
+    assert stats == {**_EMPTY_PISTOL_MATCH_STATS, "lost_both_total": 1, "lost_both_wins": 0}
 
 
 def test_pistol_match_stats_excludes_a_tied_match():
@@ -202,24 +242,17 @@ def test_pistol_match_stats_excludes_a_tied_match():
 
     stats = compute_pistol_match_stats([mp])
 
-    assert stats == {"single_total": 0, "single_wins": 0, "double_total": 0, "double_wins": 0}
+    assert stats == _EMPTY_PISTOL_MATCH_STATS
 
 
-def test_pistol_match_stats_excludes_a_pistol_round_with_no_outcome():
+def test_pistol_match_stats_excludes_a_match_with_one_pistol_round_missing_its_outcome():
+    """With only two rounds to place, a missing outcome makes the bucket
+    AMBIGUOUS (could be 1 or 2 pistols won), not just incomplete -- so the
+    whole match is excluded rather than guessed at."""
     mp = _match_player_with_pistol_rounds(
         round1_won=True, round13_won=None, team1_rounds_won=13, team2_rounds_won=7,
     )
 
     stats = compute_pistol_match_stats([mp])
 
-    assert stats == {"single_total": 1, "single_wins": 1, "double_total": 0, "double_wins": 0}
-
-
-def test_pistol_match_stats_does_not_double_count_a_losing_pistol_round():
-    mp = _match_player_with_pistol_rounds(
-        round1_won=False, round13_won=True, team1_rounds_won=13, team2_rounds_won=7,
-    )
-
-    stats = compute_pistol_match_stats([mp])
-
-    assert stats == {"single_total": 1, "single_wins": 1, "double_total": 0, "double_wins": 0}
+    assert stats == _EMPTY_PISTOL_MATCH_STATS
