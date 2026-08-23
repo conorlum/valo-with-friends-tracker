@@ -10,10 +10,9 @@ from app.db import SessionLocal, get_db
 from app.models import Player
 from app.services.auth import SESSION_KEY
 from app.services.economy_graphs import (
-    build_loadout_win_scatter,
-    build_pistol_stats,
-    build_tier_matrix,
-    player_econ_samples,
+    build_loadout_win_scatter_from_aggregates,
+    build_pistol_stats_from_aggregates,
+    build_tier_matrix_from_aggregates,
 )
 from app.services.fight_ev import PAGE_BOOTSTRAP_DRAWS, serialize_fight_ev_views
 from app.services.friends import get_current_player_and_friendship
@@ -22,7 +21,7 @@ from app.services.player_data import RECENT_MATCH_LIMIT
 from app.services.player_graphs import build_state_diagrams_from_aggregates, top_kill_order_state_deltas
 from app.services.player_view_cache import CachedPlayerViews, store_player_views
 from app.services.player_views import PlayerViews, compute_player_views
-from app.services.players import get_player_and_cached_views, get_player_profile, list_players
+from app.services.players import get_player_and_cached_views, list_players
 from app.services.request_trace import get_current_trace, log_trace, span, start_trace, submit_traced
 from app.templates import match_label, templates
 
@@ -35,12 +34,15 @@ _T = TypeVar("_T")
 
 def _run_in_own_session(fn, *args, _trace_phase: str | None = None, **kwargs):
     """Runs `fn(session, *args, **kwargs)` on a fresh session/connection of its
-    own. The independent queries this backs (player profile, state diagrams,
-    econ samples, fight-EV, map streaks) don't share any mutable state, so
-    giving each its own connection lets them go out over the wire concurrently
-    instead of paying round-trip latency to the DB one at a time -- on a
-    latency-heavy connection (e.g. Neon from a dev machine) that serial chain
-    of ~20 queries dominates page load far more than any of the CPU work.
+    own. What this backs today -- map streaks, the write-through after a
+    cache miss -- doesn't share any mutable state with the request session,
+    so giving each its own connection lets it go out over the wire
+    independently instead of paying round-trip latency to the DB serially --
+    on a latency-heavy connection (e.g. Neon from a dev machine) that adds up
+    fast. (Profile and econ used to run through here too, each as their own
+    independent query thread -- Step 2, docs/player_page_render_speed.txt,
+    retired both: they're now either read straight off the cache or produced
+    by compute_player_views's single shared load, on the request thread.)
 
     `_trace_phase`, if given, wraps the call in a Step 0 instrumentation span
     tagged with that phase (see app.services.request_trace) -- purely
@@ -68,9 +70,16 @@ def _build_profile_context(
     result (Step 1 merges its lookup with the player lookup one level up, in
     the router -- see get_player_and_cached_views) rather than queried here.
 
+    Since Step 2, `cached` (or, on a miss, `compute_player_views`) supplies
+    the profile and econ aggregates too -- threads A (get_player_profile) and
+    B (player_econ_samples) are GONE from this function entirely, on both the
+    hit and the miss path. The ONLY worker this executor ever fans out to now
+    is map_streaks (Step 4 territory); Step 2's own invariant is to narrow
+    this fan-out, not add to it.
+
     `extra_work`, if given, runs on the REQUEST thread but INSIDE the
     ThreadPoolExecutor `with` block below -- i.e. concurrently with the
-    submitted futures, the same way the live-compute branch already
+    submitted future(s), the same way the live-compute branch already
     overlaps them on a cache miss. This is how Step 1(b)'s auth/friendship
     lookup gets run "off the critical path" without widening the executor's
     own fan-out or handing the request Session to another thread."""
@@ -80,15 +89,7 @@ def _build_profile_context(
         trace.tags["cache_hit"] = cached is not None
     computed: PlayerViews | None = None
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        profile_future = submit_traced(
-            executor, _run_in_own_session, get_player_profile, player,
-            match_limit=match_limit, _trace_phase="executor:profile",
-        )
-        econ_future = submit_traced(
-            executor, _run_in_own_session, player_econ_samples, player,
-            match_limit=match_limit, _trace_phase="executor:econ",
-        )
+    with ThreadPoolExecutor(max_workers=1) as executor:
         map_streaks_future = (
             submit_traced(
                 executor, _run_in_own_session, compute_map_streaks, player.id,
@@ -101,26 +102,35 @@ def _build_profile_context(
             round_win_graph = cached.round_win_graph
             kill_order_graph = cached.kill_order_graph
             fight_ev_data = cached.fight_ev_data
+            profile = cached.profile
+            econ_tier_matrix = cached.econ_tier_matrix
+            econ_pistol_stats = cached.econ_pistol_stats
+            econ_loadout_scatter = cached.econ_loadout_scatter
         else:
             # Cache miss: full live compute on this thread, overlapped with
-            # the futures above. Tagged as an "executor:" phase (even though
-            # it runs on the request thread, not a submitted task) because it
-            # genuinely overlaps the fan-out above and must be counted in the
-            # same max() as the other concurrent chains, not added serially.
+            # the future(s) above. Tagged as an "executor:" phase (even
+            # though it runs on the request thread, not a submitted task)
+            # because it genuinely overlaps the fan-out above and must be
+            # counted in the same max() as the other concurrent chains, not
+            # added serially.
             with span("live_compute", phase="executor:main_thread_live_compute"):
                 computed = compute_player_views(db, player, match_limit, PAGE_BOOTSTRAP_DRAWS)
                 round_win_graph, kill_order_graph = build_state_diagrams_from_aggregates(
                     computed.win_stats, computed.kill_order_weights
                 )
                 fight_ev_data = serialize_fight_ev_views(computed.fight_ev)
+                profile = computed.profile
+                econ_tier_matrix = build_tier_matrix_from_aggregates(computed.econ_aggregates["tier_pairs"])
+                econ_pistol_stats = build_pistol_stats_from_aggregates(computed.econ_aggregates["pistol"])
+                econ_loadout_scatter = build_loadout_win_scatter_from_aggregates(
+                    computed.econ_aggregates["loadout_buckets"]
+                )
 
         extra_result: _T | None = None
         if extra_work is not None:
             with span("auth_and_friends", phase="executor:auth_friends"):
                 extra_result = extra_work()
 
-        profile = profile_future.result()
-        econ_samples = econ_future.result()
         map_streaks = map_streaks_future.result() if map_streaks_future is not None else None
 
     if computed is not None:
@@ -153,9 +163,6 @@ def _build_profile_context(
         "death_impact": [s.average_death_impact for s in profile.map_stats],
     }
     top_kill_differentials, top_death_differentials = top_kill_order_state_deltas(kill_order_graph)
-    econ_tier_matrix = build_tier_matrix(econ_samples)
-    econ_pistol_stats = build_pistol_stats(econ_samples)
-    econ_loadout_scatter = build_loadout_win_scatter(econ_samples)
 
     context = {
         "profile": profile,

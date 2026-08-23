@@ -188,10 +188,28 @@ def session_econ_samples(matches: list[Match], team_by_match: dict[int, str]) ->
     return samples
 
 
+def econ_samples_from_data(match_players: list[MatchPlayer]) -> list[EconSample]:
+    """Same output as player_econ_samples, but sourced from
+    app.services.player_data.load_player_match_data's shared hydration
+    (Match.rounds.player_stats + Match.match_players, both already
+    eager-loaded there since Step 2) instead of issuing its own query. Used
+    by the player_view_cache write path so econ-sample building shares ONE
+    load with profile + state-diagram + fight-EV instead of a second,
+    independent replay."""
+    samples: list[EconSample] = []
+    for mp in match_players:
+        raw = _match_raw_econ_rounds(mp.match)
+        samples.extend(_samples_from_raw(raw, mp.team))
+    return samples
+
+
 def player_econ_samples(db: Session, player: Player, match_limit: int | None = None) -> list[EconSample]:
-    """Econ samples across every round this player has played, from their own
-    team's perspective each time -- aggregated the same way build_state_diagrams
-    aggregates the kill-order/round-win diagrams."""
+    """Live per-request path: issues its own query (with its own
+    selectinloads) then delegates to econ_samples_from_data. No longer
+    called on the player page's own request path post-Step-2 (econ now
+    comes from the cache, or from econ_samples_from_data on a miss) -- kept
+    as a standalone, independently-correct function; see get_player_profile's
+    docstring for why."""
     query = (
         db.query(MatchPlayer)
         .filter_by(player_id=player.id)
@@ -204,11 +222,7 @@ def player_econ_samples(db: Session, player: Player, match_limit: int | None = N
     if match_limit is not None:
         query = query.order_by(Match.played_at.desc().nullsfirst(), Match.id.desc()).limit(match_limit)
 
-    samples: list[EconSample] = []
-    for mp in query.all():
-        raw = _match_raw_econ_rounds(mp.match)
-        samples.extend(_samples_from_raw(raw, mp.team))
-    return samples
+    return econ_samples_from_data(query.all())
 
 
 @dataclass
@@ -230,17 +244,11 @@ class TierMatrix:
     total_rounds: int
 
 
-def build_tier_matrix(samples: list[EconSample]) -> TierMatrix:
-    """Own-tier x enemy-tier win-rate grid over the ranked buy tiers (Eco/
-    Force/Full Buy) -- needs a lot of rounds to fill in all 9 cells, so this
-    is only used where the sample is large (a player's whole match history,
-    or a multi-match session), not a single match.
-
-    Pistol rounds are excluded: a pistol round is always PISTOL vs PISTOL
-    (both teams reset on the same round number), so folding it into this
-    grid would only ever populate one row/column and leave the rest of that
-    row/column empty. build_pistol_stats covers pistol rounds separately.
-    """
+def _tier_pair_buckets(samples: list[EconSample]) -> dict[tuple[str, str], dict[str, float]]:
+    """(own_tier, enemy_tier) -> {win, total, ratio_sum, ratio_count}, pistol
+    rounds excluded from either side. The canonical aggregate cached for
+    Step 2 -- see app.services.economy_graphs.compute_econ_aggregates and
+    docs/player_page_render_speed.txt 2a."""
     buckets: dict[tuple[str, str], dict[str, float]] = {}
     for s in samples:
         if s.own_tier == "PISTOL" or s.enemy_tier == "PISTOL":
@@ -255,12 +263,19 @@ def build_tier_matrix(samples: list[EconSample]) -> TierMatrix:
         if ratio is not None:
             bucket["ratio_sum"] += ratio
             bucket["ratio_count"] += 1
+    return buckets
 
+
+def build_tier_matrix_from_aggregates(tier_pairs: dict[tuple[str, str], dict[str, float]]) -> TierMatrix:
+    """Presentation half of build_tier_matrix, taking the canonical
+    (own_tier, enemy_tier) -> {win,total,ratio_sum,ratio_count} aggregate
+    instead of raw samples -- what player_view_cache's decode calls, so a
+    fill-color or layout change never needs a cache version bump (2a)."""
     cells: dict[tuple[str, str], TierMatrixCell] = {}
     total_rounds = 0
     for own_tier in _BUY_TIERS:
         for enemy_tier in _BUY_TIERS:
-            bucket = buckets.get((own_tier, enemy_tier))
+            bucket = tier_pairs.get((own_tier, enemy_tier))
             total = bucket["total"] if bucket else 0
             total_rounds += total
             win_pct = bucket["win"] / total if total else None
@@ -277,6 +292,20 @@ def build_tier_matrix(samples: list[EconSample]) -> TierMatrix:
     return TierMatrix(tiers=_BUY_TIERS, tier_labels=TIER_LABELS, cells=cells, total_rounds=total_rounds)
 
 
+def build_tier_matrix(samples: list[EconSample]) -> TierMatrix:
+    """Own-tier x enemy-tier win-rate grid over the ranked buy tiers (Eco/
+    Force/Full Buy) -- needs a lot of rounds to fill in all 9 cells, so this
+    is only used where the sample is large (a player's whole match history,
+    or a multi-match session), not a single match.
+
+    Pistol rounds are excluded: a pistol round is always PISTOL vs PISTOL
+    (both teams reset on the same round number), so folding it into this
+    grid would only ever populate one row/column and leave the rest of that
+    row/column empty. build_pistol_stats covers pistol rounds separately.
+    """
+    return build_tier_matrix_from_aggregates(_tier_pair_buckets(samples))
+
+
 @dataclass
 class PistolStats:
     wins: int
@@ -287,17 +316,25 @@ class PistolStats:
     avg_loadout_ratio: float | None
 
 
-def build_pistol_stats(samples: list[EconSample]) -> PistolStats:
-    """Pistol-round win rate/loadout share, pulled out of the tier matrix
-    grid above since pistol rounds don't vary by buy tier."""
+def _pistol_bucket(samples: list[EconSample]) -> dict[str, float]:
+    """{win, total, ratio_sum, ratio_count} over just the PISTOL-tier
+    samples. The canonical aggregate cached for Step 2 (2a)."""
     pistol_samples = [s for s in samples if s.own_tier == "PISTOL"]
     total = len(pistol_samples)
     wins = sum(1 for s in pistol_samples if s.own_won)
-    win_pct = wins / total if total else None
     ratios = [
         r for r in (_loadout_ratio(s.own_loadout, s.enemy_loadout) for s in pistol_samples) if r is not None
     ]
-    avg_ratio = sum(ratios) / len(ratios) if ratios else None
+    return {"win": wins, "total": total, "ratio_sum": sum(ratios), "ratio_count": len(ratios)}
+
+
+def build_pistol_stats_from_aggregates(pistol: dict[str, float]) -> PistolStats:
+    """Presentation half of build_pistol_stats, taking the canonical
+    {win,total,ratio_sum,ratio_count} aggregate instead of raw samples."""
+    total = pistol["total"]
+    wins = pistol["win"]
+    win_pct = wins / total if total else None
+    avg_ratio = pistol["ratio_sum"] / pistol["ratio_count"] if pistol["ratio_count"] else None
     return PistolStats(
         wins=wins,
         losses=total - wins,
@@ -306,6 +343,12 @@ def build_pistol_stats(samples: list[EconSample]) -> PistolStats:
         fill=win_color(win_pct) if win_pct is not None else NO_DATA_FILL,
         avg_loadout_ratio=avg_ratio,
     )
+
+
+def build_pistol_stats(samples: list[EconSample]) -> PistolStats:
+    """Pistol-round win rate/loadout share, pulled out of the tier matrix
+    grid above since pistol rounds don't vary by buy tier."""
+    return build_pistol_stats_from_aggregates(_pistol_bucket(samples))
 
 
 # Fixed pixel layout for the chart below -- unlike the diamond state diagrams
@@ -365,23 +408,9 @@ def _bucket_index(ratio: float) -> int:
     return min(int(ratio * 100 // _BUCKET_WIDTH_PCT), _NUM_BUCKETS - 1)
 
 
-def build_loadout_win_scatter(samples: list[EconSample]) -> LoadoutWinScatter:
-    """Win rate by own buy share, bucketed into 5-point-wide bins (0-5%,
-    5-10%, ..., 95-100%) instead of plotted per round -- own buy share is a
-    near-continuous ratio, so an exact-value grouping would mostly be groups
-    of one, and the resulting "average" would just restate each round's own
-    win/loss. Point radius scales with each bucket's round count so a
-    bucket's position reads with the confidence its sample size deserves.
-    Pistol rounds are excluded, same rationale as the tier matrix: buy tier
-    doesn't meaningfully apply to a forced-reset round.
-    """
-
-    def x_for(pct: float) -> float:
-        return _SCATTER_PLOT_LEFT + pct / 100 * (_SCATTER_PLOT_RIGHT - _SCATTER_PLOT_LEFT)
-
-    def y_for(win_pct: float) -> float:
-        return _SCATTER_PLOT_BOTTOM - win_pct * (_SCATTER_PLOT_BOTTOM - _SCATTER_PLOT_TOP)
-
+def _loadout_win_buckets(samples: list[EconSample]) -> dict[int, dict[str, int]]:
+    """bucket_index -> {win, total}, pistol rounds excluded. The canonical
+    aggregate cached for Step 2 (2a)."""
     buckets: dict[int, dict[str, int]] = {}
     for s in samples:
         if s.own_tier == "PISTOL":
@@ -393,7 +422,22 @@ def build_loadout_win_scatter(samples: list[EconSample]) -> LoadoutWinScatter:
         bucket["total"] += 1
         if s.own_won:
             bucket["win"] += 1
+    return buckets
 
+
+def build_loadout_win_scatter_from_aggregates(loadout_buckets: dict[int, dict[str, int]]) -> LoadoutWinScatter:
+    """Presentation half of build_loadout_win_scatter, taking the canonical
+    bucket_index -> {win,total} aggregate instead of raw samples -- what
+    player_view_cache's decode calls, so the fixed pixel layout/colors/ticks
+    never need a cache version bump (2a)."""
+
+    def x_for(pct: float) -> float:
+        return _SCATTER_PLOT_LEFT + pct / 100 * (_SCATTER_PLOT_RIGHT - _SCATTER_PLOT_LEFT)
+
+    def y_for(win_pct: float) -> float:
+        return _SCATTER_PLOT_BOTTOM - win_pct * (_SCATTER_PLOT_BOTTOM - _SCATTER_PLOT_TOP)
+
+    buckets = loadout_buckets
     max_total = max((b["total"] for b in buckets.values()), default=0)
     points: list[BuyBucketPoint] = []
     line_coords: list[str] = []
@@ -436,3 +480,28 @@ def build_loadout_win_scatter(samples: list[EconSample]) -> LoadoutWinScatter:
         plot_bottom=_SCATTER_PLOT_BOTTOM,
         total_rounds=total_rounds,
     )
+
+
+def build_loadout_win_scatter(samples: list[EconSample]) -> LoadoutWinScatter:
+    """Win rate by own buy share, bucketed into 5-point-wide bins (0-5%,
+    5-10%, ..., 95-100%) instead of plotted per round -- own buy share is a
+    near-continuous ratio, so an exact-value grouping would mostly be groups
+    of one, and the resulting "average" would just restate each round's own
+    win/loss. Point radius scales with each bucket's round count so a
+    bucket's position reads with the confidence its sample size deserves.
+    Pistol rounds are excluded, same rationale as the tier matrix: buy tier
+    doesn't meaningfully apply to a forced-reset round.
+    """
+    return build_loadout_win_scatter_from_aggregates(_loadout_win_buckets(samples))
+
+
+def compute_econ_aggregates(samples: list[EconSample]) -> dict:
+    """The three canonical econ aggregates Step 2 caches, computed together
+    from one samples list -- tier_pairs/pistol/loadout_buckets, each build_*
+    _from_aggregates function's counterpart above. Presentation (colors,
+    radii, SVG paths, ticks, view box) is never part of this -- see 2a."""
+    return {
+        "tier_pairs": _tier_pair_buckets(samples),
+        "pistol": _pistol_bucket(samples),
+        "loadout_buckets": _loadout_win_buckets(samples),
+    }
