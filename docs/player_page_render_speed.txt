@@ -250,6 +250,90 @@ STEP 1 -- CUT THE ROUTER'S OWN SERIAL CHAIN.  (was v1 Step 3)
   Expected effect: S 16 -> 14, C 9 -> 7, with no cache changes and no
   invalidation impact.
 
+  IMPLEMENTED 2026-08-22 (branch player-page-render-speed-step0, same branch
+  as Step 0's instrumentation and baseline):
+    (a) app.services.players.get_player_and_cached_views(db, display_name,
+        scope): Player OUTER JOIN PlayerViewCache ON (player_id, scope),
+        filtered on display_name, one round trip, returning (player,
+        decoded-or-None). The version-check/validate/decode logic that used
+        to live inside get_cached_views was extracted into a new
+        app.services.player_view_cache.decode_cache_row(row) so both the old
+        by-player_id lookup (kept, unused by the router now but not removed
+        -- no other caller needed it deleted) and this new merged lookup
+        share the exact same miss/corruption contract.
+    (b) app.services.friends.get_current_player_and_friendship(db,
+        session_player_id, target_player_id): returns (None, False) with
+        ZERO queries when there's no session (preserves the logged-out
+        short-circuit measured in Step 0's baseline), otherwise one Player
+        OUTER JOIN Friendship round trip.
+        RAN OFF THE CRITICAL PATH DIFFERENTLY THAN THE DOC'S TWO LISTED
+        OPTIONS: not "own session via _run_in_own_session" (a second
+        thread/connection) and not "on the request thread before the
+        executor block" (still serial) -- instead, _build_profile_context
+        gained an `extra_work` callable parameter that runs ON THE REQUEST
+        THREAD but INSIDE the existing ThreadPoolExecutor `with` block,
+        called right after the live_compute branch and before `.result()` is
+        awaited on the three futures -- i.e. genuinely concurrent with
+        threads A/B/C (and, on a miss, sequenced after live_compute on the
+        same thread, still within that same concurrent window), using the
+        REQUEST session (safe: only ever touched by the request thread,
+        never a worker thread). This also required Step 2c's restructuring
+        (cached now passed INTO _build_profile_context instead of queried
+        inside it) to land a step early, since extra_work has to be
+        submitted before the executor block, which is now also where the
+        merged Q1+Q2 result must already be available.
+
+  MEASURED 2026-08-22, same methodology as Step 0's baseline (Neon, one
+  uvicorn process per "cold" row):
+
+    warm hit, heavy, recent, LOGGED OUT (directly comparable to baseline):
+      before: S=14  C=0.75-0.90s  W=0.76-0.91s
+      after:  S=13  C=0.80-0.94s  W=0.80-0.94s
+      S dropped exactly by 1 as predicted (the Q1+Q2 merge; Q3/Q4 cost 0
+      either way when logged out, so change (b) is invisible in this
+      specific comparison). C/W did NOT visibly improve -- statistically
+      swallowed by run-to-run Neon latency noise (L itself ranged 77-95ms
+      across these samples), since C here is dominated by executor:profile
+      and econ (0.6-0.85s), which Step 1 does not touch. This is expected,
+      not a problem: Step 1's win on THIS specific scenario is real but
+      small relative to noise; Step 2 is what moves this row.
+
+    cold hit, heavy, recent (fresh process, K comparable):
+      before: S=14  C=1.624s  K=3  W=1.630s
+      after:  S=13  C=1.221s  K=3  W=1.226s
+      A clear, real win here (~400ms) -- the merged Q1+Q2 removes a full
+      extra round trip (and its share of that request's elevated pool-wait
+      window) from the very first request a fresh process serves.
+
+    warm hit, heavy, recent, LOGGED IN (exercises change (b) for real):
+      S=15 (14 + 1 merged auth/friends statement, vs. up to 16 -- i.e. up to
+      2 -- before), executor:auth_friends measured at 0.041-0.046s across 5
+      samples, and it is NEVER the max() of the concurrent group (profile
+      and econ, at 0.4-0.85s, always dominate) -- so it costs
+      approximately ZERO net wall time on this path, exactly as intended.
+      Before Step 1, a logged-in view of another player's profile paid Q3+Q4
+      as a fully serial +2 statements AFTER the executor block joined.
+    Functional correctness verified live against Neon: logged in, viewed a
+    profile with no friendship (Friend button rendered), added the
+    friendship (Friends badge rendered), removed it again (Friend button
+    rendered again, DB confirmed clean afterward) -- is_own_profile/is_friend
+    both correct at every step.
+
+    Also newly visible once logged in: render jumped to 0.13-0.22s (from
+    0.005-0.09s warm) -- this is Step 0's "unpredicted finding" (the
+    _inject_current_player context-processor's own, second
+    get_current_player call) firing for real now that there's a session to
+    look up. Confirms that finding was real and quantifies it: roughly
+    +100-150ms per logged-in render, not yet addressed by Step 1 or in this
+    PR's scope.
+
+  DIVERGENCE FROM THE DOC'S C PREDICTION: the doc predicted C 9 -> 7 (i.e.
+  change (b) contributing only C-1, treating the merged auth/friends
+  statement as still-serial-but-shorter). Because it actually runs
+  concurrently with A/B/C here, it contributes ~0 to C rather than 1 --
+  better than predicted, not worse. Noted per the doc's own instruction to
+  record where actual results diverge from prediction.
+
 
 STEP 2 -- EXTEND player_view_cache TO COVER THE WHOLE PAGE.  (the main event)
   Ships in ONE PR with Step 3. Goal: on a warm hit, threads A and B disappear

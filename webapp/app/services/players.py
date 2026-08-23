@@ -2,10 +2,11 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import ImpactScore, Match, MatchPlayer, Player, Round, RoundPlayerStat
+from app.models import ImpactScore, Match, MatchPlayer, Player, PlayerViewCache, Round, RoundPlayerStat
+from app.services.player_view_cache import CachedPlayerViews, decode_cache_row
 
 
 @dataclass
@@ -41,6 +42,29 @@ def get_player_or_404(db: Session, display_name: str) -> Player:
     if player is None:
         raise HTTPException(status_code=404, detail=f"No player '{display_name}'")
     return player
+
+
+def get_player_and_cached_views(
+    db: Session, display_name: str, scope: str
+) -> tuple[Player, CachedPlayerViews | None]:
+    """Merges the player-page router's Q1 (player lookup) and Q2
+    (player_view_cache lookup) into one round trip -- an OUTER join so a
+    cache miss (or no row at all) still returns the player row. Raises the
+    same 404 as get_player_or_404. See docs/player_page_render_speed.txt
+    Step 1(a)."""
+    row = (
+        db.query(Player, PlayerViewCache)
+        .outerjoin(
+            PlayerViewCache,
+            and_(PlayerViewCache.player_id == Player.id, PlayerViewCache.scope == scope),
+        )
+        .filter(Player.display_name == display_name)
+        .one_or_none()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No player '{display_name}'")
+    player, cache_row = row
+    return player, decode_cache_row(cache_row)
 
 
 def _winner_side(outcome: str | None) -> str | None:

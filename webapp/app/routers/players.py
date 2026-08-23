@@ -1,12 +1,14 @@
 import logging
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from typing import TypeVar
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, get_db
 from app.models import Player
-from app.services.auth import get_current_player
+from app.services.auth import SESSION_KEY
 from app.services.economy_graphs import (
     build_loadout_win_scatter,
     build_pistol_stats,
@@ -14,19 +16,21 @@ from app.services.economy_graphs import (
     player_econ_samples,
 )
 from app.services.fight_ev import PAGE_BOOTSTRAP_DRAWS, serialize_fight_ev_views
-from app.services.friends import list_friend_ids
+from app.services.friends import get_current_player_and_friendship
 from app.services.map_streaks import compute_map_streaks
 from app.services.player_data import RECENT_MATCH_LIMIT
 from app.services.player_graphs import build_state_diagrams_from_aggregates, top_kill_order_state_deltas
-from app.services.player_view_cache import get_cached_views, store_player_views
+from app.services.player_view_cache import CachedPlayerViews, store_player_views
 from app.services.player_views import PlayerViews, compute_player_views
-from app.services.players import get_player_or_404, get_player_profile, list_players
+from app.services.players import get_player_and_cached_views, get_player_profile, list_players
 from app.services.request_trace import get_current_trace, log_trace, span, start_trace, submit_traced
 from app.templates import match_label, templates
 
 router = APIRouter(prefix="/players", tags=["players"])
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 
 def _run_in_own_session(fn, *args, _trace_phase: str | None = None, **kwargs):
@@ -56,12 +60,21 @@ def _run_in_own_session(fn, *args, _trace_phase: str | None = None, **kwargs):
 
 
 def _build_profile_context(
-    db: Session, player: Player, match_limit: int | None, scope: str, *, include_map_streaks: bool = False
-) -> dict:
-    trace = get_current_trace()
+    db: Session, player: Player, match_limit: int | None, scope: str, *,
+    cached: CachedPlayerViews | None, include_map_streaks: bool = False,
+    extra_work: Callable[[], _T] | None = None,
+) -> tuple[dict, _T | None]:
+    """Builds the profile-page context. `cached` is the ALREADY-FETCHED cache
+    result (Step 1 merges its lookup with the player lookup one level up, in
+    the router -- see get_player_and_cached_views) rather than queried here.
 
-    with span("cache_lookup", phase="pre_executor"):
-        cached = get_cached_views(db, player.id, scope)
+    `extra_work`, if given, runs on the REQUEST thread but INSIDE the
+    ThreadPoolExecutor `with` block below -- i.e. concurrently with the
+    submitted futures, the same way the live-compute branch already
+    overlaps them on a cache miss. This is how Step 1(b)'s auth/friendship
+    lookup gets run "off the critical path" without widening the executor's
+    own fan-out or handing the request Session to another thread."""
+    trace = get_current_trace()
     if trace is not None:
         trace.tags["scope"] = scope
         trace.tags["cache_hit"] = cached is not None
@@ -100,6 +113,11 @@ def _build_profile_context(
                     computed.win_stats, computed.kill_order_weights
                 )
                 fight_ev_data = serialize_fight_ev_views(computed.fight_ev)
+
+        extra_result: _T | None = None
+        if extra_work is not None:
+            with span("auth_and_friends", phase="executor:auth_friends"):
+                extra_result = extra_work()
 
         profile = profile_future.result()
         econ_samples = econ_future.result()
@@ -156,7 +174,7 @@ def _build_profile_context(
     }
     if include_map_streaks:
         context["map_streaks"] = map_streaks
-    return context
+    return context, extra_result
 
 
 @router.get("")
@@ -170,23 +188,27 @@ def player_detail(request: Request, display_name: str, db: Session = Depends(get
     trace = start_trace(f"players.detail:{display_name}", endpoint="detail")
     try:
         with span("player_lookup", phase="pre_executor"):
-            player = get_player_or_404(db, display_name)
+            player, cached = get_player_and_cached_views(db, display_name, "recent")
+
+        session_player_id = request.session.get(SESSION_KEY)
+
+        def _auth_and_friends():
+            return get_current_player_and_friendship(db, session_player_id, player.id)
+
         # Map streaks aren't scoped by match_limit (their own windowing logic already
         # bounds itself to the current pool era) and aren't part of the recent/career
         # toggle -- computed here (rather than always in the shared context builder)
         # so the career fragment endpoint below doesn't redundantly recompute it.
-        context = _build_profile_context(
-            db, player, match_limit=RECENT_MATCH_LIMIT, scope="recent", include_map_streaks=True
+        # _auth_and_friends is passed in (rather than run after context = ... returns)
+        # so it executes ON the request thread but INSIDE _build_profile_context's
+        # ThreadPoolExecutor block -- concurrently with the submitted futures,
+        # off the critical path, per Step 1(b).
+        context, (current_player, is_friend) = _build_profile_context(
+            db, player, match_limit=RECENT_MATCH_LIMIT, scope="recent",
+            cached=cached, include_map_streaks=True, extra_work=_auth_and_friends,
         )
-
-        with span("auth_and_friends", phase="post_query"):
-            current_player = get_current_player(request, db)
-            context["is_own_profile"] = current_player is not None and current_player.id == player.id
-            context["is_friend"] = (
-                current_player is not None
-                and current_player.id != player.id
-                and player.id in list_friend_ids(db, current_player.id)
-            )
+        context["is_own_profile"] = current_player is not None and current_player.id == player.id
+        context["is_friend"] = is_friend
 
         with span("template_render", phase="render"):
             response = templates.TemplateResponse(request, "players/detail.html", context)
@@ -200,8 +222,8 @@ def player_career_fragment(request: Request, display_name: str, db: Session = De
     trace = start_trace(f"players.career:{display_name}", endpoint="career")
     try:
         with span("player_lookup", phase="pre_executor"):
-            player = get_player_or_404(db, display_name)
-        context = _build_profile_context(db, player, match_limit=None, scope="career")
+            player, cached = get_player_and_cached_views(db, display_name, "career")
+        context, _ = _build_profile_context(db, player, match_limit=None, scope="career", cached=cached)
         with span("template_render", phase="render"):
             response = templates.TemplateResponse(request, "players/_profile_sections.html", context)
         return response

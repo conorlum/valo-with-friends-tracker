@@ -1,9 +1,37 @@
 from dataclasses import dataclass
 
-from sqlalchemy import func
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session, aliased
 
 from app.models import Friendship, MatchPlayer, Player
+
+
+def get_current_player_and_friendship(
+    db: Session, session_player_id: int | None, target_player_id: int
+) -> tuple[Player | None, bool]:
+    """Merges the player-page router's Q3 (get_current_player) and Q4
+    (list_friend_ids, narrowed to just the one relationship the page needs)
+    into one round trip -- an OUTER join so "not a friend" still returns the
+    session player row. Returns (None, False) with NO query at all when
+    there's no session, matching app.services.auth.get_current_player's own
+    short-circuit for a logged-out visitor. See docs/
+    player_page_render_speed.txt Step 1(b)."""
+    if session_player_id is None:
+        return None, False
+    row = (
+        db.query(Player, Friendship)
+        .outerjoin(
+            Friendship,
+            and_(Friendship.owner_player_id == Player.id, Friendship.friend_player_id == target_player_id),
+        )
+        .filter(Player.id == session_player_id)
+        .one_or_none()
+    )
+    if row is None:
+        return None, False
+    current_player, friendship = row
+    is_friend = friendship is not None and current_player.id != target_player_id
+    return current_player, is_friend
 
 
 def list_friend_ids(db: Session, owner_player_id: int) -> set[int]:

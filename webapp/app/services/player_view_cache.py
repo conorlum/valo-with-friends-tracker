@@ -174,14 +174,15 @@ def _decode(blob: dict) -> CachedPlayerViews:
     return CachedPlayerViews(round_win_graph, kill_order_graph, blob["fight_ev"])
 
 
-def get_cached_views(db: Session, player_id: int, scope: str) -> CachedPlayerViews | None:
-    """Cache miss, version mismatch, or any validation/decode failure ->
-    None (the caller then computes live). Failures are logged, never
-    raised: a corrupt blob must not turn into a 500, and must not reach
-    the template either. Rebuilds the StateDiagrams via
-    build_state_diagrams_from_aggregates so presentation changes never
-    need a cache bump."""
-    row = db.query(PlayerViewCache).filter_by(player_id=player_id, scope=scope).one_or_none()
+def decode_cache_row(row: PlayerViewCache | None) -> CachedPlayerViews | None:
+    """Version-check + validate + decode an ALREADY-FETCHED player_view_cache
+    row (or None). Factored out of get_cached_views so a caller that already
+    has the row -- e.g. from a merged player+cache lookup query (see
+    app.services.players.get_player_and_cached_views, docs/
+    player_page_render_speed.txt Step 1) -- doesn't need a second round trip
+    just to validate/decode it. Same miss/corruption contract as
+    get_cached_views: never raises, a bad row degrades to None (live
+    recompute), never a 500 and never reaches the template."""
     if row is None:
         return None
     if row.version != cache_version():
@@ -191,8 +192,19 @@ def get_cached_views(db: Session, player_id: int, scope: str) -> CachedPlayerVie
             return None
         return _decode(row.data)
     except Exception:
-        logger.exception("player_view_cache: decode failed for player %s scope %s", player_id, scope)
+        logger.exception("player_view_cache: decode failed for player %s scope %s", row.player_id, row.scope)
         return None
+
+
+def get_cached_views(db: Session, player_id: int, scope: str) -> CachedPlayerViews | None:
+    """Cache miss, version mismatch, or any validation/decode failure ->
+    None (the caller then computes live). Failures are logged, never
+    raised: a corrupt blob must not turn into a 500, and must not reach
+    the template either. Rebuilds the StateDiagrams via
+    build_state_diagrams_from_aggregates so presentation changes never
+    need a cache bump."""
+    row = db.query(PlayerViewCache).filter_by(player_id=player_id, scope=scope).one_or_none()
+    return decode_cache_row(row)
 
 
 def _upsert_cache(db: Session, player_id: int, scope: str, data: dict) -> None:
