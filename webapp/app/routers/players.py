@@ -21,6 +21,7 @@ from app.services.player_graphs import build_state_diagrams_from_aggregates, top
 from app.services.player_view_cache import get_cached_views, store_player_views
 from app.services.player_views import PlayerViews, compute_player_views
 from app.services.players import get_player_or_404, get_player_profile, list_players
+from app.services.request_trace import get_current_trace, log_trace, span, start_trace, submit_traced
 from app.templates import match_label, templates
 
 router = APIRouter(prefix="/players", tags=["players"])
@@ -28,36 +29,59 @@ router = APIRouter(prefix="/players", tags=["players"])
 logger = logging.getLogger(__name__)
 
 
-def _run_in_own_session(fn, *args, **kwargs):
+def _run_in_own_session(fn, *args, _trace_phase: str | None = None, **kwargs):
     """Runs `fn(session, *args, **kwargs)` on a fresh session/connection of its
     own. The independent queries this backs (player profile, state diagrams,
     econ samples, fight-EV, map streaks) don't share any mutable state, so
     giving each its own connection lets them go out over the wire concurrently
     instead of paying round-trip latency to the DB one at a time -- on a
     latency-heavy connection (e.g. Neon from a dev machine) that serial chain
-    of ~20 queries dominates page load far more than any of the CPU work."""
-    session = SessionLocal()
-    try:
-        return fn(session, *args, **kwargs)
-    finally:
-        session.close()
+    of ~20 queries dominates page load far more than any of the CPU work.
+
+    `_trace_phase`, if given, wraps the call in a Step 0 instrumentation span
+    tagged with that phase (see app.services.request_trace) -- purely
+    diagnostic, changes no behavior."""
+
+    def _call():
+        session = SessionLocal()
+        try:
+            return fn(session, *args, **kwargs)
+        finally:
+            session.close()
+
+    if _trace_phase is None:
+        return _call()
+    with span(f"executor:{fn.__name__}", phase=_trace_phase):
+        return _call()
 
 
 def _build_profile_context(
     db: Session, player: Player, match_limit: int | None, scope: str, *, include_map_streaks: bool = False
 ) -> dict:
-    cached = get_cached_views(db, player.id, scope)
+    trace = get_current_trace()
+
+    with span("cache_lookup", phase="pre_executor"):
+        cached = get_cached_views(db, player.id, scope)
+    if trace is not None:
+        trace.tags["scope"] = scope
+        trace.tags["cache_hit"] = cached is not None
     computed: PlayerViews | None = None
 
     with ThreadPoolExecutor(max_workers=3) as executor:
-        profile_future = executor.submit(
-            _run_in_own_session, get_player_profile, player, match_limit=match_limit
+        profile_future = submit_traced(
+            executor, _run_in_own_session, get_player_profile, player,
+            match_limit=match_limit, _trace_phase="executor:profile",
         )
-        econ_future = executor.submit(
-            _run_in_own_session, player_econ_samples, player, match_limit=match_limit
+        econ_future = submit_traced(
+            executor, _run_in_own_session, player_econ_samples, player,
+            match_limit=match_limit, _trace_phase="executor:econ",
         )
         map_streaks_future = (
-            executor.submit(_run_in_own_session, compute_map_streaks, player.id) if include_map_streaks else None
+            submit_traced(
+                executor, _run_in_own_session, compute_map_streaks, player.id,
+                _trace_phase="executor:map_streaks",
+            )
+            if include_map_streaks else None
         )
 
         if cached is not None:
@@ -66,12 +90,16 @@ def _build_profile_context(
             fight_ev_data = cached.fight_ev_data
         else:
             # Cache miss: full live compute on this thread, overlapped with
-            # the futures above.
-            computed = compute_player_views(db, player, match_limit, PAGE_BOOTSTRAP_DRAWS)
-            round_win_graph, kill_order_graph = build_state_diagrams_from_aggregates(
-                computed.win_stats, computed.kill_order_weights
-            )
-            fight_ev_data = serialize_fight_ev_views(computed.fight_ev)
+            # the futures above. Tagged as an "executor:" phase (even though
+            # it runs on the request thread, not a submitted task) because it
+            # genuinely overlaps the fan-out above and must be counted in the
+            # same max() as the other concurrent chains, not added serially.
+            with span("live_compute", phase="executor:main_thread_live_compute"):
+                computed = compute_player_views(db, player, match_limit, PAGE_BOOTSTRAP_DRAWS)
+                round_win_graph, kill_order_graph = build_state_diagrams_from_aggregates(
+                    computed.win_stats, computed.kill_order_weights
+                )
+                fight_ev_data = serialize_fight_ev_views(computed.fight_ev)
 
         profile = profile_future.result()
         econ_samples = econ_future.result()
@@ -82,7 +110,10 @@ def _build_profile_context(
         # request session here would expire `player` and every other ORM
         # object the caller still uses. Failure is non-fatal.
         try:
-            _run_in_own_session(store_player_views, player.id, {scope: computed})
+            _run_in_own_session(
+                store_player_views, player.id, {scope: computed},
+                _trace_phase="post_executor_writethrough",
+            )
         except Exception:
             logger.exception("Cache write-through failed for player %s (%s)", player.id, scope)
 
@@ -136,25 +167,43 @@ def player_list(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/{display_name}")
 def player_detail(request: Request, display_name: str, db: Session = Depends(get_db)):
-    player = get_player_or_404(db, display_name)
-    # Map streaks aren't scoped by match_limit (their own windowing logic already
-    # bounds itself to the current pool era) and aren't part of the recent/career
-    # toggle -- computed here (rather than always in the shared context builder)
-    # so the career fragment endpoint below doesn't redundantly recompute it.
-    context = _build_profile_context(db, player, match_limit=RECENT_MATCH_LIMIT, scope="recent", include_map_streaks=True)
+    trace = start_trace(f"players.detail:{display_name}", endpoint="detail")
+    try:
+        with span("player_lookup", phase="pre_executor"):
+            player = get_player_or_404(db, display_name)
+        # Map streaks aren't scoped by match_limit (their own windowing logic already
+        # bounds itself to the current pool era) and aren't part of the recent/career
+        # toggle -- computed here (rather than always in the shared context builder)
+        # so the career fragment endpoint below doesn't redundantly recompute it.
+        context = _build_profile_context(
+            db, player, match_limit=RECENT_MATCH_LIMIT, scope="recent", include_map_streaks=True
+        )
 
-    current_player = get_current_player(request, db)
-    context["is_own_profile"] = current_player is not None and current_player.id == player.id
-    context["is_friend"] = (
-        current_player is not None
-        and current_player.id != player.id
-        and player.id in list_friend_ids(db, current_player.id)
-    )
-    return templates.TemplateResponse(request, "players/detail.html", context)
+        with span("auth_and_friends", phase="post_query"):
+            current_player = get_current_player(request, db)
+            context["is_own_profile"] = current_player is not None and current_player.id == player.id
+            context["is_friend"] = (
+                current_player is not None
+                and current_player.id != player.id
+                and player.id in list_friend_ids(db, current_player.id)
+            )
+
+        with span("template_render", phase="render"):
+            response = templates.TemplateResponse(request, "players/detail.html", context)
+        return response
+    finally:
+        log_trace(trace)
 
 
 @router.get("/{display_name}/career")
 def player_career_fragment(request: Request, display_name: str, db: Session = Depends(get_db)):
-    player = get_player_or_404(db, display_name)
-    context = _build_profile_context(db, player, match_limit=None, scope="career")
-    return templates.TemplateResponse(request, "players/_profile_sections.html", context)
+    trace = start_trace(f"players.career:{display_name}", endpoint="career")
+    try:
+        with span("player_lookup", phase="pre_executor"):
+            player = get_player_or_404(db, display_name)
+        context = _build_profile_context(db, player, match_limit=None, scope="career")
+        with span("template_render", phase="render"):
+            response = templates.TemplateResponse(request, "players/_profile_sections.html", context)
+        return response
+    finally:
+        log_trace(trace)

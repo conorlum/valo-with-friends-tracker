@@ -1,0 +1,744 @@
+PLAYER PAGE RENDER SPEED - PHASE 2 PLAN (v2, second review incorporated)
+========================================================================
+Goal: make /players/{name} appear faster, primarily by cutting the DB work and
+the serial DB round trips the initial route costs against Neon.
+
+This document is ordered as the OPTIMIZATION SEQUENCE. Each step states what it
+changes, what it is expected to buy, how it is proved, and what would make it
+not worth doing. Every "expected effect" is a prediction to be checked against
+Step 0's numbers, not a claim.
+
+Read against branch `player-page-precompute-cache` (HEAD 166ef65). Every code
+reference below was verified against the current source.
+
+Prior art -- do not redo:
+  PR #26  numpy bootstrap             7.9s -> 1.2s CPU
+  PR #27  per-request thread pool     ~20 serial statements -> 3 concurrent chains
+  PR #28  SelectInLoader chunk 10k, defer(KillEvent.source_meta)
+  PR #29  player_view_cache           state diagrams + Fight-EV precomputed
+          (docs/player_page_precompute.txt)
+
+v2 changes (second review):
+  - THE BIG ONE: v1 claimed the auto-fired career request overlaps the initial
+    render and competes with it. It does not -- HTMX cannot see the trigger
+    until the initial response has reached the browser. Corrected in 1.5, and
+    the two steps that depended on it (career deferral, pool sizing) are
+    demoted from positions 1-2 to positions 5-6.
+  - The eight-connection overflow prediction in v1's 1.6 followed from that same
+    error and is withdrawn. Peak is ~4 per request, which fits the default pool.
+  - Pool sizing moved AFTER the cache work, so it is tuned once against final
+    concurrency (v1 admitted it would need retuning -- that was the tell).
+  - Step 2's write path now has an explicit query design; "+1 select-in
+    statement" was wrong (ImpactScore and teammate names are not in the shared
+    hydration).
+  - Step 2 now restructures the cache-MISS router path; without that, a miss
+    would compute profile/econ twice.
+  - Added an explicit JSON encoding + decoded-template contract (datetime,
+    Counter, GroupedStat, live Player).
+  - Step 0's "Python time = W - SQL - connection" is invalid across concurrent
+    threads; replaced with span recording.
+  - Corrected the post-cache arithmetic: S 16 -> 4, C 9 -> ~3 -> ~2.
+  - Step 3 gained a concrete bulk-invalidation algorithm (collect the dirty set
+    UP FRONT, invalidate BEFORE scoring) and a realistic test strategy.
+  - New 4.2: the payload denormalizes match/player metadata, which adds
+    invalidation inputs beyond ImpactScore (player renames are not hypothetical
+    in this repo -- see commit 8cc6eec).
+  - New 2.1: compute the theoretical RTT floor before committing to Steps 4-7.
+
+v1 changes (first review) are preserved in git history; the substantive ones
+were: canonical-aggregates-only cache content, per-match summary rows, the
+ImpactScore invalidation gap, the four-metric accounting vocabulary, the
+unbundled connection experiments, and recovering the forgotten second idea.
+
+
+1. GROUND TRUTH
+---------------
+1.1 Accounting vocabulary. Four separate numbers; a step may improve one and
+    not the others, and each must be reported separately:
+      (S)  SQL statements issued
+      (C)  longest SERIAL chain of statements (the wall-clock critical path)
+      (K)  physical connections opened (TLS + auth + possible Neon wake)
+      (W)  total request wall time
+    Calling all four "round trips" is what made the connection settings look
+    like a guaranteed win in v0.
+
+1.2 Statement inventory, GET /players/{name}, scope=recent, WARM cache.
+    Traced through app/routers/players.py:_build_profile_context.
+
+    Request thread, serial:
+      Q1  get_player_or_404          SELECT players WHERE display_name=
+      Q2  get_cached_views           SELECT player_view_cache WHERE player_id, scope
+      ... executor fan-out, joins here ...
+      Q3  get_current_player         db.get(Player, session_id)   (services/auth.py:9)
+      Q4  list_friend_ids            SELECT friendships     (logged in, not own profile)
+
+    Thread A - get_player_profile (services/players.py:165) -- 5 statements:
+      A1  MatchPlayer + joinedload(Match), LIMIT 30
+      A2  ImpactScore WHERE match_player_id IN (...)   <- large: ~750 rows, JSON breakdown
+      A3  RoundPlayerStat SUM(k/d/a) GROUP BY match_player_id
+      A4  MatchPlayer + joinedload(Player) for every match_id   (teammate names)
+      A5  Round.id, Round.outcome WHERE id IN (...)
+
+    Thread B - player_econ_samples (services/economy_graphs.py:191) -- 5 statements:
+      B1  MatchPlayer, LIMIT 30
+      B2  selectin Match
+      B3  selectin Match.match_players
+      B4  selectin Match.rounds
+      B5  selectin Round.player_stats
+      (B4 and B5 are separate queries -- chained selectinload is one statement
+      per hop.)
+
+    Thread C - compute_map_streaks (services/map_streaks.py:157) -- 2:
+      C1  Match.map_name, Match.played_at for EVERY match in the DB (population-wide)
+      C2  this player's matches
+
+    S = 16.  C = Q1 -> Q2 -> max(A,B,C) -> Q3 -> Q4 = 2 + 5 + 2 = 9.
+    K <= 4 (request session + 3 worker sessions).
+
+1.3 What thread A actually feeds.
+    templates/players/_profile_sections.html:318-331 renders, per match:
+      m.match.external_id, match_label(m.match), m.agent, m.kills/m.deaths/
+      m.assists, m.average_impact
+    A1 alone supplies none of the impact or KDA values: A2 supplies impact, A3
+    KDA, A5 the round outcomes behind overall_average_round_win_impact, A4 the
+    teammate names behind top_traded_teammate/top_traded_by_teammate. And
+    get_player_profile DROPS any match with no ImpactScore rows
+    (players.py:245). Caching only scalars while keeping A1 would either retain
+    most of thread A or silently change which matches the table lists.
+
+1.4 What the existing cache does right, and what it constrains.
+    player_view_cache stores AGGREGATES (win_stats, kill_order_weights) and
+    rebuilds the StateDiagram objects at decode (player_view_cache.py:169-174),
+    precisely so presentation changes never need a version bump. The econ
+    builders are the opposite shape and must NOT be cached as built objects --
+    verified presentation content:
+      TierMatrixCell.fill                       (economy_graphs.py:274)
+      BuyBucketPoint.cx / cy / r / fill / title (economy_graphs.py:412-420)
+      LoadoutWinScatter.line_path / view_box / x_ticks / y_ticks /
+        reference_line_y / plot_*               (economy_graphs.py:426-438)
+    chart_data likewise embeds match_label() output and fixed highlight labels
+    (routers/players.py:90-105). All presentation; all stays live.
+
+1.5 The career fragment: double the TOTAL work, but NOT on the initial route's
+    critical path.  [CORRECTED in v2]
+    templates/players/detail.html:29-33 --
+        hx-get="/players/{name}/career"   hx-trigger="load"
+    v1 asserted these two requests overlap and contend for the pool. They do
+    not. The response is a single non-streaming TemplateResponse, so the
+    browser cannot parse #career-sections -- and HTMX cannot process its
+    trigger -- until the initial response has fully arrived. The career request
+    is therefore strictly SUBSEQUENT to the initial route's server work.
+
+    What is actually true:
+      - one navigation runs _build_profile_context twice (recent, then career
+        with no match_limit -- the expensive scope), so it doubles server and
+        Neon work per navigation;
+      - it computes career data even when the user never opens that tab;
+      - it fires during the browser's paint/asset phase, so on a cache MISS the
+        multi-second career computation can still make the page feel busy after
+        the HTML has landed;
+      - it does NOT add to the initial route's server wall time, beyond
+        possible small overlap with FastAPI dependency teardown.
+    So deferring it is a total-work and Neon-cost win and possibly a
+    post-render responsiveness win. It is NOT an initial-render win, and must
+    not be credited as one. Step 0 records both requests' timestamps so the
+    ordering is measured rather than assumed.
+
+1.6 Connection concurrency: measure it, do not predict it.  [CORRECTED in v2]
+    app/db.py:17 is `create_engine(settings.database_url)` with stock QueuePool
+    defaults (pool_size=5, max_overflow=10). One request holds 1 request
+    session + 3 worker sessions = ~4 concurrent connections. Given 1.5, the
+    career request follows rather than overlaps, so a single navigation peaks
+    at ~4 and fits inside the retained pool; the career request should then
+    reuse those same pooled connections. v1's "~3 fresh physical connections
+    per view, permanently" is WITHDRAWN.
+    Overflow is still possible from: two viewers at once, multiple tabs, a
+    background ingest sharing the pool, dependency teardown briefly overlapping
+    the HTMX request, or connections held longer than expected. Note that 4 of
+    5 pooled slots for one request leaves very little headroom -- two
+    simultaneous viewers would overflow. Keep the physical-connect counter in
+    Step 0; draw the conclusion from the counter, not from the code.
+
+
+2. BEFORE COMMITTING: THE FLOOR
+-------------------------------
+2.1 Compute the theoretical floor before spending effort on Steps 4-7.
+    Once Step 0 gives a measured median per-statement round-trip latency L to
+    Neon, the best achievable warm wall time is roughly
+        W_floor ~= (C x L) + template render + decode CPU
+    With C driven to ~2 (see 3.2's arithmetic), a 60ms L puts the floor near
+    120ms + render; a 250ms L (geographically distant Neon region) puts it near
+    500ms and NO amount of statement-count work will reach a 300ms target.
+    Do this arithmetic immediately after Step 0. It decides:
+      - whether Steps 4 and 6-7 can possibly reach the agreed target,
+      - whether the real answer is a closer Neon region, a local read replica,
+        or Step 9's progressive render,
+      - and it prevents grinding out statement-count wins against a latency
+        wall.
+
+
+3. THE OPTIMIZATION ORDER
+-------------------------
+
+STEP 0 -- INSTRUMENT AND BASELINE.  (blocks everything else)
+  Nothing below may be sequenced or claimed without these numbers. Every figure
+  in section 1 is a static read of the source, not a measurement.
+
+  Record SPANS, not summed durations. v1 proposed deriving Python time as
+  "W minus SQL and connection time"; that is invalid with concurrent workers --
+  if threads A and B each spend 200ms in SQL simultaneously, the sum is 400ms
+  against ~200ms of wall clock, and the subtraction can go negative. Record
+  start/end timestamps for:
+      the request; each executor task; connection acquisition; each SQL
+      statement; cache decode / live compute; template render.
+  Then derive:
+      total SQL work        = sum of statement durations
+      SQL on critical path  = UNION of statement intervals
+      per-chain duration    = per-task span
+      C                     = actual longest serial chain, from the spans
+      K                     = count of pool `connect` events
+      W                     = request span
+  Mechanics that will bite:
+    - `checkout` fires AFTER a connection has been acquired, so checkout/checkin
+      alone cannot measure pool WAIT. Timestamp around the application's first
+      session/connection use (or wrap session creation) to capture wait start.
+    - `ThreadPoolExecutor.submit` does not carry contextvars across the thread
+      boundary. Propagate the request ID explicitly -- and create a SEPARATE
+      `contextvars.copy_context()` PER submitted task; one Context object
+      cannot be entered by multiple threads concurrently (it raises).
+  Tag every record with: cache hit/miss, scope, and whether it is the initial
+  recent request or the career fragment -- with wall-clock timestamps, so 1.5's
+  sequential-vs-overlapping question is settled by data.
+
+  Baseline matrix against NEON (not local Postgres -- round-trip latency is the
+  entire subject), for a light player and the heaviest tracked player:
+      cold cache-hit / warm cache-hit / cold cache-miss / warm cache-miss
+  recorded as (S, C, K, W) into section 6, re-recorded after each step. Also
+  record median per-statement latency L for 2.1.
+
+  SAFETY -- benchmarking is not read-only. A cache-miss run WRITES a
+  player_view_cache row, and forcing a miss means deleting or version-bumping a
+  real row in the live Neon DB. Get explicit user approval before any benchmark
+  that mutates Neon, and define the restore up front:
+  `scripts/recompute_player_views.py --cached-only`. A throwaway DB copy is
+  preferable if cheap.
+
+  Exit criteria: the baseline table exists; 1.5 and 1.6 are settled by
+  measurement; W_floor is computed (2.1); a target for W is agreed (7.1).
+
+
+STEP 1 -- CUT THE ROUTER'S OWN SERIAL CHAIN.  (was v1 Step 3)
+  First real optimization: small, direct, on the initial route, and independent
+  of everything disputed above.
+  Changes:
+    (a) Merge Q1 and Q2 -- players LEFT JOIN player_view_cache ON player_id AND
+        scope. LEFT JOIN so a cache miss still returns the player row.
+        S -1, C -1.
+    (b) Q3/Q4 currently run AFTER the executor block joins
+        (routers/players.py:146-152) despite not depending on it. Best: fold
+        them into ONE statement (players JOIN friendships) and run it off the
+        critical path. S -1, C -1.
+  Threading constraints:
+    - Do NOT share the request Session across threads (that is why
+      _run_in_own_session exists). Either run the combined auth/friend query on
+      the request thread while the workers run, or give it its own session via
+      _run_in_own_session.
+    - Do not submit Q3 and Q4 as two more tasks into the 3-worker executor
+      while A/B/C still occupy it -- they would queue behind them and the
+      post-join delay would not go away. (After Step 2 removes A and B this
+      stops mattering, but Step 1 lands first.)
+  Expected effect: S 16 -> 14, C 9 -> 7, with no cache changes and no
+  invalidation impact.
+
+
+STEP 2 -- EXTEND player_view_cache TO COVER THE WHOLE PAGE.  (the main event)
+  Ships in ONE PR with Step 3. Goal: on a warm hit, threads A and B disappear
+  entirely -- no ImpactScore read, no round hydration, no econ replay.
+
+  2a. CACHE-CONTENT RULE (non-negotiable, from 1.4): store CANONICAL
+      AGGREGATES; rebuild every presentation object at decode.
+
+      econ aggregates (replacing thread B):
+        tier_pairs:      {(own_tier, enemy_tier): {win, total, ratio_sum, ratio_count}}
+        pistol:          {win, total, ratio_sum, ratio_count}
+        loadout_buckets: {bucket_index: {win, total}}
+      -> give build_tier_matrix / build_pistol_stats / build_loadout_win_scatter
+         aggregate-taking variants (mirroring the existing
+         build_state_diagrams_from_aggregates split); decode calls those.
+         Colors, radii, SVG paths, ticks and view boxes stay live.
+
+      per-match summary rows (replacing thread A), one per DISPLAYED match:
+        match_id, external_id, map_name, played_at, team1_rounds_won,
+        team2_rounds_won, agent, team, win, kills, deaths, assists,
+        average_impact, average_kill_impact, average_death_impact
+      -> ~30 rows for recent scope; small next to the round/kill-event data the
+         write path already loads. The exclusion rule (no ImpactScore -> not
+         listed, players.py:245) is applied at ENCODE time, so the cached list
+         is already the displayed list.
+
+      profile scalars:
+        overall_average_impact, overall_average_round_win_impact,
+        overall_average_death_impact, avg_econ_/clutch_/post_plant_ kill+death,
+        avg_traded_teammate, avg_traded_by_teammate,
+        top_traded_teammate / top_traded_by_teammate as [name, count]
+        (names resolved at encode -- this is what retires A4), agent_counts.
+      -> agent_stats, map_stats, chart_data, highlights_chart_data and
+         map_chart_data are all derivable from the summaries plus these
+         scalars, so they are rebuilt at decode. match_label() is applied at
+         decode, never stored.
+
+  2b. WRITE-PATH QUERY DESIGN.  [NEW in v2 -- v1's "+1 select-in" was wrong]
+      Adding selectinload(Round.player_stats) to load_player_match_data
+      (services/player_data.py:36) covers the econ aggregates and KDA totals.
+      It does NOT cover the rest: ImpactScore is not loaded at all, and
+      Match.match_players is loaded but MatchPlayer.player is not -- reading
+      mp.player.display_name for trade attribution would trigger an N+1.
+      Explicit design:
+        1. load the existing Match / round / kill-event graph;
+        2. add selectinload(Round.player_stats);
+        3. add selectinload(Match.match_players).selectinload(MatchPlayer.player)
+           -- or one compact bulk Player-name query;
+        4. ONE bulk ImpactScore query for all target MatchPlayer IDs (round
+           outcomes come from the already-hydrated rounds, so no A5 equivalent);
+        5. build per-match summaries and profile aggregates from those
+           preloaded inputs;
+        6. build recent and career scopes from the same ordered career load, as
+           compute_player_views_by_scope already does.
+      Honest cost: the write path grows by roughly THREE statements
+      (player_stats, ImpactScore, possibly Player names), not one. Still an
+      excellent trade for deleting ten warm-read statements and a full round
+      hydration -- but state it that way in the commit message, and note that
+      cache misses and ingest prewarms get slightly slower.
+
+  2c. RESTRUCTURE THE MISS PATH.  [NEW in v2]
+      routers/players.py:52-74 submits the get_player_profile and
+      player_econ_samples futures UNCONDITIONALLY, and only branches the
+      diagram/Fight-EV half on the cache result. Once compute_player_views
+      produces profile and econ data, those futures must NOT be launched on a
+      miss -- otherwise the miss path computes both products twice and issues
+      exactly the ten queries this step exists to remove. After this, the
+      executor collapses to map-streaks plus the auth/friend task, which is a
+      real simplification of the router, not just a bug avoided.
+
+  2d. ENCODING + DECODED-TEMPLATE CONTRACT.  [NEW in v2]
+      Decide now, not at implementation time -- this determines the warm-hit
+      statement count the plan quotes. RECOMMENDED: complete cached per-match
+      DTOs, no metadata query. ~30 small rows is cheaper than another round
+      trip, and it keeps S at 4.
+      Required details:
+        - played_at is a datetime; the JSON serializer cannot store it. Encode
+          ISO-8601 (or null) and parse back to a TIMEZONE-AWARE datetime on
+          decode. This is load-bearing: match_label (templates.py:53) calls
+          played.astimezone(DISPLAY_TZ), and a naive datetime would be silently
+          interpreted as local time and render a wrong timestamp. Validate the
+          format in _validate_blob.
+        - reconstruct a lightweight match DTO exposing everything match_label
+          and the template touch: map_name, external_id, played_at (plus the
+          round-score fields the template uses).
+        - attach the LIVE route-level Player object to the decoded profile so
+          profile.player.display_name keeps working (it is used throughout
+          _profile_sections.html).
+        - rebuild agent_counts as a collections.Counter -- the template calls
+          .most_common(1) on line 1.
+        - rebuild GroupedStat objects for agent_stats and map_stats.
+        - convert cached [name, count] arrays back to the tuple form the
+          template unpacks.
+
+  2e. Bump PLAYER_VIEW_CACHE_SCHEMA_VERSION and extend _validate_blob with a
+      validator per new key. The existing validator is strict about exact key
+      sets (player_view_cache.py:121-149) -- keep it that way: a half-written
+      or half-migrated blob must degrade to a live recompute, never render
+      wrong numbers.
+
+  2f. Side benefit worth recording: the recent-window ORDER BY contract that
+      player_data.py:26-34 currently enforces by COMMENT across three call
+      sites becomes enforced by construction, because econ no longer issues its
+      own query. Update that comment to say so.
+
+  Expected effect, corrected:  [v1's arithmetic double-counted Step 1]
+      from S = 16:  -5 (thread A)  -5 (thread B)  = 6
+      Step 1(a) merged Q1+Q2:                     = 5
+      Step 1(b) combined Q3+Q4:                   = 4
+    So S = 4 if auth/friend are genuinely COMBINED into one statement, or 5 if
+    they are merely overlapped. Not 6.
+    C: merged player/cache lookup, then max(map-streak chain of 2, auth/friend
+    chain of 1) => C ~= 3. After Step 4 removes C1 from most requests, C ~= 2.
+    And all warm-read ORM hydration goes to zero. This step -- not the
+    connection settings -- is where the page speed comes from.
+
+
+STEP 3 -- CLOSE THE INVALIDATION GAP STEP 2 OPENS.  (same PR as Step 2)
+  A correctness requirement, not an optimization. v0's claim that "invalidation
+  triggers are unchanged" is deleted.
+
+  Today's cached products never read ImpactScore, which is why
+  scripts/recompute_impact.py does not touch the cache -- verified: it only
+  loops compute_impact_for_match over every match. Step 2's payload is derived
+  from ImpactScore throughout. Without this step, running recompute_impact.py
+  would leave every cached player page serving pre-recompute numbers forever.
+
+  3a. BULK-RECOMPUTE ALGORITHM.  [NEW in v2 -- "invalidate the affected
+      players" was underspecified, and the naive implementation loses the dirty
+      set]
+      For a targeted recompute:
+        1. BEFORE recomputing anything, collect the player IDs that currently
+           have cache rows AND are affected by the matches being recomputed;
+        2. delete those cache rows;
+        3. COMMIT the invalidation;
+        4. recompute Impact scores;
+        5. optionally prewarm, only after the whole run succeeds.
+      Two traps this avoids:
+        - Invalidating at the END means a mid-run failure leaves stale profile
+          values for matches whose ImpactScore rows already changed. Invalidate
+          FIRST.
+        - Rediscovering "players with existing cache rows" per match loses the
+          set: once the first match invalidates a player, later lookups no
+          longer find that player's row. Collect the dirty set UP FRONT.
+      For recompute_impact.py specifically -- which recomputes EVERY match --
+      just delete all player_view_cache rows at the start. The table is purely
+      derived data; this is simpler and strictly safer.
+
+  3b. A scoring-ALGORITHM change must also invalidate. Either bump
+      PLAYER_VIEW_CACHE_SCHEMA_VERSION as part of any impact-scoring change,
+      or -- better, matching the existing precedent -- add an
+      IMPACT_CALCULATION_VERSION folded MECHANICALLY into cache_version(), the
+      same way CALCULATION_VERSION already is and for the reason stated at
+      player_view_cache.py:44-54. Extend the composite arithmetic and its
+      `CALCULATION_VERSION < 1000` assert rather than quietly overflowing them.
+
+  3c. Ingestion ordering is UNCHANGED and stays: commit match -> invalidate ->
+      score -> prewarm only after scoring succeeds. A scoring failure must
+      leave the cache EMPTY, never stale.
+
+  3d. TEST STRATEGY.  [refined in v2]
+      The repo DOES have a pytest suite (webapp/tests/, pytest==8.3.3), and
+      tests/test_player_view_cache.py already unit-tests _encode / _decode /
+      _validate_blob / cache_version with no DB at all. So most of Step 2's
+      risk IS testable today in the existing style: blob round-trip, the
+      datetime/Counter/GroupedStat reconstruction, validator rejection of
+      malformed blobs, and the aggregate-to-presentation rebuilds.
+      What has NO harness is DB orchestration -- there is no Postgres-backed
+      fixture anywhere in tests/. For the invalidate-then-score ordering,
+      choose ONE explicitly and write it in the PR description:
+        (i) add a real Postgres integration test (largest lift),
+        (ii) test the orchestration with a mocked session + mocked cache
+             functions (asserts call ORDER, which is the actual risk), or
+        (iii) declare it a documented manual verification step.
+      Recommended: (ii) for ordering, plus unit tests for everything in 2d.
+      Do not leave the definition of done resting on infrastructure that does
+      not exist.
+
+  Exit criteria: a full recompute_impact.py run followed by a page view shows
+  the new numbers, verified by whichever of (i)/(ii)/(iii) was chosen.
+
+
+STEP 4 -- POPULATION / MAP-STREAK DATA (thread C).
+  After Step 2, the map-streak chain IS the warm-hit critical path -- 2 of the
+  remaining ~3 serial statements. That is what promotes this above the
+  remaining items.
+  State the objective, because the obvious fix achieves only two of three:
+      fewer rows?  yes.   less CPU?  yes.   fewer round trips?  NO.
+  C1 scans every Match in the DB and is IDENTICAL for every player, so it does
+  not belong in a per-player cache row. But memoizing _act_pools() behind a
+  per-request `SELECT MAX(Match.id)` probe leaves thread C at two serial
+  statements -- it swaps a big query for a small one.
+  MAX(id) is also incomplete invalidation: it misses updates to an existing
+  match, deletion of a non-maximum match, corrections to map_name or played_at,
+  and any change to the season-acts config file (map_prediction.SEASON_ACTS_PATH),
+  which is an input to _act_pools and is not in the DB at all.
+  Options, cheapest first:
+    (a) process-level memo with a short TTL and NO per-request probe. Accepts
+        bounded staleness -- defensible, since streaks only move when a match
+        is ingested. Achieves all three objectives and takes C to ~2.
+    (b) an explicit population-cache generation that ingestion increments.
+    (c) a population cache row holding precomputed act pools, refreshed at
+        ingest.
+  Whichever is chosen, include a hash or mtime of the season-acts file in the
+  key. C2 (the player's own match history) stays: map streaks are deliberately
+  not scoped by the recent/career toggle (detail.html:41-44), so folding them
+  into the scoped per-player rows would cache the same value twice.
+
+
+STEP 5 -- STOP EAGERLY FETCHING CAREER DATA.  (was v1 Step 1; demoted)
+  NEEDS A UX DECISION FROM THE USER (7.2).
+  Change: detail.html:31 `hx-trigger="load"` -> fire on the first click of the
+  Career toggle (`hx-trigger="click once from:..."`, or `revealed`).
+  What it buys (see 1.5): halves total server + Neon work per navigation, and
+  stops computing career data for users who never open the tab. On a cache miss
+  it also removes a multi-second background computation that runs while the
+  user is reading the page.
+  What it does NOT buy: initial-route server time. Do not report it as an
+  initial-render win.
+  Note it gets LESS valuable after Step 2, since the career fragment becomes a
+  cache read -- which is exactly why it sits here and not at position 1.
+  Cost: the first Career-toggle click becomes visibly slower. Fallback if the
+  user wants it instant: keep the eager load but delay it
+  (`hx-trigger="load delay:1s"`).
+
+
+STEP 6 -- SIZE THE POOL ONCE, AGAINST FINAL CONCURRENCY.  (was v1 Step 2; demoted)
+  Do this ONLY if Step 0's counter shows real physical-connect churn or pool
+  waits. Per 1.6, the default pool of 5 may already cover a single final-form
+  request -- and after Step 2 removes two worker chains, a request needs ~2
+  connections, not 4, so the correct size is materially different from what it
+  would have been earlier. v1 placed this second and then admitted it would
+  need retuning after the cache work; that was the signal it was misplaced.
+  Tune it once, here, with the final concurrency measured. Check any larger
+  idle pool against Neon's connection limits.
+
+
+STEP 7 -- CONNECTION-LEVEL EXPERIMENTS.  (each measured separately)
+  Deliberately late, and explicitly NOT a bundle. What these actually do:
+    pool_pre_ping=True   Tests a connection at checkout, normally via SELECT 1.
+                         Improves stale-connection recovery and ADDS A ROUND
+                         TRIP TO EVERY CHECKOUT -- directly against this
+                         document's goal. Only worth it if stale connections
+                         are actually failing.
+    pool_recycle=N       Discards a connection older than N seconds at its next
+                         checkout. Refreshes nothing in the background; can
+                         force a reconnect on the first request after N seconds
+                         even when the connection is healthy. A reliability
+                         setting, not a cold-load optimization.
+    TCP keepalives       Detect dead connections, can prevent NAT timeouts. Do
+                         not execute DB activity, do not stop Neon scaling to
+                         zero, do not avoid TLS+auth on a genuinely closed
+                         connection.
+    startup warming      Only warms at process start. Does nothing for a
+                         long-lived process whose connections go idle later.
+                         Largely moot once Step 2 removes most worker sessions.
+    Neon -pooler         PgBouncer in front of Postgres; reduces upstream
+                         connection pressure, may improve establishment. Does
+                         not remove the client's own connection to PgBouncer,
+                         and does not remove compute reactivation after
+                         scale-to-zero.
+  Order: (1) measure current QueuePool behaviour; (2) test the pooled endpoint
+  alone; (3) test pre_ping and quantify its per-checkout cost; (4) add
+  pool_recycle only if a recurring stale-connection failure is observed.
+
+  If the real problem is Neon scale-to-zero latency, none of the above fixes
+  it. The only actual fixes are disabling scale-to-zero on a supported plan, or
+  deliberately issuing periodic activity to keep the compute awake -- both have
+  cost implications, and that is the user's decision (7.6).
+
+  PREREQUISITE for the pooled endpoint: split the URL. PgBouncer transaction
+  pooling does not preserve all session-level behaviour, and Neon recommends
+  direct connections for migrations and dump/restore. This repo has exactly ONE
+  URL, consumed by:
+      app/db.py:17                 (web runtime)
+      alembic/env.py:11            (migrations)
+      scripts/refresh_neon.ps1:76  (overrides DATABASE_URL for batch ingest)
+      scripts/validate_fight_ev.py, load_seed_data.py, recompute_*.py
+  Introduce DATABASE_URL (pooled, runtime) + DIRECT_DATABASE_URL (migrations,
+  dumps/restores, bulk maintenance); update alembic/env.py, .env.example, the
+  Neon refresh script and the deployment notes. Do not repoint the single URL
+  at the pooler without auditing all of the above.
+
+
+STEP 8 -- COLLAPSE THE TWO REPLAY PASSES INTO ONE.  (the recovered second idea)
+  This is what the lost prompt contained. The evidence is conclusive:
+  player_views.py's module docstring says "Phase 1 still runs two replay passes
+  over the shared rows; phase 2 collapses them into one", and
+  compute_player_views (player_views.py:52-58) does exactly that -- one
+  load_player_match_data, then build_state_aggregates_from_data AND
+  load_match_fight_ev_blocks_from_data each walking the same rows.
+  Scope it honestly: after PR #29 this is CPU on the cache-MISS and prewarm
+  paths, not Neon reads on warm hits. It matters for: first view of an uncached
+  player, the career fragment on a miss, and prewarm cost at the end of every
+  ingest run. Promote it above Steps 5-7 if Step 0 shows misses or ingest
+  prewarms are the actual pain.
+  Separate PR: adopting one strict set of replay semantics for both products
+  can change state-diagram totals. Requires a version bump and a before/after
+  diff of cached outputs for a sample of players (scripts/diff_impact_scores.py
+  is the closest existing precedent).
+
+
+STEP 9 -- SHELL-FIRST / PROGRESSIVE RENDER.  (only if the target is unmet)
+  Render the header and match table immediately, lazy-load the heavy sections,
+  reusing the fragment pattern that already exists. A fallback: it hides
+  latency rather than removing work. Revisit only if 2.1's floor or the
+  post-Step-4 measurement says the remaining time is unavoidable and the target
+  (7.1) is aggressive.
+
+
+4. INVARIANTS THAT MUST SURVIVE EVERY STEP
+------------------------------------------
+4.1 Core invariants.
+  - The cache is never load-bearing. Miss, corrupt blob, or stale version all
+    degrade to a live recompute.
+  - Cached content is canonical aggregates; presentation is rebuilt at decode.
+    A color, geometry, label or match_label() change must never require a bump.
+  - Any calculation version feeding a cached value is folded MECHANICALLY into
+    cache_version(), never left as a remember-to-bump step.
+  - Ingestion order stays: commit match -> invalidate -> score -> prewarm.
+  - The recent-window ORDER BY contract stays pinned across every call site
+    selecting "recent" matches (player_data.py:26-34).
+  - Do not widen the executor fan-out; Step 2 narrows it.
+  - Do not share a Session across threads.
+  - Do not cache rendered HTML -- the template varies per viewer
+    (is_own_profile / is_friend).
+
+4.2 DENORMALIZED FIELDS ADD INVALIDATION INPUTS BEYOND ImpactScore. [NEW in v2]
+  Step 2's payload copies Match.external_id, Match.map_name, Match.played_at,
+  the match scores, MatchPlayer.agent, and Player.display_name (in the
+  top-traded lists). Normal additive ingestion is already covered, but manual
+  corrections and player renames now make cached rows stale. This is not
+  hypothetical here -- a tracked player was renamed in commit 8cc6eec, and
+  docs note a rename can require merging two player rows.
+  Document the operational invalidation paths:
+    - player rename/merge -> invalidate that player, AND any cached profile
+      owner whose top-trade lists contain the renamed name;
+    - match metadata correction -> invalidate every player in that match;
+    - MatchPlayer agent/team correction -> invalidate every affected player;
+    - any manual data repair -> run scripts/recompute_player_views.py.
+  There may be no UI route for these mutations, so a documented operational
+  command is sufficient -- but the dependency must be acknowledged, because
+  4.1 promises every cached input has an invalidation path.
+
+
+5. NOT DOING
+------------
+  - Widening the thread fan-out.
+  - Caching rendered HTML or built presentation objects.
+  - Bundling the connection settings as a single "cheap win" (Step 7).
+  - Sizing the pool before the final concurrency is known (Step 6).
+
+
+6. BASELINE / RESULTS TABLE
+---------------------------
+  (S = statements, C = longest serial chain, K = physical connections opened,
+  W = wall time. Record the recent and career requests SEPARATELY, with
+  wall-clock start timestamps, per 1.5. Also record median statement latency L
+  for 2.1.)
+
+  Measured 2026-08-22 against Neon (not local Postgres), via the Step 0
+  instrumentation landed in app/services/request_trace.py, one uvicorn
+  process per "cold" row, unauthenticated (no session cookie -- Q3/Q4 and the
+  _inject_current_player context-processor query, see 1.2 correction below,
+  are all 0 in every row here; a logged-in run would add up to 2 more
+  statements). Heavy = NPrightdolphin#NA1 (181 matches, the tracked roster's
+  heaviest). Light = ternstyle#GIGI (29 matches). Player IDs and cache rows
+  restored afterward via `DATABASE_URL=<neon> .venv\Scripts\python.exe
+  scripts\recompute_player_views.py --cached-only` (approved by the user
+  before any Neon mutation, per the SAFETY note above).
+
+  step | scenario           | player  | req    |  S |    C   |  K |    W
+  -----+--------------------+---------+--------+----+--------+----+---------
+   0   | warm hit           | light   | recent | 14 | 0.896s |  0 | 0.900s
+   0   | warm hit           | heavy   | recent | 14 | 0.754s |  0 | 0.757s
+   0   | warm hit           | heavy   | career | 12 | 1.909s |  0 | 1.923s
+   0   | cold hit           | heavy   | recent | 14 | 1.624s |  3 | 1.630s
+   0   | warm miss          | heavy   | recent | 21 | 1.561s |  0 | 1.566s
+   0   | cold miss          | heavy   | career | 19 | 4.785s |  2 | 4.795s
+
+  A second warm-hit/heavy/recent sample landed at S=14 C=0.903s K=0 W=0.907s
+  -- consistent with the row above within run-to-run noise.
+
+  Median per-statement latency to Neon, L, from the four warm-HIT samples
+  above (pool already established, no connection cost mixed in):
+      L ~= 87ms   (sorted per-request medians: 77ms, 86ms, 88ms, 89ms)
+
+  1.5 settled: epoch_start timestamps confirm the career fragment's request
+  never overlaps the initial route's -- it starts only after the prior
+  response's trace already finished (log_trace() runs in the route's
+  `finally`, strictly before the browser could have fired the htmx request
+  that produced the next line). Matches the doc's corrected 1.5 exactly.
+
+  1.6 settled: K was 0, 2, or 3 in every row -- never above pool_size=5, no
+  overflow observed even on a fresh process. The "~4 per request" prediction
+  came out slightly high in practice (a fresh process's very first request,
+  to the unrelated /players list route used as a startup check, ate one of
+  the 3-4 expected NEW connects for the subsequent traced request by leaving
+  a connection already in the pool) -- a benchmarking artifact of how the
+  probe was sequenced, not evidence the app itself needs fewer connections.
+
+  UNPREDICTED FINDING (correction to 1.2's static inventory): every render
+  makes a get_current_player call twice -- once explicitly in the router
+  (feeds is_own_profile/is_friend), and once more inside
+  app/templates.py's _inject_current_player context processor (feeds the
+  `current_player` template global that base.html's nav and detail.html's
+  Friend button both use), each on its OWN SessionLocal(). Invisible in every
+  row above because none of these benchmark requests carried a session
+  cookie -- get_current_player short-circuits on a None session player_id
+  without touching the DB. A LOGGED-IN request pays this twice: S+1, C+1 (a
+  new, always-serial "auth_render" phase after "render" begins, since it's
+  inside the context processor invoked at TemplateResponse() construction).
+  Not in scope to fix in Step 0 -- flagging it here as a real, previously
+  undocumented cost Step 1's "combine Q3+Q4" work should also fold this into,
+  or at minimum note as a known-remaining gap if it doesn't.
+
+  WARM-HIT DOMINATED BY THREADS A/B, NOT INFRASTRUCTURE: on every warm-HIT
+  row, executor:profile (thread A, get_player_profile) and executor:econ
+  (thread B, player_econ_samples) are already the two largest phase
+  durations -- e.g. heavy/recent warm: pre_executor 0.186s, map_streaks
+  0.290s, profile 0.499s, econ 0.562s. The state-diagram/fight-EV cache from
+  PR #29 already eliminated ITS OWN queries from the hit path; profile/econ
+  are NOT cached yet (that's exactly Step 2's job) and are the actual
+  bottleneck today, well ahead of connection overhead. This is the single
+  strongest piece of evidence in this baseline that Step 2 -- not Steps 6/7's
+  connection-level settings -- is where the win lives.
+
+  CACHE-MISS COST IS REAL AND CONCENTRATED: warm-miss/heavy/recent's
+  executor:main_thread_live_compute alone (1.179s) very nearly equals the
+  ENTIRE warm-hit/heavy/recent wall time (0.757s) plus profile+econ
+  (0.499+0.562=1.061s combined) -- i.e. one cache miss on the recent scope
+  costs about as much extra time as a second full warm-hit render. On the
+  CAREER scope it is far worse: cold-miss/heavy/career's live_compute alone
+  is 4.408s out of a 4.795s total request -- the full-history bootstrap
+  (Step 8's "two replay passes" territory) dominates completely. This is
+  what the plan's Step 8 promotion note anticipates ("promote it above Steps
+  5-7 if Step 0 shows misses or ingest prewarms are the actual pain") --
+  misses ARE the actual pain on the career scope specifically.
+
+  POOL WAIT ON A FRESH PROCESS IS NOT NEGLIGIBLE: cold-hit/heavy/recent spent
+  0.780s of its 1.630s total (48%) on pool_wait spans (new physical
+  connect+TLS+auth, K=3) -- more than the entire warm-hit wall time. This
+  does not move Step 6/7 earlier (Step 2's projected win is still larger and
+  the doc's ordering rationale -- tune the pool once, against final
+  concurrency -- still holds), but it does mean the very first page view
+  after a deploy/restart pays a real, separate cost from everything else in
+  this table, worth remembering when Steps 6/7 are eventually reached.
+
+2.1 FLOOR, computed from the measured L ~= 87ms (this session's actual
+    number, not the doc's 60ms/250ms illustrative examples):
+        W_floor ~= C x L + render
+    Post-Step-1-and-4 (C ~= 2):   W_floor ~= 2 x 0.087 + ~0.01  ~= 0.18s
+    Post-Step-2-only (C ~= 3):    W_floor ~= 3 x 0.087 + ~0.01  ~= 0.27s
+    (render measured 5-12ms warm across the samples above; the 87ms cold-hit
+    render figure and the 68ms cold-miss one both carry extra first-touch
+    connection cost from _inject_current_player's own SessionLocal() and are
+    excluded from this estimate.)
+
+    This floor sits close to the doc's optimistic 60ms/120ms illustration,
+    not its pessimistic 250ms/500ms one: Neon's per-statement RTT from this
+    dev machine is NOT the "geographically distant" case 2.1 warned about.
+    Steps 1+2 alone (both already in scope for this work) should take
+    warm-hit/heavy/recent from today's measured ~0.75-0.90s to roughly
+    0.35-0.40s (pre_executor merges and roughly halves per Step 1; A/B
+    disappear per Step 2; map_streaks' ~0.29s is UNCHANGED until Step 4).
+    Step 4 alone (not in this scope) would then close most of the remaining
+    gap to the ~0.18-0.27s floor above.
+
+    CONCLUSION: the target is very likely reachable with Steps 1-4. Steps
+    6-7's connection-level settings and Step 9's progressive render are NOT
+    needed to hit a "feels fast" (sub-300-400ms warm) target on today's
+    numbers -- they would only become relevant if Neon round-trip latency
+    were materially worse than what this session measured, or if the user's
+    target (7.1, still open) is more aggressive than ~200ms.
+
+
+7. OPEN QUESTIONS FOR THE USER
+------------------------------
+7.1 What is the target for W? Combined with 2.1's floor this decides whether
+    Steps 6-7 and 9 are worth doing at all.
+7.2 Step 5 needs a product call: may the Career tab become slow on first click
+    in exchange for halving the work of every navigation? (Fallback: keep the
+    eager load but delay it.)
+7.3 May Step 0's benchmark mutate the live Neon DB (it must delete or
+    version-bump real cache rows to force a miss), or should a throwaway copy
+    be made first?
+7.4 Does the career fragment need to be as fast as the initial render, or may
+    it stay the slower path?
+7.5 Do the session / squad / match pages need the same treatment, or is the
+    player page the only one that feels slow?
+7.6 Is paying to disable Neon's scale-to-zero on the table (Step 7), or should
+    cold-start latency simply be accepted?
