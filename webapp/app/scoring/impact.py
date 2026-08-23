@@ -6,6 +6,14 @@ from sqlalchemy.orm import Session
 from app.models import ImpactScore, KillEvent, MatchPlayer, Round, RoundPlayerStat
 from app.models.match import Team
 
+# Bump whenever compute_impact_for_match's scoring algorithm changes in a way
+# that changes ImpactScore values for previously-scored rounds -- folded
+# MECHANICALLY into app.services.player_view_cache.cache_version() (Step 3b,
+# docs/player_page_render_speed.txt) so a player_view_cache row computed from
+# stale ImpactScore rows never outlives a rescoring. Same rationale/pattern
+# as app.services.fight_ev.CALCULATION_VERSION.
+IMPACT_CALCULATION_VERSION = 1
+
 _KILL_ORDER_GRAPH = nx.DiGraph()
 _KILL_ORDER_GRAPH.add_weighted_edges_from(
     [

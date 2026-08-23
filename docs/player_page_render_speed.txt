@@ -515,6 +515,141 @@ STEP 3 -- CLOSE THE INVALIDATION GAP STEP 2 OPENS.  (same PR as Step 2)
   Exit criteria: a full recompute_impact.py run followed by a page view shows
   the new numbers, verified by whichever of (i)/(ii)/(iii) was chosen.
 
+  IMPLEMENTED 2026-08-23 (branch player-page-render-speed-step23, stacked on
+  Steps 0/1). Architecture notes, since several choices weren't fully
+  specified above:
+
+    - CIRCULAR IMPORT: app.services.players already imports
+      app.services.player_view_cache (Step 1, for decode_cache_row). Step
+      2's write path needs a "build PlayerProfile from load_player_match_
+      data's hydration" function callable from app.services.player_views
+      (which player_view_cache imports) -- if that function lived in
+      players.py, player_views -> players would close a cycle
+      (players -> player_view_cache -> player_views -> players). Fixed by
+      moving PlayerProfile/MatchBreakdown/GroupedStat (and the shared
+      per-match-breakdown loop, now build_profile_from_precomputed) OUT of
+      players.py into a new neutral-leaf module,
+      app/services/player_profile_types.py -- same role
+      app.services.player_data plays for the state-diagram/fight-EV load.
+      get_player_profile now just builds its 4 lookup dicts via its own
+      queries and delegates to build_profile_from_precomputed; the new
+      build_player_profile_from_match_data (also in the new leaf module)
+      builds the same 4 dicts from load_player_match_data's already-
+      hydrated relationships instead, and is what
+      app.services.player_views.compute_player_views(_by_scope) calls.
+    - get_player_profile and player_econ_samples are NOT deleted, matching
+      Step 1's precedent. Both are now genuinely unused by the router (Step
+      2c removed their only callers), but recompute_impact.py test coverage
+      (the ORDER BY parity test) still exercises them directly, and nothing
+      forced their removal.
+    - econ_aggregates' tier_pairs/loadout_buckets use tuple/int dict keys
+      internally (matching kill_order_weights' existing precedent) --
+      encoded as [own_tier, enemy_tier, win, total, ratio_sum, ratio_count]
+      / [bucket_index, win, total] triples-of-lists for JSON safety, exactly
+      like kill_order_weights' [src, dst, weight] encoding already does.
+    - cache_version()'s composite arithmetic extended to 3 components:
+      SCHEMA * 1_000_000 + CALCULATION_VERSION * 1000 +
+      IMPACT_CALCULATION_VERSION (both component asserts < 1000 kept) --
+      e.g. 2003001 reads as schema 2, fight-EV calc 3, impact calc 1.
+    - IMPACT_CALCULATION_VERSION = 1 added to app/scoring/impact.py (no
+      version constant existed there before this).
+    - scripts/recompute_impact.py now calls the new
+      invalidate_all_player_caches(db) + commit BEFORE the recompute loop,
+      per 3a's "just delete all rows" simplification for the every-match
+      case.
+
+  TESTED (3d, option (ii) chosen for ordering + unit tests for everything in
+  2d, per the recommendation):
+    - webapp/tests/test_player_view_cache.py: extended with econ_aggregates
+      and profile validators (missing/extra keys, out-of-range values,
+      malformed pairs), a NAIVE played_at rejection test (the load-bearing
+      one from 2d), full blob round-trip assertions for econ + profile
+      (including that agent_stats/map_stats/agent_counts/top_traded_* are
+      genuinely REBUILT, not stored verbatim), and cache_version tests for
+      both the fight-EV and impact composite components.
+    - webapp/tests/test_player_profile_types.py (new): correctness tests for
+      build_player_profile_from_match_data against a hand-built in-memory
+      Match/MatchPlayer/Round/RoundPlayerStat/ImpactScore fixture (no DB,
+      following tests/test_economy_graphs.py's existing pattern) -- KDA
+      summed from Round.player_stats, round outcome read from the hydrated
+      Round, traded-teammate name resolved from Match.match_players.player,
+      matches with no ImpactScore excluded.
+    - webapp/tests/test_recompute_impact_script.py (new): mocked-session
+      ordering tests proving invalidate + commit happen before ANY match is
+      recomputed, and specifically that they're durable even if a LATER
+      match's recompute raises.
+    - webapp/tests/test_step1_query_merges.py: updated for the new
+      PlayerViews/decode_cache_row signatures.
+    138 tests total, all passing.
+
+  VERIFIED LIVE AGAINST NEON (read/write to player_view_cache only, same
+  established precedent as Steps 0-1's benchmark -- no recompute_impact.py
+  run against live data):
+    - First view under the new code (existing rows carry the OLD version,
+      1003 -> automatic version-mismatch miss): live-computed correctly,
+      wrote a v2 blob, 200 OK.
+    - Second view: cache_hit=true, and the response body was BYTE-FOR-BYTE
+      IDENTICAL to the live-computed one (134266 bytes, `diff` clean) -- for
+      both the recent and career scope, and for a second (light) player.
+      This is the strongest correctness signal available without a
+      snapshot-testing harness: decode really does reproduce what live
+      compute produces.
+    - Login/friend flow re-verified end-to-end post-restructuring (is_own_
+      profile, is_friend, add/remove) -- unaffected by Step 2c, as expected,
+      and the test friendship mutation was cleaned up afterward (confirmed
+      zero leftover rows).
+    - SAFETY INVARIANT verified directly: hand-corrupted a real row's
+      played_at to a naive (no-offset) string via flag_modified (JSON
+      columns don't track in-place mutation, a real gotcha hit while setting
+      this up -- direct dict mutation silently no-ops on commit without it).
+      The request logged "player_view_cache: invalid profile", degraded to
+      a full live recompute, returned 200 with the correct byte-identical
+      page, and the write-through self-healed the row (confirmed on a
+      follow-up read). Never a 500, never wrong numbers -- 4.1's invariant
+      holds under a real corrupted row, not just the unit tests.
+    - Cleanup: ran `DATABASE_URL=<neon> scripts/recompute_player_views.py
+      --cached-only` afterward (same restore precedent as Steps 0-1) so
+      every previously-cached player -- not just the two touched directly --
+      carries a v2 blob rather than falling back to a live recompute on
+      next visit.
+
+  MEASURED (same light/heavy players, same Neon session):
+      scenario                       |  S |    C   |  K |    W
+      --------------------------------+----+--------+----+---------
+      warm hit,  heavy, recent        |  3 | 0.436s |  0 | 0.437s
+      cold hit,  heavy, recent        |  3 | 0.729s |  1 | 0.730s
+      warm hit,  heavy, career        |  1 | 0.213s |  0 | 0.215s
+      warm hit,  light, recent        |  3 | 0.321s |  0 | 0.322s
+      miss (version-mismatch), heavy, recent | 13 | 2.472s | 0 | 2.473s
+      miss (version-mismatch), heavy, career | 11 | 6.051s | 0 | 6.055s
+
+    Compared directly to the Step 0 baseline / post-Step-1 numbers:
+      warm hit heavy recent:  0.75-0.90s (baseline) -> 0.80-0.94s (Step 1)
+                               -> 0.437s (Step 2+3)      ~2x faster
+      cold hit heavy recent:  1.630s (baseline) -> 1.226s (Step 1)
+                               -> 0.730s (Step 2+3)       55% faster than Step 1
+      warm hit heavy career:  1.92-2.51s (baseline/Step 1) -> 0.215s
+                               (Step 2+3)                  ~9-12x faster
+    S landed at 3, matching the doc's more optimistic prediction (auth/friend
+    genuinely combined AND overlapped, costing 0 when logged out -- matches
+    every benchmark sample here, all unauthenticated) rather than the
+    conservative S=4/5 estimate.
+
+    C's remaining ~0.3-0.4s on a warm hit is dominated by map_streaks (2
+    serial statements, C1 population-wide + C2 player-scoped) exactly as
+    predicted -- Step 4 is now the clear next lever, consistent with the
+    plan's own reasoning for promoting it above Steps 5-7.
+
+  WHAT DIDN'T GET MEASURED: a true "warm miss" (server already warm, cache
+  row genuinely absent rather than version-mismatched) and a "cold miss"
+  scenario weren't re-run separately from Step 0's baseline numbers for
+  Steps 2+3, since every miss observed here already exercises the full new
+  write path (the version-mismatch rows above ARE full live-compute-and-
+  write-through runs, functionally identical to a genuine miss -- just
+  triggered by a version bump instead of a deleted row). Re-running Step 0's
+  exact delete-and-reload miss scenario against the NEW code was judged
+  redundant given that overlap.
+
 
 STEP 4 -- POPULATION / MAP-STREAK DATA (thread C).
   After Step 2, the map-streak chain IS the warm-hit critical path -- 2 of the
@@ -542,6 +677,29 @@ STEP 4 -- POPULATION / MAP-STREAK DATA (thread C).
   not scoped by the recent/career toggle (detail.html:41-44), so folding them
   into the scoped per-player rows would cache the same value twice.
 
+  IMPLEMENTED 2026-08-23: option (a), a process-level (module-global) memo in
+  app/services/map_streaks.py -- _get_acts_and_pools(db) returns the cached
+  (acts, act_pools) pair if the cache exists, season_acts.json's mtime
+  matches, and less than _ACT_POOLS_TTL_SECONDS (300s = 5 min) have elapsed;
+  otherwise it recomputes and re-caches. A single global, not a dict keyed by
+  anything -- acts/act_pools are population-wide, not per-player, and this
+  process serves one deployment (CLAUDE.md: local-only, no cloud/multi-worker
+  deployment), so no cross-process cache invalidation story was needed.
+  On a cache HIT this costs ZERO queries for C1, better than the doc's own
+  "swaps a big query for a small one" characterization of the MAX(id) probe
+  alternative it steered away from.
+  TESTED: 6 new tests in tests/test_map_streaks.py (mocked Session, asserting
+  query call counts) -- first call populates + queries, a second call within
+  the TTL issues zero queries, a call past the TTL recomputes, a
+  season_acts.json mtime change forces a recompute even within the TTL (per
+  the doc's explicit "include a hash or mtime" instruction), no-acts
+  short-circuits without touching the DB at all, and compute_map_streaks
+  reuses one memoized population query across two different players.
+  VERIFIED LIVE (see the Step 4/5/8 combined verification below): a second
+  request's map_streaks phase dropped from 2 serial statements to 1 (S for a
+  full warm-hit page went 3 -> 2), matching the "takes C to ~2" prediction.
+
+
 
 STEP 5 -- STOP EAGERLY FETCHING CAREER DATA.  (was v1 Step 1; demoted)
   NEEDS A UX DECISION FROM THE USER (7.2).
@@ -559,7 +717,19 @@ STEP 5 -- STOP EAGERLY FETCHING CAREER DATA.  (was v1 Step 1; demoted)
   user wants it instant: keep the eager load but delay it
   (`hx-trigger="load delay:1s"`).
 
-
+  DECIDED AND IMPLEMENTED 2026-08-23: user chose to proceed with the primary
+  recommendation (defer to first click), not the delay fallback -- the
+  fallback stays documented in the template comment in case that judgment
+  changes later. app/templates/players/detail.html: the Career button gained
+  `id="career-tab-btn"`; `#career-sections`'s hx-trigger changed from "load"
+  to `"click once from:#career-tab-btn"`.
+  VERIFIED LIVE IN A REAL BROWSER (claude-in-chrome, against Neon): loaded
+  the player page, waited, confirmed via read_network_requests that NO
+  request to /career fired on page load. Clicked the Career tab -- confirmed
+  the GET request fired (200) and the tab correctly switched to showing full
+  career history (181 matches, career-scope stats), same as before this
+  change. No JS console errors; the existing htmx:afterSwap/chart-rendering
+  logic (unchanged) continued to work.
 STEP 6 -- SIZE THE POOL ONCE, AGAINST FINAL CONCURRENCY.  (was v1 Step 2; demoted)
   Do this ONLY if Step 0's counter shows real physical-connect churn or pool
   waits. Per 1.6, the default pool of 5 may already cover a single final-form
@@ -634,6 +804,107 @@ STEP 8 -- COLLAPSE THE TWO REPLAY PASSES INTO ONE.  (the recovered second idea)
   can change state-diagram totals. Requires a version bump and a before/after
   diff of cached outputs for a sample of players (scripts/diff_impact_scores.py
   is the closest existing precedent).
+
+  IMPLEMENTED 2026-08-23. Architecture:
+    - app.services.player_data.match_input_from_data(match_player): extracted
+      from fight_ev.py's inline MatchInput-building loop -- the ORM-to-
+      replay-input adapter, now shared.
+    - app.services.fight_ev.build_match_fight_ev_block_from_replay: the
+      per-match half of load_match_fight_ev_blocks_from_data's old inline
+      loop, extracted so it can be called with an ALREADY-COMPUTED
+      (entries, duels) pair instead of replaying internally.
+      load_match_fight_ev_blocks_from_data itself is UNCHANGED in behavior
+      (still does its own internal loop, for callers -- scripts/
+      validate_fight_ev.py via load_match_fight_ev_blocks -- that only need
+      fight-EV); it just now calls the two extracted pieces.
+    - app.services.player_graphs.accumulate_state_stats_from_replay (NEW):
+      derives win_stats/kill_order_weights from state_replay's entries/duels
+      instead of walking Match.rounds/kill_events itself. Kept
+      accumulate_match_state_stats and build_state_aggregates_from_data
+      UNTOUCHED (same "don't delete, stop calling" precedent as Steps 1-2's
+      get_player_profile/player_econ_samples) -- build_state_diagrams (their
+      only caller) was already dead code before this step.
+    - app.services.player_views._replay_all_matches (NEW): the actual "one
+      replay pass" -- calls match_input_from_data + replay_match ONCE per
+      match, and compute_player_views/compute_player_views_by_scope fan the
+      SAME (entries, duels) out to both build_match_fight_ev_block_from_
+      replay and accumulate_state_stats_from_replay.
+    - STATE_DIAGRAM_CALCULATION_VERSION = 2 (player_graphs.py), folded
+      mechanically into cache_version() (now 4 components: SCHEMA *
+      1_000_000_000 + STATE_DIAGRAM_CALC * 1_000_000 + FIGHT_EV_CALC * 1000
+      + IMPACT_CALC). v1 was accumulate_match_state_stats' manual walk; v2
+      is the replay-based version. (Why start the constant at 2, not 1: it
+      mirrors IMPACT_CALCULATION_VERSION's precedent of numbering from the
+      point a version WAS FIRST INTRODUCED as an explicit, bump-tracked
+      constant -- v1 here specifically documents "the old, now-superseded
+      algorithm" rather than claiming this is the first algorithm ever.)
+
+  SEMANTIC CHANGE -- validated, not just claimed. Two genuine divergences
+  from accumulate_match_state_stats, both deliberate, both adopting state_
+  replay's stricter rules (see accumulate_state_stats_from_replay's own
+  docstring for the full list: terminal-time truncation; whole-round
+  exclusion for ambiguous-lifecycle, equal-time-ambiguity, surrender,
+  overtime, and unresolved-winner rounds, vs. the old code's much narrower
+  guards). Self-kills/environmental deaths are DELIBERATELY PRESERVED as a
+  kill-order loss (matching old behavior) by detecting "target left the
+  alive set" from consecutive state entries, not solely from DuelOccurrence
+  (which only covers genuine cross-team duels and would otherwise silently
+  drop these).
+
+  Ran a before/after diff (throwaway script, not committed) against Neon for
+  8 real players (their full career history) comparing old win_stats/
+  kill_order_weights against new. Every single player showed the SAME
+  pattern:
+    - total win_stats observations dropped ~8-13% (e.g. heaviest player:
+      19697 -> 18119; lightest sampled: 2801 -> 2659)
+    - win rate shifted UP by ~2-3.5 percentage points across every player
+      (e.g. 57.18% -> 59.24%; 56.59% -> 60.14%)
+    - kill_order_weights' total |weight| dropped a similar ~9-14%
+    - the "Xv0" states (a state where the opponent has already been fully
+      eliminated) went from ALWAYS {win:0, total:0} under the old code to
+      real nonzero values under the new one -- turned out to be INERT either
+      way: _round_win_diagram only ever lays out 1v1..5v5 nodes (player_
+      graphs.py:477-478), so neither version ever renders these. Re-added
+      accumulate_state_stats_from_replay's own opp_alive>=1 guard (matching
+      the old code's own_alive>=1/opp_alive>=1 check) so these entries are
+      no longer computed or cached at all -- dead weight either way, no
+      reason to store them.
+  CROSS-CHECKED the exclusion counts against fight-EV, which has used
+  state_replay's exact same exclusion rules since it shipped (PR #24-26) --
+  ran scripts/validate_fight_ev.py for the heaviest sampled player and
+  confirmed its excluded_rounds_by_reason EXACTLY matches the diff script's
+  numbers for that player (ambiguous_lifecycle=319, equal_time_ambiguity=75,
+  overtime_unknown_side=64, surrendered=9). This is the key finding: the
+  ~10% round-exclusion rate that drives the ~2-3pp win-rate shift is NOT a
+  new data-quality problem Step 8 introduces -- it is the SAME, already-
+  shipped, already-accepted characteristic of this codebase's canonical
+  replay engine, simply applied to a second product that hadn't used it
+  yet. The round-win/kill-order diamonds were UNDER-filtering messy/
+  ambiguous rounds relative to fight-EV before this step; after it, both
+  products agree on which rounds are trustworthy.
+  CONCLUSION: ship as a real, understood, cross-validated statistical
+  change -- not a regression. Existing tracked-player round-win % on the
+  player page will visibly shift up by roughly 2-3 percentage points after
+  this deploys; that is the exclusion of previously-uncounted noisy rounds
+  taking effect, not new randomness.
+
+  TESTED: 11 new tests in tests/test_state_diagram_from_replay.py, built on
+  real RoundInput/KillEventInput fixtures run through the REAL replay_round
+  (mirroring tests/test_state_replay.py's own fixture style, not a hand-
+  rolled stand-in) -- covers a target's own kill, a target's death to a
+  genuine duel, an environmental death with no killer, a self-kill, target-
+  already-dead ignoring later transitions, surrender/overtime/unresolved-
+  winner round exclusion (explicitly asserting the DIVERGENCE from the old
+  code's behavior for unresolved-winner), multi-round accumulation, the
+  opposing-team perspective, and build_state_aggregates_from_replays folding
+  multiple matches.
+  VERIFIED LIVE AGAINST NEON, combined with Steps 4 and 5 (same session):
+  live-computed and cache-decoded pages were BYTE-FOR-BYTE IDENTICAL again
+  (both scopes, `diff` clean) after this change, and the hand-corrupted-row
+  safety check (naive played_at via flag_modified) was re-run and still
+  degrades correctly -- logs the rejection, live-recomputes, serves the
+  correct page, self-heals via write-through. Login/friend flow and map
+  streaks rendering re-spot-checked, unaffected.
 
 
 STEP 9 -- SHELL-FIRST / PROGRESSIVE RENDER.  (only if the target is unmet)
@@ -713,9 +984,49 @@ STEP 9 -- SHELL-FIRST / PROGRESSIVE RENDER.  (only if the target is unmet)
    0   | cold hit           | heavy   | recent | 14 | 1.624s |  3 | 1.630s
    0   | warm miss          | heavy   | recent | 21 | 1.561s |  0 | 1.566s
    0   | cold miss          | heavy   | career | 19 | 4.785s |  2 | 4.795s
+  -----+--------------------+---------+--------+----+--------+----+---------
+   1   | warm hit (logged out) | heavy | recent | 13 | 0.796-0.935s | 0 | 0.800-0.940s
+   1   | cold hit           | heavy   | recent | 13 | 1.221s |  3 | 1.226s
+   1   | warm hit (logged in)  | heavy | recent | 15 | 1.100s |  0 | 1.104s
+  -----+--------------------+---------+--------+----+--------+----+---------
+  2+3  | warm hit           | heavy   | recent |  3 | 0.436s |  0 | 0.437s
+  2+3  | cold hit           | heavy   | recent |  3 | 0.729s |  1 | 0.730s
+  2+3  | warm hit           | heavy   | career |  1 | 0.213s |  0 | 0.215s
+  2+3  | warm hit           | light   | recent |  3 | 0.321s |  0 | 0.322s
+  2+3  | miss (ver-mismatch)| heavy   | recent | 13 | 2.472s |  0 | 2.473s
+  2+3  | miss (ver-mismatch)| heavy   | career | 11 | 6.051s |  0 | 6.055s
+  -----+--------------------+---------+--------+----+--------+----+---------
+  4/5/8| warm hit           | heavy   | recent |  2 | 0.311s |  0 | 0.312s
+  4/5/8| warm hit           | heavy   | career |  1 | 0.243s |  0 | 0.246s
+  4/5/8| miss (ver-mismatch)| heavy   | recent | 13 | 2.766s |  1 | 2.768s
+  4/5/8| miss (ver-mismatch)| heavy   | career | 11 | 6.718s |  0 | 6.721s
 
   A second warm-hit/heavy/recent sample landed at S=14 C=0.903s K=0 W=0.907s
   -- consistent with the row above within run-to-run noise.
+
+  Steps 4/5/8's warm-hit S dropped from 3 to 2 (Step 4's map-streaks memo
+  removing the population-wide C1 query on a warm process, exactly as
+  predicted) -- C/W are consistent with the 2+3 numbers within run-to-run
+  noise, since Step 4's win is on S/K (fewer statements, fewer connections
+  on a cold process) more than on wall time once the pool is already warm.
+  The miss-scenario numbers went UP slightly (2.473s -> 2.768s,
+  6.055s -> 6.721s). Structurally this should be CHEAPER, not more
+  expensive: the old miss path ran state_replay's full rich replay (for
+  fight-EV) PLUS a second, separate simple walk (accumulate_match_state_
+  stats, for the diamonds); the new path runs state_replay's replay ONCE
+  and derives both products from it. Given every measurement in this
+  session (Steps 0-3's numbers included) has shown run-to-run Neon-latency
+  noise on the order of 20-40% for "identical" scenarios single-sampled,
+  the more likely explanation is noise, not a real regression -- this
+  wasn't re-run multiple times to confirm either way. Flagging as an open
+  item rather than asserting a cause: if a future measurement pass shows
+  this consistently, it's worth a proper repeated-sample comparison; for
+  now, not chasing it -- warm hit is the page's dominant, most-frequent
+  case, and it clearly improved (S 3 -> 2).
+
+  Full narrative + implementation notes for Steps 1 and 2+3 are inline in
+  their own sections above (end of STEP 1, end of STEP 3) rather than
+  repeated here -- this table is the at-a-glance summary.
 
   Median per-statement latency to Neon, L, from the four warm-HIT samples
   above (pool already established, no connection cost mixed in):
@@ -814,12 +1125,13 @@ STEP 9 -- SHELL-FIRST / PROGRESSIVE RENDER.  (only if the target is unmet)
 ------------------------------
 7.1 What is the target for W? Combined with 2.1's floor this decides whether
     Steps 6-7 and 9 are worth doing at all.
-7.2 Step 5 needs a product call: may the Career tab become slow on first click
-    in exchange for halving the work of every navigation? (Fallback: keep the
-    eager load but delay it.)
-7.3 May Step 0's benchmark mutate the live Neon DB (it must delete or
-    version-bump real cache rows to force a miss), or should a throwaway copy
-    be made first?
+7.2 ANSWERED 2026-08-23: yes, proceed with the primary recommendation (defer
+    to first click) over the delay fallback. Implemented and verified live.
+7.3 ANSWERED (Steps 0 and 2/3/8's benchmarks): yes, mutate live Neon
+    directly for the player_view_cache table specifically (never
+    friendships/other tables), with the stated restore procedure
+    (scripts/recompute_player_views.py --cached-only) run after each round.
+    No throwaway copy was requested or used.
 7.4 Does the career fragment need to be as fast as the initial render, or may
     it stay the slower path?
 7.5 Do the session / squad / match pages need the same treatment, or is the

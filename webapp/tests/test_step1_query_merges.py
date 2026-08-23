@@ -13,7 +13,9 @@ import pytest
 from fastapi import HTTPException
 
 from app.models import Friendship, Player, PlayerViewCache
+from app.services.fight_ev import build_fight_ev_views_from_blocks
 from app.services.friends import get_current_player_and_friendship
+from app.services.player_profile_types import PlayerProfile
 from app.services.player_view_cache import (
     CachedPlayerViews,
     _encode,
@@ -23,13 +25,19 @@ from app.services.player_view_cache import (
 from app.services.player_views import PlayerViews
 from app.services.players import get_player_and_cached_views
 
+_SAMPLE_PLAYER = Player(id=1, display_name="Foo#123")
+
 
 def _sample_blob() -> dict:
-    fight_ev = None
-    from app.services.fight_ev import build_fight_ev_views_from_blocks
-
     fight_ev = build_fight_ev_views_from_blocks([], player_id=1, draws=10)
-    views = PlayerViews(win_stats={}, kill_order_weights={}, fight_ev=fight_ev)
+    profile = PlayerProfile(
+        player=_SAMPLE_PLAYER, overall_average_impact=0.0, overall_average_round_win_impact=0.0,
+        overall_average_death_impact=0.0, matches=[],
+    )
+    views = PlayerViews(
+        win_stats={}, kill_order_weights={}, fight_ev=fight_ev,
+        profile=profile, econ_aggregates={"tier_pairs": {}, "pistol": {"win": 0, "total": 0, "ratio_sum": 0.0, "ratio_count": 0}, "loadout_buckets": {}},
+    )
     return _encode(views)
 
 
@@ -39,23 +47,23 @@ def _sample_blob() -> dict:
 # ---------------------------------------------------------------------------
 
 def test_decode_cache_row_returns_none_for_none():
-    assert decode_cache_row(None) is None
+    assert decode_cache_row(None, _SAMPLE_PLAYER) is None
 
 
 def test_decode_cache_row_returns_none_for_version_mismatch():
     row = PlayerViewCache(player_id=1, scope="recent", data=_sample_blob(), version=cache_version() + 1)
-    assert decode_cache_row(row) is None
+    assert decode_cache_row(row, _SAMPLE_PLAYER) is None
 
 
 def test_decode_cache_row_decodes_a_valid_row():
     row = PlayerViewCache(player_id=1, scope="recent", data=_sample_blob(), version=cache_version())
-    decoded = decode_cache_row(row)
+    decoded = decode_cache_row(row, _SAMPLE_PLAYER)
     assert isinstance(decoded, CachedPlayerViews)
 
 
 def test_decode_cache_row_rejects_a_corrupt_blob_without_raising():
     row = PlayerViewCache(player_id=1, scope="recent", data={"not": "a valid blob"}, version=cache_version())
-    assert decode_cache_row(row) is None
+    assert decode_cache_row(row, _SAMPLE_PLAYER) is None
 
 
 # ---------------------------------------------------------------------------
