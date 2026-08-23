@@ -107,6 +107,58 @@ def _winner_side(outcome: str | None) -> str | None:
     return None
 
 
+# Same pistol-round convention as app.services.economy_graphs.PISTOL_ROUNDS and
+# app.scoring.credit_events.compute_round_credit_events: rounds 1 and 13 are
+# the economy-reset rounds, regardless of match format.
+PISTOL_ROUND_NUMBERS = (1, 13)
+
+
+def compute_pistol_match_stats(match_players: list[MatchPlayer]) -> dict[str, int]:
+    """Canonical aggregate behind the "pistol round win -> match win" and
+    "won both pistols -> match win" stats -- {single_total, single_wins,
+    double_total, double_wins}. single_total/single_wins count each PISTOL
+    ROUND this player's team won (a match where both pistols were won
+    contributes to both categories -- that's the standard way trackers
+    present this stat, not a bug); double_total/double_wins count MATCHES
+    where the team won both pistol rounds. Ties (match_win returns None)
+    are excluded from every denominator, same as match_win's own contract
+    elsewhere in this module -- a round with no/unparseable outcome is
+    likewise excluded rather than counted as a loss."""
+    single_total = single_wins = double_total = double_wins = 0
+    for mp in match_players:
+        match = mp.match
+        team = mp.team.value if hasattr(mp.team, "value") else mp.team
+        won_match = match_win(match, team)
+        if won_match is None:
+            continue
+
+        rounds_by_number = {r.round_number: r for r in match.rounds}
+        pistol_results = []
+        for round_number in PISTOL_ROUND_NUMBERS:
+            r = rounds_by_number.get(round_number)
+            if r is None:
+                continue
+            winner = _winner_side(r.outcome)
+            if winner is None:
+                continue
+            pistol_results.append(winner == team)
+
+        for won_pistol in pistol_results:
+            if won_pistol:
+                single_total += 1
+                if won_match:
+                    single_wins += 1
+        if len(pistol_results) == len(PISTOL_ROUND_NUMBERS) and all(pistol_results):
+            double_total += 1
+            if won_match:
+                double_wins += 1
+
+    return {
+        "single_total": single_total, "single_wins": single_wins,
+        "double_total": double_total, "double_wins": double_wins,
+    }
+
+
 def grouped_stats(matches: list[MatchBreakdown], key_fn) -> list[GroupedStat]:
     groups: dict[str, dict] = {}
     for m in matches:

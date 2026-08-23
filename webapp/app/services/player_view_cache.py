@@ -25,9 +25,11 @@ from app.models import MatchPlayer, Player, PlayerViewCache
 from app.scoring.impact import IMPACT_CALCULATION_VERSION
 from app.services.economy_graphs import (
     LoadoutWinScatter,
+    PistolMatchStats,
     PistolStats,
     TierMatrix,
     build_loadout_win_scatter_from_aggregates,
+    build_pistol_match_stats_from_aggregates,
     build_pistol_stats_from_aggregates,
     build_tier_matrix_from_aggregates,
 )
@@ -53,7 +55,7 @@ from app.services.player_views import PlayerViews, compute_player_views_by_scope
 
 logger = logging.getLogger(__name__)
 
-PLAYER_VIEW_CACHE_SCHEMA_VERSION = 2
+PLAYER_VIEW_CACHE_SCHEMA_VERSION = 3
 # Bump when ANY of these change:
 #   - replay semantics (round exclusion rules, event filtering)
 #   - win_stats / kill_order_weights accumulation logic
@@ -80,6 +82,10 @@ PLAYER_VIEW_CACHE_SCHEMA_VERSION = 2
 # their own independent walk, adopting state_replay's stricter round-
 # exclusion semantics. See that function's docstring for the validated
 # before/after diff this represents.
+#
+# v3: added pistol_match_stats (the "pistol round win -> match win" /
+# "double pistol win -> match win" stats) to the blob -- a new canonical
+# aggregate, not a recompute of anything already stored.
 
 assert CALCULATION_VERSION < 1000  # keeps the composite below collision-free
 assert IMPACT_CALCULATION_VERSION < 1000
@@ -226,6 +232,17 @@ def _validate_econ_aggregates(econ: object) -> bool:
     return True
 
 
+_PISTOL_MATCH_STATS_KEYS = frozenset({"single_total", "single_wins", "double_total", "double_wins"})
+
+
+def _validate_pistol_match_stats(stats: object) -> bool:
+    if not isinstance(stats, dict) or set(stats.keys()) != _PISTOL_MATCH_STATS_KEYS:
+        return False
+    if not all(_is_nonneg_int(stats[k]) for k in _PISTOL_MATCH_STATS_KEYS):
+        return False
+    return stats["single_wins"] <= stats["single_total"] and stats["double_wins"] <= stats["double_total"]
+
+
 _MATCH_SUMMARY_KEYS = frozenset({
     "match_id", "external_id", "map_name", "played_at", "team1_rounds_won", "team2_rounds_won",
     "agent", "team", "win", "kills", "deaths", "assists",
@@ -318,7 +335,9 @@ def _validate_blob(blob: object) -> bool:
     payload from a half-finished refactor, a hand-edited row) must not reach
     the template -- that's exactly the failure the live-compute fallback
     exists to prevent."""
-    if not isinstance(blob, dict) or set(blob.keys()) != {"state_aggregates", "fight_ev", "econ_aggregates", "profile"}:
+    if not isinstance(blob, dict) or set(blob.keys()) != {
+        "state_aggregates", "fight_ev", "econ_aggregates", "profile", "pistol_match_stats",
+    }:
         logger.warning("player_view_cache: blob missing top-level keys")
         return False
 
@@ -352,6 +371,10 @@ def _validate_blob(blob: object) -> bool:
 
     if not _validate_profile(blob["profile"]):
         logger.warning("player_view_cache: invalid profile")
+        return False
+
+    if not _validate_pistol_match_stats(blob["pistol_match_stats"]):
+        logger.warning("player_view_cache: invalid pistol_match_stats")
         return False
 
     return True
@@ -463,6 +486,7 @@ def _encode(views: PlayerViews) -> dict:
         "fight_ev": serialize_fight_ev_views(views.fight_ev),
         "econ_aggregates": _encode_econ_aggregates(views.econ_aggregates),
         "profile": _encode_profile(views.profile),
+        "pistol_match_stats": dict(views.pistol_match_stats),
     }
 
 
@@ -476,6 +500,7 @@ class CachedPlayerViews:
         econ_tier_matrix: TierMatrix,
         econ_pistol_stats: PistolStats,
         econ_loadout_scatter: LoadoutWinScatter,
+        pistol_match_stats: PistolMatchStats,
     ):
         self.round_win_graph = round_win_graph
         self.kill_order_graph = kill_order_graph
@@ -484,6 +509,7 @@ class CachedPlayerViews:
         self.econ_tier_matrix = econ_tier_matrix
         self.econ_pistol_stats = econ_pistol_stats
         self.econ_loadout_scatter = econ_loadout_scatter
+        self.pistol_match_stats = pistol_match_stats
 
 
 def _decode(blob: dict, player: Player) -> CachedPlayerViews:
@@ -498,10 +524,12 @@ def _decode(blob: dict, player: Player) -> CachedPlayerViews:
     econ_loadout_scatter = build_loadout_win_scatter_from_aggregates(econ_aggregates["loadout_buckets"])
 
     profile = _decode_profile(blob["profile"], player)
+    pistol_match_stats = build_pistol_match_stats_from_aggregates(blob["pistol_match_stats"])
 
     return CachedPlayerViews(
         round_win_graph, kill_order_graph, blob["fight_ev"],
         profile, econ_tier_matrix, econ_pistol_stats, econ_loadout_scatter,
+        pistol_match_stats,
     )
 
 

@@ -351,6 +351,35 @@ def build_pistol_stats(samples: list[EconSample]) -> PistolStats:
     return build_pistol_stats_from_aggregates(_pistol_bucket(samples))
 
 
+@dataclass
+class PistolMatchStats:
+    """Presentation for "pistol round win -> match win" and "won both
+    pistols -> match win", built from app.services.player_profile_types.
+    compute_pistol_match_stats's canonical aggregate."""
+
+    single_wins: int
+    single_total: int
+    single_win_pct: float | None
+    single_fill: str
+    double_wins: int
+    double_total: int
+    double_win_pct: float | None
+    double_fill: str
+
+
+def build_pistol_match_stats_from_aggregates(agg: dict[str, int]) -> PistolMatchStats:
+    single_total, single_wins = agg["single_total"], agg["single_wins"]
+    double_total, double_wins = agg["double_total"], agg["double_wins"]
+    single_pct = single_wins / single_total if single_total else None
+    double_pct = double_wins / double_total if double_total else None
+    return PistolMatchStats(
+        single_wins=single_wins, single_total=single_total, single_win_pct=single_pct,
+        single_fill=win_color(single_pct) if single_pct is not None else NO_DATA_FILL,
+        double_wins=double_wins, double_total=double_total, double_win_pct=double_pct,
+        double_fill=win_color(double_pct) if double_pct is not None else NO_DATA_FILL,
+    )
+
+
 # Fixed pixel layout for the chart below -- unlike the diamond state diagrams
 # elsewhere, this has a real fixed x/y axis pair, so the geometry is
 # hardcoded once here rather than computed per dataset.
