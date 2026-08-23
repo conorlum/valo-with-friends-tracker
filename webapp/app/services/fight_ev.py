@@ -23,10 +23,9 @@ from sqlalchemy.orm import Session
 from app.models import MatchPlayer, Player
 from app.models.match import Team
 from app.services.friends import list_friend_ids
-from app.services.player_data import load_player_match_data
+from app.services.player_data import load_player_match_data, match_input_from_data
 from app.services.state_replay import (
     DuelOccurrence,
-    KillEventInput,
     MatchInput,
     ReplayDiagnostics,
     RoundInput,
@@ -551,6 +550,31 @@ def _round_side_map(round_inputs: list[RoundInput], target_team: Team) -> dict[i
     return mapping
 
 
+def build_match_fight_ev_block_from_replay(
+    match_player: MatchPlayer,
+    match_input: MatchInput,
+    entries: list[StateEntryOccurrence],
+    duels: list[DuelOccurrence],
+    roster_player_ids: set[int],
+) -> MatchFightEvBlock:
+    """Per-match block-building given an ALREADY-COMPUTED replay
+    (entries/duels) for match_input -- the fight-EV half of Step 8's shared
+    replay pass (docs/player_page_render_speed.txt). A caller that also needs
+    to replay this same match for another product (the round-win/kill-order
+    diamonds -- see app.services.player_graphs.accumulate_state_stats_from_
+    replay) calls replay_match() itself ONCE and passes the result both
+    places, instead of this function replaying again."""
+    match = match_player.match
+    target_team = match_player.team
+    match_player_team = {mp.id: mp.team for mp in match.match_players}
+    match_player_to_player_id = {mp.id: mp.player_id for mp in match.match_players}
+    round_side = _round_side_map(match_input.rounds, target_team)
+    return build_match_fight_ev_block(
+        match.id, entries, duels, round_side, target_team, match_player.id,
+        match_player_team, match_player_to_player_id, roster_player_ids,
+    )
+
+
 def load_match_fight_ev_blocks_from_data(
     db: Session,
     match_players: list[MatchPlayer],
@@ -565,51 +589,20 @@ def load_match_fight_ev_blocks_from_data(
     INVARIANT: returns exactly one block per input match_player, in the same
     order. app.services.player_views.compute_player_views_by_scope slices
     this list by scope.
+
+    Kept as its own single-purpose loop (rather than always going through
+    app.services.player_views' shared-replay orchestration) for callers that
+    only need fight-EV, e.g. scripts/validate_fight_ev.py via
+    load_match_fight_ev_blocks below.
     """
     roster_player_ids = list_friend_ids(db, player.id)
     diagnostics = ReplayDiagnostics()
 
     blocks: list[MatchFightEvBlock] = []
     for match_player in match_players:
-        match = match_player.match
-        target_team = match_player.team
-        team1_ids = frozenset(mp.id for mp in match.match_players if mp.team == Team.TEAM_1)
-        team2_ids = frozenset(mp.id for mp in match.match_players if mp.team == Team.TEAM_2)
-        match_player_team = {mp.id: mp.team for mp in match.match_players}
-        match_player_to_player_id = {mp.id: mp.player_id for mp in match.match_players}
-
-        round_inputs = [
-            RoundInput(
-                round_id=r.id,
-                round_number=r.round_number,
-                outcome=r.outcome,
-                planted=r.planted,
-                plant_time=r.plant_time,
-                exploded=r.exploded,
-                defused=r.defused,
-                defuse_time=r.defuse_time,
-                kill_events=tuple(
-                    KillEventInput(
-                        id=k.id,
-                        killer_match_player_id=k.killer_match_player_id,
-                        death_match_player_id=k.death_match_player_id,
-                        event_time_seconds=k.event_time_seconds,
-                    )
-                    for k in r.kill_events
-                ),
-            )
-            for r in match.rounds
-        ]
-        match_input = MatchInput(match_id=match.id, team1_player_ids=team1_ids, team2_player_ids=team2_ids, rounds=tuple(round_inputs))
+        match_input = match_input_from_data(match_player)
         entries, duels, _ = replay_match(match_input, diagnostics)
-        round_side = _round_side_map(round_inputs, target_team)
-
-        blocks.append(
-            build_match_fight_ev_block(
-                match.id, entries, duels, round_side, target_team, match_player.id,
-                match_player_team, match_player_to_player_id, roster_player_ids,
-            )
-        )
+        blocks.append(build_match_fight_ev_block_from_replay(match_player, match_input, entries, duels, roster_player_ids))
 
     return blocks, diagnostics
 
