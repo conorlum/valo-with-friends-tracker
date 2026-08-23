@@ -20,16 +20,24 @@
 
 <div class="scope-toggle">
   <button type="button" class="scope-toggle-btn active" data-scope="recent">Recent 30</button>
-  <button type="button" class="scope-toggle-btn" data-scope="career">Career</button>
+  <button type="button" id="career-tab-btn" class="scope-toggle-btn" data-scope="career">Career</button>
 </div>
 
 <div id="recent-sections">
   {% include "players/_profile_sections.html" %}
 </div>
 
+<!-- Step 5 (docs/player_page_render_speed.txt): deferred to the first Career
+     click instead of firing on page load -- halves total server + Neon work
+     per navigation for the (majority of) visitors who never open this tab,
+     and on a cache miss removes a multi-second background computation that
+     used to run while the user was still reading the Recent tab. Trades
+     away instant-feeling career data on the FIRST click (it now pays the
+     fetch then); fall back to `hx-trigger="load delay:1s"` if that's ever
+     judged worse than the eager load was. -->
 <div id="career-sections" style="display:none;"
      hx-get="/players/{{ profile.player.display_name | urlencode }}/career"
-     hx-trigger="load"
+     hx-trigger="click once from:#career-tab-btn"
      hx-swap="innerHTML">
   <p class="page-meta htmx-indicator">Loading career stats&hellip;</p>
 </div>

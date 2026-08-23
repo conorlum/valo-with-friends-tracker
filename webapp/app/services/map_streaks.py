@@ -1,4 +1,5 @@
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -154,21 +155,83 @@ def _load_acts() -> list[Act]:
     return acts
 
 
+# Step 4 (docs/player_page_render_speed.txt): _act_pools scans EVERY Match in
+# the DB and is IDENTICAL for every player -- it doesn't belong in a
+# per-player cache row, but a naive per-request MAX(Match.id) freshness probe
+# still leaves this at two serial statements (a big query traded for a small
+# one) and is incomplete invalidation besides (misses corrections to an
+# existing match, deletions, and season_acts.json edits -- none of which are
+# in the DB at all). A process-level memo with a short TTL and NO per-request
+# probe achieves fewer rows, less CPU, AND fewer round trips: on a cache hit
+# this costs zero queries, not one. Bounded staleness (population pools can
+# lag an ingest by up to the TTL) is accepted deliberately -- streaks only
+# move when a match is ingested, a manual/batch event on this local-only
+# site, not a live one.
+_ACT_POOLS_TTL_SECONDS = 300
+
+
+@dataclass
+class _ActPoolsCacheEntry:
+    acts: list[Act]
+    act_pools: list[set[str]]
+    computed_at_monotonic: float
+    season_acts_mtime: float
+
+
+_act_pools_cache: _ActPoolsCacheEntry | None = None
+
+
+def _season_acts_mtime() -> float:
+    try:
+        return SEASON_ACTS_PATH.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _get_acts_and_pools(db: Session) -> tuple[list[Act], list[set[str]]]:
+    """Cached (acts, act_pools) pair -- see _ACT_POOLS_TTL_SECONDS above.
+    Keyed on season_acts.json's mtime (included per Step 4's explicit
+    instruction) so an edit to that file is picked up on the very next
+    request rather than waiting out the TTL, even though the TTL alone would
+    eventually catch it too."""
+    global _act_pools_cache
+    now = time.monotonic()
+    mtime = _season_acts_mtime()
+    cached = _act_pools_cache
+    if (
+        cached is not None
+        and cached.season_acts_mtime == mtime
+        and (now - cached.computed_at_monotonic) < _ACT_POOLS_TTL_SECONDS
+    ):
+        return cached.acts, cached.act_pools
+
+    acts = _load_acts()
+    act_pools: list[set[str]] = []
+    if acts:
+        population_matches = list(
+            db.query(Match.map_name, Match.played_at).filter(Match.played_at.isnot(None)).all()
+        )
+        act_pools = _act_pools(acts, population_matches)
+
+    _act_pools_cache = _ActPoolsCacheEntry(
+        acts=acts, act_pools=act_pools, computed_at_monotonic=now, season_acts_mtime=mtime,
+    )
+    return acts, act_pools
+
+
 def compute_map_streaks(db: Session, player_id: int) -> list[MapStreak]:
     """For every map in the current competitive pool, the player's current
     and all-time-record longest run of consecutive matches without playing
     it -- see the design doc at
     docs/superpowers/specs/2026-07-27-map-play-streaks-design.md for the
     per-map windowing rationale (map pool rotates 2-3 maps per act, so
-    continuity is checked per map, not per whole pool)."""
-    acts = _load_acts()
+    continuity is checked per map, not per whole pool).
+
+    The population-wide half of this (acts + act_pools) is identical for
+    every player and process-memoized -- see _get_acts_and_pools (Step 4)."""
+    acts, act_pools = _get_acts_and_pools(db)
     if not acts:
         return []
-
-    population_matches = list(
-        db.query(Match.map_name, Match.played_at).filter(Match.played_at.isnot(None)).all()
-    )
-    act_pools = _act_pools(acts, population_matches)
 
     player_matches = list(
         db.query(Match.map_name, Match.played_at)

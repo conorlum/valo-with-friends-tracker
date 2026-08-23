@@ -1,11 +1,15 @@
 from datetime import datetime
+from unittest.mock import MagicMock
 
+import app.services.map_streaks as map_streaks_module
 from app.services.map_streaks import (
     Act,
     _act_pools,
     _build_map_streaks,
     _gap_in_window,
+    _get_acts_and_pools,
     _map_windows,
+    compute_map_streaks,
 )
 
 
@@ -239,3 +243,120 @@ def test_build_map_streaks_current_gap_is_trailing_not_historical_max():
     assert bind.record.gap == 3  # the all-time record is still the closed run of 3
     assert bind.record_is_current is False  # record's window IS "current" but its value differs from the live streak
     assert bind.record.ongoing is False  # that record run has already been closed off by a later Bind play
+
+
+# ---------------------------------------------------------------------------
+# Step 4 (docs/player_page_render_speed.txt): _get_acts_and_pools memoizes
+# the population-wide act-pools computation at process level -- these tests
+# never touch _build_map_streaks/_act_pools' own correctness (covered above),
+# just the caching behavior: a hit issues zero queries, a TTL expiry or a
+# season_acts.json mtime change forces a recompute.
+# ---------------------------------------------------------------------------
+
+def _mock_db_with_population_query(rows) -> MagicMock:
+    db = MagicMock()
+    db.query.return_value.filter.return_value.all.return_value = rows
+    return db
+
+
+def setup_function(_fn):
+    # Each test starts from a clean slate -- the cache is process-global.
+    map_streaks_module._act_pools_cache = None
+
+
+def test_first_call_populates_cache_and_queries_the_population(monkeypatch):
+    monkeypatch.setattr(map_streaks_module, "_load_acts", lambda: [Act(label="A1", start=datetime(2026, 1, 1), end=None)])
+    monkeypatch.setattr(map_streaks_module, "_season_acts_mtime", lambda: 1.0)
+    monkeypatch.setattr(map_streaks_module, "time", MagicMock(monotonic=lambda: 1000.0))
+    db = _mock_db_with_population_query([("Bind", datetime(2026, 1, 2)), ("Bind", datetime(2026, 1, 3)), ("Bind", datetime(2026, 1, 4))])
+
+    acts, act_pools = _get_acts_and_pools(db)
+
+    assert len(acts) == 1
+    db.query.assert_called_once()
+    assert map_streaks_module._act_pools_cache is not None
+
+
+def test_second_call_within_ttl_issues_no_query(monkeypatch):
+    monkeypatch.setattr(map_streaks_module, "_load_acts", lambda: [Act(label="A1", start=datetime(2026, 1, 1), end=None)])
+    monkeypatch.setattr(map_streaks_module, "_season_acts_mtime", lambda: 1.0)
+    fake_time = MagicMock(monotonic=lambda: 1000.0)
+    monkeypatch.setattr(map_streaks_module, "time", fake_time)
+    db1 = _mock_db_with_population_query([])
+    _get_acts_and_pools(db1)
+    assert db1.query.call_count == 1
+
+    db2 = _mock_db_with_population_query([])
+    fake_time.monotonic = lambda: 1010.0  # 10s later -- well within the 300s TTL
+    acts, act_pools = _get_acts_and_pools(db2)
+
+    db2.query.assert_not_called()
+
+
+def test_call_after_ttl_expires_recomputes(monkeypatch):
+    monkeypatch.setattr(map_streaks_module, "_load_acts", lambda: [Act(label="A1", start=datetime(2026, 1, 1), end=None)])
+    monkeypatch.setattr(map_streaks_module, "_season_acts_mtime", lambda: 1.0)
+    fake_time = MagicMock(monotonic=lambda: 1000.0)
+    monkeypatch.setattr(map_streaks_module, "time", fake_time)
+    db1 = _mock_db_with_population_query([])
+    _get_acts_and_pools(db1)
+
+    db2 = _mock_db_with_population_query([])
+    fake_time.monotonic = lambda: 1000.0 + map_streaks_module._ACT_POOLS_TTL_SECONDS + 1
+    _get_acts_and_pools(db2)
+
+    db2.query.assert_called_once()
+
+
+def test_season_acts_mtime_change_forces_recompute_even_within_ttl(monkeypatch):
+    monkeypatch.setattr(map_streaks_module, "_load_acts", lambda: [Act(label="A1", start=datetime(2026, 1, 1), end=None)])
+    fake_mtime = MagicMock(return_value=1.0)
+    monkeypatch.setattr(map_streaks_module, "_season_acts_mtime", fake_mtime)
+    fake_time = MagicMock(monotonic=lambda: 1000.0)
+    monkeypatch.setattr(map_streaks_module, "time", fake_time)
+    db1 = _mock_db_with_population_query([])
+    _get_acts_and_pools(db1)
+
+    fake_mtime.return_value = 2.0  # file edited -- must be picked up immediately, not after the TTL
+    db2 = _mock_db_with_population_query([])
+    fake_time.monotonic = lambda: 1001.0  # still well within the TTL
+    _get_acts_and_pools(db2)
+
+    db2.query.assert_called_once()
+
+
+def test_no_acts_short_circuits_without_a_population_query(monkeypatch):
+    monkeypatch.setattr(map_streaks_module, "_load_acts", lambda: [])
+    monkeypatch.setattr(map_streaks_module, "_season_acts_mtime", lambda: 1.0)
+    db = MagicMock()
+
+    acts, act_pools = _get_acts_and_pools(db)
+
+    assert acts == []
+    assert act_pools == []
+    db.query.assert_not_called()
+
+
+def test_compute_map_streaks_reuses_cached_population_across_two_players(monkeypatch):
+    monkeypatch.setattr(map_streaks_module, "_load_acts", lambda: [Act(label="A1", start=datetime(2026, 1, 1), end=None)])
+    monkeypatch.setattr(map_streaks_module, "_season_acts_mtime", lambda: 1.0)
+    monkeypatch.setattr(map_streaks_module, "time", MagicMock(monotonic=lambda: 1000.0))
+
+    call_log = []
+
+    def fake_query(*args):
+        call_log.append(args)
+        q = MagicMock()
+        # Population query: .filter(...).all(); player query: .join(...).filter(...).order_by(...).all()
+        q.filter.return_value.all.return_value = []
+        q.join.return_value.filter.return_value.order_by.return_value.all.return_value = []
+        return q
+
+    db = MagicMock()
+    db.query.side_effect = fake_query
+
+    compute_map_streaks(db, player_id=1)
+    compute_map_streaks(db, player_id=2)
+
+    # 1 population query (memoized across both calls) + 2 per-player queries.
+    assert db.query.call_count == 3

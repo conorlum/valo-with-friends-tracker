@@ -20,6 +20,7 @@ from app.services.fight_ev import (
     serialize_fight_ev_views,
 )
 from app.services.player_data import RECENT_MATCH_LIMIT, load_player_match_data
+from app.services.player_graphs import STATE_DIAGRAM_CALCULATION_VERSION
 from app.services.player_profile_types import GroupedStat, MatchBreakdown, PlayerProfile
 from app.services.player_view_cache import (
     PLAYER_VIEW_CACHE_SCHEMA_VERSION,
@@ -334,7 +335,10 @@ def test_serialize_fight_ev_views_keys_match_declared_view_keys():
 
 def test_cache_version_is_composite_of_schema_and_calculation_versions():
     assert cache_version() == (
-        PLAYER_VIEW_CACHE_SCHEMA_VERSION * 1_000_000 + CALCULATION_VERSION * 1000 + IMPACT_CALCULATION_VERSION
+        PLAYER_VIEW_CACHE_SCHEMA_VERSION * 1_000_000_000
+        + STATE_DIAGRAM_CALCULATION_VERSION * 1_000_000
+        + CALCULATION_VERSION * 1000
+        + IMPACT_CALCULATION_VERSION
     )
 
 
@@ -356,6 +360,16 @@ def test_cache_version_moves_when_impact_calculation_version_moves(monkeypatch):
     after = pvc.cache_version()
     assert after != before
     assert after == before + 1
+
+
+def test_cache_version_moves_when_state_diagram_calculation_version_moves(monkeypatch):
+    import app.services.player_view_cache as pvc
+
+    before = pvc.cache_version()
+    monkeypatch.setattr(pvc, "STATE_DIAGRAM_CALCULATION_VERSION", pvc.STATE_DIAGRAM_CALCULATION_VERSION + 1)
+    after = pvc.cache_version()
+    assert after != before
+    assert after == before + 1_000_000
 
 
 # ---------------------------------------------------------------------------
