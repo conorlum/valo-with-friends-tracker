@@ -1,0 +1,36 @@
+{# Expects: first_half_combo_stats, full_combo_stats, subject_label #}
+{% if first_half_combo_stats.rows or full_combo_stats.rows %}
+<div class="card">
+  <h2>Match win rate by pistol/round outcome combo</h2>
+  <p class="page-meta">For {{ subject_label }}: how often was the whole MATCH won, given how round 1 (pistol), round 2, round 13 (pistol), and round 14 each went. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
+
+  {% for combo_stats in (first_half_combo_stats, full_combo_stats) %}
+  {% if combo_stats.rows %}
+  <table>
+    <thead>
+      <tr>
+        {% for label in combo_stats.round_labels %}
+        <th data-sort="string">{{ label }}</th>
+        {% endfor %}
+        <th data-sort="number">Samples</th>
+        <th data-sort="number" aria-sort="descending">Match Win Rate</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in combo_stats.rows %}
+      <tr>
+        {% for outcome in row.outcomes %}
+        <td>{{ "Won" if outcome == "W" else "Lost" }}</td>
+        {% endfor %}
+        <td data-sort-value="{{ row.total }}">{{ row.total }}</td>
+        <td data-sort-value="{{ row.win_pct }}">
+          <span class="pill" style="background-color: {{ row.fill }};">{{ (row.win_pct * 100) | round | int }}%</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% endfor %}
+</div>
+{% endif %}

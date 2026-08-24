@@ -165,6 +165,8 @@ class EcoFollowupStats:
     best_immediate_win_bucket: EcoFollowupBucket | None
     best_kills_bucket: EcoFollowupBucket | None
     best_win_rate_next4_bucket: EcoFollowupBucket | None
+    overall_immediate_win_pct: float | None
+    overall_immediate_loss_pct: float | None
 
 
 def _bucket_label(idx: int) -> str:
@@ -176,10 +178,12 @@ def _bucket_label(idx: int) -> str:
 def build_eco_followup_stats_from_aggregates(variant: dict) -> EcoFollowupStats:
     buckets: list[EcoFollowupBucket] = []
     total_samples = 0
+    overall_wins = 0
     for idx, total, win, kills_ratio_sum, wins_ratio_sum in variant["buckets"]:
         if total == 0:
             continue
         total_samples += total
+        overall_wins += win
         immediate_win_pct = win / total
         avg_win_rate_next4 = wins_ratio_sum / total
         buckets.append(
@@ -195,10 +199,13 @@ def build_eco_followup_stats_from_aggregates(variant: dict) -> EcoFollowupStats:
         )
 
     eligible = [b for b in buckets if b.total >= MIN_SAMPLES_FOR_BEST]
+    overall_win_pct = overall_wins / total_samples if total_samples else None
     return EcoFollowupStats(
         buckets=buckets,
         total_samples=total_samples,
         best_immediate_win_bucket=max(eligible, key=lambda b: b.immediate_win_pct, default=None),
         best_kills_bucket=max(eligible, key=lambda b: b.avg_kills_next4, default=None),
         best_win_rate_next4_bucket=max(eligible, key=lambda b: b.avg_win_rate_next4, default=None),
+        overall_immediate_win_pct=overall_win_pct,
+        overall_immediate_loss_pct=(1 - overall_win_pct) if overall_win_pct is not None else None,
     )
