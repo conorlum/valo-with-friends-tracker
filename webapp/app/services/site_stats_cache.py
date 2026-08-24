@@ -6,8 +6,8 @@ degrade to a live recompute (app.services.site_stats), never a 500.
 The row holds a dict of independent canonical aggregates, one key per
 whole-database stat shown on that tab (pistol_match_stats,
 pistol_win_followup_eco, pistol_round_combos, map_side_stats,
-halftime_conversion, score_reached) -- adding another stat later means
-adding another key to this dict, not redesigning the cache.
+halftime_conversion, score_reached, round_streaks) -- adding another stat
+later means adding another key to this dict, not redesigning the cache.
 """
 
 import itertools
@@ -20,10 +20,11 @@ from sqlalchemy.orm import Session
 from app.models.site_stats_cache import SITE_STATS_CACHE_ROW_ID, SiteStatsCache
 from app.services.eco_followup import ECO_NUM_BUCKETS
 from app.services.round_combo_stats import FIRST_HALF_ROUNDS, FULL_ROUNDS
+from app.services.round_streak_stats import MAX_STREAK
 
 logger = logging.getLogger(__name__)
 
-SITE_STATS_CACHE_SCHEMA_VERSION = 7
+SITE_STATS_CACHE_SCHEMA_VERSION = 8
 # Bump when the shape of the stored blob changes (a stat's aggregate keys
 # change, or a stat is renamed/removed), or when compute_pistol_match_stats /
 # compute_pistol_win_followup_eco / compute_round_combo_stats / compute_map_side_stats
@@ -49,6 +50,9 @@ SITE_STATS_CACHE_SCHEMA_VERSION = 7
 # v7: added score_reached (match-win rate keyed by "team's final round count
 # was >= N" i.e. they reached N round wins at some point, "friends" and
 # "all" variants).
+# v8: added round_streaks (round-win-continuation rate keyed by "won round R,
+# then also won each of the next k rounds" for k=1..5, "friends" and "all"
+# variants).
 
 _PISTOL_MATCH_STATS_BUCKET_PREFIXES = ("lost_both", "won_one", "won_both")
 _PISTOL_MATCH_STATS_KEYS = frozenset(
@@ -206,6 +210,29 @@ def _validate_score_reached(data: object) -> bool:
     return _validate_score_reached_variant(data["friends"]) and _validate_score_reached_variant(data["all"])
 
 
+_ROUND_STREAK_VALID_KEYS = {str(i) for i in range(1, MAX_STREAK + 1)}
+
+
+def _validate_round_streak_bucket(bucket: object) -> bool:
+    if not isinstance(bucket, dict) or set(bucket.keys()) != {"total", "win"}:
+        return False
+    return _is_nonneg_int(bucket["total"]) and _is_nonneg_int(bucket["win"]) and bucket["win"] <= bucket["total"]
+
+
+def _validate_round_streak_variant(variant: object) -> bool:
+    if not isinstance(variant, dict):
+        return False
+    if not set(variant.keys()) <= _ROUND_STREAK_VALID_KEYS:
+        return False
+    return all(_validate_round_streak_bucket(bucket) for bucket in variant.values())
+
+
+def _validate_round_streaks(data: object) -> bool:
+    if not isinstance(data, dict) or set(data.keys()) != {"friends", "all"}:
+        return False
+    return _validate_round_streak_variant(data["friends"]) and _validate_round_streak_variant(data["all"])
+
+
 def _validate_blob(data: object) -> bool:
     if not isinstance(data, dict) or set(data.keys()) != {
         "pistol_match_stats",
@@ -214,6 +241,7 @@ def _validate_blob(data: object) -> bool:
         "map_side_stats",
         "halftime_conversion",
         "score_reached",
+        "round_streaks",
     }:
         return False
     if not _validate_pistol_match_stats(data["pistol_match_stats"]):
@@ -226,7 +254,9 @@ def _validate_blob(data: object) -> bool:
         return False
     if not _validate_halftime_conversion(data["halftime_conversion"]):
         return False
-    return _validate_score_reached(data["score_reached"])
+    if not _validate_score_reached(data["score_reached"]):
+        return False
+    return _validate_round_streaks(data["round_streaks"])
 
 
 def get_site_stats_cache(db: Session) -> dict | None:

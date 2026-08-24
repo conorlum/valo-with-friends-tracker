@@ -7,6 +7,7 @@ from app.services.eco_followup import MIN_SAMPLES_FOR_BEST, build_eco_followup_s
 from app.services.halftime_conversion_stats import build_halftime_conversion_stats
 from app.services.map_side_stats import build_map_side_stats_from_aggregates
 from app.services.round_combo_stats import build_round_combo_stats
+from app.services.round_streak_stats import build_round_streak_stats
 from app.services.score_reached_stats import build_score_reached_stats
 from app.services.site_stats import compute_roster_pistol_match_stats, get_site_stats
 from app.templates import templates
@@ -36,6 +37,7 @@ def _friends_context(db: Session, scope: str) -> dict:
         "map_side_stats": build_map_side_stats_from_aggregates(site_stats["map_side_stats"]["friends"]),
         "halftime_conversion_stats": build_halftime_conversion_stats(site_stats["halftime_conversion"]["friends"]),
         "score_reached_stats": build_score_reached_stats(site_stats["score_reached"]["friends"]),
+        "round_streak_stats": build_round_streak_stats(site_stats["round_streaks"]["friends"]),
     }
 
 
@@ -67,5 +69,6 @@ def all_players_page(request: Request, db: Session = Depends(get_db)):
         "map_side_stats": build_map_side_stats_from_aggregates(site_stats["map_side_stats"]["all"]),
         "halftime_conversion_stats": build_halftime_conversion_stats(site_stats["halftime_conversion"]["all"]),
         "score_reached_stats": build_score_reached_stats(site_stats["score_reached"]["all"]),
+        "round_streak_stats": build_round_streak_stats(site_stats["round_streaks"]["all"]),
     }
     return templates.TemplateResponse(request, "stats/detail.html", context)
