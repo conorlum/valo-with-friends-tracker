@@ -2,6 +2,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -31,7 +32,13 @@ class PlayerViewCache(Base):
     )
     scope: Mapped[str] = mapped_column(String(16), nullable=False)
     data: Mapped[dict] = mapped_column(JSON, nullable=False)
-    version: Mapped[int] = mapped_column(nullable=False)
+    # BigInteger, not the default 4-byte Integer: cache_version() packs
+    # PLAYER_VIEW_CACHE_SCHEMA_VERSION * 1_000_000_000 + ... (see
+    # app.services.player_view_cache.cache_version), which overflows a 4-byte
+    # integer (max ~2.1B) once the schema version reaches 3 -- every cache
+    # write silently failed with psycopg2.errors.NumericValueOutOfRange from
+    # that point until this column was widened.
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
