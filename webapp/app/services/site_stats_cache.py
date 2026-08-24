@@ -5,8 +5,9 @@ degrade to a live recompute (app.services.site_stats), never a 500.
 
 The row holds a dict of independent canonical aggregates, one key per
 whole-database stat shown on that tab (pistol_match_stats,
-pistol_win_followup_eco, pistol_round_combos) -- adding another stat later
-means adding another key to this dict, not redesigning the cache.
+pistol_win_followup_eco, pistol_round_combos, map_side_stats,
+halftime_conversion, score_reached) -- adding another stat later means
+adding another key to this dict, not redesigning the cache.
 """
 
 import itertools
@@ -22,7 +23,7 @@ from app.services.round_combo_stats import FIRST_HALF_ROUNDS, FULL_ROUNDS
 
 logger = logging.getLogger(__name__)
 
-SITE_STATS_CACHE_SCHEMA_VERSION = 5
+SITE_STATS_CACHE_SCHEMA_VERSION = 7
 # Bump when the shape of the stored blob changes (a stat's aggregate keys
 # change, or a stat is renamed/removed), or when compute_pistol_match_stats /
 # compute_pistol_win_followup_eco / compute_round_combo_stats / compute_map_side_stats
@@ -43,6 +44,11 @@ SITE_STATS_CACHE_SCHEMA_VERSION = 5
 # (average kills/round over the follow-up window, dropped for not being
 # discriminating enough to show) replaced with wins_ratio_sum_2 (win rate over
 # just the next 2 rounds, alongside the existing 4-round win rate).
+# v6: added halftime_conversion (match-win rate keyed by a team's own round
+# count after 12 rounds, "friends" and "all" variants).
+# v7: added score_reached (match-win rate keyed by "team's final round count
+# was >= N" i.e. they reached N round wins at some point, "friends" and
+# "all" variants).
 
 _PISTOL_MATCH_STATS_BUCKET_PREFIXES = ("lost_both", "won_one", "won_both")
 _PISTOL_MATCH_STATS_KEYS = frozenset(
@@ -152,9 +158,62 @@ def _validate_map_side_stats(data: object) -> bool:
     return _validate_map_side_variant(data["friends"]) and _validate_map_side_variant(data["all"])
 
 
+_HALFTIME_CONVERSION_VALID_KEYS = {str(i) for i in range(13)}
+
+
+def _validate_halftime_conversion_bucket(bucket: object) -> bool:
+    if not isinstance(bucket, dict) or set(bucket.keys()) != {"total", "win"}:
+        return False
+    return _is_nonneg_int(bucket["total"]) and _is_nonneg_int(bucket["win"]) and bucket["win"] <= bucket["total"]
+
+
+def _validate_halftime_conversion_variant(variant: object) -> bool:
+    if not isinstance(variant, dict):
+        return False
+    if not set(variant.keys()) <= _HALFTIME_CONVERSION_VALID_KEYS:
+        return False
+    return all(_validate_halftime_conversion_bucket(bucket) for bucket in variant.values())
+
+
+def _validate_halftime_conversion(data: object) -> bool:
+    if not isinstance(data, dict) or set(data.keys()) != {"friends", "all"}:
+        return False
+    return _validate_halftime_conversion_variant(data["friends"]) and _validate_halftime_conversion_variant(
+        data["all"]
+    )
+
+
+def _validate_score_reached_bucket(bucket: object) -> bool:
+    if not isinstance(bucket, dict) or set(bucket.keys()) != {"total", "win"}:
+        return False
+    return _is_nonneg_int(bucket["total"]) and _is_nonneg_int(bucket["win"]) and bucket["win"] <= bucket["total"]
+
+
+def _validate_score_reached_variant(variant: object) -> bool:
+    if not isinstance(variant, dict):
+        return False
+    for key, bucket in variant.items():
+        if not isinstance(key, str) or not key.isdigit():
+            return False
+        if not _validate_score_reached_bucket(bucket):
+            return False
+    return True
+
+
+def _validate_score_reached(data: object) -> bool:
+    if not isinstance(data, dict) or set(data.keys()) != {"friends", "all"}:
+        return False
+    return _validate_score_reached_variant(data["friends"]) and _validate_score_reached_variant(data["all"])
+
+
 def _validate_blob(data: object) -> bool:
     if not isinstance(data, dict) or set(data.keys()) != {
-        "pistol_match_stats", "pistol_win_followup_eco", "pistol_round_combos", "map_side_stats",
+        "pistol_match_stats",
+        "pistol_win_followup_eco",
+        "pistol_round_combos",
+        "map_side_stats",
+        "halftime_conversion",
+        "score_reached",
     }:
         return False
     if not _validate_pistol_match_stats(data["pistol_match_stats"]):
@@ -163,7 +222,11 @@ def _validate_blob(data: object) -> bool:
         return False
     if not _validate_pistol_round_combos(data["pistol_round_combos"]):
         return False
-    return _validate_map_side_stats(data["map_side_stats"])
+    if not _validate_map_side_stats(data["map_side_stats"]):
+        return False
+    if not _validate_halftime_conversion(data["halftime_conversion"]):
+        return False
+    return _validate_score_reached(data["score_reached"])
 
 
 def get_site_stats_cache(db: Session) -> dict | None:

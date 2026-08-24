@@ -1,0 +1,28 @@
+{# Expects: halftime_conversion_stats, subject_label #}
+{% if halftime_conversion_stats.rows %}
+<div class="card">
+  <h2>Match win rate by halftime score</h2>
+  <p class="page-meta">For {{ subject_label }}: given a team won this many of the first 12 rounds, what fraction of those matches did they go on to win overall. Round 13 onward isn't looked at. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th data-sort="string">Halftime score</th>
+        <th data-sort="number">Samples</th>
+        <th data-sort="number" aria-sort="descending">Match Win Rate</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in halftime_conversion_stats.rows %}
+      <tr>
+        <td>{{ row.own }}-{{ row.opp }}</td>
+        <td data-sort-value="{{ row.total }}">{{ row.total }}</td>
+        <td data-sort-value="{{ row.win_pct }}">
+          <span class="pill" style="background-color: {{ row.fill }};">{{ (row.win_pct * 100) | round | int }}%</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
