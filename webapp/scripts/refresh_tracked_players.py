@@ -11,8 +11,11 @@ After the whole roster is refreshed, every player whose player_view_cache rows
 were invalidated by ANY ingested match gets a full career recompute (a
 pre-warm), once each -- not once per match, which would be quadratic over a
 12-player x 20-match refresh. That's still roughly (number of players with
-new matches) x several seconds. Pass --no-prewarm to skip it and let the
-cache repopulate lazily as pages are visited.
+new matches) x several seconds. The site-wide "All Players" stats cache
+(app.services.site_stats_cache) is refreshed once too, regardless of
+--no-prewarm (it's a single cheap call, not a per-player fan-out). Pass
+--no-prewarm to skip the per-player pre-warm and let that cache repopulate
+lazily as pages are visited.
 
 Usage:
     .venv\\Scripts\\python.exe scripts\\refresh_tracked_players.py --count 20
@@ -32,6 +35,7 @@ from playwright.sync_api import sync_playwright
 from app.adapters.trackergg_browserstate_source import ingest_recent_matches
 from app.db import SessionLocal
 from app.services.player_view_cache import prewarm_player_cache
+from app.services.site_stats import refresh_site_stats
 
 CDP_URL = "http://localhost:9222"
 ROSTER_PATH = Path(__file__).resolve().parent / "tracked_players.json"
@@ -65,6 +69,10 @@ def main(count: int, no_prewarm: bool) -> None:
         if all_dirty and not no_prewarm:
             print(f"pre-warming cache for {len(all_dirty)} player(s)...")
             prewarm_player_cache(db, all_dirty)
+
+        if all_dirty:
+            print("refreshing site stats cache...")
+            refresh_site_stats(db)
     finally:
         db.close()
 

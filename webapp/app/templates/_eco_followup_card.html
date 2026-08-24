@@ -1,0 +1,65 @@
+{# Expects: eco_followup_stats, subject_label #}
+{% if eco_followup_stats.buckets %}
+<div class="card">
+  <h2>Buying after a pistol win</h2>
+  <p class="page-meta">Team total loadout (all 5 players' buy combined) in the round right after {{ subject_label }} won a pistol round (round 2 or round 14), and what it predicted. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
+
+  <div class="stat-grid">
+    <div class="stat-tile">
+      <div class="stat-label">Best buy to win that round</div>
+      {% if eco_followup_stats.best_immediate_win_bucket %}
+      <div class="stat-value">{{ eco_followup_stats.best_immediate_win_bucket.label }}</div>
+      <div class="page-meta">{{ (eco_followup_stats.best_immediate_win_bucket.immediate_win_pct * 100) | round | int }}% won ({{ eco_followup_stats.best_immediate_win_bucket.total }} rounds)</div>
+      {% else %}
+      <div class="stat-value stat-empty">&ndash;</div>
+      {% endif %}
+    </div>
+    <div class="stat-tile">
+      <div class="stat-label">Best buy for kills over next 4 rounds</div>
+      {% if eco_followup_stats.best_kills_bucket %}
+      <div class="stat-value">{{ eco_followup_stats.best_kills_bucket.label }}</div>
+      <div class="page-meta">{{ "%.1f" | format(eco_followup_stats.best_kills_bucket.avg_kills_next4) }} kills/round ({{ eco_followup_stats.best_kills_bucket.total }} rounds)</div>
+      {% else %}
+      <div class="stat-value stat-empty">&ndash;</div>
+      {% endif %}
+    </div>
+    <div class="stat-tile">
+      <div class="stat-label">Best buy for wins over next 4 rounds</div>
+      {% if eco_followup_stats.best_win_rate_next4_bucket %}
+      <div class="stat-value">{{ eco_followup_stats.best_win_rate_next4_bucket.label }}</div>
+      <div class="page-meta">{{ (eco_followup_stats.best_win_rate_next4_bucket.avg_win_rate_next4 * 100) | round | int }}% of rounds won ({{ eco_followup_stats.best_win_rate_next4_bucket.total }} rounds)</div>
+      {% else %}
+      <div class="stat-value stat-empty">&ndash;</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th data-sort="number" aria-sort="ascending">Team Buy (credits)</th>
+        <th data-sort="number">Samples</th>
+        <th data-sort="number">Won That Round</th>
+        <th data-sort="number">Avg Kills (next 4 rounds)</th>
+        <th data-sort="number">Win Rate (next 4 rounds)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in eco_followup_stats.buckets %}
+      <tr>
+        <td data-sort-value="{{ b.label.split('-')[0] | replace(',', '') }}">{{ b.label }}</td>
+        <td data-sort-value="{{ b.total }}">{{ b.total }}</td>
+        <td data-sort-value="{{ b.immediate_win_pct }}">
+          <span class="pill" style="background-color: {{ b.immediate_fill }};">{{ (b.immediate_win_pct * 100) | round | int }}%</span>
+        </td>
+        <td data-sort-value="{{ b.avg_kills_next4 }}">{{ "%.1f" | format(b.avg_kills_next4) }}</td>
+        <td data-sort-value="{{ b.avg_win_rate_next4 }}">
+          <span class="pill" style="background-color: {{ b.next4_fill }};">{{ (b.avg_win_rate_next4 * 100) | round | int }}%</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="page-meta">{{ eco_followup_stats.total_samples }} pistol-round wins total. "Best" callouts above only consider buckets with at least {{ eco_followup_min_samples }} samples.</p>
+</div>
+{% endif %}

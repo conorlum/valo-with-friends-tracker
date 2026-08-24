@@ -10,7 +10,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings
 from app.db import get_db
-from app.routers import auth, friends, map_prediction, matches, players, sessions, squad
+from app.routers import auth, friends, map_prediction, matches, players, sessions, site_stats, squad
 from app.services.auth import get_current_player
 from app.templates import templates
 
@@ -27,6 +27,7 @@ app.include_router(map_prediction.router)
 app.include_router(matches.router)
 app.include_router(players.router)
 app.include_router(sessions.router)
+app.include_router(site_stats.router)
 app.include_router(squad.router)
 
 

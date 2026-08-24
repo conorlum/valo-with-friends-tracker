@@ -8,6 +8,7 @@ from app.db import SessionLocal
 from app.models import ImpactScore, Match, MatchPlayer, Player, Round
 from app.scoring.impact import compute_impact_for_match
 from app.services.player_view_cache import filter_cached_player_ids, invalidate_player_cache
+from app.services.site_stats_cache import invalidate_site_stats_cache
 
 
 def main(filename: str) -> None:
@@ -35,7 +36,8 @@ def main(filename: str) -> None:
         affected = filter_cached_player_ids(db, old_ids | new_ids)
         if affected:
             invalidate_player_cache(db, affected)
-            db.commit()
+        invalidate_site_stats_cache(db)    # every new/changed match affects the All Players stats
+        db.commit()
 
         compute_impact_for_match(db, match.id)          # commits internally
 

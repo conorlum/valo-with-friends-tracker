@@ -19,6 +19,7 @@ from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayer
 from app.models.match import MatchSource, Team
 from app.scoring.impact import compute_impact_for_match
 from app.services.player_view_cache import find_cached_player_ids_for_match, invalidate_player_cache
+from app.services.site_stats_cache import invalidate_site_stats_cache
 
 MATCH_URL_TMPL = "https://tracker.gg/valorant/match/{match_id}"
 MATCH_API_MARKER_TMPL = "api.tracker.gg/api/v2/valorant/standard/matches/{match_id}"
@@ -359,8 +360,12 @@ def _dedup_and_ingest(db: Session, page: Page, match_ids: list[str]) -> set[int]
         cached_ids = find_cached_player_ids_for_match(db, match.id)
         if cached_ids:
             invalidate_player_cache(db, cached_ids)    # DELETE, no commit
-            db.commit()                                # invalidation visible
             dirty |= cached_ids
+        # Unlike the per-player cache above, the "All Players" site-stats cache
+        # covers EVERY match in the DB, so it's invalidated on every new match
+        # regardless of whether cached_ids is empty.
+        invalidate_site_stats_cache(db)                # DELETE, no commit
+        db.commit()                                    # invalidation visible
 
         compute_impact_for_match(db, match.id)         # commits internally
         print(f"  ingested {match.map_name} ({match_id})")

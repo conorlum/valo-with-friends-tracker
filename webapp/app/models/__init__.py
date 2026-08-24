@@ -5,6 +5,7 @@ from app.models.kill_event import KillEvent
 from app.models.impact_score import ImpactScore
 from app.models.friendship import Friendship
 from app.models.player_view_cache import PlayerViewCache
+from app.models.site_stats_cache import SiteStatsCache
 
 __all__ = [
     "Player",
@@ -16,4 +17,5 @@ __all__ = [
     "ImpactScore",
     "Friendship",
     "PlayerViewCache",
+    "SiteStatsCache",
 ]
