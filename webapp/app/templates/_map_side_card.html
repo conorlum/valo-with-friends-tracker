@@ -20,7 +20,7 @@
         <td>{{ row.map_name }}</td>
         <td data-sort-value="{{ row.matches }}">{{ row.matches }}</td>
         <td data-sort-value="{{ row.rounds }}">{{ row.rounds }}</td>
-        <td data-sort-value="{{ row.attack_win_pct }}">
+        <td data-sort-value="{{ row.z }}">
           <span class="pill" style="background-color: {{ row.fill }};">{{ (row.attack_win_pct * 100) | round | int }}%</span>
         </td>
         <td>{{ row.label }}</td>

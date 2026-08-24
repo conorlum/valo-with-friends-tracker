@@ -99,6 +99,7 @@ class MapSideRow:
     attack_win_pct: float
     fill: str
     label: str  # "Attacker-sided" / "Defender-sided" / "Neutral"
+    z: float  # signed significance score -- see _z. Drives both `label` and row order.
 
 
 @dataclass
@@ -106,11 +107,14 @@ class MapSideStats:
     rows: list[MapSideRow]
 
 
-def _classify(attack_win_pct: float, rounds: int) -> str:
+def _z(attack_win_pct: float, rounds: int) -> float:
     if rounds == 0:
-        return "Neutral"
+        return 0.0
     se = math.sqrt(0.25 / rounds)
-    z = (attack_win_pct - 0.5) / se
+    return (attack_win_pct - 0.5) / se
+
+
+def _classify(z: float) -> str:
     if z >= SIDED_Z_THRESHOLD:
         return "Attacker-sided"
     if z <= -SIDED_Z_THRESHOLD:
@@ -125,6 +129,7 @@ def build_map_side_stats_from_aggregates(variant: dict) -> MapSideStats:
         if rounds == 0:
             continue
         attack_win_pct = bucket["attack_wins"] / rounds
+        z = _z(attack_win_pct, rounds)
         rows.append(
             MapSideRow(
                 map_name=map_name,
@@ -132,9 +137,17 @@ def build_map_side_stats_from_aggregates(variant: dict) -> MapSideStats:
                 rounds=rounds,
                 attack_win_pct=attack_win_pct,
                 fill=win_color(attack_win_pct),
-                label=_classify(attack_win_pct, rounds),
+                label=_classify(z),
+                z=z,
             )
         )
 
-    rows.sort(key=lambda r: -r.attack_win_pct)
+    # Sort by significance (z), not raw attack_win_pct: two maps can round to
+    # the same displayed percentage while one is "Attacker-sided" and the
+    # other "Neutral" because it has far fewer rounds behind it (see
+    # SIDED_Z_THRESHOLD) -- sorting by raw pct could then rank the Neutral
+    # map above the Attacker-sided one, which reads as a contradiction next
+    # to the Verdict column. Sorting by z guarantees every Attacker-sided row
+    # outranks every Neutral row, which outranks every Defender-sided row.
+    rows.sort(key=lambda r: -r.z)
     return MapSideStats(rows=rows)
