@@ -373,6 +373,16 @@ a {
   font-weight: 600;
 }
 
+.text-good {
+  color: var(--good);
+  font-weight: 600;
+}
+
+.text-critical {
+  color: var(--critical);
+  font-weight: 600;
+}
+
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
