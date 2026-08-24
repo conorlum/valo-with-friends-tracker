@@ -22,13 +22,13 @@ from app.services.round_combo_stats import FIRST_HALF_ROUNDS, FULL_ROUNDS
 
 logger = logging.getLogger(__name__)
 
-SITE_STATS_CACHE_SCHEMA_VERSION = 3
+SITE_STATS_CACHE_SCHEMA_VERSION = 4
 # Bump when the shape of the stored blob changes (a stat's aggregate keys
 # change, or a stat is renamed/removed), or when compute_pistol_match_stats /
-# compute_pistol_win_followup_eco / compute_round_combo_stats (or any other
-# stat this blob covers) changes its round-exclusion/aggregation rules.
-# There's no separate calculation-version constant to fold in here the way
-# player_view_cache folds in IMPACT_CALCULATION_VERSION etc. -- every stat
+# compute_pistol_win_followup_eco / compute_round_combo_stats / compute_map_side_stats
+# (or any other stat this blob covers) changes its round-exclusion/aggregation
+# rules. There's no separate calculation-version constant to fold in here the
+# way player_view_cache folds in IMPACT_CALCULATION_VERSION etc. -- every stat
 # this cache covers reads raw Match/Round/MatchPlayer rows directly, with no
 # intermediate versioned calculation of its own.
 #
@@ -36,6 +36,8 @@ SITE_STATS_CACHE_SCHEMA_VERSION = 3
 # both "friends" and "all" variants) alongside pistol_match_stats.
 # v3: added pistol_round_combos (match-win rate by pistol/round-2/round-13/
 # round-14 W-L combination, "first_half" and "full" granularities, both
+# "friends" and "all" variants).
+# v4: added map_side_stats (per-map attacker vs. defender round-win rate,
 # "friends" and "all" variants).
 
 _PISTOL_MATCH_STATS_BUCKET_PREFIXES = ("lost_both", "won_one", "won_both")
@@ -122,16 +124,42 @@ def _validate_pistol_round_combos(data: object) -> bool:
     return _validate_round_combo_variant(data["friends"]) and _validate_round_combo_variant(data["all"])
 
 
+_MAP_SIDE_BUCKET_KEYS = {"matches", "attack_wins", "defense_wins"}
+
+
+def _validate_map_side_bucket(bucket: object) -> bool:
+    if not isinstance(bucket, dict) or set(bucket.keys()) != _MAP_SIDE_BUCKET_KEYS:
+        return False
+    return all(_is_nonneg_int(bucket[k]) for k in _MAP_SIDE_BUCKET_KEYS)
+
+
+def _validate_map_side_variant(variant: object) -> bool:
+    if not isinstance(variant, dict):
+        return False
+    return all(
+        isinstance(map_name, str) and _validate_map_side_bucket(bucket)
+        for map_name, bucket in variant.items()
+    )
+
+
+def _validate_map_side_stats(data: object) -> bool:
+    if not isinstance(data, dict) or set(data.keys()) != {"friends", "all"}:
+        return False
+    return _validate_map_side_variant(data["friends"]) and _validate_map_side_variant(data["all"])
+
+
 def _validate_blob(data: object) -> bool:
     if not isinstance(data, dict) or set(data.keys()) != {
-        "pistol_match_stats", "pistol_win_followup_eco", "pistol_round_combos",
+        "pistol_match_stats", "pistol_win_followup_eco", "pistol_round_combos", "map_side_stats",
     }:
         return False
     if not _validate_pistol_match_stats(data["pistol_match_stats"]):
         return False
     if not _validate_pistol_win_followup_eco(data["pistol_win_followup_eco"]):
         return False
-    return _validate_pistol_round_combos(data["pistol_round_combos"])
+    if not _validate_pistol_round_combos(data["pistol_round_combos"]):
+        return False
+    return _validate_map_side_stats(data["map_side_stats"])
 
 
 def get_site_stats_cache(db: Session) -> dict | None:
