@@ -1,0 +1,34 @@
+{# Expects: pistol_match_stats, pistol_card_title, pistol_card_description #}
+{% if pistol_match_stats.lost_both_total or pistol_match_stats.won_one_total or pistol_match_stats.won_both_total %}
+<div class="card">
+  <h2>{{ pistol_card_title }}</h2>
+  <p class="page-meta">{{ pistol_card_description }}</p>
+  <p class="page-meta">
+    Lost both pistol rounds &rarr; won the match:
+    {% if pistol_match_stats.lost_both_total %}
+    <span class="pill" style="background-color: {{ pistol_match_stats.lost_both_fill }};" title="{{ pistol_match_stats.lost_both_wins }}/{{ pistol_match_stats.lost_both_total }} matches won">{{ (pistol_match_stats.lost_both_win_pct * 100) | round | int }}%</span>
+    <span style="margin-left: 0.4rem;">({{ pistol_match_stats.lost_both_wins }}/{{ pistol_match_stats.lost_both_total }})</span>
+    {% else %}
+    <span class="stat-empty">&ndash;</span>
+    {% endif %}
+  </p>
+  <p class="page-meta">
+    Won one pistol round &rarr; won the match:
+    {% if pistol_match_stats.won_one_total %}
+    <span class="pill" style="background-color: {{ pistol_match_stats.won_one_fill }};" title="{{ pistol_match_stats.won_one_wins }}/{{ pistol_match_stats.won_one_total }} matches won">{{ (pistol_match_stats.won_one_win_pct * 100) | round | int }}%</span>
+    <span style="margin-left: 0.4rem;">({{ pistol_match_stats.won_one_wins }}/{{ pistol_match_stats.won_one_total }})</span>
+    {% else %}
+    <span class="stat-empty">&ndash;</span>
+    {% endif %}
+  </p>
+  <p class="page-meta">
+    Won both pistol rounds &rarr; won the match:
+    {% if pistol_match_stats.won_both_total %}
+    <span class="pill" style="background-color: {{ pistol_match_stats.won_both_fill }};" title="{{ pistol_match_stats.won_both_wins }}/{{ pistol_match_stats.won_both_total }} matches won">{{ (pistol_match_stats.won_both_win_pct * 100) | round | int }}%</span>
+    <span style="margin-left: 0.4rem;">({{ pistol_match_stats.won_both_wins }}/{{ pistol_match_stats.won_both_total }})</span>
+    {% else %}
+    <span class="stat-empty">&ndash;</span>
+    {% endif %}
+  </p>
+</div>
+{% endif %}

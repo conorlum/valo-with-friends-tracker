@@ -105,39 +105,9 @@
 {% set econ_tier_description = "Win rate of rounds where " ~ profile.player.display_name ~ "'s team bought at each tier (rows), split by what the enemy bought that same round (columns)." %}
 {% include "_econ_tier_matrix.html" %}
 
-{% if pistol_match_stats.lost_both_total or pistol_match_stats.won_one_total or pistol_match_stats.won_both_total %}
-<div class="card">
-  <h2>Pistols won into match wins</h2>
-  <p class="page-meta">How often winning 0, 1, or both pistol rounds (round 1 and 13) turned into winning the match, for {{ profile.player.display_name }}.</p>
-  <p class="page-meta">
-    Lost both pistol rounds &rarr; won the match:
-    {% if pistol_match_stats.lost_both_total %}
-    <span class="pill" style="background-color: {{ pistol_match_stats.lost_both_fill }};" title="{{ pistol_match_stats.lost_both_wins }}/{{ pistol_match_stats.lost_both_total }} matches won">{{ (pistol_match_stats.lost_both_win_pct * 100) | round | int }}%</span>
-    <span style="margin-left: 0.4rem;">({{ pistol_match_stats.lost_both_wins }}/{{ pistol_match_stats.lost_both_total }})</span>
-    {% else %}
-    <span class="stat-empty">&ndash;</span>
-    {% endif %}
-  </p>
-  <p class="page-meta">
-    Won one pistol round &rarr; won the match:
-    {% if pistol_match_stats.won_one_total %}
-    <span class="pill" style="background-color: {{ pistol_match_stats.won_one_fill }};" title="{{ pistol_match_stats.won_one_wins }}/{{ pistol_match_stats.won_one_total }} matches won">{{ (pistol_match_stats.won_one_win_pct * 100) | round | int }}%</span>
-    <span style="margin-left: 0.4rem;">({{ pistol_match_stats.won_one_wins }}/{{ pistol_match_stats.won_one_total }})</span>
-    {% else %}
-    <span class="stat-empty">&ndash;</span>
-    {% endif %}
-  </p>
-  <p class="page-meta">
-    Won both pistol rounds &rarr; won the match:
-    {% if pistol_match_stats.won_both_total %}
-    <span class="pill" style="background-color: {{ pistol_match_stats.won_both_fill }};" title="{{ pistol_match_stats.won_both_wins }}/{{ pistol_match_stats.won_both_total }} matches won">{{ (pistol_match_stats.won_both_win_pct * 100) | round | int }}%</span>
-    <span style="margin-left: 0.4rem;">({{ pistol_match_stats.won_both_wins }}/{{ pistol_match_stats.won_both_total }})</span>
-    {% else %}
-    <span class="stat-empty">&ndash;</span>
-    {% endif %}
-  </p>
-</div>
-{% endif %}
+{% set pistol_card_title = "Pistols won into match wins" %}
+{% set pistol_card_description = "How often winning 0, 1, or both pistol rounds (round 1 and 13) turned into winning the match, for " ~ profile.player.display_name ~ "." %}
+{% include "_pistol_match_stats_card.html" %}
 
 {% if kill_order_graph.nodes %}
 <div class="card">

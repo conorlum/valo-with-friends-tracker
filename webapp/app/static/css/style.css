@@ -822,6 +822,7 @@ footer {
   background: transparent;
   color: var(--ink-secondary);
   cursor: pointer;
+  text-decoration: none;
 }
 .scope-toggle-btn.active { background: var(--good); color: #ffffff; border-color: var(--good); }
 

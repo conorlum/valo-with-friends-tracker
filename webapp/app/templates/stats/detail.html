@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Stats - ValoWithFriendsTracker{% endblock %}
+
+{% block content %}
+<h1>Stats</h1>
+<p class="page-meta">Stats computed across many players at once, rather than one player's own profile.</p>
+
+<div class="scope-toggle">
+  <a href="/stats" class="scope-toggle-btn{{ ' active' if group == 'friends' else '' }}">Friends</a>
+  <a href="/stats/all" class="scope-toggle-btn{{ ' active' if group == 'all' else '' }}">All Players</a>
+</div>
+
+{% if group == 'friends' %}
+<div class="scope-toggle">
+  <button type="button" class="scope-toggle-btn active" data-scope="recent">Recent 30</button>
+  <button type="button" class="scope-toggle-btn" data-scope="career">Career</button>
+</div>
+
+<div id="recent-sections">
+  {% include "stats/_stats_sections.html" %}
+</div>
+
+<div id="career-sections" style="display:none;"
+     hx-get="/stats/friends/career"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+  <p class="page-meta htmx-indicator">Loading career stats&hellip;</p>
+</div>
+
+<script>
+  document.querySelectorAll(".scope-toggle-btn[data-scope]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".scope-toggle-btn[data-scope]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("recent-sections").style.display = btn.dataset.scope === "recent" ? "" : "none";
+      document.getElementById("career-sections").style.display = btn.dataset.scope === "career" ? "" : "none";
+    });
+  });
+</script>
+{% else %}
+<p class="page-meta">All-time, across every player ever recorded in the database (not just the tracked friend group).</p>
+{% include "stats/_stats_sections.html" %}
+{% endif %}
+{% endblock %}
