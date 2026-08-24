@@ -6,6 +6,15 @@
 
   <div class="stat-grid">
     <div class="stat-tile">
+      <div class="stat-label">Overall: won vs. lost that round</div>
+      {% if eco_followup_stats.overall_immediate_win_pct is not none %}
+      <div class="stat-value">{{ (eco_followup_stats.overall_immediate_win_pct * 100) | round | int }}% / {{ (eco_followup_stats.overall_immediate_loss_pct * 100) | round | int }}%</div>
+      <div class="page-meta">won / lost, across every buy amount ({{ eco_followup_stats.total_samples }} rounds)</div>
+      {% else %}
+      <div class="stat-value stat-empty">&ndash;</div>
+      {% endif %}
+    </div>
+    <div class="stat-tile">
       <div class="stat-label">Best buy to win that round</div>
       {% if eco_followup_stats.best_immediate_win_bucket %}
       <div class="stat-value">{{ eco_followup_stats.best_immediate_win_bucket.label }}</div>
