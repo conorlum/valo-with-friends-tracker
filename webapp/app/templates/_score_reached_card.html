@@ -1,0 +1,28 @@
+{# Expects: score_reached_stats, subject_label #}
+{% if score_reached_stats.rows %}
+<div class="card">
+  <h2>Match win rate by rounds reached</h2>
+  <p class="page-meta">For {{ subject_label }}: once a team has won N rounds -- at any point in the match, regardless of the opponent's score -- what fraction of the time do they go on to win overall. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th data-sort="number">Rounds won</th>
+        <th data-sort="number">Samples</th>
+        <th data-sort="number" aria-sort="descending">Match Win Rate</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in score_reached_stats.rows %}
+      <tr>
+        <td data-sort-value="{{ row.score }}">{{ row.score }}</td>
+        <td data-sort-value="{{ row.total }}">{{ row.total }}</td>
+        <td data-sort-value="{{ row.win_pct }}">
+          <span class="pill" style="background-color: {{ row.fill }};">{{ (row.win_pct * 100) | round | int }}%</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
