@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models import Match, MatchPlayer, Player, PlayerViewCache, Round
 from app.services.eco_followup import compute_pistol_win_followup_eco
+from app.services.map_side_stats import compute_map_side_stats
 from app.services.player_data import RECENT_MATCH_LIMIT
 from app.services.player_profile_types import compute_pistol_match_stats
 from app.services.player_view_cache import cache_version
@@ -179,6 +180,7 @@ def _compute_site_stats(db: Session) -> dict:
         "pistol_match_stats": compute_pistol_match_stats(match_players),
         "pistol_win_followup_eco": compute_pistol_win_followup_eco(matches, roster_player_ids),
         "pistol_round_combos": compute_round_combo_stats(matches, roster_player_ids),
+        "map_side_stats": compute_map_side_stats(matches, roster_player_ids),
     }
 
 

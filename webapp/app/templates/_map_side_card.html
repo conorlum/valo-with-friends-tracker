@@ -1,0 +1,32 @@
+{# Expects: map_side_stats, subject_label #}
+{% if map_side_stats.rows %}
+<div class="card">
+  <h2>Attack vs. defense win rate by map</h2>
+  <p class="page-meta">For {{ subject_label }}: which side wins more rounds on each map, using round 1's attacking side (whichever team is labeled "Team A") plus the standard round-13 half swap and overtime's every-round swap starting on round 25. Every map we have any recorded matches for, whether or not it's in the current rotation -- check the Matches column for sample size. "Sided" means the gap from 50% is large enough to not just be sampling noise, given that map's round count -- not just whichever side is nominally ahead. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th data-sort="string">Map</th>
+        <th data-sort="number">Matches</th>
+        <th data-sort="number">Rounds</th>
+        <th data-sort="number" aria-sort="descending">Attack Win Rate</th>
+        <th data-sort="string">Verdict</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in map_side_stats.rows %}
+      <tr>
+        <td>{{ row.map_name }}</td>
+        <td data-sort-value="{{ row.matches }}">{{ row.matches }}</td>
+        <td data-sort-value="{{ row.rounds }}">{{ row.rounds }}</td>
+        <td data-sort-value="{{ row.attack_win_pct }}">
+          <span class="pill" style="background-color: {{ row.fill }};">{{ (row.attack_win_pct * 100) | round | int }}%</span>
+        </td>
+        <td>{{ row.label }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
