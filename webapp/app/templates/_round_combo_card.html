@@ -20,7 +20,7 @@
       {% for row in combo_stats.rows %}
       <tr>
         {% for outcome in row.outcomes %}
-        <td>{{ "Won" if outcome == "W" else "Lost" }}</td>
+        <td class="{{ 'text-good' if outcome == 'W' else 'text-critical' }}">{{ "Won" if outcome == "W" else "Lost" }}</td>
         {% endfor %}
         <td data-sort-value="{{ row.total }}">{{ row.total }}</td>
         <td data-sort-value="{{ row.win_pct }}">

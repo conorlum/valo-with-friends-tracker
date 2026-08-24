@@ -22,7 +22,7 @@ from app.services.round_combo_stats import FIRST_HALF_ROUNDS, FULL_ROUNDS
 
 logger = logging.getLogger(__name__)
 
-SITE_STATS_CACHE_SCHEMA_VERSION = 4
+SITE_STATS_CACHE_SCHEMA_VERSION = 5
 # Bump when the shape of the stored blob changes (a stat's aggregate keys
 # change, or a stat is renamed/removed), or when compute_pistol_match_stats /
 # compute_pistol_win_followup_eco / compute_round_combo_stats / compute_map_side_stats
@@ -39,6 +39,10 @@ SITE_STATS_CACHE_SCHEMA_VERSION = 4
 # "friends" and "all" variants).
 # v4: added map_side_stats (per-map attacker vs. defender round-win rate,
 # "friends" and "all" variants).
+# v5: pistol_win_followup_eco's per-bucket row changed shape -- kills_ratio_sum
+# (average kills/round over the follow-up window, dropped for not being
+# discriminating enough to show) replaced with wins_ratio_sum_2 (win rate over
+# just the next 2 rounds, alongside the existing 4-round win rate).
 
 _PISTOL_MATCH_STATS_BUCKET_PREFIXES = ("lost_both", "won_one", "won_both")
 _PISTOL_MATCH_STATS_KEYS = frozenset(
@@ -67,14 +71,14 @@ def _validate_pistol_match_stats(stats: object) -> bool:
 def _validate_eco_bucket_row(row: object) -> bool:
     if not isinstance(row, list) or len(row) != 5:
         return False
-    idx, total, win, kills_ratio_sum, wins_ratio_sum = row
+    idx, total, win, wins_ratio_sum_2, wins_ratio_sum_4 = row
     if not isinstance(idx, int) or isinstance(idx, bool) or not (0 <= idx < ECO_NUM_BUCKETS):
         return False
     if not _is_nonneg_int(total) or not _is_nonneg_int(win) or win > total:
         return False
-    if not _is_number(kills_ratio_sum) or not _is_number(wins_ratio_sum):
+    if not _is_number(wins_ratio_sum_2) or not _is_number(wins_ratio_sum_4):
         return False
-    return kills_ratio_sum >= 0 and wins_ratio_sum >= 0
+    return wins_ratio_sum_2 >= 0 and wins_ratio_sum_4 >= 0
 
 
 def _validate_eco_followup_variant(variant: object) -> bool:

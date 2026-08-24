@@ -24,10 +24,10 @@
       {% endif %}
     </div>
     <div class="stat-tile">
-      <div class="stat-label">Best buy for kills over next 4 rounds</div>
-      {% if eco_followup_stats.best_kills_bucket %}
-      <div class="stat-value">{{ eco_followup_stats.best_kills_bucket.label }}</div>
-      <div class="page-meta">{{ "%.1f" | format(eco_followup_stats.best_kills_bucket.avg_kills_next4) }} kills/round ({{ eco_followup_stats.best_kills_bucket.total }} rounds)</div>
+      <div class="stat-label">Best buy for wins over next 2 rounds</div>
+      {% if eco_followup_stats.best_win_rate_next2_bucket %}
+      <div class="stat-value">{{ eco_followup_stats.best_win_rate_next2_bucket.label }}</div>
+      <div class="page-meta">{{ (eco_followup_stats.best_win_rate_next2_bucket.avg_win_rate_next2 * 100) | round | int }}% of rounds won ({{ eco_followup_stats.best_win_rate_next2_bucket.total }} rounds)</div>
       {% else %}
       <div class="stat-value stat-empty">&ndash;</div>
       {% endif %}
@@ -49,7 +49,7 @@
         <th data-sort="number" aria-sort="ascending">Team Buy (credits)</th>
         <th data-sort="number">Samples</th>
         <th data-sort="number">Won That Round</th>
-        <th data-sort="number">Avg Kills (next 4 rounds)</th>
+        <th data-sort="number">Win Rate (next 2 rounds)</th>
         <th data-sort="number">Win Rate (next 4 rounds)</th>
       </tr>
     </thead>
@@ -61,7 +61,9 @@
         <td data-sort-value="{{ b.immediate_win_pct }}">
           <span class="pill" style="background-color: {{ b.immediate_fill }};">{{ (b.immediate_win_pct * 100) | round | int }}%</span>
         </td>
-        <td data-sort-value="{{ b.avg_kills_next4 }}">{{ "%.1f" | format(b.avg_kills_next4) }}</td>
+        <td data-sort-value="{{ b.avg_win_rate_next2 }}">
+          <span class="pill" style="background-color: {{ b.next2_fill }};">{{ (b.avg_win_rate_next2 * 100) | round | int }}%</span>
+        </td>
         <td data-sort-value="{{ b.avg_win_rate_next4 }}">
           <span class="pill" style="background-color: {{ b.next4_fill }};">{{ (b.avg_win_rate_next4 * 100) | round | int }}%</span>
         </td>

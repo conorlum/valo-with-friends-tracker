@@ -4,8 +4,12 @@ value) in the round right after a won pistol round (round 2 after round 1,
 round 14 after round 13) against three outcomes:
 
   - did the team also win that immediate follow-up round
-  - average kills per round over the following 4 rounds (2-5 / 14-17)
-  - average round-win rate over that same 4-round window
+  - average round-win rate over the next 2 rounds (2-3 / 14-15)
+  - average round-win rate over the next 4 rounds (2-5 / 14-17)
+
+(Kills-per-round over the follow-up window used to be tracked here too, but
+it came out ~4 kills/round in every buy-amount bucket -- not discriminating
+enough to be worth showing -- so it was dropped.)
 
 A match contributes 0, 1, or 2 samples (one per pistol round that both had a
 decisive winner AND has a recorded follow-up round). "friends" scope only
@@ -33,6 +37,7 @@ ECO_NUM_BUCKETS = 17  # 5000-22000
 
 PISTOL_FOLLOWUP_ROUNDS = ((1, 2), (13, 14))
 FOLLOWUP_WINDOW = 4
+FOLLOWUP_WINDOW_SHORT = 2
 
 # A bucket needs at least this many samples before it's eligible to be
 # highlighted as the "optimal" buy -- otherwise a handful of rounds in a
@@ -56,12 +61,14 @@ def _winner_team(outcome: str | None) -> Team | None:
 
 
 def _pistol_win_followup_samples(match: Match) -> list[tuple[Team, int, bool, float, float]]:
-    """(winning_team, followup_total_loadout, won_followup_round, avg_kills_per_round,
-    avg_win_rate) for each pistol round (1, 13) in `match` that had a decisive
-    winner and a recorded follow-up round. avg_kills_per_round/avg_win_rate are
-    averaged over whatever of the next FOLLOWUP_WINDOW rounds actually exist --
-    most matches have all 4, but one ending early (e.g. 13-3) may have fewer,
-    so a raw sum would understate a short match's rate rather than reflect it."""
+    """(winning_team, followup_total_loadout, won_followup_round, win_rate_next2,
+    win_rate_next4) for each pistol round (1, 13) in `match` that had a decisive
+    winner and a recorded follow-up round. The win rates are averaged over
+    whatever of the next FOLLOWUP_WINDOW rounds actually exist -- most matches
+    have all 4, but one ending early (e.g. 13-3) may have fewer, so a raw sum
+    would understate a short match's rate rather than reflect it. The
+    follow-up round itself (round_number == followup_start) is already
+    confirmed to exist above, so win_rate_next2's denominator is never zero."""
     team_of = {mp.id: mp.team for mp in match.match_players}
     rounds_by_number = {r.round_number: r for r in match.rounds}
 
@@ -88,33 +95,38 @@ def _pistol_win_followup_samples(match: Match) -> list[tuple[Team, int, bool, fl
             continue
         won_followup = followup_winner == winner
 
-        kills_total = 0
         wins_total = 0
         rounds_available = 0
-        for rn in range(followup_start, followup_start + FOLLOWUP_WINDOW):
+        wins_total_2 = 0
+        rounds_available_2 = 0
+        for i, rn in enumerate(range(followup_start, followup_start + FOLLOWUP_WINDOW)):
             r = rounds_by_number.get(rn)
             if r is None:
                 continue
             rounds_available += 1
-            kills_total += sum(
-                stat.kills for stat in r.player_stats if team_of.get(stat.match_player_id) == winner
-            )
-            if _winner_team(r.outcome) == winner:
+            won = _winner_team(r.outcome) == winner
+            if won:
                 wins_total += 1
+            if i < FOLLOWUP_WINDOW_SHORT:
+                rounds_available_2 += 1
+                if won:
+                    wins_total_2 += 1
         if rounds_available == 0:
             continue
 
-        samples.append((winner, total_loadout, won_followup, kills_total / rounds_available, wins_total / rounds_available))
+        samples.append(
+            (winner, total_loadout, won_followup, wins_total_2 / rounds_available_2, wins_total / rounds_available)
+        )
     return samples
 
 
 def _empty_bucket_accumulator() -> dict[str, float]:
-    return {"total": 0, "win": 0, "kills_ratio_sum": 0.0, "wins_ratio_sum": 0.0}
+    return {"total": 0, "win": 0, "wins_ratio_sum_2": 0.0, "wins_ratio_sum_4": 0.0}
 
 
 def _encode_buckets(buckets: dict[int, dict[str, float]]) -> list[list]:
     return [
-        [idx, int(b["total"]), int(b["win"]), b["kills_ratio_sum"], b["wins_ratio_sum"]]
+        [idx, int(b["total"]), int(b["win"]), b["wins_ratio_sum_2"], b["wins_ratio_sum_4"]]
         for idx, b in sorted(buckets.items())
     ]
 
@@ -123,12 +135,12 @@ def compute_pistol_win_followup_eco(matches: list[Match], roster_player_ids: set
     """Pure aggregation over already-loaded Match rows (match_players + rounds
     + round.player_stats must be eager-loaded by the caller). Returns
     {"friends": {"buckets": [...]}, "all": {"buckets": [...]}}, each bucket
-    row JSON-safe as [idx, total, win, kills_ratio_sum, wins_ratio_sum]."""
+    row JSON-safe as [idx, total, win, wins_ratio_sum_2, wins_ratio_sum_4]."""
     friends_buckets: dict[int, dict[str, float]] = {}
     all_buckets: dict[int, dict[str, float]] = {}
 
     for match in matches:
-        for winner, total_loadout, won_followup, kills_rate, wins_rate in _pistol_win_followup_samples(match):
+        for winner, total_loadout, won_followup, win_rate_2, win_rate_4 in _pistol_win_followup_samples(match):
             idx = eco_bucket_index(total_loadout)
             winner_player_ids = {mp.player_id for mp in match.match_players if mp.team == winner}
 
@@ -141,8 +153,8 @@ def compute_pistol_win_followup_eco(matches: list[Match], roster_player_ids: set
                 bucket["total"] += 1
                 if won_followup:
                     bucket["win"] += 1
-                bucket["kills_ratio_sum"] += kills_rate
-                bucket["wins_ratio_sum"] += wins_rate
+                bucket["wins_ratio_sum_2"] += win_rate_2
+                bucket["wins_ratio_sum_4"] += win_rate_4
 
     return {"friends": {"buckets": _encode_buckets(friends_buckets)}, "all": {"buckets": _encode_buckets(all_buckets)}}
 
@@ -153,7 +165,8 @@ class EcoFollowupBucket:
     total: int
     immediate_win_pct: float
     immediate_fill: str
-    avg_kills_next4: float
+    avg_win_rate_next2: float
+    next2_fill: str
     avg_win_rate_next4: float
     next4_fill: str
 
@@ -163,7 +176,7 @@ class EcoFollowupStats:
     buckets: list[EcoFollowupBucket]
     total_samples: int
     best_immediate_win_bucket: EcoFollowupBucket | None
-    best_kills_bucket: EcoFollowupBucket | None
+    best_win_rate_next2_bucket: EcoFollowupBucket | None
     best_win_rate_next4_bucket: EcoFollowupBucket | None
     overall_immediate_win_pct: float | None
     overall_immediate_loss_pct: float | None
@@ -179,20 +192,22 @@ def build_eco_followup_stats_from_aggregates(variant: dict) -> EcoFollowupStats:
     buckets: list[EcoFollowupBucket] = []
     total_samples = 0
     overall_wins = 0
-    for idx, total, win, kills_ratio_sum, wins_ratio_sum in variant["buckets"]:
+    for idx, total, win, wins_ratio_sum_2, wins_ratio_sum_4 in variant["buckets"]:
         if total == 0:
             continue
         total_samples += total
         overall_wins += win
         immediate_win_pct = win / total
-        avg_win_rate_next4 = wins_ratio_sum / total
+        avg_win_rate_next2 = wins_ratio_sum_2 / total
+        avg_win_rate_next4 = wins_ratio_sum_4 / total
         buckets.append(
             EcoFollowupBucket(
                 label=_bucket_label(idx),
                 total=total,
                 immediate_win_pct=immediate_win_pct,
                 immediate_fill=win_color(immediate_win_pct),
-                avg_kills_next4=kills_ratio_sum / total,
+                avg_win_rate_next2=avg_win_rate_next2,
+                next2_fill=win_color(avg_win_rate_next2),
                 avg_win_rate_next4=avg_win_rate_next4,
                 next4_fill=win_color(avg_win_rate_next4),
             )
@@ -204,7 +219,7 @@ def build_eco_followup_stats_from_aggregates(variant: dict) -> EcoFollowupStats:
         buckets=buckets,
         total_samples=total_samples,
         best_immediate_win_bucket=max(eligible, key=lambda b: b.immediate_win_pct, default=None),
-        best_kills_bucket=max(eligible, key=lambda b: b.avg_kills_next4, default=None),
+        best_win_rate_next2_bucket=max(eligible, key=lambda b: b.avg_win_rate_next2, default=None),
         best_win_rate_next4_bucket=max(eligible, key=lambda b: b.avg_win_rate_next4, default=None),
         overall_immediate_win_pct=overall_win_pct,
         overall_immediate_loss_pct=(1 - overall_win_pct) if overall_win_pct is not None else None,

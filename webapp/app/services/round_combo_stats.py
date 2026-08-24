@@ -138,8 +138,7 @@ def build_round_combo_stats(buckets: dict[str, dict[str, int]], granularity: str
         win_pct = win / total
         rows.append(RoundComboRow(outcomes=list(combo), total=total, win_pct=win_pct, fill=win_color(win_pct)))
 
-    # Most rounds won first, so "won everything" leads and "lost everything"
-    # trails -- reads as a natural better-to-worse ranking rather than the
-    # arbitrary WW/WL/LW/LL enumeration order.
-    rows.sort(key=lambda r: (-r.outcomes.count("W"), r.outcomes))
+    # Highest match win rate first -- reads as a natural best-to-worst
+    # ranking rather than the arbitrary WW/WL/LW/LL enumeration order.
+    rows.sort(key=lambda r: -r.win_pct)
     return RoundComboStats(round_labels=round_labels, rows=rows, total_samples=total_samples)
