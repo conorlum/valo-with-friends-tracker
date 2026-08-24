@@ -45,6 +45,7 @@ from app.services.player_data import RECENT_MATCH_LIMIT
 from app.services.player_profile_types import compute_pistol_match_stats
 from app.services.player_view_cache import cache_version
 from app.services.round_combo_stats import compute_round_combo_stats
+from app.services.round_streak_stats import compute_round_streak_stats
 from app.services.score_reached_stats import compute_score_reached_stats
 from app.services.site_stats_cache import get_site_stats_cache, store_site_stats_cache
 
@@ -185,6 +186,7 @@ def _compute_site_stats(db: Session) -> dict:
         "map_side_stats": compute_map_side_stats(matches, roster_player_ids),
         "halftime_conversion": compute_halftime_conversion_stats(matches, roster_player_ids),
         "score_reached": compute_score_reached_stats(matches, roster_player_ids),
+        "round_streaks": compute_round_streak_stats(matches, roster_player_ids),
     }
 
 

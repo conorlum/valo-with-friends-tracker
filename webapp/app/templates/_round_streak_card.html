@@ -1,0 +1,28 @@
+{# Expects: round_streak_stats, subject_label #}
+{% if round_streak_stats.rows %}
+<div class="card">
+  <h2>Round-win momentum</h2>
+  <p class="page-meta">For {{ subject_label }}: given a team won a round, what fraction of the time did they also win each of the next N rounds in a row. Stops at a side swap (round 13, and every round in overtime) since winning while attacking says nothing about winning on defense next. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th data-sort="number">Next N rounds</th>
+        <th data-sort="number">Samples</th>
+        <th data-sort="number" aria-sort="descending">Won all N</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in round_streak_stats.rows %}
+      <tr>
+        <td data-sort-value="{{ row.next_n }}">{{ row.next_n }}</td>
+        <td data-sort-value="{{ row.total }}">{{ row.total }}</td>
+        <td data-sort-value="{{ row.win_pct }}">
+          <span class="pill" style="background-color: {{ row.fill }};">{{ (row.win_pct * 100) | round | int }}%</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
