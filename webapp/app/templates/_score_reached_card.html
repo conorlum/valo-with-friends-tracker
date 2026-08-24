@@ -24,5 +24,8 @@
       {% endfor %}
     </tbody>
   </table>
+  {% if score_reached_stats.ot_pct is not none %}
+  <p class="page-meta">Of those {{ score_reached_stats.ot_total }} decisive matches, <strong>{{ (score_reached_stats.ot_pct * 100) | round | int }}%</strong> reached a 12-12 tie and went to overtime.</p>
+  {% endif %}
 </div>
 {% endif %}

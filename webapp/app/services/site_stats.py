@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models import Match, MatchPlayer, Player, PlayerViewCache, Round
 from app.services.eco_followup import compute_pistol_win_followup_eco
+from app.services.force_buy_stats import compute_force_buy_stats
 from app.services.halftime_conversion_stats import compute_halftime_conversion_stats
 from app.services.map_side_stats import compute_map_side_stats
 from app.services.player_data import RECENT_MATCH_LIMIT
@@ -187,6 +188,7 @@ def _compute_site_stats(db: Session) -> dict:
         "halftime_conversion": compute_halftime_conversion_stats(matches, roster_player_ids),
         "score_reached": compute_score_reached_stats(matches, roster_player_ids),
         "round_streaks": compute_round_streak_stats(matches, roster_player_ids),
+        "force_buy_stats": compute_force_buy_stats(matches, roster_player_ids),
     }
 
 

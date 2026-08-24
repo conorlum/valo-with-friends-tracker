@@ -1,0 +1,29 @@
+{# Expects: force_buy_stats, subject_label #}
+{% if force_buy_stats.rows %}
+<div class="card">
+  <h2>Forcing after losing a pistol</h2>
+  <p class="page-meta">For {{ subject_label }}: after losing a pistol round (round 1 or 13), how often does spending at least 70% of the team's available money on the very next round (a force buy) pay off. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Outcome</th>
+        <th data-sort="number">Samples</th>
+        <th data-sort="number" aria-sort="descending">Rate</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in force_buy_stats.rows %}
+      <tr>
+        <td>{{ row.label }}</td>
+        <td data-sort-value="{{ row.total }}">{{ row.total }}</td>
+        <td data-sort-value="{{ row.win_pct }}">
+          <span class="pill" style="background-color: {{ row.fill }};">{{ (row.win_pct * 100) | round | int }}%</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="page-meta">{{ force_buy_stats.total_samples }} force-buy rounds total (loser spent >= 70% of its available money the round right after losing a pistol).</p>
+</div>
+{% endif %}
