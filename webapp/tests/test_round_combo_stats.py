@@ -107,4 +107,40 @@ def test_build_stats_empty_buckets_yields_no_rows():
     stats = build_round_combo_stats({}, "full")
     assert stats.rows == []
     assert stats.total_samples == 0
-    assert stats.round_labels == ["Round 1 (Pistol)", "Round 2", "Round 13 (Pistol)", "Round 14"]
+    assert stats.round_labels == [
+        "Pistol (Better Half)",
+        "Next Round (Better Half)",
+        "Pistol (Worse Half)",
+        "Next Round (Worse Half)",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# "full" granularity half-canonicalization
+# ---------------------------------------------------------------------------
+
+def test_full_combo_merges_mirrored_halves_regardless_of_which_half_they_happened_in():
+    """Won pistol-half-1 clean, lost pistol-half-2 (WWLW) and lost
+    pistol-half-1, won pistol-half-2 clean (LWWW) are the same underlying
+    situation and should land in the same canonical bucket."""
+    won_half1 = _match(
+        {1: "Team A Wins", 2: "Team A Wins", 13: "Team B Wins", 14: "Team A Wins"},
+        team1_rounds_won=13, team2_rounds_won=3,
+    )
+    won_half2 = _match(
+        {1: "Team B Wins", 2: "Team A Wins", 13: "Team A Wins", 14: "Team A Wins"},
+        team1_rounds_won=13, team2_rounds_won=3,
+    )
+    result = compute_round_combo_stats([won_half1, won_half2], roster_player_ids={100})
+    full = result["friends"]["full"]  # team 1 (player 100)'s samples only
+    assert full == {"WWLW": {"total": 2, "win": 2}}
+
+
+def test_full_combo_same_pattern_both_halves_is_unaffected():
+    match = _match(
+        {1: "Team A Wins", 2: "Team B Wins", 13: "Team A Wins", 14: "Team B Wins"},
+        team1_rounds_won=13, team2_rounds_won=3,
+    )
+    result = compute_round_combo_stats([match], roster_player_ids=set())
+    full = result["all"]["full"]
+    assert full == {"WLWL": {"total": 1, "win": 1}, "LWLW": {"total": 1, "win": 0}}

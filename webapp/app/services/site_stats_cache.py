@@ -27,7 +27,7 @@ from app.services.score_reached_stats import MAX_DISPLAYED_SCORE as SCORE_REACHE
 
 logger = logging.getLogger(__name__)
 
-SITE_STATS_CACHE_SCHEMA_VERSION = 10
+SITE_STATS_CACHE_SCHEMA_VERSION = 11
 # Bump when the shape of the stored blob changes (a stat's aggregate keys
 # change, or a stat is renamed/removed), or when compute_pistol_match_stats /
 # compute_pistol_win_followup_eco / compute_round_combo_stats / compute_map_side_stats
@@ -65,6 +65,12 @@ SITE_STATS_CACHE_SCHEMA_VERSION = 10
 # "count"}} -- score buckets above 12 dropped (redundant with just knowing
 # the team won) in favor of a single match-level "how often did this reach
 # overtime" rate.
+# v11: pistol_round_combos' "full" granularity buckets are now canonicalized
+# across the two pistol-halves (round 1-2 vs round 13-14) before accumulating
+# -- e.g. WWLW and LWWW (same pattern, different half) now land in the same
+# bucket instead of two near-duplicate rows. Key set is unchanged (still a
+# subset of the 16 WL^4 strings) so old cached rows would pass validation but
+# carry pre-merge semantics; the version bump forces a recompute.
 
 _PISTOL_MATCH_STATS_BUCKET_PREFIXES = ("lost_both", "won_one", "won_both")
 _PISTOL_MATCH_STATS_KEYS = frozenset(

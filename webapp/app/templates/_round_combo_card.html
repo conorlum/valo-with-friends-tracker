@@ -2,7 +2,7 @@
 {% if first_half_combo_stats.rows or full_combo_stats.rows %}
 <div class="card">
   <h2>Match win rate by pistol/round outcome combo</h2>
-  <p class="page-meta">For {{ subject_label }}: how often was the whole MATCH won, given how round 1 (pistol), round 2, round 13 (pistol), and round 14 each went. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
+  <p class="page-meta">For {{ subject_label }}: how often was the whole MATCH won, given how round 1 (pistol) and round 2 went (top table), or how a team's two pistol-rounds-and-follow-ups (round 1-2 and round 13-14) went overall, win-count-ranked rather than tied to which half of the map it was (bottom table) -- e.g. "won one pistol-half clean, lost the other pistol" is one row regardless of whether that happened in the first or second half. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
 
   {% for combo_stats in (first_half_combo_stats, full_combo_stats) %}
   {% if combo_stats.rows %}

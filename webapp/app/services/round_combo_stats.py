@@ -3,7 +3,8 @@ their immediate follow-up round(s) -- e.g. "won the pistol, lost round 2":
 what fraction of THOSE matches were won overall? Two granularities:
 
   - "first_half": round 1 (pistol) x round 2 -- 4 combinations (WW/WL/LW/LL)
-  - "full": round 1 x round 2 x round 13 (pistol) x round 14 -- 16 combinations
+  - "full": round 1 x round 2 x round 13 (pistol) x round 14 -- 16 raw
+    combinations, canonicalized down to 10 (see below)
 
 Unlike app.services.eco_followup (which only looks at the pistol WINNER's
 side), this needs the full win/loss space for both teams -- a losing team's
@@ -11,6 +12,18 @@ side), this needs the full win/loss space for both teams -- a losing team's
 relevant round AND the match itself decided contributes exactly 2 samples per
 granularity (one per team), which are each other's logical complement (team
 1's WW is team 2's LL, etc.).
+
+"full" canonicalization: which half of the map (1-14 vs 13-14... i.e. round
+1-2 vs round 13-14) a given pistol+follow-up pattern happened in doesn't
+change what it means, so e.g. "won round 1, won round 2, lost round 13, won
+round 14" (WWLW) and "lost round 1, won round 2, won round 13, won round 14"
+(LWWW) are the same underlying situation (won one pistol-half clean, lost the
+other pistol) and get merged into a single bucket rather than shown as two
+near-duplicate rows. Each raw 4-char combo is split into its two 2-char
+halves and re-ordered by win count (more wins first, alphabetical tie-break)
+before accumulating, so both raw combos land in the same canonical bucket.
+Rows where both halves already have the same win count and pattern (WLWL,
+LWLW) have no distinct mirror and are unaffected.
 """
 
 import itertools
@@ -26,8 +39,17 @@ FULL_ROUNDS = (1, 2, 13, 14)
 
 ROUND_LABELS = {
     "first_half": ["Round 1 (Pistol)", "Round 2"],
-    "full": ["Round 1 (Pistol)", "Round 2", "Round 13 (Pistol)", "Round 14"],
+    "full": ["Pistol (Better Half)", "Next Round (Better Half)", "Pistol (Worse Half)", "Next Round (Worse Half)"],
 }
+
+
+def _canonical_full_combo(combo: str) -> str:
+    """Re-order a "full" 4-char WWLL-style combo's two halves (round 1-2,
+    round 13-14) by win count descending, alphabetical tie-break, so which
+    half of the map a pattern happened in doesn't produce a separate row."""
+    half_a, half_b = combo[:2], combo[2:]
+    better, worse = sorted((half_a, half_b), key=lambda half: (-half.count("W"), half))
+    return better + worse
 
 
 def _winner_team(outcome: str | None) -> Team | None:
@@ -102,6 +124,8 @@ def compute_round_combo_stats(matches: list[Match], roster_player_ids: set[int])
     for match in matches:
         for granularity, round_numbers in (("first_half", FIRST_HALF_ROUNDS), ("full", FULL_ROUNDS)):
             for team, combo, won_match in _combo_samples(match, round_numbers):
+                if granularity == "full":
+                    combo = _canonical_full_combo(combo)
                 _accumulate(variants["all"][granularity], combo, won_match)
                 if _team_has_roster_player(match, team, roster_player_ids):
                     _accumulate(variants["friends"][granularity], combo, won_match)
