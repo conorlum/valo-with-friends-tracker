@@ -14,7 +14,11 @@ from app.config import settings
 # counts while staying far under Postgres's ~65535 bind-parameter limit.
 orm_strategies.SelectInLoader._chunksize = 10_000
 
-engine = create_engine(settings.database_url)
+# pool_pre_ping: validates a pooled connection with a cheap SELECT before
+# handing it to a caller, transparently reconnecting if it was silently
+# closed (e.g. Neon closing a connection that sat idle through a long
+# non-DB phase like a multi-minute tracker.gg page crawl).
+engine = create_engine(settings.database_url, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
