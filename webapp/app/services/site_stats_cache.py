@@ -6,9 +6,9 @@ degrade to a live recompute (app.services.site_stats), never a 500.
 The row holds a dict of independent canonical aggregates, one key per
 whole-database stat shown on that tab (pistol_match_stats,
 pistol_win_followup_eco, pistol_round_combos, map_side_stats,
-halftime_conversion, score_reached, round_streaks, force_buy_stats) --
-adding another stat later means adding another key to this dict, not
-redesigning the cache.
+halftime_conversion, score_reached, round_streaks, force_buy_stats,
+enemy_at_11_response) -- adding another stat later means adding another key
+to this dict, not redesigning the cache.
 """
 
 import itertools
@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.models.site_stats_cache import SITE_STATS_CACHE_ROW_ID, SiteStatsCache
 from app.services.eco_followup import ECO_NUM_BUCKETS
+from app.services.enemy_at_11_response import BUY_CATEGORIES, RESPONSE_METRICS
 from app.services.force_buy_stats import FORCE_BUY_METRICS
 from app.services.round_combo_stats import FIRST_HALF_ROUNDS, FULL_ROUNDS
 from app.services.round_streak_stats import MAX_STREAK
@@ -27,7 +28,7 @@ from app.services.score_reached_stats import MAX_DISPLAYED_SCORE as SCORE_REACHE
 
 logger = logging.getLogger(__name__)
 
-SITE_STATS_CACHE_SCHEMA_VERSION = 14
+SITE_STATS_CACHE_SCHEMA_VERSION = 15
 # Bump when the shape of the stored blob changes (a stat's aggregate keys
 # change, or a stat is renamed/removed), or when compute_pistol_match_stats /
 # compute_pistol_win_followup_eco / compute_round_combo_stats / compute_map_side_stats
@@ -85,6 +86,10 @@ SITE_STATS_CACHE_SCHEMA_VERSION = 14
 # v14: pistol_win_followup_eco's "under" tail bucket widened from under-8000
 # to under-9000 (folding in the sparse 8000-9000 middle bucket) -- ECO_NUM_BUCKETS
 # changed (13 -> 12) so idx bounds shift; the version bump forces a recompute.
+# v15: added enemy_at_11_response (win rate for the response round, the next
+# round, and the match, keyed by which of 4 buy tiers -- eco/half/force/full
+# -- the responding team bought into the round right after its opponent's
+# cumulative round-win count reached 11, "friends" and "all" variants).
 
 _PISTOL_MATCH_STATS_BUCKET_PREFIXES = ("lost_both", "won_one", "won_both")
 _PISTOL_MATCH_STATS_KEYS = frozenset(
@@ -302,6 +307,33 @@ def _validate_force_buy_stats(data: object) -> bool:
     return _validate_force_buy_variant(data["friends"]) and _validate_force_buy_variant(data["all"])
 
 
+_ENEMY_AT_11_RESPONSE_METRICS = set(RESPONSE_METRICS)
+
+
+def _validate_enemy_at_11_metric_bucket(bucket: object) -> bool:
+    if not isinstance(bucket, dict) or set(bucket.keys()) != {"total", "win"}:
+        return False
+    return _is_nonneg_int(bucket["total"]) and _is_nonneg_int(bucket["win"]) and bucket["win"] <= bucket["total"]
+
+
+def _validate_enemy_at_11_tier(tier: object) -> bool:
+    if not isinstance(tier, dict) or set(tier.keys()) != _ENEMY_AT_11_RESPONSE_METRICS:
+        return False
+    return all(_validate_enemy_at_11_metric_bucket(tier[metric]) for metric in RESPONSE_METRICS)
+
+
+def _validate_enemy_at_11_variant(variant: object) -> bool:
+    if not isinstance(variant, dict) or set(variant.keys()) != set(BUY_CATEGORIES):
+        return False
+    return all(_validate_enemy_at_11_tier(variant[category]) for category in BUY_CATEGORIES)
+
+
+def _validate_enemy_at_11_response(data: object) -> bool:
+    if not isinstance(data, dict) or set(data.keys()) != {"friends", "all"}:
+        return False
+    return _validate_enemy_at_11_variant(data["friends"]) and _validate_enemy_at_11_variant(data["all"])
+
+
 def _validate_blob(data: object) -> bool:
     if not isinstance(data, dict) or set(data.keys()) != {
         "pistol_match_stats",
@@ -312,6 +344,7 @@ def _validate_blob(data: object) -> bool:
         "score_reached",
         "round_streaks",
         "force_buy_stats",
+        "enemy_at_11_response",
     }:
         return False
     if not _validate_pistol_match_stats(data["pistol_match_stats"]):
@@ -328,7 +361,9 @@ def _validate_blob(data: object) -> bool:
         return False
     if not _validate_round_streaks(data["round_streaks"]):
         return False
-    return _validate_force_buy_stats(data["force_buy_stats"])
+    if not _validate_force_buy_stats(data["force_buy_stats"]):
+        return False
+    return _validate_enemy_at_11_response(data["enemy_at_11_response"])
 
 
 def get_site_stats_cache(db: Session) -> dict | None:
