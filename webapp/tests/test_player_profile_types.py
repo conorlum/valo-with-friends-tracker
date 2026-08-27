@@ -8,6 +8,7 @@ construction with relationships assigned by hand, no DB/session involved.
 """
 
 from app.models import ImpactScore, Match, MatchPlayer, Player, Round
+from app.models.impact_score import _SCALAR_KEYS
 from app.models.match import MatchSource, Team
 from app.models.round import RoundPlayerStat
 from app.services.economy_graphs import compute_econ_aggregates, econ_samples_from_data
@@ -40,9 +41,25 @@ def _build_one_match_two_players():
     return match, me, mp_me, mp_ally
 
 
+def _impact_score(**overrides):
+    """An ImpactScore with every breakdown column zeroed.
+
+    The breakdown scalars used to live in one JSON column that tests could
+    pass as `breakdown={...}`; they are separate columns now, and SQLAlchemy
+    applies column defaults at INSERT time rather than at construction, so an
+    in-memory instance needs them set explicitly.
+    """
+    fields = {key: 0 for key in _SCALAR_KEYS}
+    fields.update(
+        round_id=1, match_player_id=1, kill_impact=10, death_impact=-2, impact=8
+    )
+    fields.update(overrides)
+    return ImpactScore(**fields)
+
+
 def test_kda_is_summed_from_round_player_stats_not_a_separate_query():
     match, me, mp_me, _ = _build_one_match_two_players()
-    score = ImpactScore(round_id=1, match_player_id=1, kill_impact=10.0, death_impact=-2.0, impact=8.0, breakdown={})
+    score = _impact_score()
 
     profile = build_player_profile_from_match_data(me, [mp_me], {1: [score]})
 
@@ -54,7 +71,7 @@ def test_kda_is_summed_from_round_player_stats_not_a_separate_query():
 def test_round_outcome_is_read_from_hydrated_rounds_not_a_separate_query():
     match, me, mp_me, _ = _build_one_match_two_players()
     # mp_me is TEAM_1 ("Team A Wins" in the outcome string) -- winning side.
-    score = ImpactScore(round_id=1, match_player_id=1, kill_impact=10.0, death_impact=-2.0, impact=8.0, breakdown={})
+    score = _impact_score()
 
     profile = build_player_profile_from_match_data(me, [mp_me], {1: [score]})
 
@@ -63,10 +80,7 @@ def test_round_outcome_is_read_from_hydrated_rounds_not_a_separate_query():
 
 def test_traded_teammate_name_is_read_from_hydrated_match_players():
     match, me, mp_me, mp_ally = _build_one_match_two_players()
-    score = ImpactScore(
-        round_id=1, match_player_id=1, kill_impact=10.0, death_impact=-2.0, impact=8.0,
-        breakdown={"traded_teammate_targets": {str(mp_ally.id): 1}},
-    )
+    score = _impact_score(trade_detail={"t": {str(mp_ally.id): 1}})
 
     profile = build_player_profile_from_match_data(me, [mp_me], {1: [score]})
 
@@ -87,10 +101,7 @@ def test_output_matches_get_player_profile_shaped_fields():
     identical underlying data -- not a full behavioral-equivalence proof
     (that would need a DB), but guards the field-by-field shape."""
     match, me, mp_me, _ = _build_one_match_two_players()
-    score = ImpactScore(
-        round_id=1, match_player_id=1, kill_impact=10.0, death_impact=-2.0, impact=8.0,
-        breakdown={"econ_kill": 2, "clutch_kill": 1},
-    )
+    score = _impact_score(econ_kill=2, clutch_kill=1)
 
     profile = build_player_profile_from_match_data(me, [mp_me], {1: [score]})
 

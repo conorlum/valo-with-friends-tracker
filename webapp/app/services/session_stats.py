@@ -1,6 +1,7 @@
 from collections import Counter
 from dataclasses import dataclass, field
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Player, Round, RoundPlayerStat
@@ -831,22 +832,26 @@ def _build_trade_stats(
     counts across the session: who avenged a teammate's death most (traded
     the most), and who got avenged the most (got traded the most).
     """
+    # Summed per match_player in SQL; the Python loop still folds those into
+    # per-player totals, since one player has many match_player rows.
     rows = (
-        db.query(ImpactScore.match_player_id, ImpactScore.breakdown)
+        db.query(
+            ImpactScore.match_player_id,
+            func.sum(ImpactScore.traded_teammate),
+            func.sum(ImpactScore.traded_by_teammate),
+        )
         .filter(ImpactScore.match_player_id.in_(our_mp_to_player.keys()))
+        .group_by(ImpactScore.match_player_id)
         .all()
     )
     traded_teammate_totals: dict[int, int] = {}
     traded_by_teammate_totals: dict[int, int] = {}
-    for match_player_id, breakdown in rows:
+    for match_player_id, traded, traded_by in rows:
         player_id = our_mp_to_player[match_player_id]
-        breakdown = breakdown or {}
-        traded_teammate_totals[player_id] = traded_teammate_totals.get(player_id, 0) + breakdown.get(
-            "traded_teammate", 0
-        )
+        traded_teammate_totals[player_id] = traded_teammate_totals.get(player_id, 0) + int(traded or 0)
         traded_by_teammate_totals[player_id] = traded_by_teammate_totals.get(
             player_id, 0
-        ) + breakdown.get("traded_by_teammate", 0)
+        ) + int(traded_by or 0)
 
     return (traded_teammate_totals, traded_by_teammate_totals)
 
