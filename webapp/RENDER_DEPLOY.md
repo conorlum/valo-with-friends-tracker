@@ -4,36 +4,38 @@ This deploys `webapp/` as its own site, separate from the public repo's future
 Riot-application domain. Deliberately zero-auth (anyone with the URL can pick
 any seeded player at `/login`).
 
-The web app runs on Render; the Postgres database runs on **Neon** (its own
-account, separate from Render). Render's free tier only allows one active free
-Postgres per account, and this account's slot was already in use, so the DB
-lives elsewhere instead of fighting that limit. Neon's free tier doesn't get
-hard-deleted on a schedule the way Render's does — the main quirk is that a
-Neon project's compute auto-suspends after a period of inactivity and takes a
-few seconds to wake back up on the next request (a cold-start delay, not data
-loss).
+Both the web app and the Postgres database run on **Render**, in the same
+region (Oregon), so the app reaches the DB over Render's internal network.
+
+The DB previously lived on Neon, because Render's free tier allows only one
+active free Postgres per account and that slot was already taken. It was
+migrated to a paid Render Postgres on 2026-08-26 — see "Migrating the
+database" below. Two connection strings matter and they are not
+interchangeable:
+
+- **Internal** (`dpg-xxxx-a`, no domain suffix) — for the web service's
+  `DATABASE_URL`. Only resolves inside Render's network.
+- **External** (`dpg-xxxx-a.oregon-postgres.render.com`) — for anything run
+  from a dev machine, including `scripts/refresh_remote.ps1`.
 
 ## (a) One-time initial setup
 
-1. **Neon**: sign up, create a project (Postgres 16 to match local
-   `docker-compose.yml`'s `postgres:16`). Copy the connection string it gives
-   you — it'll look like `postgresql://user:pass@ep-xxx.neon.tech/dbname?sslmode=require`.
-2. **Render**: in the dashboard, **New → Blueprint**, connect the
+1. **Render Postgres**: in the dashboard, **New → Postgres**. Pick PostgreSQL
+   **18** and the same region as the web service (Oregon). Copy both the
+   Internal and External connection strings.
+2. **Render web service**: **New → Blueprint**, connect the
    `valo-with-friends-tracker` GitHub repo. Render auto-detects `render.yaml` at the
    repo root. This creates the web service (`valowithfriendstracker`) — there's
-   no `databases:` block anymore, so Render won't try to provision its own
-   Postgres.
-3. On the web service's **Environment** tab, set `DATABASE_URL` to the Neon
-   connection string from step 1 (the blueprint leaves it as `sync: false` on
-   purpose so the real value only lives in the dashboard, never in a committed
-   file).
+   no `databases:` block, so the DB above stays outside blueprint management
+   (deliberate: a `render.yaml` mistake should not be able to destroy it).
+3. On the web service's **Environment** tab, set `DATABASE_URL` to the
+   **Internal** connection string from step 1.
 4. Deploy (or redeploy after saving the env var). The build runs `pip install`
-   then `alembic upgrade head` against the Neon DB — schema only, zero rows.
-5. Load real data: make sure your local Postgres is up and populated
-   (`docker compose -p valomaths-private up -d`, then your usual tracker.gg
-   ingestion). From `webapp/`:
+   then `alembic upgrade head` against the DB — schema only, zero rows.
+5. Load real data — see "(c) Migrating the database" below, or from a populated
+   local Postgres (`docker compose -p valomaths-private up -d`):
    ```powershell
-   .\scripts\push_dump_to_render.ps1 -TargetDatabaseUrl "<neon-connection-string>"
+   .\scripts\push_dump_to_render.ps1 -TargetDatabaseUrl "<render-EXTERNAL-connection-string>"
    ```
 6. Verify: `https://<render-service>.onrender.com/health` should return
    `{"status": "ok"}`. Log in as a seeded player and spot-check a sessions page.
@@ -49,15 +51,45 @@ loss).
 
 ## (b) Routine workflow — pushing freshly ingested matches live
 
-1. Ingest locally as usual (`scripts/refresh_tracked_players.py` /
-   `scripts/ingest_trackergg_player.py` against the local Chrome/CDP session).
-2. Spot-check locally (`scripts/start_local.ps1` or your usual local run) that
-   the new data looks right.
-3. From `webapp/`:
-   ```powershell
-   .\scripts\push_dump_to_render.ps1 -TargetDatabaseUrl "<neon-connection-string>"
-   ```
-   (Same Neon connection string as always — it doesn't rotate or expire, so
-   there's no equivalent of Render's "grab a fresh URL" step here.)
-4. No redeploy needed — this is a data-only push into the existing DB. Spot-check
-   the live site.
+The normal path ingests straight into the deployed DB, no local Postgres and no
+dump/restore involved:
+
+```powershell
+matches            # PowerShell profile alias -> scripts\refresh_remote.ps1 -Count 5
+matches -Count 20
+```
+
+`refresh_remote.ps1` reads `webapp/.env.remote` (Render's **External** URL),
+launches the tracker.gg debug Chrome profile if needed, and runs the same
+idempotent, dedup-by-`external_id` ingestion as the local refresh. It only ever
+ADDS matches — re-running is safe. No redeploy needed; spot-check the live site.
+
+`scripts/refresh_matches.ps1` does the same thing but brings up a local Docker
+Postgres first — it requires Docker, which is not installed on the current
+machine. Use `matches` / `refresh_remote.ps1` instead.
+
+## (c) Migrating the database
+
+Moving the deployed DB to a new host (as was done Neon → Render on 2026-08-26)
+without Docker, using native PostgreSQL client binaries:
+
+1. Install PostgreSQL client binaries whose major version is **>= the source
+   server** (`pg_dump` refuses to dump a newer server). EDB publishes a
+   no-installer Windows zip; `winget install PostgreSQL.PostgreSQL.18` also works.
+2. Create the new DB, matching the source's major version. Leave it **empty** —
+   don't point the web service at it yet, or `alembic upgrade head` will create
+   the schema and collide with the restore.
+3. Baseline the source: record `count(*)` for every table plus
+   `max(matches.played_at)` and the `alembic_version` head.
+4. `pg_dump --format=custom --no-owner --no-privileges -d "<source>" -f dump.dump`
+5. `pg_restore --no-owner --no-privileges --jobs 4 -d "<target-external>" dump.dump`
+   — no `--clean` against an empty target; it only produces misleading
+   "does not exist, skipping" noise.
+6. Verify against the step-3 baseline: row counts, `max(played_at)`, alembic
+   head, and **sequence positions** (`last_value` vs `max(id)` for every table —
+   `COPY` does not advance sequences, and a sequence left behind causes
+   duplicate-key errors on the next insert).
+7. Swap the web service's `DATABASE_URL` to the new **Internal** URL, redeploy,
+   check `/health`.
+8. Point `webapp/.env.remote` at the new **External** URL so `matches` follows.
+9. Keep the old DB and the dump file for a week before deleting.

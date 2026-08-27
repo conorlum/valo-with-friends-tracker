@@ -13,7 +13,7 @@ services:
     autoDeploy: true
     envVars:
       - key: DATABASE_URL
-        sync: false  # set manually in the Render dashboard to your Neon connection string
+        sync: false  # set manually in the Render dashboard to the Render Postgres INTERNAL connection string
       - key: SESSION_SECRET
         generateValue: true
       - key: PYTHON_VERSION
