@@ -1,11 +1,15 @@
 """"After winning a pistol round, what should the team buy next round?" --
 buckets the WINNING team's total loadout (sum of all 5 players' loadout
 value) in the round right after a won pistol round (round 2 after round 1,
-round 14 after round 13) against three outcomes:
+round 14 after round 13) against four outcomes:
 
   - did the team also win that immediate follow-up round
   - average round-win rate over the next 2 rounds (2-3 / 14-15)
   - average round-win rate over the next 4 rounds (2-5 / 14-17)
+  - did the team go on to win the whole match
+
+The match-win outcome is undefined (excluded from that column only, not the
+sample as a whole) for a tied/undecided match -- see match_win's docstring.
 
 (Kills-per-round over the follow-up window used to be tracked here too, but
 it came out ~4 kills/round in every buy-amount bucket -- not discriminating
@@ -24,6 +28,7 @@ from dataclasses import dataclass
 from app.models import Match
 from app.models.match import Team
 from app.services.player_graphs import win_color
+from app.services.player_profile_types import match_win
 
 # Chosen from the observed distribution (2026-08-23 snapshot of this DB): team
 # total loadout the round right after a won pistol round ranged 5700-20400,
@@ -67,19 +72,20 @@ def _winner_team(outcome: str | None) -> Team | None:
     return None
 
 
-def _pistol_win_followup_samples(match: Match) -> list[tuple[Team, int, bool, float, float]]:
+def _pistol_win_followup_samples(match: Match) -> list[tuple[Team, int, bool, float, float, bool | None]]:
     """(winning_team, followup_total_loadout, won_followup_round, win_rate_next2,
-    win_rate_next4) for each pistol round (1, 13) in `match` that had a decisive
-    winner and a recorded follow-up round. The win rates are averaged over
-    whatever of the next FOLLOWUP_WINDOW rounds actually exist -- most matches
-    have all 4, but one ending early (e.g. 13-3) may have fewer, so a raw sum
-    would understate a short match's rate rather than reflect it. The
-    follow-up round itself (round_number == followup_start) is already
-    confirmed to exist above, so win_rate_next2's denominator is never zero."""
+    win_rate_next4, won_match) for each pistol round (1, 13) in `match` that had
+    a decisive winner and a recorded follow-up round. The win rates are
+    averaged over whatever of the next FOLLOWUP_WINDOW rounds actually exist --
+    most matches have all 4, but one ending early (e.g. 13-3) may have fewer,
+    so a raw sum would understate a short match's rate rather than reflect it.
+    The follow-up round itself (round_number == followup_start) is already
+    confirmed to exist above, so win_rate_next2's denominator is never zero.
+    won_match is None for a tied/undecided match (see match_win)."""
     team_of = {mp.id: mp.team for mp in match.match_players}
     rounds_by_number = {r.round_number: r for r in match.rounds}
 
-    samples: list[tuple[Team, int, bool, float, float]] = []
+    samples: list[tuple[Team, int, bool, float, float, bool | None]] = []
     for pistol_rn, followup_start in PISTOL_FOLLOWUP_ROUNDS:
         pistol_round = rounds_by_number.get(pistol_rn)
         if pistol_round is None:
@@ -122,18 +128,28 @@ def _pistol_win_followup_samples(match: Match) -> list[tuple[Team, int, bool, fl
             continue
 
         samples.append(
-            (winner, total_loadout, won_followup, wins_total_2 / rounds_available_2, wins_total / rounds_available)
+            (
+                winner,
+                total_loadout,
+                won_followup,
+                wins_total_2 / rounds_available_2,
+                wins_total / rounds_available,
+                match_win(match, winner),
+            )
         )
     return samples
 
 
 def _empty_bucket_accumulator() -> dict[str, float]:
-    return {"total": 0, "win": 0, "wins_ratio_sum_2": 0.0, "wins_ratio_sum_4": 0.0}
+    return {"total": 0, "win": 0, "wins_ratio_sum_2": 0.0, "wins_ratio_sum_4": 0.0, "match_total": 0, "match_win": 0}
 
 
 def _encode_buckets(buckets: dict[int, dict[str, float]]) -> list[list]:
     return [
-        [idx, int(b["total"]), int(b["win"]), b["wins_ratio_sum_2"], b["wins_ratio_sum_4"]]
+        [
+            idx, int(b["total"]), int(b["win"]), b["wins_ratio_sum_2"], b["wins_ratio_sum_4"],
+            int(b["match_total"]), int(b["match_win"]),
+        ]
         for idx, b in sorted(buckets.items())
     ]
 
@@ -142,12 +158,16 @@ def compute_pistol_win_followup_eco(matches: list[Match], roster_player_ids: set
     """Pure aggregation over already-loaded Match rows (match_players + rounds
     + round.player_stats must be eager-loaded by the caller). Returns
     {"friends": {"buckets": [...]}, "all": {"buckets": [...]}}, each bucket
-    row JSON-safe as [idx, total, win, wins_ratio_sum_2, wins_ratio_sum_4]."""
+    row JSON-safe as [idx, total, win, wins_ratio_sum_2, wins_ratio_sum_4,
+    match_total, match_win] -- match_total/match_win only count samples whose
+    match had a decisive outcome, so match_total <= total."""
     friends_buckets: dict[int, dict[str, float]] = {}
     all_buckets: dict[int, dict[str, float]] = {}
 
     for match in matches:
-        for winner, total_loadout, won_followup, win_rate_2, win_rate_4 in _pistol_win_followup_samples(match):
+        for winner, total_loadout, won_followup, win_rate_2, win_rate_4, won_match in _pistol_win_followup_samples(
+            match
+        ):
             idx = eco_bucket_index(total_loadout)
             winner_player_ids = {mp.player_id for mp in match.match_players if mp.team == winner}
 
@@ -162,6 +182,10 @@ def compute_pistol_win_followup_eco(matches: list[Match], roster_player_ids: set
                     bucket["win"] += 1
                 bucket["wins_ratio_sum_2"] += win_rate_2
                 bucket["wins_ratio_sum_4"] += win_rate_4
+                if won_match is not None:
+                    bucket["match_total"] += 1
+                    if won_match:
+                        bucket["match_win"] += 1
 
     return {"friends": {"buckets": _encode_buckets(friends_buckets)}, "all": {"buckets": _encode_buckets(all_buckets)}}
 
@@ -177,6 +201,9 @@ class EcoFollowupBucket:
     next2_fill: str
     avg_win_rate_next4: float
     next4_fill: str
+    match_total: int
+    match_win_pct: float | None
+    match_fill: str | None
 
 
 @dataclass
@@ -186,6 +213,7 @@ class EcoFollowupStats:
     best_immediate_win_bucket: EcoFollowupBucket | None
     best_win_rate_next2_bucket: EcoFollowupBucket | None
     best_win_rate_next4_bucket: EcoFollowupBucket | None
+    best_match_win_bucket: EcoFollowupBucket | None
     overall_immediate_win_pct: float | None
     overall_immediate_loss_pct: float | None
 
@@ -215,7 +243,7 @@ def build_eco_followup_stats_from_aggregates(variant: dict) -> EcoFollowupStats:
     buckets: list[EcoFollowupBucket] = []
     total_samples = 0
     overall_wins = 0
-    for idx, total, win, wins_ratio_sum_2, wins_ratio_sum_4 in variant["buckets"]:
+    for idx, total, win, wins_ratio_sum_2, wins_ratio_sum_4, match_total, match_win_count in variant["buckets"]:
         if total == 0:
             continue
         total_samples += total
@@ -223,6 +251,7 @@ def build_eco_followup_stats_from_aggregates(variant: dict) -> EcoFollowupStats:
         immediate_win_pct = win / total
         avg_win_rate_next2 = wins_ratio_sum_2 / total
         avg_win_rate_next4 = wins_ratio_sum_4 / total
+        match_win_pct = match_win_count / match_total if match_total else None
         buckets.append(
             EcoFollowupBucket(
                 label=_bucket_label(idx),
@@ -234,10 +263,14 @@ def build_eco_followup_stats_from_aggregates(variant: dict) -> EcoFollowupStats:
                 next2_fill=win_color(avg_win_rate_next2),
                 avg_win_rate_next4=avg_win_rate_next4,
                 next4_fill=win_color(avg_win_rate_next4),
+                match_total=match_total,
+                match_win_pct=match_win_pct,
+                match_fill=win_color(match_win_pct) if match_win_pct is not None else None,
             )
         )
 
     eligible = [b for b in buckets if b.total >= MIN_SAMPLES_FOR_BEST]
+    eligible_for_match = [b for b in eligible if b.match_win_pct is not None and b.match_total >= MIN_SAMPLES_FOR_BEST]
     overall_win_pct = overall_wins / total_samples if total_samples else None
     return EcoFollowupStats(
         buckets=buckets,
@@ -245,6 +278,7 @@ def build_eco_followup_stats_from_aggregates(variant: dict) -> EcoFollowupStats:
         best_immediate_win_bucket=max(eligible, key=lambda b: b.immediate_win_pct, default=None),
         best_win_rate_next2_bucket=max(eligible, key=lambda b: b.avg_win_rate_next2, default=None),
         best_win_rate_next4_bucket=max(eligible, key=lambda b: b.avg_win_rate_next4, default=None),
+        best_match_win_bucket=max(eligible_for_match, key=lambda b: b.match_win_pct, default=None),
         overall_immediate_win_pct=overall_win_pct,
         overall_immediate_loss_pct=(1 - overall_win_pct) if overall_win_pct is not None else None,
     )

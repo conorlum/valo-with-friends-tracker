@@ -41,6 +41,15 @@
       <div class="stat-value stat-empty">&ndash;</div>
       {% endif %}
     </div>
+    <div class="stat-tile">
+      <div class="stat-label">Best buy for match win rate</div>
+      {% if eco_followup_stats.best_match_win_bucket %}
+      <div class="stat-value">{{ eco_followup_stats.best_match_win_bucket.label }}</div>
+      <div class="page-meta">{{ (eco_followup_stats.best_match_win_bucket.match_win_pct * 100) | round | int }}% of matches won ({{ eco_followup_stats.best_match_win_bucket.match_total }} matches)</div>
+      {% else %}
+      <div class="stat-value stat-empty">&ndash;</div>
+      {% endif %}
+    </div>
   </div>
 
   <table>
@@ -51,6 +60,7 @@
         <th data-sort="number">Won That Round</th>
         <th data-sort="number">Win Rate (next 2 rounds)</th>
         <th data-sort="number">Win Rate (next 4 rounds)</th>
+        <th data-sort="number">Match Win Rate</th>
       </tr>
     </thead>
     <tbody>
@@ -66,6 +76,13 @@
         </td>
         <td data-sort-value="{{ b.avg_win_rate_next4 }}">
           <span class="pill" style="background-color: {{ b.next4_fill }};">{{ (b.avg_win_rate_next4 * 100) | round | int }}%</span>
+        </td>
+        <td data-sort-value="{{ b.match_win_pct if b.match_win_pct is not none else -1 }}">
+          {% if b.match_win_pct is not none %}
+          <span class="pill" style="background-color: {{ b.match_fill }};" title="{{ b.match_total }} decisive matches">{{ (b.match_win_pct * 100) | round | int }}%</span>
+          {% else %}
+          <span class="stat-empty">&ndash;</span>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}

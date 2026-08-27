@@ -36,8 +36,17 @@ def _round(
     return Round(round_number=round_number, outcome=outcome, player_stats=stats)
 
 
-def _match(rounds: list[Round], team1_player_id: int = 100, team2_player_id: int = 200) -> Match:
-    match = Match(id=1, external_id="ext-1", source=MatchSource.SCRAPED, team1_rounds_won=0, team2_rounds_won=0)
+def _match(
+    rounds: list[Round], team1_player_id: int = 100, team2_player_id: int = 200,
+    team1_rounds_won: int = 0, team2_rounds_won: int = 0,
+) -> Match:
+    """team1_rounds_won/team2_rounds_won default to a 0-0 tie (i.e.
+    match_win returns None, so match_total stays 0) -- tests that care about
+    the match-win outcome pass a decisive score explicitly."""
+    match = Match(
+        id=1, external_id="ext-1", source=MatchSource.SCRAPED,
+        team1_rounds_won=team1_rounds_won, team2_rounds_won=team2_rounds_won,
+    )
     match.match_players = [_mp(1, Team.TEAM_1, team1_player_id), _mp(2, Team.TEAM_2, team2_player_id)]
     match.rounds = rounds
     return match
@@ -80,12 +89,16 @@ def test_pistol_win_and_followup_round_win_both_recorded():
 
     assert result["friends"]["buckets"] == []
     idx = eco_bucket_index(13500)
-    [[bucket_idx, total, win, wins_ratio_sum_2, wins_ratio_sum_4]] = result["all"]["buckets"]
+    [[bucket_idx, total, win, wins_ratio_sum_2, wins_ratio_sum_4, match_total, match_win_count]] = result["all"][
+        "buckets"
+    ]
     assert bucket_idx == idx
     assert total == 1
     assert win == 1  # round 2 itself was won
     assert wins_ratio_sum_2 == 2 / 2  # rounds 2, 3 both won
     assert wins_ratio_sum_4 == 3 / 4  # rounds 2, 3, 5 won out of 4
+    assert match_total == 0  # match is a 0-0 tie by default -- excluded, not a loss
+    assert match_win_count == 0
 
 
 def test_sample_only_counted_for_friends_when_winning_team_has_a_roster_player():
@@ -121,7 +134,7 @@ def test_kills_and_wins_rate_normalize_over_a_partial_window():
         _round(3, "Team B Wins", team1_loadout=1000, team1_kills=2),
     ])
     result = compute_pistol_win_followup_eco([match], roster_player_ids=set())
-    [[_, total, win, wins_ratio_sum_2, wins_ratio_sum_4]] = result["all"]["buckets"]
+    [[_, total, win, wins_ratio_sum_2, wins_ratio_sum_4, _, _]] = result["all"]["buckets"]
     assert total == 1
     assert wins_ratio_sum_2 == 1 / 2  # only round 2 of the 2 available was won
     assert wins_ratio_sum_4 == 1 / 2  # only round 2 of the 2 available was won
@@ -138,12 +151,54 @@ def test_both_pistol_rounds_contribute_independent_samples():
     assert len(result["all"]["buckets"]) == 2
 
 
+def test_match_win_counted_when_the_pistol_winning_team_wins_the_match():
+    match = _match(
+        [_round(1, "Team A Wins"), _round(2, "Team A Wins", team1_loadout=13500, team1_kills=1)],
+        team1_rounds_won=13, team2_rounds_won=5,
+    )
+    result = compute_pistol_win_followup_eco([match], roster_player_ids=set())
+    [[_, total, _, _, _, match_total, match_win_count]] = result["all"]["buckets"]
+    assert total == 1
+    assert match_total == 1
+    assert match_win_count == 1
+
+
+def test_match_win_counted_as_loss_when_the_pistol_winning_team_loses_the_match():
+    match = _match(
+        [_round(1, "Team A Wins"), _round(2, "Team A Wins", team1_loadout=13500, team1_kills=1)],
+        team1_rounds_won=11, team2_rounds_won=13,
+    )
+    result = compute_pistol_win_followup_eco([match], roster_player_ids=set())
+    [[_, total, _, _, _, match_total, match_win_count]] = result["all"]["buckets"]
+    assert total == 1
+    assert match_total == 1
+    assert match_win_count == 0
+
+
+def test_match_win_excluded_from_match_total_when_the_match_is_tied():
+    match = _match(
+        [_round(1, "Team A Wins"), _round(2, "Team A Wins", team1_loadout=13500, team1_kills=1)],
+        team1_rounds_won=12, team2_rounds_won=12,
+    )
+    result = compute_pistol_win_followup_eco([match], roster_player_ids=set())
+    [[_, total, _, _, _, match_total, match_win_count]] = result["all"]["buckets"]
+    assert total == 1  # the sample still counts for the round-level columns
+    assert match_total == 0
+    assert match_win_count == 0
+
+
 # ---------------------------------------------------------------------------
 # build_eco_followup_stats_from_aggregates
 # ---------------------------------------------------------------------------
 
 def test_build_stats_computes_rates_and_label():
-    variant = {"buckets": [[0, 10, 4, 25.0, 6.0], [1, 10, 4, 25.0, 6.0], [ECO_NUM_BUCKETS - 1, 10, 4, 25.0, 6.0]]}
+    variant = {
+        "buckets": [
+            [0, 10, 4, 25.0, 6.0, 8, 5],
+            [1, 10, 4, 25.0, 6.0, 8, 5],
+            [ECO_NUM_BUCKETS - 1, 10, 4, 25.0, 6.0, 8, 5],
+        ]
+    }
     stats = build_eco_followup_stats_from_aggregates(variant)
     under_bucket, first_middle_bucket, above_bucket = stats.buckets
 
@@ -155,27 +210,40 @@ def test_build_stats_computes_rates_and_label():
     assert under_bucket.immediate_win_pct == 0.4
     assert under_bucket.avg_win_rate_next2 == 2.5
     assert under_bucket.avg_win_rate_next4 == 0.6
+    assert under_bucket.match_total == 8
+    assert under_bucket.match_win_pct == 5 / 8
     assert stats.total_samples == 30
+
+
+def test_match_win_pct_is_none_when_no_sample_in_the_bucket_had_a_decisive_match():
+    variant = {"buckets": [[0, 10, 4, 25.0, 6.0, 0, 0]]}
+    stats = build_eco_followup_stats_from_aggregates(variant)
+    bucket = stats.buckets[0]
+    assert bucket.match_total == 0
+    assert bucket.match_win_pct is None
+    assert bucket.match_fill is None
 
 
 def test_best_bucket_selection_ignores_buckets_below_min_sample_size():
     """Bucket 0 has a perfect rate but only 3 samples; bucket 1 has a worse
     rate but enough samples to be trusted -- bucket 1 should win."""
-    variant = {"buckets": [[0, 3, 3, 30.0, 3.0], [1, 50, 30, 100.0, 30.0]]}
+    variant = {"buckets": [[0, 3, 3, 30.0, 3.0, 3, 3], [1, 50, 30, 100.0, 30.0, 50, 20]]}
     stats = build_eco_followup_stats_from_aggregates(variant)
     assert stats.best_immediate_win_bucket.total == 50
+    assert stats.best_match_win_bucket.total == 50
 
 
 def test_best_bucket_is_none_when_no_bucket_meets_the_threshold():
-    variant = {"buckets": [[0, 3, 3, 3.0, 3.0]]}
+    variant = {"buckets": [[0, 3, 3, 3.0, 3.0, 3, 3]]}
     stats = build_eco_followup_stats_from_aggregates(variant)
     assert stats.best_immediate_win_bucket is None
     assert stats.best_win_rate_next2_bucket is None
     assert stats.best_win_rate_next4_bucket is None
+    assert stats.best_match_win_bucket is None
 
 
 def test_empty_buckets_total_zero_are_skipped():
-    variant = {"buckets": [[0, 0, 0, 0.0, 0.0], [1, 5, 2, 10.0, 3.0]]}
+    variant = {"buckets": [[0, 0, 0, 0.0, 0.0, 0, 0], [1, 5, 2, 10.0, 3.0, 5, 2]]}
     stats = build_eco_followup_stats_from_aggregates(variant)
     assert len(stats.buckets) == 1
     assert stats.buckets[0].total == 5

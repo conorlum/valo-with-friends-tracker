@@ -27,7 +27,7 @@ from app.services.score_reached_stats import MAX_DISPLAYED_SCORE as SCORE_REACHE
 
 logger = logging.getLogger(__name__)
 
-SITE_STATS_CACHE_SCHEMA_VERSION = 12
+SITE_STATS_CACHE_SCHEMA_VERSION = 13
 # Bump when the shape of the stored blob changes (a stat's aggregate keys
 # change, or a stat is renamed/removed), or when compute_pistol_match_stats /
 # compute_pistol_win_followup_eco / compute_round_combo_stats / compute_map_side_stats
@@ -77,6 +77,11 @@ SITE_STATS_CACHE_SCHEMA_VERSION = 12
 # to concentrate the previously sparse tail samples into buckets big enough to
 # be meaningful. ECO_NUM_BUCKETS changed (17 -> 13) so idx bounds shift; the
 # version bump forces a recompute rather than validating stale idx layouts.
+# v13: pistol_win_followup_eco's per-bucket row grew two more elements,
+# match_total/match_win -- whether the pistol-winning team went on to win the
+# whole match, alongside the existing round-level outcomes. match_total only
+# counts samples whose match had a decisive winner (excludes ties/undecided),
+# so match_total <= total.
 
 _PISTOL_MATCH_STATS_BUCKET_PREFIXES = ("lost_both", "won_one", "won_both")
 _PISTOL_MATCH_STATS_KEYS = frozenset(
@@ -103,16 +108,20 @@ def _validate_pistol_match_stats(stats: object) -> bool:
 
 
 def _validate_eco_bucket_row(row: object) -> bool:
-    if not isinstance(row, list) or len(row) != 5:
+    if not isinstance(row, list) or len(row) != 7:
         return False
-    idx, total, win, wins_ratio_sum_2, wins_ratio_sum_4 = row
+    idx, total, win, wins_ratio_sum_2, wins_ratio_sum_4, match_total, match_win_count = row
     if not isinstance(idx, int) or isinstance(idx, bool) or not (0 <= idx < ECO_NUM_BUCKETS):
         return False
     if not _is_nonneg_int(total) or not _is_nonneg_int(win) or win > total:
         return False
     if not _is_number(wins_ratio_sum_2) or not _is_number(wins_ratio_sum_4):
         return False
-    return wins_ratio_sum_2 >= 0 and wins_ratio_sum_4 >= 0
+    if wins_ratio_sum_2 < 0 or wins_ratio_sum_4 < 0:
+        return False
+    if not _is_nonneg_int(match_total) or not _is_nonneg_int(match_win_count):
+        return False
+    return match_win_count <= match_total and match_total <= total
 
 
 def _validate_eco_followup_variant(variant: object) -> bool:
