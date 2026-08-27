@@ -1352,10 +1352,10 @@ if ingestion ever becomes concurrent or webhook-driven.
         .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
     ALWAYS pass `-p valomaths-private`; the bare `docker compose up` can
     repoint the sibling public repo's Postgres.
-  - If `docker` is unavailable in the working environment, `.env.neon`
-    points at the live Neon DB. Running `alembic upgrade head` there
+  - If `docker` is unavailable in the working environment, `.env.remote`
+    points at the live Render DB. Running `alembic upgrade head` there
     mutates real data -- confirm with the user before doing it, and never
-    run the invalidation/recompute scripts against Neon unprompted.
+    run the invalidation/recompute scripts against the live DB unprompted.
 
 
 ========================================================================

@@ -13,9 +13,10 @@ Usage:
     .venv\\Scripts\\python.exe scripts\\validate_fight_ev.py "NPrightdolphin#NA1" --out report.json
     .venv\\Scripts\\python.exe scripts\\validate_fight_ev.py "NPrightdolphin#NA1" --draws 500
 
-Point at a specific database (e.g. Neon) the same way every other script in
-this folder does -- set DATABASE_URL before invoking, it overrides .env:
-    $env:DATABASE_URL = (Get-Content .env.neon | Select-String DATABASE_URL).Line.Split('=',2)[1]
+Point at a specific database (e.g. the deployed Render one) the same way every
+other script in this folder does -- set DATABASE_URL before invoking, it
+overrides .env:
+    $env:DATABASE_URL = (Get-Content .env.remote | Select-String DATABASE_URL).Line.Split('=',2)[1]
 """
 
 import argparse

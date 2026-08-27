@@ -84,8 +84,12 @@ def main(max_players: int | None, max_matches_per_player: int | None, max_acts: 
             # (and tracker.gg's dozens of ad/tracking iframes on it) attached
             # to the shared Chrome session. Left alone these accumulate across
             # resumed runs until connect_over_cdp's target enumeration times
-            # out entirely -- so start every run from a clean slate.
+            # out entirely -- so start every run from a clean slate. Open the
+            # new page *before* closing old ones so the tab count never hits
+            # zero -- Chrome quits when its last tab closes, taking the CDP
+            # connection down with it.
             stale_pages = list(context.pages)
+            page = context.new_page()
             if stale_pages:
                 print(f"closing {len(stale_pages)} stale page(s) from a previous run...")
                 for stale_page in stale_pages:
@@ -93,8 +97,6 @@ def main(max_players: int | None, max_matches_per_player: int | None, max_acts: 
                         stale_page.close()
                     except Exception:
                         pass
-
-            page = context.new_page()
 
             while state["queue"]:
                 if max_players is not None and len(state["crawled"]) >= max_players:
@@ -112,6 +114,7 @@ def main(max_players: int | None, max_matches_per_player: int | None, max_acts: 
                     )
                 except Exception as e:
                     print(f"  error crawling {riot_id}, skipping: {e}")
+                    db.rollback()
 
                 state["crawled"].append(riot_id)
                 added = _enqueue_new_opponents(db, state)

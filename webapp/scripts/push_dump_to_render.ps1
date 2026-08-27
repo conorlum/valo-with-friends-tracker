@@ -1,8 +1,11 @@
 <#
 Dumps the local docker-compose Postgres (project "valomaths-private") and restores
-it into a target database -- e.g. a Neon project's connection string (the
-ValoWithFriendsTracker deploy's DB lives on Neon, not Render, since Render's free
-tier only allows one free Postgres per account).
+it into a target database -- e.g. the deployed Render Postgres (pass its EXTERNAL
+connection string; the internal hostname only resolves inside Render's network).
+
+NOTE: this requires Docker, which is not installed on the current machine. To dump
+or restore against the deployed DB directly, use native PostgreSQL 18 client
+binaries instead (pg_dump/pg_restore must be >= the server's major version).
 
 Reusable both for the initial data load and every subsequent refresh (re-run
 after ingesting new matches locally) -- just pass the same target URL each time.

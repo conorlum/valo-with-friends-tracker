@@ -3,8 +3,8 @@ One-command tracker.gg roster refresh: brings up Docker Desktop -> Postgres
 container -> Alembic migrations -> the dedicated debug-Chrome profile, then
 runs refresh_tracked_players.py against the whole scripts/tracked_players.json
 roster. Each stage is skipped if it's already up, so re-runs in the same
-session get progressively cheaper. Finishes by calling refresh_neon.ps1 with
-the same -Count, so the live (Neon) database gets the same new matches --
+session get progressively cheaper. Finishes by calling refresh_remote.ps1 with
+the same -Count, so the live (Render) database gets the same new matches --
 no separate manual step needed.
 
 Usage:
@@ -134,8 +134,8 @@ Write-Host "Refreshing tracked_players.json roster (count=$Count per player)..."
 & $python "scripts\refresh_tracked_players.py" --count $Count
 if ($LASTEXITCODE -ne 0) { throw "refresh_tracked_players.py failed." }
 
-Write-Host "Refreshing Neon (live site) with the same roster..."
-& powershell -File (Join-Path $PSScriptRoot "refresh_neon.ps1") -Count $Count
-if ($LASTEXITCODE -ne 0) { throw "refresh_neon.ps1 failed." }
+Write-Host "Refreshing the remote DB (live site) with the same roster..."
+& powershell -File (Join-Path $PSScriptRoot "refresh_remote.ps1") -Count $Count
+if ($LASTEXITCODE -ne 0) { throw "refresh_remote.ps1 failed." }
 
 Write-Host "Done."
