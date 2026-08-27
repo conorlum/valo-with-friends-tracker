@@ -12,7 +12,7 @@ _VALID_PISTOL_MATCH_STATS = {
     "won_both_total": 1, "won_both_wins": 1,
 }
 
-_VALID_ECO_VARIANT = {"buckets": [[0, 10, 4, 12.5, 6.0], [1, 3, 1, 2.0, 1.5]]}
+_VALID_ECO_VARIANT = {"buckets": [[0, 10, 4, 12.5, 6.0, 8, 5], [1, 3, 1, 2.0, 1.5, 3, 2]]}
 _VALID_ECO_FOLLOWUP = {"friends": _VALID_ECO_VARIANT, "all": _VALID_ECO_VARIANT}
 
 _VALID_ROUND_COMBO_VARIANT = {
@@ -69,15 +69,23 @@ def test_eco_followup_variant_rejects_wrong_row_length():
 
 
 def test_eco_followup_variant_rejects_bucket_index_out_of_range():
-    assert not _validate_eco_followup_variant({"buckets": [[999, 10, 4, 12.5, 6.0]]})
+    assert not _validate_eco_followup_variant({"buckets": [[999, 10, 4, 12.5, 6.0, 8, 5]]})
 
 
 def test_eco_followup_variant_rejects_win_greater_than_total():
-    assert not _validate_eco_followup_variant({"buckets": [[0, 5, 6, 12.5, 6.0]]})
+    assert not _validate_eco_followup_variant({"buckets": [[0, 5, 6, 12.5, 6.0, 5, 3]]})
 
 
 def test_eco_followup_variant_rejects_negative_ratio_sum():
-    assert not _validate_eco_followup_variant({"buckets": [[0, 10, 4, -1.0, 6.0]]})
+    assert not _validate_eco_followup_variant({"buckets": [[0, 10, 4, -1.0, 6.0, 8, 5]]})
+
+
+def test_eco_followup_variant_rejects_match_win_greater_than_match_total():
+    assert not _validate_eco_followup_variant({"buckets": [[0, 10, 4, 12.5, 6.0, 5, 6]]})
+
+
+def test_eco_followup_variant_rejects_match_total_greater_than_total():
+    assert not _validate_eco_followup_variant({"buckets": [[0, 10, 4, 12.5, 6.0, 11, 5]]})
 
 
 def test_pistol_win_followup_eco_requires_both_friends_and_all_keys():
