@@ -4,6 +4,10 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.services.economy_graphs import build_pistol_match_stats_from_aggregates
 from app.services.eco_followup import MIN_SAMPLES_FOR_BEST, build_eco_followup_stats_from_aggregates
+from app.services.enemy_at_11_response import (
+    MIN_SAMPLES_FOR_BEST as ENEMY_AT_11_MIN_SAMPLES_FOR_BEST,
+    build_enemy_at_11_response_stats,
+)
 from app.services.force_buy_stats import build_force_buy_stats
 from app.services.halftime_conversion_stats import build_halftime_conversion_stats
 from app.services.map_side_stats import build_map_side_stats_from_aggregates
@@ -40,6 +44,8 @@ def _friends_context(db: Session, scope: str) -> dict:
         "score_reached_stats": build_score_reached_stats(site_stats["score_reached"]["friends"]),
         "round_streak_stats": build_round_streak_stats(site_stats["round_streaks"]["friends"]),
         "force_buy_stats": build_force_buy_stats(site_stats["force_buy_stats"]["friends"]),
+        "enemy_at_11_response_stats": build_enemy_at_11_response_stats(site_stats["enemy_at_11_response"]["friends"]),
+        "enemy_at_11_response_min_samples": ENEMY_AT_11_MIN_SAMPLES_FOR_BEST,
     }
 
 
@@ -73,5 +79,7 @@ def all_players_page(request: Request, db: Session = Depends(get_db)):
         "score_reached_stats": build_score_reached_stats(site_stats["score_reached"]["all"]),
         "round_streak_stats": build_round_streak_stats(site_stats["round_streaks"]["all"]),
         "force_buy_stats": build_force_buy_stats(site_stats["force_buy_stats"]["all"]),
+        "enemy_at_11_response_stats": build_enemy_at_11_response_stats(site_stats["enemy_at_11_response"]["all"]),
+        "enemy_at_11_response_min_samples": ENEMY_AT_11_MIN_SAMPLES_FOR_BEST,
     }
     return templates.TemplateResponse(request, "stats/detail.html", context)
