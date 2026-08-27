@@ -27,7 +27,7 @@ from app.services.score_reached_stats import MAX_DISPLAYED_SCORE as SCORE_REACHE
 
 logger = logging.getLogger(__name__)
 
-SITE_STATS_CACHE_SCHEMA_VERSION = 11
+SITE_STATS_CACHE_SCHEMA_VERSION = 12
 # Bump when the shape of the stored blob changes (a stat's aggregate keys
 # change, or a stat is renamed/removed), or when compute_pistol_match_stats /
 # compute_pistol_win_followup_eco / compute_round_combo_stats / compute_map_side_stats
@@ -71,6 +71,12 @@ SITE_STATS_CACHE_SCHEMA_VERSION = 11
 # bucket instead of two near-duplicate rows. Key set is unchanged (still a
 # subset of the 16 WL^4 strings) so old cached rows would pass validation but
 # carry pre-merge semantics; the version bump forces a recompute.
+# v12: pistol_win_followup_eco's buckets changed from uniform 1000-credit-wide
+# buckets spanning 5000-22000 to a fixed 8000-19000 middle range (still
+# 1000-wide) flanked by two catch-all tail buckets ("under 8000", "19000+"),
+# to concentrate the previously sparse tail samples into buckets big enough to
+# be meaningful. ECO_NUM_BUCKETS changed (17 -> 13) so idx bounds shift; the
+# version bump forces a recompute rather than validating stale idx layouts.
 
 _PISTOL_MATCH_STATS_BUCKET_PREFIXES = ("lost_both", "won_one", "won_both")
 _PISTOL_MATCH_STATS_KEYS = frozenset(

@@ -27,13 +27,17 @@ from app.services.player_graphs import win_color
 
 # Chosen from the observed distribution (2026-08-23 snapshot of this DB): team
 # total loadout the round right after a won pistol round ranged 5700-20400,
-# median ~14600, with the bulk between 10000 and 19000. 1000-credit-wide
-# buckets from 5000-22000 comfortably cover that with room to spare, and are
-# coarse enough to keep most buckets statistically meaningful (a handful of
-# samples each) rather than shattering into one-round buckets.
-ECO_BUCKET_FLOOR = 5000
+# median ~14600, with the bulk between 10000 and 19000. The tails (below 8000,
+# at/above 19000) are thin on their own -- one 1000-wide bucket per 1000
+# credits leaves them with only a handful of samples each -- so they're each
+# folded into a single "under"/"above" catch-all bucket instead, keeping the
+# tails statistically meaningful while the well-populated middle keeps its
+# 1000-credit-wide granularity.
+ECO_TAIL_LOW = 8000
+ECO_TAIL_HIGH = 19000
 ECO_BUCKET_WIDTH = 1000
-ECO_NUM_BUCKETS = 17  # 5000-22000
+_ECO_NUM_MIDDLE_BUCKETS = (ECO_TAIL_HIGH - ECO_TAIL_LOW) // ECO_BUCKET_WIDTH
+ECO_NUM_BUCKETS = _ECO_NUM_MIDDLE_BUCKETS + 2  # + 1 "under" bucket, + 1 "above" bucket
 
 PISTOL_FOLLOWUP_ROUNDS = ((1, 2), (13, 14))
 FOLLOWUP_WINDOW = 4
@@ -46,8 +50,11 @@ MIN_SAMPLES_FOR_BEST = 20
 
 
 def eco_bucket_index(total_loadout: int) -> int:
-    idx = (total_loadout - ECO_BUCKET_FLOOR) // ECO_BUCKET_WIDTH
-    return min(max(int(idx), 0), ECO_NUM_BUCKETS - 1)
+    if total_loadout < ECO_TAIL_LOW:
+        return 0
+    if total_loadout >= ECO_TAIL_HIGH:
+        return ECO_NUM_BUCKETS - 1
+    return int(1 + (total_loadout - ECO_TAIL_LOW) // ECO_BUCKET_WIDTH)
 
 
 def _winner_team(outcome: str | None) -> Team | None:
@@ -162,6 +169,7 @@ def compute_pistol_win_followup_eco(matches: list[Match], roster_player_ids: set
 @dataclass
 class EcoFollowupBucket:
     label: str
+    sort_key: int
     total: int
     immediate_win_pct: float
     immediate_fill: str
@@ -182,8 +190,23 @@ class EcoFollowupStats:
     overall_immediate_loss_pct: float | None
 
 
+def _bucket_low(idx: int) -> int:
+    """The credit value this bucket sorts by -- 0 for the "under" catch-all
+    (sorts before every real bucket), ECO_TAIL_HIGH for the "above" catch-all
+    (sorts after every real bucket), else the bucket's own lower edge."""
+    if idx == 0:
+        return 0
+    if idx == ECO_NUM_BUCKETS - 1:
+        return ECO_TAIL_HIGH
+    return ECO_TAIL_LOW + (idx - 1) * ECO_BUCKET_WIDTH
+
+
 def _bucket_label(idx: int) -> str:
-    low = ECO_BUCKET_FLOOR + idx * ECO_BUCKET_WIDTH
+    if idx == 0:
+        return f"Under {ECO_TAIL_LOW:,}"
+    if idx == ECO_NUM_BUCKETS - 1:
+        return f"{ECO_TAIL_HIGH:,}+"
+    low = _bucket_low(idx)
     high = low + ECO_BUCKET_WIDTH
     return f"{low:,}-{high:,}"
 
@@ -203,6 +226,7 @@ def build_eco_followup_stats_from_aggregates(variant: dict) -> EcoFollowupStats:
         buckets.append(
             EcoFollowupBucket(
                 label=_bucket_label(idx),
+                sort_key=_bucket_low(idx),
                 total=total,
                 immediate_win_pct=immediate_win_pct,
                 immediate_fill=win_color(immediate_win_pct),

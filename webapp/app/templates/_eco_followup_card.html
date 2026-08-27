@@ -56,7 +56,7 @@
     <tbody>
       {% for b in eco_followup_stats.buckets %}
       <tr>
-        <td data-sort-value="{{ b.label.split('-')[0] | replace(',', '') }}">{{ b.label }}</td>
+        <td data-sort-value="{{ b.sort_key }}">{{ b.label }}</td>
         <td data-sort-value="{{ b.total }}">{{ b.total }}</td>
         <td data-sort-value="{{ b.immediate_win_pct }}">
           <span class="pill" style="background-color: {{ b.immediate_fill }};">{{ (b.immediate_win_pct * 100) | round | int }}%</span>
