@@ -589,25 +589,11 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
             )
             impact = kill_impact - death_impact
 
-            breakdown = {
-                "damage": damages,
-                "econ_impact": round(kill_order_bonus_x_econ_sum - death_order_bonus_x_econ_sum),
-                "time_impact": round(kill_order_bonus_x_time_sum - death_order_bonus_x_time_sum),
-                "swing_impact": round(kill_order_bonus_x_swing_sum - death_order_bonus_x_swing_sum),
-                "econ_kill": round(econ_mismatch_kill_sum),
-                "econ_death": round(econ_mismatch_death_sum),
-                "clutch_kill": round(clutch_kill_sum),
-                "clutch_death": round(clutch_death_sum),
-                "post_plant_kill": round(post_plant_kill_sum),
-                "post_plant_death": round(post_plant_death_sum),
-                "traded_teammate": trade_kill_counts[round_number].get(match_player_id, 0),
-                "traded_by_teammate": trade_death_counts[round_number].get(match_player_id, 0),
-                "traded_teammate_targets": {
-                    str(k): v for k, v in trade_kill_targets[round_number].get(match_player_id, {}).items()
-                },
-                "traded_by_teammate_sources": {
-                    str(k): v for k, v in trade_death_sources[round_number].get(match_player_id, {}).items()
-                },
+            traded_teammate_targets = {
+                str(k): v for k, v in trade_kill_targets[round_number].get(match_player_id, {}).items()
+            }
+            traded_by_teammate_sources = {
+                str(k): v for k, v in trade_death_sources[round_number].get(match_player_id, {}).items()
             }
 
             impact_score = (
@@ -622,6 +608,26 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
             impact_score.kill_impact = kill_impact
             impact_score.death_impact = death_impact
             impact_score.impact = impact
-            impact_score.breakdown = breakdown
+
+            impact_score.damage = damages
+            impact_score.econ_impact = round(kill_order_bonus_x_econ_sum - death_order_bonus_x_econ_sum)
+            impact_score.time_impact = round(kill_order_bonus_x_time_sum - death_order_bonus_x_time_sum)
+            impact_score.swing_impact = round(kill_order_bonus_x_swing_sum - death_order_bonus_x_swing_sum)
+            impact_score.econ_kill = round(econ_mismatch_kill_sum)
+            impact_score.econ_death = round(econ_mismatch_death_sum)
+            impact_score.clutch_kill = round(clutch_kill_sum)
+            impact_score.clutch_death = round(clutch_death_sum)
+            impact_score.post_plant_kill = round(post_plant_kill_sum)
+            impact_score.post_plant_death = round(post_plant_death_sum)
+            impact_score.traded_teammate = trade_kill_counts[round_number].get(match_player_id, 0)
+            impact_score.traded_by_teammate = trade_death_counts[round_number].get(match_player_id, 0)
+
+            # Both maps empty is the common case (64.1% of rows) -- store NULL
+            # rather than two empty objects.
+            impact_score.trade_detail = (
+                {"t": traded_teammate_targets, "s": traded_by_teammate_sources}
+                if (traded_teammate_targets or traded_by_teammate_sources)
+                else None
+            )
 
     db.commit()

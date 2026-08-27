@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerStat
@@ -120,7 +121,15 @@ def get_match_summary(db: Session, match: Match) -> MatchSummary:
             ImpactScore.impact,
             ImpactScore.kill_impact,
             ImpactScore.death_impact,
-            ImpactScore.breakdown,
+            ImpactScore.econ_kill,
+            ImpactScore.econ_death,
+            ImpactScore.clutch_kill,
+            ImpactScore.clutch_death,
+            ImpactScore.post_plant_kill,
+            ImpactScore.post_plant_death,
+            ImpactScore.traded_teammate,
+            ImpactScore.traded_by_teammate,
+            ImpactScore.trade_detail,
         )
         .join(Player, Player.id == MatchPlayer.player_id)
         .join(ImpactScore, ImpactScore.match_player_id == MatchPlayer.id)
@@ -133,7 +142,13 @@ def get_match_summary(db: Session, match: Match) -> MatchSummary:
     by_player: dict[int, PlayerSummary] = {}
     round_numbers: set[int] = set()
 
-    for match_player_id, display_name, agent, team, round_number, impact, kill_impact, death_impact, breakdown in rows:
+    for (
+        match_player_id, display_name, agent, team, round_number,
+        impact, kill_impact, death_impact,
+        econ_kill, econ_death, clutch_kill, clutch_death,
+        post_plant_kill, post_plant_death,
+        traded_teammate, traded_by_teammate, trade_detail,
+    ) in rows:
         round_numbers.add(round_number)
         summary = by_player.get(match_player_id)
         if summary is None:
@@ -155,18 +170,18 @@ def get_match_summary(db: Session, match: Match) -> MatchSummary:
         summary.kill_impact_by_round[round_number] = kill_impact
         summary.death_impact_by_round[round_number] = death_impact
 
-        breakdown = breakdown or {}
-        summary.econ_kill += breakdown.get("econ_kill", 0)
-        summary.econ_death += breakdown.get("econ_death", 0)
-        summary.clutch_kill += breakdown.get("clutch_kill", 0)
-        summary.clutch_death += breakdown.get("clutch_death", 0)
-        summary.post_plant_kill += breakdown.get("post_plant_kill", 0)
-        summary.post_plant_death += breakdown.get("post_plant_death", 0)
-        summary.traded_teammate += breakdown.get("traded_teammate", 0)
-        summary.traded_by_teammate += breakdown.get("traded_by_teammate", 0)
-        for teammate_id, count in breakdown.get("traded_teammate_targets", {}).items():
+        summary.econ_kill += econ_kill
+        summary.econ_death += econ_death
+        summary.clutch_kill += clutch_kill
+        summary.clutch_death += clutch_death
+        summary.post_plant_kill += post_plant_kill
+        summary.post_plant_death += post_plant_death
+        summary.traded_teammate += traded_teammate
+        summary.traded_by_teammate += traded_by_teammate
+        detail = trade_detail or {}
+        for teammate_id, count in (detail.get("t") or {}).items():
             summary.traded_teammate_ids[int(teammate_id)] = summary.traded_teammate_ids.get(int(teammate_id), 0) + count
-        for teammate_id, count in breakdown.get("traded_by_teammate_sources", {}).items():
+        for teammate_id, count in (detail.get("s") or {}).items():
             summary.traded_by_teammate_ids[int(teammate_id)] = summary.traded_by_teammate_ids.get(int(teammate_id), 0) + count
 
     for summary in by_player.values():
@@ -398,21 +413,23 @@ def get_match_shoutouts(
     for match_player_id, _impact in best_by_round.values():
         mvp_counts[match_player_id] = mvp_counts.get(match_player_id, 0) + 1
 
+    # Summed in SQL rather than by pulling every row back into Python -- these
+    # were counters buried in the old breakdown JSON blob; they are columns now.
     traded_teammate_totals: dict[int, int] = {}
     traded_by_teammate_totals: dict[int, int] = {}
-    for match_player_id, breakdown in (
-        db.query(ImpactScore.match_player_id, ImpactScore.breakdown)
+    for match_player_id, traded, traded_by in (
+        db.query(
+            ImpactScore.match_player_id,
+            func.sum(ImpactScore.traded_teammate),
+            func.sum(ImpactScore.traded_by_teammate),
+        )
         .join(Round, Round.id == ImpactScore.round_id)
         .filter(Round.match_id == match.id)
+        .group_by(ImpactScore.match_player_id)
         .all()
     ):
-        breakdown = breakdown or {}
-        traded_teammate_totals[match_player_id] = traded_teammate_totals.get(
-            match_player_id, 0
-        ) + breakdown.get("traded_teammate", 0)
-        traded_by_teammate_totals[match_player_id] = traded_by_teammate_totals.get(
-            match_player_id, 0
-        ) + breakdown.get("traded_by_teammate", 0)
+        traded_teammate_totals[match_player_id] = int(traded or 0)
+        traded_by_teammate_totals[match_player_id] = int(traded_by or 0)
 
     post_plant_kill_counts: dict[int, int] = {}
     for (killer_mp_id,) in (
