@@ -28,7 +28,7 @@ from app.services.score_reached_stats import MAX_DISPLAYED_SCORE as SCORE_REACHE
 
 logger = logging.getLogger(__name__)
 
-SITE_STATS_CACHE_SCHEMA_VERSION = 15
+SITE_STATS_CACHE_SCHEMA_VERSION = 19
 # Bump when the shape of the stored blob changes (a stat's aggregate keys
 # change, or a stat is renamed/removed), or when compute_pistol_match_stats /
 # compute_pistol_win_followup_eco / compute_round_combo_stats / compute_map_side_stats
@@ -90,6 +90,38 @@ SITE_STATS_CACHE_SCHEMA_VERSION = 15
 # round, and the match, keyed by which of 4 buy tiers -- eco/half/force/full
 # -- the responding team bought into the round right after its opponent's
 # cumulative round-win count reached 11, "friends" and "all" variants).
+# v16: enemy_at_11_response's category set changed from the 4 buy-amount
+# tiers (eco/half/force/full) to 2 risk-focused categories (bought_up/
+# saved_to_buy_next) -- samples where the team could already afford a full
+# buy that round are now excluded entirely (no real decision to compare)
+# rather than kept as a "full" row. BUY_CATEGORIES changed shape, so old
+# cached rows would fail the key-set check under the new import anyway, but
+# the version bump forces a recompute rather than relying on that.
+# v17: enemy_at_11_response's categories changed again, from team-total-based
+# (bought_up/saved_to_buy_next) to a per-player analysis (force_buy/
+# full_save) -- force_buy now means 2-4 players individually reach
+# rifle-tier loadout (not just "team spent a lot"), and full_save requires
+# BOTH very little spent AND enough banked to actually afford a full buy
+# next round. BUY_CATEGORIES key names changed again, forcing a recompute.
+# v18: enemy_at_11_response's category DEFINITIONS changed again (key names
+# unchanged, force_buy/full_save) -- force_buy is back to a spend-ratio
+# check (>= 85% of available money spent, no rifle-count requirement), and
+# full_save now projects the team's REAL next-round credit bonus (via
+# app.scoring.credit_events.round_bonus, based on actual win/loss-streak
+# history) against a $4700/player save target, with an upper-bound
+# sanity check against a team that already had enough to buy AND save. The
+# stored bucket values change even though the key set doesn't, so the
+# version bump still forces a recompute rather than serving stale numbers
+# under the same-looking keys.
+# v19: full_save gained an own-round loadout cap (FULL_SAVE_LOADOUT_MAX,
+# 10000) -- v18's full_save had no ceiling on this round's own loadout, so
+# a sample could still be fielding real carried-over guns (loadout reflects
+# what's equipped, including free carryover from surviving the previous
+# round, not just fresh spend) and still count as a "save." Caught because
+# full_save's immediate-round win rate was implausibly higher than
+# force_buy's despite worse gear; median full_save loadout turned out to be
+# $13,450, barely below force_buy's $17,900. Stored bucket values change,
+# forcing a recompute.
 
 _PISTOL_MATCH_STATS_BUCKET_PREFIXES = ("lost_both", "won_one", "won_both")
 _PISTOL_MATCH_STATS_KEYS = frozenset(

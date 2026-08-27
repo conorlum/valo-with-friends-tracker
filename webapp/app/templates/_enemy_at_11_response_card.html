@@ -1,8 +1,8 @@
 {# Expects: enemy_at_11_response_stats, subject_label #}
 {% if enemy_at_11_response_stats.rows %}
 <div class="card">
-  <h2>Buying after the enemy hits 11 round wins</h2>
-  <p class="page-meta">The moment the enemy's cumulative round-win count reaches 11 (two wins from taking the match), what did {{ subject_label }} buy in the very next round, and how did it pay off. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
+  <h2>Force buy vs. full save</h2>
+  <p class="page-meta">The moment the enemy's cumulative round-win count reaches 11 (two wins from taking the match), when {{ subject_label }} couldn't afford a full team buy that round, was it better to force it -- spend basically everything on the spot -- or hold back, bank it, and let the real credit bonus carry the team to a full buy next round. Rounds that don't clearly match either strategy are excluded. Always all-time data -- doesn't follow the Recent/Career toggle above.</p>
 
   <div class="stat-grid">
     <div class="stat-tile">
@@ -37,7 +37,7 @@
   <table>
     <thead>
       <tr>
-        <th>Buy</th>
+        <th>Strategy</th>
         <th data-sort="number">Samples</th>
         <th data-sort="number">Won That Round</th>
         <th data-sort="number">Won Next Round</th>
@@ -70,6 +70,6 @@
       {% endfor %}
     </tbody>
   </table>
-  <p class="page-meta">{{ enemy_at_11_response_stats.total_samples }} responses total. Team total loadout, all 5 players combined; Half Buy and Force Buy cover the same credit range but differ by how much of the team's available money (loadout + remaining) that loadout represents. "Best" callouts only consider buy tiers with at least {{ enemy_at_11_response_min_samples }} samples.</p>
+  <p class="page-meta">{{ enemy_at_11_response_stats.total_samples }} responses total. A full team save is uncommon in practice -- most teams with money banked still spend some of it -- so the Full Save row is naturally thinner than Force Buy, especially in the "Friends" scope; "All Players" is the more reliable read for that row. "Best" callouts only consider a strategy with at least {{ enemy_at_11_response_min_samples }} samples.</p>
 </div>
 {% endif %}
