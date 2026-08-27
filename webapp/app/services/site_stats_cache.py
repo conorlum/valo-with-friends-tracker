@@ -27,7 +27,7 @@ from app.services.score_reached_stats import MAX_DISPLAYED_SCORE as SCORE_REACHE
 
 logger = logging.getLogger(__name__)
 
-SITE_STATS_CACHE_SCHEMA_VERSION = 13
+SITE_STATS_CACHE_SCHEMA_VERSION = 14
 # Bump when the shape of the stored blob changes (a stat's aggregate keys
 # change, or a stat is renamed/removed), or when compute_pistol_match_stats /
 # compute_pistol_win_followup_eco / compute_round_combo_stats / compute_map_side_stats
@@ -82,6 +82,9 @@ SITE_STATS_CACHE_SCHEMA_VERSION = 13
 # whole match, alongside the existing round-level outcomes. match_total only
 # counts samples whose match had a decisive winner (excludes ties/undecided),
 # so match_total <= total.
+# v14: pistol_win_followup_eco's "under" tail bucket widened from under-8000
+# to under-9000 (folding in the sparse 8000-9000 middle bucket) -- ECO_NUM_BUCKETS
+# changed (13 -> 12) so idx bounds shift; the version bump forces a recompute.
 
 _PISTOL_MATCH_STATS_BUCKET_PREFIXES = ("lost_both", "won_one", "won_both")
 _PISTOL_MATCH_STATS_KEYS = frozenset(

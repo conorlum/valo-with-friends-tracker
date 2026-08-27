@@ -32,13 +32,14 @@ from app.services.player_profile_types import match_win
 
 # Chosen from the observed distribution (2026-08-23 snapshot of this DB): team
 # total loadout the round right after a won pistol round ranged 5700-20400,
-# median ~14600, with the bulk between 10000 and 19000. The tails (below 8000,
+# median ~14600, with the bulk between 10000 and 19000. The tails (below 9000,
 # at/above 19000) are thin on their own -- one 1000-wide bucket per 1000
 # credits leaves them with only a handful of samples each -- so they're each
 # folded into a single "under"/"above" catch-all bucket instead, keeping the
 # tails statistically meaningful while the well-populated middle keeps its
-# 1000-credit-wide granularity.
-ECO_TAIL_LOW = 8000
+# 1000-credit-wide granularity. (The under-bucket was originally under-8000;
+# widened to under-9000 after the 8000-9000 bucket also turned out sparse.)
+ECO_TAIL_LOW = 9000
 ECO_TAIL_HIGH = 19000
 ECO_BUCKET_WIDTH = 1000
 _ECO_NUM_MIDDLE_BUCKETS = (ECO_TAIL_HIGH - ECO_TAIL_LOW) // ECO_BUCKET_WIDTH
