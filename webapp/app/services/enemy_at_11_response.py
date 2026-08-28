@@ -1,11 +1,52 @@
-""""The enemy just clinched their 11th round win -- what should we buy the
-very next round?" A team that reaches 11 round wins is two wins from taking
-the whole match (13), so this is the round right before a possible loss
-snowballs into match point for them. Bucket the RESPONDING team's (the one
-facing that 11th loss) buy in the immediate next round into one of four
-named tiers -- Eco/Save, Half Buy, Force Buy, Full Buy -- against three
-independent win rates: the response round itself, the round right after
-that, and the match overall.
+""""The enemy just clinched their 11th round win -- when the responding
+team can't afford a full team buy, is it better to force it (spend
+basically everything you've got right now) or to hold back and guarantee a
+real buy next round?" A team that reaches 11 round wins is two wins from
+taking the whole match (13), so this is the round right before a possible
+loss snowballs into match point for them.
+
+Every sample lands in one of two buckets, or is excluded if neither
+genuinely describes it:
+
+  - "force_buy": spent FORCE_SPEND_RATIO or more of the team's available
+    money (loadout / (loadout + remaining)) this round. No rifle-count
+    requirement -- a force buy can be a single rifle carried by whoever has
+    the most money, SMGs across the board, anything, as long as it's
+    basically everything the team had.
+  - "full_save": this round's own loadout genuinely weak (total loadout <
+    FULL_SAVE_LOADOUT_MAX -- see below, this is NOT the same check as the
+    shared "not a comfortable full buy" exclusion), AND the team's banked
+    money (this round's remaining) PLUS the real credit bonus it will
+    actually earn going into next round (computed from the real
+    win/loss-streak history via app.scoring.credit_events.round_bonus, not
+    a flat guess) projects to at least SAVE_TARGET_TOTAL -- $4700/player,
+    the standard full-buy save target. There's also an upper bound: if the
+    team's money THIS round alone (no bonus needed) already covers a rifle
+    for everyone (RIFLE_COST_TOTAL) and still clears the save target
+    afterward, holding to $0 spent isn't a genuine forced save -- it's
+    spare wealth -- so that's excluded too (FULL_SAVE_CEILING_TOTAL). In
+    practice this ceiling has never fired in this dataset (checked
+    2026-08-27): teams facing this trigger are economically constrained
+    enough that it never comes up, but it's kept as a correctness guard per
+    the user's explicit request rather than dropped as dead code.
+
+FULL_SAVE_LOADOUT_MAX exists because loadout reflects what a player is
+CARRYING this round, not what they spent -- a player who survived the
+previous round keeps their gun for free, so a "full_save" sample with no
+own-round loadout cap could still show a substantial team loadout from
+survivors, not a fresh purchase. This was caught by the user questioning
+why full_save's immediate-round win rate (49%, uncapped) came out HIGHER
+than force_buy's (46%) despite force_buy having objectively better
+weaponry -- checking the actual numbers showed full_save's median loadout
+was $13,450 (barely below force_buy's $17,900), nowhere near a real eco
+round. Adding the $10,000 cap (reused from this module's own v17 history)
+drops full_save's immediate win rate to 28% at n=50 -- consistent with
+"weaker gear should mean a lower single-round win rate," which the previous,
+uncapped definition was masking.
+
+In both cases, a response round where the team could already afford a full
+buy (total loadout >= FULL_BUY_LOADOUT_MIN) isn't a real decision -- "no
+risk, just another round" -- so it's excluded before either check runs.
 
 Unlike app.services.eco_followup / app.services.force_buy_stats (both
 pistol-round-anchored, so exactly two possible trigger rounds per match:
@@ -18,41 +59,53 @@ point, so most decisive matches contribute at least one sample; a close
 match where the loser also reaches 11 (e.g. final score 13-11) contributes
 a second, independent sample for the other team's response.
 
-Buy-tier thresholds (ECO_LOADOUT_MAX, FULL_BUY_LOADOUT_MIN, FORCE_SPEND_RATIO
-below) were chosen from the observed distribution of responding-team total
-loadout at this exact trigger (2026-08-27 snapshot of this DB, 3795
-"all"-scope samples): loadout percentiles were roughly p5=7700, p10=10300,
-p25=14850, p50=18850, p75=21550, p90=22950 -- a small low tail (eco), a
-sizeable middle spread (half/force), and a large cluster from ~18000-24000
-(full buy, comfortably affording 5 rifles + shields + utility). A team
-below ECO_LOADOUT_MAX kept its money back regardless of what fraction of
-its cash that represents. A team at/above FULL_BUY_LOADOUT_MIN has enough
-gear for a real buy whether or not it spent every last credit doing so. In
-between, spend_ratio (loadout / (loadout + remaining)) separates a
-deliberate Half Buy (held some money back) from a Force Buy (spent nearly
-everything it had despite that not amounting to a full buy) --
-FORCE_SPEND_RATIO=0.85 sits above this trigger's median spend_ratio (~0.80,
-higher than the 0.7 threshold app.services.force_buy_stats uses for its
-earlier, smaller-economy pistol-round-loss context) so "half" and "force"
-each stay populous rather than "force" swallowing nearly every mid-loadout
-round. All four tiers clear MIN_SAMPLES_FOR_BEST in both "friends" and
-"all" scope at these thresholds.
+This module went through several redesigns in one session before landing
+here -- team-total buy tiers, then a per-player rifle-count model -- each
+replaced because it couldn't cleanly express what the user actually meant
+by "force buy" (any spend-everything round, not specifically 2-4 rifles) or
+"full save" (a save target with real economic teeth, not just "didn't spend
+much"). SAVE_TARGET_PER_PLAYER=4700 and RIFLE_COST_PER_PLAYER=2900 are the
+user's own domain figures (a rifle + shield + utility costs almost exactly
+$4700 -- matches the sharp loadout-histogram spike found earlier in this
+module's history at 4400-5000/player -- and $2900 is a rifle alone).
+FORCE_SPEND_RATIO=0.85 and FULL_BUY_LOADOUT_MIN=20000 are unchanged from
+earlier validation against this same trigger's loadout/spend-ratio
+distribution.
+
+Sample counts at these thresholds (2026-08-27 snapshot): force_buy 693
+all-scope / 73 friends-scope, full_save 50 all-scope / 3 friends-scope.
+full_save's friends-scope count stays thin regardless of threshold tuning --
+confirmed with the user this reflects real behavior (they IGL most of the
+group's games and rarely call a full save at this trigger except in the
+bleakest rounds), not a bucket-boundary problem, and the loadout-cap fix
+above shrank it further (14 -> 3) since a real hard save is even rarer than
+"low spend, high bank" was. Read full_save from "All Players" scope only --
+"friends" scope isn't just thin here, it's too small to report a percentage
+from at all.
 """
 
 from dataclasses import dataclass
 
 from app.models import Match
 from app.models.match import Team
+from app.scoring.credit_events import round_bonus
 from app.services.player_graphs import win_color
 from app.services.player_profile_types import match_win
 
 ENEMY_WIN_TRIGGER = 11
+PLAYERS_PER_TEAM = 5
 
-ECO_LOADOUT_MAX = 10000
 FULL_BUY_LOADOUT_MIN = 20000
 FORCE_SPEND_RATIO = 0.85
+FULL_SAVE_LOADOUT_MAX = 10000
 
-BUY_CATEGORIES = ("eco", "half", "force", "full")
+SAVE_TARGET_PER_PLAYER = 4700
+RIFLE_COST_PER_PLAYER = 2900
+SAVE_TARGET_TOTAL = SAVE_TARGET_PER_PLAYER * PLAYERS_PER_TEAM
+RIFLE_COST_TOTAL = RIFLE_COST_PER_PLAYER * PLAYERS_PER_TEAM
+FULL_SAVE_CEILING_TOTAL = SAVE_TARGET_TOTAL + RIFLE_COST_TOTAL
+
+BUY_CATEGORIES = ("force_buy", "full_save")
 RESPONSE_METRICS = ("immediate", "next", "match")
 
 # A tier needs at least this many samples before it's eligible to be
@@ -76,14 +129,33 @@ def _team_string(team: Team) -> str:
     return team.value if hasattr(team, "value") else team
 
 
-def classify_buy(total_loadout: int, spend_ratio: float) -> str:
-    if total_loadout < ECO_LOADOUT_MAX:
-        return "eco"
+def classify_response(total_loadout: int, total_remaining: int, next_round_bonus_total: int) -> str | None:
+    """None means "not part of this analysis" -- neither a genuine
+    spend-it-all force buy nor a genuine, economically real full save.
+    `next_round_bonus_total` is the REAL credit bonus (win bonus, or the
+    real loss-streak-scaled loss bonus) the team will earn going into next
+    round, summed across all 5 players -- see
+    app.scoring.credit_events.round_bonus. force_buy is checked first: a
+    round where the team spent >= FORCE_SPEND_RATIO of its money is a force
+    buy even if it also happens to project a healthy bank balance.
+    full_save additionally requires this round's OWN loadout to be under
+    FULL_SAVE_LOADOUT_MAX -- loadout reflects what's carried this round
+    (including free carryover from surviving the previous round), not just
+    fresh spend, so without this cap a "full_save" sample could still be
+    fielding real guns via carryover."""
+    total_available = total_loadout + total_remaining
+    if total_available <= 0:
+        return None
     if total_loadout >= FULL_BUY_LOADOUT_MIN:
-        return "full"
-    if spend_ratio >= FORCE_SPEND_RATIO:
-        return "force"
-    return "half"
+        return None  # already a comfortable full buy this round -- no risk, not part of this analysis
+    if total_loadout / total_available >= FORCE_SPEND_RATIO:
+        return "force_buy"
+    if total_loadout >= FULL_SAVE_LOADOUT_MAX:
+        return None  # not spend-heavy enough to force-buy, but still carrying too much gear to call a real save
+    projected_next_total = total_remaining + next_round_bonus_total
+    if projected_next_total >= SAVE_TARGET_TOTAL and total_remaining < FULL_SAVE_CEILING_TOTAL:
+        return "full_save"
+    return None
 
 
 def _enemy_at_11_response_samples(match: Match) -> list[tuple[Team, str, dict[str, bool | None]]]:
@@ -91,13 +163,16 @@ def _enemy_at_11_response_samples(match: Match) -> list[tuple[Team, str, dict[st
     "match": bool|None}) for each team in `match` whose opponent's
     cumulative round-win count reached ENEMY_WIN_TRIGGER (11) at some round,
     AND whose immediate follow-up round has recorded loadout/remaining
-    stats for the responding team. A match contributes 0, 1, or 2 samples --
-    one per team that had to respond to the OTHER team reaching 11 wins."""
+    stats for the responding team, AND whose buy that round classifies as
+    force_buy or full_save (see classify_response). A match contributes 0,
+    1, or 2 samples -- one per team that had to respond to the OTHER team
+    reaching 11 wins."""
     team_of = {mp.id: mp.team for mp in match.match_players}
     rounds_by_number = {r.round_number: r for r in match.rounds}
     if not rounds_by_number:
         return []
     max_round_number = max(rounds_by_number)
+    round_outcomes = {rn: r.outcome for rn, r in rounds_by_number.items()}
 
     cumulative_wins = {Team.TEAM_1: 0, Team.TEAM_2: 0}
     trigger_round_for_enemy: dict[Team, int] = {}
@@ -126,16 +201,23 @@ def _enemy_at_11_response_samples(match: Match) -> list[tuple[Team, str, dict[st
         total_remaining = sum(
             stat.remaining for stat in response_round.player_stats if team_of.get(stat.match_player_id) == responder
         )
-        total_available = total_loadout + total_remaining
-        if total_available <= 0:
+        if total_loadout + total_remaining <= 0:
             continue  # no recorded loadout/remaining stats for this round
-        spend_ratio = total_loadout / total_available
-        category = classify_buy(total_loadout, spend_ratio)
 
         immediate_winner = _winner_team(response_round.outcome)
         if immediate_winner is None:
             continue
         immediate_win = immediate_winner == responder
+
+        # round_bonus only needs response_rn's own outcome (known: immediate_winner)
+        # plus earlier rounds' outcomes to walk a loss streak back -- it doesn't
+        # require response_rn + 1 to actually exist in the data.
+        next_round_bonus_total = (
+            round_bonus(round_outcomes, response_rn + 1, _team_string(responder)) * PLAYERS_PER_TEAM
+        )
+        category = classify_response(total_loadout, total_remaining, next_round_bonus_total)
+        if category is None:
+            continue  # neither a genuine force buy nor a genuine, economically real full save
 
         next_round = rounds_by_number.get(response_rn + 1)
         next_win = None
@@ -178,11 +260,13 @@ def _accumulate(variant: dict[str, dict[str, dict[str, int]]], category: str, ou
 
 
 def compute_enemy_at_11_response_stats(matches: list[Match], roster_player_ids: set[int]) -> dict:
-    """{"friends": {"eco": {"immediate": {"total","win"}, "next": {...},
-    "match": {...}}, "half": {...}, "force": {...}, "full": {...}}, "all":
-    {...}}. "friends" scope only counts a sample when the RESPONDING team
-    (the one that must decide how to buy) includes a tracked roster player;
-    "all" scope counts every sample in the DB."""
+    """{"friends": {"force_buy": {"immediate": {"total","win"}, "next":
+    {...}, "match": {...}}, "full_save": {...}}, "all": {...}}. "friends"
+    scope only counts a sample when the RESPONDING team (the one that must
+    decide how to buy) includes a tracked roster player; "all" scope counts
+    every sample in the DB. A sample that doesn't classify as either
+    force_buy or full_save is excluded entirely (see classify_response) --
+    not counted in either scope."""
     variants = {"friends": _empty_variant(), "all": _empty_variant()}
 
     for match in matches:
@@ -219,19 +303,19 @@ class EnemyAt11Stats:
     best_match_row: EnemyAt11Row | None
 
 
-_CATEGORY_LABELS = {"eco": "Eco / Save", "half": "Half Buy", "force": "Force Buy", "full": "Full Buy"}
+_CATEGORY_LABELS = {"force_buy": "Force Buy", "full_save": "Full Save"}
 
 _FORCE_SPEND_PCT = int(round(FORCE_SPEND_RATIO * 100))
 
-# Precomputed once from the classify_buy thresholds so the table always
-# matches the actual bucket boundaries -- if ECO_LOADOUT_MAX/
-# FULL_BUY_LOADOUT_MIN/FORCE_SPEND_RATIO ever change, these follow without a
-# separate edit.
+# Precomputed once from the classify_response thresholds so the table always
+# matches the actual bucket boundaries -- if any of the constants above
+# change, these follow without a separate edit.
 _CATEGORY_RANGE_LABELS = {
-    "eco": f"under {ECO_LOADOUT_MAX:,} credits",
-    "half": f"{ECO_LOADOUT_MAX:,}-{FULL_BUY_LOADOUT_MIN:,} credits, under {_FORCE_SPEND_PCT}% spent",
-    "force": f"{ECO_LOADOUT_MAX:,}-{FULL_BUY_LOADOUT_MIN:,} credits, {_FORCE_SPEND_PCT}%+ spent",
-    "full": f"{FULL_BUY_LOADOUT_MIN:,}+ credits",
+    "force_buy": f"{_FORCE_SPEND_PCT}%+ of available money spent this round",
+    "full_save": (
+        f"under {FULL_SAVE_LOADOUT_MAX:,} loadout this round, banked + next round's real credit bonus "
+        f"projects to {SAVE_TARGET_TOTAL:,}+ (~{SAVE_TARGET_PER_PLAYER:,}/player)"
+    ),
 }
 
 

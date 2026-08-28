@@ -1,12 +1,14 @@
 from app.models import Match, MatchPlayer, Round, RoundPlayerStat
 from app.models.match import MatchSource, Team
 from app.services.enemy_at_11_response import (
-    ECO_LOADOUT_MAX,
     FORCE_SPEND_RATIO,
     FULL_BUY_LOADOUT_MIN,
+    FULL_SAVE_CEILING_TOTAL,
+    FULL_SAVE_LOADOUT_MAX,
     MIN_SAMPLES_FOR_BEST,
+    SAVE_TARGET_TOTAL,
     build_enemy_at_11_response_stats,
-    classify_buy,
+    classify_response,
     compute_enemy_at_11_response_stats,
 )
 
@@ -56,23 +58,61 @@ def _rounds_to(n: int, winner_outcome: str) -> list[Round]:
 
 
 # ---------------------------------------------------------------------------
-# classify_buy
+# classify_response
 # ---------------------------------------------------------------------------
 
-def test_classify_buy_below_eco_max_is_eco_regardless_of_ratio():
-    assert classify_buy(ECO_LOADOUT_MAX - 1, spend_ratio=1.0) == "eco"
+def test_classify_response_full_buy_loadout_is_excluded_regardless_of_everything():
+    assert classify_response(FULL_BUY_LOADOUT_MIN, total_remaining=0, next_round_bonus_total=99999) is None
 
 
-def test_classify_buy_at_or_above_full_buy_min_is_full_regardless_of_ratio():
-    assert classify_buy(FULL_BUY_LOADOUT_MIN, spend_ratio=0.01) == "full"
+def test_classify_response_high_spend_ratio_is_force_buy():
+    loadout = 8000
+    # remaining chosen so loadout / (loadout + remaining) == FORCE_SPEND_RATIO exactly
+    remaining = int(loadout / FORCE_SPEND_RATIO - loadout)
+    assert classify_response(loadout, remaining, next_round_bonus_total=0) == "force_buy"
 
 
-def test_classify_buy_midrange_high_ratio_is_force():
-    assert classify_buy(ECO_LOADOUT_MAX, spend_ratio=FORCE_SPEND_RATIO) == "force"
+def test_classify_response_low_spend_ratio_and_enough_projected_is_full_save():
+    total_remaining = SAVE_TARGET_TOTAL  # already at target with zero bonus needed
+    assert classify_response(1000, total_remaining, next_round_bonus_total=0) == "full_save"
 
 
-def test_classify_buy_midrange_low_ratio_is_half():
-    assert classify_buy(ECO_LOADOUT_MAX, spend_ratio=FORCE_SPEND_RATIO - 0.01) == "half"
+def test_classify_response_projection_includes_the_real_bonus():
+    """Banked alone falls short of the target, but banked + the real
+    next-round bonus clears it."""
+    total_remaining = SAVE_TARGET_TOTAL - 1000
+    assert classify_response(1000, total_remaining, next_round_bonus_total=1000) == "full_save"
+    assert classify_response(1000, total_remaining, next_round_bonus_total=999) is None
+
+
+def test_classify_response_excluded_when_neither_condition_holds():
+    """Low spend ratio, but not enough banked+bonus to hit the save target --
+    just broke, not force-buying and not genuinely saving."""
+    assert classify_response(100, total_remaining=1000, next_round_bonus_total=0) is None
+
+
+def test_classify_response_ceiling_excludes_a_team_that_could_afford_both():
+    """Remaining alone (no bonus needed) already covers a rifle for
+    everyone AND still clears the save target afterward -- not a forced
+    save, just spare wealth."""
+    total_remaining = FULL_SAVE_CEILING_TOTAL
+    assert classify_response(0, total_remaining, next_round_bonus_total=0) is None
+
+
+def test_classify_response_loadout_cap_excludes_carried_over_gear():
+    """Loadout reflects what's carried this round, including a free weapon
+    kept from surviving the previous round -- a sample at/above
+    FULL_SAVE_LOADOUT_MAX isn't a real save even if the bank/bonus math
+    would otherwise qualify it, since real guns are still on the field."""
+    assert classify_response(FULL_SAVE_LOADOUT_MAX, SAVE_TARGET_TOTAL, next_round_bonus_total=0) is None
+
+
+def test_classify_response_force_buy_takes_precedence_over_full_save():
+    """High spend ratio wins even if the leftover money would also have
+    projected a full_save."""
+    loadout = 8000
+    remaining = int(loadout / FORCE_SPEND_RATIO - loadout)
+    assert classify_response(loadout, remaining, next_round_bonus_total=SAVE_TARGET_TOTAL) == "force_buy"
 
 
 # ---------------------------------------------------------------------------
@@ -80,16 +120,13 @@ def test_classify_buy_midrange_low_ratio_is_half():
 # ---------------------------------------------------------------------------
 
 def test_response_round_right_after_enemy_reaches_11_is_sampled():
-    rounds = _rounds_to(11, "Team A Wins") + [
-        _round(12, "Team B Wins", team2_loadout=15000, team2_remaining=3000)
-    ]
+    rounds = _rounds_to(11, "Team A Wins") + [_round(12, "Team B Wins", team2_loadout=9000, team2_remaining=100)]
     match = _match(rounds)
 
     result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
 
-    # total_loadout=15000 is mid-range; spend_ratio=15000/18000=0.833 < FORCE_SPEND_RATIO -> "half"
-    assert result["all"]["half"]["immediate"] == {"total": 1, "win": 1}
-    assert result["all"]["force"]["immediate"] == {"total": 0, "win": 0}
+    assert result["all"]["force_buy"]["immediate"] == {"total": 1, "win": 1}
+    assert result["all"]["full_save"]["immediate"] == {"total": 0, "win": 0}
 
 
 def test_trigger_requires_the_response_round_to_exist():
@@ -108,45 +145,63 @@ def test_sample_excluded_when_no_recorded_loadout_stats():
         assert tier["immediate"]["total"] == 0
 
 
-def test_sample_only_counted_for_friends_when_responding_team_has_a_roster_player():
+def test_sample_excluded_when_this_round_was_already_a_full_buy():
     rounds = _rounds_to(11, "Team A Wins") + [
-        _round(12, "Team B Wins", team2_loadout=22000, team2_remaining=1000)
+        _round(12, "Team B Wins", team2_loadout=FULL_BUY_LOADOUT_MIN, team2_remaining=0)
     ]
+    match = _match(rounds)
+    result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
+    for tier in result["all"].values():
+        assert tier["immediate"]["total"] == 0
+
+
+def test_full_save_uses_the_real_win_bonus_when_response_round_is_won():
+    """Team wins the response round -> next round's real bonus is the flat
+    WIN_BONUS (3000/player = 15000 team total). Banked $8500 + 15000 clears
+    the $23500 save target; a naive flat-loss-bonus guess would not."""
+    rounds = _rounds_to(11, "Team A Wins") + [_round(12, "Team B Wins", team2_loadout=500, team2_remaining=8500)]
+    match = _match(rounds)
+    result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
+    assert result["all"]["full_save"]["immediate"] == {"total": 1, "win": 1}
+
+
+def test_sample_only_counted_for_friends_when_responding_team_has_a_roster_player():
+    rounds = _rounds_to(11, "Team A Wins") + [_round(12, "Team B Wins", team2_loadout=9000, team2_remaining=100)]
     match = _match(rounds)
 
     friends_of_responder = compute_enemy_at_11_response_stats([match], roster_player_ids={200})
-    assert friends_of_responder["friends"]["full"]["immediate"] == {"total": 1, "win": 1}
+    assert friends_of_responder["friends"]["force_buy"]["immediate"] == {"total": 1, "win": 1}
 
     friends_of_enemy = compute_enemy_at_11_response_stats([match], roster_player_ids={100})
-    assert friends_of_enemy["friends"]["full"]["immediate"] == {"total": 0, "win": 0}
-    assert friends_of_enemy["all"]["full"]["immediate"] == {"total": 1, "win": 1}
+    assert friends_of_enemy["friends"]["force_buy"]["immediate"] == {"total": 0, "win": 0}
+    assert friends_of_enemy["all"]["force_buy"]["immediate"] == {"total": 1, "win": 1}
 
 
 def test_next_round_and_match_win_recorded_alongside_immediate():
     rounds = _rounds_to(11, "Team A Wins") + [
-        _round(12, "Team B Wins", team2_loadout=22000, team2_remaining=1000),
-        _round(13, "Team B Wins", team2_loadout=22000, team2_remaining=1000),
+        _round(12, "Team B Wins", team2_loadout=9000, team2_remaining=100),
+        _round(13, "Team B Wins"),
     ]
     match = _match(rounds, team1_rounds_won=11, team2_rounds_won=13)
 
     result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
 
-    full = result["all"]["full"]
-    assert full["immediate"] == {"total": 1, "win": 1}
-    assert full["next"] == {"total": 1, "win": 1}
-    assert full["match"] == {"total": 1, "win": 1}  # team-2 won both the response round and the match
+    force_buy = result["all"]["force_buy"]
+    assert force_buy["immediate"] == {"total": 1, "win": 1}
+    assert force_buy["next"] == {"total": 1, "win": 1}
+    assert force_buy["match"] == {"total": 1, "win": 1}  # team-2 won both the response round and the match
 
 
 def test_next_round_missing_is_excluded_from_next_but_not_immediate():
     rounds = _rounds_to(11, "Team A Wins") + [
-        _round(12, "Team B Wins", team2_loadout=22000, team2_remaining=1000)
+        _round(12, "Team B Wins", team2_loadout=9000, team2_remaining=100)
     ]  # match ends here, no round 13
     match = _match(rounds)
 
     result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
-    full = result["all"]["full"]
-    assert full["immediate"] == {"total": 1, "win": 1}
-    assert full["next"] == {"total": 0, "win": 0}
+    force_buy = result["all"]["force_buy"]
+    assert force_buy["immediate"] == {"total": 1, "win": 1}
+    assert force_buy["next"] == {"total": 0, "win": 0}
 
 
 def test_both_teams_reaching_11_contribute_independent_samples():
@@ -154,15 +209,15 @@ def test_both_teams_reaching_11_contribute_independent_samples():
     each team gets its own response sample."""
     rounds = (
         _rounds_to(11, "Team A Wins")
-        + [_round(12, "Team B Wins", team2_loadout=22000, team2_remaining=1000)]
+        + [_round(12, "Team B Wins", team2_loadout=9000, team2_remaining=100)]
         + [_round(rn, "Team B Wins") for rn in range(13, 23)]  # team-2 climbs to 11 wins by round 22
-        + [_round(23, "Team A Wins", team1_loadout=8000, team1_remaining=0)]  # team-1's response, eco
+        + [_round(23, "Team A Wins", team1_loadout=1000, team1_remaining=SAVE_TARGET_TOTAL)]  # team-1's response, full save
     )
     match = _match(rounds, team1_rounds_won=12, team2_rounds_won=11)
 
     result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
-    assert result["all"]["full"]["immediate"]["total"] == 1  # team-2's response to team-1 hitting 11
-    assert result["all"]["eco"]["immediate"]["total"] == 1  # team-1's response to team-2 hitting 11
+    assert result["all"]["force_buy"]["immediate"]["total"] == 1  # team-2's response to team-1 hitting 11
+    assert result["all"]["full_save"]["immediate"]["total"] == 1  # team-1's response to team-2 hitting 11
 
 
 # ---------------------------------------------------------------------------
@@ -179,14 +234,12 @@ def _tier(total: int, win: int, next_total: int = 0, next_win: int = 0, match_to
 
 def test_build_stats_computes_rates_and_labels():
     variant = {
-        "eco": _tier(10, 4, 8, 5, 6, 2),
-        "half": _tier(0, 0),
-        "force": _tier(0, 0),
-        "full": _tier(0, 0),
+        "force_buy": _tier(10, 4, 8, 5, 6, 2),
+        "full_save": _tier(0, 0),
     }
     stats = build_enemy_at_11_response_stats(variant)
     [row] = stats.rows
-    assert row.label == "Eco / Save"
+    assert row.label == "Force Buy"
     assert row.total == 10
     assert row.immediate_win_pct == 0.4
     assert row.next_win_pct == 5 / 8
@@ -196,49 +249,46 @@ def test_build_stats_computes_rates_and_labels():
 
 def test_build_stats_range_labels_show_the_actual_thresholds():
     variant = {
-        "eco": _tier(10, 4),
-        "half": _tier(10, 4),
-        "force": _tier(10, 4),
-        "full": _tier(10, 4),
+        "force_buy": _tier(10, 4),
+        "full_save": _tier(10, 4),
     }
     stats = build_enemy_at_11_response_stats(variant)
     by_category = {row.category: row.range_label for row in stats.rows}
-    assert by_category["eco"] == f"under {ECO_LOADOUT_MAX:,} credits"
-    assert by_category["half"] == f"{ECO_LOADOUT_MAX:,}-{FULL_BUY_LOADOUT_MIN:,} credits, under 85% spent"
-    assert by_category["force"] == f"{ECO_LOADOUT_MAX:,}-{FULL_BUY_LOADOUT_MIN:,} credits, 85%+ spent"
-    assert by_category["full"] == f"{FULL_BUY_LOADOUT_MIN:,}+ credits"
+    force_pct = int(round(FORCE_SPEND_RATIO * 100))
+    assert by_category["force_buy"] == f"{force_pct}%+ of available money spent this round"
+    assert by_category["full_save"] == (
+        f"under {FULL_SAVE_LOADOUT_MAX:,} loadout this round, banked + next round's real credit bonus "
+        f"projects to {SAVE_TARGET_TOTAL:,}+ (~4,700/player)"
+    )
 
 
 def test_build_stats_skips_empty_tiers():
     variant = {
-        "eco": _tier(0, 0),
-        "half": _tier(5, 2),
-        "force": _tier(0, 0),
-        "full": _tier(0, 0),
+        "force_buy": _tier(0, 0),
+        "full_save": _tier(5, 2),
     }
     stats = build_enemy_at_11_response_stats(variant)
     assert len(stats.rows) == 1
-    assert stats.rows[0].label == "Half Buy"
+    assert stats.rows[0].label == "Full Save"
 
 
 def test_best_row_selection_ignores_tiers_below_min_sample_size():
     variant = {
-        "eco": _tier(3, 3, match_total=3, match_win_count=3),  # perfect but too few samples
-        "half": _tier(MIN_SAMPLES_FOR_BEST, MIN_SAMPLES_FOR_BEST - 5, match_total=MIN_SAMPLES_FOR_BEST, match_win_count=MIN_SAMPLES_FOR_BEST - 10),
-        "force": _tier(0, 0),
-        "full": _tier(0, 0),
+        "force_buy": _tier(3, 3, match_total=3, match_win_count=3),  # perfect but too few samples
+        "full_save": _tier(
+            MIN_SAMPLES_FOR_BEST, MIN_SAMPLES_FOR_BEST - 5,
+            match_total=MIN_SAMPLES_FOR_BEST, match_win_count=MIN_SAMPLES_FOR_BEST - 10,
+        ),
     }
     stats = build_enemy_at_11_response_stats(variant)
-    assert stats.best_immediate_row.label == "Half Buy"
-    assert stats.best_match_row.label == "Half Buy"
+    assert stats.best_immediate_row.label == "Full Save"
+    assert stats.best_match_row.label == "Full Save"
 
 
 def test_best_row_is_none_when_no_tier_meets_the_threshold():
     variant = {
-        "eco": _tier(3, 3),
-        "half": _tier(0, 0),
-        "force": _tier(0, 0),
-        "full": _tier(0, 0),
+        "force_buy": _tier(3, 3),
+        "full_save": _tier(0, 0),
     }
     stats = build_enemy_at_11_response_stats(variant)
     assert stats.best_immediate_row is None
@@ -248,10 +298,8 @@ def test_best_row_is_none_when_no_tier_meets_the_threshold():
 
 def test_next_and_match_win_pct_are_none_when_no_sample_has_that_outcome():
     variant = {
-        "eco": _tier(10, 4),
-        "half": _tier(0, 0),
-        "force": _tier(0, 0),
-        "full": _tier(0, 0),
+        "force_buy": _tier(10, 4),
+        "full_save": _tier(0, 0),
     }
     stats = build_enemy_at_11_response_stats(variant)
     row = stats.rows[0]

@@ -33,12 +33,15 @@ def _attacking_team(round_number: int) -> str | None:
     return None
 
 
-def _round_bonus(round_outcomes: dict[int, str], round_number: int, team: str) -> int:
+def round_bonus(round_outcomes: dict[int, str], round_number: int, team: str) -> int:
     """The actual econ bonus a team earns going into `round_number`, based on
     the real outcome of round_number - 1 (unlike
     app.scoring.impact._min_next_round_econ_bonus, which is a deliberately
     pessimistic forward-looking estimate -- this is retrospective, since by
     the time we're computing credit events every round's outcome is known).
+    Public (not module-private) because app.services.enemy_at_11_response
+    also needs the real per-player bonus to project a team's next-round
+    buying power, not just this module's own sugar-daddy/scavenger detection.
     """
     prev = round_number - 1
     if _did_team_win(round_outcomes.get(prev), team):
@@ -104,8 +107,8 @@ def compute_round_credit_events(
                 if planted_by_round.get(prev_number) and _attacking_team(prev_number) == team
                 else 0
             )
-            round_bonus = _round_bonus(round_outcomes, round_number, team)
-            cash_available = prev_stat.remaining + prev_stat.kills * KILL_REWARD + plant_bonus + round_bonus
+            bonus = round_bonus(round_outcomes, round_number, team)
+            cash_available = prev_stat.remaining + prev_stat.kills * KILL_REWARD + plant_bonus + bonus
 
             sugar_daddy_credits = 0
             if prev_stat.deaths == 0:
