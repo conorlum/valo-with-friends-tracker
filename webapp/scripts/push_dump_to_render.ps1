@@ -1,8 +1,7 @@
 <#
 Dumps the local docker-compose Postgres (project "valomaths-private") and restores
-it into a target database -- e.g. a Neon project's connection string (the
-ValoWithFriendsTracker deploy's DB lives on Neon, not Render, since Render's free
-tier only allows one free Postgres per account).
+it into a target database -- the ValoWithFriendsTracker deploy's Render Postgres
+connection string.
 
 Reusable both for the initial data load and every subsequent refresh (re-run
 after ingesting new matches locally) -- just pass the same target URL each time.
