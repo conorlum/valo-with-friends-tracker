@@ -1,3 +1,5 @@
+import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -9,6 +11,8 @@ from app.services.matches import MatchSummary, get_match_summary, list_matches, 
 
 DEFAULT_OVERLAP_THRESHOLD = 3
 DEFAULT_MAX_GAP = timedelta(hours=6)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -181,9 +185,11 @@ def list_sessions(db: Session, player_ids: list[int] | None = None) -> list[Sess
     every crawled snowball opponent who has nothing to do with this
     player) into sessions, which is both wrong and, at thousands of
     matches, slow."""
+    t0 = time.perf_counter()
     all_matches = list_matches_for_players(db, player_ids) if player_ids else list_matches(db)
     matches = [m for m in all_matches if m.played_at is not None]
     match_ids = [m.id for m in matches]
+    t1 = time.perf_counter()
 
     match_players_by_match: dict[int, list[SessionMatchPlayer]] = {}
     if match_ids:
@@ -201,8 +207,10 @@ def list_sessions(db: Session, player_ids: list[int] | None = None) -> list[Sess
                     display_name=display_name,
                 )
             )
+    t2 = time.perf_counter()
 
     roster_sessions = group_matches_into_sessions(matches, match_players_by_match)
+    t3 = time.perf_counter()
 
     sessions = []
     for i, rs in enumerate(roster_sessions):
@@ -234,6 +242,16 @@ def list_sessions(db: Session, player_ids: list[int] | None = None) -> list[Sess
                 roster_ordered=roster_ordered,
             )
         )
+    t4 = time.perf_counter()
+    logger.info(
+        "list_sessions player_ids=%d matches=%d match_player_rows=%d sessions=%d "
+        "query_matches=%.3fs query_match_players=%.3fs group=%.3fs build=%.3fs total=%.3fs",
+        len(player_ids) if player_ids else 0,
+        len(matches),
+        sum(len(v) for v in match_players_by_match.values()),
+        len(sessions),
+        t1 - t0, t2 - t1, t3 - t2, t4 - t3, t4 - t0,
+    )
     return sessions
 
 
@@ -259,5 +277,10 @@ def get_session_or_404(db: Session, session_index: int, player_ids: list[int] | 
     if not (0 <= session_index < len(sessions)):
         raise HTTPException(status_code=404, detail=f"No session {session_index}")
     session = sessions[session_index]
+    t0 = time.perf_counter()
     session.match_summaries = {m.id: get_match_summary(db, m) for m in session.matches}
+    logger.info(
+        "get_session_or_404 session_index=%d matches=%d match_summaries=%.3fs",
+        session_index, len(session.matches), time.perf_counter() - t0,
+    )
     return session

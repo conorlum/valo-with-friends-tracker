@@ -1,3 +1,5 @@
+import logging
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -24,6 +26,8 @@ from app.services.shoutouts import (
     assign_shoutouts,
 )
 from app.services.sessions import SessionSummary
+
+logger = logging.getLogger(__name__)
 
 MULTI_KILL_THRESHOLD = 3
 # Operator (4700) + at minimum light shields (400): a round where the player
@@ -126,13 +130,21 @@ def get_session_stats(
     match_ids = [m.id for m in session.matches]
     roster_player_ids = session.roster_player_ids
 
+    t0 = time.perf_counter()
     round_win_diagram = build_session_round_win_diagram(session.matches, session.team_by_match)
+    t1 = time.perf_counter()
     round_win_diagrams_by_match = build_session_round_win_diagrams_by_match(session.matches, session.team_by_match)
+    t2 = time.perf_counter()
     # team_by_match is only populated for multi-match sessions (see sessions.py),
     # so this is naturally empty -- same gating the round-win diagram above relies on.
     econ_samples = session_econ_samples(session.matches, session.team_by_match)
     econ_tier_matrix = build_tier_matrix(econ_samples)
     econ_pistol_stats = build_pistol_stats(econ_samples)
+    t3 = time.perf_counter()
+    logger.info(
+        "get_session_stats matches=%d round_win_diagram=%.3fs round_win_diagrams_by_match=%.3fs econ=%.3fs",
+        len(session.matches), t1 - t0, t2 - t1, t3 - t2,
+    )
 
     if not match_ids or not roster_player_ids:
         return SessionStats(
@@ -146,7 +158,9 @@ def get_session_stats(
             shoutouts=[],
         )
 
+    t4 = time.perf_counter()
     _preload_session_match_data(db, session.matches)
+    t5 = time.perf_counter()
 
     players_by_id = {
         p.id: p.display_name
@@ -173,18 +187,29 @@ def get_session_stats(
     # want to show every agent once even if it spanned multiple matches.
     agents_by_player = {player_id: [agent for agent, _n in tally.most_common()] for player_id, tally in agent_tally.items()}
 
+    t6 = time.perf_counter()
     leaderboard = _build_leaderboard(db, our_mp_to_player, players_by_id, session.team_by_match)
+    t7 = time.perf_counter()
     kda_rows = _build_kda_rows(db, match_ids, our_mp_to_player, players_by_id)
+    t8 = time.perf_counter()
     for entry in leaderboard:
         entry.agents = agents_by_player.get(entry.player_id, [])
     for row in kda_rows:
         row.agents = agents_by_player.get(row.player_id, [])
     biggest_multi_kill, raw_counts = _compute_raw_session_counts(db, session, our_mp_to_player, players_by_id)
+    t9 = time.perf_counter()
     fun_stats = _build_fun_stats(db, session, our_mp_to_player, players_by_id, biggest_multi_kill, raw_counts)
+    t10 = time.perf_counter()
     shoutouts = _build_shoutouts(raw_counts, leaderboard, players_by_id, agent_by_player, games_played_by_player)
     if viewer_player_id is not None:
         friend_ids = list_friend_ids(db, viewer_player_id) | {viewer_player_id}
         shoutouts = [s for s in shoutouts if s.player_id in friend_ids]
+    t11 = time.perf_counter()
+    logger.info(
+        "get_session_stats phase2 preload=%.3fs players_lookup+leaderboard_prep=%.3fs leaderboard=%.3fs "
+        "kda_rows=%.3fs raw_counts=%.3fs fun_stats=%.3fs shoutouts=%.3fs total=%.3fs",
+        t5 - t4, t6 - t5, t7 - t6, t8 - t7, t9 - t8, t10 - t9, t11 - t10, t11 - t0,
+    )
 
     return SessionStats(
         leaderboard=leaderboard,

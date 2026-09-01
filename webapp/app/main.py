@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from urllib.parse import quote
 
@@ -13,6 +14,11 @@ from app.db import get_db
 from app.routers import auth, friends, map_prediction, matches, players, sessions, site_stats, squad
 from app.services.auth import get_current_player
 from app.templates import templates
+
+# INFO-level timing logs (see app.routers.sessions / app.services.sessions /
+# app.services.session_stats) otherwise wouldn't reach Render's log stream --
+# uvicorn configures its own loggers, but the root logger defaults to WARNING.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 app = FastAPI(title="ValoWithFriendsTracker")
 app.add_middleware(

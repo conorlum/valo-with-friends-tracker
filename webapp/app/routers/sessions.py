@@ -1,3 +1,6 @@
+import logging
+import time
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -10,6 +13,7 @@ from app.services.sessions import find_session_index_containing_match, get_sessi
 from app.templates import templates
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+logger = logging.getLogger(__name__)
 
 
 def _scoped_player_ids(db: Session, current_player_id: int, include_friends: bool) -> list[int]:
@@ -34,12 +38,16 @@ def session_list(request: Request, friends: bool = True, db: Session = Depends(g
 def session_detail(
     request: Request, session_index: int, friends: bool = True, db: Session = Depends(get_db)
 ):
+    t_start = time.perf_counter()
     current_player = get_current_player(request, db)
     if current_player is None:
         return RedirectResponse(url="/login", status_code=303)
     player_ids = _scoped_player_ids(db, current_player.id, friends)
+    t0 = time.perf_counter()
     session = get_session_or_404(db, session_index, player_ids)
+    t1 = time.perf_counter()
     stats = get_session_stats(db, session, current_player.id)
+    t2 = time.perf_counter()
     matches_by_id = {m.id: m for m in session.matches}
 
     # The friends-scope toggle links to this same session under the opposite
@@ -48,11 +56,13 @@ def session_detail(
     # reusing session_index and risking a 404 or the wrong session.
     other_player_ids = _scoped_player_ids(db, current_player.id, not friends)
     other_sessions = list_sessions(db, other_player_ids)
+    t3 = time.perf_counter()
     other_session_index = (
         find_session_index_containing_match(other_sessions, session.matches[0].id) if session.matches else None
     )
+    t4 = time.perf_counter()
 
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request,
         "sessions/detail.html",
         {
@@ -63,3 +73,11 @@ def session_detail(
             "other_session_index": other_session_index,
         },
     )
+    t5 = time.perf_counter()
+    logger.info(
+        "session_detail session_index=%d friends=%s player_ids=%d get_session=%.3fs stats=%.3fs "
+        "other_sessions=%.3fs find_index=%.3fs render=%.3fs total=%.3fs",
+        session_index, friends, len(player_ids),
+        t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4, t5 - t_start,
+    )
+    return response
