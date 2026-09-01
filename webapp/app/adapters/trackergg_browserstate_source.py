@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.models.match import MatchSource, Team
-from app.scoring.impact import compute_impact_for_match
+from app.scoring.impact import compute_impact_for_match, find_unscored_match_ids
 from app.services.player_view_cache import find_cached_player_ids_for_match, invalidate_player_cache
 from app.services.site_stats_cache import invalidate_site_stats_cache
 
@@ -374,6 +374,40 @@ def _dedup_and_ingest(db: Session, page: Page, match_ids: list[str]) -> set[int]
             delay = random.uniform(MIN_MATCH_DELAY_SECONDS, MAX_MATCH_DELAY_SECONDS)
             print(f"  waiting {delay:.1f}s before next match...")
             time.sleep(delay)
+
+    return dirty
+
+
+def backfill_unscored_matches(db: Session) -> set[int]:
+    """Finds any match that fully committed (has MatchPlayer rows) but never
+    got ImpactScore rows -- the signature of an ingest run that got killed or
+    crashed between load_match's commit and compute_impact_for_match's own
+    commit for one match (see the comment in _dedup_and_ingest) -- and scores
+    it now. compute_impact_for_match is idempotent, so this is safe to call
+    every run regardless of whether anything is actually stranded.
+
+    Callers should run this before their own ingestion so a stranded match
+    from a previous interrupted run gets caught before it causes a session-
+    or match-page 500 (this was a real production incident: a match found
+    this way is otherwise invisible until a user hits it). Returns the union
+    of player IDs whose cache rows were invalidated, same contract as
+    _dedup_and_ingest, so callers can fold it into the same pre-warm batch.
+    """
+    unscored_match_ids = find_unscored_match_ids(db)
+    dirty: set[int] = set()
+    for match_id in unscored_match_ids:
+        match = db.query(Match).filter_by(id=match_id).one()
+        print(f"found stranded unscored match {match.external_id} ({match.map_name}), backfilling...")
+
+        cached_ids = find_cached_player_ids_for_match(db, match_id)
+        if cached_ids:
+            invalidate_player_cache(db, cached_ids)
+            dirty |= cached_ids
+        invalidate_site_stats_cache(db)
+        db.commit()
+
+        compute_impact_for_match(db, match_id)
+        print(f"  backfilled {match.external_id}")
 
     return dirty
 

@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 import networkx as nx
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Round, RoundPlayerStat
@@ -342,6 +343,29 @@ def _combine_swing_factors(swing: float, realized: float) -> float:
     if swing == 1 or realized == 1 or swing_above != realized_above:
         return 1.0
     return max(swing, realized, key=lambda x: abs(x - 1))
+
+
+def find_unscored_match_ids(db: Session) -> list[int]:
+    """Match IDs that have MatchPlayer rows (i.e. were fully ingested) but no
+    ImpactScore rows at all -- the signature of a match whose data committed
+    successfully but compute_impact_for_match then never ran or didn't finish
+    (e.g. the ingesting process was killed/crashed between the two, which
+    trackergg_browserstate_source.py's cache-invalidation-before-scoring
+    ordering already anticipates as a possible outcome). A match with only
+    *some* players/rounds scored isn't included here -- that would be a
+    different, partial failure this hasn't been seen to produce; this only
+    catches the "scoring never started at all" case.
+    """
+    return [
+        match_id
+        for (match_id,) in (
+            db.query(MatchPlayer.match_id)
+            .outerjoin(ImpactScore, ImpactScore.match_player_id == MatchPlayer.id)
+            .group_by(MatchPlayer.match_id)
+            .having(func.count(ImpactScore.round_id) == 0)
+            .all()
+        )
+    ]
 
 
 def compute_impact_for_match(db: Session, match_id: int) -> None:

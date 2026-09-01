@@ -7,6 +7,11 @@ fails, instead of stopping the batch.
 
 Requires scripts/launch_trackergg_chrome.ps1 to already be running.
 
+Before any new ingestion, also checks the whole DB for a match that
+previously committed but never got scored (a stranded match left behind by a
+prior run that was killed/crashed mid-ingest) and backfills it -- see
+backfill_unscored_matches in app.adapters.trackergg_browserstate_source.
+
 After the whole roster is refreshed, every player whose player_view_cache rows
 were invalidated by ANY ingested match gets a full career recompute (a
 pre-warm), once each -- not once per match, which would be quadratic over a
@@ -32,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from playwright.sync_api import sync_playwright
 
-from app.adapters.trackergg_browserstate_source import ingest_recent_matches
+from app.adapters.trackergg_browserstate_source import backfill_unscored_matches, ingest_recent_matches
 from app.db import SessionLocal
 from app.services.player_view_cache import prewarm_player_cache
 from app.services.site_stats import refresh_site_stats
@@ -47,7 +52,7 @@ def main(count: int, no_prewarm: bool) -> None:
     roster = json.loads(ROSTER_PATH.read_text())
     db = SessionLocal()
     try:
-        all_dirty: set[int] = set()
+        all_dirty: set[int] = backfill_unscored_matches(db)
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(CDP_URL)
             context = browser.contexts[0]

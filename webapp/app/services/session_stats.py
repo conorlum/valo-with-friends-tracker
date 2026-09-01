@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import func
 from sqlalchemy.orm import Session, aliased, selectinload
 
-from app.models import ImpactScore, KillEvent, MatchPlayer, Player, Round, RoundPlayerStat
+from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.services.surrender_rounds import NOT_A_SURRENDER_ROUND
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD, econ_tier_name
@@ -17,7 +17,12 @@ from app.services.economy_graphs import (
 )
 from app.services.friends import list_friend_ids
 from app.services.player_graphs import StateDiagram, build_session_round_win_diagram, build_session_round_win_diagrams_by_match
-from app.services.shoutouts import SCAVENGER_MIN_AVG_PER_ROUND, PlayerShoutout, assign_shoutouts
+from app.services.shoutouts import (
+    SCAVENGER_MIN_AVG_PER_ROUND,
+    SUGAR_DADDY_MIN_AVG_PER_ROUND,
+    PlayerShoutout,
+    assign_shoutouts,
+)
 from app.services.sessions import SessionSummary
 
 MULTI_KILL_THRESHOLD = 3
@@ -140,6 +145,8 @@ def get_session_stats(
             fun_stats=SessionFunStats(),
             shoutouts=[],
         )
+
+    _preload_session_match_data(db, session.matches)
 
     players_by_id = {
         p.id: p.display_name
@@ -356,6 +363,26 @@ class _RawSessionCounts:
     active_round_counts: dict[int, int]
 
 
+def _preload_session_match_data(db: Session, matches: list[Match]) -> None:
+    """Batch-loads every match's match_players/rounds/round_player_stats/
+    kill_events for the whole session in a handful of queries, instead of
+    _build_credit_event_stats and _build_replay_stats each running their own
+    3-4 filter_by(match_id=...) queries PER MATCH (previously ~48 of a
+    6-match session's ~74 total queries -- each a full round-trip, which is
+    what actually made session pages slow, not the per-row compute). Those
+    two functions read match.match_players/match.rounds/round.player_stats/
+    round.kill_events instead of querying directly, so this must run before
+    either of them for those accesses to be preload hits rather than N+1
+    lazy loads."""
+    if not matches:
+        return
+    db.query(Match).filter(Match.id.in_([m.id for m in matches])).options(
+        selectinload(Match.match_players),
+        selectinload(Match.rounds).selectinload(Round.player_stats),
+        selectinload(Match.rounds).selectinload(Round.kill_events).defer(KillEvent.source_meta),
+    ).all()
+
+
 def _build_credit_event_stats(
     db: Session,
     session: SessionSummary,
@@ -373,38 +400,22 @@ def _build_credit_event_stats(
         if our_side is None:
             continue
 
-        our_mp_ids_here = {
-            mp.id
-            for mp in db.query(MatchPlayer).filter_by(match_id=match.id).all()
-            if mp.id in our_mp_to_player
-        }
-        agent_by_mp = {
-            mp.id: mp.agent
-            for mp in db.query(MatchPlayer).filter(MatchPlayer.id.in_(our_mp_ids_here)).all()
-        }
+        our_mp_ids_here = {mp.id for mp in match.match_players if mp.id in our_mp_to_player}
+        agent_by_mp = {mp.id: mp.agent for mp in match.match_players if mp.id in our_mp_ids_here}
         team_by_mp = {mp_id: our_side for mp_id in agent_by_mp}
 
-        rounds = db.query(Round).filter_by(match_id=match.id).all()
+        rounds = match.rounds
         round_outcomes = {r.round_number: r.outcome for r in rounds}
         planted_by_round = {r.round_number: r.planted for r in rounds}
 
         stats_by_round: dict[int, dict[int, RoundStat]] = {}
-        for match_player_id, round_number, kills, deaths, loadout, remaining in (
-            db.query(
-                RoundPlayerStat.match_player_id,
-                Round.round_number,
-                RoundPlayerStat.kills,
-                RoundPlayerStat.deaths,
-                RoundPlayerStat.loadout,
-                RoundPlayerStat.remaining,
-            )
-            .join(Round, Round.id == RoundPlayerStat.round_id)
-            .filter(Round.match_id == match.id, RoundPlayerStat.match_player_id.in_(our_mp_ids_here))
-            .all()
-        ):
-            stats_by_round.setdefault(round_number, {})[match_player_id] = RoundStat(
-                kills=kills, deaths=deaths, loadout=loadout, remaining=remaining
-            )
+        for r in rounds:
+            for stat in r.player_stats:
+                if stat.match_player_id not in our_mp_ids_here:
+                    continue
+                stats_by_round.setdefault(r.round_number, {})[stat.match_player_id] = RoundStat(
+                    kills=stat.kills, deaths=stat.deaths, loadout=stat.loadout, remaining=stat.remaining
+                )
 
         credit_events = compute_round_credit_events(
             round_outcomes, planted_by_round, stats_by_round, agent_by_mp, team_by_mp
@@ -643,7 +654,7 @@ def _build_replay_stats(
     for match in session.matches:
         our_side = session.team_by_match.get(match.id)
 
-        match_players = db.query(MatchPlayer).filter_by(match_id=match.id).all()
+        match_players = match.match_players
         team_by_mp: dict[int, str] = {
             mp.id: (mp.team.value if hasattr(mp.team, "value") else mp.team) for mp in match_players
         }
@@ -654,24 +665,15 @@ def _build_replay_stats(
         opp_bottom_frag_mp_id: int | None = None
         if our_side is not None and opp_mp_ids:
             opp_totals: dict[int, int] = {}
-            for mp_id, kills in (
-                db.query(RoundPlayerStat.match_player_id, RoundPlayerStat.kills)
-                .join(Round, Round.id == RoundPlayerStat.round_id)
-                .filter(Round.match_id == match.id, RoundPlayerStat.match_player_id.in_(opp_mp_ids))
-                .all()
-            ):
-                opp_totals[mp_id] = opp_totals.get(mp_id, 0) + kills
+            for r in match.rounds:
+                for stat in r.player_stats:
+                    if stat.match_player_id in opp_mp_ids:
+                        opp_totals[stat.match_player_id] = opp_totals.get(stat.match_player_id, 0) + stat.kills
             if opp_totals:
                 opp_top_frag_mp_id = max(opp_totals, key=lambda mp_id: (opp_totals[mp_id], -mp_id))
                 opp_bottom_frag_mp_id = min(opp_totals, key=lambda mp_id: (opp_totals[mp_id], mp_id))
 
-        rounds = (
-            db.query(Round)
-            .filter_by(match_id=match.id)
-            .options(selectinload(Round.kill_events))
-            .order_by(Round.round_number)
-            .all()
-        )
+        rounds = sorted(match.rounds, key=lambda r: r.round_number)
         for round_row in rounds:
             round_won_by_us = our_side is not None and _winner_side(round_row.outcome) == our_side
             alive_own = set(own_mp_ids)
@@ -1079,15 +1081,21 @@ def _build_shoutouts(
         if v >= games_played_by_player.get(player_id, 1)
     }
 
-    # Scavenger needs at least a 500-credit-per-round average (total scavenged
-    # over rounds actually played across the session) to earn the shoutout --
-    # a couple of stray dropped Classics scattered across many rounds isn't a
-    # standout scavenging performance, it's noise.
+    # Scavenger and Sugar Daddy both need at least a 500-credit-per-round
+    # average (total over rounds actually played across the session) to earn
+    # the shoutout -- a couple of stray dropped Classics, or a couple of
+    # forced armor top-ups for a teammate, scattered across many rounds isn't
+    # a standout performance, it's noise.
     rounds_played_by_player = {e.player_id: e.rounds_played for e in leaderboard}
     scavenger_credits = {
         player_id: v
         for player_id, v in raw.scavenger_credits.items()
         if v / rounds_played_by_player.get(player_id, 1) >= SCAVENGER_MIN_AVG_PER_ROUND
+    }
+    sugar_daddy_credits = {
+        player_id: v
+        for player_id, v in raw.sugar_daddy_credits.items()
+        if v / rounds_played_by_player.get(player_id, 1) >= SUGAR_DADDY_MIN_AVG_PER_ROUND
     }
 
     raw_dicts: dict[str, dict[int, int]] = {
@@ -1102,7 +1110,7 @@ def _build_shoutouts(
         "late_kill_counts": raw.late_kill_counts,
         "op_kill_counts": op_kill_counts,
         "eco_kill_counts": raw.eco_kill_counts,
-        "sugar_daddy_credits": raw.sugar_daddy_credits,
+        "sugar_daddy_credits": sugar_daddy_credits,
         "scavenger_credits": scavenger_credits,
         "traded_teammate_totals": raw.traded_teammate_totals,
         "traded_by_teammate_totals": raw.traded_by_teammate_totals,

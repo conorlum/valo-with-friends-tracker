@@ -8,7 +8,12 @@ from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD
 from app.services.friends import list_friend_ids
-from app.services.shoutouts import SCAVENGER_MIN_AVG_PER_ROUND, PlayerShoutout, assign_shoutouts
+from app.services.shoutouts import (
+    SCAVENGER_MIN_AVG_PER_ROUND,
+    SUGAR_DADDY_MIN_AVG_PER_ROUND,
+    PlayerShoutout,
+    assign_shoutouts,
+)
 from app.services.surrender_rounds import NOT_A_SURRENDER_ROUND
 
 # Kept in sync with the same-named constants in app.services.session_stats
@@ -108,6 +113,13 @@ class MatchSummary:
     round_numbers: list[int]
     round_outcomes: dict[int, str | None]
     team_summaries: list[TeamSummary]
+    # Keyed by TeamSummary.team ('team-1'/'team-2') rather than a fixed
+    # position -- a team is missing here (not just zero-valued) whenever
+    # every one of its players is missing ImpactScore rows entirely, e.g. a
+    # match where scoring failed after ingestion committed the match/rounds
+    # but before compute_impact_for_match ran. Callers must handle a miss
+    # rather than assume both teams are always present.
+    team_summaries_by_team: dict[str, TeamSummary] = field(default_factory=dict)
 
 
 def get_match_summary(db: Session, match: Match) -> MatchSummary:
@@ -253,6 +265,7 @@ def get_match_summary(db: Session, match: Match) -> MatchSummary:
         round_numbers=sorted_rounds,
         round_outcomes=round_outcomes,
         team_summaries=team_summaries,
+        team_summaries_by_team={ts.team: ts for ts in team_summaries},
     )
 
 
@@ -508,12 +521,12 @@ def get_match_shoutouts(
             if scavenger:
                 scavenger_credits[match_player_id] = scavenger_credits.get(match_player_id, 0) + scavenger
 
-    # Scavenger needs at least a 500-credit-per-round average (total scavenged
-    # over rounds actually played) to earn the shoutout -- a couple of stray
-    # dropped Classics over a whole match isn't a standout scavenging
-    # performance, it's noise. Filtered here (rather than in the generic
-    # assign_shoutouts) since only this raw count is rate-sensitive against
-    # rounds played.
+    # Scavenger and Sugar Daddy both need at least a 500-credit-per-round
+    # average (total over rounds actually played) to earn the shoutout -- a
+    # couple of stray dropped Classics, or a couple of forced armor top-ups
+    # for a teammate, over a whole match isn't a standout performance, it's
+    # noise. Filtered here (rather than in the generic assign_shoutouts)
+    # since only these raw counts are rate-sensitive against rounds played.
     rounds_played_by_mp: dict[int, int] = {}
     for round_stats in stats_by_round.values():
         for match_player_id in round_stats:
@@ -522,6 +535,11 @@ def get_match_shoutouts(
         match_player_id: v
         for match_player_id, v in scavenger_credits.items()
         if v / rounds_played_by_mp.get(match_player_id, 1) >= SCAVENGER_MIN_AVG_PER_ROUND
+    }
+    sugar_daddy_credits = {
+        match_player_id: v
+        for match_player_id, v in sugar_daddy_credits.items()
+        if v / rounds_played_by_mp.get(match_player_id, 1) >= SUGAR_DADDY_MIN_AVG_PER_ROUND
     }
 
     raw_dicts: dict[str, dict[int, int]] = {
