@@ -27,9 +27,10 @@ templates = Jinja2Templates(
 )
 
 _AGENT_ICON_SLUGS = {
-    "brimstone", "chamber", "clove", "cypher", "deadlock", "fade", "gekko",
-    "iso", "jett", "kayo", "killjoy", "neon", "omen", "phoenix", "raze",
-    "reyna", "sova", "veto", "yoru",
+    "astra", "breach", "brimstone", "chamber", "clove", "cypher", "deadlock",
+    "fade", "gekko", "harbor", "iso", "jett", "kayo", "killjoy", "miks",
+    "neon", "omen", "phoenix", "raze", "reyna", "sage", "skye", "sova",
+    "tejo", "veto", "viper", "vyse", "waylay", "yoru",
 }
 
 
