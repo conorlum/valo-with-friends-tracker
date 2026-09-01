@@ -140,6 +140,51 @@ def test_insufficient_roster_overlap_does_not_merge():
     assert all(not s.is_multi_match for s in sessions)
 
 
+def test_unrelated_match_between_two_real_matches_does_not_split_the_session():
+    """The bug this guards: with the friends-inclusive candidate pool, one
+    friend can solo-queue into a match with none of the rest of the group
+    while everyone else is between games. That match shares almost no
+    roster with its neighbors and correctly stays out of the session, but it
+    must not sever the two real matches on either side of it from each
+    other -- previously it silently did, because the merge check only ever
+    compared against the literal previous match in time, and that lone
+    match became the new "previous" for the next comparison."""
+    group = [
+        (1, "team-1", "Alice"),
+        (2, "team-1", "Bob"),
+        (3, "team-1", "Cara"),
+        (4, "team-1", "Dee"),
+        (5, "team-1", "Eve"),
+    ]
+    match1 = make_match(1, BASE_TIME, team1_rounds_won=13, team2_rounds_won=5)
+    match2 = make_match(2, BASE_TIME + timedelta(minutes=40), team1_rounds_won=13, team2_rounds_won=8)
+    # Match 3: only Alice, playing with four strangers against another five
+    # strangers -- essentially zero roster overlap with the group's games.
+    solo = make_match(3, BASE_TIME + timedelta(minutes=48), team1_rounds_won=4, team2_rounds_won=13)
+    match4 = make_match(4, BASE_TIME + timedelta(minutes=69), team1_rounds_won=9, team2_rounds_won=13)
+
+    rosters = {
+        1: make_roster(group + [(6, "team-2", "Finn"), (7, "team-2", "Gil"), (8, "team-2", "Hana"), (9, "team-2", "Ivan"), (10, "team-2", "Jo")]),
+        2: make_roster(group + [(11, "team-2", "Ken"), (12, "team-2", "Lea"), (13, "team-2", "Moe"), (14, "team-2", "Nia"), (15, "team-2", "Oz")]),
+        3: make_roster(
+            [(1, "team-2", "Alice")]
+            + [(20 + i, "team-2", f"S{i}") for i in range(4)]
+            + [(30 + i, "team-1", f"T{i}") for i in range(5)]
+        ),
+        4: make_roster(group + [(16, "team-2", "Pam"), (17, "team-2", "Quin"), (18, "team-2", "Ray"), (19, "team-2", "Sam"), (21, "team-2", "Uma")]),
+    }
+
+    sessions = group_matches_into_sessions([match1, match2, solo, match4], rosters)
+
+    ids_by_session = [[m.id for m in s.matches] for s in sessions]
+    assert [1, 2, 4] in ids_by_session
+    assert [3] in ids_by_session
+    real_session = next(s for s in sessions if [m.id for m in s.matches] == [1, 2, 4])
+    assert real_session.is_multi_match is True
+    assert real_session.wins == 2
+    assert real_session.losses == 1
+
+
 def test_match_with_no_played_at_is_excluded():
     match1 = make_match(1, BASE_TIME)
     match2 = make_match(2, None)
