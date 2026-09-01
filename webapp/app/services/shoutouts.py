@@ -60,6 +60,13 @@ _MAX_DEPTH = 5
 # a property of the ranking.
 SCAVENGER_MIN_AVG_PER_ROUND = 500
 
+# Same rate-filter idea as SCAVENGER_MIN_AVG_PER_ROUND, applied to Sugar
+# Daddy: a handful of rounds' worth of forced armor/utility top-ups for a
+# teammate, spread across a long session, otherwise adds up to a big-looking
+# total that isn't actually a standout Sugar-Daddy performance. Applied by
+# callers when building the sugar_daddy_credits raw dict, same as Scavenger.
+SUGAR_DADDY_MIN_AVG_PER_ROUND = 500
+
 
 def assign_shoutouts(
     roster: list[tuple[int, str, str]],

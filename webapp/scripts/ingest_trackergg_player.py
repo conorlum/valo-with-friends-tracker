@@ -8,6 +8,11 @@ Requires scripts/launch_trackergg_chrome.ps1 to already be running (a real,
 human-navigable Chrome tab -- this script paces itself between matches rather
 than firing requests back-to-back).
 
+Before any new ingestion, also checks the whole DB for a match that
+previously committed but never got scored (a stranded match left behind by a
+prior run that was killed/crashed mid-ingest) and backfills it -- see
+backfill_unscored_matches in app.adapters.trackergg_browserstate_source.
+
 After ingesting, any player whose player_view_cache rows were invalidated gets
 a full career recompute (a pre-warm) so their next page load is a cache hit
 instead of a live compute -- a few extra seconds per affected player. The
@@ -29,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from playwright.sync_api import sync_playwright
 
-from app.adapters.trackergg_browserstate_source import ingest_recent_matches
+from app.adapters.trackergg_browserstate_source import backfill_unscored_matches, ingest_recent_matches
 from app.db import SessionLocal
 from app.services.player_view_cache import prewarm_player_cache
 from app.services.site_stats import refresh_site_stats
@@ -40,11 +45,12 @@ CDP_URL = "http://localhost:9222"
 def main(riot_id: str, count: int, no_prewarm: bool) -> None:
     db = SessionLocal()
     try:
+        dirty = backfill_unscored_matches(db)
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(CDP_URL)
             context = browser.contexts[0]
             page = context.new_page()
-            dirty = ingest_recent_matches(db, page, riot_id, count)
+            dirty |= ingest_recent_matches(db, page, riot_id, count)
             page.close()
 
         if dirty and not no_prewarm:
