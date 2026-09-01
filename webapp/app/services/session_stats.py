@@ -470,9 +470,11 @@ def _compute_raw_session_counts(
     """
     match_ids = [m.id for m in session.matches]
 
+    ta = time.perf_counter()
     biggest_multi_kill, multi_kill_counts, eco_kill_counts, op_kill_counts, active_round_counts = (
         _build_round_kill_stats(db, match_ids, our_mp_to_player, players_by_id)
     )
+    tb = time.perf_counter()
     (
         max_streak,
         kills_on_top_frag,
@@ -483,12 +485,24 @@ def _compute_raw_session_counts(
         first_death_in_loss_counts,
         last_alive_in_wipe_counts,
     ) = _build_replay_stats(db, session, our_mp_to_player, players_by_id)
+    tc = time.perf_counter()
     mvp_counts, best_round_impact = _build_round_mvp(db, match_ids, our_mp_to_player, players_by_id)
+    td = time.perf_counter()
     traded_teammate_totals, traded_by_teammate_totals = _build_trade_stats(db, our_mp_to_player, players_by_id)
+    te = time.perf_counter()
     post_plant_kill_counts = _build_post_plant_menace_stats(db, match_ids, our_mp_to_player, players_by_id)
+    tf = time.perf_counter()
     entry_kill_counts = _build_entry_kill_stats(db, match_ids, our_mp_to_player, players_by_id)
+    tg = time.perf_counter()
     late_kill_counts = _build_late_kill_stats(db, match_ids, our_mp_to_player, players_by_id)
+    th = time.perf_counter()
     sugar_daddy_credits, scavenger_credits = _build_credit_event_stats(db, session, our_mp_to_player)
+    ti = time.perf_counter()
+    logger.info(
+        "_compute_raw_session_counts round_kill=%.3fs replay_stats=%.3fs round_mvp=%.3fs trade_stats=%.3fs "
+        "post_plant=%.3fs entry_kill=%.3fs late_kill=%.3fs credit_events=%.3fs total=%.3fs",
+        tb - ta, tc - tb, td - tc, te - td, tf - te, tg - tf, th - tg, ti - th, ti - ta,
+    )
 
     return biggest_multi_kill, _RawSessionCounts(
         multi_kill_counts=multi_kill_counts,
@@ -525,9 +539,17 @@ def _build_fun_stats(
 ) -> SessionFunStats:
     match_ids = [m.id for m in session.matches]
 
+    ta = time.perf_counter()
     most_econ_upset_deaths = _build_econ_upset_stats(db, match_ids, our_mp_to_player, players_by_id)
+    tb = time.perf_counter()
     most_spike_deaths = _build_spike_death_stats(db, match_ids, our_mp_to_player, players_by_id)
+    tc = time.perf_counter()
     most_ghost_rounds = _build_ghost_stats(db, match_ids, our_mp_to_player, players_by_id)
+    td = time.perf_counter()
+    logger.info(
+        "_build_fun_stats econ_upset=%.3fs spike_death=%.3fs ghost=%.3fs total=%.3fs",
+        tb - ta, tc - tb, td - tc, td - ta,
+    )
 
     return SessionFunStats(
         biggest_multi_kill=biggest_multi_kill,
