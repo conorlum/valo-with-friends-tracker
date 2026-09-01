@@ -1,7 +1,7 @@
 # Impact-vs-winning: evaluation tooling and fitted weights
 
-**Status:** draft, awaiting user review
-**Date:** 2026-09-01
+**Status:** revised after review, awaiting user approval
+**Date:** 2026-09-01 (revised 2026-09-01 after methodology review)
 
 ## Purpose
 
@@ -26,16 +26,14 @@ belong in the same place:
 | | Deliverable | Spec |
 |---|---|---|
 | P0 | `stats_math` -- pure numeric helpers | this one |
-| P1 | Internal evaluation tooling + fitted weights | this one |
+| P1 Stage 0 | Descriptive report on Impact **as it exists today** | this one |
+| P1 Stage A | Fitted weights against co-primary targets | this one |
+| P1 Stage B | Leverage-weighted WPA attribution | this one |
 | P2 | Player page: impact-to-win-rate card + break-even tile | its own, later |
 | P3 | Squad page: carry measure | its own, later |
 
-**This spec covers P0 and P1 only.** P2 and P3 are deliberately not designed
-yet: P1's report determines which metric variant and which framing are worth
-displaying, and designing the pages first would be guessing. Each gets its own
-spec once P1 has run.
-
-P1 itself ships in two stages (see "Sequencing").
+**This spec covers P0 and P1.** P2 and P3 are designed later, from Stage 0's
+observed effect sizes.
 
 ## Constraints and premises
 
@@ -44,31 +42,90 @@ P1 itself ships in two stages (see "Sequencing").
 1,151 matches - 24,157 rounds - 178,242 kill events - 241,570 impact rows -
 8,251 players.
 
-Consequences: ~48k team-round observations is ample for fitting a handful of
-weights, but **1,151 match outcomes is not enough to make match win the
-primary training target**. Match outcome still enters training as a
-*low-weight auxiliary* signal (see `forward_window_target` below) -- the user's
-econ-carryover argument requires it -- but the bulk of the fitting signal comes
-from the round-level observations. Match-level numbers carry the widest
-confidence intervals. More matches from the tracker.gg crawl
-sharpen exactly those numbers; the tool re-runs unchanged and prints `n` at
-every level so growth is visible.
+**Effective sample sizes**, stated carefully because an earlier draft got this
+wrong:
+
+- **~24k rounds**, not 48k. A round's two (round, team) rows have perfectly
+  complementary outcomes and mirrored structure; they are not independent
+  observations. The design uses **one row per round** (see "Observation
+  unit").
+- **1,151 match outcomes.** This is ample to *fit* a four-coefficient model.
+  What it does not support is finely *discriminating* small AUC differences
+  between candidate weightings -- that is where the confidence intervals bite,
+  and it is the reason match-level results are always reported with CIs.
+- Minus surrender placeholder rounds (below), and minus rounds dropped at
+  half boundaries by the forward-window target.
+
+More matches from the tracker.gg crawl sharpen the match-level numbers
+specifically. The tool re-runs unchanged and prints `n` at every level.
+
+### Surrender placeholder rounds must be excluded
+
+`app/services/surrender_rounds.py` documents 202 all-zero placeholder rounds
+across 37 matches that tracker.gg pads surrendered matches with. Every
+extraction query in this project uses the existing `NOT_A_SURRENDER_ROUND`
+predicate.
 
 ### The tautology trap
 
-A round's kill events *are*, near-deterministically, that round's outcome.
-Any model predicting "did we win round N" from round N's own kills scores
-~99% and has learned nothing. **Training targets must be strictly
-forward-looking.**
-
-This is the same phenomenon as the user's econ-carryover point: a high-impact
-*losing* round still shapes rounds N+1 and N+2 through the economy it leaves
-behind. The objection and the fix are the same thing.
+A round's kill events *are*, near-deterministically, that round's outcome. Any
+model predicting "did we win round N" from round N's own kills scores ~99% and
+has learned nothing. Training targets that involve the round's own outcome are
+therefore **attribution schemes, not predictive validation**, and are labelled
+as such throughout.
 
 Note also that `round_win_impact` (kill_impact zeroed in lost rounds, see
 `app/services/player_profile_types.py`) cannot be validated against round
 outcome at all -- it is defined by it. Only `impact`, `kill_impact`,
 `death_impact`, and the components are eligible.
+
+### LEAKAGE: stored `swing_impact` contains next-round information
+
+**This invalidates the naive forward-window target and forces a recompute.**
+
+`_realized_econ_swing_factor` (`app/scoring/impact.py:309`) reads
+`round_player_stats.get(round_number + 1)` and counts how many of a team's
+players are below `FULL_BUY_THRESHOLD` **in the next round**. It is called at
+`impact.py:473-476`, merged through `_combine_swing_factors`, multiplied into
+`kill_order_bonus_x_swing` at `impact.py:502`, and summed into the stored
+`swing_impact` column at `impact.py:639`.
+
+So the stored `swing_impact` for round N encodes round N+1's economy.
+Predicting round N+1 from it leaks.
+
+The realized term **cannot be backed out of the stored column**:
+`_combine_swing_factors` collapses to `1.0` whenever the two factors disagree
+in direction, so the ex-ante value is unrecoverable after the fact.
+
+**Resolution: re-derive ex-ante components from `kill_events`.**
+`_econ_swing_risk_factor` was checked and is clean -- it projects from
+current-round credits (`remaining + WIN_BONUS >= loadout_threshold + ...`) and
+reads no future rows. So the ex-ante signal exists; it just has to be
+recomputed rather than read.
+
+**Mechanism:** add a behaviour-preserving keyword argument to
+`compute_impact_for_match` (`use_realized_swing: bool = True`) so the existing
+scorer can produce ex-ante components in memory, without persisting them.
+`impact_eval` replays each match through it. This reuses the scorer rather
+than reimplementing it.
+
+- **A test must assert the default path is byte-identical to today's output.**
+  The flag defaults to `True`; nothing about stored scores changes.
+- **Cost:** an in-memory replay of all 1,151 matches per run, comparable to
+  `scripts/recompute_impact.py`. Acceptable for an offline tool, but it does
+  retire the earlier draft's "no recompute needed" claim.
+
+Both variants are extracted and **always labelled distinctly** in the report:
+`ex_ante` ("available at the end of round N") and `realized` ("incorporates
+round N+1's observed economy"). Only `ex_ante` is eligible for forward-looking
+fitting; `realized` appears only in retrospective/attribution contexts.
+
+### Forward windows respect the economy boundaries
+
+Valorant resets economy at halftime, and `impact.py:309`'s own guard already
+encodes the convention: `if round_number in (12, 24) or round_number > 24`.
+Forward windows use the same rule -- they never cross the halftime reset or
+the modeled OT boundary.
 
 ### The tuning surface already exists
 
@@ -95,193 +152,292 @@ Since `impact_scores` stores `econ_impact = K_econ - D_econ` (and likewise
 impact = damage + (w_e*econ_impact + w_t*time_impact + w_s*swing_impact) / SUM(w)
 ```
 
-**A linear fit over four already-stored columns therefore yields
-`FACTOR_WEIGHTS` directly.** Four free parameters, no black box, no recompute
-needed to extract the training data. The fitted values feed the existing
-`scripts/recompute_impact.py` -> `scripts/diff_impact_scores.py` workflow.
-
 **Task 0 (gate):** verify that identity empirically on live rows before
-building anything else. Each term is `round()`ed independently, so agreement
-is expected within a couple of points, not exactly. If it does not hold, the
-whole Stage A approach is invalid and must be reconsidered rather than worked
-around.
+building anything else. Each term is `round()`ed independently, so agreement is
+expected within a couple of points, not exactly. If it does not hold, Stage A
+is invalid and must be reconsidered rather than worked around. **Ships as a
+test**, so a future change to the combination step fails loudly.
 
-### Parameterization limit (report, do not silently absorb)
+Task 0 validates the **parameterization** -- that this linear form is the right
+target for fitting. It is checked against the stored columns because that is
+what the live scorer wrote. The Stage A *training features* are a different
+thing: ex-ante components re-derived per the leakage section below. Both share
+this same linear form, which is why the gate transfers.
 
-The current form fixes the damage coefficient at 1 and *averages* the three
-factors, so the factor block's total weight relative to damage is constrained.
-An unconstrained fit produces coefficient ratios that this form may not be
-able to express. The tool therefore reports **both**: the raw fitted ratios,
-and the best `FACTOR_WEIGHTS` under the existing parameterization together
-with the `damages` multiplier change (currently `* 1.25`) needed to absorb the
-scale difference. It never quietly renormalizes one into the other.
+### The three components are collinear by construction
+
+`impact.py:496-502` builds all three as `kill_order_bonus * <factor>` -- they
+share the same multiplicand. Unstable raw coefficients are therefore expected,
+not a risk to be discovered later. Every fit reports:
+
+- coefficients across all outer folds
+- bootstrap sign stability per coefficient
+- drop-one-component performance
+- the component correlation matrix
+
+A coefficient whose sign flips across folds is reported as indeterminate, never
+as a finding.
+
+### Mapping a fit back to `FACTOR_WEIGHTS` is a separate constrained problem
+
+Weighted IRLS produces unconstrained coefficients on standardized features. It
+does **not** by itself yield "the best `FACTOR_WEIGHTS` under the existing
+parameterization." Those are two different optimizations, and the spec treats
+them as such:
+
+1. **Unconstrained:** report raw fitted coefficients (back-transformed to raw
+   feature scale) and their ratios. A **negative** component coefficient is
+   reported honestly as evidence that the component is anti-predictive -- it is
+   never clipped or silently absorbed.
+2. **Constrained:** a separate small optimization for `(w_e, w_t, w_s, d)`
+   subject to the existing form `impact = d*damage + (SUM w_i*f_i)/SUM(w)`.
+   Scale-invariant in `w`, so it is 3 effective degrees of freedom -- solved by
+   projected search / coarse grid, not by IRLS. **Decision: `w_i >= 0` is
+   enforced**, since a negative factor weight is not meaningful in the current
+   design. The unconstrained result is always reported alongside, so the cost
+   of that constraint is visible rather than hidden.
+3. Report explicitly whether the unconstrained optimum is representable in the
+   existing parameterization at all.
 
 ### Scope boundary on "weight fitting"
 
 Stage A fits the **outer** weights: `econ` / `time` / `swing` and the damage
 multiplier. The **inner** curves -- the kill-order graph's per-edge bonuses,
-`_econ_swing_risk_factor`, the time-factor curve -- are baked into the
-`*_x_econ` / `*_x_time` / `*_x_swing` products and are not separable from the
-stored columns. Re-fitting those requires re-deriving from `kill_events` and
-is **out of scope**; revisit as a possible Stage C if the outer fit shows one
-factor doing all the work.
+the time-factor curve -- stay fixed. (`_econ_swing_risk_factor` is now
+partially in scope only insofar as the ex-ante/realized split above requires
+re-running it; its internals are not refit.) Inner-curve refitting is **Stage
+C**, out of scope here.
+
+## Stage 0 -- descriptive report on Impact as it exists today
+
+**Runs before any fitting.** Its purpose is to answer the original question
+directly, and to supply the effect sizes that P2's design needs. Without it,
+this project could ship sophisticated fitted weights while never reporting the
+simple correlation that was actually asked for.
+
+Read-only, no fitting, **current stored scores** -- which means the `realized`
+swing variant, since that is what the live scorer wrote and therefore what
+"Impact as it exists today" actually is. Stage 0 is descriptive of the shipped
+metric, not an input to any forward-looking fit, so the leakage constraint does
+not apply to it. The report labels it accordingly.
+
+It reports:
+
+- player-match average Impact versus win/loss
+- point-biserial correlation
+- top-tercile versus bottom-tercile win-rate lift
+- within-player-centered pooled relationship (each player's Impact centered on
+  their own mean, which controls for skill level)
+- first-half team Impact differential versus match outcome
+- full-match differential versus kill differential (diagnostic only)
+- confidence intervals (bootstrapped by match) and sample counts throughout
 
 ## The evaluation contract
 
-Defined once, before anything is fit, and identical across both stages. This
-is what makes Stage A and Stage B comparable at all: they train on different
-targets, so "which fit better" is meaningless without a common yardstick
-neither was trained on.
+Defined once, before anything is fit, and identical across every stage.
 
-### Three yardsticks
+### Observation unit
 
-1. **First half -> match outcome.** Aggregate each team's weighted impact over
-   rounds 1-12, take the differential, predict the winner. Strictly
-   forward-looking, so no tautology. Reported **split by attack-first vs
-   defense-first** (via `map_side_stats.attacking_team_for_round`), because a
-   half is played entirely on one side and a player stronger on one side would
-   otherwise be scored by the coin flip. Limited to 12 rounds of signal.
-2. **Full match -> match outcome.** Side-balanced and uses every round, which
-   the first-half yardstick cannot be. Absolute AUC here will be ~0.95 for
-   *every* weighting and is meaningless on its own; it is read **only as the
-   gap over the raw kill-differential baseline** on the identical scale. That
-   gap is precisely "does the econ/time/swing machinery add anything beyond
-   counting kills."
-3. **Round N -> rounds N+2 onward.** ~24k observations, the tightest error
-   bars, and the one that catches within-half econ carryover that the
-   match-level yardsticks average over.
+**One row per round**, not two. Features are **team-A-minus-team-B
+differentials** of each component; the label is whether team A achieved the
+target outcome. Deterministic team-A orientation (side enters as a control, so
+the attack-first asymmetry is modeled rather than absorbed -- see
+`map_side_stats.attacking_team_for_round`).
 
-A weighting must do well on all three to be worth adopting. **Disagreement
-between them is itself a finding and is printed as such**, not resolved by
-picking a favourite.
+This also matches the first-half and full-match yardsticks, which are
+inherently differential, so training and evaluation use the same
+representation.
+
+### Co-primary targets
+
+Both are fit and reported side by side. **Disagreement between them is a
+finding and is printed as such**, not resolved by picking a favourite.
+
+- **T1 -- first-half component differential -> match result.** Strictly
+  forward-looking with respect to the second half; no leakage. n = 1,151.
+- **T2 -- ex-ante components at round N -> rounds N+1..N+k**, respecting half
+  boundaries, plus match outcome as a low-weight auxiliary observation. n =
+  ~24k rounds. Uses `ex_ante` components only.
+
+### T2 requires a control ladder
+
+A round-N feature can predict future rounds merely because it reveals who won
+round N, and winning N creates the next-round economy advantage. T2 is
+therefore always reported as nested models:
+
+1. round-N result alone
+2. + score differential, side, pre-round economy differential
+3. + damage differential
+4. + full ex-ante component differentials
+
+**The incremental gain from 3 to 4 is the headline result** -- it is the only
+number that shows Impact's machinery carries information beyond "who won the
+round and what they could afford next." Each step reports ΔAUC and Δlog-loss
+with CIs.
+
+### Yardsticks (scoring, always out-of-fold)
+
+Every candidate is scored on all three, giving a targets x yardsticks matrix so
+cross-target generalization is visible:
+
+1. **First half -> match outcome.** Reported split by attack-first vs
+   defense-first, since a half is played entirely on one side.
+2. **Full match -> match outcome.** Absolute AUC will be ~0.95 for *every*
+   weighting and is meaningless alone; read **only as the gap over the raw
+   kill-differential baseline** on the identical scale.
+3. **Round N -> rounds N+2 onward**, with the control ladder above.
 
 ### Protocol
 
-- **5-fold cross-validation, split by match.** With 1,151 matches a single
-  80/20 holdout leaves ~230 evaluation points and uselessly wide intervals;
-  5-fold uses every match as an out-of-fold evaluation point with no leakage.
-  All rounds of a match live in the same fold.
-- Training targets may include match outcome **inside the training fold**;
-  scoring always happens on out-of-fold matches.
-- **Bootstrap confidence intervals on every reported number.**
-- **Baselines are mandatory in every report:** current hand-tuned Impact, plain
-  K/D, raw kills, damage alone. If Impact cannot beat K/D, that is the finding
-  and the tool says so plainly.
+- **Nested cross-validation.** Outer 5-fold by match for all reported numbers;
+  inner folds *within each training fold* for selecting `k`, `gamma`,
+  `match_weight`, and L2 strength. Selecting hyperparameters on the same folds
+  used for reporting would manufacture optimism.
+- All rounds of a match live in the same fold.
+- **Bootstrap by match** (cluster resampling, keeping all of a match's rounds
+  together). Never resample expanded target rows independently.
+- **Standardize features using training-fold statistics** before ridge fitting,
+  so L2 penalizes differently-scaled columns comparably. Back-transform
+  coefficients for reporting.
+- **Baselines are mandatory in every report:** current hand-tuned Impact, kill
+  differential, kills and deaths as separate features, damage alone. **Not a
+  K/D ratio** -- it is undefined at zero deaths.
+- Each baseline is converted to a probability by a logistic calibration fit
+  **on the training fold only**; AUC can consume raw scores, log-loss cannot.
+- If Impact cannot beat kill differential, that is the finding and the tool
+  says so plainly.
 
 ## Sequencing
 
-**Stage A** builds the entire harness end-to-end with the cheap target:
-extraction, features, fitting, CV, yardsticks, baselines, report. It is a
-complete standalone answer -- fitted weights, held-out numbers, and which
-components are dead freight.
+1. **Task 0** reconstruction gate (ships as a test).
+2. **Stage 0** descriptive report on current Impact.
+3. **Stage A** co-primary fitting: T1 and T2, with the control ladder, ex-ante
+   components, and the constrained mapping back to `FACTOR_WEIGHTS`.
+4. **Stage B** leverage-weighted WPA attribution.
+5. **P2 / P3** designed from the observed effect sizes.
 
-**Stage B** builds `V(state)` and swaps *only the target column*. Approaches 1
-and 2 share the observations, the fitter, the folds, and the yardsticks; they
-differ in one seam. So Stage B costs only the value model, and Stage A vs
-Stage B is a direct comparison rather than an assumed one. If the WPA target
-does not beat the forward-window target, Stage A's weights stand and
-`V(state)` is still independently shippable as a match-page win-probability
-readout -- nothing is wasted either way.
-
-**Implementation planning splits here too:** the first implementation plan
-covers P0 + Stage A only. Stage B gets its own plan, written once Stage A's
-numbers exist -- both to keep either plan a reasonable size, and because Stage
-A's component breakdown may change what `V(state)` should condition on.
+**Implementation planning splits here:** the first plan covers P0 + Task 0 +
+Stage 0 + Stage A. Stage B gets its own plan once Stage A's numbers exist.
 
 ## P0 -- `webapp/app/services/stats_math.py`
 
 Pure numeric helpers. No domain knowledge, no DB, no imports from other
-`app.services` modules. ~150 lines.
+`app.services` modules.
 
-- `fit_logistic(X, y, weights, l2)` -- weighted IRLS. Accepts fractional
-  `y` in [0, 1] (quasi-binomial), so one code path serves both stages' targets.
+- `fit_logistic(X, y, weights, l2)` -- weighted IRLS, accepting fractional `y`
+  in [0, 1]
 - `auc(scores, labels)`, `log_loss(probs, labels)`
+- `platt_calibrate(scores, labels)` -- training-fold calibration for baselines
 - `point_biserial(values, labels)`
-- `tercile_buckets(values)` -- for P2 later
-- `bootstrap_ci(fn, data, draws, seed)`
+- `tercile_buckets(values)`
+- `cluster_bootstrap_ci(fn, groups, draws, seed)` -- resamples groups (matches)
 
 **numpy only.** `scipy` is installed locally but absent from
 `requirements.txt`, which `render.yaml` installs from; hand-rolling IRLS keeps
 the deploy untouched.
 
-## P1 Stage A -- `webapp/app/services/impact_eval.py` + `webapp/scripts/evaluate_impact.py`
+## P1 -- `webapp/app/services/impact_eval.py` + `webapp/scripts/evaluate_impact.py`
 
 Mirrors the existing `app/services/fight_ev.py` + `scripts/validate_fight_ev.py`
 split: computation in a service module, CLI wrapper in `scripts/`.
 
-### Observation unit
+### Per-round observation
 
-**(round, team)** -- not (round, player). Ten players share one outcome, so
-fitting per-player against a team result is confounded; the team is the honest
-unit. ~48k observations.
-
-Per observation:
-
-- **Features:** sum over that team's five `MatchPlayer`s of `ImpactScore.damage`,
-  `.econ_impact`, `.time_impact`, `.swing_impact`.
-- **Baseline features:** kills/deaths from `RoundPlayerStat`, plus stored
-  `kill_impact` / `death_impact` / `impact`.
-- **Context:** `match_id`, `round_number`, team, side for that round
-  (`attacking_team_for_round`), round outcome, match outcome.
+- **Features (differential, team A minus team B):** `damage`, `econ_impact`,
+  `time_impact`, `swing_impact` -- in both `ex_ante` and `realized` variants,
+  never mixed.
+- **Controls:** score differential, side for that round, pre-round loadout
+  differential (reusing `economy_graphs._tier_for` and
+  `RoundPlayerStat.loadout`), round number.
+- **Baselines:** kills, deaths, kill differential, damage.
+- **Context:** `match_id`, `round_number`, round outcome, match outcome.
 
 ### Target seam
 
 Every target builder returns `(X, y, w)` with `y` in [0, 1]:
 
-- `forward_window_target(observations, k, gamma, match_weight)` -- Stage A.
-  Expands round N into one weighted observation per future round N+1..N+k with
-  weight `gamma**j`, plus the match outcome as one additional observation at
-  `match_weight`. **Defaults: `k=3`, `gamma=0.7`, `match_weight=1.0`** (so the
-  match contributes roughly as much as a single future round, keeping it
-  auxiliary rather than dominant). All three are CLI flags, and the report
-  includes a small sweep over them so the choice is visible rather than
-  asserted.
-- `wpa_target(observations, value_model)` -- Stage B. Same signature.
+- `first_half_target(observations)` -- T1.
+- `forward_window_target(observations, k, gamma, match_weight)` -- T2. Expands
+  round N into one weighted observation per future round N+1..N+k with weight
+  `gamma**j`, never crossing a half boundary, plus match outcome at
+  `match_weight`. Defaults `k=3`, `gamma=0.7`, `match_weight=1.0`, all selected
+  by inner CV rather than asserted.
+- `wpa_target(observations, value_model)` -- Stage B.
 
 ### Output
 
-Printed table plus JSON (`--out`, matching `validate_fight_ev.py`'s
-conventions, `DATABASE_URL` override honoured):
+Printed table plus JSON (`--out`, `DATABASE_URL` override honoured, matching
+`validate_fight_ev.py`):
 
-- fitted coefficients, and the two mappings back to `FACTOR_WEIGHTS` described
-  under "Parameterization limit"
-- per-yardstick AUC and log-loss with bootstrap CIs, for every candidate
-  including the mandatory baselines
-- per-component contribution -- which of econ/time/swing/damage is carrying the
-  prediction and which is dead freight
-- `n` at every level
+- Stage 0's descriptive block
+- fitted coefficients per outer fold, with sign-stability and the collinearity
+  diagnostics above
+- both mappings back to `FACTOR_WEIGHTS` (unconstrained and constrained)
+- the T2 control ladder with incremental ΔAUC / Δlog-loss
+- the targets x yardsticks matrix, every cell with cluster-bootstrapped CIs
+- `n` at every level, and the ex_ante/realized label on every component number
 
 ## P1 Stage B -- `webapp/app/services/win_probability.py`
 
-`V(state) = P(win match | round differential, rounds played, side)`, fit on
-~24k round starts. Round impact becomes `V(after) - V(before)`; `wpa_target`
-feeds that through the unchanged harness.
+`V(state) = P(win match | round differential, rounds played, side)`.
 
-**Econ enters as a measured second step, not from the start.** Fit the base
-feature set first, then add econ state (reusing `economy_graphs._tier_for` and
-`RoundPlayerStat.loadout`, both existing) and report the held-out log-loss
-delta. That delta *is* the quantitative answer to "how much does econ carryover
-actually matter" -- the question that motivated this whole design. Including
-econ from the start yields a model but no number for it.
+**Framing, corrected:** Stage B **defines an impact measure; it is not
+independent predictive validation.** `V(after) - V(before)` is dominated by the
+round's own outcome, which the features nearly determine -- so it does not
+escape the tautology. Its value is leverage-aware attribution: it says a swing
+in a close, late, economically pivotal round matters more than the same swing
+in a decided one.
+
+**Formulation (corrected):** signed `ΔV` is not a probability and cannot be the
+`y` of a logistic fit. Instead:
+
+- **label** = did this team win the round (0/1)
+- **sample weight** = `abs(V(after) - V(before))`
+
+so the fit weights high-leverage rounds more without treating signed WPA as a
+probability.
+
+**`V(state)` is fit inside each outer training fold.** Fitting it once over all
+matches and then running outer CV would leak evaluation outcomes into the
+target.
+
+**Econ enters as a measured second step.** Fit the base feature set, then add
+econ state and report the held-out log-loss delta. That delta is the
+quantitative answer to "how much does econ carryover actually matter."
 
 ## Testing
 
-- `tests/test_stats_math.py` -- synthetic data with analytically known answers
-  (a separable logistic fit, an AUC with a hand-computable value, a bootstrap
-  with a fixed seed).
-- `tests/test_impact_eval.py` -- hand-built fixtures for observation
-  extraction, the forward-window target expansion, and fold assignment
-  (asserting no match spans two folds).
-- **The Task 0 reconstruction check ships as a test**, not just a one-off
-  script run, so a future change to `impact.py`'s combination step fails loudly
-  here.
+- `tests/test_stats_math.py` -- synthetic data with analytically known answers.
+- `tests/test_impact_eval.py` -- fixtures for differential observation
+  extraction, forward-window expansion **including the half-boundary cut**,
+  fold assignment (no match spans two folds), and surrender-round exclusion.
+- `tests/test_impact_exante_swing.py` -- asserts `use_realized_swing=True`
+  reproduces today's stored output exactly, and that the `ex_ante` path reads
+  no round N+1 data.
+- The Task 0 reconstruction identity ships as a test.
 
 ## Out of scope
 
 - No new tables, no migrations.
-- No change to `impact.py`'s formula in this project. The tool *proposes*
-  weights; adopting them is a separate deliberate act through the existing
-  `recompute_impact.py` / `diff_impact_scores.py` scripts.
+- No change to `impact.py`'s **formula**. The only permitted edit is the
+  behaviour-preserving `use_realized_swing` keyword argument, covered by a
+  byte-identity test. Adopting fitted weights is a separate deliberate act
+  through `recompute_impact.py` / `diff_impact_scores.py`.
 - No web endpoint, no router, no template. Nothing here is imported by
   `app/main.py`, so the deploy path is untouched.
 - Inner-curve refitting (Stage C), P2, P3 -- each its own spec.
+
+## Revision note
+
+Revised after a methodology review. Changes: the `swing_impact` leakage was
+found and forced the ex-ante recompute (retiring the "no recompute needed"
+premise); the observation unit went from two team-rows to one differential row
+per round (24k, not 48k); a descriptive Stage 0 was added so the original
+question is answered before any fitting; T2 gained the control ladder; Stage B
+was reframed as attribution rather than validation and its target/fitter type
+mismatch was fixed; and nested CV, cluster bootstrapping, training-fold
+standardization, baseline calibration, surrender-round exclusion, and the
+constrained-mapping optimization were all specified. The earlier claim that
+1,151 matches could not support match outcome as a primary target was
+overstated and has been corrected; T1 and T2 are now co-primary per the user's
+decision.
