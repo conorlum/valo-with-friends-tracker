@@ -72,6 +72,21 @@ try {
     }
 }
 
+# --- Make sure tracker.gg is actually open in a tab, whether Chrome was just
+# launched (launch_trackergg_chrome.ps1 already opens it) or was already
+# running from an earlier session (where it may have been navigated away or
+# closed) -- so this always leaves you looking at tracker.gg.
+try {
+    $tabs = Invoke-RestMethod -Uri "http://127.0.0.1:9222/json/list" -TimeoutSec 3
+    $hasTrackerTab = $tabs | Where-Object { $_.url -like "https://tracker.gg*" }
+    if (-not $hasTrackerTab) {
+        Write-Host "Opening tracker.gg tab..."
+        Invoke-WebRequest -Uri "http://127.0.0.1:9222/json/new?https://tracker.gg/valorant" -Method PUT -UseBasicParsing -TimeoutSec 3 | Out-Null
+    }
+} catch {
+    Write-Host "Warning: couldn't confirm/open a tracker.gg tab via CDP ($_)."
+}
+
 # --- Run the existing batch refresh, DATABASE_URL overridden to the remote --
 # (env var wins over .env's own DATABASE_URL per pydantic-settings' default
 # precedence -- webapp/.env itself is untouched, this only affects this one
