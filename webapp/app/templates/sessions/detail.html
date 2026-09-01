@@ -8,7 +8,7 @@
   {{ session.started_at | local_strftime("%I:%M %p") }} &ndash; {{ session.ended_at | local_strftime("%I:%M %p") }}
   <span class="sep">&middot;</span>
   {{ session.matches | length }} match{{ "es" if session.matches | length != 1 else "" }}
-  {% if session.is_multi_match %}
+  {% if session.wins or session.losses %}
   <span class="sep">&middot;</span>
   <span class="badge badge-score">{{ session.wins }} &ndash; {{ session.losses }}</span>
   {% endif %}
@@ -21,9 +21,9 @@
     {{ "show just mine" if friends_enabled else "include friends" }}
   </a>
   {% else %}
-  <a href="/sessions?friends={{ 0 if friends_enabled else 1 }}">
-    {{ "show just mine" if friends_enabled else "include friends" }}
-  </a>
+  <span class="sep">
+    {{ "you weren't in any of these matches" if friends_enabled else "no friends' matches to add" }}
+  </span>
   {% endif %}
   )
 </p>

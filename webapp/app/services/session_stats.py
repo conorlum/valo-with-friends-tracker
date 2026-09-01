@@ -135,8 +135,9 @@ def get_session_stats(
     t1 = time.perf_counter()
     round_win_diagrams_by_match = build_session_round_win_diagrams_by_match(session.matches, session.team_by_match)
     t2 = time.perf_counter()
-    # team_by_match is only populated for multi-match sessions (see sessions.py),
-    # so this is naturally empty -- same gating the round-win diagram above relies on.
+    # team_by_match is empty for any match whose "our side" couldn't be resolved
+    # (see sessions.py), so this is naturally empty for those -- same gating the
+    # round-win diagram above relies on.
     econ_samples = session_econ_samples(session.matches, session.team_by_match)
     econ_tier_matrix = build_tier_matrix(econ_samples)
     econ_pistol_stats = build_pistol_stats(econ_samples)

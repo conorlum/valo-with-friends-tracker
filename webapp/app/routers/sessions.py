@@ -9,7 +9,7 @@ from app.db import get_db
 from app.services.auth import get_current_player
 from app.services.friends import list_friend_ids
 from app.services.session_stats import get_session_stats
-from app.services.sessions import find_session_index_containing_match, get_session_or_404, list_sessions
+from app.services.sessions import find_session_index_for_matches, get_session_or_404, list_sessions
 from app.templates import templates
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -51,14 +51,17 @@ def session_detail(
     matches_by_id = {m.id: m for m in session.matches}
 
     # The friends-scope toggle links to this same session under the opposite
-    # scope -- its index there isn't the same number (see
-    # find_session_index_containing_match), so resolve it here rather than
-    # reusing session_index and risking a 404 or the wrong session.
+    # scope -- its index there isn't the same number, and the two scopes don't
+    # even hold the same matches (see find_session_index_for_matches), so
+    # resolve it here rather than reusing session_index and risking a 404 or
+    # the wrong session. None means the opposite scope has nothing to show --
+    # under "just mine" that's a session the viewer sat out entirely -- and the
+    # template drops the toggle rather than bouncing them to the session list.
     other_player_ids = _scoped_player_ids(db, current_player.id, not friends)
     other_sessions = list_sessions(db, other_player_ids)
     t3 = time.perf_counter()
-    other_session_index = (
-        find_session_index_containing_match(other_sessions, session.matches[0].id) if session.matches else None
+    other_session_index = find_session_index_for_matches(
+        other_sessions, [m.id for m in session.matches]
     )
     t4 = time.perf_counter()
 
