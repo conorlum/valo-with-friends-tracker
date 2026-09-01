@@ -196,13 +196,23 @@ def get_session_stats(
         entry.agents = agents_by_player.get(entry.player_id, [])
     for row in kda_rows:
         row.agents = agents_by_player.get(row.player_id, [])
-    biggest_multi_kill, raw_counts = _compute_raw_session_counts(db, session, our_mp_to_player, players_by_id)
+
+    friend_ids = list_friend_ids(db, viewer_player_id) | {viewer_player_id} if viewer_player_id is not None else set()
+    # Fun Stats should only crown players who were actually part of the
+    # friend group for this session -- either they played every match (the
+    # "core" roster) or they're a known friend -- not a random pub teammate
+    # who happened to sub in for one match.
+    fun_stats_eligible_ids = session.core_player_ids | friend_ids
+    fun_stats_mp_to_player = {
+        mp_id: player_id for mp_id, player_id in our_mp_to_player.items() if player_id in fun_stats_eligible_ids
+    }
+
+    biggest_multi_kill, raw_counts = _compute_raw_session_counts(db, session, fun_stats_mp_to_player, players_by_id)
     t9 = time.perf_counter()
-    fun_stats = _build_fun_stats(db, session, our_mp_to_player, players_by_id, biggest_multi_kill, raw_counts)
+    fun_stats = _build_fun_stats(db, session, fun_stats_mp_to_player, players_by_id, biggest_multi_kill, raw_counts)
     t10 = time.perf_counter()
     shoutouts = _build_shoutouts(raw_counts, leaderboard, players_by_id, agent_by_player, games_played_by_player)
     if viewer_player_id is not None:
-        friend_ids = list_friend_ids(db, viewer_player_id) | {viewer_player_id}
         shoutouts = [s for s in shoutouts if s.player_id in friend_ids]
     t11 = time.perf_counter()
     logger.info(
