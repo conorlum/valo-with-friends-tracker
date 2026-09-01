@@ -67,6 +67,15 @@ _NOT_NULL_COLUMNS = (
 )
 
 
+def _catalogues_named_not_null_constraints() -> bool:
+    """Postgres 17+ catalogues `SET NOT NULL` as a named pg_constraint row
+    (auto-named `<table>_<column>_not_null`), which is what lets it be
+    renamed later. Before 17, `SET NOT NULL` only flips `attnotnull` --
+    there is no named constraint to rename, so that step must be skipped
+    there (the NOT NULL enforcement itself is identical either way)."""
+    return op.get_bind().dialect.server_version_info >= (17,)
+
+
 def upgrade() -> None:
     scalar_select = ",\n            ".join(
         f"COALESCE((breakdown->>'{key}')::numeric, 0)::smallint AS {key}"
@@ -144,12 +153,15 @@ def upgrade() -> None:
 
     # Postgres 17+ catalogues NOT NULL as named constraints, so these were also
     # created carrying the temporary table name. Renaming is catalog-only --
-    # no scan, no meaningful lock -- unlike SET NOT NULL itself.
-    for column in _NOT_NULL_COLUMNS:
-        op.execute(
-            f"ALTER TABLE impact_scores RENAME CONSTRAINT "
-            f"impact_scores_new_{column}_not_null TO impact_scores_{column}_not_null"
-        )
+    # no scan, no meaningful lock -- unlike SET NOT NULL itself. Skipped
+    # entirely on <17, where SET NOT NULL never created a named constraint
+    # to rename in the first place.
+    if _catalogues_named_not_null_constraints():
+        for column in _NOT_NULL_COLUMNS:
+            op.execute(
+                f"ALTER TABLE impact_scores RENAME CONSTRAINT "
+                f"impact_scores_new_{column}_not_null TO impact_scores_{column}_not_null"
+            )
 
 
 def downgrade() -> None:
@@ -211,11 +223,12 @@ def downgrade() -> None:
         "ALTER TABLE impact_scores RENAME CONSTRAINT "
         "impact_scores_old_match_player_id_fkey TO impact_scores_match_player_id_fkey"
     )
-    for column in _OLD_NOT_NULL:
-        op.execute(
-            f"ALTER TABLE impact_scores RENAME CONSTRAINT "
-            f"impact_scores_old_{column}_not_null TO impact_scores_{column}_not_null"
-        )
+    if _catalogues_named_not_null_constraints():
+        for column in _OLD_NOT_NULL:
+            op.execute(
+                f"ALTER TABLE impact_scores RENAME CONSTRAINT "
+                f"impact_scores_old_{column}_not_null TO impact_scores_{column}_not_null"
+            )
 
     # Restore the identity sequence the original table's `id` column had.
     op.execute("CREATE SEQUENCE impact_scores_id_seq OWNED BY impact_scores.id")
