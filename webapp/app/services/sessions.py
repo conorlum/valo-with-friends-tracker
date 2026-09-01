@@ -64,15 +64,34 @@ def group_matches_into_sessions(
 
     runs: list[list[Match]] = []
     for m in timed_matches:
-        if runs:
-            prev = runs[-1][-1]
-            prev_ids = {mp.player_id for mp in match_players_by_match.get(prev.id, [])}
-            cur_ids = {mp.player_id for mp in match_players_by_match.get(m.id, [])}
-            gap = m.played_at - prev.played_at
-            if gap <= max_gap and len(prev_ids & cur_ids) >= overlap_threshold:
-                runs[-1].append(m)
+        cur_ids = {mp.player_id for mp in match_players_by_match.get(m.id, [])}
+        # Checked against every still-open run (one whose last match is within
+        # max_gap), not just the literal most-recent match in time: with the
+        # friends-inclusive candidate pool, a match belonging to only one
+        # friend -- them soloing without the rest of the group -- can land
+        # chronologically between two of the group's real matches. It fails
+        # the overlap check against both neighbors and would otherwise become
+        # the new "previous match" for the second one's comparison, severing
+        # a session that's otherwise perfectly continuous. Reaching past it to
+        # the last real match keeps the two halves merged, with the
+        # interloping match left in its own single-match run.
+        best_run: list[Match] | None = None
+        best_key: tuple[int, timedelta] | None = None
+        for run in runs:
+            gap = m.played_at - run[-1].played_at
+            if gap > max_gap:
                 continue
-        runs.append([m])
+            last_ids = {mp.player_id for mp in match_players_by_match.get(run[-1].id, [])}
+            overlap = len(last_ids & cur_ids)
+            if overlap < overlap_threshold:
+                continue
+            key = (overlap, -gap)
+            if best_key is None or key > best_key:
+                best_run, best_key = run, key
+        if best_run is not None:
+            best_run.append(m)
+        else:
+            runs.append([m])
 
     return [
         _build_roster_session(run, match_players_by_match, anchor_player_ids) for run in runs
