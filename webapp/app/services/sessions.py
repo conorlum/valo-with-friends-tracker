@@ -43,6 +43,7 @@ def group_matches_into_sessions(
     match_players_by_match: dict[int, list[SessionMatchPlayer]],
     overlap_threshold: int = DEFAULT_OVERLAP_THRESHOLD,
     max_gap: timedelta = DEFAULT_MAX_GAP,
+    anchor_player_ids: set[int] | None = None,
 ) -> list[RosterSession]:
     """Group matches into consecutive-roster "sessions".
 
@@ -50,6 +51,11 @@ def group_matches_into_sessions(
     .played_at, .team1_rounds_won, .team2_rounds_won are read) and a
     pre-resolved match_id -> roster mapping, so it's testable against
     synthetic data without a real database.
+
+    `anchor_player_ids` is the set of players the caller is building sessions
+    for (the viewer, plus their friends when friends are in scope). It's only
+    consulted to decide which side of a match is "ours" when the run's own
+    rosters can't say -- see _build_roster_session.
     """
     timed_matches = sorted(
         (m for m in matches if m.played_at is not None),
@@ -68,61 +74,82 @@ def group_matches_into_sessions(
                 continue
         runs.append([m])
 
-    return [_build_roster_session(run, match_players_by_match) for run in runs]
+    return [
+        _build_roster_session(run, match_players_by_match, anchor_player_ids) for run in runs
+    ]
+
+
+def _side_holding(
+    team1_ids: set[int], team2_ids: set[int], reference_ids: set[int] | None
+) -> str | None:
+    """Which side `reference_ids` mostly sits on, or None when it can't tell."""
+    if not reference_ids:
+        return None
+    overlap1 = len(team1_ids & reference_ids)
+    overlap2 = len(team2_ids & reference_ids)
+    if overlap1 == overlap2:
+        return None
+    return "team-1" if overlap1 > overlap2 else "team-2"
 
 
 def _build_roster_session(
-    run: list[Match], match_players_by_match: dict[int, list[SessionMatchPlayer]]
+    run: list[Match],
+    match_players_by_match: dict[int, list[SessionMatchPlayer]],
+    anchor_player_ids: set[int] | None = None,
 ) -> RosterSession:
     per_match_ids = [{mp.player_id for mp in match_players_by_match.get(m.id, [])} for m in run]
+
+    is_multi_match = len(run) > 1
 
     # Used only to tell which side is "our" team per match: since consecutive
     # matches in a run are grouped by overlapping *full* (both-team) rosters,
     # intersecting those full rosters across the run still isolates mostly our
-    # persistent players (opponents differ match to match).
+    # persistent players (opponents differ match to match). A single-match run
+    # has nothing to intersect against, so its "core" would just be the whole
+    # 10-player lobby -- useless here, and actively misleading when the two
+    # sides aren't the same size, so it's skipped entirely below.
     provisional_core_ids = set(per_match_ids[0]) if per_match_ids else set()
     for ids in per_match_ids[1:]:
         provisional_core_ids &= ids
+    core_reference_ids = provisional_core_ids if is_multi_match else None
 
-    is_multi_match = len(run) > 1
     wins = 0
     losses = 0
     ambiguous_match_ids: list[int] = []
     per_match_our_ids: list[set[int]] = []
     team_by_match: dict[int, str] = {}
 
-    if is_multi_match:
-        for m, all_ids in zip(run, per_match_ids):
-            team1_ids = {
-                mp.player_id for mp in match_players_by_match.get(m.id, []) if mp.team == "team-1"
-            }
-            team2_ids = {
-                mp.player_id for mp in match_players_by_match.get(m.id, []) if mp.team == "team-2"
-            }
-            overlap1 = len(team1_ids & provisional_core_ids)
-            overlap2 = len(team2_ids & provisional_core_ids)
-            if overlap1 == overlap2:
-                # Can't tell which side is ours for this match; fall back to
-                # including everyone so we don't silently drop real teammates.
-                ambiguous_match_ids.append(m.id)
-                per_match_our_ids.append(all_ids)
-                continue
-            our_team = "team-1" if overlap1 > overlap2 else "team-2"
-            team_by_match[m.id] = our_team
-            per_match_our_ids.append(team1_ids if our_team == "team-1" else team2_ids)
-            our_won = (
-                m.team1_rounds_won > m.team2_rounds_won
-                if our_team == "team-1"
-                else m.team2_rounds_won > m.team1_rounds_won
-            )
-            if our_won:
-                wins += 1
-            else:
-                losses += 1
-    else:
-        # A single match has no other match in the session to compare
-        # rosters against, so which side is "ours" can't be determined.
-        per_match_our_ids = list(per_match_ids)
+    for m, all_ids in zip(run, per_match_ids):
+        team1_ids = {
+            mp.player_id for mp in match_players_by_match.get(m.id, []) if mp.team == "team-1"
+        }
+        team2_ids = {
+            mp.player_id for mp in match_players_by_match.get(m.id, []) if mp.team == "team-2"
+        }
+        # The run's own cross-match core is the stronger signal when there is
+        # one, so it goes first; the anchor (the players this session was built
+        # for) resolves what it can't -- every single-match session, plus the
+        # occasional multi-match one where the core splits evenly across sides.
+        our_team = _side_holding(team1_ids, team2_ids, core_reference_ids) or _side_holding(
+            team1_ids, team2_ids, anchor_player_ids
+        )
+        if our_team is None:
+            # Can't tell which side is ours for this match; fall back to
+            # including everyone so we don't silently drop real teammates.
+            ambiguous_match_ids.append(m.id)
+            per_match_our_ids.append(all_ids)
+            continue
+        team_by_match[m.id] = our_team
+        per_match_our_ids.append(team1_ids if our_team == "team-1" else team2_ids)
+        our_won = (
+            m.team1_rounds_won > m.team2_rounds_won
+            if our_team == "team-1"
+            else m.team2_rounds_won > m.team1_rounds_won
+        )
+        if our_won:
+            wins += 1
+        else:
+            losses += 1
 
     roster_player_ids: set[int] = set()
     for ids in per_match_our_ids:
@@ -209,7 +236,9 @@ def list_sessions(db: Session, player_ids: list[int] | None = None) -> list[Sess
             )
     t2 = time.perf_counter()
 
-    roster_sessions = group_matches_into_sessions(matches, match_players_by_match)
+    roster_sessions = group_matches_into_sessions(
+        matches, match_players_by_match, anchor_player_ids=set(player_ids) if player_ids else None
+    )
     t3 = time.perf_counter()
 
     sessions = []
@@ -255,9 +284,11 @@ def list_sessions(db: Session, player_ids: list[int] | None = None) -> list[Sess
     return sessions
 
 
-def find_session_index_containing_match(sessions: list[SessionSummary], match_id: int) -> int | None:
-    """Finds the index of the session in `sessions` that contains `match_id`,
-    or None if it isn't in any of them.
+def find_session_index_for_matches(
+    sessions: list[SessionSummary], match_ids: list[int]
+) -> int | None:
+    """Finds the index of the session in `sessions` sharing the most matches
+    with `match_ids`, or None if none of them overlap at all.
 
     Used to translate a session viewed under one friends-scope into the
     equivalent session under a different scope -- a session's index is only
@@ -265,11 +296,22 @@ def find_session_index_containing_match(sessions: list[SessionSummary], match_id
     group matches differently, and assign different positions, depending on
     which players are in scope), so a session_index from one scope can't be
     reused directly as a link into another.
+
+    Matching on overlap rather than on one chosen match matters because the
+    two scopes hold different match sets: narrowing to "just mine" drops every
+    match the viewer sat out, so keying off the session's *first* match sent
+    the viewer back to the session list whenever that first match happened to
+    be one they skipped.
     """
+    wanted = set(match_ids)
+    best_index: int | None = None
+    best_overlap = 0
     for s in sessions:
-        if any(m.id == match_id for m in s.matches):
-            return s.index
-    return None
+        overlap = sum(1 for m in s.matches if m.id in wanted)
+        if overlap > best_overlap:
+            best_index = s.index
+            best_overlap = overlap
+    return best_index
 
 
 def get_session_or_404(db: Session, session_index: int, player_ids: list[int] | None = None) -> SessionSummary:
