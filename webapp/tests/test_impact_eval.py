@@ -421,3 +421,129 @@ def test_oof_weights_are_returned():
     oof = cross_validate(observations, T2_CONFIGS, FEATURE_COMPONENTS, [1.0], seed=0)["oof"]
     assert len(oof["w"]) == len(oof["scores"]) == len(oof["y"]) == len(oof["match_ids"])
     assert np.all(oof["w"] > 0)
+
+
+from app.services.impact_eval import ConstrainedWeights, fit_constrained_weights
+
+
+def _weighted_matches(n_matches=60, econ_weight=0.9, seed=5):
+    """Rounds whose FUTURE outcome is driven mostly by econ_impact, so a
+    correct search must put its weight there rather than on time/swing.
+
+    The k=1 forward-window target predicts round N+1's outcome from round
+    N's features, so the signal must be planted ONE ROUND AHEAD: round N's
+    outcome is generated from round N-1's econ/time, not its own. Wiring a
+    round's outcome to its own features would leave the k=1 window with no
+    real relationship to find.
+    """
+    rng = np.random.default_rng(seed)
+    observations = []
+    for match_id in range(n_matches):
+        obs = []
+        prev_econ = prev_other = 0.0
+        for n in range(1, 13):
+            econ = rng.normal()
+            other = rng.normal()
+            o = _obs(n, 0.0, None, True, match_id=match_id)
+            o.econ_impact = econ * 10
+            o.time_impact = other * 10
+            o.swing_impact = rng.normal() * 10
+            o.round_won_by_team_a = (
+                (econ_weight * prev_econ + (1 - econ_weight) * prev_other) > 0 if n > 1 else True
+            )
+            prev_econ, prev_other = econ, other
+            obs.append(o)
+        obs[-1].is_terminal = True
+        observations.extend(obs)
+    return observations
+
+
+def test_constrained_search_finds_the_dominant_component():
+    obs = _weighted_matches()
+    config = TargetConfig(name="T2", k=1, gamma=1.0, match_weight=0.0)
+    result = fit_constrained_weights(obs, config, CONTROLS_CONTEXT)
+    assert result.econ > result.time
+    assert result.econ > result.swing
+
+
+def test_constrained_weights_are_non_negative_and_normalised():
+    obs = _weighted_matches(n_matches=30)
+    config = TargetConfig(name="T2", k=1, gamma=1.0, match_weight=0.0)
+    result = fit_constrained_weights(obs, config, CONTROLS_CONTEXT)
+    assert result.econ >= 0 and result.time >= 0 and result.swing >= 0
+    assert abs((result.econ + result.time + result.swing) - 3.0) < 1e-6
+    assert result.damage_multiplier >= 0
+
+
+def test_constrained_search_is_deterministic():
+    obs = _weighted_matches(n_matches=25)
+    config = TargetConfig(name="T2", k=1, gamma=1.0, match_weight=0.0)
+    a = fit_constrained_weights(obs, config, CONTROLS_CONTEXT)
+    b = fit_constrained_weights(obs, config, CONTROLS_CONTEXT)
+    assert (a.econ, a.time, a.swing, a.damage_multiplier) == (
+        b.econ, b.time, b.swing, b.damage_multiplier
+    )
+
+
+def test_controls_are_actually_in_the_design(monkeypatch):
+    """If the controls were dropped, the design handed to fit_logistic
+    would have exactly one column (the composite)."""
+    widths = []
+    original = impact_eval.fit_logistic
+
+    def spy(X, *args, **kwargs):
+        widths.append(np.asarray(X).shape[1])
+        return original(X, *args, **kwargs)
+
+    monkeypatch.setattr(impact_eval, "fit_logistic", spy)
+    obs = _weighted_matches(n_matches=15)
+    config = TargetConfig(name="T2", k=1, gamma=1.0, match_weight=0.0)
+    fit_constrained_weights(obs, config, CONTROLS_CONTEXT, simplex_step=0.5, damage_grid=[1.0])
+    assert widths, "expected fits"
+    assert all(w == len(CONTROLS_CONTEXT) + 1 for w in widths)
+
+
+def test_empty_observations_return_neutral_weights():
+    config = TargetConfig(name="T2", k=1, gamma=1.0, match_weight=0.0)
+    result = fit_constrained_weights([], config, CONTROLS_CONTEXT)
+    assert isinstance(result, ConstrainedWeights)
+    assert result.econ == result.time == result.swing == 1.0
+    assert result.usable is False
+
+
+def test_anti_predictive_components_do_not_yield_an_adoption_proposal():
+    """The upside-down-Impact trap: if every component predicts LOSING, a
+    negative composite slope would still fit well. Returning non-negative
+    weights then publishes 'higher Impact is better' when the data said the
+    opposite. The search must refuse."""
+    rng = np.random.default_rng(31)
+    observations = []
+    for match_id in range(50):
+        obs = []
+        for n in range(1, 13):
+            econ = rng.normal()
+            o = _obs(n, 0.0, None, True, match_id=match_id)
+            o.econ_impact = econ * 10
+            o.time_impact = econ * 8
+            o.swing_impact = econ * 6
+            o.damage = econ * 12
+            # Higher components -> LOSES the next round.
+            o.round_won_by_team_a = econ < 0
+            obs.append(o)
+        obs[-1].is_terminal = True
+        observations.extend(obs)
+
+    config = TargetConfig(name="T2", k=1, gamma=1.0, match_weight=0.0)
+    result = fit_constrained_weights(observations, config, CONTROLS_CONTEXT)
+    assert result.usable is False, (
+        "an anti-predictive weighting was returned as usable; the deployment "
+        "proposal would claim higher Impact is better"
+    )
+
+
+def test_usable_result_reports_a_positive_composite_slope():
+    obs = _weighted_matches(n_matches=40, seed=32)
+    config = TargetConfig(name="T2", k=1, gamma=1.0, match_weight=0.0)
+    result = fit_constrained_weights(obs, config, CONTROLS_CONTEXT)
+    if result.usable:
+        assert result.composite_slope > 0

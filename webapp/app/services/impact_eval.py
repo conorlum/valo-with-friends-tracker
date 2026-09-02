@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from app.models.match import Team
-from app.scoring.impact import FULL_BUY_THRESHOLD
+from app.scoring.impact import FACTOR_WEIGHTS, FULL_BUY_THRESHOLD
 from app.services.map_side_stats import attacking_team_for_round
 
 SURRENDER_SUFFIX = "Surrendered Win"
@@ -428,7 +428,10 @@ def forward_window_target(
     return _dataset(rows, ys, ws, mids, feature_names)
 
 
-def build_target(observations, config: TargetConfig, feature_names: list[str]) -> FitDataset:
+def build_target(observations, config: TargetConfig, feature_names: list[str], context=None) -> FitDataset:
+    """`context` carries a fold-fitted value model for a WPA config (Stage
+    B, not yet implemented); T1/T2 ignore it. Accepting it here is what lets
+    fit_constrained_weights call this uniformly for every target family."""
     if config.name == "T1":
         return first_half_target(observations, feature_names)
     if config.name == "T2":
@@ -675,3 +678,139 @@ def oof_metrics(oof: dict, draws: int = 200, seed: int = 0) -> dict:
         "matches": len(groups),
         "total_weight": float(np.sum(oof["w"])),
     }
+
+
+# Normalised so the three factor weights sum to 3, matching the shipped
+# FACTOR_WEIGHTS = {"econ": 1.0, "time": 1.0, "swing": 1.0} convention.
+FACTOR_WEIGHT_TOTAL = 3.0
+DEFAULT_DAMAGE_GRID = [0.0, 0.25, 0.5, 1.0, 2.0, 4.0]
+
+
+@dataclass
+class ConstrainedWeights:
+    damage_multiplier: float
+    econ: float
+    time: float
+    swing: float
+    train_log_loss: float
+    # The fitted logistic slope on the composite. MUST be positive for the
+    # weighting to mean "higher Impact is better"; see fit_constrained_weights.
+    composite_slope: float = float("nan")
+    usable: bool = True
+
+
+def _simplex_grid(step: float):
+    """All non-negative (a, b, c) with a + b + c == 1 on a `step` lattice."""
+    steps = int(round(1.0 / step))
+    for i in range(steps + 1):
+        for j in range(steps + 1 - i):
+            yield (i / steps, j / steps, (steps - i - j) / steps)
+
+
+def fit_constrained_weights(
+    observations, config: TargetConfig, control_names: list[str],
+    simplex_step: float = 0.1, damage_grid=None, l2: float | None = None, context=None,
+) -> ConstrainedWeights:
+    """Search (damage_multiplier, w_econ, w_time, w_swing) under the shipped
+    parameterization, WITH the nuisance controls in the design.
+
+    Fitting the composite alone would let the component weights absorb
+    variance the controls already explain, so the reported FACTOR_WEIGHTS
+    would come from a different model than the control ladder validates.
+
+    MUST be called on training-fold observations only.
+    """
+    neutral = ConstrainedWeights(1.0, 1.0, 1.0, 1.0, float("nan"), float("nan"), usable=False)
+    if not observations:
+        return neutral
+
+    feature_names = FEATURE_COMPONENTS + list(control_names)
+    # `context` carries a fold-fitted value model for a WPA config; T1/T2
+    # ignore it. Passing it here is what lets Stage B produce a constrained
+    # candidate on the same footing as T1/T2.
+    dataset = build_target(observations, config, feature_names, context)
+    if len(dataset.y) == 0:
+        return neutral
+
+    component_index = {name: feature_names.index(name) for name in FEATURE_COMPONENTS}
+    damage = dataset.X[:, component_index["damage"]]
+    factors = np.column_stack(
+        [
+            dataset.X[:, component_index["econ_impact"]],
+            dataset.X[:, component_index["time_impact"]],
+            dataset.X[:, component_index["swing_impact"]],
+        ]
+    )
+    controls = (
+        dataset.X[:, [feature_names.index(n) for n in control_names]]
+        if control_names
+        else np.zeros((len(dataset.y), 0))
+    )
+
+    # L2 here regularises the CONTROLLED composite design, which is a
+    # different model from the feature-only fit whose L2 the outer fold
+    # selected. Rather than inherit that value or sweep L2 inside the simplex
+    # search (which would multiply the search by the grid size), pick it once
+    # from a stand-in composite -- the shipped FACTOR_WEIGHTS -- on the same
+    # controlled design, then hold it fixed across the search.
+    if l2 is None:
+        stand_in = (
+            1.0 * damage
+            + factors @ (np.array([FACTOR_WEIGHTS["econ"], FACTOR_WEIGHTS["time"],
+                                   FACTOR_WEIGHTS["swing"]]) / sum(FACTOR_WEIGHTS.values()))
+        )
+        design = np.column_stack([controls, stand_in])
+        scaled, _, _, _ = standardize(design, design)
+        best_l2, best_l2_loss = 1.0, float("inf")
+        for candidate_l2 in (0.01, 0.1, 1.0, 10.0):
+            beta = fit_logistic(scaled, dataset.y, weights=dataset.w, l2=candidate_l2)
+            loss = weighted_log_loss(predict_proba(beta, scaled), dataset.y, dataset.w)
+            if np.isfinite(loss) and loss < best_l2_loss:
+                best_l2, best_l2_loss = candidate_l2, loss
+        l2 = best_l2
+
+    grid = DEFAULT_DAMAGE_GRID if damage_grid is None else damage_grid
+    best = None
+    for weights in _simplex_grid(simplex_step):
+        factor_score = factors @ np.array(weights)
+        for d in grid:
+            composite = d * damage + factor_score
+            if composite.std() == 0:
+                continue
+            design = np.column_stack([controls, composite])
+            scaled, _, _, _ = standardize(design, design)
+            beta = fit_logistic(scaled, dataset.y, weights=dataset.w, l2=l2)
+            loss = weighted_log_loss(predict_proba(beta, scaled), dataset.y, dataset.w)
+            if not np.isfinite(loss):
+                continue
+
+            # The composite is the LAST design column, so beta[-1] is its
+            # slope. A NEGATIVE slope means this weighting predicts well by
+            # saying "more Impact, more likely to LOSE". The search would
+            # otherwise happily pick it -- the loss is good -- and the
+            # deployment proposal would publish non-negative component weights
+            # as though higher meant better. Reject it outright.
+            if beta[-1] <= 0:
+                continue
+
+            key = (loss, d, weights, float(beta[-1]))
+            if best is None or key[:3] < best[:3]:
+                best = key
+
+    if best is None:
+        # Every candidate was anti-predictive (or degenerate). That is a
+        # finding, not a weighting: returning neutral weights marked unusable
+        # keeps it out of the deployment proposal.
+        return ConstrainedWeights(1.0, 1.0, 1.0, 1.0, float("nan"), float("nan"), usable=False)
+
+    loss, d, weights, slope = best
+    scaled_weights = [v * FACTOR_WEIGHT_TOTAL for v in weights]
+    return ConstrainedWeights(
+        damage_multiplier=float(d),
+        econ=float(scaled_weights[0]),
+        time=float(scaled_weights[1]),
+        swing=float(scaled_weights[2]),
+        train_log_loss=float(loss),
+        composite_slope=float(slope),
+        usable=True,
+    )
