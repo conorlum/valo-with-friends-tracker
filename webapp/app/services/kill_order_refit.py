@@ -84,8 +84,18 @@ def _aggregate_rows(rows):
     )
 
 
-def align_target(leverage_rows, observations, config) -> AlignedTarget:
-    reference = build_target(observations, config, ["damage"])
+def _wpa_context(observations) -> dict:
+    """A value model context for wpa_target. See run_nested_cv's WPA branch
+    for why an all-data fit is used here rather than a per-fold one."""
+    from app.services.win_probability import fit_value_model
+
+    return {"value_beta": fit_value_model(observations)}
+
+
+def align_target(leverage_rows, observations, config, context=None) -> AlignedTarget:
+    """`context` is only meaningful for a WPA config -- see wpa_target and
+    _wpa_context below. T1/T2 ignore it."""
+    reference = build_target(observations, config, ["damage"], context=context)
     by_round = {row.round_id: row for row in leverage_rows}
     per_round = family_a_leverage(list(by_round.values()))
     index_of = {round_id: i for i, round_id in enumerate(by_round)}
@@ -249,7 +259,18 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
     if family not in ("A", "B"):
         raise ValueError(f"unknown family {family!r}; expected 'A' or 'B'")
 
-    aligned = align_target(leverage_rows, observations, config)
+    # WPA needs a fitted value model to weight rows by leverage (see
+    # wpa_target). Round INCLUSION doesn't depend on the model's values --
+    # only round_won_by_team_a is not None -- so an all-data context is safe
+    # for determining row structure. The WEIGHT VALUES it produces are a
+    # deliberately simpler stand-in for the parent's fold-specific/inner-OOF
+    # value model: WPA feeds only the descriptive target_agreement check
+    # here (Task 18), never a primary P1-P4 comparison, so an all-data
+    # weighting is a stated, contained simplification rather than a silent
+    # one -- a genuinely held-out WPA claim would need the same per-fold
+    # refit discipline everything else in this module already has.
+    context = _wpa_context(observations) if config.name == "WPA" else None
+    aligned = align_target(leverage_rows, observations, config, context=context)
     folds = stable_folds(aligned.match_ids, n_folds=n_folds, seed=seed)
     fold_of = np.array([folds[int(m)] for m in aligned.match_ids])
 
@@ -1286,3 +1307,61 @@ REPORT_SECTIONS = (
     "deferral_check",      # match count against the ~4,000 re-open threshold
     "verdicts",            # LAST, four of them, never merged
 )
+
+
+T1_ELIGIBLE = ("current_graph", "swing_plugin", "swing_affine", "swing_basis")
+
+
+def run_all_targets(leverage_rows, observations, l2_grid, n_folds=5, seed=0,
+                    state_visits=None, value_model=None):
+    """T1, T2 and WPA, each on its own frozen definition.
+
+    G3 and G4 are excluded from T1 by design, not by accident: 26 free
+    parameters against 1,114 matches is the ratio this project already calls
+    indefensible, and running it anyway then declining to believe it would be
+    theatre.
+    """
+    from app.services.impact_eval import PRIMARY_T1, PRIMARY_T2, TargetConfig
+
+    plans = {
+        "T1": (PRIMARY_T1, list(T1_ELIGIBLE)),
+        "T2": (PRIMARY_T2, list(FAMILY_A)),
+        "WPA": (TargetConfig(name="WPA"), list(FAMILY_A)),
+    }
+    out: dict = {}
+    for label, (config, candidates) in plans.items():
+        out[label] = run_nested_cv(
+            leverage_rows, observations, config, candidates=candidates,
+            l2_grid=l2_grid, n_folds=n_folds, seed=seed, state_visits=state_visits,
+        )
+    return out
+
+
+def target_agreement(graphs_by_target, exposure) -> dict:
+    """Do the graphs fitted against different targets agree?
+
+    Stage A's answer for the OUTER weights was an emphatic no -- T1 put zero
+    weight on econ, T2 on everything but swing, WPA on swing. This asks the
+    same question of the curve, against thresholds declared before the run.
+    """
+    labels = sorted(graphs_by_target)
+    normalized = {k: normalize_for_display(v, exposure) for k, v in graphs_by_target.items()}
+    mean_price = float(np.mean([_weighted_rms(g, exposure) for g in normalized.values()]))
+
+    spearman, rms_share = {}, {}
+    for i, a in enumerate(labels):
+        for b in labels[i + 1:]:
+            key = f"{a}~{b}"
+            ranks_a, ranks_b = _average_ranks(normalized[a]), _average_ranks(normalized[b])
+            spearman[key] = float(np.corrcoef(ranks_a, ranks_b)[0, 1])
+            rms_share[key] = float(
+                _weighted_rms(normalized[a] - normalized[b], exposure) / mean_price
+            )
+    return {
+        "spearman": spearman,
+        "rms_share": rms_share,
+        "thresholds": {"spearman_above": AGREEMENT_SPEARMAN,
+                       "rms_share_below": AGREEMENT_RMS_SHARE},
+        "agree": bool(min(spearman.values()) > AGREEMENT_SPEARMAN
+                      and max(rms_share.values()) < AGREEMENT_RMS_SHARE),
+    }

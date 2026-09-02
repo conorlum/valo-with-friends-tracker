@@ -579,3 +579,34 @@ def test_an_unknown_family_is_refused():
     with pytest.raises(ValueError, match="family"):
         run_nested_cv(leverage_for(observations), observations, PRIMARY_T2,
                       candidates=["free"], l2_grid=[1.0], family="C")
+
+
+from app.services.kill_order_refit import run_all_targets, target_agreement
+
+
+def test_t1_refuses_the_high_dimensional_candidates():
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    results = run_all_targets(leverage, observations, l2_grid=[1.0], n_folds=5)
+    assert set(results) == {"T1", "T2", "WPA"}
+    assert "pooled" not in results["T1"]
+    assert "free" not in results["T1"]
+    assert "swing_basis" in results["T1"]
+    assert "pooled" in results["T2"]
+
+
+def test_agreement_is_measured_against_declared_thresholds():
+    exposure = np.ones(len(PARAMS))
+    base = shipped_graph()
+    agree = target_agreement(
+        {"T1": base, "T2": base * 1.02, "WPA": base * 0.99}, exposure
+    )
+    assert agree["agree"] is True
+    assert min(agree["spearman"].values()) > 0.90
+
+    disagree = target_agreement(
+        {"T1": base, "T2": base[::-1].copy(), "WPA": base * 3.0}, exposure
+    )
+    assert disagree["agree"] is False
+    assert disagree["thresholds"]["spearman_above"] == 0.90
+    assert disagree["thresholds"]["rms_share_below"] == 0.15
