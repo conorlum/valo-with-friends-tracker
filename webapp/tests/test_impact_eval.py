@@ -188,3 +188,117 @@ def test_round_result_control_is_signed_and_separate():
     assert "round_result" in CONTROLS_RESULT
     assert "round_result" not in CONTROLS_CONTEXT
     assert "round_result" not in FEATURE_COMPONENTS
+
+
+from app.services.impact_eval import (
+    FitDataset,
+    TargetConfig,
+    build_target,
+    first_half_target,
+    forward_window_target,
+)
+
+
+def _obs(round_number, damage, won_by_a, match_won, terminal=False, match_id=1):
+    return RoundObservation(
+        match_id=match_id, round_id=1000 * match_id + round_number, round_number=round_number,
+        damage=damage, econ_impact=0.0, time_impact=0.0, swing_impact=0.0,
+        impact_diff=damage, kill_diff=0.0,
+        score_diff_before=0, attacking_is_team_a=True,
+        loadout_diff=0.0, full_buy_count_diff=0,
+        round_won_by_team_a=won_by_a, match_won_by_team_a=match_won, is_terminal=terminal,
+    )
+
+
+def _full_half(match_id=1, damage=10.0, won_by_a=True, match_won=True):
+    obs = [_obs(n, damage, won_by_a, match_won, match_id=match_id) for n in range(1, 13)]
+    obs[-1].is_terminal = True
+    return obs
+
+
+def test_first_half_requires_all_twelve_rounds():
+    short = [_obs(n, 10.0, True, True) for n in range(1, 12)]
+    assert len(first_half_target(short, FEATURE_COMPONENTS).y) == 0
+    assert len(first_half_target(_full_half(), FEATURE_COMPONENTS).y) == 1
+
+
+def test_first_half_sums_components_over_the_half():
+    dataset = first_half_target(_full_half(), FEATURE_COMPONENTS)
+    assert dataset.X[0][FEATURE_COMPONENTS.index("damage")] == 120.0
+    assert dataset.y[0] == 1.0
+    assert dataset.w[0] == 1.0
+
+
+def test_first_half_excludes_tied_matches():
+    obs = _full_half()
+    for o in obs:
+        o.match_won_by_team_a = None
+    assert len(first_half_target(obs, FEATURE_COMPONENTS).y) == 0
+
+
+def test_forward_window_collapses_to_one_row_per_source_round():
+    """Five rounds, k=3: rounds 1 and 2 each get a full window, round 3 a
+    partial one, round 4 one, round 5 is terminal. Five rounds in, four
+    rows out -- one per non-terminal source round."""
+    obs = [_obs(n, 1.0, True, True) for n in range(1, 6)]
+    obs[-1].is_terminal = True
+    dataset = forward_window_target(obs, FEATURE_COMPONENTS, k=3, gamma=0.5, match_weight=0.0)
+    assert len(dataset.y) == 4
+
+
+def test_forward_window_target_is_the_weighted_fraction():
+    """Round 1 sees rounds 2 (won) and 3 (lost) at gamma=0.5.
+    y = (1*1 + 0.5*0) / 1.5 = 0.667, w = 1.5"""
+    obs = [
+        _obs(1, 1.0, True, True), _obs(2, 1.0, True, True),
+        _obs(3, 1.0, False, True), _obs(4, 1.0, True, True, terminal=True),
+    ]
+    dataset = forward_window_target(obs, FEATURE_COMPONENTS, k=2, gamma=0.5, match_weight=0.0)
+    assert abs(dataset.y[0] - (1.0 / 1.5)) < 1e-12
+    assert abs(dataset.w[0] - 1.5) < 1e-12
+
+
+def test_forward_window_does_not_cross_halftime():
+    """Round 12 is the last of the first half, so with no match auxiliary it
+    contributes nothing; round 11 still gets its one in-half partner."""
+    obs = [_obs(n, 1.0, True, True) for n in range(1, 25)]
+    obs[-1].is_terminal = True
+    only_twelve = [o for o in obs if o.round_number == 12]
+    assert len(forward_window_target(only_twelve, FEATURE_COMPONENTS, k=3, match_weight=0.0).y) == 0
+
+    eleven_twelve = [o for o in obs if o.round_number in (11, 12)]
+    assert len(forward_window_target(eleven_twelve, FEATURE_COMPONENTS, k=3, match_weight=0.0).y) == 1
+
+
+def test_forward_window_skips_terminal_rounds():
+    obs = [_obs(1, 1.0, True, True), _obs(2, 1.0, True, True, terminal=True)]
+    assert len(forward_window_target(obs, FEATURE_COMPONENTS, k=3, match_weight=0.0).y) == 1
+
+
+def test_match_auxiliary_only_for_early_rounds():
+    """Round 24's window crosses into OT, so with the auxiliary
+    restricted to N <= 12 it contributes no row at all."""
+    late = [_obs(24, 1.0, True, True), _obs(25, 1.0, True, True, terminal=True)]
+    assert len(forward_window_target(late, FEATURE_COMPONENTS, k=3, match_weight=5.0).y) == 0
+
+
+def test_match_auxiliary_shifts_target_and_weight_for_early_rounds():
+    obs = [
+        _obs(1, 1.0, True, False), _obs(2, 1.0, False, False),
+        _obs(3, 1.0, True, False, terminal=True),
+    ]
+    without = forward_window_target(obs, FEATURE_COMPONENTS, k=1, gamma=1.0, match_weight=0.0)
+    with_aux = forward_window_target(obs, FEATURE_COMPONENTS, k=1, gamma=1.0, match_weight=1.0)
+    assert without.y[0] == 0.0 and without.w[0] == 1.0
+    # round 2 lost, match lost -> y stays 0 but total weight doubles
+    assert with_aux.w[0] == 2.0
+
+
+def test_build_target_dispatches_on_config():
+    config_one = TargetConfig(name="T1")
+    config_two = TargetConfig(name="T2", k=2, gamma=0.5, match_weight=0.0)
+    obs = _full_half()
+    assert len(build_target(obs, config_one, FEATURE_COMPONENTS).y) == 1
+    assert len(build_target(obs, config_two, FEATURE_COMPONENTS).y) > 1
+    with pytest.raises(ValueError):
+        build_target(obs, TargetConfig(name="nope"), FEATURE_COMPONENTS)

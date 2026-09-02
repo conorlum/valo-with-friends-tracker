@@ -281,3 +281,159 @@ def group_by_match(observations) -> dict[int, list]:
     for obs in observations:
         grouped.setdefault(obs.match_id, []).append(obs)
     return grouped
+
+
+@dataclass
+class FitDataset:
+    X: np.ndarray
+    y: np.ndarray
+    w: np.ndarray
+    match_ids: np.ndarray
+    feature_names: list[str]
+
+
+@dataclass(frozen=True)
+class TargetConfig:
+    """A fully-specified target. Passed INTO the CV orchestrator rather than
+    used to pre-build a dataset, because each configuration produces
+    different rows -- selecting among prebuilt datasets on the reporting
+    folds is exactly the optimism this design avoids."""
+
+    name: str
+    k: int = 3
+    gamma: float = 0.7
+    match_weight: float = 1.0
+
+    def target_identity(self) -> tuple:
+        """What makes two configs the SAME prediction problem. Two configs
+        differing here define different y, so their losses are not
+        comparable -- see PRIMARY_T2."""
+        return (self.name, self.k, self.gamma, self.match_weight)
+
+
+# THE PRIMARY TARGETS ARE FROZEN, NOT SELECTED.
+#
+# k, gamma and match_weight change the DEFINITION of y, not just how well a
+# model predicts a fixed outcome. A smoother target (larger k, higher gamma)
+# or one diluted with the more-predictable match result has lower achievable
+# entropy, so it wins a log-loss comparison for reasons that have nothing to
+# do with whether Impact predicts winning. Selecting among them by their own
+# losses would systematically prefer whichever outcome is easiest, and would
+# let different outer folds pool predictions of different quantities.
+#
+# So: one primary target per family, declared up front. The rest are
+# SENSITIVITY ANALYSES, compared only on the fixed binary yardsticks -- whose
+# labels are identical across configurations -- never on their own losses.
+PRIMARY_T1 = TargetConfig(name="T1")
+PRIMARY_T2 = TargetConfig(name="T2", k=3, gamma=0.7, match_weight=1.0)
+T2_SENSITIVITY_GRID = [
+    TargetConfig(name="T2", k=k, gamma=g, match_weight=m)
+    for k in (2, 3, 4)
+    for g in (0.5, 0.7, 0.9)
+    for m in (0.0, 0.5, 1.0)
+]
+
+
+def _empty_dataset(feature_names: list[str]) -> FitDataset:
+    return FitDataset(
+        X=np.zeros((0, len(feature_names))), y=np.zeros(0), w=np.zeros(0),
+        match_ids=np.zeros(0, dtype=int), feature_names=list(feature_names),
+    )
+
+
+def _dataset(rows, ys, ws, mids, feature_names) -> FitDataset:
+    if not rows:
+        return _empty_dataset(feature_names)
+    return FitDataset(
+        np.array(rows, dtype=float), np.array(ys, dtype=float), np.array(ws, dtype=float),
+        np.array(mids, dtype=int), list(feature_names),
+    )
+
+
+def first_half_target(observations, feature_names: list[str]) -> FitDataset:
+    """T1: one row per ELIGIBLE match, components summed over rounds 1-12.
+
+    A match missing any genuine first-half round is excluded rather than
+    normalised -- a truncated total is not comparable to a full one. 22 of
+    1,151 matches in this DB fall short once surrender placeholders are
+    removed, so T1's n is 1,129.
+    """
+    rows, ys, ws, mids = [], [], [], []
+    for match_id, obs in group_by_match(observations).items():
+        first_half = [o for o in obs if o.round_number <= FIRST_HALF_ROUNDS]
+        # The exact round SET, not just the count: a duplicated round number
+        # alongside a missing one would pass a length check while silently
+        # double-counting one round and dropping another.
+        if {o.round_number for o in first_half} != set(range(1, FIRST_HALF_ROUNDS + 1)):
+            continue
+        result = first_half[0].match_won_by_team_a
+        if result is None:
+            continue
+        rows.append([sum(_feature_value(o, name) for o in first_half) for name in feature_names])
+        ys.append(1.0 if result else 0.0)
+        ws.append(1.0)
+        mids.append(match_id)
+    return _dataset(rows, ys, ws, mids, feature_names)
+
+
+def forward_window_target(
+    observations, feature_names: list[str], k: int = 3, gamma: float = 0.7, match_weight: float = 1.0
+) -> FitDataset:
+    """T2: ONE collapsed row per non-terminal source round.
+
+    y = weighted mean of the next k in-half round outcomes (weights
+    gamma**j), w = the total of those weights. For a weighted
+    quasi-binomial fit this is identical to expanding into k rows, but it
+    keeps n at the true number of source rounds instead of inflating it,
+    and makes the match-clustered bootstrap straightforward.
+
+    Windows never cross the halftime reset or the OT boundary -- the same
+    rule impact.py:309 encodes. Terminal rounds contribute nothing: they
+    have no eligible future. The match-outcome auxiliary is attached only
+    for N <= 12, because for later rounds the match result is
+    substantially determined by round N.
+    """
+    rows, ys, ws, mids = [], [], [], []
+    for match_id, obs in group_by_match(observations).items():
+        by_number = {o.round_number: o for o in obs}
+        for o in obs:
+            if o.is_terminal:
+                continue
+            numerator = 0.0
+            denominator = 0.0
+            for step in range(1, k + 1):
+                future = by_number.get(o.round_number + step)
+                if future is None or _half_of(future.round_number) != _half_of(o.round_number):
+                    break
+                if future.round_won_by_team_a is None:
+                    continue
+                weight = gamma ** (step - 1)
+                numerator += weight * (1.0 if future.round_won_by_team_a else 0.0)
+                denominator += weight
+
+            if (
+                match_weight > 0
+                and o.round_number <= FIRST_HALF_ROUNDS
+                and o.match_won_by_team_a is not None
+            ):
+                numerator += match_weight * (1.0 if o.match_won_by_team_a else 0.0)
+                denominator += match_weight
+
+            if denominator == 0:
+                continue
+            rows.append(_row(o, feature_names))
+            ys.append(numerator / denominator)
+            ws.append(denominator)
+            mids.append(match_id)
+    return _dataset(rows, ys, ws, mids, feature_names)
+
+
+def build_target(observations, config: TargetConfig, feature_names: list[str]) -> FitDataset:
+    if config.name == "T1":
+        return first_half_target(observations, feature_names)
+    if config.name == "T2":
+        return forward_window_target(
+            observations, feature_names, k=config.k, gamma=config.gamma,
+            match_weight=config.match_weight,
+        )
+    raise ValueError(f"unknown target: {config.name!r}")
