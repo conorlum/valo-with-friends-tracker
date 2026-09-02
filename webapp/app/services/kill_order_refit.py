@@ -21,9 +21,12 @@ from app.services.impact_eval import (
 )
 from app.services.kill_order_curves import (
     FAMILY_A,
+    effective_surfaces,
     estimate_swing_table,
     family_a_leverage,
+    family_b_columns,
     fit_family_a,
+    fit_family_b,
 )
 from app.services.kill_order_leverage import COMPONENTS, PARAMS, shipped_graph
 from app.services.stats_math import (
@@ -61,6 +64,24 @@ class AlignedTarget:
     weights: np.ndarray
     match_ids: np.ndarray
     round_ids: np.ndarray     # source round per row; -1 where a row spans many
+    team_rows: tuple = ()     # one TeamLeverageRow per output row -- T1's is synthetic
+
+
+def _aggregate_rows(rows):
+    """One synthetic row standing for a group. Family B's columns are linear
+    in the blocks, so summing the blocks and summing the columns agree --
+    a test pins that rather than trusting it."""
+    from app.services.kill_order_leverage import TeamLeverageRow
+
+    first = rows[0]
+    return TeamLeverageRow(
+        match_id=first.match_id, round_id=-1, round_number=-1,
+        damage_diff=float(sum(r.damage_diff for r in rows)),
+        kill=sum(r.kill for r in rows), death=sum(r.death for r in rows),
+        death_untraded=sum(r.death_untraded for r in rows),
+        terminal_alive_diff=float(rows[-1].terminal_alive_diff),
+        total_kills=int(sum(r.total_kills for r in rows)),
+    )
 
 
 def align_target(leverage_rows, observations, config) -> AlignedTarget:
@@ -71,7 +92,7 @@ def align_target(leverage_rows, observations, config) -> AlignedTarget:
 
     if config.name == "T1":
         # One row per eligible match: the first half summed.
-        rows, damage, round_ids = [], [], []
+        rows, damage, round_ids, team_rows = [], [], [], []
         for match_id in reference.match_ids:
             members = [
                 r for r in leverage_rows
@@ -80,6 +101,7 @@ def align_target(leverage_rows, observations, config) -> AlignedTarget:
             rows.append(sum(per_round[index_of[r.round_id]] for r in members))
             damage.append(sum(r.damage_diff for r in members))
             round_ids.append(-1)
+            team_rows.append(_aggregate_rows(members))
         leverage = np.array(rows)
         damage = np.array(damage)
     else:
@@ -88,6 +110,7 @@ def align_target(leverage_rows, observations, config) -> AlignedTarget:
         leverage = np.array([per_round[index_of[rid]] for rid in order])
         damage = np.array([by_round[rid].damage_diff for rid in order])
         round_ids = order
+        team_rows = [by_round[rid] for rid in order]
 
     names = tuple(controls_for(config))
     if config.name == "T1":
@@ -106,6 +129,7 @@ def align_target(leverage_rows, observations, config) -> AlignedTarget:
         y=np.asarray(reference.y, dtype=float),
         weights=np.asarray(reference.w, dtype=float),
         match_ids=np.asarray(reference.match_ids), round_ids=np.asarray(round_ids),
+        team_rows=tuple(team_rows),
     )
 
 
@@ -185,6 +209,10 @@ class FoldFit:
     d: float
     deployable: bool
     reasons: tuple
+    # Family B only: the fitted weighting over the FIXED graph, and the
+    # effective per-(component, side) price surfaces derived from it.
+    weights: np.ndarray | None = None
+    surfaces: dict | None = None
 
 
 @dataclass
@@ -204,13 +232,23 @@ def _weighted_loss(probabilities, y, weights):
 
 
 def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
-                  n_folds=5, seed=0, state_visits=None):
+                  n_folds=5, seed=0, state_visits=None, family="A"):
     """Outer folds by match; L2 selected inside each training fold.
 
     `state_visits` supplies the swing table's raw material. When omitted (in
     tests) a table is derived from the training rows' own outcomes, which is
     enough to exercise the wiring.
+
+    `family` selects the fitter: "A" (fit_family_a, over leverage matrices)
+    or "B" (fit_family_b, over team_rows against a FIXED graph). One
+    orchestrator handles both so the fold split, the calibration path and
+    the identity checks are not duplicated between two near-identical
+    functions -- duplicating the leakage rules is the thing most worth not
+    doing here.
     """
+    if family not in ("A", "B"):
+        raise ValueError(f"unknown family {family!r}; expected 'A' or 'B'")
+
     aligned = align_target(leverage_rows, observations, config)
     folds = stable_folds(aligned.match_ids, n_folds=n_folds, seed=seed)
     fold_of = np.array([folds[int(m)] for m in aligned.match_ids])
@@ -248,12 +286,35 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
         row_order.append(np.flatnonzero(test_mask))
 
         for name in candidates:
-            l2 = _select_l2(name, aligned, train_mask, l2_grid, state_visits or [],
-                            leverage_rows)
-            candidate = fit_family_a(name, train, test, table, l2, exposure,
-                                     shipped_graph(), controls=outer_controls)
-            in_fold = fit_family_a(name, train, train_on_train, table, l2, exposure,
-                                   shipped_graph(), controls=self_controls)
+            if family == "A":
+                l2 = _select_l2(name, aligned, train_mask, l2_grid, state_visits or [],
+                                leverage_rows)
+                candidate = fit_family_a(name, train, test, table, l2, exposure,
+                                         shipped_graph(), controls=outer_controls)
+                in_fold = fit_family_a(name, train, train_on_train, table, l2, exposure,
+                                       shipped_graph(), controls=self_controls)
+                weights = None
+                surfaces = None
+            else:
+                l2 = float(l2_grid[0]) if len(l2_grid) == 1 else _select_l2_b(
+                    name, aligned, train_mask, l2_grid
+                )
+                train_rows = [aligned.team_rows[i] for i in np.flatnonzero(train_mask)]
+                test_rows = [aligned.team_rows[i] for i in np.flatnonzero(test_mask)]
+                candidate = fit_family_b(
+                    name, (train_rows, aligned.y[train_mask], aligned.weights[train_mask]),
+                    (test_rows, aligned.weights[test_mask]), shipped_graph(), l2,
+                    controls=outer_controls, exposure=exposure,
+                )
+                in_fold = fit_family_b(
+                    name, (train_rows, aligned.y[train_mask], aligned.weights[train_mask]),
+                    (train_rows, aligned.weights[train_mask]), shipped_graph(), l2,
+                    controls=self_controls, exposure=exposure,
+                )
+                _, column_names = family_b_columns(train_rows[:1], shipped_graph(), name)
+                weights = candidate.weights
+                surfaces = effective_surfaces(candidate.weights, column_names, shipped_graph())
+
             calibration = platt_calibrate(in_fold.scores, aligned.y[train_mask],
                                           weights=aligned.weights[train_mask])
             probabilities = apply_calibration(calibration, candidate.scores)
@@ -263,6 +324,7 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
                 test_match_ids=test_match_ids, swing_table=table, exposure=exposure,
                 calibration=calibration, graph=candidate.graph, d=candidate.d,
                 deployable=candidate.deployable, reasons=candidate.reasons,
+                weights=weights, surfaces=surfaces,
             )
             collected[name].append((candidate.scores, probabilities))
 
@@ -363,6 +425,60 @@ def _select_l2(name, aligned, train_mask, l2_grid, state_visits, leverage_rows,
         # WEIGHTED across inner folds. An unweighted mean lets a small fold
         # count as much as a large one, which contradicts this project's
         # "every objective is weighted" rule.
+        if losses:
+            combined = float(np.average(losses, weights=weight_of))
+            if combined < best_loss:
+                best, best_loss = float(l2), combined
+    return best
+
+
+def _select_l2_b(name, aligned, train_mask, l2_grid, inner_folds=3, seed=1):
+    """Family B's analogue of _select_l2: inner CV inside the training
+    fold, over team_rows against the FIXED shipped graph rather than a
+    leverage matrix. Family B fits a weighting, not a curve, so there is no
+    swing table or exposure-dependent basis to rebuild per inner split --
+    only the fold split itself needs to come from training matches only.
+    """
+    train_matches = aligned.match_ids[train_mask]
+    inner = stable_folds(train_matches, n_folds=inner_folds, seed=seed)
+    inner_of = np.array([inner[int(m)] for m in train_matches])
+    train_rows = [aligned.team_rows[i] for i in np.flatnonzero(train_mask)]
+
+    best, best_loss = float(l2_grid[0]), np.inf
+    for l2 in l2_grid:
+        losses, weight_of = [], []
+        for inner_fold in range(inner_folds):
+            inner_test = inner_of == inner_fold
+            inner_train = ~inner_test
+            if not inner_test.any() or not inner_train.any():
+                continue
+
+            sub_train_rows = [r for r, keep in zip(train_rows, inner_train) if keep]
+            sub_test_rows = [r for r, keep in zip(train_rows, inner_test) if keep]
+            sub_y_train = aligned.y[train_mask][inner_train]
+            sub_w_train = aligned.weights[train_mask][inner_train]
+            sub_controls_train = aligned.controls[train_mask][inner_train]
+            sub_controls_test = aligned.controls[train_mask][inner_test]
+
+            try:
+                candidate = fit_family_b(
+                    name, (sub_train_rows, sub_y_train, sub_w_train),
+                    (sub_test_rows, aligned.weights[train_mask][inner_test]),
+                    shipped_graph(), l2, controls=(sub_controls_train, sub_controls_test),
+                )
+                fitted = fit_family_b(
+                    name, (sub_train_rows, sub_y_train, sub_w_train),
+                    (sub_train_rows, sub_w_train), shipped_graph(), l2,
+                    controls=(sub_controls_train, sub_controls_train),
+                )
+            except ValueError:
+                continue  # an inner split with an undetermined state: skip, never impute
+            calibration = platt_calibrate(fitted.scores, sub_y_train, weights=sub_w_train)
+            probabilities = apply_calibration(calibration, candidate.scores)
+            losses.append(_weighted_loss(probabilities, aligned.y[train_mask][inner_test],
+                                         aligned.weights[train_mask][inner_test]))
+            weight_of.append(float(aligned.weights[train_mask][inner_test].sum()))
+
         if losses:
             combined = float(np.average(losses, weights=weight_of))
             if combined < best_loss:

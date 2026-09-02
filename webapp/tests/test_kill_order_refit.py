@@ -516,3 +516,66 @@ def test_the_report_sections_are_ordered_with_stage_c0_first():
     assert REPORT_SECTIONS.index("stage_c0") < REPORT_SECTIONS.index("family_a")
     assert REPORT_SECTIONS.index("control_ladder") < REPORT_SECTIONS.index("verdicts")
     assert REPORT_SECTIONS.index("player_level") < REPORT_SECTIONS.index("verdicts")
+
+
+from app.services.kill_order_curves import FAMILY_B
+
+
+def test_family_b_runs_through_the_same_orchestrator():
+    observations = synthetic_observations(matches=60)
+    leverage = leverage_for(observations)
+    results = run_nested_cv(leverage, observations, PRIMARY_T2,
+                            candidates=list(FAMILY_B), l2_grid=[1.0], n_folds=5,
+                            family="B")
+    assert set(results) == set(FAMILY_B)
+    for result in results.values():
+        assert result.oof_scores is not None
+        for fitted in result.per_fold.values():
+            assert set(fitted.train_match_ids).isdisjoint(fitted.test_match_ids)
+
+
+def test_family_b_candidates_are_scored_on_the_same_rows_as_family_a():
+    """P3 compares a Family B rung against another Family B rung, but the
+    matrix places both families side by side -- so their row sets must
+    match or every cross-family number is meaningless."""
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    a = run_nested_cv(leverage, observations, PRIMARY_T2, candidates=["free"],
+                      l2_grid=[1.0], n_folds=5, family="A")
+    b = run_nested_cv(leverage, observations, PRIMARY_T2, candidates=["component_tilt"],
+                      l2_grid=[1.0], n_folds=5, family="B")
+    assert np.array_equal(a["free"].oof_row_ids, b["component_tilt"].oof_row_ids)
+
+
+def test_p3_can_actually_be_produced():
+    """The regression test for the blocking defect: verdict_report indexes
+    primaries['P3'], and before this task nothing produced it."""
+    observations = synthetic_observations(matches=60)
+    leverage = leverage_for(observations)
+    results = run_nested_cv(leverage, observations, PRIMARY_T2,
+                            candidates=["stage_a_exact", "component_tilt"],
+                            l2_grid=[1.0], n_folds=5, family="B")
+    delta = paired_delta(results["component_tilt"], results["stage_a_exact"], alpha=0.05)
+    assert np.isfinite(delta["delta"])
+    assert len(delta["ci"]) == 2
+
+
+def test_family_b_rungs_carry_their_effective_surfaces():
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    results = run_nested_cv(leverage, observations, PRIMARY_T2,
+                            candidates=["component_tilt_symmetric"], l2_grid=[1.0],
+                            n_folds=5, family="B")
+    fitted = next(iter(results["component_tilt_symmetric"].per_fold.values()))
+    assert fitted.surfaces is not None
+    assert set(fitted.surfaces) == {
+        f"{c}_{s}" for c in COMPONENTS for s in ("kill", "death")
+    }
+    assert all(v.shape == (len(PARAMS),) for v in fitted.surfaces.values())
+
+
+def test_an_unknown_family_is_refused():
+    observations = synthetic_observations(matches=20)
+    with pytest.raises(ValueError, match="family"):
+        run_nested_cv(leverage_for(observations), observations, PRIMARY_T2,
+                      candidates=["free"], l2_grid=[1.0], family="C")
