@@ -21,6 +21,9 @@ from app.services.impact_eval import (
 )
 from app.services.kill_order_curves import (
     FAMILY_A,
+    MARGIN,
+    N_LATTICE,
+    TOTAL_ALIVE,
     effective_surfaces,
     estimate_swing_table,
     family_a_leverage,
@@ -1364,4 +1367,195 @@ def target_agreement(graphs_by_target, exposure) -> dict:
                        "rms_share_below": AGREEMENT_RMS_SHARE},
         "agree": bool(min(spearman.values()) > AGREEMENT_SPEARMAN
                       and max(rms_share.values()) < AGREEMENT_RMS_SHARE),
+    }
+
+
+import copy
+
+from app.services.impact_eval import (
+    BASELINE_CANDIDATES, CURRENT_IMPACT_CANDIDATE, Candidate,
+)
+from app.services.impact_eval import yardstick_matrix as _parent_yardstick_matrix
+
+
+def _rounding_gap(team_rows, observations) -> dict:
+    """current_impact reads the ROUNDED stored impact_diff; current_graph is
+    the same shipped values through the UNROUNDED leverage pipeline.
+    Printed on its own line so the rounding cost is visible rather than
+    absorbed into a fitted-candidate comparison -- computed directly here,
+    independent of any fold structure, since neither side is fitted."""
+    by_round = {row.round_id: row for row in team_rows}
+    per_round = family_a_leverage(list(by_round.values()))
+    index_of = {rid: i for i, rid in enumerate(by_round)}
+    shipped = shipped_graph()
+
+    stored, unrounded = [], []
+    for obs in observations:
+        row = by_round.get(obs.round_id)
+        if row is None:
+            continue
+        lev = per_round[index_of[obs.round_id]]
+        unrounded.append(float(row.damage_diff + lev @ shipped))
+        stored.append(float(obs.impact_diff))
+    stored_arr = np.array(stored, dtype=float)
+    unrounded_arr = np.array(unrounded, dtype=float)
+    pearson = (
+        float(np.corrcoef(stored_arr, unrounded_arr)[0, 1]) if len(stored_arr) > 1 else float("nan")
+    )
+    return {
+        "compared": ["current_impact", "current_graph"],
+        "mean_abs_gap": float(np.mean(np.abs(stored_arr - unrounded_arr))) if len(stored_arr) else 0.0,
+        "pearson": pearson,
+        "n": int(len(stored_arr)),
+        "reading": (
+            "current_impact reads the rounded stored impact_diff; current_graph is "
+            "the same shipped values through the unrounded leverage pipeline."
+        ),
+    }
+
+
+def yardstick_matrix(team_rows, observations, results, draws=200, seed=0,
+                     stage_a_rows=None, stage_a_identity=None, identity=None) -> dict:
+    """Every Stage C candidate x every parent yardstick, scored through the
+    PARENT PROJECT'S OWN yardstick functions so Stage A and Stage C cells
+    come from identical code.
+
+    A fitted candidate's per-round score (S_r = damage_diff + graph . x_r)
+    is not one of RoundObservation's existing fields, so it cannot be
+    expressed as a Candidate over native feature names the way the fixed
+    baselines are. Instead each candidate's OOF score is attached as a
+    synthetic per-candidate field on a CLONE of each observation (never the
+    originals -- these are shared, mutable dataclasses), and a Candidate
+    reading that one field takes it through yardstick_first_half /
+    yardstick_full_match / yardstick_forward_rounds unchanged.
+
+    Refuses to join Stage A rows unless matrix_is_comparable passes on all
+    three identity values -- see RunIdentity.
+    """
+    by_round = {row.round_id: row for row in team_rows}
+    per_round = family_a_leverage(list(by_round.values()))
+    index_of = {rid: i for i, rid in enumerate(by_round)}
+
+    clones = [copy.copy(obs) for obs in observations]
+    clones_by_round: dict = {}
+    for clone in clones:
+        clones_by_round.setdefault(clone.round_id, []).append(clone)
+
+    per_fold_candidates: dict[str, dict[int, Candidate]] = {}
+    folds_source: dict = {}
+    for name, result in results.items():
+        field = f"_stage_c_score_{name}"
+        for clone in clones:
+            setattr(clone, field, 0.0)  # default for rounds no fold ever scores
+
+        per_fold_candidates[name] = {}
+        for fold_index, fitted in result.per_fold.items():
+            if fitted.graph is None:
+                continue
+            if not folds_source:
+                folds_source = result.per_fold
+            test_ids = set(fitted.test_match_ids)
+            for rid, row in by_round.items():
+                if row.match_id not in test_ids or rid not in index_of:
+                    continue
+                lev = per_round[index_of[rid]]
+                score = float(row.damage_diff + lev @ fitted.graph)
+                for clone in clones_by_round.get(rid, ()):
+                    setattr(clone, field, score)
+            per_fold_candidates[name][fold_index] = Candidate(
+                name=name, feature_names=[field], weights=[1.0],
+            )
+
+    fixed = [CURRENT_IMPACT_CANDIDATE, *BASELINE_CANDIDATES]
+    cells = _parent_yardstick_matrix(
+        clones, fixed, per_fold_candidates, folds_source, draws=draws, seed=seed,
+    )
+
+    out: dict = {
+        "cells": cells,
+        "rounding_gap": _rounding_gap(team_rows, observations),
+    }
+
+    if stage_a_rows is not None and stage_a_identity is not None and identity is not None:
+        ok, reasons = matrix_is_comparable(identity, stage_a_identity)
+        out["stage_a_joined"] = ok
+        out["stage_a_refusal"] = reasons
+        out["stage_a_rows"] = stage_a_rows if ok else None
+    else:
+        out["stage_a_joined"] = False
+        out["stage_a_refusal"] = ["no Stage A identity supplied"]
+
+    return out
+
+
+def component_correlations(team_rows, graph) -> dict:
+    """econ_impact / time_impact / swing_impact recomputed PER ROUND under a
+    given graph -- verdict item 4 reads max_abs. The CLI once passed a
+    hardcoded 1.0 here, which would have made the verdict meaningless."""
+    graph = np.asarray(graph, dtype=float)
+    columns: dict[str, np.ndarray] = {}
+    for index, component in enumerate(COMPONENTS):
+        values = [
+            float(np.sum(graph * (row.kill[:, index] + row.death[:, index])))
+            for row in team_rows
+        ]
+        columns[component] = np.array(values, dtype=float)
+
+    names = list(columns)
+    stacked = np.column_stack([columns[n] for n in names])
+    correlation = np.corrcoef(stacked, rowvar=False)
+    off_diagonal = correlation[~np.eye(len(names), dtype=bool)]
+    return {
+        "matrix": {
+            a: {b: float(correlation[i, j]) for j, b in enumerate(names)}
+            for i, a in enumerate(names)
+        },
+        "max_abs": float(np.abs(off_diagonal).max()) if len(names) > 1 else 0.0,
+    }
+
+
+def factor_profiles(state_terms) -> dict:
+    """Per-state mean kill-half factor values, and their correlation with
+    MARGIN and TOTAL_ALIVE -- the evidence Family B rests on (spec: econ
+    tracks margin at -0.981, swing at +0.946, time tracks total alive at
+    -0.956). `state_terms` is any iterable of objects carrying
+    `param_index` and a 3-tuple/array `kill` (e.g. KillTerm); only tracked
+    lattice states contribute; the fallback has no state and is excluded.
+
+    Diagnostic only -- like monotonicity, this reports a shape, it does not
+    select or gate anything.
+    """
+    sums = np.zeros((len(PARAMS), len(COMPONENTS)))
+    counts = np.zeros(len(PARAMS))
+    for term in state_terms:
+        index = term.param_index
+        if index >= N_LATTICE:  # fallback has no state
+            continue
+        sums[index] += np.asarray(term.kill, dtype=float)
+        counts[index] += 1
+
+    lattice = np.flatnonzero(counts[:N_LATTICE] > 0)
+    if len(lattice) == 0:
+        return {"profiles": {}, "corr_with_margin": {}, "corr_with_total_alive": {}}
+
+    profiles: dict[str, np.ndarray] = {}
+    corr_margin: dict[str, float] = {}
+    corr_total: dict[str, float] = {}
+    for index, component in enumerate(COMPONENTS):
+        mean_values = sums[lattice, index] / counts[lattice]
+        profiles[component] = {PARAMS[i]: float(v) for i, v in zip(lattice, mean_values)}
+        margin_here = MARGIN[lattice]
+        total_here = TOTAL_ALIVE[lattice]
+        corr_margin[component] = (
+            float(np.corrcoef(mean_values, margin_here)[0, 1]) if mean_values.std() > 0 else float("nan")
+        )
+        corr_total[component] = (
+            float(np.corrcoef(mean_values, total_here)[0, 1]) if mean_values.std() > 0 else float("nan")
+        )
+
+    return {
+        "profiles": profiles,
+        "corr_with_margin": corr_margin,
+        "corr_with_total_alive": corr_total,
+        "n_states": int(len(lattice)),
     }

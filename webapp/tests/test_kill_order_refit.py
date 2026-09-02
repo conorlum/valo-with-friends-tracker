@@ -610,3 +610,57 @@ def test_agreement_is_measured_against_declared_thresholds():
     assert disagree["agree"] is False
     assert disagree["thresholds"]["spearman_above"] == 0.90
     assert disagree["thresholds"]["rms_share_below"] == 0.15
+
+
+from app.services.kill_order_refit import (
+    component_correlations, factor_profiles, yardstick_matrix,
+)
+
+
+def test_the_matrix_covers_every_candidate_on_every_yardstick():
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    results = run_nested_cv(leverage, observations, PRIMARY_T2,
+                            candidates=["current_graph", "free"], l2_grid=[1.0], n_folds=5)
+    matrix = yardstick_matrix(leverage, observations, results, draws=20)
+    assert set(matrix["cells"]) == {"first_half_to_match", "full_match_to_match",
+                                    "forward_rounds"}
+    for cells in matrix["cells"].values():
+        assert {"current_graph", "free", "kill_diff"} <= set(cells)
+
+
+def test_the_matrix_prints_the_rounding_gap_between_the_two_baselines():
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    results = run_nested_cv(leverage, observations, PRIMARY_T2,
+                            candidates=["current_graph"], l2_grid=[1.0], n_folds=5)
+    matrix = yardstick_matrix(leverage, observations, results, draws=20)
+    assert "rounding_gap" in matrix
+    assert "current_impact" in matrix["rounding_gap"]["compared"]
+
+
+def test_the_matrix_refuses_stage_a_rows_when_identity_differs():
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    results = run_nested_cv(leverage, observations, PRIMARY_T2,
+                            candidates=["current_graph"], l2_grid=[1.0], n_folds=5)
+    a = RunIdentity("1151:abc", "deadbeef", "1/1")
+    b = RunIdentity("1151:abc", "OTHER", "1/1")
+    matrix = yardstick_matrix(leverage, observations, results, draws=20,
+                              stage_a_rows={"fitted_T1": {}}, stage_a_identity=b,
+                              identity=a)
+    assert matrix["stage_a_joined"] is False
+    assert any("fold_mapping_hash" in r for r in matrix["stage_a_refusal"])
+
+
+def test_component_correlations_are_recomputed_under_a_candidate_graph():
+    """Verdict item 4 reads the maximum of these. The CLI was passing a
+    hardcoded 1.0, which would have made the verdict meaningless."""
+    observations = synthetic_observations(matches=30)
+    leverage = leverage_for(observations)
+    flat = np.full(len(PARAMS), 136.6)
+    under_shipped = component_correlations(leverage, shipped_graph())
+    under_flat = component_correlations(leverage, flat)
+    assert set(under_shipped["matrix"]) == {"econ", "time", "swing"}
+    assert 0.0 <= under_shipped["max_abs"] <= 1.0
+    assert under_shipped["max_abs"] != under_flat["max_abs"]
