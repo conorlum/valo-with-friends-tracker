@@ -138,3 +138,53 @@ def test_tied_match_has_no_match_label():
     match.team1_rounds_won = match.team2_rounds_won = 12
     obs = build_observations_for_match(match, _calculated())
     assert all(o.match_won_by_team_a is None for o in obs)
+
+
+from app.services.impact_eval import (
+    CONTROLS_CONTEXT,
+    CONTROLS_RESULT,
+    FEATURE_COMPONENTS,
+    FIRST_HALF_ROUNDS,
+    _feature_value,
+    _half_of,
+    assign_folds,
+    group_by_match,
+)
+
+
+def test_every_match_gets_exactly_one_fold():
+    folds = assign_folds([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], n_folds=5, seed=0)
+    assert set(folds) == set(range(1, 11))
+    assert set(folds.values()) <= {0, 1, 2, 3, 4}
+
+
+def test_folds_are_balanced():
+    folds = assign_folds(list(range(100)), n_folds=5, seed=0)
+    counts = [sum(1 for f in folds.values() if f == k) for k in range(5)]
+    assert max(counts) - min(counts) <= 1
+
+
+def test_fold_assignment_is_seed_deterministic():
+    assert assign_folds(list(range(50)), seed=11) == assign_folds(list(range(50)), seed=11)
+
+
+def test_grouping_keeps_a_match_together():
+    grouped = group_by_match(build_observations_for_match(_match_with_two_rounds(), _calculated()))
+    assert list(grouped) == [1]
+    assert len(grouped[1]) == 2
+
+
+def test_half_boundaries_match_the_scorer_convention():
+    """impact.py:309 already encodes rounds 12/24 as the economy resets."""
+    assert _half_of(1) == _half_of(FIRST_HALF_ROUNDS) == 1
+    assert _half_of(13) == _half_of(24) == 2
+    assert _half_of(25) == 3
+
+
+def test_round_result_control_is_signed_and_separate():
+    obs = build_observations_for_match(_match_with_two_rounds(), _calculated())
+    assert _feature_value(obs[0], "round_result") == 1.0
+    assert _feature_value(obs[1], "round_result") == -1.0
+    assert "round_result" in CONTROLS_RESULT
+    assert "round_result" not in CONTROLS_CONTEXT
+    assert "round_result" not in FEATURE_COMPONENTS

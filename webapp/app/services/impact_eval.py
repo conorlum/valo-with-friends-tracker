@@ -200,3 +200,84 @@ def build_observations_for_match(match, calculated_rows) -> list[RoundObservatio
             score_b += 1
 
     return observations
+
+
+FIRST_HALF_ROUNDS = 12
+SECOND_HALF_END = 24
+
+FEATURE_COMPONENTS = ["damage", "econ_impact", "time_impact", "swing_impact"]
+BASELINE_DAMAGE = ["damage"]
+BASELINE_KILL_DIFF = ["kill_diff"]
+# The round's own result is a control in its own right. It is deliberately
+# NOT merged into CONTROLS_CONTEXT: the control ladder's whole point is to
+# measure what the components add ON TOP of knowing who won the round.
+CONTROLS_RESULT = ["round_result"]
+CONTROLS_CONTEXT = ["score_diff_before", "attacking_is_team_a", "loadout_diff", "full_buy_count_diff"]
+
+# Which nuisance controls belong with which target. DERIVED from the config
+# rather than passed in, because the right answer differs per target and a
+# caller passing the wrong set produces a plausible-looking but meaningless
+# weighting.
+#
+#   T2  -> result + context. The whole claim is "the components add something
+#          beyond knowing who won the round and what the teams could afford
+#          next", which is exactly the control ladder's step 3 -> 4. Fitting
+#          the weights without round_result would report weights from a
+#          different model than the ladder validates.
+#   WPA -> context only. round_result IS the WPA label; controlling for the
+#          label would be circular.
+#   T1  -> none. Its rows are whole-match aggregates, where a summed
+#          per-round result control is just the halftime score, and
+#          "does first-half Impact predict the match" is the question as
+#          asked. Stated explicitly rather than defaulted.
+TARGET_CONTROLS = {
+    "T1": [],
+    "T2": CONTROLS_RESULT + CONTROLS_CONTEXT,
+    "WPA": CONTROLS_CONTEXT,
+}
+
+
+def controls_for(config) -> list[str]:
+    if config.name not in TARGET_CONTROLS:
+        raise ValueError(f"no control set declared for target {config.name!r}")
+    return list(TARGET_CONTROLS[config.name])
+
+
+def _feature_value(obs: RoundObservation, name: str) -> float:
+    if name == "round_result":
+        return 0.0 if obs.round_won_by_team_a is None else (1.0 if obs.round_won_by_team_a else -1.0)
+    if name == "attacking_is_team_a":
+        return 1.0 if obs.attacking_is_team_a else 0.0
+    return float(getattr(obs, name))
+
+
+def _row(obs: RoundObservation, feature_names: list[str]) -> list[float]:
+    return [_feature_value(obs, name) for name in feature_names]
+
+
+def _half_of(round_number: int) -> int:
+    """1 = first half, 2 = second half, 3 = overtime. Mirrors the boundary
+    impact.py:309 already uses -- the economy resets at halftime, so a
+    forward window must never cross it."""
+    if round_number <= FIRST_HALF_ROUNDS:
+        return 1
+    if round_number <= SECOND_HALF_END:
+        return 2
+    return 3
+
+
+def assign_folds(match_ids, n_folds: int = 5, seed: int = 0) -> dict[int, int]:
+    """match_id -> fold index. Folds are assigned by MATCH, never by row:
+    two rounds of the same match are not independent, so splitting them
+    across folds would leak."""
+    unique = sorted(set(int(m) for m in match_ids))
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(len(unique))
+    return {unique[int(pos)]: int(i % n_folds) for i, pos in enumerate(order)}
+
+
+def group_by_match(observations) -> dict[int, list]:
+    grouped: dict[int, list] = {}
+    for obs in observations:
+        grouped.setdefault(obs.match_id, []).append(obs)
+    return grouped
