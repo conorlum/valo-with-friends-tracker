@@ -358,3 +358,98 @@ def test_a_fit_with_a_non_positive_damage_coefficient_is_marked_non_deployable()
     if candidate.d <= 0:
         assert not candidate.deployable
         assert any("damage" in r for r in candidate.reasons)
+
+
+from app.services.kill_order_curves import FAMILY_B, family_b_columns, fit_family_b
+
+
+def fake_rows(n=600, seed=5):
+    rng = np.random.default_rng(seed)
+    rows = []
+    for _ in range(n):
+        kill = np.zeros((len(PARAMS), len(COMPONENTS)))
+        death = np.zeros_like(kill)
+        for name in ("5v5", "3v3", "2v2"):
+            kill[PARAM_INDEX[name]] = rng.normal(size=len(COMPONENTS))
+            death[PARAM_INDEX[name]] = rng.normal(size=len(COMPONENTS))
+        rows.append(FakeTeamRow(kill=kill, death=death, damage_diff=rng.normal() * 20))
+    return rows
+
+
+def test_ladder_widths_are_3_6_9_and_18():
+    rows = fake_rows(20)
+    graph = shipped_graph()
+    widths = {rung: family_b_columns(rows, graph, rung)[0].shape[1] for rung in FAMILY_B}
+    assert widths == {
+        "stage_a_exact": 3, "kd_split_base": 6,
+        "component_tilt": 9, "component_tilt_symmetric": 18,
+    }
+
+
+def test_each_rung_is_nested_in_the_next_by_column_containment():
+    """B0's columns must literally appear in B2's, and B1's in B3's --
+    otherwise a 'nested' comparison is comparing different models."""
+    rows = fake_rows(40)
+    graph = shipped_graph()
+    cols = {r: family_b_columns(rows, graph, r) for r in FAMILY_B}
+    b0, names0 = cols["stage_a_exact"]
+    b2, names2 = cols["component_tilt"]
+    for position, name in enumerate(names0):
+        assert name in names2
+        assert np.allclose(b0[:, position], b2[:, names2.index(name)])
+    b1, names1 = cols["kd_split_base"]
+    b3, names3 = cols["component_tilt_symmetric"]
+    for position, name in enumerate(names1):
+        assert np.allclose(b1[:, position], b3[:, names3.index(name)])
+
+
+def test_stage_a_exact_columns_are_the_three_component_totals():
+    """B0 must reproduce the parent project's four-feature model on exact
+    pre-rounding columns -- that is the whole point of stage_a_exact."""
+    rows = fake_rows(30)
+    graph = shipped_graph()
+    columns, names = family_b_columns(rows, graph, "stage_a_exact")
+    assert names == ["econ_base", "time_base", "swing_base"]
+    expected = np.array([
+        float((graph[:, None] * (r.kill + r.death))[:, 0].sum()) for r in rows
+    ])
+    assert np.allclose(columns[:, 0], expected)
+
+
+def test_the_symmetric_rung_separates_kill_and_death():
+    rows = fake_rows(30)
+    columns, names = family_b_columns(rows, shipped_graph(), "component_tilt_symmetric")
+    assert "econ_kill_base" in names and "econ_death_base" in names
+    assert not np.allclose(columns[:, names.index("econ_kill_base")],
+                           columns[:, names.index("econ_death_base")])
+
+
+def test_tilt_columns_are_proportional_to_base_when_a_round_uses_one_state():
+    """Getting this backwards ships a tilt column that silently duplicates
+    a base column."""
+    kill = np.zeros((len(PARAMS), len(COMPONENTS)))
+    kill[PARAM_INDEX["3v2"]] = 1.0
+    row = FakeTeamRow(kill=kill, death=np.zeros_like(kill))
+    columns, names = family_b_columns([row], shipped_graph(), "component_tilt")
+    base = columns[0, names.index("econ_base")]
+    tilt = columns[0, names.index("econ_margin")]
+    assert np.isclose(tilt, base * MARGIN[PARAM_INDEX["3v2"]])
+    assert not np.isclose(tilt, base)
+
+
+def test_family_b_recovers_weights_by_dividing_by_the_damage_coefficient():
+    rows = fake_rows(1200)
+    graph = shipped_graph()
+    columns, _ = family_b_columns(rows, graph, "component_tilt")
+    damage = np.array([r.damage_diff for r in rows])
+    rng = np.random.default_rng(9)
+    y = (rng.uniform(size=len(rows)) < 1 / (1 + np.exp(-(damage + columns[:, 0]) / 300.0))).astype(float)
+
+    candidate = fit_family_b(
+        "component_tilt", train=(rows, y, None), test=(rows, None), graph=graph, l2=1.0
+    )
+    assert candidate.weights is not None
+    assert candidate.weights.shape == (9,)
+    assert candidate.d != 0
+    # The recovered weighting must reproduce the score it was fitted from.
+    assert np.allclose(candidate.scores, damage + columns @ candidate.weights)
