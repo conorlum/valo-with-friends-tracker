@@ -231,3 +231,243 @@ def kill_terms_for_match(
         out[round_number] = terms
 
     return out
+
+
+@dataclass(frozen=True)
+class TeamLeverageRow:
+    """One round, in contributes-to-Impact_diff form (team A minus team B).
+
+    A fit consumes `damage_diff` plus these two blocks; under the shipped
+    weights the round's Impact differential is
+
+        damage_diff + (1/3) * SUM_{k,c} b_k * (kill[k][c] + death[k][c])
+
+    Both blocks are ADDED because a kill raises the differential twice: the
+    killer's kill_impact rises, and the victim's death_impact is subtracted
+    from the other team.
+    """
+
+    match_id: int
+    round_id: int
+    round_number: int
+    damage_diff: float
+    kill: np.ndarray            # (26, 3)
+    death: np.ndarray           # (26, 3), traded discount applied
+    death_untraded: np.ndarray  # (26, 3), before the discount
+
+
+@dataclass(frozen=True)
+class PlayerLeverageRow:
+    """One (round, match_player), unsigned. Consumed by Stage 0's per-player
+    block and by the kill/death-and-trades read, neither of which can be
+    served from a team differential."""
+
+    match_id: int
+    round_id: int
+    round_number: int
+    match_player_id: int
+    # The CANONICAL player, stable across matches. match_player_id is a
+    # per-match surrogate, so grouping by it makes "within-player" analysis
+    # impossible -- terciles would compare strong players against weak ones
+    # instead of a player against their own baseline. 94.7% of players in
+    # this DB have exactly one match, which is what makes that distinction
+    # decisive rather than academic.
+    player_id: int
+    team_is_a: bool
+    damage: float
+    kill: np.ndarray
+    death: np.ndarray
+    death_untraded: np.ndarray
+
+
+@dataclass(frozen=True)
+class MatchLeverage:
+    match_id: int
+    team_rows: list[TeamLeverageRow]
+    player_rows: list[PlayerLeverageRow]
+
+
+def _blocks() -> np.ndarray:
+    return np.zeros((len(PARAMS), len(COMPONENTS)))
+
+
+def assemble_round(match_id, round_row, terms, match_players, damage_by_match_player):
+    """Both products for one round. Pure: no DB access, so it is fixture
+    testable."""
+    player_kill = {mp_id: _blocks() for mp_id in match_players}
+    player_death = {mp_id: _blocks() for mp_id in match_players}
+    player_death_raw = {mp_id: _blocks() for mp_id in match_players}
+
+    for term in terms:
+        killer, victim = term.killer_match_player_id, term.victim_match_player_id
+        player_kill[killer][term.param_index] += np.asarray(term.kill, dtype=float)
+        player_death[victim][term.param_index] += np.asarray(term.death, dtype=float)
+        player_death_raw[victim][term.param_index] += np.asarray(
+            term.death_untraded, dtype=float
+        )
+
+    player_rows: list[PlayerLeverageRow] = []
+    for mp_id, match_player in match_players.items():
+        player_rows.append(
+            PlayerLeverageRow(
+                match_id=match_id,
+                round_id=round_row.id,
+                round_number=round_row.round_number,
+                match_player_id=mp_id,
+                player_id=match_player.player_id,
+                team_is_a=match_player.team == Team.TEAM_1,
+                damage=float(damage_by_match_player.get(mp_id, 0.0)),
+                kill=player_kill[mp_id],
+                death=player_death[mp_id],
+                death_untraded=player_death_raw[mp_id],
+            )
+        )
+
+    # SUM_A - SUM_B for the kill block; SUM_B - SUM_A for the death block,
+    # because a death is SUBTRACTED from the player who suffered it.
+    def combine(field, flip):
+        total = _blocks()
+        for row in player_rows:
+            on_a = row.team_is_a
+            sign = (1.0 if on_a else -1.0) * (-1.0 if flip else 1.0)
+            total += sign * getattr(row, field)
+        return total
+
+    team_row = TeamLeverageRow(
+        match_id=match_id,
+        round_id=round_row.id,
+        round_number=round_row.round_number,
+        damage_diff=float(
+            sum(r.damage for r in player_rows if r.team_is_a)
+            - sum(r.damage for r in player_rows if not r.team_is_a)
+        ),
+        kill=combine("kill", flip=False),
+        death=combine("death", flip=True),
+        death_untraded=combine("death_untraded", flip=True),
+    )
+    return team_row, player_rows
+
+
+from collections import defaultdict
+
+from app.models import KillEvent, Match, MatchPlayer, Round
+from app.models.round import RoundPlayerStat
+from app.scoring.impact import build_impact_rows_for_match
+from app.services.surrender_rounds import NOT_A_SURRENDER_ROUND
+
+
+def eligible_match_ids(db) -> list[int]:
+    return [
+        match_id
+        for (match_id,) in db.query(Match.id)
+        .join(Round, Round.match_id == Match.id)
+        .filter(NOT_A_SURRENDER_ROUND)
+        .distinct()
+        .order_by(Match.id)
+        .all()
+    ]
+
+
+def build_match_leverage(db, match_id: int) -> MatchLeverage:
+    """Replay one match. Mirrors build_impact_rows_for_match's own loads
+    (impact.py:404-437) so the two see identical inputs.
+
+    EX-ANTE: damage comes from the scorer with use_realized_swing=False.
+    Damage is graph-independent, but the flag is passed explicitly so this
+    never becomes the one path that quietly reads round N+1.
+    """
+    rounds = (
+        db.query(Round)
+        .filter(Round.match_id == match_id)
+        .filter(NOT_A_SURRENDER_ROUND)
+        .order_by(Round.round_number)
+        .all()
+    )
+    rounds_by_number = {r.round_number: r for r in rounds}
+    number_by_round_id = {r.id: r.round_number for r in rounds}
+    round_outcomes = {r.round_number: r.outcome for r in rounds}
+
+    match_players = {
+        mp.id: mp for mp in db.query(MatchPlayer).filter_by(match_id=match_id).all()
+    }
+
+    round_player_stats: dict[int, dict[int, dict]] = defaultdict(dict)
+    for stat in db.query(RoundPlayerStat).join(Round).filter(Round.match_id == match_id).all():
+        number = number_by_round_id.get(stat.round_id)
+        if number is None:
+            continue  # a surrender placeholder round, already filtered above
+        round_player_stats[number][stat.match_player_id] = {
+            "score": stat.score, "kills": stat.kills, "deaths": stat.deaths,
+            "assists": stat.assists, "loadout": stat.loadout, "remaining": stat.remaining,
+        }
+
+    round_kills: dict[int, list[dict]] = defaultdict(list)
+    for event in (
+        db.query(KillEvent)
+        .join(Round)
+        .filter(Round.match_id == match_id)
+        .order_by(KillEvent.event_time_seconds, KillEvent.id)
+        .all()
+    ):
+        number = number_by_round_id.get(event.round_id)
+        if number is None:
+            continue
+        round_kills[number].append({
+            "killer_match_player_id": event.killer_match_player_id,
+            "death_match_player_id": event.death_match_player_id,
+            "event_time_seconds": event.event_time_seconds,
+        })
+
+    damage_by_round: dict[int, dict[int, float]] = defaultdict(dict)
+    for calculated in build_impact_rows_for_match(db, match_id, use_realized_swing=False):
+        number = number_by_round_id.get(calculated.round_id)
+        if number is None:
+            continue
+        damage_by_round[number][calculated.match_player_id] = float(calculated.damage)
+
+    terms_by_round = kill_terms_for_match(
+        rounds_by_number, round_outcomes, round_player_stats, match_players, round_kills
+    )
+
+    team_rows: list[TeamLeverageRow] = []
+    player_rows: list[PlayerLeverageRow] = []
+    for number, round_row in rounds_by_number.items():
+        if number not in round_player_stats:
+            continue  # no stats rows: nothing to attribute
+        team_row, rows = assemble_round(
+            match_id=match_id,
+            round_row=round_row,
+            terms=terms_by_round.get(number, []),
+            match_players=match_players,
+            damage_by_match_player=damage_by_round.get(number, {}),
+        )
+        team_rows.append(team_row)
+        player_rows.extend(rows)
+
+    return MatchLeverage(match_id=match_id, team_rows=team_rows, player_rows=player_rows)
+
+
+def load_all_leverage(db, report: dict | None = None):
+    """Every eligible match. Costs a full replay -- minutes, comparable to
+    the parent project's load_all_observations.
+
+    A match that raises is EXCLUDED and counted, never silently turned into
+    zero-leverage rows; the CLI prints the count.
+    """
+    team_rows: list[TeamLeverageRow] = []
+    player_rows: list[PlayerLeverageRow] = []
+    excluded: list[int] = []
+    match_ids = eligible_match_ids(db)
+    for match_id in match_ids:
+        try:
+            leverage = build_match_leverage(db, match_id)
+        except (KeyError, ValueError):
+            excluded.append(match_id)
+            continue
+        team_rows.extend(leverage.team_rows)
+        player_rows.extend(leverage.player_rows)
+    if report is not None:
+        report["eligible_matches"] = len(match_ids)
+        report["excluded_matches"] = len(excluded)
+        report["excluded_match_ids"] = excluded[:20]
+    return team_rows, player_rows

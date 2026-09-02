@@ -30,9 +30,13 @@ class FakeRound:
 
 
 class FakePlayer:
-    def __init__(self, player_id, team):
-        self.id = player_id
+    def __init__(self, match_player_id, team, player_id=None):
+        self.id = match_player_id
         self.team = team
+        # The canonical player id (distinct from the match-scoped id in
+        # production); defaults to matching id since these fixtures never
+        # need two match_players to share a canonical player.
+        self.player_id = player_id if player_id is not None else match_player_id
 
 
 def make_match(kills, outcome="Team A Eliminated", loadout=4200, round_number=5):
@@ -206,3 +210,104 @@ def test_missing_player_stats_raise_rather_than_being_skipped():
     del stats[5][6]
     with pytest.raises(KeyError):
         kill_terms_for_match(rounds, outcomes, stats, players, kills)
+
+
+from app.services.kill_order_leverage import (
+    PlayerLeverageRow,
+    TeamLeverageRow,
+    assemble_round,
+)
+
+
+def _round_products(kills, damages=None, round_number=5):
+    """Build both products for one round from the fixture helpers above."""
+    rounds, outcomes, stats, players, kill_map = make_match(kills, round_number=round_number)
+    terms = kill_terms_for_match(rounds, outcomes, stats, players, kill_map)[round_number]
+    damages = damages or {i: 0.0 for i in range(1, 11)}
+    return assemble_round(
+        match_id=1,
+        round_row=rounds[round_number],
+        terms=terms,
+        match_players=players,
+        damage_by_match_player=damages,
+    )
+
+
+def test_team_row_places_a_team_a_kill_positively_on_both_halves():
+    team, _ = _round_products([kill(1, 6, 10.0)])
+    idx = PARAM_INDEX["5v5"]
+    assert team.kill[idx].sum() > 0
+    assert team.death[idx].sum() > 0
+
+
+def test_team_row_places_a_team_b_kill_negatively_on_both_halves():
+    team, _ = _round_products([kill(6, 1, 10.0)])
+    idx = PARAM_INDEX["5v5"]
+    assert team.kill[idx].sum() < 0
+    assert team.death[idx].sum() < 0
+
+
+def test_player_rows_reconstruct_the_team_row_exactly():
+    """The data-contract gate. Note the FLIP on the death block."""
+    kills = [kill(1, 6, 4.0), kill(7, 2, 9.0), kill(3, 8, 12.0), kill(4, 4, 15.0)]
+    team, players = _round_products(kills)
+    by_id = {p.match_player_id: p for p in players}
+
+    def side_sum(field, team_a):
+        total = np.zeros((len(PARAMS), len(COMPONENTS)))
+        for row in players:
+            if row.team_is_a == team_a:
+                total += getattr(row, field)
+        return total
+
+    assert np.allclose(team.kill, side_sum("kill", True) - side_sum("kill", False))
+    assert np.allclose(team.death, side_sum("death", False) - side_sum("death", True))
+    assert np.allclose(
+        team.death_untraded,
+        side_sum("death_untraded", False) - side_sum("death_untraded", True),
+    )
+    assert set(by_id) == set(range(1, 11))
+
+
+def test_every_player_gets_a_row_even_with_no_kills_or_deaths():
+    """Stage 0 averages over player-rounds; a silently missing row would
+    change a denominator rather than raising."""
+    _, players = _round_products([kill(1, 6, 10.0)])
+    assert len(players) == 10
+    quiet = [p for p in players if p.match_player_id == 5][0]
+    assert np.allclose(quiet.kill, 0.0)
+    assert np.allclose(quiet.death, 0.0)
+
+
+def test_the_killer_gets_the_kill_half_and_the_victim_the_death_half():
+    _, players = _round_products([kill(1, 6, 10.0)])
+    by_id = {p.match_player_id: p for p in players}
+    assert by_id[1].kill.sum() > 0
+    assert np.allclose(by_id[1].death, 0.0)
+    assert by_id[6].death.sum() > 0
+    assert np.allclose(by_id[6].kill, 0.0)
+
+
+def test_a_self_kill_charges_only_the_death_half_to_that_player():
+    _, players = _round_products([kill(1, 1, 10.0)])
+    by_id = {p.match_player_id: p for p in players}
+    assert np.allclose(by_id[1].kill, 0.0)
+    assert by_id[1].death.sum() > 0
+
+
+def test_the_trade_discount_is_visible_per_player():
+    """Decision: the player-level read reports death cost as scored against
+    death cost with no trade credit. That subtraction must be available on
+    the row, per player."""
+    _, players = _round_products([kill(1, 6, 10.0), kill(7, 1, 14.0)])
+    victim = [p for p in players if p.match_player_id == 6][0]
+    discount = victim.death_untraded - victim.death
+    assert discount.sum() > 0
+    assert np.allclose(victim.death, victim.death_untraded * 0.4)
+
+
+def test_damage_is_carried_through_and_differenced():
+    damages = {i: (10.0 if i <= 5 else 4.0) for i in range(1, 11)}
+    team, players = _round_products([kill(1, 6, 10.0)], damages=damages)
+    assert np.isclose(team.damage_diff, 5 * 10.0 - 5 * 4.0)
+    assert all(np.isclose(p.damage, damages[p.match_player_id]) for p in players)
