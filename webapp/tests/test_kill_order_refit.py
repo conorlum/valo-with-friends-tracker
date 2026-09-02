@@ -204,3 +204,85 @@ def test_the_three_to_four_step_is_reported_too():
     report = control_ladder(leverage, observations, PRIMARY_T2, n_folds=5, draws=50)
     assert "delta" in report["plus_terminal_state"]
     assert report["plus_terminal_state"]["delta_from"] == "plus_damage"
+
+
+from app.services.kill_order_refit import (
+    conditioning_report,
+    monotonicity_violations,
+    per_parameter_report,
+    stability_report,
+)
+
+
+def test_the_shipped_graph_has_no_monotonicity_violations():
+    """Measured in the spec: zero, across all comparable pairs. The brief's
+    suggested counter-example (4v4=170 against 2v2=200) is the diagonal
+    rising as the round narrows, not a violation."""
+    assert monotonicity_violations(shipped_graph()) == []
+
+
+def test_a_deliberately_broken_curve_is_flagged():
+    graph = shipped_graph().copy()
+    graph[PARAM_INDEX["3v3"]] = 10.0        # even state now worth less than 3v1
+    violations = monotonicity_violations(graph)
+    assert any("3v3" in v for v in violations)
+
+
+def test_conditioning_reports_rank_and_vif():
+    rng = np.random.default_rng(4)
+    leverage = rng.normal(size=(2000, len(PARAMS)))
+    leverage[:, 1] = leverage[:, 0] + rng.normal(scale=0.01, size=2000)  # near-duplicate
+    report = conditioning_report(leverage)
+    assert report["condition_number"] > 50
+    assert report["effective_rank"] < len(PARAMS)
+    assert max(report["vif"]) > 20
+
+
+def rng_noise(fold, scale=6.0):
+    return np.random.default_rng(100 + fold).normal(scale=scale, size=len(PARAMS))
+
+
+def fake_result(graphs_by_fold):
+    from app.services.kill_order_refit import CandidateResult, FoldFit
+
+    result = CandidateResult(name="test")
+    for fold, graph in graphs_by_fold.items():
+        result.per_fold[fold] = FoldFit(
+            fold=fold, l2=1.0, train_match_ids=(), test_match_ids=(),
+            swing_table=None, exposure=np.ones(len(PARAMS)),
+            calibration=np.zeros(2), graph=graph, d=1.0,
+            deployable=True, reasons=(),
+        )
+    return result
+
+
+def test_stability_calls_a_candidate_that_barely_moves_unstable():
+    """The pathological rule this replaces would have called this STABLE,
+    because its fold spread is small in absolute terms."""
+    shipped = shipped_graph()
+    result = fake_result({f: shipped + rng_noise(f) for f in range(5)})
+    report = stability_report(result, shipped, exposure=np.ones(len(PARAMS)), draws=40)
+    assert report["ratio"] > 1
+    assert report["stable"] is False
+
+
+def test_stability_calls_a_consistent_large_move_stable():
+    shipped = shipped_graph()
+    moved = shipped * 1.4
+    result = fake_result({f: moved + rng_noise(f, scale=0.5) for f in range(5)})
+    report = stability_report(result, shipped, exposure=np.ones(len(PARAMS)), draws=40)
+    assert report["ratio"] < 1
+    assert report["stable"] is True
+    assert report["ratio_ci"][1] < 1
+
+
+def test_per_parameter_report_carries_exposure_and_never_a_verdict():
+    """Per-parameter numbers are diagnostics. If a 'stable' or
+    'indeterminate' key appears here, the rejected rule has come back."""
+    rng = np.random.default_rng(6)
+    leverage = rng.normal(size=(500, len(PARAMS)))
+    report = per_parameter_report(leverage, exposure=np.abs(leverage).sum(axis=0))
+    assert set(report) == set(PARAMS)
+    entry = report["3v3"]
+    assert {"exposure", "rounds_touched", "vif"} <= set(entry)
+    assert "stable" not in entry and "indeterminate" not in entry

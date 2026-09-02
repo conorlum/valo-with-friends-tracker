@@ -519,3 +519,214 @@ def _paired_step(aligned, predictions, lower, upper, draws, seed):
             "which for rung 4 -> 5 is an informative result rather than a failure."
         ),
     }
+
+
+from app.services.kill_order_curves import normalize_for_display
+from app.services.kill_order_leverage import PARAM_INDEX
+from app.services.stats_math import cluster_bootstrap_ci
+
+_LATTICE_STATES = [(own, opp) for own in range(1, 6) for opp in range(1, 6)]
+
+
+def monotonicity_violations(graph) -> list:
+    """Within a fixed number of players remaining, weight must be
+    non-decreasing as the state gets closer to even.
+
+    REPORTED, never imposed: the shipped table, the measured swing table
+    and every prior all satisfy this, so a constraint would bind only where
+    the data disagrees with the prior -- exactly where we want to hear from
+    the data.
+    """
+    graph = np.asarray(graph, dtype=float)
+    out: list[str] = []
+    for own_a, opp_a in _LATTICE_STATES:
+        for own_b, opp_b in _LATTICE_STATES:
+            if own_a + opp_a != own_b + opp_b:
+                continue
+            if abs(own_a - opp_a) >= abs(own_b - opp_b):
+                continue
+            closer = graph[PARAM_INDEX[f"{own_a}v{opp_a}"]]
+            further = graph[PARAM_INDEX[f"{own_b}v{opp_b}"]]
+            if closer < further:
+                out.append(
+                    f"{own_a}v{opp_a}={closer:.1f} < {own_b}v{opp_b}={further:.1f} "
+                    f"(same total alive, closer to even should not score less)"
+                )
+    return out
+
+
+def conditioning_report(leverage) -> dict:
+    leverage = np.asarray(leverage, dtype=float)
+    usable = leverage.std(axis=0) > 1e-12
+    scaled = (leverage[:, usable] - leverage[:, usable].mean(axis=0)) / leverage[:, usable].std(axis=0)
+    correlation = np.corrcoef(scaled, rowvar=False)
+    # Clip before the log: a genuinely collinear design can produce tiny
+    # negative eigenvalues from floating point, and log(share) then returns
+    # NaN for the whole report.
+    eigenvalues = np.clip(np.linalg.eigvalsh(correlation)[::-1], 1e-12, None)
+    share = eigenvalues / eigenvalues.sum()
+    off_diagonal = correlation[~np.eye(correlation.shape[0], dtype=bool)]
+    return {
+        "n_columns": int(usable.sum()),
+        "max_abs_correlation": float(np.abs(off_diagonal).max()),
+        "condition_number": float(eigenvalues[0] / eigenvalues[-1]),
+        "effective_rank": float(np.exp(-(share * np.log(share)).sum())),
+        "eigenvalues": [float(v) for v in eigenvalues],
+        "vif": [float(v) for v in np.diag(np.linalg.pinv(correlation))],
+    }
+
+
+def per_parameter_report(leverage, exposure) -> dict:
+    """Diagnostics only. Deliberately carries NO per-parameter verdict: the
+    rejected stability rule lived here, and a 'stable' key reappearing is
+    how it would come back."""
+    leverage = np.asarray(leverage, dtype=float)
+    conditioning = conditioning_report(leverage)
+    usable = leverage.std(axis=0) > 1e-12
+    vif_by_column = dict(zip(np.flatnonzero(usable).tolist(), conditioning["vif"]))
+    out = {}
+    for index, name in enumerate(PARAMS):
+        out[name] = {
+            "exposure": float(np.asarray(exposure, dtype=float)[index]),
+            "rounds_touched": int(np.count_nonzero(leverage[:, index])),
+            "vif": float(vif_by_column.get(index, float("nan"))),
+        }
+    return out
+
+
+def _weighted_rms(values, exposure) -> float:
+    exposure = np.asarray(exposure, dtype=float)
+    return float(np.sqrt(np.sum(exposure * np.asarray(values, dtype=float) ** 2) / exposure.sum()))
+
+
+def _fold_bootstrap_ratio(prepared, reference, exposure, draws, seed):
+    """DESCRIPTIVE fallback when no refit callback is available: bootstrap
+    over WHICH of the (few) fold graphs are resampled, not over matches.
+
+    This is explicitly weaker than the match-clustered refitting bootstrap
+    below -- 5 folds sharing 3/5 of their matches pairwise are neither
+    independent nor numerous -- so it never sets gate_eligible, but it still
+    gives a point estimate and an interval for reporting.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(prepared)
+    ratios = []
+    for _ in range(draws):
+        draw = [prepared[i] for i in rng.integers(0, n, size=n)]
+        block = np.array(draw)
+        mean = block.mean(axis=0)
+        distance = _weighted_rms(mean - reference, exposure)
+        if distance <= 0:
+            continue
+        spread = float(np.mean([_weighted_rms(g - mean, exposure) for g in block]))
+        ratios.append(spread / distance)
+    if not ratios:
+        return {"ratio": float("nan"), "ratio_ci": [float("nan"), float("nan")], "stable": False}
+    low, high = np.percentile(ratios, [2.5, 97.5])
+    return {
+        "ratio": float(np.mean(ratios)),
+        "ratio_ci": [float(low), float(high)],
+        "stable": bool(np.isfinite(high) and high < 1.0),
+    }
+
+
+def stability_report(result, shipped, exposure, refit=None, match_ids=None,
+                     draws=200, seed=0) -> dict:
+    """Graph-level stability, as a MATCH-CLUSTERED REFITTING bootstrap.
+
+        ratio = RMS(resampled graph - mean graph) / RMS(mean - shipped)
+
+    stable <=> the UPPER bound of that ratio is below 1: the candidate
+    differs from the shipped graph by more than it differs from itself.
+
+    `refit(match_ids) -> graph` refits the candidate on a resampled match
+    set. It is REQUIRED when stability gates a success claim. An earlier
+    draft bootstrapped the five outer-fold graphs instead -- but five
+    overlapping folds (any two share 3/5 of their matches) are neither
+    independent nor numerous enough to support a percentile interval, and
+    that quantity was gating P1/P2. Without `refit` this returns a
+    DESCRIPTIVE fold-resampling figure and sets `gate_eligible=False`, and
+    the verdict must not consume it.
+
+    Reported twice, because they answer different questions:
+      - `shape`: graphs display-normalized, so only the curve's shape counts
+      - `raw`:   graphs as recovered, so a change in overall level relative
+                 to damage counts too -- and that level IS part of the
+                 deployable metric, so erasing it would hide a real change
+
+    Top-level `ratio`/`ratio_ci`/`stable` mirror the `raw` block, since the
+    overall level IS part of what ships; `shape` stays available for a
+    reader who wants the curve's proportions alone.
+    """
+    fold_graphs = [f.graph for f in result.per_fold.values() if f.graph is not None]
+    if len(fold_graphs) < 2:
+        return {"stable": False, "gate_eligible": False,
+                "reason": "fewer than two folds produced a graph"}
+
+    def summarize(sample, reference):
+        block = np.array(sample)
+        mean = block.mean(axis=0)
+        spread = float(np.mean([_weighted_rms(g - mean, exposure) for g in block]))
+        distance = _weighted_rms(mean - reference, exposure)
+        return spread / distance if distance > 0 else np.inf
+
+    out: dict = {"n_folds": len(fold_graphs)}
+    for label, prepare in (("shape", lambda g: normalize_for_display(g, exposure)),
+                           ("raw", lambda g: np.asarray(g, dtype=float))):
+        prepared = [prepare(g) for g in fold_graphs]
+        reference = prepare(shipped)
+        out[label] = {"fold_dispersion_ratio": float(summarize(prepared, reference))}
+        out[label].update(_fold_bootstrap_ratio(prepared, reference, exposure, draws, seed))
+
+    out["ratio"] = out["raw"]["ratio"]
+    out["ratio_ci"] = out["raw"]["ratio_ci"]
+    out["stable"] = out["raw"]["stable"]
+
+    if refit is None or match_ids is None:
+        out.update({
+            "gate_eligible": False,
+            "rule": "fold-resampling only -- DESCRIPTIVE, must not gate a success claim",
+        })
+        return out
+
+    rng = np.random.default_rng(seed)
+    unique = np.asarray(sorted(set(int(m) for m in match_ids)))
+    resampled: list[np.ndarray] = []
+    for _ in range(draws):
+        drawn = unique[rng.integers(0, len(unique), size=len(unique))]
+        graph = refit(drawn.tolist())
+        if graph is not None and np.all(np.isfinite(graph)):
+            resampled.append(np.asarray(graph, dtype=float))
+    if len(resampled) < 20:
+        out.update({"gate_eligible": False,
+                    "rule": f"only {len(resampled)} usable refits; interval not trustworthy"})
+        return out
+
+    for label, prepare in (("shape", lambda g: normalize_for_display(g, exposure)),
+                           ("raw", lambda g: np.asarray(g, dtype=float))):
+        prepared = [prepare(g) for g in resampled]
+        reference = prepare(shipped)
+        mean = np.array(prepared).mean(axis=0)
+        distance = _weighted_rms(mean - reference, exposure)
+        ratios = [
+            _weighted_rms(g - mean, exposure) / distance if distance > 0 else np.inf
+            for g in prepared
+        ]
+        low, high = np.percentile(ratios, [2.5, 97.5])
+        out[label].update({
+            "ratio": float(np.mean(ratios)),
+            "ratio_ci": [float(low), float(high)],
+            "stable": bool(np.isfinite(high) and high < 1.0),
+        })
+
+    out["ratio"] = out["raw"]["ratio"]
+    out["ratio_ci"] = out["raw"]["ratio_ci"]
+    out["gate_eligible"] = True
+    out["stable"] = bool(out["shape"]["stable"] and out["raw"]["stable"])
+    out["rule"] = (
+        "match-clustered refitting bootstrap; resampled-to-mean RMS over "
+        "mean-to-shipped RMS, exposure-weighted; stable when the upper bound "
+        "is below 1 for BOTH the display-normalized shape and the raw level"
+    )
+    out["draws_used"] = len(resampled)
+    return out
