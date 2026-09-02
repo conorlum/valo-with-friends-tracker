@@ -437,3 +437,241 @@ def build_target(observations, config: TargetConfig, feature_names: list[str]) -
             match_weight=config.match_weight,
         )
     raise ValueError(f"unknown target: {config.name!r}")
+
+
+from app.services.stats_math import (
+    apply_calibration,
+    auc,
+    back_transform,
+    cluster_bootstrap_ci,
+    fit_logistic,
+    paired_bootstrap_delta,
+    platt_calibrate,
+    predict_proba,
+    standardize,
+    weighted_log_loss,
+)
+
+
+def paired_oof_log_loss_delta(oof_a: dict, oof_b: dict, draws: int = 200, seed: int = 0):
+    """(point, lo, hi) for weighted-log-loss(a) - weighted-log-loss(b), with
+    both sides evaluated on the SAME resampled matches each draw.
+
+    Only valid when a and b predict the SAME target -- differing feature
+    sets, yes; differing k/gamma/match_weight, no. See PRIMARY_T2.
+    """
+    combined: dict[int, tuple[list, list]] = {}
+    for index, oof in ((0, oof_a), (1, oof_b)):
+        for s, y, w, m in zip(oof["scores"], oof["y"], oof["w"], oof["match_ids"]):
+            combined.setdefault(int(m), ([], []))[index].append((s, y, w))
+
+    def side(index):
+        def fn(sample):
+            flat = [r for pair in sample for r in pair[index]]
+            if not flat:
+                return float("nan")
+            return weighted_log_loss(
+                [r[0] for r in flat], [r[1] for r in flat], [r[2] for r in flat]
+            )
+
+        return fn
+
+    point = weighted_log_loss(oof_a["scores"], oof_a["y"], oof_a["w"]) - weighted_log_loss(
+        oof_b["scores"], oof_b["y"], oof_b["w"]
+    )
+    lo, hi = paired_bootstrap_delta(side(0), side(1), combined, draws=draws, seed=seed)
+    return point, lo, hi
+
+
+@dataclass
+class FoldResult:
+    fold: int
+    train_match_ids: list[int]
+    test_match_ids: list[int]
+    config: TargetConfig
+    l2: float
+    beta_raw: np.ndarray
+    feature_names: list[str]
+
+
+def split_observations(observations, folds: dict[int, int], fold: int):
+    train = [o for o in observations if folds[o.match_id] != fold]
+    test = [o for o in observations if folds[o.match_id] == fold]
+    return train, test
+
+
+def _fit_and_score(train_ds: FitDataset, test_ds: FitDataset, l2: float):
+    """Standardize on TRAIN, fit on TRAIN, predict TEST. Returns
+    (predictions, raw-unit beta) or None when either side is unusable."""
+    if len(train_ds.y) == 0 or len(test_ds.y) == 0:
+        return None
+    scaled_train, scaled_test, centre, scale = standardize(train_ds.X, test_ds.X)
+    beta = fit_logistic(scaled_train, train_ds.y, weights=train_ds.w, l2=l2)
+    return predict_proba(beta, scaled_test), back_transform(beta, centre, scale)
+
+
+def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int, seed: int):
+    """Inner CV over TRAINING observations only, selecting L2.
+
+    REFUSES to compare configurations that define different targets. Log
+    loss against different y is not a comparison -- see PRIMARY_T2. Pass a
+    single frozen target; run alternatives as separate sensitivity runs and
+    compare them on the fixed yardsticks instead.
+
+    The target is still rebuilt inside every inner split, because that is
+    what lets a target depend on a fold-fitted context (Stage B).
+    """
+    identities = {c.target_identity() for c in configs}
+    if len(identities) > 1:
+        raise ValueError(
+            "_select_config cannot choose between different target definitions "
+            f"({sorted(identities)}): their losses measure different outcomes. "
+            "Freeze one target and compare alternatives on a fixed yardstick."
+        )
+    inner = assign_folds([o.match_id for o in train_obs], n_folds=inner_folds, seed=seed + 1)
+    best = (configs[0], l2_grid[0])
+    best_loss = float("inf")
+
+    for config in configs:
+        for l2 in l2_grid:
+            losses, weights = [], []
+            for fold in range(inner_folds):
+                inner_train, inner_test = split_observations(train_obs, inner, fold)
+                if not inner_train or not inner_test:
+                    continue
+                train_ds = build_target(inner_train, config, feature_names)
+                test_ds = build_target(inner_test, config, feature_names)
+                fitted = _fit_and_score(train_ds, test_ds, l2)
+                if fitted is None:
+                    continue
+                preds, _ = fitted
+                loss = weighted_log_loss(preds, test_ds.y, test_ds.w)
+                if np.isfinite(loss):
+                    losses.append(loss)
+                    weights.append(float(test_ds.w.sum()))
+            if not losses:
+                continue
+            mean_loss = float(np.average(losses, weights=weights))
+            if mean_loss < best_loss:
+                best, best_loss = (config, l2), mean_loss
+    return best
+
+
+def cross_validate(
+    observations, configs, feature_names, l2_grid,
+    n_folds: int = 5, inner_folds: int = 3, seed: int = 0,
+) -> dict:
+    """Outer CV that receives RAW OBSERVATIONS and a config grid.
+
+    Within each outer fold: select (config, l2) on inner splits of the
+    training matches, rebuild the target on the full training set, fit,
+    and predict the untouched test matches. Nothing about the test fold
+    influences selection, standardization, or fitting.
+    """
+    folds = assign_folds([o.match_id for o in observations], n_folds=n_folds, seed=seed)
+
+    fold_results: list[FoldResult] = []
+    scores, ys, ws, mids, baselines = [], [], [], [], []
+
+    for fold in range(n_folds):
+        train_obs, test_obs = split_observations(observations, folds, fold)
+        if not train_obs or not test_obs:
+            continue
+
+        config, l2 = _select_config(train_obs, configs, feature_names, l2_grid, inner_folds, seed)
+        train_ds = build_target(train_obs, config, feature_names)
+        test_ds = build_target(test_obs, config, feature_names)
+        fitted = _fit_and_score(train_ds, test_ds, l2)
+        if fitted is None:
+            continue
+        preds, beta_raw = fitted
+
+        fold_results.append(
+            FoldResult(
+                fold=fold,
+                train_match_ids=sorted({o.match_id for o in train_obs}),
+                test_match_ids=sorted({o.match_id for o in test_obs}),
+                config=config,
+                l2=l2,
+                beta_raw=beta_raw,
+                feature_names=list(feature_names),
+            )
+        )
+        scores.extend(preds.tolist())
+        ys.extend(test_ds.y.tolist())
+        ws.extend(test_ds.w.tolist())
+        mids.extend(test_ds.match_ids.tolist())
+
+        # The "knows nothing" comparator, built from the TRAINING half's base
+        # rate. Computing one base rate over all pooled OOF labels would let
+        # each test fold's own outcomes into its own comparator.
+        train_rate = float(np.average(train_ds.y, weights=train_ds.w))
+        baselines.extend([train_rate] * len(test_ds.y))
+
+    return {
+        "folds": fold_results,
+        "oof": {
+            "scores": np.array(scores),
+            "y": np.array(ys),
+            "w": np.array(ws),
+            "match_ids": np.array(mids, dtype=int),
+            "baseline": np.array(baselines),
+        },
+    }
+
+
+def oof_metrics(oof: dict, draws: int = 200, seed: int = 0) -> dict:
+    """Weighted log loss ONLY, plus the intercept-only baseline it must beat.
+
+    No AUC here, deliberately. T2's target is a weighted fraction of future
+    round wins; rounding it at 0.5 to manufacture a binary label changes the
+    estimand and discards the observation weights that gamma and
+    match_weight exist to set. AUC belongs to the yardsticks, whose labels
+    are genuinely binary.
+    """
+    if len(oof["y"]) == 0:
+        return {"n": 0}
+    groups: dict[int, list] = {}
+    for s, y, w, m in zip(oof["scores"], oof["y"], oof["w"], oof["match_ids"]):
+        groups.setdefault(int(m), []).append((s, y, w))
+
+    def loss_of(sample):
+        flat = [r for rows in sample for r in rows]
+        return weighted_log_loss([r[0] for r in flat], [r[1] for r in flat], [r[2] for r in flat])
+
+    # The "knows nothing" comparator, already computed per fold from TRAINING
+    # base rates by cross_validate -- so the improvement below is genuinely
+    # out-of-fold and can carry a paired interval.
+    fitted_loss = weighted_log_loss(oof["scores"], oof["y"], oof["w"])
+    baseline_probs = oof["baseline"]
+    baseline_loss = weighted_log_loss(baseline_probs, oof["y"], oof["w"])
+
+    paired: dict[int, tuple[list, list]] = {}
+    for s, b, y, w, m in zip(oof["scores"], baseline_probs, oof["y"], oof["w"], oof["match_ids"]):
+        entry = paired.setdefault(int(m), ([], []))
+        entry[0].append((s, y, w))
+        entry[1].append((b, y, w))
+
+    def side(index):
+        def fn(sample):
+            flat = [r for pair in sample for r in pair[index]]
+            if not flat:
+                return float("nan")
+            return weighted_log_loss(
+                [r[0] for r in flat], [r[1] for r in flat], [r[2] for r in flat]
+            )
+
+        return fn
+
+    lo, hi = paired_bootstrap_delta(side(1), side(0), paired, draws=draws, seed=seed)
+
+    return {
+        "weighted_log_loss": fitted_loss,
+        "weighted_log_loss_ci": list(cluster_bootstrap_ci(loss_of, groups, draws=draws, seed=seed)),
+        "intercept_only_log_loss": baseline_loss,
+        "improvement_over_intercept": baseline_loss - fitted_loss,
+        "improvement_ci": [lo, hi],
+        "n": int(len(oof["y"])),
+        "matches": len(groups),
+        "total_weight": float(np.sum(oof["w"])),
+    }

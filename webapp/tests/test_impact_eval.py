@@ -302,3 +302,122 @@ def test_build_target_dispatches_on_config():
     assert len(build_target(obs, config_two, FEATURE_COMPONENTS).y) > 1
     with pytest.raises(ValueError):
         build_target(obs, TargetConfig(name="nope"), FEATURE_COMPONENTS)
+
+
+from app.services import impact_eval
+from app.services.impact_eval import (
+    FoldResult,
+    _select_config,
+    cross_validate,
+    oof_metrics,
+    split_observations,
+)
+
+# One frozen target -- selection across target definitions is refused.
+T2_CONFIGS = [TargetConfig(name="T2", k=3, gamma=0.7, match_weight=1.0)]
+
+
+def _synthetic_matches(n_matches=60, seed=0):
+    """Each match is a 12-round half where team A's damage differential
+    predicts whether it wins its rounds."""
+    rng = np.random.default_rng(seed)
+    observations = []
+    for match_id in range(n_matches):
+        strength = rng.normal()
+        obs = []
+        for n in range(1, 13):
+            won = rng.random() < 1.0 / (1.0 + np.exp(-2.0 * strength))
+            o = _obs(n, strength * 10.0, won, strength > 0, match_id=match_id)
+            obs.append(o)
+        obs[-1].is_terminal = True
+        observations.extend(obs)
+    return observations
+
+
+def test_split_puts_each_match_wholly_on_one_side():
+    observations = _synthetic_matches(20)
+    folds = assign_folds([o.match_id for o in observations], n_folds=5, seed=0)
+    train, test = split_observations(observations, folds, 0)
+    assert {o.match_id for o in train}.isdisjoint({o.match_id for o in test})
+    assert len(train) + len(test) == len(observations)
+
+
+def test_cross_validate_recovers_a_planted_signal():
+    """Judged by weighted log loss against the intercept-only baseline --
+    not by AUC on a rounded fractional target."""
+    observations = _synthetic_matches(80)
+    result = cross_validate(observations, T2_CONFIGS, FEATURE_COMPONENTS, [0.1, 1.0], seed=0)
+    metrics = oof_metrics(result["oof"], draws=20, seed=0)
+    assert metrics["improvement_over_intercept"] > 0
+    assert all(f.beta_raw[FEATURE_COMPONENTS.index("damage") + 1] > 0 for f in result["folds"])
+
+
+def test_selection_refuses_to_compare_different_targets():
+    """The blocking bug this guard exists for: log loss against different y
+    is not a comparison, and a smoother target wins for the wrong reason."""
+    observations = _synthetic_matches(20)
+    mixed = [
+        TargetConfig(name="T2", k=2, gamma=0.5, match_weight=0.0),
+        TargetConfig(name="T2", k=4, gamma=0.9, match_weight=1.0),
+    ]
+    with pytest.raises(ValueError, match="different target definitions"):
+        _select_config(observations, mixed, FEATURE_COMPONENTS, [1.0], 3, 0)
+
+
+def test_oof_metrics_reports_no_auc():
+    observations = _synthetic_matches(30)
+    result = cross_validate(observations, T2_CONFIGS, FEATURE_COMPONENTS, [1.0], seed=0)
+    metrics = oof_metrics(result["oof"], draws=20, seed=0)
+    assert "auc" not in metrics
+    assert "weighted_log_loss" in metrics
+
+
+def test_every_match_appears_in_exactly_one_test_fold():
+    observations = _synthetic_matches(50)
+    result = cross_validate(observations, T2_CONFIGS, FEATURE_COMPONENTS, [1.0], seed=0)
+    test_ids = [mid for f in result["folds"] for mid in f.test_match_ids]
+    assert len(test_ids) == len(set(test_ids))
+    assert set(test_ids) == {o.match_id for o in observations}
+
+
+def test_train_and_test_never_overlap_within_a_fold():
+    observations = _synthetic_matches(40)
+    result = cross_validate(observations, T2_CONFIGS, FEATURE_COMPONENTS, [1.0], seed=0)
+    for fold in result["folds"]:
+        assert set(fold.train_match_ids).isdisjoint(fold.test_match_ids)
+
+
+def test_selection_never_sees_the_test_fold(monkeypatch):
+    """The property the whole rewrite exists to guarantee: hyperparameters
+    are chosen from training matches only."""
+    observations = _synthetic_matches(40)
+    seen = []
+    original = impact_eval._select_config
+
+    def spy(train_obs, *args, **kwargs):
+        seen.append({o.match_id for o in train_obs})
+        return original(train_obs, *args, **kwargs)
+
+    monkeypatch.setattr(impact_eval, "_select_config", spy)
+    result = cross_validate(observations, T2_CONFIGS, FEATURE_COMPONENTS, [1.0], seed=0)
+
+    assert len(seen) == len(result["folds"])
+    for fold, train_ids in zip(result["folds"], seen):
+        assert train_ids.isdisjoint(fold.test_match_ids)
+
+
+def test_select_config_returns_a_member_of_the_grid():
+    observations = _synthetic_matches(30)
+    config, l2 = _select_config(observations, T2_CONFIGS, FEATURE_COMPONENTS, [0.1, 1.0], 3, 0)
+    assert config in T2_CONFIGS
+    assert l2 in (0.1, 1.0)
+
+
+def test_oof_weights_are_returned():
+    """gamma and match_weight change row weights, so the weights must
+    survive into reporting -- otherwise they influence the fit but not the
+    number that judges it."""
+    observations = _synthetic_matches(30)
+    oof = cross_validate(observations, T2_CONFIGS, FEATURE_COMPONENTS, [1.0], seed=0)["oof"]
+    assert len(oof["w"]) == len(oof["scores"]) == len(oof["y"]) == len(oof["match_ids"])
+    assert np.all(oof["w"] > 0)
