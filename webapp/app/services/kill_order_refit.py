@@ -1003,3 +1003,148 @@ def player_level_report(player_rows, match_outcomes, graph, surfaces=None,
             ),
         },
     }
+
+
+from dataclasses import asdict
+
+PRIMARY_COMPARISONS = (
+    {"name": "P1", "candidate": "swing_basis", "against": "current_graph",
+     "target": "T2", "alpha": 0.025, "declares": "A1"},
+    {"name": "P2", "candidate": "pooled", "against": "current_graph",
+     "target": "T2", "alpha": 0.025, "declares": "A1"},
+    {"name": "P3", "candidate": "component_tilt", "against": "stage_a_exact",
+     "target": "T2", "alpha": 0.05, "declares": "C"},
+    {"name": "P4", "candidate": "swing_basis", "against": "pooled",
+     "target": "T2", "alpha": 0.05, "declares": None},
+)
+
+VERDICTS = {
+    "A1": ("prediction, next rounds", (1, 2)),
+    "A2": ("prediction, match outcome", (6,)),
+    "B": ("collinearity", (3, 4, 5)),
+    "C": ("structure", (7,)),
+}
+
+PRACTICAL_EQUIVALENCE_LOSS = 0.0008   # the parent report's own T2 CI half-width
+PRACTICAL_EQUIVALENCE_RMS = 0.01      # 1% of the score sd
+COLLINEARITY_THRESHOLD = 0.70         # just below today's observed minimum of 0.733
+AGREEMENT_SPEARMAN = 0.90
+AGREEMENT_RMS_SHARE = 0.15
+
+
+@dataclass(frozen=True)
+class RunIdentity:
+    dataset_fingerprint: str
+    fold_mapping_hash: str
+    calculation_version: str
+
+
+def matrix_is_comparable(left: RunIdentity, right: RunIdentity):
+    """Stage A and Stage C rows may share a matrix ONLY if all three match.
+
+    The fold-mapping hash is not redundant with the fingerprint: the parent
+    project's committed results used the permutation-based assign_folds, so
+    an identical match set can carry a completely different assignment --
+    same fingerprint, different folds, a matrix that looks comparable and is
+    not.
+    """
+    reasons = [
+        f"{field} differs: {getattr(left, field)!r} != {getattr(right, field)!r}"
+        for field in ("dataset_fingerprint", "fold_mapping_hash", "calculation_version")
+        if getattr(left, field) != getattr(right, field)
+    ]
+    return (not reasons), reasons
+
+
+def paired_delta(result_a, result_b, alpha=0.05, draws=500, seed=0) -> dict:
+    """Paired held-out weighted-log-loss difference, clustered by match.
+
+    Negative = A predicts better than B. `alpha` is the two-sided level:
+    0.025 for a co-primary, 0.05 otherwise.
+    """
+    groups: dict[int, list] = {}
+    for index, match_id in enumerate(result_a.oof_match_ids):
+        groups.setdefault(int(match_id), []).append(index)
+
+    def loss_of(result):
+        def inner(sample):
+            rows = [i for block in sample for i in block]
+            return weighted_log_loss(
+                result.oof_probabilities[rows], result.oof_y[rows], result.oof_weights[rows]
+            )
+        return inner
+
+    low, high = paired_bootstrap_delta(
+        loss_of(result_a), loss_of(result_b), groups, draws=draws, seed=seed, alpha=alpha
+    )
+    delta = float(
+        weighted_log_loss(result_a.oof_probabilities, result_a.oof_y, result_a.oof_weights)
+        - weighted_log_loss(result_b.oof_probabilities, result_b.oof_y, result_b.oof_weights)
+    )
+    return {
+        "delta": delta, "ci": [float(low), float(high)], "alpha": float(alpha),
+        "excludes_zero": bool(high < 0 or low > 0),
+        "favours": result_a.name if delta < 0 else result_b.name,
+    }
+
+
+def verdict_report(primaries, deployable, practically_equivalent, targets_agree,
+                   max_component_correlation, econ_negative_every_fold,
+                   beats_kill_diff_t1, stability) -> dict:
+    """Four verdicts, printed side by side and never summarized into one.
+
+    A Verdict A1 null alongside a Verdict C signal is a coherent and
+    expected outcome -- 'the shared curve's shape was right, and the mistake
+    was sharing it' -- and collapsing it would destroy the finding.
+    """
+    notes: dict[str, list[str]] = {key: [] for key in VERDICTS}
+
+    cleared = []
+    for name in ("P1", "P2"):
+        entry = primaries[name]
+        candidate = next(p["candidate"] for p in PRIMARY_COMPARISONS if p["name"] == name)
+        if not deployable.get(candidate, True):
+            notes["A1"].append(f"{name}: {candidate} is not deployable and cannot clear the bar")
+            continue
+        if not stability.get(candidate, {}).get("stable", False):
+            notes["A1"].append(f"{name}: {candidate} did not pass the stability criterion")
+            continue
+        if entry["ci"][1] < 0:
+            cleared.append(name)
+
+    items = {
+        1: bool(cleared),
+        2: not practically_equivalent,
+        3: targets_agree,
+        4: max_component_correlation < COLLINEARITY_THRESHOLD,
+        5: not econ_negative_every_fold,
+        6: beats_kill_diff_t1,
+        7: primaries["P3"]["ci"][1] < 0,
+    }
+
+    return {
+        "note": (
+            "A predeclared ANALYSIS PLAN, not a pre-registration: this dataset "
+            "was used to design the candidates and set the thresholds, so it "
+            "does not carry the independence a pre-registration claims. What it "
+            "does buy is that the thresholds cannot move after the results."
+        ),
+        "thresholds": {
+            "practical_equivalence_log_loss": PRACTICAL_EQUIVALENCE_LOSS,
+            "practical_equivalence_rms_share": PRACTICAL_EQUIVALENCE_RMS,
+            "collinearity_below": COLLINEARITY_THRESHOLD,
+            "agreement_spearman_above": AGREEMENT_SPEARMAN,
+            "agreement_rms_share_below": AGREEMENT_RMS_SHARE,
+        },
+        "primaries": primaries,
+        "cleared_primaries": cleared,
+        "verdicts": {
+            key: {
+                "question": question,
+                "items": {str(i): bool(items[i]) for i in indices},
+                "helped": all(items[i] for i in indices),
+                "notes": notes[key],
+            }
+            for key, (question, indices) in VERDICTS.items()
+        },
+    }

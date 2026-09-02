@@ -394,3 +394,112 @@ def test_a_graph_change_moves_the_player_level_read():
     assert a["per_player"]["summary"]["death_impact"]["mean"] != pytest.approx(
         b["per_player"]["summary"]["death_impact"]["mean"], rel=1e-6
     )
+
+
+from app.services.kill_order_refit import (
+    PRIMARY_COMPARISONS,
+    RunIdentity,
+    matrix_is_comparable,
+    paired_delta,
+    verdict_report,
+)
+
+
+def paired_fixture(effect=0.0, n=600, seed=71):
+    from app.services.kill_order_refit import CandidateResult
+
+    rng = np.random.default_rng(seed)
+    y = (rng.uniform(size=n) < 0.5).astype(float)
+    match_ids = np.repeat(np.arange(n // 20), 20)[:n]
+    base = np.clip(rng.uniform(0.3, 0.7, size=n), 0.01, 0.99)
+
+    def make(name, shift):
+        result = CandidateResult(name=name)
+        result.oof_probabilities = np.clip(base + shift * (y - 0.5), 0.01, 0.99)
+        result.oof_y, result.oof_weights, result.oof_match_ids = y, np.ones(n), match_ids
+        return result
+
+    return make("a", effect), make("b", 0.0)
+
+
+def verdict_fixture():
+    return {
+        "primaries": {
+            "P1": {"delta": -0.002, "ci": [-0.004, -0.0005]},
+            "P2": {"delta": -0.001, "ci": [-0.003, 0.001]},
+            "P3": {"delta": -0.0015, "ci": [-0.003, -0.0002]},
+            "P4": {"delta": -0.001, "ci": [-0.003, 0.001]},
+        },
+        "deployable": {"swing_basis": True, "pooled": True},
+        "practically_equivalent": False,
+        "targets_agree": False,
+        "max_component_correlation": 0.81,
+        "econ_negative_every_fold": True,
+        "beats_kill_diff_t1": True,
+        "stability": {"swing_basis": {"stable": True}, "pooled": {"stable": True}},
+    }
+
+
+def test_the_primaries_are_declared_with_their_intervals():
+    names = {p["name"]: p for p in PRIMARY_COMPARISONS}
+    assert set(names) == {"P1", "P2", "P3", "P4"}
+    assert names["P1"]["alpha"] == pytest.approx(0.025)
+    assert names["P2"]["alpha"] == pytest.approx(0.025)
+    assert names["P3"]["alpha"] == pytest.approx(0.05)
+    assert names["P4"]["declares"] is None
+    assert all(p["target"] == "T2" for p in PRIMARY_COMPARISONS)
+
+
+def test_a_co_primary_uses_the_tighter_interval():
+    """97.5% must be strictly harder to clear than 95%, or the multiplicity
+    adjustment is decorative."""
+    a, b = paired_fixture(effect=0.004)
+    wide = paired_delta(a, b, alpha=0.05)
+    tight = paired_delta(a, b, alpha=0.025)
+    assert tight["ci"][0] <= wide["ci"][0]
+    assert tight["ci"][1] >= wide["ci"][1]
+
+
+def test_verdicts_are_reported_separately_and_never_merged():
+    report = verdict_report(**verdict_fixture())
+    assert set(report["verdicts"]) == {"A1", "A2", "B", "C"}
+    for verdict in report["verdicts"].values():
+        assert "helped" in verdict and "items" in verdict
+    assert "overall" not in report
+
+
+def test_a_t1_null_does_not_fail_the_t2_verdict():
+    """The bug this split exists to fix: the primaries declare on T2, while
+    the kill_diff bar is a T1 comparison."""
+    fixture = verdict_fixture()
+    fixture["beats_kill_diff_t1"] = False
+    report = verdict_report(**fixture)
+    assert report["verdicts"]["A2"]["helped"] is False
+    assert report["verdicts"]["A1"]["helped"] is True
+
+
+def test_a_non_deployable_candidate_cannot_clear_the_success_bar():
+    fixture = verdict_fixture()
+    fixture["deployable"] = {"swing_basis": False, "pooled": True}
+    report = verdict_report(**fixture)
+    assert "not deployable" in " ".join(report["verdicts"]["A1"]["notes"]).lower()
+
+
+def test_the_analysis_plan_is_labelled_honestly():
+    report = verdict_report(**verdict_fixture())
+    assert "predeclared analysis plan" in report["note"].lower()
+    assert "pre-registration" in report["note"].lower()
+
+
+def test_the_matrix_refuses_mixed_runs_and_says_which_identity_differed():
+    a = RunIdentity(dataset_fingerprint="1151:abc", fold_mapping_hash="deadbeef",
+                    calculation_version="1/1")
+    assert matrix_is_comparable(a, a) == (True, [])
+
+    for field, value in (("dataset_fingerprint", "1150:abc"),
+                         ("fold_mapping_hash", "cafe"),
+                         ("calculation_version", "2/1")):
+        other = RunIdentity(**{**a.__dict__, field: value})
+        ok, reasons = matrix_is_comparable(a, other)
+        assert not ok
+        assert any(field in r for r in reasons)
