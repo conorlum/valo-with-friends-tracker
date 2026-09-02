@@ -158,15 +158,30 @@ def kill_terms_for_match(
             self_kill = killer_id == victim_id
             killer_team = match_players[killer_id].team
 
+            # _kill_order_bonus's before/after edge lookup depends only on
+            # WHICH raw index decrements, not on killer identity: a TEAM_2
+            # self-kill decrements team1_index (which tracks TEAM_2's own
+            # count) via the exact same edge a TEAM_1 kill on a TEAM_2
+            # opponent would use. shipped_graph() re-indexes every edge by
+            # "which index decrements", so own/opp here must follow the
+            # SAME rule -- keying off killer_team alone (own = killer's
+            # team) is only correct for non-self kills, and a self-kill
+            # then gets attributed to the wrong lattice cell, since the
+            # decremented index (its own team) is on the OTHER side of the
+            # own/opp pair from what killer_team alone would suggest.
+            # Verified against a live gate: a self-kill misattributed this
+            # way produces a ~22-point-per-round reconstruction gap against
+            # the shipped scorer.
             before = f"{team1_index}v{team2_index}"
+            after_a_decrements = (killer_team == Team.TEAM_1) != self_kill
             after_a, after_b = team1_index, team2_index
-            if (killer_team == Team.TEAM_1) != self_kill:
+            if after_a_decrements:
                 after_a -= 1
             else:
                 after_b -= 1
             tracked = _KILL_ORDER_GRAPH.has_edge(before, f"{after_a}v{after_b}")
 
-            if killer_team == Team.TEAM_1:
+            if after_a_decrements:
                 own, opp = team2_index, team1_index
             else:
                 own, opp = team1_index, team2_index
