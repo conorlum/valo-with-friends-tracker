@@ -1,4 +1,5 @@
 from collections import defaultdict
+from dataclasses import dataclass
 
 import networkx as nx
 from sqlalchemy import func
@@ -6,6 +7,32 @@ from sqlalchemy.orm import Session
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Round, RoundPlayerStat
 from app.models.match import Team
+
+
+@dataclass
+class CalculatedImpact:
+    """One (round, match_player)'s computed impact, with NO ORM identity and
+    no session attachment. build_impact_rows_for_match returns these;
+    compute_impact_for_match is the only thing that turns them into rows."""
+
+    round_id: int
+    match_player_id: int
+    kill_impact: int
+    death_impact: int
+    impact: int
+    damage: int
+    econ_impact: int
+    time_impact: int
+    swing_impact: int
+    econ_kill: int
+    econ_death: int
+    clutch_kill: int
+    clutch_death: int
+    post_plant_kill: int
+    post_plant_death: int
+    traded_teammate: int
+    traded_by_teammate: int
+    trade_detail: dict | None
 
 # Bump whenever compute_impact_for_match's scoring algorithm changes in a way
 # that changes ImpactScore values for previously-scored rounds -- folded
@@ -368,7 +395,9 @@ def find_unscored_match_ids(db: Session) -> list[int]:
     ]
 
 
-def compute_impact_for_match(db: Session, match_id: int) -> None:
+def build_impact_rows_for_match(
+    db: Session, match_id: int, use_realized_swing: bool = True
+) -> list[CalculatedImpact]:
     rounds = db.query(Round).filter_by(match_id=match_id).order_by(Round.round_number).all()
     rounds_by_number: dict[int, Round] = {r.round_number: r for r in rounds}
     round_number_by_round_id: dict[int, int] = {r.id: r.round_number for r in rounds}
@@ -543,6 +572,8 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
                     else:
                         team2_kill_index -= 1
 
+    calculated: list[CalculatedImpact] = []
+
     # Aggregate per (round, match_player) and write impact_scores.
     for round_number, mp_stats in round_player_stats.items():
         round_row = rounds_by_number[round_number]
@@ -620,38 +651,60 @@ def compute_impact_for_match(db: Session, match_id: int) -> None:
                 str(k): v for k, v in trade_death_sources[round_number].get(match_player_id, {}).items()
             }
 
-            impact_score = (
-                db.query(ImpactScore)
-                .filter_by(round_id=round_row.id, match_player_id=match_player_id)
-                .one_or_none()
-            )
-            if impact_score is None:
-                impact_score = ImpactScore(round_id=round_row.id, match_player_id=match_player_id)
-                db.add(impact_score)
-
-            impact_score.kill_impact = kill_impact
-            impact_score.death_impact = death_impact
-            impact_score.impact = impact
-
-            impact_score.damage = damages
-            impact_score.econ_impact = round(kill_order_bonus_x_econ_sum - death_order_bonus_x_econ_sum)
-            impact_score.time_impact = round(kill_order_bonus_x_time_sum - death_order_bonus_x_time_sum)
-            impact_score.swing_impact = round(kill_order_bonus_x_swing_sum - death_order_bonus_x_swing_sum)
-            impact_score.econ_kill = round(econ_mismatch_kill_sum)
-            impact_score.econ_death = round(econ_mismatch_death_sum)
-            impact_score.clutch_kill = round(clutch_kill_sum)
-            impact_score.clutch_death = round(clutch_death_sum)
-            impact_score.post_plant_kill = round(post_plant_kill_sum)
-            impact_score.post_plant_death = round(post_plant_death_sum)
-            impact_score.traded_teammate = trade_kill_counts[round_number].get(match_player_id, 0)
-            impact_score.traded_by_teammate = trade_death_counts[round_number].get(match_player_id, 0)
-
-            # Both maps empty is the common case (64.1% of rows) -- store NULL
-            # rather than two empty objects.
-            impact_score.trade_detail = (
-                {"t": traded_teammate_targets, "s": traded_by_teammate_sources}
-                if (traded_teammate_targets or traded_by_teammate_sources)
-                else None
+            calculated.append(
+                CalculatedImpact(
+                    round_id=round_row.id,
+                    match_player_id=match_player_id,
+                    kill_impact=kill_impact,
+                    death_impact=death_impact,
+                    impact=impact,
+                    damage=damages,
+                    econ_impact=round(kill_order_bonus_x_econ_sum - death_order_bonus_x_econ_sum),
+                    time_impact=round(kill_order_bonus_x_time_sum - death_order_bonus_x_time_sum),
+                    swing_impact=round(kill_order_bonus_x_swing_sum - death_order_bonus_x_swing_sum),
+                    econ_kill=round(econ_mismatch_kill_sum),
+                    econ_death=round(econ_mismatch_death_sum),
+                    clutch_kill=round(clutch_kill_sum),
+                    clutch_death=round(clutch_death_sum),
+                    post_plant_kill=round(post_plant_kill_sum),
+                    post_plant_death=round(post_plant_death_sum),
+                    traded_teammate=trade_kill_counts[round_number].get(match_player_id, 0),
+                    traded_by_teammate=trade_death_counts[round_number].get(match_player_id, 0),
+                    trade_detail=(
+                        {"t": traded_teammate_targets, "s": traded_by_teammate_sources}
+                        if (traded_teammate_targets or traded_by_teammate_sources)
+                        else None
+                    ),
+                )
             )
 
+    return calculated
+
+
+_PERSISTED_FIELDS = (
+    "kill_impact", "death_impact", "impact", "damage", "econ_impact",
+    "time_impact", "swing_impact", "econ_kill", "econ_death", "clutch_kill",
+    "clutch_death", "post_plant_kill", "post_plant_death", "traded_teammate",
+    "traded_by_teammate", "trade_detail",
+)
+
+
+def compute_impact_for_match(db: Session, match_id: int) -> None:
+    """Unchanged public behaviour: compute and persist. The calculation now
+    lives in build_impact_rows_for_match so the evaluation tooling can call
+    it read-only -- see
+    docs/superpowers/specs/2026-09-01-impact-win-correlation-design.md."""
+    for calculated in build_impact_rows_for_match(db, match_id, use_realized_swing=True):
+        impact_score = (
+            db.query(ImpactScore)
+            .filter_by(round_id=calculated.round_id, match_player_id=calculated.match_player_id)
+            .one_or_none()
+        )
+        if impact_score is None:
+            impact_score = ImpactScore(
+                round_id=calculated.round_id, match_player_id=calculated.match_player_id
+            )
+            db.add(impact_score)
+        for field in _PERSISTED_FIELDS:
+            setattr(impact_score, field, getattr(calculated, field))
     db.commit()
