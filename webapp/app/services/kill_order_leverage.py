@@ -486,3 +486,85 @@ def load_all_leverage(db, report: dict | None = None):
         report["excluded_matches"] = len(excluded)
         report["excluded_match_ids"] = excluded[:20]
     return team_rows, player_rows
+
+
+from app.scoring.impact import _did_team_win
+
+
+@dataclass(frozen=True)
+class StateVisitRow:
+    """One team's view of one man-advantage state the round passed through.
+
+    Every state entry produces TWO rows, one per team, mirrored: at (3, 2)
+    for team A the same instant is (2, 3) for team B. That is what makes
+    P(win | own, own) come out at exactly 0.5 by construction, which is a
+    useful sanity check on the whole table.
+    """
+
+    match_id: int
+    round_id: int
+    own: int
+    opp: int
+    won: bool
+
+
+def state_visits_for_match(db, match_id: int) -> list[StateVisitRow]:
+    """Replay the alive-count walk again, recording state entries rather
+    than kill terms. Uses impact.py's resurrection rule, like everything
+    else here."""
+    rounds = (
+        db.query(Round).filter(Round.match_id == match_id)
+        .filter(NOT_A_SURRENDER_ROUND).order_by(Round.round_number).all()
+    )
+    outcome_by_round_id = {r.id: r.outcome for r in rounds}
+    teams = {mp.id: mp.team for mp in db.query(MatchPlayer).filter_by(match_id=match_id).all()}
+
+    kills_by_round: dict[int, list] = defaultdict(list)
+    for event in (
+        db.query(KillEvent).join(Round).filter(Round.match_id == match_id)
+        .order_by(KillEvent.event_time_seconds, KillEvent.id).all()
+    ):
+        if event.round_id in outcome_by_round_id:
+            kills_by_round[event.round_id].append(event)
+
+    out: list[StateVisitRow] = []
+    # EVERY eligible round, not just those with kills. A round that ends by
+    # defuse or time expiry with no kills still starts at 5v5, and dropping
+    # it biases P(win | 5v5) toward rounds that contained a kill.
+    for round_id in outcome_by_round_id:
+        events = kills_by_round.get(round_id, [])
+        outcome = outcome_by_round_id[round_id]
+        if not outcome or "Team " not in outcome:
+            continue
+        try:
+            team_1_won = _did_team_win(outcome, Team.TEAM_1)
+        except (IndexError, ValueError):
+            continue
+
+        alive_1 = alive_2 = 5
+
+        def record():
+            out.append(StateVisitRow(match_id, round_id, alive_1, alive_2, team_1_won))
+            out.append(StateVisitRow(match_id, round_id, alive_2, alive_1, not team_1_won))
+
+        record()
+        for position, event in enumerate(events):
+            plain = [
+                {"killer_match_player_id": e.killer_match_player_id,
+                 "death_match_player_id": e.death_match_player_id,
+                 "event_time_seconds": e.event_time_seconds}
+                for e in events
+            ]
+            if _check_for_resurrection(position, plain):
+                continue
+            victim = event.death_match_player_id
+            if victim is None:
+                continue
+            if teams[victim] == Team.TEAM_1:
+                alive_1 -= 1
+            else:
+                alive_2 -= 1
+            if alive_1 < 0 or alive_2 < 0:
+                break
+            record()
+    return out
