@@ -269,6 +269,11 @@ class TeamLeverageRow:
     kill: np.ndarray            # (26, 3)
     death: np.ndarray           # (26, 3), traded discount applied
     death_untraded: np.ndarray  # (26, 3), before the discount
+    # Rung 4 of the control ladder. Two numbers, deliberately: a richer
+    # terminal encoding could reconstruct the round and make the rung 4 -> 5
+    # headline null for reasons unrelated to the price list.
+    terminal_alive_diff: float = 0.0
+    total_kills: int = 0
 
 
 @dataclass(frozen=True)
@@ -348,6 +353,13 @@ def assemble_round(match_id, round_row, terms, match_players, damage_by_match_pl
             total += sign * getattr(row, field)
         return total
 
+    # Read off the walk, never recount victims: impact.py declines to
+    # decrement on events _check_for_resurrection flags, so counting
+    # distinct victims double-subtracts a re-referenced player and can
+    # drive the terminal state negative. A round with no kills is 5v5.
+    alive_a = terms[-1].alive_team1_after if terms else 5
+    alive_b = terms[-1].alive_team2_after if terms else 5
+
     team_row = TeamLeverageRow(
         match_id=match_id,
         round_id=round_row.id,
@@ -359,6 +371,8 @@ def assemble_round(match_id, round_row, terms, match_players, damage_by_match_pl
         kill=combine("kill", flip=False),
         death=combine("death", flip=True),
         death_untraded=combine("death_untraded", flip=True),
+        terminal_alive_diff=float(alive_a - alive_b),
+        total_kills=len(terms),
     )
     return team_row, player_rows
 

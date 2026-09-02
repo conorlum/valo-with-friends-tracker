@@ -151,3 +151,56 @@ def test_every_candidate_is_scored_on_identical_rows():
     reference = results["current_graph"].oof_row_ids
     for result in results.values():
         assert np.array_equal(result.oof_row_ids, reference)
+
+
+from app.services.kill_order_refit import LADDER_RUNGS, control_ladder
+
+
+def test_the_ladder_has_five_rungs_in_the_declared_order():
+    assert LADDER_RUNGS == (
+        "round_result", "plus_context", "plus_damage",
+        "plus_terminal_state", "plus_leverage",
+    )
+
+
+def test_rung_four_adds_exactly_two_columns():
+    """Pinned before the fact: a richer terminal encoding could reconstruct
+    the round and make the headline null for the wrong reason."""
+    observations = synthetic_observations(matches=30)
+    leverage = leverage_for(observations)
+    report = control_ladder(leverage, observations, PRIMARY_T2, n_folds=5)
+    assert report["plus_terminal_state"]["n_features"] - report["plus_damage"]["n_features"] == 2
+    assert report["plus_terminal_state"]["added_columns"] == [
+        "terminal_alive_diff", "total_kills",
+    ]
+
+
+def test_each_rung_is_a_superset_of_the_previous():
+    observations = synthetic_observations(matches=30)
+    leverage = leverage_for(observations)
+    report = control_ladder(leverage, observations, PRIMARY_T2, n_folds=5)
+    previous: set[str] = set()
+    for rung in LADDER_RUNGS:
+        columns = set(report[rung]["columns"])
+        assert previous <= columns, f"{rung} dropped a column the previous rung had"
+        previous = columns
+
+
+def test_the_headline_is_rung_four_to_five_with_a_paired_interval():
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    report = control_ladder(leverage, observations, PRIMARY_T2, n_folds=5, draws=50)
+    headline = report["headline"]
+    assert headline["from"] == "plus_terminal_state"
+    assert headline["to"] == "plus_leverage"
+    low, high = headline["delta_ci"]
+    assert low <= headline["delta"] <= high
+    assert "negative delta" in headline["reading"]
+
+
+def test_the_three_to_four_step_is_reported_too():
+    observations = synthetic_observations(matches=30)
+    leverage = leverage_for(observations)
+    report = control_ladder(leverage, observations, PRIMARY_T2, n_folds=5, draws=50)
+    assert "delta" in report["plus_terminal_state"]
+    assert report["plus_terminal_state"]["delta_from"] == "plus_damage"

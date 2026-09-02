@@ -368,3 +368,154 @@ def _select_l2(name, aligned, train_mask, l2_grid, state_visits, leverage_rows,
             if combined < best_loss:
                 best, best_loss = float(l2), combined
     return best
+
+
+from app.services.impact_eval import CONTROLS_CONTEXT, CONTROLS_RESULT
+from app.services.stats_math import paired_bootstrap_delta
+
+LADDER_RUNGS = (
+    "round_result", "plus_context", "plus_damage",
+    "plus_terminal_state", "plus_leverage",
+)
+
+_RUNG_COLUMNS = {
+    "round_result": list(CONTROLS_RESULT),
+    "plus_context": list(CONTROLS_RESULT) + list(CONTROLS_CONTEXT),
+    "plus_damage": list(CONTROLS_RESULT) + list(CONTROLS_CONTEXT) + ["damage_diff"],
+    "plus_terminal_state": (
+        list(CONTROLS_RESULT) + list(CONTROLS_CONTEXT)
+        + ["damage_diff", "terminal_alive_diff", "total_kills"]
+    ),
+    "plus_leverage": (
+        list(CONTROLS_RESULT) + list(CONTROLS_CONTEXT)
+        + ["damage_diff", "terminal_alive_diff", "total_kills"]
+        + [f"leverage:{name}" for name in PARAMS]
+    ),
+}
+
+
+def _control_matrix(observations, aligned):
+    """The parent's control block, in aligned's row order. controls_for(T2)
+    is exactly CONTROLS_RESULT + CONTROLS_CONTEXT, in that order, which is
+    exactly the column order _RUNG_COLUMNS declares -- so this is aligned's
+    own controls block, unchanged."""
+    return aligned.controls
+
+
+def _rung_design(rung, controls, aligned, extras):
+    """The numeric design matrix for one rung, stacked in the same column
+    order _RUNG_COLUMNS names them in."""
+    if rung == "round_result":
+        return controls[:, :1]
+    blocks = [controls]
+    if rung in ("plus_damage", "plus_terminal_state", "plus_leverage"):
+        blocks.append(aligned.damage[:, None])
+    if rung in ("plus_terminal_state", "plus_leverage"):
+        blocks.append(extras)
+    if rung == "plus_leverage":
+        blocks.append(aligned.leverage)
+    return np.column_stack(blocks)
+
+
+def control_ladder(leverage_rows, observations, config, n_folds=5, seed=0,
+                   l2=1.0, draws=200):
+    """Nested models on the frozen target, each knowing more than the last.
+
+    L2 is DELIBERATELY FROZEN at 1.0 across every rung rather than selected.
+    The ladder measures what each block of columns ADDS, so every rung must
+    face the same penalty: selecting L2 per rung would let a rung win by
+    getting a better hyperparameter rather than better information. The
+    frozen value is stated here so a reader does not mistake it for an
+    oversight, and the report prints it.
+
+    The headline is rung 4 -> 5: what the leverage columns add beyond
+    knowing who won the round, what the teams could afford, how much damage
+    was done, how the round ended and how many kills it took.
+    """
+    aligned = align_target(leverage_rows, observations, config)
+    by_round = {row.round_id: row for row in leverage_rows}
+    extras = np.array([
+        [by_round[int(rid)].terminal_alive_diff, by_round[int(rid)].total_kills]
+        if int(rid) in by_round else [0.0, 0.0]
+        for rid in aligned.round_ids
+    ], dtype=float)
+    controls = _control_matrix(observations, aligned)
+
+    folds = stable_folds(aligned.match_ids, n_folds=n_folds, seed=seed)
+    fold_of = np.array([folds[int(m)] for m in aligned.match_ids])
+
+    predictions: dict[str, np.ndarray] = {}
+    for rung in LADDER_RUNGS:
+        design = _rung_design(rung, controls, aligned, extras)
+        probabilities = np.zeros(len(aligned.y))
+        for fold in range(n_folds):
+            test = fold_of == fold
+            train = ~test
+            if not test.any() or not train.any():
+                continue
+            scaled_train, scaled_test, _c, _s = standardize(design[train], design[test])
+            beta = fit_logistic(scaled_train, aligned.y[train],
+                                weights=aligned.weights[train], l2=l2)
+            probabilities[test] = predict_proba(beta, scaled_test)
+        predictions[rung] = probabilities
+
+    report: dict = {"config": config.name}
+    for position, rung in enumerate(LADDER_RUNGS):
+        entry = {
+            "columns": _RUNG_COLUMNS[rung],
+            "n_features": len(_RUNG_COLUMNS[rung]),
+            "weighted_log_loss": float(
+                weighted_log_loss(predictions[rung], aligned.y, aligned.weights)
+            ),
+        }
+        if position:
+            previous = LADDER_RUNGS[position - 1]
+            entry["delta_from"] = previous
+            entry["added_columns"] = [
+                c for c in _RUNG_COLUMNS[rung] if c not in _RUNG_COLUMNS[previous]
+            ]
+            entry["delta"] = entry["weighted_log_loss"] - float(
+                weighted_log_loss(predictions[previous], aligned.y, aligned.weights)
+            )
+        report[rung] = entry
+
+    report["headline"] = _paired_step(
+        aligned, predictions, "plus_terminal_state", "plus_leverage", draws, seed
+    )
+    report["plus_terminal_state"].update(
+        {k: v for k, v in _paired_step(
+            aligned, predictions, "plus_damage", "plus_terminal_state", draws, seed
+        ).items() if k in ("delta", "delta_ci")}
+    )
+    return report
+
+
+def _paired_step(aligned, predictions, lower, upper, draws, seed):
+    groups: dict[int, list] = {}
+    for index, match_id in enumerate(aligned.match_ids):
+        groups.setdefault(int(match_id), []).append(index)
+
+    def loss_of(name):
+        def inner(sample):
+            rows = [i for block in sample for i in block]
+            return weighted_log_loss(
+                predictions[name][rows], aligned.y[rows], aligned.weights[rows]
+            )
+        return inner
+
+    low, high = paired_bootstrap_delta(
+        loss_of(upper), loss_of(lower), groups, draws=draws, seed=seed
+    )
+    delta = float(
+        weighted_log_loss(predictions[upper], aligned.y, aligned.weights)
+        - weighted_log_loss(predictions[lower], aligned.y, aligned.weights)
+    )
+    return {
+        "from": lower, "to": upper, "delta": delta, "delta_ci": [low, high],
+        "metric": "weighted log loss, upper minus lower",
+        "reading": (
+            "negative delta = the added columns IMPROVED held-out prediction. "
+            "An interval spanning zero means they added nothing measurable, "
+            "which for rung 4 -> 5 is an informative result rather than a failure."
+        ),
+    }
