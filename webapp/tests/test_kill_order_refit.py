@@ -503,3 +503,16 @@ def test_the_matrix_refuses_mixed_runs_and_says_which_identity_differed():
         ok, reasons = matrix_is_comparable(a, other)
         assert not ok
         assert any(field in r for r in reasons)
+
+
+def test_the_report_sections_are_ordered_with_stage_c0_first():
+    from app.services.kill_order_refit import REPORT_SECTIONS
+
+    # identity is provenance, not a finding; stage_c0 is the first CONTENT
+    # section and must precede every fitted number.
+    assert REPORT_SECTIONS[0] == "identity"
+    assert REPORT_SECTIONS[1] == "stage_c0"
+    assert REPORT_SECTIONS[-1] == "verdicts"
+    assert REPORT_SECTIONS.index("stage_c0") < REPORT_SECTIONS.index("family_a")
+    assert REPORT_SECTIONS.index("control_ladder") < REPORT_SECTIONS.index("verdicts")
+    assert REPORT_SECTIONS.index("player_level") < REPORT_SECTIONS.index("verdicts")

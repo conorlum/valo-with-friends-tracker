@@ -1148,3 +1148,25 @@ def verdict_report(primaries, deployable, practically_equivalent, targets_agree,
             for key, (question, indices) in VERDICTS.items()
         },
     }
+
+
+# Bumped whenever a change to this stage's own calculation would alter
+# reported numbers for a fixed dataset (mirrors IMPACT_CALCULATION_VERSION's
+# role for the shipped scorer). Folded into RunIdentity.calculation_version.
+STAGE_C_SCHEMA_VERSION = 1
+
+REPORT_SECTIONS = (
+    "identity",            # dataset fingerprint, fold mapping hash, calculation version
+    "stage_c0",            # FIRST: how much can the graph move Impact at all
+    "loading",             # eligible / excluded match counts
+    "conditioning",        # condition number, effective rank, VIF
+    "per_parameter",       # exposure, rounds touched, VIF -- diagnostics only
+    "family_a",            # G0-G4 per fold: recovered graphs, d, deployability
+    "family_b",            # the B0-B3 ladder
+    "control_ladder",      # five rungs, headline on 4 -> 5
+    "yardstick_matrix",    # targets x yardsticks, refusing mixed Stage A rows
+    "player_level",        # death impact and trades
+    "stability",           # graph-level bootstrap ratio
+    "deferral_check",      # match count against the ~4,000 re-open threshold
+    "verdicts",            # LAST, four of them, never merged
+)
