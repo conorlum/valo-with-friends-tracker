@@ -3499,7 +3499,7 @@ git commit -m "Add Stage 0 with cohorts, within-player centring and per-player c
 
 **Interfaces:**
 - Consumes: `cross_validate`, `fit_constrained_weights`, `FoldResult` (Tasks 10-11); `paired_bootstrap_delta`, `platt_calibrate`, `apply_calibration` (Task 3).
-- Produces: `Candidate` dataclass (`name`, `feature_names`, `weights`); `CURRENT_IMPACT_CANDIDATE`; `BASELINE_CANDIDATES`; `candidate_from_constrained(name, weights) -> Candidate`; `yardstick_first_half`, `yardstick_full_match`, `yardstick_forward_rounds`, each `(observations, candidate) -> (scores, labels, match_ids)`; `YARDSTICKS`; `fold_candidates(observations, fold_results, control_names, name) -> dict[int, Candidate]`; `yardstick_matrix(observations, fixed_candidates, per_fold_candidates, folds, draws, seed) -> dict`.
+- Produces: `Candidate` dataclass (`name`, `feature_names`, `weights`); `CURRENT_IMPACT_CANDIDATE`; `BASELINE_CANDIDATES`; `candidate_from_constrained(name, weights) -> Candidate`; `yardstick_first_half`, `yardstick_full_match`, `yardstick_forward_rounds`, each `(observations, candidate) -> (scores, labels, match_ids)`; `YARDSTICKS`; `fold_candidates(observations, fold_results, name, context_builder=None) -> (dict[int, Candidate], dict[int, ConstrainedWeights])` (controls are derived from the target via `controls_for`, not passed); `yardstick_matrix(observations, fixed_candidates, per_fold_candidates, folds, draws, seed) -> dict`.
 
 **The three yardsticks:**
 
@@ -4555,9 +4555,9 @@ def test_value_model_learns_that_a_lead_is_good():
     for match_id in range(200):
         leading = match_id % 2 == 0
         observations.append(_obs(10, 5 if leading else -5, True, leading, match_id=match_id))
-    beta = fit_value_model(observations)
-    ahead = value_of(beta, state_before(_obs(10, 5, True, True)))
-    behind = value_of(beta, state_before(_obs(10, -5, True, False)))
+    model = fit_value_model(observations)
+    ahead = value_of(model, state_before(_obs(10, 5, True, True)))
+    behind = value_of(model, state_before(_obs(10, -5, True, False)))
     assert ahead > behind
     assert 0.0 <= ahead <= 1.0
 
@@ -4575,9 +4575,9 @@ def test_value_model_uses_a_score_by_progress_interaction():
         observations.append(
             _obs(rounds_played + 1, diff, True, rng.random() < np.clip(p, 0.02, 0.98), match_id=match_id)
         )
-    beta = fit_value_model(observations)
-    early = value_of(beta, state_before(_obs(4, 2, True, True)))
-    late = value_of(beta, state_before(_obs(20, 2, True, True)))
+    model = fit_value_model(observations)
+    early = value_of(model, state_before(_obs(4, 2, True, True)))
+    late = value_of(model, state_before(_obs(20, 2, True, True)))
     assert late > early
 
 
@@ -4992,7 +4992,7 @@ def wpa_target(observations, feature_names: list[str], context: dict) -> FitData
     """
     if not context or "value_beta" not in context:
         raise ValueError("wpa_target requires a context carrying 'value_beta'")
-    fallback = context["value_beta"]
+    fallback_model = context["value_beta"]
     # Training rows get an INNER-OOF value model (one that did not see their
     # own match), so the leverage weights used to fit the component weights
     # are not this model's in-sample predictions of the very rows it was fit
@@ -5004,8 +5004,8 @@ def wpa_target(observations, feature_names: list[str], context: dict) -> FitData
     for o in observations:
         if o.round_won_by_team_a is None:
             continue
-        beta = per_match.get(o.match_id, fallback)
-        leverage = abs(value_of(beta, state_after(o)) - value_of(beta, state_before(o)))
+        model = per_match.get(o.match_id, fallback_model)
+        leverage = abs(value_of(model, state_after(o)) - value_of(model, state_before(o)))
         rows.append(_row(o, feature_names))
         ys.append(1.0 if o.round_won_by_team_a else 0.0)
         ws.append(leverage)
