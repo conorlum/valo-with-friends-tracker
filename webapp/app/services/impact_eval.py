@@ -12,6 +12,7 @@ outcomes, so treating them as two observations would double every
 apparent sample size.
 """
 
+import hashlib
 from dataclasses import dataclass
 
 import numpy as np
@@ -285,6 +286,68 @@ def assign_folds(match_ids, n_folds: int = 5, seed: int = 0) -> dict[int, int]:
     rng = np.random.default_rng(seed)
     order = rng.permutation(len(unique))
     return {unique[int(pos)]: int(i % n_folds) for i, pos in enumerate(order)}
+
+
+_FIB64 = 0x9E3779B97F4A7C15  # nearest odd 64-bit int to 2**64 / golden ratio
+_MASK64 = (1 << 64) - 1
+
+
+def stable_folds(match_ids, n_folds: int = 5, seed: int = 0) -> dict[int, int]:
+    """match_id -> fold index, independent of what else is in the set.
+
+    assign_folds permutes over the COLLECTION, so adding or excluding a
+    single match can move every other match to a different fold even with
+    the same seed. That makes a shared Stage A / Stage C yardstick matrix
+    silently incomparable. Here the fold comes from match_id alone (plus a
+    seed-derived offset), so a match lands in the same fold regardless of
+    its neighbours.
+
+    Multiplicative (Fibonacci) hashing, not a cryptographic hash mod
+    n_folds. Measured: SHA-256(seed:match_id) mod 5 over 1,151 sequential
+    ids -- the realistic shape of this table's primary keys -- splits
+    199/207/246/249/250, a range of 51 against this stage's own <10%
+    balance tolerance, because a hash mod small n carries O(sqrt(N))
+    sampling noise per bucket regardless of hash quality. Multiplying by an
+    odd constant near 2**64/phi is a textbook equidistributing hash for
+    exactly this shape of input (contiguous or near-contiguous integer
+    keys) and lands within 1 of a perfect split on the same 1,151 ids.
+
+    The seed enters as an additive offset derived from SHA-256 of the seed
+    alone (not Python's per-process-randomized hash()), so the offset --
+    and therefore the whole partition -- is reproducible across restarts
+    and unrelated between seeds.
+
+    assign_folds is deliberately left untouched -- the parent project's
+    committed results were produced with it, and changing it would move
+    published numbers.
+    """
+    seed_bytes = hashlib.sha256(f"stable_folds_seed:{int(seed)}".encode()).digest()
+    offset = int.from_bytes(seed_bytes[:8], "big")
+    out: dict[int, int] = {}
+    for match_id in {int(m) for m in match_ids}:
+        mixed = (((match_id + offset) & _MASK64) * _FIB64) & _MASK64
+        out[match_id] = (mixed * int(n_folds)) >> 64
+    return out
+
+
+def dataset_fingerprint(match_ids) -> str:
+    """Stable identity for an eligible match SET."""
+    unique = sorted({int(m) for m in match_ids})
+    payload = ",".join(str(m) for m in unique).encode()
+    return f"{len(unique)}:{hashlib.sha256(payload).hexdigest()[:16]}"
+
+
+def fold_mapping_hash(folds: dict[int, int]) -> str:
+    """Stable identity for an ACTUAL match -> fold assignment.
+
+    Not redundant with dataset_fingerprint, and assuming it was is the hole
+    this closes: the parent project's results used the permutation-based
+    assign_folds, so the same match set can carry a completely different
+    assignment. Same fingerprint, different folds, a matrix that looks
+    comparable and is not.
+    """
+    payload = ";".join(f"{int(m)}:{int(f)}" for m, f in sorted(folds.items())).encode()
+    return hashlib.sha256(payload).hexdigest()[:16]
 
 
 def group_by_match(observations) -> dict[int, list]:
