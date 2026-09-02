@@ -105,3 +105,138 @@ def test_estimating_from_a_training_subset_ignores_held_out_matches():
     assert np.isclose(from_training_only.dp[PARAM_INDEX["3v3"]], 0.0)
     polluted = estimate_swing_table(training + held_out)
     assert not np.isclose(polluted.dp[PARAM_INDEX["3v3"]], 0.0)
+
+
+from app.services.kill_order_curves import (
+    ScoredCandidate,
+    basis_for,
+    check_deployable,
+    construction_normalize,
+    family_a_leverage,
+    normalize_for_display,
+    recover_graph,
+    score_rounds,
+)
+from app.services.kill_order_leverage import COMPONENTS, shipped_graph
+
+
+class FakeTeamRow:
+    def __init__(self, kill, death, damage_diff=0.0):
+        self.kill = kill
+        self.death = death
+        self.death_untraded = death
+        self.damage_diff = damage_diff
+
+
+def rows_with(values, damage=0.0):
+    """One row whose (kill + death) leverage equals `values` per parameter,
+    spread evenly across the three components."""
+    kill = np.zeros((len(PARAMS), len(COMPONENTS)))
+    for name, value in values.items():
+        kill[PARAM_INDEX[name], :] = value / len(COMPONENTS)
+    return FakeTeamRow(kill=kill, death=np.zeros_like(kill), damage_diff=damage)
+
+
+def test_family_a_leverage_collapses_components_with_the_shipped_weights():
+    """FACTOR_WEIGHTS are all 1.0 and divide by 3, so Family A's single
+    column per parameter is the mean over components of kill + death."""
+    row = rows_with({"3v3": 6.0})
+    X = family_a_leverage([row])
+    assert X.shape == (1, len(PARAMS))
+    assert np.isclose(X[0, PARAM_INDEX["3v3"]], 2.0)
+
+
+def test_bases_have_the_expected_widths_and_nest():
+    """G1b/G2 are over the LATTICE ONLY (25 rows): their fallback is pinned
+    and enters the fit through the composite damage column instead, and
+    fit_family_a multiplies them against the lattice-sliced leverage
+    (train_leverage[:, LATTICE] @ basis), which requires exactly 25 rows.
+    G4 is unstructured over the full 26 columns, fallback included."""
+    table = type("T", (), {"dp": np.linspace(0.01, 0.5, len(PARAMS))})()
+    assert basis_for("G1b", table).shape == (25, 2)
+    assert basis_for("G2", table).shape == (25, 5)
+    assert basis_for("G4", table).shape == (len(PARAMS), len(PARAMS))
+    # G2 contains G1b: zeroing its last three coefficients leaves the affine fit.
+    g2 = basis_for("G2", table)
+    assert np.allclose(g2[:, :2], basis_for("G1b", table))
+
+
+def test_a_nan_dp_is_pinned_rather_than_propagated_into_the_basis():
+    """The fallback has no dP. If it reached the basis as NaN the whole fit
+    would return NaN, silently."""
+    dp = np.full(len(PARAMS), 0.2)
+    dp[PARAM_INDEX["fallback"]] = np.nan
+    table = type("T", (), {"dp": dp})()
+    for name in ("G1b", "G2"):
+        assert np.all(np.isfinite(basis_for(name, table)))
+
+
+def test_recover_divides_every_coefficient_by_the_damage_coefficient():
+    basis = np.eye(len(PARAMS))
+    beta = np.zeros(1 + 1 + len(PARAMS))
+    beta[1] = 2.0                       # d
+    beta[2:] = 8.0                      # q
+    graph, d = recover_graph(beta, damage_index=0, basis=basis)
+    assert np.isclose(d, 2.0)
+    assert np.allclose(graph, 4.0)
+
+
+def test_recovery_refuses_a_non_positive_damage_coefficient():
+    basis = np.eye(len(PARAMS))
+    beta = np.zeros(1 + 1 + len(PARAMS))
+    beta[1] = -0.5
+    beta[2:] = 8.0
+    graph, d = recover_graph(beta, damage_index=0, basis=basis)
+    assert d == -0.5
+    ok, reasons = check_deployable(graph, d, exposure=np.ones(len(PARAMS)))
+    assert not ok
+    assert any("damage" in r for r in reasons)
+
+
+def test_deployability_rejects_a_negative_price_with_real_exposure():
+    graph = shipped_graph().copy()
+    graph[PARAM_INDEX["3v3"]] = -20.0
+    exposure = np.ones(len(PARAMS)) * 1000
+    ok, reasons = check_deployable(graph, d=1.0, exposure=exposure)
+    assert not ok
+    assert any("3v3" in r for r in reasons)
+
+
+def test_deployability_ignores_a_negative_price_with_no_exposure():
+    graph = shipped_graph().copy()
+    graph[PARAM_INDEX["1v5"]] = -1.0
+    exposure = np.ones(len(PARAMS)) * 1000
+    exposure[PARAM_INDEX["1v5"]] = 0.0
+    ok, _ = check_deployable(graph, d=1.0, exposure=exposure)
+    assert ok
+
+
+def test_scoring_is_damage_plus_the_graph_weighted_leverage():
+    row = rows_with({"3v3": 6.0}, damage=12.0)
+    X = family_a_leverage([row])
+    graph = np.zeros(len(PARAMS))
+    graph[PARAM_INDEX["3v3"]] = 10.0
+    scores = score_rounds(X, np.array([12.0]), graph)
+    assert np.isclose(scores[0], 12.0 + 2.0 * 10.0)
+
+
+def test_construction_normalization_matches_a_training_reference_mean():
+    exposure = np.zeros(len(PARAMS))
+    exposure[PARAM_INDEX["3v3"]] = 3.0
+    exposure[PARAM_INDEX["5v5"]] = 1.0
+    raw = np.zeros(len(PARAMS))
+    raw[PARAM_INDEX["3v3"]] = 0.2
+    raw[PARAM_INDEX["5v5"]] = 0.6
+    reference = shipped_graph()
+    scaled = construction_normalize(raw, exposure, reference)
+    target = float(np.sum(exposure * reference) / exposure.sum())
+    assert np.isclose(float(np.sum(exposure * scaled) / exposure.sum()), target)
+    assert np.isclose(scaled[PARAM_INDEX["5v5"]] / scaled[PARAM_INDEX["3v3"]], 3.0)
+
+
+def test_display_normalization_does_not_change_ordering():
+    graph = shipped_graph()
+    exposure = np.ones(len(PARAMS))
+    shown = normalize_for_display(graph, exposure)
+    assert np.isclose(float(np.sum(exposure * shown) / exposure.sum()), 136.6, atol=1e-6)
+    assert np.array_equal(np.argsort(graph), np.argsort(shown))
