@@ -232,3 +232,113 @@ def normalize_for_display(graph, exposure):
     if current == 0:
         return np.asarray(graph, dtype=float).copy()
     return np.asarray(graph, dtype=float) * (DISPLAY_MEAN / current)
+
+
+from app.services.stats_math import back_transform, fit_logistic, standardize
+
+FAMILY_A = ("current_graph", "swing_plugin", "swing_affine", "swing_basis", "pooled", "free")
+_FITTED_BASIS = {"swing_affine": "G1b", "swing_basis": "G2", "free": "G4"}
+
+
+def _fit_and_recover(design_train, y_train, weights, l2, design_test, damage_index,
+                     basis, penalty=None):
+    """Standardize on TRAIN, fit, back-transform, recover (graph, d).
+
+    Standardization is on training statistics and the coefficients are
+    back-transformed before recovery, because b = q/d is a ratio of RAW-unit
+    coefficients -- recovering from standardized ones would divide by the
+    wrong scale.
+    """
+    scaled_train, _scaled_test, centre, scale = standardize(design_train, design_test)
+    beta = fit_logistic(scaled_train, y_train, weights=weights, l2=l2, penalty=penalty)
+    raw = back_transform(beta, centre, scale)
+    graph, d = recover_graph(raw, damage_index=damage_index, basis=basis)
+    return graph, d
+
+
+def fit_family_a(name, train, test, table, l2, exposure, shipped, prior=None, controls=None):
+    """One Family A candidate, fitted on `train` and scored on `test`.
+
+    train = (leverage, damage_diff, y, weights); test = (leverage,
+    damage_diff, weights). `exposure` and `table` must come from TRAINING
+    rows -- both feed candidate construction.
+    """
+    train_leverage, train_damage, y_train, w_train = train
+    test_leverage, test_damage, _w_test = test
+    controls_train, controls_test = (controls or (None, None))
+
+    def stack(*blocks):
+        usable = [np.asarray(b, dtype=float) for b in blocks if b is not None and np.size(b)]
+        return np.column_stack(usable)
+
+    n_controls = 0 if controls_train is None else np.asarray(controls_train).shape[1]
+
+    fallback = PARAM_INDEX["fallback"]
+
+    if name == "current_graph":
+        graph, d = np.asarray(shipped, dtype=float), 1.0
+    elif name == "swing_plugin":
+        # Normalize the 25 LATTICE values against the shipped lattice, then
+        # pin the fallback. Including a parameter with no state in the
+        # normalization would let it move the whole curve's scale.
+        scaled = construction_normalize(
+            lattice_dp(table), exposure[LATTICE], np.asarray(shipped)[LATTICE]
+        )
+        graph = np.empty(len(PARAMS))
+        graph[LATTICE] = scaled
+        graph[fallback] = FALLBACK_WEIGHT
+        d = 1.0
+    elif name == "pooled":
+        if prior is None:
+            prior = fit_family_a(
+                "swing_plugin", train, test, table, l2, exposure, shipped
+            ).graph
+        b_prior = np.asarray(prior, dtype=float)
+        composite = train_damage + train_leverage @ b_prior
+        composite_test = test_damage + test_leverage @ b_prior
+        design_train = stack(controls_train, composite, train_leverage)
+        design_test = stack(controls_test, composite_test, test_leverage)
+        # The composite damage column carries d and MUST stay unpenalised:
+        # penalising it drives d and delta to zero together, and delta/d then
+        # never converges on the prior. Measured -- see Task 1.
+        mask = np.ones(design_train.shape[1])
+        mask[n_controls] = 0.0
+        delta_graph, d = _fit_and_recover(
+            design_train, y_train, w_train, l2, design_test,
+            damage_index=n_controls, basis=np.eye(len(PARAMS)), penalty=mask,
+        )
+        # recover_graph already divided by d, so delta_graph IS delta/d.
+        graph = b_prior + delta_graph
+    elif name == "free":
+        design_train = stack(controls_train, train_damage, train_leverage)
+        design_test = stack(controls_test, test_damage, test_leverage)
+        graph, d = _fit_and_recover(
+            design_train, y_train, w_train, l2, design_test,
+            damage_index=n_controls, basis=np.eye(len(PARAMS)),
+        )
+    else:
+        # Structured families: the fallback is PINNED at the shipped 100 and
+        # rides in the composite damage column, so the basis fits the 25
+        # lattice states only.
+        basis = basis_for(_FITTED_BASIS[name], table)
+        composite = train_damage + FALLBACK_WEIGHT * train_leverage[:, fallback]
+        composite_test = test_damage + FALLBACK_WEIGHT * test_leverage[:, fallback]
+        design_train = stack(controls_train, composite, train_leverage[:, LATTICE] @ basis)
+        design_test = stack(controls_test, composite_test, test_leverage[:, LATTICE] @ basis)
+        lattice_graph, d = _fit_and_recover(
+            design_train, y_train, w_train, l2, design_test,
+            damage_index=n_controls, basis=basis,
+        )
+        graph = np.empty(len(PARAMS))
+        graph[LATTICE] = lattice_graph
+        graph[fallback] = FALLBACK_WEIGHT
+
+    deployable, reasons = check_deployable(graph, d, exposure)
+    return ScoredCandidate(
+        name=name,
+        scores=score_rounds(test_leverage, test_damage, graph),
+        d=float(d),
+        deployable=deployable,
+        reasons=tuple(reasons),
+        graph=np.asarray(graph, dtype=float),
+    )

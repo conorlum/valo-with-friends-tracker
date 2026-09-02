@@ -240,3 +240,121 @@ def test_display_normalization_does_not_change_ordering():
     shown = normalize_for_display(graph, exposure)
     assert np.isclose(float(np.sum(exposure * shown) / exposure.sum()), 136.6, atol=1e-6)
     assert np.array_equal(np.argsort(graph), np.argsort(shown))
+
+
+from app.services.kill_order_curves import FAMILY_A, fit_family_a
+
+
+def synthetic_fold(n=900, seed=3):
+    """Rounds whose outcome genuinely depends on a known graph, so a fit
+    has something to find. Two active parameters keep it small."""
+    rng = np.random.default_rng(seed)
+    truth = np.zeros(len(PARAMS))
+    truth[PARAM_INDEX["5v5"]] = 150.0
+    truth[PARAM_INDEX["3v3"]] = 180.0
+
+    leverage = np.zeros((n, len(PARAMS)))
+    leverage[:, PARAM_INDEX["5v5"]] = rng.normal(size=n)
+    leverage[:, PARAM_INDEX["3v3"]] = rng.normal(size=n)
+    damage = rng.normal(size=n) * 20.0
+    score = damage + leverage @ truth
+    y = (rng.uniform(size=n) < 1 / (1 + np.exp(-score / 60.0))).astype(float)
+    return leverage, damage, y, truth
+
+
+def flat_table():
+    dp = np.full(len(PARAMS), 0.25)
+    dp[PARAM_INDEX["3v3"]] = 0.30
+    return type("T", (), {"dp": dp})()
+
+
+def test_every_family_a_name_produces_a_scored_candidate():
+    leverage, damage, y, _ = synthetic_fold()
+    exposure = np.abs(leverage).sum(axis=0)
+    for name in FAMILY_A:
+        candidate = fit_family_a(
+            name, train=(leverage, damage, y, None), test=(leverage, damage, None),
+            table=flat_table(), l2=1.0, exposure=exposure, shipped=shipped_graph(),
+        )
+        assert isinstance(candidate, ScoredCandidate)
+        assert candidate.scores.shape == (len(y),)
+        assert candidate.name == name
+
+
+def test_current_graph_scores_the_shipped_values_without_fitting():
+    leverage, damage, y, _ = synthetic_fold()
+    exposure = np.abs(leverage).sum(axis=0)
+    candidate = fit_family_a(
+        "current_graph", train=(leverage, damage, y, None), test=(leverage, damage, None),
+        table=flat_table(), l2=1.0, exposure=exposure, shipped=shipped_graph(),
+    )
+    assert np.allclose(candidate.graph, shipped_graph())
+    assert np.allclose(candidate.scores, damage + leverage @ shipped_graph())
+
+
+def test_free_recovers_a_graph_close_to_the_truth_on_active_parameters():
+    leverage, damage, y, truth = synthetic_fold(n=4000)
+    exposure = np.abs(leverage).sum(axis=0)
+    candidate = fit_family_a(
+        "free", train=(leverage, damage, y, None), test=(leverage, damage, None),
+        table=flat_table(), l2=0.01, exposure=exposure, shipped=shipped_graph(),
+    )
+    assert candidate.d > 0
+    for name in ("5v5", "3v3"):
+        assert candidate.graph[PARAM_INDEX[name]] == pytest.approx(
+            truth[PARAM_INDEX[name]], rel=0.35
+        )
+
+
+def test_pooled_shrinks_the_DEPLOYED_graph_toward_the_prior_not_prior_over_d():
+    """The regression test for the parameterization trap. With a large
+    penalty the recovered graph must go to the prior, NOT to prior/d."""
+    leverage, damage, y, _ = synthetic_fold(n=3000)
+    exposure = np.abs(leverage).sum(axis=0)
+    prior = np.full(len(PARAMS), 90.0)
+
+    candidate = fit_family_a(
+        "pooled", train=(leverage, damage, y, None), test=(leverage, damage, None),
+        table=flat_table(), l2=1e6, exposure=exposure, shipped=shipped_graph(), prior=prior,
+    )
+    active = [PARAM_INDEX["5v5"], PARAM_INDEX["3v3"]]
+    assert np.allclose(candidate.graph[active], prior[active], rtol=0.02)
+    assert not np.allclose(candidate.graph[active], (prior / candidate.d)[active], rtol=0.02)
+
+
+def test_pooled_with_no_penalty_moves_away_from_the_prior():
+    leverage, damage, y, truth = synthetic_fold(n=4000)
+    exposure = np.abs(leverage).sum(axis=0)
+    prior = np.full(len(PARAMS), 90.0)
+    candidate = fit_family_a(
+        "pooled", train=(leverage, damage, y, None), test=(leverage, damage, None),
+        table=flat_table(), l2=1e-6, exposure=exposure, shipped=shipped_graph(), prior=prior,
+    )
+    assert candidate.graph[PARAM_INDEX["3v3"]] > prior[PARAM_INDEX["3v3"]] * 1.2
+
+
+def test_swing_plugin_is_construction_normalized_against_the_training_reference():
+    leverage, damage, y, _ = synthetic_fold()
+    exposure = np.abs(leverage).sum(axis=0)
+    candidate = fit_family_a(
+        "swing_plugin", train=(leverage, damage, y, None), test=(leverage, damage, None),
+        table=flat_table(), l2=1.0, exposure=exposure, shipped=shipped_graph(),
+    )
+    target = float(np.sum(exposure * shipped_graph()) / exposure.sum())
+    actual = float(np.sum(exposure * candidate.graph) / exposure.sum())
+    assert np.isclose(actual, target)
+    assert candidate.graph[PARAM_INDEX["3v3"]] > candidate.graph[PARAM_INDEX["5v5"]]
+
+
+def test_a_fit_with_a_non_positive_damage_coefficient_is_marked_non_deployable():
+    """Sign-flipped damage: the recovery is meaningless and must be said so
+    rather than rescaled into something plausible."""
+    leverage, damage, y, _ = synthetic_fold(n=2000)
+    exposure = np.abs(leverage).sum(axis=0)
+    candidate = fit_family_a(
+        "free", train=(leverage, -damage, y, None), test=(leverage, -damage, None),
+        table=flat_table(), l2=0.01, exposure=exposure, shipped=shipped_graph(),
+    )
+    if candidate.d <= 0:
+        assert not candidate.deployable
+        assert any("damage" in r for r in candidate.reasons)
