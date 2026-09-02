@@ -594,3 +594,126 @@ def test_sign_direction_distinguishes_helpful_from_anti_predictive():
     assert diag["sign_stability"]["econ_impact"] == max(
         diag["sign_direction"]["econ_impact"], 1 - diag["sign_direction"]["econ_impact"]
     )
+
+
+from app.services.impact_eval import (
+    BASELINE_CANDIDATES,
+    CURRENT_IMPACT_CANDIDATE,
+    Candidate,
+    fold_candidates,
+    yardstick_first_half,
+    yardstick_forward_rounds,
+    yardstick_full_match,
+    yardstick_matrix,
+)
+
+
+def _decisive_match(match_id, damage, team_a_wins):
+    obs = [_obs(n, damage, team_a_wins, team_a_wins, match_id=match_id) for n in range(1, 13)]
+    obs[-1].is_terminal = True
+    return obs
+
+
+def test_first_half_yardstick_scores_one_row_per_eligible_match():
+    obs = _decisive_match(1, 10.0, True) + _decisive_match(2, -10.0, False)
+    scores, labels, mids = yardstick_first_half(obs, CURRENT_IMPACT_CANDIDATE)
+    assert len(scores) == 2
+    assert labels == [1, 0]
+    assert scores[0] > scores[1]
+    assert sorted(mids) == [1, 2]
+
+
+def test_first_half_yardstick_skips_incomplete_matches():
+    short = [_obs(n, 1.0, True, True, match_id=9) for n in range(1, 6)]
+    assert yardstick_first_half(short, CURRENT_IMPACT_CANDIDATE)[0] == []
+
+
+def test_full_match_yardstick_uses_every_round():
+    obs = _decisive_match(1, 10.0, True) + [_obs(13, 10.0, True, True, match_id=1)]
+    half, _, _ = yardstick_first_half(obs, CURRENT_IMPACT_CANDIDATE)
+    full, _, _ = yardstick_full_match(obs, CURRENT_IMPACT_CANDIDATE)
+    assert full[0] > half[0]
+
+
+def test_forward_rounds_yardstick_labels_rounds_two_ahead():
+    """Round 1's label comes from rounds 3+, never rounds 1 or 2."""
+    obs = [_obs(n, 1.0, n > 2, True, match_id=1) for n in range(1, 13)]
+    obs[-1].is_terminal = True
+    scores, labels, _ = yardstick_forward_rounds(obs, CURRENT_IMPACT_CANDIDATE)
+    assert labels[0] == 1
+
+
+def test_baselines_are_not_duplicates():
+    """kills and deaths were the same column twice; only one kill baseline
+    survives."""
+    names = {c.name for c in BASELINE_CANDIDATES}
+    assert "kill_diff" in names
+    assert "kills_and_deaths" not in names
+    assert all(isinstance(c, Candidate) for c in BASELINE_CANDIDATES)
+
+
+def test_fold_candidates_are_fitted_on_training_matches_only(monkeypatch):
+    observations = _weighted_matches(n_matches=40, seed=11)
+    result = cross_validate(observations, [DIAG_CONFIG], FEATURE_COMPONENTS, [1.0], seed=0)
+
+    seen = []
+    original = impact_eval.fit_constrained_weights
+
+    def spy(obs, *args, **kwargs):
+        seen.append({o.match_id for o in obs})
+        return original(obs, *args, **kwargs)
+
+    monkeypatch.setattr(impact_eval, "fit_constrained_weights", spy)
+    fold_candidates(observations, result["folds"], "fitted")
+
+    assert len(seen) == len(result["folds"])
+    for fold, train_ids in zip(result["folds"], seen):
+        assert train_ids.isdisjoint(fold.test_match_ids)
+
+
+def test_fold_candidates_returns_the_weights_for_reporting():
+    observations = _weighted_matches(n_matches=30, seed=14)
+    result = cross_validate(observations, [DIAG_CONFIG], FEATURE_COMPONENTS, [1.0], seed=0)
+    candidates, weights = fold_candidates(observations, result["folds"], "fitted")
+    assert set(candidates) == set(weights)
+    assert all(hasattr(w, "econ") for w in weights.values())
+
+
+def test_controls_are_derived_per_target():
+    """round_result belongs with T2 (the ladder's claim) but never with WPA,
+    where it is the label."""
+    from app.services.impact_eval import controls_for
+
+    assert "round_result" in controls_for(TargetConfig(name="T2"))
+    assert "round_result" not in controls_for(TargetConfig(name="WPA"))
+    assert controls_for(TargetConfig(name="T1")) == []
+    with pytest.raises(ValueError, match="no control set"):
+        controls_for(TargetConfig(name="nope"))
+
+
+def test_matrix_scores_each_fold_candidate_on_its_own_test_matches():
+    observations = _weighted_matches(n_matches=40, seed=12)
+    result = cross_validate(observations, [DIAG_CONFIG], FEATURE_COMPONENTS, [1.0], seed=0)
+    folds = {f.fold: f for f in result["folds"]}
+    per_fold = fold_candidates(observations, result["folds"], "fitted")
+
+    matrix = yardstick_matrix(
+        observations, [CURRENT_IMPACT_CANDIDATE, *BASELINE_CANDIDATES],
+        {"fitted": per_fold[0]}, folds, draws=20, seed=0,
+    )
+    assert "forward_rounds" in matrix
+    cell = matrix["forward_rounds"]["fitted"]
+    assert cell is not None and cell["n"] > 0
+    assert "gap_over_kill_diff" in cell
+    assert "gap_ci" in cell, "the gap needs a PAIRED interval, not two separate ones"
+    assert "log_loss_ci" in cell, "every cell carries CIs for both metrics"
+
+
+def test_matrix_reports_paired_gap_ci_not_a_difference_of_point_estimates():
+    observations = _weighted_matches(n_matches=30, seed=13)
+    matrix = yardstick_matrix(
+        observations, [CURRENT_IMPACT_CANDIDATE, *BASELINE_CANDIDATES], {}, {}, draws=20, seed=0
+    )
+    cell = matrix["forward_rounds"]["current_impact"]
+    lo, hi = cell["gap_ci"]
+    assert lo <= cell["gap_over_kill_diff"] <= hi

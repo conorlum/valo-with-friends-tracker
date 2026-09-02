@@ -904,3 +904,309 @@ def coefficient_diagnostics(
         "drop_one": drop_one,
         "bootstrap_draws_completed": completed,
     }
+
+
+@dataclass
+class Candidate:
+    """A weighting to be scored. Baselines share the shape of fitted
+    weightings so every candidate goes through identical code."""
+
+    name: str
+    feature_names: list[str]
+    weights: list[float]
+
+
+# Reads the EXACT impact differential rather than rebuilding it from the four
+# components. impact.py round()s kill_impact, death_impact and each component
+# independently, so a reconstruction carries a couple of points of error per
+# player-round -- across 10 players and ~21 rounds that is enough to move a
+# close comparison against a fitted candidate.
+CURRENT_IMPACT_CANDIDATE = Candidate(
+    name="current_impact",
+    feature_names=["impact_diff"],
+    weights=[1.0],
+)
+
+# ONE kill baseline. kills and deaths as separate columns was the same
+# column twice: kills_and_deaths.[1,-1] == kills - deaths algebraically, and
+# deaths_A == kills_B in 99.1% of this DB's rounds.
+BASELINE_CANDIDATES = [
+    Candidate("kill_diff", BASELINE_KILL_DIFF, [1.0]),
+    Candidate("damage_only", BASELINE_DAMAGE, [1.0]),
+]
+
+
+def candidate_from_constrained(name: str, weights: ConstrainedWeights) -> Candidate:
+    return Candidate(
+        name=name,
+        feature_names=FEATURE_COMPONENTS,
+        weights=[
+            weights.damage_multiplier,
+            weights.econ / FACTOR_WEIGHT_TOTAL,
+            weights.time / FACTOR_WEIGHT_TOTAL,
+            weights.swing / FACTOR_WEIGHT_TOTAL,
+        ],
+    )
+
+
+def _score_of(observation, candidate: Candidate) -> float:
+    return sum(
+        weight * _feature_value(observation, name)
+        for name, weight in zip(candidate.feature_names, candidate.weights)
+    )
+
+
+def yardstick_first_half(observations, candidate: Candidate):
+    """Y1. One row per eligible match: candidate score summed over rounds
+    1-12 versus the match result. Not split by side -- every first-half row
+    is attack-first for team A, so the other subset is empty."""
+    scores, labels, mids = [], [], []
+    for match_id, obs in group_by_match(observations).items():
+        first_half = [o for o in obs if o.round_number <= FIRST_HALF_ROUNDS]
+        if len(first_half) != FIRST_HALF_ROUNDS or first_half[0].match_won_by_team_a is None:
+            continue
+        scores.append(sum(_score_of(o, candidate) for o in first_half))
+        labels.append(1 if first_half[0].match_won_by_team_a else 0)
+        mids.append(match_id)
+    return scores, labels, mids
+
+
+def yardstick_full_match(observations, candidate: Candidate):
+    """Y2. Every round. Absolute discrimination is inflated because the
+    features contain the outcome's own kills -- read only as the paired gap
+    over kill_diff."""
+    scores, labels, mids = [], [], []
+    for match_id, obs in group_by_match(observations).items():
+        if not obs or obs[0].match_won_by_team_a is None:
+            continue
+        scores.append(sum(_score_of(o, candidate) for o in obs))
+        labels.append(1 if obs[0].match_won_by_team_a else 0)
+        mids.append(match_id)
+    return scores, labels, mids
+
+
+def yardstick_forward_rounds(observations, candidate: Candidate):
+    """Y3. Round N's score versus who won the majority of rounds N+2 onward
+    within the same half. Skipping N+1 keeps the strongest post-round
+    mediator out of the label."""
+    scores, labels, mids = [], [], []
+    for match_id, obs in group_by_match(observations).items():
+        by_half: dict[int, list] = {}
+        for o in obs:
+            by_half.setdefault(_half_of(o.round_number), []).append(o)
+        for half_obs in by_half.values():
+            half_obs.sort(key=lambda o: o.round_number)
+            for index, o in enumerate(half_obs):
+                future = [f for f in half_obs[index + 2 :] if f.round_won_by_team_a is not None]
+                if not future:
+                    continue
+                won = sum(1 for f in future if f.round_won_by_team_a)
+                if won * 2 == len(future):
+                    continue  # an exact split has no majority to predict
+                scores.append(_score_of(o, candidate))
+                labels.append(1 if won * 2 > len(future) else 0)
+                mids.append(match_id)
+    return scores, labels, mids
+
+
+YARDSTICKS = {
+    "first_half_to_match": yardstick_first_half,
+    "full_match_to_match": yardstick_full_match,
+    "forward_rounds": yardstick_forward_rounds,
+}
+
+
+def fold_candidates(
+    observations, fold_results, name: str, context_builder=None
+) -> dict[int, Candidate]:
+    """One constrained weighting per outer fold, fitted on that fold's
+    TRAINING matches only. The matrix then applies each to its own test
+    matches, so a fitted candidate is never scored on data it saw.
+
+    `context_builder` is required for a WPA config, whose target depends on
+    a value model; it is built from the same training observations, so the
+    leverage weights never see a test match either.
+
+    Returns (candidates_by_fold, weights_by_fold). The weights are returned,
+    not discarded, because "do T1 and T2 agree on the weighting?" is one of
+    the questions this whole project exists to answer.
+    """
+    by_match = group_by_match(observations)
+    out: dict[int, Candidate] = {}
+    fold_weights: dict[int, ConstrainedWeights] = {}
+    for fold in fold_results:
+        train_obs = [o for mid in fold.train_match_ids for o in by_match.get(mid, [])]
+        context = context_builder(train_obs) if context_builder is not None else None
+        # Controls are DERIVED from the target, and L2 is chosen for the
+        # controlled design inside fit_constrained_weights -- the outer fold's
+        # L2 belongs to a different (feature-only, uncontrolled) model.
+        weights = fit_constrained_weights(
+            train_obs, fold.config, controls_for(fold.config), context=context
+        )
+        out[fold.fold] = candidate_from_constrained(name, weights)
+        fold_weights[fold.fold] = weights
+    return out, fold_weights
+
+
+def _cell(scores, labels, mids, draws, seed, baseline_fn=None, probs=None):
+    """One matrix cell.
+
+    `probs` may be supplied pre-calibrated. That matters for FITTED
+    candidates: their pooled scores come from several different per-fold
+    models, so calibrating with folds drawn over those pooled scores can put
+    a score in the calibration-test set whose own model was trained on the
+    match being used to calibrate. The caller therefore calibrates inside
+    each outer fold instead (train-match scores -> test-match probabilities)
+    and passes the result in.
+
+    When `probs` is None the pooled calibration below is used. That is safe
+    only for FIXED candidates -- current_impact and the baselines were never
+    fitted to this data at all, so no model saw any of it.
+    """
+    if not scores:
+        return None
+    groups: dict[int, list] = {}
+    for s, l, m in zip(scores, labels, mids):
+        groups.setdefault(int(m), []).append((s, l))
+
+    def auc_of(sample):
+        flat = [pair for rows in sample for pair in rows]
+        return auc([p[0] for p in flat], [p[1] for p in flat])
+
+    lo, hi = cluster_bootstrap_ci(auc_of, groups, draws=draws, seed=seed)
+
+    scores_arr = np.array(scores, dtype=float)
+    labels_arr = np.array(labels, dtype=int)
+    if probs is None:
+        folds = assign_folds(mids, n_folds=5, seed=seed)
+        fold_of = np.array([folds[int(m)] for m in mids])
+        probs = np.zeros(len(scores_arr))
+        for fold in range(5):
+            test = fold_of == fold
+            if not test.any():
+                continue
+            train = ~test
+            if not train.any() or len(np.unique(labels_arr[train])) < 2:
+                probs[test] = labels_arr[train].mean() if train.any() else 0.5
+                continue
+            probs[test] = apply_calibration(
+                platt_calibrate(scores_arr[train], labels_arr[train]), scores_arr[test]
+            )
+    else:
+        probs = np.asarray(probs, dtype=float)
+
+    prob_groups: dict[int, list] = {}
+    for pr, l, m in zip(probs, labels_arr, mids):
+        prob_groups.setdefault(int(m), []).append((pr, l))
+
+    def loss_of(sample):
+        flat = [pair for rows in sample for pair in rows]
+        return weighted_log_loss([p[0] for p in flat], [p[1] for p in flat])
+
+    loss_lo, loss_hi = cluster_bootstrap_ci(loss_of, prob_groups, draws=draws, seed=seed)
+
+    cell = {
+        "auc": auc(scores, labels),
+        "auc_ci": [lo, hi],
+        "log_loss": weighted_log_loss(probs, labels_arr),
+        "log_loss_ci": [loss_lo, loss_hi],
+        "n": len(labels),
+        "matches": len(groups),
+    }
+
+    if baseline_fn is not None:
+        baseline_scores, baseline_labels, baseline_mids = baseline_fn()
+        paired: dict[int, list] = {}
+        by_match_candidate: dict[int, list] = {}
+        for s, l, m in zip(scores, labels, mids):
+            by_match_candidate.setdefault(int(m), []).append((s, l))
+        for s, l, m in zip(baseline_scores, baseline_labels, baseline_mids):
+            paired.setdefault(int(m), []).append((s, l))
+        shared = sorted(set(by_match_candidate) & set(paired))
+        combined = {m: (by_match_candidate[m], paired[m]) for m in shared}
+
+        def cand_auc(sample):
+            flat = [p for pair in sample for p in pair[0]]
+            return auc([p[0] for p in flat], [p[1] for p in flat])
+
+        def base_auc(sample):
+            flat = [p for pair in sample for p in pair[1]]
+            return auc([p[0] for p in flat], [p[1] for p in flat])
+
+        gap_lo, gap_hi = paired_bootstrap_delta(cand_auc, base_auc, combined, draws=draws, seed=seed)
+
+        # BOTH point estimates on exactly the shared rows the bootstrap used.
+        # Taking the candidate's AUC over all its rows and the baseline's over
+        # all of ITS rows would compare two different populations, and the
+        # resulting point would not sit inside its own interval.
+        shared_rows = [combined[m] for m in shared]
+        cell["gap_over_kill_diff"] = cand_auc(shared_rows) - base_auc(shared_rows)
+        cell["gap_ci"] = [gap_lo, gap_hi]
+        cell["auc_on_shared_rows"] = cand_auc(shared_rows)
+        cell["baseline_auc_on_shared_rows"] = base_auc(shared_rows)
+
+    return cell
+
+
+def yardstick_matrix(
+    observations, fixed_candidates, per_fold_candidates: dict, folds: dict,
+    draws: int = 200, seed: int = 0,
+) -> dict:
+    """Every candidate x every yardstick.
+
+    `fixed_candidates` are weightings that were never fitted to this data
+    (current_impact, baselines) and are scored on all matches.
+    `per_fold_candidates` maps a name -> {fold index: Candidate}; each is
+    scored ONLY on that fold's test matches, then pooled, so a fitted
+    weighting is never evaluated on matches it was fitted on.
+    """
+    by_match = group_by_match(observations)
+    matrix: dict[str, dict] = {}
+
+    for yardstick_name, fn in YARDSTICKS.items():
+        matrix[yardstick_name] = {}
+        kill_baseline = next(c for c in BASELINE_CANDIDATES if c.name == "kill_diff")
+
+        def baseline_fn(fn=fn):
+            return fn(observations, kill_baseline)
+
+        for candidate in fixed_candidates:
+            scores, labels, mids = fn(observations, candidate)
+            matrix[yardstick_name][candidate.name] = _cell(
+                scores, labels, mids, draws, seed,
+                baseline_fn=None if candidate.name == "kill_diff" else baseline_fn,
+            )
+
+        for name, per_fold in per_fold_candidates.items():
+            scores, labels, mids, probs = [], [], [], []
+            for fold_index, candidate in per_fold.items():
+                fold = folds.get(fold_index)
+                if fold is None:
+                    continue
+                test_obs = [o for mid in fold.test_match_ids for o in by_match.get(mid, [])]
+                s, l, m = fn(test_obs, candidate)
+                if not s:
+                    continue
+
+                # Calibration is fitted INSIDE the fold, on this fold's
+                # training matches under this fold's own candidate, then
+                # applied once to its test matches. Calibrating over the
+                # pooled scores instead would mix models across folds.
+                train_obs = [o for mid in fold.train_match_ids for o in by_match.get(mid, [])]
+                ts, tl, _ = fn(train_obs, candidate)
+                if ts and len(set(tl)) >= 2:
+                    fold_probs = apply_calibration(platt_calibrate(ts, tl), s)
+                else:
+                    fold_probs = np.full(len(s), float(np.mean(tl)) if tl else 0.5)
+
+                scores.extend(s)
+                labels.extend(l)
+                mids.extend(m)
+                probs.extend(np.asarray(fold_probs, dtype=float).tolist())
+
+            matrix[yardstick_name][name] = _cell(
+                scores, labels, mids, draws, seed,
+                baseline_fn=baseline_fn, probs=probs or None,
+            )
+
+    return matrix
