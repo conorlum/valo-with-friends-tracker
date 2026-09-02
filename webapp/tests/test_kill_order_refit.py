@@ -286,3 +286,30 @@ def test_per_parameter_report_carries_exposure_and_never_a_verdict():
     entry = report["3v3"]
     assert {"exposure", "rounds_touched", "vif"} <= set(entry)
     assert "stable" not in entry and "indeterminate" not in entry
+
+
+from app.services.kill_order_refit import stage_c0_report
+
+
+def test_stage_c0_regresses_the_shipped_graph_on_the_swing_curve():
+    """hand ~ alpha + beta * dP. The spec measured R^2 = 0.9704 on real
+    data; here the synthetic curve is exactly affine, so R^2 must be ~1."""
+    dp = np.linspace(0.02, 0.45, len(PARAMS))
+    graph = 50.0 + 478.0 * dp
+    report = stage_c0_report.regress_on_swing(graph, dp, exposure=np.ones(len(PARAMS)))
+    assert report["r_squared"] > 0.999
+    assert report["intercept"] == pytest.approx(50.0, rel=1e-6)
+    assert report["slope"] == pytest.approx(478.0, rel=1e-6)
+    assert max(abs(r) for r in report["residuals"].values()) < 1e-6
+
+
+def test_stage_c0_reports_sign_flips_and_correlation_between_two_graphs():
+    rng = np.random.default_rng(31)
+    leverage = rng.normal(size=(800, len(PARAMS)))
+    damage = rng.normal(size=800) * 20
+    a = shipped_graph()
+    b = a * 1.02
+    report = stage_c0_report.compare_graphs(leverage, damage, a, b)
+    assert report["pearson"] > 0.99
+    assert report["sign_flip_rate"] < 0.05
+    assert report["sd_difference"] < report["sd_reference"]

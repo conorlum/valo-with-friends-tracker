@@ -137,6 +137,28 @@ def lattice_dp(table) -> np.ndarray:
     return dp
 
 
+def _finite_dp(table) -> np.ndarray:
+    """The full 26-vector dP, fallback slot pinned, for DESCRIPTIVE use
+    only (never a fitted/scored candidate -- fit_family_a's swing_plugin
+    excludes the fallback from construction normalization entirely, since
+    including a stateless parameter there would move the whole curve's
+    scale; that path is untouched by this function).
+
+    The 25 lattice values are NOT imputed -- a genuine gap raises, exactly
+    like lattice_dp. This is the ONLY place the fallback's permanently-NaN
+    dp is pinned (at 0.0, so it does not corrupt an exposure-weighted mean
+    taken over all 26 columns); do not add a second copy of this pinning
+    elsewhere, or the two could drift apart.
+    """
+    dp = np.asarray(table.dp, dtype=float).copy()
+    lattice_values = dp[LATTICE]
+    if not np.all(np.isfinite(lattice_values)):
+        missing = [PARAMS[i] for i in np.flatnonzero(~np.isfinite(lattice_values))]
+        raise ValueError(f"swing table has no dP for {missing}")
+    dp[PARAM_INDEX["fallback"]] = 0.0
+    return dp
+
+
 def basis_for(name: str, table) -> np.ndarray:
     """(25, p) over the LATTICE ONLY. A structured candidate's lattice graph
     is `basis @ theta`; its fallback is pinned at FALLBACK_WEIGHT and enters

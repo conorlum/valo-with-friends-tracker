@@ -730,3 +730,146 @@ def stability_report(result, shipped, exposure, refit=None, match_ids=None,
     )
     out["draws_used"] = len(resampled)
     return out
+
+
+from app.services.kill_order_curves import (
+    _finite_dp, construction_normalize, score_rounds,
+)
+from app.services.stats_math import _average_ranks
+
+
+def _regress_on_swing(graph, dp, exposure) -> dict:
+    """Exposure-weighted least squares of the graph on the swing curve.
+
+    The spec's motivating measurement: hand = 50.0 + 478.0 * dP at
+    R^2 = 0.9704, every residual within +-17 on a 40-250 scale. If the
+    shipped numbers are already an affine function of the data's own swing
+    curve, the headroom for refitting is small and the report must say so
+    before it says anything else.
+    """
+    graph = np.asarray(graph, dtype=float)
+    dp = np.asarray(dp, dtype=float)
+    exposure = np.asarray(exposure, dtype=float)
+    usable = np.isfinite(dp) & np.isfinite(graph) & (exposure > 0)
+    weights = exposure[usable] / exposure[usable].sum()
+    design = np.column_stack([np.ones(usable.sum()), dp[usable]])
+    root = np.sqrt(weights)[:, None]
+    coefficients, *_ = np.linalg.lstsq(design * root, graph[usable] * root.ravel(), rcond=None)
+    predicted = design @ coefficients
+    residual = graph[usable] - predicted
+    mean = float(np.sum(weights * graph[usable]))
+    r_squared = 1 - float(np.sum(weights * residual ** 2)) / float(
+        np.sum(weights * (graph[usable] - mean) ** 2)
+    )
+    names = [PARAMS[i] for i in np.flatnonzero(usable)]
+    return {
+        "intercept": float(coefficients[0]),
+        "slope": float(coefficients[1]),
+        "r_squared": float(r_squared),
+        "residuals": {n: float(v) for n, v in zip(names, residual)},
+        "implied": {n: float(v) for n, v in zip(names, predicted)},
+    }
+
+
+def _compare_graphs(leverage, damage, reference, other) -> dict:
+    a = score_rounds(leverage, damage, reference)
+    b = score_rounds(leverage, damage, other)
+    # _average_ranks, not a double argsort: tied scores are common here
+    # (rounds with identical leverage) and double argsort breaks ties
+    # arbitrarily, which inflates the correlation.
+    ranks = _average_ranks
+    return {
+        "pearson": float(np.corrcoef(a, b)[0, 1]),
+        "spearman": float(np.corrcoef(ranks(a), ranks(b))[0, 1]),
+        "sd_reference": float(a.std()),
+        "sd_difference": float((a - b).std()),
+        "sign_flip_rate": float(np.mean((a > 0) != (b > 0))),
+        "n": int(len(a)),
+    }
+
+
+def stage_c0_report(team_rows, player_rows, state_visits, draws=200, seed=0) -> dict:
+    """Descriptive, all-data, and LABELLED as such. Nothing here is a
+    held-out estimate; the swing table is built over every match precisely
+    because this block describes the data rather than predicting from it.
+    """
+    leverage = family_a_leverage(team_rows)
+    damage = np.array([row.damage_diff for row in team_rows], dtype=float)
+    exposure = np.abs(leverage).sum(axis=0)
+    shipped = shipped_graph()
+    table = estimate_swing_table(state_visits)
+    # _finite_dp lives in kill_order_curves and is the ONLY place a NaN dP is
+    # pinned. Do not add a second copy here -- two pinning rules that drift
+    # apart would silently give G1a a different graph in different modules.
+    plugin = construction_normalize(_finite_dp(table), exposure, shipped)
+
+    groups: dict[int, list] = {}
+    for index, row in enumerate(team_rows):
+        groups.setdefault(int(row.match_id), []).append(index)
+
+    def pearson_of(sample):
+        rows = [i for block in sample for i in block]
+        a = score_rounds(leverage[rows], damage[rows], shipped)
+        b = score_rounds(leverage[rows], damage[rows], plugin)
+        return float(np.corrcoef(a, b)[0, 1])
+
+    low, high = cluster_bootstrap_ci(pearson_of, groups, draws=draws, seed=seed)
+
+    round_level = _compare_graphs(leverage, damage, shipped, plugin)
+    round_level["pearson_ci"] = [float(low), float(high)]
+
+    return {
+        "note": (
+            "DESCRIPTIVE, all-data. The swing table here is estimated over every "
+            "match, so nothing in this block is a held-out estimate. dP is an "
+            "observational contrast between state values, not the causal value "
+            "of crossing a state."
+        ),
+        "swing_table": {
+            "dp": {PARAMS[i]: (None if not np.isfinite(table.dp[i]) else float(table.dp[i]))
+                   for i in range(len(PARAMS))},
+            "visits": {PARAMS[i]: float(table.visits[i]) for i in range(len(PARAMS))},
+            "incomplete": table.incomplete,
+        },
+        "shipped_vs_swing": _regress_on_swing(shipped, table.dp, exposure),
+        "current_vs_swing_plugin": {
+            "round_level": round_level,
+            "player_match_level": _player_match_comparison(player_rows, shipped, plugin),
+        },
+        "reading": (
+            "A correlation above 0.99 with no sign flips means no downstream "
+            "yardstick difference was ever possible -- but correlation alone is "
+            "NOT the practical-equivalence test; see the verdict checklist."
+        ),
+    }
+
+
+def _player_match_comparison(player_rows, reference, other) -> dict:
+    """Average Impact per (player, match) under each graph. The team
+    differential can hide a change that per-player attribution shows, so
+    both are reported."""
+    # A PLAYER's Impact is damage + kill_impact - death_impact. The team row
+    # adds both halves because the victim's death is subtracted from the
+    # other team; per player it is a subtraction. An earlier draft used
+    # kill + death here, which scores a player as if their own deaths helped
+    # them.
+    totals: dict[tuple, list] = {}
+    for row in player_rows:
+        key = (row.player_id, row.match_id)
+        block = (row.kill - row.death).sum(axis=1) / 3.0
+        totals.setdefault(key, []).append((row.damage, block))
+    a, b = [], []
+    for entries in totals.values():
+        a.append(np.mean([d + float(np.sum(reference * v)) for d, v in entries]))
+        b.append(np.mean([d + float(np.sum(other * v)) for d, v in entries]))
+    a, b = np.array(a), np.array(b)
+    ranks = lambda v: np.argsort(np.argsort(v))
+    return {
+        "pearson": float(np.corrcoef(a, b)[0, 1]),
+        "spearman": float(np.corrcoef(ranks(a), ranks(b))[0, 1]),
+        "n_player_matches": int(len(a)),
+    }
+
+
+stage_c0_report.regress_on_swing = _regress_on_swing
+stage_c0_report.compare_graphs = _compare_graphs
