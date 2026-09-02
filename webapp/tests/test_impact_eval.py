@@ -547,3 +547,50 @@ def test_usable_result_reports_a_positive_composite_slope():
     result = fit_constrained_weights(obs, config, CONTROLS_CONTEXT)
     if result.usable:
         assert result.composite_slope > 0
+
+
+from app.services.impact_eval import coefficient_diagnostics
+
+DIAG_CONFIG = TargetConfig(name="T2", k=1, gamma=1.0, match_weight=0.0)
+
+
+def test_sign_stability_is_high_for_a_clean_signal():
+    obs = _weighted_matches(n_matches=80, econ_weight=1.0, seed=6)
+    diag = coefficient_diagnostics(obs, DIAG_CONFIG, FEATURE_COMPONENTS, draws=40, seed=0)
+    assert diag["sign_stability"]["econ_impact"] > 0.9
+
+
+def test_sign_stability_is_near_chance_for_a_pure_noise_column():
+    """swing_impact contributes nothing to the label here, so its sign must
+    not be reported as stable."""
+    obs = _weighted_matches(n_matches=60, econ_weight=1.0, seed=7)
+    diag = coefficient_diagnostics(obs, DIAG_CONFIG, FEATURE_COMPONENTS, draws=40, seed=0)
+    assert diag["sign_stability"]["swing_impact"] < 0.95
+
+
+def test_correlation_matrix_detects_a_duplicated_column():
+    obs = _weighted_matches(n_matches=30, seed=8)
+    for o in obs:
+        o.time_impact = o.econ_impact
+    diag = coefficient_diagnostics(obs, DIAG_CONFIG, FEATURE_COMPONENTS, draws=10, seed=0)
+    assert abs(diag["correlation_matrix"]["econ_impact"]["time_impact"] - 1.0) < 1e-9
+
+
+def test_drop_one_reports_every_component_in_weighted_log_loss():
+    obs = _weighted_matches(n_matches=40, seed=9)
+    diag = coefficient_diagnostics(obs, DIAG_CONFIG, FEATURE_COMPONENTS, draws=10, seed=0)
+    assert set(diag["drop_one"]) == set(FEATURE_COMPONENTS)
+    for entry in diag["drop_one"].values():
+        assert "log_loss_cost_of_dropping" in entry
+        assert "cost_ci" in entry, "the cost of dropping needs a PAIRED interval"
+        assert "auc_without" not in entry, "no AUC on a fractional target"
+
+
+def test_sign_direction_distinguishes_helpful_from_anti_predictive():
+    obs = _weighted_matches(n_matches=60, econ_weight=1.0, seed=10)
+    diag = coefficient_diagnostics(obs, DIAG_CONFIG, FEATURE_COMPONENTS, draws=30, seed=0)
+    assert 0.0 <= diag["sign_direction"]["econ_impact"] <= 1.0
+    # stability is the folded magnitude; direction says which way
+    assert diag["sign_stability"]["econ_impact"] == max(
+        diag["sign_direction"]["econ_impact"], 1 - diag["sign_direction"]["econ_impact"]
+    )

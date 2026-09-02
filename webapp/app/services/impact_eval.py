@@ -814,3 +814,93 @@ def fit_constrained_weights(
         composite_slope=float(slope),
         usable=True,
     )
+
+
+def coefficient_diagnostics(
+    observations, config: TargetConfig, feature_names: list[str],
+    draws: int = 200, seed: int = 0, l2: float = 1.0,
+) -> dict:
+    """Collinearity reporting for a fit whose components share a
+    multiplicand by construction (impact.py:496-502).
+
+    sign_stability is a REFITTING bootstrap over resampled MATCHES: the
+    model is re-fit on each draw. Resampling fixed predictions could not
+    say anything about coefficient signs.
+    """
+    grouped = group_by_match(observations)
+    keys = list(grouped)
+    if not keys:
+        return {"sign_stability": {}, "sign_direction": {}, "correlation_matrix": {},
+                "drop_one": {}, "full_log_loss": float("nan"),
+                "bootstrap_draws_completed": 0}
+
+    rng = np.random.default_rng(seed)
+    positives = np.zeros(len(feature_names))
+    completed = 0
+    for _ in range(draws):
+        picked = rng.integers(0, len(keys), size=len(keys))
+        sample = [o for i in picked for o in grouped[keys[int(i)]]]
+        dataset = build_target(sample, config, feature_names)
+        if len(dataset.y) == 0 or len(np.unique(np.round(dataset.y))) < 2:
+            continue
+        scaled, _, centre, scale = standardize(dataset.X, dataset.X)
+        beta = fit_logistic(scaled, dataset.y, weights=dataset.w, l2=l2)
+        positives += (back_transform(beta, centre, scale)[1:] > 0).astype(float)
+        completed += 1
+
+    # Direction as well as magnitude: max(pos, neg) alone cannot distinguish
+    # "consistently helpful" from "consistently anti-predictive", and those
+    # mean opposite things for a component that is supposed to measure impact.
+    sign_stability = {
+        name: (float(max(p, completed - p) / completed) if completed else float("nan"))
+        for name, p in zip(feature_names, positives)
+    }
+    sign_direction = {
+        name: (float(p / completed) if completed else float("nan"))
+        for name, p in zip(feature_names, positives)
+    }
+
+    full_dataset = build_target(observations, config, feature_names)
+    corr = np.corrcoef(full_dataset.X, rowvar=False)
+    correlation_matrix = {
+        a: {b: float(corr[i][j]) for j, b in enumerate(feature_names)}
+        for i, a in enumerate(feature_names)
+    }
+
+    # Drop-one is measured in WEIGHTED LOG LOSS on the fixed target, not in
+    # AUC over a rounded fractional label. The target is identical across
+    # every variant here (only the feature set changes), so the losses ARE
+    # comparable -- unlike a comparison across target definitions.
+    full = cross_validate(observations, [config], feature_names, [l2], seed=seed)
+    full_loss = (
+        weighted_log_loss(full["oof"]["scores"], full["oof"]["y"], full["oof"]["w"])
+        if len(full["oof"]["y"])
+        else float("nan")
+    )
+
+    drop_one = {}
+    for name in feature_names:
+        reduced_names = [n for n in feature_names if n != name]
+        if not reduced_names:
+            continue
+        out = cross_validate(observations, [config], reduced_names, [l2], seed=seed)
+        without = (
+            weighted_log_loss(out["oof"]["scores"], out["oof"]["y"], out["oof"]["w"])
+            if len(out["oof"]["y"])
+            else float("nan")
+        )
+        _, lo, hi = paired_oof_log_loss_delta(out["oof"], full["oof"], draws=draws, seed=seed)
+        drop_one[name] = {
+            "log_loss_without": without,
+            "log_loss_cost_of_dropping": without - full_loss,
+            "cost_ci": [lo, hi],
+        }
+
+    return {
+        "sign_stability": sign_stability,
+        "sign_direction": sign_direction,
+        "correlation_matrix": correlation_matrix,
+        "full_log_loss": full_loss,
+        "drop_one": drop_one,
+        "bootstrap_draws_completed": completed,
+    }
