@@ -131,7 +131,10 @@ def predict_proba(beta: np.ndarray, X) -> np.ndarray:
     return sigmoid(beta[0] + X @ beta[1:])
 
 
-def fit_logistic(X, y, weights=None, l2: float = 1.0, max_iter: int = 100, tol: float = 1e-9) -> np.ndarray:
+def fit_logistic(
+    X, y, weights=None, l2: float = 1.0, max_iter: int = 100, tol: float = 1e-9,
+    penalty=None,
+) -> np.ndarray:
     """Weighted IRLS logistic regression with a ridge penalty.
 
     `y` may be fractional in [0, 1] (quasi-binomial) -- a forward window of
@@ -145,16 +148,31 @@ def fit_logistic(X, y, weights=None, l2: float = 1.0, max_iter: int = 100, tol: 
     impact.py:496-502), and failure to converge logs a warning instead of
     silently returning a half-fitted model.
 
+    `penalty` is an optional per-coefficient multiplier on the ridge
+    diagonal, length X.shape[1]. A zero entry leaves that coefficient
+    unpenalised. It exists because shrinking a RATIO toward a prior --
+    b = prior + delta/d -- requires penalising delta while leaving d free:
+    penalising both drives them to zero together and the ratio never
+    converges on the prior. The intercept is unpenalised regardless.
+
     Returns beta with beta[0] = intercept, beta[1:] = coefficients in the
     column order of X.
     """
     X, y, w = _validate_xy(X, y, weights)
     n, p = X.shape
 
+    if penalty is None:
+        mask = np.ones(p)
+    else:
+        mask = np.asarray(penalty, dtype=float).ravel()
+        if mask.shape[0] != p:
+            raise ValueError(f"penalty has length {mask.shape[0]}, expected {p}")
+        if np.any(mask < 0) or not np.all(np.isfinite(mask)):
+            raise ValueError("penalty entries must be finite and non-negative")
+
     design = np.hstack([np.ones((n, 1)), X])
     beta = np.zeros(p + 1)
-    penalty = np.eye(p + 1) * l2
-    penalty[0, 0] = 0.0
+    penalty_matrix = np.diag(np.concatenate([[0.0], l2 * mask]))
 
     for _ in range(max_iter):
         eta = design @ beta
@@ -163,7 +181,7 @@ def fit_logistic(X, y, weights=None, l2: float = 1.0, max_iter: int = 100, tol: 
         s = variance * w
         z = eta + (y - mu) / variance
         weighted = design.T * s
-        hessian = weighted @ design + penalty
+        hessian = weighted @ design + penalty_matrix
         gradient = weighted @ z
         try:
             new_beta = np.linalg.solve(hessian, gradient)

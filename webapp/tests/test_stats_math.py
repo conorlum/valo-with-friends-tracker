@@ -298,3 +298,66 @@ def test_paired_bootstrap_delta_detects_no_difference():
     fn = lambda sample: float(np.mean([v for rows in sample for v in rows]))
     lo, hi = paired_bootstrap_delta(fn, fn, groups, draws=200, seed=2)
     assert lo <= 0.0 <= hi
+
+
+
+def test_fit_logistic_penalty_defaults_to_uniform():
+    """An explicit all-ones mask must be identical to no mask at all --
+    otherwise every existing caller silently changes."""
+    rng = np.random.default_rng(21)
+    X = rng.normal(size=(300, 3))
+    y = (X @ np.array([1.0, -0.5, 0.25]) + rng.normal(scale=0.3, size=300) > 0).astype(float)
+    assert np.allclose(
+        fit_logistic(X, y, l2=2.0), fit_logistic(X, y, l2=2.0, penalty=np.ones(3)), atol=1e-10
+    )
+
+
+def test_a_zero_mask_entry_leaves_that_coefficient_unpenalised():
+    """Column 0 exempt must stay large under a penalty that crushes the
+    others."""
+    rng = np.random.default_rng(22)
+    X = rng.normal(size=(800, 3))
+    y = (X @ np.array([2.0, 1.0, -1.0]) + rng.normal(scale=0.4, size=800) > 0).astype(float)
+
+    masked = fit_logistic(X, y, l2=500.0, penalty=np.array([0.0, 1.0, 1.0]))
+    uniform = fit_logistic(X, y, l2=500.0)
+
+    assert abs(masked[1]) > abs(uniform[1]) * 3
+    assert abs(masked[2]) < abs(masked[1])
+
+
+def test_the_intercept_is_never_penalised_whatever_the_mask():
+    rng = np.random.default_rng(23)
+    X = rng.normal(size=(400, 2))
+    y = np.ones(400)
+    y[:40] = 0.0
+    beta = fit_logistic(X, y, l2=1e6, penalty=np.ones(2))
+    assert beta[0] > 1.0, "intercept was shrunk; the base rate is now biased"
+
+
+def test_the_mask_delivers_prior_shrinkage_on_the_deployable_graph():
+    """The reason this argument exists. Composite damage column plus free
+    delta: with d exempt, a large penalty must drive b = prior + delta/d to
+    the prior. With d penalised it stalls -- that is the bug."""
+    rng = np.random.default_rng(7)
+    X = rng.normal(size=(4000, 4))
+    damage = rng.normal(size=4000)
+    prior = np.full(4, 0.6)
+    truth = np.array([1.0, -0.5, 0.8, 0.2])
+    eta = 3.0 * damage + X @ (3.0 * truth)
+    y = (rng.uniform(size=4000) < 1 / (1 + np.exp(-eta))).astype(float)
+
+    design = np.column_stack([damage + X @ prior, X])
+    mask = np.array([0.0, 1.0, 1.0, 1.0, 1.0])
+    beta = fit_logistic(design, y, l2=1e7, penalty=mask)
+    recovered = prior + beta[2:] / beta[1]
+    assert np.allclose(recovered, prior, atol=0.01)
+
+    unmasked = fit_logistic(design, y, l2=1e7)
+    stalled = prior + unmasked[2:] / unmasked[1]
+    assert not np.allclose(stalled, prior, atol=0.1)
+
+
+def test_penalty_length_is_validated():
+    with pytest.raises(ValueError, match="penalty"):
+        fit_logistic(np.zeros((10, 3)), np.zeros(10), penalty=np.ones(2))
