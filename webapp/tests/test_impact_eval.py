@@ -717,3 +717,20 @@ def test_matrix_reports_paired_gap_ci_not_a_difference_of_point_estimates():
     cell = matrix["forward_rounds"]["current_impact"]
     lo, hi = cell["gap_ci"]
     assert lo <= cell["gap_over_kill_diff"] <= hi
+
+
+def test_loaders_use_the_shared_surrender_predicate():
+    """Guards the constraint rather than the DB: loaders must reference the
+    shared predicate, not hand-roll a filter that can drift."""
+    import inspect
+
+    for fn in (impact_eval.load_all_observations, impact_eval.load_stored_observations,
+               impact_eval.load_player_matches):
+        assert "NOT_A_SURRENDER_ROUND" in inspect.getsource(fn), fn.__name__
+
+
+def test_ex_ante_loader_defaults_to_ex_ante():
+    import inspect
+
+    signature = inspect.signature(impact_eval.load_all_observations)
+    assert signature.parameters["use_realized_swing"].default is False

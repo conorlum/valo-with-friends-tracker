@@ -1210,3 +1210,130 @@ def yardstick_matrix(
             )
 
     return matrix
+
+
+from sqlalchemy import func
+from sqlalchemy.orm import selectinload
+
+from app.models import ImpactScore, Match, MatchPlayer, Round
+from app.scoring.impact import build_impact_rows_for_match
+from app.services.impact_stage0 import PlayerMatch
+from app.services.surrender_rounds import NOT_A_SURRENDER_ROUND
+
+
+def _match_ids(db) -> list[int]:
+    return [
+        mid
+        for (mid,) in db.query(Match.id)
+        .join(Round, Round.match_id == Match.id)
+        .filter(NOT_A_SURRENDER_ROUND)
+        .distinct()
+        .all()
+    ]
+
+
+def _hydrated_match(db, match_id):
+    return (
+        db.query(Match)
+        .options(
+            selectinload(Match.match_players),
+            selectinload(Match.rounds).selectinload(Round.player_stats),
+        )
+        .filter(Match.id == match_id)
+        .one()
+    )
+
+
+def load_all_observations(db, use_realized_swing: bool = False, report: dict | None = None):
+    """Replays every match through the scorer, so components are the
+    EX-ANTE variant by default -- the only variant eligible for
+    forward-looking fitting. Costs a full replay (minutes).
+
+    A match whose rounds lack impact rows is EXCLUDED and counted, never
+    silently turned into zero-impact observations. Pass `report` to receive
+    the exclusion count; the CLI prints it.
+    """
+    observations: list[RoundObservation] = []
+    excluded: list[int] = []
+    # Surrender placeholder rounds are excluded via _match_ids' NOT_A_SURRENDER_ROUND
+    # filter above -- this loader must not hand-roll a second, driftable copy.
+    for match_id in _match_ids(db):
+        match = _hydrated_match(db, match_id)
+        rows = build_impact_rows_for_match(db, match_id, use_realized_swing=use_realized_swing)
+        try:
+            observations.extend(build_observations_for_match(match, rows))
+        except MissingImpactRows:
+            excluded.append(match_id)
+    if report is not None:
+        report["excluded_matches"] = len(excluded)
+        report["excluded_match_ids"] = excluded[:20]
+    return observations
+
+
+def load_stored_observations(db, report: dict | None = None) -> list[RoundObservation]:
+    """Reads stored impact_scores directly -- the REALIZED components, as
+    the live scorer wrote them. No replay, so Stage 0 and the realized
+    yardstick pass are fast. Never use these for a forward-looking fit.
+
+    Exclusions are counted separately from the ex-ante loader's: a match can
+    be scored but incompletely, and "how much data did we actually have"
+    differs between the two passes."""
+    observations: list[RoundObservation] = []
+    excluded: list[int] = []
+    for match_id in _match_ids(db):
+        match = _hydrated_match(db, match_id)
+        stored = (
+            db.query(ImpactScore)
+            .join(Round, Round.id == ImpactScore.round_id)
+            .filter(Round.match_id == match_id, NOT_A_SURRENDER_ROUND)
+            .all()
+        )
+        try:
+            observations.extend(build_observations_for_match(match, stored))
+        except MissingImpactRows:
+            excluded.append(match_id)
+    if report is not None:
+        report["excluded_matches"] = len(excluded)
+        report["excluded_match_ids"] = excluded[:20]
+    return observations
+
+
+def load_player_matches(db) -> list[PlayerMatch]:
+    """One row per (player, match): their average STORED Impact across the
+    match, and whether their team won. Stage 0 describes the shipped
+    metric, so stored scores are correct here."""
+    rows = (
+        db.query(
+            MatchPlayer.player_id,
+            MatchPlayer.match_id,
+            MatchPlayer.team,
+            func.avg(ImpactScore.impact).label("avg_impact"),
+            Match.team1_rounds_won,
+            Match.team2_rounds_won,
+        )
+        .join(ImpactScore, ImpactScore.match_player_id == MatchPlayer.id)
+        .join(Round, Round.id == ImpactScore.round_id)
+        .join(Match, Match.id == MatchPlayer.match_id)
+        .filter(NOT_A_SURRENDER_ROUND)
+        .group_by(
+            MatchPlayer.player_id, MatchPlayer.match_id, MatchPlayer.team,
+            Match.team1_rounds_won, Match.team2_rounds_won,
+        )
+        .all()
+    )
+
+    out: list[PlayerMatch] = []
+    for player_id, match_id, team, avg_impact, won1, won2 in rows:
+        if won1 == won2:
+            continue  # ties excluded from every denominator
+        team_value = team.value if hasattr(team, "value") else team
+        team_a_won = won1 > won2
+        out.append(
+            PlayerMatch(
+                player_id=player_id,
+                match_id=match_id,
+                avg_impact=float(avg_impact),
+                won=team_a_won if team_value == Team.TEAM_1.value else not team_a_won,
+            )
+        )
+    return out
