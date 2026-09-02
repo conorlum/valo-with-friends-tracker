@@ -404,9 +404,11 @@ cross-target generalization is visible:
 - **Standardize features using training-fold statistics** before ridge fitting,
   so L2 penalizes differently-scaled columns comparably. Back-transform
   coefficients for reporting.
-- **Baselines are mandatory in every report:** current hand-tuned Impact, kill
-  differential, kills and deaths as separate features, damage alone. **Not a
-  K/D ratio** -- it is undefined at zero deaths.
+- **Baselines are mandatory in every report:** current hand-tuned Impact, team
+  kill differential, damage alone. **Not a K/D ratio** (undefined at zero
+  deaths), and **not kills and deaths as separate columns** -- in the
+  differential representation those are the same baseline twice, since
+  `deaths_A == kills_B` in 99.1% of this DB's 24,157 rounds.
 - Each baseline is converted to a probability by a logistic calibration fit
   **on the training fold only**; AUC can consume raw scores, log-loss cannot.
 - If Impact cannot beat kill differential, that is the finding and the tool
