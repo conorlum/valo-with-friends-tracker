@@ -25,13 +25,13 @@ def _match_with_two_rounds():
 
     r1 = Round(id=101, match_id=1, round_number=1, outcome="Team A Wins")
     r1.player_stats = [
-        RoundPlayerStat(match_player_id=1, kills=2, deaths=0, assists=0, loadout=800),
-        RoundPlayerStat(match_player_id=2, kills=0, deaths=2, assists=0, loadout=800),
+        RoundPlayerStat(match_player_id=1, kills=2, deaths=0, assists=0, loadout=800, score=250),
+        RoundPlayerStat(match_player_id=2, kills=0, deaths=2, assists=0, loadout=800, score=90),
     ]
     r2 = Round(id=102, match_id=1, round_number=2, outcome="Team B Wins")
     r2.player_stats = [
-        RoundPlayerStat(match_player_id=1, kills=0, deaths=1, assists=0, loadout=4500),
-        RoundPlayerStat(match_player_id=2, kills=1, deaths=0, assists=0, loadout=2000),
+        RoundPlayerStat(match_player_id=1, kills=0, deaths=1, assists=0, loadout=4500, score=60),
+        RoundPlayerStat(match_player_id=2, kills=1, deaths=0, assists=0, loadout=2000, score=210),
     ]
     match.rounds = [r1, r2]
     return match
@@ -64,6 +64,14 @@ def test_kill_diff_is_team_kill_differential():
     obs = build_observations_for_match(_match_with_two_rounds(), _calculated())
     assert obs[0].kill_diff == 2 - 0
     assert obs[1].kill_diff == 0 - 1
+
+
+def test_acs_diff_is_the_raw_combat_score_differential():
+    """Team A minus team B's RoundPlayerStat.score, summed over the round --
+    plain ACS, not anything the Impact formula derives."""
+    obs = build_observations_for_match(_match_with_two_rounds(), _calculated())
+    assert obs[0].acs_diff == 250 - 90
+    assert obs[1].acs_diff == 60 - 210
 
 
 def test_score_differential_excludes_the_current_round():
@@ -203,7 +211,7 @@ def _obs(round_number, damage, won_by_a, match_won, terminal=False, match_id=1):
     return RoundObservation(
         match_id=match_id, round_id=1000 * match_id + round_number, round_number=round_number,
         damage=damage, econ_impact=0.0, time_impact=0.0, swing_impact=0.0,
-        impact_diff=damage, kill_diff=0.0,
+        impact_diff=damage, kill_diff=0.0, acs_diff=0.0,
         score_diff_before=0, attacking_is_team_a=True,
         loadout_diff=0.0, full_buy_count_diff=0,
         round_won_by_team_a=won_by_a, match_won_by_team_a=match_won, is_terminal=terminal,
@@ -725,8 +733,15 @@ def test_loaders_use_the_shared_surrender_predicate():
     import inspect
 
     for fn in (impact_eval.load_all_observations, impact_eval.load_stored_observations,
-               impact_eval.load_player_matches):
+               impact_eval.load_player_matches, impact_eval.load_player_matches_acs):
         assert "NOT_A_SURRENDER_ROUND" in inspect.getsource(fn), fn.__name__
+
+
+def test_acs_baseline_is_registered():
+    """User-requested addition: Impact must be compared against straight
+    ACS, not just kill differential -- this is a much sharper baseline."""
+    names = {c.name for c in BASELINE_CANDIDATES}
+    assert "acs" in names
 
 
 def test_ex_ante_loader_defaults_to_ex_ante():

@@ -40,6 +40,7 @@ from app.services.impact_eval import (
     fold_candidates,
     load_all_observations,
     load_player_matches,
+    load_player_matches_acs,
     load_stored_observations,
     oof_metrics,
     paired_oof_log_loss_delta,
@@ -150,8 +151,19 @@ def main() -> int:
         report = {
             "stage0": stage0_report(
                 load_player_matches(db), roster, draws=args.draws, seed=args.seed
-            )
+            ),
+            # User-requested comparison: does Impact beat straight ACS on the
+            # SAME cohort methodology? A weaker "about the same as kill diff"
+            # finding would look very different from "can't beat raw ACS."
+            "stage0_acs": stage0_report(
+                load_player_matches_acs(db), roster, draws=args.draws, seed=args.seed
+            ),
         }
+        report["stage0_acs"]["note"] = (
+            "Same Stage 0 methodology (cohorts, within-player centering, CIs) "
+            "applied to plain ACS instead of Impact, for direct comparison "
+            "against report['stage0']."
+        )
 
         stored_report = {}
         stored = load_stored_observations(db, report=stored_report)
@@ -162,6 +174,8 @@ def main() -> int:
         )
         print("== Stage 0: Impact as it ships today (realized components) ==")
         print(json.dumps(report["stage0"], indent=2, default=float))
+        print("\n== Stage 0, same methodology, applied to straight ACS ==")
+        print(json.dumps(report["stage0_acs"], indent=2, default=float))
 
         if args.stage0_only:
             if args.out:

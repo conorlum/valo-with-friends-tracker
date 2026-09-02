@@ -45,6 +45,12 @@ class RoundObservation:
     # separately would be the same column twice.
     kill_diff: float
 
+    # Raw Average Combat Score differential (RoundPlayerStat.score, team A
+    # minus team B, summed over the round) -- the simplest possible baseline.
+    # If the hand-tuned Impact formula can't beat plain ACS, that is a much
+    # sharper finding than "it's about the same as kill differential."
+    acs_diff: float
+
     # The EXACT stored/calculated impact differential, carried alongside the
     # components rather than reconstructed from them. impact.py round()s
     # kill_impact, death_impact and each component independently, so
@@ -134,17 +140,20 @@ def build_observations_for_match(match, calculated_rows) -> list[RoundObservatio
         loadout_a = loadout_b = 0
         players_a = players_b = 0
         full_buy_a = full_buy_b = 0
+        acs_a = acs_b = 0
         for stat in round_row.player_stats:
             if team_of(stat.match_player_id) == team_a:
                 kills_a += stat.kills
                 loadout_a += stat.loadout
                 players_a += 1
                 full_buy_a += 1 if stat.loadout >= FULL_BUY_THRESHOLD else 0
+                acs_a += stat.score or 0
             else:
                 kills_b += stat.kills
                 loadout_b += stat.loadout
                 players_b += 1
                 full_buy_b += 1 if stat.loadout >= FULL_BUY_THRESHOLD else 0
+                acs_b += stat.score or 0
 
         # A round with no impact rows would otherwise silently become a
         # "zero impact" observation, which is a data point that says
@@ -180,6 +189,7 @@ def build_observations_for_match(match, calculated_rows) -> list[RoundObservatio
                 swing_impact=impact["swing_impact"],
                 impact_diff=impact["impact_diff"],
                 kill_diff=kills_a - kills_b,
+                acs_diff=acs_a - acs_b,
                 score_diff_before=score_a - score_b,
                 attacking_is_team_a=attacking_team_for_round(round_row.round_number) == Team.TEAM_1,
                 # TEAM-AVERAGE, not sum: a sum silently encodes how many
@@ -208,6 +218,7 @@ SECOND_HALF_END = 24
 FEATURE_COMPONENTS = ["damage", "econ_impact", "time_impact", "swing_impact"]
 BASELINE_DAMAGE = ["damage"]
 BASELINE_KILL_DIFF = ["kill_diff"]
+BASELINE_ACS = ["acs_diff"]
 # The round's own result is a control in its own right. It is deliberately
 # NOT merged into CONTROLS_CONTEXT: the control ladder's whole point is to
 # measure what the components add ON TOP of knowing who won the round.
@@ -933,6 +944,10 @@ CURRENT_IMPACT_CANDIDATE = Candidate(
 BASELINE_CANDIDATES = [
     Candidate("kill_diff", BASELINE_KILL_DIFF, [1.0]),
     Candidate("damage_only", BASELINE_DAMAGE, [1.0]),
+    # Straight ACS -- the sharpest possible baseline. If the hand-tuned
+    # Impact formula can't beat this, "about the same as kill diff" was
+    # the mild version of the finding.
+    Candidate("acs", BASELINE_ACS, [1.0]),
 ]
 
 
@@ -1216,6 +1231,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import selectinload
 
 from app.models import ImpactScore, Match, MatchPlayer, Round
+from app.models.round import RoundPlayerStat
 from app.scoring.impact import build_impact_rows_for_match
 from app.services.impact_stage0 import PlayerMatch
 from app.services.surrender_rounds import NOT_A_SURRENDER_ROUND
@@ -1333,6 +1349,54 @@ def load_player_matches(db) -> list[PlayerMatch]:
                 player_id=player_id,
                 match_id=match_id,
                 avg_impact=float(avg_impact),
+                won=team_a_won if team_value == Team.TEAM_1.value else not team_a_won,
+            )
+        )
+    return out
+
+
+def load_player_matches_acs(db) -> list[PlayerMatch]:
+    """One row per (player, match): their average STORED ACS (RoundPlayerStat.score)
+    across the match, and whether their team won.
+
+    User-requested comparison baseline: if the hand-tuned Impact formula
+    can't beat plain ACS on the SAME Stage 0 methodology (same cohorts,
+    same within-player centering, same CIs), that is a sharper finding
+    than "about the same as kill differential." Mirrors load_player_matches
+    exactly except for the averaged column, so the two are directly
+    comparable through the same stage0_report call.
+    """
+    rows = (
+        db.query(
+            MatchPlayer.player_id,
+            MatchPlayer.match_id,
+            MatchPlayer.team,
+            func.avg(RoundPlayerStat.score).label("avg_acs"),
+            Match.team1_rounds_won,
+            Match.team2_rounds_won,
+        )
+        .join(RoundPlayerStat, RoundPlayerStat.match_player_id == MatchPlayer.id)
+        .join(Round, Round.id == RoundPlayerStat.round_id)
+        .join(Match, Match.id == MatchPlayer.match_id)
+        .filter(NOT_A_SURRENDER_ROUND)
+        .group_by(
+            MatchPlayer.player_id, MatchPlayer.match_id, MatchPlayer.team,
+            Match.team1_rounds_won, Match.team2_rounds_won,
+        )
+        .all()
+    )
+
+    out: list[PlayerMatch] = []
+    for player_id, match_id, team, avg_acs, won1, won2 in rows:
+        if won1 == won2:
+            continue  # ties excluded from every denominator
+        team_value = team.value if hasattr(team, "value") else team
+        team_a_won = won1 > won2
+        out.append(
+            PlayerMatch(
+                player_id=player_id,
+                match_id=match_id,
+                avg_impact=float(avg_acs),
                 won=team_a_won if team_value == Team.TEAM_1.value else not team_a_won,
             )
         )
