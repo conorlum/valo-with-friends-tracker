@@ -371,8 +371,12 @@ be one more thing selected on data without earning its complexity.
 
 **The incremental gain from 3 to 4 is the headline result** -- it is the only
 number that shows Impact's machinery carries information beyond "who won the
-round and what they could afford next." Each step reports ΔAUC and Δlog-loss
-with CIs.
+round and what they could afford next." Each step reports **paired
+Δweighted-log-loss with a match-clustered CI** -- and only that. No AUC: every
+ladder step predicts T2's fractional target, and rounding it to manufacture a
+binary label would change the estimand and discard the observation weights.
+AUC appears only on the fixed binary yardsticks, where a candidate weighting
+can be compared across formulations.
 
 ### Yardsticks (scoring, always out-of-fold)
 
@@ -479,7 +483,10 @@ split: computation in a service module, CLI wrapper in `scripts/`.
   `RoundPlayerStat.loadout`, as a TEAM AVERAGE not a sum -- a sum silently
   encodes how many player-stat rows a round happens to have), round number, and
   round-N result as its own separate control.
-- **Baselines:** kills, deaths, kill differential, damage.
+- **Baseline:** team kill differential (`kills_A - kills_B`) and damage. NOT
+  kills and deaths as separate columns -- in the differential representation
+  they are the same baseline twice, since `deaths_A == kills_B` in 99.1% of
+  this DB's rounds.
 - **Context:** `match_id`, `round_number`, round outcome, match outcome.
 
 ### Target seam
@@ -489,7 +496,8 @@ Every target builder returns `(X, y, w)` with `y` in [0, 1]:
 - `first_half_target(observations)` -- T1. Eligible matches only (all 12
   genuine first-half rounds present).
 - `forward_window_target(observations, k, gamma, match_weight)` -- T2. Expands
-  round N into one weighted observation per future round N+1..N+k with weight
+  round N into ONE COLLAPSED row whose target is the weighted mean of rounds
+  N+1..N+k and whose weight is the total of those weights, with weight
   `gamma**j`, never crossing a half boundary, skipping terminal rounds, and
   attaching the match outcome at `match_weight` **only for N <= 12**. Sweep
   `k` in {2, 3, 4}, `gamma` in {0.5, 0.7, 0.9}, `match_weight` in **{0, 0.5,
@@ -508,7 +516,7 @@ Printed table plus JSON (`--out`, `DATABASE_URL` override honoured, matching
 - fitted coefficients per outer fold, with sign-stability and the collinearity
   diagnostics above
 - both mappings back to `FACTOR_WEIGHTS` (unconstrained and constrained)
-- the T2 control ladder with incremental ΔAUC / Δlog-loss
+- the T2 control ladder with paired incremental Δweighted-log-loss and its CI
 - the targets x yardsticks matrix, every cell with cluster-bootstrapped CIs
 - `n` at every level, and the ex_ante/realized label on every component number
 
