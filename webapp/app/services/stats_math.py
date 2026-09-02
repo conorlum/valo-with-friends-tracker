@@ -188,3 +188,140 @@ def point_biserial(values, labels) -> float:
     if v.std() == 0 or l.std() == 0:
         return float("nan")
     return float(np.corrcoef(v, l)[0, 1])
+
+
+def standardize(X_train, X_apply):
+    """Centre and scale by TRAINING statistics. Returns centre and scale
+    too -- back_transform needs BOTH, and an earlier version of this
+    project shipped a back-transform that dropped the centre and produced
+    an intercept off by ~5 logits.
+
+    A constant column gets scale 1.0 rather than 0, so it contributes
+    nothing instead of producing NaN.
+    """
+    X_train = np.asarray(X_train, dtype=float)
+    X_apply = np.asarray(X_apply, dtype=float)
+    centre = X_train.mean(axis=0)
+    scale = X_train.std(axis=0)
+    scale = np.where(scale == 0, 1.0, scale)
+    return (X_train - centre) / scale, (X_apply - centre) / scale, centre, scale
+
+
+def back_transform(beta: np.ndarray, centre: np.ndarray, scale: np.ndarray) -> np.ndarray:
+    """Convert coefficients fitted on standardized columns back to raw
+    units.
+
+        eta = b0 + sum b_j (x_j - c_j)/s_j
+            = (b0 - sum (b_j/s_j) c_j) + sum (b_j/s_j) x_j
+
+    so the intercept MUST absorb the centring term.
+    """
+    slope = beta[1:] / scale
+    intercept = beta[0] - float(np.sum(slope * centre))
+    return np.concatenate([[intercept], slope])
+
+
+def platt_calibrate(scores, labels, weights=None) -> np.ndarray:
+    """Fit a 1-D logistic mapping raw scores -> probabilities.
+
+    Uses Platt's target smoothing plus a small ridge: with perfectly
+    separable scores the unregularised MLE diverges, and separable slices
+    are common here (a candidate that happens to order a small fold
+    perfectly).
+
+    Callers MUST fit this on training-fold data only. AUC is rank-based and
+    needs no calibration; log loss does, and calibrating on the rows being
+    scored would leak.
+    """
+    scores = np.asarray(scores, dtype=float).reshape(-1, 1)
+    labels = np.asarray(labels, dtype=float)
+    # Class totals are WEIGHTED when weights are supplied: Platt's smoothing
+    # is a function of how much evidence each class carries, and unweighted
+    # counts would smooth a heavily-weighted class as if it were sparse.
+    w = np.ones(len(labels)) if weights is None else np.asarray(weights, dtype=float)
+    n_pos = float(w[labels >= 0.5].sum())
+    n_neg = float(w[labels < 0.5].sum())
+    high = (n_pos + 1.0) / (n_pos + 2.0)
+    low = 1.0 / (n_neg + 2.0)
+    smoothed = np.where(labels >= 0.5, high, low)
+    return fit_logistic(scores, smoothed, weights=weights, l2=1e-6)
+
+
+def apply_calibration(beta: np.ndarray, scores) -> np.ndarray:
+    return predict_proba(beta, np.asarray(scores, dtype=float).reshape(-1, 1))
+
+
+def tercile_buckets(values) -> np.ndarray:
+    """0 = bottom third, 1 = middle, 2 = top. All -1 when there are fewer
+    than 3 values, so callers filter rather than crash.
+
+    TIE POLICY, explicit because it changes what a lift means: boundaries
+    are strict `>`, so a value exactly on a quantile falls into the LOWER
+    bucket. When the two boundaries COLLAPSE (a player whose Impact barely
+    varies), there is no meaningful top or bottom third at all, so every row
+    returns -1 -- unestimable -- rather than piling the player's whole history
+    into the bottom bucket and dragging the pooled lift down.
+    """
+    v = np.asarray(values, dtype=float)
+    if len(v) < 3:
+        return np.full(len(v), -1, dtype=int)
+    lower, upper = np.quantile(v, [1 / 3, 2 / 3])
+    if lower == upper:
+        # Boundaries collapsed: there is no meaningful top or bottom third.
+        # Assigning everything to bucket 0 would silently feed a player's
+        # whole history into the BOTTOM win rate and bias the lift downward.
+        return np.full(len(v), -1, dtype=int)
+    out = np.zeros(len(v), dtype=int)
+    out[v > lower] = 1
+    out[v > upper] = 2
+    return out
+
+
+def _resample(groups: dict, rng) -> list:
+    keys = list(groups.keys())
+    picked = rng.integers(0, len(keys), size=len(keys))
+    return [groups[keys[int(i)]] for i in picked]
+
+
+def cluster_bootstrap_ci(fn, groups: dict, draws: int = 1000, seed: int = 0, alpha: float = 0.05):
+    """Percentile CI from resampling WHOLE GROUPS with replacement.
+
+    `groups` maps a cluster key (always a match_id here) to that cluster's
+    rows; `fn` receives a list of row-lists. Resampling rows independently
+    would treat one match's ~21 rounds as independent evidence and
+    understate every interval, so it is not offered.
+    """
+    if not groups:
+        return (float("nan"), float("nan"))
+    rng = np.random.default_rng(seed)
+    stats = []
+    for _ in range(draws):
+        value = fn(_resample(groups, rng))
+        if value is not None and np.isfinite(value):
+            stats.append(value)
+    if not stats:
+        return (float("nan"), float("nan"))
+    lo, hi = np.percentile(stats, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return (float(lo), float(hi))
+
+
+def paired_bootstrap_delta(fn_a, fn_b, groups: dict, draws: int = 1000, seed: int = 0, alpha: float = 0.05):
+    """CI for (fn_a - fn_b), both evaluated on the SAME resample each draw.
+
+    Every headline comparison here is a difference -- fitted Impact vs kill
+    differential, ladder step 3 vs 4. Subtracting two independently
+    bootstrapped point estimates gives no interval for the difference.
+    """
+    if not groups:
+        return (float("nan"), float("nan"))
+    rng = np.random.default_rng(seed)
+    deltas = []
+    for _ in range(draws):
+        sample = _resample(groups, rng)
+        a, b = fn_a(sample), fn_b(sample)
+        if a is not None and b is not None and np.isfinite(a) and np.isfinite(b):
+            deltas.append(a - b)
+    if not deltas:
+        return (float("nan"), float("nan"))
+    lo, hi = np.percentile(deltas, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return (float(lo), float(hi))

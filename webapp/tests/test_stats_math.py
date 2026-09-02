@@ -178,3 +178,123 @@ def test_fit_logistic_warns_when_it_does_not_converge(caplog):
 def test_fit_logistic_rejects_bad_input():
     with pytest.raises(ValueError):
         fit_logistic(np.zeros((3, 1)), np.array([0.0, 1.0]))
+
+
+from app.services.stats_math import (
+    apply_calibration,
+    back_transform,
+    cluster_bootstrap_ci,
+    paired_bootstrap_delta,
+    platt_calibrate,
+    standardize,
+    tercile_buckets,
+)
+
+
+def test_standardize_uses_training_statistics_only():
+    train = np.array([[0.0], [10.0]])
+    train_scaled, apply_scaled, centre, scale = standardize(train, np.array([[20.0]]))
+    assert abs(train_scaled.mean()) < 1e-12
+    assert centre[0] == 5.0 and scale[0] == 5.0
+    assert abs(apply_scaled[0][0] - 3.0) < 1e-9
+
+
+def test_standardize_handles_constant_column():
+    train_scaled, _, _, scale = standardize(np.array([[1.0], [1.0]]), np.array([[1.0], [1.0]]))
+    assert np.all(np.isfinite(train_scaled))
+    assert scale[0] == 1.0
+
+
+def test_back_transform_recovers_the_raw_fit():
+    """The whole point: a fit on standardized columns, back-transformed,
+    must equal a fit on raw columns -- INTERCEPT INCLUDED."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(loc=50, scale=10, size=(2000, 2))
+    y = 1.0 / (1.0 + np.exp(-(0.3 * (X[:, 0] - 50) - 0.2 * (X[:, 1] - 50))))
+
+    raw = fit_logistic(X, y, l2=0.0)
+    scaled_X, _, centre, scale = standardize(X, X)
+    recovered = back_transform(fit_logistic(scaled_X, y, l2=0.0), centre, scale)
+
+    assert np.allclose(recovered, raw, atol=1e-6)
+
+
+def test_naive_back_transform_would_be_wrong():
+    """Guards against reintroducing the bug: keeping the scaled intercept
+    is materially different from the correct value."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(loc=50, scale=10, size=(500, 1))
+    y = (X[:, 0] > 50).astype(float)
+    scaled_X, _, centre, scale = standardize(X, X)
+    beta = fit_logistic(scaled_X, y, l2=1.0)
+    assert abs(back_transform(beta, centre, scale)[0] - beta[0]) > 1.0
+
+
+def test_platt_calibration_survives_perfect_separation():
+    scores = np.linspace(-5, 5, 101)
+    labels = (scores > 0).astype(int)
+    probs = apply_calibration(platt_calibrate(scores, labels), scores)
+    assert np.all(np.isfinite(probs))
+    assert probs[0] < 0.5 < probs[-1]
+    assert np.all((probs > 0.0) & (probs < 1.0))
+
+
+def test_tercile_buckets_splits_evenly():
+    assert list(tercile_buckets(list(range(9)))) == [0, 0, 0, 1, 1, 1, 2, 2, 2]
+
+
+def test_tercile_buckets_too_few_values_returns_sentinel():
+    assert list(tercile_buckets([1.0, 2.0])) == [-1, -1]
+
+
+def test_tercile_buckets_collapsed_boundaries_are_unestimable():
+    """All-equal values have no meaningful thirds. Returning bucket 0 would
+    feed the player's whole history into the BOTTOM win rate."""
+    assert list(tercile_buckets([5.0, 5.0, 5.0, 5.0])) == [-1, -1, -1, -1]
+
+
+def test_tercile_buckets_ties_at_a_boundary_go_down():
+    assert list(tercile_buckets([1.0, 1.0, 1.0, 2.0, 3.0, 4.0])) == [0, 0, 0, 1, 2, 2]
+
+
+def test_cluster_bootstrap_resamples_whole_groups():
+    groups = {1: [0.0, 0.0], 2: [1.0, 1.0], 3: [2.0, 2.0]}
+    fn = lambda sample: float(np.mean([v for rows in sample for v in rows]))
+    lo, hi = cluster_bootstrap_ci(fn, groups, draws=500, seed=7)
+    assert 0.0 <= lo <= hi <= 2.0
+
+
+def test_cluster_bootstrap_is_seed_deterministic():
+    groups = {i: [float(i)] for i in range(10)}
+    fn = lambda sample: float(np.mean([v for rows in sample for v in rows]))
+    assert cluster_bootstrap_ci(fn, groups, draws=200, seed=3) == cluster_bootstrap_ci(
+        fn, groups, draws=200, seed=3
+    )
+
+
+def test_paired_bootstrap_delta_is_tight_for_a_constant_offset():
+    """B is always A plus 1. The paired interval must be tight around 1.0,
+    whereas independently bootstrapping each would be far wider."""
+    groups = {i: [float(i)] for i in range(40)}
+    fn_a = lambda sample: float(np.mean([v for rows in sample for v in rows]))
+    fn_b = lambda sample: float(np.mean([v + 1.0 for rows in sample for v in rows]))
+    lo, hi = paired_bootstrap_delta(fn_b, fn_a, groups, draws=400, seed=1)
+    assert abs(lo - 1.0) < 1e-9 and abs(hi - 1.0) < 1e-9
+
+
+def test_fit_logistic_rejects_all_zero_weights():
+    with pytest.raises(ValueError, match="total sample weight"):
+        fit_logistic(np.zeros((3, 1)), np.zeros(3), weights=np.zeros(3))
+
+
+def test_bootstraps_on_empty_groups_return_nan():
+    fn = lambda sample: 0.0
+    assert all(np.isnan(v) for v in cluster_bootstrap_ci(fn, {}, draws=10))
+    assert all(np.isnan(v) for v in paired_bootstrap_delta(fn, fn, {}, draws=10))
+
+
+def test_paired_bootstrap_delta_detects_no_difference():
+    groups = {i: [float(i)] for i in range(40)}
+    fn = lambda sample: float(np.mean([v for rows in sample for v in rows]))
+    lo, hi = paired_bootstrap_delta(fn, fn, groups, draws=200, seed=2)
+    assert lo <= 0.0 <= hi
