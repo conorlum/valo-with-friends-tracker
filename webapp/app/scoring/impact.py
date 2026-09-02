@@ -499,10 +499,21 @@ def build_impact_rows_for_match(
         team2_swing = _econ_swing_risk_factor(
             round_outcomes, round_player_stats, match_players, round_number, Team.TEAM_2, round_row
         )
-        team1_realized_swing = _realized_econ_swing_factor(round_player_stats, match_players, round_number, Team.TEAM_1)
-        team2_realized_swing = _realized_econ_swing_factor(round_player_stats, match_players, round_number, Team.TEAM_2)
-        team1_combined_swing = _combine_swing_factors(team1_swing, team1_realized_swing)
-        team2_combined_swing = _combine_swing_factors(team2_swing, team2_realized_swing)
+        # Ex-ante mode drops the realized term entirely. _realized_econ_swing_factor
+        # reads round N+1's loadouts, so any forward-looking model trained on a
+        # swing_impact that includes it is leaking. See the spec's LEAKAGE section.
+        if use_realized_swing:
+            team1_realized_swing = _realized_econ_swing_factor(
+                round_player_stats, match_players, round_number, Team.TEAM_1
+            )
+            team2_realized_swing = _realized_econ_swing_factor(
+                round_player_stats, match_players, round_number, Team.TEAM_2
+            )
+            team1_combined_swing = _combine_swing_factors(team1_swing, team1_realized_swing)
+            team2_combined_swing = _combine_swing_factors(team2_swing, team2_realized_swing)
+        else:
+            team1_combined_swing = team1_swing
+            team2_combined_swing = team2_swing
 
         for kill_index, kill in enumerate(kills):
             killer_id = kill["killer_match_player_id"]

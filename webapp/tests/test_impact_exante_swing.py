@@ -113,3 +113,52 @@ def test_builder_matches_stored_values(db_session):
                 )
             checked += 1
     assert checked, "no stored scores found to compare against"
+
+
+import app.scoring.impact as impact_module
+
+
+def test_wrapper_still_persists_and_commits(db_and_match, monkeypatch):
+    """The spec requires compute_impact_for_match's behaviour be unchanged.
+    The builder test proves the CALCULATION matches; this proves the WRAPPER
+    still writes -- otherwise the split could silently turn the scorer into a
+    no-op and every ingest would stop scoring."""
+    from app.scoring.impact import compute_impact_for_match
+
+    db, match_id = db_and_match
+    spy = _SpyDB(db)
+    before = db.query(ImpactScore).join(ImpactScore.round).filter_by(match_id=match_id).count()
+    compute_impact_for_match(spy, match_id)
+    assert spy.commits >= 1, "wrapper must commit"
+    after = db.query(ImpactScore).join(ImpactScore.round).filter_by(match_id=match_id).count()
+    assert after == before, "re-scoring an existing match must update, not duplicate"
+
+
+def test_ex_ante_never_calls_the_realized_factor(db_and_match, monkeypatch):
+    """The direct proof: if the ex-ante path touched round N+1 data, this
+    would raise. Deterministic, unlike comparing outputs on a match that
+    may happen to have no disagreement."""
+    db, match_id = db_and_match
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("ex-ante path must not read round N+1 data")
+
+    monkeypatch.setattr(impact_module, "_realized_econ_swing_factor", _forbidden)
+    rows = build_impact_rows_for_match(db, match_id, use_realized_swing=False)
+    assert rows, "expected calculated rows"
+
+
+def test_realized_path_does_call_the_realized_factor(db_and_match, monkeypatch):
+    """Confirms the monkeypatch above actually has teeth -- otherwise the
+    ex-ante test would pass even if the flag were ignored."""
+    db, match_id = db_and_match
+    calls = []
+    original = impact_module._realized_econ_swing_factor
+
+    def _counting(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(impact_module, "_realized_econ_swing_factor", _counting)
+    build_impact_rows_for_match(db, match_id, use_realized_swing=True)
+    assert calls, "realized path must consult the realized factor"
