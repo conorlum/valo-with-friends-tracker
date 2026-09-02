@@ -112,3 +112,69 @@ def test_empty_input_raises():
 
     with pytest.raises(ValueError, match="empty"):
         _validate_xy(np.zeros((0, 2)), np.zeros(0), None)
+
+
+from app.services.stats_math import fit_logistic, predict_proba
+
+
+def test_fit_logistic_recovers_known_coefficient():
+    """y is the EXACT logistic mean of 2*x, so an unpenalised fit must
+    recover slope 2 and intercept 0."""
+    x = np.linspace(-3, 3, 61).reshape(-1, 1)
+    y = 1.0 / (1.0 + np.exp(-2.0 * x.ravel()))
+    beta = fit_logistic(x, y, l2=0.0)
+    assert abs(beta[0]) < 1e-6
+    assert abs(beta[1] - 2.0) < 1e-6
+
+
+def test_fit_logistic_l2_shrinks_coefficient():
+    x = np.linspace(-3, 3, 61).reshape(-1, 1)
+    y = 1.0 / (1.0 + np.exp(-2.0 * x.ravel()))
+    assert fit_logistic(x, y, l2=50.0)[1] < fit_logistic(x, y, l2=0.0)[1]
+
+
+def test_fit_logistic_intercept_is_not_penalised():
+    x = np.zeros((40, 1))
+    y = np.full(40, 0.75)
+    beta = fit_logistic(x, y, l2=1000.0)
+    assert abs(predict_proba(beta, x)[0] - 0.75) < 1e-6
+
+
+def test_fit_logistic_respects_sample_weights():
+    x = np.array([[0.0], [1.0]])
+    y = np.array([0.0, 1.0])
+    heavy_zero = fit_logistic(x, y, weights=np.array([100.0, 1.0]), l2=1.0)
+    heavy_one = fit_logistic(x, y, weights=np.array([1.0, 100.0]), l2=1.0)
+    assert predict_proba(heavy_zero, x)[0] < predict_proba(heavy_one, x)[0]
+
+
+def test_fit_logistic_survives_perfect_separation():
+    """Unpenalised MLE has no finite solution here. It must terminate with
+    finite coefficients rather than hanging or overflowing."""
+    x = np.linspace(-3, 3, 40).reshape(-1, 1)
+    y = (x.ravel() > 0).astype(float)
+    beta = fit_logistic(x, y, l2=1e-3)
+    assert np.all(np.isfinite(beta))
+    assert beta[1] > 0
+
+
+def test_fit_logistic_survives_a_singular_hessian():
+    """A duplicated column makes the unpenalised Hessian singular; the fit
+    must fall back to a pseudo-inverse instead of raising."""
+    base = np.linspace(-2, 2, 50)
+    X = np.column_stack([base, base])
+    y = (base > 0).astype(float)
+    assert np.all(np.isfinite(fit_logistic(X, y, l2=0.0)))
+
+
+def test_fit_logistic_warns_when_it_does_not_converge(caplog):
+    x = np.linspace(-3, 3, 40).reshape(-1, 1)
+    y = (x.ravel() > 0).astype(float)
+    with caplog.at_level("WARNING"):
+        fit_logistic(x, y, l2=0.0, max_iter=2)
+    assert any("converge" in record.message for record in caplog.records)
+
+
+def test_fit_logistic_rejects_bad_input():
+    with pytest.raises(ValueError):
+        fit_logistic(np.zeros((3, 1)), np.array([0.0, 1.0]))

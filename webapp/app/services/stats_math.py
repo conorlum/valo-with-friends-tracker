@@ -126,6 +126,60 @@ def log_loss(probs, labels, eps: float = 1e-12) -> float:
     return weighted_log_loss(probs, labels, None, eps)
 
 
+def predict_proba(beta: np.ndarray, X) -> np.ndarray:
+    X = np.asarray(X, dtype=float)
+    return sigmoid(beta[0] + X @ beta[1:])
+
+
+def fit_logistic(X, y, weights=None, l2: float = 1.0, max_iter: int = 100, tol: float = 1e-9) -> np.ndarray:
+    """Weighted IRLS logistic regression with a ridge penalty.
+
+    `y` may be fractional in [0, 1] (quasi-binomial) -- a forward window of
+    "weighted fraction of later rounds won" is not a 0/1 label.
+
+    The intercept is never penalised: shrinking it would bias the base
+    rate, which is not what L2 is for.
+
+    Degenerate cases are handled rather than propagated: a singular Hessian
+    falls back to a pseudo-inverse (collinear components are expected, see
+    impact.py:496-502), and failure to converge logs a warning instead of
+    silently returning a half-fitted model.
+
+    Returns beta with beta[0] = intercept, beta[1:] = coefficients in the
+    column order of X.
+    """
+    X, y, w = _validate_xy(X, y, weights)
+    n, p = X.shape
+
+    design = np.hstack([np.ones((n, 1)), X])
+    beta = np.zeros(p + 1)
+    penalty = np.eye(p + 1) * l2
+    penalty[0, 0] = 0.0
+
+    for _ in range(max_iter):
+        eta = design @ beta
+        mu = sigmoid(eta)
+        variance = np.clip(mu * (1.0 - mu), 1e-9, None)
+        s = variance * w
+        z = eta + (y - mu) / variance
+        weighted = design.T * s
+        hessian = weighted @ design + penalty
+        gradient = weighted @ z
+        try:
+            new_beta = np.linalg.solve(hessian, gradient)
+        except np.linalg.LinAlgError:
+            new_beta = np.linalg.pinv(hessian) @ gradient
+        if not np.all(np.isfinite(new_beta)):
+            logger.warning("fit_logistic: non-finite step, returning last finite estimate")
+            return beta
+        if np.max(np.abs(new_beta - beta)) < tol:
+            return new_beta
+        beta = new_beta
+
+    logger.warning("fit_logistic: did not converge in %d iterations", max_iter)
+    return beta
+
+
 def point_biserial(values, labels) -> float:
     """Pearson correlation between a continuous value and a 0/1 label.
     NaN when either side has zero variance."""
