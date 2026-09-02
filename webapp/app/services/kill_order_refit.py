@@ -25,7 +25,7 @@ from app.services.kill_order_curves import (
     family_a_leverage,
     fit_family_a,
 )
-from app.services.kill_order_leverage import PARAMS, shipped_graph
+from app.services.kill_order_leverage import COMPONENTS, PARAMS, shipped_graph
 from app.services.stats_math import (
     apply_calibration,
     fit_logistic,
@@ -873,3 +873,133 @@ def _player_match_comparison(player_rows, reference, other) -> dict:
 
 stage_c0_report.regress_on_swing = _regress_on_swing
 stage_c0_report.compare_graphs = _compare_graphs
+
+
+from app.services.stats_math import point_biserial, tercile_buckets
+
+
+MIN_MATCHES_FOR_WITHIN_PLAYER = 9   # >= 3 per tercile, matching the parent spec
+
+
+def player_level_report(player_rows, match_outcomes, graph, surfaces=None,
+                        draws=200, seed=0, min_matches=MIN_MATCHES_FOR_WITHIN_PLAYER) -> dict:
+    """The only place in this project where the kill and death halves
+    separate. At team level they correlate 0.937-0.957 by construction, so
+    the team yardsticks cannot see a kill/death asymmetry; here they can.
+
+    `surfaces` optionally supplies a Family B rung's recovered EFFECTIVE
+    PRICE SURFACES -- a dict of (component, side) -> 26-vector, from
+    `effective_surfaces`. An earlier draft took a three-element component
+    weighting, which B2 and B3 (9 and 18 coefficients) cannot supply: it
+    would have raised a shape error or, worse, silently scored the wrong
+    thing. None uses the shipped equal weights over the given graph.
+    """
+    graph = np.asarray(graph, dtype=float)
+
+    def collapse(block, side):
+        block = np.asarray(block, dtype=float)
+        if surfaces is None:
+            return float(np.sum(graph * block.sum(axis=1) / len(COMPONENTS)))
+        total = 0.0
+        for index, component in enumerate(COMPONENTS):
+            key = f"{component}_{side}"
+            surface = surfaces.get(key, surfaces.get(component))
+            if surface is None:
+                raise KeyError(f"no effective surface for {key!r}")
+            total += float(np.sum(np.asarray(surface) * block[:, index]))
+        return total
+
+    per_match: dict[tuple, dict] = {}
+    for row in player_rows:
+        key = (row.player_id, row.match_id)     # canonical player, then match
+        entry = per_match.setdefault(key, {
+            "kill": 0.0, "death": 0.0, "death_untraded": 0.0, "damage": 0.0,
+            "rounds": 0, "won": bool(match_outcomes[row.match_id]) == bool(row.team_is_a),
+        })
+        entry["kill"] += collapse(row.kill, "kill")
+        entry["death"] += collapse(row.death, "death")
+        entry["death_untraded"] += collapse(row.death_untraded, "death")
+        entry["damage"] += row.damage
+        entry["rounds"] += 1
+
+    def series(name):
+        if name == "impact":
+            return np.array([
+                (e["damage"] + e["kill"] - e["death"]) / e["rounds"] for e in per_match.values()
+            ])
+        if name == "kill_impact":
+            return np.array([(e["damage"] + e["kill"]) / e["rounds"] for e in per_match.values()])
+        return np.array([e["death"] / e["rounds"] for e in per_match.values()])
+
+    won = np.array([e["won"] for e in per_match.values()], dtype=int)
+    keys = list(per_match)
+    players = np.array([k[0] for k in keys])
+    groups: dict[int, list] = {}
+    for index, (_player, match_id) in enumerate(keys):
+        groups.setdefault(int(match_id), []).append(index)
+
+    def within_player_lift(values, rows=None):
+        """Terciles computed WITHIN each sufficiently-observed player, then
+        pooled. Global terciles would mostly compare strong players against
+        weak ones -- 94.7% of players here have a single match -- which is
+        not the quantity the spec asks for and not what the player page
+        would show."""
+        rows = np.arange(len(values)) if rows is None else np.asarray(rows)
+        top_hits = top_n = bottom_hits = bottom_n = 0
+        eligible = 0
+        for player in np.unique(players[rows]):
+            mine = rows[players[rows] == player]
+            if len(mine) < min_matches:
+                continue
+            eligible += 1
+            buckets = tercile_buckets(values[mine])
+            if not (buckets == 2).any() or not (buckets == 0).any():
+                continue
+            top_hits += int(won[mine][buckets == 2].sum())
+            top_n += int((buckets == 2).sum())
+            bottom_hits += int(won[mine][buckets == 0].sum())
+            bottom_n += int((buckets == 0).sum())
+        if not top_n or not bottom_n:
+            return None, 0
+        return (top_hits / top_n) - (bottom_hits / bottom_n), eligible
+
+    per_player: dict = {"summary": {}, "min_matches": min_matches}
+    for name in ("impact", "kill_impact", "death_impact"):
+        values = series(name)
+        lift, eligible = within_player_lift(values)
+
+        def lift_of(sample, values=values):
+            rows = [i for block in sample for i in block]
+            result, _ = within_player_lift(values, rows)
+            return result
+
+        low, high = cluster_bootstrap_ci(lift_of, groups, draws=draws, seed=seed)
+        per_player[name] = {
+            "point_biserial": float(point_biserial(values, won)),
+            "within_player_tercile_lift": None if lift is None else float(lift),
+            "ci": [float(low), float(high)],
+            "eligible_players": eligible,
+        }
+        per_player["summary"][name] = {"mean": float(values.mean()), "sd": float(values.std())}
+
+    scored = float(np.mean([e["death"] / e["rounds"] for e in per_match.values()]))
+    untraded = float(np.mean([e["death_untraded"] / e["rounds"] for e in per_match.values()]))
+    return {
+        "note": (
+            "Player-level. The team differential fuses kill and death (they "
+            "correlate 0.937-0.957 there by construction); this block is where "
+            "they separate, and where the trade discount is attributable."
+        ),
+        "n_player_matches": len(per_match),
+        "per_player": per_player,
+        "trades": {
+            "death_impact_as_scored": scored,
+            "death_impact_without_trade_credit": untraded,
+            "discount": untraded - scored,
+            "reading": (
+                "The discount is what _traded_factor forgave. It depends on "
+                "whether the player's TEAM traded for them, so it is a team "
+                "quality currently charged to an individual."
+            ),
+        },
+    }

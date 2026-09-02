@@ -313,3 +313,84 @@ def test_stage_c0_reports_sign_flips_and_correlation_between_two_graphs():
     assert report["pearson"] > 0.99
     assert report["sign_flip_rate"] < 0.05
     assert report["sd_difference"] < report["sd_reference"]
+
+
+from app.services.kill_order_refit import player_level_report
+
+
+def fake_player_rows(n_players=10, n_rounds=20, seed=41):
+    from app.services.kill_order_leverage import PlayerLeverageRow
+
+    rng = np.random.default_rng(seed)
+    rows, outcomes = [], {}
+    for match in range(6):
+        outcomes[match] = bool(rng.uniform() < 0.5)
+        for rnd in range(n_rounds):
+            for player in range(n_players):
+                kill = np.zeros((len(PARAMS), len(COMPONENTS)))
+                death = np.zeros_like(kill)
+                untraded = np.zeros_like(kill)
+                kill[PARAM_INDEX["3v3"]] = abs(rng.normal(size=len(COMPONENTS)))
+                untraded[PARAM_INDEX["3v3"]] = abs(rng.normal(size=len(COMPONENTS)))
+                death[PARAM_INDEX["3v3"]] = untraded[PARAM_INDEX["3v3"]] * 0.7
+                rows.append(PlayerLeverageRow(
+                    match_id=match, round_id=match * 100 + rnd, round_number=rnd + 1,
+                    match_player_id=match * 10 + player,
+                    # Canonical player id, stable ACROSS matches (unlike
+                    # match_player_id, a per-match surrogate) -- the same
+                    # `player` index plays in all 6 fake matches here, which
+                    # is what makes them a candidate for within-player
+                    # eligibility at all.
+                    player_id=player,
+                    team_is_a=player < 5,
+                    damage=rng.normal() * 20, kill=kill, death=death,
+                    death_untraded=untraded,
+                ))
+    return rows, outcomes
+
+
+def test_kill_and_death_impact_are_reported_separately():
+    rows, outcomes = fake_player_rows()
+    report = player_level_report(rows, outcomes, shipped_graph(), draws=20)
+    assert "kill_impact" in report["per_player"]["summary"]
+    assert "death_impact" in report["per_player"]["summary"]
+    assert report["per_player"]["summary"]["death_impact"]["mean"] > 0
+
+
+def test_the_trade_discount_is_reported_per_player():
+    """The decision this task exists to honour: death cost as scored,
+    against death cost with no trade credit."""
+    rows, outcomes = fake_player_rows()
+    report = player_level_report(rows, outcomes, shipped_graph(), draws=20)
+    trades = report["trades"]
+    assert trades["death_impact_as_scored"] < trades["death_impact_without_trade_credit"]
+    assert trades["discount"] > 0
+    assert np.isclose(
+        trades["discount"],
+        trades["death_impact_without_trade_credit"] - trades["death_impact_as_scored"],
+    )
+
+
+def test_tercile_lift_is_reported_for_each_half_as_well_as_pooled():
+    rows, outcomes = fake_player_rows()
+    report = player_level_report(rows, outcomes, shipped_graph(), draws=20)
+    for key in ("impact", "kill_impact", "death_impact"):
+        # Named within_player_tercile_lift, not the generic "tercile_lift":
+        # the whole point (spec, repeatedly) is that terciles are computed
+        # WITHIN each sufficiently-observed player then pooled, never
+        # globally -- a name that dropped "within_player" would invite
+        # exactly the wrong (global-tercile) implementation later.
+        assert "within_player_tercile_lift" in report["per_player"][key]
+        assert "ci" in report["per_player"][key]
+
+
+def test_a_graph_change_moves_the_player_level_read():
+    """If it did not, the player-level block would be decorative and the
+    kill/death decision would have nowhere to land."""
+    rows, outcomes = fake_player_rows()
+    flat = np.full(len(PARAMS), 136.6)
+    a = player_level_report(rows, outcomes, shipped_graph(), draws=20)
+    b = player_level_report(rows, outcomes, flat, draws=20)
+    assert a["per_player"]["summary"]["death_impact"]["mean"] != pytest.approx(
+        b["per_player"]["summary"]["death_impact"]["mean"], rel=1e-6
+    )
