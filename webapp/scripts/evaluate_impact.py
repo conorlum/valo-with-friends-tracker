@@ -33,6 +33,7 @@ from app.services.impact_eval import (
     PRIMARY_T1,
     PRIMARY_T2,
     T2_SENSITIVITY_GRID,
+    TargetConfig,
     coefficient_diagnostics,
     controls_for,
     cross_validate,
@@ -48,6 +49,7 @@ from app.services.impact_eval import (
 )
 from app.services.impact_stage0 import stage0_report
 from app.services.site_stats import resolve_roster_player_ids
+from app.services.win_probability import econ_increment_report, fit_value_model
 
 L2_GRID = [0.01, 0.1, 1.0, 10.0]
 
@@ -62,10 +64,23 @@ LADDER = [
     ("4_plus_components", CONTROLS_RESULT + CONTROLS_CONTEXT + FEATURE_COMPONENTS),
 ]
 
-# STAGE A ONLY. Stage B (the WPA target, the value model and the economy
-# increment) is added by Task 17, after this report has been produced and read
-# -- that ordering is the spec's gate, and it is also what keeps this file
-# runnable at this commit: win_probability.py does not exist yet.
+def _value_context(train_obs, seed: int = 0, inner_folds: int = 3):
+    """Stage B's context: a value model fitted on the training half, PLUS
+    inner-OOF value models so a training row's leverage does not come from a
+    model that saw its own match."""
+    from app.services.impact_eval import assign_folds, split_observations
+
+    full = fit_value_model(train_obs)
+    inner = assign_folds([o.match_id for o in train_obs], n_folds=inner_folds, seed=seed + 7)
+    by_match = {}
+    for fold in range(inner_folds):
+        inner_train, inner_test = split_observations(train_obs, inner, fold)
+        if not inner_train or not inner_test:
+            continue
+        model = fit_value_model(inner_train)
+        for o in inner_test:
+            by_match[o.match_id] = model
+    return {"value_beta": full, "value_beta_by_match": by_match}
 
 
 def _control_ladder(observations, config, draws, seed):
@@ -188,15 +203,22 @@ def main() -> int:
         report["loading_ex_ante"] = {"n_observations": len(observations), **load_report}
         report["component_variant"] = "ex_ante"
 
-        # --- The frozen Stage A targets, each nested end to end ---
+        # --- The frozen Stage A/B targets, each nested end to end ---
         per_fold_candidates = {}
         all_folds = {}
-        for name, config in (("T1", PRIMARY_T1), ("T2", PRIMARY_T2)):
+        targets = [
+            ("T1", PRIMARY_T1, None),
+            ("T2", PRIMARY_T2, None),
+            ("WPA", TargetConfig(name="WPA"), lambda o: _value_context(o, args.seed)),
+        ]
+        for name, config, context_builder in targets:
             result = cross_validate(
-                observations, [config], FEATURE_COMPONENTS, L2_GRID, seed=args.seed
+                observations, [config], FEATURE_COMPONENTS, L2_GRID,
+                seed=args.seed, context_builder=context_builder,
             )
             candidates, fold_weights = fold_candidates(
-                observations, result["folds"], f"fitted_{name}"
+                observations, result["folds"], f"fitted_{name}",
+                context_builder=context_builder,
             )
             per_fold_candidates[f"fitted_{name}"] = candidates
             all_folds.update({f.fold: f for f in result["folds"]})
@@ -233,6 +255,13 @@ def main() -> int:
         report["diagnostics_T2"] = coefficient_diagnostics(
             observations, PRIMARY_T2, FEATURE_COMPONENTS, draws=args.draws, seed=args.seed
         )
+
+        report["WPA"]["framing"] = (
+            "attribution, not independent validation -- dV is dominated by the round's "
+            "own outcome. Its yardstick-matrix row IS comparable to T1/T2, because every "
+            "candidate is scored there on the same fixed binary labels."
+        )
+        report["econ_increment"] = econ_increment_report(observations, seed=args.seed)
 
         if args.sensitivity:
             sensitivity = []

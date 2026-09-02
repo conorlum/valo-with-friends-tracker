@@ -450,7 +450,46 @@ def build_target(observations, config: TargetConfig, feature_names: list[str], c
             observations, feature_names, k=config.k, gamma=config.gamma,
             match_weight=config.match_weight,
         )
+    if config.name == "WPA":
+        return wpa_target(observations, feature_names, context)
     raise ValueError(f"unknown target: {config.name!r}")
+
+
+from app.services.win_probability import state_after, state_before, value_of
+
+
+def wpa_target(observations, feature_names: list[str], context: dict) -> FitDataset:
+    """Stage B: label = did team A win this round, weight = leverage.
+
+    Signed dV is in [-1, 1] and is not a probability, so it cannot be the
+    `y` of a logistic fit. Using abs(dV) as a SAMPLE WEIGHT instead makes
+    the fit care more about high-leverage rounds without pretending a
+    signed swing is a likelihood.
+
+    `context["value_beta"]` MUST come from a model fitted on training
+    observations only -- see cross_validate's context_builder.
+    """
+    if not context or "value_beta" not in context:
+        raise ValueError("wpa_target requires a context carrying 'value_beta'")
+    fallback_model = context["value_beta"]
+    # Training rows get an INNER-OOF value model (one that did not see their
+    # own match), so the leverage weights used to fit the component weights
+    # are not this model's in-sample predictions of the very rows it was fit
+    # on. Outer-test rows are absent from this map and fall back to the
+    # full-training model, which never saw them either.
+    per_match = context.get("value_beta_by_match", {})
+
+    rows, ys, ws, mids = [], [], [], []
+    for o in observations:
+        if o.round_won_by_team_a is None:
+            continue
+        model = per_match.get(o.match_id, fallback_model)
+        leverage = abs(value_of(model, state_after(o)) - value_of(model, state_before(o)))
+        rows.append(_row(o, feature_names))
+        ys.append(1.0 if o.round_won_by_team_a else 0.0)
+        ws.append(leverage)
+        mids.append(o.match_id)
+    return _dataset(rows, ys, ws, mids, feature_names)
 
 
 from app.services.stats_math import (
@@ -524,7 +563,7 @@ def _fit_and_score(train_ds: FitDataset, test_ds: FitDataset, l2: float):
     return predict_proba(beta, scaled_test), back_transform(beta, centre, scale)
 
 
-def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int, seed: int):
+def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int, seed: int, context_builder=None):
     """Inner CV over TRAINING observations only, selecting L2.
 
     REFUSES to compare configurations that define different targets. Log
@@ -553,8 +592,9 @@ def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int,
                 inner_train, inner_test = split_observations(train_obs, inner, fold)
                 if not inner_train or not inner_test:
                     continue
-                train_ds = build_target(inner_train, config, feature_names)
-                test_ds = build_target(inner_test, config, feature_names)
+                inner_context = context_builder(inner_train) if context_builder is not None else None
+                train_ds = build_target(inner_train, config, feature_names, inner_context)
+                test_ds = build_target(inner_test, config, feature_names, inner_context)
                 fitted = _fit_and_score(train_ds, test_ds, l2)
                 if fitted is None:
                     continue
@@ -573,7 +613,7 @@ def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int,
 
 def cross_validate(
     observations, configs, feature_names, l2_grid,
-    n_folds: int = 5, inner_folds: int = 3, seed: int = 0,
+    n_folds: int = 5, inner_folds: int = 3, seed: int = 0, context_builder=None,
 ) -> dict:
     """Outer CV that receives RAW OBSERVATIONS and a config grid.
 
@@ -581,6 +621,11 @@ def cross_validate(
     training matches, rebuild the target on the full training set, fit,
     and predict the untouched test matches. Nothing about the test fold
     influences selection, standardization, or fitting.
+
+    `context_builder(train_obs) -> dict`, when given, is called on each
+    outer fold's TRAINING observations only, and the result is threaded to
+    both the training and test target builds -- this is how a WPA config's
+    value model is cross-fit without ever seeing a test match's outcome.
     """
     folds = assign_folds([o.match_id for o in observations], n_folds=n_folds, seed=seed)
 
@@ -592,9 +637,12 @@ def cross_validate(
         if not train_obs or not test_obs:
             continue
 
-        config, l2 = _select_config(train_obs, configs, feature_names, l2_grid, inner_folds, seed)
-        train_ds = build_target(train_obs, config, feature_names)
-        test_ds = build_target(test_obs, config, feature_names)
+        config, l2 = _select_config(
+            train_obs, configs, feature_names, l2_grid, inner_folds, seed, context_builder
+        )
+        context = context_builder(train_obs) if context_builder is not None else None
+        train_ds = build_target(train_obs, config, feature_names, context)
+        test_ds = build_target(test_obs, config, feature_names, context)
         fitted = _fit_and_score(train_ds, test_ds, l2)
         if fitted is None:
             continue

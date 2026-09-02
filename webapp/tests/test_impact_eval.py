@@ -449,10 +449,15 @@ def _weighted_matches(n_matches=60, econ_weight=0.9, seed=5):
     for match_id in range(n_matches):
         obs = []
         prev_econ = prev_other = 0.0
+        # Alternating, not constant: fit_value_model (Stage B) needs real
+        # label variance across matches, and a constant match_won_by_team_a
+        # degenerates every fit to the same trivial zero-coefficient model,
+        # making two different training subsets indistinguishable.
+        match_won = match_id % 2 == 0
         for n in range(1, 13):
             econ = rng.normal()
             other = rng.normal()
-            o = _obs(n, 0.0, None, True, match_id=match_id)
+            o = _obs(n, 0.0, None, match_won, match_id=match_id)
             o.econ_impact = econ * 10
             o.time_impact = other * 10
             o.swing_impact = rng.normal() * 10
@@ -749,3 +754,88 @@ def test_ex_ante_loader_defaults_to_ex_ante():
 
     signature = inspect.signature(impact_eval.load_all_observations)
     assert signature.parameters["use_realized_swing"].default is False
+
+
+def test_wpa_target_labels_are_round_outcomes_and_weights_are_leverage():
+    from app.services.impact_eval import wpa_target
+    from app.services.win_probability import fit_value_model
+
+    obs = _weighted_matches(n_matches=40, seed=21)
+    beta = fit_value_model(obs)
+    dataset = wpa_target(obs, FEATURE_COMPONENTS, {"value_beta": beta})
+
+    assert set(np.unique(dataset.y)) <= {0.0, 1.0}, "labels must be round outcomes"
+    assert np.all(dataset.w >= 0.0)
+    assert np.all(dataset.w <= 1.0), "abs(dV) cannot exceed 1"
+
+
+def test_wpa_target_skips_unresolved_rounds():
+    from app.services.impact_eval import wpa_target
+    from app.services.win_probability import fit_value_model
+
+    resolved = _obs(5, 1.0, True, True, match_id=1)
+    unresolved = _obs(6, 1.0, None, True, match_id=1)
+    beta = fit_value_model([resolved])
+    dataset = wpa_target([resolved, unresolved], FEATURE_COMPONENTS, {"value_beta": beta})
+    assert len(dataset.y) == 1
+
+
+def test_training_rows_use_an_inner_oof_value_model():
+    """Leverage for a training row must come from a model that did not see
+    that row's match."""
+    from app.services.impact_eval import wpa_target
+    from app.services.win_probability import fit_value_model
+
+    obs = _weighted_matches(n_matches=30, seed=25)
+    full = fit_value_model(obs)
+    other = fit_value_model(obs[: len(obs) // 2])
+    match_ids = {o.match_id for o in obs}
+    context = {
+        "value_beta": full,
+        "value_beta_by_match": {mid: other for mid in match_ids},
+    }
+    with_inner = wpa_target(obs, FEATURE_COMPONENTS, context)
+    without = wpa_target(obs, FEATURE_COMPONENTS, {"value_beta": full})
+    assert not np.allclose(with_inner.w, without.w), "per-match betas must change leverage"
+
+
+def test_context_builder_only_sees_training_matches(monkeypatch):
+    """The Stage B leakage fix, asserted directly."""
+    observations = _weighted_matches(n_matches=40, seed=22)
+    seen = []
+
+    def builder(train_obs):
+        from app.services.win_probability import fit_value_model
+
+        seen.append({o.match_id for o in train_obs})
+        return {"value_beta": fit_value_model(train_obs)}
+
+    result = cross_validate(
+        observations, [TargetConfig(name="WPA")], FEATURE_COMPONENTS, [1.0],
+        seed=0, context_builder=builder,
+    )
+    # context_builder fires once per INNER fold (for L2 selection inside
+    # _select_config) plus once for the final outer fit, per outer fold --
+    # not just once per outer fold. Every one of those calls must still
+    # never see its own outer fold's held-out matches.
+    calls_per_fold = len(seen) // len(result["folds"])
+    assert calls_per_fold * len(result["folds"]) == len(seen)
+    for i, fold in enumerate(result["folds"]):
+        chunk = seen[i * calls_per_fold : (i + 1) * calls_per_fold]
+        for train_ids in chunk:
+            assert train_ids.isdisjoint(fold.test_match_ids)
+
+
+def test_build_target_passes_context_to_wpa():
+    from app.services.win_probability import fit_value_model
+
+    obs = _weighted_matches(n_matches=20, seed=23)
+    beta = fit_value_model(obs)
+    dataset = build_target(obs, TargetConfig(name="WPA"), FEATURE_COMPONENTS, {"value_beta": beta})
+    assert len(dataset.y) > 0
+
+
+def test_wpa_without_context_raises():
+    obs = _weighted_matches(n_matches=10, seed=24)
+    with pytest.raises(ValueError, match="context"):
+        build_target(obs, TargetConfig(name="WPA"), FEATURE_COMPONENTS, None)
