@@ -23,7 +23,38 @@
 - **Run everything from `webapp/`** with `.\.venv\Scripts\python.exe`. Tests: `.\.venv\Scripts\python.exe -m pytest tests/<file> -v`.
 - **Test style:** plain ORM construction with no DB session, following `tests/test_player_profile_types.py`. **Tasks 4, 5 and 6 require a live Postgres** (`docker compose -p valomaths-private up -d`) and skip cleanly when unreachable; every other task's tests are pure.
 
-## Revision note
+## Revision note (third review)
+
+A further review found four issues that would still have made the report
+dishonest, all fixed here. **T2 hyperparameters were being selected by each
+configuration's own log loss** -- but k/gamma/match_weight change the
+definition of y, so that comparison rewards whichever outcome is easiest to
+predict and lets different folds pool predictions of different quantities.
+Targets are now frozen, alternatives are sensitivity runs judged on fixed
+yardsticks, and `_select_config` raises if handed two different target
+definitions. **Stage B never entered the common matrix**, so T1/T2/WPA were
+still incomparable -- the exact thing the matrix exists to prevent, and the
+reason Stage B is in this plan at all; `fitted_WPA` is now a first-class
+candidate. **The control ladder used a config chosen across all folds and
+printed a bare point estimate** despite the plan telling the reader to judge it
+by its interval; it now runs on the frozen target with a paired bootstrap
+delta. **AUC was computed by rounding a fractional target at 0.5**, changing
+the estimand and discarding the weights; AUC is now confined to the binary
+yardsticks, with weighted log loss everywhere else.
+
+Also: `current_impact` reads an exact `impact_diff` column instead of being
+rebuilt from rounded components; missing impact rows raise and are counted
+rather than becoming zero-impact observations; economy controls are team
+averages, not sums; calibration for fitted candidates happens inside each outer
+fold; the value model gives training rows inner-OOF leverage; `V(after)`
+refuses econ-aware evaluation rather than reusing round N's economy; drop-one
+diagnostics report paired weighted-log-loss costs and signed stability;
+`fold_candidates` passes each fold's own L2; Stage 0's cohorts and per-player
+medians gained intervals and terciles gained an explicit tie policy; and the
+scorer-equivalence test checks every persisted field across regulation and
+overtime matches.
+
+## Revision note (second review)
 
 Rewritten after a methodology review found the previous version would have produced optimistically biased results presented as held-out. Substantive changes: outer CV now receives raw observations and a target-builder callback, so `k`/`gamma`/`match_weight` are selected inside training folds; constrained weights are fitted per outer fold and scored only on that fold's held-out matches, with a separate all-data fit labelled the deployment proposal; every objective became weighted; the constrained search runs with nuisance controls present, so reported weights come from the same model the control ladder validates; Stage B cross-fits `V(state)` inside each training fold; the standardization back-transform's intercept bug is fixed; the duplicate kill baseline is removed; and Stage 0 gained the analyses the spec required but the plan omitted.
 
@@ -39,6 +70,18 @@ Rewritten after a methodology review found the previous version would have produ
 | 13 | Stage 0 |
 | 14-15 | Yardsticks and matrix, CLI |
 | 16-17 | Stage B: cross-fit `V(state)`, WPA target |
+
+**Two rules that the whole design hangs on, stated once here:**
+
+1. **Targets are frozen, never selected.** `k`, `gamma` and `match_weight`
+   change the definition of `y`, so comparing configurations by their own
+   losses rewards whichever outcome is easiest to predict. `PRIMARY_T1`,
+   `PRIMARY_T2` and the WPA target are declared up front; alternatives run as
+   sensitivity analyses and are compared *only* on the fixed binary
+   yardsticks.
+2. **AUC is for yardsticks; weighted log loss is for targets.** T2's target is
+   a weighted fraction, and rounding it to manufacture a binary label would
+   change the estimand and discard the weights `gamma` exists to set.
 
 ---
 
@@ -226,6 +269,8 @@ def _validate_xy(X, y, weights):
             raise ValueError(f"weights length mismatch: {w.shape[0]} vs {X.shape[0]}")
         if not np.isfinite(w).all() or w.min() < 0:
             raise ValueError("weights must be finite and non-negative")
+        if w.sum() == 0:
+            raise ValueError("total sample weight is zero; nothing to fit")
     return X, y, w
 
 
@@ -549,6 +594,12 @@ def test_tercile_buckets_too_few_values_returns_sentinel():
     assert list(tercile_buckets([1.0, 2.0])) == [-1, -1]
 
 
+def test_tercile_buckets_tie_policy_sends_ties_down():
+    """All-equal values land in bucket 0, so they contribute to no top rate
+    and produce NaN lift rather than a spurious zero."""
+    assert list(tercile_buckets([5.0, 5.0, 5.0, 5.0])) == [0, 0, 0, 0]
+
+
 def test_cluster_bootstrap_resamples_whole_groups():
     groups = {1: [0.0, 0.0], 2: [1.0, 1.0], 3: [2.0, 2.0]}
     fn = lambda sample: float(np.mean([v for rows in sample for v in rows]))
@@ -572,6 +623,17 @@ def test_paired_bootstrap_delta_is_tight_for_a_constant_offset():
     fn_b = lambda sample: float(np.mean([v + 1.0 for rows in sample for v in rows]))
     lo, hi = paired_bootstrap_delta(fn_b, fn_a, groups, draws=400, seed=1)
     assert abs(lo - 1.0) < 1e-9 and abs(hi - 1.0) < 1e-9
+
+
+def test_fit_logistic_rejects_all_zero_weights():
+    with pytest.raises(ValueError, match="total sample weight"):
+        fit_logistic(np.zeros((3, 1)), np.zeros(3), weights=np.zeros(3))
+
+
+def test_bootstraps_on_empty_groups_return_nan():
+    fn = lambda sample: 0.0
+    assert all(np.isnan(v) for v in cluster_bootstrap_ci(fn, {}, draws=10))
+    assert all(np.isnan(v) for v in paired_bootstrap_delta(fn, fn, {}, draws=10))
 
 
 def test_paired_bootstrap_delta_detects_no_difference():
@@ -636,8 +698,12 @@ def platt_calibrate(scores, labels, weights=None) -> np.ndarray:
     """
     scores = np.asarray(scores, dtype=float).reshape(-1, 1)
     labels = np.asarray(labels, dtype=float)
-    n_pos = float((labels >= 0.5).sum())
-    n_neg = float(len(labels) - n_pos)
+    # Class totals are WEIGHTED when weights are supplied: Platt's smoothing
+    # is a function of how much evidence each class carries, and unweighted
+    # counts would smooth a heavily-weighted class as if it were sparse.
+    w = np.ones(len(labels)) if weights is None else np.asarray(weights, dtype=float)
+    n_pos = float(w[labels >= 0.5].sum())
+    n_neg = float(w[labels < 0.5].sum())
     high = (n_pos + 1.0) / (n_pos + 2.0)
     low = 1.0 / (n_neg + 2.0)
     smoothed = np.where(labels >= 0.5, high, low)
@@ -650,7 +716,14 @@ def apply_calibration(beta: np.ndarray, scores) -> np.ndarray:
 
 def tercile_buckets(values) -> np.ndarray:
     """0 = bottom third, 1 = middle, 2 = top. All -1 when there are fewer
-    than 3 values, so callers filter rather than crash."""
+    than 3 values, so callers filter rather than crash.
+
+    TIE POLICY, explicit because it changes what a lift means: boundaries
+    are strict `>`, so a value exactly on a quantile falls into the LOWER
+    bucket. A player whose Impact is constant therefore lands entirely in
+    bucket 0, contributing to neither the top nor the bottom rate, and their
+    lift is NaN rather than a spurious 0.
+    """
     v = np.asarray(values, dtype=float)
     if len(v) < 3:
         return np.full(len(v), -1, dtype=int)
@@ -675,6 +748,8 @@ def cluster_bootstrap_ci(fn, groups: dict, draws: int = 1000, seed: int = 0, alp
     would treat one match's ~21 rounds as independent evidence and
     understate every interval, so it is not offered.
     """
+    if not groups:
+        return (float("nan"), float("nan"))
     rng = np.random.default_rng(seed)
     stats = []
     for _ in range(draws):
@@ -694,6 +769,8 @@ def paired_bootstrap_delta(fn_a, fn_b, groups: dict, draws: int = 1000, seed: in
     differential, ladder step 3 vs 4. Subtracting two independently
     bootstrapped point estimates gives no interval for the difference.
     """
+    if not groups:
+        return (float("nan"), float("nan"))
     rng = np.random.default_rng(seed)
     deltas = []
     for _ in range(draws):
@@ -856,9 +933,14 @@ import pytest
 from app.models import ImpactScore, Round
 from app.scoring.impact import build_impact_rows_for_match
 
+# EVERY persisted field, not a subset: the spec asks for field-by-field
+# equality, and a drift in e.g. clutch_kill or trade_detail would otherwise
+# pass unnoticed while silently changing what the tooling reads.
 PERSISTED_FIELDS = (
-    "kill_impact", "death_impact", "impact", "damage",
-    "econ_impact", "time_impact", "swing_impact",
+    "kill_impact", "death_impact", "impact", "damage", "econ_impact",
+    "time_impact", "swing_impact", "econ_kill", "econ_death", "clutch_kill",
+    "clutch_death", "post_plant_kill", "post_plant_death", "traded_teammate",
+    "traded_by_teammate", "trade_detail",
 )
 
 
@@ -883,20 +965,40 @@ class _SpyDB:
 
 
 @pytest.fixture
-def db_and_match():
+def db_session():
     try:
         from app.db import SessionLocal
 
         db = SessionLocal()
-        round_id = db.query(ImpactScore.round_id).limit(1).scalar()
+        db.query(ImpactScore.round_id).limit(1).scalar()
     except Exception as exc:  # pragma: no cover - environment dependent
         pytest.skip(f"no database available: {exc}")
-    if round_id is None:
-        db.close()
-        pytest.skip("no scored matches in the database")
-    match_id = db.query(Round.match_id).filter(Round.id == round_id).scalar()
-    yield db, match_id
+    yield db
     db.close()
+
+
+def _representative_match_ids(db, per_kind: int = 3) -> list[int]:
+    """A few regulation matches AND a few overtime ones. Overtime exercises
+    the round>24 branches of the swing factor and the side rule, which a
+    single arbitrary match would never touch."""
+    from sqlalchemy import func
+
+    rows = (
+        db.query(Round.match_id, func.max(Round.round_number).label("last"))
+        .group_by(Round.match_id)
+        .all()
+    )
+    regulation = [m for m, last in rows if last <= 24][:per_kind]
+    overtime = [m for m, last in rows if last > 24][:per_kind]
+    if not regulation and not overtime:
+        pytest.skip("no matches in the database")
+    return regulation + overtime
+
+
+@pytest.fixture
+def db_and_match(db_session):
+    ids = _representative_match_ids(db_session, per_kind=1)
+    return db_session, ids[0]
 
 
 def test_builder_writes_nothing(db_and_match):
@@ -908,20 +1010,29 @@ def test_builder_writes_nothing(db_and_match):
     assert spy.commits == 0, "builder must not commit"
 
 
-def test_builder_matches_stored_values(db_and_match):
-    db, match_id = db_and_match
-    rows = build_impact_rows_for_match(db, match_id, use_realized_swing=True)
-    stored = {
-        (s.round_id, s.match_player_id): s
-        for s in db.query(ImpactScore).join(ImpactScore.round).filter_by(match_id=match_id).all()
-    }
-    assert stored, "match has no stored scores to compare against"
-    for row in rows:
-        existing = stored[(row.round_id, row.match_player_id)]
-        for field in PERSISTED_FIELDS:
-            assert getattr(row, field) == getattr(existing, field), (
-                f"{field} drifted for {row.round_id}/{row.match_player_id}"
-            )
+def test_builder_matches_stored_values(db_session):
+    """Field-by-field over several regulation AND overtime matches."""
+    checked = 0
+    for match_id in _representative_match_ids(db_session):
+        rows = build_impact_rows_for_match(db_session, match_id, use_realized_swing=True)
+        stored = {
+            (s.round_id, s.match_player_id): s
+            for s in db_session.query(ImpactScore)
+            .join(ImpactScore.round)
+            .filter_by(match_id=match_id)
+            .all()
+        }
+        if not stored:
+            continue
+        for row in rows:
+            existing = stored[(row.round_id, row.match_player_id)]
+            for field in PERSISTED_FIELDS:
+                assert getattr(row, field) == getattr(existing, field), (
+                    f"{field} drifted for match {match_id} "
+                    f"round {row.round_id}/{row.match_player_id}"
+                )
+            checked += 1
+    assert checked, "no stored scores found to compare against"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1286,6 +1397,33 @@ def test_surrender_rounds_are_dropped():
     assert [o.round_number for o in obs] == [1]
 
 
+def test_impact_diff_is_the_exact_stored_differential():
+    """Not reconstructed from components: round 1 is 300 - (-250) = 550."""
+    obs = build_observations_for_match(_match_with_two_rounds(), _calculated())
+    assert obs[0].impact_diff == 300 - (-250)
+    assert obs[1].impact_diff == -200 - 280
+
+
+def test_economy_control_is_a_team_average_not_a_sum():
+    """A sum would encode how many player-stat rows a round happens to have."""
+    match = _match_with_two_rounds()
+    # Drop one of team B's stat rows from round 2; the average must not move.
+    match.rounds[1].player_stats = [
+        s for s in match.rounds[1].player_stats if s.match_player_id == 1
+    ] + [RoundPlayerStat(match_player_id=2, kills=1, deaths=0, assists=0, loadout=2000)]
+    obs = build_observations_for_match(match, _calculated())
+    assert obs[1].loadout_diff == 4500 - 2000
+
+
+def test_missing_impact_rows_raise_rather_than_becoming_zero():
+    from app.services.impact_eval import MissingImpactRows
+
+    with pytest.raises(MissingImpactRows, match="round 2"):
+        build_observations_for_match(
+            _match_with_two_rounds(), [r for r in _calculated() if r.round_id == 101]
+        )
+
+
 def test_tied_match_has_no_match_label():
     match = _match_with_two_rounds()
     match.team1_rounds_won = match.team2_rounds_won = 12
@@ -1327,6 +1465,11 @@ from app.services.map_side_stats import attacking_team_for_round
 SURRENDER_SUFFIX = "Surrendered Win"
 
 
+class MissingImpactRows(Exception):
+    """Raised when a playable round has no impact rows. Never swallowed into
+    a zero-valued observation -- absent data is not zero impact."""
+
+
 @dataclass
 class RoundObservation:
     match_id: int
@@ -1343,6 +1486,15 @@ class RoundObservation:
     # (deaths_A == kills_B in 99.1% of rounds in this DB), so carrying them
     # separately would be the same column twice.
     kill_diff: float
+
+    # The EXACT stored/calculated impact differential, carried alongside the
+    # components rather than reconstructed from them. impact.py round()s
+    # kill_impact, death_impact and each component independently, so
+    # rebuilding "current Impact" from the four component columns accumulates
+    # a couple of points of error per player-round -- across 10 players and
+    # ~21 rounds that is enough to move a close comparison. The
+    # current_impact candidate reads this field directly.
+    impact_diff: float
 
     # Controls. Score is BEFORE this round, economy is at the START of this
     # round, side is DURING this round, and the round's own result is kept
@@ -1391,12 +1543,14 @@ def build_observations_for_match(match, calculated_rows) -> list[RoundObservatio
         sign = 1.0 if team_by_mp.get(row.match_player_id) == team_a else -1.0
         bucket = impact_by_round.setdefault(
             row.round_id,
-            {"damage": 0.0, "econ_impact": 0.0, "time_impact": 0.0, "swing_impact": 0.0},
+            {"damage": 0.0, "econ_impact": 0.0, "time_impact": 0.0,
+             "swing_impact": 0.0, "impact_diff": 0.0},
         )
         bucket["damage"] += sign * row.damage
         bucket["econ_impact"] += sign * row.econ_impact
         bucket["time_impact"] += sign * row.time_impact
         bucket["swing_impact"] += sign * row.swing_impact
+        bucket["impact_diff"] += sign * row.impact
 
     playable = [
         r for r in sorted(match.rounds, key=lambda r: r.round_number)
@@ -1409,18 +1563,29 @@ def build_observations_for_match(match, calculated_rows) -> list[RoundObservatio
     for index, round_row in enumerate(playable):
         kills_a = kills_b = 0
         loadout_a = loadout_b = 0
+        players_a = players_b = 0
         full_buy_a = full_buy_b = 0
         for stat in round_row.player_stats:
             if team_by_mp.get(stat.match_player_id) == team_a:
                 kills_a += stat.kills
                 loadout_a += stat.loadout
+                players_a += 1
                 full_buy_a += 1 if stat.loadout >= FULL_BUY_THRESHOLD else 0
             else:
                 kills_b += stat.kills
                 loadout_b += stat.loadout
+                players_b += 1
                 full_buy_b += 1 if stat.loadout >= FULL_BUY_THRESHOLD else 0
 
-        impact = impact_by_round.get(round_row.id, {})
+        # A round with no impact rows would otherwise silently become a
+        # "zero impact" observation, which is a data point that says
+        # something false. Fail loudly; the loader counts and reports
+        # excluded matches.
+        if round_row.id not in impact_by_round:
+            raise MissingImpactRows(
+                f"match {match.id} round {round_row.round_number} has no impact rows"
+            )
+        impact = impact_by_round[round_row.id]
         won_by_a = _winner_is_team_a(round_row.outcome)
 
         observations.append(
@@ -1428,14 +1593,19 @@ def build_observations_for_match(match, calculated_rows) -> list[RoundObservatio
                 match_id=match.id,
                 round_id=round_row.id,
                 round_number=round_row.round_number,
-                damage=impact.get("damage", 0.0),
-                econ_impact=impact.get("econ_impact", 0.0),
-                time_impact=impact.get("time_impact", 0.0),
-                swing_impact=impact.get("swing_impact", 0.0),
+                damage=impact["damage"],
+                econ_impact=impact["econ_impact"],
+                time_impact=impact["time_impact"],
+                swing_impact=impact["swing_impact"],
+                impact_diff=impact["impact_diff"],
                 kill_diff=kills_a - kills_b,
                 score_diff_before=score_a - score_b,
                 attacking_is_team_a=attacking_team_for_round(round_row.round_number) == Team.TEAM_1,
-                loadout_diff=loadout_a - loadout_b,
+                # TEAM-AVERAGE, not sum: a sum silently encodes how many
+                # player-stat rows a round happens to have, so a round
+                # missing a player would read as a poorer economy.
+                loadout_diff=(loadout_a / players_a if players_a else 0.0)
+                - (loadout_b / players_b if players_b else 0.0),
                 full_buy_count_diff=full_buy_a - full_buy_b,
                 round_won_by_team_a=won_by_a,
                 match_won_by_team_a=match_result,
@@ -1638,7 +1808,8 @@ from app.services.impact_eval import (
 def _obs(round_number, damage, won_by_a, match_won, terminal=False, match_id=1):
     return RoundObservation(
         match_id=match_id, round_id=1000 * match_id + round_number, round_number=round_number,
-        damage=damage, econ_impact=0.0, time_impact=0.0, swing_impact=0.0, kill_diff=0.0,
+        damage=damage, econ_impact=0.0, time_impact=0.0, swing_impact=0.0,
+        impact_diff=damage, kill_diff=0.0,
         score_diff_before=0, attacking_is_team_a=True,
         loadout_diff=0.0, full_buy_count_diff=0,
         round_won_by_team_a=won_by_a, match_won_by_team_a=match_won, is_terminal=terminal,
@@ -1769,6 +1940,35 @@ class TargetConfig:
     k: int = 3
     gamma: float = 0.7
     match_weight: float = 1.0
+
+    def target_identity(self) -> tuple:
+        """What makes two configs the SAME prediction problem. Two configs
+        differing here define different y, so their losses are not
+        comparable -- see PRIMARY_T2."""
+        return (self.name, self.k, self.gamma, self.match_weight)
+
+
+# THE PRIMARY TARGETS ARE FROZEN, NOT SELECTED.
+#
+# k, gamma and match_weight change the DEFINITION of y, not just how well a
+# model predicts a fixed outcome. A smoother target (larger k, higher gamma)
+# or one diluted with the more-predictable match result has lower achievable
+# entropy, so it wins a log-loss comparison for reasons that have nothing to
+# do with whether Impact predicts winning. Selecting among them by their own
+# losses would systematically prefer whichever outcome is easiest, and would
+# let different outer folds pool predictions of different quantities.
+#
+# So: one primary target per family, declared up front. The rest are
+# SENSITIVITY ANALYSES, compared only on the fixed binary yardsticks -- whose
+# labels are identical across configurations -- never on their own losses.
+PRIMARY_T1 = TargetConfig(name="T1")
+PRIMARY_T2 = TargetConfig(name="T2", k=3, gamma=0.7, match_weight=1.0)
+T2_SENSITIVITY_GRID = [
+    TargetConfig(name="T2", k=k, gamma=g, match_weight=m)
+    for k in (2, 3, 4)
+    for g in (0.5, 0.7, 0.9)
+    for m in (0.0, 0.5, 1.0)
+]
 
 
 def _empty_dataset(feature_names: list[str]) -> FitDataset:
@@ -1906,15 +2106,16 @@ git commit -m "Add collapsed T1/T2 target builders with half-boundary and auxili
 ```python
 # append to webapp/tests/test_impact_eval.py
 from app.services import impact_eval
-from app.services.impact_eval import FoldResult, _select_config, cross_validate, split_observations
-from app.services.stats_math import auc as auc_fn
+from app.services.impact_eval import (
+    FoldResult,
+    _select_config,
+    cross_validate,
+    oof_metrics,
+    split_observations,
+)
 
-T2_CONFIGS = [
-    TargetConfig(name="T2", k=k, gamma=g, match_weight=m)
-    for k in (2, 3)
-    for g in (0.5, 0.9)
-    for m in (0.0, 1.0)
-]
+# One frozen target -- selection across target definitions is refused.
+T2_CONFIGS = [TargetConfig(name="T2", k=3, gamma=0.7, match_weight=1.0)]
 
 
 def _synthetic_matches(n_matches=60, seed=0):
@@ -1943,11 +2144,33 @@ def test_split_puts_each_match_wholly_on_one_side():
 
 
 def test_cross_validate_recovers_a_planted_signal():
+    """Judged by weighted log loss against the intercept-only baseline --
+    not by AUC on a rounded fractional target."""
     observations = _synthetic_matches(80)
     result = cross_validate(observations, T2_CONFIGS, FEATURE_COMPONENTS, [0.1, 1.0], seed=0)
-    oof = result["oof"]
-    assert auc_fn(oof["scores"], np.round(oof["y"])) > 0.7
+    metrics = oof_metrics(result["oof"], draws=20, seed=0)
+    assert metrics["improvement_over_intercept"] > 0
     assert all(f.beta_raw[FEATURE_COMPONENTS.index("damage") + 1] > 0 for f in result["folds"])
+
+
+def test_selection_refuses_to_compare_different_targets():
+    """The blocking bug this guard exists for: log loss against different y
+    is not a comparison, and a smoother target wins for the wrong reason."""
+    observations = _synthetic_matches(20)
+    mixed = [
+        TargetConfig(name="T2", k=2, gamma=0.5, match_weight=0.0),
+        TargetConfig(name="T2", k=4, gamma=0.9, match_weight=1.0),
+    ]
+    with pytest.raises(ValueError, match="different target definitions"):
+        _select_config(observations, mixed, FEATURE_COMPONENTS, [1.0], 3, 0)
+
+
+def test_oof_metrics_reports_no_auc():
+    observations = _synthetic_matches(30)
+    result = cross_validate(observations, T2_CONFIGS, FEATURE_COMPONENTS, [1.0], seed=0)
+    metrics = oof_metrics(result["oof"], draws=20, seed=0)
+    assert "auc" not in metrics
+    assert "weighted_log_loss" in metrics
 
 
 def test_every_match_appears_in_exactly_one_test_fold():
@@ -2024,6 +2247,36 @@ from app.services.stats_math import (
 )
 
 
+def paired_oof_log_loss_delta(oof_a: dict, oof_b: dict, draws: int = 200, seed: int = 0):
+    """(point, lo, hi) for weighted-log-loss(a) - weighted-log-loss(b), with
+    both sides evaluated on the SAME resampled matches each draw.
+
+    Only valid when a and b predict the SAME target -- differing feature
+    sets, yes; differing k/gamma/match_weight, no. See PRIMARY_T2.
+    """
+    combined: dict[int, tuple[list, list]] = {}
+    for index, oof in ((0, oof_a), (1, oof_b)):
+        for s, y, w, m in zip(oof["scores"], oof["y"], oof["w"], oof["match_ids"]):
+            combined.setdefault(int(m), ([], []))[index].append((s, y, w))
+
+    def side(index):
+        def fn(sample):
+            flat = [r for pair in sample for r in pair[index]]
+            if not flat:
+                return float("nan")
+            return weighted_log_loss(
+                [r[0] for r in flat], [r[1] for r in flat], [r[2] for r in flat]
+            )
+
+        return fn
+
+    point = weighted_log_loss(oof_a["scores"], oof_a["y"], oof_a["w"]) - weighted_log_loss(
+        oof_b["scores"], oof_b["y"], oof_b["w"]
+    )
+    lo, hi = paired_bootstrap_delta(side(0), side(1), combined, draws=draws, seed=seed)
+    return point, lo, hi
+
+
 @dataclass
 class FoldResult:
     fold: int
@@ -2052,13 +2305,23 @@ def _fit_and_score(train_ds: FitDataset, test_ds: FitDataset, l2: float):
 
 
 def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int, seed: int):
-    """Inner CV over TRAINING observations only.
+    """Inner CV over TRAINING observations only, selecting L2.
 
-    The target is rebuilt inside every inner split, because each config
-    produces different rows -- this is precisely what a prebuilt dataset
-    cannot express. Objective is weighted log loss, matching the weights
-    the fit itself uses.
+    REFUSES to compare configurations that define different targets. Log
+    loss against different y is not a comparison -- see PRIMARY_T2. Pass a
+    single frozen target; run alternatives as separate sensitivity runs and
+    compare them on the fixed yardsticks instead.
+
+    The target is still rebuilt inside every inner split, because that is
+    what lets a target depend on a fold-fitted context (Stage B).
     """
+    identities = {c.target_identity() for c in configs}
+    if len(identities) > 1:
+        raise ValueError(
+            "_select_config cannot choose between different target definitions "
+            f"({sorted(identities)}): their losses measure different outcomes. "
+            "Freeze one target and compare alternatives on a fixed yardstick."
+        )
     inner = assign_folds([o.match_id for o in train_obs], n_folds=inner_folds, seed=seed + 1)
     best = (configs[0], l2_grid[0])
     best_loss = float("inf")
@@ -2145,11 +2408,16 @@ def cross_validate(
 
 
 def oof_metrics(oof: dict, draws: int = 200, seed: int = 0) -> dict:
-    """Weighted log loss is primary; AUC is reported against the binarised
-    target for interpretability. Both CIs are clustered by match."""
+    """Weighted log loss ONLY, plus the intercept-only baseline it must beat.
+
+    No AUC here, deliberately. T2's target is a weighted fraction of future
+    round wins; rounding it at 0.5 to manufacture a binary label changes the
+    estimand and discards the observation weights that gamma and
+    match_weight exist to set. AUC belongs to the yardsticks, whose labels
+    are genuinely binary.
+    """
     if len(oof["y"]) == 0:
         return {"n": 0}
-    labels = np.round(oof["y"]).astype(int)
     groups: dict[int, list] = {}
     for s, y, w, m in zip(oof["scores"], oof["y"], oof["w"], oof["match_ids"]):
         groups.setdefault(int(m), []).append((s, y, w))
@@ -2158,16 +2426,18 @@ def oof_metrics(oof: dict, draws: int = 200, seed: int = 0) -> dict:
         flat = [r for rows in sample for r in rows]
         return weighted_log_loss([r[0] for r in flat], [r[1] for r in flat], [r[2] for r in flat])
 
-    def auc_of(sample):
-        flat = [r for rows in sample for r in rows]
-        return auc([r[0] for r in flat], [int(round(r[1])) for r in flat])
+    # "Predict the weighted base rate every time" is the model that knows
+    # nothing. A loss at or above this means the fit has learned nothing.
+    base_rate = float(np.average(oof["y"], weights=oof["w"]))
+    fitted_loss = weighted_log_loss(oof["scores"], oof["y"], oof["w"])
+    baseline = weighted_log_loss(np.full(len(oof["y"]), base_rate), oof["y"], oof["w"])
 
     return {
-        "weighted_log_loss": weighted_log_loss(oof["scores"], oof["y"], oof["w"]),
+        "weighted_log_loss": fitted_loss,
         "weighted_log_loss_ci": list(cluster_bootstrap_ci(loss_of, groups, draws=draws, seed=seed)),
-        "auc": auc(oof["scores"], labels),
-        "auc_ci": list(cluster_bootstrap_ci(auc_of, groups, draws=draws, seed=seed)),
-        "n": int(len(labels)),
+        "intercept_only_log_loss": baseline,
+        "improvement_over_intercept": baseline - fitted_loss,
+        "n": int(len(oof["y"])),
         "matches": len(groups),
         "total_weight": float(np.sum(oof["w"])),
     }
@@ -2327,7 +2597,7 @@ def _simplex_grid(step: float):
 
 def fit_constrained_weights(
     observations, config: TargetConfig, control_names: list[str],
-    simplex_step: float = 0.1, damage_grid=None, l2: float = 1.0,
+    simplex_step: float = 0.1, damage_grid=None, l2: float = 1.0, context=None,
 ) -> ConstrainedWeights:
     """Search (damage_multiplier, w_econ, w_time, w_swing) under the shipped
     parameterization, WITH the nuisance controls in the design.
@@ -2343,7 +2613,10 @@ def fit_constrained_weights(
         return neutral
 
     feature_names = FEATURE_COMPONENTS + list(control_names)
-    dataset = build_target(observations, config, feature_names)
+    # `context` carries a fold-fitted value model for a WPA config; T1/T2
+    # ignore it. Passing it here is what lets Stage B produce a constrained
+    # candidate on the same footing as T1/T2.
+    dataset = build_target(observations, config, feature_names, context)
     if len(dataset.y) == 0:
         return neutral
 
@@ -2420,7 +2693,7 @@ from a different model than the control ladder validates."
 
 **Interfaces:**
 - Consumes: `cross_validate`, `build_target`, `standardize`, `fit_logistic`, `back_transform`, `auc`.
-- Produces: `coefficient_diagnostics(observations, config, feature_names, draws=200, seed=0, l2=1.0) -> dict` with keys `"sign_stability"`, `"correlation_matrix"`, `"drop_one"`, `"full_auc"`, `"bootstrap_draws_completed"`.
+- Produces: `paired_oof_log_loss_delta(oof_a, oof_b, draws=200, seed=0) -> (point, lo, hi)`; `coefficient_diagnostics(observations, config, feature_names, draws=200, seed=0, l2=1.0) -> dict` with keys `"sign_stability"`, `"sign_direction"`, `"correlation_matrix"`, `"drop_one"`, `"full_log_loss"`, `"bootstrap_draws_completed"`.
 
 **Why these are mandatory:** `impact.py:496-502` builds all three components as `kill_order_bonus * <factor>` — they share a multiplicand by construction, so unstable coefficients are expected rather than surprising. A coefficient whose sign flips across resamples is reported as indeterminate, never as a finding.
 
@@ -2457,12 +2730,24 @@ def test_correlation_matrix_detects_a_duplicated_column():
     assert abs(diag["correlation_matrix"]["econ_impact"]["time_impact"] - 1.0) < 1e-9
 
 
-def test_drop_one_reports_every_component():
+def test_drop_one_reports_every_component_in_weighted_log_loss():
     obs = _weighted_matches(n_matches=40, seed=9)
     diag = coefficient_diagnostics(obs, DIAG_CONFIG, FEATURE_COMPONENTS, draws=10, seed=0)
     assert set(diag["drop_one"]) == set(FEATURE_COMPONENTS)
     for entry in diag["drop_one"].values():
-        assert "auc_without" in entry and "auc_lost" in entry
+        assert "log_loss_cost_of_dropping" in entry
+        assert "cost_ci" in entry, "the cost of dropping needs a PAIRED interval"
+        assert "auc_without" not in entry, "no AUC on a fractional target"
+
+
+def test_sign_direction_distinguishes_helpful_from_anti_predictive():
+    obs = _weighted_matches(n_matches=60, econ_weight=1.0, seed=10)
+    diag = coefficient_diagnostics(obs, DIAG_CONFIG, FEATURE_COMPONENTS, draws=30, seed=0)
+    assert 0.0 <= diag["sign_direction"]["econ_impact"] <= 1.0
+    # stability is the folded magnitude; direction says which way
+    assert diag["sign_stability"]["econ_impact"] == max(
+        diag["sign_direction"]["econ_impact"], 1 - diag["sign_direction"]["econ_impact"]
+    )
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2489,7 +2774,8 @@ def coefficient_diagnostics(
     grouped = group_by_match(observations)
     keys = list(grouped)
     if not keys:
-        return {"sign_stability": {}, "correlation_matrix": {}, "drop_one": {}, "full_auc": float("nan"),
+        return {"sign_stability": {}, "sign_direction": {}, "correlation_matrix": {},
+                "drop_one": {}, "full_log_loss": float("nan"),
                 "bootstrap_draws_completed": 0}
 
     rng = np.random.default_rng(seed)
@@ -2506,8 +2792,15 @@ def coefficient_diagnostics(
         positives += (back_transform(beta, centre, scale)[1:] > 0).astype(float)
         completed += 1
 
+    # Direction as well as magnitude: max(pos, neg) alone cannot distinguish
+    # "consistently helpful" from "consistently anti-predictive", and those
+    # mean opposite things for a component that is supposed to measure impact.
     sign_stability = {
         name: (float(max(p, completed - p) / completed) if completed else float("nan"))
+        for name, p in zip(feature_names, positives)
+    }
+    sign_direction = {
+        name: (float(p / completed) if completed else float("nan"))
         for name, p in zip(feature_names, positives)
     }
 
@@ -2518,9 +2811,13 @@ def coefficient_diagnostics(
         for i, a in enumerate(feature_names)
     }
 
+    # Drop-one is measured in WEIGHTED LOG LOSS on the fixed target, not in
+    # AUC over a rounded fractional label. The target is identical across
+    # every variant here (only the feature set changes), so the losses ARE
+    # comparable -- unlike a comparison across target definitions.
     full = cross_validate(observations, [config], feature_names, [l2], seed=seed)
-    full_auc = (
-        auc(full["oof"]["scores"], np.round(full["oof"]["y"]).astype(int))
+    full_loss = (
+        weighted_log_loss(full["oof"]["scores"], full["oof"]["y"], full["oof"]["w"])
         if len(full["oof"]["y"])
         else float("nan")
     )
@@ -2532,16 +2829,22 @@ def coefficient_diagnostics(
             continue
         out = cross_validate(observations, [config], reduced_names, [l2], seed=seed)
         without = (
-            auc(out["oof"]["scores"], np.round(out["oof"]["y"]).astype(int))
+            weighted_log_loss(out["oof"]["scores"], out["oof"]["y"], out["oof"]["w"])
             if len(out["oof"]["y"])
             else float("nan")
         )
-        drop_one[name] = {"auc_without": without, "auc_lost": full_auc - without}
+        _, lo, hi = paired_oof_log_loss_delta(out["oof"], full["oof"], draws=draws, seed=seed)
+        drop_one[name] = {
+            "log_loss_without": without,
+            "log_loss_cost_of_dropping": without - full_loss,
+            "cost_ci": [lo, hi],
+        }
 
     return {
         "sign_stability": sign_stability,
+        "sign_direction": sign_direction,
         "correlation_matrix": correlation_matrix,
-        "full_auc": full_auc,
+        "full_log_loss": full_loss,
         "drop_one": drop_one,
         "bootstrap_draws_completed": completed,
     }
@@ -2708,6 +3011,11 @@ def test_stage0_report_has_every_required_section():
     assert report["cohorts"]["roster"]["players"] == 2
     for section in ("pooled", "within_player_centered", "within_player_terciles"):
         assert "ci" in report[section], f"{section} must carry a bootstrap CI"
+    assert "median_ci" in report["per_player_correlations"]
+    for cohort in report["cohorts"].values():
+        assert "ci" in cohort["pooled"]
+        assert "median_ci" in cohort["per_player_correlations"]
+        assert "ci" in cohort["within_player_terciles"]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2915,15 +3223,37 @@ def stage0_report(rows, roster_player_ids=None, draws: int = 200, seed: int = 0)
         "cohorts": {},
     }
 
+    # Every headline number gets an interval, in the cohorts too -- a cohort
+    # of 71 players is exactly where an uncertainty-free point estimate
+    # misleads most.
     for name, cohort_rows in (("roster", roster_rows), ("recurrent", recurrent_rows)):
         report["cohorts"][name] = {
             "players": len(_by_player(cohort_rows)),
-            "pooled": pooled_relationship(cohort_rows),
-            "within_player_centered": within_player_centered(cohort_rows),
-            "per_player_correlations": per_player_correlations(cohort_rows),
-            "within_player_terciles": within_player_tercile_lift(cohort_rows),
+            "pooled": {
+                **pooled_relationship(cohort_rows),
+                "ci": _ci(lambda r: pooled_relationship(r)["point_biserial"],
+                          cohort_rows, draws, seed),
+            },
+            "within_player_centered": {
+                **within_player_centered(cohort_rows),
+                "ci": _ci(lambda r: within_player_centered(r)["point_biserial"],
+                          cohort_rows, draws, seed),
+            },
+            "per_player_correlations": {
+                **per_player_correlations(cohort_rows),
+                "median_ci": _ci(lambda r: per_player_correlations(r)["median"],
+                                 cohort_rows, draws, seed),
+            },
+            "within_player_terciles": {
+                **within_player_tercile_lift(cohort_rows),
+                "ci": _ci(lambda r: within_player_tercile_lift(r)["lift"],
+                          cohort_rows, draws, seed),
+            },
         }
 
+    report["per_player_correlations"]["median_ci"] = _ci(
+        lambda r: per_player_correlations(r)["median"], rows, draws, seed
+    )
     return report
 ```
 
@@ -3088,16 +3418,15 @@ class Candidate:
     weights: list[float]
 
 
-_SHIPPED_FACTOR_TOTAL = sum(FACTOR_WEIGHTS.values())
+# Reads the EXACT impact differential rather than rebuilding it from the four
+# components. impact.py round()s kill_impact, death_impact and each component
+# independently, so a reconstruction carries a couple of points of error per
+# player-round -- across 10 players and ~21 rounds that is enough to move a
+# close comparison against a fitted candidate.
 CURRENT_IMPACT_CANDIDATE = Candidate(
     name="current_impact",
-    feature_names=FEATURE_COMPONENTS,
-    weights=[
-        1.0,
-        FACTOR_WEIGHTS["econ"] / _SHIPPED_FACTOR_TOTAL,
-        FACTOR_WEIGHTS["time"] / _SHIPPED_FACTOR_TOTAL,
-        FACTOR_WEIGHTS["swing"] / _SHIPPED_FACTOR_TOTAL,
-    ],
+    feature_names=["impact_diff"],
+    weights=[1.0],
 )
 
 # ONE kill baseline. kills and deaths as separate columns was the same
@@ -3189,23 +3518,48 @@ YARDSTICKS = {
 }
 
 
-def fold_candidates(observations, fold_results, control_names, name: str) -> dict[int, Candidate]:
+def fold_candidates(
+    observations, fold_results, control_names, name: str, context_builder=None
+) -> dict[int, Candidate]:
     """One constrained weighting per outer fold, fitted on that fold's
     TRAINING matches only. The matrix then applies each to its own test
-    matches, so a fitted candidate is never scored on data it saw."""
+    matches, so a fitted candidate is never scored on data it saw.
+
+    `context_builder` is required for a WPA config, whose target depends on
+    a value model; it is built from the same training observations, so the
+    leverage weights never see a test match either.
+
+    The fold's OWN selected L2 is passed through -- using the default here
+    would fit the deployment candidate under different regularisation from
+    the model whose performance is being reported.
+    """
     by_match = group_by_match(observations)
     out: dict[int, Candidate] = {}
     for fold in fold_results:
         train_obs = [o for mid in fold.train_match_ids for o in by_match.get(mid, [])]
-        # T1/T2 only: a WPA config needs a value-model context, which
-        # fit_constrained_weights does not carry. The CLI never passes
-        # Stage B folds here.
-        weights = fit_constrained_weights(train_obs, fold.config, control_names)
+        context = context_builder(train_obs) if context_builder is not None else None
+        weights = fit_constrained_weights(
+            train_obs, fold.config, control_names, l2=fold.l2, context=context
+        )
         out[fold.fold] = candidate_from_constrained(name, weights)
     return out
 
 
-def _cell(scores, labels, mids, draws, seed, baseline_fn=None):
+def _cell(scores, labels, mids, draws, seed, baseline_fn=None, probs=None):
+    """One matrix cell.
+
+    `probs` may be supplied pre-calibrated. That matters for FITTED
+    candidates: their pooled scores come from several different per-fold
+    models, so calibrating with folds drawn over those pooled scores can put
+    a score in the calibration-test set whose own model was trained on the
+    match being used to calibrate. The caller therefore calibrates inside
+    each outer fold instead (train-match scores -> test-match probabilities)
+    and passes the result in.
+
+    When `probs` is None the pooled calibration below is used. That is safe
+    only for FIXED candidates -- current_impact and the baselines were never
+    fitted to this data at all, so no model saw any of it.
+    """
     if not scores:
         return None
     groups: dict[int, list] = {}
@@ -3218,24 +3572,25 @@ def _cell(scores, labels, mids, draws, seed, baseline_fn=None):
 
     lo, hi = cluster_bootstrap_ci(auc_of, groups, draws=draws, seed=seed)
 
-    # Calibrated log loss: fit the calibration on the other folds' rows,
-    # never on the rows being scored.
-    folds = assign_folds(mids, n_folds=5, seed=seed)
     scores_arr = np.array(scores, dtype=float)
     labels_arr = np.array(labels, dtype=int)
-    fold_of = np.array([folds[int(m)] for m in mids])
-    probs = np.zeros(len(scores_arr))
-    for fold in range(5):
-        test = fold_of == fold
-        if not test.any():
-            continue
-        train = ~test
-        if not train.any() or len(np.unique(labels_arr[train])) < 2:
-            probs[test] = labels_arr[train].mean() if train.any() else 0.5
-            continue
-        probs[test] = apply_calibration(
-            platt_calibrate(scores_arr[train], labels_arr[train]), scores_arr[test]
-        )
+    if probs is None:
+        folds = assign_folds(mids, n_folds=5, seed=seed)
+        fold_of = np.array([folds[int(m)] for m in mids])
+        probs = np.zeros(len(scores_arr))
+        for fold in range(5):
+            test = fold_of == fold
+            if not test.any():
+                continue
+            train = ~test
+            if not train.any() or len(np.unique(labels_arr[train])) < 2:
+                probs[test] = labels_arr[train].mean() if train.any() else 0.5
+                continue
+            probs[test] = apply_calibration(
+                platt_calibrate(scores_arr[train], labels_arr[train]), scores_arr[test]
+            )
+    else:
+        probs = np.asarray(probs, dtype=float)
 
     prob_groups: dict[int, list] = {}
     for pr, l, m in zip(probs, labels_arr, mids):
@@ -3313,18 +3668,35 @@ def yardstick_matrix(
             )
 
         for name, per_fold in per_fold_candidates.items():
-            scores, labels, mids = [], [], []
+            scores, labels, mids, probs = [], [], [], []
             for fold_index, candidate in per_fold.items():
                 fold = folds.get(fold_index)
                 if fold is None:
                     continue
                 test_obs = [o for mid in fold.test_match_ids for o in by_match.get(mid, [])]
                 s, l, m = fn(test_obs, candidate)
+                if not s:
+                    continue
+
+                # Calibration is fitted INSIDE the fold, on this fold's
+                # training matches under this fold's own candidate, then
+                # applied once to its test matches. Calibrating over the
+                # pooled scores instead would mix models across folds.
+                train_obs = [o for mid in fold.train_match_ids for o in by_match.get(mid, [])]
+                ts, tl, _ = fn(train_obs, candidate)
+                if ts and len(set(tl)) >= 2:
+                    fold_probs = apply_calibration(platt_calibrate(ts, tl), s)
+                else:
+                    fold_probs = np.full(len(s), float(np.mean(tl)) if tl else 0.5)
+
                 scores.extend(s)
                 labels.extend(l)
                 mids.extend(m)
+                probs.extend(np.asarray(fold_probs, dtype=float).tolist())
+
             matrix[yardstick_name][name] = _cell(
-                scores, labels, mids, draws, seed, baseline_fn=baseline_fn
+                scores, labels, mids, draws, seed,
+                baseline_fn=baseline_fn, probs=probs or None,
             )
 
     return matrix
@@ -3423,15 +3795,27 @@ def _hydrated_match(db, match_id):
     )
 
 
-def load_all_observations(db, use_realized_swing: bool = False) -> list[RoundObservation]:
+def load_all_observations(db, use_realized_swing: bool = False, report: dict | None = None):
     """Replays every match through the scorer, so components are the
     EX-ANTE variant by default -- the only variant eligible for
-    forward-looking fitting. Costs a full replay (minutes)."""
+    forward-looking fitting. Costs a full replay (minutes).
+
+    A match whose rounds lack impact rows is EXCLUDED and counted, never
+    silently turned into zero-impact observations. Pass `report` to receive
+    the exclusion count; the CLI prints it.
+    """
     observations: list[RoundObservation] = []
+    excluded: list[int] = []
     for match_id in _match_ids(db):
         match = _hydrated_match(db, match_id)
         rows = build_impact_rows_for_match(db, match_id, use_realized_swing=use_realized_swing)
-        observations.extend(build_observations_for_match(match, rows))
+        try:
+            observations.extend(build_observations_for_match(match, rows))
+        except MissingImpactRows:
+            excluded.append(match_id)
+    if report is not None:
+        report["excluded_matches"] = len(excluded)
+        report["excluded_match_ids"] = excluded[:20]
     return observations
 
 
@@ -3448,7 +3832,10 @@ def load_stored_observations(db) -> list[RoundObservation]:
             .filter(Round.match_id == match_id)
             .all()
         )
-        observations.extend(build_observations_for_match(match, stored))
+        try:
+            observations.extend(build_observations_for_match(match, stored))
+        except MissingImpactRows:
+            continue  # unscored match; counted by the ex-ante loader's report
     return observations
 
 
@@ -3534,8 +3921,10 @@ from app.services.impact_eval import (
     CONTROLS_RESULT,
     CURRENT_IMPACT_CANDIDATE,
     FEATURE_COMPONENTS,
+    PRIMARY_T1,
+    PRIMARY_T2,
+    T2_SENSITIVITY_GRID,
     TargetConfig,
-    candidate_from_constrained,
     coefficient_diagnostics,
     cross_validate,
     fit_constrained_weights,
@@ -3544,23 +3933,19 @@ from app.services.impact_eval import (
     load_player_matches,
     load_stored_observations,
     oof_metrics,
+    paired_oof_log_loss_delta,
     yardstick_matrix,
 )
 from app.services.impact_stage0 import stage0_report
 from app.services.site_stats import resolve_roster_player_ids
+from app.services.win_probability import econ_increment_report
 
 L2_GRID = [0.01, 0.1, 1.0, 10.0]
-T1_CONFIGS = [TargetConfig(name="T1")]
-T2_CONFIGS = [
-    TargetConfig(name="T2", k=k, gamma=g, match_weight=m)
-    for k in (2, 3, 4)
-    for g in (0.5, 0.7, 0.9)
-    for m in (0.0, 0.5, 1.0)  # 0.0 included so the auxiliary must earn its place
-]
 
-# The control ladder. The 3 -> 4 increment is the headline: the only number
-# showing the components carry information beyond who won the round and what
-# the teams could afford next.
+# The control ladder. The 3 -> 4 step is the headline: the only number showing
+# the components carry information beyond who won the round and what the teams
+# could afford next. Every step predicts the SAME frozen target, so their
+# losses are directly comparable and the delta can be bootstrapped paired.
 LADDER = [
     ("1_round_result", CONTROLS_RESULT),
     ("2_plus_context", CONTROLS_RESULT + CONTROLS_CONTEXT),
@@ -3569,9 +3954,57 @@ LADDER = [
 ]
 
 
-def _evaluate(observations, configs, feature_names, draws, seed):
-    result = cross_validate(observations, configs, feature_names, L2_GRID, seed=seed)
-    return result, oof_metrics(result["oof"], draws=draws, seed=seed)
+def _value_context(train_obs, seed: int = 0, inner_folds: int = 3):
+    """Stage B's context: a value model fitted on the training half, plus
+    inner-OOF value models so training rows' leverage is not in-sample."""
+    from app.services.impact_eval import assign_folds, split_observations
+    from app.services.win_probability import fit_value_model
+
+    full = fit_value_model(train_obs)
+    inner = assign_folds([o.match_id for o in train_obs], n_folds=inner_folds, seed=seed + 7)
+    by_match = {}
+    for fold in range(inner_folds):
+        inner_train, inner_test = split_observations(train_obs, inner, fold)
+        if not inner_train or not inner_test:
+            continue
+        beta = fit_value_model(inner_train)
+        for o in inner_test:
+            by_match[o.match_id] = beta
+    return {"value_beta": full, "value_beta_by_match": by_match}
+
+
+def _control_ladder(observations, config, draws, seed):
+    """Every step run through the SAME outer folds on the SAME frozen target,
+    with its L2 selected inside each fold's training half. The headline 3 -> 4
+    step gets a PAIRED interval, because a point estimate cannot tell you
+    whether the components added anything."""
+    runs = {name: cross_validate(observations, [config], features, L2_GRID, seed=seed)
+            for name, features in LADDER}
+    out = {name: oof_metrics(run["oof"], draws=draws, seed=seed) for name, run in runs.items()}
+
+    point, lo, hi = paired_oof_log_loss_delta(
+        runs["4_plus_components"]["oof"], runs["3_plus_damage"]["oof"], draws=draws, seed=seed
+    )
+    out["headline"] = {
+        "metric": "weighted log loss, components minus damage-only",
+        "delta": point,
+        "delta_ci": [lo, hi],
+        "reading": (
+            "negative delta = adding the components IMPROVED held-out prediction. "
+            "An interval spanning zero means they added nothing measurable."
+        ),
+    }
+    return out
+
+
+def _stage0_match_diagnostics(observations, draws, seed):
+    """The spec's two stored-Impact match-level diagnostics, on realized
+    components. Available under --stage0-only because load_stored_observations
+    needs no replay."""
+    return yardstick_matrix(
+        observations, [CURRENT_IMPACT_CANDIDATE, *BASELINE_CANDIDATES], {}, {},
+        draws=draws, seed=seed,
+    )
 
 
 def main() -> int:
@@ -3580,10 +4013,8 @@ def main() -> int:
     parser.add_argument("--draws", type=int, default=200, help="bootstrap draws (default 200)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--stage0-only", action="store_true", help="skip all fitting")
-    parser.add_argument(
-        "--include-realized", action="store_true",
-        help="also score every candidate on realized (shipped) components",
-    )
+    parser.add_argument("--sensitivity", action="store_true",
+                        help="also run the T2 k/gamma/match_weight grid, compared ONLY on the fixed yardsticks")
     args = parser.parse_args()
 
     db = SessionLocal()
@@ -3594,7 +4025,12 @@ def main() -> int:
                 load_player_matches(db), roster, draws=args.draws, seed=args.seed
             )
         }
-        print("== Stage 0: Impact as it ships today ==")
+
+        stored = load_stored_observations(db)
+        report["stage0"]["match_level_diagnostics"] = _stage0_match_diagnostics(
+            stored, args.draws, args.seed
+        )
+        print("== Stage 0: Impact as it ships today (realized components) ==")
         print(json.dumps(report["stage0"], indent=2, default=float))
 
         if args.stage0_only:
@@ -3603,75 +4039,114 @@ def main() -> int:
                 print(f"\nwrote {args.out}")
             return 0
 
-        observations = load_all_observations(db, use_realized_swing=False)
-        report["n_observations"] = len(observations)
+        load_report = {}
+        observations = load_all_observations(db, use_realized_swing=False, report=load_report)
+        report["loading"] = {"n_observations": len(observations), **load_report}
         report["component_variant"] = "ex_ante"
 
-        # --- T1 and T2, each nested end to end ---
+        # --- The three frozen targets, each nested end to end ---
         per_fold_candidates = {}
         all_folds = {}
-        for name, configs in (("T1", T1_CONFIGS), ("T2", T2_CONFIGS)):
-            result, metrics = _evaluate(observations, configs, FEATURE_COMPONENTS, args.draws, args.seed)
+        targets = [
+            ("T1", PRIMARY_T1, None),
+            ("T2", PRIMARY_T2, None),
+            ("WPA", TargetConfig(name="WPA"), lambda o: _value_context(o, args.seed)),
+        ]
+        for name, config, context_builder in targets:
+            result = cross_validate(
+                observations, [config], FEATURE_COMPONENTS, L2_GRID,
+                seed=args.seed, context_builder=context_builder,
+            )
             per_fold_candidates[f"fitted_{name}"] = fold_candidates(
-                observations, result["folds"], CONTROLS_CONTEXT, f"fitted_{name}"
+                observations, result["folds"], CONTROLS_CONTEXT, f"fitted_{name}",
+                context_builder=context_builder,
             )
             all_folds.update({f.fold: f for f in result["folds"]})
             report[name] = {
-                "metrics": metrics,
-                "selected_per_fold": [
-                    {"fold": f.fold, "config": vars(f.config), "l2": f.l2} for f in result["folds"]
-                ],
+                "frozen_config": vars(config),
+                "metrics": oof_metrics(result["oof"], draws=args.draws, seed=args.seed),
+                "selected_l2_per_fold": [{"fold": f.fold, "l2": f.l2} for f in result["folds"]],
                 "fold_coefficients": [f.beta_raw.tolist() for f in result["folds"]],
             }
-
-        # --- Control ladder on T2's most-selected configuration ---
-        chosen = max(
-            (f.config for f in result["folds"]),
-            key=lambda c: sum(1 for f in result["folds"] if f.config == c),
+        report["WPA"]["framing"] = (
+            "attribution, not independent validation -- dV is dominated by the round's "
+            "own outcome. Its yardstick-matrix row IS comparable to T1/T2, because every "
+            "candidate is scored there on the same fixed binary labels."
         )
-        ladder = {}
-        for step_name, features in LADDER:
-            _, metrics = _evaluate(observations, [chosen], features, args.draws, args.seed)
-            ladder[step_name] = metrics
-        if ladder.get("3_plus_damage") and ladder.get("4_plus_components"):
-            ladder["headline_delta_auc"] = (
-                ladder["4_plus_components"]["auc"] - ladder["3_plus_damage"]["auc"]
-            )
-        report["T2_control_ladder"] = {"config": vars(chosen), **ladder}
 
-        # --- Yardstick matrix: fixed candidates on all matches, fitted ones per fold ---
+        # --- Control ladder on the frozen T2 target ---
+        report["T2_control_ladder"] = {
+            "config": vars(PRIMARY_T2),
+            **_control_ladder(observations, PRIMARY_T2, args.draws, args.seed),
+        }
+
+        # --- The common comparison: every candidate, both component variants ---
+        fixed = [CURRENT_IMPACT_CANDIDATE, *BASELINE_CANDIDATES]
         report["yardstick_matrix_ex_ante"] = yardstick_matrix(
-            observations, [CURRENT_IMPACT_CANDIDATE, *BASELINE_CANDIDATES],
-            per_fold_candidates, all_folds, draws=args.draws, seed=args.seed,
+            observations, fixed, per_fold_candidates, all_folds, draws=args.draws, seed=args.seed
         )
+        report["yardstick_matrix_realized"] = yardstick_matrix(
+            stored, fixed, per_fold_candidates, all_folds, draws=args.draws, seed=args.seed
+        )
+        report["realized_note"] = (
+            "Fitted candidates evaluated on realized components too: adopting weights "
+            "fitted on ex_ante applies them to a scorer that still computes realized, "
+            "so this row is what adoption would actually buy."
+        )
+
         report["diagnostics_T2"] = coefficient_diagnostics(
-            observations, chosen, FEATURE_COMPONENTS, draws=args.draws, seed=args.seed
+            observations, PRIMARY_T2, FEATURE_COMPONENTS, draws=args.draws, seed=args.seed
         )
+        report["econ_increment"] = econ_increment_report(observations, seed=args.seed)
+
+        # --- Sensitivity: alternative targets, judged ONLY on fixed yardsticks ---
+        if args.sensitivity:
+            sensitivity = []
+            for config in T2_SENSITIVITY_GRID:
+                result = cross_validate(
+                    observations, [config], FEATURE_COMPONENTS, L2_GRID, seed=args.seed
+                )
+                candidates = {
+                    "sens": fold_candidates(
+                        observations, result["folds"], CONTROLS_CONTEXT, "sens"
+                    )
+                }
+                folds = {f.fold: f for f in result["folds"]}
+                cell = yardstick_matrix(
+                    observations, [], candidates, folds, draws=50, seed=args.seed
+                )["forward_rounds"]["sens"]
+                sensitivity.append({"config": vars(config), "forward_rounds": cell})
+            report["T2_sensitivity"] = {
+                "note": (
+                    "Compared on the FIXED forward-rounds yardstick, never on each "
+                    "target's own loss -- those losses measure different outcomes."
+                ),
+                "runs": sensitivity,
+            }
 
         # --- Deployment proposal: an all-data fit, NOT its own evaluation ---
-        proposal = fit_constrained_weights(observations, chosen, CONTROLS_CONTEXT)
+        proposal = fit_constrained_weights(observations, PRIMARY_T2, CONTROLS_CONTEXT)
         report["deployment_proposal"] = {
             "weights": vars(proposal),
+            "units": (
+                "econ/time/swing map directly onto FACTOR_WEIGHTS. damage_multiplier "
+                "multiplies the STORED damage component, which impact.py already "
+                "computed as round(damage_and_assists * 1.25) -- so a proposed value of "
+                "d means changing that 1.25 to 1.25 * d, NOT setting the raw multiplier "
+                "to d."
+            ),
             "warning": (
                 "Fitted on ALL matches. This is the weighting to consider adopting; it is "
                 "NOT an unbiased estimate of its own performance -- read the per-fold "
-                "fitted_T1/fitted_T2 rows of the yardstick matrix for that."
+                "fitted_* rows of the yardstick matrix for that."
             ),
             "adoption_caveat": (
-                "Fitted on ex_ante components. Today's scorer computes the realized variant, "
-                "so adopting these weights applies them to a different formula unless the "
-                "realized swing term is also removed (Stage C)."
+                "Fitted on ex_ante components. Today's scorer computes the realized "
+                "variant, so compare the ex_ante and realized matrix rows before adopting."
             ),
         }
 
-        if args.include_realized:
-            realized = load_stored_observations(db)
-            report["yardstick_matrix_realized"] = yardstick_matrix(
-                realized, [CURRENT_IMPACT_CANDIDATE, *BASELINE_CANDIDATES],
-                {}, {}, draws=args.draws, seed=args.seed,
-            )
-
-        print("\n== T2 control ladder (3 -> 4 is the headline) ==")
+        print("\n== T2 control ladder (headline: 3 -> 4) ==")
         print(json.dumps(report["T2_control_ladder"], indent=2, default=float))
         print("\n== Targets x yardsticks (ex-ante) ==")
         print(json.dumps(report["yardstick_matrix_ex_ante"], indent=2, default=float))
@@ -3750,7 +4225,8 @@ from app.services.win_probability import (
 def _obs(round_number, score_diff_before, won_by_a, match_won, terminal=False, match_id=1):
     return RoundObservation(
         match_id=match_id, round_id=round_number, round_number=round_number,
-        damage=0.0, econ_impact=0.0, time_impact=0.0, swing_impact=0.0, kill_diff=0.0,
+        damage=0.0, econ_impact=0.0, time_impact=0.0, swing_impact=0.0,
+        impact_diff=0.0, kill_diff=0.0,
         score_diff_before=score_diff_before, attacking_is_team_a=True,
         loadout_diff=0.0, full_buy_count_diff=0,
         round_won_by_team_a=won_by_a, match_won_by_team_a=match_won, is_terminal=terminal,
@@ -3824,6 +4300,20 @@ def test_value_model_uses_a_score_by_progress_interaction():
     assert late > early
 
 
+def test_after_state_refuses_econ_aware_evaluation():
+    """Round N+1's pre-buy economy is not extracted, so an econ-aware
+    V(after) would silently reuse round N's -- flattering econ. It must
+    raise instead."""
+    import pytest
+
+    observations = [_obs(10, 1, True, True, match_id=i) for i in range(40)]
+    for i, o in enumerate(observations):
+        o.match_won_by_team_a = i % 2 == 0
+    econ_beta = fit_value_model(observations, include_econ=True)
+    with pytest.raises(ValueError, match="after-state"):
+        value_of(econ_beta, state_after(_obs(5, 1, True, True)))
+
+
 def test_econ_increment_report_measures_the_delta():
     observations = []
     rng = np.random.default_rng(1)
@@ -3882,6 +4372,9 @@ class StateFeatures:
     terminal_result: float | None = None
     loadout_diff: float = 0.0
     full_buy_count_diff: float = 0.0
+    # False for an after-state: round N+1's pre-buy economy is not something
+    # this project extracts, and reusing round N's would be a silent lie.
+    econ_known: bool = True
 
 
 def state_before(observation) -> StateFeatures:
@@ -3923,12 +4416,18 @@ def state_after(observation) -> StateFeatures:
         )
 
     next_round = observation.round_number + 1
+    # Economy is deliberately NOT carried into the after-state. The
+    # observation's loadout is round N's PRE-BUY state; round N+1's economy
+    # is a different quantity that this project never extracts. Copying N's
+    # economy forward would make an econ-aware V(after) quietly wrong -- and
+    # wrong in the direction that flatters econ, since it would look like the
+    # economy had not changed. `econ_known=False` makes value_of refuse
+    # rather than guess.
     return StateFeatures(
         score_diff=observation.score_diff_before + delta,
         rounds_played=observation.round_number,
         attacking_is_team_a=attacking_team_for_round(next_round) == Team.TEAM_1,
-        loadout_diff=observation.loadout_diff,
-        full_buy_count_diff=observation.full_buy_count_diff,
+        econ_known=False,
     )
 
 
@@ -3968,6 +4467,12 @@ def value_of(beta: np.ndarray, state: StateFeatures) -> float:
     if state.is_terminal and state.terminal_result is not None:
         return float(state.terminal_result)
     include_econ = len(beta) == 7
+    if include_econ and not state.econ_known:
+        raise ValueError(
+            "econ-aware V(state) cannot be evaluated on an after-state: round "
+            "N+1's pre-buy economy is not extracted. Either use the base model "
+            "for leverage, or extract genuine next-round economy first."
+        )
     row = np.array([_design_row(state, include_econ)], dtype=float)
     return float(predict_proba(beta, row)[0])
 
@@ -4060,6 +4565,25 @@ def test_wpa_target_skips_unresolved_rounds():
     assert len(dataset.y) == 1
 
 
+def test_training_rows_use_an_inner_oof_value_model():
+    """Leverage for a training row must come from a model that did not see
+    that row's match."""
+    from app.services.impact_eval import wpa_target
+    from app.services.win_probability import fit_value_model
+
+    obs = _weighted_matches(n_matches=30, seed=25)
+    full = fit_value_model(obs)
+    other = fit_value_model(obs[: len(obs) // 2])
+    match_ids = {o.match_id for o in obs}
+    context = {
+        "value_beta": full,
+        "value_beta_by_match": {mid: other for mid in match_ids},
+    }
+    with_inner = wpa_target(obs, FEATURE_COMPONENTS, context)
+    without = wpa_target(obs, FEATURE_COMPONENTS, {"value_beta": full})
+    assert not np.allclose(with_inner.w, without.w), "per-match betas must change leverage"
+
+
 def test_context_builder_only_sees_training_matches(monkeypatch):
     """The Stage B leakage fix, asserted directly."""
     observations = _weighted_matches(n_matches=40, seed=22)
@@ -4122,12 +4646,19 @@ def wpa_target(observations, feature_names: list[str], context: dict) -> FitData
     """
     if not context or "value_beta" not in context:
         raise ValueError("wpa_target requires a context carrying 'value_beta'")
-    beta = context["value_beta"]
+    fallback = context["value_beta"]
+    # Training rows get an INNER-OOF value model (one that did not see their
+    # own match), so the leverage weights used to fit the component weights
+    # are not this model's in-sample predictions of the very rows it was fit
+    # on. Outer-test rows are absent from this map and fall back to the
+    # full-training model, which never saw them either.
+    per_match = context.get("value_beta_by_match", {})
 
     rows, ys, ws, mids = [], [], [], []
     for o in observations:
         if o.round_won_by_team_a is None:
             continue
+        beta = per_match.get(o.match_id, fallback)
         leverage = abs(value_of(beta, state_after(o)) - value_of(beta, state_before(o)))
         rows.append(_row(o, feature_names))
         ys.append(1.0 if o.round_won_by_team_a else 0.0)
@@ -4161,33 +4692,33 @@ and in `_select_config`'s inner loop, build a context from the inner-training ob
 
 `_select_config` therefore also takes `context_builder` — added as a **keyword parameter defaulting to `None`**, after `seed`, so Task 10's positional call `_select_config(obs, configs, names, grid, 3, 0)` and its test keep working unchanged.
 
-- [ ] **Step 4: Wire Stage B into the CLI**
+- [ ] **Step 4: Confirm Stage B is already wired into the CLI**
 
-Add to `scripts/evaluate_impact.py` inside `main()`, after the deployment proposal:
+No new CLI code is needed: Task 15's `main()` already treats WPA as the third
+frozen target, alongside T1 and T2, in the same loop —
 
 ```python
-        from app.services.impact_eval import wpa_target  # noqa: F401  (registered via build_target)
-        from app.services.win_probability import econ_increment_report, fit_value_model
-
-        def value_context(train_obs):
-            return {"value_beta": fit_value_model(train_obs)}
-
-        stage_b = cross_validate(
-            observations, [TargetConfig(name="WPA")], FEATURE_COMPONENTS, L2_GRID,
-            seed=args.seed, context_builder=value_context,
-        )
-        report["stage_b"] = {
-            "framing": (
-                "attribution, not independent validation -- dV is dominated by the "
-                "round's own outcome, which the features nearly determine"
-            ),
-            "metrics": oof_metrics(stage_b["oof"], draws=args.draws, seed=args.seed),
-            "value_model_cross_fitted": True,
-            "econ_increment": econ_increment_report(observations, seed=args.seed),
-        }
-        print("\n== Stage B: leverage-weighted attribution ==")
-        print(json.dumps(report["stage_b"], indent=2, default=float))
+        targets = [
+            ("T1", PRIMARY_T1, None),
+            ("T2", PRIMARY_T2, None),
+            ("WPA", TargetConfig(name="WPA"), lambda o: _value_context(o, args.seed)),
+        ]
 ```
+
+so `fitted_WPA` gets per-fold candidates from `fold_candidates` and lands in
+`yardstick_matrix` beside `fitted_T1`, `fitted_T2`, `current_impact` and the
+baselines. **That is the whole point of Stage B**: the comparison only exists
+because every candidate is scored on the same fixed binary yardsticks.
+
+Verify it rather than adding anything:
+
+```bash
+.\.venv\Scripts\python.exe -c "import json,sys; r=json.load(open(sys.argv[1])); print(sorted(r['yardstick_matrix_ex_ante']['forward_rounds']))" ..\scratch-impact-report.json
+```
+
+Expected output to contain `fitted_WPA` alongside `fitted_T1`, `fitted_T2`,
+`current_impact`, `kill_diff` and `damage_only`. If `fitted_WPA` is missing,
+Stage B is not being compared to anything and the task is not done.
 
 - [ ] **Step 5: Run the full suite**
 
@@ -4218,11 +4749,13 @@ remove the leakage."
 Read the report before designing anything user-facing:
 
 1. **Did the Task 0 gate pass?** If not, nothing downstream is meaningful.
-2. **What is `headline_delta_auc` in the T2 control ladder?** If it is near zero with a CI spanning zero, the econ/time/swing machinery adds nothing beyond damage plus who won the round. That is the headline finding, and it should be reported plainly.
-3. **Do the `fitted_T1` and `fitted_T2` rows beat `current_impact` and `kill_diff` on the yardstick matrix?** Read `gap_ci`, not `gap_over_kill_diff` alone — a gap whose paired interval spans zero is not a difference.
+2. **Read `T2_control_ladder.headline`** — the weighted-log-loss delta for step 3 → 4, *with its paired interval*. Negative means the components improved held-out prediction. **An interval spanning zero means they added nothing measurable**, and that is the headline finding whether or not it is the hoped-for one. Do not read the point estimate alone.
+3. **Do `fitted_T1`, `fitted_T2` and `fitted_WPA` beat `current_impact` and `kill_diff` on the yardstick matrix?** Read `gap_ci`, not `gap_over_kill_diff` alone — a gap whose paired interval spans zero is not a difference. All three fitted candidates appear in the same matrix on the same labels; that comparison is the reason Stage B is in this plan at all.
 4. **Do T1 and T2 agree on the constrained weights?** Disagreement is a finding to report, not a tie to break.
 5. **Is any component's `sign_stability` below ~0.9?** Report it as indeterminate rather than as a result.
-6. **Stage 0's `within_player_terciles.lift`** is the number P2's player-page card would display. Its effect size, and its CI, determine whether that card is worth building at all.
-7. **Stage B's `econ_increment.delta`** answers the econ-carryover question that motivated the whole design.
+6. **Stage 0's `within_player_terciles.lift`** is the number P2's player-page card would display. Its effect size, and its CI, determine whether that card is worth building at all. Check the roster cohort separately — it is the population the page actually serves.
+7. **`econ_increment.delta`** answers the econ-carryover question that motivated the whole design.
+8. **Compare `yardstick_matrix_ex_ante` against `yardstick_matrix_realized`.** The weights are fitted on ex-ante components but today's scorer computes realized ones, so the realized row is what adoption would actually buy. A large gap between them is itself the argument for the Stage C question: should the scorer drop the realized swing term?
+9. **Check `loading.excluded_matches`.** Matches whose rounds lacked impact rows were excluded, not zero-filled. A large count means the DB needs a rescore before any of this is trustworthy.
 
 P2 (player page) and P3 (squad page) each get their own spec, written from these numbers.

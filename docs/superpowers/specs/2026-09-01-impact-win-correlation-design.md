@@ -365,8 +365,9 @@ is labelled pre-round context:
 `PISTOL`/`ECO`/`FULL_BUY`, and collapsing that to a single ordinal difference
 discards information. The economy control is therefore the **raw team-average
 loadout differential plus the full-buy player-count differential**, with
-one-hot tier differences available as an alternative encoding; the inner CV
-picks between them.
+**one encoding, not a menu**: an alternative one-hot tier encoding was
+considered and dropped rather than left as an inner-CV choice, since it would
+be one more thing selected on data without earning its complexity.
 
 **The incremental gain from 3 to 4 is the headline result** -- it is the only
 number that shows Impact's machinery carries information beyond "who won the
@@ -390,11 +391,26 @@ cross-target generalization is visible:
 
 ### Protocol
 
+- **The targets are FROZEN, not selected.** `k`, `gamma` and `match_weight`
+  change the *definition of y*, not merely how well a model predicts a fixed
+  outcome. A smoother target, or one diluted with the more-predictable match
+  result, has lower achievable entropy and would win a log-loss comparison for
+  reasons unrelated to whether Impact predicts winning -- and pooling folds
+  that chose different configurations would pool predictions of different
+  quantities. So one primary target is declared up front per family
+  (`T1`; `T2` at k=3, gamma=0.7, match_weight=1.0; `WPA`), and alternatives run
+  as **sensitivity analyses compared only on the fixed binary yardsticks**,
+  whose labels are identical across configurations.
 - **Nested cross-validation.** Outer 5-fold by match for all reported numbers;
-  inner folds *within each training fold* for selecting `k`, `gamma`,
-  `match_weight`, L2 strength, and the economy encoding. Selecting
-  hyperparameters on the same folds used for reporting would manufacture
-  optimism. **The inner-CV selection objective is target-specific log loss.**
+  inner folds *within each training fold* select **L2 only** -- the one
+  hyperparameter that does not change the outcome being predicted. Selecting
+  anything on the folds used for reporting would manufacture optimism. **The
+  inner-CV objective is weighted log loss**, matching the weights the fit uses.
+- **AUC is for yardsticks; weighted log loss is for targets.** T2's target is a
+  weighted fraction of later round wins. Rounding it at 0.5 to manufacture a
+  binary label would change the estimand and discard the observation weights
+  that `gamma` and `match_weight` exist to set, so no AUC is computed against a
+  target. The yardsticks' labels are genuinely binary and carry the AUC.
 - **The constrained `FACTOR_WEIGHTS` search and the damage-multiplier choice
   also run inside the training/inner folds**, never once over all data --
   they are model selection like any other.
@@ -424,7 +440,11 @@ cross-target generalization is visible:
 5. **P2 / P3** designed from the observed effect sizes.
 
 **Implementation planning splits here:** the first plan covers P0 + Task 0 +
-Stage 0 + Stage A. Stage B gets its own plan once Stage A's numbers exist.
+Stage 0 + Stage A. **Superseded by an explicit user decision:** the
+implementation plan covers Stage B as well, so that the T1/T2-vs-WPA comparison
+the user asked for exists in one common yardstick matrix rather than being
+deferred. Stage B's tasks still carry a hard gate -- they are not started until
+Stage A's report has been produced and read.
 
 ## P0 -- `webapp/app/services/stats_math.py`
 
@@ -456,9 +476,9 @@ split: computation in a service module, CLI wrapper in `scripts/`.
 - **Controls** (timing per the table in the control-ladder section): score
   differential before round N, side during round N, start-of-round-N economy
   (raw team-average loadout differential + full-buy count differential from
-  `RoundPlayerStat.loadout`; one-hot `economy_graphs._tier_for` differences as
-  the alternative encoding), round number, and round-N result as its own
-  separate control.
+  `RoundPlayerStat.loadout`, as a TEAM AVERAGE not a sum -- a sum silently
+  encodes how many player-stat rows a round happens to have), round number, and
+  round-N result as its own separate control.
 - **Baselines:** kills, deaths, kill differential, damage.
 - **Context:** `match_id`, `round_number`, round outcome, match outcome.
 
@@ -473,8 +493,10 @@ Every target builder returns `(X, y, w)` with `y` in [0, 1]:
   `gamma**j`, never crossing a half boundary, skipping terminal rounds, and
   attaching the match outcome at `match_weight` **only for N <= 12**. Sweep
   `k` in {2, 3, 4}, `gamma` in {0.5, 0.7, 0.9}, `match_weight` in **{0, 0.5,
-  1.0}** -- zero included so the auxiliary has to earn its place. Selected by
-  inner CV on target-specific log loss, never asserted.
+  1.0}** -- zero included so the auxiliary has to earn its place. These are
+  **sensitivity runs scored on the fixed yardsticks**, never selected against
+  their own losses; the primary target is frozen at k=3, gamma=0.7,
+  match_weight=1.0.
 - `wpa_target(observations, value_model)` -- Stage B.
 
 ### Output
@@ -518,11 +540,15 @@ target.
 econ state and report the held-out log-loss delta. That delta is the
 quantitative answer to "how much does econ carryover actually matter."
 
-**Deferred to Stage B's own plan:** once econ is part of the state, `V(before)`
-and `V(after)` need exact definitions -- specifically which economy snapshot
-each one reads, since that is where a second leakage path could open. Not
-resolved here because Stage A's component breakdown may change what the state
-should condition on.
+**Resolved: econ enters `V(before)` only, and `V(after)` refuses it.** Round
+N+1's pre-buy economy is not a quantity this project extracts; the observation's
+loadout is round N's. Carrying round N's economy into the after-state would make
+an econ-aware `V(after)` quietly wrong -- and wrong in the direction that
+flatters econ, since it would look as though the economy had not moved. So the
+after-state is marked `econ_known=False` and `value_of` **raises** rather than
+guessing. The measured econ increment is therefore reported on before-states
+only; an econ-aware leverage weight would first require genuinely extracting
+next-round pre-buy state, which is deferred.
 
 ## Testing
 
