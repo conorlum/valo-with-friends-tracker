@@ -839,3 +839,86 @@ def test_wpa_without_context_raises():
     obs = _weighted_matches(n_matches=10, seed=24)
     with pytest.raises(ValueError, match="context"):
         build_target(obs, TargetConfig(name="WPA"), FEATURE_COMPONENTS, None)
+
+
+from app.services.impact_eval import (
+    assign_folds,
+    dataset_fingerprint,
+    fold_mapping_hash,
+    stable_folds,
+)
+
+
+def test_assign_folds_moves_when_the_match_set_changes():
+    """Documents the defect stable_folds exists to fix. If this ever stops
+    holding, assign_folds changed and this plan's premise needs rechecking."""
+    base = list(range(1, 51))
+    a = assign_folds(base, n_folds=5, seed=0)
+    b = assign_folds(base + [999], n_folds=5, seed=0)
+    assert [m for m in base if a[m] != b[m]], "expected a reshuffle"
+
+
+def test_stable_folds_are_membership_independent():
+    base = list(range(1, 51))
+    a = stable_folds(base, n_folds=5, seed=0)
+    b = stable_folds(base + [999], n_folds=5, seed=0)
+    for m in base:
+        assert a[m] == b[m]
+    subset = stable_folds([m for m in base if m % 7], n_folds=5, seed=0)
+    for m in subset:
+        assert subset[m] == a[m]
+
+
+def test_stable_folds_respect_the_seed_and_fold_count():
+    ids = list(range(1, 201))
+    assert stable_folds(ids, seed=0) != stable_folds(ids, seed=1)
+    assert set(stable_folds(ids, n_folds=5, seed=0).values()) <= set(range(5))
+    assert set(stable_folds(ids, n_folds=3, seed=0).values()) <= set(range(3))
+
+
+def test_stable_folds_are_reasonably_balanced():
+    ids = list(range(1, 1152))
+    counts: dict[int, int] = {}
+    for fold in stable_folds(ids, n_folds=5, seed=0).values():
+        counts[fold] = counts.get(fold, 0) + 1
+    assert len(counts) == 5
+    assert max(counts.values()) - min(counts.values()) < 0.1 * len(ids) / 5
+
+
+def test_stable_folds_survive_a_process_restart():
+    """Python's built-in hash() is randomized per process, so a mapping
+    built on hash() would differ between runs and silently invalidate every
+    cached comparison. Asserting equality inside ONE process cannot detect
+    that -- this launches a second interpreter and compares."""
+    import subprocess
+    import sys
+
+    program = (
+        "from app.services.impact_eval import stable_folds;"
+        "print(sorted(stable_folds(range(1, 40), n_folds=5, seed=0).items()))"
+    )
+    runs = [
+        subprocess.run([sys.executable, "-c", program], capture_output=True, text=True,
+                       check=True).stdout
+        for _ in range(2)
+    ]
+    assert runs[0] == runs[1]
+    assert runs[0].strip() == str(sorted(stable_folds(range(1, 40), n_folds=5, seed=0).items()))
+
+
+def test_dataset_fingerprint_is_order_insensitive_and_content_sensitive():
+    assert dataset_fingerprint([3, 1, 2]) == dataset_fingerprint([1, 2, 3])
+    assert dataset_fingerprint([1, 1, 2, 3]) == dataset_fingerprint([1, 2, 3])
+    assert dataset_fingerprint([1, 2, 3]) != dataset_fingerprint([1, 2, 4])
+    assert dataset_fingerprint([1, 2, 3]) != dataset_fingerprint([1, 2, 3, 4])
+
+
+def test_fold_mapping_hash_catches_a_same_set_different_folds_collision():
+    """The whole point: the two mappings below cover the same matches, so
+    the dataset fingerprint agrees, but the assignments differ."""
+    ids = list(range(1, 51))
+    stable = stable_folds(ids, n_folds=5, seed=0)
+    permuted = assign_folds(ids, n_folds=5, seed=0)
+    assert dataset_fingerprint(ids) == dataset_fingerprint(list(permuted))
+    assert fold_mapping_hash(stable) != fold_mapping_hash(permuted)
+    assert fold_mapping_hash(stable) == fold_mapping_hash(dict(stable))

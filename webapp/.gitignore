@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 captured_state/
 scripts/.dumps/
+.impact_eval_cache/

@@ -34,17 +34,21 @@ from app.services.impact_eval import (
     PRIMARY_T2,
     T2_SENSITIVITY_GRID,
     TargetConfig,
+    assign_folds,
     coefficient_diagnostics,
     controls_for,
     cross_validate,
+    dataset_fingerprint,
     fit_constrained_weights,
     fold_candidates,
+    fold_mapping_hash,
     load_all_observations,
     load_player_matches,
     load_player_matches_acs,
     load_stored_observations,
     oof_metrics,
     paired_oof_log_loss_delta,
+    stable_folds,
     yardstick_matrix,
 )
 from app.services.impact_stage0 import stage0_report
@@ -83,12 +87,13 @@ def _value_context(train_obs, seed: int = 0, inner_folds: int = 3):
     return {"value_beta": full, "value_beta_by_match": by_match}
 
 
-def _control_ladder(observations, config, draws, seed):
+def _control_ladder(observations, config, draws, seed, fold_fn=assign_folds):
     """Every step run through the SAME outer folds on the SAME frozen target,
     with its L2 selected inside each fold's training half. The headline 3 -> 4
     step gets a PAIRED interval, because a point estimate cannot tell you
     whether the components added anything."""
-    runs = {name: cross_validate(observations, [config], features, L2_GRID, seed=seed)
+    runs = {name: cross_validate(observations, [config], features, L2_GRID, seed=seed,
+                                 fold_fn=fold_fn)
             for name, features in LADDER}
     out = {name: oof_metrics(run["oof"], draws=draws, seed=seed) for name, run in runs.items()}
 
@@ -158,7 +163,19 @@ def main() -> int:
     parser.add_argument("--stage0-only", action="store_true", help="skip all fitting")
     parser.add_argument("--sensitivity", action="store_true",
                         help="also run the T2 grid, compared ONLY on the fixed yardsticks")
+    parser.add_argument("--stable-folds", action="store_true",
+                        help=(
+                            "use stable_folds (membership-independent, keyed by match id) "
+                            "instead of assign_folds (permutation-based) for every outer/inner "
+                            "split. Required for this run's fold assignment to be shareable "
+                            "with a Stage C kill-order-graph run on the same snapshot -- "
+                            "assign_folds permutes over the match collection, so an identical "
+                            "match set can still carry a different assignment under it. "
+                            "Existing committed Stage A results were produced WITHOUT this "
+                            "flag and are not comparable fold-for-fold to a run made with it."
+                        ))
     args = parser.parse_args()
+    fold_fn = stable_folds if args.stable_folds else assign_folds
 
     db = SessionLocal()
     try:
@@ -203,6 +220,14 @@ def main() -> int:
         report["loading_ex_ante"] = {"n_observations": len(observations), **load_report}
         report["component_variant"] = "ex_ante"
 
+        match_ids = sorted({o.match_id for o in observations})
+        outer_folds = fold_fn(match_ids, n_folds=5, seed=args.seed)
+        report["identity"] = {
+            "dataset_fingerprint": dataset_fingerprint(match_ids),
+            "fold_mapping_hash": fold_mapping_hash(outer_folds),
+            "fold_fn": "stable_folds" if args.stable_folds else "assign_folds",
+        }
+
         # --- The frozen Stage A/B targets, each nested end to end ---
         per_fold_candidates = {}
         all_folds = {}
@@ -214,7 +239,7 @@ def main() -> int:
         for name, config, context_builder in targets:
             result = cross_validate(
                 observations, [config], FEATURE_COMPONENTS, L2_GRID,
-                seed=args.seed, context_builder=context_builder,
+                seed=args.seed, context_builder=context_builder, fold_fn=fold_fn,
             )
             candidates, fold_weights = fold_candidates(
                 observations, result["folds"], f"fitted_{name}",
@@ -236,7 +261,7 @@ def main() -> int:
 
         report["T2_control_ladder"] = {
             "config": vars(PRIMARY_T2),
-            **_control_ladder(observations, PRIMARY_T2, args.draws, args.seed),
+            **_control_ladder(observations, PRIMARY_T2, args.draws, args.seed, fold_fn=fold_fn),
         }
 
         fixed = [CURRENT_IMPACT_CANDIDATE, *BASELINE_CANDIDATES]
@@ -267,7 +292,8 @@ def main() -> int:
             sensitivity = []
             for config in T2_SENSITIVITY_GRID:
                 result = cross_validate(
-                    observations, [config], FEATURE_COMPONENTS, L2_GRID, seed=args.seed
+                    observations, [config], FEATURE_COMPONENTS, L2_GRID, seed=args.seed,
+                    fold_fn=fold_fn,
                 )
                 candidates, _ = fold_candidates(observations, result["folds"], "sens")
                 folds = {f.fold: f for f in result["folds"]}
@@ -294,6 +320,8 @@ def main() -> int:
             ),
         }
 
+        print("\n== Identity ==")
+        print(json.dumps(report["identity"], indent=2))
         print("\n== T2 control ladder (headline: 3 -> 4) ==")
         print(json.dumps(report["T2_control_ladder"], indent=2, default=float))
         print("\n== Targets x yardsticks (ex-ante) ==")

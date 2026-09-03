@@ -12,6 +12,7 @@ outcomes, so treating them as two observations would double every
 apparent sample size.
 """
 
+import hashlib
 from dataclasses import dataclass
 
 import numpy as np
@@ -244,6 +245,11 @@ CONTROLS_CONTEXT = ["score_diff_before", "attacking_is_team_a", "loadout_diff", 
 TARGET_CONTROLS = {
     "T1": [],
     "T2": CONTROLS_RESULT + CONTROLS_CONTEXT,
+    # T3 predicts future rounds AND the match from round N, so it needs the
+    # same control block T2 does. score_diff_before matters more here than it
+    # does for T2: it is what stops a late-round row from recovering the match
+    # outcome for free off the scoreline.
+    "T3": CONTROLS_RESULT + CONTROLS_CONTEXT,
     "WPA": CONTROLS_CONTEXT,
 }
 
@@ -287,6 +293,68 @@ def assign_folds(match_ids, n_folds: int = 5, seed: int = 0) -> dict[int, int]:
     return {unique[int(pos)]: int(i % n_folds) for i, pos in enumerate(order)}
 
 
+_FIB64 = 0x9E3779B97F4A7C15  # nearest odd 64-bit int to 2**64 / golden ratio
+_MASK64 = (1 << 64) - 1
+
+
+def stable_folds(match_ids, n_folds: int = 5, seed: int = 0) -> dict[int, int]:
+    """match_id -> fold index, independent of what else is in the set.
+
+    assign_folds permutes over the COLLECTION, so adding or excluding a
+    single match can move every other match to a different fold even with
+    the same seed. That makes a shared Stage A / Stage C yardstick matrix
+    silently incomparable. Here the fold comes from match_id alone (plus a
+    seed-derived offset), so a match lands in the same fold regardless of
+    its neighbours.
+
+    Multiplicative (Fibonacci) hashing, not a cryptographic hash mod
+    n_folds. Measured: SHA-256(seed:match_id) mod 5 over 1,151 sequential
+    ids -- the realistic shape of this table's primary keys -- splits
+    199/207/246/249/250, a range of 51 against this stage's own <10%
+    balance tolerance, because a hash mod small n carries O(sqrt(N))
+    sampling noise per bucket regardless of hash quality. Multiplying by an
+    odd constant near 2**64/phi is a textbook equidistributing hash for
+    exactly this shape of input (contiguous or near-contiguous integer
+    keys) and lands within 1 of a perfect split on the same 1,151 ids.
+
+    The seed enters as an additive offset derived from SHA-256 of the seed
+    alone (not Python's per-process-randomized hash()), so the offset --
+    and therefore the whole partition -- is reproducible across restarts
+    and unrelated between seeds.
+
+    assign_folds is deliberately left untouched -- the parent project's
+    committed results were produced with it, and changing it would move
+    published numbers.
+    """
+    seed_bytes = hashlib.sha256(f"stable_folds_seed:{int(seed)}".encode()).digest()
+    offset = int.from_bytes(seed_bytes[:8], "big")
+    out: dict[int, int] = {}
+    for match_id in {int(m) for m in match_ids}:
+        mixed = (((match_id + offset) & _MASK64) * _FIB64) & _MASK64
+        out[match_id] = (mixed * int(n_folds)) >> 64
+    return out
+
+
+def dataset_fingerprint(match_ids) -> str:
+    """Stable identity for an eligible match SET."""
+    unique = sorted({int(m) for m in match_ids})
+    payload = ",".join(str(m) for m in unique).encode()
+    return f"{len(unique)}:{hashlib.sha256(payload).hexdigest()[:16]}"
+
+
+def fold_mapping_hash(folds: dict[int, int]) -> str:
+    """Stable identity for an ACTUAL match -> fold assignment.
+
+    Not redundant with dataset_fingerprint, and assuming it was is the hole
+    this closes: the parent project's results used the permutation-based
+    assign_folds, so the same match set can carry a completely different
+    assignment. Same fingerprint, different folds, a matrix that looks
+    comparable and is not.
+    """
+    payload = ";".join(f"{int(m)}:{int(f)}" for m, f in sorted(folds.items())).encode()
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
 def group_by_match(observations) -> dict[int, list]:
     grouped: dict[int, list] = {}
     for obs in observations:
@@ -315,11 +383,20 @@ class TargetConfig:
     gamma: float = 0.7
     match_weight: float = 1.0
 
+    # T3 only. `match_share` is the fraction of each row's target weight that
+    # the MATCH outcome carries, held constant across rows -- see
+    # match_primary_target for why that is not the same knob as
+    # `match_weight`. `match_rounds_limit`, when set, attaches the match term
+    # only for rounds <= that number (T2's N <= 12 rule).
+    match_share: float | None = None
+    match_rounds_limit: int | None = None
+
     def target_identity(self) -> tuple:
         """What makes two configs the SAME prediction problem. Two configs
         differing here define different y, so their losses are not
         comparable -- see PRIMARY_T2."""
-        return (self.name, self.k, self.gamma, self.match_weight)
+        return (self.name, self.k, self.gamma, self.match_weight,
+                self.match_share, self.match_rounds_limit)
 
 
 # THE PRIMARY TARGETS ARE FROZEN, NOT SELECTED.
@@ -439,6 +516,100 @@ def forward_window_target(
     return _dataset(rows, ys, ws, mids, feature_names)
 
 
+def match_primary_target(
+    observations, feature_names: list[str], k: int = 3, gamma: float = 0.7,
+    match_share: float = 0.67, match_rounds_limit: int | None = None,
+) -> FitDataset:
+    """T3: winning the MATCH first, winning subsequent ROUNDS second.
+
+    T2 already blends the two, but through `match_weight`, which is an
+    absolute weight rather than a share -- and that makes the balance
+    invisible. At the frozen k=3, gamma=0.7 the future-round weights sum to
+    1 + 0.7 + 0.49 = 2.19, so `match_weight=1.0` gives the match outcome
+    1.0/3.19 = **31%** of the target. The whole T2 sensitivity grid swept
+    `match_weight` in {0, 0.5, 1.0}, i.e. a match share of 0%, 19% and 31%:
+    every target this project has fitted has been round-dominant.
+
+    This builder states the balance directly instead. `match_share` is the
+    fraction of each row's target weight carried by the match outcome, and
+    it is held CONSTANT across rows by deriving the match weight per row:
+
+        W_r = SUM over available future rounds j of gamma**(j-1)
+        m_r = W_r * s / (1 - s)
+        y   = (1 - s) * (weighted mean future round win)  +  s * match win
+        w   = W_r + m_r  =  W_r / (1 - s)
+
+    Deriving `m_r` per row matters near a half boundary, where fewer future
+    rounds are available: a constant `match_weight` there silently raises the
+    match share, so rows would not share a target definition. This form keeps
+    the share exactly `s` for every row, and reduces to T2 with
+    `match_weight=0` at s=0.
+
+    **"Winning the round" here means SUBSEQUENT rounds, never the round the
+    impact was scored in.** A round's own kills are, near-deterministically,
+    that round's outcome, so scoring impact against it measures nothing --
+    the tautology the parent spec is built to avoid. Attribution of the
+    current round is Stage B's WPA, a different question with a different
+    contract.
+
+    `match_rounds_limit` reproduces T2's "match term only for N <= 12" rule.
+    It defaults to OFF here: applying the match term to only some rows makes
+    the share inconsistent across the dataset, which defeats the purpose of
+    naming a share. The tautology risk that rule guards against is also much
+    weaker in this design, because `score_diff_before` is a control -- the
+    model already knows the scoreline, so recovering the match outcome from a
+    late round's components is not free. It is exposed as a parameter so the
+    restriction can be run as a sensitivity rather than assumed either way.
+    """
+    if not 0.0 <= match_share < 1.0:
+        raise ValueError(f"match_share must be in [0, 1), got {match_share}")
+
+    rows, ys, ws, mids = [], [], [], []
+    for match_id, obs in group_by_match(observations).items():
+        by_number = {o.round_number: o for o in obs}
+        for o in obs:
+            if o.is_terminal:
+                continue
+            round_numerator = 0.0
+            round_weight = 0.0
+            for step in range(1, k + 1):
+                future = by_number.get(o.round_number + step)
+                if future is None or _half_of(future.round_number) != _half_of(o.round_number):
+                    break
+                if future.round_won_by_team_a is None:
+                    continue
+                weight = gamma ** (step - 1)
+                round_numerator += weight * (1.0 if future.round_won_by_team_a else 0.0)
+                round_weight += weight
+
+            # No future evidence means no row, exactly as in T2. Carrying
+            # such a row on the match term alone would give it a different
+            # blend from every other row.
+            if round_weight == 0:
+                continue
+
+            wants_match = (
+                match_share > 0
+                and (match_rounds_limit is None or o.round_number <= match_rounds_limit)
+            )
+            if wants_match and o.match_won_by_team_a is None:
+                # A tie carries no match signal. Silently dropping just the
+                # match term would leave this row round-only, i.e. a
+                # different target; drop the row instead.
+                continue
+
+            match_component = match_share / (1.0 - match_share) if wants_match else 0.0
+            m_r = round_weight * match_component
+            numerator = round_numerator + m_r * (1.0 if o.match_won_by_team_a else 0.0)
+            denominator = round_weight + m_r
+
+            rows.append(_row(o, feature_names))
+            ys.append(numerator / denominator)
+            ws.append(denominator)
+            mids.append(match_id)
+    return _dataset(rows, ys, ws, mids, feature_names)
+
+
 def build_target(observations, config: TargetConfig, feature_names: list[str], context=None) -> FitDataset:
     """`context` carries a fold-fitted value model for a WPA config (Stage
     B, not yet implemented); T1/T2 ignore it. Accepting it here is what lets
@@ -449,6 +620,14 @@ def build_target(observations, config: TargetConfig, feature_names: list[str], c
         return forward_window_target(
             observations, feature_names, k=config.k, gamma=config.gamma,
             match_weight=config.match_weight,
+        )
+    if config.name == "T3":
+        if config.match_share is None:
+            raise ValueError("a T3 config must set match_share")
+        return match_primary_target(
+            observations, feature_names, k=config.k, gamma=config.gamma,
+            match_share=config.match_share,
+            match_rounds_limit=config.match_rounds_limit,
         )
     if config.name == "WPA":
         return wpa_target(observations, feature_names, context)
@@ -563,7 +742,8 @@ def _fit_and_score(train_ds: FitDataset, test_ds: FitDataset, l2: float):
     return predict_proba(beta, scaled_test), back_transform(beta, centre, scale)
 
 
-def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int, seed: int, context_builder=None):
+def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int, seed: int,
+                   context_builder=None, fold_fn=assign_folds):
     """Inner CV over TRAINING observations only, selecting L2.
 
     REFUSES to compare configurations that define different targets. Log
@@ -573,6 +753,10 @@ def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int,
 
     The target is still rebuilt inside every inner split, because that is
     what lets a target depend on a fold-fitted context (Stage B).
+
+    `fold_fn` defaults to assign_folds (this function's original, published
+    behaviour) and is otherwise identical in signature to stable_folds --
+    passing the latter is how a re-run shares fold membership with Stage C.
     """
     identities = {c.target_identity() for c in configs}
     if len(identities) > 1:
@@ -581,7 +765,7 @@ def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int,
             f"({sorted(identities)}): their losses measure different outcomes. "
             "Freeze one target and compare alternatives on a fixed yardstick."
         )
-    inner = assign_folds([o.match_id for o in train_obs], n_folds=inner_folds, seed=seed + 1)
+    inner = fold_fn([o.match_id for o in train_obs], n_folds=inner_folds, seed=seed + 1)
     best = (configs[0], l2_grid[0])
     best_loss = float("inf")
 
@@ -614,6 +798,7 @@ def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int,
 def cross_validate(
     observations, configs, feature_names, l2_grid,
     n_folds: int = 5, inner_folds: int = 3, seed: int = 0, context_builder=None,
+    fold_fn=assign_folds,
 ) -> dict:
     """Outer CV that receives RAW OBSERVATIONS and a config grid.
 
@@ -626,8 +811,15 @@ def cross_validate(
     outer fold's TRAINING observations only, and the result is threaded to
     both the training and test target builds -- this is how a WPA config's
     value model is cross-fit without ever seeing a test match's outcome.
+
+    `fold_fn` defaults to assign_folds, this function's original published
+    behaviour -- every existing committed result was produced with it.
+    Passing stable_folds instead is how a re-run shares fold membership
+    with Stage C's yardstick matrix (see RunIdentity / matrix_is_comparable
+    in kill_order_refit.py): assign_folds permutes over the collection, so
+    an identical match set can still carry a different assignment under it.
     """
-    folds = assign_folds([o.match_id for o in observations], n_folds=n_folds, seed=seed)
+    folds = fold_fn([o.match_id for o in observations], n_folds=n_folds, seed=seed)
 
     fold_results: list[FoldResult] = []
     scores, ys, ws, mids, baselines = [], [], [], [], []
@@ -638,7 +830,8 @@ def cross_validate(
             continue
 
         config, l2 = _select_config(
-            train_obs, configs, feature_names, l2_grid, inner_folds, seed, context_builder
+            train_obs, configs, feature_names, l2_grid, inner_folds, seed, context_builder,
+            fold_fn=fold_fn,
         )
         context = context_builder(train_obs) if context_builder is not None else None
         train_ds = build_target(train_obs, config, feature_names, context)
