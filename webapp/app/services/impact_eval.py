@@ -245,6 +245,11 @@ CONTROLS_CONTEXT = ["score_diff_before", "attacking_is_team_a", "loadout_diff", 
 TARGET_CONTROLS = {
     "T1": [],
     "T2": CONTROLS_RESULT + CONTROLS_CONTEXT,
+    # T3 predicts future rounds AND the match from round N, so it needs the
+    # same control block T2 does. score_diff_before matters more here than it
+    # does for T2: it is what stops a late-round row from recovering the match
+    # outcome for free off the scoreline.
+    "T3": CONTROLS_RESULT + CONTROLS_CONTEXT,
     "WPA": CONTROLS_CONTEXT,
 }
 
@@ -378,11 +383,20 @@ class TargetConfig:
     gamma: float = 0.7
     match_weight: float = 1.0
 
+    # T3 only. `match_share` is the fraction of each row's target weight that
+    # the MATCH outcome carries, held constant across rows -- see
+    # match_primary_target for why that is not the same knob as
+    # `match_weight`. `match_rounds_limit`, when set, attaches the match term
+    # only for rounds <= that number (T2's N <= 12 rule).
+    match_share: float | None = None
+    match_rounds_limit: int | None = None
+
     def target_identity(self) -> tuple:
         """What makes two configs the SAME prediction problem. Two configs
         differing here define different y, so their losses are not
         comparable -- see PRIMARY_T2."""
-        return (self.name, self.k, self.gamma, self.match_weight)
+        return (self.name, self.k, self.gamma, self.match_weight,
+                self.match_share, self.match_rounds_limit)
 
 
 # THE PRIMARY TARGETS ARE FROZEN, NOT SELECTED.
@@ -502,6 +516,100 @@ def forward_window_target(
     return _dataset(rows, ys, ws, mids, feature_names)
 
 
+def match_primary_target(
+    observations, feature_names: list[str], k: int = 3, gamma: float = 0.7,
+    match_share: float = 0.67, match_rounds_limit: int | None = None,
+) -> FitDataset:
+    """T3: winning the MATCH first, winning subsequent ROUNDS second.
+
+    T2 already blends the two, but through `match_weight`, which is an
+    absolute weight rather than a share -- and that makes the balance
+    invisible. At the frozen k=3, gamma=0.7 the future-round weights sum to
+    1 + 0.7 + 0.49 = 2.19, so `match_weight=1.0` gives the match outcome
+    1.0/3.19 = **31%** of the target. The whole T2 sensitivity grid swept
+    `match_weight` in {0, 0.5, 1.0}, i.e. a match share of 0%, 19% and 31%:
+    every target this project has fitted has been round-dominant.
+
+    This builder states the balance directly instead. `match_share` is the
+    fraction of each row's target weight carried by the match outcome, and
+    it is held CONSTANT across rows by deriving the match weight per row:
+
+        W_r = SUM over available future rounds j of gamma**(j-1)
+        m_r = W_r * s / (1 - s)
+        y   = (1 - s) * (weighted mean future round win)  +  s * match win
+        w   = W_r + m_r  =  W_r / (1 - s)
+
+    Deriving `m_r` per row matters near a half boundary, where fewer future
+    rounds are available: a constant `match_weight` there silently raises the
+    match share, so rows would not share a target definition. This form keeps
+    the share exactly `s` for every row, and reduces to T2 with
+    `match_weight=0` at s=0.
+
+    **"Winning the round" here means SUBSEQUENT rounds, never the round the
+    impact was scored in.** A round's own kills are, near-deterministically,
+    that round's outcome, so scoring impact against it measures nothing --
+    the tautology the parent spec is built to avoid. Attribution of the
+    current round is Stage B's WPA, a different question with a different
+    contract.
+
+    `match_rounds_limit` reproduces T2's "match term only for N <= 12" rule.
+    It defaults to OFF here: applying the match term to only some rows makes
+    the share inconsistent across the dataset, which defeats the purpose of
+    naming a share. The tautology risk that rule guards against is also much
+    weaker in this design, because `score_diff_before` is a control -- the
+    model already knows the scoreline, so recovering the match outcome from a
+    late round's components is not free. It is exposed as a parameter so the
+    restriction can be run as a sensitivity rather than assumed either way.
+    """
+    if not 0.0 <= match_share < 1.0:
+        raise ValueError(f"match_share must be in [0, 1), got {match_share}")
+
+    rows, ys, ws, mids = [], [], [], []
+    for match_id, obs in group_by_match(observations).items():
+        by_number = {o.round_number: o for o in obs}
+        for o in obs:
+            if o.is_terminal:
+                continue
+            round_numerator = 0.0
+            round_weight = 0.0
+            for step in range(1, k + 1):
+                future = by_number.get(o.round_number + step)
+                if future is None or _half_of(future.round_number) != _half_of(o.round_number):
+                    break
+                if future.round_won_by_team_a is None:
+                    continue
+                weight = gamma ** (step - 1)
+                round_numerator += weight * (1.0 if future.round_won_by_team_a else 0.0)
+                round_weight += weight
+
+            # No future evidence means no row, exactly as in T2. Carrying
+            # such a row on the match term alone would give it a different
+            # blend from every other row.
+            if round_weight == 0:
+                continue
+
+            wants_match = (
+                match_share > 0
+                and (match_rounds_limit is None or o.round_number <= match_rounds_limit)
+            )
+            if wants_match and o.match_won_by_team_a is None:
+                # A tie carries no match signal. Silently dropping just the
+                # match term would leave this row round-only, i.e. a
+                # different target; drop the row instead.
+                continue
+
+            match_component = match_share / (1.0 - match_share) if wants_match else 0.0
+            m_r = round_weight * match_component
+            numerator = round_numerator + m_r * (1.0 if o.match_won_by_team_a else 0.0)
+            denominator = round_weight + m_r
+
+            rows.append(_row(o, feature_names))
+            ys.append(numerator / denominator)
+            ws.append(denominator)
+            mids.append(match_id)
+    return _dataset(rows, ys, ws, mids, feature_names)
+
+
 def build_target(observations, config: TargetConfig, feature_names: list[str], context=None) -> FitDataset:
     """`context` carries a fold-fitted value model for a WPA config (Stage
     B, not yet implemented); T1/T2 ignore it. Accepting it here is what lets
@@ -512,6 +620,14 @@ def build_target(observations, config: TargetConfig, feature_names: list[str], c
         return forward_window_target(
             observations, feature_names, k=config.k, gamma=config.gamma,
             match_weight=config.match_weight,
+        )
+    if config.name == "T3":
+        if config.match_share is None:
+            raise ValueError("a T3 config must set match_share")
+        return match_primary_target(
+            observations, feature_names, k=config.k, gamma=config.gamma,
+            match_share=config.match_share,
+            match_rounds_limit=config.match_rounds_limit,
         )
     if config.name == "WPA":
         return wpa_target(observations, feature_names, context)
