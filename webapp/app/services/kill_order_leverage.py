@@ -482,23 +482,30 @@ def load_all_leverage(db, report: dict | None = None):
 
     A match that raises is EXCLUDED and counted, never silently turned into
     zero-leverage rows; the CLI prints the count.
+
+    The reason is recorded per exclusion, not just the count: a broad
+    catch-and-move-on turns an extractor bug into a silently changed study
+    population. Anyone reading the report can tell "497 rounds hit the
+    fallback heuristic" (expected, small) apart from "a KeyError in every
+    match from a schema change" (not expected, and not small).
     """
     team_rows: list[TeamLeverageRow] = []
     player_rows: list[PlayerLeverageRow] = []
-    excluded: list[int] = []
+    excluded: list[dict] = []
     match_ids = eligible_match_ids(db)
     for match_id in match_ids:
         try:
             leverage = build_match_leverage(db, match_id)
-        except (KeyError, ValueError):
-            excluded.append(match_id)
+        except (KeyError, ValueError) as exc:
+            excluded.append({"match_id": match_id, "reason": f"{type(exc).__name__}: {exc}"})
             continue
         team_rows.extend(leverage.team_rows)
         player_rows.extend(leverage.player_rows)
     if report is not None:
         report["eligible_matches"] = len(match_ids)
         report["excluded_matches"] = len(excluded)
-        report["excluded_match_ids"] = excluded[:20]
+        report["excluded_match_ids"] = [e["match_id"] for e in excluded[:20]]
+        report["excluded_reasons"] = excluded[:20]
     return team_rows, player_rows
 
 

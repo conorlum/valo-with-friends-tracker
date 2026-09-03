@@ -1051,6 +1051,13 @@ def player_level_report(player_rows, match_outcomes, graph, surfaces=None,
 
     per_match: dict[tuple, dict] = {}
     for row in player_rows:
+        if row.match_id not in match_outcomes:
+            # A tie has no winner -- match_win()'s own contract excludes it
+            # from every denominator, and "won" is undefined for it here
+            # too. Not every match a player appears in has a determinable
+            # outcome, so this is a real, expected skip on live data, not
+            # a data-quality problem.
+            continue
         key = (row.player_id, row.match_id)     # canonical player, then match
         entry = per_match.setdefault(key, {
             "kill": 0.0, "death": 0.0, "death_untraded": 0.0, "damage": 0.0,
@@ -1286,6 +1293,25 @@ def verdict_report(primaries, deployable, practically_equivalent, targets_agree,
                 "notes": notes[key],
             }
             for key, (question, indices) in VERDICTS.items()
+        },
+        # Every value consumed above, plus WHERE it came from. A verdict
+        # computed from a hardcoded input is worse than no verdict -- the
+        # CLI once passed max_component_correlation=1.0 and
+        # beats_kill_diff_t1=False as constants, and this is the record
+        # that would have caught it.
+        "inputs": {
+            "practically_equivalent": practically_equivalent,
+            "targets_agree": targets_agree,
+            "max_component_correlation": max_component_correlation,
+            "econ_negative_every_fold": econ_negative_every_fold,
+            "beats_kill_diff_t1": beats_kill_diff_t1,
+            "source": {
+                "practically_equivalent": "stage_c0_report (current_vs_swing_plugin round-level sd ratio)",
+                "targets_agree": "target_agreement",
+                "max_component_correlation": "component_correlations",
+                "econ_negative_every_fold": "Stage A's own coefficient diagnostics (a prior finding this stage does not re-derive: Stage C fits the kill-order graph, not the outer FACTOR_WEIGHTS econ collapsed under)",
+                "beats_kill_diff_t1": "yardstick_matrix",
+            },
         },
     }
 
@@ -1559,3 +1585,394 @@ def factor_profiles(state_terms) -> dict:
         "corr_with_total_alive": corr_total,
         "n_states": int(len(lattice)),
     }
+
+
+def to_jsonable(value):
+    """Walk a report converting numpy scalars/arrays to plain Python types,
+    NaN/Inf to None (json.dumps would otherwise emit non-standard `NaN`
+    tokens that json.loads on the read side may not accept), and
+    dataclasses to dicts. Everything this module returns eventually goes
+    through this before json.dumps -- the acceptance test is what pins that
+    the round trip survives."""
+    import dataclasses
+    import math
+
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return to_jsonable(dataclasses.asdict(value))
+    if isinstance(value, dict):
+        return {str(k): to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_jsonable(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return to_jsonable(value.tolist())
+    if isinstance(value, (np.floating, float)):
+        f = float(value)
+        return None if not math.isfinite(f) else f
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _weighted_leverage(team_rows, component_weights) -> np.ndarray:
+    """Like family_a_leverage, but with EXPLICIT per-component outer
+    weights instead of the shipped FACTOR_WEIGHTS (all 1.0, total 3).
+    Used only by outer_weight_sensitivity / alternation_sensitivity to ask
+    how much a candidate's recovered graph depends on w rather than b."""
+    weights = np.asarray(component_weights, dtype=float)
+    total = float(weights.sum())
+    out = np.zeros((len(team_rows), len(PARAMS)))
+    for index, row in enumerate(team_rows):
+        out[index] = ((row.kill + row.death) * weights).sum(axis=1) / total
+    return out
+
+
+def fallback_sensitivity(team_rows, observations, config, l2_grid,
+                         candidates=("swing_basis", "pooled"), n_folds=5, seed=0) -> dict:
+    """Drops every round where a kill touched the FALLBACK parameter and
+    re-runs the same candidates. A shift here is a data-quality finding
+    about the resurrection heuristic (497 rounds, measured, in the full
+    DB), not a graph finding -- reported, never adopted, and the eligible
+    round set for the primary run is never restricted this way.
+
+    Not a paired significance test: the full and dropped runs replay
+    DIFFERENT observation sets, so their OOF rows are not index-aligned the
+    way paired_delta requires. Reported instead as each run's own held-out
+    loss plus how far the two runs' recovered graphs sit from each other.
+    """
+    fallback_index = PARAM_INDEX["fallback"]
+    affected = {
+        row.round_id for row in team_rows
+        if np.any(row.kill[fallback_index] != 0) or np.any(row.death[fallback_index] != 0)
+    }
+    filtered_rows = [row for row in team_rows if row.round_id not in affected]
+    filtered_obs = [o for o in observations if o.round_id not in affected]
+
+    exposure = np.abs(family_a_leverage(team_rows)).sum(axis=0)
+    full = run_nested_cv(team_rows, observations, config, candidates=list(candidates),
+                         l2_grid=l2_grid, n_folds=n_folds, seed=seed)
+    dropped = (
+        run_nested_cv(filtered_rows, filtered_obs, config, candidates=list(candidates),
+                     l2_grid=l2_grid, n_folds=n_folds, seed=seed)
+        if filtered_rows else {}
+    )
+
+    moved: dict = {}
+    for name in candidates:
+        if name not in full or name not in dropped:
+            continue
+        full_graphs = [f.graph for f in full[name].per_fold.values() if f.graph is not None]
+        dropped_graphs = [f.graph for f in dropped[name].per_fold.values() if f.graph is not None]
+        if not full_graphs or not dropped_graphs:
+            continue
+        full_mean = np.mean(full_graphs, axis=0)
+        dropped_mean = np.mean(dropped_graphs, axis=0)
+        moved[name] = {
+            "graph_rms_shift": float(_weighted_rms(full_mean - dropped_mean, exposure)),
+            "full_oof_log_loss": float(
+                weighted_log_loss(full[name].oof_probabilities, full[name].oof_y, full[name].oof_weights)
+            ),
+            "dropped_oof_log_loss": float(
+                weighted_log_loss(dropped[name].oof_probabilities, dropped[name].oof_y,
+                                  dropped[name].oof_weights)
+            ),
+        }
+
+    return {
+        "affected_rounds": len(affected),
+        "moved": moved,
+        "reading": (
+            "A shift here is a data-quality finding about the resurrection "
+            "heuristic, not a graph finding."
+        ),
+    }
+
+
+def outer_weight_sensitivity(team_rows, observations, config, weights_by_target,
+                             name="swing_basis", l2=1.0, state_visits=None) -> dict:
+    """ALL-DATA (descriptive, not held-out): the same candidate fit under
+    the shipped equal outer weighting versus under each TARGET's own Stage
+    A weighting, measuring how much the recovered graph depends on w
+    rather than on b. `weights_by_target` is {label: (w_econ, w_time,
+    w_swing)}, supplied by the caller from Stage A's own fitted weights --
+    this stage does not re-derive them.
+    """
+    aligned = align_target(team_rows, observations, config)
+    table = (
+        estimate_swing_table(state_visits) if state_visits
+        else _table_from_rows(team_rows, {r.round_id for r in team_rows})
+    )
+    exposure = np.abs(aligned.leverage).sum(axis=0)
+
+    def fit(leverage):
+        return fit_family_a(
+            name, (leverage, aligned.damage, aligned.y, aligned.weights),
+            (leverage, aligned.damage, aligned.weights), table, l2, exposure, shipped_graph(),
+        )
+
+    shipped = fit(aligned.leverage)
+    out: dict = {"shipped_weighting": {"graph": shipped.graph, "d": shipped.d}}
+    for label, w in weights_by_target.items():
+        candidate = fit(_weighted_leverage(aligned.team_rows, w))
+        out[label] = {
+            "graph": candidate.graph, "d": candidate.d,
+            "rms_shift_from_shipped_weighting": float(
+                _weighted_rms(candidate.graph - shipped.graph, exposure)
+            ),
+        }
+    return out
+
+
+def alternation_sensitivity(team_rows, observations, config, name="swing_basis", l2=1.0,
+                            state_visits=None) -> dict:
+    """b -> w -> b, EXACTLY two b steps, declared up front: fit the graph
+    under the shipped w, refit w under that graph (the parent's own
+    fit_constrained_weights), then refit the graph once more under the new
+    w. Reports whether the second b step moved anything. Iterating to
+    convergence is refused: the objective is non-convex, and "we stopped
+    when it stopped moving" is a selection surface dressed as a numerical
+    detail.
+    """
+    from app.services.impact_eval import controls_for, fit_constrained_weights
+
+    aligned = align_target(team_rows, observations, config)
+    table = (
+        estimate_swing_table(state_visits) if state_visits
+        else _table_from_rows(team_rows, {r.round_id for r in team_rows})
+    )
+    exposure = np.abs(aligned.leverage).sum(axis=0)
+
+    def fit_b(leverage):
+        return fit_family_a(
+            name, (leverage, aligned.damage, aligned.y, aligned.weights),
+            (leverage, aligned.damage, aligned.weights), table, l2, exposure, shipped_graph(),
+        )
+
+    def refit_w(graph):
+        """econ/time/swing recomputed as observation-shaped columns UNDER
+        `graph`, on CLONES (never the shared originals), then Stage A's own
+        constrained-weight search over them."""
+        by_round = {row.round_id: row for row in team_rows}
+        clones = []
+        for obs in observations:
+            row = by_round.get(obs.round_id)
+            clone = copy.copy(obs)
+            if row is not None:
+                for attr, index in (("econ_impact", 0), ("time_impact", 1), ("swing_impact", 2)):
+                    setattr(clone, attr, float(
+                        np.sum(graph * (row.kill[:, index] + row.death[:, index])) / len(COMPONENTS)
+                    ))
+            clones.append(clone)
+        return fit_constrained_weights(clones, config, controls_for(config))
+
+    step1 = fit_b(aligned.leverage)
+    w2 = refit_w(step1.graph)
+    step2 = fit_b(_weighted_leverage(aligned.team_rows, [w2.econ, w2.time, w2.swing]))
+
+    return {
+        "b1": step1.graph,
+        "w2": {"econ": w2.econ, "time": w2.time, "swing": w2.swing,
+              "damage_multiplier": w2.damage_multiplier},
+        "b2": step2.graph,
+        "graph_rms_shift": float(_weighted_rms(step2.graph - step1.graph, exposure)),
+        "reading": (
+            "Exactly two b steps, declared up front. Iterating to convergence is "
+            "refused: the objective is non-convex, and stopping when it stops "
+            "moving is a selection surface dressed as a numerical detail."
+        ),
+    }
+
+
+def _practically_equivalent_stage_c0(stage_c0: dict) -> bool:
+    """PRACTICAL_EQUIVALENCE_RMS is 1% of the score sd: reuses Stage C0's
+    own current-vs-swing-plugin comparison, since sd(difference) vs
+    sd(reference) is exactly that measurement, already in the report."""
+    round_level = stage_c0["current_vs_swing_plugin"]["round_level"]
+    if round_level["sd_reference"] == 0:
+        return False
+    return (round_level["sd_difference"] / round_level["sd_reference"]) < PRACTICAL_EQUIVALENCE_RMS
+
+
+def build_full_report(leverage_rows, observations, player_rows=None, state_visits=None,
+                      draws=200, l2_grid=None, n_folds=5, seed=0,
+                      outer_weights_by_target=None, econ_negative_every_fold=True) -> dict:
+    """Assembles the complete Stage C report: every REPORT_SECTIONS entry
+    populated, all four primaries, all four verdicts computed from real
+    inputs -- never a hardcoded placeholder. The CLI becomes argument
+    parsing plus printing; this is the function it calls.
+
+    `econ_negative_every_fold` is the one verdict input this stage cannot
+    derive on its own: it is a STAGE A finding (the outer FACTOR_WEIGHTS
+    econ coefficient was negative in every fold), not something a
+    kill-order-graph refit independently measures, since Stage C never
+    fits per-component outer weights at all. Defaults to that already-
+    established prior finding rather than an invented constant; a caller
+    with a fresh Stage A run should pass the real value.
+
+    `outer_weights_by_target`, if given, feeds outer_weight_sensitivity
+    with each target's Stage A weighting ({label: (w_econ, w_time,
+    w_swing)}); omitted, that one sensitivity is skipped rather than
+    guessed.
+    """
+    from app.scoring.impact import IMPACT_CALCULATION_VERSION
+    from app.services.impact_eval import (
+        PRIMARY_T2, dataset_fingerprint, fold_mapping_hash,
+    )
+    from app.services.kill_order_curves import FAMILY_B
+
+    player_rows = list(player_rows or [])
+    state_visits = list(state_visits or [])
+    l2_grid = list(l2_grid or [0.01, 0.1, 1.0, 10.0, 100.0])
+
+    report: dict = {section: None for section in REPORT_SECTIONS}
+
+    match_ids = sorted({row.match_id for row in leverage_rows})
+    folds = stable_folds(match_ids)
+    identity = RunIdentity(
+        dataset_fingerprint=dataset_fingerprint(match_ids),
+        fold_mapping_hash=fold_mapping_hash(folds),
+        calculation_version=f"{IMPACT_CALCULATION_VERSION}/{STAGE_C_SCHEMA_VERSION}",
+    )
+    report["identity"] = identity.__dict__
+    report["loading"] = {
+        "eligible_matches": len(match_ids), "excluded_matches": 0, "excluded_match_ids": [],
+    }
+
+    # FIRST, always: if the metric does not move, everything below is read
+    # in that light rather than as a headline of its own.
+    report["stage_c0"] = stage_c0_report(leverage_rows, player_rows, state_visits, draws=draws)
+
+    leverage_matrix = family_a_leverage(leverage_rows)
+    exposure = np.abs(leverage_matrix).sum(axis=0)
+    report["conditioning"] = conditioning_report(leverage_matrix)
+    report["per_parameter"] = per_parameter_report(leverage_matrix, exposure)
+
+    def _fold_summary(result):
+        oof_loss = (
+            float(weighted_log_loss(result.oof_probabilities, result.oof_y, result.oof_weights))
+            if result.oof_probabilities is not None else None
+        )
+        return {
+            "oof_weighted_log_loss": oof_loss,
+            "per_fold": {
+                str(f.fold): {
+                    "l2": f.l2, "d": f.d, "deployable": f.deployable, "reasons": list(f.reasons),
+                    "graph": f.graph, "weights": f.weights,
+                }
+                for f in result.per_fold.values()
+            },
+        }
+
+    family_a_results = run_nested_cv(
+        leverage_rows, observations, PRIMARY_T2, candidates=list(FAMILY_A), l2_grid=l2_grid,
+        n_folds=n_folds, seed=seed, state_visits=state_visits, family="A",
+    )
+    report["family_a"] = {name: _fold_summary(r) for name, r in family_a_results.items()}
+
+    family_b_results = run_nested_cv(
+        leverage_rows, observations, PRIMARY_T2, candidates=list(FAMILY_B), l2_grid=l2_grid,
+        n_folds=n_folds, seed=seed, family="B",
+    )
+    report["family_b"] = {name: _fold_summary(r) for name, r in family_b_results.items()}
+
+    all_results = {**family_a_results, **family_b_results}
+
+    report["control_ladder"] = control_ladder(
+        leverage_rows, observations, PRIMARY_T2, n_folds=n_folds, draws=draws,
+    )
+
+    match_outcomes = {
+        o.match_id: o.match_won_by_team_a for o in observations if o.match_won_by_team_a is not None
+    }
+    report["player_level"] = player_level_report(
+        player_rows, match_outcomes, shipped_graph(), draws=draws,
+    )
+
+    report["stability"] = {
+        name: stability_report(result, shipped_graph(), exposure, draws=draws)
+        for name, result in all_results.items() if name != "current_graph"
+    }
+
+    report["yardstick_matrix"] = yardstick_matrix(
+        leverage_rows, observations, family_a_results, draws=draws, identity=identity,
+    )
+
+    report["deferral_check"] = {
+        "matches": len(match_ids), "reopen_threshold": 4000,
+        "reachable": len(match_ids) >= 4000,
+        "note": "4,000 re-opens the deferred per-component fits for a LOOK, not a verdict.",
+    }
+
+    all_targets = run_all_targets(
+        leverage_rows, observations, l2_grid=l2_grid, n_folds=n_folds, seed=seed,
+        state_visits=state_visits,
+    )
+    graphs_by_target: dict = {}
+    for label, results_by_name in all_targets.items():
+        candidate = results_by_name.get("swing_basis")
+        if candidate is None:
+            continue
+        graphs = [f.graph for f in candidate.per_fold.values() if f.graph is not None]
+        if graphs:
+            graphs_by_target[label] = np.mean(graphs, axis=0)
+    agreement = (
+        target_agreement(graphs_by_target, exposure) if len(graphs_by_target) >= 2
+        else {"agree": False, "spearman": {}, "rms_share": {},
+             "thresholds": {"spearman_above": AGREEMENT_SPEARMAN,
+                            "rms_share_below": AGREEMENT_RMS_SHARE}}
+    )
+
+    correlations = component_correlations(leverage_rows, shipped_graph())
+
+    primaries = {
+        spec["name"]: paired_delta(all_results[spec["candidate"]], all_results[spec["against"]],
+                                   alpha=spec["alpha"], draws=draws, seed=seed)
+        for spec in PRIMARY_COMPARISONS
+        if spec["candidate"] in all_results and spec["against"] in all_results
+    }
+
+    first_half_cell = (report["yardstick_matrix"]["cells"] or {}).get("first_half_to_match", {})
+    current_graph_cell = first_half_cell.get("current_graph") or {}
+    beats_kill_diff_t1 = bool((current_graph_cell.get("gap_over_kill_diff") or 0.0) > 0)
+
+    report["verdicts"] = verdict_report(
+        primaries=primaries,
+        deployable={n: all(f.deployable for f in r.per_fold.values()) for n, r in all_results.items()},
+        practically_equivalent=_practically_equivalent_stage_c0(report["stage_c0"]),
+        targets_agree=agreement["agree"],
+        max_component_correlation=correlations["max_abs"],
+        econ_negative_every_fold=econ_negative_every_fold,
+        beats_kill_diff_t1=beats_kill_diff_t1,
+        stability=report["stability"],
+    )
+
+    # Sensitivities: reported and none adopted. Best-effort -- a failure
+    # here must never take down the sections above, which is why each is
+    # wrapped rather than left to propagate.
+    sensitivities: dict = {}
+    try:
+        sensitivities["fallback"] = fallback_sensitivity(
+            leverage_rows, observations, PRIMARY_T2, l2_grid, n_folds=n_folds, seed=seed,
+        )
+    except Exception as exc:  # noqa: BLE001 -- reported, not swallowed
+        sensitivities["fallback"] = {"error": f"{type(exc).__name__}: {exc}"}
+    if outer_weights_by_target:
+        try:
+            sensitivities["outer_weight"] = outer_weight_sensitivity(
+                leverage_rows, observations, PRIMARY_T2, outer_weights_by_target,
+                state_visits=state_visits,
+            )
+        except Exception as exc:  # noqa: BLE001
+            sensitivities["outer_weight"] = {"error": f"{type(exc).__name__}: {exc}"}
+    try:
+        sensitivities["alternation"] = alternation_sensitivity(
+            leverage_rows, observations, PRIMARY_T2, state_visits=state_visits,
+        )
+    except Exception as exc:  # noqa: BLE001
+        sensitivities["alternation"] = {"error": f"{type(exc).__name__}: {exc}"}
+    report["sensitivities"] = sensitivities
+
+    return report
