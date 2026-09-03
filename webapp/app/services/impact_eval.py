@@ -626,7 +626,8 @@ def _fit_and_score(train_ds: FitDataset, test_ds: FitDataset, l2: float):
     return predict_proba(beta, scaled_test), back_transform(beta, centre, scale)
 
 
-def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int, seed: int, context_builder=None):
+def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int, seed: int,
+                   context_builder=None, fold_fn=assign_folds):
     """Inner CV over TRAINING observations only, selecting L2.
 
     REFUSES to compare configurations that define different targets. Log
@@ -636,6 +637,10 @@ def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int,
 
     The target is still rebuilt inside every inner split, because that is
     what lets a target depend on a fold-fitted context (Stage B).
+
+    `fold_fn` defaults to assign_folds (this function's original, published
+    behaviour) and is otherwise identical in signature to stable_folds --
+    passing the latter is how a re-run shares fold membership with Stage C.
     """
     identities = {c.target_identity() for c in configs}
     if len(identities) > 1:
@@ -644,7 +649,7 @@ def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int,
             f"({sorted(identities)}): their losses measure different outcomes. "
             "Freeze one target and compare alternatives on a fixed yardstick."
         )
-    inner = assign_folds([o.match_id for o in train_obs], n_folds=inner_folds, seed=seed + 1)
+    inner = fold_fn([o.match_id for o in train_obs], n_folds=inner_folds, seed=seed + 1)
     best = (configs[0], l2_grid[0])
     best_loss = float("inf")
 
@@ -677,6 +682,7 @@ def _select_config(train_obs, configs, feature_names, l2_grid, inner_folds: int,
 def cross_validate(
     observations, configs, feature_names, l2_grid,
     n_folds: int = 5, inner_folds: int = 3, seed: int = 0, context_builder=None,
+    fold_fn=assign_folds,
 ) -> dict:
     """Outer CV that receives RAW OBSERVATIONS and a config grid.
 
@@ -689,8 +695,15 @@ def cross_validate(
     outer fold's TRAINING observations only, and the result is threaded to
     both the training and test target builds -- this is how a WPA config's
     value model is cross-fit without ever seeing a test match's outcome.
+
+    `fold_fn` defaults to assign_folds, this function's original published
+    behaviour -- every existing committed result was produced with it.
+    Passing stable_folds instead is how a re-run shares fold membership
+    with Stage C's yardstick matrix (see RunIdentity / matrix_is_comparable
+    in kill_order_refit.py): assign_folds permutes over the collection, so
+    an identical match set can still carry a different assignment under it.
     """
-    folds = assign_folds([o.match_id for o in observations], n_folds=n_folds, seed=seed)
+    folds = fold_fn([o.match_id for o in observations], n_folds=n_folds, seed=seed)
 
     fold_results: list[FoldResult] = []
     scores, ys, ws, mids, baselines = [], [], [], [], []
@@ -701,7 +714,8 @@ def cross_validate(
             continue
 
         config, l2 = _select_config(
-            train_obs, configs, feature_names, l2_grid, inner_folds, seed, context_builder
+            train_obs, configs, feature_names, l2_grid, inner_folds, seed, context_builder,
+            fold_fn=fold_fn,
         )
         context = context_builder(train_obs) if context_builder is not None else None
         train_ds = build_target(train_obs, config, feature_names, context)
