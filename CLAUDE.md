@@ -2,12 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## This is the private sister-repo
+## This is the sister-repo (PUBLIC on GitHub)
 
-This repo is a personal-use fork of `ValorantIGLTutor`/valomaths that adds a tracker.gg-based data source for friend-group match stats. It's kept separate from the public repo because that one is being groomed for Riot API production access (it serves `/riot.txt` for Riot's domain-verification check) and shouldn't also display scraped third-party (tracker.gg) data.
+This repo is a personal-use fork of `ValorantIGLTutor`/valomaths that adds a tracker.gg-based data source for friend-group match stats. It's kept separate from the other repo because that one is being groomed for Riot API production access (it serves `/riot.txt` for Riot's domain-verification check) and shouldn't also display scraped third-party (tracker.gg) data.
 
-- `git remote -v` here has `origin` = this private GitHub repo, and `public` = the original `ValorantIGLTutor` repo. Pull new public-site features in with `git fetch public && git merge public/main`.
-- Runs **local-only** — no cloud deployment. Keep private-only changes additive (new files) rather than editing shared files, so future merges from `public` stay clean.
+- **This GitHub repo is PUBLIC** (`conorlum/valo-with-friends-tracker`), despite the "private sister-repo" framing this file used to carry. Treat everything committed here as world-readable. **Never commit a credential** -- `webapp/.env.remote` held the live Render Postgres password in a public repo from 2026-08-26 until it was caught and rotated on 2026-09-03. `.env.*` is now gitignored (with `!.env.example`).
+- It is also **deployed**, at ValoWithFriendsTracker.com on Render, with a Render-hosted Postgres -- see `webapp/RENDER_DEPLOY.md`. The "runs local-only, no cloud deployment" note this file used to carry was wrong.
+
+- `git remote -v` here has `origin` = this repo (public), and `public` = the original `ValorantIGLTutor` repo. Pull new public-site features in with `git fetch public && git merge public/main`.
+- Keep repo-specific changes additive (new files) rather than editing files shared with `public`, so future merges from `public` stay clean. (This bullet previously also claimed the repo "runs local-only — no cloud deployment"; that was wrong, see above.)
 - **Docker Compose gotcha**: both this repo's `webapp/` folder and the original repo's `webapp/` folder are literally both named `webapp`, so Docker Compose's default project name (derived from the folder name) collides between the two repos — running plain `docker compose up -d` here can recreate/repoint the *other* repo's Postgres container. Always bring this repo's Postgres up with an explicit project name: `docker compose -p valomaths-private up -d`. It's mapped to host port **5433** (not 5432, which the original repo's Postgres uses) — see `.env`.
 - `app/adapters/trackergg_browserstate_source.py` + `scripts/ingest_trackergg_player.py` — the tracker.gg ingestion pipeline (see below). Not present in the public repo.
 - Repo name history: this was previously named `valomaths-private` (both on GitHub and as the local folder name). The GitHub repo is now `valo-with-friends-tracker`, and the local folder was renamed to match. Some internal paths (the Docker Compose project name, local Postgres db name) intentionally still use `valomaths`/`valomaths-private` — they're independent of the folder name and don't need to be changed.
