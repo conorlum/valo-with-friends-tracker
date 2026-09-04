@@ -296,6 +296,51 @@ state, so "HIGH" is not a fixed credit amount across rows.
 association "decaying to nothing by round 4/16". That was an artifact of not
 conditioning on the state the destruction acted against.
 
+### M12a -- M12 adjusted for kill count and round-N outcome: the effect does not survive
+
+`M12` compares LOW vs HIGH *total destroyed value*. High destruction co-occurs
+with killing more enemies and with winning round N, both of which predict
+winning N+1 on their own. Measured:
+
+```
+corr(destroyed, enemies killed) = +0.652
+corr(destroyed, won round N)    = +0.474
+```
+
+Holding **both** fixed -- terciles of destroyed formed inside each
+(round-N outcome x enemies killed) cell, deltas bootstrapped by match:
+
+| round N | enemies killed | delta (HIGH - LOW) on winning N+1 |
+|---|---|---|
+| WON | 4 | -0.8pp [-5.7, +4.1] spans 0 |
+| WON | 5 | **-3.0pp [-4.0, -2.0]** excludes 0, **negative** |
+| LOST | 1 | +0.4pp [-1.7, +2.6] spans 0 |
+| LOST | 2 | +4.4pp [+2.7, +6.4] |
+| LOST | 3 | +6.7pp [+4.8, +8.5] |
+| LOST | 4 | +8.7pp [+6.4, +10.8] |
+| LOST | 5 | +3.9pp [-1.5, +9.4] spans 0 |
+
+And within the buy-state bands the econ weights would have been fitted from,
+restricted to won rounds with all five enemies killed:
+
+| buy state | delta | |
+|---|---|---|
+| broke (0-1) | **-4.2pp [-5.6, -2.8]** | negative |
+| partial (2-3) | +2.8pp [+0.6, +4.8] | positive |
+| full (4-5) | **-9.8pp [-11.5, -8.0]** | negative |
+
+**`M12`'s headline effect is substantially kill count, and the remainder changes
+sign by cell.** Among teams that *lost* round N, destruction still predicts
+(+4 to +9pp). Among teams that *won* it and wiped the enemy, more destruction
+predicts winning N+1 **less** -- consistent with the wealth-persistence
+mechanism: a rich team you wipe collects a large loss bonus and rebuys, while a
+poor team you wipe stays poor.
+
+**Consequence:** the buy-state weights `w(state)` proposed in the econ policy
+spec **cannot be fitted from `M12`**. Two of the three bands would have taken
+the wrong sign. `M12` remains valid as the unadjusted association it reports;
+it is not a basis for scoring weights.
+
 ### M13 -- Round 4/16 economy is largely determined by rounds 2-3
 
 **Sample:** one row per (team, half) where rounds 2, 3 and 4 of that half all
@@ -428,6 +473,7 @@ Kept so they are not rediscovered as findings.
 | "Six for six is not noise" (OT defender share) | `M6` -- two of six negative, one of six excludes zero |
 | Destruction shows a *threshold* in the deciles | `M10` -- confounded by enemy wealth |
 | Destruction decays to nothing by round 4/16 | `M12`, `M13` -- artifact of not conditioning on buy state |
+| `M12` supports fitting econ buy-state weights | `M12a` -- effect is largely kill count; sign flips by cell once adjusted |
 | Within-player role effect ~5pp | `M18` -- subset artifact, n=8-10 |
 | Site participation is a stable player trait | `M17` -- reliability halved and spans zero at two of three gates |
 | The econ factor's direction is "exactly backwards" | `M9` -- a between-context artifact |

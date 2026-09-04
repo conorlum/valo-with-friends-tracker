@@ -1,6 +1,8 @@
-# Econ impact as a separate, credits-denominated component
+# Econ impact as a separate realized economy-state allocation
 
-**Status:** awaiting human review
+**Status:** BLOCKED -- do not implement. The buy-state weights this design
+depends on cannot be derived from the measurements available (`M12a`). See
+"Blocking issue" below.
 **Date:** 2026-09-04
 
 ## Purpose
@@ -28,6 +30,48 @@ The component must pick exactly one of these and say so:
 (a) credits removed, (b) next-round buy denial, (c) an Impact-scaled allocation
 of (a) or (b). This spec chooses **(c) an allocation of (b)**. The equations
 below are normative; any implementation that silently mixes them is wrong.
+
+## Blocking issue -- the weight derivation does not survive adjustment
+
+**Added 2026-09-04 after external review.** Section 3 fits `w(state)` from
+`M12`. `M12a` re-ran that measurement holding **enemies killed** and **round-N
+outcome** fixed, and the effect does not survive:
+
+- `corr(destroyed, enemies killed) = +0.652`, `corr(destroyed, won round N) = +0.474`
+- among teams that *won* round N and wiped the enemy, more destruction predicts
+  winning N+1 **less** (-3.0pp, interval excluding zero)
+- within the three buy-state bands, the fitted weights would take the **wrong
+  sign in two of three** (broke -4.2pp, full -9.8pp, partial +2.8pp)
+
+This matters more than a normal null. The redesign exists to escape the
+components' collinearity with kill count and leverage; fitting `w(state)` from
+an unadjusted `M12` would have **reintroduced that correlation through the
+weights themselves**, while appearing to be an independent economic signal.
+
+**What survives:** `M10` (destroyed value is largely a measure of enemy
+committed wealth) and `M11` (enemy next-round buy state associates with winning
+that round) are unaffected -- they are descriptive and were not the confounded
+step. The confounded step is the link from *a player's destruction* to *the next
+round's outcome*.
+
+**What is required before this spec can be implemented:**
+
+1. An estimand for the econ component that is not a function of how many
+   enemies were killed -- the current `magnitude` is close to a linear function
+   of kill count at fixed enemy wealth.
+2. Weights derived from a measurement that adjusts for kill count, round
+   outcome, and man-advantage trajectory, or an argument that the component
+   should not be outcome-fitted at all and is a *descriptive* allocation of
+   credits destroyed with no predictive claim attached.
+3. A decision on `swing_impact` absorption, which section 8 still leaves open.
+
+Option 2's second branch is worth serious consideration: an econ term that
+simply *describes* economic damage, scaled by nothing fitted, makes no
+predictive claim and therefore cannot be undermined by one. That would be a
+smaller and more defensible component than the one specified below.
+
+**Everything below is retained as the design as it stood, not as an approved
+plan.**
 
 ## Layer note -- this is a POLICY document
 
@@ -124,7 +168,7 @@ ahead or tied when a "flip" is evaluated.
 | `magnitude(T)` | `removed(T) / R` | dimensionless, ~0..1 |
 | `w(state)` | buy-state weight from `M12` | dimensionless |
 | `denial(T)` | realized next-round denial | dimensionless |
-| `ECON_SCALE` | credits-to-Impact conversion | Impact points |
+| `ECON_SCALE` | Impact points per unit of allocation | Impact points per dimensionless unit |
 
 ### 1. Per-kill raw quantity: the victim's committed value
 
@@ -207,12 +251,29 @@ aggregate and killed Stage C.
 
 By construction `sum(credit(p)) = econ_round(T)` over the team.
 
-### 7. Zero-sum
+### 7. Zero-sum -- it IS, and an earlier draft said otherwise
 
-`econ_component` is **not** zero-sum across teams. Team A's credit derives from
-`magnitude(A) * w * denial` and team B's debit from the same removal but scaled
-by B's own state and denial, which differ. This is deliberate -- a round can be
-economically bad for both sides -- and is stated so no test asserts symmetry.
+The equations in section 6 are **exactly zero-sum** over the ten players in a
+round. A victim's debit is scaled by `econ_round(opp)`, where `opp` is the team
+that produced the removal, and the debit shares sum to 1 over that team's
+losses -- so `sum(credit) over T == econ_round(T) == sum(debit) over the enemy`.
+
+A previous version of this section claimed the component was deliberately *not*
+zero-sum, on the reasoning that credit and debit use different states and denial
+values. That is wrong: they use the *same* `econ_round` term, viewed from the
+two sides. **The prose was describing a design the equations do not implement.**
+
+Zero-sum is accepted rather than worked around: the component is a transfer, it
+distinguishes players within a round, and it gives a clean testable invariant
+(the ten values sum to zero).
+
+**Self-kills and environmental deaths are therefore excluded entirely** -- no
+credit and no debit. They are not transfers: no enemy gains from them, and they
+do not appear in `removed(opp)`, so the section 6 denominator cannot express
+them. An earlier boundary table assigned them a debit, which is not
+implementable through that denominator. The cost is that a player who falls off
+the map loses their team real economic value and is not charged for it; that is
+a known simplification, not an oversight.
 
 ### 8. Top-level structure
 
@@ -253,7 +314,7 @@ which would award credit where none was earned. Hence explicit values:
 | surrendered / incomplete match | **0**, consistent with existing surrender handling |
 | missing `round_player_stats` | **0**, and counted in a diagnostic |
 | `removed(T) == 0` (no enemy killed) | **0** by the guard in section 6 |
-| self-kill / environmental death | contributes to `debit` for the victim, **never** to any player's `credit`; no killer is credited |
+| self-kill / environmental death | **0** -- excluded entirely; see section 7 |
 | victim `C(v) == 0` | contributes 0; not an error |
 
 ### 11. The weapon-pickup extension (data-gated, ships inert)
@@ -327,8 +388,10 @@ the rescore cost is prohibitive.
   round N+1 outcome computed *without* reference to `denial()`. Adjust for
   pre-round economy, round result, survival count, side, score differential,
   map and patch era. Report with intervals.
-- **External validation:** held-out association with later outcomes not used to
-  build the component, on a temporal split.
+- **Temporal stability check -- NOT external validation.** The whole dataset
+  has already been used to choose this component's structure, so splitting it by
+  date afterwards does not create an untouched holdout. Report it as a stability
+  check. Genuine external validation needs matches not yet crawled.
 - **Naming:** this is a *realized economy-state allocation*, not causal
   attribution. Do not write "what the destruction achieved" in code comments or
   UI copy without a counterfactual analysis to support it.

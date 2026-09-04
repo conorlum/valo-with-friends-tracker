@@ -37,10 +37,11 @@ first proposed as a player-page stat ranking players by how much their K/D
 degrades under site pressure; that *efficiency* framing was measured and
 **failed** (split-half r = +0.062). It was then reframed as a *participation*
 question -- where do a player's kills happen, not how well they trade -- which
-measures as a genuinely stable trait (split-half r = +0.44 to +0.52) and is
-almost entirely independent of agent choice. Part 2 is the participation
-version. Both results are recorded below, because the pair is the useful
-lesson: on this window, location replicates and efficiency does not.
+initially appeared to measure a stable trait. **On the full dataset it does
+not** -- split-half +0.177 to +0.300, spanning zero at two of three gates
+(`M17`) -- and Part 2 is deferred entirely. Both results are recorded because
+the pair is the useful lesson: on this window, location replicates better than
+efficiency, but neither replicates well enough to ship.
 
 ## Layer note -- this is a POLICY document
 
@@ -358,8 +359,14 @@ not a measurement, and must be stated rather than left implicit:
   parameters (symmetric, per the Deaths section) and do **not** enter the fit
   as separate rows.
 - **Weights and errors.** Logistic regression of round win on
-  `shape(dt) x adv x side`, with **match-clustered** standard errors; the
-  clustering premise in `M1`'s method section applies to the fit too.
+  `shape(dt) x adv x side` **plus exact pre-kill state fixed effects**.
+  Advantage alone collapses 5v5, 4v4, 3v3 and 2v2 into one value, and `M1`
+  shows those states have different baselines *and* different proximity lifts
+  -- so without exact-state terms a shift in the 5v5-versus-2v2 mixture can
+  masquerade as a time effect at fixed advantage. `kill_order_bonus` depends
+  on the exact transition, not on the differential, for the same reason.
+  **Match-clustered** standard errors; the clustering premise in `M1`'s method
+  section applies to the fit too.
 - **Shape knots.** Fixed at the measurement boundaries (30, 20, 10, 5, 0
   seconds) rather than estimated, so the shape is not free to chase noise. The
   plateau below 10s is imposed, not fitted, per `M1`.
@@ -368,9 +375,16 @@ not a measurement, and must be stated rather than left implicit:
   error.
 - **Order of operations.** Fit, then clamp, then centre. Centring is computed
   on the clamped scalar, because the clamped value is what actually scores.
-- **Temporal split.** Fit on matches before the dataset's 70th percentile by
-  `played_at`, validate after. Chosen by date, not by match index, and fixed
-  before fitting.
+- **Temporal split -- a stability check, not a holdout.** Fit before the 70th
+  percentile by `played_at`, evaluate after; chosen by date and fixed before
+  fitting. But the full dataset already selected the buckets, the plateau, the
+  interaction and the clamp concept, so this **does not** produce independent
+  validation and must not be described as such. A genuine holdout needs matches
+  not yet crawled.
+- **`k` is a policy parameter, not an estimate.** The amplitude scale and the
+  0.2-1.7 clamps are chosen, not fitted. Report sensitivity across several
+  predeclared values of `k`; do **not** attach confidence intervals to a scalar
+  whose amplitude was normatively selected.
 
 ### Centering is on CONTRIBUTION, not on the factor
 
@@ -414,9 +428,12 @@ carries as many variables as kill impact. Revisit only with a player-level read.
 
 ### Validation
 
-- **Primary: a temporal holdout.** Fit on earlier matches, evaluate the lift
-  table on later ones. This is the only validation here not contaminated by the
-  data used to design the curve.
+- **Primary: a temporal STABILITY CHECK, not a holdout.** Fit on earlier
+  matches, evaluate the lift table on later ones. **This is not an
+  uncontaminated holdout** -- the full dataset already selected the buckets, the
+  plateau, the side and advantage interactions and the clamp concept, so a
+  later date split cannot make it independent. It tests whether coefficients
+  drift, nothing stronger. A genuine holdout needs matches not yet crawled.
 - **NOT a holdout: overtime.** OT is used in this spec's findings to argue the
   shape is not an economy artifact, so it cannot also serve as independent
   validation. It is a robustness sample. An earlier draft listed it as the
@@ -467,9 +484,9 @@ assertions against it.**
 
 ## Out of scope
 
-- Anything econ. The killer/victim loadout cross-tab found a large effect
-  pointing opposite to the current `econ_differential_factor`, and the user has
-  explicitly parked it. It is a separate spec.
+- Anything econ -- a separate spec, currently blocked (`M12a`). Note the claim
+  that econ points "opposite" to the current factor was **withdrawn**: `M9`
+  shows it was a between-context artifact.
 - A deadline / plant-denial term. Measured and not elevated.
 - Any player-level site-pressure ranking. Measured and unreliable.
 - Refitting `FACTOR_WEIGHTS`. Unrelated, already measured at +0.005 AUC, and
