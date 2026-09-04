@@ -46,6 +46,16 @@ bootstrapped, not inferred from whether two intervals overlap.
 **Exclusions applied throughout.** Surrendered rounds; phantom plants (`M16`);
 and, where a next round is required, the halftime boundaries (rounds 12 and 24).
 
+**What the match bootstrap does NOT cover.** Resampling matches handles
+dependence *within* a match. It treats matches as independent, which they are
+not: the same players, parties and lineups recur across the whole dataset, and
+matches cluster in sessions and in time. **Intervals here are therefore lower
+bounds on uncertainty**, and the narrowest of them -- `M1`'s, some spanning
+under 1pp -- are the most likely to be optimistic. A session/date block
+bootstrap, or multiway clustering by match and player, would be more
+defensible; neither has been run. Treat interval *separation* as the usable
+signal and exact widths as indicative.
+
 **Standing limitation.** Every measurement conditioning on "rounds that were
 eventually planted" is subject to **post-treatment selection** -- the plant is
 downstream of the kills being measured. Holding man-advantage fixed addresses
@@ -77,11 +87,19 @@ outside even states (it does not -- see `M3`).
 
 ### M2 -- The same analysis on ABSOLUTE round clock is flat
 
-Bucketing pre-plant kills by clock time rather than distance to the plant, within
-even states: 5v5 runs 69.4 / 69.6 / 67.9 / 71.5 / 64.2 across the clock; 3v3
-moves 1.4pp end to end. **[SUBSET]**, but the direction is a null and the
-mechanism is understood -- absolute clock averages "5s before a plant" together
-with "5s into a quiet round". Not worth re-running.
+**Sample:** non-self pre-plant kills in non-phantom planted rounds, killer's
+alive count == victim's. Round-win % for the killer's team, by absolute clock.
+Full dataset, match-level bootstrap.
+
+| state | <20s | 20-35 | 35-50 | 50-65 | >=65 |
+|---|---|---|---|---|---|
+| 5v5 | 65.0 [64.5,65.6] n=32,362 | 65.5 [64.4,66.6] n=6,519 | 64.7 [62.2,67.4] n=1,323 | 64.3 [58.8,69.4] n=322 | 64.7 [55.8,73.2] n=116 |
+| 4v4 | 67.6 [66.5,68.6] n=6,815 | 67.6 [66.5,68.7] n=7,340 | 66.2 [64.3,68.1] n=2,371 | 65.3 [62.1,68.6] n=882 | 69.9 [64.9,74.9] n=326 |
+| 3v3 | 67.5 [64.5,70.4] n=948 | 69.6 [68.2,71.1] n=3,890 | 69.9 [68.0,71.9] n=2,255 | 67.1 [64.1,70.0] n=1,004 | 70.9 [67.2,74.6] n=581 |
+| 2v2 | -- | 74.4 [71.7,76.9] n=991 | 73.9 [71.3,76.4] n=1,126 | 75.5 [72.2,78.8] n=677 | 73.6 [69.7,77.1] n=522 |
+
+Flat in every state, intervals overlapping throughout. Previously **[SUBSET]**
+without intervals; now full-data with them.
 
 ### M3 -- The proximity association reverses sign with man-advantage
 
@@ -149,12 +167,27 @@ Defender share of window kills, difference bootstrapped by match:
 *shape*: OT reproduces the `-10..-5` trough (32.9%, its lowest) and the
 post-plant rise to near-even (54.5%, its highest).
 
-### M7 -- Late kills in never-planted rounds are mop-up
+### M7 -- Late kills in never-planted rounds
 
-2,968 kills at t>=70s in never-planted rounds are overwhelmingly lopsided states
-(2v1 99.7%, 3v1 99.4%, 4v1 100%). Even-state cells are rare and not elevated:
-2v2 85.3% (n=170) against an 80.3% baseline; 3v3 75.9% (n=83) against 77.8%.
-**[SUBSET]**
+**Sample:** non-self kills at `t >= 70s` in rounds never planted. Full dataset,
+**9,235** such kills (the subset figure was 2,968).
+
+Overwhelmingly lopsided states: 4v1 100.0% [100.0,100.0] n=557; 3v1 99.6%
+[99.2,99.9] n=980; 2v1 99.2% [98.6,99.7] n=1,163; 3v2 96.4% [94.8,97.8] n=583.
+
+Contested even states, against a within-state baseline of kills at `t < 50s` in
+never-planted rounds, delta bootstrapped by match:
+
+| state | early (t<50s) | late (t>=70s) | delta |
+|---|---|---|---|
+| 2v2 | 79.2% [77.6,80.7] n=2,792 | 84.0% [81.0,87.1] n=539 | **+4.9pp [+1.5,+8.3]** excludes 0 |
+| 3v3 | 77.1% [75.9,78.2] n=5,216 | 78.3% [73.6,82.9] n=286 | +1.3pp [-3.4,+6.1] spans 0 |
+
+**Correction to the subset version**, which stated these cells were "not
+elevated". On full data 2v2 late kills are modestly but detectably elevated
+(+4.9pp); 3v3 remains null. The effect is small relative to proximity (`M3`,
+16-30pp), which is why the policy conclusion is unchanged -- but "not elevated"
+was wrong and is withdrawn.
 
 ### M8 -- Composition of the plant window **[SUBSET]**
 
@@ -169,20 +202,26 @@ kills over 14,998 planted rounds. Retained for shape; superseded on counts by
 
 ### M9 -- The killer's own loadout, holding team economy fixed
 
-Killer's-team round win %, even states, by the killer's loadout band within a
-fixed team full-buy differential:
+**Sample:** non-self kills where killer's alive count == victim's. `ctx` =
+killer's team full-buy count minus victim's team full-buy count, both measured
+in the round the kill occurs. Loadout bands: poor `<2100`, mid `2100-4249`,
+rich `>=4250` credits.
 
-| team full-buy diff | killer poor | killer mid | killer rich |
+| ctx | killer poor | killer mid | killer rich |
 |---|---|---|---|
-| -5..-3 | 55.2% | 62.8% | 64.3% |
-| -2..-1 | 55.0% | 66.2% | 67.5% |
-| 0 | 60.0% | 84.8% | 71.5% |
-| +1..+2 | 81.3% | 82.8% | 78.0% |
-| +3..+5 | 79.6% | 82.8% | 82.3% |
+| -5..-3 | 57.3 [55.6,59.0] n=4,808 | 63.5 [62.3,64.6] n=10,565 | 64.0 [62.2,65.8] n=3,801 |
+| -2..-1 | 59.8 [57.7,61.9] n=2,971 | 67.7 [66.5,68.8] n=9,315 | 68.2 [67.3,69.1] n=16,679 |
+| 0 | 70.5 [69.8,71.1] n=19,362 | 82.8 [82.0,83.6] n=9,446 | 72.2 [71.5,72.8] n=16,904 |
+| +1..+2 | 77.2 [73.9,80.6] n=759 | 81.3 [80.1,82.5] n=5,760 | 75.5 [74.8,76.2] n=26,401 |
+| +3..+5 | 82.6 [76.8,87.8] n=195 | 81.8 [80.1,83.5] n=2,438 | 81.2 [80.5,81.9] n=23,965 |
 
-Roughly 9pp when the team is behind, flat or reversed otherwise, against a
-team-context effect spanning 55% -> 82%. The pooled cross-tab (+12 to +26pp) is a
-composition artifact.
+Roughly 6-8pp when the team is behind; flat or reversed at parity and above
+(`+1..+2` runs 77.2 / 81.3 / 75.5, rich lowest). Team context spans 57% -> 82%.
+
+**Known limitation of `ctx`:** a differential of 0 conflates "both teams have
+zero full buys" with "both have five". The 82.8% mid cell at `ctx = 0` is
+likely that conflation rather than a real spike, and the band should be split
+by level before anything is built on it.
 
 ### M10 -- "Value destroyed" is largely a measure of enemy wealth
 
@@ -202,62 +241,89 @@ gradient is the enemy's committed value, not the amount destroyed.
 as showing a *threshold*. That reading was confounded by enemy wealth and is
 retracted.
 
-### M11 -- Enemy full-buy count next round vs winning it
+### M11 -- Enemy full-buy count next round vs winning that round
 
-| enemy full-buys next round | you win it |
-|---|---|
-| 0 | 76.2% [73.8, 78.5] |
-| 1 | 64.6% [61.5, 67.5] |
-| 2 | 55.5% [52.9, 58.3] |
-| 3 | 49.8% [47.7, 51.8] |
-| 4 | 43.0% [41.6, 44.5] |
-| 5 | 39.4% [37.9, 40.9] |
+**Sample:** one row per (team, round N) where rounds N and N+1 both exist and
+are usable, N not in (12, 24), N <= 24, both teams have `round_player_stats`.
+**No restriction on round N's outcome.** n = 116,538 team-rounds over 3,124
+matches.
 
-Monotone, non-overlapping end to end.
+| enemy full-buys in N+1 | you win N+1 | n |
+|---|---|---|
+| 0 | 62.9% [62.4, 63.3] | 21,093 |
+| 1 | 56.2% [55.3, 57.0] | 10,945 |
+| 2 | 55.0% [54.2, 55.9] | 11,994 |
+| 3 | 50.2% [49.5, 50.8] | 16,833 |
+| 4 | 44.4% [43.9, 45.0] | 25,458 |
+| 5 | 41.4% [40.9, 42.0] | 30,215 |
 
-**Does not establish** that the kills caused the next-round buy state. Next-round
-loadout is determined by prior cash, the round result, the loss-bonus ladder,
+Monotone, non-overlapping end to end, **21.5pp** across the range.
+
+**Correction:** an earlier version of this entry reported 76.2% -> 39.4%, a
+36.8pp spread. That was computed only on rounds 2/3/14/15 **that the team won**,
+a restriction the entry did not state. Conditioning on winning round N inflates
+the spread. The unrestricted figures above supersede it.
+
+**Does not establish** that the kills caused the next-round buy state, which is
+jointly determined by prior cash, the round result, the loss-bonus ladder,
 survival, weapon recovery, teammate drops and purchase choice.
 
 ### M12 -- Destruction vs next round, conditioned on the enemy's buy state
 
-LOW vs HIGH destruction tercile, win the next round:
+**Sample:** as `M11`. `enemy buy state` is their full-buy count **entering round
+N** -- the round the kills happen in, not N+1. `destroyed` is the summed loadout
+of that team's players killed in round N, in credits. Terciles are formed
+**within each (round group x buy state) cell**, so cut points differ by cell and
+are given below. Deltas are bootstrapped by match, not inferred from overlap.
 
-| rounds | enemy buy state | LOW | HIGH | delta |
-|---|---|---|---|---|
-| 2-4 / 14-16 | broke (0-1) | 44.1% [43.2,45.0] | 55.0% [53.9,56.1] | +10.9pp |
-| 2-4 / 14-16 | partial (2-3) | 40.9% [39.0,42.7] | 63.5% [61.7,65.3] | +22.6pp |
-| 2-4 / 14-16 | full (4-5) | 39.3% [37.5,41.2] | 63.1% [61.4,64.9] | +23.8pp |
-| 5-7 / 17-19 | broke (0-1) | 46.6% [44.3,48.7] | 59.9% [57.7,62.1] | +13.3pp |
-| 5-7 / 17-19 | partial (2-3) | 42.3% [40.5,44.0] | 63.2% [61.4,65.0] | +20.9pp |
-| 5-7 / 17-19 | full (4-5) | 39.5% [38.4,40.8] | 54.8% [53.6,56.0] | +15.3pp |
-| 8-11 / 20-23 | broke (0-1) | 47.3% [44.7,49.6] | 60.2% [57.8,62.6] | +12.9pp |
-| 8-11 / 20-23 | partial (2-3) | 46.1% [44.3,48.0] | 60.8% [59.0,62.6] | +14.7pp |
-| 8-11 / 20-23 | full (4-5) | 40.1% [38.9,41.2] | 52.8% [51.7,53.9] | +12.7pp |
+| rounds | buy state | tercile cuts | LOW | HIGH | delta |
+|---|---|---|---|---|---|
+| 2-4 / 14-16 | broke 0-1 | 3,700 / 9,600 | 44.1 [43.2,45.0] n=6,622 | 55.0 [53.9,56.2] n=6,639 | **+10.9 [+9.6,+12.4]** |
+| 2-4 / 14-16 | partial 2-3 | 10,800 / 18,300 | 40.9 [39.0,42.7] n=2,789 | 63.5 [61.7,65.4] n=2,798 | **+22.6 [+20.1,+25.1]** |
+| 2-4 / 14-16 | full 4-5 | 9,700 / 21,050 | 39.3 [37.4,41.2] n=2,497 | 63.1 [61.3,64.9] n=2,515 | **+23.8 [+21.3,+26.4]** |
+| 5-7 / 17-19 | broke 0-1 | 8,800 / 12,250 | 46.6 [44.4,48.7] n=1,885 | 59.9 [57.6,62.1] n=1,891 | **+13.3 [+10.2,+16.3]** |
+| 5-7 / 17-19 | partial 2-3 | 12,400 / 18,550 | 42.3 [40.5,44.1] n=2,843 | 63.2 [61.4,65.0] n=2,869 | **+20.9 [+18.4,+23.5]** |
+| 5-7 / 17-19 | full 4-5 | 13,250 / 22,300 | 39.5 [38.2,40.7] n=6,106 | 54.8 [53.6,56.0] n=6,145 | **+15.3 [+13.5,+17.1]** |
+| 8-11 / 20-23 | broke 0-1 | 9,300 / 13,000 | 47.3 [44.7,49.7] n=1,543 | 60.2 [57.7,62.5] n=1,582 | **+12.9 [+9.3,+16.3]** |
+| 8-11 / 20-23 | partial 2-3 | 12,950 / 18,750 | 46.1 [44.3,48.0] n=2,863 | 60.8 [59.0,62.6] n=2,901 | **+14.7 [+12.2,+17.3]** |
+| 8-11 / 20-23 | full 4-5 | 13,500 / 22,450 | 40.1 [38.9,41.3] n=7,148 | 52.8 [51.7,54.0] n=7,243 | **+12.7 [+11.1,+14.3]** |
 
-Nine cells, all positive, all intervals separated. A mild taper (~+23pp early to
-~+13pp late), not a cliff.
+**All nine deltas exclude zero.** A mild taper (~+23pp early to ~+13pp late),
+not a cliff. Note the tercile cuts themselves rise with round number and buy
+state, so "HIGH" is not a fixed credit amount across rows.
 
-**Withdrawn on the basis of this:** an unconditioned version of this test
-reported the association "decaying to nothing by round 4/16". That was an
-artifact of not conditioning on the state the destruction acted against.
+**Withdrawn on the basis of this:** an unconditioned version reported the
+association "decaying to nothing by round 4/16". That was an artifact of not
+conditioning on the state the destruction acted against.
 
-### M13 -- Round 4's economy is largely determined by rounds 2-3
+### M13 -- Round 4/16 economy is largely determined by rounds 2-3
 
-Mean enemy full-buys in round 4, by their record in rounds 2-3:
+**Sample:** one row per (team, half) where rounds 2, 3 and 4 of that half all
+exist and are usable. Categories are the **exact pair of outcomes** in rounds 2
+and 3, so they are mutually exclusive by construction -- an earlier version used
+a loss-streak encoding whose labels ("split 1-1", "won the round before")
+overlapped and collapsed two distinct states.
 
-| their record | mean enemy full-buys in R4 | n |
-|---|---|---|
-| lost both | 1.18 | 2,754 |
-| split 1-1 | 3.29 | 3,167 |
-| won the round before | 3.54 | 5,921 |
+| enemy's rounds 2-3 record | mean enemy full-buys entering R4 | 95% CI | n |
+|---|---|---|---|
+| lost both | **1.17** | [1.12, 1.23] | 2,837 |
+| won 2, lost 3 | 3.29 | [3.24, 3.33] | 3,209 |
+| lost 2, won 3 | 3.02 | [2.97, 3.06] | 3,209 |
+| won both | **4.15** | [4.11, 4.18] | 2,837 |
 
-Conditioned on that state, round 4 destruction shows +12.8 / +26.7 / +22.7pp
-across the three buy bands -- among the largest, not the smallest.
+A **~3 full-buy** spread fixed before round 4 begins. The two split records
+differ from each other (3.29 vs 3.02, intervals non-overlapping), which the
+earlier three-category version hid.
 
 ### M14 -- `_combine_swing_factors` suppresses the realized signal
 
-Over 37,774 team-rounds (900 most recent matches), using the shipped functions:
+**Sample:** 37,774 team-rounds from the **900 most recent matches**, using the
+shipped functions unmodified. The restriction is a compute bound, not a
+selection: this measurement replays `_econ_swing_risk_factor` through the ORM
+per round rather than in bulk SQL, so the full 3,124 matches would take roughly
+3.5x as long. The quantity measured is a property of the *function*, not of the
+data distribution, so the restriction is unlikely to matter -- but it has not
+been verified on the full set and the figures should be read as approximate.
 
 | outcome | count | share |
 |---|---|---|
@@ -315,11 +381,17 @@ Chronological split-half, bootstrapped by player:
 
 **Variance decomposition** (86 players, >=100 kills): observed between-player SD
 5.49pp, expected binomial sampling SD 3.44pp, implied **true SD 4.28pp**,
-reliability ceiling **0.608**. Real differences exist but barely exceed
+reliability ceiling **0.608**. **Caveat: the binomial term assumes independent
+kills, which contradicts this document's own clustering premise** -- kills share
+a player, match, map, agent and session. Real sampling variance is therefore
+higher, the implied true SD lower, and 0.608 is an *over*estimate of the
+ceiling. A hierarchical binomial model would be the defensible version. Real differences exist but barely exceed
 measurement error; the middle half of players sits inside 7pp.
 
 **Drift:** random split gives +0.446 against chronological +0.177 at the >=30
-gate -- the measure describes current form, not a persistent trait.
+gate. This is *consistent with* drift but does not establish it -- differing
+time composition and unequal opportunity across periods produce the same
+pattern. "Describes current form" is an interpretation, not a measurement.
 
 **Denominator effect:** a *rate* over eligible rounds roughly doubles
 reliability on identical events -- window-kill rate +0.573 chronological at

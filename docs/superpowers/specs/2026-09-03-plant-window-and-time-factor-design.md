@@ -1,4 +1,4 @@
-# The plant window: a shared helper, a match breakdown, and a time-factor redesign
+# The plant window: a shared helper and a time-factor redesign
 
 **Status:** awaiting human review
 **Date:** 2026-09-03
@@ -6,8 +6,12 @@
 ## Purpose
 
 `app/scoring/impact.py`'s `_time_factor` returns a flat `1.0` for every
-pre-plant kill. That is 122,833 of 178,242 kills in the database -- 69% of all
-kill events -- carrying no time signal whatsoever.
+pre-plant kill, carrying no time signal whatsoever. On the full 3,124-match
+dataset the population this spec's scalar would touch -- pre-plant kills in
+rounds that were planted -- is **168,370 kills, 34.7% of all kill events**
+(`M5`). (An earlier draft quoted 122,833 of 178,242 from the 1,151-match
+subset, and against a wider denominator that also counted pre-plant kills in
+never-planted rounds.)
 
 Measurement on 2026-09-03 shows that is leaving a large effect on the table.
 The signal is not in the round clock, which is flat; it is in **proximity to
@@ -102,8 +106,16 @@ result as failure, and do not tune against those yardsticks here.
 
 ### Never-planted rounds have no plant to be proximate to
 
-They get a flat 1.0, which the clock null above supports empirically. This
-creates a normalisation hazard: if planted-round pre-plant kills can exceed
+They get a flat 1.0. **This is a conservative policy choice, not an empirical
+finding, and an earlier draft wrongly cited `M2` for it.** `M2` measures the
+absolute clock among pre-plant kills in rounds that *were* planted; it says
+nothing about never-planted rounds. `M7` covers only very late never-planted
+kills and is subset-only. To claim empirical support, measure clock effects
+*within* never-planted rounds across states against an equivalence bound.
+Until then the flat value is chosen because it is neutral, not because it is
+verified.
+
+Flat also creates a normalisation hazard: if planted-round pre-plant kills can exceed
 1.0 while unplanted-round kills cannot, planted rounds gain Impact relative to
 unplanted ones for no modelled reason.
 
@@ -169,7 +181,10 @@ outcome-determinable rounds gives **5,251 agreements and 0 disagreements**.
 The same derivation settles overtime, which both functions currently return
 `None` for: past round 24 the side alternates per round, `TEAM_1` on odd and
 `TEAM_2` on even. **97 determinable OT rounds, 0 exceptions.** There are 448 OT
-rounds in the database, currently excluded from every side-aware calculation.
+rounds. They are excluded from `impact.py` and `credit_events.py`, and dropped
+outright by `state_replay.py:229` -- but **not** from `map_side_stats.py`,
+which already handles them. "Excluded from every side-aware calculation" was
+false and is corrected.
 
 ## Part 1 -- `app/scoring/plant_window.py`
 
@@ -208,9 +223,22 @@ not all want the same fix:
 - `enemy_at_11_response.py` imports `round_bonus`, not `_attacking_team`, and
   is unaffected.
 
-Both `impact.py` and `credit_events.py` keep thin private wrappers delegating
-to the shared function, so the duplicated convention comment disappears and
-neither module grows a new import cycle.
+`app/services/state_replay.py:132` is the fourth implementation and the one
+with real blast radius. It currently **discards every OT round**
+(`:229`, `excluded_rounds_by_reason["overtime_unknown_side"]`). Migrating it
+makes 448 previously-invisible rounds visible to the state replay, which
+changes **OT state diagrams and fight-EV output**, not merely the credit
+shoutouts. That needs golden-output review and a `player_view_cache` version
+bump **even if Part 1 lands separately from any scoring change** -- it is not
+a pure refactor.
+
+`app/services/map_side_stats.py:35` is the reference implementation and should
+be the one absorbed; the others delegate to it. Both `impact.py` and
+`credit_events.py` keep thin private wrappers so the duplicated convention
+comment disappears and no module grows an import cycle.
+
+**Enumerate every consumer before migrating.** Otherwise "finally handles
+overtime" stays true for some products and false for others.
 
 ## Part 2 -- DEFERRED: site participation
 
@@ -282,9 +310,15 @@ one of three parallel factors averaged together. Three regimes:
 
 1. **Pre-plant, planted round** -- a proximity curve whose amplitude is a linear
    function of man-advantage, with separate attacker and defender terms.
-2. **Post-plant** -- retained and retuned. The existing `plant+38..plant+45`
-   denial bonus (1.75 kill / 0.5 death) and the post-resolution 0.5 survive.
-   Post-plant state is known at kill time, so this half is **not** leakage.
+2. **Post-plant -- UNCHANGED in this version.** An earlier draft said
+   "retained and retuned" but supplied no replacement for the current linear
+   `1 + (t - plant)/53` ramp, no evidence for one, and no tests. Rather than
+   ship an undefined change, post-plant keeps today's behaviour exactly: the
+   ramp, the `plant+38..plant+45` denial bonus (1.75 kill / 0.5 death), and
+   the post-resolution 0.5. This isolates the pre-plant experiment, simplifies
+   the centring invariant to one regime, and removes post-plant from the
+   forward-yardstick discussion entirely. Retuning it is future work needing
+   its own measurements.
 3. **Pre-plant, never-planted round** -- flat 1.0, supported by the clock null.
 
 ### Parameterisation
@@ -306,6 +340,37 @@ amplitude(adv, side) = intercept_side + slope_side * adv
   kills at the floor and 2-4% at the ceiling. **Do not spend fitting effort on
   the clamps.** The middle slope through `adv -1..+1` governs 82.6% of affected
   kills and is what must be fitted well.
+
+### The fitting contract
+
+`M3` and `M4` report **percentage-point lifts in round-win rate**. The scoring
+equation needs a **dimensionless amplitude**. That conversion is a decision,
+not a measurement, and must be stated rather than left implicit:
+
+- **Link.** Fit on the log-odds scale, not on raw percentage points. A lift
+  from 57% to 71% and one from 85% to 99% are not the same quantity in pp, and
+  the clamp interacts badly with a raw-pp mapping near the boundaries.
+- **Amplitude mapping.** `amplitude = k * logit_lift`, with a single global `k`
+  chosen so the fitted scalar spans the intended range over the observed data.
+  `k` is reported, not hand-tuned per cell.
+- **Observations.** One row per non-self pre-plant kill in a non-phantom,
+  non-surrendered planted round. Deaths are scored with the same fitted
+  parameters (symmetric, per the Deaths section) and do **not** enter the fit
+  as separate rows.
+- **Weights and errors.** Logistic regression of round win on
+  `shape(dt) x adv x side`, with **match-clustered** standard errors; the
+  clustering premise in `M1`'s method section applies to the fit too.
+- **Shape knots.** Fixed at the measurement boundaries (30, 20, 10, 5, 0
+  seconds) rather than estimated, so the shape is not free to chase noise. The
+  plateau below 10s is imposed, not fitted, per `M1`.
+- **Advantage outside -3..+2.** Clamped to the nearest fitted level. `M3` has
+  no support beyond that range and `M5` shows those cells are a rounding
+  error.
+- **Order of operations.** Fit, then clamp, then centre. Centring is computed
+  on the clamped scalar, because the clamped value is what actually scores.
+- **Temporal split.** Fit on matches before the dataset's 70th percentile by
+  `played_at`, validate after. Chosen by date, not by match index, and fixed
+  before fitting.
 
 ### Centering is on CONTRIBUTION, not on the factor
 
@@ -335,8 +400,11 @@ carries as many variables as kill impact. Revisit only with a player-level read.
 
 ### Rollout
 
-- `IMPACT_CALCULATION_VERSION` 1 -> 2, folding mechanically into
-  `player_view_cache.cache_version()`.
+- `IMPACT_CALCULATION_VERSION` bump, folding mechanically into
+  `player_view_cache.cache_version()`. **The two specs must not both claim
+  1 -> 2.** Whichever ships first takes 2; the second takes 3. If they ship
+  together in one bump, the rescore cannot attribute any movement in the
+  numbers to either change -- separate bumps are recommended for that reason.
 - Full rescore via `scripts/recompute_impact.py`, then
   `scripts/recompute_player_views.py`.
 - `.impact_eval_cache/` self-invalidates on the version key.
@@ -357,9 +425,9 @@ carries as many variables as kill impact. Revisit only with a player-level read.
   each advantage level within its bootstrap interval, including the negative
   levels the clamp then floors.
 - **Reported, not gated:** `impact_eval.py`'s forward yardsticks, with the
-  leakage caveat. Pre-plant proximity is stripped under `use_realized=False`;
-  the post-plant retuning is **not** leakage and *will* appear there, so that
-  half is a legitimate non-inferiority check.
+  leakage caveat. Pre-plant proximity is stripped under `use_realized=False`,
+  so the yardsticks are blind to the whole of this change now that post-plant
+  is frozen. They are reported for the record only.
 
 ## Testing
 
@@ -371,13 +439,20 @@ Part 1:
   agreement with the outcome-derived attacker.
 - `seconds_to_plant` returns `None` for unplanted and phantom rounds.
 
-Part 2:
-- A fixture match with a known plant produces the expected per-bucket counts.
-- A match with only phantom plants produces an empty summary, not a crash.
-
 Part 3:
-- The centring gate: sample-weighted mean of the pre-plant factor is 1.0 within
-  tolerance over the real kill distribution.
+- **The centring gate, stated as one invariant** (an earlier draft of this
+  section restored the rejected `mean(factor) = 1` test while the design
+  section specified a contribution-weighted one -- the two contradicted each
+  other). The invariant is: **the mean NET time contribution is preserved**,
+  i.e. `mean(kill_order_bonus * scalar) - mean(kill_order_bonus *
+  traded_factor * scalar)` matches its value under today's flat factor.
+  Kills and deaths are *not* separately normalised: their weighting
+  distributions differ (deaths carry `_traded_factor`), so one symmetric
+  scalar cannot satisfy both simultaneously, and separate constants would
+  break the symmetric kill/death treatment this spec commits to. Preserving
+  the net is the one achievable invariant of the three; the other two --
+  separate constants, or a documented aggregate shift -- are rejected here
+  and the rejection is deliberate.
 - Monotone non-decreasing in proximity up to the 10s plateau.
 - `use_realized=False` returns exactly 1.0 for every pre-plant kill, so the
   ex-ante replay is unchanged from today's behaviour. **This is the leakage

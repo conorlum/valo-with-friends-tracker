@@ -114,59 +114,177 @@ ahead or tied when a "flip" is evaluated.
 
 ## The design
 
+### Notation and units
+
+| symbol | meaning | units |
+|---|---|---|
+| `C(v)` | victim `v`'s committed value in the round | credits |
+| `R` | fixed full-buy reference, `5 * 3900 = 19500` | credits |
+| `removed(T)` | sum of `C(v)` over enemies of team `T` killed this round | credits |
+| `magnitude(T)` | `removed(T) / R` | dimensionless, ~0..1 |
+| `w(state)` | buy-state weight from `M12` | dimensionless |
+| `denial(T)` | realized next-round denial | dimensionless |
+| `ECON_SCALE` | credits-to-Impact conversion | Impact points |
+
 ### 1. Per-kill raw quantity: the victim's committed value
 
 ```python
-committed_value(round, victim) = max(0, loadout - free_ability_credits(agent))
+C(v) = max(0, loadout(v) - free_ability_credits(agent(v)))
 ```
 
-`free_ability_credits` is already in `app/scoring/agent_economy.py` and strips
-the phantom credit value tracker.gg assigns a free signature charge. **The
-killer's loadout does not appear.**
+`free_ability_credits` is in `app/scoring/agent_economy.py` and strips the
+phantom value tracker.gg assigns a free signature charge. **The killer's loadout
+does not appear** (`M9`).
 
-### 2. Per-round, per-team scaler: one rule, conditioned on the enemy's buy state
+### 2. Team-round magnitude: ABSOLUTE, against a fixed reference
 
-**Single regime.** An earlier draft split rounds 2-4/14-16 (raw destruction)
-from 5+/17+ (econ flip). That split rested on a decay which was a conditioning
-artifact (`M12`, `M13`) and is removed. The econ-flip formulation
-is not needed and is dropped entirely.
+```python
+magnitude(T) = removed(T) / R          # R = 19500, a constant
+```
 
-The scaler has two inputs:
+**This must not be normalised by what the enemy happened to hold.** An earlier
+draft defined `destruction_share = removed / enemy_total_committed`, which is
+wrong and self-contradictory: by `M10`, wiping a saving team removes 1,869 of
+1,890 credits and wiping a full-buy team removes 10,767 of 10,861 -- **shares of
+0.989 and 0.991, indistinguishable** -- while the associated next-round win
+rates are 36.3% and 66.2%. A share normalises away precisely the quantity `M10`
+identifies as carrying the signal, and makes the required test in Testing
+(a saved round yields ~0 credit) impossible to satisfy.
 
-- **`destruction_share`** -- the enemy's committed value your team removed,
-  over what they had.
-- **`enemy_buy_state`** -- their full-buy count entering the round, bucketed
-  broke (0-1) / partial (2-3) / full (4-5).
+A fixed reference keeps the magnitude proportional to credits actually removed.
+`R` is a constant, not fitted; it exists only to put the term on a sane scale.
 
-Destruction is worth roughly **twice as much against a partial or full buy as
-against an already-broken team** (+22.6 / +23.8 vs +10.9pp early). The buy
-state is part of the estimand, not a nuisance control.
+### 3. Buy-state weight
 
-A mild round taper is permitted (~+23pp early to ~+13pp late) but must be
-fitted from `M12` with intervals, not hand-set, and it is **optional**
--- the flat version is defensible and simpler. Do not reintroduce a hard
-round-number boundary; the evidence for one was an artifact.
+`M12` shows the same destruction is worth about twice as much against a partial
+or full buy as against an already-broken team. The enemy's buy state is
+**entering round N** (their full-buy count in the round where the kills happen),
+not N+1:
 
-`_realized_econ_swing_factor`'s body supplies the realized denial measure. It is
-extracted from the swing path and **no longer passes through
-`_combine_swing_factors`**, which the 44.9%-neutral measurement argues for. It
-remains defined for `kill_order_leverage.py`.
-- `econ_tier_name` and `FORCE_THRESHOLD` are untouched -- public and consumed
-  by two services.
-- `_realized_econ_swing_factor` keeps its name and signature (a test
-  monkeypatches it) but its result is routed to the new econ scaler instead of
-  into `_combine_swing_factors`.
-- `_econ_swing_risk_factor` and `_combine_swing_factors` remain defined. If the
-  swing-absorption decision is taken they simply stop being called by the
-  scoring path; `kill_order_leverage.py` continues to use the former.
-- `FACTOR_WEIGHTS` loses its `econ` and `swing` keys.
-- New: `app/scoring/econ_value.py` for committed-value, denial and attribution
-  maths, keeping `impact.py` from growing further. It is already 721 lines.
+| enemy full-buys entering round N | `w(state)` |
+|---|---|
+| 0-1 (broke) | fitted, ~0.5 |
+| 2-3 (partial) | fitted, ~1.0 |
+| 4-5 (full) | fitted, ~1.0 |
 
-**`tests/test_impact_exante_swing.py` already asserts that
-`_realized_econ_swing_factor` is not called when `use_realized_swing=False`.**
-That is the existing leakage gate and the new econ component must extend it
-rather than route around it.
+Fitted from `M12`'s nine cells with intervals. A mild early/late round taper is
+permitted (`M12` shows ~+23pp early to ~+13pp late) but is **optional** -- the
+flat version is defensible and simpler. **No hard round-number boundary**; the
+evidence for one was an artifact (`M12`, `M13`).
+
+### 4. Realized denial
+
+```python
+denial(T) = 0.5 + 0.2 * enemy_players_below_full_buy_next_round     # 0.5 .. 1.5
+```
+
+This is `_realized_econ_swing_factor`'s existing body (`impact.py:336-360`),
+extracted from the swing path. It **no longer passes through
+`_combine_swing_factors`**, which returns a neutral 1.0 for 44.9% of team-rounds
+and, when it does not, usually lets the wider-ranging ex-ante factor dominate
+(`M14`). Both functions remain defined for `kill_order_leverage.py`.
+
+### 5. Team-round econ quantity
+
+```python
+econ_round(T) = magnitude(T) * w(state(T)) * denial(T)
+```
+
+### 6. Player attribution -- a share, but only of the ALLOCATION
+
+```python
+credit(p) = econ_round(T) * C_removed_by(p) / removed(T)      if removed(T) > 0 else 0
+debit(p)  = econ_round(opp) * C_lost_by(p)  / removed(opp)    if removed(opp) > 0 else 0
+econ_component(p) = ECON_SCALE * (credit(p) - debit(p))
+```
+
+The share appears **here and only here** -- dividing a team-level magnitude
+among the players who produced it. It is not used to compute the magnitude
+itself, which is the error corrected in section 2. A share is required at this
+step because a per-player *sum* rises with kill count and re-correlates with
+every other component, which is how `damage` reached 0.869 against the leverage
+aggregate and killed Stage C.
+
+By construction `sum(credit(p)) = econ_round(T)` over the team.
+
+### 7. Zero-sum
+
+`econ_component` is **not** zero-sum across teams. Team A's credit derives from
+`magnitude(A) * w * denial` and team B's debit from the same removal but scaled
+by B's own state and denial, which differ. This is deliberate -- a round can be
+economically bad for both sides -- and is stated so no test asserts symmetry.
+
+### 8. Top-level structure
+
+```
+impact = damage
+       + leverage_component     # kill_order_bonus * time_factor  (time spec)
+       + econ_component         # section 6
+```
+
+replacing today's `damages + mean(econ, time, swing)`, in which all three terms
+share `kill_order_bonus`.
+
+**Open decision, not settled here: whether this absorbs `swing_impact`.**
+Absorbing it completes the decollinearisation; not absorbing leaves a
+`kill_order_bonus` multiplicand in place. Larger than "replace the econ term",
+so it must be confirmed rather than assumed.
+
+### 9. ECON_SCALE
+
+A single constant chosen so `econ_component`'s standard deviation over the full
+dataset equals `time_impact`'s current standard deviation -- the component
+enters with influence comparable to what it replaces, rather than a hand-picked
+weight. Recorded with its derivation and gated by a test.
+
+### 10. Boundary behaviour -- decisions, not just a list of cases
+
+`_realized_econ_swing_factor` returns a neutral `1.0` for rounds 12, 24,
+overtime and missing next-round data (`impact.py:342-350`). `1.0` is neutral for
+a *multiplicative* factor but is a *positive quantity* when reused as denial,
+which would award credit where none was earned. Hence explicit values:
+
+| case | `econ_component` |
+|---|---|
+| rounds 1 and 13 (pistol) | **0** -- no prior economy to damage |
+| rounds 12 and 24 (halftime) | **0** -- economy resets, no next-round link |
+| final round of a match | **0** -- no next round |
+| overtime | **0** in v1; OT economy is ~uniform (`M6`), so there is little to measure |
+| surrendered / incomplete match | **0**, consistent with existing surrender handling |
+| missing `round_player_stats` | **0**, and counted in a diagnostic |
+| `removed(T) == 0` (no enemy killed) | **0** by the guard in section 6 |
+| self-kill / environmental death | contributes to `debit` for the victim, **never** to any player's `credit`; no killer is credited |
+| victim `C(v) == 0` | contributes 0; not an error |
+
+### 11. The weapon-pickup extension (data-gated, ships inert)
+
+A kill near the victim lets the killer take their weapon, converting *destroyed*
+value into *transferred* value. Designed in now, shipped disabled.
+
+- Optional `KillEvent` distance field, populated only when the source provides
+  it, `NULL` otherwise.
+- `pickup_bonus(kill)` returns **0** when distance is `NULL`. The feature must be
+  a no-op on all 487,844 currently-ingested rows.
+- `PICKUP_BONUS_ENABLED = False` by default.
+
+**The value-differential rule an earlier draft proposed is withdrawn as not
+computable.** `KillEvent.weapon` is the weapon the *killer used*
+(`models/kill_event.py:18`); the victim's held weapon at death is not stored,
+and neither is the killer's weapon at that instant. Distance alone establishes
+neither the dropped weapon's value nor whether anyone picked it up.
+
+**Unverified:** whether tracker.gg's response carries location at all. The
+adapter keeps only `weaponName`, `roundTime` and `assistants`
+(`trackergg_browserstate_source.py:312-325`). Confirm with one captured match
+(`scripts/launch_trackergg_chrome.ps1`, then
+`scripts/capture_trackergg_state.py`) **before** building the adapter side.
+Backfill would mean re-crawling ~3,124 matches at 5-12s pacing -- roughly 7
+hours -- and is not proposed.
+
+Validation when picked up: a ~30-50 match sample to confirm the field exists and
+its units, then synthetic fixtures. Per `feedback_plan_execution_test_fixtures`,
+**verify each fixture actually produces the relationship it claims before
+writing assertions against it.**
 
 ## Persistence and rollout
 
@@ -176,8 +294,11 @@ rather than route around it.
   those columns by name; silently changing their meaning would invalidate
   every stored comparison. Old columns are written as `0` under the new
   scheme and dropped in a later migration once nothing reads them.
-- `IMPACT_CALCULATION_VERSION` 1 -> 2, folding mechanically into
-  `player_view_cache.cache_version()`.
+- `IMPACT_CALCULATION_VERSION` bump, folding mechanically into
+  `player_view_cache.cache_version()`. **The two specs must not both claim
+  1 -> 2.** Whichever ships first takes 2; the second takes 3. If they ship
+  together in one bump, the rescore cannot attribute any movement in the
+  numbers to either change -- separate bumps are recommended for that reason.
 - Full rescore: `scripts/recompute_impact.py` then
   `scripts/recompute_player_views.py`.
 - `.impact_eval_cache/` self-invalidates on the version key.
@@ -196,12 +317,16 @@ the rescore cost is prohibitive.
   count. The component *uses* that quantity as its scaler, so monotonicity is
   guaranteed by construction. It belongs in the unit tests as a
   reconstruction check, and nowhere else.
-- **Construct validation (primary):** association between `econ_component` and
-  next-round purchasing power **after adjusting** for pre-round economy, round
-  result, survival count, side, score differential, map and patch era. Next-round
-  loadout is caused by prior cash, the round result, the loss-bonus ladder,
-  survival, weapon recovery, teammate drops and purchase choice -- not only by
-  the kills being credited. Report with intervals.
+- **NOT construct validation either:** association with next-round *purchasing
+  power*. An earlier draft proposed this as primary. It is computed from the
+  same next-round loadout data that `denial()` is built from, so covariate
+  adjustment does not remove the circularity -- it is the scaler measured a
+  second way.
+- **Construct validation (primary), on an endpoint the component does not
+  contain:** association with **round N+2** purchasing power, and with the
+  round N+1 outcome computed *without* reference to `denial()`. Adjust for
+  pre-round economy, round result, survival count, side, score differential,
+  map and patch era. Report with intervals.
 - **External validation:** held-out association with later outcomes not used to
   build the component, on a temporal split.
 - **Naming:** this is a *realized economy-state allocation*, not causal
