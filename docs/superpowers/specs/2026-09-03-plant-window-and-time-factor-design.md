@@ -1,7 +1,17 @@
 # The plant window: a shared helper and a time-factor redesign
 
 **Status:** awaiting human review
-**Date:** 2026-09-03
+**Date:** 2026-09-03, substantially revised 2026-09-05
+
+**Revision note (2026-09-05).** Post-plant was frozen in the 2026-09-03 draft
+because no measurements supported retuning it. Those measurements now exist
+(`M21`-`M26`) and show the frozen regime carries a **larger** error than the
+pre-plant one this spec was written to fix: the shipped ramp is side-blind,
+while measured duel stakes depend on state, on side, and reverse direction
+between `2v1` and `1v2`. Post-plant is therefore **in scope**. The pre-plant
+centring gate has also been replaced -- `M19` shows the previous one
+constrained 17.7% of the affected weight. Both changes are recorded in the
+measurement record's register of withdrawn claims.
 
 ## Purpose
 
@@ -21,16 +31,28 @@ redesign that is the actual prize.
 
 ## What this spec covers
 
-Three deliverables in dependency order. Part 1 is a precondition for both
-others. Part 2 is additive and touches no scoring. Part 3 changes every
-displayed Impact number and needs a full rescore.
+Four parts in dependency order. Part 1 is a precondition for Parts 3 and 4.
+Parts 3 and 4 each change every displayed Impact number and need a full
+rescore.
 
 1. `app/scoring/plant_window.py` -- phantom-plant detection, a verified
    attacking-side function that finally handles overtime, and the window
-   arithmetic.
+   arithmetic. Also admits **1,274 overtime rounds** into the state replay,
+   which is an intended product fix rather than a refactor.
 2. ~~A site-participation stat on the player page.~~ **DEFERRED 2026-09-04** --
    an additive page stat, not a scoring change. Findings retained in Part 2.
-3. The `_time_factor` redesign.
+3. The **pre-plant** `_time_factor` redesign -- a proximity curve whose
+   amplitude is linear in man-advantage. Ex-post; invisible to the forward
+   yardsticks by construction.
+4. The **post-plant** redesign -- a leverage ratio in `(state, second, victim
+   side)`, replacing the side-blind ramp. **Ex-ante**, so the forward
+   yardsticks see it in full and it carries a non-inferiority gate Part 3 does
+   not.
+
+**DECIDED 2026-09-06: everything ships under ONE `IMPACT_CALCULATION_VERSION`
+bump, 1 -> 2, with a single rescore.** An earlier version of this line required
+separate bumps for Parts 3 and 4; that is withdrawn. See "Rollout" for the
+decision, and for why it costs far less interpretability than it appears to.
 
 **Part 2 changed twice during design and the reader should know why.** It was
 first proposed as a player-page stat ranking players by how much their K/D
@@ -76,6 +98,12 @@ decisions need revisiting.
 | Phantom plants excluded | `M16` | -- |
 | One consolidated attacking-side helper | `M15` | novelty -- `map_side_stats.py` already derived the OT rule |
 | Site participation deferred | `M17`, `M18` | -- |
+| The pre-plant centring gate is on the KILL side, with the death-side residual reported | `M19`, `M20` | the residual under the *actual* fitted parameters -- `M20`'s scalar family is not fitted |
+| Post-plant is retuned at all | `M21`, `M22` | that the shipped ramp's *direction* is wrong for attackers -- that is `M24`'s result, not `M21`'s |
+| The post-plant quantity is duel leverage, not a raw win rate | `M23` | causation; `V` is estimated from rounds that reached each state and second |
+| The post-plant factor is a function of state, second and victim side | `M24`, `M25` | the functional form; cells thin above 6 players alive |
+| Two deadlines, at +38.0s and +41.5s | `M26` | that either is a discontinuity rather than a steepening |
+| No forced-death discount | -- | **nothing supports one either way.** Defuse progress is absent from the schema (`rounds` has only `defused`/`defuse_time`) and is not recoverable without replay parsing, so the agency question is dropped rather than guessed |
 
 **Every claim previously made in this spec that has since been withdrawn is
 listed in the measurements document's register.** Do not reintroduce them.
@@ -128,13 +156,53 @@ carry `_traded_factor` (`:544`), so `mean(f)=1` only preserves the mean
 contribution if `f` and `kill_order_bonus` are independent -- and they are not,
 since timing and man-advantage state co-vary.
 
-The gate is therefore on the **contribution**: the sample-weighted mean of
-`kill_order_bonus * time_factor` over pre-plant kills must match its value
-under the current flat-1.0 factor, within tolerance, computed separately for
-kills and deaths. Note also that retuning the post-plant regime means a
-pre-plant-only gate cannot by itself guarantee total Impact is stable -- the
-post-plant contribution must be included in the same check or the
-mean-preservation claim must be dropped explicitly.
+### The gate is on the KILL side, and the death-side residual is reported
+
+A previous version of this spec gated the **net** contribution,
+`mean(K*s) - mean(K*T*s)`, and asserted that was "the one achievable invariant
+of the three". **That is withdrawn.** The per-kill integrand of that expression
+is `K*s*(1-T)`, and `_traded_factor` returns *exactly* 1 for any kill whose
+killer was not traded back within 10s -- so `(1-T) = 0` there. `M19` measures
+the consequence: **71.7% of affected kills enter that gate at zero weight**,
+and it sees only **17.7% of the kill-side mass**. A scalar badly miscalibrated
+across the untraded majority passes it untouched.
+
+The underlying algebra the old text relied on is still correct: with one
+multiplicative constant you cannot satisfy
+`mean(K*s) = mean(K)` **and** `mean(K*T*s) = mean(K*T)` simultaneously. Two
+equations, one unknown. But "cannot hit both exactly" does not force the net;
+it forces a choice of which one to pin.
+
+**Pin the kill side.** `kill_impact` is not an intermediate -- it is a stored
+column (`impact_score.py:41`) surfaced as `average_kill_impact`
+(`routers/players.py:154,165`) and `total_kill_impact` / `kill_impact_by_round`
+(`services/matches.py:105,84`), and it is what the win-gated Round Win Impact
+metric displays. Gating only the net lets `kill_impact` and `death_impact`
+inflate together while the check reads green, moving every displayed Round Win
+Impact number.
+
+- **Gate (exact).** Solve one constant `c` so the sample-weighted mean of
+  `kill_order_bonus * c * s` over affected kills equals its value under
+  today's flat-1.0 factor. This is the hazard named above -- planted rounds
+  gaining relative to unplanted ones -- and pinning the kill side addresses it
+  directly.
+- **Reported, with a predeclared tolerance.** The death-side residual
+  `mean(K*T*c*s)/mean(K*T) - 1`. `M20` puts this at **+0.35% to +1.00%** across
+  a `k` grid spanning far past any plausible amplitude, and **~+0.7%** at the
+  amplitude this spec's own clamp rates imply. Tolerance: **2%**, declared
+  before fitting. Exceeding it is a finding, not something to tune away.
+- The residual is non-zero because `s` and `T` are correlated through
+  man-advantage, not through proximity. `M20` shows K-weighted mean `T` is flat
+  across proximity buckets marginally, while at `adv = -2` it falls 0.884 ->
+  0.713 and at `adv = +2` it rises 0.736 -> 0.919. The margin hides it; the
+  scalar, being a function of advantage, does not get to.
+
+The rejected option "a documented aggregate shift" is the one adopted here. It
+was rejected without a stated reason; measured, it costs ~0.7%.
+
+**Post-plant is centred separately** -- see Part 4. The two regimes have
+different populations and different factors, and a single constant across both
+would let one absorb the other's drift.
 
 ### Phantom plants
 
@@ -181,11 +249,17 @@ outcome-determinable rounds gives **5,251 agreements and 0 disagreements**.
 
 The same derivation settles overtime, which both functions currently return
 `None` for: past round 24 the side alternates per round, `TEAM_1` on odd and
-`TEAM_2` on even. **97 determinable OT rounds, 0 exceptions.** There are 448 OT
-rounds. They are excluded from `impact.py` and `credit_events.py`, and dropped
-outright by `state_replay.py:229` -- but **not** from `map_side_stats.py`,
-which already handles them. "Excluded from every side-aware calculation" was
-false and is corrected.
+`TEAM_2` on even. **294 determinable OT rounds, 0 exceptions.** There are
+**1,274** OT rounds over **374 matches**. They are excluded from `impact.py`
+and `credit_events.py`, and dropped outright by `state_replay.py:229` -- but
+**not** from `map_side_stats.py`, which already handles them. "Excluded from
+every side-aware calculation" was false and is corrected.
+
+**Corrected 2026-09-06.** This paragraph previously read "97 determinable OT
+rounds" and "there are 448 OT rounds", contradicting both `M15` and this
+spec's own Part 1 text below. Both were unmarked `[SUBSET]` figures -- 448 is
+exactly the OT-round count of the newest 1,151 matches. See the measurement
+record's register.
 
 ## Part 1 -- `app/scoring/plant_window.py`
 
@@ -226,12 +300,92 @@ not all want the same fix:
 
 `app/services/state_replay.py:132` is the fourth implementation and the one
 with real blast radius. It currently **discards every OT round**
-(`:229`, `excluded_rounds_by_reason["overtime_unknown_side"]`). Migrating it
-makes 448 previously-invisible rounds visible to the state replay, which
-changes **OT state diagrams and fight-EV output**, not merely the credit
-shoutouts. That needs golden-output review and a `player_view_cache` version
-bump **even if Part 1 lands separately from any scoring change** -- it is not
-a pure refactor.
+(`:229`, `excluded_rounds_by_reason["overtime_unknown_side"]`).
+
+**Making OT rounds visible is an intended product fix, not blast radius.**
+There are **1,274** OT rounds across **374 matches** -- 12.0% of the corpus,
+1.93% of all rounds (`M15`; an earlier draft said 448, an unmarked subset
+figure now withdrawn). Every one of them clears every other replay exclusion.
+They are real rounds that were played, including every overtime clutch anyone
+on the roster has pulled off, currently erased from their fight-EV and state
+diagrams because a side convention had not been derived when `state_replay`
+was written. The exclusion reason string says so: `overtime_unknown_side`.
+The side is now known and verified at 294 determinable rounds, 0 exceptions.
+
+**Decision: OT rounds are pooled, not tagged.** OT economy is compressed
+(`M6`: 94.7% full-buy against regulation's 57.4%), so pooling mixes two
+economic regimes into diamonds that carry no economy term. Accepted: at 1.93%
+of rounds it cannot move a bootstrapped cell, dropping rounds that happened is
+the worse bias, and more full-buy-versus-full-buy fights is a fine thing for
+the diamond to contain. Side is already in the fight-EV key, so an OT flag
+remains separable later if it ever matters.
+
+### The full consumer enumeration -- seven call sites, not three
+
+An earlier draft listed three and told the reader to "enumerate every consumer".
+The complete list:
+
+| call site | current source | effect of migration |
+|---|---|---|
+| `impact.py:277` | own | **none** -- OT early-returns at `:271` before consulting it |
+| `credit_events.py:107` | own | **changes OT** Sugar Daddy / Scavenger credit figures |
+| `fight_ev.py:545` | `state_replay` (import at `:33`) | **transitive** -- see below |
+| `impact_eval.py:195` | `map_side_stats` | none -- already OT-aware |
+| `win_probability.py:98` | `map_side_stats` | none -- already OT-aware |
+| `round_streak_stats.py:84` | `map_side_stats` | none -- already OT-aware |
+| `map_side_stats.py:85` | own (the reference) | none |
+
+`enemy_at_11_response.py` imports `round_bonus`, not `_attacking_team`
+(`credit_events.py:91`), and is unaffected.
+
+**State explicitly:** `impact_eval.py:195` is the forward-yardstick harness and
+already uses the OT-aware version, so **the yardsticks do not move for
+side-convention reasons.** Part 3 and Part 4 lean on those being interpretable;
+this is asserted here rather than left for a reader to re-derive.
+
+### The two edits are atomic
+
+Part 1 is two changes in two places, and only one ordering is safe:
+
+- **Edit A** -- make the side function total (handle OT).
+- **Edit B** -- delete the `:229` exclusion.
+
+`fight_ev.py:545` builds its side map over `match_input.rounds` (all rounds)
+but consumes it only against `entries`/`duels`, which today have OT already
+stripped upstream. So **Edit A alone changes nothing**, and A+B is the intended
+end state.
+
+**Edit B alone is the failure mode.** OT rounds enter the replay; the state
+diagrams pick them up, because `player_graphs.accumulate_state_stats_from_replay`
+takes no side argument and is side-agnostic; but fight-EV asks the un-migrated
+function, gets `None`, and **silently skips every one** at
+`fight_ev.py:172-174` and `:186-188` (`if side is None: continue`). The result
+is two products built from the same replay disagreeing about which rounds
+exist, with both written into `player_view_cache`. Nothing errors.
+
+Requirements:
+
+1. A and B ship in the same change. Edit B is a one-line deletion ten lines
+   below the function Edit A touches, which is exactly why this needs stating.
+2. A test asserts the side map is **total** over the rounds present in
+   `entries`, and fails otherwise.
+3. After migration `side is None` is unreachable, so the two `continue`
+   branches become an **assert**. A silent skip that leaves no diagnostic is a
+   regression against `state_replay`'s counted
+   `excluded_rounds_by_reason["overtime_unknown_side"]`, and this project has
+   already lost months to numbers computed over a quietly wrong population
+   (`M15`).
+4. `_round_side_map`'s `if attacking_team is None` branch (`:545-547`) becomes
+   dead code, since `map_side_stats.attacking_team_for_round` returns `Team`,
+   not `Team | None`. Remove it rather than leaving it as false reassurance.
+
+### The four implementations do not agree on return type
+
+Not mentioned in the earlier draft and it will surface mid-migration:
+`impact.py` and `state_replay.py` return `Team | None`, `map_side_stats.py`
+returns `Team`, and **`credit_events.py` returns `str | None`** -- literal
+`"team-1"` / `"team-2"`, compared against string teams at `:107`. The thin
+private wrapper `credit_events` keeps must do the enum-to-string conversion.
 
 `app/services/map_side_stats.py:35` is the reference implementation and should
 be the one absorbed; the others delegate to it. Both `impact.py` and
@@ -311,16 +465,20 @@ one of three parallel factors averaged together. Three regimes:
 
 1. **Pre-plant, planted round** -- a proximity curve whose amplitude is a linear
    function of man-advantage, with separate attacker and defender terms.
-2. **Post-plant -- UNCHANGED in this version.** An earlier draft said
-   "retained and retuned" but supplied no replacement for the current linear
-   `1 + (t - plant)/53` ramp, no evidence for one, and no tests. Rather than
-   ship an undefined change, post-plant keeps today's behaviour exactly: the
-   ramp, the `plant+38..plant+45` denial bonus (1.75 kill / 0.5 death), and
-   the post-resolution 0.5. This isolates the pre-plant experiment, simplifies
-   the centring invariant to one regime, and removes post-plant from the
-   forward-yardstick discussion entirely. Retuning it is future work needing
-   its own measurements.
-3. **Pre-plant, never-planted round** -- flat 1.0, supported by the clock null.
+   Part 3.
+2. **Post-plant, pre-resolution** -- a leverage ratio in `(state, second,
+   victim side)`. **Retuned in this version**; see Part 4. The 2026-09-03 draft
+   froze this regime for want of evidence. `M21`-`M26` supply it and show the
+   frozen ramp is wrong in three separate ways at once.
+3. **Post-resolution** (after detonation at plant+45, or after `defuse_time`) --
+   flat 0.5, unchanged. Nothing measured here; the round is over.
+4. **Pre-plant, never-planted round** -- flat 1.0. **This is a conservative
+   policy choice, not an empirical finding.** An earlier draft cited `M2` for
+   it; `M2` measures the absolute clock among pre-plant kills in rounds that
+   *were* planted and says nothing about never-planted rounds. To claim
+   empirical support, measure clock effects within never-planted rounds across
+   states against an equivalence bound. Until then the flat value is chosen
+   because it is neutral.
 
 ### Parameterisation
 
@@ -367,6 +525,19 @@ not a measurement, and must be stated rather than left implicit:
   on the exact transition, not on the differential, for the same reason.
   **Match-clustered** standard errors; the clustering premise in `M1`'s method
   section applies to the fit too.
+- **The side terms must earn their keep -- a predeclared nested comparison.**
+  This spec's rests-on table cites `M4` for separate attacker and defender
+  terms, but `M4`'s population is *pre-plant kills in rounds that were
+  planted*, so every defender in it is by construction a defender who was
+  about to lose the site. The measured side difference may therefore be the
+  selection speaking rather than the two sides responding differently to plant
+  proximity. **This cannot be settled empirically inside the estimand** --
+  proximity to the plant does not exist in a round with no plant, so the
+  conditioning is structural. What can be settled is whether the parameters
+  pay for themselves: fit with and without the side interaction, against exact
+  pre-kill state fixed effects, and compare. If dropping side costs nothing,
+  ship two parameters instead of four and delete the claim. Declared before
+  fitting so the answer cannot be chosen after seeing it.
 - **Shape knots.** Fixed at the measurement boundaries (30, 20, 10, 5, 0
   seconds) rather than estimated, so the shape is not free to chase noise. The
   plateau below 10s is imposed, not fitted, per `M1`.
@@ -396,11 +567,12 @@ only if `f` and `kill_order_bonus` are independent, and they demonstrably are
 not -- the amplitude is a function of man-advantage, which *is* the graph's own
 input.
 
-**Gate:** the sample-weighted mean of `kill_order_bonus * scalar` over affected
-kills must match its value under today's flat-1.0 factor, within tolerance,
-computed separately for kills and for deaths. Because post-plant is also being
-retuned, the check must span both regimes, or the mean-preservation claim must be
-dropped explicitly rather than quietly weakened.
+**Gate:** as specified in "The gate is on the KILL side" above -- one constant
+solved exactly on `mean(kill_order_bonus * scalar)` over affected pre-plant
+kills, with the death-side residual reported against a 2% predeclared
+tolerance. Post-plant is centred **separately**, on its own population, in
+Part 4. A single constant spanning both regimes would let one absorb the
+other's drift and make the rescore uninterpretable.
 
 ### Deaths
 
@@ -412,19 +584,69 @@ kill/death base split.
 **Ship symmetric**, consistent with the standing decision that death impact
 carries as many variables as kill impact. Revisit only with a player-level read.
 
+**This survives into post-plant, contrary to an intermediate reading of `M25`.**
+A post-plant event transfers what the *victim's team* lost, and both the
+killer's credit and the victim's debit reference that same quantity -- so kill
+and death remain mirror images and one scalar serves both. The asymmetry `M25`
+found is over **which side the victim was on**, not over kill versus death. See
+Part 4.
+
 ### Rollout
 
-- `IMPACT_CALCULATION_VERSION` bump, folding mechanically into
-  `player_view_cache.cache_version()`. **The two specs must not both claim
-  1 -> 2.** Whichever ships first takes 2; the second takes 3. If they ship
-  together in one bump, the rescore cannot attribute any movement in the
-  numbers to either change -- separate bumps are recommended for that reason.
+- **ONE `IMPACT_CALCULATION_VERSION` bump, 1 -> 2, covering this spec AND the
+  econ spec together. DECIDED 2026-09-06.** An earlier version of this bullet
+  required a bump per change (Part 3, Part 4, the econ swap) so that movement
+  in displayed numbers stayed attributable. Withdrawn. The site is a
+  friend-group tracker with no external consumers, nobody is reading these
+  numbers closely enough for un-attributable movement to cost anything, and if
+  the result is bad the remedy is one more rescore back. Three rescores to
+  protect attribution nobody needs is the wrong trade.
+- **This costs much less interpretability than it looks, and the reason is
+  load-bearing.** The two non-inferiority gates (Part 4 here, the econ deletion
+  in the econ spec) run through `impact_eval.py`, which **replays from raw
+  data** -- `load_all_observations` calls `build_impact_rows_for_match`
+  directly (`:1519`) and never reads stored `impact_scores`. **The gates
+  therefore need no rescore at all.** Each change can be evaluated on its own
+  by toggling it in the replay, and the database is rescored once at the end.
+- **Requirement that follows: the changes must be independently switchable in
+  the replay path.** `use_realized_swing` is already such a switch; Part 3,
+  Part 4 and the econ swap need equivalents. Without them the single bump does
+  become un-diagnosable, because the two gates push in opposite directions --
+  the post-plant retune should help, the econ deletion should cost -- and
+  measured together they can cancel and both read clean.
 - Full rescore via `scripts/recompute_impact.py`, then
   `scripts/recompute_player_views.py`.
+- **Rollback is one rescore.** Revert the scoring code and rescore; migration
+  `0008`'s added columns are left in place and unused, which is harmless.
 - `.impact_eval_cache/` self-invalidates on the version key.
 - Stage C artifacts become non-comparable (`kill_order_refit.py:1837` stamps
   results with the version). Costs nothing -- every Stage C candidate was
   non-deployable -- but do not quote those numbers afterwards.
+- **`fight_ev.CALCULATION_VERSION` 3 -> 4 as well, and this is functional, not
+  bookkeeping.** That constant is an input to `_bootstrap_seed`
+  (`fight_ev.py:273`), so every stored confidence interval on the diamond
+  depends on it, and its own comment (`:44-46`) names this exact situation:
+  *"use it to force a reshuffle if the replay/aggregation logic changes in a
+  way that should not be silently blended with old draws."* Admitting 1,274 OT
+  rounds is that change. Bumping `IMPACT_CALCULATION_VERSION` alone would
+  invalidate the cache correctly but leave the new draws -- over a different
+  population of rounds -- reusing seeds computed for the old one.
+- **`STATE_DIAGRAM_CALCULATION_VERSION` stays at 2. DECIDED 2026-09-06.** An
+  earlier version of this bullet called for 2 -> 3 on the grounds that the
+  diagrams' round population changes. Withdrawn: **admitting overtime rounds
+  adds data, exactly as ingesting more matches does, and that has never bumped
+  this constant.** The replay *rules* are unchanged; only the set of rounds
+  they run over grows. Bumping it would imply a semantic change that did not
+  happen.
+
+  Note this constant feeds no calculation -- unlike `fight_ev.CALCULATION_
+  VERSION`, which is an input to `_bootstrap_seed` -- so leaving it alone has
+  no functional consequence. The player-view cache is invalidated regardless,
+  by the fight-EV and Impact bumps shipping alongside it
+  (`player_view_cache.py:116-121`).
+- `validate_fight_ev.py` writes reports stamped `"calculation_version"`
+  (`:277`); any saved report predating the bump describes a different
+  population.
 
 ### Validation
 
@@ -443,8 +665,140 @@ carries as many variables as kill impact. Revisit only with a player-level read.
   levels the clamp then floors.
 - **Reported, not gated:** `impact_eval.py`'s forward yardsticks, with the
   leakage caveat. Pre-plant proximity is stripped under `use_realized=False`,
-  so the yardsticks are blind to the whole of this change now that post-plant
-  is frozen. They are reported for the record only.
+  so the yardsticks are blind to **Part 3**. They are reported for the record
+  only. **This does not extend to Part 4** -- see its leakage section.
+
+## Part 4 -- the post-plant regime
+
+### Why this is no longer frozen
+
+The 2026-09-03 draft froze post-plant for want of evidence. `M21`-`M26` supply
+it, and the frozen regime turns out to carry the larger error. The shipped
+`1 + (t - plant)/53` ramp is **side-blind**, and measured value is not:
+
+| | ramp does | measured | verdict |
+|---|---|---|---|
+| attacker kills | rises 1.05 -> 1.75 | leverage falls late | **backwards** |
+| defender kills | rises 1.05 -> 1.75 (+67%) | leverage rises +19pp -> +39pp (+105%) | right sign, **too weak** |
+| defender deaths | rises 1.00 -> 1.72, then cliffs to 0.5 | cost falls 0.141 -> 0.023 | **backwards for 38s** |
+
+The `plant+38..45` window pays **1.75 to both sides** at the moment their
+stakes are furthest apart -- in a 1v1 at t=38 the attacker carries **10x** the
+defender's risk (`M26`). Population affected: **149,976 post-plant kills**,
+30.7% of the database, of which **68,378 are defender kills** scored on a curve
+that is flat then backwards.
+
+### The estimand, and why not the obvious one
+
+The raw win-rate curve (`M21`) cannot separate "this kill decided the round"
+from "this round was already decided and a kill happened in it". Nor can a
+marginal difference against `V(before)`: `M23` shows
+
+```
+V(after | killer wins) - V(before)  =  (1 - p) * [V(atk wins) - V(def wins)]
+```
+
+so it is **leverage shrunk by the probability of the other outcome**, and
+collapses toward zero exactly when the favourite wins. It credits surprise, not
+stakes. Neither is the quantity this factor should track.
+
+The quantity is **what the victim's team lost** (`M25`):
+
+```
+D(a, d, t, victim=defender) = V(a, d-1, t) - V(a, d, t)
+D(a, d, t, victim=attacker) = V(a, d, t)   - V(a-1, d, t)
+```
+
+`V(a, d, t)` is the attacking team's win rate given `a` attackers and `d`
+defenders alive at whole second `t` after the plant, round unresolved. These
+two sum exactly to the duel's leverage, so the decomposition is complete.
+
+**Kill and death take the same value**, per the Deaths section: the event
+transfers `D`, the killer is credited it and the victim debited it.
+
+### Parameterisation
+
+```
+post_plant_factor(a, d, t, victim_side)
+    = clamp( D(a, d, t, victim_side) / mean_over_t D(a, d, ., victim_side),
+             FLOOR, CEIL )
+```
+
+- **A ratio, deliberately.** `D` is a state-transition value, which is exactly
+  what `kill_order_bonus` already is. Using `D` directly would multiply two
+  measures of the same thing and reintroduce the collinearity the econ spec
+  exists to escape. Dividing by that state's own time-average leaves **only
+  the time shape**, and leaves the state level where it already lives.
+- **Normalise within `(state, victim_side)`**, not across sides. `M24`'s ratio
+  table shows the time shapes differ by state with **reversing sign** -- `2v1`
+  falls 1.33 -> 0.10 while `1v2` rises 0.89 -> 1.09 -- so a single shared
+  shape cannot represent them.
+- **`FLOOR` and `CEIL` are policy parameters, not estimates**, on the same
+  footing as `k` in Part 3. Measured ratios span roughly 0.06 (`2v1` at t=43)
+  to 1.50 (`3v2` at t=0). Report sensitivity across a predeclared grid; do not
+  attach confidence intervals to a normatively chosen bound. The standing
+  constraint that no kill is ever worth negative Impact requires `FLOOR > 0`.
+- **No hard discontinuity at plant+38.** The shipped denial window opens at the
+  *weaker* of the two deadlines. `M26` shows the full-defuse boundary (38.0s)
+  produces a gentle bend while the half-defuse boundary (**41.5s**) produces
+  the sharpest drops -- 41->42 is -0.171. The flat 1.75 override is deleted
+  outright; the measured shape already contains both deadlines and does not
+  need either hard-coded.
+- **Post-resolution stays 0.5**, unchanged and unmeasured.
+
+### Estimating `V` without overfitting
+
+- Minimum **60 observations** per `(a, d, t)` cell, the floor `M23` used;
+  1,219 cells clear it.
+- Cells below the floor fall back to a factor of exactly **1.0** (neutral), not
+  to a neighbouring cell. `M26` shows states with 6+ players alive fall to 1.7%
+  of live rounds by t=30 and 0.5% by t=43 -- they run out because they cease to
+  exist, so a neutral fallback is honest and the affected mass is negligible.
+- `V` is smoothed across `t` within a state before differencing; knots fixed at
+  the second boundaries, not estimated. Match-clustered errors throughout.
+- Recomputed and versioned with the scorer, never at request time.
+
+### Known limitation, recorded rather than fixed
+
+`kill_order_bonus` is **side-blind** -- it keys on alive counts, not on who is
+attacking. `M24` measures time-averaged leverage of **+0.330 for `2v1` against
++0.631 for `1v2`**, a ~2x gap for the same man-advantage held by opposite
+sides. Because this spec's factor is a pure ratio, that level difference is
+divided out and **nothing models it**.
+
+This is a defect in the kill-order graph, not in the time factor, and fixing it
+means refitting the graph -- explicitly out of scope here, and changing two
+things at once would make the rescore uninterpretable. Recorded so it is not
+rediscovered. `M24` also finds the graph **agrees** with measured leverage at
+the top (`1v1` ranks highest, weight 250 against a floor of 40).
+
+### Leakage -- Part 4 is NOT ex-post, and this matters
+
+Part 3 reads `plant_time`, which is future information at the moment of a
+pre-plant kill, so it is gated by `use_realized` and the forward yardsticks are
+blind to it by construction.
+
+**Part 4 is different.** At a post-plant kill the plant has already happened;
+seconds-since-plant, the alive counts and the side are all **known at kill
+time**. Nothing here is leakage, nothing is stripped under
+`use_realized=False`, and `impact_eval.py`'s forward yardsticks therefore **see
+this change in full**.
+
+Consequence: Part 4 carries a **non-inferiority gate** on those yardsticks,
+where Part 3 carries none. Replacing a ramp the data contradicts should not
+make forward performance worse; if it does, that is a finding about the
+yardsticks or the design and must be reported, not tuned around.
+
+### Centring
+
+Separate constant, solved on the post-plant population alone: the
+sample-weighted mean of `kill_order_bonus * post_plant_factor` over post-plant
+pre-resolution kills matches its value under today's ramp. Death-side residual
+reported against the same 2% tolerance as Part 3.
+
+Post-plant and pre-plant are **not** centred jointly. Their populations,
+factors and leakage properties all differ, and one constant across both would
+let either regime absorb the other's drift.
 
 ## Testing
 
@@ -456,27 +810,48 @@ Part 1:
   agreement with the outcome-derived attacker.
 - `seconds_to_plant` returns `None` for unplanted and phantom rounds.
 
+- **The side map is total.** Every round present in `entries` resolves to a
+  side; the test fails otherwise. This is the guard against Edit B shipping
+  without Edit A.
+- An OT round scores identically before and after the `attacking_team` change,
+  confirming the `_econ_swing_risk_factor` early return at `impact.py:271`.
+- OT rounds appear in **both** the state diagrams and fight-EV after
+  migration, not one or the other.
+- `credit_events`' wrapper returns `"team-1"`/`"team-2"` strings, not `Team`.
+
 Part 3:
-- **The centring gate, stated as one invariant** (an earlier draft of this
-  section restored the rejected `mean(factor) = 1` test while the design
-  section specified a contribution-weighted one -- the two contradicted each
-  other). The invariant is: **the mean NET time contribution is preserved**,
-  i.e. `mean(kill_order_bonus * scalar) - mean(kill_order_bonus *
-  traded_factor * scalar)` matches its value under today's flat factor.
-  Kills and deaths are *not* separately normalised: their weighting
-  distributions differ (deaths carry `_traded_factor`), so one symmetric
-  scalar cannot satisfy both simultaneously, and separate constants would
-  break the symmetric kill/death treatment this spec commits to. Preserving
-  the net is the one achievable invariant of the three; the other two --
-  separate constants, or a documented aggregate shift -- are rejected here
-  and the rejection is deliberate.
+- **The centring gate, on the KILL side, stated once.** The sample-weighted
+  mean of `kill_order_bonus * scalar` over affected pre-plant kills equals its
+  value under today's flat-1.0 factor, exactly, to solver tolerance. An earlier
+  draft of this section specified a *net* invariant contradicting the design
+  section's contribution-weighted one; the net version is withdrawn (`M19`) --
+  it carries zero weight on 71.7% of the affected kills.
+- **The death-side residual is reported and bounded**, not required to be zero:
+  `mean(K*T*c*s)/mean(K*T) - 1` within the 2% predeclared tolerance. `M20`
+  expects ~+0.7%.
 - Monotone non-decreasing in proximity up to the 10s plateau.
 - `use_realized=False` returns exactly 1.0 for every pre-plant kill, so the
   ex-ante replay is unchanged from today's behaviour. **This is the leakage
   gate** and it must be exact, not approximate.
-- An OT round scores identically before and after the Part 1 `attacking_team`
-  change, confirming the `_econ_swing_risk_factor` early return.
-- Golden-file test on one fully-scored match.
+
+Part 4:
+- **Kill and death use the same factor** for the same event -- the transfer is
+  one number, credited to one player and debited from the other.
+- **Side-dependence is real, not incidental:** an attacker kill and a defender
+  kill in the same state at the same second receive **different** factors.
+  A test asserting they are equal would encode the shipped bug.
+- `2v1` and `1v2` factors move in **opposite directions** across `t`, per
+  `M24`. This is the single sharpest behavioural test in Part 4 -- if a
+  refactor collapses them to a shared shape, this catches it.
+- Cells below the 60-observation floor return exactly **1.0**, not a
+  neighbouring cell's value.
+- The `plant+38..45` flat 1.75 override is **gone**; a kill at plant+39 and one
+  at plant+44 in the same state receive different factors.
+- Post-resolution kills still return 0.5.
+- `use_realized=False` changes **nothing** in Part 4 -- post-plant state is
+  known at kill time. This is the mirror of Part 3's leakage gate and must
+  also be exact.
+- Golden-file test on one fully-scored match containing both regimes.
 
 Per the note in `feedback_plan_execution_test_fixtures`: **verify each
 synthetic fixture actually produces the relationship it claims before writing
@@ -484,10 +859,26 @@ assertions against it.**
 
 ## Out of scope
 
-- Anything econ -- a separate spec, currently blocked (`M12a`). Note the claim
-  that econ points "opposite" to the current factor was **withdrawn**: `M9`
-  shows it was a between-context artifact.
-- A deadline / plant-denial term. Measured and not elevated.
+- Anything econ -- a separate spec
+  (`2026-09-04-econ-impact-separate-component-design.md`), **UNBLOCKED
+  2026-09-05** and revised again 2026-09-06. The decision this bullet
+  previously said it "does not yet record" has been taken: the outcome-fitted
+  `w(state)` weights are deleted (`M12b`) and the component is a descriptive
+  allocation. Its late regime is now scope-locked to rounds 5-11 / 17-23 and
+  its early regime scores rounds 2-4 / 14-16 on a total-wealth readout gated by
+  commitment (`M27f`, `M28`). This spec still does not depend on it -- the two
+  are separable and take separate version bumps -- but the dependency note is
+  no longer accurate and is corrected. Note the claim that econ points
+  "opposite" to the current factor was **withdrawn**: `M9` shows it was a
+  between-context artifact.
+- Refitting the kill-order graph, including the side-blindness `M24` exposes
+  (`2v1` +0.330 against `1v2` +0.631). Recorded in Part 4, out of scope here.
+- A pre-plant deadline / plant-denial term. The policy conclusion stands, but
+  **not on the wording used here before 2026-09-06**: `M7`'s "not elevated" was
+  itself withdrawn on full data, where 2v2 late kills in never-planted rounds
+  are elevated **+4.9pp [+1.5,+8.3]** (3v3 remains null). The term stays out of
+  scope because that effect is small against proximity's 16-30pp (`M3`), not
+  because there is no effect.
 - Any player-level site-pressure ranking. Measured and unreliable.
 - Refitting `FACTOR_WEIGHTS`. Unrelated, already measured at +0.005 AUC, and
   changing two things at once would make the rescore uninterpretable.
