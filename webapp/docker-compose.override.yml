@@ -1,0 +1,27 @@
+# Private-repo override, auto-merged by Compose over docker-compose.yml.
+#
+# WHY: the deployed Render Postgres runs PostgreSQL 18, and pg_dump/pg_restore
+# refuse to work across a major-version gap in this direction, so the local DB
+# must match it to accept a restore of production data. docker-compose.yml is
+# shared with the `public` remote and is deliberately left alone (see
+# CLAUDE.md) -- this file carries the private-repo-only changes instead.
+#
+# THE VOLUME PATH IS NOT OPTIONAL. PostgreSQL 18 images changed where data
+# lives: <=16 mount at /var/lib/postgresql/data, 18+ expect the mount one level
+# up at /var/lib/postgresql and place data in a major-version subdirectory
+# (see docker-library/postgres#1259). An 18 image started against a mount at
+# the old path refuses to boot with "in 18+, these Docker images are configured
+# to store database data in a format which is compatible with pg_ctlcluster".
+#
+# `!override` (Compose 2.24+) REPLACES the base file's volumes list. A plain
+# `volumes:` here would be APPENDED to it, leaving the old /var/lib/postgresql/data
+# mount in place and reproducing exactly that boot failure.
+#
+# NOTE: an 18 server cannot read a data directory initialised by 16, so
+# changing this pin means recreating the volume:
+#   docker compose -p valomaths-private down -v
+services:
+  postgres:
+    image: postgres:18
+    volumes: !override
+      - postgres_data:/var/lib/postgresql
