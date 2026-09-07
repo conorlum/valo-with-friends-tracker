@@ -1133,3 +1133,61 @@ Kept so they are not rediscovered as findings.
 | Killing enemies in round 2 leaves them better off (`M27`(a) +3.45pp, `M28` +11.74pp on winning round 3) | `M27f` -- a **pooling artifact**. The positive outcome is entirely the saving stratum (+19.70pp); teams that bought in show +0.37pp and -0.48pp, both spanning zero, and lose round 4 by -7.88pp and -6.60pp. You can only deny what they bought |
 | The pistol-round outcome identifies which teams have equipment to lose | `M27f` -- a noisy proxy for buy-in. Pistol winners average 2947 credits and straddle the light/bought-in boundary; measured directly, buy-in separates cleanly where the pistol proxy does not |
 | `M10`'s enemy-wealth confound is weaker in the early rounds because economy is low for both teams | `M27` -- the spread is **wider** early, not narrower: sd 1312 against 839, p90-p10 3770 against 2100. Early rounds mix savers at 750 with full buys at 4520. The confound is more live there, which is why the stratified rows are the ones to read |
+### Withdrawn under external review, 2026-09-06 -- Layer 2 policy claims
+
+These are claims the two **specs** made, withdrawn on argument or arithmetic
+rather than on a new measurement. Kept here with the rest so they are not
+rediscovered as findings, and so a reader who remembers the old wording can see
+what replaced it.
+
+| claim | why withdrawn |
+|---|---|
+| The post-plant estimand `D` avoids the marginal-value quantity that "credits surprise, not stakes" (time spec, Part 4 estimand) | `D(victim=defender)` **is** `V(after) - V(before)` for an attacker kill, and equals `(1-p)*L` under the section's own mixture identity. The rejection and the equation could not both stand. The equation stays; what is actually rejected is the pooled, side-blind form |
+| "Nothing here is leakage" for Part 4, because the factor's inputs are known at kill time (time spec, Part 4 leakage) | True of the inputs, false of the table. `V` is fitted on round outcomes, so an in-sample table hands each evaluated row a feature that has seen its own label. `win_probability.fit_value_model` already states the rule; `V` now takes the same out-of-fold treatment for evaluation |
+| Overtime "at 1.93% of rounds cannot move a bootstrapped cell" (time spec, Part 1) | A global share bounds nothing at cell level, and `M6` says OT is concentrated by economy. The pooling decision stands on its other two reasons; the bound is replaced by a per-cell OT share report |
+| "A lift from 57% to 71% and one from 85% to 99% are not the same quantity in pp" (time spec, fitting contract) | Both are exactly 14pp. The point survives on the log-odds scale (+0.61 against +2.86), which is why pp is the wrong scale, and the sentence now says that |
+| Fit, clamp, centre leaves the scored value inside 0.2-1.7 (time spec, order of operations) | What scores is `c * s`. The clamp is policy on the pre-centred scalar and the effective range is `[0.2c, 1.7c]`, now reported with `c` |
+| Exact pre-kill state fixed effects handle the different **proximity lifts** `M1` finds (time spec, fitting contract) | Intercepts absorb different baselines only. Equal-advantage states still share one pooled slope; that is an accepted simplification with a predeclared lack-of-fit check, not a solved problem |
+| "The fused column is 98.5% the raw kill-order bonus" (econ spec, §8c-i) | `M29` measures a correlation, `r = +0.9845`. A correlation is not a composition share; `r^2 = 0.969` is the variance statement |
+| `sum(credit(p)) = econ_round(T)` by construction (econ spec, §6) | Holds only when `removed(T) > 0`. A team can remove nothing while `econ_round(T)` is positive -- the late regime's floor is 0.5 -- and the section 6 guard then sends every share to 0. The allocation abstains |
+| "Every endpoint used to judge it is drawn from N+2 onward" while listing the round N+1 outcome as primary (econ spec, Validation) | N+1 is not N+2 onward. The N+1 outcome survives as a **secondary** endpoint on a different argument -- the component reads N+1's buy-phase state, and the round's result is not contained in it -- which depends on `loadoutValue` being a start-of-round snapshot |
+| A share "does not carry that scaling", so the component is independent of kill count (econ spec, attribution) | The share removes the level, not the correlation: at fixed team kills it is exactly proportional to the player's kills. Restated as a hypothesis with a declared threshold, `|r| <= 0.50` |
+| At halftime "there is genuinely nothing downstream to measure" (econ spec, §9b-i) | True of rounds 13+, false of round 12: a round-11 kill has a real effect on round 12 that the N+2 shift excludes. It is a horizon limitation like the end-of-match one, not a real absence |
+| A wider min-max log-loss range after decorrelation "would confirm" that refitting is worth it (econ spec, §9c) | A range widens just as readily because the worst candidate got worse, and it moves with the grid's bounds. It stays as a sensitivity diagnostic; the refit is judged on held-out best-versus-baseline |
+| Matching `time_impact`'s standard deviation makes the component "enter with influence comparable to what it replaces" (econ spec, §9) | Equal unweighted SDs ignore the top-level coefficients and the covariance with the rest of the score, and will amplify a noisy allocation to reach a target spread. It is a dispersion convention |
+| Mean player-round Impact is a check on the new component's scale (econ spec, Validation) | The component is exactly zero-sum, so its mean over complete rounds is 0 whatever `ECON_SCALE` is. The check can only detect the removal of the old terms |
+| The zero-variance guard is an unconditional refusal (econ spec, §8c) | It would refuse the harness's own default run, where `econ_component` is constant-zero by design. Refuse-**unless-declared**: expected-inert columns are dropped with a counted note, undeclared ones are a hard refusal |
+| The split `FEATURE_COMPONENTS` reuses the existing simplex machinery unchanged (econ spec, §8c-i) | The search fits `kill_order_bonus` and `time_delta` independently, but the locked formula ties them to one coefficient `B`. Free weights are diagnostic only; a deployment fit must impose the tie or refuse |
+### Withdrawn under external review, round 2 (2026-09-07)
+
+Same status as the block above -- Layer 2 policy claims retired on argument,
+arithmetic, or a source check. **Four of the nine were introduced by round
+one's own fixes.**
+
+| claim | why withdrawn |
+|---|---|
+| No measurement covers the no-attackers-left post-plant state; `M23` excludes it by conditioning on "round unresolved", so a new estimator and a new Layer 1 entry are preconditions for Part 4 | **False, and it was a round-one addition.** `M23`'s script resolves at `plant + 45` lowered to `defuse_time`, then emits one observation per (round, second) with alive counts free to reach zero. `(0, d, t)` and `(a, 0, t)` cells are **already in that table**, on the occupancy convention, labelled by attacking-team victory. What is unknown is only whether they clear the 60-observation floor |
+| The post-plant centring constant is `( mean_all(K*ramp) - mean_fallback(K*1) ) / mean_supported(K*s)` | Subgroup means cannot be subtracted from an overall mean without reweighting. On one supported kill (`K=100, s=1`) and one fallback kill (`K=200`), both at ramp 1.2, it returns **-0.2** where the preserving constant is **1.6** -- a negative factor on every affected kill. Sums, not means |
+| Under the post-plant estimand, killing the player whose team was carrying the round pays more than killing the player whose team had already lost it | The scored factor divides `D` by that victim side's own time-average, so a side-level difference divides out entirely. Only the **time shape within a side** survives, which is what `M24`'s reversing `2v1` / `1v2` shapes require. Cross-side ordering at a given second is not promised |
+| Estimating `V` out-of-fold by match is sufficient for the evaluation | It is cross-fitting, not nested estimation: training-fold rows still carry features built from the outer test fold's outcomes, which then influence the fitted composite. `win_probability.fit_value_model` already asks for the stronger form -- *inside each outer training fold* |
+| `V(a, 0, t) = 1.0` because "the bomb detonates" | The conclusion holds but the stated mechanism does not: `V` is the **attacking team's** win probability and planted rounds ending in Elimination Wins exist. A label keyed on `exploded` would score those as attacker losses |
+| The no-attackers-left value is strictly between 0 and 1 and rises with `t`; an exact 0 or 1 means the estimator was skipped | A directly observed rate legitimately hits 0 (every qualifying round defused) or 1 (every one detonated), and monotonicity across separately-pooled empirical bands follows from nothing. Same defect class as the withdrawn pre-plant monotonicity test |
+| The population is rounds "in which the last attacker died post-plant" | Post-plant does not imply pre-resolution. A last attacker killed after a completed defuse never occupied the live state and arrives with its outcome already determined |
+| In the late regime "a team that fully saved is rich, so it full-buys next round, the count is 0" | Saving describes this round's spending, not next round's purchasing power or buying decision. The formula pays 0.5 when the **observed** below-full-buy count is zero; the test has to contain that observation, not infer it |
+| A cash-rich enemy means "`denial` does not fire" (econ `§5b`) | `denial(T)` always fires; its floor is 0.5. What goes to zero is the count-dependent increment |
+### Withdrawn under external review, round 3 (2026-09-07)
+
+Final review pass. Three claims retired; **all three were introduced by round
+two's own fixes**, which is the pattern that ended the review sequence.
+
+| claim | why withdrawn |
+|---|---|
+| The retired non-inferiority margin was **arithmetically unpassable**, so the gate had to go (econ `§8d`) | The decision stands but this reason does not. The `+0.0026` figure is **paired AUC** while the margin was in **log loss**, and the width of each score's advantage over ACS says nothing about the width of the **paired arm-0-vs-arm-1** contrast -- two arms sharing most of their structure can be compared far more tightly than two different scores. What survives is that the anchor was ambiguous (`+0.1316` descriptive against `+0.0026` forward, two orders apart) and that report-not-gate is a policy choice, not a forced one |
+| `arm 4 vs arm 1` measures how much of the deletion is information removed rather than re-weighting (econ `§8d-i`) | Backwards. Both arms have the information removed; only their combination structure differs. `L1 - L0 = (L4 - L0) + (L1 - L4)`: information removed is **4 against 0**, structure changed is **1 against 4** |
+| The calibration reliability curve is estimated inside each outer training fold (time spec, leakage) | A fitted recalibration model would be; the **reliability report is an evaluation statistic**, and computing it inside the training folds produces an in-sample curve wearing an out-of-fold label -- the vacuous number that section exists to prevent. Fit inside the fold, report from the outer held-out predictions |
+
+**Also corrected, not withdrawn:** `M23`'s horizon is timer-and-defuse, so it
+keeps emitting `(a, 0, t)` round-seconds after a side is eliminated and the
+round is decided. Those deterministic rows are now excluded from the
+calibration population and its support counts; the analytic terminal endpoint
+used for differencing is unaffected.
