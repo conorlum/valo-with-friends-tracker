@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 from app.models import Match
 from app.models.match import Team
+from app.scoring.plant_window import attacking_team
 from app.services.player_graphs import win_color
 
 # How many standard deviations a map's attack-win% must be from 50% before
@@ -33,14 +34,15 @@ SIDED_Z_THRESHOLD = 2.0
 
 
 def attacking_team_for_round(round_number: int) -> Team:
-    if round_number <= 12:
-        return Team.TEAM_1
-    if round_number <= 24:
-        return Team.TEAM_2
-    # Overtime: round 25 resets to the same side as round 1, then the
-    # attacker alternates every single round (not every 2, unlike halves).
-    offset = round_number - 25
-    return Team.TEAM_1 if offset % 2 == 0 else Team.TEAM_2
+    # Thin wrapper: the algorithm this module derived and verified now lives
+    # in app.scoring.plant_window as the one consolidated helper (Part 1,
+    # docs/superpowers/specs/2026-09-03-plant-window-and-time-factor-design.md).
+    # Callers here always pass a real round number (>= 1), so the None case
+    # -- which plant_window.attacking_team reserves for round_number < 1 --
+    # never arises.
+    side = attacking_team(round_number)
+    assert side is not None
+    return side
 
 
 def _winner_team(outcome: str | None) -> Team | None:

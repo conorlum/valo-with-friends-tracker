@@ -29,6 +29,16 @@ class MissingImpactRows(Exception):
     a zero-valued observation -- absent data is not zero impact."""
 
 
+class UndeclaredConstantFactorError(ValueError):
+    """Raised by fit_constrained_weights when a factor column is constant
+    (zero variance) in the mode being fitted but the caller did not declare
+    it via expected_constant_factors. See econ spec section 8c: a dead
+    column silently absorbs weight the search cannot tell apart from a live
+    one, so this refuses rather than proceeding -- a deployment proposal is
+    the output, and an undeclared dead column is information worth
+    surfacing, not noise to route around."""
+
+
 @dataclass
 class RoundObservation:
     match_id: int
@@ -73,6 +83,14 @@ class RoundObservation:
     round_won_by_team_a: bool | None
     match_won_by_team_a: bool | None
     is_terminal: bool
+
+    # Migration 0008 / econ spec section 8c-i. The NET kill_order_bonus (no
+    # time/econ/swing multiplier) -- time_delta = time_impact -
+    # kill_order_bonus is derived from this by subtraction wherever the
+    # diagnostic split is needed, rather than storing time_delta itself.
+    # Defaulted (and placed last) so existing positional construction of
+    # this dataclass keeps working.
+    kill_order_bonus: float = 0.0
 
 
 def _winner_is_team_a(outcome: str | None) -> bool | None:
@@ -120,13 +138,14 @@ def build_observations_for_match(match, calculated_rows) -> list[RoundObservatio
         bucket = impact_by_round.setdefault(
             row.round_id,
             {"damage": 0.0, "econ_impact": 0.0, "time_impact": 0.0,
-             "swing_impact": 0.0, "impact_diff": 0.0},
+             "swing_impact": 0.0, "impact_diff": 0.0, "kill_order_bonus": 0.0},
         )
         bucket["damage"] += sign * row.damage
         bucket["econ_impact"] += sign * row.econ_impact
         bucket["time_impact"] += sign * row.time_impact
         bucket["swing_impact"] += sign * row.swing_impact
         bucket["impact_diff"] += sign * row.impact
+        bucket["kill_order_bonus"] += sign * row.kill_order_bonus
 
     playable = [
         r for r in sorted(match.rounds, key=lambda r: r.round_number)
@@ -189,6 +208,7 @@ def build_observations_for_match(match, calculated_rows) -> list[RoundObservatio
                 time_impact=impact["time_impact"],
                 swing_impact=impact["swing_impact"],
                 impact_diff=impact["impact_diff"],
+                kill_order_bonus=impact["kill_order_bonus"],
                 kill_diff=kills_a - kills_b,
                 acs_diff=acs_a - acs_b,
                 score_diff_before=score_a - score_b,
@@ -949,6 +969,11 @@ class ConstrainedWeights:
     # weighting to mean "higher Impact is better"; see fit_constrained_weights.
     composite_slope: float = float("nan")
     usable: bool = True
+    # Names of factor columns the search found constant and excluded from
+    # the simplex (weight pinned to exactly 0) rather than searched over.
+    # Populated only when the caller declared them via
+    # expected_constant_factors -- see fit_constrained_weights.
+    dropped_constant_factors: tuple[str, ...] = ()
 
 
 def _simplex_grid(step: float):
@@ -959,9 +984,33 @@ def _simplex_grid(step: float):
             yield (i / steps, j / steps, (steps - i - j) / steps)
 
 
+def _simplex_grid_ndim(step: float, n: int):
+    """All non-negative n-tuples on a `step` lattice summing to 1. n == 0
+    yields a single empty tuple (nothing to search; every weight is 0)."""
+    if n == 0:
+        yield ()
+        return
+    steps = int(round(1.0 / step))
+
+    def recurse(dims_left: int, steps_left: int):
+        if dims_left == 1:
+            yield (steps_left / steps,)
+            return
+        for i in range(steps_left + 1):
+            for rest in recurse(dims_left - 1, steps_left - i):
+                yield (i / steps,) + rest
+
+    yield from recurse(n, steps)
+
+
+# Order matches the `factors` column order built inside fit_constrained_weights.
+_FACTOR_NAMES = ("econ_impact", "time_impact", "swing_impact")
+
+
 def fit_constrained_weights(
     observations, config: TargetConfig, control_names: list[str],
     simplex_step: float = 0.1, damage_grid=None, l2: float | None = None, context=None,
+    expected_constant_factors: frozenset[str] = frozenset(),
 ) -> ConstrainedWeights:
     """Search (damage_multiplier, w_econ, w_time, w_swing) under the shipped
     parameterization, WITH the nuisance controls in the design.
@@ -999,6 +1048,32 @@ def fit_constrained_weights(
         else np.zeros((len(dataset.y), 0))
     )
 
+    # The zero-variance guard (econ spec section 8c). Standardizing before
+    # fitting frees the composite's overall scale, which is normally pinned
+    # by the simplex constraint w_econ + w_time + w_swing == 1 -- but a
+    # constant factor column breaks that pin: the dead coordinate can absorb
+    # any amount of the rescale, making an entire one-parameter family of
+    # (damage_multiplier, weights) points observationally identical, and the
+    # tie-break then silently picks the largest dead weight and the smallest
+    # damage multiplier. Refuse-unless-declared: a column the caller expects
+    # to be inert in this mode is dropped from the search (pinned to weight
+    # 0) with a counted note; an undeclared one is a hard refusal, because
+    # this function's output is a deployment proposal and a dead column it
+    # did not know about is worth surfacing, not routing around.
+    factor_stds = factors.std(axis=0)
+    dropped_indices: list[int] = []
+    for index, name in enumerate(_FACTOR_NAMES):
+        if factor_stds[index] == 0:
+            if name not in expected_constant_factors:
+                raise UndeclaredConstantFactorError(
+                    f"factor column {name!r} is constant (zero variance) in this fit but was "
+                    "not declared via expected_constant_factors -- refusing rather than "
+                    "silently misallocating weight to it (econ spec section 8c)."
+                )
+            dropped_indices.append(index)
+    dropped_constant_factors = tuple(_FACTOR_NAMES[i] for i in dropped_indices)
+    live_indices = [i for i in range(len(_FACTOR_NAMES)) if i not in dropped_indices]
+
     # L2 here regularises the CONTROLLED composite design, which is a
     # different model from the feature-only fit whose L2 the outer fold
     # selected. Rather than inherit that value or sweep L2 inside the simplex
@@ -1022,8 +1097,19 @@ def fit_constrained_weights(
         l2 = best_l2
 
     grid = DEFAULT_DAMAGE_GRID if damage_grid is None else damage_grid
+
+    def _weight_grid():
+        if not dropped_indices:
+            yield from _simplex_grid(simplex_step)
+            return
+        for live_weights in _simplex_grid_ndim(simplex_step, len(live_indices)):
+            full = [0.0, 0.0, 0.0]
+            for i, w in zip(live_indices, live_weights):
+                full[i] = w
+            yield tuple(full)
+
     best = None
-    for weights in _simplex_grid(simplex_step):
+    for weights in _weight_grid():
         factor_score = factors @ np.array(weights)
         for d in grid:
             composite = d * damage + factor_score
@@ -1053,7 +1139,10 @@ def fit_constrained_weights(
         # Every candidate was anti-predictive (or degenerate). That is a
         # finding, not a weighting: returning neutral weights marked unusable
         # keeps it out of the deployment proposal.
-        return ConstrainedWeights(1.0, 1.0, 1.0, 1.0, float("nan"), float("nan"), usable=False)
+        return ConstrainedWeights(
+            1.0, 1.0, 1.0, 1.0, float("nan"), float("nan"), usable=False,
+            dropped_constant_factors=dropped_constant_factors,
+        )
 
     loss, d, weights, slope = best
     scaled_weights = [v * FACTOR_WEIGHT_TOTAL for v in weights]
@@ -1065,6 +1154,7 @@ def fit_constrained_weights(
         train_log_loss=float(loss),
         composite_slope=float(slope),
         usable=True,
+        dropped_constant_factors=dropped_constant_factors,
     )
 
 
@@ -1273,7 +1363,8 @@ YARDSTICKS = {
 
 
 def fold_candidates(
-    observations, fold_results, name: str, context_builder=None
+    observations, fold_results, name: str, context_builder=None,
+    expected_constant_factors: frozenset[str] = frozenset(),
 ) -> dict[int, Candidate]:
     """One constrained weighting per outer fold, fitted on that fold's
     TRAINING matches only. The matrix then applies each to its own test
@@ -1282,6 +1373,10 @@ def fold_candidates(
     `context_builder` is required for a WPA config, whose target depends on
     a value model; it is built from the same training observations, so the
     leverage weights never see a test match either.
+
+    `expected_constant_factors` passes straight through to
+    fit_constrained_weights's zero-variance guard -- e.g. econ_impact in
+    ex-ante mode, which is constant-zero by design (econ spec section 9a).
 
     Returns (candidates_by_fold, weights_by_fold). The weights are returned,
     not discarded, because "do T1 and T2 agree on the weighting?" is one of
@@ -1297,7 +1392,8 @@ def fold_candidates(
         # controlled design inside fit_constrained_weights -- the outer fold's
         # L2 belongs to a different (feature-only, uncontrolled) model.
         weights = fit_constrained_weights(
-            train_obs, fold.config, controls_for(fold.config), context=context
+            train_obs, fold.config, controls_for(fold.config), context=context,
+            expected_constant_factors=expected_constant_factors,
         )
         out[fold.fold] = candidate_from_constrained(name, weights)
         fold_weights[fold.fold] = weights

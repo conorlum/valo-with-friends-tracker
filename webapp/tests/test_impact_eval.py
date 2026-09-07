@@ -554,6 +554,46 @@ def test_anti_predictive_components_do_not_yield_an_adoption_proposal():
     )
 
 
+def _weighted_matches_with_dead_swing(n_matches=40, seed=5):
+    """Same generator as _weighted_matches, but swing_impact is pinned to
+    exactly 0 for every row -- the zero-variance guard's target case (econ
+    spec section 8c)."""
+    obs = _weighted_matches(n_matches=n_matches, seed=seed)
+    for o in obs:
+        o.swing_impact = 0.0
+    return obs
+
+
+def test_undeclared_constant_factor_column_is_a_hard_refusal():
+    obs = _weighted_matches_with_dead_swing()
+    config = TargetConfig(name="T2", k=1, gamma=1.0, match_weight=0.0)
+    with pytest.raises(impact_eval.UndeclaredConstantFactorError):
+        fit_constrained_weights(obs, config, CONTROLS_CONTEXT)
+
+
+def test_declared_constant_factor_is_dropped_not_searched():
+    obs = _weighted_matches_with_dead_swing()
+    config = TargetConfig(name="T2", k=1, gamma=1.0, match_weight=0.0)
+    result = fit_constrained_weights(
+        obs, config, CONTROLS_CONTEXT, expected_constant_factors=frozenset({"swing_impact"})
+    )
+    assert result.dropped_constant_factors == ("swing_impact",)
+    # Pinned to exactly 0, not left free to roam the degenerate manifold and
+    # absorb an arbitrary share of the rescale (the trap measured in the
+    # econ spec: 1.50 of 3.00 landing on a dead column with every live
+    # weight halved).
+    assert result.swing == 0.0
+
+
+def test_declaring_a_factor_that_is_not_actually_constant_is_a_harmless_no_op():
+    obs = _weighted_matches()  # every factor genuinely varies
+    config = TargetConfig(name="T2", k=1, gamma=1.0, match_weight=0.0)
+    result = fit_constrained_weights(
+        obs, config, CONTROLS_CONTEXT, expected_constant_factors=frozenset({"swing_impact"})
+    )
+    assert result.dropped_constant_factors == ()
+
+
 def test_usable_result_reports_a_positive_composite_slope():
     obs = _weighted_matches(n_matches=40, seed=32)
     config = TargetConfig(name="T2", k=1, gamma=1.0, match_weight=0.0)

@@ -1,4 +1,4 @@
-from app.scoring.credit_events import RoundStat, compute_round_credit_events
+from app.scoring.credit_events import RoundStat, _attacking_team, compute_round_credit_events
 
 TEAM = "team-1"
 MP = 1
@@ -178,3 +178,20 @@ def test_kill_reward_and_plant_bonus_count_toward_cash_available():
     )
     sugar_daddy, _ = events[2][MP]
     assert sugar_daddy == 700
+
+
+def test_attacking_team_wrapper_returns_plain_strings_not_the_team_enum():
+    # Part 1's migration wraps app.scoring.plant_window.attacking_team, which
+    # returns the Team enum -- this module's callers compare against plain
+    # "team-1"/"team-2" strings, so the wrapper must do the conversion.
+    result = _attacking_team(5)
+    assert result == "team-1"
+    assert type(result) is str
+
+
+def test_attacking_team_wrapper_now_resolves_overtime():
+    # Withdrawn behaviour (M15): this used to return None past round 24,
+    # which meant OT rounds never got a plant_bonus. It now delegates to the
+    # consolidated helper, which resolves overtime too.
+    assert _attacking_team(25) == "team-1"
+    assert _attacking_team(26) == "team-2"

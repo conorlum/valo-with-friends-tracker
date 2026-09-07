@@ -109,13 +109,21 @@ def test_surrendered_round_produces_no_aggregates():
     assert win_stats == {} and kill_order_weights == {}
 
 
-def test_overtime_round_produces_no_aggregates():
+def test_overtime_round_now_produces_aggregates():
+    # Withdrawn behaviour (M15): overtime rounds used to be excluded outright
+    # by state_replay because no side convention had been derived for them.
+    # Part 1 of the plant-window spec supplies one, and
+    # accumulate_state_stats_from_replay is side-agnostic (it takes no side
+    # argument), so an OT round now contributes identically to a regulation
+    # round with the same kill pattern.
     round_input = make_round(round_number=25, kills=[kill(1, killer=1, victim=6, t=1.0)])
     entries, duels = replay_one_round(round_input)
-    assert entries == [] and duels == []  # round_number > 24 -- no recoverable attack/defense side
+    assert entries != [] and duels != []
 
     win_stats, kill_order_weights = _accumulate(entries, duels)
-    assert win_stats == {} and kill_order_weights == {}
+    assert kill_order_weights[("5v5", "5v4")] == 1
+    assert win_stats["5v5"] == {"win": 1, "total": 1}
+    assert win_stats["5v4"] == {"win": 1, "total": 1}
 
 
 def test_unresolved_winner_excludes_the_round_from_both_products():

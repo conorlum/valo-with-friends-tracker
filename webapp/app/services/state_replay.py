@@ -14,10 +14,12 @@ ingestion path for scraped data:
   (app/scoring/impact.py, app/services/player_graphs.py) already relies on
   sorting by `(event_time_seconds, id)` as a source-order tiebreaker -- this
   replay engine keeps that same convention rather than inventing a new one.
-- Round side: not persisted anywhere. Reuses the documented convention from
-  app/scoring/impact.py's `_attacking_team`: rounds 1-12 team-1 attacks,
-  13-24 team-2 attacks, anything past 24 (overtime) has no recoverable side
-  and must be excluded.
+- Round side: not persisted anywhere. Reuses the one consolidated,
+  OT-aware attacking-side helper, `app.scoring.plant_window.attacking_team`
+  (Part 1, docs/superpowers/specs/2026-09-03-plant-window-and-time-factor-design.md):
+  rounds 1-12 team-1 attacks, 13-24 team-2 attacks, and past 24 (overtime)
+  the side resets to round 1's side at round 25 and alternates every round.
+  Overtime rounds are therefore admitted to the replay, not excluded.
 - Terminal time: `Round.defuse_time` and `Round.plant_time` (+45s) cover the
   defuse/detonation cases. Elimination and time-expiry wins have no stored
   timestamp -- elimination truncation is derived during replay (the casualty
@@ -46,6 +48,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from app.models.match import Team
+from app.scoring.plant_window import attacking_team as _plant_window_attacking_team
 
 
 class TerminalCause(str, enum.Enum):
@@ -130,12 +133,11 @@ class RoundReplayResult:
 
 
 def attacking_team_for_round(round_number: int) -> Team | None:
-    """See the module docstring's "Round side" audit finding."""
-    if round_number <= 12:
-        return Team.TEAM_1
-    if round_number <= 24:
-        return Team.TEAM_2
-    return None
+    """See the module docstring's "Round side" audit finding. Thin wrapper
+    around the one consolidated attacking-side helper -- total over every
+    round_number >= 1, so callers (fight_ev.py's _round_side_map) no longer
+    need to handle a None side for overtime rounds."""
+    return _plant_window_attacking_team(round_number)
 
 
 def is_surrender_round(outcome: str | None) -> bool:
@@ -225,10 +227,6 @@ def replay_round(
     if not team1_player_ids or not team2_player_ids:
         diagnostics.excluded_rounds_by_reason["unknown_team_membership"] += 1
         return RoundReplayResult([], [], "unknown_team_membership")
-
-    if round_input.round_number > 24:
-        diagnostics.excluded_rounds_by_reason["overtime_unknown_side"] += 1
-        return RoundReplayResult([], [], "overtime_unknown_side")
 
     cause = _outcome_cause(round_input.outcome)
     if cause is None:

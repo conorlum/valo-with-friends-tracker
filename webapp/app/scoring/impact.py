@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Round, RoundPlayerStat
 from app.models.match import Team
+from app.scoring.plant_window import attacking_team as _plant_window_attacking_team
 
 
 @dataclass
@@ -33,6 +34,15 @@ class CalculatedImpact:
     traded_teammate: int
     traded_by_teammate: int
     trade_detail: dict | None
+    # Migration 0008 (docs/superpowers/specs/2026-09-04-econ-impact-separate-component-design.md,
+    # section 8c-i / persistence). kill_order_bonus is the net kill_order_bonus
+    # (no time/econ/swing multiplier) -- the harness derives time_delta =
+    # time_impact - kill_order_bonus from it. econ_component/econ_pickup are
+    # written as 0 for now; their real computation lands with the econ
+    # component itself. Defaulted so existing positional callers keep working.
+    kill_order_bonus: int = 0
+    econ_component: int = 0
+    econ_pickup: int = 0
 
 # Bump whenever compute_impact_for_match's scoring algorithm changes in a way
 # that changes ImpactScore values for previously-scored rounds -- folded
@@ -246,14 +256,13 @@ def _min_next_round_econ_bonus(round_outcomes: dict[int, str], round_number: int
 
 
 def _attacking_team(round_number: int) -> Team | None:
-    # Confirmed against the demo matches: team-1 attacks rounds 1-12, team-2
-    # attacks rounds 13-24. No attacking-side data is stored in the schema, so
-    # this is a documented convention, not derived from a stored fact.
-    if round_number <= 12:
-        return Team.TEAM_1
-    if round_number <= 24:
-        return Team.TEAM_2
-    return None  # OT: already treated as economy-neutral below
+    # Thin wrapper around the one consolidated attacking-side helper (Part 1,
+    # docs/superpowers/specs/2026-09-03-plant-window-and-time-factor-design.md).
+    # _econ_swing_risk_factor early-returns for round_number > 24 before ever
+    # consulting this, so extending it to cover OT cannot change any score
+    # through this path -- kept only so the module has no second copy of the
+    # convention.
+    return _plant_window_attacking_team(round_number)
 
 
 def _econ_swing_risk_factor(
@@ -595,6 +604,7 @@ def build_impact_rows_for_match(
             kill_order_bonus_x_econ_sum = 0.0
             kill_order_bonus_x_time_sum = 0.0
             kill_order_bonus_x_swing_sum = 0.0
+            kill_order_bonus_sum = 0.0
             kills_in_round = 0
             clutch_kill_sum = 0.0
             post_plant_kill_sum = 0.0
@@ -607,6 +617,7 @@ def build_impact_rows_for_match(
                     kill_order_bonus_x_econ_sum += kill["kill_order_bonus_x_econ"]
                     kill_order_bonus_x_time_sum += kill["kill_order_bonus_x_time"]
                     kill_order_bonus_x_swing_sum += kill["kill_order_bonus_x_swing"]
+                    kill_order_bonus_sum += kill["kill_order_bonus"]
                     if kill["killer_clutch"]:
                         clutch_kill_sum += kill["kill_order_bonus"]
                     if kill["is_post_plant"]:
@@ -620,6 +631,7 @@ def build_impact_rows_for_match(
             death_order_bonus_x_econ_sum = 0.0
             death_order_bonus_x_time_sum = 0.0
             death_order_bonus_x_swing_sum = 0.0
+            death_order_bonus_sum = 0.0
             clutch_death_sum = 0.0
             post_plant_death_sum = 0.0
             econ_mismatch_death_sum = 0.0
@@ -628,6 +640,7 @@ def build_impact_rows_for_match(
                     death_order_bonus_x_econ_sum += kill["death_order_bonus_x_econ"]
                     death_order_bonus_x_time_sum += kill["death_order_bonus_x_time"]
                     death_order_bonus_x_swing_sum += kill["death_order_bonus_x_swing"]
+                    death_order_bonus_sum += kill["death_order_bonus"]
                     if kill["victim_clutch"]:
                         clutch_death_sum += kill["death_order_bonus"]
                     if kill["is_post_plant"]:
@@ -673,6 +686,7 @@ def build_impact_rows_for_match(
                     econ_impact=round(kill_order_bonus_x_econ_sum - death_order_bonus_x_econ_sum),
                     time_impact=round(kill_order_bonus_x_time_sum - death_order_bonus_x_time_sum),
                     swing_impact=round(kill_order_bonus_x_swing_sum - death_order_bonus_x_swing_sum),
+                    kill_order_bonus=round(kill_order_bonus_sum - death_order_bonus_sum),
                     econ_kill=round(econ_mismatch_kill_sum),
                     econ_death=round(econ_mismatch_death_sum),
                     clutch_kill=round(clutch_kill_sum),
@@ -696,7 +710,8 @@ _PERSISTED_FIELDS = (
     "kill_impact", "death_impact", "impact", "damage", "econ_impact",
     "time_impact", "swing_impact", "econ_kill", "econ_death", "clutch_kill",
     "clutch_death", "post_plant_kill", "post_plant_death", "traded_teammate",
-    "traded_by_teammate", "trade_detail",
+    "traded_by_teammate", "trade_detail", "kill_order_bonus", "econ_component",
+    "econ_pickup",
 )
 
 
