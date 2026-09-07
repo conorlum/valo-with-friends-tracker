@@ -21,6 +21,20 @@ active path changes; `IMPACT_CALCULATION_VERSION` stays at 1.
 hand-rolled IRLS logistic regression — this repo has no statsmodels/scipy
 dependency and none should be added), pytest, sqlite (test-only).
 
+**Correction (during Task 1 execution, 2026-09-07):** every code block below
+was drafted with `dt = kill_time - plant_time` (negative before the plant).
+That's backwards from `app.scoring.plant_window.seconds_to_plant`, which
+returns `plant_time - kill_time` — **positive before the plant, decreasing to
+0 at the plant** — matching the spec's own knot values written as positive
+numbers (30, 20, 10, 5, 0). The implementation uses `seconds_to_plant`
+directly (reusing Part 1's helper rather than re-deriving the sign) and
+**positive** knots `(30.0, 20.0, 10.0, 5.0, 0.0)`, plateauing on `dt` in
+`[0, 10)`, rising through `dt` in `(10, 30)`, zero at `dt >= 30`. Every task
+below is implemented against this corrected convention; the negative-`dt`
+numbers embedded in the plan's illustrative code/tests are superseded by
+the actual committed code, not restated inline here to avoid a second
+place to keep in sync.
+
 **Spec:** `docs/superpowers/specs/2026-09-03-plant-window-and-time-factor-design.md`
 (Part 3: "Parameterisation", "The fitting contract", "Centering is on
 CONTRIBUTION", "Deaths", "Testing: Part 3"), plus
@@ -536,6 +550,14 @@ git commit -m "Add the fixed-knot shape basis with the imposed sub-10s plateau"
   bool) -> float`; `fit_preplant_time_model(observations:
   list[PreplantKillObservation], include_side_interaction: bool = True) ->
   PreplantFit`.
+
+**Correction (during Task 3 execution):** the by-side LEVEL columns
+(`w1*is_attacker, w2*is_attacker`, item 3 below) must drop together with the
+by-side SLOPE columns (item 5) when `include_side_interaction=False` — a
+first pass left the level columns unconditional, which meant "no side
+interaction" still produced two different lines by side, defeating the
+whole point of the nested comparison. Both are gated on the same flag now
+(caught by `test_fit_without_side_interaction_produces_one_shared_line`).
 
 **Design.** One row per observation. Advantage is clamped to `[-3, 2]`
 *for the interaction term only* (exact states keep their real alive counts).

@@ -13,7 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db import Base
 from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.models.match import MatchSource, Team
-from app.scoring.preplant_time_model import extract_preplant_observations
+from app.scoring.preplant_time_model import PreplantKillObservation, extract_preplant_observations
 
 
 def _session():
@@ -225,3 +225,82 @@ def test_shape_of_composed_scalar_matches_hand_computation():
                          (15.0, 0.8), (10.0, 1.0), (5.0, 1.0), (0.0, 1.0)):
         w1, w2 = shape_basis(dt)
         assert w1 * theta1 + w2 * theta2 == pytest.approx(expected)
+
+
+# -- fit_preplant_time_model ---------------------------------------------
+
+from app.scoring.preplant_time_model import PreplantFit, fit_preplant_time_model  # noqa: E402
+
+
+def _synthetic_observations(n_per_cell=200, seed=0):
+    """Built to CONTAIN a known relationship: win probability rises with
+    proximity to the plant (dt small), more steeply when the killer's team
+    is up a man, and attackers get a bigger boost than defenders -- exactly
+    what the real regression is meant to detect. Verified below
+    (test_synthetic_fixture_actually_contains_the_claimed_effect) before it
+    is used to test the fit, per feedback_plan_execution_test_fixtures."""
+    import random
+
+    rng = random.Random(seed)
+    obs = []
+    for adv in (-1, 0, 1):
+        for is_attacker in (True, False):
+            for dt in (25.0, 7.0):  # one far, one near-plateau (dt < 10)
+                near = dt < 10.0
+                side_bump = 0.15 if is_attacker else 0.05
+                base = 0.5 + 0.08 * adv
+                p = base + (side_bump + 0.05 * adv) * (1.0 if near else 0.0)
+                p = min(max(p, 0.02), 0.98)
+                state = f"{5 + min(adv, 0)}v{5 - max(adv, 0)}"
+                for i in range(n_per_cell):
+                    won = rng.random() < p
+                    obs.append(PreplantKillObservation(
+                        match_id=i % 50, round_id=i, dt=dt, adv=adv,
+                        is_attacker=is_attacker, exact_state=state,
+                        round_won_by_killer_team=won,
+                    ))
+    return obs
+
+
+def test_synthetic_fixture_actually_contains_the_claimed_effect():
+    """Guard against the fixture-construction bug this project has hit
+    twice before: verify the raw win-rate gap by hand before trusting any
+    fit against it."""
+    obs = _synthetic_observations()
+    near_atk_adv1 = [o for o in obs if o.dt == 7.0 and o.is_attacker and o.adv == 1]
+    far_atk_adv1 = [o for o in obs if o.dt == 25.0 and o.is_attacker and o.adv == 1]
+    near_rate = sum(o.round_won_by_killer_team for o in near_atk_adv1) / len(near_atk_adv1)
+    far_rate = sum(o.round_won_by_killer_team for o in far_atk_adv1) / len(far_atk_adv1)
+    assert near_rate - far_rate > 0.15  # the fixture's own construction implies +0.20
+
+
+def test_fit_recovers_the_positive_near_plant_lift():
+    obs = _synthetic_observations()
+    fit = fit_preplant_time_model(obs, include_side_interaction=True)
+
+    assert isinstance(fit, PreplantFit)
+    assert fit.n_observations == len(obs)
+    # Attacker lift at adv=1 should be positive and larger than defender's.
+    atk_lift = fit.logit_lift(1, is_attacker=True)
+    def_lift = fit.logit_lift(1, is_attacker=False)
+    assert atk_lift > 0
+    assert atk_lift > def_lift
+
+
+def test_fit_without_side_interaction_produces_one_shared_line():
+    obs = _synthetic_observations()
+    fit = fit_preplant_time_model(obs, include_side_interaction=False)
+
+    assert fit.logit_lift(1, is_attacker=True) == fit.logit_lift(1, is_attacker=False)
+
+
+def test_fit_ignores_observations_with_undeterminable_winner():
+    obs = _synthetic_observations(n_per_cell=20)
+    unresolved = [
+        PreplantKillObservation(0, 0, 7.0, 1, True, "5v4", round_won_by_killer_team=None)
+        for _ in range(1000)
+    ]
+    fit_with = fit_preplant_time_model(obs)
+    fit_with_junk = fit_preplant_time_model(obs + unresolved)
+
+    assert fit_with_junk.n_observations == fit_with.n_observations

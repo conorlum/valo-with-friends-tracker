@@ -148,3 +148,108 @@ def shape_basis(dt: float) -> tuple[float, float]:
         frac = (20.0 - dt) / 10.0
         return (1.0 - frac, frac)
     return (0.0, 1.0)  # plateau: 0 <= dt < 10 (and anything nearer the plant)
+
+
+# -- The exact-state logistic fit (spec, "The fitting contract") ------------
+#
+# Advantage is clamped to [-3, 2] for the INTERACTION term only -- exact
+# states keep their real alive counts. logit_lift(adv, side) is defined at
+# the near-plant plateau (w1=0, w2=1, i.e. dt <= 10, where shape(dt) == 1 by
+# construction), so shape(dt) * logit_lift(adv, side) reproduces the fitted
+# linear predictor exactly at every dt: the joint shape*adv*side fit is not
+# uniquely decomposable into a separate shape() and amplitude() on its own
+# (scale one up and the other down by any constant, the product is
+# unchanged), so this module resolves the decomposition the same way the
+# spec resolves k -- by PINNING it at a defined reference point, not
+# claiming a unique split exists.
+
+import numpy as np
+
+from app.services.stats_math import fit_logistic
+
+
+def _clamp_adv(adv: int) -> int:
+    return max(-3, min(2, adv))
+
+
+@dataclass
+class PreplantFit:
+    intercept_atk: float
+    slope_atk: float
+    intercept_def: float
+    slope_def: float
+    state_effects: dict[str, float]
+    include_side_interaction: bool
+    n_observations: int
+
+    def logit_lift(self, adv: int, is_attacker: bool) -> float:
+        adv = _clamp_adv(adv)
+        if is_attacker:
+            return self.intercept_atk + self.slope_atk * adv
+        return self.intercept_def + self.slope_def * adv
+
+
+def fit_preplant_time_model(
+    observations: list[PreplantKillObservation], include_side_interaction: bool = True,
+) -> PreplantFit:
+    """Logistic regression of round-win on shape(dt) x adv x side, plus
+    exact pre-kill state fixed effects (spec, 'Weights and errors'). One row
+    per observation; hand-rolled IRLS (app.services.stats_math.fit_logistic)
+    since this repo has no statsmodels/scipy dependency."""
+    usable = [o for o in observations if o.round_won_by_killer_team is not None]
+    states = sorted({o.exact_state for o in usable})
+    reference_state = "5v5" if "5v5" in states else (states[0] if states else None)
+    other_states = [s for s in states if s != reference_state]
+
+    rows, labels = [], []
+    for o in usable:
+        w1, w2 = shape_basis(o.dt)
+        adv_c = _clamp_adv(o.adv)
+        atk = 1.0 if o.is_attacker else 0.0
+        row = [1.0 if o.exact_state == s else 0.0 for s in other_states]
+        row += [w1, w2, w1 * adv_c, w2 * adv_c]
+        if include_side_interaction:
+            # Both the by-side LEVEL (w1*atk, w2*atk) and the by-side SLOPE
+            # (w1*adv*atk, w2*adv*atk) drop together -- "side interaction"
+            # means side matters at all, not just in its slope. This is
+            # exactly the nested comparison Task 7 runs.
+            row += [w1 * atk, w2 * atk, w1 * adv_c * atk, w2 * adv_c * atk]
+        rows.append(row)
+        labels.append(1.0 if o.round_won_by_killer_team else 0.0)
+
+    n_state = len(other_states)
+    if not rows or len(set(labels)) < 2:
+        width = n_state + 4 + (4 if include_side_interaction else 0)
+        beta = np.zeros(width + 1)
+    else:
+        X = np.array(rows, dtype=float)
+        beta = fit_logistic(X, np.array(labels), l2=1.0)
+
+    idx = 1 + n_state  # skip intercept + state dummies
+    # Column order after idx: w1, w2, w1*adv, w2*adv,
+    # [w1*atk, w2*atk, w1*adv*atk, w2*adv*atk]. logit_lift is pinned at the
+    # w2=1 plateau, so only the w2-family coefficients matter here.
+    theta2_pooled = beta[idx + 1]      # w2
+    theta2_adv_pooled = beta[idx + 3]  # w2*adv
+    if include_side_interaction:
+        theta2_pooled_atk = beta[idx + 5]  # w2*atk
+        theta2_adv_atk = beta[idx + 7]     # w2*adv*atk
+    else:
+        theta2_pooled_atk = 0.0
+        theta2_adv_atk = 0.0
+
+    intercept_def = theta2_pooled
+    intercept_atk = theta2_pooled + theta2_pooled_atk
+    slope_def = theta2_adv_pooled
+    slope_atk = theta2_adv_pooled + theta2_adv_atk
+
+    state_effects = {reference_state: 0.0} if reference_state else {}
+    for i, s in enumerate(other_states):
+        state_effects[s] = float(beta[1 + i])
+
+    return PreplantFit(
+        intercept_atk=float(intercept_atk), slope_atk=float(slope_atk),
+        intercept_def=float(intercept_def), slope_def=float(slope_def),
+        state_effects=state_effects, include_side_interaction=include_side_interaction,
+        n_observations=len(usable),
+    )
