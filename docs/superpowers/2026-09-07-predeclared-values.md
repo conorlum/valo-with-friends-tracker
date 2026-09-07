@@ -50,9 +50,9 @@ them afterwards defeats the point.
 
 | value | constraint the spec already imposes |
 |---|---|
-| `k`, the amplitude scale | policy parameter, not an estimate. Several predeclared values, sensitivity reported. No confidence intervals attached to it |
-| `FLOOR` / `CEIL`, post-plant | policy parameters. `FLOOR > 0` is required by the no-negative-kill constraint. Measured ratios span ~0.06 to ~1.50 |
-| `W` sensitivity grid | `W = 2` is the default; the grid around it is reported |
+| ~~`k`, the amplitude scale~~ | **FIXED 2026-09-07 -- see "The k / FLOOR / CEIL / W grid decision" below** |
+| ~~`FLOOR` / `CEIL`, post-plant~~ | **FIXED 2026-09-07 -- see "The k / FLOOR / CEIL / W grid decision" below** |
+| ~~`W` sensitivity grid~~ | **FIXED 2026-09-07 -- see "The k / FLOOR / CEIL / W grid decision" below** |
 | ~~the early-regime wealth readout mapping~~ | **FIXED 2026-09-07 -- see "The early-regime f/g decision" below** |
 | ~~the early-regime commitment gate~~ | **FIXED 2026-09-07 -- see "The early-regime f/g decision" below** |
 | `ECON_SCALE` | a dispersion convention: matches `econ_component`'s SD to `time_impact`'s current SD, over all scored player-rounds in realized mode |
@@ -161,9 +161,132 @@ which would make `M13`'s ladder exposure structural rather than incidental.
 That is a v2 redesign with its own measurement, not a threshold swap -- do
 not substitute it while keeping this formula's interpretation.
 
+## The k / FLOOR / CEIL / W grid decision -- FIXED 2026-09-07
+
+Decided across five external review rounds, recorded in full in
+`2026-09-07-three-grids-declaration-draft.md` (rationale, the proxy evidence
+base, and the round-by-round change log -- not restated here). Governs Part 3's
+pre-plant amplitude scale and Part 4's post-plant clamp and smoother
+(`specs/2026-09-03-plant-window-and-time-factor-design.md`).
+
+**`k` (Part 3, the pre-plant amplitude scale).**
+
+```
+amplitude = k * logit_lift(adv, side)
+scalar    = clamp(1 + amplitude * shape(seconds_to_plant), 0.2, 1.7)
+```
+
+- Grid (11 members, fixed): `k in {0.2, 0.27, 0.35, 0.45, 0.6, 0.8, 1.0, 1.3,
+  1.7, 2.2, 2.8}`.
+- Crossing rates are counted on the **raw, unclamped** scalar
+  (`raw_scalar = 1 + k*logit_lift*shape`) -- `scalar` itself is already
+  clamped, so testing it against 0.2/1.7 is vacuous and reports 0.00% at every
+  `k`.
+- Two denominators, both reported: **target** = all non-self kills in
+  non-surrendered rounds (484,610 on the 2026-09-07 snapshot, `M5`'s
+  denominator); **also reported** = pre-plant kills in non-phantom
+  non-surrendered planted rounds (168,432).
+- Targets on the target denominator: floor rate `< 1.5%`; ceiling rate in
+  `[2.0%, 4.0%]`.
+- Selection rule, deterministic: (1) among qualifying members, pick the one
+  whose ceiling rate is closest to 3.0%; (2) if none qualifies, minimise
+  `|ceiling - 3.0%|` among floor-qualifying members; (3) if none satisfies the
+  floor constraint, pick the smallest `k` in the grid (this is the
+  floor-rate minimiser, not merely a default -- both crossing rates are
+  monotone non-decreasing in `k`). Every tie breaks toward the smaller `k`.
+  Branches 2/3 are reported as a finding with the full 11-row table; the grid
+  is never widened or given an off-grid value.
+- **Selected once per training population, never once globally**: shipped
+  (frozen full dataset), the temporal 70th-percentile split (select on
+  pre-70th data only, carry unchanged into evaluation), and each nested
+  comparison arm (side interaction in/out; pooled vs. state-specific
+  proximity) selects within its own training population. A shipped-vs-training
+  difference is reported, not reconciled.
+  **These three are the complete list of populations needing their own
+  selection** -- checked against the code 2026-09-07: `impact_eval.py`'s only
+  fold/CV machinery (`stable_folds`/`assign_folds`) is invoked exclusively
+  under `use_realized_swing=False` (no call site passes `True`), and Part 3's
+  factor is pinned to exactly 1.0 under that mode. `k` is therefore a
+  structural no-op inside every CV/bootstrap context this codebase has,
+  including the econ spec's 5-arm forward measurement (`8d-i`), which runs
+  "same folds" but in ex-ante mode per econ `9a`. The only places `k` is live
+  (realized mode) are shipped scoring and the `ECON_SCALE` fit (econ `9b`),
+  and the latter consumes whatever `k` shipped uses rather than re-selecting
+  it. This closes the declaration draft's open question 8.2.
+- Nothing else may influence selection -- not the death-side residual, any
+  win-correlation/predictive loss, rank movement, nor `|c-1|` or the effective
+  bounds (`|c-1|` moves monotonically with `k` and pulls opposite to the
+  clamp target). All reported **at** the selected `k`, never used to choose
+  it. No confidence intervals attached to `k`.
+- **Exploratory prediction only, not a tolerance:** on the proxy in the draft
+  doc's §0, `|c-1|` lands in `[0.10, 0.13]` and the rule selects `k = 0.8`.
+  Neither is licence to re-tune the grid if the real fit differs.
+
+**`FLOOR` / `CEIL` (Part 4, the post-plant clamp).**
+
+```
+post_plant_factor = clamp(D / mean_over_t(D), FLOOR, CEIL)
+```
+
+- Shipped default: `FLOOR = 0.05`, `CEIL = 2.0`.
+- Sensitivity grid: all nine pairs of `FLOOR in {0.02, 0.05, 0.1} x
+  CEIL in {1.5, 2.0, 2.5}`, each at `W = 2`, each with its own recomputed
+  centring constant `c`, reporting effective bounds `[c*FLOOR, c*CEIL]`.
+- For `FLOOR < CEIL` the two clamps act on disjoint kills -- report as two
+  1-D sensitivities coupled only through `c`; nonlinear downstream summaries
+  (rank movement, loss) may show real joint effects and are reported as found.
+- Report alongside every row: kill-weighted floor/ceiling binding rates;
+  pre-clamp ratio distribution (min, p1, p50, p99, max); count of
+  non-positive denominators falling back to 1.0; count of cells per pooling
+  rung; count of **negative numerators** (`D < 0` with a positive
+  denominator) reported separately from ordinary floor binding -- report
+  only, no gate, still scores at `FLOOR` (the negative-numerator fallback
+  itself is out of scope here, see the draft doc §5.1).
+- **"Final scores insensitive across the grid" != "bound inert."** Inertness
+  requires **zero pre-clamp crossings** on the raw ratio; identical centred
+  scores can coexist with 100% floor binding if `c` moves inversely with
+  `FLOOR`. Report the observed pre-clamp extremum alongside either statement.
+- No confidence intervals attached to `FLOOR`/`CEIL`.
+
+**`W` (Part 4, the post-plant smoother half-window).**
+
+- Shipped default: `W = 2`, unchanged, **never selected from results**.
+- Sensitivity grid: `W in {0, 1, 2, 3, 4, 6}` at `FLOOR=0.05, CEIL=2.0`, `c`
+  recomputed per `W`. `W=0` = "no moving-average smoothing" (support floor,
+  pooling ladder, endpoint rule, neutral fallback all still active); `W=6` =
+  broad-window stress test. A flat table is a finding, not a failure. Report
+  supported-cell counts at each `W`.
+- The pooling ladder runs first and unchanged, and fixes each cell's support
+  rung; the 60-observation floor is never applied to a summed moving window.
+  The window is evaluated **entirely at the target second's resolved rung**:
+  each neighbour contributes its estimate at the *target's* pooling level,
+  weighted by its own per-second observation count at that level (a pooled
+  count is never repeated across the seconds it covers); seconds with no
+  observations at that level contribute weight zero, and the window is not
+  widened to compensate.
+- Count-based endpoint support is independent of `W`; the **finally scored
+  population is not** -- smoothing changes `V`, hence `D`, hence
+  `mean_over_t D`, which can cross zero and trigger the neutral fallback.
+  Report both populations (count-supported vs. ratio-scored) separately at
+  each `W`.
+- The window is **not** truncated at the 38.0/41.5 band boundaries; at
+  `W >= 2` it routinely straddles 41.5, per the spec's "no hard discontinuity
+  at plant+38".
+- A result favouring another `W` is a finding requiring a dated amendment.
+
+**Snapshot validation.** Re-run against the local DB 2026-09-07 (3,124
+matches): denominators (484,610 / 168,432) and the side-specific clamp table
+reproduce the draft doc's §0 numbers exactly (e.g. `k=0.60` -> floor 0.01%,
+ceiling 2.17%, `|c-1|=0.103`, matching to the digit).
+
 ## Amendments
 
 - **2026-09-07** -- the early-regime `f`/`g` mappings, previously listed
   above as "to be fixed at first run," are fixed. See "The early-regime
   f/g decision" section. Do not edit the rows above in place; the
   strikethrough marks them superseded.
+- **2026-09-07** -- the `k` / `FLOOR` / `CEIL` / `W` grids, rules and targets,
+  previously listed above as "to be fixed at first run," are fixed. See "The
+  k / FLOOR / CEIL / W grid decision" section, and the full rationale in
+  `2026-09-07-three-grids-declaration-draft.md`. Do not edit the rows above
+  in place; the strikethrough marks them superseded.
