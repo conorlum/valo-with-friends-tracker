@@ -120,3 +120,31 @@ def extract_preplant_observations(db) -> list[PreplantKillObservation]:
                 alive[victim_team] -= 1
 
     return observations
+
+
+# -- The fixed-knot proximity shape (spec, "Shape knots") -------------------
+#
+# Knots at dt = 30, 20, 10, 5, 0 (dt is seconds_to_plant: POSITIVE before the
+# plant). shape(30) is pinned to 0 (the far-end anchor, no free parameter).
+# shape(20) = theta1 and shape(10) = theta2 are free, fitted parameters
+# (Task 3). The plateau below 10s is IMPOSED, not fitted: shape(5) and
+# shape(0) both equal theta2 exactly, rather than carrying their own
+# parameters -- M1 shows the near-plant buckets dip below the -10..-5 bucket
+# in every even state, and letting the shape fit that dip would misrepresent
+# sampling noise as a real late-arriving decline.
+SHAPE_KNOTS = (30.0, 20.0, 10.0, 5.0, 0.0)
+
+
+def shape_basis(dt: float) -> tuple[float, float]:
+    """Weights (w1, w2) on the two free shape parameters theta1 = shape(20),
+    theta2 = shape(10) == shape(5) == shape(0) (the imposed plateau), such
+    that shape(dt) = w1*theta1 + w2*theta2 for any fitted (theta1, theta2)."""
+    if dt >= 30.0:
+        return (0.0, 0.0)
+    if dt >= 20.0:
+        frac = (30.0 - dt) / 10.0
+        return (frac, 0.0)
+    if dt >= 10.0:
+        frac = (20.0 - dt) / 10.0
+        return (1.0 - frac, frac)
+    return (0.0, 1.0)  # plateau: 0 <= dt < 10 (and anything nearer the plant)

@@ -175,3 +175,53 @@ def test_never_planted_round_excluded():
     obs = extract_preplant_observations(db)
 
     assert obs == []
+
+
+# -- shape_basis --------------------------------------------------------
+#
+# dt = seconds_to_plant, POSITIVE before the plant. Knots at 30, 20, 10, 5, 0.
+
+from app.scoring.preplant_time_model import shape_basis  # noqa: E402
+
+
+def test_shape_basis_at_or_beyond_far_knot_is_zero():
+    assert shape_basis(30.0) == (0.0, 0.0)
+    assert shape_basis(45.0) == (0.0, 0.0)  # beyond 30: still anchored at 0
+
+
+def test_shape_basis_at_middle_knot_is_pure_theta1():
+    w1, w2 = shape_basis(20.0)
+    assert w1 == 1.0
+    assert w2 == 0.0
+
+
+def test_shape_basis_at_near_knot_is_pure_theta2():
+    w1, w2 = shape_basis(10.0)
+    assert w1 == 0.0
+    assert w2 == 1.0
+
+
+def test_shape_basis_plateaus_from_ten_seconds_to_the_plant():
+    # dt=10 down to dt=0 must all reproduce EXACTLY theta2 -- the imposed
+    # plateau, not a separately fitted value.
+    for dt in (10.0, 7.5, 5.0, 2.0, 0.0):
+        w1, w2 = shape_basis(dt)
+        assert w1 == 0.0
+        assert w2 == 1.0
+
+
+def test_shape_basis_interpolates_linearly_between_free_knots():
+    w1, w2 = shape_basis(25.0)  # halfway between 30 (0) and 20 (theta1)
+    assert w1 == pytest.approx(0.5)
+    assert w2 == 0.0
+    w1, w2 = shape_basis(15.0)  # halfway between 20 (theta1) and 10 (theta2)
+    assert w1 == pytest.approx(0.5)
+    assert w2 == pytest.approx(0.5)
+
+
+def test_shape_of_composed_scalar_matches_hand_computation():
+    theta1, theta2 = 0.6, 1.0
+    for dt, expected in ((30.0, 0.0), (25.0, 0.3), (20.0, 0.6),
+                         (15.0, 0.8), (10.0, 1.0), (5.0, 1.0), (0.0, 1.0)):
+        w1, w2 = shape_basis(dt)
+        assert w1 * theta1 + w2 * theta2 == pytest.approx(expected)
