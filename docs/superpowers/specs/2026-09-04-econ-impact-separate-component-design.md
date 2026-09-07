@@ -201,7 +201,7 @@ decisions need revisiting.
 | The early regime is gated on the victim team's **commitment** | `M27f` | that commitment *causes* the difference; buy-in is chosen by the team and correlates with prior rounds, role and score state |
 | The round-2 denial is real but paid at N+2 | `M27e` | causation; the exposure and the conditioning split are two rounds apart |
 | Round 4 / 16 belongs in the early regime | `M28` | -- `M27`'s pistol conditioning reaches only rounds 2 and 3 |
-| The realized denial measure is pulled out of the swing path | `M14` | that removing the ex-ante half is harmless -- see the non-inferiority gate |
+| The realized denial measure is pulled out of the swing path | `M14` | that removing the ex-ante half is harmless -- its price is measured and reported, not gated (section 8d) |
 
 **The naming rule this table enforces:** this component is a *realized
 economy-state allocation*. Phrases like "what the destruction achieved" are
@@ -225,8 +225,10 @@ new component exactly 0 under `use_realized=False`.
 
 So forward evaluation is blind to the **new** term but **highly sensitive to
 deleting the old ones** -- ex-ante mode would lose econ information it currently
-has. That makes the forward yardsticks a required **non-inferiority gate on the
-deletion decision**, not a metric to be waved away. The same qualification
+has. That makes the forward yardsticks a **required measurement of the deletion,
+reported loudly** (section 8d), not a metric to be waved away. It is
+deliberately *not* a gate: the yardstick cannot resolve effects of the size at
+stake, so a threshold on it would decide by noise. The same qualification
 applies to any post-plant retuning in the time spec, since post-plant state is
 known at kill time and is therefore *not* leakage.
 
@@ -240,6 +242,34 @@ every other component -- exactly how `damage` ended up 0.869 correlated with
 the leverage aggregate and killed Stage C. **The player term is a share of a
 round-level quantity**, which does not carry that scaling.
 
+**What that does and does not buy -- corrected 2026-09-06 under review.** The
+share removes the **level** scaling: a player's credit is bounded by a
+round-level quantity instead of growing without limit in their kill count. It
+does **not** make the term independent of kill count. With comparable victim
+values the share is `player_kills / team_kills`, which at fixed team kills is
+exactly proportional to the player's kills, and the debit tracks deaths the
+same way. The structural argument buys a hypothesis, not a result.
+
+**So it is measured against a number declared now**, in Validation:
+`|corr(econ_component, leverage aggregate)| <= 0.50` passes. That is the line
+`M29` already implies -- it accepted `+0.4386` as "well below" the 0.73-0.90
+band -- and it is a **policy screen carried over from a precedent, not a
+statistical derivation**. Three qualifications, added 2026-09-07 under review:
+
+- **It must say which population.** Realized mode, per scored player-round,
+  unweighted, reported **separately for the early and late regimes** since they
+  use different readouts. In ex-ante mode the component is constant zero and the
+  correlation is **undefined**, so the check cannot be run in the harness's
+  default mode at all.
+- **Against every component, not only leverage.** A component could correlate
+  0.40 with the leverage aggregate while duplicating `damage` almost exactly
+  and still pass a leverage-only screen. Report the full pairwise matrix.
+- **Passing it does not establish identification.** Pairwise correlation is not
+  rank: also report the feature matrix's condition number and the stability of
+  the fitted coefficients under match-level resampling. The screen is a
+  necessary condition for the redimensioning having worked, not a sufficient
+  one.
+
 ### Boundary behaviour must be enumerated, not inherited
 
 Pistol rounds 1 and 13 are 0 -- no prior economy to damage.
@@ -252,9 +282,20 @@ denial magnitude, which would silently award econ credit where none was earned.
 
 Every one of these needs an explicit, tested value:
 rounds 12 and 24 (halftime reset, no next-round link); the final round of a
-match; surrendered and incomplete matches; overtime; missing
-`round_player_stats`; an exactly tied wealth differential; and teams already
-ahead or tied when a "flip" is evaluated.
+match; surrendered and incomplete matches; overtime; and missing
+`round_player_stats`.
+
+**Two cases were dropped from this list on 2026-09-06:** "an exactly tied
+wealth differential" and "teams already ahead or tied when a 'flip' is
+evaluated". Both are leftovers from the differential/flip design that sections
+2-4 removed -- the component contains no wealth differential and evaluates no
+flip, so neither case exists to have a value.
+
+**Precedence, since two rules can now name the same round.** The exception
+rows below **override** the round-position regimes: a final round that is also
+round 21 scores **0**, not `denial(T)`, and the same holds for surrendered
+matches and missing `round_player_stats`. The regime table says which readout
+applies *when the component fires at all*; the exceptions say whether it fires.
 
 ## The design
 
@@ -468,6 +509,29 @@ never fitted to an outcome. `g` must send a fully-saving team to approximately
 zero, which is the behavioural test in Testing. The standing constraint that no
 kill is worth negative Impact requires both to stay non-negative.
 
+**Declare before choosing, not after:** each of `f` and `g` needs its
+aggregation (over which players, summed or averaged), its direction, its output
+range, and `g`'s saving threshold written down in advance. A grid reported over
+mappings whose *shape* was picked after looking is a sensitivity analysis of
+nothing.
+
+**The seam at rounds 4/5 and 16/17 is a real discontinuity, and it is accepted
+rather than calibrated away.** No choice of `f` and `g` can make the two
+regimes agree, because they read different quantities and the map from one to
+the other is many-to-one. Concretely: next-round loadouts of
+`[5000,5000,5000,5000,5000]` and `[4000,4000,4000,4000,9000]` are the same
+25,000 of total wealth, so any `f` keyed on total wealth scores them
+identically -- while the late regime scores them `denial = 0.5` and
+`denial = 1.3`, because four of the second team sit below the 4,200 full-buy
+line. Same state, 2.6x apart, and the early readout cannot see the difference
+by construction. That is the deliberate consequence of `M28`: early denial is
+97% bank, and a full-buy *count* cannot read a bank.
+
+**So it is reported, not asserted away:** a matched-state seam report -- the
+score a fixed set of situations receives at round 4 against round 5, and at 16
+against 17 -- ships with the fit. A large jump is expected. An *unexplainable*
+jump is a finding.
+
 **The component is still built on the mediator, never the outcome.** The win-rate
 columns above are mechanism evidence and appear nowhere in the formula. That is
 what preserves "no fitted parameter anywhere in this component", and it is why
@@ -490,14 +554,47 @@ damage.
 4: total wealth -2099 [-2184,-2022], win N+1 -4.00pp [-7.12,-0.67]), not on
 `M27`'s, whose pistol conditioning only reaches rounds 2 and 3.
 
+### 5a-i. The late regime pays an unconditional baseline, and the spec should say so
+
+`denial(T) = 0.5 + 0.2 * (enemies below full buy next round)` is **0.5 when
+that count is zero**, not 0. So in rounds 5-11 / 17-23 a team that removes any
+positive committed value collects a 0.5 allocation **however completely the
+victims re-buy**. That is a property of the locked formula, not a defect in it,
+and leaving it implicit made one of the Testing bullets unsatisfiable (see
+Testing). Added 2026-09-06 under review.
+
+Consequences, recorded rather than fixed:
+
+- The saving-team behavioural test (`~0` credit despite a 5-kill round) is an
+  **early-regime** test. In the late regime the same round pays the baseline.
+  **State the fixture rather than the intuition** (corrected 2026-09-07 under
+  review): an earlier version of this bullet reasoned that "a team that saved is
+  rich, so it full-buys next round, the count is 0". Saving describes this
+  round's spending; it does not guarantee next round's purchasing power or the
+  team's buying decision. The formula pays exactly 0.5 when the **observed**
+  below-full-buy count is zero -- so the fixture must contain a saving victim
+  team, **positive removed committed value** (otherwise the section 6 guard
+  zeroes the allocation for a different reason entirely), and five observed
+  next-round full buys. A second fixture with a saving team and a non-zero count
+  asserts `0.5 + 0.2n`.
+- The baseline is allocated by removal share, so it inherits that share's
+  correlation with kill count. It is part of what the collinearity check in
+  Validation measures, and a reason to expect that number to be non-trivial
+  rather than near zero.
+
+Changing the 0.5 is **out of scope** -- the late regime is scope-locked. This
+section documents it so the next reader does not rediscover it as a bug.
+
 ### 5b. What the component does NOT condition on, and why
 
 `M12d` conditions on the enemy's **bank** in round N, and the denial is 6.7x
 larger against a committed team than a cash-rich one. That gradient is **not**
 re-encoded as a multiplier here, because `denial(T)` already contains it: a
 cash-rich team you kill four of simply is not below a full buy next round, so
-`denial` does not fire. Adding a bank term on top would count the same thing
-twice.
+the **count-dependent increment is zero** and `denial(T)` sits at its 0.5
+baseline (section 5a-i). Adding a bank term on top would count the same thing
+twice. (This sentence read "so `denial` does not fire" until 2026-09-07;
+`denial` always fires, and its floor is 0.5.)
 
 The bank stratification is how the mechanism was **verified**, not a parameter
 to be carried into the formula.
@@ -509,7 +606,7 @@ different reasons:
 | | late regime | early regime |
 |---|---|---|
 | what is *not* re-encoded | the enemy's **bank** in round N | -- |
-| why | `denial(T)` already contains it: a cash-rich team you kill four of is not below a full buy next round | -- |
+| why | `denial(T)` already contains it: a cash-rich team you kill four of is not below a full buy next round, leaving the increment at zero and the factor at its 0.5 floor | -- |
 | what *is* gated on | -- | the enemy's **committed value** (loadout) in round N |
 | why it does not double count | -- | `denial_early(T)` reads their **total wealth**, which cannot distinguish a team that was poor from a team that was made poor. Commitment is the missing information, not a second copy of it |
 
@@ -533,7 +630,20 @@ step because a per-player *sum* rises with kill count and re-correlates with
 every other component, which is how `damage` reached 0.869 against the leverage
 aggregate and killed Stage C.
 
-By construction `sum(credit(p)) = econ_round(T)` over the team.
+By construction `sum(credit(p)) = econ_round(T)` over the team -- **when
+`removed(T) > 0`.** Written exactly:
+
+```
+sum(credit(p)) over T  =  econ_round(T) * 1[removed(T) > 0]
+```
+
+The indicator is not pedantry. `removed(T) == 0` arises two ways: the team
+killed nobody, **and** the team killed enemies who were all carrying
+`C(v) == 0` (a full save with only free ability charges). In the second case
+`econ_round(T)` is strictly positive -- the late regime's `denial(T)` never
+drops below 0.5 -- while the guard sends every share to 0. The allocation
+**abstains**; it does not fail. Both sides use the **same** event eligibility,
+so section 7's zero-sum invariant is unaffected.
 
 ### 7. Zero-sum -- it IS, and an earlier draft said otherwise
 
@@ -541,6 +651,13 @@ The equations in section 6 are **exactly zero-sum** over the ten players in a
 round. A victim's debit is scaled by `econ_round(opp)`, where `opp` is the team
 that produced the removal, and the debit shares sum to 1 over that team's
 losses -- so `sum(credit) over T == econ_round(T) == sum(debit) over the enemy`.
+
+**The identity carries section 6's indicator.** Written out:
+`sum(credit) over T == econ_round(T) * 1[removed(T) > 0] == sum(debit) over the
+enemy`. When a team removes nothing, both directions abstain together, which is
+why zero-sum survives the guard rather than being broken by it. (An earlier
+version of this section stated the middle term unconditionally; the indicator
+was added to section 6 on 2026-09-06 and not propagated here until 2026-09-07.)
 
 A previous version of this section claimed the component was deliberately *not*
 zero-sum, on the reasoning that credit and debit use different states and denial
@@ -666,11 +783,25 @@ not catch this.
 
 **Required, and it is a prerequisite for anything in section 9b:**
 `fit_constrained_weights` must check each factor column's variance and **refuse
-rather than proceed** on a constant one. Refusing beats silently dropping the
-dimension because this function's output is a *deployment proposal* -- it flows
-through `candidate_from_constrained` (`:1198`) into published `FACTOR_WEIGHTS`
--- and a dead column almost always means the caller passed the wrong feature
-list or the wrong replay mode, which is information worth surfacing.
+rather than proceed** on a constant one -- with one qualification added
+2026-09-06 under review, because without it the guard refuses the harness's own
+normal run. `econ_component` is constant-zero in ex-ante mode **by design**
+(section 9a), and ex-ante is the default mode. A bare "refuse on any constant
+column" makes every default fit an error.
+
+**So the contract is refuse-unless-declared.** The caller passes the columns it
+*expects* to be inert in the mode being fitted; a constant column on that list
+is dropped from the search with a counted, reported note, and a constant column
+**not** on it is a hard refusal. That keeps the whole point of the guard -- a
+dead column almost always means the wrong feature list or the wrong replay mode
+-- while letting the one structurally-dead column this design creates through
+the front door instead of past the check.
+
+Refusing -- rather than silently dropping the dimension -- is the right default
+because this function's output is a *deployment proposal*: it flows through
+`candidate_from_constrained` (`:1198`) into published `FACTOR_WEIGHTS`. A dead
+column the caller did not declare is information worth surfacing, not noise to
+route around.
 
 **This is not specific to migration 0008.** The same degeneracy appears
 whenever a factor column is constant in the mode being fitted, and by section
@@ -715,9 +846,11 @@ and `swing_impact` go to zero.
 | `kill_order_bonus` vs `time_delta` | **+0.4386** |
 | `damage` vs `time_delta` | +0.3060 |
 
-The fused column is **98.5% the raw kill-order bonus**, so a weight fitted on it
-is close to a weight on the state term alone -- the timing signal is nearly
-invisible inside it. The split's two columns correlate at +0.4386, well below
+The fused column correlates with the raw kill-order bonus at **r = +0.9845**
+(`r^2 = 0.969`), so a weight fitted on it is close to a weight on the state
+term alone -- the timing signal is nearly invisible inside it. (An earlier
+version of this line read "98.5% the raw kill-order bonus", which states a
+correlation as a composition share. Corrected 2026-09-06 under review.) The split's two columns correlate at +0.4386, well below
 the 0.73-0.90 band this spec exists to escape, so they carry separable variance.
 The pre-check declared before running was that a correlation approaching that
 band would send the decision back to a fused three-column list; it did not.
@@ -731,8 +864,8 @@ band would send the decision back to a fused three-column list; it did not.
    returns exactly 1.0, so `time_delta` is non-zero **only for post-plant
    kills** -- `M29` measures 69.7% of player-rounds at exactly zero, matching
    `M5`'s independent ~69% non-post-plant share. That makes `time_delta`
-   precisely the column the plant-window spec's **Part 4 non-inferiority gate**
-   needs to read, and that gate currently has nowhere to look.
+   precisely the column the plant-window spec's **Part 4 forward measurement**
+   needs to read, and that measurement currently has nowhere to look.
 3. **Two live factor columns in ex-ante mode instead of one**, since
    `econ_component` is zero there (section 9a). Without the split the ex-ante
    weight search has a single live factor and nothing to search.
@@ -746,6 +879,39 @@ not just replayed. Three factor columns also match `FACTOR_WEIGHTS`' current
 arity, so `ConstrainedWeights` and the simplex machinery are renamed rather than
 restructured.
 
+**Matching the arity is where the resemblance stops, and this needs stating
+explicitly (added 2026-09-06 under review).** The split list is a
+**diagnostic** list. It is not a deployment proposal -- and the machinery it
+reuses currently treats every fit as one: `candidate_from_constrained`
+(`impact_eval.py:1194`) maps the three fitted factor weights positionally onto
+`FEATURE_COMPONENTS` and hands the result out as published `FACTOR_WEIGHTS`.
+
+The locked scoring formula is
+
+```
+impact = A*damage + B*(kill_order_bonus * time_factor)
+       = A*damage + B*kill_order_bonus + B*time_delta
+```
+
+**one** coefficient `B` on both split columns, because `time_delta` is defined
+as `time_impact - kill_order_bonus`. The simplex search fits them
+**independently**, so its argmin generally lands on `w_kob != w_time_delta` --
+a scoring function the shipped formula **cannot express**. Deploying it would
+silently change the structure the time spec locked, not merely the weights.
+
+**Two contracts, named separately:**
+
+| | features | what a fit means |
+|---|---|---|
+| **diagnostic** | `[damage, kill_order_bonus, time_delta, econ_component]` | does timing earn its place on top of state? which column carries the post-plant retune? Free weights, never published |
+| **deployment** | same columns, **`w_kob` and `w_time_delta` tied** | a candidate the scorer can actually implement |
+
+A deployment fit therefore searches `(damage_multiplier, B, w_econ)` with the
+tie imposed, and `econ_component` either fitted in a valid realized-mode run or
+held at its section 9 anchor. **A deployment fit that cannot satisfy those
+conditions returns a refusal, not a candidate** -- same posture as the
+zero-variance guard, and for the same reason: this path publishes weights.
+
 **Accepted cost.** Dropping `econ_impact` and `swing_impact` from the list
 changes the feature set every stored harness comparison was computed on. That
 is already accepted in the rollout section -- Stage C artifacts are written off
@@ -754,7 +920,7 @@ and `.impact_eval_cache` self-invalidates on the version key.
 **This does not remove the need for the zero-variance guard.** `econ_component`
 is still constant-zero in ex-ante mode by design.
 
-### 8d. This makes the non-inferiority gate MANDATORY, not advisory
+### 8d. This makes the forward measurement MANDATORY -- as a report, not a gate
 
 The constraints section already notes that ex-ante mode keeps
 `econ_differential_factor` (`:474-476`) and the ex-ante swing factor today.
@@ -763,9 +929,53 @@ all.** That is the largest deletion in this spec and the forward yardsticks are
 fully sensitive to it.
 
 So: `impact_eval.py`'s yardsticks are **reported, not gated** for the new
-component, and **a hard non-inferiority gate** on the deletion of the two old
-ex-ante terms. Failing it is a finding about the deletion, not a reason to
-retune the new component.
+component -- and the deletion of the two old ex-ante terms is **measured and
+reported loudly, also not gated. DECIDED 2026-09-07.**
+
+An earlier version of this paragraph made the deletion subject to a hard
+non-inferiority gate, and 2026-09-06's revision gave that gate a margin of 10%
+of the shipped score's advantage over `BASELINE_ACS`. **The margin is what broke it -- though not for the reason first written
+here.**
+
+The reason as given on 2026-09-07 was that the margin was arithmetically
+unpassable: on the round N -> N+2 target, `current_impact` beats `kill_diff` by
+**+0.00122 [-0.00171, +0.00420]** and `acs` sits at
+**-0.00134 [-0.00328, +0.00064]**, a gap of roughly **+0.0026 with both
+intervals spanning zero**, so 10% of it is ~0.0003 and nothing could clear it.
+**That argument does not hold and is withdrawn** (2026-09-07, second review):
+
+- Those figures are **paired AUC**; the retired margin was in **log loss**. One
+  does not supply the other's numerical threshold.
+- More importantly, the width of each *score's* advantage over ACS says nothing
+  about the width of the **paired arm-0-against-arm-1 contrast**. Those two arms
+  share almost all of their structure, so their paired difference can be
+  estimated far more tightly than any between-score comparison -- in the limit,
+  identical predictions give a zero difference in every resample and would clear
+  any positive margin comfortably.
+
+**What survives, and it is enough.** The anchor was genuinely ambiguous: "the
+score's advantage over ACS" is **+0.1316** point-biserial on Stage 0's
+descriptive same-match statistic and **+0.0026** paired AUC on the forward
+yardstick -- two orders of magnitude apart, on different quantities, answering
+different questions. A margin defined as a fraction of "the advantage" is
+therefore not defined at all until someone picks, and nobody had. Beyond that,
+the decision is a **policy choice by the project owner**: this is a
+friend-group tracker with no external consumers, rollback is one rescore, and
+the calibration check went the same way a day earlier. It is not claimed to be
+forced by the mathematics.
+
+**What replaces it: the cost is measured, and it is impossible to miss.** The
+deletion's effect on the yardsticks is reported at the head of the run, beside
+the neutralized control, which splits it into information loss (arm 4 against
+arm 0) and re-weighting (arm 1 against arm 4), and it is carried with any later
+quote of a post-deletion number. If the cost is large the finding is that ex-ante mode needed the econ
+information -- which is exactly what the old gate existed to surface, and it
+surfaces just as well written down as it would attached to a threshold nobody
+can defend.
+
+Failing to measure it is the actual failure mode. Measuring it and shipping
+anyway is a decision the owner is entitled to make on a friend-group tracker
+with no external consumers.
 
 **Rescore attribution. DECIDED 2026-09-06: one bump, one rescore.** An earlier
 version of this paragraph required separate bumps because a single one makes
@@ -784,13 +994,124 @@ because the post-plant retune is expected to *help* the yardsticks while this
 deletion is expected to *cost* -- measured together they can cancel and both
 read clean, which is the failure this gate exists to prevent.
 
+### 8d-i. The measurement protocol, predeclared
+
+Added 2026-09-06 under review; converted from a gate to a loud report on
+2026-09-07 by the project owner's decision (reasoning in section 8d -- the
+yardstick cannot resolve effects of the size at stake, so any threshold on it
+decides by noise). Everything below is still fixed **before** the arms are run:
+predeclaration is what stops the *interpretation* being chosen after the fact,
+and that matters as much for a report as for a gate.
+
+**Metric.** Weighted log loss of the controlled composite fit on the shared
+`forward_window_target` (T2), the harness's existing primary. AUC is reported
+alongside and is never the decision variable.
+
+**Comparison.** Paired by match, **match-clustered bootstrap** (2,000
+resamples), **two-sided 95% intervals**. Same matches, same folds, same target
+for every arm. **Sign convention: the contrast is `loss(arm) - loss(arm 0)`, so
+positive means deterioration.** (One-sided intervals were specified while this
+was a gate, where only the deterioration bound mattered. A report that discusses
+both directions cannot use them: `(-inf, upper]` cannot establish improvement
+and `[lower, +inf)` cannot establish deterioration. Corrected 2026-09-07.)
+`V` and any other outcome-fitted table are estimated **out-of-fold** -- see the
+plant-window spec's leakage section; a gate read on an in-sample table is not
+evidence.
+
+**Arms -- five, because two of them separate effects the other three fuse:**
+
+| arm | what it is | why |
+|---|---|---|
+| 0 | today's shipped scoring | the reference |
+| 1 | econ deletion only (`econ_differential_factor` + ex-ante swing removed) | the deletion this gate governs |
+| 2 | post-plant retune only | the plant-window spec's Part 4 gate |
+| 3 | both | what actually ships |
+| 4 | **neutralized control**: the two econ terms pinned to their neutral 1.0 *inside today's combination structure* | separates **information removed** from **formula re-weighted** |
+
+Arm 4 exists because deleting terms from `damages + mean(econ, time, swing)`
+also changes the mean's arity. Without it, arm 1 confounds "econ information is
+gone" with "the remaining components were re-weighted", and the report cannot
+say which one it caught.
+
+**The decomposition, written out, because an earlier version of the contrast
+table had it backwards** (corrected 2026-09-07 under review -- it read arm 4
+against arm 1 as the information effect, when both of those arms have the
+information removed and only their structure differs):
+
+```
+L1 - L0  =  (L4 - L0)  +  (L1 - L4)
+ total       information    structure
+ deletion    removed        changed
+```
+
+Report all three.
+
+**No margin, and no pass/fail. DECIDED 2026-09-07.** A predeclared margin was
+specified on 2026-09-06 as 10% of the shipped score's measured advantage over
+`BASELINE_ACS`. It does not survive contact with the numbers: on this target
+`current_impact` beats `kill_diff` by **+0.00122 [-0.00171, +0.00420]** and
+`acs` sits at **-0.00134 [-0.00328, +0.00064]**, a gap of roughly **+0.0026
+with both intervals spanning zero**, so the margin would be ~0.0003 and nothing
+could pass it. The anchor was also ambiguous -- Stage 0's descriptive
+same-match statistic puts the same gap at **+0.1316** point-biserial, two orders
+of magnitude away, on a different quantity entirely.
+
+Both readings are recorded because the next person to reach for "the score's
+advantage over ACS" needs to know it is two different numbers depending on the
+question.
+
+**Every contrast is reported, with its interval, and none of them decides
+anything on its own.** The time spec's Part 4 measurement is arm 2 here.
+
+| contrast | what it says |
+|---|---|
+| **arm 1 vs arm 0** -- the econ deletion | the price of removing the two old ex-ante terms. The headline number of this whole section |
+| **arm 2 vs arm 0** -- the post-plant retune | the post-plant retune's forward effect. Expected positive; a negative result is a finding about the design or the yardstick, reported either way |
+| **arm 3 vs arm 0** -- both, i.e. what actually ships | **the one that reaches players, and it is reported even when 1 and 2 look fine separately.** Effects do not add: two changes can each look harmless and combine badly, and this is the only contrast that measures the shipped configuration |
+| **arm 4 vs arm 0** -- the neutralized control | **information removed**, with the combination structure held fixed |
+| **arm 1 vs arm 4** | **the structure change**, with the information already removed from both sides |
+
+**Each arm is evaluated as a fixed scoring composite.** The controlled fit
+scores the *configuration*; refitting diagnostic component weights per arm is
+not a substitute, because a search that recovers the loss by reweighting has
+answered a different question than what that configuration is worth.
+
+**Loud, in the same sense as the calibration report.** All four contrasts and
+their intervals appear at the head of the run; arm 3's number travels with any
+later quote of a post-change yardstick figure; both halves of the arm-1
+decomposition are reported next to the total; and an arm whose interval spans
+zero is reported as **inconclusive in those words**, never rounded into "no
+harm found". The failure this replaces a gate with is not "shipping something
+worse" -- it is shipping something worse *without knowing*.
+
+**A large arm-1 cost is a finding about the deletion.** It is not licence to
+retune the new component, whose own yardsticks are reported and not gated
+(section 9a explains why they are structurally blind to it). The reason to
+expect a cost is unchanged and worth restating: **ex-ante mode is left with no
+economic information at all**, so this contrast is the one place that shows up.
+
+(Residual instructions from the retired gate -- "the burden of proof is on the
+deletion", "structurally biased toward failing", "not a reason to soften the
+rule" -- were removed here on 2026-09-07. "No margin, and no pass/fail" governs
+implementation; leaving pass/fail language in the active text would have had an
+implementer looking for a threshold that no longer exists.)
+
 ### 9. ECON_SCALE
 
 **Anchor (ships with the structural change).** A single constant chosen so
 `econ_component`'s standard deviation over the full dataset equals
-`time_impact`'s current standard deviation -- the component enters with
-influence comparable to what it replaces, rather than a hand-picked weight.
-Recorded with its derivation and gated by a test.
+`time_impact`'s current standard deviation. Recorded with its derivation and
+gated by a test.
+
+**It is a dispersion convention, and calling it "comparable influence" was too
+strong (corrected 2026-09-06 under review).** Equal unweighted standard
+deviations do not equal comparable influence: the components enter under
+different top-level coefficients and with different covariance against the
+rest of the score, and matching an SD will happily **amplify a noisy
+allocation** until its spread reaches the target. What the anchor actually
+guarantees is that the new term is not introduced at an arbitrary scale. State
+the population it is computed over (all scored player-rounds, realized mode)
+and where in the formula the constant sits, and stop there.
 
 This is a **scale-matching rule, not an estimate**, and it exists because the
 evaluation harness cannot see this component at all (section 9a). It is what
@@ -840,9 +1161,15 @@ rounds 8+, round 7 on rounds 9+.
 
 - Take `forward_window_target` (`impact_eval.py:467`) and start the window at
   **N+2** rather than N+1. The current loop is
-  `for step in range(1, k + 1)` at `:492`; the shifted version starts at
-  `step = 2`. Everything else -- the `gamma` discount, the per-row weight equal
-  to the total discount mass, the match-clustered bootstrap -- is unchanged.
+  `for step in range(1, k + 1)` at `:492` with `weight = gamma ** (step - 1)`.
+  The shifted version is **`range(2, k + 2)`** -- so the window still spans `k`
+  rounds rather than `k - 1` -- with **`weight = gamma ** (step - 2)`**, which
+  keeps `gamma**0` on the first *counted* round instead of silently discounting
+  the whole window by an extra factor of `gamma`. ("Starts at `step = 2`" was
+  ambiguous about both and is replaced; corrected 2026-09-06 under review.)
+  Everything else -- the discount shape, the per-row weight equal to the total
+  discount mass, the halftime/OT break, the match-clustered bootstrap -- is
+  unchanged.
 - **Windows still never cross halftime or the OT boundary.** That rule already
   exists at `:494` and is correct here for a substantive reason, not a
   technical one: the economy resets at halftime, so a round-11 kill cannot deny
@@ -884,9 +1211,15 @@ no future either.
 
 Two different things are happening and only one of them is acceptable:
 
-- **At halftime this is correct.** The reset destroys the mechanism, so there
-  is genuinely nothing downstream to measure. The method is reporting a real
-  absence.
+- **At halftime this is mostly, but not entirely, correct.** The reset does
+  destroy the mechanism across the boundary, so nothing *past* round 12 is
+  measurable and the method is reporting a real absence there. **But a round-11
+  kill has a completely real effect on round 12**, and the N+2 shift excludes
+  it -- round 11 is judged on 13+, which is empty. The effect exists and is
+  simply unmeasured, exactly like the end-of-match case below. An earlier
+  version of this bullet said there was "genuinely nothing downstream to
+  measure", which is true of rounds 13+ and false of round 12. Corrected
+  2026-09-06 under review.
 - **At the end of the match it is not.** A round-21 kill that leaves the enemy
   broke for round 22 has a completely real effect with the match on the line.
   The effect exists; there is simply no future left to measure it against.
@@ -927,18 +1260,34 @@ point of this spec, so that ceiling may not survive the change.
 **This is directly testable on existing code, and cheaply.**
 `fit_constrained_weights` already evaluates every point of the simplex grid;
 record the **min-max log-loss range across the grid** rather than only the
-argmin. A near-flat range before the change and a wider one after would confirm
-it. A range that stays flat would show the ceiling is structural rather than a
-collinearity artifact, which is itself worth knowing before spending on a
-refit.
+argmin.
+
+**What that range can and cannot show -- corrected 2026-09-06 under review.**
+An earlier version of this paragraph said a wider range after the change "would
+confirm it". It would not. A range widens just as readily because the *worst*
+candidate got worse, it moves with the grid's own bounds, and it says nothing
+about whether the best candidate beats the shipping weights. Keep it as a
+**sensitivity diagnostic** on how much reweighting can move anything at all --
+which is the collinearity question, and is genuinely what it measures.
+
+**The refit is judged separately, on held-out improvement:** best-versus-
+baseline log loss with the argmin selected inside training matches only and the
+comparison made on evaluation matches, paired and match-clustered. A flat range
+is still worth knowing -- it says the ceiling is structural rather than a
+collinearity artifact -- but neither reading substitutes for the held-out
+number.
 
 **First supporting evidence, 2026-09-06.** `M29` measures
 `corr(kill_order_bonus, time_impact) = +0.9845` -- the shipped leverage column
 is almost entirely its own multiplicand. Since all three shipped factor terms
 are `kill_order_bonus * <factor>`, this is consistent with the +0.005 ceiling
 being an artifact of reweighting three near-copies of one column. It is
-suggestive, not decisive: it measures one of the three terms, and the min-max
-range test above remains the check that would settle it.
+suggestive, not decisive: it measures one of the three terms. **What would
+settle it is the held-out best-versus-baseline comparison specified above, not
+the min-max range** -- the range is a sensitivity diagnostic on how much
+reweighting can move anything, and cannot show that the best candidate improves.
+(This sentence pointed at the range as the settling check until 2026-09-07,
+contradicting the correction three paragraphs earlier.)
 
 **Prerequisite either way:** `fit_constrained_weights` must reject
 zero-variance factor columns before any of this is run. See the rollout
@@ -959,7 +1308,7 @@ which would award credit where none was earned. Hence explicit values:
 | overtime | **0** in v1; OT economy is ~uniform (`M6`), so there is little to measure |
 | surrendered / incomplete match | **0**, consistent with existing surrender handling |
 | missing `round_player_stats` | **0**, and counted in a diagnostic |
-| `removed(T) == 0` (no enemy killed) | **0** by the guard in section 6 |
+| `removed(T) == 0` (team removed no committed value -- killed nobody, or killed only enemies holding `C(v) == 0`) | **that team's credit allocation is 0** by the guard in section 6. **Directional:** its players' *debits* for their own deaths are unaffected, since those are scaled by the enemy's `econ_round` and the enemy's removal. An earlier version of this row zeroed the whole component for the team, which is not what section 6 does |
 | self-kill / environmental death | **0** -- excluded entirely; see section 7 |
 | victim `C(v) == 0` | contributes 0; not an error |
 
@@ -1037,13 +1386,33 @@ spec's Rollout.
   adjustment does not remove the circularity -- it is the scaler measured a
   second way.
 - **Construct validation (primary), on an endpoint the component does not
-  contain:** association with **round N+2** purchasing power, and with the
-  round N+1 outcome computed *without* reference to `denial()`. Adjust for
+  contain:** association with **round N+2 purchasing power**. Adjust for
   pre-round economy, round result, survival count, side, score differential,
   map and patch era. Report with intervals. **Same principle as the
-  `ECON_SCALE` fit in section 9b** -- the component reads round N+1, so every
-  endpoint used to judge it is drawn from N+2 onward. The two share a
-  justification and should share a round-coverage report.
+  `ECON_SCALE` fit in section 9b** -- the component reads round N+1, so the
+  primary endpoint is drawn from N+2 onward. The two share a justification and
+  should share a round-coverage report.
+- **Secondary, and it needs its own argument rather than the sentence above:
+  the round N+1 outcome.** An earlier version of this bullet listed the N+1
+  outcome inside the primary and then justified the whole thing with "every
+  endpoint used to judge it is drawn from N+2 onward". N+1 is not N+2 onward;
+  the two halves contradicted each other. Corrected 2026-09-06 under review.
+
+  The N+1 outcome is still a **legitimate secondary endpoint**, on a different
+  argument: what the component reads from round N+1 is the **buy-phase** state
+  -- `loadout` and `remaining` are post-buy, pre-play quantities, which is
+  exactly how `_realized_econ_swing_factor` already interprets them
+  (`impact.py:352-360`). The round's *result* is not contained in that feature;
+  it happens afterwards. So this is a forward association, subject to ordinary
+  confounding (round N's result drives both) and handled by the same control
+  ladder, not to label containment.
+
+  **That argument depends on one fact about the data, and it is the thing to
+  check before leaning on it:** that tracker.gg's `loadoutValue` /
+  `remainingCredits` are start-of-round snapshots rather than end-of-round or
+  peak-in-round values. The codebase assumes the former throughout, and the
+  late regime rests on it too. Confirm it against one captured match payload;
+  if it is not true, this endpoint is dropped rather than defended.
 - **Temporal stability check -- NOT external validation.** The whole dataset
   has already been used to choose this component's structure, so splitting it by
   date afterwards does not create an untouched holdout. Report it as a stability
@@ -1055,8 +1424,18 @@ spec's Rollout.
   leverage aggregate)` must come in **well below** the 0.73-0.90 the current
   components show and below `damage`'s 0.869. If it does not, the
   redimensioning failed and the design should be reconsidered before shipping.
-- **Distributional:** mean player-round Impact should move by less than the
-  scale-reconciliation tolerance.
+- **Distributional -- and the obvious check is vacuous here, which is worth
+  knowing before someone reports it as reassurance.** `econ_component` is
+  **exactly zero-sum** over the ten players in a round (section 7), so its mean
+  over complete rounds is 0 by construction: no choice of `ECON_SCALE`, however
+  wild, can move mean player-round Impact through this term. A mean check
+  therefore detects only the *removal* of the old econ terms, never the size of
+  the new one. Report instead: the **SD**, the 1st/5th/95th/99th percentiles,
+  the largest per-player-round change, and **rank movement** on the player
+  leaderboard -- plus, because the component is a transfer, whether any roster
+  is systematically on one side of it. The previously-undefined
+  "scale-reconciliation tolerance" is replaced by these, each with a number
+  declared before the rescore.
 - **Reported, not gated:** `impact_eval.py`'s forward yardsticks, with the
   leakage caveat attached.
 
@@ -1066,11 +1445,27 @@ spec's Rollout.
   negative.
 - A round where the enemy fully saved yields ~0 econ credit despite a 5-kill
   round -- the Q1 case, and the single most important behavioural test here.
-  **In the early regime this is the `commitment(opp)` gate** and it is what
-  `M27f` requires: a fully-saving victim team must send `econ_round` to
-  approximately zero. A test asserting the early regime pays the same against a
-  saving team as against a bought-in one would encode the exact pooling artifact
-  `M27f` identified.
+  **This is an EARLY-REGIME test and must be scoped to rounds 2-4 / 14-16.** It
+  is the `commitment(opp)` gate, and it is what `M27f` requires: a fully-saving
+  victim team must send `econ_round` to approximately zero. A test asserting the
+  early regime pays the same against a saving team as against a bought-in one
+  would encode the exact pooling artifact `M27f` identified.
+- **The same assertion in the LATE regime would fail, correctly.** Scoped to
+  rounds 5-11 / 17-23, a 5-kill round against a saving team pays the
+  **baseline** of `denial(T)`, not ~0. An unscoped version of this test cannot
+  pass in both regimes, and before 2026-09-06 this bullet asked for one.
+  **The fixtures are stated, not inferred** (corrected 2026-09-07 -- this bullet
+  still carried the reasoning "a team that saved is rich, so it full-buys next
+  round, the count is 0", which section 5a-i had already withdrawn: saving
+  describes this round's spending, not next round's purchasing power or buying
+  decision):
+  - **0.5 case:** a saving victim team, **positive removed committed value**,
+    and **five observed next-round full buys**. Assert exactly 0.5 allocated by
+    removal share.
+  - **Non-zero-count case:** a saving victim team whose next-round below-full-buy
+    count is `n > 0`. Assert `0.5 + 0.2n`, **not** the floor -- a saving team
+    that stays poor is paid more than a saving team that re-buys, which is the
+    formula behaving correctly.
 - **Early and late regimes use different readouts, deliberately.** A round-3
   team-round and a round-7 team-round with identical enemy next-round full-buy
   counts but different enemy next-round *bank* receive **different** early-regime
@@ -1085,7 +1480,14 @@ spec's Rollout.
   drift that box exists to stop.
 - Two rounds with identical credits destroyed but different resulting
   full-buy counts produce **different** econ credit -- the (B) finding.
-- Attribution shares sum to the team's round total, within rounding.
+- Attribution shares sum to the team's round total, within rounding -- **when
+  that team removed positive committed value.** With `removed(T) == 0` the
+  shares sum to 0 while `econ_round(T)` may be positive, per section 6's
+  indicator; a test asserting the unconditional identity fails on a legitimate
+  round.
+- **A team that removed nothing still absorbs debits.** Fixture: team A kills
+  nobody, loses two players to team B. Assert A's credit is 0 and A's two
+  debits are non-zero.
 - Rounds 1 and 13 produce exactly 0.
 - `use_realized=False` produces exactly 0 econ component for every row. **This
   is the leakage gate and must be exact.**
