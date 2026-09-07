@@ -304,3 +304,27 @@ def test_fit_ignores_observations_with_undeterminable_winner():
     fit_with_junk = fit_preplant_time_model(obs + unresolved)
 
     assert fit_with_junk.n_observations == fit_with.n_observations
+
+
+def test_shape_uses_the_fitted_mid_knot_not_a_naive_linear_ramp():
+    obs = _synthetic_observations()
+    fit = fit_preplant_time_model(obs)
+
+    # shape() must be pinned exactly as shape_basis says at the anchor knots...
+    assert fit.shape(30.0) == pytest.approx(0.0)
+    assert fit.shape(10.0) == pytest.approx(1.0)
+    assert fit.shape(5.0) == pytest.approx(1.0)
+    # ...and at dt=20 must equal the FITTED ratio, not the naive midpoint 0.5.
+    assert fit.shape(20.0) == pytest.approx(fit.shape_mid_ratio)
+
+
+def test_shape_mid_ratio_falls_back_when_theta2_is_degenerate():
+    # A fixture with zero variance in the outcome pins theta2 near 0
+    # (fit_logistic returns a zero vector for a single-class label), so the
+    # ratio must fall back rather than divide by ~0.
+    obs = [
+        PreplantKillObservation(0, i, 7.0, 0, True, "5v5", round_won_by_killer_team=True)
+        for i in range(50)
+    ]
+    fit = fit_preplant_time_model(obs)
+    assert fit.shape_mid_ratio == pytest.approx(0.5)

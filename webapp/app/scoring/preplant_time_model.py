@@ -162,10 +162,19 @@ def shape_basis(dt: float) -> tuple[float, float]:
 # unchanged), so this module resolves the decomposition the same way the
 # spec resolves k -- by PINNING it at a defined reference point, not
 # claiming a unique split exists.
+#
+# The remaining piece -- what shape(dt) is at the MIDDLE knot (dt=20, w1=1)
+# -- is NOT hand-set to a naive linear ramp. It is the fitted w1-family
+# coefficient (pooled across side, since a single shared shape() curve is
+# what "shape(dt) x adv x side" as a factored product requires), normalised
+# by theta2 so shape(dt<=10) == 1 exactly, matching logit_lift's own pin.
+# shape_mid_ratio is that normalised value: shape(dt) = w1*shape_mid_ratio + w2.
 
 import numpy as np
 
 from app.services.stats_math import fit_logistic
+
+_DEGENERATE_THETA2_FALLBACK = 0.5  # see shape_mid_ratio's docstring
 
 
 def _clamp_adv(adv: int) -> int:
@@ -178,6 +187,7 @@ class PreplantFit:
     slope_atk: float
     intercept_def: float
     slope_def: float
+    shape_mid_ratio: float
     state_effects: dict[str, float]
     include_side_interaction: bool
     n_observations: int
@@ -187,6 +197,14 @@ class PreplantFit:
         if is_attacker:
             return self.intercept_atk + self.slope_atk * adv
         return self.intercept_def + self.slope_def * adv
+
+    def shape(self, dt: float) -> float:
+        """The fitted proximity curve, normalised to peak at exactly 1.0 at
+        the plateau (dt <= 10), 0 at dt >= 30. shape_mid_ratio (the fitted
+        value at dt=20, relative to the plateau) is a real fitted parameter,
+        not assumed linear."""
+        w1, w2 = shape_basis(dt)
+        return w1 * self.shape_mid_ratio + w2
 
 
 def fit_preplant_time_model(
@@ -227,8 +245,11 @@ def fit_preplant_time_model(
 
     idx = 1 + n_state  # skip intercept + state dummies
     # Column order after idx: w1, w2, w1*adv, w2*adv,
-    # [w1*atk, w2*atk, w1*adv*atk, w2*adv*atk]. logit_lift is pinned at the
-    # w2=1 plateau, so only the w2-family coefficients matter here.
+    # [w1*atk, w2*atk, w1*adv*atk, w2*adv*atk]. logit_lift (the amplitude
+    # line) is pinned at the w2=1 plateau, so only the w2-family coefficients
+    # feed intercept_atk/slope_atk/etc. theta1_pooled (the w1 coefficient)
+    # feeds shape_mid_ratio instead -- see PreplantFit.shape's docstring.
+    theta1_pooled = beta[idx + 0]      # w1
     theta2_pooled = beta[idx + 1]      # w2
     theta2_adv_pooled = beta[idx + 3]  # w2*adv
     if include_side_interaction:
@@ -242,6 +263,10 @@ def fit_preplant_time_model(
     intercept_atk = theta2_pooled + theta2_pooled_atk
     slope_def = theta2_adv_pooled
     slope_atk = theta2_adv_pooled + theta2_adv_atk
+    shape_mid_ratio = (
+        float(theta1_pooled / theta2_pooled)
+        if abs(theta2_pooled) > 1e-9 else _DEGENERATE_THETA2_FALLBACK
+    )
 
     state_effects = {reference_state: 0.0} if reference_state else {}
     for i, s in enumerate(other_states):
@@ -250,6 +275,7 @@ def fit_preplant_time_model(
     return PreplantFit(
         intercept_atk=float(intercept_atk), slope_atk=float(slope_atk),
         intercept_def=float(intercept_def), slope_def=float(slope_def),
+        shape_mid_ratio=shape_mid_ratio,
         state_effects=state_effects, include_side_interaction=include_side_interaction,
         n_observations=len(usable),
     )
