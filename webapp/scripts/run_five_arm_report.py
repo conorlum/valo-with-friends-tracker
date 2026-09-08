@@ -65,26 +65,60 @@ from app.services.impact_eval import (
 # weight on the state term alone.
 FEATURE_COMPONENTS_NEW = ["damage", "kill_order_bonus", "time_delta", "econ_component"]
 
+# Today's shipped list, which arms 0, 2 and 4 are evaluated on.
+FEATURE_COMPONENTS_OLD = ["damage", "econ_impact", "time_impact", "swing_impact"]
+
+# EACH ARM CARRIES ITS OWN FEATURE LIST, and getting this wrong silently
+# destroys the whole report. A first run evaluated all five arms on the 8c-i
+# list; arms 1 and 4 came back at exactly +0.00000 with ZERO-WIDTH intervals,
+# because the columns those arms actually move (econ_impact, swing_impact) are
+# not in that list and econ_component is exactly 0 in ex-ante mode -- so their
+# design matrices were identical to arm 0's and the "contrast" was measuring
+# nothing. The arm IS a scoring configuration, so it must be evaluated on the
+# component structure that configuration ships:
+#
+#   arm 0  today's structure          -> old list
+#   arm 1  structure changed          -> new list
+#   arm 2  post-plant retune only     -> old list (structure unchanged)
+#   arm 3  both                       -> new list
+#   arm 4  information removed,       -> old list (structure held FIXED, which
+#          structure held fixed          is the entire point of this arm)
+#
+# That is also what makes the decomposition mean what it says: arm 4 vs 0
+# holds the columns fixed and neutralises their content, arm 1 vs 4 holds the
+# content fixed and changes the columns.
+
 L2_GRID = (0.1, 1.0, 10.0)
 BOOTSTRAP_DRAWS = 2000  # predeclared
 
 
 def _arms(postplant_table):
     return [
-        ("arm 0", "today's shipped scoring", {}),
-        ("arm 1", "econ deletion only", {"enable_econ_component": True}),
+        ("arm 0", "today's shipped scoring", {}, FEATURE_COMPONENTS_OLD),
+        ("arm 1", "econ deletion only", {"enable_econ_component": True},
+         FEATURE_COMPONENTS_NEW),
         ("arm 2", "post-plant retune only", {
             "enable_postplant_leverage": True, "postplant_factor_table": postplant_table,
-        }),
+        }, FEATURE_COMPONENTS_OLD),
         ("arm 3", "both -- what actually ships", {
             "enable_econ_component": True, "enable_postplant_leverage": True,
             "postplant_factor_table": postplant_table,
-        }),
-        ("arm 4", "neutralized control", {"neutralize_econ_terms": True}),
+        }, FEATURE_COMPONENTS_NEW),
+        ("arm 4", "neutralized control", {"neutralize_econ_terms": True},
+         FEATURE_COMPONENTS_OLD),
     ]
 
 
 def _describe(label, point, lo, hi):
+    # A ZERO-WIDTH interval at exactly zero is not "inconclusive" -- it means
+    # the two arms produced identical predictions, which is a statement about
+    # the comparison being degenerate rather than about the effect being
+    # unresolvable. Reporting it as inconclusive would hide a broken contrast
+    # behind a legitimate-sounding verdict.
+    if point == 0.0 and lo == 0.0 and hi == 0.0:
+        print(f"  {label:<34} {point:+.5f}  [{lo:+.5f}, {hi:+.5f}]  "
+              f"*** IDENTICAL -- this arm did not differ from its reference ***")
+        return "identical"
     inconclusive = lo <= 0.0 <= hi
     verdict = (
         "INCONCLUSIVE -- the interval spans zero"
@@ -92,7 +126,7 @@ def _describe(label, point, lo, hi):
         else ("DETERIORATION" if point > 0 else "IMPROVEMENT")
     )
     print(f"  {label:<34} {point:+.5f}  [{lo:+.5f}, {hi:+.5f}]  {verdict}")
-    return inconclusive
+    return "inconclusive" if inconclusive else None
 
 
 def main():
@@ -112,13 +146,13 @@ def main():
     postplant_table = build_factor_table(value_table, extract_postplant_kills(db))
 
     oofs = {}
-    for label, description, scoring_kwargs in _arms(postplant_table):
-        print(f"replaying {label} ({description}) ...", flush=True)
+    for label, description, scoring_kwargs, components in _arms(postplant_table):
+        print(f"replaying {label} ({description}) on {components} ...", flush=True)
         observations = load_all_observations(db, scoring_kwargs=scoring_kwargs)
         if not observations:
             print(f"  {label}: no observations; aborting")
             return
-        feature_names = FEATURE_COMPONENTS_NEW + controls_for(PRIMARY_T2)
+        feature_names = components + controls_for(PRIMARY_T2)
         result = cross_validate(
             observations, [PRIMARY_T2], feature_names, L2_GRID,
             fold_fn=stable_folds,
@@ -134,13 +168,15 @@ def main():
                   f"match_weight={PRIMARY_T2.match_weight})")
             print(f"  dataset_fingerprint: {dataset_fingerprint(match_ids)}")
             print(f"  fold_mapping_hash:   {fold_mapping_hash(stable_folds(match_ids))}")
-            print(f"  features: {FEATURE_COMPONENTS_NEW}")
+            print(f"  arm 0/2/4 features: {FEATURE_COMPONENTS_OLD}")
+            print(f"  arm 1/3   features: {FEATURE_COMPONENTS_NEW}")
             print(f"  paired match-clustered bootstrap, {draws} resamples, two-sided 95%")
             print("  sign convention: loss(arm) - loss(arm 0), so POSITIVE MEANS WORSE")
             print()
 
     print("CONTRASTS")
     inconclusive = []
+    identical = []
     contrasts = {}
     for label in ("arm 1", "arm 2", "arm 3", "arm 4"):
         point, lo, hi = paired_oof_log_loss_delta(
@@ -153,13 +189,19 @@ def main():
             "arm 3": "arm 3 vs 0  BOTH (what ships)",
             "arm 4": "arm 4 vs 0  information removed",
         }[label]
-        if _describe(name, point, lo, hi):
+        verdict = _describe(name, point, lo, hi)
+        if verdict == "inconclusive":
             inconclusive.append(name)
+        elif verdict == "identical":
+            identical.append(name)
 
     point, lo, hi = paired_oof_log_loss_delta(oofs["arm 1"], oofs["arm 4"], draws=draws)
     contrasts["arm 1 vs 4"] = point
-    if _describe("arm 1 vs 4  structure changed", point, lo, hi):
+    verdict = _describe("arm 1 vs 4  structure changed", point, lo, hi)
+    if verdict == "inconclusive":
         inconclusive.append("arm 1 vs 4  structure changed")
+    elif verdict == "identical":
+        identical.append("arm 1 vs 4  structure changed")
 
     print()
     print("DECOMPOSITION of the econ deletion")
@@ -167,6 +209,14 @@ def main():
     print(f"  {contrasts['arm 1']:+.5f} = {contrasts['arm 4']:+.5f} + "
           f"{contrasts['arm 1 vs 4']:+.5f}")
     print("  total deletion = information removed + structure changed")
+
+    if identical:
+        print()
+        print("  *** These contrasts came back IDENTICAL. That is a broken")
+        print("  *** comparison, not a result -- check that each arm is being")
+        print("  *** evaluated on a feature set its change actually moves:")
+        for name in identical:
+            print(f"    - {name}")
 
     if inconclusive:
         print()
