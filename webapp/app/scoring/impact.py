@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Round, RoundPlayerStat
 from app.models.match import Team
+from app.scoring import econ_component
 from app.scoring.plant_window import attacking_team as _plant_window_attacking_team
 from app.scoring.preplant_empirical_factor import empirical_preplant_factor
 
@@ -457,10 +458,102 @@ def find_unscored_match_ids(db: Session) -> list[int]:
     ]
 
 
+def _econ_components_for_round(
+    round_number: int, is_final_round: bool, kills: list[dict],
+    match_players: dict[int, MatchPlayer],
+    round_player_stats: dict[int, dict[int, dict]],
+    use_realized: bool,
+) -> dict[int, float]:
+    """econ_component per match_player for one round (econ spec, sections
+    4-7). Returns {} when the round abstains, so callers write 0.
+
+    Guards run BEFORE any division, and abstention is zero credit -- never
+    the 0.5 baseline, and never an average taken over whichever rows happen
+    to exist.
+    """
+    if not use_realized:
+        return {}  # the leakage gate: this component reads round N+1
+    if is_final_round:
+        return {}
+    if not (econ_component.is_early_regime(round_number)
+            or econ_component.is_late_regime(round_number)):
+        return {}  # pistols, halftime, overtime
+
+    this_round = round_player_stats.get(round_number) or {}
+    next_round = round_player_stats.get(round_number + 1) or {}
+    if not next_round:
+        return {}
+
+    roster: dict[Team, list[int]] = defaultdict(list)
+    for match_player_id, mp in match_players.items():
+        roster[mp.team].append(match_player_id)
+
+    committed: dict[int, float] = {}
+    for match_player_id in match_players:
+        stat = this_round.get(match_player_id)
+        if stat is None:
+            return {}  # a roster member missing a round N record -> abstain
+        committed[match_player_id] = econ_component.committed_value(
+            stat["loadout"], match_players[match_player_id].agent
+        )
+
+    econ_round_by_team: dict[Team, float] = {}
+    for team, members in roster.items():
+        enemies = [m for m in match_players if match_players[m].team != team]
+        if any(m not in next_round for m in enemies):
+            econ_round_by_team[team] = 0.0
+            continue
+        below = sum(
+            1 for m in enemies if next_round[m]["loadout"] < econ_component.FULL_BUY_THRESHOLD
+        )
+        wealth = sum(next_round[m]["loadout"] + next_round[m]["remaining"] for m in enemies)
+        mean_committed = sum(committed[m] for m in enemies) / len(enemies) if enemies else None
+        econ_round_by_team[team] = econ_component.econ_round(econ_component.EconRoundInputs(
+            round_number=round_number, is_final_round=is_final_round,
+            enemy_below_full_buy_next=below, enemy_wealth_next=wealth,
+            enemy_roster_size=len(enemies), enemy_mean_committed=mean_committed,
+        ))
+
+    removed: dict[int, float] = defaultdict(float)
+    lost: dict[int, float] = defaultdict(float)
+    for kill in kills:
+        killer_id = kill["killer_match_player_id"]
+        victim_id = kill["death_match_player_id"]
+        if killer_id not in match_players or victim_id not in match_players:
+            continue
+        # Self-kills and environmental deaths are excluded ENTIRELY -- no
+        # credit and no debit. They are not transfers: no enemy gains from
+        # them, and they do not appear in removed(opp), so section 6's
+        # denominator cannot express them.
+        if killer_id == victim_id:
+            continue
+        if match_players[killer_id].team == match_players[victim_id].team:
+            continue
+        removed[killer_id] += committed[victim_id]
+        lost[victim_id] += committed[victim_id]
+
+    attributions = econ_component.attribute_econ(
+        [
+            econ_component.PlayerRemoval(
+                player=match_player_id, team=match_players[match_player_id].team,
+                removed=removed.get(match_player_id, 0.0),
+                lost=lost.get(match_player_id, 0.0),
+            )
+            for match_player_id in match_players
+        ],
+        econ_round_by_team=econ_round_by_team,
+    )
+    return {
+        match_player_id: econ_component.ECON_SCALE * attribution.value
+        for match_player_id, attribution in attributions.items()
+    }
+
+
 def build_impact_rows_for_match(
     db: Session, match_id: int, use_realized_swing: bool = True,
     enable_preplant_empirical: bool = False,
     enable_postplant_leverage: bool = False, postplant_factor_table=None,
+    enable_econ_component: bool = False,
 ) -> list[CalculatedImpact]:
     rounds = db.query(Round).filter_by(match_id=match_id).order_by(Round.round_number).all()
     rounds_by_number: dict[int, Round] = {r.round_number: r for r in rounds}
@@ -683,9 +776,18 @@ def build_impact_rows_for_match(
     calculated: list[CalculatedImpact] = []
 
     # Aggregate per (round, match_player) and write impact_scores.
+    last_round_number = max(round_player_stats) if round_player_stats else 0
     for round_number, mp_stats in round_player_stats.items():
         round_row = rounds_by_number[round_number]
         kills = round_kills.get(round_number, [])
+
+        econ_by_player = (
+            _econ_components_for_round(
+                round_number, round_number >= last_round_number, kills, match_players,
+                round_player_stats, use_realized=use_realized_swing,
+            )
+            if enable_econ_component else {}
+        )
 
         for match_player_id, stat in mp_stats.items():
             acs = stat["score"]
@@ -737,24 +839,40 @@ def build_impact_rows_for_match(
                         econ_mismatch_death_sum += kill["death_order_bonus_x_econ"]
 
             damages = round(damage_and_assists * 1.25)
-            kill_impact = round(
-                damages
-                + (
-                    FACTOR_WEIGHTS["econ"] * kill_order_bonus_x_econ_sum
-                    + FACTOR_WEIGHTS["time"] * kill_order_bonus_x_time_sum
-                    + FACTOR_WEIGHTS["swing"] * kill_order_bonus_x_swing_sum
+            econ_component_value = round(econ_by_player.get(match_player_id, 0.0))
+            time_impact_value = round(kill_order_bonus_x_time_sum - death_order_bonus_x_time_sum)
+
+            if enable_econ_component:
+                # Econ spec section 8: impact = damage + leverage + econ,
+                # replacing damages + mean(econ, time, swing) in which all
+                # three terms shared kill_order_bonus. swing_impact leaves the
+                # FORMULA here; its column stays and is written as 0 below,
+                # because the evaluation harness reads it by name and silently
+                # changing its meaning would invalidate every stored
+                # comparison. time_impact does NOT die -- it IS the leverage
+                # component under the new structure.
+                kill_impact = round(damages + kill_order_bonus_x_time_sum)
+                death_impact = round(death_order_bonus_x_time_sum)
+                impact = damages + time_impact_value + econ_component_value
+            else:
+                kill_impact = round(
+                    damages
+                    + (
+                        FACTOR_WEIGHTS["econ"] * kill_order_bonus_x_econ_sum
+                        + FACTOR_WEIGHTS["time"] * kill_order_bonus_x_time_sum
+                        + FACTOR_WEIGHTS["swing"] * kill_order_bonus_x_swing_sum
+                    )
+                    / _FACTOR_WEIGHT_TOTAL
                 )
-                / _FACTOR_WEIGHT_TOTAL
-            )
-            death_impact = round(
-                (
-                    FACTOR_WEIGHTS["econ"] * death_order_bonus_x_econ_sum
-                    + FACTOR_WEIGHTS["time"] * death_order_bonus_x_time_sum
-                    + FACTOR_WEIGHTS["swing"] * death_order_bonus_x_swing_sum
+                death_impact = round(
+                    (
+                        FACTOR_WEIGHTS["econ"] * death_order_bonus_x_econ_sum
+                        + FACTOR_WEIGHTS["time"] * death_order_bonus_x_time_sum
+                        + FACTOR_WEIGHTS["swing"] * death_order_bonus_x_swing_sum
+                    )
+                    / _FACTOR_WEIGHT_TOTAL
                 )
-                / _FACTOR_WEIGHT_TOTAL
-            )
-            impact = kill_impact - death_impact
+                impact = kill_impact - death_impact
 
             traded_teammate_targets = {
                 str(k): v for k, v in trade_kill_targets[round_number].get(match_player_id, {}).items()
@@ -771,9 +889,20 @@ def build_impact_rows_for_match(
                     death_impact=death_impact,
                     impact=impact,
                     damage=damages,
-                    econ_impact=round(kill_order_bonus_x_econ_sum - death_order_bonus_x_econ_sum),
-                    time_impact=round(kill_order_bonus_x_time_sum - death_order_bonus_x_time_sum),
-                    swing_impact=round(kill_order_bonus_x_swing_sum - death_order_bonus_x_swing_sum),
+                    # econ_impact and swing_impact keep their columns but are
+                    # written as 0 once the new structure is live -- they left
+                    # the formula, and redefining a column consumers read by
+                    # name would invalidate every stored comparison.
+                    econ_impact=(
+                        0 if enable_econ_component
+                        else round(kill_order_bonus_x_econ_sum - death_order_bonus_x_econ_sum)
+                    ),
+                    time_impact=time_impact_value,
+                    swing_impact=(
+                        0 if enable_econ_component
+                        else round(kill_order_bonus_x_swing_sum - death_order_bonus_x_swing_sum)
+                    ),
+                    econ_component=econ_component_value,
                     kill_order_bonus=round(kill_order_bonus_sum - death_order_bonus_sum),
                     econ_kill=round(econ_mismatch_kill_sum),
                     econ_death=round(econ_mismatch_death_sum),
