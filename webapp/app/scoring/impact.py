@@ -173,7 +173,8 @@ def _kill_order_bonus(team1_kill_index: int, team2_kill_index: int, kill_team: T
 def _time_factor(
     round_row: Round, kill_time: float, for_death: bool = False,
     is_attacker: bool | None = None, enable_preplant_empirical: bool = False,
-    use_realized: bool = True,
+    use_realized: bool = True, alive_counts: tuple[int, int] | None = None,
+    postplant_factor_table=None, enable_postplant_leverage: bool = False,
 ) -> float:
     # Mirrors the original's chronological state machine (planted/plantedTime/
     # exploded/defused flags updated as the event log is walked), reconstructed
@@ -190,6 +191,33 @@ def _time_factor(
         return 0.5
 
     if plant_time is not None and kill_time >= plant_time:
+        # Part 4 (spec, "Part 4 -- the post-plant regime"). When enabled, the
+        # measured leverage ratio REPLACES both the side-blind ramp and the
+        # flat plant+38..45 override: the ramp is backwards for attacker kills
+        # and for defender deaths, and the override pays 1.75 to both sides at
+        # the moment their stakes are furthest apart (in a 1v1 at t=38 the
+        # attacker carries 10x the defender's risk, M26). "No hard
+        # discontinuity at plant+38" -- the measured shape already contains
+        # both deadlines and does not need either hard-coded.
+        #
+        # Nothing here is gated by use_realized: at a post-plant kill the
+        # plant has already happened, so seconds-since-plant, the alive counts
+        # and the side are all known at kill time. That is the mirror of Part
+        # 3's leakage gate and it is exact -- V's own fitting leakage is
+        # handled by the out-of-fold table in evaluation, not by this switch.
+        if (
+            enable_postplant_leverage and postplant_factor_table is not None
+            and alive_counts is not None and is_attacker is not None
+        ):
+            attackers_alive, defenders_alive = alive_counts
+            return postplant_factor_table.factor(
+                attackers_alive, defenders_alive, int(kill_time - plant_time),
+                # is_attacker describes the KILLER, so the victim is on the
+                # other side. D is keyed on the VICTIM's side -- that split is
+                # the entire reason the factor is side-dependent.
+                victim_is_attacker=not is_attacker,
+            )
+
         if plant_time + 38 <= kill_time <= plant_time + 45:
             # A kill in this window is denying/clutching a near-explosion round, so
             # it's highly valuable. A death in this window isn't the mirror-image
@@ -432,6 +460,7 @@ def find_unscored_match_ids(db: Session) -> list[int]:
 def build_impact_rows_for_match(
     db: Session, match_id: int, use_realized_swing: bool = True,
     enable_preplant_empirical: bool = False,
+    enable_postplant_leverage: bool = False, postplant_factor_table=None,
 ) -> list[CalculatedImpact]:
     rounds = db.query(Round).filter_by(match_id=match_id).order_by(Round.round_number).all()
     rounds_by_number: dict[int, Round] = {r.round_number: r for r in rounds}
@@ -567,6 +596,19 @@ def build_impact_rows_for_match(
             combined_swing_factor = team1_combined_swing if killer_team == Team.TEAM_2 else team2_combined_swing
             kill_order_bonus = _kill_order_bonus(team1_kill_index, team2_kill_index, killer_team, self_kill)
 
+            # Alive counts BEFORE this kill, in (attackers, defenders) order --
+            # Part 4's V table is keyed that way. Note the index names are
+            # inverted relative to the teams they count (see the comment where
+            # they are initialised): team2_kill_index holds TEAM_1's alive
+            # count and team1_kill_index holds TEAM_2's.
+            attacking = _attacking_team(round_number)
+            if attacking is None:
+                alive_counts = None
+            elif attacking == Team.TEAM_1:
+                alive_counts = (team2_kill_index, team1_kill_index)
+            else:
+                alive_counts = (team1_kill_index, team2_kill_index)
+
             kill["kill_order_bonus"] = kill_order_bonus if not self_kill else 0
             kill["kill_order_bonus_x_econ"] = (
                 kill_order_bonus * kill["econ_differential_factor"] if not self_kill else 0
@@ -574,9 +616,12 @@ def build_impact_rows_for_match(
             kill["kill_order_bonus_x_time"] = (
                 kill_order_bonus * _time_factor(
                     round_row, kill["event_time_seconds"],
-                    is_attacker=(_attacking_team(round_number) == killer_team),
+                    is_attacker=(attacking == killer_team),
                     enable_preplant_empirical=enable_preplant_empirical,
                     use_realized=use_realized_swing,
+                    alive_counts=alive_counts,
+                    postplant_factor_table=postplant_factor_table,
+                    enable_postplant_leverage=enable_postplant_leverage,
                 ) if not self_kill else 0
             )
             kill["kill_order_bonus_x_swing"] = kill_order_bonus * combined_swing_factor if not self_kill else 0
@@ -602,9 +647,15 @@ def build_impact_rows_for_match(
                 # Always the KILLER's side, per the candidate doc: a death is the
                 # transfer of what the victim's team lost, referencing the same
                 # event/side the kill-side scalar used -- not the victim's side.
-                is_attacker=(_attacking_team(round_number) == killer_team),
+                # Part 4 takes the same value for kill and death by the same
+                # argument: the event transfers D, the killer is credited it and
+                # the victim debited it (spec, "Deaths").
+                is_attacker=(attacking == killer_team),
                 enable_preplant_empirical=enable_preplant_empirical,
                 use_realized=use_realized_swing,
+                alive_counts=alive_counts,
+                postplant_factor_table=postplant_factor_table,
+                enable_postplant_leverage=enable_postplant_leverage,
             )
             kill["death_order_bonus_x_swing"] = death_order_bonus * combined_swing_factor
 
