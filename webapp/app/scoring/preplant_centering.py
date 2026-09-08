@@ -1,4 +1,14 @@
-"""The Part 3 kill-side centring gate and its reported death-side residual
+"""SUPERSEDED 2026-09-08 -- part of the model-based Part 3 scalar that was
+not shipped; see preplant_scalar.py's module docstring and
+docs/superpowers/specs/2026-09-03-plant-window-and-time-factor-design.md's
+"DECIDED 2026-09-08" section. The centering GATE ITSELF (solve c so
+mean(kill_order_bonus * c * s) matches today's flat baseline) still applies
+to whatever ships -- it has not yet been run against
+preplant_empirical_factor's strength=3.0 curve and must be before that
+curve is activated. This module's specific solve, over the superseded
+model's PreplantFit, is retained for its fitting-diagnostics value.
+
+The Part 3 kill-side centring gate and its reported death-side residual
 (spec, 'The gate is on the KILL side'; M19, M20)."""
 
 from dataclasses import dataclass

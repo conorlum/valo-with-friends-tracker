@@ -1,4 +1,9 @@
-"""k selection per docs/superpowers/2026-09-07-predeclared-values.md, 'The
+"""SUPERSEDED 2026-09-08 -- part of the model-based Part 3 scalar that was
+not shipped; see preplant_scalar.py's module docstring and
+docs/superpowers/specs/2026-09-03-plant-window-and-time-factor-design.md's
+"DECIDED 2026-09-08" section. Retained for its fitting-diagnostics value.
+
+k selection per docs/superpowers/2026-09-07-predeclared-values.md, 'The
 k / FLOOR / CEIL / W grid decision'. Deterministic; nothing here reads a
 score, a correlation, or |c-1| -- see that section for why."""
 

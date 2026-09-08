@@ -1,7 +1,19 @@
-# Empirical pre-plant timing factor: fitted review candidate
+# Empirical pre-plant timing factor: the shipped Part 3 mechanism
 
 Date: 2026-09-08. User request: follow the state-adjusted data, state conclusions,
 and make a fitted function that returns a factor for Impact.
+
+**UPDATE 2026-09-08 (later same day):** promoted from review candidate to the
+decided Part 3 mechanism, at strength=3.0, wired behind `enable_preplant_
+empirical` in `app/scoring/impact.py`'s `_time_factor` (off by default; no
+change to any currently scored match). See
+`docs/superpowers/specs/2026-09-03-plant-window-and-time-factor-design.md`,
+Part 3's "DECIDED 2026-09-08" section for the formal record -- it supersedes
+that spec's original model-based parameterisation. What is still open before
+this can be activated (flag flipped, `IMPACT_CALCULATION_VERSION` bumped):
+the kill-side centering gate (below, "uncentered") has not been run at
+strength=3.0, and the boundary discontinuity at dt=30 is unresolved. The
+original status note, for context, follows unchanged:
 
 Status: implemented as an additive candidate. No changes to the live scoring
 path, calculation version, stored scores, or existing spec requirements. This

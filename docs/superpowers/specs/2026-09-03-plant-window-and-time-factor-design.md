@@ -448,6 +448,65 @@ measurement work below is retained so it is not re-derived.
 
 ## Part 3 -- the `_time_factor` redesign
 
+### DECIDED 2026-09-08: shipped as an empirical curve, superseding the parameterisation below
+
+The parameterisation this Part originally specified -- `scalar = clamp(1 +
+amplitude(adv, side) * shape(seconds_to_plant), 0.2, 1.7)`, a 2-knot logistic
+fit with `k`-grid selection and a kill-side centering solve -- was fully
+implemented (`app/scoring/preplant_time_model.py`, `preplant_k_selection.py`,
+`preplant_centering.py`, `preplant_scalar.py`; Tasks 1-7 of
+`docs/superpowers/plans/2026-09-07-preplant-time-factor-part3.md`). Fixing a
+real reconstruction bug in that fit (`docs/superpowers/2026-09-08-preplant-dip-
+independent-verification.md`, section 7, Bug B) surfaced that the model,
+honestly fit, is **non-monotonic** -- `shape(dt)` overshoots to 1.545 at the
+middle knot before settling to 1.0 at the plateau -- contradicting this
+spec's own Testing assertion below and reproducing, in the model's own
+coefficients, the inverted-U the independent verification found in the raw
+data (section 4 of that doc).
+
+Rather than resolve that by re-fitting the interaction, reconstructing the
+scalar from the additive predictor, or dropping the middle knot (the three
+options drafted for this decision), the shipped implementation instead
+replaced the parametric model with a **direct empirical curve**:
+`app/scoring/preplant_empirical_factor.py`, a smoothed per-second lookup of
+the state-adjusted win-rate lift, evaluated separately per side and
+converted to a scalar via `clamp(1 + 3.0 * (fitted_rate(dt, side) -
+reference_rate(side)), 0.2, 1.7)`. This is a deliberate, explicit product
+decision, made with the independent verification's finding on the table
+(most of the raw `dt` association is composition -- man-count at the plant,
+not proximity to it -- per that doc's section 6) rather than in spite of it.
+
+**What this means for the rest of Part 3, read against what's below:**
+
+- **Parameterisation / The fitting contract sections below describe the
+  superseded design**, kept as the historical record of the analysis that
+  was done, not the shipped mechanism. Do not transcribe further constants
+  into `preplant_scalar.py` against this decision; `preplant_k_selection.py`,
+  `preplant_centering.py` and `preplant_scalar.py` are unused by the shipped
+  path (`app/scoring/impact.py` imports `preplant_empirical_factor`, not
+  `preplant_scalar`) and are retained for their fitting-diagnostics value,
+  not as dormant production code.
+- **No advantage interaction.** The shipped curve is a function of `(dt,
+  side)` only; it does not vary by man-advantage. The "continuous in
+  advantage, no hard cutoff at adv=0" requirement below does not apply to
+  what shipped.
+- **No `k`-grid selection.** The `3.0` multiplier is a direct policy choice
+  (documented in `docs/superpowers/2026-09-08-preplant-empirical-factor-
+  candidate.md`), not selected by the predeclared floor/ceiling clamp-rate
+  rule below.
+- **Centering is not yet solved for the shipped curve.** The kill-side
+  centering gate (below, "The gate is on the KILL side") has not been run
+  against `preplant_empirical_factor` at strength 3.0. It is wired in
+  (`app/scoring/impact.py`, `enable_preplant_empirical`, default `False`)
+  but must not be activated (flag flipped, `IMPACT_CALCULATION_VERSION`
+  bumped) before that gate is run, per the Rollout section below.
+- **Monotonicity is explicitly not satisfied.** The shipped curve is
+  non-monotone by construction (it reproduces the independent verification's
+  inverted-U rather than avoiding it). The Testing section's "shape() is
+  monotone non-decreasing" assertion applies to the superseded model, not to
+  `preplant_empirical_factor` -- there is no equivalent assertion for the
+  shipped curve, and it does not exist yet as a written test.
+
 ### Standing design constraint: no kill is ever worth negative Impact
 
 Stated here so it is not relitigated. A kill may be worth very little; it is

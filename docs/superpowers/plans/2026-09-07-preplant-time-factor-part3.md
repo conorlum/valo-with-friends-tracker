@@ -1472,6 +1472,20 @@ git commit -m "Add the Part 3 fit-and-report script, run against the live DB"
 
 ### Task 8: Transcribe the fitted constants and close out the dormancy tests
 
+**SUPERSEDED 2026-09-08.** Tasks 8 and 9 as written below were not executed
+against this model. Fixing Bug B (the shape*lift reconstruction mismatch;
+see `2026-09-08-preplant-dip-independent-verification.md` section 7) surfaced
+that the model, correctly fit, is non-monotonic, contradicting this Part's
+Testing assertion. Rather than resolve that within this parameterisation,
+Part 3 shipped via a different mechanism: `app/scoring/preplant_empirical_
+factor.py`, wired behind `enable_preplant_empirical` in `impact.py` (the
+Task-9-shaped wiring step was done for THAT module, not this one -- see the
+spec's "DECIDED 2026-09-08" section under Part 3). `preplant_scalar.py`,
+`preplant_k_selection.py` and `preplant_centering.py` remain unused,
+placeholder-valued, and are not on a path to being wired in without
+reopening that decision. Left below as the historical record of the plan
+as originally scoped.
+
 **Files:**
 - Modify: `webapp/app/scoring/preplant_scalar.py`
 - Modify: `webapp/tests/test_preplant_scalar.py`

@@ -1,11 +1,18 @@
-"""The Part 3 runtime scalar. DORMANT: every constant below is a
-placeholder that makes preplant_proximity_scalar return exactly 1.0 for
-every input, until scripts/fit_preplant_time_factor.py has been run against
-the real DB and its reported constants are transcribed here. Do not wire
-this into impact.py's default path before that happens -- see
-docs/superpowers/plans/2026-09-07-preplant-time-factor-part3.md's Global
-Constraints (no rescore, no IMPACT_CALCULATION_VERSION bump until Part 3,
-Part 4 and the econ swap ship together)."""
+"""SUPERSEDED 2026-09-08 -- not wired into app.scoring.impact and not the
+shipped Part 3 mechanism. See
+docs/superpowers/specs/2026-09-03-plant-window-and-time-factor-design.md,
+Part 3's "DECIDED 2026-09-08" section: Part 3 shipped as
+app.scoring.preplant_empirical_factor.empirical_preplant_factor (wired
+behind enable_preplant_empirical in impact.py) instead of this model-based
+scalar. Retained for its fitting-diagnostics value (the logistic model
+behind it is real, tested infrastructure), not as dormant production code
+-- do not transcribe further constants here or wire this into impact.py
+without first reopening that decision.
+
+Original docstring, for context: every constant below is a placeholder that
+makes preplant_proximity_scalar return exactly 1.0 for every input, until
+scripts/fit_preplant_time_factor.py's reported constants are transcribed
+here -- which per the decision above, will not happen."""
 
 from app.scoring.preplant_k_selection import raw_scalar
 from app.scoring.preplant_time_model import PreplantFit
