@@ -90,15 +90,21 @@ def main():
     report: dict = {}
 
     # =====================================================================
-    # 0. The fitting/runtime mismatch, quantified against the ALREADY
-    #    FITTED (committed) 2-knot model.
+    # 0. The fitting/runtime mismatch (Bug B,
+    #    2026-09-08-preplant-dip-independent-verification.md section 7) is
+    #    now fixed at the source: fit_preplant_time_model profiles
+    #    shape_mid_ratio by grid search so shape(dt)*logit_lift(adv,side) IS
+    #    the fitted linear predictor, not a reconstruction of a separately
+    #    fitted w1 coefficient (there is no such independent coefficient any
+    #    more -- see the module-level comment above fit_preplant_time_model).
+    #    This section now just confirms that by construction, rather than
+    #    quantifying a mismatch that no longer exists.
     # =====================================================================
     print("\n=== 0. fitting/runtime mismatch check ===")
     fit = fit_preplant_time_model(usable, include_side_interaction=True)
-    theta2_pooled = fit.intercept_def  # == theta2_pooled exactly, no offset
-    theta1_pooled = fit.shape_mid_ratio * theta2_pooled
-    print(f"  fitted: theta1(dt=20, pooled)={theta1_pooled:+.4f}   "
-          f"theta2(dt<=10, pooled)={theta2_pooled:+.4f}   shape_mid_ratio={fit.shape_mid_ratio:+.4f}")
+    print(f"  fitted: shape_mid_ratio={fit.shape_mid_ratio:+.4f}   "
+          f"intercept_atk={fit.intercept_atk:+.4f}  slope_atk={fit.slope_atk:+.4f}   "
+          f"intercept_def={fit.intercept_def:+.4f}  slope_def={fit.slope_def:+.4f}")
 
     mismatch_rows = []
     for dt in (30.0, 25.0, 20.0, 15.0, 10.0, 5.0, 0.0):
@@ -106,8 +112,12 @@ def main():
             for is_attacker in (True, False):
                 w1, w2 = shape_basis(dt)
                 lift = fit.logit_lift(adv, is_attacker)
-                eta_true = w1 * theta1_pooled + w2 * lift  # the model actually fitted
-                eta_runtime = fit.shape(dt) * lift          # what shape()*logit_lift() computes
+                # eta_true: what the profiled fit actually optimised -- s(dt;r)*lift, where
+                # s(dt;r) = w1*shape_mid_ratio + w2 is exactly fit.shape(dt). No independent
+                # per-knot coefficient exists to disagree with it any more.
+                s = w1 * fit.shape_mid_ratio + w2
+                eta_true = s * lift
+                eta_runtime = fit.shape(dt) * lift  # what shape()*logit_lift() computes
                 mismatch_rows.append({
                     "dt": dt, "adv": adv, "is_attacker": is_attacker,
                     "eta_true": round(float(eta_true), 4),
@@ -121,15 +131,15 @@ def main():
                   f"delta={row['delta']:+.4f}")
     max_abs_delta = max(abs(r["delta"]) for r in mismatch_rows)
     print(f"  max |delta| across the grid above: {max_abs_delta:.4f} logits")
-    print("  CONCLUSION: shape(dt)*logit_lift(adv,side) != the model's own fitted linear")
-    print("  predictor whenever logit_lift(adv,side) != theta2_pooled (i.e. whenever adv!=0")
-    print("  or side != the reference), because w1 was fit WITHOUT any side/adv interaction")
-    print("  (a deliberate, tested design choice -- Task 3), so its true contribution to eta")
-    print("  is the FLAT constant theta1_pooled, not theta1_pooled*(lift(adv,side)/theta2_pooled).")
+    print("  CONCLUSION: shape(dt)*logit_lift(adv,side) == the model's own fitted linear")
+    print("  predictor at every dt/adv/side, by construction (Bug B fix) -- fit_preplant_time_model")
+    print("  now profiles shape_mid_ratio directly against this product, rather than fitting w1")
+    print("  as an independent pooled coefficient and dividing by theta2 after the fact.")
     report["mismatch"] = {
-        "theta1_pooled": float(theta1_pooled), "theta2_pooled": float(theta2_pooled),
-        "shape_mid_ratio": float(fit.shape_mid_ratio), "grid": mismatch_rows,
-        "max_abs_delta_logits": float(max_abs_delta),
+        "shape_mid_ratio": float(fit.shape_mid_ratio),
+        "intercept_atk": float(fit.intercept_atk), "slope_atk": float(fit.slope_atk),
+        "intercept_def": float(fit.intercept_def), "slope_def": float(fit.slope_def),
+        "grid": mismatch_rows, "max_abs_delta_logits": float(max_abs_delta),
     }
 
     # =====================================================================
@@ -275,9 +285,8 @@ def main():
     idx_bucket_atk = idx_atk_main + 1     # 30 more columns: dt_bucket x atk
 
     def_bucket_coef = {bl: float(beta[idx_bucket_def + i]) for i, bl in enumerate(dt_buckets_ordered)}
-    atk_main = float(beta[idx_atk_main])
     atk_bucket_coef = {
-        bl: def_bucket_coef[bl] + atk_main + float(beta[idx_bucket_atk + i])
+        bl: def_bucket_coef[bl] + float(beta[idx_bucket_atk + i])
         for i, bl in enumerate(dt_buckets_ordered)
     }
     def_bucket_coef = {bl: def_bucket_coef[bl] for bl in dt_buckets_ordered}

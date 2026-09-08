@@ -156,25 +156,48 @@ def shape_basis(dt: float) -> tuple[float, float]:
 # states keep their real alive counts. logit_lift(adv, side) is defined at
 # the near-plant plateau (w1=0, w2=1, i.e. dt <= 10, where shape(dt) == 1 by
 # construction), so shape(dt) * logit_lift(adv, side) reproduces the fitted
-# linear predictor exactly at every dt: the joint shape*adv*side fit is not
-# uniquely decomposable into a separate shape() and amplitude() on its own
-# (scale one up and the other down by any constant, the product is
-# unchanged), so this module resolves the decomposition the same way the
-# spec resolves k -- by PINNING it at a defined reference point, not
-# claiming a unique split exists.
+# linear predictor exactly at every dt.
 #
-# The remaining piece -- what shape(dt) is at the MIDDLE knot (dt=20, w1=1)
-# -- is NOT hand-set to a naive linear ramp. It is the fitted w1-family
-# coefficient (pooled across side, since a single shared shape() curve is
-# what "shape(dt) x adv x side" as a factored product requires), normalised
-# by theta2 so shape(dt<=10) == 1 exactly, matching logit_lift's own pin.
-# shape_mid_ratio is that normalised value: shape(dt) = w1*shape_mid_ratio + w2.
+# FIT AS A PRODUCT, not reverse-engineered into one. An earlier version fit
+# w1 (the dt=20 knot) as its own pooled, un-interacted coefficient theta1,
+# then set shape_mid_ratio = theta1/theta2 after the fact, hoping
+# shape(dt)*logit_lift(adv, side) would reproduce it. It doesn't, except at
+# the one cell where logit_lift(adv, side) happens to equal theta2 -- see
+# docs/superpowers/2026-09-08-preplant-dip-independent-verification.md
+# section 7, Bug B, up to 3.2 logits off everywhere else. (Interacting w1
+# with adv/side directly -- giving it its own independent intercept/slope
+# family -- was tried before that and produced an unstable shape_mid_ratio;
+# it also wouldn't have actually restored the product form, since nothing
+# forces two independently-fit knot families to be proportional.)
+#
+# Instead, shape_mid_ratio is treated as what it is: the one nuisance
+# parameter of a genuinely multiplicative model, profiled by grid search
+# (SHAPE_MID_RATIO_COARSE_GRID below -- coarse then a fine pass around the
+# coarse winner, both fixed and deterministic, no adaptive optimizer). For each
+# candidate ratio r, dt's ENTIRE contribution collapses to a single scalar
+# s(dt; r) = w1*r + w2, and the amplitude family (state FE aside) is fit as
+# s * [1, adv, atk, adv*atk] -- one shared logit_lift(adv, side), scaled by
+# s, at every dt. The r minimising training deviance is shape_mid_ratio; the
+# amplitude coefficients at that r are intercept_atk/slope_atk/etc. below.
+# By construction shape(dt) * logit_lift(adv, side) now IS the fitted linear
+# predictor at every dt, not an approximation of it.
 
 import numpy as np
 
-from app.services.stats_math import back_transform, fit_logistic, standardize
+from app.services.stats_math import back_transform, fit_logistic, predict_proba, standardize, weighted_log_loss
 
 _DEGENERATE_THETA2_FALLBACK = 0.5  # see shape_mid_ratio's docstring
+
+# Profiled over shape_mid_ratio (see the block comment above). Coarse pass
+# fixed at step 0.05 over a wide range; the fine pass re-centres on the
+# coarse winner at step 0.005 across +/-0.05. Both grids are fixed ahead of
+# any run, per this repo's predeclared-values discipline -- neither widens
+# or shifts based on a result.
+SHAPE_MID_RATIO_COARSE_GRID: tuple[float, ...] = tuple(
+    round(v, 2) for v in np.arange(-3.0, 3.0 + 1e-9, 0.05)
+)
+_SHAPE_MID_RATIO_FINE_STEP = 0.005
+_SHAPE_MID_RATIO_FINE_RADIUS = 0.05
 
 
 def _clamp_adv(adv: int) -> int:
@@ -207,84 +230,103 @@ class PreplantFit:
         return w1 * self.shape_mid_ratio + w2
 
 
+def _amplitude_design_row(o: PreplantKillObservation, r: float, include_side_interaction: bool) -> list[float]:
+    """s(dt; r) = w1*r + w2 -- dt's entire contribution collapses to one
+    scalar at candidate ratio r, shared by every column below. This is what
+    makes the fit a literal product shape(dt) * logit_lift(adv, side)."""
+    w1, w2 = shape_basis(o.dt)
+    s = w1 * r + w2
+    adv_c = _clamp_adv(o.adv)
+    atk = 1.0 if o.is_attacker else 0.0
+    row = [s, s * adv_c]
+    if include_side_interaction:
+        row += [s * atk, s * adv_c * atk]
+    return row
+
+
+def _fit_at_ratio(usable, other_states, labels, r, include_side_interaction):
+    rows = [
+        [1.0 if o.exact_state == st else 0.0 for st in other_states]
+        + _amplitude_design_row(o, r, include_side_interaction)
+        for o in usable
+    ]
+    X = np.array(rows, dtype=float)
+    # Standardize before ridge-penalized fitting, then back-transform to raw
+    # units. Without this, fit_logistic's uniform l2 penalty shrinks columns
+    # unevenly by their natural scale (0/1 state dummies vs. shape*adv
+    # products spanning several units) -- exactly the trap
+    # win_probability.py's ValueModel docstring warns about, and the cause
+    # of an early, wildly wrong shape_mid_ratio caught while running this
+    # against the real DB (Task 7).
+    scaled, _, centre, scale = standardize(X, X)
+    beta_scaled = fit_logistic(scaled, labels, l2=1.0)
+    beta = back_transform(beta_scaled, centre, scale)
+    deviance = weighted_log_loss(predict_proba(beta, X), labels)
+    return beta, deviance
+
+
 def fit_preplant_time_model(
     observations: list[PreplantKillObservation], include_side_interaction: bool = True,
 ) -> PreplantFit:
     """Logistic regression of round-win on shape(dt) x adv x side, plus
     exact pre-kill state fixed effects (spec, 'Weights and errors'). One row
     per observation; hand-rolled IRLS (app.services.stats_math.fit_logistic)
-    since this repo has no statsmodels/scipy dependency."""
+    since this repo has no statsmodels/scipy dependency.
+
+    shape_mid_ratio is profiled by grid search (see the module-level comment
+    above `fit_preplant_time_model`'s definition) rather than fit as an
+    independent coefficient and divided out after the fact -- that produced
+    Bug B (docs/superpowers/2026-09-08-preplant-dip-independent-verification.md
+    section 7): the reconstructed shape(dt) * logit_lift(adv, side) disagreed
+    with the actual fitted linear predictor by up to 3.2 logits away from the
+    plateau. Profiling fits the product directly, so no reconstruction step
+    exists to disagree."""
     usable = [o for o in observations if o.round_won_by_killer_team is not None]
     states = sorted({o.exact_state for o in usable})
     reference_state = "5v5" if "5v5" in states else (states[0] if states else None)
     other_states = [s for s in states if s != reference_state]
-
-    rows, labels = [], []
-    for o in usable:
-        w1, w2 = shape_basis(o.dt)
-        adv_c = _clamp_adv(o.adv)
-        atk = 1.0 if o.is_attacker else 0.0
-        row = [1.0 if o.exact_state == s else 0.0 for s in other_states]
-        # w1 (the dt=20 knot) gets EXACTLY ONE column, never interacted with
-        # anything: shape() is a pure function of dt (PreplantFit.shape
-        # takes dt only, no adv or side), so a w1*adv or w1*atk column would
-        # fit a coefficient nothing downstream ever reads -- which is not
-        # merely wasted, it actively distorts theta1 by making it share
-        # variance with directions it is never used to express. Two earlier
-        # versions did this (first interacting w1 with side, then leaving a
-        # pooled w1*adv column) and both produced an unstable shape_mid_ratio
-        # against the real DB (caught in Task 7, before any constant was
-        # transcribed) -- see the commit history for the numbers.
-        row += [w1, w2, w2 * adv_c]
-        if include_side_interaction:
-            # Only the AMPLITUDE reference (w2, pinned at the plateau) gets
-            # a side split -- both its LEVEL and its SLOPE, together. This
-            # is exactly the nested comparison Task 7 runs.
-            row += [w2 * atk, w2 * adv_c * atk]
-        rows.append(row)
-        labels.append(1.0 if o.round_won_by_killer_team else 0.0)
-
     n_state = len(other_states)
-    if not rows or len(set(labels)) < 2:
-        width = n_state + 3 + (2 if include_side_interaction else 0)
+
+    labels_list = [1.0 if o.round_won_by_killer_team else 0.0 for o in usable]
+    if not usable or len(set(labels_list)) < 2:
+        width = n_state + (4 if include_side_interaction else 2)
         beta = np.zeros(width + 1)
+        shape_mid_ratio = _DEGENERATE_THETA2_FALLBACK
     else:
-        X = np.array(rows, dtype=float)
-        # Standardize before ridge-penalized fitting, then back-transform to
-        # raw units. Without this, fit_logistic's uniform l2 penalty shrinks
-        # columns unevenly by their natural scale (0/1 state dummies vs.
-        # shape*adv products spanning several units) -- exactly the trap
-        # win_probability.py's ValueModel docstring warns about, and the
-        # cause of an early, wildly wrong shape_mid_ratio caught while
-        # running this against the real DB (Task 7).
-        scaled, _, centre, scale = standardize(X, X)
-        beta_scaled = fit_logistic(scaled, np.array(labels), l2=1.0)
-        beta = back_transform(beta_scaled, centre, scale)
+        labels = np.array(labels_list)
+
+        best_r, best_beta, best_deviance = None, None, float("inf")
+        for r in SHAPE_MID_RATIO_COARSE_GRID:
+            beta_r, deviance = _fit_at_ratio(usable, other_states, labels, r, include_side_interaction)
+            if deviance < best_deviance:
+                best_r, best_beta, best_deviance = r, beta_r, deviance
+
+        n_fine = round(_SHAPE_MID_RATIO_FINE_RADIUS / _SHAPE_MID_RATIO_FINE_STEP)
+        fine_grid = [round(best_r + i * _SHAPE_MID_RATIO_FINE_STEP, 4) for i in range(-n_fine, n_fine + 1)]
+        for r in fine_grid:
+            beta_r, deviance = _fit_at_ratio(usable, other_states, labels, r, include_side_interaction)
+            if deviance < best_deviance:
+                best_r, best_beta, best_deviance = r, beta_r, deviance
+
+        shape_mid_ratio = float(best_r)
+        beta = best_beta
 
     idx = 1 + n_state  # skip intercept + state dummies
-    # Column order after idx: w1, w2, w2*adv, [w2*atk, w2*adv*atk].
-    # logit_lift (the amplitude line) is pinned at the w2=1 plateau, so only
-    # the w2-family coefficients feed intercept_atk/slope_atk/etc.
-    # theta1_pooled (the w1 coefficient -- one column, never interacted with
-    # anything) feeds shape_mid_ratio instead -- see PreplantFit.shape.
-    theta1_pooled = beta[idx + 0]      # w1
-    theta2_pooled = beta[idx + 1]      # w2
-    theta2_adv_pooled = beta[idx + 2]  # w2*adv
+    # Column order after idx: s, s*adv, [s*atk, s*adv*atk] -- the single
+    # amplitude family shared by every dt, per _amplitude_design_row.
+    amp_intercept = beta[idx + 0]
+    amp_slope_adv = beta[idx + 1]
     if include_side_interaction:
-        theta2_pooled_atk = beta[idx + 3]  # w2*atk
-        theta2_adv_atk = beta[idx + 4]     # w2*adv*atk
+        amp_atk = beta[idx + 2]
+        amp_adv_atk = beta[idx + 3]
     else:
-        theta2_pooled_atk = 0.0
-        theta2_adv_atk = 0.0
+        amp_atk = 0.0
+        amp_adv_atk = 0.0
 
-    intercept_def = theta2_pooled
-    intercept_atk = theta2_pooled + theta2_pooled_atk
-    slope_def = theta2_adv_pooled
-    slope_atk = theta2_adv_pooled + theta2_adv_atk
-    shape_mid_ratio = (
-        float(theta1_pooled / theta2_pooled)
-        if abs(theta2_pooled) > 1e-9 else _DEGENERATE_THETA2_FALLBACK
-    )
+    intercept_def = amp_intercept
+    intercept_atk = amp_intercept + amp_atk
+    slope_def = amp_slope_adv
+    slope_atk = amp_slope_adv + amp_adv_atk
 
     state_effects = {reference_state: 0.0} if reference_state else {}
     for i, s in enumerate(other_states):

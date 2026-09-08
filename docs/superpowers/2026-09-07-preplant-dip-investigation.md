@@ -1,8 +1,33 @@
 # Investigation: the pre-plant shape curve's non-monotonic dip
 
-**Status:** Investigation complete. Decision on how to treat the remaining
-real (small) non-monotonicity is still open -- see "What this doesn't
-decide" below.
+**Status:** Investigation complete, but its two headline claims are
+corrected by an independent verification --
+`2026-09-08-preplant-dip-independent-verification.md` -- read that
+alongside this document, not instead of it:
+
+- The `dt~2-5s` dip is real (this document's finding), but the "faster
+  plants" causal reading the user leaned toward afterward is **rejected**:
+  the raw, unadjusted attacker win rate is actually *higher* at `dt~4`
+  than `dt~16` (+2.15pp) -- the entire reported effect is manufactured by
+  the pre-kill state adjustment, which can't see the subsequent kills that
+  happen between the marked kill and the plant. Small `dt` is a fast,
+  forced plant into an uncleared site, not a wasted kill. Do not use the
+  empirical `dt` curve as a scoring input.
+- "The fitting/runtime mismatch is real and large... I fixed this" (this
+  document's Finding 1) was **wrong on the fix at the time it was written**.
+  `350b0c9` fixed only the *fitting* instability; the *runtime
+  reconstruction* formula (`shape(dt) * logit_lift(adv, side)`) remained
+  mismatched against what the model actually fits, diverging by up to 3.2
+  logits. See the verification's Bug B. **That has since been fixed** --
+  `fit_preplant_time_model` now profiles `shape_mid_ratio` by grid search
+  against the product directly, so `shape(dt) * logit_lift(adv, side)` *is*
+  the fitted linear predictor rather than a reconstruction of one;
+  re-running the diagnostic against the full DB reports
+  `max |delta| = 0.0000 logits`. Note what the corrected fit then shows:
+  `shape_mid_ratio = +1.545`, i.e. the honestly-fit shape is
+  **non-monotonic** (it overshoots the near-plant plateau at the middle
+  knot), which is what ultimately led Part 3 to ship an empirical curve
+  instead -- see the spec's "DECIDED 2026-09-08" section.
 
 **Why this exists.** Running `scripts/fit_preplant_time_factor.py` (Part 3
 implementation plan, Task 7) against the real DB produced a fitted
@@ -87,8 +112,11 @@ adjusted win rate falls from a `dt=10-28` plateau of roughly 0.80-0.82 down
 to about 0.75 at `dt=2-5`, before a partial recovery at `dt=1` (0.766). The
 95% bootstrap CIs at the trough (`dt=4`: `[0.720, 0.766]`) and the plateau
 (`dt=20`: `[0.797, 0.827]`) do not overlap. The same pattern appears in the
-regression's log-odds-vs-reference curve (trough ~1.55-1.59 at `dt=2-4`
-against a `dt=15-28` plateau of ~1.9-2.1), independently confirming it.
+regression's log-odds-vs-reference curve (trough −0.19 to −0.22 at `dt=2-4`
+against a `dt=15-28` plateau of +0.21 to +0.26 -- corrected from an earlier
+`+atk_main` labelling bug, see
+`2026-09-08-preplant-dip-independent-verification.md` section 7 Bug A; the
+contrast itself is unaffected), independently confirming it.
 **Defenders show no such dip** -- their curve declines close to
 monotonically (in win-rate terms, rises close to monotonically toward the
 plant) across the full range on both methods.
@@ -101,8 +129,10 @@ point, the *corrected* finding (the joint regression's `dt=2-5` dip) was
 refit independently on two random halves of matches (1,561 / 1,562 matches,
 ~84k observations each): in **both halves independently**, the mean
 `dt=2-5` coefficient sits below both the `dt=15-25` plateau mean and the
-`dt=1` value (half A: 1.598 vs 1.992 and 1.617; half B: 1.612 vs 2.071 and
-1.742).
+`dt=1` value (half A: −0.075 vs +0.319 and −0.056; half B: −0.254 vs +0.206
+and −0.123 -- corrected from the same labelling bug as above; `atk_main`
+cancels in every one of these differences, so the dip-below-plateau-and-b1
+verdict is unchanged in both halves).
 
 **4. A per-state breakdown found no single state driving it.** The eight
 most common exact states each show a similar direction of effect

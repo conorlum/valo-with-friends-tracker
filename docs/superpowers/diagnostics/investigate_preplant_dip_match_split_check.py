@@ -59,8 +59,7 @@ def fit_dt_bucket_regression(usable):
     idx_atk_main = idx_bucket_def + 30
     idx_bucket_atk = idx_atk_main + 1
     def_coef = {bl: float(beta[idx_bucket_def + i]) for i, bl in enumerate(dt_buckets_ordered)}
-    atk_main = float(beta[idx_atk_main])
-    atk_coef = {bl: def_coef[bl] + atk_main + float(beta[idx_bucket_atk + i])
+    atk_coef = {bl: def_coef[bl] + float(beta[idx_bucket_atk + i])
                 for i, bl in enumerate(dt_buckets_ordered)}
     return atk_coef, def_coef
 
