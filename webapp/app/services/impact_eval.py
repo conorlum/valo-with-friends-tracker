@@ -92,6 +92,11 @@ class RoundObservation:
     # this dataclass keeps working.
     kill_order_bonus: float = 0.0
 
+    # Econ spec section 8c-i. Zero for every row in the harness's default
+    # ex-ante replay -- that is the econ component's own leakage gate, and it
+    # is why section 9a says the harness is structurally blind to ECON_SCALE.
+    econ_component: float = 0.0
+
 
 def _winner_is_team_a(outcome: str | None) -> bool | None:
     if not outcome or outcome.endswith(SURRENDER_SUFFIX):
@@ -138,7 +143,8 @@ def build_observations_for_match(match, calculated_rows) -> list[RoundObservatio
         bucket = impact_by_round.setdefault(
             row.round_id,
             {"damage": 0.0, "econ_impact": 0.0, "time_impact": 0.0,
-             "swing_impact": 0.0, "impact_diff": 0.0, "kill_order_bonus": 0.0},
+             "swing_impact": 0.0, "impact_diff": 0.0, "kill_order_bonus": 0.0,
+             "econ_component": 0.0},
         )
         bucket["damage"] += sign * row.damage
         bucket["econ_impact"] += sign * row.econ_impact
@@ -146,6 +152,7 @@ def build_observations_for_match(match, calculated_rows) -> list[RoundObservatio
         bucket["swing_impact"] += sign * row.swing_impact
         bucket["impact_diff"] += sign * row.impact
         bucket["kill_order_bonus"] += sign * row.kill_order_bonus
+        bucket["econ_component"] += sign * row.econ_component
 
     playable = [
         r for r in sorted(match.rounds, key=lambda r: r.round_number)
@@ -209,6 +216,7 @@ def build_observations_for_match(match, calculated_rows) -> list[RoundObservatio
                 swing_impact=impact["swing_impact"],
                 impact_diff=impact["impact_diff"],
                 kill_order_bonus=impact["kill_order_bonus"],
+                econ_component=impact["econ_component"],
                 kill_diff=kills_a - kills_b,
                 acs_diff=acs_a - acs_b,
                 score_diff_before=score_a - score_b,
@@ -281,6 +289,13 @@ def controls_for(config) -> list[str]:
 
 
 def _feature_value(obs: RoundObservation, name: str) -> float:
+    if name == "time_delta":
+        # Econ spec 8c-i: the fused leverage column is split into what the
+        # kill was worth for the STATE it happened in (kill_order_bonus) and
+        # what it was worth extra for WHEN it happened. The two sum back to
+        # time_impact exactly, so nothing is invented. Derived by subtraction
+        # rather than stored, so the identity cannot drift.
+        return float(obs.time_impact - obs.kill_order_bonus)
     if name == "round_result":
         return 0.0 if obs.round_won_by_team_a is None else (1.0 if obs.round_won_by_team_a else -1.0)
     if name == "attacking_is_team_a":
@@ -1597,7 +1612,10 @@ def _hydrated_match(db, match_id):
     )
 
 
-def load_all_observations(db, use_realized_swing: bool = False, report: dict | None = None):
+def load_all_observations(
+    db, use_realized_swing: bool = False, report: dict | None = None,
+    scoring_kwargs: dict | None = None,
+):
     """Replays every match through the scorer, so components are the
     EX-ANTE variant by default -- the only variant eligible for
     forward-looking fitting. Costs a full replay (minutes).
@@ -1608,11 +1626,19 @@ def load_all_observations(db, use_realized_swing: bool = False, report: dict | N
     """
     observations: list[RoundObservation] = []
     excluded: list[int] = []
+    # scoring_kwargs lets a caller replay the SAME matches under a different
+    # scoring configuration, which is what the econ spec's five-arm protocol
+    # (section 8d-i) needs: each arm is evaluated as a fixed scoring composite
+    # rather than by refitting weights, because a search that recovers the loss
+    # by reweighting has answered a different question.
+    scoring_kwargs = scoring_kwargs or {}
     # Surrender placeholder rounds are excluded via _match_ids' NOT_A_SURRENDER_ROUND
     # filter above -- this loader must not hand-roll a second, driftable copy.
     for match_id in _match_ids(db):
         match = _hydrated_match(db, match_id)
-        rows = build_impact_rows_for_match(db, match_id, use_realized_swing=use_realized_swing)
+        rows = build_impact_rows_for_match(
+            db, match_id, use_realized_swing=use_realized_swing, **scoring_kwargs
+        )
         try:
             observations.extend(build_observations_for_match(match, rows))
         except MissingImpactRows:

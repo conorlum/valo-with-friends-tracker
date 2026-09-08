@@ -553,7 +553,7 @@ def build_impact_rows_for_match(
     db: Session, match_id: int, use_realized_swing: bool = True,
     enable_preplant_empirical: bool = False,
     enable_postplant_leverage: bool = False, postplant_factor_table=None,
-    enable_econ_component: bool = False,
+    enable_econ_component: bool = False, neutralize_econ_terms: bool = False,
 ) -> list[CalculatedImpact]:
     rounds = db.query(Round).filter_by(match_id=match_id).order_by(Round.round_number).all()
     rounds_by_number: dict[int, Round] = {r.round_number: r for r in rounds}
@@ -703,8 +703,15 @@ def build_impact_rows_for_match(
                 alive_counts = (team1_kill_index, team2_kill_index)
 
             kill["kill_order_bonus"] = kill_order_bonus if not self_kill else 0
+            # Arm 4 of the predeclared five-arm protocol (econ spec 8d-i): the
+            # two old econ terms pinned to their NEUTRAL 1.0 inside today's
+            # combination structure. It exists because deleting terms from
+            # damages + mean(econ, time, swing) also changes the mean's arity,
+            # so without it arm 1 confounds "econ information is gone" with
+            # "the remaining components were re-weighted".
+            econ_differential = 1.0 if neutralize_econ_terms else kill["econ_differential_factor"]
             kill["kill_order_bonus_x_econ"] = (
-                kill_order_bonus * kill["econ_differential_factor"] if not self_kill else 0
+                kill_order_bonus * econ_differential if not self_kill else 0
             )
             kill["kill_order_bonus_x_time"] = (
                 kill_order_bonus * _time_factor(
@@ -717,6 +724,8 @@ def build_impact_rows_for_match(
                     enable_postplant_leverage=enable_postplant_leverage,
                 ) if not self_kill else 0
             )
+            if neutralize_econ_terms:
+                combined_swing_factor = 1.0
             kill["kill_order_bonus_x_swing"] = kill_order_bonus * combined_swing_factor if not self_kill else 0
 
             death_order_bonus = kill_order_bonus * _traded_factor(kills, kill, self_kill)
@@ -732,7 +741,7 @@ def build_impact_rows_for_match(
                 else:
                     death_econ_factor = 0.15
             else:
-                death_econ_factor = kill["econ_differential_factor"]
+                death_econ_factor = econ_differential
 
             kill["death_order_bonus_x_econ"] = death_order_bonus * death_econ_factor
             kill["death_order_bonus_x_time"] = death_order_bonus * _time_factor(
