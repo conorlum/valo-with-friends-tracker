@@ -172,7 +172,7 @@ def shape_basis(dt: float) -> tuple[float, float]:
 
 import numpy as np
 
-from app.services.stats_math import fit_logistic
+from app.services.stats_math import back_transform, fit_logistic, standardize
 
 _DEGENERATE_THETA2_FALLBACK = 0.5  # see shape_mid_ratio's docstring
 
@@ -225,36 +225,54 @@ def fit_preplant_time_model(
         adv_c = _clamp_adv(o.adv)
         atk = 1.0 if o.is_attacker else 0.0
         row = [1.0 if o.exact_state == s else 0.0 for s in other_states]
-        row += [w1, w2, w1 * adv_c, w2 * adv_c]
+        # w1 (the dt=20 knot) gets EXACTLY ONE column, never interacted with
+        # anything: shape() is a pure function of dt (PreplantFit.shape
+        # takes dt only, no adv or side), so a w1*adv or w1*atk column would
+        # fit a coefficient nothing downstream ever reads -- which is not
+        # merely wasted, it actively distorts theta1 by making it share
+        # variance with directions it is never used to express. Two earlier
+        # versions did this (first interacting w1 with side, then leaving a
+        # pooled w1*adv column) and both produced an unstable shape_mid_ratio
+        # against the real DB (caught in Task 7, before any constant was
+        # transcribed) -- see the commit history for the numbers.
+        row += [w1, w2, w2 * adv_c]
         if include_side_interaction:
-            # Both the by-side LEVEL (w1*atk, w2*atk) and the by-side SLOPE
-            # (w1*adv*atk, w2*adv*atk) drop together -- "side interaction"
-            # means side matters at all, not just in its slope. This is
-            # exactly the nested comparison Task 7 runs.
-            row += [w1 * atk, w2 * atk, w1 * adv_c * atk, w2 * adv_c * atk]
+            # Only the AMPLITUDE reference (w2, pinned at the plateau) gets
+            # a side split -- both its LEVEL and its SLOPE, together. This
+            # is exactly the nested comparison Task 7 runs.
+            row += [w2 * atk, w2 * adv_c * atk]
         rows.append(row)
         labels.append(1.0 if o.round_won_by_killer_team else 0.0)
 
     n_state = len(other_states)
     if not rows or len(set(labels)) < 2:
-        width = n_state + 4 + (4 if include_side_interaction else 0)
+        width = n_state + 3 + (2 if include_side_interaction else 0)
         beta = np.zeros(width + 1)
     else:
         X = np.array(rows, dtype=float)
-        beta = fit_logistic(X, np.array(labels), l2=1.0)
+        # Standardize before ridge-penalized fitting, then back-transform to
+        # raw units. Without this, fit_logistic's uniform l2 penalty shrinks
+        # columns unevenly by their natural scale (0/1 state dummies vs.
+        # shape*adv products spanning several units) -- exactly the trap
+        # win_probability.py's ValueModel docstring warns about, and the
+        # cause of an early, wildly wrong shape_mid_ratio caught while
+        # running this against the real DB (Task 7).
+        scaled, _, centre, scale = standardize(X, X)
+        beta_scaled = fit_logistic(scaled, np.array(labels), l2=1.0)
+        beta = back_transform(beta_scaled, centre, scale)
 
     idx = 1 + n_state  # skip intercept + state dummies
-    # Column order after idx: w1, w2, w1*adv, w2*adv,
-    # [w1*atk, w2*atk, w1*adv*atk, w2*adv*atk]. logit_lift (the amplitude
-    # line) is pinned at the w2=1 plateau, so only the w2-family coefficients
-    # feed intercept_atk/slope_atk/etc. theta1_pooled (the w1 coefficient)
-    # feeds shape_mid_ratio instead -- see PreplantFit.shape's docstring.
+    # Column order after idx: w1, w2, w2*adv, [w2*atk, w2*adv*atk].
+    # logit_lift (the amplitude line) is pinned at the w2=1 plateau, so only
+    # the w2-family coefficients feed intercept_atk/slope_atk/etc.
+    # theta1_pooled (the w1 coefficient -- one column, never interacted with
+    # anything) feeds shape_mid_ratio instead -- see PreplantFit.shape.
     theta1_pooled = beta[idx + 0]      # w1
     theta2_pooled = beta[idx + 1]      # w2
-    theta2_adv_pooled = beta[idx + 3]  # w2*adv
+    theta2_adv_pooled = beta[idx + 2]  # w2*adv
     if include_side_interaction:
-        theta2_pooled_atk = beta[idx + 5]  # w2*atk
-        theta2_adv_atk = beta[idx + 7]     # w2*adv*atk
+        theta2_pooled_atk = beta[idx + 3]  # w2*atk
+        theta2_adv_atk = beta[idx + 4]     # w2*adv*atk
     else:
         theta2_pooled_atk = 0.0
         theta2_adv_atk = 0.0
