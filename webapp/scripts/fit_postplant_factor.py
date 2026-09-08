@@ -123,6 +123,93 @@ def _calibration(observations, folds):
     }
 
 
+def _per_state_calibration(observations, folds, states):
+    """Reliability restricted to individual states.
+
+    A pooled curve can hide state-specific errors that cancel -- in the limit
+    a constant predictor equal to the population win rate calibrates perfectly
+    and carries no transition information at all. So the reported set is the
+    pooled statistic PLUS per-state curves for the states carrying the most
+    scored kills.
+    """
+    live = [o for o in observations if o.attackers_alive > 0 and o.defenders_alive > 0]
+    by_fold = defaultdict(list)
+    for o in live:
+        by_fold[folds.get(o.match_id, 0)].append(o)
+
+    per_state = defaultdict(lambda: [0.0, 0.0, 0])  # (a,d) -> [pred, act, n]
+    for fold, held_out in by_fold.items():
+        training = [o for o in live if folds.get(o.match_id, 0) != fold]
+        table = build_value_table(training, w=DEFAULT_W)
+        for o in held_out:
+            state = (o.attackers_alive, o.defenders_alive)
+            if state not in states:
+                continue
+            lookup = table.value(o.attackers_alive, o.defenders_alive, o.t)
+            if not lookup.supported:
+                continue
+            per_state[state][0] += lookup.value
+            per_state[state][1] += 1.0 if o.atk_won else 0.0
+            per_state[state][2] += 1
+    return per_state
+
+
+def _support_churn(observations, folds):
+    """Count of cells whose support status differs between the fold-trained
+    and full-data tables. A support decision made on the full corpus is a
+    full-corpus decision even if the numbers inside it are not, so the size of
+    this disagreement is reported rather than assumed negligible."""
+    live = [o for o in observations if o.attackers_alive > 0 and o.defenders_alive > 0]
+    full = build_value_table(live, w=DEFAULT_W)
+    cells = {(o.attackers_alive, o.defenders_alive, o.t) for o in live}
+
+    changed = 0
+    for fold in sorted({folds.get(o.match_id, 0) for o in live}):
+        training = [o for o in live if folds.get(o.match_id, 0) != fold]
+        table = build_value_table(training, w=DEFAULT_W)
+        for a, d, t in cells:
+            if table.value(a, d, t).supported != full.value(a, d, t).supported:
+                changed += 1
+    return changed, len(cells)
+
+
+def _bootstrap_ratios(observations, kills, targets, draws, seed=20260908):
+    """Match-clustered bootstrap of the WHOLE path: resample matches, then run
+    smooth -> difference -> ratio on each draw.
+
+    The published interval has to come from here rather than from V alone,
+    because the ratio's uncertainty is dominated by a difference of two
+    smoothed cells divided by an average of such differences. Sixty
+    observations per cell is a support floor, not a precision guarantee.
+    """
+    import random
+
+    rng = random.Random(seed)
+    obs_by_match = defaultdict(list)
+    for o in observations:
+        obs_by_match[o.match_id].append(o)
+    kills_by_match = defaultdict(list)
+    for k in kills:
+        kills_by_match[k.match_id].append(k)
+    match_ids = sorted(obs_by_match)
+
+    collected = defaultdict(list)
+    for _ in range(draws):
+        picks = [match_ids[rng.randrange(len(match_ids))] for _ in match_ids]
+        draw_obs, draw_kills = [], []
+        for m in picks:
+            draw_obs.extend(obs_by_match[m])
+            draw_kills.extend(kills_by_match.get(m, ()))
+        table = build_value_table(draw_obs, w=DEFAULT_W)
+        factors = build_factor_table(table, draw_kills)
+        for target in targets:
+            a, d, t, victim_is_attacker = target
+            ratio = factors.raw_ratio(a, d, t, victim_is_attacker)
+            if ratio is not None:
+                collected[target].append(ratio)
+    return collected
+
+
 def _rung_census(value_table, kills):
     census = defaultdict(int)
     for kill in kills:
@@ -201,6 +288,26 @@ def main():
         print(f"    [{lower:.1f}, {lower + 1 / N_BINS:.1f})  pred={predicted:.3f}  "
               f"act={actual:.3f}  n={n:,}")
 
+    kills_by_state = defaultdict(int)
+    for kill in kills:
+        kills_by_state[(kill.attackers_alive, kill.defenders_alive)] += 1
+    top_states = [s for s, _ in sorted(kills_by_state.items(), key=lambda kv: -kv[1])[:8]]
+    print("  per-state reliability, for the states carrying the most scored")
+    print("  kills -- a pooled curve can hide state-specific errors that cancel:")
+    per_state = _per_state_calibration(observations, folds, set(top_states))
+    for state in top_states:
+        predicted_sum, actual_sum, n = per_state.get(state, (0.0, 0.0, 0))
+        if not n:
+            print(f"    {state[0]}v{state[1]}  (no supported out-of-fold rows)")
+            continue
+        print(f"    {state[0]}v{state[1]}  pred={predicted_sum / n:.3f}  "
+              f"act={actual_sum / n:.3f}  err={abs(predicted_sum - actual_sum) / n:.4f}  "
+              f"n={n:,}  scored_kills={kills_by_state[state]:,}")
+
+    changed, total_cells = _support_churn(observations, folds)
+    print(f"  cells whose support status changed between the fold-trained and "
+          f"full-data tables: {changed:,} of {total_cells * 5:,} cell-folds")
+
     # ---------------------------------------------------------------- 2
     print()
     print("=" * 72)
@@ -238,16 +345,16 @@ def main():
     # contribution only if f and kill_order_bonus are independent -- which they
     # demonstrably are not, since both key on the same alive counts.
     kill_order_bonuses = [k.kill_order_bonus for k in kills]
+    traded_factors = [k.traded_factor for k in kills]
     print(f"  weighted by real kill_order_bonus (mean "
-          f"{sum(kill_order_bonuses) / max(1, len(kill_order_bonuses)):.1f})")
-    print("  NOTE: traded_factor is not threaded here, so the death-side residual")
-    print("  below is computed at T=1 for every kill and is a placeholder, not the")
-    print("  reportable residual.")
+          f"{sum(kill_order_bonuses) / max(1, len(kill_order_bonuses)):.1f}), "
+          f"real traded_factor (mean "
+          f"{sum(traded_factors) / max(1, len(traded_factors)):.3f})")
     try:
         centering = solve_postplant_centering(
             kill_order_bonuses=kill_order_bonuses, ramp_factors=ramp,
             new_factors=new, supported=supported,
-            traded_factors=[1.0] * len(kills),
+            traded_factors=traded_factors,
         )
         print(f"  c = {centering.c:.6f}   |c-1| = {abs(centering.c - 1):.4f}")
         print(f"  effective bounds: [{centering.c * FLOOR_DEFAULT:.4f}, "
@@ -260,6 +367,39 @@ def main():
         print(f"  DEGENERATE: {exc}")
 
     # ---------------------------------------------------------------- 4
+    draws = 0
+    for index, arg in enumerate(sys.argv):
+        if arg == "--bootstrap" and index + 1 < len(sys.argv):
+            draws = int(sys.argv[index + 1])
+    print()
+    print("=" * 72)
+    print("BOOTSTRAP (match-clustered, whole path: smooth -> difference -> ratio)")
+    print("=" * 72)
+    if not draws:
+        print("  SKIPPED. Pass --bootstrap N to run it (N=200 takes a while: each")
+        print("  draw rebuilds the whole table). The spec REQUIRES these intervals")
+        print("  before any post-plant ratio is published -- 60 observations per")
+        print("  cell is a support floor, not a precision guarantee.")
+    else:
+        targets = []
+        for state in top_states[:4]:
+            for victim_is_attacker in (False, True):
+                targets.append((state[0], state[1], 20, victim_is_attacker))
+        collected = _bootstrap_ratios(observations, kills, targets, draws)
+        print(f"  {draws} draws, resampling matches with replacement")
+        print(f"  {'state':>7} {'victim':>9} {'point':>8} {'p2.5':>8} {'p97.5':>8} {'n_draws':>8}")
+        for target in targets:
+            a, d, t, victim_is_attacker = target
+            values = collected.get(target, [])
+            point = factors.raw_ratio(a, d, t, victim_is_attacker)
+            if not values or point is None:
+                print(f"  {a}v{d:<5} {'atk' if victim_is_attacker else 'def':>9} "
+                      f"{'unsupported':>8}")
+                continue
+            print(f"  {a}v{d:<5} {'atk' if victim_is_attacker else 'def':>9} "
+                  f"{point:>8.4f} {_percentile(values, 0.025):>8.4f} "
+                  f"{_percentile(values, 0.975):>8.4f} {len(values):>8,}")
+
     print()
     print("=" * 72)
     print("SENSITIVITY: the nine FLOOR x CEIL pairs at W=2")
@@ -277,7 +417,7 @@ def main():
                 g_c = solve_postplant_centering(
                     kill_order_bonuses=kill_order_bonuses, ramp_factors=g_ramp,
                     new_factors=g_new, supported=g_supported,
-                    traded_factors=[1.0] * len(kills),
+                    traded_factors=traded_factors,
                 ).c
                 print(f"  {floor:>6.2f} {ceil:>6.2f} {floor_rate:>7.2f}% {ceil_rate:>7.2f}% "
                       f"{g_c:>9.4f} {g_c * floor:>8.4f} {g_c * ceil:>8.4f}")
@@ -295,7 +435,7 @@ def main():
         w_factors = build_factor_table(w_table, kills)
         w_ramp, w_new, w_supported, _ = _score_population(w_factors, kills, plant_times)
         try:
-            w_c = f"{solve_postplant_centering(kill_order_bonuses=kill_order_bonuses, ramp_factors=w_ramp, new_factors=w_new, supported=w_supported, traded_factors=[1.0] * len(kills)).c:.4f}"
+            w_c = f"{solve_postplant_centering(kill_order_bonuses=kill_order_bonuses, ramp_factors=w_ramp, new_factors=w_new, supported=w_supported, traded_factors=traded_factors).c:.4f}"
         except DegenerateCentering:
             w_c = "DEGENERATE"
         print(f"  {w:>3} {w_factors.diagnostics['supported_cells']:>16,} "

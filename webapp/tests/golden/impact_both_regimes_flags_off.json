@@ -1,0 +1,112 @@
+{
+  "A1": {
+    "death_impact": 133,
+    "econ_impact": 160,
+    "impact": 225,
+    "kill_impact": 358,
+    "kill_order_bonus": 160,
+    "post_plant_death": 80,
+    "post_plant_kill": 208,
+    "swing_impact": 160,
+    "time_impact": 278
+  },
+  "A2": {
+    "death_impact": 140,
+    "econ_impact": -140,
+    "impact": 110,
+    "kill_impact": 250,
+    "kill_order_bonus": -140,
+    "post_plant_death": 0,
+    "post_plant_kill": 0,
+    "swing_impact": -140,
+    "time_impact": -140
+  },
+  "A3": {
+    "death_impact": 0,
+    "econ_impact": 180,
+    "impact": 262,
+    "kill_impact": 262,
+    "kill_order_bonus": 180,
+    "post_plant_death": 0,
+    "post_plant_kill": 90,
+    "swing_impact": 180,
+    "time_impact": 90
+  },
+  "A4": {
+    "death_impact": 0,
+    "econ_impact": 0,
+    "impact": 250,
+    "kill_impact": 250,
+    "kill_order_bonus": 0,
+    "post_plant_death": 0,
+    "post_plant_kill": 0,
+    "swing_impact": 0,
+    "time_impact": 0
+  },
+  "A5": {
+    "death_impact": 0,
+    "econ_impact": 0,
+    "impact": 250,
+    "kill_impact": 250,
+    "kill_order_bonus": 0,
+    "post_plant_death": 0,
+    "post_plant_kill": 0,
+    "swing_impact": 0,
+    "time_impact": 0
+  },
+  "B1": {
+    "death_impact": 150,
+    "econ_impact": -150,
+    "impact": 100,
+    "kill_impact": 250,
+    "kill_order_bonus": -150,
+    "post_plant_death": 0,
+    "post_plant_kill": 0,
+    "swing_impact": -150,
+    "time_impact": -150
+  },
+  "B2": {
+    "death_impact": 183,
+    "econ_impact": -30,
+    "impact": 19,
+    "kill_impact": 202,
+    "kill_order_bonus": -30,
+    "post_plant_death": 208,
+    "post_plant_kill": 0,
+    "swing_impact": -30,
+    "time_impact": -68
+  },
+  "B3": {
+    "death_impact": 150,
+    "econ_impact": -20,
+    "impact": 138,
+    "kill_impact": 288,
+    "kill_order_bonus": -20,
+    "post_plant_death": 90,
+    "post_plant_kill": 280,
+    "swing_impact": -20,
+    "time_impact": 190
+  },
+  "B4": {
+    "death_impact": 0,
+    "econ_impact": 0,
+    "impact": 250,
+    "kill_impact": 250,
+    "kill_order_bonus": 0,
+    "post_plant_death": 0,
+    "post_plant_kill": 0,
+    "swing_impact": 0,
+    "time_impact": 0
+  },
+  "B5": {
+    "death_impact": 0,
+    "econ_impact": 0,
+    "impact": 250,
+    "kill_impact": 250,
+    "kill_order_bonus": 0,
+    "post_plant_death": 0,
+    "post_plant_kill": 0,
+    "swing_impact": 0,
+    "time_impact": 0
+  }
+}

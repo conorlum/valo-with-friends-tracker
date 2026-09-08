@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from sqlalchemy import text
 
 from app.models.match import Team
-from app.scoring.impact import _check_for_resurrection, _kill_order_bonus
+from app.scoring.impact import _check_for_resurrection, _kill_order_bonus, _traded_factor
 from app.scoring.plant_window import attacking_team
 from app.scoring.postplant_value_table import SPIKE_SECONDS, ValueTable, _winner_team
 
@@ -60,6 +60,10 @@ class PostPlantKill:
     # alone -- the factor and kill_order_bonus are demonstrably not independent,
     # since both key on the same alive counts.
     kill_order_bonus: float = 1.0
+    # impact.py's _traded_factor for this kill, carried so the death-side
+    # residual is computed on the weight deaths actually score with (K*T)
+    # rather than at a placeholder T=1.
+    traded_factor: float = 1.0
 
 
 def extract_postplant_kills(db) -> list[PostPlantKill]:
@@ -143,6 +147,7 @@ def extract_postplant_kills(db) -> list[PostPlantKill]:
                 kill_order_bonus=_kill_order_bonus(
                     team1_index, team2_index, killer_team, False
                 ),
+                traded_factor=_traded_factor(kills, kill, False),
             ))
 
     return out
