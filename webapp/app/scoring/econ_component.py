@@ -221,15 +221,70 @@ def attribute_econ(
     return out
 
 
-def pickup_bonus(distance: float | None) -> float:
-    """Section 11's weapon-pickup extension: designed in, shipped disabled.
+# --- Section 11: the weapon-pickup extension ------------------------------
+#
+# Confirmed by the project owner 2026-09-08: tracker.gg DOES return a
+# distance-to-kill field, which resolves the spec's "Unverified" note on
+# whether the response carries location at all.
+#
+# NOT yet confirmed, and this is why the feature stays disabled: the field's
+# exact key and its UNITS. PICKUP_MAX_DISTANCE below is a number in unknown
+# units, so it cannot be allowed to reach scoring until one captured match
+# settles what it is measuring (scripts/capture_trackergg_state.py).
+#
+# The readout. The spec withdrew an earlier value-differential rule as not
+# computable, and correctly: KillEvent.weapon is the weapon the KILLER used,
+# the victim's held weapon at death is not stored, and distance alone
+# establishes neither the dropped weapon's value nor whether anyone took it.
+# This rule does NOT revive that one. It reads LOADOUT TIER, which is stored,
+# on the project owner's reading: a killer who is saving and a victim on a
+# full buy means the killer is going to take the gun.
+#
+# It remains an INFERENCE, not an observation. Nothing in this schema records
+# a pickup happening. Proximity plus an economy mismatch is a proxy for it,
+# and should be described that way in anything quoting these numbers.
+#
+# Why it does not double-count the econ component. The component already
+# debits the victim for their committed value C(v), but that measures what the
+# VICTIM'S TEAM LOST, and a pickup does not change it -- the gun is gone from
+# them whether it was destroyed or taken. What a pickup changes is what the
+# KILLER'S TEAM GAINED, which nothing else models. Distinct quantity, not a
+# second copy of the denial.
+#
+# Which is also why it is a strict TRANSFER: the same magnitude credited to
+# the killer and debited from the victim, so section 7's zero-sum invariant
+# survives it. An asymmetric bonus would break a tested invariant.
+PICKUP_BONUS = 0.25          # dimensionless, on econ_round's scale; a policy choice
+PICKUP_MAX_DISTANCE = 500.0  # UNITS UNCONFIRMED -- see the block comment above
+PICKUP_KILLER_TIERS = frozenset({"SAVE"})
+PICKUP_VICTIM_TIERS = frozenset({"FULL_BUY"})
+
+
+def pickup_bonus(
+    distance: float | None,
+    killer_loadout: float | None = None,
+    victim_loadout: float | None = None,
+) -> float:
+    """The magnitude TRANSFERRED from victim to killer by an inferred pickup.
 
     Returns 0 when distance is NULL, which is every one of the 487,844
     currently-ingested kill rows -- the feature must be a no-op on all of
-    them. The value-differential rule an earlier draft proposed is withdrawn
-    as not computable: KillEvent.weapon is the weapon the KILLER used, and the
-    victim's held weapon at death is not stored.
+    them, and backfilling would mean re-crawling every match at 5-12s pacing
+    (~7 hours), which the spec does not propose.
+
+    Callers CREDIT the killer this amount and DEBIT the victim the same
+    amount; it is never applied to one side alone.
     """
-    if not PICKUP_BONUS_ENABLED or distance is None:
-        return 0
-    return 0
+    if not PICKUP_BONUS_ENABLED:
+        return 0.0
+    if distance is None or killer_loadout is None or victim_loadout is None:
+        return 0.0
+    if distance > PICKUP_MAX_DISTANCE:
+        return 0.0
+    from app.scoring.impact import econ_tier_name
+
+    if econ_tier_name(killer_loadout) not in PICKUP_KILLER_TIERS:
+        return 0.0
+    if econ_tier_name(victim_loadout) not in PICKUP_VICTIM_TIERS:
+        return 0.0
+    return PICKUP_BONUS

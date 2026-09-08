@@ -11,6 +11,7 @@ records as previously unsatisfiable and since rescoped.
 
 import pytest
 
+from app.scoring import econ_component
 from app.scoring.econ_component import (
     ECON_SCALE,
     FULL_COMMIT,
@@ -278,8 +279,44 @@ def test_use_realized_false_produces_exactly_zero_for_every_row():
 
 
 def test_pickup_bonus_is_zero_for_every_row_with_null_distance():
+    """The entire current dataset -- 487,844 kill rows -- has no distance, so
+    the feature must be a no-op on all of it."""
     assert pickup_bonus(None) == 0
-    assert pickup_bonus(250.0) == 0  # PICKUP_BONUS_ENABLED is False
+    assert pickup_bonus(None, killer_loadout=800, victim_loadout=4900) == 0
+
+
+def test_pickup_bonus_is_disabled_by_default_even_with_perfect_inputs():
+    """PICKUP_BONUS_ENABLED is False, and the distance field's UNITS are still
+    unconfirmed -- so the threshold must not be able to reach scoring."""
+    assert econ_component.PICKUP_BONUS_ENABLED is False
+    assert pickup_bonus(10.0, killer_loadout=800, victim_loadout=4900) == 0
+
+
+def test_pickup_fires_only_for_a_saving_killer_and_a_full_buy_victim(monkeypatch):
+    monkeypatch.setattr(econ_component, "PICKUP_BONUS_ENABLED", True)
+
+    # Saving killer, full-buy victim, close: the case the rule is for.
+    assert pickup_bonus(10.0, killer_loadout=800, victim_loadout=4900) == econ_component.PICKUP_BONUS
+
+    # Killer already rich -- nothing worth swapping to.
+    assert pickup_bonus(10.0, killer_loadout=4900, victim_loadout=4900) == 0
+    # Victim poor -- nothing worth taking.
+    assert pickup_bonus(10.0, killer_loadout=800, victim_loadout=800) == 0
+    # Right economy, too far away to take it.
+    far = econ_component.PICKUP_MAX_DISTANCE + 1
+    assert pickup_bonus(far, killer_loadout=800, victim_loadout=4900) == 0
+
+
+def test_pickup_is_a_transfer_so_zero_sum_survives_it(monkeypatch):
+    """Section 7's invariant is tested elsewhere and must not be broken here:
+    whatever the killer is credited, the victim is debited. The helper returns
+    ONE magnitude precisely so a caller cannot apply it to one side only."""
+    monkeypatch.setattr(econ_component, "PICKUP_BONUS_ENABLED", True)
+
+    magnitude = pickup_bonus(10.0, killer_loadout=800, victim_loadout=4900)
+    killer_credit, victim_debit = magnitude, magnitude
+
+    assert killer_credit - victim_debit == 0.0
 
 
 def test_econ_scale_is_positive_and_documented():

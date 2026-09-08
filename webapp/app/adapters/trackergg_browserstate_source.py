@@ -203,6 +203,29 @@ def _outcome_string(winning_team_id: str, round_result: str) -> str:
     return f"Team {letter} {round_result} Win"
 
 
+# Candidate keys for tracker.gg's distance-to-kill field, in priority order.
+# The field's EXISTENCE is confirmed (project owner, 2026-09-08); its exact key
+# and its UNITS are not, and this list is the honest consequence -- capture
+# whatever is there under a stable name so one real ingest settles the
+# question, rather than guessing a key and silently recording nothing.
+_DISTANCE_KEYS = ("distance", "killDistance", "distanceToKill", "kill_distance")
+
+
+def _pickup_distance_meta(meta: dict) -> dict:
+    """Record the raw distance value and which key it came from, or nothing.
+
+    Deliberately does NOT convert or threshold: units are unconfirmed, so the
+    only safe thing to persist is the number tracker.gg gave and its
+    provenance. econ_component.pickup_bonus stays disabled until a captured
+    match says what the number means.
+    """
+    for key in _DISTANCE_KEYS:
+        value = meta.get(key)
+        if isinstance(value, (int, float)):
+            return {"kill_distance_raw": float(value), "kill_distance_key": key}
+    return {}
+
+
 def load_match(db: Session, match_json: dict) -> Match:
     external_id = match_json["attributes"]["id"]
     existing = db.query(Match).filter_by(external_id=external_id).one_or_none()
@@ -320,7 +343,8 @@ def load_match(db: Session, match_json: dict) -> Match:
                 source_meta={
                     "assistants": [
                         a["platformUserIdentifier"] for a in (meta.get("assistants") or [])
-                    ]
+                    ],
+                    **_pickup_distance_meta(meta),
                 },
             )
         )
