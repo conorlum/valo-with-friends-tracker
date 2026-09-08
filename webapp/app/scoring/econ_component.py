@@ -37,10 +37,15 @@ R = 5 * FULL_COMMIT        # 19500, the fixed full-buy reference
 # is zero). It guarantees only that the term is not introduced at an arbitrary
 # scale; it does NOT establish comparable influence.
 #
-# PLACEHOLDER until scripts/fit_econ_scale.py is run against the full DB and
-# its reported value is transcribed here. Left at 1.0 so the component is
-# on its raw dimensionless scale rather than silently mis-scaled.
-ECON_SCALE = 1.0
+# Fitted 2026-09-08 by scripts/fit_econ_scale.py against the full local DB
+# (3,124 matches, 659,290 scored player-rounds, realized mode):
+#   SD(time_impact) = 179.0723,  SD(econ_component raw) = 0.177665
+#   ECON_SCALE = 179.0723 / 0.177665 = 1007.9209
+# Re-run that script to reproduce. The magnitude is not arbitrary-looking by
+# accident: the component's raw range is 0..1.5 while Impact points run in the
+# hundreds, and econ_component persists as an INTEGER, so at the previous
+# placeholder of 1.0 every row rounded to zero and the component was invisible.
+ECON_SCALE = 1007.9209
 
 PICKUP_BONUS_ENABLED = False
 
