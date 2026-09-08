@@ -1,0 +1,261 @@
+"""Part 4's post-plant factor: difference two V cells, divide by that cell's
+own kill-weighted time-average, clamp.
+
+    D(a, d, t, victim=defender) = V(a, d-1, t) - V(a, d, t)
+    D(a, d, t, victim=attacker) = V(a, d, t)   - V(a-1, d, t)
+
+    post_plant_factor = clamp(D / mean_over_t D, FLOOR, CEIL)
+
+Spec: docs/superpowers/specs/2026-09-03-plant-window-and-time-factor-design.md,
+Part 4. Clamp values: docs/superpowers/2026-09-07-three-grids-declaration-draft.md
+section 2.
+
+A ratio, deliberately: D is a state-transition value and so is
+kill_order_bonus, so scoring D directly would multiply two measures of the same
+thing and reintroduce the collinearity this redesign exists to escape.
+Dividing by the state's own time-average leaves only the TIME SHAPE and leaves
+the state level where it already lives -- which is also why the (a, d) and
+victim-side LEVELS divide out and are modelled by nothing (spec, "Known
+limitation", recorded rather than fixed).
+
+Normalisation is within (state, victim_side), never across sides: M24's shapes
+differ by state with reversing sign (2v1 falls 1.33 -> 0.10 while 1v2 rises
+0.89 -> 1.09), so one shared shape cannot represent them.
+"""
+
+from collections import defaultdict
+from dataclasses import dataclass
+
+from sqlalchemy import text
+
+from app.models.match import Team
+from app.scoring.impact import _check_for_resurrection, _kill_order_bonus
+from app.scoring.plant_window import attacking_team
+from app.scoring.postplant_value_table import SPIKE_SECONDS, ValueTable, _winner_team
+
+# Policy parameters, not estimates -- on the same footing as Part 3's k. The
+# standing constraint that no kill is ever worth negative Impact requires
+# FLOOR > 0. Sensitivity grid (declaration 2.1): FLOOR in {0.02, 0.05, 0.1} x
+# CEIL in {1.5, 2.0, 2.5}.
+FLOOR_DEFAULT = 0.05
+CEIL_DEFAULT = 2.0
+
+# The whole (a, d, victim_side) cell is unsupported below this many eligible
+# seconds (estimator contract, item 5).
+MIN_ELIGIBLE_SECONDS = 5
+
+
+@dataclass(frozen=True)
+class PostPlantKill:
+    """A scored post-plant, pre-resolution kill, with the state BEFORE it."""
+
+    match_id: int
+    round_id: int
+    t: int                      # whole seconds since the plant, floor(t)
+    attackers_alive: int
+    defenders_alive: int
+    victim_is_attacker: bool
+    # impact.py's own graph weight for this transition, carried so the centring
+    # gate can be solved on CONTRIBUTION (K * factor) rather than on the factor
+    # alone -- the factor and kill_order_bonus are demonstrably not independent,
+    # since both key on the same alive counts.
+    kill_order_bonus: float = 1.0
+
+
+def extract_postplant_kills(db) -> list[PostPlantKill]:
+    """Non-self post-plant kills in non-phantom, non-surrendered planted
+    rounds, before the round resolves. These are the events the factor
+    scores, and their per-second counts are the mean_over_t weights.
+    """
+    rounds = {
+        r["id"]: dict(r)
+        for r in db.execute(text(
+            "SELECT id, match_id, round_number, outcome, planted, plant_time, "
+            "exploded, defused, defuse_time FROM rounds"
+        )).mappings()
+    }
+    match_players = {
+        mp["id"]: dict(mp)
+        for mp in db.execute(text("SELECT id, team FROM match_players")).mappings()
+    }
+    kills_by_round: dict[int, list[dict]] = defaultdict(list)
+    for k in db.execute(text(
+        "SELECT round_id, killer_match_player_id, death_match_player_id, event_time_seconds "
+        "FROM kill_events ORDER BY round_id, event_time_seconds, id"
+    )).mappings():
+        kills_by_round[k["round_id"]].append(dict(k))
+
+    out: list[PostPlantKill] = []
+    for round_id, round_row in rounds.items():
+        outcome = round_row["outcome"] or ""
+        if "Surrendered" in outcome or "Time Win" in outcome:
+            continue
+        if not round_row["planted"] or round_row["plant_time"] is None:
+            continue
+        if _winner_team(outcome) is None:
+            continue
+        attackers = attacking_team(round_row["round_number"])
+        if attackers is None:
+            continue
+
+        plant_time = round_row["plant_time"]
+        resolution = plant_time + SPIKE_SECONDS
+        if round_row["defused"] and round_row["defuse_time"] is not None:
+            resolution = min(resolution, round_row["defuse_time"])
+
+        kills = kills_by_round.get(round_id, [])
+        a_alive = d_alive = 5
+        for index, kill in enumerate(kills):
+            killer_id = kill["killer_match_player_id"]
+            victim_id = kill["death_match_player_id"]
+            if killer_id not in match_players or victim_id not in match_players:
+                continue
+            killer_team = Team[match_players[killer_id]["team"]]
+            victim_team = Team[match_players[victim_id]["team"]]
+            self_kill = killer_id == victim_id
+            kill_time = kill["event_time_seconds"]
+            a_before, d_before = a_alive, d_alive
+
+            if not _check_for_resurrection(index, kills):
+                victim_is_attacker = (
+                    (killer_team == attackers) if self_kill else (victim_team == attackers)
+                )
+                if victim_is_attacker:
+                    a_alive = max(0, a_alive - 1)
+                else:
+                    d_alive = max(0, d_alive - 1)
+
+            if self_kill or killer_team == victim_team:
+                continue
+            if not (plant_time <= kill_time < resolution):
+                continue
+            # impact.py's index names are inverted relative to the teams they
+            # count: team1_kill_index holds TEAM_2's alive count and vice versa.
+            if attackers == Team.TEAM_1:
+                team1_index, team2_index = d_before, a_before
+            else:
+                team1_index, team2_index = a_before, d_before
+            out.append(PostPlantKill(
+                match_id=round_row["match_id"], round_id=round_id,
+                t=int(kill_time - plant_time),
+                attackers_alive=a_before, defenders_alive=d_before,
+                victim_is_attacker=(victim_team == attackers),
+                kill_order_bonus=_kill_order_bonus(
+                    team1_index, team2_index, killer_team, False
+                ),
+            ))
+
+    return out
+
+
+def difference(
+    value_table: ValueTable, a: int, d: int, t: int, victim_is_attacker: bool,
+) -> float | None:
+    """D -- what the victim's team lost. None when either endpoint of the
+    difference is unsupported: support is required at BOTH V cells, not just
+    the kill's own, and the states this spec cares most about (the last kill
+    of a round) are exactly the ones whose second endpoint is thin.
+    """
+    before = value_table.value(a, d, t)
+    after = (
+        value_table.value(a - 1, d, t) if victim_is_attacker
+        else value_table.value(a, d - 1, t)
+    )
+    if not (before.supported and after.supported):
+        return None
+    if victim_is_attacker:
+        return before.value - after.value
+    return after.value - before.value
+
+
+class PostPlantFactorTable:
+    def __init__(self, denominators, value_table, floor, ceil, diagnostics):
+        self._denominators = denominators  # (a, d, victim_is_attacker) -> mean D
+        self._value_table = value_table
+        self._floor = floor
+        self._ceil = ceil
+        self.diagnostics = diagnostics
+
+    def raw_ratio(self, a: int, d: int, t: int, victim_is_attacker: bool) -> float | None:
+        """D / mean_over_t D, BEFORE clamping. Crossing rates are counted on
+        this, never on the clamped factor (declaration 2.4's 'bound inert'
+        statement is defined on the raw ratio)."""
+        denominator = self._denominators.get((a, d, victim_is_attacker))
+        if denominator is None:
+            return None
+        numerator = difference(self._value_table, a, d, t, victim_is_attacker)
+        if numerator is None:
+            return None
+        return numerator / denominator
+
+    def factor(self, a: int, d: int, t: int, victim_is_attacker: bool) -> float:
+        ratio = self.raw_ratio(a, d, t, victim_is_attacker)
+        if ratio is None:
+            return 1.0
+        if ratio < 0:
+            # Still scores at FLOOR; only the counting is new (declaration 2.4).
+            self.diagnostics["negative_numerators"] += 1
+        if ratio < self._floor:
+            self.diagnostics["floor_bindings"] += 1
+            return self._floor
+        if ratio > self._ceil:
+            self.diagnostics["ceiling_bindings"] += 1
+            return self._ceil
+        return ratio
+
+    def is_supported(self, a: int, d: int, t: int, victim_is_attacker: bool) -> bool:
+        return self.raw_ratio(a, d, t, victim_is_attacker) is not None
+
+
+def build_factor_table(
+    value_table: ValueTable, kills: list[PostPlantKill],
+    floor: float = FLOOR_DEFAULT, ceil: float = CEIL_DEFAULT,
+) -> PostPlantFactorTable:
+    """Precompute mean_over_t per (a, d, victim_side).
+
+    The average runs over whole seconds in that cell, WEIGHTED BY THE NUMBER
+    OF SCORED KILLS observed at each second -- not uniformly over seconds and
+    not by live-round occupancy. Three defensible weightings give three
+    different denominators, and the spec fixes this one: the denominator's job
+    is to leave the factor averaging ~1 over the population it scores, so the
+    weighting is that population.
+    """
+    kill_counts: dict[tuple[int, int, bool], dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    for kill in kills:
+        key = (kill.attackers_alive, kill.defenders_alive, kill.victim_is_attacker)
+        kill_counts[key][kill.t] += 1
+
+    diagnostics: dict[str, int] = defaultdict(int)
+    denominators: dict[tuple[int, int, bool], float] = {}
+
+    for key, per_second in kill_counts.items():
+        a, d, victim_is_attacker = key
+        eligible_weight = 0.0
+        eligible_total = 0.0
+        eligible_seconds = 0
+        for second in range(int(SPIKE_SECONDS)):
+            numerator = difference(value_table, a, d, second, victim_is_attacker)
+            if numerator is None:
+                continue  # falls back to 1.0, so it is not scored by the ratio
+            eligible_seconds += 1
+            weight = per_second.get(second, 0)
+            eligible_weight += weight
+            eligible_total += weight * numerator
+
+        if eligible_seconds < MIN_ELIGIBLE_SECONDS:
+            diagnostics["cells_with_too_few_eligible_seconds"] += 1
+            continue
+        if eligible_weight <= 0:
+            diagnostics["cells_with_no_scored_weight"] += 1
+            continue
+
+        mean_d = eligible_total / eligible_weight
+        if mean_d <= 0:
+            # Never divide: dividing by a non-positive mean flips the factor's
+            # sign, which the FLOOR > 0 clamp then hides rather than catches.
+            diagnostics["non_positive_denominators"] += 1
+            continue
+        denominators[key] = mean_d
+
+    diagnostics["supported_cells"] = len(denominators)
+    return PostPlantFactorTable(denominators, value_table, floor, ceil, diagnostics)
