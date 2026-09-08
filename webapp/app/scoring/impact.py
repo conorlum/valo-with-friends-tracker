@@ -8,6 +8,12 @@ from sqlalchemy.orm import Session
 from app.models import ImpactScore, KillEvent, MatchPlayer, Round, RoundPlayerStat
 from app.models.match import Team
 from app.scoring.plant_window import attacking_team as _plant_window_attacking_team
+from app.scoring.preplant_empirical_factor import empirical_preplant_factor
+
+# The conversion of the empirical pre-plant win-rate lift into a scoring
+# multiplier (docs/superpowers/2026-09-08-preplant-empirical-factor-candidate.md).
+# A policy choice, not fitted -- see enable_preplant_empirical's docstring below.
+_PREPLANT_EMPIRICAL_STRENGTH = 3.0
 
 
 @dataclass
@@ -164,7 +170,11 @@ def _kill_order_bonus(team1_kill_index: int, team2_kill_index: int, kill_team: T
         return 100
 
 
-def _time_factor(round_row: Round, kill_time: float, for_death: bool = False) -> float:
+def _time_factor(
+    round_row: Round, kill_time: float, for_death: bool = False,
+    is_attacker: bool | None = None, enable_preplant_empirical: bool = False,
+    use_realized: bool = True,
+) -> float:
     # Mirrors the original's chronological state machine (planted/plantedTime/
     # exploded/defused flags updated as the event log is walked), reconstructed
     # from the round's final planted/plant_time/exploded/defuse_time. The
@@ -189,6 +199,21 @@ def _time_factor(round_row: Round, kill_time: float, for_death: bool = False) ->
             return 0.5 if for_death else 1.75
         return 1 + (kill_time - plant_time) / 53
 
+    # Pre-plant. Legacy flat 1.0 unless the empirical timing modifier is
+    # explicitly enabled (docs/superpowers/2026-09-08-preplant-empirical-
+    # factor-candidate.md). enable_preplant_empirical defaults False and is
+    # NOT the Part 3 spec's model-based scalar (app.scoring.preplant_scalar,
+    # still dormant/unwired) -- this is a separate, explicitly non-monotone,
+    # uncentered empirical curve wired in at the user's direction. It does
+    # not satisfy Part 3's Testing section monotonicity assertion; that
+    # tension is recorded, not resolved, here. NEVER flip this default as
+    # part of an unrelated change -- activating it is a deliberate rollout
+    # decision (version bump + rescore), same as the model-based scalar.
+    if enable_preplant_empirical and plant_time is not None and is_attacker is not None:
+        return empirical_preplant_factor(
+            plant_time - kill_time, is_attacker,
+            strength=_PREPLANT_EMPIRICAL_STRENGTH, use_realized=use_realized,
+        )
     return 1
 
 
@@ -405,7 +430,8 @@ def find_unscored_match_ids(db: Session) -> list[int]:
 
 
 def build_impact_rows_for_match(
-    db: Session, match_id: int, use_realized_swing: bool = True
+    db: Session, match_id: int, use_realized_swing: bool = True,
+    enable_preplant_empirical: bool = False,
 ) -> list[CalculatedImpact]:
     rounds = db.query(Round).filter_by(match_id=match_id).order_by(Round.round_number).all()
     rounds_by_number: dict[int, Round] = {r.round_number: r for r in rounds}
@@ -546,7 +572,12 @@ def build_impact_rows_for_match(
                 kill_order_bonus * kill["econ_differential_factor"] if not self_kill else 0
             )
             kill["kill_order_bonus_x_time"] = (
-                kill_order_bonus * _time_factor(round_row, kill["event_time_seconds"]) if not self_kill else 0
+                kill_order_bonus * _time_factor(
+                    round_row, kill["event_time_seconds"],
+                    is_attacker=(_attacking_team(round_number) == killer_team),
+                    enable_preplant_empirical=enable_preplant_empirical,
+                    use_realized=use_realized_swing,
+                ) if not self_kill else 0
             )
             kill["kill_order_bonus_x_swing"] = kill_order_bonus * combined_swing_factor if not self_kill else 0
 
@@ -567,7 +598,13 @@ def build_impact_rows_for_match(
 
             kill["death_order_bonus_x_econ"] = death_order_bonus * death_econ_factor
             kill["death_order_bonus_x_time"] = death_order_bonus * _time_factor(
-                round_row, kill["event_time_seconds"], for_death=True
+                round_row, kill["event_time_seconds"], for_death=True,
+                # Always the KILLER's side, per the candidate doc: a death is the
+                # transfer of what the victim's team lost, referencing the same
+                # event/side the kill-side scalar used -- not the victim's side.
+                is_attacker=(_attacking_team(round_number) == killer_team),
+                enable_preplant_empirical=enable_preplant_empirical,
+                use_realized=use_realized_swing,
             )
             kill["death_order_bonus_x_swing"] = death_order_bonus * combined_swing_factor
 
