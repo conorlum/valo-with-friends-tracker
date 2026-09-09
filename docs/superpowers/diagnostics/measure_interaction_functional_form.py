@@ -54,19 +54,26 @@ def lift(rows):
         d=collections.defaultdict(lambda:[0,0])
         for x in rr: d[x["mid"]][0]+=x["won"]; d[x["mid"]][1]+=1
         return list(d.values())
-    F,N=bym(far),bym(near); ds=[]
+    # PAIRED by match: a match usually contributes to BOTH arms, so resampling
+    # each arm independently discards their covariance and gives the wrong
+    # uncertainty for the DIFFERENCE. Point estimates are unaffected; the
+    # interval is (here) too wide, so "excludes zero" can flip. Draw each match
+    # once and recompute both rates on that draw.
+    per_match=collections.defaultdict(lambda:[0,0,0,0])
+    for x in far:  per_match[x["mid"]][0]+=x["won"]; per_match[x["mid"]][1]+=1
+    for x in near: per_match[x["mid"]][2]+=x["won"]; per_match[x["mid"]][3]+=1
+    union=list(per_match.values()); ds=[]
     for _ in range(1200):
-        h=n=0
-        for _ in range(len(F)):
-            a,b=F[rng.randrange(len(F))]; h+=a; n+=b
-        p1=h/n if n else 0
-        h=n=0
-        for _ in range(len(N)):
-            a,b=N[rng.randrange(len(N))]; h+=a; n+=b
-        ds.append((h/n if n else 0)-p1)
+        fh=fn=nh=nn=0
+        for _ in range(len(union)):
+            a,b,c,d=union[rng.randrange(len(union))]
+            fh+=a; fn+=b; nh+=c; nn+=d
+        if not fn or not nn: continue
+        ds.append(nh/nn - fh/fn)
+    if not ds: return None
     ds.sort()
     return (sum(x["won"] for x in near)/len(near)-sum(x["won"] for x in far)/len(far),
-            ds[30], ds[1169], len(far)+len(near))
+            ds[int(.025*(len(ds)-1))], ds[int(.975*(len(ds)-1))], len(far)+len(near))
 
 print("="*88)
 print("PROXIMITY LIFT BY EXACT MAN-ADVANTAGE  (is it a simple function?)")

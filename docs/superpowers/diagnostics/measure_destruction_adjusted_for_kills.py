@@ -65,23 +65,24 @@ def boot(obs, n=1500):
     return (th / tn, out[int(.025 * len(out))], out[int(.975 * len(out))], tn)
 
 def boot_delta(a, b, n=1500):
-    def by_m(o):
-        d = collections.defaultdict(lambda: [0, 0])
-        for mid, hit in o:
-            d[mid][0] += bool(hit); d[mid][1] += 1
-        return list(d.values())
-    A, B = by_m(a), by_m(b)
-    if not A or not B: return None
+    # PAIRED by match: a match usually contributes to BOTH arms, so resampling
+    # each arm independently discards their covariance and gives the wrong
+    # uncertainty for the DIFFERENCE. Point estimates are unaffected; the
+    # interval is too wide, so "excludes zero" can flip.
+    per_match = collections.defaultdict(lambda: [0, 0, 0, 0])
+    for mid, hit in a: per_match[mid][0] += bool(hit); per_match[mid][1] += 1
+    for mid, hit in b: per_match[mid][2] += bool(hit); per_match[mid][3] += 1
+    union = list(per_match.values())
+    if not union: return None
     ds = []
     for _ in range(n):
-        h = t = 0
-        for _ in range(len(A)):
-            x, y = A[rng.randrange(len(A))]; h += x; t += y
-        p1 = h / t if t else 0
-        h = t = 0
-        for _ in range(len(B)):
-            x, y = B[rng.randrange(len(B))]; h += x; t += y
-        ds.append((h / t if t else 0) - p1)
+        ah = at = bh = bt = 0
+        for _ in range(len(union)):
+            w, x, y, z = union[rng.randrange(len(union))]
+            ah += w; at += x; bh += y; bt += z
+        if not at or not bt: continue
+        ds.append(bh / bt - ah / at)
+    if not ds: return None
     ds.sort()
     return (sum(x[1] for x in b) / len(b) - sum(x[1] for x in a) / len(a),
             ds[int(.025 * len(ds))], ds[int(.975 * len(ds))])

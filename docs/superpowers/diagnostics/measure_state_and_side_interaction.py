@@ -57,23 +57,28 @@ def lift(rows):
     far =[r for r in rows if r["dt"]< -30]
     near=[r for r in rows if -10<=r["dt"]< -5]
     if len(far)<80 or len(near)<80: return None
-    def bym(rr):
-        d=collections.defaultdict(lambda:[0,0])
-        for x in rr: d[x["mid"]][0]+=x["won"]; d[x["mid"]][1]+=1
-        return list(d.values())
-    F,N=bym(far),bym(near); ds=[]
+    # PAIRED by match. A match usually contributes to BOTH arms, so
+    # resampling each arm independently discards their covariance and gives
+    # the wrong uncertainty for the DIFFERENCE -- the point estimate is
+    # unaffected but "excludes zero" can flip. Draw the match once and
+    # recompute both rates on that draw, as measure_kills_vs_enemy_bank.py
+    # already does.
+    per_match=collections.defaultdict(lambda:[0,0,0,0])  # far_h, far_n, near_h, near_n
+    for x in far:  per_match[x["mid"]][0]+=x["won"]; per_match[x["mid"]][1]+=1
+    for x in near: per_match[x["mid"]][2]+=x["won"]; per_match[x["mid"]][3]+=1
+    union=list(per_match.values()); ds=[]
     for _ in range(1500):
-        h=n=0
-        for _ in range(len(F)):
-            a,b=F[rng.randrange(len(F))]; h+=a; n+=b
-        p1=h/n if n else 0
-        h=n=0
-        for _ in range(len(N)):
-            a,b=N[rng.randrange(len(N))]; h+=a; n+=b
-        ds.append((h/n if n else 0)-p1)
+        fh=fn=nh=nn=0
+        for _ in range(len(union)):
+            a,b,c,d=union[rng.randrange(len(union))]
+            fh+=a; fn+=b; nh+=c; nn+=d
+        if not fn or not nn: continue
+        ds.append(nh/nn - fh/fn)
     ds.sort()
+    if len(ds)<100: return None
     fr=sum(x["won"] for x in far)/len(far); nr=sum(x["won"] for x in near)/len(near)
-    return (fr, nr, nr-fr, ds[37], ds[1462], len(far), len(near))
+    lo=ds[int(0.025*(len(ds)-1))]; hi=ds[int(0.975*(len(ds)-1))]
+    return (fr, nr, nr-fr, lo, hi, len(far), len(near))
 
 def show(lab, rows):
     r=lift(rows)

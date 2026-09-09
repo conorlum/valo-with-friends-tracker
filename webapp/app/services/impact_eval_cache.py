@@ -26,6 +26,7 @@ a different scorer would make it cheap and wrong.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pickle
 import time
@@ -34,7 +35,7 @@ from pathlib import Path
 
 from sqlalchemy import text
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3  # 3: identity gained source_revision + database_identity
 
 
 def cache_path() -> Path:
@@ -47,8 +48,13 @@ def cache_path() -> Path:
 
 
 def _live_identity(db) -> dict:
-    """What the cache must match to be usable. Cheap: two counts and a hash
-    of the match ids, no replay."""
+    """What the cache must match to be usable. No replay -- a handful of
+    counts, sums and a digest.
+
+    Match ids and counts alone cannot see an EDIT, so source_revision and
+    database_identity are part of the identity: without them, correcting a
+    kill time or a round winner left a stale cache looking valid, and two
+    databases sharing surrogate ids compared as the same snapshot."""
     from sqlalchemy import func, select
 
     from app.models import Round
@@ -71,7 +77,56 @@ def _live_identity(db) -> dict:
         "calculation_version": IMPACT_CALCULATION_VERSION,
         "dataset_fingerprint": dataset_fingerprint(match_ids),
         "n_rounds": int(rounds),
+        "source_revision": _source_revision(db),
+        "database_identity": _database_identity(db),
     }
+
+
+def _database_identity(db) -> str:
+    """Which database this is, so two snapshots carrying the same surrogate
+    ids cannot be mistaken for each other."""
+    try:
+        url = db.get_bind().url
+        return f"{url.get_backend_name()}:{url.host or 'local'}:{url.database or ''}"
+    except Exception:
+        return "unknown"
+
+
+def _source_revision(db) -> str:
+    """A content digest of the rows the replay actually reads.
+
+    Match ids and row counts cannot see an EDIT. Correcting a kill time,
+    a loadout or a round winner leaves the id list and both counts identical,
+    so a stale cache stayed 'valid' and a comparison could claim two
+    different snapshots were the same data. These aggregates move whenever
+    any value the scorer consumes changes, and they cost four cheap scans
+    rather than a replay.
+    """
+    aggregates = [
+        "SELECT COUNT(*), COALESCE(SUM(event_time_seconds), 0) FROM kill_events",
+        "SELECT COUNT(*), COALESCE(SUM(loadout), 0) + COALESCE(SUM(score), 0) "
+        "FROM round_player_stats",
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN planted THEN 1 ELSE 0 END), 0) FROM rounds",
+    ]
+    parts = []
+    for sql in aggregates:
+        try:
+            row = db.execute(text(sql)).one()
+            parts.append(":".join(f"{v}" for v in row))
+        except Exception:
+            parts.append("NA")
+    # Round outcomes decide every label, and are pure text.
+    try:
+        outcomes = db.execute(text(
+            "SELECT id, outcome FROM rounds ORDER BY id"
+        )).all()
+        digest = hashlib.sha256(
+            ";".join(f"{r[0]}={r[1] or ''}" for r in outcomes).encode()
+        ).hexdigest()[:16]
+        parts.append(digest)
+    except Exception:
+        parts.append("NA")
+    return "|".join(parts)
 
 
 def _mismatches(cached: dict, live: dict) -> list[str]:

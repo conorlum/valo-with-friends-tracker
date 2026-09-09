@@ -1085,6 +1085,7 @@ def player_level_report(player_rows, match_outcomes, graph, surfaces=None,
     won = np.array([e["won"] for e in per_match.values()], dtype=int)
     keys = list(per_match)
     players = np.array([k[0] for k in keys])
+    match_of_row = np.array([k[1] for k in keys])
     groups: dict[int, list] = {}
     for index, (_player, match_id) in enumerate(keys):
         groups.setdefault(int(match_id), []).append(index)
@@ -1100,7 +1101,12 @@ def player_level_report(player_rows, match_outcomes, graph, surfaces=None,
         eligible = 0
         for player in np.unique(players[rows]):
             mine = rows[players[rows] == player]
-            if len(mine) < min_matches:
+            # DISTINCT matches, not drawn rows. A match-clustered bootstrap
+            # can draw the same match repeatedly, and counting rows lets those
+            # duplicates promote a player across the min_matches threshold --
+            # at which point their terciles are computed over copies of one
+            # match rather than over a real spread.
+            if len(np.unique(match_of_row[mine])) < min_matches:
                 continue
             eligible += 1
             buckets = tercile_buckets(values[mine])
@@ -1188,10 +1194,17 @@ class RunIdentity:
     dataset_fingerprint: str
     fold_mapping_hash: str
     calculation_version: str
+    # A content digest of the source rows. The fingerprint hashes match IDs
+    # only, so an EDIT -- a corrected kill time, loadout or round winner --
+    # leaves it identical and two different snapshots compare as the same
+    # data. Defaulted so existing callers keep working; "" means "not
+    # recorded", and two unrecorded runs are still refused a comparison
+    # claim only when one side recorded it and the other did not.
+    source_revision: str = ""
 
 
 def matrix_is_comparable(left: RunIdentity, right: RunIdentity):
-    """Stage A and Stage C rows may share a matrix ONLY if all three match.
+    """Stage A and Stage C rows may share a matrix ONLY if all four match.
 
     The fold-mapping hash is not redundant with the fingerprint: the parent
     project's committed results used the permutation-based assign_folds, so
@@ -1201,7 +1214,8 @@ def matrix_is_comparable(left: RunIdentity, right: RunIdentity):
     """
     reasons = [
         f"{field} differs: {getattr(left, field)!r} != {getattr(right, field)!r}"
-        for field in ("dataset_fingerprint", "fold_mapping_hash", "calculation_version")
+        for field in ("dataset_fingerprint", "fold_mapping_hash", "calculation_version",
+                      "source_revision")
         if getattr(left, field) != getattr(right, field)
     ]
     return (not reasons), reasons
