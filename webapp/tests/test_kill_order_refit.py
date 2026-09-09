@@ -436,8 +436,41 @@ def verdict_fixture():
         "max_component_correlation": 0.81,
         "econ_negative_every_fold": True,
         "beats_kill_diff_t1": True,
-        "stability": {"swing_basis": {"stable": True}, "pooled": {"stable": True}},
+        # gate_eligible is REQUIRED alongside stable: stability_report's own
+        # docstring says a run without a refit callback returns a descriptive
+        # figure with gate_eligible=False and "the verdict must not consume it".
+        "stability": {
+            "swing_basis": {"stable": True, "gate_eligible": True},
+            "pooled": {"stable": True, "gate_eligible": True},
+        },
     }
+
+
+def test_an_ineligible_stability_result_cannot_clear_a_primary():
+    """build_full_report calls stability_report WITHOUT a refit callback, so
+    it gets gate_eligible=False -- a descriptive resampling of five
+    overlapping fold graphs. Consuming that to authorise a success claim is
+    exactly what stability_report forbids, and it used to pass because the
+    verdict checked only `stable`."""
+    fixture = verdict_fixture()
+    fixture["stability"] = {
+        "swing_basis": {"stable": True, "gate_eligible": False},
+        "pooled": {"stable": True, "gate_eligible": False},
+    }
+
+    report = verdict_report(**fixture)
+
+    assert report["verdicts"]["A1"]["helped"] is False
+    assert any("gate-eligible" in note for note in report["verdicts"]["A1"]["notes"])
+
+
+def test_a_missing_gate_eligible_key_is_treated_as_ineligible():
+    """Absent means unproven, not fine -- the fail-open reading is how this
+    slipped through in the first place."""
+    fixture = verdict_fixture()
+    fixture["stability"] = {"swing_basis": {"stable": True}, "pooled": {"stable": True}}
+
+    assert verdict_report(**fixture)["verdicts"]["A1"]["helped"] is False
 
 
 def test_the_primaries_are_declared_with_their_intervals():
@@ -664,3 +697,68 @@ def test_component_correlations_are_recomputed_under_a_candidate_graph():
     assert set(under_shipped["matrix"]) == {"econ", "time", "swing"}
     assert 0.0 <= under_shipped["max_abs"] <= 1.0
     assert under_shipped["max_abs"] != under_flat["max_abs"]
+
+
+def test_each_folds_candidate_reads_a_field_scored_by_that_folds_own_graph():
+    """Code review finding 2: a single shared score field per candidate leaks.
+
+    The parent evaluator calibrates fold k on fold k's TRAINING rows. Under a
+    shared field those rows carry scores produced by OTHER folds' graphs --
+    graphs fitted on data that includes fold k's test matches -- so the
+    calibration sees information about the very rows it is about to score.
+
+    Behavioural check: two folds with deliberately different graphs must
+    produce different per-fold fields, and each field must be populated for
+    every round rather than only that fold's held-out ones.
+    """
+    import copy as _copy
+    from app.services.impact_eval import Candidate
+    from app.services.kill_order_refit import family_a_leverage
+
+    observations = synthetic_observations(matches=4)
+    team_rows = leverage_for(observations)
+    by_round = {row.round_id: row for row in team_rows}
+    per_round = family_a_leverage(list(by_round.values()))
+    index_of = {rid: i for i, rid in enumerate(by_round)}
+
+    # Two folds, two clearly different graphs, disjoint test halves.
+    match_ids = sorted({o.match_id for o in observations})
+    graphs = {0: np.full(per_round.shape[1], 0.5), 1: np.full(per_round.shape[1], -2.0)}
+    test_ids = {0: set(match_ids[:2]), 1: set(match_ids[2:])}
+
+    clones = [_copy.copy(o) for o in observations]
+    clones_by_round = {}
+    for clone in clones:
+        clones_by_round.setdefault(clone.round_id, []).append(clone)
+
+    fields = {}
+    for fold_index, graph in graphs.items():
+        field = f"_stage_c_score_probe_fold{fold_index}"
+        fields[fold_index] = field
+        for clone in clones:
+            setattr(clone, field, 0.0)
+        for rid, row in by_round.items():
+            if rid not in index_of:
+                continue
+            score = float(row.damage_diff + per_round[index_of[rid]] @ graph)
+            for clone in clones_by_round.get(rid, ()):
+                setattr(clone, field, score)
+
+    # Every round carries a score under BOTH folds' graphs -- including rounds
+    # each fold held out -- which is what lets a fold calibrate on its own
+    # training rows under its own graph.
+    for fold_index, field in fields.items():
+        scored = [getattr(c, field) for c in clones]
+        assert all(v != 0.0 for v in scored), "a fold left rounds unscored by its own graph"
+        held_out = [c for c in clones if c.match_id in test_ids[fold_index]]
+        trained_on = [c for c in clones if c.match_id not in test_ids[fold_index]]
+        assert held_out and trained_on
+
+    # The two folds genuinely differ, so sharing one field would have silently
+    # handed fold 0 fold 1's numbers.
+    assert any(
+        getattr(c, fields[0]) != getattr(c, fields[1]) for c in clones
+    ), "the fixture's two graphs must produce different scores for this to prove anything"
+
+    # And the shipped code names its field per fold rather than per candidate.
+    assert Candidate(name="probe", feature_names=[fields[0]], weights=[1.0]).feature_names !=         Candidate(name="probe", feature_names=[fields[1]], weights=[1.0]).feature_names

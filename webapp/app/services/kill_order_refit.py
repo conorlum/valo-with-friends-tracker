@@ -35,7 +35,7 @@ from app.services.kill_order_leverage import COMPONENTS, PARAMS, shipped_graph
 from app.services.stats_math import (
     apply_calibration,
     fit_logistic,
-    platt_calibrate,
+    calibrate_fractional,
     predict_proba,
     standardize,
     weighted_log_loss,
@@ -339,8 +339,12 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
                 weights = candidate.weights
                 surfaces = effective_surfaces(candidate.weights, column_names, shipped_graph())
 
-            calibration = platt_calibrate(in_fold.scores, aligned.y[train_mask],
-                                          weights=aligned.weights[train_mask])
+            # T2's targets are FRACTIONAL. platt_calibrate would threshold
+            # them at 0.5, which changes the estimand the loss below is then
+            # evaluated against (correlation spec: rounding T2 "would change
+            # the estimand and discard the observation weights").
+            calibration = calibrate_fractional(in_fold.scores, aligned.y[train_mask],
+                                               weights=aligned.weights[train_mask])
             probabilities = apply_calibration(calibration, candidate.scores)
 
             results[name].per_fold[fold] = FoldFit(
@@ -440,7 +444,7 @@ def _select_l2(name, aligned, train_mask, l2_grid, state_visits, leverage_rows,
                                       controls=self_controls)
             except ValueError:
                 continue  # an inner split with an undetermined state: skip, never impute
-            calibration = platt_calibrate(fitted.scores, sub_train[2], weights=sub_train[3])
+            calibration = calibrate_fractional(fitted.scores, sub_train[2], weights=sub_train[3])
             probabilities = apply_calibration(calibration, candidate.scores)
             losses.append(_weighted_loss(probabilities, aligned.y[train_mask][inner_test],
                                          aligned.weights[train_mask][inner_test]))
@@ -497,7 +501,7 @@ def _select_l2_b(name, aligned, train_mask, l2_grid, inner_folds=3, seed=1):
                 )
             except ValueError:
                 continue  # an inner split with an undetermined state: skip, never impute
-            calibration = platt_calibrate(fitted.scores, sub_y_train, weights=sub_w_train)
+            calibration = calibrate_fractional(fitted.scores, sub_y_train, weights=sub_w_train)
             probabilities = apply_calibration(calibration, candidate.scores)
             losses.append(_weighted_loss(probabilities, aligned.y[train_mask][inner_test],
                                          aligned.weights[train_mask][inner_test]))
@@ -1253,7 +1257,25 @@ def verdict_report(primaries, deployable, practically_equivalent, targets_agree,
         if not deployable.get(candidate, True):
             notes["A1"].append(f"{name}: {candidate} is not deployable and cannot clear the bar")
             continue
-        if not stability.get(candidate, {}).get("stable", False):
+        candidate_stability = stability.get(candidate, {})
+        # BOTH are required, and eligibility is checked first because it says
+        # whether the stability figure is admissible at all. stability_report
+        # returns gate_eligible=False when it had no refit callback and fell
+        # back to resampling the five outer-fold graphs -- any two of which
+        # share 3/5 of their matches -- and its own docstring says "the
+        # verdict must not consume it". Checking only `stable` let exactly
+        # that descriptive figure authorise a success claim.
+        #
+        # Absent is treated as ineligible, not as fine: the fail-open reading
+        # is what made this silent.
+        if not candidate_stability.get("gate_eligible", False):
+            notes["A1"].append(
+                f"{name}: {candidate}'s stability result is not gate-eligible "
+                f"(no match-clustered refit supplied), so this criterion is "
+                f"UNEVALUATED and cannot clear the bar"
+            )
+            continue
+        if not candidate_stability.get("stable", False):
             notes["A1"].append(f"{name}: {candidate} did not pass the stability criterion")
             continue
         if entry["ci"][1] < 0:
@@ -1470,24 +1492,39 @@ def yardstick_matrix(team_rows, observations, results, draws=200, seed=0,
     per_fold_candidates: dict[str, dict[int, Candidate]] = {}
     folds_source: dict = {}
     for name, result in results.items():
-        field = f"_stage_c_score_{name}"
-        for clone in clones:
-            setattr(clone, field, 0.0)  # default for rounds no fold ever scores
-
         per_fold_candidates[name] = {}
         for fold_index, fitted in result.per_fold.items():
             if fitted.graph is None:
                 continue
             if not folds_source:
                 folds_source = result.per_fold
-            test_ids = set(fitted.test_match_ids)
+
+            # ONE FIELD PER FOLD, populated for EVERY round from THAT fold's
+            # graph -- training rows included.
+            #
+            # A single shared field per candidate, written only where each
+            # round was held out, leaks. The parent evaluator calibrates fold
+            # k on fold k's TRAINING observations, and under a shared field
+            # those carry scores produced by other folds' graphs -- graphs
+            # fitted on data that includes fold k's test matches. The
+            # calibration then encodes information about the rows it is about
+            # to score.
+            #
+            # Test rows are unchanged by this: fold k's test rounds are still
+            # scored with fold k's graph, exactly as before, so the pooled
+            # raw-score AUC is untouched. Only the calibration inputs -- and
+            # therefore the reported log loss -- move.
+            field = f"_stage_c_score_{name}_fold{fold_index}"
+            for clone in clones:
+                setattr(clone, field, 0.0)  # rounds with no leverage row
             for rid, row in by_round.items():
-                if row.match_id not in test_ids or rid not in index_of:
+                if rid not in index_of:
                     continue
                 lev = per_round[index_of[rid]]
                 score = float(row.damage_diff + lev @ fitted.graph)
                 for clone in clones_by_round.get(rid, ()):
                     setattr(clone, field, score)
+
             per_fold_candidates[name][fold_index] = Candidate(
                 name=name, feature_names=[field], weights=[1.0],
             )
