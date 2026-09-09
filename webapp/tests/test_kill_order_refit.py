@@ -793,30 +793,285 @@ def test_a2_requires_the_gap_interval_to_exclude_zero():
 
 def test_practical_equivalence_is_judged_on_the_cleared_candidate_with_both_bounds():
     """Code review finding 4: A1 item 2 read only Stage C0's plugin SD ratio,
-    never the fitted candidate and never the loss bound."""
+    never the fitted candidate and never the loss bound.
+
+    UPDATED for review finding 9. Its four cases are unchanged in intent; what
+    changed is where the score-deviation half comes from. It used to be read
+    off `stage_c0`, which is the PRELIMINARY PLUGIN and not the candidate that
+    cleared -- the mixing finding 9 identified -- so the fixtures below now
+    supply the cleared candidate's OWN deviation instead. `stage_c0` is still
+    passed because a non-None value is what selects this path at the call
+    site, but it no longer supplies a bound.
+    """
+    from app.services.kill_order_refit import (
+        PRACTICAL_EQUIVALENCE_LOSS,
+        PRACTICAL_EQUIVALENCE_RMS,
+        _practically_equivalent_for_candidate,
+    )
+
+    stage_c0 = {"current_vs_swing_plugin": {
+        "round_level": {"sd_difference": 0.001, "sd_reference": 1.0}}}
+    # P1's candidate is swing_basis; deviations are keyed by candidate name.
+    tiny_deviation = {"swing_basis": PRACTICAL_EQUIVALENCE_RMS / 10}
+    large_deviation = {"swing_basis": PRACTICAL_EQUIVALENCE_RMS * 50}
+
+    # A candidate whose paired loss interval sits inside the loss bound AND
+    # whose score deviation is tiny is genuinely equivalent.
+    tight = {"P1": {"ci": [-PRACTICAL_EQUIVALENCE_LOSS / 2, PRACTICAL_EQUIVALENCE_LOSS / 2]}}
+    assert _practically_equivalent_for_candidate(
+        tight, stage_c0, ["P1"], tiny_deviation) is True
+
+    # A candidate that moved the loss well beyond the bound is NOT equivalent,
+    # even though its score deviation is tiny -- the case the old code got
+    # backwards.
+    wide = {"P1": {"ci": [-0.05, -0.02]}}
+    assert _practically_equivalent_for_candidate(
+        wide, stage_c0, ["P1"], tiny_deviation) is False
+
+    # And the score-deviation bound still has to hold too.
+    assert _practically_equivalent_for_candidate(
+        tight, stage_c0, ["P1"], large_deviation) is False
+
+    # Nothing cleared means there is no candidate to assess: unmeasured.
+    assert _practically_equivalent_for_candidate(
+        tight, stage_c0, [], tiny_deviation) is None
+
+
+def test_the_two_equivalence_bounds_are_applied_to_the_SAME_candidate():
+    """Review finding 9. The defect was a caller combining a
+    candidate-specific loss bound with a candidate-AGNOSTIC one: it computed
+    the loss bound for the candidate that cleared, then called
+    _practically_equivalent_stage_c0, which reads
+    stage_c0["current_vs_swing_plugin"] -- the preliminary plugin.
+
+    The two can disagree, and this is the case where they do. The plugin
+    barely moved; the fitted candidate moved a great deal. The old code
+    cleared the item on the plugin's number and called a materially different
+    candidate 'practically equivalent to the shipped score'.
+    """
+    from app.services.kill_order_refit import (
+        PRACTICAL_EQUIVALENCE_LOSS,
+        PRACTICAL_EQUIVALENCE_RMS,
+        _practically_equivalent_for_candidate,
+        _practically_equivalent_stage_c0,
+    )
+
+    plugin_barely_moved = {"current_vs_swing_plugin": {
+        "round_level": {"sd_difference": 0.001, "sd_reference": 1.0}}}
+    assert _practically_equivalent_stage_c0(plugin_barely_moved) is True
+
+    tight = {"P1": {"ci": [-PRACTICAL_EQUIVALENCE_LOSS / 2, PRACTICAL_EQUIVALENCE_LOSS / 2]}}
+    candidate_moved_a_lot = {"swing_basis": PRACTICAL_EQUIVALENCE_RMS * 50}
+
+    assert _practically_equivalent_for_candidate(
+        tight, plugin_barely_moved, ["P1"], candidate_moved_a_lot) is False
+
+
+def test_an_unmeasurable_candidate_deviation_is_unmeasured_not_the_plugins():
+    """Falling back to the plugin's SD ratio when the candidate's own is
+    missing would reinstate the defect under a different name. UNMEASURED is
+    the honest answer, and this module's own rule is that an unmeasured item
+    cannot be satisfied."""
     from app.services.kill_order_refit import (
         PRACTICAL_EQUIVALENCE_LOSS,
         _practically_equivalent_for_candidate,
     )
 
-    stage_c0_equivalent = {"current_vs_swing_plugin": {
+    plugin_barely_moved = {"current_vs_swing_plugin": {
         "round_level": {"sd_difference": 0.001, "sd_reference": 1.0}}}
-    stage_c0_moved = {"current_vs_swing_plugin": {
-        "round_level": {"sd_difference": 0.5, "sd_reference": 1.0}}}
-
-    # A candidate whose paired loss interval sits inside the loss bound AND
-    # whose score deviation is tiny is genuinely equivalent.
     tight = {"P1": {"ci": [-PRACTICAL_EQUIVALENCE_LOSS / 2, PRACTICAL_EQUIVALENCE_LOSS / 2]}}
-    assert _practically_equivalent_for_candidate(tight, stage_c0_equivalent, ["P1"]) is True
 
-    # A candidate that moved the loss well beyond the bound is NOT equivalent,
-    # even though the preliminary plugin barely moved -- the case the old
-    # code got backwards.
-    wide = {"P1": {"ci": [-0.05, -0.02]}}
-    assert _practically_equivalent_for_candidate(wide, stage_c0_equivalent, ["P1"]) is False
+    assert _practically_equivalent_for_candidate(
+        tight, plugin_barely_moved, ["P1"], {}) is None
+    assert _practically_equivalent_for_candidate(
+        tight, plugin_barely_moved, ["P1"], {"swing_basis": None}) is None
 
-    # And the score-deviation bound still has to hold too.
-    assert _practically_equivalent_for_candidate(tight, stage_c0_moved, ["P1"]) is False
 
-    # Nothing cleared means there is no candidate to assess: unmeasured.
-    assert _practically_equivalent_for_candidate(tight, stage_c0_equivalent, []) is None
+def test_candidate_score_deviation_is_the_rms_share_of_its_own_held_out_scores():
+    from app.services.kill_order_refit import candidate_score_deviation
+
+    class _R:
+        oof_scores = np.array([1.0, 2.0, 3.0, 4.0])
+
+    reference = np.array([1.0, 2.0, 3.0, 4.0])
+    assert candidate_score_deviation(_R(), reference) == pytest.approx(0.0)
+
+    shifted = reference + 0.5           # a constant offset has no sd
+    assert candidate_score_deviation(_R(), shifted) == pytest.approx(0.0)
+
+    stretched = reference * 2.0
+    # sd(stretched - scores) / sd(stretched) = sd(scores) / (2 sd(scores))
+    assert candidate_score_deviation(_R(), stretched) == pytest.approx(0.5)
+
+    # No spread in the reference: there is no share to take.
+    assert candidate_score_deviation(_R(), np.ones(4)) is None
+
+
+# --------------------------------------------------------------------------
+# Review finding 7 -- Family B folds reached the matrix
+# --------------------------------------------------------------------------
+
+
+def test_the_matrix_scores_family_b_candidates_too():
+    """fit_family_b returns a ScoredCandidate with no `graph=` field --
+    deliberately, since Family B fits weightings over a FIXED graph rather
+    than a graph. `if fitted.graph is None: continue` therefore dropped every
+    Family B fold, so the family matrix the previous review asked for was
+    still empty for Family B while looking populated."""
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    results = run_nested_cv(leverage, observations, PRIMARY_T2,
+                            candidates=["component_tilt_symmetric"], l2_grid=[1.0],
+                            n_folds=5, family="B")
+    # Keyed the way run_stage_c keys it, so the test exercises the real path.
+    matrix = yardstick_matrix(
+        leverage, observations,
+        {"component_tilt_symmetric#familyB": results["component_tilt_symmetric"]},
+        draws=20,
+    )
+
+    assert set(matrix["cells"]) == {"first_half_to_match", "full_match_to_match",
+                                    "forward_rounds"}
+    for yardstick, cells in matrix["cells"].items():
+        # The KEY is written even when every fold was skipped -- _cell returns
+        # None for an empty score list -- so asserting membership alone passes
+        # against the defect. The cell has to carry a real scored result.
+        cell = cells.get("component_tilt_symmetric#familyB")
+        assert cell is not None, yardstick
+        assert cell["n"] > 0, yardstick
+        assert cell["auc"] is not None, yardstick
+
+
+def test_family_a_and_family_b_land_in_the_same_matrix():
+    """The point of the matrix is a common yardstick across families. Both
+    have to be present at once for the comparison to exist at all."""
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    a = run_nested_cv(leverage, observations, PRIMARY_T2,
+                      candidates=["current_graph"], l2_grid=[1.0], n_folds=5)
+    b = run_nested_cv(leverage, observations, PRIMARY_T2,
+                      candidates=["component_tilt_symmetric"], l2_grid=[1.0],
+                      n_folds=5, family="B")
+    merged = dict(a)
+    merged["component_tilt_symmetric#familyB"] = b["component_tilt_symmetric"]
+
+    matrix = yardstick_matrix(leverage, observations, merged, draws=20)
+
+    for cells in matrix["cells"].values():
+        for name in ("current_graph", "component_tilt_symmetric#familyB"):
+            assert cells.get(name) is not None, name
+            assert cells[name]["n"] > 0, name
+
+
+def test_family_b_scores_are_the_fitted_weighting_not_a_constant():
+    """A reconstruction that quietly returned zeros would also 'populate' the
+    matrix. The scores have to be the ones fit_family_b itself produces:
+    damage_diff + family_b_columns(rows, shipped_graph(), rung) . weights."""
+    from app.services.kill_order_curves import family_b_columns
+
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    results = run_nested_cv(leverage, observations, PRIMARY_T2,
+                            candidates=["component_tilt_symmetric"], l2_grid=[1.0],
+                            n_folds=5, family="B")
+    fitted = next(iter(results["component_tilt_symmetric"].per_fold.values()))
+    assert fitted.graph is None and fitted.weights is not None
+
+    columns, _ = family_b_columns(leverage, shipped_graph(), "component_tilt_symmetric")
+    expected = np.array([r.damage_diff for r in leverage]) + columns @ fitted.weights
+    assert np.ptp(expected) > 0  # the fixture really does vary across rounds
+
+
+# --------------------------------------------------------------------------
+# Review finding 8 -- WPA's value model is refit inside each INNER split too
+# --------------------------------------------------------------------------
+
+
+def _record_value_model_fits(monkeypatch):
+    """Record the match set every WPA value-model fit sees, delegating to the
+    real fitter so the run is otherwise unchanged."""
+    import app.services.win_probability as wp
+
+    real = wp.fit_value_model
+    seen = []
+
+    def spy(observations, *args, **kwargs):
+        seen.append(frozenset(o.match_id for o in observations))
+        return real(observations, *args, **kwargs)
+
+    monkeypatch.setattr(wp, "fit_value_model", spy)
+    return seen
+
+
+def test_the_wpa_value_model_is_refit_inside_each_inner_split(monkeypatch):
+    """_wpa_context(train_obs) fixed the OUTER leak. _select_l2 then sliced
+    y and weights out of that same object -- targets produced by a value
+    model fitted on the whole outer training set, INCLUDING the
+    inner-validation matches it was about to select L2 against.
+
+    Before the fix the only fits are the all-data alignment and one per outer
+    fold. After it, each (l2, inner fold) adds one more.
+    """
+    from app.services.impact_eval import TargetConfig
+
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    seen = _record_value_model_fits(monkeypatch)
+
+    n_folds = 2
+    run_nested_cv(leverage, observations, TargetConfig(name="WPA"),
+                  candidates=["swing_basis"], l2_grid=[0.1, 1.0],
+                  n_folds=n_folds, seed=0)
+
+    assert len(seen) > 1 + n_folds
+
+
+def test_no_inner_value_model_fit_sees_an_inner_validation_match(monkeypatch):
+    """The property that actually matters, not just the call count: every
+    fit is on a set that is either the full corpus (the row-geometry
+    alignment, whose target values are discarded), an outer training set, or
+    a STRICT SUBSET of one -- an inner training split. Nothing is ever fitted
+    on a superset of the rows it is then validated against."""
+    from app.services.impact_eval import TargetConfig
+    from app.services.impact_eval import stable_folds as _stable_folds
+
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    seen = _record_value_model_fits(monkeypatch)
+
+    n_folds = 2
+    run_nested_cv(leverage, observations, TargetConfig(name="WPA"),
+                  candidates=["swing_basis"], l2_grid=[0.1, 1.0],
+                  n_folds=n_folds, seed=0)
+
+    all_matches = frozenset(o.match_id for o in observations)
+    folds = _stable_folds(sorted(all_matches), n_folds=n_folds, seed=0)
+    outer_train = [
+        frozenset(m for m in all_matches if folds[m] != f) for f in range(n_folds)
+    ]
+
+    strict_inner = 0
+    for fitted_on in seen:
+        if fitted_on == all_matches or fitted_on in outer_train:
+            continue
+        containing = [t for t in outer_train if fitted_on < t]
+        assert containing, (
+            "a value model was fitted on a set that is neither the full corpus, "
+            "an outer training set, nor a strict subset of one"
+        )
+        strict_inner += 1
+
+    assert strict_inner > 0, "no inner training split ever refitted the value model"
+
+
+def test_t2_needs_no_realignment_and_does_not_refit_anything(monkeypatch):
+    """The guard must be exactly WPA-shaped: T2's target is read off the
+    observations and depends on no fitted model, so it is left alone."""
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    seen = _record_value_model_fits(monkeypatch)
+
+    run_nested_cv(leverage, observations, PRIMARY_T2,
+                  candidates=["swing_basis"], l2_grid=[0.1, 1.0], n_folds=2, seed=0)
+
+    assert seen == []

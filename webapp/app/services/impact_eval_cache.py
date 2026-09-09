@@ -84,48 +84,75 @@ def _live_identity(db) -> dict:
 
 def _database_identity(db) -> str:
     """Which database this is, so two snapshots carrying the same surrogate
-    ids cannot be mistaken for each other."""
+    ids cannot be mistaken for each other.
+
+    The PORT is part of the identity (review finding 10): this repo runs its
+    own Postgres on 5433 precisely because the sister repo's runs on 5432,
+    and two databases on the same host with the same name are exactly the
+    confusion this string exists to prevent.
+    """
     try:
         url = db.get_bind().url
-        return f"{url.get_backend_name()}:{url.host or 'local'}:{url.database or ''}"
+        return (
+            f"{url.get_backend_name()}:{url.host or 'local'}:"
+            f"{url.port or ''}:{url.database or ''}"
+        )
     except Exception:
         return "unknown"
+
+
+# Exactly the columns the replay consumes, per table, ordered by primary key
+# so the digest is deterministic across runs and across servers. Review
+# finding 10: the previous version hashed three aggregate TOTALS plus a
+# round-outcome digest, which had two holes.
+#
+#   * plant_time appeared NOWHERE, and it drives every timing score. Changing
+#     a planted round's plant_time from 30 to 20 left the revision identical
+#     while default replay scores moved -- so a stale cache stayed "valid"
+#     over exactly the edit Part 3 and Part 4 are built on.
+#   * A SUM cannot see a balanced edit. Two loadouts swapped between players,
+#     or +100 on one row and -100 on another, leave every total unchanged.
+#     Per-player attribution moves; the revision does not.
+#
+# A digest of the row contents has neither hole, and is a single ordered scan
+# per table rather than a replay.
+_REVISION_QUERIES = (
+    ("kill_events",
+     "SELECT id, round_id, killer_match_player_id, death_match_player_id, "
+     "event_time_seconds, weapon FROM kill_events ORDER BY id"),
+    ("round_player_stats",
+     "SELECT id, round_id, match_player_id, kills, deaths, assists, score, "
+     "loadout, remaining FROM round_player_stats ORDER BY id"),
+    ("rounds",
+     "SELECT id, match_id, round_number, outcome, planted, plant_time, "
+     "exploded, defused, defuse_time FROM rounds ORDER BY id"),
+    ("match_players",
+     "SELECT id, match_id, player_id, team FROM match_players ORDER BY id"),
+)
 
 
 def _source_revision(db) -> str:
     """A content digest of the rows the replay actually reads.
 
-    Match ids and row counts cannot see an EDIT. Correcting a kill time,
-    a loadout or a round winner leaves the id list and both counts identical,
-    so a stale cache stayed 'valid' and a comparison could claim two
-    different snapshots were the same data. These aggregates move whenever
-    any value the scorer consumes changes, and they cost four cheap scans
-    rather than a replay.
+    Match ids and row counts cannot see an EDIT. Correcting a kill time, a
+    loadout, a plant time or a round winner leaves the id list and every
+    count identical, so a stale cache stayed 'valid' and a comparison could
+    claim two different snapshots were the same data.
     """
-    aggregates = [
-        "SELECT COUNT(*), COALESCE(SUM(event_time_seconds), 0) FROM kill_events",
-        "SELECT COUNT(*), COALESCE(SUM(loadout), 0) + COALESCE(SUM(score), 0) "
-        "FROM round_player_stats",
-        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN planted THEN 1 ELSE 0 END), 0) FROM rounds",
-    ]
     parts = []
-    for sql in aggregates:
+    for table, sql in _REVISION_QUERIES:
         try:
-            row = db.execute(text(sql)).one()
-            parts.append(":".join(f"{v}" for v in row))
+            digest = hashlib.sha256()
+            rows = 0
+            for row in db.execute(text(sql)).yield_per(10_000):
+                rows += 1
+                digest.update(
+                    "|".join("" if v is None else str(v) for v in row).encode()
+                )
+                digest.update(b";")
+            parts.append(f"{table}={rows}:{digest.hexdigest()[:16]}")
         except Exception:
-            parts.append("NA")
-    # Round outcomes decide every label, and are pure text.
-    try:
-        outcomes = db.execute(text(
-            "SELECT id, outcome FROM rounds ORDER BY id"
-        )).all()
-        digest = hashlib.sha256(
-            ";".join(f"{r[0]}={r[1] or ''}" for r in outcomes).encode()
-        ).hexdigest()[:16]
-        parts.append(digest)
-    except Exception:
-        parts.append("NA")
+            parts.append(f"{table}=NA")
     return "|".join(parts)
 
 

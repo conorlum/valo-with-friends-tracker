@@ -328,3 +328,88 @@ def test_shape_mid_ratio_falls_back_when_theta2_is_degenerate():
     ]
     fit = fit_preplant_time_model(obs)
     assert fit.shape_mid_ratio == pytest.approx(0.5)
+
+
+# --------------------------------------------------------------------------
+# Review finding 13 -- the retained diagnostic keeps the global intercept
+# --------------------------------------------------------------------------
+
+
+def test_the_fitted_global_intercept_is_retained():
+    """beta[0] was computed by every fit and then dropped. state_effects pins
+    the reference state to 0.0 and stores only the OTHER states' offsets, so
+    without it PreplantFit carried no level at all."""
+    observations = _synthetic_observations()
+    fit = fit_preplant_time_model(observations)
+
+    assert hasattr(fit, "intercept")
+    assert fit.intercept != 0.0
+
+
+def test_the_linear_predictor_matches_the_models_own_fitted_eta():
+    """The property the diagnostic needs: reconstructing
+    intercept + state_effect + shape(dt)*logit_lift(adv, side) reproduces the
+    fitted linear predictor, so a loss computed from it really is the fitted
+    model's loss."""
+    import numpy as np
+
+    from app.scoring.preplant_time_model import (
+        _amplitude_design_row,
+        _fit_at_ratio,
+    )
+
+    observations = _synthetic_observations()
+    fit = fit_preplant_time_model(observations)
+    usable = [o for o in observations if o.round_won_by_killer_team is not None]
+    states = sorted({o.exact_state for o in usable})
+    reference = "5v5" if "5v5" in states else states[0]
+    other_states = [s for s in states if s != reference]
+    labels = np.array([1.0 if o.round_won_by_killer_team else 0.0 for o in usable])
+
+    beta, _ = _fit_at_ratio(usable, other_states, labels, fit.shape_mid_ratio, True)
+
+    for o in usable[:25]:
+        row = np.concatenate(([1.0],
+                              [1.0 if o.exact_state == st else 0.0 for st in other_states],
+                              _amplitude_design_row(o, fit.shape_mid_ratio, True)))
+        eta_design = float(row @ beta)
+        eta_fit = fit.linear_predictor(o.dt, o.adv, o.is_attacker, o.exact_state)
+        assert eta_fit == pytest.approx(eta_design, abs=1e-9)
+
+
+def test_dropping_the_intercept_would_change_the_reconstructed_loss():
+    """The fixture must actually contain the relationship the fix is about:
+    an intercept large enough that omitting it moves the diagnostic. If the
+    fitted intercept were ~0 this test would pass vacuously."""
+    import numpy as np
+
+    from app.services.stats_math import weighted_log_loss
+
+    observations = _synthetic_observations()
+    fit = fit_preplant_time_model(observations)
+    usable = [o for o in observations if o.round_won_by_killer_team is not None]
+    labels = [1.0 if o.round_won_by_killer_team else 0.0 for o in usable]
+
+    def loss(include_intercept):
+        preds = []
+        for o in usable:
+            eta = fit.linear_predictor(o.dt, o.adv, o.is_attacker, o.exact_state)
+            if not include_intercept:
+                eta -= fit.intercept
+            preds.append(1.0 / (1.0 + np.exp(-eta)))
+        return weighted_log_loss(preds, labels)
+
+    assert abs(fit.intercept) > 0.01, "fixture's intercept is too small to test with"
+    assert loss(True) != pytest.approx(loss(False))
+
+
+def test_the_intercept_is_a_level_and_does_not_touch_the_lift():
+    """Nothing that consumes logit_lift or shape -- preplant_scalar,
+    preplant_k_selection, the shipped empirical curve -- may move because of
+    this. The intercept is a level, not part of the lift."""
+    observations = _synthetic_observations()
+    fit = fit_preplant_time_model(observations)
+
+    lift_only = fit.logit_lift(1, True)
+    assert lift_only == fit.intercept_atk + fit.slope_atk * 1
+    assert fit.shape(5.0) == pytest.approx(1.0)

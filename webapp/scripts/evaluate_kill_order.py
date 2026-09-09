@@ -105,6 +105,9 @@ def main() -> int:
     report = build_full_report(
         team_rows, observations, player_rows=player_rows, state_visits=visits,
         draws=args.draws,
+        # Review finding 10: lets RunIdentity record the source-row digest, so
+        # two runs over EDITED data cannot compare as the same snapshot.
+        db=db,
     )
     report["loading"] = loading
     _print_stage_c0(report["stage_c0"])

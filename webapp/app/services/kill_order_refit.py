@@ -293,6 +293,19 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
         for o in observations:
             observations_by_match.setdefault(o.match_id, []).append(o)
 
+    # Finding 8. The rebuild _select_l2 needs to re-derive a model-derived
+    # target from an inner training split alone. None for T1/T2, whose
+    # targets are read off the observations and see no fitted model.
+    realign = None
+    if config.name == "WPA":
+        def realign(match_ids):
+            inner_obs = [
+                o for mid in match_ids for o in observations_by_match.get(mid, ())
+            ]
+            return align_target(
+                leverage_rows, observations, config, context=_wpa_context(inner_obs),
+            )
+
     results = {name: CandidateResult(name=name) for name in candidates}
     collected = {name: [] for name in candidates}
     row_order: list[np.ndarray] = []
@@ -358,7 +371,7 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
         for name in candidates:
             if family == "A":
                 l2 = _select_l2(name, aligned_fold, train_mask, l2_grid, state_visits or [],
-                                leverage_rows)
+                                leverage_rows, realign=realign)
                 candidate = fit_family_a(name, train, test, table, l2, exposure,
                                          shipped_graph(), controls=outer_controls)
                 in_fold = fit_family_a(name, train, train_on_train, table, l2, exposure,
@@ -367,7 +380,7 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
                 surfaces = None
             else:
                 l2 = float(l2_grid[0]) if len(l2_grid) == 1 else _select_l2_b(
-                    name, aligned, train_mask, l2_grid
+                    name, aligned_fold, train_mask, l2_grid, realign=realign
                 )
                 train_rows = [aligned.team_rows[i] for i in np.flatnonzero(train_mask)]
                 test_rows = [aligned.team_rows[i] for i in np.flatnonzero(test_mask)]
@@ -431,18 +444,34 @@ def _table_from_rows(leverage_rows, train_round_ids):
 
 
 def _select_l2(name, aligned, train_mask, l2_grid, state_visits, leverage_rows,
-               inner_folds=3, seed=1):
+               inner_folds=3, seed=1, realign=None):
     """Inner CV inside the training fold. L2 is the ONLY hyperparameter
     selected here -- it does not change the outcome being predicted, which is
     why it is the only one allowed.
 
-    EVERYTHING data-derived is rebuilt per inner split. An earlier draft
-    passed in the swing table and exposure computed over the WHOLE outer
-    training set and reused them for every inner split -- so for G2 (whose
-    basis is built on dP) and G3 (whose prior is) the candidate had already
-    seen the inner-validation matches' outcomes, and G1a's construction scale
-    had seen their covariates. That is a leak inside the selection loop, and
-    it biases the L2 choice toward whichever value overfits the table best.
+    The swing table, the exposure and the basis they build are rebuilt per
+    inner split. An earlier draft passed in the swing table and exposure
+    computed over the WHOLE outer training set and reused them for every
+    inner split -- so for G2 (whose basis is built on dP) and G3 (whose prior
+    is) the candidate had already seen the inner-validation matches'
+    outcomes, and G1a's construction scale had seen their covariates. That is
+    a leak inside the selection loop, and it biases the L2 choice toward
+    whichever value overfits the table best.
+
+    THE TARGET ITSELF also has to be rebuilt, and used not to be (review
+    finding 8). Under WPA, y and the weights are produced by a value model,
+    and this function was handed `aligned_fold` -- fitted on the whole OUTER
+    training set, which contains every inner-validation match. Slicing
+    y[train_mask][inner_train] out of it therefore selected L2 against
+    targets that had already seen the rows they were about to be validated
+    on. The rebuild above was real; the value model simply was not part of
+    it, and this docstring used to claim "EVERYTHING data-derived is rebuilt
+    per inner split", which overstated what the code did.
+
+    `realign(match_ids) -> AlignedTarget` re-derives the target from a model
+    fitted on those matches only. It is None for T1/T2, whose targets are
+    read off the observations and depend on no fitted model, so for them
+    `aligned` is already correct per split.
     """
     if name in ("current_graph", "swing_plugin") or len(l2_grid) == 1:
         return float(l2_grid[0])
@@ -478,10 +507,28 @@ def _select_l2(name, aligned, train_mask, l2_grid, state_visits, leverage_rows,
             )
             inner_exposure = np.abs(aligned.leverage[train_mask][inner_train]).sum(axis=0)
 
-            sub_train = tuple(a[train_mask][inner_train] for a in
-                              (aligned.leverage, aligned.damage, aligned.y, aligned.weights))
-            sub_test = tuple(a[train_mask][inner_test] for a in
-                             (aligned.leverage, aligned.damage, aligned.weights))
+            # Finding 8. The value model behind y/weights is refitted on the
+            # INNER training matches only. leverage/damage/controls are row
+            # geometry and depend on no model, so they still come from
+            # `aligned`. The inner-VALIDATION labels come from the inner
+            # model too, mirroring the outer loop, where a fold's test labels
+            # come from the model fitted on that fold's training half.
+            inner_aligned = aligned
+            if realign is not None:
+                inner_aligned = realign(sorted(inner_match_ids))
+                if not np.array_equal(inner_aligned.match_ids, aligned.match_ids):
+                    raise ValueError(
+                        "inner re-alignment changed the row set; the inner masks "
+                        "would no longer line up"
+                    )
+
+            sub_train = (aligned.leverage[train_mask][inner_train],
+                         aligned.damage[train_mask][inner_train],
+                         inner_aligned.y[train_mask][inner_train],
+                         inner_aligned.weights[train_mask][inner_train])
+            sub_test = (aligned.leverage[train_mask][inner_test],
+                        aligned.damage[train_mask][inner_test],
+                        inner_aligned.weights[train_mask][inner_test])
             sub_controls = (aligned.controls[train_mask][inner_train],
                             aligned.controls[train_mask][inner_test])
             self_controls = (aligned.controls[train_mask][inner_train],) * 2
@@ -498,9 +545,9 @@ def _select_l2(name, aligned, train_mask, l2_grid, state_visits, leverage_rows,
                 continue  # an inner split with an undetermined state: skip, never impute
             calibration = calibrate_fractional(fitted.scores, sub_train[2], weights=sub_train[3])
             probabilities = apply_calibration(calibration, candidate.scores)
-            losses.append(_weighted_loss(probabilities, aligned.y[train_mask][inner_test],
-                                         aligned.weights[train_mask][inner_test]))
-            weight_of.append(float(aligned.weights[train_mask][inner_test].sum()))
+            losses.append(_weighted_loss(probabilities, inner_aligned.y[train_mask][inner_test],
+                                         inner_aligned.weights[train_mask][inner_test]))
+            weight_of.append(float(inner_aligned.weights[train_mask][inner_test].sum()))
 
         # WEIGHTED across inner folds. An unweighted mean lets a small fold
         # count as much as a large one, which contradicts this project's
@@ -512,12 +559,19 @@ def _select_l2(name, aligned, train_mask, l2_grid, state_visits, leverage_rows,
     return best
 
 
-def _select_l2_b(name, aligned, train_mask, l2_grid, inner_folds=3, seed=1):
+def _select_l2_b(name, aligned, train_mask, l2_grid, inner_folds=3, seed=1,
+                 realign=None):
     """Family B's analogue of _select_l2: inner CV inside the training
     fold, over team_rows against the FIXED shipped graph rather than a
     leverage matrix. Family B fits a weighting, not a curve, so there is no
     swing table or exposure-dependent basis to rebuild per inner split --
     only the fold split itself needs to come from training matches only.
+
+    `realign` carries finding 8's target rebuild, on the same contract as
+    _select_l2's. Family B is only ever run against T2 today, whose target
+    depends on no fitted model, so it arrives as None and this function
+    behaves exactly as before -- the parameter exists so that adding a
+    model-derived target here later cannot silently reintroduce the leak.
     """
     train_matches = aligned.match_ids[train_mask]
     inner = stable_folds(train_matches, n_folds=inner_folds, seed=seed)
@@ -533,17 +587,27 @@ def _select_l2_b(name, aligned, train_mask, l2_grid, inner_folds=3, seed=1):
             if not inner_test.any() or not inner_train.any():
                 continue
 
+            inner_aligned = aligned
+            if realign is not None:
+                inner_match_ids = sorted(set(train_matches[inner_train].tolist()))
+                inner_aligned = realign(inner_match_ids)
+                if not np.array_equal(inner_aligned.match_ids, aligned.match_ids):
+                    raise ValueError(
+                        "inner re-alignment changed the row set; the inner masks "
+                        "would no longer line up"
+                    )
+
             sub_train_rows = [r for r, keep in zip(train_rows, inner_train) if keep]
             sub_test_rows = [r for r, keep in zip(train_rows, inner_test) if keep]
-            sub_y_train = aligned.y[train_mask][inner_train]
-            sub_w_train = aligned.weights[train_mask][inner_train]
+            sub_y_train = inner_aligned.y[train_mask][inner_train]
+            sub_w_train = inner_aligned.weights[train_mask][inner_train]
             sub_controls_train = aligned.controls[train_mask][inner_train]
             sub_controls_test = aligned.controls[train_mask][inner_test]
 
             try:
                 candidate = fit_family_b(
                     name, (sub_train_rows, sub_y_train, sub_w_train),
-                    (sub_test_rows, aligned.weights[train_mask][inner_test]),
+                    (sub_test_rows, inner_aligned.weights[train_mask][inner_test]),
                     shipped_graph(), l2, controls=(sub_controls_train, sub_controls_test),
                 )
                 fitted = fit_family_b(
@@ -555,9 +619,9 @@ def _select_l2_b(name, aligned, train_mask, l2_grid, inner_folds=3, seed=1):
                 continue  # an inner split with an undetermined state: skip, never impute
             calibration = calibrate_fractional(fitted.scores, sub_y_train, weights=sub_w_train)
             probabilities = apply_calibration(calibration, candidate.scores)
-            losses.append(_weighted_loss(probabilities, aligned.y[train_mask][inner_test],
-                                         aligned.weights[train_mask][inner_test]))
-            weight_of.append(float(aligned.weights[train_mask][inner_test].sum()))
+            losses.append(_weighted_loss(probabilities, inner_aligned.y[train_mask][inner_test],
+                                         inner_aligned.weights[train_mask][inner_test]))
+            weight_of.append(float(inner_aligned.weights[train_mask][inner_test].sum()))
 
         if losses:
             combined = float(np.average(losses, weights=weight_of))
@@ -1307,7 +1371,8 @@ def paired_delta(result_a, result_b, alpha=0.05, draws=500, seed=0) -> dict:
 
 def verdict_report(primaries, deployable, practically_equivalent, targets_agree,
                    max_component_correlation, econ_negative_every_fold,
-                   beats_kill_diff_t1, stability, stage_c0=None) -> dict:
+                   beats_kill_diff_t1, stability, stage_c0=None,
+                   score_deviations=None) -> dict:
     """Four verdicts, printed side by side and never summarized into one.
 
     A Verdict A1 null alongside a Verdict C signal is a coherent and
@@ -1363,7 +1428,9 @@ def verdict_report(primaries, deployable, practically_equivalent, targets_agree,
     # available to supply the score-deviation half. Falling back to the
     # caller's value keeps existing callers working.
     equivalence = (
-        _practically_equivalent_for_candidate(primaries, stage_c0, cleared)
+        _practically_equivalent_for_candidate(
+            primaries, stage_c0, cleared, score_deviations,
+        )
         if stage_c0 is not None else practically_equivalent
     )
 
@@ -1587,12 +1654,51 @@ def yardstick_matrix(team_rows, observations, results, draws=200, seed=0,
     for clone in clones:
         clones_by_round.setdefault(clone.round_id, []).append(clone)
 
+    # Review finding 7. `if fitted.graph is None: continue` silently dropped
+    # EVERY Family B fold: fit_family_b returns a ScoredCandidate with no
+    # `graph=` field at all -- deliberately, because Family B fits weightings
+    # over a FIXED graph rather than a graph -- so the matrix the previous
+    # review's "incomplete family matrix" finding asked for was still empty
+    # for Family B. Adding the names to the results dict did not fix that.
+    #
+    # A Family B fold's score is reconstructed the way fit_family_b builds it:
+    #   S_r = damage_diff_r + family_b_columns(rows, shipped_graph(), rung)_r . weights
+    # on BOTH training and test observations, matching the Family A branch,
+    # which is what the per-fold field below requires.
+    ordered_rounds = list(by_round)
+    all_rows = [by_round[rid] for rid in ordered_rounds]
+    damage_diff = np.array([r.damage_diff for r in all_rows], dtype=float)
+    family_b_column_cache: dict[str, np.ndarray] = {}
+
+    def _fold_scores(result, fitted) -> np.ndarray | None:
+        """Per-round scores for one fold, in `ordered_rounds` order, or None
+        if this fold recovered nothing scoreable."""
+        if fitted.graph is not None:
+            return damage_diff + per_round @ np.asarray(fitted.graph, dtype=float)
+        if fitted.weights is None:
+            return None
+        weights = np.asarray(fitted.weights, dtype=float)
+        if not np.all(np.isfinite(weights)):
+            # fit_family_b fills weights with NaN when d <= 0, i.e. no
+            # weighting is recoverable. Skipping is right; skipping SILENTLY
+            # for every fold regardless of d was the defect.
+            return None
+        # result.name is the bare rung; the matrix key carries a "#familyB"
+        # suffix so the families cannot collide, and parsing it back would be
+        # fragile.
+        rung = result.name
+        if rung not in family_b_column_cache:
+            columns, _names = family_b_columns(all_rows, shipped_graph(), rung)
+            family_b_column_cache[rung] = columns
+        return damage_diff + family_b_column_cache[rung] @ weights
+
     per_fold_candidates: dict[str, dict[int, Candidate]] = {}
     folds_source: dict = {}
     for name, result in results.items():
         per_fold_candidates[name] = {}
         for fold_index, fitted in result.per_fold.items():
-            if fitted.graph is None:
+            fold_scores = _fold_scores(result, fitted)
+            if fold_scores is None:
                 continue
             if not folds_source:
                 folds_source = result.per_fold
@@ -1615,11 +1721,10 @@ def yardstick_matrix(team_rows, observations, results, draws=200, seed=0,
             field = f"_stage_c_score_{name}_fold{fold_index}"
             for clone in clones:
                 setattr(clone, field, 0.0)  # rounds with no leverage row
-            for rid, row in by_round.items():
+            for rid in by_round:
                 if rid not in index_of:
                     continue
-                lev = per_round[index_of[rid]]
-                score = float(row.damage_diff + lev @ fitted.graph)
+                score = float(fold_scores[index_of[rid]])
                 for clone in clones_by_round.get(rid, ()):
                     setattr(clone, field, score)
 
@@ -1950,9 +2055,34 @@ def _practically_equivalent_stage_c0(stage_c0: dict) -> bool:
     return (round_level["sd_difference"] / round_level["sd_reference"]) < PRACTICAL_EQUIVALENCE_RMS
 
 
-def _practically_equivalent_for_candidate(primaries, stage_c0, cleared) -> bool | None:
+def candidate_score_deviation(result, reference_scores) -> float | None:
+    """sd(reference - candidate) / sd(reference), on the candidate's OWN
+    held-out scores -- the same RMS-share quantity `_compare_graphs` computes
+    for two graphs, but for a fitted candidate against the shipped one.
+
+    `reference_scores` must already be sliced to the candidate's
+    `oof_row_ids`, so the two arrays are the same rounds in the same order.
+    None when the candidate has no OOF scores, or when the reference has no
+    spread to take a share of.
+    """
+    scores = getattr(result, "oof_scores", None)
+    if scores is None or len(scores) == 0:
+        return None
+    scores = np.asarray(scores, dtype=float)
+    reference = np.asarray(reference_scores, dtype=float)
+    if len(reference) != len(scores):
+        return None
+    sd_reference = float(reference.std())
+    if sd_reference == 0:
+        return None
+    return float((reference - scores).std()) / sd_reference
+
+
+def _practically_equivalent_for_candidate(
+    primaries, stage_c0, cleared, score_deviations=None,
+) -> bool | None:
     """Practical equivalence for the candidate that actually cleared a
-    primary, using BOTH declared bounds.
+    primary, using BOTH declared bounds ON THAT SAME CANDIDATE.
 
     The spec requires the loss bound AND the score-deviation bound,
     recomputed for fitted candidates. Reading only Stage C0's plugin SD ratio
@@ -1961,29 +2091,58 @@ def _practically_equivalent_for_candidate(primaries, stage_c0, cleared) -> bool 
     candidate did not -- it was answering a question about a different
     object.
 
+    Review finding 9: this function said exactly that and then did it anyway.
+    It computed a CANDIDATE-SPECIFIC loss bound and combined it with
+    _practically_equivalent_stage_c0, which reads
+    stage_c0["current_vs_swing_plugin"] -- the preliminary plugin, not the
+    candidate that cleared. `score_deviations` now carries
+    {candidate name: sd(reference - candidate)/sd(reference)} from that
+    candidate's own held-out scores, so both bounds land on one object.
+
     Equivalent means "indistinguishable from the shipped score": the paired
     loss interval must lie INSIDE +/-PRACTICAL_EQUIVALENCE_LOSS, and the
     score deviation must be under PRACTICAL_EQUIVALENCE_RMS. Returns None --
     unmeasured -- when no primary cleared, since there is then no fitted
-    candidate whose equivalence could be assessed.
+    candidate whose equivalence could be assessed, and also when a cleared
+    candidate's own deviation could not be measured: falling back to the
+    plugin's number there would reinstate the defect under a different name.
     """
     if not cleared:
         return None
-    loss_within = []
+    within = []
     for name in cleared:
         ci = primaries[name]["ci"]
-        loss_within.append(
+        loss_ok = (
             abs(ci[0]) <= PRACTICAL_EQUIVALENCE_LOSS and abs(ci[1]) <= PRACTICAL_EQUIVALENCE_LOSS
         )
-    if not loss_within:
+        candidate = next(p["candidate"] for p in PRIMARY_COMPARISONS if p["name"] == name)
+        deviation = (score_deviations or {}).get(candidate)
+        if deviation is None:
+            return None
+        within.append(loss_ok and deviation < PRACTICAL_EQUIVALENCE_RMS)
+    if not within:
         return None
-    # Both bounds must hold for the candidate to count as merely equivalent.
-    return all(loss_within) and _practically_equivalent_stage_c0(stage_c0)
+    return all(within)
+
+
+def _source_revision_for_identity(db) -> str:
+    """The content digest of the source rows, for RunIdentity.
+
+    "" when no session was supplied -- meaning "not recorded", which
+    matrix_is_comparable already treats as a difference from any run that DID
+    record one. Never guessed and never omitted silently.
+    """
+    if db is None:
+        return ""
+    from app.services.impact_eval_cache import _source_revision
+
+    return _source_revision(db)
 
 
 def build_full_report(leverage_rows, observations, player_rows=None, state_visits=None,
                       draws=200, l2_grid=None, n_folds=5, seed=0,
-                      outer_weights_by_target=None, econ_negative_every_fold=None) -> dict:
+                      outer_weights_by_target=None, econ_negative_every_fold=None,
+                      db=None) -> dict:
     """Assembles the complete Stage C report: every REPORT_SECTIONS entry
     populated, all four primaries, all four verdicts computed from real
     inputs -- never a hardcoded placeholder. The CLI becomes argument
@@ -2025,10 +2184,17 @@ def build_full_report(leverage_rows, observations, player_rows=None, state_visit
     # with genuinely different folds could carry the same fold_mapping_hash
     # and be joined as comparable.
     folds = stable_folds(match_ids, n_folds=n_folds, seed=seed)
+    # Review finding 10: source_revision was declared on RunIdentity, read by
+    # matrix_is_comparable, and NEVER ASSIGNED -- so it was "" on both sides
+    # of every comparison and the field protected nothing. It is populated
+    # here from the same digest impact_eval_cache uses, when a session is
+    # available; "" continues to mean "not recorded" for callers that have no
+    # database in hand.
     identity = RunIdentity(
         dataset_fingerprint=dataset_fingerprint(match_ids),
         fold_mapping_hash=fold_mapping_hash(folds),
         calculation_version=f"{IMPACT_CALCULATION_VERSION}/{STAGE_C_SCHEMA_VERSION}",
+        source_revision=_source_revision_for_identity(db),
     )
     report["identity"] = identity.__dict__
     report["loading"] = {
@@ -2199,11 +2365,29 @@ def build_full_report(leverage_rows, observations, player_rows=None, state_visit
         # UNMEASURED rather than false-or-true by default.
         beats_kill_diff_t1 = None
 
+    # Review finding 9. The score-deviation half of practical equivalence,
+    # measured on EACH CANDIDATE'S OWN held-out scores against the shipped
+    # reference over the same rounds, so the verdict applies both declared
+    # bounds to one object instead of pairing a candidate-specific loss bound
+    # with the preliminary plugin's SD ratio.
+    t2_aligned = align_target(leverage_rows, observations, PRIMARY_T2)
+    score_deviations = {}
+    for name, result in all_results.items():
+        rows = getattr(result, "oof_row_ids", None)
+        if rows is None:
+            continue
+        reference = score_rounds(
+            t2_aligned.leverage[rows], t2_aligned.damage[rows], shipped_graph(),
+        )
+        score_deviations[name] = candidate_score_deviation(result, reference)
+    report["score_deviations"] = score_deviations
+
     report["verdicts"] = verdict_report(
         primaries=primaries,
         deployable={n: all(f.deployable for f in r.per_fold.values()) for n, r in all_results.items()},
         practically_equivalent=_practically_equivalent_stage_c0(report["stage_c0"]),
         stage_c0=report["stage_c0"],
+        score_deviations=score_deviations,
         targets_agree=agreement["agree"],
         max_component_correlation=correlations["max_abs"],
         econ_negative_every_fold=econ_negative_every_fold,

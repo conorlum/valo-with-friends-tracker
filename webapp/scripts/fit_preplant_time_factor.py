@@ -75,17 +75,16 @@ def main():
     import numpy as np
 
     def _predicted(fit, obs_list):
-        # Approximates the fit's own linear predictor via the PINNED
-        # decomposition (state_effect + shape(dt)*logit_lift(adv,side)),
-        # not a re-derivation of the raw joint design matrix's exact beta.
-        # Good enough for the spec's descriptive lack-of-fit comparison and
-        # the temporal-split stability report -- neither is a gate.
+        # The fit's own linear predictor: intercept + state_effect +
+        # shape(dt)*logit_lift(adv,side). Review finding 13: the global
+        # intercept used to be missing here, because PreplantFit had no field
+        # for it -- state_effects pins the reference state to 0.0, so the
+        # reconstruction had no level at all and the loss and temporal
+        # reliability figures below were not predictions from the fitted
+        # model. Both remain descriptive, and neither is a gate.
         preds = []
         for o in obs_list:
-            lift = fit.logit_lift(o.adv, o.is_attacker)
-            shp = fit.shape(o.dt)
-            state_fx = fit.state_effects.get(o.exact_state, 0.0)
-            eta = state_fx + shp * lift
+            eta = fit.linear_predictor(o.dt, o.adv, o.is_attacker, o.exact_state)
             preds.append(1.0 / (1.0 + np.exp(-eta)))
         return preds
 

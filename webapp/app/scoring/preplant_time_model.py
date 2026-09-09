@@ -229,6 +229,27 @@ class PreplantFit:
     state_effects: dict[str, float]
     include_side_interaction: bool
     n_observations: int
+    # The fitted GLOBAL intercept, beta[0]. Review finding 13: this was
+    # computed by every fit and then dropped on the floor -- state_effects
+    # pins the reference state to 0.0 and stores only the OTHER states'
+    # offsets, so without beta[0] there was no level anywhere in PreplantFit
+    # and `state_effect + shape * lift` was not a prediction from the fitted
+    # model. It is a LEVEL, not part of the lift, so nothing that consumes
+    # logit_lift or shape (preplant_scalar, preplant_k_selection, the shipped
+    # empirical curve) is affected by its presence. Defaulted so existing
+    # positional constructions keep working.
+    intercept: float = 0.0
+
+    def linear_predictor(self, dt: float, adv: int, is_attacker: bool,
+                         exact_state: str) -> float:
+        """The fitted model's own eta for one observation. This is what a
+        lack-of-fit or reliability diagnostic must score against; the
+        decomposition without the intercept is a shape, not a prediction."""
+        return (
+            self.intercept
+            + self.state_effects.get(exact_state, 0.0)
+            + self.shape(dt) * self.logit_lift(adv, is_attacker)
+        )
 
     def logit_lift(self, adv: int, is_attacker: bool) -> float:
         adv = _clamp_adv(adv)
@@ -353,4 +374,7 @@ def fit_preplant_time_model(
         shape_mid_ratio=shape_mid_ratio,
         state_effects=state_effects, include_side_interaction=include_side_interaction,
         n_observations=len(usable),
+        # beta[0]; the design's column order is [intercept, state dummies,
+        # amplitude family], which is what `idx = 1 + n_state` above skips.
+        intercept=float(beta[0]),
     )
