@@ -377,3 +377,87 @@ so the staleness is discoverable rather than silent.
 exclusions v2 introduced, and `cache_version()`'s worked example still read
 `2_002_003_001` when the function returns `4_003_003_001` (the schema digit had
 been stale since the v3/v4 pistol reshapes).
+
+### 2026-09-09 -- Part 4's fitted figures, the death-side residual, and the arm-2 conclusion
+
+**No governing value moved.** `c` is a fitted output, not a predeclared input;
+`FLOOR = 0.05`, `CEIL = 2.0`, `W = 2`, the 60-observation support floor, the 2%
+death-side tolerance and the 0.05 calibration tolerance are all unchanged and
+none was tuned. This entry exists so the figures are discoverable from this
+file rather than only from a script's stdout.
+
+**Part 4, measured on the full 3,124-match dataset:**
+
+| figure | value | against |
+|---|---|---|
+| `c` | **1.277851** | not predeclared; `\|c-1\| = 0.2779` |
+| effective bounds | `[0.0639, 2.5557]` | `[c*FLOOR, c*CEIL]` |
+| supported / fallback kills | 149,937 / 39 | -- |
+| out-of-fold calibration MACE, `t >= 38` | 0.0061 | tolerance 0.05, **inside** |
+| out-of-fold calibration MACE, overall | 0.0010 | tolerance 0.05, **inside** |
+| death-side residual | **+2.61%** | tolerance 2%, **EXCEEDS** |
+
+`c` is identical before and after the remediation, as it must be: it is defined
+on the kill side alone.
+
+**The death-side residual: +0.52% -> +2.61%, and the old number was wrong.**
+Not a re-measurement -- a correction. `fit_postplant_factor.py` built its
+baseline with `for_death` left at its default `False`, so the residual was
+measured against what today's scorer pays *kills*. In `plant+38..45` that is
+1.75 where a death is paid 0.50. 2,750 of 149,976 scored post-plant kills
+(**1.83%**) sit in that window, which makes the wrong baseline 2.07% too large
+and understates the residual by almost exactly that:
+
+| | |
+|---|---|
+| what deaths would pay under Part 4 | 21,372,143 |
+| what deaths pay today (correct baseline) | 20,828,581 |
+| what *kills* pay today (baseline used) | 21,260,691 |
+
+**Exceeding the tolerance is accepted and not acted on.** The spec's own rule
+is that this is a finding, never something to tune away, and there is no second
+free constant to pin the death side with in any case -- one constant, two
+equations. Deciding factor from the project owner (2026-09-09): death impact
+was always a function of kill impact, so it moving under a kill-side retune is
+expected and correct behaviour rather than a defect.
+
+**Arm 2's recorded reading is withdrawn and replaced.** The five-arm report
+previously recorded the post-plant retune as a small measured improvement. That
+was measured with `c` solved and then discarded, so the arm carried a 22%
+shrinkage of the whole post-plant term alongside Part 4's time shape. Three
+runs separate them, all 5-fold, 2,000 match-clustered draws, sign convention
+`loss(arm) - loss(arm 0)`:
+
+| arm | contrast | reading |
+|---|---|---|
+| shape **and** level (as previously recorded) | -0.00003 [-0.00006, -0.00000] | improvement |
+| shape alone (`c` applied -- what would ship) | **+0.00000 [-0.00003, +0.00003]** | **inconclusive** |
+| level alone (legacy ramp x 1/c, no shape change) | **-0.00003 [-0.00005, -0.00002]** | **improvement** |
+
+So **Part 4's measured time shape is worth nothing detectable out-of-fold**,
+and the whole of the previously recorded improvement was the level. The
+level-only interval is the tighter of the two, excluding zero with margin where
+the confounded one merely touched it.
+
+Two cautions on the level result. The scale is `1/c = 0.7826`, chosen because
+it is what the uncentred table implied -- it is not fitted, so this shows that
+*this* scale beats 1.0, not that it is the right one. And `c` is solved on full
+data and depends on `V`, which is fitted on round outcomes, so the specific
+value has seen the labels indirectly: trust the sign, not the magnitude. A
+clean version selects the scale per fold on training matches only. Recorded as
+an open lead, not a decision.
+
+Arms 1, 4 and 1-vs-4 are bit-identical across all three runs, as they must be:
+none of them touches the flag-gated post-plant path.
+
+**Collinearity, measured rather than asserted.** An earlier draft of this
+analysis attributed arm 2's move to a collinearity artifact by analogy. That
+was unmeasured and is withdrawn. Measured (fold 0, 65,727 rounds): the four
+diagnostic components carry `max |r| = 0.89` (damage vs `time_impact`), above
+this project's own 0.70 threshold, and near-identical across arms (0.8947 /
+0.8999 / 0.8839) -- so it is real but cannot explain a *difference* between
+arms. It also cannot reach the arm contrast at all, which puts one coefficient
+on the fixed composite and never estimates the components separately. Where it
+could reach -- the composite against its controls -- `max |r| = 0.195`. It does
+bear on the labelled per-component diagnostic block, where coefficients are
+refit.

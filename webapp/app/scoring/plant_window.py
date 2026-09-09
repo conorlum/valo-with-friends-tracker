@@ -24,9 +24,11 @@ POST_WINDOW = 15.0
 def is_phantom_plant(round_row) -> bool:
     """A planted round decided by the round timer (a 'Time Win') never armed
     for real -- a genuine plant forces an explode or a defuse. The rule is
-    the outcome string, not the plant_time value: 6 further rounds have
+    the outcome string, not the plant_time value: 14 further rounds have
     plant_time > 100s and end in Elimination Wins, and those are legitimate
-    rounds with a noisy timestamp, not phantom plants."""
+    rounds with a noisy timestamp, not phantom plants. (76 phantom rounds and
+    14 such Elimination Wins on the full dataset, re-measured 2026-09-09; the
+    24/6 this used to cite came from a pre-sync subset.)"""
     return bool(round_row.planted and round_row.outcome and "Time Win" in round_row.outcome)
 
 

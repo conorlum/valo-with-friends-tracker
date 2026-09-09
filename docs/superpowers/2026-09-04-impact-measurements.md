@@ -1127,10 +1127,35 @@ measurement is a larger-sample confirmation, not a new result.
 
 ### M16 -- Phantom plants
 
-24 planted rounds end in a *Time Win*, all with `plant_time > 100s`. A genuine
-plant forces an explode or a defuse, so a planted round decided by the timer
-never armed. Six further rounds have `plant_time > 100s` but end in Elimination
-Wins; those are legitimate rounds with noisy timestamps.
+**Re-run 2026-09-09 on the full dataset. The counts moved; the rule did not.**
+The previous figures (24 and 6) predate the 2026-09-03 sync and were never
+marked `[SUBSET]`, so they read as full-dataset numbers and were not.
+
+**76** planted rounds end in a *Time Win*, all with `plant_time > 100s`
+(range 100-107s; 41 Team B, 35 Team A). A genuine plant forces an explode or a
+defuse, so a planted round decided by the timer never armed. **14** further
+rounds have `plant_time > 100s` but end in Elimination Wins; those are
+legitimate rounds with noisy timestamps.
+
+The rule survives the re-run exactly: every Time-Win plant is above 100s and
+none is below it, so the outcome string and the timestamp agree on the whole
+population -- and the outcome string is still the one to use, because the 14
+Elimination Wins separate them.
+
+Denominator and exposure, which the previous entry did not carry:
+
+| | |
+|---|---|
+| planted rounds | 42,480 |
+| phantom plants | 76 (**0.18%** of planted rounds) |
+| kill events inside them | 573 |
+| ...at or after `plant_time` | 36 |
+| ...before `plant_time` | 537 |
+
+Those last two are what an enabled timing path would have mis-scored: 36 kills
+read off a post-plant curve trained only on real plants, and 537 read off the
+pre-plant curve at a distance from a plant that never armed. Both now fall back
+to the legacy factor (`impact.py`, review finding 5).
 
 ---
 

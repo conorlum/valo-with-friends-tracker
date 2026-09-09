@@ -207,12 +207,13 @@ would let one absorb the other's drift.
 
 ### Phantom plants
 
-24 planted rounds end in a *Time Win*, all with `plant_time > 100s`. A real
+76 planted rounds end in a *Time Win*, all with `plant_time > 100s`. A real
 plant forces an explode or a defuse, so a planted round decided by the timer
 never armed -- the plant registered as the round expired. These must be treated
-as unplanted everywhere.
+as unplanted everywhere. (Counts corrected 2026-09-09 against the full dataset;
+`M16` previously read 24 and 6 from a pre-sync subset without saying so.)
 
-The rule is the outcome string, not the timestamp. Six further rounds have
+The rule is the outcome string, not the timestamp. 14 further rounds have
 `plant_time > 100s` and end in Elimination Wins; those are legitimate rounds
 with a noisy timestamp and are kept.
 
@@ -1291,6 +1292,22 @@ sample-weighted mean of `kill_order_bonus * post_plant_factor` over post-plant
 pre-resolution kills matches its value under today's ramp. Death-side residual
 reported against the same 2% tolerance as Part 3.
 
+**"The same tolerance as Part 3" means the same 2%, not the same denominator.**
+Part 3's residual is `mean(K*T*c*s)/mean(K*T) - 1`, and its denominator is
+"what deaths pay today" -- which pre-plant happens to be a flat 1.0, so the
+legacy factor is invisible in the formula. Post-plant it is not 1.0: today's
+scorer pays a death 0.5 in `plant+38..45` where it pays the kill 1.75. The
+denominator here is therefore `mean(K*T*legacy_death_factor)`. This sentence
+was read the other way in implementation and cost a 4x understatement of the
+reported figure; see the 2026-09-09 amendment in `predeclared-values.md`.
+
+**Measured (full data, 2026-09-09):** `c = 1.277851`, `|c-1| = 0.2779`,
+effective bounds `[0.0639, 2.5557]`, over 149,937 supported and 39 fallback
+kills. Out-of-fold calibration MACE is 0.0061 for `t >= 38` and 0.0010 overall,
+both inside the predeclared 0.05. The death-side residual is **+2.61%**, which
+**exceeds** the 2% tolerance. Per this spec's own rule that is a finding and
+not something to tune away, and it is recorded rather than acted on.
+
 **Fallback cells are held at exactly 1.0 and excluded from the centred
 population.** Centring them multiplies the neutral fallback by `c`, which
 contradicts both the rule above and the test that asserts an unsupported cell
@@ -1333,7 +1350,7 @@ let either regime absorb the other's drift.
 ## Testing
 
 Part 1:
-- `is_phantom_plant` accepts the 24 known rounds and rejects the 6
+- `is_phantom_plant` accepts the 76 known rounds and rejects the 14
   Elimination-Win rounds with `plant_time > 100s`.
 - `attacking_team` reproduces the convention on 1-24 and the verified
   alternation past 24; a table-driven test over sampled real rounds asserts
