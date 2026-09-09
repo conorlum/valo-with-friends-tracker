@@ -87,15 +87,24 @@ def test_flag_defaults_off_and_matches_todays_flat_behaviour():
 
 
 def test_flag_on_at_dt16_matches_the_worked_example():
-    # dt=16, attacker: fitted difference ~= +0.0637 -> time_factor ~= 1.191,
-    # matching this task's own worked example (100 -> ~119.1).
+    # dt=16, attacker: fitted difference ~= +0.0607 -> time_factor ~= 1.182.
+    #
+    # The task's original worked example said +0.0637 -> ~1.191. That curve was
+    # fitted on a contaminated replay: extract_preplant_observations diverged
+    # from impact.py on self-kills and resurrections, and exact_state/adv are
+    # the standardization keys, so 6.42% of pre-plant kills were standardized
+    # under the wrong state. Correcting the replay moved the attacker reference
+    # rate 0.749559 -> 0.752707 and shifted every attacker factor down slightly
+    # (largest move -0.019, at dt=1.5). The mapping and alpha=3 are unchanged;
+    # only the fitted inputs are. See test_replay_policy_matches_the_scorer...
+    # in test_preplant_fit_support.py, which pins the policy itself.
     db = _session()
     match, a1_id, _ = _match_with_preplant_kill(db, dt_before_plant=16.0)
 
     rows = {r.match_player_id: r for r in build_impact_rows_for_match(db, match.id, enable_preplant_empirical=True)}
     row = rows[a1_id]
     factor = empirical_preplant_factor(16.0, True, strength=3.0)
-    assert factor == pytest.approx(1.191, abs=0.001)
+    assert factor == pytest.approx(1.182, abs=0.001)
     assert row.time_impact == round(row.kill_order_bonus * factor)
 
 

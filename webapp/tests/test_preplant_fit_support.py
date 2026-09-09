@@ -80,3 +80,73 @@ def test_kill_order_bonus_and_trade_match_hand_computation():
     assert obs[kill1].is_attacker is False  # killer B3 is TEAM_2, the defender
     assert kobs[kill1] == 140.0
     assert trades[kill1] == 1.0  # never traded back
+
+
+def test_replay_policy_matches_the_scorer_on_selfkills_and_resurrections():
+    """The alive-count replay must mirror impact.py exactly.
+
+    This is the case the old code got wrong in BOTH directions:
+      - a self-kill left the counts untouched (the scorer decrements -- the
+        team really is a player down),
+      - a resurrection decremented (the scorer skips it -- the player is back).
+
+    Measured on the full data, 15.06% of rounds contain at least one of the
+    two, and once a round diverges every later kill in it is filed under the
+    wrong state. `exact_state`/`adv` are the standardization keys for the
+    fitted curve, so a wrong state reweights the estimate rather than merely
+    mislabelling a row -- which is why this is pinned.
+
+    Round 1 (TEAM_1 attacks), planted at t=100 so every kill stays pre-plant:
+      t=10  A1 kills A2   TEAMKILL   -> TEAM_1 drops to 4    (old: stayed 5)
+      t=20  A3 kills B1              -> seen at 4v5          (old: 5v5)
+      t=30  B2 kills A4   RESURRECTED (A4 kills again later)
+                                      -> no decrement        (old: decremented)
+      t=40  A4 kills B3              -> seen at 4v4          (old: 4v4 too, but
+                                         only because two errors cancelled)
+    """
+    db = _session()
+    match = Match(external_id="fs2", source=MatchSource.SCRAPED, map_name="Bind")
+    db.add(match)
+    db.flush()
+    players = {}
+    for i in range(1, 6):
+        mp = MatchPlayer(match_id=match.id, player_id=_player(db, f"A{i}"), agent="Reyna", team=Team.TEAM_1)
+        db.add(mp)
+        players[f"A{i}"] = mp
+    for i in range(1, 6):
+        mp = MatchPlayer(match_id=match.id, player_id=_player(db, f"B{i}"), agent="Sage", team=Team.TEAM_2)
+        db.add(mp)
+        players[f"B{i}"] = mp
+    db.flush()
+
+    rnd = Round(match_id=match.id, round_number=1, outcome="Team A Detonate Win",
+                planted=True, plant_time=100.0, exploded=True, defused=False)
+    db.add(rnd)
+    db.flush()
+    for mp in players.values():
+        db.add(RoundPlayerStat(round_id=rnd.id, match_player_id=mp.id, kills=0, deaths=0,
+                               assists=0, score=0, loadout=800, remaining=0))
+    for killer, victim, t in (("A1", "A2", 10.0), ("A3", "B1", 20.0),
+                              ("B2", "A4", 30.0), ("A4", "B3", 40.0)):
+        db.add(KillEvent(round_id=rnd.id, killer_match_player_id=players[killer].id,
+                         death_match_player_id=players[victim].id,
+                         event_time_seconds=t, weapon="Vandal"))
+    db.commit()
+
+    obs, _kobs, _trades = extract_preplant_observations_with_factors(db)
+
+    # The teamkill produces no observation; the other three do.
+    assert len(obs) == 3
+    by_dt = {o.dt: o for o in obs}
+
+    # t=20, after the teamkill cost TEAM_1 a player. Old policy said 5v5 / 0.
+    assert by_dt[80.0].exact_state == "4v5"
+    assert by_dt[80.0].adv == -1
+
+    # t=30. Old policy said 4v5 / -1 (it had not yet spent the teamkill).
+    assert by_dt[70.0].exact_state == "4v4"
+    assert by_dt[70.0].adv == 0
+
+    # t=40, after A4's death was recognised as a resurrection and NOT charged.
+    assert by_dt[60.0].exact_state == "4v4"
+    assert by_dt[60.0].adv == 0

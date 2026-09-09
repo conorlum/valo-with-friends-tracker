@@ -2,13 +2,13 @@
   "A1": {
     "death_impact": 171,
     "econ_impact": 160,
-    "impact": 169,
-    "kill_impact": 340,
+    "impact": 168,
+    "kill_impact": 339,
     "kill_order_bonus": 160,
     "post_plant_death": 194,
     "post_plant_kill": 122,
     "swing_impact": 160,
-    "time_impact": 110
+    "time_impact": 109
   },
   "A2": {
     "death_impact": 148,
@@ -19,7 +19,7 @@
     "post_plant_death": 0,
     "post_plant_kill": 0,
     "swing_impact": -140,
-    "time_impact": -163
+    "time_impact": -164
   },
   "A3": {
     "death_impact": 0,
@@ -63,7 +63,7 @@
     "post_plant_death": 0,
     "post_plant_kill": 0,
     "swing_impact": -150,
-    "time_impact": -181
+    "time_impact": -180
   },
   "B2": {
     "death_impact": 154,
@@ -74,7 +74,7 @@
     "post_plant_death": 122,
     "post_plant_kill": 0,
     "swing_impact": -30,
-    "time_impact": 41
+    "time_impact": 42
   },
   "B3": {
     "death_impact": 150,

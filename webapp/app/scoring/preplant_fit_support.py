@@ -12,7 +12,7 @@ fit-and-report script (which nothing imports) needs this module.
 """
 
 from app.models.match import Team
-from app.scoring.impact import _kill_order_bonus, _traded_factor
+from app.scoring.impact import _check_for_resurrection, _kill_order_bonus, _traded_factor
 from app.scoring.plant_window import attacking_team, effective_plant_time, is_phantom_plant, seconds_to_plant
 from app.scoring.preplant_time_model import PreplantKillObservation, _RoundRow, _winner_team
 from sqlalchemy import text
@@ -64,7 +64,7 @@ def extract_preplant_observations_with_factors(
         atk = attacking_team(r["round_number"])
         alive = {Team.TEAM_1: 5, Team.TEAM_2: 5}
 
-        for kill in kills:
+        for index, kill in enumerate(kills):
             killer_id = kill["killer_match_player_id"]
             victim_id = kill["death_match_player_id"]
             if not killer_id or not victim_id or killer_id not in match_players or victim_id not in match_players:
@@ -95,7 +95,16 @@ def extract_preplant_observations_with_factors(
                 )
                 traded_factors.append(_traded_factor(kills, kill, self_kill=False))
 
-            if not self_kill and alive[victim_team] > 0:
-                alive[victim_team] -= 1
+            # REPLAY POLICY -- must mirror impact.py, exactly as the
+            # kill-order bonus above already does. See the matching comment in
+            # preplant_time_model.extract_preplant_observations: the old
+            # `not self_kill` guard skipped the decrement on a teamkill (the
+            # scorer decrements) and this branch decremented on a resurrection
+            # (the scorer does not). Both alive counts feed exact_state, adv
+            # AND the kill_order_bonus weights, so the divergence reached the
+            # centring weights as well as the standardization keys.
+            if not _check_for_resurrection(index, kills):
+                if alive[victim_team] > 0:
+                    alive[victim_team] -= 1
 
     return observations, kill_order_bonuses, traded_factors
