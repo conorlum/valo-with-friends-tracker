@@ -762,3 +762,61 @@ def test_each_folds_candidate_reads_a_field_scored_by_that_folds_own_graph():
 
     # And the shipped code names its field per fold rather than per candidate.
     assert Candidate(name="probe", feature_names=[fields[0]], weights=[1.0]).feature_names !=         Candidate(name="probe", feature_names=[fields[1]], weights=[1.0]).feature_names
+
+
+def test_unmeasured_verdict_inputs_cannot_satisfy_their_item():
+    """Code review finding 6: build_full_report defaulted econ_negative_every_fold
+    to the historical True, so the CLI silently asserted a stale Stage A
+    finding as though this run had re-derived it. None now means UNMEASURED,
+    and an unmeasured item can never be satisfied."""
+    fixture = verdict_fixture()
+    fixture["econ_negative_every_fold"] = None
+    fixture["max_component_correlation"] = None
+
+    report = verdict_report(**fixture)
+
+    assert report["verdicts"]["B"]["helped"] is False
+    notes = " ".join(report["verdicts"]["B"]["notes"]).lower()
+    assert "unmeasured" in notes
+
+
+def test_a2_requires_the_gap_interval_to_exclude_zero():
+    """Code review finding 5: a +0.0001 point estimate with an interval
+    crossing zero used to clear A2, because only the point was read."""
+    fixture = verdict_fixture()
+    fixture["beats_kill_diff_t1"] = False  # what a CI crossing zero now yields
+    assert verdict_report(**fixture)["verdicts"]["A2"]["helped"] is False
+
+    fixture["beats_kill_diff_t1"] = True
+    assert verdict_report(**fixture)["verdicts"]["A2"]["helped"] is True
+
+
+def test_practical_equivalence_is_judged_on_the_cleared_candidate_with_both_bounds():
+    """Code review finding 4: A1 item 2 read only Stage C0's plugin SD ratio,
+    never the fitted candidate and never the loss bound."""
+    from app.services.kill_order_refit import (
+        PRACTICAL_EQUIVALENCE_LOSS,
+        _practically_equivalent_for_candidate,
+    )
+
+    stage_c0_equivalent = {"current_vs_swing_plugin": {
+        "round_level": {"sd_difference": 0.001, "sd_reference": 1.0}}}
+    stage_c0_moved = {"current_vs_swing_plugin": {
+        "round_level": {"sd_difference": 0.5, "sd_reference": 1.0}}}
+
+    # A candidate whose paired loss interval sits inside the loss bound AND
+    # whose score deviation is tiny is genuinely equivalent.
+    tight = {"P1": {"ci": [-PRACTICAL_EQUIVALENCE_LOSS / 2, PRACTICAL_EQUIVALENCE_LOSS / 2]}}
+    assert _practically_equivalent_for_candidate(tight, stage_c0_equivalent, ["P1"]) is True
+
+    # A candidate that moved the loss well beyond the bound is NOT equivalent,
+    # even though the preliminary plugin barely moved -- the case the old
+    # code got backwards.
+    wide = {"P1": {"ci": [-0.05, -0.02]}}
+    assert _practically_equivalent_for_candidate(wide, stage_c0_equivalent, ["P1"]) is False
+
+    # And the score-deviation bound still has to hold too.
+    assert _practically_equivalent_for_candidate(tight, stage_c0_moved, ["P1"]) is False
+
+    # Nothing cleared means there is no candidate to assess: unmeasured.
+    assert _practically_equivalent_for_candidate(tight, stage_c0_equivalent, []) is None
