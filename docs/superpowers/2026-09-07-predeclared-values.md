@@ -40,7 +40,7 @@ Sources: `specs/2026-09-03-plant-window-and-time-factor-design.md`,
 | **two-sided 95%, 2,000 resamples, match-clustered** | every arm contrast. **Sign: `loss(arm) - loss(arm 0)`, positive = deterioration** | econ, §8d-i |
 | **1 -> 2** | `IMPACT_CALCULATION_VERSION`, one bump for both specs, one rescore | both, Rollout |
 | **3 -> 4** | `fight_ev.CALCULATION_VERSION` (functional -- feeds `_bootstrap_seed`) | time, Rollout |
-| **stays 2** | `STATE_DIAGRAM_CALCULATION_VERSION` | both, Rollout |
+| ~~**stays 2**~~ **-> 3** | `STATE_DIAGRAM_CALCULATION_VERSION` -- **superseded 2026-09-09**, see Amendments | both, Rollout |
 
 ## To be fixed at first run, and recorded here before any result is read
 
@@ -325,3 +325,55 @@ change is discoverable from this file rather than only from the curve JSON.
 **Conclusion-level consequences** (both recorded in full at their measurements):
 `M1`'s plateau now holds in three of four even states rather than all four, and
 `M7`'s 2v2 elevation weakened from +4.9pp [+1.5,+8.3] to +3.6pp [+0.2,+7.0].
+
+### 2026-09-09 -- `STATE_DIAGRAM_CALCULATION_VERSION` 2 -> 3; the "stays 2" row is superseded
+
+**This amends a fixed value.** The row above reads:
+
+> | **stays 2** | `STATE_DIAGRAM_CALCULATION_VERSION` | both, Rollout |
+
+with the recorded reason: *"admitting OT rounds adds data, as ingesting more
+matches does; replay semantics are unchanged."* Do not edit that row in place;
+this entry supersedes it. **The new value is 3, effective immediately, not at
+rollout.**
+
+**Reason -- the premise does not hold.** `b2d1d55` deleted `state_replay.py`'s
+`round_number > 24` exclusion once `plant_window.attacking_team` was made total,
+admitting **1,274 overtime rounds across 374 matches** into the replay. The
+analogy to ingestion is what fails: ingesting a match invalidates *that match's*
+players, and every one of them, through
+`player_view_cache.invalidate_player_cache`. Admitting OT invalidates nobody. It
+changes the numbers for **every player who has ever played overtime** -- 2,916
+players, **399 of them holding a cached row** -- including players with no new
+matches, whose rows would otherwise never be revisited. "Adds data" and
+"invalidates correctly" are not the same property, and only the second one was
+ever true of ingestion.
+
+The consequence, had this shipped unbumped: a cached player page served pre-OT
+round-win and kill-order diamonds while any live recomputation of the same page
+served OT-inclusive ones. Same page, two rules, decided by cache state.
+
+**Not a live incident.** `b2d1d55` is on `impact-scoring-impl` only.
+`origin/main` -- what Render deploys, `render.yaml` naming no branch -- still
+carries the `round_number > 24` exclusion, so the deployed site is internally
+consistent today. This was a MERGE-blocker, not a production one. The
+remediation plan and the session that produced it both described it as live;
+that was checked against `git branch --contains` and is withdrawn.
+
+**Scope of the bump.** `cache_version()` is a composite, so moving any one
+constant invalidates every row -- all 4,478, not only the 399 affected. That is
+accepted rather than worked around: a targeted invalidation would need a
+per-player OT predicate that nothing else in the cache layer has, to save a
+recompute the project can afford.
+
+**`fight_ev.CALCULATION_VERSION` is left at 3**, with its 3 -> 4 bump still
+scheduled for rollout. `state_replay` feeds both products, so the fight-EV blob
+is equally stale -- but the composite already forces the invalidation, so the
+bump would buy honesty in the individual number, not correctness. Recorded here
+so the staleness is discoverable rather than silent.
+
+**Also corrected**, both stale in ways unrelated to any decision: the comment on
+`STATE_DIAGRAM_CALCULATION_VERSION` still listed "overtime" among the
+exclusions v2 introduced, and `cache_version()`'s worked example still read
+`2_002_003_001` when the function returns `4_003_003_001` (the schema digit had
+been stale since the v3/v4 pistol reshapes).

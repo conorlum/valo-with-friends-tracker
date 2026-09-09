@@ -19,7 +19,18 @@ from app.services.state_replay import DuelOccurrence, StateEntryOccurrence
 # overtime, ambiguous lifecycle, equal-time ambiguity, unresolved winner,
 # post-terminal-time events) -- see that function's docstring for the exact
 # list of behavior changes this represents.
-STATE_DIAGRAM_CALCULATION_VERSION = 2
+#
+# v3 ADMITS OVERTIME. b2d1d55 deleted state_replay's `round_number > 24`
+# exclusion once plant_window.attacking_team was made total, letting 1,274 OT
+# rounds across 374 matches into the replay -- but bumped nothing, so every
+# row cached before it stayed "valid" while carrying pre-OT numbers. That was
+# recorded as a deliberate non-bump on the grounds that "admitting OT rounds
+# adds data, as ingesting more matches does; replay semantics are unchanged".
+# The premise does not hold: ingesting a match invalidates THAT MATCH'S
+# players, whereas this changes every player who has ever played overtime --
+# 2,916 of them, 399 with a cached row -- and nothing invalidates those.
+# Amended 2026-09-09; see docs/superpowers/2026-09-07-predeclared-values.md.
+STATE_DIAGRAM_CALCULATION_VERSION = 3
 
 # Round-win diamond: compact, with larger nodes since there's no edge label to make room for.
 ROUND_WIN_X_STEP = 56

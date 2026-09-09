@@ -109,9 +109,12 @@ def cache_version() -> int:
     the round-win/kill-order replay semantics (Step 8) -- any of these
     changing without invalidating this cache would leave the site serving
     numbers computed under the PREVIOUS rules indefinitely. Composite rather
-    than hashed so the stored value stays readable -- 2_002_003_001 is
-    schema 2, state-diagram calculation 2, fight-EV calculation 3, impact
-    calculation 1.
+    than hashed so the stored value stays readable -- the current
+    4_003_003_001 is schema 4, state-diagram calculation 3, fight-EV
+    calculation 3, impact calculation 1. (This example read "2_002_003_001,
+    schema 2, state-diagram calculation 2" until 2026-09-09: the schema digit
+    had been stale since the v3/v4 pistol reshapes, so the illustration no
+    longer matched anything the function returned.)
     """
     return (
         PLAYER_VIEW_CACHE_SCHEMA_VERSION * 1_000_000_000
