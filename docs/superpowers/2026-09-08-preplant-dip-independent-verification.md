@@ -612,7 +612,7 @@ Consequences:
 `w1`). Un-interacting `w1` is precisely what **creates** the structural
 mismatch. It is still live.
 
-Current fit against the full DB:
+Fit against the full DB, **as measured on 2026-09-08**:
 
 ```
 theta1 (w1 column)  = +0.31218
@@ -621,6 +621,24 @@ shape_mid_ratio     = -1.12258
 intercept_atk=+1.22417  slope_atk=+0.67290
 intercept_def=-0.27809  slope_def=+0.59371
 ```
+
+**Recomputed 2026-09-09 under the corrected replay** (`extract_preplant_
+observations` diverged from `impact.py` on self-kills and resurrections; see
+`M1` in the measurement record). The block above is kept as the record of what
+this verification actually measured; the corrected values are:
+
+```
+theta1 (w1 column)  = +0.31376
+theta2 (w2 column)  = -0.26023
+shape_mid_ratio     = -1.20568
+```
+
+Nothing in this section's argument turns on the third decimal: `theta2` is
+still negative, the ratio is still negative, and the mismatch this
+verification identified is unchanged. Both the mismatch and the negative
+reference cell were subsequently fixed by profiling `shape_mid_ratio`
+directly, which is what produced the `+1.63` non-monotonic fit that sent
+Part 3 to an empirical curve.
 
 Reconstructing `eta` from the design matrix vs. what the runtime computes,
 row by row on all 168,432 observations:
@@ -654,12 +672,13 @@ matrix (`state FE + w1, w2, w2·adv, w2·atk, w2·adv·atk`) does **not** match
 what `PreplantFit.shape()` / `.logit_lift()` consume. This is the *same*
 mismatch, not a second undiscovered one.
 
-**Related and worth flagging:** `theta2 = intercept_def = −0.27809` is
-**negative**, so `shape_mid_ratio = theta1/theta2 = −1.12`. The "normalize
-shape to 1 at the plateau" convention is pinned on a negative reference
-cell, and that is the mechanical origin of the sign reversal in `shape()`.
-Ridge sensitivity is not the issue (`shape_mid_ratio` moves only −1.122 to
-−1.142 across `l2 ∈ {0.1, 1, 10, 100}`).
+**Related and worth flagging:** `theta2 = intercept_def` is **negative**, so
+`shape_mid_ratio = theta1/theta2` is negative too. The "normalize shape to 1
+at the plateau" convention is pinned on a negative reference cell, and that
+is the mechanical origin of the sign reversal in `shape()`. Ridge sensitivity
+is not the issue (`shape_mid_ratio` moves only −1.205 to −1.227 across
+`l2 ∈ {0.1, 1, 10, 100}` under the corrected replay; −1.122 to −1.142 as
+originally measured -- the insensitivity is the point either way).
 
 ### Verified clean
 

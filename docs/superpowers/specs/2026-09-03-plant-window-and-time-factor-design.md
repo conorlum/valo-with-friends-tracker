@@ -458,11 +458,14 @@ implemented (`app/scoring/preplant_time_model.py`, `preplant_k_selection.py`,
 `docs/superpowers/plans/2026-09-07-preplant-time-factor-part3.md`). Fixing a
 real reconstruction bug in that fit (`docs/superpowers/2026-09-08-preplant-dip-
 independent-verification.md`, section 7, Bug B) surfaced that the model,
-honestly fit, is **non-monotonic** -- `shape(dt)` overshoots to 1.545 at the
+honestly fit, is **non-monotonic** -- `shape(dt)` overshoots to 1.63 at the
 middle knot before settling to 1.0 at the plateau -- contradicting this
 spec's own Testing assertion below and reproducing, in the model's own
 coefficients, the inverted-U the independent verification found in the raw
-data (section 4 of that doc).
+data (section 4 of that doc). (Revised 2026-09-09: this figure read 1.545
+until the replay correction, `M1`. The overshoot is larger under the
+corrected replay, not smaller, so the decision recorded here rests on
+firmer ground than when it was taken.)
 
 Rather than resolve that by re-fitting the interaction, reconstructing the
 scalar from the additive predictor, or dropping the middle knot (the three

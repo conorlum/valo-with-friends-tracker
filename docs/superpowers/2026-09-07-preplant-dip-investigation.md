@@ -24,10 +24,16 @@ alongside this document, not instead of it:
   the fitted linear predictor rather than a reconstruction of one;
   re-running the diagnostic against the full DB reports
   `max |delta| = 0.0000 logits`. Note what the corrected fit then shows:
-  `shape_mid_ratio = +1.545`, i.e. the honestly-fit shape is
+  `shape_mid_ratio = +1.63`, i.e. the honestly-fit shape is
   **non-monotonic** (it overshoots the near-plant plateau at the middle
   knot), which is what ultimately led Part 3 to ship an empirical curve
   instead -- see the spec's "DECIDED 2026-09-08" section.
+  **Revised 2026-09-09:** this read `+1.545` until the replay correction
+  (see `M1` in the measurement record). `extract_preplant_observations`
+  diverged from `impact.py` on self-kills and resurrections, so the fit
+  was standardized on mis-stated states. The corrected value is **further**
+  above 1, not nearer it -- the non-monotonicity conclusion this section
+  reports is unchanged and slightly stronger.
 
 **Why this exists.** Running `scripts/fit_preplant_time_factor.py` (Part 3
 implementation plan, Task 7) against the real DB produced a fitted
@@ -123,16 +129,19 @@ plant) across the full range on both methods.
 
 **3. The attacker dip survives regularization and a match-based split.**
 The original 2-knot model's `dt=20` numbers are essentially insensitive to
-ridge strength (`l2` 0.1 to 100 moves `shape_mid_ratio` from -1.122 to
--1.142) -- the mismatch, not the ridge penalty, was the problem. More to the
+ridge strength (`l2` 0.1 to 100 moves `shape_mid_ratio` from -1.205 to
+-1.227) -- the mismatch, not the ridge penalty, was the problem. More to the
 point, the *corrected* finding (the joint regression's `dt=2-5` dip) was
-refit independently on two random halves of matches (1,561 / 1,562 matches,
-~84k observations each): in **both halves independently**, the mean
-`dt=2-5` coefficient sits below both the `dt=15-25` plateau mean and the
-`dt=1` value (half A: −0.075 vs +0.319 and −0.056; half B: −0.254 vs +0.206
-and −0.123 -- corrected from the same labelling bug as above; `atk_main`
+refit independently on two random halves of matches (~84k observations
+each): in **both halves independently**, the mean `dt=2-5` coefficient sits
+below both the `dt=15-25` plateau mean and the `dt=1` value (half A: −0.147
+vs +0.314 and −0.109; half B: −0.311 vs +0.200 and −0.182; `atk_main`
 cancels in every one of these differences, so the dip-below-plateau-and-b1
 verdict is unchanged in both halves).
+
+Revised 2026-09-09 for the replay correction. Both halves' verdicts still
+hold, and the per-half `shape_mid_ratio` (1.615 and 1.65) now straddles the
+pooled +1.63 tightly, which is a better split-stability result than before.
 
 **4. A per-state breakdown found no single state driving it.** The eight
 most common exact states each show a similar direction of effect
