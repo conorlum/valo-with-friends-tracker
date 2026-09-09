@@ -117,3 +117,56 @@ def test_report_returns_the_same_result_the_solver_gives(capsys):
     )
     assert returned.c == pytest.approx(direct.c)
     assert returned.death_side_residual == pytest.approx(direct.death_side_residual)
+
+
+def test_report_states_whether_the_clamp_actually_binds_rather_than_asserting_it(capsys):
+    # The predeclared 0.2-1.7 clamp is inert at strength 3.0 on the real
+    # population (0 of 130,506 events reach either bound). Saying so is only
+    # honest if the script COUNTED it -- a hardcoded parenthetical would keep
+    # printing "does not bind" on a population where it did.
+    _report_empirical_centering(*_population())
+    out = capsys.readouterr().out
+    assert "clamp binds on 0 of 3" in out
+
+
+def test_report_shows_a_binding_clamp_when_the_strength_makes_it_bind(capsys, monkeypatch):
+    # Verified against the curve before asserting on the output: at this
+    # strength the defender curve's far end falls below the 0.2 floor.
+    import scripts.fit_preplant_time_factor as script
+    from app.scoring.preplant_empirical_factor import empirical_preplant_factor
+
+    strength = 60.0
+    # BOTH halves of the fixture are checked: one kill must clamp and the
+    # other must not, or "1 of 2" would pass for a counter that counts
+    # everything. dt=8.0 attacker was the first attempt and clamps at the
+    # CEILING, which is why this is checked and not assumed.
+    assert empirical_preplant_factor(29.0, False, strength=strength) == pytest.approx(0.2), (
+        "fixture no longer drives the defender curve onto the floor"
+    )
+    assert 0.2 < empirical_preplant_factor(3.0, True, strength=strength) < 1.7, (
+        "fixture's unclamped attacker kill now clamps too"
+    )
+    monkeypatch.setattr(script, "_PREPLANT_EMPIRICAL_STRENGTH", strength)
+
+    observations = [
+        PreplantKillObservation(0, 0, 29.0, 0, False, "5v5", True),
+        PreplantKillObservation(0, 0, 3.0, 0, True, "5v5", True),
+    ]
+    script._report_empirical_centering(observations, [100.0, 100.0], [1.0, 1.0])
+    out = capsys.readouterr().out
+    assert "clamp binds on 1 of 2" in out
+
+
+def test_report_prints_the_realised_post_centring_factor_range(capsys):
+    observations, bonuses, trades = _population()
+    expected = solve_empirical_kill_side_centering(
+        observations, bonuses, trades, strength=STRENGTH,
+    )
+    from app.scoring.preplant_empirical_factor import empirical_preplant_factor
+    scored = [
+        expected.c * empirical_preplant_factor(o.dt, o.is_attacker, strength=STRENGTH)
+        for o in observations if 0 < o.dt <= 30
+    ]
+    _report_empirical_centering(observations, bonuses, trades)
+    out = capsys.readouterr().out
+    assert f"realised range        = [{min(scored):.6f}, {max(scored):.6f}]" in out

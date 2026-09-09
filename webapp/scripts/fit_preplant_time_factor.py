@@ -37,6 +37,8 @@ from app.scoring.impact import _PREPLANT_EMPIRICAL_STRENGTH
 from app.scoring.preplant_centering import (
     DEATH_RESIDUAL_TOLERANCE,
     EMPIRICAL_CUTOFF,
+    SCALAR_CEILING,
+    SCALAR_FLOOR,
     solve_empirical_kill_side_centering,
     solve_kill_side_centering,
 )
@@ -97,8 +99,26 @@ def _report_empirical_centering(observations, kobs, trades):
     print(f"    c                     = {result.c:.6f}")
     print(f"    |c - 1|               = {abs(result.c - 1):.6f}   "
           f"(0.05 is a REPORTED finding, not an assertion)")
+    # The predeclared 0.2-1.7 clamp is on the PRE-centring scalar, so what
+    # scores is [c*0.2, c*1.7]. Whether it binds is COUNTED, never asserted --
+    # it is inert at strength 3.0, and a hardcoded "does not bind" would go on
+    # saying so at a strength where it did.
+    scored_factors = [
+        result.c * empirical_preplant_factor(obs.dt, obs.is_attacker, strength=strength)
+        for obs in observations if 0 < obs.dt <= EMPIRICAL_CUTOFF
+    ]
+    clamped = sum(
+        1 for obs in observations
+        if 0 < obs.dt <= EMPIRICAL_CUTOFF
+        and not SCALAR_FLOOR < empirical_preplant_factor(
+            obs.dt, obs.is_attacker, strength=strength,
+        ) < SCALAR_CEILING
+    )
     print(f"    effective bounds      = [{low:.6f}, {high:.6f}]   "
-          f"([c*0.2, c*1.7]; the clamp does not bind at this strength)")
+          f"([c*{SCALAR_FLOOR}, c*{SCALAR_CEILING}])")
+    print(f"    realised range        = [{min(scored_factors):.6f}, "
+          f"{max(scored_factors):.6f}]   "
+          f"clamp binds on {clamped:,} of {result.scored_kills:,} scored kills")
     print(f"    death-side residual   = {result.death_side_residual:+.4%}   "
           f"{verdict} the predeclared {DEATH_RESIDUAL_TOLERANCE:.0%} tolerance")
     print("      -- REPORTED, never solved for. One constant cannot pin both sides.")
