@@ -32,6 +32,7 @@ associations, not effects. Cells below the observation floor are blank rather
 than reported thin.
 """
 import os, sys, collections, random
+import numpy as np  # the nested bootstrap resamples matches as index arrays
 
 sys.path.insert(0, os.path.abspath("."))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -149,17 +150,30 @@ for _cell, _per_m in cell_by_match.items():
 
 
 def _v_from_draw(cell, counts):
-    """V for one cell under a bootstrap draw, or None if the drawn sample
-    leaves it under the support floor."""
+    """V for one cell under a bootstrap draw.
+
+    Falls back to the FULL-DATA V when the draw leaves the cell under the
+    support floor. Returning None there instead (the first version) dropped
+    those deaths from that draw, so every draw averaged a different,
+    survivorship-selected subset of deaths -- and the cells that lose support
+    are the expensive late ones, so the bootstrap distribution sat well below
+    the point estimate. In the 38-41.5s and 41.5-45s bands the printed
+    interval did not even contain its own point estimate.
+
+    Falling back keeps the estimand identical across draws (the same death
+    set, always) at the cost of freezing the unsupported cells' contribution
+    to the spread; `_fallback_share` reports how much of each band that is,
+    so a band whose interval is mostly frozen is visible rather than silent.
+    """
     arrays = _cell_arrays.get(cell)
     if arrays is None:
-        return None
+        return V.get(cell), True
     idx, w, n = arrays
     mult = counts[idx]
     total = float((n * mult).sum())
     if total < MIN_N:
-        return None
-    return float((w * mult).sum()) / total
+        return V.get(cell), True
+    return float((w * mult).sum()) / total, False
 
 
 def boot_nested(subset, want_atk_victim):
@@ -182,6 +196,7 @@ def boot_nested(subset, want_atk_victim):
     rng = random.Random(SEED)
     n_matches = len(_match_ids_sorted)
     out = []
+    fallback_shares = []
     for _ in range(N_BOOT_NESTED):
         drawn = [keys[rng.randrange(len(keys))] for _ in range(len(keys))]
         counts = np.zeros(n_matches, dtype=float)
@@ -191,21 +206,47 @@ def boot_nested(subset, want_atk_victim):
                 counts[i] += 1.0
         v_draw = {c: _v_from_draw(c, counts) for c in needed}
         s = n = 0.0
+        frozen = 0.0
         for m in drawn:
             for (a, d, t) in by_match[m]:
                 if want_atk_victim:
                     hi, lo = v_draw.get((a, d, t)), v_draw.get((a - 1, d, t))
                 else:
                     hi, lo = v_draw.get((a, d - 1, t)), v_draw.get((a, d, t))
-                if hi is None or lo is None:
+                if hi is None or lo is None or hi[0] is None or lo[0] is None:
                     continue
-                s += hi - lo; n += 1
+                s += hi[0] - lo[0]; n += 1
+                if hi[1] or lo[1]:
+                    frozen += 1
         if n:
             out.append(s / n)
+            fallback_shares.append(frozen / n)
     if not out or point is None:
         return None
     out.sort()
-    return (point[0], out[int(.025 * len(out))], out[int(.975 * len(out))], point[3])
+    share = sum(fallback_shares) / len(fallback_shares) if fallback_shares else 0.0
+    # The reported CI is the FIXED-V one from `boot`: it is a valid interval
+    # for the sampling of deaths, which is the question the bands are asked to
+    # answer, and it always contains its point estimate.
+    #
+    # The nested draws are reported ALONGSIDE it as a spread, not as a CI, and
+    # deliberately not recentred. Re-estimating V inside each draw turns out to
+    # be biased DOWNWARD, hard: in the late bands the entire nested
+    # distribution sits below the point estimate, so neither a percentile nor a
+    # basic (reverse-percentile) interval can contain it -- percentile excludes
+    # it from above, basic excludes it from below. That is not a centring
+    # problem to be transformed away. The draws re-weight matches and
+    # re-estimate V from those same re-weighted matches, so a cell's value and
+    # the weight of the deaths sitting in it are correlated within a draw, and
+    # the difference of two such cells is pulled toward zero.
+    #
+    # So: quote the fixed-V interval, and read the nested spread as what it
+    # honestly is -- evidence about how unstable V itself is in a band, which
+    # is exactly the concern that motivated nesting. A band whose nested spread
+    # sits far below its point estimate has a V table too thin to trust there,
+    # whatever its fixed-V interval says.
+    return (point[0], point[1], point[2], point[3], share,
+            out[int(.025 * len(out))], out[int(.975 * len(out))])
 
 
 def _fixed_pm(subset, want_atk_victim):
@@ -273,9 +314,15 @@ for lab, lo, hi in BANDS:
             if victim_is_atk == want_atk_victim and lo <= dt < hi
         ]
         r = boot_nested(subset, want_atk_victim)
-        cells.append(f"{r[0]:+.4f} [{r[1]:+.4f},{r[2]:+.4f}] n={r[3]:,}".rjust(32)
-                     if r and r[3] >= 80 else f"{'--':>32}")
-    print(f"  {lab:>9} | " + " | ".join(cells))
+        # CI = fixed-V (valid, contains the point). {..} = nested V-refit
+        # spread, NOT a CI -- see boot_nested. f = mean share of deaths in a
+        # draw whose V cell lost support and reused the full-data value.
+        cells.append(
+            f"{r[0]:+.4f} [{r[1]:+.4f},{r[2]:+.4f}] n={r[3]:,}\n"
+            f"{'':>11}   refit{{{r[5]:+.4f},{r[6]:+.4f}}} f={100*r[4]:.0f}%"
+            if r and r[3] >= 80 else "--")
+    print(f"  {lab:>9} | ATT {cells[0]}")
+    print(f"  {'':>9} | DEF {cells[1]}")
 
 # ---- (3) does the 41.5s deadline show up as its own break? --------------------
 print("\n" + "=" * 132)

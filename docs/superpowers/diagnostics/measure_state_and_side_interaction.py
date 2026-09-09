@@ -87,7 +87,13 @@ def show(lab, rows):
     r=lift(rows)
     if r is None: print(f"  {lab:<30} (insufficient n)"); return
     fr,nr,d,lo,hi,nf,nn = r
-    flag = "" if lo>0 else "   <-- CI SPANS 0"
+    # A wholly-negative interval EXCLUDES zero just as a wholly-positive one
+    # does. The old test was `lo>0`, which stamped "CI SPANS 0" on every
+    # negative lift -- so the three rows carrying the reversal (behind by 1,
+    # behind by 2+, defender pooled) were labelled inconclusive when each is
+    # in fact significant. The bug understated the very effect this table exists
+    # to show.
+    flag = "" if (lo > 0 or hi < 0) else "   <-- CI SPANS 0"
     print(f"  {lab:<30} far {100*fr:5.1f}% -> near {100*nr:5.1f}%   "
           f"lift {100*d:+5.1f}pp [{100*lo:+5.1f},{100*hi:+5.1f}]  n={nf:,}/{nn:,}{flag}")
 

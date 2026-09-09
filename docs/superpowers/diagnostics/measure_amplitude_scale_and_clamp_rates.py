@@ -28,6 +28,7 @@ if os.path.exists(".env.remote"):
 from sqlalchemy import text
 from app.db import SessionLocal
 from app.scoring.impact import _KILL_ORDER_GRAPH as _G
+from app.scoring.impact import _check_for_resurrection
 
 KOB = {(u, v): d["weight"] for u, v, d in _G.edges(data=True)}
 
@@ -66,29 +67,35 @@ for rid, ks in kills.items():
     w = winner(r["outcome"])
     a = atk(r["round_number"])
     alive = {"TEAM_1": 5, "TEAM_2": 5}
-    for k in ks:
+    # REPLAY POLICY -- mirrors app/scoring/impact.py, and the other diagnostics.
+    # This script was the last one still on the old policy: it skipped a
+    # self-kill BEFORE the alive counts moved (so a teamkill then an enemy kill
+    # read 5v5 where the scorer had 5v4) and decremented on resurrections. That
+    # matters here more than anywhere else -- the amplitude fit and the clamp
+    # rates below are where the spec's predeclared scale came from.
+    for idx, k in enumerate(ks):
         kid, vid = k["killer_match_player_id"], k["death_match_player_id"]
         if not kid or not vid or kid not in mp or vid not in mp:
             continue
         kt, vt = mp[kid]["team"], mp[vid]["team"]
-        if kt == vt:
-            continue
-        total_kills += 1
-        dt = (k["event_time_seconds"] - r["plant_time"]) if planted else None
-        if dt is not None and dt < 0 and w is not None:
-            before = f"{alive['TEAM_2']}v{alive['TEAM_1']}"
-            nxt = dict(alive)
-            if nxt[vt] > 0:
-                nxt[vt] -= 1
-            after = f"{nxt['TEAM_2']}v{nxt['TEAM_1']}"
-            try:
-                kob = KOB[(before, after)]
-            except KeyError:
-                kob = 100
-            recs.append({"adv": alive[kt] - alive[vt], "dt": dt, "atk": kt == a,
-                         "won": kt == w, "K": kob})
-        if alive[vt] > 0:
-            alive[vt] -= 1
+        if kt != vt:
+            total_kills += 1
+            dt = (k["event_time_seconds"] - r["plant_time"]) if planted else None
+            if dt is not None and dt < 0 and w is not None:
+                before = f"{alive['TEAM_2']}v{alive['TEAM_1']}"
+                nxt = dict(alive)
+                if nxt[vt] > 0:
+                    nxt[vt] -= 1
+                after = f"{nxt['TEAM_2']}v{nxt['TEAM_1']}"
+                try:
+                    kob = KOB[(before, after)]
+                except KeyError:
+                    kob = 100
+                recs.append({"adv": alive[kt] - alive[vt], "dt": dt, "atk": kt == a,
+                             "won": kt == w, "K": kob})
+        if not _check_for_resurrection(idx, ks):
+            if alive[vt] > 0:
+                alive[vt] -= 1
 
 print(f"all non-self kills {total_kills:,}   pre-plant-in-planted {len(recs):,} "
       f"({100 * len(recs) / total_kills:.1f}%)")

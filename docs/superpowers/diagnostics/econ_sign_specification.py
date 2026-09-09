@@ -8,6 +8,12 @@ import numpy as np, sys, os
 sys.path.insert(0, os.path.abspath("."))
 from app.services.stats_math import back_transform, fit_logistic, standardize
 
+
+def _t2_design_path():
+    from app.services.impact_eval_cache import cache_path
+    return str(cache_path().parent / "t2_design.npz")
+
+
 d = np.load(_t2_design_path(), allow_pickle=True)
 X, y, w, names, mids = d["X"], d["y"], d["w"], list(d["names"]), d["match_ids"]
 col = {n: i for i, n in enumerate(names)}
