@@ -1,18 +1,31 @@
 """Run from webapp/:
     .\\.venv\\Scripts\\python.exe scripts\\fit_preplant_time_factor.py
 
-Fits Part 3's exact-state logistic regression against the real DB, runs the
-predeclared nested comparison and temporal-split checks, selects k per the
-predeclared rule, solves the centring constant, and prints the constants to
-transcribe into app/scoring/preplant_scalar.py. Read-only; never writes to
-the database.
+Reports, AT THE HEAD, the Part 3 kill-side centring gate for the mechanism
+that actually shipped -- app/scoring/preplant_empirical_factor at
+impact.py's own _PREPLANT_EMPIRICAL_STRENGTH: the declared population and
+its scored/fallback split, c, |c-1|, the effective bounds, and the
+death-side residual against its predeclared 2% tolerance.
+
+Everything printed BELOW that block fits the SUPERSEDED parametric model
+(spec, Part 3 "DECIDED 2026-09-08"): the exact-state logistic regression,
+the nested comparison and temporal-split checks, the k selection, and the
+constants for app/scoring/preplant_scalar.py, which nothing imports. It is
+kept for its fitting-diagnostics value, not as a live fit.
+
+Read-only; never writes to the database.
 """
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-if os.path.exists(".env.remote"):
+
+# Only when actually RUN as a script. app.db builds its engine at import time,
+# so this must stay above that import -- but importing this module (the tests
+# do, to exercise the head report) must not silently repoint every later
+# consumer of app.db at the remote database.
+if __name__ == "__main__" and os.path.exists(".env.remote"):
     for line in open(".env.remote"):
         if line.startswith("DATABASE_URL="):
             os.environ["DATABASE_URL"] = line.split("=", 1)[1].strip()
@@ -20,7 +33,14 @@ if os.path.exists(".env.remote"):
 from sqlalchemy import text
 
 from app.db import SessionLocal
-from app.scoring.preplant_centering import solve_kill_side_centering
+from app.scoring.impact import _PREPLANT_EMPIRICAL_STRENGTH
+from app.scoring.preplant_centering import (
+    DEATH_RESIDUAL_TOLERANCE,
+    EMPIRICAL_CUTOFF,
+    solve_empirical_kill_side_centering,
+    solve_kill_side_centering,
+)
+from app.scoring.preplant_empirical_factor import empirical_preplant_factor
 from app.scoring.preplant_fit_support import extract_preplant_observations_with_factors
 from app.scoring.preplant_k_selection import select_k
 from app.scoring.preplant_time_model import fit_preplant_time_model
@@ -46,6 +66,55 @@ TEMPORAL_SPLIT_SQL = """
 """
 
 
+def _report_empirical_centering(observations, kobs, trades):
+    """The SHIPPED Part 3 mechanism's gate, printed at the head because it is
+    the number that governs activation. Everything below it in this script
+    fits the SUPERSEDED parametric model (spec, 'DECIDED 2026-09-08')."""
+    strength = _PREPLANT_EMPIRICAL_STRENGTH
+    result = solve_empirical_kill_side_centering(
+        observations, kobs, trades, strength=strength,
+    )
+    affected = result.scored_kills + result.fallback_kills
+    mass = result.scored_kill_order_mass + result.fallback_kill_order_mass
+    low, high = result.effective_bounds
+    verdict = (
+        "WITHIN" if abs(result.death_side_residual) <= DEATH_RESIDUAL_TOLERANCE
+        else "EXCEEDS"
+    )
+
+    print("=" * 78)
+    print(f"  PART 3 KILL-SIDE CENTRING -- preplant_empirical_factor, strength={strength}")
+    print("=" * 78)
+    print("  POPULATION (the two are NOT the same set; c is solved on SCORED):")
+    print(f"    AFFECTED  {affected:>9,}   non-self pre-plant kills, non-phantom,")
+    print("                            non-surrendered planted rounds")
+    print(f"    SCORED    {result.scored_kills:>9,}   0 < dt <= {EMPIRICAL_CUTOFF:g}; "
+          f"{100 * result.scored_kills / affected:5.2f}% of affected, "
+          f"{100 * result.scored_kill_order_mass / mass:5.2f}% of kill-order mass")
+    print(f"    FALLBACK  {result.fallback_kills:>9,}   dt > {EMPIRICAL_CUTOFF:g}; "
+          f"curve returns exactly 1.0 and c is NOT applied")
+    print()
+    print(f"    c                     = {result.c:.6f}")
+    print(f"    |c - 1|               = {abs(result.c - 1):.6f}   "
+          f"(0.05 is a REPORTED finding, not an assertion)")
+    print(f"    effective bounds      = [{low:.6f}, {high:.6f}]   "
+          f"([c*0.2, c*1.7]; the clamp does not bind at this strength)")
+    print(f"    death-side residual   = {result.death_side_residual:+.4%}   "
+          f"{verdict} the predeclared {DEATH_RESIDUAL_TOLERANCE:.0%} tolerance")
+    print("      -- REPORTED, never solved for. One constant cannot pin both sides.")
+    print()
+    print(f"  dt = {EMPIRICAL_CUTOFF:g} BOUNDARY, under the decided policy (keep the jump):")
+    for label, is_attacker in (("attacker", True), ("defender", False)):
+        edge = result.c * empirical_preplant_factor(
+            EMPIRICAL_CUTOFF, is_attacker, strength=strength,
+        )
+        print(f"    {label}  {edge:.4f} -> 1.0000  ({1.0 - edge:+.4f})")
+    print("      -- REF is a pooled dt>30 category, not an observation at second 31.")
+    print("=" * 78)
+    print()
+    return result
+
+
 def _print_k_table(result):
     for row in result.table:
         print(f"  k={row['k']:.2f}  floor%all={row['floor_rate_all']:.2f}  "
@@ -61,6 +130,9 @@ def main():
 
     observations, kobs, trades = extract_preplant_observations_with_factors(db)
     print(f"affected population (pre-plant kills, non-phantom planted rounds): {len(observations):,}")
+    print()
+
+    _report_empirical_centering(observations, kobs, trades)
 
     # -- Nested comparison: does the side interaction earn its keep? --------
     with_side = fit_preplant_time_model(observations, include_side_interaction=True)
