@@ -27,7 +27,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db import SessionLocal
-from app.scoring.impact import _time_factor
 from app.scoring.postplant_centering import (
     DegenerateCentering,
     solve_postplant_centering,
@@ -37,6 +36,8 @@ from app.scoring.postplant_factor import (
     FLOOR_DEFAULT,
     build_factor_table,
     extract_postplant_kills,
+    legacy_postplant_factor,
+    solve_and_apply_centering,
 )
 from app.scoring.postplant_value_table import (
     DEFAULT_W,
@@ -54,17 +55,6 @@ N_BINS = 10                   # fixed-width on [0, 1], declared in advance
 FLOOR_GRID = (0.02, 0.05, 0.1)
 CEIL_GRID = (1.5, 2.0, 2.5)
 W_GRID = (0, 1, 2, 3, 4, 6)
-
-
-class _RoundShim:
-    """What _time_factor reads, so today's ramp can be evaluated per kill."""
-
-    def __init__(self, plant_time):
-        self.plant_time = plant_time
-        self.planted = True
-        self.exploded = False
-        self.defused = False
-        self.defuse_time = None
 
 
 def _calibration(observations, folds):
@@ -218,23 +208,28 @@ def _rung_census(value_table, kills):
     return census
 
 
-def _score_population(factors, kills, plant_times):
-    """Per-kill ramp factor, new factor and support flag."""
-    ramp, new, supported, raw_ratios = [], [], [], []
+def _score_population(factors, kills):
+    """Per-kill KILL-side ramp, DEATH-side ramp, new factor and support flag.
+
+    The two ramps are carried separately because they differ -- 1.75 against
+    0.5 in plant+38..45 -- and the death-side residual has to be measured
+    against the death side (review finding 4).
+
+    `new` is the UNCENTRED clamped factor: c is by definition the constant
+    that rescales these, so reading the centred value here would be circular.
+    """
+    kill_ramp, death_ramp, new, supported, raw_ratios = [], [], [], [], []
     for kill in kills:
-        shim = _RoundShim(plant_times[kill.round_id])
-        ramp.append(_time_factor(shim, plant_times[kill.round_id] + kill.t))
-        ratio = factors.raw_ratio(
-            kill.attackers_alive, kill.defenders_alive, kill.t, kill.victim_is_attacker
-        )
+        key = (kill.attackers_alive, kill.defenders_alive, kill.t, kill.victim_is_attacker)
+        kill_ramp.append(legacy_postplant_factor(kill.t, for_death=False))
+        death_ramp.append(legacy_postplant_factor(kill.t, for_death=True))
+        ratio = factors.raw_ratio(*key)
         is_supported = ratio is not None
         supported.append(is_supported)
         if is_supported:
             raw_ratios.append(ratio)
-        new.append(factors.factor(
-            kill.attackers_alive, kill.defenders_alive, kill.t, kill.victim_is_attacker
-        ))
-    return ramp, new, supported, raw_ratios
+        new.append(factors.clamped_factor(*key))
+    return kill_ramp, death_ramp, new, supported, raw_ratios
 
 
 def _percentile(values, q):
@@ -249,10 +244,6 @@ def main():
     db = SessionLocal()
     observations = extract_postplant_round_seconds(db)
     kills = extract_postplant_kills(db)
-    plant_times = {}
-    from sqlalchemy import text
-    for row in db.execute(text("SELECT id, plant_time FROM rounds WHERE plant_time IS NOT NULL")).mappings():
-        plant_times[row["id"]] = row["plant_time"]
     db.close()
 
     match_ids = sorted({o.match_id for o in observations})
@@ -321,7 +312,7 @@ def main():
     print("  pooling rung of each scored kill's own V cell:")
     for rung in (RUNG_EXACT, RUNG_D_POOLED, RUNG_BAND, RUNG_ANALYTIC, "unsupported"):
         print(f"    {rung:<12} {census.get(rung, 0):,}")
-    ramp, new, supported, raw_ratios = _score_population(factors, kills, plant_times)
+    ramp, death_ramp, new, supported, raw_ratios = _score_population(factors, kills)
     print(f"  supported (a, d, victim_side) cells: {factors.diagnostics['supported_cells']:,}")
     print(f"  kills falling back to 1.0:           {sum(1 for s in supported if not s):,}")
     for key in ("non_positive_denominators", "cells_with_too_few_eligible_seconds",
@@ -355,8 +346,15 @@ def main():
             kill_order_bonuses=kill_order_bonuses, ramp_factors=ramp,
             new_factors=new, supported=supported,
             traded_factors=traded_factors,
+            death_ramp_factors=death_ramp,
         )
+        # Review finding 3: c is not a number to print and discard -- the
+        # SCORED table has to carry it. Applied here so every factor read
+        # after this point in the run is the centred one.
+        factors.set_centering(centering.c)
         print(f"  c = {centering.c:.6f}   |c-1| = {abs(centering.c - 1):.4f}")
+        print("  (applied to the shipped table above; fallback cells stay at "
+              "exactly 1.0)")
         print(f"  effective bounds: [{centering.c * FLOOR_DEFAULT:.4f}, "
               f"{centering.c * CEIL_DEFAULT:.4f}]")
         print(f"  death-side residual: {centering.death_side_residual:+.4%}  "
@@ -409,7 +407,7 @@ def main():
     for floor in FLOOR_GRID:
         for ceil in CEIL_GRID:
             grid_factors = build_factor_table(value_table, kills, floor=floor, ceil=ceil)
-            g_ramp, g_new, g_supported, _ = _score_population(grid_factors, kills, plant_times)
+            g_ramp, g_death, g_new, g_supported, _ = _score_population(grid_factors, kills)
             n_scored = max(1, sum(1 for s in g_supported if s))
             floor_rate = 100.0 * grid_factors.diagnostics.get("floor_bindings", 0) / n_scored
             ceil_rate = 100.0 * grid_factors.diagnostics.get("ceiling_bindings", 0) / n_scored
@@ -417,7 +415,7 @@ def main():
                 g_c = solve_postplant_centering(
                     kill_order_bonuses=kill_order_bonuses, ramp_factors=g_ramp,
                     new_factors=g_new, supported=g_supported,
-                    traded_factors=traded_factors,
+                    traded_factors=traded_factors, death_ramp_factors=g_death,
                 ).c
                 print(f"  {floor:>6.2f} {ceil:>6.2f} {floor_rate:>7.2f}% {ceil_rate:>7.2f}% "
                       f"{g_c:>9.4f} {g_c * floor:>8.4f} {g_c * ceil:>8.4f}")
@@ -433,9 +431,9 @@ def main():
     for w in W_GRID:
         w_table = build_value_table(observations, w=w)
         w_factors = build_factor_table(w_table, kills)
-        w_ramp, w_new, w_supported, _ = _score_population(w_factors, kills, plant_times)
+        w_ramp, w_death, w_new, w_supported, _ = _score_population(w_factors, kills)
         try:
-            w_c = f"{solve_postplant_centering(kill_order_bonuses=kill_order_bonuses, ramp_factors=w_ramp, new_factors=w_new, supported=w_supported, traded_factors=traded_factors).c:.4f}"
+            w_c = f"{solve_postplant_centering(kill_order_bonuses=kill_order_bonuses, ramp_factors=w_ramp, new_factors=w_new, supported=w_supported, traded_factors=traded_factors, death_ramp_factors=w_death).c:.4f}"
         except DegenerateCentering:
             w_c = "DEGENERATE"
         print(f"  {w:>3} {w_factors.diagnostics['supported_cells']:>16,} "

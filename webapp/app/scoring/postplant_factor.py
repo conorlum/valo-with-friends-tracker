@@ -174,12 +174,24 @@ def difference(
 
 
 class PostPlantFactorTable:
-    def __init__(self, denominators, value_table, floor, ceil, diagnostics):
+    def __init__(self, denominators, value_table, floor, ceil, diagnostics,
+                 centering: float = 1.0):
         self._denominators = denominators  # (a, d, victim_is_attacker) -> mean D
         self._value_table = value_table
         self._floor = floor
         self._ceil = ceil
         self.diagnostics = diagnostics
+        # Part 4's centring constant c (review finding 3). 1.0 until
+        # solve_and_apply_centering runs, so a table built and used without
+        # centring is exactly the uncentred table and nothing changes silently.
+        self._centering = centering
+
+    @property
+    def centering(self) -> float:
+        return self._centering
+
+    def set_centering(self, c: float) -> None:
+        self._centering = c
 
     def raw_ratio(self, a: int, d: int, t: int, victim_is_attacker: bool) -> float | None:
         """D / mean_over_t D, BEFORE clamping. Crossing rates are counted on
@@ -193,7 +205,15 @@ class PostPlantFactorTable:
             return None
         return numerator / denominator
 
-    def factor(self, a: int, d: int, t: int, victim_is_attacker: bool) -> float:
+    def clamped_factor(self, a: int, d: int, t: int, victim_is_attacker: bool) -> float:
+        """The raw ratio put through the DECLARED clamp, with c NOT applied.
+
+        This is the `s` the centring equation is solved on -- c is defined as
+        the constant that rescales these -- so it has to be reachable
+        separately from the scored factor. It is also the only place the clamp
+        diagnostics are counted, so scoring a kill increments them exactly
+        once whichever entry point is used.
+        """
         ratio = self.raw_ratio(a, d, t, victim_is_attacker)
         if ratio is None:
             return 1.0
@@ -207,6 +227,25 @@ class PostPlantFactorTable:
             self.diagnostics["ceiling_bindings"] += 1
             return self._ceil
         return ratio
+
+    def factor(self, a: int, d: int, t: int, victim_is_attacker: bool) -> float:
+        """What scoring receives: the clamped ratio scaled by c.
+
+        Three properties the spec fixes, all visible here:
+          * a FALLBACK cell returns EXACTLY 1.0 and is never scaled by c --
+            centring it would multiply the neutral fallback, contradicting
+            both the fallback rule and the centring equation, which holds the
+            fallback population out of its denominator;
+          * c is applied AFTER the declared clamp, so the clamp bounds the
+            RATIO, which is what declaration 2.4's crossing rates are defined
+            on;
+          * and the product is NOT clamped again -- a second clamp would make
+            the centring it just applied partially inert, and the whole point
+            of c is that total contribution is preserved exactly.
+        """
+        if not self.is_supported(a, d, t, victim_is_attacker):
+            return 1.0
+        return self.clamped_factor(a, d, t, victim_is_attacker) * self._centering
 
     def is_supported(self, a: int, d: int, t: int, victim_is_attacker: bool) -> bool:
         return self.raw_ratio(a, d, t, victim_is_attacker) is not None
@@ -264,3 +303,80 @@ def build_factor_table(
 
     diagnostics["supported_cells"] = len(denominators)
     return PostPlantFactorTable(denominators, value_table, floor, ceil, diagnostics)
+
+
+class _PostPlantRoundShim:
+    """What `_time_factor` reads, so today's SHIPPED post-plant factor can be
+    evaluated for a kill at t seconds past the plant.
+
+    plant_time is 0.0 and the kill time is t itself: the legacy post-plant
+    branches depend on `kill_time - plant_time` only (the plant+38..45 window
+    and the 1 + (t - plant)/53 ramp), so the absolute timestamp divides out.
+    `exploded`/`defused` are False because extract_postplant_kills already
+    restricted its rows to kills strictly before the round resolves, and
+    `outcome` is None because it excluded phantom plants -- this shim stands in
+    only for rounds that passed both filters.
+    """
+
+    plant_time = 0.0
+    planted = True
+    exploded = False
+    defused = False
+    defuse_time = None
+    outcome = None
+
+
+_SHIM = _PostPlantRoundShim()
+
+
+def legacy_postplant_factor(t: int, for_death: bool = False) -> float:
+    """Today's shipped `_time_factor` at t seconds past the plant.
+
+    `for_death` is not cosmetic and is the whole of review finding 4: in
+    plant+38..45 the legacy scorer pays 1.75 on the kill side and 0.5 on the
+    death side. A death-side residual measured against the KILL-side ramp is
+    wrong by 3.5x exactly where the two diverge.
+    """
+    from app.scoring.impact import _time_factor  # local: impact imports nothing here
+
+    return _time_factor(_SHIM, float(t), for_death=for_death)
+
+
+def solve_and_apply_centering(table: PostPlantFactorTable, kills: list[PostPlantKill]):
+    """Solve Part 4's centring constant on `kills` and attach it to `table`.
+
+    Returns the full PostPlantCenteringResult so the caller can report c, its
+    supported/fallback split and the death-side residual. `table` is mutated:
+    every subsequent `factor()` call on it is centred.
+
+    LEAKAGE. `kills` must be the population the caller is entitled to fit on.
+    In the five-arm report that is the outer fold's TRAINING matches only --
+    solving c once on the whole corpus and then scoring held-out folds with it
+    would put a whole-corpus quantity back into every arm, which is exactly
+    the leak the per-fold tables were built to remove.
+    """
+    from app.scoring.postplant_centering import solve_postplant_centering
+
+    bonuses, kill_ramp, death_ramp, new, supported, traded = [], [], [], [], [], []
+    for kill in kills:
+        key = (kill.attackers_alive, kill.defenders_alive, kill.t, kill.victim_is_attacker)
+        bonuses.append(kill.kill_order_bonus)
+        kill_ramp.append(legacy_postplant_factor(kill.t, for_death=False))
+        death_ramp.append(legacy_postplant_factor(kill.t, for_death=True))
+        supported.append(table.is_supported(*key))
+        # The UNCENTRED clamped factor: c is by definition the constant that
+        # rescales these, so solving against already-centred values would be
+        # circular.
+        new.append(table.clamped_factor(*key))
+        traded.append(kill.traded_factor)
+
+    result = solve_postplant_centering(
+        kill_order_bonuses=bonuses,
+        ramp_factors=kill_ramp,
+        new_factors=new,
+        supported=supported,
+        traded_factors=traded,
+        death_ramp_factors=death_ramp,
+    )
+    table.set_centering(result.c)
+    return result

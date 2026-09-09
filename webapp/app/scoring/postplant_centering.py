@@ -43,15 +43,26 @@ def solve_postplant_centering(
     new_factors: list[float],
     supported: list[bool],
     traded_factors: list[float],
+    death_ramp_factors: list[float],
 ) -> PostPlantCenteringResult:
-    """All five lists are aligned index-for-index, one entry per post-plant
+    """All six lists are aligned index-for-index, one entry per post-plant
     pre-resolution kill. `ramp_factors` is today's shipped `_time_factor`
-    value for that kill -- the quantity total contribution is preserved
-    against.
+    value for that kill on the KILL side -- the quantity total contribution is
+    preserved against. `death_ramp_factors` is the same call with
+    `for_death=True`.
+
+    The two are not interchangeable (review finding 4). In plant+38..45 the
+    legacy scorer pays 1.75 on the kill side and 0.5 on the death side, so
+    measuring the death-side residual against the kill-side ramp is wrong by a
+    factor of 3.5 exactly in the window where the two regimes diverge most --
+    and that residual exists to report what a player's DEATHS would actually
+    move by. It is REPORTED against DEATH_RESIDUAL_TOLERANCE, never solved
+    for: only the kill side is pinned exactly, and forcing the death side to
+    zero as well would need a second free constant this design does not have.
     """
     lengths = {
         len(kill_order_bonuses), len(ramp_factors), len(new_factors),
-        len(supported), len(traded_factors),
+        len(supported), len(traded_factors), len(death_ramp_factors),
     }
     if len(lengths) != 1:
         raise ValueError("all per-kill lists must be aligned index-for-index")
@@ -74,12 +85,18 @@ def solve_postplant_centering(
 
     # Death side: the same events, weighted additionally by _traded_factor.
     # Reported against the 2% tolerance, never solved for.
+    #
+    # The NEW regime takes the same factor for a kill and for the death it
+    # causes -- the event transfers D, the killer is credited it and the
+    # victim debited it (spec, Part 4, "Deaths") -- so `c * s` and the
+    # fallback 1.0 are side-blind here. The LEGACY regime is not: its baseline
+    # has to be the death-side ramp, which is what death_ramp_factors carries.
     sum_kt_new = sum(
         k * t * (c * s if sup else 1.0)
         for k, t, s, sup in zip(kill_order_bonuses, traded_factors, new_factors, supported)
     )
     sum_kt_ramp = sum(
-        k * t * r for k, t, r in zip(kill_order_bonuses, traded_factors, ramp_factors)
+        k * t * r for k, t, r in zip(kill_order_bonuses, traded_factors, death_ramp_factors)
     )
     residual = (sum_kt_new / sum_kt_ramp - 1.0) if sum_kt_ramp else 0.0
 

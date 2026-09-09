@@ -90,7 +90,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db import SessionLocal
-from app.scoring.postplant_factor import build_factor_table, extract_postplant_kills
+from app.scoring.postplant_factor import (
+    build_factor_table,
+    extract_postplant_kills,
+    solve_and_apply_centering,
+)
+from app.scoring.postplant_centering import DegenerateCentering
 from app.scoring.postplant_value_table import (
     DEFAULT_W,
     build_value_table,
@@ -244,7 +249,7 @@ def main():
     # Per-fold tables, fitted on TRAINING matches only. This is the leakage
     # fix: support decisions, smoothing, denominators and centring all see
     # only the training half.
-    fold_tables = {}
+    fold_tables, fold_centering = {}, {}
     for fold in range(n_folds):
         train = {m for m, f in folds.items() if f != fold}
         print(f"building fold {fold}'s post-plant table on {len(train):,} "
@@ -252,9 +257,28 @@ def main():
         value_table = build_value_table(
             [s for s in all_seconds if s.match_id in train], w=DEFAULT_W
         )
-        fold_tables[fold] = build_factor_table(
-            value_table, [k for k in all_kills if k.match_id in train]
-        )
+        train_kills = [k for k in all_kills if k.match_id in train]
+        table = build_factor_table(value_table, train_kills)
+        # D2 / review finding 3. The centring constant is part of the fitted
+        # table, so it is solved PER FOLD on that fold's TRAINING kills. c
+        # depends on the support pattern, the denominators and the clamp, all
+        # of which are already per-fold; solving it once on the whole corpus
+        # would push a whole-corpus quantity back into every held-out score
+        # and reinstate exactly the leak the per-fold tables removed.
+        try:
+            fold_centering[fold] = solve_and_apply_centering(table, train_kills)
+        except DegenerateCentering as exc:
+            print(f"  fold {fold}: DEGENERATE centring ({exc}); table left "
+                  f"uncentred at c = 1.0", flush=True)
+            fold_centering[fold] = None
+        else:
+            result = fold_centering[fold]
+            print(f"  fold {fold}: c = {result.c:.6f}  |c-1| = "
+                  f"{abs(result.c - 1):.4f}  death-side residual "
+                  f"{result.death_side_residual:+.4%}  "
+                  f"({result.supported_kills:,} supported / "
+                  f"{result.fallback_kills:,} fallback)", flush=True)
+        fold_tables[fold] = table
 
     composite_features = [COMPOSITE] + controls_for(PRIMARY_T2)
 
@@ -293,7 +317,16 @@ def main():
     print(f"            plus nuisance controls {controls_for(PRIMARY_T2)}")
     print(f"            -- one coefficient on the composite, no component reweighting")
     print(f"  LEAKAGE:  post-plant value/factor tables rebuilt per outer fold on")
-    print(f"            training matches only ({n_folds} folds)")
+    print(f"            training matches only ({n_folds} folds), INCLUDING the")
+    print(f"            centring constant c -- solved per fold on that fold's")
+    print(f"            training kills, never once on the whole corpus")
+    _cs = [r.c for r in fold_centering.values() if r is not None]
+    if _cs:
+        print(f"            per-fold c: "
+              + ", ".join(f"{c:.6f}" for c in _cs))
+        print(f"            per-fold death-side residual: "
+              + ", ".join(f"{r.death_side_residual:+.2%}"
+                          for r in fold_centering.values() if r is not None))
     print(f"  paired match-clustered bootstrap, {draws} resamples, two-sided 95%")
     print("  sign convention: loss(arm) - loss(arm 0), so POSITIVE MEANS WORSE")
     if quick:

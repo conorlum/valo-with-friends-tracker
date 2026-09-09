@@ -318,3 +318,130 @@ def test_factors_differ_across_seconds_within_the_denial_window():
     assert factors.factor(2, 1, 39, victim_is_attacker=False) != pytest.approx(
         factors.factor(2, 1, 44, victim_is_attacker=False)
     )
+
+
+# --------------------------------------------------------------------------
+# Review finding 3 -- the centring constant reaches the scored table
+# --------------------------------------------------------------------------
+
+from app.scoring.postplant_factor import (  # noqa: E402
+    legacy_postplant_factor,
+    solve_and_apply_centering,
+)
+
+
+def _supported_table():
+    """A table with (3, 1, victim=defender) supported and D constant at 0.4,
+    so the raw ratio is exactly 1.0 at every second in 10..19 -- verified
+    below before anything is asserted against it."""
+    obs = []
+    for t in range(10, 20):
+        obs += _cell(3, 1, t, 0.6, seed=t)
+    table = build_value_table(obs, w=0)
+    factors = build_factor_table(table, _kills(3, 1, False, range(10, 20)))
+    assert factors.raw_ratio(3, 1, 15, victim_is_attacker=False) == pytest.approx(1.0)
+    assert factors.raw_ratio(2, 2, 15, victim_is_attacker=False) is None  # a fallback cell
+    return factors
+
+
+def test_a_fresh_table_is_uncentred_so_nothing_changes_silently():
+    factors = _supported_table()
+
+    assert factors.centering == 1.0
+    assert factors.factor(3, 1, 15, victim_is_attacker=False) == pytest.approx(1.0)
+
+
+def test_c_is_applied_to_supported_cells():
+    """The defect: `factor` returned the clamped raw ratio and c was solved,
+    printed, and thrown away."""
+    factors = _supported_table()
+    factors.set_centering(1.3)
+
+    assert factors.factor(3, 1, 15, victim_is_attacker=False) == pytest.approx(1.3)
+
+
+def test_a_fallback_cell_stays_exactly_one_however_large_c_is():
+    """Centring the neutral fallback would contradict both the fallback rule
+    and the centring equation, which holds the fallback population out of its
+    denominator precisely so it is not rescaled."""
+    factors = _supported_table()
+    factors.set_centering(1.9)
+
+    assert factors.factor(2, 2, 15, victim_is_attacker=False) == 1.0
+
+
+def test_c_is_applied_after_the_clamp_and_the_product_is_not_clamped_again():
+    """The clamp bounds the RATIO -- that is what declaration 2.4's crossing
+    rates are counted on. c then scales the clamped value, and the product is
+    left alone: re-clamping would make the centring partially inert and break
+    the exact preservation c exists to provide.
+    """
+    factors = _supported_table()
+    factors.set_centering(1.5)
+
+    # Verify the fixture: this cell's raw ratio really does exceed CEIL.
+    obs = []
+    for t in range(10, 20):
+        obs += _cell(3, 1, t, 0.6 if t < 19 else 0.0, seed=t)
+    steep = build_factor_table(build_value_table(obs, w=0),
+                               _kills(3, 1, False, range(10, 20)))
+    raw = steep.raw_ratio(3, 1, 19, victim_is_attacker=False)
+    assert raw > CEIL_DEFAULT
+    steep.set_centering(1.5)
+
+    assert steep.clamped_factor(3, 1, 19, victim_is_attacker=False) == CEIL_DEFAULT
+    assert steep.factor(3, 1, 19, victim_is_attacker=False) == pytest.approx(
+        CEIL_DEFAULT * 1.5)
+    assert factors.factor(3, 1, 15, victim_is_attacker=False) == pytest.approx(1.5)
+
+
+def test_clamped_factor_stays_uncentred_so_the_solve_is_not_circular():
+    """c is defined as the constant that rescales the CLAMPED factors, so
+    solving against already-centred values would be circular."""
+    factors = _supported_table()
+    factors.set_centering(1.4)
+
+    assert factors.clamped_factor(3, 1, 15, victim_is_attacker=False) == pytest.approx(1.0)
+
+
+# --------------------------------------------------------------------------
+# The legacy ramp both sides of the centring equation are measured against
+# --------------------------------------------------------------------------
+
+
+def test_the_legacy_ramp_helper_reproduces_todays_two_sided_scoring():
+    """The plant+38..45 override is the whole of finding 4: 1.75 for a kill,
+    0.5 for the death it causes. Outside that window the ramp is side-blind.
+    """
+    assert legacy_postplant_factor(40, for_death=False) == pytest.approx(1.75)
+    assert legacy_postplant_factor(40, for_death=True) == pytest.approx(0.5)
+
+    assert legacy_postplant_factor(10, for_death=False) == pytest.approx(1 + 10 / 53)
+    assert legacy_postplant_factor(10, for_death=True) == pytest.approx(1 + 10 / 53)
+
+
+def test_solve_and_apply_centering_preserves_total_kill_side_contribution():
+    """The end-to-end gate: after solving and applying c, the total
+    contribution over the WHOLE population -- fallback cells included at
+    exactly 1.0 -- matches what today's ramp pays."""
+    factors = _supported_table()
+    kills = (
+        _kills(3, 1, False, range(10, 20))       # supported
+        + _kills(2, 2, False, range(10, 20))     # fallback
+    )
+
+    result = solve_and_apply_centering(factors, kills)
+
+    assert factors.centering == pytest.approx(result.c)
+    assert result.supported_kills == 10
+    assert result.fallback_kills == 10
+
+    under_ramp = sum(
+        k.kill_order_bonus * legacy_postplant_factor(k.t) for k in kills
+    )
+    under_new = sum(
+        k.kill_order_bonus * factors.factor(
+            k.attackers_alive, k.defenders_alive, k.t, k.victim_is_attacker)
+        for k in kills
+    )
+    assert under_new == pytest.approx(under_ramp)
