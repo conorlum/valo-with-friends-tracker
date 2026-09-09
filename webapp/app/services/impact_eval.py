@@ -989,6 +989,10 @@ class ConstrainedWeights:
     # Populated only when the caller declared them via
     # expected_constant_factors -- see fit_constrained_weights.
     dropped_constant_factors: tuple[str, ...] = ()
+    # The l2 this fit actually used. Reported because the run's separate
+    # selected_l2_per_fold describes the UNCONSTRAINED fit, not this one, so
+    # quoting that alongside these weights misstates the hyperparameter.
+    l2: float = float("nan")
 
 
 def _simplex_grid(step: float):
@@ -1102,13 +1106,41 @@ def fit_constrained_weights(
                                    FACTOR_WEIGHTS["swing"]]) / sum(FACTOR_WEIGHTS.values()))
         )
         design = np.column_stack([controls, stand_in])
-        scaled, _, _, _ = standardize(design, design)
+
+        # Selected on INNER HELD-OUT MATCHES, not on training loss.
+        #
+        # Fitting and scoring the same design makes this a training-loss
+        # comparison, which rewards the weakest penalty essentially by
+        # construction -- so the "selection" reduced to picking the smallest
+        # candidate and the promised nested protocol never happened.
+        # fold_candidates passes no l2, so this path produces the reported
+        # fitted weightings rather than an optional proposal.
+        inner = stable_folds(np.asarray(dataset.match_ids).tolist(), n_folds=3, seed=0)
+        fold_of = np.array([inner[int(m)] for m in dataset.match_ids])
+
         best_l2, best_l2_loss = 1.0, float("inf")
         for candidate_l2 in (0.01, 0.1, 1.0, 10.0):
-            beta = fit_logistic(scaled, dataset.y, weights=dataset.w, l2=candidate_l2)
-            loss = weighted_log_loss(predict_proba(beta, scaled), dataset.y, dataset.w)
-            if np.isfinite(loss) and loss < best_l2_loss:
-                best_l2, best_l2_loss = candidate_l2, loss
+            total, weight_total = 0.0, 0.0
+            for fold in range(3):
+                test = fold_of == fold
+                train = ~test
+                if not test.any() or not train.any():
+                    continue
+                if len(np.unique(np.round(dataset.y[train]))) < 2:
+                    continue
+                scaled_train, scaled_test, _, _ = standardize(design[train], design[test])
+                beta = fit_logistic(
+                    scaled_train, dataset.y[train], weights=dataset.w[train], l2=candidate_l2
+                )
+                loss = weighted_log_loss(
+                    predict_proba(beta, scaled_test), dataset.y[test], dataset.w[test]
+                )
+                if np.isfinite(loss):
+                    fold_weight = float(dataset.w[test].sum())
+                    total += loss * fold_weight
+                    weight_total += fold_weight
+            if weight_total and (total / weight_total) < best_l2_loss:
+                best_l2, best_l2_loss = candidate_l2, total / weight_total
         l2 = best_l2
 
     grid = DEFAULT_DAMAGE_GRID if damage_grid is None else damage_grid
@@ -1170,6 +1202,7 @@ def fit_constrained_weights(
         composite_slope=float(slope),
         usable=True,
         dropped_constant_factors=dropped_constant_factors,
+        l2=float(l2),
     )
 
 
@@ -1194,14 +1227,34 @@ def coefficient_diagnostics(
     rng = np.random.default_rng(seed)
     positives = np.zeros(len(feature_names))
     completed = 0
+
+    # Build the target ONCE, then resample the ALREADY AGGREGATED rows.
+    #
+    # Resampling observations and rebuilding the target silently collapses
+    # repeated clusters: T1 groups by match_id and sums the first half, so a
+    # match drawn twice became ONE row with doubled features and a single
+    # unit-weight label instead of the same row twice. That destroys the
+    # cluster multiplicity the bootstrap depends on, and it is the coefficient
+    # SIGNS that are read off this.
+    full = build_target(observations, config, feature_names)
+    if len(full.y) == 0:
+        return {"sign_stability": {}, "sign_direction": {}, "correlation_matrix": {},
+                "drop_one": {}, "full_log_loss": float("nan"),
+                "bootstrap_draws_completed": 0}
+    rows_by_match: dict[int, list[int]] = {}
+    for index, match_id in enumerate(full.match_ids):
+        rows_by_match.setdefault(int(match_id), []).append(index)
+    row_keys = list(rows_by_match)
+
     for _ in range(draws):
-        picked = rng.integers(0, len(keys), size=len(keys))
-        sample = [o for i in picked for o in grouped[keys[int(i)]]]
-        dataset = build_target(sample, config, feature_names)
-        if len(dataset.y) == 0 or len(np.unique(np.round(dataset.y))) < 2:
+        picked = rng.integers(0, len(row_keys), size=len(row_keys))
+        rows = [r for i in picked for r in rows_by_match[row_keys[int(i)]]]
+        y = full.y[rows]
+        if len(y) == 0 or len(np.unique(np.round(y))) < 2:
             continue
-        scaled, _, centre, scale = standardize(dataset.X, dataset.X)
-        beta = fit_logistic(scaled, dataset.y, weights=dataset.w, l2=l2)
+        X = full.X[rows]
+        scaled, _, centre, scale = standardize(X, X)
+        beta = fit_logistic(scaled, y, weights=full.w[rows], l2=l2)
         positives += (back_transform(beta, centre, scale)[1:] > 0).astype(float)
         completed += 1
 

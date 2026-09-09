@@ -962,3 +962,83 @@ def test_fold_mapping_hash_catches_a_same_set_different_folds_collision():
     assert dataset_fingerprint(ids) == dataset_fingerprint(list(permuted))
     assert fold_mapping_hash(stable) != fold_mapping_hash(permuted)
     assert fold_mapping_hash(stable) == fold_mapping_hash(dict(stable))
+
+
+def test_t1_coefficient_bootstrap_preserves_repeated_clusters():
+    """Code review finding 8: the bootstrap resampled OBSERVATIONS and then
+    rebuilt T1, which groups by match_id and sums the first half. A match
+    drawn twice therefore collapsed into ONE row with doubled features and a
+    single unit-weight label, instead of the same row appearing twice --
+    destroying the cluster multiplicity the interval depends on.
+    """
+    from app.services.impact_eval import PRIMARY_T1, build_target
+
+    observations = [
+        _obs(number, damage=10.0 * number, won_by_a=number % 2 == 0,
+             match_won=True, terminal=number == 24, match_id=mid)
+        for mid in (1, 2, 3)
+        for number in range(1, 25)
+    ]
+    full = build_target(observations, PRIMARY_T1, ["damage"])
+
+    rows_by_match = {}
+    for index, match_id in enumerate(full.match_ids):
+        rows_by_match.setdefault(int(match_id), []).append(index)
+
+    # T1 is one AGGREGATED row per match, which is exactly why rebuilding it
+    # from duplicated observations collapsed the duplicates.
+    assert all(len(rows) == 1 for rows in rows_by_match.values())
+
+    # Resampling the aggregated rows keeps a twice-drawn match as two
+    # identical rows, each with its own label and weight.
+    first = sorted(rows_by_match)[0]
+    drawn_twice = rows_by_match[first] * 2
+    assert len(drawn_twice) == 2
+    assert full.X[drawn_twice][0] == pytest.approx(full.X[drawn_twice][1])
+
+    # And NOT as one row carrying twice the damage, which is what rebuilding
+    # the target from duplicated observations produced.
+    rebuilt = build_target(
+        [o for mid in (first, first) for o in observations if o.match_id == mid],
+        PRIMARY_T1, ["damage"],
+    )
+    assert len(rebuilt.y) == 1
+    assert rebuilt.X[0][0] == pytest.approx(2 * full.X[rows_by_match[first][0]][0])
+
+
+def test_constrained_l2_is_selected_on_held_out_matches_not_training_loss():
+    """Code review finding 9: L2 was chosen by fitting and scoring the SAME
+    design, which is a training-loss comparison and rewards the weakest
+    penalty essentially by construction. fold_candidates passes no l2, so
+    this path produces the reported fitted weightings.
+
+    The fix must (a) not simply return the smallest candidate on data with no
+    signal, and (b) report the value it actually used.
+    """
+    import numpy as np
+    from app.services.impact_eval import PRIMARY_T1, controls_for, fit_constrained_weights
+
+    rng = np.random.default_rng(11)
+    observations = [
+        _obs(number, damage=float(rng.normal()), won_by_a=bool(rng.random() < 0.5),
+             match_won=bool(rng.random() < 0.5), terminal=number == 24, match_id=mid)
+        for mid in range(1, 31)
+        for number in range(1, 25)
+    ]
+
+    # `_obs` leaves econ_impact/time_impact/swing_impact at 0, so all three
+    # factor columns are constant here -- this fixture exercises L2 selection,
+    # not the factor search. On the implementation branch that is exactly what
+    # the zero-variance guard (econ spec section 8c) refuses unless declared,
+    # so declare it. Merged 2026-09-09: the guard and this test were written on
+    # separate branches and neither knew about the other.
+    weights = fit_constrained_weights(
+        observations, PRIMARY_T1, controls_for(PRIMARY_T1),
+        expected_constant_factors=frozenset({"econ_impact", "time_impact", "swing_impact"}),
+    )
+
+    # The chosen value is reported, and it is one of the declared candidates.
+    assert weights.l2 in (0.01, 0.1, 1.0, 10.0)
+    # On pure noise, held-out selection should not land on the weakest
+    # penalty the training-loss version would always have picked.
+    assert weights.l2 > 0.01

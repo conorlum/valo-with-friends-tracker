@@ -14,6 +14,7 @@ import os, sys, collections, statistics
 sys.path.insert(0, os.path.abspath("."))  # run from webapp/
 from sqlalchemy import text
 from app.db import SessionLocal
+from app.scoring.impact import _check_for_resurrection
 db = SessionLocal()
 rounds = {r["id"]: dict(r) for r in db.execute(text("""
     SELECT id, round_number, outcome, planted, plant_time FROM rounds""")).mappings()}
@@ -36,16 +37,21 @@ for rid,ks in kills.items():
     if not r or (r["outcome"] and "Surrendered" in r["outcome"]): continue
     planted = r["planted"] and r["plant_time"] is not None and not (r["outcome"] and "Time Win" in r["outcome"])
     a=atk(r["round_number"]); alive={"TEAM_1":5,"TEAM_2":5}
-    for k in ks:
+    # REPLAY POLICY -- mirrors app/scoring/impact.py: self-kills DO cost the
+    # victim's team a player, and a resurrected "death" does not. 15.06% of
+    # rounds contain one or the other, and once a round diverges every later
+    # kill in it is filed under the wrong state.
+    for idx,k in enumerate(ks):
         kid,vid=k["killer_match_player_id"],k["death_match_player_id"]
         if not kid or not vid or kid not in mp or vid not in mp: continue
         kt,vt=mp[kid]["team"],mp[vid]["team"]
-        if kt==vt: continue
-        total_kills+=1
-        dt = (k["event_time_seconds"]-r["plant_time"]) if planted else None
-        rows.append({"adv":alive[kt]-alive[vt], "dt":dt, "is_atk":kt==a,
-                     "preplant": dt is not None and dt<0})
-        if alive[vt]>0: alive[vt]-=1
+        if kt!=vt:
+            total_kills+=1
+            dt = (k["event_time_seconds"]-r["plant_time"]) if planted else None
+            rows.append({"adv":alive[kt]-alive[vt], "dt":dt, "is_atk":kt==a,
+                         "preplant": dt is not None and dt<0})
+        if not _check_for_resurrection(idx, ks):
+            if alive[vt]>0: alive[vt]-=1
 
 pre=[r for r in rows if r["preplant"]]
 print("="*78)

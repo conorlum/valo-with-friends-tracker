@@ -13,8 +13,13 @@ Protocol:
   * Fitted candidates are fitted per outer fold on training matches and scored
     only on that fold's held-out matches, via the same fold_candidates path
     the yardstick matrix uses.
-  * `current_impact` reads the exact stored impact differential -- it was
-    never fitted to this data, so it is scored on all rows.
+  * `current_impact` reads the observation cache's impact differential. NOTE
+    WHICH VARIANT THAT IS: the cache is built with use_realized_swing=False,
+    while the live scorer defaults to realized swing. So by default this
+    compares against the EX-ANTE variant, not the score users actually see.
+    Pass --realized-baseline to replay the realized score from the database
+    and compare against that instead; the output records which was used.
+    It was never fitted to this data, so it is scored on all rows.
   * The comparison is a PAIRED cluster bootstrap of the AUC difference,
     resampling matches and recomputing both AUCs on the same resample. A
     difference of two separately-bootstrapped intervals is not a test of the
@@ -120,17 +125,52 @@ def main() -> int:
     parser.add_argument("--out", type=Path)
     parser.add_argument("--draws", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--realized-baseline", action="store_true",
+        help="replay the REALIZED score from the DB for the baseline, instead of "
+             "the ex-ante cache. Slower, but it is the score users actually see.",
+    )
     args = parser.parse_args()
 
     observations = load_observations(None)
+
+    # Training always uses the ex-ante rows -- realized swing is the leak the
+    # forward fits exist to avoid. Only the BASELINE can legitimately be the
+    # realized score, and only if it is loaded separately and aligned.
+    baseline_observations = observations
+    baseline_kind = "ex-ante (use_realized_swing=False)"
+    if args.realized_baseline:
+        from app.db import SessionLocal
+        from app.services.impact_eval import load_all_observations
+
+        db = SessionLocal()
+        try:
+            realized = load_all_observations(db, use_realized_swing=True)
+        finally:
+            db.close()
+        by_round = {o.round_id: o for o in realized}
+        missing = sum(1 for o in observations if o.round_id not in by_round)
+        baseline_observations = [
+            by_round[o.round_id] for o in observations if o.round_id in by_round
+        ]
+        baseline_kind = (
+            f"realized (use_realized_swing=True), aligned on round_id; "
+            f"{missing} of {len(observations)} training rows had no realized match"
+        )
+
     report: dict = {
         "note": (
-            "Paired AUC difference against the SHIPPED impact score "
-            "(current_impact, the exact stored impact_diff). Positive = the "
-            "fitted weighting ranks better than what the site shows today."
+            "Paired AUC difference against current_impact. Positive = the fitted "
+            "weighting ranks better than the baseline. READ baseline_kind: the "
+            "default baseline is the EX-ANTE variant, which is a diagnostic "
+            "comparison, NOT the adoption question -- the live scorer uses "
+            "realized swing. Pass --realized-baseline for the adoption comparison."
         ),
+        "baseline_kind": baseline_kind,
         "comparisons": {},
     }
+    print(f"baseline: {baseline_kind}")
+
 
     fitted: dict[str, dict] = {}
     for label, config in TARGETS:
@@ -142,11 +182,11 @@ def main() -> int:
         fitted[label] = {"per_fold": per_fold,
                          "folds": {f.fold: f for f in result["folds"]}}
 
-    header = f"{'candidate':12s} {'yardstick':22s} {'AUC delta vs shipped':>24s}  verdict"
+    header = f"{'candidate':12s} {'yardstick':22s} {'AUC delta vs baseline':>24s}  verdict"
     print(header)
     print("-" * len(header))
     for yardstick_name, fn in YARDSTICKS.items():
-        shipped = _fixed_scores(observations, fn, CURRENT_IMPACT_CANDIDATE)
+        shipped = _fixed_scores(baseline_observations, fn, CURRENT_IMPACT_CANDIDATE)
         for label in fitted:
             got = _fitted_scores(observations, fn, fitted[label]["per_fold"],
                                  fitted[label]["folds"])

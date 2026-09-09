@@ -6,8 +6,11 @@ import numpy as np
 import pytest
 
 from app.services.stats_math import (
+    apply_calibration,
     auc,
+    calibrate_fractional,
     log_loss,
+    platt_calibrate,
     point_biserial,
     sigmoid,
     weighted_log_loss,
@@ -361,3 +364,80 @@ def test_the_mask_delivers_prior_shrinkage_on_the_deployable_graph():
 def test_penalty_length_is_validated():
     with pytest.raises(ValueError, match="penalty"):
         fit_logistic(np.zeros((10, 3)), np.zeros(10), penalty=np.ones(2))
+
+
+# --------------------------------------------------------------------------
+# Fractional-target calibration (code review finding 1)
+# --------------------------------------------------------------------------
+
+def test_platt_calibrate_binarizes_and_is_therefore_wrong_for_fractional_targets():
+    """Documents the defect the fractional path exists to avoid, so nobody
+    'simplifies' the two back into one. platt_calibrate thresholds at 0.5,
+    which is correct for a genuinely binary yardstick and wrong for T2.
+
+    Uses a sample large enough that Platt's smoothing is negligible -- on two
+    rows the smoothing legitimately dominates either path (see the next
+    test), which would hide the defect rather than show it."""
+    n = 400
+    fractional = np.tile([0.2, 0.8], n // 2)
+    scores = np.tile([-1.0, 1.0], n // 2)
+
+    binarized = apply_calibration(platt_calibrate(scores, fractional), scores)
+    preserved = apply_calibration(calibrate_fractional(scores, fractional), scores)
+
+    # The binarising path pushes toward the extremes it was told to see.
+    assert binarized[0] < 0.05 and binarized[1] > 0.95
+    # The fractional path recovers the structure that is actually there.
+    assert preserved[0] == pytest.approx(0.2, abs=0.02)
+    assert preserved[1] == pytest.approx(0.8, abs=0.02)
+
+
+def test_smoothing_still_shrinks_hard_when_there_is_almost_no_data():
+    """Platt smoothing is retained, not bypassed: on a two-row sample the
+    effective class mass is ~1, so labels are pulled well toward the middle.
+    That is the smoothing working, not the fractional structure being lost."""
+    scores = np.array([-1.0, 1.0])
+    preserved = apply_calibration(
+        calibrate_fractional(scores, np.array([0.2, 0.8])), scores
+    )
+
+    assert 0.2 < preserved[0] < 0.5
+    assert 0.5 < preserved[1] < 0.8
+
+
+def test_calibrate_fractional_reduces_exactly_to_platt_on_binary_labels():
+    """The generalisation must not change behaviour where Platt was already
+    right, or swapping it in would silently move every yardstick number."""
+    rng = np.random.default_rng(3)
+    scores = rng.normal(size=200)
+    labels = (rng.random(200) < 0.4).astype(float)
+    weights = rng.uniform(0.5, 1.5, 200)
+
+    assert calibrate_fractional(scores, labels, weights=weights) == pytest.approx(
+        platt_calibrate(scores, labels, weights=weights)
+    )
+
+
+def test_calibrate_fractional_beats_binarising_against_fractional_labels():
+    """The reason this matters: on realistic fractional targets the binarising
+    path is worse by far more than the contrasts this tooling reports."""
+    rng = np.random.default_rng(7)
+    n = 2000
+    y = np.clip(rng.beta(2.2, 2.2, n), 0.0, 1.0)
+    scores = (y - 0.5) * 4 + rng.normal(0, 1.2, n)
+    train, test = np.arange(n) < n // 2, np.arange(n) >= n // 2
+
+    binarized = apply_calibration(platt_calibrate(scores[train], y[train]), scores[test])
+    preserved = apply_calibration(calibrate_fractional(scores[train], y[train]), scores[test])
+
+    assert weighted_log_loss(preserved, y[test]) < weighted_log_loss(binarized, y[test])
+
+
+def test_calibrate_fractional_keeps_labels_inside_the_open_unit_interval():
+    """Smoothing still has to happen -- a label of exactly 0 or 1 fed to IRLS
+    with near-zero regularisation drives the fit to a degenerate extreme."""
+    scores = np.array([-2.0, 0.0, 2.0])
+    beta = calibrate_fractional(scores, np.array([0.0, 0.5, 1.0]))
+    probs = apply_calibration(beta, scores)
+
+    assert np.all(probs > 0.0) and np.all(probs < 1.0)

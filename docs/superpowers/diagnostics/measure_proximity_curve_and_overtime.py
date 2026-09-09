@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _bootstrap import boot_rate
 from sqlalchemy import text
 from app.db import SessionLocal
+from app.scoring.impact import _check_for_resurrection
 db = SessionLocal(); PRE, POST = 30.0, 15.0
 
 rounds = {r["id"]: dict(r) for r in db.execute(text("""
@@ -40,15 +41,23 @@ for rid, ks in kills.items():
     if r["planted"] and r["outcome"] and "Time Win" in r["outcome"]: continue
     pt = r["plant_time"] if r["planted"] else None
     a=atk(r["round_number"]); alive={"TEAM_1":5,"TEAM_2":5}
-    for k in ks:
+    # REPLAY POLICY -- mirrors app/scoring/impact.py. Two divergences used
+    # to live here: a self-kill was skipped BEFORE the alive counts moved
+    # (so a teamkill then an enemy kill read 5v5 where the scorer had
+    # 5v4), and resurrections were decremented (the scorer does not).
+    # Measured: 4.31% of rounds contain a self-kill, 12.66% a
+    # resurrection, 15.06% at least one -- and once a round diverges every
+    # later kill in it is filed under the wrong state.
+    for idx,k in enumerate(ks):
         kid,vid=k["killer_match_player_id"],k["death_match_player_id"]
         if not kid or not vid or kid not in mp or vid not in mp: continue
         kt,vt=mp[kid]["team"],mp[vid]["team"]
-        if kt==vt: continue
-        recs.append({"mid":r["match_id"],"ot":r["round_number"]>24,"state":(alive[kt],alive[vt]),
-            "dt":(k["event_time_seconds"]-pt) if pt is not None else None,
-            "def_kill": kt!=a, "won": kt==w})
-        if alive[vt]>0: alive[vt]-=1
+        if kt!=vt:
+            recs.append({"mid":r["match_id"],"ot":r["round_number"]>24,"state":(alive[kt],alive[vt]),
+                "dt":(k["event_time_seconds"]-pt) if pt is not None else None,
+                "def_kill": kt!=a, "won": kt==w})
+        if not _check_for_resurrection(idx, ks):
+            if alive[vt]>0: alive[vt]-=1
 
 print("="*104)
 print("(1) PLANT-PROXIMITY CURVE, full 3,124 matches, match-level bootstrap 95% CI")

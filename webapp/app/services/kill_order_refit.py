@@ -35,7 +35,7 @@ from app.services.kill_order_leverage import COMPONENTS, PARAMS, shipped_graph
 from app.services.stats_math import (
     apply_calibration,
     fit_logistic,
-    platt_calibrate,
+    calibrate_fractional,
     predict_proba,
     standardize,
     weighted_log_loss,
@@ -272,14 +272,35 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
     # weighting is a stated, contained simplification rather than a silent
     # one -- a genuinely held-out WPA claim would need the same per-fold
     # refit discipline everything else in this module already has.
-    context = _wpa_context(observations) if config.name == "WPA" else None
-    aligned = align_target(leverage_rows, observations, config, context=context)
+    # The fold PARTITION is built from an all-data alignment, because the row
+    # set has to be stable across folds for the masks to mean anything.
+    #
+    # For WPA that alignment needs SOME context to build rows at all, so it
+    # gets the all-data one -- but its TARGET VALUES are then discarded: every
+    # read of y/weights inside the fold loop goes through `aligned_fold`,
+    # re-derived below from a value model fitted on that fold's training
+    # matches only. The all-data object survives purely as row geometry
+    # (leverage, damage, controls, ids), none of which depends on the value
+    # model.
+    aligned = align_target(
+        leverage_rows, observations, config,
+        context=_wpa_context(observations) if config.name == "WPA" else None,
+    )
     folds = stable_folds(aligned.match_ids, n_folds=n_folds, seed=seed)
     fold_of = np.array([folds[int(m)] for m in aligned.match_ids])
+    observations_by_match: dict = {}
+    if config.name == "WPA":
+        for o in observations:
+            observations_by_match.setdefault(o.match_id, []).append(o)
 
     results = {name: CandidateResult(name=name) for name in candidates}
     collected = {name: [] for name in candidates}
     row_order: list[np.ndarray] = []
+    # Under WPA cross-fitting each fold has its OWN target values, so the
+    # pooled OOF labels must be collected per fold rather than sliced out of a
+    # single all-data alignment.
+    oof_y_parts: list[np.ndarray] = []
+    oof_w_parts: list[np.ndarray] = []
 
     for fold in range(n_folds):
         test_mask = fold_of == fold
@@ -290,6 +311,27 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
         train_match_ids = tuple(sorted(set(aligned.match_ids[train_mask].tolist())))
         test_match_ids = tuple(sorted(set(aligned.match_ids[test_mask].tolist())))
 
+        # WPA's value model is CROSS-FITTED. Fitting it once on every
+        # observation and reusing it in each fold let held-out outcomes shape
+        # the training weights and the fitted graphs -- and those graphs feed
+        # target_agreement, which gates Verdict B, so the "descriptive
+        # simplification" was not contained after all. Re-derive the target
+        # from a model fitted on this fold's TRAINING matches only; the row
+        # order is unchanged, so the masks computed above still apply.
+        aligned_fold = aligned
+        if config.name == "WPA":
+            train_obs = [
+                o for mid in train_match_ids for o in observations_by_match.get(mid, ())
+            ]
+            aligned_fold = align_target(
+                leverage_rows, observations, config, context=_wpa_context(train_obs),
+            )
+            if not np.array_equal(aligned_fold.match_ids, aligned.match_ids):
+                raise ValueError(
+                    "WPA re-alignment changed the row set; the fold masks would "
+                    "no longer line up"
+                )
+
         # EVERYTHING below is training-fold only.
         train_rounds = {int(r) for r in aligned.round_ids[train_mask] if r >= 0}
         visits = [v for v in (state_visits or []) if v.match_id in set(train_match_ids)]
@@ -298,20 +340,24 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
         )
         exposure = np.abs(aligned.leverage[train_mask]).sum(axis=0)
 
+        # Target values come from THIS fold's alignment (identical to the
+        # all-data one except under WPA, where it is cross-fitted above).
         train = (aligned.leverage[train_mask], aligned.damage[train_mask],
-                 aligned.y[train_mask], aligned.weights[train_mask])
+                 aligned_fold.y[train_mask], aligned_fold.weights[train_mask])
         test = (aligned.leverage[test_mask], aligned.damage[test_mask],
-                aligned.weights[test_mask])
+                aligned_fold.weights[test_mask])
         train_on_train = (aligned.leverage[train_mask], aligned.damage[train_mask],
-                          aligned.weights[train_mask])
+                          aligned_fold.weights[train_mask])
         outer_controls = (aligned.controls[train_mask], aligned.controls[test_mask])
         self_controls = (aligned.controls[train_mask], aligned.controls[train_mask])
 
         row_order.append(np.flatnonzero(test_mask))
+        oof_y_parts.append(aligned_fold.y[test_mask])
+        oof_w_parts.append(aligned_fold.weights[test_mask])
 
         for name in candidates:
             if family == "A":
-                l2 = _select_l2(name, aligned, train_mask, l2_grid, state_visits or [],
+                l2 = _select_l2(name, aligned_fold, train_mask, l2_grid, state_visits or [],
                                 leverage_rows)
                 candidate = fit_family_a(name, train, test, table, l2, exposure,
                                          shipped_graph(), controls=outer_controls)
@@ -326,21 +372,25 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
                 train_rows = [aligned.team_rows[i] for i in np.flatnonzero(train_mask)]
                 test_rows = [aligned.team_rows[i] for i in np.flatnonzero(test_mask)]
                 candidate = fit_family_b(
-                    name, (train_rows, aligned.y[train_mask], aligned.weights[train_mask]),
-                    (test_rows, aligned.weights[test_mask]), shipped_graph(), l2,
+                    name, (train_rows, aligned_fold.y[train_mask], aligned_fold.weights[train_mask]),
+                    (test_rows, aligned_fold.weights[test_mask]), shipped_graph(), l2,
                     controls=outer_controls, exposure=exposure,
                 )
                 in_fold = fit_family_b(
-                    name, (train_rows, aligned.y[train_mask], aligned.weights[train_mask]),
-                    (train_rows, aligned.weights[train_mask]), shipped_graph(), l2,
+                    name, (train_rows, aligned_fold.y[train_mask], aligned_fold.weights[train_mask]),
+                    (train_rows, aligned_fold.weights[train_mask]), shipped_graph(), l2,
                     controls=self_controls, exposure=exposure,
                 )
                 _, column_names = family_b_columns(train_rows[:1], shipped_graph(), name)
                 weights = candidate.weights
                 surfaces = effective_surfaces(candidate.weights, column_names, shipped_graph())
 
-            calibration = platt_calibrate(in_fold.scores, aligned.y[train_mask],
-                                          weights=aligned.weights[train_mask])
+            # T2's targets are FRACTIONAL. platt_calibrate would threshold
+            # them at 0.5, which changes the estimand the loss below is then
+            # evaluated against (correlation spec: rounding T2 "would change
+            # the estimand and discard the observation weights").
+            calibration = calibrate_fractional(in_fold.scores, aligned_fold.y[train_mask],
+                                               weights=aligned_fold.weights[train_mask])
             probabilities = apply_calibration(calibration, candidate.scores)
 
             results[name].per_fold[fold] = FoldFit(
@@ -358,8 +408,8 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
         probabilities = np.concatenate([p for _, p in collected[name]])
         results[name].oof_scores = scores
         results[name].oof_probabilities = probabilities
-        results[name].oof_y = aligned.y[order]
-        results[name].oof_weights = aligned.weights[order]
+        results[name].oof_y = np.concatenate(oof_y_parts)
+        results[name].oof_weights = np.concatenate(oof_w_parts)
         results[name].oof_match_ids = aligned.match_ids[order]
         results[name].oof_row_ids = order
     return results
@@ -416,9 +466,15 @@ def _select_l2(name, aligned, train_mask, l2_grid, state_visits, leverage_rows,
             # Rebuilt from the INNER training matches only.
             inner_match_ids = set(train_matches[inner_train].tolist())
             inner_visits = [v for m in inner_match_ids for v in visits_by_match.get(m, [])]
+            # _table_from_rows filters on ROUND ids; handing it match ids
+            # matched nothing, so the fallback table it built was empty of
+            # visits rather than "derived from the inner training rows".
+            inner_rounds = {
+                int(r) for r in aligned.round_ids[train_mask][inner_train] if r >= 0
+            }
             inner_table = (
                 estimate_swing_table(inner_visits) if inner_visits
-                else _table_from_rows(leverage_rows, inner_match_ids)
+                else _table_from_rows(leverage_rows, inner_rounds)
             )
             inner_exposure = np.abs(aligned.leverage[train_mask][inner_train]).sum(axis=0)
 
@@ -440,7 +496,7 @@ def _select_l2(name, aligned, train_mask, l2_grid, state_visits, leverage_rows,
                                       controls=self_controls)
             except ValueError:
                 continue  # an inner split with an undetermined state: skip, never impute
-            calibration = platt_calibrate(fitted.scores, sub_train[2], weights=sub_train[3])
+            calibration = calibrate_fractional(fitted.scores, sub_train[2], weights=sub_train[3])
             probabilities = apply_calibration(calibration, candidate.scores)
             losses.append(_weighted_loss(probabilities, aligned.y[train_mask][inner_test],
                                          aligned.weights[train_mask][inner_test]))
@@ -497,7 +553,7 @@ def _select_l2_b(name, aligned, train_mask, l2_grid, inner_folds=3, seed=1):
                 )
             except ValueError:
                 continue  # an inner split with an undetermined state: skip, never impute
-            calibration = platt_calibrate(fitted.scores, sub_y_train, weights=sub_w_train)
+            calibration = calibrate_fractional(fitted.scores, sub_y_train, weights=sub_w_train)
             probabilities = apply_calibration(calibration, candidate.scores)
             losses.append(_weighted_loss(probabilities, aligned.y[train_mask][inner_test],
                                          aligned.weights[train_mask][inner_test]))
@@ -1081,6 +1137,7 @@ def player_level_report(player_rows, match_outcomes, graph, surfaces=None,
     won = np.array([e["won"] for e in per_match.values()], dtype=int)
     keys = list(per_match)
     players = np.array([k[0] for k in keys])
+    match_of_row = np.array([k[1] for k in keys])
     groups: dict[int, list] = {}
     for index, (_player, match_id) in enumerate(keys):
         groups.setdefault(int(match_id), []).append(index)
@@ -1096,7 +1153,12 @@ def player_level_report(player_rows, match_outcomes, graph, surfaces=None,
         eligible = 0
         for player in np.unique(players[rows]):
             mine = rows[players[rows] == player]
-            if len(mine) < min_matches:
+            # DISTINCT matches, not drawn rows. A match-clustered bootstrap
+            # can draw the same match repeatedly, and counting rows lets those
+            # duplicates promote a player across the min_matches threshold --
+            # at which point their terciles are computed over copies of one
+            # match rather than over a real spread.
+            if len(np.unique(match_of_row[mine])) < min_matches:
                 continue
             eligible += 1
             buckets = tercile_buckets(values[mine])
@@ -1184,10 +1246,17 @@ class RunIdentity:
     dataset_fingerprint: str
     fold_mapping_hash: str
     calculation_version: str
+    # A content digest of the source rows. The fingerprint hashes match IDs
+    # only, so an EDIT -- a corrected kill time, loadout or round winner --
+    # leaves it identical and two different snapshots compare as the same
+    # data. Defaulted so existing callers keep working; "" means "not
+    # recorded", and two unrecorded runs are still refused a comparison
+    # claim only when one side recorded it and the other did not.
+    source_revision: str = ""
 
 
 def matrix_is_comparable(left: RunIdentity, right: RunIdentity):
-    """Stage A and Stage C rows may share a matrix ONLY if all three match.
+    """Stage A and Stage C rows may share a matrix ONLY if all four match.
 
     The fold-mapping hash is not redundant with the fingerprint: the parent
     project's committed results used the permutation-based assign_folds, so
@@ -1197,7 +1266,8 @@ def matrix_is_comparable(left: RunIdentity, right: RunIdentity):
     """
     reasons = [
         f"{field} differs: {getattr(left, field)!r} != {getattr(right, field)!r}"
-        for field in ("dataset_fingerprint", "fold_mapping_hash", "calculation_version")
+        for field in ("dataset_fingerprint", "fold_mapping_hash", "calculation_version",
+                      "source_revision")
         if getattr(left, field) != getattr(right, field)
     ]
     return (not reasons), reasons
@@ -1237,7 +1307,7 @@ def paired_delta(result_a, result_b, alpha=0.05, draws=500, seed=0) -> dict:
 
 def verdict_report(primaries, deployable, practically_equivalent, targets_agree,
                    max_component_correlation, econ_negative_every_fold,
-                   beats_kill_diff_t1, stability) -> dict:
+                   beats_kill_diff_t1, stability, stage_c0=None) -> dict:
     """Four verdicts, printed side by side and never summarized into one.
 
     A Verdict A1 null alongside a Verdict C signal is a coherent and
@@ -1253,19 +1323,63 @@ def verdict_report(primaries, deployable, practically_equivalent, targets_agree,
         if not deployable.get(candidate, True):
             notes["A1"].append(f"{name}: {candidate} is not deployable and cannot clear the bar")
             continue
-        if not stability.get(candidate, {}).get("stable", False):
+        candidate_stability = stability.get(candidate, {})
+        # BOTH are required, and eligibility is checked first because it says
+        # whether the stability figure is admissible at all. stability_report
+        # returns gate_eligible=False when it had no refit callback and fell
+        # back to resampling the five outer-fold graphs -- any two of which
+        # share 3/5 of their matches -- and its own docstring says "the
+        # verdict must not consume it". Checking only `stable` let exactly
+        # that descriptive figure authorise a success claim.
+        #
+        # Absent is treated as ineligible, not as fine: the fail-open reading
+        # is what made this silent.
+        if not candidate_stability.get("gate_eligible", False):
+            notes["A1"].append(
+                f"{name}: {candidate}'s stability result is not gate-eligible "
+                f"(no match-clustered refit supplied), so this criterion is "
+                f"UNEVALUATED and cannot clear the bar"
+            )
+            continue
+        if not candidate_stability.get("stable", False):
             notes["A1"].append(f"{name}: {candidate} did not pass the stability criterion")
             continue
         if entry["ci"][1] < 0:
             cleared.append(name)
 
+    # An input of None means UNMEASURED, and an unmeasured item can never be
+    # satisfied. "A verdict computed from a hardcoded input is worse than no
+    # verdict" is already this module's stated rule; None is how a caller says
+    # it could not compute the thing honestly, rather than passing a stand-in
+    # that reads as a real measurement.
+    def _item(value, label, verdict_key):
+        if value is None:
+            notes[verdict_key].append(f"{label}: UNMEASURED, so this item cannot be satisfied")
+            return False
+        return bool(value)
+
+    # Practical equivalence is judged on the candidate that actually CLEARED a
+    # primary, using both declared bounds, whenever the Stage C0 report is
+    # available to supply the score-deviation half. Falling back to the
+    # caller's value keeps existing callers working.
+    equivalence = (
+        _practically_equivalent_for_candidate(primaries, stage_c0, cleared)
+        if stage_c0 is not None else practically_equivalent
+    )
+
     items = {
         1: bool(cleared),
-        2: not practically_equivalent,
-        3: targets_agree,
-        4: max_component_correlation < COLLINEARITY_THRESHOLD,
-        5: not econ_negative_every_fold,
-        6: beats_kill_diff_t1,
+        2: _item(None if equivalence is None else not equivalence,
+                 "practical equivalence", "A1"),
+        3: _item(targets_agree, "target agreement", "B"),
+        4: _item(
+            None if max_component_correlation is None
+            else max_component_correlation < COLLINEARITY_THRESHOLD,
+            "component correlation", "B",
+        ),
+        5: _item(None if econ_negative_every_fold is None else not econ_negative_every_fold,
+                 "econ sign", "B"),
+        6: _item(beats_kill_diff_t1, "beats kill_diff on T1", "A2"),
         7: primaries["P3"]["ci"][1] < 0,
     }
 
@@ -1300,13 +1414,19 @@ def verdict_report(primaries, deployable, practically_equivalent, targets_agree,
         # beats_kill_diff_t1=False as constants, and this is the record
         # that would have caught it.
         "inputs": {
-            "practically_equivalent": practically_equivalent,
+            "practically_equivalent": equivalence,
             "targets_agree": targets_agree,
             "max_component_correlation": max_component_correlation,
             "econ_negative_every_fold": econ_negative_every_fold,
             "beats_kill_diff_t1": beats_kill_diff_t1,
             "source": {
-                "practically_equivalent": "stage_c0_report (current_vs_swing_plugin round-level sd ratio)",
+                "practically_equivalent": (
+                    "cleared candidate's paired loss CI within +/-"
+                    f"{PRACTICAL_EQUIVALENCE_LOSS} AND stage_c0 round-level sd ratio below "
+                    f"{PRACTICAL_EQUIVALENCE_RMS}"
+                    if stage_c0 is not None else
+                    "caller-supplied (stage_c0 not passed; NOT candidate-specific)"
+                ),
                 "targets_agree": "target_agreement",
                 "max_component_correlation": "component_correlations",
                 "econ_negative_every_fold": "Stage A's own coefficient diagnostics (a prior finding this stage does not re-derive: Stage C fits the kill-order graph, not the outer FACTOR_WEIGHTS econ collapsed under)",
@@ -1470,24 +1590,39 @@ def yardstick_matrix(team_rows, observations, results, draws=200, seed=0,
     per_fold_candidates: dict[str, dict[int, Candidate]] = {}
     folds_source: dict = {}
     for name, result in results.items():
-        field = f"_stage_c_score_{name}"
-        for clone in clones:
-            setattr(clone, field, 0.0)  # default for rounds no fold ever scores
-
         per_fold_candidates[name] = {}
         for fold_index, fitted in result.per_fold.items():
             if fitted.graph is None:
                 continue
             if not folds_source:
                 folds_source = result.per_fold
-            test_ids = set(fitted.test_match_ids)
+
+            # ONE FIELD PER FOLD, populated for EVERY round from THAT fold's
+            # graph -- training rows included.
+            #
+            # A single shared field per candidate, written only where each
+            # round was held out, leaks. The parent evaluator calibrates fold
+            # k on fold k's TRAINING observations, and under a shared field
+            # those carry scores produced by other folds' graphs -- graphs
+            # fitted on data that includes fold k's test matches. The
+            # calibration then encodes information about the rows it is about
+            # to score.
+            #
+            # Test rows are unchanged by this: fold k's test rounds are still
+            # scored with fold k's graph, exactly as before, so the pooled
+            # raw-score AUC is untouched. Only the calibration inputs -- and
+            # therefore the reported log loss -- move.
+            field = f"_stage_c_score_{name}_fold{fold_index}"
+            for clone in clones:
+                setattr(clone, field, 0.0)  # rounds with no leverage row
             for rid, row in by_round.items():
-                if row.match_id not in test_ids or rid not in index_of:
+                if rid not in index_of:
                     continue
                 lev = per_round[index_of[rid]]
                 score = float(row.damage_diff + lev @ fitted.graph)
                 for clone in clones_by_round.get(rid, ()):
                     setattr(clone, field, score)
+
             per_fold_candidates[name][fold_index] = Candidate(
                 name=name, feature_names=[field], weights=[1.0],
             )
@@ -1631,7 +1766,8 @@ def _weighted_leverage(team_rows, component_weights) -> np.ndarray:
 
 
 def fallback_sensitivity(team_rows, observations, config, l2_grid,
-                         candidates=("swing_basis", "pooled"), n_folds=5, seed=0) -> dict:
+                         candidates=("swing_basis", "pooled"), n_folds=5, seed=0,
+                         state_visits=None) -> dict:
     """Drops every round where a kill touched the FALLBACK parameter and
     re-runs the same candidates. A shift here is a data-quality finding
     about the resurrection heuristic (497 rounds, measured, in the full
@@ -1652,11 +1788,24 @@ def fallback_sensitivity(team_rows, observations, config, l2_grid,
     filtered_obs = [o for o in observations if o.round_id not in affected]
 
     exposure = np.abs(family_a_leverage(team_rows)).sum(axis=0)
+
+    # Both runs need the REAL state visits. Without them run_nested_cv falls
+    # back to _table_from_rows, which hardcodes every state's swing to 0.2 --
+    # a fixture table, by its own docstring. Fitting both arms against a
+    # constant table means the reported difference does not isolate the
+    # removal of fallback rounds; it compares two runs that never estimated a
+    # swing table at all. The dropped arm filters visits by the SAME affected
+    # round set, so the two arms differ only in those rounds.
+    visits = list(state_visits or [])
+    filtered_visits = [v for v in visits if v.round_id not in affected]
+
     full = run_nested_cv(team_rows, observations, config, candidates=list(candidates),
-                         l2_grid=l2_grid, n_folds=n_folds, seed=seed)
+                         l2_grid=l2_grid, n_folds=n_folds, seed=seed,
+                         state_visits=visits or None)
     dropped = (
         run_nested_cv(filtered_rows, filtered_obs, config, candidates=list(candidates),
-                     l2_grid=l2_grid, n_folds=n_folds, seed=seed)
+                     l2_grid=l2_grid, n_folds=n_folds, seed=seed,
+                     state_visits=filtered_visits or None)
         if filtered_rows else {}
     )
 
@@ -1787,18 +1936,54 @@ def alternation_sensitivity(team_rows, observations, config, name="swing_basis",
 
 
 def _practically_equivalent_stage_c0(stage_c0: dict) -> bool:
-    """PRACTICAL_EQUIVALENCE_RMS is 1% of the score sd: reuses Stage C0's
-    own current-vs-swing-plugin comparison, since sd(difference) vs
-    sd(reference) is exactly that measurement, already in the report."""
+    """The SCORE-DEVIATION half of practical equivalence, measured on Stage
+    C0's current-vs-swing-plugin comparison: sd(difference) vs sd(reference)
+    is exactly the RMS-share quantity.
+
+    This is only half the criterion, and it is measured on the PRELIMINARY
+    PLUGIN rather than on a fitted candidate -- see
+    _practically_equivalent_for_candidate, which is what the verdict reads.
+    """
     round_level = stage_c0["current_vs_swing_plugin"]["round_level"]
     if round_level["sd_reference"] == 0:
         return False
     return (round_level["sd_difference"] / round_level["sd_reference"]) < PRACTICAL_EQUIVALENCE_RMS
 
 
+def _practically_equivalent_for_candidate(primaries, stage_c0, cleared) -> bool | None:
+    """Practical equivalence for the candidate that actually cleared a
+    primary, using BOTH declared bounds.
+
+    The spec requires the loss bound AND the score-deviation bound,
+    recomputed for fitted candidates. Reading only Stage C0's plugin SD ratio
+    could reject a meaningful refit because the preliminary plugin barely
+    moved, or clear this item because the plugin moved while the fitted
+    candidate did not -- it was answering a question about a different
+    object.
+
+    Equivalent means "indistinguishable from the shipped score": the paired
+    loss interval must lie INSIDE +/-PRACTICAL_EQUIVALENCE_LOSS, and the
+    score deviation must be under PRACTICAL_EQUIVALENCE_RMS. Returns None --
+    unmeasured -- when no primary cleared, since there is then no fitted
+    candidate whose equivalence could be assessed.
+    """
+    if not cleared:
+        return None
+    loss_within = []
+    for name in cleared:
+        ci = primaries[name]["ci"]
+        loss_within.append(
+            abs(ci[0]) <= PRACTICAL_EQUIVALENCE_LOSS and abs(ci[1]) <= PRACTICAL_EQUIVALENCE_LOSS
+        )
+    if not loss_within:
+        return None
+    # Both bounds must hold for the candidate to count as merely equivalent.
+    return all(loss_within) and _practically_equivalent_stage_c0(stage_c0)
+
+
 def build_full_report(leverage_rows, observations, player_rows=None, state_visits=None,
                       draws=200, l2_grid=None, n_folds=5, seed=0,
-                      outer_weights_by_target=None, econ_negative_every_fold=True) -> dict:
+                      outer_weights_by_target=None, econ_negative_every_fold=None) -> dict:
     """Assembles the complete Stage C report: every REPORT_SECTIONS entry
     populated, all four primaries, all four verdicts computed from real
     inputs -- never a hardcoded placeholder. The CLI becomes argument
@@ -1807,10 +1992,14 @@ def build_full_report(leverage_rows, observations, player_rows=None, state_visit
     `econ_negative_every_fold` is the one verdict input this stage cannot
     derive on its own: it is a STAGE A finding (the outer FACTOR_WEIGHTS
     econ coefficient was negative in every fold), not something a
-    kill-order-graph refit independently measures, since Stage C never
-    fits per-component outer weights at all. Defaults to that already-
-    established prior finding rather than an invented constant; a caller
-    with a fresh Stage A run should pass the real value.
+    kill-order-graph refit independently measures, since Stage C never fits
+    per-component outer weights at all.
+
+    It defaults to None -- UNMEASURED -- rather than to the historical True.
+    Defaulting to the prior finding meant the CLI, which passes nothing,
+    silently asserted a stale measurement as though this run had re-derived
+    it, and made verdict item 5 necessarily false. A caller with a fresh
+    Stage A run should pass the real value.
 
     `outer_weights_by_target`, if given, feeds outer_weight_sensitivity
     with each target's Stage A weighting ({label: (w_econ, w_time,
@@ -1830,7 +2019,12 @@ def build_full_report(leverage_rows, observations, player_rows=None, state_visit
     report: dict = {section: None for section in REPORT_SECTIONS}
 
     match_ids = sorted({row.match_id for row in leverage_rows})
-    folds = stable_folds(match_ids)
+    # The identity must describe the splits this run ACTUALLY used. Hashing
+    # stable_folds(match_ids) at its defaults recorded a different partition
+    # whenever the caller passed a non-default seed or n_folds, so two runs
+    # with genuinely different folds could carry the same fold_mapping_hash
+    # and be joined as comparable.
+    folds = stable_folds(match_ids, n_folds=n_folds, seed=seed)
     identity = RunIdentity(
         dataset_fingerprint=dataset_fingerprint(match_ids),
         fold_mapping_hash=fold_mapping_hash(folds),
@@ -1896,9 +2090,6 @@ def build_full_report(leverage_rows, observations, player_rows=None, state_visit
         for name, result in all_results.items() if name != "current_graph"
     }
 
-    report["yardstick_matrix"] = yardstick_matrix(
-        leverage_rows, observations, family_a_results, draws=draws, identity=identity,
-    )
 
     report["deferral_check"] = {
         "matches": len(match_ids), "reopen_threshold": 4000,
@@ -1925,7 +2116,56 @@ def build_full_report(leverage_rows, observations, player_rows=None, state_visit
                             "rms_share_below": AGREEMENT_RMS_SHARE}}
     )
 
-    correlations = component_correlations(leverage_rows, shipped_graph())
+    # Verdict B asks whether the correlations remain problematic UNDER THE
+    # REFIT. Computing them from shipped_graph() answers a different question
+    # and lets B stay negative even when a refit resolves the collinearity it
+    # is complaining about. The shipped figure is kept alongside for
+    # reference, but the verdict now reads the refitted one.
+    # THE MATRIX GETS EVERY FAMILY, target-qualified.
+    #
+    # It previously received only T2's Family A, so Family B's fitted scores
+    # were absent and the T1/WPA fits were flattened into mean graphs for the
+    # agreement check and never emitted rows at all -- which is why the
+    # "complete" report could not show the common-yardstick comparison its own
+    # spec asks for. Names are suffixed so the families cannot collide.
+    matrix_results = dict(family_a_results)
+    matrix_results.update({f"{name}#familyB": r for name, r in family_b_results.items()})
+    for label, results_by_name in all_targets.items():
+        if label == "T2":
+            continue  # already present, unqualified, as Family A
+        for name, result in results_by_name.items():
+            matrix_results[f"{name}@{label}"] = result
+
+    report["yardstick_matrix"] = yardstick_matrix(
+        leverage_rows, observations, matrix_results, draws=draws, identity=identity,
+    )
+    # No Stage A report is produced anywhere in this repo, so the join hook
+    # has nothing to join. Say so, rather than rendering an empty section that
+    # reads as "compared, found nothing".
+    report["yardstick_matrix"]["stage_a_join"] = {
+        "joined": False,
+        "note": (
+            "UNAVAILABLE, not empty: no Stage A report was supplied to this run, "
+            "so the Stage A rows of the candidate-by-target matrix could not be "
+            "populated. Pass stage_a_rows and a matching stage_a_identity to "
+            "yardstick_matrix to join them."
+        ),
+    }
+
+    correlations_shipped = component_correlations(leverage_rows, shipped_graph())
+    primary_candidate = PRIMARY_COMPARISONS[0]["candidate"]
+    refit_graphs = [
+        f.graph
+        for f in all_results[primary_candidate].per_fold.values()
+        if f.graph is not None
+    ] if primary_candidate in all_results else []
+    if refit_graphs:
+        correlations = component_correlations(leverage_rows, np.mean(refit_graphs, axis=0))
+        correlations["basis"] = f"refit mean graph ({primary_candidate})"
+    else:
+        correlations = dict(correlations_shipped)
+        correlations["basis"] = "shipped graph (no refit graph available)"
+    correlations["shipped_for_reference"] = correlations_shipped
 
     primaries = {
         spec["name"]: paired_delta(all_results[spec["candidate"]], all_results[spec["against"]],
@@ -1934,14 +2174,36 @@ def build_full_report(leverage_rows, observations, player_rows=None, state_visit
         if spec["candidate"] in all_results and spec["against"] in all_results
     }
 
+    # A2 asks whether a candidate beats kill differential on the match-outcome
+    # yardstick, and the spec wants that judged with an INTERVAL and on the
+    # FITTED candidates -- not as "any positive point estimate for
+    # current_graph". A +0.0001 point with an interval crossing zero used to
+    # pass, and a fitted candidate with a clearly positive interval was never
+    # consulted. The paired match-clustered gap_ci was already being computed
+    # and simply discarded.
     first_half_cell = (report["yardstick_matrix"]["cells"] or {}).get("first_half_to_match", {})
-    current_graph_cell = first_half_cell.get("current_graph") or {}
-    beats_kill_diff_t1 = bool((current_graph_cell.get("gap_over_kill_diff") or 0.0) > 0)
+    deployable_by_name = {
+        n: all(f.deployable for f in r.per_fold.values()) for n, r in all_results.items()
+    }
+    fitted_gaps = {
+        name: cell for name, cell in first_half_cell.items()
+        if name in all_results and deployable_by_name.get(name, False)
+        and isinstance(cell, dict) and cell.get("gap_ci")
+    }
+    if fitted_gaps:
+        beats_kill_diff_t1 = any(
+            (cell["gap_ci"][0] or 0.0) > 0 for cell in fitted_gaps.values()
+        )
+    else:
+        # No eligible fitted candidate carries an interval, so this is
+        # UNMEASURED rather than false-or-true by default.
+        beats_kill_diff_t1 = None
 
     report["verdicts"] = verdict_report(
         primaries=primaries,
         deployable={n: all(f.deployable for f in r.per_fold.values()) for n, r in all_results.items()},
         practically_equivalent=_practically_equivalent_stage_c0(report["stage_c0"]),
+        stage_c0=report["stage_c0"],
         targets_agree=agreement["agree"],
         max_component_correlation=correlations["max_abs"],
         econ_negative_every_fold=econ_negative_every_fold,
@@ -1956,6 +2218,7 @@ def build_full_report(leverage_rows, observations, player_rows=None, state_visit
     try:
         sensitivities["fallback"] = fallback_sensitivity(
             leverage_rows, observations, PRIMARY_T2, l2_grid, n_folds=n_folds, seed=seed,
+            state_visits=state_visits,
         )
     except Exception as exc:  # noqa: BLE001 -- reported, not swallowed
         sensitivities["fallback"] = {"error": f"{type(exc).__name__}: {exc}"}
