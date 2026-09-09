@@ -9,11 +9,25 @@ empirical` in `app/scoring/impact.py`'s `_time_factor` (off by default; no
 change to any currently scored match). See
 `docs/superpowers/specs/2026-09-03-plant-window-and-time-factor-design.md`,
 Part 3's "DECIDED 2026-09-08" section for the formal record -- it supersedes
-that spec's original model-based parameterisation. What is still open before
+that spec's original model-based parameterisation. ~~What is still open before
 this can be activated (flag flipped, `IMPACT_CALCULATION_VERSION` bumped):
 the kill-side centering gate (below, "uncentered") has not been run at
-strength=3.0, and the boundary discontinuity at dt=30 is unresolved. The
-original status note, for context, follows unchanged:
+strength=3.0, and the boundary discontinuity at dt=30 is unresolved.~~
+
+**UPDATE 2026-09-09: both of those are now closed.** The kill-side gate has
+been run at strength=3.0 -- **`c = 0.900537`**, abs(`c`-1) = 0.099463, with a
+**+0.4114%** death-side residual, inside its predeclared 2% tolerance -- and
+the dt=30 boundary has been decided: **the jump is kept**, deliberately, with
+its size quantified. See the time spec's "2026-09-09: the centring gate, run
+against the shipped curve" for the full record, and
+`2026-09-07-predeclared-values.md`'s amendment of the same date for the
+figures. **Still off:** `enable_preplant_empirical` remains `False` and
+`IMPACT_CALCULATION_VERSION` remains 1. What is left before activation is
+predictive validation, which cannot reuse the five-arm harness (that harness
+runs `use_realized_swing=False`, where this curve returns exactly 1.0, so an
+arm there would be degenerate rather than weak).
+
+The original status note, for context, follows unchanged:
 
 Status: implemented as an additive candidate. No changes to the live scoring
 path, calculation version, stored scores, or existing spec requirements. This
@@ -144,6 +158,15 @@ the old shape-times-amplitude reconstruction mismatch entirely.
 | 30 | 1.0440 | 0.9452 |
 | >30, pooled reference category | 1.0000 | 1.0000 |
 
+**STALE as of the 2026-09-09 replay correction; kept, not edited in place.**
+That correction refit both reference rates (attacker 0.749559 -> 0.752707,
+defender 0.378668 -> 0.377010) and every figure in the table above moved with
+them, by up to 0.006. The row the boundary decision rests on, dt=30, now
+reads **1.0414 / 0.9466** at strength=1 rather than 1.0440 / 0.9452. At the
+shipped strength=3.0 it is **1.1241 / 0.8399** before centring, and
+**1.0123 / 0.7564** after. The predeclared-values amendment of 2026-09-09
+records this alongside the other figures that correction moved.
+
 At strength=1, a base kill-order credit of 100 at dt=16 for an attacker would
 become about 106.37 in the time component. With the current equal weights for
 econ/time/swing, that increases the combined kill-credit contribution by about
@@ -156,17 +179,56 @@ multiply damage, assists, or the entire final Impact score by 1.0637.
   31 or used to infer a smooth decline after second 30. The candidate treats
   it categorically. This deliberately leaves a boundary jump: attacker 1.0440
   to 1.0000, defender 0.9452 to 1.0000. This is a modeling discontinuity, not
-  evidence of an in-game threshold. Resolve it with finer data beyond 30s or
-  an explicitly chosen transition policy before live activation.
+  evidence of an in-game threshold. ~~Resolve it with finer data beyond 30s or
+  an explicitly chosen transition policy before live activation.~~
+  **DECIDED 2026-09-09: the jump is KEPT**, as an explicit policy choice by
+  the project owner, with all four options measured first. Post-centring at
+  strength=3.0 it is attacker `1.0123 -> 1.0000` and defender
+  `0.7564 -> 1.0000`; 4.78% of affected kills sit within +/-2s of the edge.
+  The finding that decided it: because the centring constant is applied only
+  inside the scored region, centring itself creates a step of size abs(1-`c`)
+  at whichever edge that region ends -- so **a transition policy relocates the
+  jump, it does not remove it.** A raw taper to 45s merely trades the
+  asymmetric pair above for a symmetric `0.9139 -> 1.0000` at 45s. The two
+  genuinely continuous constructions were rejected on cost, not feasibility:
+  one invents linear shape over 21,455 kills (12.74% of the affected
+  population) where there is no estimate, and the other marks every far
+  pre-plant kill in a planted round down by 7.8% against never-planted rounds,
+  re-opening the exact hazard the gate exists to close. Full table in the time
+  spec.
 - Missing/invalid timestamps, dt<=0, and use_realized=False return 1 exactly.
   Never-planted/phantom rounds must pass dt=None; this leaf receives no round
   object and cannot determine phantom status itself. Post-plant scoring must
   still use its own regime.
-- The candidate is uncentered. Live activation needs per-event replay and
+- ~~The candidate is uncentered. Live activation needs per-event replay and
   contribution-weighted centering, `c = sum(K)/sum(K*factor)`, on a precisely
   declared affected population, followed by the death-side residual check.
   This must be recalculated for the chosen strength and boundary policy.
-  Bucket kill counts cannot substitute for kill-order contribution weights.
+  Bucket kill counts cannot substitute for kill-order contribution weights.~~
+  **DONE 2026-09-09**, on every count above. Solved by per-event
+  replay over the real population, using `_kill_order_bonus` and
+  `_traded_factor` -- the same functions production scoring calls -- via
+  `extract_preplant_observations_with_factors`, never bucket kill counts.
+  `solve_empirical_kill_side_centering` in `app/scoring/preplant_centering.py`;
+  reported at the head of `scripts/fit_preplant_time_factor.py`.
+
+  The population is declared precisely because `c` depends on which one is
+  used. AFFECTED is the 168,432 non-self pre-plant kills in non-phantom,
+  non-surrendered planted rounds (reproduces `M5` exactly). SCORED is the
+  130,506 with `0 < dt <= 30` -- the only kills the curve moves, 76.91% of
+  the kill-order mass. FALLBACK is the remaining 37,926, which keep exactly
+  1.0 and are not multiplied by `c`. **`c` is solved over SCORED alone**
+  (over AFFECTED it would be 0.921710), and the total kill-side contribution
+  over AFFECTED is preserved exactly either way, because the fallback kills
+  are unchanged on both sides of the equation.
+
+  Result: **`c = 0.900537`**, abs(`c`-1) = 0.099463 against a 0.05 that the
+  predeclared-values file calls a reported finding rather than an assertion.
+  Death-side residual **+0.4114%**, inside the 2% tolerance; reported, never
+  solved for. The `0.2 - 1.7` clamp turns out to be inert at this strength --
+  0 of 130,506 scored kills reach either bound -- so the realised
+  post-centring range is `[0.756372, 1.354622]` against nominal effective
+  bounds of `[0.180107, 1.530914]`.
 - Fresh match-based validation, lifecycle-consistent state reconstruction,
   and actual player/kill redistribution checks remain necessary to assess
   deployment behavior. Good fit to the saved curve does not establish those.

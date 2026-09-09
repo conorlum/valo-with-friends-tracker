@@ -462,6 +462,63 @@ could reach -- the composite against its controls -- `max |r| = 0.195`. It does
 bear on the labelled per-component diagnostic block, where coefficients are
 refit.
 
+### 2026-09-09 -- Part 3's centring constant, the death-side residual, and the dt=30 boundary decision
+
+**No governing value moved.** `c` is a fitted output, not a predeclared
+input. The 2% death-side tolerance, the 0.05 abs(`c`-1) reporting threshold and
+the `0.2 - 1.7` clamp are all unchanged, and none was tuned. Nothing was
+activated: `enable_preplant_empirical` is still `False` and
+`IMPACT_CALCULATION_VERSION` is still 1. This entry exists so the figures are
+discoverable from this file rather than only from a script's stdout.
+
+**Part 3, `preplant_empirical_factor` at strength 3.0, measured on the full
+3,124-match dataset** (local and Render return identical figures):
+
+| figure | value | against |
+|---|---|---|
+| AFFECTED population | 168,432 | reproduces `M5` exactly |
+| SCORED / FALLBACK split | **130,506 / 37,926** | 77.48% of affected by count, 76.91% by kill-order mass |
+| `c` | **0.900537** | not predeclared; solved over SCORED alone |
+| abs(`c`-1) | **0.099463** | the 0.05 row is a **reported finding, not an assertion**. This is roughly double it |
+| effective bounds | `[0.180107, 1.530914]` | `[c*0.2, c*1.7]` |
+| realised post-centring range | `[0.756372, 1.354622]` | the `0.2 - 1.7` clamp binds on **0 of 130,506** scored kills -- it is inert at this strength |
+| death-side residual | **+0.4114%** | tolerance **2%**, **WITHIN** |
+
+`c` is solved over SCORED alone, so which population is used is itself a
+recorded decision: over AFFECTED it would be 0.921710 instead.
+
+**abs(`c`-1) = 0.0995 is a finding, recorded not acted on.** The row above
+governs both centring constants and calls itself a reported finding rather
+than an assertion; Part 4's own `c` sits 0.287 from 1. Nothing was adjusted
+to bring it closer.
+
+**The death-side residual came in at +0.41%, below `M20`'s ~+0.7%
+expectation.** Part 4's finding-4 defect -- the residual measured against a
+`for_death=False` baseline -- has no analogue pre-plant, where the legacy
+factor is 1.0 for kills and deaths alike, so `mean(K*T)` already is the
+death-side baseline. That was checked, and deliberately not "fixed".
+
+**The `dt = 30` boundary jump is KEPT.** Decided by the project owner on
+2026-09-09 with all options measured. Under the chosen policy, post-centring
+at strength 3.0: attacker `1.0123 -> 1.0000`, defender `0.7564 -> 1.0000`.
+The structural reason no transition policy was adopted: because `c` applies
+only inside the scored region, centring itself creates a step of size
+abs(1-`c`) at whichever edge that region ends, so a taper relocates the jump
+rather than removing it. Full option table in the time spec, "The `dt = 30`
+boundary: the jump is KEPT, deliberately".
+
+**Self-kills are scored on the death side and never on the kill side**,
+per the project owner. That is what `impact.py` already does, so no code
+changed. Exposure of the resulting centring gap -- these events are scored by
+a constant solved on a population that excludes them -- is 272 events,
+0.245% of pre-plant death-side mass, moving it +0.013% uncentred.
+
+**The 2026-09-09 replay-correction amendment above did not list the
+candidate doc's worked example table.** That table's figures moved with the
+reference rates and are stale by up to 0.006 at strength 1; `dt=30` reads
+1.0440 / 0.9452 there and is now **1.0414 / 0.9466**. Recorded here rather
+than edited in place; the candidate doc carries the same note.
+
 ### 2026-09-09 (later) -- external review, three P2 findings; `c` corrected to 1.287003
 
 A second external review of the remediated branch raised three P2 issues. All
