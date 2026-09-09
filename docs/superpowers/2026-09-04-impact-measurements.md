@@ -393,27 +393,33 @@ support floor and reused the full-data value):
 
 | band | attacker refit spread | defender refit spread |
 |---|---|---|
-| 0-15 | {+0.1946,+0.1987} f=0% | {+0.1386,+0.1438} f=0% |
-| 15-25 | {+0.2245,+0.2306} f=0% | {+0.1397,+0.1462} f=0% |
-| 25-32 | {+0.2785,+0.2908} f=0% | {+0.1240,+0.1346} f=0% |
-| 32-38 | {+0.3371,+0.3618} f=1% | {+0.0845,+0.0981} f=1% |
-| 38-41.5 | {+0.2572,+0.3088} f=12% | {+0.0282,+0.0436} f=6% |
-| 41.5-45 | {+0.1176,+0.1676} f=34% | {+0.0111,+0.0211} f=10% |
+| 0-15 | {+0.1945,+0.1984} f=0% | {+0.1386,+0.1436} f=0% |
+| 15-25 | {+0.2244,+0.2307} f=0% | {+0.1402,+0.1463} f=0% |
+| 25-32 | {+0.2798,+0.2917} f=0% | {+0.1266,+0.1360} f=0% |
+| 32-38 | {+0.3443,+0.3696} f=0% | {+0.0933,+0.1048} f=0% |
+| 38-41.5 | {+0.3114,+0.3620} f=0% | {+0.0410,+0.0569} f=0% |
+| 41.5-45 | {+0.1490,+0.2058} f=1% | {+0.0160,+0.0301} f=1% |
 
-**These are a spread, not a confidence interval, and are deliberately not
-recentred.** Re-estimating `V` inside a draw is biased downward: the draw
-re-weights matches and re-estimates `V` from those same re-weighted matches, so
-a cell's value and the weight of the deaths in it are correlated, and a
-difference of two such cells is pulled toward zero. Past 32s the entire nested
-distribution sits below the point estimate, so neither a percentile nor a basic
-interval can contain it -- which is why the fixed-V interval is what the table
-quotes.
+Every refit spread contains its point estimate and is **wider** than the
+corresponding fixed-V interval, which is what a nested bootstrap should
+produce: the extra width is `V`'s own uncertainty, and it grows with thinness
+(41.5-45s attacker spans 0.057 against the fixed-V 0.048). Fixed-V intervals
+are conditional on the estimated table; these are not.
 
-Read the spread as evidence about `V`'s own stability. Through 25-32s it tracks
-the fixed-V interval closely. **From 32s on it separates**, and by 41.5-45s a
-third of attacker deaths sit in cells that lose support under resampling
-entirely. Late post-plant `V` is too thin to carry a scoring decision on its
-own, whatever the fixed-V interval's width suggests.
+**Correction, 2026-09-09.** A first version of this table reported spreads that
+sat entirely *below* their point estimates past 32s, with fallback shares up to
+34%, and attributed that to an inherent downward bias in nested resampling. That
+was wrong, and the accompanying conclusion -- "late post-plant `V` is too thin
+to carry a scoring decision" -- is **withdrawn**. The cause was a defect in the
+resampling population: draws were taken only from matches contributing a death
+to the band being measured, while `V` is estimated from every match contributing
+state occupancy, so matches with occupancy but no in-band death received zero
+weight in every draw. That re-estimates `V` on a subpopulation rather than
+bootstrapping it. Demonstrated on a synthetic cell where 200 matches carry
+occupancy and 100 carry a selected death: full-data `V` = 0.500 and every
+restricted draw returns exactly 1.000. Resampling the full match population and
+using one set of multiplicities for both `V` and the deaths removes the
+displacement entirely, and takes the fallback share to 0-1%.
 
 Script: `diagnostics/measure_post_plant_death_cost.py`
 

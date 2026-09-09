@@ -198,17 +198,33 @@ def boot_nested(subset, want_atk_victim):
     out = []
     fallback_shares = []
     for _ in range(N_BOOT_NESTED):
-        drawn = [keys[rng.randrange(len(keys))] for _ in range(len(keys))]
+        # Resample the FULL match population that V is estimated from, not
+        # just the matches contributing a death to this band/side, and use the
+        # SAME multiplicities for V and for the deaths.
+        #
+        # Drawing only from `by_match` (the previous version) gave every match
+        # that contributes state occupancy but no in-band death zero weight in
+        # every single draw. That is not a bootstrap of V, it is V re-estimated
+        # on a strict subpopulation -- a different estimator. Demonstrated on a
+        # synthetic cell where 200 matches carry occupancy and only 100 carry a
+        # selected death: full-data V = 0.500, and every restricted draw
+        # returns exactly 1.000.
+        #
+        # This is also the real cause of the displaced spreads below. An
+        # earlier version of this comment attributed them to an inherent
+        # downward bias from correlation between a cell's value and the weight
+        # of the deaths inside it. That explanation was wrong and is withdrawn.
+        drawn_matches = [
+            _match_ids_sorted[rng.randrange(n_matches)] for _ in range(n_matches)
+        ]
         counts = np.zeros(n_matches, dtype=float)
-        for m in drawn:
-            i = _match_index.get(m)
-            if i is not None:
-                counts[i] += 1.0
+        for m in drawn_matches:
+            counts[_match_index[m]] += 1.0
         v_draw = {c: _v_from_draw(c, counts) for c in needed}
         s = n = 0.0
         frozen = 0.0
-        for m in drawn:
-            for (a, d, t) in by_match[m]:
+        for m in drawn_matches:
+            for (a, d, t) in by_match.get(m, ()):
                 if want_atk_victim:
                     hi, lo = v_draw.get((a, d, t)), v_draw.get((a - 1, d, t))
                 else:
@@ -229,16 +245,10 @@ def boot_nested(subset, want_atk_victim):
     # for the sampling of deaths, which is the question the bands are asked to
     # answer, and it always contains its point estimate.
     #
-    # The nested draws are reported ALONGSIDE it as a spread, not as a CI, and
-    # deliberately not recentred. Re-estimating V inside each draw turns out to
-    # be biased DOWNWARD, hard: in the late bands the entire nested
-    # distribution sits below the point estimate, so neither a percentile nor a
-    # basic (reverse-percentile) interval can contain it -- percentile excludes
-    # it from above, basic excludes it from below. That is not a centring
-    # problem to be transformed away. The draws re-weight matches and
-    # re-estimate V from those same re-weighted matches, so a cell's value and
-    # the weight of the deaths sitting in it are correlated within a draw, and
-    # the difference of two such cells is pulled toward zero.
+    # The nested draws are reported ALONGSIDE it as a spread. They now resample
+    # the full match population, so they are a genuine nested bootstrap of the
+    # death cost -- V's own uncertainty included -- rather than the
+    # subpopulation artifact the first version produced.
     #
     # So: quote the fixed-V interval, and read the nested spread as what it
     # honestly is -- evidence about how unstable V itself is in a band, which
