@@ -272,14 +272,35 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
     # weighting is a stated, contained simplification rather than a silent
     # one -- a genuinely held-out WPA claim would need the same per-fold
     # refit discipline everything else in this module already has.
-    context = _wpa_context(observations) if config.name == "WPA" else None
-    aligned = align_target(leverage_rows, observations, config, context=context)
+    # The fold PARTITION is built from an all-data alignment, because the row
+    # set has to be stable across folds for the masks to mean anything.
+    #
+    # For WPA that alignment needs SOME context to build rows at all, so it
+    # gets the all-data one -- but its TARGET VALUES are then discarded: every
+    # read of y/weights inside the fold loop goes through `aligned_fold`,
+    # re-derived below from a value model fitted on that fold's training
+    # matches only. The all-data object survives purely as row geometry
+    # (leverage, damage, controls, ids), none of which depends on the value
+    # model.
+    aligned = align_target(
+        leverage_rows, observations, config,
+        context=_wpa_context(observations) if config.name == "WPA" else None,
+    )
     folds = stable_folds(aligned.match_ids, n_folds=n_folds, seed=seed)
     fold_of = np.array([folds[int(m)] for m in aligned.match_ids])
+    observations_by_match: dict = {}
+    if config.name == "WPA":
+        for o in observations:
+            observations_by_match.setdefault(o.match_id, []).append(o)
 
     results = {name: CandidateResult(name=name) for name in candidates}
     collected = {name: [] for name in candidates}
     row_order: list[np.ndarray] = []
+    # Under WPA cross-fitting each fold has its OWN target values, so the
+    # pooled OOF labels must be collected per fold rather than sliced out of a
+    # single all-data alignment.
+    oof_y_parts: list[np.ndarray] = []
+    oof_w_parts: list[np.ndarray] = []
 
     for fold in range(n_folds):
         test_mask = fold_of == fold
@@ -290,6 +311,27 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
         train_match_ids = tuple(sorted(set(aligned.match_ids[train_mask].tolist())))
         test_match_ids = tuple(sorted(set(aligned.match_ids[test_mask].tolist())))
 
+        # WPA's value model is CROSS-FITTED. Fitting it once on every
+        # observation and reusing it in each fold let held-out outcomes shape
+        # the training weights and the fitted graphs -- and those graphs feed
+        # target_agreement, which gates Verdict B, so the "descriptive
+        # simplification" was not contained after all. Re-derive the target
+        # from a model fitted on this fold's TRAINING matches only; the row
+        # order is unchanged, so the masks computed above still apply.
+        aligned_fold = aligned
+        if config.name == "WPA":
+            train_obs = [
+                o for mid in train_match_ids for o in observations_by_match.get(mid, ())
+            ]
+            aligned_fold = align_target(
+                leverage_rows, observations, config, context=_wpa_context(train_obs),
+            )
+            if not np.array_equal(aligned_fold.match_ids, aligned.match_ids):
+                raise ValueError(
+                    "WPA re-alignment changed the row set; the fold masks would "
+                    "no longer line up"
+                )
+
         # EVERYTHING below is training-fold only.
         train_rounds = {int(r) for r in aligned.round_ids[train_mask] if r >= 0}
         visits = [v for v in (state_visits or []) if v.match_id in set(train_match_ids)]
@@ -298,20 +340,24 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
         )
         exposure = np.abs(aligned.leverage[train_mask]).sum(axis=0)
 
+        # Target values come from THIS fold's alignment (identical to the
+        # all-data one except under WPA, where it is cross-fitted above).
         train = (aligned.leverage[train_mask], aligned.damage[train_mask],
-                 aligned.y[train_mask], aligned.weights[train_mask])
+                 aligned_fold.y[train_mask], aligned_fold.weights[train_mask])
         test = (aligned.leverage[test_mask], aligned.damage[test_mask],
-                aligned.weights[test_mask])
+                aligned_fold.weights[test_mask])
         train_on_train = (aligned.leverage[train_mask], aligned.damage[train_mask],
-                          aligned.weights[train_mask])
+                          aligned_fold.weights[train_mask])
         outer_controls = (aligned.controls[train_mask], aligned.controls[test_mask])
         self_controls = (aligned.controls[train_mask], aligned.controls[train_mask])
 
         row_order.append(np.flatnonzero(test_mask))
+        oof_y_parts.append(aligned_fold.y[test_mask])
+        oof_w_parts.append(aligned_fold.weights[test_mask])
 
         for name in candidates:
             if family == "A":
-                l2 = _select_l2(name, aligned, train_mask, l2_grid, state_visits or [],
+                l2 = _select_l2(name, aligned_fold, train_mask, l2_grid, state_visits or [],
                                 leverage_rows)
                 candidate = fit_family_a(name, train, test, table, l2, exposure,
                                          shipped_graph(), controls=outer_controls)
@@ -326,13 +372,13 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
                 train_rows = [aligned.team_rows[i] for i in np.flatnonzero(train_mask)]
                 test_rows = [aligned.team_rows[i] for i in np.flatnonzero(test_mask)]
                 candidate = fit_family_b(
-                    name, (train_rows, aligned.y[train_mask], aligned.weights[train_mask]),
-                    (test_rows, aligned.weights[test_mask]), shipped_graph(), l2,
+                    name, (train_rows, aligned_fold.y[train_mask], aligned_fold.weights[train_mask]),
+                    (test_rows, aligned_fold.weights[test_mask]), shipped_graph(), l2,
                     controls=outer_controls, exposure=exposure,
                 )
                 in_fold = fit_family_b(
-                    name, (train_rows, aligned.y[train_mask], aligned.weights[train_mask]),
-                    (train_rows, aligned.weights[train_mask]), shipped_graph(), l2,
+                    name, (train_rows, aligned_fold.y[train_mask], aligned_fold.weights[train_mask]),
+                    (train_rows, aligned_fold.weights[train_mask]), shipped_graph(), l2,
                     controls=self_controls, exposure=exposure,
                 )
                 _, column_names = family_b_columns(train_rows[:1], shipped_graph(), name)
@@ -343,8 +389,8 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
             # them at 0.5, which changes the estimand the loss below is then
             # evaluated against (correlation spec: rounding T2 "would change
             # the estimand and discard the observation weights").
-            calibration = calibrate_fractional(in_fold.scores, aligned.y[train_mask],
-                                               weights=aligned.weights[train_mask])
+            calibration = calibrate_fractional(in_fold.scores, aligned_fold.y[train_mask],
+                                               weights=aligned_fold.weights[train_mask])
             probabilities = apply_calibration(calibration, candidate.scores)
 
             results[name].per_fold[fold] = FoldFit(
@@ -362,8 +408,8 @@ def run_nested_cv(leverage_rows, observations, config, candidates, l2_grid,
         probabilities = np.concatenate([p for _, p in collected[name]])
         results[name].oof_scores = scores
         results[name].oof_probabilities = probabilities
-        results[name].oof_y = aligned.y[order]
-        results[name].oof_weights = aligned.weights[order]
+        results[name].oof_y = np.concatenate(oof_y_parts)
+        results[name].oof_weights = np.concatenate(oof_w_parts)
         results[name].oof_match_ids = aligned.match_ids[order]
         results[name].oof_row_ids = order
     return results
@@ -1973,7 +2019,12 @@ def build_full_report(leverage_rows, observations, player_rows=None, state_visit
     report: dict = {section: None for section in REPORT_SECTIONS}
 
     match_ids = sorted({row.match_id for row in leverage_rows})
-    folds = stable_folds(match_ids)
+    # The identity must describe the splits this run ACTUALLY used. Hashing
+    # stable_folds(match_ids) at its defaults recorded a different partition
+    # whenever the caller passed a non-default seed or n_folds, so two runs
+    # with genuinely different folds could carry the same fold_mapping_hash
+    # and be joined as comparable.
+    folds = stable_folds(match_ids, n_folds=n_folds, seed=seed)
     identity = RunIdentity(
         dataset_fingerprint=dataset_fingerprint(match_ids),
         fold_mapping_hash=fold_mapping_hash(folds),
@@ -2039,9 +2090,6 @@ def build_full_report(leverage_rows, observations, player_rows=None, state_visit
         for name, result in all_results.items() if name != "current_graph"
     }
 
-    report["yardstick_matrix"] = yardstick_matrix(
-        leverage_rows, observations, family_a_results, draws=draws, identity=identity,
-    )
 
     report["deferral_check"] = {
         "matches": len(match_ids), "reopen_threshold": 4000,
@@ -2073,6 +2121,37 @@ def build_full_report(leverage_rows, observations, player_rows=None, state_visit
     # and lets B stay negative even when a refit resolves the collinearity it
     # is complaining about. The shipped figure is kept alongside for
     # reference, but the verdict now reads the refitted one.
+    # THE MATRIX GETS EVERY FAMILY, target-qualified.
+    #
+    # It previously received only T2's Family A, so Family B's fitted scores
+    # were absent and the T1/WPA fits were flattened into mean graphs for the
+    # agreement check and never emitted rows at all -- which is why the
+    # "complete" report could not show the common-yardstick comparison its own
+    # spec asks for. Names are suffixed so the families cannot collide.
+    matrix_results = dict(family_a_results)
+    matrix_results.update({f"{name}#familyB": r for name, r in family_b_results.items()})
+    for label, results_by_name in all_targets.items():
+        if label == "T2":
+            continue  # already present, unqualified, as Family A
+        for name, result in results_by_name.items():
+            matrix_results[f"{name}@{label}"] = result
+
+    report["yardstick_matrix"] = yardstick_matrix(
+        leverage_rows, observations, matrix_results, draws=draws, identity=identity,
+    )
+    # No Stage A report is produced anywhere in this repo, so the join hook
+    # has nothing to join. Say so, rather than rendering an empty section that
+    # reads as "compared, found nothing".
+    report["yardstick_matrix"]["stage_a_join"] = {
+        "joined": False,
+        "note": (
+            "UNAVAILABLE, not empty: no Stage A report was supplied to this run, "
+            "so the Stage A rows of the candidate-by-target matrix could not be "
+            "populated. Pass stage_a_rows and a matching stage_a_identity to "
+            "yardstick_matrix to join them."
+        ),
+    }
+
     correlations_shipped = component_correlations(leverage_rows, shipped_graph())
     primary_candidate = PRIMARY_COMPARISONS[0]["candidate"]
     refit_graphs = [

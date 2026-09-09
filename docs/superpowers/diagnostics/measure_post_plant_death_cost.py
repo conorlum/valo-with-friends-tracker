@@ -126,6 +126,98 @@ def def_death_cost(a, d, t):
     return None if hi is None or lo is None else hi - lo
 
 
+# ---- NESTED bootstrap over the V table itself --------------------------------
+# The plain `boot` below holds V FIXED and resamples only the per-match death
+# costs, so its intervals carry no uncertainty about the state values those
+# costs are differences of. For deaths sharing one (state, second) cell that
+# interval can collapse to nearly a point even though the two win rates behind
+# it came from finite samples.
+#
+# This version resamples MATCHES and rebuilds the needed V cells from that
+# draw before recomputing costs, so the table's own uncertainty propagates.
+# Fewer draws than `boot`, deliberately: each one re-estimates the table.
+N_BOOT_NESTED = 200
+
+_match_ids_sorted = sorted({m for per_m in cell_by_match.values() for m in per_m})
+_match_index = {m: i for i, m in enumerate(_match_ids_sorted)}
+_cell_arrays = {}
+for _cell, _per_m in cell_by_match.items():
+    _idx = np.array([_match_index[m] for m in _per_m], dtype=np.int64)
+    _w = np.array([v[0] for v in _per_m.values()], dtype=float)
+    _n = np.array([v[1] for v in _per_m.values()], dtype=float)
+    _cell_arrays[_cell] = (_idx, _w, _n)
+
+
+def _v_from_draw(cell, counts):
+    """V for one cell under a bootstrap draw, or None if the drawn sample
+    leaves it under the support floor."""
+    arrays = _cell_arrays.get(cell)
+    if arrays is None:
+        return None
+    idx, w, n = arrays
+    mult = counts[idx]
+    total = float((n * mult).sum())
+    if total < MIN_N:
+        return None
+    return float((w * mult).sum()) / total
+
+
+def boot_nested(subset, want_atk_victim):
+    """subset: [(mid, a, d, t)] deaths already filtered to one band/side."""
+    if not subset:
+        return None
+    needed = set()
+    for _mid, a, d, t in subset:
+        if want_atk_victim:
+            needed.add((a, d, t)); needed.add((a - 1, d, t))
+        else:
+            needed.add((a, d - 1, t)); needed.add((a, d, t))
+
+    by_match = collections.defaultdict(list)
+    for mid, a, d, t in subset:
+        by_match[mid].append((a, d, t))
+    keys = list(by_match)
+
+    point = boot({k: v for k, v in _fixed_pm(subset, want_atk_victim).items()})
+    rng = random.Random(SEED)
+    n_matches = len(_match_ids_sorted)
+    out = []
+    for _ in range(N_BOOT_NESTED):
+        drawn = [keys[rng.randrange(len(keys))] for _ in range(len(keys))]
+        counts = np.zeros(n_matches, dtype=float)
+        for m in drawn:
+            i = _match_index.get(m)
+            if i is not None:
+                counts[i] += 1.0
+        v_draw = {c: _v_from_draw(c, counts) for c in needed}
+        s = n = 0.0
+        for m in drawn:
+            for (a, d, t) in by_match[m]:
+                if want_atk_victim:
+                    hi, lo = v_draw.get((a, d, t)), v_draw.get((a - 1, d, t))
+                else:
+                    hi, lo = v_draw.get((a, d - 1, t)), v_draw.get((a, d, t))
+                if hi is None or lo is None:
+                    continue
+                s += hi - lo; n += 1
+        if n:
+            out.append(s / n)
+    if not out or point is None:
+        return None
+    out.sort()
+    return (point[0], out[int(.025 * len(out))], out[int(.975 * len(out))], point[3])
+
+
+def _fixed_pm(subset, want_atk_victim):
+    pm = collections.defaultdict(lambda: [0.0, 0])
+    for mid, a, d, t in subset:
+        c = att_death_cost(a, d, t) if want_atk_victim else def_death_cost(a, d, t)
+        if c is None:
+            continue
+        pm[mid][0] += c; pm[mid][1] += 1
+    return {k: tuple(v) for k, v in pm.items()}
+
+
 STATES = [(1, 1), (2, 2), (2, 1), (1, 2), (3, 2), (2, 3)]
 
 print("\n" + "=" * 132)
@@ -172,13 +264,15 @@ print(f"  {'band':>9} | {'ATTACKER death cost':>32} | {'DEFENDER death cost':>32
 for lab, lo, hi in BANDS:
     cells = []
     for want_atk_victim in (True, False):
-        pm = collections.defaultdict(lambda: [0.0, 0])
-        for mid, dt, victim_is_atk, a, d in deaths:
-            if victim_is_atk != want_atk_victim or not (lo <= dt < hi): continue
-            c = att_death_cost(a, d, int(dt)) if victim_is_atk else def_death_cost(a, d, int(dt))
-            if c is None: continue
-            pm[mid][0] += c; pm[mid][1] += 1
-        r = boot({k: tuple(v) for k, v in pm.items()})
+        # NESTED: the V table is re-estimated inside each draw, so these
+        # intervals include uncertainty in the state values the costs are
+        # differences of -- not just in which deaths were observed.
+        subset = [
+            (mid, a, d, int(dt))
+            for mid, dt, victim_is_atk, a, d in deaths
+            if victim_is_atk == want_atk_victim and lo <= dt < hi
+        ]
+        r = boot_nested(subset, want_atk_victim)
         cells.append(f"{r[0]:+.4f} [{r[1]:+.4f},{r[2]:+.4f}] n={r[3]:,}".rjust(32)
                      if r and r[3] >= 80 else f"{'--':>32}")
     print(f"  {lab:>9} | " + " | ".join(cells))

@@ -15,6 +15,7 @@ import os, sys, collections, random, statistics
 sys.path.insert(0, os.path.abspath("."))  # run from webapp/
 from sqlalchemy import text
 from app.db import SessionLocal
+from app.scoring.impact import _check_for_resurrection
 
 db = SessionLocal()
 FULL_BUY = 4200
@@ -101,18 +102,23 @@ for rid, ks in kills.items():
     for m, lo in d.items():
         if m in mp and lo >= FULL_BUY: fb[mp[m]["team"]] += 1
     alive = {"TEAM_1": 5, "TEAM_2": 5}
-    for k in ks:
+    # REPLAY POLICY -- mirrors app/scoring/impact.py: self-kills DO cost the
+    # victim's team a player, and a resurrected "death" does not. 15.06% of
+    # rounds contain one or the other, and once a round diverges every later
+    # kill in it is filed under the wrong state.
+    for idx, k in enumerate(ks):
         kid, vid = k["killer_match_player_id"], k["death_match_player_id"]
         if not kid or not vid or kid not in mp or vid not in mp: continue
         kt, vt = mp[kid]["team"], mp[vid]["team"]
-        if kt == vt: continue
-        recs.append({
-            "mid": r["match_id"], "rn": r["round_number"], "t": k["event_time_seconds"],
-            "planted": planted, "dt": (k["event_time_seconds"] - r["plant_time"]) if planted else None,
-            "state": (alive[kt], alive[vt]), "ctx": fb[kt] - fb[vt],
-            "kl": d.get(kid, 0), "won": kt == w,
-        })
-        if alive[vt] > 0: alive[vt] -= 1
+        if kt != vt:
+            recs.append({
+                "mid": r["match_id"], "rn": r["round_number"], "t": k["event_time_seconds"],
+                "planted": planted, "dt": (k["event_time_seconds"] - r["plant_time"]) if planted else None,
+                "state": (alive[kt], alive[vt]), "ctx": fb[kt] - fb[vt],
+                "kl": d.get(kid, 0), "won": kt == w,
+            })
+        if not _check_for_resurrection(idx, ks):
+            if alive[vt] > 0: alive[vt] -= 1
 
 print("=" * 100)
 print("PROVENANCE RE-RUN -- full dataset, all cells with n_obs/n_matches and 95% CI")
