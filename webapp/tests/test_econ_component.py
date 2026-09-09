@@ -289,21 +289,21 @@ def test_pickup_bonus_is_disabled_by_default_even_with_perfect_inputs():
     """PICKUP_BONUS_ENABLED is False, and the distance field's UNITS are still
     unconfirmed -- so the threshold must not be able to reach scoring."""
     assert econ_component.PICKUP_BONUS_ENABLED is False
-    assert pickup_bonus(10.0, killer_loadout=800, victim_loadout=4900) == 0
+    assert pickup_bonus(3.0, killer_loadout=800, victim_loadout=4900) == 0
 
 
 def test_pickup_fires_only_for_a_saving_killer_and_a_full_buy_victim(monkeypatch):
     monkeypatch.setattr(econ_component, "PICKUP_BONUS_ENABLED", True)
 
     # Saving killer, full-buy victim, close: the case the rule is for.
-    assert pickup_bonus(10.0, killer_loadout=800, victim_loadout=4900) == econ_component.PICKUP_BONUS
+    assert pickup_bonus(3.0, killer_loadout=800, victim_loadout=4900) == econ_component.PICKUP_BONUS
 
     # Killer already rich -- nothing worth swapping to.
-    assert pickup_bonus(10.0, killer_loadout=4900, victim_loadout=4900) == 0
+    assert pickup_bonus(3.0, killer_loadout=4900, victim_loadout=4900) == 0
     # Victim poor -- nothing worth taking.
-    assert pickup_bonus(10.0, killer_loadout=800, victim_loadout=800) == 0
+    assert pickup_bonus(3.0, killer_loadout=800, victim_loadout=800) == 0
     # Right economy, too far away to take it.
-    far = econ_component.PICKUP_MAX_DISTANCE + 1
+    far = econ_component.PICKUP_MAX_DISTANCE_M + 1
     assert pickup_bonus(far, killer_loadout=800, victim_loadout=4900) == 0
 
 
@@ -313,7 +313,7 @@ def test_pickup_is_a_transfer_so_zero_sum_survives_it(monkeypatch):
     ONE magnitude precisely so a caller cannot apply it to one side only."""
     monkeypatch.setattr(econ_component, "PICKUP_BONUS_ENABLED", True)
 
-    magnitude = pickup_bonus(10.0, killer_loadout=800, victim_loadout=4900)
+    magnitude = pickup_bonus(3.0, killer_loadout=800, victim_loadout=4900)
     killer_credit, victim_debit = magnitude, magnitude
 
     assert killer_credit - victim_debit == 0.0

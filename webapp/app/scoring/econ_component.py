@@ -223,14 +223,21 @@ def attribute_econ(
 
 # --- Section 11: the weapon-pickup extension ------------------------------
 #
-# Confirmed by the project owner 2026-09-08: tracker.gg DOES return a
-# distance-to-kill field, which resolves the spec's "Unverified" note on
-# whether the response carries location at all.
+# VERIFIED 2026-09-08 against 8 captured matches / 1,279 kills. Two things
+# turned out different from the brief, and both matter:
 #
-# NOT yet confirmed, and this is why the feature stays disabled: the field's
-# exact key and its UNITS. PICKUP_MAX_DISTANCE below is a number in unknown
-# units, so it cannot be allowed to reach scoring until one captured match
-# settles what it is measuring (scripts/capture_trackergg_state.py).
+#   1. There is NO distance field. tracker.gg returns COORDINATES --
+#      opponentLocation for the victim, playerLocations for everyone including
+#      the killer -- and the distance has to be computed from them. See
+#      trackergg_browserstate_source._pickup_distance_meta.
+#   2. The units are NOT metres. They are Unreal units, ~centimetres: raw / 100
+#      = metres. The weapon medians settle it (Operator 28.0 m, Vandal 16.3 m,
+#      Classic 11.2 m, longest kill on any map 53.4 m). Read as metres the raw
+#      numbers would put a median rifle kill 1.6 km away.
+#
+# Distances reaching this function are therefore in METRES, converted at the
+# adapter. Observed distribution over those 1,279 kills: p05 4.4 m, p50 16.0 m,
+# p95 38.1 m, max 53.4 m.
 #
 # The readout. The spec withdrew an earlier value-differential rule as not
 # computable, and correctly: KillEvent.weapon is the weapon the KILLER used,
@@ -254,19 +261,32 @@ def attribute_econ(
 # Which is also why it is a strict TRANSFER: the same magnitude credited to
 # the killer and debited from the victim, so section 7's zero-sum invariant
 # survives it. An asymmetric bonus would break a tested invariant.
-PICKUP_BONUS = 0.25          # dimensionless, on econ_round's scale; a policy choice
-PICKUP_MAX_DISTANCE = 500.0  # UNITS UNCONFIRMED -- see the block comment above
+PICKUP_BONUS = 0.25  # dimensionless, on econ_round's scale; a policy choice
+
+# METRES. A policy constant, chosen and reported with sensitivity, never
+# fitted -- same footing as every other constant in this component. 5 m covers
+# 6.25% of observed kills; the predeclared grid for reporting is
+# {3, 5, 7.5, 10} m, which spans 2.42% / 6.25% / 13.53% / 25.10%.
+#
+# Distance is measured AT THE KILL, which is the honest weakness of the whole
+# readout: a killer 30 m away can still walk over and take the gun if they
+# survive. A tight threshold keeps the inference defensible rather than making
+# it true.
+PICKUP_MAX_DISTANCE_M = 5.0
+PICKUP_DISTANCE_GRID_M = (3.0, 5.0, 7.5, 10.0)
+
 PICKUP_KILLER_TIERS = frozenset({"SAVE"})
 PICKUP_VICTIM_TIERS = frozenset({"FULL_BUY"})
 
 
 def pickup_bonus(
-    distance: float | None,
+    distance_m: float | None,
     killer_loadout: float | None = None,
     victim_loadout: float | None = None,
 ) -> float:
     """The magnitude TRANSFERRED from victim to killer by an inferred pickup.
 
+    `distance_m` is in METRES (the adapter converts from Unreal units).
     Returns 0 when distance is NULL, which is every one of the 487,844
     currently-ingested kill rows -- the feature must be a no-op on all of
     them, and backfilling would mean re-crawling every match at 5-12s pacing
@@ -277,9 +297,9 @@ def pickup_bonus(
     """
     if not PICKUP_BONUS_ENABLED:
         return 0.0
-    if distance is None or killer_loadout is None or victim_loadout is None:
+    if distance_m is None or killer_loadout is None or victim_loadout is None:
         return 0.0
-    if distance > PICKUP_MAX_DISTANCE:
+    if distance_m > PICKUP_MAX_DISTANCE_M:
         return 0.0
     from app.scoring.impact import econ_tier_name
 

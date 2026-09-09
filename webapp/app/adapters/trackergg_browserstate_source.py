@@ -8,6 +8,7 @@ the JSON response the page's own client-side code requests while rendering.
 Companion piece to app/adapters/demo_match_source.py, same target schema.
 """
 
+import math
 import random
 import time
 from datetime import datetime
@@ -203,27 +204,62 @@ def _outcome_string(winning_team_id: str, round_result: str) -> str:
     return f"Team {letter} {round_result} Win"
 
 
-# Candidate keys for tracker.gg's distance-to-kill field, in priority order.
-# The field's EXISTENCE is confirmed (project owner, 2026-09-08); its exact key
-# and its UNITS are not, and this list is the honest consequence -- capture
-# whatever is there under a stable name so one real ingest settles the
-# question, rather than guessing a key and silently recording nothing.
-_DISTANCE_KEYS = ("distance", "killDistance", "distanceToKill", "kill_distance")
+# Kill distance. VERIFIED 2026-09-08 against 8 captured matches / 1,279 kills
+# (scripts/capture_trackergg_state.py, plus fetch_match_json directly).
+#
+# There is NO distance field. tracker.gg returns COORDINATES, and the distance
+# has to be computed:
+#   metadata.opponentLocation   -> {x, y} for the VICTIM at the kill
+#   metadata.playerLocations    -> [{platformUserIdentifier, location{x,y},
+#                                    viewRadians}] including the KILLER
+# Both were present on 98.69% of kills; the rest yield no distance.
+#
+# UNITS ARE UNREAL UNITS (~centimetres), NOT metres -- raw / 100 = metres.
+# The weapon breakdown is what settles it, and it is unambiguous:
+#   Operator/Outlaw (snipers)  median 2798-2801 uu -> 28.0 m
+#   Guardian                   median      2081 uu -> 20.8 m
+#   Vandal/Phantom (rifles)    median 1604-1627 uu -> 16.0-16.3 m
+#   Classic/Spectre/Bulldog    median 1118-1189 uu -> 11.2-11.9 m
+#   max over all maps               5335 uu -> 53.4 m
+# Read as metres the raw numbers would put a median Vandal kill at 1.6 km; read
+# as centimetres every weapon lands where its effective range says it should,
+# and the 53 m maximum matches a long Valorant sightline.
+#
+# Known limitation: the coordinates are planar (x, y only, no elevation), so on
+# vertical maps two players stacked above each other measure as adjacent.
+UNREAL_UNITS_PER_METRE = 100.0
 
 
-def _pickup_distance_meta(meta: dict) -> dict:
-    """Record the raw distance value and which key it came from, or nothing.
+def _pickup_distance_meta(meta: dict, killer_identifier: str | None) -> dict:
+    """Distance between killer and victim at the kill, in metres.
 
-    Deliberately does NOT convert or threshold: units are unconfirmed, so the
-    only safe thing to persist is the number tracker.gg gave and its
-    provenance. econ_component.pickup_bonus stays disabled until a captured
-    match says what the number means.
+    Returns {} when either location is absent, which is what the ~1.3% of
+    kills without both endpoints must produce -- pickup_bonus then sees no
+    distance and abstains.
     """
-    for key in _DISTANCE_KEYS:
-        value = meta.get(key)
-        if isinstance(value, (int, float)):
-            return {"kill_distance_raw": float(value), "kill_distance_key": key}
-    return {}
+    victim_location = meta.get("opponentLocation")
+    if not (isinstance(victim_location, dict) and killer_identifier):
+        return {}
+    killer_location = next(
+        (
+            entry.get("location")
+            for entry in (meta.get("playerLocations") or [])
+            if entry.get("platformUserIdentifier") == killer_identifier
+        ),
+        None,
+    )
+    if not isinstance(killer_location, dict):
+        return {}
+    try:
+        dx = float(killer_location["x"]) - float(victim_location["x"])
+        dy = float(killer_location["y"]) - float(victim_location["y"])
+    except (KeyError, TypeError, ValueError):
+        return {}
+    raw = math.hypot(dx, dy)
+    return {
+        "kill_distance_raw": raw,
+        "kill_distance_m": raw / UNREAL_UNITS_PER_METRE,
+    }
 
 
 def load_match(db: Session, match_json: dict) -> Match:
@@ -344,7 +380,9 @@ def load_match(db: Session, match_json: dict) -> Match:
                     "assistants": [
                         a["platformUserIdentifier"] for a in (meta.get("assistants") or [])
                     ],
-                    **_pickup_distance_meta(meta),
+                    **_pickup_distance_meta(
+                        meta, prk["attributes"].get("platformUserIdentifier")
+                    ),
                 },
             )
         )
