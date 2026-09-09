@@ -74,13 +74,30 @@ the plant. Conditioned on the man-advantage state before the kill.
 
 | state | <-30s | -30..-20 | -20..-10 | -10..-5 | -5..0 |
 |---|---|---|---|---|---|
-| 5v5 | 57.0 [56.2,57.8] | 67.5 [66.4,68.5] | 69.7 [68.9,70.5] | 71.3 [70.1,72.7] | 70.0 [67.8,72.1] |
-| 4v4 | 56.7 [55.1,58.2] | 66.9 [65.1,68.7] | 70.9 [69.7,72.1] | 71.6 [70.1,73.1] | 70.7 [68.9,72.5] |
-| 3v3 | 55.5 [52.9,58.0] | 66.4 [63.7,68.9] | 71.6 [69.8,73.3] | 75.1 [73.2,77.1] | 73.4 [71.1,75.6] |
-| 2v2 | 57.6 [53.1,62.4] | 67.5 [63.4,71.8] | 76.6 [74.0,79.2] | 80.4 [77.6,83.1] | 80.0 [76.7,83.2] |
+| 5v5 | 57.1 [56.3,57.9] | 67.4 [66.4,68.3] | 69.6 [68.7,70.3] | 71.1 [69.8,72.4] | 69.6 [67.5,71.7] |
+| 4v4 | 56.8 [55.3,58.3] | 67.1 [65.3,68.9] | 70.7 [69.6,71.9] | 71.4 [69.9,72.9] | 71.1 [69.2,72.9] |
+| 3v3 | 55.2 [52.6,57.7] | 66.7 [64.1,69.3] | 72.3 [70.5,74.1] | 76.2 [74.3,78.1] | 74.1 [71.8,76.3] |
+| 2v2 | 60.0 [54.9,64.6] | 67.4 [63.1,71.7] | 76.2 [73.3,78.9] | 81.1 [78.4,83.8] | 82.6 [79.1,85.8] |
 
-Far and near intervals do not overlap in any state. The `-5..0` bucket is at or
-below `-10..-5` in all four states.
+Far and near intervals do not overlap in any state.
+
+**Revised 2026-09-09, replay correction.** The earlier version of this table was
+computed with a replay that diverged from `impact.py` on self-kills and
+resurrections; 15.06% of rounds contained at least one, and the error compounds
+within a round. Dense cells barely moved (5v5 and 4v4 all within 0.4pp), but
+2v2 moved up to +2.6pp, and with it a conclusion:
+
+> The `-5..0` bucket is at or below `-10..-5` in **three of the four** even
+> states. It was previously reported as all four. In 2v2 the order now
+> reverses (81.1 -> 82.6).
+
+That reversal is **not** evidence of a real rise near the plant: 2v2 `-5..0` is
+the thinnest cell in the table (n=488) and its interval [79.1,85.8] overlaps
+`-10..-5`'s [78.4,83.8] almost entirely. Read it as "the plateau is flat to
+within noise in the sparse states", not as a late upturn. The imposed sub-10s
+plateau (see the time spec's fitting contract) remains a policy choice; what
+changed is that the data no longer order strictly against a continued rise in
+every even state.
 
 **Does not establish:** that timing causes the outcome, or that this holds
 outside even states (it does not -- see `M3`).
@@ -93,13 +110,15 @@ Full dataset, match-level bootstrap.
 
 | state | <20s | 20-35 | 35-50 | 50-65 | >=65 |
 |---|---|---|---|---|---|
-| 5v5 | 65.0 [64.5,65.6] n=32,362 | 65.5 [64.4,66.6] n=6,519 | 64.7 [62.2,67.4] n=1,323 | 64.3 [58.8,69.4] n=322 | 64.7 [55.8,73.2] n=116 |
-| 4v4 | 67.6 [66.5,68.6] n=6,815 | 67.6 [66.5,68.7] n=7,340 | 66.2 [64.3,68.1] n=2,371 | 65.3 [62.1,68.6] n=882 | 69.9 [64.9,74.9] n=326 |
-| 3v3 | 67.5 [64.5,70.4] n=948 | 69.6 [68.2,71.1] n=3,890 | 69.9 [68.0,71.9] n=2,255 | 67.1 [64.1,70.0] n=1,004 | 70.9 [67.2,74.6] n=581 |
-| 2v2 | -- | 74.4 [71.7,76.9] n=991 | 73.9 [71.3,76.4] n=1,126 | 75.5 [72.2,78.8] n=677 | 73.6 [69.7,77.1] n=522 |
+| 5v5 | 65.0 [64.5,65.5] n=33,067 | 65.2 [64.1,66.3] n=6,828 | 65.1 [62.5,67.5] n=1,417 | 65.5 [60.8,70.4] n=354 | 64.5 [56.1,72.8] n=124 |
+| 4v4 | 67.4 [66.3,68.5] n=6,641 | 67.6 [66.5,68.7] n=7,426 | 66.6 [64.7,68.5] n=2,460 | 66.2 [63.1,69.2] n=923 | 71.0 [66.4,75.6] n=348 |
+| 3v3 | 68.1 [64.9,71.0] n=864 | 69.9 [68.4,71.4] n=3,799 | 70.6 [68.7,72.5] n=2,264 | 68.8 [65.8,71.8] n=1,006 | 71.0 [67.2,74.5] n=603 |
+| 2v2 | -- | 76.1 [73.4,78.9] n=876 | 74.0 [71.5,76.4] n=1,085 | 76.7 [73.3,79.8] n=647 | 73.5 [69.6,77.3] n=520 |
 
 Flat in every state, intervals overlapping throughout. Previously **[SUBSET]**
-without intervals; now full-data with them.
+without intervals; now full-data with them. Revised 2026-09-09 for the replay
+correction (see `M1`); largest cell shift +1.7pp (2v2, 20-35s), conclusion
+unchanged.
 
 ### M3 -- The proximity association reverses sign with man-advantage
 
@@ -108,15 +127,19 @@ killer's man-advantage at the moment of the kill.
 
 | advantage | lift | 95% CI | n |
 |---|---|---|---|
-| -3 | -31.2pp | [-36.7, -26.1] | 1,217 |
-| -2 | -26.5pp | [-29.0, -23.9] | 5,463 |
-| -1 | -4.5pp | [-6.1, -2.9] | 15,938 |
-| 0 | +16.5pp | [+15.5, +17.6] | 30,104 |
-| +1 | +29.6pp | [+28.0, +31.2] | 11,970 |
-| +2 | +27.9pp | [+24.2, +31.7] | 3,656 |
+| -3 | -29.4pp | [-34.8, -24.4] | 1,164 |
+| -2 | -27.4pp | [-30.2, -24.7] | 5,342 |
+| -1 | -4.4pp | [-6.2, -2.8] | 15,846 |
+| 0 | +16.5pp | [+15.5, +17.5] | 30,493 |
+| +1 | +29.0pp | [+27.3, +30.8] | 11,948 |
+| +2 | +25.9pp | [+22.3, +29.4] | 3,617 |
 
-Linear in advantage: `lift = +8.9pp + 13.9pp per man`, **R^2 = 0.933**, with
-mild saturation at the extremes (residuals -7.7pp at -2, -8.7pp at +2).
+Linear in advantage: `lift = +8.4pp + 13.3pp per man`, **R^2 = 0.914**, with
+mild saturation at the extremes (residuals -9.1pp at -2, -9.1pp at +2).
+
+Revised 2026-09-09 for the replay correction (see `M1`). Cell shifts are at most
+2.0pp, the ordering and the sign reversal are unchanged, and the fit loosens
+slightly (R^2 0.933 -> 0.914). Every interval still excludes zero.
 
 **Note on the mechanism, offered as interpretation not measurement:** these are
 pre-plant kills in rounds that *were* planted, so a kill while heavily behind
@@ -128,8 +151,8 @@ Same lift statistic, fitted separately by side:
 
 | side | slope | intercept |
 |---|---|---|
-| attacker | +6.4pp per man | -0.5pp |
-| defender | +9.6pp per man | +11.6pp |
+| attacker | +7.0pp per man | -1.9pp |
+| defender | +10.1pp per man | +11.1pp |
 
 **Pooled side figures are a Simpson's artifact and must not be quoted.** At every
 advantage level both sides order the same way; a pooled comparison reverses
@@ -139,13 +162,17 @@ distributions.
 ### M5 -- Mass distribution over the affected kills
 
 Pre-plant kills in planted rounds -- the only population any proximity term
-touches -- are **168,370 = 34.7% of all kills**. The remaining 65.3%
+touches -- are **168,432 = 34.8% of all kills**. The remaining 65.2%
 (post-plant, and all never-planted rounds) are untouched.
 
-Within those, by advantage: -1 = 22.9%, 0 = 42.1%, +1 = 17.6%, so **82.6% lie in
+Within those, by advantage: -1 = 22.8%, 0 = 42.5%, +1 = 17.7%, so **83.0% lie in
 adv -1..+1**. Tail cells: `adv <= -2` within 10s of the plant is **0.70%** of all
-kills (1.42% within 10s of either side); `adv >= +1` within 10s is 2.21%
-(4.08%).
+kills (1.41% within 10s of either side); `adv >= +1` within 10s is 2.22%
+(4.10%).
+
+Revised 2026-09-09 for the replay correction (see `M1`). The population itself is
+unchanged (dt and plant status do not depend on alive counts); only the
+advantage labels move, and the mass conclusion is unaffected.
 
 ### M6 -- Overtime: the shape persists; the level differences mostly do not
 
@@ -172,22 +199,31 @@ post-plant rise to near-even (54.5%, its highest).
 **Sample:** non-self kills at `t >= 70s` in rounds never planted. Full dataset,
 **9,235** such kills (the subset figure was 2,968).
 
-Overwhelmingly lopsided states: 4v1 100.0% [100.0,100.0] n=557; 3v1 99.6%
-[99.2,99.9] n=980; 2v1 99.2% [98.6,99.7] n=1,163; 3v2 96.4% [94.8,97.8] n=583.
+Overwhelmingly lopsided states: 4v1 100.0% [100.0,100.0] n=572; 3v1 99.9%
+[99.7,100.0] n=1,027; 2v1 99.9% [99.7,100.0] n=1,202; 3v2 96.6% [95.2,98.0]
+n=615.
 
 Contested even states, against a within-state baseline of kills at `t < 50s` in
 never-planted rounds, delta bootstrapped by match:
 
 | state | early (t<50s) | late (t>=70s) | delta |
 |---|---|---|---|
-| 2v2 | 79.2% [77.6,80.7] n=2,792 | 84.0% [81.0,87.1] n=539 | **+4.9pp [+1.5,+8.3]** excludes 0 |
-| 3v3 | 77.1% [75.9,78.2] n=5,216 | 78.3% [73.6,82.9] n=286 | +1.3pp [-3.4,+6.1] spans 0 |
+| 2v2 | 80.9% [79.4,82.4] n=2,665 | 84.5% [81.4,87.3] n=561 | **+3.6pp [+0.2,+7.0]** excludes 0 |
+| 3v3 | 77.5% [76.4,78.6] n=5,211 | 79.1% [74.1,83.7] n=301 | +1.6pp [-3.5,+6.1] spans 0 |
 
 **Correction to the subset version**, which stated these cells were "not
-elevated". On full data 2v2 late kills are modestly but detectably elevated
-(+4.9pp); 3v3 remains null. The effect is small relative to proximity (`M3`,
-16-30pp), which is why the policy conclusion is unchanged -- but "not elevated"
-was wrong and is withdrawn.
+elevated". On full data 2v2 late kills are elevated; 3v3 remains null. The
+effect is small relative to proximity (`M3`, 16-30pp), which is why the policy
+conclusion is unchanged -- but "not elevated" was wrong and is withdrawn.
+
+**Weakened 2026-09-09, replay correction (see `M1`).** The 2v2 delta fell from
++4.9pp [+1.5,+8.3] to +3.6pp [+0.2,+7.0]. It still excludes zero, but only
+barely, and the correction above should be read as much weaker than its original
+wording implies. Note *where* the change came from: the late cell hardly moved
+(84.0 -> 84.5), while the early baseline rose (79.2 -> 80.9) as kills were
+refiled into their correct states. The effect did not shrink; the thing it was
+measured against was previously understated. At n=561 late observations this is
+a cell to re-check before anything is built on it.
 
 ### M8 -- Composition of the plant window **[SUBSET]**
 
@@ -348,6 +384,37 @@ Pooled attacker cost hides a large state split. At t=38: `2v1` **+0.066**
 (a teammate survives to contest the defuse), `1v2` +0.597, `1v1` **+0.754**
 (no attacker left to punish the exposure).
 
+**Added 2026-09-09 -- how much of this is `V` itself?** The intervals above hold
+the `V` table fixed and resample only which deaths were observed, so they carry
+no uncertainty about the state values the costs are differences *of*. A nested
+bootstrap that re-estimates `V` inside each draw gives, alongside the same point
+estimates (`f` = mean share of deaths in a draw whose cell fell under the
+support floor and reused the full-data value):
+
+| band | attacker refit spread | defender refit spread |
+|---|---|---|
+| 0-15 | {+0.1946,+0.1987} f=0% | {+0.1386,+0.1438} f=0% |
+| 15-25 | {+0.2245,+0.2306} f=0% | {+0.1397,+0.1462} f=0% |
+| 25-32 | {+0.2785,+0.2908} f=0% | {+0.1240,+0.1346} f=0% |
+| 32-38 | {+0.3371,+0.3618} f=1% | {+0.0845,+0.0981} f=1% |
+| 38-41.5 | {+0.2572,+0.3088} f=12% | {+0.0282,+0.0436} f=6% |
+| 41.5-45 | {+0.1176,+0.1676} f=34% | {+0.0111,+0.0211} f=10% |
+
+**These are a spread, not a confidence interval, and are deliberately not
+recentred.** Re-estimating `V` inside a draw is biased downward: the draw
+re-weights matches and re-estimates `V` from those same re-weighted matches, so
+a cell's value and the weight of the deaths in it are correlated, and a
+difference of two such cells is pulled toward zero. Past 32s the entire nested
+distribution sits below the point estimate, so neither a percentile nor a basic
+interval can contain it -- which is why the fixed-V interval is what the table
+quotes.
+
+Read the spread as evidence about `V`'s own stability. Through 25-32s it tracks
+the fixed-V interval closely. **From 32s on it separates**, and by 41.5-45s a
+third of attacker deaths sit in cells that lose support under resampling
+entirely. Late post-plant `V` is too thin to carry a scoring decision on its
+own, whatever the fixed-V interval's width suggests.
+
 Script: `diagnostics/measure_post_plant_death_cost.py`
 
 ### M26 -- Two deadlines, and why late post-plant states are thin
@@ -488,14 +555,16 @@ rich `>=4250` credits.
 
 | ctx | killer poor | killer mid | killer rich |
 |---|---|---|---|
-| -5..-3 | 57.3 [55.6,59.0] n=4,808 | 63.5 [62.3,64.6] n=10,565 | 64.0 [62.2,65.8] n=3,801 |
-| -2..-1 | 59.8 [57.7,61.9] n=2,971 | 67.7 [66.5,68.8] n=9,315 | 68.2 [67.3,69.1] n=16,679 |
-| 0 | 70.5 [69.8,71.1] n=19,362 | 82.8 [82.0,83.6] n=9,446 | 72.2 [71.5,72.8] n=16,904 |
-| +1..+2 | 77.2 [73.9,80.6] n=759 | 81.3 [80.1,82.5] n=5,760 | 75.5 [74.8,76.2] n=26,401 |
-| +3..+5 | 82.6 [76.8,87.8] n=195 | 81.8 [80.1,83.5] n=2,438 | 81.2 [80.5,81.9] n=23,965 |
+| -5..-3 | 57.9 [56.2,59.5] n=4,890 | 64.5 [63.3,65.6] n=10,719 | 65.2 [63.5,67.0] n=3,876 |
+| -2..-1 | 60.4 [58.2,62.4] n=3,033 | 68.0 [66.8,69.1] n=9,401 | 68.8 [67.9,69.8] n=17,001 |
+| 0 | 70.4 [69.8,71.0] n=19,367 | 82.8 [81.9,83.7] n=9,525 | 72.3 [71.7,72.9] n=17,180 |
+| +1..+2 | 77.8 [74.6,81.1] n=772 | 81.6 [80.4,82.8] n=5,830 | 75.7 [75.0,76.4] n=26,970 |
+| +3..+5 | 81.8 [76.1,87.3] n=209 | 82.2 [80.5,83.9] n=2,460 | 81.5 [80.8,82.2] n=24,229 |
 
 Roughly 6-8pp when the team is behind; flat or reversed at parity and above
-(`+1..+2` runs 77.2 / 81.3 / 75.5, rich lowest). Team context spans 57% -> 82%.
+(`+1..+2` runs 77.8 / 81.6 / 75.7, rich lowest). Team context spans 58% -> 82%.
+Revised 2026-09-09 for the replay correction (see `M1`); all cells moved by at
+most 1.0pp and every conclusion here is unchanged.
 
 **Known limitation of `ctx`:** a differential of 0 conflates "both teams have
 zero full buys" with "both have five". The 82.8% mid cell at `ctx = 0` is
@@ -557,19 +626,25 @@ are given below. Deltas are bootstrapped by match, not inferred from overlap.
 
 | rounds | buy state | tercile cuts | LOW | HIGH | delta |
 |---|---|---|---|---|---|
-| 2-4 / 14-16 | broke 0-1 | 3,700 / 9,600 | 44.1 [43.2,45.0] n=6,622 | 55.0 [53.9,56.2] n=6,639 | **+10.9 [+9.6,+12.4]** |
-| 2-4 / 14-16 | partial 2-3 | 10,800 / 18,300 | 40.9 [39.0,42.7] n=2,789 | 63.5 [61.7,65.4] n=2,798 | **+22.6 [+20.1,+25.1]** |
-| 2-4 / 14-16 | full 4-5 | 9,700 / 21,050 | 39.3 [37.4,41.2] n=2,497 | 63.1 [61.3,64.9] n=2,515 | **+23.8 [+21.3,+26.4]** |
-| 5-7 / 17-19 | broke 0-1 | 8,800 / 12,250 | 46.6 [44.4,48.7] n=1,885 | 59.9 [57.6,62.1] n=1,891 | **+13.3 [+10.2,+16.3]** |
-| 5-7 / 17-19 | partial 2-3 | 12,400 / 18,550 | 42.3 [40.5,44.1] n=2,843 | 63.2 [61.4,65.0] n=2,869 | **+20.9 [+18.4,+23.5]** |
-| 5-7 / 17-19 | full 4-5 | 13,250 / 22,300 | 39.5 [38.2,40.7] n=6,106 | 54.8 [53.6,56.0] n=6,145 | **+15.3 [+13.5,+17.1]** |
-| 8-11 / 20-23 | broke 0-1 | 9,300 / 13,000 | 47.3 [44.7,49.7] n=1,543 | 60.2 [57.7,62.5] n=1,582 | **+12.9 [+9.3,+16.3]** |
-| 8-11 / 20-23 | partial 2-3 | 12,950 / 18,750 | 46.1 [44.3,48.0] n=2,863 | 60.8 [59.0,62.6] n=2,901 | **+14.7 [+12.2,+17.3]** |
-| 8-11 / 20-23 | full 4-5 | 13,500 / 22,450 | 40.1 [38.9,41.3] n=7,148 | 52.8 [51.7,54.0] n=7,243 | **+12.7 [+11.1,+14.3]** |
+| 2-4 / 14-16 | broke 0-1 | 3,700 / 9,600 | 44.1 [43.2,45.0] n=6,622 | 55.0 [53.9,56.2] n=6,639 | **+10.9 [+9.3,+12.6]** |
+| 2-4 / 14-16 | partial 2-3 | 10,800 / 18,300 | 40.9 [39.1,42.7] n=2,789 | 63.5 [61.7,65.2] n=2,798 | **+22.6 [+19.8,+25.6]** |
+| 2-4 / 14-16 | full 4-5 | 9,700 / 21,050 | 39.3 [37.4,41.2] n=2,497 | 63.1 [61.3,64.9] n=2,515 | **+23.8 [+21.0,+26.7]** |
+| 5-7 / 17-19 | broke 0-1 | 8,800 / 12,250 | 46.6 [44.4,48.8] n=1,885 | 59.9 [57.6,62.1] n=1,891 | **+13.3 [+10.1,+16.2]** |
+| 5-7 / 17-19 | partial 2-3 | 12,400 / 18,550 | 42.3 [40.6,44.1] n=2,843 | 63.2 [61.4,65.0] n=2,869 | **+20.9 [+18.1,+23.6]** |
+| 5-7 / 17-19 | full 4-5 | 13,250 / 22,300 | 39.5 [38.3,40.8] n=6,106 | 54.8 [53.6,56.0] n=6,145 | **+15.3 [+13.3,+17.2]** |
+| 8-11 / 20-23 | broke 0-1 | 9,300 / 13,000 | 47.3 [44.9,49.7] n=1,543 | 60.2 [57.7,62.6] n=1,582 | **+12.9 [+9.4,+16.6]** |
+| 8-11 / 20-23 | partial 2-3 | 12,950 / 18,750 | 46.1 [44.3,48.0] n=2,863 | 60.8 [59.1,62.7] n=2,901 | **+14.7 [+12.1,+17.3]** |
+| 8-11 / 20-23 | full 4-5 | 13,500 / 22,450 | 40.1 [38.9,41.3] n=7,148 | 52.8 [51.7,54.0] n=7,243 | **+12.7 [+10.9,+14.5]** |
 
 **All nine deltas exclude zero.** A mild taper (~+23pp early to ~+13pp late),
 not a cliff. Note the tercile cuts themselves rise with round number and buy
 state, so "HIGH" is not a fixed credit amount across rows.
+
+Delta intervals revised 2026-09-09: the delta bootstrap now resamples matches
+*paired* across the LOW and HIGH arms rather than independently, which is the
+correct construction when both arms are drawn from the same matches. Every point
+estimate is unchanged and every interval is slightly wider. All nine still
+exclude zero.
 
 **Withdrawn on the basis of this:** an unconditioned version reported the
 association "decaying to nothing by round 4/16". That was an artifact of not
@@ -591,22 +666,22 @@ Holding **both** fixed -- terciles of destroyed formed inside each
 
 | round N | enemies killed | delta (HIGH - LOW) on winning N+1 |
 |---|---|---|
-| WON | 4 | -0.8pp [-5.7, +4.1] spans 0 |
+| WON | 4 | -0.8pp [-5.4, +3.9] spans 0 |
 | WON | 5 | **-3.0pp [-4.0, -2.0]** excludes 0, **negative** |
-| LOST | 1 | +0.4pp [-1.7, +2.6] spans 0 |
-| LOST | 2 | +4.4pp [+2.7, +6.4] |
-| LOST | 3 | +6.7pp [+4.8, +8.5] |
-| LOST | 4 | +8.7pp [+6.4, +10.8] |
-| LOST | 5 | +3.9pp [-1.5, +9.4] spans 0 |
+| LOST | 1 | +0.4pp [-1.8, +2.7] spans 0 |
+| LOST | 2 | +4.4pp [+2.5, +6.3] |
+| LOST | 3 | +6.7pp [+4.9, +8.6] |
+| LOST | 4 | +8.7pp [+6.5, +11.0] |
+| LOST | 5 | +3.9pp [-1.4, +9.2] spans 0 |
 
 And within the buy-state bands the econ weights would have been fitted from,
 restricted to won rounds with all five enemies killed:
 
 | buy state | delta | |
 |---|---|---|
-| broke (0-1) | **-4.2pp [-5.6, -2.8]** | negative |
-| partial (2-3) | +2.8pp [+0.6, +4.8] | positive |
-| full (4-5) | **-9.8pp [-11.5, -8.0]** | negative |
+| broke (0-1) | **-4.2pp [-5.7, -2.7]** | negative |
+| partial (2-3) | +2.8pp [+0.5, +5.0] | positive |
+| full (4-5) | **-9.8pp [-11.6, -7.9]** | negative |
 
 **`M12`'s headline effect is substantially kill count, and the remainder changes
 sign by cell.** Among teams that *lost* round N, destruction still predicts
@@ -755,7 +830,7 @@ overlapped and collapsed two distinct states.
 
 | enemy's rounds 2-3 record | mean enemy full-buys entering R4 | 95% CI | n |
 |---|---|---|---|
-| lost both | **1.17** | [1.12, 1.23] | 2,837 |
+| lost both | **1.17** | [1.11, 1.22] | 2,837 |
 | won 2, lost 3 | 3.29 | [3.24, 3.33] | 3,209 |
 | lost 2, won 3 | 3.02 | [2.97, 3.06] | 3,209 |
 | won both | **4.15** | [4.11, 4.18] | 2,837 |

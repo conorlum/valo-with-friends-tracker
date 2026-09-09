@@ -27,7 +27,7 @@ Sources: `specs/2026-09-03-plant-window-and-time-factor-design.md`,
 | **5 seconds** | minimum eligible seconds in a `mean_over_t` denominator before the whole cell falls back | time, "The estimator contract" |
 | **W = 2** | smoother half-window, count-weighted centred moving average | time, "The estimator contract" |
 | **0.2 - 1.7** | time scalar clamp, on the **pre-centred** scalar. Effective range is `[0.2c, 1.7c]` and is reported | time, "Parameterisation" |
-| **adv -1..+1** | the range the middle slope is fitted through (82.6% of affected kills) | time, "Parameterisation" |
+| **adv -1..+1** | the range the middle slope is fitted through (83.0% of affected kills) | time, "Parameterisation" |
 | **adv -3..+2** | fitted support; outside it, clamp to the nearest fitted level | time, "The fitting contract" |
 | **30, 20, 10, 5, 0s** | shape knots, fixed not estimated; the sub-10s plateau is imposed | time, "The fitting contract" |
 | **38.0 / 41.5** | band boundaries, half-open: `[0,38.0)`, `[38.0,41.5)`, `[41.5,45)`; lookup by `floor(t)` | time, "The estimator contract" |
@@ -60,4 +60,37 @@ them afterwards defeats the point.
 
 ## Amendments
 
-None yet. Append here with date and reason; do not edit rows above in place.
+Append here with date and reason; do not edit rows above in place.
+
+### 2026-09-09 -- replay correction; descriptive figures refreshed, no governing value moved
+
+**Reason.** The diagnostics and the two pre-plant fitting modules
+(`preplant_time_model.py`, `preplant_fit_support.py`) replayed alive counts in a
+way that diverged from `impact.py` on self-kills and on resurrections. 15.06% of
+rounds contain at least one, and the error compounds within a round, so 6.42% of
+pre-plant kills were filed under the wrong state. All of them now mirror the
+scorer, and the affected measurements were rerun.
+
+**What did NOT move.** No governing value in "Fixed now" changed. Specifically:
+the clamp `0.2 - 1.7`, the knots `30, 20, 10, 5, 0s`, the fitted support
+`adv -3..+2`, the support floor `60`, `W = 2`, `5 seconds`, `38.0 / 41.5`, and
+the amplitude scale's selected band (`k = 0.60-0.80`) are all unchanged under
+the corrected replay. The `adv -1..+1` range itself is unchanged.
+
+**What did move, and where it is recorded:**
+
+| figure | before | after | note |
+|---|---|---|---|
+| share of affected kills in `adv -1..+1` | 82.6% | **83.0%** | descriptive gloss on an unchanged row; edited in place because the *value* (`adv -1..+1`) did not change |
+| affected population (`M5`) | 168,370 (34.7%) | 168,432 (34.8%) | spec §1 |
+| pre-plant curve, attacker reference rate | 0.749559 | **0.752707** | fitted, not predeclared |
+| pre-plant curve, defender reference rate | 0.378668 | **0.377010** | fitted, not predeclared |
+| worked example, attacker at `dt=16`, alpha=3 | 1.191 | **1.182** | fitted consequence of the two above |
+
+The reference rates are outputs of the fit, not predeclared inputs, so refitting
+them is not an amendment to a fixed value -- they are listed here only so the
+change is discoverable from this file rather than only from the curve JSON.
+
+**Conclusion-level consequences** (both recorded in full at their measurements):
+`M1`'s plateau now holds in three of four even states rather than all four, and
+`M7`'s 2v2 elevation weakened from +4.9pp [+1.5,+8.3] to +3.6pp [+0.2,+7.0].

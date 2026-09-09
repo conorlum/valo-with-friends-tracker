@@ -18,7 +18,7 @@ measurement record's register of withdrawn claims.
 `app/scoring/impact.py`'s `_time_factor` returns a flat `1.0` for every
 pre-plant kill, carrying no time signal whatsoever. On the full 3,124-match
 dataset the population this spec's scalar would touch -- pre-plant kills in
-rounds that were planted -- is **168,370 kills, 34.7% of all kill events**
+rounds that were planted -- is **168,432 kills, 34.8% of all kill events**
 (`M5`). (An earlier draft quoted 122,833 of 178,242 from the 1,151-match
 subset, and against a wider denominator that also counted pre-plant kills in
 never-planted rounds.)
@@ -499,15 +499,20 @@ amplitude(adv, side) = intercept_side + slope_side * adv
 
 - `shape()` is the shared proximity curve, 0 at the far end rising to 1 near the
   plant, **plateauing below 10s** -- the `-5..0` bucket is at or below the
-  `-10..-5` bucket in all four even states, so forcing a continued rise would fit
-  a shape the data contradicts.
+  `-10..-5` bucket in three of the four even states, and in the fourth (2v2, the
+  thinnest cell at n=488) the two are separated by less than the width of either
+  interval. Forcing a continued rise would fit a shape the data do not support.
+  **The plateau is imposed, not fitted** -- see "The fitting contract" -- and
+  that choice stands; what the data supply is the absence of a rise to fit, not
+  a demonstration of a fall. Revised 2026-09-09: this previously read "in all
+  four even states", which the replay correction (`M1`) made false.
 - Four fitted interaction parameters (slope and intercept x attacker/defender)
   plus the shape knots. Fitted with intervals, not hand-set.
 - **Continuous in advantage.** No hard cutoff at `adv = 0` -- the measured effect
   is continuous, and a step there would be an artifact of bucketing.
 - **Bounds 0.2 - 1.7.** Deliberately wide, and cheap: they bind on under 1.5% of
   kills at the floor and 2-4% at the ceiling. **Do not spend fitting effort on
-  the clamps.** The middle slope through `adv -1..+1` governs 82.6% of affected
+  the clamps.** The middle slope through `adv -1..+1` governs 83.0% of affected
   kills and is what must be fitted well.
 
 ### The fitting contract
@@ -1398,9 +1403,13 @@ assertions against it.**
 - A pre-plant deadline / plant-denial term. The policy conclusion stands, but
   **not on the wording used here before 2026-09-06**: `M7`'s "not elevated" was
   itself withdrawn on full data, where 2v2 late kills in never-planted rounds
-  are elevated **+4.9pp [+1.5,+8.3]** (3v3 remains null). The term stays out of
+  are elevated **+3.6pp [+0.2,+7.0]** (3v3 remains null). The term stays out of
   scope because that effect is small against proximity's 16-30pp (`M3`), not
-  because there is no effect.
+  because there is no effect. Revised 2026-09-09: the replay correction (`M1`)
+  moved this from +4.9pp [+1.5,+8.3], mostly by raising the early baseline it is
+  measured against. It still excludes zero but only just, so treat the
+  out-of-scope call as resting on the size comparison against `M3` -- which is
+  unchanged -- rather than on this interval.
 - Any player-level site-pressure ranking. Measured and unreliable.
 - Refitting `FACTOR_WEIGHTS`. Unrelated, already measured at +0.005 AUC, and
   changing two things at once would make the rescore uninterpretable.
