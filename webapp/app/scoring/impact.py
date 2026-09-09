@@ -9,6 +9,7 @@ from app.models import ImpactScore, KillEvent, MatchPlayer, Round, RoundPlayerSt
 from app.models.match import Team
 from app.scoring import econ_component
 from app.scoring.plant_window import attacking_team as _plant_window_attacking_team
+from app.scoring.plant_window import effective_plant_time
 from app.scoring.preplant_empirical_factor import empirical_preplant_factor
 
 # The conversion of the empirical pre-plant win-rate lift into a scoring
@@ -176,12 +177,23 @@ def _time_factor(
     is_attacker: bool | None = None, enable_preplant_empirical: bool = False,
     use_realized: bool = True, alive_counts: tuple[int, int] | None = None,
     postplant_factor_table=None, enable_postplant_leverage: bool = False,
+    self_kill: bool = False,
 ) -> float:
     # Mirrors the original's chronological state machine (planted/plantedTime/
     # exploded/defused flags updated as the event log is walked), reconstructed
     # from the round's final planted/plant_time/exploded/defuse_time. The
     # post-plant window and ramp only apply once a plant has actually happened
     # in this round, and only to kills at or after the plant.
+    #
+    # PHANTOM PLANTS (review finding 5). This raw read is DELIBERATELY not
+    # routed through plant_window.effective_plant_time, which additionally
+    # excludes a planted round decided by the round timer (a "Time Win" -- a
+    # plant that never armed for real). Every branch below that reads
+    # `plant_time` is TODAY'S SHIPPED SCORING: the exploded/defused early
+    # return, the plant+38..45 override and the ramp. Routing them through the
+    # helper would change stored Impact for 76 rounds without a version bump,
+    # and would silently move arm 0, the reference arm of the five-arm report.
+    # The flag-gated paths -- and only those -- ask the helper instead, below.
     plant_time = round_row.plant_time if round_row.planted else None
 
     exploded_effective = round_row.exploded and plant_time is not None and kill_time >= plant_time + 45
@@ -191,34 +203,52 @@ def _time_factor(
     if exploded_effective or defused_effective:
         return 0.5
 
-    if plant_time is not None and kill_time >= plant_time:
-        # Part 4 (spec, "Part 4 -- the post-plant regime"). When enabled, the
-        # measured leverage ratio REPLACES both the side-blind ramp and the
-        # flat plant+38..45 override: the ramp is backwards for attacker kills
-        # and for defender deaths, and the override pays 1.75 to both sides at
-        # the moment their stakes are furthest apart (in a 1v1 at t=38 the
-        # attacker carries 10x the defender's risk, M26). "No hard
-        # discontinuity at plant+38" -- the measured shape already contains
-        # both deadlines and does not need either hard-coded.
-        #
-        # Nothing here is gated by use_realized: at a post-plant kill the
-        # plant has already happened, so seconds-since-plant, the alive counts
-        # and the side are all known at kill time. That is the mirror of Part
-        # 3's leakage gate and it is exact -- V's own fitting leakage is
-        # handled by the out-of-fold table in evaluation, not by this switch.
-        if (
-            enable_postplant_leverage and postplant_factor_table is not None
-            and alive_counts is not None and is_attacker is not None
-        ):
+    # Part 4 (spec, "Part 4 -- the post-plant regime"). When enabled, the
+    # measured leverage ratio REPLACES both the side-blind ramp and the
+    # flat plant+38..45 override: the ramp is backwards for attacker kills
+    # and for defender deaths, and the override pays 1.75 to both sides at
+    # the moment their stakes are furthest apart (in a 1v1 at t=38 the
+    # attacker carries 10x the defender's risk, M26). "No hard
+    # discontinuity at plant+38" -- the measured shape already contains
+    # both deadlines and does not need either hard-coded.
+    #
+    # Nothing here is gated by use_realized: at a post-plant kill the
+    # plant has already happened, so seconds-since-plant, the alive counts
+    # and the side are all known at kill time. That is the mirror of Part
+    # 3's leakage gate and it is exact -- V's own fitting leakage is
+    # handled by the out-of-fold table in evaluation, not by this switch.
+    #
+    # Hoisted ABOVE the legacy post-plant block so it can decline an event the
+    # legacy block still claims. Two declines, both because the factor was
+    # never estimated on that event and the centring constant therefore does
+    # not cover it -- in both cases the event falls through to the legacy
+    # branches, exactly as arm 0 scores it:
+    #   * finding 5 -- a phantom plant has no effective plant time, and
+    #     extract_postplant_kills drops those rounds from the fit;
+    #   * finding 6 -- a self-kill's killer and victim are the same player, so
+    #     `not is_attacker` would name the WRONG side, and
+    #     extract_postplant_kills drops self-kills from the fit too.
+    # For a genuine plant this gate is character-for-character equivalent to
+    # the legacy `plant_time is not None and kill_time >= plant_time` it used
+    # to sit inside: effective_plant_time returns plant_time unchanged there.
+    if (
+        enable_postplant_leverage and postplant_factor_table is not None
+        and alive_counts is not None and is_attacker is not None
+        and not self_kill
+    ):
+        effective_plant = effective_plant_time(round_row)
+        if effective_plant is not None and kill_time >= effective_plant:
             attackers_alive, defenders_alive = alive_counts
             return postplant_factor_table.factor(
-                attackers_alive, defenders_alive, int(kill_time - plant_time),
+                attackers_alive, defenders_alive, int(kill_time - effective_plant),
                 # is_attacker describes the KILLER, so the victim is on the
                 # other side. D is keyed on the VICTIM's side -- that split is
-                # the entire reason the factor is side-dependent.
+                # the entire reason the factor is side-dependent. Sound only
+                # because self-kills are excluded above.
                 victim_is_attacker=not is_attacker,
             )
 
+    if plant_time is not None and kill_time >= plant_time:
         if plant_time + 38 <= kill_time <= plant_time + 45:
             # A kill in this window is denying/clutching a near-explosion round, so
             # it's highly valuable. A death in this window isn't the mirror-image
@@ -238,11 +268,20 @@ def _time_factor(
     # tension is recorded, not resolved, here. NEVER flip this default as
     # part of an unrelated change -- activating it is a deliberate rollout
     # decision (version bump + rescore), same as the model-based scalar.
-    if enable_preplant_empirical and plant_time is not None and is_attacker is not None:
-        return empirical_preplant_factor(
-            plant_time - kill_time, is_attacker,
-            strength=_PREPLANT_EMPIRICAL_STRENGTH, use_realized=use_realized,
-        )
+    #
+    # Finding 5, pre-plant half: seconds-to-plant is measured against the
+    # EFFECTIVE plant. On a phantom plant the curve would otherwise be read at
+    # a distance from a plant that never armed, and the curve was fitted on
+    # "non-self pre-plant kills in a non-phantom round" (spec, Part 3
+    # Observations) -- a population these 537 kills are not in. They fall
+    # through to the flat legacy 1.0 below.
+    if enable_preplant_empirical and is_attacker is not None:
+        effective_plant = effective_plant_time(round_row)
+        if effective_plant is not None:
+            return empirical_preplant_factor(
+                effective_plant - kill_time, is_attacker,
+                strength=_PREPLANT_EMPIRICAL_STRENGTH, use_realized=use_realized,
+            )
     return 1
 
 
@@ -758,6 +797,15 @@ def build_impact_rows_for_match(
                 alive_counts=alive_counts,
                 postplant_factor_table=postplant_factor_table,
                 enable_postplant_leverage=enable_postplant_leverage,
+                # Finding 6. The is_attacker convention above is correct and
+                # stays; what it cannot express is a self-kill, where killer
+                # and victim are the SAME player and Part 4's
+                # `victim_is_attacker = not is_attacker` therefore names the
+                # opposite side. _time_factor declines the Part 4 table for
+                # these and falls back to the legacy factor. The KILL side
+                # needs no such flag: `... if not self_kill else 0` above
+                # means _time_factor is never evaluated for a self-kill there.
+                self_kill=self_kill,
             )
             kill["death_order_bonus_x_swing"] = death_order_bonus * combined_swing_factor
 
