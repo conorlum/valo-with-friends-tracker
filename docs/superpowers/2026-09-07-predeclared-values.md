@@ -390,12 +390,12 @@ file rather than only from a script's stdout.
 
 | figure | value | against |
 |---|---|---|
-| `c` | **1.277851** | not predeclared; `\|c-1\| = 0.2779` |
-| effective bounds | `[0.0639, 2.5557]` | `[c*FLOOR, c*CEIL]` |
+| `c` | **1.287003** | not predeclared; `\|c-1\| = 0.2870`. Corrected from 1.277851; see the claim-3 amendment below |
+| effective bounds | `[0.0644, 2.5740]` | `[c*FLOOR, c*CEIL]` |
 | supported / fallback kills | 149,937 / 39 | -- |
 | out-of-fold calibration MACE, `t >= 38` | 0.0061 | tolerance 0.05, **inside** |
 | out-of-fold calibration MACE, overall | 0.0010 | tolerance 0.05, **inside** |
-| death-side residual | **+2.61%** | tolerance 2%, **EXCEEDS** |
+| death-side residual | **+2.59%** | tolerance 2%, **EXCEEDS** (was +2.61% before the claim-3 correction) |
 
 `c` is identical before and after the remediation, as it must be: it is defined
 on the kill side alone.
@@ -461,3 +461,72 @@ on the fixed composite and never estimates the components separately. Where it
 could reach -- the composite against its controls -- `max |r| = 0.195`. It does
 bear on the labelled per-component diagnostic block, where coefficients are
 refit.
+
+### 2026-09-09 (later) -- external review, three P2 findings; `c` corrected to 1.287003
+
+A second external review of the remediated branch raised three P2 issues. All
+three were checked against source and reproduced numerically before any code
+moved; none was accepted on assertion. **No governing value moved**; `c` is a
+fitted output and its correction is recorded here for discoverability.
+
+**Claim 3 -- centring solved its legacy baseline at the TABLE INDEX.** Upheld,
+and it is the one that moves a number. `extract_postplant_kills` stored only
+`t = int(kill_time - plant_time)`, and the centring solve evaluated the legacy
+ramp there, while runtime evaluates `1 + (kill_time - plant_time) / 53` at the
+real timestamp.
+
+| | |
+|---|---|
+| scored post-plant pre-resolution kills | 151,141 |
+| carrying a fractional offset | **150,962 (99.9%)** |
+| mean fractional part | 0.496 s |
+| summed legacy baseline, exact times | 192,896.5 |
+| summed legacy baseline, `floor(t)` | 191,507.7 |
+| baseline understated by | **0.725%** |
+
+`c` was biased LOW by the same margin: **1.277851 -> 1.287003** (+0.716%),
+effective bounds `[0.0639, 2.5557] -> [0.0644, 2.5740]`, death-side residual
+`+2.61% -> +2.59%` (still exceeding the 2% tolerance, still accepted). The
+split is now explicit: EXACT seconds for the legacy ramp, the floored `t` for
+V, support and the denominator buckets, which remain declared policy.
+
+*One part of the review's claim 3 does not hold and is not adopted:* the
+plant+38..45 window boundary is unaffected. **Zero** scored kills cross it under
+flooring, because `extract_postplant_kills` already caps its window at
+`plant + 45`. The example offered at 45.7s is outside the scored population.
+The finding stands on the ramp arithmetic alone.
+
+**Claim 2 -- the source revision missed the fields that decide LABELS.**
+Upheld. `_REVISION_QUERIES` covered four tables while the replay consumes five.
+`matches.team1_rounds_won` / `team2_rounds_won` decide `match_won_by_team_a`,
+which is T1's entire label and the match-weight half of T2's: correcting a
+final score from 13-11 to 11-13 flipped every label in that match while leaving
+the revision byte-identical, so a cached replay was accepted with the old
+labels. `match_players.agent` was likewise absent although `impact.py:536`
+feeds it to `econ_component.committed_value`. Both are now in the digest.
+
+**Claim 1 -- inner folds do not rebuild the post-plant table.** Structurally
+upheld, **measured inert, and NOT actioned.** The report builds a table per
+OUTER fold, then hands already-scored observations to `_select_config`, whose
+inner-validation features have therefore seen their own outcomes. The outer
+test fold remains clean and the review says so explicitly. But the only
+quantity `_select_config` chooses on this path is L2, over `(0.1, 1.0, 10.0)`:
+
+| L2 | pooled out-of-fold weighted log loss |
+|---|---|
+| 0.1 | 0.67291745 |
+| 1.0 | 0.67291744 |
+| 10.0 | 0.67291738 |
+
+A spread of **7e-8** -- 400x below the smallest arm contrast the report
+resolves (3e-5) and 20,000x below the econ deletion. An optimistically selected
+L2 cannot move any contrast. The proposed nested rebuild costs roughly 30
+additional whole-corpus replays (~15 min -> ~40 min per run) to correct a
+quantity bounded at 7e-8, so it is **recorded as a known, measured limitation
+rather than built.** Revisit if the feature set, sample size or L2 grid changes
+enough for that spread to matter.
+
+Worth noting on direction: the outer coefficient is fitted on training features
+that are in-sample with respect to the table and applied to out-of-sample test
+features. That mismatch's likely effect is to make arms 2 and 3 look WORSE, not
+better, so it is not an optimism concern for the arms that matter.

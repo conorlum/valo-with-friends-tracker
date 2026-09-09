@@ -221,8 +221,10 @@ def _score_population(factors, kills):
     kill_ramp, death_ramp, new, supported, raw_ratios = [], [], [], [], []
     for kill in kills:
         key = (kill.attackers_alive, kill.defenders_alive, kill.t, kill.victim_is_attacker)
-        kill_ramp.append(legacy_postplant_factor(kill.t, for_death=False))
-        death_ramp.append(legacy_postplant_factor(kill.t, for_death=True))
+        # Exact seconds for the legacy ramps, floored `t` (inside `key`) for
+        # the table -- Astra review, claim 3.
+        kill_ramp.append(legacy_postplant_factor(kill.exact_seconds, for_death=False))
+        death_ramp.append(legacy_postplant_factor(kill.exact_seconds, for_death=True))
         ratio = factors.raw_ratio(*key)
         is_supported = ratio is not None
         supported.append(is_supported)

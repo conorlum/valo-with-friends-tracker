@@ -437,7 +437,7 @@ def test_solve_and_apply_centering_preserves_total_kill_side_contribution():
     assert result.fallback_kills == 10
 
     under_ramp = sum(
-        k.kill_order_bonus * legacy_postplant_factor(k.t) for k in kills
+        k.kill_order_bonus * legacy_postplant_factor(k.exact_seconds) for k in kills
     )
     under_new = sum(
         k.kill_order_bonus * factors.factor(
@@ -445,3 +445,88 @@ def test_solve_and_apply_centering_preserves_total_kill_side_contribution():
         for k in kills
     )
     assert under_new == pytest.approx(under_ramp)
+
+
+# --------------------------------------------------------------------------
+# Astra review, claim 3 -- centring must use the EXACT event time
+# --------------------------------------------------------------------------
+
+
+def test_the_legacy_ramp_helper_is_evaluated_at_fractional_time():
+    """The ramp is 1 + (kill_time - plant_time)/53, which runtime evaluates at
+    the real timestamp. Flooring to the table index understates it."""
+    assert legacy_postplant_factor(10.0) == pytest.approx(1 + 10.0 / 53)
+    assert legacy_postplant_factor(10.9) == pytest.approx(1 + 10.9 / 53)
+    assert legacy_postplant_factor(10.9) > legacy_postplant_factor(10.0)
+
+
+def test_exact_seconds_is_carried_and_falls_back_to_the_index():
+    exact = PostPlantKill(match_id=1, round_id=1, t=10, attackers_alive=3,
+                          defenders_alive=2, victim_is_attacker=False, t_exact=10.9)
+    assert exact.exact_seconds == pytest.approx(10.9)
+
+    legacy = PostPlantKill(match_id=1, round_id=1, t=10, attackers_alive=3,
+                           defenders_alive=2, victim_is_attacker=False)
+    assert legacy.exact_seconds == pytest.approx(10.0)
+
+
+def test_centering_preserves_contribution_at_the_REAL_event_times():
+    """The gate, restated against fractional timestamps.
+
+    Every kill sits at second X.9, so a floored baseline is short by 0.9/53 on
+    each one. Solving against floor(t) yields a c that preserves the ROUNDED
+    population's contribution while runtime pays the exact one -- which is the
+    defect: the constant that exists to make total contribution exact is
+    solved against a baseline runtime never uses.
+    """
+    obs = []
+    for t in range(10, 20):
+        obs += _cell(3, 1, t, 0.6, seed=t)
+    table = build_value_table(obs, w=0)
+    kills = [
+        PostPlantKill(match_id=1, round_id=1, t=t, attackers_alive=3,
+                      defenders_alive=1, victim_is_attacker=False,
+                      t_exact=t + 0.9)
+        for t in range(10, 20)
+    ]
+    factors = build_factor_table(table, kills)
+    # Verify the fixture: floored and exact baselines really do differ.
+    floored = sum(legacy_postplant_factor(k.t) for k in kills)
+    exact = sum(legacy_postplant_factor(k.exact_seconds) for k in kills)
+    assert exact > floored
+
+    result = solve_and_apply_centering(factors, kills)
+
+    under_new = sum(
+        k.kill_order_bonus * factors.factor(
+            k.attackers_alive, k.defenders_alive, k.t, k.victim_is_attacker)
+        for k in kills
+    )
+    under_runtime_ramp = sum(
+        k.kill_order_bonus * legacy_postplant_factor(k.exact_seconds) for k in kills
+    )
+    assert under_new == pytest.approx(under_runtime_ramp)
+    assert result.c == pytest.approx(under_runtime_ramp / sum(
+        k.kill_order_bonus * factors.clamped_factor(
+            k.attackers_alive, k.defenders_alive, k.t, k.victim_is_attacker)
+        for k in kills))
+
+
+def test_the_table_index_stays_an_integer_second():
+    """Exact time is for the legacy ramp ONLY. V, support and the denominator
+    buckets remain on whole seconds -- that is declared policy and the fix
+    must not quietly change it."""
+    obs = []
+    for t in range(10, 20):
+        obs += _cell(3, 1, t, 0.6, seed=t)
+    table = build_value_table(obs, w=0)
+    kills = [
+        PostPlantKill(match_id=1, round_id=1, t=t, attackers_alive=3,
+                      defenders_alive=1, victim_is_attacker=False, t_exact=t + 0.9)
+        for t in range(10, 20)
+    ]
+    factors = build_factor_table(table, kills)
+
+    # t=15 and t=15.9 must resolve to the SAME table cell.
+    assert factors.raw_ratio(3, 1, 15, victim_is_attacker=False) == pytest.approx(
+        factors.raw_ratio(3, 1, int(15.9), victim_is_attacker=False))

@@ -127,7 +127,20 @@ _REVISION_QUERIES = (
      "SELECT id, match_id, round_number, outcome, planted, plant_time, "
      "exploded, defused, defuse_time FROM rounds ORDER BY id"),
     ("match_players",
-     "SELECT id, match_id, player_id, team FROM match_players ORDER BY id"),
+     # `agent` is consumed: impact.py:536 passes it to
+     # econ_component.committed_value to back out the free ability credits
+     # tracker.gg folds into a loadout. Omitting it let an agent correction
+     # change scores invisibly.
+     "SELECT id, match_id, player_id, team, agent FROM match_players ORDER BY id"),
+    ("matches",
+     # The MATCH RESULT decides `match_won_by_team_a`
+     # (impact_eval._match_won_by_team_a), which is T1's entire label and the
+     # match-weight half of T2's. Correcting a final score from 13-11 to 11-13
+     # flips every label in that match while touching no round row -- so
+     # without these two columns the revision stayed identical and a cached
+     # replay was accepted with the old labels. Match metadata is corrected
+     # independently of round data; the digest must not assume otherwise.
+     "SELECT id, team1_rounds_won, team2_rounds_won FROM matches ORDER BY id"),
 )
 
 

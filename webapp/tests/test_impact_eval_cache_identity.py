@@ -230,3 +230,48 @@ def test_the_run_identity_actually_records_the_source_revision():
     recorded = _source_revision_for_identity(db)
     assert recorded != ""
     assert recorded == _source_revision(db)
+
+
+# --------------------------------------------------------------------------
+# Astra review, claim 2 -- the digest must see the fields that decide LABELS
+# --------------------------------------------------------------------------
+
+
+def test_correcting_a_final_match_score_changes_the_source_revision():
+    """team1_rounds_won/team2_rounds_won decide match_won_by_team_a, which is
+    T1's entire label and the match-weight half of T2's. Correcting 13-11 to
+    11-13 flips every label in the match while touching no round row, so the
+    revision stayed identical and a cached replay was accepted with the old
+    labels."""
+    from app.services.impact_eval import _match_won_by_team_a
+    from app.models import Match
+
+    db = _identity_session()
+    match = db.query(Match).one()
+    match.team1_rounds_won, match.team2_rounds_won = 13, 11
+    db.commit()
+
+    before_rev = _source_revision(db)
+    before_label = _match_won_by_team_a(db.query(Match).one())
+
+    db.execute(text("UPDATE matches SET team1_rounds_won=11, team2_rounds_won=13"))
+    db.commit()
+    db.expire_all()
+
+    # Verify the fixture really does flip the label -- otherwise the revision
+    # assertion below would pass for the wrong reason.
+    assert _match_won_by_team_a(db.query(Match).one()) is not before_label
+    assert _source_revision(db) != before_rev
+
+
+def test_editing_an_agent_changes_the_source_revision():
+    """impact.py:536 passes match_players.agent to
+    econ_component.committed_value, to back out the free ability credits
+    tracker.gg folds into a loadout figure. It was in no query at all."""
+    db = _identity_session()
+    before = _source_revision(db)
+
+    db.execute(text("UPDATE match_players SET agent='Chamber' WHERE agent='Jett'"))
+    db.commit()
+
+    assert _source_revision(db) != before

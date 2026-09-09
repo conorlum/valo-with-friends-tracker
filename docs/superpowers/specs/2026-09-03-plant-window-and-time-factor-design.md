@@ -1301,12 +1301,22 @@ denominator here is therefore `mean(K*T*legacy_death_factor)`. This sentence
 was read the other way in implementation and cost a 4x understatement of the
 reported figure; see the 2026-09-09 amendment in `predeclared-values.md`.
 
-**Measured (full data, 2026-09-09):** `c = 1.277851`, `|c-1| = 0.2779`,
-effective bounds `[0.0639, 2.5557]`, over 149,937 supported and 39 fallback
+**Measured (full data, 2026-09-09):** `c = 1.287003`, `|c-1| = 0.2870`,
+effective bounds `[0.0644, 2.5740]`, over 149,937 supported and 39 fallback
 kills. Out-of-fold calibration MACE is 0.0061 for `t >= 38` and 0.0010 overall,
-both inside the predeclared 0.05. The death-side residual is **+2.61%**, which
+both inside the predeclared 0.05. The death-side residual is **+2.59%**, which
 **exceeds** the 2% tolerance. Per this spec's own rule that is a finding and
 not something to tune away, and it is recorded rather than acted on.
+
+**`c` is solved at the EXACT event time, not the table index.** `t` indexes V,
+support and the denominator buckets and stays a whole second -- declared
+policy. The legacy baseline `c` preserves against is `1 + (kill_time -
+plant_time) / 53`, which runtime evaluates at the real timestamp, so solving it
+at `floor(t)` understates the baseline: 99.9% of the 151,141 scored kills carry
+a fractional offset (mean 0.496s) and the summed baseline came out 0.725% low.
+That biased `c` down by the same amount (1.277851 against the correct
+1.287003). Mixing the two times is easy to do and invisible in the output --
+the solve reports a clean preservation for a population runtime never scores.
 
 **Fallback cells are held at exactly 1.0 and excluded from the centred
 population.** Centring them multiplies the neutral fallback by `c`, which

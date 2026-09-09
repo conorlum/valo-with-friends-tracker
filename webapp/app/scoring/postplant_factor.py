@@ -64,6 +64,23 @@ class PostPlantKill:
     # residual is computed on the weight deaths actually score with (K*T)
     # rather than at a placeholder T=1.
     traded_factor: float = 1.0
+    # EXACT seconds since the plant. `t` above is the TABLE INDEX -- V,
+    # support and the denominator buckets are defined on whole seconds and
+    # stay that way, which is declared policy. But the LEGACY baseline the
+    # centring equation preserves against is `1 + (kill_time - plant_time)/53`,
+    # which runtime evaluates at the REAL timestamp. Solving that baseline at
+    # floor(t) understates it: 99.9% of scored kills carry a fractional offset
+    # (mean 0.496s), the summed baseline comes out 0.725% low, and c is biased
+    # down by about the same. Defaulted to None so existing constructions keep
+    # working; `exact_seconds` below falls back to `t` when it is absent.
+    t_exact: float | None = None
+
+    @property
+    def exact_seconds(self) -> float:
+        """Seconds since the plant for LEGACY-factor evaluation. Never use
+        this as a table index: `t` is the index, and the split is the whole
+        point of the field."""
+        return float(self.t) if self.t_exact is None else self.t_exact
 
 
 def extract_postplant_kills(db) -> list[PostPlantKill]:
@@ -142,6 +159,9 @@ def extract_postplant_kills(db) -> list[PostPlantKill]:
             out.append(PostPlantKill(
                 match_id=round_row["match_id"], round_id=round_id,
                 t=int(kill_time - plant_time),
+                # The table index is floored above; the legacy baseline needs
+                # the real offset (Astra review, claim 3).
+                t_exact=float(kill_time - plant_time),
                 attackers_alive=a_before, defenders_alive=d_before,
                 victim_is_attacker=(victim_team == attackers),
                 kill_order_bonus=_kill_order_bonus(
@@ -329,8 +349,14 @@ class _PostPlantRoundShim:
 _SHIM = _PostPlantRoundShim()
 
 
-def legacy_postplant_factor(t: int, for_death: bool = False) -> float:
+def legacy_postplant_factor(t: float, for_death: bool = False) -> float:
     """Today's shipped `_time_factor` at t seconds past the plant.
+
+    `t` IS A FLOAT AND MUST BE THE EXACT OFFSET, not the table index. The
+    legacy ramp is `1 + (kill_time - plant_time) / 53`, evaluated by runtime
+    at the real timestamp; passing floor(t) understates it on 99.9% of scored
+    kills and biases the centring constant low (Astra review, claim 3). Use
+    `PostPlantKill.exact_seconds`, never `.t`.
 
     `for_death` is not cosmetic and is the whole of review finding 4: in
     plant+38..45 the legacy scorer pays 1.75 on the kill side and 0.5 on the
@@ -361,8 +387,11 @@ def solve_and_apply_centering(table: PostPlantFactorTable, kills: list[PostPlant
     for kill in kills:
         key = (kill.attackers_alive, kill.defenders_alive, kill.t, kill.victim_is_attacker)
         bonuses.append(kill.kill_order_bonus)
-        kill_ramp.append(legacy_postplant_factor(kill.t, for_death=False))
-        death_ramp.append(legacy_postplant_factor(kill.t, for_death=True))
+        # EXACT seconds for the legacy baselines (what runtime actually pays),
+        # the floored `t` inside `key` above for the table lookups (declared
+        # policy). Mixing them is Astra review claim 3.
+        kill_ramp.append(legacy_postplant_factor(kill.exact_seconds, for_death=False))
+        death_ramp.append(legacy_postplant_factor(kill.exact_seconds, for_death=True))
         supported.append(table.is_supported(*key))
         # The UNCENTRED clamped factor: c is by definition the constant that
         # rescales these, so solving against already-centred values would be
