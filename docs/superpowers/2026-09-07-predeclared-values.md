@@ -739,3 +739,85 @@ a reader. Reviewed on the fixed ten: at `A = 1.25` the mean player-match delta
 is **-4.4** with **54%** of players changing rank; at `A = 5.0` it is
 **+12,044** (median **+271%**) with **32%** changing rank. The lower churn at
 `A = 5` is not stability -- it is damage drowning out the other two terms.
+
+### 2026-09-09 (later still) -- T4: the 4/2/1 target, and a PREDICTION recorded before the run
+
+**Nothing below has been run.** Committed first, including a falsifiable
+prediction about what the fit will return, so the result cannot be
+rationalised after the fact in either direction.
+
+**The target, at the project owner's direction.** A weighted mean of three
+round outcomes, from the round the components were scored in:
+
+| round | weight |
+|---|---|
+| **N** (the round itself) | **4/7** |
+| N+1 | 2/7 |
+| N+2 | 1/7 |
+
+`y` = the availability-weighted mean of "team A won", `w` = the available
+weight. Windows stop at the half boundary, as T2's do; round N is always
+available.
+
+**`round_result` LEAVES the controls.** It is the label now. Controls are
+`CONTROLS_CONTEXT` only: `score_diff_before`, `attacking_is_team_a`,
+`loadout_diff`, `full_buy_count_diff`.
+
+**Three parameters, two identified.** `impact = A*damage + B*leverage +
+C*econ_component`. The evaluator puts a free coefficient on the composite, so
+overall scale is absorbed: **B is fixed at 1** and the search is a 2-D grid
+over (A, C).
+
+| value | |
+|---|---|
+| A grid (absolute) | `0, 0.3125, 0.625, 0.9375, 1.25, 1.5625, 1.875, 2.5, 3.75, 5.0` |
+| C grid | `0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0` |
+| incumbent | `A = 1.25, C = 1.0` |
+| mode | **REALIZED** (`use_realized_swing=True`) -- required, or econ_component is identically 0 |
+| folds / bootstrap / sign | 5, seed 0 / 2,000 match-clustered / `loss(fitted) - loss(incumbent)`, positive = worse |
+
+**Decision rule, fixed now.** An interval spanning zero is INCONCLUSIVE in
+those words and the incumbent `(1.25, 1.0)` stands.
+
+## THE PREDICTION, recorded before the run
+
+Round N at 4/7 makes it ~57% of the label, and the features were computed
+FROM round N. Measured earlier today, against round N's own result:
+
+| term | r | R^2 |
+|---|---|---|
+| leverage | +0.9379 | 0.880 |
+| damage | +0.8473 | 0.718 |
+| econ_component | +0.5469 | 0.299 |
+
+**Predicted, and the reason to write it down: this fit WILL resolve** -- unlike
+the A search, whose interval spanned zero -- **and the resolution will rank the
+three terms by how directly each restates round N's outcome rather than by how
+much each is worth.** Specifically:
+
+1. The contrast will EXCLUDE zero (a "significant" result).
+2. `C` will land at or near the BOTTOM of its grid (0 or 0.25).
+3. `A` will move DOWN from 1.25, toward the term with the higher round-N
+   correlation (leverage, whose weight is pinned at 1).
+4. The held-out loss surface will be far steeper than the A search's 0.00019
+   spread, because the label is now largely a restatement of the features.
+
+If all four land, the fit is an artifact of the target and **must not be
+adopted**, however tight its interval. A tautology with a confidence interval
+is still a tautology.
+
+**What would falsify the artifact reading**, and would be genuinely
+interesting: `C` coming back LARGE. That cannot be explained by round-N
+tautology, since econ_component is the WEAKEST of the three on round N.
+Caveat already known: `econ_component` reads round N+1's loadouts and N+1 is
+2/7 of this label, so a large C could instead be that leak. The two
+explanations are distinguishable by re-running with the N+1 term removed;
+that is not part of this run.
+
+**Standing objection, recorded so adopting this target later is a decision and
+not a drift.** The whole evaluation design excludes round N deliberately: "a
+round's own kills are, near-deterministically, that round's outcome, so
+scoring impact against it measures nothing." This target reverses that. It is
+run because the project owner asked for it and because a recorded, checkable
+prediction makes the result informative either way -- not because the
+tautology argument has been withdrawn.
