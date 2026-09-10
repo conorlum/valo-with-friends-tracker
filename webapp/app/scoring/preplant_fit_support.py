@@ -34,6 +34,8 @@ def extract_preplant_observations_with_factors(
         mp["id"]: dict(mp)
         for mp in db.execute(text("SELECT id, match_id, team FROM match_players")).mappings()
     }
+    # Built once for _traded_factor's team check, not per kill.
+    team_of = {mp_id: Team[mp["team"]] for mp_id, mp in match_players.items()}
 
     kills_by_round: dict[int, list[dict]] = {}
     for k in db.execute(text(
@@ -93,7 +95,10 @@ def extract_preplant_observations_with_factors(
                 kill_order_bonuses.append(
                     _kill_order_bonus(alive[Team.TEAM_2], alive[Team.TEAM_1], killer_team, self_kill=False)
                 )
-                traded_factors.append(_traded_factor(kills, kill, self_kill=False))
+                traded_factors.append(_traded_factor(
+                    kills, kill, self_kill=False,
+                    team_of=team_of,
+                ))
 
             # REPLAY POLICY -- must mirror impact.py, exactly as the
             # kill-order bonus above already does. See the matching comment in

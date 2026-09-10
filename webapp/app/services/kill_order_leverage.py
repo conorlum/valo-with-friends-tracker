@@ -129,6 +129,9 @@ def kill_terms_for_match(
     loadouts and any forward-looking model trained on it would leak.
     """
     out: dict[int, list[KillTerm]] = {}
+    # For _traded_factor's team check: a killer who dies to their own
+    # side did not trade the victim back (impact.py's _traded_factor).
+    team_of = {mp_id: mp.team for mp_id, mp in match_players.items()}
 
     for round_number, kills in round_kills.items():
         round_row = rounds_by_number[round_number]
@@ -197,7 +200,7 @@ def kill_terms_for_match(
             killer_tier = _categorize_econ(stats[killer_id]["loadout"])
             victim_tier = _categorize_econ(stats[victim_id]["loadout"])
             swing = swing_by_team[Team.TEAM_2 if killer_team == Team.TEAM_1 else Team.TEAM_1]
-            traded = _traded_factor(kills, event, self_kill)
+            traded = _traded_factor(kills, event, self_kill, team_of=team_of)
 
             if self_kill:
                 kill_half = (0.0, 0.0, 0.0)

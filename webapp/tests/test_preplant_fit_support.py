@@ -73,7 +73,7 @@ def test_kill_order_bonus_and_trade_match_hand_computation():
     assert obs[kill0].exact_state == "5v5"
     assert obs[kill0].is_attacker is True
     assert kobs[kill0] == 150.0
-    assert trades[kill0] == 0.2  # traded back 2s later, of a 10s window
+    assert trades[kill0] == 0.17  # traded back 2s later -> the 2-3s bucket
 
     assert obs[kill1].adv == -1
     assert obs[kill1].exact_state == "4v5"

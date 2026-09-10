@@ -66,7 +66,11 @@ class CalculatedImpact:
 # docs/player_page_render_speed.txt) so a player_view_cache row computed from
 # stale ImpactScore rows never outlives a rescoring. Same rationale/pattern
 # as app.services.fight_ev.CALCULATION_VERSION.
-IMPACT_CALCULATION_VERSION = 1
+# 2 (2026-09-10): the trade-cost schedule replaced `trade_time / 10`, the trade
+# window closed from 10s to 6s for both the discount and the displayed count,
+# and a killer who dies to their OWN side no longer trades the victim back.
+# Every stored ImpactScore row predates this and needs a rescore.
+IMPACT_CALCULATION_VERSION = 2
 
 _KILL_ORDER_GRAPH = nx.DiGraph()
 _KILL_ORDER_GRAPH.add_weighted_edges_from(
@@ -317,19 +321,70 @@ def _time_factor(
     return 1
 
 
-def _traded_factor(round_kills: list[dict], checking_kill: dict, self_kill: bool) -> float:
+# The trade-cost schedule, declared by the project owner 2026-09-10. Each pair
+# is (upper bound in seconds, COST multiplier charged on the traded death); a
+# trade at or beyond TRADE_WINDOW_SECONDS is not a trade at all and the death is
+# charged in full.
+#
+# Replaces `trade_time / 10`, which was linear, free at t=0, and still granted a
+# discount at 9s. Two deliberate changes: a traded death is never free, because
+# you did still die; and slower trades are forgiven substantially less.
+TRADE_COST_SCHEDULE: tuple[tuple[float, float], ...] = (
+    (1.0, 0.05),
+    (2.0, 0.10),
+    (3.0, 0.17),
+    (4.0, 0.35),
+    (5.0, 0.50),
+    (6.0, 0.75),
+)
+TRADE_WINDOW_SECONDS = 6.0
+
+
+def _traded_factor(
+    round_kills: list[dict], checking_kill: dict, self_kill: bool,
+    team_of: dict | None = None,
+) -> float:
+    """The COST multiplier charged on a traded death, from TRADE_COST_SCHEDULE.
+
+    A traded death is never free -- 5% is the floor, because you did still die
+    -- and a gap of TRADE_WINDOW_SECONDS or more is not a trade at all.
+
+    `team_of` maps match_player_id -> team. When it is given, a killer who dies
+    to their OWN side does not trade the victim back -- nobody on the victim's
+    team avenged them (project owner's ruling, 2026-09-10). A killer who
+    self-kills or falls to the environment DOES still count as a trade, which
+    is the larger population and is deliberately kept.
+
+    The search continues past a team-kill rather than stopping, so a killer who
+    is team-killed, revived, and then killed again by the victim's own side
+    inside the window is still a trade.
+
+    Omitting `team_of` skips the team check only. It does NOT restore the old
+    `trade_time / 10` curve or the 10s window, so docs/superpowers/diagnostics
+    (the one caller that omits it) no longer reproduces the numbers it
+    recorded -- re-derive rather than re-run it if those are needed again.
+    """
     if self_kill:
         return 1
 
-    time_to_trade = 10
     killer_id = checking_kill["killer_match_player_id"]
     death_time = checking_kill["event_time_seconds"]
 
     for kill in round_kills:
         if kill["death_match_player_id"] == killer_id:
             trade_time = kill["event_time_seconds"] - death_time
-            if 0 <= trade_time <= time_to_trade:
-                return trade_time / time_to_trade
+            if 0 <= trade_time < TRADE_WINDOW_SECONDS:
+                if team_of is not None:
+                    avenger = kill["killer_match_player_id"]
+                    if (
+                        avenger is not None
+                        and avenger != killer_id
+                        and team_of.get(avenger) == team_of.get(killer_id)
+                    ):
+                        continue  # team-kill: not a trade, keep looking
+                for upper, cost in TRADE_COST_SCHEDULE:
+                    if trade_time < upper:
+                        return cost
 
     return 1
 
@@ -675,6 +730,9 @@ def build_impact_rows_for_match(
     match_players: dict[int, MatchPlayer] = {
         mp.id: mp for mp in db.query(MatchPlayer).filter_by(match_id=match_id).all()
     }
+    # Built once for _traded_factor's team check (a killer who dies to their
+    # own side did not trade the victim back).
+    team_of: dict[int, Team] = {mp_id: mp.team for mp_id, mp in match_players.items()}
 
     round_player_stats: dict[int, dict[int, dict]] = defaultdict(dict)
     for stat in db.query(RoundPlayerStat).join(Round).filter(Round.match_id == match_id).all():
@@ -705,10 +763,15 @@ def build_impact_rows_for_match(
             }
         )
 
-    # Trade detection: kill D1 (A kills B, an enemy kill), followed within 10s by
-    # kill D2 where B's teammate C kills A. From C's perspective, C traded for B;
-    # from B's perspective, B was traded by C.
-    time_to_trade = 10
+    # Trade detection: kill D1 (A kills B, an enemy kill), followed inside the
+    # trade window by kill D2 where B's teammate C kills A. From C's
+    # perspective, C traded for B; from B's perspective, B was traded by C.
+    #
+    # Shares TRADE_WINDOW_SECONDS with the scoring discount (project owner,
+    # 2026-09-10). These were 10s while the discount ramped over 10s, so a
+    # 9.5s "trade" -- forgiven only 5% by the scorer -- was still DISPLAYED as
+    # a full trade on the match page, indistinguishable from an instant one.
+    time_to_trade = TRADE_WINDOW_SECONDS
     trade_kill_counts: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
     trade_death_counts: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
     trade_kill_targets: dict[int, dict[int, dict[int, int]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
@@ -840,7 +903,8 @@ def build_impact_rows_for_match(
                 combined_swing_factor = 1.0
             kill["kill_order_bonus_x_swing"] = kill_order_bonus * combined_swing_factor if not self_kill else 0
 
-            death_order_bonus = kill_order_bonus * _traded_factor(kills, kill, self_kill)
+            death_order_bonus = kill_order_bonus * _traded_factor(
+                kills, kill, self_kill, team_of=team_of)
             kill["death_order_bonus"] = death_order_bonus
 
             if self_kill:

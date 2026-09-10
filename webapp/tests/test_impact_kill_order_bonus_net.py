@@ -96,9 +96,11 @@ def test_net_kill_order_bonus_reflects_the_traded_factor_discount():
     (4v5 -> 4v4, weight 140).
 
     B1's death_order_bonus is discounted because B1's KILLER (A1) was
-    traded back within 10s: trade_time = 3.0 - 1.0 = 2.0, factor 2.0/10 =
-    0.2, so B1's death_order_bonus = 150 * 0.2 = 30 -> net kill_order_bonus
-    -30. A1's own death (to B2) is not itself traded (B2 lives past the
+    traded back inside the window: trade_time = 3.0 - 1.0 = 2.0, which the
+    2026-09-10 schedule charges at 0.17 (the 2-3s bucket), so B1's
+    death_order_bonus = 150 * 0.17 = 25.5 -> net kill_order_bonus -26.
+    (Before that schedule this was factor 2.0/10 = 0.2 and a net of -30.)
+    A1's own death (to B2) is not itself traded (B2 lives past the
     round in this fixture), so A1's death_order_bonus = 140 * 1 = 140,
     giving A1 a net of 150 (as killer) - 140 (as victim) = 10. B2 has no
     death this round: net = 140 (as killer) - 0 = 140."""
@@ -132,5 +134,5 @@ def test_net_kill_order_bonus_reflects_the_traded_factor_discount():
     rows = {r.match_player_id: r for r in build_impact_rows_for_match(db, match.id)}
 
     assert rows[a1.id].kill_order_bonus == 10
-    assert rows[b1.id].kill_order_bonus == -30
+    assert rows[b1.id].kill_order_bonus == -26
     assert rows[b2.id].kill_order_bonus == 140

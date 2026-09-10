@@ -159,12 +159,13 @@ def test_an_untracked_transition_lands_on_the_fallback_parameter():
 
 
 def test_the_traded_factor_is_folded_into_the_death_half_only():
-    """Kill at t=10 traded back at t=14 -> factor 0.4 on the death half."""
+    """Kill at t=10 traded back at t=14 -> a 4s trade, which the 2026-09-10
+    schedule charges at 0.50 on the death half (was 0.4 under trade_time/10)."""
     plain = kill_terms_for_match(*make_match([kill(1, 6, 10.0)]))[5][0]
     traded = kill_terms_for_match(*make_match([kill(1, 6, 10.0), kill(7, 1, 14.0)]))[5][0]
-    assert np.isclose(traded.traded, 0.4)
+    assert np.isclose(traded.traded, 0.5)
     assert np.allclose(traded.kill, plain.kill)
-    assert np.allclose(traded.death, np.array(plain.death) * 0.4)
+    assert np.allclose(traded.death, np.array(plain.death) * 0.5)
 
 
 def test_death_untraded_is_the_undiscounted_half_and_the_invariant_holds():
@@ -181,14 +182,40 @@ def test_death_untraded_is_the_undiscounted_half_and_the_invariant_holds():
     assert np.all(discount > 0)
 
 
-def test_an_instant_trade_gives_a_zero_factor_without_a_division():
-    """_traded_factor returns trade_time/10, so a same-second trade is
-    exactly 0.0 -- which is why death_untraded is stored rather than
-    recovered by dividing."""
+def test_an_instant_trade_costs_the_declared_floor_not_zero():
+    """A same-second trade is charged 0.05, the 2026-09-10 floor: a traded
+    death is never free, because you did still die.
+
+    Under the old trade_time/10 this was exactly 0.0, which is why
+    death_untraded is stored rather than recovered by dividing. The floor
+    makes that division defined again, but the stored field stays the
+    contract -- consumers read it by name."""
     term = kill_terms_for_match(*make_match([kill(1, 6, 10.0), kill(7, 1, 10.0)]))[5][0]
-    assert term.traded == 0.0
-    assert np.allclose(term.death, (0.0, 0.0, 0.0))
-    assert np.any(np.array(term.death_untraded) != 0.0)
+    assert term.traded == 0.05
+    assert np.allclose(term.death, np.array(term.death_untraded) * 0.05)
+    assert np.any(np.array(term.death) != 0.0)
+
+
+def test_a_killer_killed_by_their_own_teammate_is_not_a_trade():
+    """Project owner's ruling, 2026-09-10: a killer who dies to their OWN side
+    was not traded for -- nobody on the victim's team avenged them, so the
+    victim's death must be charged in full.
+
+    _traded_factor searched only for "the killer subsequently died" and never
+    checked who killed them, so this returned 0.4 (a 60% discount) on the
+    strength of a team-kill. Measured across the full corpus this reached 68 of
+    142,804 discounted deaths."""
+    term = kill_terms_for_match(*make_match([kill(1, 6, 10.0), kill(2, 1, 14.0)]))[5][0]
+    assert term.traded == 1.0
+
+
+def test_a_killer_who_self_kills_still_counts_as_a_trade():
+    """The same ruling, other half: a killer who self-kills or falls to the
+    environment DOES leave the victim traded. This is the larger population
+    (1,366 of 142,804) and is deliberately kept, so it is pinned here rather
+    than left to fall out of the team check."""
+    term = kill_terms_for_match(*make_match([kill(1, 6, 10.0), kill(1, 1, 14.0)]))[5][0]
+    assert term.traded == 0.5
 
 
 def test_econ_mismatch_moves_the_kill_half_econ_factor():
@@ -303,7 +330,7 @@ def test_the_trade_discount_is_visible_per_player():
     victim = [p for p in players if p.match_player_id == 6][0]
     discount = victim.death_untraded - victim.death
     assert discount.sum() > 0
-    assert np.allclose(victim.death, victim.death_untraded * 0.4)
+    assert np.allclose(victim.death, victim.death_untraded * 0.5)
 
 
 def test_damage_is_carried_through_and_differenced():

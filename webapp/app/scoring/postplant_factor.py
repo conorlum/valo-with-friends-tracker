@@ -99,6 +99,8 @@ def extract_postplant_kills(db) -> list[PostPlantKill]:
         mp["id"]: dict(mp)
         for mp in db.execute(text("SELECT id, team FROM match_players")).mappings()
     }
+    # Built once for _traded_factor's team check, not per kill.
+    team_of = {mp_id: Team[mp["team"]] for mp_id, mp in match_players.items()}
     kills_by_round: dict[int, list[dict]] = defaultdict(list)
     for k in db.execute(text(
         "SELECT round_id, killer_match_player_id, death_match_player_id, event_time_seconds "
@@ -167,7 +169,10 @@ def extract_postplant_kills(db) -> list[PostPlantKill]:
                 kill_order_bonus=_kill_order_bonus(
                     team1_index, team2_index, killer_team, False
                 ),
-                traded_factor=_traded_factor(kills, kill, False),
+                traded_factor=_traded_factor(
+                    kills, kill, False,
+                    team_of=team_of,
+                ),
             ))
 
     return out
