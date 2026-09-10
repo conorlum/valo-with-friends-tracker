@@ -949,3 +949,40 @@ not win-prediction/causal validation or an optimization target. More non-zero
 sums do not by themselves mean a better score. Adoption requires explaining
 the concrete behavior and remaining asymmetric credit/debit assumptions to
 the owner; these runs do not automatically select or activate a candidate.
+
+### 2026-09-10 -- independent econ experiment RESULT (no adoption)
+
+Completed the above declaration on 3,124 matches / 659,290 player-rounds in
+a repeatable-read, read-only local snapshot. The incumbent matches its econ
+observer and scorer rows exactly. Maximum unrounded round net: 4.44e-16;
+rounded match sums reproduce mean -0.2692 and SD 3.1217.
+
+The independent debit fixes the requested missing-debit behavior, but with
+the floor retained it makes both teams net-positive in 26,414 / 34,142 late
+rounds (77.36%). With the floor removed this is 4,376 (12.82%); both-negative
+late rounds become possible, 130 (0.38%). Early results for either independent
+arm: 1,132 / 18,118 both-negative (6.25%) and 277 both-positive (1.53%).
+Floor removal alone remains zero-sum, as expected.
+
+At the existing scale, match 3104's ternstyle#GIGI econ changes +11 -> -11 in
+R14, stays 0 in R16, and changes -101 -> 0 in R17 under the combined arm.
+In R5 both teams fully re-arm but retain positive modeled scarcity; the
+combined arm produces TEAM_1 -195 and TEAM_2 -132, instead of the incumbent's
+rounding-only net totals. The saving-team question remains a product choice.
+
+Reported proposed anchors (NOT installed): incumbent 899.8970, independent
+1005.3451, no_floor 1549.8498, independent_no_floor 1672.6149. The current
+incumbent raw SD is 0.198992, so the old 1007.9209 anchor no longer reproduces
+its historical SD match; reference time SD still reproduces 179.0723. This
+entry records the discrepancy without overwriting the historical value.
+
+Recommendation: review independent_no_floor further, but do not call its
+non-zero sums proof of better attribution. Small removals can still allocate
+an entire positive credit pool, late harm reuses the early scarcity curve,
+and 4,952 eligible player-rounds contain repeated counted equipment losses.
+No production defaults, versions, weights or scores changed. Behavioral
+verification: 44 tests pass; reinstating the old allocator behind the new API
+produces 15 numerical failures (four shared behaviors continue to pass).
+
+Full record: `docs/superpowers/econ-counterfactual-results/conclusions.md`,
+`walkthrough.md` and `measurements.json` in the same directory.
