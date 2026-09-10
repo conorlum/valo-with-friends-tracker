@@ -1044,3 +1044,36 @@ Pistol-winner round-2 losses are not guaranteed to exist in this one game;
 missing histories are identified rather than fabricated as match evidence.
 
 Specification: docs/superpowers/specs/2026-09-10-econ-buy-disruption-implementation.md.
+
+### 2026-09-10 -- Abyss development review: V2 severity rule, before recalculation
+
+The first calculation completed with 163 reconciliation checks. It flags six
+team-rounds. R22 TEAM_2 exposes a mismatch with the owner's definition:
+target=19500, capped equipment plus bank=17750 (D=1750), but next loadouts are
+600/2150/700/700/4650, four below 4200. A rule scoring only the 1750 funding
+gap does not represent the larger coordinated buy downgrade the owner described.
+The previously declared Q=min(D,L) remains a RESOURCE-restoration audit; it
+is no longer the candidate's buy-disruption severity pool after this revision.
+
+V2, declared before calculating its examples:
+
+```
+G = sum(max(0,target_i - next_paid_i))
+activation = min(1,D/3900)
+severity_pool = min(L, G*activation)
+```
+
+Use severity_pool instead of Q in the event-credit allocation. Everything
+else stays as declared: targets, eligibility, first-kit exposure, background
+0.10, disruption coefficient 1.00, independent debit, scale and C. The gate's
+3900 is ONE reference full kit, chosen as a product unit, not fitted. It
+avoids a hard jump for a tiny funding gap; a gap of a full kit activates the
+whole observed downgrade, capped by the recorded losses. Funding adequate
+for the target still means activation=0 even if the observed buy is weak.
+
+This is a DEVELOPMENT revision prompted by a reviewed failure case, not an
+independent validation on Abyss. Preserve the first calculation and report
+both rules. No target outcomes or loss curves selected this formula. The
+severity pool is a score index in equipment-value units, not a claim that
+restoring those many credits is necessary or that every cheap buy was caused
+by a kill. Round 22 cannot be reused as independent evidence for the revision.

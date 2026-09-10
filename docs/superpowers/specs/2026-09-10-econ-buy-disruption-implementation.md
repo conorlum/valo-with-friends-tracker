@@ -1,7 +1,7 @@
 # Economy impact: replacement cost and disruption of the next buy
 
-Date: 2026-09-10. Status: implementation specification / reference candidate,
-pending the worked review and broader validation. No production activation.
+Date: 2026-09-10. Status: V2 implementation specification / reference candidate,
+revised during the worked review; broader validation pending. No production activation.
 Owner direction: `../2026-09-10-econ-buy-disruption-design.md`.
 
 ## 1. Purpose and accepted interpretation
@@ -105,6 +105,9 @@ H_T = sum(target_i)
 U_T = sum(min(P_i,N+1, target_i)) + sum(bank_i,N+1)
 D_T = max(0, H_T - U_T)
 Q_T = min(D_T, L_T)
+G_T = sum(max(0, target_i - P_i,N+1))
+activation_T = min(1, D_T / 3900)
+severity_pool_T = min(L_T, G_T * activation_T)
 ```
 
 U caps each player's equipment at their target so an expensive surplus item
@@ -127,6 +130,23 @@ loadout with enough unspent pooled resources -> no large disruption bonus.
 Any claim that the exact gun buy was prevented must additionally be supported
 by the shown next-round loadouts, not just the scalar estimate.
 
+**V2: next-buy severity, not only the cash gap.** G measures the observed
+equipment downgrade from the reference. The funding gap D activates it
+smoothly: a gap of one reference kit, 3900, activates the whole observed
+downgrade. Smaller gaps activate proportionately less. The loss cap prevents
+a cheap casualty claiming an unlimited existing downgrade. If D=0, a weak
+observed buy alone gets no large reward.
+
+Use severity_pool, not Q, in scoring. Q remains an audit quantity measuring
+restorable resource shortfall; severity_pool is an equipment-value **score
+index**, not literal missing cash or a causal loss estimate. It may exceed D.
+The one-kit activation threshold is an explicit policy choice, not a fit.
+
+The initial V1 used Q as the bonus pool. Abyss R22 exposed why this was too
+narrow for the owner's coordinated force/save definition. V2 was declared
+before recalculation and the V1 artifact is preserved. Abyss therefore serves
+as a development walkthrough, not independent validation of V2.
+
 ## 6. Kill-side economic credit
 
 Review constants, declared before the worked calculation:
@@ -141,7 +161,7 @@ For each eligible enemy event e against team T, with exposure v_e:
 
 ```
 background_e = BACKGROUND * v_e / R
-disruption_e = DISRUPTION * Q_T / R * v_e / L_T   if L_T > 0, else 0
+disruption_e = DISRUPTION * severity_pool_T / R * v_e / L_T   if L_T > 0, else 0
 credit_e = background_e + disruption_e
 ```
 
@@ -153,7 +173,8 @@ proportional to paid equipment exposure, not necessarily equal per kill.
 
 The background is small and proportional to what was lost. There is no
 automatic 0.5 award for a single cheap kill. At the review scale, a 3900-kit
-enemy kill gives about 20 points when Q=0, up to about 222 if Q=L. A cheap
+enemy kill gives about 20 points when severity_pool=0, up to about 222 if
+severity_pool=L. A cheap
 500-kit kill is proportionately smaller (about 3 to 28 points). These are
 policy examples, not fitted estimates or percentages of round win probability.
 
