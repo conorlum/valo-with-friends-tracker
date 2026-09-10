@@ -1107,3 +1107,29 @@ or observed guns lost. Detailed findings: docs/superpowers/abyss-buy-disruption-
 No production scorer activation, database rescore, version change or deployment
 was performed as part of this work; unrelated concurrent working-tree edits
 are outside this experiment.
+
+### 2026-09-10 -- owner-directed 30% / 80% death penalties, before calculation
+
+Use the frozen Abyss 3104 V2 source and killer credits, C=1 and scale=1007.9209.
+Replace the own-wealth scarcity debit for this comparison. Interpret the
+owner's percentages relative to the death's modeled economic damage value,
+not as multipliers on the retired scarcity debit or on the raw kit price:
+
+```
+background = 0.10 * own_first_loss / 19500
+disruption = severity_pool / 19500 * own_first_loss / team_first_loss
+rate = 0.80 if severity_pool > 0 else 0.30
+own_debit = rate * (background + disruption)
+```
+
+The severity pool already requires a funding gap and observed equipment
+downgrade. A positive pool is a proxy for buy disruption, not causal proof.
+Self/team/environmental losses receive the same own debit without invented
+enemy credit. Repeated deaths retain zero additional starting-kit exposure.
+All other eligibility and target rules remain fixed. Round the final net
+player-round econ once; sum those rounded nets for match totals, and divide
+by all 24 played rounds for the average match contribution.
+
+Report gross credit, revised debit, net, prior V2 net, net change, per-round
+average, team and match sums, plus the prior worked deaths. This is a
+read-only reference comparison; production scoring is outside this change.
