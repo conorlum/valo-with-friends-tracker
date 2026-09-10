@@ -10,6 +10,7 @@ from app.models.match import Team
 from app.scoring import econ_component
 from app.scoring.plant_window import attacking_team as _plant_window_attacking_team
 from app.scoring.plant_window import effective_plant_time
+from app.scoring.plant_window import seconds_to_plant
 from app.scoring.preplant_empirical_factor import empirical_preplant_factor
 
 # The conversion of the empirical pre-plant win-rate lift into a scoring
@@ -593,7 +594,16 @@ def build_impact_rows_for_match(
     enable_preplant_empirical: bool = False,
     enable_postplant_leverage: bool = False, postplant_factor_table=None,
     enable_econ_component: bool = False, neutralize_econ_terms: bool = False,
+    kill_observer=None,
 ) -> list[CalculatedImpact]:
+    """kill_observer, when given, is called once per kill AFTER that kill has
+    been fully scored, with the scorer's own mutated kill dict and the round
+    context it was scored in. It is a REPORTING hook for trace/review tooling
+    and must never influence scoring -- a test pins that passing one leaves
+    every returned row identical. It exists so a review tool reports what the
+    scorer computed rather than re-deriving it; re-derivation is how
+    preplant_fit_support and ten diagnostics silently drifted from this
+    module's own replay policy."""
     rounds = db.query(Round).filter_by(match_id=match_id).order_by(Round.round_number).all()
     rounds_by_number: dict[int, Round] = {r.round_number: r for r in rounds}
     round_number_by_round_id: dict[int, int] = {r.id: r.round_number for r in rounds}
@@ -816,6 +826,30 @@ def build_impact_rows_for_match(
 
             plant_time = round_row.plant_time if round_row.planted else None
             kill["is_post_plant"] = plant_time is not None and kill["event_time_seconds"] >= plant_time
+
+            if kill_observer is not None:
+                # Alive counts are reported PRE-decrement, which is the state
+                # kill_order_bonus was keyed on just above. seconds_to_plant is
+                # the effective-plant offset (positive before the plant), the
+                # same quantity the pre-plant curve reads.
+                kill_observer(
+                    round_number=round_number,
+                    kill_index=kill_index,
+                    kill=kill,
+                    context={
+                        "self_kill": self_kill,
+                        "killer_team": killer_team,
+                        "killer_is_attacker": attacking == killer_team,
+                        "killer_team_alive": killer_own_alive,
+                        "victim_team_alive": killer_opp_alive,
+                        "kill_order_bonus_raw": kill_order_bonus,
+                        "seconds_to_plant": seconds_to_plant(round_row, kill["event_time_seconds"]),
+                        "combined_swing_factor": combined_swing_factor,
+                        "round_outcome": round_row.outcome,
+                        "planted": round_row.planted,
+                        "plant_time": round_row.plant_time,
+                    },
+                )
 
             resurrection = _check_for_resurrection(kill_index, kills)
             if not resurrection:
