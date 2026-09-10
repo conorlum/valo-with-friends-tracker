@@ -51,6 +51,13 @@ class CalculatedImpact:
     # component itself. Defaulted so existing positional callers keep working.
     kill_order_bonus: int = 0
     econ_component: int = 0
+    # NOT persisted (absent from _PERSISTED_FIELDS): the weighted leverage
+    # term as it actually enters `impact`, so a review tool can show that
+    # impact == damage + leverage_component + econ_component exactly. The
+    # `time_impact` column stays UNWEIGHTED -- the eval harness derives
+    # time_delta from it and reweighting it would redefine a column
+    # consumers read by name.
+    leverage_component: int = 0
     econ_pickup: int = 0
 
 # Bump whenever compute_impact_for_match's scoring algorithm changes in a way
@@ -134,6 +141,30 @@ FACTOR_WEIGHTS = {
     "swing": 1.0,
 }
 _FACTOR_WEIGHT_TOTAL = sum(FACTOR_WEIGHTS.values())
+
+
+@dataclass(frozen=True)
+class FormulaWeights:
+    """A, B and C of the new structure:
+
+        impact = A*damage + B*(kill_order_bonus x time_factor) + C*econ_component
+
+    The defaults ARE today's declared candidate, so FormulaWeights() changes
+    nothing: 1.25 is the literal the damage term has always carried, and the
+    other two are 1.0 because neither term was ever weighted.
+
+    `econ` multiplies ON TOP of ECON_SCALE, which is a dispersion anchor
+    (econ_component's SD matched to time_impact's), not a fitted weight. So
+    C = 1.0 means "the declared anchor", and C is dimensionless around it.
+
+    `damage` is the only one that also reaches the LEGACY branch, because
+    `damages` is shared; the other two weight terms that exist only in the
+    new structure and are inert when enable_econ_component is False.
+    """
+
+    damage: float = 1.25
+    leverage: float = 1.0
+    econ: float = 1.0
 
 
 _ECON_TIER_CODES = {"SAVE": 8, "ECO": 6, "FORCE": 5, "FULL_BUY": 4}
@@ -594,7 +625,7 @@ def build_impact_rows_for_match(
     enable_preplant_empirical: bool = False,
     enable_postplant_leverage: bool = False, postplant_factor_table=None,
     enable_econ_component: bool = False, neutralize_econ_terms: bool = False,
-    kill_observer=None,
+    kill_observer=None, weights: "FormulaWeights | None" = None,
 ) -> list[CalculatedImpact]:
     """kill_observer, when given, is called once per kill AFTER that kill has
     been fully scored, with the scorer's own mutated kill dict and the round
@@ -604,6 +635,7 @@ def build_impact_rows_for_match(
     scorer computed rather than re-deriving it; re-derivation is how
     preplant_fit_support and ten diagnostics silently drifted from this
     module's own replay policy."""
+    weights = weights or FormulaWeights()
     rounds = db.query(Round).filter_by(match_id=match_id).order_by(Round.round_number).all()
     rounds_by_number: dict[int, Round] = {r.round_number: r for r in rounds}
     round_number_by_round_id: dict[int, int] = {r.id: r.round_number for r in rounds}
@@ -929,9 +961,12 @@ def build_impact_rows_for_match(
                     if kill["econ_mismatch"]:
                         econ_mismatch_death_sum += kill["death_order_bonus_x_econ"]
 
-            damages = round(damage_and_assists * 1.25)
-            econ_component_value = round(econ_by_player.get(match_player_id, 0.0))
+            damages = round(damage_and_assists * weights.damage)
+            econ_component_value = round(weights.econ * econ_by_player.get(match_player_id, 0.0))
             time_impact_value = round(kill_order_bonus_x_time_sum - death_order_bonus_x_time_sum)
+            leverage_component_value = round(
+                weights.leverage * (kill_order_bonus_x_time_sum - death_order_bonus_x_time_sum)
+            )
 
             if enable_econ_component:
                 # Econ spec section 8: impact = damage + leverage + econ,
@@ -942,9 +977,14 @@ def build_impact_rows_for_match(
                 # changing its meaning would invalidate every stored
                 # comparison. time_impact does NOT die -- it IS the leverage
                 # component under the new structure.
-                kill_impact = round(damages + kill_order_bonus_x_time_sum)
-                death_impact = round(death_order_bonus_x_time_sum)
-                impact = damages + time_impact_value + econ_component_value
+                kill_impact = round(damages + weights.leverage * kill_order_bonus_x_time_sum)
+                death_impact = round(weights.leverage * death_order_bonus_x_time_sum)
+                # Reconciliation, exactly: the three ints below are the three
+                # terms of the formula and nothing else. kill_impact minus
+                # death_impact can differ from leverage_component_value by 1,
+                # because each rounds independently -- so `impact` is built
+                # from the terms, never from that subtraction.
+                impact = damages + leverage_component_value + econ_component_value
             else:
                 kill_impact = round(
                     damages
@@ -980,6 +1020,7 @@ def build_impact_rows_for_match(
                     death_impact=death_impact,
                     impact=impact,
                     damage=damages,
+                    leverage_component=leverage_component_value if enable_econ_component else 0,
                     # econ_impact and swing_impact keep their columns but are
                     # written as 0 once the new structure is live -- they left
                     # the formula, and redefining a column consumers read by
