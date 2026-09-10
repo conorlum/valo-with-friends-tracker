@@ -1,0 +1,3658 @@
+{
+  "match": {
+    "id": 3104,
+    "external_id": "41a9e909-325f-4975-bbd6-29268edf99bb",
+    "map_name": "Abyss",
+    "played_at": "2026-08-25T00:48:33.361000+00:00",
+    "team1_rounds_won": 11,
+    "team2_rounds_won": 13
+  },
+  "players": [
+    {
+      "id": 31031,
+      "team": "TEAM_2",
+      "agent": "Cypher",
+      "display_name": "NPrightdolphin#NA1",
+      "free_ability_value": 0
+    },
+    {
+      "id": 31032,
+      "team": "TEAM_2",
+      "agent": "Reyna",
+      "display_name": "DoubleBl1nd#BEEF",
+      "free_ability_value": 250
+    },
+    {
+      "id": 31033,
+      "team": "TEAM_1",
+      "agent": "Clove",
+      "display_name": "ZETA 3y5#213",
+      "free_ability_value": 150
+    },
+    {
+      "id": 31034,
+      "team": "TEAM_2",
+      "agent": "Phoenix",
+      "display_name": "Osmin#NA1",
+      "free_ability_value": 250
+    },
+    {
+      "id": 31035,
+      "team": "TEAM_2",
+      "agent": "Fade",
+      "display_name": "Najumi#NPC",
+      "free_ability_value": 0
+    },
+    {
+      "id": 31036,
+      "team": "TEAM_1",
+      "agent": "Reyna",
+      "display_name": "Helpless#qiqi",
+      "free_ability_value": 250
+    },
+    {
+      "id": 31037,
+      "team": "TEAM_1",
+      "agent": "Sova",
+      "display_name": "Mokalover67#ILLIT",
+      "free_ability_value": 0
+    },
+    {
+      "id": 31038,
+      "team": "TEAM_1",
+      "agent": "Sage",
+      "display_name": "1xgoofy#56719",
+      "free_ability_value": 0
+    },
+    {
+      "id": 31039,
+      "team": "TEAM_2",
+      "agent": "Clove",
+      "display_name": "ternstyle#GIGI",
+      "free_ability_value": 150
+    },
+    {
+      "id": 31040,
+      "team": "TEAM_1",
+      "agent": "Jett",
+      "display_name": "VorteXx#Val",
+      "free_ability_value": 0
+    }
+  ],
+  "rounds": [
+    {
+      "id": 65377,
+      "round_number": 1,
+      "outcome": "Team B Defuse Win",
+      "planted": true,
+      "plant_time": 14.695
+    },
+    {
+      "id": 65378,
+      "round_number": 2,
+      "outcome": "Team B Elimination Win",
+      "planted": false,
+      "plant_time": null
+    },
+    {
+      "id": 65379,
+      "round_number": 3,
+      "outcome": "Team B Defuse Win",
+      "planted": true,
+      "plant_time": 20.582
+    },
+    {
+      "id": 65380,
+      "round_number": 4,
+      "outcome": "Team B Defuse Win",
+      "planted": true,
+      "plant_time": 24.747
+    },
+    {
+      "id": 65381,
+      "round_number": 5,
+      "outcome": "Team A Elimination Win",
+      "planted": true,
+      "plant_time": 25.057
+    },
+    {
+      "id": 65382,
+      "round_number": 6,
+      "outcome": "Team B Elimination Win",
+      "planted": false,
+      "plant_time": null
+    },
+    {
+      "id": 65383,
+      "round_number": 7,
+      "outcome": "Team B Elimination Win",
+      "planted": false,
+      "plant_time": null
+    },
+    {
+      "id": 65384,
+      "round_number": 8,
+      "outcome": "Team A Elimination Win",
+      "planted": true,
+      "plant_time": 23.001
+    },
+    {
+      "id": 65385,
+      "round_number": 9,
+      "outcome": "Team A Elimination Win",
+      "planted": false,
+      "plant_time": null
+    },
+    {
+      "id": 65386,
+      "round_number": 10,
+      "outcome": "Team A Elimination Win",
+      "planted": true,
+      "plant_time": 32.235
+    },
+    {
+      "id": 65387,
+      "round_number": 11,
+      "outcome": "Team A Detonate Win",
+      "planted": true,
+      "plant_time": 44.564
+    },
+    {
+      "id": 65388,
+      "round_number": 12,
+      "outcome": "Team B Defuse Win",
+      "planted": true,
+      "plant_time": 20.542
+    },
+    {
+      "id": 65389,
+      "round_number": 13,
+      "outcome": "Team A Elimination Win",
+      "planted": false,
+      "plant_time": null
+    },
+    {
+      "id": 65390,
+      "round_number": 14,
+      "outcome": "Team A Defuse Win",
+      "planted": true,
+      "plant_time": 77.45
+    },
+    {
+      "id": 65391,
+      "round_number": 15,
+      "outcome": "Team B Elimination Win",
+      "planted": true,
+      "plant_time": 49.782
+    },
+    {
+      "id": 65392,
+      "round_number": 16,
+      "outcome": "Team B Elimination Win",
+      "planted": true,
+      "plant_time": 42.804
+    },
+    {
+      "id": 65393,
+      "round_number": 17,
+      "outcome": "Team A Defuse Win",
+      "planted": true,
+      "plant_time": 29.48
+    },
+    {
+      "id": 65394,
+      "round_number": 18,
+      "outcome": "Team A Elimination Win",
+      "planted": false,
+      "plant_time": null
+    },
+    {
+      "id": 65395,
+      "round_number": 19,
+      "outcome": "Team B Detonate Win",
+      "planted": true,
+      "plant_time": 28.344
+    },
+    {
+      "id": 65396,
+      "round_number": 20,
+      "outcome": "Team B Elimination Win",
+      "planted": true,
+      "plant_time": 56.09
+    },
+    {
+      "id": 65397,
+      "round_number": 21,
+      "outcome": "Team B Elimination Win",
+      "planted": true,
+      "plant_time": 49.807
+    },
+    {
+      "id": 65398,
+      "round_number": 22,
+      "outcome": "Team A Time Win",
+      "planted": false,
+      "plant_time": null
+    },
+    {
+      "id": 65399,
+      "round_number": 23,
+      "outcome": "Team A Elimination Win",
+      "planted": false,
+      "plant_time": null
+    },
+    {
+      "id": 65400,
+      "round_number": 24,
+      "outcome": "Team B Elimination Win",
+      "planted": true,
+      "plant_time": 37.513
+    }
+  ],
+  "stats": [
+    {
+      "round_number": 1,
+      "match_player_id": 31031,
+      "loadout": 500,
+      "remaining": 0,
+      "kills": 4,
+      "deaths": 0
+    },
+    {
+      "round_number": 1,
+      "match_player_id": 31032,
+      "loadout": 950,
+      "remaining": 50,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 1,
+      "match_player_id": 31033,
+      "loadout": 900,
+      "remaining": 50,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 1,
+      "match_player_id": 31034,
+      "loadout": 1050,
+      "remaining": 0,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 1,
+      "match_player_id": 31035,
+      "loadout": 600,
+      "remaining": 200,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 1,
+      "match_player_id": 31036,
+      "loadout": 900,
+      "remaining": 100,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 1,
+      "match_player_id": 31037,
+      "loadout": 700,
+      "remaining": 100,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 1,
+      "match_player_id": 31038,
+      "loadout": 800,
+      "remaining": 0,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 1,
+      "match_player_id": 31039,
+      "loadout": 900,
+      "remaining": 50,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 1,
+      "match_player_id": 31040,
+      "loadout": 600,
+      "remaining": 50,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 2,
+      "match_player_id": 31031,
+      "loadout": 3300,
+      "remaining": 600,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 2,
+      "match_player_id": 31032,
+      "loadout": 2900,
+      "remaining": 600,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 2,
+      "match_player_id": 31033,
+      "loadout": 750,
+      "remaining": 1850,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 2,
+      "match_player_id": 31034,
+      "loadout": 3250,
+      "remaining": 0,
+      "kills": 3,
+      "deaths": 0
+    },
+    {
+      "round_number": 2,
+      "match_player_id": 31035,
+      "loadout": 2900,
+      "remaining": 1100,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 2,
+      "match_player_id": 31036,
+      "loadout": 900,
+      "remaining": 1800,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 2,
+      "match_player_id": 31037,
+      "loadout": 700,
+      "remaining": 1900,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 2,
+      "match_player_id": 31038,
+      "loadout": 300,
+      "remaining": 2100,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 2,
+      "match_player_id": 31039,
+      "loadout": 4000,
+      "remaining": 0,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 2,
+      "match_player_id": 31040,
+      "loadout": 950,
+      "remaining": 1300,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 3,
+      "match_player_id": 31031,
+      "loadout": 3200,
+      "remaining": 3200,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 3,
+      "match_player_id": 31032,
+      "loadout": 2900,
+      "remaining": 3350,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 3,
+      "match_player_id": 31033,
+      "loadout": 4650,
+      "remaining": 200,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 3,
+      "match_player_id": 31034,
+      "loadout": 4100,
+      "remaining": 2150,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 3,
+      "match_player_id": 31035,
+      "loadout": 2900,
+      "remaining": 3850,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 3,
+      "match_player_id": 31036,
+      "loadout": 4800,
+      "remaining": 300,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 3,
+      "match_player_id": 31037,
+      "loadout": 4250,
+      "remaining": 200,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 3,
+      "match_player_id": 31038,
+      "loadout": 4600,
+      "remaining": 200,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 3,
+      "match_player_id": 31039,
+      "loadout": 4350,
+      "remaining": 2850,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 3,
+      "match_player_id": 31040,
+      "loadout": 1950,
+      "remaining": 1750,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 4,
+      "match_player_id": 31031,
+      "loadout": 4000,
+      "remaining": 1900,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 4,
+      "match_player_id": 31032,
+      "loadout": 4800,
+      "remaining": 2200,
+      "kills": 3,
+      "deaths": 1
+    },
+    {
+      "round_number": 4,
+      "match_player_id": 31033,
+      "loadout": 2200,
+      "remaining": 1800,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 4,
+      "match_player_id": 31034,
+      "loadout": 4750,
+      "remaining": 650,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 4,
+      "match_player_id": 31035,
+      "loadout": 4850,
+      "remaining": 5750,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 4,
+      "match_player_id": 31036,
+      "loadout": 2700,
+      "remaining": 1200,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 4,
+      "match_player_id": 31037,
+      "loadout": 4600,
+      "remaining": 2100,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 4,
+      "match_player_id": 31038,
+      "loadout": 4600,
+      "remaining": 1900,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 4,
+      "match_player_id": 31039,
+      "loadout": 4950,
+      "remaining": 4900,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 4,
+      "match_player_id": 31040,
+      "loadout": 3500,
+      "remaining": 1450,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 5,
+      "match_player_id": 31031,
+      "loadout": 4100,
+      "remaining": 3400,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 5,
+      "match_player_id": 31032,
+      "loadout": 5100,
+      "remaining": 4050,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 5,
+      "match_player_id": 31033,
+      "loadout": 4650,
+      "remaining": 950,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 5,
+      "match_player_id": 31034,
+      "loadout": 4750,
+      "remaining": 2200,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 5,
+      "match_player_id": 31035,
+      "loadout": 4850,
+      "remaining": 3000,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 5,
+      "match_player_id": 31036,
+      "loadout": 4800,
+      "remaining": 450,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 5,
+      "match_player_id": 31037,
+      "loadout": 4600,
+      "remaining": 700,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 5,
+      "match_player_id": 31038,
+      "loadout": 4600,
+      "remaining": 900,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 5,
+      "match_player_id": 31039,
+      "loadout": 5450,
+      "remaining": 3850,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 5,
+      "match_player_id": 31040,
+      "loadout": 4450,
+      "remaining": 400,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 6,
+      "match_player_id": 31031,
+      "loadout": 4300,
+      "remaining": 1400,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 6,
+      "match_player_id": 31032,
+      "loadout": 4800,
+      "remaining": 2050,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 6,
+      "match_player_id": 31033,
+      "loadout": 4650,
+      "remaining": 4500,
+      "kills": 0,
+      "deaths": 2
+    },
+    {
+      "round_number": 6,
+      "match_player_id": 31034,
+      "loadout": 4500,
+      "remaining": 200,
+      "kills": 5,
+      "deaths": 0
+    },
+    {
+      "round_number": 6,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 1350,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 6,
+      "match_player_id": 31036,
+      "loadout": 4200,
+      "remaining": 200,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 6,
+      "match_player_id": 31037,
+      "loadout": 4250,
+      "remaining": 100,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 6,
+      "match_player_id": 31038,
+      "loadout": 4600,
+      "remaining": 0,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 6,
+      "match_player_id": 31039,
+      "loadout": 6250,
+      "remaining": 100,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 6,
+      "match_player_id": 31040,
+      "loadout": 4450,
+      "remaining": 200,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 7,
+      "match_player_id": 31031,
+      "loadout": 4300,
+      "remaining": 4000,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 7,
+      "match_player_id": 31032,
+      "loadout": 4800,
+      "remaining": 650,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 7,
+      "match_player_id": 31033,
+      "loadout": 4650,
+      "remaining": 2350,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 7,
+      "match_player_id": 31034,
+      "loadout": 4750,
+      "remaining": 3750,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 7,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 350,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 7,
+      "match_player_id": 31036,
+      "loadout": 1850,
+      "remaining": 1450,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 7,
+      "match_player_id": 31037,
+      "loadout": 1900,
+      "remaining": 0,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 7,
+      "match_player_id": 31038,
+      "loadout": 1100,
+      "remaining": 1300,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 7,
+      "match_player_id": 31039,
+      "loadout": 6450,
+      "remaining": 2750,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 7,
+      "match_player_id": 31040,
+      "loadout": 1200,
+      "remaining": 1050,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 8,
+      "match_player_id": 31031,
+      "loadout": 5100,
+      "remaining": 6000,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 8,
+      "match_player_id": 31032,
+      "loadout": 5100,
+      "remaining": 3100,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 8,
+      "match_player_id": 31033,
+      "loadout": 4650,
+      "remaining": 700,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 8,
+      "match_player_id": 31034,
+      "loadout": 5050,
+      "remaining": 5850,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 8,
+      "match_player_id": 31035,
+      "loadout": 5050,
+      "remaining": 3550,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 8,
+      "match_player_id": 31036,
+      "loadout": 4200,
+      "remaining": 50,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 8,
+      "match_player_id": 31037,
+      "loadout": 1900,
+      "remaining": 800,
+      "kills": 3,
+      "deaths": 0
+    },
+    {
+      "round_number": 8,
+      "match_player_id": 31038,
+      "loadout": 2500,
+      "remaining": 1700,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 8,
+      "match_player_id": 31039,
+      "loadout": 6750,
+      "remaining": 4650,
+      "kills": 1,
+      "deaths": 2
+    },
+    {
+      "round_number": 8,
+      "match_player_id": 31040,
+      "loadout": 3850,
+      "remaining": 0,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 9,
+      "match_player_id": 31031,
+      "loadout": 4100,
+      "remaining": 3600,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 9,
+      "match_player_id": 31032,
+      "loadout": 5100,
+      "remaining": 800,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 9,
+      "match_player_id": 31033,
+      "loadout": 4300,
+      "remaining": 250,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 9,
+      "match_player_id": 31034,
+      "loadout": 4750,
+      "remaining": 3600,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 9,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 1900,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 9,
+      "match_player_id": 31036,
+      "loadout": 4800,
+      "remaining": 1850,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 9,
+      "match_player_id": 31037,
+      "loadout": 5400,
+      "remaining": 3700,
+      "kills": 0,
+      "deaths": 2
+    },
+    {
+      "round_number": 9,
+      "match_player_id": 31038,
+      "loadout": 5400,
+      "remaining": 2100,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 9,
+      "match_player_id": 31039,
+      "loadout": 6450,
+      "remaining": 700,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 9,
+      "match_player_id": 31040,
+      "loadout": 6250,
+      "remaining": 2150,
+      "kills": 4,
+      "deaths": 0
+    },
+    {
+      "round_number": 10,
+      "match_player_id": 31031,
+      "loadout": 4100,
+      "remaining": 1900,
+      "kills": 3,
+      "deaths": 1
+    },
+    {
+      "round_number": 10,
+      "match_player_id": 31032,
+      "loadout": 2400,
+      "remaining": 1200,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 10,
+      "match_player_id": 31033,
+      "loadout": 4300,
+      "remaining": 2450,
+      "kills": 2,
+      "deaths": 2
+    },
+    {
+      "round_number": 10,
+      "match_player_id": 31034,
+      "loadout": 4400,
+      "remaining": 2200,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 10,
+      "match_player_id": 31035,
+      "loadout": 3150,
+      "remaining": 1850,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 10,
+      "match_player_id": 31036,
+      "loadout": 4800,
+      "remaining": 700,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 10,
+      "match_player_id": 31037,
+      "loadout": 4600,
+      "remaining": 2250,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 10,
+      "match_player_id": 31038,
+      "loadout": 5400,
+      "remaining": 4800,
+      "kills": 3,
+      "deaths": 0
+    },
+    {
+      "round_number": 10,
+      "match_player_id": 31039,
+      "loadout": 2750,
+      "remaining": 1150,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 10,
+      "match_player_id": 31040,
+      "loadout": 6100,
+      "remaining": 3050,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 11,
+      "match_player_id": 31031,
+      "loadout": 4100,
+      "remaining": 1100,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 11,
+      "match_player_id": 31032,
+      "loadout": 4450,
+      "remaining": 50,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 11,
+      "match_player_id": 31033,
+      "loadout": 4650,
+      "remaining": 2100,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 11,
+      "match_player_id": 31034,
+      "loadout": 4750,
+      "remaining": 750,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 11,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 900,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 11,
+      "match_player_id": 31036,
+      "loadout": 4800,
+      "remaining": 2750,
+      "kills": 3,
+      "deaths": 1
+    },
+    {
+      "round_number": 11,
+      "match_player_id": 31037,
+      "loadout": 4600,
+      "remaining": 1950,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 11,
+      "match_player_id": 31038,
+      "loadout": 5400,
+      "remaining": 7200,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 11,
+      "match_player_id": 31039,
+      "loadout": 4650,
+      "remaining": 0,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 11,
+      "match_player_id": 31040,
+      "loadout": 6250,
+      "remaining": 500,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 12,
+      "match_player_id": 31031,
+      "loadout": 4100,
+      "remaining": 1400,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 12,
+      "match_player_id": 31032,
+      "loadout": 4100,
+      "remaining": 50,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 12,
+      "match_player_id": 31033,
+      "loadout": 4650,
+      "remaining": 4250,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 12,
+      "match_player_id": 31034,
+      "loadout": 4100,
+      "remaining": 150,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 12,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 250,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 12,
+      "match_player_id": 31036,
+      "loadout": 5100,
+      "remaining": 2000,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 12,
+      "match_player_id": 31037,
+      "loadout": 4600,
+      "remaining": 4950,
+      "kills": 3,
+      "deaths": 0
+    },
+    {
+      "round_number": 12,
+      "match_player_id": 31038,
+      "loadout": 5400,
+      "remaining": 5400,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 12,
+      "match_player_id": 31039,
+      "loadout": 3400,
+      "remaining": 100,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 12,
+      "match_player_id": 31040,
+      "loadout": 6250,
+      "remaining": 4000,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 13,
+      "match_player_id": 31031,
+      "loadout": 600,
+      "remaining": 0,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 13,
+      "match_player_id": 31032,
+      "loadout": 950,
+      "remaining": 50,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 13,
+      "match_player_id": 31033,
+      "loadout": 900,
+      "remaining": 50,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 13,
+      "match_player_id": 31034,
+      "loadout": 1050,
+      "remaining": 0,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 13,
+      "match_player_id": 31035,
+      "loadout": 600,
+      "remaining": 200,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 13,
+      "match_player_id": 31036,
+      "loadout": 900,
+      "remaining": 100,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 13,
+      "match_player_id": 31037,
+      "loadout": 800,
+      "remaining": 0,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 13,
+      "match_player_id": 31038,
+      "loadout": 800,
+      "remaining": 0,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 13,
+      "match_player_id": 31039,
+      "loadout": 950,
+      "remaining": 0,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 13,
+      "match_player_id": 31040,
+      "loadout": 750,
+      "remaining": 50,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 14,
+      "match_player_id": 31031,
+      "loadout": 600,
+      "remaining": 1400,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 14,
+      "match_player_id": 31032,
+      "loadout": 200,
+      "remaining": 1950,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 14,
+      "match_player_id": 31033,
+      "loadout": 2250,
+      "remaining": 1150,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 14,
+      "match_player_id": 31034,
+      "loadout": 450,
+      "remaining": 1700,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 14,
+      "match_player_id": 31035,
+      "loadout": 700,
+      "remaining": 2000,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 14,
+      "match_player_id": 31036,
+      "loadout": 1300,
+      "remaining": 2200,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 14,
+      "match_player_id": 31037,
+      "loadout": 2700,
+      "remaining": 450,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 14,
+      "match_player_id": 31038,
+      "loadout": 800,
+      "remaining": 3100,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 14,
+      "match_player_id": 31039,
+      "loadout": 1300,
+      "remaining": 1150,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 14,
+      "match_player_id": 31040,
+      "loadout": 3750,
+      "remaining": 250,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 15,
+      "match_player_id": 31031,
+      "loadout": 4300,
+      "remaining": 400,
+      "kills": 3,
+      "deaths": 0
+    },
+    {
+      "round_number": 15,
+      "match_player_id": 31032,
+      "loadout": 4800,
+      "remaining": 50,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 15,
+      "match_player_id": 31033,
+      "loadout": 2250,
+      "remaining": 3300,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 15,
+      "match_player_id": 31034,
+      "loadout": 4500,
+      "remaining": 150,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 15,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 1100,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 15,
+      "match_player_id": 31036,
+      "loadout": 4450,
+      "remaining": 1400,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 15,
+      "match_player_id": 31037,
+      "loadout": 3350,
+      "remaining": 100,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 15,
+      "match_player_id": 31038,
+      "loadout": 4600,
+      "remaining": 1800,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 15,
+      "match_player_id": 31039,
+      "loadout": 3700,
+      "remaining": 500,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 15,
+      "match_player_id": 31040,
+      "loadout": 3150,
+      "remaining": 3650,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 16,
+      "match_player_id": 31031,
+      "loadout": 4300,
+      "remaining": 3700,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 16,
+      "match_player_id": 31032,
+      "loadout": 4800,
+      "remaining": 2150,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 16,
+      "match_player_id": 31033,
+      "loadout": 4650,
+      "remaining": 1150,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 16,
+      "match_player_id": 31034,
+      "loadout": 4750,
+      "remaining": 3400,
+      "kills": 3,
+      "deaths": 0
+    },
+    {
+      "round_number": 16,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 3950,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 16,
+      "match_player_id": 31036,
+      "loadout": 3950,
+      "remaining": 0,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 16,
+      "match_player_id": 31037,
+      "loadout": 1900,
+      "remaining": 800,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 16,
+      "match_player_id": 31038,
+      "loadout": 2500,
+      "remaining": 1700,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 16,
+      "match_player_id": 31039,
+      "loadout": 4150,
+      "remaining": 3350,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 16,
+      "match_player_id": 31040,
+      "loadout": 4450,
+      "remaining": 1500,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 17,
+      "match_player_id": 31031,
+      "loadout": 4300,
+      "remaining": 2900,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 17,
+      "match_player_id": 31032,
+      "loadout": 5100,
+      "remaining": 3850,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 17,
+      "match_player_id": 31033,
+      "loadout": 3900,
+      "remaining": 50,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 17,
+      "match_player_id": 31034,
+      "loadout": 4750,
+      "remaining": 5700,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 17,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 4300,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 17,
+      "match_player_id": 31036,
+      "loadout": 1700,
+      "remaining": 1100,
+      "kills": 3,
+      "deaths": 0
+    },
+    {
+      "round_number": 17,
+      "match_player_id": 31037,
+      "loadout": 3350,
+      "remaining": 150,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 17,
+      "match_player_id": 31038,
+      "loadout": 4400,
+      "remaining": 100,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 17,
+      "match_player_id": 31039,
+      "loadout": 4650,
+      "remaining": 2600,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 17,
+      "match_player_id": 31040,
+      "loadout": 4450,
+      "remaining": 200,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 18,
+      "match_player_id": 31031,
+      "loadout": 4300,
+      "remaining": 900,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 18,
+      "match_player_id": 31032,
+      "loadout": 5100,
+      "remaining": 1350,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 18,
+      "match_player_id": 31033,
+      "loadout": 4650,
+      "remaining": 2100,
+      "kills": 2,
+      "deaths": 2
+    },
+    {
+      "round_number": 18,
+      "match_player_id": 31034,
+      "loadout": 4750,
+      "remaining": 3950,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 18,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 2500,
+      "kills": 3,
+      "deaths": 1
+    },
+    {
+      "round_number": 18,
+      "match_player_id": 31036,
+      "loadout": 5600,
+      "remaining": 350,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 18,
+      "match_player_id": 31037,
+      "loadout": 4600,
+      "remaining": 2000,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 18,
+      "match_player_id": 31038,
+      "loadout": 2500,
+      "remaining": 1100,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 18,
+      "match_player_id": 31039,
+      "loadout": 4650,
+      "remaining": 750,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 18,
+      "match_player_id": 31040,
+      "loadout": 2350,
+      "remaining": 1600,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 19,
+      "match_player_id": 31031,
+      "loadout": 2100,
+      "remaining": 1500,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 19,
+      "match_player_id": 31032,
+      "loadout": 3550,
+      "remaining": 600,
+      "kills": 3,
+      "deaths": 1
+    },
+    {
+      "round_number": 19,
+      "match_player_id": 31033,
+      "loadout": 4300,
+      "remaining": 1800,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 19,
+      "match_player_id": 31034,
+      "loadout": 4750,
+      "remaining": 2050,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 19,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 1750,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 19,
+      "match_player_id": 31036,
+      "loadout": 4200,
+      "remaining": 50,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 19,
+      "match_player_id": 31037,
+      "loadout": 4600,
+      "remaining": 3500,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 19,
+      "match_player_id": 31038,
+      "loadout": 4250,
+      "remaining": 150,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 19,
+      "match_player_id": 31039,
+      "loadout": 2750,
+      "remaining": 750,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 19,
+      "match_player_id": 31040,
+      "loadout": 5250,
+      "remaining": 4850,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 20,
+      "match_player_id": 31031,
+      "loadout": 4300,
+      "remaining": 900,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 20,
+      "match_player_id": 31032,
+      "loadout": 4550,
+      "remaining": 150,
+      "kills": 4,
+      "deaths": 0
+    },
+    {
+      "round_number": 20,
+      "match_player_id": 31033,
+      "loadout": 4650,
+      "remaining": 50,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 20,
+      "match_player_id": 31034,
+      "loadout": 4750,
+      "remaining": 850,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 20,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 4800,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 20,
+      "match_player_id": 31036,
+      "loadout": 4800,
+      "remaining": 950,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 20,
+      "match_player_id": 31037,
+      "loadout": 4600,
+      "remaining": 1100,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 20,
+      "match_player_id": 31038,
+      "loadout": 1700,
+      "remaining": 750,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 20,
+      "match_player_id": 31039,
+      "loadout": 4200,
+      "remaining": 0,
+      "kills": 1,
+      "deaths": 2
+    },
+    {
+      "round_number": 20,
+      "match_player_id": 31040,
+      "loadout": 4450,
+      "remaining": 150,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 21,
+      "match_player_id": 31031,
+      "loadout": 4300,
+      "remaining": 100,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 21,
+      "match_player_id": 31032,
+      "loadout": 5100,
+      "remaining": 2250,
+      "kills": 4,
+      "deaths": 0
+    },
+    {
+      "round_number": 21,
+      "match_player_id": 31033,
+      "loadout": 2250,
+      "remaining": 1200,
+      "kills": 0,
+      "deaths": 2
+    },
+    {
+      "round_number": 21,
+      "match_player_id": 31034,
+      "loadout": 4500,
+      "remaining": 50,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 21,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 1450,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 21,
+      "match_player_id": 31036,
+      "loadout": 2700,
+      "remaining": 1250,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 21,
+      "match_player_id": 31037,
+      "loadout": 3600,
+      "remaining": 50,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 21,
+      "match_player_id": 31038,
+      "loadout": 3600,
+      "remaining": 250,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 21,
+      "match_player_id": 31039,
+      "loadout": 4650,
+      "remaining": 1900,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 21,
+      "match_player_id": 31040,
+      "loadout": 1950,
+      "remaining": 950,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 22,
+      "match_player_id": 31031,
+      "loadout": 3500,
+      "remaining": 100,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 22,
+      "match_player_id": 31032,
+      "loadout": 5100,
+      "remaining": 1650,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 22,
+      "match_player_id": 31033,
+      "loadout": 4650,
+      "remaining": 50,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 22,
+      "match_player_id": 31034,
+      "loadout": 3750,
+      "remaining": 50,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 22,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 1200,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 22,
+      "match_player_id": 31036,
+      "loadout": 4450,
+      "remaining": 300,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 22,
+      "match_player_id": 31037,
+      "loadout": 3350,
+      "remaining": 0,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 22,
+      "match_player_id": 31038,
+      "loadout": 2500,
+      "remaining": 1050,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 22,
+      "match_player_id": 31039,
+      "loadout": 4650,
+      "remaining": 1350,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 22,
+      "match_player_id": 31040,
+      "loadout": 3850,
+      "remaining": 150,
+      "kills": 1,
+      "deaths": 0
+    },
+    {
+      "round_number": 23,
+      "match_player_id": 31031,
+      "loadout": 600,
+      "remaining": 1600,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 23,
+      "match_player_id": 31032,
+      "loadout": 2150,
+      "remaining": 1800,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 23,
+      "match_player_id": 31033,
+      "loadout": 4300,
+      "remaining": 2650,
+      "kills": 1,
+      "deaths": 2
+    },
+    {
+      "round_number": 23,
+      "match_player_id": 31034,
+      "loadout": 700,
+      "remaining": 1950,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 23,
+      "match_player_id": 31035,
+      "loadout": 700,
+      "remaining": 2650,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 23,
+      "match_player_id": 31036,
+      "loadout": 5100,
+      "remaining": 1700,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 23,
+      "match_player_id": 31037,
+      "loadout": 4600,
+      "remaining": 1450,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 23,
+      "match_player_id": 31038,
+      "loadout": 5400,
+      "remaining": 650,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 23,
+      "match_player_id": 31039,
+      "loadout": 4650,
+      "remaining": 2200,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 23,
+      "match_player_id": 31040,
+      "loadout": 4450,
+      "remaining": 2350,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 24,
+      "match_player_id": 31031,
+      "loadout": 4300,
+      "remaining": 100,
+      "kills": 0,
+      "deaths": 0
+    },
+    {
+      "round_number": 24,
+      "match_player_id": 31032,
+      "loadout": 4550,
+      "remaining": 50,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 24,
+      "match_player_id": 31033,
+      "loadout": 4650,
+      "remaining": 1800,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 24,
+      "match_player_id": 31034,
+      "loadout": 4500,
+      "remaining": 100,
+      "kills": 2,
+      "deaths": 0
+    },
+    {
+      "round_number": 24,
+      "match_player_id": 31035,
+      "loadout": 4250,
+      "remaining": 1050,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 24,
+      "match_player_id": 31036,
+      "loadout": 5100,
+      "remaining": 3400,
+      "kills": 2,
+      "deaths": 1
+    },
+    {
+      "round_number": 24,
+      "match_player_id": 31037,
+      "loadout": 4600,
+      "remaining": 4050,
+      "kills": 0,
+      "deaths": 1
+    },
+    {
+      "round_number": 24,
+      "match_player_id": 31038,
+      "loadout": 5400,
+      "remaining": 3650,
+      "kills": 1,
+      "deaths": 1
+    },
+    {
+      "round_number": 24,
+      "match_player_id": 31039,
+      "loadout": 4650,
+      "remaining": 750,
+      "kills": 0,
+      "deaths": 2
+    },
+    {
+      "round_number": 24,
+      "match_player_id": 31040,
+      "loadout": 4450,
+      "remaining": 5200,
+      "kills": 1,
+      "deaths": 1
+    }
+  ],
+  "events": [
+    {
+      "id": 484684,
+      "round_number": 1,
+      "killer": 31038,
+      "victim": 31032,
+      "time": 8.351,
+      "weapon": "Ghost"
+    },
+    {
+      "id": 484687,
+      "round_number": 1,
+      "killer": 31031,
+      "victim": 31040,
+      "time": 11.352,
+      "weapon": "Ghost"
+    },
+    {
+      "id": 484688,
+      "round_number": 1,
+      "killer": 31031,
+      "victim": 31036,
+      "time": 21.333,
+      "weapon": "Ghost"
+    },
+    {
+      "id": 484685,
+      "round_number": 1,
+      "killer": 31033,
+      "victim": 31039,
+      "time": 23.201,
+      "weapon": "Ghost"
+    },
+    {
+      "id": 484689,
+      "round_number": 1,
+      "killer": 31031,
+      "victim": 31037,
+      "time": 29.204,
+      "weapon": "Ghost"
+    },
+    {
+      "id": 484690,
+      "round_number": 1,
+      "killer": 31031,
+      "victim": 31033,
+      "time": 37.207,
+      "weapon": "Ghost"
+    },
+    {
+      "id": 484686,
+      "round_number": 1,
+      "killer": 31035,
+      "victim": 31038,
+      "time": 46.635,
+      "weapon": "Classic"
+    },
+    {
+      "id": 484693,
+      "round_number": 2,
+      "killer": 31034,
+      "victim": 31036,
+      "time": 11.437,
+      "weapon": "Guardian"
+    },
+    {
+      "id": 484694,
+      "round_number": 2,
+      "killer": 31034,
+      "victim": 31038,
+      "time": 12.609,
+      "weapon": "Guardian"
+    },
+    {
+      "id": 484691,
+      "round_number": 2,
+      "killer": 31039,
+      "victim": 31037,
+      "time": 16.011,
+      "weapon": "Outlaw"
+    },
+    {
+      "id": 484695,
+      "round_number": 2,
+      "killer": 31034,
+      "victim": 31040,
+      "time": 16.57,
+      "weapon": "Guardian"
+    },
+    {
+      "id": 484692,
+      "round_number": 2,
+      "killer": 31033,
+      "victim": 31033,
+      "time": 21.58,
+      "weapon": "Fall"
+    },
+    {
+      "id": 484696,
+      "round_number": 3,
+      "killer": 31039,
+      "victim": 31040,
+      "time": 13.89,
+      "weapon": "Outlaw"
+    },
+    {
+      "id": 484700,
+      "round_number": 3,
+      "killer": 31036,
+      "victim": 31032,
+      "time": 16.329,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484701,
+      "round_number": 3,
+      "killer": 31031,
+      "victim": 31036,
+      "time": 24.396,
+      "weapon": "Spectre"
+    },
+    {
+      "id": 484697,
+      "round_number": 3,
+      "killer": 31039,
+      "victim": 31033,
+      "time": 28.895,
+      "weapon": "Outlaw"
+    },
+    {
+      "id": 484698,
+      "round_number": 3,
+      "killer": 31037,
+      "victim": 31034,
+      "time": 38.248,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484699,
+      "round_number": 3,
+      "killer": 31037,
+      "victim": 31031,
+      "time": 51.176,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484706,
+      "round_number": 4,
+      "killer": 31036,
+      "victim": 31031,
+      "time": 19.788,
+      "weapon": "Sheriff"
+    },
+    {
+      "id": 484702,
+      "round_number": 4,
+      "killer": 31032,
+      "victim": 31036,
+      "time": 28.417,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484703,
+      "round_number": 4,
+      "killer": 31032,
+      "victim": 31037,
+      "time": 32.751,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484709,
+      "round_number": 4,
+      "killer": 31040,
+      "victim": 31034,
+      "time": 38.012,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484704,
+      "round_number": 4,
+      "killer": 31032,
+      "victim": 31040,
+      "time": 38.791,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484705,
+      "round_number": 4,
+      "killer": 31038,
+      "victim": 31032,
+      "time": 42.237,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484707,
+      "round_number": 4,
+      "killer": 31035,
+      "victim": 31038,
+      "time": 43.437,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484708,
+      "round_number": 4,
+      "killer": 31035,
+      "victim": 31033,
+      "time": 46.357,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484714,
+      "round_number": 5,
+      "killer": 31034,
+      "victim": 31036,
+      "time": 13.973,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484715,
+      "round_number": 5,
+      "killer": 31040,
+      "victim": 31034,
+      "time": 14.441,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484711,
+      "round_number": 5,
+      "killer": 31037,
+      "victim": 31035,
+      "time": 21.22,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484710,
+      "round_number": 5,
+      "killer": 31039,
+      "victim": 31037,
+      "time": 22.867,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484716,
+      "round_number": 5,
+      "killer": 31040,
+      "victim": 31032,
+      "time": 25.243,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484712,
+      "round_number": 5,
+      "killer": 31033,
+      "victim": 31039,
+      "time": 29.139,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484717,
+      "round_number": 5,
+      "killer": 31031,
+      "victim": 31040,
+      "time": 36.959,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484718,
+      "round_number": 5,
+      "killer": 31031,
+      "victim": 31038,
+      "time": 39.146,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484713,
+      "round_number": 5,
+      "killer": 31033,
+      "victim": 31031,
+      "time": 42.189,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484722,
+      "round_number": 6,
+      "killer": 31034,
+      "victim": 31033,
+      "time": 14.943,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484723,
+      "round_number": 6,
+      "killer": 31034,
+      "victim": 31038,
+      "time": 15.581,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484724,
+      "round_number": 6,
+      "killer": 31034,
+      "victim": 31036,
+      "time": 15.855,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484719,
+      "round_number": 6,
+      "killer": 31032,
+      "victim": 31033,
+      "time": 28.759,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484720,
+      "round_number": 6,
+      "killer": 31037,
+      "victim": 31035,
+      "time": 46.955,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484721,
+      "round_number": 6,
+      "killer": 31037,
+      "victim": 31032,
+      "time": 47.091,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484725,
+      "round_number": 6,
+      "killer": 31034,
+      "victim": 31040,
+      "time": 77.337,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484726,
+      "round_number": 6,
+      "killer": 31034,
+      "victim": 31037,
+      "time": 81.148,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484727,
+      "round_number": 7,
+      "killer": 31039,
+      "victim": 31036,
+      "time": 19.173,
+      "weapon": "Operator"
+    },
+    {
+      "id": 484728,
+      "round_number": 7,
+      "killer": 31032,
+      "victim": 31040,
+      "time": 23.017,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484729,
+      "round_number": 7,
+      "killer": 31035,
+      "victim": 31037,
+      "time": 41.06,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484730,
+      "round_number": 7,
+      "killer": 31031,
+      "victim": 31033,
+      "time": 63.934,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484731,
+      "round_number": 7,
+      "killer": 31031,
+      "victim": 31038,
+      "time": 71.728,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484732,
+      "round_number": 8,
+      "killer": 31039,
+      "victim": 31036,
+      "time": 10.369,
+      "weapon": "Operator"
+    },
+    {
+      "id": 484736,
+      "round_number": 8,
+      "killer": 31033,
+      "victim": 31031,
+      "time": 16.332,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484738,
+      "round_number": 8,
+      "killer": 31040,
+      "victim": 31032,
+      "time": 25.862,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484733,
+      "round_number": 8,
+      "killer": 31037,
+      "victim": 31035,
+      "time": 25.99,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484734,
+      "round_number": 8,
+      "killer": 31037,
+      "victim": 31039,
+      "time": 31.537,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484737,
+      "round_number": 8,
+      "killer": 31034,
+      "victim": 31033,
+      "time": 34.224,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484739,
+      "round_number": 8,
+      "killer": 31040,
+      "victim": 31034,
+      "time": 34.306,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484735,
+      "round_number": 8,
+      "killer": 31037,
+      "victim": 31039,
+      "time": 37.469,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484740,
+      "round_number": 9,
+      "killer": 31039,
+      "victim": 31037,
+      "time": 9.914,
+      "weapon": "Operator"
+    },
+    {
+      "id": 484741,
+      "round_number": 9,
+      "killer": 31036,
+      "victim": 31039,
+      "time": 13.618,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484747,
+      "round_number": 9,
+      "killer": 31031,
+      "victim": 31033,
+      "time": 15.234,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484743,
+      "round_number": 9,
+      "killer": 31040,
+      "victim": 31035,
+      "time": 15.498,
+      "weapon": "Operator"
+    },
+    {
+      "id": 484748,
+      "round_number": 9,
+      "killer": 31031,
+      "victim": 31036,
+      "time": 17.855,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484744,
+      "round_number": 9,
+      "killer": 31040,
+      "victim": 31032,
+      "time": 21.699,
+      "weapon": "Operator"
+    },
+    {
+      "id": 484742,
+      "round_number": 9,
+      "killer": 31034,
+      "victim": 31037,
+      "time": 71.848,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484745,
+      "round_number": 9,
+      "killer": 31040,
+      "victim": 31034,
+      "time": 75.627,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484746,
+      "round_number": 9,
+      "killer": 31040,
+      "victim": 31031,
+      "time": 79.563,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484754,
+      "round_number": 10,
+      "killer": 31035,
+      "victim": 31040,
+      "time": 16.982,
+      "weapon": "Bulldog"
+    },
+    {
+      "id": 484755,
+      "round_number": 10,
+      "killer": 31031,
+      "victim": 31036,
+      "time": 34.555,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484749,
+      "round_number": 10,
+      "killer": 31038,
+      "victim": 31035,
+      "time": 35.648,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484750,
+      "round_number": 10,
+      "killer": 31038,
+      "victim": 31032,
+      "time": 36.624,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484752,
+      "round_number": 10,
+      "killer": 31033,
+      "victim": 31034,
+      "time": 48.477,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484753,
+      "round_number": 10,
+      "killer": 31033,
+      "victim": 31039,
+      "time": 49.165,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484756,
+      "round_number": 10,
+      "killer": 31031,
+      "victim": 31033,
+      "time": 57.065,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484757,
+      "round_number": 10,
+      "killer": 31031,
+      "victim": 31033,
+      "time": 63.055,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484751,
+      "round_number": 10,
+      "killer": 31038,
+      "victim": 31031,
+      "time": 63.381,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484758,
+      "round_number": 11,
+      "killer": 31036,
+      "victim": 31035,
+      "time": 10.132,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484759,
+      "round_number": 11,
+      "killer": 31036,
+      "victim": 31032,
+      "time": 11.048,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484760,
+      "round_number": 11,
+      "killer": 31036,
+      "victim": 31039,
+      "time": 18.72,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484761,
+      "round_number": 11,
+      "killer": 31034,
+      "victim": 31036,
+      "time": 24.669,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484762,
+      "round_number": 11,
+      "killer": 31040,
+      "victim": 31034,
+      "time": 52.367,
+      "weapon": "Operator"
+    },
+    {
+      "id": 484770,
+      "round_number": 12,
+      "killer": 31031,
+      "victim": 31036,
+      "time": 9.637,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484768,
+      "round_number": 12,
+      "killer": 31035,
+      "victim": 31040,
+      "time": 31.939,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484767,
+      "round_number": 12,
+      "killer": 31033,
+      "victim": 31034,
+      "time": 34.71,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484766,
+      "round_number": 12,
+      "killer": 31038,
+      "victim": 31039,
+      "time": 36.609,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484763,
+      "round_number": 12,
+      "killer": 31037,
+      "victim": 31032,
+      "time": 45.724,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484771,
+      "round_number": 12,
+      "killer": 31031,
+      "victim": 31038,
+      "time": 47.736,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484769,
+      "round_number": 12,
+      "killer": 31035,
+      "victim": 31033,
+      "time": 48.243,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484764,
+      "round_number": 12,
+      "killer": 31037,
+      "victim": 31035,
+      "time": 58.14,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484765,
+      "round_number": 12,
+      "killer": 31037,
+      "victim": 31031,
+      "time": 59.387,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484775,
+      "round_number": 13,
+      "killer": 31036,
+      "victim": 31034,
+      "time": 6.948,
+      "weapon": "Ghost"
+    },
+    {
+      "id": 484772,
+      "round_number": 13,
+      "killer": 31039,
+      "victim": 31036,
+      "time": 10.444,
+      "weapon": "Fall"
+    },
+    {
+      "id": 484776,
+      "round_number": 13,
+      "killer": 31035,
+      "victim": 31037,
+      "time": 40.922,
+      "weapon": "Classic"
+    },
+    {
+      "id": 484778,
+      "round_number": 13,
+      "killer": 31040,
+      "victim": 31039,
+      "time": 46.612,
+      "weapon": "Bandit"
+    },
+    {
+      "id": 484779,
+      "round_number": 13,
+      "killer": 31031,
+      "victim": 31031,
+      "time": 49.835,
+      "weapon": "Fall"
+    },
+    {
+      "id": 484773,
+      "round_number": 13,
+      "killer": 31038,
+      "victim": 31032,
+      "time": 52.013,
+      "weapon": "Ghost"
+    },
+    {
+      "id": 484777,
+      "round_number": 13,
+      "killer": 31035,
+      "victim": 31033,
+      "time": 66.036,
+      "weapon": "Classic"
+    },
+    {
+      "id": 484774,
+      "round_number": 13,
+      "killer": 31038,
+      "victim": 31035,
+      "time": 83.877,
+      "weapon": "Ghost"
+    },
+    {
+      "id": 484780,
+      "round_number": 14,
+      "killer": 31039,
+      "victim": 31038,
+      "time": 17.301,
+      "weapon": "Marshal"
+    },
+    {
+      "id": 484784,
+      "round_number": 14,
+      "killer": 31035,
+      "victim": 31037,
+      "time": 27.21,
+      "weapon": "Classic"
+    },
+    {
+      "id": 484781,
+      "round_number": 14,
+      "killer": 31033,
+      "victim": 31032,
+      "time": 28.428,
+      "weapon": "Bucky"
+    },
+    {
+      "id": 484783,
+      "round_number": 14,
+      "killer": 31036,
+      "victim": 31039,
+      "time": 39.175,
+      "weapon": "Bandit"
+    },
+    {
+      "id": 484785,
+      "round_number": 14,
+      "killer": 31040,
+      "victim": 31034,
+      "time": 51.248,
+      "weapon": "Spectre"
+    },
+    {
+      "id": 484787,
+      "round_number": 14,
+      "killer": 31031,
+      "victim": 31036,
+      "time": 55.669,
+      "weapon": "Classic"
+    },
+    {
+      "id": 484786,
+      "round_number": 14,
+      "killer": 31040,
+      "victim": 31035,
+      "time": 82.611,
+      "weapon": "Spectre"
+    },
+    {
+      "id": 484782,
+      "round_number": 14,
+      "killer": 31033,
+      "victim": 31031,
+      "time": 84.352,
+      "weapon": "Classic"
+    },
+    {
+      "id": 484790,
+      "round_number": 15,
+      "killer": 31031,
+      "victim": 31038,
+      "time": 19.315,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484791,
+      "round_number": 15,
+      "killer": 31031,
+      "victim": 31037,
+      "time": 20.069,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484788,
+      "round_number": 15,
+      "killer": 31034,
+      "victim": 31036,
+      "time": 23.76,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484792,
+      "round_number": 15,
+      "killer": 31031,
+      "victim": 31033,
+      "time": 27.304,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484789,
+      "round_number": 15,
+      "killer": 31034,
+      "victim": 31040,
+      "time": 82.311,
+      "weapon": "Fall"
+    },
+    {
+      "id": 484795,
+      "round_number": 16,
+      "killer": 31036,
+      "victim": 31039,
+      "time": 7.647,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484797,
+      "round_number": 16,
+      "killer": 31034,
+      "victim": 31036,
+      "time": 17.617,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484800,
+      "round_number": 16,
+      "killer": 31040,
+      "victim": 31031,
+      "time": 32.447,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484793,
+      "round_number": 16,
+      "killer": 31032,
+      "victim": 31040,
+      "time": 39.235,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484798,
+      "round_number": 16,
+      "killer": 31034,
+      "victim": 31037,
+      "time": 52.075,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484794,
+      "round_number": 16,
+      "killer": 31038,
+      "victim": 31032,
+      "time": 62.711,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484796,
+      "round_number": 16,
+      "killer": 31035,
+      "victim": 31033,
+      "time": 64.818,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484799,
+      "round_number": 16,
+      "killer": 31034,
+      "victim": 31038,
+      "time": 74.67,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484803,
+      "round_number": 17,
+      "killer": 31036,
+      "victim": 31039,
+      "time": 10.907,
+      "weapon": "Sheriff"
+    },
+    {
+      "id": 484801,
+      "round_number": 17,
+      "killer": 31032,
+      "victim": 31038,
+      "time": 12.647,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484806,
+      "round_number": 17,
+      "killer": 31034,
+      "victim": 31037,
+      "time": 17.938,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484804,
+      "round_number": 17,
+      "killer": 31036,
+      "victim": 31032,
+      "time": 26.234,
+      "weapon": "Sheriff"
+    },
+    {
+      "id": 484808,
+      "round_number": 17,
+      "killer": 31040,
+      "victim": 31035,
+      "time": 32.021,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484805,
+      "round_number": 17,
+      "killer": 31036,
+      "victim": 31031,
+      "time": 35.8,
+      "weapon": "Sheriff"
+    },
+    {
+      "id": 484807,
+      "round_number": 17,
+      "killer": 31034,
+      "victim": 31040,
+      "time": 36.67,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484802,
+      "round_number": 17,
+      "killer": 31033,
+      "victim": 31034,
+      "time": 43.036,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484812,
+      "round_number": 18,
+      "killer": 31035,
+      "victim": 31036,
+      "time": 4.153,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484810,
+      "round_number": 18,
+      "killer": 31033,
+      "victim": 31032,
+      "time": 48.552,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484811,
+      "round_number": 18,
+      "killer": 31033,
+      "victim": 31031,
+      "time": 52.281,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484815,
+      "round_number": 18,
+      "killer": 31034,
+      "victim": 31033,
+      "time": 52.44,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484816,
+      "round_number": 18,
+      "killer": 31040,
+      "victim": 31039,
+      "time": 60.093,
+      "weapon": "Blade Storm"
+    },
+    {
+      "id": 484809,
+      "round_number": 18,
+      "killer": 31037,
+      "victim": 31034,
+      "time": 62.816,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484813,
+      "round_number": 18,
+      "killer": 31035,
+      "victim": 31033,
+      "time": 65.277,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484814,
+      "round_number": 18,
+      "killer": 31035,
+      "victim": 31038,
+      "time": 67.023,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484817,
+      "round_number": 18,
+      "killer": 31040,
+      "victim": 31035,
+      "time": 73.201,
+      "weapon": "Blade Storm"
+    },
+    {
+      "id": 484818,
+      "round_number": 19,
+      "killer": 31032,
+      "victim": 31036,
+      "time": 14.985,
+      "weapon": "Guardian"
+    },
+    {
+      "id": 484819,
+      "round_number": 19,
+      "killer": 31032,
+      "victim": 31038,
+      "time": 18.942,
+      "weapon": "Guardian"
+    },
+    {
+      "id": 484825,
+      "round_number": 19,
+      "killer": 31040,
+      "victim": 31031,
+      "time": 26.289,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484824,
+      "round_number": 19,
+      "killer": 31035,
+      "victim": 31037,
+      "time": 32.566,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484826,
+      "round_number": 19,
+      "killer": 31040,
+      "victim": 31039,
+      "time": 39.575,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484821,
+      "round_number": 19,
+      "killer": 31033,
+      "victim": 31034,
+      "time": 39.607,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484820,
+      "round_number": 19,
+      "killer": 31032,
+      "victim": 31040,
+      "time": 49.64,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484822,
+      "round_number": 19,
+      "killer": 31033,
+      "victim": 31032,
+      "time": 56.576,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484823,
+      "round_number": 19,
+      "killer": 31033,
+      "victim": 31033,
+      "time": 74.476,
+      "weapon": "Bomb"
+    },
+    {
+      "id": 484834,
+      "round_number": 20,
+      "killer": 31036,
+      "victim": 31031,
+      "time": 26.11,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484832,
+      "round_number": 20,
+      "killer": 31033,
+      "victim": 31034,
+      "time": 29.899,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484833,
+      "round_number": 20,
+      "killer": 31033,
+      "victim": 31039,
+      "time": 31.118,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484828,
+      "round_number": 20,
+      "killer": 31032,
+      "victim": 31033,
+      "time": 32.177,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484829,
+      "round_number": 20,
+      "killer": 31032,
+      "victim": 31037,
+      "time": 36.598,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484835,
+      "round_number": 20,
+      "killer": 31036,
+      "victim": 31035,
+      "time": 45.299,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484827,
+      "round_number": 20,
+      "killer": 31039,
+      "victim": 31036,
+      "time": 47.065,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484830,
+      "round_number": 20,
+      "killer": 31032,
+      "victim": 31038,
+      "time": 49.689,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484836,
+      "round_number": 20,
+      "killer": 31040,
+      "victim": 31039,
+      "time": 68.067,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484831,
+      "round_number": 20,
+      "killer": 31032,
+      "victim": 31040,
+      "time": 78.242,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484837,
+      "round_number": 21,
+      "killer": 31039,
+      "victim": 31040,
+      "time": 31.512,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484847,
+      "round_number": 21,
+      "killer": 31034,
+      "victim": 31033,
+      "time": 34.235,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484845,
+      "round_number": 21,
+      "killer": 31036,
+      "victim": 31039,
+      "time": 43.106,
+      "weapon": "Sheriff"
+    },
+    {
+      "id": 484843,
+      "round_number": 21,
+      "killer": 31037,
+      "victim": 31035,
+      "time": 57.746,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484844,
+      "round_number": 21,
+      "killer": 31037,
+      "victim": 31034,
+      "time": 69.746,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484846,
+      "round_number": 21,
+      "killer": 31036,
+      "victim": 31031,
+      "time": 76.135,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484838,
+      "round_number": 21,
+      "killer": 31032,
+      "victim": 31037,
+      "time": 78.124,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484839,
+      "round_number": 21,
+      "killer": 31032,
+      "victim": 31038,
+      "time": 79.856,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484840,
+      "round_number": 21,
+      "killer": 31032,
+      "victim": 31036,
+      "time": 87.95,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484841,
+      "round_number": 21,
+      "killer": 31032,
+      "victim": 31033,
+      "time": 89.351,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484842,
+      "round_number": 21,
+      "killer": 31032,
+      "victim": 31032,
+      "time": 95.995,
+      "weapon": "Bomb"
+    },
+    {
+      "id": 484852,
+      "round_number": 22,
+      "killer": 31040,
+      "victim": 31031,
+      "time": 73.5,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484849,
+      "round_number": 22,
+      "killer": 31033,
+      "victim": 31034,
+      "time": 84.29,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484850,
+      "round_number": 22,
+      "killer": 31033,
+      "victim": 31032,
+      "time": 86.29,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484851,
+      "round_number": 22,
+      "killer": 31036,
+      "victim": 31035,
+      "time": 86.581,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484848,
+      "round_number": 22,
+      "killer": 31039,
+      "victim": 31037,
+      "time": 90.55,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484857,
+      "round_number": 23,
+      "killer": 31040,
+      "victim": 31032,
+      "time": 20.581,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484853,
+      "round_number": 23,
+      "killer": 31039,
+      "victim": 31033,
+      "time": 24.363,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484854,
+      "round_number": 23,
+      "killer": 31033,
+      "victim": 31034,
+      "time": 37.14,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484859,
+      "round_number": 23,
+      "killer": 31031,
+      "victim": 31033,
+      "time": 37.548,
+      "weapon": "Classic"
+    },
+    {
+      "id": 484858,
+      "round_number": 23,
+      "killer": 31040,
+      "victim": 31031,
+      "time": 38.323,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484855,
+      "round_number": 23,
+      "killer": 31036,
+      "victim": 31035,
+      "time": 39.34,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484856,
+      "round_number": 23,
+      "killer": 31036,
+      "victim": 31039,
+      "time": 41.06,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484866,
+      "round_number": 24,
+      "killer": 31034,
+      "victim": 31037,
+      "time": 14.101,
+      "weapon": "Hot Hands"
+    },
+    {
+      "id": 484862,
+      "round_number": 24,
+      "killer": 31036,
+      "victim": 31039,
+      "time": 18.795,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484860,
+      "round_number": 24,
+      "killer": 31032,
+      "victim": 31033,
+      "time": 23.693,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484863,
+      "round_number": 24,
+      "killer": 31036,
+      "victim": 31039,
+      "time": 24.644,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484864,
+      "round_number": 24,
+      "killer": 31035,
+      "victim": 31036,
+      "time": 26.174,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484861,
+      "round_number": 24,
+      "killer": 31038,
+      "victim": 31032,
+      "time": 38.477,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484865,
+      "round_number": 24,
+      "killer": 31035,
+      "victim": 31038,
+      "time": 49.625,
+      "weapon": "Phantom"
+    },
+    {
+      "id": 484868,
+      "round_number": 24,
+      "killer": 31040,
+      "victim": 31035,
+      "time": 56.222,
+      "weapon": "Vandal"
+    },
+    {
+      "id": 484867,
+      "round_number": 24,
+      "killer": 31034,
+      "victim": 31040,
+      "time": 68.025,
+      "weapon": "Vandal"
+    }
+  ],
+  "read_only": "on",
+  "snapshot": "3121:3121:"
+}

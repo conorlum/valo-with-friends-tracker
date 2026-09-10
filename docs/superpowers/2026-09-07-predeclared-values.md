@@ -1077,3 +1077,33 @@ both rules. No target outcomes or loss curves selected this formula. The
 severity pool is a score index in equipment-value units, not a claim that
 restoring those many credits is necessary or that every cheap buy was caused
 by a kill. Round 22 cannot be reused as independent evidence for the revision.
+
+### 2026-09-10 -- V2 Abyss measured results (after the preceding declaration)
+
+Completed all 20 eligible rounds / 40 team-rounds from the same frozen source
+snapshot as V1. Six team-rounds have a positive funding gap and loss exposure:
+TEAM_1 rounds 6, 7, 16, 20, 21 and TEAM_2 round 22. All 163 match arithmetic
+checks pass. Seventeen standalone reference tests pass; restoring V1's pool
+behind the same API produces two numerical failures and fifteen passes.
+Twenty-eight independent decimal comparisons reproduce the manually worked
+R2/R3/R6/R22 inputs, team quantities and selected credit/debit values.
+
+At the unchanged review scale and C=1: R6 Osmin -> 1xgoofy earns 124.040530;
+R3 Mokalover -> Osmin earns 19.899977; R22 ZETA -> DoubleBl1nd earns 108.561606;
+R2 Osmin -> 1xgoofy earns 1.550648. These are event ECON credits, not full Impact.
+R22 next-equipment gap is 11950 and V2 severity pool is 5362.179487; V1 retained
+only the 1750 funding-gap pool. This development revision is not held-out proof.
+
+Material unresolved finding: all ten match-total economy nets are negative,
+from -100 to -928. The independent own-wealth debit charges reserve depletion
+more often/strongly than the constrained-buy reward activates. Non-zero-sum
+does not justify this magnitude by itself. Review an own-buy-disruption-focused
+debit before choosing the production rule or adjusting C; no such additional
+arm or numerical rule is declared or measured here.
+
+The selected match contains no pistol winner losing round 2/14. Pooled
+resources and starting paid kits remain proxies, not exact transferable buys
+or observed guns lost. Detailed findings: docs/superpowers/abyss-buy-disruption-review/manual-review.md.
+No production scorer activation, database rescore, version change or deployment
+was performed as part of this work; unrelated concurrent working-tree edits
+are outside this experiment.

@@ -233,7 +233,8 @@ Proposed additive module: `app/scoring/econ_buy_disruption.py`, pure functions:
 - `estimate_buy_disruption(targets, next_paid_loadouts, next_bank, exposures)`
 - `attribute_buy_disruption(exposures, team_results)`
 
-Return a typed audit record containing H/U/D/Q/L, uncapped wealth, scarcity,
+Return a typed audit record containing H/U/D/Q/L/G, activation, severity pool,
+uncapped wealth, scarcity,
 data-quality flags and per-event credit/per-player debit parts. Runtime and
 review must call the same implementation. Add an opt-in candidate flag and
 an econ observer payload version; leave current defaults unchanged until
@@ -255,7 +256,8 @@ calculator is for a transparent worked review, not prediction validation.
 5. Permuting the order of distinct players' deaths preserves their economic
    shares. First/third/fifth order alone is not an economic allocation rule.
 6. Repeated death of a player counts one starting kit. Non-enemy deaths create
-   own cost, never opponent credit; their share of Q is not credited to enemies.
+   own cost, never opponent credit; their share of the severity pool is not
+   credited to enemies.
 7. Pistol-winning h=2 has carryover targets; losing that round does not lower
    those targets. A low-value survivor carryover is not automatically a failed
    full buy. Other histories use the declared standard target.
@@ -282,3 +284,33 @@ predeclared coverage/distribution checks, assess the target and debit choices,
 and prepare the single approved runtime configuration. Verify it reproduces
 review totals, then follow the existing version/migration/rescore/cache rollout
 on the verified site database. This spec and walkthrough do not activate it.
+
+## 11. Completed Abyss development review and implementation handoff
+
+See the [manual review](../abyss-buy-disruption-review/manual-review.md) for
+hand-substituted formulas and the complete event ledger. The reference
+calculator passes 17 tests, 163 match reconciliation checks and 28 separate
+decimal comparisons for the selected worked cases. Reinstating V1's bonus
+pool behind the same API produces two numerical failures.
+
+R6 supplies a constrained next buy and a 124.04-point kill; R3 supplies three
+absorbed losses and a 19.90-point kill. R22 prompted the declared V2 revision
+and supplies a 108.56-point kill. All are ECON only at C=1 and the fixed review
+scale. These examples establish arithmetic and intended local behavior, not
+the validity of the chosen constants or counterfactual causation.
+
+**Release acceptance remains open for the independent debit.** All ten match
+economy totals are negative. The current debit charges reserve depletion even
+when next-buy denial is zero, so implementing it as an already-approved final
+design would overstate this review. Keep it exposed as a candidate. Before
+release, compare an own-buy-disruption-focused debit with this reserve-burden
+debit in the same review views; declare its rule before computing that arm.
+Do not use C alone to hide this structural choice.
+
+The match contains no pistol-winning team losing round 2/14. A separate game
+must cover that history. Pistols themselves remain excluded here; this spec
+does not yet award a pistol-round equipment-retention effect. Resource sharing,
+partial-kit upgrade feasibility, pickups and exact lost guns remain documented
+data limitations. Broader behavior and runtime integration tests in section 9
+are requirements for the production implementation, not claims about coverage
+of the standalone 17-test reference suite.
