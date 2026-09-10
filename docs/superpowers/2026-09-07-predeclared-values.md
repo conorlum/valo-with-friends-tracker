@@ -1133,3 +1133,23 @@ by all 24 played rounds for the average match contribution.
 Report gross credit, revised debit, net, prior V2 net, net change, per-round
 average, team and match sums, plus the prior worked deaths. This is a
 read-only reference comparison; production scoring is outside this change.
+
+### 2026-09-10 -- 30%/80% Abyss measured results
+
+Same frozen source and killer credits as V2. All 199 artifact reconciliation
+checks pass; 22 reference tests pass. Reinstating the old own-wealth debit
+behind the new API produces four numerical failures and eighteen passes.
+
+Sum of rounded player-round economy nets: TEAM_1 +502 (previously -4057),
+TEAM_2 +1293 (previously -2537), match +1795 (previously -6594). Nine players
+are positive; 1xgoofy remains negative at -101. Osmin leads at +708, or +29.50
+per played round. Both full match sums and 24-round averages are reported.
+
+Worked own death costs: R3 Osmin 5.969993 (30% of 19.899977); R6 1xgoofy
+99.232424 (80% of 124.040530); R22 DoubleBl1nd 86.849285 (80% of 108.561606).
+Positive combined enemy-event balance follows from 100% credit versus 30%/80%
+debit and is not evidence of predictive improvement. The positive-severity
+switch creates a rate step on the small background term even for a tiny gap.
+No constants were adjusted after measurement; production remains untouched.
+
+Full report: docs/superpowers/abyss-buy-disruption-review/death-penalty-30-80.md.

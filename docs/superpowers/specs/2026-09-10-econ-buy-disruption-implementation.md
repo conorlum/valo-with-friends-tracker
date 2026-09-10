@@ -1,7 +1,7 @@
 # Economy impact: replacement cost and disruption of the next buy
 
-Date: 2026-09-10. Status: V2 implementation specification / reference candidate,
-revised during the worked review; broader validation pending. No production activation.
+Date: 2026-09-10. Status: V2 kill credit with owner's revised 30%/80% death
+penalty in section 12; broader validation pending. No production activation.
 Owner direction: `../2026-09-10-econ-buy-disruption-design.md`.
 
 ## 1. Purpose and accepted interpretation
@@ -180,6 +180,9 @@ policy examples, not fitted estimates or percentages of round win probability.
 
 ## 7. Independent victim debit
 
+Historical V2 candidate, superseded by the owner's rule in section 12.
+Retained here to explain the original Abyss comparison, not for new activation.
+
 Use the existing own-wealth scarcity definition as the initial independent
 debit candidate, adding the small cost so even affordable losses are visible:
 
@@ -314,3 +317,40 @@ partial-kit upgrade feasibility, pickups and exact lost guns remain documented
 data limitations. Broader behavior and runtime integration tests in section 9
 are requirements for the production implementation, not claims about coverage
 of the standalone 17-test reference suite.
+
+## 12. Owner revision: absorbed deaths at 30%, disrupted deaths at 80%
+
+The owner replaced the reserve-depletion debit after reviewing section 11.
+Keep the V2 credit and team severity calculation unchanged. For each player's
+first lost kit, compute the same damage basis used to value an enemy kill:
+
+```
+background_loss = 0.10 * lost_i / 19500
+disruption_loss = severity_pool_T / 19500 * lost_i / L_T  # zero if L_T=0
+rate_T = 0.80 if severity_pool_T > 0 else 0.30
+debit_i = rate_T * (background_loss + disruption_loss)
+```
+
+There is no additional scarcity or low-reserve charge. The 30% case applies
+when the funding test says the team can absorb the loss; 80% applies when
+the positive severity pool indicates a constrained next buy. The percentages
+are of the modeled damage basis, not of the previous V2 debit or raw kit price.
+This uses an observational buy-disruption proxy, not a new causal estimator.
+
+Enemy kills retain 100% credit. Self/team/environmental first-kit losses use
+this same own damage basis without creating enemy credit. Subsequent deaths
+still do not invent another starting kit. Sum at full precision and round
+the player-round net once, as in section 8.
+
+This intentionally produces positive combined credit-minus-debit for enemy
+kills, while individual players or teams can still finish negative. The rate
+on the background term jumps from 30% to 80% at any positive severity pool;
+retain this explicit policy in review rather than silently smoothing it.
+
+The [Abyss comparison](../abyss-buy-disruption-review/death-penalty-30-80.md)
+reports old and new totals, gross credits, revised debits, and selected deaths.
+At the unchanged scale and C=1, TEAM_1 moves from -4057 to +502 and TEAM_2
+from -2537 to +1293. Nine players finish positive and one negative. This
+replaces section 11's open debit choice for this reference candidate; the
+broader match review and activation requirements remain. The reference suite
+now has 22 passing tests; restoring the old debit produces four value failures.

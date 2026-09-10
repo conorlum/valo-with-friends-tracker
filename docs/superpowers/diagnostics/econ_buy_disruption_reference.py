@@ -75,3 +75,10 @@ def event_credit(value, budget, *, enemy=True):
 def own_debit(loss, budget):
     _valid([loss])
     return BACKGROUND * loss / R, budget.scarcity * loss / R
+
+
+def buy_linked_debit(loss, budget):
+    """Owner's 30% absorbed / 80% disrupted candidate, separate from V2."""
+    background, disruption = event_credit(loss, budget)
+    rate = 0.80 if budget.severity_pool > 0 else 0.30
+    return rate * background, rate * disruption

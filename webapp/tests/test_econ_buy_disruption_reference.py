@@ -108,3 +108,30 @@ def test_tiny_funding_gap_does_not_activate_a_whole_save_round_bonus():
     assert b.shortfall == 5
     expected_pool = 5000 * 5 / 3900
     assert ref.event_credit(3900, b)[1] == pytest.approx(expected_pool / 19500 * 0.2)
+
+
+def test_absorbed_death_costs_thirty_percent_of_small_damage_value():
+    b = budget()
+    assert ref.buy_linked_debit(3900, b) == pytest.approx((0.006, 0))
+
+
+def test_disrupted_death_costs_eighty_percent_of_full_damage_value():
+    b = budget(paid=[0, 0, 0, 3900, 3900], bank=[0]*5, losses=[3900]*3+[0, 0])
+    assert ref.buy_linked_debit(3900, b) == pytest.approx((0.016, 0.16))
+
+
+def test_low_reserves_do_not_charge_extra_if_next_buy_is_funded():
+    b = budget(paid=[3900]*5, bank=[0]*5)
+    assert b.scarcity > 0
+    assert ref.buy_linked_debit(3900, b) == pytest.approx((0.006, 0))
+
+
+def test_non_enemy_death_uses_same_buy_damage_basis_without_enemy_credit():
+    b = budget(paid=[0]*5, bank=[0]*5, losses=[500, 0, 0, 0, 0])
+    assert ref.event_credit(500, b, enemy=False) == (0, 0)
+    assert sum(ref.buy_linked_debit(500, b)) == pytest.approx(0.8*1.1*500/19500)
+
+
+def test_no_second_kit_no_buy_linked_penalty():
+    b = budget(paid=[0]*5, bank=[0]*5)
+    assert ref.buy_linked_debit(0, b) == (0, 0)
