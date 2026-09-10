@@ -668,3 +668,74 @@ to be FLAT. The prior evidence on weight refitting is +0.005 AUC, measured
 when the components correlated 0.73-0.90. The performance CURVE across the
 grid is reported for this reason: a flat surface must read as "any A in this
 band is equivalent", never as a point optimum.
+
+### 2026-09-09 (later) -- the A search RESULT: inconclusive, A stays at 1.25
+
+**No governing value moved, and none was tuned.** The grid, target, controls,
+folds, draws, sign and decision rule are exactly as declared in the entry
+above, which was committed before this ran (`7663395`).
+
+**Verification of the three things the search rests on**, done before the
+result was read:
+
+| | |
+|---|---|
+| the one-live-factor reduction | holds -- every fold reports **effective B = 1.0000**; the script refuses silently and shouts if it ever does not |
+| output normalization | the fitter rescales returned factor weights by `FACTOR_WEIGHT_TOTAL` (3), so a reported `w_time = 3.0` **is** an effective B of 1.0. `damage_multiplier` is returned RAW, so `A = 1.25 * d` stands |
+| damage-column scaling and rounding | the column is already `round(1.25 * damage_and_assists)`. The gap between what the fit sees (`d * round(1.25x)`) and what the scorer computes (`round(1.25dx)`) is **<= 2.0 absolute, <= 0.39% of the term**, and exactly **0 at d = 1.0**, as it must be |
+
+**The contrast, on identical held-out matches, 5 folds, 2,000 match-clustered
+draws:**
+
+    loss(fitted A) - loss(A = 1.25)  =  -0.000038  [-0.000082, +0.000004]
+
+The interval spans zero. Per the rule declared before the run, this is
+**INCONCLUSIVE in those words, and A STAYS AT 1.25.**
+
+**The held-out performance curve** (weighted log loss; lower is better):
+
+| d | A | mean over 5 folds | SD |
+|---|---|---|---|
+| 0.00 | 0.0000 | 0.674582 | 0.001789 |
+| 0.25 | 0.3125 | 0.674522 | 0.001802 |
+| 0.50 | 0.6250 | 0.674479 | 0.001815 |
+| 0.75 | 0.9375 | 0.674451 | 0.001826 |
+| **1.00** | **1.2500** | **0.674433** | 0.001834 |
+| 1.25 | 1.5625 | 0.674421 | 0.001841 |
+| 1.50 | 1.8750 | 0.674413 | 0.001846 |
+| 2.00 | 2.5000 | 0.674403 | 0.001853 |
+| 3.00 | 3.7500 | 0.674396 | 0.001860 |
+| 4.00 | 5.0000 | 0.674394 | 0.001865 |
+
+**FINDING 1 -- the curve is flat, and flatter than the thing it is measured
+against.** Across the WHOLE grid, from `A = 0` (damage deleted from Impact
+entirely) to `A = 5`, held-out loss moves **0.00019**. That is eight times
+smaller than the econ-deletion arm (+0.00153) and smaller than the score's
+entire measured edge over `kill_diff` (+0.00122). Between-fold SD (~0.0018) is
+**ten times** the whole between-`A` spread. On this target damage and leverage
+are near-substitutes rather than complements, which is what their measured
+`r = 0.89` already implied. **A is not identified by this data.**
+
+**FINDING 2 -- the optimum is at the grid edge and the folds disagree.**
+Per-fold HELD-OUT argmin `d`: **4.0, 1.5, 4.0, 4.0, 2.0** -- three distinct
+values, three of five at the boundary. It is not an interior optimum. The
+grid was **not** widened after seeing this; widening a predeclared grid to
+chase an edge is the move this file exists to prevent. A future search that
+wants a wider grid declares it first, in advance, as its own entry.
+
+The per-fold TRAINING-selected `d` was 4.0 in all five folds, which looks like
+stability and is not: it is the same edge being hit five times. The held-out
+argmin is the honest stability measure and it disagrees.
+
+**Consequence for the weights question.** A is a **product choice, not a
+fitted quantity** -- the same conclusion already reached for C, arrived at
+from the opposite direction. Recorded so nobody re-runs this expecting the
+data to pick a value.
+
+**A second thing A does, worth stating before anyone changes it.** A sets the
+damage-to-leverage RATIO and the overall DISPLAY SCALE at the same time. The
+evaluator absorbs scale, so those are one knob statistically and two knobs to
+a reader. Reviewed on the fixed ten: at `A = 1.25` the mean player-match delta
+is **-4.4** with **54%** of players changing rank; at `A = 5.0` it is
+**+12,044** (median **+271%**) with **32%** changing rank. The lower churn at
+`A = 5` is not stability -- it is damage drowning out the other two terms.
