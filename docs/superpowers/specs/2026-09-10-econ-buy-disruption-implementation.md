@@ -342,6 +342,14 @@ this same own damage basis without creating enemy credit. Subsequent deaths
 still do not invent another starting kit. Sum at full precision and round
 the player-round net once, as in section 8.
 
+**Owner clarification: net econ remains signed.** Do not clamp it to zero or
+offset any round, match, player list or leaderboard by its minimum score.
+Negative values must survive persistence, aggregation and display. The earlier
++928/+101 tables were illustrative arithmetic, not a scoring or display rule.
+Under the frozen Abyss candidate, 1xgoofy's match econ stays -101. The existing
+caps on resource quantities and severity remain part of the formula; they are
+not bounds or baseline adjustments on the resulting net econ contribution.
+
 This intentionally produces positive combined credit-minus-debit for enemy
 kills, while individual players or teams can still finish negative. The rate
 on the background term jumps from 30% to 80% at any positive severity pool;

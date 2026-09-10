@@ -1153,3 +1153,18 @@ switch creates a rate step on the small background term even for a tiny gap.
 No constants were adjusted after measurement; production remains untouched.
 
 Full report: docs/superpowers/abyss-buy-disruption-review/death-penalty-30-80.md.
+
+### 2026-09-10 -- owner clarification: signed economy, no minimum offset
+
+The owner explicitly confirmed that econ may be negative and must not be
+bounded or shifted to make the worst player zero. Preserve the signed formula
+result in scoring, persistence, totals, averages and displayed values. Neither
+the +928 previous-formula table nor the +101 new-formula table is an adopted
+normalization. The frozen 30%/80% Abyss totals therefore remain unchanged,
+including 1xgoofy -101. Formula resource/severity caps remain unchanged.
+
+The implementation plan now includes the four plan-review corrections: input
+routing before legacy preprocessing, an offline local backfill with recovery,
+explicit comparison-model identities, and a complete configuration frozen
+before integrated review. No new measurement, runtime activation or scoring
+code change is part of these documentation corrections.
