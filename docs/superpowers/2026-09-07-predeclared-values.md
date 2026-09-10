@@ -821,3 +821,68 @@ scoring impact against it measures nothing." This target reverses that. It is
 run because the project owner asked for it and because a recorded, checkable
 prediction makes the result informative either way -- not because the
 tautology argument has been withdrawn.
+
+### 2026-09-09 (T4 RESULT) -- all four predictions landed; the fit is an artifact and is NOT adopted
+
+**No governing value moved.** The incumbent `(A, C) = (1.25, 1.0)` stands.
+The prediction this checks against was committed before the run (`5f67c60`).
+
+**The fit resolved, crisply and stably.** 5 folds, 2,000 match-clustered
+draws:
+
+    loss(fitted) - loss(incumbent) = -0.011417 [-0.011947, -0.010903]
+
+Selected `(A, C) = (0.3125, 0.25)` in **all five folds** -- both terms shrunk
+to a quarter of their declared weight, with leverage pinned at B = 1.
+
+**All four recorded predictions landed:**
+
+| # | prediction | outcome |
+|---|---|---|
+| 1 | the contrast will exclude zero | **yes** -- and by 20 interval-widths |
+| 2 | `C` at or near the bottom of its grid | **yes** -- 0.25, the second-lowest of eight, every fold |
+| 3 | `A` moves down from 1.25 | **yes** -- 0.3125, the second-lowest of ten, every fold |
+| 4 | surface far steeper than the A search's 0.00019 | **yes** -- **0.06627, 353x steeper** |
+
+**Scale check, which is what makes this unadoptable.** The "improvement" is
+**-0.0114**. For comparison: the A search's contrast was -0.000038, the
+econ-deletion arm +0.00153, and today's Impact beats plain `kill_diff` by
+**+0.00122**. So this target reports an improvement **nine times larger than
+the score's entire measured advantage over kill difference** -- obtained by
+reweighting toward the term that most restates the label.
+
+**The mechanism, measured directly.** Correlation with round N's own result:
+
+| column | r | R^2 |
+|---|---|---|
+| **`kill_order_bonus`** (no time factor at all) | **+0.9420** | 0.887 |
+| leverage (`kill_order_bonus x time_factor`) | +0.9379 | 0.880 |
+| `kill_diff`, plain | +0.8879 | 0.788 |
+| `acs_diff` | +0.8544 | 0.730 |
+| damage | +0.8473 | 0.718 |
+| `econ_component` | +0.5469 | 0.299 |
+
+The order the fit produces is exactly this order. The winner is the raw
+hand-tuned man-advantage sum, which is close to a **description of the
+round's ending state** -- a 5v0 man-advantage IS a won round. The fit did not
+discover that damage and econ are overweighted; it discovered which column is
+the nearest copy of the label and shrank the others toward it.
+
+**Conclusion: NOT ADOPTED.** Per the rule recorded before the run, a fit whose
+four predicted artifact signatures all land must not be adopted however tight
+its interval. A tautology with a confidence interval is still a tautology.
+The incumbent `(1.25, 1.0)` stands.
+
+**What this does establish, and it is worth keeping.** The A search's null was
+not a tooling failure. The identical machinery, pointed at a target that
+shares variance with the features, resolves instantly and stably -- 353x the
+surface curvature, five folds agreeing exactly. So the flat surface under T2
+is a real property of that estimand, not a broken fit. The two runs together
+are stronger evidence than either alone.
+
+**Not re-run, and worth stating so nobody assumes it was:** the C-vs-N+1 leak
+is still confounded here. `econ_component` reads round N+1 and N+1 carries 2/7
+of this label, so C's collapse to 0.25 cannot be cleanly separated from that
+leak by this run. It does not change the conclusion -- C collapsed rather than
+inflated, which is the direction the tautology predicts and the opposite of
+what the leak would produce -- but a clean test would drop the N+1 term.
