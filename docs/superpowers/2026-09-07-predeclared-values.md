@@ -886,3 +886,66 @@ of this label, so C's collapse to 0.25 cannot be cleanly separated from that
 leak by this run. It does not change the conclusion -- C collapsed rather than
 inflated, which is the direction the tautology predicts and the opposite of
 what the leak would produce -- but a clean test would drop the N+1 term.
+
+### 2026-09-10 -- independent economic harm and the late floor: experiment declared before measurement
+
+Authorization: the owner's `webapp/econ_issue_prompt.md` requests implementing
+and measuring an independent debit, a late-regime walkthrough, corpus-wide
+sign counts, reconsideration of the 0.5 floor, and recalculated anchors.
+The late scope lock is reopened **for these experimental comparisons only**.
+The production scorer, defaults, versions, persisted scores and deployment
+remain unchanged. No production formula is selected by this declaration.
+
+Four prespecified arms, with no parameter search:
+
+| arm | credit pool | debit |
+|---|---|---|
+| incumbent | current early/late `econ_round` | current opponent-pool share |
+| independent | unchanged | `denial_early(own next wealth, own roster size) * player_lost / 19500` |
+| no_floor | early unchanged; late `0.2 * enemy_below_4200_next` | opponent-pool share using that arm's credit pool |
+| independent_no_floor | same as no_floor | same independent debit |
+
+All use the existing early/late eligibility, final-round/pistol/halftime/OT
+abstention, committed-value definition and enemy-death eligibility. Self,
+environmental and team deaths remain excluded to isolate allocation changes.
+Independent harm needs a complete next-round **own** roster; unavailable
+data gives zero harm, not imputation. The scarcity function is reused in
+late rounds as a hypothesis, not a claim that its early calibration transfers.
+`ZERO_AT=6300`, `R=19500`, full-buy threshold 4200 and all other existing
+constants are held fixed. No commitment gate on independent harm. Saving
+policy is left to the owner; report the affected cases separately. A low
+mean commitment is only a proxy for a saving round, not observed intent.
+
+Population: the complete available local corpus in one repeatable-read,
+read-only snapshot, expected 3,124 matches. Report actual counts. Reuse the
+production scorer's econ observer to obtain credits, debits, removed and lost
+values; reconcile reconstructed incumbent values with both the observer and
+the scorer's player-round outputs. All scored player-rounds, including zero
+boundary rows, enter dispersion calculations. No live database writes.
+
+Report: match 3104, every scored early and late round and player, especially
+ternstyle#GIGI in rounds 14, 16 and 17; the existing fixed ten-match roster;
+unrounded both-teams-negative/positive/zero/opposite/mixed sign counts by
+early/late/boundary regime (`epsilon=1e-10`); unrounded total and rounding
+residuals; player-round SD and p1/p5/p50/p95/p99; lost equipment with zero
+debit split by own scarcity and commitment gate; late positive-removal cases
+at count=0; repeated-loss exposure; and largest player-round changes.
+
+Scales: first compare raw values and the SAME incumbent scale 1007.9209 at
+C=1, to isolate formula changes. Separately compute each arm's proposed
+anchor as `SD(legacy time_impact) / SD(unrounded arm econ)` over the identical
+scored population. Keep the reference time calculation fixed (B=1, both
+timing retunes off). Report these anchors and their effects without installing
+them. Do not retune C or center the new non-zero mean away. A=1.25 and B=1
+remain fixed for any illustrative total; these are econ-only comparisons,
+not the complete release-candidate review.
+
+Decision criteria: reproduce the incumbent; verify harm increases with own
+equipment loss at fixed own scarcity, is zero when own scarcity is zero,
+and is independent of the opponent's credit gate; verify no_floor removes
+credit exactly when the late below-buy count is zero, without altering early
+credit. Corpus sign frequencies and scale shifts are descriptive findings,
+not win-prediction/causal validation or an optimization target. More non-zero
+sums do not by themselves mean a better score. Adoption requires explaining
+the concrete behavior and remaining asymmetric credit/debit assumptions to
+the owner; these runs do not automatically select or activate a candidate.
