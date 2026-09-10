@@ -534,6 +534,7 @@ def _econ_components_for_round(
     match_players: dict[int, MatchPlayer],
     round_player_stats: dict[int, dict[int, dict]],
     use_realized: bool,
+    econ_observer=None,
 ) -> dict[int, float]:
     """econ_component per match_player for one round (econ spec, sections
     4-7). Returns {} when the round abstains, so callers write 0.
@@ -614,10 +615,40 @@ def _econ_components_for_round(
         ],
         econ_round_by_team=econ_round_by_team,
     )
-    return {
+    scaled = {
         match_player_id: econ_component.ECON_SCALE * attribution.value
         for match_player_id, attribution in attributions.items()
     }
+
+    if econ_observer is not None:
+        # REPORTING ONLY -- the return value above is already final. Reports
+        # the whole division so a review can show where each player's econ
+        # came from: the team magnitude, its denominator, and each player's
+        # numerator on both the credit and the debit side.
+        removed_by_team: dict = {}
+        for match_player_id, mp in match_players.items():
+            removed_by_team[mp.team] = (
+                removed_by_team.get(mp.team, 0.0) + removed.get(match_player_id, 0.0)
+            )
+        econ_observer(
+            round_number=round_number,
+            econ_round_by_team=dict(econ_round_by_team),
+            removed_by_team=removed_by_team,
+            players={
+                match_player_id: {
+                    "team": match_players[match_player_id].team,
+                    "committed": committed.get(match_player_id, 0.0),
+                    "removed": removed.get(match_player_id, 0.0),
+                    "lost": lost.get(match_player_id, 0.0),
+                    "credit": attribution.credit,
+                    "debit": attribution.debit,
+                    "value": attribution.value,
+                    "scaled": scaled[match_player_id],
+                }
+                for match_player_id, attribution in attributions.items()
+            },
+        )
+    return scaled
 
 
 def build_impact_rows_for_match(
@@ -625,7 +656,7 @@ def build_impact_rows_for_match(
     enable_preplant_empirical: bool = False,
     enable_postplant_leverage: bool = False, postplant_factor_table=None,
     enable_econ_component: bool = False, neutralize_econ_terms: bool = False,
-    kill_observer=None, weights: "FormulaWeights | None" = None,
+    kill_observer=None, econ_observer=None, weights: "FormulaWeights | None" = None,
 ) -> list[CalculatedImpact]:
     """kill_observer, when given, is called once per kill AFTER that kill has
     been fully scored, with the scorer's own mutated kill dict and the round
@@ -908,6 +939,7 @@ def build_impact_rows_for_match(
             _econ_components_for_round(
                 round_number, round_number >= last_round_number, kills, match_players,
                 round_player_stats, use_realized=use_realized_swing,
+                econ_observer=econ_observer,
             )
             if enable_econ_component else {}
         )
