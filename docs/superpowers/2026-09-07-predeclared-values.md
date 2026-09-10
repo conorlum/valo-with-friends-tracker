@@ -986,3 +986,61 @@ produces 15 numerical failures (four shared behaviors continue to pass).
 
 Full record: `docs/superpowers/econ-counterfactual-results/conclusions.md`,
 `walkthrough.md` and `measurements.json` in the same directory.
+
+### 2026-09-10 -- buy-disruption specification and Abyss worked example: declared before calculation
+
+The owner's new direction is a small equipment-loss reward plus a larger
+reward when losses impair the next buy, shared across all contributing kills.
+The requested worked game is match 3104 (Abyss, TEAM_1 11 - TEAM_2 13), the
+game discussed in the econ issue prompt. This is a worked example, not a
+weight fit, causal estimate, corpus test or activation decision.
+
+Fixed review values: paid-loadout target 3900 per player, R=19500,
+background coefficient 0.10, buy-disruption coefficient 1.00, review scale
+1007.9209, external C=1. Independent debit retains the existing own-wealth
+scarcity curve (ZERO_AT=6300, ceiling 1.5), with the 0.10 background added.
+These are explicit review policies, not learned or optimized constants.
+
+For round 2/14 on the pistol-winning team, target_i is
+min(3900,max(1000,paid_loadout_i_this_round)); other eligible teams/rounds
+target 3900/player. This preserves the post-pistol carryover-buy target even
+if that team loses round 2. Rounds 1/13, 12/24, OT and the last played round
+remain zero. Early history is reported, not another score multiplier.
+
+Team funding proxy U = sum(min(next_paid_loadout_i,target_i)) + sum(next_bank_i).
+Shortfall D = max(0,sum(target_i)-U). Recorded equipment exposure L counts
+at most the first observed death's starting paid loadout per player. Restorable
+shortfall Q=min(D,L). This is an optimistic pooled-resource / replacement-spend
+restoration proxy, not an observed counterfactual or exact weapon-loss value.
+
+Every valid enemy kill with first-loss exposure v receives raw credit
+0.10*v/R + (Q/R)*(v/L), with the second term zero if L=0. Q is for the
+VICTIM team and L includes all its first-loss exposure, including self/team/
+environmental deaths; those do not create enemy credit. A player's raw debit
+is (0.10+own_scarcity)*own_first_loss/R. This explicitly extends independent
+harm to non-enemy deaths and avoids counting the same starting kit repeatedly.
+Subsequent deaths retain their combat scoring but do not invent another kit.
+
+Own scarcity uses sum(next_paid_loadout+next_bank), without the target cap,
+and the existing denial_early function. This intentionally distinguishes
+remaining wealth from the stricter funding proxy; the approximation and
+possible divergent cases must be exposed in the review, not silently merged.
+
+Compute unrounded event and player values; round only each final player-round
+net. Report every eligible round/team in match 3104, the named R14/R16/R17
+cases, and highest/lowest positive enemy-event credits (ties ordered by
+round,time,id). Include actual next loadouts/banks, both target/funding values,
+loss exposure, shortfall, restored-shortfall estimate and separate credit/debit
+parts. No post-hoc parameter changes to make an example look better. A failed
+behavior or an ambiguity is reported and any revision separately declared.
+
+Validation criteria: no large credit if pooled funding covers the target;
+large credit never exceeds the restored equipment value on this scale; no
+credit without an economically eligible enemy kill; all contributing kills
+share the same victim-team bonus per credit of loss, independent of order;
+no duplicate starting-kit charges; scarce/wealthy cases and surviving
+teammate funding are explicitly examined. Any violation fails the calculator.
+Pistol-winner round-2 losses are not guaranteed to exist in this one game;
+missing histories are identified rather than fabricated as match evidence.
+
+Specification: docs/superpowers/specs/2026-09-10-econ-buy-disruption-implementation.md.
