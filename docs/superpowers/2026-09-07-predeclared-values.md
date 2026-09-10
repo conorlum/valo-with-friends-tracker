@@ -587,3 +587,84 @@ Worth noting on direction: the outer coefficient is fitted on training features
 that are in-sample with respect to the table and applied to out-of-sample test
 features. That mismatch's likely effect is to make arms 2 and 3 look WORSE, not
 better, so it is not an optimism concern for the arms that matter.
+
+### 2026-09-09 -- the one-parameter A search: declared BEFORE the run
+
+**Nothing below has been run.** This entry is committed first so the grid, the
+target, the controls and the decision rule are checkable against the timestamp
+of the result. Per this file's own rule, if the answer lands outside the rule
+below, the rule does not move.
+
+**What is being fitted.** One parameter. `impact = A*damage + B*leverage +
+C*econ_component`; **B is fixed at 1** and **C is excluded from this fit**.
+
+`B = 1` is not a choice so much as an identity: the evaluator puts a FREE
+coefficient on the composite, so overall scale is absorbed and only the ratio
+A:B is identified. Fixing B pins the scale and leaves exactly one degree of
+freedom.
+
+`C` is excluded because the fit runs in EX-ANTE mode, where
+`_econ_components_for_round` returns `{}` (the leakage gate -- the component
+reads round N+1). `econ_component` is therefore identically 0 and cannot
+contaminate the A:B ratio. Fitting C is separate, optional, later work
+(econ spec 9b: realized mode, forward window from N+2, relative to a frozen
+A:B). It is **not** a prerequisite for anything here.
+
+**The search reduces to the existing fitter, verified rather than assumed.**
+`fit_constrained_weights` searches `(damage_multiplier, w_econ, w_time,
+w_swing)` under `w_econ + w_time + w_swing == 1`. In new-structure rows
+`econ_impact` and `swing_impact` are written as 0, so the section 8c
+zero-variance guard drops them (declared inert, below). With one live factor
+`_simplex_grid_ndim(step, 1)` returns exactly `[(1.0,)]` -- checked -- so
+`w_time = 1` is forced and the whole search collapses to the damage grid.
+That is the one-parameter A search, with no new fitter.
+
+The tied-coefficient gate is satisfied **by construction**: B is a single
+scalar on the fused product `kill_order_bonus x time_factor`, which occupies
+`time_impact` as one number. Nothing in this search can split it additively.
+
+**NORMALIZATION -- the grid is RELATIVE, the reported A is ABSOLUTE.** The
+`damage` column is already `round(1.25 * damage_and_assists)`, so the searched
+multiplier `d` sits on top of the existing 1.25:
+
+    A_absolute = 1.25 * d      d = 1.0 is today's incumbent
+
+| value | what it governs |
+|---|---|
+| **relative grid `d`** | `0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0` |
+| **absolute `A` searched** | `0, 0.3125, 0.625, 0.9375, 1.25, 1.5625, 1.875, 2.5, 3.75, 5.0` |
+| **target** | `PRIMARY_T2` -- `TargetConfig(name="T2", k=3, gamma=0.7, match_weight=1.0)` |
+| **controls** | `round_result`, `score_diff_before`, `attacking_is_team_a`, `loadout_diff`, `full_buy_count_diff` (T2's declared set) |
+| **mode** | EX-ANTE, `use_realized_swing=False` |
+| **candidate config** | `enable_econ_component=True`, `enable_postplant_leverage=True` |
+| **declared inert factor columns** | `econ_impact`, `swing_impact` -- both written as 0 by the new structure |
+| **outer folds** | 5, `stable_folds(..., seed=0)` -- the five-arm's own convention |
+| **bootstrap** | 2,000 draws, match-clustered, two-sided 95% |
+| **sign** | `loss(fitted A) - loss(A = 1.25)`, **positive = deterioration** |
+
+**Leakage.** A is a FITTED OBJECT, like `V` and the post-plant table. It is
+selected on each outer fold's TRAINING matches only, and the post-plant table
+is rebuilt per fold on those same training matches. Selecting A once on the
+whole corpus and scoring held-out folds with it would reinstate exactly the
+leak the per-fold tables were built to remove.
+
+Within a fold, A is selected by TRAINING loss across the grid. That is
+acceptable here and not the defect finding 1 caught in the L2 selection: every
+grid candidate has identical model complexity (one composite coefficient plus
+the same controls), so training loss discriminates between genuinely different
+predictors rather than rewarding flexibility. The selection is then judged
+out-of-fold, which is the whole protocol.
+
+**DECISION RULE, fixed now.** If the 95% interval on the contrast spans zero,
+the result is **INCONCLUSIVE in those words** and **A stays at 1.25**. A tie
+goes to the incumbent, and to the value already in the record -- which also
+keeps any rescore attributable to the structure change alone, as econ spec 9c
+wants. A is only moved if the interval excludes zero on the improvement side.
+
+**Expected outcome, recorded so a null is not re-read as a surprise.** Damage
+and `time_impact` carry `max |r| = 0.89`, above this project's own 0.70
+threshold, so the ratio is weakly identified and the loss surface is expected
+to be FLAT. The prior evidence on weight refitting is +0.005 AUC, measured
+when the components correlated 0.73-0.90. The performance CURVE across the
+grid is reported for this reason: a flat surface must read as "any A in this
+band is equivalent", never as a point optimum.
