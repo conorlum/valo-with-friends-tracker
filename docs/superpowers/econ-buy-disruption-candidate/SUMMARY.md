@@ -5,9 +5,19 @@ deployed, not pushed.** `ACTIVE_MANIFEST` is `None` and `IMPACT_CALCULATION_VERS
 is 2, so the site still scores with the live legacy formula. Activation and
 rollback steps: [README](README.md).
 
-Commits: `61737f7` implementation and tests; `827ef4c` frozen manifest,
-runbook and ledger declaration (before any integrated review); a final commit
-adds these review artifacts.
+Commits: `61737f7` implementation and tests; `827ef4c` frozen manifest, runbook
+and ledger declaration (before any integrated review); `059e94e` the first
+review artifacts; `bba279b` the eleven external-review fixes; a final commit
+carries the rc2 refreeze and these regenerated artifacts.
+
+The frozen candidate is `impact-buy-disruption-30-80-rc2`, manifest LF-SHA-256
+`ae043e361e3398ee578e82e9a393e63b8977d8a9ef4cad3894d357d5c8ebdae6`, scorer
+revision `bba279b`. Two of the review fixes touch hashed scoring sources, so the
+candidate was refrozen and every review re-run under it. **No score moved**: the
+corpus audit JSON is byte-identical to the rc1 run, and the reports differ only
+in the identity line (plus self/environmental trace rows, which now name the
+victim's own side, and review-results.json, which now carries all 19 persisted
+fields).
 
 ## What was built
 
@@ -128,7 +138,7 @@ These are descriptive. No weight, scale or constant was changed from them.
 
 ## Verification
 
-- **Tests.** 1009 passed. The 2 failures are the known drift guard
+- **Tests.** 1019 passed. The 2 failures are the known drift guard
   (`test_builder_matches_stored_values`, red by design until the site is
   rescored) and the pre-existing `test_site_stats_cache` failure. Baseline before
   this work was 889 passed with the same two failures. 120 tests are new.
@@ -139,9 +149,9 @@ These are descriptive. No weight, scale or constant was changed from them.
   - Before routing, candidate econ came out as the legacy allocator's values,
     e.g. 756 instead of 222.
   - Abyss round 2 gave 0 instead of -16.
-- **Defects reinstated behind the same API.** All 37 were detected; most by
-  value assertions, the crash defects by the reinstated exception
-  ([record](defect-reinstatement.md)).
+- **Defects reinstated behind the same API.** All 47 were detected, including
+  one per external-review fix; most by value assertions, the crash defects by
+  the reinstated exception ([record](defect-reinstatement.md)).
 - **Abyss parity.** All 200 eligible player-rounds and 152 events for both
   artifacts match, pure and through the build path. Rounded nets are exact,
   unrounded values within 1e-12 relative, and event IDs match. The frozen
@@ -161,6 +171,32 @@ These are descriptive. No weight, scale or constant was changed from them.
   | Fixed ten site | 5,140 |
   | Fixed ten penalty | 46,877 |
   | 3120 match and trace | 958 |
+  | 3116 trace | 620 |
+  | Corpus audit | 3 |
+
+## External review, and what it changed
+
+An external reviewer (Astra) reviewed this code read-only and raised eleven
+findings. Every one was verified against the source and every one was correct.
+All are fixed in `bba279b`, each with a test that failed on a value first. None
+touches the owner's locked values and none changes a score.
+
+Four were rollout defects in the backfill: a **refused** run still deleted cache
+rows; a match that returned cleanly but left stale rows stayed in `succeeded`, so
+the documented rerun skipped it forever; the declared match set was never
+rechecked at acceptance, so an ingest that connected and disconnected between
+session polls went unseen; and acceptance compared 6 of the 19 persisted fields,
+so a stale `econ_impact`, `swing_impact`, `trade_detail` or counter could pass.
+
+Two were reporting integrity: corpus-audit identity and validation failures never
+reached the exit status, and `--weights` mutated the verified manifest while
+artifacts kept the frozen hash and the "C=1" text.
+
+Three were freeze integrity: no ORM/model definitions were hashed, the runtime
+cached a verified manifest by path forever, and version masking covered chained
+assignments. One was the scorer's kill observer naming the opponent's alive count
+as the victim's for self and environmental deaths (reporting only). One was the
+runbook's post-ingestion check, which named a command that cannot work.
 
 ## Remaining findings
 

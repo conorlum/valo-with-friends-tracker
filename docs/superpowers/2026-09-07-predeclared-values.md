@@ -1277,3 +1277,46 @@ structure's kill/death impact (and so Round Win Impact) excludes econ; a
 pre-existing legacy team-kill state bug (122 events) is unchanged.
 
 Full record: docs/superpowers/econ-buy-disruption-candidate/SUMMARY.md.
+
+### 2026-09-11 (later) -- external review of the candidate's code; eleven fixes and a REFREEZE
+
+An external reviewer (Astra) reviewed the implementation read-only and raised
+eleven findings. All eleven were verified against the source and **all were
+correct**; none touches the owner's locked values (30%/80%, C=1, A/B, ECON_SCALE,
+signed econ), and none changed a score. The measured results in the preceding
+RESULT entry therefore still stand; they were re-run under the new manifest and
+reproduced exactly (see below).
+
+Fixed, each with a test that failed on a VALUE before the fix:
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | A refused backfill still deleted cache rows and committed | caches are cleared only once the run has actually started |
+| 2 | A match that returned cleanly but left stale rows stayed in `succeeded`, so the documented rerun skipped it forever | failing matches are requeued out of `succeeded` at acceptance |
+| 3 | Acceptance never rechecked the database's match set, so a match ingested and disconnected between session polls went unnoticed | the declared set is re-read and compared at acceptance |
+| 4 | Acceptance compared 6 of the 19 persisted fields | it compares `impact.PERSISTED_FIELDS` |
+| 5 | Corpus-audit identity or validation failures did not affect the exit status | they are registered with the reconciler |
+| 6 | `--weights` mutated the verified manifest but kept the frozen hash and "C=1" text in artifacts | the identity is restamped `WEIGHTS-OVERRIDE ... NOT THE FROZEN CANDIDATE`, and `--results` is refused with it |
+| 7 | The runbook's post-ingestion check named a command that cannot work, since a new match has no frozen fingerprint | replaced with a replay-vs-persisted comparison |
+| 8 | The manifest hashed no ORM/model definitions, so a mapped column or the Team enum could change inputs invisibly | `app/models/{match,round,kill_event,impact_score}.py` are hashed |
+| 9 | The runtime cached the verified manifest by path forever, so a file edited afterwards kept scoring | the cache is keyed on the file's content hash |
+| 10 | For self/environmental deaths the kill observer reported the OPPONENT's alive count as `victim_team_alive` | it reports the victim's own side (reporting only; no score changed) |
+| 11 | Version masking covered chained assignments, so `IMPACT_CALCULATION_VERSION = RATE = 2` could hide a behavioral change | only a lone `Name` target is masked |
+
+Findings 8 and 10 change hashed scoring sources, so the candidate was
+**refrozen** as `impact-buy-disruption-30-80-rc2`, manifest LF-SHA-256
+`ae043e361e3398ee578e82e9a393e63b8977d8a9ef4cad3894d357d5c8ebdae6`, scorer revision `bba279bc4f4f771f04809f82493edee9247a57bf`, and every review was re-run
+under it. The declared samples, constants, weights, comparators, checks and
+interpretation rules are unchanged from the 2026-09-11 declaration above.
+
+**Re-run under rc2, compared against the rc1 numbers:** identical. Abyss 3104
+again gives Osmin +708 ... 1xgoofy -101, TEAM_1 +502, TEAM_2 +1293 and the
+wealth column -100 ... -928; the fixed ten again give mean full-Impact change
++157.7 and 25/100 rank changes; the corpus audit again reports 0 validation
+failures, 0 identity mismatches, 13,817 constrained team-rounds and Spearman
+0.998. The only differences in the artifacts are the manifest hash and
+candidate id. The corpus audit JSON is byte-identical to the rc1 run; the reports differ only in that identity line, plus self/environmental trace rows now showing the victim own side (finding 10) and review-results.json now carrying all 19 persisted fields (finding 4).
+
+Defect reinstatement now covers 47 defects, including one per fix above; all 47
+are detected. No production defaults changed: ACTIVE_MANIFEST stays None and
+IMPACT_CALCULATION_VERSION stays 2.

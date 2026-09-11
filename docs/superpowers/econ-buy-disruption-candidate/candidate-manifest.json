@@ -1,6 +1,6 @@
 {
   "manifest_version": 1,
-  "candidate_id": "impact-buy-disruption-30-80-rc1",
+  "candidate_id": "impact-buy-disruption-30-80-rc2",
   "created": "2026-09-11",
   "status": "frozen_for_review",
   "release_comparator": "buy_disruption_v2_30_80",
@@ -85,7 +85,7 @@
   },
   "impact_calculation_version_at_freeze": 2,
   "activation_impact_calculation_version": 3,
-  "scorer_revision": "61737f79c3277e1b9bb651d2d5405bee2e92cd18",
+  "scorer_revision": "bba279bc4f4f771f04809f82493edee9247a57bf",
   "source_snapshots": {
     "matches": {
       "3104": "68d3ce70042bcabed8f9bbebd68518ddb7bf69c4e7f5e58766979239a778fa9c",
@@ -185,12 +185,16 @@
   },
   "agent_free_ability_credits_sha256": "b972dbf1ac67ce966db2a0c570f741983b38a000c1085f9ad650dff78ad89bb8",
   "source_digests": {
-    "app/scoring/impact.py": "61ce2814d73016198537e896bd573e48a93e31f14b885bda384c26e1334ab61e",
+    "app/scoring/impact.py": "ec996960af39e5976ad2012e30b5f319b474fd37cc05838d3b194360b4cda9b0",
     "app/scoring/impact_config.py": "dbbdaaee03677aef579d3f7c8d97bdd9aeaaffb09c6413f0ed873ff1cb139703",
     "app/scoring/econ_buy_disruption.py": "dda15fb8faf44823e4d31a05211d9b8879c6e8e386a3e0574f0bb009f432eb2f",
     "app/scoring/econ_component.py": "94632e65f9cae930c0d8fde1a47a33112b32cb973af608f4ce65cb9a752e6ae8",
     "app/scoring/agent_economy.py": "eade098e2a0710cf9fa3d17ff7319465179765a34341f7bd036f3af166dcba9d",
     "app/scoring/plant_window.py": "d14749551f65e1e43ed0da94504e214044674cbabb2ec6a1e7ef2c2bc962a93b",
-    "app/scoring/preplant_empirical_factor.py": "bf1eeb8cb83197ea483078c1557b33b5bee1acc66bf447190da2407c61d6a23c"
+    "app/scoring/preplant_empirical_factor.py": "bf1eeb8cb83197ea483078c1557b33b5bee1acc66bf447190da2407c61d6a23c",
+    "app/models/match.py": "4019f0030f09c760d8fdc661c8d5dc60eadc284aee86a23f5043616d98d3a87c",
+    "app/models/round.py": "0f71ac984d9b9a067b483d079eaf37c71226d7ab54d671dff2d2a29719a11808",
+    "app/models/kill_event.py": "5c10f11df8e3ee697f2a6654352412fb469d64b68c15bbdbb62181b0fdc91028",
+    "app/models/impact_score.py": "014ec5c11f5f7833a40fedf5cf3b2ca2cacc4ac5289276162d2791880b045024"
   }
 }

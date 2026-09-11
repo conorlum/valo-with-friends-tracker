@@ -1,6 +1,6 @@
 # Corpus audit: live_legacy vs buy_disruption_v2_30_80
 
-Candidate `impact-buy-disruption-30-80-rc1`, manifest LF-SHA-256 `2cca86489aef31d5851350bb9e6928839df5e7a511b8845ec08f053b3a74e19f`. Read-only, one repeatable-read snapshot. Descriptive checks declared before this run; nothing is fitted.
+Candidate `impact-buy-disruption-30-80-rc2`, manifest LF-SHA-256 `ae043e361e3398ee578e82e9a393e63b8977d8a9ef4cad3894d357d5c8ebdae6`. Read-only, one repeatable-read snapshot. Descriptive checks declared before this run; nothing is fitted.
 
 ```json
 {

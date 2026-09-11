@@ -1,6 +1,6 @@
 # Per-kill trace: match 3116 Ascent 12-14
 
-Candidate `impact-buy-disruption-30-80-rc1`, manifest LF-SHA-256 `2cca86489aef31d5851350bb9e6928839df5e7a511b8845ec08f053b3a74e19f`.
+Candidate `impact-buy-disruption-30-80-rc2`, manifest LF-SHA-256 `ae043e361e3398ee578e82e9a393e63b8977d8a9ef4cad3894d357d5c8ebdae6`.
 
 - **Before: `live_legacy`** -- enable_econ_component=False, econ_model=None, weights A/B/C=1.25/1.0/1.0, use_realized_swing=True, post-plant table OFF, pre-plant curve OFF
 - **After: `buy_disruption_v2_30_80`** -- enable_econ_component=True, econ_model=buy_disruption_v2_30_80, weights A/B/C=1.25/1.0/1.0, use_realized_swing=True, post-plant table OFF, pre-plant curve OFF
@@ -23,7 +23,7 @@ Economy abstains: **pistol_half_or_ot_boundary** -- econ is exactly 0 this round
 | event 486531 | 28.381s | chickenfries27#6819 -> NPrightdolphin#NA1 | combat | 1v3 | 120 | 1.128 | 135.4 | 135.4 | | | | | no economy this round |
 | event 486532 | 33.022s | chickenfries27#6819 -> Osmin#NA1 | combat | 1v2 | 190 | 1.216 | 231.0 | 231.0 | | | | | no economy this round |
 | event 486538 | 67.224s | IP Thoaiyama#Phan -> IP Thoaiyama#Phan | self | 1v1 | 250 | 1.000 | 0.0 | 125.0 | | | | | no economy this round |
-| event 486533 | 67.703s | chickenfries27#6819 -> chickenfries27#6819 | self | 1v0 | 100 | 1.000 | 0.0 | 50.0 | | | | | no economy this round |
+| event 486533 | 67.703s | chickenfries27#6819 -> chickenfries27#6819 | self | 1v1 | 100 | 1.000 | 0.0 | 50.0 | | | | | no economy this round |
 
 | Player | Before impact | A*damage | B*leverage | Econ credit pts | Econ debit pts | C*econ | = After impact |
 |---|---:|---:|---:|---:|---:|---:|---:|

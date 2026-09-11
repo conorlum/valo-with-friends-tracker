@@ -1,6 +1,6 @@
 # Per-kill trace: match 3104 Abyss 11-13
 
-Candidate `impact-buy-disruption-30-80-rc1`, manifest LF-SHA-256 `2cca86489aef31d5851350bb9e6928839df5e7a511b8845ec08f053b3a74e19f`.
+Candidate `impact-buy-disruption-30-80-rc2`, manifest LF-SHA-256 `ae043e361e3398ee578e82e9a393e63b8977d8a9ef4cad3894d357d5c8ebdae6`.
 
 - **Before: `live_legacy`** -- enable_econ_component=False, econ_model=None, weights A/B/C=1.25/1.0/1.0, use_realized_swing=True, post-plant table OFF, pre-plant curve OFF
 - **After: `buy_disruption_v2_30_80`** -- enable_econ_component=True, econ_model=buy_disruption_v2_30_80, weights A/B/C=1.25/1.0/1.0, use_realized_swing=True, post-plant table OFF, pre-plant curve OFF
@@ -65,7 +65,7 @@ Pistol winner TEAM_2; round winner TEAM_2; half round 2.
 | event 484694 | 12.609s | Osmin#NA1 -> 1xgoofy#56719 | enemy | 5v4 | 130 | 1.000 | 130.0 | 130.0 | 300 | 1.55 | 0.00 | 1.55 | 0.47 (30%, absorbed) |
 | event 484691 | 16.011s | ternstyle#GIGI -> Mokalover67#ILLIT | enemy | 5v3 | 90 | 1.000 | 90.0 | 90.0 | 700 | 3.62 | 0.00 | 3.62 | 1.09 (30%, absorbed) |
 | event 484695 | 16.570s | Osmin#NA1 -> VorteXx#Val | enemy | 5v2 | 50 | 1.000 | 50.0 | 50.0 | 950 | 4.91 | 0.00 | 4.91 | 1.47 (30%, absorbed) |
-| event 484692 | 21.580s | ZETA 3y5#213 -> ZETA 3y5#213 | self | 1v5 | 40 | 1.000 | 0.0 | 40.0 | 600 | 0.00 | 0.00 | 0.00 | 0.93 (30%, absorbed) |
+| event 484692 | 21.580s | ZETA 3y5#213 -> ZETA 3y5#213 | self | 1v1 | 40 | 1.000 | 0.0 | 40.0 | 600 | 0.00 | 0.00 | 0.00 | 0.93 (30%, absorbed) |
 
 | Player | Before impact | A*damage | B*leverage | Econ credit pts | Econ debit pts | C*econ | = After impact |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -937,7 +937,7 @@ Pistol winner TEAM_1; round winner TEAM_2; half round 9.
 | event 484839 | 79.856s | DoubleBl1nd#BEEF -> 1xgoofy#56719 | enemy | 1v3 | 120 | 1.567 | 188.0 | 188.0 | 3,600 | 18.61 | 3.13 | 21.74 | 17.39 (80%, constrained) |
 | event 484840 | 87.950s | DoubleBl1nd#BEEF -> Helpless#qiqi | enemy | 1v2 | 190 | 1.750 | 332.5 | 95.0 | 2,450 | 12.66 | 2.13 | 14.80 | 11.84 (80%, constrained) |
 | event 484841 | 89.351s | DoubleBl1nd#BEEF -> ZETA 3y5#213 | enemy | 1v1 | 250 | 1.750 | 437.5 | 125.0 | 0 | 0.00 | 0.00 | 0.00 | 0.00 (80%, constrained) |
-| event 484842 | 95.995s | DoubleBl1nd#BEEF -> DoubleBl1nd#BEEF | self | 1v0 | 100 | 1.000 | 0.0 | 187.1 | 4,850 | 0.00 | 0.00 | 0.00 | 7.52 (30%, absorbed) |
+| event 484842 | 95.995s | DoubleBl1nd#BEEF -> DoubleBl1nd#BEEF | self | 1v1 | 100 | 1.000 | 0.0 | 187.1 | 4,850 | 0.00 | 0.00 | 0.00 | 7.52 (30%, absorbed) |
 
 | Player | Before impact | A*damage | B*leverage | Econ credit pts | Econ debit pts | C*econ | = After impact |
 |---|---:|---:|---:|---:|---:|---:|---:|

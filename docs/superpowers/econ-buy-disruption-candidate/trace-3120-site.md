@@ -1,6 +1,6 @@
 # Per-kill trace: match 3120 Summit 7-13
 
-Candidate `impact-buy-disruption-30-80-rc1`, manifest LF-SHA-256 `2cca86489aef31d5851350bb9e6928839df5e7a511b8845ec08f053b3a74e19f`.
+Candidate `impact-buy-disruption-30-80-rc2`, manifest LF-SHA-256 `ae043e361e3398ee578e82e9a393e63b8977d8a9ef4cad3894d357d5c8ebdae6`.
 
 - **Before: `live_legacy`** -- enable_econ_component=False, econ_model=None, weights A/B/C=1.25/1.0/1.0, use_realized_swing=True, post-plant table OFF, pre-plant curve OFF
 - **After: `buy_disruption_v2_30_80`** -- enable_econ_component=True, econ_model=buy_disruption_v2_30_80, weights A/B/C=1.25/1.0/1.0, use_realized_swing=True, post-plant table OFF, pre-plant curve OFF
@@ -305,7 +305,7 @@ Pistol winner TEAM_1; round winner TEAM_1; half round 7.
 | event 487203 | 31.740s | Deemo#Derf -> Sub asf#nuhh | enemy | 4v5 | 140 | 1.000 | 140.0 | 49.0 | 3,500 | 18.09 | 0.00 | 18.09 | 5.43 (30%, absorbed) |
 | event 487204 | 33.445s | Deemo#Derf -> Jasmine#6767 | enemy | 4v4 | 170 | 1.000 | 170.0 | 17.0 | 3,650 | 18.87 | 0.00 | 18.87 | 5.66 (30%, absorbed) |
 | event 487207 | 35.192s | wqe#4119 -> Deemo#Derf | enemy | 4v4 | 170 | 1.000 | 170.0 | 170.0 | 4,600 | 23.78 | 98.51 | 122.29 | 97.83 (80%, constrained) |
-| event 487206 | 46.677s | Jasmine#6767 -> Jasmine#6767 | self | 4v3 | 160 | 1.000 | 0.0 | 160.0 | 0 | 0.00 | 0.00 | 0.00 | 0.00 (30%, absorbed) |
+| event 487206 | 46.677s | Jasmine#6767 -> Jasmine#6767 | self | 4v4 | 160 | 1.000 | 0.0 | 160.0 | 0 | 0.00 | 0.00 | 0.00 | 0.00 (30%, absorbed) |
 | event 487209 | 71.769s | kilo#1688 -> NPrightdolphin#NA1 | enemy | 3v3 | 180 | 1.254 | 225.6 | 225.6 | 4,100 | 21.19 | 87.81 | 109.00 | 87.20 (80%, constrained) |
 | event 487210 | 79.241s | kilo#1688 -> Najumi#NPC | enemy | 3v2 | 140 | 1.395 | 195.2 | 195.2 | 4,250 | 21.97 | 91.02 | 112.99 | 90.39 (80%, constrained) |
 | event 487202 | 85.821s | DoubleBl1nd#BEEF -> kilo#1688 | enemy | 1v3 | 120 | 1.519 | 182.2 | 9.1 | 1,900 | 9.82 | 0.00 | 9.82 | 2.95 (30%, absorbed) |
@@ -451,7 +451,7 @@ Pistol winner TEAM_1; round winner TEAM_1; half round 10.
 | event 487232 | 15.065s | Jasmine#6767 -> Najumi#NPC | enemy | 4v3 | 130 | 1.000 | 130.0 | 130.0 | 4,250 | 21.97 | 24.07 | 46.04 | 36.83 (80%, constrained) |
 | event 487229 | 28.026s | NPrightdolphin#NA1 -> Sub asf#nuhh | enemy | 2v4 | 130 | 1.000 | 130.0 | 130.0 | 1,550 | 8.01 | 0.00 | 8.01 | 2.40 (30%, absorbed) |
 | event 487230 | 40.031s | NPrightdolphin#NA1 -> Jasmine#6767 | enemy | 2v3 | 170 | 1.000 | 170.0 | 170.0 | 4,500 | 23.26 | 0.00 | 23.26 | 6.98 (30%, absorbed) |
-| event 487233 | 52.926s | Jasmine#6767 -> Jasmine#6767 | self | 3v2 | 170 | 1.000 | 0.0 | 190.0 | 0 | 0.00 | 0.00 | 0.00 | 0.00 (30%, absorbed) |
+| event 487233 | 52.926s | Jasmine#6767 -> Jasmine#6767 | self | 3v3 | 170 | 1.000 | 0.0 | 190.0 | 0 | 0.00 | 0.00 | 0.00 | 0.00 (30%, absorbed) |
 | event 487226 | 61.667s | SirBanArthur#King6 -> NPrightdolphin#NA1 | enemy | 2v2 | 200 | 1.283 | 256.5 | 256.5 | 4,000 | 20.68 | 22.66 | 43.33 | 34.67 (80%, constrained) |
 | event 487234 | 65.224s | kilo#1688 -> DoubleBl1nd#BEEF | enemy | 2v1 | 130 | 1.350 | 175.5 | 175.5 | 5,000 | 25.84 | 28.32 | 54.17 | 43.33 (80%, constrained) |
 
