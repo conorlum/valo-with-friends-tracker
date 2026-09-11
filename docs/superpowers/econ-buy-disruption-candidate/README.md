@@ -105,9 +105,14 @@ Run from `webapp/` unless stated. Do every step in one sitting.
    3104's player totals must equal `match-3104-site.md`'s AFTER column; open a
    player page and the stats page.
 
-7. **Reopen.** Resume ingestion. After the first new match is ingested, replay
-   it with `--manifest ... --match <id> --compare site` and confirm the
-   persisted values match.
+7. **Reopen.** Resume ingestion. After the first new match is ingested, confirm
+   it was scored under the active configuration. A new match has no frozen
+   fingerprint, so the review tool's frozen mode cannot review it; compare its
+   persisted rows against a replay instead (empty output means they agree):
+
+   ```powershell
+   .\.venv\Scripts\python.exe -c "from app.db import SessionLocal; from app.scoring.impact_runtime import active_scoring_config; from scripts.backfill_impact_candidate import replay_diffs; print(replay_diffs(SessionLocal(), [NEW_MATCH_ID], active_scoring_config()) or 'matches the active configuration')"
+   ```
 
 This backfill also resolves the outstanding rescore: stored rows currently
 predate `IMPACT_CALCULATION_VERSION` 2, so `test_builder_matches_stored_values`

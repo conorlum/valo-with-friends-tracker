@@ -171,6 +171,23 @@ def test_environmental_death_is_kept_for_round_state_and_death_leverage():
     assert victim.kill_impact == victim.damage  # no kill is credited to anyone for it
 
 
+def test_observer_reports_the_victims_own_side_for_non_enemy_deaths():
+    """For a self or environmental death the victim is on the KILLER's side,
+    so reporting the opponent's count as victim_team_alive is wrong."""
+    db = session()
+    match, players, _ = build_match(
+        db, "ctx", kills={7: [("A1", "B1", 10.0), (None, "A3", 20.0), ("A2", "A2", 30.0)]},
+        loadouts=B_BROKE_NEXT, remainings=B_BROKE_NEXT)
+    _, kills, _ = _collect(db, match, **CANDIDATE)
+    calls = [kw["context"] for kw in kills if kw["round_number"] == 7]
+    environmental, self_kill = calls[1], calls[2]
+    # Team A is whole (5) when A3 dies to the environment, and down to 4 when A2 self-kills.
+    assert (environmental["killer_team_alive"], environmental["victim_team_alive"]) == (5, 5)
+    assert (self_kill["killer_team_alive"], self_kill["victim_team_alive"]) == (4, 4)
+    # An enemy kill still reports the two sides.
+    assert (calls[0]["killer_team_alive"], calls[0]["victim_team_alive"]) == (5, 5)
+
+
 def test_environmental_death_does_not_crash_the_live_legacy_formula():
     db = session()
     match, players, _ = _environmental_match(db)

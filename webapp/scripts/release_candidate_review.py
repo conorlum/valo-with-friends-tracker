@@ -54,6 +54,7 @@ TWO CAVEATS ON THE NUMBERS.
     outstanding work.
 """
 import argparse
+import copy
 import json
 import statistics
 import sys
@@ -1164,17 +1165,44 @@ def _emit(out_dir, filename, content):
     print(f"  wrote {path}")
 
 
+def register_corpus_failures(rec, audit):
+    """The corpus audit's own checks must reach the exit status, not sit in
+    the JSON while the command reports success."""
+    rec.equal("corpus identity mismatches", dict(audit.get("identity_mismatches") or {}), {})
+    rec.equal("corpus input validation failures", dict(audit.get("input_validation_failures") or {}), {})
+    rec.equal("corpus matches scored", audit.get("matches_scored"), audit.get("matches_requested"))
+
+
+def apply_weight_override(manifest, manifest_sha, spec):
+    """--weights makes the run something other than the frozen candidate, so
+    the reported identity must say so rather than carrying the file's hash
+    alone into artifacts."""
+    a, b, c = (float(x) for x in spec.split(","))
+    overridden = copy.deepcopy(manifest)
+    for data in overridden["comparators"].values():
+        data["weights"] = {"damage": a, "leverage": b, "econ": c}
+    overridden["candidate_id"] = f"{manifest['candidate_id']} WEIGHTS-OVERRIDE {a},{b},{c}"
+    overridden["formula_changes_vs_live_legacy"] = [
+        change for change in manifest["formula_changes_vs_live_legacy"]
+        if not change.startswith("weights:")
+    ] + [f"weights: OVERRIDDEN at review time -- A(damage)={a}, B(leverage)={b}, C(econ)={c}"]
+    return overridden, (f"{manifest_sha} with --weights {a},{b},{c}: "
+                        "NOT THE FROZEN CANDIDATE")
+
+
 def frozen_main(args):
     manifest = load_manifest(args.manifest)
     verify_manifest(manifest)
     manifest_sha = lf_sha256(args.manifest)
+    identity = manifest_sha
     if args.weights:
-        a, b, c = (float(x) for x in args.weights.split(","))
-        weights = FormulaWeights(damage=a, leverage=b, econ=c)
-        for name, data in manifest["comparators"].items():
-            data["weights"] = {"damage": a, "leverage": b, "econ": c}
-        print(f"  *** --weights {weights} OVERRIDES the frozen manifest: this is NOT the frozen candidate ***")
-    print(f"frozen candidate {manifest['candidate_id']}  manifest LF-SHA-256 {manifest_sha}")
+        if args.results:
+            raise SystemExit(
+                "--results writes the backfill's acceptance values and cannot be combined with "
+                "--weights; freeze a new candidate instead")
+        manifest, identity = apply_weight_override(manifest, manifest_sha, args.weights)
+        print(f"  *** {identity} ***")
+    print(f"frozen candidate {manifest['candidate_id']}  manifest LF-SHA-256 {identity}")
     db = SessionLocal()
     db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
     rec = Reconciler()
@@ -1185,22 +1213,23 @@ def frozen_main(args):
         print(f"  source fingerprints match the freeze for {len(reviewed)} matches")
     suffix = args.compare
     if args.match:
-        content, _ = render_match_review(db, args.match, manifest, args.compare, rec, manifest_sha)
+        content, _ = render_match_review(db, args.match, manifest, args.compare, rec, identity)
         _emit(args.report_dir, f"match-{args.match}-{suffix}.md", content)
     if args.trace:
         _emit(args.report_dir, f"trace-{args.trace}-{suffix}.md",
-              render_frozen_trace(db, args.trace, manifest, rec, args.compare, manifest_sha))
+              render_frozen_trace(db, args.trace, manifest, rec, args.compare, identity))
     if args.ten:
         _emit(args.report_dir, f"fixed-ten-{suffix}.md",
-              render_ten_review(db, FIXED_TEN, manifest, args.compare, rec, manifest_sha))
+              render_ten_review(db, FIXED_TEN, manifest, args.compare, rec, identity))
     if args.pistol_examples:
         for found in pistol_winner_round_two_losses(db)[:20]:
             print(f"  match {found['match_id']} round {found['round']} played {found['played_at']}")
     if args.corpus:
         audit = corpus_audit(db, manifest, progress=lambda i, n: print(f"  corpus {i}/{n}", flush=True))
         audit["snapshot"] = db.execute(text("SELECT txid_current_snapshot()::text")).scalar()
+        register_corpus_failures(rec, audit)
         _emit(args.report_dir, "corpus-audit.json", json.dumps(audit, indent=2, default=str))
-        _emit(args.report_dir, "corpus-audit.md", render_corpus_audit(audit, manifest, manifest_sha))
+        _emit(args.report_dir, "corpus-audit.md", render_corpus_audit(audit, manifest, identity))
     if args.results:
         results = build_review_results(db, args.manifest, manifest, reviewed)
         Path(args.results).write_text(json.dumps(results, indent=2), encoding="utf-8")

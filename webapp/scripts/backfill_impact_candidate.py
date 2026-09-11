@@ -50,7 +50,10 @@ from app.services.site_stats_cache import invalidate_site_stats_cache
 
 STATE_VERSION = 1
 SESSION_CHECK_EVERY = 25
-RESULT_FIELDS = ("impact", "econ_component", "damage", "time_impact", "kill_impact", "death_impact")
+# EVERY persisted field. A subset would let a stale econ_impact, swing_impact,
+# kill_order_bonus, econ_kill/econ_death, trade_detail or trade counter pass
+# acceptance while dependent views display the old values.
+RESULT_FIELDS = impact.PERSISTED_FIELDS
 
 
 class BackfillRefused(RuntimeError):
@@ -151,6 +154,7 @@ def run_backfill(db_factory, manifest_path, state_path, *, confirm_maintenance_w
                 if approved_results_path else None)
 
     db = db_factory()
+    cleared_caches = False
     try:
         others = session_checker(db)
         if others:
@@ -177,6 +181,7 @@ def run_backfill(db_factory, manifest_path, state_path, *, confirm_maintenance_w
             state["history"].append(["resumed", _now()])
         _write_state(state_path, state)
         _clear_caches(db)
+        cleared_caches = True
 
         done = set(state["succeeded"])
         pending = [m for m in state["match_ids"] if m not in done]
@@ -211,7 +216,21 @@ def run_backfill(db_factory, manifest_path, state_path, *, confirm_maintenance_w
                 "IMPACT_CALCULATION_VERSION. Never reopen a partly converted database.")
             return state
 
-        verification = {"replay_differences": replay_diffs(db, state["match_ids"], config),
+        replay = replay_diffs(db, state["match_ids"], config)
+        if replay:
+            # Requeue them. A match that returned cleanly but does not equal its
+            # replay must be recomputed by the documented rerun, not skipped
+            # forever because it is already listed in `succeeded`.
+            state["succeeded"] = [m for m in state["succeeded"] if str(m) not in replay]
+        current_ids = [m for (m,) in db.query(Match.id).order_by(Match.id).all()]
+        added = sorted(set(current_ids) - set(state["match_ids"]))
+        removed = sorted(set(state["match_ids"]) - set(current_ids))
+        verification = {"replay_differences": replay,
+                        # Session polling cannot see a connection that has
+                        # already disconnected, so the declared match set is
+                        # rechecked against the database here.
+                        "match_set_changed": ({"added": added, "removed": removed}
+                                              if added or removed else {}),
                         "approved_result_differences": (persisted_result_diffs(db, approved, manifest_sha)
                                                         if approved is not None else []),
                         "sessions_at_end": session_checker(db)}
@@ -232,7 +251,11 @@ def run_backfill(db_factory, manifest_path, state_path, *, confirm_maintenance_w
     finally:
         try:
             db.rollback()
-            _clear_caches(db)
+            # Only when this run actually started. A REFUSED run must leave the
+            # database exactly as it found it -- clearing caches is a write, and
+            # the site may still be serving from them.
+            if cleared_caches:
+                _clear_caches(db)
         finally:
             db.close()
 

@@ -1158,7 +1158,10 @@ def build_impact_rows_for_match(
                         "killer_team": killer_team,
                         "killer_is_attacker": attacking == killer_team,
                         "killer_team_alive": killer_own_alive,
-                        "victim_team_alive": killer_opp_alive,
+                        # For a self or environmental death the victim is on
+                        # the KILLER's side (killer_team is the victim's team),
+                        # so the opponent's count would name the wrong team.
+                        "victim_team_alive": killer_own_alive if self_kill else killer_opp_alive,
                         "kill_order_bonus_raw": kill_order_bonus,
                         "seconds_to_plant": seconds_to_plant(round_row, kill["event_time_seconds"]),
                         "combined_swing_factor": combined_swing_factor,
@@ -1353,6 +1356,10 @@ _PERSISTED_FIELDS = (
     "traded_by_teammate", "trade_detail", "kill_order_bonus", "econ_component",
     "econ_pickup",
 )
+
+# Public alias for tooling that must compare EVERY persisted value (the
+# backfill's acceptance check): a subset would let stale columns through.
+PERSISTED_FIELDS = _PERSISTED_FIELDS
 
 
 def compute_impact_for_match(db: Session, match_id: int, config=None) -> None:

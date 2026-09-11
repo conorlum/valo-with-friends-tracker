@@ -14,7 +14,7 @@ from sqlalchemy.orm import sessionmaker
 
 import scripts.backfill_impact_candidate as backfill
 from app.db import Base
-from app.models import ImpactScore, Player
+from app.models import ImpactScore, Player, Round
 from app.models.player_view_cache import PlayerViewCache
 from app.models.site_stats_cache import SiteStatsCache
 from app.scoring import impact, impact_runtime
@@ -114,6 +114,17 @@ def test_refuses_a_manifest_that_is_not_the_active_runtime_configuration(world, 
         run(world)
 
 
+def test_a_refused_run_never_writes_to_the_database(world):
+    """A refusal means nothing happened. Clearing caches is a write, and the
+    site may still be serving from them."""
+    db = world.Session()
+    _seed_caches(db)
+    db.close()
+    with pytest.raises(backfill.BackfillRefused, match="uvicorn"):
+        run(world, session_checker=lambda db: ["pid 7 app='uvicorn'"])
+    assert _cache_rows(world) == 2
+
+
 # ---- interruption and recovery -------------------------------------------------------------
 
 def test_interrupted_backfill_records_progress_clears_caches_and_resumes(world):
@@ -198,6 +209,55 @@ def test_a_match_left_with_stale_or_missing_rows_fails_acceptance(world):
     assert state["status"] == "verification_failed"
     assert set(state["verification"]["replay_differences"]) >= {str(world.matches[1])}
     assert _cache_rows(world) == 0
+
+
+def test_a_verification_failure_returns_its_matches_to_the_pending_set(world):
+    """A match that "succeeded" but left stale rows must be recomputed by the
+    documented rerun, not skipped forever because it is in `succeeded`."""
+    stale = {world.matches[1]}
+
+    def partial(db, match_id, config):
+        if match_id in stale:
+            return  # returns cleanly, leaves the live-legacy rows in place
+        compute_impact_for_match(db, match_id, config=config)
+
+    state = run(world, compute=partial)
+    assert state["status"] == "verification_failed"
+    assert world.matches[1] not in state["succeeded"]
+
+    stale.clear()
+    state = run(world, compute=partial)
+    assert state["status"] == "scored"
+    assert all(_persisted_equals_candidate(world, m) for m in world.matches)
+
+
+def test_a_match_ingested_during_the_run_fails_acceptance(world):
+    """Session polling cannot see a connection that has already gone, so the
+    declared match set is rechecked at acceptance."""
+    def ingest_midway(db, match_id, config):
+        compute_impact_for_match(db, match_id, config=config)
+        if match_id == world.matches[0]:
+            other = world.Session()
+            build_match(other, "sneaked-in", kills={7: [("A1", "B1", 10.0)]})
+            other.close()
+
+    state = run(world, compute=ingest_midway)
+    assert state["status"] == "verification_failed"
+    assert state["verification"]["match_set_changed"]
+
+
+def test_acceptance_compares_every_persisted_field(world):
+    db = world.Session()
+    config = config_from_manifest(world.manifest)
+    compute_impact_for_match(db, world.matches[0], config=config)
+    assert backfill.replay_diffs(db, [world.matches[0]], config) == {}
+
+    row = (db.query(ImpactScore).join(Round, Round.id == ImpactScore.round_id)
+           .filter(Round.match_id == world.matches[0]).first())
+    row.econ_impact = (row.econ_impact or 0) + 7  # a persisted field outside the six
+    db.commit()
+    assert backfill.replay_diffs(db, [world.matches[0]], config)
+    db.close()
 
 
 def test_approved_results_must_match_the_persisted_scores(world, tmp_path):

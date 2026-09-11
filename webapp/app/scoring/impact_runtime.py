@@ -17,6 +17,7 @@ from app.scoring.impact_manifest import (
     REPO_ROOT,
     ManifestMismatchError,
     config_from_manifest,
+    lf_sha256,
     load_manifest,
     verify_manifest,
 )
@@ -25,8 +26,8 @@ ACTIVE_MANIFEST: str | None = None
 
 
 @functools.lru_cache(maxsize=None)
-def _load_verified(manifest_path: str):
-    manifest = load_manifest(REPO_ROOT / manifest_path)
+def _load_verified(manifest_path: str, file_digest: str):
+    manifest = load_manifest(manifest_path)
     verify_manifest(manifest)
     expected = manifest["activation_impact_calculation_version"]
     if impact.IMPACT_CALCULATION_VERSION != expected:
@@ -36,13 +37,22 @@ def _load_verified(manifest_path: str):
     return manifest, config_from_manifest(manifest)
 
 
+def _verified():
+    """Keyed on the file's CONTENT, so a manifest edited or replaced after a
+    long-running worker started is re-verified rather than served from cache."""
+    path = REPO_ROOT / ACTIVE_MANIFEST
+    if not path.is_file():
+        raise ManifestMismatchError([f"manifest file is missing: {path}"])
+    return _load_verified(str(path), lf_sha256(path))
+
+
 def active_manifest() -> dict | None:
-    return None if ACTIVE_MANIFEST is None else _load_verified(ACTIVE_MANIFEST)[0]
+    return None if ACTIVE_MANIFEST is None else _verified()[0]
 
 
 def active_scoring_config():
     """The verified active ImpactScoringConfig, or None for the live legacy formula."""
-    return None if ACTIVE_MANIFEST is None else _load_verified(ACTIVE_MANIFEST)[1]
+    return None if ACTIVE_MANIFEST is None else _verified()[1]
 
 
 def clear_cache() -> None:

@@ -147,6 +147,28 @@ def test_review_results_are_exactly_what_backfill_acceptance_compares(tmp_path):
     assert backfill.persisted_result_diffs(db, results, lf_sha256(path))
 
 
+def test_corpus_identity_and_validation_failures_fail_the_run():
+    """A corpus mismatch must reach the exit status, not just the JSON."""
+    rec = review.Reconciler()
+    review.register_corpus_failures(rec, {"identity_mismatches": {"impact_identity": 1},
+                                          "input_validation_failures": {"7": "boom"},
+                                          "matches_requested": 2, "matches_scored": 1})
+    assert len(rec.failures) >= 2
+    clean = review.Reconciler()
+    review.register_corpus_failures(clean, {"identity_mismatches": {}, "input_validation_failures": {},
+                                            "matches_requested": 2, "matches_scored": 2})
+    assert clean.failures == []
+
+
+def test_a_weights_override_restamps_the_reported_identity():
+    manifest = _manifest()
+    overridden, label = review.apply_weight_override(manifest, "abc123", "1.25,1.0,2.0")
+    assert overridden["comparators"][bd.MODEL_V2_30_80]["weights"]["econ"] == 2.0
+    assert "abc123" in label and "NOT THE FROZEN CANDIDATE" in label
+    assert "WEIGHTS-OVERRIDE" in overridden["candidate_id"]
+    assert any("C(econ)=2.0" in change for change in overridden["formula_changes_vs_live_legacy"])
+
+
 def test_corpus_audit_counts_identities_and_signs_on_a_small_corpus():
     db = session()
     first, _, _ = _environmental_match(db)

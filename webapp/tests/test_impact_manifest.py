@@ -94,6 +94,23 @@ def test_changed_scoring_source_or_missing_digest_fails_visibly():
         verify_manifest(dropped)
 
 
+def test_model_definitions_are_covered_by_the_source_digests():
+    """A mapped column or enum change alters what the scorer reads without
+    touching app/scoring, so the models are hashed too."""
+    assert {"app/models/match.py", "app/models/round.py", "app/models/kill_event.py",
+            "app/models/impact_score.py"} <= set(impact_manifest.HASHED_SOURCES)
+    assert set(_manifest()["source_digests"]) == set(impact_manifest.HASHED_SOURCES)
+
+
+def test_masking_covers_only_a_lone_version_assignment(tmp_path):
+    """`IMPACT_CALCULATION_VERSION = RATE = 2` must not mask RATE as well."""
+    chained_two = tmp_path / "two.py"
+    chained_two.write_text("IMPACT_CALCULATION_VERSION = RATE = 2\ndef score():\n    return RATE\n")
+    chained_three = tmp_path / "three.py"
+    chained_three.write_text("IMPACT_CALCULATION_VERSION = RATE = 3\ndef score():\n    return RATE\n")
+    assert behavioral_source_digest(chained_two) != behavioral_source_digest(chained_three)
+
+
 def test_behavioral_digest_ignores_comments_docstrings_and_the_version_bump(tmp_path):
     base = tmp_path / "a.py"
     base.write_text('"""doc"""\nIMPACT_CALCULATION_VERSION = 2\nRATE = 0.8\ndef f():\n    return RATE\n')
@@ -166,6 +183,22 @@ def test_an_active_manifest_drives_compute_impact_for_match(tmp_path, monkeypatc
     for row in expected:
         assert stored[(row.round_id, row.match_player_id)].econ_component == row.econ_component
         assert stored[(row.round_id, row.match_player_id)].impact == row.impact
+
+
+def test_a_manifest_edited_after_it_was_cached_is_rejected(tmp_path, monkeypatch):
+    """A long-running ingest process must not keep scoring under a manifest
+    that no longer matches the file on disk."""
+    path = tmp_path / "manifest.json"
+    manifest = _manifest()
+    write_manifest(path, manifest)
+    monkeypatch.setattr(impact_runtime, "ACTIVE_MANIFEST", str(path))
+    monkeypatch.setattr(impact, "IMPACT_CALCULATION_VERSION", manifest["activation_impact_calculation_version"])
+    assert impact_runtime.active_scoring_config() is not None
+
+    tampered = {**manifest, "econ_scale": 1000.0}
+    write_manifest(path, tampered)
+    with pytest.raises(ManifestMismatchError):
+        impact_runtime.active_scoring_config()
 
 
 def test_activation_without_the_declared_version_bump_fails_visibly(tmp_path, monkeypatch):

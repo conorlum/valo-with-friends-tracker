@@ -43,6 +43,13 @@ HASHED_SOURCES = (
     "app/scoring/agent_economy.py",
     "app/scoring/plant_window.py",
     "app/scoring/preplant_empirical_factor.py",
+    # The ORM definitions decide what the scorer READS -- a mapped column, a
+    # type conversion or the Team enum can change scores without any file in
+    # app/scoring changing, and the raw-SQL fingerprint would not see it.
+    "app/models/match.py",
+    "app/models/round.py",
+    "app/models/kill_event.py",
+    "app/models/impact_score.py",
 )
 _MASKED_ASSIGNMENTS = frozenset({"IMPACT_CALCULATION_VERSION"})
 
@@ -93,8 +100,11 @@ def behavioral_source_digest(path) -> str:
             if (body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant)
                     and isinstance(body[0].value.value, str)):
                 node.body = body[1:] or [ast.Pass()]
-        if isinstance(node, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id in _MASKED_ASSIGNMENTS for t in node.targets):
+        # ONE lone target only: `IMPACT_CALCULATION_VERSION = RATE = 2` would
+        # otherwise mask RATE too, hiding a behavioral change behind the bump.
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in _MASKED_ASSIGNMENTS):
             node.value = ast.Constant(value="<masked>")
     return hashlib.sha256(ast.dump(tree, include_attributes=False).encode()).hexdigest()
 
