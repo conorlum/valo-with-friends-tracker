@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Round, RoundPlayerStat
 from app.models.match import Team
-from app.scoring import econ_component
+from app.scoring import econ_buy_disruption, econ_component
+from app.scoring.agent_economy import free_ability_credits
 from app.scoring.plant_window import attacking_team as _plant_window_attacking_team
 from app.scoring.plant_window import effective_plant_time
 from app.scoring.plant_window import seconds_to_plant
@@ -59,6 +60,29 @@ class CalculatedImpact:
     # consumers read by name.
     leverage_component: int = 0
     econ_pickup: int = 0
+
+
+@dataclass(frozen=True)
+class ImpactInputIssue:
+    kind: str
+    round_number: int
+    event_id: int | None = None
+    match_player_id: int | None = None
+    detail: str = ""
+
+
+class ImpactInputError(ValueError):
+    """A match whose combat inputs cannot be scored, raised before any row is
+    built or persisted. Structured so a backfill can record exactly which
+    event or player blocked it."""
+
+    def __init__(self, match_id: int, issues):
+        self.match_id = match_id
+        self.issues = tuple(issues)
+        super().__init__(f"match {match_id}: " + "; ".join(
+            f"{i.kind} (round {i.round_number}, event {i.event_id}, player {i.match_player_id})"
+            for i in self.issues))
+
 
 # Bump whenever compute_impact_for_match's scoring algorithm changes in a way
 # that changes ImpactScore values for previously-scored rounds -- folded
@@ -706,12 +730,161 @@ def _econ_components_for_round(
     return scaled
 
 
+_ECON_MODELS = (
+    frozenset({econ_buy_disruption.MODEL_SEPARATE_ECON_LEGACY})
+    | econ_buy_disruption.BUY_DISRUPTION_MODELS
+)
+
+
+def _resolve_econ_model(
+    enable_econ_component: bool, econ_model: str | None, neutralize_econ_terms: bool,
+) -> str | None:
+    """The econ model this build scores with, or None for the live legacy
+    formula. Invalid combinations are rejected rather than silently ignored."""
+    if econ_model is None:
+        return econ_buy_disruption.MODEL_SEPARATE_ECON_LEGACY if enable_econ_component else None
+    if not enable_econ_component:
+        raise ValueError(
+            f"econ_model={econ_model!r} requires enable_econ_component=True; the legacy "
+            "formula has no separate econ component")
+    if econ_model not in _ECON_MODELS:
+        raise ValueError(f"Unknown econ_model {econ_model!r}; expected one of {sorted(_ECON_MODELS)}")
+    if neutralize_econ_terms and econ_model in econ_buy_disruption.BUY_DISRUPTION_MODELS:
+        raise ValueError(
+            "neutralize_econ_terms is an arm of the legacy combination; it cannot be "
+            f"combined with econ_model={econ_model!r}")
+    return econ_model
+
+
+def _combat_input_issues(
+    match_players: dict[int, MatchPlayer],
+    round_player_stats: dict[int, dict[int, dict]],
+    round_kills: dict[int, list[dict]],
+) -> list[ImpactInputIssue]:
+    """What would stop combat scoring from reconstructing a round, checked
+    BEFORE the trade, economy-differential and kill-order loops index anything.
+
+    A known victim with a NULL killer is not an issue: it is an environmental
+    death, routed as a death on the victim's own side (see the kill-order
+    loop). An unknown victim is: no team can be charged the death, so the
+    round state cannot be reconstructed, and nothing is invented to fill it.
+    """
+    issues = []
+    for round_number in sorted(round_kills):
+        stats = round_player_stats.get(round_number, {})
+        for kill in round_kills[round_number]:
+            killer_id = kill["killer_match_player_id"]
+            victim_id = kill["death_match_player_id"]
+            event_id = kill["id"]
+            if victim_id is None or victim_id not in match_players:
+                issues.append(ImpactInputIssue("unknown_victim", round_number, event_id, victim_id))
+                continue
+            if killer_id is not None and killer_id not in match_players:
+                issues.append(ImpactInputIssue("killer_not_in_match", round_number, event_id, killer_id))
+            elif killer_id is not None and killer_id not in stats:
+                issues.append(ImpactInputIssue(
+                    "killer_missing_round_stats", round_number, event_id, killer_id))
+            if victim_id not in stats:
+                issues.append(ImpactInputIssue(
+                    "victim_missing_round_stats", round_number, event_id, victim_id))
+    return issues
+
+
+def _combined_swing_factors_for_round(
+    round_outcomes: dict[int, str],
+    round_player_stats: dict[int, dict[int, dict]],
+    match_players: dict[int, MatchPlayer],
+    round_number: int,
+    round_row: Round,
+    use_realized_swing: bool,
+) -> tuple[float, float]:
+    """(TEAM_1, TEAM_2) combined swing factors -- the legacy swing term."""
+    team1_swing = _econ_swing_risk_factor(
+        round_outcomes, round_player_stats, match_players, round_number, Team.TEAM_1, round_row
+    )
+    team2_swing = _econ_swing_risk_factor(
+        round_outcomes, round_player_stats, match_players, round_number, Team.TEAM_2, round_row
+    )
+    # Ex-ante mode drops the realized term entirely. _realized_econ_swing_factor
+    # reads round N+1's loadouts, so any forward-looking model trained on a
+    # swing_impact that includes it is leaking. See the spec's LEAKAGE section.
+    if use_realized_swing:
+        team1_realized_swing = _realized_econ_swing_factor(
+            round_player_stats, match_players, round_number, Team.TEAM_1
+        )
+        team2_realized_swing = _realized_econ_swing_factor(
+            round_player_stats, match_players, round_number, Team.TEAM_2
+        )
+        return (_combine_swing_factors(team1_swing, team1_realized_swing),
+                _combine_swing_factors(team2_swing, team2_realized_swing))
+    return team1_swing, team2_swing
+
+
+def _buy_disruption_econ_for_round(
+    round_number: int, rounds_by_number: dict[int, Round], kills: list[dict],
+    match_players: dict[int, MatchPlayer],
+    round_player_stats: dict[int, dict[int, dict]],
+    model: str, use_realized: bool, econ_observer=None,
+) -> dict[int, float]:
+    """ECON_SCALE * raw signed net per match_player for one round, from the
+    production calculator (spec 2026-09-10, section 12). {} when the round
+    abstains. Rounding -- once, after C -- is the caller's.
+
+    The whole ordered source-event ledger is passed, including environmental
+    deaths, which the calculator charges to their victim without enemy credit.
+    """
+    this_round = round_player_stats.get(round_number) or {}
+    next_round = round_player_stats.get(round_number + 1) or {}
+    next_row = rounds_by_number.get(round_number + 1)
+    pistol_row = rounds_by_number.get(econ_buy_disruption.pistol_round_for(round_number))
+    inputs = econ_buy_disruption.RoundEconInputs(
+        round_number=round_number,
+        last_round_number=max(rounds_by_number),
+        team_a=Team.TEAM_1, team_b=Team.TEAM_2,
+        players=tuple(
+            econ_buy_disruption.PlayerEconomy(
+                match_player_id=match_player_id, team=mp.team,
+                free_ability_credits=free_ability_credits(mp.agent),
+                loadout=this_round.get(match_player_id, {}).get("loadout"),
+                next_loadout=next_round.get(match_player_id, {}).get("loadout"),
+                next_remaining=next_round.get(match_player_id, {}).get("remaining"),
+                has_current_stats=match_player_id in this_round,
+                has_next_stats=match_player_id in next_round,
+            )
+            for match_player_id, mp in sorted(match_players.items())
+        ),
+        events=tuple(
+            econ_buy_disruption.EconEvent(
+                event_id=kill["id"], time_seconds=kill["event_time_seconds"],
+                killer_id=kill["killer_match_player_id"], victim_id=kill["death_match_player_id"],
+            )
+            for kill in kills
+        ),
+        outcome=rounds_by_number[round_number].outcome,
+        next_outcome=next_row.outcome if next_row is not None else None,
+        pistol_outcome=pistol_row.outcome if pistol_row is not None else None,
+        has_next_round=next_row is not None,
+        use_realized=use_realized,
+    )
+    result = econ_buy_disruption.score_round(inputs, model)
+    if econ_observer is not None:
+        # REPORTING ONLY, and called for abstaining rounds too so a review can
+        # show every played round and its reason.
+        econ_observer(round_number=round_number, model=model,
+                      audit_version=result.audit_version, result=result)
+    return {
+        match_player_id: econ_component.ECON_SCALE * net
+        for match_player_id, net in result.raw_net_by_player().items()
+    }
+
+
 def build_impact_rows_for_match(
     db: Session, match_id: int, use_realized_swing: bool = True,
     enable_preplant_empirical: bool = False,
     enable_postplant_leverage: bool = False, postplant_factor_table=None,
     enable_econ_component: bool = False, neutralize_econ_terms: bool = False,
     kill_observer=None, econ_observer=None, weights: "FormulaWeights | None" = None,
+    econ_model: str | None = None,
 ) -> list[CalculatedImpact]:
     """kill_observer, when given, is called once per kill AFTER that kill has
     been fully scored, with the scorer's own mutated kill dict and the round
@@ -720,8 +893,16 @@ def build_impact_rows_for_match(
     every returned row identical. It exists so a review tool reports what the
     scorer computed rather than re-deriving it; re-derivation is how
     preplant_fit_support and ten diagnostics silently drifted from this
-    module's own replay policy."""
+    module's own replay policy.
+
+    `econ_model` selects the separate econ component's model when
+    enable_econ_component is True: None keeps `separate_econ_legacy`; the
+    buy-disruption models live in app.scoring.econ_buy_disruption. Combat
+    inputs are validated before any loop indexes them; an unscoreable match
+    raises ImpactInputError before a single row is built."""
     weights = weights or FormulaWeights()
+    resolved_econ_model = _resolve_econ_model(enable_econ_component, econ_model, neutralize_econ_terms)
+    bypass_legacy_swing = resolved_econ_model in econ_buy_disruption.BUY_DISRUPTION_MODELS
     rounds = db.query(Round).filter_by(match_id=match_id).order_by(Round.round_number).all()
     rounds_by_number: dict[int, Round] = {r.round_number: r for r in rounds}
     round_number_by_round_id: dict[int, int] = {r.id: r.round_number for r in rounds}
@@ -757,11 +938,18 @@ def build_impact_rows_for_match(
         round_number = round_number_by_round_id[kill.round_id]
         round_kills[round_number].append(
             {
+                # The source KillEvent.id, kept so economy audits and traces
+                # reconcile to real events in (event_time_seconds, id) order.
+                "id": kill.id,
                 "killer_match_player_id": kill.killer_match_player_id,
                 "death_match_player_id": kill.death_match_player_id,
                 "event_time_seconds": kill.event_time_seconds,
             }
         )
+
+    issues = _combat_input_issues(match_players, round_player_stats, round_kills)
+    if issues:
+        raise ImpactInputError(match_id, issues)
 
     # Trade detection: kill D1 (A kills B, an enemy kill), followed inside the
     # trade window by kill D2 where B's teammate C kills A. From C's
@@ -803,13 +991,15 @@ def build_impact_rows_for_match(
         for kill in kills:
             killer_id = kill["killer_match_player_id"]
             death_id = kill["death_match_player_id"]
-            self_kill = killer_id == death_id
-            killer_econ = round_player_stats[round_number][killer_id]["loadout"]
+            # An environmental death (no killer) takes the self-kill policy:
+            # a death with no enemy on the other end.
+            self_kill = killer_id is None or killer_id == death_id
             death_econ = round_player_stats[round_number][death_id]["loadout"]
             if self_kill:
                 kill["econ_differential_factor"] = _categorize_econ(death_econ)
                 kill["econ_mismatch"] = False
             else:
+                killer_econ = round_player_stats[round_number][killer_id]["loadout"]
                 killer_tier = _categorize_econ(killer_econ)
                 death_tier = _categorize_econ(death_econ)
                 kill["econ_differential_factor"] = killer_tier / death_tier
@@ -825,33 +1015,27 @@ def build_impact_rows_for_match(
         team1_kill_index = 5
         team2_kill_index = 5
 
-        team1_swing = _econ_swing_risk_factor(
-            round_outcomes, round_player_stats, match_players, round_number, Team.TEAM_1, round_row
-        )
-        team2_swing = _econ_swing_risk_factor(
-            round_outcomes, round_player_stats, match_players, round_number, Team.TEAM_2, round_row
-        )
-        # Ex-ante mode drops the realized term entirely. _realized_econ_swing_factor
-        # reads round N+1's loadouts, so any forward-looking model trained on a
-        # swing_impact that includes it is leaking. See the spec's LEAKAGE section.
-        if use_realized_swing:
-            team1_realized_swing = _realized_econ_swing_factor(
-                round_player_stats, match_players, round_number, Team.TEAM_1
-            )
-            team2_realized_swing = _realized_econ_swing_factor(
-                round_player_stats, match_players, round_number, Team.TEAM_2
-            )
-            team1_combined_swing = _combine_swing_factors(team1_swing, team1_realized_swing)
-            team2_combined_swing = _combine_swing_factors(team2_swing, team2_realized_swing)
+        if bypass_legacy_swing:
+            # The buy-disruption composite never reads swing (swing_impact is
+            # written 0 under the new structure), so the legacy economy work
+            # is skipped rather than computed and discarded (plan review, P1).
+            team1_combined_swing = team2_combined_swing = None
         else:
-            team1_combined_swing = team1_swing
-            team2_combined_swing = team2_swing
+            team1_combined_swing, team2_combined_swing = _combined_swing_factors_for_round(
+                round_outcomes, round_player_stats, match_players, round_number, round_row,
+                use_realized_swing,
+            )
 
         for kill_index, kill in enumerate(kills):
             killer_id = kill["killer_match_player_id"]
             death_id = kill["death_match_player_id"]
-            self_kill = killer_id == death_id
-            killer_team = match_players[killer_id].team
+            # An environmental death (known victim, no killer) is routed as a
+            # death on the VICTIM's own side: their team loses a player and
+            # they are charged the death, but no kill is credited to anyone.
+            # This is the existing self-kill policy, not an invented killer.
+            environmental = killer_id is None
+            self_kill = environmental or killer_id == death_id
+            killer_team = match_players[death_id].team if environmental else match_players[killer_id].team
 
             # Valorant's own combat-score kill-order bonus: 150 for a kill against a
             # still-full 5-player enemy team, decrementing 20 per further kill landed
@@ -901,7 +1085,10 @@ def build_impact_rows_for_match(
             )
             if neutralize_econ_terms:
                 combined_swing_factor = 1.0
-            kill["kill_order_bonus_x_swing"] = kill_order_bonus * combined_swing_factor if not self_kill else 0
+            if combined_swing_factor is None:
+                kill["kill_order_bonus_x_swing"] = 0.0
+            else:
+                kill["kill_order_bonus_x_swing"] = kill_order_bonus * combined_swing_factor if not self_kill else 0
 
             death_order_bonus = kill_order_bonus * _traded_factor(
                 kills, kill, self_kill, team_of=team_of)
@@ -944,7 +1131,9 @@ def build_impact_rows_for_match(
                 # means _time_factor is never evaluated for a self-kill there.
                 self_kill=self_kill,
             )
-            kill["death_order_bonus_x_swing"] = death_order_bonus * combined_swing_factor
+            kill["death_order_bonus_x_swing"] = (
+                death_order_bonus * combined_swing_factor if combined_swing_factor is not None else 0.0
+            )
 
             killer_own_alive = team2_kill_index if killer_team == Team.TEAM_1 else team1_kill_index
             killer_opp_alive = team1_kill_index if killer_team == Team.TEAM_1 else team2_kill_index
@@ -965,6 +1154,7 @@ def build_impact_rows_for_match(
                     kill=kill,
                     context={
                         "self_kill": self_kill,
+                        "environmental": environmental,
                         "killer_team": killer_team,
                         "killer_is_attacker": attacking == killer_team,
                         "killer_team_alive": killer_own_alive,
@@ -999,14 +1189,19 @@ def build_impact_rows_for_match(
         round_row = rounds_by_number[round_number]
         kills = round_kills.get(round_number, [])
 
-        econ_by_player = (
-            _econ_components_for_round(
+        if resolved_econ_model is None:
+            econ_by_player = {}
+        elif resolved_econ_model == econ_buy_disruption.MODEL_SEPARATE_ECON_LEGACY:
+            econ_by_player = _econ_components_for_round(
                 round_number, round_number >= last_round_number, kills, match_players,
                 round_player_stats, use_realized=use_realized_swing,
                 econ_observer=econ_observer,
             )
-            if enable_econ_component else {}
-        )
+        else:
+            econ_by_player = _buy_disruption_econ_for_round(
+                round_number, rounds_by_number, kills, match_players, round_player_stats,
+                resolved_econ_model, use_realized=use_realized_swing, econ_observer=econ_observer,
+            )
 
         for match_player_id, stat in mp_stats.items():
             acs = stat["score"]
@@ -1160,12 +1355,21 @@ _PERSISTED_FIELDS = (
 )
 
 
-def compute_impact_for_match(db: Session, match_id: int) -> None:
-    """Unchanged public behaviour: compute and persist. The calculation now
-    lives in build_impact_rows_for_match so the evaluation tooling can call
-    it read-only -- see
-    docs/superpowers/specs/2026-09-01-impact-win-correlation-design.md."""
-    for calculated in build_impact_rows_for_match(db, match_id, use_realized_swing=True):
+def compute_impact_for_match(db: Session, match_id: int, config=None) -> None:
+    """Compute and persist. The calculation lives in build_impact_rows_for_match
+    so the evaluation tooling can call it read-only -- see
+    docs/superpowers/specs/2026-09-01-impact-win-correlation-design.md.
+
+    `config` (an app.scoring.impact_config.ImpactScoringConfig) is the one
+    explicit scoring configuration. None resolves app.scoring.impact_runtime's
+    active configuration, which is itself None -- the live legacy formula --
+    until a frozen manifest is deliberately activated."""
+    if config is None:
+        from app.scoring.impact_runtime import active_scoring_config  # avoids an import cycle
+
+        config = active_scoring_config()
+    kwargs = config.build_kwargs() if config is not None else {"use_realized_swing": True}
+    for calculated in build_impact_rows_for_match(db, match_id, **kwargs):
         impact_score = (
             db.query(ImpactScore)
             .filter_by(round_id=calculated.round_id, match_player_id=calculated.match_player_id)

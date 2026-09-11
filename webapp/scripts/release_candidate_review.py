@@ -32,6 +32,19 @@ RECONCILIATION. Every displayed total is checked, not asserted:
   * cross-view         the trace's match totals equal the --match view's
 Any failure prints as a RECONCILIATION ERROR rather than being smoothed over.
 
+FROZEN MODE (--manifest PATH). Everything below "THE CANDIDATE" describes the
+UNFROZEN legacy review. With a manifest, the configurations are the manifest's
+NAMED comparators -- live_legacy, separate_econ_legacy (diagnostic),
+buy_disruption_v2_wealth and buy_disruption_v2_30_80 -- verified against this
+checkout, with no implicit post-plant table or pre-plant patch:
+
+    ... --manifest M --match 3104 --compare site      # total release change
+    ... --manifest M --match 3104 --compare penalty   # wealth vs 30/80 debit only
+    ... --manifest M --trace 3104 --report-dir DIR    # per-kill economy trace
+    ... --manifest M --ten --report-dir DIR
+    ... --manifest M --corpus --report-dir DIR        # predeclared read-only audit
+    ... --manifest M --ten --extra 3104 --results R   # backfill acceptance values
+
 TWO CAVEATS ON THE NUMBERS.
   * The post-plant table is fitted on the FULL corpus, deliberately:
     out-of-fold is a rule for EVALUATING a candidate, not for shipping one.
@@ -41,6 +54,7 @@ TWO CAVEATS ON THE NUMBERS.
     outstanding work.
 """
 import argparse
+import json
 import statistics
 import sys
 from collections import defaultdict
@@ -51,7 +65,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import text
 
 from app.db import SessionLocal
-from app.scoring.impact import FormulaWeights, build_impact_rows_for_match
+from app.scoring import econ_buy_disruption as bd
+from app.scoring import econ_component
+from app.scoring.impact import FormulaWeights, ImpactInputError, build_impact_rows_for_match
+from app.scoring.impact_manifest import (
+    config_from_manifest,
+    lf_sha256,
+    load_manifest,
+    match_source_fingerprint,
+    verify_manifest,
+    verify_source_snapshots,
+)
 from app.scoring.postplant_factor import (
     build_factor_table,
     extract_postplant_kills,
@@ -495,6 +519,697 @@ def trace_match(db, match_id, table, preplant, weights, rec, out_path):
           f"{len(econ_by_round):,} rounds with economy)")
 
 
+# ============================================================================
+# FROZEN-MANIFEST MODE (--manifest). Implementation plan sections 3 and 5,
+# plan-review findings P2 (named comparators; freeze before review).
+#
+# Nothing here builds a post-plant table, enables a timing flag or patches a
+# module: every configuration comes from the frozen manifest, verified against
+# this checkout, and every reviewed match's source rows are checked against
+# their frozen fingerprint first. Scores come from build_impact_rows_for_match
+# and the econ audit from the production calculator via econ_observer -- the
+# same code the runtime and backfill call.
+# ============================================================================
+
+NON_ECON_FIELDS = (
+    "damage", "leverage_component", "time_impact", "kill_impact", "death_impact",
+    "kill_order_bonus", "econ_kill", "econ_death", "clutch_kill", "clutch_death",
+    "post_plant_kill", "post_plant_death", "traded_teammate", "traded_by_teammate", "trade_detail",
+)
+
+
+def frozen_pair(manifest, compare):
+    """The two NAMED comparators a view contrasts, in (before, after) order."""
+    if compare == "site":
+        names = manifest["site_comparison"]
+    elif compare == "penalty":
+        names = manifest["penalty_comparison"]
+    elif compare == "separate":
+        names = [bd.MODEL_SEPARATE_ECON_LEGACY, manifest["release_comparator"]]
+    else:
+        raise ValueError(f"unknown comparison {compare!r}")
+    return [(name, config_from_manifest(manifest, name)) for name in names]
+
+
+def score_with(db, match_id, config):
+    econ, kills = {}, []
+    rows = build_impact_rows_for_match(
+        db, match_id,
+        kill_observer=lambda **kw: kills.append(kw),
+        econ_observer=lambda **kw: econ.__setitem__(kw["round_number"], kw),
+        **config.build_kwargs())
+    return {"config": config, "rows": rows, "econ": econ, "kills": kills}
+
+
+def econ_points(scored, round_number, match_player_id):
+    """(gross credit, gross debit) in C-weighted econ points, unrounded."""
+    config = scored["config"]
+    scale = config.weights.econ * econ_component.ECON_SCALE
+    audit = scored["econ"].get(round_number)
+    if audit is None:
+        return 0.0, 0.0
+    if "result" in audit:
+        ledger = audit["result"].players.get(match_player_id)
+        return (scale * ledger.credit, scale * ledger.debit) if ledger else (0.0, 0.0)
+    player = audit["players"].get(match_player_id)
+    return (scale * player["credit"], scale * player["debit"]) if player else (0.0, 0.0)
+
+
+def reconcile_scores(rec, label, scored, round_numbers):
+    config = scored["config"]
+    for row in scored["rows"]:
+        tag = f"{label} round {round_numbers[row.round_id]} player {row.match_player_id}"
+        if config.enable_econ_component:
+            rec.identity(tag, row.impact, [row.damage, row.leverage_component, row.econ_component])
+    if config.econ_model not in bd.BUY_DISRUPTION_MODELS:
+        return
+    for row in scored["rows"]:
+        rn = round_numbers[row.round_id]
+        raw = scored["econ"][rn]["result"].raw_net_by_player().get(row.match_player_id, 0.0)
+        rec.equal(f"{label} round {rn} player {row.match_player_id} econ == round(C*S*raw)",
+                  row.econ_component,
+                  round(config.weights.econ * (econ_component.ECON_SCALE * raw)))
+    for rn, kw in scored["econ"].items():
+        result = kw["result"]
+        if result.abstention:
+            continue
+        for team, audit in result.teams.items():
+            rec.close(f"{label} round {rn} {team} credit == its enemy events", audit.credit,
+                      sum(e.credit for e in result.events if e.kind == "enemy" and e.killer_team == team),
+                      tolerance=1e-9)
+            rec.close(f"{label} round {rn} {team} debit == its victims' event debits", audit.debit,
+                      sum(e.victim_debit for e in result.events if e.victim_team == team), tolerance=1e-9)
+
+
+def reconcile_penalty_pair(rec, left, right):
+    """The penalty-only comparison: identical gross credits and non-econ terms."""
+    rec.equal("penalty pair row count", len(left["rows"]), len(right["rows"]))
+    for l_row, r_row in zip(left["rows"], right["rows"]):
+        key = (l_row.round_id, l_row.match_player_id)
+        rec.equal(f"penalty pair row order {key}", key, (r_row.round_id, r_row.match_player_id))
+        for field in NON_ECON_FIELDS:
+            rec.equal(f"penalty pair {field} {key}", getattr(l_row, field), getattr(r_row, field))
+    for rn, l_kw in left["econ"].items():
+        l_result, r_result = l_kw["result"], right["econ"][rn]["result"]
+        rec.equal(f"penalty pair round {rn} abstention", l_result.abstention, r_result.abstention)
+        for pid, ledger in l_result.players.items():
+            rec.equal(f"penalty pair round {rn} player {pid} gross credit",
+                      ledger.credit, r_result.players[pid].credit)
+
+
+def _blank_side():
+    return dict(impact=0, damage=0, leverage=0, econ=0, credit=0.0, debit=0.0, rounds=0)
+
+
+def player_match_rows(db, match_id, left, right):
+    names, rounds = _names(db, match_id), _round_numbers(db, match_id)
+    players = {}
+    for side, scored in (("left", left), ("right", right)):
+        for row in scored["rows"]:
+            name, team = names.get(row.match_player_id, ("?", "?"))
+            entry = players.setdefault(row.match_player_id, dict(
+                name=name, team=str(team), left=_blank_side(), right=_blank_side(), by_round={}))
+            t = entry[side]
+            rn = rounds[row.round_id]
+            credit, debit = econ_points(scored, rn, row.match_player_id)
+            t["impact"] += row.impact
+            t["damage"] += row.damage
+            t["leverage"] += row.leverage_component
+            t["econ"] += row.econ_component
+            t["credit"] += credit
+            t["debit"] += debit
+            t["rounds"] += 1
+            entry["by_round"].setdefault(rn, {})[side] = (row.impact, row.econ_component)
+    for side in ("left", "right"):
+        ranked = sorted(players, key=lambda mp: -players[mp][side]["impact"])
+        for position, mp in enumerate(ranked, 1):
+            players[mp][side]["rank"] = position
+    return players
+
+
+def _identity_block(manifest, manifest_sha, pair):
+    lines = [f"Candidate `{manifest['candidate_id']}`, manifest LF-SHA-256 `{manifest_sha}`.", ""]
+    for label, (name, config) in zip(("Before", "After"), pair):
+        kwargs = config.build_kwargs()
+        lines.append(f"- **{label}: `{name}`** -- enable_econ_component={kwargs['enable_econ_component']}, "
+                     f"econ_model={kwargs['econ_model']}, weights A/B/C={config.weights.damage}/"
+                     f"{config.weights.leverage}/{config.weights.econ}, use_realized_swing="
+                     f"{kwargs['use_realized_swing']}, post-plant table OFF, pre-plant curve OFF")
+    return lines
+
+
+def render_match_review(db, match_id, manifest, compare, rec, manifest_sha="(unrecorded)"):
+    pair = frozen_pair(manifest, compare)
+    (left_name, left_cfg), (right_name, right_cfg) = pair
+    left, right = score_with(db, match_id, left_cfg), score_with(db, match_id, right_cfg)
+    rounds = _round_numbers(db, match_id)
+    reconcile_scores(rec, left_name, left, rounds)
+    reconcile_scores(rec, right_name, right, rounds)
+    if compare == "penalty":
+        reconcile_penalty_pair(rec, left, right)
+    players = player_match_rows(db, match_id, left, right)
+    header = _header(db, match_id)
+    played = len({row.round_id for row in right["rows"]})
+
+    lines = [f"# Match {match_id}: {header['map_name']} {header['team1_rounds_won']}-"
+             f"{header['team2_rounds_won']} -- {left_name} vs {right_name}", ""]
+    lines += _identity_block(manifest, manifest_sha, pair)
+    if compare == "site":
+        lines += ["", "This is the TOTAL release change. Formula changes versus live legacy:", ""]
+        lines += [f"- {change}" for change in manifest["formula_changes_vs_live_legacy"]]
+        stored = _stored_totals(db, match_id)
+        stale = sum(1 for mp, p in players.items() if stored.get(mp) not in (None, p["left"]["impact"]))
+        lines += ["", f"Persisted site values vs the live-legacy REPLAY: {stale} of {len(players)} players "
+                      "differ (reported separately below; neither replaces the other)."]
+    elif compare == "penalty":
+        lines += ["", "Penalty-only comparison: gross kill credits and every non-econ term are "
+                      "reconciled as identical; only the death debit differs."]
+    lines += ["", f"Econ points per played round divide by all {played} played rounds, including "
+                  "zero-econ boundary rounds.", "",
+              "| Player | Team | Before | After | Change | Rank | A*damage | B*leverage | C*econ after | "
+              "Gross credit | Gross debit | C*econ before | Econ / round | Persisted |",
+              "|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    stored = _stored_totals(db, match_id)
+    team_totals = defaultdict(lambda: dict(before=0, after=0, econ=0, credit=0.0, debit=0.0))
+    for mp, p in sorted(players.items(), key=lambda kv: kv[1]["right"]["rank"]):
+        l, r = p["left"], p["right"]
+        if right_cfg.enable_econ_component:
+            rec.identity(f"{right_name} match {match_id} player {mp} total", r["impact"],
+                         [r["damage"], r["leverage"], r["econ"]])
+        lines.append(f"| {p['name']} | {p['team'][5:]} | {l['impact']:+,} | {r['impact']:+,} | "
+                     f"{r['impact'] - l['impact']:+,} | {l['rank']}->{r['rank']} | {r['damage']:,} | "
+                     f"{r['leverage']:+,} | {r['econ']:+,} | {r['credit']:.2f} | {r['debit']:.2f} | "
+                     f"{l['econ']:+,} | {r['econ'] / played:+.2f} | {stored.get(mp, 'n/a')} |")
+        t = team_totals[p["team"][5:]]
+        t["before"] += l["impact"]
+        t["after"] += r["impact"]
+        t["econ"] += r["econ"]
+        t["credit"] += r["credit"]
+        t["debit"] += r["debit"]
+    lines += ["", "| Team | Before | After | C*econ after | Gross credit | Gross debit |",
+              "|---|---:|---:|---:|---:|---:|"]
+    for team, t in sorted(team_totals.items()):
+        lines.append(f"| {team} | {t['before']:+,} | {t['after']:+,} | {t['econ']:+,} | "
+                     f"{t['credit']:.2f} | {t['debit']:.2f} |")
+
+    lines += ["", "## Per-round changes", "",
+              "Each cell: impact before -> after (C*econ before -> after).", ""]
+    round_list = sorted({rn for p in players.values() for rn in p["by_round"]})
+    lines.append("| Round | " + " | ".join(p["name"][:14] for p in players.values()) + " |")
+    lines.append("|---|" + "---|" * len(players))
+    for rn in round_list:
+        cells = []
+        for p in players.values():
+            pair_round = p["by_round"].get(rn, {})
+            if "left" in pair_round and "right" in pair_round:
+                (li, le), (ri, re) = pair_round["left"], pair_round["right"]
+                cells.append(f"{li:+}->{ri:+} ({le:+}->{re:+})")
+            else:
+                cells.append("n/a")
+        lines.append(f"| {rn} | " + " | ".join(cells) + " |")
+
+    if right_cfg.econ_model in bd.BUY_DISRUPTION_MODELS:
+        lines += ["", "## Economy by round (after)", "",
+                  "| Round | Abstention | Team | L lost | H target | U funding | D gap | G observed gap | "
+                  "Severity pool | Rate | Next raw < 4200 | Credit pts | Debit pts |",
+                  "|---|---|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|"]
+        scale = right_cfg.weights.econ * econ_component.ECON_SCALE
+        for rn in sorted(right["econ"]):
+            result = right["econ"][rn]["result"]
+            if result.abstention:
+                lines.append(f"| {rn} | {result.abstention} | | | | | | | | | | | |")
+                continue
+            for team, audit in sorted(result.teams.items(), key=lambda kv: str(kv[0])):
+                b = audit.budget
+                rate = f"{audit.penalty_rate:.0%}" if audit.penalty_rate is not None else "wealth"
+                lines.append(f"| {rn} | | {str(team)[5:]} | {b.lost:,.0f} | {b.target:,.0f} | "
+                             f"{b.funding:,.0f} | {b.shortfall:,.0f} | {b.observed_gap:,.0f} | "
+                             f"{b.severity_pool:,.1f} | {rate} | {audit.next_below_raw_4200} | "
+                             f"{scale * audit.credit:.2f} | {scale * audit.debit:.2f} |")
+    return "\n".join(lines) + "\n", {"players": players, "left": left, "right": right}
+
+
+def render_frozen_trace(db, match_id, manifest, rec, compare="site", manifest_sha="(unrecorded)"):
+    """Event -> round -> match, for the AFTER comparator, with BEFORE impact
+    shown per player-round. Every economy line comes from the calculator's
+    audit through econ_observer; every combat line from kill_observer."""
+    pair = frozen_pair(manifest, compare)
+    (left_name, left_cfg), (right_name, right_cfg) = pair
+    left, right = score_with(db, match_id, left_cfg), score_with(db, match_id, right_cfg)
+    names, rounds, header = _names(db, match_id), _round_numbers(db, match_id), _header(db, match_id)
+    reconcile_scores(rec, right_name, right, rounds)
+    scale = right_cfg.weights.econ * econ_component.ECON_SCALE
+    A, B, C = right_cfg.weights.damage, right_cfg.weights.leverage, right_cfg.weights.econ
+
+    def who(mp):
+        return names.get(mp, ("unknown/environment",))[0] if mp is not None else "environment"
+
+    left_rows = {(r.round_id, r.match_player_id): r for r in left["rows"]}
+    rows_by_round = defaultdict(dict)
+    for row in right["rows"]:
+        rows_by_round[rounds[row.round_id]][row.match_player_id] = row
+    kills_by_round = defaultdict(list)
+    for kw in right["kills"]:
+        kills_by_round[kw["round_number"]].append(kw)
+
+    L = [f"# Per-kill trace: match {match_id} {header['map_name']} {header['team1_rounds_won']}-"
+         f"{header['team2_rounds_won']}", ""]
+    L += _identity_block(manifest, manifest_sha, pair)
+    L += ["", f"impact = A*damage + B*leverage + C*econ with A={A}, B={B}, C={C}; econ points = "
+              f"C * {econ_component.ECON_SCALE} * raw, rounded ONCE per player-round.",
+          "Kill credit = small equipment value + allocated buy-disruption value. Death debit = 30% of the "
+          "victim's damage value when the team's funding absorbed the loss, 80% when its severity pool "
+          "is positive (constrained next buy). Repeated deaths expose no new kit.", ""]
+    match_totals = defaultdict(lambda: dict(before=0, damage=0, leverage=0, econ=0, impact=0,
+                                            credit=0.0, debit=0.0, rounds=0))
+    for rn in sorted(rows_by_round):
+        audit_kw = right["econ"].get(rn)
+        result = audit_kw["result"] if audit_kw and "result" in audit_kw else None
+        events = {e.event_id: e for e in result.events} if result is not None else {}
+        L += [f"## Round {rn}", ""]
+        if result is not None and result.abstention:
+            L += [f"Economy abstains: **{result.abstention}**"
+                  + (f" ({result.abstention_detail})" if result.abstention_detail else "")
+                  + " -- econ is exactly 0 this round.", ""]
+        elif result is not None:
+            first = next(iter(result.teams.values()))
+            L += [f"Pistol winner {'/'.join(str(t)[5:] for t, a in result.teams.items() if a.pistol_winner)}; "
+                  f"round winner {'/'.join(str(t)[5:] for t, a in result.teams.items() if a.round_winner) or 'none'}; "
+                  f"half round {first.half_round}.", ""]
+            for team, audit in sorted(result.teams.items(), key=lambda kv: str(kv[0])):
+                b = audit.budget
+                verdict = ("funding ABSORBED its losses (30% death debits)" if audit.penalty_rate == 0.30
+                           else "CONSTRAINED next buy (80% death debits)" if audit.penalty_rate == 0.80
+                           else "wealth-debit comparator")
+                L.append(f"**{str(team)[5:]}** lost L={b.lost:,.0f}; target H={b.target:,.0f}"
+                         f"{' (carryover targets)' if audit.carryover_targets else ''}; funding U={b.funding:,.0f}; "
+                         f"gap D={b.shortfall:,.0f}; observed next-equipment gap G={b.observed_gap:,.0f}; "
+                         f"activation {b.activation:.4f}; severity pool {b.severity_pool:,.2f} -> {verdict}.")
+                L += ["", "| Player | Current paid | Lost once | Next raw loadout | Next paid | Next bank | Target |",
+                      "|---|---:|---:|---:|---:|---:|---:|"]
+                for pid, ledger in sorted(result.players.items()):
+                    if ledger.team == team:
+                        L.append(f"| {who(pid)} | {ledger.current_paid:,.0f} | {ledger.lost:,.0f} | "
+                                 f"{ledger.next_loadout:,.0f} | {ledger.next_paid:,.0f} | "
+                                 f"{ledger.next_bank:,.0f} | {ledger.target:,.0f} |")
+                L.append("")
+        L += ["| Event | Time | Killer -> victim | Kind | State | Kill-order bonus | Time x | "
+              "B*leverage to killer | B*death to victim | Exposure | Small credit | Disruption credit | "
+              "Killer econ credit | Victim econ debit (rate) |",
+              "|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|"]
+        for kw in kills_by_round.get(rn, []):
+            kill, ctx = kw["kill"], kw["context"]
+            bonus = ctx["kill_order_bonus_raw"]
+            econ_event = events.get(kill["id"])
+            kind = econ_event.kind if econ_event else ("environment" if ctx.get("environmental") else
+                                                      "self" if ctx["self_kill"] else "combat")
+            time_x = kill["kill_order_bonus_x_time"] / bonus if bonus and not ctx["self_kill"] else 1.0
+            if econ_event is not None:
+                rate = f"{econ_event.penalty_rate:.0%}" if econ_event.penalty_rate is not None else "wealth"
+                state = "absorbed" if econ_event.absorbed else "constrained"
+                econ_cells = (f"{econ_event.exposure:,.0f} | {scale * econ_event.background_credit:.2f} | "
+                              f"{scale * econ_event.disruption_credit:.2f} | {scale * econ_event.credit:.2f} | "
+                              f"{scale * econ_event.victim_debit:.2f} ({rate}, {state})")
+            else:
+                econ_cells = "| | | | no economy this round"
+            L.append(f"| event {kill['id']} | {kill['event_time_seconds']:.3f}s | "
+                     f"{who(kill['killer_match_player_id'])} -> {who(kill['death_match_player_id'])} | {kind} | "
+                     f"{ctx['killer_team_alive']}v{ctx['victim_team_alive']} | {bonus:,.0f} | {time_x:.3f} | "
+                     f"{B * kill['kill_order_bonus_x_time']:.1f} | {B * kill['death_order_bonus_x_time']:.1f} | "
+                     f"{econ_cells} |")
+        L += ["", "| Player | Before impact | A*damage | B*leverage | Econ credit pts | Econ debit pts | "
+                  "C*econ | = After impact |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
+        for mp, row in sorted(rows_by_round[rn].items(), key=lambda kv: -kv[1].impact):
+            credit, debit = econ_points(right, rn, mp)
+            before = left_rows.get((row.round_id, mp))
+            before_impact = before.impact if before is not None else 0
+            L.append(f"| {who(mp)} | {before_impact:+,} | {row.damage:,} | {row.leverage_component:+,} | "
+                     f"{credit:.2f} | {debit:.2f} | {row.econ_component:+,} | {row.impact:+,} |")
+            t = match_totals[mp]
+            t["before"] += before_impact
+            t["damage"] += row.damage
+            t["leverage"] += row.leverage_component
+            t["econ"] += row.econ_component
+            t["impact"] += row.impact
+            t["credit"] += credit
+            t["debit"] += debit
+            t["rounds"] += 1
+        L.append("")
+
+    L += ["## Match totals", "",
+          "| Player | Before | A*damage | B*leverage | Gross econ credit | Gross econ debit | C*econ | "
+          "Econ / played round | After |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    view = _totals(right["rows"])
+    for mp, t in sorted(match_totals.items(), key=lambda kv: -kv[1]["impact"]):
+        rec.identity(f"trace match total player {mp}", t["impact"], [t["damage"], t["leverage"], t["econ"]])
+        rec.equal(f"trace vs match view player {mp}", t["impact"], view[mp]["impact"])
+        L.append(f"| {who(mp)} | {t['before']:+,} | {t['damage']:,} | {t['leverage']:+,} | {t['credit']:.2f} | "
+                 f"{t['debit']:.2f} | {t['econ']:+,} | {t['econ'] / t['rounds']:+.2f} | {t['impact']:+,} |")
+    return "\n".join(L) + "\n"
+
+
+def pistol_winner_round_two_losses(db, exclude=()):
+    """Matches where a pistol winner LOST round 2 or 14, selected from round
+    OUTCOMES only (never from scores), most recent first."""
+    rows = db.execute(text(
+        "SELECT r.match_id, r.round_number, r.outcome, m.played_at FROM rounds r "
+        "JOIN matches m ON m.id = r.match_id WHERE r.round_number IN (1, 2, 3, 13, 14, 15)"
+    )).all()
+    by_match = defaultdict(dict)
+    played = {}
+    for match_id, number, outcome, played_at in rows:
+        by_match[match_id][number] = outcome
+        played[match_id] = played_at
+
+    def winner(outcome):
+        if not outcome or "Surrendered" in outcome:
+            return None
+        return "A" if outcome.startswith("Team A") else "B" if outcome.startswith("Team B") else None
+
+    found = []
+    for match_id, outcomes in by_match.items():
+        if match_id in exclude:
+            continue
+        for pistol, second in ((1, 2), (13, 14)):
+            p, s = winner(outcomes.get(pistol)), winner(outcomes.get(second))
+            if p and s and p != s and winner(outcomes.get(second + 1)):
+                found.append(dict(match_id=match_id, round=second, played_at=str(played[match_id])))
+    found.sort(key=lambda f: (f["played_at"], f["match_id"]), reverse=True)
+    return found
+
+
+def build_review_results(db, manifest_path, manifest, match_ids):
+    from scripts.backfill_impact_candidate import result_rows
+
+    config = config_from_manifest(manifest)
+    return {
+        "manifest_lf_sha256": lf_sha256(manifest_path),
+        "candidate_id": manifest["candidate_id"],
+        "release_comparator": manifest["release_comparator"],
+        "fields": ["impact", "econ_component", "damage", "time_impact", "kill_impact", "death_impact"],
+        "matches": {
+            str(match_id): {
+                "source_fingerprint": match_source_fingerprint(db, match_id),
+                "rows": result_rows(build_impact_rows_for_match(db, match_id, **config.build_kwargs())),
+            }
+            for match_id in match_ids
+        },
+    }
+
+
+def render_ten_review(db, match_ids, manifest, compare, rec, manifest_sha="(unrecorded)"):
+    pair = frozen_pair(manifest, compare)
+    (left_name, _), (right_name, right_cfg) = pair
+    lines = [f"# Fixed ten-match review: {left_name} vs {right_name}", ""]
+    lines += _identity_block(manifest, manifest_sha, pair)
+    lines += ["", f"Matches (pinned): {', '.join(str(m) for m in match_ids)}", ""]
+    deltas, econ_values, rank_moves, total_players = [], [], 0, 0
+    reasons, rates = defaultdict(int), defaultdict(int)
+    histories = pistol_winner_round_two_losses(db)
+    history_by_match = defaultdict(list)
+    for h in histories:
+        history_by_match[h["match_id"]].append(h["round"])
+    for match_id in match_ids:
+        text_block, data = render_match_review(db, match_id, manifest, compare, rec, manifest_sha)
+        players = data["players"]
+        header = _header(db, match_id)
+        moved = sum(1 for p in players.values() if p["left"]["rank"] != p["right"]["rank"])
+        rank_moves += moved
+        total_players += len(players)
+        right = data["right"]
+        for kw in right["econ"].values():
+            if "result" in kw:
+                result = kw["result"]
+                reasons[result.abstention or "scored"] += 1
+                for audit in result.teams.values():
+                    if audit.budget.lost > 0 and audit.penalty_rate is not None:
+                        rates[f"{audit.penalty_rate:.0%}"] += 1
+        history = history_by_match.get(match_id)
+        lines += [f"## Match {match_id}: {header['map_name']} {header['team1_rounds_won']}-"
+                  f"{header['team2_rounds_won']} -- {moved}/{len(players)} players change rank"
+                  + (f"; pistol winner lost round(s) {history}" if history else ""), "",
+                  "| Player | Team | Before | After | Change | Rank | C*econ | Gross credit | Gross debit |",
+                  "|---|---|---:|---:|---:|---|---:|---:|---:|"]
+        for mp, p in sorted(players.items(), key=lambda kv: kv[1]["right"]["rank"]):
+            l, r = p["left"], p["right"]
+            deltas.append(r["impact"] - l["impact"])
+            econ_values.append(r["econ"])
+            lines.append(f"| {p['name']} | {p['team'][5:]} | {l['impact']:+,} | {r['impact']:+,} | "
+                         f"{r['impact'] - l['impact']:+,} | {l['rank']}->{r['rank']} | {r['econ']:+,} | "
+                         f"{r['credit']:.2f} | {r['debit']:.2f} |")
+        lines.append("")
+    deltas.sort()
+    econ_values.sort()
+
+    def at(values, q):
+        return values[min(len(values) - 1, int(len(values) * q))]
+
+    lines += ["## Across all ten", "",
+              f"- player-matches: {len(deltas)}; rank changes {rank_moves} ({100 * rank_moves / total_players:.1f}%)",
+              f"- full-Impact change: mean {statistics.mean(deltas):+.1f}, median {statistics.median(deltas):+.1f}, "
+              f"SD {statistics.pstdev(deltas):.1f}, p5 {at(deltas, .05):+}, p95 {at(deltas, .95):+}, "
+              f"min {deltas[0]:+}, max {deltas[-1]:+}",
+              f"- match C*econ per player: mean {statistics.mean(econ_values):+.1f}, median "
+              f"{statistics.median(econ_values):+.1f}, min {econ_values[0]:+}, max {econ_values[-1]:+}, "
+              f"negative {sum(v < 0 for v in econ_values)}, zero {sum(v == 0 for v in econ_values)}",
+              f"- economy rounds by outcome: {dict(sorted(reasons.items()))}",
+              f"- team-rounds with lost equipment by death-penalty rate: {dict(sorted(rates.items()))}",
+              f"- pistol-winner-loses-round-2/14 histories present: "
+              f"{ {m: history_by_match[m] for m in match_ids if m in history_by_match} }"]
+    return "\n".join(lines) + "\n"
+
+
+def _quantiles(values):
+    values = sorted(values)
+    if not values:
+        return {}
+
+    def at(q):
+        return values[min(len(values) - 1, int(len(values) * q))]
+
+    return dict(n=len(values), mean=statistics.fmean(values), sd=statistics.pstdev(values),
+                min=values[0], p1=at(.01), p5=at(.05), p50=at(.5), p95=at(.95), p99=at(.99), max=values[-1],
+                negative=sum(v < 0 for v in values), zero=sum(v == 0 for v in values),
+                positive=sum(v > 0 for v in values))
+
+
+def _spearman(xs, ys):
+    def ranks(values):
+        order = sorted(range(len(values)), key=lambda i: values[i])
+        out = [0.0] * len(values)
+        i = 0
+        while i < len(order):
+            j = i
+            while j + 1 < len(order) and values[order[j + 1]] == values[order[i]]:
+                j += 1
+            for k in range(i, j + 1):
+                out[order[k]] = (i + j) / 2 + 1
+            i = j + 1
+        return out
+
+    rx, ry = ranks(xs), ranks(ys)
+    mx, my = statistics.fmean(rx), statistics.fmean(ry)
+    cov = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
+    return cov / ((sum((a - mx) ** 2 for a in rx) * sum((b - my) ** 2 for b in ry)) ** 0.5)
+
+
+def corpus_audit(db, manifest, min_matches=20, match_ids=None, progress=None):
+    """The predeclared read-only corpus checks. Descriptive: nothing is fitted
+    or tuned from these numbers."""
+    live_cfg = config_from_manifest(manifest, "live_legacy")
+    wealth_cfg = config_from_manifest(manifest, bd.MODEL_V2_WEALTH)
+    release_cfg = config_from_manifest(manifest)
+    if match_ids is None:
+        match_ids = [m for (m,) in db.execute(text("SELECT id FROM matches ORDER BY id")).all()]
+    player_of = {mp: pl for mp, pl in db.execute(text("SELECT id, player_id FROM match_players")).all()}
+    player_name = {pl: name for pl, name in db.execute(text("SELECT id, display_name FROM players")).all()}
+
+    econ_rows, delta_rows, delta_matches, match_econ = [], [], [], []
+    reasons, kinds, rates, signs = defaultdict(int), defaultdict(int), defaultdict(int), defaultdict(int)
+    mismatch = defaultdict(int)
+    failures = {}
+    rank_changes = players_seen = 0
+    leader = defaultdict(lambda: dict(live=0, release=0, rounds=0, matches=0))
+    stale_player_matches = 0
+    for index, match_id in enumerate(match_ids):
+        if progress and index % 250 == 0:
+            progress(index, len(match_ids))
+        try:
+            live = build_impact_rows_for_match(db, match_id, **live_cfg.build_kwargs())
+            wealth = score_with(db, match_id, wealth_cfg)
+            release = score_with(db, match_id, release_cfg)
+        except ImpactInputError as exc:
+            failures[str(match_id)] = str(exc)
+            continue
+        rounds = {r.round_id for r in release["rows"]}
+        round_numbers = {rid: rn for rid, rn in db.execute(
+            text("SELECT id, round_number FROM rounds WHERE match_id = :m"), {"m": match_id}).all()}
+        live_by_key = {(r.round_id, r.match_player_id): r for r in live}
+        per_player = defaultdict(lambda: dict(live=0, release=0, econ=0, rounds=0))
+        for row, w_row in zip(release["rows"], wealth["rows"]):
+            key = (row.round_id, row.match_player_id)
+            rn = round_numbers[row.round_id]
+            econ_rows.append(row.econ_component)
+            live_row = live_by_key[key]
+            delta_rows.append(row.impact - live_row.impact)
+            raw = release["econ"][rn]["result"].raw_net_by_player().get(row.match_player_id, 0.0)
+            if row.econ_component != round(release_cfg.weights.econ * (econ_component.ECON_SCALE * raw)):
+                mismatch["econ_row_vs_calculator"] += 1
+            if row.impact != row.damage + row.leverage_component + row.econ_component:
+                mismatch["impact_identity"] += 1
+            for field in NON_ECON_FIELDS:
+                if getattr(row, field) != getattr(w_row, field):
+                    mismatch[f"non_econ_{field}_wealth_vs_release"] += 1
+            w_ledger = wealth["econ"][rn]["result"].players.get(row.match_player_id)
+            r_ledger = release["econ"][rn]["result"].players.get(row.match_player_id)
+            if (w_ledger.credit if w_ledger else 0.0) != (r_ledger.credit if r_ledger else 0.0):
+                mismatch["gross_credit_wealth_vs_release"] += 1
+            p = per_player[row.match_player_id]
+            p["live"] += live_row.impact
+            p["release"] += row.impact
+            p["econ"] += row.econ_component
+            p["rounds"] += 1
+        for rn, kw in release["econ"].items():
+            result = kw["result"]
+            reasons[result.abstention or "scored"] += 1
+            if result.abstention:
+                continue
+            for event in result.events:
+                kinds[event.kind] += 1
+            nets = []
+            for team, audit in result.teams.items():
+                if audit.budget.lost > 0:
+                    rates[f"{audit.penalty_rate:.0%}"] += 1
+                nets.append(audit.credit - audit.debit)
+            if all(n > 1e-10 for n in nets):
+                signs["both_positive"] += 1
+            elif all(n < -1e-10 for n in nets):
+                signs["both_negative"] += 1
+            elif all(abs(n) <= 1e-10 for n in nets):
+                signs["both_zero"] += 1
+            else:
+                signs["mixed"] += 1
+        stored = _stored_totals(db, match_id)
+        before_rank = sorted(per_player, key=lambda mp: -per_player[mp]["live"])
+        after_rank = sorted(per_player, key=lambda mp: -per_player[mp]["release"])
+        for mp, p in per_player.items():
+            players_seen += 1
+            if before_rank.index(mp) != after_rank.index(mp):
+                rank_changes += 1
+            if stored.get(mp) is not None and stored[mp] != p["live"]:
+                stale_player_matches += 1
+            delta_matches.append((p["release"] - p["live"], match_id, player_name.get(player_of.get(mp), "?"),
+                                  p["live"], p["release"], p["econ"]))
+            match_econ.append(p["econ"])
+            lb = leader[player_of[mp]]
+            lb["live"] += p["live"]
+            lb["release"] += p["release"]
+            lb["rounds"] += p["rounds"]
+            lb["matches"] += 1
+    delta_matches.sort()
+    eligible = {pl: v for pl, v in leader.items() if v["matches"] >= min_matches}
+    ids = sorted(eligible)
+    live_avg = [eligible[pl]["live"] / eligible[pl]["rounds"] for pl in ids]
+    release_avg = [eligible[pl]["release"] / eligible[pl]["rounds"] for pl in ids]
+    live_order = [ids[i] for i in sorted(range(len(ids)), key=lambda i: -live_avg[i])]
+    release_order = [ids[i] for i in sorted(range(len(ids)), key=lambda i: -release_avg[i])]
+    moves = sorted(((release_order.index(pl) - live_order.index(pl), pl) for pl in ids),
+                   key=lambda m: -abs(m[0]))
+    return {
+        "matches_requested": len(match_ids),
+        "matches_scored": len(match_ids) - len(failures),
+        "input_validation_failures": failures,
+        "player_rounds": len(econ_rows),
+        "econ_rounds_by_outcome": dict(sorted(reasons.items())),
+        "event_kinds_in_scored_rounds": dict(sorted(kinds.items())),
+        "team_rounds_with_losses_by_rate": dict(sorted(rates.items())),
+        "scored_round_team_net_signs": dict(sorted(signs.items())),
+        "identity_mismatches": dict(mismatch),
+        "econ_component_player_round": _quantiles(econ_rows),
+        "econ_component_player_match": _quantiles(match_econ),
+        "full_impact_change_player_round": _quantiles(delta_rows),
+        "full_impact_change_player_match": _quantiles([d[0] for d in delta_matches]),
+        "largest_player_match_decreases": [list(d) for d in delta_matches[:10]],
+        "largest_player_match_increases": [list(d) for d in delta_matches[-10:][::-1]],
+        "within_match_rank_changes": [rank_changes, players_seen],
+        "persisted_vs_live_replay_differing_player_matches": [stale_player_matches, players_seen],
+        "leaderboard": {
+            "min_matches": min_matches, "players": len(ids),
+            "spearman_avg_impact_per_round": _spearman(live_avg, release_avg) if len(ids) > 2 else None,
+            "top20_overlap": len(set(live_order[:20]) & set(release_order[:20])),
+            "largest_rank_moves": [[player_name.get(pl, "?"), live_order.index(pl) + 1,
+                                    release_order.index(pl) + 1] for _, pl in moves[:15]],
+        },
+    }
+
+
+def render_corpus_audit(audit, manifest, manifest_sha):
+    q = audit["econ_component_player_round"]
+    lines = [f"# Corpus audit: live_legacy vs {manifest['release_comparator']}", "",
+             f"Candidate `{manifest['candidate_id']}`, manifest LF-SHA-256 `{manifest_sha}`. Read-only, "
+             "one repeatable-read snapshot. Descriptive checks declared before this run; nothing is fitted.", "",
+             "```json", json.dumps(audit, indent=2, default=str), "```", "",
+             f"Player-round C*econ: mean {q.get('mean', 0):+.2f}, SD {q.get('sd', 0):.2f}, "
+             f"p1 {q.get('p1')}, p50 {q.get('p50')}, p99 {q.get('p99')}."]
+    return "\n".join(lines) + "\n"
+
+
+def _emit(out_dir, filename, content):
+    if out_dir is None:
+        print(content)
+        return
+    path = Path(out_dir) / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    print(f"  wrote {path}")
+
+
+def frozen_main(args):
+    manifest = load_manifest(args.manifest)
+    verify_manifest(manifest)
+    manifest_sha = lf_sha256(args.manifest)
+    if args.weights:
+        a, b, c = (float(x) for x in args.weights.split(","))
+        weights = FormulaWeights(damage=a, leverage=b, econ=c)
+        for name, data in manifest["comparators"].items():
+            data["weights"] = {"damage": a, "leverage": b, "econ": c}
+        print(f"  *** --weights {weights} OVERRIDES the frozen manifest: this is NOT the frozen candidate ***")
+    print(f"frozen candidate {manifest['candidate_id']}  manifest LF-SHA-256 {manifest_sha}")
+    db = SessionLocal()
+    db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
+    rec = Reconciler()
+    reviewed = sorted({m for m in (args.match, args.trace) if m} | (set(FIXED_TEN) if args.ten else set())
+                      | set(args.extra))
+    if reviewed:
+        verify_source_snapshots(db, manifest, reviewed)
+        print(f"  source fingerprints match the freeze for {len(reviewed)} matches")
+    suffix = args.compare
+    if args.match:
+        content, _ = render_match_review(db, args.match, manifest, args.compare, rec, manifest_sha)
+        _emit(args.report_dir, f"match-{args.match}-{suffix}.md", content)
+    if args.trace:
+        _emit(args.report_dir, f"trace-{args.trace}-{suffix}.md",
+              render_frozen_trace(db, args.trace, manifest, rec, args.compare, manifest_sha))
+    if args.ten:
+        _emit(args.report_dir, f"fixed-ten-{suffix}.md",
+              render_ten_review(db, FIXED_TEN, manifest, args.compare, rec, manifest_sha))
+    if args.pistol_examples:
+        for found in pistol_winner_round_two_losses(db)[:20]:
+            print(f"  match {found['match_id']} round {found['round']} played {found['played_at']}")
+    if args.corpus:
+        audit = corpus_audit(db, manifest, progress=lambda i, n: print(f"  corpus {i}/{n}", flush=True))
+        audit["snapshot"] = db.execute(text("SELECT txid_current_snapshot()::text")).scalar()
+        _emit(args.report_dir, "corpus-audit.json", json.dumps(audit, indent=2, default=str))
+        _emit(args.report_dir, "corpus-audit.md", render_corpus_audit(audit, manifest, manifest_sha))
+    if args.results:
+        results = build_review_results(db, args.manifest, manifest, reviewed)
+        Path(args.results).write_text(json.dumps(results, indent=2), encoding="utf-8")
+        print(f"  wrote review results for {len(reviewed)} matches to {args.results}")
+    db.rollback()
+    rec.report()
+    return 1 if rec.failures else 0
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--match", type=int)
@@ -504,7 +1219,22 @@ def main():
     parser.add_argument("--weights", default=None,
                         help="A,B,C -- default 1.25,1.0,1.0 (the declared candidate)")
     parser.add_argument("--out", default="release_candidate_trace.txt")
+    parser.add_argument("--manifest", help="frozen candidate manifest: explicit comparators, no implicit timing")
+    parser.add_argument("--compare", choices=["site", "penalty", "separate"], default="site")
+    parser.add_argument("--report-dir", help="write frozen-mode reports here instead of printing")
+    parser.add_argument("--extra", type=int, action="append", default=[],
+                        help="additional frozen match ids to fingerprint-check and include in --results")
+    parser.add_argument("--corpus", action="store_true", help="frozen mode: predeclared corpus audit")
+    parser.add_argument("--pistol-examples", action="store_true")
+    parser.add_argument("--results", help="frozen mode: write persisted-field results for backfill acceptance")
     args = parser.parse_args()
+
+    if args.manifest:
+        if args.preplant:
+            raise SystemExit("--preplant patches a module and cannot be combined with a frozen manifest")
+        sys.exit(frozen_main(args))
+    print("  NOTE: no --manifest, so this is the UNFROZEN legacy review: it enables post-plant "
+          "leverage and rebuilds its table from the current corpus.")
 
     weights = FormulaWeights()
     if args.weights:
