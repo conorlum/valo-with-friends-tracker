@@ -1168,3 +1168,75 @@ routing before legacy preprocessing, an offline local backfill with recovery,
 explicit comparison-model identities, and a complete configuration frozen
 before integrated review. No new measurement, runtime activation or scoring
 code change is part of these documentation corrections.
+
+### 2026-09-11 -- buy-disruption 30%/80% integrated review: frozen candidate, samples and checks, declared before scoring
+
+**Nothing below has been scored.** This entry is committed together with the
+frozen manifest and before any integrated review run, so the configuration,
+samples and checks are checkable against the timestamp of the results.
+
+**Frozen candidate.** `docs/superpowers/econ-buy-disruption-candidate/candidate-manifest.json`,
+candidate `impact-buy-disruption-30-80-rc1`, LF-SHA-256 `2cca86489aef31d5851350bb9e6928839df5e7a511b8845ec08f053b3a74e19f`,
+scorer revision `61737f79c3277e1b9bb651d2d5405bee2e92cd18`. Review, the maintenance-window backfill and (on
+activation only) ingestion load this manifest and refuse on any difference in
+constants, allowances, comparators, timing flags, scoring-source digests or
+reviewed source rows.
+
+| value | governs |
+|---|---|
+| release comparator | `buy_disruption_v2_30_80`: `enable_econ_component=True`, realized mode |
+| weights | A(damage)=1.25, B(leverage)=1.0, C(econ)=1.0 -- unchanged, not refit |
+| ECON_SCALE | 1007.9209 -- unchanged, not re-anchored |
+| calculator | background 0.10, disruption 1.00, R 19500, target kit 3900, activation gap 3900, carryover floor 1000, absorbed 30%, disrupted 80% (binary, not smoothed) |
+| timing | post-plant table OFF and pre-plant curve OFF in EVERY comparator; the unfrozen review tool's implicit corpus-fitted post-plant table is not used |
+| trade discount | unchanged: the declared cost schedule and 6s window |
+| activation version | IMPACT_CALCULATION_VERSION 3; the live code stays at 2 and inactive |
+
+**Comparators.** `live_legacy` (replay; persisted site values reported
+separately), `separate_econ_legacy` (diagnostic only), `buy_disruption_v2_wealth`,
+`buy_disruption_v2_30_80`. The penalty-only comparison is wealth vs 30/80; the
+site comparison is live_legacy vs 30/80 and is labelled the TOTAL release change.
+
+**Samples, fixed now.**
+
+- Abyss 3104 -- the development match. A parity check, not validation.
+- The pinned ten: 3129, 3130, 3131, 3113, 3118, 3121, 3114, 3115, 3116, 3117.
+  Read from outcomes only: 3116 contains a pistol winner losing round 14; none
+  contains a pistol winner losing round 2.
+- Match 3120 -- a separately labelled round-2 history, selected from round
+  outcomes only, before scoring: the most recent match outside the ten and 3104
+  whose round-1 pistol winner lost round 2 with a scoreable round 3 (501
+  first-half histories qualified). Not a favourable-score selection.
+
+**Integrated checks (any failure is an implementation finding that blocks
+approval of this manifest; nothing is tuned to pass).**
+
+1. Every reviewed match's source rows equal their frozen fingerprint.
+2. Zero reconciliation errors: impact == A*damage + B*leverage + C*econ per
+   row; econ == round(C * ECON_SCALE * raw calculator net) per row; each team's
+   credit equals its enemy events; each team's debit equals its victims' event
+   debits; trace totals equal the match view.
+3. Penalty comparison: gross kill credits and every non-econ field identical per
+   player-round.
+4. Abyss parity through the build path is already pinned by tests (all 200
+   player-round nets and 152 events, both artifacts).
+
+**Read-only corpus audit** (all local matches, one repeatable-read snapshot).
+Reported, not optimized: matches scored and input-validation failures
+(expected 0: the corpus has no null/unknown killers or victims and no missing
+stats); econ abstention reasons; event kinds; team-rounds with losses by 30%/80%
+rate; scored-round team net signs (both positive / both negative / mixed / zero,
+epsilon 1e-10); identity mismatch counts (expected 0); player-round and
+player-match C*econ distributions including zero rows (mean, SD, p1/p5/p50/p95/p99,
+min, max, sign counts); full-Impact change vs the live_legacy replay per
+player-round and per player-match, with the ten largest increases and decreases;
+within-match rank changes; persisted-vs-replay differing player-matches
+(descriptive -- stored rows predate version 2); leaderboard movement for players
+with at least 20 matches by average Impact per played round (Spearman, top-20
+overlap, 15 largest rank moves).
+
+**Interpretation rules, fixed now.** Positive aggregate econ is inherent to 100%
+credit against 30%/80% debit; it is neither a defect nor evidence of improvement.
+No weight, scale, constant or sample is changed from these results. A surprising
+distribution is reported to the owner, not corrected. The owner reviews the
+concrete match reports before any activation; this entry activates nothing.
