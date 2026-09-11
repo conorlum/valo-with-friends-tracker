@@ -1240,3 +1240,40 @@ credit against 30%/80% debit; it is neither a defect nor evidence of improvement
 No weight, scale, constant or sample is changed from these results. A surprising
 distribution is reported to the owner, not corrected. The owner reviews the
 concrete match reports before any activation; this entry activates nothing.
+
+### 2026-09-11 -- buy-disruption 30%/80% integrated review RESULT (no activation)
+
+Run exactly as declared above, under manifest `2cca8648...e19f` (candidate
+`impact-buy-disruption-30-80-rc1`, scorer `61737f7`). Every run verified the
+manifest and the frozen source fingerprints of all 12 reviewed matches first.
+**No governing value moved; nothing was fitted, re-anchored or activated.**
+
+Integrated checks: zero reconciliation errors -- Abyss site 570, penalty 5,195,
+trace 580; ten site 5,140, penalty 46,877; 3120 match+trace 958; 3116 trace 620.
+Through the integrated scorer Abyss reproduces the frozen 30/80 totals exactly
+(Osmin +708 ... 1xgoofy -101; TEAM_1 +502, TEAM_2 +1293) and the wealth
+comparator's (-100 ... -928; -4057 / -2537), with identical gross credits.
+
+Fixed ten, live_legacy -> 30/80: mean full-Impact change +157.7 per
+player-match (SD 234.9, -280..+899), 25/100 within-match rank changes, C*econ
+per player-match mean +152.9 (23 negative); 296 absorbed vs 37 constrained
+team-rounds with losses. Histories: 3116 R14 (pistol winner loses, carryover
+H=15,800, D=1,000, 80%) and separately selected 3120 R2 (carryover H=16,350,
+D=100, severity pool 258.97 -- the binary step moves all five debits to 80%).
+
+Corpus (3,124 matches, 659,290 player-rounds): 0 validation failures, 0
+identity mismatches; 13,817 of 100,011 team-rounds with losses at 80%; scored
+round signs 28,737 both positive, 23,370 mixed, 0 both negative; player-round
+C*econ mean +7.08, SD 35.47; player-match mean +149.4 (19.8% negative);
+full-Impact change per player-match mean +163.3 (SD 222.4); 19.0% within-match
+rank changes; leaderboard (104 players >= 20 matches) Spearman 0.998, top-20
+overlap 20/20.
+
+Reported for the owner, not corrected: the 30%/80% step fires on tiny funding
+gaps in real histories; aggregate econ is positive by construction; the
+candidate's econ SD (35.5) is far below the 179 time_impact SD ECON_SCALE was
+anchored to, so any scale or C change is a separate decision; the new
+structure's kill/death impact (and so Round Win Impact) excludes econ; a
+pre-existing legacy team-kill state bug (122 events) is unchanged.
+
+Full record: docs/superpowers/econ-buy-disruption-candidate/SUMMARY.md.

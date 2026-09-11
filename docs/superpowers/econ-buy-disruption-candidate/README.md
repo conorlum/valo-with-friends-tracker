@@ -16,7 +16,7 @@ Formula: `../specs/2026-09-10-econ-buy-disruption-implementation.md`, section 12
 | `candidate-manifest.json` | The complete frozen configuration: named comparators, weights, scale, calculator constants, trade schedule, agent allowances, timing flags (all off), behavioral digests of every scoring source file, and fingerprints of every reviewed match's source rows. |
 | `review-results.json` | Persisted-field values for every reviewed match under the release comparator. The backfill's acceptance check compares the site database against it. |
 | `match-3104-site.md`, `match-3104-penalty.md`, `trace-3104-site.md` | Abyss full-Impact before/after, the penalty-only comparison, and the per-kill trace. |
-| `fixed-ten-site.md`, `fixed-ten-penalty.md` | The pinned ten-match comparison. |
+| `fixed-ten-site.md`, `fixed-ten-penalty.md`, `trace-3116-site.md` | The pinned ten-match comparison, and the trace of its pistol-winner-loses-round-14 history. |
 | `match-3120-site.md`, `trace-3120-site.md` | The separately selected pistol-winner-loses-round-2 history. |
 | `corpus-audit.json`, `corpus-audit.md` | The predeclared read-only corpus checks. |
 | `defect-reinstatement.md` | Each defect reinstated behind the same API, and the tests that caught it. |
