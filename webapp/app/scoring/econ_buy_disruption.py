@@ -454,9 +454,75 @@ def _bonus_denial(inputs, by_id, paid, next_paid, exposures, team, round_winner)
     )
 
 
+def _event_key(event: EconEvent) -> tuple:
+    return (event.time_seconds, event.event_id)
+
+
 def _survivor_recovery(inputs, by_id, paid, next_paid, team, dead, player) -> SurvivorRecovery:
-    return SurvivorRecovery(player.match_player_id, _utility(player), 0.0, 0.0, 0.0, 0.0,
-                            None, None, None, 0.0)
+    """Spec section 4 for one surviving pistol winner: credit evidence first,
+    kill-feed evidence as a supplement, and the larger of the two -- never both."""
+    pid = player.match_player_id
+    utility = _utility(player)
+    plant = round_rewards.PLANT_BONUS if (inputs.planted and inputs.attacking_team == team) else 0.0
+    cash = min(float(round_rewards.CREDIT_CAP),
+               player.remaining + round_rewards.KILL_REWARD * player.kills + plant
+               + inputs.next_round_reward[team])
+    surplus = (player.next_remaining + next_paid[pid]) - (cash + paid[pid])
+    credit_recovery = surplus - utility if surplus > utility else 0.0
+    feed_value, inference, weapon, own = _feed_recovery(
+        pid, team, by_id, inputs.events, inputs.next_events, cash, player.next_remaining)
+    return SurvivorRecovery(
+        match_player_id=pid, utility_cost=utility, cash=cash, surplus=surplus,
+        credit_recovery=credit_recovery, feed_recovery=feed_value, feed_inference=inference,
+        feed_weapon=weapon, own_weapon=own, recovery=max(credit_recovery, feed_value),
+    )
+
+
+def _feed_recovery(pid, team, by_id, events, next_events, cash, next_remaining):
+    """Spec section 4.2: (value, inference, weapon, own_weapon), or (0, None, None, None).
+
+    Unidentified and non-purchasable names are never evidence and never change
+    the survivor's own weapon. A weapon a survivor uses shows use, not
+    acquisition: in round N it cannot be a purchase; in round N+1 it counts only
+    when the survivor's spend could not have bought it."""
+    prices = weapon_prices.WEAPON_PRICES
+    ordered = ordered_events(events)
+    death_key: dict[int, tuple] = {}
+    for e in ordered:
+        if by_id[e.victim_id].team == team and e.victim_id not in death_key:
+            death_key[e.victim_id] = _event_key(e)
+    # weapon -> earliest death of a teammate who killed with it before dying
+    teammate_gun_death: dict[str, tuple] = {}
+    for e in ordered:
+        k = e.killer_id
+        if (k is None or k == pid or k not in death_key
+                or weapon_prices.classify(e.weapon) != "priced" or _event_key(e) >= death_key[k]):
+            continue
+        teammate_gun_death[e.weapon] = min(teammate_gun_death.get(e.weapon, death_key[k]), death_key[k])
+
+    best = (0.0, None, None, None)
+    used: list[str] = []
+    for e in ordered:
+        if e.killer_id != pid or weapon_prices.classify(e.weapon) != "priced":
+            continue
+        gun, own = e.weapon, (used[-1] if used else None)
+        if (own is not None and gun != own and gun not in used and gun in teammate_gun_death
+                and _event_key(e) > teammate_gun_death[gun]):
+            value = max(0.0, float(prices[gun] - prices[own]))
+            if value > best[0]:
+                best = (value, "in_round", gun, own)
+        used.append(gun)
+
+    own_last = used[-1] if used else None
+    first_next = next((e for e in ordered_events(next_events) if e.killer_id == pid), None)
+    if (first_next is not None and own_last is not None
+            and weapon_prices.classify(first_next.weapon) == "priced"):
+        gun = first_next.weapon
+        if gun != own_last and gun in teammate_gun_death and cash - next_remaining < prices[gun]:
+            value = max(0.0, float(prices[gun] - prices[own_last]))
+            if value > best[0]:
+                best = (value, "carried", gun, own_last)
+    return best
 
 
 def _bonus_guard(inputs: RoundEconInputs, pistol_winner) -> tuple[str, str] | None:

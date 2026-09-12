@@ -192,3 +192,107 @@ def test_round_14_uses_pistol_round_13():
     result = score(round_number=14, events=[ev(1, 10.0, 6, 1)], player_kw=dict(deaths={1: 1}))
     assert result.teams[A].bonus is not None
     assert result.teams[B].bonus is None
+
+
+# ---- recovery (spec section 4) --------------------------------------------------------------
+# Victim 1 (qualifying, denied 3350). Round won -> reward 3000.
+# Survivor 2's cash = remaining 1000 + 200*kills + plant + 3000.
+
+def _recovery(**kw):
+    base = dict(events=[ev(1, 10.0, 6, 1)], player_kw=dict(deaths={1: 1}))
+    for key, value in kw.items():
+        if key == "player_kw":
+            base["player_kw"] = {**base["player_kw"], **value}
+        else:
+            base[key] = value
+    return score(**base)
+
+
+def _survivor(result, pid):
+    return next(s for s in result.teams[A].bonus.survivors if s.match_player_id == pid)
+
+
+def test_credit_recovery_nets_only_the_surplus_above_utility():
+    # survivor 2: next wealth 1000 + 6000 = 7000; cash 4000 + paid 3900 = 7900 -> surplus -900: none
+    none = _recovery(player_kw=dict(next_loadout={2: 6000}))
+    assert none.teams[A].bonus.team_recovered == 0
+    # next loadout 7550 -> surplus 650 > 550 -> recovery 100
+    small = _recovery(player_kw=dict(next_loadout={2: 7550}))
+    s2 = _survivor(small, 2)
+    assert (s2.cash, s2.surplus, s2.credit_recovery, s2.recovery) == (4000, 650, 100, 100)
+    assert small.teams[A].bonus.net_denied[1] == pytest.approx(3250)
+    assert small.players[6].credit == pytest.approx(0.8 * 1.10 * 3250 / R)
+
+
+def test_kills_plant_and_the_credit_cap_enter_cash():
+    result = _recovery(planted=True, attacking_team=A, reward={A: 3000, B: 1900},
+                       player_kw=dict(kills={2: 2}, remaining={2: 8000}))
+    assert _survivor(result, 2).cash == 9000   # min(9000, 8000 + 400 + 300 + 3000)
+    defending = _recovery(planted=True, attacking_team=B, player_kw=dict(kills={2: 1}))
+    assert _survivor(defending, 2).cash == 4200   # no plant bonus for the defenders
+
+
+def test_in_round_feed_pickup_nets_the_upgrade():
+    # 1 kills with Spectre, then dies; 2 killed with Stinger, then kills with Spectre after 1's death
+    events = [ev(1, 5.0, 1, 7, "Spectre"), ev(2, 6.0, 2, 8, "Stinger"), ev(3, 10.0, 6, 1, "Vandal"),
+              ev(4, 20.0, 2, 9, "Spectre")]
+    result = score(events=events, player_kw=dict(deaths={1: 1, 7: 1, 8: 1, 9: 1}))
+    s2 = _survivor(result, 2)
+    assert (s2.feed_inference, s2.feed_weapon, s2.own_weapon, s2.feed_recovery) == (
+        "in_round", "Spectre", "Stinger", 500)
+    assert result.teams[A].bonus.net_denied[1] == pytest.approx(2850)
+
+
+def test_feed_use_before_the_teammate_died_is_not_a_pickup():
+    events = [ev(1, 5.0, 1, 7, "Spectre"), ev(2, 6.0, 2, 8, "Stinger"), ev(4, 8.0, 2, 9, "Spectre"),
+              ev(3, 10.0, 6, 1, "Vandal")]
+    result = score(events=events, player_kw=dict(deaths={1: 1, 7: 1, 8: 1, 9: 1}))
+    assert result.teams[A].bonus.team_recovered == 0
+
+
+def test_carried_feed_pickup_requires_spend_below_the_price():
+    events = [ev(1, 5.0, 1, 7, "Vandal"), ev(2, 6.0, 2, 8, "Spectre"), ev(3, 10.0, 6, 1, "Vandal")]
+    nxt = [ev(9, 4.0, 2, 6, "Vandal")]
+    # survivor 2: cash 1000 + 200 + 3000 = 4200. next bank 3000 -> spend 1200 < 2900: carried
+    carried = score(events=events, next_events=nxt,
+                    player_kw=dict(deaths={1: 1, 7: 1, 8: 1}, next_deaths={6: 1}, kills={2: 1},
+                                   next_bank={2: 3000}))
+    s2 = _survivor(carried, 2)
+    assert (s2.feed_inference, s2.feed_recovery) == ("carried", 1300)
+    # next bank 1000 -> spend 3200 >= 2900: could have bought it, no inference
+    bought = score(events=events, next_events=nxt,
+                   player_kw=dict(deaths={1: 1, 7: 1, 8: 1}, next_deaths={6: 1}, kills={2: 1},
+                                  next_bank={2: 1000}))
+    s2b = _survivor(bought, 2)
+    assert (s2b.feed_inference, s2b.feed_recovery) == (None, 0)
+
+
+def test_duplicate_evidence_takes_the_larger_never_the_sum():
+    events = [ev(1, 5.0, 1, 7, "Spectre"), ev(2, 6.0, 2, 8, "Stinger"), ev(3, 10.0, 6, 1, "Vandal"),
+              ev(4, 20.0, 2, 9, "Spectre")]
+    # credit evidence: cash 1000 + 400 + 3000 = 4400; surplus (1000+7950) - (4400+3900) = 650 -> 100
+    result = score(events=events, player_kw=dict(
+        deaths={1: 1, 7: 1, 8: 1, 9: 1}, kills={2: 2}, next_loadout={2: 7950}))
+    s2 = _survivor(result, 2)
+    assert s2.credit_recovery == 100 and s2.feed_recovery == 500
+    assert s2.recovery == 500
+    assert result.teams[A].bonus.team_recovered == 500
+
+
+def test_full_recovery_floors_net_denied_at_zero_and_keeps_totals_signed():
+    result = _recovery(player_kw=dict(next_loadout={2: 20000}))
+    assert result.teams[A].bonus.net_denied == {1: 0.0}
+    assert result.players[6].credit == 0
+    assert result.players[1].raw_net == 0
+
+
+def test_recovery_is_pro_rata_across_qualifying_deaths():
+    events = [ev(1, 10.0, 6, 1), ev(2, 11.0, 7, 3)]
+    result = score(events=events, player_kw=dict(deaths={1: 1, 3: 1}, loadout={3: 3050},
+                                                  next_loadout={2: 8550}))
+    audit = result.teams[A].bonus
+    assert audit.denied == {1: 3350, 3: 2500}
+    assert audit.team_recovered == 1100
+    keep = 1 - 1100 / 5850
+    assert audit.net_denied[1] == pytest.approx(3350 * keep)
+    assert audit.net_denied[3] == pytest.approx(2500 * keep)
