@@ -296,3 +296,49 @@ def test_recovery_is_pro_rata_across_qualifying_deaths():
     keep = 1 - 1100 / 5850
     assert audit.net_denied[1] == pytest.approx(3350 * keep)
     assert audit.net_denied[3] == pytest.approx(2500 * keep)
+
+
+# ---- parity (spec section 12) ---------------------------------------------------------------
+import random
+
+from tests.test_econ_buy_disruption_abyss_parity import results as abyss_results
+
+
+def test_abyss_outside_rounds_2_and_14_is_identical_to_30_80():
+    old, new = abyss_results(bd.MODEL_V2_30_80), abyss_results(NEW)
+    compared = 0
+    for rn, o in old.items():
+        n = new[rn]
+        if bd.half_round_index(rn) == 2:
+            # The frozen Abyss snapshot carries no weapons or next-round kills: it abstains, visibly.
+            assert o.abstention is not None or n.abstention == "missing_bonus_inputs"
+            continue
+        assert n.abstention == o.abstention
+        assert n.raw_net_by_player() == o.raw_net_by_player()
+        compared += 1
+    assert compared > 0
+
+
+@pytest.mark.parametrize("seed", range(25))
+def test_random_round_2_victims_on_the_pistol_loser_are_identical_to_30_80(seed):
+    rng = random.Random(seed)
+    order = rng.sample(ALL, 10)
+    events, deaths, t = [], {}, 0.0
+    for victim in order[: rng.randint(1, 8)]:
+        killers = [k for k in ALL if k not in deaths and (k in A_IDS) != (victim in A_IDS)] or [None]
+        t += rng.uniform(1, 9)
+        events.append(ev(len(events) + 1, t, rng.choice(killers), victim,
+                         rng.choice(["Vandal", "Spectre", "Ghost"])))
+        deaths[victim] = 1
+    kw = dict(events=events, outcome=rng.choice([WIN_A, WIN_B]), player_kw=dict(
+        deaths=deaths, loadout={i: rng.choice([800, 2000, 3900]) for i in ALL},
+        next_loadout={i: rng.choice([0, 1500, 3900]) for i in ALL},
+        next_bank={i: rng.choice([0, 800, 3000]) for i in ALL}))
+    old, new = score(bd.MODEL_V2_30_80, **kw), score(NEW, **kw)
+    assert new.abstention is None
+    for o, n in zip(old.events, new.events):
+        assert o.event_id == n.event_id
+        if o.victim_team == B:
+            assert (n.credit, n.victim_debit) == (o.credit, o.victim_debit)
+    for pid in B_IDS:
+        assert new.players[pid].debit == old.players[pid].debit
