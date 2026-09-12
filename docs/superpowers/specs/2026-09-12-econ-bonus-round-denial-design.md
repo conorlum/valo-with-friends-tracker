@@ -239,7 +239,10 @@ existing models keep 1.
 
 - New optional fields default to `None` so existing callers and models are
   untouched.
-  - `PlayerEconomy`: `agent`, `remaining`, `kills`.
+  - `PlayerEconomy`: `agent`, `remaining`, `kills`, `deaths`, `next_deaths`.
+    The last two feed `kill_feed_incomplete` (plan-time amendment). An absent
+    agent is a missing input; `unknown_agent_utility` applies only to a named
+    agent the utility table lacks.
   - `EconEvent`: `weapon`.
   - `RoundEconInputs`: `next_events`, `planted`, `attacking_team`,
     `next_round_reward` (per team).
