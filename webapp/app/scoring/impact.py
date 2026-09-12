@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Round, RoundPlayerStat
 from app.models.match import Team
-from app.scoring import econ_buy_disruption, econ_component
+from app.scoring import econ_buy_disruption, econ_component, round_rewards
 from app.scoring.agent_economy import free_ability_credits
 from app.scoring.plant_window import attacking_team as _plant_window_attacking_team
 from app.scoring.plant_window import effective_plant_time
@@ -825,6 +825,7 @@ def _buy_disruption_econ_for_round(
     match_players: dict[int, MatchPlayer],
     round_player_stats: dict[int, dict[int, dict]],
     model: str, use_realized: bool, econ_observer=None,
+    next_kills: list[dict] | None = None,
 ) -> dict[int, float]:
     """ECON_SCALE * raw signed net per match_player for one round, from the
     production calculator (spec 2026-09-10, section 12). {} when the round
@@ -837,6 +838,13 @@ def _buy_disruption_econ_for_round(
     next_round = round_player_stats.get(round_number + 1) or {}
     next_row = rounds_by_number.get(round_number + 1)
     pistol_row = rounds_by_number.get(econ_buy_disruption.pistol_round_for(round_number))
+    # Inputs below this line feed only the bonus-denial model (spec 2026-09-12
+    # section 8); every other model ignores them. None stays None -- the
+    # calculator refuses a round with missing inputs rather than assume zero.
+    winners = {number: econ_buy_disruption.outcome_winner(row.outcome, Team.TEAM_1, Team.TEAM_2)
+               for number, row in rounds_by_number.items()}
+    next_round_reward = {team: round_rewards.round_reward(winners, round_number + 1, team)
+                         for team in (Team.TEAM_1, Team.TEAM_2)}
     inputs = econ_buy_disruption.RoundEconInputs(
         round_number=round_number,
         last_round_number=max(rounds_by_number),
@@ -850,6 +858,11 @@ def _buy_disruption_econ_for_round(
                 next_remaining=next_round.get(match_player_id, {}).get("remaining"),
                 has_current_stats=match_player_id in this_round,
                 has_next_stats=match_player_id in next_round,
+                agent=mp.agent,
+                remaining=this_round.get(match_player_id, {}).get("remaining"),
+                kills=this_round.get(match_player_id, {}).get("kills"),
+                deaths=this_round.get(match_player_id, {}).get("deaths"),
+                next_deaths=next_round.get(match_player_id, {}).get("deaths"),
             )
             for match_player_id, mp in sorted(match_players.items())
         ),
@@ -857,6 +870,7 @@ def _buy_disruption_econ_for_round(
             econ_buy_disruption.EconEvent(
                 event_id=kill["id"], time_seconds=kill["event_time_seconds"],
                 killer_id=kill["killer_match_player_id"], victim_id=kill["death_match_player_id"],
+                weapon=kill.get("weapon"),
             )
             for kill in kills
         ),
@@ -865,6 +879,17 @@ def _buy_disruption_econ_for_round(
         pistol_outcome=pistol_row.outcome if pistol_row is not None else None,
         has_next_round=next_row is not None,
         use_realized=use_realized,
+        next_events=(tuple(
+            econ_buy_disruption.EconEvent(
+                event_id=kill["id"], time_seconds=kill["event_time_seconds"],
+                killer_id=kill["killer_match_player_id"], victim_id=kill["death_match_player_id"],
+                weapon=kill.get("weapon"),
+            )
+            for kill in next_kills
+        ) if (next_row is not None and next_kills is not None) else None),
+        planted=rounds_by_number[round_number].planted,
+        attacking_team=_attacking_team(round_number),
+        next_round_reward=next_round_reward,
     )
     result = econ_buy_disruption.score_round(inputs, model)
     if econ_observer is not None:
@@ -944,6 +969,8 @@ def build_impact_rows_for_match(
                 "killer_match_player_id": kill.killer_match_player_id,
                 "death_match_player_id": kill.death_match_player_id,
                 "event_time_seconds": kill.event_time_seconds,
+                # Read only by the bonus-denial econ model's kill-feed evidence.
+                "weapon": kill.weapon,
             }
         )
 
@@ -1204,6 +1231,7 @@ def build_impact_rows_for_match(
             econ_by_player = _buy_disruption_econ_for_round(
                 round_number, rounds_by_number, kills, match_players, round_player_stats,
                 resolved_econ_model, use_realized=use_realized_swing, econ_observer=econ_observer,
+                next_kills=round_kills.get(round_number + 1, []),
             )
 
         for match_player_id, stat in mp_stats.items():
