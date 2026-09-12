@@ -1320,3 +1320,68 @@ candidate id. The corpus audit JSON is byte-identical to the rc1 run; the report
 Defect reinstatement now covers 47 defects, including one per fix above; all 47
 are detected. No production defaults changed: ACTIVE_MANIFEST stays None and
 IMPACT_CALCULATION_VERSION stays 2.
+
+### 2026-09-12 -- round 2/14 bonus-round denial: frozen candidate, samples and checks, declared before scoring
+
+**Nothing below has been scored.** This entry is committed together with the
+frozen manifest and before any scored run, so the configuration, samples and
+checks are checkable against the timestamp of the results.
+
+**Frozen candidate.** `docs/superpowers/econ-bonus-denial-candidate/candidate-manifest.json`,
+candidate `impact-bonus-denial-rc1`, LF-SHA-256 `2a5d247c8471b7489a2ea718d9fff3597c81b7850f7350cb000c891926798172`, scorer revision
+`c7cbfd7f137692e7c453c6367af843109ecda7b0`. Spec `docs/superpowers/specs/2026-09-12-econ-bonus-round-denial-design.md`;
+plan `docs/superpowers/plans/2026-09-12-econ-bonus-round-denial.md`.
+
+| value | governs |
+|---|---|
+| release comparator | `buy_disruption_v2_30_80_bonus_denial`: identical to `buy_disruption_v2_30_80` outside half-round 2 and for victims on the pistol-losing team |
+| qualifying death | a pistol winner's first death in round 2/14 with `paid - agent utility cost > 1500` (strict) |
+| value | killer credit `V * 1.10 * net_denied / 19500`, V = 0.8 if the pistol winner won the round, 1.0 if lost; victim debit 0.80 of that; replaces background and disruption; self/team/environmental deaths debit only |
+| non-qualifying death | background `0.10 * paid / 19500` credit, 30% of it as debit |
+| recovery | per survivor `max(credit, feed)`, never summed. Credit: `surplus - utility` when `surplus > utility`, with `surplus = (next bank + next paid) - (min(9000, bank + 200*kills + plant + actual next-round reward) + paid)`. Feed: the upgrade `price(gun) - price(own)`, in round after the teammate's death, or carried into N+1 when the survivor's spend could not have bought it |
+| allocation | `net_denied_i = denied_i * max(0, 1 - team_recovered / sum(denied))`; player nets stay signed |
+| prices and names | spec section 6 (19 priced weapons; 34 non-purchasable names; `Weapon`/`Unknown`/`Primary` unidentified -> no feed evidence, flagged) |
+| abstentions | `unknown_agent_utility`, `missing_bonus_inputs`, `unrecognised_weapon`, `kill_feed_incomplete`; audit_version 2 on every bonus-model result |
+| weights | A(damage)=1.25, B(leverage)=1.0, C(econ)=1.0 -- rc2's, unchanged, not refit |
+| ECON_SCALE, timing, trades | unchanged from rc2; timing candidates OFF in every comparator |
+| activation | none. `ACTIVE_MANIFEST` stays None and `IMPACT_CALCULATION_VERSION` stays 2 |
+
+**Comparators.** `buy_disruption_v2_30_80` (the current candidate) vs
+`buy_disruption_v2_30_80_bonus_denial` (new); `live_legacy` for the site reviews.
+
+**Samples, fixed now.** Abyss 3104 (development match; parity only), the pinned ten
+(3129, 3130, 3131, 3113, 3118, 3121, 3114, 3115, 3116, 3117), match 3120 (a
+pistol winner losing round 2, selected from outcomes only on 2026-09-11), and the
+whole local corpus (3,124 matches).
+
+**Checks (any failure blocks approval; nothing is tuned to pass).**
+
+1. Every reviewed match's source rows equal their frozen fingerprint (now including kill weapons).
+2. `scripts/compare_econ_models.py` over the corpus: parity mismatches == 0 and input-validation failures == 0.
+3. rc2 parity demonstration: a scratch manifest at this revision with `release_comparator=buy_disruption_v2_30_80`
+   produces a `--corpus` audit equal to rc2's `corpus-audit.json` on every key except `snapshot`.
+4. Site reviews under the frozen manifest (3104, the ten, 3120 with trace) reconcile with zero failures.
+5. Defect reinstatement: all 14 declared mutations (plan Task 11 step 4) apply and are detected.
+
+**Reported, not optimized.** Gross econ points per scored round by round number under both models;
+bonus evidence counts (qualifying deaths, denied and net denied credits, survivors with credit / in-round
+feed / carried feed / both evidence, unidentified-weapon flags); half-round-2 abstentions by reason;
+player-round econ change and player-match Impact change quantiles; within-match rank changes; leaderboard
+(>= 20 matches, average Impact per played round) Spearman, top-20 overlap and largest moves.
+
+**Problem flags, fixed now.** (a) mean gross econ per round over rounds 2 and 14 above twice the mean over
+rounds 3, 4, 15 and 16 under the bonus model; (b) any half-round-2 abstention reason above 1% of rounds 2/14;
+(c) any parity or validation failure. A flag is reported to the owner, not corrected.
+
+**Deviation from the spec's "reviews use the README commands".** The release-review `--corpus` audit is not
+run under this manifest: its wealth-vs-release gross-credit identity holds only for 30/80 by construction and
+would count every changed round-2/14 kill as a mismatch. The comparison script's victim-side parity replaces
+it, and check 3 runs the unchanged audit for 30/80 itself.
+
+**Disclosure.** The sizing (~1,190 pts per round 2/14 from this term vs ~305 today), the pickup calibration
+(credit rule flags 12.4% of kill-feed-inferred pickups and 2.6% of kept-own-gun survivors), the round-number
+profile and 8 raw tracker captures were all seen during design. They are development evidence, not an
+untouched validation set.
+
+**Interpretation rules.** No constant, price, weight, scale or sample is changed from these results. This
+entry activates nothing.
