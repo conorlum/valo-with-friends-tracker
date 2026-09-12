@@ -207,3 +207,32 @@ def test_activation_without_the_declared_version_bump_fails_visibly(tmp_path, mo
     monkeypatch.setattr(impact_runtime, "ACTIVE_MANIFEST", str(path))
     with pytest.raises(ManifestMismatchError, match="IMPACT_CALCULATION_VERSION"):
         impact_runtime.active_scoring_config()
+
+
+# ---- the round 2/14 bonus-denial candidate (spec 2026-09-12 section 9) --------------------
+
+def test_bonus_comparator_differs_from_30_80_only_in_the_model():
+    manifest = _manifest(release_comparator=impact_manifest.V2_30_80_BONUS)
+    verify_manifest(manifest)
+    old = dict(config_from_manifest(manifest, bd.MODEL_V2_30_80).build_kwargs())
+    new = dict(config_from_manifest(manifest).build_kwargs())
+    assert {k for k in old if old[k] != new[k]} == {"econ_model"}
+    assert new["econ_model"] == bd.MODEL_V2_30_80_BONUS_DENIAL
+
+
+def test_bonus_constants_and_modules_are_frozen():
+    manifest = _manifest()
+    for name in ("BONUS_AUDIT_VERSION", "BONUS_DENIAL_THRESHOLD", "SWING_VALUE_PER_CREDIT",
+                 "BONUS_WON_FACTOR", "BONUS_LOST_FACTOR"):
+        assert name in manifest["calculator_constants"]
+    assert {"app/scoring/weapon_prices.py", "app/scoring/round_rewards.py"} <= set(manifest["source_digests"])
+
+
+def test_a_weapon_only_change_moves_the_source_fingerprint():
+    from app.models import KillEvent
+    db = session()
+    match, _, _ = build_match(db, "fpw", kills={7: [("A1", "B1", 10.0)]})
+    before = match_source_fingerprint(db, match.id)
+    db.query(KillEvent).one().weapon = "Phantom"
+    db.commit()
+    assert match_source_fingerprint(db, match.id) != before

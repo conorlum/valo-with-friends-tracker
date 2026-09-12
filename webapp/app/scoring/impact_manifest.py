@@ -40,6 +40,8 @@ HASHED_SOURCES = (
     "app/scoring/impact_config.py",
     "app/scoring/econ_buy_disruption.py",
     "app/scoring/econ_component.py",
+    "app/scoring/weapon_prices.py",
+    "app/scoring/round_rewards.py",
     "app/scoring/agent_economy.py",
     "app/scoring/plant_window.py",
     "app/scoring/preplant_empirical_factor.py",
@@ -57,12 +59,15 @@ CALCULATOR_CONSTANT_NAMES = (
     "AUDIT_VERSION", "TARGET_KIT", "TEAM_REFERENCE", "BACKGROUND", "DISRUPTION",
     "ACTIVATION_GAP", "CARRYOVER_FLOOR", "ABSORBED_RATE", "DISRUPTED_RATE",
     "WEALTH_ZERO_AT", "WEALTH_CEILING", "ROSTER_SIZE",
+    "BONUS_AUDIT_VERSION", "BONUS_DENIAL_THRESHOLD", "SWING_VALUE_PER_CREDIT",
+    "BONUS_WON_FACTOR", "BONUS_LOST_FACTOR",
 )
 
 LIVE_LEGACY = "live_legacy"
 SEPARATE_ECON_LEGACY = bd.MODEL_SEPARATE_ECON_LEGACY
 V2_WEALTH = bd.MODEL_V2_WEALTH
 V2_30_80 = bd.MODEL_V2_30_80
+V2_30_80_BONUS = bd.MODEL_V2_30_80_BONUS_DENIAL
 
 COMPARATORS = {
     # The current runtime formula. Its REPLAY and the PERSISTED site values are
@@ -75,6 +80,10 @@ COMPARATORS = {
     V2_WEALTH: ImpactScoringConfig(V2_WEALTH, enable_econ_component=True, econ_model=bd.MODEL_V2_WEALTH),
     # Identical V2 kill credit + the owner's 30%/80% debit: the release candidate.
     V2_30_80: ImpactScoringConfig(V2_30_80, enable_econ_component=True, econ_model=bd.MODEL_V2_30_80),
+    # The round 2/14 bonus-round denial candidate (spec 2026-09-12): identical to 30/80
+    # outside half-round 2 and for victims on the pistol-losing team.
+    V2_30_80_BONUS: ImpactScoringConfig(V2_30_80_BONUS, enable_econ_component=True,
+                                        econ_model=bd.MODEL_V2_30_80_BONUS_DENIAL),
 }
 
 
@@ -167,7 +176,7 @@ _FINGERPRINT_QUERIES = {
               "s.loadout, s.remaining FROM round_player_stats s JOIN rounds r ON r.id = s.round_id "
               "WHERE r.match_id = :m ORDER BY s.round_id, s.match_player_id"),
     "events": ("SELECT k.id, k.round_id, k.killer_match_player_id, k.death_match_player_id, "
-               "k.event_time_seconds FROM kill_events k JOIN rounds r ON r.id = k.round_id "
+               "k.event_time_seconds, k.weapon FROM kill_events k JOIN rounds r ON r.id = k.round_id "
                "WHERE r.match_id = :m ORDER BY k.id"),
 }
 
