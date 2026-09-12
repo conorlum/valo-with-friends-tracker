@@ -35,11 +35,16 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from typing import Hashable, Iterable, Mapping, Sequence
 
+from app.scoring import agent_economy, round_rewards, weapon_prices
+
 # ---- Model identities ----------------------------------------------------------
 MODEL_SEPARATE_ECON_LEGACY = "separate_econ_legacy"  # app.scoring.econ_component
 MODEL_V2_WEALTH = "buy_disruption_v2_wealth"          # historical comparator only
 MODEL_V2_30_80 = "buy_disruption_v2_30_80"            # the owner's candidate
-BUY_DISRUPTION_MODELS = frozenset({MODEL_V2_WEALTH, MODEL_V2_30_80})
+MODEL_V2_30_80_BONUS_DENIAL = "buy_disruption_v2_30_80_bonus_denial"  # spec 2026-09-12
+BUY_DISRUPTION_MODELS = frozenset({MODEL_V2_WEALTH, MODEL_V2_30_80, MODEL_V2_30_80_BONUS_DENIAL})
+# Both carry the 30%/80% death debit; the bonus model differs only in half-round 2.
+THIRTY_EIGHTY_MODELS = frozenset({MODEL_V2_30_80, MODEL_V2_30_80_BONUS_DENIAL})
 
 # Bump when the audit record's shape or meaning changes; review tooling keys on it.
 AUDIT_VERSION = 1
@@ -57,6 +62,17 @@ WEALTH_ZERO_AT = 6300.0      # comparator only: section 7 scarcity curve
 WEALTH_CEILING = 1.5         # comparator only
 ROSTER_SIZE = 5
 CONTEXT_FULL_BUY_RAW = 4200  # displayed as context only; never a scoring threshold
+
+# ---- Round 2/14 bonus-round denial (spec 2026-09-12). Declared, not fitted. ------------
+BONUS_AUDIT_VERSION = 2
+BONUS_DENIAL_THRESHOLD = 1500.0   # kit net of agent utility, strictly greater
+SWING_VALUE_PER_CREDIT = 1.10     # BACKGROUND + DISRUPTION: a disrupted swing-round loss
+BONUS_WON_FACTOR = 0.8            # the pistol winner still won round N
+BONUS_LOST_FACTOR = 1.0           # the pistol winner lost round N
+
+
+def audit_version_for(model: str) -> int:
+    return BONUS_AUDIT_VERSION if model == MODEL_V2_30_80_BONUS_DENIAL else AUDIT_VERSION
 
 _ELIGIBLE_ROUNDS = frozenset(range(2, 12)) | frozenset(range(14, 24))
 SURRENDER_MARKER = "Surrendered"
@@ -80,6 +96,11 @@ class PlayerEconomy:
     next_remaining: float | None
     has_current_stats: bool = True
     has_next_stats: bool = True
+    agent: str | None = None
+    remaining: float | None = None
+    kills: int | None = None
+    deaths: int | None = None
+    next_deaths: int | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +113,7 @@ class EconEvent:
     time_seconds: float
     killer_id: int | None
     victim_id: int | None
+    weapon: str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +129,10 @@ class RoundEconInputs:
     pistol_outcome: str | None  # round 1 in the first half, round 13 in the second
     has_next_round: bool
     use_realized: bool = True
+    next_events: tuple | None = None
+    planted: bool | None = None
+    attacking_team: Hashable | None = None
+    next_round_reward: Mapping | None = None
 
 
 # ---- Outputs ---------------------------------------------------------------------
@@ -178,6 +204,7 @@ class EventLedger:
     victim_scarcity_debit: float
     penalty_rate: float | None
     absorbed: bool       # the victim team's funding test absorbed its losses
+    bonus_qualifying: bool = False  # scored by the round 2/14 denial ledger
 
     @property
     def credit(self) -> float:
@@ -186,6 +213,36 @@ class EventLedger:
     @property
     def victim_debit(self) -> float:
         return self.victim_background_debit + self.victim_disruption_debit + self.victim_scarcity_debit
+
+
+@dataclass(frozen=True)
+class SurvivorRecovery:
+    """Spec section 4 for one surviving pistol winner. Pickups are INFERRED:
+    credits show value that was not bought; a kill-feed weapon shows use,
+    not how or when it was acquired."""
+
+    match_player_id: int
+    utility_cost: float
+    cash: float
+    surplus: float
+    credit_recovery: float
+    feed_recovery: float
+    feed_inference: str | None   # "in_round" | "carried" | None
+    feed_weapon: str | None
+    own_weapon: str | None
+    recovery: float              # max(credit_recovery, feed_recovery), never their sum
+
+
+@dataclass(frozen=True)
+class BonusDenialAudit:
+    """Spec sections 3-5 for the pistol-winning team in half-round 2."""
+
+    won: bool
+    factor: float
+    denied: dict             # qualifying victim match_player_id -> denied credits
+    survivors: tuple         # SurvivorRecovery, one per surviving pistol winner
+    team_recovered: float
+    net_denied: dict         # qualifying victim match_player_id -> net denied credits
 
 
 @dataclass(frozen=True)
@@ -203,6 +260,7 @@ class TeamAudit:
     next_below_raw_4200: int
     credit: float  # raw credit EARNED by this team's players
     debit: float   # raw debit CHARGED to this team's players
+    bonus: BonusDenialAudit | None = None  # bonus-denial model, pistol winner, half-round 2
 
 
 @dataclass(frozen=True)
@@ -353,7 +411,7 @@ def penalty_rate(budget: TeamBudget) -> float:
 
 def death_debit(loss: float, budget: TeamBudget, model: str) -> tuple[float, float, float]:
     """(background, disruption, scarcity) raw debit on a player's own first loss."""
-    if model == MODEL_V2_30_80:
+    if model in THIRTY_EIGHTY_MODELS:
         background, disruption = event_credit(loss, budget)
         rate = penalty_rate(budget)
         return rate * background, rate * disruption, 0.0
@@ -362,10 +420,51 @@ def death_debit(loss: float, budget: TeamBudget, model: str) -> tuple[float, flo
     raise ValueError(f"Unknown buy-disruption model {model!r}")
 
 
+# ---- Round 2/14 bonus-round denial ------------------------------------------------------
+
+def _bonus_guard(inputs: RoundEconInputs, pistol_winner) -> tuple[str, str] | None:
+    """Spec section 7, in its fixed order. Only for the bonus model in half-round 2.
+    Missing inputs refuse the round; they are never read as zero or as no kills."""
+    team = [p for p in inputs.players if p.team == pistol_winner]
+    # A NAMED agent the table lacks is unknown; an absent agent is a missing input.
+    unknown = [p.match_player_id for p in team
+               if p.agent is not None and agent_economy.known_utility_cost(p.agent) is None]
+    if unknown:
+        return "unknown_agent_utility", f"match_player_ids {unknown}"
+    missing = [f"{p.match_player_id}.agent" for p in team if p.agent is None]
+    missing += [f"{p.match_player_id}.{name}" for p in team for name in ("remaining", "kills")
+                if not _valid_number(getattr(p, name))]
+    missing += [f"{p.match_player_id}.{name}" for p in inputs.players for name in ("deaths", "next_deaths")
+                if not _valid_number(getattr(p, name))]
+    reward = (inputs.next_round_reward or {}).get(pistol_winner)
+    if not isinstance(inputs.planted, bool):
+        missing.append("planted")
+    if inputs.attacking_team not in (inputs.team_a, inputs.team_b):
+        missing.append("attacking_team")
+    if not _valid_number(reward):
+        missing.append("next_round_reward")
+    if inputs.next_events is None:
+        missing.append("next_events")
+    else:
+        missing += [f"event {e.event_id}.weapon" for e in (*inputs.events, *inputs.next_events)
+                    if not isinstance(e.weapon, str)]
+    if missing:
+        return "missing_bonus_inputs", ", ".join(missing)
+    team_ids = {p.match_player_id for p in team}
+    bad = [e.event_id for e in (*inputs.events, *inputs.next_events)
+           if e.killer_id in team_ids and weapon_prices.classify(e.weapon) == "unrecognised"]
+    if bad:
+        return "unrecognised_weapon", f"event_ids {bad}"
+    if (sum(p.deaths for p in inputs.players) > len(inputs.events)
+            or sum(p.next_deaths for p in inputs.players) > len(inputs.next_events)):
+        return "kill_feed_incomplete", "the deaths stat exceeds the kill events"
+    return None
+
+
 # ---- The round calculator -------------------------------------------------------------
 
 def _abstain(inputs: RoundEconInputs, model: str, reason: str, detail: str | None = None):
-    return RoundEconResult(model=model, audit_version=AUDIT_VERSION,
+    return RoundEconResult(model=model, audit_version=audit_version_for(model),
                            round_number=inputs.round_number, abstention=reason,
                            abstention_detail=detail)
 
@@ -427,8 +526,19 @@ def score_round(inputs: RoundEconInputs, model: str) -> RoundEconResult:
         return _abstain(inputs, model, "invalid_economy_data",
                         f"match_player_ids {invalid}, event_ids {bad_times}")
 
-    round_winner = outcome_winner(inputs.outcome, team_a, team_b)
     half_round = half_round_index(rn)
+    bonus_team = pistol_winner if (model == MODEL_V2_30_80_BONUS_DENIAL and half_round == 2) else None
+    flags_bonus = []
+    if bonus_team is not None:
+        refused = _bonus_guard(inputs, bonus_team)
+        if refused:
+            return _abstain(inputs, model, *refused)
+        team_ids = {p.match_player_id for p in inputs.players if p.team == bonus_team}
+        flags_bonus = [f"unidentified_weapon: event {e.event_id} {e.weapon!r}"
+                       for e in (*inputs.events, *inputs.next_events)
+                       if e.killer_id in team_ids and weapon_prices.classify(e.weapon) == "unidentified"]
+
+    round_winner = outcome_winner(inputs.outcome, team_a, team_b)
     paid = {pid: paid_loadout(p.loadout, p.free_ability_credits) for pid, p in by_id.items()}
     next_paid = {pid: paid_loadout(p.next_loadout, p.free_ability_credits) for pid, p in by_id.items()}
 
@@ -450,12 +560,12 @@ def score_round(inputs: RoundEconInputs, model: str) -> RoundEconResult:
         targets_by_team[team] = targets
         targets_by_player.update(zip(member_ids, targets))
 
-    rates = {team: penalty_rate(b) if model == MODEL_V2_30_80 else None for team, b in budgets.items()}
+    rates = {team: penalty_rate(b) if model in THIRTY_EIGHTY_MODELS else None for team, b in budgets.items()}
 
     background_credit: dict[int, float] = defaultdict(float)
     disruption_credit: dict[int, float] = defaultdict(float)
     event_ledgers = []
-    flags = []
+    flags = list(flags_bonus)
     seen_victims: set = set()
     for event, exposure in exposures:
         victim = by_id[event.victim_id]
@@ -524,6 +634,6 @@ def score_round(inputs: RoundEconInputs, model: str) -> RoundEconResult:
         )
 
     return RoundEconResult(
-        model=model, audit_version=AUDIT_VERSION, round_number=rn, teams=teams,
+        model=model, audit_version=audit_version_for(model), round_number=rn, teams=teams,
         players=ledgers, events=tuple(event_ledgers), data_quality=tuple(flags),
     )
