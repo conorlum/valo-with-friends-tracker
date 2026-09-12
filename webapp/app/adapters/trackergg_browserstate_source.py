@@ -16,7 +16,7 @@ from datetime import datetime
 from playwright.sync_api import Page
 from sqlalchemy.orm import Session
 
-from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerStat
+from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerSpend, RoundPlayerStat
 from app.models.match import MatchSource, Team
 from app.scoring.impact import compute_impact_for_match, find_unscored_match_ids
 from app.services.player_view_cache import find_cached_player_ids_for_match, invalidate_player_cache
@@ -343,24 +343,33 @@ def load_match(db: Session, match_json: dict) -> Match:
         db.flush()
         rounds_by_number[round_number] = db_round
 
+    # tracker.gg's spentCredits goes to its own table once the stat rows have ids.
+    # Absent means unknown: no row is written, never a 0 (spec 2026-09-12 section 10).
+    pending_spend: list[tuple[RoundPlayerStat, int]] = []
     for pr in player_rounds:
         match_player = match_players.get(pr["attributes"]["platformUserIdentifier"])
         round_row = rounds_by_number.get(pr["attributes"]["round"])
         if match_player is None or round_row is None:
             continue
         stats = pr["stats"]
-        db.add(
-            RoundPlayerStat(
-                round_id=round_row.id,
-                match_player_id=match_player.id,
-                score=stats["score"]["value"],
-                kills=stats["kills"]["value"],
-                deaths=stats["deaths"]["value"],
-                assists=stats["assists"]["value"],
-                loadout=stats["loadoutValue"]["value"],
-                remaining=stats["remainingCredits"]["value"],
-            )
+        stat_row = RoundPlayerStat(
+            round_id=round_row.id,
+            match_player_id=match_player.id,
+            score=stats["score"]["value"],
+            kills=stats["kills"]["value"],
+            deaths=stats["deaths"]["value"],
+            assists=stats["assists"]["value"],
+            loadout=stats["loadoutValue"]["value"],
+            remaining=stats["remainingCredits"]["value"],
         )
+        db.add(stat_row)
+        if "spentCredits" in stats:
+            pending_spend.append((stat_row, stats["spentCredits"]["value"]))
+
+    if pending_spend:
+        db.flush()
+        for stat_row, spent in pending_spend:
+            db.add(RoundPlayerSpend(round_player_stat_id=stat_row.id, spent=spent))
 
     for prk in player_round_kills:
         round_row = rounds_by_number.get(prk["attributes"]["round"])
