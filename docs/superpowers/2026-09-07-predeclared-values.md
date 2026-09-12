@@ -1385,3 +1385,26 @@ untouched validation set.
 
 **Interpretation rules.** No constant, price, weight, scale or sample is changed from these results. This
 entry activates nothing.
+
+### 2026-09-12 (RESULT) -- round 2/14 bonus-round denial: every declared check passes; no flag raised; not activated
+
+Reviewed under the entry above: manifest LF-SHA-256 `2a5d247c...6798172`, scorer revision `c7cbfd7`. Nothing was
+tuned, refit or re-sampled after scoring.
+
+1. Source fingerprints match for 3104, the ten and 3120.
+2. `compare_econ_models.py`: 3,124/3,124 matches, parity mismatches 0, input failures 0.
+3. rc2 parity: the unchanged 30/80 corpus audit at `c7cbfd7` is identical to rc2's on all 18 keys but `snapshot`.
+4. Site reviews: 570 (3104), 5,140 (the ten), 958 (3120 + trace) reconciliation checks, all pass.
+5. Defect reinstatement: 16 of 16 mutations applied and detected.
+
+Reported (C = 1): gross econ per round, rounds 2/14 137.2 -> 437.5; rounds 3/4/15/16 310.5 under both; every
+other round identical. 10,181 qualifying deaths; recovery netted 2.33% of denied credits; survivors with
+credit evidence 807, in-round feed 92, carried feed
+198, both 69 of 16,536. Player-match Impact change
+p1 -195, p50 0, p99 307; within-match rank changes 2,556/31,240;
+leaderboard Spearman 0.9997, top-20 overlap 20/20.
+
+Flags: (a) 437.5 vs 2 x 310.5 -- not raised; (b) worst half-round-2 abstention
+0.84% (existing final_round/surrender guards only; no new bonus reason fired) -- not raised;
+(c) not raised. Details: `docs/superpowers/econ-bonus-denial-candidate/SUMMARY.md`. Activation remains the
+owner's decision and would need its own refreeze if the weights change.
