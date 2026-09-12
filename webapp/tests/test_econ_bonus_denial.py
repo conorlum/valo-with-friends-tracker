@@ -123,3 +123,72 @@ def test_kill_feed_incomplete_is_distinguished_from_a_round_without_kills():
 
 def test_existing_guards_still_come_first():
     assert score(pistol="Draw").abstention == "unknown_pistol_winner"
+
+
+# ---- denial values (spec sections 3 and 5) --------------------------------------------------
+# Victim 1: Jett, paid 3900 -> kit ex-utility 3350 > 1500. Survivors 2-5 have surplus
+# (1000+3900) - (1000+reward+3900) = -reward < 550, so no credit recovery.
+
+def _one_kill(outcome, **kw):
+    return score(outcome=outcome, events=[ev(1, 10.0, 6, 1)], player_kw=dict(deaths={1: 1}, **kw))
+
+
+@pytest.mark.parametrize("outcome,factor", [(WIN_A, 0.8), (WIN_B, 1.0)])
+def test_qualifying_death_pays_factor_times_swing_value(outcome, factor):
+    result = _one_kill(outcome)
+    value = factor * 1.10 * 3350 / R
+    assert result.players[6].credit == pytest.approx(value)
+    assert result.players[6].background_credit == 0
+    assert result.players[1].debit == pytest.approx(0.80 * value)
+    assert result.players[1].raw_net == pytest.approx(-0.80 * value)
+    assert result.events[0].bonus_qualifying is True
+    assert result.events[0].penalty_rate == 0.80
+    audit = result.teams[A].bonus
+    assert (audit.won, audit.factor) == (outcome == WIN_A, factor)
+    assert audit.denied == {1: 3350} and audit.net_denied == {1: pytest.approx(3350)}
+
+
+def test_threshold_is_strictly_greater_than_1500_after_utility():
+    at = _one_kill(WIN_A, loadout={1: 2050})       # 2050 - 550 = 1500 -> not qualifying
+    above = _one_kill(WIN_A, loadout={1: 2051})    # 1501 -> qualifying
+    assert at.teams[A].bonus.denied == {}
+    assert at.players[6].credit == pytest.approx(0.10 * 2050 / R)
+    assert at.players[1].debit == pytest.approx(0.30 * 0.10 * 2050 / R)
+    assert at.events[0].penalty_rate == 0.30
+    assert above.teams[A].bonus.denied == {1: 1501}
+    assert above.players[6].credit == pytest.approx(0.8 * 1.10 * 1501 / R)
+
+
+def test_utility_is_subtracted_by_agent():
+    sova = _one_kill(WIN_A, agent={1: "Sova"}, loadout={1: 2150})   # 2150 - 700 = 1450
+    jett = _one_kill(WIN_A, loadout={1: 2150})                      # 2150 - 550 = 1600
+    assert sova.teams[A].bonus.denied == {}
+    assert jett.teams[A].bonus.denied == {1: 1600}
+
+
+def test_environmental_self_and_team_deaths_take_the_debit_without_credit():
+    for killer in (None, 1, 2):
+        result = score(events=[ev(1, 10.0, killer, 1)], player_kw=dict(deaths={1: 1}))
+        assert result.players[1].debit == pytest.approx(0.80 * 0.8 * 1.10 * 3350 / R)
+        assert sum(p.credit for p in result.players.values()) == 0
+
+
+def test_repeated_death_exposes_nothing():
+    result = score(events=[ev(1, 10.0, 6, 1), ev(2, 50.0, 7, 1)], player_kw=dict(deaths={1: 2}))
+    assert result.players[7].credit == 0
+    assert result.players[1].debit == pytest.approx(0.80 * 0.8 * 1.10 * 3350 / R)
+
+
+def test_pistol_losers_equipment_loss_is_unchanged_but_their_killers_earn_the_denial():
+    events = [ev(1, 10.0, 6, 1), ev(2, 20.0, 2, 7)]
+    kw = dict(events=events, player_kw=dict(deaths={1: 1, 7: 1}))
+    old, new = score(bd.MODEL_V2_30_80, **kw), score(NEW, **kw)
+    assert new.events[1].credit == old.events[1].credit          # victim 7 on the pistol loser
+    assert new.events[1].victim_debit == old.events[1].victim_debit
+    assert new.players[6].credit != old.players[6].credit          # killer of a pistol winner
+
+
+def test_round_14_uses_pistol_round_13():
+    result = score(round_number=14, events=[ev(1, 10.0, 6, 1)], player_kw=dict(deaths={1: 1}))
+    assert result.teams[A].bonus is not None
+    assert result.teams[B].bonus is None

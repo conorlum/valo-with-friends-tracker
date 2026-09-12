@@ -422,6 +422,43 @@ def death_debit(loss: float, budget: TeamBudget, model: str) -> tuple[float, flo
 
 # ---- Round 2/14 bonus-round denial ------------------------------------------------------
 
+def _utility(player: PlayerEconomy) -> float:
+    return float(agent_economy.known_utility_cost(player.agent))
+
+
+def _bonus_denial(inputs, by_id, paid, next_paid, exposures, team, round_winner) -> BonusDenialAudit:
+    """Spec sections 3-5 for the pistol-winning team in half-round 2: which first
+    deaths qualify, what survivors recovered, and the net denied kit."""
+    won = round_winner == team
+    denied: dict[int, float] = {}
+    dead: set[int] = set()
+    for event, exposure in exposures:
+        victim = by_id[event.victim_id]
+        if victim.team != team:
+            continue
+        dead.add(victim.match_player_id)
+        if exposure == 0:
+            continue
+        kit = max(0.0, exposure - _utility(victim))
+        if kit > BONUS_DENIAL_THRESHOLD:
+            denied[victim.match_player_id] = kit
+    survivors = tuple(_survivor_recovery(inputs, by_id, paid, next_paid, team, dead, p)
+                      for p in inputs.players if p.team == team and p.match_player_id not in dead)
+    team_recovered = sum(s.recovery for s in survivors)
+    total = sum(denied.values())
+    keep = max(0.0, 1.0 - team_recovered / total) if total > 0 else 0.0
+    return BonusDenialAudit(
+        won=won, factor=BONUS_WON_FACTOR if won else BONUS_LOST_FACTOR, denied=denied,
+        survivors=survivors, team_recovered=team_recovered,
+        net_denied={pid: d * keep for pid, d in denied.items()},
+    )
+
+
+def _survivor_recovery(inputs, by_id, paid, next_paid, team, dead, player) -> SurvivorRecovery:
+    return SurvivorRecovery(player.match_player_id, _utility(player), 0.0, 0.0, 0.0, 0.0,
+                            None, None, None, 0.0)
+
+
 def _bonus_guard(inputs: RoundEconInputs, pistol_winner) -> tuple[str, str] | None:
     """Spec section 7, in its fixed order. Only for the bonus model in half-round 2.
     Missing inputs refuse the round; they are never read as zero or as no kills."""
@@ -561,6 +598,9 @@ def score_round(inputs: RoundEconInputs, model: str) -> RoundEconResult:
         targets_by_player.update(zip(member_ids, targets))
 
     rates = {team: penalty_rate(b) if model in THIRTY_EIGHTY_MODELS else None for team, b in budgets.items()}
+    bonus = (_bonus_denial(inputs, by_id, paid, next_paid, exposures, bonus_team, round_winner)
+             if bonus_team is not None else None)
+    bonus_debits: dict[int, tuple[float, float]] = defaultdict(lambda: (0.0, 0.0))
 
     background_credit: dict[int, float] = defaultdict(float)
     disruption_credit: dict[int, float] = defaultdict(float)
@@ -587,34 +627,60 @@ def score_round(inputs: RoundEconInputs, model: str) -> RoundEconResult:
         seen_victims.add(event.victim_id)
 
         budget = budgets[victim.team]
+        in_bonus = bonus is not None and victim.team == bonus_team
+        qualifying = False
+        event_rate = rates[victim.team]
+        if in_bonus:
+            # Spec section 5: the denial REPLACES background and disruption for a
+            # qualifying first death; the factor and the victim's 80% apply once each.
+            vid = victim.match_player_id
+            if exposure > 0 and vid in bonus.denied:
+                qualifying = True
+                value = bonus.factor * SWING_VALUE_PER_CREDIT * bonus.net_denied[vid] / TEAM_REFERENCE
+                bg, dis = (0.0, value) if kind == "enemy" else (0.0, 0.0)
+                debit_bg, debit_dis, debit_scarcity = 0.0, DISRUPTED_RATE * value, 0.0
+                event_rate = DISRUPTED_RATE
+            else:
+                background = BACKGROUND * exposure / TEAM_REFERENCE
+                bg, dis = (background, 0.0) if kind == "enemy" else (0.0, 0.0)
+                debit_bg, debit_dis, debit_scarcity = ABSORBED_RATE * background, 0.0, 0.0
+                event_rate = ABSORBED_RATE
+            previous = bonus_debits[vid]
+            bonus_debits[vid] = (previous[0] + debit_bg, previous[1] + debit_dis)
+        else:
+            bg, dis = event_credit(exposure, budget) if kind == "enemy" else (0.0, 0.0)
+            debit_bg, debit_dis, debit_scarcity = death_debit(exposure, budget, model)
         if kind == "enemy":
-            bg, dis = event_credit(exposure, budget)
             background_credit[killer.match_player_id] += bg
             disruption_credit[killer.match_player_id] += dis
-        else:
-            bg, dis = 0.0, 0.0
-        debit_bg, debit_dis, debit_scarcity = death_debit(exposure, budget, model)
         event_ledgers.append(EventLedger(
             event_id=event.event_id, time_seconds=event.time_seconds,
             killer_id=event.killer_id, victim_id=event.victim_id,
             killer_team=killer.team if killer is not None else None, victim_team=victim.team,
             kind=kind, exposure=exposure, background_credit=bg, disruption_credit=dis,
             victim_background_debit=debit_bg, victim_disruption_debit=debit_dis,
-            victim_scarcity_debit=debit_scarcity, penalty_rate=rates[victim.team],
-            absorbed=budget.severity_pool == 0,
+            victim_scarcity_debit=debit_scarcity, penalty_rate=event_rate,
+            absorbed=(not qualifying) if in_bonus else budget.severity_pool == 0,
+            bonus_qualifying=qualifying,
         ))
 
     ledgers: dict[int, PlayerLedger] = {}
     for pid, player in by_id.items():
         budget = budgets[player.team]
-        debit_bg, debit_dis, debit_scarcity = death_debit(lost[pid], budget, model)
+        if bonus is not None and player.team == bonus_team:
+            debit_bg, debit_dis = bonus_debits[pid]
+            debit_scarcity = 0.0
+            player_rate = DISRUPTED_RATE if pid in bonus.denied else ABSORBED_RATE
+        else:
+            debit_bg, debit_dis, debit_scarcity = death_debit(lost[pid], budget, model)
+            player_rate = rates[player.team]
         ledgers[pid] = PlayerLedger(
             match_player_id=pid, team=player.team, current_paid=paid[pid],
             next_loadout=player.next_loadout, next_paid=next_paid[pid],
             next_bank=player.next_remaining, target=targets_by_player[pid], lost=lost[pid],
             background_credit=background_credit[pid], disruption_credit=disruption_credit[pid],
             background_debit=debit_bg, disruption_debit=debit_dis, scarcity_debit=debit_scarcity,
-            penalty_rate=rates[player.team],
+            penalty_rate=player_rate,
         )
 
     teams = {}
@@ -622,7 +688,8 @@ def score_round(inputs: RoundEconInputs, model: str) -> RoundEconResult:
         member_ids = [p.match_player_id for p in members]
         teams[team] = TeamAudit(
             team=team, budget=budgets[team], targets=targets_by_team[team],
-            penalty_rate=rates[team],
+            penalty_rate=((DISRUPTED_RATE if bonus.denied else ABSORBED_RATE)
+                          if (bonus is not None and team == bonus_team) else rates[team]),
             carryover_targets=half_round == 2 and team == pistol_winner,
             pistol_winner=team == pistol_winner, round_winner=team == round_winner,
             half_round=half_round,
@@ -631,6 +698,7 @@ def score_round(inputs: RoundEconInputs, model: str) -> RoundEconResult:
             next_below_raw_4200=sum(1 for p in members if p.next_loadout < CONTEXT_FULL_BUY_RAW),
             credit=sum(ledgers[m].credit for m in member_ids),
             debit=sum(ledgers[m].debit for m in member_ids),
+            bonus=bonus if team == bonus_team else None,
         )
 
     return RoundEconResult(
