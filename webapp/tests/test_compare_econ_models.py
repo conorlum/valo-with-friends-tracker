@@ -25,3 +25,13 @@ def test_small_corpus_reconciles_and_reports_the_round_two_change():
     r2, r5 = report["by_round_number"]["2"], report["by_round_number"]["5"]
     assert r2["new_gross_points_per_round"] > r2["old_gross_points_per_round"]
     assert r5["new_gross_points_per_round"] == r5["old_gross_points_per_round"]
+
+
+def test_abstaining_rounds_are_not_counted_as_scored():
+    db = session()
+    build_match(db, "c3", kills={2: [("B1", "A1", 10.0)]}, weapons={2: ["Spectre"]},
+                loadouts={2: {"A1": 2600}}, count_stats=True)
+    report = cmp.compare(db, _manifest(), min_matches=1)
+    assert "1" not in report["by_round_number"]          # the pistol round always abstains
+    assert report["by_round_number"]["2"]["scored_rounds"] == 1
+    assert report["abstained_rounds_by_number"]["1"] == 1

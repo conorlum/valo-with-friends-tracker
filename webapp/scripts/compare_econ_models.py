@@ -55,6 +55,7 @@ def compare(db, manifest, match_ids=None, min_matches=20, progress=None):
     failures = {}
     by_rn = defaultdict(lambda: dict(rounds=0, old=0.0, new=0.0))
     abstain = defaultdict(int)
+    abstained_by_rn = defaultdict(int)
     bonus = defaultdict(float)
     econ_delta_rows, impact_delta_matches, movers = [], [], []
     leader = defaultdict(lambda: dict(old=0, new=0, rounds=0, matches=0))
@@ -88,9 +89,15 @@ def compare(db, manifest, match_ids=None, min_matches=20, progress=None):
             p["rounds"] += 1
         for rn, kw in new["econ"].items():
             n_res, o_res = kw["result"], old["econ"][rn]["result"]
-            by_rn[rn]["rounds"] += 1
-            by_rn[rn]["old"] += _gross_points(o_res, scale_c)
-            by_rn[rn]["new"] += _gross_points(n_res, scale_c)
+            # Only rounds the model actually scored enter the per-round averages; abstentions
+            # are reported separately (30/80 abstains wherever the bonus model does outside
+            # half-round 2, and inside it the bonus model is the stricter of the two).
+            if n_res.abstention:
+                abstained_by_rn[rn] += 1
+            else:
+                by_rn[rn]["rounds"] += 1
+                by_rn[rn]["old"] += _gross_points(o_res, scale_c)
+                by_rn[rn]["new"] += _gross_points(n_res, scale_c)
             if bd.half_round_index(rn) != 2:
                 continue
             if n_res.abstention:
@@ -145,6 +152,7 @@ def compare(db, manifest, match_ids=None, min_matches=20, progress=None):
         "input_validation_failures": failures,
         "parity_mismatches": dict(parity),
         "half_round_2_abstentions_bonus_model": dict(sorted(abstain.items())),
+        "abstained_rounds_by_number": {str(k): v for k, v in sorted(abstained_by_rn.items())},
         "bonus": {k: (round(v, 2) if isinstance(v, float) else v) for k, v in sorted(bonus.items())},
         "by_round_number": {
             str(rn): {"scored_rounds": v["rounds"],
