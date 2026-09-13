@@ -1476,3 +1476,45 @@ Flags: (a) 442.5 vs 2 x 316.1 -- not raised; (b) worst 0.84%, new reasons fired
 none -- not raised; (c) not raised. Details:
 `docs/superpowers/econ-bonus-denial-candidate-rc2/SUMMARY.md`. Activation remains the owner's decision (runbook: that
 folder's README).
+
+### 2026-09-12 -- owner locks the four-term weights: A=1, D=5, B=4.25, C=3.875
+
+**Owner decision, recorded as given ("put D to 5 flat. lets make B 4.25 and C be 3.875. just for simplicity. lets
+lock those numbers in").** These replace the analysis set A=1 / D=4.993 / B=4.292 / C=3.871 as the owner's chosen
+weights for the four-term score:
+
+```
+impact = A*damage + D*assists + B*leverage + C*econ
+```
+
+| term | weight | meaning at the weight |
+|---|---:|---|
+| A, damage (combat score less kill points, assists carved out) | 1 | unchanged |
+| D, assists (25 per assist, carved out of the damage column) | 5 | 125 points per assist |
+| B, leverage (kill-order edge x time factor) | 4.25 | 2v2 kill 850, 3v3 kill 765, 4v4 kill 722.5, 5v5 first blood 637.5 (time factor 1.0) |
+| C, econ (buy disruption incl. the round 2/14 denial) | 3.875 | max full-kit denial 221.7426 x 3.875 = 859.3, still about one 2v2 kill |
+
+**Measured shares at the locked weights**, bonus-denial rc2 code (scorer revision `90d9cd1`), from the saved
+per-player-match terms of all 3,124 matches, rescaled from the previous analysis weights (read-only):
+- corpus share: damage 37.5%, assists 8.6%, leverage 44.4%, econ 9.5%;
+- median player-match share (18+ rounds): damage 40.6%, assists 8.9%, leverage 39.8%, econ 8.4%.
+
+The previous analysis weights gave 37.3 / 8.6 / 44.7 / 9.5 and 40.4 / 8.9 / 40.0 / 8.3. The rounding moves no share
+by more than 0.3 points.
+
+**Context the owner gave before locking.** Leverage outliers (for example 25/10/0 with 16,104 leverage, or rank 6->1
+from leverage) are "super impactful ... something i want to showcase more than damage". The owner agrees with
+the econ outliers, but "realistically ... this needs to be toned down". **No econ toning change is made by this
+entry**; that remains open.
+
+**What this entry does NOT do.**
+- It changes no code or frozen manifest. The frozen candidate `impact-bonus-denial-rc2` still scores
+  A(damage)=1.25 / B=1.0 / C=1.0 with no D term (damage includes assists). `ACTIVE_MANIFEST` stays None;
+  `IMPACT_CALCULATION_VERSION` stays 2.
+- **Adopting these weights in scoring is a separate change:**
+  1. a D term in the scorer (a persisted or derived assists term);
+  2. `FormulaWeights` / manifest comparators carrying A, D, B, C;
+  3. the `IMPACT_CALCULATION_VERSION` bump at activation;
+  4. a new frozen candidate with its own declaration before scoring;
+  5. the full review re-run.
+- The 25-per-assist carve-out has been checked on Abyss only (0 of 240 player-rounds negative), not corpus-wide.
