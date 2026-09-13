@@ -1408,3 +1408,48 @@ Flags: (a) 437.5 vs 2 x 310.5 -- not raised; (b) worst half-round-2 abstention
 0.84% (existing final_round/surrender guards only; no new bonus reason fired) -- not raised;
 (c) not raised. Details: `docs/superpowers/econ-bonus-denial-candidate/SUMMARY.md`. Activation remains the
 owner's decision and would need its own refreeze if the weights change.
+
+### 2026-09-12 (amendment) -- round 2/14 bonus-round denial rc2: code-review fixes and two owner rules, declared before scoring
+
+**Nothing below has been scored under rc2.** rc1's recorded values above stay as recorded; this entry
+supersedes them only for the rc2 candidate.
+
+**Why rc2 exists.** A code review of `f28afe5..6e67c4d` found seven defects, all verified against source or data
+before fixing:
+
+| # | defect | fix (commit) |
+|---|---|---|
+| F1 | a sidearm kill followed by a kill with the survivor's own gun was inferred as picking up a dead teammate's gun | owner rule: an in-round pickup needs the survivor's paid kit to be below the picked-up gun's price plus every distinct gun they had already fired (`9c2cf87`) |
+| F2 | a survivor of a lost round was credited the team loss bonus as cash | owner rule: a survivor of a lost round always banks 1,000 (`90d9cd1`) |
+| F3 | traces explained a pistol winner's round 2/14 deaths with the 30/80 budget and never showed the bonus audit | bonus audit rendered; qualifying events labelled "denial" (`bfd9d2b`) |
+| F4 | `compare_econ_models.py` counted abstaining rounds as scored, diluting per-round averages and rc1's flag (a) | only scored rounds are averaged; abstentions reported per round (`2e9c052`) |
+| F5 | a bonus manifest described only the 30/80 formula | the bonus formula line is added for a bonus release (`58b3646`) |
+| F6 | no README runbook or `review-results.json` for activation | both produced for rc2 (this review) |
+| F7 | a null `spentCredits` would abort an ingest | invalid spend writes no row (`0ce78fe`) |
+
+**Owner rule F2, verified before adoption.** On the 8 raw tracker captures, team-summed start credits
+(`remaining + spentCredits`, where teammate drops cancel) give:
+- winners: exactly 15,000 in 126 of 127 team-rounds;
+- losers with no survivors: exactly the streak bonus in 138 of 140.
+
+Of the 10 lost team-rounds with a stat-survivor, 4 matched 1,000 per survivor and 6 matched the loss bonus. In
+every one of the 4 defender cases that matched the loss bonus, the "survivor" appears in the kill feed as a
+**"Bomb"** victim: killed by the detonation, which tracker's deaths stat omits. Counted as deaths, every true
+survivor banked 1,000. The calculator already reads survival from kill events, not the stat.
+
+**Frozen candidate.** `docs/superpowers/econ-bonus-denial-candidate-rc2/candidate-manifest.json`, candidate
+`impact-bonus-denial-rc2`, LF-SHA-256 `85b873cd19803c831c20930f3f3c84a8f6f6f3ff6197edb464f0182fd4156f68`, scorer revision `90d9cd12dd9b31fce154a7f6d601ee78b389d3e3`. Release comparator
+`buy_disruption_v2_30_80_bonus_denial`; weights A=1.25, B=1, C=1; every other value as in the rc1 declaration,
+plus `SURVIVED_LOSS_REWARD = 1000` and the loadout-coverage condition (spec sections 4.1 and 4.2, amended).
+
+**Activation note.** At this revision the 30/80 rc2 manifest (`econ-buy-disruption-candidate/`) and the bonus rc1
+manifest no longer verify, as intended: their hashed sources changed. Activating either requires a checkout of
+its own scorer revision (`bba279b` for 30/80 rc2, `c7cbfd7` for bonus rc1). Their folders are not edited.
+
+**Samples, checks and reports: unchanged from the rc1 declaration**, with three additions:
+- Check 5 (defect reinstatement) now covers the 16 rc1 mutations plus 8 for the fixes (B17-B24).
+- `release_candidate_review.py --ten --extra 3104 --extra 3120 --results review-results.json` is produced for
+  backfill acceptance, with a `README.md` runbook in the rc2 folder.
+- Flag (a) is evaluated on the corrected comparison, which averages only scored rounds.
+
+**Problem flags and interpretation rules: unchanged.** Nothing is tuned from rc2's results; this entry activates nothing.
