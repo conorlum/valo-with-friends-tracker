@@ -363,8 +363,10 @@ def load_match(db: Session, match_json: dict) -> Match:
             remaining=stats["remainingCredits"]["value"],
         )
         db.add(stat_row)
-        if "spentCredits" in stats:
-            pending_spend.append((stat_row, stats["spentCredits"]["value"]))
+        spent = (stats.get("spentCredits") or {}).get("value")
+        if (isinstance(spent, (int, float)) and not isinstance(spent, bool) and math.isfinite(spent)
+                and spent >= 0):
+            pending_spend.append((stat_row, int(spent)))
 
     if pending_spend:
         db.flush()

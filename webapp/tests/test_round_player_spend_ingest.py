@@ -58,3 +58,13 @@ def test_ingesting_into_a_populated_database_leaves_old_matches_unknown():
     linked = {s.round_player_stat_id for s in db.query(RoundPlayerSpend)}
     assert len(linked) == 20
     assert not (linked & old_ids)
+
+
+def test_null_spent_credits_write_no_row_and_do_not_abort_ingest():
+    db = session(all_tables=True)
+    payload = _payload(spent_for=lambda r, i: 5)
+    for s in payload["segments"]:
+        if s["type"] == "player-round" and s["attributes"]["platformUserIdentifier"] == IDS[0]:
+            s["stats"]["spentCredits"] = {"value": None}
+    load_match(db, payload)
+    assert db.query(RoundPlayerSpend).count() == 18
