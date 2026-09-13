@@ -94,6 +94,14 @@ credit_recovery_S = surplus_S - utility_cost_S   if surplus_S > utility_cost_S
 - `plant_bonus_S` = 300 if round N was planted and S's team attacked round N.
 - `reward_S` = S's team's actual round-N+1 reward: 3,000 after a win, else
   1,900 / 2,400 / 2,900 by the real consecutive-loss streak within the half.
+- **Amendment 2026-09-12 (owner rule, after code review):** a survivor of a round
+  their team LOST banks the survive-loss **1,000**, never the loss bonus.
+  - Checked at team level on the 8 raw captures, where teammate drops cancel:
+    winners 126 of 127 exactly 15,000, and dead losers exact on the streak bonus.
+  - Every true survivor of a lost round banked 1,000. The four apparent exceptions
+    were defenders killed by the spike detonation: the kill feed records them as
+    "Bomb" victims, but tracker's deaths stat omits them. Survival is therefore
+    read from kill events, never from the deaths stat.
 - Both are supplied as calculator inputs (section 8).
 
 Development evidence, pistol-winner survivors of rounds 2/14 labelled by the kill
@@ -120,7 +128,10 @@ inferred when **all** hold:
    before dying;
 2. S's own weapon is known, and differs from G; and one of:
    - **(a) in round:** S kills with G in round N after V's death, having not
-     killed with G earlier in round N (a weapon cannot be bought mid-round); or
+     killed with G earlier in round N (a weapon cannot be bought mid-round), **and**
+     S's paid kit is below `price(G)` plus the prices of every distinct priced weapon
+     S had already killed with in round N (amendment 2026-09-12, owner rule: a kit
+     that covers them all, e.g. Vandal + Sheriff = 3,700, shows S owned the gun); or
    - **(b) carried:** S's first kill in round N+1 uses G, and S's round-N+1
      spend `cash_S - next_remaining_S` is **less than** `price(G)` (S could not
      have bought it).

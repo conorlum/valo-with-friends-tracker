@@ -69,6 +69,7 @@ BONUS_DENIAL_THRESHOLD = 1500.0   # kit net of agent utility, strictly greater
 SWING_VALUE_PER_CREDIT = 1.10     # BACKGROUND + DISRUPTION: a disrupted swing-round loss
 BONUS_WON_FACTOR = 0.8            # the pistol winner still won round N
 BONUS_LOST_FACTOR = 1.0           # the pistol winner lost round N
+SURVIVED_LOSS_REWARD = 1000.0    # owner rule: surviving a round your team lost always banks 1,000
 
 
 def audit_version_for(model: str) -> int:
@@ -442,7 +443,7 @@ def _bonus_denial(inputs, by_id, paid, next_paid, exposures, team, round_winner)
         kit = max(0.0, exposure - _utility(victim))
         if kit > BONUS_DENIAL_THRESHOLD:
             denied[victim.match_player_id] = kit
-    survivors = tuple(_survivor_recovery(inputs, by_id, paid, next_paid, team, dead, p)
+    survivors = tuple(_survivor_recovery(inputs, by_id, paid, next_paid, team, dead, p, won)
                       for p in inputs.players if p.team == team and p.match_player_id not in dead)
     team_recovered = sum(s.recovery for s in survivors)
     total = sum(denied.values())
@@ -458,15 +459,18 @@ def _event_key(event: EconEvent) -> tuple:
     return (event.time_seconds, event.event_id)
 
 
-def _survivor_recovery(inputs, by_id, paid, next_paid, team, dead, player) -> SurvivorRecovery:
+def _survivor_recovery(inputs, by_id, paid, next_paid, team, dead, player, won) -> SurvivorRecovery:
     """Spec section 4 for one surviving pistol winner: credit evidence first,
     kill-feed evidence as a supplement, and the larger of the two -- never both."""
     pid = player.match_player_id
     utility = _utility(player)
     plant = round_rewards.PLANT_BONUS if (inputs.planted and inputs.attacking_team == team) else 0.0
+    # A survivor of a round their team LOST banks the survive-loss 1,000, never the team's
+    # loss bonus (owner rule; exact on every true survivor in the raw captures -- the only
+    # apparent exceptions were spike-detonation deaths, which the kill feed records).
+    reward = inputs.next_round_reward[team] if won else SURVIVED_LOSS_REWARD
     cash = min(float(round_rewards.CREDIT_CAP),
-               player.remaining + round_rewards.KILL_REWARD * player.kills + plant
-               + inputs.next_round_reward[team])
+               player.remaining + round_rewards.KILL_REWARD * player.kills + plant + reward)
     surplus = (player.next_remaining + next_paid[pid]) - (cash + paid[pid])
     credit_recovery = surplus - utility if surplus > utility else 0.0
     feed_value, inference, weapon, own = _feed_recovery(

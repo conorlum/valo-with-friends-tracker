@@ -361,3 +361,25 @@ def test_in_round_pickup_requires_that_the_killer_could_not_own_every_gun_they_f
     picked = score(events=events, player_kw=dict(deaths=deaths, loadout={2: 3000}))  # 3,000 < 3,700
     s2 = _survivor(picked, 2)
     assert (s2.feed_inference, s2.feed_weapon, s2.own_weapon, s2.feed_recovery) == ("in_round", "Vandal", "Sheriff", 2100)
+
+
+# ---- owner rule 2026-09-12: surviving a round you lost always banks 1,000 ------------------
+
+def test_survivor_of_a_lost_round_banks_1000_not_the_loss_bonus():
+    assert bd.SURVIVED_LOSS_REWARD == 1000
+    # Pistol winner A loses round 2; its team reward into round 3 is the 1,900 loss bonus,
+    # but survivor 2 (remaining 1,000, no kills, no plant) banks only the survive-loss 1,000.
+    lost = score(outcome=WIN_B, events=[ev(1, 10.0, 6, 1)], reward={A: 1900, B: 3000},
+                 player_kw=dict(deaths={1: 1}))
+    assert _survivor(lost, 2).cash == 2000
+    won = score(outcome=WIN_A, events=[ev(1, 10.0, 6, 1)], reward={A: 3000, B: 1900},
+                player_kw=dict(deaths={1: 1}))
+    assert _survivor(won, 2).cash == 4000    # winners bank the full 3,000
+
+
+def test_a_spike_death_is_a_death_not_a_survival():
+    # tracker's deaths stat omits spike deaths, but the kill feed records them ("Bomb", no killer):
+    # a player killed by the detonation is not a survivor and banks no survive-loss reward.
+    result = score(outcome=WIN_B, events=[ev(1, 10.0, 6, 1), ev(2, 99.0, None, 2, "Bomb")],
+                   reward={A: 1900, B: 3000}, player_kw=dict(deaths={1: 1}))
+    assert 2 not in {s.match_player_id for s in result.teams[A].bonus.survivors}

@@ -223,7 +223,7 @@ def test_bonus_comparator_differs_from_30_80_only_in_the_model():
 def test_bonus_constants_and_modules_are_frozen():
     manifest = _manifest()
     for name in ("BONUS_AUDIT_VERSION", "BONUS_DENIAL_THRESHOLD", "SWING_VALUE_PER_CREDIT",
-                 "BONUS_WON_FACTOR", "BONUS_LOST_FACTOR"):
+                 "BONUS_WON_FACTOR", "BONUS_LOST_FACTOR", "SURVIVED_LOSS_REWARD"):
         assert name in manifest["calculator_constants"]
     assert {"app/scoring/weapon_prices.py", "app/scoring/round_rewards.py"} <= set(manifest["source_digests"])
 
