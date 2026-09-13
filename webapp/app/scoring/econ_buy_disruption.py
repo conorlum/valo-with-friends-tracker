@@ -470,7 +470,7 @@ def _survivor_recovery(inputs, by_id, paid, next_paid, team, dead, player) -> Su
     surplus = (player.next_remaining + next_paid[pid]) - (cash + paid[pid])
     credit_recovery = surplus - utility if surplus > utility else 0.0
     feed_value, inference, weapon, own = _feed_recovery(
-        pid, team, by_id, inputs.events, inputs.next_events, cash, player.next_remaining)
+        pid, team, by_id, inputs.events, inputs.next_events, cash, player.next_remaining, paid[pid])
     return SurvivorRecovery(
         match_player_id=pid, utility_cost=utility, cash=cash, surplus=surplus,
         credit_recovery=credit_recovery, feed_recovery=feed_value, feed_inference=inference,
@@ -478,13 +478,16 @@ def _survivor_recovery(inputs, by_id, paid, next_paid, team, dead, player) -> Su
     )
 
 
-def _feed_recovery(pid, team, by_id, events, next_events, cash, next_remaining):
+def _feed_recovery(pid, team, by_id, events, next_events, cash, next_remaining, paid_self):
     """Spec section 4.2: (value, inference, weapon, own_weapon), or (0, None, None, None).
 
     Unidentified and non-purchasable names are never evidence and never change
     the survivor's own weapon. A weapon a survivor uses shows use, not
-    acquisition: in round N it cannot be a purchase; in round N+1 it counts only
-    when the survivor's spend could not have bought it."""
+    acquisition: in round N it cannot be a purchase, but the survivor may have
+    owned it all along -- so an in-round pickup counts only when their paid kit
+    could not cover that weapon plus every priced weapon they had already fired
+    (owner rule 2026-09-12: a Vandal + Sheriff kit shows both were owned). In
+    round N+1 it counts only when the survivor's spend could not have bought it."""
     prices = weapon_prices.WEAPON_PRICES
     ordered = ordered_events(events)
     death_key: dict[int, tuple] = {}
@@ -507,7 +510,8 @@ def _feed_recovery(pid, team, by_id, events, next_events, cash, next_remaining):
             continue
         gun, own = e.weapon, (used[-1] if used else None)
         if (own is not None and gun != own and gun not in used and gun in teammate_gun_death
-                and _event_key(e) > teammate_gun_death[gun]):
+                and _event_key(e) > teammate_gun_death[gun]
+                and paid_self < prices[gun] + sum(prices[w] for w in set(used))):
             value = max(0.0, float(prices[gun] - prices[own]))
             if value > best[0]:
                 best = (value, "in_round", gun, own)

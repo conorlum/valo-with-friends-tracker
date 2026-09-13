@@ -236,7 +236,8 @@ def test_in_round_feed_pickup_nets_the_upgrade():
     # 1 kills with Spectre, then dies; 2 killed with Stinger, then kills with Spectre after 1's death
     events = [ev(1, 5.0, 1, 7, "Spectre"), ev(2, 6.0, 2, 8, "Stinger"), ev(3, 10.0, 6, 1, "Vandal"),
               ev(4, 20.0, 2, 9, "Spectre")]
-    result = score(events=events, player_kw=dict(deaths={1: 1, 7: 1, 8: 1, 9: 1}))
+    # survivor 2's paid kit 2,500 cannot cover both a Stinger (1,100) and a Spectre (1,600)
+    result = score(events=events, player_kw=dict(deaths={1: 1, 7: 1, 8: 1, 9: 1}, loadout={2: 2500}))
     s2 = _survivor(result, 2)
     assert (s2.feed_inference, s2.feed_weapon, s2.own_weapon, s2.feed_recovery) == (
         "in_round", "Spectre", "Stinger", 500)
@@ -270,9 +271,10 @@ def test_carried_feed_pickup_requires_spend_below_the_price():
 def test_duplicate_evidence_takes_the_larger_never_the_sum():
     events = [ev(1, 5.0, 1, 7, "Spectre"), ev(2, 6.0, 2, 8, "Stinger"), ev(3, 10.0, 6, 1, "Vandal"),
               ev(4, 20.0, 2, 9, "Spectre")]
-    # credit evidence: cash 1000 + 400 + 3000 = 4400; surplus (1000+7950) - (4400+3900) = 650 -> 100
+    # paid kit 2,500 (cannot cover Stinger + Spectre); credit evidence: cash 1000 + 400 + 3000 = 4400;
+    # surplus (1000+6550) - (4400+2500) = 650 -> 100
     result = score(events=events, player_kw=dict(
-        deaths={1: 1, 7: 1, 8: 1, 9: 1}, kills={2: 2}, next_loadout={2: 7950}))
+        deaths={1: 1, 7: 1, 8: 1, 9: 1}, kills={2: 2}, loadout={2: 2500}, next_loadout={2: 6550}))
     s2 = _survivor(result, 2)
     assert s2.credit_recovery == 100 and s2.feed_recovery == 500
     assert s2.recovery == 500
@@ -342,3 +344,20 @@ def test_random_round_2_victims_on_the_pistol_loser_are_identical_to_30_80(seed)
             assert (n.credit, n.victim_debit) == (o.credit, o.victim_debit)
     for pid in B_IDS:
         assert new.players[pid].debit == old.players[pid].debit
+
+
+
+# ---- owner rule 2026-09-12: the killer's loadout must not already cover every gun they fired ----
+
+def test_in_round_pickup_requires_that_the_killer_could_not_own_every_gun_they_fired():
+    # 1 kills with a Vandal then dies; 2 kills with a Sheriff, then with a Vandal after 1's death.
+    events = [ev(1, 5.0, 1, 7, "Vandal"), ev(2, 6.0, 2, 8, "Sheriff"), ev(3, 10.0, 6, 1, "Vandal"),
+              ev(4, 20.0, 2, 9, "Vandal")]
+    deaths = {1: 1, 7: 1, 8: 1, 9: 1}
+    owned = score(events=events, player_kw=dict(deaths=deaths, loadout={2: 3900}))   # 3,900 >= 800 + 2,900
+    assert (_survivor(owned, 2).feed_inference, _survivor(owned, 2).feed_recovery) == (None, 0)
+    exact = score(events=events, player_kw=dict(deaths=deaths, loadout={2: 3700}))   # exactly 800 + 2,900
+    assert _survivor(exact, 2).feed_recovery == 0
+    picked = score(events=events, player_kw=dict(deaths=deaths, loadout={2: 3000}))  # 3,000 < 3,700
+    s2 = _survivor(picked, 2)
+    assert (s2.feed_inference, s2.feed_weapon, s2.own_weapon, s2.feed_recovery) == ("in_round", "Vandal", "Sheriff", 2100)
