@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status: Tasks 1-6 implemented 2026-09-12; Task 7 (refreeze + re-review) in progress.** Owner decisions: Task 5 -- a survivor of a round their team lost always banks 1,000 (verified exact at team level on the raw captures once spike-detonation deaths, which tracker's deaths stat omits, are counted as deaths); Task 6 -- an in-round pickup requires that the survivor's paid kit could not cover the picked-up gun plus every gun they had already fired (e.g. Vandal + Sheriff = 3,700).
+**Status: COMPLETE 2026-09-12.** Tasks 1-6 implemented; Task 7 froze `impact-bonus-denial-rc2` (`docs/superpowers/econ-bonus-denial-candidate-rc2/`, see SUMMARY.md) and every declared check passed. Owner decisions: Task 5 -- a survivor of a round their team lost always banks 1,000 (verified exact at team level on the raw captures once spike-detonation deaths, which tracker's deaths stat omits, are counted as deaths); Task 6 -- an in-round pickup requires that the survivor's paid kit could not cover the picked-up gun plus every gun they had already fired (e.g. Vandal + Sheriff = 3,700).
 
 **Goal:** Fix the seven verified defects found in the code review of `f28afe5..6e67c4d` (the round 2/14 bonus-denial model), then refreeze the candidate and re-run its declared review.
 

@@ -1453,3 +1453,26 @@ its own scorer revision (`bba279b` for 30/80 rc2, `c7cbfd7` for bonus rc1). Thei
 - Flag (a) is evaluated on the corrected comparison, which averages only scored rounds.
 
 **Problem flags and interpretation rules: unchanged.** Nothing is tuned from rc2's results; this entry activates nothing.
+
+### 2026-09-12 (RESULT, rc2) -- round 2/14 bonus-round denial rc2: declared checks pass; flags none raised; not activated
+
+Reviewed under the rc2 amendment above: manifest LF-SHA-256 `85b873cd...4156f68`, scorer revision `90d9cd1`.
+Nothing was tuned, refit or re-sampled after scoring.
+
+1. Source fingerprints match for 3104, the ten and 3120.
+2. `compare_econ_models.py`: 3,124/3,124 matches, parity mismatches 0, input failures 0.
+3. The unchanged 30/80 corpus audit at `90d9cd1` is identical to the 30/80 candidate's on all 18 keys but `snapshot`.
+4. Site reviews: 570 (3104), 5,140 (the ten), 958 (3120 + trace) reconciliation checks, all pass; `review-results.json`
+   written for 12 matches.
+5. Defect reinstatement: 24 of 24 applied mutations detected (24 declared).
+
+Reported (C = 1, scored rounds only): rounds 2/14 gross 138.7 -> 442.5 per round, 1.40x rounds 3/4/15/16
+(316.1); rc1 recorded 437.5 on diluted averages. Qualifying deaths 10,181; recovery netted 2.28%
+(rc1 2.33%); survivors with credit evidence 816, in-round feed 64
+(rc1 92), carried feed 199. Player-match Impact change p1 -195,
+p99 307; leaderboard Spearman 0.9997, top-20 overlap 20/20.
+
+Flags: (a) 442.5 vs 2 x 316.1 -- not raised; (b) worst 0.84%, new reasons fired
+none -- not raised; (c) not raised. Details:
+`docs/superpowers/econ-bonus-denial-candidate-rc2/SUMMARY.md`. Activation remains the owner's decision (runbook: that
+folder's README).
