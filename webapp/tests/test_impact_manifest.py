@@ -236,3 +236,9 @@ def test_a_weapon_only_change_moves_the_source_fingerprint():
     db.query(KillEvent).one().weapon = "Phantom"
     db.commit()
     assert match_source_fingerprint(db, match.id) != before
+
+
+def test_bonus_release_manifest_describes_the_bonus_rule():
+    bonus_text = " ".join(_manifest(release_comparator=impact_manifest.V2_30_80_BONUS)["formula_changes_vs_live_legacy"])
+    assert "round 2/14 bonus-round denial" in bonus_text
+    assert "round 2/14" not in " ".join(_manifest()["formula_changes_vs_live_legacy"])

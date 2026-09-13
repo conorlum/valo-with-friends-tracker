@@ -213,6 +213,15 @@ def verify_source_snapshots(db, manifest: dict, match_ids=None) -> None:
 
 # ---- build / load / verify ----------------------------------------------------------------
 
+# Appended to the formula description when the bonus-denial model is the release comparator,
+# so a frozen manifest never describes a different formula than the one it scores.
+_BONUS_FORMULA_CHANGE = (
+    "economy: round 2/14 bonus-round denial -- a pistol winner's first death with paid kit net of agent "
+    "utility above 1,500 pays V*1.10*net denied/19,500 to the killer (V 0.8 won / 1.0 lost) and 80% of that "
+    "as the victim's debit, net of inferred pickups (spec 2026-09-12)",
+)
+
+
 def build_manifest(*, candidate_id: str, created: str, scorer_revision: str,
                    activation_impact_calculation_version: int, source_snapshots: dict,
                    release_comparator: str = V2_30_80, notes=()) -> dict:
@@ -231,6 +240,7 @@ def build_manifest(*, candidate_id: str, created: str, scorer_revision: str,
             "damage + mean(econ, time, swing) kill-order products",
             "economy: the legacy econ-differential and swing factors leave leverage; "
             "econ is the separate buy-disruption component with 30%/80% death debits",
+            *(_BONUS_FORMULA_CHANGE if release_comparator == V2_30_80_BONUS else ()),
             "columns: econ_impact and swing_impact are written 0; econ_component is signed",
             "timing: unchanged legacy time factor (post-plant table and pre-plant curve OFF)",
             "trade discount: unchanged (the declared cost schedule and 6s window)",
