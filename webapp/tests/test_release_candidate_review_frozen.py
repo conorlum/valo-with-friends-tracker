@@ -180,3 +180,22 @@ def test_corpus_audit_counts_identities_and_signs_on_a_small_corpus():
     assert audit["event_kinds_in_scored_rounds"]["unknown_killer"] == 1
     assert audit["player_rounds"] == 160
     assert audit["econ_component_player_round"]["negative"] > 0
+
+
+def test_trace_explains_bonus_denial_rounds_with_the_bonus_audit():
+    db = session()
+    match, _, _ = build_match(db, "tb", kills={2: [("B1", "A1", 10.0)]}, weapons={2: ["Spectre"]},
+                              loadouts={2: {"A1": 2600}}, outcomes={2: "Team B Elimination Win"},
+                              count_stats=True)
+    manifest = build_manifest(candidate_id="t", created="2026-09-12", scorer_revision="t",
+                              activation_impact_calculation_version=impact.IMPACT_CALCULATION_VERSION + 1,
+                              source_snapshots={"matches": {}}, release_comparator=bd.MODEL_V2_30_80_BONUS_DENIAL)
+    rec = review.Reconciler()
+    text = review.render_frozen_trace(db, match.id, manifest, rec)
+    round_two = text.split("## Round 2\n")[1].split("## Round 3\n")[0]
+    pistol_winner_block = round_two.split("**TEAM_2**")[0]
+    assert "BONUS-ROUND DENIAL" in pistol_winner_block
+    assert "denied 2,050" in pistol_winner_block and "net 2,050" in pistol_winner_block
+    assert "severity pool" not in pistol_winner_block
+    assert "(80%, denial)" in round_two
+    assert rec.failures == []

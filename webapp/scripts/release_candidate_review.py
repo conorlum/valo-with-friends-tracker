@@ -780,7 +780,11 @@ def render_frozen_trace(db, match_id, manifest, rec, compare="site", manifest_sh
               f"C * {econ_component.ECON_SCALE} * raw, rounded ONCE per player-round.",
           "Kill credit = small equipment value + allocated buy-disruption value. Death debit = 30% of the "
           "victim's damage value when the team's funding absorbed the loss, 80% when its severity pool "
-          "is positive (constrained next buy). Repeated deaths expose no new kit.", ""]
+          "is positive (constrained next buy). Repeated deaths expose no new kit."
+          + (" Under the round 2/14 bonus-round denial, a pistol winner's qualifying death instead pays "
+             "factor x 1.10 x net denied kit to the killer and 80% of that as the victim's debit; "
+             "that team's 30/80 budget does not apply." if right_cfg.econ_model == bd.MODEL_V2_30_80_BONUS_DENIAL
+             else ""), ""]
     match_totals = defaultdict(lambda: dict(before=0, damage=0, leverage=0, econ=0, impact=0,
                                             credit=0.0, debit=0.0, rounds=0))
     for rn in sorted(rows_by_round):
@@ -798,14 +802,29 @@ def render_frozen_trace(db, match_id, manifest, rec, compare="site", manifest_sh
                   f"round winner {'/'.join(str(t)[5:] for t, a in result.teams.items() if a.round_winner) or 'none'}; "
                   f"half round {first.half_round}.", ""]
             for team, audit in sorted(result.teams.items(), key=lambda kv: str(kv[0])):
-                b = audit.budget
-                verdict = ("funding ABSORBED its losses (30% death debits)" if audit.penalty_rate == 0.30
-                           else "CONSTRAINED next buy (80% death debits)" if audit.penalty_rate == 0.80
-                           else "wealth-debit comparator")
-                L.append(f"**{str(team)[5:]}** lost L={b.lost:,.0f}; target H={b.target:,.0f}"
-                         f"{' (carryover targets)' if audit.carryover_targets else ''}; funding U={b.funding:,.0f}; "
-                         f"gap D={b.shortfall:,.0f}; observed next-equipment gap G={b.observed_gap:,.0f}; "
-                         f"activation {b.activation:.4f}; severity pool {b.severity_pool:,.2f} -> {verdict}.")
+                bonus_audit = getattr(audit, "bonus", None)
+                if bonus_audit is not None:
+                    # The bonus-denial ledger, not the 30/80 budget, scores this team's deaths.
+                    L.append(f"**{str(team)[5:]}** BONUS-ROUND DENIAL (pistol winner "
+                             f"{'won' if bonus_audit.won else 'lost'} this round, factor {bonus_audit.factor}): "
+                             f"denied {sum(bonus_audit.denied.values()):,.0f}; recovered "
+                             f"{bonus_audit.team_recovered:,.0f}; net {sum(bonus_audit.net_denied.values()):,.0f}.")
+                    for survivor in bonus_audit.survivors:
+                        if survivor.recovery:
+                            feed = (f" {survivor.feed_inference} {survivor.feed_weapon} over {survivor.own_weapon}"
+                                    if survivor.feed_inference else "")
+                            L.append(f"- {who(survivor.match_player_id)} recovered {survivor.recovery:,.0f} "
+                                     f"(credit {survivor.credit_recovery:,.0f}; kill feed "
+                                     f"{survivor.feed_recovery:,.0f}{feed}; inferred)")
+                else:
+                    b = audit.budget
+                    verdict = ("funding ABSORBED its losses (30% death debits)" if audit.penalty_rate == 0.30
+                               else "CONSTRAINED next buy (80% death debits)" if audit.penalty_rate == 0.80
+                               else "wealth-debit comparator")
+                    L.append(f"**{str(team)[5:]}** lost L={b.lost:,.0f}; target H={b.target:,.0f}"
+                             f"{' (carryover targets)' if audit.carryover_targets else ''}; funding U={b.funding:,.0f}; "
+                             f"gap D={b.shortfall:,.0f}; observed next-equipment gap G={b.observed_gap:,.0f}; "
+                             f"activation {b.activation:.4f}; severity pool {b.severity_pool:,.2f} -> {verdict}.")
                 L += ["", "| Player | Current paid | Lost once | Next raw loadout | Next paid | Next bank | Target |",
                       "|---|---:|---:|---:|---:|---:|---:|"]
                 for pid, ledger in sorted(result.players.items()):
@@ -827,7 +846,8 @@ def render_frozen_trace(db, match_id, manifest, rec, compare="site", manifest_sh
             time_x = kill["kill_order_bonus_x_time"] / bonus if bonus and not ctx["self_kill"] else 1.0
             if econ_event is not None:
                 rate = f"{econ_event.penalty_rate:.0%}" if econ_event.penalty_rate is not None else "wealth"
-                state = "absorbed" if econ_event.absorbed else "constrained"
+                state = ("denial" if getattr(econ_event, "bonus_qualifying", False)
+                         else "absorbed" if econ_event.absorbed else "constrained")
                 econ_cells = (f"{econ_event.exposure:,.0f} | {scale * econ_event.background_credit:.2f} | "
                               f"{scale * econ_event.disruption_credit:.2f} | {scale * econ_event.credit:.2f} | "
                               f"{scale * econ_event.victim_debit:.2f} ({rate}, {state})")
