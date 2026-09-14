@@ -1568,3 +1568,62 @@ negative (all 1 kill, 0 assists, -1 to -40); carving 25 per assist would take th
 **What this entry does NOT do.** No weight is in code. `impact-bonus-denial-rc2` stays frozen and NOT active; its
 manifest no longer verifies because `impact.py` changed. Adoption still needs the D term, `FormulaWeights` carrying
 A/D/B/C, a new freeze (rc3) declared before scoring, the full review and the `IMPACT_CALCULATION_VERSION` bump.
+
+### 2026-09-14 -- D becomes a flat per-assist knob; the alive count is fixed; correction to the 2026-09-13 entry
+
+**Owner decision, recorded as given ("i dont want to see negative damage numbers. so lets just fold assists into
+damage for now ... lets keep a scalor for just straight assists * D").**
+- ~~D = 5, 125 per assist, carved out of the damage column~~ -> nothing is carved out of damage. The damage term is
+  combat score less the kill bonuses (150 - 20 * (5 - alive)) and 50 per kill after the first, so it keeps Valorant's
+  25 for each non-damaging assist and cannot go negative.
+- **D = 100 points per assist**, on the raw assist count, as a separate term:
+  `impact = A*damage + B*leverage + C*econ + D*assists`. In code as `FormulaWeights.assists` (default 0, so no existing
+  candidate changes) and frozen with the other weights by `impact_manifest.config_to_dict`. D = 100 applies with
+  A=1 / B=3 / C=2.347 at the next freeze.
+- Approximate shares at A=1 / B=3 / C=2.347 / D=100, from the saved per-player-round terms (multikill fix applied, no
+  assist carve; alive-count fix NOT applied, it moves damage in 1.5% of player-rounds): corpus damage 40.6%,
+  assists 9.3%, leverage 42.3%, econ 7.8%; median player-match 42.8 / 9.1 / 39.2 / 6.7. At D = 0: 44.8 / 0 / 46.6 / 8.6.
+
+**Correction to the 2026-09-13 entry.** Its "Open" paragraph is wrong on two counts.
+1. The 35-46 per-kill gap was not in combat score. It came from checking score against **tracker's damage stat, which
+   counts overkill** (a Vandal headshot on a 150-HP player reads 160) and damage to teammates. Combat score counts HP
+   removed. On the 8 captures, 61.6% of killed players "received" 160 or more; on single kills the residual equals
+   minus the overkill in every bin. With overkill removed the fitted bonuses are 142 / 124 / 104 / 85 / 64 (the rest is
+   unseen overkill on light- and no-shield victims, in 25-point steps) and the extra-kill term 47.8. The owner's model
+   `ACS = damage + 25 per non-damaging assist + 150 - 20 * (5 - alive) + 50 per kill after the first` is confirmed.
+   Tracker's damage stat is never used by the scorer and must not be used as a reference.
+2. The "11.8 per assist" was an average: **damaging assists fit at 1.5, non-damaging at 24.3**. Riot pays 25 only for
+   non-damaging assists (owner confirmed). 65% of captured assists (316 of 483) are damaging, which is why a flat 25
+   carve drove damage negative.
+3. The gap did not cause the negative damage rounds. The alive count did (below).
+
+**Alive-count fixes (defects, not tuned values).** The count feeds the combat-score bonus backed out of ACS and the
+kill-order state leverage is keyed on. Negative damage traced to it in all 42 player-rounds:
+1. A disconnected or AFK player (score, kills, deaths, assists and loadout all zero; not in the kill feed) is not
+   alive. Valorant's bonus counts only players in the round; the scorer started every team at 5.
+2. A dead player who kills later with lingering utility (Showstopper, Orbital Strike, Boom Bot, ...) stays dead. The
+   old rule treated ANY later appearance as a killer as a revive; of 2,232 such deaths, ~934 were Clove ults and most
+   of the rest Sage-revived players shooting, but the utility kills were not revives.
+3. A revived player is dead from their death until their next appearance in the feed (a later death, or a later kill
+   with a gun or an ability that needs its user alive). The old rule never removed them at all.
+4. A kill logged at the instant of its killer's death is a trade, not a revive.
+5. A team kill removes a player from the victim's team (the old walk decremented the enemy).
+
+Checked against the raw captures' per-kill player positions: the new count is right on 1,286 of 1,289 kills (old rule
+1,283). Over the whole corpus with the real scorer (read-only), negative damage player-rounds: **42 at `07166da` ->
+0**. Between the two versions damage changes in 9,907 player-rounds (1.50%, mean +25.5) and unweighted leverage in
+37,488 player-rounds (5.69%) across 7,733 rounds (mean |change| 40.1); corpus sum |leverage| moves +0.15%.
+
+The walk is now one function, `impact._alive_before_each_kill`, used by the scorer, the kill-order refit service
+(`kill_order_leverage`: kill terms and state visits) and the four fit replays (`preplant_time_model`,
+`preplant_fit_support`, `postplant_factor`, `postplant_value_table`), which had each hand-rolled their own and also
+skipped environmental deaths. No stored table, curve or fit is regenerated by this; the next refit reads the new states.
+
+**Noted, unchanged.** A team kill still pays its killer kill-order leverage (the legacy `_kill_order_bonus` call treats
+it as an enemy kill). The player page's state diagrams (`player_graphs.py`) keep their own alive rule. The revive
+payout question (first kill on a player who is later revived) stays open, and its earlier win-rate evidence should be
+re-run under the new classification.
+
+**What this entry does NOT do.** No rescore, no activation. `impact-bonus-denial-rc2` stays frozen, inactive and
+unverifiable. Adoption still needs a freeze (rc3) declared before scoring, the full review and the
+`IMPACT_CALCULATION_VERSION` bump.
