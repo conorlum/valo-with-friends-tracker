@@ -146,6 +146,7 @@ def config_to_dict(config: ImpactScoringConfig) -> dict:
                     "econ": config.weights.econ, "assists": config.weights.assists},
         "enable_postplant_leverage": config.enable_postplant_leverage,
         "enable_preplant_empirical": config.enable_preplant_empirical,
+        "enable_trade_credit": config.enable_trade_credit,
     }
 
 
@@ -156,6 +157,8 @@ def config_from_dict(data: dict) -> ImpactScoringConfig:
         weights=FormulaWeights(**data["weights"]),
         enable_postplant_leverage=data["enable_postplant_leverage"],
         enable_preplant_empirical=data["enable_preplant_empirical"],
+        # Manifests frozen before the switch existed scored without it.
+        enable_trade_credit=data.get("enable_trade_credit", False),
     )
 
 

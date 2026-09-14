@@ -19,6 +19,7 @@ class ImpactScoringConfig:
     weights: FormulaWeights = field(default_factory=FormulaWeights)
     enable_postplant_leverage: bool = False
     enable_preplant_empirical: bool = False
+    enable_trade_credit: bool = False
 
     def build_kwargs(self) -> dict:
         if self.enable_postplant_leverage or self.enable_preplant_empirical:
@@ -32,4 +33,5 @@ class ImpactScoringConfig:
             "enable_econ_component": self.enable_econ_component,
             "econ_model": self.econ_model,
             "weights": self.weights,
+            "enable_trade_credit": self.enable_trade_credit,
         }

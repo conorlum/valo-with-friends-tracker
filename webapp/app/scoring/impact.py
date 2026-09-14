@@ -62,6 +62,9 @@ class CalculatedImpact:
     econ_pickup: int = 0
     # NOT persisted, like leverage_component: D * assists as it enters `impact`.
     assists_component: int = 0
+    # NOT persisted: B * the trade credit, the part of leverage_component paid
+    # for being traded (enable_trade_credit).
+    trade_credit: int = 0
 
 
 @dataclass(frozen=True)
@@ -371,6 +374,43 @@ TRADE_COST_SCHEDULE: tuple[tuple[float, float], ...] = (
 )
 TRADE_WINDOW_SECONDS = 6.0
 
+# The trade CREDIT schedule, declared by the project owner 2026-09-14: each pair
+# is (upper bound in seconds, share of the TRADE KILL's leverage credited to the
+# player who was traded), timed from that player's own death. It pays for the
+# space and pressure an entry creates -- a Clove killed in her ult and traded
+# gets it too. Added on top of the trader's kill, never taken from it.
+TRADE_CREDIT_SCHEDULE: tuple[tuple[float, float], ...] = (
+    (1.0, 0.60),
+    (2.0, 0.54),
+    (3.0, 0.48),
+    (4.0, 0.42),
+    (5.0, 0.36),
+    (6.0, 0.30),
+)
+
+
+def _trade_kill(round_kills: list[dict], checking_kill: dict, team_of: dict | None = None):
+    """(trade kill, seconds after the death) for a death, or None if it was not
+    traded: the first death of its killer inside TRADE_WINDOW_SECONDS that is
+    not a kill by the killer's own side. A self or environmental death of the
+    killer counts. See _traded_factor for the rulings behind each clause."""
+    killer_id = checking_kill["killer_match_player_id"]
+    death_time = checking_kill["event_time_seconds"]
+    for kill in round_kills:
+        if kill["death_match_player_id"] == killer_id:
+            trade_time = kill["event_time_seconds"] - death_time
+            if 0 <= trade_time < TRADE_WINDOW_SECONDS:
+                if team_of is not None:
+                    avenger = kill["killer_match_player_id"]
+                    if (
+                        avenger is not None
+                        and avenger != killer_id
+                        and team_of.get(avenger) == team_of.get(killer_id)
+                    ):
+                        continue  # team-kill: not a trade, keep looking
+                return kill, trade_time
+    return None
+
 
 def _traded_factor(
     round_kills: list[dict], checking_kill: dict, self_kill: bool,
@@ -399,26 +439,47 @@ def _traded_factor(
     if self_kill:
         return 1
 
-    killer_id = checking_kill["killer_match_player_id"]
-    death_time = checking_kill["event_time_seconds"]
-
-    for kill in round_kills:
-        if kill["death_match_player_id"] == killer_id:
-            trade_time = kill["event_time_seconds"] - death_time
-            if 0 <= trade_time < TRADE_WINDOW_SECONDS:
-                if team_of is not None:
-                    avenger = kill["killer_match_player_id"]
-                    if (
-                        avenger is not None
-                        and avenger != killer_id
-                        and team_of.get(avenger) == team_of.get(killer_id)
-                    ):
-                        continue  # team-kill: not a trade, keep looking
-                for upper, cost in TRADE_COST_SCHEDULE:
-                    if trade_time < upper:
-                        return cost
-
+    traded = _trade_kill(round_kills, checking_kill, team_of)
+    if traded is None:
+        return 1
+    _, trade_time = traded
+    for upper, cost in TRADE_COST_SCHEDULE:
+        if trade_time < upper:
+            return cost
     return 1
+
+
+def _trade_credits_for_round(round_kills: list[dict], team_of: dict) -> dict[int, float]:
+    """{match_player_id: unweighted leverage credit} for players who were traded.
+
+    Needs each kill's `kill_order_bonus_x_time` already set. Only a death to an
+    enemy earns credit, and only a trade kill by a teammate pays it (a killer
+    who dies to themself or the environment is still a trade for the death
+    discount, but there is no teammate's kill to share). When one trade kill
+    avenges several teammates, each timed share is scaled by max/sum, so the
+    credited shares add up to the fastest one's."""
+    by_trade: dict[int, list[tuple[dict, int, float]]] = defaultdict(list)
+    for kill in round_kills:
+        killer_id, victim_id = kill["killer_match_player_id"], kill["death_match_player_id"]
+        if killer_id is None or killer_id == victim_id or team_of[killer_id] == team_of[victim_id]:
+            continue
+        traded = _trade_kill(round_kills, kill, team_of)
+        if traded is None:
+            continue
+        trade, trade_time = traded
+        avenger = trade["killer_match_player_id"]
+        if avenger is None or avenger == trade["death_match_player_id"]:
+            continue
+        share = next(share for upper, share in TRADE_CREDIT_SCHEDULE if trade_time < upper)
+        by_trade[id(trade)].append((trade, victim_id, share))
+
+    credits: dict[int, float] = defaultdict(float)
+    for avenged in by_trade.values():
+        shares = [share for _, _, share in avenged]
+        scale = max(shares) / sum(shares)
+        for trade, victim_id, share in avenged:
+            credits[victim_id] += share * scale * trade["kill_order_bonus_x_time"]
+    return credits
 
 
 def _clutch_bucket(own_alive: int, opp_alive: int) -> bool:
@@ -990,7 +1051,7 @@ def build_impact_rows_for_match(
     enable_postplant_leverage: bool = False, postplant_factor_table=None,
     enable_econ_component: bool = False, neutralize_econ_terms: bool = False,
     kill_observer=None, econ_observer=None, weights: "FormulaWeights | None" = None,
-    econ_model: str | None = None,
+    econ_model: str | None = None, enable_trade_credit: bool = False,
 ) -> list[CalculatedImpact]:
     """kill_observer, when given, is called once per kill AFTER that kill has
     been fully scored, with the scorer's own mutated kill dict and the round
@@ -1112,6 +1173,9 @@ def build_impact_rows_for_match(
                 death_tier = _categorize_econ(death_econ)
                 kill["econ_differential_factor"] = killer_tier / death_tier
                 kill["econ_mismatch"] = killer_tier != death_tier
+
+    # Leverage credited to traded players, per round (enable_trade_credit).
+    trade_credit_by_round: dict[int, dict[int, float]] = {}
 
     # Kill-order bonuses, decorated per kill.
     for round_number, kills in round_kills.items():
@@ -1287,6 +1351,12 @@ def build_impact_rows_for_match(
                     },
                 )
 
+        # After the loop: a credit is a share of the TRADE kill's leverage, so
+        # every kill's kill_order_bonus_x_time must already be set. Like the
+        # other weighted terms it exists only in the new structure.
+        if enable_trade_credit and enable_econ_component:
+            trade_credit_by_round[round_number] = _trade_credits_for_round(kills, team_of)
+
     calculated: list[CalculatedImpact] = []
 
     # Aggregate per (round, match_player) and write impact_scores.
@@ -1371,9 +1441,10 @@ def build_impact_rows_for_match(
             damages = round(damage_and_assists * weights.damage)
             econ_component_value = round(weights.econ * econ_by_player.get(match_player_id, 0.0))
             assists_component_value = round(weights.assists * stat["assists"])
-            time_impact_value = round(kill_order_bonus_x_time_sum - death_order_bonus_x_time_sum)
+            trade_credit_x_time = trade_credit_by_round.get(round_number, {}).get(match_player_id, 0.0)
+            time_impact_value = round(kill_order_bonus_x_time_sum + trade_credit_x_time - death_order_bonus_x_time_sum)
             leverage_component_value = round(
-                weights.leverage * (kill_order_bonus_x_time_sum - death_order_bonus_x_time_sum)
+                weights.leverage * (kill_order_bonus_x_time_sum + trade_credit_x_time - death_order_bonus_x_time_sum)
             )
 
             if enable_econ_component:
@@ -1385,7 +1456,9 @@ def build_impact_rows_for_match(
                 # changing its meaning would invalidate every stored
                 # comparison. time_impact does NOT die -- it IS the leverage
                 # component under the new structure.
-                kill_impact = round(damages + weights.leverage * kill_order_bonus_x_time_sum) + assists_component_value
+                kill_impact = round(
+                    damages + weights.leverage * (kill_order_bonus_x_time_sum + trade_credit_x_time)
+                ) + assists_component_value
                 death_impact = round(weights.leverage * death_order_bonus_x_time_sum)
                 # Reconciliation, exactly: the four ints below are the four
                 # terms of the formula and nothing else. kill_impact minus
@@ -1430,6 +1503,7 @@ def build_impact_rows_for_match(
                     damage=damages,
                     leverage_component=leverage_component_value if enable_econ_component else 0,
                     assists_component=assists_component_value if enable_econ_component else 0,
+                    trade_credit=round(weights.leverage * trade_credit_x_time),
                     # econ_impact and swing_impact keep their columns but are
                     # written as 0 once the new structure is live -- they left
                     # the formula, and redefining a column consumers read by
