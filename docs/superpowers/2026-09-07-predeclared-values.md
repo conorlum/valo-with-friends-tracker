@@ -1518,3 +1518,53 @@ entry**; that remains open.
   4. a new frozen candidate with its own declaration before scoring;
   5. the full review re-run.
 - The 25-per-assist carve-out has been checked on Abyss only (0 of 240 player-rounds negative), not corpus-wide.
+
+### 2026-09-13 -- owner re-anchors B and C, and fixes the ACS -> damage decomposition
+
+**Supersedes two of the locked weights above.** ~~B = 4.25~~ -> **B = 3.0**; ~~C = 3.875~~ -> **C = 2.347**. A = 1 and
+D = 5 (125 per assist) are unchanged. Each weight is now set from an anchor the owner stated in damage units.
+
+| term | weight | owner's anchor | what it means at the weight |
+|---|---:|---|---|
+| B, leverage | 3.0 | a 1v1 kill at time factor 1.00 = 750 (the 1v1 edge is 250) | 5v5 first blood 450, 4v4 510, 3v3 540, 2v2 600, 1v1 750; a 4v1 cleanup 150 |
+| C, econ | 2.347 | a full-kit denial kill = 3 full enemy damages = 450 | match 1824 R17's anchor kill 743.083 -> 450 (x 0.605585, C = 2.346642 rounded); per-kill ceiling 859 -> 520 |
+
+B is the opening kill in damage units: the 5v5 edge is exactly 150 and its median time factor is 1.00, so B = 3 means
+first blood is worth three full enemy damages.
+
+**Econ stays state-blind, on purpose** ("econ should ignore game state that's the point"). Scaling econ by the kill's
+edge is rejected and is not an open option.
+
+**ACS -> damage decomposition (owner's model, recorded as given):**
+
+```
+ACS = damage + 25 per assist + kill bonus (150 - 20 * (5 - alive)) + 50 per kill after the first
+```
+
+Everything except damage is stripped. Two defects in `build_impact_rows_for_match` are fixed to match it:
+1. **Multikill sign.** The scorer computed `acs - (-50 * kills)` for multikill rounds, which ADDED 50 per kill (+250 on
+   an ace) instead of removing Valorant's bonus. Now `acs -= 50 * (scoring_kills - 1)`.
+2. **Team kills.** A team kill earns no combat score, so no kill bonus is backed out of it and it does not count toward
+   the multikill total (`scores_a_kill`).
+
+This is a defect fix to match a stated model, not a tuned value, and it was measured before this entry was written
+(2026-09-13, read-only rescore): negative-damage player-rounds 142 -> 42, ace damage term mean 1,029 -> 581.
+
+**Measured shares at A=1 / D=5 / B=3 / C=2.347 with the multikill fix**, from the saved per-player-round terms of all
+3,124 matches (rc2 code, rescaled; the team-kill part of the fix is not in these figures):
+- corpus share (player-match totals): damage 38.3%, assists 11.6%, leverage 42.3%, econ 7.8%;
+- median player-match share: damage 40.2%, assists 11.4%, leverage 39.2%, econ 6.7%.
+
+With C re-anchored alone (B still 4.25, no ACS fix) the corpus split is 38.9 / 8.9 / 46.2 / 6.0. A figure of
+40.9 / 11.1 / 40.5 / 7.4 circulated in session notes; it removed the erroneous +50 per kill without subtracting the
+real bonus, and is wrong.
+
+**Open, not decided by this entry.** A fit of combat score against every term at once on the 8 raw captures
+(1,040 player-rounds) gives 48.7 per extra kill (the 50 above), **11.8 per assist** (not 25) and kill bonuses of
+112.8 / 95.9 / 71.7 / 49.9 / 23.9, each 35-46 below the 150-20(5-alive) schedule. Score equals damage exactly in
+703 of 711 rounds with no kills and no assists, so the gap is per-kill. It is what leaves the remaining 42 rounds
+negative (all 1 kill, 0 assists, -1 to -40); carving 25 per assist would take that to 102.
+
+**What this entry does NOT do.** No weight is in code. `impact-bonus-denial-rc2` stays frozen and NOT active; its
+manifest no longer verifies because `impact.py` changed. Adoption still needs the D term, `FormulaWeights` carrying
+A/D/B/C, a new freeze (rc3) declared before scoring, the full review and the `IMPACT_CALCULATION_VERSION` bump.
