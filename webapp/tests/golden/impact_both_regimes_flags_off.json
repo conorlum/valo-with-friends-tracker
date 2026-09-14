@@ -2,8 +2,8 @@
   "A1": {
     "death_impact": 133,
     "econ_impact": 160,
-    "impact": 225,
-    "kill_impact": 358,
+    "impact": 38,
+    "kill_impact": 171,
     "kill_order_bonus": 160,
     "post_plant_death": 80,
     "post_plant_kill": 208,

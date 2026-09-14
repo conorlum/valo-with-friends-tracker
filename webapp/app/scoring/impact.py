@@ -1070,7 +1070,14 @@ def build_impact_rows_for_match(
             # This has nothing to do with our kill_order_bonus graph below -- it has to
             # be backed out of the raw ACS number so damages reflects pure damage+assists.
             victim_team_alive = team1_kill_index if killer_team == Team.TEAM_1 else team2_kill_index
-            kill["acs_bonus"] = 0 if self_kill else max(0, 150 - 20 * (5 - victim_team_alive))
+            # A team kill earns no combat score, so there is no bonus in the ACS
+            # to back out of it. Subtracting one drove the damage term negative
+            # (owner, 2026-09-13): 43 player-rounds, down to -150 for a team kill
+            # at 5v5. Team kills are excluded from the multikill count below for
+            # the same reason.
+            team_kill = not self_kill and match_players[death_id].team == killer_team
+            kill["scores_a_kill"] = not self_kill and not team_kill
+            kill["acs_bonus"] = max(0, 150 - 20 * (5 - victim_team_alive)) if kill["scores_a_kill"] else 0
 
             combined_swing_factor = team1_combined_swing if killer_team == Team.TEAM_2 else team2_combined_swing
             kill_order_bonus = _kill_order_bonus(team1_kill_index, team2_kill_index, killer_team, self_kill)
@@ -1240,15 +1247,15 @@ def build_impact_rows_for_match(
             kill_order_bonus_x_time_sum = 0.0
             kill_order_bonus_x_swing_sum = 0.0
             kill_order_bonus_sum = 0.0
-            kills_in_round = 0
             clutch_kill_sum = 0.0
             post_plant_kill_sum = 0.0
             econ_mismatch_kill_sum = 0.0
 
+            scoring_kills = 0
             for kill in kills:
                 if kill["killer_match_player_id"] == match_player_id:
                     acs -= kill["acs_bonus"]
-                    kills_in_round += 1
+                    scoring_kills += kill["scores_a_kill"]
                     kill_order_bonus_x_econ_sum += kill["kill_order_bonus_x_econ"]
                     kill_order_bonus_x_time_sum += kill["kill_order_bonus_x_time"]
                     kill_order_bonus_x_swing_sum += kill["kill_order_bonus_x_swing"]
@@ -1260,8 +1267,17 @@ def build_impact_rows_for_match(
                     if kill["econ_mismatch"]:
                         econ_mismatch_kill_sum += kill["kill_order_bonus_x_econ"]
 
-            adjust_acs_for_multikill = -50 * kills_in_round if kills_in_round > 1 else 0
-            damage_and_assists = acs - adjust_acs_for_multikill
+            # Valorant's own multikill bonus: +50 for each kill after the first in
+            # a round. It is part of the ACS, not of damage, so it is stripped out
+            # (owner, 2026-09-13). The old line read `acs - (-50 * kills_in_round)`,
+            # which ADDED 50 per kill instead -- +250 on an ace -- so this is a sign
+            # fix, not a new adjustment. Fitting combat score against damage dealt
+            # over the raw captures puts the per-extra-kill term at 48.7, which is
+            # this 50. acs already has the kill-order bonuses removed above, so what
+            # remains is damage plus assist points.
+            if scoring_kills > 1:
+                acs -= 50 * (scoring_kills - 1)
+            damage_and_assists = acs
 
             death_order_bonus_x_econ_sum = 0.0
             death_order_bonus_x_time_sum = 0.0
