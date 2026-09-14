@@ -1627,3 +1627,46 @@ re-run under the new classification.
 **What this entry does NOT do.** No rescore, no activation. `impact-bonus-denial-rc2` stays frozen, inactive and
 unverifiable. Adoption still needs a freeze (rc3) declared before scoring, the full review and the
 `IMPACT_CALCULATION_VERSION` bump.
+
+### 2026-09-14 (later) -- trade credit for the traded player: declared before scoring
+
+**Owner decision** ("the person who gets traded should get a portion of the impact of the kill that they were traded.
+this shows the need for entry and the space and pressure it can make ... 0-1 gets 60% of the trades kill impact and
+then scale down to 30% at 5-6 seconds"), with the owner's choices on 2026-09-14: added on top, per-second steps,
+leverage only, and split when one trade kill avenges several teammates.
+
+**Rule.** A player killed by an enemy, whose killer is then killed by the player's team within the trade window,
+is credited a share of the TRADE KILL's leverage (`kill_order_bonus x time_factor`, then weighted by B). The share is
+timed from the credited player's own death:
+
+| seconds from death to trade kill | [0,1) | [1,2) | [2,3) | [3,4) | [4,5) | [5,6) | >= 6 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| share of the trade kill's leverage | 60% | 54% | 48% | 42% | 36% | 30% | 0 (not a trade) |
+
+- **Added on top.** The trader keeps the whole kill.
+- **Several teammates avenged by one trade kill:** each timed share is scaled by `max(shares) / sum(shares)`, so the
+  credited shares sum to the fastest one's share (e.g. 42% and 54% become 23.625% and 30.375%).
+- **The trade is the existing one** (`_traded_factor`): the first kill of the killer in [0, 6) seconds that is not by
+  the killer's own side. When that kill is a self or environmental death, the existing death discount still applies
+  and there is no credit (no teammate's kill leverage to share).
+- **Only enemy kills earn credit:** a self-kill, environmental death or team kill does not.
+- **Where it lands:** inside leverage. `leverage_component = B * (kill_x_time + trade_credit - death_x_time)`;
+  `time_impact` and `kill_impact` carry it too. A non-persisted `trade_credit` field shows `B * credit` alone. Damage,
+  econ, assists and the legacy formula are untouched.
+- **Switch:** `enable_trade_credit`, default False on `build_impact_rows_for_match` and `ImpactScoringConfig`, and
+  frozen by `impact_manifest.config_to_dict`. No existing candidate changes.
+
+Measured on the corpus before this entry (read-only): 22.1% of enemy-kill deaths are traded (106,960); by second
+27,726 / 22,525 / 17,860 / 14,627 / 12,830 / 11,392; trade kills avenge one teammate 89.5%, two 9.8%, three 0.6%.
+
+**Declared measurements, read-only, all 3,124 matches, A=1 / B=3 / C=2.347 / D=100, rc2 econ model, alive-count fix,
+credit OFF versus ON:**
+1. Corpus and median player-match term shares.
+2. Total credit as a share of positive leverage; credited deaths; credit per credited death by trade second.
+3. Mean credit per player-round and change in mean impact per round, by agent.
+4. Match 3104 player table, and player 226's rounds 20 and 24.
+5. Checks: with the flag off every row is identical to the scorer without the change; impact reconciles to its four
+   terms; no negative damage.
+
+No adoption threshold is declared: the owner judges the measured results. Nothing is rescored in the database,
+activated or frozen by this entry.
