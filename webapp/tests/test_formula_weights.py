@@ -216,3 +216,63 @@ def test_kill_and_death_impact_carry_the_leverage_weight_too():
             2 * (row.kill_impact - row.damage), abs=1
         )
         assert doubled[key].death_impact == pytest.approx(2 * row.death_impact, abs=1)
+
+
+# -- D: a flat amount per assist (owner, 2026-09-14) --------------------------
+#
+#     impact = A*damage + B*leverage + C*econ + D*assists
+#
+# The damage term keeps Valorant's 25 for each non-damaging assist (nothing is
+# carved out of it, so it cannot go negative). D is a separate knob on the raw
+# assist count. Default 0: it pays nothing until a candidate sets it.
+
+def _with_assists(db, players, round_number=5, name="A1", assists=2):
+    stat = db.query(RoundPlayerStat).join(Round).filter(
+        Round.round_number == round_number,
+        RoundPlayerStat.match_player_id == players[name].id,
+    ).one()
+    stat.assists = assists
+    db.commit()
+    return stat
+
+
+def test_the_assists_weight_defaults_to_zero():
+    assert FormulaWeights().assists == 0.0
+
+
+def test_the_assists_weight_pays_a_flat_amount_per_assist():
+    _ids.clear()
+    db = _session()
+    match, players = _match(db)
+    stat = _with_assists(db, players)
+    base = {(r.round_id, r.match_player_id): r for r in _rows(db, match.id)}
+    paid = {(r.round_id, r.match_player_id): r
+            for r in _rows(db, match.id, FormulaWeights(assists=100.0))}
+
+    key = (stat.round_id, players["A1"].id)
+    assert paid[key].assists_component == 200
+    assert paid[key].impact == base[key].impact + 200
+    assert paid[key].kill_impact == base[key].kill_impact + 200
+    for other, row in base.items():
+        assert paid[other].damage == row.damage
+        if other != key:
+            assert paid[other].impact == row.impact
+
+
+def test_impact_reconciles_to_its_four_terms_with_assists_paid():
+    _ids.clear()
+    db = _session()
+    match, players = _match(db)
+    _with_assists(db, players)
+    rows = _rows(db, match.id, FormulaWeights(damage=1.0, leverage=3.0, econ=2.347, assists=100.0))
+    assert any(r.assists_component for r in rows), "fixture produced no assists"
+    for row in rows:
+        assert row.impact == row.damage + row.leverage_component + row.econ_component + row.assists_component
+
+
+def test_the_assists_weight_is_inert_in_the_legacy_formula():
+    _ids.clear()
+    db = _session()
+    match, players = _match(db)
+    _with_assists(db, players)
+    assert _rows(db, match.id, econ=False) == _rows(db, match.id, FormulaWeights(assists=100.0), econ=False)

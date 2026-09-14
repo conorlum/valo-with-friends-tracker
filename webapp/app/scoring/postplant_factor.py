@@ -29,7 +29,10 @@ from dataclasses import dataclass
 from sqlalchemy import text
 
 from app.models.match import Team
-from app.scoring.impact import _check_for_resurrection, _kill_order_bonus, _traded_factor
+from app.scoring.impact import (
+    _alive_before_each_kill, _kill_order_bonus, _present_players, _round_stats_for_presence,
+    _scoreable_kills, _traded_factor,
+)
 from app.scoring.plant_window import attacking_team
 from app.scoring.postplant_value_table import SPIKE_SECONDS, ValueTable, _winner_team
 
@@ -101,9 +104,10 @@ def extract_postplant_kills(db) -> list[PostPlantKill]:
     }
     # Built once for _traded_factor's team check, not per kill.
     team_of = {mp_id: Team[mp["team"]] for mp_id, mp in match_players.items()}
+    stats_by_round = _round_stats_for_presence(db)
     kills_by_round: dict[int, list[dict]] = defaultdict(list)
     for k in db.execute(text(
-        "SELECT round_id, killer_match_player_id, death_match_player_id, event_time_seconds "
+        "SELECT round_id, killer_match_player_id, death_match_player_id, event_time_seconds, weapon "
         "FROM kill_events ORDER BY round_id, event_time_seconds, id"
     )).mappings():
         kills_by_round[k["round_id"]].append(dict(k))
@@ -126,27 +130,23 @@ def extract_postplant_kills(db) -> list[PostPlantKill]:
         if round_row["defused"] and round_row["defuse_time"] is not None:
             resolution = min(resolution, round_row["defuse_time"])
 
-        kills = kills_by_round.get(round_id, [])
-        a_alive = d_alive = 5
+        # The scorer's own alive counts (impact._alive_before_each_kill), so
+        # the factor is fitted on exactly the states scoring uses.
+        kills = _scoreable_kills(kills_by_round.get(round_id, []), team_of)
+        alive_before = _alive_before_each_kill(
+            kills, team_of, _present_players(stats_by_round.get(round_id, {}), kills, team_of))
+        defenders = Team.TEAM_2 if attackers == Team.TEAM_1 else Team.TEAM_1
         for index, kill in enumerate(kills):
             killer_id = kill["killer_match_player_id"]
             victim_id = kill["death_match_player_id"]
-            if killer_id not in match_players or victim_id not in match_players:
-                continue
-            killer_team = Team[match_players[killer_id]["team"]]
-            victim_team = Team[match_players[victim_id]["team"]]
+            if killer_id is None:
+                continue  # environmental: in the alive counts, not a kill
+            killer_team = team_of[killer_id]
+            victim_team = team_of[victim_id]
             self_kill = killer_id == victim_id
             kill_time = kill["event_time_seconds"]
-            a_before, d_before = a_alive, d_alive
-
-            if not _check_for_resurrection(index, kills):
-                victim_is_attacker = (
-                    (killer_team == attackers) if self_kill else (victim_team == attackers)
-                )
-                if victim_is_attacker:
-                    a_alive = max(0, a_alive - 1)
-                else:
-                    d_alive = max(0, d_alive - 1)
+            a_before = alive_before[index][attackers]
+            d_before = alive_before[index][defenders]
 
             if self_kill or killer_team == victim_team:
                 continue

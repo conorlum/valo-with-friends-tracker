@@ -143,7 +143,7 @@ def config_to_dict(config: ImpactScoringConfig) -> dict:
         "enable_econ_component": config.enable_econ_component,
         "econ_model": config.econ_model,
         "weights": {"damage": config.weights.damage, "leverage": config.weights.leverage,
-                    "econ": config.weights.econ},
+                    "econ": config.weights.econ, "assists": config.weights.assists},
         "enable_postplant_leverage": config.enable_postplant_leverage,
         "enable_preplant_empirical": config.enable_preplant_empirical,
     }

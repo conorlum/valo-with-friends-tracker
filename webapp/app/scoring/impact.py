@@ -2,7 +2,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 import networkx as nx
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.models import ImpactScore, KillEvent, MatchPlayer, Round, RoundPlayerStat
@@ -60,6 +60,8 @@ class CalculatedImpact:
     # consumers read by name.
     leverage_component: int = 0
     econ_pickup: int = 0
+    # NOT persisted, like leverage_component: D * assists as it enters `impact`.
+    assists_component: int = 0
 
 
 @dataclass(frozen=True)
@@ -173,9 +175,9 @@ _FACTOR_WEIGHT_TOTAL = sum(FACTOR_WEIGHTS.values())
 
 @dataclass(frozen=True)
 class FormulaWeights:
-    """A, B and C of the new structure:
+    """A, B, C and D of the new structure:
 
-        impact = A*damage + B*(kill_order_bonus x time_factor) + C*econ_component
+        impact = A*damage + B*(kill_order_bonus x time_factor) + C*econ_component + D*assists
 
     The defaults ARE today's declared candidate, so FormulaWeights() changes
     nothing: 1.25 is the literal the damage term has always carried, and the
@@ -185,14 +187,20 @@ class FormulaWeights:
     (econ_component's SD matched to time_impact's), not a fitted weight. So
     C = 1.0 means "the declared anchor", and C is dimensionless around it.
 
+    `assists` (D) is a flat amount per assist on the raw assist count. Nothing
+    is carved out of the damage term for it: damage keeps Valorant's 25 for
+    each non-damaging assist, so it cannot go negative (owner, 2026-09-14). It
+    defaults to 0, so a candidate that does not set it pays nothing extra.
+
     `damage` is the only one that also reaches the LEGACY branch, because
-    `damages` is shared; the other two weight terms that exist only in the
+    `damages` is shared; the other three weight terms that exist only in the
     new structure and are inert when enable_econ_component is False.
     """
 
     damage: float = 1.25
     leverage: float = 1.0
     econ: float = 1.0
+    assists: float = 0.0
 
 
 _ECON_TIER_CODES = {"SAVE": 8, "ECO": 6, "FORCE": 5, "FULL_BUY": 4}
@@ -426,12 +434,85 @@ def _clutch_bucket(own_alive: int, opp_alive: int) -> bool:
     return False
 
 
-def _check_for_resurrection(kill_index: int, round_kills: list[dict]) -> bool:
-    match_player_id = round_kills[kill_index]["death_match_player_id"]
-    for later_kill in round_kills[kill_index + 1 :]:
-        if later_kill["death_match_player_id"] == match_player_id or later_kill["killer_match_player_id"] == match_player_id:
-            return True
-    return False
+# A kill with one of these proves its killer was alive when it landed. Lingering
+# utility (Showstopper, Orbital Strike, Boom Bot, turrets, mollies) can kill after
+# its user has died, and generic feed names ("Weapon", "Primary", "Unknown") could
+# be either, so a kill with anything else proves nothing about the killer.
+_KILL_PROVES_KILLER_ALIVE = frozenset({
+    "Classic", "Shorty", "Frenzy", "Ghost", "Sheriff", "Stinger", "Spectre", "Bucky", "Judge",
+    "Bulldog", "Guardian", "Phantom", "Vandal", "Marshal", "Outlaw", "Operator", "Ares", "Odin",
+    "Bandit", "Melee", "Blade Storm", "Overdrive", "Headhunter", "Tour De Force",
+})
+
+
+def _present_players(round_stats: dict[int, dict], round_kills: list[dict], team_of: dict[int, Team]) -> dict[Team, int]:
+    """Players actually in the round, per team: five, less anyone whose row
+    shows they were absent. A disconnected or AFK player's row is all zeros --
+    no score, kills, deaths, assists or loadout -- and Valorant's combat-score
+    kill bonus does not count them as alive. Anyone in the kill feed was in the
+    round whatever their row says, and a missing row is not evidence of absence."""
+    in_feed = {pid for kill in round_kills
+               for pid in (kill["killer_match_player_id"], kill["death_match_player_id"]) if pid is not None}
+    present = {Team.TEAM_1: 5, Team.TEAM_2: 5}
+    for match_player_id, stats in round_stats.items():
+        took_part = any(stats[key] for key in ("score", "kills", "deaths", "assists", "loadout"))
+        if not took_part and match_player_id not in in_feed:
+            present[team_of[match_player_id]] -= 1
+    return present
+
+
+def _round_stats_for_presence(db) -> dict[int, dict[int, dict]]:
+    """{round_id: {match_player_id: row}} for _present_players, for replays
+    that load the whole corpus with raw SQL instead of one match."""
+    out: dict[int, dict[int, dict]] = defaultdict(dict)
+    for row in db.execute(text(
+        "SELECT round_id, match_player_id, score, kills, deaths, assists, loadout FROM round_player_stats"
+    )).mappings():
+        out[row["round_id"]][row["match_player_id"]] = dict(row)
+    return out
+
+
+def _scoreable_kills(round_kills: list[dict], team_of: dict) -> list[dict]:
+    """The kills an alive-count walk can place: a known victim, and a killer
+    that is known or absent (an environmental death)."""
+    return [
+        kill for kill in round_kills
+        if kill["death_match_player_id"] in team_of
+        and (kill["killer_match_player_id"] is None or kill["killer_match_player_id"] in team_of)
+    ]
+
+
+def _alive_before_each_kill(
+    round_kills: list[dict], team_of: dict[int, Team], present: dict[Team, int],
+) -> list[dict[Team, int]]:
+    """Each team's alive count just before every kill of a round.
+
+    A death removes a player from the victim's team -- a team kill included.
+    A revive is inferred from the feed, which carries no revive events: a dead
+    player is back when they next die, or when they next kill with something
+    that needs its user alive, strictly after their death (a kill logged at the
+    same instant is a trade). They count as dead until that appearance, the
+    earliest moment the feed proves them alive. Against the raw captures'
+    per-kill player positions this reproduces the true count on 1,286 of 1,289
+    kills; the three misses are revived players back up before the feed shows it.
+    """
+    alive = dict(present)
+    died_at: dict[int, float] = {}
+    before = []
+    for kill in round_kills:
+        killer_id, victim_id = kill["killer_match_player_id"], kill["death_match_player_id"]
+        when = kill["event_time_seconds"]
+        if victim_id in died_at:
+            alive[team_of[victim_id]] += 1
+            del died_at[victim_id]
+        if (killer_id in died_at and killer_id != victim_id
+                and kill["weapon"] in _KILL_PROVES_KILLER_ALIVE and when > died_at[killer_id]):
+            alive[team_of[killer_id]] += 1
+            del died_at[killer_id]
+        before.append(dict(alive))
+        alive[team_of[victim_id]] -= 1
+        died_at[victim_id] = when
+    return before
 
 
 def _did_team_win(outcome: str, team: Team) -> bool:
@@ -1035,12 +1116,8 @@ def build_impact_rows_for_match(
     # Kill-order bonuses, decorated per kill.
     for round_number, kills in round_kills.items():
         round_row = rounds_by_number[round_number]
-        # Despite the names, team1_kill_index tracks TEAM_2's alive count and
-        # team2_kill_index tracks TEAM_1's -- each decrements when the *other*
-        # team lands a kill against it. Fixed for the whole round regardless of
-        # which team is killing on a given kill (see the decrement below).
-        team1_kill_index = 5
-        team2_kill_index = 5
+        alive_before = _alive_before_each_kill(
+            kills, team_of, _present_players(round_player_stats[round_number], kills, team_of))
 
         if bypass_legacy_swing:
             # The buy-disruption composite never reads swing (swing_impact is
@@ -1063,6 +1140,11 @@ def build_impact_rows_for_match(
             environmental = killer_id is None
             self_kill = environmental or killer_id == death_id
             killer_team = match_players[death_id].team if environmental else match_players[killer_id].team
+            # Despite the names, team1_kill_index holds TEAM_2's alive count and
+            # team2_kill_index holds TEAM_1's -- the convention _kill_order_bonus
+            # and the code below were written against.
+            team1_kill_index = alive_before[kill_index][Team.TEAM_2]
+            team2_kill_index = alive_before[kill_index][Team.TEAM_1]
 
             # Valorant's own combat-score kill-order bonus: 150 for a kill against a
             # still-full 5-player enemy team, decrementing 20 per further kill landed
@@ -1205,19 +1287,6 @@ def build_impact_rows_for_match(
                     },
                 )
 
-            resurrection = _check_for_resurrection(kill_index, kills)
-            if not resurrection:
-                if self_kill:
-                    if killer_team == Team.TEAM_1:
-                        team2_kill_index -= 1
-                    else:
-                        team1_kill_index -= 1
-                else:
-                    if killer_team == Team.TEAM_1:
-                        team1_kill_index -= 1
-                    else:
-                        team2_kill_index -= 1
-
     calculated: list[CalculatedImpact] = []
 
     # Aggregate per (round, match_player) and write impact_scores.
@@ -1301,6 +1370,7 @@ def build_impact_rows_for_match(
 
             damages = round(damage_and_assists * weights.damage)
             econ_component_value = round(weights.econ * econ_by_player.get(match_player_id, 0.0))
+            assists_component_value = round(weights.assists * stat["assists"])
             time_impact_value = round(kill_order_bonus_x_time_sum - death_order_bonus_x_time_sum)
             leverage_component_value = round(
                 weights.leverage * (kill_order_bonus_x_time_sum - death_order_bonus_x_time_sum)
@@ -1315,14 +1385,14 @@ def build_impact_rows_for_match(
                 # changing its meaning would invalidate every stored
                 # comparison. time_impact does NOT die -- it IS the leverage
                 # component under the new structure.
-                kill_impact = round(damages + weights.leverage * kill_order_bonus_x_time_sum)
+                kill_impact = round(damages + weights.leverage * kill_order_bonus_x_time_sum) + assists_component_value
                 death_impact = round(weights.leverage * death_order_bonus_x_time_sum)
-                # Reconciliation, exactly: the three ints below are the three
+                # Reconciliation, exactly: the four ints below are the four
                 # terms of the formula and nothing else. kill_impact minus
                 # death_impact can differ from leverage_component_value by 1,
                 # because each rounds independently -- so `impact` is built
                 # from the terms, never from that subtraction.
-                impact = damages + leverage_component_value + econ_component_value
+                impact = damages + leverage_component_value + econ_component_value + assists_component_value
             else:
                 kill_impact = round(
                     damages
@@ -1359,6 +1429,7 @@ def build_impact_rows_for_match(
                     impact=impact,
                     damage=damages,
                     leverage_component=leverage_component_value if enable_econ_component else 0,
+                    assists_component=assists_component_value if enable_econ_component else 0,
                     # econ_impact and swing_impact keep their columns but are
                     # written as 0 once the new structure is live -- they left
                     # the formula, and redefining a column consumers read by

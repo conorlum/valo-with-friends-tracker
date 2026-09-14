@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from sqlalchemy import text
 
 from app.models.match import Team
-from app.scoring.impact import _check_for_resurrection
+from app.scoring.impact import _alive_before_each_kill, _present_players, _round_stats_for_presence, _scoreable_kills
 from app.scoring.plant_window import attacking_team, effective_plant_time, is_phantom_plant, seconds_to_plant
 
 
@@ -62,10 +62,12 @@ def extract_preplant_observations(db) -> list[PreplantKillObservation]:
         mp["id"]: dict(mp)
         for mp in db.execute(text("SELECT id, match_id, team FROM match_players")).mappings()
     }
+    team_of = {mp_id: Team[mp["team"]] for mp_id, mp in match_players.items()}
+    stats_by_round = _round_stats_for_presence(db)
 
     kills_by_round: dict[int, list[dict]] = {}
     for k in db.execute(text(
-        "SELECT round_id, killer_match_player_id, death_match_player_id, event_time_seconds "
+        "SELECT round_id, killer_match_player_id, death_match_player_id, event_time_seconds, weapon "
         "FROM kill_events ORDER BY round_id, event_time_seconds, id"
     )).mappings():
         kills_by_round.setdefault(k["round_id"], []).append(dict(k))
@@ -87,9 +89,19 @@ def extract_preplant_observations(db) -> list[PreplantKillObservation]:
 
         winner = _winner_team(r["outcome"])
         atk = attacking_team(r["round_number"])
-        alive = {Team.TEAM_1: 5, Team.TEAM_2: 5}
+        kills = _scoreable_kills(kills, team_of)
+        # REPLAY POLICY: the scorer's own alive counts
+        # (impact._alive_before_each_kill), so the fitted curve is keyed
+        # on exactly the states scoring uses. Hand-rolled replays here
+        # drifted from the scorer before -- on self-kills, team kills,
+        # environmental deaths and revives -- and `exact_state` and `adv`
+        # are the standardization keys, so a wrong state reweights the
+        # estimate rather than just mislabelling a row.
+        alive_before = _alive_before_each_kill(
+            kills, team_of, _present_players(stats_by_round.get(round_id, {}), kills, team_of))
 
         for index, kill in enumerate(kills):
+            alive = alive_before[index]
             killer_id = kill["killer_match_player_id"]
             victim_id = kill["death_match_player_id"]
             if not killer_id or not victim_id or killer_id not in match_players or victim_id not in match_players:
@@ -116,23 +128,6 @@ def extract_preplant_observations(db) -> list[PreplantKillObservation]:
                     exact_state=f"{killer_alive}v{victim_alive}",
                     round_won_by_killer_team=(winner == killer_team) if winner is not None else None,
                 ))
-
-            # REPLAY POLICY -- must mirror impact.py's own state replay
-            # (see the decrement block at the end of its kill loop).
-            #
-            # This used to read `if not self_kill and alive[...] > 0`, which
-            # diverged from the scorer in both directions: a self-kill left the
-            # counts untouched (the scorer decrements -- a team really does
-            # lose the player), and a resurrection decremented (the scorer
-            # skips it -- the player comes back). Measured on the full data,
-            # 4.31% of rounds contain a self-kill and 12.66% a resurrection,
-            # 15.06% at least one; once a round diverges every later kill in it
-            # is filed under the wrong state. `exact_state` and `adv` are the
-            # standardization keys for the fitted curve, so a wrong state does
-            # not just mislabel a row, it reweights the estimate.
-            if not _check_for_resurrection(index, kills):
-                if alive[victim_team] > 0:
-                    alive[victim_team] -= 1
 
     return observations
 

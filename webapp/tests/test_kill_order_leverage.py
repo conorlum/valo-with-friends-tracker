@@ -132,12 +132,10 @@ def test_an_untracked_transition_lands_on_the_fallback_parameter():
     (never-before-referenced) team-B member has no edge FROM 0v5 to cross.
 
     Reusing an earlier victim's id for the 6th kill (as a first draft of
-    this test did) does not exercise the fallback: _check_for_resurrection
-    looks FORWARD from each kill for any later kill referencing that same
-    match_player_id, so a repeated victim retroactively cancels that
-    EARLIER kill's decrement -- the walk then still lands on the tracked
-    1v5->0v5 edge with one kill to spare, never reaching an untracked
-    transition. The 6th kill's victim must be new to avoid that."""
+    this test did) does not exercise the fallback: a repeated victim is read
+    as a revive (impact._alive_before_each_kill adds them back before their
+    second death), so the walk never reaches an untracked transition. The
+    6th kill's victim must be new to avoid that."""
     players = {i: FakePlayer(i, Team.TEAM_1) for i in range(1, 6)}
     players.update({i: FakePlayer(i, Team.TEAM_2) for i in range(6, 12)})
     stats = {

@@ -12,7 +12,10 @@ fit-and-report script (which nothing imports) needs this module.
 """
 
 from app.models.match import Team
-from app.scoring.impact import _check_for_resurrection, _kill_order_bonus, _traded_factor
+from app.scoring.impact import (
+    _alive_before_each_kill, _kill_order_bonus, _present_players, _round_stats_for_presence,
+    _scoreable_kills, _traded_factor,
+)
 from app.scoring.plant_window import attacking_team, effective_plant_time, is_phantom_plant, seconds_to_plant
 from app.scoring.preplant_time_model import PreplantKillObservation, _RoundRow, _winner_team
 from sqlalchemy import text
@@ -36,10 +39,11 @@ def extract_preplant_observations_with_factors(
     }
     # Built once for _traded_factor's team check, not per kill.
     team_of = {mp_id: Team[mp["team"]] for mp_id, mp in match_players.items()}
+    stats_by_round = _round_stats_for_presence(db)
 
     kills_by_round: dict[int, list[dict]] = {}
     for k in db.execute(text(
-        "SELECT round_id, killer_match_player_id, death_match_player_id, event_time_seconds "
+        "SELECT round_id, killer_match_player_id, death_match_player_id, event_time_seconds, weapon "
         "FROM kill_events ORDER BY round_id, event_time_seconds, id"
     )).mappings():
         kills_by_round.setdefault(k["round_id"], []).append(dict(k))
@@ -64,9 +68,19 @@ def extract_preplant_observations_with_factors(
 
         winner = _winner_team(r["outcome"])
         atk = attacking_team(r["round_number"])
-        alive = {Team.TEAM_1: 5, Team.TEAM_2: 5}
+        kills = _scoreable_kills(kills, team_of)
+        # REPLAY POLICY: the scorer's own alive counts
+        # (impact._alive_before_each_kill), so the fitted curve is keyed
+        # on exactly the states scoring uses. Hand-rolled replays here
+        # drifted from the scorer before -- on self-kills, team kills,
+        # environmental deaths and revives -- and `exact_state` and `adv`
+        # are the standardization keys, so a wrong state reweights the
+        # estimate rather than just mislabelling a row.
+        alive_before = _alive_before_each_kill(
+            kills, team_of, _present_players(stats_by_round.get(round_id, {}), kills, team_of))
 
         for index, kill in enumerate(kills):
+            alive = alive_before[index]
             killer_id = kill["killer_match_player_id"]
             victim_id = kill["death_match_player_id"]
             if not killer_id or not victim_id or killer_id not in match_players or victim_id not in match_players:
@@ -99,17 +113,5 @@ def extract_preplant_observations_with_factors(
                     kills, kill, self_kill=False,
                     team_of=team_of,
                 ))
-
-            # REPLAY POLICY -- must mirror impact.py, exactly as the
-            # kill-order bonus above already does. See the matching comment in
-            # preplant_time_model.extract_preplant_observations: the old
-            # `not self_kill` guard skipped the decrement on a teamkill (the
-            # scorer decrements) and this branch decremented on a resurrection
-            # (the scorer does not). Both alive counts feed exact_state, adv
-            # AND the kill_order_bonus weights, so the divergence reached the
-            # centring weights as well as the standardization keys.
-            if not _check_for_resurrection(index, kills):
-                if alive[victim_team] > 0:
-                    alive[victim_team] -= 1
 
     return observations, kill_order_bonuses, traded_factors

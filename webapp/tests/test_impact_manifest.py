@@ -242,3 +242,14 @@ def test_bonus_release_manifest_describes_the_bonus_rule():
     bonus_text = " ".join(_manifest(release_comparator=impact_manifest.V2_30_80_BONUS)["formula_changes_vs_live_legacy"])
     assert "round 2/14 bonus-round denial" in bonus_text
     assert "round 2/14" not in " ".join(_manifest()["formula_changes_vs_live_legacy"])
+
+
+def test_a_frozen_config_records_the_assists_weight():
+    """D is a scoring weight like A, B and C: a candidate that sets it must
+    freeze it, or the manifest would reproduce a different score."""
+    config = ImpactScoringConfig("d", enable_econ_component=True,
+                                 weights=FormulaWeights(damage=1.0, leverage=3.0, econ=2.347, assists=100.0))
+    recorded = impact_manifest.config_to_dict(config)
+    assert recorded["weights"]["assists"] == 100.0
+    assert impact_manifest.config_from_dict(recorded) == config
+

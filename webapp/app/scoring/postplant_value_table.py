@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from sqlalchemy import text
 
 from app.models.match import Team
-from app.scoring.impact import _check_for_resurrection
+from app.scoring.impact import _alive_before_each_kill, _present_players, _round_stats_for_presence, _scoreable_kills
 from app.scoring.plant_window import attacking_team
 
 SPIKE_SECONDS = 45.0
@@ -118,9 +118,11 @@ def extract_postplant_round_seconds(db) -> list[PostPlantRoundSecond]:
         mp["id"]: dict(mp)
         for mp in db.execute(text("SELECT id, team FROM match_players")).mappings()
     }
+    team_of = {mp_id: Team[mp["team"]] for mp_id, mp in match_players.items()}
+    stats_by_round = _round_stats_for_presence(db)
     kills_by_round: dict[int, list[dict]] = defaultdict(list)
     for k in db.execute(text(
-        "SELECT round_id, killer_match_player_id, death_match_player_id, event_time_seconds "
+        "SELECT round_id, killer_match_player_id, death_match_player_id, event_time_seconds, weapon "
         "FROM kill_events ORDER BY round_id, event_time_seconds, id"
     )).mappings():
         kills_by_round[k["round_id"]].append(dict(k))
@@ -145,33 +147,19 @@ def extract_postplant_round_seconds(db) -> list[PostPlantRoundSecond]:
             resolution = min(resolution, round_row["defuse_time"])
         atk_won = winner == attackers
 
-        kills = kills_by_round.get(round_id, [])
-        a_alive = d_alive = 5
+        # The scorer's own alive counts (impact._alive_before_each_kill), so
+        # the table is built on exactly the states scoring uses.
+        kills = _scoreable_kills(kills_by_round.get(round_id, []), team_of)
+        present = _present_players(stats_by_round.get(round_id, {}), kills, team_of)
+        defenders = Team.TEAM_2 if attackers == Team.TEAM_1 else Team.TEAM_1
         events: list[tuple[float, int, int]] = []
-        for index, kill in enumerate(kills):
-            killer_id = kill["killer_match_player_id"]
-            victim_id = kill["death_match_player_id"]
-            if killer_id not in match_players or victim_id not in match_players:
-                continue
-            self_kill = killer_id == victim_id
-            if not _check_for_resurrection(index, kills):
-                # SQLAlchemy's Enum column stores the member NAME ("TEAM_1"),
-                # which raw SQL reads back as a plain string -- Team[...] (by
-                # name), never Team(...) (by value). Same trap documented in
-                # preplant_time_model.extract_preplant_observations.
-                killer_team = Team[match_players[killer_id]["team"]]
-                victim_team = Team[match_players[victim_id]["team"]]
-                victim_is_attacker = (
-                    (killer_team == attackers) if self_kill else (victim_team == attackers)
-                )
-                if victim_is_attacker:
-                    a_alive = max(0, a_alive - 1)
-                else:
-                    d_alive = max(0, d_alive - 1)
-            events.append((kill["event_time_seconds"], a_alive, d_alive))
+        for kill, before in zip(kills, _alive_before_each_kill(kills, team_of, present)):
+            after = dict(before)
+            after[team_of[kill["death_match_player_id"]]] -= 1
+            events.append((kill["event_time_seconds"], after[attackers], after[defenders]))
 
         horizon = int(min(SPIKE_SECONDS, resolution - plant_time))
-        a = d = 5
+        a, d = present[attackers], present[defenders]
         event_index = 0
         for t in range(0, horizon):
             absolute_t = plant_time + t
