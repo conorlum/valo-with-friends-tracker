@@ -1670,3 +1670,27 @@ credit OFF versus ON:**
 
 No adoption threshold is declared: the owner judges the measured results. Nothing is rescored in the database,
 activated or frozen by this entry.
+
+### 2026-09-14 (RESULT) -- trade credit: the declared measurements
+
+Read-only, all 3,124 matches (659,290 player-rounds), A=1 / B=3 / C=2.347 / D=100, rc2 econ model, alive-count fix,
+credit OFF versus ON, in the order declared.
+
+1. **Shares.** Corpus: damage 40.6 -> 38.8, assists 9.3 -> 8.9, leverage 42.3 -> 44.9, econ 7.8 -> 7.4.
+   Median player-match: 42.9 -> 40.8, 9.1 -> 8.7, 39.2 -> 41.9, 6.6 -> 6.4. Leverage now leads damage on both.
+2. **Size.** Total credit 21,837,543 = 15.1% of positive leverage (144,930,512); net corpus leverage
+   36,560,647 -> 58,398,637. 106,110 credited deaths (the 850 fewer than traded deaths are trades by a self or
+   environmental death), in 105,632 player-rounds (16.0%). Mean credit per credited death 206; by trade second
+   256 / 230 / 201 / 180 / 155 / 133 (n 27,667 / 22,444 / 17,725 / 14,435 / 12,647 / 11,192). The per-death
+   reconstruction totals 21,837,644 against the rows' 21,837,543 (rounding).
+3. **By agent**, credit per player-round (= change in mean impact per round), agents with 2,000+ rounds: highest
+   Clove 38.9, Neon 36.2, Raze 35.8, Iso 35.2, Waylay 34.9, Breach 34.7; lowest Chamber 28.4, Astra 29.4, Cypher 29.8,
+   Veto 30.3, Killjoy 30.4. The spread is narrow (28.4 to 38.9): being traded is common for every role.
+4. **Match 3104.** Every player gains (+169 to +855); only ranks 4 and 5 swap (players Najumi and NPrightdolphin).
+   Player 226: match leverage -2,281 -> -1,754 (credit +528); round 20 leverage -216 -> -156 (+60), impact
+   +129 -> +189; round 24 leverage -456 -> -245 (+211), impact -423 -> -212.
+5. **Checks.** With the flag off, all 659,290 rows equal the pre-change rescore exactly; impact reconciles to its four
+   terms on every row; no negative damage. Suite 1,150 pass, 2 known-red. Mutating the schedule, the split or the
+   enemy-kill rule each fails its test.
+
+No adoption decision is recorded here; the owner judges these. Nothing is rescored in the database or frozen.
