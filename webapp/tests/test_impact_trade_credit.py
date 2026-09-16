@@ -21,6 +21,11 @@ WEIGHTS = FormulaWeights(damage=1.0, leverage=B, econ=2.347, assists=100.0)
 
 def _score(kills, enable_trade_credit=True):
     """{player name: row for SCORED_ROUND}, and {kill index: kill_order_bonus_x_time}."""
+    return _score_with_weights(kills, WEIGHTS, enable_trade_credit=enable_trade_credit)
+
+
+def _score_with_weights(kills, weights, enable_trade_credit=True):
+    """Same as _score, but with an explicit FormulaWeights (for trade_credit_scale)."""
     db, match, players = _build(kills)
     x_time = {}
 
@@ -29,7 +34,7 @@ def _score(kills, enable_trade_credit=True):
             x_time[kill_index] = kill["kill_order_bonus_x_time"]
 
     rows = build_impact_rows_for_match(
-        db, match.id, enable_econ_component=True, weights=WEIGHTS,
+        db, match.id, enable_econ_component=True, weights=weights,
         enable_trade_credit=enable_trade_credit, kill_observer=observer,
     )
     names = {mp.id: name for name, mp in players.items()}
@@ -99,6 +104,33 @@ def test_impact_reconciles_to_its_four_terms_with_the_credit_on():
     assert on["A1"].trade_credit > 0
     for row in on.values():
         assert row.impact == row.damage + row.leverage_component + row.econ_component + row.assists_component
+
+
+def test_trade_credit_scale_defaults_to_1_and_changes_nothing():
+    assert FormulaWeights().trade_credit_scale == 1.0
+    kills = [("B1", "A1", 10.0, "Vandal"), ("A2", "B1", 10.5, "Vandal")]
+    default_scale, _ = _score(kills)
+    explicit_scale, _ = _score_with_weights(
+        kills, FormulaWeights(damage=1.0, leverage=B, econ=2.347, assists=100.0, trade_credit_scale=1.0),
+    )
+    assert default_scale["A1"].trade_credit == explicit_scale["A1"].trade_credit
+
+
+def test_trade_credit_scale_multiplies_the_credit_independent_of_leverage():
+    kills = [("B1", "A1", 10.0, "Vandal"), ("A2", "B1", 10.5, "Vandal")]
+    full, x_time = _score_with_weights(
+        kills, FormulaWeights(damage=1.0, leverage=B, econ=2.347, assists=100.0, trade_credit_scale=1.0),
+    )
+    halved, _ = _score_with_weights(
+        kills, FormulaWeights(damage=1.0, leverage=B, econ=2.347, assists=100.0, trade_credit_scale=0.5),
+    )
+    doubled, _ = _score_with_weights(
+        kills, FormulaWeights(damage=1.0, leverage=B, econ=2.347, assists=100.0, trade_credit_scale=2.0),
+    )
+    assert halved["A1"].trade_credit == round(B * 0.5 * 0.60 * x_time[1])
+    assert doubled["A1"].trade_credit == round(B * 2.0 * 0.60 * x_time[1])
+    # The trader's own kill (leverage, not credit) is untouched by the scale.
+    assert full["A2"].leverage_component == halved["A2"].leverage_component == doubled["A2"].leverage_component
 
 
 def test_a_frozen_config_records_the_trade_credit_switch():

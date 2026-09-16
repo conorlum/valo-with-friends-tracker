@@ -198,12 +198,20 @@ class FormulaWeights:
     `damage` is the only one that also reaches the LEGACY branch, because
     `damages` is shared; the other three weight terms that exist only in the
     new structure and are inert when enable_econ_component is False.
+
+    `trade_credit_scale` multiplies trade_credit_x_time (enable_trade_credit)
+    BEFORE `leverage` does, so it stacks with B rather than replacing it: the
+    schedule's 60%-to-30% shares stay B's usual leverage-vs-other-terms ratio,
+    and this knob only turns trade credit itself up or down against that.
+    Defaults to 1.0, so a candidate that does not set it scores identically to
+    one with no scale term at all.
     """
 
     damage: float = 1.25
     leverage: float = 1.0
     econ: float = 1.0
     assists: float = 0.0
+    trade_credit_scale: float = 1.0
 
 
 _ECON_TIER_CODES = {"SAVE": 8, "ECO": 6, "FORCE": 5, "FULL_BUY": 4}
@@ -1441,7 +1449,10 @@ def build_impact_rows_for_match(
             damages = round(damage_and_assists * weights.damage)
             econ_component_value = round(weights.econ * econ_by_player.get(match_player_id, 0.0))
             assists_component_value = round(weights.assists * stat["assists"])
-            trade_credit_x_time = trade_credit_by_round.get(round_number, {}).get(match_player_id, 0.0)
+            trade_credit_x_time = (
+                trade_credit_by_round.get(round_number, {}).get(match_player_id, 0.0)
+                * weights.trade_credit_scale
+            )
             time_impact_value = round(kill_order_bonus_x_time_sum + trade_credit_x_time - death_order_bonus_x_time_sum)
             leverage_component_value = round(
                 weights.leverage * (kill_order_bonus_x_time_sum + trade_credit_x_time - death_order_bonus_x_time_sum)
