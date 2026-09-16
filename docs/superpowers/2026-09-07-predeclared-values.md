@@ -1694,3 +1694,200 @@ credit OFF versus ON, in the order declared.
    enemy-kill rule each fails its test.
 
 No adoption decision is recorded here; the owner judges these. Nothing is rescored in the database or frozen.
+
+### 2026-09-16 -- rc3: the owner's lock after measurement, and the replays declared before the freeze
+
+**What kind of entry this is.** The weights below were chosen after read-only corpus measurements at exactly these
+weights, and the credit-ON figures were shown to the owner before this entry was written. Those figures are recorded as
+measured before this entry; they are not preregistered results. What this entry declares in advance is everything still
+to come:
+- the artifacts, their contracts and their hash chain;
+- the Python 3.13 reproduction;
+- the stored-v1 comparison;
+- the measurements, the checks and the review.
+
+No adoption threshold is declared.
+
+**Owner decisions.**
+- ~~B = 3.0~~ -> **B = 2.5**; ~~C = 2.347~~ -> **C = 2.5**. A = 1 and D = 100 (flat per assist) are unchanged. Set in
+  the session of 2026-09-15/16, and confirmed on 2026-09-16 after the credit-ON measurement below.
+- **Trade credit is adopted ON**, with the rule, schedule and split declared on 2026-09-14, unchanged.
+- **`trade_credit_scale` = 1.0.** A knob that multiplies the credit before B (`FormulaWeights.trade_credit_scale`,
+  default 1.0, frozen by `impact_manifest.config_to_dict`). At 1.0 it changes no value.
+- (2026-09-16) **Two new persisted columns on `impact_scores`, in migration 0010.** Neither changes any value.
+  - `trade_credit` holds the row's existing `trade_credit` field, `round(B * trade_credit_scale * credit)`. Neither
+    `leverage_component` nor `assists_component` is stored, so without it the credit is recoverable only by replay.
+  - `scoring_version` records the `IMPACT_CALCULATION_VERSION` that wrote the row; rows written before 0010 are
+    marked 1. **It is provenance only.**
+- (2026-09-16) **Writes are enforced by a release write gate, not by the row's own version.** A row-value check cannot
+  identify the writer: a checkout whose model lacks the column can update a row that already says 3 and pass it. The
+  gate is a gate table plus statement-level triggers (including TRUNCATE) on `impact_scores` and the ingestion tables,
+  refusing any write whose connection does not carry the open release's identity. Only a verified rc3 preflight sets
+  that identity; deliberate manual fixes use a documented admin identity and are recorded here.
+- (2026-09-16) **Python 3.13 for tests, freeze and scoring.** Refreshes run only on the owner's PC; 3.13 matches the
+  Render runtime (3.13.5) and the rc2 freeze environment. The full suite gives identical results under 3.11.4 and
+  3.13.15 (1,148 passed, 1 skipped, and the same 5 failures, all environmental).
+- (2026-09-16) **Ingestion is frozen from this entry until 48 hours after activation**, held closed by the gate, so that
+  restoring the pre-activation table stays a complete rollback for that window.
+- (2026-09-16) **Measurement 7 below (stored v1 -> rc3) is the owner's last look before the freeze.** A retune after
+  seeing it requires a new declaration and new corpus runs; otherwise this lock stands.
+
+Structure unchanged: `impact = A*damage + B*leverage + C*econ + D*assists`; `enable_econ_component` true; econ model
+`buy_disruption_v2_30_80_bonus_denial`; `use_realized_swing` true; `enable_postplant_leverage` and
+`enable_preplant_empirical` false.
+
+| term | weight | at the weight (time factor 1.00) |
+|---|---:|---|
+| B, leverage | 2.5 | 5v5 first blood 375, 4v4 425, 3v3 450, 2v2 500, 1v1 625; a 4v1 cleanup 125 |
+| C, econ | 2.5 | match 1824 R17's anchor kill 479.4 (450 at C = 2.347); per-kill ceiling 554.4 (221.7426 x 2.5) |
+
+**Measured before this entry (read-only).**
+- **Scope:** all 3,125 matches (ids 1-3133, 659,500 player-rounds), production snapshot of 2026-09-16.
+- **Environment:** Python 3.11.4, code at `7f4a63b` plus the uncommitted `trade_credit_scale` change, explicit weights
+  in scratch scripts.
+- **Method:** values were saved as unkeyed arrays and compared by position.
+
+Credit OFF -> ON:
+1. **Shares.** Corpus share is each term's summed magnitude over player-matches. Median share is taken over
+   player-matches with >= 12 rounds (n 30,990).
+   - Corpus: damage 43.5 -> 41.7, leverage 37.7 -> 40.3, econ 8.9 -> 8.5, assists 9.9 -> 9.5.
+   - Median: 45.6 -> 43.7, 34.6 -> 37.3, 7.6 -> 7.3, 9.7 -> 9.3.
+   - At B = 2.5 damage still leads leverage on both (at B = 3 on 2026-09-14, leverage led).
+2. **Credit, measured through leverage.** ON minus OFF leverage, summed over player-rounds: 18,204,413. This includes
+   per-round rounding and is **not** the sum of the `trade_credit` field.
+   - It is 15.1% of positive per-round leverage with credit off (120,812,285, the 2026-09-14 basis), and 13.5% with
+     credit on (134,754,165).
+   - Net corpus leverage 30,479,853 -> 48,684,266.
+   - 105,669 player-rounds have a positive difference (16.0%), mean 172.3.
+   - The largest per-round difference is 981. It was computed separately from the same saved arrays, not printed by
+     the report.
+3. **Impact per round.** Mean 206.0 -> 233.6, sd 604.8 -> 613.6; range -1,958 to 5,416 both ways.
+4. **Ranks.** Within-match impact order, with ties broken by player id:
+   - the order changes in 2,262 of 3,125 matches (72.4%), and the top player changes in 222 (7.1%);
+   - 6,884 of 31,250 player-matches change rank (by 1: 6,055; 2: 722; 3: 97; 4: 10);
+   - impact rank against K-D rank (K-D from kill events; ties kept in the saved player-match order): identical
+     45.4% -> 41.1%, within one place 80.8% -> 76.9%.
+5. **Impact movement, which is not a rank statistic.** 29,892 player-match impact values increase, 1,358 are unchanged,
+   and none decrease.
+6. **Checks, by position.** Damage, econ and assists are identical OFF vs ON on every row. The impact change equals the
+   leverage change on every row, and impact equals its four terms on every row. Zero negative damage; no failed
+   matches.
+
+**Consistency with 2026-09-14.** That entry measured the credit two ways over 3,124 matches:
+- the sum of the row field, 21,837,543;
+- ON minus OFF leverage, 21,837,990 (58,398,637 - 36,560,647).
+
+Rescaled from B = 3 to B = 2.5, the second is 18,198,325. Today's 18,204,413 exceeds it by 6,088, which is consistent
+with match 3133's rows plus rescaling rounding. The 2026-09-14 corpus excluded match 3133, which has no stored
+`impact_scores` rows (ingested 2026-09-10, never scored); this corpus includes it.
+
+**Declared cohort.** 3,125 matches, ids 1-3133, 659,500 player-rounds. If a match is ingested before the freeze anyway,
+every result for this cohort is kept and additions are reported separately.
+
+**Declared artifacts.** Three contracts, none of them re-derived from `PERSISTED_FIELDS` at run time.
+1. **Comparison projection** -- the only thing the chain below compares. One CSV row per
+   `(round_id, match_player_id)` over the cohort, sorted by key; the ordered header is recorded once at commit A (every
+   field in `PERSISTED_FIELDS` there, plus `trade_credit`, `leverage_component`, `assists_component`);
+   `scoring_version` is excluded, because it legitimately differs between review (2) and activation (3). Identified by
+   SHA-256.
+2. **Load projection** -- exactly the table's columns, including `trade_credit` and `scoring_version`, with
+   `scoring_version = 3` asserted on every row before the swap, and verified by reading the built table back through
+   the same serializer.
+3. **Inputs and diagnostics** -- `match_source_fingerprint` for all 3,125 matches, computed inside the export's
+   `REPEATABLE READ` snapshot, with counts, max match id, snapshot id and database name; the interpreter build and
+   `pip freeze`; and the K-D counts, read from `kill_events` in that same snapshot.
+
+One canonical serialization is used on both sides: UTF-8, LF, fixed column order, integers without separators, SQL NULL
+distinct from JSON null, and `trade_detail` written as recursive canonical JSON with sorted keys.
+
+**Declared chain.** Commit A is the first commit after this entry (the `trade_credit_scale` change and the exporter).
+Commit B completes the implementation. Commit C is the freeze.
+- K1: Python 3.11, commit A, explicit weights.
+- K2: Python 3.13, commit A. **Prediction, recorded before the run: K2's comparison hash equals K1's.**
+- K3: Python 3.13, commit B, the declared `impact_rc3` comparator. Must equal K1.
+- K4: Python 3.13, commit C, `config_from_manifest`. Must equal K1.
+- K5: Python 3.13, the activation commit. Must equal K1, and K5's load projection is what production receives.
+
+A credit-OFF export is produced at commit A and at commit B, in the same configuration with only
+`enable_trade_credit` false; OFF(B) must equal OFF(A). Matching ON hashes do **not** by themselves establish the
+OFF-derived measurements, which is why the OFF pair is declared here.
+
+A mismatch at any link stops the next step. An explanation does not pass it: the mismatch is eliminated, or this entry
+is re-declared.
+
+**Declared measurements.** Measurements 1-6 are computed from K2 with OFF(A) for the last look, and recomputed from K3
+with OFF(B) for the RESULT entry; the ON chain fixes the ON side, and the OFF pair fixes the OFF side. Measurement 7 is
+computed from K2 against the stored rows.
+1. Shares, by the definitions above.
+2. Credit, as two separately named measures plus the difference between them:
+   - (a) **leverage difference**: ON minus OFF leverage summed over player-rounds, its share of positive leverage
+     (credit-off basis), and the player-rounds with a positive difference;
+   - (b) **persisted credit**: the sum of the `trade_credit` field, and the player-rounds with a nonzero value.
+
+   Event-level credit measures (credited deaths, and credit per credited death by trade second) are **not** re-measured
+   for rc3. The rule is unchanged since 2026-09-14, which measured them at B = 3; at B = 2.5 they scale by 2.5/3 up to
+   rounding. The scorer's kill observer runs before the credit is split, so producing them would mean changing a
+   hashed source before the freeze.
+3. Impact per round: mean and standard deviation to 0.1; negative-damage player-rounds.
+4. Sanity and ranks: 10 players in every match; the round-count profile; impact rank against K-D rank; OFF -> ON rank
+   changes; and, reported separately from rank movement, the count of player-matches whose impact rises, is unchanged
+   or falls. Tie rules and the K-D source are as above.
+5. Checksums: row count, per-column sums, the comparison hash and the load-projection hash.
+6. The largest absolute value in every smallint column, `trade_credit` included, and the largest per-round credit under
+   both definitions in measurement 2.
+7. **Stored v1 -> rc3, the owner's last look.** Over the 3,124 matches with stored rows:
+   - per-player-match rank changes within each match (ties by player id);
+   - matches whose top player changes;
+   - the per-match Spearman correlation;
+   - for each tracked player, average impact per round under v1 and under rc3, and their rank among tracked players.
+
+   Match 3133 is reported separately.
+
+**Declared review checks** (recorded in `SUMMARY.md`, as for rc2):
+1. Source fingerprints match for the 13 declared matches: 3104, the fixed ten (3129, 3130, 3131, 3113, 3118, 3121,
+   3114, 3115, 3116, 3117), 3120 and 3133; and the whole-cohort input fingerprint is unchanged between export and
+   load.
+2. `verify_manifest` passes, and every configuration value is exact, including `enable_trade_credit: true` and
+   `trade_credit_scale: 1.0`. The release comparator is the declared `impact_rc3`, so a manifest missing
+   `enable_trade_credit` fails identity.
+3. The chain holds (K4 = K1, OFF(B) = OFF(A)). Zero input failures; impact equals its four terms on every row; zero
+   negative damage; smallint maxima in range.
+4. The decomposition check. Raw econ equals the rc2 configuration's raw econ, and every term equals its weight times its
+   raw value after the scorer's rounding.
+5. The site, fixed-ten and trace reviews reconcile under four-term identities wherever they total impact. Their
+   "Before" is the stored production value, with the legacy replay shown separately, and `scoring_version` is compared
+   explicitly rather than ignored.
+6. Each reinstated defect is caught:
+   - the credit flag dropped from the manifest;
+   - the scale ignored;
+   - the leverage weight applied to the econ term, tested with unequal weights (swapping B and C cannot be detected
+     while B = C);
+   - D left out of `impact`;
+   - credit paid to the trader instead of the traded player;
+   - the credit schedule reversed;
+   - a three-term identity restored anywhere in the review;
+   - `trade_credit` or `scoring_version` left out of the persisted fields (caught against the model's columns, not the
+     shared list);
+   - one row of the built table altered;
+   - a swap killed mid-transaction (production must be unchanged);
+   - **a real pre-0010 checkout updating a row that already says 3** (refused by the gate, which a row-value check
+     would have allowed), and an ingestion run with no identity (refused at its first insert, nothing committed).
+7. `review-results.json` covers the 13 declared matches, with its field list recorded and validated on read, and is
+   compared against the built table before the swap.
+8. The full suite passes under Python 3.13 with database tests against the rehearsal database, except failures
+   confirmed environmental and listed.
+9. A rehearsal on a scratch database on the Render instance, restored from a fresh production backup, covers:
+   - migrations and the gate install;
+   - export, build, verify, swap, rollback and re-swap;
+   - the gate tests above;
+   - page loads that miss the cache during a forward and a rollback swap, with the longest stalled request recorded;
+   - prewarm coverage including cache-blob validity;
+   - review of PR #67's non-scoring pages;
+   - the PR #67 rollback path.
+
+   Every duration is recorded.
+
+**What this entry does NOT do.** No code, manifest, migration or database row is changed by it. `ACTIVE_MANIFEST` stays
+None, and `IMPACT_CALCULATION_VERSION` stays 2 on the branch (1 on `main`, which produced every stored row). rc2 stays
+frozen, inactive and unverifiable. No adoption threshold is declared: the owner judges the measurements, the last look
+and the review.
