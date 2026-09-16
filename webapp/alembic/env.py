@@ -5,6 +5,7 @@ from sqlalchemy import engine_from_config, pool
 
 from app.config import settings
 from app.db import Base
+from app.migration_guards import migration_connect_args
 from app import models  # noqa: F401 - ensures all models are registered on Base.metadata
 
 config = context.config
@@ -29,10 +30,15 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    # The bounds ride in on the connection (see app/migration_guards.py): running
+    # them as statements here would autobegin a transaction and silently discard
+    # the migration's commit. Render's build runs `alembic upgrade head` on every
+    # deploy, so it is bounded by exactly the same rule as a hand-run migration.
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=migration_connect_args(config.get_main_option("sqlalchemy.url")),
     )
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)

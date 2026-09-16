@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerSpend, RoundPlayerStat
 from app.models.match import MatchSource, Team
 from app.scoring.impact import compute_impact_for_match, find_unscored_match_ids
+from app.scoring.ingest_preflight import verify_ingest_preflight
 from app.services.player_view_cache import find_cached_player_ids_for_match, invalidate_player_cache
 from app.services.site_stats_cache import invalidate_site_stats_cache
 
@@ -412,6 +413,10 @@ def _dedup_and_ingest(db: Session, page: Page, match_ids: list[str]) -> set[int]
     invalidated -- callers batch a deferred pre-warm over this set rather than
     recomputing per match (a player appearing in N ingested matches would
     otherwise be recomputed N times)."""
+    # Before the first load_match commit, not after it: a checkout that cannot
+    # score must not leave a committed, unscored match behind (match 3133).
+    verify_ingest_preflight(db)
+
     new_ids = []
     for match_id in match_ids:
         if db.query(Match).filter_by(external_id=match_id).one_or_none() is not None:
@@ -466,6 +471,10 @@ def backfill_unscored_matches(db: Session) -> set[int]:
     of player IDs whose cache rows were invalidated, same contract as
     _dedup_and_ingest, so callers can fold it into the same pre-warm batch.
     """
+    # This function's first act used to be committing cache deletions, which a
+    # checkout that could not then score left deleted. Refuse first.
+    verify_ingest_preflight(db)
+
     unscored_match_ids = find_unscored_match_ids(db)
     dirty: set[int] = set()
     for match_id in unscored_match_ids:

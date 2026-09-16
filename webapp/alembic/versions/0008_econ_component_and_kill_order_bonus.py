@@ -20,19 +20,24 @@ migration once nothing reads them (econ spec, "Persistence and rollout").
     kill_order_bonus_x_time over kills minus deaths. The evaluation harness
     derives time_delta = time_impact - kill_order_bonus from this column by
     subtraction rather than storing time_delta itself (econ spec section
-    8c-i). Backfilled from the existing kill/death event data via the same
-    per-kill kill_order_bonus/death_order_bonus values compute_impact_for_
-    match already uses -- NOT re-derivable from the other stored columns
-    (kill_impact/death_impact bake in the 1.25 damage multiplier and the
-    FACTOR_WEIGHTS division, which kill_order_bonus must not carry).
+    8c-i). This migration only adds the column as 0: the real values come
+    from a rescore, because they are NOT re-derivable from the other stored
+    columns (kill_impact/death_impact bake in the 1.25 damage multiplier and
+    the FACTOR_WEIGHTS division, which kill_order_bonus must not carry). An
+    earlier version of this note claimed the migration backfilled them from
+    the kill/death events; it never did.
   - econ_component, econ_pickup: the new econ component (section 6) and the
     gated weapon-pickup extension (section 11). Both are 0 for every
     existing row -- the component's real computation is a separate change --
     so no backfill is needed here beyond the column default.
 
-Small, additive columns on a table this size (impact_scores) take a SHARE
-lock for the ALTER, consistent with 0007's index additions -- no full
-rewrite like 0006's column-unpacking migration needed one.
+Each ALTER takes ACCESS EXCLUSIVE on impact_scores, not a SHARE lock as an
+earlier version of this note said. It is brief -- adding a NOT NULL column
+with a constant default is catalogue-only on PG 11+, so there is no full
+rewrite like 0006's column-unpacking migration -- but it does queue behind
+every open reader, and every later reader queues behind it. alembic/env.py
+therefore bounds migrations with lock_timeout and statement_timeout, so a
+migration that cannot take its lock fails instead of stalling the site.
 """
 from typing import Sequence, Union
 

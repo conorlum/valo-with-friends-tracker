@@ -88,6 +88,40 @@ COMPARISON_HEADER = (
 EXCLUDED_FROM_COMPARISON = ("scoring_version",)
 
 
+def load_columns() -> tuple[str, ...]:
+    """Contract (b), the load projection: exactly the table's columns, in the
+    table's own order.
+
+    Unlike the comparison header this one IS derived, and must be: it has to
+    match whatever `impact_scores` looks like at the moment rows are loaded into
+    a copy of it. The two contracts are separate for this reason -- the
+    comparison must not move when the table gains a column, and the load must.
+    """
+    from app.models import ImpactScore
+
+    return tuple(column.name for column in ImpactScore.__table__.columns)
+
+
+def load_row_fields(row) -> list[str]:
+    return [render_field(getattr(row, name)) for name in load_columns()]
+
+
+def write_load_artifact(rows, path) -> dict:
+    """The CSV that is COPYed into the replacement table."""
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
+    writer.writerow(load_columns())
+    count = 0
+    for row in sorted(rows, key=sort_key):
+        writer.writerow(load_row_fields(row))
+        count += 1
+    payload = buffer.getvalue().encode("utf-8")
+    with open(path, "wb") as handle:
+        handle.write(payload)
+    return {"sha256": hashlib.sha256(payload).hexdigest(), "rows": count, "bytes": len(payload),
+            "columns": list(load_columns())}
+
+
 def canonical_json(value) -> str:
     """The one JSON form used on both sides of every comparison.
 
@@ -228,6 +262,8 @@ def main(argv=None) -> int:
     parser.add_argument("--weights", default="1.0,2.5,2.5,100.0,1.0",
                         help="A,B,C,D,trade_credit_scale (default: the locked rc3 weights)")
     parser.add_argument("--matches", help="comma-separated match ids (default: every match)")
+    parser.add_argument("--projection", choices=("comparison", "both"), default="comparison",
+                        help="'both' also writes <label>.load.csv, the projection the swap loads")
     parser.add_argument("--no-fingerprints", action="store_true",
                         help="skip contract (c) source fingerprints -- rehearsals only")
     args = parser.parse_args(argv)
@@ -257,6 +293,13 @@ def main(argv=None) -> int:
         written = write_artifact(rows, artifact_path)
         print(f"  scored {written['rows']:,} player-rounds in {(time.time() - started) / 60:.1f} min",
               flush=True)
+        load_written = None
+        if args.projection == "both":
+            load_path = os.path.join(args.out, f"{args.label}.load.csv")
+            load_written = write_load_artifact(rows, load_path)
+            load_written["file"] = os.path.basename(load_path)
+            print(f"  load projection: {load_written['rows']:,} rows, "
+                  f"sha256 {load_written['sha256']}", flush=True)
 
         inputs = _inputs(db, match_ids, fingerprints=not args.no_fingerprints)
         db.rollback()
@@ -280,6 +323,7 @@ def main(argv=None) -> int:
             "impact_calculation_version": impact_module.IMPACT_CALCULATION_VERSION,
         },
         "artifact": {"file": os.path.basename(artifact_path), **written},
+        "load_artifact": load_written,
         "inputs": inputs,
         "environment": _environment(),
         "minutes": round((time.time() - started) / 60, 2),

@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import text
 
 from app.scoring.impact import FACTOR_WEIGHTS
+from tests._postgres import postgres_session_or_skip
 
 # impact.py round()s kill_impact, death_impact and each component
 # independently, so exact equality is not expected.
@@ -20,12 +21,8 @@ TOLERANCE = 2
 
 
 def _session():
-    try:
-        from app.db import SessionLocal
-
-        return SessionLocal()
-    except Exception as exc:  # pragma: no cover - environment dependent
-        pytest.skip(f"no database available: {exc}")
+    # A disposable test database only (tests/_postgres.py).
+    return postgres_session_or_skip()
 
 
 def test_impact_reconstructs_from_stored_components():

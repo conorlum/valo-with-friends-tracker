@@ -46,12 +46,14 @@ class _SpyDB:
 
 @pytest.fixture
 def db_session():
+    # A disposable test database only: this module calls the scorer's
+    # committing wrapper, so a fixture that reached `.env` could rescore real
+    # matches. See tests/_postgres.py.
+    db = postgres_session_or_skip()
     try:
-        from app.db import SessionLocal
-
-        db = SessionLocal()
         db.query(ImpactScore.round_id).limit(1).scalar()
     except Exception as exc:  # pragma: no cover - environment dependent
+        db.close()
         pytest.skip(f"no database available: {exc}")
     yield db
     db.close()
@@ -116,6 +118,7 @@ def test_builder_matches_stored_values(db_session):
 
 
 import app.scoring.impact as impact_module
+from tests._postgres import postgres_session_or_skip
 
 
 def test_wrapper_still_persists_and_commits(db_and_match, monkeypatch):

@@ -68,6 +68,7 @@ SEPARATE_ECON_LEGACY = bd.MODEL_SEPARATE_ECON_LEGACY
 V2_WEALTH = bd.MODEL_V2_WEALTH
 V2_30_80 = bd.MODEL_V2_30_80
 V2_30_80_BONUS = bd.MODEL_V2_30_80_BONUS_DENIAL
+RC3 = "impact_rc3"
 
 COMPARATORS = {
     # The current runtime formula. Its REPLAY and the PERSISTED site values are
@@ -84,6 +85,17 @@ COMPARATORS = {
     # outside half-round 2 and for victims on the pistol-losing team.
     V2_30_80_BONUS: ImpactScoringConfig(V2_30_80_BONUS, enable_econ_component=True,
                                         econ_model=bd.MODEL_V2_30_80_BONUS_DENIAL),
+    # The rc3 release candidate: the owner's locked weights with the trade credit
+    # ON, declared 2026-09-16 in docs/superpowers/2026-09-07-predeclared-values.md.
+    # Declaring it HERE, and not only inside the frozen file, is what lets
+    # verify_manifest reject a manifest whose release configuration has drifted
+    # from the code -- including one that merely omits enable_trade_credit, which
+    # config_from_dict would otherwise read as False and ship the wrong scoring.
+    RC3: ImpactScoringConfig(RC3, enable_econ_component=True,
+                             econ_model=bd.MODEL_V2_30_80_BONUS_DENIAL,
+                             weights=impact.FormulaWeights(damage=1.0, leverage=2.5, econ=2.5,
+                                                           assists=100.0, trade_credit_scale=1.0),
+                             enable_trade_credit=True),
 }
 
 
@@ -129,7 +141,12 @@ def current_code_identity() -> dict:
         "econ_scale": econ_component.ECON_SCALE,
         "calculator_constants": {name: getattr(bd, name) for name in CALCULATOR_CONSTANT_NAMES},
         "trade": {"cost_schedule": [list(step) for step in impact.TRADE_COST_SCHEDULE],
-                  "window_seconds": impact.TRADE_WINDOW_SECONDS},
+                  "window_seconds": impact.TRADE_WINDOW_SECONDS,
+                  # The credit schedule is a declared value, so it belongs in the
+                  # identity in readable form. Until now only impact.py's source
+                  # digest covered it, which says "something changed" rather than
+                  # what the frozen shares actually were.
+                  "credit_schedule": [list(step) for step in impact.TRADE_CREDIT_SCHEDULE]},
         "agent_free_ability_credits": allowances,
         "agent_free_ability_credits_sha256": _canonical_sha256(allowances),
         "source_digests": {p: behavioral_source_digest(WEBAPP_ROOT / p) for p in HASHED_SOURCES},
@@ -226,6 +243,34 @@ _BONUS_FORMULA_CHANGE = (
 )
 
 
+def _weights_and_credit_changes(release_comparator: str) -> tuple[str, ...]:
+    """The weights and trade-credit lines of `formula_changes_vs_live_legacy`,
+    derived from the comparator actually being released.
+
+    They used to be hard-coded as "A(damage)=1.25, B=1.0, C=1.0" and "trade
+    discount: unchanged", which was true for rc2 and silently false for anything
+    else. A frozen manifest that misdescribes what it freezes is worse than one
+    that says nothing, because the review reads it as the change summary.
+    """
+    config = COMPARATORS.get(release_comparator)
+    if config is None:
+        return (f"weights: release comparator {release_comparator!r} is not declared in code",)
+    weights = config.weights
+    lines = [
+        f"weights: A(damage)={weights.damage}, B(leverage)={weights.leverage}, "
+        f"C(econ)={weights.econ}, D(assists)={weights.assists}; ECON_SCALE unchanged",
+    ]
+    if config.enable_trade_credit:
+        lines.append(
+            f"trade credit: ON at scale {weights.trade_credit_scale} -- a player who is traded is "
+            "credited a share of the trade kill's leverage on the declared schedule, added on top "
+            "of the trader; the trade discount itself is unchanged")
+    else:
+        lines.append("trade discount: unchanged (the declared cost schedule and 6s window); "
+                     "trade credit OFF")
+    return tuple(lines)
+
+
 def build_manifest(*, candidate_id: str, created: str, scorer_revision: str,
                    activation_impact_calculation_version: int, source_snapshots: dict,
                    release_comparator: str = V2_30_80, notes=()) -> dict:
@@ -247,8 +292,7 @@ def build_manifest(*, candidate_id: str, created: str, scorer_revision: str,
             *(_BONUS_FORMULA_CHANGE if release_comparator == V2_30_80_BONUS else ()),
             "columns: econ_impact and swing_impact are written 0; econ_component is signed",
             "timing: unchanged legacy time factor (post-plant table and pre-plant curve OFF)",
-            "trade discount: unchanged (the declared cost schedule and 6s window)",
-            "weights: A(damage)=1.25, B(leverage)=1.0, C(econ)=1.0; ECON_SCALE unchanged",
+            *_weights_and_credit_changes(release_comparator),
         ],
         "timing": {"postplant_leverage": False, "preplant_empirical": False,
                    "postplant_table_sha256": None, "preplant_centering_c": None},

@@ -11,6 +11,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings
 from app.db import get_db
+from app.maintenance import maintenance_middleware
 from app.routers import auth, friends, map_prediction, matches, players, sessions, site_stats, squad
 from app.services.auth import get_current_player
 from app.templates import templates
@@ -21,6 +22,9 @@ from app.templates import templates
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 app = FastAPI(title="ValoWithFriendsTracker")
+# Blocks every page but /health while MAINTENANCE_MODE is set, so a rollback can
+# stop traffic without depending on how the platform behaves while suspended.
+app.middleware("http")(maintenance_middleware)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.session_secret,

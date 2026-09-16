@@ -79,6 +79,19 @@ class ImpactScore(Base):
     econ_component: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     econ_pickup: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
 
+    # Migration 0010 (declared 2026-09-16 in the ledger). trade_credit is
+    # B * trade_credit_scale * credit as it enters leverage_component, which is
+    # itself not stored -- without it the credit can only be recovered by
+    # replaying the frozen code.
+    #
+    # scoring_version is the IMPACT_CALCULATION_VERSION that wrote the row (the
+    # rows that predate this migration: 1). It is PROVENANCE, not a guard: a
+    # checkout whose model lacks the column can update a row that already says 3
+    # and leave it saying 3. Which build may write is enforced by the release
+    # write gate's triggers, which read the writer's connection, not the row.
+    trade_credit: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    scoring_version: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+
     # The only part of the old breakdown that stays JSON: the two per-teammate
     # maps of match_player_id -> count. Both are empty on 64.1% of rows, which
     # is stored as NULL rather than two empty objects.

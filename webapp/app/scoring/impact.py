@@ -62,6 +62,10 @@ class CalculatedImpact:
     econ_pickup: int = 0
     # NOT persisted, like leverage_component: D * assists as it enters `impact`.
     assists_component: int = 0
+    # Persisted from migration 0010: the IMPACT_CALCULATION_VERSION that
+    # computed this row, stamped by the builder below. Provenance for stored
+    # rows -- the release write gate, not this value, decides who may write.
+    scoring_version: int = 0
     # NOT persisted: B * the trade credit, the part of leverage_component paid
     # for being traded (enable_trade_credit).
     trade_credit: int = 0
@@ -1515,6 +1519,7 @@ def build_impact_rows_for_match(
                     leverage_component=leverage_component_value if enable_econ_component else 0,
                     assists_component=assists_component_value if enable_econ_component else 0,
                     trade_credit=round(weights.leverage * trade_credit_x_time),
+                    scoring_version=IMPACT_CALCULATION_VERSION,
                     # econ_impact and swing_impact keep their columns but are
                     # written as 0 once the new structure is live -- they left
                     # the formula, and redefining a column consumers read by
@@ -1555,6 +1560,10 @@ _PERSISTED_FIELDS = (
     "clutch_death", "post_plant_kill", "post_plant_death", "traded_teammate",
     "traded_by_teammate", "trade_detail", "kill_order_bonus", "econ_component",
     "econ_pickup",
+    # Migration 0010. tests/test_impact_persistence_contract.py holds this list
+    # to the model's own columns, so a column added without its field here (or
+    # the reverse) fails independently of anything that reads this tuple.
+    "trade_credit", "scoring_version",
 )
 
 # Public alias for tooling that must compare EVERY persisted value (the
