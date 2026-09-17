@@ -6,11 +6,13 @@ decomposition check to disagree.
 """
 
 import math
+from dataclasses import replace
 
 
 from app.models import RoundPlayerStat
 from app.models.match import Team
 from app.scoring import impact
+from app.scoring.impact import FormulaWeights
 from app.scoring.impact_manifest import COMPARATORS, RC3, V2_30_80_BONUS
 from scripts import compare_rc3_decomposition as decomposition
 from tests.buy_disruption_fixtures import build_match, session
@@ -105,3 +107,42 @@ def test_a_self_inflicted_trade_pays_no_credit():
          "kill_order_bonus_x_time": 90},
     ]
     assert decomposition.independent_trade_credits(kills, team_of) == {}
+
+
+def test_a_scorer_that_applies_the_weights_to_the_wrong_terms_is_caught(monkeypatch):
+    """Declared defect reinstatement: the leverage weight applied to the econ
+    term. rc3 ships B = C = 2.5, where swapping them changes nothing anyone can
+    see, so this reinstates the defect under unequal weights."""
+    db, match, _ = _match()
+    unequal = replace(RC3_CONFIG, weights=FormulaWeights(
+        damage=1.0, leverage=2.5, econ=3.5, assists=100.0, trade_credit_scale=1.0))
+    real = decomposition.build_impact_rows_for_match
+
+    def swaps_the_weights(database, match_id, **kwargs):
+        weights = kwargs["weights"]
+        kwargs["weights"] = replace(weights, leverage=weights.econ, econ=weights.leverage)
+        return real(database, match_id, **kwargs)
+
+    monkeypatch.setattr(decomposition, "build_impact_rows_for_match", swaps_the_weights)
+    _, mismatches = decomposition.check_match(db, match.id, unequal, RC2_CONFIG)
+
+    assert any("C*econ" in m for m in mismatches)
+    assert any("B*leverage" in m for m in mismatches)
+
+
+def test_a_scorer_that_drops_the_assists_term_from_impact_is_caught(monkeypatch):
+    """Declared defect reinstatement: D left out of impact. The term is still
+    computed and still stored, so only the identity notices."""
+    db, match, _ = _match()
+    real = decomposition.build_impact_rows_for_match
+
+    def forgets_assists(database, match_id, **kwargs):
+        rows = real(database, match_id, **kwargs)
+        for row in rows:
+            row.impact -= row.assists_component
+        return rows
+
+    monkeypatch.setattr(decomposition, "build_impact_rows_for_match", forgets_assists)
+    _, mismatches = decomposition.check_match(db, match.id, RC3_CONFIG, RC2_CONFIG)
+
+    assert any("identity" in m for m in mismatches)
