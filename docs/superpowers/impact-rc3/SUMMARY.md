@@ -130,6 +130,10 @@ another manifest.
 At the reviewed code: **1,251 passed, 63 skipped, 0 failed** under Python 3.11 offline, and **1,301 passed, 13
 skipped, 0 failed** under Python 3.13 with the database tests enabled. No failure is tolerated or explained away.
 
+Re-measured at the tip on 2026-09-17: **1,255 / 63 / 0** and **1,305 / 13 / 0**. Both are +4, reconciling exactly —
+two tests landed after the freeze and two are the write-guard tests added with `1e0b722`. The skip counts are
+unchanged, so nothing became a silent skip.
+
 The 13 skips are analysis tests that measure the real corpus (stage C0, leverage gates, ex-ante swing,
 reconstruction), which skip when the database they are pointed at has no matches.
 
