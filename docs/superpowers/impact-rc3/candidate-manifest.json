@@ -1,0 +1,323 @@
+{
+  "manifest_version": 1,
+  "candidate_id": "impact-rc3",
+  "created": "2026-09-17T10:03:34+00:00",
+  "status": "frozen_for_review",
+  "release_comparator": "impact_rc3",
+  "site_comparison": [
+    "live_legacy",
+    "impact_rc3"
+  ],
+  "penalty_comparison": [
+    "buy_disruption_v2_wealth",
+    "buy_disruption_v2_30_80"
+  ],
+  "diagnostic_comparators": [
+    "separate_econ_legacy"
+  ],
+  "comparators": {
+    "live_legacy": {
+      "config_id": "live_legacy",
+      "use_realized_swing": true,
+      "enable_econ_component": false,
+      "econ_model": null,
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0,
+        "assists": 0.0,
+        "trade_credit_scale": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false,
+      "enable_trade_credit": false
+    },
+    "separate_econ_legacy": {
+      "config_id": "separate_econ_legacy",
+      "use_realized_swing": true,
+      "enable_econ_component": true,
+      "econ_model": "separate_econ_legacy",
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0,
+        "assists": 0.0,
+        "trade_credit_scale": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false,
+      "enable_trade_credit": false
+    },
+    "buy_disruption_v2_wealth": {
+      "config_id": "buy_disruption_v2_wealth",
+      "use_realized_swing": true,
+      "enable_econ_component": true,
+      "econ_model": "buy_disruption_v2_wealth",
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0,
+        "assists": 0.0,
+        "trade_credit_scale": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false,
+      "enable_trade_credit": false
+    },
+    "buy_disruption_v2_30_80": {
+      "config_id": "buy_disruption_v2_30_80",
+      "use_realized_swing": true,
+      "enable_econ_component": true,
+      "econ_model": "buy_disruption_v2_30_80",
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0,
+        "assists": 0.0,
+        "trade_credit_scale": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false,
+      "enable_trade_credit": false
+    },
+    "buy_disruption_v2_30_80_bonus_denial": {
+      "config_id": "buy_disruption_v2_30_80_bonus_denial",
+      "use_realized_swing": true,
+      "enable_econ_component": true,
+      "econ_model": "buy_disruption_v2_30_80_bonus_denial",
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0,
+        "assists": 0.0,
+        "trade_credit_scale": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false,
+      "enable_trade_credit": false
+    },
+    "impact_rc3": {
+      "config_id": "impact_rc3",
+      "use_realized_swing": true,
+      "enable_econ_component": true,
+      "econ_model": "buy_disruption_v2_30_80_bonus_denial",
+      "weights": {
+        "damage": 1.0,
+        "leverage": 2.5,
+        "econ": 2.5,
+        "assists": 100.0,
+        "trade_credit_scale": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false,
+      "enable_trade_credit": true
+    }
+  },
+  "formula_changes_vs_live_legacy": [
+    "structure: impact = A*damage + B*leverage + C*econ_component replaces damage + mean(econ, time, swing) kill-order products",
+    "economy: the legacy econ-differential and swing factors leave leverage; econ is the separate buy-disruption component with 30%/80% death debits",
+    "columns: econ_impact and swing_impact are written 0; econ_component is signed",
+    "timing: unchanged legacy time factor (post-plant table and pre-plant curve OFF)",
+    "weights: A(damage)=1.0, B(leverage)=2.5, C(econ)=2.5, D(assists)=100.0; ECON_SCALE unchanged",
+    "trade credit: ON at scale 1.0 -- a player who is traded is credited a share of the trade kill's leverage on the declared schedule, added on top of the trader; the trade discount itself is unchanged"
+  ],
+  "timing": {
+    "postplant_leverage": false,
+    "preplant_empirical": false,
+    "postplant_table_sha256": null,
+    "preplant_centering_c": null
+  },
+  "impact_calculation_version_at_freeze": 2,
+  "activation_impact_calculation_version": 3,
+  "scorer_revision": "68a9dc819ecf05ade66e994fb3311f4bb9f90b77",
+  "source_snapshots": {
+    "matches": {
+      "3104": "4564a9e44ec195c1f41f4cd0fabd79db2ce3780e9d1d4bafec8a762f695ac2ab",
+      "3129": "9a67e5255ff8fc2dd8ebd225b5c7c47f553e8f7f8d483eb67369c1d6db34f963",
+      "3130": "f6b0a2af908ab9f747f5ba303851ca93da94340cb38796da98a336160a8b7e20",
+      "3131": "f9f9ea06fe52039a79c7046d3947cdfa522d9c30437179532aaa408844cc8898",
+      "3113": "7c2ae5e1d17d81b0929deccdd5749edf4952d378651166f209e74ea9db61773c",
+      "3118": "9bea3edae6469c3b7f0e6cdfff1817571b6eb8a2f0839b4e1ab683332cadcc9e",
+      "3121": "87b251634f7a7d95558873303344702fc85b0f4f2afb70097ef2c991a6e89685",
+      "3114": "7401ac795fd71141874446ee3110fdd3a1276f2474bd109ebf066cbcfc0e1b2d",
+      "3115": "42d5e7274490e975257a398dbdef0c9d93743b6fc1990768bba6b7eac5256086",
+      "3116": "05ad92d2b95972092b5f8d54504e19f492246a409fe01ba9417e675fe94d022a",
+      "3117": "7d2e7c4d745e41bd2d71ab208c2cac86ed9db4321f7c064e69bb26f522d80b3b",
+      "3120": "760dde4475e03865781cac641d0a168ecaf10f7b09fdd9f4a885d50aadd15e25",
+      "3133": "3ed3ec9a987ce9cfcfb74ae1173c39fb2d740098a439c85c609ebd5a41359c32"
+    }
+  },
+  "notes": [],
+  "python": "3.13",
+  "econ_scale": 1007.9209,
+  "calculator_constants": {
+    "AUDIT_VERSION": 1,
+    "TARGET_KIT": 3900.0,
+    "TEAM_REFERENCE": 19500.0,
+    "BACKGROUND": 0.1,
+    "DISRUPTION": 1.0,
+    "ACTIVATION_GAP": 3900.0,
+    "CARRYOVER_FLOOR": 1000.0,
+    "ABSORBED_RATE": 0.3,
+    "DISRUPTED_RATE": 0.8,
+    "WEALTH_ZERO_AT": 6300.0,
+    "WEALTH_CEILING": 1.5,
+    "ROSTER_SIZE": 5,
+    "BONUS_AUDIT_VERSION": 2,
+    "BONUS_DENIAL_THRESHOLD": 1500.0,
+    "SWING_VALUE_PER_CREDIT": 1.1,
+    "BONUS_WON_FACTOR": 0.8,
+    "BONUS_LOST_FACTOR": 1.0,
+    "SURVIVED_LOSS_REWARD": 1000.0
+  },
+  "trade": {
+    "cost_schedule": [
+      [
+        1.0,
+        0.05
+      ],
+      [
+        2.0,
+        0.1
+      ],
+      [
+        3.0,
+        0.17
+      ],
+      [
+        4.0,
+        0.35
+      ],
+      [
+        5.0,
+        0.5
+      ],
+      [
+        6.0,
+        0.75
+      ]
+    ],
+    "window_seconds": 6.0,
+    "credit_schedule": [
+      [
+        1.0,
+        0.6
+      ],
+      [
+        2.0,
+        0.54
+      ],
+      [
+        3.0,
+        0.48
+      ],
+      [
+        4.0,
+        0.42
+      ],
+      [
+        5.0,
+        0.36
+      ],
+      [
+        6.0,
+        0.3
+      ]
+    ]
+  },
+  "agent_free_ability_credits": {
+    "astra": 150,
+    "brimstone": 100,
+    "clove": 150,
+    "miks": 100,
+    "omen": 150,
+    "phoenix": 250,
+    "reyna": 250,
+    "skye": 250,
+    "tejo": 150,
+    "yoru": 150
+  },
+  "agent_free_ability_credits_sha256": "b972dbf1ac67ce966db2a0c570f741983b38a000c1085f9ad650dff78ad89bb8",
+  "source_digests": {
+    "app/scoring/impact.py": "da61459ab8bf73ea9f323cebe14a2119be09c04a67ce35f2910742a9d94f99e8",
+    "app/scoring/impact_config.py": "ded0cf62f17256fc4b520fafac4ef21f58f0f54743369e7fbfd59b484ae6f445",
+    "app/scoring/econ_buy_disruption.py": "cfa97b9cb7e8db3f62b92737282e4e9e185c0f8a10156f3ae8d636ee0bf1d52b",
+    "app/scoring/econ_component.py": "94632e65f9cae930c0d8fde1a47a33112b32cb973af608f4ce65cb9a752e6ae8",
+    "app/scoring/weapon_prices.py": "c53cf06bf24ec7369bdfb7abb683a3b07efd0a58139f25e435b991bdaf400a14",
+    "app/scoring/round_rewards.py": "e2705156aad6dfd90d107a209f94ade1e3cb88e058ec4858900d99299fef7576",
+    "app/scoring/agent_economy.py": "94f6f4b009d708d517cc8cc90ca67ac1b5dc06280c980f218708e2a39045a56d",
+    "app/scoring/plant_window.py": "d14749551f65e1e43ed0da94504e214044674cbabb2ec6a1e7ef2c2bc962a93b",
+    "app/scoring/preplant_empirical_factor.py": "bf1eeb8cb83197ea483078c1557b33b5bee1acc66bf447190da2407c61d6a23c",
+    "app/models/match.py": "4019f0030f09c760d8fdc661c8d5dc60eadc284aee86a23f5043616d98d3a87c",
+    "app/models/round.py": "0f71ac984d9b9a067b483d079eaf37c71226d7ab54d671dff2d2a29719a11808",
+    "app/models/kill_event.py": "5c10f11df8e3ee697f2a6654352412fb469d64b68c15bbdbb62181b0fdc91028",
+    "app/models/impact_score.py": "b71a5fae1132dd3b1c1bf7ee2d43a0411decd79a2a73b3e51aee887f06aac054"
+  },
+  "freeze_context": {
+    "database": "valowithfriendsdb",
+    "snapshot": "66324:66324:",
+    "match_count": 3125,
+    "max_match_id": 3133,
+    "declared_matches": [
+      3104,
+      3129,
+      3130,
+      3131,
+      3113,
+      3118,
+      3121,
+      3114,
+      3115,
+      3116,
+      3117,
+      3120,
+      3133
+    ]
+  },
+  "environment": {
+    "python": "3.13.15 (tags/v3.13.15:4061bc4, Aug  5 2026, 13:05:39) [MSC v.1944 64 bit (AMD64)]",
+    "packages": [
+      "ImageHash==4.3.1",
+      "Jinja2==3.1.4",
+      "Mako==1.4.1",
+      "MarkupSafe==3.0.3",
+      "PyWavelets==1.10.0",
+      "PyYAML==6.0.3",
+      "SQLAlchemy==2.0.35",
+      "alembic==1.13.2",
+      "annotated-types==0.8.0",
+      "anyio==4.15.1",
+      "click==8.5.0",
+      "colorama==0.4.6",
+      "fastapi==0.115.0",
+      "greenlet==3.5.6",
+      "h11==0.16.0",
+      "httptools==0.8.0",
+      "idna==3.19",
+      "iniconfig==2.3.0",
+      "itsdangerous==2.2.0",
+      "networkx==3.3",
+      "numpy==2.4.6",
+      "packaging==26.3",
+      "pillow==10.4.0",
+      "playwright==1.61.0",
+      "pluggy==1.6.0",
+      "psycopg2-binary==2.9.10",
+      "pydantic-settings==2.5.2",
+      "pydantic==2.13.5",
+      "pydantic_core==2.46.5",
+      "pyee==13.0.1",
+      "pytest==8.3.3",
+      "python-dotenv==1.2.3",
+      "python-multipart==0.0.12",
+      "scipy==1.18.1",
+      "starlette==0.38.6",
+      "typing-inspection==0.4.4",
+      "typing_extensions==4.16.0",
+      "tzdata==2025.2",
+      "uvicorn==0.30.6",
+      "watchfiles==1.2.0",
+      "websockets==17.1"
+    ]
+  }
+}
