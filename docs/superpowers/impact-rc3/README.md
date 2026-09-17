@@ -28,6 +28,11 @@ Every command below was written against the tools as committed. **A step that ha
   rehearsal URLs differ only in that name.
 - **Artifacts, dumps and logs live outside the repository** (`$ART`).
 - **Database tests run against `valo_rc3_test` only**, never `valo_rc3_rehearsal` (tests that empty tables refuse it).
+- **Keep the machine awake for the long steps.** An export holds one snapshot for about 30 minutes, and
+  `verify-build` fingerprints every match for about 15; if the machine sleeps, the connection dies and the step fails
+  with "server closed the connection unexpectedly". That happened to K4 on 2026-09-17 at match 2067. Nothing is
+  written by an export or a verification, so the answer is always to run it again -- but do not start one and walk
+  away from a machine that sleeps.
 
 ### Session setup
 
