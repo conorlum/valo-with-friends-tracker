@@ -296,6 +296,19 @@ def test_a_swap_refuses_while_the_gate_is_open(db, tmp_path):
     assert _impacts(db) == [10]
 
 
+def test_a_gate_opened_after_the_early_check_still_stops_the_swap(db, tmp_path, monkeypatch):
+    """The early check runs before the locks; the gate is read again under them."""
+    _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    db.execute(text("UPDATE scoring_gate SET state = 'open' WHERE id"))
+    db.commit()
+    monkeypatch.setattr(swap_tool, "_require_gate_closed", lambda database, operation: None)
+
+    with pytest.raises(swap_tool.Refused, match="gate is open under lock"):
+        swap_tool.swap(db)
+    db.rollback()
+    assert _impacts(db) == [10]
+
+
 def test_rollback_refuses_while_the_gate_is_open(db, tmp_path):
     _built_and_verified(db, tmp_path, v1=10, rc3=77)
     swap_tool.swap(db)

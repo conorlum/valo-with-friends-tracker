@@ -144,6 +144,18 @@ def _require_gate_closed(db, operation: str) -> None:
                       "(plan v2, D11)")
 
 
+def _lock_gate_closed(db, operation: str) -> None:
+    """The gate re-read under a row lock, after the table locks are held.
+
+    The early check refuses fast; this one closes the gap behind it. Until this
+    transaction ends the installer cannot open the gate, so no writer can be let
+    in between this check and the renames."""
+    gate_state = db.execute(text("SELECT state FROM scoring_gate WHERE id FOR UPDATE")).scalar()
+    if gate_state != "closed":
+        raise Refused(f"the gate is {gate_state or 'missing'} under lock: {operation} runs only while it is "
+                      "closed (plan v2, D11)")
+
+
 def _require_clean_verification(db) -> dict:
     """The newest build-or-verify entry must be a clean verification of the
     table about to be swapped in, and no match may have arrived since.
@@ -435,6 +447,7 @@ def swap(db) -> dict:
     # other way round is the deadlock this design exists to avoid.
     db.execute(text("LOCK TABLE player_view_cache IN ACCESS EXCLUSIVE MODE"))
     db.execute(text(f"LOCK TABLE {LIVE}, {BUILT} IN ACCESS EXCLUSIVE MODE"))
+    _lock_gate_closed(db, "swap")
     verified = _require_clean_verification(db)
 
     renamed = _rename_owned_objects(db, LIVE, LIVE, PREVIOUS)
@@ -458,6 +471,7 @@ def rollback(db) -> dict:
     db.execute(text(f"SET LOCAL lock_timeout = '{SWAP_LOCK_TIMEOUT}'"))
     db.execute(text("LOCK TABLE player_view_cache IN ACCESS EXCLUSIVE MODE"))
     db.execute(text(f"LOCK TABLE {LIVE}, {PREVIOUS} IN ACCESS EXCLUSIVE MODE"))
+    _lock_gate_closed(db, "rollback")
 
     swapped = _latest(db, ("swap", "swapped"), ("rollback", "rolled back"))
     if swapped is None or swapped.operation != "swap":
