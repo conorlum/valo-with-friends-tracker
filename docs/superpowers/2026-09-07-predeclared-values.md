@@ -1891,3 +1891,57 @@ computed from K2 against the stored rows.
 None, and `IMPACT_CALCULATION_VERSION` stays 2 on the branch (1 on `main`, which produced every stored row). rc2 stays
 frozen, inactive and unverifiable. No adoption threshold is declared: the owner judges the measurements, the last look
 and the review.
+
+### 2026-09-16 (RESULT, K1 vs K2) -- the cross-interpreter prediction failed; exact summation adopted; the chain is re-declared
+
+**What was run** (read-only, production snapshot of 2026-09-16, commit A = `93c1c03`):
+
+| link | Python | credit | player-rounds | SHA-256 |
+|---|---|---|---:|---|
+| K1 | 3.11.4 | ON | 659,500 | `2457a844e5fc16db0a44334ce9798573ce5b8b733b577a99d13d47967b376181` |
+| K2 | 3.13.15 | ON | 659,500 | `7e5ff2789ed1ea3a61425e1a6138576bc250cddc5de4e63cb3740a6d9f42f1bb` |
+| OFF(A) | 3.13.15 | OFF | 659,500 | `648df0403a0d48411dfd42c5b7697da1d6952de416e3a1a36bc97fc628460eac` |
+
+All three carry the same cohort fingerprint, `2c31fbbd9b1507f32631d304dec86885f5b876440a3e31140f4c1769545bdc5f`, so the
+inputs were identical.
+
+**The declared prediction failed: K2 does not equal K1.** 18 player-rounds differ. Every one differs by exactly 1 in
+`trade_credit`, and the same rows carry knock-on differences of 1 in `kill_impact` (7 rows), `impact` (1) and
+`leverage_component` (1). No other column differs.
+
+**Cause, verified.** `_trade_credits_for_round` computed `scale = max(shares) / sum(shares)`, and Python 3.12 changed
+the built-in `sum()` to compensated summation for floats. In match 89, round 1776, one trade kill avenged three players
+with timed shares [0.3, 0.36, 0.42]:
+- `sum()` gave 1.0799999999999998 under 3.11 and 1.08 under 3.13;
+- player 886's credit was therefore 23.8 and 23.799999999999997;
+- at B = 2.5 that is 59.5 and 59.49999999999999, which round to 60 and 59.
+
+Each interpreter reproduced its own value three times in one process, so this is not run-to-run nondeterminism.
+`math.fsum` gives 1.08 under both.
+
+**Owner decision (2026-09-16): eliminate the mismatch rather than re-declare around it.** The scorer sums floats with
+`math.fsum` at every float total: the credit split and two totals in `impact.py`, and the budget, recovery, denial and
+ledger totals in `econ_buy_disruption.py`. Integer sums (counts, loadouts, weapon prices) keep `sum()`, which is exact
+for them. Commit `b65fd4f`.
+
+**Evidence the change is exact.** `tests/test_scoring_float_sums.py` fails on values under Python 3.11 before the
+change (the observed credit, and a budget total of 47325.369000000006 against 29030.962 + 18294.407) and passes under
+3.11 and 3.13 after it. The full suite gives identical results under both interpreters: 1,189 passed, 30 skipped, and 1
+failed (the stale `test_happy_path_blob_validates` fixture).
+
+**Re-declared chain.** Commit A is now `b65fd4f`. K1, K2 and OFF(A) above are kept as evidence and are no longer
+baselines.
+- K1': Python 3.11, commit `b65fd4f`, explicit weights, credit ON.
+- K2': Python 3.13, commit `b65fd4f`, explicit weights, credit ON. **Prediction, recorded before the run: K2' equals
+  K1', byte for byte.**
+- OFF(A'): Python 3.13, commit `b65fd4f`, credit OFF.
+- K3, K4, K5 and OFF(B) as declared in the previous entry, compared against K1' and OFF(A').
+
+The last look (measurements 1-7 of the previous entry) is computed from K2' and OFF(A'). Reported alongside, with no
+pass condition: the player-rounds that differ between K2' and K2 (what exact summation changed relative to 3.13's
+`sum()`), and between K1' and K1.
+
+**The figures measured before the previous entry** were computed under Python 3.11 with the old summation. The RESULT
+entry reports figures from the re-declared chain, and shows both wherever they differ.
+
+**What this entry does NOT do.** No production row, manifest or activation changes. Ingestion stays frozen.
