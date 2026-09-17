@@ -75,7 +75,7 @@ Chain hashes (comparison projection, `artifact.sha256` in each sidecar):
 | K2' | 3.13 | same | same | **equal to K1'** (the declared prediction held) |
 | OFF(A') | 3.13 | same | credit off | `648df0403a0d48411dfd42c5b7697da1d6952de416e3a1a36bc97fc628460eac` |
 | K3, OFF(B) | 3.13 | commit B (5c369f8) | `impact_rc3` comparator | **equal to K1' and OFF(A')** |
-| K4 | 3.13 | commit C (freeze) | the manifest | must equal K1' |
+| K4 | 3.13 | commit C (freeze) | the manifest, by digest | **equal to K1'** (closed 2026-09-17) |
 | K5 | 3.13 | activation commit | the active manifest | must equal K1'; **K5 is what gets loaded** |
 
 K1' input fingerprint over all 3,125 matches: `2c31fbbd9b1507f32631d304dec86885f5b876440a3e31140f4c1769545bdc5f`.
