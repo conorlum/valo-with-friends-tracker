@@ -96,6 +96,13 @@ under the four-term identity wherever a total is shown.
 3104 it differs from the stored value for 10 of 10 players — which is why the distinction matters. Match 3133's
 players read `n/a (unscored)`, since production holds no rows for that match.
 
+That difference is explained, not mysterious: `IMPACT_CALCULATION_VERSION` went to 2 on 2026-09-10 (the trade-cost
+schedule replaced `trade_time / 10`, the trade window closed from 10s to 6s, and a killer who dies to their own side
+no longer trades the victim back), and its history comment already said "Every stored ImpactScore row predates this
+and needs a rescore." Production stores version 1; this branch computes version 2; rc3 activates at 3. So part of the
+move a visitor sees at activation is that pending rescore rather than the rc3 weights — the reports carry both columns
+so the two can be told apart.
+
 `scoring_version` is compared explicitly rather than ignored: `verify-build` asserts it is 3 on every built row, and
 reports the review-time versions the approved results carry, instead of silently dropping the field.
 

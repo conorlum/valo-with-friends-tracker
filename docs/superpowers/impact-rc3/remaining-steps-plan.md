@@ -73,11 +73,30 @@ wrapper UPDATES in place, so on the restore it would rescore a match without cha
 scratch database, and the helper now enforces that: `writes=True` joins `empties_tables=True`, both held to `*_test`
 (`1e0b722`).
 
-**Open: before or after the swap?** `test_builder_matches_stored_values` compares the builder field-by-field against
-*stored* scores. Before the swap, stored is production's v1 and the running code computes legacy — and those are known
-to disagree (10 of 10 players on match 3104). After the swap from the activation checkout, stored is rc3 and the code
-computes rc3, which makes the test an independent end-to-end check on the loaded table that does not go through
-`verify-build`'s artifact comparison at all. A run is in flight to settle this.
+**Settled by running it (2026-09-17): after the swap.** The step is 6.4a in the runbook.
+
+Pre-swap the run gave 12 passed, 1 failed, 1 error in 45 m 51 s. Both non-passes were informative:
+
+- The **error** was the new guard refusing the rehearsal database to the committing test — the real scenario, not the
+  synthetic URL check.
+- The **failure** was `test_builder_matches_stored_values`: `kill_impact drifted for match 2 round 27/11, 73 != 62`.
+  That is not drift. `IMPACT_CALCULATION_VERSION` is 2 on this branch and 1 on `main`, and its history comment says
+  why — on 2026-09-10 the trade-cost schedule replaced `trade_time / 10`, the trade window closed from 10s to 6s, and
+  a killer who dies to their own side stopped trading the victim back, concluding "Every stored ImpactScore row
+  predates this and needs a rescore." The test was comparing a v2 builder against v1 rows and calling the documented
+  difference "drifted".
+
+A test that reports a version bump as drift would report *every* row that way, hiding real drift in noise, so the test
+now compares only rows stored at the version the running code writes and skips with the versions it found otherwise.
+Mutation evidence is the run itself: without the filter it failed on a value (`assert 73 == 62`); with it, it skips
+saying "stored scores are version [1], this code writes 2".
+
+Run after the swap the versions agree (3 and 3) and it becomes a real end-to-end check on the loaded table. **A skip
+there is a finding**, not noise: it would mean the loaded table is not at the version the checkout writes.
+
+*Correction to an earlier characterisation.* This is also the whole explanation for "production's stored scores cannot
+be reproduced by today's legacy code", which `SUMMARY.md` check 5 reports for match 3104 (10 of 10 players). It is a
+deliberate, documented formula change, not unexplained drift.
 
 ### 3.3 to 3.9 — the rehearsal proper
 

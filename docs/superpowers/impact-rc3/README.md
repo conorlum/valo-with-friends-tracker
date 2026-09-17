@@ -244,6 +244,30 @@ time DATABASE_URL="$REH" $PY scripts/export_impact_artifact.py --out "$ART/rehea
 The KR input fingerprint must equal K1''s (`inputs.cohort_fingerprint`): that, with the equal hash, is the A14
 comparison. Then serve the rehearsal from the activation checkout (`--port 8001`) and check pages.
 
+**6.4a The declared database tests, on real data.** The declaration says the database tests run against the rehearsal
+database. On a schema-only scratch database the corpus-measuring ones skip, so they run nowhere; run them here, and
+run them **after** the swap, from the activation checkout. That ordering is the point: the table now holds
+`scoring_version` 3 and the checkout computes 3, which makes `test_builder_matches_stored_values` an independent
+end-to-end check on the loaded table -- one that never touches `verify-build`'s artifact comparison.
+
+```bash
+VALO_TEST_DATABASE_URL="$REH" $PY -m pytest \
+    tests/test_impact_exante_swing.py tests/test_impact_reconstruction.py \
+    tests/test_kill_order_leverage_gates.py tests/test_kill_order_stage_c0.py -q -rs \
+    --deselect tests/test_impact_exante_swing.py::test_wrapper_still_persists_and_commits \
+  || echo "STOP: exit $?"
+```
+
+**13 passed, 0 skipped.** A skip from `test_builder_matches_stored_values` is a finding, not noise: its message names
+the versions it found, and a mismatch there means the loaded table is not at the version this checkout writes.
+
+The deselected test calls the scorer's committing wrapper on a real match and belongs on `valo_rc3_test`; the guard
+fails it by name if it is not deselected, rather than letting it rescore a match here (`1e0b722`).
+
+Budget **46 minutes** and keep the machine awake: measured 2026-09-17 pre-swap at 45 m 51 s, nearly all of it stage C0
+and the leverage gates. Pre-swap that run gave 12 passed and 1 skipped, the skip being the version mismatch above --
+production's stored rows are version 1, the branch writes 2 (see `IMPACT_CALCULATION_VERSION`'s history comment).
+
 **6.5 Gate tests.** Each must print the expected outcome.
 
 ```bash

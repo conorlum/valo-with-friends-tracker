@@ -11,7 +11,7 @@ Requires a live database; skips cleanly without one.
 import pytest
 
 from app.models import ImpactScore, Round
-from app.scoring.impact import build_impact_rows_for_match
+from app.scoring.impact import IMPACT_CALCULATION_VERSION, build_impact_rows_for_match
 
 # EVERY persisted field, not a subset: the spec asks for field-by-field
 # equality, and a drift in e.g. clutch_kill or trade_detail would otherwise
@@ -106,8 +106,18 @@ def test_builder_writes_nothing(db_and_match):
 
 
 def test_builder_matches_stored_values(db_session):
-    """Field-by-field over several regulation AND overtime matches."""
+    """Field-by-field over several regulation AND overtime matches.
+
+    Only against rows stored at the version this code produces. Comparing
+    across a version bump is not a drift check: IMPACT_CALCULATION_VERSION is
+    bumped exactly when the algorithm changes values for already-scored rounds,
+    so rows from an older version are SUPPOSED to differ and every one of them
+    would report as `kill_impact drifted`, hiding real drift in noise. A
+    database whose scores all predate the running code skips instead, saying
+    which versions it found -- see IMPACT_CALCULATION_VERSION's own history
+    comment in app/scoring/impact.py."""
     checked = 0
+    seen_versions = set()
     for match_id in _representative_match_ids(db_session):
         rows = build_impact_rows_for_match(db_session, match_id, use_realized_swing=True)
         stored = {
@@ -119,14 +129,20 @@ def test_builder_matches_stored_values(db_session):
         }
         if not stored:
             continue
+        seen_versions.update(s.scoring_version for s in stored.values())
         for row in rows:
             existing = stored[(row.round_id, row.match_player_id)]
+            if existing.scoring_version != row.scoring_version:
+                continue
             for field in PERSISTED_FIELDS:
                 assert getattr(row, field) == getattr(existing, field), (
                     f"{field} drifted for match {match_id} "
                     f"round {row.round_id}/{row.match_player_id}"
                 )
             checked += 1
+    if not checked and seen_versions:
+        pytest.skip(f"stored scores are version {sorted(seen_versions)}, this code writes "
+                    f"{IMPACT_CALCULATION_VERSION}: nothing to compare without a rescore")
     assert checked, "no stored scores found to compare against"
 
 
