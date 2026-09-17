@@ -622,7 +622,8 @@ Then, in PowerShell from the activation checkout's `webapp/`: `.\scripts\refresh
 
 ```bash
 "$PGBIN/psql" -c "SELECT DISTINCT scoring_version FROM impact_scores s JOIN rounds r ON r.id = s.round_id WHERE r.match_id = NEW" "$PROD"
-DATABASE_URL="$PROD" $PY -c "from app.db import SessionLocal; from app.scoring.impact_runtime import active_scoring_config; from scripts.backfill_impact_candidate import replay_diffs; print(replay_diffs(SessionLocal(), [NEW], active_scoring_config()) or 'equals its replay')"
+DATABASE_URL="$PROD" $PY -c "import sys; from app.db import SessionLocal; from app.scoring.impact_runtime import active_scoring_config; from scripts.backfill_impact_candidate import replay_diffs; d = replay_diffs(SessionLocal(), [NEW], active_scoring_config()); print(d or 'equals its replay'); sys.exit(1 if d else 0)" \
+  || echo "STOP: the first ingested match does not equal its replay -- exit $?"
 ```
 
 `scoring_version` must be 3 only.
@@ -696,8 +697,15 @@ Pending the recovery gate.
 | script | codes |
 |---|---|
 | `release_preflight.py` | 0 every expectation holds; 3 a mismatch |
-| `swap_impact_scores.py` | 0 done; 2 verification found problems; 3 refused, nothing changed; 4 lock timeout, nothing changed |
+| `swap_impact_scores.py` | 0 done; **2 see below**; 3 refused, nothing changed; 4 lock timeout, nothing changed |
 | `install_release_write_gate.py` | 0 done; 3 connected to a database other than `--expect-database` |
+
+**Exit 2 is ambiguous and must not be read as a verdict** (external review, finding 7). It is both "verification found
+problems" *and* argparse's code for a malformed command line — a typo, a missing argument, a mangled line
+continuation. They look identical from the exit code alone. **Read the output before concluding anything**: a
+verification failure names the rows or fields that disagree; an invocation error prints a `usage:` block and a
+message like `unrecognized arguments` or `the following arguments are required`. A `usage:` block means the command
+never ran, so nothing was checked and nothing changed — fix the command, do not reach for R1.
 | `freeze_impact_candidate.py` | 0 frozen and verified; 3 the tree is not exactly a commit |
 | `prewarm_player_cache_ids.py` | capture: 1 a roster name matched no player; prewarm: 1 a player failed |
 | `verify_player_cache_coverage.py` | 0 every player-scope usable; 1 otherwise |
