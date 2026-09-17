@@ -36,8 +36,17 @@ from app.scoring.write_gate import read_gate
 SQL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sql", "release_write_gate.sql")
 
 
+#: Installing drops and recreates the triggers, which takes ACCESS EXCLUSIVE on
+#: every gated table (measured on PostgreSQL 18.6). That is milliseconds of work,
+#: but it queues behind any in-flight page read and every later reader queues
+#: behind it, so it is bounded exactly like the swap: give up rather than stall
+#: the site, having changed nothing.
+INSTALL_LOCK_TIMEOUT = "5s"
+
+
 def install(db, *, state: str | None, release_id: str | None, admin_id: str | None,
             note: str | None) -> None:
+    db.execute(text(f"SET LOCAL lock_timeout = '{INSTALL_LOCK_TIMEOUT}'"))
     db.execute(text(open(SQL_PATH, encoding="utf-8").read()))
     existing = db.execute(text("SELECT count(*) FROM scoring_gate WHERE id")).scalar()
     if not existing:

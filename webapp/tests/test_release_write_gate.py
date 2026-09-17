@@ -20,6 +20,7 @@ from sqlalchemy.exc import InternalError, ProgrammingError
 from app.models import ImpactScore, Match, MatchPlayer, Player, Round
 from app.models.match import MatchSource, Team
 from app.scoring.write_gate import claim_write_identity, install_write_identity, read_gate
+from scripts.install_release_write_gate import INSTALL_LOCK_TIMEOUT, install
 from tests._postgres import postgres_session_or_skip
 
 REFUSED = (InternalError, ProgrammingError)
@@ -78,6 +79,15 @@ def test_every_declared_table_is_gated_for_every_write(db):
     gated = dict(rows)
     assert set(gated) == set(GATED_TABLES)
     assert set(gated.values()) == {4}, "insert, update, delete and truncate each need a trigger"
+
+
+def test_installing_bounds_how_long_it_can_stall_the_site(db):
+    """Re-installing drops and recreates the triggers, which takes ACCESS
+    EXCLUSIVE on every gated table: readers queue behind it. Bounded, it gives
+    up instead, having changed nothing."""
+    install(db, state=None, release_id=None, admin_id=None, note="lock timeout test")
+    assert db.execute(text("SHOW lock_timeout")).scalar() == INSTALL_LOCK_TIMEOUT
+    db.rollback()
 
 
 def test_a_write_with_no_identity_is_refused(db):
