@@ -1,3 +1,5 @@
+> **Superseded by `HANDOFF-2026-09-17-rc3.md` (2026-09-17).** Kept as the record of how the work got here.
+
 # Handoff: freeze rc3 and ship the new Impact scoring to the live site
 
 You are picking up a Valorant match-analytics project mid-stream. The owner has just **locked a scoring

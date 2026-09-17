@@ -1,3 +1,5 @@
+> **Superseded by `HANDOFF-2026-09-17-rc3.md` (2026-09-17).** Kept as the record of how the work got here.
+
 # Session handoff — 2026-09-16, resume point
 
 Written at the owner's request so the session can be closed overnight. Read this first, then
