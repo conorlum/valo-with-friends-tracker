@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -55,6 +56,60 @@ INT_COLUMNS = tuple(c for c in COMPARISON_HEADER if c != "trade_detail")
 
 class ArtifactMismatch(RuntimeError):
     pass
+
+
+def _lockstep(path_a, path_b):
+    """Both artifacts, row by row, refusing anything but the same keys in the
+    same order for the same number of rows.
+
+    `zip` stops at the shorter file, so an artifact that lost its tail used to
+    be measured on its prefix and reported as a smaller corpus with no error
+    (external review, C5).
+    """
+    rows_a, rows_b = _rows(path_a), _rows(path_b)
+    for a in rows_a:
+        b = next(rows_b, None)
+        if b is None:
+            raise ArtifactMismatch(f"{path_b} ends before {path_a} does")
+        if (a["round_id"], a["match_player_id"]) != (b["round_id"], b["match_player_id"]):
+            raise ArtifactMismatch(
+                f"artifacts are not key-aligned: {path_a} {(a['round_id'], a['match_player_id'])} "
+                f"vs {path_b} {(b['round_id'], b['match_player_id'])}")
+        yield a, b
+    if next(rows_b, None) is not None:
+        raise ArtifactMismatch(f"{path_a} ends before {path_b} does")
+
+
+def _artifact_identity(path) -> dict:
+    """The artifact's own hash, and what its sidecar says it was scored from."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    identity = {"file": os.path.basename(path), "sha256": digest.hexdigest()}
+    sidecar = os.path.splitext(path)[0] + ".json"
+    if os.path.isfile(sidecar):
+        with open(sidecar, encoding="utf-8") as handle:
+            recorded = json.load(handle)
+        identity["recorded_sha256"] = (recorded.get("artifact") or {}).get("sha256")
+        identity["configuration"] = recorded.get("configuration")
+        identity["inputs"] = {name: (recorded.get("inputs") or {}).get(name)
+                              for name in ("database", "counts", "cohort_fingerprint")}
+    return identity
+
+
+def _require_matching_inputs(db, identities) -> None:
+    """The mappings below are read from the database NOW, and joined to scores
+    exported earlier. If the corpus has moved since, they no longer describe
+    the same rows and the report would mix two databases."""
+    live = {name: db.execute(sa.text(f"SELECT count(*) FROM {name}")).scalar()
+            for name in ("matches", "round_player_stats", "kill_events")}
+    for label, identity in identities.items():
+        counts = (identity.get("inputs") or {}).get("counts")
+        if counts and any(counts.get(name) != value for name, value in live.items()):
+            raise ArtifactMismatch(
+                f"{label} was exported from a database with {counts}, this one has {live}: "
+                "the source mappings would not describe the same rows")
 
 
 def _rows(path):
@@ -132,11 +187,7 @@ def measure(on_path, off_path, sources, tracked_names, limit_matches=None):
     credit_nonzero_rows = 0
     credit_max = 0
 
-    for on, off in zip(_rows(on_path), _rows(off_path)):
-        key_on = (on["round_id"], on["match_player_id"])
-        key_off = (off["round_id"], off["match_player_id"])
-        if key_on != key_off:
-            raise ArtifactMismatch(f"artifacts are not key-aligned: ON {key_on} vs OFF {key_off}")
+    for on, off in _lockstep(on_path, off_path):
         match_id, _player = match_player[on["match_player_id"]]
         if limit_matches is not None and match_id not in limit_matches:
             continue
@@ -318,9 +369,7 @@ def measure(on_path, off_path, sources, tracked_names, limit_matches=None):
 
 def rows_that_differ(path_a, path_b):
     differing, columns = 0, Counter()
-    for a, b in zip(_rows(path_a), _rows(path_b)):
-        if (a["round_id"], a["match_player_id"]) != (b["round_id"], b["match_player_id"]):
-            raise ArtifactMismatch("artifacts are not key-aligned")
+    for a, b in _lockstep(path_a, path_b):
         if a != b:
             differing += 1
             for name in INT_COLUMNS:
@@ -345,6 +394,8 @@ def main(argv=None) -> int:
     db = SessionLocal()
     try:
         db.execute(sa.text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
+        identities = {"on": _artifact_identity(args.on), "off": _artifact_identity(args.off)}
+        _require_matching_inputs(db, identities)
         sources = load_sources(db)
         db.rollback()
     finally:
@@ -354,7 +405,8 @@ def main(argv=None) -> int:
     tracked_names = json.load(open(tracked_path, encoding="utf-8"))
     limit = {int(x) for x in args.limit_matches.split(",")} if args.limit_matches else None
 
-    result = measure(args.on, args.off, sources, tracked_names, limit_matches=limit)
+    result = {"artifacts": identities}
+    result.update(measure(args.on, args.off, sources, tracked_names, limit_matches=limit))
     for spec in args.compare_on:
         label, path = spec.split("=", 1)
         result[f"differs_from_{label}"] = rows_that_differ(args.on, path)
