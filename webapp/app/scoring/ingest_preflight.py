@@ -92,8 +92,21 @@ def check_scoring_configuration():
     return manifest
 
 
+def _running_python() -> str:
+    return f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
 def check_environment(manifest) -> None:
-    recorded = (manifest.get("environment") or {}).get("packages")
+    environment = manifest.get("environment") or {}
+    # Compared at major.minor. Scores have depended on the interpreter before --
+    # 3.12 made sum() compensated, which moved trade credits -- and that was a
+    # minor-version change; a patch release does not change float arithmetic.
+    frozen_python = (environment.get("python") or "").split(" ", 1)[0]
+    if frozen_python and ".".join(frozen_python.split(".")[:2]) != _running_python():
+        raise IngestRefused(
+            f"this is Python {_running_python()}, but this candidate was frozen under Python "
+            f"{frozen_python}. Ingest from the frozen environment (.venv313), or refreeze.")
+    recorded = environment.get("packages")
     if not recorded:
         return
     current = _installed_packages()

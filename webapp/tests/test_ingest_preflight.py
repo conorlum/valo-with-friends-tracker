@@ -111,6 +111,26 @@ def test_a_manifest_without_a_recorded_environment_is_not_blocked():
     check_environment({"candidate_id": "impact-rc3"})
 
 
+FROZEN_UNDER_313 = {"candidate_id": "impact-rc3",
+                    "environment": {"python": "3.13.15 (tags/v3.13.15:1a2b3c4, Sep 2026) [MSC v.1944 64 bit (AMD64)]",
+                                    "packages": ["numpy==2.4.6"]}}
+
+
+def test_another_interpreter_is_refused_even_with_identical_packages(monkeypatch):
+    """The K1/K2 finding: 3.11 and 3.13 once scored 18 rows differently."""
+    monkeypatch.setattr(ingest_preflight, "_running_python", lambda: "3.11")
+    monkeypatch.setattr(ingest_preflight, "_installed_packages", lambda: ["numpy==2.4.6"])
+    with pytest.raises(IngestRefused) as caught:
+        check_environment(FROZEN_UNDER_313)
+    assert str(caught.value).startswith("this is Python 3.11, but this candidate was frozen under Python 3.13.15")
+
+
+def test_a_patch_release_of_the_frozen_interpreter_passes(monkeypatch):
+    monkeypatch.setattr(ingest_preflight, "_running_python", lambda: "3.13")
+    monkeypatch.setattr(ingest_preflight, "_installed_packages", lambda: ["numpy==2.4.6"])
+    check_environment(FROZEN_UNDER_313)
+
+
 def test_a_missing_gate_is_refused(monkeypatch):
     monkeypatch.setattr(ingest_preflight, "read_gate", lambda _db: None)
     with pytest.raises(IngestRefused) as caught:
