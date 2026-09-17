@@ -202,9 +202,24 @@ including defect reinstatement, `SUMMARY.md`, the ledger's review RESULT, and th
 
 Everything timed over the real link; write each duration into `$ART/rehearsal/durations.md`.
 
-**The activation commit.** A local branch off commit C with exactly one commit: in `app/scoring/impact_runtime.py`
-`ACTIVE_MANIFEST = "docs/superpowers/impact-rc3/candidate-manifest.json"`, and in `app/scoring/impact.py`
-`IMPACT_CALCULATION_VERSION = 3` with a history comment. The rehearsal from 6.4 on runs from a clean checkout of it:
+**The activation commit.** A local branch off **the reviewed tip, not commit C**, with exactly one commit: in
+`app/scoring/impact_runtime.py` `ACTIVE_MANIFEST = "docs/superpowers/impact-rc3/candidate-manifest.json"`, and in
+`app/scoring/impact.py` `IMPACT_CALCULATION_VERSION = 3` with a history comment. The rehearsal from 6.4 on runs from a
+clean checkout of it:
+
+> **Branch off the tip, and check that before branching** (external review, finding 4). Commit C `82d8e6b` is the
+> frozen *scoring baseline* — what the manifest pins and what K4 reproduced. It is **not** a runnable execution
+> checkout: at C the `impact-rc3/` directory holds only this runbook and the manifest. `review-results.json` arrived
+> later in `6f58593`, so a branch off C fails at `verify-build --approved` with a missing file, and also lacks the
+> test guards added since. Branching off the tip is safe precisely because the two differ only in documentation and
+> tests — assert that rather than trust it, and stop if anything prints:
+>
+> ```bash
+> git diff --stat 82d8e6b HEAD -- webapp/app webapp/scripts webapp/alembic
+> ```
+>
+> Empty output means the scoring code at the tip is byte-identical to the freeze, so the manifest's behavioural
+> digests still verify and the chain still holds. The export refuses to run if they do not.
 
 ```bash
 $PY -c "from app.scoring.impact_runtime import active_scoring_config; print(active_scoring_config())"
@@ -350,13 +365,20 @@ try:
 finally:
     db.rollback()   # the probe never keeps its match
 EOF
-echo "probe (c) exit $?"
+probe_c=$?; echo "probe (c) exit $probe_c"
 DATABASE_URL="$REH" $PY scripts/install_release_write_gate.py --expect-database valo_rc3_rehearsal --state closed --note "gate tests done" \
   || echo "STOP: the gate did not close again -- exit $?"
+[ "$probe_c" -eq 0 ] || echo "STOP: probe (c) failed with exit $probe_c -- the gate refused a write it must allow"
 ```
 
-Every probe rolls back and exits nonzero unless the gate behaved exactly as stated, so a broken gate stops the
-rehearsal instead of printing a line nobody reads. Confirm the gate is closed again before going on.
+Every probe rolls back and exits nonzero unless the gate behaved exactly as stated. Confirm the gate is closed again
+before going on.
+
+**The status is captured before the cleanup runs, and tested after it** (external review, finding 3). Previously
+probe (c)'s exit was only `echo`ed and the gate-closing command ran unconditionally, so a failed probe followed by a
+successful cleanup ended the block with no `STOP` at all — the prose above claimed a broken gate would stop the
+rehearsal "instead of printing a line nobody reads", while the command did precisely that. The gate must still be
+closed even when the probe fails, which is why the cleanup is not chained behind it.
 
 **6.6 Concurrency (B2).** With the rehearsal served on port 8001 from the activation checkout, record page latencies in
 a second terminal, first with no swap running (the baseline), then across a swap and a rollback:
@@ -547,9 +569,18 @@ must list `4003003003` (schema 4, state diagram 3, fight-EV 3, Impact **3**) for
   && time DATABASE_URL="$PROD" $PY scripts/prewarm_player_cache_ids.py prewarm --ids-file "$ART/activation/roster-ids.txt" \
   && DATABASE_URL="$PROD" $PY scripts/verify_player_cache_coverage.py --ids-file "$ART/activation/roster-ids.txt" \
   && DATABASE_URL="$PROD" $PY -c "from app.db import SessionLocal; from app.services.site_stats import refresh_site_stats; db = SessionLocal(); refresh_site_stats(db); db.close(); print('site stats refreshed')" \
-  || echo "STOP: exit $?"
-DATABASE_URL="$PROD" $PY scripts/prewarm_player_cache_ids.py prewarm --ids-file "$ART/activation/recent-ids.txt" > "$ART/activation/prewarm-recent.log" 2>&1 &
+  && { DATABASE_URL="$PROD" $PY scripts/prewarm_player_cache_ids.py prewarm --ids-file "$ART/activation/recent-ids.txt" \
+         > "$ART/activation/prewarm-recent.log" 2>&1 & \
+       echo $! > "$ART/activation/prewarm-recent.pid"; \
+       echo "background prewarm pid $(cat "$ART/activation/prewarm-recent.pid")"; } \
+  || echo "STOP: exit $? -- the background prewarm was NOT started"
 ```
+
+The background prewarm is **inside** the `&&` chain and records its pid. Both matter (external review, finding 3):
+previously it was a separate line, so a failed roster prewarm, coverage check or stats refresh printed `STOP` and then
+launched the background worker anyway — and since the instruction is to paste a block and read its output afterwards,
+reading `STOP` could not prevent the launch. The pid file is what **R1.1** stops and waits on; without it a rollback
+has only a presence check, which races.
 
 **8.7 Acceptance**, read-only: every match equals its replay under the active configuration.
 
@@ -606,17 +637,46 @@ later decision.
 **R1 (scoring). Valid only while the gate is closed and no match has arrived since the swap**; the tool refuses
 otherwise.
 
+**This is the only R1 sequence. Run it in this order.** An earlier version of this section printed the rollback
+command *above* the instruction to stop the background prewarm, and the short plan omitted the rollback step
+altogether — leaving a "rollback" that reverts the code while `impact_scores` still holds rc3, which serves rc3
+numbers under v1 code and looks complete (external review, finding 1).
+
+**R1.1 Stop the background prewarm and wait for it to exit.** Step 8.6 leaves one running over the recently cached
+players. It reads scores and writes cache rows in one transaction, so a live one both blocks the rollback's rename
+until its transaction ends and can write version-3 cache rows *after* the restore. A presence check is not enough —
+capture the pid when 8.6 launches it, and wait.
+
+```bash
+kill "$(cat "$ART/activation/prewarm-recent.pid")" 2>/dev/null
+while kill -0 "$(cat "$ART/activation/prewarm-recent.pid")" 2>/dev/null; do sleep 1; done
+echo "background prewarm stopped"
+```
+
+**R1.2 Restore the score table** — this is the step that actually undoes the swap:
+
 ```bash
 DATABASE_URL="$PROD" $PY scripts/swap_impact_scores.py rollback --yes --expect-database valowithfriendsdb; echo "rollback exit $?"
 DATABASE_URL="$PROD" $PY scripts/swap_impact_scores.py state --expect-database valowithfriendsdb
 ```
 
-**Stop the background prewarm first.** Step 8.6 leaves one running over the recently cached players; it reads scores
-and writes cache rows, so one still running across a rollback caches rc3 numbers over restored v1 scores.
+`state` must show a `rollback rolled back` entry. Exit 4 is a lock timeout that changed nothing: run it again.
 
-Then revert the activation PR (site up); once the revert is live, clear the cache with
-`psql -c "DELETE FROM player_view_cache"` (never TRUNCATE, see 8.6) and prewarm the roster from the reverted checkout. Ingestion stays closed until the owner decides. After ingestion reopens, R1 no longer
-applies: fix forward, or capture the current scores first and decide what happens to matches ingested since (B4).
+**R1.3 Revert the activation PR** (site stays up) and wait for the deploy to go live.
+
+**R1.4 Clear and refill the cache, naming the database** — the previous wording passed no database at all:
+
+```bash
+"$PGBIN/psql" -v ON_ERROR_STOP=1 -c "DELETE FROM player_view_cache" "$PROD" \
+  && DATABASE_URL="$PROD" $PY scripts/prewarm_player_cache_ids.py prewarm --ids-file "$ART/activation/roster-ids.txt" \
+  || echo "STOP: exit $?"
+```
+
+Never TRUNCATE (see 8.6), and prewarm from the **reverted** checkout, so the cache version it writes matches the code
+now serving.
+
+Ingestion stays closed until the owner decides. After ingestion reopens, R1 no longer applies: fix forward, or capture
+the current scores first and decide what happens to matches ingested since (B4).
 
 **R2 (PR #67)**, each step verified before the next:
 

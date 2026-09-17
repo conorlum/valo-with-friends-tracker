@@ -56,12 +56,20 @@ Entirely on `valo_rc3_rehearsal`. Production is not touched. Every duration is r
 
 ### 3.1 Build the activation commit (does not exist yet)
 
-A local branch off `82d8e6b` with **exactly one commit**: `ACTIVE_MANIFEST` from `None` to the manifest path
+A local branch off **the reviewed tip** with **exactly one commit**: `ACTIVE_MANIFEST` from `None` to the manifest path
 (`app/scoring/impact_runtime.py:25`) and `IMPACT_CALCULATION_VERSION` from 2 to 3 (`app/scoring/impact.py:107`).
 Everything from 3.3 on runs from a clean checkout of it, and Stage 8 rebases this same commit onto the merged `main`.
 
 *Why one commit:* it is the thing that is reviewed, rebased, merged and, if needed, reverted. A second commit makes the
 revert a judgement call.
+
+*Why the tip and not the freeze* (external review, finding 4). An earlier version of this said "off `82d8e6b`". Commit
+C is the frozen **scoring baseline** — what the manifest pins and what K4 reproduced — not a runnable execution
+checkout: at C the `impact-rc3/` directory holds only the runbook and the manifest, because `review-results.json`
+arrived later in `6f58593`. A branch off C fails at `verify-build --approved` with a missing file, and lacks the test
+guards added since. Branching off the tip is safe *because* the two differ only in documentation and tests — asserted,
+not assumed: `git diff --stat 82d8e6b HEAD -- webapp/app webapp/scripts webapp/alembic` is empty, so the scoring code
+is byte-identical and the manifest's behavioural digests still verify.
 
 ### 3.2 The read-only corpus tests against the restore (new, added 2026-09-17)
 
@@ -148,8 +156,15 @@ checkout of that PR's head.
 ## 6. Stage 9 — rollback
 
 - **R1 (scoring).** Valid only while the gate is closed and no match has arrived since the swap; the tool refuses
-  otherwise. Stop 8.6's background prewarm first, revert the activation PR, clear the cache, prewarm from the reverted
-  checkout.
+  otherwise. In this order, and the runbook's R1.1–R1.4 is the only authoritative copy: **(1)** stop the background
+  prewarm by pid and *wait for it to exit*; **(2)** `swap_impact_scores.py rollback`, then `state`, which must show
+  `rollback rolled back` — **this is the step that restores the score table**; **(3)** revert the activation PR and
+  wait for the deploy; **(4)** clear the cache naming `$PROD` explicitly, and prewarm from the reverted checkout.
+
+  *An earlier version of this line listed steps 1, 3 and 4 and omitted step 2* (external review, finding 1). Followed
+  literally it reverts the code while `impact_scores` still holds rc3 — the site then serves rc3 numbers under v1 code
+  and the rollback looks complete. The runbook had the command but printed it *above* the instruction to stop the
+  worker, and its cache-clear named no database at all. Both are fixed.
 - **R2 (PR #67).** Maintenance mode → (R1 if needed) → `alembic downgrade 0007` → revert the merge → deploy. The gate
   survives the downgrade, closed, so nothing ingests until it is lifted deliberately with
   `DROP FUNCTION scoring_gate_guard() CASCADE`.
@@ -182,9 +197,15 @@ checkout of that PR's head.
    *both* Render and the local prewarm, under the same version number. If any cached value is a float sum, the two
    could disagree. This predates rc3; I want to know whether it is genuinely inert.
 
-6. **How long ingestion is frozen.** The gate closes at 7.4 and opens at 8.10 — Stage 7, plus the rehearsal, plus
-   Stage 8, plus 48 hours. Matches played in that window must be backfilled afterwards from tracker.gg. Nobody has
-   costed that window or confirmed the backfill depth is sufficient.
+6. **How long ingestion is frozen.** ~~The gate closes at 7.4 and opens at 8.10 — Stage 7, plus the rehearsal, plus
+   Stage 8, plus 48 hours.~~ **Wrong, corrected by the review:** Stage 6 happens *before* 7.4, so the database-gate
+   interval is Stage 7 + Stage 8 + 48 hours, and does not include the rehearsal. The operational pause is the larger
+   number and started earlier, when ingestion was frozen for the branch work.
+
+   The concrete consequence, which was only a worry before: `refresh_remote.ps1 -Count 5` fetches the **five most
+   recent** matches and then deduplicates — it does not fetch five *missing* matches, and does not walk back to the
+   last ingested one. A player with six unseen matches silently keeps the oldest missing, and act transitions bound
+   the history further. Catch-up must be defined against a known boundary, not a count.
 
 7. **A defect class I found by reading, not by testing** (`8854c0f`): five runbook commands carried a literal `\n`
    where a line continuation belonged, from a heredoc that mangled the backslash. Pasted, `\n` collapses to a stray
