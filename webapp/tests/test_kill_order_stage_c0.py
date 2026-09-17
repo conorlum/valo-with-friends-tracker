@@ -19,6 +19,9 @@ def loaded():
     session = postgres_session_or_skip()
     report: dict = {}
     team_rows, player_rows = load_all_leverage(session, report=report)
+    if not team_rows:
+        session.close()
+        pytest.skip("no eligible matches in the database: stage C0 measures the real corpus")
     visits = []
     for match_id in {row.match_id for row in team_rows}:
         visits.extend(state_visits_for_match(session, match_id))
