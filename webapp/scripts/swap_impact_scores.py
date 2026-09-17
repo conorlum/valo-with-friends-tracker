@@ -88,6 +88,10 @@ EXIT_LOCK_TIMEOUT = 4
 #: SQLSTATE lock_not_available, raised when lock_timeout expires.
 LOCK_NOT_AVAILABLE = "55P03"
 
+#: Everything the scorer reads. A verification says these rows produced the
+#: staged scores, so a write to any of them makes it stale.
+SOURCE_TABLES = ("matches", "match_players", "rounds", "round_player_stats", "kill_events")
+
 
 class Refused(RuntimeError):
     """A precondition does not hold. Raised before anything is committed."""
@@ -145,6 +149,22 @@ def _latest(db, *entries: tuple[str, str]):
         params).first()
 
 
+def _write_counters(db, tables) -> dict:
+    """Rows inserted, updated and deleted per table, cumulatively.
+
+    A verification is a statement about the staged table AND the source rows it
+    was scored from, and the admin identity may write both at any time (that is
+    what it is for). Comparing these counters at the swap notices a deliberate
+    correction that landed after the verification -- which neither the table's
+    oid nor the highest match id would show (external review, C6). They can lag
+    a moment behind a just-committed writer, so a spurious refusal means verify
+    again, never force.
+    """
+    return {name: [inserted, updated, deleted] for name, inserted, updated, deleted in db.execute(text(
+        "SELECT relname, n_tup_ins, n_tup_upd, n_tup_del FROM pg_stat_all_tables "
+        "WHERE schemaname = 'public' AND relname = ANY(:names)"), {"names": list(tables)}).all()}
+
+
 def _require_gate_closed(db, operation: str) -> None:
     gate = read_gate(db)
     if gate is None:
@@ -188,6 +208,12 @@ def _require_clean_verification(db) -> dict:
     if details.get("max_match_id") != max_match_id:
         raise Refused(f"matches changed after verification (max id {details.get('max_match_id')} "
                       f"then, {max_match_id} now): verify again")
+    counters = _write_counters(db, (BUILT, *SOURCE_TABLES))
+    verified_counters = details.get("write_counters") or {}
+    moved = sorted(name for name, counts in counters.items() if verified_counters.get(name) != counts)
+    if moved:
+        raise Refused(f"{', '.join(moved)} changed after verification (rows written since it ran): "
+                      "verify again before swapping")
     return {"verify_entry": latest.id, "built_oid": built_oid, "max_match_id": max_match_id,
             "rows": details.get("rows"), "comparison_sha256": details.get("comparison_sha256"),
             "artifact_sha256": details.get("artifact_sha256")}
@@ -490,6 +516,7 @@ def verify_build(db, artifact_path: str, *, sidecar_path: str, comparison_path: 
         facts["problems"] = [f"{table} does not exist: build first"]
         return facts
 
+    facts["write_counters"] = _write_counters(db, (table, *SOURCE_TABLES))
     facts["rows"] = _scalar(db, f"SELECT count(*) FROM {table}")
     facts["stat_rows"] = _scalar(db, "SELECT count(*) FROM round_player_stats")
     facts["max_match_id"] = _scalar(db, "SELECT max(id) FROM matches")

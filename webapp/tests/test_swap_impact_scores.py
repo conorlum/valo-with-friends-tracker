@@ -676,3 +676,36 @@ def test_the_swap_empties_the_player_cache(db, tmp_path):
     db.commit()
 
     assert db.execute(text("SELECT count(*) FROM player_view_cache")).scalar() == 0
+
+
+def test_an_edit_after_a_clean_verification_is_refused(db, tmp_path):
+    """C6: the admin identity may correct rows at any time, and neither the
+    staged table's oid nor the highest match id would show that it did."""
+    keys, export = _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    db.execute(text(f"UPDATE {swap_tool.BUILT} SET impact = 79 "
+                    "WHERE round_id = :r AND match_player_id = :m"),
+               {"r": keys[0][0], "m": keys[0][1]})
+    db.commit()
+    db.execute(text("SELECT pg_stat_force_next_flush()"))
+    db.commit()
+
+    with pytest.raises(swap_tool.Refused, match="changed after verification"):
+        swap_tool.swap(db)
+    db.rollback()
+    assert _impacts(db) == [10]
+
+
+def test_a_source_row_edited_after_verification_is_refused(db, tmp_path):
+    """The verification says those source rows produced these scores."""
+    keys, export = _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    db.execute(text("UPDATE round_player_stats SET kills = kills + 1 "
+                    "WHERE round_id = :r AND match_player_id = :m"),
+               {"r": keys[0][0], "m": keys[0][1]})
+    db.commit()
+    db.execute(text("SELECT pg_stat_force_next_flush()"))
+    db.commit()
+
+    with pytest.raises(swap_tool.Refused, match="round_player_stats changed after verification"):
+        swap_tool.swap(db)
+    db.rollback()
+    assert _impacts(db) == [10]
