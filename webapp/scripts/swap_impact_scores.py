@@ -192,22 +192,38 @@ def verify_build(db, artifact_path: str, *, expect_scoring_version: int,
 
     if approved_path:
         approved = json.load(open(approved_path, encoding="utf-8"))
-        fields = approved.get("fields") or []
-        differing = []
-        for match_id, match in approved.get("matches", {}).items():
-            stored = {
-                f"{r[0]}:{r[1]}": [render_field(v) for v in r[2:]]
-                for r in db.execute(text(
-                    f"SELECT b.round_id, b.match_player_id, {', '.join(fields)} FROM {BUILT} b "
-                    "JOIN rounds r ON r.id = b.round_id WHERE r.match_id = :m"), {"m": int(match_id)})
-            }
-            for key, values in match.get("rows", {}).items():
-                if stored.get(key) != [render_field(v) for v in values]:
-                    differing.append(f"{match_id}:{key}")
-        facts["approved_rows_checked"] = sum(len(m.get("rows", {}))
-                                             for m in approved.get("matches", {}).values())
-        if differing:
-            problems.append(f"{len(differing)} approved rows differ (first {differing[0]})")
+        fields = list(approved.get("fields") or [])
+        persisted = [c for c in load_columns() if c not in ("round_id", "match_player_id")]
+        if sorted(fields) != sorted(persisted):
+            problems.append(f"the approved results label their values {fields}, which is not the "
+                            f"table's persisted fields {persisted}")
+        else:
+            # scoring_version is provenance. The review ran under the review-time
+            # calculation version and the built table must carry the activation
+            # version, so comparing it row by row would fail exactly the rows that
+            # are right -- and dropping it silently would hide that it was never
+            # checked. It is asserted explicitly above (expect_scoring_version) and
+            # reported here; every other field is compared exactly.
+            version_at = fields.index("scoring_version")
+            compared = [f for f in fields if f != "scoring_version"]
+            positions = [fields.index(f) for f in compared]
+            differing, review_versions = [], set()
+            for match_id, match in approved.get("matches", {}).items():
+                built = {
+                    f"{r[0]}:{r[1]}": [render_field(v) for v in r[2:]]
+                    for r in db.execute(text(
+                        f"SELECT b.round_id, b.match_player_id, {', '.join(compared)} FROM {BUILT} b "
+                        "JOIN rounds r ON r.id = b.round_id WHERE r.match_id = :m"), {"m": int(match_id)})
+                }
+                for key, values in match.get("rows", {}).items():
+                    review_versions.add(values[version_at])
+                    if built.get(key) != [render_field(values[i]) for i in positions]:
+                        differing.append(f"{match_id}:{key}")
+            facts["approved_rows_checked"] = sum(len(m.get("rows", {}))
+                                                 for m in approved.get("matches", {}).values())
+            facts["approved_review_scoring_versions"] = sorted(review_versions)
+            if differing:
+                problems.append(f"{len(differing)} approved rows differ (first {differing[0]})")
 
     facts["problems"] = problems
     return facts

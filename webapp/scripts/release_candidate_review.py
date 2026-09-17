@@ -581,7 +581,10 @@ def reconcile_scores(rec, label, scored, round_numbers):
     for row in scored["rows"]:
         tag = f"{label} round {round_numbers[row.round_id]} player {row.match_player_id}"
         if config.enable_econ_component:
-            rec.identity(tag, row.impact, [row.damage, row.leverage_component, row.econ_component])
+            # Four terms: D*assists is its own term. The trade credit is NOT a
+            # fifth one -- it is inside leverage_component, and is shown there.
+            rec.identity(tag, row.impact, [row.damage, row.leverage_component, row.econ_component,
+                                           row.assists_component])
     if config.econ_model not in bd.BUY_DISRUPTION_MODELS:
         return
     for row in scored["rows"]:
@@ -619,10 +622,27 @@ def reconcile_penalty_pair(rec, left, right):
 
 
 def _blank_side():
-    return dict(impact=0, damage=0, leverage=0, econ=0, credit=0.0, debit=0.0, rounds=0)
+    # `credit`/`debit` are gross ECONOMY points; `trade` is the trade credit,
+    # which already sits inside `leverage` and is broken out only for display.
+    return dict(impact=0, damage=0, leverage=0, econ=0, assists=0, trade=0, credit=0.0, debit=0.0, rounds=0)
 
 
-def player_match_rows(db, match_id, left, right):
+def _stored_rows(db, match_id):
+    """{(round_id, match_player_id): stored impact} -- what the site shows today."""
+    return {
+        (r["round_id"], r["match_player_id"]): r["impact"]
+        for r in db.execute(text(
+            "SELECT s.round_id, s.match_player_id, s.impact "
+            "FROM impact_scores s JOIN rounds r ON r.id = s.round_id WHERE r.match_id = :m"
+        ), {"m": match_id}).mappings()
+    }
+
+
+def player_match_rows(db, match_id, left, right, stored=None):
+    """Per-player totals for both replays, plus -- when `stored` is given -- the
+    STORED total and its rank, which is the only honest "before" for a
+    deployment: the legacy replay is what the current code would compute now,
+    not what production actually holds."""
     names, rounds = _names(db, match_id), _round_numbers(db, match_id)
     players = {}
     for side, scored in (("left", left), ("right", right)):
@@ -637,25 +657,37 @@ def player_match_rows(db, match_id, left, right):
             t["damage"] += row.damage
             t["leverage"] += row.leverage_component
             t["econ"] += row.econ_component
+            t["assists"] += row.assists_component
+            t["trade"] += row.trade_credit
             t["credit"] += credit
             t["debit"] += debit
             t["rounds"] += 1
             entry["by_round"].setdefault(rn, {})[side] = (row.impact, row.econ_component)
+            entry["by_round"][rn]["round_id"] = row.round_id
     for side in ("left", "right"):
         ranked = sorted(players, key=lambda mp: -players[mp][side]["impact"])
         for position, mp in enumerate(ranked, 1):
             players[mp][side]["rank"] = position
+    if stored is not None:
+        for mp, entry in players.items():
+            entry["stored"] = {"impact": stored.get(mp)}
+        with_stored = [mp for mp in players if players[mp]["stored"]["impact"] is not None]
+        for position, mp in enumerate(sorted(with_stored, key=lambda m: -players[m]["stored"]["impact"]), 1):
+            players[mp]["stored"]["rank"] = position
     return players
 
 
 def _identity_block(manifest, manifest_sha, pair):
     lines = [f"Candidate `{manifest['candidate_id']}`, manifest LF-SHA-256 `{manifest_sha}`.", ""]
-    for label, (name, config) in zip(("Before", "After"), pair):
+    for label, (name, config) in zip(("Left", "Right"), pair):
         kwargs = config.build_kwargs()
+        weights = config.weights
         lines.append(f"- **{label}: `{name}`** -- enable_econ_component={kwargs['enable_econ_component']}, "
-                     f"econ_model={kwargs['econ_model']}, weights A/B/C={config.weights.damage}/"
-                     f"{config.weights.leverage}/{config.weights.econ}, use_realized_swing="
-                     f"{kwargs['use_realized_swing']}, post-plant table OFF, pre-plant curve OFF")
+                     f"econ_model={kwargs['econ_model']}, weights A/B/C/D={weights.damage}/"
+                     f"{weights.leverage}/{weights.econ}/{weights.assists}, trade credit "
+                     f"{'ON' if config.enable_trade_credit else 'OFF'} (scale {weights.trade_credit_scale}), "
+                     f"use_realized_swing={kwargs['use_realized_swing']}, "
+                     f"post-plant table OFF, pre-plant curve OFF")
     return lines
 
 
@@ -668,41 +700,67 @@ def render_match_review(db, match_id, manifest, compare, rec, manifest_sha="(unr
     reconcile_scores(rec, right_name, right, rounds)
     if compare == "penalty":
         reconcile_penalty_pair(rec, left, right)
-    players = player_match_rows(db, match_id, left, right)
+    site = compare == "site"
+    players = player_match_rows(db, match_id, left, right,
+                                stored=_stored_totals(db, match_id) if site else None)
     header = _header(db, match_id)
     played = len({row.round_id for row in right["rows"]})
 
     lines = [f"# Match {match_id}: {header['map_name']} {header['team1_rounds_won']}-"
              f"{header['team2_rounds_won']} -- {left_name} vs {right_name}", ""]
     lines += _identity_block(manifest, manifest_sha, pair)
-    if compare == "site":
+    if site:
         lines += ["", "This is the TOTAL release change. Formula changes versus live legacy:", ""]
         lines += [f"- {change}" for change in manifest["formula_changes_vs_live_legacy"]]
-        stored = _stored_totals(db, match_id)
-        stale = sum(1 for mp, p in players.items() if stored.get(mp) not in (None, p["left"]["impact"]))
-        lines += ["", f"Persisted site values vs the live-legacy REPLAY: {stale} of {len(players)} players "
-                      "differ (reported separately below; neither replaces the other)."]
+        unscored = sum(1 for p in players.values() if p["stored"]["impact"] is None)
+        stale = sum(1 for p in players.values()
+                    if p["stored"]["impact"] is not None and p["stored"]["impact"] != p["left"]["impact"])
+        lines += ["", "**Before is what production stores today**, so Change and Rank describe what a visitor "
+                      f"will actually see move. The `{left_name}` REPLAY is shown separately as Legacy replay: it "
+                      "is what today's legacy code would compute now, which is not what production holds -- it "
+                      f"differs from the stored value for {stale} of {len(players)} players"
+                      + (f", and {unscored} have no stored rows at all" if unscored else "") + "."]
     elif compare == "penalty":
         lines += ["", "Penalty-only comparison: gross kill credits and every non-econ term are "
                       "reconciled as identical; only the death debit differs."]
     lines += ["", f"Econ points per played round divide by all {played} played rounds, including "
-                  "zero-econ boundary rounds.", "",
-              "| Player | Team | Before | After | Change | Rank | A*damage | B*leverage | C*econ after | "
-              "Gross credit | Gross debit | C*econ before | Econ / round | Persisted |",
-              "|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
-    stored = _stored_totals(db, match_id)
-    team_totals = defaultdict(lambda: dict(before=0, after=0, econ=0, credit=0.0, debit=0.0))
+                  "zero-econ boundary rounds. `of which trade credit` is already inside B*leverage; "
+                  "impact = A*damage + B*leverage + C*econ + D*assists.", ""]
+    if site:
+        lines += ["| Player | Team | Before (stored) | After | Change | Rank | A*damage | B*leverage | "
+                  "of which trade credit | C*econ | D*assists | Gross credit | Gross debit | Econ / round | "
+                  "Legacy replay |",
+                  "|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    else:
+        lines += ["| Player | Team | Before | After | Change | Rank | A*damage | B*leverage | "
+                  "of which trade credit | C*econ after | D*assists | Gross credit | Gross debit | "
+                  "C*econ before | Econ / round |",
+                  "|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    team_totals = defaultdict(lambda: dict(before=0, before_missing=0, after=0, econ=0, credit=0.0, debit=0.0))
     for mp, p in sorted(players.items(), key=lambda kv: kv[1]["right"]["rank"]):
         l, r = p["left"], p["right"]
         if right_cfg.enable_econ_component:
             rec.identity(f"{right_name} match {match_id} player {mp} total", r["impact"],
-                         [r["damage"], r["leverage"], r["econ"]])
-        lines.append(f"| {p['name']} | {p['team'][5:]} | {l['impact']:+,} | {r['impact']:+,} | "
-                     f"{r['impact'] - l['impact']:+,} | {l['rank']}->{r['rank']} | {r['damage']:,} | "
-                     f"{r['leverage']:+,} | {r['econ']:+,} | {r['credit']:.2f} | {r['debit']:.2f} | "
-                     f"{l['econ']:+,} | {r['econ'] / played:+.2f} | {stored.get(mp, 'n/a')} |")
+                         [r["damage"], r["leverage"], r["econ"], r["assists"]])
         t = team_totals[p["team"][5:]]
-        t["before"] += l["impact"]
+        if site:
+            before = p["stored"]["impact"]
+            before_cell = f"{before:+,}" if before is not None else "n/a (unscored)"
+            change_cell = f"{r['impact'] - before:+,}" if before is not None else "n/a"
+            rank_cell = f"{p['stored'].get('rank', 'n/a')}->{r['rank']}"
+            tail = f"{r['econ'] / played:+.2f} | {l['impact']:+,}"
+            if before is None:
+                t["before_missing"] += 1
+            else:
+                t["before"] += before
+        else:
+            before_cell, change_cell = f"{l['impact']:+,}", f"{r['impact'] - l['impact']:+,}"
+            rank_cell = f"{l['rank']}->{r['rank']}"
+            tail = f"{l['econ']:+,} | {r['econ'] / played:+.2f}"
+            t["before"] += l["impact"]
+        lines.append(f"| {p['name']} | {p['team'][5:]} | {before_cell} | {r['impact']:+,} | {change_cell} | "
+                     f"{rank_cell} | {r['damage']:,} | {r['leverage']:+,} | {r['trade']:+,} | {r['econ']:+,} | "
+                     f"{r['assists']:+,} | {r['credit']:.2f} | {r['debit']:.2f} | {tail} |")
         t["after"] += r["impact"]
         t["econ"] += r["econ"]
         t["credit"] += r["credit"]
@@ -710,21 +768,28 @@ def render_match_review(db, match_id, manifest, compare, rec, manifest_sha="(unr
     lines += ["", "| Team | Before | After | C*econ after | Gross credit | Gross debit |",
               "|---|---:|---:|---:|---:|---:|"]
     for team, t in sorted(team_totals.items()):
-        lines.append(f"| {team} | {t['before']:+,} | {t['after']:+,} | {t['econ']:+,} | "
+        before = (f"{t['before']:+,}" + (f" ({t['before_missing']} unscored)" if t["before_missing"] else ""))
+        lines.append(f"| {team} | {before} | {t['after']:+,} | {t['econ']:+,} | "
                      f"{t['credit']:.2f} | {t['debit']:.2f} |")
 
+    stored_rounds = _stored_rows(db, match_id) if site else {}
     lines += ["", "## Per-round changes", "",
-              "Each cell: impact before -> after (C*econ before -> after).", ""]
+              ("Each cell: STORED impact -> after impact (C*econ after)." if site
+               else "Each cell: impact before -> after (C*econ before -> after)."), ""]
     round_list = sorted({rn for p in players.values() for rn in p["by_round"]})
     lines.append("| Round | " + " | ".join(p["name"][:14] for p in players.values()) + " |")
     lines.append("|---|" + "---|" * len(players))
     for rn in round_list:
         cells = []
-        for p in players.values():
+        for mp, p in players.items():
             pair_round = p["by_round"].get(rn, {})
             if "left" in pair_round and "right" in pair_round:
                 (li, le), (ri, re) = pair_round["left"], pair_round["right"]
-                cells.append(f"{li:+}->{ri:+} ({le:+}->{re:+})")
+                if site:
+                    was = stored_rounds.get((pair_round.get("round_id"), mp))
+                    cells.append(f"{was:+}->{ri:+} ({re:+})" if was is not None else f"n/a->{ri:+} ({re:+})")
+                else:
+                    cells.append(f"{li:+}->{ri:+} ({le:+}->{re:+})")
             else:
                 cells.append("n/a")
         lines.append(f"| {rn} | " + " | ".join(cells) + " |")
@@ -761,6 +826,9 @@ def render_frozen_trace(db, match_id, manifest, rec, compare="site", manifest_sh
     reconcile_scores(rec, right_name, right, rounds)
     scale = right_cfg.weights.econ * econ_component.ECON_SCALE
     A, B, C = right_cfg.weights.damage, right_cfg.weights.leverage, right_cfg.weights.econ
+    D = right_cfg.weights.assists
+    site = compare == "site"
+    stored_rounds = _stored_rows(db, match_id) if site else {}
 
     def who(mp):
         return names.get(mp, ("unknown/environment",))[0] if mp is not None else "environment"
@@ -776,8 +844,11 @@ def render_frozen_trace(db, match_id, manifest, rec, compare="site", manifest_sh
     L = [f"# Per-kill trace: match {match_id} {header['map_name']} {header['team1_rounds_won']}-"
          f"{header['team2_rounds_won']}", ""]
     L += _identity_block(manifest, manifest_sha, pair)
-    L += ["", f"impact = A*damage + B*leverage + C*econ with A={A}, B={B}, C={C}; econ points = "
-              f"C * {econ_component.ECON_SCALE} * raw, rounded ONCE per player-round.",
+    L += ["", f"impact = A*damage + B*leverage + C*econ + D*assists with A={A}, B={B}, C={C}, D={D}; "
+              f"econ points = C * {econ_component.ECON_SCALE} * raw, rounded ONCE per player-round. "
+              + (f"Trade credit is ON (scale {right_cfg.weights.trade_credit_scale}): a traded player's share "
+                 "of the trade kill's leverage is inside B*leverage and shown separately as `trade credit`."
+                 if right_cfg.enable_trade_credit else "Trade credit is OFF."),
           "Kill credit = small equipment value + allocated buy-disruption value. Death debit = 30% of the "
           "victim's damage value when the team's funding absorbed the loss, 80% when its severity pool "
           "is positive (constrained next buy). Repeated deaths expose no new kit."
@@ -785,8 +856,9 @@ def render_frozen_trace(db, match_id, manifest, rec, compare="site", manifest_sh
              "factor x 1.10 x net denied kit to the killer and 80% of that as the victim's debit; "
              "that team's 30/80 budget does not apply." if right_cfg.econ_model == bd.MODEL_V2_30_80_BONUS_DENIAL
              else ""), ""]
-    match_totals = defaultdict(lambda: dict(before=0, damage=0, leverage=0, econ=0, impact=0,
-                                            credit=0.0, debit=0.0, rounds=0))
+    match_totals = defaultdict(lambda: dict(before=0, before_missing=0, replay=0, damage=0, leverage=0,
+                                            trade=0, econ=0, assists=0, impact=0, credit=0.0, debit=0.0,
+                                            rounds=0))
     for rn in sorted(rows_by_round):
         audit_kw = right["econ"].get(rn)
         result = audit_kw["result"] if audit_kw and "result" in audit_kw else None
@@ -858,19 +930,36 @@ def render_frozen_trace(db, match_id, manifest, rec, compare="site", manifest_sh
                      f"{ctx['killer_team_alive']}v{ctx['victim_team_alive']} | {bonus:,.0f} | {time_x:.3f} | "
                      f"{B * kill['kill_order_bonus_x_time']:.1f} | {B * kill['death_order_bonus_x_time']:.1f} | "
                      f"{econ_cells} |")
-        L += ["", "| Player | Before impact | A*damage | B*leverage | Econ credit pts | Econ debit pts | "
-                  "C*econ | = After impact |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
+        before_label = "Stored impact" if site else "Before impact"
+        L += ["", f"| Player | {before_label} | A*damage | B*leverage | of which trade credit | "
+                  "Econ credit pts | Econ debit pts | C*econ | D*assists | = After impact |"
+              + (" Legacy replay |" if site else ""),
+              "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|" + ("---:|" if site else "")]
         for mp, row in sorted(rows_by_round[rn].items(), key=lambda kv: -kv[1].impact):
             credit, debit = econ_points(right, rn, mp)
-            before = left_rows.get((row.round_id, mp))
-            before_impact = before.impact if before is not None else 0
-            L.append(f"| {who(mp)} | {before_impact:+,} | {row.damage:,} | {row.leverage_component:+,} | "
-                     f"{credit:.2f} | {debit:.2f} | {row.econ_component:+,} | {row.impact:+,} |")
+            replay_row = left_rows.get((row.round_id, mp))
+            replay_impact = replay_row.impact if replay_row is not None else 0
             t = match_totals[mp]
-            t["before"] += before_impact
+            if site:
+                stored_impact = stored_rounds.get((row.round_id, mp))
+                before_cell = f"{stored_impact:+,}" if stored_impact is not None else "n/a"
+                if stored_impact is None:
+                    t["before_missing"] += 1
+                else:
+                    t["before"] += stored_impact
+            else:
+                before_cell = f"{replay_impact:+,}"
+                t["before"] += replay_impact
+            L.append(f"| {who(mp)} | {before_cell} | {row.damage:,} | {row.leverage_component:+,} | "
+                     f"{row.trade_credit:+,} | {credit:.2f} | {debit:.2f} | {row.econ_component:+,} | "
+                     f"{row.assists_component:+,} | {row.impact:+,} |"
+                     + (f" {replay_impact:+,} |" if site else ""))
+            t["replay"] += replay_impact
             t["damage"] += row.damage
             t["leverage"] += row.leverage_component
+            t["trade"] += row.trade_credit
             t["econ"] += row.econ_component
+            t["assists"] += row.assists_component
             t["impact"] += row.impact
             t["credit"] += credit
             t["debit"] += debit
@@ -878,14 +967,21 @@ def render_frozen_trace(db, match_id, manifest, rec, compare="site", manifest_sh
         L.append("")
 
     L += ["## Match totals", "",
-          "| Player | Before | A*damage | B*leverage | Gross econ credit | Gross econ debit | C*econ | "
-          "Econ / played round | After |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+          f"| Player | {'Stored' if site else 'Before'} | A*damage | B*leverage | of which trade credit | "
+          "Gross econ credit | Gross econ debit | C*econ | D*assists | Econ / played round | After |"
+          + (" Legacy replay |" if site else ""),
+          "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|" + ("---:|" if site else "")]
     view = _totals(right["rows"])
     for mp, t in sorted(match_totals.items(), key=lambda kv: -kv[1]["impact"]):
-        rec.identity(f"trace match total player {mp}", t["impact"], [t["damage"], t["leverage"], t["econ"]])
+        rec.identity(f"trace match total player {mp}", t["impact"],
+                     [t["damage"], t["leverage"], t["econ"], t["assists"]])
         rec.equal(f"trace vs match view player {mp}", t["impact"], view[mp]["impact"])
-        L.append(f"| {who(mp)} | {t['before']:+,} | {t['damage']:,} | {t['leverage']:+,} | {t['credit']:.2f} | "
-                 f"{t['debit']:.2f} | {t['econ']:+,} | {t['econ'] / t['rounds']:+.2f} | {t['impact']:+,} |")
+        before = (f"{t['before']:+,}" + (f" ({t['before_missing']} rounds unscored)"
+                                          if t["before_missing"] else ""))
+        L.append(f"| {who(mp)} | {before} | {t['damage']:,} | {t['leverage']:+,} | {t['trade']:+,} | "
+                 f"{t['credit']:.2f} | {t['debit']:.2f} | {t['econ']:+,} | {t['assists']:+,} | "
+                 f"{t['econ'] / t['rounds']:+.2f} | {t['impact']:+,} |"
+                 + (f" {t['replay']:+,} |" if site else ""))
     return "\n".join(L) + "\n"
 
 
@@ -920,14 +1016,18 @@ def pistol_winner_round_two_losses(db, exclude=()):
 
 
 def build_review_results(db, manifest_path, manifest, match_ids):
-    from scripts.backfill_impact_candidate import result_rows
+    from scripts.backfill_impact_candidate import RESULT_FIELDS, result_rows
 
     config = config_from_manifest(manifest)
     return {
         "manifest_lf_sha256": lf_sha256(manifest_path),
         "candidate_id": manifest["candidate_id"],
         "release_comparator": manifest["release_comparator"],
-        "fields": ["impact", "econ_component", "damage", "time_impact", "kill_impact", "death_impact"],
+        # Derived from the list the rows are actually written in. It used to be
+        # a hand-typed six-field list while every row carried all the persisted
+        # fields in a different order, so a reader taking the metadata at its
+        # word read kill_impact as impact.
+        "fields": list(RESULT_FIELDS),
         "matches": {
             str(match_id): {
                 "source_fingerprint": match_source_fingerprint(db, match_id),
@@ -950,13 +1050,22 @@ def render_ten_review(db, match_ids, manifest, compare, rec, manifest_sha="(unre
     history_by_match = defaultdict(list)
     for h in histories:
         history_by_match[h["match_id"]].append(h["round"])
+    site = compare == "site"
+    unscored_players = 0
     for match_id in match_ids:
         text_block, data = render_match_review(db, match_id, manifest, compare, rec, manifest_sha)
         players = data["players"]
         header = _header(db, match_id)
-        moved = sum(1 for p in players.values() if p["left"]["rank"] != p["right"]["rank"])
+        if site:
+            # Against what production STORES, not against a replay of the legacy code.
+            compared = [p for p in players.values() if p["stored"]["impact"] is not None]
+            unscored_players += len(players) - len(compared)
+            moved = sum(1 for p in compared if p["stored"]["rank"] != p["right"]["rank"])
+            total_players += len(compared)
+        else:
+            moved = sum(1 for p in players.values() if p["left"]["rank"] != p["right"]["rank"])
+            total_players += len(players)
         rank_moves += moved
-        total_players += len(players)
         right = data["right"]
         for kw in right["econ"].values():
             if "result" in kw:
@@ -969,15 +1078,27 @@ def render_ten_review(db, match_ids, manifest, compare, rec, manifest_sha="(unre
         lines += [f"## Match {match_id}: {header['map_name']} {header['team1_rounds_won']}-"
                   f"{header['team2_rounds_won']} -- {moved}/{len(players)} players change rank"
                   + (f"; pistol winner lost round(s) {history}" if history else ""), "",
-                  "| Player | Team | Before | After | Change | Rank | C*econ | Gross credit | Gross debit |",
-                  "|---|---|---:|---:|---:|---|---:|---:|---:|"]
+                  f"| Player | Team | {'Before (stored)' if site else 'Before'} | After | Change | Rank | "
+                  "C*econ | D*assists | of which trade credit | Gross credit | Gross debit |",
+                  "|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|"]
         for mp, p in sorted(players.items(), key=lambda kv: kv[1]["right"]["rank"]):
             l, r = p["left"], p["right"]
-            deltas.append(r["impact"] - l["impact"])
             econ_values.append(r["econ"])
-            lines.append(f"| {p['name']} | {p['team'][5:]} | {l['impact']:+,} | {r['impact']:+,} | "
-                         f"{r['impact'] - l['impact']:+,} | {l['rank']}->{r['rank']} | {r['econ']:+,} | "
-                         f"{r['credit']:.2f} | {r['debit']:.2f} |")
+            if site:
+                before = p["stored"]["impact"]
+                if before is None:
+                    before_cell, change_cell, rank_cell = "n/a (unscored)", "n/a", f"n/a->{r['rank']}"
+                else:
+                    deltas.append(r["impact"] - before)
+                    before_cell, change_cell = f"{before:+,}", f"{r['impact'] - before:+,}"
+                    rank_cell = f"{p['stored']['rank']}->{r['rank']}"
+            else:
+                deltas.append(r["impact"] - l["impact"])
+                before_cell, change_cell = f"{l['impact']:+,}", f"{r['impact'] - l['impact']:+,}"
+                rank_cell = f"{l['rank']}->{r['rank']}"
+            lines.append(f"| {p['name']} | {p['team'][5:]} | {before_cell} | {r['impact']:+,} | "
+                         f"{change_cell} | {rank_cell} | {r['econ']:+,} | {r['assists']:+,} | "
+                         f"{r['trade']:+,} | {r['credit']:.2f} | {r['debit']:.2f} |")
         lines.append("")
     deltas.sort()
     econ_values.sort()
@@ -986,6 +1107,9 @@ def render_ten_review(db, match_ids, manifest, compare, rec, manifest_sha="(unre
         return values[min(len(values) - 1, int(len(values) * q))]
 
     lines += ["## Across all ten", "",
+              (f"- compared against STORED production values; {unscored_players} player-matches have no "
+               "stored rows and are excluded from Change and Rank" if site else
+               "- compared against the named Before comparator's replay"),
               f"- player-matches: {len(deltas)}; rank changes {rank_moves} ({100 * rank_moves / total_players:.1f}%)",
               f"- full-Impact change: mean {statistics.mean(deltas):+.1f}, median {statistics.median(deltas):+.1f}, "
               f"SD {statistics.pstdev(deltas):.1f}, p5 {at(deltas, .05):+}, p95 {at(deltas, .95):+}, "
@@ -1076,7 +1200,8 @@ def corpus_audit(db, manifest, min_matches=20, match_ids=None, progress=None):
             raw = release["econ"][rn]["result"].raw_net_by_player().get(row.match_player_id, 0.0)
             if row.econ_component != round(release_cfg.weights.econ * (econ_component.ECON_SCALE * raw)):
                 mismatch["econ_row_vs_calculator"] += 1
-            if row.impact != row.damage + row.leverage_component + row.econ_component:
+            if row.impact != (row.damage + row.leverage_component + row.econ_component
+                              + row.assists_component):
                 mismatch["impact_identity"] += 1
             for field in NON_ECON_FIELDS:
                 if getattr(row, field) != getattr(w_row, field):
@@ -1198,9 +1323,23 @@ def apply_weight_override(manifest, manifest_sha, spec):
     the reported identity must say so rather than carrying the file's hash
     alone into artifacts."""
     a, b, c = (float(x) for x in spec.split(","))
+    # --weights only knows A, B and C. A comparator the review actually uses that
+    # carries D or the trade credit would be reviewed with an A/B/C that nobody
+    # declared alongside a D and credit that --weights cannot express, so refuse.
+    # Comparators the review never uses are left alone, and every comparator
+    # keeps its own D and credit scale rather than having them dropped to
+    # defaults by a weights dict that simply omits them.
+    used = (set(manifest.get("site_comparison") or []) | set(manifest.get("penalty_comparison") or [])
+            | set(manifest.get("diagnostic_comparators") or []) | {manifest.get("release_comparator")})
+    for name in sorted(n for n in used if n in manifest["comparators"]):
+        data = manifest["comparators"][name]
+        if (data.get("weights") or {}).get("assists", 0.0) or data.get("enable_trade_credit"):
+            raise SystemExit(
+                f"--weights cannot override comparator {name!r}: it carries D (assists) or the trade "
+                "credit, which --weights cannot express. Freeze a new candidate instead.")
     overridden = copy.deepcopy(manifest)
     for data in overridden["comparators"].values():
-        data["weights"] = {"damage": a, "leverage": b, "econ": c}
+        data["weights"] = {**(data.get("weights") or {}), "damage": a, "leverage": b, "econ": c}
     overridden["candidate_id"] = f"{manifest['candidate_id']} WEIGHTS-OVERRIDE {a},{b},{c}"
     overridden["formula_changes_vs_live_legacy"] = [
         change for change in manifest["formula_changes_vs_live_legacy"]

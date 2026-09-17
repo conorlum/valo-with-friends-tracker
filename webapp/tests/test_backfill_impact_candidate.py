@@ -265,7 +265,10 @@ def test_approved_results_must_match_the_persisted_scores(world, tmp_path):
     config = config_from_manifest(world.manifest)
     rows = backfill.result_rows(build_impact_rows_for_match(db, world.matches[0], **config.build_kwargs()))
     db.close()
+    # The real review-results format: rows are positional, so they carry the
+    # field list that labels them (an unlabelled file is now refused outright).
     approved = {"manifest_lf_sha256": lf_sha256(world.manifest_path),
+                "fields": list(backfill.RESULT_FIELDS),
                 "matches": {str(world.matches[0]): {"rows": rows}}}
     good = tmp_path / "approved.json"
     good.write_text(json.dumps(approved))

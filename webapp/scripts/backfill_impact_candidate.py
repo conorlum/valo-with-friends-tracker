@@ -92,6 +92,12 @@ def persisted_result_diffs(db, approved: dict, manifest_sha: str) -> list[str]:
     diffs = []
     if approved.get("manifest_lf_sha256") != manifest_sha:
         diffs.append("the approved results were produced under a different manifest")
+    # The rows are positional, so the field list that labels them must be the one
+    # they were written in. A file whose metadata disagrees is refused rather than
+    # compared, because a positional comparison would still "pass" on it.
+    if approved.get("fields") != list(RESULT_FIELDS):
+        diffs.append(f"the approved results label their values {approved.get('fields')}, "
+                     f"not the persisted fields {list(RESULT_FIELDS)}")
     for match_id, match in approved.get("matches", {}).items():
         stored = persisted_rows(db, int(match_id))
         expected = match["rows"]
