@@ -434,6 +434,34 @@ def test_verify_refuses_an_export_that_is_not_the_chain(db, tmp_path):
     assert any("is not the chain's" in p for p in facts["problems"])
 
 
+def test_verify_live_proves_what_the_site_reads_after_the_swap(db, tmp_path):
+    keys, path, sidecar = _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    swap_tool.swap(db)
+    db.commit()
+    assert _verify(db, path, sidecar, table=swap_tool.LIVE)["problems"] == []
+
+    db.execute(text("UPDATE impact_scores SET impact = 78 WHERE round_id = :r AND match_player_id = :m"),
+               {"r": keys[0][0], "m": keys[0][1]})
+    facts = _verify(db, path, sidecar, table=swap_tool.LIVE)
+    assert facts["problems"] == ["impact_scores does not read back as the artifact that was loaded"]
+
+
+def test_a_clean_live_verification_never_authorizes_a_swap(db, tmp_path):
+    keys = _corpus(db)
+    _install_v1(db, keys, impact=10)
+    db.commit()
+    path, _ = _export(tmp_path, db, keys, impact=77)
+    built = swap_tool.build(db, path)
+    db.commit()
+    swap_tool.record(db, "verify-live", "clean", {"built_oid": built["built_oid"],
+                                                  "max_match_id": db.execute(text("SELECT max(id) FROM matches")).scalar()})
+    db.commit()
+
+    with pytest.raises(swap_tool.Refused, match="not a clean verify-build"):
+        swap_tool.swap(db)
+    db.rollback()
+
+
 def test_the_cli_refuses_a_database_it_was_not_told_to_expect(db, monkeypatch, capsys):
     monkeypatch.setattr(swap_tool, "SessionLocal", postgres_session_or_skip)
     assert swap_tool.main(["state", "--expect-database", "valo_somewhere_else"]) == swap_tool.EXIT_REFUSED

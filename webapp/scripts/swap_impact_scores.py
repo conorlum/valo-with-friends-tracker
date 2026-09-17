@@ -21,6 +21,7 @@ transaction.
     verify-build  count, key set, version, hashes, the approved rows, and every
                   match's input fingerprint against the export's sidecar -- read-only
     swap          one transaction: locks, renames, cache clear
+    verify-live   verify-build's checks on the live table, after the swap -- read-only
     rollback      the same in reverse, and close the gate
     state         print what the database currently looks like, with the log
 
@@ -313,23 +314,27 @@ def _check_inputs(db, sidecar: dict, facts: dict, problems: list) -> None:
 
 
 def verify_build(db, artifact_path: str, *, sidecar_path: str, expect_scoring_version: int,
-                 expect_comparison_sha256: str, approved_path: str | None) -> dict:
-    """Read-only. The CLI runs it inside one REPEATABLE READ snapshot."""
+                 expect_comparison_sha256: str, approved_path: str | None, table: str = BUILT) -> dict:
+    """Read-only. The CLI runs it inside one REPEATABLE READ snapshot.
+
+    `table` is the built table before a swap, and the live table after one
+    (`verify-live`, plan v2 8.4): the same checks prove what the site now reads."""
     problems = []
-    facts = {"database": _scalar(db, "SELECT current_database()"), "built_oid": _table_oid(db, BUILT)}
+    facts = {"database": _scalar(db, "SELECT current_database()"), "table": table,
+             "built_oid": _table_oid(db, table)}
     if facts["built_oid"] is None:
-        facts["problems"] = [f"{BUILT} does not exist: build first"]
+        facts["problems"] = [f"{table} does not exist: build first"]
         return facts
 
-    facts["rows"] = _scalar(db, f"SELECT count(*) FROM {BUILT}")
+    facts["rows"] = _scalar(db, f"SELECT count(*) FROM {table}")
     facts["stat_rows"] = _scalar(db, "SELECT count(*) FROM round_player_stats")
     facts["max_match_id"] = _scalar(db, "SELECT max(id) FROM matches")
     missing = _scalar(db, f"""
         SELECT count(*) FROM round_player_stats s
-        LEFT JOIN {BUILT} b ON b.round_id = s.round_id AND b.match_player_id = s.match_player_id
+        LEFT JOIN {table} b ON b.round_id = s.round_id AND b.match_player_id = s.match_player_id
         WHERE b.round_id IS NULL""")
     unexpected = _scalar(db, f"""
-        SELECT count(*) FROM {BUILT} b
+        SELECT count(*) FROM {table} b
         LEFT JOIN round_player_stats s ON s.round_id = b.round_id
              AND s.match_player_id = b.match_player_id
         WHERE s.id IS NULL""")
@@ -340,18 +345,18 @@ def verify_build(db, artifact_path: str, *, sidecar_path: str, expect_scoring_ve
                         f"{unexpected} unexpected")
 
     versions = [v for (v,) in db.execute(text(
-        f"SELECT DISTINCT scoring_version FROM {BUILT} ORDER BY 1")).all()]
+        f"SELECT DISTINCT scoring_version FROM {table} ORDER BY 1")).all()]
     facts["scoring_versions"] = versions
     if versions != [expect_scoring_version]:
         problems.append(f"scoring_version is {versions}, expected [{expect_scoring_version}]")
 
     with open(artifact_path, "r", encoding="utf-8", newline="") as handle:
         expected = handle.read()
-    read_back = _canonical_rows(db, BUILT)
+    read_back = _canonical_rows(db, table)
     facts["artifact_sha256"] = hashlib.sha256(expected.encode("utf-8")).hexdigest()
     facts["read_back_sha256"] = hashlib.sha256(read_back.encode("utf-8")).hexdigest()
     if facts["artifact_sha256"] != facts["read_back_sha256"]:
-        problems.append("the built table does not read back as the artifact that was loaded")
+        problems.append(f"{table} does not read back as the artifact that was loaded")
 
     with open(sidecar_path, encoding="utf-8") as handle:
         sidecar = json.load(handle)
@@ -381,7 +386,7 @@ def verify_build(db, artifact_path: str, *, sidecar_path: str, expect_scoring_ve
                 built = {
                     f"{r[0]}:{r[1]}": [render_field(v) for v in r[2:]]
                     for r in db.execute(text(
-                        f"SELECT b.round_id, b.match_player_id, {', '.join(compared)} FROM {BUILT} b "
+                        f"SELECT b.round_id, b.match_player_id, {', '.join(compared)} FROM {table} b "
                         "JOIN rounds r ON r.id = b.round_id WHERE r.match_id = :m"), {"m": int(match_id)})
                 }
                 for key, values in match.get("rows", {}).items():
@@ -404,12 +409,12 @@ def verify_build(db, artifact_path: str, *, sidecar_path: str, expect_scoring_ve
     return facts
 
 
-def verify_and_record(db, artifact_path: str, **kwargs) -> dict:
+def verify_and_record(db, artifact_path: str, *, operation: str = "verify-build", **kwargs) -> dict:
     """verify_build, then its entry in the log. The verification's own
     transaction is read-only, so the entry is written after it ends."""
     facts = verify_build(db, artifact_path, **kwargs)
     db.rollback()
-    record(db, "verify-build", "failed" if facts["problems"] else "clean", facts)
+    record(db, operation, "failed" if facts["problems"] else "clean", facts)
     db.commit()
     return facts
 
@@ -502,7 +507,8 @@ def state(db) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=("build", "verify-build", "swap", "rollback", "state"))
+    parser.add_argument("command", choices=("build", "verify-build", "swap", "verify-live", "rollback",
+                                            "state"))
     parser.add_argument("--expect-database", required=True,
                         help="the database this step must touch; any other is refused")
     parser.add_argument("--artifact", help="the load projection CSV (<label>.load.csv)")
@@ -544,23 +550,24 @@ def main(argv=None) -> int:
                   f"(oid {result['built_oid']})")
             return 0
 
-        if args.command == "verify-build":
+        if args.command in ("verify-build", "verify-live"):
             missing = [flag for flag, value in (("--artifact", args.artifact), ("--sidecar", args.sidecar),
                                                 ("--approved", args.approved),
                                                 ("--expect-comparison-sha256", args.expect_comparison_sha256))
                        if not value]
             if missing:
-                raise SystemExit(f"verify-build needs {', '.join(missing)}")
+                raise SystemExit(f"{args.command} needs {', '.join(missing)}")
             db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
-            facts = verify_and_record(db, args.artifact, sidecar_path=args.sidecar,
+            facts = verify_and_record(db, args.artifact, operation=args.command, sidecar_path=args.sidecar,
                                       expect_scoring_version=args.expect_scoring_version,
                                       expect_comparison_sha256=args.expect_comparison_sha256,
-                                      approved_path=args.approved)
+                                      approved_path=args.approved,
+                                      table=BUILT if args.command == "verify-build" else LIVE)
             print(canonical_json(facts))
             if facts["problems"]:
                 print("VERIFY FAILED")
                 return EXIT_VERIFY_FAILED
-            print("verify-build: clean")
+            print(f"{args.command}: clean")
             return 0
 
         if not args.yes:
