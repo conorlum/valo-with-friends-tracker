@@ -6,17 +6,18 @@ docs/superpowers/plans/2026-09-16-rc3-ship-plan-v2.md wants: from the moment the
 migrations land until the observation hold ends, nothing but the runbook writes.
 
     # install, closed, before merging PR #67
-    python scripts/install_release_write_gate.py --admin-id "rc3-runbook" \
+    python scripts/install_release_write_gate.py --expect-database <name> --admin-id "rc3-runbook" \
         --release-id "impact-rc3" --state closed --note "installed with 0010"
 
     # after the 48-hour hold, let rc3 ingestion back in
-    python scripts/install_release_write_gate.py --state open --note "hold over"
+    python scripts/install_release_write_gate.py --expect-database <name> --state open --note "hold over"
 
     # after a rollback
-    python scripts/install_release_write_gate.py --state closed --note "R1"
+    python scripts/install_release_write_gate.py --expect-database <name> --state closed --note "R1"
 
-Reads DATABASE_URL like every other script here; it prints the database name it
-is about to change and refuses nothing -- check the name before you run it.
+Reads DATABASE_URL like every other script here, and refuses (exit 3) unless the
+database it connected to is the one --expect-database names: the production and
+rehearsal URLs differ only in that name.
 """
 
 from __future__ import annotations
@@ -58,6 +59,8 @@ def install(db, *, state: str | None, release_id: str | None, admin_id: str | No
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--expect-database", required=True,
+                        help="the database this must change; any other is refused")
     parser.add_argument("--state", choices=("closed", "open"))
     parser.add_argument("--release-id")
     parser.add_argument("--admin-id")
@@ -67,6 +70,9 @@ def main(argv=None) -> int:
     db = SessionLocal()
     try:
         database = db.execute(text("SELECT current_database()")).scalar()
+        if database != args.expect_database:
+            print(f"REFUSED: connected to {database}, but this step expects {args.expect_database}")
+            return 3
         before = read_gate(db)
         print(f"database {database}: gate before = {before}")
         install(db, state=args.state, release_id=args.release_id, admin_id=args.admin_id,

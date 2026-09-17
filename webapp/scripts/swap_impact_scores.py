@@ -18,12 +18,25 @@ is up and nothing is committed to the live table until `swap`, which is one
 transaction.
 
     build         create impact_scores_new and COPY the load projection in
-    verify-build  count, key set, version, hash and approved rows -- read-only
+    verify-build  count, key set, version, hashes, the approved rows, and every
+                  match's input fingerprint against the export's sidecar -- read-only
     swap          one transaction: locks, renames, cache clear
     rollback      the same in reverse, and close the gate
-    state         print what the database currently looks like
+    state         print what the database currently looks like, with the log
 
-Every subcommand needs the gate's admin identity (scripts/sql/release_write_gate.sql).
+THE OPERATION-STATE RECORD. Every subcommand but `state` appends to
+scoring_release_log (scripts/sql/release_write_gate.sql), and build, swap and
+rollback write their entry inside the transaction that makes the change, so the
+entry and the change commit together or not at all. After a lost connection,
+`state` says whether a swap happened; nobody repeats one blind. The log also
+binds the steps together: a swap refuses unless the newest build-or-verify entry
+is a CLEAN verification of the very table it is about to swap in.
+
+Every subcommand first asserts --expect-database, and runs under the gate's
+admin identity.
+
+Exit codes: 0 done; 2 verify-build found problems; 3 refused, nothing changed;
+4 the swap or rollback could not take its locks in time, nothing changed -- retry.
 """
 
 from __future__ import annotations
@@ -40,18 +53,32 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from app.db import SessionLocal
-from app.scoring.write_gate import install_write_identity, read_gate
+from app.scoring.impact_manifest import match_source_fingerprint
+from app.scoring.write_gate import WRITE_IDENTITY_SETTING, install_write_identity, read_gate
 from scripts.export_impact_artifact import canonical_json, load_columns, render_field
 
 LIVE = "impact_scores"
 BUILT = "impact_scores_new"
 PREVIOUS = "impact_scores_v1"
 ROLLED_BACK = "impact_scores_rc3_rolled_back"
+LOG = "scoring_release_log"
 
 #: A swap that cannot take its locks in this long changes nothing and is retried.
 SWAP_LOCK_TIMEOUT = "5s"
+
+EXIT_VERIFY_FAILED = 2
+EXIT_REFUSED = 3
+EXIT_LOCK_TIMEOUT = 4
+
+#: SQLSTATE lock_not_available, raised when lock_timeout expires.
+LOCK_NOT_AVAILABLE = "55P03"
+
+
+class Refused(RuntimeError):
+    """A precondition does not hold. Raised before anything is committed."""
 
 
 def _identity(db, identity: str) -> None:
@@ -66,6 +93,82 @@ def _table_exists(db, name: str) -> bool:
     return bool(_scalar(db, "SELECT to_regclass(:n)", n=f"public.{name}"))
 
 
+def _table_oid(db, name: str) -> int | None:
+    return _scalar(db, "SELECT CAST(to_regclass(:n) AS oid)", n=f"public.{name}")
+
+
+def _file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+# ---- the operation-state record ---------------------------------------------------------
+
+def record(db, operation: str, outcome: str, details: dict) -> int:
+    """Append one entry, in the caller's transaction."""
+    return db.execute(text(
+        f"INSERT INTO {LOG} (operation, outcome, identity, details) "
+        "VALUES (:operation, :outcome, current_setting(:setting, true), CAST(:details AS jsonb)) "
+        "RETURNING id"),
+        {"operation": operation, "outcome": outcome, "setting": WRITE_IDENTITY_SETTING,
+         "details": canonical_json(details)}).scalar()
+
+
+def _latest(db, *entries: tuple[str, str]):
+    """The newest entry among these (operation, outcome) pairs.
+
+    Matching outcomes, not just operations, matters: a refused second swap is
+    logged as ("swap", "refused") and must not hide the swap that really
+    happened from a later rollback."""
+    clauses = " OR ".join(f"(operation = :operation{i} AND outcome = :outcome{i})"
+                          for i in range(len(entries)))
+    params = {}
+    for i, (operation, outcome) in enumerate(entries):
+        params[f"operation{i}"], params[f"outcome{i}"] = operation, outcome
+    return db.execute(text(
+        f"SELECT id, operation, outcome, details FROM {LOG} WHERE {clauses} ORDER BY id DESC LIMIT 1"),
+        params).first()
+
+
+def _require_gate_closed(db, operation: str) -> None:
+    gate = read_gate(db)
+    if gate is None:
+        raise Refused("the release write gate is not installed")
+    if gate.is_open:
+        raise Refused(f"the gate is open for {gate.release_id}: {operation} runs only while it is "
+                      "closed, because an open gate lets ingestion write while tables are renamed "
+                      "(plan v2, D11)")
+
+
+def _require_clean_verification(db) -> dict:
+    """The newest build-or-verify entry must be a clean verification of the
+    table about to be swapped in, and no match may have arrived since.
+
+    Called with the locks held, so neither can change before the renames."""
+    # A failed build rolls back whole, leaving any earlier build and its
+    # verification exactly as they were, so it is not a reason to refuse.
+    latest = _latest(db, ("build", "built"), ("verify-build", "clean"), ("verify-build", "failed"))
+    if latest is None or latest.operation != "verify-build" or latest.outcome != "clean":
+        found = "nothing" if latest is None else f"{latest.operation} {latest.outcome} (entry {latest.id})"
+        raise Refused(f"the newest build-or-verify entry is {found}, not a clean verify-build: "
+                      "verify the build before swapping it in")
+    details = latest.details
+    built_oid = _table_oid(db, BUILT)
+    if details.get("built_oid") != built_oid:
+        raise Refused(f"verify-build entry {latest.id} checked table oid {details.get('built_oid')}, "
+                      f"but {BUILT} is now oid {built_oid}: it was rebuilt after verification")
+    max_match_id = _scalar(db, "SELECT max(id) FROM matches")
+    if details.get("max_match_id") != max_match_id:
+        raise Refused(f"matches changed after verification (max id {details.get('max_match_id')} "
+                      f"then, {max_match_id} now): verify again")
+    return {"verify_entry": latest.id, "built_oid": built_oid, "max_match_id": max_match_id,
+            "rows": details.get("rows"), "comparison_sha256": details.get("comparison_sha256"),
+            "artifact_sha256": details.get("artifact_sha256")}
+
+
 # ---- names -------------------------------------------------------------------------
 
 def _rename_owned_objects(db, table: str, old_prefix: str, new_prefix: str) -> list[str]:
@@ -74,9 +177,10 @@ def _rename_owned_objects(db, table: str, old_prefix: str, new_prefix: str) -> l
 
     Index names are schema-scoped, so the old table must give up
     `impact_scores_pkey` before the new one can take it. NOT NULL constraint
-    names are per-table and are deliberately left alone: two tables may both
-    carry `impact_scores_damage_not_null`, and after a rollback rename the old
-    table's names are already the canonical ones.
+    names are per-table and are deliberately left alone: PostgreSQL 18 copies
+    them with `CREATE TABLE ... LIKE` under their original names
+    (`impact_scores_damage_not_null`), and a table rename does not change them,
+    so after a swap or a rollback the live table carries the canonical names.
     """
     renamed = []
     constraints = db.execute(text(
@@ -134,8 +238,15 @@ def build(db, artifact_path: str) -> dict:
             f"CREATE TRIGGER scoring_gate_{operation.lower()} BEFORE {operation} ON {BUILT} "
             "FOR EACH STATEMENT EXECUTE FUNCTION scoring_gate_guard()"))
     db.execute(text(f"ANALYZE {BUILT}"))
-    rows = _scalar(db, f"SELECT count(*) FROM {BUILT}")
-    return {"rows": rows, "minutes": round((time.time() - started) / 60, 2)}
+    result = {
+        "rows": _scalar(db, f"SELECT count(*) FROM {BUILT}"),
+        "minutes": round((time.time() - started) / 60, 2),
+        "artifact": os.path.basename(artifact_path),
+        "artifact_sha256": _file_sha256(artifact_path),
+        "built_oid": _table_oid(db, BUILT),
+    }
+    record(db, "build", "built", result)
+    return result
 
 
 # ---- verify ------------------------------------------------------------------------
@@ -155,12 +266,64 @@ def _canonical_rows(db, table: str) -> str:
     return buffer.getvalue()
 
 
-def verify_build(db, artifact_path: str, *, expect_scoring_version: int,
-                 approved_path: str | None) -> dict:
-    problems, facts = [], {}
+def _check_sidecar(db, sidecar: dict, facts: dict, problems: list, *,
+                   expect_scoring_version: int, expect_comparison_sha256: str) -> None:
+    """Tie the loaded file to the export that produced it, and that export to the chain."""
+    recorded_load = (sidecar.get("load_artifact") or {}).get("sha256")
+    if recorded_load != facts["artifact_sha256"]:
+        problems.append(f"the sidecar describes load artifact {recorded_load}, but the file loaded "
+                        f"is {facts['artifact_sha256']}")
+    facts["comparison_sha256"] = (sidecar.get("artifact") or {}).get("sha256")
+    if facts["comparison_sha256"] != expect_comparison_sha256:
+        problems.append(f"the export's comparison hash {facts['comparison_sha256']} is not the chain's "
+                        f"{expect_comparison_sha256}: this is not the scoring that was approved")
+    exported_version = (sidecar.get("configuration") or {}).get("impact_calculation_version")
+    if exported_version != expect_scoring_version:
+        problems.append(f"the export ran at impact_calculation_version {exported_version}, "
+                        f"expected {expect_scoring_version}")
+    exported_from = (sidecar.get("inputs") or {}).get("database")
+    if exported_from != facts["database"]:
+        problems.append(f"the export read database {exported_from}, but this is {facts['database']}")
+
+
+def _check_inputs(db, sidecar: dict, facts: dict, problems: list) -> None:
+    """Every match's source rows, fingerprinted again and compared with the
+    export's. The slow part: four queries per match."""
+    inputs = sidecar.get("inputs") or {}
+    recorded = inputs.get("match_source_fingerprints")
+    if not recorded:
+        problems.append("the export recorded no input fingerprints (--no-fingerprints), so it "
+                        "cannot be loaded")
+        return
+    current_ids = [str(m) for (m,) in db.execute(text("SELECT id FROM matches ORDER BY id")).all()]
+    added = sorted(set(current_ids) - set(recorded), key=int)
+    removed = sorted(set(recorded) - set(current_ids), key=int)
+    if added or removed:
+        problems.append(f"the match set changed since the export: {len(added)} added "
+                        f"(first {added[:5]}), {len(removed)} removed (first {removed[:5]})")
+        return
+    started = time.time()
+    current = {match_id: match_source_fingerprint(db, int(match_id)) for match_id in current_ids}
+    facts["fingerprint_minutes"] = round((time.time() - started) / 60, 2)
+    facts["cohort_fingerprint"] = hashlib.sha256(canonical_json(current).encode("utf-8")).hexdigest()
+    changed = [m for m in current_ids if current[m] != recorded[m]]
+    if changed or facts["cohort_fingerprint"] != inputs.get("cohort_fingerprint"):
+        problems.append(f"{len(changed)} matches' source rows changed since the export "
+                        f"(first {changed[:5]})")
+
+
+def verify_build(db, artifact_path: str, *, sidecar_path: str, expect_scoring_version: int,
+                 expect_comparison_sha256: str, approved_path: str | None) -> dict:
+    """Read-only. The CLI runs it inside one REPEATABLE READ snapshot."""
+    problems = []
+    facts = {"database": _scalar(db, "SELECT current_database()"), "built_oid": _table_oid(db, BUILT)}
+    if facts["built_oid"] is None:
+        facts["problems"] = [f"{BUILT} does not exist: build first"]
+        return facts
 
     facts["rows"] = _scalar(db, f"SELECT count(*) FROM {BUILT}")
     facts["stat_rows"] = _scalar(db, "SELECT count(*) FROM round_player_stats")
+    facts["max_match_id"] = _scalar(db, "SELECT max(id) FROM matches")
     missing = _scalar(db, f"""
         SELECT count(*) FROM round_player_stats s
         LEFT JOIN {BUILT} b ON b.round_id = s.round_id AND b.match_player_id = s.match_player_id
@@ -190,8 +353,14 @@ def verify_build(db, artifact_path: str, *, expect_scoring_version: int,
     if facts["artifact_sha256"] != facts["read_back_sha256"]:
         problems.append("the built table does not read back as the artifact that was loaded")
 
+    with open(sidecar_path, encoding="utf-8") as handle:
+        sidecar = json.load(handle)
+    _check_sidecar(db, sidecar, facts, problems, expect_scoring_version=expect_scoring_version,
+                   expect_comparison_sha256=expect_comparison_sha256)
+
     if approved_path:
-        approved = json.load(open(approved_path, encoding="utf-8"))
+        with open(approved_path, encoding="utf-8") as handle:
+            approved = json.load(handle)
         fields = list(approved.get("fields") or [])
         persisted = [c for c in load_columns() if c not in ("round_id", "match_player_id")]
         if sorted(fields) != sorted(persisted):
@@ -225,36 +394,76 @@ def verify_build(db, artifact_path: str, *, expect_scoring_version: int,
             if differing:
                 problems.append(f"{len(differing)} approved rows differ (first {differing[0]})")
 
+    if problems:
+        # Fingerprinting every match takes minutes over the link; it is only
+        # worth paying for a build that could otherwise be swapped in.
+        facts["input_fingerprints"] = "not checked: fix the problems above first"
+    else:
+        _check_inputs(db, sidecar, facts, problems)
     facts["problems"] = problems
+    return facts
+
+
+def verify_and_record(db, artifact_path: str, **kwargs) -> dict:
+    """verify_build, then its entry in the log. The verification's own
+    transaction is read-only, so the entry is written after it ends."""
+    facts = verify_build(db, artifact_path, **kwargs)
+    db.rollback()
+    record(db, "verify-build", "failed" if facts["problems"] else "clean", facts)
+    db.commit()
     return facts
 
 
 # ---- swap and rollback ---------------------------------------------------------------
 
 def swap(db) -> dict:
-    """One transaction. Either every rename lands or none does."""
+    """One transaction. Either every rename lands, with its log entry, or none does."""
     started = time.time()
+    _require_gate_closed(db, "swap")
+    if not _table_exists(db, BUILT):
+        raise Refused(f"{BUILT} does not exist: build and verify it first")
+    if _table_exists(db, PREVIOUS):
+        raise Refused(f"{PREVIOUS} already exists, so this database was already swapped "
+                      "(see `state`); a second swap would have nowhere to put the live table")
     db.execute(text(f"SET LOCAL lock_timeout = '{SWAP_LOCK_TIMEOUT}'"))
     # Request order: pages read the cache, then the scores. Taking the locks the
     # other way round is the deadlock this design exists to avoid.
     db.execute(text("LOCK TABLE player_view_cache IN ACCESS EXCLUSIVE MODE"))
     db.execute(text(f"LOCK TABLE {LIVE}, {BUILT} IN ACCESS EXCLUSIVE MODE"))
+    verified = _require_clean_verification(db)
 
     renamed = _rename_owned_objects(db, LIVE, LIVE, PREVIOUS)
     db.execute(text(f"ALTER TABLE {LIVE} RENAME TO {PREVIOUS}"))
     db.execute(text(f"ALTER TABLE {BUILT} RENAME TO {LIVE}"))
     renamed += _rename_owned_objects(db, LIVE, BUILT, LIVE)
     db.execute(text("TRUNCATE player_view_cache"))
-    return {"renamed": renamed, "seconds": round(time.time() - started, 2)}
+    result = {**verified, "renamed": renamed, "seconds": round(time.time() - started, 2)}
+    record(db, "swap", "swapped", result)
+    return result
 
 
 def rollback(db) -> dict:
+    """R1. Valid only while nothing has been ingested since the swap (plan v2, D11)."""
     started = time.time()
     if not _table_exists(db, PREVIOUS):
-        raise SystemExit(f"{PREVIOUS} does not exist: there is nothing to roll back to")
+        raise Refused(f"{PREVIOUS} does not exist: there is nothing to roll back to")
+    if _table_exists(db, ROLLED_BACK):
+        raise Refused(f"{ROLLED_BACK} exists from an earlier rollback: inspect it and drop it first")
+    _require_gate_closed(db, "rollback")
     db.execute(text(f"SET LOCAL lock_timeout = '{SWAP_LOCK_TIMEOUT}'"))
     db.execute(text("LOCK TABLE player_view_cache IN ACCESS EXCLUSIVE MODE"))
     db.execute(text(f"LOCK TABLE {LIVE}, {PREVIOUS} IN ACCESS EXCLUSIVE MODE"))
+
+    swapped = _latest(db, ("swap", "swapped"), ("rollback", "rolled back"))
+    if swapped is None or swapped.operation != "swap":
+        raise Refused("the log's newest committed swap-or-rollback is not a swap, so there is "
+                      "no swap this rollback can be sure it undoes")
+    max_match_id = _scalar(db, "SELECT max(id) FROM matches")
+    if max_match_id != swapped.details.get("max_match_id"):
+        raise Refused(f"matches were ingested after the swap (max id {swapped.details.get('max_match_id')} "
+                      f"then, {max_match_id} now): restoring {PREVIOUS} would lose their scores. R1 "
+                      "no longer applies (plan v2, D11) -- fix forward, or capture the current "
+                      "scores first")
 
     renamed = _rename_owned_objects(db, LIVE, LIVE, ROLLED_BACK)
     db.execute(text(f"ALTER TABLE {LIVE} RENAME TO {ROLLED_BACK}"))
@@ -264,19 +473,29 @@ def rollback(db) -> dict:
     # Nothing writes scores again until the owner decides what should.
     db.execute(text("UPDATE scoring_gate SET state = 'closed', note = :n, updated_at = now() "
                     "WHERE id"), {"n": "closed by swap_impact_scores.py rollback"})
-    return {"renamed": renamed, "seconds": round(time.time() - started, 2)}
+    result = {"undoes_swap_entry": swapped.id, "max_match_id": max_match_id, "renamed": renamed,
+              "seconds": round(time.time() - started, 2)}
+    record(db, "rollback", "rolled back", result)
+    return result
 
 
 def state(db) -> dict:
     tables = {name: _table_exists(db, name) for name in (LIVE, BUILT, PREVIOUS, ROLLED_BACK)}
-    counts = {name: _scalar(db, f"SELECT count(*) FROM {name}") for name, exists in tables.items()
-              if exists}
     return {
         "database": _scalar(db, "SELECT current_database()"),
         "tables": tables,
-        "rows": counts,
+        "rows": {name: _scalar(db, f"SELECT count(*) FROM {name}")
+                 for name, exists in tables.items() if exists},
+        "oids": {name: _table_oid(db, name) for name, exists in tables.items() if exists},
         "gate": str(read_gate(db)),
         "player_view_cache": _scalar(db, "SELECT count(*) FROM player_view_cache"),
+        "max_match_id": _scalar(db, "SELECT max(id) FROM matches"),
+        "log": [
+            {"id": entry_id, "at": at.isoformat(), "operation": operation, "outcome": outcome,
+             "identity": identity}
+            for entry_id, at, operation, outcome, identity in db.execute(text(
+                f"SELECT id, at, operation, outcome, identity FROM {LOG} ORDER BY id DESC LIMIT 10")).all()
+        ],
     }
 
 
@@ -284,8 +503,13 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=("build", "verify-build", "swap", "rollback", "state"))
+    parser.add_argument("--expect-database", required=True,
+                        help="the database this step must touch; any other is refused")
     parser.add_argument("--artifact", help="the load projection CSV (<label>.load.csv)")
+    parser.add_argument("--sidecar", help="the export's sidecar (<label>.json)")
     parser.add_argument("--approved", help="review-results.json to compare against")
+    parser.add_argument("--expect-comparison-sha256",
+                        help="the chain's comparison hash, which the export must carry")
     parser.add_argument("--expect-scoring-version", type=int, default=3)
     parser.add_argument("--identity", default="rc3-runbook", help="the gate's admin identity")
     parser.add_argument("--yes", action="store_true", help="required for swap and rollback")
@@ -295,7 +519,11 @@ def main(argv=None) -> int:
     try:
         database = _scalar(db, "SELECT current_database()")
         print(f"database {database}")
+        if database != args.expect_database:
+            print(f"REFUSED: connected to {database}, but this step expects {args.expect_database}")
+            return EXIT_REFUSED
         _identity(db, args.identity)
+        db.commit()  # the identity is a session setting: commit it so later rollbacks keep it
 
         if args.command == "state":
             print(canonical_json(state(db)))
@@ -304,29 +532,57 @@ def main(argv=None) -> int:
         if args.command == "build":
             if not args.artifact:
                 raise SystemExit("build needs --artifact")
-            result = build(db, args.artifact)
-            db.commit()
-            print(f"built {BUILT}: {result['rows']:,} rows in {result['minutes']} min")
+            try:
+                result = build(db, args.artifact)
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                record(db, "build", "failed", {"error": repr(exc)[:500]})
+                db.commit()
+                raise
+            print(f"built {BUILT}: {result['rows']:,} rows in {result['minutes']} min "
+                  f"(oid {result['built_oid']})")
             return 0
 
         if args.command == "verify-build":
-            if not args.artifact:
-                raise SystemExit("verify-build needs --artifact")
-            facts = verify_build(db, args.artifact,
-                                 expect_scoring_version=args.expect_scoring_version,
-                                 approved_path=args.approved)
-            db.rollback()
+            missing = [flag for flag, value in (("--artifact", args.artifact), ("--sidecar", args.sidecar),
+                                                ("--approved", args.approved),
+                                                ("--expect-comparison-sha256", args.expect_comparison_sha256))
+                       if not value]
+            if missing:
+                raise SystemExit(f"verify-build needs {', '.join(missing)}")
+            db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
+            facts = verify_and_record(db, args.artifact, sidecar_path=args.sidecar,
+                                      expect_scoring_version=args.expect_scoring_version,
+                                      expect_comparison_sha256=args.expect_comparison_sha256,
+                                      approved_path=args.approved)
             print(canonical_json(facts))
             if facts["problems"]:
                 print("VERIFY FAILED")
-                return 2
+                return EXIT_VERIFY_FAILED
             print("verify-build: clean")
             return 0
 
         if not args.yes:
             raise SystemExit(f"{args.command} changes the live table: pass --yes")
-        result = swap(db) if args.command == "swap" else rollback(db)
-        db.commit()
+        try:
+            result = swap(db) if args.command == "swap" else rollback(db)
+            db.commit()
+        except Refused as exc:
+            db.rollback()
+            record(db, args.command, "refused", {"reason": str(exc)})
+            db.commit()
+            print(f"REFUSED, nothing changed: {exc}")
+            return EXIT_REFUSED
+        except OperationalError as exc:
+            db.rollback()
+            if getattr(exc.orig, "pgcode", None) != LOCK_NOT_AVAILABLE:
+                raise
+            record(db, args.command, "lock timeout", {"lock_timeout": SWAP_LOCK_TIMEOUT})
+            db.commit()
+            print(f"{args.command} could not take its locks within {SWAP_LOCK_TIMEOUT}: nothing "
+                  "changed, retry")
+            return EXIT_LOCK_TIMEOUT
         print(f"{args.command} committed in {result['seconds']}s")
         for line in result["renamed"]:
             print(f"  renamed {line}")

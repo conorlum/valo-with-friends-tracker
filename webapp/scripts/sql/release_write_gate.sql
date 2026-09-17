@@ -28,6 +28,20 @@ CREATE TABLE IF NOT EXISTS scoring_gate (
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
 
+-- The operation-state record. scripts/swap_impact_scores.py appends one entry
+-- per build, verification, swap and rollback, and writes the swap's and the
+-- rollback's entries INSIDE the transaction that makes the change: the entry
+-- and the change commit together or not at all. After a lost connection this
+-- table says whether a swap happened, so nobody repeats one blind.
+CREATE TABLE IF NOT EXISTS scoring_release_log (
+    id          bigserial   PRIMARY KEY,
+    at          timestamptz NOT NULL DEFAULT now(),
+    operation   text        NOT NULL,
+    outcome     text        NOT NULL,
+    identity    text,
+    details     jsonb       NOT NULL
+);
+
 CREATE OR REPLACE FUNCTION scoring_gate_guard() RETURNS trigger
 LANGUAGE plpgsql AS $guard$
 DECLARE
