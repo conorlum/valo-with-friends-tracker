@@ -130,6 +130,9 @@ DATABASE_URL="$PROD" $PY scripts/release_preflight.py --expect-database valowith
   || echo "STOP: exit $?"
 ```
 
+Measured on 2026-09-17: the dump is 31 MB and takes 33 s, the restore 3 m 13 s, migrations 0007 to 0010 **3.5 s**, and
+the gate install under a second. The migration timing is the one Stage 7.3 repeats against production.
+
 `CREATE DATABASE` is the only statement before Stage 7 that uses the production URL and is not a read. It creates a
 second database on the instance; it does not touch `valowithfriendsdb`. To start the rehearsal over from a fresh
 restore, `DROP DATABASE valo_rc3_rehearsal` first, typed by hand, reading the name twice.
