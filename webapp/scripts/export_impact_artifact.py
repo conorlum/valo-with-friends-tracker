@@ -15,11 +15,21 @@ time: migration 0010 adds `trade_credit` (already in the header) and
 carry 2 while activation rows carry 3). Re-deriving it would silently change the
 projection mid-chain. tests/test_impact_artifact_export.py holds that contract.
 
-Usage (read-only; from webapp/, with DATABASE_URL set):
+Usage (read-only; from webapp/, with DATABASE_URL set). Exactly one configuration
+source per export, the one the chain names:
 
-    .venv313/Scripts/python.exe scripts/export_impact_artifact.py \
-        --out "C:/Users/Conor Lum/Documents/valo-backups/rc3-artifacts" \
-        --label K2-on --credit on --weights 1.0,2.5,2.5,100.0,1.0
+    # K1, K2: explicit weights (default: the locked rc3 weights) and --credit
+    .venv313/Scripts/python.exe scripts/export_impact_artifact.py --out DIR --label K2-on --credit on
+    # K3 and OFF(B): the declared comparator; --credit off overrides only that flag
+    .venv313/Scripts/python.exe scripts/export_impact_artifact.py --out DIR --label K3-on --comparator impact_rc3
+    # K4: the frozen manifest, verified against this checkout
+    .venv313/Scripts/python.exe scripts/export_impact_artifact.py --out DIR --label K4 --manifest PATH
+    # K5: this checkout's ACTIVE_MANIFEST, exactly as the runtime loads it
+    .venv313/Scripts/python.exe scripts/export_impact_artifact.py --out DIR --label K5 --active --projection both
+
+It refuses (exit 3) when webapp/ is not exactly a commit, because the sidecar
+names HEAD as the code that scored. `--allow-dirty` is for experiments; the
+sidecar then lists what differed.
 
 `--no-fingerprints` skips contract (c)'s per-match source fingerprints, which
 cost one round trip per match per query; use it only for rehearsals and tests,
@@ -38,6 +48,7 @@ import platform
 import subprocess
 import sys
 import time
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -47,9 +58,21 @@ import sqlalchemy as sa
 from app.scoring import econ_buy_disruption as bd
 from app.scoring import impact as impact_module
 from app.scoring.impact import FormulaWeights, build_impact_rows_for_match
-from app.scoring.impact_manifest import match_source_fingerprint
+from app.scoring.impact_manifest import (
+    COMPARATORS,
+    config_from_manifest,
+    lf_sha256,
+    load_manifest,
+    match_source_fingerprint,
+    verify_manifest,
+)
 
 ARTIFACT_CONTRACT_VERSION = 1
+
+#: A, B, C, D and trade_credit_scale, as the owner locked them.
+LOCKED_WEIGHTS = "1.0,2.5,2.5,100.0,1.0"
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 KEY_FIELDS = ("round_id", "match_player_id")
 
@@ -204,6 +227,79 @@ def build_kwargs_for(*, weights: FormulaWeights, credit_on: bool) -> dict:
     }
 
 
+class ExportRefused(RuntimeError):
+    """The export could not say exactly which code and configuration scored it."""
+
+
+def parse_weights(text: str) -> FormulaWeights:
+    a, b, c, d, scale = (float(x) for x in text.split(","))
+    return FormulaWeights(damage=a, leverage=b, econ=c, assists=d, trade_credit_scale=scale)
+
+
+def resolve_configuration(*, comparator: str | None = None, manifest_path: str | None = None,
+                          active: bool = False, weights: FormulaWeights | None = None,
+                          credit: str | None = None) -> tuple[dict, dict]:
+    """(build kwargs, source) from exactly one configuration source.
+
+    comparator: COMPARATORS[name], the declared configuration (K3).
+    manifest_path: the frozen manifest's release comparator, after verifying the
+      manifest against this checkout (K4).
+    active: this checkout's ACTIVE_MANIFEST, as the runtime loads it (K5).
+    none of these: explicit weights, the locked ones by default, and --credit
+      (K1, K2).
+    `credit` overrides enable_trade_credit for any source, because each OFF
+    artifact differs from its ON artifact in exactly that flag.
+    """
+    chosen = [flag for flag, value in (("--comparator", comparator), ("--manifest", manifest_path),
+                                       ("--active", active)) if value]
+    if len(chosen) > 1:
+        raise ExportRefused(f"choose one configuration source, not {' and '.join(chosen)}")
+    if chosen and weights is not None:
+        raise ExportRefused(f"--weights belongs to an explicit export, not to {chosen[0]}")
+
+    if comparator:
+        if comparator not in COMPARATORS:
+            raise ExportRefused(f"unknown comparator {comparator!r}")
+        kwargs = COMPARATORS[comparator].build_kwargs()
+        source = {"kind": "comparator", "name": comparator}
+    elif manifest_path:
+        manifest = load_manifest(manifest_path)
+        verify_manifest(manifest)
+        kwargs = config_from_manifest(manifest).build_kwargs()
+        source = {"kind": "manifest", "file": os.path.basename(manifest_path),
+                  "lf_sha256": lf_sha256(manifest_path), "comparator": manifest["release_comparator"]}
+    elif active:
+        from app.scoring import impact_runtime
+
+        config = impact_runtime.active_scoring_config()
+        if config is None:
+            raise ExportRefused("--active, but this checkout's ACTIVE_MANIFEST is None")
+        kwargs = config.build_kwargs()
+        source = {"kind": "active", "manifest": impact_runtime.ACTIVE_MANIFEST, "comparator": config.config_id}
+    else:
+        if credit is None:
+            raise ExportRefused("an explicit export needs --credit on or --credit off")
+        kwargs = build_kwargs_for(weights=weights or parse_weights(LOCKED_WEIGHTS), credit_on=credit == "on")
+        return kwargs, {"kind": "explicit"}
+
+    if credit is not None:
+        kwargs = {**kwargs, "enable_trade_credit": credit == "on"}
+        source["credit_override"] = credit
+    return kwargs, source
+
+
+def git(*args: str) -> str:
+    return subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, check=True).stdout
+
+
+def code_identity(run_git=git) -> dict:
+    """HEAD, and every tracked change or untracked file under webapp/ that
+    means the code that ran was not exactly HEAD."""
+    status = run_git("status", "--porcelain", "--untracked-files=all", "--", "webapp")
+    return {"revision": run_git("rev-parse", "HEAD").strip(),
+            "dirty": [line for line in status.splitlines() if line.strip()]}
+
+
 def export_rows(db, match_ids, build_kwargs) -> list:
     rows = []
     for match_id in match_ids:
@@ -258,9 +354,15 @@ def main(argv=None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", required=True, help="directory for the artifact and its sidecar")
     parser.add_argument("--label", required=True, help="chain link, e.g. K1-on, K2-on, K2-off")
-    parser.add_argument("--credit", choices=("on", "off"), required=True)
-    parser.add_argument("--weights", default="1.0,2.5,2.5,100.0,1.0",
-                        help="A,B,C,D,trade_credit_scale (default: the locked rc3 weights)")
+    parser.add_argument("--comparator", help="a declared comparator, e.g. impact_rc3 (K3)")
+    parser.add_argument("--manifest", help="a frozen candidate manifest (K4)")
+    parser.add_argument("--active", action="store_true", help="this checkout's ACTIVE_MANIFEST (K5)")
+    parser.add_argument("--credit", choices=("on", "off"),
+                        help="required for an explicit export; with another source, overrides its credit flag")
+    parser.add_argument("--weights", default=None,
+                        help=f"explicit exports only: A,B,C,D,trade_credit_scale (default {LOCKED_WEIGHTS})")
+    parser.add_argument("--allow-dirty", action="store_true",
+                        help="export from a checkout that is not exactly a commit (experiments only)")
     parser.add_argument("--matches", help="comma-separated match ids (default: every match)")
     parser.add_argument("--projection", choices=("comparison", "both"), default="comparison",
                         help="'both' also writes <label>.load.csv, the projection the swap loads")
@@ -270,9 +372,20 @@ def main(argv=None) -> int:
 
     from app.db import SessionLocal
 
-    a, b, c, d, scale = (float(x) for x in args.weights.split(","))
-    weights = FormulaWeights(damage=a, leverage=b, econ=c, assists=d, trade_credit_scale=scale)
-    build_kwargs = build_kwargs_for(weights=weights, credit_on=args.credit == "on")
+    try:
+        build_kwargs, source = resolve_configuration(
+            comparator=args.comparator, manifest_path=args.manifest, active=args.active,
+            weights=parse_weights(args.weights) if args.weights else None, credit=args.credit)
+    except ExportRefused as exc:
+        print(f"REFUSED: {exc}")
+        return 3
+    code = code_identity()
+    if code["dirty"] and not args.allow_dirty:
+        print("REFUSED: webapp/ is not exactly a commit, so the sidecar would name the wrong code:\n  "
+              + "\n  ".join(code["dirty"][:20]))
+        return 3
+    weights = build_kwargs["weights"]
+    credit_on = build_kwargs["enable_trade_credit"]
 
     os.makedirs(args.out, exist_ok=True)
     artifact_path = os.path.join(args.out, f"{args.label}.csv")
@@ -286,8 +399,9 @@ def main(argv=None) -> int:
             match_ids = [int(x) for x in args.matches.split(",")]
         else:
             match_ids = [m for (m,) in db.execute(sa.text("SELECT id FROM matches ORDER BY id")).all()]
-        print(f"{args.label}: {len(match_ids)} matches, credit {args.credit}, "
-              f"weights A={a} B={b} C={c} D={d} scale={scale}", flush=True)
+        print(f"{args.label}: {len(match_ids)} matches at {code['revision'][:12]}, source {source['kind']}, "
+              f"credit {'on' if credit_on else 'off'}, weights A={weights.damage} B={weights.leverage} "
+              f"C={weights.econ} D={weights.assists} scale={weights.trade_credit_scale}", flush=True)
 
         rows = export_rows(db, match_ids, build_kwargs)
         written = write_artifact(rows, artifact_path)
@@ -314,14 +428,17 @@ def main(argv=None) -> int:
         "header": list(COMPARISON_HEADER),
         "excluded_from_comparison": list(EXCLUDED_FROM_COMPARISON),
         "configuration": {
-            "weights": {"damage": a, "leverage": b, "econ": c, "assists": d,
-                        "trade_credit_scale": scale},
-            "enable_trade_credit": args.credit == "on",
-            "enable_econ_component": True,
-            "econ_model": bd.MODEL_V2_30_80_BONUS_DENIAL,
-            "use_realized_swing": True,
+            "source": source,
+            "weights": asdict(weights),
+            "enable_trade_credit": credit_on,
+            "enable_econ_component": build_kwargs["enable_econ_component"],
+            "econ_model": build_kwargs["econ_model"],
+            "use_realized_swing": build_kwargs["use_realized_swing"],
+            "build_kwargs": {name: asdict(value) if is_dataclass(value) else value
+                             for name, value in build_kwargs.items()},
             "impact_calculation_version": impact_module.IMPACT_CALCULATION_VERSION,
         },
+        "code": code,
         "artifact": {"file": os.path.basename(artifact_path), **written},
         "load_artifact": load_written,
         "inputs": inputs,
