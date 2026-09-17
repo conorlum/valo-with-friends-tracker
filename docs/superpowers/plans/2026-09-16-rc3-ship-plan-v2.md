@@ -430,5 +430,6 @@ suite after them: 3.11 offline 1,251 passed / 63 skipped, 3.13 with the database
 exporter's diff is its docstring), so K3 and OFF(B) stand and K4 and K5 are still expected to equal K1'.
 
 ### Remaining
-Stage 3 is complete. Next: the owner confirms the lock from the last look, then the Stage 4 RESULT entry (from K3 and
-OFF(B)), the rehearsal restore, and Stage 5's freeze.
+Stages 1 to 5 are complete: the lock confirmed, the RESULT entry committed, rc3 frozen at `82d8e6b`, K4 equal to K1'
+through the frozen manifest, the reviews run against the rehearsal database, and `impact-rc3/SUMMARY.md` written.
+Next: the owner approves that summary, then Stage 6, the rehearsal.

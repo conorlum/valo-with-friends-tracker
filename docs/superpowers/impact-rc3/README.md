@@ -1,8 +1,9 @@
 # Impact rc3 — release runbook
 
-Status (2026-09-17): **Stage 3 done and its chain verified; the owner confirmed the lock at the last look; the
-rehearsal database is restored, migrated and gated; point-in-time recovery is confirmed for 7 days. Not frozen, not
-active, nothing in production changed** (alembic 0007, no gate). Next: commit the Stage 4 RESULT entry, then freeze.
+Status (2026-09-17): **Stages 1 to 5 done. rc3 is frozen at `82d8e6b`, K4 closed the chain through the frozen
+manifest, the reviews pass, and `SUMMARY.md` is written. NOT active, nothing in production changed** (alembic 0007,
+no gate; the rehearsal database is restored, migrated and gated, and recovery is confirmed for 7 days). Next: the
+owner approves `SUMMARY.md`, then section 6, the rehearsal.
 
 rc3 is the locked Impact formula: A 1 (damage) / B 2.5 (leverage) / C 2.5 (econ) / D 100 (assists), trade credit on at
 `trade_credit_scale` 1.0, econ model `buy_disruption_v2_30_80_bonus_denial`, realized swing, timing candidates off. Its
