@@ -68,8 +68,10 @@ C is the frozen **scoring baseline** — what the manifest pins and what K4 repr
 checkout: at C the `impact-rc3/` directory holds only the runbook and the manifest, because `review-results.json`
 arrived later in `6f58593`. A branch off C fails at `verify-build --approved` with a missing file, and lacks the test
 guards added since. Branching off the tip is safe *because* the two differ only in documentation and tests — asserted,
-not assumed: `git diff --stat 82d8e6b HEAD -- webapp/app webapp/scripts webapp/alembic` is empty, so the scoring code
-is byte-identical and the manifest's behavioural digests still verify.
+not assumed: `git diff --stat 82d8e6b HEAD -- webapp/app/scoring webapp/app/models
+webapp/scripts/export_impact_artifact.py` is empty, so the surface the chain depends on is byte-identical and the
+manifest's behavioural digests still verify. The swap tool is deliberately *not* in that list: it changed after this
+review (finding 2) and it loads rows rather than scoring them, so no chain hash covers it.
 
 ### 3.2 The read-only corpus tests against the restore (new, added 2026-09-17)
 
@@ -173,6 +175,23 @@ checkout of that PR's head.
 ---
 
 ## 7. What I am unsure about — the review I actually want
+
+**Reviewed 2026-09-17. All five findings were confirmed against the code; none was overstated, and the review also
+caught an error in item 6 below.**
+
+| finding | outcome |
+|---|---|
+| 1 · R1 had two sequences, one omitting the step that restores the score table | fixed — one sequence, R1.1–R1.4 |
+| 2 · the stale-verification guard compared lagging `pg_stat` counters | fixed — transactional row digests |
+| 3 · shell blocks continued past failed safeguards | fixed — probe (c) and 8.6 |
+| 4 · the activation checkout lacked `review-results.json` | fixed — branch off the reviewed tip |
+| 5 · the post-swap test computed legacy scoring under an rc3 version label | fixed — it resolves the active config |
+
+Finding 2 changed the swap tool, deliberately **before** the rehearsal rather than after, so one rehearsal covers it.
+The digest costs about **31 seconds** over the real corpus — measured, which is why the swap now takes three locks in
+a fixed order instead of two, keeping that work outside the live table's exclusive lock.
+
+The questions are kept as asked, with the answers recorded against them.
 
 1. **The window between 8.4 and 8.5.** The swap lands rc3 scores while the deployed code is still
    `IMPACT_CALCULATION_VERSION = 2`. Pages read impact from the table, so they would display rc3 numbers under v2 code

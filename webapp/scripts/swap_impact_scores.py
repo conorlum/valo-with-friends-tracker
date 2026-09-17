@@ -149,20 +149,39 @@ def _latest(db, *entries: tuple[str, str]):
         params).first()
 
 
-def _write_counters(db, tables) -> dict:
-    """Rows inserted, updated and deleted per table, cumulatively.
+def _row_digests(db, tables) -> dict:
+    """Row count and an order-independent hash of every row, per table.
 
     A verification is a statement about the staged table AND the source rows it
     was scored from, and the admin identity may write both at any time (that is
-    what it is for). Comparing these counters at the swap notices a deliberate
-    correction that landed after the verification -- which neither the table's
-    oid nor the highest match id would show (external review, C6). They can lag
-    a moment behind a just-committed writer, so a spurious refusal means verify
-    again, never force.
+    what it is for). Comparing these at the swap notices a deliberate correction
+    that landed after the verification -- which neither the table's oid nor the
+    highest match id would show (external review, C6).
+
+    This reads THE ROWS, under the caller's locks. It replaces
+    pg_stat_all_tables' n_tup_ins/upd/del, which were the C6 fix and were not
+    sufficient: those counters are collected asynchronously and lag a
+    just-committed writer, so the guard could pass while an admin write sat
+    invisible behind the statistics, and the swap would commit an edited table
+    and report success. Taking the table lock does not make another backend's
+    statistics current. The test for it only passed because it called
+    pg_stat_force_next_flush() first, which excluded exactly the failing case
+    (external review, finding 2).
+
+    hashtextextended over each row's text form changes if any byte of any row
+    changes; summing is order-independent, and sum(bigint) is numeric, so it
+    cannot overflow. The sum is kept as a string because numeric is not JSON.
+    Measured over the real corpus: about 31 s for the staged table and the five
+    source tables together, which is why swap() digests BEFORE it locks the
+    live table (see there).
     """
-    return {name: [inserted, updated, deleted] for name, inserted, updated, deleted in db.execute(text(
-        "SELECT relname, n_tup_ins, n_tup_upd, n_tup_del FROM pg_stat_all_tables "
-        "WHERE schemaname = 'public' AND relname = ANY(:names)"), {"names": list(tables)}).all()}
+    digests = {}
+    for name in tables:
+        count, digest = db.execute(text(
+            f"SELECT count(*), coalesce(sum(hashtextextended(t.*::text, 0)), 0) FROM {name} AS t"
+        )).one()
+        digests[name] = [int(count), str(digest)]
+    return digests
 
 
 def _require_gate_closed(db, operation: str) -> None:
@@ -208,11 +227,14 @@ def _require_clean_verification(db) -> dict:
     if details.get("max_match_id") != max_match_id:
         raise Refused(f"matches changed after verification (max id {details.get('max_match_id')} "
                       f"then, {max_match_id} now): verify again")
-    counters = _write_counters(db, (BUILT, *SOURCE_TABLES))
-    verified_counters = details.get("write_counters") or {}
-    moved = sorted(name for name, counts in counters.items() if verified_counters.get(name) != counts)
+    digests = _row_digests(db, (BUILT, *SOURCE_TABLES))
+    verified_digests = details.get("row_digests") or {}
+    if not verified_digests:
+        raise Refused(f"verify-build entry {latest.id} recorded no row digests: it predates the "
+                      "digest guard, so it cannot show the rows are unchanged. Verify again")
+    moved = sorted(name for name, digest in digests.items() if verified_digests.get(name) != digest)
     if moved:
-        raise Refused(f"{', '.join(moved)} changed after verification (rows written since it ran): "
+        raise Refused(f"{', '.join(moved)} changed after verification (the rows themselves differ): "
                       "verify again before swapping")
     return {"verify_entry": latest.id, "built_oid": built_oid, "max_match_id": max_match_id,
             "rows": details.get("rows"), "comparison_sha256": details.get("comparison_sha256"),
@@ -516,7 +538,7 @@ def verify_build(db, artifact_path: str, *, sidecar_path: str, comparison_path: 
         facts["problems"] = [f"{table} does not exist: build first"]
         return facts
 
-    facts["write_counters"] = _write_counters(db, (table, *SOURCE_TABLES))
+    facts["row_digests"] = _row_digests(db, (table, *SOURCE_TABLES))
     facts["rows"] = _scalar(db, f"SELECT count(*) FROM {table}")
     facts["stat_rows"] = _scalar(db, "SELECT count(*) FROM round_player_stats")
     facts["max_match_id"] = _scalar(db, "SELECT max(id) FROM matches")
@@ -592,12 +614,23 @@ def swap(db) -> dict:
                       "(see `state`); a second swap would have nowhere to put the live table")
     db.execute(text(f"SET LOCAL lock_timeout = '{SWAP_LOCK_TIMEOUT}'"))
     db.execute(text(f"SET LOCAL statement_timeout = '{SWAP_STATEMENT_TIMEOUT}'"))
+    # Three lock acquisitions, in this order, and the order is the design.
+    #
+    # The staged table and the sources come first: SHARE stops writers without
+    # stopping readers, so the site is untouched while _require_clean_verification
+    # digests every row of six tables -- about 31 s, measured on the real corpus.
+    # That work CANNOT sit inside the live table's ACCESS EXCLUSIVE, which stops
+    # page loads dead; 31 s there would blow the 5 s stall budget by six times.
+    db.execute(text(f"LOCK TABLE {', '.join(SOURCE_TABLES)} IN SHARE MODE"))
+    db.execute(text(f"LOCK TABLE {BUILT} IN ACCESS EXCLUSIVE MODE"))
+    _lock_gate_closed(db, "swap")
+    verified = _require_clean_verification(db)
+
+    # Only now the live table, so its exclusive lock covers the renames alone.
     # The cache first, as requests read it first -- but by DELETE, which takes
     # no lock a reader conflicts with. See _clear_player_cache.
     _clear_player_cache(db)
-    db.execute(text(f"LOCK TABLE {LIVE}, {BUILT} IN ACCESS EXCLUSIVE MODE"))
-    _lock_gate_closed(db, "swap")
-    verified = _require_clean_verification(db)
+    db.execute(text(f"LOCK TABLE {LIVE} IN ACCESS EXCLUSIVE MODE"))
 
     renamed = _rename_owned_objects(db, LIVE, LIVE, PREVIOUS)
     db.execute(text(f"ALTER TABLE {LIVE} RENAME TO {PREVIOUS}"))

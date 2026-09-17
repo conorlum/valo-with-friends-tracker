@@ -215,11 +215,18 @@ clean checkout of it:
 > tests — assert that rather than trust it, and stop if anything prints:
 >
 > ```bash
-> git diff --stat 82d8e6b HEAD -- webapp/app webapp/scripts webapp/alembic
+> git diff --stat 82d8e6b HEAD -- webapp/app/scoring webapp/app/models webapp/scripts/export_impact_artifact.py
 > ```
 >
-> Empty output means the scoring code at the tip is byte-identical to the freeze, so the manifest's behavioural
-> digests still verify and the chain still holds. The export refuses to run if they do not.
+> Empty output means the surface the chain depends on -- the scorer, the model the rows are shaped by, and the
+> exporter that hashes them -- is byte-identical to the freeze, so the manifest's behavioural digests still verify and
+> K5 must still reproduce the chain hash. The export refuses to run if they do not.
+>
+> **The paths are narrow on purpose.** The swap tool has deliberately changed since the freeze (external review,
+> finding 2: its stale-verification guard now reads the rows instead of lagging statistics), so a diff over all of
+> `webapp/scripts` is expected to be non-empty and is not a failure. The swap tool loads rows; it does not score them,
+> and no hash in the chain covers it. What must not move is the scoring surface above -- and a swap-tool change must
+> be rehearsed before production, which is why it was made now, before Stage 6, rather than after.
 
 ```bash
 $PY -c "from app.scoring.impact_runtime import active_scoring_config; print(active_scoring_config())"
@@ -402,7 +409,7 @@ done < "$ART/rehearsal/recent-paths.txt"; done | tee "$ART/rehearsal/latency.txt
 Most of these pages miss the cache (the swap emptied it), which is the path that reads the cache and then the scores.
 
 No deadlock, no 5xx, and no request stalled more than 5 seconds per lock acquisition beyond the baseline (the swap
-takes two, and clears the cache by DELETE, which takes no lock a page load conflicts with). A swap that cannot take its locks
+takes three, and clears the cache by DELETE, which takes no lock a page load conflicts with). A swap that cannot take its locks
 exits 4 having changed nothing; that is a pass for this test, and the swap is retried.
 
 **6.7 Rollback path**, then forward again from a fresh build:
@@ -538,7 +545,12 @@ DATABASE_URL="$PROD" $PY scripts/swap_impact_scores.py state --expect-database v
 ```
 
 Exit 4: a lock did not come free within 5 seconds and nothing changed; run it again. Those 5 seconds bound each
-acquisition, not the whole transaction: the swap takes two, and clears the cache by DELETE rather than a third. Exit 3: read the reason. Anything
+acquisition, not the whole transaction: the swap takes three, and clears the cache by DELETE rather than a fourth.
+The three are deliberate and ordered (external review, finding 2): SHARE on the five source tables and ACCESS
+EXCLUSIVE on the staged table first, so the row-digest check -- about **31 seconds**, measured over the real
+corpus -- runs without touching the live table; SHARE stops writers, not readers, so page loads are unaffected.
+Only then is the live table taken ACCESS EXCLUSIVE, so the lock that does stall page loads covers the renames
+alone. Exit 3: read the reason. Anything
 else (a traceback, a dropped connection): run `state` before anything else. The log holds a `swap swapped` entry
 exactly when the swap committed.
 

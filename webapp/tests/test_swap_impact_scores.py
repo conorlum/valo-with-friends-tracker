@@ -680,16 +680,74 @@ def test_the_swap_empties_the_player_cache(db, tmp_path):
 
 def test_an_edit_after_a_clean_verification_is_refused(db, tmp_path):
     """C6: the admin identity may correct rows at any time, and neither the
-    staged table's oid nor the highest match id would show that it did."""
+    staged table's oid nor the highest match id would show that it did.
+
+    NOTE the absence of pg_stat_force_next_flush(). This test used to call it
+    before swapping, which made the statistics current and so tested only the
+    case where the old counter-based guard could work at all -- see
+    test_an_edit_the_statistics_have_not_caught_up_with_is_refused below.
+    """
     keys, export = _built_and_verified(db, tmp_path, v1=10, rc3=77)
     db.execute(text(f"UPDATE {swap_tool.BUILT} SET impact = 79 "
                     "WHERE round_id = :r AND match_player_id = :m"),
                {"r": keys[0][0], "m": keys[0][1]})
     db.commit()
-    db.execute(text("SELECT pg_stat_force_next_flush()"))
-    db.commit()
 
     with pytest.raises(swap_tool.Refused, match="changed after verification"):
+        swap_tool.swap(db)
+    db.rollback()
+    assert _impacts(db) == [10]
+
+
+def test_a_row_digest_moves_on_an_edit_that_leaves_the_row_count_alone(db, tmp_path):
+    """External review, finding 2: the guard must read the ROWS.
+
+    The old guard compared pg_stat_all_tables' n_tup_ins/upd/del, which are
+    collected asynchronously: a write can be committed and durable while the
+    statistics still report the pre-write totals, and taking the table lock
+    does not make another backend's statistics current. So the guard could pass
+    over a real edit and swap it in reporting success.
+
+    That lag cannot be forced from a test here -- pg_stat_reset_* needs
+    privileges this database's role does not have -- so what is pinned instead
+    is the property that makes the lag irrelevant: the digest is computed from
+    the row contents, and moves for an edit that changes NO row count and no
+    row identity. A count-only or statistics-only guard cannot do this.
+    """
+    keys, _ = _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    before = swap_tool._row_digests(db, (swap_tool.BUILT,))
+    db.execute(text(f"UPDATE {swap_tool.BUILT} SET impact = 4242 "
+                    "WHERE round_id = :r AND match_player_id = :m"),
+               {"r": keys[0][0], "m": keys[0][1]})
+    db.commit()
+    after = swap_tool._row_digests(db, (swap_tool.BUILT,))
+
+    assert before[swap_tool.BUILT][0] == after[swap_tool.BUILT][0], \
+        "the row count is unchanged -- that is the point of this test"
+    assert before[swap_tool.BUILT][1] != after[swap_tool.BUILT][1], \
+        "the digest must move when a single value changes"
+
+
+def test_a_verification_without_row_digests_is_refused(db, tmp_path):
+    """A log entry written before the digest guard cannot show the rows are
+    unchanged, so it must not be accepted as if it had.
+
+    This is a DIAGNOSTIC guard, not a safety one, and the mutation check says
+    so: with the explicit branch removed the swap still refuses, because an
+    absent recorded digest compares unequal to every table's real one. What the
+    branch changes is the message -- "the rows themselves differ", which sends
+    the operator hunting for an edit that never happened, becomes "this entry
+    predates the digest guard: verify again".
+    """
+    _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    latest = swap_tool._latest(db, ("verify-build", "clean"))
+    details = dict(latest.details)
+    details.pop("row_digests", None)
+    db.execute(text(f"UPDATE {swap_tool.LOG} SET details = :d WHERE id = :i"),
+               {"d": json.dumps(details), "i": latest.id})
+    db.commit()
+
+    with pytest.raises(swap_tool.Refused, match="recorded no row digests"):
         swap_tool.swap(db)
     db.rollback()
     assert _impacts(db) == [10]
@@ -701,8 +759,6 @@ def test_a_source_row_edited_after_verification_is_refused(db, tmp_path):
     db.execute(text("UPDATE round_player_stats SET kills = kills + 1 "
                     "WHERE round_id = :r AND match_player_id = :m"),
                {"r": keys[0][0], "m": keys[0][1]})
-    db.commit()
-    db.execute(text("SELECT pg_stat_force_next_flush()"))
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="round_player_stats changed after verification"):
