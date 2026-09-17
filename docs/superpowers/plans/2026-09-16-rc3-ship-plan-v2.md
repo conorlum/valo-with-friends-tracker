@@ -1,8 +1,8 @@
 # rc3 ship plan v2: keyed artifacts, build-and-rename swap, release write gate
 
-**Status (2026-09-16, late): Stages 1 and 2 done; Stage 3 implemented and committed on `impact-scoring-impl`
-(not pushed), except the K3 and OFF(B) exports. Nothing is frozen, rescored, activated or deployed; production is
-unchanged (alembic 0007, no gate).** Progress, results and deviations from this plan are in section 7. The runbook
+**Status (2026-09-17): Stages 1 to 3 done and the chain verified; the owner confirmed the lock and the Stage 4
+RESULT entry is drafted; `valo_rc3_rehearsal` is restored, migrated to 0010 and gated. Nothing is frozen, rescored,
+activated or deployed; production is unchanged (alembic 0007, no gate).** Progress, results and deviations from this plan are in section 7. The runbook
 with exact commands is `../impact-rc3/README.md`.
 
 **Revision 2 (2026-09-16), after Astra's second review** (`2026-09-16-rc3-plan-astra-review-2.md`, findings B1–B9).
@@ -37,8 +37,8 @@ Defaults adopted without a separate question:
 - `FormulaWeights` defaults unchanged.
 - The gate is installed **closed**, and only opens for the rc3 release at the end of the observation hold.
 - A small app maintenance switch covers the rare PR #67 rollback, instead of relying on Render suspension (A2).
-- **A swap may stall page loads for at most 5 seconds.** If it cannot take its locks in that time it aborts, changes
-  nothing and is retried.
+- **A swap may stall page loads for at most 5 seconds per lock acquisition**, of which it now makes two. If a lock
+  does not come free in that time it aborts, changes nothing and is retried.
 - Deliberate manual fixes to gated tables (for example merging a renamed friend's player rows) use a documented admin
   identity, and each use is noted in the ledger.
 
@@ -55,8 +55,10 @@ Defaults adopted without a separate question:
 - **Preflight before every production or rehearsal step.** It asserts `current_database()`, `alembic_version`, match
   count, max id and the gate state against expected values; a mismatch aborts. The two URLs differ only by database
   name, so the name is asserted, never eyeballed.
-- **Locks are taken in request order:** `player_view_cache` first, then the score tables. Requests do the same
-  (`app/services/players.py:56` reads the cache, `app/services/player_data.py:95` reads scores), so no cycle exists.
+- **The swap takes no lock on `player_view_cache` at all.** It clears the cache by DELETE, which no page load
+  conflicts with, and takes ACCESS EXCLUSIVE only on the score tables. The original order (cache first, then scores)
+  was right about requests but still let a page load's own write-through connection queue behind an exclusive cache
+  lock with no deadlock to break it (§7, C1).
 - **Exit codes gate everything.** Every command's exit code is checked, and a nonzero exit stops the procedure.
 - **Every comparison hash must match at every link of the chain** (§2). An explanation does not pass a mismatch: it is
   eliminated, or the ledger entry is re-declared.
