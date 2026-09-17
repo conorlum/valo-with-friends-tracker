@@ -728,6 +728,27 @@ def test_a_row_digest_moves_on_an_edit_that_leaves_the_row_count_alone(db, tmp_p
         "the digest must move when a single value changes"
 
 
+def test_a_row_digest_ignores_the_session_rendering_settings(db, tmp_path):
+    """The digest hashes each row's TEXT form, so a setting that changes how a
+    value prints would change the digest with no row changing -- and these
+    tables hold double precision and timestamptz. A verification taken under
+    one setting and a swap under another would then disagree, and the refusal
+    ("verify again") would reproduce the disagreement rather than clear it.
+
+    _row_digests pins the rendering itself. Hostile settings here must make no
+    difference to the value it returns.
+    """
+    _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    tables = (swap_tool.BUILT, *swap_tool.SOURCE_TABLES)
+    baseline = swap_tool._row_digests(db, tables)
+
+    db.execute(text("SET LOCAL extra_float_digits = 0"))
+    db.execute(text("SET LOCAL DateStyle = 'SQL, DMY'"))
+    db.execute(text("SET LOCAL TimeZone = 'America/New_York'"))
+    assert swap_tool._row_digests(db, tables) == baseline, \
+        "the digest must not depend on how the session happens to render values"
+
+
 def test_a_verification_without_row_digests_is_refused(db, tmp_path):
     """A log entry written before the digest guard cannot show the rows are
     unchanged, so it must not be accepted as if it had.

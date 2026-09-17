@@ -175,6 +175,19 @@ def _row_digests(db, tables) -> dict:
     source tables together, which is why swap() digests BEFORE it locks the
     live table (see there).
     """
+    # The hash is over each row's TEXT rendering, so anything that changes how a
+    # value prints changes the digest without any row changing. These tables hold
+    # double precision (kill_events, rounds) and timestamptz (matches), whose text
+    # depends on extra_float_digits, DateStyle and TimeZone. A verification taken
+    # under one setting and a swap under another would disagree, and the refusal
+    # says "verify again" -- which would reproduce the same disagreement and could
+    # block the release with nothing actually wrong. So the settings are pinned
+    # here, in the function, rather than assumed equal at the two call sites.
+    # extra_float_digits 3 is the round-trip-exact rendering.
+    db.execute(text("SET LOCAL DateStyle = 'ISO, YMD'"))
+    db.execute(text("SET LOCAL IntervalStyle = 'postgres'"))
+    db.execute(text("SET LOCAL TimeZone = 'UTC'"))
+    db.execute(text("SET LOCAL extra_float_digits = 3"))
     digests = {}
     for name in tables:
         count, digest = db.execute(text(
