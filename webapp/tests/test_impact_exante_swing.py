@@ -83,6 +83,19 @@ def db_and_match(db_session):
     return db_session, ids[0]
 
 
+@pytest.fixture
+def writing_db_and_match():
+    """Its own session, asked for as a WRITING one. The test below calls the
+    scorer's committing wrapper on a real match, which no `_rehearsal` restore
+    may host: the wrapper updates in place, so a rescore there would change no
+    row count and quietly invalidate every measurement taken against it."""
+    db = postgres_session_or_skip(writes=True)
+    try:
+        yield db, _representative_match_ids(db, per_kind=1)[0]
+    finally:
+        db.close()
+
+
 def test_builder_writes_nothing(db_and_match):
     db, match_id = db_and_match
     spy = _SpyDB(db)
@@ -121,14 +134,14 @@ import app.scoring.impact as impact_module
 from tests._postgres import postgres_session_or_skip
 
 
-def test_wrapper_still_persists_and_commits(db_and_match, monkeypatch):
+def test_wrapper_still_persists_and_commits(writing_db_and_match, monkeypatch):
     """The spec requires compute_impact_for_match's behaviour be unchanged.
     The builder test proves the CALCULATION matches; this proves the WRAPPER
     still writes -- otherwise the split could silently turn the scorer into a
     no-op and every ingest would stop scoring."""
     from app.scoring.impact import compute_impact_for_match
 
-    db, match_id = db_and_match
+    db, match_id = writing_db_and_match
     spy = _SpyDB(db)
     before = db.query(ImpactScore).join(ImpactScore.round).filter_by(match_id=match_id).count()
     compute_impact_for_match(spy, match_id)
