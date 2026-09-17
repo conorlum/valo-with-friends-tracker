@@ -17,8 +17,9 @@ from sqlalchemy import text
 
 from app.models import Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.models.match import MatchSource, Team
-from app.scoring.impact_manifest import match_source_fingerprint
+from app.scoring.impact_manifest import RC3, lf_sha256, match_source_fingerprint
 from app.scoring.write_gate import install_write_identity, read_gate
+from scripts import freeze_impact_candidate as freezer
 from scripts import swap_impact_scores as swap_tool
 from scripts.export_impact_artifact import (
     COMPARISON_HEADER,
@@ -545,3 +546,99 @@ def test_the_cli_refuses_a_database_it_was_not_told_to_expect(db, monkeypatch, c
     monkeypatch.setattr(swap_tool, "SessionLocal", postgres_session_or_skip)
     assert swap_tool.main(["state", "--expect-database", "valo_somewhere_else"]) == swap_tool.EXIT_REFUSED
     assert "REFUSED: connected to" in capsys.readouterr().out
+
+
+# ---- the approved review must be complete, and be this candidate's -------------------
+
+def _approved(tmp_path, db, keys, *, impact, drop_rows=0, manifest_sha=None, candidate=None,
+              matches=None):
+    """A frozen manifest and the review results that belong to it."""
+    manifest_path = tmp_path / "candidate-manifest.json"
+    match_id = db.execute(text("SELECT match_id FROM rounds WHERE id = :r"), {"r": keys[0][0]}).scalar()
+    freezer.freeze(db, candidate_id="impact-rc3-test", release_comparator=RC3, activation_version=3,
+                   match_ids=[match_id], out_path=manifest_path, scorer_revision="f" * 40, packages=[])
+    fields = [c for c in load_columns() if c not in ("round_id", "match_player_id")]
+    row = {name: 0 for name in fields}
+    row.update(impact=impact, trade_detail=None, scoring_version=2)
+    rows = {f"{r}:{m}": [row[name] for name in fields] for r, m in sorted(keys)}
+    for key in sorted(rows)[:drop_rows]:
+        del rows[key]
+    approved = {
+        "manifest_lf_sha256": manifest_sha or lf_sha256(manifest_path),
+        "candidate_id": candidate or "impact-rc3-test",
+        "release_comparator": RC3,
+        "fields": fields,
+        "matches": {str(match_id): {"source_fingerprint": match_source_fingerprint(db, match_id),
+                                    "rows": rows}} if matches is None else matches,
+    }
+    approved_path = tmp_path / "review-results.json"
+    approved_path.write_text(canonical_json(approved), encoding="utf-8")
+    return str(approved_path), str(manifest_path)
+
+
+def test_a_complete_approval_for_this_manifest_passes(db, tmp_path):
+    keys = _corpus(db)
+    _install_v1(db, keys)
+    db.commit()
+    export = _export(tmp_path, db, keys, impact=77)
+    swap_tool.build(db, export[0])
+    approved, manifest = _approved(tmp_path, db, keys, impact=77)
+
+    facts = _verify(db, export, approved_path=approved, manifest_path=manifest)
+
+    assert facts["problems"] == []
+    assert facts["approved_rows_checked"] == len(keys)
+    assert facts["approved_review_scoring_versions"] == [2], "the review ran before activation"
+
+
+def test_an_approval_covering_no_matches_is_refused(db, tmp_path):
+    """C3: checking only the rows a file happens to carry is no check at all."""
+    keys = _corpus(db)
+    _install_v1(db, keys)
+    db.commit()
+    export = _export(tmp_path, db, keys, impact=77)
+    swap_tool.build(db, export[0])
+    approved, manifest = _approved(tmp_path, db, keys, impact=77, matches={})
+
+    facts = _verify(db, export, approved_path=approved, manifest_path=manifest)
+
+    assert any("cover 0 of the manifest's 1 declared matches" in p for p in facts["problems"])
+
+
+def test_an_approval_missing_rows_of_a_match_is_refused(db, tmp_path):
+    keys = _corpus(db)
+    _install_v1(db, keys)
+    db.commit()
+    export = _export(tmp_path, db, keys, impact=77)
+    swap_tool.build(db, export[0])
+    approved, manifest = _approved(tmp_path, db, keys, impact=77, drop_rows=1)
+
+    facts = _verify(db, export, approved_path=approved, manifest_path=manifest)
+
+    assert any("do not cover their rows" in p for p in facts["problems"])
+
+
+def test_an_approval_from_another_manifest_is_refused(db, tmp_path):
+    keys = _corpus(db)
+    _install_v1(db, keys)
+    db.commit()
+    export = _export(tmp_path, db, keys, impact=77)
+    swap_tool.build(db, export[0])
+    approved, manifest = _approved(tmp_path, db, keys, impact=77, manifest_sha="0" * 64)
+
+    facts = _verify(db, export, approved_path=approved, manifest_path=manifest)
+
+    assert any("were written against manifest 000" in p for p in facts["problems"])
+
+
+def test_an_approval_without_its_manifest_is_refused(db, tmp_path):
+    keys = _corpus(db)
+    _install_v1(db, keys)
+    db.commit()
+    export = _export(tmp_path, db, keys, impact=77)
+    swap_tool.build(db, export[0])
+    approved, _ = _approved(tmp_path, db, keys, impact=77)
+
+    facts = _verify(db, export, approved_path=approved)
+
+    assert facts["problems"] == ["approved results were given without the manifest they belong to"]

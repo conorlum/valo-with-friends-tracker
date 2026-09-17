@@ -58,7 +58,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from app.db import SessionLocal
-from app.scoring.impact_manifest import match_source_fingerprint
+from app.scoring.impact_manifest import lf_sha256, load_manifest, match_source_fingerprint
 from app.scoring.write_gate import WRITE_IDENTITY_SETTING, install_write_identity, read_gate
 from scripts.export_impact_artifact import (
     COMPARISON_HEADER,
@@ -334,6 +334,83 @@ def _check_against_approved_scoring(db, table: str, comparison_path: str, facts:
                             f"(first {differing[:3]})")
 
 
+def _check_approved(db, table: str, approved_path: str, manifest_path: str | None,
+                    facts: dict, problems: list) -> None:
+    """The owner's approved review, compared against the table -- completely.
+
+    Checking only the rows the file happens to carry is no check at all: an
+    empty or truncated report passes, and so does one from another candidate
+    (external review, C3). The file must name the manifest it came from, cover
+    exactly the matches that manifest declares, and carry exactly the rows the
+    table holds for each of them.
+    """
+    with open(approved_path, encoding="utf-8") as handle:
+        approved = json.load(handle)
+    fields = list(approved.get("fields") or [])
+    persisted = [c for c in load_columns() if c not in ("round_id", "match_player_id")]
+    if sorted(fields) != sorted(persisted):
+        problems.append(f"the approved results label their values {fields}, which is not the "
+                        f"table's persisted fields {persisted}")
+        return
+
+    if manifest_path is None:
+        problems.append("approved results were given without the manifest they belong to")
+        return
+    manifest = load_manifest(manifest_path)
+    facts["manifest_lf_sha256"] = lf_sha256(manifest_path)
+    if approved.get("manifest_lf_sha256") != facts["manifest_lf_sha256"]:
+        problems.append(f"the approved results were written against manifest "
+                        f"{approved.get('manifest_lf_sha256')}, not {facts['manifest_lf_sha256']}")
+        return
+    for name in ("candidate_id", "release_comparator"):
+        if approved.get(name) != manifest.get(name):
+            problems.append(f"the approved results are for {name} {approved.get(name)!r}, "
+                            f"the manifest for {manifest.get(name)!r}")
+    declared = set((manifest.get("source_snapshots") or {}).get("matches") or {})
+    reviewed = set(approved.get("matches") or {})
+    facts["approved_matches"] = sorted(reviewed, key=int)
+    if reviewed != declared:
+        problems.append(f"the approved results cover {len(reviewed)} of the manifest's "
+                        f"{len(declared)} declared matches (missing {sorted(declared - reviewed, key=int)[:5]}, "
+                        f"unexpected {sorted(reviewed - declared, key=int)[:5]})")
+        return
+
+    # scoring_version is provenance. The review ran under the review-time
+    # calculation version and the built table must carry the activation
+    # version, so comparing it row by row would fail exactly the rows that
+    # are right -- and dropping it silently would hide that it was never
+    # checked. It is asserted explicitly elsewhere (expect_scoring_version) and
+    # reported here; every other field is compared exactly.
+    version_at = fields.index("scoring_version")
+    compared = [f for f in fields if f != "scoring_version"]
+    positions = [fields.index(f) for f in compared]
+    differing, incomplete, review_versions = [], [], set()
+    for match_id, match in approved["matches"].items():
+        built = {
+            f"{r[0]}:{r[1]}": [render_field(v) for v in r[2:]]
+            for r in db.execute(text(
+                f"SELECT b.round_id, b.match_player_id, {', '.join(compared)} FROM {table} b "
+                "JOIN rounds r ON r.id = b.round_id WHERE r.match_id = :m"), {"m": int(match_id)})
+        }
+        rows = match.get("rows") or {}
+        if set(rows) != set(built):
+            incomplete.append(f"{match_id} ({len(rows)} approved rows, {len(built)} in the table)")
+            continue
+        frozen_fingerprint = (manifest.get("source_snapshots") or {}).get("matches", {}).get(match_id)
+        if match.get("source_fingerprint") != frozen_fingerprint:
+            problems.append(f"match {match_id} was reviewed against source rows the manifest did not freeze")
+        for key, values in rows.items():
+            review_versions.add(values[version_at])
+            if built[key] != [render_field(values[i]) for i in positions]:
+                differing.append(f"{match_id}:{key}")
+    facts["approved_rows_checked"] = sum(len(m.get("rows") or {}) for m in approved["matches"].values())
+    facts["approved_review_scoring_versions"] = sorted(review_versions)
+    if incomplete:
+        problems.append(f"{len(incomplete)} approved matches do not cover their rows (first {incomplete[0]})")
+    if differing:
+        problems.append(f"{len(differing)} approved rows differ (first {differing[0]})")
+
+
 def _check_sidecar(db, sidecar: dict, facts: dict, problems: list, *,
                    expect_scoring_version: int, expect_comparison_sha256: str) -> None:
     """Tie the loaded file to the export that produced it, and that export to the chain."""
@@ -382,7 +459,8 @@ def _check_inputs(db, sidecar: dict, facts: dict, problems: list) -> None:
 
 def verify_build(db, artifact_path: str, *, sidecar_path: str, comparison_path: str,
                  expect_scoring_version: int, expect_comparison_sha256: str,
-                 approved_path: str | None, table: str = BUILT) -> dict:
+                 approved_path: str | None, manifest_path: str | None = None,
+                 table: str = BUILT) -> dict:
     """Read-only. The CLI runs it inside one REPEATABLE READ snapshot.
 
     `table` is the built table before a swap, and the live table after one
@@ -434,40 +512,7 @@ def verify_build(db, artifact_path: str, *, sidecar_path: str, comparison_path: 
                                     expect_comparison_sha256=expect_comparison_sha256)
 
     if approved_path:
-        with open(approved_path, encoding="utf-8") as handle:
-            approved = json.load(handle)
-        fields = list(approved.get("fields") or [])
-        persisted = [c for c in load_columns() if c not in ("round_id", "match_player_id")]
-        if sorted(fields) != sorted(persisted):
-            problems.append(f"the approved results label their values {fields}, which is not the "
-                            f"table's persisted fields {persisted}")
-        else:
-            # scoring_version is provenance. The review ran under the review-time
-            # calculation version and the built table must carry the activation
-            # version, so comparing it row by row would fail exactly the rows that
-            # are right -- and dropping it silently would hide that it was never
-            # checked. It is asserted explicitly above (expect_scoring_version) and
-            # reported here; every other field is compared exactly.
-            version_at = fields.index("scoring_version")
-            compared = [f for f in fields if f != "scoring_version"]
-            positions = [fields.index(f) for f in compared]
-            differing, review_versions = [], set()
-            for match_id, match in approved.get("matches", {}).items():
-                built = {
-                    f"{r[0]}:{r[1]}": [render_field(v) for v in r[2:]]
-                    for r in db.execute(text(
-                        f"SELECT b.round_id, b.match_player_id, {', '.join(compared)} FROM {table} b "
-                        "JOIN rounds r ON r.id = b.round_id WHERE r.match_id = :m"), {"m": int(match_id)})
-                }
-                for key, values in match.get("rows", {}).items():
-                    review_versions.add(values[version_at])
-                    if built.get(key) != [render_field(values[i]) for i in positions]:
-                        differing.append(f"{match_id}:{key}")
-            facts["approved_rows_checked"] = sum(len(m.get("rows", {}))
-                                                 for m in approved.get("matches", {}).values())
-            facts["approved_review_scoring_versions"] = sorted(review_versions)
-            if differing:
-                problems.append(f"{len(differing)} approved rows differ (first {differing[0]})")
+        _check_approved(db, table, approved_path, manifest_path, facts, problems)
 
     if problems:
         # Fingerprinting every match takes minutes over the link; it is only
@@ -587,6 +632,7 @@ def main(argv=None) -> int:
     parser.add_argument("--sidecar", help="the export's sidecar (<label>.json)")
     parser.add_argument("--comparison", help="the export's comparison projection (<label>.csv)")
     parser.add_argument("--approved", help="review-results.json to compare against")
+    parser.add_argument("--manifest", help="the frozen manifest those approved results belong to")
     parser.add_argument("--expect-comparison-sha256",
                         help="the chain's comparison hash, which the export must carry")
     parser.add_argument("--expect-scoring-version", type=int, default=3)
@@ -627,6 +673,7 @@ def main(argv=None) -> int:
             missing = [flag for flag, value in (("--artifact", args.artifact), ("--sidecar", args.sidecar),
                                                 ("--comparison", args.comparison),
                                                 ("--approved", args.approved),
+                                                ("--manifest", args.manifest),
                                                 ("--expect-comparison-sha256", args.expect_comparison_sha256))
                        if not value]
             if missing:
@@ -636,7 +683,7 @@ def main(argv=None) -> int:
                                       comparison_path=args.comparison,
                                       expect_scoring_version=args.expect_scoring_version,
                                       expect_comparison_sha256=args.expect_comparison_sha256,
-                                      approved_path=args.approved,
+                                      approved_path=args.approved, manifest_path=args.manifest,
                                       table=BUILT if args.command == "verify-build" else LIVE)
             print(canonical_json(facts))
             if facts["problems"]:

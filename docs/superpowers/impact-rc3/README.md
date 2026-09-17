@@ -214,12 +214,12 @@ time DATABASE_URL="$REH" $PY scripts/export_impact_artifact.py --out "$ART/rehea
   && time DATABASE_URL="$REH" $PY scripts/swap_impact_scores.py build --expect-database valo_rc3_rehearsal \
     --artifact "$ART/rehearsal/KR.load.csv" \
   && time DATABASE_URL="$REH" $PY scripts/swap_impact_scores.py verify-build --expect-database valo_rc3_rehearsal \
-    --artifact "$ART/rehearsal/KR.load.csv" --sidecar "$ART/rehearsal/KR.json" --comparison "$ART/rehearsal/KR.csv" --approved "$RC3/review-results.json" \
+    --artifact "$ART/rehearsal/KR.load.csv" --sidecar "$ART/rehearsal/KR.json" --comparison "$ART/rehearsal/KR.csv" --approved "$RC3/review-results.json" \n    --manifest "$RC3/candidate-manifest.json" \
     --expect-comparison-sha256 "$CHAIN" \
   && time DATABASE_URL="$REH" $PY scripts/swap_impact_scores.py swap --yes --expect-database valo_rc3_rehearsal \
   && DATABASE_URL="$REH" $PY scripts/swap_impact_scores.py state --expect-database valo_rc3_rehearsal \
   && time DATABASE_URL="$REH" $PY scripts/swap_impact_scores.py verify-live --expect-database valo_rc3_rehearsal \
-    --artifact "$ART/rehearsal/KR.load.csv" --sidecar "$ART/rehearsal/KR.json" --comparison "$ART/rehearsal/KR.csv" --approved "$RC3/review-results.json" \
+    --artifact "$ART/rehearsal/KR.load.csv" --sidecar "$ART/rehearsal/KR.json" --comparison "$ART/rehearsal/KR.csv" --approved "$RC3/review-results.json" \n    --manifest "$RC3/candidate-manifest.json" \
     --expect-comparison-sha256 "$CHAIN" \
   && time DATABASE_URL="$REH" $PY scripts/prewarm_player_cache_ids.py prewarm --ids-file "$ART/rehearsal/roster-ids.txt" \
   && DATABASE_URL="$REH" $PY scripts/verify_player_cache_coverage.py --ids-file "$ART/rehearsal/roster-ids.txt" \
@@ -318,7 +318,7 @@ time DATABASE_URL="$REH" $PY scripts/swap_impact_scores.py rollback --yes --expe
   && "$PGBIN/psql" -v ON_ERROR_STOP=1 -c "DROP TABLE impact_scores_rc3_rolled_back" "$REH" \
   && DATABASE_URL="$REH" $PY scripts/swap_impact_scores.py build --expect-database valo_rc3_rehearsal --artifact "$ART/rehearsal/KR.load.csv" \
   && DATABASE_URL="$REH" $PY scripts/swap_impact_scores.py verify-build --expect-database valo_rc3_rehearsal \
-    --artifact "$ART/rehearsal/KR.load.csv" --sidecar "$ART/rehearsal/KR.json" --comparison "$ART/rehearsal/KR.csv" --approved "$RC3/review-results.json" \
+    --artifact "$ART/rehearsal/KR.load.csv" --sidecar "$ART/rehearsal/KR.json" --comparison "$ART/rehearsal/KR.csv" --approved "$RC3/review-results.json" \n    --manifest "$RC3/candidate-manifest.json" \
     --expect-comparison-sha256 "$CHAIN" \
   || echo "STOP: exit $?"
 ```
@@ -419,7 +419,7 @@ K5's hash against the chain.
 ```bash
 time DATABASE_URL="$PROD" $PY scripts/swap_impact_scores.py build --expect-database valowithfriendsdb --artifact "$ART/activation/K5.load.csv" \
   && time DATABASE_URL="$PROD" $PY scripts/swap_impact_scores.py verify-build --expect-database valowithfriendsdb \
-    --artifact "$ART/activation/K5.load.csv" --sidecar "$ART/activation/K5.json" --comparison "$ART/activation/K5.csv" --approved "$RC3/review-results.json" \
+    --artifact "$ART/activation/K5.load.csv" --sidecar "$ART/activation/K5.json" --comparison "$ART/activation/K5.csv" --approved "$RC3/review-results.json" \n    --manifest "$RC3/candidate-manifest.json" \
     --expect-comparison-sha256 "$CHAIN" \
   || echo "STOP: exit $?"
 ```
@@ -444,7 +444,7 @@ exactly when the swap committed.
 
 ```bash
 time DATABASE_URL="$PROD" $PY scripts/swap_impact_scores.py verify-live --expect-database valowithfriendsdb \
-    --artifact "$ART/activation/K5.load.csv" --sidecar "$ART/activation/K5.json" --comparison "$ART/activation/K5.csv" --approved "$RC3/review-results.json" \
+    --artifact "$ART/activation/K5.load.csv" --sidecar "$ART/activation/K5.json" --comparison "$ART/activation/K5.csv" --approved "$RC3/review-results.json" \n    --manifest "$RC3/candidate-manifest.json" \
     --expect-comparison-sha256 "$CHAIN" \
   && "$PGBIN/psql" -v ON_ERROR_STOP=1 -c "SELECT count(*) AS match_3133_rows FROM impact_scores s JOIN rounds r ON r.id = s.round_id WHERE r.match_id = 3133" "$PROD" \
   || echo "STOP: exit $? -- consider R1"
