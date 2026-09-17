@@ -7,8 +7,8 @@ Postgres. This only ever ADDS matches the remote doesn't already have; it is
 never a destructive replace (contrast with push_dump_to_render.ps1, which
 drops and replaces everything).
 
-Requires webapp/.env.remote to exist (tracked in git on this machine's copy
-of the repo) with one line:
+Requires webapp/.env.remote to exist (gitignored -- this repository is public,
+so never commit it) with one line:
     DATABASE_URL=<your Render connection string>
 
 Use Render's EXTERNAL connection string here, not the internal one -- the
@@ -94,7 +94,15 @@ try {
 Write-Host "Refreshing the remote DB with the last $Count match(es) per tracked player..."
 $env:DATABASE_URL = $remoteUrl
 try {
-    & ".\.venv\Scripts\python.exe" "scripts\refresh_tracked_players.py" --count $Count
+    # Python 3.13 (.venv313): the release decision for scoring (rc3 plan v2, D3).
+    # Ingestion's preflight also refuses any environment whose installed
+    # packages differ from the frozen candidate's, which .venv's do.
+    $python = ".\.venv313\Scripts\python.exe"
+    if (-not (Test-Path $python)) {
+        throw ".venv313 not found -- create it with Python 3.13 and install requirements.txt first."
+    }
+    & $python "scripts\refresh_tracked_players.py" --count $Count
+    if ($LASTEXITCODE -ne 0) { throw "refresh_tracked_players.py failed (exit $LASTEXITCODE)." }
 } finally {
     Remove-Item Env:\DATABASE_URL -ErrorAction SilentlyContinue
 }

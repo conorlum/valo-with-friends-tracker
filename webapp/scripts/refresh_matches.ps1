@@ -88,9 +88,10 @@ while ($true) {
 }
 Write-Host "Postgres is ready."
 
-$python = Join-Path $webappRoot ".venv\Scripts\python.exe"
+# Python 3.13 (.venv313), the release decision for scoring (rc3 plan v2, D3).
+$python = Join-Path $webappRoot ".venv313\Scripts\python.exe"
 if (-not (Test-Path $python)) {
-    throw ".venv not found at $python -- create it and install requirements.txt first."
+    throw ".venv313 not found at $python -- create it with Python 3.13 and install requirements.txt first."
 }
 
 Write-Host "Applying Alembic migrations..."
