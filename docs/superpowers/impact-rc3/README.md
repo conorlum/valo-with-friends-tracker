@@ -28,7 +28,10 @@ Every command below was written against the tools as committed. **A step that ha
 - **Every step asserts its database by name first** (`--expect-database`, or `release_preflight.py`). The production and
   rehearsal URLs differ only in that name.
 - **Artifacts, dumps and logs live outside the repository** (`$ART`).
-- **Database tests run against `valo_rc3_test` only**, never `valo_rc3_rehearsal` (tests that empty tables refuse it).
+- **Any database test that writes runs against `valo_rc3_test` only.** The helper refuses `valo_rc3_rehearsal` to a
+  test declaring `empties_tables=True` or `writes=True`, because that database is the production restore every
+  measurement is taken against, and the scorer's wrapper updates rows in place -- a stray rescore there changes no
+  row count and leaves nothing to notice. Read-only tests **may** use it, and section 6 is where they do.
 - **Keep the machine awake for the long steps.** An export holds one snapshot for about 30 minutes, and
   `verify-build` fingerprints every match for about 15; if the machine sleeps, the connection dies and the step fails
   with "server closed the connection unexpectedly". That happened to K4 on 2026-09-17 at match 2067. Nothing is

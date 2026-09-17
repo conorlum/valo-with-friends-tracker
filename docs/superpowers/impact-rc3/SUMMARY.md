@@ -126,10 +126,20 @@ skipped, 0 failed** under Python 3.13 with the database tests enabled. No failur
 The 13 skips are analysis tests that measure the real corpus (stage C0, leverage gates, ex-ante swing,
 reconstruction), which skip when the database they are pointed at has no matches.
 
-**Declared deviation.** The declaration says the database tests run against the rehearsal database. They run against
-`valo_rc3_test`, a schema-only scratch database on the same instance, because several of them empty the tables they
-use — which would quietly invalidate a rehearsal restored from production. The test helper now refuses a
-`*_rehearsal` database for exactly that reason. Plan v2 section 7 records this.
+**Declared deviation, now narrowed (2026-09-17, `1e0b722`).** The declaration says the database tests run against the
+rehearsal database. At the reviewed code they ran against `valo_rc3_test`, a schema-only scratch database, because
+some of them empty the tables they use — which would quietly invalidate a rehearsal restored from production.
+
+That was true but too broad, and it cost coverage rather than merely deviating: a scratch database holds no matches,
+so the 13 corpus-measuring tests skipped, and ran nowhere at all. Twelve of the thirteen only read, and Stage 6 runs
+them against the restore, which is what the declaration asked for.
+
+The thirteenth genuinely cannot. `test_wrapper_still_persists_and_commits` calls the scorer's committing wrapper on a
+real match; the wrapper UPDATES in place, so on the rehearsal database it would rescore a match without changing any
+row count — no failure, no trace, and every later measurement quietly wrong. It keeps `valo_rc3_test`.
+
+The guard was widened to enforce that line: `writes=True` now joins `empties_tables=True`, and both are held to a
+`*_test` database. Until this change a test that merely wrote was allowed on the restore. Plan v2 section 7 records it.
 
 ## 9. The rehearsal
 

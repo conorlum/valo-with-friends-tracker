@@ -380,8 +380,19 @@ not touch scoring, and K4 re-verifies the chain at commit C.
 ### Deviations from this plan
 - **3.0.** Stage 3's database tests used `valo_rc3_test`, a schema-only scratch database (migrations 0001–0010, gate
   installed closed). The production restore, `valo_rc3_rehearsal`, moves to just before Stage 5, because the reviews
-  need production's data at schema 0010 (runbook section 4). Tests never run against the rehearsal database, and
-  tests that empty tables refuse it.
+  need production's data at schema 0010 (runbook section 4).
+
+  **Narrowed on 2026-09-17 (`1e0b722`).** The declaration said the database tests run against the rehearsal database;
+  saying "tests never run against the rehearsal database" closed the deviation by fiat and cost real coverage — on a
+  schema-only scratch database the 13 corpus-measuring tests *skip*, so they ran nowhere. Twelve of the thirteen only
+  read and can run against the restore; Stage 6 runs them there, which is what the declaration asked for.
+
+  The thirteenth cannot: `test_wrapper_still_persists_and_commits` calls the scorer's committing wrapper on a real
+  match, and that wrapper UPDATES in place — on the rehearsal database it would rescore a match without changing any
+  row count, quietly invalidating every measurement taken against it. It keeps `valo_rc3_test`.
+
+  The guard now enforces that distinction instead of the weaker one it had: `writes=True` joins `empties_tables=True`,
+  and both are held to a `*_test` database. Before this, a test that merely wrote was allowed on the restore.
 - **3.8.** Changes to the swap tool:
   - **NOT NULL constraints are not renamed.** PostgreSQL 18's `CREATE TABLE ... LIKE` keeps their canonical names,
     and a table rename does not change them (verified on 18.6 and pinned by a test).
