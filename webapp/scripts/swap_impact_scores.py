@@ -18,8 +18,9 @@ is up and nothing is committed to the live table until `swap`, which is one
 transaction.
 
     build         create impact_scores_new and COPY the load projection in
-    verify-build  count, key set, version, hashes, the approved rows, and every
-                  match's input fingerprint against the export's sidecar -- read-only
+    verify-build  count, key set, version, hashes, the chain's own artifact
+                  compared row by row, the approved rows, and every match's
+                  input fingerprint against the export's sidecar -- read-only
     swap          one transaction: locks, renames, cache clear
     verify-live   verify-build's checks on the live table, after the swap -- read-only
     rollback      the same in reverse, and close the gate
@@ -59,7 +60,12 @@ from sqlalchemy.exc import OperationalError
 from app.db import SessionLocal
 from app.scoring.impact_manifest import match_source_fingerprint
 from app.scoring.write_gate import WRITE_IDENTITY_SETTING, install_write_identity, read_gate
-from scripts.export_impact_artifact import canonical_json, load_columns, render_field
+from scripts.export_impact_artifact import (
+    COMPARISON_HEADER,
+    canonical_json,
+    load_columns,
+    render_field,
+)
 
 LIVE = "impact_scores"
 BUILT = "impact_scores_new"
@@ -279,6 +285,55 @@ def _canonical_rows(db, table: str) -> str:
     return buffer.getvalue()
 
 
+def _check_against_approved_scoring(db, table: str, comparison_path: str, facts: dict, problems: list, *,
+                                    expect_comparison_sha256: str) -> None:
+    """The chain's own artifact, compared against the rows about to go live.
+
+    Everything else proves the table matches the file that was loaded, and that
+    the file came from an export whose sidecar claims the chain's hash. Only
+    this compares the approved scoring itself with the table: a load projection
+    that dropped or moved a value would satisfy every other check (external
+    review, C2).
+
+    Two of the artifact's 24 columns -- leverage_component and
+    assists_component -- are diagnostics the table never stores, so they cannot
+    be compared against it; the other 22 can, by key, in one pass.
+    """
+    facts["comparison_artifact_sha256"] = _file_sha256(comparison_path)
+    if facts["comparison_artifact_sha256"] != expect_comparison_sha256:
+        problems.append(f"the comparison artifact hashes to {facts['comparison_artifact_sha256']}, "
+                        f"not the chain's {expect_comparison_sha256}")
+        return
+
+    stored = [name for name in COMPARISON_HEADER if name in set(load_columns())]
+    facts["compared_columns"] = stored
+    facts["columns_the_table_never_stores"] = [n for n in COMPARISON_HEADER if n not in set(load_columns())]
+    with open(comparison_path, "r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        header = tuple(next(reader))
+        if header != COMPARISON_HEADER:
+            problems.append(f"the comparison artifact's header is not the recorded one: {header}")
+            return
+        at = [header.index(name) for name in stored]
+        rows, differing = 0, []
+        result = db.execute(text(
+            f"SELECT {', '.join(stored)} FROM {table} ORDER BY round_id, match_player_id"))
+        for row in result:
+            approved = next(reader, None)
+            if approved is None:
+                problems.append(f"{table} has more rows than the approved artifact")
+                return
+            rows += 1
+            if [render_field(value) for value in row] != [approved[i] for i in at]:
+                differing.append(f"{approved[0]}:{approved[1]}")
+        if next(reader, None) is not None:
+            problems.append(f"the approved artifact has more rows than {table}")
+        facts["approved_rows_compared"] = rows
+        if differing:
+            problems.append(f"{len(differing)} rows differ from the approved scoring "
+                            f"(first {differing[:3]})")
+
+
 def _check_sidecar(db, sidecar: dict, facts: dict, problems: list, *,
                    expect_scoring_version: int, expect_comparison_sha256: str) -> None:
     """Tie the loaded file to the export that produced it, and that export to the chain."""
@@ -325,8 +380,9 @@ def _check_inputs(db, sidecar: dict, facts: dict, problems: list) -> None:
                         f"(first {changed[:5]})")
 
 
-def verify_build(db, artifact_path: str, *, sidecar_path: str, expect_scoring_version: int,
-                 expect_comparison_sha256: str, approved_path: str | None, table: str = BUILT) -> dict:
+def verify_build(db, artifact_path: str, *, sidecar_path: str, comparison_path: str,
+                 expect_scoring_version: int, expect_comparison_sha256: str,
+                 approved_path: str | None, table: str = BUILT) -> dict:
     """Read-only. The CLI runs it inside one REPEATABLE READ snapshot.
 
     `table` is the built table before a swap, and the live table after one
@@ -374,6 +430,8 @@ def verify_build(db, artifact_path: str, *, sidecar_path: str, expect_scoring_ve
         sidecar = json.load(handle)
     _check_sidecar(db, sidecar, facts, problems, expect_scoring_version=expect_scoring_version,
                    expect_comparison_sha256=expect_comparison_sha256)
+    _check_against_approved_scoring(db, table, comparison_path, facts, problems,
+                                    expect_comparison_sha256=expect_comparison_sha256)
 
     if approved_path:
         with open(approved_path, encoding="utf-8") as handle:
@@ -527,6 +585,7 @@ def main(argv=None) -> int:
                         help="the database this step must touch; any other is refused")
     parser.add_argument("--artifact", help="the load projection CSV (<label>.load.csv)")
     parser.add_argument("--sidecar", help="the export's sidecar (<label>.json)")
+    parser.add_argument("--comparison", help="the export's comparison projection (<label>.csv)")
     parser.add_argument("--approved", help="review-results.json to compare against")
     parser.add_argument("--expect-comparison-sha256",
                         help="the chain's comparison hash, which the export must carry")
@@ -566,6 +625,7 @@ def main(argv=None) -> int:
 
         if args.command in ("verify-build", "verify-live"):
             missing = [flag for flag, value in (("--artifact", args.artifact), ("--sidecar", args.sidecar),
+                                                ("--comparison", args.comparison),
                                                 ("--approved", args.approved),
                                                 ("--expect-comparison-sha256", args.expect_comparison_sha256))
                        if not value]
@@ -573,6 +633,7 @@ def main(argv=None) -> int:
                 raise SystemExit(f"{args.command} needs {', '.join(missing)}")
             db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
             facts = verify_and_record(db, args.artifact, operation=args.command, sidecar_path=args.sidecar,
+                                      comparison_path=args.comparison,
                                       expect_scoring_version=args.expect_scoring_version,
                                       expect_comparison_sha256=args.expect_comparison_sha256,
                                       approved_path=args.approved,

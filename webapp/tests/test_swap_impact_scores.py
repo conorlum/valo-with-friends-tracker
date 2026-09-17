@@ -20,12 +20,18 @@ from app.models.match import MatchSource, Team
 from app.scoring.impact_manifest import match_source_fingerprint
 from app.scoring.write_gate import install_write_identity, read_gate
 from scripts import swap_impact_scores as swap_tool
-from scripts.export_impact_artifact import canonical_json, load_columns, write_load_artifact
+from scripts.export_impact_artifact import (
+    COMPARISON_HEADER,
+    canonical_json,
+    load_columns,
+    write_artifact,
+    write_load_artifact,
+)
 from tests._postgres import postgres_session_or_skip
 
 ADMIN = "rc3-runbook"
-#: Stands in for K1's comparison hash: the export under test must carry it.
-CHAIN = "c" * 64
+#: A hash that belongs to no artifact here, for the export-off-the-chain test.
+NOT_THE_CHAIN = "c" * 64
 
 
 def _empty(session):
@@ -90,7 +96,9 @@ def _corpus(db, rounds=2, players=2):
 
 
 def _row(round_id, match_player_id, *, impact, scoring_version):
-    values = {name: 0 for name in load_columns()}
+    """Carries both projections' fields: the table's columns, and the two the
+    comparison header renders but the table never stores."""
+    values = {name: 0 for name in (*load_columns(), *COMPARISON_HEADER)}
     values.update(round_id=round_id, match_player_id=match_player_id, impact=impact,
                   trade_detail=None, scoring_version=scoring_version)
     return types.SimpleNamespace(**values)
@@ -110,15 +118,24 @@ def _install_v1(db, keys, *, impact=10):
     db.flush()
 
 
-def _export(tmp_path, db, keys, *, impact, scoring_version=3, comparison_sha256=CHAIN):
-    """A load artifact and the sidecar an export would write beside it."""
+def _export(tmp_path, db, keys, *, impact, scoring_version=3, comparison_sha256=None,
+            comparison_impact=None):
+    """Both projections of one export, and the sidecar written beside them.
+
+    `comparison_impact` scores the comparison artifact differently from the
+    load artifact, which is the shape of a load projection that lost or moved a
+    value: everything else still agrees."""
     rows = [_row(r, m, impact=impact, scoring_version=scoring_version) for r, m in keys]
+    compared = rows if comparison_impact is None else [
+        _row(r, m, impact=comparison_impact, scoring_version=scoring_version) for r, m in keys]
+    comparison_path = tmp_path / "K5.csv"
+    comparison = write_artifact(compared, comparison_path)
     path = tmp_path / "K5.load.csv"
     written = write_load_artifact(rows, path)
     fingerprints = {str(m): match_source_fingerprint(db, m)
                     for (m,) in db.execute(text("SELECT id FROM matches ORDER BY id")).all()}
     sidecar = {
-        "artifact": {"sha256": comparison_sha256},
+        "artifact": {"sha256": comparison_sha256 or comparison["sha256"]},
         "load_artifact": {"sha256": written["sha256"]},
         "configuration": {"impact_calculation_version": 3},
         "inputs": {
@@ -129,31 +146,40 @@ def _export(tmp_path, db, keys, *, impact, scoring_version=3, comparison_sha256=
     }
     sidecar_path = tmp_path / "K5.json"
     sidecar_path.write_text(canonical_json(sidecar), encoding="utf-8")
-    return str(path), str(sidecar_path)
+    return str(path), str(sidecar_path), str(comparison_path)
 
 
-def _verify(db, path, sidecar, **overrides):
-    kwargs = dict(sidecar_path=sidecar, expect_scoring_version=3, expect_comparison_sha256=CHAIN,
-                  approved_path=None)
+def _chain_of(sidecar):
+    """What the runbook would pass as the chain's hash for this export."""
+    with open(sidecar, encoding="utf-8") as handle:
+        return json.load(handle)["artifact"]["sha256"]
+
+
+def _verify(db, export, **overrides):
+    path, sidecar, comparison = export
+    kwargs = dict(sidecar_path=sidecar, comparison_path=comparison, expect_scoring_version=3,
+                  expect_comparison_sha256=_chain_of(export[1]), approved_path=None)
     kwargs.update(overrides)
     return swap_tool.verify_build(db, path, **kwargs)
 
 
-def _verify_and_record(db, path, sidecar):
-    return swap_tool.verify_and_record(db, path, sidecar_path=sidecar, expect_scoring_version=3,
-                                       expect_comparison_sha256=CHAIN, approved_path=None)
+def _verify_and_record(db, export):
+    path, sidecar, comparison = export
+    return swap_tool.verify_and_record(db, path, sidecar_path=sidecar, comparison_path=comparison,
+                                       expect_scoring_version=3,
+                                       expect_comparison_sha256=_chain_of(export[1]), approved_path=None)
 
 
 def _built_and_verified(db, tmp_path, *, v1=10, rc3=77):
     keys = _corpus(db)
     _install_v1(db, keys, impact=v1)
     db.commit()
-    path, sidecar = _export(tmp_path, db, keys, impact=rc3)
-    swap_tool.build(db, path)
+    export = _export(tmp_path, db, keys, impact=rc3)
+    swap_tool.build(db, export[0])
     db.commit()
-    facts = _verify_and_record(db, path, sidecar)
+    facts = _verify_and_record(db, export)
     assert facts["problems"] == []
-    return keys, path, sidecar
+    return keys, export
 
 
 def _impacts(db, table="impact_scores"):
@@ -230,8 +256,8 @@ def test_the_built_table_is_gated_too(db, tmp_path):
     keys = _corpus(db)
     _install_v1(db, keys)
     db.commit()
-    path, _ = _export(tmp_path, db, keys, impact=77)
-    swap_tool.build(db, path)
+    export = _export(tmp_path, db, keys, impact=77)
+    swap_tool.build(db, export[0])
     db.commit()
 
     other = postgres_session_or_skip()
@@ -250,8 +276,8 @@ def test_a_swap_without_a_verification_is_refused(db, tmp_path):
     keys = _corpus(db)
     _install_v1(db, keys, impact=10)
     db.commit()
-    path, _ = _export(tmp_path, db, keys, impact=77)
-    swap_tool.build(db, path)
+    export = _export(tmp_path, db, keys, impact=77)
+    swap_tool.build(db, export[0])
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="not a clean verify-build"):
@@ -264,10 +290,10 @@ def test_a_failed_verification_does_not_authorize_a_swap(db, tmp_path):
     keys = _corpus(db)
     _install_v1(db, keys, impact=10)
     db.commit()
-    path, sidecar = _export(tmp_path, db, keys[:-1], impact=77)  # one player-round short
-    swap_tool.build(db, path)
+    export = _export(tmp_path, db, keys[:-1], impact=77)  # one player-round short
+    swap_tool.build(db, export[0])
     db.commit()
-    assert _verify_and_record(db, path, sidecar)["problems"]
+    assert _verify_and_record(db, export)["problems"]
 
     with pytest.raises(swap_tool.Refused, match="verify-build failed"):
         swap_tool.swap(db)
@@ -276,8 +302,8 @@ def test_a_failed_verification_does_not_authorize_a_swap(db, tmp_path):
 
 
 def test_a_rebuild_after_verification_must_be_verified_again(db, tmp_path):
-    _, path, _ = _built_and_verified(db, tmp_path)
-    swap_tool.build(db, path)  # same file, but a new table the verification never saw
+    _, export = _built_and_verified(db, tmp_path)
+    swap_tool.build(db, export[0])  # same file, but a new table the verification never saw
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="not a clean verify-build"):
@@ -358,10 +384,10 @@ def test_verify_refuses_an_artifact_that_misses_a_player_round(db, tmp_path):
     keys = _corpus(db)
     _install_v1(db, keys)
     db.commit()
-    path, sidecar = _export(tmp_path, db, keys[:-1], impact=77)
+    export = _export(tmp_path, db, keys[:-1], impact=77)
 
-    swap_tool.build(db, path)
-    facts = _verify(db, path, sidecar)
+    swap_tool.build(db, export[0])
+    facts = _verify(db, export)
     assert any("key set differs" in problem for problem in facts["problems"])
 
 
@@ -369,10 +395,10 @@ def test_verify_refuses_the_wrong_scoring_version(db, tmp_path):
     keys = _corpus(db)
     _install_v1(db, keys)
     db.commit()
-    path, sidecar = _export(tmp_path, db, keys, impact=77, scoring_version=2)
+    export = _export(tmp_path, db, keys, impact=77, scoring_version=2)
 
-    swap_tool.build(db, path)
-    facts = _verify(db, path, sidecar)
+    swap_tool.build(db, export[0])
+    facts = _verify(db, export)
     assert any("scoring_version is [2]" in problem for problem in facts["problems"])
 
 
@@ -382,13 +408,13 @@ def test_verify_catches_a_single_edited_row(db, tmp_path):
     keys = _corpus(db)
     _install_v1(db, keys)
     db.commit()
-    path, sidecar = _export(tmp_path, db, keys, impact=77)
-    swap_tool.build(db, path)
+    export = _export(tmp_path, db, keys, impact=77)
+    swap_tool.build(db, export[0])
     db.execute(text(f"UPDATE {swap_tool.BUILT} SET impact = 78 "
                     "WHERE round_id = :r AND match_player_id = :m"),
                {"r": keys[0][0], "m": keys[0][1]})
 
-    facts = _verify(db, path, sidecar)
+    facts = _verify(db, export)
     assert any("does not read back" in problem for problem in facts["problems"])
 
 
@@ -396,12 +422,12 @@ def test_verify_refuses_inputs_that_changed_since_the_export(db, tmp_path):
     keys = _corpus(db)
     _install_v1(db, keys)
     db.commit()
-    path, sidecar = _export(tmp_path, db, keys, impact=77)
-    swap_tool.build(db, path)
+    export = _export(tmp_path, db, keys, impact=77)
+    swap_tool.build(db, export[0])
     db.execute(text("UPDATE round_player_stats SET kills = 4 WHERE round_id = :r AND match_player_id = :m"),
                {"r": keys[0][0], "m": keys[0][1]})
 
-    facts = _verify(db, path, sidecar)
+    facts = _verify(db, export)
     match_id = db.execute(text("SELECT match_id FROM rounds WHERE id = :r"), {"r": keys[0][0]}).scalar()
     assert facts["problems"] == [f"1 matches' source rows changed since the export (first ['{match_id}'])"]
 
@@ -411,12 +437,12 @@ def test_verify_refuses_a_match_ingested_since_the_export(db, tmp_path):
     keys = _corpus(db)
     _install_v1(db, keys)
     db.commit()
-    path, sidecar = _export(tmp_path, db, keys, impact=77)
-    swap_tool.build(db, path)
+    export = _export(tmp_path, db, keys, impact=77)
+    swap_tool.build(db, export[0])
     db.add(Match(external_id=f"late-{uuid.uuid4()}", source=MatchSource.SCRAPED, map_name="Ascent"))
     db.flush()
 
-    facts = _verify(db, path, sidecar)
+    facts = _verify(db, export)
     assert len(facts["problems"]) == 1
     assert facts["problems"][0].startswith("the match set changed since the export: 1 added")
 
@@ -425,14 +451,15 @@ def test_verify_refuses_a_sidecar_that_describes_another_file(db, tmp_path):
     keys = _corpus(db)
     _install_v1(db, keys)
     db.commit()
-    path, sidecar = _export(tmp_path, db, keys, impact=77)
-    swap_tool.build(db, path)
-    edited = json.load(open(sidecar, encoding="utf-8"))
+    export = _export(tmp_path, db, keys, impact=77)
+    swap_tool.build(db, export[0])
+    with open(export[1], encoding="utf-8") as handle:
+        edited = json.load(handle)
     edited["load_artifact"]["sha256"] = "0" * 64
-    with open(sidecar, "w", encoding="utf-8") as handle:
+    with open(export[1], "w", encoding="utf-8") as handle:
         json.dump(edited, handle)
 
-    facts = _verify(db, path, sidecar)
+    facts = _verify(db, export)
     assert any("the sidecar describes load artifact 000" in p for p in facts["problems"])
 
 
@@ -440,31 +467,70 @@ def test_verify_refuses_an_export_that_is_not_the_chain(db, tmp_path):
     keys = _corpus(db)
     _install_v1(db, keys)
     db.commit()
-    path, sidecar = _export(tmp_path, db, keys, impact=77, comparison_sha256="d" * 64)
-    swap_tool.build(db, path)
+    export = _export(tmp_path, db, keys, impact=77)
+    swap_tool.build(db, export[0])
 
-    facts = _verify(db, path, sidecar)
+    facts = _verify(db, export, expect_comparison_sha256=NOT_THE_CHAIN)
     assert any("is not the chain's" in p for p in facts["problems"])
 
 
+def test_verify_refuses_a_comparison_artifact_that_was_edited(db, tmp_path):
+    """The approved scoring is identified by the artifact's own bytes, never by
+    the sidecar's word for them."""
+    keys = _corpus(db)
+    _install_v1(db, keys)
+    db.commit()
+    export = _export(tmp_path, db, keys, impact=77)
+    swap_tool.build(db, export[0])
+    with open(export[2], "ab") as handle:
+        handle.write(b"0,0\n")
+
+    facts = _verify(db, export)
+
+    assert len(facts["problems"]) == 1
+    assert facts["problems"][0].startswith("the comparison artifact hashes to")
+    assert facts["problems"][0].endswith(f"not the chain's {_chain_of(export[1])}")
+
+
+def test_verify_refuses_a_table_that_is_not_the_approved_scoring(db, tmp_path):
+    """C2: the load file matches its sidecar, and the sidecar carries the
+    chain's hash, but the rows loaded are not the rows the chain approved. Only
+    comparing the approved artifact against the table catches it."""
+    keys = _corpus(db)
+    _install_v1(db, keys)
+    db.commit()
+    export = _export(tmp_path, db, keys, impact=78, comparison_impact=77)
+    swap_tool.build(db, export[0])
+
+    facts = _verify(db, export)
+
+    assert facts["problems"] == [f"{len(keys)} rows differ from the approved scoring "
+                                 f"(first {[f'{r}:{m}' for r, m in sorted(keys)[:3]]})"]
+    assert facts["approved_rows_compared"] == len(keys)
+    assert facts["columns_the_table_never_stores"] == ["leverage_component", "assists_component"]
+
+
 def test_verify_live_proves_what_the_site_reads_after_the_swap(db, tmp_path):
-    keys, path, sidecar = _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    keys, export = _built_and_verified(db, tmp_path, v1=10, rc3=77)
     swap_tool.swap(db)
     db.commit()
-    assert _verify(db, path, sidecar, table=swap_tool.LIVE)["problems"] == []
+    assert _verify(db, export, table=swap_tool.LIVE)["problems"] == []
 
     db.execute(text("UPDATE impact_scores SET impact = 78 WHERE round_id = :r AND match_player_id = :m"),
                {"r": keys[0][0], "m": keys[0][1]})
-    facts = _verify(db, path, sidecar, table=swap_tool.LIVE)
-    assert facts["problems"] == ["impact_scores does not read back as the artifact that was loaded"]
+    facts = _verify(db, export, table=swap_tool.LIVE)
+    assert facts["problems"] == [
+        "impact_scores does not read back as the artifact that was loaded",
+        f"1 rows differ from the approved scoring (first ['{keys[0][0]}:{keys[0][1]}'])",
+    ]
 
 
 def test_a_clean_live_verification_never_authorizes_a_swap(db, tmp_path):
     keys = _corpus(db)
     _install_v1(db, keys, impact=10)
     db.commit()
-    path, _ = _export(tmp_path, db, keys, impact=77)
-    built = swap_tool.build(db, path)
+    export = _export(tmp_path, db, keys, impact=77)
+    built = swap_tool.build(db, export[0])
     db.commit()
     swap_tool.record(db, "verify-live", "clean", {"built_oid": built["built_oid"],
                                                   "max_match_id": db.execute(text("SELECT max(id) FROM matches")).scalar()})
