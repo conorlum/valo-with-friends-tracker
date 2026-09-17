@@ -375,12 +375,14 @@ def team_budget(targets, next_paid, next_bank, losses) -> TeamBudget:
     for xs in columns:
         _require_valid(xs)
     targets, next_paid, next_bank, losses = columns
-    target = sum(targets)
-    funding = sum(min(p, t) for p, t in zip(next_paid, targets)) + sum(next_bank)
-    wealth = sum(next_paid) + sum(next_bank)
-    lost = sum(losses)
+    # Every float total here is math.fsum: the built-in sum() changed algorithm
+    # in Python 3.12, and a score must not depend on which interpreter added it.
+    target = math.fsum(targets)
+    funding = math.fsum(min(p, t) for p, t in zip(next_paid, targets)) + math.fsum(next_bank)
+    wealth = math.fsum(next_paid) + math.fsum(next_bank)
+    lost = math.fsum(losses)
     shortfall = max(0.0, target - funding)
-    observed_gap = sum(max(0.0, t - p) for t, p in zip(targets, next_paid))
+    observed_gap = math.fsum(max(0.0, t - p) for t, p in zip(targets, next_paid))
     activation = min(1.0, shortfall / ACTIVATION_GAP)
     scarcity = max(0.0, min(WEALTH_CEILING,
                             WEALTH_CEILING * (1 - wealth / (ROSTER_SIZE * WEALTH_ZERO_AT))))
@@ -445,8 +447,8 @@ def _bonus_denial(inputs, by_id, paid, next_paid, exposures, team, round_winner)
             denied[victim.match_player_id] = kit
     survivors = tuple(_survivor_recovery(inputs, by_id, paid, next_paid, team, dead, p, won)
                       for p in inputs.players if p.team == team and p.match_player_id not in dead)
-    team_recovered = sum(s.recovery for s in survivors)
-    total = sum(denied.values())
+    team_recovered = math.fsum(s.recovery for s in survivors)
+    total = math.fsum(denied.values())
     keep = max(0.0, 1.0 - team_recovered / total) if total > 0 else 0.0
     return BonusDenialAudit(
         won=won, factor=BONUS_WON_FACTOR if won else BONUS_LOST_FACTOR, denied=denied,
@@ -770,8 +772,8 @@ def score_round(inputs: RoundEconInputs, model: str) -> RoundEconResult:
             deaths=sum(1 for e in event_ledgers if e.victim_team == team),
             first_loss_players=sum(1 for m in member_ids if lost[m] > 0),
             next_below_raw_4200=sum(1 for p in members if p.next_loadout < CONTEXT_FULL_BUY_RAW),
-            credit=sum(ledgers[m].credit for m in member_ids),
-            debit=sum(ledgers[m].debit for m in member_ids),
+            credit=math.fsum(ledgers[m].credit for m in member_ids),
+            debit=math.fsum(ledgers[m].debit for m in member_ids),
             bonus=bonus if team == bonus_team else None,
         )
 

@@ -1,3 +1,4 @@
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -177,7 +178,7 @@ FACTOR_WEIGHTS = {
     "time": 1.0,
     "swing": 1.0,
 }
-_FACTOR_WEIGHT_TOTAL = sum(FACTOR_WEIGHTS.values())
+_FACTOR_WEIGHT_TOTAL = math.fsum(FACTOR_WEIGHTS.values())
 
 
 @dataclass(frozen=True)
@@ -488,7 +489,11 @@ def _trade_credits_for_round(round_kills: list[dict], team_of: dict) -> dict[int
     credits: dict[int, float] = defaultdict(float)
     for avenged in by_trade.values():
         shares = [share for _, _, share in avenged]
-        scale = max(shares) / sum(shares)
+        # math.fsum, not sum(): Python 3.12 made sum() compensated, and these
+        # shares ([0.3, 0.36, 0.42] in match 89) summed to 1.0799999999999998 on
+        # 3.11 and 1.08 on 3.13, which moved a credit across a rounding boundary.
+        # Exact summation is the same on every interpreter.
+        scale = max(shares) / math.fsum(shares)
         for trade, victim_id, share in avenged:
             credits[victim_id] += share * scale * trade["kill_order_bonus_x_time"]
     return credits
@@ -812,7 +817,7 @@ def _econ_components_for_round(
             1 for m in enemies if next_round[m]["loadout"] < econ_component.FULL_BUY_THRESHOLD
         )
         wealth = sum(next_round[m]["loadout"] + next_round[m]["remaining"] for m in enemies)
-        mean_committed = sum(committed[m] for m in enemies) / len(enemies) if enemies else None
+        mean_committed = math.fsum(committed[m] for m in enemies) / len(enemies) if enemies else None
         econ_round_by_team[team] = econ_component.econ_round(econ_component.EconRoundInputs(
             round_number=round_number, is_final_round=is_final_round,
             enemy_below_full_buy_next=below, enemy_wealth_next=wealth,
