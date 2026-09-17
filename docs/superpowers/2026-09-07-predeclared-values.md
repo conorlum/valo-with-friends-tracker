@@ -1945,3 +1945,90 @@ pass condition: the player-rounds that differ between K2' and K2 (what exact sum
 entry reports figures from the re-declared chain, and shows both wherever they differ.
 
 **What this entry does NOT do.** No production row, manifest or activation changes. Ingestion stays frozen.
+
+### 2026-09-17 (RESULT, rc3) -- the chain holds; the declared measurements; the owner's last look confirms the lock
+
+**What was run** (read-only, production snapshot of 2026-09-16/17; 3,125 matches, 659,500 player-rounds each):
+
+| link | Python | code | configuration | credit | SHA-256 |
+|---|---|---|---|---|---|
+| K1' | 3.11.4 | `b501ae2` | explicit locked weights | ON | `7e5ff2789ed1ea3a61425e1a6138576bc250cddc5de4e63cb3740a6d9f42f1bb` |
+| K2' | 3.13.15 | `b501ae2` | explicit locked weights | ON | the same, byte for byte |
+| OFF(A') | 3.13.15 | `b501ae2` | explicit locked weights | OFF | `648df0403a0d48411dfd42c5b7697da1d6952de416e3a1a36bc97fc628460eac` |
+| K3 | 3.13.15 | commit B `5c369f8` | the declared `impact_rc3` comparator | ON | equal to K1' |
+| OFF(B) | 3.13.15 | commit B `5c369f8` | `impact_rc3`, credit off | OFF | equal to OFF(A') |
+
+`b501ae2` is the ledger commit whose `webapp/` tree is exactly commit A (`b65fd4f`); `git diff b65fd4f b501ae2 --
+webapp` is empty. All five artifacts carry the cohort fingerprint
+`2c31fbbd9b1507f32631d304dec86885f5b876440a3e31140f4c1769545bdc5f`, so the inputs were identical, and each ON artifact
+is 53,437,561 bytes, each OFF artifact 53,252,671.
+
+**The declared prediction holds: K2' equals K1'.** Rows differing from K2': K1' 0, and the pre-fix K2 0 as well -- exact
+summation reproduced what 3.13's compensated `sum()` already computed, so only 3.11 moved. Against the pre-fix K1,
+18 rows differ, as the previous entry recorded.
+
+**K3 and OFF(B) hold the chain through the comparator.** K3 was exported from a clean checkout of commit B through
+`COMPARATORS["impact_rc3"]` rather than explicit weights, and reproduces K1' exactly; OFF(B) reproduces OFF(A'). The
+sidecars record the source (`comparator impact_rc3`, with a credit override for OFF(B)) and HEAD.
+
+**Declared measurements 1-6, from K3 and OFF(B)** (`rc3-release/chain/rc3-measurements.json`; identical to the last
+look's figures, the artifacts being byte-identical):
+
+1. **Shares.** Corpus: damage 41.7%, leverage 40.3%, econ 8.5%, assists 9.5%. Median over the 30,990 player-matches
+   with at least 12 rounds: 43.7%, 37.3%, 7.3%, 9.3%.
+2. **Credit**, as the two declared measures:
+   - (a) leverage difference: 18,204,414 summed over player-rounds, 15.1% of the credit-off positive leverage
+     (120,812,285), positive on 105,669 player-rounds, largest 981;
+   - (b) persisted credit: 18,206,528 over the same 105,669 player-rounds, largest 981;
+   - (a) minus (b) is -2,114, which is the scorer's per-row rounding, not a disagreement about who is credited.
+
+   Event-level credit measures are not re-measured, as declared: the rule is unchanged since 2026-09-14, which
+   measured them at B = 3, and at B = 2.5 they scale by 2.5/3 up to rounding.
+3. **Impact per round.** Mean 233.6, standard deviation 613.6. Negative-damage player-rounds: 0.
+4. **Sanity and ranks.** Ten players in every one of the 3,125 matches. Round counts run 4 to 38, with 404 matches at
+   24 rounds the mode. Impact rank equals K-D rank for 41.1% of the 31,250 player-matches and is within one for 76.9%.
+   Credit off to on: 6,884 player-match rank changes, 2,262 matches whose order changes at all, 222 whose top player
+   changes; movement is 0 places for 24,366, one for 6,055, two for 722, three for 97 and four for 10. Reported
+   separately, impact rises for 29,892 player-matches, is unchanged for 1,358 and falls for none.
+5. **Checksums.** 659,500 rows. Column sums: kill_impact 291,572,774; death_impact 149,485,256; impact 154,070,781;
+   damage 76,040,271; econ_impact 0; time_impact 19,473,492; swing_impact 0; econ_kill 34,151,593; econ_death
+   28,177,150; clutch_kill 37,397,270; clutch_death 31,225,516; post_plant_kill 26,726,383; post_plant_death
+   21,936,853; traded_teammate 106,160; traded_by_teammate 106,160; kill_order_bonus 10,694,197; econ_component
+   11,984,643; econ_pickup 0; trade_credit 18,206,528; leverage_component 48,684,267; assists_component 17,361,600.
+   The comparison hash is the K3 hash above.
+
+   **The load-projection hash is not reported here, and cannot be.** That projection includes `scoring_version`, which
+   is 2 under the reviewed code and 3 at activation -- the same fact that keeps `scoring_version` out of the comparison
+   projection. The hash that matters is the one actually loaded; it is recorded at the activation export and bound by
+   `verify-build`, which also compares the approved comparison artifact against the built table row by row.
+6. **Smallint maxima** (largest absolute value): damage 953, econ_impact 0, time_impact 1,497, swing_impact 0,
+   econ_kill 1,833, econ_death 800, clutch_kill 1,030, clutch_death 500, post_plant_kill 1,420, post_plant_death 805,
+   traded_teammate 5, traded_by_teammate 3, kill_order_bonus 1,170, econ_component 2,397, econ_pickup 0,
+   trade_credit 981. Every one is far inside a smallint. The largest per-round credit is 981 under both definitions in
+   measurement 2.
+
+**Measurement 7, the owner's last look** (from K2' against the stored rows; `rc3-artifacts-A2/last-look.json`). Over
+the 3,124 matches with stored rows, 31,240 player-matches:
+- 15,179 player-match ranks change: 16,061 stay, 10,372 move one place, 3,534 two, 955 three, 262 four, 50 five, 5 six
+  and 1 seven;
+- 633 matches change their top player;
+- per-match Spearman correlation: median 0.939, p10 0.842, p90 0.988;
+- tracked players, average impact per round v1 -> rc3 and rank among tracked players: NPrightdolphin#NA1 269.1 ->
+  329.3 (1 -> 1), SambuUwU#NA1 263.7 -> 329.1 (2 -> 2), Osmin#NA1 241.1 -> 291.9 (5 -> 3), flatcat#woof 236.1 ->
+  286.8 (6 -> 4), Deemo#Derf 261.4 -> 281.8 (3 -> 5), ternstyle#GIGI 242.4 -> 268.3 (4 -> 6), DoubleBl1nd#BEEF 206.4
+  -> 246.0 (7 -> 7), Beef Shortrib#Galbi 180.9 -> 219.3 (8 -> 8), Najumi#NPC 175.7 -> 201.3 (9 -> 9), Yosher#Toshi
+  165.5 -> 184.3 (10 -> 10), zopecow#1570 117.3 -> 106.5 (11 -> 11), Momomimo#hru 101.0 -> 97.9 (12 -> 12);
+- match 3133, reported separately, is scored for the first time: ten players from 8,838 down to -507 over 21 rounds.
+
+**Owner decision, 2026-09-17: the lock stands.** A = 1, B = 2.5, C = 2.5, D = 100, trade credit on at
+`trade_credit_scale` 1.0, econ model `buy_disruption_v2_30_80_bonus_denial`, realized swing, timing candidates off.
+The freeze proceeds against this scoring.
+
+**Implementation evidence.** The full suite passes on both interpreters: 1,251 passed and 63 skipped under 3.11
+offline, 1,301 passed and 13 skipped under 3.13 with the database tests, none failed. A third external review of the
+implementation (2026-09-17) raised eight findings, all fixed with tests shown to fail on values; dispositions are in
+section 7 of `plans/2026-09-16-rc3-ship-plan-v2.md`.
+
+**What this entry does NOT do.** No production row, manifest or activation changes. `ACTIVE_MANIFEST` stays None and
+`IMPACT_CALCULATION_VERSION` stays 2 on the branch. Ingestion stays frozen. The freeze, the reviews and the rehearsal
+are still ahead, and the declared review checks are answered in `SUMMARY.md`, not here.
