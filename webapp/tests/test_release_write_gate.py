@@ -149,8 +149,13 @@ def test_a_writer_that_never_touches_the_version_is_still_refused(db):
         install_write_identity(cleanup, "rc3-runbook")
         cleanup.execute(text("DELETE FROM impact_scores WHERE round_id = :r"), {"r": score.round_id})
         cleanup.execute(text("DELETE FROM rounds WHERE id = :r"), {"r": score.round_id})
+        match_id, player_id = cleanup.execute(text(
+            "SELECT match_id, player_id FROM match_players WHERE id = :m"),
+            {"m": score.match_player_id}).one()
         cleanup.execute(text("DELETE FROM match_players WHERE id = :m"),
                         {"m": score.match_player_id})
+        cleanup.execute(text("DELETE FROM matches WHERE id = :m"), {"m": match_id})
+        cleanup.execute(text("DELETE FROM players WHERE id = :p"), {"p": player_id})
         cleanup.commit()
     finally:
         cleanup.close()

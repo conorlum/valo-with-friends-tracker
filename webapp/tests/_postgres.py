@@ -26,13 +26,17 @@ from sqlalchemy.orm import sessionmaker
 
 TEST_URL_ENV = "VALO_TEST_DATABASE_URL"
 DISPOSABLE_SUFFIXES = ("_test", "_rehearsal")
+#: Tests that empty whole tables need a database holding nothing worth keeping.
+#: A `_rehearsal` database is a restore of production that the release is
+#: rehearsed on, and emptying it would quietly invalidate the rehearsal.
+EMPTYABLE_SUFFIX = "_test"
 
 
 def database_name(url: str) -> str:
     return url.rsplit("/", 1)[-1].split("?")[0]
 
 
-def postgres_url_or_skip() -> str:
+def postgres_url_or_skip(*, empties_tables: bool = False) -> str:
     url = os.environ.get(TEST_URL_ENV, "").strip()
     if not url:
         pytest.skip(f"{TEST_URL_ENV} is not set: this test needs a disposable PostgreSQL database")
@@ -40,13 +44,16 @@ def postgres_url_or_skip() -> str:
     if not name.endswith(DISPOSABLE_SUFFIXES):
         pytest.fail(f"refusing to test against database {name!r}: "
                     f"{TEST_URL_ENV} must name a database ending in {DISPOSABLE_SUFFIXES}")
+    if empties_tables and not name.endswith(EMPTYABLE_SUFFIX):
+        pytest.fail(f"refusing to empty tables in database {name!r}: this test deletes every row of "
+                    f"the tables it uses, so it needs a database ending in {EMPTYABLE_SUFFIX!r}")
     if not url.startswith("postgresql+"):
         url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
     return url
 
 
-def postgres_session_or_skip():
+def postgres_session_or_skip(*, empties_tables: bool = False):
     """A session on its own connection, so a session-level setting one test
     makes (the write gate's identity) cannot leak into the next one."""
-    engine = create_engine(postgres_url_or_skip(), poolclass=pool.NullPool)
+    engine = create_engine(postgres_url_or_skip(empties_tables=empties_tables), poolclass=pool.NullPool)
     return sessionmaker(bind=engine)()
