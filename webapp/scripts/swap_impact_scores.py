@@ -73,8 +73,13 @@ PREVIOUS = "impact_scores_v1"
 ROLLED_BACK = "impact_scores_rc3_rolled_back"
 LOG = "scoring_release_log"
 
-#: A swap that cannot take its locks in this long changes nothing and is retried.
+#: Per lock acquisition, not for the whole transaction: a swap takes two, so
+#: this bounds each wait rather than the total. A swap that cannot take a lock
+#: in this long changes nothing and is retried.
 SWAP_LOCK_TIMEOUT = "5s"
+
+#: A backstop for the statements themselves. Nothing here should take seconds.
+SWAP_STATEMENT_TIMEOUT = "60s"
 
 EXIT_VERIFY_FAILED = 2
 EXIT_REFUSED = 3
@@ -189,6 +194,19 @@ def _require_clean_verification(db) -> dict:
 
 
 # ---- names -------------------------------------------------------------------------
+
+def _clear_player_cache(db) -> int:
+    """Empty player_view_cache by DELETE, never TRUNCATE.
+
+    TRUNCATE needs ACCESS EXCLUSIVE, which a page load's cache read blocks --
+    and that page load may itself be waiting on its own second connection
+    writing the cache through, which would now be queued behind the TRUNCATE.
+    Nothing in that cycle is a database deadlock, so nothing breaks it (external
+    review, C1). DELETE takes row locks that no reader conflicts with, and the
+    table holds a few thousand rows.
+    """
+    return db.execute(text("DELETE FROM player_view_cache")).rowcount
+
 
 def _rename_owned_objects(db, table: str, old_prefix: str, new_prefix: str) -> list[str]:
     """Rename a table's index-backed and foreign-key constraints, and its plain
@@ -546,9 +564,10 @@ def swap(db) -> dict:
         raise Refused(f"{PREVIOUS} already exists, so this database was already swapped "
                       "(see `state`); a second swap would have nowhere to put the live table")
     db.execute(text(f"SET LOCAL lock_timeout = '{SWAP_LOCK_TIMEOUT}'"))
-    # Request order: pages read the cache, then the scores. Taking the locks the
-    # other way round is the deadlock this design exists to avoid.
-    db.execute(text("LOCK TABLE player_view_cache IN ACCESS EXCLUSIVE MODE"))
+    db.execute(text(f"SET LOCAL statement_timeout = '{SWAP_STATEMENT_TIMEOUT}'"))
+    # The cache first, as requests read it first -- but by DELETE, which takes
+    # no lock a reader conflicts with. See _clear_player_cache.
+    _clear_player_cache(db)
     db.execute(text(f"LOCK TABLE {LIVE}, {BUILT} IN ACCESS EXCLUSIVE MODE"))
     _lock_gate_closed(db, "swap")
     verified = _require_clean_verification(db)
@@ -557,7 +576,6 @@ def swap(db) -> dict:
     db.execute(text(f"ALTER TABLE {LIVE} RENAME TO {PREVIOUS}"))
     db.execute(text(f"ALTER TABLE {BUILT} RENAME TO {LIVE}"))
     renamed += _rename_owned_objects(db, LIVE, BUILT, LIVE)
-    db.execute(text("TRUNCATE player_view_cache"))
     result = {**verified, "renamed": renamed, "seconds": round(time.time() - started, 2)}
     record(db, "swap", "swapped", result)
     return result
@@ -572,7 +590,8 @@ def rollback(db) -> dict:
         raise Refused(f"{ROLLED_BACK} exists from an earlier rollback: inspect it and drop it first")
     _require_gate_closed(db, "rollback")
     db.execute(text(f"SET LOCAL lock_timeout = '{SWAP_LOCK_TIMEOUT}'"))
-    db.execute(text("LOCK TABLE player_view_cache IN ACCESS EXCLUSIVE MODE"))
+    db.execute(text(f"SET LOCAL statement_timeout = '{SWAP_STATEMENT_TIMEOUT}'"))
+    _clear_player_cache(db)
     db.execute(text(f"LOCK TABLE {LIVE}, {PREVIOUS} IN ACCESS EXCLUSIVE MODE"))
     _lock_gate_closed(db, "rollback")
 
@@ -591,7 +610,6 @@ def rollback(db) -> dict:
     db.execute(text(f"ALTER TABLE {LIVE} RENAME TO {ROLLED_BACK}"))
     db.execute(text(f"ALTER TABLE {PREVIOUS} RENAME TO {LIVE}"))
     renamed += _rename_owned_objects(db, LIVE, PREVIOUS, LIVE)
-    db.execute(text("TRUNCATE player_view_cache"))
     # Nothing writes scores again until the owner decides what should.
     db.execute(text("UPDATE scoring_gate SET state = 'closed', note = :n, updated_at = now() "
                     "WHERE id"), {"n": "closed by swap_impact_scores.py rollback"})

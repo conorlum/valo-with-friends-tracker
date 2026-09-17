@@ -307,7 +307,8 @@ done < "$ART/rehearsal/recent-paths.txt"; done | tee "$ART/rehearsal/latency.txt
 
 Most of these pages miss the cache (the swap emptied it), which is the path that reads the cache and then the scores.
 
-No deadlock, no 5xx, and no request stalled more than 5 seconds beyond the baseline. A swap that cannot take its locks
+No deadlock, no 5xx, and no request stalled more than 5 seconds per lock acquisition beyond the baseline (the swap
+takes two, and clears the cache by DELETE, which takes no lock a page load conflicts with). A swap that cannot take its locks
 exits 4 having changed nothing; that is a pass for this test, and the swap is retried.
 
 **6.7 Rollback path**, then forward again from a fresh build:
@@ -438,7 +439,8 @@ DATABASE_URL="$PROD" $PY scripts/swap_impact_scores.py swap --yes --expect-datab
 DATABASE_URL="$PROD" $PY scripts/swap_impact_scores.py state --expect-database valowithfriendsdb
 ```
 
-Exit 4: it could not take its locks in 5 seconds and changed nothing; run it again. Exit 3: read the reason. Anything
+Exit 4: a lock did not come free within 5 seconds and nothing changed; run it again. Those 5 seconds bound each
+acquisition, not the whole transaction: the swap takes two, and clears the cache by DELETE rather than a third. Exit 3: read the reason. Anything
 else (a traceback, a dropped connection): run `state` before anything else. The log holds a `swap swapped` entry
 exactly when the swap committed.
 
@@ -464,7 +466,7 @@ must list `4003003003` (schema 4, state diagram 3, fight-EV 3, Impact **3**) for
 **8.6 Caches**, from the activation checkout (the cache version includes `IMPACT_CALCULATION_VERSION`):
 
 ```bash
-"$PGBIN/psql" -v ON_ERROR_STOP=1 -c "TRUNCATE player_view_cache" "$PROD" \
+"$PGBIN/psql" -v ON_ERROR_STOP=1 -c "DELETE FROM player_view_cache" "$PROD" \
   && time DATABASE_URL="$PROD" $PY scripts/prewarm_player_cache_ids.py prewarm --ids-file "$ART/activation/roster-ids.txt" \
   && DATABASE_URL="$PROD" $PY scripts/verify_player_cache_coverage.py --ids-file "$ART/activation/roster-ids.txt" \
   && DATABASE_URL="$PROD" $PY -c "from app.db import SessionLocal; from app.services.site_stats import refresh_site_stats; db = SessionLocal(); refresh_site_stats(db); db.close(); print('site stats refreshed')" \
@@ -532,8 +534,11 @@ DATABASE_URL="$PROD" $PY scripts/swap_impact_scores.py rollback --yes --expect-d
 DATABASE_URL="$PROD" $PY scripts/swap_impact_scores.py state --expect-database valowithfriendsdb
 ```
 
-Then revert the activation PR (site up); once the revert is live, `TRUNCATE player_view_cache` and prewarm the roster
-from the reverted checkout. Ingestion stays closed until the owner decides. After ingestion reopens, R1 no longer
+**Stop the background prewarm first.** Step 8.6 leaves one running over the recently cached players; it reads scores
+and writes cache rows, so one still running across a rollback caches rc3 numbers over restored v1 scores.
+
+Then revert the activation PR (site up); once the revert is live, clear the cache with
+`psql -c "DELETE FROM player_view_cache"` (never TRUNCATE, see 8.6) and prewarm the roster from the reverted checkout. Ingestion stays closed until the owner decides. After ingestion reopens, R1 no longer
 applies: fix forward, or capture the current scores first and decide what happens to matches ingested since (B4).
 
 **R2 (PR #67)**, each step verified before the next:

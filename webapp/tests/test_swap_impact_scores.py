@@ -642,3 +642,37 @@ def test_an_approval_without_its_manifest_is_refused(db, tmp_path):
     facts = _verify(db, export, approved_path=approved)
 
     assert facts["problems"] == ["approved results were given without the manifest they belong to"]
+
+
+def test_a_page_holding_the_cache_open_does_not_stall_the_swap(db, tmp_path):
+    """C1: a page load reads player_view_cache and keeps that lock while its
+    own second connection writes the cache through. Clearing the cache by
+    TRUNCATE would queue behind the first and block the second, and no
+    database deadlock exists to break it. The swap clears by DELETE instead."""
+    keys, export = _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    reader = postgres_session_or_skip()
+    try:
+        reader.execute(text("SELECT count(*) FROM player_view_cache")).scalar()  # holds ACCESS SHARE
+
+        swap_tool.swap(db)
+        db.commit()
+
+        assert _impacts(db) == [77]
+    finally:
+        reader.rollback()
+        reader.close()
+
+
+def test_the_swap_empties_the_player_cache(db, tmp_path):
+    """Every cached page was computed from the old scores."""
+    keys, export = _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    player_id = db.execute(text(
+        "SELECT player_id FROM match_players WHERE id = :m"), {"m": keys[0][1]}).scalar()
+    db.execute(text("INSERT INTO player_view_cache (player_id, scope, data, version, updated_at) "
+                    "VALUES (:p, 'recent', '{}'::jsonb, 1, now())"), {"p": player_id})
+    db.commit()
+
+    swap_tool.swap(db)
+    db.commit()
+
+    assert db.execute(text("SELECT count(*) FROM player_view_cache")).scalar() == 0
