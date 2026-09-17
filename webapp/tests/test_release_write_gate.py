@@ -19,7 +19,7 @@ from sqlalchemy.exc import InternalError, ProgrammingError
 
 from app.models import ImpactScore, Match, MatchPlayer, Player, Round
 from app.models.match import MatchSource, Team
-from app.scoring.write_gate import install_write_identity, read_gate
+from app.scoring.write_gate import claim_write_identity, install_write_identity, read_gate
 from tests._postgres import postgres_session_or_skip
 
 REFUSED = (InternalError, ProgrammingError)
@@ -85,6 +85,16 @@ def test_a_write_with_no_identity_is_refused(db):
     with pytest.raises(REFUSED) as caught:
         _a_match(db)
     assert "release write gate refused" in str(caught.value)
+
+
+def test_an_empty_identity_is_no_identity_even_against_a_blank_gate_row(db):
+    """An identity that was set and then rolled back reads back as '' rather
+    than NULL. It must never match a gate row whose ids were left blank."""
+    _gate(db, "open", release_id="", admin_id="")
+    claim_write_identity(db, "")
+    with pytest.raises(REFUSED) as caught:
+        _a_match(db)
+    assert "connection identity (none)" in str(caught.value)
 
 
 def test_the_open_release_may_write(db):

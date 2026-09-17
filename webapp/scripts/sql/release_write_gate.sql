@@ -55,14 +55,23 @@ BEGIN
             USING HINT = 'run scripts/install_release_write_gate.py';
     END IF;
 
+    -- An identity that was set and then rolled back reads as '' rather than
+    -- NULL, so an empty identity is no identity -- whatever the gate row says.
+    IF who IS NULL OR who = '' THEN
+        RAISE EXCEPTION 'the release write gate refused % on %', TG_OP, TG_TABLE_NAME
+            USING DETAIL = format('connection identity (none); gate %s for release %s',
+                                  gate.state, gate.release_id),
+                  HINT = 'only a checkout whose preflight verified the active manifest may write';
+    END IF;
+
     -- The runbook's own identity: swaps, rollbacks and deliberate manual fixes.
-    IF who IS NOT NULL AND who = gate.admin_id THEN
+    IF who = gate.admin_id THEN
         RETURN NULL;
     END IF;
 
     -- The open release: set only by an ingestion preflight that has verified
     -- the active manifest, its version and this gate.
-    IF gate.state = 'open' AND who IS NOT NULL AND who = gate.release_id THEN
+    IF gate.state = 'open' AND who = gate.release_id THEN
         RETURN NULL;
     END IF;
 
