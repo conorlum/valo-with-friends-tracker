@@ -30,7 +30,7 @@ and rehearsed in Stages 3 and 6, and land in the rc3 README runbook, as rc2's di
 | **D10** | **A release write gate**: a gate table plus statement-level triggers on the score AND ingestion tables, which refuse any write whose connection does not carry the open release's identity | B1: a row-value CHECK cannot tell who is writing. This also enforces the ingestion freeze in the database, so a stale checkout can no longer strand a match |
 | **D11** | **Rollback expires when ingestion reopens**: a 48-hour observation hold after activation, during which the gate stays closed and R1 is a complete rollback. After that, problems are fixed forward | B4: once a new match is scored under rc3, restoring the pre-activation table would lose it |
 | **D12** | **Event-level credit measurements are dropped from the rc3 RESULT**, citing the 2026-09-14 figures scaled by 2.5/3 | B7: the saved exports cannot produce them, the rule is unchanged since 09-14, and adding an allocation observer would change a hashed source before the freeze |
-| — | Point-in-time recovery: available, and the window | **pending: owner checking Render Dashboard -> Postgres instance -> Recovery.** It is a gate before Stage 7 (§1) |
+| D13 | **Point-in-time recovery is available, to any timestamp in the past 7 days** (owner checked the Render Recovery page, 2026-09-17) | The Stage 7 gate is cleared. It restores into a NEW instance, so R3 also means repointing the web service and `.env.remote`. After 7 days recovery rests on the B0/B1 dumps and `impact_scores_v1` |
 
 Defaults adopted without a separate question:
 - PR #67 split: merged without activation, then activation as its own one-commit PR; both merged with merge commits.
@@ -305,8 +305,9 @@ Between Stages 7 and 8 the site shows today's v1 numbers with the branch's other
 
 ## 6. Open
 
-- Point-in-time recovery: available, and its window. The owner is checking. It gates Stage 7 (§1) and sets how long
-  `impact_scores_v1` is kept.
+- Nothing gating the next step. Point-in-time recovery was the last open question and is answered (D13): any timestamp
+  in the past 7 days. `impact_scores_v1` is kept at least 14 days, which already outlasts that window, so the dumps and
+  that table are what recovery rests on once 7 days have passed.
 
 ## 7. Progress, results and deviations (2026-09-16)
 

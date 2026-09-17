@@ -385,9 +385,11 @@ Do not rerun `install_release_write_gate.py` below 0009: it refuses because `rou
 
 ## 7. Stage 7: PR #67 without activation (production, site up)
 
-**7.1 Recovery gate.** Point-in-time recovery confirmed with its window (Render Dashboard -> the Postgres instance ->
-Recovery), or backup-only recovery accepted with section 4's restore rehearsed. Record which in the ledger. No production
-write happens before this.
+**7.1 Recovery gate: cleared (2026-09-17).** The Render Recovery page offers restore to any timestamp in the past 7
+days, so production can be recreated at a point before any step below. Two consequences for the steps that follow:
+recovery restores into a NEW instance, so R3 also repoints the web service and `.env.remote`; and after 7 days
+recovery rests on the B0/B1 dumps and `impact_scores_v1`, which is why that table is kept at least 14 days (8.12).
+Note the server time printed by each preflight -- that is the timestamp to restore to.
 
 **7.2 Preflight and backup B1.** Note the printed server time: it is the restore point.
 
