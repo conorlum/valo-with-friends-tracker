@@ -14,14 +14,15 @@ otherwise, because triggers cannot be exercised on sqlite.
 import uuid
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import InternalError, ProgrammingError
+from sqlalchemy.orm import sessionmaker
 
 from app.models import ImpactScore, Match, MatchPlayer, Player, Round
 from app.models.match import MatchSource, Team
 from app.scoring.write_gate import claim_write_identity, install_write_identity, read_gate
 from scripts.install_release_write_gate import INSTALL_LOCK_TIMEOUT, install
-from tests._postgres import postgres_session_or_skip
+from tests._postgres import postgres_session_or_skip, postgres_url_or_skip
 
 REFUSED = (InternalError, ProgrammingError)
 GATED_TABLES = ("impact_scores", "matches", "match_players", "rounds",
@@ -193,3 +194,56 @@ def test_truncate_is_refused(db):
     install_write_identity(db, "not-the-release")
     with pytest.raises(REFUSED):
         db.execute(text("TRUNCATE impact_scores"))
+
+
+# ---- the identity must reach every connection the pool hands out ----------------------
+
+def _pooled_engine():
+    """A real QueuePool. The shared helper uses NullPool, which opens a fresh
+    connection per checkout and so hides both cases below."""
+    return create_engine(postgres_url_or_skip())
+
+
+def test_a_connection_opened_before_the_install_still_carries_the_identity():
+    """The pool can already hold connections; a connect-time hook never fires
+    for those, and the writer that gets one would be refused mid-ingest."""
+    engine = _pooled_engine()
+    try:
+        warmed = [engine.connect() for _ in range(3)]
+        for connection in warmed:
+            connection.close()  # checked back in, never identified
+        installer = sessionmaker(bind=engine)()
+        if read_gate(installer) is None:
+            pytest.skip("the write gate is not installed on the test database")
+        install_write_identity(installer, "rc3-runbook")
+        installer.commit()
+        installer.close()
+
+        writer = sessionmaker(bind=engine)()
+        try:
+            assert _a_match(writer).id is not None
+        finally:
+            writer.rollback()
+            writer.close()
+    finally:
+        engine.dispose()
+
+
+def test_the_identity_outlives_a_transaction_that_rolled_back():
+    """set_config is reverted with the transaction that made it, and the pool
+    hands that same connection out again without opening it afresh."""
+    engine = _pooled_engine()
+    try:
+        db = sessionmaker(bind=engine)()
+        if read_gate(db) is None:
+            pytest.skip("the write gate is not installed on the test database")
+        install_write_identity(db, "rc3-runbook")
+        db.rollback()  # the claim goes with it
+
+        try:
+            assert _a_match(db).id is not None
+        finally:
+            db.rollback()
+            db.close()
+    finally:
+        engine.dispose()

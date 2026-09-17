@@ -16,6 +16,7 @@ commits, then scoring commits) and all of them must carry it.
 
 from __future__ import annotations
 
+import weakref
 from dataclasses import dataclass
 
 from sqlalchemy import event, text
@@ -64,24 +65,42 @@ def claim_write_identity(db, identity: str) -> None:
                {"name": WRITE_IDENTITY_SETTING, "value": identity})
 
 
-def install_write_identity(db, identity: str) -> None:
-    """Present `identity` on every connection this session's engine opens.
+#: The identity each engine presents, keyed weakly so a disposed engine is not
+#: kept alive by it.
+_ENGINE_IDENTITIES: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_LISTENING: "weakref.WeakSet" = weakref.WeakSet()
 
-    A per-connection claim is not enough. An ingest commits several times (the
-    match, then the cache invalidation, then the scores), and a commit returns
-    the connection to the pool: the next statement can arrive on a different
-    connection with no identity at all, and the gate would refuse it halfway
-    through -- committed match, no scores, which is the exact shape of the
-    stranding this gate exists to prevent.
+
+def install_write_identity(db, identity: str) -> None:
+    """Present `identity` on every connection this session's engine hands out.
+
+    On CHECKOUT, not on connect, and every time rather than once. Two ways a
+    writer otherwise ends up with no identity halfway through an ingest --
+    committed match, refused scores, the exact stranding shape the gate exists
+    to prevent:
+
+    - the pool can already hold connections opened before this call, and a
+      "connect" listener never fires for those;
+    - `set_config` made inside a transaction that later rolls back is reverted
+      with it, and the pool hands that connection out again without opening it
+      afresh, so no connect-time hook runs either.
+
+    Re-registering is harmless: the listener is installed once per engine and
+    reads the current identity when it fires.
     """
     engine = db.get_bind()
+    _ENGINE_IDENTITIES[engine] = identity
+    if engine not in _LISTENING:
+        @event.listens_for(engine, "checkout")
+        def _claim_on_checkout(dbapi_connection, _record, _proxy):  # pragma: no cover - pool callback
+            claimed = _ENGINE_IDENTITIES.get(engine)
+            if claimed is None:
+                return
+            with dbapi_connection.cursor() as cursor:
+                cursor.execute("SELECT set_config(%s, %s, false)",
+                               (WRITE_IDENTITY_SETTING, claimed))
 
-    @event.listens_for(engine, "connect")
-    def _claim_on_connect(dbapi_connection, _record):  # pragma: no cover - driver callback
-        with dbapi_connection.cursor() as cursor:
-            cursor.execute("SELECT set_config(%s, %s, false)",
-                           (WRITE_IDENTITY_SETTING, identity))
-
+        _LISTENING.add(engine)
     claim_write_identity(db, identity)  # the connection already checked out
 
 
