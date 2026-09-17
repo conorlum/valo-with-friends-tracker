@@ -236,55 +236,88 @@ comparison. Then serve the rehearsal from the activation checkout (`--port 8001`
 OLDPY="$(git rev-parse --show-toplevel)/webapp/.venv/Scripts/python.exe"   # 3.11, the pre-rc3 environment
 git worktree add "$ART/rehearsal/main-worktree" origin/main
 ( cd "$ART/rehearsal/main-worktree/webapp" && DATABASE_URL="$REH" "$OLDPY" - <<'EOF'
+import sys
+
 from sqlalchemy import text
+
 from app.db import SessionLocal
+
 db = SessionLocal()
+before = db.execute(text("SELECT sum(impact) FROM impact_scores")).scalar()
 try:
     db.execute(text("UPDATE impact_scores SET impact = impact + 1 WHERE (round_id, match_player_id) IN "
                     "(SELECT round_id, match_player_id FROM impact_scores LIMIT 1)"))
-    db.commit()
     print("UNEXPECTED: the stale checkout wrote")
+    sys.exit(1)
 except Exception as exc:
-    print("refused as expected" if "release write gate refused" in str(exc) else f"UNEXPECTED error: {exc}")
+    if "release write gate refused" not in str(exc):
+        print(f"UNEXPECTED error: {exc}")
+        sys.exit(1)
+finally:
+    db.rollback()   # nothing here is ever committed
+if db.execute(text("SELECT sum(impact) FROM impact_scores")).scalar() != before:
+    print("UNEXPECTED: the scores changed")
+    sys.exit(1)
+print("refused as expected, scores unchanged")
 EOF
-)
+) || echo "STOP: gate probe (a) did not refuse -- exit $?"
 git worktree remove "$ART/rehearsal/main-worktree"
 
 # (b) an ingestion write without the identity, from the rc3 checkout: REFUSED, nothing committed
 DATABASE_URL="$REH" $PY - <<'EOF'
+import sys
 import uuid
+
 from app.db import SessionLocal
 from app.models import Match
 from app.models.match import MatchSource
+
 db = SessionLocal()
 before = db.query(Match).count()
 try:
     db.add(Match(external_id=f"gate-probe-{uuid.uuid4()}", source=MatchSource.SCRAPED, map_name="Bind"))
-    db.commit()
+    db.flush()
     print("UNEXPECTED: wrote without an identity")
+    sys.exit(1)
 except Exception as exc:
+    if "release write gate refused" not in str(exc):
+        print(f"UNEXPECTED error: {exc}")
+        sys.exit(1)
+finally:
     db.rollback()
-    print("refused as expected" if "release write gate refused" in str(exc) else f"UNEXPECTED error: {exc}")
-print("match count unchanged" if db.query(Match).count() == before else "UNEXPECTED: match count changed")
+if db.query(Match).count() != before:
+    print("UNEXPECTED: the match count changed")
+    sys.exit(1)
+print("refused as expected, match count unchanged")
 EOF
+[ $? -eq 0 ] || echo "STOP: gate probe (b) did not refuse"
 
 # (c) the activation checkout, gate open for impact-rc3, preflight verified: ALLOWED (rolled back)
-DATABASE_URL="$REH" $PY scripts/install_release_write_gate.py --expect-database valo_rc3_rehearsal --state open --note "gate test c"
-DATABASE_URL="$REH" $PY - <<'EOF'
+DATABASE_URL="$REH" $PY scripts/install_release_write_gate.py --expect-database valo_rc3_rehearsal --state open --note "gate test c" \
+  && DATABASE_URL="$REH" $PY - <<'EOF'
 import uuid
+
 from app.db import SessionLocal
 from app.models import Match
 from app.models.match import MatchSource
 from app.scoring.ingest_preflight import verify_ingest_preflight
+
 db = SessionLocal()
-verify_ingest_preflight(db)
-db.add(Match(external_id=f"gate-probe-{uuid.uuid4()}", source=MatchSource.SCRAPED, map_name="Bind"))
-db.flush()
-print("allowed as expected")
-db.rollback()
+try:
+    verify_ingest_preflight(db)
+    db.add(Match(external_id=f"gate-probe-{uuid.uuid4()}", source=MatchSource.SCRAPED, map_name="Bind"))
+    db.flush()
+    print("allowed as expected")
+finally:
+    db.rollback()   # the probe never keeps its match
 EOF
-DATABASE_URL="$REH" $PY scripts/install_release_write_gate.py --expect-database valo_rc3_rehearsal --state closed --note "gate tests done"
+echo "probe (c) exit $?"
+DATABASE_URL="$REH" $PY scripts/install_release_write_gate.py --expect-database valo_rc3_rehearsal --state closed --note "gate tests done" \
+  || echo "STOP: the gate did not close again -- exit $?"
 ```
+
+Every probe rolls back and exits nonzero unless the gate behaved exactly as stated, so a broken gate stops the
+rehearsal instead of printing a line nobody reads. Confirm the gate is closed again before going on.
 
 **6.6 Concurrency (B2).** With the rehearsal served on port 8001 from the activation checkout, record page latencies in
 a second terminal, first with no swap running (the baseline), then across a swap and a rollback:

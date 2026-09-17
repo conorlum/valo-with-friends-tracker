@@ -9,10 +9,12 @@ different bytes -- is pinned here.
 import types
 
 import pytest
+from sqlalchemy import text
 
 from app.scoring import impact as impact_module
 from app.scoring.impact import CalculatedImpact, FormulaWeights, build_impact_rows_for_match
 from scripts import export_impact_artifact as export
+from tests._postgres import postgres_session_or_skip
 from tests.test_impact_alive_counts import SCORED_ROUND, _build
 
 LOCKED = FormulaWeights(damage=1.0, leverage=2.5, econ=2.5, assists=100.0, trade_credit_scale=1.0)
@@ -139,3 +141,22 @@ def test_export_rows_are_the_scorer_s_rows(tmp_path):
     assert credited, "the fixture's traded player should carry credit in the artifact"
     scored_round_rows = [r for r in parsed if r["impact"] != "0"]
     assert scored_round_rows, f"round {SCORED_ROUND} should produce nonzero impact"
+
+
+def test_what_postgres_hands_back_for_each_kind_of_null():
+    """C7: pinning the driver's real behaviour rather than an assumption about
+    it. A temporary table, so no gated table is touched."""
+    db = postgres_session_or_skip()
+    try:
+        db.execute(text("CREATE TEMP TABLE trade_detail_shapes (id int, trade_detail jsonb)"))
+        db.execute(text("INSERT INTO trade_detail_shapes VALUES (1, NULL), (2, 'null'::jsonb), "
+                        """(3, '{"t": {"5": null}}'::jsonb)"""))
+        rendered = {row[0]: export.render_field(row[1]) for row in db.execute(text(
+            "SELECT id, trade_detail FROM trade_detail_shapes ORDER BY id"))}
+    finally:
+        db.rollback()
+        db.close()
+
+    assert rendered[1] == "", "SQL NULL: no trade detail"
+    assert rendered[2] == "", "a top-level JSON null means the same, and renders the same"
+    assert rendered[3] == '{"t":{"5":null}}', "a null INSIDE the detail stays in its JSON text"

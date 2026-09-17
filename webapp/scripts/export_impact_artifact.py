@@ -159,10 +159,14 @@ def canonical_json(value) -> str:
 def render_field(value) -> str:
     """One cell of the artifact.
 
-    SQL NULL is the empty field; a JSON null *inside* trade_detail stays inside
-    its JSON text. That distinction is why the empty field is reserved: a row
-    with no trade detail and a row whose trade detail is the JSON value null
-    must not render identically.
+    "No trade detail" is the empty field, whether the column holds SQL NULL or
+    the JSON value null: the driver returns Python None for both, and both mean
+    the same thing to every reader of this schema. Production holds both forms
+    today (418,535 SQL NULLs and 4,330 JSON nulls on 2026-09-17), because
+    SQLAlchemy's JSON type persists Python None as JSON null while the swap's
+    COPY writes SQL NULL, and after the swap every such row is SQL NULL.
+    A JSON null *inside* a trade_detail object is a different thing, and stays
+    inside its canonical JSON text (external review, C7).
     """
     if value is None:
         return ""
