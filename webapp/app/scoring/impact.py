@@ -104,7 +104,14 @@ class ImpactInputError(ValueError):
 # window closed from 10s to 6s for both the discount and the displayed count,
 # and a killer who dies to their OWN side no longer trades the victim back.
 # Every stored ImpactScore row predates this and needs a rescore.
-IMPACT_CALCULATION_VERSION = 2
+# 3 (2026-09-17): activates the frozen rc3 manifest named by
+# app.scoring.impact_runtime.ACTIVE_MANIFEST -- A 1 (damage) / B 2.5 (leverage) /
+# C 2.5 (econ) / D 100 (assists), trade credit on at scale 1.0, econ model
+# buy_disruption_v2_30_80_bonus_denial, realized swing, timing candidates off.
+# Version 2 was never loaded into any database: production's stored rows are
+# version 1, and they are replaced wholesale by the rc3 swap rather than
+# rescored in place.
+IMPACT_CALCULATION_VERSION = 3
 
 _KILL_ORDER_GRAPH = nx.DiGraph()
 _KILL_ORDER_GRAPH.add_weighted_edges_from(
