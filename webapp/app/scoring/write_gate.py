@@ -99,6 +99,19 @@ def install_write_identity(db, identity: str) -> None:
             with dbapi_connection.cursor() as cursor:
                 cursor.execute("SELECT set_config(%s, %s, false)",
                                (WRITE_IDENTITY_SETTING, claimed))
+            # Hand the connection over IDLE, not mid-transaction. psycopg2 opens
+            # a transaction implicitly on that first statement, so without this
+            # commit every checkout arrives with a query already in it, and the
+            # caller can no longer ask for a snapshot: SET TRANSACTION ISOLATION
+            # LEVEL must be a transaction's first statement, and psycopg2's
+            # set_session() refuses inside one at all. That broke verify-build
+            # and verify-live, the only commands that claim an identity and then
+            # take a REPEATABLE READ READ ONLY snapshot on the same connection.
+            # Committing is also what makes the identity stick: set_config's
+            # third argument is false (session scope, not transaction scope), so
+            # a later rollback would otherwise revert it -- the very stranding
+            # this listener exists to prevent.
+            dbapi_connection.commit()
 
         _LISTENING.add(engine)
     claim_write_identity(db, identity)  # the connection already checked out
