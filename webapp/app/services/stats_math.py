@@ -265,6 +265,39 @@ def platt_calibrate(scores, labels, weights=None) -> np.ndarray:
     return fit_logistic(scores, smoothed, weights=weights, l2=1e-6)
 
 
+def calibrate_fractional(scores, labels, weights=None) -> np.ndarray:
+    """Platt-style calibration that PRESERVES fractional labels.
+
+    `platt_calibrate` thresholds at 0.5 and replaces every label with one of
+    two smoothed class constants. That is right for a genuinely binary
+    yardstick and WRONG for T2, whose targets are fractional: the correlation
+    spec forbids rounding T2 into a binary label because it "would change the
+    estimand and discard the observation weights", and requires `fit_logistic`
+    to accept fractional `y`. Calibrating on binarised labels and then scoring
+    the result against the original fractions measures a different quantity
+    and, measured on realistic targets, costs ~0.05 log loss -- an order of
+    magnitude more than the contrasts this tooling is used to decide.
+
+    The smoothing is Platt's, generalised rather than replaced. The effective
+    class masses are the weighted sums of `y` and `1 - y`, which for genuinely
+    binary labels are exactly Platt's positive and negative counts; the
+    endpoints are then interpolated through, so a 0/1 label lands on precisely
+    the constant `platt_calibrate` would have used. Smoothing is still
+    applied, because a label of exactly 0 or 1 handed to IRLS at l2=1e-6
+    drives the fit to a degenerate extreme.
+    """
+    scores = np.asarray(scores, dtype=float).reshape(-1, 1)
+    labels = np.asarray(labels, dtype=float)
+    w = np.ones(len(labels)) if weights is None else np.asarray(weights, dtype=float)
+
+    n_pos = float((w * labels).sum())
+    n_neg = float((w * (1.0 - labels)).sum())
+    high = (n_pos + 1.0) / (n_pos + 2.0)
+    low = 1.0 / (n_neg + 2.0)
+    smoothed = low + labels * (high - low)
+    return fit_logistic(scores, smoothed, weights=weights, l2=1e-6)
+
+
 def apply_calibration(beta: np.ndarray, scores) -> np.ndarray:
     return predict_proba(beta, np.asarray(scores, dtype=float).reshape(-1, 1))
 

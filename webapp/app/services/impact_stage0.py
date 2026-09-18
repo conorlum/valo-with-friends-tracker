@@ -68,7 +68,13 @@ def within_player_centered(rows, min_matches: int = 2) -> dict:
     grouped = _by_player(rows)
     values, labels, eligible = [], [], 0
     for player_rows in grouped.values():
-        if len(player_rows) < min_matches:
+        # DISTINCT matches, not rows. Under a match-clustered bootstrap the
+        # same match can be drawn several times, and counting rows lets a
+        # duplicate promote a one-match player into the recurrent cohort --
+        # whose centred values are then identically zero, so the resampled
+        # statistic describes a different cohort from the point estimate.
+        # Multiplicities still count for the statistic itself, below.
+        if len({r.match_id for r in player_rows}) < min_matches:
             continue
         eligible += 1
         mean = float(np.mean([r.avg_impact for r in player_rows]))

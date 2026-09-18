@@ -26,8 +26,9 @@ import numpy as np
 from app.models.match import Team
 from app.scoring.impact import (
     _KILL_ORDER_GRAPH,
+    _alive_before_each_kill,
     _categorize_econ,
-    _check_for_resurrection,
+    _present_players,
     _econ_swing_risk_factor,
     _time_factor,
     _traded_factor,
@@ -106,10 +107,10 @@ class KillTerm:
     death_untraded: tuple[float, float, float]
     traded: float
     # Alive counts AFTER this kill, straight from the walk. Reconstructing
-    # them later by counting victims is wrong: impact.py deliberately does
-    # not decrement on events _check_for_resurrection flags, so a
-    # re-referenced player would be subtracted twice and the terminal state
-    # could go negative.
+    # them later by counting victims is wrong: the walk starts from the
+    # players actually in the round and adds revived players back, so
+    # counting victims subtracts a revived player twice and the terminal
+    # state could go negative.
     alive_team1_after: int = 5
     alive_team2_after: int = 5
 
@@ -129,6 +130,9 @@ def kill_terms_for_match(
     loadouts and any forward-looking model trained on it would leak.
     """
     out: dict[int, list[KillTerm]] = {}
+    # For _traded_factor's team check: a killer who dies to their own
+    # side did not trade the victim back (impact.py's _traded_factor).
+    team_of = {mp_id: mp.team for mp_id, mp in match_players.items()}
 
     for round_number, kills in round_kills.items():
         round_row = rounds_by_number[round_number]
@@ -145,11 +149,9 @@ def kill_terms_for_match(
             ),
         }
 
-        # Mirrors impact.py's confusing but load-bearing naming: team1_index
-        # tracks TEAM_2's alive count and vice versa, because each decrements
-        # when the OTHER team lands a kill.
-        team1_index = 5
-        team2_index = 5
+        # The scorer's own alive-count walk (impact._alive_before_each_kill),
+        # so the two cannot drift.
+        alive_before = _alive_before_each_kill(kills, team_of, _present_players(stats, kills, team_of))
         terms: list[KillTerm] = []
 
         for position, event in enumerate(kills):
@@ -157,6 +159,10 @@ def kill_terms_for_match(
             victim_id = event["death_match_player_id"]
             self_kill = killer_id == victim_id
             killer_team = match_players[killer_id].team
+            # Mirrors impact.py's confusing but load-bearing naming: team1_index
+            # holds TEAM_2's alive count and vice versa.
+            team1_index = alive_before[position][Team.TEAM_2]
+            team2_index = alive_before[position][Team.TEAM_1]
 
             # _kill_order_bonus's before/after edge lookup depends only on
             # WHICH raw index decrements, not on killer identity: a TEAM_2
@@ -197,7 +203,7 @@ def kill_terms_for_match(
             killer_tier = _categorize_econ(stats[killer_id]["loadout"])
             victim_tier = _categorize_econ(stats[victim_id]["loadout"])
             swing = swing_by_team[Team.TEAM_2 if killer_team == Team.TEAM_1 else Team.TEAM_1]
-            traded = _traded_factor(kills, event, self_kill)
+            traded = _traded_factor(kills, event, self_kill, team_of=team_of)
 
             if self_kill:
                 kill_half = (0.0, 0.0, 0.0)
@@ -233,14 +239,12 @@ def kill_terms_for_match(
                 )
             )
 
-            if not _check_for_resurrection(position, kills):
-                if (killer_team == Team.TEAM_1) != self_kill:
-                    team1_index -= 1
-                else:
-                    team2_index -= 1
-            # team1_index tracks TEAM_2's alive count and vice versa.
+            alive_after = dict(alive_before[position])
+            alive_after[match_players[victim_id].team] -= 1
             terms[-1] = replace(
-                terms[-1], alive_team1_after=team2_index, alive_team2_after=team1_index
+                terms[-1],
+                alive_team1_after=alive_after[Team.TEAM_1],
+                alive_team2_after=alive_after[Team.TEAM_2],
             )
 
         out[round_number] = terms
@@ -353,10 +357,9 @@ def assemble_round(match_id, round_row, terms, match_players, damage_by_match_pl
             total += sign * getattr(row, field)
         return total
 
-    # Read off the walk, never recount victims: impact.py declines to
-    # decrement on events _check_for_resurrection flags, so counting
-    # distinct victims double-subtracts a re-referenced player and can
-    # drive the terminal state negative. A round with no kills is 5v5.
+    # Read off the walk, never recount victims: the walk adds revived players
+    # back, so counting victims double-subtracts them and can drive the
+    # terminal state negative. A round with no kills is 5v5.
     alive_a = terms[-1].alive_team1_after if terms else 5
     alive_b = terms[-1].alive_team2_after if terms else 5
 
@@ -445,6 +448,7 @@ def build_match_leverage(db, match_id: int) -> MatchLeverage:
             "killer_match_player_id": event.killer_match_player_id,
             "death_match_player_id": event.death_match_player_id,
             "event_time_seconds": event.event_time_seconds,
+            "weapon": event.weapon,
         })
 
     damage_by_round: dict[int, dict[int, float]] = defaultdict(dict)
@@ -531,8 +535,8 @@ class StateVisitRow:
 
 def state_visits_for_match(db, match_id: int) -> list[StateVisitRow]:
     """Replay the alive-count walk again, recording state entries rather
-    than kill terms. Uses impact.py's resurrection rule, like everything
-    else here."""
+    than kill terms. Uses the scorer's own alive counts
+    (impact._alive_before_each_kill), like everything else here."""
     rounds = (
         db.query(Round).filter(Round.match_id == match_id)
         .filter(NOT_A_SURRENDER_ROUND).order_by(Round.round_number).all()
@@ -546,7 +550,19 @@ def state_visits_for_match(db, match_id: int) -> list[StateVisitRow]:
         .order_by(KillEvent.event_time_seconds, KillEvent.id).all()
     ):
         if event.round_id in outcome_by_round_id:
-            kills_by_round[event.round_id].append(event)
+            kills_by_round[event.round_id].append({
+                "killer_match_player_id": event.killer_match_player_id,
+                "death_match_player_id": event.death_match_player_id,
+                "event_time_seconds": event.event_time_seconds,
+                "weapon": event.weapon,
+            })
+
+    stats_by_round: dict[int, dict[int, dict]] = defaultdict(dict)
+    for stat in db.query(RoundPlayerStat).join(Round).filter(Round.match_id == match_id).all():
+        stats_by_round[stat.round_id][stat.match_player_id] = {
+            "score": stat.score, "kills": stat.kills, "deaths": stat.deaths,
+            "assists": stat.assists, "loadout": stat.loadout,
+        }
 
     out: list[StateVisitRow] = []
     # EVERY eligible round, not just those with kills. A round that ends by
@@ -562,30 +578,20 @@ def state_visits_for_match(db, match_id: int) -> list[StateVisitRow]:
         except (IndexError, ValueError):
             continue
 
-        alive_1 = alive_2 = 5
+        present = _present_players(stats_by_round[round_id], events, teams)
+        visited = [present]
+        for before, event in zip(_alive_before_each_kill(events, teams, present), events):
+            # A revive is a state entry of its own, between two kills.
+            if before != visited[-1]:
+                visited.append(before)
+            after = dict(before)
+            after[teams[event["death_match_player_id"]]] -= 1
+            visited.append(after)
 
-        def record():
-            out.append(StateVisitRow(match_id, round_id, alive_1, alive_2, team_1_won))
-            out.append(StateVisitRow(match_id, round_id, alive_2, alive_1, not team_1_won))
-
-        record()
-        for position, event in enumerate(events):
-            plain = [
-                {"killer_match_player_id": e.killer_match_player_id,
-                 "death_match_player_id": e.death_match_player_id,
-                 "event_time_seconds": e.event_time_seconds}
-                for e in events
-            ]
-            if _check_for_resurrection(position, plain):
-                continue
-            victim = event.death_match_player_id
-            if victim is None:
-                continue
-            if teams[victim] == Team.TEAM_1:
-                alive_1 -= 1
-            else:
-                alive_2 -= 1
+        for alive in visited:
+            alive_1, alive_2 = alive[Team.TEAM_1], alive[Team.TEAM_2]
             if alive_1 < 0 or alive_2 < 0:
                 break
-            record()
+            out.append(StateVisitRow(match_id, round_id, alive_1, alive_2, team_1_won))
+            out.append(StateVisitRow(match_id, round_id, alive_2, alive_1, not team_1_won))
     return out

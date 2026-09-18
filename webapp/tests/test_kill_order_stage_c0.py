@@ -10,19 +10,18 @@ import pytest
 
 from app.services.kill_order_leverage import load_all_leverage, state_visits_for_match
 from app.services.kill_order_refit import stage_c0_report
+from tests._postgres import postgres_session_or_skip
 
 
 @pytest.fixture(scope="module")
 def loaded():
-    try:
-        from app.db import SessionLocal
-
-        session = SessionLocal()
-        session.execute(__import__("sqlalchemy").text("select 1"))
-    except Exception as exc:  # pragma: no cover - environment dependent
-        pytest.skip(f"live Postgres unavailable: {exc}")
+    # A disposable test database only (tests/_postgres.py).
+    session = postgres_session_or_skip()
     report: dict = {}
     team_rows, player_rows = load_all_leverage(session, report=report)
+    if not team_rows:
+        session.close()
+        pytest.skip("no eligible matches in the database: stage C0 measures the real corpus")
     visits = []
     for match_id in {row.match_id for row in team_rows}:
         visits.extend(state_visits_for_match(session, match_id))

@@ -159,7 +159,7 @@ def build_match_fight_ev_block(
     match_id: int,
     entries: list[StateEntryOccurrence],
     duels: list[DuelOccurrence],
-    round_side_by_round_id: dict[int, Side | None],
+    round_side_by_round_id: dict[int, Side],
     target_team: Team,
     target_match_player_id: int,
     match_player_team: dict[int, Team],
@@ -169,9 +169,13 @@ def build_match_fight_ev_block(
     block = MatchFightEvBlock(match_id=match_id)
 
     for entry in entries:
-        side = round_side_by_round_id.get(entry.round_id)
-        if side is None:
-            continue
+        # round_side_by_round_id is total over every round _round_side_map was
+        # built from (Part 1's migration made the side lookup total), and
+        # entries always come from replaying those same rounds -- so a miss
+        # here means a caller passed mismatched entries/round_side_by_round_id,
+        # not a legitimate unknown side. A silent skip previously hid exactly
+        # this class of bug (M15: months of OT rounds quietly excluded).
+        side = round_side_by_round_id[entry.round_id]
         own_alive = _team_perspective(entry.team1_alive_ids, entry.team2_alive_ids, target_team)
         opp_alive = _opponent_perspective(entry.team1_alive_ids, entry.team2_alive_ids, target_team)
         key: StateKey = (side, len(own_alive), len(opp_alive))
@@ -181,9 +185,9 @@ def build_match_fight_ev_block(
             counts.wins += 1
 
     for duel in duels:
-        side = round_side_by_round_id.get(duel.round_id)
-        if side is None:
-            continue
+        # See the equivalent comment above the entries loop -- this lookup is
+        # total, and a miss is a caller bug, not a legitimate unknown side.
+        side = round_side_by_round_id[duel.round_id]
         killer_team = match_player_team.get(duel.killer_match_player_id)
         victim_team = match_player_team.get(duel.victim_match_player_id)
         if killer_team is None or victim_team is None:
@@ -539,14 +543,15 @@ def serialize_fight_ev_views(views: FightEvViews) -> dict:
     }
 
 
-def _round_side_map(round_inputs: list[RoundInput], target_team: Team) -> dict[int, Side | None]:
-    mapping: dict[int, Side | None] = {}
+def _round_side_map(round_inputs: list[RoundInput], target_team: Team) -> dict[int, Side]:
+    # attacking_team_for_round is now total over every round_number >= 1
+    # (Part 1, docs/superpowers/specs/2026-09-03-plant-window-and-time-factor-design.md),
+    # including overtime, so this map has no None branch to fall back to.
+    mapping: dict[int, Side] = {}
     for round_input in round_inputs:
         attacking_team = attacking_team_for_round(round_input.round_number)
-        if attacking_team is None:
-            mapping[round_input.round_id] = None
-        else:
-            mapping[round_input.round_id] = "attacking" if attacking_team == target_team else "defending"
+        assert attacking_team is not None
+        mapping[round_input.round_id] = "attacking" if attacking_team == target_team else "defending"
     return mapping
 
 

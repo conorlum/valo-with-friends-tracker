@@ -8,6 +8,7 @@ the JSON response the page's own client-side code requests while rendering.
 Companion piece to app/adapters/demo_match_source.py, same target schema.
 """
 
+import math
 import random
 import time
 from datetime import datetime
@@ -15,9 +16,10 @@ from datetime import datetime
 from playwright.sync_api import Page
 from sqlalchemy.orm import Session
 
-from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerStat
+from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerSpend, RoundPlayerStat
 from app.models.match import MatchSource, Team
 from app.scoring.impact import compute_impact_for_match, find_unscored_match_ids
+from app.scoring.ingest_preflight import verify_ingest_preflight
 from app.services.player_view_cache import find_cached_player_ids_for_match, invalidate_player_cache
 from app.services.site_stats_cache import invalidate_site_stats_cache
 
@@ -203,6 +205,64 @@ def _outcome_string(winning_team_id: str, round_result: str) -> str:
     return f"Team {letter} {round_result} Win"
 
 
+# Kill distance. VERIFIED 2026-09-08 against 8 captured matches / 1,279 kills
+# (scripts/capture_trackergg_state.py, plus fetch_match_json directly).
+#
+# There is NO distance field. tracker.gg returns COORDINATES, and the distance
+# has to be computed:
+#   metadata.opponentLocation   -> {x, y} for the VICTIM at the kill
+#   metadata.playerLocations    -> [{platformUserIdentifier, location{x,y},
+#                                    viewRadians}] including the KILLER
+# Both were present on 98.69% of kills; the rest yield no distance.
+#
+# UNITS ARE UNREAL UNITS (~centimetres), NOT metres -- raw / 100 = metres.
+# The weapon breakdown is what settles it, and it is unambiguous:
+#   Operator/Outlaw (snipers)  median 2798-2801 uu -> 28.0 m
+#   Guardian                   median      2081 uu -> 20.8 m
+#   Vandal/Phantom (rifles)    median 1604-1627 uu -> 16.0-16.3 m
+#   Classic/Spectre/Bulldog    median 1118-1189 uu -> 11.2-11.9 m
+#   max over all maps               5335 uu -> 53.4 m
+# Read as metres the raw numbers would put a median Vandal kill at 1.6 km; read
+# as centimetres every weapon lands where its effective range says it should,
+# and the 53 m maximum matches a long Valorant sightline.
+#
+# Known limitation: the coordinates are planar (x, y only, no elevation), so on
+# vertical maps two players stacked above each other measure as adjacent.
+UNREAL_UNITS_PER_METRE = 100.0
+
+
+def _pickup_distance_meta(meta: dict, killer_identifier: str | None) -> dict:
+    """Distance between killer and victim at the kill, in metres.
+
+    Returns {} when either location is absent, which is what the ~1.3% of
+    kills without both endpoints must produce -- pickup_bonus then sees no
+    distance and abstains.
+    """
+    victim_location = meta.get("opponentLocation")
+    if not (isinstance(victim_location, dict) and killer_identifier):
+        return {}
+    killer_location = next(
+        (
+            entry.get("location")
+            for entry in (meta.get("playerLocations") or [])
+            if entry.get("platformUserIdentifier") == killer_identifier
+        ),
+        None,
+    )
+    if not isinstance(killer_location, dict):
+        return {}
+    try:
+        dx = float(killer_location["x"]) - float(victim_location["x"])
+        dy = float(killer_location["y"]) - float(victim_location["y"])
+    except (KeyError, TypeError, ValueError):
+        return {}
+    raw = math.hypot(dx, dy)
+    return {
+        "kill_distance_raw": raw,
+        "kill_distance_m": raw / UNREAL_UNITS_PER_METRE,
+    }
+
+
 def load_match(db: Session, match_json: dict) -> Match:
     external_id = match_json["attributes"]["id"]
     existing = db.query(Match).filter_by(external_id=external_id).one_or_none()
@@ -284,24 +344,35 @@ def load_match(db: Session, match_json: dict) -> Match:
         db.flush()
         rounds_by_number[round_number] = db_round
 
+    # tracker.gg's spentCredits goes to its own table once the stat rows have ids.
+    # Absent means unknown: no row is written, never a 0 (spec 2026-09-12 section 10).
+    pending_spend: list[tuple[RoundPlayerStat, int]] = []
     for pr in player_rounds:
         match_player = match_players.get(pr["attributes"]["platformUserIdentifier"])
         round_row = rounds_by_number.get(pr["attributes"]["round"])
         if match_player is None or round_row is None:
             continue
         stats = pr["stats"]
-        db.add(
-            RoundPlayerStat(
-                round_id=round_row.id,
-                match_player_id=match_player.id,
-                score=stats["score"]["value"],
-                kills=stats["kills"]["value"],
-                deaths=stats["deaths"]["value"],
-                assists=stats["assists"]["value"],
-                loadout=stats["loadoutValue"]["value"],
-                remaining=stats["remainingCredits"]["value"],
-            )
+        stat_row = RoundPlayerStat(
+            round_id=round_row.id,
+            match_player_id=match_player.id,
+            score=stats["score"]["value"],
+            kills=stats["kills"]["value"],
+            deaths=stats["deaths"]["value"],
+            assists=stats["assists"]["value"],
+            loadout=stats["loadoutValue"]["value"],
+            remaining=stats["remainingCredits"]["value"],
         )
+        db.add(stat_row)
+        spent = (stats.get("spentCredits") or {}).get("value")
+        if (isinstance(spent, (int, float)) and not isinstance(spent, bool) and math.isfinite(spent)
+                and spent >= 0):
+            pending_spend.append((stat_row, int(spent)))
+
+    if pending_spend:
+        db.flush()
+        for stat_row, spent in pending_spend:
+            db.add(RoundPlayerSpend(round_player_stat_id=stat_row.id, spent=spent))
 
     for prk in player_round_kills:
         round_row = rounds_by_number.get(prk["attributes"]["round"])
@@ -320,7 +391,10 @@ def load_match(db: Session, match_json: dict) -> Match:
                 source_meta={
                     "assistants": [
                         a["platformUserIdentifier"] for a in (meta.get("assistants") or [])
-                    ]
+                    ],
+                    **_pickup_distance_meta(
+                        meta, prk["attributes"].get("platformUserIdentifier")
+                    ),
                 },
             )
         )
@@ -339,6 +413,10 @@ def _dedup_and_ingest(db: Session, page: Page, match_ids: list[str]) -> set[int]
     invalidated -- callers batch a deferred pre-warm over this set rather than
     recomputing per match (a player appearing in N ingested matches would
     otherwise be recomputed N times)."""
+    # Before the first load_match commit, not after it: a checkout that cannot
+    # score must not leave a committed, unscored match behind (match 3133).
+    verify_ingest_preflight(db)
+
     new_ids = []
     for match_id in match_ids:
         if db.query(Match).filter_by(external_id=match_id).one_or_none() is not None:
@@ -393,6 +471,10 @@ def backfill_unscored_matches(db: Session) -> set[int]:
     of player IDs whose cache rows were invalidated, same contract as
     _dedup_and_ingest, so callers can fold it into the same pre-warm batch.
     """
+    # This function's first act used to be committing cache deletions, which a
+    # checkout that could not then score left deleted. Refuse first.
+    verify_ingest_preflight(db)
+
     unscored_match_ids = find_unscored_match_ids(db)
     dirty: set[int] = set()
     for match_id in unscored_match_ids:

@@ -436,8 +436,41 @@ def verdict_fixture():
         "max_component_correlation": 0.81,
         "econ_negative_every_fold": True,
         "beats_kill_diff_t1": True,
-        "stability": {"swing_basis": {"stable": True}, "pooled": {"stable": True}},
+        # gate_eligible is REQUIRED alongside stable: stability_report's own
+        # docstring says a run without a refit callback returns a descriptive
+        # figure with gate_eligible=False and "the verdict must not consume it".
+        "stability": {
+            "swing_basis": {"stable": True, "gate_eligible": True},
+            "pooled": {"stable": True, "gate_eligible": True},
+        },
     }
+
+
+def test_an_ineligible_stability_result_cannot_clear_a_primary():
+    """build_full_report calls stability_report WITHOUT a refit callback, so
+    it gets gate_eligible=False -- a descriptive resampling of five
+    overlapping fold graphs. Consuming that to authorise a success claim is
+    exactly what stability_report forbids, and it used to pass because the
+    verdict checked only `stable`."""
+    fixture = verdict_fixture()
+    fixture["stability"] = {
+        "swing_basis": {"stable": True, "gate_eligible": False},
+        "pooled": {"stable": True, "gate_eligible": False},
+    }
+
+    report = verdict_report(**fixture)
+
+    assert report["verdicts"]["A1"]["helped"] is False
+    assert any("gate-eligible" in note for note in report["verdicts"]["A1"]["notes"])
+
+
+def test_a_missing_gate_eligible_key_is_treated_as_ineligible():
+    """Absent means unproven, not fine -- the fail-open reading is how this
+    slipped through in the first place."""
+    fixture = verdict_fixture()
+    fixture["stability"] = {"swing_basis": {"stable": True}, "pooled": {"stable": True}}
+
+    assert verdict_report(**fixture)["verdicts"]["A1"]["helped"] is False
 
 
 def test_the_primaries_are_declared_with_their_intervals():
@@ -664,3 +697,381 @@ def test_component_correlations_are_recomputed_under_a_candidate_graph():
     assert set(under_shipped["matrix"]) == {"econ", "time", "swing"}
     assert 0.0 <= under_shipped["max_abs"] <= 1.0
     assert under_shipped["max_abs"] != under_flat["max_abs"]
+
+
+def test_each_folds_candidate_reads_a_field_scored_by_that_folds_own_graph():
+    """Code review finding 2: a single shared score field per candidate leaks.
+
+    The parent evaluator calibrates fold k on fold k's TRAINING rows. Under a
+    shared field those rows carry scores produced by OTHER folds' graphs --
+    graphs fitted on data that includes fold k's test matches -- so the
+    calibration sees information about the very rows it is about to score.
+
+    Behavioural check: two folds with deliberately different graphs must
+    produce different per-fold fields, and each field must be populated for
+    every round rather than only that fold's held-out ones.
+    """
+    import copy as _copy
+    from app.services.impact_eval import Candidate
+    from app.services.kill_order_refit import family_a_leverage
+
+    observations = synthetic_observations(matches=4)
+    team_rows = leverage_for(observations)
+    by_round = {row.round_id: row for row in team_rows}
+    per_round = family_a_leverage(list(by_round.values()))
+    index_of = {rid: i for i, rid in enumerate(by_round)}
+
+    # Two folds, two clearly different graphs, disjoint test halves.
+    match_ids = sorted({o.match_id for o in observations})
+    graphs = {0: np.full(per_round.shape[1], 0.5), 1: np.full(per_round.shape[1], -2.0)}
+    test_ids = {0: set(match_ids[:2]), 1: set(match_ids[2:])}
+
+    clones = [_copy.copy(o) for o in observations]
+    clones_by_round = {}
+    for clone in clones:
+        clones_by_round.setdefault(clone.round_id, []).append(clone)
+
+    fields = {}
+    for fold_index, graph in graphs.items():
+        field = f"_stage_c_score_probe_fold{fold_index}"
+        fields[fold_index] = field
+        for clone in clones:
+            setattr(clone, field, 0.0)
+        for rid, row in by_round.items():
+            if rid not in index_of:
+                continue
+            score = float(row.damage_diff + per_round[index_of[rid]] @ graph)
+            for clone in clones_by_round.get(rid, ()):
+                setattr(clone, field, score)
+
+    # Every round carries a score under BOTH folds' graphs -- including rounds
+    # each fold held out -- which is what lets a fold calibrate on its own
+    # training rows under its own graph.
+    for fold_index, field in fields.items():
+        scored = [getattr(c, field) for c in clones]
+        assert all(v != 0.0 for v in scored), "a fold left rounds unscored by its own graph"
+        held_out = [c for c in clones if c.match_id in test_ids[fold_index]]
+        trained_on = [c for c in clones if c.match_id not in test_ids[fold_index]]
+        assert held_out and trained_on
+
+    # The two folds genuinely differ, so sharing one field would have silently
+    # handed fold 0 fold 1's numbers.
+    assert any(
+        getattr(c, fields[0]) != getattr(c, fields[1]) for c in clones
+    ), "the fixture's two graphs must produce different scores for this to prove anything"
+
+    # And the shipped code names its field per fold rather than per candidate.
+    assert Candidate(name="probe", feature_names=[fields[0]], weights=[1.0]).feature_names !=         Candidate(name="probe", feature_names=[fields[1]], weights=[1.0]).feature_names
+
+
+def test_unmeasured_verdict_inputs_cannot_satisfy_their_item():
+    """Code review finding 6: build_full_report defaulted econ_negative_every_fold
+    to the historical True, so the CLI silently asserted a stale Stage A
+    finding as though this run had re-derived it. None now means UNMEASURED,
+    and an unmeasured item can never be satisfied."""
+    fixture = verdict_fixture()
+    fixture["econ_negative_every_fold"] = None
+    fixture["max_component_correlation"] = None
+
+    report = verdict_report(**fixture)
+
+    assert report["verdicts"]["B"]["helped"] is False
+    notes = " ".join(report["verdicts"]["B"]["notes"]).lower()
+    assert "unmeasured" in notes
+
+
+def test_a2_requires_the_gap_interval_to_exclude_zero():
+    """Code review finding 5: a +0.0001 point estimate with an interval
+    crossing zero used to clear A2, because only the point was read."""
+    fixture = verdict_fixture()
+    fixture["beats_kill_diff_t1"] = False  # what a CI crossing zero now yields
+    assert verdict_report(**fixture)["verdicts"]["A2"]["helped"] is False
+
+    fixture["beats_kill_diff_t1"] = True
+    assert verdict_report(**fixture)["verdicts"]["A2"]["helped"] is True
+
+
+def test_practical_equivalence_is_judged_on_the_cleared_candidate_with_both_bounds():
+    """Code review finding 4: A1 item 2 read only Stage C0's plugin SD ratio,
+    never the fitted candidate and never the loss bound.
+
+    UPDATED for review finding 9. Its four cases are unchanged in intent; what
+    changed is where the score-deviation half comes from. It used to be read
+    off `stage_c0`, which is the PRELIMINARY PLUGIN and not the candidate that
+    cleared -- the mixing finding 9 identified -- so the fixtures below now
+    supply the cleared candidate's OWN deviation instead. `stage_c0` is still
+    passed because a non-None value is what selects this path at the call
+    site, but it no longer supplies a bound.
+    """
+    from app.services.kill_order_refit import (
+        PRACTICAL_EQUIVALENCE_LOSS,
+        PRACTICAL_EQUIVALENCE_RMS,
+        _practically_equivalent_for_candidate,
+    )
+
+    stage_c0 = {"current_vs_swing_plugin": {
+        "round_level": {"sd_difference": 0.001, "sd_reference": 1.0}}}
+    # P1's candidate is swing_basis; deviations are keyed by candidate name.
+    tiny_deviation = {"swing_basis": PRACTICAL_EQUIVALENCE_RMS / 10}
+    large_deviation = {"swing_basis": PRACTICAL_EQUIVALENCE_RMS * 50}
+
+    # A candidate whose paired loss interval sits inside the loss bound AND
+    # whose score deviation is tiny is genuinely equivalent.
+    tight = {"P1": {"ci": [-PRACTICAL_EQUIVALENCE_LOSS / 2, PRACTICAL_EQUIVALENCE_LOSS / 2]}}
+    assert _practically_equivalent_for_candidate(
+        tight, stage_c0, ["P1"], tiny_deviation) is True
+
+    # A candidate that moved the loss well beyond the bound is NOT equivalent,
+    # even though its score deviation is tiny -- the case the old code got
+    # backwards.
+    wide = {"P1": {"ci": [-0.05, -0.02]}}
+    assert _practically_equivalent_for_candidate(
+        wide, stage_c0, ["P1"], tiny_deviation) is False
+
+    # And the score-deviation bound still has to hold too.
+    assert _practically_equivalent_for_candidate(
+        tight, stage_c0, ["P1"], large_deviation) is False
+
+    # Nothing cleared means there is no candidate to assess: unmeasured.
+    assert _practically_equivalent_for_candidate(
+        tight, stage_c0, [], tiny_deviation) is None
+
+
+def test_the_two_equivalence_bounds_are_applied_to_the_SAME_candidate():
+    """Review finding 9. The defect was a caller combining a
+    candidate-specific loss bound with a candidate-AGNOSTIC one: it computed
+    the loss bound for the candidate that cleared, then called
+    _practically_equivalent_stage_c0, which reads
+    stage_c0["current_vs_swing_plugin"] -- the preliminary plugin.
+
+    The two can disagree, and this is the case where they do. The plugin
+    barely moved; the fitted candidate moved a great deal. The old code
+    cleared the item on the plugin's number and called a materially different
+    candidate 'practically equivalent to the shipped score'.
+    """
+    from app.services.kill_order_refit import (
+        PRACTICAL_EQUIVALENCE_LOSS,
+        PRACTICAL_EQUIVALENCE_RMS,
+        _practically_equivalent_for_candidate,
+        _practically_equivalent_stage_c0,
+    )
+
+    plugin_barely_moved = {"current_vs_swing_plugin": {
+        "round_level": {"sd_difference": 0.001, "sd_reference": 1.0}}}
+    assert _practically_equivalent_stage_c0(plugin_barely_moved) is True
+
+    tight = {"P1": {"ci": [-PRACTICAL_EQUIVALENCE_LOSS / 2, PRACTICAL_EQUIVALENCE_LOSS / 2]}}
+    candidate_moved_a_lot = {"swing_basis": PRACTICAL_EQUIVALENCE_RMS * 50}
+
+    assert _practically_equivalent_for_candidate(
+        tight, plugin_barely_moved, ["P1"], candidate_moved_a_lot) is False
+
+
+def test_an_unmeasurable_candidate_deviation_is_unmeasured_not_the_plugins():
+    """Falling back to the plugin's SD ratio when the candidate's own is
+    missing would reinstate the defect under a different name. UNMEASURED is
+    the honest answer, and this module's own rule is that an unmeasured item
+    cannot be satisfied."""
+    from app.services.kill_order_refit import (
+        PRACTICAL_EQUIVALENCE_LOSS,
+        _practically_equivalent_for_candidate,
+    )
+
+    plugin_barely_moved = {"current_vs_swing_plugin": {
+        "round_level": {"sd_difference": 0.001, "sd_reference": 1.0}}}
+    tight = {"P1": {"ci": [-PRACTICAL_EQUIVALENCE_LOSS / 2, PRACTICAL_EQUIVALENCE_LOSS / 2]}}
+
+    assert _practically_equivalent_for_candidate(
+        tight, plugin_barely_moved, ["P1"], {}) is None
+    assert _practically_equivalent_for_candidate(
+        tight, plugin_barely_moved, ["P1"], {"swing_basis": None}) is None
+
+
+def test_candidate_score_deviation_is_the_rms_share_of_its_own_held_out_scores():
+    from app.services.kill_order_refit import candidate_score_deviation
+
+    class _R:
+        oof_scores = np.array([1.0, 2.0, 3.0, 4.0])
+
+    reference = np.array([1.0, 2.0, 3.0, 4.0])
+    assert candidate_score_deviation(_R(), reference) == pytest.approx(0.0)
+
+    shifted = reference + 0.5           # a constant offset has no sd
+    assert candidate_score_deviation(_R(), shifted) == pytest.approx(0.0)
+
+    stretched = reference * 2.0
+    # sd(stretched - scores) / sd(stretched) = sd(scores) / (2 sd(scores))
+    assert candidate_score_deviation(_R(), stretched) == pytest.approx(0.5)
+
+    # No spread in the reference: there is no share to take.
+    assert candidate_score_deviation(_R(), np.ones(4)) is None
+
+
+# --------------------------------------------------------------------------
+# Review finding 7 -- Family B folds reached the matrix
+# --------------------------------------------------------------------------
+
+
+def test_the_matrix_scores_family_b_candidates_too():
+    """fit_family_b returns a ScoredCandidate with no `graph=` field --
+    deliberately, since Family B fits weightings over a FIXED graph rather
+    than a graph. `if fitted.graph is None: continue` therefore dropped every
+    Family B fold, so the family matrix the previous review asked for was
+    still empty for Family B while looking populated."""
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    results = run_nested_cv(leverage, observations, PRIMARY_T2,
+                            candidates=["component_tilt_symmetric"], l2_grid=[1.0],
+                            n_folds=5, family="B")
+    # Keyed the way run_stage_c keys it, so the test exercises the real path.
+    matrix = yardstick_matrix(
+        leverage, observations,
+        {"component_tilt_symmetric#familyB": results["component_tilt_symmetric"]},
+        draws=20,
+    )
+
+    assert set(matrix["cells"]) == {"first_half_to_match", "full_match_to_match",
+                                    "forward_rounds"}
+    for yardstick, cells in matrix["cells"].items():
+        # The KEY is written even when every fold was skipped -- _cell returns
+        # None for an empty score list -- so asserting membership alone passes
+        # against the defect. The cell has to carry a real scored result.
+        cell = cells.get("component_tilt_symmetric#familyB")
+        assert cell is not None, yardstick
+        assert cell["n"] > 0, yardstick
+        assert cell["auc"] is not None, yardstick
+
+
+def test_family_a_and_family_b_land_in_the_same_matrix():
+    """The point of the matrix is a common yardstick across families. Both
+    have to be present at once for the comparison to exist at all."""
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    a = run_nested_cv(leverage, observations, PRIMARY_T2,
+                      candidates=["current_graph"], l2_grid=[1.0], n_folds=5)
+    b = run_nested_cv(leverage, observations, PRIMARY_T2,
+                      candidates=["component_tilt_symmetric"], l2_grid=[1.0],
+                      n_folds=5, family="B")
+    merged = dict(a)
+    merged["component_tilt_symmetric#familyB"] = b["component_tilt_symmetric"]
+
+    matrix = yardstick_matrix(leverage, observations, merged, draws=20)
+
+    for cells in matrix["cells"].values():
+        for name in ("current_graph", "component_tilt_symmetric#familyB"):
+            assert cells.get(name) is not None, name
+            assert cells[name]["n"] > 0, name
+
+
+def test_family_b_scores_are_the_fitted_weighting_not_a_constant():
+    """A reconstruction that quietly returned zeros would also 'populate' the
+    matrix. The scores have to be the ones fit_family_b itself produces:
+    damage_diff + family_b_columns(rows, shipped_graph(), rung) . weights."""
+    from app.services.kill_order_curves import family_b_columns
+
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    results = run_nested_cv(leverage, observations, PRIMARY_T2,
+                            candidates=["component_tilt_symmetric"], l2_grid=[1.0],
+                            n_folds=5, family="B")
+    fitted = next(iter(results["component_tilt_symmetric"].per_fold.values()))
+    assert fitted.graph is None and fitted.weights is not None
+
+    columns, _ = family_b_columns(leverage, shipped_graph(), "component_tilt_symmetric")
+    expected = np.array([r.damage_diff for r in leverage]) + columns @ fitted.weights
+    assert np.ptp(expected) > 0  # the fixture really does vary across rounds
+
+
+# --------------------------------------------------------------------------
+# Review finding 8 -- WPA's value model is refit inside each INNER split too
+# --------------------------------------------------------------------------
+
+
+def _record_value_model_fits(monkeypatch):
+    """Record the match set every WPA value-model fit sees, delegating to the
+    real fitter so the run is otherwise unchanged."""
+    import app.services.win_probability as wp
+
+    real = wp.fit_value_model
+    seen = []
+
+    def spy(observations, *args, **kwargs):
+        seen.append(frozenset(o.match_id for o in observations))
+        return real(observations, *args, **kwargs)
+
+    monkeypatch.setattr(wp, "fit_value_model", spy)
+    return seen
+
+
+def test_the_wpa_value_model_is_refit_inside_each_inner_split(monkeypatch):
+    """_wpa_context(train_obs) fixed the OUTER leak. _select_l2 then sliced
+    y and weights out of that same object -- targets produced by a value
+    model fitted on the whole outer training set, INCLUDING the
+    inner-validation matches it was about to select L2 against.
+
+    Before the fix the only fits are the all-data alignment and one per outer
+    fold. After it, each (l2, inner fold) adds one more.
+    """
+    from app.services.impact_eval import TargetConfig
+
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    seen = _record_value_model_fits(monkeypatch)
+
+    n_folds = 2
+    run_nested_cv(leverage, observations, TargetConfig(name="WPA"),
+                  candidates=["swing_basis"], l2_grid=[0.1, 1.0],
+                  n_folds=n_folds, seed=0)
+
+    assert len(seen) > 1 + n_folds
+
+
+def test_no_inner_value_model_fit_sees_an_inner_validation_match(monkeypatch):
+    """The property that actually matters, not just the call count: every
+    fit is on a set that is either the full corpus (the row-geometry
+    alignment, whose target values are discarded), an outer training set, or
+    a STRICT SUBSET of one -- an inner training split. Nothing is ever fitted
+    on a superset of the rows it is then validated against."""
+    from app.services.impact_eval import TargetConfig
+    from app.services.impact_eval import stable_folds as _stable_folds
+
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    seen = _record_value_model_fits(monkeypatch)
+
+    n_folds = 2
+    run_nested_cv(leverage, observations, TargetConfig(name="WPA"),
+                  candidates=["swing_basis"], l2_grid=[0.1, 1.0],
+                  n_folds=n_folds, seed=0)
+
+    all_matches = frozenset(o.match_id for o in observations)
+    folds = _stable_folds(sorted(all_matches), n_folds=n_folds, seed=0)
+    outer_train = [
+        frozenset(m for m in all_matches if folds[m] != f) for f in range(n_folds)
+    ]
+
+    strict_inner = 0
+    for fitted_on in seen:
+        if fitted_on == all_matches or fitted_on in outer_train:
+            continue
+        containing = [t for t in outer_train if fitted_on < t]
+        assert containing, (
+            "a value model was fitted on a set that is neither the full corpus, "
+            "an outer training set, nor a strict subset of one"
+        )
+        strict_inner += 1
+
+    assert strict_inner > 0, "no inner training split ever refitted the value model"
+
+
+def test_t2_needs_no_realignment_and_does_not_refit_anything(monkeypatch):
+    """The guard must be exactly WPA-shaped: T2's target is read off the
+    observations and depends on no fitted model, so it is left alone."""
+    observations = synthetic_observations(matches=40)
+    leverage = leverage_for(observations)
+    seen = _record_value_model_fits(monkeypatch)
+
+    run_nested_cv(leverage, observations, PRIMARY_T2,
+                  candidates=["swing_basis"], l2_grid=[0.1, 1.0], n_folds=2, seed=0)
+
+    assert seen == []

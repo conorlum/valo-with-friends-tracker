@@ -123,3 +123,35 @@ def test_stage0_report_has_every_required_section():
         assert "ci" in cohort["pooled"]
         assert "median_ci" in cohort["per_player_correlations"]
         assert "ci" in cohort["within_player_terciles"]
+
+
+def test_bootstrap_duplication_cannot_promote_a_one_match_player():
+    """Code review finding 7: eligibility counted ROWS, so a match drawn
+    twice made a one-match player look recurrent. Their centred values are
+    identically zero, so the bootstrap cohort differs from the one the point
+    estimate was computed on, biasing the interval toward zero."""
+    from app.services.impact_stage0 import PlayerMatch, within_player_centered
+
+    one_match = [PlayerMatch(player_id=1, match_id=100, avg_impact=250.0, won=True)]
+
+    assert within_player_centered(one_match)["players"] == 0
+    # The same single match, drawn twice, must still be one distinct match.
+    assert within_player_centered(one_match * 2)["players"] == 0
+    assert within_player_centered(one_match * 5)["players"] == 0
+
+
+def test_a_genuine_multi_match_player_stays_eligible_with_multiplicities():
+    """Multiplicities must still count for the STATISTIC -- only eligibility
+    is decided on distinct matches."""
+    from app.services.impact_stage0 import PlayerMatch, within_player_centered
+
+    rows = [
+        PlayerMatch(player_id=1, match_id=100, avg_impact=200.0, won=True),
+        PlayerMatch(player_id=1, match_id=101, avg_impact=300.0, won=False),
+    ]
+    drawn = [rows[0], rows[0], rows[1]]  # match 100 drawn twice
+
+    assert within_player_centered(rows)["players"] == 1
+    result = within_player_centered(drawn)
+    assert result["players"] == 1
+    assert result["n"] == 3  # every drawn row contributes, duplicates included

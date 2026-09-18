@@ -15,6 +15,7 @@ import os, sys, collections, random
 sys.path.insert(0, os.path.abspath("."))  # run from webapp/
 from sqlalchemy import text
 from app.db import SessionLocal
+from app.scoring.impact import _check_for_resurrection
 db = SessionLocal()
 
 rounds = {r["id"]: dict(r) for r in db.execute(text("""
@@ -38,18 +39,20 @@ for rid, ks in kills.items():
     if w is None or not r["planted"] or r["plant_time"] is None: continue
     if r["outcome"] and ("Surrendered" in r["outcome"] or "Time Win" in r["outcome"]): continue
     a=atk(r["round_number"]); alive={"TEAM_1":5,"TEAM_2":5}
-    for k in ks:
+    # REPLAY POLICY -- mirrors app/scoring/impact.py: self-kills DO cost the
+    # victim's team a player, and a resurrected "death" does not. 15.06% of
+    # rounds contain one or the other, and once a round diverges every later
+    # kill in it is filed under the wrong state.
+    for idx,k in enumerate(ks):
         kid,vid=k["killer_match_player_id"],k["death_match_player_id"]
         if not kid or not vid or kid not in mp or vid not in mp: continue
         kt,vt=mp[kid]["team"],mp[vid]["team"]
-        if kt==vt: continue
         dt=k["event_time_seconds"]-r["plant_time"]
-        if dt>=0: 
+        if kt!=vt and dt<0:
+            recs.append({"mid":r["match_id"], "adv":alive[kt]-alive[vt], "dt":dt,
+                         "killer_is_atk": kt==a, "won": kt==w})
+        if not _check_for_resurrection(idx, ks):
             if alive[vt]>0: alive[vt]-=1
-            continue
-        recs.append({"mid":r["match_id"], "adv":alive[kt]-alive[vt], "dt":dt,
-                     "killer_is_atk": kt==a, "won": kt==w})
-        if alive[vt]>0: alive[vt]-=1
 
 rng=random.Random(31)
 def lift(rows):
@@ -57,29 +60,40 @@ def lift(rows):
     far =[r for r in rows if r["dt"]< -30]
     near=[r for r in rows if -10<=r["dt"]< -5]
     if len(far)<80 or len(near)<80: return None
-    def bym(rr):
-        d=collections.defaultdict(lambda:[0,0])
-        for x in rr: d[x["mid"]][0]+=x["won"]; d[x["mid"]][1]+=1
-        return list(d.values())
-    F,N=bym(far),bym(near); ds=[]
+    # PAIRED by match. A match usually contributes to BOTH arms, so
+    # resampling each arm independently discards their covariance and gives
+    # the wrong uncertainty for the DIFFERENCE -- the point estimate is
+    # unaffected but "excludes zero" can flip. Draw the match once and
+    # recompute both rates on that draw, as measure_kills_vs_enemy_bank.py
+    # already does.
+    per_match=collections.defaultdict(lambda:[0,0,0,0])  # far_h, far_n, near_h, near_n
+    for x in far:  per_match[x["mid"]][0]+=x["won"]; per_match[x["mid"]][1]+=1
+    for x in near: per_match[x["mid"]][2]+=x["won"]; per_match[x["mid"]][3]+=1
+    union=list(per_match.values()); ds=[]
     for _ in range(1500):
-        h=n=0
-        for _ in range(len(F)):
-            a,b=F[rng.randrange(len(F))]; h+=a; n+=b
-        p1=h/n if n else 0
-        h=n=0
-        for _ in range(len(N)):
-            a,b=N[rng.randrange(len(N))]; h+=a; n+=b
-        ds.append((h/n if n else 0)-p1)
+        fh=fn=nh=nn=0
+        for _ in range(len(union)):
+            a,b,c,d=union[rng.randrange(len(union))]
+            fh+=a; fn+=b; nh+=c; nn+=d
+        if not fn or not nn: continue
+        ds.append(nh/nn - fh/fn)
     ds.sort()
+    if len(ds)<100: return None
     fr=sum(x["won"] for x in far)/len(far); nr=sum(x["won"] for x in near)/len(near)
-    return (fr, nr, nr-fr, ds[37], ds[1462], len(far), len(near))
+    lo=ds[int(0.025*(len(ds)-1))]; hi=ds[int(0.975*(len(ds)-1))]
+    return (fr, nr, nr-fr, lo, hi, len(far), len(near))
 
 def show(lab, rows):
     r=lift(rows)
     if r is None: print(f"  {lab:<30} (insufficient n)"); return
     fr,nr,d,lo,hi,nf,nn = r
-    flag = "" if lo>0 else "   <-- CI SPANS 0"
+    # A wholly-negative interval EXCLUDES zero just as a wholly-positive one
+    # does. The old test was `lo>0`, which stamped "CI SPANS 0" on every
+    # negative lift -- so the three rows carrying the reversal (behind by 1,
+    # behind by 2+, defender pooled) were labelled inconclusive when each is
+    # in fact significant. The bug understated the very effect this table exists
+    # to show.
+    flag = "" if (lo > 0 or hi < 0) else "   <-- CI SPANS 0"
     print(f"  {lab:<30} far {100*fr:5.1f}% -> near {100*nr:5.1f}%   "
           f"lift {100*d:+5.1f}pp [{100*lo:+5.1f},{100*hi:+5.1f}]  n={nf:,}/{nn:,}{flag}")
 

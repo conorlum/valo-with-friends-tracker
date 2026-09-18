@@ -502,12 +502,16 @@ Two things are **decided** here: the early readout is total wealth, not
 full-buy count; and it is gated by the victim team's commitment in round N.
 Both follow directly from `M28` and `M27f`.
 
-Two things are **not** decided and must not be invented during implementation.
-The exact mappings `f` and `g` are **policy constants on the same footing as
+Two things were **not** decided by this spec and were not to be invented
+during implementation. **FIXED 2026-09-07** -- see
+`../2026-09-07-predeclared-values.md`, "The early-regime f/g decision," for
+the exact formulas, constants, sensitivity grid and diagnostics. The exact
+mappings `f` and `g` are **policy constants on the same footing as
 `ECON_SCALE`** -- chosen, reported with sensitivity across a predeclared grid,
 never fitted to an outcome. `g` must send a fully-saving team to approximately
-zero, which is the behavioural test in Testing. The standing constraint that no
-kill is worth negative Impact requires both to stay non-negative.
+zero, which is the behavioural test in Testing (the chosen `g` sends it to
+exactly zero). The standing constraint that no kill is worth negative Impact
+requires both to stay non-negative.
 
 **Declare before choosing, not after:** each of `f` and `g` needs its
 aggregation (over which players, summed or averaged), its direction, its output
@@ -526,6 +530,17 @@ identically -- while the late regime scores them `denial = 0.5` and
 line. Same state, 2.6x apart, and the early readout cannot see the difference
 by construction. That is the deliberate consequence of `M28`: early denial is
 97% bank, and a full-buy *count* cannot read a bank.
+
+**Amended 2026-09-07, on the f/g decision
+(`../2026-09-07-predeclared-values.md`).** This example is still true exactly
+as written under the chosen pooled `f` -- both loadouts sum to the same
+25,000 of total wealth, so `f` scores them identically, and no change was
+needed here. But the chosen `f`/`g` also **widen** the seam in a way worth
+recording: the early regime's range is `[0, 1.5]` with `f` reaching 0 at
+6,300 average wealth/player, so a fully-recovered enemy team scores *below*
+the late regime's unconditional 0.5 floor (section 5a-i) rather than merely
+disagreeing with it. The seam report below must therefore not assume the
+early regime's floor matches the late regime's.
 
 **So it is reported, not asserted away:** a matched-state seam report -- the
 score a fixed set of situations receives at round 4 against round 5, and at 16
@@ -1473,7 +1488,13 @@ spec's Rollout.
   bank, the late readout does not see bank at all.
 - **Rounds 2-4 / 14-16 are not zero.** A regression test pinning them to zero
   would reinstate the withdrawn blanket rule; assert instead that a bought-in
-  victim team produces non-zero early credit.
+  victim team produces non-zero early credit. **Amended 2026-09-07, on the
+  f/g decision (`../2026-09-07-predeclared-values.md`):** unscoped, this is
+  unsatisfiable -- under the chosen `f`, a bought-in team left at or above
+  `ZERO_AT` (6,300 average wealth/player) in round N+1 correctly scores
+  zero even with `g = 1`, since `f` reads next-round scarcity, not round-N
+  commitment. Scope the assertion to a bought-in victim team left **below**
+  `ZERO_AT`.
 - The early regime fires in **rounds 2, 3, 4 and their second-half mirrors, and
   nowhere else**; the late regime fires in **5-11 / 17-23 and nowhere else**.
   This is the scope lock expressed as a test, and it is the guard against the

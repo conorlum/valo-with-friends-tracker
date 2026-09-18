@@ -12,7 +12,8 @@ from app.services.fight_ev import (
     compute_point_estimate,
     win_rate,
 )
-from app.services.state_replay import DuelOccurrence, StateEntryOccurrence, TerminalCause
+from app.services.fight_ev import _round_side_map
+from app.services.state_replay import DuelOccurrence, RoundInput, StateEntryOccurrence, TerminalCause
 
 
 def make_block(match_id, wins=None, player_duels=None, roster_duels=None, all_teammate_duels=None):
@@ -312,3 +313,32 @@ def test_compute_fight_ev_view_returns_25_cells():
     assert len(cells) == 25
     target = next(c for c in cells if c.a == 2 and c.b == 2)
     assert target.m is not None
+
+
+def _round_input(round_id, round_number):
+    return RoundInput(
+        round_id=round_id, round_number=round_number, outcome="Team A Elimination Win",
+        planted=False, plant_time=None, exploded=False, defused=False, defuse_time=None,
+        kill_events=(),
+    )
+
+
+def test_round_side_map_is_total_including_overtime():
+    # Guard against Edit B (deleting state_replay's OT exclusion) shipping
+    # without Edit A (making the side function total): every round number
+    # _round_side_map is given -- regulation AND overtime -- must resolve to
+    # a real side, never None. A KeyError below is the failure mode this
+    # test exists to catch.
+    round_inputs = [_round_input(1, 1), _round_input(2, 13), _round_input(3, 25), _round_input(4, 30)]
+    mapping = _round_side_map(round_inputs, Team.TEAM_1)
+    for round_input in round_inputs:
+        side = mapping[round_input.round_id]
+        assert side in ("attacking", "defending")
+
+
+def test_round_side_map_overtime_alternation_matches_regulation_convention():
+    round_inputs = [_round_input(1, 25), _round_input(2, 26)]
+    mapping = _round_side_map(round_inputs, Team.TEAM_1)
+    # Round 25 resets to round 1's side (team-1 attacks), round 26 flips.
+    assert mapping[1] == "attacking"
+    assert mapping[2] == "defending"

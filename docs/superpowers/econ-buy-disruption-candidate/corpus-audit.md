@@ -1,0 +1,351 @@
+# Corpus audit: live_legacy vs buy_disruption_v2_30_80
+
+Candidate `impact-buy-disruption-30-80-rc2`, manifest LF-SHA-256 `ae043e361e3398ee578e82e9a393e63b8977d8a9ef4cad3894d357d5c8ebdae6`. Read-only, one repeatable-read snapshot. Descriptive checks declared before this run; nothing is fitted.
+
+```json
+{
+  "matches_requested": 3124,
+  "matches_scored": 3124,
+  "input_validation_failures": {},
+  "player_rounds": 659290,
+  "econ_rounds_by_outcome": {
+    "final_round": 3124,
+    "pistol_half_or_ot_boundary": 10545,
+    "scored": 52111,
+    "surrender": 149
+  },
+  "event_kinds_in_scored_rounds": {
+    "enemy": 382988,
+    "self": 2546,
+    "team": 70
+  },
+  "team_rounds_with_losses_by_rate": {
+    "30%": 86194,
+    "80%": 13817
+  },
+  "scored_round_team_net_signs": {
+    "both_positive": 28737,
+    "both_zero": 4,
+    "mixed": 23370
+  },
+  "identity_mismatches": {},
+  "econ_component_player_round": {
+    "n": 659290,
+    "mean": 7.078397973577636,
+    "sd": 35.47477954813454,
+    "min": -215,
+    "p1": -79,
+    "p5": -26,
+    "p50": 0,
+    "p95": 56,
+    "p99": 140,
+    "max": 959,
+    "negative": 243843,
+    "zero": 189272,
+    "positive": 226175
+  },
+  "econ_component_player_match": {
+    "n": 31240,
+    "mean": 149.38274647887323,
+    "sd": 187.5160661064183,
+    "min": -486,
+    "p1": -223,
+    "p5": -115,
+    "p50": 128,
+    "p95": 485,
+    "p99": 725,
+    "max": 1469,
+    "negative": 6186,
+    "zero": 69,
+    "positive": 24985
+  },
+  "full_impact_change_player_round": {
+    "n": 659290,
+    "mean": 7.735921976671874,
+    "sd": 48.34978683321545,
+    "min": -527,
+    "p1": -100,
+    "p5": -52,
+    "p50": 0,
+    "p95": 91,
+    "p99": 184,
+    "max": 811,
+    "negative": 288480,
+    "zero": 83174,
+    "positive": 287636
+  },
+  "full_impact_change_player_match": {
+    "n": 31240,
+    "mean": 163.25915492957748,
+    "sd": 222.4019261822621,
+    "min": -618,
+    "p1": -279,
+    "p5": -155,
+    "p50": 140,
+    "p95": 562,
+    "p99": 787,
+    "max": 1608,
+    "negative": 7310,
+    "zero": 62,
+    "positive": 23868
+  },
+  "largest_player_match_decreases": [
+    [
+      -618,
+      2659,
+      "AJuShe#SWAGG",
+      6074,
+      5456,
+      103
+    ],
+    [
+      -600,
+      967,
+      "Black Frost#2837",
+      4854,
+      4254,
+      -25
+    ],
+    [
+      -581,
+      97,
+      "greencrack#420",
+      2394,
+      1813,
+      -358
+    ],
+    [
+      -578,
+      1587,
+      "d00bie#doobs",
+      6172,
+      5594,
+      -63
+    ],
+    [
+      -554,
+      726,
+      "WalkingUltOrb#1019",
+      2823,
+      2269,
+      179
+    ],
+    [
+      -540,
+      226,
+      "haeun#mommy",
+      777,
+      237,
+      -206
+    ],
+    [
+      -538,
+      571,
+      "branwon2x#ichi",
+      6601,
+      6063,
+      291
+    ],
+    [
+      -522,
+      2246,
+      "ali4#6161",
+      7391,
+      6869,
+      293
+    ],
+    [
+      -518,
+      1262,
+      "NPrightdolphin#NA1",
+      6955,
+      6437,
+      76
+    ],
+    [
+      -512,
+      882,
+      "Squishy#luvr",
+      3311,
+      2799,
+      -36
+    ]
+  ],
+  "largest_player_match_increases": [
+    [
+      1608,
+      2103,
+      "khangdeer#bruh",
+      14481,
+      16089,
+      1398
+    ],
+    [
+      1395,
+      455,
+      "fdg#2144",
+      12815,
+      14210,
+      1323
+    ],
+    [
+      1392,
+      2639,
+      "s2RaVe#bee",
+      9570,
+      10962,
+      1205
+    ],
+    [
+      1331,
+      1524,
+      "Stew#4355",
+      12639,
+      13970,
+      379
+    ],
+    [
+      1287,
+      2817,
+      "Mr Woogles#dog",
+      11057,
+      12344,
+      1469
+    ],
+    [
+      1261,
+      2318,
+      "BTS Jin#Biphm",
+      14531,
+      15792,
+      541
+    ],
+    [
+      1237,
+      239,
+      "EarLight#Ear",
+      11716,
+      12953,
+      757
+    ],
+    [
+      1225,
+      1006,
+      "Overscore#00000",
+      8709,
+      9934,
+      347
+    ],
+    [
+      1219,
+      1277,
+      "jude#0517",
+      7262,
+      8481,
+      233
+    ],
+    [
+      1213,
+      2003,
+      "naiga#222",
+      10737,
+      11950,
+      368
+    ]
+  ],
+  "within_match_rank_changes": [
+    5951,
+    31240
+  ],
+  "persisted_vs_live_replay_differing_player_matches": [
+    30434,
+    31240
+  ],
+  "leaderboard": {
+    "min_matches": 20,
+    "players": 104,
+    "spearman_avg_impact_per_round": 0.99788754934386,
+    "top20_overlap": 20,
+    "largest_rank_moves": [
+      [
+        "DarthVader1956#1956",
+        51,
+        58
+      ],
+      [
+        "ternstyle#GIGI",
+        24,
+        30
+      ],
+      [
+        "Rain#5540",
+        29,
+        23
+      ],
+      [
+        "Echohh#1010",
+        55,
+        50
+      ],
+      [
+        "Jon#328",
+        78,
+        74
+      ],
+      [
+        "silvermist#adu",
+        64,
+        60
+      ],
+      [
+        "ABG EXA#VIETS",
+        30,
+        34
+      ],
+      [
+        "sqwerty#00000",
+        33,
+        29
+      ],
+      [
+        "sqwerty#00001",
+        13,
+        9
+      ],
+      [
+        "NPrightdolphin#NA1",
+        11,
+        14
+      ],
+      [
+        "DoubleBl1nd#BEEF",
+        56,
+        53
+      ],
+      [
+        "AppleThruOrange#NA1",
+        75,
+        78
+      ],
+      [
+        "CLEAR COMMS#lmao",
+        28,
+        25
+      ],
+      [
+        "2kvert#00000",
+        48,
+        51
+      ],
+      [
+        "10 Piece Chicken#FRIES",
+        84,
+        87
+      ]
+    ]
+  },
+  "snapshot": "3121:3121:"
+}
+```
+
+Player-round C*econ: mean +7.08, SD 35.47, p1 -79, p50 0, p99 140.

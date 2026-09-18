@@ -1,0 +1,200 @@
+{
+  "manifest_version": 1,
+  "candidate_id": "impact-buy-disruption-30-80-rc2",
+  "created": "2026-09-11",
+  "status": "frozen_for_review",
+  "release_comparator": "buy_disruption_v2_30_80",
+  "site_comparison": [
+    "live_legacy",
+    "buy_disruption_v2_30_80"
+  ],
+  "penalty_comparison": [
+    "buy_disruption_v2_wealth",
+    "buy_disruption_v2_30_80"
+  ],
+  "diagnostic_comparators": [
+    "separate_econ_legacy"
+  ],
+  "comparators": {
+    "live_legacy": {
+      "config_id": "live_legacy",
+      "use_realized_swing": true,
+      "enable_econ_component": false,
+      "econ_model": null,
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false
+    },
+    "separate_econ_legacy": {
+      "config_id": "separate_econ_legacy",
+      "use_realized_swing": true,
+      "enable_econ_component": true,
+      "econ_model": "separate_econ_legacy",
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false
+    },
+    "buy_disruption_v2_wealth": {
+      "config_id": "buy_disruption_v2_wealth",
+      "use_realized_swing": true,
+      "enable_econ_component": true,
+      "econ_model": "buy_disruption_v2_wealth",
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false
+    },
+    "buy_disruption_v2_30_80": {
+      "config_id": "buy_disruption_v2_30_80",
+      "use_realized_swing": true,
+      "enable_econ_component": true,
+      "econ_model": "buy_disruption_v2_30_80",
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false
+    }
+  },
+  "formula_changes_vs_live_legacy": [
+    "structure: impact = A*damage + B*leverage + C*econ_component replaces damage + mean(econ, time, swing) kill-order products",
+    "economy: the legacy econ-differential and swing factors leave leverage; econ is the separate buy-disruption component with 30%/80% death debits",
+    "columns: econ_impact and swing_impact are written 0; econ_component is signed",
+    "timing: unchanged legacy time factor (post-plant table and pre-plant curve OFF)",
+    "trade discount: unchanged (the declared cost schedule and 6s window)",
+    "weights: A(damage)=1.25, B(leverage)=1.0, C(econ)=1.0; ECON_SCALE unchanged"
+  ],
+  "timing": {
+    "postplant_leverage": false,
+    "preplant_empirical": false,
+    "postplant_table_sha256": null,
+    "preplant_centering_c": null
+  },
+  "impact_calculation_version_at_freeze": 2,
+  "activation_impact_calculation_version": 3,
+  "scorer_revision": "bba279bc4f4f771f04809f82493edee9247a57bf",
+  "source_snapshots": {
+    "matches": {
+      "3104": "68d3ce70042bcabed8f9bbebd68518ddb7bf69c4e7f5e58766979239a778fa9c",
+      "3129": "9d8043820b041fe08bea571ffa46a2e39e3fd10b1a38a8b94582f696771383b8",
+      "3130": "abb6f56ad4f3913c1525d4c57d565bf248a69f4d7e70c70b455a7e093c36d24e",
+      "3131": "9ceff6e4968063cfd38095134f797513ecf3ecb52ca0c3465c65c355705ddb8f",
+      "3113": "8d88569cd9aec577496945f2da8fe79e35f57015f904b64d40b73574d92be740",
+      "3118": "127a7f2309225a5a29d5ffe352f1c73d182a1ee75ace1b01a0097fa301fd659a",
+      "3121": "eb1865c190354a2c02427877a959ddaebdd15511b60a5661ecedd83a6309c643",
+      "3114": "1623f57aac6df416fcd7a853dff02d7ba4861a53b8af75fd34ead59077bd760d",
+      "3115": "fdedf2ad3ef74cabc24be76dbbfbbe9a49b6595e5beee0ebf5ba00f82101b262",
+      "3116": "9041b43bafa5ef99c247b26d329849f9761186857615146bb96354ad3623c571",
+      "3117": "8241e816b29d492d776f1486246cdb3bbed5876983d833a16233bdb6f8d4551b",
+      "3120": "ed54501d31a2b2aa98e3b0d7832693615bc5c60b528668e3dbc9dcba38f6ca37"
+    },
+    "abyss_3104_source_json_lf_sha256": "74271ea043a623646fd9202648779a31c05d011655b05a548427763e3a5011a4",
+    "roles": {
+      "abyss": 3104,
+      "fixed_ten": [
+        3129,
+        3130,
+        3131,
+        3113,
+        3118,
+        3121,
+        3114,
+        3115,
+        3116,
+        3117
+      ],
+      "pistol_winner_loses_round_two": 3120
+    },
+    "local_db_matches_at_freeze": 3124,
+    "db_snapshot_at_freeze": "3121:3121:"
+  },
+  "notes": [
+    "Frozen before any integrated review of this candidate (plan section 5).",
+    "Econ-only release relative to the new structure: timing candidates are OFF in every comparator.",
+    "Match 3120 was selected from round outcomes only: the most recent match outside the fixed ten and Abyss 3104 whose round-1 pistol winner lost round 2 with a scoreable round 3."
+  ],
+  "python": "3.13",
+  "econ_scale": 1007.9209,
+  "calculator_constants": {
+    "AUDIT_VERSION": 1,
+    "TARGET_KIT": 3900.0,
+    "TEAM_REFERENCE": 19500.0,
+    "BACKGROUND": 0.1,
+    "DISRUPTION": 1.0,
+    "ACTIVATION_GAP": 3900.0,
+    "CARRYOVER_FLOOR": 1000.0,
+    "ABSORBED_RATE": 0.3,
+    "DISRUPTED_RATE": 0.8,
+    "WEALTH_ZERO_AT": 6300.0,
+    "WEALTH_CEILING": 1.5,
+    "ROSTER_SIZE": 5
+  },
+  "trade": {
+    "cost_schedule": [
+      [
+        1.0,
+        0.05
+      ],
+      [
+        2.0,
+        0.1
+      ],
+      [
+        3.0,
+        0.17
+      ],
+      [
+        4.0,
+        0.35
+      ],
+      [
+        5.0,
+        0.5
+      ],
+      [
+        6.0,
+        0.75
+      ]
+    ],
+    "window_seconds": 6.0
+  },
+  "agent_free_ability_credits": {
+    "astra": 150,
+    "brimstone": 100,
+    "clove": 150,
+    "miks": 100,
+    "omen": 150,
+    "phoenix": 250,
+    "reyna": 250,
+    "skye": 250,
+    "tejo": 150,
+    "yoru": 150
+  },
+  "agent_free_ability_credits_sha256": "b972dbf1ac67ce966db2a0c570f741983b38a000c1085f9ad650dff78ad89bb8",
+  "source_digests": {
+    "app/scoring/impact.py": "ec996960af39e5976ad2012e30b5f319b474fd37cc05838d3b194360b4cda9b0",
+    "app/scoring/impact_config.py": "dbbdaaee03677aef579d3f7c8d97bdd9aeaaffb09c6413f0ed873ff1cb139703",
+    "app/scoring/econ_buy_disruption.py": "dda15fb8faf44823e4d31a05211d9b8879c6e8e386a3e0574f0bb009f432eb2f",
+    "app/scoring/econ_component.py": "94632e65f9cae930c0d8fde1a47a33112b32cb973af608f4ce65cb9a752e6ae8",
+    "app/scoring/agent_economy.py": "eade098e2a0710cf9fa3d17ff7319465179765a34341f7bd036f3af166dcba9d",
+    "app/scoring/plant_window.py": "d14749551f65e1e43ed0da94504e214044674cbabb2ec6a1e7ef2c2bc962a93b",
+    "app/scoring/preplant_empirical_factor.py": "bf1eeb8cb83197ea483078c1557b33b5bee1acc66bf447190da2407c61d6a23c",
+    "app/models/match.py": "4019f0030f09c760d8fdc661c8d5dc60eadc284aee86a23f5043616d98d3a87c",
+    "app/models/round.py": "0f71ac984d9b9a067b483d079eaf37c71226d7ab54d671dff2d2a29719a11808",
+    "app/models/kill_event.py": "5c10f11df8e3ee697f2a6654352412fb469d64b68c15bbdbb62181b0fdc91028",
+    "app/models/impact_score.py": "014ec5c11f5f7833a40fedf5cf3b2ca2cacc4ac5289276162d2791880b045024"
+  }
+}

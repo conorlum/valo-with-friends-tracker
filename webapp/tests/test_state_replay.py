@@ -205,8 +205,14 @@ def test_explicit_surrender_placeholder_excluded_while_valid_no_kill_round_retai
     assert len(result2.entries) == 1
 
 
-def test_overtime_without_side_data_excluded():
+def test_overtime_round_is_admitted_not_excluded():
+    # Withdrawn behaviour (M15): overtime used to be excluded outright because
+    # no side convention had been derived for it. Part 1 of the plant-window
+    # spec supplies one (app.scoring.plant_window.attacking_team), so an OT
+    # round with a determinable outcome now replays like any other round.
     round_input = make_round(round_number=25, outcome="Team A Elimination Win", kills=[])
     result, diagnostics = replay(round_input)
-    assert result.exclusion_reason == "overtime_unknown_side"
-    assert diagnostics.excluded_rounds_by_reason["overtime_unknown_side"] == 1
+    assert result.exclusion_reason is None
+    assert len(result.entries) == 1
+    assert diagnostics.accepted_rounds == 1
+    assert diagnostics.excluded_rounds_by_reason["overtime_unknown_side"] == 0

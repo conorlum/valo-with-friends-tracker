@@ -3,7 +3,17 @@ import numpy as np, sys, os
 sys.path.insert(0, os.path.abspath("."))
 from app.services.stats_math import back_transform, fit_logistic, standardize
 
-d = np.load(r"C:/Users/User/AppData/Local/Temp/claude/C--Users-User-Documents-GitHub-valo-with-friends-tracker/0b4fe174-30b0-48fa-8d46-9389e837f3e2/scratchpad/t2_design.npz", allow_pickle=True)
+# The T2 design cache lives beside the observation cache -- outside the repo,
+# same convention as impact_eval_cache.cache_path(). It previously pointed at a
+# session-scoped scratchpad directory that no longer exists, so every script
+# reading it was unreproducible from the committed command.
+def _t2_design_path():
+    from app.services.impact_eval_cache import cache_path
+    return str(cache_path().parent / "t2_design.npz")
+
+
+
+d = np.load(_t2_design_path(), allow_pickle=True)
 X, y, w, names = d["X"], d["y"], d["w"], list(d["names"])
 col = {n: i for i, n in enumerate(names)}
 COMP = ["damage", "econ_impact", "time_impact", "swing_impact"]

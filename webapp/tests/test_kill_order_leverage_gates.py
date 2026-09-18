@@ -21,19 +21,15 @@ from app.services.kill_order_leverage import (
     eligible_match_ids,
     shipped_graph,
 )
+from tests._postgres import postgres_session_or_skip
 
 SAMPLE_MATCHES = 12
 
 
 @pytest.fixture(scope="module")
 def db():
-    try:
-        from app.db import SessionLocal
-
-        session = SessionLocal()
-        session.execute(__import__("sqlalchemy").text("select 1"))
-    except Exception as exc:  # pragma: no cover - environment dependent
-        pytest.skip(f"live Postgres unavailable: {exc}")
+    # A disposable test database only (tests/_postgres.py).
+    session = postgres_session_or_skip()
     yield session
     session.close()
 

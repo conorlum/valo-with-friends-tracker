@@ -1,0 +1,415 @@
+"""Part 3: pre-plant observation extraction, the fixed-knot shape basis, and
+the exact-state logistic fit. No live Postgres required for extraction tests
+-- in-memory sqlite, per test_impact_kill_order_bonus_net.py's pattern.
+
+dt throughout is seconds_to_plant (app.scoring.plant_window): POSITIVE
+before the plant, decreasing to 0 at the plant instant.
+"""
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.db import Base
+from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerStat
+from app.models.match import MatchSource, Team
+from app.scoring.preplant_time_model import PreplantKillObservation, extract_preplant_observations
+
+
+def _session():
+    engine = create_engine("sqlite:///:memory:")
+    tables = [
+        Player.__table__, Match.__table__, MatchPlayer.__table__,
+        Round.__table__, RoundPlayerStat.__table__, KillEvent.__table__,
+    ]
+    Base.metadata.create_all(engine, tables=tables)
+    return sessionmaker(bind=engine)()
+
+
+def _player(db, name):
+    p = Player(display_name=name)
+    db.add(p)
+    db.flush()
+    return p.id
+
+
+def _match_with_one_planted_round(db):
+    """Round 1 (TEAM_1 attacks), planted at t=40. A1 kills B1 at t=20
+    (pre-plant, dt = 40-20 = +20, killer's exact_state is 5v5, adv=0).
+    Team A wins by Detonate."""
+    match = Match(external_id="m1", source=MatchSource.SCRAPED, map_name="Bind")
+    db.add(match)
+    db.flush()
+    players = {}
+    for i in range(1, 6):
+        mp = MatchPlayer(match_id=match.id, player_id=_player(db, f"A{i}"), agent="Jett", team=Team.TEAM_1)
+        db.add(mp)
+        players[f"A{i}"] = mp
+    for i in range(1, 6):
+        mp = MatchPlayer(match_id=match.id, player_id=_player(db, f"B{i}"), agent="Sova", team=Team.TEAM_2)
+        db.add(mp)
+        players[f"B{i}"] = mp
+    db.flush()
+
+    rnd = Round(match_id=match.id, round_number=1, outcome="Team A Detonate Win",
+                planted=True, plant_time=40.0, exploded=True, defused=False)
+    db.add(rnd)
+    db.flush()
+    for mp in players.values():
+        db.add(RoundPlayerStat(round_id=rnd.id, match_player_id=mp.id, kills=0, deaths=0,
+                                assists=0, score=0, loadout=800, remaining=0))
+    db.add(KillEvent(round_id=rnd.id, killer_match_player_id=players["A1"].id,
+                      death_match_player_id=players["B1"].id, event_time_seconds=20.0,
+                      weapon="Vandal"))
+    db.commit()
+    return match, rnd, players
+
+
+def test_extracts_one_row_for_the_only_qualifying_kill():
+    db = _session()
+    match, rnd, _ = _match_with_one_planted_round(db)
+
+    obs = extract_preplant_observations(db)
+
+    assert len(obs) == 1
+    row = obs[0]
+    assert row.match_id == match.id
+    assert row.round_id == rnd.id
+    assert row.dt == 20.0
+    assert row.adv == 0
+    assert row.is_attacker is True  # round 1 -> TEAM_1 attacks, killer is A1/TEAM_1
+    assert row.exact_state == "5v5"
+    assert row.round_won_by_killer_team is True  # Team A won, killer is on TEAM_1
+
+
+def test_self_kill_excluded():
+    db = _session()
+    match, rnd, players = _match_with_one_planted_round(db)
+    a2 = players["A2"]
+    db.add(KillEvent(round_id=rnd.id, killer_match_player_id=a2.id,
+                      death_match_player_id=a2.id, event_time_seconds=10.0, weapon="Ghost"))
+    db.commit()
+
+    obs = extract_preplant_observations(db)
+
+    assert len(obs) == 1  # still just the one cross-team kill
+
+
+def test_post_plant_kill_excluded():
+    db = _session()
+    match, rnd, players = _match_with_one_planted_round(db)
+    a2, b2 = players["A2"], players["B2"]
+    db.add(KillEvent(round_id=rnd.id, killer_match_player_id=a2.id,
+                      death_match_player_id=b2.id, event_time_seconds=42.0, weapon="Vandal"))
+    db.commit()
+
+    obs = extract_preplant_observations(db)
+
+    assert len(obs) == 1  # the post-plant kill at t=42 (dt would be negative) is excluded
+
+
+def test_phantom_plant_round_excluded():
+    """Time Win with plant_time > 100s -- not a real plant (plant_window's
+    is_phantom_plant), so this round contributes nothing at all, including
+    its early kills."""
+    db = _session()
+    match = Match(external_id="m2", source=MatchSource.SCRAPED, map_name="Bind")
+    db.add(match)
+    db.flush()
+    a1 = MatchPlayer(match_id=match.id, player_id=_player(db, "PA1"), agent="Jett", team=Team.TEAM_1)
+    b1 = MatchPlayer(match_id=match.id, player_id=_player(db, "PB1"), agent="Sova", team=Team.TEAM_2)
+    db.add_all([a1, b1])
+    db.flush()
+    rnd = Round(match_id=match.id, round_number=1, outcome="Team A Time Win",
+                planted=True, plant_time=101.0, exploded=False, defused=False)
+    db.add(rnd)
+    db.flush()
+    db.add(KillEvent(round_id=rnd.id, killer_match_player_id=a1.id,
+                      death_match_player_id=b1.id, event_time_seconds=10.0, weapon="Vandal"))
+    db.commit()
+
+    obs = extract_preplant_observations(db)
+
+    assert obs == []
+
+
+def test_surrendered_round_excluded():
+    db = _session()
+    match = Match(external_id="m3", source=MatchSource.SCRAPED, map_name="Bind")
+    db.add(match)
+    db.flush()
+    a1 = MatchPlayer(match_id=match.id, player_id=_player(db, "SA1"), agent="Jett", team=Team.TEAM_1)
+    b1 = MatchPlayer(match_id=match.id, player_id=_player(db, "SB1"), agent="Sova", team=Team.TEAM_2)
+    db.add_all([a1, b1])
+    db.flush()
+    rnd = Round(match_id=match.id, round_number=1, outcome="Team A Surrendered",
+                planted=False, plant_time=None)
+    db.add(rnd)
+    db.flush()
+    db.add(KillEvent(round_id=rnd.id, killer_match_player_id=a1.id,
+                      death_match_player_id=b1.id, event_time_seconds=10.0, weapon="Vandal"))
+    db.commit()
+
+    obs = extract_preplant_observations(db)
+
+    assert obs == []
+
+
+def test_never_planted_round_excluded():
+    db = _session()
+    match = Match(external_id="m4", source=MatchSource.SCRAPED, map_name="Bind")
+    db.add(match)
+    db.flush()
+    a1 = MatchPlayer(match_id=match.id, player_id=_player(db, "NA1"), agent="Jett", team=Team.TEAM_1)
+    b1 = MatchPlayer(match_id=match.id, player_id=_player(db, "NB1"), agent="Sova", team=Team.TEAM_2)
+    db.add_all([a1, b1])
+    db.flush()
+    rnd = Round(match_id=match.id, round_number=1, outcome="Team B Eliminated",
+                planted=False, plant_time=None)
+    db.add(rnd)
+    db.flush()
+    db.add(KillEvent(round_id=rnd.id, killer_match_player_id=a1.id,
+                      death_match_player_id=b1.id, event_time_seconds=10.0, weapon="Vandal"))
+    db.commit()
+
+    obs = extract_preplant_observations(db)
+
+    assert obs == []
+
+
+# -- shape_basis --------------------------------------------------------
+#
+# dt = seconds_to_plant, POSITIVE before the plant. Knots at 30, 20, 10, 5, 0.
+
+from app.scoring.preplant_time_model import shape_basis  # noqa: E402
+
+
+def test_shape_basis_at_or_beyond_far_knot_is_zero():
+    assert shape_basis(30.0) == (0.0, 0.0)
+    assert shape_basis(45.0) == (0.0, 0.0)  # beyond 30: still anchored at 0
+
+
+def test_shape_basis_at_middle_knot_is_pure_theta1():
+    w1, w2 = shape_basis(20.0)
+    assert w1 == 1.0
+    assert w2 == 0.0
+
+
+def test_shape_basis_at_near_knot_is_pure_theta2():
+    w1, w2 = shape_basis(10.0)
+    assert w1 == 0.0
+    assert w2 == 1.0
+
+
+def test_shape_basis_plateaus_from_ten_seconds_to_the_plant():
+    # dt=10 down to dt=0 must all reproduce EXACTLY theta2 -- the imposed
+    # plateau, not a separately fitted value.
+    for dt in (10.0, 7.5, 5.0, 2.0, 0.0):
+        w1, w2 = shape_basis(dt)
+        assert w1 == 0.0
+        assert w2 == 1.0
+
+
+def test_shape_basis_interpolates_linearly_between_free_knots():
+    w1, w2 = shape_basis(25.0)  # halfway between 30 (0) and 20 (theta1)
+    assert w1 == pytest.approx(0.5)
+    assert w2 == 0.0
+    w1, w2 = shape_basis(15.0)  # halfway between 20 (theta1) and 10 (theta2)
+    assert w1 == pytest.approx(0.5)
+    assert w2 == pytest.approx(0.5)
+
+
+def test_shape_of_composed_scalar_matches_hand_computation():
+    theta1, theta2 = 0.6, 1.0
+    for dt, expected in ((30.0, 0.0), (25.0, 0.3), (20.0, 0.6),
+                         (15.0, 0.8), (10.0, 1.0), (5.0, 1.0), (0.0, 1.0)):
+        w1, w2 = shape_basis(dt)
+        assert w1 * theta1 + w2 * theta2 == pytest.approx(expected)
+
+
+# -- fit_preplant_time_model ---------------------------------------------
+
+from app.scoring.preplant_time_model import PreplantFit, fit_preplant_time_model  # noqa: E402
+
+
+def _synthetic_observations(n_per_cell=200, seed=0):
+    """Built to CONTAIN a known relationship: win probability rises with
+    proximity to the plant (dt small), more steeply when the killer's team
+    is up a man, and attackers get a bigger boost than defenders -- exactly
+    what the real regression is meant to detect. Verified below
+    (test_synthetic_fixture_actually_contains_the_claimed_effect) before it
+    is used to test the fit, per feedback_plan_execution_test_fixtures."""
+    import random
+
+    rng = random.Random(seed)
+    obs = []
+    for adv in (-1, 0, 1):
+        for is_attacker in (True, False):
+            for dt in (25.0, 7.0):  # one far, one near-plateau (dt < 10)
+                near = dt < 10.0
+                side_bump = 0.15 if is_attacker else 0.05
+                base = 0.5 + 0.08 * adv
+                p = base + (side_bump + 0.05 * adv) * (1.0 if near else 0.0)
+                p = min(max(p, 0.02), 0.98)
+                state = f"{5 + min(adv, 0)}v{5 - max(adv, 0)}"
+                for i in range(n_per_cell):
+                    won = rng.random() < p
+                    obs.append(PreplantKillObservation(
+                        match_id=i % 50, round_id=i, dt=dt, adv=adv,
+                        is_attacker=is_attacker, exact_state=state,
+                        round_won_by_killer_team=won,
+                    ))
+    return obs
+
+
+def test_synthetic_fixture_actually_contains_the_claimed_effect():
+    """Guard against the fixture-construction bug this project has hit
+    twice before: verify the raw win-rate gap by hand before trusting any
+    fit against it."""
+    obs = _synthetic_observations()
+    near_atk_adv1 = [o for o in obs if o.dt == 7.0 and o.is_attacker and o.adv == 1]
+    far_atk_adv1 = [o for o in obs if o.dt == 25.0 and o.is_attacker and o.adv == 1]
+    near_rate = sum(o.round_won_by_killer_team for o in near_atk_adv1) / len(near_atk_adv1)
+    far_rate = sum(o.round_won_by_killer_team for o in far_atk_adv1) / len(far_atk_adv1)
+    assert near_rate - far_rate > 0.15  # the fixture's own construction implies +0.20
+
+
+def test_fit_recovers_the_positive_near_plant_lift():
+    obs = _synthetic_observations()
+    fit = fit_preplant_time_model(obs, include_side_interaction=True)
+
+    assert isinstance(fit, PreplantFit)
+    assert fit.n_observations == len(obs)
+    # Attacker lift at adv=1 should be positive and larger than defender's.
+    atk_lift = fit.logit_lift(1, is_attacker=True)
+    def_lift = fit.logit_lift(1, is_attacker=False)
+    assert atk_lift > 0
+    assert atk_lift > def_lift
+
+
+def test_fit_without_side_interaction_produces_one_shared_line():
+    obs = _synthetic_observations()
+    fit = fit_preplant_time_model(obs, include_side_interaction=False)
+
+    assert fit.logit_lift(1, is_attacker=True) == fit.logit_lift(1, is_attacker=False)
+
+
+def test_fit_ignores_observations_with_undeterminable_winner():
+    obs = _synthetic_observations(n_per_cell=20)
+    unresolved = [
+        PreplantKillObservation(0, 0, 7.0, 1, True, "5v4", round_won_by_killer_team=None)
+        for _ in range(1000)
+    ]
+    fit_with = fit_preplant_time_model(obs)
+    fit_with_junk = fit_preplant_time_model(obs + unresolved)
+
+    assert fit_with_junk.n_observations == fit_with.n_observations
+
+
+def test_shape_uses_the_fitted_mid_knot_not_a_naive_linear_ramp():
+    obs = _synthetic_observations()
+    fit = fit_preplant_time_model(obs)
+
+    # shape() must be pinned exactly as shape_basis says at the anchor knots...
+    assert fit.shape(30.0) == pytest.approx(0.0)
+    assert fit.shape(10.0) == pytest.approx(1.0)
+    assert fit.shape(5.0) == pytest.approx(1.0)
+    # ...and at dt=20 must equal the FITTED ratio, not the naive midpoint 0.5.
+    assert fit.shape(20.0) == pytest.approx(fit.shape_mid_ratio)
+
+
+def test_shape_mid_ratio_falls_back_when_theta2_is_degenerate():
+    # A fixture with zero variance in the outcome pins theta2 near 0
+    # (fit_logistic returns a zero vector for a single-class label), so the
+    # ratio must fall back rather than divide by ~0.
+    obs = [
+        PreplantKillObservation(0, i, 7.0, 0, True, "5v5", round_won_by_killer_team=True)
+        for i in range(50)
+    ]
+    fit = fit_preplant_time_model(obs)
+    assert fit.shape_mid_ratio == pytest.approx(0.5)
+
+
+# --------------------------------------------------------------------------
+# Review finding 13 -- the retained diagnostic keeps the global intercept
+# --------------------------------------------------------------------------
+
+
+def test_the_fitted_global_intercept_is_retained():
+    """beta[0] was computed by every fit and then dropped. state_effects pins
+    the reference state to 0.0 and stores only the OTHER states' offsets, so
+    without it PreplantFit carried no level at all."""
+    observations = _synthetic_observations()
+    fit = fit_preplant_time_model(observations)
+
+    assert hasattr(fit, "intercept")
+    assert fit.intercept != 0.0
+
+
+def test_the_linear_predictor_matches_the_models_own_fitted_eta():
+    """The property the diagnostic needs: reconstructing
+    intercept + state_effect + shape(dt)*logit_lift(adv, side) reproduces the
+    fitted linear predictor, so a loss computed from it really is the fitted
+    model's loss."""
+    import numpy as np
+
+    from app.scoring.preplant_time_model import (
+        _amplitude_design_row,
+        _fit_at_ratio,
+    )
+
+    observations = _synthetic_observations()
+    fit = fit_preplant_time_model(observations)
+    usable = [o for o in observations if o.round_won_by_killer_team is not None]
+    states = sorted({o.exact_state for o in usable})
+    reference = "5v5" if "5v5" in states else states[0]
+    other_states = [s for s in states if s != reference]
+    labels = np.array([1.0 if o.round_won_by_killer_team else 0.0 for o in usable])
+
+    beta, _ = _fit_at_ratio(usable, other_states, labels, fit.shape_mid_ratio, True)
+
+    for o in usable[:25]:
+        row = np.concatenate(([1.0],
+                              [1.0 if o.exact_state == st else 0.0 for st in other_states],
+                              _amplitude_design_row(o, fit.shape_mid_ratio, True)))
+        eta_design = float(row @ beta)
+        eta_fit = fit.linear_predictor(o.dt, o.adv, o.is_attacker, o.exact_state)
+        assert eta_fit == pytest.approx(eta_design, abs=1e-9)
+
+
+def test_dropping_the_intercept_would_change_the_reconstructed_loss():
+    """The fixture must actually contain the relationship the fix is about:
+    an intercept large enough that omitting it moves the diagnostic. If the
+    fitted intercept were ~0 this test would pass vacuously."""
+    import numpy as np
+
+    from app.services.stats_math import weighted_log_loss
+
+    observations = _synthetic_observations()
+    fit = fit_preplant_time_model(observations)
+    usable = [o for o in observations if o.round_won_by_killer_team is not None]
+    labels = [1.0 if o.round_won_by_killer_team else 0.0 for o in usable]
+
+    def loss(include_intercept):
+        preds = []
+        for o in usable:
+            eta = fit.linear_predictor(o.dt, o.adv, o.is_attacker, o.exact_state)
+            if not include_intercept:
+                eta -= fit.intercept
+            preds.append(1.0 / (1.0 + np.exp(-eta)))
+        return weighted_log_loss(preds, labels)
+
+    assert abs(fit.intercept) > 0.01, "fixture's intercept is too small to test with"
+    assert loss(True) != pytest.approx(loss(False))
+
+
+def test_the_intercept_is_a_level_and_does_not_touch_the_lift():
+    """Nothing that consumes logit_lift or shape -- preplant_scalar,
+    preplant_k_selection, the shipped empirical curve -- may move because of
+    this. The intercept is a level, not part of the lift."""
+    observations = _synthetic_observations()
+    fit = fit_preplant_time_model(observations)
+
+    lift_only = fit.logit_lift(1, True)
+    assert lift_only == fit.intercept_atk + fit.slope_atk * 1
+    assert fit.shape(5.0) == pytest.approx(1.0)

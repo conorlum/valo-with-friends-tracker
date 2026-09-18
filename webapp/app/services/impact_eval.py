@@ -29,6 +29,16 @@ class MissingImpactRows(Exception):
     a zero-valued observation -- absent data is not zero impact."""
 
 
+class UndeclaredConstantFactorError(ValueError):
+    """Raised by fit_constrained_weights when a factor column is constant
+    (zero variance) in the mode being fitted but the caller did not declare
+    it via expected_constant_factors. See econ spec section 8c: a dead
+    column silently absorbs weight the search cannot tell apart from a live
+    one, so this refuses rather than proceeding -- a deployment proposal is
+    the output, and an undeclared dead column is information worth
+    surfacing, not noise to route around."""
+
+
 @dataclass
 class RoundObservation:
     match_id: int
@@ -73,6 +83,19 @@ class RoundObservation:
     round_won_by_team_a: bool | None
     match_won_by_team_a: bool | None
     is_terminal: bool
+
+    # Migration 0008 / econ spec section 8c-i. The NET kill_order_bonus (no
+    # time/econ/swing multiplier) -- time_delta = time_impact -
+    # kill_order_bonus is derived from this by subtraction wherever the
+    # diagnostic split is needed, rather than storing time_delta itself.
+    # Defaulted (and placed last) so existing positional construction of
+    # this dataclass keeps working.
+    kill_order_bonus: float = 0.0
+
+    # Econ spec section 8c-i. Zero for every row in the harness's default
+    # ex-ante replay -- that is the econ component's own leakage gate, and it
+    # is why section 9a says the harness is structurally blind to ECON_SCALE.
+    econ_component: float = 0.0
 
 
 def _winner_is_team_a(outcome: str | None) -> bool | None:
@@ -120,13 +143,16 @@ def build_observations_for_match(match, calculated_rows) -> list[RoundObservatio
         bucket = impact_by_round.setdefault(
             row.round_id,
             {"damage": 0.0, "econ_impact": 0.0, "time_impact": 0.0,
-             "swing_impact": 0.0, "impact_diff": 0.0},
+             "swing_impact": 0.0, "impact_diff": 0.0, "kill_order_bonus": 0.0,
+             "econ_component": 0.0},
         )
         bucket["damage"] += sign * row.damage
         bucket["econ_impact"] += sign * row.econ_impact
         bucket["time_impact"] += sign * row.time_impact
         bucket["swing_impact"] += sign * row.swing_impact
         bucket["impact_diff"] += sign * row.impact
+        bucket["kill_order_bonus"] += sign * row.kill_order_bonus
+        bucket["econ_component"] += sign * row.econ_component
 
     playable = [
         r for r in sorted(match.rounds, key=lambda r: r.round_number)
@@ -189,6 +215,8 @@ def build_observations_for_match(match, calculated_rows) -> list[RoundObservatio
                 time_impact=impact["time_impact"],
                 swing_impact=impact["swing_impact"],
                 impact_diff=impact["impact_diff"],
+                kill_order_bonus=impact["kill_order_bonus"],
+                econ_component=impact["econ_component"],
                 kill_diff=kills_a - kills_b,
                 acs_diff=acs_a - acs_b,
                 score_diff_before=score_a - score_b,
@@ -261,6 +289,13 @@ def controls_for(config) -> list[str]:
 
 
 def _feature_value(obs: RoundObservation, name: str) -> float:
+    if name == "time_delta":
+        # Econ spec 8c-i: the fused leverage column is split into what the
+        # kill was worth for the STATE it happened in (kill_order_bonus) and
+        # what it was worth extra for WHEN it happened. The two sum back to
+        # time_impact exactly, so nothing is invented. Derived by subtraction
+        # rather than stored, so the identity cannot drift.
+        return float(obs.time_impact - obs.kill_order_bonus)
     if name == "round_result":
         return 0.0 if obs.round_won_by_team_a is None else (1.0 if obs.round_won_by_team_a else -1.0)
     if name == "attacking_is_team_a":
@@ -949,6 +984,15 @@ class ConstrainedWeights:
     # weighting to mean "higher Impact is better"; see fit_constrained_weights.
     composite_slope: float = float("nan")
     usable: bool = True
+    # Names of factor columns the search found constant and excluded from
+    # the simplex (weight pinned to exactly 0) rather than searched over.
+    # Populated only when the caller declared them via
+    # expected_constant_factors -- see fit_constrained_weights.
+    dropped_constant_factors: tuple[str, ...] = ()
+    # The l2 this fit actually used. Reported because the run's separate
+    # selected_l2_per_fold describes the UNCONSTRAINED fit, not this one, so
+    # quoting that alongside these weights misstates the hyperparameter.
+    l2: float = float("nan")
 
 
 def _simplex_grid(step: float):
@@ -959,9 +1003,33 @@ def _simplex_grid(step: float):
             yield (i / steps, j / steps, (steps - i - j) / steps)
 
 
+def _simplex_grid_ndim(step: float, n: int):
+    """All non-negative n-tuples on a `step` lattice summing to 1. n == 0
+    yields a single empty tuple (nothing to search; every weight is 0)."""
+    if n == 0:
+        yield ()
+        return
+    steps = int(round(1.0 / step))
+
+    def recurse(dims_left: int, steps_left: int):
+        if dims_left == 1:
+            yield (steps_left / steps,)
+            return
+        for i in range(steps_left + 1):
+            for rest in recurse(dims_left - 1, steps_left - i):
+                yield (i / steps,) + rest
+
+    yield from recurse(n, steps)
+
+
+# Order matches the `factors` column order built inside fit_constrained_weights.
+_FACTOR_NAMES = ("econ_impact", "time_impact", "swing_impact")
+
+
 def fit_constrained_weights(
     observations, config: TargetConfig, control_names: list[str],
     simplex_step: float = 0.1, damage_grid=None, l2: float | None = None, context=None,
+    expected_constant_factors: frozenset[str] = frozenset(),
 ) -> ConstrainedWeights:
     """Search (damage_multiplier, w_econ, w_time, w_swing) under the shipped
     parameterization, WITH the nuisance controls in the design.
@@ -999,6 +1067,32 @@ def fit_constrained_weights(
         else np.zeros((len(dataset.y), 0))
     )
 
+    # The zero-variance guard (econ spec section 8c). Standardizing before
+    # fitting frees the composite's overall scale, which is normally pinned
+    # by the simplex constraint w_econ + w_time + w_swing == 1 -- but a
+    # constant factor column breaks that pin: the dead coordinate can absorb
+    # any amount of the rescale, making an entire one-parameter family of
+    # (damage_multiplier, weights) points observationally identical, and the
+    # tie-break then silently picks the largest dead weight and the smallest
+    # damage multiplier. Refuse-unless-declared: a column the caller expects
+    # to be inert in this mode is dropped from the search (pinned to weight
+    # 0) with a counted note; an undeclared one is a hard refusal, because
+    # this function's output is a deployment proposal and a dead column it
+    # did not know about is worth surfacing, not routing around.
+    factor_stds = factors.std(axis=0)
+    dropped_indices: list[int] = []
+    for index, name in enumerate(_FACTOR_NAMES):
+        if factor_stds[index] == 0:
+            if name not in expected_constant_factors:
+                raise UndeclaredConstantFactorError(
+                    f"factor column {name!r} is constant (zero variance) in this fit but was "
+                    "not declared via expected_constant_factors -- refusing rather than "
+                    "silently misallocating weight to it (econ spec section 8c)."
+                )
+            dropped_indices.append(index)
+    dropped_constant_factors = tuple(_FACTOR_NAMES[i] for i in dropped_indices)
+    live_indices = [i for i in range(len(_FACTOR_NAMES)) if i not in dropped_indices]
+
     # L2 here regularises the CONTROLLED composite design, which is a
     # different model from the feature-only fit whose L2 the outer fold
     # selected. Rather than inherit that value or sweep L2 inside the simplex
@@ -1012,18 +1106,57 @@ def fit_constrained_weights(
                                    FACTOR_WEIGHTS["swing"]]) / sum(FACTOR_WEIGHTS.values()))
         )
         design = np.column_stack([controls, stand_in])
-        scaled, _, _, _ = standardize(design, design)
+
+        # Selected on INNER HELD-OUT MATCHES, not on training loss.
+        #
+        # Fitting and scoring the same design makes this a training-loss
+        # comparison, which rewards the weakest penalty essentially by
+        # construction -- so the "selection" reduced to picking the smallest
+        # candidate and the promised nested protocol never happened.
+        # fold_candidates passes no l2, so this path produces the reported
+        # fitted weightings rather than an optional proposal.
+        inner = stable_folds(np.asarray(dataset.match_ids).tolist(), n_folds=3, seed=0)
+        fold_of = np.array([inner[int(m)] for m in dataset.match_ids])
+
         best_l2, best_l2_loss = 1.0, float("inf")
         for candidate_l2 in (0.01, 0.1, 1.0, 10.0):
-            beta = fit_logistic(scaled, dataset.y, weights=dataset.w, l2=candidate_l2)
-            loss = weighted_log_loss(predict_proba(beta, scaled), dataset.y, dataset.w)
-            if np.isfinite(loss) and loss < best_l2_loss:
-                best_l2, best_l2_loss = candidate_l2, loss
+            total, weight_total = 0.0, 0.0
+            for fold in range(3):
+                test = fold_of == fold
+                train = ~test
+                if not test.any() or not train.any():
+                    continue
+                if len(np.unique(np.round(dataset.y[train]))) < 2:
+                    continue
+                scaled_train, scaled_test, _, _ = standardize(design[train], design[test])
+                beta = fit_logistic(
+                    scaled_train, dataset.y[train], weights=dataset.w[train], l2=candidate_l2
+                )
+                loss = weighted_log_loss(
+                    predict_proba(beta, scaled_test), dataset.y[test], dataset.w[test]
+                )
+                if np.isfinite(loss):
+                    fold_weight = float(dataset.w[test].sum())
+                    total += loss * fold_weight
+                    weight_total += fold_weight
+            if weight_total and (total / weight_total) < best_l2_loss:
+                best_l2, best_l2_loss = candidate_l2, total / weight_total
         l2 = best_l2
 
     grid = DEFAULT_DAMAGE_GRID if damage_grid is None else damage_grid
+
+    def _weight_grid():
+        if not dropped_indices:
+            yield from _simplex_grid(simplex_step)
+            return
+        for live_weights in _simplex_grid_ndim(simplex_step, len(live_indices)):
+            full = [0.0, 0.0, 0.0]
+            for i, w in zip(live_indices, live_weights):
+                full[i] = w
+            yield tuple(full)
+
     best = None
-    for weights in _simplex_grid(simplex_step):
+    for weights in _weight_grid():
         factor_score = factors @ np.array(weights)
         for d in grid:
             composite = d * damage + factor_score
@@ -1053,7 +1186,10 @@ def fit_constrained_weights(
         # Every candidate was anti-predictive (or degenerate). That is a
         # finding, not a weighting: returning neutral weights marked unusable
         # keeps it out of the deployment proposal.
-        return ConstrainedWeights(1.0, 1.0, 1.0, 1.0, float("nan"), float("nan"), usable=False)
+        return ConstrainedWeights(
+            1.0, 1.0, 1.0, 1.0, float("nan"), float("nan"), usable=False,
+            dropped_constant_factors=dropped_constant_factors,
+        )
 
     loss, d, weights, slope = best
     scaled_weights = [v * FACTOR_WEIGHT_TOTAL for v in weights]
@@ -1065,6 +1201,8 @@ def fit_constrained_weights(
         train_log_loss=float(loss),
         composite_slope=float(slope),
         usable=True,
+        dropped_constant_factors=dropped_constant_factors,
+        l2=float(l2),
     )
 
 
@@ -1089,14 +1227,34 @@ def coefficient_diagnostics(
     rng = np.random.default_rng(seed)
     positives = np.zeros(len(feature_names))
     completed = 0
+
+    # Build the target ONCE, then resample the ALREADY AGGREGATED rows.
+    #
+    # Resampling observations and rebuilding the target silently collapses
+    # repeated clusters: T1 groups by match_id and sums the first half, so a
+    # match drawn twice became ONE row with doubled features and a single
+    # unit-weight label instead of the same row twice. That destroys the
+    # cluster multiplicity the bootstrap depends on, and it is the coefficient
+    # SIGNS that are read off this.
+    full = build_target(observations, config, feature_names)
+    if len(full.y) == 0:
+        return {"sign_stability": {}, "sign_direction": {}, "correlation_matrix": {},
+                "drop_one": {}, "full_log_loss": float("nan"),
+                "bootstrap_draws_completed": 0}
+    rows_by_match: dict[int, list[int]] = {}
+    for index, match_id in enumerate(full.match_ids):
+        rows_by_match.setdefault(int(match_id), []).append(index)
+    row_keys = list(rows_by_match)
+
     for _ in range(draws):
-        picked = rng.integers(0, len(keys), size=len(keys))
-        sample = [o for i in picked for o in grouped[keys[int(i)]]]
-        dataset = build_target(sample, config, feature_names)
-        if len(dataset.y) == 0 or len(np.unique(np.round(dataset.y))) < 2:
+        picked = rng.integers(0, len(row_keys), size=len(row_keys))
+        rows = [r for i in picked for r in rows_by_match[row_keys[int(i)]]]
+        y = full.y[rows]
+        if len(y) == 0 or len(np.unique(np.round(y))) < 2:
             continue
-        scaled, _, centre, scale = standardize(dataset.X, dataset.X)
-        beta = fit_logistic(scaled, dataset.y, weights=dataset.w, l2=l2)
+        X = full.X[rows]
+        scaled, _, centre, scale = standardize(X, X)
+        beta = fit_logistic(scaled, y, weights=full.w[rows], l2=l2)
         positives += (back_transform(beta, centre, scale)[1:] > 0).astype(float)
         completed += 1
 
@@ -1273,7 +1431,8 @@ YARDSTICKS = {
 
 
 def fold_candidates(
-    observations, fold_results, name: str, context_builder=None
+    observations, fold_results, name: str, context_builder=None,
+    expected_constant_factors: frozenset[str] = frozenset(),
 ) -> dict[int, Candidate]:
     """One constrained weighting per outer fold, fitted on that fold's
     TRAINING matches only. The matrix then applies each to its own test
@@ -1282,6 +1441,10 @@ def fold_candidates(
     `context_builder` is required for a WPA config, whose target depends on
     a value model; it is built from the same training observations, so the
     leverage weights never see a test match either.
+
+    `expected_constant_factors` passes straight through to
+    fit_constrained_weights's zero-variance guard -- e.g. econ_impact in
+    ex-ante mode, which is constant-zero by design (econ spec section 9a).
 
     Returns (candidates_by_fold, weights_by_fold). The weights are returned,
     not discarded, because "do T1 and T2 agree on the weighting?" is one of
@@ -1297,7 +1460,8 @@ def fold_candidates(
         # controlled design inside fit_constrained_weights -- the outer fold's
         # L2 belongs to a different (feature-only, uncontrolled) model.
         weights = fit_constrained_weights(
-            train_obs, fold.config, controls_for(fold.config), context=context
+            train_obs, fold.config, controls_for(fold.config), context=context,
+            expected_constant_factors=expected_constant_factors,
         )
         out[fold.fold] = candidate_from_constrained(name, weights)
         fold_weights[fold.fold] = weights
@@ -1501,7 +1665,10 @@ def _hydrated_match(db, match_id):
     )
 
 
-def load_all_observations(db, use_realized_swing: bool = False, report: dict | None = None):
+def load_all_observations(
+    db, use_realized_swing: bool = False, report: dict | None = None,
+    scoring_kwargs: dict | None = None,
+):
     """Replays every match through the scorer, so components are the
     EX-ANTE variant by default -- the only variant eligible for
     forward-looking fitting. Costs a full replay (minutes).
@@ -1512,11 +1679,19 @@ def load_all_observations(db, use_realized_swing: bool = False, report: dict | N
     """
     observations: list[RoundObservation] = []
     excluded: list[int] = []
+    # scoring_kwargs lets a caller replay the SAME matches under a different
+    # scoring configuration, which is what the econ spec's five-arm protocol
+    # (section 8d-i) needs: each arm is evaluated as a fixed scoring composite
+    # rather than by refitting weights, because a search that recovers the loss
+    # by reweighting has answered a different question.
+    scoring_kwargs = scoring_kwargs or {}
     # Surrender placeholder rounds are excluded via _match_ids' NOT_A_SURRENDER_ROUND
     # filter above -- this loader must not hand-roll a second, driftable copy.
     for match_id in _match_ids(db):
         match = _hydrated_match(db, match_id)
-        rows = build_impact_rows_for_match(db, match_id, use_realized_swing=use_realized_swing)
+        rows = build_impact_rows_for_match(
+            db, match_id, use_realized_swing=use_realized_swing, **scoring_kwargs
+        )
         try:
             observations.extend(build_observations_for_match(match, rows))
         except MissingImpactRows:

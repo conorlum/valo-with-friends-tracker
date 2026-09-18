@@ -74,3 +74,9 @@ def free_ability_credits(agent: str | None) -> int:
     """Credit-equivalent value of this agent's free ability charge, which
     inflates the raw loadout stat without costing the player anything."""
     return AGENT_FREE_ABILITY_CREDITS.get(_normalize_agent(agent), 0)
+
+
+def known_utility_cost(agent: str | None) -> int | None:
+    """The table value, or None for an agent the table does not cover. Unlike
+    max_utility_cost there is no fallback: the bonus-denial model abstains."""
+    return AGENT_UTILITY_COST.get(_normalize_agent(agent))

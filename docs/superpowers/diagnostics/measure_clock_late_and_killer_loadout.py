@@ -15,6 +15,7 @@ import os, sys, collections, random, statistics
 sys.path.insert(0, os.path.abspath("."))  # run from webapp/
 from sqlalchemy import text
 from app.db import SessionLocal
+from app.scoring.impact import _check_for_resurrection
 
 db = SessionLocal()
 FULL_BUY = 4200
@@ -61,24 +62,28 @@ def boot(obs, n=2000):
     return (th / tn, out[int(.025 * len(out))], out[int(.975 * len(out))], tn, len(ks))
 
 def boot_delta(obs_a, obs_b, n=2000):
-    """CI on rate(b) - rate(a), resampling matches independently in each arm."""
-    def by_m(o):
-        d = collections.defaultdict(lambda: [0, 0])
-        for mid, hit in o:
-            d[mid][0] += bool(hit); d[mid][1] += 1
-        return list(d.values())
-    A, B = by_m(obs_a), by_m(obs_b)
-    if not A or not B: return None
+    """CI on rate(b) - rate(a), resampling each match once for BOTH arms."""
+    # PAIRED by match: a match usually contributes to BOTH arms, so resampling
+    # each arm independently discards their covariance and gives the wrong
+    # uncertainty for the DIFFERENCE. Point estimates are unaffected; the
+    # interval is (here) too wide, so "excludes zero" can flip. Draw each match
+    # once and recompute both rates on that draw.
+    per_match = collections.defaultdict(lambda: [0, 0, 0, 0])
+    for mid, hit in obs_a:
+        per_match[mid][0] += bool(hit); per_match[mid][1] += 1
+    for mid, hit in obs_b:
+        per_match[mid][2] += bool(hit); per_match[mid][3] += 1
+    union = list(per_match.values())
+    if not union: return None
     ds = []
     for _ in range(n):
-        h = t = 0
-        for _ in range(len(A)):
-            a, b = A[rng.randrange(len(A))]; h += a; t += b
-        p1 = h / t if t else 0
-        h = t = 0
-        for _ in range(len(B)):
-            a, b = B[rng.randrange(len(B))]; h += a; t += b
-        ds.append((h / t if t else 0) - p1)
+        ah = at = bh = bt = 0
+        for _ in range(len(union)):
+            x, y, z, w = union[rng.randrange(len(union))]
+            ah += x; at += y; bh += z; bt += w
+        if not at or not bt: continue
+        ds.append(bh / bt - ah / at)
+    if not ds: return None
     ds.sort()
     ra = sum(x[1] for x in obs_a) / len(obs_a); rb = sum(x[1] for x in obs_b) / len(obs_b)
     return (rb - ra, ds[int(.025 * len(ds))], ds[int(.975 * len(ds))])
@@ -97,18 +102,23 @@ for rid, ks in kills.items():
     for m, lo in d.items():
         if m in mp and lo >= FULL_BUY: fb[mp[m]["team"]] += 1
     alive = {"TEAM_1": 5, "TEAM_2": 5}
-    for k in ks:
+    # REPLAY POLICY -- mirrors app/scoring/impact.py: self-kills DO cost the
+    # victim's team a player, and a resurrected "death" does not. 15.06% of
+    # rounds contain one or the other, and once a round diverges every later
+    # kill in it is filed under the wrong state.
+    for idx, k in enumerate(ks):
         kid, vid = k["killer_match_player_id"], k["death_match_player_id"]
         if not kid or not vid or kid not in mp or vid not in mp: continue
         kt, vt = mp[kid]["team"], mp[vid]["team"]
-        if kt == vt: continue
-        recs.append({
-            "mid": r["match_id"], "rn": r["round_number"], "t": k["event_time_seconds"],
-            "planted": planted, "dt": (k["event_time_seconds"] - r["plant_time"]) if planted else None,
-            "state": (alive[kt], alive[vt]), "ctx": fb[kt] - fb[vt],
-            "kl": d.get(kid, 0), "won": kt == w,
-        })
-        if alive[vt] > 0: alive[vt] -= 1
+        if kt != vt:
+            recs.append({
+                "mid": r["match_id"], "rn": r["round_number"], "t": k["event_time_seconds"],
+                "planted": planted, "dt": (k["event_time_seconds"] - r["plant_time"]) if planted else None,
+                "state": (alive[kt], alive[vt]), "ctx": fb[kt] - fb[vt],
+                "kl": d.get(kid, 0), "won": kt == w,
+            })
+        if not _check_for_resurrection(idx, ks):
+            if alive[vt] > 0: alive[vt] -= 1
 
 print("=" * 100)
 print("PROVENANCE RE-RUN -- full dataset, all cells with n_obs/n_matches and 95% CI")

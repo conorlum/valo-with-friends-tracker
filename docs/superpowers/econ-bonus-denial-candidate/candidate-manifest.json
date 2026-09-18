@@ -1,0 +1,220 @@
+{
+  "manifest_version": 1,
+  "candidate_id": "impact-bonus-denial-rc1",
+  "created": "2026-09-12",
+  "status": "frozen_for_review",
+  "release_comparator": "buy_disruption_v2_30_80_bonus_denial",
+  "site_comparison": [
+    "live_legacy",
+    "buy_disruption_v2_30_80_bonus_denial"
+  ],
+  "penalty_comparison": [
+    "buy_disruption_v2_wealth",
+    "buy_disruption_v2_30_80"
+  ],
+  "diagnostic_comparators": [
+    "separate_econ_legacy"
+  ],
+  "comparators": {
+    "live_legacy": {
+      "config_id": "live_legacy",
+      "use_realized_swing": true,
+      "enable_econ_component": false,
+      "econ_model": null,
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false
+    },
+    "separate_econ_legacy": {
+      "config_id": "separate_econ_legacy",
+      "use_realized_swing": true,
+      "enable_econ_component": true,
+      "econ_model": "separate_econ_legacy",
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false
+    },
+    "buy_disruption_v2_wealth": {
+      "config_id": "buy_disruption_v2_wealth",
+      "use_realized_swing": true,
+      "enable_econ_component": true,
+      "econ_model": "buy_disruption_v2_wealth",
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false
+    },
+    "buy_disruption_v2_30_80": {
+      "config_id": "buy_disruption_v2_30_80",
+      "use_realized_swing": true,
+      "enable_econ_component": true,
+      "econ_model": "buy_disruption_v2_30_80",
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false
+    },
+    "buy_disruption_v2_30_80_bonus_denial": {
+      "config_id": "buy_disruption_v2_30_80_bonus_denial",
+      "use_realized_swing": true,
+      "enable_econ_component": true,
+      "econ_model": "buy_disruption_v2_30_80_bonus_denial",
+      "weights": {
+        "damage": 1.25,
+        "leverage": 1.0,
+        "econ": 1.0
+      },
+      "enable_postplant_leverage": false,
+      "enable_preplant_empirical": false
+    }
+  },
+  "formula_changes_vs_live_legacy": [
+    "structure: impact = A*damage + B*leverage + C*econ_component replaces damage + mean(econ, time, swing) kill-order products",
+    "economy: the legacy econ-differential and swing factors leave leverage; econ is the separate buy-disruption component with 30%/80% death debits",
+    "columns: econ_impact and swing_impact are written 0; econ_component is signed",
+    "timing: unchanged legacy time factor (post-plant table and pre-plant curve OFF)",
+    "trade discount: unchanged (the declared cost schedule and 6s window)",
+    "weights: A(damage)=1.25, B(leverage)=1.0, C(econ)=1.0; ECON_SCALE unchanged"
+  ],
+  "timing": {
+    "postplant_leverage": false,
+    "preplant_empirical": false,
+    "postplant_table_sha256": null,
+    "preplant_centering_c": null
+  },
+  "impact_calculation_version_at_freeze": 2,
+  "activation_impact_calculation_version": 3,
+  "scorer_revision": "c7cbfd7f137692e7c453c6367af843109ecda7b0",
+  "source_snapshots": {
+    "matches": {
+      "3104": "4564a9e44ec195c1f41f4cd0fabd79db2ce3780e9d1d4bafec8a762f695ac2ab",
+      "3129": "9a67e5255ff8fc2dd8ebd225b5c7c47f553e8f7f8d483eb67369c1d6db34f963",
+      "3130": "f6b0a2af908ab9f747f5ba303851ca93da94340cb38796da98a336160a8b7e20",
+      "3131": "f9f9ea06fe52039a79c7046d3947cdfa522d9c30437179532aaa408844cc8898",
+      "3113": "7c2ae5e1d17d81b0929deccdd5749edf4952d378651166f209e74ea9db61773c",
+      "3118": "9bea3edae6469c3b7f0e6cdfff1817571b6eb8a2f0839b4e1ab683332cadcc9e",
+      "3121": "87b251634f7a7d95558873303344702fc85b0f4f2afb70097ef2c991a6e89685",
+      "3114": "7401ac795fd71141874446ee3110fdd3a1276f2474bd109ebf066cbcfc0e1b2d",
+      "3115": "42d5e7274490e975257a398dbdef0c9d93743b6fc1990768bba6b7eac5256086",
+      "3116": "05ad92d2b95972092b5f8d54504e19f492246a409fe01ba9417e675fe94d022a",
+      "3117": "7d2e7c4d745e41bd2d71ab208c2cac86ed9db4321f7c064e69bb26f522d80b3b",
+      "3120": "760dde4475e03865781cac641d0a168ecaf10f7b09fdd9f4a885d50aadd15e25"
+    },
+    "abyss_3104_source_json_lf_sha256": "74271ea043a623646fd9202648779a31c05d011655b05a548427763e3a5011a4",
+    "roles": {
+      "abyss": 3104,
+      "fixed_ten": [
+        3129,
+        3130,
+        3131,
+        3113,
+        3118,
+        3121,
+        3114,
+        3115,
+        3116,
+        3117
+      ],
+      "pistol_winner_loses_round_two": 3120
+    },
+    "local_db_matches_at_freeze": 3124,
+    "db_snapshot_at_freeze": "3126:3126:"
+  },
+  "notes": [
+    "Frozen before any scored run of this candidate. Release comparator buy_disruption_v2_30_80_bonus_denial (spec 2026-09-12); weights A=1.25, B=1, C=1 (rc2's), so the comparison isolates the formula change.",
+    "Sizing, pickup calibration, the round-number profile and 8 raw captures were seen during design (spec section 11): development evidence, not an untouched validation set.",
+    "The unchanged buy_disruption_v2_30_80 comparator is carried for the rc2 parity demonstration; rc2's own manifest intentionally no longer verifies against this checkout."
+  ],
+  "python": "3.13",
+  "econ_scale": 1007.9209,
+  "calculator_constants": {
+    "AUDIT_VERSION": 1,
+    "TARGET_KIT": 3900.0,
+    "TEAM_REFERENCE": 19500.0,
+    "BACKGROUND": 0.1,
+    "DISRUPTION": 1.0,
+    "ACTIVATION_GAP": 3900.0,
+    "CARRYOVER_FLOOR": 1000.0,
+    "ABSORBED_RATE": 0.3,
+    "DISRUPTED_RATE": 0.8,
+    "WEALTH_ZERO_AT": 6300.0,
+    "WEALTH_CEILING": 1.5,
+    "ROSTER_SIZE": 5,
+    "BONUS_AUDIT_VERSION": 2,
+    "BONUS_DENIAL_THRESHOLD": 1500.0,
+    "SWING_VALUE_PER_CREDIT": 1.1,
+    "BONUS_WON_FACTOR": 0.8,
+    "BONUS_LOST_FACTOR": 1.0
+  },
+  "trade": {
+    "cost_schedule": [
+      [
+        1.0,
+        0.05
+      ],
+      [
+        2.0,
+        0.1
+      ],
+      [
+        3.0,
+        0.17
+      ],
+      [
+        4.0,
+        0.35
+      ],
+      [
+        5.0,
+        0.5
+      ],
+      [
+        6.0,
+        0.75
+      ]
+    ],
+    "window_seconds": 6.0
+  },
+  "agent_free_ability_credits": {
+    "astra": 150,
+    "brimstone": 100,
+    "clove": 150,
+    "miks": 100,
+    "omen": 150,
+    "phoenix": 250,
+    "reyna": 250,
+    "skye": 250,
+    "tejo": 150,
+    "yoru": 150
+  },
+  "agent_free_ability_credits_sha256": "b972dbf1ac67ce966db2a0c570f741983b38a000c1085f9ad650dff78ad89bb8",
+  "source_digests": {
+    "app/scoring/impact.py": "0a09c1d56aad434428726aff18ae9981be17e431bb12ee9d424a0aaee538b5d6",
+    "app/scoring/impact_config.py": "dbbdaaee03677aef579d3f7c8d97bdd9aeaaffb09c6413f0ed873ff1cb139703",
+    "app/scoring/econ_buy_disruption.py": "e062e5a61a220343a9a6b8f1e9584a82a94e9baef00483ec0f732a4037f2ea34",
+    "app/scoring/econ_component.py": "94632e65f9cae930c0d8fde1a47a33112b32cb973af608f4ce65cb9a752e6ae8",
+    "app/scoring/weapon_prices.py": "c53cf06bf24ec7369bdfb7abb683a3b07efd0a58139f25e435b991bdaf400a14",
+    "app/scoring/round_rewards.py": "e2705156aad6dfd90d107a209f94ade1e3cb88e058ec4858900d99299fef7576",
+    "app/scoring/agent_economy.py": "94f6f4b009d708d517cc8cc90ca67ac1b5dc06280c980f218708e2a39045a56d",
+    "app/scoring/plant_window.py": "d14749551f65e1e43ed0da94504e214044674cbabb2ec6a1e7ef2c2bc962a93b",
+    "app/scoring/preplant_empirical_factor.py": "bf1eeb8cb83197ea483078c1557b33b5bee1acc66bf447190da2407c61d6a23c",
+    "app/models/match.py": "4019f0030f09c760d8fdc661c8d5dc60eadc284aee86a23f5043616d98d3a87c",
+    "app/models/round.py": "0f71ac984d9b9a067b483d079eaf37c71226d7ab54d671dff2d2a29719a11808",
+    "app/models/kill_event.py": "5c10f11df8e3ee697f2a6654352412fb469d64b68c15bbdbb62181b0fdc91028",
+    "app/models/impact_score.py": "014ec5c11f5f7833a40fedf5cf3b2ca2cacc4ac5289276162d2791880b045024"
+  }
+}

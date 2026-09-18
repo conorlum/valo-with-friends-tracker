@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from app.scoring.agent_economy import ARMOR_COST, free_ability_credits, max_utility_cost
 from app.scoring.impact import KILL_REWARD, PLANT_BONUS, WIN_BONUS
+from app.scoring.plant_window import attacking_team as _plant_window_attacking_team
 
 
 @dataclass
@@ -23,14 +24,16 @@ def _did_team_win(outcome: str | None, team: str) -> bool:
 
 
 def _attacking_team(round_number: int) -> str | None:
-    # Same documented convention as app.scoring.impact._attacking_team: no
-    # attacking-side data is stored in the schema, so this is a convention,
-    # not a derived fact.
-    if 1 <= round_number <= 12:
-        return "team-1"
-    if 13 <= round_number <= 24:
-        return "team-2"
-    return None
+    # Thin wrapper around the one consolidated attacking-side helper (Part 1,
+    # docs/superpowers/specs/2026-09-03-plant-window-and-time-factor-design.md).
+    # Unlike app.scoring.impact's wrapper, this one DOES change behaviour for
+    # overtime rounds: compute_round_credit_events uses it for plant_bonus,
+    # so OT rounds now get a correctly-computed Sugar Daddy / Scavenger
+    # figure instead of never getting a plant bonus at all. team_by_mp here
+    # is a plain str ("team-1"/"team-2"), not the Team enum, so this wrapper
+    # does the enum-to-string conversion.
+    team = _plant_window_attacking_team(round_number)
+    return team.value if team is not None else None
 
 
 def round_bonus(round_outcomes: dict[int, str], round_number: int, team: str) -> int:

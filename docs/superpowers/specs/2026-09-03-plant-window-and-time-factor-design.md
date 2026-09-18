@@ -18,7 +18,7 @@ measurement record's register of withdrawn claims.
 `app/scoring/impact.py`'s `_time_factor` returns a flat `1.0` for every
 pre-plant kill, carrying no time signal whatsoever. On the full 3,124-match
 dataset the population this spec's scalar would touch -- pre-plant kills in
-rounds that were planted -- is **168,370 kills, 34.7% of all kill events**
+rounds that were planted -- is **168,432 kills, 34.8% of all kill events**
 (`M5`). (An earlier draft quoted 122,833 of 178,242 from the 1,151-match
 subset, and against a wider denominator that also counted pre-plant kills in
 never-planted rounds.)
@@ -207,12 +207,13 @@ would let one absorb the other's drift.
 
 ### Phantom plants
 
-24 planted rounds end in a *Time Win*, all with `plant_time > 100s`. A real
+76 planted rounds end in a *Time Win*, all with `plant_time > 100s`. A real
 plant forces an explode or a defuse, so a planted round decided by the timer
 never armed -- the plant registered as the round expired. These must be treated
-as unplanted everywhere.
+as unplanted everywhere. (Counts corrected 2026-09-09 against the full dataset;
+`M16` previously read 24 and 6 from a pre-sync subset without saying so.)
 
-The rule is the outcome string, not the timestamp. Six further rounds have
+The rule is the outcome string, not the timestamp. 14 further rounds have
 `plant_time > 100s` and end in Elimination Wins; those are legitimate rounds
 with a noisy timestamp and are kept.
 
@@ -448,6 +449,197 @@ measurement work below is retained so it is not re-derived.
 
 ## Part 3 -- the `_time_factor` redesign
 
+### DECIDED 2026-09-08: shipped as an empirical curve, superseding the parameterisation below
+
+The parameterisation this Part originally specified -- `scalar = clamp(1 +
+amplitude(adv, side) * shape(seconds_to_plant), 0.2, 1.7)`, a 2-knot logistic
+fit with `k`-grid selection and a kill-side centering solve -- was fully
+implemented (`app/scoring/preplant_time_model.py`, `preplant_k_selection.py`,
+`preplant_centering.py`, `preplant_scalar.py`; Tasks 1-7 of
+`docs/superpowers/plans/2026-09-07-preplant-time-factor-part3.md`). Fixing a
+real reconstruction bug in that fit (`docs/superpowers/2026-09-08-preplant-dip-
+independent-verification.md`, section 7, Bug B) surfaced that the model,
+honestly fit, is **non-monotonic** -- `shape(dt)` overshoots to 1.63 at the
+middle knot before settling to 1.0 at the plateau -- contradicting this
+spec's own Testing assertion below and reproducing, in the model's own
+coefficients, the inverted-U the independent verification found in the raw
+data (section 4 of that doc). (Revised 2026-09-09: this figure read 1.545
+until the replay correction, `M1`. The overshoot is larger under the
+corrected replay, not smaller, so the decision recorded here rests on
+firmer ground than when it was taken.)
+
+Rather than resolve that by re-fitting the interaction, reconstructing the
+scalar from the additive predictor, or dropping the middle knot (the three
+options drafted for this decision), the shipped implementation instead
+replaced the parametric model with a **direct empirical curve**:
+`app/scoring/preplant_empirical_factor.py`, a smoothed per-second lookup of
+the state-adjusted win-rate lift, evaluated separately per side and
+converted to a scalar via `clamp(1 + 3.0 * (fitted_rate(dt, side) -
+reference_rate(side)), 0.2, 1.7)`. This is a deliberate, explicit product
+decision, made with the independent verification's finding on the table
+(most of the raw `dt` association is composition -- man-count at the plant,
+not proximity to it -- per that doc's section 6) rather than in spite of it.
+
+**What this means for the rest of Part 3, read against what's below:**
+
+- **Parameterisation / The fitting contract sections below describe the
+  superseded design**, kept as the historical record of the analysis that
+  was done, not the shipped mechanism. Do not transcribe further constants
+  into `preplant_scalar.py` against this decision; `preplant_k_selection.py`,
+  `preplant_centering.py` and `preplant_scalar.py` are unused by the shipped
+  path (`app/scoring/impact.py` imports `preplant_empirical_factor`, not
+  `preplant_scalar`) and are retained for their fitting-diagnostics value,
+  not as dormant production code.
+- **No advantage interaction.** The shipped curve is a function of `(dt,
+  side)` only; it does not vary by man-advantage. The "continuous in
+  advantage, no hard cutoff at adv=0" requirement below does not apply to
+  what shipped.
+- **No `k`-grid selection.** The `3.0` multiplier is a direct policy choice
+  (documented in `docs/superpowers/2026-09-08-preplant-empirical-factor-
+  candidate.md`), not selected by the predeclared floor/ceiling clamp-rate
+  rule below.
+- ~~**Centering is not yet solved for the shipped curve.**~~ **SUPERSEDED
+  2026-09-09 -- the gate has now been run; see "2026-09-09: the centring
+  gate, run against the shipped curve" immediately below.** The bullet is
+  left in place rather than rewritten so the sequence stays readable. Its
+  standing instruction is unchanged and still binds: the curve is wired in
+  (`app/scoring/impact.py`, `enable_preplant_empirical`, default `False`)
+  and must not be activated (flag flipped, `IMPACT_CALCULATION_VERSION`
+  bumped) as part of this work, per the Rollout section below.
+- **Monotonicity is explicitly not satisfied.** The shipped curve is
+  non-monotone by construction (it reproduces the independent verification's
+  inverted-U rather than avoiding it). The Testing section's "shape() is
+  monotone non-decreasing" assertion applies to the superseded model, not to
+  `preplant_empirical_factor` -- there is no equivalent assertion for the
+  shipped curve, and it does not exist yet as a written test.
+
+### 2026-09-09: the centring gate, run against the shipped curve
+
+Run by `webapp/scripts/fit_preplant_time_factor.py`, whose head block now
+reports this; solved by `solve_empirical_kill_side_centering` in
+`app/scoring/preplant_centering.py`. `solve_kill_side_centering` alongside it
+takes a `PreplantFit` from the superseded parametric model and cannot score
+this curve; it is retained, not replaced. **Nothing was activated.** The flag
+is still `False` and `IMPACT_CALCULATION_VERSION` is still 1.
+
+Measured on the full 3,124-match dataset. The local and Render databases
+return identical figures, so the "Render DB is authoritative" caution does
+not bite here.
+
+**The population, declared before the solve and reported in the output.**
+The fitting population and the scored population are not the same set and
+`c` depends on which is used, so both are named:
+
+| | count | note |
+|---|---:|---|
+| AFFECTED | **168,432** | non-self pre-plant kills in non-phantom, non-surrendered planted rounds. Reproduces `M5` exactly |
+| SCORED | **130,506** | the subset with `0 < dt <= 30`; 77.48% of affected, **76.91% of kill-order mass**. The only kills the curve moves |
+| FALLBACK | **37,926** | `dt > 30`; the curve returns exactly 1.0 and `c` is **not** applied |
+
+**`c` is solved over SCORED alone**, `c = sum(K)/sum(K*s)`. This is not Part
+4's form: Part 4 subtracts a fallback population because its legacy baseline
+is a ramp, where pre-plant today's factor is a flat 1.0. Solving over
+AFFECTED instead gives `c = 0.921710` and then marks down 37,926 kills the
+curve has no estimate for; solving over SCORED preserves the AFFECTED total
+either way, because the fallback kills are unchanged on both sides of the
+equation. Total kill-side contribution over AFFECTED is preserved exactly,
+asserted in `webapp/tests/test_preplant_empirical_centering.py`.
+
+| figure | value | against |
+|---|---|---|
+| `c` | **0.900537** | fitted output, not predeclared |
+| abs(`c`-1) | **0.099463** | the predeclared 0.05 is a **reported finding, not an assertion** -- this is roughly double it, and is recorded as a finding, not tuned |
+| effective bounds | `[0.180107, 1.530914]` | `[c*0.2, c*1.7]` |
+| realised post-centring range | `[0.756372, 1.354622]` | **the predeclared clamp is inert here** -- 0 of 130,506 scored kills reach either bound, and the curve's own extremes at strength 3.0 are `[0.8399, 1.5042]` |
+| death-side residual | **+0.4114%** | tolerance **2%**, **WITHIN** |
+
+**The death-side residual is reported, never solved for.** `mean(K*T*c*s) /
+mean(K*T) - 1` over AFFECTED. Part 4's finding-4 defect -- a baseline built
+with `for_death=False`, so the residual was measured against what the scorer
+pays *kills* -- has **no analogue here**: pre-plant the legacy factor is 1.0
+for kills and deaths alike, so `mean(K*T)` already is the death-side
+baseline. It was checked and deliberately not "fixed".
+
+At +0.41% this comes in below `M20`'s ~+0.7% expectation and well inside the
+tolerance. Note the contrast with the same script's superseded-model block,
+which reports `c = 0.8872` with a **+2.81%** residual: the empirical curve
+passes a check the parametric model it replaced fails. That is a by-the-way
+observation, not evidence for the empirical curve -- the two score different
+populations with different shapes.
+
+**`dt` is the exact fractional offset.** 99.91% of the 168,432 observations
+carry a nonzero fractional part. Both the extractor and `impact.py:281`
+compute `plant_time - kill_time` through `seconds_to_plant`; nothing floors.
+The mistake that biased Part 4's constant 0.7% low is absent here, and a
+test pins it.
+
+#### The `dt = 30` boundary: the jump is KEPT, deliberately
+
+Decided by the project owner 2026-09-09, with the measured consequences of
+each option on the table. Quantified under the chosen policy, at strength
+3.0 and post-centring:
+
+| side | factor at `dt = 30` | at `dt > 30` | jump |
+|---|---:|---:|---:|
+| attacker | 1.0123 | 1.0000 | **-0.0123** |
+| defender | 0.7564 | 1.0000 | **+0.2436** |
+
+The defender step is the real cost: two defender kills a tenth of a second
+either side of 30 differ by 32% in the time component, and 4.78% of affected
+kills sit within +/-2s of that edge. It is accepted rather than smoothed.
+
+**Why keep it.** REF is a pooled `dt > 30` category, not an observation at
+second 31 -- the saved data cannot place it, and the runtime module's own
+docstring forbids fabricating a long-distance curve from it. Every
+alternative buys continuity by inventing shape where there is no estimate.
+
+**The structural finding that decided it: a transition policy cannot remove
+the jump, only relocate it.** Because `c` is applied only inside the scored
+region, centring itself creates a step of size abs(1-`c`) at whichever edge
+that region ends. Tapering the raw curve to 1.0 by `dt=45` does not help --
+it replaces the asymmetric pair above with a symmetric `0.9139 -> 1.0000`
+step on both sides, at 45s instead of 30s:
+
+| policy | `c` | residual | step at the edge |
+|---|---:|---:|---|
+| **keep the jump (chosen)** | 0.900537 | +0.4114% | atk `1.0123->1.0000`, def `0.7564->1.0000` |
+| raw taper to 45s | 0.913930 | +0.4807% | both sides `0.9139->1.0000` |
+| taper the *centred* factor to 45s | 0.908609 | +0.4849% | none -- continuous, but invents linear shape over 21,455 kills (12.74% of AFFECTED) |
+| uniform `c` on all AFFECTED + taper | 0.921858 | +0.4744% | none in `dt`, but every `dt>45` kill in a planted round pays 0.9219x against 1.0000x in a never-planted round |
+
+The third and fourth options are genuinely continuous and were rejected on
+their costs, not on feasibility. The fourth re-opens, on evidence-free
+kills, the very planted-vs-unplanted hazard this gate exists to close.
+
+#### Self-kills: scored on the death side, never on the kill side
+
+Decided by the project owner 2026-09-09: *"self kills should be included in
+death impact but never kill impact."* **This is what `impact.py` already
+does** -- the kill side is `... if not self_kill else 0` at `impact.py:756`,
+so `_time_factor` is never evaluated there, and the death side at `:786`
+scores them. **No code change was made, and none is needed.**
+
+This deliberately diverges from Part 4, which declines self-kills outright
+(finding 6). The reason Part 4 must is absent here: Part 4 keys its table on
+`victim_is_attacker = not is_attacker`, which names the *wrong side* when
+killer and victim are the same player, whereas this curve reads
+`is_attacker` directly and it is well-defined for a self-kill.
+
+The residual exposure is that these events are scored by a constant solved
+on a population excluding them: 337 pre-plant self-kills in the affected
+rounds, 272 of them inside `0 < dt <= 30`, carrying **0.245%** of pre-plant
+death-side mass, and moving it by **+0.013%** uncentred. Recorded so the gap
+is discoverable, not treated as negligible by assumption.
+
+#### What remains open before activation
+
+Predictive validation. `use_realized=False` returns exactly 1.0, and
+`load_all_observations` defaults `use_realized_swing=False`, so **any arm
+added to the existing five-arm harness would show exactly zero difference**
+-- degenerate, not weak. The gate is deliberate: seconds-until-a-*future*
+plant is unknowable at kill time. Validating this curve needs a separately
+designed comparison, which has not been built.
+
 ### Standing design constraint: no kill is ever worth negative Impact
 
 Stated here so it is not relitigated. A kill may be worth very little; it is
@@ -499,15 +691,20 @@ amplitude(adv, side) = intercept_side + slope_side * adv
 
 - `shape()` is the shared proximity curve, 0 at the far end rising to 1 near the
   plant, **plateauing below 10s** -- the `-5..0` bucket is at or below the
-  `-10..-5` bucket in all four even states, so forcing a continued rise would fit
-  a shape the data contradicts.
+  `-10..-5` bucket in three of the four even states, and in the fourth (2v2, the
+  thinnest cell at n=488) the two are separated by less than the width of either
+  interval. Forcing a continued rise would fit a shape the data do not support.
+  **The plateau is imposed, not fitted** -- see "The fitting contract" -- and
+  that choice stands; what the data supply is the absence of a rise to fit, not
+  a demonstration of a fall. Revised 2026-09-09: this previously read "in all
+  four even states", which the replay correction (`M1`) made false.
 - Four fitted interaction parameters (slope and intercept x attacker/defender)
   plus the shape knots. Fitted with intervals, not hand-set.
 - **Continuous in advantage.** No hard cutoff at `adv = 0` -- the measured effect
   is continuous, and a step there would be an artifact of bucketing.
 - **Bounds 0.2 - 1.7.** Deliberately wide, and cheap: they bind on under 1.5% of
   kills at the floor and 2-4% at the ceiling. **Do not spend fitting effort on
-  the clamps.** The middle slope through `adv -1..+1` governs 82.6% of affected
+  the clamps.** The middle slope through `adv -1..+1` governs 83.0% of affected
   kills and is what must be fitted well.
 
 ### The fitting contract
@@ -1224,6 +1421,32 @@ sample-weighted mean of `kill_order_bonus * post_plant_factor` over post-plant
 pre-resolution kills matches its value under today's ramp. Death-side residual
 reported against the same 2% tolerance as Part 3.
 
+**"The same tolerance as Part 3" means the same 2%, not the same denominator.**
+Part 3's residual is `mean(K*T*c*s)/mean(K*T) - 1`, and its denominator is
+"what deaths pay today" -- which pre-plant happens to be a flat 1.0, so the
+legacy factor is invisible in the formula. Post-plant it is not 1.0: today's
+scorer pays a death 0.5 in `plant+38..45` where it pays the kill 1.75. The
+denominator here is therefore `mean(K*T*legacy_death_factor)`. This sentence
+was read the other way in implementation and cost a 4x understatement of the
+reported figure; see the 2026-09-09 amendment in `predeclared-values.md`.
+
+**Measured (full data, 2026-09-09):** `c = 1.287003`, `|c-1| = 0.2870`,
+effective bounds `[0.0644, 2.5740]`, over 149,937 supported and 39 fallback
+kills. Out-of-fold calibration MACE is 0.0061 for `t >= 38` and 0.0010 overall,
+both inside the predeclared 0.05. The death-side residual is **+2.59%**, which
+**exceeds** the 2% tolerance. Per this spec's own rule that is a finding and
+not something to tune away, and it is recorded rather than acted on.
+
+**`c` is solved at the EXACT event time, not the table index.** `t` indexes V,
+support and the denominator buckets and stays a whole second -- declared
+policy. The legacy baseline `c` preserves against is `1 + (kill_time -
+plant_time) / 53`, which runtime evaluates at the real timestamp, so solving it
+at `floor(t)` understates the baseline: 99.9% of the 151,141 scored kills carry
+a fractional offset (mean 0.496s) and the summed baseline came out 0.725% low.
+That biased `c` down by the same amount (1.277851 against the correct
+1.287003). Mixing the two times is easy to do and invisible in the output --
+the solve reports a clean preservation for a population runtime never scores.
+
 **Fallback cells are held at exactly 1.0 and excluded from the centred
 population.** Centring them multiplies the neutral fallback by `c`, which
 contradicts both the rule above and the test that asserts an unsupported cell
@@ -1266,7 +1489,7 @@ let either regime absorb the other's drift.
 ## Testing
 
 Part 1:
-- `is_phantom_plant` accepts the 24 known rounds and rejects the 6
+- `is_phantom_plant` accepts the 76 known rounds and rejects the 14
   Elimination-Win rounds with `plant_time > 100s`.
 - `attacking_team` reproduces the convention on 1-24 and the verified
   alternation past 24; a table-driven test over sampled real rounds asserts
@@ -1398,9 +1621,13 @@ assertions against it.**
 - A pre-plant deadline / plant-denial term. The policy conclusion stands, but
   **not on the wording used here before 2026-09-06**: `M7`'s "not elevated" was
   itself withdrawn on full data, where 2v2 late kills in never-planted rounds
-  are elevated **+4.9pp [+1.5,+8.3]** (3v3 remains null). The term stays out of
+  are elevated **+3.6pp [+0.2,+7.0]** (3v3 remains null). The term stays out of
   scope because that effect is small against proximity's 16-30pp (`M3`), not
-  because there is no effect.
+  because there is no effect. Revised 2026-09-09: the replay correction (`M1`)
+  moved this from +4.9pp [+1.5,+8.3], mostly by raising the early baseline it is
+  measured against. It still excludes zero but only just, so treat the
+  out-of-scope call as resting on the size comparison against `M3` -- which is
+  unchanged -- rather than on this interval.
 - Any player-level site-pressure ranking. Measured and unreliable.
 - Refitting `FACTOR_WEIGHTS`. Unrelated, already measured at +0.005 AUC, and
   changing two things at once would make the rescore uninterpretable.

@@ -21,10 +21,32 @@ _VALID_ROUND_COMBO_VARIANT = {
 }
 _VALID_ROUND_COMBOS = {"friends": _VALID_ROUND_COMBO_VARIANT, "all": _VALID_ROUND_COMBO_VARIANT}
 
+# The blob gained six stats after this fixture was written (PRs #39-#53), and
+# until they were added here the fixture itself was invalid: every
+# "rejects ..." test below then passed no matter what the validator did. These
+# six values are what _compute_site_stats returns for a one-match fixture.
+_VALID_OTHER_STATS = {
+    "map_side_stats": {"all": {"Bind": {"attack_wins": 8, "defense_wins": 0, "matches": 1}}, "friends": {}},
+    "halftime_conversion": {"all": {}, "friends": {}},
+    "score_reached": {"all": {"buckets": {}, "ot": {"count": 0, "total": 0}},
+                      "friends": {"buckets": {}, "ot": {"count": 0, "total": 0}}},
+    "round_streaks": {"all": {"1": {"total": 7, "win": 7}, "2": {"total": 6, "win": 6}}, "friends": {}},
+    "force_buy_stats": {
+        side: {bucket: {"total": 1, "win": 0} for bucket in ("forced", "next", "next2", "match")}
+        for side in ("all", "friends")
+    },
+    "enemy_at_11_response": {
+        side: {choice: {when: {"total": 0, "win": 0} for when in ("immediate", "next", "match")}
+               for choice in ("force_buy", "full_save")}
+        for side in ("all", "friends")
+    },
+}
+
 _VALID_BLOB = {
     "pistol_match_stats": _VALID_PISTOL_MATCH_STATS,
     "pistol_win_followup_eco": _VALID_ECO_FOLLOWUP,
     "pistol_round_combos": _VALID_ROUND_COMBOS,
+    **_VALID_OTHER_STATS,
 }
 
 

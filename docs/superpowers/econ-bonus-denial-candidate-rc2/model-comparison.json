@@ -1,0 +1,429 @@
+{
+  "old": "buy_disruption_v2_30_80",
+  "new": "buy_disruption_v2_30_80_bonus_denial",
+  "matches_requested": 3124,
+  "matches_scored": 3124,
+  "input_validation_failures": {},
+  "parity_mismatches": {},
+  "half_round_2_abstentions_bonus_model": {
+    "final_round": 52,
+    "surrender": 15
+  },
+  "abstained_rounds_by_number": {
+    "1": 3124,
+    "4": 10,
+    "5": 11,
+    "6": 13,
+    "7": 16,
+    "8": 20,
+    "9": 22,
+    "10": 25,
+    "11": 23,
+    "12": 3098,
+    "13": 3088,
+    "14": 67,
+    "15": 85,
+    "16": 123,
+    "17": 199,
+    "18": 227,
+    "19": 265,
+    "20": 315,
+    "21": 305,
+    "22": 359,
+    "23": 371,
+    "24": 778,
+    "25": 374,
+    "26": 374,
+    "27": 171,
+    "28": 171,
+    "29": 63,
+    "30": 63,
+    "31": 16,
+    "32": 16,
+    "33": 8,
+    "34": 8,
+    "35": 4,
+    "36": 4,
+    "37": 1,
+    "38": 1
+  },
+  "bonus": {
+    "denied_credits": 26369000.0,
+    "net_denied_credits": 25766900.0,
+    "qualifying_deaths": 10181.0,
+    "recovery_credits_offered": 677600.0,
+    "survivors": 16536.0,
+    "survivors_with_both": 68.0,
+    "survivors_with_credit_evidence": 816.0,
+    "survivors_with_feed_carried": 199.0,
+    "survivors_with_feed_in_round": 64.0,
+    "team_rounds": 6116.0,
+    "team_rounds_pistol_winner_won": 5047.0,
+    "unidentified_weapon_flags": 4.0
+  },
+  "by_round_number": {
+    "2": {
+      "scored_rounds": 3124,
+      "old_gross_points_per_round": 103.6,
+      "new_gross_points_per_round": 386.6
+    },
+    "3": {
+      "scored_rounds": 3124,
+      "old_gross_points_per_round": 312.1,
+      "new_gross_points_per_round": 312.1
+    },
+    "4": {
+      "scored_rounds": 3114,
+      "old_gross_points_per_round": 310.8,
+      "new_gross_points_per_round": 310.8
+    },
+    "5": {
+      "scored_rounds": 3109,
+      "old_gross_points_per_round": 274.2,
+      "new_gross_points_per_round": 274.2
+    },
+    "6": {
+      "scored_rounds": 3104,
+      "old_gross_points_per_round": 253.1,
+      "new_gross_points_per_round": 253.1
+    },
+    "7": {
+      "scored_rounds": 3098,
+      "old_gross_points_per_round": 252.9,
+      "new_gross_points_per_round": 252.9
+    },
+    "8": {
+      "scored_rounds": 3093,
+      "old_gross_points_per_round": 259.6,
+      "new_gross_points_per_round": 259.6
+    },
+    "9": {
+      "scored_rounds": 3087,
+      "old_gross_points_per_round": 264.6,
+      "new_gross_points_per_round": 264.6
+    },
+    "10": {
+      "scored_rounds": 3080,
+      "old_gross_points_per_round": 269.8,
+      "new_gross_points_per_round": 269.8
+    },
+    "11": {
+      "scored_rounds": 3076,
+      "old_gross_points_per_round": 247.0,
+      "new_gross_points_per_round": 247.0
+    },
+    "14": {
+      "scored_rounds": 2992,
+      "old_gross_points_per_round": 175.4,
+      "new_gross_points_per_round": 500.8
+    },
+    "15": {
+      "scored_rounds": 2922,
+      "old_gross_points_per_round": 309.2,
+      "new_gross_points_per_round": 309.2
+    },
+    "16": {
+      "scored_rounds": 2807,
+      "old_gross_points_per_round": 333.7,
+      "new_gross_points_per_round": 333.7
+    },
+    "17": {
+      "scored_rounds": 2614,
+      "old_gross_points_per_round": 283.5,
+      "new_gross_points_per_round": 283.5
+    },
+    "18": {
+      "scored_rounds": 2391,
+      "old_gross_points_per_round": 269.8,
+      "new_gross_points_per_round": 269.8
+    },
+    "19": {
+      "scored_rounds": 2128,
+      "old_gross_points_per_round": 267.8,
+      "new_gross_points_per_round": 267.8
+    },
+    "20": {
+      "scored_rounds": 1813,
+      "old_gross_points_per_round": 271.7,
+      "new_gross_points_per_round": 271.7
+    },
+    "21": {
+      "scored_rounds": 1508,
+      "old_gross_points_per_round": 271.1,
+      "new_gross_points_per_round": 271.1
+    },
+    "22": {
+      "scored_rounds": 1149,
+      "old_gross_points_per_round": 269.5,
+      "new_gross_points_per_round": 269.5
+    },
+    "23": {
+      "scored_rounds": 778,
+      "old_gross_points_per_round": 267.6,
+      "new_gross_points_per_round": 267.6
+    }
+  },
+  "econ_change_player_round": {
+    "n": 659290,
+    "mean": 0.19120569097058956,
+    "sd": 19.312815412601374,
+    "min": -206,
+    "p1": -78,
+    "p5": 0,
+    "p50": 0,
+    "p95": 0,
+    "p99": 75,
+    "max": 553,
+    "negative": 10237,
+    "zero": 640832,
+    "positive": 8221
+  },
+  "impact_change_player_match": {
+    "n": 31240,
+    "mean": 4.035211267605634,
+    "sd": 89.69852574446257,
+    "min": -296,
+    "p1": -195,
+    "p5": -118,
+    "p50": 0,
+    "p95": 168,
+    "p99": 307,
+    "max": 702,
+    "negative": 8293,
+    "zero": 15757,
+    "positive": 7190
+  },
+  "largest_player_match_decreases_delta_match_mp_old_new": [
+    [
+      -296,
+      1498,
+      14974,
+      9445,
+      9149
+    ],
+    [
+      -295,
+      658,
+      6579,
+      2068,
+      1773
+    ],
+    [
+      -275,
+      3060,
+      30598,
+      7205,
+      6930
+    ],
+    [
+      -270,
+      1566,
+      15652,
+      2311,
+      2041
+    ],
+    [
+      -268,
+      1731,
+      17305,
+      5374,
+      5106
+    ],
+    [
+      -267,
+      1626,
+      16252,
+      8255,
+      7988
+    ],
+    [
+      -265,
+      2566,
+      25658,
+      10379,
+      10114
+    ],
+    [
+      -264,
+      1006,
+      10058,
+      3561,
+      3297
+    ],
+    [
+      -262,
+      1489,
+      14887,
+      10428,
+      10166
+    ],
+    [
+      -262,
+      2694,
+      26937,
+      6466,
+      6204
+    ]
+  ],
+  "largest_player_match_increases_delta_match_mp_old_new": [
+    [
+      702,
+      1793,
+      17929,
+      10603,
+      11305
+    ],
+    [
+      627,
+      2664,
+      26635,
+      12470,
+      13097
+    ],
+    [
+      626,
+      732,
+      7316,
+      5463,
+      6089
+    ],
+    [
+      620,
+      170,
+      1695,
+      4182,
+      4802
+    ],
+    [
+      591,
+      711,
+      7110,
+      7567,
+      8158
+    ],
+    [
+      573,
+      768,
+      7672,
+      3102,
+      3675
+    ],
+    [
+      563,
+      2016,
+      20152,
+      6744,
+      7307
+    ],
+    [
+      553,
+      1970,
+      19700,
+      3059,
+      3612
+    ],
+    [
+      553,
+      251,
+      2509,
+      8341,
+      8894
+    ],
+    [
+      552,
+      3015,
+      30145,
+      8103,
+      8655
+    ]
+  ],
+  "within_match_rank_changes": [
+    2550,
+    31240
+  ],
+  "leaderboard": {
+    "min_matches": 20,
+    "players": 104,
+    "spearman_avg_impact_per_round": 0.9996692627760589,
+    "top20_overlap": 20,
+    "largest_rank_moves_player_id_old_new": [
+      [
+        200,
+        76,
+        79
+      ],
+      [
+        6132,
+        63,
+        60
+      ],
+      [
+        10,
+        13,
+        15
+      ],
+      [
+        437,
+        61,
+        63
+      ],
+      [
+        454,
+        25,
+        23
+      ],
+      [
+        10663,
+        11,
+        9
+      ],
+      [
+        13310,
+        23,
+        25
+      ],
+      [
+        5,
+        14,
+        13
+      ],
+      [
+        75,
+        53,
+        52
+      ],
+      [
+        153,
+        48,
+        49
+      ],
+      [
+        196,
+        94,
+        93
+      ],
+      [
+        201,
+        15,
+        14
+      ],
+      [
+        215,
+        52,
+        53
+      ],
+      [
+        226,
+        30,
+        29
+      ],
+      [
+        309,
+        49,
+        48
+      ]
+    ]
+  },
+  "snapshot": "3126:3126:",
+  "manifest_lf_sha256": "85b873cd19803c831c20930f3f3c84a8f6f6f3ff6197edb464f0182fd4156f68"
+}

@@ -63,6 +63,35 @@ class ImpactScore(Base):
     traded_teammate: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     traded_by_teammate: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
 
+    # Migration 0008 (docs/superpowers/specs/2026-09-04-econ-impact-separate-component-design.md,
+    # section 8c-i / persistence). Added ALONGSIDE econ_impact and
+    # swing_impact rather than redefining them -- the evaluation harness
+    # reads those by name, and silently changing their meaning would
+    # invalidate every stored comparison. econ_impact/swing_impact stay as
+    # written by the live scorer until a later migration drops them.
+    #
+    # kill_order_bonus: the NET kill_order_bonus (no time/econ/swing
+    # multiplier) -- the harness derives time_delta = time_impact -
+    # kill_order_bonus from this column rather than storing it twice.
+    # econ_component / econ_pickup: written as 0 until the econ component
+    # (section 6) and the weapon-pickup extension (section 11) are wired in.
+    kill_order_bonus: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    econ_component: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    econ_pickup: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+
+    # Migration 0010 (declared 2026-09-16 in the ledger). trade_credit is
+    # B * trade_credit_scale * credit as it enters leverage_component, which is
+    # itself not stored -- without it the credit can only be recovered by
+    # replaying the frozen code.
+    #
+    # scoring_version is the IMPACT_CALCULATION_VERSION that wrote the row (the
+    # rows that predate this migration: 1). It is PROVENANCE, not a guard: a
+    # checkout whose model lacks the column can update a row that already says 3
+    # and leave it saying 3. Which build may write is enforced by the release
+    # write gate's triggers, which read the writer's connection, not the row.
+    trade_credit: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    scoring_version: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+
     # The only part of the old breakdown that stays JSON: the two per-teammate
     # maps of match_player_id -> count. Both are empty on 64.1% of rows, which
     # is stored as NULL rather than two empty objects.
