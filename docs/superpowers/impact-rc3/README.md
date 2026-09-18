@@ -279,6 +279,41 @@ time DATABASE_URL="$REH" $PY scripts/export_impact_artifact.py --out "$ART/rehea
 The KR input fingerprint must equal K1''s (`inputs.cohort_fingerprint`): that, with the equal hash, is the A14
 comparison. Then serve the rehearsal from the activation checkout (`--port 8001`) and check pages.
 
+**6.4b Cache-table agreement (open item 1). THIS IS THE ONLY COPY OF THIS STEP.** Stages 6.7, 8.6 and R1.4 refer
+back here rather than repeating the command, because this release has twice shipped a defect from an instruction
+that was duplicated and then drifted.
+
+`verify-live` proves the *table*. `verify_player_cache_coverage.py` proves each cache row exists, carries the
+running code's `cache_version()` and decodes. Neither compares the cached **numbers** to the scores they were
+derived from, so a blob that decodes cleanly and disagrees with the table is served without complaint.
+
+> **The tool does not exist yet: `scripts/verify_cache_matches_scores.py` must be written before this step can
+> run.** Until it does, every reference below is a documented gap, not a step that passed. What it must do:
+>
+> - One REPEATABLE READ, READ ONLY snapshot. Bulk-read the cache rows, player/match membership, and grouped
+>   score sums and counts -- three bulk SELECTs, no kill-event replay and no bootstrap.
+> - Re-select each scope independently of the cache: `recent` = the newest `RECENT_MATCH_LIMIT` matches ordered
+>   `played_at DESC NULLS FIRST, id DESC`; `career` = all. Choose the scope's matches *before* dropping unscored
+>   ones, so an unscored match cannot silently shift the window.
+> - Compare the ordered match identities exactly, each match's Impact / kill-Impact / death-Impact averages, and
+>   the overall round-weighted Impact and death averages. Identities and counts are exact; averages are compared
+>   **pre-display** at absolute tolerance 1e-9.
+> - Exit nonzero naming player, scope and field. A requested player with no cache row is a failure, never a skip.
+> - Ship it with a test that fails on a value: feed it an in-memory blob with one average altered and show it is
+>   rejected. Do not mutate the database to prove this.
+>
+> **What it does not prove**, and must not be described as proving: whole-blob equality. Offsetting changes that
+> preserve an average, highlights and trade detail, non-Impact products, sub-tolerance differences, and any race
+> after its snapshot all remain uncovered.
+
+```bash
+# BLOCKED until scripts/verify_cache_matches_scores.py exists (see above).
+DATABASE_URL="$REH" $PY scripts/verify_cache_matches_scores.py --ids-file "$ART/rehearsal/roster-ids.txt" \
+  || echo "STOP: exit $?"
+```
+
+Run it here, after 6.4's coverage check, on the roster the prewarm just warmed.
+
 **6.4a The declared database tests, on real data.** The declaration says the database tests run against the rehearsal
 database. On a schema-only scratch database the corpus-measuring ones skip, so they run nowhere; run them here, and
 run them **after** the swap, from the activation checkout. That ordering is the point: the table now holds
@@ -445,6 +480,11 @@ Before swapping forward again, prove an interrupted swap changes nothing. In `ps
 no new `swap swapped` entry. Repeat without Ctrl+C: the swap exits 4 after 5 seconds and logs `lock timeout`. Then swap
 for real, and `verify-live`.
 
+After that rollback, and again after the final forward swap and its prewarm, run the cache-table agreement check
+**exactly as 6.4b defines it** -- do not restate the command here. A rollback is the case it exists for: the
+restored table is v1 while any cache row a background worker wrote moments earlier was derived from rc3, and
+`cache_version()` alone cannot tell those apart within one deployed generation.
+
 **6.8 R2 dry run** (rehearsal only): roll back (6.7's first command), serve with `MAINTENANCE_MODE=1` and confirm pages
 return 503 while `/health` returns 200, then:
 
@@ -463,6 +503,17 @@ Do not rerun `install_release_write_gate.py` below 0009: it refuses because `rou
 **6.9** Record every duration and the latest safe rollback time.
 
 ## 7. Stage 7: PR #67 without activation (production, site up)
+
+**7.0 Gates on entering Stage 7.** Stage 6 passing is necessary, not sufficient. All of these must be settled first,
+and each is a decision the owner records rather than something a command can prove:
+
+| gate | what must exist |
+|---|---|
+| open item 1 | `scripts/verify_cache_matches_scores.py` written, its rejection test failing on a value, and **6.4b** run clean in the rehearsal (and after 6.7's rollback) |
+| open item 2 | a written exposure and abort policy for the 8.4 -> 8.5 window: how long the swap may sit ahead of the deploy, what is watched while it does, and the trigger that turns a slow deploy into R1 |
+| open item 3 | the 8.10a inventory **designed**, with its per-player pre-freeze boundary evidence captured. It runs at 8.10, but an undesigned catch-up is a decision to lose matches |
+| chain surface | `write_gate.py` changed inside `CHAIN_PATHS` while changing no pinned source. Narrow the pathspec, record an exception, or re-freeze -- but decide, and write down which |
+| push | PR #67's head is still the pre-release commit. The release commits must be pushed before 7.3 can check out "the commit PR #67 will merge" |
 
 **7.1 Recovery gate: cleared (2026-09-17).** The Render Recovery page offers restore to any timestamp in the past 7
 days, so production can be recreated at a point before any step below. Two consequences for the steps that follow:
@@ -593,6 +644,7 @@ must list `4003003003` (schema 4, state diagram 3, fight-EV 3, Impact **3**) for
 "$PGBIN/psql" -v ON_ERROR_STOP=1 -c "DELETE FROM player_view_cache" "$PROD" \
   && time DATABASE_URL="$PROD" $PY scripts/prewarm_player_cache_ids.py prewarm --ids-file "$ART/activation/roster-ids.txt" \
   && DATABASE_URL="$PROD" $PY scripts/verify_player_cache_coverage.py --ids-file "$ART/activation/roster-ids.txt" \
+  && DATABASE_URL="$PROD" $PY scripts/verify_cache_matches_scores.py --ids-file "$ART/activation/roster-ids.txt" \
   && DATABASE_URL="$PROD" $PY -c "from app.db import SessionLocal; from app.services.site_stats import refresh_site_stats; db = SessionLocal(); refresh_site_stats(db); db.close(); print('site stats refreshed')" \
   && { [ ! -s "$ART/activation/prewarm-recent.pid" ] \
          || ! kill -0 "$(cat "$ART/activation/prewarm-recent.pid")" 2>/dev/null; } \
@@ -603,6 +655,12 @@ must list `4003003003` (schema 4, state diagram 3, fight-EV 3, Impact **3**) for
   && echo "background prewarm pid $(cat "$ART/activation/prewarm-recent.pid")" \
   || echo "STOP: exit $? -- if a worker DID start, its pid was not recorded: find and stop it by hand before any rollback"
 ```
+
+The agreement check (`verify_cache_matches_scores.py`, defined once in **6.4b**) sits inside the chain deliberately,
+after the foreground prewarm and coverage and **before** the background worker launches: a disagreement must stop the
+chain while exactly one, known set of cache rows exists. Put it after the background launch and a failure leaves a
+worker running that the `STOP` cannot recall. It covers the roster ids only; extend it to the recent ids once that
+background prewarm has finished.
 
 The background prewarm is **inside** the `&&` chain and records its pid. Both matter (external review, finding 3):
 previously it was a separate line, so a failed roster prewarm, coverage check or stats refresh printed `STOP` and then
@@ -639,6 +697,29 @@ scores; every roster page returns 200.
 **8.9 Observation hold: 48 hours, gate closed** (D11). Note the start time. R1 is complete throughout.
 
 **8.10 Reopen ingestion.** R1 expires here.
+
+**8.10a Take the catch-up inventory BEFORE opening the gate (open item 3).** `refresh_remote.ps1 -Count 5` fetches
+the five most recent matches and deduplicates on `matches.external_id`; it does not walk back to the last ingested
+one. A player with more unseen matches than `-Count` keeps the oldest missing, every later refresh deduplicates the
+same recent five, and **nothing reports the hole** -- discovery returns only the ids it fetched. Ingestion has been
+frozen since 7.4, so the hole is as deep as the freeze is long.
+
+Discovery is read-only and may run with the gate still closed; the existing CLI entry points may **not**, because
+they call committing stranded-score repair first. So the inventory runs as its own pass, before the gate opens:
+
+> **Not yet designed. This blocks reopening, not activation.** Required: a per-player lower boundary established by
+> observation (the last external_id ingested before the freeze, with its timestamp), browser-driven pagination
+> across every act intersecting the freeze window, and a recorded expected-id set per player with its cursors and
+> boundary evidence. Reconcile that set against what is in the database; report every difference.
+>
+> - Completion means **every expected id present and scored** -- not that the process exited 0.
+> - An unknown timestamp, a repeated cursor, a private profile, an unreachable boundary or a cap is **INCOMPLETE**,
+>   never success.
+> - Never stop at the first already-known match: another friend's ingestion can have placed a newer match in the
+>   database while an older one of this player's is still missing.
+> - Preserve the 5-12 s pacing. Depth and request fan-out are unmeasured; measure them on one player first.
+
+Then open the gate, and sweep again through the reopening moment so nothing that arrived mid-pass is missed.
 
 ```bash
 DATABASE_URL="$PROD" $PY scripts/install_release_write_gate.py --expect-database valowithfriendsdb --state open --note "48-hour hold over"
@@ -738,6 +819,12 @@ in SHARE, so this check costs about 16 s and stalls no page load.
 
 Never TRUNCATE (see 8.6), and prewarm from the **reverted** checkout, so the cache version it writes matches the code
 now serving.
+
+Then run the cache-table agreement check **as 6.4b defines it**, from the reverted checkout, against
+`$ART/activation/roster-ids.txt`. This is the step that catches the failure R1.1 only mitigates: a background worker
+that committed an rc3-derived blob between the cache clear and the rollback's exclusive lock leaves a row that
+decodes cleanly, carries the version the reverted code expects, and disagrees with the restored v1 scores. Stopping
+the worker makes that unlikely; only this check makes it visible.
 
 Ingestion stays closed until the owner decides. After ingestion reopens, R1 no longer applies: fix forward, or capture
 the current scores first and decide what happens to matches ingested since (B4).
