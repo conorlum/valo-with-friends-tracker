@@ -374,8 +374,15 @@ VALO_TEST_DATABASE_URL="$REH" $PY -m pytest \
   || echo "STOP: exit $?"
 ```
 
-**13 passed, 0 skipped.** A skip from `test_builder_matches_stored_values` is a finding, not noise: its message names
-the versions it found, and a mismatch there means the loaded table is not at the version this checkout writes.
+**13 passed, 1 skipped, 0 failed** -- 14 tests are collected after the deselect, not 13 (corrected 2026-09-18).
+A skip from `test_builder_matches_stored_values` is a finding, not noise: its message names the versions it found,
+and a mismatch there means the loaded table is not at the version this checkout writes.
+
+The one EXPECTED skip is `test_impact_reconstruction`, and only after the swap. It asserts the legacy identity
+`damage + (econ + time + swing)/3`, which rc3 cannot satisfy by construction: it does not store
+`leverage_component` or `assists_component`, so no identity over stored columns can reconstruct its `impact`.
+Before the swap it runs against legacy rows and must PASS; after the swap it must SKIP, naming the versions it
+found. A FAILURE there means its version filter has stopped working -- not that rc3 is wrong.
 
 The deselected test calls the scorer's committing wrapper on a real match and belongs on `valo_rc3_test`; the guard
 fails it by name if it is not deselected, rather than letting it rescore a match here (`1e0b722`).
@@ -592,8 +599,9 @@ and each is a decision the owner records rather than something a command can pro
 | open item 2 | **CLOSED 2026-09-18** by owner decision: the window is accepted, unbounded, with no abort trigger. See 8.4.0 |
 | open item 3 | **PARTIAL.** The database-side boundary is captured (2026-09-18, see 8.10a): per-player newest `external_id` and `played_at`, spanning 2026-09-09 back to 2026-06-03. The browser-side pagination design is still open. **Gates 8.10, not Stage 7** -- catch-up runs after the gate reopens, so this must be settled before then, not before the first production write |
 | chain surface | **CLOSED 2026-09-18**: exception recorded for `app/scoring/write_gate.py` alone; the pathspec is not narrowed and rc3 is not re-frozen. See the recorded exception in section 6. Any other file in that output is still a STOP |
-| 6.4a | **OPEN**: `test_impact_reconstruction` asserts the legacy identity and cannot pass on rc3 rows, which do not store `leverage_component` or `assists_component`. Decide its disposition, and correct 6.4a's stated expectation -- 14 tests are collected after the deselect, not 13 |
-| push | PR #67's head is still the pre-release commit. The release commits must be pushed before 7.3 can check out "the commit PR #67 will merge" |
+| 6.4a | **CLOSED 2026-09-18**: `test_impact_reconstruction` now runs only over rows the legacy formula produced, skipping with the versions it found otherwise (the `5ec6a93` pattern). Verified in all three states: legacy rows 659,290 / 0 breaches; rc3 + activation checkout skips; rc3 + stale checkout skips rather than reporting 618,393 false breaches. 6.4a's expectation corrected to 13 passed / 1 skipped |
+| 6.6 concurrency | **ACCEPTED UNMEASURED 2026-09-18**, owner decision. The load generator's CRLF defect is fixed and guarded by a 2xx floor, but the measurement was never retaken: re-running costs a rollback/rebuild cycle to have a swap to observe, and it measures a risk 8.4.0 already accepts (few visitors, the site may be down). **The C1 hazard is therefore untested against real concurrent load** -- the mitigation is that the swap clears the cache by DELETE, which takes no lock a page load conflicts with |
+| push | **CLOSED 2026-09-18**: the release commits are pushed; PR #67's head is the release tip |
 
 **7.1 Recovery gate: cleared (2026-09-17).** The Render Recovery page offers restore to any timestamp in the past 7
 days, so production can be recreated at a point before any step below. Two consequences for the steps that follow:

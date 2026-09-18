@@ -65,7 +65,7 @@ otherwise revert the claim. Validated: 67 tests green, both commands clean, KR2 
 
 This is exactly what the remaining-steps plan predicted could not be proven "until a table exists".
 
-### 2. `test_impact_reconstruction` asserts an identity rc3 cannot satisfy — OPEN
+### 2. `test_impact_reconstruction` asserts an identity rc3 cannot satisfy — FIXED
 
 It checks `impact = damage + (econ + time + swing)/3` using the legacy `FACTOR_WEIGHTS`. Measured:
 
@@ -78,9 +78,18 @@ Not a tuning problem: rc3 does not store `leverage_component` or `assists_compon
 stored columns can reconstruct its `impact`**. Its docstring scopes it to a weight-*fitting* workflow
 ("TASK 0 GATE … Stage A fits FACTOR_WEIGHTS"), which rc3 does not perform.
 
-*Recommended:* scope it to the generation it describes, as `5ec6a93` did for
-`test_builder_matches_stored_values`. Also correct 6.4a's stated expectation: **14** tests are collected
-after the deselect, not 13.
+*Fixed* by scoping it to the generation it describes, as `5ec6a93` did for
+`test_builder_matches_stored_values`. The boundary is not hardcoded: it is the active manifest's activation
+version, or — with no manifest active — one above what the running legacy code writes, so a stale checkout
+against a swapped table skips rather than reporting every row as broken. Verified in all three states:
+
+| state | behaviour |
+|---|---|
+| legacy rows | **runs**: 659,290 rows, 0 breaches |
+| rc3 rows + activation checkout | **skips**, naming the versions found |
+| rc3 rows + stale checkout (v2) | **skips** — not 618,393 false breaches |
+
+6.4a's stated expectation corrected to **13 passed / 1 skipped**; 14 tests are collected after the deselect.
 
 ### 3. 6.6's load generator measured nothing, and the failure read as a pass — FIXED
 
@@ -134,8 +143,8 @@ defect as finding 3, and deleting the attempt would hide that it happened.
 | open item 2 — swap→deploy window | **closed** by owner decision, recorded as 8.4.0 |
 | open item 3 — catch-up | **partial**: database boundary captured; browser pagination still to design. Gates **8.10**, not Stage 7 |
 | chain surface | **closed**: exception recorded for `write_gate.py` alone |
-| 6.4a | **open**: disposition for `test_impact_reconstruction`, and 6.4a's expectation corrected |
-| 6.6 | **open**: fixed in the runbook, but the concurrency measurement was never actually taken |
+| 6.4a | **closed**: the test now runs only over rows the legacy formula produced, verified in all three states |
+| 6.6 | **accepted unmeasured** by owner decision; the defect is fixed and guarded, the measurement was not retaken |
 
 Stage 7 also needs per-step authorization for every production write, and PR #67 must carry the release
 commits before 7.3 can check out "the commit PR #67 will merge".
