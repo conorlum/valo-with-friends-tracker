@@ -73,9 +73,9 @@ PREVIOUS = "impact_scores_v1"
 ROLLED_BACK = "impact_scores_rc3_rolled_back"
 LOG = "scoring_release_log"
 
-#: Per lock acquisition, not for the whole transaction: a swap takes two, so
-#: this bounds each wait rather than the total. A swap that cannot take a lock
-#: in this long changes nothing and is retried.
+#: Per lock acquisition, not for the whole transaction: a swap takes three lock
+#: statements and a rollback two, so this bounds each wait rather than the total.
+#: One that cannot take a lock in this long changes nothing and is retried.
 SWAP_LOCK_TIMEOUT = "5s"
 
 #: A backstop for the statements themselves. Nothing here should take seconds.
@@ -260,9 +260,13 @@ def _require_clean_verification(db) -> dict:
     if moved:
         raise Refused(f"{', '.join(moved)} changed after verification (the rows themselves differ): "
                       "verify again before swapping")
+    # row_digests goes into the swap's own log entry so a later rollback can ask
+    # whether the SOURCES still match what these scores were verified against.
+    # Without it R1's only evidence is max(matches.id), which shows nothing about
+    # an edit to an existing row (external review round 2, finding 1).
     return {"verify_entry": latest.id, "built_oid": built_oid, "max_match_id": max_match_id,
             "rows": details.get("rows"), "comparison_sha256": details.get("comparison_sha256"),
-            "artifact_sha256": details.get("artifact_sha256")}
+            "artifact_sha256": details.get("artifact_sha256"), "row_digests": digests}
 
 
 # ---- names -------------------------------------------------------------------------
@@ -668,17 +672,35 @@ def swap(db) -> dict:
     _clear_player_cache(db)
     db.execute(text(f"LOCK TABLE {LIVE} IN ACCESS EXCLUSIVE MODE"))
 
+    # The oid the live table has now is the oid impact_scores_v1 will have after
+    # the rename, so a later rollback can tell the retained table apart from one
+    # dropped and recreated under the same name.
+    retained_oid = _table_oid(db, LIVE)
     renamed = _rename_owned_objects(db, LIVE, LIVE, PREVIOUS)
     db.execute(text(f"ALTER TABLE {LIVE} RENAME TO {PREVIOUS}"))
     db.execute(text(f"ALTER TABLE {BUILT} RENAME TO {LIVE}"))
     renamed += _rename_owned_objects(db, LIVE, BUILT, LIVE)
-    result = {**verified, "renamed": renamed, "seconds": round(time.time() - started, 2)}
+    result = {**verified, "retained_oid": retained_oid, "renamed": renamed,
+              "seconds": round(time.time() - started, 2)}
     record(db, "swap", "swapped", result)
     return result
 
 
-def rollback(db) -> dict:
-    """R1. Valid only while nothing has been ingested since the swap (plan v2, D11)."""
+def rollback(db, accept_source_drift: bool = False) -> dict:
+    """R1. Valid only while nothing has been ingested since the swap (plan v2, D11).
+
+    R1 restores the scores the site had before the swap. It deliberately does
+    NOT ask whether the current rc3 scores are right -- that they are wrong is
+    the usual reason to be here. What it does ask is whether the table it is
+    about to restore is still the intended target, and whether the source rows
+    those restored scores describe are still the ones they were computed from
+    (external review round 2, finding 1: max(matches.id) shows neither, and an
+    admin correction during the hold changes no match id).
+
+    `accept_source_drift` performs the rollback anyway and records that it was
+    overridden. A recovery path that can refuse outright is its own hazard, so
+    the refusal is a stop sign, not a wall.
+    """
     started = time.time()
     if not _table_exists(db, PREVIOUS):
         raise Refused(f"{PREVIOUS} does not exist: there is nothing to roll back to")
@@ -687,6 +709,10 @@ def rollback(db) -> dict:
     _require_gate_closed(db, "rollback")
     db.execute(text(f"SET LOCAL lock_timeout = '{SWAP_LOCK_TIMEOUT}'"))
     db.execute(text(f"SET LOCAL statement_timeout = '{SWAP_STATEMENT_TIMEOUT}'"))
+    # Sources first and under SHARE, for the reason swap() gives: the digest is
+    # ~16 s over these five tables, and it must not run inside the live table's
+    # exclusive lock. Readers are unaffected.
+    db.execute(text(f"LOCK TABLE {', '.join(SOURCE_TABLES)} IN SHARE MODE"))
     _clear_player_cache(db)
     db.execute(text(f"LOCK TABLE {LIVE}, {PREVIOUS} IN ACCESS EXCLUSIVE MODE"))
     _lock_gate_closed(db, "rollback")
@@ -702,6 +728,26 @@ def rollback(db) -> dict:
                       "no longer applies (plan v2, D11) -- fix forward, or capture the current "
                       "scores first")
 
+    retained_oid = _table_oid(db, PREVIOUS)
+    expected_oid = swapped.details.get("retained_oid")
+    if expected_oid is not None and expected_oid != retained_oid:
+        raise Refused(f"{PREVIOUS} is oid {retained_oid}, but the swap retained oid {expected_oid}: "
+                      f"the table under that name is not the one the swap set aside. Inspect it "
+                      f"before restoring anything")
+
+    drift = []
+    swap_digests = swapped.details.get("row_digests") or {}
+    if swap_digests:
+        now = _row_digests(db, SOURCE_TABLES)
+        drift = sorted(name for name, digest in now.items() if swap_digests.get(name) != digest)
+    if drift and not accept_source_drift:
+        raise Refused(
+            f"{', '.join(drift)} changed since the swap, so the scores in {PREVIOUS} were computed "
+            f"from source rows that no longer exist as they were: restoring them would describe "
+            f"different inputs, and nothing afterwards would say so. Check what changed. To roll "
+            f"back regardless -- which is the right call if the rc3 scores are the emergency -- "
+            f"re-run with --accept-source-drift")
+
     renamed = _rename_owned_objects(db, LIVE, LIVE, ROLLED_BACK)
     db.execute(text(f"ALTER TABLE {LIVE} RENAME TO {ROLLED_BACK}"))
     db.execute(text(f"ALTER TABLE {PREVIOUS} RENAME TO {LIVE}"))
@@ -710,6 +756,8 @@ def rollback(db) -> dict:
     db.execute(text("UPDATE scoring_gate SET state = 'closed', note = :n, updated_at = now() "
                     "WHERE id"), {"n": "closed by swap_impact_scores.py rollback"})
     result = {"undoes_swap_entry": swapped.id, "max_match_id": max_match_id, "renamed": renamed,
+              "retained_oid": retained_oid, "source_drift": drift,
+              "accepted_source_drift": bool(drift) and accept_source_drift,
               "seconds": round(time.time() - started, 2)}
     record(db, "rollback", "rolled back", result)
     return result
@@ -752,6 +800,10 @@ def main(argv=None) -> int:
     parser.add_argument("--expect-scoring-version", type=int, default=3)
     parser.add_argument("--identity", default="rc3-runbook", help="the gate's admin identity")
     parser.add_argument("--yes", action="store_true", help="required for swap and rollback")
+    parser.add_argument("--accept-source-drift", action="store_true",
+                        help="rollback only: restore even though the source tables changed since the "
+                             "swap. The restored scores will describe inputs that have since moved; the "
+                             "log entry records that this was overridden")
     args = parser.parse_args(argv)
 
     db = SessionLocal()
@@ -809,7 +861,8 @@ def main(argv=None) -> int:
         if not args.yes:
             raise SystemExit(f"{args.command} changes the live table: pass --yes")
         try:
-            result = swap(db) if args.command == "swap" else rollback(db)
+            result = (swap(db) if args.command == "swap"
+                      else rollback(db, accept_source_drift=args.accept_source_drift))
             db.commit()
         except Refused as exc:
             db.rollback()

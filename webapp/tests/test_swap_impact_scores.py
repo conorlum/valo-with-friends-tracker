@@ -364,6 +364,73 @@ def test_rollback_refuses_once_a_match_arrived_after_the_swap(db, tmp_path):
     assert _impacts(db) == [77]
 
 
+def test_rollback_refuses_when_the_sources_changed_since_the_swap(db, tmp_path):
+    """External review round 2, finding 1. R1's only evidence used to be
+    max(matches.id), which an edit to an EXISTING row does not move.
+
+    The admin identity may correct a round during the 48-hour hold -- that is
+    what it is for. If it does, the scores in impact_scores_v1 were computed
+    from rows that no longer exist as they were, and restoring them puts back
+    numbers that describe different inputs while logging `rollback rolled back`
+    as though nothing were odd.
+    """
+    keys, _ = _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    swap_tool.swap(db)
+    db.commit()
+    db.execute(text("UPDATE round_player_stats SET kills = kills + 1 "
+                    "WHERE round_id = :r AND match_player_id = :m"),
+               {"r": keys[0][0], "m": keys[0][1]})
+    db.commit()
+
+    with pytest.raises(swap_tool.Refused, match="round_player_stats changed since the swap"):
+        swap_tool.rollback(db)
+    db.rollback()
+    assert _impacts(db) == [77], "the rollback must not have happened"
+
+
+def test_rollback_accepts_source_drift_when_told_to_and_records_it(db, tmp_path):
+    """A recovery path that can refuse outright is its own hazard: if the rc3
+    scores are the emergency, drifted sources must not strand production on
+    them. The override performs the rollback and writes the drift into the log,
+    so the decision survives the incident."""
+    keys, _ = _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    swap_tool.swap(db)
+    db.commit()
+    db.execute(text("UPDATE round_player_stats SET kills = kills + 1 "
+                    "WHERE round_id = :r AND match_player_id = :m"),
+               {"r": keys[0][0], "m": keys[0][1]})
+    db.commit()
+
+    result = swap_tool.rollback(db, accept_source_drift=True)
+    db.commit()
+    assert _impacts(db) == [10], "the v1 scores must be restored"
+    assert result["source_drift"] == ["round_player_stats"]
+    assert result["accepted_source_drift"] is True
+    logged = swap_tool._latest(db, ("rollback", "rolled back")).details
+    assert logged["source_drift"] == ["round_player_stats"]
+    assert logged["accepted_source_drift"] is True
+
+
+def test_rollback_refuses_a_retained_table_that_is_not_the_one_set_aside(db, tmp_path):
+    """The swap records the oid the live table had, which is the oid
+    impact_scores_v1 carries afterwards. A table dropped and recreated under
+    that name has the right name and the wrong contents."""
+    _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    swap_tool.swap(db)
+    db.commit()
+    db.execute(text(f"ALTER TABLE {swap_tool.PREVIOUS} RENAME TO impact_scores_v1_moved"))
+    db.execute(text(f"CREATE TABLE {swap_tool.PREVIOUS} "
+                    f"(LIKE impact_scores_v1_moved INCLUDING ALL)"))
+    db.commit()
+
+    with pytest.raises(swap_tool.Refused, match="not the one the swap set aside"):
+        swap_tool.rollback(db)
+    db.rollback()
+    db.execute(text(f"DROP TABLE {swap_tool.PREVIOUS}"))
+    db.execute(text(f"ALTER TABLE impact_scores_v1_moved RENAME TO {swap_tool.PREVIOUS}"))
+    db.commit()
+
+
 def test_a_refused_second_swap_does_not_hide_the_real_one_from_rollback(db, tmp_path):
     _built_and_verified(db, tmp_path, v1=10, rc3=77)
     swap_tool.swap(db)

@@ -715,6 +715,17 @@ DATABASE_URL="$PROD" $PY scripts/swap_impact_scores.py state --expect-database v
 
 `state` must show a `rollback rolled back` entry. Exit 4 is a lock timeout that changed nothing: run it again.
 
+**Exit 3 naming a source table is not a lock problem, and is not retried.** Rollback re-digests the five source
+tables against the digests the swap recorded, and checks that `impact_scores_v1` is still the table the swap set
+aside, by oid (external review round 2, finding 1). A refusal means someone corrected a round during the hold, so the
+scores about to be restored were computed from rows that have since moved — `max(matches.id)` cannot see that,
+because an edit to an existing row does not change it. **Find out what changed first.**
+
+If the rc3 scores are themselves the emergency, drifted sources must not strand production on them. Re-run with
+`--accept-source-drift`, which performs the rollback and writes `"accepted_source_drift": true` and the table names
+into the log entry, so the decision is on the record rather than in someone's memory. Rollback takes its source locks
+in SHARE, so this check costs about 16 s and stalls no page load.
+
 **R1.3 Revert the activation PR** (site stays up) and wait for the deploy to go live.
 
 **R1.4 Clear and refill the cache, naming the database** — the previous wording passed no database at all:
