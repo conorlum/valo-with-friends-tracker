@@ -228,6 +228,33 @@ clean checkout of it:
 > freeze, so the manifest's behavioural digests still verify and K5 must still reproduce the chain hash. The export
 > refuses to run if they do not.
 >
+> **RECORDED EXCEPTION, owner decision 2026-09-18: `app/scoring/write_gate.py`.** From commit `1894534` this check
+> no longer prints the clean line. It prints:
+>
+> ```
+> STOP: the chain surface changed since the freeze:
+>  webapp/app/scoring/write_gate.py | 13 +++++++++++++
+> ```
+>
+> **That one file, and only that file, is an accepted difference. Any other name in that output is a real STOP.**
+>
+> Why it is accepted, on evidence rather than judgement:
+>
+> - It is **not a pinned source.** The manifest's `source_digests` names 13 files; `write_gate.py` is not among them
+>   and appears nowhere in the manifest. `verify_manifest(load_manifest(...))` passes, with 0 of 13 differing.
+> - It is **not in the scorer's import graph.** Nothing in `app/scoring` or `app/models` imports it except
+>   `ingest_preflight`; it imports only `weakref`, `dataclasses` and `sqlalchemy`. It cannot change a scored value.
+> - It is **the same category the runbook already accepts for the swap tool** -- release plumbing that moves rows
+>   and gates writes rather than scoring them, covered by no hash in the chain. The only reason it trips this check
+>   and the swap tool does not is that it happens to live under `app/scoring/` while the swap tool lives under
+>   `scripts/`. The pathspec is a proxy for "the scoring surface", and this is a false positive of that proxy.
+> - The change itself is what made `verify-build` and `verify-live` able to run at all (see the commit message).
+>
+> The pathspec was deliberately **not** narrowed to the 13 pinned files. It is broader than the manifest on purpose,
+> and a check that has already caught a real defect should not be loosened to silence a known, reasoned exception.
+> Re-freezing was also rejected: it would invalidate four completed reviews to restate a digest for a file the
+> manifest does not cover.
+>
 > **The `:/` prefixes and the file count are both load-bearing** (external review round 2, finding 3). Git pathspecs
 > resolve against the *current directory*, and section 0 says to run everything from `webapp/` -- so the earlier form,
 > `-- webapp/app/scoring ...`, silently meant `webapp/webapp/app/scoring`, matched nothing, and printed nothing. It
@@ -287,8 +314,9 @@ that was duplicated and then drifted.
 running code's `cache_version()` and decodes. Neither compares the cached **numbers** to the scores they were
 derived from, so a blob that decodes cleanly and disagrees with the table is served without complaint.
 
-> **The tool does not exist yet: `scripts/verify_cache_matches_scores.py` must be written before this step can
-> run.** Until it does, every reference below is a documented gap, not a step that passed. What it must do:
+> **Written 2026-09-18 as `scripts/verify_cache_matches_scores.py`; first clean run recorded below.** It cost
+> **4.4 s** for the 12-player roster over both scopes on the rehearsal restore -- the agent's design note listed
+> this as "seconds, unverified", and that is the measurement. What it does:
 >
 > - One REPEATABLE READ, READ ONLY snapshot. Bulk-read the cache rows, player/match membership, and grouped
 >   score sums and counts -- three bulk SELECTs, no kill-event replay and no bootstrap.
@@ -307,12 +335,23 @@ derived from, so a blob that decodes cleanly and disagrees with the table is ser
 > after its snapshot all remain uncovered.
 
 ```bash
-# BLOCKED until scripts/verify_cache_matches_scores.py exists (see above).
 DATABASE_URL="$REH" $PY scripts/verify_cache_matches_scores.py --ids-file "$ART/rehearsal/roster-ids.txt" \
+    --expect-database valo_rc3_rehearsal \
   || echo "STOP: exit $?"
 ```
 
-Run it here, after 6.4's coverage check, on the roster the prewarm just warmed.
+Run it here, after 6.4's coverage check, on the roster the prewarm just warmed. Exit 0 prints
+`cache agrees with scores: N player-scopes`; exit 1 names each player, scope and field that disagrees; exit 3 is
+the wrong database.
+
+**Two orderings it had to get right, recorded because getting either backwards produces a difference that looks
+real and is not.** The scope window is chosen **newest first** (`played_at DESC NULLS FIRST, id DESC`, first
+`RECENT_MATCH_LIMIT` for `recent`) and taken *before* unscored matches are dropped, because the profile builder
+skips a scoreless match_player only afterwards. The comparison list is then **reversed to oldest first**, because
+`PlayerProfile.matches` is oldest-first by the contract in
+`player_profile_types.build_player_profile_from_match_data`'s docstring, and the router displays
+`reversed(profile.matches)`. The first run of this tool reported all 24 player-scopes as "same matches in a
+different order" for exactly this reason -- the tool was wrong, the cache was right.
 
 **6.4a The declared database tests, on real data.** The declaration says the database tests run against the rehearsal
 database. On a schema-only scratch database the corpus-measuring ones skip, so they run nowhere; run them here, and
@@ -509,10 +548,11 @@ and each is a decision the owner records rather than something a command can pro
 
 | gate | what must exist |
 |---|---|
-| open item 1 | `scripts/verify_cache_matches_scores.py` written, its rejection test failing on a value, and **6.4b** run clean in the rehearsal (and after 6.7's rollback) |
+| open item 1 | **CLOSED 2026-09-18**: `scripts/verify_cache_matches_scores.py` written, 10 tests including two mutation proofs, and 6.4b run clean on the rehearsal (24 player-scopes, 4.4 s). Still to do: run it again after 6.7's rollback |
 | open item 2 | **CLOSED 2026-09-18** by owner decision: the window is accepted, unbounded, with no abort trigger. See 8.4.0 |
-| open item 3 | the 8.10a inventory **designed**, with its per-player pre-freeze boundary evidence captured. It runs at 8.10, but an undesigned catch-up is a decision to lose matches |
-| chain surface | `write_gate.py` changed inside `CHAIN_PATHS` while changing no pinned source. Narrow the pathspec, record an exception, or re-freeze -- but decide, and write down which |
+| open item 3 | **PARTIAL.** The database-side boundary is captured (2026-09-18, see 8.10a): per-player newest `external_id` and `played_at`, spanning 2026-09-09 back to 2026-06-03. The browser-side pagination design is still open. **Gates 8.10, not Stage 7** -- catch-up runs after the gate reopens, so this must be settled before then, not before the first production write |
+| chain surface | **CLOSED 2026-09-18**: exception recorded for `app/scoring/write_gate.py` alone; the pathspec is not narrowed and rc3 is not re-frozen. See the recorded exception in section 6. Any other file in that output is still a STOP |
+| 6.4a | **OPEN**: `test_impact_reconstruction` asserts the legacy identity and cannot pass on rc3 rows, which do not store `leverage_component` or `assists_component`. Decide its disposition, and correct 6.4a's stated expectation -- 14 tests are collected after the deselect, not 13 |
 | push | PR #67's head is still the pre-release commit. The release commits must be pushed before 7.3 can check out "the commit PR #67 will merge" |
 
 **7.1 Recovery gate: cleared (2026-09-17).** The Render Recovery page offers restore to any timestamp in the past 7
@@ -729,10 +769,30 @@ frozen since 7.4, so the hole is as deep as the freeze is long.
 Discovery is read-only and may run with the gate still closed; the existing CLI entry points may **not**, because
 they call committing stranded-score repair first. So the inventory runs as its own pass, before the gate opens:
 
-> **Not yet designed. This blocks reopening, not activation.** Required: a per-player lower boundary established by
-> observation (the last external_id ingested before the freeze, with its timestamp), browser-driven pagination
-> across every act intersecting the freeze window, and a recorded expected-id set per player with its cursors and
-> boundary evidence. Reconcile that set against what is in the database; report every difference.
+**The database half of the boundary is captured** (2026-09-18, read-only against production):
+`$ART/activation/catchup-boundary-2026-09-18.tsv`, one row per roster player with player id, match count, newest
+`played_at`, newest `external_id` and newest match id. All 12 roster names resolve to a player row.
+
+| player | matches | newest played_at | newest match |
+|---|---|---|---|
+| NPrightdolphin#NA1, Osmin#NA1, Momomimo#hru, Najumi#NPC | 344 / 217 / 212 / 276 | 2026-09-09 | 3133 |
+| Deemo#Derf, DoubleBl1nd#BEEF | 202 / 196 | 2026-09-01 | 3129 |
+| Beef Shortrib#Galbi | 129 | 2026-08-31 | 3121 |
+| ternstyle#GIGI | 159 | 2026-08-29 | 3120 |
+| flatcat#woof | 46 | 2026-08-29 | 3127 |
+| Yosher#Toshi | 142 | 2026-08-28 | 3122 |
+| SambuUwU#NA1 | 101 | 2026-08-25 | 3111 |
+| zopecow#1570 | 116 | **2026-06-03** | 177 |
+
+Two things this makes concrete. **The boundary is not one date** -- it is per player, spanning 2026-09-09 back to
+2026-06-03, so a single global "since" cutoff would either re-walk months of history for most of the roster or
+miss matches for `zopecow#1570`. And **the corpus is already 9 days stale** as of capture, before Stage 7, Stage 8
+and the 48-hour hold have run: whatever `-Count 5` is asked to cover at 8.10 will be a gap of well over two weeks.
+
+> **The browser half is not yet designed. This blocks reopening, not activation.** Still required: browser-driven
+> pagination across every act intersecting each player's own freeze window, down to that player's captured
+> `external_id` above, and a recorded expected-id set per player with its cursors and boundary evidence.
+> Reconcile that set against what is in the database; report every difference.
 >
 > - Completion means **every expected id present and scored** -- not that the process exited 0.
 > - An unknown timestamp, a repeated cursor, a private profile, an unreachable boundary or a cap is **INCOMPLETE**,
