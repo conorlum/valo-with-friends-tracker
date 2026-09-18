@@ -1,9 +1,16 @@
 # Impact rc3 — release runbook
 
-Status (2026-09-17): **Stages 1 to 5 done. rc3 is frozen at `82d8e6b`, K4 closed the chain through the frozen
-manifest, the reviews pass, and `SUMMARY.md` is written. NOT active, nothing in production changed** (alembic 0007,
-no gate; the rehearsal database is restored, migrated and gated, and recovery is confirmed for 7 days). Next: the
-owner approves `SUMMARY.md`, then section 6, the rehearsal.
+Status (2026-09-18): **Stages 1 to 6 done. NOT active, nothing in production changed** -- re-checked after the
+rehearsal: `alembic 0007, 3125 matches (max id 3133), gate absent`.
+
+rc3 is frozen at `82d8e6b`, K4 closed the chain through the frozen manifest, the reviews pass, and the rehearsal
+ran end to end on `valo_rc3_rehearsal`: export -> build -> verify-build -> swap -> verify-live -> prewarm ->
+coverage, plus the gate probes, the rollback path and the interrupted-swap proofs. **See `STAGE6-RESULTS.md`.**
+It found three defects, one of which made `verify-build` and `verify-live` impossible to run at all (fixed,
+`1894534`); none were in the scoring, and the chain hash has now been reproduced six times.
+
+Next: settle the two items `STAGE6-RESULTS.md` leaves open (6.4a's legacy-identity test, and whether to re-run
+6.6 now that its load generator is fixed), then **7.0**, which lists every gate on entering Stage 7.
 
 rc3 is the locked Impact formula: A 1 (damage) / B 2.5 (leverage) / C 2.5 (econ) / D 100 (assists), trade credit on at
 `trade_credit_scale` 1.0, econ model `buy_disruption_v2_30_80_bonus_denial`, realized swing, timing candidates off. Its
@@ -483,17 +490,50 @@ import sys
 import urllib.parse
 from app.db import SessionLocal
 from app.models import Player
+# LF, not CRLF. On Windows print() writes \r\n, `read -r path` keeps the \r, and
+# every URL below is then malformed -- curl fails before connecting and reports
+# 000 in ~17 microseconds. Measured 2026-09-18: 899 samples, every one of them 000.
+sys.stdout.reconfigure(newline="\n")
 db = SessionLocal()
 for line in open(sys.argv[1], encoding="utf-8"):
     if line.strip():
         print("/players/" + urllib.parse.quote(db.get(Player, int(line)).display_name, safe=""))
 EOF
+head -2 "$ART/rehearsal/recent-paths.txt" | cat -A | grep -q '\^M' \
+  && echo "STOP: recent-paths.txt has CRLF line endings; every request would fail as 000"
 for i in $(seq 1 300); do while read -r path; do
   curl -s -o /dev/null -w "%{http_code} %{time_total} $(date +%T) $path\n" "http://127.0.0.1:8001$path"
 done < "$ART/rehearsal/recent-paths.txt"; done | tee "$ART/rehearsal/latency.txt"
 ```
 
 Most of these pages miss the cache (the swap emptied it), which is the path that reads the cache and then the scores.
+
+**Stop the loop once the swap and the rollback have both been observed, then judge the run with this -- never by
+reading the file** (2026-09-18). The loop is a load generator, not a benchmark: 300 passes over ~2,238 paths is
+roughly 93 hours, and one pass alone is ~93 minutes.
+
+```bash
+DATABASE_URL="" awk '
+  { total++; code=$1; t=$2+0
+    if (code ~ /^2/) ok++; else if (code ~ /^5/) bad++; else if (code == "000") dead++; else other++
+    if (t > slowest) { slowest = t; slowpath = $4 }
+    if (t > 5) stalled++ }
+  END {
+    printf "samples %d  2xx %d  5xx %d  no-connection %d  other %d  stalled>5s %d  slowest %.2fs %s\n",
+           total, ok, bad, dead, other, stalled, slowest, slowpath
+    fail = 0
+    if (ok < 200)   { print "STOP: fewer than 200 successful responses -- this run measured NOTHING"; fail = 1 }
+    if (dead > 0)   { print "STOP: " dead " requests never connected (000)"; fail = 1 }
+    if (bad > 0)    { print "STOP: " bad " 5xx responses"; fail = 1 }
+    if (stalled > 0){ print "STOP: " stalled " requests took over 5s"; fail = 1 }
+    if (!fail) print "concurrency: clean"
+  }' "$ART/rehearsal/latency.txt"
+```
+
+**The 2xx floor is the point of this block, not decoration** (2026-09-18). 6.6's stated acceptance -- no deadlock,
+no 5xx, nothing stalled over 5 s -- is satisfied *perfectly* by a run in which nothing connected at all, which is
+exactly what the CRLF defect above produced. "No 5xx" must never be reachable by "no responses". An assertion that
+cannot fail is worse than no assertion, because it is recorded as evidence.
 
 No deadlock, no 5xx, and no request stalled more than 5 seconds per lock acquisition beyond the baseline (the swap
 takes three, and clears the cache by DELETE, which takes no lock a page load conflicts with). A swap that cannot take its locks
