@@ -168,9 +168,20 @@ def _row_digests(db, tables) -> dict:
     pg_stat_force_next_flush() first, which excluded exactly the failing case
     (external review, finding 2).
 
-    hashtextextended over each row's text form changes if any byte of any row
-    changes; summing is order-independent, and sum(bigint) is numeric, so it
+    hashtextextended over each row's text form moves for any realistic change to
+    any row; summing is order-independent, and sum(bigint) is numeric, so it
     cannot overflow. The sum is kept as a string because numeric is not JSON.
+
+    It is a probabilistic change detector, NOT proof of equality, and must not
+    be described as one (external review round 2). These are finite,
+    non-cryptographic 64-bit hashes: individual collisions and compensating
+    changes are mathematically possible, and an edit that is later restored to
+    identical contents is invisible to it by design. No accidental
+    score-relevant mutation in this schema is known to evade it, and against
+    the maintenance edits this guards it is a large improvement over counters
+    -- but it is not cryptographic artifact identity, and it is not an audit of
+    every intervening write. The chain's SHA-256 over the exported bytes is the
+    artifact identity; this is the "did anything move under us" check.
     Measured over the real corpus: about 31 s for the staged table and the five
     source tables together, which is why swap() digests BEFORE it locks the
     live table (see there).
@@ -627,7 +638,19 @@ def swap(db) -> dict:
                       "(see `state`); a second swap would have nowhere to put the live table")
     db.execute(text(f"SET LOCAL lock_timeout = '{SWAP_LOCK_TIMEOUT}'"))
     db.execute(text(f"SET LOCAL statement_timeout = '{SWAP_STATEMENT_TIMEOUT}'"))
-    # Three lock acquisitions, in this order, and the order is the design.
+    # Three lock statements, in this order, and the order is the design. (Three
+    # statements, not three locks: the first takes all five source tables.)
+    #
+    # This order is NOT globally deadlock-free, and no claim is made that it is
+    # (external review round 2). install_release_write_gate.py rebuilds triggers
+    # starting at impact_scores and ending at the sources -- the opposite order
+    # -- so a gate install overlapping a swap can cycle: the installer holds the
+    # live table and waits for a source table this transaction holds, while this
+    # transaction waits for the live table. PostgreSQL aborts one of them, so
+    # nothing commits half-done, but the abort arrives as a generic error and
+    # NOT as exit 4, so it takes the state-inspection path. The runbook is
+    # sequential and never overlaps these tools; do not run gate installation,
+    # a swap or a rollback concurrently.
     #
     # The staged table and the sources come first: SHARE stops writers without
     # stopping readers, so the site is untouched while _require_clean_verification

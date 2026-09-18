@@ -710,9 +710,15 @@ def test_a_row_digest_moves_on_an_edit_that_leaves_the_row_count_alone(db, tmp_p
 
     That lag cannot be forced from a test here -- pg_stat_reset_* needs
     privileges this database's role does not have -- so what is pinned instead
-    is the property that makes the lag irrelevant: the digest is computed from
-    the row contents, and moves for an edit that changes NO row count and no
-    row identity. A count-only or statistics-only guard cannot do this.
+    is a necessary property: the digest is computed from the row contents, and
+    moves for an edit that changes NO row count and no row identity.
+
+    What this test does NOT establish, and an earlier version of this docstring
+    wrongly claimed (external review round 2): independence from the statistics.
+    A counter-based guard would also notice THIS edit, once its statistics
+    caught up -- n_tup_upd moves for any update. Independence comes from the
+    implementation reading rows rather than pg_stat_all_tables, not from this
+    assertion. What the assertion rules out is a count-only guard.
     """
     keys, _ = _built_and_verified(db, tmp_path, v1=10, rc3=77)
     before = swap_tool._row_digests(db, (swap_tool.BUILT,))

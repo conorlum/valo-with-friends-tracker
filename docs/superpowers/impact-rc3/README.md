@@ -215,12 +215,25 @@ clean checkout of it:
 > tests — assert that rather than trust it, and stop if anything prints:
 >
 > ```bash
-> git diff --stat 82d8e6b HEAD -- webapp/app/scoring webapp/app/models webapp/scripts/export_impact_artifact.py
+> CHAIN_PATHS=":/webapp/app/scoring :/webapp/app/models :/webapp/scripts/export_impact_artifact.py"
+> n=$(git ls-tree -r --name-only 82d8e6b -- $CHAIN_PATHS | wc -l)
+> [ "$n" -gt 0 ] || echo "STOP: the pathspec matched no files at the freeze -- an empty diff would prove nothing"
+> git diff --quiet 82d8e6b HEAD -- $CHAIN_PATHS \
+>   && echo "chain surface identical to the freeze ($n files compared)" \
+>   || { echo "STOP: the chain surface changed since the freeze:"; git diff --stat 82d8e6b HEAD -- $CHAIN_PATHS; }
 > ```
 >
-> Empty output means the surface the chain depends on -- the scorer, the model the rows are shaped by, and the
-> exporter that hashes them -- is byte-identical to the freeze, so the manifest's behavioural digests still verify and
-> K5 must still reproduce the chain hash. The export refuses to run if they do not.
+> It must print `chain surface identical to the freeze (36 files compared)`. That means the surface the chain depends
+> on -- the scorer, the model the rows are shaped by, and the exporter that hashes them -- is byte-identical to the
+> freeze, so the manifest's behavioural digests still verify and K5 must still reproduce the chain hash. The export
+> refuses to run if they do not.
+>
+> **The `:/` prefixes and the file count are both load-bearing** (external review round 2, finding 3). Git pathspecs
+> resolve against the *current directory*, and section 0 says to run everything from `webapp/` -- so the earlier form,
+> `-- webapp/app/scoring ...`, silently meant `webapp/webapp/app/scoring`, matched nothing, and printed nothing. It
+> printed nothing for a file that had changed by 64 lines, and that empty output was the "proof" of equality. `:/`
+> anchors each path at the repository root from any directory, and the count refuses to let an empty diff mean
+> anything until the paths are known to match real files.
 >
 > **The paths are narrow on purpose.** The swap tool has deliberately changed since the freeze (external review,
 > finding 2: its stale-verification guard now reads the rows instead of lagging statistics), so a diff over all of
@@ -581,11 +594,14 @@ must list `4003003003` (schema 4, state diagram 3, fight-EV 3, Impact **3**) for
   && time DATABASE_URL="$PROD" $PY scripts/prewarm_player_cache_ids.py prewarm --ids-file "$ART/activation/roster-ids.txt" \
   && DATABASE_URL="$PROD" $PY scripts/verify_player_cache_coverage.py --ids-file "$ART/activation/roster-ids.txt" \
   && DATABASE_URL="$PROD" $PY -c "from app.db import SessionLocal; from app.services.site_stats import refresh_site_stats; db = SessionLocal(); refresh_site_stats(db); db.close(); print('site stats refreshed')" \
+  && { [ ! -s "$ART/activation/prewarm-recent.pid" ] \
+         || ! kill -0 "$(cat "$ART/activation/prewarm-recent.pid")" 2>/dev/null; } \
   && { DATABASE_URL="$PROD" $PY scripts/prewarm_player_cache_ids.py prewarm --ids-file "$ART/activation/recent-ids.txt" \
          > "$ART/activation/prewarm-recent.log" 2>&1 & \
-       echo $! > "$ART/activation/prewarm-recent.pid"; \
-       echo "background prewarm pid $(cat "$ART/activation/prewarm-recent.pid")"; } \
-  || echo "STOP: exit $? -- the background prewarm was NOT started"
+       echo $! > "$ART/activation/prewarm-recent.pid"; } \
+  && [ -s "$ART/activation/prewarm-recent.pid" ] \
+  && echo "background prewarm pid $(cat "$ART/activation/prewarm-recent.pid")" \
+  || echo "STOP: exit $? -- if a worker DID start, its pid was not recorded: find and stop it by hand before any rollback"
 ```
 
 The background prewarm is **inside** the `&&` chain and records its pid. Both matter (external review, finding 3):
@@ -661,10 +677,34 @@ until its transaction ends and can write version-3 cache rows *after* the restor
 capture the pid when 8.6 launches it, and wait.
 
 ```bash
-kill "$(cat "$ART/activation/prewarm-recent.pid")" 2>/dev/null
-while kill -0 "$(cat "$ART/activation/prewarm-recent.pid")" 2>/dev/null; do sleep 1; done
-echo "background prewarm stopped"
+PIDFILE="$ART/activation/prewarm-recent.pid"
+if [ ! -s "$PIDFILE" ]; then
+  echo "STOP: no recorded prewarm pid. Either 8.6 never launched one, or it launched one it failed to record --"
+  echo "      do not assume the former. Find any running prewarm and stop it before rolling back."
+else
+  pid="$(cat "$PIDFILE")"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "recorded prewarm pid $pid is not running"
+  else
+    kill "$pid"
+    for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+    kill -0 "$pid" 2>/dev/null \
+      && echo "STOP: prewarm pid $pid is still alive after 30s -- do not roll back with it running" \
+      || echo "prewarm pid $pid stopped"
+  fi
+fi
 ```
+
+Three outcomes, told apart on purpose (external review round 2, finding 2). The earlier version ran `kill` on whatever
+`cat` produced and then printed "background prewarm stopped" **unconditionally** -- with no pid file at all it reported
+success having stopped nothing. A missing pid file is now a `STOP`, not a shrug, because 8.6 can start a worker and
+fail to record it, and "no pid file" cannot distinguish that from "never launched".
+
+**The pid stop is a courtesy, not the fence.** Killing a process does not prove its PostgreSQL backend has finished
+unwinding, and nothing here prevents a *second* worker being started. The barrier that actually protects the rollback
+is its own ACCESS EXCLUSIVE on the score table: a still-active reader makes the rename wait, and then time out at
+`lock_timeout` having changed nothing, rather than rename out from under it. Stopping the worker first is what keeps
+it from writing version-3 cache rows *after* the restore.
 
 **R1.2 Restore the score table** — this is the step that actually undoes the swap:
 
