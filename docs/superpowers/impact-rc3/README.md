@@ -510,7 +510,7 @@ and each is a decision the owner records rather than something a command can pro
 | gate | what must exist |
 |---|---|
 | open item 1 | `scripts/verify_cache_matches_scores.py` written, its rejection test failing on a value, and **6.4b** run clean in the rehearsal (and after 6.7's rollback) |
-| open item 2 | a written exposure and abort policy for the 8.4 -> 8.5 window: how long the swap may sit ahead of the deploy, what is watched while it does, and the trigger that turns a slow deploy into R1 |
+| open item 2 | **CLOSED 2026-09-18** by owner decision: the window is accepted, unbounded, with no abort trigger. See 8.4.0 |
 | open item 3 | the 8.10a inventory **designed**, with its per-player pre-freeze boundary evidence captured. It runs at 8.10, but an undesigned catch-up is a decision to lose matches |
 | chain surface | `write_gate.py` changed inside `CHAIN_PATHS` while changing no pinned source. Narrow the pathspec, record an exception, or re-freeze -- but decide, and write down which |
 | push | PR #67's head is still the pre-release commit. The release commits must be pushed before 7.3 can check out "the commit PR #67 will merge" |
@@ -600,6 +600,28 @@ time DATABASE_URL="$PROD" $PY scripts/swap_impact_scores.py build --expect-datab
 DATABASE_URL="$PROD" $PY scripts/prewarm_player_cache_ids.py capture --roster-out "$ART/activation/roster-ids.txt" \
     --recent-out "$ART/activation/recent-ids.txt" || echo "STOP: exit $? (1 = a roster name matched no player)"
 ```
+
+**8.4.0 Exposure policy for the 8.4 -> 8.5 window (open item 2). DECIDED by the owner, 2026-09-18: accept it.**
+
+Between the swap and the deploy going live, `impact_scores` holds rc3 while the running code is still
+`IMPACT_CALCULATION_VERSION` 2. Pages read Impact from the table rather than computing it, so they show rc3 numbers
+under v2 code, and any cache row written in the window is stamped `...002`.
+
+The owner's decision: **the window is not time-bounded, there is no abort trigger, and a slow deploy is not by
+itself a reason to reach for R1.** The site has few visitors and may be degraded or down for as long as the window
+takes. Log whatever errors occur and clean up afterwards.
+
+That is safe because nothing is left behind to find later: rows written in the window carry `...002`, which the
+deployed v3 code rejects at decode, **and** 8.6 deletes the whole cache before prewarming. Two independent
+mechanisms, either sufficient. Nothing in the serving path computes Impact -- it is read from the table -- so no
+page can blend a v2 calculation with rc3 scores.
+
+What still applies: a swap that cannot take its locks exits 4 having changed nothing, and is simply retried. R1
+remains available on its own merits (a bad swap), not as a response to deploy latency.
+
+**If you would rather have no exposure at all**, the switch already exists and 6.8 rehearses it: set
+`MAINTENANCE_MODE=1` before 8.4 and remove it once 8.5 is live. Player pages then return 503 and `/health` stays
+200, so no reader can consume a window-era cache row. Given the decision above this is optional, not required.
 
 **8.4 Swap**, then verify what the site now reads:
 
