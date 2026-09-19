@@ -2583,3 +2583,96 @@ and beginning a version 4 is a separate release with its own runbook.
 - **`paired_bootstrap_delta` is a pure-Python loop** over 2,000 draws x ~67,000 rows. Once the replays moved local it
   became the single largest compute cost in this session — larger than all 30 corpus passes combined. Vectorising it
   is a clear win; it lives in `app/services/stats_math.py`, which this session was scoped out of touching.
+
+### 2026-09-19 (CORRECTION) — the "missing resolution flags" finding was wrong
+
+The RESULT entry above claims that 66.1% of planted rounds carry neither `exploded` nor `defused`, that the
+post-resolution branch therefore "never fires for two-thirds of planted rounds", and that kills after a decided round
+in that majority "get no discount at all today". It calls this "the strongest lead this session produced".
+
+**That is wrong, and it is withdrawn.** The owner's question — after a plant, the round can only end by detonation or
+defuse — is what exposed it. There is a third ending, and it is the common one:
+
+| planted round ends by | winner | rounds |
+|---|---|---:|
+| **elimination** | **attacker** | **28,695** |
+| defuse | defender | 12,498 |
+| detonate | attacker | 2,243 |
+| time (phantom plant) | defender | 77 |
+| elimination | defender | **2** |
+
+Attackers plant and then wipe the defenders: the round ends *at that kill* and the spike never detonates. That is
+normal Valorant, not absent data. The flags are not missing — they track the outcome string exactly (`exploded` iff
+"Detonate Win", `defused` iff "Defuse Win").
+
+And the consequence the withdrawn claim drew does not follow. A round that ends by elimination has **no
+post-decision period at all**, because its last kill is its ending; there are no kills left to discount. The
+post-resolution branch correctly does not fire. Only 2 rounds in 41,515 are genuinely impossible (defenders winning
+by elimination after a plant, which cannot end a round).
+
+**What survives.** C3's defect is real but far smaller than stated. The 632 kills charged an uncapped ramp all fall
+within **45.00 to 46.88 seconds** after the plant — at most 1.88s past the spike timer, a clock-skew artefact
+between the plant timestamp and kill timestamps — and are charged at most 1.884 against the design's 1.75 ceiling.
+Capping the ramp is still right; it is a rounding-scale correction, not a structural hole.
+
+The RESULT's contrasts, verdicts, predictions and recommendation are unaffected: no arm measured this population,
+and the row-motion figures were measured, not inferred. What changes is the follow-up list — "the missing-flag
+population" is struck from it.
+
+### 2026-09-19 (DECLARATION 2) — the level's real optimum, and whether any post-plant shape beats none
+
+Declared before running. Two questions the first session left open, and one the owner raised in response to it.
+
+**Question 1 — what IS the level?** `P4f` selected 0.70 on all five folds, the floor of the declared grid, and the
+contrasts were monotone toward it. The level is too high; how much is unknown, because the grid did not bracket it.
+
+**Question 2 — is a principled shape worth anything over no shape at all?** Three post-plant shapes have now each
+measured nothing out of fold. The owner's position is that principled scoring beats none. That is testable rather
+than a matter of taste: if shape genuinely carries no signal, a **flat** post-plant factor should do as well as the
+shipped ramp — and a flat factor of exactly 1.0 is *no post-plant timing model whatsoever*. If the ramp beats flat,
+the ramp has earned its place; if it does not, the shipped ramp is decoration and the honest choice is the simplest
+form at the right level.
+
+#### The arms
+
+Everything from the first declaration carries over unchanged: target T2, its control set, the fixed composite
+`impact_diff`, 5 match-clustered folds at seed 0, inner 3-fold selection on training matches only, 2,000-draw paired
+bootstrap, `loss(arm) − loss(P0)` so positive is worse, and the verdict vocabulary IMPROVEMENT / HARM /
+INCONCLUSIVE with an interval spanning zero never reported as "no harm found". P0 is the same reference, on the same
+corpus and fold assignment (`3198:f9a31bb2df2586ec`, `cebae50f85e94736`).
+
+| arm | what it is |
+|---|---|
+| **L-s** | the legacy post-plant regime scaled by a constant s, for **s in {0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00}**. Same construction as the first declaration's P4-s; 0.70, 0.90 and 1.00 are already measured and are reused, not re-run |
+| **Lf** | s selected **per fold on training matches only** from that grid, applied to the held-out fold |
+| **F-k** | the post-plant regime **replaced by a flat constant k** — no ramp, no plant+38..45 override — for **k in {0.40, 0.60, 0.80, 1.00, 1.20, 1.40}**. Pre-plant stays 1.0 and the post-resolution value stays 0.5, both untouched. **F-1.00 is the null model: no post-plant timing at all** |
+| **Ff** | k selected per fold on training matches only from that grid |
+| **Ff vs Lf** | the question. Does the shipped ramp's shape beat a flat factor once each is allowed its own best level? |
+
+#### Decision rule
+
+Unchanged in kind from the first declaration, and fixed here before any of it runs.
+
+- **Both Lf and Ff are Tier B**: each ships only on IMPROVEMENT against P0.
+- **The shape question is decided by `Ff vs Lf`, not by which has the better headline contrast.** If that contrast is
+  INCONCLUSIVE, the ramp is **not** shown to beat flat, and the recommendation is the simpler form — a flat
+  post-plant factor at the fitted level — on the grounds that between two forms that cannot be told apart, the one
+  with fewer arbitrary constants is preferred. If it favours the ramp (negative, interval below zero), the ramp
+  earns its place and ships. If it favours flat, flat ships on evidence rather than on parsimony.
+- **The boundary rule, which the first declaration lacked and needed.** If `Lf` or `Ff` selects a value at the edge
+  of its grid on any fold, that is reported as **UNBRACKETED** alongside the contrast, and the constant is **not**
+  recommended for freezing — the same failure as last time, named in advance so it cannot be quietly accepted.
+  The grids above are deliberately wide enough that an interior optimum is the expected outcome.
+- **No constant is frozen by this entry**, and nothing is implemented or activated.
+
+#### Prediction, declared before running
+
+1. `Lf` selects an **interior** value, most likely in 0.40–0.60, and is IMPROVEMENT.
+2. `Ff` is IMPROVEMENT, and its selected k lands below 1.00.
+3. **`Ff vs Lf` is INCONCLUSIVE** — the ramp will not be shown to beat a flat factor.
+4. `F-1.00`, the no-timing-at-all null, is **not** IMPROVEMENT: removing the post-plant scalar entirely without
+   re-levelling loses the level correction that is the only thing measuring so far.
+
+If prediction 3 fails in the ramp's favour, the shipped shape is doing real work and the case for principled timing
+is evidential rather than aesthetic — which is the outcome the owner expects and which this session exists to give a
+fair chance.
