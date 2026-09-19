@@ -2032,3 +2032,107 @@ section 7 of `plans/2026-09-16-rc3-ship-plan-v2.md`.
 **What this entry does NOT do.** No production row, manifest or activation changes. `ACTIVE_MANIFEST` stays None and
 `IMPACT_CALCULATION_VERSION` stays 2 on the branch. Ingestion stays frozen. The freeze, the reviews and the rehearsal
 are still ahead, and the declared review checks are answered in `SUMMARY.md`, not here.
+
+### 2026-09-19 — RESULT: rc3 activated in production (Stage 8)
+
+**rc3 is live.** `IMPACT_CALCULATION_VERSION = 3`, `ACTIVE_MANIFEST =
+docs/superpowers/impact-rc3/candidate-manifest.json`. A = 1, B = 2.5, C = 2.5, D = 100, trade credit on at
+`trade_credit_scale` 1.0, econ model `buy_disruption_v2_30_80_bonus_denial`, realized swing, **timing
+candidates off** — the lock of 2026-09-17, unchanged.
+
+**Commits.** rc3 frozen at `82d8e6b` (commit C). PR #67 (the release, without activation) merged
+2026-09-18 07:32:49 UTC as `c0cd59a`. The activation commit — one commit, `ACTIVE_MANIFEST` and
+`IMPACT_CALCULATION_VERSION` only — was created as `b2940fd` off the reviewed tip and rebased onto merged
+`main` as **`17612c3`**; PR #68 merged 2026-09-18 09:50:04 UTC as **`510204f`**, a true merge commit with
+parents `c0cd59a` and `17612c3`.
+
+**The chain, reproduced a seventh time by K5** (exported at `17612c3`, `code.dirty: []`, against production
+at alembic 0010, cohort 3,125 matches / max id 3133):
+
+| | |
+|---|---|
+| comparison sha256 | `7e5ff2789ed1ea3a61425e1a6138576bc250cddc5de4e63cb3740a6d9f42f1bb` |
+| cohort fingerprint | `2c31fbbd9b1507f32631d304dec86885f5b876440a3e31140f4c1769545bdc5f` |
+| load projection | `3674f8a0160a87b1b862ae902dcad228a1d0967fb43482f0b0730d86a46e5a00`, 659,500 rows |
+| manifest LF-sha256 | `8e5c637b34b2ccb767fe2d16b18017eb8571f158623653c8f9bc4bf2ae10e20c` |
+
+Equal to K1', K2', K3, K4, KR and KR2 on **both** the hash and the cohort fingerprint. `K5.csv` is
+byte-identical in size to `K3-on.csv` and `K4.csv` (53,437,561); `K5.load.csv` to `KR2.load.csv`
+(50,393,745).
+
+**Durations (all 2026-09-18 UTC unless stated).**
+
+| step | window | duration |
+|---|---|---|
+| 8.1 preflight + K5 export | 08:33:17 – 09:02:04 | `28m43.374s` (scoring 14.8 min) |
+| 8.2 build | 09:05:02 | `54.545s` — 659,500 rows, staged oid 65265 |
+| 8.2 verify-build | – 09:22:37 | `16m39.616s` (fingerprinting 14.65 min) |
+| 8.3 capture prewarm lists | 09:24:00 | `3.674s` — 12 roster, 2,238 recent |
+| **8.4 swap** | 09:27:32 | **`35.25s` committed** |
+| 8.4 verify-live | 09:28:41 – 09:44:11 | `15m27.928s` |
+| 8.5 merge + Render deploy | 09:50:04 – ~09:52:13 | deploy live in **~2 min** |
+| 8.6 caches | 09:54:01 – 09:55:53 | roster prewarm `1m5.200s`, 12 of 12 |
+| 8.7 acceptance replay | 09:56:42 – 10:15:39 | `18m56.710s` |
+| 8.7 final verify-live | 10:15:48 – 10:31:42 | `15m50.083s` |
+| 8.9 observation hold | 10:34:41 – 2026-09-19 08:31:37 | **21h47m** (ended early, below) |
+| 8.10 roster refresh | 2026-09-19 08:32:53 – 09:21:45 | `48m52s`, 73 matches |
+
+**Gate transitions.** Installed **closed** at 7.4 (`note: installed before merging PR #67`). Opened at 8.10:
+`scoring_gate` now `state=open, release_id=impact-rc3, admin_id=rc3-runbook, note='48-hour hold over'`,
+**`updated_at 2026-09-19 08:31:39.544768+00`**.
+
+`scoring_release_log`, complete:
+
+| id | at (UTC) | identity | operation | outcome |
+|---|---|---|---|---|
+| 1 | 2026-09-18 09:05:05.390584+00 | rc3-runbook | build | built |
+| 2 | 2026-09-18 09:22:36.119087+00 | rc3-runbook | verify-build | clean |
+| 3 | **2026-09-18 09:27:35.050690+00** | rc3-runbook | **swap** | **swapped** |
+| 4 | 2026-09-18 09:44:08.880701+00 | rc3-runbook | verify-live | clean |
+| 5 | 2026-09-18 10:31:41.146059+00 | rc3-runbook | verify-live | clean |
+
+**The swap.** `impact_scores` oid 25941 → **65265**, 659,290 rows → **659,500**, `scoring_version` 1 → **3**.
+The pre-activation table is preserved as `impact_scores_v1` (oid 25941, 659,290 rows, retained per 8.12).
+`player_view_cache` cleared by DELETE. **Match 3133 scored for the first time: exactly 210 rows**, stranded
+unscored since 2026-09-10.
+
+**Nothing moved between build and live.** All six row digests are byte-identical at 8.2, at 8.4 and at the
+final verify-live: `impact_scores` (as `impact_scores_new` at build) `-7994785726743056784682`,
+`round_player_stats` `-2715131475311374433553`, `rounds` `-1435023103768587768058`, `kill_events`
+`999620965623172311516`, `match_players` `-416037733228552673585`, `matches` `-141510464020508552521`.
+
+**Verification results.** `verify-build` and `verify-live` both `clean`, `problems: []`, `scoring_versions
+[3]`, 22 compared columns, `read_back_sha256 == artifact_sha256`, `scores_without_a_stat_row 0`,
+`stat_rows_without_a_score 0`. **8.7 acceptance: `3125 matches replayed, 0 differ`.** 8.6 cache agreement:
+`cache agrees with scores: 24 player-scopes, 12 players, tolerance 1e-09`, coverage 24 of 24 usable at
+`4003003003`. 8.8: match 3104's ten player totals equal the AFTER column of `match-3104-site.md` exactly
+(every diff 0); match 3133's page renders Avg Impact equal to the stored score for all ten players; all 12
+roster pages 200.
+
+**Exposure window (8.4.0).** Open 09:27:35 → ~09:52:13 UTC, **about 24.5 minutes**, accepted in advance by
+owner decision. The live code was confirmed by the cache version it writes, caught mid-flip:
+`4003003002` at 09:51:25, **`4003003003`** at 09:52:13. No `...002` row survived.
+
+**8.9 ended early, 2026-09-19 08:31 UTC, owner decision** — 21h47m of the declared 48h. D11's purpose is a
+window in which rollback is lossless, not a soak test: nothing accumulates with elapsed time, the site has
+few visitors and no periodic job runs. Its substance is a human judging the numbers, and that was done —
+five of the owner's own matches, five of Najumi's and five across the roster, plus two deep dives that both
+resolved to the model behaving correctly (a −425 pistol death explained by `_present_players` shifting a 5v4
+round onto the 4v4 node at 180; a −872 post-plant death decomposed to 3v3 × 1.346 time factor = −606
+leverage, −330 econ, +64 damage). **No defect was found in rc3 at any point.**
+
+**8.10 reopening.** 73 matches ingested (3,125 → 3,198, max id 3206), spanning 2026-09-05 to 2026-09-19.
+**674,530 `impact_scores` rows, `scoring_version` 3 only. Zero unscored matches.** Match 3134 verified:
+`scoring_version` 3 only, and `equals its replay`. R1 expired here, as declared.
+
+**Catch-up is incomplete, and by how much is now measured.** `-Count 100` was requested; the single
+`__INITIAL_STATE__` batch returns **exactly 20**, so **9 of 12 roster players hit that ceiling**
+(NPrightdolphin, Najumi, Beef Shortrib, Deemo, Osmin, ternstyle, DoubleBl1nd, flatcat, Momomimo) and their
+history is still truncated. Yosher#Toshi returned 16 — under the ceiling, therefore complete. **SambuUwU#NA1
+and zopecow#1570 returned 0**, which the current output cannot distinguish from a silent failure. tracker.gg
+exposes a "load more" control that pages further; the code does not use it
+(`discover_recent_match_ids` reads one page load). Deepening this is deferred work, not a release gate.
+
+**What this entry does NOT do.** No scoring change, no formula change, no manifest change. The timing
+candidates remain off and Part 4 remains dormant and unshipped — its measured shape was worth nothing
+out-of-fold, and that finding stands.
