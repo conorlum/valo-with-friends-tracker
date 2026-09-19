@@ -4,6 +4,11 @@ r"""Run from webapp/, read-only:
     ... --arms P0,P1            # a subset; anything already cached in DIR is reused
     ... --quick                 # 2 folds / 200 draws. SMOKE TEST, NOT A RESULT.
 
+Arms are independent once the fold assignment exists, and a replay is dominated
+by database round trips rather than by CPU, so several processes may share one
+--out directory with disjoint --arms. They write disjoint per-arm files; the
+identity gate and the fold assignment are computed once and reused by the rest.
+
 The measurement declared in docs/superpowers/2026-09-07-predeclared-values.md,
 entry "2026-09-19 -- DECLARATION: the post-plant time factor". Read that entry
 before reading this file: the arms, the bucketing and the decision rule are
@@ -39,6 +44,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from sqlalchemy import text
 
 from app.db import SessionLocal
 from app.scoring.postplant_centering import DegenerateCentering
@@ -231,12 +238,27 @@ def p2l_lambda(kills):
 
 # --- replays ---------------------------------------------------------------
 
+EXPECTED_MATCHES = None  # set from P0; every later arm is checked against it
+
+
 def replay(db, arm, variant=None, scoring_kwargs=None):
     variants.activate(variant)
     try:
-        return load_all_observations(db, scoring_kwargs=scoring_kwargs or {})
+        observations = load_all_observations(db, scoring_kwargs=scoring_kwargs or {})
     finally:
         variants.activate(None)
+        # End the read transaction between replays so no snapshot is held open
+        # across the run. Read-only, so there is nothing to lose by rolling back.
+        db.rollback()
+    seen = frozenset(o.match_id for o in observations)
+    if EXPECTED_MATCHES is not None and seen != EXPECTED_MATCHES:
+        added = sorted(seen - EXPECTED_MATCHES)
+        removed = sorted(EXPECTED_MATCHES - seen)
+        raise SystemExit(
+            f"STOP: arm {arm} saw a different corpus than P0 "
+            f"({len(added)} added {added[:5]}, {len(removed)} removed {removed[:5]}). "
+            f"The arms would not be comparable; rerun from a clean output directory.")
+    return observations
 
 
 def identity_gate(db, out_dir):
@@ -328,6 +350,23 @@ def build_fold_tables(all_seconds, all_kills, folds, n_folds, label):
 
 # --- reporting -------------------------------------------------------------
 
+def check_pairing(name, oof, reference):
+    """paired_oof_log_loss_delta pairs by MATCH, not by row index, so it will
+    happily compare two arms whose row sets differ within a match and report a
+    contrast that is partly a difference in population. Two arms of the same
+    target should produce identical row counts per match; if they do not,
+    something upstream dropped rows for one arm only and the contrast is not
+    the quantity it claims to be."""
+    import collections
+    left = collections.Counter(int(m) for m in oof["match_ids"])
+    right = collections.Counter(int(m) for m in reference["match_ids"])
+    if left != right:
+        differing = [m for m in set(left) | set(right) if left.get(m) != right.get(m)]
+        return (f"row counts differ from the reference on {len(differing)} matches "
+                f"(e.g. {sorted(differing)[:5]})")
+    return None
+
+
 def verdict(point, lo, hi):
     if point == 0.0 and lo == 0.0 and hi == 0.0:
         return "IDENTICAL"
@@ -353,11 +392,31 @@ def main():
 
     wanted = set(args.arms.split(",")) if args.arms else set(ALL_ARMS + ["P4f"])
     db = SessionLocal()
+    # Declared constraint: every query here is read-only, enforced by the
+    # database rather than by reading the code and trusting it.
+    #
+    # SESSION characteristics, not one REPEATABLE READ transaction. A single
+    # snapshot would make the arms trivially comparable, but this run is ~9
+    # hours long and holding one open that long against PRODUCTION pins every
+    # table's dead tuples for the duration -- vacuum cannot pass a transaction
+    # older than the rows it wants to remove. Read-only is what the constraint
+    # is actually for; the comparability it also bought is bought back below by
+    # checking every arm against P0's match set instead, which detects a corpus
+    # change rather than merely hiding it.
+    db.rollback()
+    db.execute(text("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY"))
+    db.commit()
     features = [COMPOSITE] + controls_for(PRIMARY_T2)
 
+    # The identity gate is a property of the WRAPPER, not of an arm, so it runs
+    # once per output directory and its result is kept. Re-running it per
+    # process would cost two full replays each and prove the same thing again.
     base_obs = None
-    if load_oof(out_dir, "P0") is None or wanted & {"P4f", "P5", "P5b", "P6"}:
+    gate_path = out_dir / "identity_gate.json"
+    if not gate_path.exists():
         base_obs = identity_gate(db, out_dir)
+    elif not json.loads(gate_path.read_text())["identical"]:
+        raise SystemExit("STOP: the recorded identity gate did not pass")
     variants.install()
 
     # The fold assignment comes from P0's match set and is shared by every arm.
@@ -371,6 +430,7 @@ def main():
             base_obs = replay(db, "P0")
         match_ids = [o.match_id for o in base_obs]
         ids_path.write_text(json.dumps(match_ids))
+    globals()["EXPECTED_MATCHES"] = frozenset(match_ids)
     folds = stable_folds(match_ids, n_folds=n_folds, seed=SEED)
     meta = {
         "matches": len(set(match_ids)),
@@ -484,6 +544,7 @@ def main():
             del per_fold_obs, tables
 
     variants.uninstall()
+    db.rollback()
     db.close()
 
     # ---- contrasts, recomputed from the stored predictions every run -------
@@ -512,6 +573,11 @@ def main():
         oof = load_oof(out_dir, arm)
         if oof is None:
             print(f"  {arm:<12} NOT RUN")
+            continue
+        mismatch = check_pairing(arm, oof, reference)
+        if mismatch:
+            print(f"  {arm:<12} UNPAIRED -- {mismatch}")
+            results[arm] = {"verdict": "UNPAIRED", "detail": mismatch}
             continue
         point, lo, hi = paired_oof_log_loss_delta(oof, reference, draws=draws)
         results[arm] = {"point": point, "lo": lo, "hi": hi,
