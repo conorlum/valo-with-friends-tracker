@@ -2364,3 +2364,56 @@ and read-only queries against production under `SET TRANSACTION ISOLATION LEVEL 
 under `webapp/app/`, `docs/superpowers/impact-rc3/`, `alembic/versions/` or `.env*` is touched. No row is written, no
 match is ingested, no manifest is frozen, no version is bumped. **Starting a version 4 is a separate release with its
 own runbook and is not begun here.**
+
+### 2026-09-19 (amendment) — one more arm, P5b, declared before it runs
+
+**Why this amendment exists.** The declaration above fixed C5's ladder with Part 4's exact `(a, d, t)` rung left
+untouched at rung 1, and said in advance that P5 "can differ from Part 4 only on cells that fall BELOW it", that the
+share of lookups reaching the lower rungs would be reported, and that "if that share is small, a null result for P5
+says little about the differential idea and much about how rarely it is reached". **That share has now been measured,
+and it is small.**
+
+Building both tables once on the whole corpus as a construction check — 1,726,739 post-plant round-seconds,
+153,481 kills, no contrast computed and no arm scored — the P5 ladder resolves:
+
+| rung | lookups | share |
+|---|---:|---:|
+| `exact` | 668,487 | **99.04%** |
+| `diff_size` | 3,316 | 0.49% |
+| `diff` | 2,809 | 0.42% |
+| `diff_band` | 338 | 0.05% |
+| `unsupported` | 32 | 0.005% |
+
+So P5 as declared regroups **under 1% of value lookups** and is identical to Part 4 on the other 99%. It is a fair
+test of "does a differential fallback beat Part 4's defender-pooled fallback on thin cells". It is **not** a test of
+the owner's actual proposition, which is that the differential is the right way to group post-plant states *at all*.
+
+**What is added.** One arm, and nothing else changes:
+
+- **P5b** — the same differential ladder with the exact rung **removed**, so `(g, nb, t)` becomes rung 1 and the
+  absolute `(a, d)` cell is never consulted. The regrouping then applies to the whole scored population instead of
+  to the 0.96% Part 4 could not support. `g = a − d`, `nb = LOW if a + d <= 5 else HIGH`, and the remaining rungs,
+  the 60-observation floor, W=2, the differencing, the denominators, the clamp and `solve_and_apply_centering` are
+  all exactly as section 6 fixes them. Fitted per fold on training matches only, like P5 and P6.
+
+**What has not changed, and is not allowed to.** P5's own bucketing stays exactly as declared and P5 still runs. The
+decision rule of section 8 applies to P5b unchanged: it is **Tier B**, so it ships **only on IMPROVEMENT**, and it
+must additionally not be HARM against P6. No threshold, no verdict vocabulary and no prediction from the entry above
+is revised.
+
+**The honest description of what happened here.** A descriptive support count — not a contrast, not an arm, not a
+loss — showed that a declared arm could not answer the question it was declared for. Adding an arm to answer it, and
+saying so in advance and in the open, is the intended use of this ledger. Deleting or re-tuning P5 after the fact
+would not have been.
+
+**Prediction for P5b, declared now:** INCONCLUSIVE against P0, and INCONCLUSIVE against P6. The reasoning is
+unchanged from prediction 3 — this is still a SHAPE change to a scalar whose shape has already measured zero — but
+P5b is the version of that test with real statistical weight behind it, so a failure of this prediction is
+informative in a way P5's would not have been.
+
+**Two other pre-measurement facts from the same construction check, recorded because they are inputs to the run and
+not results of it.** The wrapper's identity gate passes at row level on a 25-match sample (5,170 rows, every
+`impact`, `time_impact`, `kill_impact` and `death_impact` identical) — the full-corpus gate still runs before any
+contrast. And a replay costs about 0.29s per match, so the declared arm set is roughly nine hours of read-only
+replay; that is a scheduling fact, and section 5's rule stands that no arm is dropped from the report for costing
+time.
