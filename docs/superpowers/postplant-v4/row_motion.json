@@ -1,0 +1,56 @@
+{
+  "matches": 3198,
+  "rows_per_arm_baseline": 674530,
+  "arms": {
+    "PC": {
+      "rows_changed": 6891,
+      "rows_changed_pct": 1.02160022534209,
+      "matches_changed": 2216,
+      "matches_changed_pct": 69.29330831769856,
+      "matches_reordered": 242,
+      "matches_reordered_pct": 7.567229518449031,
+      "mean_abs_delta_on_changed_rows": 29.597881294442026,
+      "max_abs_delta": 102
+    },
+    "P1": {
+      "rows_changed": 4078,
+      "rows_changed_pct": 0.6045691073784709,
+      "matches_changed": 1590,
+      "matches_changed_pct": 49.71857410881801,
+      "matches_reordered": 105,
+      "matches_reordered_pct": 3.283302063789869,
+      "mean_abs_delta_on_changed_rows": 24.079941147621383,
+      "max_abs_delta": 93
+    },
+    "P2b": {
+      "rows_changed": 2774,
+      "rows_changed_pct": 0.4112493143373905,
+      "matches_changed": 1589,
+      "matches_changed_pct": 49.687304565353344,
+      "matches_reordered": 152,
+      "matches_reordered_pct": 4.752970606629143,
+      "mean_abs_delta_on_changed_rows": 38.1463590483057,
+      "max_abs_delta": 102
+    },
+    "P3a": {
+      "rows_changed": 634,
+      "rows_changed_pct": 0.09399137176997317,
+      "matches_changed": 505,
+      "matches_changed_pct": 15.791119449656035,
+      "matches_reordered": 30,
+      "matches_reordered_pct": 0.9380863039399625,
+      "mean_abs_delta_on_changed_rows": 45.421135646687695,
+      "max_abs_delta": 46
+    },
+    "P3b": {
+      "rows_changed": 45,
+      "rows_changed_pct": 0.006671311876417654,
+      "matches_changed": 21,
+      "matches_changed_pct": 0.6566604127579737,
+      "matches_reordered": 0,
+      "matches_reordered_pct": 0.0,
+      "mean_abs_delta_on_changed_rows": 3.4444444444444446,
+      "max_abs_delta": 11
+    }
+  }
+}

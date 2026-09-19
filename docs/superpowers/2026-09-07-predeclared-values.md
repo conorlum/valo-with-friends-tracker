@@ -2417,3 +2417,169 @@ not results of it.** The wrapper's identity gate passes at row level on a 25-mat
 contrast. And a replay costs about 0.29s per match, so the declared arm set is roughly nine hours of read-only
 replay; that is a scheduling fact, and section 5's rule stands that no arm is dropped from the report for costing
 time.
+
+### 2026-09-19 (RESULT) — the post-plant time factor: the level is the only thing that measured
+
+Every arm declared on 2026-09-19 and amended the same day, run to completion. **No arm was left unrun.** Nothing was
+implemented, no scoring code was edited (`git diff --stat webapp/app/` is empty), nothing was written to production,
+and no version 4 was begun.
+
+**Provenance.** 3,198 matches, 67,251 round-observations, `dataset_fingerprint 3198:f9a31bb2df2586ec`,
+`fold_mapping_hash cebae50f85e94736`, shared by every arm. Target T2 (k=3, gamma=0.7, match_weight=1.0), controls
+`round_result, score_diff_before, attacking_is_team_a, loadout_diff, full_buy_count_diff`, fixed composite
+`impact_diff`, 5 match-clustered outer folds at seed 0, inner 3-fold L2 selection on training matches only, paired
+match-clustered bootstrap at 2,000 draws, two-sided 95%. Sign convention `loss(arm) − loss(P0)`, so **positive is
+worse**.
+
+**The identity gate passed**: the wrapper with no variant reproduced the unpatched replay on **67,251 of 67,251
+observations**, every field identical. Arms therefore measure their declared change and not the way it was injected.
+
+**Where it ran, and why that is worth recording.** Against production the replay cost 28.4 minutes, of which almost
+all was latency: `build_impact_rows_for_match` issues exactly 4 queries per call with no caching, at ~65ms a round
+trip, 3,198 times a pass. The corpus was copied to a local PostgreSQL 18.6 instance — counts, `alembic 0010` and the
+match-id md5 `1d639f01ece40d3cf43b7b94352edccc` all verified identical to production — and the same replay then cost
+**80 seconds, a 21x speedup**. 30 full-corpus passes ran in about 15 minutes. The bulk dump of the same data takes
+19 seconds; the 28 minutes was never data volume, it was 12,792 round trips. See [[project_local_postgres_for_replays]].
+
+#### The contrasts
+
+| arm | contrast | 95% interval | verdict |
+|---|---:|---|---|
+| **P1** post-resolution kills pay 0 | −4.7362e−06 | [−1.0710e−05, +1.0597e−06] | **INCONCLUSIVE** |
+| **P2b** death cliff at plant+38 → linear decay | +3.6193e−06 | [−2.9623e−06, +1.0090e−05] | **INCONCLUSIVE** |
+| **P3a** ramp capped at plant+45 regardless of flags | +2.8970e−07 | [−2.7251e−06, +3.4408e−06] | **INCONCLUSIVE** |
+| **P3b** phantom plants get no post-plant regime | +5.0325e−08 | [−2.2719e−08, +1.3035e−07] | **INCONCLUSIVE** |
+| **PC** the three Tier A fixes combined | −9.8504e−07 | [−1.0421e−05, +8.0107e−06] | **INCONCLUSIVE** |
+| **P4-0.90** level scaled 0.90 | −2.1789e−05 | [−3.1501e−05, −1.1819e−05] | **IMPROVEMENT** |
+| **P4-0.7826** level scaled 0.7826 | −4.4022e−05 | [−6.5051e−05, −2.2381e−05] | **IMPROVEMENT** |
+| **P4-0.70** level scaled 0.70 | −5.7483e−05 | [−8.6576e−05, −2.7736e−05] | **IMPROVEMENT** |
+| **P4f** level selected per fold | −5.7483e−05 | [−8.6576e−05, −2.7736e−05] | **IMPROVEMENT** |
+| **P6** Part 4 exactly as built | +1.8235e−06 | [−3.8102e−05, +4.0623e−05] | **INCONCLUSIVE** |
+| **P5** differential ladder beneath Part 4's exact rung | −5.5814e−06 | [−4.5572e−05, +3.1335e−05] | **INCONCLUSIVE** |
+| **P5b** differential ladder as rung 1 | −8.4907e−06 | [−4.8962e−05, +3.0285e−05] | **INCONCLUSIVE** |
+| **PC+** Tier A plus the level | −6.0502e−05 | [−9.0421e−05, −3.0167e−05] | **IMPROVEMENT** |
+| **P2L** level-matched control for P2b | +1.8140e−06 | [+9.9321e−07, +2.6912e−06] | **HARM** |
+| P5 vs P6 | −7.4049e−06 | [−1.7948e−05, +3.1908e−06] | **INCONCLUSIVE** |
+| P5b vs P6 | −1.0314e−05 | [−2.4998e−05, +4.8692e−06] | **INCONCLUSIVE** |
+| P2b vs P2L | +1.8053e−06 | [−4.7734e−06, +8.3146e−06] | **INCONCLUSIVE** |
+
+Scale anchor, so none of these is read without it: the baseline pooled out-of-fold weighted log loss is 0.6729
+against a coin flip's 0.6931, and the entire scoring system buys about 0.02. The largest effect here, PC+ at
+6.05e−05, is about **1/330th** of that.
+
+#### The four declared predictions, scored
+
+All four held. That is not a virtue — it means nothing below is being explained after the fact.
+
+1. **P1, P2b, P3a, P3b each INCONCLUSIVE** — CONFIRMED, all five Tier A arms including PC.
+2. **P4f IMPROVEMENT** — CONFIRMED, and the level result replicates on the larger corpus.
+3. **P5 INCONCLUSIVE, and P5 vs P6 INCONCLUSIVE** — CONFIRMED, both.
+4. **PC INCONCLUSIVE** — CONFIRMED.
+
+The amendment's prediction for P5b — INCONCLUSIVE against P0 and against P6 — also held.
+
+#### What actually measured
+
+**The level is the entire result, and it is monotone.** 0.90 → 0.7826 → 0.70 gives −2.18e−05 → −4.40e−05 →
+−5.75e−05, improving all the way down, and PC+ (Tier A plus the level) is statistically indistinguishable from the
+level alone. Every detectable gain in this session comes from charging the post-plant regime **less**.
+
+**The shape measured nothing, again, and P5b is the decisive version of that test.** P5 only regrouped the 1.14% of
+lookups that fall below Part 4's exact rung. P5b removed the exact rung entirely: **99.41% of its lookups resolved
+on the differential rung** (7,782,489 of 7,828,364), so the owner's grouping was applied to essentially the whole
+scored population. It still cannot be distinguished from zero, nor from Part 4, whose own arm is likewise
+INCONCLUSIVE here. Three different post-plant *shapes* — Part 4's cell-keyed table, the differential fallback, and
+the differential throughout — have now each measured nothing out of fold. The finding recorded on 2026-09-19 that
+Part 4's shape is worth nothing survives a fair test of the alternative.
+
+**P2L is the sharpest methodological result in the set.** Spreading P2b's extra death-side leverage uniformly over
+every post-plant death instead of concentrating it in the window is **HARM** — +1.81e−06, interval entirely above
+zero — while `P2b vs P2L`, the contrast that isolates whether *targeting* the window beats spreading it, is
+INCONCLUSIVE. So C2's shape is not demonstrably worth anything; only its level moved, and it moved the wrong way.
+The magnitude, ~1/11,000th of what the system buys, is resolvable only because it is a uniform shift over a large
+population. **Statistically real and practically nil is a coherent verdict, and it is this one.**
+
+#### C3's stated cause is wrong
+
+C3 was declared as a phantom-plant defect. It is not one. Of the kills charged an uncapped ramp past plant+45:
+
+| exploded | defused | "Time Win" | rounds | kills |
+|---|---|---|---:|---:|
+| false | false | **false** | 566 | 632 |
+
+**Zero are phantom plants.** All 566 rounds are "Team A/B Elimination Win" with both resolution flags absent, and the
+worst factor charged is 1.884 against the design's own 1.75 ceiling. That is why P3b, which keys on
+`is_phantom_plant` (outcome "Time Win"), changes 45 rows while P3a, which caps at plant+45 regardless of flags,
+changes 634.
+
+The wider fact behind it, and the more important one: **28,774 of 43,515 planted rounds (66.1%) carry neither
+`exploded` nor `defused`.** tracker.gg appears not to set them when a round ends by elimination. So the
+post-resolution branch of `_time_factor` never fires for two-thirds of planted rounds — which also bounds C1, whose
+population exists only in the third that do have flags. Kills after a decided round in the other two-thirds get no
+discount at all today, and **neither C1 nor C3 as declared addresses them.** That is a larger instance of the same
+defect than either candidate was written against, and it is the strongest lead this session produced. It is recorded
+here as a finding, not measured — measuring it is a new declaration.
+
+#### Two limitations of the declaration itself
+
+Recorded as limitations, not repaired after the fact.
+
+1. **The P4 grid did not bracket its optimum.** P4f selected **0.70 on all five folds** — the floor of the declared
+   grid {0.70, 0.7826, 0.90, 1.00} — and the contrasts are monotone toward it. Every fold's inner cross-validation
+   wanted to go lower than the grid allowed. So P4f measures "the best of four values declared in advance", not
+   "the best level", and **the true optimum is unbracketed and below 0.70**. The grid was fixed before measurement,
+   which is the discipline working as intended; it was also too narrow, which is a defect in my declaration and not
+   in the result.
+2. **PC was composed with P3b.** The declaration fixed PC = P1 + P2b + P3b before the row-motion evidence existed.
+   P3b turns out to address 45 rows of C3 against P3a's 634, so the declared combination leaves most of C3 unfixed.
+   PC and PC+ are reported exactly as declared; the recommendation below says plainly that **P3a is the C3 fix worth
+   shipping**, and that is a recommendation, not a retrofitted arm.
+
+#### Row motion — not a contrast, no verdict
+
+3,198 matches, 674,530 rows. Reported separately from evidence because Part 4 reordered 81.5% of matches while being
+worth nothing out of fold.
+
+| arm | rows changed | matches changed | matches reordered | mean abs delta |
+|---|---:|---:|---:|---:|
+| **PC** | **6,891 (1.02%)** | 2,216 (69.3%) | **242 (7.6%)** | 29.6 |
+| P1 | 4,078 (0.60%) | 1,590 (49.7%) | 105 (3.3%) | 24.1 |
+| P2b | 2,774 (0.41%) | 1,589 (49.7%) | 152 (4.8%) | 38.1 |
+| P3a | 634 (0.09%) | 505 (15.8%) | 30 (0.9%) | 45.4 |
+| P3b | 45 (0.01%) | 21 (0.7%) | 0 (0.0%) | 3.4 |
+
+PC clears **both** limbs of section 8's threshold: >= 1% of rows (1.02%) and >= 5% of matches reordered (7.6%). The
+row limb clears by 0.02pp, which is a hair; the reorder limb clears comfortably.
+
+#### The decision, under the rule as written
+
+- **Tier A (P1, P2b, P3a, P3b, PC): all INCONCLUSIVE, therefore not HARM, therefore eligible to ship.** The rule
+  declared INCONCLUSIVE an acceptable Tier A verdict in advance, precisely so this could not be argued afterwards.
+  Their case remains what it was: a decided round has nothing at stake, a 70.8% cut across 0.1s is not a model of a
+  continuous quantity, and a factor above the design's own ceiling after the bomb should have detonated is outside
+  the model's stated range.
+- **Tier B: P4f IMPROVEMENT, so the level ships. P5 and P5b INCONCLUSIVE, so the regrouping does not.** P5b
+  additionally fails to beat P6. The owner's hypothesis was given the fairest test available — applied to 99.41% of
+  the population, not to a 1% remainder — and did not survive it.
+- **The combined arm is not HARM:** PC+ is IMPROVEMENT at −6.05e−05.
+- **Version 4 is justified**, on limb (a) — a Tier B arm is IMPROVEMENT and the combination is not HARM — and
+  independently on limb (b), since Tier A is not HARM and PC clears both motion thresholds.
+
+**Recommendation: a version 4 carrying the Tier A fixes with P3a in place of P3b, plus a post-plant level constant —
+but the level constant is not yet known, and must be fitted before it is frozen.** Shipping 0.70 would ship the edge
+of a grid that every fold pushed against. The next step is one declared measurement: the same P4f arm over a wider
+grid extending well below 0.70, declared in advance, with the boundary condition checked. That is cheap now — a full
+replay is 80 seconds against the local corpus — and it is the difference between shipping a fitted constant and
+shipping an artefact of the grid I chose.
+
+**Nothing in this entry activates anything.** The timing candidates stay off, `IMPACT_CALCULATION_VERSION` stays 3,
+and beginning a version 4 is a separate release with its own runbook.
+
+#### Follow-ups this session did not take
+
+- **The missing-flag population.** 66.1% of planted rounds have no resolution flags; kills after those rounds are
+  decided are charged in full. Larger than C1 and C3 combined, and not addressed by either.
+- **A wider level grid**, per the recommendation above.
+- **`paired_bootstrap_delta` is a pure-Python loop** over 2,000 draws x ~67,000 rows. Once the replays moved local it
+  became the single largest compute cost in this session — larger than all 30 corpus passes combined. Vectorising it
+  is a clear win; it lives in `app/services/stats_math.py`, which this session was scoped out of touching.

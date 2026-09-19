@@ -1,0 +1,37 @@
+{
+  "0": {
+    "exact": 1553490,
+    "diff_size": 9123,
+    "diff": 8469,
+    "diff_band": 1078,
+    "unsupported": 72
+  },
+  "1": {
+    "exact": 1558885,
+    "diff_size": 9011,
+    "diff": 7562,
+    "diff_band": 1076,
+    "unsupported": 70
+  },
+  "2": {
+    "exact": 1559718,
+    "diff_size": 8264,
+    "diff": 8132,
+    "diff_band": 996,
+    "unsupported": 70
+  },
+  "3": {
+    "exact": 1557924,
+    "diff_size": 8825,
+    "diff_band": 1076,
+    "diff": 7977,
+    "unsupported": 70
+  },
+  "4": {
+    "exact": 1557499,
+    "diff_size": 8806,
+    "diff": 8143,
+    "diff_band": 1012,
+    "unsupported": 124
+  }
+}

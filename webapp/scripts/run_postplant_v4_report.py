@@ -36,6 +36,7 @@ What this script adds is the arms, and three things they need:
 
 import argparse
 import json
+import pickle
 import os
 import sys
 import time
@@ -91,7 +92,7 @@ P4_GRID = (0.70, 0.7826, 0.90, 1.00)
 # Arms that fit something and are therefore replayed once per fold.
 PER_FOLD_ARMS = {"P2L", "P5", "P5b", "P6"}
 # Arms that are pure deterministic rule changes: one replay each.
-SIMPLE_ARMS = ["P1", "P2b", "P3a", "P3b", "PC"] + [f"P4-{s}" for s in P4_GRID if s != 1.00]
+SIMPLE_ARMS = ["P1", "P2b", "P3a", "P3b", "PC", "PC+"] + [f"P4-{s}" for s in P4_GRID if s != 1.00]
 
 ALL_ARMS = ["P0"] + SIMPLE_ARMS + ["P2L", "P6", "P5", "P5b"]
 
@@ -434,7 +435,10 @@ def main():
     folds = stable_folds(match_ids, n_folds=n_folds, seed=SEED)
     meta = {
         "matches": len(set(match_ids)),
-        "observations": len(base_obs),
+        # From match_ids, not base_obs: a process that reuses the recorded
+        # identity gate and the cached fold assignment never replays P0 at all,
+        # and match_ids is one entry per observation either way.
+        "observations": len(match_ids),
         "dataset_fingerprint": dataset_fingerprint(match_ids),
         "fold_mapping_hash": fold_mapping_hash(folds),
         "n_folds": n_folds,
@@ -448,6 +452,13 @@ def main():
     log(f"dataset_fingerprint {meta['dataset_fingerprint']}")
     log(f"fold_mapping_hash   {meta['fold_mapping_hash']}")
 
+    # P0's observations are kept on disk as well as its predictions: P4f needs
+    # the grid's 1.00 member, which IS P0's configuration, and reloading them
+    # costs seconds against the half hour a re-replay would.
+    obs_path = out_dir / "obs_P0.pkl"
+    if base_obs is not None and not obs_path.exists():
+        obs_path.write_bytes(pickle.dumps(base_obs, protocol=pickle.HIGHEST_PROTOCOL))
+        log(f"  P0 observations cached for reuse ({obs_path.stat().st_size / 1e6:.0f} MB)")
     if load_oof(out_dir, "P0") is None:
         log("P0: cross-validating ...")
         save_oof(out_dir, "P0", outer_cv(lambda f: base_obs, folds, features, n_folds))
@@ -479,8 +490,13 @@ def main():
             del observations
 
     if need_p4f:
-        log("P4f: replaying the grid's 1.00 member (P0's own configuration) ...")
-        obs_by_scale[1.00] = replay(db, "P0", variant=None)
+        obs_path = out_dir / "obs_P0.pkl"
+        if obs_path.exists():
+            log("P4f: loading the grid's 1.00 member from P0's cached observations ...")
+            obs_by_scale[1.00] = pickle.loads(obs_path.read_bytes())
+        else:
+            log("P4f: replaying the grid's 1.00 member (P0's own configuration) ...")
+            obs_by_scale[1.00] = replay(db, "P0", variant=None)
         missing = [s for s in P4_GRID if s not in obs_by_scale]
         if missing:
             raise SystemExit(f"P4f needs every declared scale replayed; missing {missing}")

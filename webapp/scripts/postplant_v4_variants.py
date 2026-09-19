@@ -182,8 +182,26 @@ def _v_pc(round_row, kill_time, for_death, shipped):
     return _compose(_v_p3b, _v_p1, _v_p2b)(round_row, kill_time, for_death, shipped)
 
 
+# PC+ (declaration section 5): PC plus every Tier B arm that reached
+# IMPROVEMENT. P4f selected scale 0.70 on all five folds, so the level member is
+# the fixed 0.70 rather than a per-fold choice, and PC+ needs no refitting.
+#
+# ORDER MATTERS, and the declaration did not fix it, so it is fixed here and
+# stated in the RESULT. P2b first, so the death-window decay exists; then the
+# level, which scales the whole post-plant regime INCLUDING that decay, because
+# the decay is part of the regime whose level is under test; then P3b and P1,
+# whose outputs are NOT scaled -- a phantom plant's 1.0 is the pre-plant value
+# and a decided round's 0 is an absence of stake, and scaling either would be
+# applying a post-plant level to something the fix just removed from the
+# post-plant regime.
+def _v_pc_plus(round_row, kill_time, for_death, shipped):
+    return _compose(_v_p2b, _v_p4(0.70), _v_p3b, _v_p1)(
+        round_row, kill_time, for_death, shipped)
+
+
 VARIANTS = {
     "P0": None,
+    "PC+": _v_pc_plus,
     "P1": _v_p1,
     "P2b": _v_p2b,
     "P3a": _v_p3a,

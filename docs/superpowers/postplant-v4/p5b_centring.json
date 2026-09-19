@@ -1,0 +1,32 @@
+{
+  "0": {
+    "c": 1.294085090860668,
+    "death_side_residual": 0.025754958592358657,
+    "supported_kills": 120713,
+    "fallback_kills": 1207
+  },
+  "1": {
+    "c": 1.2903176073508453,
+    "death_side_residual": 0.025524959349063847,
+    "supported_kills": 123051,
+    "fallback_kills": 35
+  },
+  "2": {
+    "c": 1.2905824845809677,
+    "death_side_residual": 0.026483340031571823,
+    "supported_kills": 121985,
+    "fallback_kills": 1213
+  },
+  "3": {
+    "c": 1.2913639122528915,
+    "death_side_residual": 0.026129882705925978,
+    "supported_kills": 121724,
+    "fallback_kills": 1177
+  },
+  "4": {
+    "c": 1.2928091314818835,
+    "death_side_residual": 0.02624050689365154,
+    "supported_kills": 122782,
+    "fallback_kills": 37
+  }
+}
