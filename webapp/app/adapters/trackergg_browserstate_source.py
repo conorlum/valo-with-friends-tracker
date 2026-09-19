@@ -10,8 +10,11 @@ Companion piece to app/adapters/demo_match_source.py, same target schema.
 
 import math
 import random
+import re
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 
 from playwright.sync_api import Page
 from sqlalchemy.orm import Session
@@ -26,6 +29,25 @@ from app.services.site_stats_cache import invalidate_site_stats_cache
 MATCH_URL_TMPL = "https://tracker.gg/valorant/match/{match_id}"
 MATCH_API_MARKER_TMPL = "api.tracker.gg/api/v2/valorant/standard/matches/{match_id}"
 HISTORY_URL_TMPL = "https://tracker.gg/valorant/profile/riot/{riot_id}/matches"
+
+# The "All Acts" view of the competitive history, i.e. what the act selector
+# produces when "All Acts" is chosen: no `season=` param at all. The default
+# /matches URL is implicitly scoped to the CURRENT act, which is why players
+# who simply haven't queued this act read as zero (see DiscoveryStatus
+# .NO_HISTORY) and why everyone else's history appeared to stop at ~20.
+ALL_ACTS_HISTORY_URL_TMPL = (
+    "https://tracker.gg/valorant/profile/riot/{riot_id}/matches?platform=pc&playlist=competitive"
+)
+# Substring identifying the history (not match-detail) responses that the
+# "Load More" button fires: .../standard/matches/riot/<riot_id>?...&next=N
+HISTORY_API_MARKER = "api.tracker.gg/api/v2/valorant/standard/matches/riot/"
+LOAD_MORE_PATTERN = re.compile(r"load\s*more", re.IGNORECASE)
+# tracker.gg serves history in fixed pages of 20; used only to bound how many
+# clicks could possibly be needed, never to assume a page really held 20.
+MATCHES_PER_HISTORY_PAGE = 20
+# Guard against an unbounded click loop if tracker.gg ever keeps handing back
+# a non-null `next` forever. Hitting this is INCOMPLETE, never success.
+MAX_HISTORY_PAGES = 50
 
 MIN_MATCH_DELAY_SECONDS = 5
 MAX_MATCH_DELAY_SECONDS = 12
@@ -50,13 +72,19 @@ def _fetch_history_state(page: Page, riot_id: str, season_id: str | None = None)
     if state is None:
         raise RuntimeError(f"window.__INITIAL_STATE__ missing on history page for {riot_id!r}")
 
+    _raise_if_private(state, riot_id)
+    return state
+
+
+def _raise_if_private(state: dict, riot_id: str) -> None:
+    """Raises ProfilePrivateError if the loaded profile opted out of public
+    stats. A private profile is a named, distinguishable outcome -- never a
+    zero that reads the same as a player with no recent play."""
     profiles = state.get("stats", {}).get("standardProfiles") or []
     for profile in profiles:
         for error in profile.get("errors") or []:
             if error.get("code") == "CollectorResultStatus::Private":
                 raise ProfilePrivateError(f"{riot_id!r}'s tracker.gg match history is private")
-
-    return state
 
 
 def _competitive_matches_from_state(state: dict) -> list[dict]:
@@ -77,6 +105,264 @@ def discover_recent_match_ids(page: Page, riot_id: str, count: int) -> list[str]
     state = _fetch_history_state(page, riot_id)
     competitive = _competitive_matches_from_state(state)
     return [m["attributes"]["id"] for m in competitive[:count]]
+
+
+class DiscoveryStatus(str, Enum):
+    """Why a discovery run stopped. Only COMPLETE and EXHAUSTED are outcomes
+    where the number returned is the number that exists; everything else means
+    the count is a floor, not an answer, and must not print as plain success."""
+
+    COMPLETE = "COMPLETE"        # reached the requested count
+    EXHAUSTED = "EXHAUSTED"      # fewer than requested, but tracker.gg says that's all there is
+    NO_HISTORY = "NO_HISTORY"    # zero competitive matches exposed under ANY act
+    PRIVATE = "PRIVATE"          # profile opted out of public stats
+    INCOMPLETE = "INCOMPLETE"    # stopped for any other reason -- the count is a floor
+
+
+@dataclass(frozen=True)
+class DiscoveryResult:
+    """What a discovery run reached, against what it was asked for.
+
+    The whole point of this type: `len(match_ids)` alone cannot distinguish
+    "they have 20 matches" from "we asked for 100 and the cap gave us 20".
+    Callers print `summary()`, never a bare count.
+    """
+
+    riot_id: str
+    requested: int
+    match_ids: list[str] = field(default_factory=list)
+    status: DiscoveryStatus = DiscoveryStatus.INCOMPLETE
+    reason: str = ""
+    pages_fetched: int = 0
+
+    @property
+    def reached(self) -> int:
+        return len(self.match_ids)
+
+    @property
+    def is_conclusive(self) -> bool:
+        """True when `reached` is the real number tracker.gg exposes, rather
+        than a floor we stopped at. NO_HISTORY and PRIVATE count as conclusive
+        -- zero really is everything available for those players -- but they
+        still carry their own status, so neither can be mistaken for a run
+        that simply found nothing new."""
+        return self.status in (
+            DiscoveryStatus.COMPLETE,
+            DiscoveryStatus.EXHAUSTED,
+            DiscoveryStatus.NO_HISTORY,
+            DiscoveryStatus.PRIVATE,
+        )
+
+    def summary(self) -> str:
+        return (
+            f"{self.riot_id}: {self.reached}/{self.requested} reached "
+            f"[{self.status.value}] ({self.reason}; {self.pages_fetched} page(s))"
+        )
+
+
+def _competitive_from_payload(data: dict) -> list[dict]:
+    """Competitive matches out of one history API `data` object. tracker.gg
+    already filters by `type=competitive`, but the mode is re-checked here so
+    a change in that query param can never silently admit Deathmatch rows."""
+    matches = data.get("matches") or []
+    return [m for m in matches if (m.get("metadata") or {}).get("modeName") == "Competitive"]
+
+
+def _next_cursor(data: dict) -> int | None:
+    """tracker.gg's page cursor: `metadata.next`, a plain 1-based page index.
+    None/absent means this was the last page -- the authoritative
+    end-of-history signal, matching the DOM dropping the Load More button."""
+    return (data.get("metadata") or {}).get("next")
+
+
+def discover_match_ids_paginated(
+    page: Page,
+    riot_id: str,
+    count: int,
+    max_pages: int = MAX_HISTORY_PAGES,
+) -> DiscoveryResult:
+    """Reaches up to `count` Competitive match IDs by driving tracker.gg's own
+    "Load More" control across the All-Acts history view, most recent first.
+
+    Unlike `discover_recent_match_ids` (one server-rendered batch, current act
+    only, hard-capped at the ~20 tracker.gg puts in `__INITIAL_STATE__`), this
+    accumulates from the XHR each click fires.
+
+    That distinction is load-bearing, and was measured rather than assumed:
+    clicking Load More REPLACES `stats.standardProfileMatches[0].matches` in
+    `window.__INITIAL_STATE__` with the newly fetched page instead of appending
+    to it. So `__INITIAL_STATE__` stays exactly 20 entries long forever while
+    its contents change on every click -- a loop that re-read it and checked
+    "did this change?" would pass that check every single time, report success,
+    and silently discard every page but the last. Page 0 is read from
+    `__INITIAL_STATE__` (correct, and it is what the server rendered); every
+    page after it comes from the captured response body, and `__INITIAL_STATE__`
+    is never consulted again.
+
+    Returns a DiscoveryResult carrying reached-vs-requested and a named stop
+    reason on every path -- a run that could not reach `count` is never
+    reported as plain success. Paces itself between clicks exactly like
+    `_dedup_and_ingest` does between match fetches: a history page load is a
+    request like any other."""
+    if count <= 0:
+        return DiscoveryResult(
+            riot_id=riot_id,
+            requested=count,
+            status=DiscoveryStatus.COMPLETE,
+            reason="nothing requested",
+        )
+
+    captured: list[dict] = []
+
+    def on_response(response):
+        if HISTORY_API_MARKER in response.url:
+            try:
+                body = response.json()
+            except Exception:
+                return
+            data = (body or {}).get("data")
+            if isinstance(data, dict):
+                captured.append(data)
+
+    page.on("response", on_response)
+    try:
+        url = ALL_ACTS_HISTORY_URL_TMPL.format(riot_id=riot_id.replace("#", "%23"))
+        page.goto(url, wait_until="load", timeout=60_000)
+        page.wait_for_timeout(5000)
+
+        state = page.evaluate("() => window.__INITIAL_STATE__ ?? null")
+        if state is None:
+            return DiscoveryResult(
+                riot_id=riot_id,
+                requested=count,
+                status=DiscoveryStatus.INCOMPLETE,
+                reason="window.__INITIAL_STATE__ missing on history page",
+            )
+        _raise_if_private(state, riot_id)
+
+        containers = state.get("stats", {}).get("standardProfileMatches") or []
+        if not containers:
+            return DiscoveryResult(
+                riot_id=riot_id,
+                requested=count,
+                status=DiscoveryStatus.NO_HISTORY,
+                reason="no match container on the All-Acts history page",
+                pages_fetched=1,
+            )
+
+        first_page = containers[0]
+        match_ids: list[str] = []
+        seen: set[str] = set()
+
+        def absorb(data: dict) -> int:
+            """Adds this page's unseen Competitive IDs; returns how many were new."""
+            fresh = 0
+            for m in _competitive_from_payload(data):
+                match_id = (m.get("attributes") or {}).get("id")
+                if match_id and match_id not in seen:
+                    seen.add(match_id)
+                    match_ids.append(match_id)
+                    fresh += 1
+            return fresh
+
+        absorb(first_page)
+        cursor = _next_cursor(first_page)
+        pages = 1
+
+        if not match_ids and cursor is None:
+            return DiscoveryResult(
+                riot_id=riot_id,
+                requested=count,
+                status=DiscoveryStatus.NO_HISTORY,
+                reason="zero Competitive matches under any act",
+                pages_fetched=pages,
+            )
+
+        def finish(status: DiscoveryStatus, reason: str) -> DiscoveryResult:
+            return DiscoveryResult(
+                riot_id=riot_id,
+                requested=count,
+                match_ids=match_ids[:count],
+                status=status,
+                reason=reason,
+                pages_fetched=pages,
+            )
+
+        load_more = page.get_by_role("button", name=LOAD_MORE_PATTERN)
+        while len(match_ids) < count:
+            if cursor is None:
+                return finish(DiscoveryStatus.EXHAUSTED, "metadata.next is null -- end of history")
+            if pages >= max_pages:
+                return finish(
+                    DiscoveryStatus.INCOMPLETE,
+                    f"hit the {max_pages}-page safety cap with more history left",
+                )
+            try:
+                clickable = (
+                    load_more.count() > 0
+                    and load_more.first.is_visible()
+                    and load_more.first.is_enabled()
+                )
+            except Exception as e:
+                return finish(DiscoveryStatus.INCOMPLETE, f"Load More control unreadable: {e}")
+            if not clickable:
+                # The DOM agrees with metadata.next in every case observed, so
+                # a missing button with a non-null cursor is a real anomaly --
+                # not exhaustion, and not something to report as success.
+                return finish(
+                    DiscoveryStatus.INCOMPLETE,
+                    f"no usable Load More control although metadata.next={cursor}",
+                )
+
+            before = len(captured)
+            try:
+                load_more.first.scroll_into_view_if_needed()
+                load_more.first.click()
+            except Exception as e:
+                return finish(DiscoveryStatus.INCOMPLETE, f"Load More click failed: {e}")
+            page.wait_for_timeout(8000)
+
+            new_payloads = captured[before:]
+            if not new_payloads:
+                return finish(
+                    DiscoveryStatus.INCOMPLETE,
+                    f"Load More (next={cursor}) fired no history request",
+                )
+
+            fresh_total = sum(absorb(d) for d in new_payloads)
+            pages += 1
+            advanced = [_next_cursor(d) for d in new_payloads]
+            new_cursor = advanced[-1]
+
+            if fresh_total == 0:
+                # Every ID came back already-seen: the cursor did not really
+                # advance. Stopping here is mandatory -- looping would spin
+                # forever collecting nothing while looking busy.
+                return finish(
+                    DiscoveryStatus.INCOMPLETE,
+                    f"page {pages} returned no new matches (cursor {cursor} did not advance)",
+                )
+            if new_cursor is not None and new_cursor == cursor:
+                return finish(
+                    DiscoveryStatus.INCOMPLETE,
+                    f"metadata.next repeated at {cursor} -- cursor stuck",
+                )
+            cursor = new_cursor
+
+            if len(match_ids) < count and cursor is not None:
+                delay = random.uniform(MIN_MATCH_DELAY_SECONDS, MAX_MATCH_DELAY_SECONDS)
+                time.sleep(delay)
+
+        return finish(DiscoveryStatus.COMPLETE, "reached the requested count")
+    except ProfilePrivateError as e:
+        return DiscoveryResult(
+            riot_id=riot_id,
+            requested=count,
+            status=DiscoveryStatus.PRIVATE,
+            reason=str(e),
+        )
+    finally:
+        page.remove_listener("response", on_response)
 
 
 def discover_all_season_ids(page: Page, riot_id: str) -> list[dict]:
@@ -505,6 +791,26 @@ def ingest_recent_matches(db: Session, page: Page, riot_id: str, count: int) -> 
         return set()
     print(f"discovered {len(match_ids)} recent match(es) for {riot_id}")
     return _dedup_and_ingest(db, page, match_ids)
+
+
+def ingest_paginated_history(
+    db: Session, page: Page, riot_id: str, count: int
+) -> tuple[set[int], DiscoveryResult]:
+    """Like `ingest_recent_matches`, but discovers via the paginated All-Acts
+    path so `count` above ~20 actually reaches that many, and hands the
+    DiscoveryResult back to the caller alongside the invalidated player IDs.
+
+    Returning the result rather than just a count is the point: the caller has
+    to be able to say "100 requested, 20 reached, INCOMPLETE" instead of
+    printing a bare number that looks identical to success.
+
+    Discovery failures are reported, never raised -- a batch over a roster
+    keeps going past one bad profile, exactly as it does today."""
+    result = discover_match_ids_paginated(page, riot_id, count)
+    print(f"  discovery: {result.summary()}")
+    if not result.match_ids:
+        return set(), result
+    return _dedup_and_ingest(db, page, result.match_ids), result
 
 
 def ingest_full_history(
