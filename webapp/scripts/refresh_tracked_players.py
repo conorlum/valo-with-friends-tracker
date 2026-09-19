@@ -37,6 +37,7 @@ import json
 import random
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -46,6 +47,7 @@ from playwright.sync_api import sync_playwright
 from app.adapters.trackergg_browserstate_source import (
     DiscoveryResult,
     DiscoveryStatus,
+    IngestLedger,
     backfill_unscored_matches,
     ingest_paginated_history,
 )
@@ -55,6 +57,8 @@ from app.services.site_stats import refresh_site_stats
 
 CDP_URL = "http://localhost:9222"
 ROSTER_PATH = Path(__file__).resolve().parent / "tracked_players.json"
+# Gitignored -- ledgers name real match IDs and are run artifacts, not source.
+LEDGER_DIR = Path(__file__).resolve().parents[1] / "ingest_ledgers"
 MIN_PLAYER_DELAY_SECONDS = 5
 MAX_PLAYER_DELAY_SECONDS = 12
 # The run completed but fell short of --count for at least one player. Distinct
@@ -89,9 +93,16 @@ def _print_roster_report(results: list[DiscoveryResult], count: int) -> None:
     print("=" * 72)
 
 
-def main(count: int, no_prewarm: bool) -> int:
+def _default_ledger_path() -> Path:
+    stamp = datetime.now().astimezone().strftime("%Y%m%dT%H%M%S")
+    return LEDGER_DIR / f"ingest-{stamp}.jsonl"
+
+
+def main(count: int, no_prewarm: bool, ledger_path: Path) -> int:
     roster = json.loads(ROSTER_PATH.read_text())
     results: list[DiscoveryResult] = []
+    ledger = IngestLedger(ledger_path, run_label=f"refresh_tracked_players --count {count}")
+    print(f"ledger: {ledger.path}")
     db = SessionLocal()
     try:
         all_dirty: set[int] = backfill_unscored_matches(db)
@@ -102,7 +113,9 @@ def main(count: int, no_prewarm: bool) -> int:
 
             for i, riot_id in enumerate(roster):
                 try:
-                    dirty, result = ingest_paginated_history(db, page, riot_id, count)
+                    dirty, result = ingest_paginated_history(
+                        db, page, riot_id, count, ledger
+                    )
                     all_dirty |= dirty
                     results.append(result)
                 except Exception as e:
@@ -133,9 +146,15 @@ def main(count: int, no_prewarm: bool) -> int:
             print("refreshing site stats cache...")
             refresh_site_stats(db)
     finally:
+        ledger.record_end(f"{len(results)} player(s) processed")
         db.close()
 
     _print_roster_report(results, count)
+    print(f"\nLEDGER: {ledger.count} match(es) added this run")
+    print(f"  {ledger.path}")
+    if ledger.count:
+        print("  back out the whole run with:")
+        print(f"    python scripts\\rollback_ingest_ledger.py \"{ledger.path}\"")
     # Exit 2 (not 1) if ANY player ended INCOMPLETE: the run itself worked, but
     # it did not reach what it was asked for, and that must not read as success
     # to a shell caller. 1 stays reserved for an actual crash, so
@@ -153,5 +172,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-prewarm", action="store_true", help="skip the post-refresh cache pre-warm (see module docstring)"
     )
+    parser.add_argument(
+        "--ledger",
+        type=Path,
+        default=None,
+        help="where to record the matches this run adds (default: "
+             "webapp/ingest_ledgers/ingest-<timestamp>.jsonl). Feed it to "
+             "scripts/rollback_ingest_ledger.py to back the run out.",
+    )
     args = parser.parse_args()
-    sys.exit(main(args.count, args.no_prewarm))
+    sys.exit(main(args.count, args.no_prewarm, args.ledger or _default_ledger_path()))

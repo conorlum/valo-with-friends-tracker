@@ -8,6 +8,7 @@ the JSON response the page's own client-side code requests while rendering.
 Companion piece to app/adapters/demo_match_source.py, same target schema.
 """
 
+import json
 import math
 import random
 import re
@@ -15,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 
 from playwright.sync_api import Page
 from sqlalchemy.orm import Session
@@ -105,6 +107,57 @@ def discover_recent_match_ids(page: Page, riot_id: str, count: int) -> list[str]
     state = _fetch_history_state(page, riot_id)
     competitive = _competitive_matches_from_state(state)
     return [m["attributes"]["id"] for m in competitive[:count]]
+
+
+class IngestLedger:
+    """Append-only record of the matches one run actually added, so the whole
+    run can be backed out if it turns out to be wrong.
+
+    Written as JSONL and flushed per match, deliberately: a run killed or
+    crashed halfway still leaves a complete, truthful record of everything
+    that made it into the database. A ledger assembled in memory and dumped at
+    the end would be empty in exactly the case it is most needed.
+
+    A line is appended the moment `load_match`'s commit makes a match
+    permanent -- before impact scoring -- because that commit is the point
+    from which dedup will skip the match forever. Anything recorded here is in
+    the database; scoring state is recoverable from the database itself.
+    """
+
+    def __init__(self, path, run_label: str = ""):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.count = 0
+        self._write({
+            "event": "run_start",
+            "at": datetime.now().astimezone().isoformat(),
+            "label": run_label,
+        })
+
+    def _write(self, record: dict) -> None:
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+            fh.flush()
+
+    def record_match(self, match: Match, riot_id: str) -> None:
+        self.count += 1
+        self._write({
+            "event": "ingested",
+            "at": datetime.now().astimezone().isoformat(),
+            "discovered_via": riot_id,
+            "match_id": match.id,
+            "external_id": match.external_id,
+            "map_name": match.map_name,
+            "played_at": match.played_at.isoformat() if match.played_at else None,
+        })
+
+    def record_end(self, note: str = "") -> None:
+        self._write({
+            "event": "run_end",
+            "at": datetime.now().astimezone().isoformat(),
+            "ingested": self.count,
+            "note": note,
+        })
 
 
 class DiscoveryStatus(str, Enum):
@@ -689,7 +742,13 @@ def load_match(db: Session, match_json: dict) -> Match:
     return match
 
 
-def _dedup_and_ingest(db: Session, page: Page, match_ids: list[str]) -> set[int]:
+def _dedup_and_ingest(
+    db: Session,
+    page: Page,
+    match_ids: list[str],
+    ledger: "IngestLedger | None" = None,
+    riot_id: str = "",
+) -> set[int]:
     """Shared tail end of both ingestion entry points below: skip anything
     already in the DB (dedup by tracker.gg's own match ID, so the same match
     is never double-ingested even when reached via a different player's
@@ -715,6 +774,13 @@ def _dedup_and_ingest(db: Session, page: Page, match_ids: list[str]) -> set[int]
         print(f"[{i + 1}/{len(new_ids)}] capturing {match_id}")
         match_json = fetch_match_json(page, match_id)
         match = load_match(db, match_json)            # commits internally
+
+        # Recorded here, immediately after the commit that makes this match
+        # permanent and dedup-skipped forever -- not at the end of the run.
+        # Whatever is in the ledger is in the database, even if the run dies
+        # on the very next line.
+        if ledger is not None:
+            ledger.record_match(match, riot_id)
 
         # Invalidate BETWEEN load_match's commit and impact scoring, not after
         # both: load_match's commit makes the match row permanent and
@@ -794,7 +860,11 @@ def ingest_recent_matches(db: Session, page: Page, riot_id: str, count: int) -> 
 
 
 def ingest_paginated_history(
-    db: Session, page: Page, riot_id: str, count: int
+    db: Session,
+    page: Page,
+    riot_id: str,
+    count: int,
+    ledger: "IngestLedger | None" = None,
 ) -> tuple[set[int], DiscoveryResult]:
     """Like `ingest_recent_matches`, but discovers via the paginated All-Acts
     path so `count` above ~20 actually reaches that many, and hands the
@@ -810,7 +880,7 @@ def ingest_paginated_history(
     print(f"  discovery: {result.summary()}")
     if not result.match_ids:
         return set(), result
-    return _dedup_and_ingest(db, page, result.match_ids), result
+    return _dedup_and_ingest(db, page, result.match_ids, ledger, riot_id), result
 
 
 def ingest_full_history(
