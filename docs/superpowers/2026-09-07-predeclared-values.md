@@ -2136,3 +2136,231 @@ exposes a "load more" control that pages further; the code does not use it
 **What this entry does NOT do.** No scoring change, no formula change, no manifest change. The timing
 candidates remain off and Part 4 remains dormant and unshipped — its measured shape was worth nothing
 out-of-fold, and that finding stands.
+
+### 2026-09-19 — DECLARATION: the post-plant time factor, five candidates, declared before measurement
+
+**What kind of entry this is.** Predeclaration. Nothing is implemented, nothing is activated, no scoring code is
+edited, nothing is written to the database. It fixes the arms, the estimand, the bucketing and the decision rule for
+a measurement session that has not yet run a single contrast. It exists because this project has already been burned
+once by the opposite order: Part 4's post-plant factor was recorded as a win, and the win turned out to be a 22%
+level shrink riding alongside a shape that measured nothing. That reading was withdrawn (entry 2026-09-16 and the
+remediation commits). This entry is written so the same thing cannot happen twice.
+
+**Why now.** rc3 is live (activation RESULT, 2026-09-19): `IMPACT_CALCULATION_VERSION = 3`, A 1 / B 2.5 / C 2.5 /
+D 100, trade credit 1.0, econ `buy_disruption_v2_30_80_bonus_denial`, realized swing, **both timing candidates OFF**.
+The post-plant time factor is therefore the legacy one, and four defects in it plus one owner redesign were written
+down on 2026-09-19 with their populations counted. None has been measured out of fold. Any change to any of them is
+`IMPACT_CALCULATION_VERSION` 4 and a full rescore, so the question is not "is this defensible" but "is this worth a
+rescore", and that is an evidence question.
+
+#### 1. What is live, stated exactly
+
+`app/scoring/impact.py::_time_factor`, with `enable_postplant_leverage=False` and
+`enable_preplant_empirical=False`:
+
+| region | kill | death |
+|---|---:|---:|
+| pre-plant | 1.0 | 1.0 |
+| post-plant, `t < plant+38` | `1 + (t − plant)/53` | same |
+| `plant+38 <= t <= plant+45` | 1.75 flat | **0.50 flat** |
+| `t >= plant+45` in an `exploded` round, or `t >= defuse_time` in a `defused` round | 0.50 | 0.50 |
+| `t > plant+45` with neither flag set (a phantom plant) | **the ramp, uncapped** | same |
+
+Corpus-wide the scalar is modest: median effective multiplier 1.000, mean 1.022, contributing +2.43% of total
+impact. It scales 152,083 rows down and 100,058 up — a redistribution, not a bonus layer.
+
+#### 2. The candidates, and which are arguments and which are claims
+
+Two kinds, and they get **different decision rules**, declared here rather than chosen once the numbers are in.
+
+**Tier A — correctness fixes.** Their case is a priori: the shipped rule contradicts its own stated reasoning. They
+are measured to check they do no harm, not to discover whether they are right.
+
+- **C1. A decided round pays 0, not 0.5.** After detonation or defuse the round is over; nothing is at stake and
+  econ already prices the gear. Owner decision, 2026-09-19: **0, not 0.5**. Population **2,856 events** (1,662 post
+  detonation, 1,194 post defuse) of 323,394 kills in planted rounds — **0.9%**.
+- **C2. The death cliff at plant+38.** A death at t=37.9 is charged 1.715 and at t=38.0 is charged 0.500: a **70.8%
+  cut across 0.1 seconds**, where the kill side steps 1.715 → 1.750. The comment justifying it ("the round is
+  basically already decided") describes something continuous and implements it as a step. **1,577 events within
+  ±1s of the boundary**; 2,924 of 154,031 post-plant kills reach the window at all.
+- **C3. The phantom-plant ramp is unbounded.** The 0.5 resolution value fires only on the `exploded` or `defused`
+  flag. A phantom plant (never armed, decided on the round timer) sets neither, so the ramp keeps climbing past the
+  point the bomb should have gone off: **1.851 at 45.1s, 1.981 at 52s**, both above the design's own 1.75 ceiling.
+  **618 kills.** Known and deliberate: `_time_factor` does not route the legacy branches through
+  `effective_plant_time` because it would move stored Impact for 76 rounds without a version bump (review finding 5).
+  A version 4 removes that objection.
+
+**Tier B — empirical claims.** Their case is evidence and nothing else. Both are shape-or-level changes to a scalar
+that the last measurement could not distinguish from noise.
+
+- **C4. The post-plant level is too high by about a quarter.** The only candidate with prior out-of-fold evidence:
+  legacy ramp × 0.7826 scored −0.00003 [−0.00005, −0.00002], an IMPROVEMENT. Caveat on record and carried forward:
+  **0.7826 is not fitted.** It is `1/c` from the uncentred Part 4 table, so the existing result shows that *this*
+  scale beats 1.0, not that it is the best scale.
+- **C5. Group post-plant states by man-advantage differential, not absolute counts** (owner's redesign). Empirical
+  attacker win rate over 1,686,190 post-plant round-seconds: even states cluster tightly (1v1 65.5, 2v2 64.0,
+  3v3 62.5, 4v4 63.4, 5v5 67.3 — spread 4.8pp) and 1v1 vs 1v2 differ by 39.4pp. Refuted within that same table:
+  1v2/1v3/1v4 are *not* alike (26.1 / 8.0 / 3.0), and there is a real second-order gradient along total alive
+  (+1 is worth 91.0% at 2v1 but 80.4% at 5v4). The argument for trying it where Part 4 failed is data density —
+  Part 4 spread thin counts over 54 supported cells keyed `(a, d, t, victim_side)`. **That is a hypothesis. It is
+  still a SHAPE change, and shape is exactly what measured zero.**
+
+#### 3. The instrument — inherited, not invented
+
+The predeclared out-of-fold protocol of `scripts/run_five_arm_report.py` (econ spec 8d-i), unchanged:
+
+- **Estimand:** each arm scored as the FIXED composite `impact_diff` — the scorer's own output under that arm's
+  configuration — as a single predictor beside the nuisance controls. One coefficient, no component reweighting.
+  An arm cannot repair a bad composite by being refit.
+- **Target:** `PRIMARY_T2` (k=3, gamma=0.7, match_weight=1.0). **Controls:** `round_result`, `score_diff_before`,
+  `attacking_is_team_a`, `loadout_diff`, `full_buy_count_diff`.
+- **Folds:** 5 outer, `stable_folds(seed=0)`, match-clustered, assignment fixed once from the reference arm's match
+  set and shared by every arm. Inner 3-fold config/L2 selection on training matches only, L2 grid (0.1, 1.0, 10.0).
+- **Uncertainty:** paired match-clustered bootstrap, **2,000 draws**, two-sided 95%.
+- **Sign convention:** `loss(arm) − loss(P0)`. **Positive is worse.**
+- **Replay mode:** ex-ante (`use_realized_swing=False`), as the protocol runs it. The time factor is not gated by
+  that switch, so every arm here is measurable in this mode; the econ component is 0 throughout for every arm alike
+  and therefore cannot differentiate them.
+- **Scale anchor, carried forward so no contrast is read without it:** baseline pooled out-of-fold weighted log loss
+  0.6729 against a coin flip's 0.6931. The entire scoring system buys about 0.02. A 0.00003 contrast is roughly
+  1/700th of that.
+
+**Corpus.** Every arm runs on the full current corpus — **3,198 matches** as of this entry, up from the 3,125 the
+Part 4 numbers were measured on. Contrasts within this session are mutually comparable; **they are not directly
+comparable to the recorded Part 4 figures**, which is why C4 and Part 4 itself are both re-measured here rather than
+quoted. The dataset fingerprint and fold-mapping hash are recorded in the RESULT entry.
+
+#### 4. How the arms are produced without touching scoring code
+
+`webapp/app/` is not edited — not one line — and `git diff --stat webapp/app/` is required to be empty at the end
+of the session. Four of the five candidates cannot be expressed through the existing `scoring_kwargs`: the
+`postplant_factor_table` hook is consulted only for genuine plants and non-self kills, is reached only *after* the
+exploded/defused early return, and is never told whether it is pricing a kill or a death. So:
+
+**A measurement-local replacement for `_time_factor`, installed by monkeypatch from `webapp/scripts/`, is the
+mechanism.** It is a copy of the live function plus one variant switch, and the live file is untouched on disk.
+
+**The identity gate, run before any contrast and reported in the RESULT whatever it says:** the patched function with
+its variant set to NONE must reproduce the reference replay **exactly** — every observation of every round of all
+3,198 matches identical. A single differing value voids the mechanism and the session stops. This is the same
+discipline as commit 88643a3 ("stop a formula change from reporting itself as a broken identity"), applied to the
+harness rather than to the formula.
+
+#### 5. The arms
+
+`P0` is the reference. Every contrast is against `P0`.
+
+| arm | what it changes | fitted? |
+|---|---|---|
+| **P0** | nothing — rc3 as shipped | no |
+| **P0′** | the patch, variant NONE — the identity gate, not a contrast | no |
+| **P1** | C1: the exploded/defused branch returns **0.0** instead of 0.5, kill side and death side alike | no |
+| **P2b** | C2: the flat 0.5 death charge in `[plant+38, plant+45]` is replaced by a linear decay from the ramp's own value at t=38 (`1 + 38/53 = 1.71698`) down to **0.5 at t=45**. Continuous at both ends. **The kill side is left exactly as shipped** (flat 1.75), so this arm moves the death side only | no |
+| **P2L** | the level-matched control for P2b: the same total extra death-side post-plant leverage as P2b, spread **uniformly across all post-plant deaths** instead of concentrated in the window. `P2b − P2L` is what the *targeting* is worth once the level is held equal | yes, per fold |
+| **P3a** | C3, minimal: the resolution value applies at `t >= plant+45` **regardless of the exploded/defused flags**, so the ramp is capped | no |
+| **P3b** | C3, structural: a phantom plant gets **no post-plant regime at all** — the pre-plant 1.0 throughout — which is what routing the legacy branches through `effective_plant_time` would do | no |
+| **P4-0.70 / P4-0.7826 / P4-0.90** | C4: the legacy post-plant ramp multiplied by a fixed scale s. `s = 1.0` is P0 | no |
+| **P4f** | C4 with s selected **per fold on training matches only** from the declared grid {0.70, 0.7826, 0.90, 1.00} and applied to the held-out fold. Assembled from the arms above; no extra replay | yes, per fold |
+| **P5** | C5: Part 4 with **one thing changed — the pooling ladder key** (section 6). Everything else identical: the differencing, the kill-weighted time-mean denominator, FLOOR 0.05, CEIL 2.0, W=2, the 60-observation floor, `solve_and_apply_centering` | yes, per fold |
+| **P6** | Part 4 exactly as built, on this corpus. Both a replication of the withdrawn result and the only honest comparator for P5 | yes, per fold |
+| **PC** | the Tier A fixes combined: P1 + P2b + P3b | no |
+| **PC+** | PC plus each Tier B arm that reaches IMPROVEMENT under section 8. Contingent by rule, not by outcome: the rule is fixed here, the membership is whatever the results make it | as its members |
+
+**On C2 and the level/shape split.** The separation is required "wherever both could move". For C2 they **cannot be
+separated by construction**: removing a 70.8% discount necessarily raises what those deaths are charged, and a
+rescaling that restores the level reintroduces the discontinuity the candidate exists to remove. That is stated here
+rather than discovered later, and `P2L` is the decomposition offered in its place.
+
+**Every declared arm that is not run is reported as NOT RUN, with its reason, in the RESULT.** None is dropped
+silently, and compute cost is not a reason to omit one from the report.
+
+#### 6. C5's bucketing — fixed here, in full
+
+P5 changes the pooling ladder of `ValueTable` and nothing else. With `a` attackers and `d` defenders alive:
+
+- **differential** `g = a − d`, which takes exactly the values −4 … +4 over the 25 reachable states;
+- **size bucket** `nb = LOW if (a + d) <= 5 else HIGH`.
+
+The ladder, tried in this order, each rung requiring **60 observations** (the existing `MIN_OBSERVATIONS`, applied to
+the target second's own counts before smoothing, exactly as today):
+
+1. `exact` — `(a, d, t)`. **Unchanged from Part 4.**
+2. `diff_size` — `(g, nb, t)`, pooled over every state sharing that differential and size bucket.
+3. `diff` — `(g, t)`, pooled over every state sharing that differential.
+4. `diff_band` — `(g, band(t))`, with the existing half-open bands [0, 38.0), [38.0, 41.5), [41.5, 45).
+5. `unsupported`.
+
+`V(a, 0, t)` stays analytically pinned as today. The W=2 moving-average smoother, the differencing, the denominators,
+the clamp and the centring constant are untouched.
+
+Three consequences, stated before the fact so neither can be presented as a finding afterwards:
+
+- P5 is **identical to P6 on every cell that resolves at rung 1**, so it can only differ where Part 4 was thin. The
+  share of scored post-plant kills that resolves below rung 1 is reported in the RESULT; if that share is small,
+  a null result for P5 says little about the differential idea and much about how rarely it is reached, and it will
+  be reported that way.
+- The rungs pool **more** where the data is thinnest and **not at all** where it is dense, which is the hypothesis's
+  own logic.
+- The choice to key on `(a − d)` with a size correction **was informed by the whole-corpus win-rate table** quoted
+  in section 2. That is prior information about the structure, disclosed here. What is fitted per fold on training
+  matches only is every *value*: the cells, the smoothing, the denominators and `c`.
+
+#### 7. Leakage rules
+
+- Anything fitted — V, the factor table, `c`, P2L's scalar, P4f's selection of s — is fitted on **training folds
+  only** and applied to held-out folds. Arms P2L, P4f, P5 and P6 are therefore replayed once per fold.
+- `solve_and_apply_centering`'s own warning is binding: solving `c` on the whole corpus is the exact leak the
+  per-fold tables exist to remove. `c` is solved per fold, on that fold's training kills, and the per-fold values
+  are reported.
+- Arms that are pure deterministic rule changes (P1, P2b, P3a, P3b, P4-s, PC) are fitted from nothing and are
+  replayed once.
+
+#### 8. The decision rule
+
+Fixed now. **If a result lands outside it, the result is recorded against the rule as written and the rule does not
+move.**
+
+Verdict vocabulary, used in these words and no others: **IMPROVEMENT** (interval entirely below zero),
+**HARM** (interval entirely above zero), **INCONCLUSIVE** (interval spans zero). An interval spanning zero is never
+reported as "no harm found", and a zero-width interval at exactly zero is reported as IDENTICAL — a broken contrast,
+not a verdict.
+
+- **Tier A (P1, P2b, P3a, P3b).** Ship if the arm is **not HARM**. INCONCLUSIVE is an acceptable ship verdict for
+  Tier A, because the case for these is a priori and the measurement is a harm check. This is declared here
+  precisely so it cannot be invented after an inconclusive result arrives.
+- **Tier B (P4f, P5).** Ship **only on IMPROVEMENT**. INCONCLUSIVE does not ship. HARM does not ship. This is the
+  rule that Part 4's shape failed, and it is applied unchanged.
+- **P5 additionally** must beat P6 — the contrast `P5 − P6` must not be HARM — or the regrouping has not earned its
+  place over the design it replaces.
+- **The combination is measured, not assumed.** Whatever set passes is also run as `PC` / `PC+`, and if the combined
+  arm is HARM while its parts are not, **nothing ships**. Effects do not add.
+- **Where a whole version 4 is justified.** A version 4 costs a full rescore of ~674,530 rows plus a release. It is
+  recommended if **either**: (a) at least one Tier B arm is IMPROVEMENT and the combined arm is not HARM; **or**
+  (b) the Tier A arms are not HARM *and* their combination moves enough stored Impact to make leaving a known-wrong
+  rule live worse than the rescore — declared threshold: **>= 1% of `impact_scores` rows changed, or >= 5% of
+  matches reordered by within-match player rank**. If neither holds, the recommendation is **no version 4 now**, with
+  the Tier A fixes recorded as accepted and deferred to ride along with the next version bump for another reason.
+
+#### 9. Predictions, declared before running
+
+Falsifiable, and recorded so the RESULT can be scored against them rather than narrated:
+
+1. **P1, P2b, P3a, P3b are each INCONCLUSIVE.** Power, not merit: they move 0.9%, 1.9% and 0.2% of post-plant kills
+   respectively, and a change to *all* post-plant kills (Part 4's shape) already measured +0.00000 [−0.00003,
+   +0.00003]. A fraction of a population that cannot be resolved is not resolvable either.
+2. **P4f is IMPROVEMENT**, replicating the level result on the larger corpus.
+3. **P5 is INCONCLUSIVE**, and `P5 − P6` is INCONCLUSIVE: the differential regrouping changes which thin cells
+   borrow from which, and thin cells are by definition where few kills are scored.
+4. **PC is INCONCLUSIVE.**
+
+If prediction 2 fails, C4's prior evidence does not survive contact with a larger corpus and C4 does not ship. If
+prediction 3 fails in the improving direction, the owner's redesign has done something Part 4 could not, and that is
+the finding this session was worth running for.
+
+#### 10. Scope, and what this entry does not do
+
+Work is confined to `webapp/scripts/` (new analysis scripts only), `docs/superpowers/` (this entry and the RESULT),
+and read-only queries against production under `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`. Nothing
+under `webapp/app/`, `docs/superpowers/impact-rc3/`, `alembic/versions/` or `.env*` is touched. No row is written, no
+match is ingested, no manifest is frozen, no version is bumped. **Starting a version 4 is a separate release with its
+own runbook and is not begun here.**
