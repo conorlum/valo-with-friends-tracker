@@ -2889,3 +2889,76 @@ honest framing is "stop overpaying post-plant kills", not "this transforms the s
 bump is the correctness fixes plus a sign error, not the size of the log-loss gain.
 
 Version 4 remains unstarted: it is a separate release with its own runbook, and `IMPACT_CALCULATION_VERSION` stays 3.
+
+### 2026-09-20 (CORRECTION) — "INCONCLUSIVE" was read as "does not help" without checking whether the test could see the arm
+
+The owner asked how the side-asymmetric arm lost, and whether the logic was flawed. It was. This entry records the
+flaw, what it invalidates, what survives, and the protocol gate that should have existed from the first declaration.
+
+**The flaw.** Every arm is scored as the fixed composite `impact_diff` with **one free coefficient**. Any change that
+amounts to a rescale of `impact_diff` is absorbed entirely by that coefficient and produces a contrast of zero — not
+because the change is worthless, but because the estimator cannot see it. The verdict vocabulary has no word for
+that case, so it comes back INCONCLUSIVE, which is then read as "the effect does not help". **Those are different
+statements and the entries above conflated them.**
+
+**The diagnostic, which costs nothing and was never run.** The R² between an arm's `impact_diff` and its
+comparator's bounds what any contrast can resolve, before a single bootstrap draw:
+
+| contrast | R² | residual variance | resid sd / signal sd | reported verdict |
+|---|---:|---:|---:|---|
+| `F-0.4` vs `P0` | 0.992660 | **0.734%** | 8.57% | IMPROVEMENT |
+| `P6` vs `P0` | 0.997802 | **0.220%** | 4.69% | INCONCLUSIVE |
+| `F-1.0` vs `P0` | 0.998927 | **0.107%** | 3.28% | **IMPROVEMENT** |
+| **`A1` vs `F-0.40`** | **0.999502** | **0.0498%** | **2.23%** | INCONCLUSIVE |
+
+`A1 = 0.99672 × F-0.40 − 2.53`. It is a 0.997 rescale of the arm it was compared against, plus a residual carrying
+2.2% of the signal's spread.
+
+**The demonstrated detection floor is 0.107%** — `F-1.0` registered a clear IMPROVEMENT at that separability. `A1`
+sits at 0.0498%, **below the lowest separability at which this harness has ever detected anything.**
+
+#### What is withdrawn
+
+**The claim that the side asymmetry does not help.** The RESULT entry above says of A1: "Real, large, reproducible,
+and predictively worthless at this sample size," and calls it "the sharpest negative." That is not supported. The
+contrast is arithmetically correct and the verdict INCONCLUSIVE is correct; the **interpretation** is wrong. The
+supportable statement is that **A1 as parameterised is collinear with its comparator and the contrast is
+uninformative** — the test could not have detected the effect had it been there.
+
+**The conclusion drawn from it about Part 4** is withdrawn with it. That entry said A1's failure retires the
+hypothesis that Part 4 lost because it normalised the per-side level away. A1 never tested that hypothesis with any
+power, so the hypothesis returns to open.
+
+**The count of "four structural models each lost to a constant" is wrong.** A1 did not lose; it was not measured.
+
+#### What survives, and why
+
+- **The level results stand.** `F-0.4 vs P0` at 0.734% residual variance is the most separable contrast in the whole
+  investigation — 15x A1's — and it registered. The bracketing, the monotone curve and the 0.2–0.4 region are
+  unaffected.
+- **Part 4's null stands.** `P6 vs P0` at 0.220% had **twice** the separability of `F-1.0`, which the harness
+  detected. It had room to be seen and was not seen. That null is evidence, not a power failure.
+- **The Tier A correctness fixes are unaffected** — they were always argued a priori and measured only for harm.
+
+#### The parameterisation problem underneath
+
+Worth stating because it is the deeper reason A1 collapsed to a scalar. The measured asymmetry is a claim about
+**two teams' stakes in the same duel** — in a 1v1 at 38–45s the attacker's death costs 50.0pp while the defender's
+costs 4.0pp. But `_time_factor` returns **one number per event**, applied to the killer's credit and the victim's
+debit alike, so an arm built on it can only say "this event counts more". Within a round those re-weightings largely
+cancel in the differential, which is precisely why A1 came out a near-rescale. **Expressing a two-sided stake
+asymmetry requires a scorer that can charge the two sides differently for the same event** — a change to the scoring
+interface, not a new constant inside the existing one. That is why no arm reachable through this wrapper could have
+tested it.
+
+#### Protocol gate, declared now for every future arm
+
+1. Before any bootstrap, compute R² between the arm's `impact_diff` and its comparator's.
+2. An arm whose residual variance is **below the smallest value at which this harness has detected an effect**
+   (currently **0.107%**, set by `F-1.0`) is reported as **UNTESTABLE**, never INCONCLUSIVE. UNTESTABLE is not a
+   licence to ship and not evidence against; it means the question was not asked.
+3. The floor is empirical and moves as more arms register; it is recorded with each result so later entries can see
+   which floor applied.
+
+This gate would have flagged `A1` before it ran, and would have saved the arm from being built in a form that could
+not carry its own hypothesis.
