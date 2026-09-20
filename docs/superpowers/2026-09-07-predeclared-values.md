@@ -3152,3 +3152,67 @@ it is a necessary and not a sufficient condition — the round-differential R² 
 first arm that changes what a kill is worth *as a function of state*, not a scalar re-weighting, and 46.6% of the
 event-level variance is currently unpriced. If it fails the gate, then round aggregation destroys even a
 redistribution this large, and that is a finding about the target rather than about the model.
+
+### 2026-09-20 (DECLARATION 7) — three ways to read the scalar that do not depend on a grid search
+
+Declared before running. All three come from the owner's question: is there a metric that can say something about
+the time scalar, given that the paired-loss harness has proven blind to whole classes of change? Each estimates the
+same quantity by different machinery, so agreement between them is evidence the grid search alone cannot supply.
+
+#### Method A — the coefficient ratio
+
+Split the round's leverage differential into its **pre-plant** and **post-plant** halves and fit both:
+
+```
+y ~ b_pre * leverage_diff[pre-plant] + b_post * leverage_diff[post-plant] + controls
+```
+
+**`b_post / b_pre` IS the time scalar**, read off directly with an interval, instead of searched for on a grid. The
+shipped model asserts that ratio is 1.00–1.85; the flat arms estimated ~0.3 by search. Extracted through
+`build_impact_rows_for_match`'s existing `kill_observer` hook, which reports the scorer's own per-kill values, so
+nothing is re-derived. Target T2 and its controls, same folds, 2,000-draw bootstrap on the ratio.
+
+**Declared caveat:** the two columns are not orthogonal — a round with more post-plant action has less pre-plant
+action — so `corr(pre, post)` is reported beside the ratio, and a correlation near -1 would make the split
+ill-conditioned and the ratio unreliable. That is reported whatever it says.
+
+#### Method B — equalise the scalar from measured swings
+
+No target, no folds, no log loss. Build `V(a, d, planted)` over **whole-round** second-by-second occupancy — not
+just post-plant, which is all Part 4 ever covered — then compute the win-probability swing of every scored kill and
+take
+
+```
+scalar = mean |dV| over post-plant kills  /  mean |dV| over pre-plant kills
+```
+
+This measures what a post-plant kill is worth relative to a pre-plant one, directly. It cannot be defeated by
+collinearity or by a weak target, because it never predicts anything. Its weakness is the mirror image: it says what
+the states are worth on average and nothing about whether re-weighting them helps a downstream model.
+
+`planted` must be in the state because planting is itself a large jump in attacker win probability; omitting it
+would attribute the plant's value to the kills around it.
+
+#### Method C — target the round itself
+
+Re-evaluate the arms on `y = did team A win THIS round`, with the context controls only and **without**
+`round_result`, which is the label here rather than a nuisance. Run for `P0`, `F-0.40` and `F-0.30`.
+
+**Declared caveat, stated before the numbers:** this is partly circular. Impact is computed from the kills that
+decided the round, so any variant tracking "who won the fights" scores well, which is close to but not the same as
+"which weighting reflects contribution". It measures something different from T2 and will not be reported as the
+same quantity.
+
+#### What would count
+
+- **The three agreeing near a common value** is the strongest evidence available for a scalar, precisely because
+  they share no machinery: a fitted coefficient ratio, a direct measurement, and a different target.
+- **Disagreement is equally informative** and will be reported as such: if A and B say ~0.3 while C says ~1.0, the
+  forward-looking and within-round questions have different answers, and the shipped 1.00–1.85 may be right for a
+  question nobody has been asking.
+- No constant is frozen by this entry, and none of these three is a shipping gate on its own.
+
+**Prediction.** A and B both land in **0.2–0.5**, agreeing with the grid search. C lands **higher**, nearer 1.0,
+because a within-round target rewards tracking the kills that decided that round and post-plant kills are
+disproportionately the deciding ones. If C comes in near 0.3 as well, the case for the change is much stronger than
+tonight's contrasts made it look.
