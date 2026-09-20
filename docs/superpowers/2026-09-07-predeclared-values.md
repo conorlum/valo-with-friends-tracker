@@ -3082,3 +3082,73 @@ with its own arm.
 
 **Standing conclusion unchanged.** Nothing here revises the level finding, the Tier A fixes, or the recommendation
 for version 4. It closes one methodological question and reopens one design question.
+
+### 2026-09-20 (CORRECTION + DECLARATION 6) — a kill should be worth what it changes
+
+**First, a correction to this session's own framing.** Declaration 4 and the entries around it describe the 21.2pp
+vs 74.1pp comparison as "the same event at the same second, worth 3.5x more to one side than the other". **That is
+wrong.** Those are two *different* events reachable from the same state — the attacker killing the defender
+(1v1 -> 1v0) and the attacker dying (1v1 -> 0v1). A single kill is **zero-sum in win probability**: the killer's
+team gains exactly what the victim's team loses. There is no two-sided asymmetry within one event, and the
+prescription that followed from it — "`_time_factor` should return a pair" — does not follow.
+
+What is true, and is a better target: **different events from the same state differ enormously in magnitude**, and
+the scorer prices them all as `K(s) x T(t)` where `T` is side-blind and `K` comes from a graph verified spike-blind.
+
+#### The redesign
+
+Replace the post-plant leverage payout with the measured win-probability swing:
+
+```
+today   leverage contribution = K(s) x T(t)
+D1      leverage contribution = S x clamp(D(a, d, t, victim_side), FLOOR, CEIL)
+```
+
+`D` is Part 4's own quantity — `V(a,d,t) − V(a−1,d,t)` for an attacker victim, `V(a,d−1,t) − V(a,d,t)` for a
+defender victim — used **directly**, without the `D / mean_over_t D` normalisation that divided its level away.
+Pre-plant is untouched; only the post-plant regime is replaced.
+
+**Why this is not the double-count Part 4 avoided.** Part 4 kept `K` and divided `D` by its own time-mean precisely
+so the two would not multiply. D1 does the opposite: it **replaces** `K x T` outright, so `K` is not applied to a
+post-plant kill at all and nothing is counted twice. The state, the side and the clock all enter once, through the
+measured swing.
+
+**The pre-check, run before declaring and reported whatever it said** (the gate instituted 2026-09-20). Over the
+153,450 post-plant kills with a supported `D`:
+
+| | |
+|---|---|
+| `corr(D, K x T)` today | **+0.7306**, R² 0.534 |
+| variance in what a kill is worth that today's payout does not capture | **46.6%** |
+| `corr(D, K)` | +0.8230 |
+
+Against A1's 0.05% unexplained, this has room by three orders of magnitude. It is event-level, not round-level, so
+it is a necessary and not a sufficient condition — the round-differential R² gate still applies below.
+
+#### Construction
+
+- `V` and therefore `D` are built **per fold on training matches only**, exactly as P5/P6 do.
+- **`FLOOR = 0.005` (0.5pp), `CEIL = 1.0`.** A floor is required: `D` runs to −19.6pp in thin cells, and the
+  standing constraint is that no kill is worth negative Impact. The floor is a policy value, declared here, not
+  fitted.
+- **`S` is fitted per fold so that `Σ S·D` over training post-plant kills equals `Σ K x 0.40` over the same kills.**
+  So D1 and `F-0.40` carry **identical total post-plant leverage** and differ only in how it is distributed across
+  events. That is what isolates the redistribution from the level.
+- Implemented through the existing wrapper as `T = S·D/K`, which makes the kill leg `S·D` and the death leg
+  `S·D x traded_factor`, preserving the trade discount. The kill-order graph is verified symmetric under team
+  relabeling (0 asymmetric edges), so `K` is recoverable from the alive counts alone.
+- An unsupported cell (31 of 153,481 kills) falls back to the flat `0.40`, matching the comparator.
+- Self-kills and phantom plants are excluded as everywhere else.
+
+#### Rule
+
+- **Primary contrast `D1 vs F-0.40`**, level-matched by construction. Secondary `D1 vs P0`.
+- **The R² gate runs first.** If D1's round-level `impact_diff` has residual variance against `F-0.40` below
+  **0.107%**, D1 is reported **UNTESTABLE** and no bootstrap is run.
+- Tier B: ships only on IMPROVEMENT.
+- Report the event-level redistribution regardless: how much payout moves, and to which states.
+
+**Prediction.** D1 passes the gate (residual variance above 0.5%) and is **IMPROVEMENT**. Reasoning: this is the
+first arm that changes what a kill is worth *as a function of state*, not a scalar re-weighting, and 46.6% of the
+event-level variance is currently unpriced. If it fails the gate, then round aggregation destroys even a
+redistribution this large, and that is a finding about the target rather than about the model.
