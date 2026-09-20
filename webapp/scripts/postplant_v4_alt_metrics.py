@@ -300,13 +300,27 @@ def round_dataset(obs, features):
             np.array(mids, dtype=int))
 
 
-def mode_c(db, out_dir):
+def mode_c(db, out_dir, arms_csv=None, tag=""):
+    """DECLARATION 8: the seven-arm level curve on the round's own outcome.
+
+    Declaration 7 ran P0, F-0.40 and F-0.30 only. F-0.30 and F-0.40 are re-run
+    here unchanged as a REPRODUCTION CHECK -- the bootstrap seeds to 0 and the
+    corpus is fixed, so they must return their recorded numbers exactly or the
+    new arms are not comparable to declaration 7.
+
+    F-1.26 is level-matched to the shipped mean post-plant T (1.264), so the
+    P0 contrast isolates the ramp's SHAPE from its LEVEL. F-1.60 sits above the
+    shipped level so an interior minimum can be bracketed rather than inferred.
+    """
     features = ["impact_diff"] + CONTROLS_CONTEXT
     variants.install()
     results = {}
-    arms = {"P0": None, "F-0.4": variants.variant_for("F-0.4"),
-            "F-0.3": variants.variant_for("F-0.3")}
-    oofs = {}
+    arm_names = ([a.strip() for a in arms_csv.split(",")] if arms_csv else
+                 ["P0", "F-0.3", "F-0.4", "F-0.7", "F-1.0", "F-1.26", "F-1.6"])
+    if arm_names[0] != "P0":
+        raise SystemExit("P0 must be the first arm; it is the comparator")
+    arms = {n: (None if n == "P0" else variants.variant_for(n)) for n in arm_names}
+    oofs, diffs = {}, {}
     for name, v in arms.items():
         log(f"replaying {name} ...")
         variants.activate(v)
@@ -314,6 +328,7 @@ def mode_c(db, out_dir):
         variants.activate(None)
         db.rollback()
         X, y, w, mids = round_dataset(obs, features)
+        diffs[name] = X[:, 0].copy()
         folds = stable_folds(mids.tolist(), n_folds=N_FOLDS, seed=SEED)
         preds = np.zeros(len(y))
         for fold in range(N_FOLDS):
@@ -327,24 +342,66 @@ def mode_c(db, out_dir):
         log(f"  {name}: round-target log loss {loss:.6f}  n={len(y):,}")
     variants.uninstall()
 
+    # Every arm must land on the SAME rows, or neither the gate's R2 nor the
+    # paired bootstrap is comparing what it claims to compare.
+    for name in arm_names:
+        if not np.array_equal(oofs[name]["match_ids"], oofs["P0"]["match_ids"]):
+            raise SystemExit(f"row misalignment: {name} does not match P0")
+
+    # --- the protocol gate, BEFORE any bootstrap (declaration 6's deviation) --
+    FLOOR = 0.00107  # 0.107% residual variance, set by F-1.0 on target T2
+    print()
+    print("PROTOCOL GATE -- separability against P0, computed before any bootstrap")
+    print(f"  standing floor {FLOOR*100:.3f}% residual variance (set by F-1.0 on T2)")
+    gate = {}
+    base = diffs["P0"]
+    for name in arm_names:
+        if name == "P0":
+            continue
+        # R2 of a simple linear fit is corr^2 and so is direction-free.
+        r2 = float(np.corrcoef(diffs[name], base)[0, 1]) ** 2
+        resid = 1.0 - r2
+        below = bool(resid < FLOOR)
+        gate[name] = {"r2": r2, "residual_variance": resid,
+                      "resid_sd_over_signal_sd": float(np.sqrt(resid)),
+                      "below_standing_floor": below}
+        print(f"  {name:6s} vs P0   R2 {r2:.6f}   residual variance {resid*100:7.4f}%   "
+              f"resid/signal {np.sqrt(resid)*100:5.2f}%   "
+              f"{'BELOW STANDING FLOOR' if below else 'testable'}")
+    results["_gate"] = {"standing_floor_residual_variance": FLOOR, "arms": gate}
+
     from app.services.impact_eval import paired_oof_log_loss_delta
     print()
     print("METHOD C -- the round's own outcome as the target")
-    for name in ("F-0.4", "F-0.3"):
+    for name in arm_names:
+        if name == "P0":
+            continue
         point, lo, hi = paired_oof_log_loss_delta(oofs[name], oofs["P0"], draws=DRAWS)
         verdict = ("INCONCLUSIVE" if lo <= 0 <= hi else
                    ("HARM" if point > 0 else "IMPROVEMENT"))
-        results[f"{name} vs P0"] = {"point": point, "lo": lo, "hi": hi,
-                                    "verdict": verdict}
-        print(f"  {name} vs P0   {point:+.6e}  [{lo:+.6e}, {hi:+.6e}]  {verdict}")
+        results[f"{name} vs P0"] = {
+            "point": point, "lo": lo, "hi": hi, "verdict": verdict,
+            "residual_variance": gate[name]["residual_variance"],
+            "below_standing_floor": gate[name]["below_standing_floor"],
+        }
+        note = "  [below standing floor]" if gate[name]["below_standing_floor"] else ""
+        print(f"  {name:6s} vs P0   {point:+.6e}  [{lo:+.6e}, {hi:+.6e}]  "
+              f"{verdict}{note}")
     print("  NOTE: partly circular by construction -- see declaration 7.")
-    (out_dir / "alt_metric_C.json").write_text(json.dumps(results, indent=2))
+    print("  NOTE: a decisive verdict below the standing floor MOVES the floor")
+    print("        on this target (gate clause 3); it is not suppressed.")
+    (out_dir / f"alt_metric_C{tag}.json").write_text(json.dumps(results, indent=2))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--mode", required=True, choices=["A", "B", "C"])
+    ap.add_argument("--arms", default=None,
+                    help="mode C only: comma-separated arms, P0 first. "
+                         "Default is declaration 8's seven.")
+    ap.add_argument("--tag", default="",
+                    help="mode C only: suffix for the output filename")
     args = ap.parse_args()
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -352,7 +409,10 @@ def main():
     db.rollback()
     db.execute(text("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY"))
     db.commit()
-    {"A": mode_a, "B": mode_b, "C": mode_c}[args.mode](db, out_dir)
+    if args.mode == "C":
+        mode_c(db, out_dir, arms_csv=args.arms, tag=args.tag)
+    else:
+        {"A": mode_a, "B": mode_b}[args.mode](db, out_dir)
     db.rollback()
     db.close()
 
