@@ -3216,3 +3216,82 @@ same quantity.
 because a within-round target rewards tracking the kills that decided that round and post-plant kills are
 disproportionately the deciding ones. If C comes in near 0.3 as well, the case for the change is much stronger than
 tonight's contrasts made it look.
+
+### 2026-09-20 (RESULT, declarations 6 and 7) — the answer depends on the target, and that reframes everything
+
+All four measurements complete. **They disagree, and the disagreement is the finding.**
+
+| method | machinery | scalar it implies |
+|---|---|---|
+| grid search (T2, forward window) | loss contrasts over a grid | **~0.3** |
+| **A** coefficient ratio (T2) | `b_post / b_pre`, fitted | **0.431** (sd 0.017, folds 0.41–0.46) |
+| **B** direct swing (no target at all) | mean \|dV\| post / pre | **1.023** (median-based 0.874) |
+| **C** round's own outcome | flat arms vs shipped | **favours the shipped ramp** |
+
+Method C in full: `F-0.40 vs P0` **+6.953e−03 [+6.218e−03, +7.706e−03] HARM**; `F-0.30 vs P0`
+**+8.428e−03 [+7.617e−03, +9.276e−03] HARM**. Note the magnitude — these are **~100x larger** than anything measured
+on T2, because the round outcome is nearly determined by the kills that decided it. That is the circularity
+declared in advance, visible in the numbers.
+
+**A's split is well-conditioned**: `corr(pre_leverage, post_leverage) = +0.060`, so the two columns are nearly
+orthogonal and the ratio is trustworthy as an estimate of what T2 wants.
+
+#### The reconciliation
+
+`K(s)` is **already correct**. Measured over the scored population: mean `K` is 1.018x larger post-plant, and the
+measured win-probability swing is 1.023x larger. The kill-order bonus tracks what a kill is worth almost exactly,
+without knowing anything about the spike. The time factor then multiplies by a further **1.264x** on average, and
+nothing in the win-probability data justifies that.
+
+So three of the four agree the shipped ramp **overpays** post-plant kills. They disagree on by how much, and the
+disagreement tracks **which question is being asked**:
+
+- **"Who decided the round in front of us?"** — B (1.02) and C (the ramp wins) say post-plant kills are worth at
+  least as much as pre-plant ones.
+- **"Who will win the rounds after this one?"** — the grid (~0.3) and A (0.43) say post-plant kills predict future
+  rounds substantially less well.
+
+Both are true statements about different quantities. Post-plant play decides the round it happens in, and predicts
+subsequent rounds poorly — consistent with post-plant outcomes being driven more by position, timer and spike state
+than by repeatable individual skill.
+
+#### D1, and its gate
+
+`D1 vs P0` **−8.716e−05 [−1.505e−04, −2.202e−05] IMPROVEMENT**. `D1 vs F-0.40` **+5.430e−06, and the gate says
+UNTESTABLE** — residual variance 0.0625% against the 0.107% floor. So D1 beats the shipped model and is
+**indistinguishable from a flat constant**, which the pre-check already implied: `corr(D, K) = 0.823`, so paying the
+measured swing is close to paying `K` times a constant. **The redesign collapses onto the flat arm.** That is a
+real result about the redesign, not a failure of it: it says the swing information is already carried by `K`.
+
+**Process deviation, recorded.** Declaration 6 says the gate runs BEFORE any bootstrap. It did not — the contrast
+was computed first and the gate after. The gate's verdict governs regardless, and `D1 vs F-0.40` is reported
+UNTESTABLE rather than INCONCLUSIVE.
+
+#### Predictions, scored
+
+| declared | outcome |
+|---|---|
+| A lands 0.2–0.5 | **held** — 0.431 |
+| B lands 0.2–0.5 | **FAILED** — 1.023 |
+| C lands higher, nearer 1.0 | **held** directionally — C favours the shipped ramp outright |
+| D1 passes the gate and is IMPROVEMENT | **half failed** — IMPROVEMENT vs P0, but UNTESTABLE vs its level-matched comparator |
+
+#### What this does to the version 4 recommendation
+
+**It suspends it.** The earlier entries recommend replacing the post-plant regime with a flat constant near 0.3.
+That recommendation rests entirely on T2, a forward-looking target, and **method C says the same change is HARM on
+the round's own outcome by a margin two orders of magnitude larger than the gains that motivated it.**
+
+The choice is no longer statistical. It is: **what is Impact for?**
+
+- If Impact rates contribution to the match being played, the round-outcome reading governs, and flattening is
+  wrong. The defensible change shrinks to `T ~ 1.0` — remove the *ramp's growth* and the plant+38..45 override,
+  keep post-plant kills at parity with pre-plant ones, which is what B measures and what `F-1.00` already showed
+  beats the shipped ramp on T2 as well.
+- If Impact forecasts future performance, the T2 reading governs and ~0.3–0.43 is right.
+
+**`T = 1.00` is the only value that is not contradicted by any of the four measurements**: B measures it directly,
+A and the grid say "well below 1.26" which it satisfies, C prefers the shipped ramp but `F-1.00` was never run on
+C. **That gap should be closed before any version 4 is specified** — run `F-1.00` on the round target.
+
+The Tier A correctness fixes are untouched by any of this and remain recommended.

@@ -109,6 +109,11 @@ L2_GRID = (0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)
 # side split with the level held identical. Fitting a level here would
 # reintroduce the level/shape confound the whole investigation exists to avoid.
 SIDE_LEVEL = 0.40
+
+# DECLARATION 6 (D1). The post-plant payout becomes the measured win-probability
+# swing itself. S is fitted per fold so D1 carries the SAME total post-plant
+# leverage as F-0.40, isolating the redistribution from the level.
+D1_FLOOR, D1_CEIL, D1_FALLBACK, D1_MATCH_LEVEL = 0.005, 1.0, 0.40, 0.40
 SIDE_LATE_BAND = 30  # A2's split, in seconds since the plant
 F2_GRID = (0.00, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 0.80, 1.00, 1.20, 1.40)
 
@@ -124,7 +129,7 @@ SIMPLE_ARMS = (
     + [f"F-{k}" for k in F2_GRID if k not in F_GRID]
 )
 
-ALL_ARMS = ["P0"] + SIMPLE_ARMS + ["P2L", "P6", "P5", "P5b", "Lf", "Ff", "Lf2", "Ff2", "A1", "A2"]
+ALL_ARMS = ["P0"] + SIMPLE_ARMS + ["P2L", "P6", "P5", "P5b", "Lf", "Ff", "Lf2", "Ff2", "A1", "A2", "D1"]
 
 
 def log(message):
@@ -579,7 +584,7 @@ def main():
                 f"the constant is NOT recommended for freezing")
         del obs_by_value
 
-    if wanted & {"P2L", "P5", "P5b", "P6", "A1", "A2"}:
+    if wanted & {"P2L", "P5", "P5b", "P6", "A1", "A2", "D1"}:
         log("extracting post-plant rows (raw data, extracted once) ...")
         all_seconds = extract_postplant_round_seconds(db)
         all_kills = extract_postplant_kills(db)
@@ -599,6 +604,37 @@ def main():
                      outer_cv(lambda f: per_fold_obs[f], folds, features, n_folds))
             (out_dir / "p2l_lambdas.json").write_text(
                 json.dumps({str(k): v for k, v in lambdas.items()}, indent=2))
+            del per_fold_obs
+
+        if "D1" in wanted and load_oof(out_dir, "D1") is None:
+            log("D1: fitting per-fold swing scale ...")
+            per_fold_obs, fitted = {}, {}
+            for fold in range(n_folds):
+                train = {m for m, f in folds.items() if f != fold}
+                vt = build_value_table([r for r in all_seconds if r.match_id in train],
+                                       w=DEFAULT_W)
+                swing_total = k_total = 0.0
+                for kill in (k for k in all_kills if k.match_id in train):
+                    raw = difference(vt, kill.attackers_alive, kill.defenders_alive,
+                                     kill.t, kill.victim_is_attacker)
+                    if raw is None:
+                        continue
+                    swing_total += min(max(raw, D1_FLOOR), D1_CEIL)
+                    k_total += kill.kill_order_bonus * D1_MATCH_LEVEL
+                scale = k_total / swing_total
+                fitted[fold] = {"scale": scale, "swing_total": swing_total,
+                                "k_total": k_total}
+                log(f"  D1 fold {fold}: S = {scale:.2f}  "
+                    f"(matches {k_total:,.0f} of post-plant leverage)")
+                per_fold_obs[fold] = replay(db, "D1", variant=variants.variant_for(
+                    "D1", scale=scale, value_table=vt, floor=D1_FLOOR,
+                    ceil=D1_CEIL, fallback=D1_FALLBACK))
+            save_oof(out_dir, "D1",
+                     outer_cv(lambda f: per_fold_obs[f], folds, features, n_folds))
+            (out_dir / "d1_scale.json").write_text(json.dumps(
+                {"floor": D1_FLOOR, "ceil": D1_CEIL, "fallback": D1_FALLBACK,
+                 "match_level": D1_MATCH_LEVEL,
+                 "per_fold": {str(k): v for k, v in fitted.items()}}, indent=2))
             del per_fold_obs
 
         for arm, banded in (("A1", False), ("A2", True)):

@@ -169,6 +169,60 @@ def _v_flat(k: float):
     return variant
 
 
+def _v_swing(scale: float, value_table, floor: float, ceil: float, fallback: float):
+    """DECLARATION 6 (D1): the post-plant payout IS the measured win-probability
+    swing, not the kill-order bonus times a clock factor.
+
+    Today a post-plant kill pays `K(s) x T(t)`. D1 pays `S x clamp(D, floor,
+    ceil)` where D is what the event actually changed. It is delivered through
+    this wrapper by returning `T = S*D/K`, which makes the kill leg exactly
+    `K * T = S*D` and the death leg `K * traded * T = S*D*traded`, so the trade
+    discount survives untouched.
+
+    `K` is recovered from the alive counts alone. That is sound because the
+    kill-order graph is symmetric under team relabeling -- verified, zero
+    asymmetric edges -- so it does not matter which side is stored as team 1.
+
+    A cell with no supported D, a self-kill, or a phantom plant falls back to
+    the flat `fallback`, matching the comparator rather than the shipped ramp.
+    """
+    from app.scoring.impact import _kill_order_bonus
+    from app.models.match import Team
+    from app.scoring.postplant_factor import difference
+    from app.scoring.plant_window import effective_plant_time
+
+    def variant(round_row, kill_time, for_death, shipped, ctx=None):
+        if not _post_plant(round_row, kill_time):
+            return shipped
+        ctx = ctx or {}
+        alive = ctx.get("alive_counts")
+        is_attacker = ctx.get("is_attacker")
+        if alive is None or is_attacker is None or ctx.get("self_kill"):
+            return fallback
+        effective = effective_plant_time(round_row)
+        if effective is None:          # phantom plant: never in D's population
+            return fallback
+        a, d = alive
+        t = int(kill_time - effective)
+        victim_is_attacker = not is_attacker
+        raw = difference(value_table, a, d, t, victim_is_attacker)
+        if raw is None:
+            return fallback
+        swung = min(max(raw, floor), ceil)
+        # K for this transition, with attackers labelled team 1 (safe by the
+        # verified mirror symmetry). team1_kill_index/team2_kill_index are the
+        # counts BEFORE the kill, and the loser is the victim's side.
+        # Argument order validated against the scorer's own stored
+        # kill_order_bonus on all 153,481 post-plant kills: TEAM_1 when the
+        # victim is an attacker matches exactly, the mirror matches 24%.
+        k = _kill_order_bonus(a, d, Team.TEAM_1 if victim_is_attacker else Team.TEAM_2,
+                              False)
+        if not k:
+            return fallback
+        return scale * swung / k
+    return variant
+
+
 def _v_side(level: float, weights: dict):
     """DECLARATION 4: a post-plant factor that is a constant PER VICTIM SIDE.
 
@@ -271,6 +325,9 @@ def variant_for(name: str, **kwargs):
         return _v_p4(float(name.split("-", 1)[1]))
     if name.startswith("F-"):
         return _v_flat(float(name.split("-", 1)[1]))
+    if name == "D1":
+        return _v_swing(kwargs["scale"], kwargs["value_table"],
+                        kwargs["floor"], kwargs["ceil"], kwargs["fallback"])
     if name in ("A1", "A2"):
         return _v_side(kwargs["level"], kwargs["weights"])
     if name == "P2L":
