@@ -36,6 +36,7 @@ Usage:
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -43,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from playwright.sync_api import sync_playwright
 
 from app.adapters.trackergg_browserstate_source import (
+    IngestLedger,
     backfill_unscored_matches,
     ingest_paginated_history,
 )
@@ -54,9 +56,21 @@ CDP_URL = "http://localhost:9222"
 # Reached fewer than --count with no end-of-history to justify it. Distinct
 # from 1 (a crash), matching refresh_tracked_players.py.
 EXIT_INCOMPLETE = 2
+# Gitignored -- ledgers name real match IDs and are run artifacts, not source.
+LEDGER_DIR = Path(__file__).resolve().parents[1] / "ingest_ledgers"
 
 
-def main(riot_id: str, count: int, no_prewarm: bool) -> int:
+def _default_ledger_path(riot_id: str) -> Path:
+    stamp = datetime.now().astimezone().strftime("%Y%m%dT%H%M%S")
+    safe = "".join(c if c.isalnum() else "-" for c in riot_id)
+    return LEDGER_DIR / f"ingest-{safe}-{stamp}.jsonl"
+
+
+def main(riot_id: str, count: int, no_prewarm: bool, ledger_path: Path) -> int:
+    ledger = IngestLedger(
+        ledger_path, run_label=f"ingest_trackergg_player {riot_id} --count {count}"
+    )
+    print(f"ledger: {ledger.path}")
     db = SessionLocal()
     try:
         dirty = backfill_unscored_matches(db)
@@ -64,7 +78,9 @@ def main(riot_id: str, count: int, no_prewarm: bool) -> int:
             browser = p.chromium.connect_over_cdp(CDP_URL)
             context = browser.contexts[0]
             page = context.new_page()
-            new_dirty, outcome = ingest_paginated_history(db, page, riot_id, count)
+            new_dirty, outcome = ingest_paginated_history(
+                db, page, riot_id, count, ledger
+            )
             dirty |= new_dirty
             page.close()
 
@@ -90,7 +106,14 @@ def main(riot_id: str, count: int, no_prewarm: bool) -> int:
             print("refreshing site stats cache...")
             refresh_site_stats(db)
     finally:
+        ledger.record_end(f"{riot_id}: {ledger.count} added")
         db.close()
+
+    print(f"\nLEDGER: {ledger.count} match(es) added this run")
+    print(f"  {ledger.path}")
+    if ledger.count:
+        print("  back this run out with:")
+        print(f"    python scripts\\rollback_ingest_ledger.py \"{ledger.path}\"")
 
     # Non-zero when discovery was INCOMPLETE or the ingest was cut short --
     # the "we don't know what we missed" bucket. PRIVATE and NO_HISTORY are
@@ -107,5 +130,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-prewarm", action="store_true", help="skip the post-ingest cache pre-warm (see module docstring)"
     )
+    parser.add_argument(
+        "--ledger",
+        type=Path,
+        default=None,
+        help="where to record the matches this run adds (default: "
+             "webapp/ingest_ledgers/ingest-<riot id>-<timestamp>.jsonl). Feed "
+             "it to scripts/rollback_ingest_ledger.py to back the run out.",
+    )
     args = parser.parse_args()
-    sys.exit(main(args.riot_id, args.count, args.no_prewarm))
+    sys.exit(
+        main(
+            args.riot_id,
+            args.count,
+            args.no_prewarm,
+            args.ledger or _default_ledger_path(args.riot_id),
+        )
+    )
