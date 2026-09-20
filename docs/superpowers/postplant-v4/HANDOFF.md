@@ -6,6 +6,9 @@ nothing is activated. `IMPACT_CALCULATION_VERSION` stays **3** and `git diff web
 Read this before re-deriving anything. The ledger entries in `../2026-09-07-predeclared-values.md` (declarations
 1–8 and their RESULT entries, 2026-09-19 and 2026-09-20) are authoritative; this file is the map.
 
+**`ARMS.md`** in this directory catalogues every arm with its numbers and why it failed, sorted by kind of
+failure (genuine null / UNTESTABLE / harm). Read it before proposing a new arm — most of them have been tried.
+
 ---
 
 ## 1. The state of the question
