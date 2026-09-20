@@ -89,12 +89,23 @@ SEED = 0
 # per-fold selection in P4f can decline to change anything.
 P4_GRID = (0.70, 0.7826, 0.90, 1.00)
 
+# DECLARATION 2. The level grid widened, because P4f selected P4_GRID's floor on
+# every fold and therefore measured the edge of the grid rather than an optimum.
+# And the flat grid, whose 1.00 member is "no post-plant timing model at all".
+L_GRID = (0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)
+F_GRID = (0.40, 0.60, 0.80, 1.00, 1.20, 1.40)
+
 # Arms that fit something and are therefore replayed once per fold.
 PER_FOLD_ARMS = {"P2L", "P5", "P5b", "P6"}
 # Arms that are pure deterministic rule changes: one replay each.
-SIMPLE_ARMS = ["P1", "P2b", "P3a", "P3b", "PC", "PC+"] + [f"P4-{s}" for s in P4_GRID if s != 1.00]
+SIMPLE_ARMS = (
+    ["P1", "P2b", "P3a", "P3b", "PC", "PC+"]
+    + [f"P4-{s}" for s in P4_GRID if s != 1.00]
+    + [f"L-{s}" for s in L_GRID if s != 1.00]
+    + [f"F-{k}" for k in F_GRID]
+)
 
-ALL_ARMS = ["P0"] + SIMPLE_ARMS + ["P2L", "P6", "P5", "P5b"]
+ALL_ARMS = ["P0"] + SIMPLE_ARMS + ["P2L", "P6", "P5", "P5b", "Lf", "Ff"]
 
 
 def log(message):
@@ -506,6 +517,47 @@ def main():
             json.dumps({str(k): v for k, v in chosen.items()}, indent=2))
         del obs_by_scale
 
+    # DECLARATION 2's two fitted arms. Each selects its constant per fold on
+    # training matches only, from its declared grid, and the selection is
+    # reported so a grid-edge choice is visible as UNBRACKETED rather than
+    # quietly accepted -- the failure P4f hit and this declaration names.
+    for fitted, grid, fmt, reuse_p0 in (
+        ("Lf", L_GRID, "L-{}", True),
+        ("Ff", F_GRID, "F-{}", False),
+    ):
+        if fitted not in wanted or load_oof(out_dir, fitted) is not None:
+            continue
+        log(f"{fitted}: assembling its grid ...")
+        obs_by_value = {}
+        for value in grid:
+            arm = fmt.format(value)
+            if reuse_p0 and value == 1.00:
+                obs_path = out_dir / "obs_P0.pkl"
+                if obs_path.exists():
+                    log(f"  {arm} is P0's configuration; loading cached observations")
+                    obs_by_value[value] = pickle.loads(obs_path.read_bytes())
+                    continue
+            log(f"  replaying {arm} ...")
+            t0 = time.time()
+            observations = replay(db, arm, variant=variants.variant_for(arm))
+            log(f"    replayed in {time.time() - t0:.0f}s")
+            obs_by_value[value] = observations
+            if load_oof(out_dir, arm) is None:
+                save_oof(out_dir, arm,
+                         outer_cv(lambda f, o=observations: o, folds, features, n_folds))
+        oof, chosen = outer_cv_selecting_scale(obs_by_value, folds, features, n_folds)
+        save_oof(out_dir, fitted, oof)
+        edges = {min(grid), max(grid)}
+        (out_dir / f"{fitted.lower()}_selected.json").write_text(json.dumps({
+            "selected_per_fold": {str(k): v for k, v in chosen.items()},
+            "grid": list(grid),
+            "unbracketed": any(v in edges for v in chosen.values()),
+        }, indent=2))
+        if any(v in edges for v in chosen.values()):
+            log(f"  *** {fitted}: UNBRACKETED -- a fold selected a grid edge; "
+                f"the constant is NOT recommended for freezing")
+        del obs_by_value
+
     if wanted & {"P2L", "P5", "P5b", "P6"}:
         log("extracting post-plant rows (raw data, extracted once) ...")
         all_seconds = extract_postplant_round_seconds(db)
@@ -619,6 +671,18 @@ def main():
                              "verdict": verdict(point, lo, hi)}
             print(f"  {name:<12} {point:+.5f}  [{lo:+.5f}, {hi:+.5f}]  "
                   f"{results[name]['verdict']}")
+
+    lf, ff = load_oof(out_dir, "Lf"), load_oof(out_dir, "Ff")
+    if lf is not None and ff is not None:
+        point, lo, hi = paired_oof_log_loss_delta(ff, lf, draws=draws)
+        results["Ff vs Lf"] = {"point": point, "lo": lo, "hi": hi,
+                               "verdict": verdict(point, lo, hi)}
+        print()
+        print("  DECLARATION 2's question -- does the shipped RAMP beat a FLAT")
+        print("  factor, each at its own fitted level? (loss(Ff) - loss(Lf)):")
+        print(f"  {'Ff vs Lf':<12} {point:+.5f}  [{lo:+.5f}, {hi:+.5f}]  "
+              f"{results['Ff vs Lf']['verdict']}")
+        print("  INCONCLUSIVE here means the ramp is NOT shown to beat flat.")
 
     p2b, p2l = load_oof(out_dir, "P2b"), load_oof(out_dir, "P2L")
     if p2b is not None and p2l is not None:

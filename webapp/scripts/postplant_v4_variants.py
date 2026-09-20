@@ -152,6 +152,23 @@ def _v_p4(scale: float):
     return variant
 
 
+def _v_flat(k: float):
+    """DECLARATION 2: the post-plant regime replaced by a flat constant -- no
+    ramp, no plant+38..45 override. Pre-plant stays 1.0 and the post-resolution
+    value stays 0.5, both untouched, so this isolates the SHAPE of the
+    post-plant factor and nothing else.
+
+    k = 1.00 is the null model: no post-plant timing whatsoever, the factor is
+    1.0 everywhere a round is live. It is in the grid precisely so "no model"
+    is an option the measurement can choose.
+    """
+    def variant(round_row, kill_time, for_death, shipped):
+        if _post_plant(round_row, kill_time):
+            return k
+        return shipped
+    return variant
+
+
 def _v_p2l(lam: float):
     """P2L: P2b's extra death-side leverage spread uniformly over every
     post-plant death instead of concentrated in the window. `lam` is fitted per
@@ -215,6 +232,10 @@ def variant_for(name: str, **kwargs):
     built here so the runner never constructs one by hand."""
     if name.startswith("P4-"):
         return _v_p4(float(name.split("-", 1)[1]))
+    if name.startswith("L-"):
+        return _v_p4(float(name.split("-", 1)[1]))
+    if name.startswith("F-"):
+        return _v_flat(float(name.split("-", 1)[1]))
     if name == "P2L":
         return _v_p2l(kwargs["lam"])
     if name not in VARIANTS:

@@ -2676,3 +2676,48 @@ Unchanged in kind from the first declaration, and fixed here before any of it ru
 If prediction 3 fails in the ramp's favour, the shipped shape is doing real work and the case for principled timing
 is evidential rather than aesthetic — which is the outcome the owner expects and which this session exists to give a
 fair chance.
+
+### 2026-09-19 (DECLARATION 3) — bracket the post-plant constant, and test whether zero is the answer
+
+Declared before running. Declaration 2's two fitted arms both selected their grid **floor** on all five folds
+(`Lf` 0.30, `Ff` 0.40) and were reported UNBRACKETED under its own boundary rule, so neither constant is fitted and
+neither may be frozen. This entry widens downward until the optimum is interior, and adds the limiting case.
+
+**What Declaration 2 established, and is not re-opened.** `Ff vs Lf` was INCONCLUSIVE, so the shipped ramp is not
+shown to beat a flat factor and the simpler form is preferred; that rule was fixed in advance and stands. `F-1.00` —
+no post-plant timing model at all — was IMPROVEMENT against the shipped ramp, refuting this session's own
+prediction 4. Both facts are settled and this entry does not re-measure them.
+
+**Arms.** Same protocol throughout: same corpus and fold assignment (`3198:f9a31bb2df2586ec`, `cebae50f85e94736`),
+target T2 and its controls, fixed composite `impact_diff`, 2,000-draw paired bootstrap, `loss(arm) − loss(P0)`,
+positive is worse, and the same verdict vocabulary.
+
+| arm | what it is |
+|---|---|
+| **F-k** | flat post-plant constant, for **k in {0.00, 0.05, 0.10, 0.15, 0.20, 0.30}**. 0.40 and above are already measured and are reused |
+| **Ff2** | k selected per fold on training matches only, over the **union** grid {0.00, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 0.80, 1.00, 1.20, 1.40} |
+| **L-s** | the ramp scaled, for **s in {0.10, 0.20}**, so the ramp family is bracketed on the same range as the flat family |
+| **Lf2** | s selected per fold over {0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00} |
+
+**`F-0.00` is the limiting case and is in the grid deliberately.** It sets the post-plant factor to exactly zero:
+a post-plant kill contributes NOTHING to leverage. It is almost certainly wrong as a model — a kill that wins a
+post-plant 1v1 is not worth nothing — and it is included precisely so the measurement can say whether the data
+distinguishes "much less than pre-plant" from "nothing at all". If `F-0.00` is not clearly worse than `F-0.10`, the
+target cannot tell those apart, and that is a statement about the limits of this evidence, not a licence to ship
+zero. **No arm shipping recommendation will be made for `F-0.00` whatever it measures**, because scoring a decisive
+duel at zero contradicts the standing constraint that no kill is worth nothing.
+
+**The boundary rule carries over, unchanged.** A fold selecting a grid edge means UNBRACKETED and the constant is
+not recommended for freezing. `Lf2`'s grid bottoms at 0.10 and `Ff2`'s at 0.00, which is the floor of the
+representable range, so an interior selection is now the only outcome that yields a freezable constant.
+
+**Predictions, declared before running.**
+
+1. `Ff2` selects an **interior** value in **0.10–0.30**, and is IMPROVEMENT against P0.
+2. `F-0.00` is **worse** than `Ff2` — the data does distinguish "small" from "nothing".
+3. `Lf2` selects interior, and `Ff2 vs Lf2` is again INCONCLUSIVE, leaving the flat form preferred on parsimony.
+4. The improvement curve is **shallow** across 0.10–0.40: the spread among those arms is smaller than the gap from
+   any of them to the shipped ramp, so the exact constant matters much less than the decision to stop boosting
+   post-plant kills.
+
+Nothing is implemented, activated or frozen by this entry.
