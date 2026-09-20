@@ -3366,3 +3366,50 @@ say.
 
 It freezes no constant, does not touch `webapp/app/`, and does not move `IMPACT_CALCULATION_VERSION` off 3. It
 closes one gap, and either supports or refutes `T = 1.00` as the defensible within-round value.
+
+#### Addendum to declaration 8, written while the run was replaying and before any C result was seen
+
+**Prediction 2 is under-identified, and the T2 grid proves it.** The two-point solve reads
+`delta(k) = c(k - k*)^2` and so silently forces a third parameter to zero: it assumes **the best flat arm exactly
+ties `P0`**. The honest model has an offset, `delta(k) = c(k - k*)^2 + d`, and two points cannot identify three
+parameters.
+
+The flat-arm grid already run on **T2** settles whether `d = 0` is safe. It is not:
+
+| k | `F-k vs P0` on T2 | verdict |
+|---:|---:|---|
+| 0.4 | −9.259e−05 | IMPROVEMENT |
+| 0.6 | −8.633e−05 | IMPROVEMENT |
+| 0.8 | −7.285e−05 | IMPROVEMENT |
+| 1.0 | **−5.270e−05** | **IMPROVEMENT** |
+| 1.2 | −2.494e−05 | IMPROVEMENT |
+| 1.4 | +9.469e−06 | INCONCLUSIVE |
+
+A quadratic through those six points fits to a **maximum residual of 1.6e−07 against a curve spanning 1.0e−04** —
+0.16% of the range. So:
+
+- **The quadratic form is validated**, and independently: its vertex lands at **k\* = 0.3221**, against the grid
+  search's own selection of 0.3–0.4 by a completely separate mechanism. The shape assumption behind prediction 2 is
+  sound.
+- **The `d = 0` assumption is refuted.** T2's best flat arm beats `P0` by **d = −9.31e−05**. Every T2 delta in the
+  table is negative, so the two-point solve applied there does not merely mis-estimate the vertex — it **fails
+  outright**, asking for the square root of a negative number.
+- T2's curve crosses zero at **k = 1.349**: on the forward target, every flat constant below ~1.35 beats the
+  shipped ramp.
+
+**What this does to the declared predictions.** Prediction 2's *point value* (+1.1e−3) and the derived vertex
+(k\* = 1.390) are conditional on `d = 0` and are scored as conditional. Its *direction* — `F-1.00` is HARM on C —
+holds only if `d >= 0`, i.e. only if no flat arm beats the shipped ramp on C. That is an open question this run
+answers rather than an assumption it is entitled to. Prediction 3's curve values inherit the same condition.
+
+**What survives untouched:** predictions 1 (bit-for-bit reproduction), 4 (`F-1.26` may be UNTESTABLE) and 5 (the
+minimum is interior) do not depend on the offset at all.
+
+**And this is now the sharpest argument for the seven arms.** Six non-`P0` points identify `c`, `k*` and `d`
+together, with three degrees of freedom left over to test the quadratic form on C the same way it was just tested
+on T2. The single arm the handoff named could not have identified any of them.
+
+**One asymmetry to carry into the result, stated before the numbers.** `F-1.00` is already a **measured
+IMPROVEMENT on T2** (−5.270e−05, interval excluding zero). So whatever C returns, `T = 1.00` is not a compromise
+between one target that wants it and one that does not — it is a value the forward-looking target actively
+prefers to the shipped ramp, being tested against the one target that might not.
