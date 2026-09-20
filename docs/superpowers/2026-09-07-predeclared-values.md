@@ -3413,3 +3413,199 @@ on T2. The single arm the handoff named could not have identified any of them.
 IMPROVEMENT on T2** (−5.270e−05, interval excluding zero). So whatever C returns, `T = 1.00` is not a compromise
 between one target that wants it and one that does not — it is a value the forward-looking target actively
 prefers to the shipped ramp, being tested against the one target that might not.
+
+### 2026-09-20 (RESULT, declaration 8) — `T = 1.00` is refuted, and the ramp's **shape** is the defect
+
+**The gap is closed, in the direction the handoff did not want.**
+
+```
+F-1.00 vs P0, round's own outcome:  +9.823565e-04  [+6.548e-04, +1.304e-03]  HARM
+```
+
+The interval excludes zero. The value declaration 7 left standing as "the only one no measurement contradicts" **is
+contradicted.** `T = 1.00` is not uncontradicted, and version 4 cannot be specified around it on the strength of
+"nothing says no".
+
+#### Reproduction: bit-for-bit
+
+`P0`, `F-0.40` and `F-0.30` returned their declaration-7 values **exactly** — log loss to all 17 significant
+figures, and `point`, `lo` and `hi` identical on both contrasts. Prediction 1 held. The corpus (3,198 matches /
+67,453 rounds / 499,093 kill_events, alembic 0010, match-id md5 `1d639f01ece40d3cf43b7b94352edccc`) and the scorer
+are where declaration 7 left them, so the four new arms are directly comparable to the three old ones. `P0`
+reproduced a further two times in the independent runs below.
+
+#### The curve
+
+| k | `F-k vs P0` | 95% interval | verdict | resid. var. |
+|---:|---:|---|---|---:|
+| 0.30 | +8.427835e−03 | [+7.6167e−03, +9.2757e−03] | HARM | 0.9092% |
+| 0.40 | +6.953219e−03 | [+6.2181e−03, +7.7058e−03] | HARM | 0.7340% |
+| 0.70 | +3.417382e−03 | [+2.9005e−03, +3.9310e−03] | HARM | 0.3332% |
+| **1.00** | **+9.823565e−04** | **[+6.5482e−04, +1.3043e−03]** | **HARM** | 0.1073% |
+| 1.26 | −4.118715e−04 | [−6.2024e−04, −2.0070e−04] | IMPROVEMENT | 0.0407% |
+| 1.60 | −1.446362e−03 | [−1.6914e−03, −1.2084e−03] | IMPROVEMENT | 0.1164% |
+
+Monotone across the whole range, decelerating. Log losses: `P0` 0.092374, and 0.100802 / 0.099327 / 0.095791 /
+0.093356 / 0.091962 / 0.090927 for k = 0.30 … 1.60.
+
+#### What the extra arms bought: **level** and **shape** separate
+
+This is the finding the single named arm could not have produced.
+
+`F-1.26` is **level-matched** — 1.26 is the shipped ramp's own mean post-plant `T` (1.264). It carries the shipped
+level and none of the shipped shape. It is an **IMPROVEMENT on C** (−4.119e−04, interval excluding zero).
+
+So on the target that *prefers* the shipped ramp to every flat arm below it, **holding the level fixed and deleting
+the shape still helps.** The ramp's shape is not merely unsupported by measurement, as the earlier entries had it —
+it is **worse than no shape at all**, on the one target that was supposed to be defending it.
+
+The two questions therefore come apart cleanly:
+
+- **Shape** — both targets want it gone. Settled, and it needs no answer to "what is Impact for".
+- **Level** — the targets disagree, and that disagreement is the real open question.
+
+#### The protocol gate has a hole: the floor is per-target, not global
+
+`F-1.26 vs P0` registered a **decisive** IMPROVEMENT at **0.0407%** residual variance — comfortably below the
+**0.107%** standing floor, and below `A1`'s 0.0498% and `D1`'s 0.0625%, both of which were reported UNTESTABLE.
+
+The floor is **a property of the target, not of the harness.** C's target is ~30x more determined by its own
+features than T2's, so C resolves separations T2 cannot. Concretely:
+
+- On **T2** the floor stands at 0.107%. `A1` and `D1` remain UNTESTABLE; nothing here rescues them.
+- On **C** the demonstrated floor is now **at most 0.0407%**.
+
+Gate clause 3 anticipated a moving floor but wrote it as one global number. **It should be recorded per target**,
+and the declaration-6 addendum's single-column table should be read as "the T2 floor" throughout. Recorded as a
+defect in the gate's statement, not in any verdict it produced.
+
+#### Scale: the "two orders of magnitude" was a property of the target, not of the effect
+
+Declaration 7 suspended the version-4 recommendation partly because C's harms are "~100x larger than anything
+measured on T2". That comparison is between raw log-loss deltas on two targets whose headroom differs by 30x.
+
+| | what the whole scoring system buys | best/worst flat-arm effect | as % of headroom |
+|---|---:|---:|---:|
+| T2 | 0.0202 (0.6931 → 0.6729) | −9.259e−05 gain | **0.458%** |
+| C | 0.6007 (0.6931 → 0.0924) | +6.953e−03 harm at k=0.40 | **1.157%** |
+
+`F-0.40`'s harm on C is **2.5x** T2's best gain in headroom terms, not the 75x the raw numbers suggest. And
+`F-1.00`'s harm on C is **0.36x** T2's best gain — in headroom terms it **loses less on C than it gains on T2**.
+The asymmetry that drove the suspension is largely an artifact of comparing two targets' log losses directly.
+
+#### Predictions, scored
+
+| declared | outcome |
+|---|---|
+| 1. reproduction is bit-for-bit | **held** — exact, on all three arms |
+| 2. `F-1.00` is HARM on C, in [+2e−4, +2e−3] | **held on both counts** — +9.82e−04. The conditional point estimate (+1.1e−3) landed within 12% despite resting on an offset withdrawn mid-run |
+| 3. curve values | `F-0.70` **1.01x** (+3.40e−3 predicted vs +3.42e−3). `F-1.26` and `F-1.60` **wrong in sign**, exactly as the addendum said they would be once `d != 0` |
+| 4. `F-1.26` may be UNTESTABLE | **held mechanically, and it is the interesting failure** — 0.0407%, below the floor, and it registered anyway |
+| 5. the minimum is interior | **FAILED** — still falling at 1.60, grid pinned at its upper edge. The declared re-run-wider rule fires |
+
+The addendum's withdrawal of prediction 2's *identification* was correct and load-bearing: the two-point solve put
+C's vertex at 1.390 and a six-point fit puts it at **1.685**, outside the grid.
+
+#### The re-run wider, and where C's optimum actually is
+
+Prediction 5's failure fired the grid-edge rule, so a second grid ran at k = 1.9, 2.2, 2.6. **It was killed by the
+OS for memory pressure after completing all four replays but before its bootstraps**, so these three arms have
+**point estimates and no intervals**. Recorded as such; they are not registered contrasts.
+
+| k | log loss | `F-k vs P0` | status |
+|---:|---:|---:|---|
+| 0.30 | 0.100802 | +8.428e−03 | bootstrapped, HARM |
+| 0.40 | 0.099327 | +6.953e−03 | bootstrapped, HARM |
+| 0.70 | 0.095791 | +3.417e−03 | bootstrapped, HARM |
+| 1.00 | 0.093356 | +9.824e−04 | bootstrapped, **HARM** |
+| 1.26 | 0.091962 | −4.119e−04 | bootstrapped, IMPROVEMENT |
+| 1.60 | 0.090927 | −1.446e−03 | bootstrapped, IMPROVEMENT |
+| **1.90** | **0.090614** | **−1.760e−03** | point only — **minimum** |
+| 2.20 | 0.090733 | −1.641e−03 | point only |
+| 2.60 | 0.091425 | −9.490e−04 | point only |
+
+**The minimum is bracketed and the grid is no longer pinned.** `F-1.9` beats both neighbours; a three-point
+parabola through 1.6 / 1.9 / 2.2 puts the vertex at **k\* = 1.97**. Located loosely — the 1.9-vs-2.2 gap
+(1.19e−04) is inside a typical bootstrap half-width, so the honest reading is **the optimum lies around 1.7–2.3**.
+The 1.9-vs-1.6 gap (3.13e−04) is not, so "above 1.6" is secure.
+
+The six-point quadratic had put the vertex at 1.685. It was wrong, as its fit quality warned: 1.02% residuals on C
+against 0.16% on T2. **The quadratic form holds on T2 and does not hold on C** — a decelerating curve, not a
+parabola. Any future extrapolation on this target should be treated as indicative only.
+
+#### The reconciliation: B is the anchor, and the other two bracket it
+
+Putting the four estimates of "what a post-plant kill is worth relative to a pre-plant one" on one line:
+
+| estimate | machinery | scalar |
+|---|---|---:|
+| T2 optimum | forward 3-round window, fitted composite | **0.32** |
+| **B** | **mean \|dV\| ratio — no target, no folds, no loss** | **1.02** |
+| shipped ramp, mean | the model in production | 1.26 |
+| C optimum | the round's own outcome | **~1.97** |
+
+**B is the only one that measures the quantity directly**, and the two target-based estimates sit on either side of
+it — T2 at roughly a third of B, C at roughly double. That is the signature of two biases pulling opposite ways,
+not of three disagreeing measurements:
+
+- **T2 undershoots** because post-plant play predicts *later rounds* poorly. It is answering a forecasting
+  question, and post-plant outcomes are driven by position, timer and spike state more than by repeatable skill.
+- **C overshoots** because of the circularity declared in advance in declaration 7. Its target is nearly determined
+  by its own features — pooled out-of-fold log loss **0.0924** against a coin flip's 0.6931, i.e. the model is
+  about **91% confident and right**. Post-plant kills are disproportionately the *last* kills, so up-weighting them
+  reconstructs the label better almost tautologically. C's ~1.97 is an estimate of **which kills are most
+  diagnostic of the round result**, which is not the same quantity as which kills were worth the most.
+
+C is not noise and should not be discarded — it is the operationalisation of the within-round reading, and
+declaration 7 committed in advance to reporting it. But **its optimum is a biased estimate of the scalar**, and the
+size of the bias is visible: 1.97 against B's directly-measured 1.02.
+
+#### What is now settled without needing "what is Impact for"
+
+**The shape goes.** `F-1.26` carries the shipped ramp's own mean level and none of its shape, and it is an
+IMPROVEMENT on the target that prefers the ramp to every flat arm below it. Both targets want the ramp's growth and
+the plant+38..45 override removed. No weighting of the two targets changes this.
+
+**The level is the open question, and it is narrow.** A flat constant beats the shipped ramp on:
+
+- **T2** for k < 1.349 (bracketed by measured IMPROVEMENT at 1.2 and INCONCLUSIVE at 1.4)
+- **C** for k > ~1.18 (bracketed by measured HARM at 1.00 and IMPROVEMENT at 1.26)
+
+giving a **joint window of roughly 1.18 < k < 1.35** in which one constant improves both targets at once.
+
+**The honest caveat, and the one measurement that closes it.** There is as yet **no single k measured as an
+IMPROVEMENT on both targets.** T2's highest measured improvement is k = 1.2; C's lowest is k = 1.26. They are
+adjacent and do not overlap. The missing cell is **T2 at k = 1.26** — the run that was killed for memory. Its fit
+value is −1.54e−05, an improvement, but it is a fit.
+
+```bash
+cd webapp
+DATABASE_URL="postgresql+psycopg2://postgres@localhost:5434/valo_v4" \
+  ./.venv313/Scripts/python.exe scripts/run_postplant_v4_report.py \
+    --out <DIR> --arms "P0,F-1.2,F-1.26,F-1.4"
+```
+`F-1.2` and `F-1.4` are in that list as reproduction checks against declaration 5's `contrasts_flat2.json`. The
+killed run got through its identity gate (**PASSED**, 67,251 observations identical) and banked `oof_P0.npz`, and
+it re-confirmed `dataset_fingerprint 3198:f9a31bb2df2586ec` / `fold_mapping_hash cebae50f85e94736`, so a rerun
+pointed at that directory resumes rather than restarting.
+
+#### What this does to the version 4 recommendation
+
+It **unblocks the part that was blocked, and narrows the part that was not.**
+
+1. **Remove the ramp's shape and the plant+38..45 override.** Settled by measurement on both targets. This no
+   longer waits on the owner's answer to "what is Impact for".
+2. **Replace it with a flat constant in the joint window, 1.18–1.35.** The shipped ramp's own mean level, 1.26,
+   sits inside it. Pending the one measurement above.
+3. **`T = 1.00` is out.** It is HARM on C with an interval excluding zero, and it sits below the joint window.
+4. **0.30–0.40 is out too.** It was the earlier entries' recommendation, and it is 1.16% of C's headroom worse
+   against 0.46% of T2's headroom better — the worst net of any arm tested.
+5. Tier A fixes with `P3a` are untouched by all of this and remain recommended.
+
+Note what has changed about the *character* of the recommendation. The earlier entries proposed moving the level a
+long way (1.26 → 0.3) on T2's authority alone. This one proposes **leaving the level almost exactly where it is and
+deleting the shape**. Impact scores will move less, and the case no longer depends on which target is preferred.
+
+`IMPACT_CALCULATION_VERSION` stays **3**, `git diff webapp/app/` is empty, and no constant is frozen by this entry.
+Row motion for `F-1.26` has not been measured and should be, via `postplant_v4_row_motion.py`, before any version-4
+runbook is written.

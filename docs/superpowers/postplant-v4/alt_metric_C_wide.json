@@ -1,0 +1,42 @@
+{
+  "_note": "DECLARATION 8's re-run-wider, fired by prediction 5's failure (the curve was still falling at k=1.6). The run completed all four replays and was KILLED BY THE OS for memory pressure before its bootstraps, so these arms have POINT ESTIMATES AND NO INTERVALS and are not registered contrasts. Log losses are transcribed from the run log at 6 decimal places; deltas are derived as loss(arm) - loss(P0), which is exactly how paired_oof_log_loss_delta computes its point.",
+  "_status": "point estimates only -- no bootstrap, no verdicts, no protocol gate",
+  "_target": "method C, the round's own outcome",
+  "_corpus": "3198:f9a31bb2df2586ec",
+  "P0": {
+    "log_loss": 0.092374,
+    "n": 67251
+  },
+  "F-1.9": {
+    "log_loss": 0.090614,
+    "n": 67251
+  },
+  "F-2.2": {
+    "log_loss": 0.090733,
+    "n": 67251
+  },
+  "F-2.6": {
+    "log_loss": 0.091425,
+    "n": 67251
+  },
+  "F-1.9 vs P0": {
+    "point": -0.00176,
+    "verdict": "NOT RUN -- point estimate only"
+  },
+  "F-2.2 vs P0": {
+    "point": -0.001641,
+    "verdict": "NOT RUN -- point estimate only"
+  },
+  "F-2.6 vs P0": {
+    "point": -0.000949,
+    "verdict": "NOT RUN -- point estimate only"
+  },
+  "_vertex": {
+    "method": "three-point parabola through the equally spaced k = 1.6 / 1.9 / 2.2 log losses",
+    "k_star": 1.967,
+    "bracketed": true,
+    "comment": "F-1.9 beats both neighbours, so the grid is no longer pinned at its edge and declaration 8's grid-edge rule is satisfied. Located LOOSELY: the 1.9-vs-2.2 gap (1.19e-04) is inside a typical bootstrap half-width, so read this as 'the optimum is around 1.7-2.3'. The 1.9-vs-1.6 gap (3.13e-04) is not, so 'above 1.6' is secure.",
+    "six_point_quadratic_had_predicted": 1.685,
+    "why_it_was_wrong": "the quadratic form holds on T2 (0.16% residuals) and does NOT hold on C (1.02%); C's curve decelerates rather than being parabolic"
+  }
+}

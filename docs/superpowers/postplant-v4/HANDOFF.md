@@ -4,51 +4,85 @@ Session of 2026-09-19/20. Everything here is measured, out-of-fold and reproduci
 nothing is activated. `IMPACT_CALCULATION_VERSION` stays **3** and `git diff webapp/app/` is empty.
 
 Read this before re-deriving anything. The ledger entries in `../2026-09-07-predeclared-values.md` (declarations
-1–7 and their RESULT entries, 2026-09-19 and 2026-09-20) are authoritative; this file is the map.
+1–8 and their RESULT entries, 2026-09-19 and 2026-09-20) are authoritative; this file is the map.
 
 ---
 
 ## 1. The state of the question
 
-**The shipped post-plant time factor overpays, and `K(s)` does not.**
+**The shipped post-plant time factor has the wrong *shape*. Its *level* is roughly right.**
+
+That is a reversal of what this file said on 2026-09-20 02:26, and it came from running the gap that entry named.
 
 | | |
 |---|---|
 | mean `K` post-plant ÷ pre-plant | **1.018** |
-| mean win-probability swing post ÷ pre | **1.023** |
-| mean `T` post-plant | **1.264** (rising to 1.75) |
-| what the scorer pays, post ÷ pre | **1.299** |
+| mean win-probability swing post ÷ pre (**method B, no target**) | **1.023** |
+| mean `T` post-plant (shipped) | **1.264** (rising to 1.75) |
+| best flat constant on T2 (forward) | **0.32** |
+| best flat constant on C (round's own outcome) | **~1.97** |
 
-`K(s)` already prices a kill almost exactly right without knowing the spike exists. The time factor multiplies by a
-further ~1.26× that **no measurement justifies**.
+`K(s)` already prices a kill almost exactly right without knowing the spike exists — that part is unchanged and
+still settled. What changed is the reading of `T`.
 
-**But how far it should come down depends on the question**, and this is the session's central finding:
+### `T = 1.00` is refuted
 
-| method | machinery | implied scalar |
-|---|---|---|
-| grid search | loss contrasts, target T2 (3-round forward window) | ~0.3 |
-| **A** coefficient ratio | `b_post/b_pre` fitted, target T2 | **0.431** (sd 0.017) |
-| **B** direct swing | mean \|ΔV\| ratio, **no target at all** | **1.023** |
-| **C** round's own outcome | flat arms vs shipped | **shipped ramp wins** |
+`F-1.00 vs P0` on the round's own outcome: **+9.823565e−04 [+6.548e−04, +1.304e−03] HARM**, interval excluding
+zero. The previous handoff's "`T = 1.00` is the only value nothing contradicts" is false; C contradicts it. Do not
+specify version 4 around 1.00.
 
-Forward-looking targets want ~0.3–0.43. Within-round measures want ~1.0 or higher. Both are true about different
-quantities: post-plant play decides the round it happens in and predicts later rounds poorly.
+### What replaced it, and why it is a better answer
 
-**`T = 1.00` is the only value no measurement contradicts.** B measures it directly; A and the grid say "well below
-1.26", which 1.00 satisfies; C prefers the shipped ramp, **but `F-1.00` was never run on C's target.**
+`F-1.26` is **level-matched** — 1.26 is the shipped ramp's own mean post-plant `T`. It carries the shipped level
+and none of the shipped shape, and on C it is an **IMPROVEMENT (−4.119e−04, interval excluding zero)**. So on the
+one target that prefers the shipped ramp to every flat arm below it, **holding the level fixed and deleting the
+shape still helps.**
+
+The question therefore splits, and only half of it is still open:
+
+- **Shape — settled.** Both targets want the ramp's growth and the plant+38..45 override gone. This needs **no**
+  answer to "what is Impact for".
+- **Level — open, but narrow.** T2 improves for k < 1.349; C improves for k > ~1.18. **Joint window ≈ 1.18–1.35**,
+  and the shipped level 1.26 sits inside it.
+
+### Why the four methods disagreed, resolved
+
+B is the only one that measures the scalar **directly** — no target, no folds, no loss — and it says **1.02**. The
+two target-based estimates sit either side of it: T2 at **0.32**, C at **~1.97**. Two biases pulling opposite
+ways, not three disagreeing measurements.
+
+- **T2 undershoots**: post-plant play predicts *later rounds* poorly.
+- **C overshoots**: the circularity declaration 7 declared in advance. C's pooled out-of-fold log loss is **0.0924**
+  against a coin flip's 0.6931 — the model is ~91% confident and right. Post-plant kills are disproportionately the
+  *last* kills, so up-weighting them reconstructs the label almost tautologically. C's ~1.97 estimates **which
+  kills are most diagnostic of the round result**, not which were worth most.
+
+Also settled: **the "~100x" that suspended the recommendation was a target artifact.** C's headroom is 0.6007
+against T2's 0.0202 — 30x. Normalised, `F-0.40`'s harm on C is 2.5x T2's best gain, not 75x; and `F-1.00` loses
+**less** on C than it gains on T2 (0.36x).
 
 ### The single open gap
 
-**Run `F-1.00` on the round-outcome target (method C).** One replay, ~10 minutes:
+**Measure T2 at k = 1.26.** There is as yet **no single k measured as an IMPROVEMENT on both targets** — T2's
+highest measured improvement is 1.2, C's lowest is 1.26. Adjacent, not overlapping. The fit says T2 at 1.26 is
+−1.54e−05 (an improvement), but it is a fit.
 
 ```bash
 cd webapp
 DATABASE_URL="postgresql+psycopg2://postgres@localhost:5434/valo_v4" \
-  ./.venv313/Scripts/python.exe scripts/postplant_v4_alt_metrics.py --out DIR --mode C
+  ./.venv313/Scripts/python.exe scripts/run_postplant_v4_report.py \
+    --out <DIR> --arms "P0,F-1.2,F-1.26,F-1.4"
 ```
-(add `F-1.0` to the `arms` dict in `mode_c`). If `F-1.00` is not HARM on the round target, `T = 1.00` is
-uncontradicted by all four methods and version 4 can be specified around it.
 
+`F-1.2` / `F-1.4` are reproduction checks against `contrasts_flat2.json`. **This run was started and killed by the
+OS for memory pressure** (a game was running alongside two corpus replays). It passed its identity gate, banked
+`oof_P0.npz`, and re-confirmed `dataset_fingerprint 3198:f9a31bb2df2586ec` / `fold_mapping_hash
+cebae50f85e94736`; pointing a rerun at that directory resumes rather than restarts. **Do not run two corpus
+replays at once on this machine unless RAM is free.**
+
+Second, smaller gap: **row motion for `F-1.26` has never been measured** (`postplant_v4_row_motion.py`). Needed
+before a version-4 runbook, because this recommendation barely moves the level and so may move fewer rows than the
+Tier A combination's 6,891 (1.02%).
 ---
 
 ## 2. The math, so it is not re-derived
@@ -107,7 +141,14 @@ Key derived numbers already in the ledger: attacker win % by band and by man-adv
 ## 3. What is settled, and what was withdrawn
 
 **Settled:**
-- The level is wrong and the direction is clear: post-plant is overpaid.
+- **The SHAPE is the defect, not the level.** `F-1.26` carries the shipped mean level and no shape, and improves
+  on C. Both targets want the ramp's growth and the plant+38..45 override gone.
+- **`T = 1.00` is refuted** — HARM on C at +9.82e−04, interval excluding zero. It was never contradicted only
+  because it had never been asked.
+- **The level disagreement is a bias sandwich, not a three-way tie.** B measures 1.02 directly; T2 undershoots at
+  0.32, C overshoots at ~1.97 through its declared circularity.
+- **The "~100x" that suspended the recommendation was a target artifact** — C's headroom is 30x T2's. Normalised,
+  the asymmetry is 2.5x, and `F-1.00` loses less on C than it gains on T2.
 - `K(s)` is already right — the swing is priced without the spike.
 - Part 4's shape genuinely fails **against the shipped model** (`P6 vs P0`, 0.220% residual variance, twice the
   detection floor — it had room to be seen and was not).
@@ -148,6 +189,12 @@ cannot see it*, and that is indistinguishable from "does not help" unless you ch
 Below **0.107%**, report **UNTESTABLE**, not INCONCLUSIVE. Untestable is not evidence against and not a licence to
 ship — it means the question was never asked.
 
+**CORRECTION, 2026-09-20: that floor is per-TARGET, and the table above is the T2 column.** `F-1.26 vs P0`
+registered a decisive IMPROVEMENT on C at **0.0407%** residual variance — below the 0.107% floor, and below both
+`A1` (0.0498%) and `D1` (0.0625%) which were reported UNTESTABLE. C's target is ~30x more determined by its own
+features, so it resolves separations T2 cannot. **On T2 the floor stands at 0.107% and `A1`/`D1` stay UNTESTABLE;
+on C the demonstrated floor is at most 0.0407%.** Record the floor with the target, never as one global number.
+
 Other traps that cost time tonight:
 - A fitted constant selected at a **grid edge** is not fitted. Two grids pinned against their floor before a wide
   enough one bracketed it. Declare a boundary rule.
@@ -170,7 +217,7 @@ All read-only. All in `webapp/scripts/`:
 | `run_postplant_v4_report.py` | the arm runner: identity gate, per-fold fitting, per-arm caching of out-of-fold predictions |
 | `postplant_v4_contrast_subset.py` | named subsets of contrasts, parallelisable. Use this — the full runner recomputes all ~35 bootstraps every invocation (an hour) |
 | `postplant_v4_incremental.py` | nested/encompassing test: does arm X carry information beyond arm Y? |
-| `postplant_v4_alt_metrics.py` | methods A, B, C |
+| `postplant_v4_alt_metrics.py` | methods A, B, C. Mode C takes `--arms "P0,F-1.0,..."` (P0 first) and `--tag _wide` for a separate output file |
 | `postplant_v4_row_motion.py` | how much stored Impact an arm actually moves (not a contrast, no verdict) |
 
 ### The local corpus — this is the big time-saver
@@ -186,7 +233,13 @@ DATABASE_URL="postgresql+psycopg2://postgres@localhost:5434/valo_v4"
 ```
 
 **Start it detached** (`Start-Process`, not `pg_ctl` from a shell) — a shell-owned postmaster dies with the shell,
-corrupts its shared memory segment, and needs the orphan killed by PID plus `postmaster.pid` removed.
+corrupts its shared memory segment, and needs the orphan killed by PID plus `postmaster.pid` removed. A stale
+`postmaster.pid` left by that failure mode is what you will find on a cold start; check the recorded PID is dead,
+delete the file, then start.
+
+**Do not run two corpus replays at once unless RAM is free.** Each holds the whole corpus; two of them alongside a
+running game cost both jobs on 2026-09-20, killed by the OS mid-bootstrap. The replays had finished, so their log
+losses survived in the run log and the contrasts did not — log the run to a file, always.
 
 Verified identical to production: 3,198 matches / 67,453 rounds / 499,093 kill_events / 674,530 round_player_stats,
 alembic 0010, match-id md5 `1d639f01ece40d3cf43b7b94352edccc`.
@@ -209,16 +262,24 @@ Corpus fingerprint `3198:f9a31bb2df2586ec`, fold mapping `cebae50f85e94736` — 
 
 ## 6. If version 4 proceeds
 
-Blocked on the owner's answer to **what Impact is for**, and on the `F-1.00`-on-C gap above.
+**No longer blocked on "what Impact is for" for the shape.** Still open on the level, but the window is narrow.
 
-1. **Post-plant regime → a flat constant.** `1.00` if Impact rates contribution to the match played; `0.3–0.43` if
-   it forecasts future performance. Remove the ramp's growth and the plant+38..45 override either way.
+1. **Post-plant regime → a flat constant, and remove the ramp's growth and the plant+38..45 override.** The shape
+   removal is settled on both targets and needs no weighting between them. For the level, take a constant in the
+   **joint window ≈ 1.18–1.35**; the shipped mean level **1.26** sits inside it. **Not `1.00`** (HARM on C,
+   interval excluding zero) and **not `0.3–0.43`** (the worst net of any arm tested: 1.16% of C's headroom worse
+   against 0.46% of T2's better). Pending the T2-at-1.26 measurement in section 1.
 2. **Tier A fixes**, taking `P3a` over `P3b`.
 3. **No structure**: no state table, no differential grouping, no side asymmetry, no time shape. None beat a
    constant, and the ones that "lost" mostly were not measurable.
 4. **Not zero** — `F-0.00` is indistinguishable from the fitted constant, and was pre-committed as never shippable
    because a decisive duel scoring nothing contradicts a standing constraint.
 
+Note the recommendation's changed character: the earlier entries moved the level a long way (1.26 → 0.3) on T2's
+authority alone. This one **leaves the level almost where it is and deletes the shape**, so scores move less and
+the case no longer depends on which target is preferred.
+
 Row motion for the Tier A combination: 6,891 rows (1.02%), 242 matches reordered (7.6%) — clears both declared
-version-4 thresholds. Scale check: the best contrast is ~1/215th of what the whole scoring system buys, so the
+version-4 thresholds. **`F-1.26`'s own row motion is unmeasured** and should be taken before a runbook is written,
+since a near-unchanged level may move far fewer rows. Scale check: the best contrast is ~1/215th of what the whole scoring system buys, so the
 version bump is justified by the correctness fixes and the sign error, not by the size of the gain.
