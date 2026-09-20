@@ -3295,3 +3295,74 @@ A and the grid say "well below 1.26" which it satisfies, C prefers the shipped r
 C. **That gap should be closed before any version 4 is specified** — run `F-1.00` on the round target.
 
 The Tier A correctness fixes are untouched by any of this and remain recommended.
+
+### 2026-09-20 (DECLARATION 8) — close the `F-1.00` gap on the round target, and bracket C's optimum
+
+Declared before running. Declaration 7's RESULT left exactly one measurement unrun, and this entry runs it.
+
+Restated so this entry stands alone: `T = 1.00` is the only post-plant scalar no method contradicts — B measures it
+directly (1.023), A (0.431) and the grid (~0.3) say "well below the shipped 1.264", which 1.00 satisfies, and C
+prefers the shipped ramp over both flat arms it was given — **but neither of those arms was 1.00**. C was run at
+0.40 and 0.30 only, both far below the shipped level, so C has never been asked about parity.
+
+#### What is run
+
+Method C's harness unchanged — `y = did team A win THIS round`, context controls only, no `round_result` — extended
+from three arms to seven:
+
+| arm | why it is in |
+|---|---|
+| `P0` | shipped, the comparator |
+| `F-0.30`, `F-0.40` | already measured on C — **re-run as a reproduction check**, not as new evidence |
+| **`F-1.00`** | **the declared gap** |
+| `F-0.70` | between the arms that lost and 1.00; makes the level a curve rather than two points and an extrapolation |
+| `F-1.26` | **level-matched** — mean shipped post-plant `T` is 1.264. Shipped level, no shape. |
+| `F-1.60` | above the shipped level, so an interior minimum can be **bracketed** instead of inferred |
+
+**Why more than the one arm the handoff named.** `F-1.00` alone returns a verdict on `F-1.00` and nothing else. If
+it is HARM — which prediction 2 below says it will be — the handoff's proposed resolution fails and the very next
+question is "then what level does C want?", which is these same seven replays run a day later. The level-matched
+arm additionally splits what C likes about the ramp into **level** and **shape**, a decomposition no arm run on
+this target so far can make.
+
+#### The gate runs first, as declared
+
+R² between each arm's round-level `impact_diff` and `P0`'s is computed and reported **before** that arm's
+bootstrap. Declaration 6 recorded a deviation on exactly this point; this entry does not repeat it.
+
+Standing floor: **0.107%** residual variance. Recorded caveat, stated in advance: that floor is a property of
+**T2's** detection power. C's contrasts run ~100x larger, so C's own floor is almost certainly well below 0.107%,
+and under gate clause 3 a decisive verdict beneath the standing floor on this target **moves the floor** rather
+than being suppressed as UNTESTABLE. Residual variance and verdict are both reported for every arm whatever they
+say.
+
+#### Predictions, all falsifiable
+
+1. **Reproduction is bit-for-bit.** `paired_oof_log_loss_delta` defaults to `seed=0` and mode C passes no seed, so
+   `P0`, `F-0.40` and `F-0.30` must return their declaration-7 log losses and intervals exactly. Any drift means
+   the corpus or the scorer moved, and the new arms are not comparable to declaration 7.
+
+2. **`F-1.00` is HARM on C, and small — point estimate in `[+2e-4, +2e-3]`.** This contradicts the handoff's stated
+   hope and is declared before the number is seen. C's two measured points fit a quadratic in `k` almost exactly;
+   solving `c(0.30-k*)^2 = 8.428e-3` against `c(0.40-k*)^2 = 6.953e-3` gives **`k* = 1.390`** and **`c = 7.089e-3`**.
+   C's optimum therefore sits slightly **above** the shipped mean `T` of 1.264 — not at 1.00. That model puts
+   `F-1.00` at **+1.1e-3**: roughly one sixth of `F-0.40`'s harm, but still several times the interval half-width,
+   so it should register rather than land INCONCLUSIVE.
+
+3. **The rest of the curve, from the same two-point model:** `F-0.70` at **+3.4e-3**, `F-1.26` at **+1.2e-4**,
+   `F-1.60` at **+3.1e-4**. Scored against the measured values as a curve-shape prediction. The model is fitted on
+   two points and assumes a quadratic; it is offered as a falsifiable guess, not as a result.
+
+4. **`F-1.26` may return UNTESTABLE.** `F-1.0 vs P0` sits at 0.107% residual variance on T2, and `F-1.26` is nearer
+   `P0` still. If it lands below the floor, that is itself the finding: the shipped ramp's **shape** is
+   arithmetically near-indistinguishable from its **level** through this wrapper, and the post-plant question
+   collapses to choosing a level.
+
+5. **The minimum is interior** — `F-1.60` loses to `F-1.26`. If loss instead falls monotonically through 1.60, the
+   grid is pinned at its edge, no constant has been fitted, and the level is declared inconclusive and re-run
+   wider. The grid-edge rule applies.
+
+#### What this entry does not do
+
+It freezes no constant, does not touch `webapp/app/`, and does not move `IMPACT_CALCULATION_VERSION` off 3. It
+closes one gap, and either supports or refutes `T = 1.00` as the defensible within-round value.
