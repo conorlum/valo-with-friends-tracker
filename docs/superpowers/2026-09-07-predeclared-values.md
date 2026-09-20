@@ -2987,3 +2987,49 @@ about.
 the shipped model. The differential regroupings have credible nulls against the shipped model and untestable ones
 against Part 4. The side asymmetry has no test at all. "Four structural models each lost to a constant" overstated
 the evidence by three.
+
+### 2026-09-20 (DECLARATION 5) — does A1 carry information F-0.40 does not?
+
+Declared before running. The paired-loss contrast could not answer this: with one free coefficient on `impact_diff`,
+log loss is invariant to an affine rescale, and `A1 = 0.99672 x F-0.40 − 2.53` with R² 0.999502. The arms make
+near-identical predictions by construction. This entry asks the question that test could not.
+
+**The estimand.** Not "is A1's loss lower" but "does A1's `impact_diff` earn a non-zero coefficient **beyond**
+F-0.40's". Two nested models, both out-of-fold on the same folds:
+
+```
+baseline     y ~ impact_diff[F-0.40] + controls
+incremental  y ~ impact_diff[F-0.40] + impact_diff[A1] + controls
+```
+
+Target T2 and its control set unchanged, same corpus and fold assignment (`3198:f9a31bb2df2586ec`,
+`cebae50f85e94736`), L2 selected per fold per model by inner 3-fold CV on training matches only, contrast
+`loss(incremental) − loss(baseline)` with a 2,000-draw paired match-clustered bootstrap, positive worse.
+
+**Why this has power where the paired test did not.** The second column is fitted on exactly the part of A1 the
+first column does not explain — the residual carrying 2.2% of the signal's spread, which the paired-loss comparison
+discarded. It does not violate the fixed-composite rule: both terms are frozen scoring configurations, and nothing
+searches over the owner's locked weights A/B/C/D.
+
+**Also reported, whatever the verdict:** the fitted coefficient on A1's column per fold, its sign and its stability.
+A coefficient that flips sign across folds is noise being fitted, and will be reported as such even if the loss
+improves.
+
+#### Decision rule
+
+- **IMPROVEMENT** — A1 carries information F-0.40 does not. The side asymmetry is real **and recoverable**, and the
+  right response is a scoring interface that can charge the two sides differently for the same event.
+- **INCONCLUSIVE** — no evidence the residual carries signal. The hypothesis stays **open but unsupported**; it is
+  not refuted, because a per-event multiplier is a weak encoding of a two-sided stake asymmetry and this tests the
+  encoding as much as the idea.
+- **HARM** — the extra column costs out-of-fold, i.e. the residual is noise the model overfits.
+
+**What IMPROVEMENT does NOT license, pre-committed here.** It does not mean ship A1. A two-composite model is not a
+scoring configuration — the scorer emits one number per player-round, and this test deliberately uses two. A positive
+result motivates a **design change**, and the design change then needs its own declaration and its own arm. Nothing
+here may be read as evidence for activating A1 or any per-event side multiplier.
+
+**Prediction.** INCONCLUSIVE. The within-round cancellation that flattened A1 into a rescale is structural — a kill
+credits one side and debits the other through the same factor — so little of the 50pp-vs-4pp asymmetry should
+survive into the round differential at all, however the test is posed. An IMPROVEMENT would be strong evidence that
+the information is recoverable and the encoding, not the idea, was the problem.
