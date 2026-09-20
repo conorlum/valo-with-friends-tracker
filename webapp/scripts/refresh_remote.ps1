@@ -21,9 +21,19 @@ so this is a genuine one-command refresh after the very first run (which
 still needs you to log into tracker.gg once in the window that opens --
 the login persists in that profile after that).
 
+-Count is a target, not a ceiling: discovery pages through tracker.gg's
+"Load More" control across the All-Acts history view, so counts above 20
+now reach past the single server-rendered batch (which holds exactly 20 and
+is scoped to the CURRENT act). Budget roughly 14s per 20 matches discovered
+per player, plus the usual 5-12s per newly ingested match.
+
+The run prints a per-player REACHED/REQUESTED table at the end and exits 2
+if any player fell short without hitting the end of their history.
+
 Usage:
   .\scripts\refresh_remote.ps1              # last 5 matches per tracked player (default)
   .\scripts\refresh_remote.ps1 -Count 10    # last 10 matches per tracked player
+  .\scripts\refresh_remote.ps1 -Count 100   # 100 per player (~70s discovery each)
 #>
 
 param(
@@ -102,7 +112,18 @@ try {
         throw ".venv313 not found -- create it with Python 3.13 and install requirements.txt first."
     }
     & $python "scripts\refresh_tracked_players.py" --count $Count
-    if ($LASTEXITCODE -ne 0) { throw "refresh_tracked_players.py failed (exit $LASTEXITCODE)." }
+    # Exit 2 means the run worked but did not reach -Count for some player
+    # (see refresh_tracked_players.py's EXIT_INCOMPLETE). That is a warning,
+    # not a crash -- but it is never silent, because "100 requested, 20
+    # returned" printing as plain success is exactly the bug this guards.
+    if ($LASTEXITCODE -eq 2) {
+        Write-Warning ("Refresh finished INCOMPLETE -- at least one player did not reach " +
+                       "$Count matches. See the DISCOVERY REPORT above for the per-player " +
+                       "reason; re-run to continue where it left off (ingestion is " +
+                       "idempotent and dedupes on external_id).")
+    } elseif ($LASTEXITCODE -ne 0) {
+        throw "refresh_tracked_players.py failed (exit $LASTEXITCODE)."
+    }
 } finally {
     Remove-Item Env:\DATABASE_URL -ErrorAction SilentlyContinue
 }
