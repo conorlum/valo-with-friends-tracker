@@ -3033,3 +3033,52 @@ here may be read as evidence for activating A1 or any per-event side multiplier.
 credits one side and debits the other through the same factor — so little of the 50pp-vs-4pp asymmetry should
 survive into the round differential at all, however the test is posed. An IMPROVEMENT would be strong evidence that
 the information is recoverable and the encoding, not the idea, was the problem.
+
+### 2026-09-20 (RESULT, declaration 5) — A1 carries nothing F-0.40 does not; only the coefficient SUM is identified
+
+Run as declared, on the same corpus and folds. Prediction held.
+
+```
+loss(base + A1) − loss(base)   +8.390625e-06  [−4.221189e-06, +2.158141e-05]   INCONCLUSIVE
+```
+
+**The coefficients are the real finding**, and they were pre-committed to be reported whatever the loss did:
+
+| fold | β on `F-0.40` | β on `A1` | **sum** | L2 |
+|---|---:|---:|---:|---:|
+| 0 | +0.2665 | +0.0436 | **+0.3101** | 10.0 |
+| 1 | +0.1959 | +0.1059 | **+0.3018** | 10.0 |
+| 2 | +0.3706 | −0.0725 | **+0.2981** | 10.0 |
+| 3 | +0.7990 | −0.5126 | **+0.2864** | 0.1 |
+| 4 | +0.6181 | −0.3109 | **+0.3072** | 1.0 |
+
+Each coefficient swings across a range of ~0.60 and **the sum is stable to 0.024 (CV 3.1%)**. The sign on A1's
+column flips across folds — twice positive, three times negative — which the declaration named in advance as noise
+being fitted. **The model cannot identify the split, only the total.** That is the textbook signature of two
+predictors carrying the same information, and it is a stronger statement than the loss contrast: it is not that
+A1's extra column fails to help, it is that the estimator cannot tell the two columns apart at all.
+
+#### Verdict under the declared rule
+
+INCONCLUSIVE, so: **no evidence the residual carries signal. The hypothesis stays open but unsupported — not
+refuted.** The declaration fixed that reading in advance precisely because a per-event multiplier is a weak encoding
+of a two-sided stake asymmetry, and this tests the encoding at least as much as the idea.
+
+**What is now established about the encoding, rather than the idea.** Three independent diagnostics agree:
+`A1 = 0.99672 × F-0.40 − 2.53`; R² 0.999502 with 0.0498% residual variance, below the harness's demonstrated
+detection floor of 0.107%; and now, only the coefficient sum identified in a nested fit. **A per-event multiplier
+cannot express a two-sided stake asymmetry, and no arm built on `_time_factor` ever could.** The cancellation is
+structural: one kill credits the killer and debits the victim through the same scalar, so the two sides' differing
+stakes never reach the round differential.
+
+#### What would actually test the owner's observation
+
+The measured asymmetry is real and large — in a 1v1 at 38–45s the attacker's death costs 50.0pp of win probability
+while the defender's costs 4.0pp — and none of the above touches it. Testing it requires the scorer to charge the
+two sides **differently for the same event**, which means `_time_factor` returning a pair rather than a scalar, or
+the kill and death legs taking separate factors keyed on their own side. That is a change to
+`app/scoring/impact.py`'s interface, out of scope for this measurement session, and it needs its own declaration
+with its own arm.
+
+**Standing conclusion unchanged.** Nothing here revises the level finding, the Tier A fixes, or the recommendation
+for version 4. It closes one methodological question and reopens one design question.
