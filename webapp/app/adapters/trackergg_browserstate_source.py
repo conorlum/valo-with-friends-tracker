@@ -757,23 +757,73 @@ def _dedup_and_ingest(
     Returns the union of player IDs whose player_view_cache rows were
     invalidated -- callers batch a deferred pre-warm over this set rather than
     recomputing per match (a player appearing in N ingested matches would
-    otherwise be recomputed N times)."""
+    otherwise be recomputed N times).
+
+    Raises whatever the ingest loop raised, preserving the behaviour its
+    pre-existing callers (snowball_1hour.py, the map-diversity crawl) already
+    handle. Callers that need the partial progress behind a failure use
+    `_ingest_discovered` directly."""
+    outcome = _ingest_discovered(db, page, match_ids, ledger, riot_id)
+    if outcome.error is not None:
+        raise outcome.error
+    return outcome.dirty
+
+
+@dataclass
+class _IngestProgress:
+    """What an ingest loop actually managed to do, including when it died
+    partway. `dirty` and `ingested` describe work that is already committed
+    and is valid regardless of `error`."""
+
+    dirty: set[int] = field(default_factory=set)
+    ingested: int = 0
+    already_present: int = 0
+    attempted: int = 0
+    error: BaseException | None = None
+
+
+def _ingest_discovered(
+    db: Session,
+    page: Page,
+    match_ids: list[str],
+    ledger: "IngestLedger | None" = None,
+    riot_id: str = "",
+) -> _IngestProgress:
+    """The ingest loop, reporting partial progress instead of losing it.
+
+    A failure partway through leaves every match committed before it fully
+    ingested and scored; that work is real and must not be reported as
+    nothing. The 2026-09-19 roster run made the cost concrete: one dropped
+    connection 27 minutes into a player's ingest printed `0/200` for a player
+    whose discovery had reached 200 and whose ingest had already added 28."""
     # Before the first load_match commit, not after it: a checkout that cannot
     # score must not leave a committed, unscored match behind (match 3133).
     verify_ingest_preflight(db)
+
+    progress = _IngestProgress()
 
     new_ids = []
     for match_id in match_ids:
         if db.query(Match).filter_by(external_id=match_id).one_or_none() is not None:
             print(f"  {match_id}: already ingested, skipping")
+            progress.already_present += 1
         else:
             new_ids.append(match_id)
+    progress.attempted = len(new_ids)
 
-    dirty: set[int] = set()
+    dirty: set[int] = progress.dirty
     for i, match_id in enumerate(new_ids):
         print(f"[{i + 1}/{len(new_ids)}] capturing {match_id}")
-        match_json = fetch_match_json(page, match_id)
-        match = load_match(db, match_json)            # commits internally
+        try:
+            match_json = fetch_match_json(page, match_id)
+            match = load_match(db, match_json)        # commits internally
+        except Exception as e:
+            # Stop here, but keep everything already committed. The caller
+            # decides whether a partial ingest is acceptable; it is never
+            # silently rewritten to zero.
+            print(f"  FAILED on {match_id}: {type(e).__name__}: {e}")
+            progress.error = e
+            return progress
 
         # Recorded here, immediately after the commit that makes this match
         # permanent and dedup-skipped forever -- not at the end of the run.
@@ -797,7 +847,17 @@ def _dedup_and_ingest(
         invalidate_site_stats_cache(db)                # DELETE, no commit
         db.commit()                                    # invalidation visible
 
-        compute_impact_for_match(db, match.id)         # commits internally
+        try:
+            compute_impact_for_match(db, match.id)     # commits internally
+        except Exception as e:
+            # The match itself is committed and will be dedup-skipped forever,
+            # so it counts as ingested; backfill_unscored_matches picks the
+            # scoring up on the next run (this is the match-3133 shape).
+            progress.ingested += 1
+            print(f"  SCORING FAILED for {match_id}: {type(e).__name__}: {e}")
+            progress.error = e
+            return progress
+        progress.ingested += 1
         print(f"  ingested {match.map_name} ({match_id})")
 
         if i < len(new_ids) - 1:
@@ -805,7 +865,7 @@ def _dedup_and_ingest(
             print(f"  waiting {delay:.1f}s before next match...")
             time.sleep(delay)
 
-    return dirty
+    return progress
 
 
 def backfill_unscored_matches(db: Session) -> set[int]:
@@ -859,28 +919,85 @@ def ingest_recent_matches(db: Session, page: Page, riot_id: str, count: int) -> 
     return _dedup_and_ingest(db, page, match_ids)
 
 
+@dataclass(frozen=True)
+class IngestOutcome:
+    """Discovery and ingestion reported separately, because they fail
+    separately.
+
+    Collapsing the two is what produced the 2026-09-19 misreport: a player
+    whose discovery reached 200/200 and whose ingest added 28 matches before a
+    dropped connection was printed as `0/200`, because the failure replaced
+    the discovery result instead of sitting beside it. Discovery answers "how
+    much of their history did we find"; ingestion answers "how much of it did
+    we get into the database". Both are always reported."""
+
+    discovery: DiscoveryResult
+    ingested: int = 0
+    already_present: int = 0
+    attempted: int = 0
+    error: str = ""
+
+    @property
+    def riot_id(self) -> str:
+        return self.discovery.riot_id
+
+    @property
+    def ok(self) -> bool:
+        """Discovery was conclusive AND ingestion ran to completion."""
+        return not self.error and self.discovery.is_conclusive
+
+    def summary(self) -> str:
+        head = (
+            f"{self.riot_id}: discovered {self.discovery.reached}/"
+            f"{self.discovery.requested} [{self.discovery.status.value}]"
+        )
+        if self.attempted or self.ingested:
+            head += f" | ingested {self.ingested}/{self.attempted} new"
+        if self.already_present:
+            head += f" ({self.already_present} already held)"
+        if self.error:
+            head += f" | INGEST FAILED: {self.error}"
+        return head
+
+
 def ingest_paginated_history(
     db: Session,
     page: Page,
     riot_id: str,
     count: int,
     ledger: "IngestLedger | None" = None,
-) -> tuple[set[int], DiscoveryResult]:
+) -> tuple[set[int], IngestOutcome]:
     """Like `ingest_recent_matches`, but discovers via the paginated All-Acts
-    path so `count` above ~20 actually reaches that many, and hands the
-    DiscoveryResult back to the caller alongside the invalidated player IDs.
+    path so `count` above ~20 actually reaches that many, and hands a full
+    IngestOutcome back to the caller alongside the invalidated player IDs.
 
-    Returning the result rather than just a count is the point: the caller has
-    to be able to say "100 requested, 20 reached, INCOMPLETE" instead of
-    printing a bare number that looks identical to success.
+    Returning the outcome rather than just a count is the point: the caller has
+    to be able to say "200 requested, 200 discovered, 28 of 172 ingested before
+    the connection dropped" instead of any single number that looks like
+    success -- or, worse, like nothing happened at all.
 
-    Discovery failures are reported, never raised -- a batch over a roster
-    keeps going past one bad profile, exactly as it does today."""
+    Neither discovery nor ingest failures are raised here: a batch over a
+    roster keeps going past one bad profile or one dropped connection, and
+    what did succeed is preserved and reported."""
     result = discover_match_ids_paginated(page, riot_id, count)
     print(f"  discovery: {result.summary()}")
     if not result.match_ids:
-        return set(), result
-    return _dedup_and_ingest(db, page, result.match_ids, ledger, riot_id), result
+        return set(), IngestOutcome(discovery=result)
+
+    progress = _ingest_discovered(db, page, result.match_ids, ledger, riot_id)
+    outcome = IngestOutcome(
+        discovery=result,
+        ingested=progress.ingested,
+        already_present=progress.already_present,
+        attempted=progress.attempted,
+        error=(
+            f"{type(progress.error).__name__}: {progress.error}"
+            if progress.error is not None
+            else ""
+        ),
+    )
+    print(f"  {outcome.summary()}")
+    return progress.dirty, outcome
 
 
 def ingest_full_history(

@@ -48,6 +48,7 @@ from app.adapters.trackergg_browserstate_source import (
     DiscoveryResult,
     DiscoveryStatus,
     IngestLedger,
+    IngestOutcome,
     backfill_unscored_matches,
     ingest_paginated_history,
 )
@@ -66,31 +67,56 @@ MAX_PLAYER_DELAY_SECONDS = 12
 EXIT_INCOMPLETE = 2
 
 
-def _print_roster_report(results: list[DiscoveryResult], count: int) -> None:
-    """Reached vs requested for every player, with the ones that fell short
-    called out. A roster refresh that quietly returns 20 for nine players is
-    the exact failure this table exists to make impossible to miss."""
-    print("\n" + "=" * 72)
-    print(f"DISCOVERY REPORT -- {count} requested per player")
-    print("=" * 72)
-    width = max((len(r.riot_id) for r in results), default=0)
-    for r in results:
-        flag = "" if r.is_conclusive else "   <- FLOOR, not their history"
-        print(f"  {r.riot_id:<{width}}  {r.reached:>4}/{r.requested:<4} "
-              f"{r.status.value:<11}{flag}")
+def _print_roster_report(outcomes: list[IngestOutcome], count: int) -> None:
+    """Discovered vs requested AND ingested vs attempted, per player.
 
-    incomplete = [r for r in results if r.status is DiscoveryStatus.INCOMPLETE]
+    Two columns rather than one, deliberately. They are different questions
+    and they fail independently: a player can be fully discovered and only
+    partly ingested (a dropped connection), or fully ingested and only partly
+    discovered (a cap). Reporting one number for both is what printed `0/200`
+    for a player who had in fact been discovered 200/200 and ingested 28."""
+    print("\n" + "=" * 78)
+    print(f"ROSTER REPORT -- {count} requested per player")
+    print("=" * 78)
+    width = max((len(o.riot_id) for o in outcomes), default=0)
+    print(f"  {'player':<{width}}  {'discovered':>10}  {'status':<11} {'ingested':>9}")
+    for o in outcomes:
+        d = o.discovery
+        ing = f"{o.ingested}/{o.attempted}" if o.attempted else "-"
+        flag = ""
+        if not d.is_conclusive:
+            flag = "   <- FLOOR, not their history"
+        elif o.error:
+            flag = "   <- INGEST CUT SHORT"
+        print(f"  {o.riot_id:<{width}}  {d.reached:>4}/{d.requested:<4}  "
+              f"{d.status.value:<11} {ing:>9}{flag}")
+
+    total_ingested = sum(o.ingested for o in outcomes)
+    print(f"\n  {total_ingested} match(es) added this run")
+
+    failed = [o for o in outcomes if o.error]
+    if failed:
+        print(f"\n  {len(failed)} player(s) whose INGEST was cut short "
+              f"(their discovery figure still stands):")
+        for o in failed:
+            remaining = o.attempted - o.ingested
+            print(f"    {o.riot_id}: added {o.ingested}, {remaining} still missing")
+            print(f"      {o.error}")
+        print("    Re-run to pick these up -- ingestion dedupes on external_id.")
+
+    incomplete = [o for o in outcomes
+                  if o.discovery.status is DiscoveryStatus.INCOMPLETE]
     if incomplete:
-        print(f"\n  {len(incomplete)} player(s) INCOMPLETE -- reason given per player:")
-        for r in incomplete:
-            print(f"    {r.riot_id}: {r.reason}")
-    empty = [r for r in results
-             if r.status in (DiscoveryStatus.NO_HISTORY, DiscoveryStatus.PRIVATE)]
+        print(f"\n  {len(incomplete)} player(s) whose DISCOVERY was INCOMPLETE:")
+        for o in incomplete:
+            print(f"    {o.riot_id}: {o.discovery.reason}")
+    empty = [o for o in outcomes
+             if o.discovery.status in (DiscoveryStatus.NO_HISTORY, DiscoveryStatus.PRIVATE)]
     if empty:
         print(f"\n  {len(empty)} player(s) returned nothing, by named cause:")
-        for r in empty:
-            print(f"    {r.riot_id}: {r.status.value} -- {r.reason}")
-    print("=" * 72)
+        for o in empty:
+            print(f"    {o.riot_id}: {o.discovery.status.value} -- {o.discovery.reason}")
+    print("=" * 78)
 
 
 def _default_ledger_path() -> Path:
@@ -100,7 +126,7 @@ def _default_ledger_path() -> Path:
 
 def main(count: int, no_prewarm: bool, ledger_path: Path) -> int:
     roster = json.loads(ROSTER_PATH.read_text())
-    results: list[DiscoveryResult] = []
+    results: list[IngestOutcome] = []
     ledger = IngestLedger(ledger_path, run_label=f"refresh_tracked_players --count {count}")
     print(f"ledger: {ledger.path}")
     db = SessionLocal()
@@ -113,21 +139,27 @@ def main(count: int, no_prewarm: bool, ledger_path: Path) -> int:
 
             for i, riot_id in enumerate(roster):
                 try:
-                    dirty, result = ingest_paginated_history(
+                    dirty, outcome = ingest_paginated_history(
                         db, page, riot_id, count, ledger
                     )
                     all_dirty |= dirty
-                    results.append(result)
+                    results.append(outcome)
                 except Exception as e:
-                    # One player's failure never aborts the batch -- but it is
-                    # recorded as INCOMPLETE so it cannot vanish into the log.
-                    print(f"  error ingesting {riot_id}, skipping: {e}")
+                    # Last-resort net. ingest_paginated_history already reports
+                    # discovery and ingest failures without raising, so this
+                    # only catches something unforeseen -- and unlike the
+                    # version that printed `0/200` over a real 200/200, it no
+                    # longer pretends to know what discovery found.
+                    print(f"  unexpected error for {riot_id}, skipping: {e}")
                     results.append(
-                        DiscoveryResult(
-                            riot_id=riot_id,
-                            requested=count,
-                            status=DiscoveryStatus.INCOMPLETE,
-                            reason=f"{type(e).__name__}: {e}",
+                        IngestOutcome(
+                            discovery=DiscoveryResult(
+                                riot_id=riot_id,
+                                requested=count,
+                                status=DiscoveryStatus.INCOMPLETE,
+                                reason=f"{type(e).__name__}: {e}",
+                            ),
+                            error=f"{type(e).__name__}: {e}",
                         )
                     )
 
@@ -155,13 +187,12 @@ def main(count: int, no_prewarm: bool, ledger_path: Path) -> int:
     if ledger.count:
         print("  back out the whole run with:")
         print(f"    python scripts\\rollback_ingest_ledger.py \"{ledger.path}\"")
-    # Exit 2 (not 1) if ANY player ended INCOMPLETE: the run itself worked, but
+    # Exit 2 (not 1) if ANY player fell short -- whether discovery was
+    # INCOMPLETE or ingestion was cut short partway. The run itself worked, but
     # it did not reach what it was asked for, and that must not read as success
     # to a shell caller. 1 stays reserved for an actual crash, so
     # refresh_remote.ps1 can tell "fell short" from "blew up".
-    return EXIT_INCOMPLETE if any(
-        r.status is DiscoveryStatus.INCOMPLETE for r in results
-    ) else 0
+    return EXIT_INCOMPLETE if any(not o.ok for o in results) else 0
 
 
 if __name__ == "__main__":

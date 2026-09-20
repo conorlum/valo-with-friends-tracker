@@ -64,17 +64,23 @@ def main(riot_id: str, count: int, no_prewarm: bool) -> int:
             browser = p.chromium.connect_over_cdp(CDP_URL)
             context = browser.contexts[0]
             page = context.new_page()
-            new_dirty, result = ingest_paginated_history(db, page, riot_id, count)
+            new_dirty, outcome = ingest_paginated_history(db, page, riot_id, count)
             dirty |= new_dirty
             page.close()
 
-        # Reached vs requested, always -- a bare "discovered 20" reads exactly
-        # the same whether 20 is all they have or all we could get.
-        print(f"\n{result.summary()}")
-        if not result.is_conclusive:
+        # Discovered vs requested AND ingested vs attempted, always -- a bare
+        # "discovered 20" reads the same whether 20 is all they have or all we
+        # could get, and a bare failure reads as though nothing was added.
+        print(f"\n{outcome.summary()}")
+        if not outcome.discovery.is_conclusive:
             print(
-                f"  WARNING: {result.reached}/{result.requested} is a FLOOR, not their history."
+                f"  WARNING: discovered {outcome.discovery.reached}/"
+                f"{outcome.discovery.requested} is a FLOOR, not their history."
             )
+        if outcome.error:
+            missing = outcome.attempted - outcome.ingested
+            print(f"  WARNING: ingest cut short -- added {outcome.ingested}, "
+                  f"{missing} still missing. Re-run to pick them up.")
 
         if dirty and not no_prewarm:
             print(f"pre-warming cache for {len(dirty)} player(s)...")
@@ -86,9 +92,10 @@ def main(riot_id: str, count: int, no_prewarm: bool) -> int:
     finally:
         db.close()
 
-    # Non-zero only for INCOMPLETE -- the "we don't know what we missed"
-    # bucket. PRIVATE and NO_HISTORY are definite answers, printed by name.
-    return 0 if result.is_conclusive else EXIT_INCOMPLETE
+    # Non-zero when discovery was INCOMPLETE or the ingest was cut short --
+    # the "we don't know what we missed" bucket. PRIVATE and NO_HISTORY are
+    # definite answers, printed by name, and exit 0.
+    return 0 if outcome.ok else EXIT_INCOMPLETE
 
 
 if __name__ == "__main__":
