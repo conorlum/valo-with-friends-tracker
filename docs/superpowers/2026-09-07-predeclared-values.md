@@ -2721,3 +2721,74 @@ representable range, so an interior selection is now the only outcome that yield
    post-plant kills.
 
 Nothing is implemented, activated or frozen by this entry.
+
+### 2026-09-19 (DECLARATION 4) — the side asymmetry, which both models discard
+
+Declared before running. The owner's observation drove this: kills at the defuse deadline are kills on the defuser,
+and they are must-win fights for the side that is behind. Measuring that produced the largest effect this
+investigation has found, and it is in a quantity neither the shipped model nor Part 4 represents.
+
+**The measurement that motivates the arm** (descriptive, whole-corpus, no contrast computed). In win-probability
+points, over the 153,450 scored post-plant kills:
+
+| victim | mean D | n | weight vs grand mean |
+|---|---:|---:|---:|
+| **attacker** | **21.92pp** | 69,946 | 1.254 |
+| **defender** | **13.76pp** | 83,504 | 0.787 |
+
+Ratio **1.59** overall, and **3.26** late (t >= 30). Per band in a 1v1: at 30-38s an attacker killing the defender
+gains 21.2pp while an attacker dying costs 74.1pp; by 38-45s it is 4.0pp against 50.0pp. The same event at the same
+second is worth 3.5x to 12.5x more to one side than the other.
+
+**Why neither model carries it.** The shipped factor is **side-blind** — `_time_factor` applies the same
+`1 + t/53` to the kill and the death, so a 4pp event and a 50pp event are both multiplied by 1.75. Part 4 keys on
+`victim_is_attacker`, which looks correct, but its factor is `D / mean_over_t D` computed **within**
+`(a, d, victim_side)`: the per-side level divides out by construction and only the within-side time shape survives.
+It normalised away the asymmetry it was built to represent. That is a candidate explanation for why three separate
+shape models each measured nothing, and it is recorded as a hypothesis, not a conclusion.
+
+**Why this is not double-counting `K(s)`.** The kill-order graph is spike-blind, verified directly:
+`1v1 -> 0v1` and `1v1 -> 1v0` both carry weight 250. Post-plant those are not equivalent — one ends the round for
+the attackers, the other leaves the spike ticking — so the state term provably does not encode the asymmetry and a
+side-dependent factor supplies new information rather than repeating `K`.
+
+#### The arms
+
+Protocol unchanged throughout: same corpus and fold assignment (`3198:f9a31bb2df2586ec`, `cebae50f85e94736`), target
+T2 and its controls, fixed composite `impact_diff`, 5 match-clustered folds, 2,000-draw paired bootstrap,
+`loss(arm) − loss(P0)` with positive worse, and the same verdict vocabulary.
+
+| arm | what it is |
+|---|---|
+| **A1** | post-plant factor `= 0.40 × w(victim side)`, where `w` is `mean D` for that victim side divided by the kill-weighted grand mean, **fitted per fold on training matches only** and normalised so the training population's kill-weighted mean `w` is exactly 1. One constant per side, no time shape at all |
+| **A2** | the same, with `w` fitted per `(victim side × time band)`, bands `t < 30` and `t >= 30`, again per fold. Tests whether the asymmetry *growing* with the clock adds anything over a constant asymmetry |
+
+**The level is deliberately pinned at 0.40 and not fitted.** `F-0.40` — a side-blind flat factor at exactly that
+level — is already measured, so `A1 vs F-0.40` isolates the side split with the level held identical. Fitting a
+level here would reintroduce the confound this whole investigation exists to avoid, and a level that beat `F-0.40`
+by being better-fitted would say nothing about asymmetry.
+
+#### Decision rule
+
+- **A1 and A2 are Tier B**: each ships only on IMPROVEMENT against P0.
+- **The question is decided by `A1 vs F-0.40`, not by the headline contrast.** IMPROVEMENT there means the side
+  asymmetry earns its place over a side-blind factor at the same level. INCONCLUSIVE means it does not, and the
+  recommendation stays with the simpler side-blind form however good A1's own contrast looks.
+- **`A2 vs A1`** decides the time-varying asymmetry on the same terms: INCONCLUSIVE leaves the constant asymmetry
+  preferred on parsimony.
+- If `A1 vs F-0.40` is IMPROVEMENT, the level is then fitted in a **separate** declared measurement. No constant is
+  frozen here.
+
+#### Predictions, declared before running
+
+1. **`A1 vs F-0.40` is IMPROVEMENT.** This is the first arm in the investigation whose underlying effect is measured
+   in tens of win-probability points rather than single digits, and unlike the shape arms its signal is concentrated
+   where the kills actually are, not in the 1% tail.
+2. `A1 vs P0` is IMPROVEMENT and larger in magnitude than `F-0.40 vs P0` (−9.26e−05).
+3. **`A2 vs A1` is INCONCLUSIVE** — the asymmetry's growth with the clock is a time shape, and every time shape
+   tested so far has measured nothing.
+4. If prediction 1 fails, the asymmetry is real in win probability but not recoverable by this target, and the
+   recommendation returns to a side-blind flat factor. That outcome would also weaken the hypothesis above about
+   why Part 4 failed.
+
+Nothing is implemented, activated or frozen by this entry.
