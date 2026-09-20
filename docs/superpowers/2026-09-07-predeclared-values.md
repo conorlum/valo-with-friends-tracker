@@ -2962,3 +2962,28 @@ tested it.
 
 This gate would have flagged `A1` before it ran, and would have saved the arm from being built in a form that could
 not carry its own hypothesis.
+
+#### Addendum — the differential arms, split by comparator
+
+The same gate applied to the remaining nulls, and it separates two claims the RESULT entry ran together.
+
+| contrast | residual variance | status under the gate |
+|---|---:|---|
+| `P5` vs `P0` | ~0.22% (as `P6` vs `P0`) | testable — the null stands |
+| `P5b` vs `P0` | ~0.22% | testable — the null stands |
+| **`P5` vs `P6`** | **0.0132%** | **UNTESTABLE** — 8x below the floor |
+| **`P5b` vs `P6`** | **0.0336%** | **UNTESTABLE** — 3x below the floor |
+
+So **"the differential regrouping does not beat the SHIPPED model" survives** — those contrasts had the same
+separability as `P6 vs P0`, which sits at twice the demonstrated floor. **"The differential regrouping does not beat
+Part 4" is withdrawn**: `P5` and `P5b` differ from `P6` only in the pooling ladder, and the resulting scores are
+0.999+ correlated, so those two contrasts never had the power to separate them.
+
+That also revises the declaration-2 framing of `P5b` as "the decisive test of the owner's hypothesis". It was
+decisive against the shipped ramp and inert against Part 4, which is the comparator the hypothesis was actually
+about.
+
+**Corrected count.** Of the structural models: **one** (Part 4's own shape, `P6 vs P0`) has a credible null against
+the shipped model. The differential regroupings have credible nulls against the shipped model and untestable ones
+against Part 4. The side asymmetry has no test at all. "Four structural models each lost to a constant" overstated
+the evidence by three.
