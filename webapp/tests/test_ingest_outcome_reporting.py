@@ -47,7 +47,7 @@ def test_ingest_failure_does_not_erase_what_discovery_found():
     summary = outcome.summary()
     assert "200/200" in summary
     assert "28/172" in summary
-    assert "INGEST FAILED" in summary
+    assert "GAVE UP" in summary
     # The actual misreport was "discovered 0/200"; guard that exact phrasing
     # rather than the bare substring, which "200/200" legitimately contains.
     assert "discovered 0/200" not in summary
@@ -93,6 +93,21 @@ def test_no_history_is_ok_but_named():
     assert outcome.ok
     assert "NO_HISTORY" in outcome.summary()
     assert "0/200" in outcome.summary()
+
+
+def test_skipped_matches_make_a_run_not_ok_even_though_it_continued():
+    """Skipping exists to salvage the rest of a player's list, not to call a
+    partial ingest a success."""
+    outcome = IngestOutcome(
+        discovery=_discovery(),
+        ingested=170,
+        attempted=172,
+        failed_ids=("bad-1", "bad-2"),
+    )
+
+    assert not outcome.ok
+    assert "2 SKIPPED" in outcome.summary()
+    assert "GAVE UP" not in outcome.summary(), "skipping is not giving up"
 
 
 def test_incomplete_discovery_is_not_ok():

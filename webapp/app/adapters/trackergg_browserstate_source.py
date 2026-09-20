@@ -54,6 +54,17 @@ MAX_HISTORY_PAGES = 50
 MIN_MATCH_DELAY_SECONDS = 5
 MAX_MATCH_DELAY_SECONDS = 12
 
+# Fetching a match page is a pure read -- nothing is committed -- so a failed
+# attempt can simply be repeated. The 2026-09-19 roster run lost the rest of a
+# player's ingest to a single ERR_CONNECTION_CLOSED that would almost certainly
+# have succeeded on a second try.
+MATCH_FETCH_ATTEMPTS = 3
+MATCH_FETCH_BACKOFF_SECONDS = (10, 30, 60)
+# ...but a service that is refusing everything must not be ground through one
+# 40-second failure at a time. A streak this long (reset by any success) means
+# the problem is not this match, and the run stops.
+MAX_CONSECUTIVE_MATCH_FAILURES = 5
+
 
 class ProfilePrivateError(RuntimeError):
     """The player has their tracker.gg match history set to private -- no
@@ -149,6 +160,19 @@ class IngestLedger:
             "external_id": match.external_id,
             "map_name": match.map_name,
             "played_at": match.played_at.isoformat() if match.played_at else None,
+        })
+
+    def record_failure(self, external_id: str, riot_id: str, reason: str) -> None:
+        """A match the run could not ingest. Recorded so a run's ledger says
+        what it could NOT get as well as what it did -- a skipped match is
+        otherwise indistinguishable from one that was never discovered.
+        Rollback ignores these: nothing was written for them."""
+        self._write({
+            "event": "failed",
+            "at": datetime.now().astimezone().isoformat(),
+            "discovered_via": riot_id,
+            "external_id": external_id,
+            "reason": reason,
         })
 
     def record_end(self, note: str = "") -> None:
@@ -759,26 +783,36 @@ def _dedup_and_ingest(
     recomputing per match (a player appearing in N ingested matches would
     otherwise be recomputed N times).
 
-    Raises whatever the ingest loop raised, preserving the behaviour its
-    pre-existing callers (snowball_1hour.py, the map-diversity crawl) already
-    handle. Callers that need the partial progress behind a failure use
-    `_ingest_discovered` directly."""
-    outcome = _ingest_discovered(db, page, match_ids, ledger, riot_id)
-    if outcome.error is not None:
-        raise outcome.error
-    return outcome.dirty
+    Raises on ANY match failure, preserving the behaviour its pre-existing
+    callers (snowball_1hour.py, the map-diversity crawl) already handle --
+    including the failures the loop itself now retries past and skips, which
+    those callers have never had a way to hear about. Callers that want the
+    skip-and-continue behaviour, and the partial progress behind a failure,
+    use `_ingest_discovered` directly."""
+    progress = _ingest_discovered(db, page, match_ids, ledger, riot_id)
+    failure = progress.error or progress.first_error
+    if failure is not None:
+        raise failure
+    return progress.dirty
 
 
 @dataclass
 class _IngestProgress:
     """What an ingest loop actually managed to do, including when it died
     partway. `dirty` and `ingested` describe work that is already committed
-    and is valid regardless of `error`."""
+    and is valid regardless of `error`.
+
+    `first_error` is the first failure of any kind, kept so the legacy
+    `_dedup_and_ingest` wrapper can raise exactly as it always has even when
+    the loop itself chose to skip and carry on. `error` is set only when the
+    loop gave up entirely."""
 
     dirty: set[int] = field(default_factory=set)
     ingested: int = 0
     already_present: int = 0
     attempted: int = 0
+    failed_ids: list[str] = field(default_factory=list)
+    first_error: BaseException | None = None
     error: BaseException | None = None
 
 
@@ -812,18 +846,64 @@ def _ingest_discovered(
     progress.attempted = len(new_ids)
 
     dirty: set[int] = progress.dirty
+    consecutive_failures = 0
+
+    def note_failure(match_id: str, e: Exception, what: str) -> bool:
+        """Records a skipped match. Returns True if the run should give up."""
+        nonlocal consecutive_failures
+        print(f"  SKIPPING {match_id} after {what}: {type(e).__name__}: {e}")
+        progress.failed_ids.append(match_id)
+        if progress.first_error is None:
+            progress.first_error = e
+        if ledger is not None:
+            ledger.record_failure(match_id, riot_id, f"{type(e).__name__}: {e}")
+        consecutive_failures += 1
+        if consecutive_failures >= MAX_CONSECUTIVE_MATCH_FAILURES:
+            print(f"  GIVING UP: {consecutive_failures} consecutive failures")
+            progress.error = e
+            return True
+        return False
+
     for i, match_id in enumerate(new_ids):
         print(f"[{i + 1}/{len(new_ids)}] capturing {match_id}")
+
+        # Retry only the fetch. It writes nothing, so repeating it is free and
+        # safe, and a dropped connection is exactly the kind of failure that
+        # succeeds on the next attempt.
+        match_json = None
+        fetch_error: Exception | None = None
+        for attempt in range(1, MATCH_FETCH_ATTEMPTS + 1):
+            try:
+                match_json = fetch_match_json(page, match_id)
+                fetch_error = None
+                break
+            except Exception as e:
+                fetch_error = e
+                if attempt < MATCH_FETCH_ATTEMPTS:
+                    backoff = MATCH_FETCH_BACKOFF_SECONDS[attempt - 1]
+                    print(f"  attempt {attempt}/{MATCH_FETCH_ATTEMPTS} failed "
+                          f"({type(e).__name__}), retrying in {backoff}s...")
+                    time.sleep(backoff)
+        if fetch_error is not None:
+            if note_failure(match_id, fetch_error, f"{MATCH_FETCH_ATTEMPTS} attempts"):
+                return progress
+            continue
+
         try:
-            match_json = fetch_match_json(page, match_id)
             match = load_match(db, match_json)        # commits internally
         except Exception as e:
-            # Stop here, but keep everything already committed. The caller
-            # decides whether a partial ingest is acceptable; it is never
-            # silently rewritten to zero.
-            print(f"  FAILED on {match_id}: {type(e).__name__}: {e}")
-            progress.error = e
-            return progress
+            # NOT retried: a load failure means the payload is malformed, and
+            # repeating it just fails slower. Roll back first -- load_match
+            # commits internally, so a mid-flight failure leaves the session in
+            # a poisoned transaction where every later query fails too, turning
+            # one bad match into a cascade that looks like the streak guard
+            # working correctly.
+            db.rollback()
+            if note_failure(match_id, e, "load_match"):
+                return progress
+            continue
+
+        consecutive_failures = 0
 
         # Recorded here, immediately after the commit that makes this match
         # permanent and dedup-skipped forever -- not at the end of the run.
@@ -935,6 +1015,7 @@ class IngestOutcome:
     ingested: int = 0
     already_present: int = 0
     attempted: int = 0
+    failed_ids: tuple[str, ...] = ()
     error: str = ""
 
     @property
@@ -943,8 +1024,14 @@ class IngestOutcome:
 
     @property
     def ok(self) -> bool:
-        """Discovery was conclusive AND ingestion ran to completion."""
-        return not self.error and self.discovery.is_conclusive
+        """Discovery was conclusive AND every attempted match was ingested.
+        A skipped match makes a run not-ok even though it kept going -- the
+        point of skipping is to salvage the rest, not to call it a success."""
+        return (
+            not self.error
+            and not self.failed_ids
+            and self.discovery.is_conclusive
+        )
 
     def summary(self) -> str:
         head = (
@@ -955,8 +1042,10 @@ class IngestOutcome:
             head += f" | ingested {self.ingested}/{self.attempted} new"
         if self.already_present:
             head += f" ({self.already_present} already held)"
+        if self.failed_ids:
+            head += f" | {len(self.failed_ids)} SKIPPED"
         if self.error:
-            head += f" | INGEST FAILED: {self.error}"
+            head += f" | GAVE UP: {self.error}"
         return head
 
 
@@ -990,6 +1079,7 @@ def ingest_paginated_history(
         ingested=progress.ingested,
         already_present=progress.already_present,
         attempted=progress.attempted,
+        failed_ids=tuple(progress.failed_ids),
         error=(
             f"{type(progress.error).__name__}: {progress.error}"
             if progress.error is not None

@@ -87,21 +87,32 @@ def _print_roster_report(outcomes: list[IngestOutcome], count: int) -> None:
         if not d.is_conclusive:
             flag = "   <- FLOOR, not their history"
         elif o.error:
-            flag = "   <- INGEST CUT SHORT"
+            flag = "   <- GAVE UP MID-INGEST"
+        elif o.failed_ids:
+            flag = f"   <- {len(o.failed_ids)} match(es) SKIPPED"
         print(f"  {o.riot_id:<{width}}  {d.reached:>4}/{d.requested:<4}  "
               f"{d.status.value:<11} {ing:>9}{flag}")
 
     total_ingested = sum(o.ingested for o in outcomes)
+    total_skipped = sum(len(o.failed_ids) for o in outcomes)
     print(f"\n  {total_ingested} match(es) added this run")
+    if total_skipped:
+        print(f"  {total_skipped} match(es) skipped after retries")
 
-    failed = [o for o in outcomes if o.error]
+    failed = [o for o in outcomes if o.failed_ids or o.error]
     if failed:
-        print(f"\n  {len(failed)} player(s) whose INGEST was cut short "
+        print(f"\n  {len(failed)} player(s) with match-level failures "
               f"(their discovery figure still stands):")
         for o in failed:
-            remaining = o.attempted - o.ingested
-            print(f"    {o.riot_id}: added {o.ingested}, {remaining} still missing")
-            print(f"      {o.error}")
+            gave_up = " -- GAVE UP, rest of their list untouched" if o.error else ""
+            print(f"    {o.riot_id}: added {o.ingested}/{o.attempted}, "
+                  f"{len(o.failed_ids)} skipped{gave_up}")
+            for match_id in o.failed_ids[:5]:
+                print(f"      skipped {match_id}")
+            if len(o.failed_ids) > 5:
+                print(f"      ... and {len(o.failed_ids) - 5} more (see the ledger)")
+            if o.error:
+                print(f"      {o.error}")
         print("    Re-run to pick these up -- ingestion dedupes on external_id.")
 
     incomplete = [o for o in outcomes

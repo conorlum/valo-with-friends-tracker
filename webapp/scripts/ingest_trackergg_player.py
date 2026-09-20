@@ -93,10 +93,18 @@ def main(riot_id: str, count: int, no_prewarm: bool, ledger_path: Path) -> int:
                 f"  WARNING: discovered {outcome.discovery.reached}/"
                 f"{outcome.discovery.requested} is a FLOOR, not their history."
             )
+        if outcome.failed_ids:
+            print(f"  WARNING: {len(outcome.failed_ids)} match(es) skipped after "
+                  f"retries. Re-run to pick them up -- dedup means only the "
+                  f"missing ones are fetched:")
+            for match_id in outcome.failed_ids[:10]:
+                print(f"    {match_id}")
+            if len(outcome.failed_ids) > 10:
+                print(f"    ... and {len(outcome.failed_ids) - 10} more (see the ledger)")
         if outcome.error:
-            missing = outcome.attempted - outcome.ingested
-            print(f"  WARNING: ingest cut short -- added {outcome.ingested}, "
-                  f"{missing} still missing. Re-run to pick them up.")
+            untouched = outcome.attempted - outcome.ingested - len(outcome.failed_ids)
+            print(f"  WARNING: gave up mid-ingest -- added {outcome.ingested}, "
+                  f"{untouched} never attempted.")
 
         if dirty and not no_prewarm:
             print(f"pre-warming cache for {len(dirty)} player(s)...")
