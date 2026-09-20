@@ -100,14 +100,14 @@ def p2b_death_decay(seconds: float) -> float:
 #
 # Signature: (round_row, kill_time, for_death, shipped_value) -> float
 
-def _v_p1(round_row, kill_time, for_death, shipped):
+def _v_p1(round_row, kill_time, for_death, shipped, ctx=None):
     """C1: a decided round pays 0, not 0.5."""
     if _resolved(round_row, kill_time):
         return 0.0
     return shipped
 
 
-def _v_p2b(round_row, kill_time, for_death, shipped):
+def _v_p2b(round_row, kill_time, for_death, shipped, ctx=None):
     """C2: the death cliff at plant+38 becomes a linear decay. The KILL side is
     left exactly as shipped (flat 1.75), so this arm moves deaths only."""
     if for_death and _post_plant(round_row, kill_time) and _in_override_window(round_row, kill_time):
@@ -115,7 +115,7 @@ def _v_p2b(round_row, kill_time, for_death, shipped):
     return shipped
 
 
-def _v_p3a(round_row, kill_time, for_death, shipped):
+def _v_p3a(round_row, kill_time, for_death, shipped, ctx=None):
     """C3, minimal: the resolution value applies at plant+45 whatever the
     exploded/defused flags say, so the ramp is capped. Changes nothing in a
     round that already resolves -- the shipped function returns 0.5 there
@@ -126,7 +126,7 @@ def _v_p3a(round_row, kill_time, for_death, shipped):
     return shipped
 
 
-def _v_p3b(round_row, kill_time, for_death, shipped):
+def _v_p3b(round_row, kill_time, for_death, shipped, ctx=None):
     """C3, structural: a phantom plant gets no post-plant regime at all -- what
     routing the legacy branches through effective_plant_time would do."""
     if round_row.planted and is_phantom_plant(round_row):
@@ -145,7 +145,7 @@ def _v_p4(scale: float):
     window is 2,924 of 154,031 post-plant kills, so the reading barely moves
     either way; it is written down because it is a choice.
     """
-    def variant(round_row, kill_time, for_death, shipped):
+    def variant(round_row, kill_time, for_death, shipped, ctx=None):
         if _post_plant(round_row, kill_time):
             return shipped * scale
         return shipped
@@ -162,10 +162,45 @@ def _v_flat(k: float):
     1.0 everywhere a round is live. It is in the grid precisely so "no model"
     is an option the measurement can choose.
     """
-    def variant(round_row, kill_time, for_death, shipped):
+    def variant(round_row, kill_time, for_death, shipped, ctx=None):
         if _post_plant(round_row, kill_time):
             return k
         return shipped
+    return variant
+
+
+def _v_side(level: float, weights: dict):
+    """DECLARATION 4: a post-plant factor that is a constant PER VICTIM SIDE.
+
+    `weights` maps a key to a multiplier whose kill-weighted mean over the
+    training population is 1, so `level` alone sets the overall level and the
+    weights carry only the split. Keys are either `victim_is_attacker` (A1) or
+    `(victim_is_attacker, late)` with `late` meaning t >= 30 (A2).
+
+    Two events decline the split and take the flat `level` instead, because
+    "the victim's side" is undefined or unestimated for them:
+      * a self-kill, where killer and victim are the same player -- the same
+        exclusion Part 4 makes for the same reason;
+      * a call with no `is_attacker`, which is how the scorer signals it could
+        not resolve the attacking side for the round.
+    """
+    banded = any(isinstance(k, tuple) for k in weights)
+
+    def variant(round_row, kill_time, for_death, shipped, ctx=None):
+        if not _post_plant(round_row, kill_time):
+            return shipped
+        ctx = ctx or {}
+        is_attacker = ctx.get("is_attacker")
+        if is_attacker is None or ctx.get("self_kill"):
+            return level
+        # is_attacker names the KILLER's side, so the victim is the other one.
+        victim_is_attacker = not is_attacker
+        if banded:
+            late = (kill_time - round_row.plant_time) >= 30
+            w = weights.get((victim_is_attacker, late), 1.0)
+        else:
+            w = weights.get(victim_is_attacker, 1.0)
+        return level * w
     return variant
 
 
@@ -173,7 +208,7 @@ def _v_p2l(lam: float):
     """P2L: P2b's extra death-side leverage spread uniformly over every
     post-plant death instead of concentrated in the window. `lam` is fitted per
     fold on training matches only (see the runner)."""
-    def variant(round_row, kill_time, for_death, shipped):
+    def variant(round_row, kill_time, for_death, shipped, ctx=None):
         if for_death and _post_plant(round_row, kill_time):
             return shipped * lam
         return shipped
@@ -182,10 +217,10 @@ def _v_p2l(lam: float):
 
 def _compose(*variants):
     """Apply in order, each seeing the previous one's output as `shipped`."""
-    def variant(round_row, kill_time, for_death, shipped):
+    def variant(round_row, kill_time, for_death, shipped, ctx=None):
         value = shipped
         for inner in variants:
-            value = inner(round_row, kill_time, for_death, value)
+            value = inner(round_row, kill_time, for_death, value, ctx)
         return value
     return variant
 
@@ -195,8 +230,8 @@ def _compose(*variants):
 # resolved round, and P2b reshapes what is left. A phantom plant sets neither
 # resolution flag, so P1 never fires on one either way -- the ordering is for
 # legibility, not to paper over an interaction.
-def _v_pc(round_row, kill_time, for_death, shipped):
-    return _compose(_v_p3b, _v_p1, _v_p2b)(round_row, kill_time, for_death, shipped)
+def _v_pc(round_row, kill_time, for_death, shipped, ctx=None):
+    return _compose(_v_p3b, _v_p1, _v_p2b)(round_row, kill_time, for_death, shipped, ctx)
 
 
 # PC+ (declaration section 5): PC plus every Tier B arm that reached
@@ -211,9 +246,9 @@ def _v_pc(round_row, kill_time, for_death, shipped):
 # and a decided round's 0 is an absence of stake, and scaling either would be
 # applying a post-plant level to something the fix just removed from the
 # post-plant regime.
-def _v_pc_plus(round_row, kill_time, for_death, shipped):
+def _v_pc_plus(round_row, kill_time, for_death, shipped, ctx=None):
     return _compose(_v_p2b, _v_p4(0.70), _v_p3b, _v_p1)(
-        round_row, kill_time, for_death, shipped)
+        round_row, kill_time, for_death, shipped, ctx)
 
 
 VARIANTS = {
@@ -236,6 +271,8 @@ def variant_for(name: str, **kwargs):
         return _v_p4(float(name.split("-", 1)[1]))
     if name.startswith("F-"):
         return _v_flat(float(name.split("-", 1)[1]))
+    if name in ("A1", "A2"):
+        return _v_side(kwargs["level"], kwargs["weights"])
     if name == "P2L":
         return _v_p2l(kwargs["lam"])
     if name not in VARIANTS:
@@ -249,7 +286,11 @@ def _patched(round_row, kill_time, for_death=False, **kwargs):
     shipped = _ORIGINAL_TIME_FACTOR(round_row, kill_time, for_death=for_death, **kwargs)
     if _ACTIVE is None:
         return shipped
-    return _ACTIVE(round_row, kill_time, for_death, shipped)
+    # kwargs is the scorer's OWN call context, passed through untouched. A
+    # side-dependent arm needs `is_attacker` (which names the KILLER's side, so
+    # the victim is the other one) and `self_kill` (where killer and victim are
+    # the same player and "the victim's side" has no meaning).
+    return _ACTIVE(round_row, kill_time, for_death, shipped, kwargs)
 
 
 def install():

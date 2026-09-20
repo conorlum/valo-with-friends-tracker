@@ -2792,3 +2792,100 @@ by being better-fitted would say nothing about asymmetry.
    why Part 4 failed.
 
 Nothing is implemented, activated or frozen by this entry.
+
+### 2026-09-19 (RESULT, declarations 2–4) — no structure beats a constant; the constant is bracketed at last
+
+Every arm from declarations 2, 3 and 4 run to completion, none left unrun. Same protocol throughout: corpus
+`3198:f9a31bb2df2586ec`, folds `cebae50f85e94736`, target T2 and its controls, fixed composite `impact_diff`,
+5 match-clustered folds, 2,000-draw paired bootstrap, `loss(arm) − loss(P0)` with positive worse. Nothing
+implemented, activated or frozen.
+
+#### The headline
+
+| contrast | point | 95% interval | verdict |
+|---|---:|---|---|
+| **F-1.00 vs P0** — *no post-plant model at all* | −5.270e−05 | [−7.883e−05, −2.691e−05] | **IMPROVEMENT** |
+| **Ff2 vs P0** — flat, level fitted per fold | −9.073e−05 | [−1.627e−04, −1.768e−05] | **IMPROVEMENT** |
+| **Lf2 vs P0** — ramp, level fitted per fold | −8.830e−05 | [−1.620e−04, −1.243e−05] | **IMPROVEMENT** |
+| **Ff2 vs Lf2** — does the ramp's shape beat flat? | −2.431e−06 | [−7.384e−06, +2.503e−06] | **INCONCLUSIVE** |
+| **A1 vs F-0.40** — does the side split beat side-blind? | +1.096e−05 | [−3.068e−06, +2.436e−05] | **INCONCLUSIVE** |
+| **A2 vs F-0.40** — side split, time-banded | +1.743e−05 | [+9.068e−07, +3.368e−05] | **HARM** |
+| **A2 vs A1** | +6.473e−06 | [+5.802e−07, +1.275e−05] | **HARM** |
+| **F-0.00 vs Ff2** — is nothing worse than a little? | +8.073e−06 | [−1.615e−05, +3.333e−05] | **INCONCLUSIVE** |
+| F-0.30 vs F-0.40 | +1.705e−07 | [−7.114e−06, +7.815e−06] | INCONCLUSIVE |
+
+Level family, flat: F-0.00 −8.27e−05 (INCONCLUSIVE) · 0.05 −8.49e−05 (INC) · 0.10 −8.78e−05 (INC) · 0.15 −8.97e−05
+(IMPROVEMENT) · 0.20 −9.07e−05 · 0.30 −9.24e−05 · 0.40 −9.26e−05 · 0.60 −8.63e−05 · 0.80 −7.29e−05 · 1.00 −5.27e−05
+· 1.20 −2.49e−05 · 1.40 +9.47e−06 (INCONCLUSIVE). Ramp family: L-0.10 −8.78e−05 · 0.20 −9.04e−05 · 0.30 −8.99e−05
+· 0.40 −8.62e−05 · 0.50 −7.98e−05 · 0.60 −6.99e−05 · 0.70 −5.75e−05 · 0.80 −4.11e−05 · 0.90 −2.18e−05.
+
+#### The constant is finally bracketed
+
+| arm | selected per fold | grid | bracketed? |
+|---|---|---|---|
+| `Lf` (decl. 2) | 0.30 ×5 | 0.30–1.00 | **no — floor** |
+| `Ff` (decl. 2) | 0.40 ×5 | 0.40–1.40 | **no — floor** |
+| **`Lf2`** (decl. 3) | 0.30, 0.20, 0.20, 0.30, 0.20 | 0.10–1.00 | **yes — interior** |
+| **`Ff2`** (decl. 3) | 0.40, 0.30, 0.30, 0.40, 0.30 | 0.00–1.40 | **yes — interior** |
+
+Declaration 3's boundary rule is satisfied for the first time, so a constant may now be recommended for freezing.
+The flat curve is shallow across 0.15–0.40 and `F-0.30 vs F-0.40` is INCONCLUSIVE, so the evidence picks a **region,
+around 0.2–0.4**, not a point. Against the shipped regime's 1.00 rising to 1.85.
+
+#### Predictions, scored — four of seven failed
+
+The discipline's value is visible here: more predictions failed than held, and each failure is a thing learned.
+
+| # | declared | outcome |
+|---|---|---|
+| 2.1 | `Lf` selects interior, 0.40–0.60 | **FAILED** — floor on all five folds |
+| 2.2 | `Ff` IMPROVEMENT, k below 1.00 | held (k = 0.40, also the floor) |
+| 2.3 | `Ff vs Lf` INCONCLUSIVE | **held** |
+| 2.4 | `F-1.00` **not** IMPROVEMENT | **FAILED** — removing the model outright improves on it |
+| 3.1 | `Ff2` selects interior in 0.10–0.30 | half held — interior, but 0.30/0.40 |
+| 3.2 | `F-0.00` worse than `Ff2` | **FAILED** — INCONCLUSIVE; the target cannot distinguish "much less" from "nothing" |
+| 4.1 | `A1 vs F-0.40` IMPROVEMENT | **FAILED** — INCONCLUSIVE, and the point estimate is positive |
+| 4.3 | `A2 vs A1` INCONCLUSIVE | **FAILED**, and worse than predicted — HARM |
+
+#### What this establishes
+
+**No structure beats a constant.** Four structural models have now each been measured against a side-blind constant
+and none has beaten it: Part 4's `(a, d, t, victim_side)` table, the differential regrouping as a fallback rung, the
+differential regrouping applied to 99.41% of the population, and the side-asymmetric level. The last is the sharpest
+negative, because its underlying effect is the largest anything in this investigation has found — a kill whose
+victim is an attacker is worth 21.92pp against 13.76pp for a defender victim, and in a 1v1 at 38–45s it is 50.0pp
+against 4.0pp — and it was fitted stably across five independent folds (defender weight 0.785–0.789, attacker weight
+1.252–1.256). **Real, large, reproducible, and predictively worthless at this sample size.** Making it time-varying
+is HARM, not merely useless.
+
+**The hypothesis that Part 4 failed because it normalised the asymmetry away is now unsupported.** Declaration 4
+recorded it as a candidate explanation. A1 restores exactly that discarded level asymmetry and does not beat a flat
+constant, so the explanation does not survive its own test and is withdrawn.
+
+**The level is the whole finding, and its direction is the opposite of what ships.** Pre-plant is 1.0 by definition;
+the evidence puts post-plant at 0.2–0.4. The shipped model raises post-plant kills to 1.00–1.85. Not a
+mis-calibration — a sign error. The mechanism that fits: the plant is the decisive event, and once it lands the
+timer does most of the work, so kills after it move the outcome less than the kills that decided whether the plant
+happened at all.
+
+**A limit on the evidence, declared in advance and now reached.** `F-0.00` — post-plant kills contributing nothing
+at all — cannot be distinguished from the fitted constant. Declaration 3 pre-committed that zero is never shippable
+whatever it measured, because a decisive duel scoring nothing contradicts the standing constraint that no kill is
+worth nothing. That commitment is load-bearing now rather than decorative.
+
+#### Recommendation for version 4
+
+1. **Replace the post-plant regime with a flat constant in the 0.2–0.4 region** — no ramp, no plant+38..45 override.
+   It is simpler than what ships, it is the only change with evidence behind it, and `Ff2 vs Lf2` says the ramp's
+   shape cannot be told from flat.
+2. **Take the three Tier A correctness fixes, using `P3a` (cap the factor at plant+45) rather than `P3b`** — P3a
+   addresses 634 rows of the defect against P3b's 45, and the earlier entry establishes why.
+3. **Ship no structure**: no state table, no differential grouping, no side asymmetry, no time shape.
+4. **Do not ship zero**, per the standing constraint and declaration 3.
+
+Scale, so none of this is oversold: the baseline pooled out-of-fold log loss is 0.6729 against a coin flip's 0.6931,
+and the whole scoring system buys about 0.02. The best contrast here is 9.3e−05, about **1/215th** of that. The
+honest framing is "stop overpaying post-plant kills", not "this transforms the score". What justifies the version
+bump is the correctness fixes plus a sign error, not the size of the log-loss gain.
+
+Version 4 remains unstarted: it is a separate release with its own runbook, and `IMPACT_CALCULATION_VERSION` stays 3.

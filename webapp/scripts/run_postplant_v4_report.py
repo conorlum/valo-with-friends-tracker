@@ -42,6 +42,8 @@ import sys
 import time
 from pathlib import Path
 
+from collections import defaultdict
+
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -52,6 +54,7 @@ from app.db import SessionLocal
 from app.scoring.postplant_centering import DegenerateCentering
 from app.scoring.postplant_factor import (
     build_factor_table,
+    difference,
     extract_postplant_kills,
     solve_and_apply_centering,
 )
@@ -95,6 +98,20 @@ P4_GRID = (0.70, 0.7826, 0.90, 1.00)
 L_GRID = (0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)
 F_GRID = (0.40, 0.60, 0.80, 1.00, 1.20, 1.40)
 
+# DECLARATION 3. Both families selected their floor on every fold, so both are
+# widened downward until an optimum is interior. F-0.00 is the limiting case --
+# a post-plant kill worth nothing -- included to test whether the target can
+# tell "much less" from "nothing", and declared never shippable regardless.
+L2_GRID = (0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)
+
+# DECLARATION 4. The side-asymmetric arms. The level is PINNED, not fitted:
+# F-0.40 is already measured at exactly this level, so A1 vs F-0.40 isolates the
+# side split with the level held identical. Fitting a level here would
+# reintroduce the level/shape confound the whole investigation exists to avoid.
+SIDE_LEVEL = 0.40
+SIDE_LATE_BAND = 30  # A2's split, in seconds since the plant
+F2_GRID = (0.00, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 0.80, 1.00, 1.20, 1.40)
+
 # Arms that fit something and are therefore replayed once per fold.
 PER_FOLD_ARMS = {"P2L", "P5", "P5b", "P6"}
 # Arms that are pure deterministic rule changes: one replay each.
@@ -103,9 +120,11 @@ SIMPLE_ARMS = (
     + [f"P4-{s}" for s in P4_GRID if s != 1.00]
     + [f"L-{s}" for s in L_GRID if s != 1.00]
     + [f"F-{k}" for k in F_GRID]
+    + [f"L-{s}" for s in L2_GRID if s not in L_GRID]
+    + [f"F-{k}" for k in F2_GRID if k not in F_GRID]
 )
 
-ALL_ARMS = ["P0"] + SIMPLE_ARMS + ["P2L", "P6", "P5", "P5b", "Lf", "Ff"]
+ALL_ARMS = ["P0"] + SIMPLE_ARMS + ["P2L", "P6", "P5", "P5b", "Lf", "Ff", "Lf2", "Ff2", "A1", "A2"]
 
 
 def log(message):
@@ -524,6 +543,8 @@ def main():
     for fitted, grid, fmt, reuse_p0 in (
         ("Lf", L_GRID, "L-{}", True),
         ("Ff", F_GRID, "F-{}", False),
+        ("Lf2", L2_GRID, "L-{}", True),
+        ("Ff2", F2_GRID, "F-{}", False),
     ):
         if fitted not in wanted or load_oof(out_dir, fitted) is not None:
             continue
@@ -558,7 +579,7 @@ def main():
                 f"the constant is NOT recommended for freezing")
         del obs_by_value
 
-    if wanted & {"P2L", "P5", "P5b", "P6"}:
+    if wanted & {"P2L", "P5", "P5b", "P6", "A1", "A2"}:
         log("extracting post-plant rows (raw data, extracted once) ...")
         all_seconds = extract_postplant_round_seconds(db)
         all_kills = extract_postplant_kills(db)
@@ -578,6 +599,46 @@ def main():
                      outer_cv(lambda f: per_fold_obs[f], folds, features, n_folds))
             (out_dir / "p2l_lambdas.json").write_text(
                 json.dumps({str(k): v for k, v in lambdas.items()}, indent=2))
+            del per_fold_obs
+
+        for arm, banded in (("A1", False), ("A2", True)):
+            if arm not in wanted or load_oof(out_dir, arm) is not None:
+                continue
+            log(f"{arm}: fitting per-fold side weights ...")
+            per_fold_obs, fitted = {}, {}
+            for fold in range(n_folds):
+                train = {m for m, f in folds.items() if f != fold}
+                rows = [r for r in all_seconds if r.match_id in train]
+                train_kills = [k for k in all_kills if k.match_id in train]
+                value_table = build_value_table(rows, w=DEFAULT_W)
+                sums, counts = defaultdict(float), defaultdict(int)
+                total, n_total = 0.0, 0
+                for kill in train_kills:
+                    d = difference(value_table, kill.attackers_alive,
+                                   kill.defenders_alive, kill.t, kill.victim_is_attacker)
+                    if d is None:
+                        continue
+                    key = ((kill.victim_is_attacker, kill.t >= SIDE_LATE_BAND)
+                           if banded else kill.victim_is_attacker)
+                    sums[key] += d
+                    counts[key] += 1
+                    total += d
+                    n_total += 1
+                grand = total / n_total
+                # w = mean D for the key over the kill-weighted grand mean, so
+                # the training population's kill-weighted mean w is exactly 1
+                # and `level` alone carries the level.
+                weights = {k: (sums[k] / counts[k]) / grand for k in sums}
+                fitted[fold] = {str(k): round(v, 6) for k, v in weights.items()}
+                log(f"  {arm} fold {fold}: " + ", ".join(
+                    f"{k}={v:.3f}" for k, v in sorted(fitted[fold].items())))
+                per_fold_obs[fold] = replay(db, arm, variant=variants.variant_for(
+                    arm, level=SIDE_LEVEL, weights=weights))
+            save_oof(out_dir, arm,
+                     outer_cv(lambda f: per_fold_obs[f], folds, features, n_folds))
+            (out_dir / f"{arm.lower()}_weights.json").write_text(json.dumps(
+                {"level": SIDE_LEVEL, "late_band": SIDE_LATE_BAND,
+                 "per_fold": {str(k): v for k, v in fitted.items()}}, indent=2))
             del per_fold_obs
 
         for arm in ("P6", "P5", "P5b"):
