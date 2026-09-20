@@ -117,9 +117,16 @@ D1_FLOOR, D1_CEIL, D1_FALLBACK, D1_MATCH_LEVEL = 0.005, 1.0, 0.40, 0.40
 SIDE_LATE_BAND = 30  # A2's split, in seconds since the plant
 F2_GRID = (0.00, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 0.80, 1.00, 1.20, 1.40)
 
+# DECLARATION 8. The level-matched constant: 1.26 is the shipped ramp's own
+# mean post-plant T, so `F-1.26 vs P0` isolates the ramp's SHAPE from its LEVEL.
+# It is not on any earlier grid because no earlier entry asked that question.
+F3_GRID = (1.26,)
+
 # Arms that fit something and are therefore replayed once per fold.
 PER_FOLD_ARMS = {"P2L", "P5", "P5b", "P6"}
 # Arms that are pure deterministic rule changes: one replay each.
+# NOTE: this list is what the REPLAY loop iterates. ALL_ARMS is only what the
+# report prints. An arm added to ALL_ARMS alone shows up as "NOT RUN" forever.
 SIMPLE_ARMS = (
     ["P1", "P2b", "P3a", "P3b", "PC", "PC+"]
     + [f"P4-{s}" for s in P4_GRID if s != 1.00]
@@ -127,6 +134,7 @@ SIMPLE_ARMS = (
     + [f"F-{k}" for k in F_GRID]
     + [f"L-{s}" for s in L2_GRID if s not in L_GRID]
     + [f"F-{k}" for k in F2_GRID if k not in F_GRID]
+    + [f"F-{k}" for k in F3_GRID if k not in F_GRID and k not in F2_GRID]
 )
 
 ALL_ARMS = ["P0"] + SIMPLE_ARMS + ["P2L", "P6", "P5", "P5b", "Lf", "Ff", "Lf2", "Ff2", "A1", "A2", "D1"]
@@ -426,7 +434,20 @@ def main():
         draws, n_folds = 200, 2
         log("*** --quick: SMOKE TEST, NOT A RESULT ***")
 
-    wanted = set(args.arms.split(",")) if args.arms else set(ALL_ARMS + ["P4f"])
+    known = set(ALL_ARMS + ["P4f"])
+    wanted = set(args.arms.split(",")) if args.arms else set(known)
+    # An arm name that is not in ALL_ARMS is simply never iterated over, so the
+    # run exits 0 having measured NOTHING for it and the contrast table shows
+    # no row at all. That cost a run on 2026-09-20 (`F-1.26` requested, two of
+    # three arms delivered, exit 0). Fail loudly instead.
+    unknown = wanted - known
+    if unknown:
+        flats = sorted(a for a in known if a.startswith("F-"))
+        raise SystemExit(
+            f"unknown arm(s): {', '.join(sorted(unknown))}\n"
+            "These would be SILENTLY SKIPPED. Add the constant to a grid near "
+            "the top of this file, or fix the spelling.\n"
+            f"Known flat arms: {', '.join(flats)}")
     db = SessionLocal()
     # Declared constraint: every query here is read-only, enforced by the
     # database rather than by reading the code and trusting it.

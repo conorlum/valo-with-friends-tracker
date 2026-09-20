@@ -42,8 +42,29 @@ The question therefore splits, and only half of it is still open:
 
 - **Shape — settled.** Both targets want the ramp's growth and the plant+38..45 override gone. This needs **no**
   answer to "what is Impact for".
-- **Level — open, but narrow.** T2 improves for k < 1.349; C improves for k > ~1.18. **Joint window ≈ 1.18–1.35**,
-  and the shipped level 1.26 sits inside it.
+- **Level — open, but narrow.** T2 improves for k < 1.349; C improves for k > ~1.18, so a **joint window ≈
+  1.18–1.35** exists and the shipped level 1.26 sits inside it.
+
+**Do not state that as "a constant that improves both targets".** `F-1.26` was measured on T2 and came back
+**INCONCLUSIVE** (−1.516e−05, [−3.189e−05, **+1.117e−06**] — the interval spans zero, barely). **No k is measured
+as an IMPROVEMENT on both targets, and there is a structural reason there cannot be one:** the window is *defined*
+by the two zero-crossings, and near a crossing an effect is small by construction, so any k inside it is
+necessarily weak on at least one target. Running more arms inside the window cannot fix this.
+
+The claim the evidence does bear, at k = 1.26, in each target's own headroom:
+
+| | effect | % of that target's headroom |
+|---|---:|---:|
+| C | −4.119e−04, interval excludes zero | **0.0686% gain** |
+| T2 | worst case +1.117e−06 (interval upper bound) | **0.0055% cost** |
+
+> Replacing the ramp with a flat constant at its own mean level **decisively improves the within-round target and
+> costs the forward-looking target nothing measurable** — a 12x asymmetry, with the cost *bounded by measurement*
+> rather than assumed — while being a strict simplification.
+
+**Unresolved alternative:** `F-1.2` is a measured IMPROVEMENT on T2 where `F-1.26` is inconclusive, and C at 1.2 is
+unmeasured but interpolates to ~−2.7e−05, just past its crossing. **k = 1.2 may dominate k = 1.26.** One mode-C arm
+settles it: `--mode C --arms "P0,F-1.2" --tag _k12`.
 
 ### Why the four methods disagreed, resolved
 
@@ -61,28 +82,27 @@ Also settled: **the "~100x" that suspended the recommendation was a target artif
 against T2's 0.0202 — 30x. Normalised, `F-0.40`'s harm on C is 2.5x T2's best gain, not 75x; and `F-1.00` loses
 **less** on C than it gains on T2 (0.36x).
 
-### The single open gap
+### What is still open
 
-**Measure T2 at k = 1.26.** There is as yet **no single k measured as an IMPROVEMENT on both targets** — T2's
-highest measured improvement is 1.2, C's lowest is 1.26. Adjacent, not overlapping. The fit says T2 at 1.26 is
-−1.54e−05 (an improvement), but it is a fit.
+The T2-at-1.26 gap is **closed** — see the corrected claim above. Every arm this investigation declared has now
+been measured. What remains:
 
-```bash
-cd webapp
-DATABASE_URL="postgresql+psycopg2://postgres@localhost:5434/valo_v4" \
-  ./.venv313/Scripts/python.exe scripts/run_postplant_v4_report.py \
-    --out <DIR> --arms "P0,F-1.2,F-1.26,F-1.4"
-```
+1. **Is k = 1.2 better than k = 1.26?** `F-1.2` is a measured IMPROVEMENT on T2 where `F-1.26` is INCONCLUSIVE, and
+   C at 1.2 is unmeasured. One arm: `--mode C --arms "P0,F-1.2" --tag _k12`. This is the only measurement that
+   would change *which* constant to ship.
+2. **Row motion for the chosen constant has never been measured** (`postplant_v4_row_motion.py`). Needed before a
+   version-4 runbook, because this recommendation barely moves the level and so may move far fewer rows than the
+   Tier A combination's 6,891 (1.02%). **If it moves too few rows to clear the declared thresholds on its own,
+   that is a finding, not a blocker** — it ships bundled with Tier A, which clears them.
+3. **The owner's call on the level**, now much cheaper than it was: the range is 1.18–1.35 rather than 0.3 vs 1.0,
+   and every value in it is a strict simplification of what ships.
 
-`F-1.2` / `F-1.4` are reproduction checks against `contrasts_flat2.json`. **This run was started and killed by the
-OS for memory pressure** (a game was running alongside two corpus replays). It passed its identity gate, banked
-`oof_P0.npz`, and re-confirmed `dataset_fingerprint 3198:f9a31bb2df2586ec` / `fold_mapping_hash
-cebae50f85e94736`; pointing a rerun at that directory resumes rather than restarts. **Do not run two corpus
-replays at once on this machine unless RAM is free.**
+**Machine note:** the T2 run was once killed by the OS for memory pressure (a game plus two corpus replays). It
+resumes rather than restarts — a directory holding `identity_gate.json`, `p0_match_ids.json` and `oof_P0.npz`
+skips the gate and all of P0, reaching the first uncached arm in ~2 seconds. **Run one corpus replay at a time
+unless RAM is free**, and always redirect to a log file: when a run is killed mid-bootstrap its flushed log losses
+still yield exact point estimates via `loss(arm) − loss(P0)`, which is how the wide grid survived its first death.
 
-Second, smaller gap: **row motion for `F-1.26` has never been measured** (`postplant_v4_row_motion.py`). Needed
-before a version-4 runbook, because this recommendation barely moves the level and so may move fewer rows than the
-Tier A combination's 6,891 (1.02%).
 ---
 
 ## 2. The math, so it is not re-derived
@@ -204,6 +224,10 @@ Other traps that cost time tonight:
   reconstruction against the scorer's own stored values (`TEAM_1 if victim_is_attacker` matches all 153,481 kills;
   the mirror matches 24%).
 - `predict_proba` computes `beta[0] + X @ beta[1:]`, so **`beta[0]` is the intercept**, not the first feature.
+- `run_postplant_v4_report.py` **silently drops an unrecognised `--arms` entry** and exits 0 with no row for
+  it. Worse, its two arm registries differ: **`ALL_ARMS` drives the REPORT, `SIMPLE_ARMS` drives the REPLAY**,
+  so an arm added to the first alone prints as `NOT RUN` forever. Both cost a run on 2026-09-20. Now a hard
+  `SystemExit`, but check the contrast table actually has a row with a NUMBER for every arm you asked for.
 
 ---
 
@@ -268,7 +292,12 @@ Corpus fingerprint `3198:f9a31bb2df2586ec`, fold mapping `cebae50f85e94736` — 
    removal is settled on both targets and needs no weighting between them. For the level, take a constant in the
    **joint window ≈ 1.18–1.35**; the shipped mean level **1.26** sits inside it. **Not `1.00`** (HARM on C,
    interval excluding zero) and **not `0.3–0.43`** (the worst net of any arm tested: 1.16% of C's headroom worse
-   against 0.46% of T2's better). Pending the T2-at-1.26 measurement in section 1.
+   against 0.46% of T2's better).
+
+   **State the justification as measured, not as "improves both":** at 1.26 the within-round gain is decisive
+   (0.0686% of C's headroom) and the forward-looking cost is bounded at 0.0055% of T2's headroom by that arm's own
+   interval — 12x asymmetry. `F-1.26` on T2 is INCONCLUSIVE, and section 1 explains why no constant can be
+   decisive on both.
 2. **Tier A fixes**, taking `P3a` over `P3b`.
 3. **No structure**: no state table, no differential grouping, no side asymmetry, no time shape. None beat a
    constant, and the ones that "lost" mostly were not measurable.

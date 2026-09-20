@@ -3609,3 +3609,83 @@ deleting the shape**. Impact scores will move less, and the case no longer depen
 `IMPACT_CALCULATION_VERSION` stays **3**, `git diff webapp/app/` is empty, and no constant is frozen by this entry.
 Row motion for `F-1.26` has not been measured and should be, via `postplant_v4_row_motion.py`, before any version-4
 runbook is written.
+
+### 2026-09-20 (RESULT, declaration 8 — addendum) — both killed runs completed; the joint-window claim is corrected
+
+Run sequentially at the owner's instruction, one Python process at a time, while a game held ~2GB. Both finished.
+
+#### The wide grid, now registered rather than salvaged
+
+| k | `F-k vs P0` on C | 95% interval | verdict | resid. var. |
+|---:|---:|---|---|---:|
+| 1.90 | −1.760123e−03 | [−2.1330e−03, −1.3937e−03] | IMPROVEMENT | 0.3203% |
+| 2.20 | −1.641140e−03 | [−2.1568e−03, −1.1331e−03] | IMPROVEMENT | 0.6373% |
+| 2.60 | −9.486863e−04 | [−1.6587e−03, −2.4499e−04] | IMPROVEMENT | 1.2122% |
+
+All three clear the gate comfortably. **C's vertex is confirmed at k\* = 1.9675**, minimum bracketed (`F-1.9` beats
+`F-1.6` by −3.138e−04 and `F-2.2` by −1.190e−04). Declaration 8's grid-edge rule is discharged.
+
+**The salvage was sound.** The killed run's log losses, transcribed from its flushed run log, reproduced to every
+printed digit (0.090614 / 0.090733 / 0.091425), and the point estimate derived as `loss(arm) − loss(P0)` — −1.760e−03
+— matched the measured −1.7601230e−03. Recovering point estimates from a run log when the JSON never lands is a
+valid technique, worth keeping.
+
+#### `F-1.26` on T2 — and the claim it does not support
+
+```
+F-1.26 vs P0, target T2:  -1.515723e-05  [-3.189432e-05, +1.117182e-06]  INCONCLUSIVE
+```
+
+The fit predicted −1.5435e−05 and the measurement came in at −1.5157e−05, **1.8% off on the point estimate**. But
+the interval spans zero — barely, upper bound +1.12e−06 — so the verdict is **INCONCLUSIVE, which by this ledger's
+own vocabulary is never "no harm found".**
+
+**The joint-window claim as the RESULT entry above framed it is therefore not established.** That entry said a
+constant in 1.18–1.35 "improves both targets at once", and predicted this measurement would make it fully measured.
+It did not. **There is still no k measured as an IMPROVEMENT on both targets, and now there is a reason to think
+there cannot be one.**
+
+**Why it is structural, not bad luck.** The window is *defined* by the two targets' zero-crossings — C's at ~1.18,
+T2's at ~1.35. Near a crossing an effect is small by construction. So any k inside the window is necessarily close
+to zero on at least one target, and "a constant that decisively improves both" is **unachievable in principle
+here**, not merely unmeasured. Running more arms inside the window cannot fix this.
+
+#### What the measurement does support
+
+At k = 1.26, in each target's own headroom:
+
+| | effect | as % of that target's headroom |
+|---|---:|---:|
+| C | −4.119e−04, interval excludes zero | **0.0686% gain** |
+| T2 | worst case +1.117e−06 (interval upper bound) | **0.0055% cost** |
+
+**The decisive gain on one target is 12x the worst-case cost on the other**, and that cost is bounded by measurement
+rather than assumed. The defensible claim is therefore *not* "improves both". It is:
+
+> Replacing the ramp with a flat constant at the shipped ramp's own mean level **decisively improves the
+> within-round target and costs the forward-looking target nothing measurable**, while being a strict
+> simplification — one constant instead of a ramp plus an override.
+
+That is still a shipping case. It is a weaker claim than the one it replaces, and it is the one the evidence bears.
+
+**An unresolved alternative, flagged not answered:** `F-1.2` is a measured IMPROVEMENT on T2 (−2.494e−05, interval
+excluding zero) where `F-1.26` is inconclusive, and C at 1.2 is unmeasured but interpolates to roughly −2.7e−05,
+just past its crossing. **k = 1.2 may dominate k = 1.26** — one mode-C arm would settle it. Not run.
+
+#### Two process failures worth recording
+
+**1. `run_postplant_v4_report.py` silently drops unknown arms — twice over.** The first attempt requested
+`P0,F-1.2,F-1.26,F-1.4`, **exited 0, and measured two of three**: `F-1.26` is on no grid, so it never entered
+`ALL_ARMS` and produced no row at all. The two arms that did run were the reproduction checks, so the output looked
+healthy. Worse, the obvious fix — adding it to `ALL_ARMS` — made it appear in the table as `NOT RUN` while still
+never executing, because **`ALL_ARMS` is the REPORT loop and `SIMPLE_ARMS` is the REPLAY loop**. A second run was
+burned on that. Fixed: `F3_GRID = (1.26,)` feeds `SIMPLE_ARMS`, and an unrecognised `--arms` entry is now a hard
+`SystemExit` listing the known flat arms instead of a silent skip. Same family as `build_target` dropping rows —
+**the harness quietly answering a smaller question than the one asked.**
+
+**2. The T2 harness does not reproduce bit-for-bit.** `F-1.2` and `F-1.4` came back at −2.494432e−05 and
++9.467676e−06 against declaration 5's −2.494206e−05 and +9.469171e−06 — agreeing to **four significant figures**
+with identical verdicts, but differing by ~2e−09. The two arms' drifts are unequal (−2.26e−09 vs −1.49e−09), so it
+is not a shared `P0` offset; the likely source is the inner 3-fold L2 selection, which mode C does not perform
+(it fixes `L2 = 1.0`). Immaterial to any verdict, but **"bit-for-bit" is true of mode C only** — the RESULT entry
+above says so of mode C, correctly, and it must not be generalised to this harness.
