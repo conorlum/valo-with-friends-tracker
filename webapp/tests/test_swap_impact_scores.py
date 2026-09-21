@@ -17,7 +17,12 @@ from sqlalchemy import text
 
 from app.models import Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.models.match import MatchSource, Team
-from app.scoring.impact_manifest import RC3, lf_sha256, match_source_fingerprint
+from app.scoring.impact_manifest import (
+    RC3,
+    SOURCE_FINGERPRINT_VERSION,
+    lf_sha256,
+    match_source_fingerprint,
+)
 from app.scoring.write_gate import install_write_identity, read_gate
 from scripts import freeze_impact_candidate as freezer
 from scripts import swap_impact_scores as swap_tool
@@ -147,6 +152,9 @@ def _export(tmp_path, db, keys, *, impact, scoring_version=3, comparison_sha256=
         "configuration": {"impact_calculation_version": 3},
         "inputs": {
             "database": db.execute(text("SELECT current_database()")).scalar(),
+            # As the exporter records it: fingerprints are only comparable
+            # within one contract (Impact v4 plan, section 2.4).
+            "fingerprint_version": SOURCE_FINGERPRINT_VERSION,
             "match_source_fingerprints": fingerprints,
             "cohort_fingerprint": hashlib.sha256(canonical_json(fingerprints).encode("utf-8")).hexdigest(),
         },
