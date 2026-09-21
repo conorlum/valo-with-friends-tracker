@@ -91,7 +91,10 @@ DECLARE
 BEGIN
     FOREACH guarded IN ARRAY ARRAY[
         'impact_scores', 'matches', 'match_players', 'rounds',
-        'round_player_stats', 'round_player_spend', 'kill_events'
+        'round_player_stats', 'round_player_spend', 'kill_events',
+        -- Impact v4: assistants are mapped to players by display_name, so a
+        -- rename is a change to scoring input (plan 2026-09-21-impact-v4, R1).
+        'players'
     ] LOOP
         IF to_regclass('public.' || guarded) IS NULL THEN
             RAISE EXCEPTION 'cannot gate %: the table does not exist', guarded;

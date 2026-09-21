@@ -61,13 +61,17 @@ from app.scoring.impact import FormulaWeights, build_impact_rows_for_match
 from app.scoring.impact_manifest import (
     COMPARATORS,
     config_from_manifest,
+    SOURCE_FINGERPRINT_VERSION,
     lf_sha256,
     load_manifest,
     match_source_fingerprint,
     verify_manifest,
 )
 
-ARTIFACT_CONTRACT_VERSION = 1
+# 2: contract (c) moved to source-fingerprint contract v2 (Impact v4: the
+# assistants payload and the match's players), recorded as
+# inputs.fingerprint_version. The artifact bytes' own contract is unchanged.
+ARTIFACT_CONTRACT_VERSION = 2
 
 #: A, B, C, D and trade_credit_scale, as the owner locked them.
 LOCKED_WEIGHTS = "1.0,2.5,2.5,100.0,1.0"
@@ -344,10 +348,12 @@ def _inputs(db, match_ids, *, fingerprints: bool) -> dict:
     }
     if fingerprints:
         per_match = {str(m): match_source_fingerprint(db, m) for m in match_ids}
+        inputs["fingerprint_version"] = SOURCE_FINGERPRINT_VERSION
         inputs["match_source_fingerprints"] = per_match
         inputs["cohort_fingerprint"] = hashlib.sha256(
             canonical_json(per_match).encode("utf-8")).hexdigest()
     else:
+        inputs["fingerprint_version"] = None
         inputs["match_source_fingerprints"] = None
         inputs["cohort_fingerprint"] = None
     return inputs

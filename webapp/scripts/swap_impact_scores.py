@@ -58,7 +58,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from app.db import SessionLocal
-from app.scoring.impact_manifest import lf_sha256, load_manifest, match_source_fingerprint
+from app.scoring.impact_manifest import (
+    fingerprint_contract_problem,
+    lf_sha256,
+    load_manifest,
+    match_source_fingerprint,
+)
 from app.scoring.write_gate import WRITE_IDENTITY_SETTING, install_write_identity, read_gate
 from scripts.export_impact_artifact import (
     COMPARISON_HEADER,
@@ -89,8 +94,11 @@ EXIT_LOCK_TIMEOUT = 4
 LOCK_NOT_AVAILABLE = "55P03"
 
 #: Everything the scorer reads. A verification says these rows produced the
-#: staged scores, so a write to any of them makes it stale.
-SOURCE_TABLES = ("matches", "match_players", "rounds", "round_player_stats", "kill_events")
+#: staged scores, so a write to any of them makes it stale. `players` joined for
+#: Impact v4, which maps assistants to players by display_name: without it a
+#: rename between export and swap passed every check (plan 2026-09-21, R1).
+SOURCE_TABLES = ("matches", "match_players", "rounds", "round_player_stats", "kill_events",
+                 "players")
 
 
 class Refused(RuntimeError):
@@ -456,6 +464,10 @@ def _check_approved(db, table: str, approved_path: str, manifest_path: str | Non
         problems.append(f"the approved results were written against manifest "
                         f"{approved.get('manifest_lf_sha256')}, not {facts['manifest_lf_sha256']}")
         return
+    problem = fingerprint_contract_problem(
+        (manifest.get("source_snapshots") or {}).get("fingerprint_version"), "the manifest")
+    if problem:
+        problems.append(problem)
     for name in ("candidate_id", "release_comparator"):
         if approved.get(name) != manifest.get(name):
             problems.append(f"the approved results are for {name} {approved.get(name)!r}, "
@@ -530,6 +542,12 @@ def _check_inputs(db, sidecar: dict, facts: dict, problems: list) -> None:
     export's. The slow part: four queries per match."""
     inputs = sidecar.get("inputs") or {}
     recorded = inputs.get("match_source_fingerprints")
+    # Before any row is read: fingerprints taken under another contract never
+    # match this checkout's, and saying "every match changed" would hide why.
+    problem = fingerprint_contract_problem(inputs.get("fingerprint_version"), "the export") if recorded else None
+    if problem:
+        problems.append(problem)
+        return
     if not recorded:
         problems.append("the export recorded no input fingerprints (--no-fingerprints), so it "
                         "cannot be loaded")
@@ -643,7 +661,7 @@ def swap(db) -> dict:
     db.execute(text(f"SET LOCAL lock_timeout = '{SWAP_LOCK_TIMEOUT}'"))
     db.execute(text(f"SET LOCAL statement_timeout = '{SWAP_STATEMENT_TIMEOUT}'"))
     # Three lock statements, in this order, and the order is the design. (Three
-    # statements, not three locks: the first takes all five source tables.)
+    # statements, not three locks: the first takes every source table.)
     #
     # This order is NOT globally deadlock-free, and no claim is made that it is
     # (external review round 2). install_release_write_gate.py rebuilds triggers
@@ -658,7 +676,8 @@ def swap(db) -> dict:
     #
     # The staged table and the sources come first: SHARE stops writers without
     # stopping readers, so the site is untouched while _require_clean_verification
-    # digests every row of six tables -- about 31 s, measured on the real corpus.
+    # digests every row of seven tables -- about 31 s measured on the real corpus
+    # for six, before `players` joined them (small: one row per player).
     # That work CANNOT sit inside the live table's ACCESS EXCLUSIVE, which stops
     # page loads dead; 31 s there would blow the 5 s stall budget by six times.
     db.execute(text(f"LOCK TABLE {', '.join(SOURCE_TABLES)} IN SHARE MODE"))

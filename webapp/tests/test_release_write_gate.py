@@ -26,7 +26,9 @@ from tests._postgres import postgres_session_or_skip, postgres_url_or_skip
 
 REFUSED = (InternalError, ProgrammingError)
 GATED_TABLES = ("impact_scores", "matches", "match_players", "rounds",
-                "round_player_stats", "round_player_spend", "kill_events")
+                "round_player_stats", "round_player_spend", "kill_events",
+                # Impact v4: assistants map to players by display_name (plan R1).
+                "players")
 
 
 @pytest.fixture
