@@ -3689,3 +3689,80 @@ with identical verdicts, but differing by ~2e−09. The two arms' drifts are une
 is not a shared `P0` offset; the likely source is the inner 3-fold L2 selection, which mode C does not perform
 (it fixes `L2 = 1.0`). Immaterial to any verdict, but **"bit-for-bit" is true of mode C only** — the RESULT entry
 above says so of mode C, correctly, and it must not be generalised to this harness.
+
+### 2026-09-20 (DECLARATION 9) — ask the side-asymmetry question on the target that can hear it
+
+Declared before running. This entry exists **only because of declaration 8's finding that the detection floor is a
+property of the target, not of the harness.**
+
+`A1` — the post-plant factor as a constant per victim side, at level 0.40 so `A1 vs F-0.40` isolates the split and
+nothing else — was reported **UNTESTABLE** on T2: residual variance **0.0498%** against T2's demonstrated floor of
+**0.107%**. The arm is a 0.997 rescale of its own comparator and the estimator is blind to a rescale.
+
+But C's demonstrated floor is **at most 0.0407%**, set when `F-1.26` registered a decisive IMPROVEMENT there.
+**0.0498% > 0.0407%.** If `A1`'s separability on C's row set is comparable to its separability on T2's, then the
+question that could not be asked on the forward target **can be asked on the round-outcome target** — for the first
+time in this investigation.
+
+This is the single highest-value experiment the per-target floor unlocks, and it is the one the owner asked for.
+
+#### What is run
+
+| arm | why |
+|---|---|
+| `P0` | shipped, the comparator of record |
+| `F-0.40` | **the comparator that matters** — same level, no split |
+| `A1` | level 0.40, per-victim-side weights |
+
+Target C (`y = did team A win THIS round`, context controls, no `round_result`), the same machinery declaration 8
+used, so the result is directly comparable to that entry's nine-arm curve.
+
+#### The weights are reused verbatim, and that is legitimate
+
+`a1_weights.json`'s per-fold weights are taken **unchanged**, not refitted. Justification, stated before the run:
+
+1. They are fitted from the **kill population** — the mean measured swing `D` per victim side, normalised so the
+   kill-weighted mean is exactly 1 — and **not from any target**. Nothing about T2 entered them.
+2. They were fitted **per fold on training matches only**, and this run uses **the same fold split**:
+   `stable_folds(seed=0)`, `fold_mapping_hash cebae50f85e94736`, re-confirmed three times today.
+3. Fold `f`'s predictions come from fold `f`'s weights, fitted on the complement of `f`. Out-of-fold purity is
+   preserved exactly as the original run preserved it. **`A1` is replayed five times, once per fold** — it is not a
+   single-replay arm and must not be run as one.
+
+Refitting on C would change nothing (the fitter never sees the target) and would risk transcription error, so the
+stored values are used and this paragraph is the record of that choice.
+
+#### The gate runs first, and is RECOMPUTED, not inherited
+
+`build_target` drops rows — 53,730 of 67,251 survive T2's forward window, where C keeps all 67,251 with a known
+winner. **The 0.0498% figure is a property of T2's row set and does not transfer.** R² between `A1`'s out-of-fold
+`impact_diff` and `F-0.40`'s is recomputed on C's rows before any bootstrap. For a per-fold arm the out-of-fold
+assembly — each row taking the value from the replay of the fold in which it was a test row — is the arm's column.
+
+#### Predictions
+
+1. **The gate passes, narrowly.** Separability on C's rows lands in **0.04%–0.07%**, above C's 0.0407% floor. It is
+   close enough that landing below is a real possibility, and **if it does, the answer is "still untestable, now on
+   both targets"** — which would close the side-asymmetry question properly rather than leaving it open, and is a
+   legitimate outcome of this run rather than a failure of it.
+
+2. **`A1 vs F-0.40` on C is not an IMPROVEMENT.** Direction declared before the number: on T2 the point estimate
+   was **+1.096e−05** (the harm direction, though inconclusive), and `A2` — the same idea with a time band — was
+   **decisively HARM** vs `F-0.40`. The side split has never once produced a favourable point estimate against a
+   level-matched flat comparator.
+
+   **Stated against my own prior:** there is a real mechanism by which C could disagree. C rewards weighting kills
+   by how decisive they were for *this* round, `A1` up-weights attacker-victim kills (≈1.25) and down-weights
+   defender-victim ones (≈0.79), and post-plant an attacker's death does plausibly move the round more. **If `A1`
+   comes back IMPROVEMENT on C, that is a genuinely new finding** — the first evidence in this investigation that
+   any structure beats a flat constant — and it would reopen the side asymmetry rather than close it.
+
+3. `A1 vs P0` on C is **HARM**, and close to `F-0.40`'s **+6.953e−03**, because `A1` is `F-0.40` plus a split and
+   `F-0.40` is far below C's optimum of ~1.97.
+
+#### What this entry does not do
+
+It freezes nothing, touches no `webapp/app/` code, and leaves `IMPACT_CALCULATION_VERSION` at 3. A favourable
+result would **not** be a licence to ship a side-asymmetric factor — it would be grounds to build the arm properly,
+which per declaration 6's parameterisation note means a scorer that can charge the two sides of a duel separately,
+not another constant inside `_time_factor`.
