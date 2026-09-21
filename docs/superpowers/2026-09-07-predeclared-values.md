@@ -3951,3 +3951,92 @@ shape question rather than closing it.
 
 No constant is frozen, `webapp/app/` is untouched, `IMPACT_CALCULATION_VERSION` stays 3. The new variant lives in
 `scripts/postplant_v4_variants.py` as a wrapper around the shipped `_time_factor`, like every arm before it.
+
+### 2026-09-21 (RESULT, declaration 10) — additive is not neutral, it is actively worse, and the time shape carries nothing
+
+**Every additive arm loses to its level-matched flat twin, every interval excludes zero, and the harm grows with
+how much additive mass is added.**
+
+| arm | vs level-matched twin | 95% interval | verdict | % of C headroom | separability |
+|---|---:|---|---|---:|---:|
+| `ADD-T@1.26` | +1.364339e−03 | [+1.2342e−03, +1.4999e−03] | HARM | 0.227% | 0.0247% **UNTESTABLE** |
+| `ADD-T@1.6` | +3.045884e−03 | [+2.7570e−03, +3.3479e−03] | **HARM** | 0.507% | 0.1259% |
+| `ADD-T@1.9` | +4.432181e−03 | [+4.0161e−03, +4.8729e−03] | **HARM** | 0.738% | 0.2729% |
+| `ADD-S@1.6` | +3.017792e−03 | [+2.8423e−03, +3.1832e−03] | **HARM** | 0.502% | 0.0975% |
+| `ADD-TS@1.6` | +6.960561e−03 | [+6.5461e−03, +7.4085e−03] | **HARM** | 1.159% | 0.1682% |
+| `ADD-TS@1.6` vs `ADD-T@1.6` | +3.914677e−03 | [+3.7001e−03, +4.1350e−03] | **HARM** | — | 0.0776% |
+
+Every additive arm is also worse than the **shipped `P0`**, not merely worse than flat.
+
+**Reproduction:** `F-1.26 vs P0` and `F-1.6 vs P0` returned **−4.118714982721e−04** and **−1.446361904629e−03**,
+bit-for-bit identical to declaration 8. `F-1.9 vs P0` is now a registered contrast (−1.760123e−03) rather than the
+point estimate salvaged from the OS-killed run, and it matches that salvage exactly.
+
+#### Two findings, and the second is the sharper one
+
+**1. Additive is worse than multiplicative, and monotonically so.** At matched mean payout the harm runs
+0.227% → 0.507% → 0.738% of C's headroom as the level goes 1.26 → 1.6 → 1.9. The more additive mass, the worse.
+`ADD-TS@1.6` at **1.159%** is as harmful as `F-0.40 vs P0` (1.157%), the largest harm measured anywhere in this
+investigation.
+
+**2. The time shape carries essentially nothing — measured directly for the first time.** `ADD-T@1.6` rises with
+`t`; `ADD-S@1.6` is **flat in `t`** and differs only by the side split. Their harm against the same twin:
+
+```
+ADD-T@1.6  (rises with t)   +3.0459e-03
+ADD-S@1.6  (flat in t)      +3.0178e-03
+difference                   2.81e-05     <- 0.9% of the effect
+```
+
+Whether the additive term rises with time or ignores time entirely **makes almost no difference**. Every earlier
+entry inferred this from the mass distribution (72% of post-plant kills in the first 20 seconds, 1.02% past t=40);
+this is the first arm pair that isolates the time shape with everything else held equal, and it **confirms the
+inference directly**. The shape is not merely undetectable — at this level of aggregation it is inert.
+
+#### Why additive is harmful rather than merely useless
+
+An additive term pays **the same absolute bonus regardless of how decisive the kill was**. Verified at build time:
+at `alive=(2,4)`, `K=80`, it lifts `T` to 2.68; at `alive=(1,1)`, `K=250`, the same term reaches only 1.49.
+
+So as a *fraction*, it up-weights marginal kills far more than decisive ones. That **partially erases the
+kill-order ordering** — and `K(s)` is the one component this investigation has established is **already correct**
+(mean `K` 1.018x post/pre against a measured swing of 1.023x, while verifiably spike-blind). The additive form
+degrades information that was right, which is why it does not merely fail to help.
+
+This is the same lesson as `D1` and `A1`, in its strongest form yet: **everything that tries to add to `K(s)`
+either cannot be seen, or makes things worse.**
+
+#### Predictions, scored
+
+| declared | outcome |
+|---|---|
+| 1. the gate passes comfortably, separability **above 0.3%** | **FAILED** — measured 0.0247% / 0.1259% / 0.2729% / 0.0975% / 0.1682%. **None reached 0.3%**, and `ADD-T@1.26` came back **UNTESTABLE** |
+| 2. `ADD-T` does not beat its level-matched twin | **held**, and more strongly than declared — HARM at every level, not merely INCONCLUSIVE |
+| 3. `ADD-S` and `ADD-TS` are HARM | **held**, both decisively |
+| 4. `ADD-TS` does not beat `ADD-T` | **held** — +3.915e−03 HARM |
+
+**Prediction 1's reasoning was wrong and is worth recording.** I argued an additive term "behaves like a count of
+post-plant kills, a genuinely different feature from the `K`-weighted sum", and therefore would be comfortably
+testable. The flaw: **the flat twin's `impact_diff` also scales with that count**, and level-matching forces the
+two to share their mean, so the round-to-round variation of both is driven by the same underlying quantity — how
+much post-plant action the round had. The additive column is far more collinear with flat than I predicted.
+
+Note the useful regularity that came out of the miss: **separability grows with additive mass** (0.0247% → 0.1259%
+→ 0.2729% as the level rises), because a larger `alpha` means more deviation from flat. Separability is not a fixed
+property of an *idea*; it scales with how hard the arm is pushed.
+
+The failed cell does not weaken the conclusion. `ADD-T@1.26` is UNTESTABLE, but `ADD-T@1.6` and `ADD-T@1.9` are
+both comfortably testable and both decisively HARM, and the trend across the three is monotone.
+
+**The falsifier did not fire.** Declaration 10 stated that an `ADD-T` win over its twin would be the first
+structure in this investigation to beat a flat constant. It lost at every level.
+
+#### What this does not settle
+
+C is partly circular (declaration 7), so this is a within-round result. `ADD` vs its twin on **T2** was not run and
+would likely be UNTESTABLE at these separabilities against T2's 0.107% floor — `ADD-T@1.26`'s 0.0247% is below even
+C's floor. The additive form is therefore **measured harmful for the within-round question and unmeasured for the
+forward-looking one**, which is the same shape as declaration 9's finding for the side split.
+
+`IMPACT_CALCULATION_VERSION` stays 3, `git diff webapp/app/` is empty, and the version-4 recommendation is
+unchanged: **flat multiplicative constant, no structure, no additive term.**

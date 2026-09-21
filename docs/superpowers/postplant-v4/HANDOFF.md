@@ -4,7 +4,7 @@ Session of 2026-09-19/20. Everything here is measured, out-of-fold and reproduci
 nothing is activated. `IMPACT_CALCULATION_VERSION` stays **3** and `git diff webapp/app/` is empty.
 
 Read this before re-deriving anything. The ledger entries in `../2026-09-07-predeclared-values.md` (declarations
-1–8 and their RESULT entries, 2026-09-19 and 2026-09-20) are authoritative; this file is the map.
+1–10 and their RESULT entries, 2026-09-19 to 2026-09-21) are authoritative; this file is the map.
 
 **`ARMS.md`** in this directory catalogues every arm with its numbers and why it failed, sorted by kind of
 failure (genuine null / UNTESTABLE / harm). Read it before proposing a new arm — most of them have been tried.
@@ -43,8 +43,11 @@ shape still helps.**
 
 The question therefore splits, and only half of it is still open:
 
-- **Shape — settled.** Both targets want the ramp's growth and the plant+38..45 override gone. This needs **no**
-  answer to "what is Impact for".
+- **Shape — settled, and now measured directly.** Both targets want the ramp's growth and the plant+38..45
+  override gone; this needs **no** answer to "what is Impact for". Declaration 10 isolated the time shape with
+  everything else held equal — an additive term that **rises with `t`** and one that **ignores `t` entirely** harm
+  their shared twin by +3.0459e−03 and +3.0178e−03, **2.81e−05 apart (0.9% of the effect)**. The shape is not
+  merely undetectable; at this aggregation it is **inert**.
 - **Level — open, but narrow.** T2 improves for k < 1.349; C improves for k > ~1.18, so a **joint window ≈
   1.18–1.35** exists and the shipped level 1.26 sits inside it.
 
@@ -98,11 +101,15 @@ been measured. What remains:
    loss is worse than *every* flat constant measured on C. The 2026-09-20 correction reopened this hypothesis; it
    is now shut on evidence. **Separability is a property of the two columns and is target-free; only the FLOOR is
    target-bound** — the recomputation on C's rows returned 0.0498%, identical to T2's recorded figure.
-3. **Row motion for the chosen constant has never been measured** (`postplant_v4_row_motion.py`). Needed before a
+3. **Additive is dead too** (declaration 10). `K(s) + f` instead of `K(s) · T` loses to its level-matched flat
+   twin at every level, with harm **growing** as more additive mass is added (0.227% → 0.507% → 0.738% of C's
+   headroom), and loses to the shipped ramp as well. Mechanism: an additive term pays the same bonus whether a
+   kill was decisive or marginal, so it partially **erases** the kill-order ordering that is already correct.
+4. **Row motion for the chosen constant has never been measured** (`postplant_v4_row_motion.py`). Needed before a
    version-4 runbook, because this recommendation barely moves the level and so may move far fewer rows than the
    Tier A combination's 6,891 (1.02%). **If it moves too few rows to clear the declared thresholds on its own,
    that is a finding, not a blocker** — it ships bundled with Tier A, which clears them.
-4. **The owner's call on the level**, now much cheaper than it was: the range is 1.18–1.35 rather than 0.3 vs 1.0,
+5. **The owner's call on the level**, now much cheaper than it was: the range is 1.18–1.35 rather than 0.3 vs 1.0,
    and every value in it is a strict simplification of what ships.
 
 **Machine note:** the T2 run was once killed by the OS for memory pressure (a game plus two corpus replays). It

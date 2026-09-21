@@ -1,7 +1,7 @@
 # Every arm, and what happened to it
 
-A catalogue of the post-plant time-factor investigation, 2026-09-19/20. Companion to `HANDOFF.md` (the map) and
-`../2026-09-07-predeclared-values.md` (the authoritative ledger, declarations 1–8).
+A catalogue of the post-plant time-factor investigation, 2026-09-19/21. Companion to `HANDOFF.md` (the map) and
+`../2026-09-07-predeclared-values.md` (the authoritative ledger, declarations 1–10).
 
 ## The one-sentence version
 
@@ -173,6 +173,8 @@ state is what `K(s)` already encodes, so a victim-side weight **double-counts in
 | `A2` vs `F-0.4` | +1.743e−05 | [+9.068e−07, +3.368e−05] | the time-banded side split is worse than a flat constant |
 | `A2` vs `A1` | +6.473e−06 | [+5.802e−07, +1.275e−05] | adding the `t >= 30` band to the side split actively hurt |
 | **`A1` vs `F-0.4` on C** | **+1.545e−03** | [+1.407e−03, +1.684e−03] | **the per-victim-side split, on a target that can see it.** `A1`'s log loss (0.10087) is worse than *every* flat constant measured on C. Declaration 9 |
+| **`ADD-T` vs its level-matched flat twin** | **+1.36e−03 / +3.05e−03 / +4.43e−03** | all exclude zero | **the first ADDITIVE arm** (`K+f`, not `K·T`), level-matched at 1.26 / 1.6 / 1.9. Harm **grows with additive mass**. Declaration 10 |
+| **`ADD-TS@1.6` vs `F-1.6`** | **+6.96e−03** | [+6.55e−03, +7.41e−03] | additive **and** per-side: 1.159% of C's headroom, matching `F-0.40`'s 1.157% — the largest harm in the investigation |
 | **`F-1.00` on C** | **+9.824e−04** | **[+6.548e−04, +1.304e−03]** | **on the round's own outcome, parity underpays post-plant kills.** This refutes `T = 1.00` |
 | `F-0.7` / `F-0.4` / `F-0.3` on C | +3.417e−03 / +6.953e−03 / +8.428e−03 | all exclude zero | the whole 0.3–0.7 region is badly wrong for the within-round question |
 
@@ -202,7 +204,13 @@ where every candidate curve sits between 1.0 and 1.4. Only **1.02%** occur at t 
 the measured 2v1 value falls to 0.18 while the shipped ramp pays 1.75. **A model can be badly wrong about 1% of
 events and be undetectable.**
 
-**2. The information was already in `K(s)`.** Mean `K` is 1.018x larger post-plant; the measured win-probability
+**2. The information was already in `K(s)` — and adding to it DEGRADES it.** Declaration 10 measured the time
+shape directly for the first time: `ADD-T@1.6` (rises with `t`) and `ADD-S@1.6` (flat in `t`) harm their shared
+twin by +3.0459e−03 and +3.0178e−03 — **2.81e−05 apart, 0.9% of the effect.** The shape is not merely
+undetectable, it is inert. And an additive term pays the same bonus whether a kill was decisive or marginal, so it
+partially **erases** the kill-order ordering that is already correct.
+
+**2b.** Mean `K` is 1.018x larger post-plant; the measured win-probability
 swing is 1.023x larger. The kill-order bonus already prices a post-plant kill almost exactly right *while being
 verifiably spike-blind* (`1v1→0v1` and `1v1→1v0` both weight 250). There was no shape left for `T` to add.
 
@@ -222,7 +230,9 @@ returns a contrast of zero by construction. Four of the ten structural contrasts
 | measurable harm | 5 | `P2L`, `A2` (twice), and on target C `F-1.00` and the 0.3–0.7 region |
 | no-harm correctness fixes | 5 | `P1`, `P2b`, `P3a`, `P3b`, `PC` |
 
-**What survives to ship:** a flat constant (level per `HANDOFF.md` §1, currently 1.18–1.35), the Tier A fixes taking
-`P3a`, and **no structure whatsoever** — no state table, no differential grouping, no side asymmetry, no time shape.
+**What survives to ship:** a flat **multiplicative** constant (level per `HANDOFF.md` §1, currently 1.18–1.35), the
+Tier A fixes taking `P3a`, and **no structure whatsoever** — no state table, no differential grouping, no side
+asymmetry, no time shape, **and no additive term** (declaration 10: additive is worse than multiplicative at every
+matched level, and worse than the shipped ramp too).
 Not zero: `F-0.00` is statistically indistinguishable from the fitted constant, and was pre-committed as never
 shippable because a decisive duel scoring nothing contradicts a standing constraint.
