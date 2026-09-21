@@ -20,6 +20,19 @@ class ImpactScoringConfig:
     enable_postplant_leverage: bool = False
     enable_preplant_empirical: bool = False
     enable_trade_credit: bool = False
+    # Impact v4 (declaration 12, plan 2026-09-21-impact-v4 section 2.2). Both
+    # default OFF, so every configuration that predates them scores as before.
+    enable_decided_only_time: bool = False
+    remove_post_decided_assists: bool = False
+
+    def __post_init__(self):
+        if self.enable_decided_only_time and (
+                self.enable_preplant_empirical or self.enable_postplant_leverage):
+            # Decided-only time REPLACES the time factor; stacking a legacy
+            # timing candidate on it would score neither measured arm.
+            raise ValueError(
+                f"{self.config_id}: enable_decided_only_time cannot be combined with "
+                "enable_preplant_empirical or enable_postplant_leverage")
 
     def build_kwargs(self) -> dict:
         if self.enable_postplant_leverage or self.enable_preplant_empirical:
@@ -28,10 +41,18 @@ class ImpactScoringConfig:
             raise ValueError(
                 f"{self.config_id}: timing candidates are not supported by a frozen "
                 "configuration without their table artifacts")
-        return {
+        kwargs = {
             "use_realized_swing": self.use_realized_swing,
             "enable_econ_component": self.enable_econ_component,
             "econ_model": self.econ_model,
             "weights": self.weights,
             "enable_trade_credit": self.enable_trade_credit,
         }
+        # The v4 flags are passed only when True, so a pre-v4 configuration's
+        # kwargs stay the exact dict they always were (the scorer defaults both
+        # to False) -- the same rule the manifest's serialisation follows.
+        if self.enable_decided_only_time:
+            kwargs["enable_decided_only_time"] = True
+        if self.remove_post_decided_assists:
+            kwargs["remove_post_decided_assists"] = True
+        return kwargs
