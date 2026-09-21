@@ -41,6 +41,42 @@ def effective_plant_time(round_row) -> float | None:
     return round_row.plant_time
 
 
+# Declaration 12 (docs/superpowers/2026-09-07-predeclared-values.md). Ported
+# from scripts/postplant_v4_variants.py, which defines SPIKE_SECONDS on its own
+# rather than importing one, so both are spelled out here.
+ROUND_SECONDS = 100.0
+SPIKE_SECONDS = 45.0
+
+
+def round_decided(round_row, kill_time: float) -> bool:
+    """DECLARATION 12: the round's outcome no longer depends on anything a
+    player can do. Three ways, and only these:
+
+      * the spike was defused, and the kill is at or after the defuse;
+      * the spike really armed (not a phantom plant) and the kill is at or
+        after plant+45 -- it has exploded, whatever the flags say (C3);
+      * no real plant, the round was a Time Win, and the kill is after 100s.
+
+    The Time Win condition is not decoration: 14 rounds carry plant_time >
+    100s and end in Elimination Wins (is_phantom_plant), so the clock alone is
+    noisy enough to catch a real round-ending kill. On the measurement corpus
+    every post-100s kill in an unplanted or phantom round is in a Time Win
+    round (338 kills), so the condition removes nothing there; it is there so
+    a noisy timestamp can never zero a live kill.
+
+    A verbatim port of the measurement's reference,
+    scripts/postplant_v4_variants.py::round_decided;
+    tests/test_round_decided.py holds the two to agreement."""
+    if (round_row.defused and round_row.defuse_time is not None
+            and kill_time >= round_row.defuse_time):
+        return True
+    plant_time = effective_plant_time(round_row)
+    if plant_time is not None:
+        return kill_time >= plant_time + SPIKE_SECONDS
+    return (kill_time > ROUND_SECONDS
+            and bool(round_row.outcome and "Time Win" in round_row.outcome))
+
+
 def attacking_team(round_number: int) -> Team | None:
     """None only for round_number < 1. Regulation is the documented 1-12 /
     13-24 split; past round 24 (overtime) the side resets to round 1's side
