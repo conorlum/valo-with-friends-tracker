@@ -28,9 +28,16 @@ Start Postgres with: docker compose -p valomaths-private up -d
 import pytest
 from sqlalchemy import text
 
-from app.scoring.impact import FACTOR_WEIGHTS, IMPACT_CALCULATION_VERSION
-from app.scoring.impact_runtime import active_manifest
+from app.scoring.impact import FACTOR_WEIGHTS
 from tests._postgres import postgres_session_or_skip
+
+# The first scoring_version whose rows the NEW structure wrote (rc3, version 3).
+# Versions 1 and 2 are the legacy combination step this identity describes, and
+# every version from 3 on -- rc3, v4 and whatever follows -- is not. A fact
+# about the history of the formula, so it is fixed here rather than read from
+# the active manifest: with v4 active, "the activation version" is 4, and v3
+# rows would have been classified as legacy (plan 2026-09-21-impact-v4, R9).
+FIRST_NEW_STRUCTURE_VERSION = 3
 
 # impact.py round()s kill_impact, death_impact and each component
 # independently, so exact equality is not expected.
@@ -45,17 +52,15 @@ def _session():
 def _legacy_only_filter(db):
     """SQL predicate selecting rows the legacy combination step produced.
 
-    Two things vary and neither can be assumed:
+    Two things matter here:
 
     - `scoring_version` only exists from migration 0008. A database still at
       0007 predates rc3 entirely, so every row in it is legacy by construction
       and needs no filter.
-    - the boundary is not a constant hardcoded here. With a manifest active it
-      is that manifest's activation version. With NO manifest active the
-      running code is itself the legacy formula, so anything stored ABOVE the
-      version it writes came from a newer one -- which is exactly the stale
-      checkout against a swapped table, and must skip rather than report the
-      newer rows as a broken identity.
+    - the boundary is the formula's GENERATION, FIRST_NEW_STRUCTURE_VERSION,
+      and deliberately not the active manifest's activation version: that
+      moves with every release (4 under v4), while which versions the legacy
+      step wrote never does.
     """
     has_column = db.execute(text(
         "SELECT 1 FROM information_schema.columns "
@@ -63,10 +68,7 @@ def _legacy_only_filter(db):
     )).scalar()
     if not has_column:
         return "true", None
-    manifest = active_manifest()
-    first_rc3 = (manifest["activation_impact_calculation_version"] if manifest is not None
-                 else IMPACT_CALCULATION_VERSION + 1)
-    return "scoring_version < :first_rc3", first_rc3
+    return "scoring_version < :first_rc3", FIRST_NEW_STRUCTURE_VERSION
 
 
 def test_impact_reconstructs_from_stored_components():
@@ -128,3 +130,29 @@ def test_impact_reconstructs_from_stored_components():
         f"do NOT widen TOLERANCE -- re-read impact.py's kill_impact/"
         f"death_impact combination step instead."
     )
+
+
+class _HasScoringVersion:
+    """Offline stand-in: the only query _legacy_only_filter makes."""
+
+    def execute(self, *_args, **_kwargs):
+        class _Result:
+            @staticmethod
+            def scalar():
+                return 1
+        return _Result()
+
+
+@pytest.mark.parametrize("active", [None, 3, 4, 5])
+def test_the_legacy_boundary_is_the_formula_generation_not_the_active_version(monkeypatch, active):
+    """Plan 2026-09-21-impact-v4 section 2.7 (R9). Versions 1 and 2 are the
+    legacy combination step; 3 (rc3) is the first new-structure formula, and so
+    is every version after it. Taking the ACTIVE manifest's activation version
+    as the boundary would classify v3 rows as legacy once v4 is active."""
+    import sys
+    module = sys.modules[__name__]
+    manifest = None if active is None else {"activation_impact_calculation_version": active}
+    monkeypatch.setattr(module, "active_manifest", lambda: manifest, raising=False)
+    predicate, boundary = _legacy_only_filter(_HasScoringVersion())
+    assert boundary == FIRST_NEW_STRUCTURE_VERSION == 3
+    assert predicate == "scoring_version < :first_rc3"
