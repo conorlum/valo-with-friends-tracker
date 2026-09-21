@@ -4535,3 +4535,98 @@ The artifacts are stored in `~/Documents/valo-backups/v4-release/reference/`.
 
 The reference's own `N+A` hook reported **1,960** assists removed and **2** unmapped in each mode. That reproduces
 declaration 12's replay, and it is the reference side of prediction 13.7.
+
+
+### 2026-09-21 (RESULT, declaration 13) — the implementation reproduces the independent reference exactly, in both modes, on every row
+
+**Every prediction held.** All six comparisons are **0 rows differing** over **674,530** rows each, with identical key
+sets and identical `scoring_version`, and each implementation CSV is **byte-identical** to its reference artifact. The
+assists counters match declaration 12's replay exactly. Nothing was adjusted on the reference side, and nothing
+needed to be.
+
+Branch `impact-v4-implementation` (from `4ecf7f0`), Python 3.13.15, `valo_v4` (3,198 matches, id-list sha256
+`8d97eba9…b973b` as declared). Reference: `c470670` on `v4-reference-f96aee9`, whose `webapp/app` is production rc3.
+Artifacts: `~/Documents/valo-backups/v4-release/equivalence/step2_all_pairs.json` and
+`equivalence_step3/step3_flags_off_vs_rc3.json`.
+
+| comparison | comparator scored | rows | rows differing | keys only on one side | bytes equal |
+|---|---|---:|---:|---:|---|
+| `P0` ex-ante | `impact_rc3` (flags off) | 674,530 | **0** | 0 / 0 | yes |
+| `N` ex-ante | `impact_v4_n` | 674,530 | **0** | 0 / 0 | yes |
+| `N+A` ex-ante | `impact_v4` | 674,530 | **0** | 0 / 0 | yes |
+| `P0` realized | `impact_rc3` (flags off) | 674,530 | **0** | 0 / 0 | yes |
+| `N` realized | `impact_v4_n` | 674,530 | **0** | 0 / 0 | yes |
+| `N+A` realized | `impact_v4` | 674,530 | **0** | 0 / 0 | yes |
+| §2.6 step 3, its own command: `P0` realized vs the production scorer | `impact_rc3` | 674,530 | **0** | 0 / 0 | yes |
+
+`scoring_version` was projected out of the row comparison and checked separately: **3 on all 674,530 rows on both
+sides** of every pair, as it must be with no bump on this branch.
+
+The assists hook reported, identically in both modes: **1,960 removed, 0 clamped, 2 unmapped, 0 ambiguous**, over
+3,891 kills made after their round was decided.
+
+#### Predictions, scored
+
+| # | prediction | outcome | |
+|---|---|---|---|
+| 13.1 | flags off = reference `P0`, 0 rows, both modes | 0 and 0 | **right** |
+| 13.2 | `impact_v4_n` = reference `N`, both modes | 0 and 0 | **right** |
+| 13.3 | `impact_v4` = reference `N+A`, both modes | 0 and 0 | **right** |
+| 13.4 | identical row sets and counts in all six pairs | 674,530 each, no key on one side only | **right** |
+| 13.5 | `scoring_version` 3 on every row on both sides | 3 × 674,530 on both | **right** |
+| 13.6 | full-cohort flags-off = rc3, as its own command | 0 rows differing, bytes equal | **right** |
+| 13.7 | clamp 0, ambiguous 0, removed 1,960, unmapped 2 | 0 / 0 / 1,960 / 2 | **right** |
+| 13.8 | each newly fingerprinted input moves the v2 fingerprint | assistant payload, display name and match-player remap each move it; an unrelated match's rename does not; a non-assistants `source_meta` key does not | **right on the v2 half; the v1 half was not measured** |
+
+**13.8, honestly.** The second clause — "and none changes the v1 one except where v1 already read it" — was **not
+measured**, and cannot be on this checkout: v1 fingerprints are computable only by code that predates the contract.
+It is recorded as unmeasured rather than as passed. What is measured is the v2 contract's own behaviour
+(`tests/test_impact_manifest_v4.py`), including that only the `assistants` key of `source_meta` is read.
+
+#### The measurement cohort under the new contract
+
+| | |
+|---|---|
+| cohort fingerprint, **v2** contract | `44367dead07770b2f94f5718442a116457fa9e88757936777e064fd376554001` |
+| per-match v2 fingerprints | `~/Documents/valo-backups/v4-release/measurement/cohort_v2.json`, sha256 `6d8569a945c43ae7e4c134d09a465ae8aac3c30bac872fa9d92e37b54ad5657d` |
+
+The v1 figure declaration 13 pinned (`ff0854b9…81aa`) is unchanged and not rewritten; the two are simply not
+comparable, which is what the version is for.
+
+#### Two departures from declaration 13's letter, both recorded rather than waved through
+
+1. **The assistants projection is computed in Python, not in SQL.** Declaration 13 wrote the contract as
+   `(k.source_meta::jsonb -> 'assistants')::text`. The fingerprint also runs on sqlite (the manifest's own tests use
+   it), where that cast does not exist, so `events` selects `k.source_meta` and the projection is
+   `json.dumps(source_meta["assistants"], sort_keys=True, separators=(",", ":"))`, with `None` when the key is
+   absent. Same content and the same canonical intent; a different text form, which matters to nothing because only
+   v2 code ever computes a v2 fingerprint.
+2. **`build_kwargs()` emits the two flags only when True**, which declaration 13 did not say. It is the same rule the
+   manifest's serialisation follows, and it is load-bearing: the K-chain compares a comparator's kwargs against
+   explicitly built kwargs (`tests/test_export_configuration_sources.py`), and always emitting the keys made rc3's
+   kwargs a different dict. With this rule an rc3 configuration's kwargs are exactly what they were before v4
+   existed.
+
+#### The suite, and the 15 tests that fail on this branch
+
+Offline on **3.11 and 3.13**: identical results on both — 1,366 passed, 3 failed, 13 errors, 77 skipped. With the
+local scratch database `valo_v4_test` on 3.13: 1,430 passed, 4 failed, 13 errors.
+
+- **2 failures are pre-existing**, identical on `origin/main`: `test_default_persistence_path_is_unchanged_legacy`
+  and `test_runtime_default_is_the_live_legacy_formula` (the latter asserts `ACTIVE_MANIFEST is None`, which stopped
+  being true when rc3 was activated).
+- **15 are branch-only, and all 15 have one cause**: `compute_impact_for_match` / `active_scoring_config()` resolve
+  the repository's **rc3** manifest, whose source digests this branch's `impact.py`, `impact_config.py`,
+  `plant_window.py` and `player.py` no longer match (and whose fingerprints are v1). That is exactly what plan §1
+  says must happen to any §2 change. They are the 13 errors in `test_backfill_impact_candidate` (its `world`
+  fixture scores three matches before it monkeypatches `ACTIVE_MANIFEST`),
+  `test_release_candidate_review_rc3::test_site_before_is_what_production_stores_not_a_replay`, and
+  `test_impact_exante_swing::test_builder_matches_stored_values`.
+- **Not grandfathered as environmental.** The same 15 fail on `origin/main` **under Python 3.11**, because rc3's
+  manifest records `python: "3.13"` and fails the same verification there. So the failure is "the active manifest
+  cannot verify against the running checkout", not anything about v4's scoring, and it resolves at activation, when
+  `ACTIVE_MANIFEST` names the v4 manifest frozen from this code. Whether to make those three fixtures pass an
+  explicit configuration instead of resolving the active one is an **owner decision**, left open here.
+- One failure appears on `origin/main` only and is a database-state artifact, not code:
+  `test_every_declared_table_is_gated_for_every_write`, because the scratch database's gate was installed from this
+  branch's SQL and therefore also guards `players`.
