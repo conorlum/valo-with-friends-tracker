@@ -4505,3 +4505,33 @@ These items need production, so they are left for the freeze declaration (plan �
 - the **production row-motion tolerance** around 32.1% of rows and 72.0% of matches reordered.
 
 Nothing on this branch reads production. The separability wording stays "below both carried floors" (R5.7).
+
+
+### 2026-09-21 (ADDENDUM to declaration 13) — the reference artifacts, recorded before any comparison
+
+Produced by `scripts/postplant_v4_decl12.py --dump-rows` at **`c470670`** on branch `v4-reference-f96aee9`, a
+scripts-only commit on top of `f96aee9`. At that commit `git diff f96aee9 -- webapp/app` is **empty**, and the script
+itself refuses to run otherwise. The run used Python 3.13.15 against `valo_v4`.
+
+- rc3's configuration was read as data from `docs/superpowers/impact-rc3/candidate-manifest.json`,
+  `comparators.impact_rc3` (LF sha256 `8e5c637b34b2ccb767fe2d16b18017eb8571f158623653c8f9bc4bf2ae10e20c`). It was not
+  verified, and `active_scoring_config()` was not consulted.
+- The cohort is **3,198** matches, and the id-list sha256 is `8d97eba9…b973b`, equal to declaration 13's.
+- Each artifact has one CSV row per `(round_id, match_player_id)`, sorted by that key. It carries every
+  `CalculatedImpact` field, with `trade_detail` as canonical JSON.
+- Each artifact holds **674,530** rows.
+
+| artifact | sha256 |
+|---|---|
+| `ref_P0_exante.csv` | `f286f4b0c21dcb636ffa6f2bbd424503f1640382d39de260fbd6dd40e9dd0ca6` |
+| `ref_N_exante.csv` | `9fd87abfd6157c2d9603c0c06fe9f87b49defaadad0bb803d3d422a83aa1f464` |
+| `ref_NplusA_exante.csv` | `5ace786c36ee7664188a3f54619e40247f46e722baf3ec0e98d3d7c858d10031` |
+| `ref_P0_realized.csv` | `8109eb685970040af390cec2a80d58022a7593e7b7ef00489d129d307496b7bb` |
+| `ref_N_realized.csv` | `4338589db37f50039de6cde6fc502bbf1822c6b784d4cb8edd33bbe29a8da451` |
+| `ref_NplusA_realized.csv` | `c1c2a19346633b68a3ad9fdeab7a56949719560d2610ae97db36e33dbe7b4fbd` |
+| `reference_sidecar.json` | `a82f9d6a95781973d535f9a4cf8d1fe3b74957ade896dc1bb4a468d1cac46303` |
+
+The artifacts are stored in `~/Documents/valo-backups/v4-release/reference/`.
+
+The reference's own `N+A` hook reported **1,960** assists removed and **2** unmapped in each mode. That reproduces
+declaration 12's replay, and it is the reference side of prediction 13.7.
