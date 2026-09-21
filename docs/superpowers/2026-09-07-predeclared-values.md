@@ -4383,3 +4383,125 @@ depend on this outcome.
 Because the rc3 manifest freezes the scoring sources' digests, an edit to `impact.py` invalidates rc3 verification —
 version 4 has to ship as a new frozen manifest activated with the bump, the rc3 way; flags default off so rc3 and
 legacy stay reproducible.
+
+
+### 2026-09-21 (DECLARATION 13, release) — Impact v4 is implemented behind two flags and must equal an independent reference, row by row
+
+Written and committed **before any equivalence comparison is run** (plan
+`plans/2026-09-21-impact-v4-no-time-factor-plan.md` r5, §3.1). This entry covers the branch-only part of the release:
+the implementation (branch `impact-v4-implementation`, from `4ecf7f0`), the independent reference, and the
+equivalence between them. It fixes what ships **as code**. Declaration 12 and its RESULT fixed what ships **as a
+formula**, and nothing here re-opens them.
+
+#### What is implemented
+
+Two flags on `ImpactScoringConfig` and `build_impact_rows_for_match`, both defaulting to **False**:
+
+- `enable_decided_only_time`: `_time_factor` returns `0.0` if `plant_window.round_decided(round, t)` and `1.0`
+  otherwise, **before every other branch**, including the legacy exploded/defused `0.5`. "Decided" means exactly
+  declaration 12's three cases. The check is ported verbatim from `scripts/postplant_v4_variants.py::round_decided`,
+  with `ROUND_SECONDS = 100.0` and `SPIKE_SECONDS = 45.0`. Combining it with either legacy timing flag raises an error.
+- `remove_post_decided_assists`: for each kill made after the round was decided, each name in
+  `kill_events.source_meta["assistants"]` is mapped to one of this match's players by case-insensitive
+  `Player.display_name`. The assists component then pays `D × (assists − min(n, assists))`. `stat["assists"]`, damage
+  and every other term are untouched.
+
+The implementation makes two choices that the measured reference does not. Both are **declared here as extensions;
+neither was measured**:
+
+1. **The clamp** `min(n, stat["assists"])` (plan R10). The reference subtracts `D × n` with no clamp. The clamp is
+   predicted to fire on **0** rows of the measurement cohort (13.7), so it cannot move the equivalence.
+2. **Ambiguous names are left in.** The reference builds a `{lower(name): match_player}` dict. On a case-insensitive
+   name collision within one match, whichever row the query returned last wins. The implementation instead treats a
+   name that matches two players as **ambiguous**: it removes nothing for that name and reports it, just as it does
+   for an unmapped name. The cohort has **0** such collisions (queried 2026-09-21: no match has two players whose
+   lowercased `display_name` agree), so this cannot move the equivalence either.
+
+Each kill's removed, clamped, unmapped and ambiguous assistants are reported through the existing `kill_observer`
+hook, in that kill's context. The keys are present only when `remove_post_decided_assists` is on. Nothing that is
+reported influences a score.
+
+`kill_order_leverage` keeps the legacy time factor explicitly (plan R8). `postplant_factor.py`'s shim is unchanged.
+On this branch `IMPACT_CALCULATION_VERSION` stays **3** and `ACTIVE_MANIFEST` stays rc3.
+
+#### The measurement cohort (plan §1, "three cohorts")
+
+The cohort is every match in the local copy `valo_v4` (PostgreSQL 18, port 5434; no `impact_scores` rows):
+
+| | |
+|---|---|
+| matches | **3,198**, ids 1..3206 |
+| id list | `sha256(canonical_json(sorted ids))` = `8d97eba943a212bc07d14815470280c898d602f7e670f8e87ec2c559dc9b973b` |
+| per-match fingerprints, **rc3 (v1) contract** | `match_source_fingerprint` at `4ecf7f0` (`app/` identical to `f96aee9`), taken in one REPEATABLE READ snapshot |
+| cohort fingerprint, v1 | `sha256(canonical_json({id: fingerprint}))` = `ff0854b9a8ef94cba1d594f563d440f8e5109661c14a21e880bba34b11dd81aa` |
+| stored at | `~/Documents/valo-backups/v4-release/measurement/cohort_v1.json`, sha256 `8596b903068ba09d88d6e6b0a71c1d9cee469d03e9cc59e9111725e0f20af4d7` |
+
+`canonical_json` is `export_impact_artifact.canonical_json` (sorted keys, no whitespace). The v2 fingerprints of the
+same cohort will be recorded in the RESULT entry once the v2 contract exists. Until then, the v1 fingerprints are what
+pin the cohort.
+
+**The plan states a fact that is no longer literally true.** Plan §2.6 says `git diff origin/main -- webapp/app` is
+empty at `f96aee9`. Since PR #70 merged, it is not: one file differs,
+`app/adapters/trackergg_browserstate_source.py` (ingestion pagination). Every file in `HASHED_SOURCES`, and all of
+`app/scoring`, `app/models` and `app/services`, is byte-identical between `f96aee9` and `origin/main` (checked
+2026-09-21). So `f96aee9`'s scorer is still exactly production rc3's, and the reference is taken there as planned.
+
+#### The new fingerprint contract (plan §2.4, R1)
+
+`SOURCE_FINGERPRINT_VERSION = 2` in `app/scoring/impact_manifest.py`. It differs from v1 in exactly three ways:
+
+- `events` gains a canonical projection of the assistants payload, `(k.source_meta::jsonb -> 'assistants')::text`.
+  It does not take the whole `source_meta`: the scorer reads nothing else in it, and jsonb's text form is canonical.
+- A new `players` query returns each match player's `match_players.id`, `player_id` and `players.display_name`,
+  ordered by `match_players.id`.
+- `app/models/player.py` joins `HASHED_SOURCES`.
+
+The version is recorded in every new manifest (`source_snapshots.fingerprint_version`) and every new export sidecar
+(`inputs.fingerprint_version`). The release tools refuse to compare fingerprints across contracts; a missing version
+reads as 1. `ARTIFACT_CONTRACT_VERSION` goes from 1 to 2, because contract (c) changed.
+
+**Old frozen evidence is not rewritten.** rc3's manifest, sidecars and approvals stay exactly as they are. They no
+longer verify against this branch's code, which is expected: any change to `impact.py` breaks rc3's source digest
+(plan §1).
+
+Release write protection (§2.5): `players` joins the swap's source digests, its lock set and the release write gate.
+
+#### The independent reference (plan §2.6 step 1)
+
+A separate worktree at `f96aee9` gets one **scripts-only** commit, which adds a row-dump mode to
+`scripts/postplant_v4_decl12.py`. At that commit, `git diff f96aee9 -- webapp/app` must be empty. rc3's configuration
+is read as data from `docs/superpowers/impact-rc3/candidate-manifest.json` (`comparators.impact_rc3`), **not**
+through `active_scoring_config()`. The mode dumps every `CalculatedImpact` field for `P0`, `N` and `N+A` on the
+measurement cohort, under both **ex-ante and realized** scoring. That makes six artifacts, stored under
+`~/Documents/valo-backups/v4-release/reference/`. Their sha256s are recorded in an addendum before the comparison
+runs.
+
+#### Predictions (scored in the RESULT entry, whatever happens)
+
+Every comparison is made **row by key** `(round_id, match_player_id)`, within one scoring mode. It covers **every**
+`CalculatedImpact` field except `scoring_version`: all scoring and diagnostic columns, including the non-persisted
+`leverage_component`, `assists_component` and `trade_credit`, and `trade_detail`.
+
+| # | prediction | confidence |
+|---|---|---|
+| 13.1 | with the flags off (`impact_rc3` from `COMPARATORS`), the new code equals reference `P0`: **0 rows differ**, ex-ante **and** realized | high |
+| 13.2 | `impact_v4_n` equals reference `N`: **0 rows differ**, both modes | high |
+| 13.3 | `impact_v4` equals reference `N+A`: **0 rows differ**, both modes | high |
+| 13.4 | the row **sets** are identical in all six pairs: no key appears on only one side, and the row counts are equal | high |
+| 13.5 | `scoring_version`, checked separately, is **3** on every row on both sides (there is no bump on this branch) | high |
+| 13.6 | across the full cohort, the new code with the flags off equals rc3 at the production scorer (reference `P0`, realized). This is the §2.6 step 3 check, run as its own command through the `impact_rc3` comparator | high |
+| 13.7 | the assists clamp fires on **0** (round, player) rows, and there are **0** ambiguous names. **1,960** assists are removed and **2** assistant names on decided kills are unmapped, as declaration 12's `N+A` replay reported | high on the two zeros; moderate on the counts, which the reference replays again |
+| 13.8 | each mutation of a newly fingerprinted input changes the v2 fingerprint: an assistant name, a display name, a match player's `player_id` | high |
+
+**Stop rule.** Any nonzero count in 13.1–13.6 stops the work. The difference is then either explained and eliminated
+in the implementation, or reported. **The reference is never adjusted to match.**
+
+#### Declared at freeze, not here
+
+These items need production, so they are left for the freeze declaration (plan §3.1, §1):
+- the **activation cohort**;
+- the **review cohort's** three rule-exercising match ids;
+- the binding **K4 = K5** chain, and the rehearsal-grade K3 = K4;
+- the **production row-motion tolerance** around 32.1% of rows and 72.0% of matches reordered.
+
+Nothing on this branch reads production. The separability wording stays "below both carried floors" (R5.7).
