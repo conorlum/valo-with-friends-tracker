@@ -52,6 +52,9 @@ HASHED_SOURCES = (
     "app/models/round.py",
     "app/models/kill_event.py",
     "app/models/impact_score.py",
+    # Impact v4: remove_post_decided_assists maps assistants to players by
+    # Player.display_name, so the Player mapping is now scoring input too.
+    "app/models/player.py",
 )
 _MASKED_ASSIGNMENTS = frozenset({"IMPACT_CALCULATION_VERSION"})
 
@@ -69,6 +72,16 @@ V2_WEALTH = bd.MODEL_V2_WEALTH
 V2_30_80 = bd.MODEL_V2_30_80
 V2_30_80_BONUS = bd.MODEL_V2_30_80_BONUS_DENIAL
 RC3 = "impact_rc3"
+V4 = "impact_v4"
+V4_N = "impact_v4_n"
+
+# The two Impact v4 flags. config_to_dict writes each ONLY WHEN TRUE, so every
+# comparator frozen before they existed (rc3's included) serialises to exactly
+# the dict it was frozen as, and config_from_dict reads an absent key as False.
+# A declared comparator that sets one is still protected: verify_manifest
+# compares its whole dict, so a manifest that drops the key fails. That
+# protection covers DECLARED comparators only (plan R5.2).
+_V4_FLAGS = ("enable_decided_only_time", "remove_post_decided_assists")
 
 COMPARATORS = {
     # The current runtime formula. Its REPLAY and the PERSISTED site values are
@@ -96,6 +109,22 @@ COMPARATORS = {
                              weights=impact.FormulaWeights(damage=1.0, leverage=2.5, econ=2.5,
                                                            assists=100.0, trade_credit_scale=1.0),
                              enable_trade_credit=True),
+    # Impact v4 (declaration 12; plan 2026-09-21-impact-v4): rc3 exactly, plus
+    # no time factor (T = 1, 0 once the round is decided) and no assists
+    # credit on kills made after the round was decided.
+    V4: ImpactScoringConfig(V4, enable_econ_component=True,
+                            econ_model=bd.MODEL_V2_30_80_BONUS_DENIAL,
+                            weights=impact.FormulaWeights(damage=1.0, leverage=2.5, econ=2.5,
+                                                          assists=100.0, trade_credit_scale=1.0),
+                            enable_trade_credit=True,
+                            enable_decided_only_time=True, remove_post_decided_assists=True),
+    # Diagnostic: rc3 plus the time change alone (arm N), so a review can show
+    # how v4's movement splits between its two changes.
+    V4_N: ImpactScoringConfig(V4_N, enable_econ_component=True,
+                              econ_model=bd.MODEL_V2_30_80_BONUS_DENIAL,
+                              weights=impact.FormulaWeights(damage=1.0, leverage=2.5, econ=2.5,
+                                                            assists=100.0, trade_credit_scale=1.0),
+                              enable_trade_credit=True, enable_decided_only_time=True),
 }
 
 
@@ -165,6 +194,8 @@ def config_to_dict(config: ImpactScoringConfig) -> dict:
         "enable_postplant_leverage": config.enable_postplant_leverage,
         "enable_preplant_empirical": config.enable_preplant_empirical,
         "enable_trade_credit": config.enable_trade_credit,
+        # Only when True (see _V4_FLAGS): rc3's frozen dict must not change.
+        **{flag: True for flag in _V4_FLAGS if getattr(config, flag)},
     }
 
 
@@ -177,6 +208,9 @@ def config_from_dict(data: dict) -> ImpactScoringConfig:
         enable_preplant_empirical=data["enable_preplant_empirical"],
         # Manifests frozen before the switch existed scored without it.
         enable_trade_credit=data.get("enable_trade_credit", False),
+        # Written only when True, so absent means False (_V4_FLAGS).
+        enable_decided_only_time=data.get("enable_decided_only_time", False),
+        remove_post_decided_assists=data.get("remove_post_decided_assists", False),
     )
 
 
@@ -189,27 +223,60 @@ def config_from_manifest(manifest: dict, comparator: str | None = None) -> Impac
 
 # ---- source snapshots ------------------------------------------------------------------
 
+# The source-fingerprint CONTRACT: which rows, which columns, which projection.
+# Fingerprints from different contracts are never comparable, so the version is
+# recorded beside every set of them (a manifest's source_snapshots, an export's
+# inputs) and a comparison across versions is refused. A missing version is 1.
+#   1  rc3: match_players, rounds, stats, events (declared 2026-09-16).
+#   2  Impact v4 (declaration 13, plan R1): events gain the assistants payload
+#      of kill_events.source_meta, and `players` adds each match player's
+#      player_id and Player.display_name -- remove_post_decided_assists reads
+#      both. Nothing in v1 is dropped.
+SOURCE_FINGERPRINT_VERSION = 2
+_UNVERSIONED_FINGERPRINTS = 1
+
 _FINGERPRINT_QUERIES = {
     "match_players": "SELECT id, team, agent FROM match_players WHERE match_id = :m ORDER BY id",
+    "players": ("SELECT mp.id, mp.player_id, p.display_name FROM match_players mp "
+                "JOIN players p ON p.id = mp.player_id WHERE mp.match_id = :m ORDER BY mp.id"),
     "rounds": ("SELECT id, round_number, outcome, planted, plant_time, exploded, defused, defuse_time "
                "FROM rounds WHERE match_id = :m ORDER BY round_number"),
     "stats": ("SELECT s.round_id, s.match_player_id, s.score, s.kills, s.deaths, s.assists, "
               "s.loadout, s.remaining FROM round_player_stats s JOIN rounds r ON r.id = s.round_id "
               "WHERE r.match_id = :m ORDER BY s.round_id, s.match_player_id"),
     "events": ("SELECT k.id, k.round_id, k.killer_match_player_id, k.death_match_player_id, "
-               "k.event_time_seconds, k.weapon FROM kill_events k JOIN rounds r ON r.id = k.round_id "
-               "WHERE r.match_id = :m ORDER BY k.id"),
+               "k.event_time_seconds, k.weapon, k.source_meta FROM kill_events k "
+               "JOIN rounds r ON r.id = k.round_id WHERE r.match_id = :m ORDER BY k.id"),
 }
+
+
+def _assistants_projection(source_meta):
+    """The one part of kill_events.source_meta the scorer reads, canonically.
+
+    Computed here rather than in SQL so the same contract holds on every
+    dialect the fingerprint runs on (PostgreSQL returns a json column parsed,
+    sqlite as text). None when there is no assistants key at all, which keeps
+    "no assistants recorded" distinct from an empty list."""
+    if isinstance(source_meta, str):
+        source_meta = json.loads(source_meta)
+    if not isinstance(source_meta, dict) or "assistants" not in source_meta:
+        return None
+    return json.dumps(source_meta["assistants"], sort_keys=True, separators=(",", ":"))
+
+
+def _fingerprint_rows(name: str, rows):
+    if name == "events":
+        rows = [(*row[:-1], _assistants_projection(row[-1])) for row in rows]
+    return [[str(value) if value is not None else None for value in row] for row in rows]
 
 
 def match_source_fingerprint(db, match_id: int) -> str:
     """Content hash of exactly the rows build_impact_rows_for_match reads for
-    one match. Scores depend on nothing else, so an unchanged fingerprint
-    under an unchanged manifest reproduces the approved values even after
-    unrelated matches are ingested."""
+    one match, under contract SOURCE_FINGERPRINT_VERSION. Scores depend on
+    nothing else, so an unchanged fingerprint under an unchanged manifest
+    reproduces the approved values even after unrelated matches are ingested."""
     content = {
-        name: [[str(value) if value is not None else None for value in row]
-               for row in db.execute(text(sql), {"m": match_id}).all()]
+        name: _fingerprint_rows(name, db.execute(text(sql), {"m": match_id}).all())
         for name, sql in _FINGERPRINT_QUERIES.items()
     }
     if not content["match_players"]:
@@ -217,7 +284,22 @@ def match_source_fingerprint(db, match_id: int) -> str:
     return _canonical_sha256(content)
 
 
+def fingerprint_contract_problem(recorded_version, where: str) -> str | None:
+    """A difference line when fingerprints recorded under `recorded_version`
+    (None: recorded before versions existed, i.e. 1) cannot be compared with
+    this checkout's, else None."""
+    version = _UNVERSIONED_FINGERPRINTS if recorded_version is None else recorded_version
+    if version != SOURCE_FINGERPRINT_VERSION:
+        return (f"{where}: source fingerprints use fingerprint contract v{version}, this checkout "
+                f"computes v{SOURCE_FINGERPRINT_VERSION}; they are not comparable")
+    return None
+
+
 def verify_source_snapshots(db, manifest: dict, match_ids=None) -> None:
+    problem = fingerprint_contract_problem(
+        manifest.get("source_snapshots", {}).get("fingerprint_version"), "manifest")
+    if problem:
+        raise ManifestMismatchError([problem])
     frozen = manifest.get("source_snapshots", {}).get("matches", {})
     wanted = [str(m) for m in match_ids] if match_ids is not None else list(frozen)
     diffs = []
@@ -271,6 +353,26 @@ def _weights_and_credit_changes(release_comparator: str) -> tuple[str, ...]:
     return tuple(lines)
 
 
+def _timing_and_assists_changes(release_comparator: str) -> tuple[str, ...]:
+    """The timing line (and, for v4, the assists line) of
+    `formula_changes_vs_live_legacy`, generated from the release comparator's
+    flags (plan R11) -- a hard-coded "unchanged legacy time factor" would be
+    frozen into a v4 manifest that changes exactly that."""
+    config = COMPARATORS.get(release_comparator)
+    if config is None or not config.enable_decided_only_time:
+        lines = ["timing: unchanged legacy time factor (post-plant table and pre-plant curve OFF)"]
+    else:
+        lines = ["timing: NO time factor -- T = 1 for every kill and death before and after the plant "
+                 "(no ramp, no plant+38..45 override), and T = 0 once the round is decided: defused "
+                 "and at/after the defuse, a real plant at/after plant+45, or an unplanted Time Win "
+                 "after 100s (declaration 12); post-plant table and pre-plant curve OFF"]
+    if config is not None and config.remove_post_decided_assists:
+        lines.append("assists: an assist on a kill made after the round was decided is not paid "
+                     "(D per assist), clamped to the scoreboard count; damage keeps its "
+                     "combat-score assist points")
+    return tuple(lines)
+
+
 def build_manifest(*, candidate_id: str, created: str, scorer_revision: str,
                    activation_impact_calculation_version: int, source_snapshots: dict,
                    release_comparator: str = V2_30_80, notes=()) -> dict:
@@ -291,7 +393,7 @@ def build_manifest(*, candidate_id: str, created: str, scorer_revision: str,
             "econ is the separate buy-disruption component with 30%/80% death debits",
             *(_BONUS_FORMULA_CHANGE if release_comparator == V2_30_80_BONUS else ()),
             "columns: econ_impact and swing_impact are written 0; econ_component is signed",
-            "timing: unchanged legacy time factor (post-plant table and pre-plant curve OFF)",
+            *_timing_and_assists_changes(release_comparator),
             *_weights_and_credit_changes(release_comparator),
         ],
         "timing": {"postplant_leverage": False, "preplant_empirical": False,
@@ -299,7 +401,8 @@ def build_manifest(*, candidate_id: str, created: str, scorer_revision: str,
         "impact_calculation_version_at_freeze": impact.IMPACT_CALCULATION_VERSION,
         "activation_impact_calculation_version": activation_impact_calculation_version,
         "scorer_revision": scorer_revision,
-        "source_snapshots": source_snapshots,
+        # The snapshots were taken by this checkout, so under its contract.
+        "source_snapshots": {**source_snapshots, "fingerprint_version": SOURCE_FINGERPRINT_VERSION},
         "notes": list(notes),
         **current_code_identity(),
     }
@@ -349,5 +452,9 @@ def verify_manifest(manifest: dict) -> None:
                 diffs.append(f"comparator {name!r} does not match its declared identity")
     if manifest.get("release_comparator") not in comparators:
         diffs.append(f"release comparator {manifest.get('release_comparator')!r} is missing")
+    problem = fingerprint_contract_problem(
+        (manifest.get("source_snapshots") or {}).get("fingerprint_version"), "source_snapshots")
+    if problem:
+        diffs.append(problem)
     if diffs:
         raise ManifestMismatchError(diffs)
