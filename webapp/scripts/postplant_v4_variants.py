@@ -258,6 +258,34 @@ def _v_side(level: float, weights: dict):
     return variant
 
 
+def _v_band(level: float, profile, norm: float):
+    """DECLARATION 11: a STEP profile over time bands, not a smooth curve.
+
+    `profile` is [(t_lo, multiplier), ...] ascending; the last band whose
+    `t_lo <= t` wins. `norm` is the kill-weighted mean of the multiplier over
+    the post-plant kill population, so `level` alone sets the LEVEL and the
+    profile carries only the step shape:
+
+        T = level * multiplier(t) / norm      ->  mean T over post-plant = level
+
+    Every shape arm before this was smooth and RISING (the shipped ramp, Part
+    4's curve, `t/45`). The measured swing is flat to 30s and then COLLAPSES --
+    20.03pp at 20-30s against 2.54pp at 38-45s, an 8x drop -- so this tests a
+    cliff DOWNWARD at a mechanically meaningful boundary, which is the shape
+    the data actually shows and the opposite of what ships.
+    """
+    def variant(round_row, kill_time, for_death, shipped, ctx=None):
+        if not _post_plant(round_row, kill_time):
+            return shipped
+        t = kill_time - round_row.plant_time
+        mult = profile[0][1]
+        for t_lo, m in profile:
+            if t >= t_lo:
+                mult = m
+        return level * mult / norm
+    return variant
+
+
 def _v_additive(alpha: float, kbar: float, use_time: bool, side_weights=None):
     """DECLARATION 10: the post-plant payout is `K(s)` PLUS a term, not `K(s)`
     TIMES one.
@@ -380,6 +408,10 @@ def variant_for(name: str, **kwargs):
         return _v_p4(float(name.split("-", 1)[1]))
     if name.startswith("F-"):
         return _v_flat(float(name.split("-", 1)[1]))
+    if name.startswith("STEP"):
+        # DECLARATION 11. Banded step profile; the caller supplies the profile
+        # and the kill-weighted norm that holds the LEVEL fixed.
+        return _v_band(kwargs["level"], kwargs["profile"], kwargs["norm"])
     if name.startswith("ADD-"):
         # DECLARATION 10. ADD-T / ADD-S / ADD-TS; alpha, kbar and the side
         # weights are supplied by the caller, which calibrates alpha so the
