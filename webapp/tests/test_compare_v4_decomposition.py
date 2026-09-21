@@ -91,6 +91,25 @@ def test_a_scorer_that_keeps_the_legacy_time_factor_is_caught(monkeypatch):
     assert any("time factor" in m for m in mismatches)
 
 
+def test_a_planted_round_with_no_plant_time_is_not_a_crash():
+    """Code review, finding 3. rounds.plant_time is nullable, and the scorer's
+    own round_decided routes that case through effective_plant_time() is None
+    to the Time-Win branch. The independent restatement must agree, not raise."""
+    no_time = {"planted": True, "plant_time": None, "defused": False, "defuse_time": None,
+               "outcome": "Team A Elimination Win"}
+    assert decomposition.independent_round_decided(no_time, 150.0) is False
+    time_win = dict(no_time, outcome="Team B Time Win")
+    assert decomposition.independent_round_decided(time_win, 150.0) is True
+    assert decomposition.independent_round_decided(time_win, 99.0) is False
+    # and it agrees with the scorer's own predicate on the same inputs
+    from app.models.round import Round
+    from app.scoring.plant_window import round_decided
+    for row in (no_time, time_win):
+        r = Round(round_number=5, **row)
+        for t in (0.0, 99.0, 150.0):
+            assert decomposition.independent_round_decided(row, t) == round_decided(r, t)
+
+
 def test_the_independent_decided_rule_matches_declaration_12():
     decided = decomposition.independent_round_decided
     defused = {"planted": True, "plant_time": 20.0, "defused": True, "defuse_time": 50.0,
@@ -105,6 +124,18 @@ def test_the_independent_decided_rule_matches_declaration_12():
     late_elim = {"planted": True, "plant_time": 101.0, "defused": False, "defuse_time": None,
                  "outcome": "Team A Elimination Win"}
     assert not decided(late_elim, 103.0)
+
+
+def test_malformed_pairs_are_reported_not_a_traceback():
+    """Code review, finding 6: `--pairs P0` unpacked to a 1-tuple and raised
+    ValueError before the STOP message it has for exactly this."""
+    from scripts import compare_v4_reference
+
+    for bad in ("P0", "P0:", ":exante", "P0:exante:extra", "N+A:sometime"):
+        with pytest.raises(SystemExit, match="unknown pair|malformed pair"):
+            compare_v4_reference.parse_pairs(bad)
+    assert compare_v4_reference.parse_pairs("P0:exante,N:realized") == [("P0", "exante"), ("N", "realized")]
+    assert len(compare_v4_reference.parse_pairs("")) == 6
 
 
 # -- the command follows the manifest -----------------------------------------------------

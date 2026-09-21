@@ -74,6 +74,25 @@ def _line(row, fields):
     return buf.getvalue()
 
 
+def parse_pairs(spec: str):
+    """"P0:exante,N:realized" -> [("P0", "exante"), ("N", "realized")]; empty
+    means all six. Every malformed spelling is reported, not unpacked: a bare
+    "P0" used to raise ValueError before the message below could be shown."""
+    if not spec:
+        return [(arm, mode) for mode in MODES for arm in ARMS]
+    pairs = []
+    for item in spec.split(","):
+        parts = item.split(":")
+        if len(parts) != 2:
+            raise SystemExit(f"STOP: malformed pair {item!r}, expected <arm>:<mode>")
+        arm, mode = parts
+        if arm not in ARMS or mode not in MODES:
+            raise SystemExit(f"STOP: unknown pair {arm}:{mode} "
+                             f"(arms {sorted(ARMS)}, modes {list(MODES)})")
+        pairs.append((arm, mode))
+    return pairs
+
+
 def _kwargs(arm, mode):
     kw = COMPARATORS[ARMS[arm]].build_kwargs()
     kw["use_realized_swing"] = mode == "realized"
@@ -159,11 +178,7 @@ def main():
     args = ap.parse_args()
     reference, out_dir = Path(args.reference), Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    pairs = ([tuple(p.split(":")) for p in args.pairs.split(",")] if args.pairs
-             else [(arm, mode) for mode in MODES for arm in ARMS])
-    for arm, mode in pairs:
-        if arm not in ARMS or mode not in MODES:
-            raise SystemExit(f"STOP: unknown pair {arm}:{mode}")
+    pairs = parse_pairs(args.pairs)
     sidecar = json.loads((reference / "reference_sidecar.json").read_text(encoding="utf-8"))
     fields = [f.name for f in dataclasses.fields(CalculatedImpact)]
     if sidecar["fields"] != fields:

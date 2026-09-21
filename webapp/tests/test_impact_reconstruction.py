@@ -28,6 +28,7 @@ Start Postgres with: docker compose -p valomaths-private up -d
 import pytest
 from sqlalchemy import text
 
+from app.scoring import impact
 from app.scoring.impact import FACTOR_WEIGHTS
 from tests._postgres import postgres_session_or_skip
 
@@ -149,10 +150,13 @@ def test_the_legacy_boundary_is_the_formula_generation_not_the_active_version(mo
     legacy combination step; 3 (rc3) is the first new-structure formula, and so
     is every version after it. Taking the ACTIVE manifest's activation version
     as the boundary would classify v3 rows as legacy once v4 is active."""
-    import sys
-    module = sys.modules[__name__]
+    # Patched at the SOURCE, app.scoring.impact_runtime, so this would also
+    # catch a regression that re-read the manifest through a function-local
+    # import -- which is how the rest of the codebase imports it.
+    from app.scoring import impact_runtime
     manifest = None if active is None else {"activation_impact_calculation_version": active}
-    monkeypatch.setattr(module, "active_manifest", lambda: manifest, raising=False)
+    monkeypatch.setattr(impact_runtime, "active_manifest", lambda: manifest)
+    monkeypatch.setattr(impact, "IMPACT_CALCULATION_VERSION", (active or 3) + 1)
     predicate, boundary = _legacy_only_filter(_HasScoringVersion())
     assert boundary == FIRST_NEW_STRUCTURE_VERSION == 3
     assert predicate == "scoring_version < :first_rc3"

@@ -818,10 +818,19 @@ def rollback(db, names: SwapNames, accept_source_drift: bool = False) -> dict:
                       f"before restoring anything")
 
     drift = []
+    unrecorded = []
     swap_digests = swapped.details.get("row_digests") or {}
     if swap_digests:
         now = _row_digests(db, SOURCE_TABLES)
-        drift = sorted(name for name, digest in now.items() if swap_digests.get(name) != digest)
+        # A swap recorded before a table joined SOURCE_TABLES has no digest for
+        # it (`players`, Impact v4). "Absent" is not "changed": comparing None
+        # against the current digest reported a drift that never happened, and
+        # refused every such rollback -- during exactly the incident rollback
+        # exists for. Absent tables are reported instead, as the previous-table
+        # check above reports an unrecorded name.
+        unrecorded = sorted(name for name in now if name not in swap_digests)
+        drift = sorted(name for name, digest in now.items()
+                       if name in swap_digests and swap_digests[name] != digest)
     if drift and not accept_source_drift:
         raise Refused(
             f"{', '.join(drift)} changed since the swap, so the scores in {previous} were computed "
@@ -839,6 +848,7 @@ def rollback(db, names: SwapNames, accept_source_drift: bool = False) -> dict:
                     "WHERE id"), {"n": "closed by swap_impact_scores.py rollback"})
     result = {"undoes_swap_entry": swapped.id, "max_match_id": max_match_id, "renamed": renamed,
               "previous_table": previous, "rolled_back_table": rolled_back,
+              "source_digests_not_recorded": unrecorded,
               "retained_oid": retained_oid, "source_drift": drift,
               "accepted_source_drift": bool(drift) and accept_source_drift,
               "seconds": round(time.time() - started, 2)}
@@ -848,9 +858,18 @@ def rollback(db, names: SwapNames, accept_source_drift: bool = False) -> dict:
 
 def state(db, names: SwapNames) -> dict:
     tables = {name: _table_exists(db, name) for name in (LIVE, BUILT, names.previous, names.rolled_back)}
+    # Every other impact_scores* relation, so `state` still answers "was this
+    # database already swapped?" when the caller named a different release's
+    # tables: it is the tool's discovery command, and it now requires the names
+    # it used to default (Impact v4 plan, section 4.1).
+    others = [name for (name,) in db.execute(text(
+        "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname LIKE :like "
+        "ORDER BY c.relname"), {"like": LIVE + "%"}).all() if name not in tables]
     return {
         "database": _scalar(db, "SELECT current_database()"),
         "tables": tables,
+        "other_impact_scores_tables": others,
         "rows": {name: _scalar(db, f"SELECT count(*) FROM {_quoted(name)}")
                  for name, exists in tables.items() if exists},
         "oids": {name: _table_oid(db, name) for name, exists in tables.items() if exists},

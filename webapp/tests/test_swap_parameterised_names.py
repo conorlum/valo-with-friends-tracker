@@ -130,6 +130,60 @@ def test_a_v4_rollback_restores_from_its_own_previous_table(db, tmp_path):
     assert _log(db)[-1] == ("rollback", "rolled back")
 
 
+def test_a_swap_entry_without_a_players_digest_is_not_read_as_drift(db, tmp_path):
+    """Code review, finding 2. A swap recorded before `players` joined
+    SOURCE_TABLES has no digest for it, and comparing None against the current
+    digest made every such rollback refuse with a drift that never happened --
+    during exactly the incident rollback exists for."""
+    _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    names = SwapNames.validated(**V4_NAMES)
+    swap_tool.swap(db, names)
+    db.commit()
+    entry = db.execute(text(
+        f"SELECT id, details FROM {swap_tool.LOG} WHERE operation = 'swap' AND outcome = 'swapped' "
+        "ORDER BY id DESC LIMIT 1")).one()
+    details = dict(entry.details)
+    details["row_digests"] = {k: v for k, v in details["row_digests"].items() if k != "players"}
+    db.execute(text(f"UPDATE {swap_tool.LOG} SET details = CAST(:d AS jsonb) WHERE id = :i"),
+               {"d": swap_tool.canonical_json(details), "i": entry.id})
+    db.commit()
+
+    result = swap_tool.rollback(db, names)
+    db.commit()
+    assert result["source_drift"] == []
+    assert result["source_digests_not_recorded"] == ["players"]
+    assert _impacts(db) == [10]
+
+
+def test_a_real_change_to_players_is_still_drift(db, tmp_path):
+    """The back-compat above must not swallow a rename the swap DID record."""
+    keys, _ = _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    names = SwapNames.validated(**V4_NAMES)
+    swap_tool.swap(db, names)
+    db.commit()
+    db.execute(text("UPDATE players SET display_name = display_name || '-x' "
+                    "WHERE id = (SELECT player_id FROM match_players WHERE id = :m)"),
+               {"m": keys[0][1]})
+    db.commit()
+    with pytest.raises(swap_tool.Refused, match="players changed since the swap"):
+        swap_tool.rollback(db, names)
+    db.rollback()
+
+
+def test_state_lists_every_impact_scores_table_it_was_not_told_about(db, tmp_path):
+    """Code review, finding 4. `state` is how an operator finds out whether a
+    database was already swapped, so a table under a name they did not pass
+    must still be visible."""
+    _built_and_verified(db, tmp_path, v1=10, rc3=77)
+    swap_tool.swap(db, SwapNames.validated(**V4_NAMES))
+    db.commit()
+    wrong = SwapNames.validated(previous="impact_scores_v1",
+                                rolled_back="impact_scores_rc3_rolled_back")
+    reported = swap_tool.state(db, wrong)
+    assert reported["tables"]["impact_scores_v1"] is False
+    assert "impact_scores_v3" in reported["other_impact_scores_tables"]
+
+
 def test_a_rollback_naming_a_different_previous_table_than_the_swap_is_refused(db, tmp_path):
     _built_and_verified(db, tmp_path, v1=10, rc3=77)
     swap_tool.swap(db, SwapNames.validated(**V4_NAMES))

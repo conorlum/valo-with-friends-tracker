@@ -112,7 +112,11 @@ def independent_round_decided(round_row: dict, t: float) -> bool:
     outcome = round_row["outcome"] or ""
     if round_row["defused"] and round_row["defuse_time"] is not None and t >= round_row["defuse_time"]:
         return True
-    if round_row["planted"] and "Time Win" not in outcome:
+    # A REAL plant: planted, not a Time Win, and with a plant time. plant_time
+    # is nullable, and the scorer's own predicate routes a planted round without
+    # one through effective_plant_time() is None to the Time-Win branch below;
+    # reading None as a number here would raise instead of reporting.
+    if round_row["planted"] and "Time Win" not in outcome and round_row["plant_time"] is not None:
         return t >= round_row["plant_time"] + SPIKE_SECONDS
     return t > ROUND_SECONDS and "Time Win" in outcome
 
