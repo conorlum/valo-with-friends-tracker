@@ -1,0 +1,63 @@
+{
+  "P0": {
+    "log_loss": 0.09237380783040487,
+    "n": 67251
+  },
+  "F-0.4": {
+    "log_loss": 0.09932702715803486,
+    "n": 67251
+  },
+  "A1": {
+    "log_loss": 0.10087170415827208,
+    "n": 67251
+  },
+  "_gate": {
+    "c_floor": 0.000407,
+    "t2_floor": 0.00107,
+    "t2_recorded_A1_vs_F040": 0.000498,
+    "arms": {
+      "A1 vs F-0.4": {
+        "r2": 0.9995024656132792,
+        "residual_variance": 0.0004975343867208437,
+        "resid_sd_over_signal_sd": 0.02230547884984413,
+        "below_c_floor": false
+      },
+      "A1 vs P0": {
+        "r2": 0.9923980794846923,
+        "residual_variance": 0.007601920515307725,
+        "resid_sd_over_signal_sd": 0.08718899308575438,
+        "below_c_floor": false
+      },
+      "F-0.4 vs P0": {
+        "r2": 0.9926603312213883,
+        "residual_variance": 0.0073396687786116965,
+        "resid_sd_over_signal_sd": 0.08567186690280361,
+        "below_c_floor": false
+      }
+    }
+  },
+  "A1 vs F-0.4": {
+    "point": 0.0015446770002372212,
+    "lo": 0.0014066382638958919,
+    "hi": 0.0016844540850810919,
+    "verdict": "HARM",
+    "residual_variance": 0.0004975343867208437,
+    "below_c_floor": false
+  },
+  "A1 vs P0": {
+    "point": 0.00849789632786721,
+    "lo": 0.007800012599651163,
+    "hi": 0.009200987763536403,
+    "verdict": "HARM",
+    "residual_variance": 0.007601920515307725,
+    "below_c_floor": false
+  },
+  "F-0.4 vs P0": {
+    "point": 0.006953219327629989,
+    "lo": 0.0062180824835072245,
+    "hi": 0.007705841690723602,
+    "verdict": "HARM",
+    "residual_variance": 0.0073396687786116965,
+    "below_c_floor": false
+  }
+}

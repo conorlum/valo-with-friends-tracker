@@ -3766,3 +3766,99 @@ It freezes nothing, touches no `webapp/app/` code, and leaves `IMPACT_CALCULATIO
 result would **not** be a licence to ship a side-asymmetric factor — it would be grounds to build the arm properly,
 which per declaration 6's parameterisation note means a scorer that can charge the two sides of a duel separately,
 not another constant inside `_time_factor`.
+
+### 2026-09-20 (RESULT, declaration 9) — the side asymmetry is a measured negative, not an untestable one
+
+**The question is answered. It had never been answered before.**
+
+```
+A1 vs F-0.40, target C:  +1.544677e-03  [+1.406638e-03, +1.684454e-03]  HARM
+A1 vs P0,     target C:  +8.497896e-03  [+7.800013e-03, +9.200988e-03]  HARM
+F-0.40 vs P0, target C:  +6.953219e-03  [+6.218082e-03, +7.705842e-03]  HARM  (reproduced exactly)
+```
+
+`A1` is `F-0.40` plus a per-victim-side split and nothing else. Against its own level-matched comparator it is
+**decisively worse**, by an interval nowhere near zero.
+
+#### The gate, and a correction to how it was described
+
+| | residual variance | floor | status |
+|---|---:|---:|---|
+| `A1` vs `F-0.40` on **C** | **0.0498%** | 0.0407% | **TESTABLE** |
+| `A1` vs `F-0.40` on **T2** | 0.0498% | 0.107% | UNTESTABLE |
+| `A1` vs `P0` on C | 0.7602% | 0.0407% | testable |
+| `F-0.40` vs `P0` on C | 0.7340% | 0.0407% | testable |
+
+Declaration 9 insisted the gate be **recomputed on C's rows rather than inherited**, on the grounds that
+`build_target` drops rows for T2. The recomputation returned **0.0498%, identical to the recorded T2 figure to
+four significant figures.** That is not a coincidence and it sharpens the rule:
+
+> **Separability is a property of the two `impact_diff` COLUMNS and is target-independent. The FLOOR is
+> target-dependent.** An arm pair has one separability; whether it can be resolved depends on which target you ask.
+
+So the caution was right in principle and the recomputation confirmed the number instead of changing it. The
+declaration-6 addendum's table should be read as "separability" (target-free) beside "the T2 floor" (target-bound).
+
+#### What this settles
+
+**The hypothesis that `A1` lost because the test was blind is refuted.** Given a target that *can* see the arm —
+same separability, lower floor — it loses on the merits, and not narrowly.
+
+Every side-split contrast that has ever been testable is now HARM:
+
+| contrast | target | separability | verdict |
+|---|---|---:|---|
+| `A2` vs `F-0.40` | T2 | above floor | **HARM** (+1.743e−05) |
+| `A2` vs `A1` | T2 | above floor | **HARM** (+6.473e−06) |
+| **`A1` vs `F-0.40`** | **C** | 0.0498% | **HARM (+1.545e−03)** |
+| `A1` vs `F-0.40` | T2 | 0.0498% | UNTESTABLE — the only one still unanswered |
+
+`A1`'s log loss on C is **0.10087170**, worse than **every flat constant measured on C** — worse even than
+`F-0.30` (0.10080164), the worst point on the nine-arm curve. In headroom terms the split costs **0.257% of C's
+headroom** against its own comparator, which is larger than `F-1.00`'s **0.164%** harm.
+
+**This closes the question the 2026-09-20 correction explicitly reopened.** That entry withdrew "the side asymmetry
+does not help", correctly, because `A1` had never been measured with any power — and said "the hypothesis returns
+to open". It is now closed, on evidence rather than on a blind test.
+
+#### Why a real effect makes the metric worse
+
+The underlying asymmetry is real and large: a kill whose victim is an attacker moves win probability **21.92pp**
+against **13.76pp** for a defender victim. The mistake is in what that difference *is*.
+
+**A kill is zero-sum in win probability** — the ledger established this when it withdrew the "same event worth 3.5x
+more to one side" claim. So 21.92 vs 13.76 does not mean one event is worth more to one side; it means
+**attacker-victim kills happen in systematically different STATES than defender-victim kills.** And the state is
+exactly what `K(s)` already encodes — it is the man-advantage transition's worth, verified symmetric under team
+relabeling.
+
+Multiplying by a victim-side weight therefore **double-counts state information `K(s)` already carries**, and
+distorts rather than refines. That is the same mechanism as `D1`: `corr(D, K) = 0.823`, the swing was already in
+`K`, and paying it again bought nothing. The side split is the sharper case because paying it again is not merely
+redundant — it is **measurably harmful**.
+
+#### Predictions, scored
+
+| declared | outcome |
+|---|---|
+| 1. the gate passes narrowly, separability in 0.04–0.07% | **held** — 0.0498%, above C's 0.0407% floor |
+| 2. `A1 vs F-0.40` on C is **not** an IMPROVEMENT | **held**, and decisively: HARM, interval far from zero |
+| 3. `A1 vs P0` is HARM and **close to** `F-0.40`'s +6.953e−03 | **direction held, magnitude FAILED** — +8.498e−03 is 22% worse, not close. The split does real additional damage on top of the level being wrong |
+
+Declaration 9 recorded in advance that an IMPROVEMENT would be "the first evidence in this investigation that any
+structure beats a flat constant" and would reopen the question. It did not happen; the record of having staked that
+claim before the number stands either way.
+
+#### What does not follow
+
+C is **partly circular by construction** (declaration 7), so the precise claim is: **the side split is decisively
+harmful for the within-round question, and remains unmeasurable for the forward-looking one.** `A1` vs `F-0.40` on
+T2 is still UNTESTABLE and no run can change that without changing the arm's parameterisation.
+
+The parameterisation note from declaration 6 is unaffected and still stands: a two-sided *stake* asymmetry — the
+two outcomes of one duel carrying different consequences — cannot be expressed by a function returning one number
+per event. What this result kills is the specific idea that **a per-event multiplier keyed on victim side** is a
+useful way to encode it. That idea is now measured, and it is worse than doing nothing.
+
+`IMPACT_CALCULATION_VERSION` stays 3, `git diff webapp/app/` is empty, no constant is frozen, and the version-4
+recommendation is unchanged: flat constant, no structure.

@@ -108,7 +108,8 @@ only comparison that could justify shipping structure.
 |---|---:|---|---:|---|
 | `Ff` vs `Lf` | −2.697e−06 | INCONCLUSIVE | — | **the ramp's shape cannot be told from flat** |
 | `Ff2` vs `Lf2` | −2.431e−06 | INCONCLUSIVE | — | same, on the bracketed grids |
-| `A1` vs `F-0.4` | +1.096e−05 | INCONCLUSIVE | **0.0498%** | **UNTESTABLE** |
+| `A1` vs `F-0.4` (T2) | +1.096e−05 | INCONCLUSIVE | **0.0498%** | **UNTESTABLE** |
+| **`A1` vs `F-0.4` (C)** | **+1.545e−03** | **HARM** | 0.0498% | **the side split, finally measured — and worse** |
 | `A2` vs `F-0.4` | +1.743e−05 | **HARM** | — | measurably worse than flat |
 | `A2` vs `A1` | +6.473e−06 | **HARM** | — | the time-banding hurt |
 | `D1` vs `F-0.4` | +5.430e−06 | INCONCLUSIVE | **0.0625%** | **UNTESTABLE** |
@@ -140,16 +141,26 @@ These returned INCONCLUSIVE and were originally written up as "does not help". T
 
 | contrast | resid. var. | floor | why the test was blind |
 |---|---:|---:|---|
-| `A1` vs `F-0.4` | 0.0498% | 0.107% | `A1 = 0.99672 × F-0.40 − 2.53`, R² 0.9995. A 0.997 rescale of its own comparator |
+| `A1` vs `F-0.4` **on T2** | 0.0498% | 0.107% | `A1 = 0.99672 × F-0.40 − 2.53`, R² 0.9995. A 0.997 rescale of its own comparator. **Asked again on target C and ANSWERED — see §3c** |
 | `D1` vs `F-0.4` | 0.0625% | 0.107% | `corr(D, K) = 0.823` — paying the measured swing ≈ paying `K` times a constant. **The swing information was already inside `K`** |
 | `P5` vs `P6` | 0.0132% | 0.107% | 8x below the floor; differs from `P6` only in the pooling ladder |
 | `P5b` vs `P6` | 0.0336% | 0.107% | 3x below the floor |
 
-**The deeper reason `A1` collapsed.** The measured asymmetry is real and large — in a 1v1 at 38–45s an attacker's
-death costs 50.0pp against a defender's 4.0pp. But `_time_factor` **returns one number per event**, applied to the
-killer's credit and the victim's debit alike, so within a round the re-weightings largely cancel in the
-differential. **No arm reachable through this wrapper could have carried that hypothesis.** Testing it needs a
-scorer that can charge the two sides differently for the same event — an interface change, not a new constant.
+**The deeper reason `A1` collapsed on T2.** The measured asymmetry is real and large — in a 1v1 at 38–45s an
+attacker's death costs 50.0pp against a defender's 4.0pp. But `_time_factor` **returns one number per event**,
+applied to the killer's credit and the victim's debit alike, so within a round the re-weightings largely cancel in
+the differential. **No arm reachable through this wrapper could have carried that hypothesis on T2.**
+
+**Careful with that 50.0 vs 4.0, though** — it is *not* one event worth more to one side. **A kill is zero-sum in
+win probability**; the ledger withdrew the "same event worth 3.5x more to one side" claim on 2026-09-20. Those are
+the *two outcomes of one duel*, carrying different consequences. Expressing *that* still needs a scorer able to
+charge the two sides of a duel separately — an interface change, not a new constant.
+
+**But the per-victim-side multiplier itself is now measured, and it is harmful.** Declaration 9 re-asked
+`A1 vs F-0.40` on target C, where the same 0.0498% separability sits *above* the floor: **+1.545e−03 HARM**. So the
+hypothesis that `A1` lost only because the test was blind is **refuted** — given a target that can see it, it loses
+on the merits. The mechanism is `D1`'s: attacker-victim kills happen in systematically different *states*, and the
+state is what `K(s)` already encodes, so a victim-side weight **double-counts information `K(s)` already carries**.
 
 `A1`'s nested/incremental test agrees: the extra column's fitted coefficient **flips sign across folds**
 (+0.044, +0.106, −0.072, −0.513, −0.311), so only the coefficient *sum* is identified.
@@ -161,6 +172,7 @@ scorer that can charge the two sides differently for the same event — an inter
 | `P2L` vs `P0` | +1.814e−06 | [+9.932e−07, +2.691e−06] | spreading `P2b`'s death-side leverage uniformly over every post-plant death is worse than leaving it concentrated |
 | `A2` vs `F-0.4` | +1.743e−05 | [+9.068e−07, +3.368e−05] | the time-banded side split is worse than a flat constant |
 | `A2` vs `A1` | +6.473e−06 | [+5.802e−07, +1.275e−05] | adding the `t >= 30` band to the side split actively hurt |
+| **`A1` vs `F-0.4` on C** | **+1.545e−03** | [+1.407e−03, +1.684e−03] | **the per-victim-side split, on a target that can see it.** `A1`'s log loss (0.10087) is worse than *every* flat constant measured on C. Declaration 9 |
 | **`F-1.00` on C** | **+9.824e−04** | **[+6.548e−04, +1.304e−03]** | **on the round's own outcome, parity underpays post-plant kills.** This refutes `T = 1.00` |
 | `F-0.7` / `F-0.4` / `F-0.3` on C | +3.417e−03 / +6.953e−03 / +8.428e−03 | all exclude zero | the whole 0.3–0.7 region is badly wrong for the within-round question |
 
@@ -206,7 +218,7 @@ returns a contrast of zero by construction. Four of the ten structural contrasts
 | beat the shipped `P0` | 20+ | every flat 0.15–1.2, every level 0.1–0.9, `PC+`, `A1`, `A2`, `D1`, `P4f`, `Lf`/`Ff`/`Lf2`/`Ff2` |
 | beat a flat constant | **0** | — |
 | genuine null vs flat/`P6` | 3 | `P6`, `Ff` vs `Lf`, `Ff2` vs `Lf2` |
-| UNTESTABLE | 4 | `A1`, `D1`, `P5`, `P5b` |
+| UNTESTABLE | 3 | `D1`, `P5`, `P5b` (`A1` was the fourth until declaration 9 answered it on C) |
 | measurable harm | 5 | `P2L`, `A2` (twice), and on target C `F-1.00` and the 0.3–0.7 region |
 | no-harm correctness fixes | 5 | `P1`, `P2b`, `P3a`, `P3b`, `PC` |
 

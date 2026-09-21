@@ -93,11 +93,16 @@ been measured. What remains:
 1. **Is k = 1.2 better than k = 1.26?** `F-1.2` is a measured IMPROVEMENT on T2 where `F-1.26` is INCONCLUSIVE, and
    C at 1.2 is unmeasured. One arm: `--mode C --arms "P0,F-1.2" --tag _k12`. This is the only measurement that
    would change *which* constant to ship.
-2. **Row motion for the chosen constant has never been measured** (`postplant_v4_row_motion.py`). Needed before a
+2. **The side asymmetry is CLOSED, not open.** Declaration 9 re-asked `A1 vs F-0.40` on target C, where its
+   0.0498% separability sits above C's 0.0407% floor: **+1.545e−03 HARM**, interval far from zero, and `A1`'s log
+   loss is worse than *every* flat constant measured on C. The 2026-09-20 correction reopened this hypothesis; it
+   is now shut on evidence. **Separability is a property of the two columns and is target-free; only the FLOOR is
+   target-bound** — the recomputation on C's rows returned 0.0498%, identical to T2's recorded figure.
+3. **Row motion for the chosen constant has never been measured** (`postplant_v4_row_motion.py`). Needed before a
    version-4 runbook, because this recommendation barely moves the level and so may move far fewer rows than the
    Tier A combination's 6,891 (1.02%). **If it moves too few rows to clear the declared thresholds on its own,
    that is a finding, not a blocker** — it ships bundled with Tier A, which clears them.
-3. **The owner's call on the level**, now much cheaper than it was: the range is 1.18–1.35 rather than 0.3 vs 1.0,
+4. **The owner's call on the level**, now much cheaper than it was: the range is 1.18–1.35 rather than 0.3 vs 1.0,
    and every value in it is a strict simplification of what ships.
 
 **Machine note:** the T2 run was once killed by the OS for memory pressure (a game plus two corpus replays). It
