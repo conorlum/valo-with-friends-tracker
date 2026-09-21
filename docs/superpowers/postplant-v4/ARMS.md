@@ -5,9 +5,13 @@ A catalogue of the post-plant time-factor investigation, 2026-09-19/21. Companio
 
 ## The one-sentence version
 
-**Almost every arm beat the shipped model. Almost nothing beat a flat constant.**
+**Almost every arm beat the shipped model. Almost nothing beat a flat constant — until a cliff DOWN did.**
 
-That sentence is the whole investigation. The shipped ramp is a low bar, so "improves on `P0`" was cheap and nearly
+That was the whole investigation until 2026-09-21, when `STEP38@1.6` and `STEP30@1.6` beat a level-matched flat
+constant by −1.99e−03 and −2.40e−03 on target C, both clearing the gate. **See §6.** The sentence above still
+describes every *smooth* or *multiplicative* arm; what it missed was a step DOWN at plant+38.
+
+The original framing: The shipped ramp is a low bar, so "improves on `P0`" was cheap and nearly
 universal. The question that mattered was always *"does this beat a flat constant at the same level?"* — and that
 comparison is where every structural idea died, or failed to be asked at all.
 
@@ -224,7 +228,7 @@ returns a contrast of zero by construction. Four of the ten structural contrasts
 | outcome | count | arms |
 |---|---:|---|
 | beat the shipped `P0` | 20+ | every flat 0.15–1.2, every level 0.1–0.9, `PC+`, `A1`, `A2`, `D1`, `P4f`, `Lf`/`Ff`/`Lf2`/`Ff2` |
-| beat a flat constant | **0** | — |
+| **beat a flat constant** | **2** (`STEP38@1.6`, `STEP30@1.6` — see §6) | — |
 | genuine null vs flat/`P6` | 3 | `P6`, `Ff` vs `Lf`, `Ff2` vs `Lf2` |
 | UNTESTABLE | 3 | `D1`, `P5`, `P5b` (`A1` was the fourth until declaration 9 answered it on C) |
 | measurable harm | 5 | `P2L`, `A2` (twice), and on target C `F-1.00` and the 0.3–0.7 region |
@@ -236,3 +240,36 @@ asymmetry, no time shape, **and no additive term** (declaration 10: additive is 
 matched level, and worse than the shipped ramp too).
 Not zero: `F-0.00` is statistically indistinguishable from the fitted constant, and was pre-committed as never
 shippable because a decisive duel scoring nothing contradicts a standing constraint.
+
+---
+
+## 6. The one thing that DID beat a flat constant (2026-09-21, declaration 11)
+
+Every arm in §1–5 is smooth, multiplicative, or additive. None tested a **cliff downward**. The measured swing
+says there should be one: 17.94 / 19.77 / 20.03 / 13.62 / **2.54** pp across the five time bands — an **8x drop**
+from 20–30s to 38–45s, in a window where the shipped model pays its **maximum** (1.75). A sign error, not a
+calibration error.
+
+| contrast (target C) | point | interval | verdict | sep. |
+|---|---:|---|---|---:|
+| **`STEP30@1.6` vs `F-1.6`** | **−2.403e−03** | [−2.865e−03, −1.945e−03] | **IMPROVEMENT** | 0.0768% |
+| **`STEP38@1.6` vs `F-1.6`** | **−1.991e−03** | [−2.408e−03, −1.569e−03] | **IMPROVEMENT** | 0.0572% |
+| `STEP41.5@1.6` vs `STEP38@1.6` | +1.289e−03 | [+9.206e−04, +1.658e−03] | **HARM** | 0.0482% |
+| `STEP30@1.6` vs `STEP38@1.6` | −4.122e−04 | [−6.126e−04, −2.076e−04] | IMPROVEMENT | 0.0217% **UNTESTABLE** |
+
+All step arms are level-matched by a kill-weighted norm, so the contrast is the step and nothing else. The cliff
+adds **0.331–0.400% of C's headroom** on top of the best flat arm — more than that flat arm's own **0.241%** gain
+over the shipped model.
+
+**Where the break belongs:** 38 beats 41.5 decisively. 30 vs 38 is **untestable** — the point estimate favours 30,
+but do not claim it.
+
+**Three caveats.** (1) The band multipliers were read off a whole-corpus table, so the profile is **in-sample
+informed** and the magnitude is an **upper bound** until refit per fold. (2) C is partly circular. (3) Separability
+(0.0572% / 0.0768%) is above C's floor but **below T2's 0.107%**, so forward-target confirmation would likely come
+back UNTESTABLE unless the cliff is pushed harder.
+
+**And `P6` is finished.** Part 4's `(a,d,t)` table — which has far MORE information than a step — is HARM against
+every comparator on C (+1.878e−03 vs `F-1.6`, +4.317e−04 vs `P0`) at 0.2220% separability, on top of its genuine
+null on T2. The win is not "state×time modelling works"; it is **specifically the cliff**, which `P6`'s per-state
+normalisation (`D / mean_t D`, clamped, centred) is exactly what erases.

@@ -4040,3 +4040,84 @@ forward-looking one**, which is the same shape as declaration 9's finding for th
 
 `IMPACT_CALCULATION_VERSION` stays 3, `git diff webapp/app/` is empty, and the version-4 recommendation is
 unchanged: **flat multiplicative constant, no structure, no additive term.**
+
+### 2026-09-21 (RESULT, declaration 11) — the falsifier fired: a cliff DOWN beats a flat constant
+
+**For the first time in this investigation, a structural arm beats a flat constant, clears the gate, and returns an
+interval excluding zero.** Declaration 10 named that outcome as the falsifier. It has happened.
+
+| contrast | point | 95% interval | verdict | separability |
+|---|---:|---|---|---:|
+| **`STEP30@1.6` vs `F-1.6`** | **−2.402741e−03** | [−2.8645e−03, −1.9449e−03] | **IMPROVEMENT** | 0.0768% |
+| **`STEP38@1.6` vs `F-1.6`** | **−1.990558e−03** | [−2.4078e−03, −1.5686e−03] | **IMPROVEMENT** | 0.0572% |
+| `STEP41.5@1.6` vs `F-1.6` | −7.011557e−04 | [−9.2477e−04, −4.8043e−04] | IMPROVEMENT | 0.0136% **UNTESTABLE** |
+| `STEP41.5@1.6` vs `STEP38@1.6` | +1.289403e−03 | [+9.2059e−04, +1.6579e−03] | **HARM** | 0.0482% |
+| `STEP30@1.6` vs `STEP38@1.6` | −4.121825e−04 | [−6.1258e−04, −2.0761e−04] | IMPROVEMENT | 0.0217% **UNTESTABLE** |
+| `P6` vs `F-1.6` | +1.878019e−03 | [+1.4863e−03, +2.2729e−03] | **HARM** | 0.2299% |
+| `P6` vs `F-1.26` | +8.435287e−04 | [+4.8543e−04, +1.2119e−03] | **HARM** | 0.1600% |
+| `P6` vs `P0` | +4.316572e−04 | [+2.6184e−05, +8.2879e−04] | **HARM** | 0.2220% |
+
+All three step arms are level-matched by a kill-weighted norm, so `F-1.6` and `STEP*@1.6` have **the same mean
+post-plant payout** — the contrast is the step shape and nothing else.
+
+#### The size of it
+
+| | gain over shipped `P0`, as % of C's headroom |
+|---|---:|
+| `F-1.26` | 0.069% |
+| `F-1.6` (best flat tested) | 0.241% |
+| `STEP38@1.6` | **0.572%** |
+| `STEP30@1.6` | **0.641%** |
+
+**The cliff adds 0.331–0.400% of headroom on top of the best flat arm — larger than that flat arm's own 0.241%
+gain over the shipped model.** Every previous entry's framing ("no structure beats a constant") is now wrong as a
+general claim, and must be narrowed to the arms that were actually tried.
+
+#### Where the break belongs
+
+- **38 beats 41.5 decisively.** `STEP41.5 vs STEP38` is **+1.289e−03 HARM**, testable at 0.0482%. Moving the cliff
+  to the half-defuse boundary gives back most of the gain. The owner's instinct that 38 and 41.5 were both
+  candidates is **half right**: 38 carries it, 41.5 is measurably worse.
+- **30 vs 38 cannot be separated.** `STEP30 vs STEP38` is −4.122e−04 at **0.0217% — below C's floor, UNTESTABLE.**
+  The point estimate favours 30 and the measured swing does decline from 30s, but this harness cannot tell them
+  apart. **Do not claim 30 over 38.**
+
+#### Part 4 is now dead on both targets
+
+`P6` was a genuine null on T2 (0.220% separability, twice the floor). On C, at 0.2220% separability, it is
+**HARM against every comparator** — the shipped model included. Part 4's `(a,d,t)` table is the only arm with both
+a real null and a real negative on two different targets. **It is finished.**
+
+And note what that separates: the win here is **not** "state×time modelling works". `P6` has far more information
+than `STEP38` and does worse. It is specifically **the cliff** — and `P6`'s per-state normalisation
+(`D / mean_t D`, clamped to [0.05, 2.0], centred at c≈1.287) is precisely what erases a cliff.
+
+#### Three caveats, and the first one is serious
+
+**1. The step profile is IN-SAMPLE INFORMED, so this result is optimistic.** The band multipliers (0.136 for
+38–45s; 0.715 / 0.133 for the two-step) were read off `V_postplant_by_band`, which is computed over the **whole
+corpus**, not per fold. The out-of-fold protocol protects the fitted *coefficient*; it does **not** protect the
+*choice of profile*. A clean test refits the band multipliers on training matches only, per fold, exactly as `A1`
+and `P6` fit theirs. **Until that is run, treat the magnitude as an upper bound.** The direction is not in doubt —
+the shipped model pays 1.75 where the measured swing is 2.54pp, and any correction of that sign helps — but the
+size is not yet earned.
+
+**2. C is partly circular** (declaration 7), so this is a within-round result.
+
+**3. T2 confirmation may be impossible.** Separability is **target-free** (established 2026-09-20), and
+`STEP38 vs F-1.6` sits at **0.0572%**, `STEP30 vs F-1.6` at **0.0768%** — both **above C's 0.0407% floor and below
+T2's 0.107% floor.** So the forward-target check this result needs would most likely return **UNTESTABLE**. The
+lever, from declaration 10's regularity: separability grows with how hard an arm is pushed, so a deeper or earlier
+cliff would raise it. That is the way to make the question askable on T2, and it should be declared before it is
+tried.
+
+#### What this changes
+
+The version-4 recommendation is **no longer "flat constant, no structure"**. It becomes: a flat constant **plus a
+cliff at plant+38**, pending (1) a per-fold refit of the profile and (2) whatever T2 can say. Nothing is frozen and
+`IMPACT_CALCULATION_VERSION` stays 3, but this is the first change with a positive result behind it rather than a
+correctness argument.
+
+The mechanism is not subtle and was visible in the swing table before any arm ran: **the shipped model pays its
+MAXIMUM (1.75) in the window where a kill is worth least (2.54pp against 20.03pp at 20–30s).** It is a sign error,
+and correcting it is worth more than getting the level right.

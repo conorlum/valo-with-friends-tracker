@@ -15,6 +15,16 @@ failure (genuine null / UNTESTABLE / harm). Read it before proposing a new arm �
 
 **The shipped post-plant time factor has the wrong *shape*. Its *level* is roughly right.**
 
+**UPDATE 2026-09-21 (declaration 11) — the shape is wrong in a SPECIFIC, FIXABLE way.** It is not that no shape
+helps; it is that every shape tried was smooth and RISING. The measured swing **collapses 8x** from 20–30s
+(20.03pp) to 38–45s (2.54pp), and the shipped model pays its **maximum** (1.75) in exactly that window — a sign
+error. A **cliff DOWN at plant+38**, level-matched so only the step differs, **beats a flat constant**:
+`STEP38@1.6 vs F-1.6` = **−1.991e−03 [−2.408e−03, −1.569e−03] IMPROVEMENT**, gate cleared at 0.0572%. This is the
+**first and only arm in the investigation to beat a flat constant.** 38 beats 41.5 decisively; 30 vs 38 is
+untestable. Caveats that matter: the profile is **in-sample informed** (magnitude is an upper bound until refit
+per fold), C is circular, and separability sits **below T2's floor** so forward confirmation may be impossible
+without pushing the cliff harder. `P6` is now HARM on C too and is finished.
+
 That is a reversal of what this file said on 2026-09-20 02:26, and it came from running the gap that entry named.
 
 | | |
