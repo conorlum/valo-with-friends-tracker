@@ -209,16 +209,22 @@ def kill_terms_for_match(
                 kill_half = (0.0, 0.0, 0.0)
                 death_econ = _SELF_KILL_DEATH_ECON.get(victim_tier, _SELF_KILL_DEATH_ECON_DEFAULT)
             else:
+                # decided_only=False, explicitly and on purpose (Impact v4,
+                # plan R8): this is a LEGACY ex-ante decomposition for the
+                # evaluation and refit tooling, not the runtime formula, so it
+                # must not follow the runtime's decided-only time factor.
+                # tests/test_kill_order_leverage_v4_legacy.py pins it.
                 kill_half = (
                     killer_tier / victim_tier,
-                    _time_factor(round_row, event["event_time_seconds"]),
+                    _time_factor(round_row, event["event_time_seconds"], decided_only=False),
                     swing,
                 )
                 death_econ = killer_tier / victim_tier
 
             death_untraded = (
                 death_econ,
-                _time_factor(round_row, event["event_time_seconds"], for_death=True),
+                _time_factor(round_row, event["event_time_seconds"], for_death=True,
+                             decided_only=False),  # legacy, as above
                 swing,
             )
             death_half = tuple(traded * value for value in death_untraded)
