@@ -13,6 +13,15 @@ failure (genuine null / UNTESTABLE / harm). Read it before proposing a new arm �
 
 ## 1. The state of the question
 
+> **UPDATE 2026-09-21 (CORRECTION + declaration 12) — read the ledger's last three entries before anything below.**
+> Every number in this file was measured on the **legacy** formula, not rc3 (the harness called the scorer with no
+> config). Under **rc3 ex-ante**, the owner's design `N` — **no time factor, `T = 1` everywhere, `T = 0` once the round
+> is decided** — is an IMPROVEMENT on **both** targets (T2 −8.99e−05, C −1.11e−02, intervals excluding zero), and
+> `F-1.00` is an IMPROVEMENT on C too. So "`T = 1.00` is refuted", the 1.18–1.35 joint window and C's ~1.97 optimum
+> below are **withdrawn as claims about the shipped scorer**. The shape finding stands. The cliff / side×time / 1v1
+> leads are closed by the owner's concept and parked for a /stats card. Version 4 = `N` (+ post-decision assists
+> removed), shipped as a new frozen manifest.
+
 **The shipped post-plant time factor has the wrong *shape*. Its *level* is roughly right.**
 
 **UPDATE 2026-09-21 (declaration 11) — the shape is wrong in a SPECIFIC, FIXABLE way.** It is not that no shape

@@ -4308,3 +4308,78 @@ mean the legacy-formula conclusions did not transfer.
 
 Only after the stop rule clears: edit `_time_factor` in `webapp/app/scoring/impact.py` (and the assists component),
 bump `IMPACT_CALCULATION_VERSION` 3 → 4, code review, rc3-style release path. **Not before.**
+
+
+### 2026-09-21 (RESULT, declaration 12) — no time factor improves BOTH targets under rc3; the legacy "T = 1.00 is refuted" does not transfer
+
+**The stop rule clears. `N` ships; `N+A` ships with it.** `N vs P0` on T2 is an **IMPROVEMENT with the interval
+excluding zero**, and on C — where a HARM was predicted and the owner had decided to ship through it — it is **also
+an IMPROVEMENT**, the largest effect measured in the whole v4 investigation. This is the first design in the
+investigation that beats the shipped model on both targets at once.
+
+Artifacts: `postplant-v4/decl12.json`, `postplant-v4/decl12_row_motion.json`. Scored rc3 ex-ante, 3,198 matches,
+67,251 C rows / 63,633 T2 rows, 2,000 draws. Identity gate passed on 153 matches.
+
+| arm | C log loss | T2 log loss |
+|---|---:|---:|
+| `P0` (rc3) | 0.08678503 | 0.67451429 |
+| `F-1.00` | 0.07804499 | 0.67442468 |
+| **`N`** | **0.07564680** | **0.67442437** |
+| `N+A` | 0.07666090 | 0.67442359 |
+
+Protocol gate, before any bootstrap (floors carried from legacy, not re-derived — no verdict below sits near one):
+`N vs P0` 1.692%, `F-1.00 vs P0` 1.571%, `N vs F-1.00` 0.162% — all testable on both targets; `N+A vs N` **0.0058%**,
+below both floors.
+
+| contrast | T2 | C |
+|---|---|---|
+| **`N vs P0`** | **−8.992e−05 [−1.349e−04, −4.750e−05] IMPROVEMENT** | **−1.114e−02 [−1.229e−02, −9.921e−03] IMPROVEMENT** |
+| `F-1.00 vs P0` | −8.961e−05 [−1.318e−04, −4.782e−05] IMPROVEMENT | −8.740e−03 [−9.812e−03, −7.704e−03] IMPROVEMENT |
+| `N vs F-1.00` | −3.137e−07 [−1.268e−05, +1.188e−05] INCONCLUSIVE | −2.398e−03 [−3.245e−03, −1.526e−03] IMPROVEMENT |
+| `N+A vs N` | UNTESTABLE (point −7.80e−07) | UNTESTABLE (point +1.01e−03 — **not** a harm finding) |
+
+**Scale.** Against the legacy-derived headrooms (rc3's are not re-derived; C's is ~unchanged since P0's C loss moved
+0.0924 → 0.0868 against a 0.6931 coin flip), `N vs P0` is **~1.84% of C's headroom** and **~0.45% of T2's** — about
+5x the cliff's 0.33–0.40% on C, and the cliff was measured on the wrong formula. Still small in absolute terms; the
+standing framing ("stop overpaying post-plant kills") holds, but it is no longer 1/150th-scale on C.
+
+**Where the T2 gain comes from.** Almost entirely from deleting the ramp and override: `F-1.00 vs P0` and `N vs P0`
+agree on T2 to three significant figures, and `N vs F-1.00` is INCONCLUSIVE there. Zeroing decided rounds is
+invisible to the forward target and helps the within-round one.
+
+**Row motion, rc3 live** (section 8 threshold ≥1% rows or ≥5% reordered): `N` **216,804 rows (32.14%)**, **2,301
+matches reordered (72.0%)**, mean |Δ| 97.2 on changed rows; `N+A` 32.22% / 71.9% / 97.3. Clears both limbs by far.
+**Motion is not improvement** — but 72% of matches reordering is what the site will visibly do, versus ~20% the
+legacy-formula runs suggested: under rc3 leverage carries B = 2.5, so a time-factor change moves far more.
+
+#### Predictions, scored
+
+| # | prediction | outcome | |
+|---|---|---|---|
+| 12.1 | identity gate passes | passed, 153 matches | **right** |
+| 12.2 | `N vs P0` [T2] IMPROVEMENT | IMPROVEMENT | **right** |
+| 12.3 | `N vs P0` [C] HARM, ~1e−03 | **IMPROVEMENT, −1.11e−02** | **WRONG — sign and order of magnitude** |
+| 12.4 | `F-1.00 vs P0` keeps legacy signs (T2 improve, C harm) | T2 improve; **C IMPROVEMENT** | **WRONG on C** |
+| 12.5 | `N vs F-1.00` UNTESTABLE on both | testable (0.162%); T2 INCONCLUSIVE, C IMPROVEMENT | **WRONG** |
+| 12.6 | `N+A vs N` UNTESTABLE on both | 0.0058% | **right** |
+| 12.7 | row motion clears section 8 | 32.1% rows / 72.0% reordered | **right** |
+
+**12.3 and 12.4 fail for the same reason, and it is the important finding of the day: the legacy-formula conclusions
+about the LEVEL do not transfer to rc3.** Under legacy, `F-1.00 vs P0` on C was HARM (+9.82e−04) and grounded "T = 1.00
+is refuted", the 1.18–1.35 "joint window", and C's ~1.97 optimum. Under rc3 the same arm is an IMPROVEMENT of
+−8.74e−03, excluding zero. **Those three conclusions are withdrawn as statements about the shipped scorer**; they
+stand only as descriptions of the legacy formula. The shape conclusion (the ramp is wrong) survives and is
+strengthened. Why the sign flips is not established; a plausible mechanism — not tested — is that rc3's trade credit
+already routes post-plant-trade value through `T`, so the ramp double-counts there in a way the legacy mean did not.
+
+**12.5 fails** because zeroing decided rounds is far more separable than its 0.8% kill share suggested: each such
+event moves B × K × 0.5 under rc3. Recorded as a wrong prediction, not explained away.
+
+**Owner's override, revisited.** Declaration 12 recorded shipping through a predicted C harm as a decision. There is
+no C harm to ship through; the override was never exercised. It stays in the record as the reason the design did not
+depend on this outcome.
+
+**Next, per the declaration:** edit `_time_factor` and the assists component, bump `IMPACT_CALCULATION_VERSION` 3 → 4.
+Because the rc3 manifest freezes the scoring sources' digests, an edit to `impact.py` invalidates rc3 verification —
+version 4 has to ship as a new frozen manifest activated with the bump, the rc3 way; flags default off so rc3 and
+legacy stay reproducible.
