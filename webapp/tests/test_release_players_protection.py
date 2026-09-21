@@ -54,6 +54,7 @@ def test_verify_refuses_an_export_under_another_fingerprint_contract(version):
 # -- against the scratch database ------------------------------------------------------
 
 from tests.test_swap_impact_scores import (  # noqa: E402  (fixture and helpers)
+    NAMES,
     _built_and_verified,
     _impacts,
     db,
@@ -72,19 +73,19 @@ def test_a_player_renamed_after_verification_stops_the_swap(db, tmp_path):
     _rename_a_scored_player(db, keys[0])
     db.commit()
     with pytest.raises(swap_tool.Refused, match="players changed after verification"):
-        swap_tool.swap(db)
+        swap_tool.swap(db, NAMES)
     db.rollback()
     assert _impacts(db) == [10]
 
 
 def test_a_player_renamed_during_the_hold_stops_the_rollback(db, tmp_path):
     keys, _ = _built_and_verified(db, tmp_path, v1=10, rc3=77)
-    swap_tool.swap(db)
+    swap_tool.swap(db, NAMES)
     db.commit()
     _rename_a_scored_player(db, keys[0])
     db.commit()
     with pytest.raises(swap_tool.Refused, match="players"):
-        swap_tool.rollback(db)
+        swap_tool.rollback(db, NAMES)
     db.rollback()
 
 
@@ -97,7 +98,7 @@ def test_the_swap_locks_players_against_writers(db, tmp_path):
                             "WHERE id = (SELECT player_id FROM match_players WHERE id = :m)"),
                        {"m": keys[0][1]})               # uncommitted: holds ROW EXCLUSIVE
         with pytest.raises(OperationalError) as caught:
-            swap_tool.swap(db)
+            swap_tool.swap(db, NAMES)
         assert getattr(caught.value.orig, "pgcode", None) == swap_tool.LOCK_NOT_AVAILABLE
         db.rollback()
     finally:
