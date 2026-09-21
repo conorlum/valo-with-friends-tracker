@@ -4121,3 +4121,88 @@ correctness argument.
 The mechanism is not subtle and was visible in the swing table before any arm ran: **the shipped model pays its
 MAXIMUM (1.75) in the window where a kill is worth least (2.54pp against 20.03pp at 20–30s).** It is a sign error,
 and correcting it is worth more than getting the level right.
+
+### 2026-09-21 (OBSERVATIONS, unrun) — three things found while reading the tables, none of them yet tested
+
+Recorded because they came out of reading saved artifacts during discussion, not out of an arm, and would otherwise
+exist only in a conversation. **None of these is a result.** Each is a lead or a defect.
+
+#### 1. The side asymmetry REVERSES with time — which is why `A1` was always going to fail
+
+Mean |swing| by victim side, from `V_postplant_by_band` (Part 4's extractor, so post-resolution seconds are
+correctly excluded):
+
+| band | attacker-victim | defender-victim | ratio |
+|---|---:|---:|---:|
+| 0–10s | 19.61pp | 16.43pp | 1.19 |
+| 10–20s | 20.60pp | 17.35pp | 1.19 |
+| 20–30s | 20.46pp | 18.29pp | 1.12 |
+| 30–38s | 13.89pp | **16.97pp** | **0.82** |
+| 38–45s | 2.54pp | **8.16pp** | **0.31** |
+
+Early, killing an attacker swings ~19% more. Late, killing a **defender** swings **3.2x** more. **The crossover is
+around 30s.**
+
+`A1` applied a *fixed* split (attacker-victim 1.25, defender-victim 0.79) at **all** times. The data says +19%
+early and −69% late, so a constant split has the late region **backwards** — which is a mechanism for declaration
+9's finding that `A1` is measurably HARM, not merely inert. **Side-ness is not wrong; side-ness WITHOUT time is
+wrong.** `A2` banded at t≥30 but was fitted to the same pooled `D`, so it has never been tested with the crossover
+pointing the right way. **A side×time arm with the reversal built in is UNTESTED.**
+
+Caveats: the late bands are dominated by `Xv1` states so composition does some of this work, and these numbers
+exclude terminal kills (see 3).
+
+#### 2. DEFECT — `whole_round_states` counts seconds after the round was already decided
+
+`scripts/postplant_v4_alt_metrics.py`'s `whole_round_states` runs its occupancy loop to `plant + 45`
+**unconditionally**:
+
+```python
+end = max(end, plant + 45.0)      # defused / defuse_time are SELECTed and never used
+for t in range(0, int(end) + 1):
+```
+
+`defused` and `defuse_time` are queried and then never consulted, so every second **after a successful defuse** is
+still counted into `V(a, d, planted)`. Measured on the corpus: **216,465 of 1,958,175 post-plant seconds = 11.05%**
+of the table is post-resolution. Of 43,515 planted rounds, 12,498 (28.7%) are defused and 2,243 (5.2%) exploded.
+
+This is what produces the impossible cells: `1v0|post` has attacker win **0.972**, i.e. attackers lose 2.8% of
+rounds in which the last defender is dead and the spike is planted — only possible if the defuse had already
+landed.
+
+**Scope, which matters:** `app/scoring/postplant_value_table.py` (Part 4's extractor, used by `P6` and by
+`V_postplant_by_band`) is **correct** — it explicitly lowers the horizon to `defuse_time`. The defect is confined
+to `whole_round_states`, i.e. to **`V_whole_round` and METHOD B**.
+
+**Method B is the anchor of the whole reconciliation** (the only estimate with no target, no folds and no free
+coefficient; it is why 1.02 is treated as the true swing ratio). Post-defuse seconds are defender wins, so they
+add defender mass to post-plant states and most likely bias B's post/pre ratio **downward** — magnitude unknown
+until recomputed. **B's 1.023 should be treated as provisional until `whole_round_states` excludes resolved
+seconds.**
+
+#### 3. The banded table has no terminal states, so round-ENDING kills are unpriced by band
+
+`V_postplant_by_band` covers 1–5 × 1–5 only. `0v1` and `1v0` are **absent**, so every kill that takes a side to
+zero is missing from every band number above — including the side table in 1 above.
+
+`V_whole_round` does have them, but is not time-resolved (pre/post only):
+
+| | attacker win % | swing |
+|---|---:|---:|
+| `1v1` post-plant | 0.636 (n=85,236 round-seconds) | — |
+| attacker dies → `0v1` | 0.039 | **−59.7pp** |
+| defender dies → `1v0` | 0.972 | **+33.6pp** |
+
+Those are the largest swings in the game, they are exactly what a 1v1 consists of, and **they cannot currently be
+priced by time band.** (They also come from the defective table in 2.)
+
+**1v1 is the most occupied state at 38–45s** (n=6,026, ahead of `2v1`'s 4,142), and attacker win % in 1v1 runs
+0.550 / 0.562 / 0.633 / 0.787 / **0.960** across the bands — by 38–45s the defender's wincon is gone, which is the
+mechanism behind the 8x swing collapse that `STEP38` exploits.
+
+**What is needed:** rebuild the banded table including `0v1`/`1v0`, over the corrected (resolution-aware) horizon.
+One replay. That would (a) let a 1v1-specific model be priced at all, (b) tell whether the side crossover in 1
+survives once terminal kills are included, and (c) re-anchor method B.
+
+Only occupancy (round-seconds) is saved anywhere; **a count of distinct 1v1 post-plant situations does not exist**
+and needs a pass over `kill_events`.
