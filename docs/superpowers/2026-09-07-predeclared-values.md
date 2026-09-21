@@ -4206,3 +4206,105 @@ survives once terminal kills are included, and (c) re-anchor method B.
 
 Only occupancy (round-seconds) is saved anywhere; **a count of distinct 1v1 post-plant situations does not exist**
 and needs a pass over `kill_events`.
+
+
+### 2026-09-21 (CORRECTION) — every post-plant v4 measurement scored the LEGACY formula, not rc3
+
+**Found while building declaration 12's assists arm, before anything in it was run.** Every v4 script
+(`run_postplant_v4_report.py`, `postplant_v4_row_motion.py`, `postplant_v4_steps_and_p6_on_c.py`, the additive and
+side runners) replays `build_impact_rows_for_match` with **no scoring configuration**. With no configuration the
+scorer runs the **legacy** formula: no econ component, no assists term (`FormulaWeights()` defaults `assists=0`), no
+trade credit, time folded into `damages + mean(econ, time, swing)`. What has shipped since 2026-09-18 is the rc3
+manifest (`impact_runtime.active_scoring_config()`: A 1 / B 2.5 / C 2.5 / D 100, trade credit on,
+`buy_disruption_v2_30_80_bonus_denial`). HANDOFF.md §2 writes the rc3 formula down as the thing being measured; the
+harness never scored it.
+
+Measured, on the latest match in the local corpus: **185 of 190 rows** score differently under the two; the legacy
+replay has **0** nonzero `econ_component` and `assists_component` rows against 143 and 53 under rc3.
+
+**Scope.** Every v4 contrast, every separability figure, both demonstrated floors (T2 0.107%, C 0.0407%), and every
+row-motion count (including this morning's STEP38 run: 28.9–30.8% of rows) describe the time factor **inside the
+legacy formula**. Direction probably transfers — the time factor is the same function in both — but magnitude does
+not: under rc3 leverage carries B = 2.5 against damage's 1.0, so the time factor is a larger share of Impact than it
+was in the legacy mean. **None of the v4 numbers is withdrawn; all of them are re-labelled "legacy formula".**
+Declaration 12 re-measures the one prior result it leans on (`F-1.00 vs P0`) under rc3 instead of assuming it.
+
+**The ex-ante constraint, which rc3 makes visible.** The buy-disruption econ component reads round N+1, so under
+`use_realized_swing=False` it abstains to exactly 0 (`econ_buy_disruption.score_round`, the leakage gate). Both
+outcome targets need ex-ante scoring, so the honest harness configuration is **rc3 ex-ante**: rc3's weights,
+assists and trade credit, with econ necessarily zero. On a 60-match sample realized vs ex-ante changes 71% of rc3
+rows, so the choice is not cosmetic. Row motion — about stored rows, not prediction — uses rc3 live, unchanged.
+
+### 2026-09-21 (DECLARATION 12) — no time factor: every kill is worth the same, and a decided round pays nothing
+
+**The owner's decision, made before this was measured, and the reason the arms look the way they do.** The time
+factor was meant to say that kills under pressure are worth more. The owner's position after declaration 11: they
+are not — *every fight is under some clock*, pre-plant and post-plant alike, and a phase of the round is not a
+premium. Timing is kept for exactly one purpose: **to recognise kills that can no longer change the round**, which
+get no leverage and no assists credit, and keep full econ. This is consistent with method B (post/pre swing ratio
+1.023, provisional per the OBSERVATIONS entry) and with `K(s)` already pricing post-plant kills at 1.018 of
+pre-plant. It deliberately overrides target C's preference for a post-plant premium, on the grounds that C is
+circular (declaration 7). **That override is a decision, recorded here as one, not a measured result.**
+
+**Closed by that decision, not by measurement** — and moved to a future /stats card, not to Impact:
+the plant+38 cliff (declaration 11), side×time with the ~30s crossover, and a 1v1-by-time model. With no fitted
+parameter left in the design, declaration 11's per-fold profile refit is **moot**. The `whole_round_states` defect
+(method B) stays open; it no longer anchors any decision here.
+
+**"Decided"** (`postplant_v4_variants.round_decided`), exactly these three and nothing else:
+
+1. spike defused, kill at or after `defuse_time`;
+2. real plant (`effective_plant_time`, phantoms excluded), kill at or after plant + 45 — exploded whatever the flags
+   say (C3's cap);
+3. no real plant, outcome is a **Time Win**, kill after 100s. The Time Win condition guards against noisy clocks
+   (14 Elimination Wins carry plant_time > 100s); on the corpus all 338 such post-100s kills are in Time Win rounds,
+   so it removes nothing today.
+
+Not the 38–45s window: at plant+38 a round is *nearly* decided (1v1 attackers win 96%, not 100%), a defender with a
+banked half-defuse can still win until 41.5s, and killing a mid-defuser is the round. The owner chose strictly
+decided over clock-decided.
+
+**Arms**, all scored **rc3 ex-ante** (CORRECTION above), one replay each feeding both targets
+(`scripts/postplant_v4_decl12.py`):
+
+| arm | definition |
+|---|---|
+| `P0` | rc3 as shipped |
+| `F-1.00` | post-plant flat 1.0; decided rounds keep the shipped 0.5 (re-measures the legacy result under rc3) |
+| **`N`** | **`T = 1` everywhere, `T = 0` once decided** — no ramp, no override, no premium |
+| `N+A` | `N`, plus each assist on a kill after the round was decided is removed from the assists component (D = 100 each) |
+
+**Not in any arm, and why.** Damage has no timestamps — it is a per-round total derived from combat score — so
+post-decision damage cannot be separated and stays in. The combat-score assist points inside that damage total
+(Valorant's 25 per non-damaging assist; `FormulaWeights` docstring) stay with it for the same reason. Econ is
+untouched by both arms and is zero under ex-ante on both sides of every contrast. Assistants are mapped to players
+by Riot ID; 112 of 177,781 (0.06%) do not map and are left in.
+
+**Contrasts, gate and floors.** `N vs P0`, `N vs F-1.00`, `N+A vs N`, `F-1.00 vs P0`, each on **T2** (the report's
+`outer_cv`, inner L2 selection, 5 folds, seed 0) and **C** (fixed L2 1.0, declaration 7's features), 2,000-draw
+paired match-clustered bootstrap. Separability is computed once (target-free) **before any bootstrap**; below a
+target's floor the verdict is **UNTESTABLE**. The floors are carried over from the legacy-formula runs and are **not
+re-derived for rc3** — flagged, not fixed; a floor re-derivation is its own declaration if a verdict ends up
+depending on it. Identity gate: the wrapper installed with no variant must reproduce rc3 bit-for-bit on a ~150-match
+sample, or the run stops.
+
+**Predictions**, to be scored afterwards whatever happens:
+
+| # | prediction | confidence |
+|---|---|---|
+| 12.1 | identity gate passes | high |
+| 12.2 | `N vs P0` **[T2]: IMPROVEMENT** | moderate — rests on legacy `F-1.00`, which the formula change could move |
+| 12.3 | `N vs P0` **[C]: HARM**, order 1e-03 | moderate on sign; magnitude not predicted (formula changed) |
+| 12.4 | `F-1.00 vs P0` has the **same sign on each target as it did under legacy** (T2 improvement, C harm) | moderate |
+| 12.5 | `N vs F-1.00`: **UNTESTABLE on both targets** (0.5→0 on ~0.8% of kills) | moderate |
+| 12.6 | `N+A vs N`: **UNTESTABLE on both targets** (~1.1% of assists) | high |
+| 12.7 | row motion (rc3 live): `N` clears section 8's threshold (≥1% of rows or ≥5% of matches reordered) | high |
+
+**Stop rule, fixed now.** Version 4 does **not** ship `N` if `N vs P0` **[T2] is HARM** (interval excluding zero).
+INCONCLUSIVE ships: the design is the owner's conceptual decision and the forward cost is then bounded by the
+interval. C HARM is predicted (12.3) and does not stop anything. `N+A` ships with `N` unless `N+A vs N` [T2] is HARM.
+If `N` is stopped, nothing ships and the finding is written up — including whether it contradicts 12.4, which would
+mean the legacy-formula conclusions did not transfer.
+
+Only after the stop rule clears: edit `_time_factor` in `webapp/app/scoring/impact.py` (and the assists component),
+bump `IMPACT_CALCULATION_VERSION` 3 → 4, code review, rc3-style release path. **Not before.**

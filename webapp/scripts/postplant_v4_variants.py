@@ -388,8 +388,47 @@ def _v_pc_plus(round_row, kill_time, for_death, shipped, ctx=None):
         round_row, kill_time, for_death, shipped, ctx)
 
 
+ROUND_SECONDS = 100.0
+
+
+def round_decided(round_row, kill_time):
+    """DECLARATION 12: the round's outcome no longer depends on anything a
+    player can do. Three ways, and only these:
+
+      * the spike was defused, and the kill is at or after the defuse;
+      * the spike really armed (not a phantom plant) and the kill is at or
+        after plant+45 -- it has exploded, whatever the flags say (C3);
+      * no real plant, the round was a Time Win, and the kill is after 100s.
+
+    The Time Win condition is not decoration: 14 rounds carry plant_time >
+    100s and end in Elimination Wins (plant_window.is_phantom_plant), so the
+    clock alone is noisy enough to catch a real round-ending kill. On the
+    corpus every post-100s kill in an unplanted or phantom round is in a Time
+    Win round (338 kills), so the condition removes nothing today; it is there
+    so a noisy timestamp can never zero a live kill."""
+    from app.scoring.plant_window import effective_plant_time
+    if (round_row.defused and round_row.defuse_time is not None
+            and kill_time >= round_row.defuse_time):
+        return True
+    plant_time = effective_plant_time(round_row)
+    if plant_time is not None:
+        return kill_time >= plant_time + SPIKE_SECONDS
+    return (kill_time > ROUND_SECONDS
+            and bool(round_row.outcome and "Time Win" in round_row.outcome))
+
+
+def _v_decided(round_row, kill_time, for_death, shipped, ctx=None):
+    """DECLARATION 12, arm N: NO time factor. Every kill and death is worth
+    1.0 before and after the plant -- no ramp, no plant+38..45 override, no
+    post-plant premium -- and 0 once the round is decided, where the shipped
+    function pays 0.5. Timing survives only as the answer to "could this kill
+    still change the round?"."""
+    return 0.0 if round_decided(round_row, kill_time) else 1.0
+
+
 VARIANTS = {
     "P0": None,
+    "N": _v_decided,
     "PC+": _v_pc_plus,
     "P1": _v_p1,
     "P2b": _v_p2b,
