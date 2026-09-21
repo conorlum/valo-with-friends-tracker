@@ -258,6 +258,61 @@ def _v_side(level: float, weights: dict):
     return variant
 
 
+def _v_additive(alpha: float, kbar: float, use_time: bool, side_weights=None):
+    """DECLARATION 10: the post-plant payout is `K(s)` PLUS a term, not `K(s)`
+    TIMES one.
+
+        payout = K(s) + f
+        f      = alpha * kbar * shape
+        shape  = (t / SPIKE_SECONDS) when use_time else 1.0,
+                 multiplied by side_weights[victim_is_attacker] when given
+
+    Every arm in this investigation so far has been multiplicative or a
+    replacement. This is the first additive one, and it encodes a different
+    belief: a multiplier says late kills AMPLIFY whatever the kill was worth,
+    an additive term says being late is worth something IN ITSELF, the same
+    amount whether the kill was decisive or marginal.
+
+    Delivered through the wrapper as `T = 1 + f/K`, so `K*T = K + f` exactly.
+    The base is 1.0 -- the F-1.00 flat arm -- NOT the shipped ramp: this
+    REPLACES the multiplicative time factor rather than stacking on top of it,
+    which is what makes `ADD vs F-1.00` isolate `f` and nothing else.
+
+    `K` is recovered exactly as D1 recovers it, with the same validated
+    argument order (TEAM_1 when the victim is an attacker; the mirror matches
+    only 24%). An event with no usable `K`, a self-kill or a phantom plant
+    falls back to the flat 1.0 base, matching the comparator.
+    """
+    from app.scoring.impact import _kill_order_bonus
+    from app.models.match import Team
+    from app.scoring.plant_window import effective_plant_time
+
+    def variant(round_row, kill_time, for_death, shipped, ctx=None):
+        if not _post_plant(round_row, kill_time):
+            return shipped
+        ctx = ctx or {}
+        alive = ctx.get("alive_counts")
+        is_attacker = ctx.get("is_attacker")
+        if alive is None or is_attacker is None or ctx.get("self_kill"):
+            return 1.0
+        effective = effective_plant_time(round_row)
+        if effective is None:          # phantom plant
+            return 1.0
+        a, d = alive
+        victim_is_attacker = not is_attacker
+        k = _kill_order_bonus(a, d, Team.TEAM_1 if victim_is_attacker else Team.TEAM_2,
+                              False)
+        if not k:
+            return 1.0
+        shape = 1.0
+        if use_time:
+            shape = min(max((kill_time - effective) / SPIKE_SECONDS, 0.0), 1.0)
+        if side_weights is not None:
+            shape *= side_weights.get(victim_is_attacker, 1.0)
+        return 1.0 + (alpha * kbar * shape) / k
+    return variant
+
+
 def _v_p2l(lam: float):
     """P2L: P2b's extra death-side leverage spread uniformly over every
     post-plant death instead of concentrated in the window. `lam` is fitted per
@@ -325,6 +380,12 @@ def variant_for(name: str, **kwargs):
         return _v_p4(float(name.split("-", 1)[1]))
     if name.startswith("F-"):
         return _v_flat(float(name.split("-", 1)[1]))
+    if name.startswith("ADD-"):
+        # DECLARATION 10. ADD-T / ADD-S / ADD-TS; alpha, kbar and the side
+        # weights are supplied by the caller, which calibrates alpha so the
+        # arm's MEAN post-plant payout matches a measured flat arm.
+        return _v_additive(kwargs["alpha"], kwargs["kbar"],
+                           kwargs["use_time"], kwargs.get("side_weights"))
     if name == "D1":
         return _v_swing(kwargs["scale"], kwargs["value_table"],
                         kwargs["floor"], kwargs["ceil"], kwargs["fallback"])

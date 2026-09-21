@@ -3862,3 +3862,92 @@ useful way to encode it. That idea is now measured, and it is worse than doing n
 
 `IMPACT_CALCULATION_VERSION` stays 3, `git diff webapp/app/` is empty, no constant is frozen, and the version-4
 recommendation is unchanged: flat constant, no structure.
+
+### 2026-09-21 (DECLARATION 10) — the first ADDITIVE arm: `K(s) + f`, not `K(s) · T`
+
+Declared before running. Asked for by the owner, and it is a hypothesis this investigation has never tested.
+
+Every arm from declarations 1–9 is **multiplicative** (`P4`, `L`, `F`, `A1`, `A2`, `P2L`) or a **replacement**
+(`D1` returns `T = S·D/K` so the product becomes `S·D`). **Nothing has ever added.**
+
+```
+shipped and every arm so far:   leverage = K(s) · T(t)
+this declaration:               leverage = K(s) + f
+```
+
+That is a different belief, not a different curve. **A multiplier says a late kill AMPLIFIES whatever the kill was
+worth; an additive term says being late is worth something IN ITSELF — the same amount whether the kill was
+decisive or marginal.** Verified at build time: at `alive=(2,4)`, `K=80`, the term lifts `T` to 2.68; at
+`alive=(1,1)`, `K=250`, the same term reaches only 1.49.
+
+Delivered through the existing wrapper as `T = 1 + f/K`, so `K·T = K + f` exactly — identity verified to 1e−9 on
+four states before any run. The base is **1.0**, not the shipped ramp: this **replaces** the multiplicative factor
+rather than stacking on it.
+
+#### The design point that makes this a real test: level-matching
+
+An additive term **raises the post-plant payout**, and C's optimum is ~1.97 while `F-1.00` is far below it. So an
+additive arm on a flat-1.0 base would beat `F-1.00` **merely by raising the level**, and that would prove nothing.
+
+So `alpha` is **not** chosen from a grid. For each arm it is **calibrated so the arm's mean post-plant payout
+equals a flat arm that has already been measured on C**:
+
+```
+mean T = 1 + (1/N_postplant) * SUM_applies (alpha * kbar * shape_i / K_i)      solved for alpha
+```
+
+`kbar = 137.71`, the kill-weighted mean post-plant `K` from `derived_tables.json`
+(143.19 × 69,946 attacker-victims, 133.13 × 83,504 defender-victims). Calibration reads `kill_order_bonus_raw`
+and `seconds_to_plant` out of the scorer's own `kill_observer`, so `K` and `t` are the scorer's values, not a
+re-derivation. Self-kills, phantom plants and `K = 0` events take the flat base and are counted in `N` but
+contribute nothing to the sum, exactly as the variant treats them.
+
+**Each additive arm is then contrasted against its own level-matched flat twin.** That isolates *additive vs flat*
+with the level held constant — the same move `F-1.26 vs P0` used to isolate shape from level.
+
+| arm | shape | level-matched to |
+|---|---|---|
+| `ADD-T` × 3 | `t / 45`, rising | `F-1.26`, `F-1.6`, `F-1.9` |
+| `ADD-S` | flat in `t`, per victim side | `F-1.6` |
+| `ADD-TS` | `t / 45` × per victim side | `F-1.6` |
+
+Comparators replayed in the same run: `P0`, `F-1.26`, `F-1.6`, `F-1.9`.
+
+#### Side weights are FIXED, and the caveat is recorded in advance
+
+`{victim_is_attacker: 1.25, else: 0.79}`, rounded from `A1`'s per-fold fits (1.250–1.256 / 0.785–0.790) and
+kill-weighted mean 0.9997, so they carry only the split. **They are a declared constant, not fitted here** — but
+they descend from a fit that saw the whole corpus, so the side arms carry a mild optimistic bias. **Declaration 9
+found the per-victim-side split is measurably harmful, so I expect these arms to fail; a favourable-to-them bias
+makes a negative result stronger, not weaker.** Stated now rather than after.
+
+#### Target, and what it cannot settle
+
+**Target C**, because its demonstrated floor (0.0407%) is well below T2's (0.107%) and small effects stand a chance
+of being resolved. C is **partly circular** (declaration 7). **A favourable result here would not be a shipping
+result** — it would require T2 confirmation, and `ADD` vs its flat twin on T2 may well be UNTESTABLE.
+
+#### Predictions
+
+1. **The gate passes comfortably.** An additive term is **not** a rescale of its comparator — over most of the mass
+   (72% of post-plant kills fall in the first 20s where `t/45` is nearly flat) it behaves like *a constant per
+   post-plant kill*, i.e. roughly a **count** of post-plant kills, which is a genuinely different feature from the
+   `K`-weighted sum. Residual variance against the flat twin lands **above 0.3%**, far clear of the floor. This is
+   the first arm I expect to be comfortably testable against a level-matched comparator.
+
+2. **`ADD-T` does not beat its level-matched flat twin** — INCONCLUSIVE or HARM. The distinctive part of `t/45` is
+   the late tail, which is 1.02% of events, and `K(s)` already prices post-plant kills at 1.018x against a measured
+   1.023x swing, leaving little room for any additional term.
+
+3. **`ADD-S` and `ADD-TS` are HARM** against their flat twin, following declaration 9.
+
+4. **`ADD-TS` does not beat `ADD-T`** — the side split adds damage, not information.
+
+**The falsifier, stated plainly:** if `ADD-T` beats its level-matched flat twin with an interval excluding zero,
+that is **the first structure in this entire investigation to beat a flat constant**, and it reopens the whole
+shape question rather than closing it.
+
+#### What this entry does not do
+
+No constant is frozen, `webapp/app/` is untouched, `IMPACT_CALCULATION_VERSION` stays 3. The new variant lives in
+`scripts/postplant_v4_variants.py` as a wrapper around the shipped `_time_factor`, like every arm before it.
