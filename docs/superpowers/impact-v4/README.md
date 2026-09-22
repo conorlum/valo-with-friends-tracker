@@ -48,6 +48,7 @@ guessed.
 
 ```bash
 cd "$(git rev-parse --show-toplevel)/webapp"
+set -o pipefail   # a failing command piped into tee must still fail the block (final review, finding 1)
 export PYTHONIOENCODING=utf-8
 PY=.venv313/Scripts/python.exe
 PGBIN="/c/Program Files/PostgreSQL/18/bin"
@@ -55,8 +56,10 @@ ART="$HOME/Documents/valo-backups/v4-release"; mkdir -p "$ART/chain" "$ART/rehea
 REL=../docs/superpowers/impact-v4
 PROD="$(grep '^DATABASE_URL' .env.remote | cut -d= -f2-)"
 case "$PROD" in */valowithfriendsdb) REH="${PROD%/valowithfriendsdb}/valo_v4_rehearsal" ;; *) echo "STOP: .env.remote is not the production URL shape" ;; esac
-sha() { "$PY" -c "import json, sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['artifact']['sha256'])" "$1"; }
-same() { a="$(sha "$1")"; b="$(sha "$2")"; if [ "$a" = "$b" ]; then echo "EQUAL $a"; else echo "DIFFERENT: $1 $a vs $2 $b"; return 1; fi; }
+# sha/same fail CLOSED: an unreadable sidecar, a missing key or a malformed hash is a STOP, never "EQUAL". (Two
+# failed reads used to compare two empty strings and print EQUAL; final review of the process, finding 3.)
+sha() { "$PY" -c "import json, re, sys; h = json.load(open(sys.argv[1], encoding='utf-8'))['artifact']['sha256']; assert isinstance(h, str) and re.fullmatch('[0-9a-f]{64}', h), f'not a sha256: {h!r}'; print(h)" "$1"; }
+same() { a="$(sha "$1")" || { echo "STOP: cannot read a hash from $1"; return 1; }; b="$(sha "$2")" || { echo "STOP: cannot read a hash from $2"; return 1; }; if [ "$a" = "$b" ]; then echo "EQUAL $a"; else echo "DIFFERENT: $1 $a vs $2 $b"; return 1; fi; }
 git status --porcelain --untracked-files=all -- . | head -5    # must print nothing
 ```
 
@@ -172,7 +175,12 @@ time DATABASE_URL="$PROD" $PY scripts/export_impact_artifact.py --out "$ART/chai
   || echo "STOP: exit $?"
 ```
 
-Record the K3/K4 hash and the input fingerprint. That hash is `$CHAIN` for every later `--expect-comparison-sha256`.
+Record the K3/K4 hash and its input fingerprint as **`PREP_CHAIN`**. It is **preparation-grade**: it proves the frozen
+manifest reproduces the comparator on production *as it stood at F4*. It is **not** the hash later verifications
+expect. Every `verify-build` / `verify-live` passes `--expect-comparison-sha256` for the export of **the database and
+moment it verifies**: the rehearsal's own export (§G), and in the window the in-window **K4 = K5** hash, `CHAIN`
+(process §H1.3). The activation cohort includes every match ingested after F4, so the preparation hash would fail
+`verify-build` even with K4 = K5 exactly (final review, finding 2).
 
 ### F5. Reviews, against the restore
 
@@ -187,11 +195,13 @@ DATABASE_URL="$REH" $PY -X utf8 scripts/release_candidate_review.py --manifest $
   || echo "STOP: exit $?"
 ```
 
-The decomposition check's econ-model assumption holds for v4, which leaves the econ model unchanged. **Read before
-the owner's look**: the "site" review's replayed left column is `live_legacy`, because `build_manifest` fixes
-`site_comparison = [live_legacy, release]`. The before-state that matters for v4 is **rc3**, which the tool shows as
-*what production stores* — the restore's stored rows, which are rc3's. Compare stored against v4, not the legacy
-replay against v4. Whether to add `impact_rc3` to `site_comparison` before freezing is an open owner question.
+The decomposition check's econ-model assumption holds for v4, which leaves the econ model unchanged.
+
+**What the owner sees at G4** (settled by the final review, with evidence). The site review's **Before, Change and
+Rank columns use the stored scores**, not the replay (`release_candidate_review.py` ~730/747), and so does the
+ten-match summary (~1060). On the restore, the stored rows are rc3's, so the comparison shown is **rc3 → v4**, which is
+the one that matters. `site_comparison` stays `[live_legacy, impact_v4]`: the legacy replay is only an extra
+diagnostic column. And a third entry would break the renderer, which unpacks exactly two comparators (~1043).
 
 **Gate G4:** the owner's side-by-side look at several friend-group matches (72% of matches reorder), and approval of
 the reviews.

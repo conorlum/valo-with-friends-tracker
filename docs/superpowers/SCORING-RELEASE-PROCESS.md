@@ -47,6 +47,7 @@ Non-negotiable. Each one is here because breaking it went wrong at least once.
 
 ```bash
 cd "$(git rev-parse --show-toplevel)/webapp"
+set -o pipefail   # a failing command piped into tee must still fail the block
 export PYTHONIOENCODING=utf-8
 PY=.venv313/Scripts/python.exe
 PGBIN="/c/Program Files/PostgreSQL/18/bin"
@@ -54,7 +55,17 @@ ART="$HOME/Documents/valo-backups/<id>-release"; mkdir -p "$ART"
 REL=../docs/superpowers/impact-<id>
 PROD="$(grep '^DATABASE_URL' .env.remote | cut -d= -f2-)"
 case "$PROD" in */valowithfriendsdb) REH="${PROD%/valowithfriendsdb}/valo_<id>_rehearsal" ;; *) echo "STOP: .env.remote is not the production URL shape" ;; esac
+# sha/same fail CLOSED: an unreadable sidecar, a missing key or a malformed hash is a STOP, never "EQUAL". (Two
+# failed reads used to compare two empty strings and print EQUAL; final review of the process, finding 3.)
+sha() { "$PY" -c "import json, re, sys; h = json.load(open(sys.argv[1], encoding='utf-8'))['artifact']['sha256']; assert isinstance(h, str) and re.fullmatch('[0-9a-f]{64}', h), f'not a sha256: {h!r}'; print(h)" "$1"; }
+same() { a="$(sha "$1")" || { echo "STOP: cannot read a hash from $1"; return 1; }; b="$(sha "$2")" || { echo "STOP: cannot read a hash from $2"; return 1; }; if [ "$a" = "$b" ]; then echo "EQUAL $a"; else echo "DIFFERENT: $1 $a vs $2 $b"; return 1; fi; }
 ```
+
+**Every block must be able to fail.** `set -o pipefail` stays on for the session, because without it a command piped
+into `tee` reports `tee`'s success. Any helper that compares two values must fail closed on an unreadable input.
+Every `psql` script that sets variables with `\gset` must check them afterwards, because a NULL result *unsets*
+the variable. Use the helpers above, not the older ones in `impact-rc3/README.md` §0, which print `EQUAL` when both
+reads fail.
 
 ### Where things are
 
@@ -86,11 +97,15 @@ case "$PROD" in */valowithfriendsdb) REH="${PROD%/valowithfriendsdb}/valo_<id>_r
 | G1 | B → C | Does the measurement clear the declared stop rule, and does the formula ship? |
 | G2 | C → D | Is the plan approved for **branch-only** implementation, after external review? |
 | G3 | E → F | Branch review clean (§E4)? The release's F commands written in its runbook (§F)? May production be **read**, and a rehearsal restore be **created** on the production instance, for the freeze and the reviews? |
-| G3s | before F, **schema releases only** | The schema-only release rehearsed (§D′)? May it migrate production and deploy, **with no activation**? |
+| G3s | before F, **schema releases only** | The schema-only release rehearsed (§D′)? **The recovery gate (§H0) cleared** and a fresh restore point recorded? May it migrate production and deploy, **with no activation**? |
 | G4 | F → G | Owner's last look at the site comparison; approval of the reviews |
 | G5 | G → H | Rehearsal passed end to end, including the real-data tests; concurrency measured or explicitly waived **for this release**; the swap-to-deploy exposure policy chosen; the window's timing and the ingestion freeze accepted; storage and recovery (§H0) confirmed |
 | G6 | during H | Swap. Merge and deploy of the activation checkout |
 | G7 | I | Reopen the gate: catch-up shown complete, nothing unexplained in the hold |
+
+**The recovery gate (§H0) is cleared before the first write to any production table**: D′'s migration for a
+schema-bearing release, and H1's swap otherwise. `CREATE DATABASE` for a rehearsal restore is not such a write; it
+touches no production table.
 
 A **defect found at any gate goes back to the earliest phase it invalidates.** A scorer change after F means a
 re-freeze and new reviews, because the manifest digests the scoring sources.
@@ -180,7 +195,10 @@ production it fails with a missing relation or column. The order, modelled on rc
 2. **Rehearse it on a restore**: migrate, timed; install or refresh the gate; serve the site from that checkout; then
    the **R2 dry run** — maintenance mode, `alembic downgrade` to the previous head, preflight, and confirm the gate
    survives the downgrade.
-3. **Gate G3s.** Then preflight and back up production, record the restore point, migrate by hand from a clean
+3. **Clear the recovery gate (§H0) first.** This migration is the release's first write to a production table, so
+   point-in-time restore must cover it, or backup-only recovery must be accepted explicitly for it, with R2 and R3
+   written into the runbook. Then **gate G3s**. Preflight and back up production (`pg_dump`, then
+   `pg_restore --list`), record the preflight's server time as the restore point, migrate by hand from a clean
    checkout of exactly the commit that will merge, refresh the gate, merge, and check that the site is healthy.
    Production still scores with the live release.
 4. Only now continue to §F, from a restore taken **after** the schema release.
@@ -267,7 +285,8 @@ and then fail every review.
    ```
    Commit the manifest **alone**. Never edit it: review results are tied to its hash.
 4. **K3, K4** (`export_impact_artifact.py --comparator <cmp>` and `--manifest "$REL/candidate-manifest.json"`; the
-   `same` helper is in `impact-rc3/README.md` §0). Hashes must be equal.
+   `same` helper is in §0 above). Hashes must be equal. This is **`PREP_CHAIN`**: preparation-grade, and **never**
+   the hash a later verification expects (§H1.3).
 5. **Reviews, against the rehearsal restore** from step 0 (the review tool checks the manifest's fingerprints):
    - `release_candidate_review.py` per the rc3 runbook §5.3 pattern, for the release's cohort;
    - `compare_rc3_decomposition.py --manifest "$REL/candidate-manifest.json" --matches <cohort>`, which reviews the
@@ -342,7 +361,10 @@ and then fail every review.
    It is the restore point for R3. The preparation dump from §F is not this checkpoint.
 2. **Pre-swap capture**: a canonical `COPY (SELECT <every persisted column> FROM impact_scores ORDER BY round_id,
    match_player_id)`, with its sha256, row count and the cohort's fingerprints recorded.
-3. **K4 then K5** on the gated dataset. Equal, or STOP.
+3. **K4 then K5** on the gated dataset. Equal, or STOP. **Their hash is `CHAIN`** — the value every verification in
+   this window passes as `--expect-comparison-sha256`. It is not F4's `PREP_CHAIN`: the activation cohort includes
+   every match ingested since F, so the preparation hash cannot match `verify-build` even when K4 = K5 exactly. The
+   rehearsal likewise verifies against its own export's hash.
 4. `build`, then `verify-build --expect-scoring-version N`, then **capture the prewarm lists**, then `swap`:
    ```bash
    S="--expect-database valowithfriendsdb --identity <id>-runbook --previous-table impact_scores_v<N-1> --rolled-back-table impact_scores_<id>_rolled_back"

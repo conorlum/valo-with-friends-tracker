@@ -7,6 +7,11 @@
 -- distinct. Tested 2026-09-21 on the local corpus valo_v4: a=3206, b=3205 (3206 excluded), c=3202. For (a),
 -- impact_v4 removed 2 assists on 3206 through the scorer itself, which confirms the SQL picks what the code removes.
 -- Production's picks will differ; record them in impact-v4/README.md.
+--
+-- A rule with NO qualifying match makes max() NULL, and \gset then UNSETS the variable instead of setting it; a
+-- later reference to it would be a confusing syntax error. Each pick is therefore checked right after its \gset
+-- and raises a named STOP, which exits nonzero under ON_ERROR_STOP. Run with ON_ERROR_STOP=1, as below, and in a
+-- shell with `set -o pipefail` when piping to tee.
 
 \set base '3104,3129,3130,3131,3113,3118,3121,3114,3115,3116,3117,3120,3133'
 
@@ -26,6 +31,10 @@ WHERE r.match_id <> ALL (string_to_array(:'base', ',')::int[])
            AND k.event_time_seconds >= r.plant_time + 45)
        OR (coalesce(r.outcome, '') LIKE '%Time Win%' AND k.event_time_seconds > 100))
 \gset
+\if :{?a_post_decided_assist}
+\else
+DO $$ BEGIN RAISE EXCEPTION 'STOP: no match qualifies for rule (a), a post-decided assist'; END $$;
+\endif
 
 -- (b) a kill after a defuse, excluding (a)
 SELECT max(r.match_id) AS b_post_defuse_kill
@@ -33,6 +42,10 @@ FROM kill_events k JOIN rounds r ON r.id = k.round_id
 WHERE r.match_id <> ALL (string_to_array(:'base', ',')::int[]) AND r.match_id <> :a_post_decided_assist
   AND r.defused AND r.defuse_time IS NOT NULL AND k.event_time_seconds >= r.defuse_time
 \gset
+\if :{?b_post_defuse_kill}
+\else
+DO $$ BEGIN RAISE EXCEPTION 'STOP: no match qualifies for rule (b), a kill after a defuse'; END $$;
+\endif
 
 -- (c) a Time Win round with a kill after 100 s, excluding (a) and (b)
 SELECT max(r.match_id) AS c_time_win_post_100s_kill
@@ -41,6 +54,10 @@ WHERE r.match_id <> ALL (string_to_array(:'base', ',')::int[])
   AND r.match_id NOT IN (:a_post_decided_assist, :b_post_defuse_kill)
   AND coalesce(r.outcome, '') LIKE '%Time Win%' AND k.event_time_seconds > 100
 \gset
+\if :{?c_time_win_post_100s_kill}
+\else
+DO $$ BEGIN RAISE EXCEPTION 'STOP: no match qualifies for rule (c), a Time Win kill after 100 s'; END $$;
+\endif
 
 SELECT :'a_post_decided_assist' AS a, :'b_post_defuse_kill' AS b, :'c_time_win_post_100s_kill' AS c,
        :'base' || ',' || :'a_post_decided_assist' || ',' || :'b_post_defuse_kill' || ','
