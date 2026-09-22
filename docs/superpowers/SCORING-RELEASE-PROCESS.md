@@ -85,8 +85,8 @@ case "$PROD" in */valowithfriendsdb) REH="${PROD%/valowithfriendsdb}/valo_<id>_r
 |---|---|---|
 | G1 | B → C | Does the measurement clear the declared stop rule, and does the formula ship? |
 | G2 | C → D | Is the plan approved for **branch-only** implementation, after external review? |
-| G3 | E → F | Branch review clean (§E4)? May production be **read** for the freeze and reviews? |
-| G4 | F → G | Owner's last look at the site comparison; approval of the reviews; may a rehearsal database be **created** on the production instance? |
+| G3 | E → F | Branch review clean (§E4)? May production be **read**, and a rehearsal restore be **created** on the production instance, for the freeze and the reviews? |
+| G4 | F → G | Owner's last look at the site comparison; approval of the reviews |
 | G5 | G → H | Rehearsal passed end to end; the window's timing and the ingestion freeze accepted; storage confirmed |
 | G6 | during H | Swap. Merge and deploy of the activation checkout |
 | G7 | I | Reopen the gate: catch-up shown complete, nothing unexplained in the hold |
@@ -204,8 +204,13 @@ implementation branch and both sides execute the new code: a shared regression w
    - Then a **read-only external code review** of the whole branch. Fix what it confirms, with tests.
 5. Write the **RESULT** for the release declaration, scoring every prediction. **Gate G3.**
 
-## F. Freeze and review (production reads only)
+## F. Freeze and review (production reads, plus one restore)
 
+0. **Create the rehearsal restore first.** The reviews in step 5 need production's data, which only a restored copy
+   has. Take a backup dump of production, run `CREATE DATABASE valo_<id>_rehearsal` on the instance (the only
+   statement before activation that uses the production URL and is not a read; it touches no production table),
+   restore into it, migrate it if the release has migrations, and install its gate closed. The commands are in
+   `impact-rc3/README.md` §4. **Measure storage while you are here** (§H0). The same restore serves §G.
 1. **Fix the review cohort** by querying production: the previous release's review matches, plus one match that
    demonstrably exercises each new rule (chosen by query, recorded with the query). The freeze requires `--matches`,
    and acceptance requires review results covering **exactly** that set.
@@ -223,7 +228,7 @@ implementation branch and both sides execute the new code: a shared regression w
    Commit the manifest **alone**. Never edit it: review results are tied to its hash.
 4. **K3, K4** (`export_impact_artifact.py --comparator <cmp>` and `--manifest "$REL/candidate-manifest.json"`; the
    `same` helper is in `impact-rc3/README.md` §0). Hashes must be equal.
-5. **Reviews, against a rehearsal restore** (§G1 creates it; the review tool checks the manifest's fingerprints):
+5. **Reviews, against the rehearsal restore** from step 0 (the review tool checks the manifest's fingerprints):
    - `release_candidate_review.py` per the rc3 runbook §5.3 pattern, for the release's cohort;
    - `compare_rc3_decomposition.py --manifest "$REL/candidate-manifest.json" --matches <cohort>`, which reviews the
      manifest's **release comparator**;
@@ -233,9 +238,8 @@ implementation branch and both sides execute the new code: a shared regression w
 
 ## G. Rehearse — the whole window on a fresh restore, timed
 
-1. **Restore.** Take a backup dump of production, `CREATE DATABASE valo_<id>_rehearsal` on the instance (the only
-   non-read before activation, and it touches no production table), restore into it, and install its gate closed
-   (`impact-rc3/README.md` §4). **Measure storage now** (§H0).
+1. **Use a fresh restore.** F step 0's restore serves if nothing but reviews has touched it. Otherwise drop it —
+   type the name by hand and read it twice — and restore again the same way.
 2. **The activation checkout**: a local branch off **the reviewed tip**, with exactly one commit: `ACTIVE_MANIFEST` →
    `docs/superpowers/impact-<id>/candidate-manifest.json` and `IMPACT_CALCULATION_VERSION` → N, with a history
    comment. Before relying on it, assert the chain surface is identical to the freeze (the `:/`-anchored check with

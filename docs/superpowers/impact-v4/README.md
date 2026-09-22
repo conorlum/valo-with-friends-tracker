@@ -32,7 +32,7 @@ Nothing is merged, deployed or frozen. Production runs rc3 (`IMPACT_CALCULATION_
 | C plan | done | plan r5, `4ecf7f0`, after four external reviews (R1–R11, S1–S6, T1–T5, U1–U3) |
 | D implement | done | `71ad905` `de1494f` `2bfff71` `c8f1ce3` `8b72d0d` `af8d3d1` `edcec2a` `a9140fb` `27daaf2` |
 | E prove | done | DECLARATION 13 `82ee277`; reference hashes `97ed0b0`; comparison tool `0003010`; RESULT `852dc49`; review fixes `9bb5618` `6d00d08`; addendum `7f6c0ed`. Seven comparisons, 0 rows differing over 674,530 rows each, both modes, byte-identical, and the hardened checker exits 0 |
-| F freeze & review | **next** | needs production reads and gate G3/G4 |
+| F freeze & review | **next** | gate G3: production reads plus the rehearsal restore; then G4 after the reviews |
 | G rehearse | not started | |
 | H activate | not started | |
 | I hold & reopen | not started | |
