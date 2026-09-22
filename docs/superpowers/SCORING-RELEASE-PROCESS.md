@@ -85,9 +85,10 @@ case "$PROD" in */valowithfriendsdb) REH="${PROD%/valowithfriendsdb}/valo_<id>_r
 |---|---|---|
 | G1 | B → C | Does the measurement clear the declared stop rule, and does the formula ship? |
 | G2 | C → D | Is the plan approved for **branch-only** implementation, after external review? |
-| G3 | E → F | Branch review clean (§E4)? May production be **read**, and a rehearsal restore be **created** on the production instance, for the freeze and the reviews? |
+| G3 | E → F | Branch review clean (§E4)? The release's F commands written in its runbook (§F)? May production be **read**, and a rehearsal restore be **created** on the production instance, for the freeze and the reviews? |
+| G3s | before F, **schema releases only** | The schema-only release rehearsed (§D′)? May it migrate production and deploy, **with no activation**? |
 | G4 | F → G | Owner's last look at the site comparison; approval of the reviews |
-| G5 | G → H | Rehearsal passed end to end; the window's timing and the ingestion freeze accepted; storage confirmed |
+| G5 | G → H | Rehearsal passed end to end, including the real-data tests; concurrency measured or explicitly waived **for this release**; the swap-to-deploy exposure policy chosen; the window's timing and the ingestion freeze accepted; storage and recovery (§H0) confirmed |
 | G6 | during H | Swap. Merge and deploy of the activation checkout |
 | G7 | I | Reopen the gate: catch-up shown complete, nothing unexplained in the hold |
 
@@ -166,8 +167,25 @@ code.** The rules that hold for every scoring change:
 - **Release tools stay parameterised.** No release-specific default names, identities or versions. Everything is
   explicit and validated.
 
-If the change needs a **schema migration**, add rc3's Stage 7 (`impact-rc3/README.md` §7): a PR that migrates and
-installs the gate without activating, rehearsed first, with its own rollback (R2).
+### D′. Schema-bearing releases only: ship the schema first, as its own release
+
+If the change adds or alters a table or column the scorer reads, **production must be at the new schema before §F**.
+The freeze fingerprints the cohort by querying production under the *new* fingerprint contract, so on unmigrated
+production it fails with a missing relation or column. The order, modelled on rc3's Stage 7
+(`impact-rc3/README.md` §6.8 and §7):
+
+1. The migrations, and any gate or `SOURCE_TABLES` changes for new tables, go in a **schema-only commit with no
+   activation**. `ACTIVE_MANIFEST` and `IMPACT_CALCULATION_VERSION` are unchanged. Old code must keep scoring
+   correctly on the new schema, so every new column is nullable or defaulted, and old code never reads it.
+2. **Rehearse it on a restore**: migrate, timed; install or refresh the gate; serve the site from that checkout; then
+   the **R2 dry run** — maintenance mode, `alembic downgrade` to the previous head, preflight, and confirm the gate
+   survives the downgrade.
+3. **Gate G3s.** Then preflight and back up production, record the restore point, migrate by hand from a clean
+   checkout of exactly the commit that will merge, refresh the gate, merge, and check that the site is healthy.
+   Production still scores with the live release.
+4. Only now continue to §F, from a restore taken **after** the schema release.
+
+A weights-only or scorer-logic-only release has no D′.
 
 ## E. Prove — against an independent reference, never against yourself
 
@@ -182,9 +200,17 @@ implementation branch and both sides execute the new code: a shared regression w
    - any declared extension beyond the measured reference (a clamp, an ambiguity rule).
    Items that need production are marked declared-at-freeze.
 2. **Build the reference from unchanged code.** Make a separate `git worktree` at the measurement commit, where the
-   scorer equals production. Add a **scripts-only** commit with a row-dump mode, assert `git diff <commit> --
-   webapp/app` is empty (the dumper should refuse otherwise), and read the live configuration from the original
-   frozen manifest **as data**. Dump every `CalculatedImpact` field for the shipped arm and each new arm, ex-ante
+   scorer equals production. Add a **scripts-only** commit with a row-dump mode. Then prove the scorer is untouched
+   with an **anchored, counted** check — from `webapp/`, a bare `webapp/app` pathspec matches nothing and an empty
+   diff then proves nothing:
+   ```bash
+   n=$(git ls-tree -r --name-only <commit> -- :/webapp/app | wc -l)
+   [ "$n" -gt 0 ] || echo "STOP: the pathspec matched no files"
+   git diff --quiet <commit> HEAD -- :/webapp/app && echo "scorer identical ($n files)" || echo "STOP: webapp/app changed"
+   ```
+   The dumper must make the same check itself, with the same count, and refuse to run otherwise. v4's does, with
+   `-- app` run from `webapp/`, which matches 151 files. Read the live configuration from the original frozen
+   manifest **as data**. Dump every `CalculatedImpact` field for the shipped arm and each new arm, ex-ante
    **and** realized, as canonical CSV sorted by `(round_id, match_player_id)`. **Record the sha256s in a ledger
    addendum before comparing.**
 3. **Compare** with a checker modelled on `scripts/compare_v4_reference.py`:
@@ -206,12 +232,22 @@ implementation branch and both sides execute the new code: a shared regression w
 
 ## F. Freeze and review (production reads, plus one restore)
 
-0. **Create the rehearsal restore first.** The reviews in step 5 need production's data, which only a restored copy
-   has. Take a backup dump of production, run `CREATE DATABASE valo_<id>_rehearsal` on the instance (the only
-   statement before activation that uses the production URL and is not a read; it touches no production table),
-   restore into it, migrate it if the release has migrations, and install its gate closed. The commands are in
-   `impact-rc3/README.md` §4. **Measure storage while you are here** (§H0). The same restore serves §G.
-1. **Fix the review cohort** by querying production: the previous release's review matches, plus one match that
+**Before gate G3, write this release's F commands into its runbook, with its own values.** Never paste rc3's: its
+§4 asserts schema 0007, 3,125 matches, an absent gate and `valo_rc3_rehearsal`, all of which were rc3's preparation
+state, not yours. Each step's expectations come from step 0's baseline, recorded read-only.
+
+**One snapshot, three uses.** The review cohort is **chosen on the restore**, frozen from production, and reviewed
+against the restore. That only holds if the restore and production agree on those matches' source rows, so step 3
+checks it. Otherwise a match ingested after the dump, or an admin correction to an old one, would pass the freeze
+and then fail every review.
+
+0. **Baseline, backup and restore.** Record production's baseline read-only: alembic head, match count, max match id,
+   and gate state, release id and admin id. These become every later `--expect-*`. Preflight production with them,
+   `pg_dump` it (the backup), run `CREATE DATABASE valo_<id>_rehearsal` on the instance (the only statement before
+   activation that uses the production URL and is not a read; it touches no production table), restore into it,
+   and install its gate closed. Preflight the restore with the same counts. **Measure storage while you are here**
+   (§H0). The same restore serves §G.
+1. **Fix the review cohort by querying the restore**: the previous release's review matches, plus one match that
    demonstrably exercises each new rule (chosen by query, recorded with the query). The freeze requires `--matches`,
    and acceptance requires review results covering **exactly** that set.
 2. **Freeze declaration** in the ledger, before freezing. It records:
@@ -225,13 +261,20 @@ implementation branch and both sides execute the new code: a shared regression w
    DATABASE_URL="$PROD" $PY scripts/freeze_impact_candidate.py --candidate-id <cand> --release-comparator <cmp> \
        --activation-version N --matches <cohort> --out "$REL/candidate-manifest.json" || echo "STOP: exit $?"
    ```
+   Then, **before committing it**, prove the restore holds the same source rows as the freeze for every cohort match:
+   ```bash
+   DATABASE_URL="$REH" $PY -c "import sys; from app.db import SessionLocal; from app.scoring.impact_manifest import load_manifest, verify_source_snapshots; verify_source_snapshots(SessionLocal(), load_manifest(sys.argv[1])); print('restore matches the freeze')" "$REL/candidate-manifest.json" || echo "STOP: re-restore and freeze again"
+   ```
    Commit the manifest **alone**. Never edit it: review results are tied to its hash.
 4. **K3, K4** (`export_impact_artifact.py --comparator <cmp>` and `--manifest "$REL/candidate-manifest.json"`; the
    `same` helper is in `impact-rc3/README.md` §0). Hashes must be equal.
 5. **Reviews, against the rehearsal restore** from step 0 (the review tool checks the manifest's fingerprints):
    - `release_candidate_review.py` per the rc3 runbook §5.3 pattern, for the release's cohort;
    - `compare_rc3_decomposition.py --manifest "$REL/candidate-manifest.json" --matches <cohort>`, which reviews the
-     manifest's **release comparator**;
+     manifest's **release comparator**. **Its assumptions must hold for your release**: it takes raw econ from the
+     `V2_30_80_BONUS` comparator and requires the same `econ_model`, so a release that changes the econ model needs
+     its own decomposition check, with its assumptions declared and a defect-reinstatement test that shows it can
+     fail. Reuse this one only when the econ model is unchanged;
    - `--results "$REL/review-results.json"` covering exactly the frozen cohort.
 6. **The owner's last look**: a side-by-side of several friend-group matches on the site, before and after (rc3's
    `SUMMARY.md`), especially when the RESULT's row motion says many matches reorder. **Gate G4.**
@@ -240,10 +283,16 @@ implementation branch and both sides execute the new code: a shared regression w
 
 1. **Use a fresh restore.** F step 0's restore serves if nothing but reviews has touched it. Otherwise drop it —
    type the name by hand and read it twice — and restore again the same way.
-2. **The activation checkout**: a local branch off **the reviewed tip**, with exactly one commit: `ACTIVE_MANIFEST` →
-   `docs/superpowers/impact-<id>/candidate-manifest.json` and `IMPACT_CALCULATION_VERSION` → N, with a history
-   comment. Before relying on it, assert the chain surface is identical to the freeze (the `:/`-anchored check with
-   the file count, `impact-rc3/README.md` §6). Any file other than a recorded exception is a STOP.
+2. **The activation checkout**, in two checks, in this order:
+   - **Before branching**, on the reviewed tip: the chain surface is identical to the freeze. Use the `:/`-anchored
+     check with the file count (`impact-rc3/README.md` §6). Any difference is a STOP unless this release has recorded
+     its own exception, with its evidence, in its runbook. rc3's `write_gate.py` exception does not carry over.
+   - Then a local branch off that tip, with **exactly one commit**: `ACTIVE_MANIFEST` →
+     `docs/superpowers/impact-<id>/candidate-manifest.json` and `IMPACT_CALCULATION_VERSION` → N, with a history
+     comment. Assert that commit is exactly the permitted edit. `git diff --name-only HEAD~1 HEAD` must print only
+     `webapp/app/scoring/impact_runtime.py` and `webapp/app/scoring/impact.py`. Then, from the checkout,
+     `active_scoring_config().config_id == "<cmp>"` and `IMPACT_CALCULATION_VERSION == N`. `verify_manifest` passes
+     only if `impact.py` moved in nothing but the masked version assignment.
 3. **Rehearse the window exactly as §H will run it**, recording every duration in `$ART/rehearsal/durations.md`:
    - drain, stranded-match check, close the gate;
    - the **pre-swap capture** of the live rows (a prerequisite for the swap);
@@ -251,24 +300,46 @@ implementation branch and both sides execute the new code: a shared regression w
    - cache DELETE, prewarm, coverage, and **cache/table agreement** (`verify_cache_matches_scores.py`);
    - the gate probes: a stale checkout is refused, a write without identity is refused, the preflighted checkout is
      allowed;
+   - **the database tests on real data**, after the swap, from the activation checkout
+     (`VALO_TEST_DATABASE_URL="$REH"`, the rc3 §6.4a set, deselecting the committing-wrapper test). The table then
+     holds version N and the checkout computes N, so `test_builder_matches_stored_values` checks the loaded table
+     end to end. A skip is a finding;
+   - **concurrency**: page latencies against the served restore, across a swap and a rollback (rc3 §6.6, including
+     its 2xx floor). If the owner declines to measure it, that is a **new, dated waiver for this release** — rc3's
+     waiver is not a standing approval;
+   - the **exposure policy** for the swap-to-deploy interval, chosen by the owner for this release: accept it, as
+     rc3 did (§8.4.0), or `MAINTENANCE_MODE=1` for its duration (rehearse that too);
    - **rollback with its full verification**, then forward again;
    - an **interrupted swap** changes nothing.
-4. On a **second restore**, the case that consumes the rollback precondition: open the gate, ingest one match, close
-   it, and assert `rollback` refuses **specifically** with "matches were ingested after the swap".
+4. On a **second restore**, the case that consumes the rollback precondition. First run the forward path on it,
+   exactly as step 3 did: build, verify-build, swap, deploy locally, restart, verify-live. Without a completed swap
+   there is nothing to roll back, and the refusal would prove nothing. Then open the gate for `<cand>`, ingest one
+   match, check it committed with its scores, close the gate, and assert `rollback` refuses **specifically** with
+   "matches were ingested after the swap".
 5. **Write the window's commands into the release's runbook** from what actually ran. **Gate G5.**
 
 ## H. Activate — one gated window
 
 **H0. Before the window.**
 - Storage for live + staged + retained tables, indexes and WAL headroom is confirmed.
+- **Recovery gate** (rc3 plan, recovery gate; `impact-rc3/README.md` §7.1). Confirm, on the Render Recovery page,
+  that point-in-time restore covers the window, and record its retention. If it does not, the owner must accept
+  backup-only recovery explicitly, for this release. **R3** — restore into a new instance, then repoint the web
+  service and `.env.remote` — is written into the runbook as an executable last resort.
 - The exact pre-release **production `main` SHA is recorded** (it is the rollback deployment).
 - The retained table name is free.
 - A separate checkout of the release-tools commit exists for any database rollback.
 
 **H1. The window**, from a clean checkout of the activation PR's head, in this order:
 
-1. Preflight. **Drain ingestion**, check for **stranded matches**, and close the gate. That moment fixes the
-   **activation cohort**: every match now in production.
+1. Preflight. **Drain ingestion**: stop every scheduled or running refresh, and wait for the last one to exit.
+   Check for **stranded matches** — a match committed without its scores (`find_unscored_match_ids`), the shape of
+   the 3133 incident. Then close the gate and hand it to this release's runbook identity, explicitly:
+   `install_release_write_gate.py --expect-database valowithfriendsdb --state closed --release-id <live cand>
+   --admin-id <id>-runbook --note "..."`. That moment fixes the **activation cohort**: every match now in
+   production.
+   Take a **fresh backup** now (`pg_dump`, then `pg_restore --list`), and record the preflight's printed server time.
+   It is the restore point for R3. The preparation dump from §F is not this checkpoint.
 2. **Pre-swap capture**: a canonical `COPY (SELECT <every persisted column> FROM impact_scores ORDER BY round_id,
    match_player_id)`, with its sha256, row count and the cohort's fingerprints recorded.
 3. **K4 then K5** on the gated dataset. Equal, or STOP.
@@ -285,20 +356,29 @@ implementation branch and both sides execute the new code: a shared regression w
 7. **Cache barriers**: `DELETE FROM player_view_cache` (never TRUNCATE), prewarm the roster, coverage,
    **agreement**, the site stats refresh, then the background prewarm with its pid recorded (`impact-rc3/README.md`
    §8.6's chain). Confirm the live cache version includes N.
-8. **Acceptance**: every match equals its replay under the active configuration (`replay_diffs`, rc3 §8.7), then
-   page checks.
+8. **Acceptance**: every match equals its replay under the active configuration (`replay_diffs`, rc3 §8.7). Then
+   **`verify-live` once more**, with every argument (artifact, sidecar, comparison, `--approved`, `--manifest`,
+   `--expect-comparison-sha256`, `--expect-scoring-version N`, and the swap names). It is the final input-fingerprint
+   and approved-results check: an admin correction plus a rescore can pass the replay while departing from the
+   approved export. Then page checks.
 9. **The rollback window is open.** Resolve every doubt now, with the gate still closed.
 
 ## I. Hold and reopen
 
 1. **Observation hold: 48 hours with the gate closed.** Ordinary rollback stays complete throughout.
-2. **Catch-up inventory** (rc3 §8.10a): a per-player boundary, not one date. Tracker.gg history pages hold 20
-   matches. An unreachable boundary is **incomplete**, never assumed covered. **Show the catch-up is complete before
-   reopening.** **Gate G7.**
+2. **Catch-up inventory, before reopening** (rc3 §8.10a). Take a per-player boundary, not one date: each roster
+   player's newest ingested `external_id` and `played_at`. Record an **expected-id set** per player, with the cursors
+   and boundary evidence. Tracker.gg history pages hold 20 matches. An unknown timestamp, a repeated cursor, a
+   private profile, an unreachable boundary or a cap is **INCOMPLETE**, never assumed covered. **Gate G7**: the
+   inventory is complete, and nothing in the hold is unexplained.
 3. Open the gate **explicitly for `<cand>`**:
-   `install_release_write_gate.py --expect-database valowithfriendsdb --state open --release-id <cand> --note "..."`.
+   `install_release_write_gate.py --expect-database valowithfriendsdb --state open --release-id <cand> --admin-id <id>-runbook --note "..."`.
    Ingest; the first new match must carry `scoring_version` N and equal its replay. Probe that a stale checkout is
    refused. **From here ordinary rollback is gone: fix forward**, as a new release through this same process.
+4. **Reconcile after reopening.** Every id in the expected sets must be present **and scored** at version N. Report
+   every difference; a clean exit status is not completion. Then **sweep again through the reopening moment**, so a
+   match that arrived between the inventory and the gate opening is not missed. Never stop at the first
+   already-known match: another friend's ingestion can have placed a newer one while an older one is still missing.
 
 ### Rollback (only before the gate reopens)
 
