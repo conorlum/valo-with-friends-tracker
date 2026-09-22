@@ -4759,3 +4759,50 @@ on the owner's concept, not on evidence.
 
 **Stop rule.** Any of 14.1–14.4 failing stops the release at F until the cause is eliminated or reported. 14.7 failing
 means **no swap**.
+
+
+### 2026-09-22 (RESULT, declaration 14 — phase F) — the freeze holds, and the chain closes on production
+
+Phase F of the process is complete. **Predictions 14.1 to 14.5 are all right**; 14.6 and 14.7 belong to rehearsal and
+the window and are not yet scored. Production was only read. Nothing is merged, deployed or activated:
+`IMPACT_CALCULATION_VERSION` is 3 and `ACTIVE_MANIFEST` is still rc3's.
+
+| # | prediction | outcome | |
+|---|---|---|---|
+| 14.1 | the freeze succeeds from a clean tree, and the restore matches all 16 fingerprints | frozen at `f9b5cc0`, manifest LF-sha256 `2f33f137…`; `verify_source_snapshots` on the restore printed "restore matches the freeze" | **right** |
+| 14.2 | K3 = K4 on production (`PREP_CHAIN`) | **EQUAL** `2cd448e2edb3d4616dfd3ce7abf0150a33a851ab126dc21245ef3e430c4424c2` | **right** |
+| 14.3 | the decomposition check reports 0 mismatches | **29,606 checks, 0 mismatches** over the 16 matches | **right** |
+| 14.4 | `review-results.json` covers exactly the 16 frozen matches | exactly the 16 | **right** |
+| 14.5 | a removed post-decided assist and a zeroed decided kill are visible in 3655 / 3652 / 3642 | zeroed decided events 2 / 4 / 2, assists removed 1 / 1 / 3 (−100 / −100 / −300 on the assists component) | **right** |
+| 14.6 | rehearsal-grade row motion inside the declared band | not yet run (§G) | — |
+| 14.7 | in the window, K4 = K5, and row motion inside the band | not yet run (§H) | — |
+
+#### The chain, as it now stands
+
+| link | what it is | value |
+|---|---|---|
+| `PREP_CHAIN` | K3 (comparator `impact_v4`) = K4 (frozen manifest), both on production over the 3,649 matches present at F0, 769,120 player-rounds | `2cd448e2edb3d4616dfd3ce7abf0150a33a851ab126dc21245ef3e430c4424c2` |
+| cohort fingerprint | equal in both sidecars, contract **v2** | `768c86b30b68d77a…` |
+| both exports | revision `2e5140e`, artifact contract 2, `impact_calculation_version` 3 (no bump on the branch) | |
+
+K3 took 45.6 minutes and K4 44.7, each about 23 minutes of scoring and the rest per-match fingerprinting. Both were
+pinned with `--matches` to the id list captured at F0 (sha256 `92077535…`), so a match ingested while they ran could
+not make them differ; production's max match id was 3657 before and after. Each export holds the whole corpus in
+memory, and a first attempt at running both in one job was killed by the machine's low-memory reaper after K3 had
+scored but before it wrote its sidecar. They were rerun one at a time. **That is a lesson for the process: run one
+export per job.**
+
+#### The reviews
+
+Every reconciliation passes: 5,140 checks over the fixed ten, and 450 to 958 per single match. `review-results.json`
+holds all 16. The reviewed "Before" column is what production stores, which is rc3, so the tables are the rc3 → v4
+comparison the owner's G4 look needs.
+
+Across the ten fixed matches, 100 player-rounds: **every one changes** (mean −155, median −115, p5 −915, p95 +371),
+and **6 of 10 matches change at least one player's rank**. The largest single move is −1,949 (match 3115), which also
+swaps rank 1 and 2 there. This is consistent with the corpus measurement behind declaration 12 — about a third of
+rows and about 72% of matches — and it is the visible consequence of removing the post-plant ramp and the
+plant+38..45 override.
+
+**Motion is not improvement.** The evidence that v4 is better is declaration 12's, on both targets; this entry only
+records that the freeze reproduces, that the reviews reconcile, and what the site will look like.
