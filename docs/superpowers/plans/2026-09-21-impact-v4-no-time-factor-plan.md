@@ -2,8 +2,11 @@
 
 **Status:** r5, 2026-09-21. **Approved by review for branch-only implementation** after four external reviews
 (R1–R11, S1–S6, T1–T5, U1–U3; §6). This is **not** approval to release: rehearsal and acceptance must still pass.
-Nothing is implemented.
-`webapp/app/` is untouched, `IMPACT_CALCULATION_VERSION` is 3, and `ACTIVE_MANIFEST` is the rc3 manifest.
+**Progress (2026-09-21): §2 is implemented and proved on branch `impact-v4-implementation`; the live phase
+checklist is `../impact-v4/README.md`, run per `../SCORING-RELEASE-PROCESS.md`.** Production is unchanged:
+`IMPACT_CALCULATION_VERSION` is 3 and `ACTIVE_MANIFEST` is the rc3 manifest. Two statements below are superseded
+by the code and the ledger (see the runbook's "Known state"): §2.6's claim that `f96aee9`'s `webapp/app` equals
+`origin/main`, and the swap commands' rc3 defaults.
 
 **Authority.** The ledger (`../2026-09-07-predeclared-values.md`) fixes what ships and why, in the entries
 *2026-09-21 CORRECTION*, *DECLARATION 12* and *RESULT, declaration 12*. This plan covers only how. The release
