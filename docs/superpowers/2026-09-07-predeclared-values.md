@@ -4630,3 +4630,53 @@ local scratch database `valo_v4_test` on 3.13: 1,430 passed, 4 failed, 13 errors
 - One failure appears on `origin/main` only and is a database-state artifact, not code:
   `test_every_declared_table_is_gated_for_every_write`, because the scratch database's gate was installed from this
   branch's SQL and therefore also guards `players`.
+
+
+### 2026-09-21 (ADDENDUM to RESULT, declaration 13) — the equivalence checker could not fail; fixed, and the equivalence re-run through it
+
+**An external read-only review of the branch found that the instrument behind 13.1–13.6 could not fail.** The
+result does not change. What changes is what the result rests on.
+
+**What was wrong** in `scripts/compare_v4_reference.py`, both confirmed by the reviewer:
+
+1. **A corrupted reference could produce a clean report.** The reference CSV was read into a dict, so a duplicate
+   key was silently collapsed. A conflicting duplicate placed before the correct row therefore vanished. The row
+   count was taken from that dict, which hid the duplicate. And `reference_sha256` was **copied from the sidecar**
+   rather than computed from the file actually compared, so `bytes_equal: true` could be reported against a file
+   that had changed.
+2. **A failed equivalence exited 0.** `scoring_version` was only reported. A score difference, an unequal key set or
+   an unexpected version all left the command's exit status at success. Any chain relying on that status would have
+   carried on past this declaration's stop rule.
+
+**Why the recorded result survives regardless.** When the RESULT above was written, byte equality was also checked
+outside the checker: `sha256sum` of each reference file against each implementation file, all six equal. The
+reviewer independently re-hashed and scanned all six pairs as well, and found 674,530 unique keys per pair and
+version 3 throughout. So the claim was true. It was simply not proved by the tool that claimed to prove it.
+
+**The fix** (`6d00d08`, with tests that corrupt the reference and the implementation each way, `test_compare_v4_reference.py`):
+- each reference file is hashed and must equal its pinned sha256 and row count;
+- a duplicate key stops the run;
+- `--expect-scoring-version` is required and is a failure condition on **both** sides;
+- the command exits **1** on any problem, after writing the full report.
+
+The companion review findings (rollback drift on swap entries that predate `players`, `state` discoverability, the
+decided rule on a NULL `plant_time`, malformed `--pairs`) were fixed in `9bb5618`. None of them touches a scoring path.
+
+**The re-run through the fixed checker, `--expect-scoring-version 3`:**
+
+| command | pairs | rows differing | keys on one side only | reference hash (computed from the file) = pinned | exit |
+|---|---|---:|---:|---|---:|
+| all six pairs | P0 / N / N+A × ex-ante / realized | **0** each | 0 / 0 each | yes, all six | **0** |
+| §2.6 step 3, its own command | P0 realized | **0** | 0 / 0 | yes (`8109eb68…`) | **0** |
+
+Every implementation artifact is again byte-identical to its reference. The assists counters are unchanged:
+1,960 removed, 0 clamped, 2 unmapped, 0 ambiguous in both modes.
+
+Reports:
+- `~/Documents/valo-backups/v4-release/equivalence_rerun/step2_all_pairs_hardened.json`, sha256
+  `7364b486caca85d5c33028886b3c33c479c0a1af52d7beebc93832e6f2ef2395`;
+- `equivalence_rerun_step3/step3_flags_off_vs_rc3_hardened.json`, sha256
+  `f6cad5056f4cbe167e3fc06ff877ae679f16cc2063eea18ddcbff9610d3996e0`.
+
+**The lesson worth keeping:** a checker whose only outcome is "pass" is not evidence. Every instrument a declaration
+relies on needs a test showing it can fail, run through the same entry point the declaration uses.
