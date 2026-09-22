@@ -1,7 +1,7 @@
 # Impact v4 — release runbook
 
-Status (2026-09-22): **phases A–F done; waiting on gate G4 (the owner's last look), then G (rehearsal).**
-Nothing is merged, deployed or frozen. Production runs rc3 (`IMPACT_CALCULATION_VERSION` 3, `ACTIVE_MANIFEST` rc3).
+Status (2026-09-22): **phases A-F done; gate G4 approved 2026-09-22; phase G (rehearsal) in progress.**
+Manifest frozen at `2e5140e`. Nothing is merged or deployed. Production runs rc3 (`IMPACT_CALCULATION_VERSION` 3, `ACTIVE_MANIFEST` rc3).
 
 - Process: `../SCORING-RELEASE-PROCESS.md`. This file is v4's instance of it.
 - Plan (the spec): `../plans/2026-09-21-impact-v4-no-time-factor-plan.md` (r5).
@@ -251,3 +251,4 @@ None yet.
 | 2026-09-21 | Ship `N` and `N+A` per declaration 12's stop rule. `N+A` ships on concept; it is untestable |
 | 2026-09-21 | Leave the 15 active-manifest test failures red and documented until activation |
 | 2026-09-21 | Leave rc3's runbook commands as rc3's record; this runbook carries the new flags |
+| 2026-09-22 | **Gate G4 approved**: the rc3 -> v4 site comparison over the fixed ten and both review rounds. Phase G may start |
