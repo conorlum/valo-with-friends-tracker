@@ -4,7 +4,7 @@
 exists.** It is the general process, distilled from two real releases: rc3 (`impact-rc3/README.md`, shipped
 2026-09-18) and v4 (`impact-v4/README.md`). Every step here exists because skipping it caused, or would have
 caused, a real defect in one of them. Where a step names "the release's runbook", that is the per-release file this
-process tells you to create in §3. **Do not replan the process; plan only the release.**
+process tells you to create in §C. **Do not replan the process; plan only the release.**
 
 Throughout, `<id>` is the release's short name (`v4`), `<cand>` its candidate id (`impact-v4`), `<cmp>` its release
 comparator (`impact_v4`), `N` the new `IMPACT_CALCULATION_VERSION`, and `N-1` the one live now.
