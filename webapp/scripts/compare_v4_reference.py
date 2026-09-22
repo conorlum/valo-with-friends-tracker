@@ -4,7 +4,14 @@ reference rows (plan 2026-09-21-impact-v4, section 2.6 steps 2 and 3).
 Run from webapp/, read-only, on the measurement cohort (valo_v4):
 
     DATABASE_URL=... .venv313/Scripts/python.exe scripts/compare_v4_reference.py \
-        --reference DIR --out DIR [--pairs P0:exante,N:realized,...]
+        --reference DIR --out DIR --expect-scoring-version 3 [--pairs P0:exante,N:realized,...]
+
+EXIT STATUS is the verdict: 0 only when every pair has no differing row, no key
+on one side only, equal row counts and `--expect-scoring-version` on every row
+of both sides; 1 otherwise, AFTER the full diagnostic report is written. Each
+reference file is hashed and checked against its pinned sidecar entry, and a
+duplicate reference key or a row count other than the pinned one stops the run
+(external review of the v4 branch, findings 1 and 2).
 
 The reference rows were written by scripts/postplant_v4_decl12.py --dump-rows at
 c470670, whose app/ is production rc3 (f96aee9). They are NEVER regenerated
@@ -129,17 +136,38 @@ def replay(db, ids, pairs, fields):
     return out, assists
 
 
-def _read_reference(path):
-    with open(path, encoding="utf-8", newline="") as handle:
-        reader = csv.reader(handle)
-        header = next(reader)
-        return header, {(int(r[0]), int(r[1])): r for r in reader}
+def load_reference(path, pinned: dict, fields):
+    """(header, {key: row}, sha256) for one reference artifact, PROVED against
+    its pinned sidecar entry rather than trusted.
 
-
-def compare(reference_path, impl_lines, fields):
-    header, ref = _read_reference(reference_path)
+    The bytes actually compared are hashed and must equal the pinned sha256; a
+    duplicate key is refused rather than collapsed by the dict (a conflicting
+    duplicate before the correct row was invisible otherwise); and the physical
+    row count must equal the pinned one."""
+    data = Path(path).read_bytes()
+    sha = hashlib.sha256(data).hexdigest()
+    if sha != pinned["sha256"]:
+        raise SystemExit(f"STOP: {path} has sha256 {sha}, but its sidecar pins {pinned['sha256']}: "
+                         "this is not the reference that was recorded")
+    reader = csv.reader(io.StringIO(data.decode("utf-8"), newline=""))
+    header = next(reader)
     if header != fields:
         raise SystemExit(f"STOP: reference header {header} is not this checkout's fields {fields}")
+    rows, count = {}, 0
+    for row in reader:
+        count += 1
+        key = (int(row[0]), int(row[1]))
+        if key in rows:
+            raise SystemExit(f"STOP: {path} has a duplicate key {key}: a reference row cannot be "
+                             "chosen between, so the artifact is corrupt")
+        rows[key] = row
+    if count != pinned["rows"]:
+        raise SystemExit(f"STOP: {path} has {count} rows, but its sidecar pins {pinned['rows']}")
+    return header, rows, sha
+
+
+def compare(reference_path, pinned, impl_lines, fields):
+    header, ref, reference_sha = load_reference(reference_path, pinned, fields)
     impl = {key: next(csv.reader([line])) for key, line in impl_lines}
     if len(impl) != len(impl_lines):
         raise SystemExit("STOP: duplicate keys in the implementation's rows")
@@ -158,6 +186,7 @@ def compare(reference_path, impl_lines, fields):
                 examples.append({"key": list(key), "fields": {f: [a[fields.index(f)], b[fields.index(f)]]
                                                               for f in moved}})
     return {
+        "reference_sha256": reference_sha,
         "rows_reference": len(ref), "rows_implementation": len(impl),
         "keys_only_in_reference": len(only_ref), "keys_only_in_implementation": len(only_impl),
         "first_keys_only_in_reference": [list(k) for k in only_ref[:5]],
@@ -168,14 +197,38 @@ def compare(reference_path, impl_lines, fields):
     }
 
 
-def main():
+def problems_for(pair: str, result: dict, expect_scoring_version: int) -> list[str]:
+    """Every way one pair fails declaration 13. scoring_version is outside the
+    row comparison, so it is checked here as a failure, not only reported."""
+    problems = []
+    if result["rows_differing"]:
+        problems.append(f"{pair}: {result['rows_differing']:,} rows differ "
+                        f"(by field {result['differing_by_field']})")
+    if result["keys_only_in_reference"] or result["keys_only_in_implementation"]:
+        problems.append(f"{pair}: {result['keys_only_in_reference']:,} keys only in the reference, "
+                        f"{result['keys_only_in_implementation']:,} only in the implementation")
+    if result["rows_reference"] != result["rows_implementation"]:
+        problems.append(f"{pair}: {result['rows_reference']:,} reference rows vs "
+                        f"{result['rows_implementation']:,} implementation rows")
+    expected = str(expect_scoring_version)
+    for side in ("reference", "implementation"):
+        versions = result[f"scoring_version_{side}"]
+        if set(versions) != {expected}:
+            problems.append(f"{pair}: {side} scoring_version is {versions}, expected only {expected}")
+    return problems
+
+
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--expect-scoring-version", type=int, required=True,
+                    help="the scoring_version every row must carry on BOTH sides (3 on the "
+                         "implementation branch, where there is no bump); no default")
     ap.add_argument("--reference", required=True, help="directory holding ref_*.csv and its sidecar")
     ap.add_argument("--out", required=True)
     ap.add_argument("--pairs", default="", help="e.g. P0:realized; default all six")
     ap.add_argument("--label", default="equivalence")
     ap.add_argument("--limit", type=int, default=0, help="last N matches: SMOKE TEST, NOT A RESULT")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     reference, out_dir = Path(args.reference), Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     pairs = parse_pairs(args.pairs)
@@ -204,21 +257,26 @@ def main():
         db.close()
 
     report = {"label": args.label, "database": database, "matches": len(ids),
-              "limit": args.limit, "reference_revision": sidecar["revision"], "pairs": {}}
+              "limit": args.limit, "reference_revision": sidecar["revision"],
+              "expect_scoring_version": args.expect_scoring_version, "pairs": {}, "problems": []}
     for arm, mode in pairs:
         name = f"ref_{arm.replace('+', 'plus')}_{mode}.csv"
         rows = sorted(lines[(arm, mode)])
         data = (",".join(fields) + "\n" + "".join(line for _, line in rows)).encode("utf-8")
         impl_name = f"impl_{arm.replace('+', 'plus')}_{mode}.csv"
         (out_dir / impl_name).write_bytes(data)
-        result = compare(reference / name, rows, fields) if not args.limit else {}
+        pinned = sidecar["artifacts"][name]
+        # The hash is the reference file's OWN, computed from the bytes compared
+        # (load_reference), never copied from the sidecar.
+        result = compare(reference / name, pinned, rows, fields) if not args.limit else {}
         result.update({
             "comparator": ARMS[arm], "implementation_sha256": hashlib.sha256(data).hexdigest(),
-            "reference_sha256": sidecar["artifacts"][name]["sha256"],
             "assists": dict(assists[(arm, mode)]),
         })
-        result["bytes_equal"] = result["implementation_sha256"] == result["reference_sha256"]
+        result["bytes_equal"] = result["implementation_sha256"] == result.get("reference_sha256")
         report["pairs"][f"{arm}:{mode}"] = result
+        if not args.limit:
+            report["problems"] += problems_for(f"{arm}:{mode}", result, args.expect_scoring_version)
         log(f"{arm:4s} {mode:8s} vs reference: rows differing {result.get('rows_differing')}, "
             f"keys only ref/impl {result.get('keys_only_in_reference')}/"
             f"{result.get('keys_only_in_implementation')}, scoring_version "
@@ -226,7 +284,17 @@ def main():
             f"bytes equal {result['bytes_equal']}, assists {result['assists']}")
     (out_dir / f"{args.label}.json").write_text(json.dumps(report, indent=2))
     log(f"written to {out_dir / (args.label + '.json')}")
+    if args.limit:
+        log("smoke test: no verdict")
+        return 0
+    if report["problems"]:
+        for problem in report["problems"]:
+            log(f"FAIL {problem}")
+        log(f"EQUIVALENCE FAILED: {len(report['problems'])} problems (declaration 13 stop rule)")
+        return 1
+    log("EQUIVALENCE HOLDS on every pair")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
