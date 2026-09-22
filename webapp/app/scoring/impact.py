@@ -112,7 +112,12 @@ class ImpactInputError(ValueError):
 # Version 2 was never loaded into any database: production's stored rows are
 # version 1, and they are replaced wholesale by the rc3 swap rather than
 # rescored in place.
-IMPACT_CALCULATION_VERSION = 3
+# 4 (2026-09-22): activates the frozen impact-v4 manifest --
+# no time factor (T = 1 for every kill and death, T = 0 once a round is
+# decided) and no assists paid on kills made after the round was
+# decided. Every other term is rc3's. Stored version 3 rows are replaced,
+# not rescored in place; rc3's rows are retained as impact_scores_v3.
+IMPACT_CALCULATION_VERSION = 4
 
 _KILL_ORDER_GRAPH = nx.DiGraph()
 _KILL_ORDER_GRAPH.add_weighted_edges_from(

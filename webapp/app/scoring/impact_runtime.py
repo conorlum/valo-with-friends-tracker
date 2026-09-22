@@ -22,7 +22,7 @@ from app.scoring.impact_manifest import (
     verify_manifest,
 )
 
-ACTIVE_MANIFEST: str | None = "docs/superpowers/impact-rc3/candidate-manifest.json"
+ACTIVE_MANIFEST: str | None = "docs/superpowers/impact-v4/candidate-manifest.json"
 
 
 @functools.lru_cache(maxsize=None)
