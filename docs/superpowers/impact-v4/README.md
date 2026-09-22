@@ -32,7 +32,7 @@ Nothing is merged, deployed or frozen. Production runs rc3 (`IMPACT_CALCULATION_
 | C plan | done | plan r5, `4ecf7f0`, after four external reviews (R1–R11, S1–S6, T1–T5, U1–U3) |
 | D implement | done | `71ad905` `de1494f` `2bfff71` `c8f1ce3` `8b72d0d` `af8d3d1` `edcec2a` `a9140fb` `27daaf2` |
 | E prove | done | DECLARATION 13 `82ee277`; reference hashes `97ed0b0`; comparison tool `0003010`; RESULT `852dc49`; review fixes `9bb5618` `6d00d08`; addendum `7f6c0ed`. Seven comparisons, 0 rows differing over 674,530 rows each, both modes, byte-identical, and the hardened checker exits 0 |
-| F freeze & review | **next** | commands below; gate G3 (production reads + the restore), then G4 after the reviews |
+| F freeze & review | **in progress** | G3 given 2026-09-22; F0 and F1 done (values below) |
 | G rehearse | not started | |
 | H activate | not started | |
 | I hold & reopen | not started | |
@@ -79,11 +79,15 @@ git status --porcelain --untracked-files=all -- . | head -5    # must print noth
 
 | baseline (F0) | value |
 |---|---|
-| server time | `<fill>` |
-| alembic head | `<fill>` — expected `0010` |
-| matches / max match id | `<fill>` |
-| gate state / release id / admin id | `<fill>` — expected `open` / `impact-rc3` / `rc3-runbook` |
-| database size / `impact_scores` size | `<fill>` (storage, process §H0) |
+| server time | `2026-09-22 04:44:55 UTC` (preflight `04:45:14`) |
+| alembic head | `0010` ✓ |
+| matches / max match id | `3,649` / `3657` |
+| gate state / release id / admin id | `open` / `impact-rc3` / `rc3-runbook` ✓ |
+| database size / `impact_scores` size | 392 MB / 101 MB; 769,120 rows, all `scoring_version` 3 |
+| `impact_scores_v1` / `impact_scores_v3` | present (rc3's, kept to 2026-10-03) / free ✓ |
+| other databases on the instance | `valo_rc3_rehearsal` 324 MB, `valo_rc3_test` 10 MB, and now `valo_v4_rehearsal`; about 1.2 GB used of the **~15 GB recorded** for the plan (memory, 2026-08-26). Not yet confirmed on the Render dashboard (G5/H0) |
+| backup B0 | `B0-v4-valowithfriendsdb.dump`, 49.7 MB, 60 s, sha256 `0d1723cf4deffcd47ff0a2184115ea141bdcf69c69c4242ebda13c201d9789f5` |
+| rehearsal restore | `valo_v4_rehearsal`: restored in 4 m 22 s; gate closed, `impact-rc3` / `v4-runbook`, guarding `players`; preflight equal to production |
 
 **Stop and ask** if the alembic head is not `0010` or the gate is not `open`/`impact-rc3`. Either means production
 is not in the state the plan assumes.
@@ -140,9 +144,11 @@ sys.exit(0 if n[0] else 1)" "$A" || echo "STOP: (a) removes nothing through the 
 | review cohort (F1) | match | query |
 |---|---|---|
 | rc3's thirteen | `3104,3129,3130,3131,3113,3118,3121,3114,3115,3116,3117,3120,3133` | rc3 freeze |
-| (a) post-decided assist removed | `<fill>` | `review-cohort.sql` (a), confirmed by the scorer |
-| (b) kill after a defuse | `<fill>` | (b) |
-| (c) Time Win, kill after 100 s | `<fill>` | (c) |
+| (a) post-decided assist removed | **3655** | `review-cohort.sql` (a); `impact_v4` removes 1 assist, through the scorer |
+| (b) kill after a defuse | **3652** | (b) |
+| (c) Time Win, kill after 100 s | **3642** | (c) |
+
+**Cohort (16):** `3104,3129,3130,3131,3113,3118,3121,3114,3115,3116,3117,3120,3133,3655,3652,3642`
 
 ### F2. Freeze declaration
 
