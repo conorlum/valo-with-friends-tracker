@@ -1,6 +1,6 @@
 # Impact v4 — release runbook
 
-Status (2026-09-21): **phases A–E done on the branch; F (freeze and review) is next and needs production reads.**
+Status (2026-09-22): **phases A–F done; waiting on gate G4 (the owner's last look), then G (rehearsal).**
 Nothing is merged, deployed or frozen. Production runs rc3 (`IMPACT_CALCULATION_VERSION` 3, `ACTIVE_MANIFEST` rc3).
 
 - Process: `../SCORING-RELEASE-PROCESS.md`. This file is v4's instance of it.
@@ -32,7 +32,7 @@ Nothing is merged, deployed or frozen. Production runs rc3 (`IMPACT_CALCULATION_
 | C plan | done | plan r5, `4ecf7f0`, after four external reviews (R1–R11, S1–S6, T1–T5, U1–U3) |
 | D implement | done | `71ad905` `de1494f` `2bfff71` `c8f1ce3` `8b72d0d` `af8d3d1` `edcec2a` `a9140fb` `27daaf2` |
 | E prove | done | DECLARATION 13 `82ee277`; reference hashes `97ed0b0`; comparison tool `0003010`; RESULT `852dc49`; review fixes `9bb5618` `6d00d08`; addendum `7f6c0ed`. Seven comparisons, 0 rows differing over 674,530 rows each, both modes, byte-identical, and the hardened checker exits 0 |
-| F freeze & review | **in progress** | G3 given 2026-09-22; F0 and F1 done (values below) |
+| F freeze & review | **done, awaiting G4** | manifest `2e5140e` (LF-sha `2f33f137…`); PREP_CHAIN `2cd448e2…` (K3 = K4); reviews reconcile, decomposition 29,606 checks / 0 mismatches; RESULT `55c7fd8` |
 | G rehearse | not started | |
 | H activate | not started | |
 | I hold & reopen | not started | |
