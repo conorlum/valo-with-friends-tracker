@@ -4680,3 +4680,82 @@ Reports:
 
 **The lesson worth keeping:** a checker whose only outcome is "pass" is not evidence. Every instrument a declaration
 relies on needs a test showing it can fail, run through the same entry point the declaration uses.
+
+
+### 2026-09-22 (DECLARATION 14, freeze) — v4 is frozen on a sixteen-match review cohort chosen on the restore it is reviewed against
+
+Written and committed **before** `freeze_impact_candidate.py` runs. This is process §F2
+(`SCORING-RELEASE-PROCESS.md`) and plan r5 §3.1–3.2. Gate G3 was given by the owner on 2026-09-22.
+
+#### The state it is frozen from (F0, read-only)
+
+Production `valowithfriendsdb` at 2026-09-22 04:44:55 UTC:
+- alembic `0010`;
+- **3,649 matches**, max id 3657;
+- gate `open` for `impact-rc3`, admin `rc3-runbook`;
+- `impact_scores` 769,120 rows, all `scoring_version` 3;
+- `impact_scores_v1` present, `impact_scores_v3` free.
+
+Backup B0: `B0-v4-valowithfriendsdb.dump`, sha256 `0d1723cf4deffcd47ff0a2184115ea141bdcf69c69c4242ebda13c201d9789f5`.
+
+It was restored into `valo_v4_rehearsal` on the same instance. The restore's gate is closed (`impact-rc3` /
+`v4-runbook`), and its preflight is equal to production's.
+
+#### The review cohort (F1): sixteen matches
+
+- rc3's thirteen: `3104,3129,3130,3131,3113,3118,3121,3114,3115,3116,3117,3120,3133`.
+- Three matches that exercise v4's rules, each the newest qualifying match **on the restore**
+  (`impact-v4/review-cohort.sql`):
+  - **3655**: an assist on a kill after the round was decided. The `impact_v4` scorer removes 1 assist there;
+  - **3652**: a kill after a defuse;
+  - **3642**: a Time Win round with a kill after 100 s.
+
+The cohort is chosen on the restore, frozen from production, and reviewed on the restore. The freeze is therefore
+followed immediately by `verify_source_snapshots` against the restore (F3). A mismatch means re-restore and freeze
+again; the manifest is never edited.
+
+#### The K-chain
+
+- **K3** (`--comparator impact_v4`) and **K4** (`--manifest`), both exported from production at F4, over every match
+  then present. Their common hash is **`PREP_CHAIN`**. It is preparation-grade: it proves the frozen manifest
+  reproduces the comparator on production as it stood then. **No later verification expects it.**
+- **K4 and K5 in the window**, on the gated dataset after the gate closes, are **binding**. Their common hash is
+  **`CHAIN`**, which the window's `verify-build` and `verify-live` expect.
+- The **activation cohort** is every match in production at the moment the gate closes in H1.1.
+
+#### Production row motion
+
+The motion measured on the local corpus (rc3 live, `N+A`) was **32.22% of player-rounds changed and 71.9% of matches
+reordered**; for `N` alone it was 32.14% and 72.0%. The declared tolerance for `impact_v4` on production is:
+
+- **player-rounds changed: 27.2% to 37.2%** (±5 points);
+- **matches reordered: 64.9% to 78.9%** (±7 points).
+
+Why this width: 3,198 of production's 3,649 matches (87.6%) are the measured corpus. If the other 451 moved not at
+all, the row figure would fall to about 28.2%, still inside the band. To pass 37.2%, more than about 73% of their
+rows would have to move, against 32% measured. So the band holds for any plausible mix of new matches, and a result
+outside it means a real change in behaviour.
+
+Row motion is measured on the restore during rehearsal (rehearsal-grade), and **in the window** between the pre-swap
+capture and the swap: the capture (rc3 as stored) against K5's rows (v4), by key. **Outside the band, the swap does
+not happen** until the difference is explained. As always, motion is not improvement.
+
+#### Wording carried
+
+`N+A vs N` stays **UNTESTABLE, below both carried floors** — not "below any plausible rc3 floor" (R5.7). `N+A` ships
+on the owner's concept, not on evidence.
+
+#### Predictions (scored in a RESULT entry, whatever happens)
+
+| # | prediction | confidence |
+|---|---|---|
+| 14.1 | the freeze succeeds from a clean tree, and `verify_source_snapshots` against the restore passes for all 16 matches | high |
+| 14.2 | K3 = K4 on production (`PREP_CHAIN`) | high |
+| 14.3 | the decomposition check on the 16-match cohort reports **0 mismatches** | high |
+| 14.4 | `review-results.json` covers exactly the 16 frozen matches | high |
+| 14.5 | at least one removed post-decided assist and at least one zeroed decided kill are visible in the reviews of 3655 / 3652 / 3642 | high |
+| 14.6 | rehearsal-grade row motion on the restore falls inside the declared band | moderate |
+| 14.7 | in the window, K4 = K5 (binding), and row motion falls inside the band | high on K4 = K5; moderate on motion |
+
+**Stop rule.** Any of 14.1–14.4 failing stops the release at F until the cause is eliminated or reported. 14.7 failing
+means **no swap**.
