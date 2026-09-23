@@ -4806,3 +4806,67 @@ plant+38..45 override.
 
 **Motion is not improvement.** The evidence that v4 is better is declaration 12's, on both targets; this entry only
 records that the freeze reproduces, that the reviews reconcile, and what the site will look like.
+
+### 2026-09-23 (RESULT, declaration 14 — rehearsal and window; ACTIVATION NOTE) — v4 is live, ingestion is reopened, and the motion gate was skipped before the swap
+
+Impact v4 is live at `IMPACT_CALCULATION_VERSION` 4, and ingestion reopened under it at gate G7. Declaration 14's last
+two predictions are scored below, including how late one of them was measured. The full record is
+`impact-v4/README.md` sections H1 and I.
+
+| # | prediction | outcome | |
+|---|---|---|---|
+| 14.6 | rehearsal-grade row motion inside the declared band | **32.42% of rows / 72.13% of matches reordered** (band 27.2–37.2 / 64.9–78.9). Measured at close-out from the rehearsal's own files, **not during rehearsal** | **right, measured late** |
+| 14.7 | in the window, K4 = K5 (binding), and row motion inside the band | K4 = K5 **EQUAL** `2cd448e2…` (= `PREP_CHAIN`). Motion **32.42% / 72.13%, inside**, but measured at close-out from the window's files (pre-swap capture against `K5.load.csv`), **after the swap** | **right**; the motion half was **not checked before the swap** |
+
+**The stop rule was not enforced as written.** Declaration 14 says a 14.7 failure means no swap. The window swapped
+without measuring motion. There is no record of it in H1 and no artifact of it, so it was skipped, not lost. It
+would have passed, since the window's rows are byte-identical to the rehearsal's (`K5.load.csv` sha256
+`32f3994c…` in both, and byte-identical pre-swap captures). But passing afterwards is not the same as gating. The
+process doc's H1 step 4 now puts motion first, as a printed check. Method: rows changed = `impact` differs by
+`(round_id, match_player_id)`. Reordered = the players' order by mean Impact changed, as in declaration 12's measurement.
+Totals: 249,349 of 769,120 rows, 2,632 of 3,649 matches.
+
+#### Activation note
+
+| what | value |
+|---|---|
+| manifest frozen | `2e5140e` (LF-sha256 `2f33f137…`) |
+| activation commit / PR | `fe5411b`, PR **#71** merged 2026-09-23 07:30:16 UTC as **`e2453ce`**, Render deploy green |
+| pre-release production `main` | `6f45476` (PR #70) |
+| `CHAIN` | `2cd448e2edb3d4616dfd3ce7abf0150a33a851ab126dc21245ef3e430c4424c2` (K4 = K5 = `PREP_CHAIN`) |
+| load artifact / read-back | `32f3994c…`, 769,120 rows |
+| pre-swap capture (rc3 rows) | `37c81af806c58ec559deb4c9c8b47fafc4e1eac6c7061e5dbde2a0cb44865a65` |
+| W0 backup | 49,712,365 bytes, `fd6b7f6cdfa4b28f72c9679794b40310452781f8603a7257366ed52f772a2d8a`; R3 restore point `2026-09-23 04:16:10.790079+00` |
+| activation cohort | 3,649 matches, max id 3657, id-list sha256 `92077535…` |
+| cache version | `4003003004` |
+
+| step | at (UTC) | duration |
+|---|---|---|
+| gate closed (H1.1) | 04:16:07 | |
+| K4 / K5 | | 45.0 min / 42.3 min |
+| build (release log 6) | 06:48:09 | 1.07 min, oid 80081 |
+| verify-build (7) | 07:11:40 | 22.5 min, clean |
+| **swap (8)** | **07:12:54** | **36.98 s**; oid 65265 → `impact_scores_v3`, 80081 → `impact_scores` |
+| PR #71 merged | 07:30:16 | |
+| verify-live (9) | 08:02:34 | 22.5 min, clean |
+| cache DELETE + prewarm | | 1 row deleted; 12 players in 2 m 39 s; 24/24 scopes, agreement clean |
+| acceptance replay | | 3,649 matches, **0 differ**, 27.1 min |
+| verify-live again (10) | 09:01:10 | 23.4 min, clean, max match id still 3657 |
+| hold | 07:12:54 – 21:25:55 | **about 14h13m**, ended early by the owner after checking the site |
+| **gate opened for `impact-v4` (G7)** | **21:25:55.346579** | `open`/`impact-v4`/`v4-runbook` |
+| catch-up ingest | 21:26:33 – 21:38:23 | 12 matches, 3658–3669 |
+
+**Gate transitions.** `open`/`impact-rc3`/`rc3-runbook` → `closed`/`impact-rc3`/`v4-runbook` (04:16:07, "impact-v4
+activation window") → `open`/`impact-v4`/`v4-runbook` (21:25:55, "G7: hold ended early by owner; inventory 11/12,
+SambuUwU#NA1 private accepted").
+
+**G7.** The inventory was 11 of 12 players complete, and SambuUwU#NA1's private profile was accepted by the owner. It
+expected 12 matches. The canary, **3658**, was at `scoring_version` 4 and equal to its replay: the first real exercise
+of the adapter's commit-then-score path under v4, which the rehearsal had waived. All 12 matches reconciled, each
+present, rows = rounds × 10, at version 4 and equal to its replay. The sweep through the reopening moment found
+nothing new. Probe (a) from `6f45476` was refused, with scores unchanged. **Production now: `impact_scores` 771,780
+rows, all version 4; 3,661 matches.** Ordinary rollback ended at 3658. From here, fix forward.
+
+**Retention.** `impact_scores_v3` (rc3's 769,120 rows) is kept at least through the 7-day recovery window.
+`impact_scores_v1` is kept to 2026-10-03, per rc3. The two rehearsal databases and the rehearsal and release-tools
+worktrees await the owner's say-so.

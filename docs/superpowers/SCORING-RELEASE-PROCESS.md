@@ -30,6 +30,18 @@ Non-negotiable. Each one is here because breaking it went wrong at least once.
   current directory, so anchor them with `:/`, and check that they matched files before trusting an empty diff.
 - **One corpus replay at a time.** Two at once get OS-killed. Redirect every long run to a log file, run it in the
   background, and wait for the notification rather than polling.
+- **Run every long job as a detached Windows process, never as a supervised background task.** The low-memory
+  reaper kills supervised tasks: v4 lost an in-window K4 after 22 minutes of scoring, before its sidecar, and two
+  waiters besides. `Start-Process powershell -WindowStyle Hidden -PassThru -RedirectStandardOutput <log>` survives;
+  only the thing waiting on it can die. Watch the log, and treat the pid disappearing as a terminal event.
+- **Scripts outside `webapp/` need `PYTHONPATH`, or feed them on stdin** (`python - < probe.py`). `sys.path[0]` is
+  the script's own directory, so `import app` fails. v4 hit this three times: the probes, the acceptance replay and
+  the catch-up inventory.
+- **Windows paths inside SQL strings need `cygpath -m`.** Git Bash converts argv paths, not string literals.
+- **An export is bound to the database it read.** A second restore cannot reuse the first's artifact; re-export.
+- **Some production writes need the owner's hands.** Claude Code's auto-mode classifier refused v4's gate open and
+  the stale-checkout probe as production writes, and refused adding an allow rule as self-modification. The owner
+  ran both with `! <command>`. Hand over the exact one-line command; never route around a refusal.
 - **Keep the machine awake** for exports (~30 min each against production) and `verify-build` (~15 min). A sleep
   kills the connection mid-snapshot.
 - **Artifacts, dumps and logs live outside the repository** (`$ART`, under `~/Documents/valo-backups/<id>-release/`).
@@ -77,7 +89,7 @@ reads fail.
 | declared comparators, manifest, fingerprints | `app/scoring/impact_manifest.py` (`COMPARATORS`, `HASHED_SOURCES`, `SOURCE_FINGERPRINT_VERSION`) |
 | the one runtime switch | `app/scoring/impact_runtime.py` (`ACTIVE_MANIFEST`) |
 | ingestion's refusal to write under the wrong code | `app/scoring/ingest_preflight.py`, `scripts/sql/release_write_gate.sql` |
-| release tools | `scripts/freeze_impact_candidate.py`, `export_impact_artifact.py`, `release_candidate_review.py`, `compare_rc3_decomposition.py`, `swap_impact_scores.py`, `install_release_write_gate.py`, `release_preflight.py`, `prewarm_player_cache_ids.py`, `verify_player_cache_coverage.py`, `verify_cache_matches_scores.py` |
+| release tools | `scripts/freeze_impact_candidate.py`, `export_impact_artifact.py`, `release_candidate_review.py`, `compare_rc3_decomposition.py`, `swap_impact_scores.py`, `install_release_write_gate.py`, `release_preflight.py`, `prewarm_player_cache_ids.py`, `verify_player_cache_coverage.py`, `verify_cache_matches_scores.py`, `catchup_inventory.py` (§I) |
 | a worked example of every stage | `impact-rc3/README.md` (first release, schema migrations included), `impact-v4/README.md` (scoring-only) |
 
 ---
@@ -352,7 +364,8 @@ and then fail every review.
 **H1. The window**, from a clean checkout of the activation PR's head, in this order:
 
 1. Preflight. **Drain ingestion**: stop every scheduled or running refresh, and wait for the last one to exit.
-   Check for **stranded matches** — a match committed without its scores (`find_unscored_match_ids`), the shape of
+   Check for **stranded matches** — a match committed without its scores (`find_unscored_match_ids`, in
+   **`app.scoring.impact`**, not `ingest_preflight`), the shape of
    the 3133 incident. Then close the gate and hand it to this release's runbook identity, explicitly:
    `install_release_write_gate.py --expect-database valowithfriendsdb --state closed --release-id <live cand>
    --admin-id <id>-runbook --note "..."`. That moment fixes the **activation cohort**: every match now in
@@ -365,7 +378,11 @@ and then fail every review.
    this window passes as `--expect-comparison-sha256`. It is not F4's `PREP_CHAIN`: the activation cohort includes
    every match ingested since F, so the preparation hash cannot match `verify-build` even when K4 = K5 exactly. The
    rehearsal likewise verifies against its own export's hash.
-4. `build`, then `verify-build --expect-scoring-version N`, then **capture the prewarm lists**, then `swap`:
+4. **Row motion first**: the pre-swap capture against K5's `.load.csv`, by key, counting rows whose `impact`
+   changed and matches whose players' mean-Impact order changed. **Outside the declared band, STOP.** v4's window
+   skipped this and swapped anyway. It was measured only at close-out (32.42% / 72.13%, inside the band), so make it a
+   printed line in the runbook's commands where it cannot be skipped silently.
+   Then `build`, then `verify-build --expect-scoring-version N`, then **capture the prewarm lists**, then `swap`:
    ```bash
    S="--expect-database valowithfriendsdb --identity <id>-runbook --previous-table impact_scores_v<N-1> --rolled-back-table impact_scores_<id>_rolled_back"
    DATABASE_URL="$PROD" $PY scripts/swap_impact_scores.py swap --yes $S; echo "swap exit $?"
@@ -387,20 +404,40 @@ and then fail every review.
 
 ## I. Hold and reopen
 
-1. **Observation hold: 48 hours with the gate closed.** Ordinary rollback stays complete throughout.
-2. **Catch-up inventory, before reopening** (rc3 §8.10a). Take a per-player boundary, not one date: each roster
-   player's newest ingested `external_id` and `played_at`. Record an **expected-id set** per player, with the cursors
-   and boundary evidence. Tracker.gg history pages hold 20 matches. An unknown timestamp, a repeated cursor, a
-   private profile, an unreachable boundary or a cap is **INCOMPLETE**, never assumed covered. **Gate G7**: the
-   inventory is complete, and nothing in the hold is unexplained.
+1. **Observation hold: 48 hours with the gate closed.** Ordinary rollback stays complete throughout. It exists so
+   that problems on the live site surface while rollback is still cheap. The owner may end it early once they have
+   looked (rc3 after 21h47m, v4 after about 14h). Record the decision and the time in the runbook, **in the repo**:
+   v4's early end was agreed in a session but not written down, and the next session read the runbook and believed
+   the hold was still running.
+2. **Catch-up inventory, before reopening** (rc3 §8.10a). Read-only, and it may run with the gate closed. Launch the
+   scraper Chrome (`scripts/launch_trackergg_chrome.ps1`; if port 9222 stays closed, start `chrome.exe` with the same
+   flags through `Start-Process`, which survives the launching shell), then:
+   ```bash
+   # database half: one row per roster player (name, id, matches, newest played_at, newest external_id, max id)
+   "$PGBIN/psql" -X -A -F $'\t' -t -c "<per-player boundary query, impact-v4/README.md §I>" "$PROD" > "$ART/window/catchup-boundary.tsv"
+   # browser half: probe one player first, then the roster as a detached job
+   DATABASE_URL="$PROD" $PY scripts/catchup_inventory.py "$ART/window/catchup-boundary.tsv" "$ART/window/catchup-inventory.json" "NPrightdolphin#NA1"
+   ```
+   `catchup_inventory.py` walks each player's All-Acts history down to **that player's own** newest-ingested
+   `external_id`, and every id above it goes into the expected set. It never stops at the first already-known match.
+   An unknown timestamp, a repeated cursor, a private profile, an unreachable boundary or a cap is **INCOMPLETE**,
+   never assumed covered. **The adapter reports a private profile as `NO_HISTORY`**, not `PRIVATE`: for a player the
+   database already has matches for, read `NO_HISTORY` as private until the page says otherwise. **Gate G7**: the
+   inventory is complete, or the owner accepts each incomplete player by name, and nothing in the hold is unexplained.
 3. Open the gate **explicitly for `<cand>`**:
    `install_release_write_gate.py --expect-database valowithfriendsdb --state open --release-id <cand> --admin-id <id>-runbook --note "..."`.
-   Ingest; the first new match must carry `scoring_version` N and equal its replay. Probe that a stale checkout is
-   refused. **From here ordinary rollback is gone: fix forward**, as a new release through this same process.
-4. **Reconcile after reopening.** Every id in the expected sets must be present **and scored** at version N. Report
-   every difference; a clean exit status is not completion. Then **sweep again through the reopening moment**, so a
-   match that arrived between the inventory and the gate opening is not missed. Never stop at the first
-   already-known match: another friend's ingestion can have placed a newer one while an older one is still missing.
+   Then **ingest one match as a canary**: `ingest_trackergg_player.py "<player>" --count 1` for a player whose
+   inventory holds exactly one new match at position 0. It must carry `scoring_version` N and equal its replay
+   before anything else is ingested. **From that first match, ordinary rollback is gone: fix forward**, as a new
+   release through this same process. Then ingest the rest (`refresh_tracked_players.py --count 20`, detached,
+   with `--count` at least the deepest boundary position).
+4. **Reconcile after reopening.** Every id in the expected sets must be present **and scored** at version N, with
+   rows = rounds × 10, and all of them must equal their replay. Report every difference; a clean exit status is not
+   completion. Then **sweep again through the reopening moment**: take a fresh boundary and rerun the inventory. Every
+   public player should come back at position 0.
+5. **Probe that a stale checkout is refused**: probe (a) from the pre-release worktree. **Only while nothing is
+   ingesting**, because it compares `sum(impact)` before and after, and a concurrent ingest breaks that comparison
+   without anything being wrong.
 
 ### Rollback (only before the gate reopens)
 
@@ -423,7 +460,9 @@ In this order, and no other:
 
 1. Ledger activation note: commit SHAs, durations, hashes, gate transitions.
 2. Retention: keep the retained table about two weeks, longer than the recovery window. Drop older ones on their own
-   schedule.
+   schedule. Drop the rehearsal databases on the Render instance (v4's two held about 800 MB) and remove the
+   rehearsal and release-tools worktrees, each on the owner's say-so. Once ingestion has reopened, neither can be
+   used for a rollback any more.
 3. Analysis hygiene: anything reading stored rows asserts a single `scoring_version`
    (`load_stored_observations` does not filter).
 4. **Update this document** with anything the release taught you: a new trap in §0, a new rule in §D. That is how the

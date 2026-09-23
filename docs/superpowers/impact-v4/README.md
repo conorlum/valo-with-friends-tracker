@@ -1,8 +1,9 @@
 # Impact v4 — release runbook
 
-Status (2026-09-23): **SWAPPED. Production serves `impact_scores` at version 4 as of 07:12:54 UTC. The gate is closed; the activation PR is open for the owner to merge and deploy.**
-Manifest frozen at `2e5140e`. **The swap has happened**: production's `impact_scores` holds version 4 rows. The
-deployed code is still rc3 until the activation PR is merged, which is the accepted swap-to-deploy exposure.
+Status (2026-09-23): **LIVE, and ingestion is REOPENED. Swap 07:12:54 UTC, PR #71 merged 07:30:16 UTC, acceptance clean. Gate G7 passed: the gate was opened for `impact-v4` at 21:25:55 UTC, and 12 catch-up matches are ingested, all at version 4 and all equal to their replay.**
+Manifest frozen at `2e5140e`, activated by PR #71. Production's `impact_scores` holds 771,780 rows, all at
+`scoring_version` 4, and the deployed code computes 4. rc3's rows are retained as `impact_scores_v3` for the recovery
+window. **Ordinary rollback ended with the first ingested match (3658): fix forward.**
 
 - Process: `../SCORING-RELEASE-PROCESS.md`. This file is v4's instance of it.
 - Plan (the spec): `../plans/2026-09-21-impact-v4-no-time-factor-plan.md` (r5).
@@ -35,9 +36,9 @@ deployed code is still rc3 until the activation PR is merged, which is the accep
 | E prove | done | DECLARATION 13 `82ee277`; reference hashes `97ed0b0`; comparison tool `0003010`; RESULT `852dc49`; review fixes `9bb5618` `6d00d08`; addendum `7f6c0ed`. Seven comparisons, 0 rows differing over 674,530 rows each, both modes, byte-identical, and the hardened checker exits 0 |
 | F freeze & review | **done, awaiting G4** | manifest `2e5140e` (LF-sha `2f33f137…`); PREP_CHAIN `2cd448e2…` (K3 = K4); reviews reconcile, decomposition 29,606 checks / 0 mismatches; RESULT `55c7fd8` |
 | G rehearse | **done bar one item, awaiting G5** | Section G below. Forward path, caches, three probes, rollback verified byte-identical, forward again, interrupted swap changes nothing, post-ingest refusal exact. Real-data suite 17 passed / 1 skipped / 1 deselected. **Outstanding: ingest one real tracker.gg match after a swap and confirm it scores at version 4** |
-| H activate | not started | |
-| I hold & reopen | not started | |
-| J close out | not started | |
+| H activate | **DONE 2026-09-23** | Section H1. Gate closed 04:16 UTC, K4 = K5 `2cd448e2...`, verify-build clean, **swap committed 07:12:54 UTC in 36.98 s**, PR #71 merged 07:30:16 UTC, verify-live clean, caches rebuilt at version `4003003004`, acceptance 3,649 matches / 0 differ |
+| I hold & reopen | **DONE 2026-09-23** | Section I. Hold ended early by the owner (07:12:54 → 21:25:55 UTC, about 14h13m). Inventory 11/12 complete, SambuUwU#NA1 private (accepted). Gate opened for `impact-v4`; canary 3658 at v4 and equal to its replay; 12/12 reconciled; sweep clean; probe (a) refused |
+| J close out | **docs done; cleanup awaiting the owner** | ledger activation note and RESULT for 14.6/14.7; process doc updated. Still pending the owner's say-so: dropping `valo_v4_rehearsal` and `valo_v4_rehearsal2`, and removing the `main-worktree` and `release-tools` worktrees |
 
 ## F. Freeze and review — v4's commands (process §F)
 
@@ -600,10 +601,113 @@ owner to merge.** The merge, the deploy, `verify-live` and the cache rebuild are
 > removes a 45-minute retry risk from the critical path.
 
 
+### H1.5-H1.8 After the merge
 
-> **The process doc names a function that does not exist.** H1.1 says to check for stranded matches with
-> `find_unscored_match_ids` imported from `app.scoring.ingest_preflight`. It lives in **`app.scoring.impact`**.
-> Corrected in the commands above; worth fixing in the process doc at close-out.
+PR **#71** merged 2026-09-23 07:30:16 UTC as `e2453ce`. Render deployed and the owner confirmed it green.
+
+| step | result |
+|---|---|
+| `verify-live` (all arguments, `--expect-scoring-version 4`) | **clean**, 22.5 min. `problems: []`, `scoring_versions: [4]`, `read_back_sha256` = `32f3994c...`, `comparison_sha256` = CHAIN |
+| cache DELETE | **1 row** -- a visitor had loaded a page between the swap and the barrier |
+| prewarm | 12 of 12 roster players, 2 m 39 s |
+| coverage | expected cache version **`4003003004`**, 24 of 24 player-scopes usable |
+| agreement (`verify_cache_matches_scores.py`) | cache agrees with scores, 24 scopes / 12 players, 5.4 s |
+| **acceptance replay** | **3,649 matches replayed, 0 differ** under active configuration `impact_v4`, 27.1 min |
+| page checks | `/` 200, `/health` 200, `/stats` 200 (1.8 s), three roster player pages 200 (0.6-1.0 s) |
+| **`verify-live` again, after acceptance** | **clean**, 23.4 min. `problems: []`, `scoring_versions: [4]`, `read_back_sha256` = `32f3994c...`, `comparison_sha256` = CHAIN, `max_match_id` still **3657** -- nothing was ingested across the entire window, so the activation cohort held from the gate closing to acceptance |
+
+**How the deploy was confirmed to be v4, without a version endpoint.** The app exposes no build or scoring version,
+so "Render says green" and "the running code computes v4" are not the same claim. The check used instead: prewarm
+wrote cache rows locally at version `4003003004`, then a live player page was loaded and the rows were re-read. Their
+`updated_at` was **unchanged** and the page returned in 0.44 s. A process still running rc3 would compute a different
+`cache_version()`, judge those rows stale and rewrite them. It did not, so the deployed code's cache version equals
+v4's composite, whose leading component is `IMPACT_CALCULATION_VERSION`.
+
+A cheaper version of the same check was available and missed: the one cache row the DELETE removed had been written
+by the deployed code, and reading its `version` first would have answered the question outright. **Read that row
+before deleting it next time.**
+
+**`/stats` needs no invalidation, and this was checked rather than assumed.** `site_stats_cache` has its own
+`SITE_STATS_CACHE_SCHEMA_VERSION` (19) which deliberately does **not** fold in `IMPACT_CALCULATION_VERSION`. That
+would be a staleness risk if any of its stats read impact scores, but none do -- the constant's own comment says
+every stat it covers reads raw `Match`/`Round`/`MatchPlayer` rows, and nothing under `app/services/site_stats*`
+references `ImpactScore`.
+
+> **Scripts run from outside `webapp/` need `PYTHONPATH`.** The acceptance replay failed instantly with
+> `ModuleNotFoundError: No module named 'app'` because `sys.path[0]` is the script's own directory. Either set
+> `PYTHONPATH` to the checkout, or feed the script on stdin as the gate probes do. This is the third form of the same
+> trap in this release, after the probes and the Windows path-in-SQL split.
+
+> **Detaching the long jobs worked exactly as intended.** The low-memory reaper stopped the *waiter* during the final
+> `verify-live`, and the export itself carried on untouched because it was a detached Windows process rather than a
+> supervised background task. Every long step of this window ran that way after the first K4 was lost.
+
+
+
+> **`find_unscored_match_ids` lives in `app.scoring.impact`**, not `app.scoring.ingest_preflight`. The wrong import
+> was in this runbook's first draft of H1.1, and it is corrected in the commands above. The process doc now names
+> the module explicitly (close-out).
+
+## I. Hold and reopen -- what actually ran
+
+**The hold.** It started at the swap (07:12:54 UTC). The owner looked at the live site overnight and ended it early
+("nothing looks too broken"), so the gate opened at 21:25:55 UTC, about 14h13m in. rc3's hold ended early the same
+way, after 21h47m. **That decision was agreed in a session but not written into this file**, and the next session
+read "CLOSED for the 48-hour hold" here and believed it. The process doc now says to record it in the repo.
+
+**The scraper Chrome.** On 2026-09-22 it would not start through `launch_trackergg_chrome.ps1` (port 9222 stayed
+closed). Starting `chrome.exe` with the same three arguments through `Start-Process` worked first time, which suggests
+the `&` launch died with the tool's shell.
+
+**Inventory (read-only, gate closed).** The database half:
+
+```bash
+"$PGBIN/psql" -X -A -F $'\t' -t -c "
+SELECT p.display_name, p.id, count(*), max(m.played_at),
+       (array_agg(m.external_id ORDER BY m.played_at DESC NULLS LAST, m.id DESC))[1], max(m.id)
+FROM players p JOIN match_players mp ON mp.player_id=p.id JOIN matches m ON m.id=mp.match_id
+WHERE p.display_name IN (<the roster from scripts/tracked_players.json>)
+GROUP BY p.id, p.display_name ORDER BY max(m.played_at) DESC;" "$PROD" > "$ART/window/catchup-boundary-2026-09-23.tsv"
+```
+
+12 of 12 roster players resolved. Each player's newest ingested match fell between 2026-09-13 and 2026-09-20. The
+browser half was `scripts/catchup_inventory.py`, first on one player (27 s), then on the roster as a detached job.
+
+| player | boundary position = matches missing |
+|---|---|
+| flatcat#woof | 8 |
+| Yosher#Toshi | 2 |
+| Osmin#NA1, ternstyle#GIGI, zopecow#1570, DoubleBl1nd#BEEF | 1 each (the last three share `d1aaa2a2…`) |
+| NPrightdolphin#NA1, Najumi#NPC, Beef Shortrib#Galbi, Deemo#Derf, Momomimo#hru | 0 |
+| **SambuUwU#NA1** | **INCOMPLETE: profile private** ("SAMBUUWU#NA1'S PROFILE IS PRIVATE"), confirmed on a retry. The adapter reported it as `NO_HISTORY` |
+
+**12 distinct matches** to ingest. Every complete player's boundary was on the first history page, so nothing was
+near the 20-match cap. **Gate G7: the owner accepted SambuUwU's gap by name.** Their matches with other roster
+players still arrive through those players' histories. Solo queues cannot arrive while the profile is private, which
+was already true before the gate closed.
+
+**Reopen.** The owner ran the gate command (the auto-mode classifier refused it as a production write):
+`closed`/`impact-rc3`/`v4-runbook` → **`open`/`impact-v4`/`v4-runbook`**, `updated_at 2026-09-23 21:25:55.346579+00`.
+
+| step | result |
+|---|---|
+| canary: `ingest_trackergg_player.py "Osmin#NA1" --count 1` | match **3658** (Abyss, `361b8a3f…`), 210 rows, **`scoring_version` 4 only, equals its replay**. The adapter's commit-then-score path, the one item rehearsal waived, is proven on production. **Rollback ended here** |
+| the rest: `refresh_tracked_players.py --count 20`, detached | 11 ingested (3659–3669), empty stderr. Discovery 20/20 COMPLETE for every public player; SambuUwU `NO_HISTORY` again |
+| reconcile | **12/12 present**, rows = rounds × 10 for each, all version 4. **All 12 equal their replay.** `impact_scores` 771,780 rows = 769,120 + 2,660, all version 4. Matches 3,649 → 3,661, so nothing unexpected arrived |
+| sweep through the reopening moment | fresh boundary, inventory rerun: **every public player at position 0, nothing new** |
+| probe (a), from `main-worktree` (`6f45476`, Python 3.11), run by the owner after ingestion was idle | **refused as expected, scores unchanged** |
+
+Match creation times ran 21:26:33 to 21:38:23 UTC. The ingest ledgers (gitignored, on this PC only) are
+`webapp/ingest_ledgers/ingest-Osmin-NA1-20260923T142604.jsonl` and `ingest-20260923T142834.jsonl`. The artifacts are in `$ART/window/`: `catchup-boundary-2026-09-23{,-post}.tsv`,
+`catchup-inventory-2026-09-23.json`, `catchup-sweep-2026-09-23-post.json`, `g7-refresh.out`.
+
+**Row motion, measured late.** The declared band (declaration 14: 27.2–37.2% of rows, 64.9–78.9% of matches
+reordered) was supposed to gate the swap, measured between the pre-swap capture and the swap. H1 does not record it,
+and no artifact of it exists, so it was skipped. Measured at close-out from the window's own files (pre-swap capture
+against `K5.load.csv`, by key; reordering by mean Impact per player, as in declaration 12's measurement):
+**249,349 of 769,120 rows changed (32.42%), 2,632 of 3,649 matches reordered (72.13%). Both are inside the band.**
+The rehearsal's files give the same figures, as they must: `K5R.load.csv` and `K5.load.csv` share sha256
+`32f3994c…`, and the two pre-swap captures are byte-identical.
 
 ## Durations measured in rehearsal
 
@@ -677,3 +781,5 @@ rehearses no maintenance path and H1 turns none on.
 | 2026-09-22 | **Render disk confirmed on the dashboard: 15 GB, 8.3% used** (~1.25 GB). The plan's ~15 GB from memory was right; H0's storage gate can cite the dashboard |
 | 2026-09-22 | **Gate G5 accepted**, conditional: the rehearsal and the window commands are accepted as they stand, with the real-match ingest left as an explicit open item to close before H0 |
 | 2026-09-22 | **Real-match ingest rehearsal waived.** Phase G ships without it; the first post-G7 ingest is the first test of that path |
+| 2026-09-23 | **The 48-hour hold ended early** after the owner checked the live site ("nothing looks too broken"). The gate opened at 21:25:55 UTC, about 14h13m after the swap |
+| 2026-09-23 | **Gate G7 approved with one accepted gap**: SambuUwU#NA1's profile is private, so their inventory is INCOMPLETE; the owner accepted it by name and reopened ingestion |
