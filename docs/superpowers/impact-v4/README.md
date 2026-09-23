@@ -1,8 +1,9 @@
 # Impact v4 — release runbook
 
-Status (2026-09-23): **SWAPPED. Production serves `impact_scores` at version 4 as of 07:12:54 UTC. The gate is closed; the activation PR is open for the owner to merge and deploy.**
-Manifest frozen at `2e5140e`. **The swap has happened**: production's `impact_scores` holds version 4 rows. The
-deployed code is still rc3 until the activation PR is merged, which is the accepted swap-to-deploy exposure.
+Status (2026-09-23): **LIVE. Impact v4 is deployed and serving. Swap 07:12:54 UTC, PR #71 merged 07:30:16 UTC, acceptance clean. The gate is CLOSED for the 48-hour hold; ingestion reopens at gate G7.**
+Manifest frozen at `2e5140e`, activated by PR #71. Production's `impact_scores` holds 769,120 rows at
+`scoring_version` 4 and the deployed code computes 4. rc3's rows are retained as `impact_scores_v3`, and
+rollback stays available until the gate reopens.
 
 - Process: `../SCORING-RELEASE-PROCESS.md`. This file is v4's instance of it.
 - Plan (the spec): `../plans/2026-09-21-impact-v4-no-time-factor-plan.md` (r5).
@@ -35,8 +36,8 @@ deployed code is still rc3 until the activation PR is merged, which is the accep
 | E prove | done | DECLARATION 13 `82ee277`; reference hashes `97ed0b0`; comparison tool `0003010`; RESULT `852dc49`; review fixes `9bb5618` `6d00d08`; addendum `7f6c0ed`. Seven comparisons, 0 rows differing over 674,530 rows each, both modes, byte-identical, and the hardened checker exits 0 |
 | F freeze & review | **done, awaiting G4** | manifest `2e5140e` (LF-sha `2f33f137…`); PREP_CHAIN `2cd448e2…` (K3 = K4); reviews reconcile, decomposition 29,606 checks / 0 mismatches; RESULT `55c7fd8` |
 | G rehearse | **done bar one item, awaiting G5** | Section G below. Forward path, caches, three probes, rollback verified byte-identical, forward again, interrupted swap changes nothing, post-ingest refusal exact. Real-data suite 17 passed / 1 skipped / 1 deselected. **Outstanding: ingest one real tracker.gg match after a swap and confirm it scores at version 4** |
-| H activate | not started | |
-| I hold & reopen | not started | |
+| H activate | **DONE 2026-09-23** | Section H1. Gate closed 04:16 UTC, K4 = K5 `2cd448e2...`, verify-build clean, **swap committed 07:12:54 UTC in 36.98 s**, PR #71 merged 07:30:16 UTC, verify-live clean, caches rebuilt at version `4003003004`, acceptance 3,649 matches / 0 differ |
+| I hold & reopen | **in progress** | 48-hour observation hold started 2026-09-23, gate closed. Reopen at gate G7 after the catch-up inventory |
 | J close out | not started | |
 
 ## F. Freeze and review — v4's commands (process §F)
@@ -598,6 +599,47 @@ owner to merge.** The merge, the deploy, `verify-live` and the cache rebuild are
 > process** (`Start-Process ... -WindowStyle Hidden -RedirectStandardOutput`), which the reaper does not supervise,
 > and have the session merely wait on its output file. Do that from the start next time; it costs nothing and it
 > removes a 45-minute retry risk from the critical path.
+
+
+### H1.5-H1.8 After the merge
+
+PR **#71** merged 2026-09-23 07:30:16 UTC as `e2453ce`. Render deployed and the owner confirmed it green.
+
+| step | result |
+|---|---|
+| `verify-live` (all arguments, `--expect-scoring-version 4`) | **clean**, 22.5 min. `problems: []`, `scoring_versions: [4]`, `read_back_sha256` = `32f3994c...`, `comparison_sha256` = CHAIN |
+| cache DELETE | **1 row** -- a visitor had loaded a page between the swap and the barrier |
+| prewarm | 12 of 12 roster players, 2 m 39 s |
+| coverage | expected cache version **`4003003004`**, 24 of 24 player-scopes usable |
+| agreement (`verify_cache_matches_scores.py`) | cache agrees with scores, 24 scopes / 12 players, 5.4 s |
+| **acceptance replay** | **3,649 matches replayed, 0 differ** under active configuration `impact_v4`, 27.1 min |
+| page checks | `/` 200, `/health` 200, `/stats` 200 (1.8 s), three roster player pages 200 (0.6-1.0 s) |
+
+**How the deploy was confirmed to be v4, without a version endpoint.** The app exposes no build or scoring version,
+so "Render says green" and "the running code computes v4" are not the same claim. The check used instead: prewarm
+wrote cache rows locally at version `4003003004`, then a live player page was loaded and the rows were re-read. Their
+`updated_at` was **unchanged** and the page returned in 0.44 s. A process still running rc3 would compute a different
+`cache_version()`, judge those rows stale and rewrite them. It did not, so the deployed code's cache version equals
+v4's composite, whose leading component is `IMPACT_CALCULATION_VERSION`.
+
+A cheaper version of the same check was available and missed: the one cache row the DELETE removed had been written
+by the deployed code, and reading its `version` first would have answered the question outright. **Read that row
+before deleting it next time.**
+
+**`/stats` needs no invalidation, and this was checked rather than assumed.** `site_stats_cache` has its own
+`SITE_STATS_CACHE_SCHEMA_VERSION` (19) which deliberately does **not** fold in `IMPACT_CALCULATION_VERSION`. That
+would be a staleness risk if any of its stats read impact scores, but none do -- the constant's own comment says
+every stat it covers reads raw `Match`/`Round`/`MatchPlayer` rows, and nothing under `app/services/site_stats*`
+references `ImpactScore`.
+
+> **Scripts run from outside `webapp/` need `PYTHONPATH`.** The acceptance replay failed instantly with
+> `ModuleNotFoundError: No module named 'app'` because `sys.path[0]` is the script's own directory. Either set
+> `PYTHONPATH` to the checkout, or feed the script on stdin as the gate probes do. This is the third form of the same
+> trap in this release, after the probes and the Windows path-in-SQL split.
+
+> **Detaching the long jobs worked exactly as intended.** The low-memory reaper stopped the *waiter* during the final
+> `verify-live`, and the export itself carried on untouched because it was a detached Windows process rather than a
+> supervised background task. Every long step of this window ran that way after the first K4 was lost.
 
 
 
