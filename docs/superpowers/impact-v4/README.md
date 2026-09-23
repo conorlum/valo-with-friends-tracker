@@ -1,7 +1,8 @@
 # Impact v4 — release runbook
 
-Status (2026-09-22): **phases A-G done; G4 and G5 approved; H0 complete. Waiting on the owner to open the activation window (gate G6).**
-Manifest frozen at `2e5140e`. Nothing is merged or deployed. Production runs rc3 (`IMPACT_CALCULATION_VERSION` 3, `ACTIVE_MANIFEST` rc3).
+Status (2026-09-23): **SWAPPED. Production serves `impact_scores` at version 4 as of 07:12:54 UTC. The gate is closed; the activation PR is open for the owner to merge and deploy.**
+Manifest frozen at `2e5140e`. **The swap has happened**: production's `impact_scores` holds version 4 rows. The
+deployed code is still rc3 until the activation PR is merged, which is the accepted swap-to-deploy exposure.
 
 - Process: `../SCORING-RELEASE-PROCESS.md`. This file is v4's instance of it.
 - Plan (the spec): `../plans/2026-09-21-impact-v4-no-time-factor-plan.md` (r5).
@@ -253,7 +254,7 @@ Drain ingestion first and wait for the last refresh to exit. Then check for stra
 take the window's own backup.
 
 ```bash
-DATABASE_URL="$PROD" $PY -c "from app.db import SessionLocal; from app.scoring.ingest_preflight import find_unscored_match_ids; print(find_unscored_match_ids(SessionLocal()))"
+DATABASE_URL="$PROD" $PY -c "from app.db import SessionLocal; from app.scoring.impact import find_unscored_match_ids; print(find_unscored_match_ids(SessionLocal()))"
 DATABASE_URL="$PROD" $PY scripts/install_release_write_gate.py --expect-database valowithfriendsdb \
     --state closed --release-id impact-rc3 --admin-id v4-runbook --note "impact-v4 activation window"
 time "$PGBIN/pg_dump" --dbname="$PROD" --format=custom --no-owner --no-privileges --file="$ART/window/W0-valowithfriendsdb.dump"
@@ -566,6 +567,43 @@ chain-surface check must be re-run on whatever tip the merge produces before the
 
 **R3, the last resort**, stays as written in the plan: restore into a new instance, then repoint the web service and
 `.env.remote`.
+
+## H1. The activation window -- what actually ran
+
+Opened 2026-09-23 on the owner's authorisation of 2026-09-22: **everything through the swap, then a PR for the
+owner to merge.** The merge, the deploy, `verify-live` and the cache rebuild are deliberately NOT in this scope.
+
+| step | result |
+|---|---|
+| ingestion drained | no python processes, no project scheduled tasks. Ingestion here is manual |
+| stranded matches | **NONE** |
+| gate closed | `open`/`impact-rc3`/`rc3-runbook` -> `closed`/`impact-rc3`/`v4-runbook`, note "impact-v4 activation window" |
+| preflight | alembic `0010`, **3,649 matches, max id 3657**, gate closed. Identical to F0, so no match arrived between the freeze and the window |
+| **R3 restore point (server time)** | **`2026-09-23 04:16:10.790079+00`** |
+| W0 backup | 56 s, 49,712,365 bytes, sha256 `fd6b7f6cdfa4b28f72c9679794b40310452781f8603a7257366ed52f772a2d8a`; `pg_restore --list` reads 171 entries |
+| activation cohort id list | 3,649 ids, sha256 `92077535d7af2ccbd529b34fd722ee22c9daafa9c330208dac184e189dea8362` -- **the same list pinned at F4 and in the rehearsal** |
+| pre-swap capture | 769,120 rc3 rows, 23 s, sha256 `37c81af806c58ec559deb4c9c8b47fafc4e1eac6c7061e5dbde2a0cb44865a65` -- **byte-identical to the rehearsal's**, so production's live rows and the restore's were the same rows |
+| K4 (frozen manifest) | 45.0 min, sha256 `2cd448e2...`, cohort fingerprint `768c86b3...` |
+| K5 (`--active --projection both`) | 42.3 min, same sha256 and fingerprint; load projection `32f3994c...`, 769,120 rows |
+| **`CHAIN`** | **`2cd448e2edb3d4616dfd3ce7abf0150a33a851ab126dc21245ef3e430c4424c2`** -- equal to F4's `PREP_CHAIN` and the rehearsal's, because **no match was ingested between the freeze and the window**, so the activation cohort is F4's cohort exactly. The runbook's warning that it would differ is right in general and simply did not bite here |
+| prewarm lists | 12 roster players, 2,238 recently cached beyond them |
+| `build` | 1.07 min, `impact_scores_new` oid 80081, 769,120 rows |
+| `verify-build` | **clean**, 22.5 min. `problems: []`, `scoring_versions: [4]`, `read_back_sha256` = `32f3994c...` = the load artifact, `comparison_sha256` = CHAIN, manifest `2f33f137...`, 3,460 approved rows checked |
+| **`swap`** | **committed 2026-09-23 07:12:54 UTC, exit 0, 36.98 s** -- inside the rehearsal range of 36.56-41.33 s. Retained oid 65265 -> `impact_scores_v3`; built oid 80081 -> `impact_scores` |
+| state after the swap | `impact_scores` 769,120 rows **all version 4**; `impact_scores_v3` 769,120 rows at version 3; `impact_scores_v1` still present; cache cleared to 0; gate closed; release log id 8 `swapped` under `v4-runbook` |
+
+> **The exports were reaped twice as Claude Code background tasks and had to be run detached.** The first in-window
+> K4 died after 22 minutes of scoring but before writing its sidecar -- `K4.csv` on disk, no `K4.json`, unusable --
+> which is the same failure the ledger records at F4. The fix that worked: run each export as a **detached Windows
+> process** (`Start-Process ... -WindowStyle Hidden -RedirectStandardOutput`), which the reaper does not supervise,
+> and have the session merely wait on its output file. Do that from the start next time; it costs nothing and it
+> removes a 45-minute retry risk from the critical path.
+
+
+
+> **The process doc names a function that does not exist.** H1.1 says to check for stranded matches with
+> `find_unscored_match_ids` imported from `app.scoring.ingest_preflight`. It lives in **`app.scoring.impact`**.
+> Corrected in the commands above; worth fixing in the process doc at close-out.
 
 ## Durations measured in rehearsal
 
