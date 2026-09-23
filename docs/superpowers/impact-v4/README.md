@@ -1,6 +1,6 @@
 # Impact v4 — release runbook
 
-Status (2026-09-22): **phases A-F done; G4 approved; phase G rehearsed bar one item; waiting on gate G5.**
+Status (2026-09-22): **phases A-G done; G4 and G5 approved; H0 checklist in progress. One rehearsal item still open (real-match ingest).**
 Manifest frozen at `2e5140e`. Nothing is merged or deployed. Production runs rc3 (`IMPACT_CALCULATION_VERSION` 3, `ACTIVE_MANIFEST` rc3).
 
 - Process: `../SCORING-RELEASE-PROCESS.md`. This file is v4's instance of it.
@@ -548,6 +548,25 @@ Two corrections to rc3's numbers, for whoever reads this next:
   provenance). It is the clean spare. It would need its own ~43-minute export before it could be swapped.
 - Both can be dropped once G5 is settled. They cost about 800 MB of the instance's 15 GB.
 
+## H0. Before the window
+
+| item | state |
+|---|---|
+| storage for live + staged + retained tables, indexes and WAL headroom | **confirmed 2026-09-22 on the Render dashboard: 15 GB, 8.3% used** (~1.25 GB). The swap needs one extra copy of `impact_scores` (101 MB) plus its indexes while both tables exist |
+| pre-release production `main` SHA (the rollback deployment) | **`6f45476df7fcf55574a2506f2850fb85b587643b`** — `Merge pull request #70 from conorlum/trackergg-paginated-history` |
+| retained table name free | **yes**: production holds only `impact_scores` and `impact_scores_v1`; both `impact_scores_v3` and `impact_scores_v4_rolled_back` are free |
+| a separate checkout of the release-tools commit for a database rollback | **`$ART/release-tools`**, a detached worktree at `bcb83b9`. It carries `swap_impact_scores.py` with this release's flags, and its `ACTIVE_MANIFEST` is still rc3's — deliberately, so reverting the deployment and rolling the database back do not disagree |
+| recovery gate: point-in-time restore covers the window, with its retention recorded | **OUTSTANDING — owner.** Confirm on Render's Recovery page. If PITR does not cover the window, the owner must explicitly accept backup-only recovery for this release |
+| the outstanding rehearsal item | **OUTSTANDING — owner.** Ingest one real tracker.gg match after a swap on the rehearsal and confirm it commits with scores at version 4. Needs `webapp\scripts\launch_trackergg_chrome.ps1` |
+
+**The activation PR is a real merge, not a fast-forward.** `origin/main` moved to `6f45476` (PR #70) after this branch
+was cut, so `impact-v4-activation` is 6 commits behind it. Nothing in the chain surface differs — PR #70 touched only
+the tracker.gg adapter, and every scoring file is identical — but H1.5 has to reconcile those six commits, and the
+chain-surface check must be re-run on whatever tip the merge produces before the window relies on it.
+
+**R3, the last resort**, stays as written in the plan: restore into a new instance, then repoint the web service and
+`.env.remote`.
+
 ## Durations measured in rehearsal
 
 | step | duration | note |
@@ -618,3 +637,4 @@ rehearses no maintenance path and H1 turns none on.
 | 2026-09-22 | **Concurrency is not measured for v4** -- a new, dated waiver for this release only. rc3's waiver does not carry over, and this one does not carry to a later release |
 | 2026-09-22 | **Swap-to-deploy exposure accepted**, as rc3 did (rc3 §8.4.0). No maintenance mode; the site serves through the interval |
 | 2026-09-22 | **Render disk confirmed on the dashboard: 15 GB, 8.3% used** (~1.25 GB). The plan's ~15 GB from memory was right; H0's storage gate can cite the dashboard |
+| 2026-09-22 | **Gate G5 accepted**, conditional: the rehearsal and the window commands are accepted as they stand, with the real-match ingest left as an explicit open item to close before H0 |
