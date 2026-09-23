@@ -1,0 +1,119 @@
+{
+  "P0": {
+    "log_loss": 0.09237380783040487,
+    "n": 67251
+  },
+  "F-0.3": {
+    "log_loss": 0.10080164241157727,
+    "n": 67251
+  },
+  "F-0.4": {
+    "log_loss": 0.09932702715803486,
+    "n": 67251
+  },
+  "F-0.7": {
+    "log_loss": 0.09579118940865476,
+    "n": 67251
+  },
+  "F-1.0": {
+    "log_loss": 0.09335616429199169,
+    "n": 67251
+  },
+  "F-1.26": {
+    "log_loss": 0.09196193633213277,
+    "n": 67251
+  },
+  "F-1.6": {
+    "log_loss": 0.09092744592577609,
+    "n": 67251
+  },
+  "_gate": {
+    "standing_floor_residual_variance": 0.00107,
+    "arms": {
+      "F-0.3": {
+        "r2": 0.9909077886943961,
+        "residual_variance": 0.009092211305603892,
+        "resid_sd_over_signal_sd": 0.09535308755149931,
+        "below_standing_floor": false
+      },
+      "F-0.4": {
+        "r2": 0.9926603312213883,
+        "residual_variance": 0.0073396687786116965,
+        "resid_sd_over_signal_sd": 0.08567186690280361,
+        "below_standing_floor": false
+      },
+      "F-0.7": {
+        "r2": 0.9966679723881978,
+        "residual_variance": 0.0033320276118021797,
+        "resid_sd_over_signal_sd": 0.05772371793121247,
+        "below_standing_floor": false
+      },
+      "F-1.0": {
+        "r2": 0.9989267740467703,
+        "residual_variance": 0.0010732259532296728,
+        "resid_sd_over_signal_sd": 0.0327601274910473,
+        "below_standing_floor": false
+      },
+      "F-1.26": {
+        "r2": 0.9995932783141294,
+        "residual_variance": 0.00040672168587063684,
+        "resid_sd_over_signal_sd": 0.02016734206261789,
+        "below_standing_floor": true
+      },
+      "F-1.6": {
+        "r2": 0.998835855690619,
+        "residual_variance": 0.0011641443093810544,
+        "resid_sd_over_signal_sd": 0.03411955904435247,
+        "below_standing_floor": false
+      }
+    }
+  },
+  "F-0.3 vs P0": {
+    "point": 0.008427834581172397,
+    "lo": 0.007616718424427366,
+    "hi": 0.00927566264434912,
+    "verdict": "HARM",
+    "residual_variance": 0.009092211305603892,
+    "below_standing_floor": false
+  },
+  "F-0.4 vs P0": {
+    "point": 0.006953219327629989,
+    "lo": 0.0062180824835072245,
+    "hi": 0.007705841690723602,
+    "verdict": "HARM",
+    "residual_variance": 0.0073396687786116965,
+    "below_standing_floor": false
+  },
+  "F-0.7 vs P0": {
+    "point": 0.0034173815782498895,
+    "lo": 0.002900529453430225,
+    "hi": 0.003930976503478966,
+    "verdict": "HARM",
+    "residual_variance": 0.0033320276118021797,
+    "below_standing_floor": false
+  },
+  "F-1.0 vs P0": {
+    "point": 0.0009823564615868141,
+    "lo": 0.0006548177256511707,
+    "hi": 0.0013042941794832164,
+    "verdict": "HARM",
+    "residual_variance": 0.0010732259532296728,
+    "below_standing_floor": false
+  },
+  "F-1.26 vs P0": {
+    "point": -0.00041187149827209835,
+    "lo": -0.0006202407760672855,
+    "hi": -0.00020069981829557674,
+    "verdict": "IMPROVEMENT",
+    "residual_variance": 0.00040672168587063684,
+    "below_standing_floor": true
+  },
+  "F-1.6 vs P0": {
+    "point": -0.0014463619046287818,
+    "lo": -0.0016913669965383192,
+    "hi": -0.0012083555483892003,
+    "verdict": "IMPROVEMENT",
+    "residual_variance": 0.0011641443093810544,
+    "below_standing_floor": false
+  }
+}

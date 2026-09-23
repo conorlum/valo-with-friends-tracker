@@ -61,6 +61,14 @@ docker compose -p valomaths-private up -d            # start local Postgres on p
 
 A `.venv` with `requirements.txt` installed already exists in `webapp/` (includes `playwright`, used by the tracker.gg pipeline below). `.env` already points `DATABASE_URL` at port 5433.
 
+## Changing how Impact is scored
+
+Any change to Impact scoring -- a new term, a changed factor, new weights -- and any release of one follows
+`docs/superpowers/SCORING-RELEASE-PROCESS.md`: declare before measuring, implement behind flags that default off,
+prove equivalence against a reference built from unchanged code, freeze, rehearse, and activate in one gated
+window. Read it before touching `app/scoring/`; plan only the release, not the process. Each release keeps its own
+runbook at `docs/superpowers/impact-<id>/README.md` (rc3 shipped; v4 in progress).
+
 ## tracker.gg ingestion pipeline
 
 tracker.gg has no public API for Valorant match data, so this reads match data the same way a browser session naturally loads it: a dedicated Chrome profile with remote debugging enabled, attached to via Playwright's CDP connection, browsing the public match-history and match-detail pages.

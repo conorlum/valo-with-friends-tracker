@@ -1,0 +1,32 @@
+{
+  "0": {
+    "diff_size": 1546247,
+    "diff": 8451,
+    "diff_band": 1078,
+    "unsupported": 72
+  },
+  "1": {
+    "diff_size": 1567896,
+    "diff": 7562,
+    "diff_band": 1076,
+    "unsupported": 70
+  },
+  "2": {
+    "diff_size": 1551556,
+    "diff": 8114,
+    "diff_band": 996,
+    "unsupported": 70
+  },
+  "3": {
+    "diff_size": 1550485,
+    "diff_band": 1076,
+    "diff": 7961,
+    "unsupported": 70
+  },
+  "4": {
+    "diff_size": 1566305,
+    "diff": 8143,
+    "diff_band": 1012,
+    "unsupported": 124
+  }
+}

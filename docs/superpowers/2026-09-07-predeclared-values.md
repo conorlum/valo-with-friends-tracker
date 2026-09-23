@@ -2136,3 +2136,2673 @@ exposes a "load more" control that pages further; the code does not use it
 **What this entry does NOT do.** No scoring change, no formula change, no manifest change. The timing
 candidates remain off and Part 4 remains dormant and unshipped — its measured shape was worth nothing
 out-of-fold, and that finding stands.
+
+### 2026-09-19 — DECLARATION: the post-plant time factor, five candidates, declared before measurement
+
+**What kind of entry this is.** Predeclaration. Nothing is implemented, nothing is activated, no scoring code is
+edited, nothing is written to the database. It fixes the arms, the estimand, the bucketing and the decision rule for
+a measurement session that has not yet run a single contrast. It exists because this project has already been burned
+once by the opposite order: Part 4's post-plant factor was recorded as a win, and the win turned out to be a 22%
+level shrink riding alongside a shape that measured nothing. That reading was withdrawn (entry 2026-09-16 and the
+remediation commits). This entry is written so the same thing cannot happen twice.
+
+**Why now.** rc3 is live (activation RESULT, 2026-09-19): `IMPACT_CALCULATION_VERSION = 3`, A 1 / B 2.5 / C 2.5 /
+D 100, trade credit 1.0, econ `buy_disruption_v2_30_80_bonus_denial`, realized swing, **both timing candidates OFF**.
+The post-plant time factor is therefore the legacy one, and four defects in it plus one owner redesign were written
+down on 2026-09-19 with their populations counted. None has been measured out of fold. Any change to any of them is
+`IMPACT_CALCULATION_VERSION` 4 and a full rescore, so the question is not "is this defensible" but "is this worth a
+rescore", and that is an evidence question.
+
+#### 1. What is live, stated exactly
+
+`app/scoring/impact.py::_time_factor`, with `enable_postplant_leverage=False` and
+`enable_preplant_empirical=False`:
+
+| region | kill | death |
+|---|---:|---:|
+| pre-plant | 1.0 | 1.0 |
+| post-plant, `t < plant+38` | `1 + (t − plant)/53` | same |
+| `plant+38 <= t <= plant+45` | 1.75 flat | **0.50 flat** |
+| `t >= plant+45` in an `exploded` round, or `t >= defuse_time` in a `defused` round | 0.50 | 0.50 |
+| `t > plant+45` with neither flag set (a phantom plant) | **the ramp, uncapped** | same |
+
+Corpus-wide the scalar is modest: median effective multiplier 1.000, mean 1.022, contributing +2.43% of total
+impact. It scales 152,083 rows down and 100,058 up — a redistribution, not a bonus layer.
+
+#### 2. The candidates, and which are arguments and which are claims
+
+Two kinds, and they get **different decision rules**, declared here rather than chosen once the numbers are in.
+
+**Tier A — correctness fixes.** Their case is a priori: the shipped rule contradicts its own stated reasoning. They
+are measured to check they do no harm, not to discover whether they are right.
+
+- **C1. A decided round pays 0, not 0.5.** After detonation or defuse the round is over; nothing is at stake and
+  econ already prices the gear. Owner decision, 2026-09-19: **0, not 0.5**. Population **2,856 events** (1,662 post
+  detonation, 1,194 post defuse) of 323,394 kills in planted rounds — **0.9%**.
+- **C2. The death cliff at plant+38.** A death at t=37.9 is charged 1.715 and at t=38.0 is charged 0.500: a **70.8%
+  cut across 0.1 seconds**, where the kill side steps 1.715 → 1.750. The comment justifying it ("the round is
+  basically already decided") describes something continuous and implements it as a step. **1,577 events within
+  ±1s of the boundary**; 2,924 of 154,031 post-plant kills reach the window at all.
+- **C3. The phantom-plant ramp is unbounded.** The 0.5 resolution value fires only on the `exploded` or `defused`
+  flag. A phantom plant (never armed, decided on the round timer) sets neither, so the ramp keeps climbing past the
+  point the bomb should have gone off: **1.851 at 45.1s, 1.981 at 52s**, both above the design's own 1.75 ceiling.
+  **618 kills.** Known and deliberate: `_time_factor` does not route the legacy branches through
+  `effective_plant_time` because it would move stored Impact for 76 rounds without a version bump (review finding 5).
+  A version 4 removes that objection.
+
+**Tier B — empirical claims.** Their case is evidence and nothing else. Both are shape-or-level changes to a scalar
+that the last measurement could not distinguish from noise.
+
+- **C4. The post-plant level is too high by about a quarter.** The only candidate with prior out-of-fold evidence:
+  legacy ramp × 0.7826 scored −0.00003 [−0.00005, −0.00002], an IMPROVEMENT. Caveat on record and carried forward:
+  **0.7826 is not fitted.** It is `1/c` from the uncentred Part 4 table, so the existing result shows that *this*
+  scale beats 1.0, not that it is the best scale.
+- **C5. Group post-plant states by man-advantage differential, not absolute counts** (owner's redesign). Empirical
+  attacker win rate over 1,686,190 post-plant round-seconds: even states cluster tightly (1v1 65.5, 2v2 64.0,
+  3v3 62.5, 4v4 63.4, 5v5 67.3 — spread 4.8pp) and 1v1 vs 1v2 differ by 39.4pp. Refuted within that same table:
+  1v2/1v3/1v4 are *not* alike (26.1 / 8.0 / 3.0), and there is a real second-order gradient along total alive
+  (+1 is worth 91.0% at 2v1 but 80.4% at 5v4). The argument for trying it where Part 4 failed is data density —
+  Part 4 spread thin counts over 54 supported cells keyed `(a, d, t, victim_side)`. **That is a hypothesis. It is
+  still a SHAPE change, and shape is exactly what measured zero.**
+
+#### 3. The instrument — inherited, not invented
+
+The predeclared out-of-fold protocol of `scripts/run_five_arm_report.py` (econ spec 8d-i), unchanged:
+
+- **Estimand:** each arm scored as the FIXED composite `impact_diff` — the scorer's own output under that arm's
+  configuration — as a single predictor beside the nuisance controls. One coefficient, no component reweighting.
+  An arm cannot repair a bad composite by being refit.
+- **Target:** `PRIMARY_T2` (k=3, gamma=0.7, match_weight=1.0). **Controls:** `round_result`, `score_diff_before`,
+  `attacking_is_team_a`, `loadout_diff`, `full_buy_count_diff`.
+- **Folds:** 5 outer, `stable_folds(seed=0)`, match-clustered, assignment fixed once from the reference arm's match
+  set and shared by every arm. Inner 3-fold config/L2 selection on training matches only, L2 grid (0.1, 1.0, 10.0).
+- **Uncertainty:** paired match-clustered bootstrap, **2,000 draws**, two-sided 95%.
+- **Sign convention:** `loss(arm) − loss(P0)`. **Positive is worse.**
+- **Replay mode:** ex-ante (`use_realized_swing=False`), as the protocol runs it. The time factor is not gated by
+  that switch, so every arm here is measurable in this mode; the econ component is 0 throughout for every arm alike
+  and therefore cannot differentiate them.
+- **Scale anchor, carried forward so no contrast is read without it:** baseline pooled out-of-fold weighted log loss
+  0.6729 against a coin flip's 0.6931. The entire scoring system buys about 0.02. A 0.00003 contrast is roughly
+  1/700th of that.
+
+**Corpus.** Every arm runs on the full current corpus — **3,198 matches** as of this entry, up from the 3,125 the
+Part 4 numbers were measured on. Contrasts within this session are mutually comparable; **they are not directly
+comparable to the recorded Part 4 figures**, which is why C4 and Part 4 itself are both re-measured here rather than
+quoted. The dataset fingerprint and fold-mapping hash are recorded in the RESULT entry.
+
+#### 4. How the arms are produced without touching scoring code
+
+`webapp/app/` is not edited — not one line — and `git diff --stat webapp/app/` is required to be empty at the end
+of the session. Four of the five candidates cannot be expressed through the existing `scoring_kwargs`: the
+`postplant_factor_table` hook is consulted only for genuine plants and non-self kills, is reached only *after* the
+exploded/defused early return, and is never told whether it is pricing a kill or a death. So:
+
+**A measurement-local replacement for `_time_factor`, installed by monkeypatch from `webapp/scripts/`, is the
+mechanism.** It is a copy of the live function plus one variant switch, and the live file is untouched on disk.
+
+**The identity gate, run before any contrast and reported in the RESULT whatever it says:** the patched function with
+its variant set to NONE must reproduce the reference replay **exactly** — every observation of every round of all
+3,198 matches identical. A single differing value voids the mechanism and the session stops. This is the same
+discipline as commit 88643a3 ("stop a formula change from reporting itself as a broken identity"), applied to the
+harness rather than to the formula.
+
+#### 5. The arms
+
+`P0` is the reference. Every contrast is against `P0`.
+
+| arm | what it changes | fitted? |
+|---|---|---|
+| **P0** | nothing — rc3 as shipped | no |
+| **P0′** | the patch, variant NONE — the identity gate, not a contrast | no |
+| **P1** | C1: the exploded/defused branch returns **0.0** instead of 0.5, kill side and death side alike | no |
+| **P2b** | C2: the flat 0.5 death charge in `[plant+38, plant+45]` is replaced by a linear decay from the ramp's own value at t=38 (`1 + 38/53 = 1.71698`) down to **0.5 at t=45**. Continuous at both ends. **The kill side is left exactly as shipped** (flat 1.75), so this arm moves the death side only | no |
+| **P2L** | the level-matched control for P2b: the same total extra death-side post-plant leverage as P2b, spread **uniformly across all post-plant deaths** instead of concentrated in the window. `P2b − P2L` is what the *targeting* is worth once the level is held equal | yes, per fold |
+| **P3a** | C3, minimal: the resolution value applies at `t >= plant+45` **regardless of the exploded/defused flags**, so the ramp is capped | no |
+| **P3b** | C3, structural: a phantom plant gets **no post-plant regime at all** — the pre-plant 1.0 throughout — which is what routing the legacy branches through `effective_plant_time` would do | no |
+| **P4-0.70 / P4-0.7826 / P4-0.90** | C4: the legacy post-plant ramp multiplied by a fixed scale s. `s = 1.0` is P0 | no |
+| **P4f** | C4 with s selected **per fold on training matches only** from the declared grid {0.70, 0.7826, 0.90, 1.00} and applied to the held-out fold. Assembled from the arms above; no extra replay | yes, per fold |
+| **P5** | C5: Part 4 with **one thing changed — the pooling ladder key** (section 6). Everything else identical: the differencing, the kill-weighted time-mean denominator, FLOOR 0.05, CEIL 2.0, W=2, the 60-observation floor, `solve_and_apply_centering` | yes, per fold |
+| **P6** | Part 4 exactly as built, on this corpus. Both a replication of the withdrawn result and the only honest comparator for P5 | yes, per fold |
+| **PC** | the Tier A fixes combined: P1 + P2b + P3b | no |
+| **PC+** | PC plus each Tier B arm that reaches IMPROVEMENT under section 8. Contingent by rule, not by outcome: the rule is fixed here, the membership is whatever the results make it | as its members |
+
+**On C2 and the level/shape split.** The separation is required "wherever both could move". For C2 they **cannot be
+separated by construction**: removing a 70.8% discount necessarily raises what those deaths are charged, and a
+rescaling that restores the level reintroduces the discontinuity the candidate exists to remove. That is stated here
+rather than discovered later, and `P2L` is the decomposition offered in its place.
+
+**Every declared arm that is not run is reported as NOT RUN, with its reason, in the RESULT.** None is dropped
+silently, and compute cost is not a reason to omit one from the report.
+
+#### 6. C5's bucketing — fixed here, in full
+
+P5 changes the pooling ladder of `ValueTable` and nothing else. With `a` attackers and `d` defenders alive:
+
+- **differential** `g = a − d`, which takes exactly the values −4 … +4 over the 25 reachable states;
+- **size bucket** `nb = LOW if (a + d) <= 5 else HIGH`.
+
+The ladder, tried in this order, each rung requiring **60 observations** (the existing `MIN_OBSERVATIONS`, applied to
+the target second's own counts before smoothing, exactly as today):
+
+1. `exact` — `(a, d, t)`. **Unchanged from Part 4.**
+2. `diff_size` — `(g, nb, t)`, pooled over every state sharing that differential and size bucket.
+3. `diff` — `(g, t)`, pooled over every state sharing that differential.
+4. `diff_band` — `(g, band(t))`, with the existing half-open bands [0, 38.0), [38.0, 41.5), [41.5, 45).
+5. `unsupported`.
+
+`V(a, 0, t)` stays analytically pinned as today. The W=2 moving-average smoother, the differencing, the denominators,
+the clamp and the centring constant are untouched.
+
+Three consequences, stated before the fact so neither can be presented as a finding afterwards:
+
+- P5 is **identical to P6 on every cell that resolves at rung 1**, so it can only differ where Part 4 was thin. The
+  share of scored post-plant kills that resolves below rung 1 is reported in the RESULT; if that share is small,
+  a null result for P5 says little about the differential idea and much about how rarely it is reached, and it will
+  be reported that way.
+- The rungs pool **more** where the data is thinnest and **not at all** where it is dense, which is the hypothesis's
+  own logic.
+- The choice to key on `(a − d)` with a size correction **was informed by the whole-corpus win-rate table** quoted
+  in section 2. That is prior information about the structure, disclosed here. What is fitted per fold on training
+  matches only is every *value*: the cells, the smoothing, the denominators and `c`.
+
+#### 7. Leakage rules
+
+- Anything fitted — V, the factor table, `c`, P2L's scalar, P4f's selection of s — is fitted on **training folds
+  only** and applied to held-out folds. Arms P2L, P4f, P5 and P6 are therefore replayed once per fold.
+- `solve_and_apply_centering`'s own warning is binding: solving `c` on the whole corpus is the exact leak the
+  per-fold tables exist to remove. `c` is solved per fold, on that fold's training kills, and the per-fold values
+  are reported.
+- Arms that are pure deterministic rule changes (P1, P2b, P3a, P3b, P4-s, PC) are fitted from nothing and are
+  replayed once.
+
+#### 8. The decision rule
+
+Fixed now. **If a result lands outside it, the result is recorded against the rule as written and the rule does not
+move.**
+
+Verdict vocabulary, used in these words and no others: **IMPROVEMENT** (interval entirely below zero),
+**HARM** (interval entirely above zero), **INCONCLUSIVE** (interval spans zero). An interval spanning zero is never
+reported as "no harm found", and a zero-width interval at exactly zero is reported as IDENTICAL — a broken contrast,
+not a verdict.
+
+- **Tier A (P1, P2b, P3a, P3b).** Ship if the arm is **not HARM**. INCONCLUSIVE is an acceptable ship verdict for
+  Tier A, because the case for these is a priori and the measurement is a harm check. This is declared here
+  precisely so it cannot be invented after an inconclusive result arrives.
+- **Tier B (P4f, P5).** Ship **only on IMPROVEMENT**. INCONCLUSIVE does not ship. HARM does not ship. This is the
+  rule that Part 4's shape failed, and it is applied unchanged.
+- **P5 additionally** must beat P6 — the contrast `P5 − P6` must not be HARM — or the regrouping has not earned its
+  place over the design it replaces.
+- **The combination is measured, not assumed.** Whatever set passes is also run as `PC` / `PC+`, and if the combined
+  arm is HARM while its parts are not, **nothing ships**. Effects do not add.
+- **Where a whole version 4 is justified.** A version 4 costs a full rescore of ~674,530 rows plus a release. It is
+  recommended if **either**: (a) at least one Tier B arm is IMPROVEMENT and the combined arm is not HARM; **or**
+  (b) the Tier A arms are not HARM *and* their combination moves enough stored Impact to make leaving a known-wrong
+  rule live worse than the rescore — declared threshold: **>= 1% of `impact_scores` rows changed, or >= 5% of
+  matches reordered by within-match player rank**. If neither holds, the recommendation is **no version 4 now**, with
+  the Tier A fixes recorded as accepted and deferred to ride along with the next version bump for another reason.
+
+#### 9. Predictions, declared before running
+
+Falsifiable, and recorded so the RESULT can be scored against them rather than narrated:
+
+1. **P1, P2b, P3a, P3b are each INCONCLUSIVE.** Power, not merit: they move 0.9%, 1.9% and 0.2% of post-plant kills
+   respectively, and a change to *all* post-plant kills (Part 4's shape) already measured +0.00000 [−0.00003,
+   +0.00003]. A fraction of a population that cannot be resolved is not resolvable either.
+2. **P4f is IMPROVEMENT**, replicating the level result on the larger corpus.
+3. **P5 is INCONCLUSIVE**, and `P5 − P6` is INCONCLUSIVE: the differential regrouping changes which thin cells
+   borrow from which, and thin cells are by definition where few kills are scored.
+4. **PC is INCONCLUSIVE.**
+
+If prediction 2 fails, C4's prior evidence does not survive contact with a larger corpus and C4 does not ship. If
+prediction 3 fails in the improving direction, the owner's redesign has done something Part 4 could not, and that is
+the finding this session was worth running for.
+
+#### 10. Scope, and what this entry does not do
+
+Work is confined to `webapp/scripts/` (new analysis scripts only), `docs/superpowers/` (this entry and the RESULT),
+and read-only queries against production under `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`. Nothing
+under `webapp/app/`, `docs/superpowers/impact-rc3/`, `alembic/versions/` or `.env*` is touched. No row is written, no
+match is ingested, no manifest is frozen, no version is bumped. **Starting a version 4 is a separate release with its
+own runbook and is not begun here.**
+
+### 2026-09-19 (amendment) — one more arm, P5b, declared before it runs
+
+**Why this amendment exists.** The declaration above fixed C5's ladder with Part 4's exact `(a, d, t)` rung left
+untouched at rung 1, and said in advance that P5 "can differ from Part 4 only on cells that fall BELOW it", that the
+share of lookups reaching the lower rungs would be reported, and that "if that share is small, a null result for P5
+says little about the differential idea and much about how rarely it is reached". **That share has now been measured,
+and it is small.**
+
+Building both tables once on the whole corpus as a construction check — 1,726,739 post-plant round-seconds,
+153,481 kills, no contrast computed and no arm scored — the P5 ladder resolves:
+
+| rung | lookups | share |
+|---|---:|---:|
+| `exact` | 668,487 | **99.04%** |
+| `diff_size` | 3,316 | 0.49% |
+| `diff` | 2,809 | 0.42% |
+| `diff_band` | 338 | 0.05% |
+| `unsupported` | 32 | 0.005% |
+
+So P5 as declared regroups **under 1% of value lookups** and is identical to Part 4 on the other 99%. It is a fair
+test of "does a differential fallback beat Part 4's defender-pooled fallback on thin cells". It is **not** a test of
+the owner's actual proposition, which is that the differential is the right way to group post-plant states *at all*.
+
+**What is added.** One arm, and nothing else changes:
+
+- **P5b** — the same differential ladder with the exact rung **removed**, so `(g, nb, t)` becomes rung 1 and the
+  absolute `(a, d)` cell is never consulted. The regrouping then applies to the whole scored population instead of
+  to the 0.96% Part 4 could not support. `g = a − d`, `nb = LOW if a + d <= 5 else HIGH`, and the remaining rungs,
+  the 60-observation floor, W=2, the differencing, the denominators, the clamp and `solve_and_apply_centering` are
+  all exactly as section 6 fixes them. Fitted per fold on training matches only, like P5 and P6.
+
+**What has not changed, and is not allowed to.** P5's own bucketing stays exactly as declared and P5 still runs. The
+decision rule of section 8 applies to P5b unchanged: it is **Tier B**, so it ships **only on IMPROVEMENT**, and it
+must additionally not be HARM against P6. No threshold, no verdict vocabulary and no prediction from the entry above
+is revised.
+
+**The honest description of what happened here.** A descriptive support count — not a contrast, not an arm, not a
+loss — showed that a declared arm could not answer the question it was declared for. Adding an arm to answer it, and
+saying so in advance and in the open, is the intended use of this ledger. Deleting or re-tuning P5 after the fact
+would not have been.
+
+**Prediction for P5b, declared now:** INCONCLUSIVE against P0, and INCONCLUSIVE against P6. The reasoning is
+unchanged from prediction 3 — this is still a SHAPE change to a scalar whose shape has already measured zero — but
+P5b is the version of that test with real statistical weight behind it, so a failure of this prediction is
+informative in a way P5's would not have been.
+
+**Two other pre-measurement facts from the same construction check, recorded because they are inputs to the run and
+not results of it.** The wrapper's identity gate passes at row level on a 25-match sample (5,170 rows, every
+`impact`, `time_impact`, `kill_impact` and `death_impact` identical) — the full-corpus gate still runs before any
+contrast. And a replay costs about 0.29s per match, so the declared arm set is roughly nine hours of read-only
+replay; that is a scheduling fact, and section 5's rule stands that no arm is dropped from the report for costing
+time.
+
+### 2026-09-19 (RESULT) — the post-plant time factor: the level is the only thing that measured
+
+Every arm declared on 2026-09-19 and amended the same day, run to completion. **No arm was left unrun.** Nothing was
+implemented, no scoring code was edited (`git diff --stat webapp/app/` is empty), nothing was written to production,
+and no version 4 was begun.
+
+**Provenance.** 3,198 matches, 67,251 round-observations, `dataset_fingerprint 3198:f9a31bb2df2586ec`,
+`fold_mapping_hash cebae50f85e94736`, shared by every arm. Target T2 (k=3, gamma=0.7, match_weight=1.0), controls
+`round_result, score_diff_before, attacking_is_team_a, loadout_diff, full_buy_count_diff`, fixed composite
+`impact_diff`, 5 match-clustered outer folds at seed 0, inner 3-fold L2 selection on training matches only, paired
+match-clustered bootstrap at 2,000 draws, two-sided 95%. Sign convention `loss(arm) − loss(P0)`, so **positive is
+worse**.
+
+**The identity gate passed**: the wrapper with no variant reproduced the unpatched replay on **67,251 of 67,251
+observations**, every field identical. Arms therefore measure their declared change and not the way it was injected.
+
+**Where it ran, and why that is worth recording.** Against production the replay cost 28.4 minutes, of which almost
+all was latency: `build_impact_rows_for_match` issues exactly 4 queries per call with no caching, at ~65ms a round
+trip, 3,198 times a pass. The corpus was copied to a local PostgreSQL 18.6 instance — counts, `alembic 0010` and the
+match-id md5 `1d639f01ece40d3cf43b7b94352edccc` all verified identical to production — and the same replay then cost
+**80 seconds, a 21x speedup**. 30 full-corpus passes ran in about 15 minutes. The bulk dump of the same data takes
+19 seconds; the 28 minutes was never data volume, it was 12,792 round trips. See [[project_local_postgres_for_replays]].
+
+#### The contrasts
+
+| arm | contrast | 95% interval | verdict |
+|---|---:|---|---|
+| **P1** post-resolution kills pay 0 | −4.7362e−06 | [−1.0710e−05, +1.0597e−06] | **INCONCLUSIVE** |
+| **P2b** death cliff at plant+38 → linear decay | +3.6193e−06 | [−2.9623e−06, +1.0090e−05] | **INCONCLUSIVE** |
+| **P3a** ramp capped at plant+45 regardless of flags | +2.8970e−07 | [−2.7251e−06, +3.4408e−06] | **INCONCLUSIVE** |
+| **P3b** phantom plants get no post-plant regime | +5.0325e−08 | [−2.2719e−08, +1.3035e−07] | **INCONCLUSIVE** |
+| **PC** the three Tier A fixes combined | −9.8504e−07 | [−1.0421e−05, +8.0107e−06] | **INCONCLUSIVE** |
+| **P4-0.90** level scaled 0.90 | −2.1789e−05 | [−3.1501e−05, −1.1819e−05] | **IMPROVEMENT** |
+| **P4-0.7826** level scaled 0.7826 | −4.4022e−05 | [−6.5051e−05, −2.2381e−05] | **IMPROVEMENT** |
+| **P4-0.70** level scaled 0.70 | −5.7483e−05 | [−8.6576e−05, −2.7736e−05] | **IMPROVEMENT** |
+| **P4f** level selected per fold | −5.7483e−05 | [−8.6576e−05, −2.7736e−05] | **IMPROVEMENT** |
+| **P6** Part 4 exactly as built | +1.8235e−06 | [−3.8102e−05, +4.0623e−05] | **INCONCLUSIVE** |
+| **P5** differential ladder beneath Part 4's exact rung | −5.5814e−06 | [−4.5572e−05, +3.1335e−05] | **INCONCLUSIVE** |
+| **P5b** differential ladder as rung 1 | −8.4907e−06 | [−4.8962e−05, +3.0285e−05] | **INCONCLUSIVE** |
+| **PC+** Tier A plus the level | −6.0502e−05 | [−9.0421e−05, −3.0167e−05] | **IMPROVEMENT** |
+| **P2L** level-matched control for P2b | +1.8140e−06 | [+9.9321e−07, +2.6912e−06] | **HARM** |
+| P5 vs P6 | −7.4049e−06 | [−1.7948e−05, +3.1908e−06] | **INCONCLUSIVE** |
+| P5b vs P6 | −1.0314e−05 | [−2.4998e−05, +4.8692e−06] | **INCONCLUSIVE** |
+| P2b vs P2L | +1.8053e−06 | [−4.7734e−06, +8.3146e−06] | **INCONCLUSIVE** |
+
+Scale anchor, so none of these is read without it: the baseline pooled out-of-fold weighted log loss is 0.6729
+against a coin flip's 0.6931, and the entire scoring system buys about 0.02. The largest effect here, PC+ at
+6.05e−05, is about **1/330th** of that.
+
+#### The four declared predictions, scored
+
+All four held. That is not a virtue — it means nothing below is being explained after the fact.
+
+1. **P1, P2b, P3a, P3b each INCONCLUSIVE** — CONFIRMED, all five Tier A arms including PC.
+2. **P4f IMPROVEMENT** — CONFIRMED, and the level result replicates on the larger corpus.
+3. **P5 INCONCLUSIVE, and P5 vs P6 INCONCLUSIVE** — CONFIRMED, both.
+4. **PC INCONCLUSIVE** — CONFIRMED.
+
+The amendment's prediction for P5b — INCONCLUSIVE against P0 and against P6 — also held.
+
+#### What actually measured
+
+**The level is the entire result, and it is monotone.** 0.90 → 0.7826 → 0.70 gives −2.18e−05 → −4.40e−05 →
+−5.75e−05, improving all the way down, and PC+ (Tier A plus the level) is statistically indistinguishable from the
+level alone. Every detectable gain in this session comes from charging the post-plant regime **less**.
+
+**The shape measured nothing, again, and P5b is the decisive version of that test.** P5 only regrouped the 1.14% of
+lookups that fall below Part 4's exact rung. P5b removed the exact rung entirely: **99.41% of its lookups resolved
+on the differential rung** (7,782,489 of 7,828,364), so the owner's grouping was applied to essentially the whole
+scored population. It still cannot be distinguished from zero, nor from Part 4, whose own arm is likewise
+INCONCLUSIVE here. Three different post-plant *shapes* — Part 4's cell-keyed table, the differential fallback, and
+the differential throughout — have now each measured nothing out of fold. The finding recorded on 2026-09-19 that
+Part 4's shape is worth nothing survives a fair test of the alternative.
+
+**P2L is the sharpest methodological result in the set.** Spreading P2b's extra death-side leverage uniformly over
+every post-plant death instead of concentrating it in the window is **HARM** — +1.81e−06, interval entirely above
+zero — while `P2b vs P2L`, the contrast that isolates whether *targeting* the window beats spreading it, is
+INCONCLUSIVE. So C2's shape is not demonstrably worth anything; only its level moved, and it moved the wrong way.
+The magnitude, ~1/11,000th of what the system buys, is resolvable only because it is a uniform shift over a large
+population. **Statistically real and practically nil is a coherent verdict, and it is this one.**
+
+#### C3's stated cause is wrong
+
+C3 was declared as a phantom-plant defect. It is not one. Of the kills charged an uncapped ramp past plant+45:
+
+| exploded | defused | "Time Win" | rounds | kills |
+|---|---|---|---:|---:|
+| false | false | **false** | 566 | 632 |
+
+**Zero are phantom plants.** All 566 rounds are "Team A/B Elimination Win" with both resolution flags absent, and the
+worst factor charged is 1.884 against the design's own 1.75 ceiling. That is why P3b, which keys on
+`is_phantom_plant` (outcome "Time Win"), changes 45 rows while P3a, which caps at plant+45 regardless of flags,
+changes 634.
+
+The wider fact behind it, and the more important one: **28,774 of 43,515 planted rounds (66.1%) carry neither
+`exploded` nor `defused`.** tracker.gg appears not to set them when a round ends by elimination. So the
+post-resolution branch of `_time_factor` never fires for two-thirds of planted rounds — which also bounds C1, whose
+population exists only in the third that do have flags. Kills after a decided round in the other two-thirds get no
+discount at all today, and **neither C1 nor C3 as declared addresses them.** That is a larger instance of the same
+defect than either candidate was written against, and it is the strongest lead this session produced. It is recorded
+here as a finding, not measured — measuring it is a new declaration.
+
+#### Two limitations of the declaration itself
+
+Recorded as limitations, not repaired after the fact.
+
+1. **The P4 grid did not bracket its optimum.** P4f selected **0.70 on all five folds** — the floor of the declared
+   grid {0.70, 0.7826, 0.90, 1.00} — and the contrasts are monotone toward it. Every fold's inner cross-validation
+   wanted to go lower than the grid allowed. So P4f measures "the best of four values declared in advance", not
+   "the best level", and **the true optimum is unbracketed and below 0.70**. The grid was fixed before measurement,
+   which is the discipline working as intended; it was also too narrow, which is a defect in my declaration and not
+   in the result.
+2. **PC was composed with P3b.** The declaration fixed PC = P1 + P2b + P3b before the row-motion evidence existed.
+   P3b turns out to address 45 rows of C3 against P3a's 634, so the declared combination leaves most of C3 unfixed.
+   PC and PC+ are reported exactly as declared; the recommendation below says plainly that **P3a is the C3 fix worth
+   shipping**, and that is a recommendation, not a retrofitted arm.
+
+#### Row motion — not a contrast, no verdict
+
+3,198 matches, 674,530 rows. Reported separately from evidence because Part 4 reordered 81.5% of matches while being
+worth nothing out of fold.
+
+| arm | rows changed | matches changed | matches reordered | mean abs delta |
+|---|---:|---:|---:|---:|
+| **PC** | **6,891 (1.02%)** | 2,216 (69.3%) | **242 (7.6%)** | 29.6 |
+| P1 | 4,078 (0.60%) | 1,590 (49.7%) | 105 (3.3%) | 24.1 |
+| P2b | 2,774 (0.41%) | 1,589 (49.7%) | 152 (4.8%) | 38.1 |
+| P3a | 634 (0.09%) | 505 (15.8%) | 30 (0.9%) | 45.4 |
+| P3b | 45 (0.01%) | 21 (0.7%) | 0 (0.0%) | 3.4 |
+
+PC clears **both** limbs of section 8's threshold: >= 1% of rows (1.02%) and >= 5% of matches reordered (7.6%). The
+row limb clears by 0.02pp, which is a hair; the reorder limb clears comfortably.
+
+#### The decision, under the rule as written
+
+- **Tier A (P1, P2b, P3a, P3b, PC): all INCONCLUSIVE, therefore not HARM, therefore eligible to ship.** The rule
+  declared INCONCLUSIVE an acceptable Tier A verdict in advance, precisely so this could not be argued afterwards.
+  Their case remains what it was: a decided round has nothing at stake, a 70.8% cut across 0.1s is not a model of a
+  continuous quantity, and a factor above the design's own ceiling after the bomb should have detonated is outside
+  the model's stated range.
+- **Tier B: P4f IMPROVEMENT, so the level ships. P5 and P5b INCONCLUSIVE, so the regrouping does not.** P5b
+  additionally fails to beat P6. The owner's hypothesis was given the fairest test available — applied to 99.41% of
+  the population, not to a 1% remainder — and did not survive it.
+- **The combined arm is not HARM:** PC+ is IMPROVEMENT at −6.05e−05.
+- **Version 4 is justified**, on limb (a) — a Tier B arm is IMPROVEMENT and the combination is not HARM — and
+  independently on limb (b), since Tier A is not HARM and PC clears both motion thresholds.
+
+**Recommendation: a version 4 carrying the Tier A fixes with P3a in place of P3b, plus a post-plant level constant —
+but the level constant is not yet known, and must be fitted before it is frozen.** Shipping 0.70 would ship the edge
+of a grid that every fold pushed against. The next step is one declared measurement: the same P4f arm over a wider
+grid extending well below 0.70, declared in advance, with the boundary condition checked. That is cheap now — a full
+replay is 80 seconds against the local corpus — and it is the difference between shipping a fitted constant and
+shipping an artefact of the grid I chose.
+
+**Nothing in this entry activates anything.** The timing candidates stay off, `IMPACT_CALCULATION_VERSION` stays 3,
+and beginning a version 4 is a separate release with its own runbook.
+
+#### Follow-ups this session did not take
+
+- **The missing-flag population.** 66.1% of planted rounds have no resolution flags; kills after those rounds are
+  decided are charged in full. Larger than C1 and C3 combined, and not addressed by either.
+- **A wider level grid**, per the recommendation above.
+- **`paired_bootstrap_delta` is a pure-Python loop** over 2,000 draws x ~67,000 rows. Once the replays moved local it
+  became the single largest compute cost in this session — larger than all 30 corpus passes combined. Vectorising it
+  is a clear win; it lives in `app/services/stats_math.py`, which this session was scoped out of touching.
+
+### 2026-09-19 (CORRECTION) — the "missing resolution flags" finding was wrong
+
+The RESULT entry above claims that 66.1% of planted rounds carry neither `exploded` nor `defused`, that the
+post-resolution branch therefore "never fires for two-thirds of planted rounds", and that kills after a decided round
+in that majority "get no discount at all today". It calls this "the strongest lead this session produced".
+
+**That is wrong, and it is withdrawn.** The owner's question — after a plant, the round can only end by detonation or
+defuse — is what exposed it. There is a third ending, and it is the common one:
+
+| planted round ends by | winner | rounds |
+|---|---|---:|
+| **elimination** | **attacker** | **28,695** |
+| defuse | defender | 12,498 |
+| detonate | attacker | 2,243 |
+| time (phantom plant) | defender | 77 |
+| elimination | defender | **2** |
+
+Attackers plant and then wipe the defenders: the round ends *at that kill* and the spike never detonates. That is
+normal Valorant, not absent data. The flags are not missing — they track the outcome string exactly (`exploded` iff
+"Detonate Win", `defused` iff "Defuse Win").
+
+And the consequence the withdrawn claim drew does not follow. A round that ends by elimination has **no
+post-decision period at all**, because its last kill is its ending; there are no kills left to discount. The
+post-resolution branch correctly does not fire. Only 2 rounds in 41,515 are genuinely impossible (defenders winning
+by elimination after a plant, which cannot end a round).
+
+**What survives.** C3's defect is real but far smaller than stated. The 632 kills charged an uncapped ramp all fall
+within **45.00 to 46.88 seconds** after the plant — at most 1.88s past the spike timer, a clock-skew artefact
+between the plant timestamp and kill timestamps — and are charged at most 1.884 against the design's 1.75 ceiling.
+Capping the ramp is still right; it is a rounding-scale correction, not a structural hole.
+
+The RESULT's contrasts, verdicts, predictions and recommendation are unaffected: no arm measured this population,
+and the row-motion figures were measured, not inferred. What changes is the follow-up list — "the missing-flag
+population" is struck from it.
+
+### 2026-09-19 (DECLARATION 2) — the level's real optimum, and whether any post-plant shape beats none
+
+Declared before running. Two questions the first session left open, and one the owner raised in response to it.
+
+**Question 1 — what IS the level?** `P4f` selected 0.70 on all five folds, the floor of the declared grid, and the
+contrasts were monotone toward it. The level is too high; how much is unknown, because the grid did not bracket it.
+
+**Question 2 — is a principled shape worth anything over no shape at all?** Three post-plant shapes have now each
+measured nothing out of fold. The owner's position is that principled scoring beats none. That is testable rather
+than a matter of taste: if shape genuinely carries no signal, a **flat** post-plant factor should do as well as the
+shipped ramp — and a flat factor of exactly 1.0 is *no post-plant timing model whatsoever*. If the ramp beats flat,
+the ramp has earned its place; if it does not, the shipped ramp is decoration and the honest choice is the simplest
+form at the right level.
+
+#### The arms
+
+Everything from the first declaration carries over unchanged: target T2, its control set, the fixed composite
+`impact_diff`, 5 match-clustered folds at seed 0, inner 3-fold selection on training matches only, 2,000-draw paired
+bootstrap, `loss(arm) − loss(P0)` so positive is worse, and the verdict vocabulary IMPROVEMENT / HARM /
+INCONCLUSIVE with an interval spanning zero never reported as "no harm found". P0 is the same reference, on the same
+corpus and fold assignment (`3198:f9a31bb2df2586ec`, `cebae50f85e94736`).
+
+| arm | what it is |
+|---|---|
+| **L-s** | the legacy post-plant regime scaled by a constant s, for **s in {0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00}**. Same construction as the first declaration's P4-s; 0.70, 0.90 and 1.00 are already measured and are reused, not re-run |
+| **Lf** | s selected **per fold on training matches only** from that grid, applied to the held-out fold |
+| **F-k** | the post-plant regime **replaced by a flat constant k** — no ramp, no plant+38..45 override — for **k in {0.40, 0.60, 0.80, 1.00, 1.20, 1.40}**. Pre-plant stays 1.0 and the post-resolution value stays 0.5, both untouched. **F-1.00 is the null model: no post-plant timing at all** |
+| **Ff** | k selected per fold on training matches only from that grid |
+| **Ff vs Lf** | the question. Does the shipped ramp's shape beat a flat factor once each is allowed its own best level? |
+
+#### Decision rule
+
+Unchanged in kind from the first declaration, and fixed here before any of it runs.
+
+- **Both Lf and Ff are Tier B**: each ships only on IMPROVEMENT against P0.
+- **The shape question is decided by `Ff vs Lf`, not by which has the better headline contrast.** If that contrast is
+  INCONCLUSIVE, the ramp is **not** shown to beat flat, and the recommendation is the simpler form — a flat
+  post-plant factor at the fitted level — on the grounds that between two forms that cannot be told apart, the one
+  with fewer arbitrary constants is preferred. If it favours the ramp (negative, interval below zero), the ramp
+  earns its place and ships. If it favours flat, flat ships on evidence rather than on parsimony.
+- **The boundary rule, which the first declaration lacked and needed.** If `Lf` or `Ff` selects a value at the edge
+  of its grid on any fold, that is reported as **UNBRACKETED** alongside the contrast, and the constant is **not**
+  recommended for freezing — the same failure as last time, named in advance so it cannot be quietly accepted.
+  The grids above are deliberately wide enough that an interior optimum is the expected outcome.
+- **No constant is frozen by this entry**, and nothing is implemented or activated.
+
+#### Prediction, declared before running
+
+1. `Lf` selects an **interior** value, most likely in 0.40–0.60, and is IMPROVEMENT.
+2. `Ff` is IMPROVEMENT, and its selected k lands below 1.00.
+3. **`Ff vs Lf` is INCONCLUSIVE** — the ramp will not be shown to beat a flat factor.
+4. `F-1.00`, the no-timing-at-all null, is **not** IMPROVEMENT: removing the post-plant scalar entirely without
+   re-levelling loses the level correction that is the only thing measuring so far.
+
+If prediction 3 fails in the ramp's favour, the shipped shape is doing real work and the case for principled timing
+is evidential rather than aesthetic — which is the outcome the owner expects and which this session exists to give a
+fair chance.
+
+### 2026-09-19 (DECLARATION 3) — bracket the post-plant constant, and test whether zero is the answer
+
+Declared before running. Declaration 2's two fitted arms both selected their grid **floor** on all five folds
+(`Lf` 0.30, `Ff` 0.40) and were reported UNBRACKETED under its own boundary rule, so neither constant is fitted and
+neither may be frozen. This entry widens downward until the optimum is interior, and adds the limiting case.
+
+**What Declaration 2 established, and is not re-opened.** `Ff vs Lf` was INCONCLUSIVE, so the shipped ramp is not
+shown to beat a flat factor and the simpler form is preferred; that rule was fixed in advance and stands. `F-1.00` —
+no post-plant timing model at all — was IMPROVEMENT against the shipped ramp, refuting this session's own
+prediction 4. Both facts are settled and this entry does not re-measure them.
+
+**Arms.** Same protocol throughout: same corpus and fold assignment (`3198:f9a31bb2df2586ec`, `cebae50f85e94736`),
+target T2 and its controls, fixed composite `impact_diff`, 2,000-draw paired bootstrap, `loss(arm) − loss(P0)`,
+positive is worse, and the same verdict vocabulary.
+
+| arm | what it is |
+|---|---|
+| **F-k** | flat post-plant constant, for **k in {0.00, 0.05, 0.10, 0.15, 0.20, 0.30}**. 0.40 and above are already measured and are reused |
+| **Ff2** | k selected per fold on training matches only, over the **union** grid {0.00, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 0.80, 1.00, 1.20, 1.40} |
+| **L-s** | the ramp scaled, for **s in {0.10, 0.20}**, so the ramp family is bracketed on the same range as the flat family |
+| **Lf2** | s selected per fold over {0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00} |
+
+**`F-0.00` is the limiting case and is in the grid deliberately.** It sets the post-plant factor to exactly zero:
+a post-plant kill contributes NOTHING to leverage. It is almost certainly wrong as a model — a kill that wins a
+post-plant 1v1 is not worth nothing — and it is included precisely so the measurement can say whether the data
+distinguishes "much less than pre-plant" from "nothing at all". If `F-0.00` is not clearly worse than `F-0.10`, the
+target cannot tell those apart, and that is a statement about the limits of this evidence, not a licence to ship
+zero. **No arm shipping recommendation will be made for `F-0.00` whatever it measures**, because scoring a decisive
+duel at zero contradicts the standing constraint that no kill is worth nothing.
+
+**The boundary rule carries over, unchanged.** A fold selecting a grid edge means UNBRACKETED and the constant is
+not recommended for freezing. `Lf2`'s grid bottoms at 0.10 and `Ff2`'s at 0.00, which is the floor of the
+representable range, so an interior selection is now the only outcome that yields a freezable constant.
+
+**Predictions, declared before running.**
+
+1. `Ff2` selects an **interior** value in **0.10–0.30**, and is IMPROVEMENT against P0.
+2. `F-0.00` is **worse** than `Ff2` — the data does distinguish "small" from "nothing".
+3. `Lf2` selects interior, and `Ff2 vs Lf2` is again INCONCLUSIVE, leaving the flat form preferred on parsimony.
+4. The improvement curve is **shallow** across 0.10–0.40: the spread among those arms is smaller than the gap from
+   any of them to the shipped ramp, so the exact constant matters much less than the decision to stop boosting
+   post-plant kills.
+
+Nothing is implemented, activated or frozen by this entry.
+
+### 2026-09-19 (DECLARATION 4) — the side asymmetry, which both models discard
+
+Declared before running. The owner's observation drove this: kills at the defuse deadline are kills on the defuser,
+and they are must-win fights for the side that is behind. Measuring that produced the largest effect this
+investigation has found, and it is in a quantity neither the shipped model nor Part 4 represents.
+
+**The measurement that motivates the arm** (descriptive, whole-corpus, no contrast computed). In win-probability
+points, over the 153,450 scored post-plant kills:
+
+| victim | mean D | n | weight vs grand mean |
+|---|---:|---:|---:|
+| **attacker** | **21.92pp** | 69,946 | 1.254 |
+| **defender** | **13.76pp** | 83,504 | 0.787 |
+
+Ratio **1.59** overall, and **3.26** late (t >= 30). Per band in a 1v1: at 30-38s an attacker killing the defender
+gains 21.2pp while an attacker dying costs 74.1pp; by 38-45s it is 4.0pp against 50.0pp. The same event at the same
+second is worth 3.5x to 12.5x more to one side than the other.
+
+**Why neither model carries it.** The shipped factor is **side-blind** — `_time_factor` applies the same
+`1 + t/53` to the kill and the death, so a 4pp event and a 50pp event are both multiplied by 1.75. Part 4 keys on
+`victim_is_attacker`, which looks correct, but its factor is `D / mean_over_t D` computed **within**
+`(a, d, victim_side)`: the per-side level divides out by construction and only the within-side time shape survives.
+It normalised away the asymmetry it was built to represent. That is a candidate explanation for why three separate
+shape models each measured nothing, and it is recorded as a hypothesis, not a conclusion.
+
+**Why this is not double-counting `K(s)`.** The kill-order graph is spike-blind, verified directly:
+`1v1 -> 0v1` and `1v1 -> 1v0` both carry weight 250. Post-plant those are not equivalent — one ends the round for
+the attackers, the other leaves the spike ticking — so the state term provably does not encode the asymmetry and a
+side-dependent factor supplies new information rather than repeating `K`.
+
+#### The arms
+
+Protocol unchanged throughout: same corpus and fold assignment (`3198:f9a31bb2df2586ec`, `cebae50f85e94736`), target
+T2 and its controls, fixed composite `impact_diff`, 5 match-clustered folds, 2,000-draw paired bootstrap,
+`loss(arm) − loss(P0)` with positive worse, and the same verdict vocabulary.
+
+| arm | what it is |
+|---|---|
+| **A1** | post-plant factor `= 0.40 × w(victim side)`, where `w` is `mean D` for that victim side divided by the kill-weighted grand mean, **fitted per fold on training matches only** and normalised so the training population's kill-weighted mean `w` is exactly 1. One constant per side, no time shape at all |
+| **A2** | the same, with `w` fitted per `(victim side × time band)`, bands `t < 30` and `t >= 30`, again per fold. Tests whether the asymmetry *growing* with the clock adds anything over a constant asymmetry |
+
+**The level is deliberately pinned at 0.40 and not fitted.** `F-0.40` — a side-blind flat factor at exactly that
+level — is already measured, so `A1 vs F-0.40` isolates the side split with the level held identical. Fitting a
+level here would reintroduce the confound this whole investigation exists to avoid, and a level that beat `F-0.40`
+by being better-fitted would say nothing about asymmetry.
+
+#### Decision rule
+
+- **A1 and A2 are Tier B**: each ships only on IMPROVEMENT against P0.
+- **The question is decided by `A1 vs F-0.40`, not by the headline contrast.** IMPROVEMENT there means the side
+  asymmetry earns its place over a side-blind factor at the same level. INCONCLUSIVE means it does not, and the
+  recommendation stays with the simpler side-blind form however good A1's own contrast looks.
+- **`A2 vs A1`** decides the time-varying asymmetry on the same terms: INCONCLUSIVE leaves the constant asymmetry
+  preferred on parsimony.
+- If `A1 vs F-0.40` is IMPROVEMENT, the level is then fitted in a **separate** declared measurement. No constant is
+  frozen here.
+
+#### Predictions, declared before running
+
+1. **`A1 vs F-0.40` is IMPROVEMENT.** This is the first arm in the investigation whose underlying effect is measured
+   in tens of win-probability points rather than single digits, and unlike the shape arms its signal is concentrated
+   where the kills actually are, not in the 1% tail.
+2. `A1 vs P0` is IMPROVEMENT and larger in magnitude than `F-0.40 vs P0` (−9.26e−05).
+3. **`A2 vs A1` is INCONCLUSIVE** — the asymmetry's growth with the clock is a time shape, and every time shape
+   tested so far has measured nothing.
+4. If prediction 1 fails, the asymmetry is real in win probability but not recoverable by this target, and the
+   recommendation returns to a side-blind flat factor. That outcome would also weaken the hypothesis above about
+   why Part 4 failed.
+
+Nothing is implemented, activated or frozen by this entry.
+
+### 2026-09-19 (RESULT, declarations 2–4) — no structure beats a constant; the constant is bracketed at last
+
+Every arm from declarations 2, 3 and 4 run to completion, none left unrun. Same protocol throughout: corpus
+`3198:f9a31bb2df2586ec`, folds `cebae50f85e94736`, target T2 and its controls, fixed composite `impact_diff`,
+5 match-clustered folds, 2,000-draw paired bootstrap, `loss(arm) − loss(P0)` with positive worse. Nothing
+implemented, activated or frozen.
+
+#### The headline
+
+| contrast | point | 95% interval | verdict |
+|---|---:|---|---|
+| **F-1.00 vs P0** — *no post-plant model at all* | −5.270e−05 | [−7.883e−05, −2.691e−05] | **IMPROVEMENT** |
+| **Ff2 vs P0** — flat, level fitted per fold | −9.073e−05 | [−1.627e−04, −1.768e−05] | **IMPROVEMENT** |
+| **Lf2 vs P0** — ramp, level fitted per fold | −8.830e−05 | [−1.620e−04, −1.243e−05] | **IMPROVEMENT** |
+| **Ff2 vs Lf2** — does the ramp's shape beat flat? | −2.431e−06 | [−7.384e−06, +2.503e−06] | **INCONCLUSIVE** |
+| **A1 vs F-0.40** — does the side split beat side-blind? | +1.096e−05 | [−3.068e−06, +2.436e−05] | **INCONCLUSIVE** |
+| **A2 vs F-0.40** — side split, time-banded | +1.743e−05 | [+9.068e−07, +3.368e−05] | **HARM** |
+| **A2 vs A1** | +6.473e−06 | [+5.802e−07, +1.275e−05] | **HARM** |
+| **F-0.00 vs Ff2** — is nothing worse than a little? | +8.073e−06 | [−1.615e−05, +3.333e−05] | **INCONCLUSIVE** |
+| F-0.30 vs F-0.40 | +1.705e−07 | [−7.114e−06, +7.815e−06] | INCONCLUSIVE |
+
+Level family, flat: F-0.00 −8.27e−05 (INCONCLUSIVE) · 0.05 −8.49e−05 (INC) · 0.10 −8.78e−05 (INC) · 0.15 −8.97e−05
+(IMPROVEMENT) · 0.20 −9.07e−05 · 0.30 −9.24e−05 · 0.40 −9.26e−05 · 0.60 −8.63e−05 · 0.80 −7.29e−05 · 1.00 −5.27e−05
+· 1.20 −2.49e−05 · 1.40 +9.47e−06 (INCONCLUSIVE). Ramp family: L-0.10 −8.78e−05 · 0.20 −9.04e−05 · 0.30 −8.99e−05
+· 0.40 −8.62e−05 · 0.50 −7.98e−05 · 0.60 −6.99e−05 · 0.70 −5.75e−05 · 0.80 −4.11e−05 · 0.90 −2.18e−05.
+
+#### The constant is finally bracketed
+
+| arm | selected per fold | grid | bracketed? |
+|---|---|---|---|
+| `Lf` (decl. 2) | 0.30 ×5 | 0.30–1.00 | **no — floor** |
+| `Ff` (decl. 2) | 0.40 ×5 | 0.40–1.40 | **no — floor** |
+| **`Lf2`** (decl. 3) | 0.30, 0.20, 0.20, 0.30, 0.20 | 0.10–1.00 | **yes — interior** |
+| **`Ff2`** (decl. 3) | 0.40, 0.30, 0.30, 0.40, 0.30 | 0.00–1.40 | **yes — interior** |
+
+Declaration 3's boundary rule is satisfied for the first time, so a constant may now be recommended for freezing.
+The flat curve is shallow across 0.15–0.40 and `F-0.30 vs F-0.40` is INCONCLUSIVE, so the evidence picks a **region,
+around 0.2–0.4**, not a point. Against the shipped regime's 1.00 rising to 1.85.
+
+#### Predictions, scored — four of seven failed
+
+The discipline's value is visible here: more predictions failed than held, and each failure is a thing learned.
+
+| # | declared | outcome |
+|---|---|---|
+| 2.1 | `Lf` selects interior, 0.40–0.60 | **FAILED** — floor on all five folds |
+| 2.2 | `Ff` IMPROVEMENT, k below 1.00 | held (k = 0.40, also the floor) |
+| 2.3 | `Ff vs Lf` INCONCLUSIVE | **held** |
+| 2.4 | `F-1.00` **not** IMPROVEMENT | **FAILED** — removing the model outright improves on it |
+| 3.1 | `Ff2` selects interior in 0.10–0.30 | half held — interior, but 0.30/0.40 |
+| 3.2 | `F-0.00` worse than `Ff2` | **FAILED** — INCONCLUSIVE; the target cannot distinguish "much less" from "nothing" |
+| 4.1 | `A1 vs F-0.40` IMPROVEMENT | **FAILED** — INCONCLUSIVE, and the point estimate is positive |
+| 4.3 | `A2 vs A1` INCONCLUSIVE | **FAILED**, and worse than predicted — HARM |
+
+#### What this establishes
+
+**No structure beats a constant.** Four structural models have now each been measured against a side-blind constant
+and none has beaten it: Part 4's `(a, d, t, victim_side)` table, the differential regrouping as a fallback rung, the
+differential regrouping applied to 99.41% of the population, and the side-asymmetric level. The last is the sharpest
+negative, because its underlying effect is the largest anything in this investigation has found — a kill whose
+victim is an attacker is worth 21.92pp against 13.76pp for a defender victim, and in a 1v1 at 38–45s it is 50.0pp
+against 4.0pp — and it was fitted stably across five independent folds (defender weight 0.785–0.789, attacker weight
+1.252–1.256). **Real, large, reproducible, and predictively worthless at this sample size.** Making it time-varying
+is HARM, not merely useless.
+
+**The hypothesis that Part 4 failed because it normalised the asymmetry away is now unsupported.** Declaration 4
+recorded it as a candidate explanation. A1 restores exactly that discarded level asymmetry and does not beat a flat
+constant, so the explanation does not survive its own test and is withdrawn.
+
+**The level is the whole finding, and its direction is the opposite of what ships.** Pre-plant is 1.0 by definition;
+the evidence puts post-plant at 0.2–0.4. The shipped model raises post-plant kills to 1.00–1.85. Not a
+mis-calibration — a sign error. The mechanism that fits: the plant is the decisive event, and once it lands the
+timer does most of the work, so kills after it move the outcome less than the kills that decided whether the plant
+happened at all.
+
+**A limit on the evidence, declared in advance and now reached.** `F-0.00` — post-plant kills contributing nothing
+at all — cannot be distinguished from the fitted constant. Declaration 3 pre-committed that zero is never shippable
+whatever it measured, because a decisive duel scoring nothing contradicts the standing constraint that no kill is
+worth nothing. That commitment is load-bearing now rather than decorative.
+
+#### Recommendation for version 4
+
+1. **Replace the post-plant regime with a flat constant in the 0.2–0.4 region** — no ramp, no plant+38..45 override.
+   It is simpler than what ships, it is the only change with evidence behind it, and `Ff2 vs Lf2` says the ramp's
+   shape cannot be told from flat.
+2. **Take the three Tier A correctness fixes, using `P3a` (cap the factor at plant+45) rather than `P3b`** — P3a
+   addresses 634 rows of the defect against P3b's 45, and the earlier entry establishes why.
+3. **Ship no structure**: no state table, no differential grouping, no side asymmetry, no time shape.
+4. **Do not ship zero**, per the standing constraint and declaration 3.
+
+Scale, so none of this is oversold: the baseline pooled out-of-fold log loss is 0.6729 against a coin flip's 0.6931,
+and the whole scoring system buys about 0.02. The best contrast here is 9.3e−05, about **1/215th** of that. The
+honest framing is "stop overpaying post-plant kills", not "this transforms the score". What justifies the version
+bump is the correctness fixes plus a sign error, not the size of the log-loss gain.
+
+Version 4 remains unstarted: it is a separate release with its own runbook, and `IMPACT_CALCULATION_VERSION` stays 3.
+
+### 2026-09-20 (CORRECTION) — "INCONCLUSIVE" was read as "does not help" without checking whether the test could see the arm
+
+The owner asked how the side-asymmetric arm lost, and whether the logic was flawed. It was. This entry records the
+flaw, what it invalidates, what survives, and the protocol gate that should have existed from the first declaration.
+
+**The flaw.** Every arm is scored as the fixed composite `impact_diff` with **one free coefficient**. Any change that
+amounts to a rescale of `impact_diff` is absorbed entirely by that coefficient and produces a contrast of zero — not
+because the change is worthless, but because the estimator cannot see it. The verdict vocabulary has no word for
+that case, so it comes back INCONCLUSIVE, which is then read as "the effect does not help". **Those are different
+statements and the entries above conflated them.**
+
+**The diagnostic, which costs nothing and was never run.** The R² between an arm's `impact_diff` and its
+comparator's bounds what any contrast can resolve, before a single bootstrap draw:
+
+| contrast | R² | residual variance | resid sd / signal sd | reported verdict |
+|---|---:|---:|---:|---|
+| `F-0.4` vs `P0` | 0.992660 | **0.734%** | 8.57% | IMPROVEMENT |
+| `P6` vs `P0` | 0.997802 | **0.220%** | 4.69% | INCONCLUSIVE |
+| `F-1.0` vs `P0` | 0.998927 | **0.107%** | 3.28% | **IMPROVEMENT** |
+| **`A1` vs `F-0.40`** | **0.999502** | **0.0498%** | **2.23%** | INCONCLUSIVE |
+
+`A1 = 0.99672 × F-0.40 − 2.53`. It is a 0.997 rescale of the arm it was compared against, plus a residual carrying
+2.2% of the signal's spread.
+
+**The demonstrated detection floor is 0.107%** — `F-1.0` registered a clear IMPROVEMENT at that separability. `A1`
+sits at 0.0498%, **below the lowest separability at which this harness has ever detected anything.**
+
+#### What is withdrawn
+
+**The claim that the side asymmetry does not help.** The RESULT entry above says of A1: "Real, large, reproducible,
+and predictively worthless at this sample size," and calls it "the sharpest negative." That is not supported. The
+contrast is arithmetically correct and the verdict INCONCLUSIVE is correct; the **interpretation** is wrong. The
+supportable statement is that **A1 as parameterised is collinear with its comparator and the contrast is
+uninformative** — the test could not have detected the effect had it been there.
+
+**The conclusion drawn from it about Part 4** is withdrawn with it. That entry said A1's failure retires the
+hypothesis that Part 4 lost because it normalised the per-side level away. A1 never tested that hypothesis with any
+power, so the hypothesis returns to open.
+
+**The count of "four structural models each lost to a constant" is wrong.** A1 did not lose; it was not measured.
+
+#### What survives, and why
+
+- **The level results stand.** `F-0.4 vs P0` at 0.734% residual variance is the most separable contrast in the whole
+  investigation — 15x A1's — and it registered. The bracketing, the monotone curve and the 0.2–0.4 region are
+  unaffected.
+- **Part 4's null stands.** `P6 vs P0` at 0.220% had **twice** the separability of `F-1.0`, which the harness
+  detected. It had room to be seen and was not seen. That null is evidence, not a power failure.
+- **The Tier A correctness fixes are unaffected** — they were always argued a priori and measured only for harm.
+
+#### The parameterisation problem underneath
+
+Worth stating because it is the deeper reason A1 collapsed to a scalar. The measured asymmetry is a claim about
+**two teams' stakes in the same duel** — in a 1v1 at 38–45s the attacker's death costs 50.0pp while the defender's
+costs 4.0pp. But `_time_factor` returns **one number per event**, applied to the killer's credit and the victim's
+debit alike, so an arm built on it can only say "this event counts more". Within a round those re-weightings largely
+cancel in the differential, which is precisely why A1 came out a near-rescale. **Expressing a two-sided stake
+asymmetry requires a scorer that can charge the two sides differently for the same event** — a change to the scoring
+interface, not a new constant inside the existing one. That is why no arm reachable through this wrapper could have
+tested it.
+
+#### Protocol gate, declared now for every future arm
+
+1. Before any bootstrap, compute R² between the arm's `impact_diff` and its comparator's.
+2. An arm whose residual variance is **below the smallest value at which this harness has detected an effect**
+   (currently **0.107%**, set by `F-1.0`) is reported as **UNTESTABLE**, never INCONCLUSIVE. UNTESTABLE is not a
+   licence to ship and not evidence against; it means the question was not asked.
+3. The floor is empirical and moves as more arms register; it is recorded with each result so later entries can see
+   which floor applied.
+
+This gate would have flagged `A1` before it ran, and would have saved the arm from being built in a form that could
+not carry its own hypothesis.
+
+#### Addendum — the differential arms, split by comparator
+
+The same gate applied to the remaining nulls, and it separates two claims the RESULT entry ran together.
+
+| contrast | residual variance | status under the gate |
+|---|---:|---|
+| `P5` vs `P0` | ~0.22% (as `P6` vs `P0`) | testable — the null stands |
+| `P5b` vs `P0` | ~0.22% | testable — the null stands |
+| **`P5` vs `P6`** | **0.0132%** | **UNTESTABLE** — 8x below the floor |
+| **`P5b` vs `P6`** | **0.0336%** | **UNTESTABLE** — 3x below the floor |
+
+So **"the differential regrouping does not beat the SHIPPED model" survives** — those contrasts had the same
+separability as `P6 vs P0`, which sits at twice the demonstrated floor. **"The differential regrouping does not beat
+Part 4" is withdrawn**: `P5` and `P5b` differ from `P6` only in the pooling ladder, and the resulting scores are
+0.999+ correlated, so those two contrasts never had the power to separate them.
+
+That also revises the declaration-2 framing of `P5b` as "the decisive test of the owner's hypothesis". It was
+decisive against the shipped ramp and inert against Part 4, which is the comparator the hypothesis was actually
+about.
+
+**Corrected count.** Of the structural models: **one** (Part 4's own shape, `P6 vs P0`) has a credible null against
+the shipped model. The differential regroupings have credible nulls against the shipped model and untestable ones
+against Part 4. The side asymmetry has no test at all. "Four structural models each lost to a constant" overstated
+the evidence by three.
+
+### 2026-09-20 (DECLARATION 5) — does A1 carry information F-0.40 does not?
+
+Declared before running. The paired-loss contrast could not answer this: with one free coefficient on `impact_diff`,
+log loss is invariant to an affine rescale, and `A1 = 0.99672 x F-0.40 − 2.53` with R² 0.999502. The arms make
+near-identical predictions by construction. This entry asks the question that test could not.
+
+**The estimand.** Not "is A1's loss lower" but "does A1's `impact_diff` earn a non-zero coefficient **beyond**
+F-0.40's". Two nested models, both out-of-fold on the same folds:
+
+```
+baseline     y ~ impact_diff[F-0.40] + controls
+incremental  y ~ impact_diff[F-0.40] + impact_diff[A1] + controls
+```
+
+Target T2 and its control set unchanged, same corpus and fold assignment (`3198:f9a31bb2df2586ec`,
+`cebae50f85e94736`), L2 selected per fold per model by inner 3-fold CV on training matches only, contrast
+`loss(incremental) − loss(baseline)` with a 2,000-draw paired match-clustered bootstrap, positive worse.
+
+**Why this has power where the paired test did not.** The second column is fitted on exactly the part of A1 the
+first column does not explain — the residual carrying 2.2% of the signal's spread, which the paired-loss comparison
+discarded. It does not violate the fixed-composite rule: both terms are frozen scoring configurations, and nothing
+searches over the owner's locked weights A/B/C/D.
+
+**Also reported, whatever the verdict:** the fitted coefficient on A1's column per fold, its sign and its stability.
+A coefficient that flips sign across folds is noise being fitted, and will be reported as such even if the loss
+improves.
+
+#### Decision rule
+
+- **IMPROVEMENT** — A1 carries information F-0.40 does not. The side asymmetry is real **and recoverable**, and the
+  right response is a scoring interface that can charge the two sides differently for the same event.
+- **INCONCLUSIVE** — no evidence the residual carries signal. The hypothesis stays **open but unsupported**; it is
+  not refuted, because a per-event multiplier is a weak encoding of a two-sided stake asymmetry and this tests the
+  encoding as much as the idea.
+- **HARM** — the extra column costs out-of-fold, i.e. the residual is noise the model overfits.
+
+**What IMPROVEMENT does NOT license, pre-committed here.** It does not mean ship A1. A two-composite model is not a
+scoring configuration — the scorer emits one number per player-round, and this test deliberately uses two. A positive
+result motivates a **design change**, and the design change then needs its own declaration and its own arm. Nothing
+here may be read as evidence for activating A1 or any per-event side multiplier.
+
+**Prediction.** INCONCLUSIVE. The within-round cancellation that flattened A1 into a rescale is structural — a kill
+credits one side and debits the other through the same factor — so little of the 50pp-vs-4pp asymmetry should
+survive into the round differential at all, however the test is posed. An IMPROVEMENT would be strong evidence that
+the information is recoverable and the encoding, not the idea, was the problem.
+
+### 2026-09-20 (RESULT, declaration 5) — A1 carries nothing F-0.40 does not; only the coefficient SUM is identified
+
+Run as declared, on the same corpus and folds. Prediction held.
+
+```
+loss(base + A1) − loss(base)   +8.390625e-06  [−4.221189e-06, +2.158141e-05]   INCONCLUSIVE
+```
+
+**The coefficients are the real finding**, and they were pre-committed to be reported whatever the loss did:
+
+| fold | β on `F-0.40` | β on `A1` | **sum** | L2 |
+|---|---:|---:|---:|---:|
+| 0 | +0.2665 | +0.0436 | **+0.3101** | 10.0 |
+| 1 | +0.1959 | +0.1059 | **+0.3018** | 10.0 |
+| 2 | +0.3706 | −0.0725 | **+0.2981** | 10.0 |
+| 3 | +0.7990 | −0.5126 | **+0.2864** | 0.1 |
+| 4 | +0.6181 | −0.3109 | **+0.3072** | 1.0 |
+
+Each coefficient swings across a range of ~0.60 and **the sum is stable to 0.024 (CV 3.1%)**. The sign on A1's
+column flips across folds — twice positive, three times negative — which the declaration named in advance as noise
+being fitted. **The model cannot identify the split, only the total.** That is the textbook signature of two
+predictors carrying the same information, and it is a stronger statement than the loss contrast: it is not that
+A1's extra column fails to help, it is that the estimator cannot tell the two columns apart at all.
+
+#### Verdict under the declared rule
+
+INCONCLUSIVE, so: **no evidence the residual carries signal. The hypothesis stays open but unsupported — not
+refuted.** The declaration fixed that reading in advance precisely because a per-event multiplier is a weak encoding
+of a two-sided stake asymmetry, and this tests the encoding at least as much as the idea.
+
+**What is now established about the encoding, rather than the idea.** Three independent diagnostics agree:
+`A1 = 0.99672 × F-0.40 − 2.53`; R² 0.999502 with 0.0498% residual variance, below the harness's demonstrated
+detection floor of 0.107%; and now, only the coefficient sum identified in a nested fit. **A per-event multiplier
+cannot express a two-sided stake asymmetry, and no arm built on `_time_factor` ever could.** The cancellation is
+structural: one kill credits the killer and debits the victim through the same scalar, so the two sides' differing
+stakes never reach the round differential.
+
+#### What would actually test the owner's observation
+
+The measured asymmetry is real and large — in a 1v1 at 38–45s the attacker's death costs 50.0pp of win probability
+while the defender's costs 4.0pp — and none of the above touches it. Testing it requires the scorer to charge the
+two sides **differently for the same event**, which means `_time_factor` returning a pair rather than a scalar, or
+the kill and death legs taking separate factors keyed on their own side. That is a change to
+`app/scoring/impact.py`'s interface, out of scope for this measurement session, and it needs its own declaration
+with its own arm.
+
+**Standing conclusion unchanged.** Nothing here revises the level finding, the Tier A fixes, or the recommendation
+for version 4. It closes one methodological question and reopens one design question.
+
+### 2026-09-20 (CORRECTION + DECLARATION 6) — a kill should be worth what it changes
+
+**First, a correction to this session's own framing.** Declaration 4 and the entries around it describe the 21.2pp
+vs 74.1pp comparison as "the same event at the same second, worth 3.5x more to one side than the other". **That is
+wrong.** Those are two *different* events reachable from the same state — the attacker killing the defender
+(1v1 -> 1v0) and the attacker dying (1v1 -> 0v1). A single kill is **zero-sum in win probability**: the killer's
+team gains exactly what the victim's team loses. There is no two-sided asymmetry within one event, and the
+prescription that followed from it — "`_time_factor` should return a pair" — does not follow.
+
+What is true, and is a better target: **different events from the same state differ enormously in magnitude**, and
+the scorer prices them all as `K(s) x T(t)` where `T` is side-blind and `K` comes from a graph verified spike-blind.
+
+#### The redesign
+
+Replace the post-plant leverage payout with the measured win-probability swing:
+
+```
+today   leverage contribution = K(s) x T(t)
+D1      leverage contribution = S x clamp(D(a, d, t, victim_side), FLOOR, CEIL)
+```
+
+`D` is Part 4's own quantity — `V(a,d,t) − V(a−1,d,t)` for an attacker victim, `V(a,d−1,t) − V(a,d,t)` for a
+defender victim — used **directly**, without the `D / mean_over_t D` normalisation that divided its level away.
+Pre-plant is untouched; only the post-plant regime is replaced.
+
+**Why this is not the double-count Part 4 avoided.** Part 4 kept `K` and divided `D` by its own time-mean precisely
+so the two would not multiply. D1 does the opposite: it **replaces** `K x T` outright, so `K` is not applied to a
+post-plant kill at all and nothing is counted twice. The state, the side and the clock all enter once, through the
+measured swing.
+
+**The pre-check, run before declaring and reported whatever it said** (the gate instituted 2026-09-20). Over the
+153,450 post-plant kills with a supported `D`:
+
+| | |
+|---|---|
+| `corr(D, K x T)` today | **+0.7306**, R² 0.534 |
+| variance in what a kill is worth that today's payout does not capture | **46.6%** |
+| `corr(D, K)` | +0.8230 |
+
+Against A1's 0.05% unexplained, this has room by three orders of magnitude. It is event-level, not round-level, so
+it is a necessary and not a sufficient condition — the round-differential R² gate still applies below.
+
+#### Construction
+
+- `V` and therefore `D` are built **per fold on training matches only**, exactly as P5/P6 do.
+- **`FLOOR = 0.005` (0.5pp), `CEIL = 1.0`.** A floor is required: `D` runs to −19.6pp in thin cells, and the
+  standing constraint is that no kill is worth negative Impact. The floor is a policy value, declared here, not
+  fitted.
+- **`S` is fitted per fold so that `Σ S·D` over training post-plant kills equals `Σ K x 0.40` over the same kills.**
+  So D1 and `F-0.40` carry **identical total post-plant leverage** and differ only in how it is distributed across
+  events. That is what isolates the redistribution from the level.
+- Implemented through the existing wrapper as `T = S·D/K`, which makes the kill leg `S·D` and the death leg
+  `S·D x traded_factor`, preserving the trade discount. The kill-order graph is verified symmetric under team
+  relabeling (0 asymmetric edges), so `K` is recoverable from the alive counts alone.
+- An unsupported cell (31 of 153,481 kills) falls back to the flat `0.40`, matching the comparator.
+- Self-kills and phantom plants are excluded as everywhere else.
+
+#### Rule
+
+- **Primary contrast `D1 vs F-0.40`**, level-matched by construction. Secondary `D1 vs P0`.
+- **The R² gate runs first.** If D1's round-level `impact_diff` has residual variance against `F-0.40` below
+  **0.107%**, D1 is reported **UNTESTABLE** and no bootstrap is run.
+- Tier B: ships only on IMPROVEMENT.
+- Report the event-level redistribution regardless: how much payout moves, and to which states.
+
+**Prediction.** D1 passes the gate (residual variance above 0.5%) and is **IMPROVEMENT**. Reasoning: this is the
+first arm that changes what a kill is worth *as a function of state*, not a scalar re-weighting, and 46.6% of the
+event-level variance is currently unpriced. If it fails the gate, then round aggregation destroys even a
+redistribution this large, and that is a finding about the target rather than about the model.
+
+### 2026-09-20 (DECLARATION 7) — three ways to read the scalar that do not depend on a grid search
+
+Declared before running. All three come from the owner's question: is there a metric that can say something about
+the time scalar, given that the paired-loss harness has proven blind to whole classes of change? Each estimates the
+same quantity by different machinery, so agreement between them is evidence the grid search alone cannot supply.
+
+#### Method A — the coefficient ratio
+
+Split the round's leverage differential into its **pre-plant** and **post-plant** halves and fit both:
+
+```
+y ~ b_pre * leverage_diff[pre-plant] + b_post * leverage_diff[post-plant] + controls
+```
+
+**`b_post / b_pre` IS the time scalar**, read off directly with an interval, instead of searched for on a grid. The
+shipped model asserts that ratio is 1.00–1.85; the flat arms estimated ~0.3 by search. Extracted through
+`build_impact_rows_for_match`'s existing `kill_observer` hook, which reports the scorer's own per-kill values, so
+nothing is re-derived. Target T2 and its controls, same folds, 2,000-draw bootstrap on the ratio.
+
+**Declared caveat:** the two columns are not orthogonal — a round with more post-plant action has less pre-plant
+action — so `corr(pre, post)` is reported beside the ratio, and a correlation near -1 would make the split
+ill-conditioned and the ratio unreliable. That is reported whatever it says.
+
+#### Method B — equalise the scalar from measured swings
+
+No target, no folds, no log loss. Build `V(a, d, planted)` over **whole-round** second-by-second occupancy — not
+just post-plant, which is all Part 4 ever covered — then compute the win-probability swing of every scored kill and
+take
+
+```
+scalar = mean |dV| over post-plant kills  /  mean |dV| over pre-plant kills
+```
+
+This measures what a post-plant kill is worth relative to a pre-plant one, directly. It cannot be defeated by
+collinearity or by a weak target, because it never predicts anything. Its weakness is the mirror image: it says what
+the states are worth on average and nothing about whether re-weighting them helps a downstream model.
+
+`planted` must be in the state because planting is itself a large jump in attacker win probability; omitting it
+would attribute the plant's value to the kills around it.
+
+#### Method C — target the round itself
+
+Re-evaluate the arms on `y = did team A win THIS round`, with the context controls only and **without**
+`round_result`, which is the label here rather than a nuisance. Run for `P0`, `F-0.40` and `F-0.30`.
+
+**Declared caveat, stated before the numbers:** this is partly circular. Impact is computed from the kills that
+decided the round, so any variant tracking "who won the fights" scores well, which is close to but not the same as
+"which weighting reflects contribution". It measures something different from T2 and will not be reported as the
+same quantity.
+
+#### What would count
+
+- **The three agreeing near a common value** is the strongest evidence available for a scalar, precisely because
+  they share no machinery: a fitted coefficient ratio, a direct measurement, and a different target.
+- **Disagreement is equally informative** and will be reported as such: if A and B say ~0.3 while C says ~1.0, the
+  forward-looking and within-round questions have different answers, and the shipped 1.00–1.85 may be right for a
+  question nobody has been asking.
+- No constant is frozen by this entry, and none of these three is a shipping gate on its own.
+
+**Prediction.** A and B both land in **0.2–0.5**, agreeing with the grid search. C lands **higher**, nearer 1.0,
+because a within-round target rewards tracking the kills that decided that round and post-plant kills are
+disproportionately the deciding ones. If C comes in near 0.3 as well, the case for the change is much stronger than
+tonight's contrasts made it look.
+
+### 2026-09-20 (RESULT, declarations 6 and 7) — the answer depends on the target, and that reframes everything
+
+All four measurements complete. **They disagree, and the disagreement is the finding.**
+
+| method | machinery | scalar it implies |
+|---|---|---|
+| grid search (T2, forward window) | loss contrasts over a grid | **~0.3** |
+| **A** coefficient ratio (T2) | `b_post / b_pre`, fitted | **0.431** (sd 0.017, folds 0.41–0.46) |
+| **B** direct swing (no target at all) | mean \|dV\| post / pre | **1.023** (median-based 0.874) |
+| **C** round's own outcome | flat arms vs shipped | **favours the shipped ramp** |
+
+Method C in full: `F-0.40 vs P0` **+6.953e−03 [+6.218e−03, +7.706e−03] HARM**; `F-0.30 vs P0`
+**+8.428e−03 [+7.617e−03, +9.276e−03] HARM**. Note the magnitude — these are **~100x larger** than anything measured
+on T2, because the round outcome is nearly determined by the kills that decided it. That is the circularity
+declared in advance, visible in the numbers.
+
+**A's split is well-conditioned**: `corr(pre_leverage, post_leverage) = +0.060`, so the two columns are nearly
+orthogonal and the ratio is trustworthy as an estimate of what T2 wants.
+
+#### The reconciliation
+
+`K(s)` is **already correct**. Measured over the scored population: mean `K` is 1.018x larger post-plant, and the
+measured win-probability swing is 1.023x larger. The kill-order bonus tracks what a kill is worth almost exactly,
+without knowing anything about the spike. The time factor then multiplies by a further **1.264x** on average, and
+nothing in the win-probability data justifies that.
+
+So three of the four agree the shipped ramp **overpays** post-plant kills. They disagree on by how much, and the
+disagreement tracks **which question is being asked**:
+
+- **"Who decided the round in front of us?"** — B (1.02) and C (the ramp wins) say post-plant kills are worth at
+  least as much as pre-plant ones.
+- **"Who will win the rounds after this one?"** — the grid (~0.3) and A (0.43) say post-plant kills predict future
+  rounds substantially less well.
+
+Both are true statements about different quantities. Post-plant play decides the round it happens in, and predicts
+subsequent rounds poorly — consistent with post-plant outcomes being driven more by position, timer and spike state
+than by repeatable individual skill.
+
+#### D1, and its gate
+
+`D1 vs P0` **−8.716e−05 [−1.505e−04, −2.202e−05] IMPROVEMENT**. `D1 vs F-0.40` **+5.430e−06, and the gate says
+UNTESTABLE** — residual variance 0.0625% against the 0.107% floor. So D1 beats the shipped model and is
+**indistinguishable from a flat constant**, which the pre-check already implied: `corr(D, K) = 0.823`, so paying the
+measured swing is close to paying `K` times a constant. **The redesign collapses onto the flat arm.** That is a
+real result about the redesign, not a failure of it: it says the swing information is already carried by `K`.
+
+**Process deviation, recorded.** Declaration 6 says the gate runs BEFORE any bootstrap. It did not — the contrast
+was computed first and the gate after. The gate's verdict governs regardless, and `D1 vs F-0.40` is reported
+UNTESTABLE rather than INCONCLUSIVE.
+
+#### Predictions, scored
+
+| declared | outcome |
+|---|---|
+| A lands 0.2–0.5 | **held** — 0.431 |
+| B lands 0.2–0.5 | **FAILED** — 1.023 |
+| C lands higher, nearer 1.0 | **held** directionally — C favours the shipped ramp outright |
+| D1 passes the gate and is IMPROVEMENT | **half failed** — IMPROVEMENT vs P0, but UNTESTABLE vs its level-matched comparator |
+
+#### What this does to the version 4 recommendation
+
+**It suspends it.** The earlier entries recommend replacing the post-plant regime with a flat constant near 0.3.
+That recommendation rests entirely on T2, a forward-looking target, and **method C says the same change is HARM on
+the round's own outcome by a margin two orders of magnitude larger than the gains that motivated it.**
+
+The choice is no longer statistical. It is: **what is Impact for?**
+
+- If Impact rates contribution to the match being played, the round-outcome reading governs, and flattening is
+  wrong. The defensible change shrinks to `T ~ 1.0` — remove the *ramp's growth* and the plant+38..45 override,
+  keep post-plant kills at parity with pre-plant ones, which is what B measures and what `F-1.00` already showed
+  beats the shipped ramp on T2 as well.
+- If Impact forecasts future performance, the T2 reading governs and ~0.3–0.43 is right.
+
+**`T = 1.00` is the only value that is not contradicted by any of the four measurements**: B measures it directly,
+A and the grid say "well below 1.26" which it satisfies, C prefers the shipped ramp but `F-1.00` was never run on
+C. **That gap should be closed before any version 4 is specified** — run `F-1.00` on the round target.
+
+The Tier A correctness fixes are untouched by any of this and remain recommended.
+
+### 2026-09-20 (DECLARATION 8) — close the `F-1.00` gap on the round target, and bracket C's optimum
+
+Declared before running. Declaration 7's RESULT left exactly one measurement unrun, and this entry runs it.
+
+Restated so this entry stands alone: `T = 1.00` is the only post-plant scalar no method contradicts — B measures it
+directly (1.023), A (0.431) and the grid (~0.3) say "well below the shipped 1.264", which 1.00 satisfies, and C
+prefers the shipped ramp over both flat arms it was given — **but neither of those arms was 1.00**. C was run at
+0.40 and 0.30 only, both far below the shipped level, so C has never been asked about parity.
+
+#### What is run
+
+Method C's harness unchanged — `y = did team A win THIS round`, context controls only, no `round_result` — extended
+from three arms to seven:
+
+| arm | why it is in |
+|---|---|
+| `P0` | shipped, the comparator |
+| `F-0.30`, `F-0.40` | already measured on C — **re-run as a reproduction check**, not as new evidence |
+| **`F-1.00`** | **the declared gap** |
+| `F-0.70` | between the arms that lost and 1.00; makes the level a curve rather than two points and an extrapolation |
+| `F-1.26` | **level-matched** — mean shipped post-plant `T` is 1.264. Shipped level, no shape. |
+| `F-1.60` | above the shipped level, so an interior minimum can be **bracketed** instead of inferred |
+
+**Why more than the one arm the handoff named.** `F-1.00` alone returns a verdict on `F-1.00` and nothing else. If
+it is HARM — which prediction 2 below says it will be — the handoff's proposed resolution fails and the very next
+question is "then what level does C want?", which is these same seven replays run a day later. The level-matched
+arm additionally splits what C likes about the ramp into **level** and **shape**, a decomposition no arm run on
+this target so far can make.
+
+#### The gate runs first, as declared
+
+R² between each arm's round-level `impact_diff` and `P0`'s is computed and reported **before** that arm's
+bootstrap. Declaration 6 recorded a deviation on exactly this point; this entry does not repeat it.
+
+Standing floor: **0.107%** residual variance. Recorded caveat, stated in advance: that floor is a property of
+**T2's** detection power. C's contrasts run ~100x larger, so C's own floor is almost certainly well below 0.107%,
+and under gate clause 3 a decisive verdict beneath the standing floor on this target **moves the floor** rather
+than being suppressed as UNTESTABLE. Residual variance and verdict are both reported for every arm whatever they
+say.
+
+#### Predictions, all falsifiable
+
+1. **Reproduction is bit-for-bit.** `paired_oof_log_loss_delta` defaults to `seed=0` and mode C passes no seed, so
+   `P0`, `F-0.40` and `F-0.30` must return their declaration-7 log losses and intervals exactly. Any drift means
+   the corpus or the scorer moved, and the new arms are not comparable to declaration 7.
+
+2. **`F-1.00` is HARM on C, and small — point estimate in `[+2e-4, +2e-3]`.** This contradicts the handoff's stated
+   hope and is declared before the number is seen. C's two measured points fit a quadratic in `k` almost exactly;
+   solving `c(0.30-k*)^2 = 8.428e-3` against `c(0.40-k*)^2 = 6.953e-3` gives **`k* = 1.390`** and **`c = 7.089e-3`**.
+   C's optimum therefore sits slightly **above** the shipped mean `T` of 1.264 — not at 1.00. That model puts
+   `F-1.00` at **+1.1e-3**: roughly one sixth of `F-0.40`'s harm, but still several times the interval half-width,
+   so it should register rather than land INCONCLUSIVE.
+
+3. **The rest of the curve, from the same two-point model:** `F-0.70` at **+3.4e-3**, `F-1.26` at **+1.2e-4**,
+   `F-1.60` at **+3.1e-4**. Scored against the measured values as a curve-shape prediction. The model is fitted on
+   two points and assumes a quadratic; it is offered as a falsifiable guess, not as a result.
+
+4. **`F-1.26` may return UNTESTABLE.** `F-1.0 vs P0` sits at 0.107% residual variance on T2, and `F-1.26` is nearer
+   `P0` still. If it lands below the floor, that is itself the finding: the shipped ramp's **shape** is
+   arithmetically near-indistinguishable from its **level** through this wrapper, and the post-plant question
+   collapses to choosing a level.
+
+5. **The minimum is interior** — `F-1.60` loses to `F-1.26`. If loss instead falls monotonically through 1.60, the
+   grid is pinned at its edge, no constant has been fitted, and the level is declared inconclusive and re-run
+   wider. The grid-edge rule applies.
+
+#### What this entry does not do
+
+It freezes no constant, does not touch `webapp/app/`, and does not move `IMPACT_CALCULATION_VERSION` off 3. It
+closes one gap, and either supports or refutes `T = 1.00` as the defensible within-round value.
+
+#### Addendum to declaration 8, written while the run was replaying and before any C result was seen
+
+**Prediction 2 is under-identified, and the T2 grid proves it.** The two-point solve reads
+`delta(k) = c(k - k*)^2` and so silently forces a third parameter to zero: it assumes **the best flat arm exactly
+ties `P0`**. The honest model has an offset, `delta(k) = c(k - k*)^2 + d`, and two points cannot identify three
+parameters.
+
+The flat-arm grid already run on **T2** settles whether `d = 0` is safe. It is not:
+
+| k | `F-k vs P0` on T2 | verdict |
+|---:|---:|---|
+| 0.4 | −9.259e−05 | IMPROVEMENT |
+| 0.6 | −8.633e−05 | IMPROVEMENT |
+| 0.8 | −7.285e−05 | IMPROVEMENT |
+| 1.0 | **−5.270e−05** | **IMPROVEMENT** |
+| 1.2 | −2.494e−05 | IMPROVEMENT |
+| 1.4 | +9.469e−06 | INCONCLUSIVE |
+
+A quadratic through those six points fits to a **maximum residual of 1.6e−07 against a curve spanning 1.0e−04** —
+0.16% of the range. So:
+
+- **The quadratic form is validated**, and independently: its vertex lands at **k\* = 0.3221**, against the grid
+  search's own selection of 0.3–0.4 by a completely separate mechanism. The shape assumption behind prediction 2 is
+  sound.
+- **The `d = 0` assumption is refuted.** T2's best flat arm beats `P0` by **d = −9.31e−05**. Every T2 delta in the
+  table is negative, so the two-point solve applied there does not merely mis-estimate the vertex — it **fails
+  outright**, asking for the square root of a negative number.
+- T2's curve crosses zero at **k = 1.349**: on the forward target, every flat constant below ~1.35 beats the
+  shipped ramp.
+
+**What this does to the declared predictions.** Prediction 2's *point value* (+1.1e−3) and the derived vertex
+(k\* = 1.390) are conditional on `d = 0` and are scored as conditional. Its *direction* — `F-1.00` is HARM on C —
+holds only if `d >= 0`, i.e. only if no flat arm beats the shipped ramp on C. That is an open question this run
+answers rather than an assumption it is entitled to. Prediction 3's curve values inherit the same condition.
+
+**What survives untouched:** predictions 1 (bit-for-bit reproduction), 4 (`F-1.26` may be UNTESTABLE) and 5 (the
+minimum is interior) do not depend on the offset at all.
+
+**And this is now the sharpest argument for the seven arms.** Six non-`P0` points identify `c`, `k*` and `d`
+together, with three degrees of freedom left over to test the quadratic form on C the same way it was just tested
+on T2. The single arm the handoff named could not have identified any of them.
+
+**One asymmetry to carry into the result, stated before the numbers.** `F-1.00` is already a **measured
+IMPROVEMENT on T2** (−5.270e−05, interval excluding zero). So whatever C returns, `T = 1.00` is not a compromise
+between one target that wants it and one that does not — it is a value the forward-looking target actively
+prefers to the shipped ramp, being tested against the one target that might not.
+
+### 2026-09-20 (RESULT, declaration 8) — `T = 1.00` is refuted, and the ramp's **shape** is the defect
+
+**The gap is closed, in the direction the handoff did not want.**
+
+```
+F-1.00 vs P0, round's own outcome:  +9.823565e-04  [+6.548e-04, +1.304e-03]  HARM
+```
+
+The interval excludes zero. The value declaration 7 left standing as "the only one no measurement contradicts" **is
+contradicted.** `T = 1.00` is not uncontradicted, and version 4 cannot be specified around it on the strength of
+"nothing says no".
+
+#### Reproduction: bit-for-bit
+
+`P0`, `F-0.40` and `F-0.30` returned their declaration-7 values **exactly** — log loss to all 17 significant
+figures, and `point`, `lo` and `hi` identical on both contrasts. Prediction 1 held. The corpus (3,198 matches /
+67,453 rounds / 499,093 kill_events, alembic 0010, match-id md5 `1d639f01ece40d3cf43b7b94352edccc`) and the scorer
+are where declaration 7 left them, so the four new arms are directly comparable to the three old ones. `P0`
+reproduced a further two times in the independent runs below.
+
+#### The curve
+
+| k | `F-k vs P0` | 95% interval | verdict | resid. var. |
+|---:|---:|---|---|---:|
+| 0.30 | +8.427835e−03 | [+7.6167e−03, +9.2757e−03] | HARM | 0.9092% |
+| 0.40 | +6.953219e−03 | [+6.2181e−03, +7.7058e−03] | HARM | 0.7340% |
+| 0.70 | +3.417382e−03 | [+2.9005e−03, +3.9310e−03] | HARM | 0.3332% |
+| **1.00** | **+9.823565e−04** | **[+6.5482e−04, +1.3043e−03]** | **HARM** | 0.1073% |
+| 1.26 | −4.118715e−04 | [−6.2024e−04, −2.0070e−04] | IMPROVEMENT | 0.0407% |
+| 1.60 | −1.446362e−03 | [−1.6914e−03, −1.2084e−03] | IMPROVEMENT | 0.1164% |
+
+Monotone across the whole range, decelerating. Log losses: `P0` 0.092374, and 0.100802 / 0.099327 / 0.095791 /
+0.093356 / 0.091962 / 0.090927 for k = 0.30 … 1.60.
+
+#### What the extra arms bought: **level** and **shape** separate
+
+This is the finding the single named arm could not have produced.
+
+`F-1.26` is **level-matched** — 1.26 is the shipped ramp's own mean post-plant `T` (1.264). It carries the shipped
+level and none of the shipped shape. It is an **IMPROVEMENT on C** (−4.119e−04, interval excluding zero).
+
+So on the target that *prefers* the shipped ramp to every flat arm below it, **holding the level fixed and deleting
+the shape still helps.** The ramp's shape is not merely unsupported by measurement, as the earlier entries had it —
+it is **worse than no shape at all**, on the one target that was supposed to be defending it.
+
+The two questions therefore come apart cleanly:
+
+- **Shape** — both targets want it gone. Settled, and it needs no answer to "what is Impact for".
+- **Level** — the targets disagree, and that disagreement is the real open question.
+
+#### The protocol gate has a hole: the floor is per-target, not global
+
+`F-1.26 vs P0` registered a **decisive** IMPROVEMENT at **0.0407%** residual variance — comfortably below the
+**0.107%** standing floor, and below `A1`'s 0.0498% and `D1`'s 0.0625%, both of which were reported UNTESTABLE.
+
+The floor is **a property of the target, not of the harness.** C's target is ~30x more determined by its own
+features than T2's, so C resolves separations T2 cannot. Concretely:
+
+- On **T2** the floor stands at 0.107%. `A1` and `D1` remain UNTESTABLE; nothing here rescues them.
+- On **C** the demonstrated floor is now **at most 0.0407%**.
+
+Gate clause 3 anticipated a moving floor but wrote it as one global number. **It should be recorded per target**,
+and the declaration-6 addendum's single-column table should be read as "the T2 floor" throughout. Recorded as a
+defect in the gate's statement, not in any verdict it produced.
+
+#### Scale: the "two orders of magnitude" was a property of the target, not of the effect
+
+Declaration 7 suspended the version-4 recommendation partly because C's harms are "~100x larger than anything
+measured on T2". That comparison is between raw log-loss deltas on two targets whose headroom differs by 30x.
+
+| | what the whole scoring system buys | best/worst flat-arm effect | as % of headroom |
+|---|---:|---:|---:|
+| T2 | 0.0202 (0.6931 → 0.6729) | −9.259e−05 gain | **0.458%** |
+| C | 0.6007 (0.6931 → 0.0924) | +6.953e−03 harm at k=0.40 | **1.157%** |
+
+`F-0.40`'s harm on C is **2.5x** T2's best gain in headroom terms, not the 75x the raw numbers suggest. And
+`F-1.00`'s harm on C is **0.36x** T2's best gain — in headroom terms it **loses less on C than it gains on T2**.
+The asymmetry that drove the suspension is largely an artifact of comparing two targets' log losses directly.
+
+#### Predictions, scored
+
+| declared | outcome |
+|---|---|
+| 1. reproduction is bit-for-bit | **held** — exact, on all three arms |
+| 2. `F-1.00` is HARM on C, in [+2e−4, +2e−3] | **held on both counts** — +9.82e−04. The conditional point estimate (+1.1e−3) landed within 12% despite resting on an offset withdrawn mid-run |
+| 3. curve values | `F-0.70` **1.01x** (+3.40e−3 predicted vs +3.42e−3). `F-1.26` and `F-1.60` **wrong in sign**, exactly as the addendum said they would be once `d != 0` |
+| 4. `F-1.26` may be UNTESTABLE | **held mechanically, and it is the interesting failure** — 0.0407%, below the floor, and it registered anyway |
+| 5. the minimum is interior | **FAILED** — still falling at 1.60, grid pinned at its upper edge. The declared re-run-wider rule fires |
+
+The addendum's withdrawal of prediction 2's *identification* was correct and load-bearing: the two-point solve put
+C's vertex at 1.390 and a six-point fit puts it at **1.685**, outside the grid.
+
+#### The re-run wider, and where C's optimum actually is
+
+Prediction 5's failure fired the grid-edge rule, so a second grid ran at k = 1.9, 2.2, 2.6. **It was killed by the
+OS for memory pressure after completing all four replays but before its bootstraps**, so these three arms have
+**point estimates and no intervals**. Recorded as such; they are not registered contrasts.
+
+| k | log loss | `F-k vs P0` | status |
+|---:|---:|---:|---|
+| 0.30 | 0.100802 | +8.428e−03 | bootstrapped, HARM |
+| 0.40 | 0.099327 | +6.953e−03 | bootstrapped, HARM |
+| 0.70 | 0.095791 | +3.417e−03 | bootstrapped, HARM |
+| 1.00 | 0.093356 | +9.824e−04 | bootstrapped, **HARM** |
+| 1.26 | 0.091962 | −4.119e−04 | bootstrapped, IMPROVEMENT |
+| 1.60 | 0.090927 | −1.446e−03 | bootstrapped, IMPROVEMENT |
+| **1.90** | **0.090614** | **−1.760e−03** | point only — **minimum** |
+| 2.20 | 0.090733 | −1.641e−03 | point only |
+| 2.60 | 0.091425 | −9.490e−04 | point only |
+
+**The minimum is bracketed and the grid is no longer pinned.** `F-1.9` beats both neighbours; a three-point
+parabola through 1.6 / 1.9 / 2.2 puts the vertex at **k\* = 1.97**. Located loosely — the 1.9-vs-2.2 gap
+(1.19e−04) is inside a typical bootstrap half-width, so the honest reading is **the optimum lies around 1.7–2.3**.
+The 1.9-vs-1.6 gap (3.13e−04) is not, so "above 1.6" is secure.
+
+The six-point quadratic had put the vertex at 1.685. It was wrong, as its fit quality warned: 1.02% residuals on C
+against 0.16% on T2. **The quadratic form holds on T2 and does not hold on C** — a decelerating curve, not a
+parabola. Any future extrapolation on this target should be treated as indicative only.
+
+#### The reconciliation: B is the anchor, and the other two bracket it
+
+Putting the four estimates of "what a post-plant kill is worth relative to a pre-plant one" on one line:
+
+| estimate | machinery | scalar |
+|---|---|---:|
+| T2 optimum | forward 3-round window, fitted composite | **0.32** |
+| **B** | **mean \|dV\| ratio — no target, no folds, no loss** | **1.02** |
+| shipped ramp, mean | the model in production | 1.26 |
+| C optimum | the round's own outcome | **~1.97** |
+
+**B is the only one that measures the quantity directly**, and the two target-based estimates sit on either side of
+it — T2 at roughly a third of B, C at roughly double. That is the signature of two biases pulling opposite ways,
+not of three disagreeing measurements:
+
+- **T2 undershoots** because post-plant play predicts *later rounds* poorly. It is answering a forecasting
+  question, and post-plant outcomes are driven by position, timer and spike state more than by repeatable skill.
+- **C overshoots** because of the circularity declared in advance in declaration 7. Its target is nearly determined
+  by its own features — pooled out-of-fold log loss **0.0924** against a coin flip's 0.6931, i.e. the model is
+  about **91% confident and right**. Post-plant kills are disproportionately the *last* kills, so up-weighting them
+  reconstructs the label better almost tautologically. C's ~1.97 is an estimate of **which kills are most
+  diagnostic of the round result**, which is not the same quantity as which kills were worth the most.
+
+C is not noise and should not be discarded — it is the operationalisation of the within-round reading, and
+declaration 7 committed in advance to reporting it. But **its optimum is a biased estimate of the scalar**, and the
+size of the bias is visible: 1.97 against B's directly-measured 1.02.
+
+#### What is now settled without needing "what is Impact for"
+
+**The shape goes.** `F-1.26` carries the shipped ramp's own mean level and none of its shape, and it is an
+IMPROVEMENT on the target that prefers the ramp to every flat arm below it. Both targets want the ramp's growth and
+the plant+38..45 override removed. No weighting of the two targets changes this.
+
+**The level is the open question, and it is narrow.** A flat constant beats the shipped ramp on:
+
+- **T2** for k < 1.349 (bracketed by measured IMPROVEMENT at 1.2 and INCONCLUSIVE at 1.4)
+- **C** for k > ~1.18 (bracketed by measured HARM at 1.00 and IMPROVEMENT at 1.26)
+
+giving a **joint window of roughly 1.18 < k < 1.35** in which one constant improves both targets at once.
+
+**The honest caveat, and the one measurement that closes it.** There is as yet **no single k measured as an
+IMPROVEMENT on both targets.** T2's highest measured improvement is k = 1.2; C's lowest is k = 1.26. They are
+adjacent and do not overlap. The missing cell is **T2 at k = 1.26** — the run that was killed for memory. Its fit
+value is −1.54e−05, an improvement, but it is a fit.
+
+```bash
+cd webapp
+DATABASE_URL="postgresql+psycopg2://postgres@localhost:5434/valo_v4" \
+  ./.venv313/Scripts/python.exe scripts/run_postplant_v4_report.py \
+    --out <DIR> --arms "P0,F-1.2,F-1.26,F-1.4"
+```
+`F-1.2` and `F-1.4` are in that list as reproduction checks against declaration 5's `contrasts_flat2.json`. The
+killed run got through its identity gate (**PASSED**, 67,251 observations identical) and banked `oof_P0.npz`, and
+it re-confirmed `dataset_fingerprint 3198:f9a31bb2df2586ec` / `fold_mapping_hash cebae50f85e94736`, so a rerun
+pointed at that directory resumes rather than restarting.
+
+#### What this does to the version 4 recommendation
+
+It **unblocks the part that was blocked, and narrows the part that was not.**
+
+1. **Remove the ramp's shape and the plant+38..45 override.** Settled by measurement on both targets. This no
+   longer waits on the owner's answer to "what is Impact for".
+2. **Replace it with a flat constant in the joint window, 1.18–1.35.** The shipped ramp's own mean level, 1.26,
+   sits inside it. Pending the one measurement above.
+3. **`T = 1.00` is out.** It is HARM on C with an interval excluding zero, and it sits below the joint window.
+4. **0.30–0.40 is out too.** It was the earlier entries' recommendation, and it is 1.16% of C's headroom worse
+   against 0.46% of T2's headroom better — the worst net of any arm tested.
+5. Tier A fixes with `P3a` are untouched by all of this and remain recommended.
+
+Note what has changed about the *character* of the recommendation. The earlier entries proposed moving the level a
+long way (1.26 → 0.3) on T2's authority alone. This one proposes **leaving the level almost exactly where it is and
+deleting the shape**. Impact scores will move less, and the case no longer depends on which target is preferred.
+
+`IMPACT_CALCULATION_VERSION` stays **3**, `git diff webapp/app/` is empty, and no constant is frozen by this entry.
+Row motion for `F-1.26` has not been measured and should be, via `postplant_v4_row_motion.py`, before any version-4
+runbook is written.
+
+### 2026-09-20 (RESULT, declaration 8 — addendum) — both killed runs completed; the joint-window claim is corrected
+
+Run sequentially at the owner's instruction, one Python process at a time, while a game held ~2GB. Both finished.
+
+#### The wide grid, now registered rather than salvaged
+
+| k | `F-k vs P0` on C | 95% interval | verdict | resid. var. |
+|---:|---:|---|---|---:|
+| 1.90 | −1.760123e−03 | [−2.1330e−03, −1.3937e−03] | IMPROVEMENT | 0.3203% |
+| 2.20 | −1.641140e−03 | [−2.1568e−03, −1.1331e−03] | IMPROVEMENT | 0.6373% |
+| 2.60 | −9.486863e−04 | [−1.6587e−03, −2.4499e−04] | IMPROVEMENT | 1.2122% |
+
+All three clear the gate comfortably. **C's vertex is confirmed at k\* = 1.9675**, minimum bracketed (`F-1.9` beats
+`F-1.6` by −3.138e−04 and `F-2.2` by −1.190e−04). Declaration 8's grid-edge rule is discharged.
+
+**The salvage was sound.** The killed run's log losses, transcribed from its flushed run log, reproduced to every
+printed digit (0.090614 / 0.090733 / 0.091425), and the point estimate derived as `loss(arm) − loss(P0)` — −1.760e−03
+— matched the measured −1.7601230e−03. Recovering point estimates from a run log when the JSON never lands is a
+valid technique, worth keeping.
+
+#### `F-1.26` on T2 — and the claim it does not support
+
+```
+F-1.26 vs P0, target T2:  -1.515723e-05  [-3.189432e-05, +1.117182e-06]  INCONCLUSIVE
+```
+
+The fit predicted −1.5435e−05 and the measurement came in at −1.5157e−05, **1.8% off on the point estimate**. But
+the interval spans zero — barely, upper bound +1.12e−06 — so the verdict is **INCONCLUSIVE, which by this ledger's
+own vocabulary is never "no harm found".**
+
+**The joint-window claim as the RESULT entry above framed it is therefore not established.** That entry said a
+constant in 1.18–1.35 "improves both targets at once", and predicted this measurement would make it fully measured.
+It did not. **There is still no k measured as an IMPROVEMENT on both targets, and now there is a reason to think
+there cannot be one.**
+
+**Why it is structural, not bad luck.** The window is *defined* by the two targets' zero-crossings — C's at ~1.18,
+T2's at ~1.35. Near a crossing an effect is small by construction. So any k inside the window is necessarily close
+to zero on at least one target, and "a constant that decisively improves both" is **unachievable in principle
+here**, not merely unmeasured. Running more arms inside the window cannot fix this.
+
+#### What the measurement does support
+
+At k = 1.26, in each target's own headroom:
+
+| | effect | as % of that target's headroom |
+|---|---:|---:|
+| C | −4.119e−04, interval excludes zero | **0.0686% gain** |
+| T2 | worst case +1.117e−06 (interval upper bound) | **0.0055% cost** |
+
+**The decisive gain on one target is 12x the worst-case cost on the other**, and that cost is bounded by measurement
+rather than assumed. The defensible claim is therefore *not* "improves both". It is:
+
+> Replacing the ramp with a flat constant at the shipped ramp's own mean level **decisively improves the
+> within-round target and costs the forward-looking target nothing measurable**, while being a strict
+> simplification — one constant instead of a ramp plus an override.
+
+That is still a shipping case. It is a weaker claim than the one it replaces, and it is the one the evidence bears.
+
+**An unresolved alternative, flagged not answered:** `F-1.2` is a measured IMPROVEMENT on T2 (−2.494e−05, interval
+excluding zero) where `F-1.26` is inconclusive, and C at 1.2 is unmeasured but interpolates to roughly −2.7e−05,
+just past its crossing. **k = 1.2 may dominate k = 1.26** — one mode-C arm would settle it. Not run.
+
+#### Two process failures worth recording
+
+**1. `run_postplant_v4_report.py` silently drops unknown arms — twice over.** The first attempt requested
+`P0,F-1.2,F-1.26,F-1.4`, **exited 0, and measured two of three**: `F-1.26` is on no grid, so it never entered
+`ALL_ARMS` and produced no row at all. The two arms that did run were the reproduction checks, so the output looked
+healthy. Worse, the obvious fix — adding it to `ALL_ARMS` — made it appear in the table as `NOT RUN` while still
+never executing, because **`ALL_ARMS` is the REPORT loop and `SIMPLE_ARMS` is the REPLAY loop**. A second run was
+burned on that. Fixed: `F3_GRID = (1.26,)` feeds `SIMPLE_ARMS`, and an unrecognised `--arms` entry is now a hard
+`SystemExit` listing the known flat arms instead of a silent skip. Same family as `build_target` dropping rows —
+**the harness quietly answering a smaller question than the one asked.**
+
+**2. The T2 harness does not reproduce bit-for-bit.** `F-1.2` and `F-1.4` came back at −2.494432e−05 and
++9.467676e−06 against declaration 5's −2.494206e−05 and +9.469171e−06 — agreeing to **four significant figures**
+with identical verdicts, but differing by ~2e−09. The two arms' drifts are unequal (−2.26e−09 vs −1.49e−09), so it
+is not a shared `P0` offset; the likely source is the inner 3-fold L2 selection, which mode C does not perform
+(it fixes `L2 = 1.0`). Immaterial to any verdict, but **"bit-for-bit" is true of mode C only** — the RESULT entry
+above says so of mode C, correctly, and it must not be generalised to this harness.
+
+### 2026-09-20 (DECLARATION 9) — ask the side-asymmetry question on the target that can hear it
+
+Declared before running. This entry exists **only because of declaration 8's finding that the detection floor is a
+property of the target, not of the harness.**
+
+`A1` — the post-plant factor as a constant per victim side, at level 0.40 so `A1 vs F-0.40` isolates the split and
+nothing else — was reported **UNTESTABLE** on T2: residual variance **0.0498%** against T2's demonstrated floor of
+**0.107%**. The arm is a 0.997 rescale of its own comparator and the estimator is blind to a rescale.
+
+But C's demonstrated floor is **at most 0.0407%**, set when `F-1.26` registered a decisive IMPROVEMENT there.
+**0.0498% > 0.0407%.** If `A1`'s separability on C's row set is comparable to its separability on T2's, then the
+question that could not be asked on the forward target **can be asked on the round-outcome target** — for the first
+time in this investigation.
+
+This is the single highest-value experiment the per-target floor unlocks, and it is the one the owner asked for.
+
+#### What is run
+
+| arm | why |
+|---|---|
+| `P0` | shipped, the comparator of record |
+| `F-0.40` | **the comparator that matters** — same level, no split |
+| `A1` | level 0.40, per-victim-side weights |
+
+Target C (`y = did team A win THIS round`, context controls, no `round_result`), the same machinery declaration 8
+used, so the result is directly comparable to that entry's nine-arm curve.
+
+#### The weights are reused verbatim, and that is legitimate
+
+`a1_weights.json`'s per-fold weights are taken **unchanged**, not refitted. Justification, stated before the run:
+
+1. They are fitted from the **kill population** — the mean measured swing `D` per victim side, normalised so the
+   kill-weighted mean is exactly 1 — and **not from any target**. Nothing about T2 entered them.
+2. They were fitted **per fold on training matches only**, and this run uses **the same fold split**:
+   `stable_folds(seed=0)`, `fold_mapping_hash cebae50f85e94736`, re-confirmed three times today.
+3. Fold `f`'s predictions come from fold `f`'s weights, fitted on the complement of `f`. Out-of-fold purity is
+   preserved exactly as the original run preserved it. **`A1` is replayed five times, once per fold** — it is not a
+   single-replay arm and must not be run as one.
+
+Refitting on C would change nothing (the fitter never sees the target) and would risk transcription error, so the
+stored values are used and this paragraph is the record of that choice.
+
+#### The gate runs first, and is RECOMPUTED, not inherited
+
+`build_target` drops rows — 53,730 of 67,251 survive T2's forward window, where C keeps all 67,251 with a known
+winner. **The 0.0498% figure is a property of T2's row set and does not transfer.** R² between `A1`'s out-of-fold
+`impact_diff` and `F-0.40`'s is recomputed on C's rows before any bootstrap. For a per-fold arm the out-of-fold
+assembly — each row taking the value from the replay of the fold in which it was a test row — is the arm's column.
+
+#### Predictions
+
+1. **The gate passes, narrowly.** Separability on C's rows lands in **0.04%–0.07%**, above C's 0.0407% floor. It is
+   close enough that landing below is a real possibility, and **if it does, the answer is "still untestable, now on
+   both targets"** — which would close the side-asymmetry question properly rather than leaving it open, and is a
+   legitimate outcome of this run rather than a failure of it.
+
+2. **`A1 vs F-0.40` on C is not an IMPROVEMENT.** Direction declared before the number: on T2 the point estimate
+   was **+1.096e−05** (the harm direction, though inconclusive), and `A2` — the same idea with a time band — was
+   **decisively HARM** vs `F-0.40`. The side split has never once produced a favourable point estimate against a
+   level-matched flat comparator.
+
+   **Stated against my own prior:** there is a real mechanism by which C could disagree. C rewards weighting kills
+   by how decisive they were for *this* round, `A1` up-weights attacker-victim kills (≈1.25) and down-weights
+   defender-victim ones (≈0.79), and post-plant an attacker's death does plausibly move the round more. **If `A1`
+   comes back IMPROVEMENT on C, that is a genuinely new finding** — the first evidence in this investigation that
+   any structure beats a flat constant — and it would reopen the side asymmetry rather than close it.
+
+3. `A1 vs P0` on C is **HARM**, and close to `F-0.40`'s **+6.953e−03**, because `A1` is `F-0.40` plus a split and
+   `F-0.40` is far below C's optimum of ~1.97.
+
+#### What this entry does not do
+
+It freezes nothing, touches no `webapp/app/` code, and leaves `IMPACT_CALCULATION_VERSION` at 3. A favourable
+result would **not** be a licence to ship a side-asymmetric factor — it would be grounds to build the arm properly,
+which per declaration 6's parameterisation note means a scorer that can charge the two sides of a duel separately,
+not another constant inside `_time_factor`.
+
+### 2026-09-20 (RESULT, declaration 9) — the side asymmetry is a measured negative, not an untestable one
+
+**The question is answered. It had never been answered before.**
+
+```
+A1 vs F-0.40, target C:  +1.544677e-03  [+1.406638e-03, +1.684454e-03]  HARM
+A1 vs P0,     target C:  +8.497896e-03  [+7.800013e-03, +9.200988e-03]  HARM
+F-0.40 vs P0, target C:  +6.953219e-03  [+6.218082e-03, +7.705842e-03]  HARM  (reproduced exactly)
+```
+
+`A1` is `F-0.40` plus a per-victim-side split and nothing else. Against its own level-matched comparator it is
+**decisively worse**, by an interval nowhere near zero.
+
+#### The gate, and a correction to how it was described
+
+| | residual variance | floor | status |
+|---|---:|---:|---|
+| `A1` vs `F-0.40` on **C** | **0.0498%** | 0.0407% | **TESTABLE** |
+| `A1` vs `F-0.40` on **T2** | 0.0498% | 0.107% | UNTESTABLE |
+| `A1` vs `P0` on C | 0.7602% | 0.0407% | testable |
+| `F-0.40` vs `P0` on C | 0.7340% | 0.0407% | testable |
+
+Declaration 9 insisted the gate be **recomputed on C's rows rather than inherited**, on the grounds that
+`build_target` drops rows for T2. The recomputation returned **0.0498%, identical to the recorded T2 figure to
+four significant figures.** That is not a coincidence and it sharpens the rule:
+
+> **Separability is a property of the two `impact_diff` COLUMNS and is target-independent. The FLOOR is
+> target-dependent.** An arm pair has one separability; whether it can be resolved depends on which target you ask.
+
+So the caution was right in principle and the recomputation confirmed the number instead of changing it. The
+declaration-6 addendum's table should be read as "separability" (target-free) beside "the T2 floor" (target-bound).
+
+#### What this settles
+
+**The hypothesis that `A1` lost because the test was blind is refuted.** Given a target that *can* see the arm —
+same separability, lower floor — it loses on the merits, and not narrowly.
+
+Every side-split contrast that has ever been testable is now HARM:
+
+| contrast | target | separability | verdict |
+|---|---|---:|---|
+| `A2` vs `F-0.40` | T2 | above floor | **HARM** (+1.743e−05) |
+| `A2` vs `A1` | T2 | above floor | **HARM** (+6.473e−06) |
+| **`A1` vs `F-0.40`** | **C** | 0.0498% | **HARM (+1.545e−03)** |
+| `A1` vs `F-0.40` | T2 | 0.0498% | UNTESTABLE — the only one still unanswered |
+
+`A1`'s log loss on C is **0.10087170**, worse than **every flat constant measured on C** — worse even than
+`F-0.30` (0.10080164), the worst point on the nine-arm curve. In headroom terms the split costs **0.257% of C's
+headroom** against its own comparator, which is larger than `F-1.00`'s **0.164%** harm.
+
+**This closes the question the 2026-09-20 correction explicitly reopened.** That entry withdrew "the side asymmetry
+does not help", correctly, because `A1` had never been measured with any power — and said "the hypothesis returns
+to open". It is now closed, on evidence rather than on a blind test.
+
+#### Why a real effect makes the metric worse
+
+The underlying asymmetry is real and large: a kill whose victim is an attacker moves win probability **21.92pp**
+against **13.76pp** for a defender victim. The mistake is in what that difference *is*.
+
+**A kill is zero-sum in win probability** — the ledger established this when it withdrew the "same event worth 3.5x
+more to one side" claim. So 21.92 vs 13.76 does not mean one event is worth more to one side; it means
+**attacker-victim kills happen in systematically different STATES than defender-victim kills.** And the state is
+exactly what `K(s)` already encodes — it is the man-advantage transition's worth, verified symmetric under team
+relabeling.
+
+Multiplying by a victim-side weight therefore **double-counts state information `K(s)` already carries**, and
+distorts rather than refines. That is the same mechanism as `D1`: `corr(D, K) = 0.823`, the swing was already in
+`K`, and paying it again bought nothing. The side split is the sharper case because paying it again is not merely
+redundant — it is **measurably harmful**.
+
+#### Predictions, scored
+
+| declared | outcome |
+|---|---|
+| 1. the gate passes narrowly, separability in 0.04–0.07% | **held** — 0.0498%, above C's 0.0407% floor |
+| 2. `A1 vs F-0.40` on C is **not** an IMPROVEMENT | **held**, and decisively: HARM, interval far from zero |
+| 3. `A1 vs P0` is HARM and **close to** `F-0.40`'s +6.953e−03 | **direction held, magnitude FAILED** — +8.498e−03 is 22% worse, not close. The split does real additional damage on top of the level being wrong |
+
+Declaration 9 recorded in advance that an IMPROVEMENT would be "the first evidence in this investigation that any
+structure beats a flat constant" and would reopen the question. It did not happen; the record of having staked that
+claim before the number stands either way.
+
+#### What does not follow
+
+C is **partly circular by construction** (declaration 7), so the precise claim is: **the side split is decisively
+harmful for the within-round question, and remains unmeasurable for the forward-looking one.** `A1` vs `F-0.40` on
+T2 is still UNTESTABLE and no run can change that without changing the arm's parameterisation.
+
+The parameterisation note from declaration 6 is unaffected and still stands: a two-sided *stake* asymmetry — the
+two outcomes of one duel carrying different consequences — cannot be expressed by a function returning one number
+per event. What this result kills is the specific idea that **a per-event multiplier keyed on victim side** is a
+useful way to encode it. That idea is now measured, and it is worse than doing nothing.
+
+`IMPACT_CALCULATION_VERSION` stays 3, `git diff webapp/app/` is empty, no constant is frozen, and the version-4
+recommendation is unchanged: flat constant, no structure.
+
+### 2026-09-21 (DECLARATION 10) — the first ADDITIVE arm: `K(s) + f`, not `K(s) · T`
+
+Declared before running. Asked for by the owner, and it is a hypothesis this investigation has never tested.
+
+Every arm from declarations 1–9 is **multiplicative** (`P4`, `L`, `F`, `A1`, `A2`, `P2L`) or a **replacement**
+(`D1` returns `T = S·D/K` so the product becomes `S·D`). **Nothing has ever added.**
+
+```
+shipped and every arm so far:   leverage = K(s) · T(t)
+this declaration:               leverage = K(s) + f
+```
+
+That is a different belief, not a different curve. **A multiplier says a late kill AMPLIFIES whatever the kill was
+worth; an additive term says being late is worth something IN ITSELF — the same amount whether the kill was
+decisive or marginal.** Verified at build time: at `alive=(2,4)`, `K=80`, the term lifts `T` to 2.68; at
+`alive=(1,1)`, `K=250`, the same term reaches only 1.49.
+
+Delivered through the existing wrapper as `T = 1 + f/K`, so `K·T = K + f` exactly — identity verified to 1e−9 on
+four states before any run. The base is **1.0**, not the shipped ramp: this **replaces** the multiplicative factor
+rather than stacking on it.
+
+#### The design point that makes this a real test: level-matching
+
+An additive term **raises the post-plant payout**, and C's optimum is ~1.97 while `F-1.00` is far below it. So an
+additive arm on a flat-1.0 base would beat `F-1.00` **merely by raising the level**, and that would prove nothing.
+
+So `alpha` is **not** chosen from a grid. For each arm it is **calibrated so the arm's mean post-plant payout
+equals a flat arm that has already been measured on C**:
+
+```
+mean T = 1 + (1/N_postplant) * SUM_applies (alpha * kbar * shape_i / K_i)      solved for alpha
+```
+
+`kbar = 137.71`, the kill-weighted mean post-plant `K` from `derived_tables.json`
+(143.19 × 69,946 attacker-victims, 133.13 × 83,504 defender-victims). Calibration reads `kill_order_bonus_raw`
+and `seconds_to_plant` out of the scorer's own `kill_observer`, so `K` and `t` are the scorer's values, not a
+re-derivation. Self-kills, phantom plants and `K = 0` events take the flat base and are counted in `N` but
+contribute nothing to the sum, exactly as the variant treats them.
+
+**Each additive arm is then contrasted against its own level-matched flat twin.** That isolates *additive vs flat*
+with the level held constant — the same move `F-1.26 vs P0` used to isolate shape from level.
+
+| arm | shape | level-matched to |
+|---|---|---|
+| `ADD-T` × 3 | `t / 45`, rising | `F-1.26`, `F-1.6`, `F-1.9` |
+| `ADD-S` | flat in `t`, per victim side | `F-1.6` |
+| `ADD-TS` | `t / 45` × per victim side | `F-1.6` |
+
+Comparators replayed in the same run: `P0`, `F-1.26`, `F-1.6`, `F-1.9`.
+
+#### Side weights are FIXED, and the caveat is recorded in advance
+
+`{victim_is_attacker: 1.25, else: 0.79}`, rounded from `A1`'s per-fold fits (1.250–1.256 / 0.785–0.790) and
+kill-weighted mean 0.9997, so they carry only the split. **They are a declared constant, not fitted here** — but
+they descend from a fit that saw the whole corpus, so the side arms carry a mild optimistic bias. **Declaration 9
+found the per-victim-side split is measurably harmful, so I expect these arms to fail; a favourable-to-them bias
+makes a negative result stronger, not weaker.** Stated now rather than after.
+
+#### Target, and what it cannot settle
+
+**Target C**, because its demonstrated floor (0.0407%) is well below T2's (0.107%) and small effects stand a chance
+of being resolved. C is **partly circular** (declaration 7). **A favourable result here would not be a shipping
+result** — it would require T2 confirmation, and `ADD` vs its flat twin on T2 may well be UNTESTABLE.
+
+#### Predictions
+
+1. **The gate passes comfortably.** An additive term is **not** a rescale of its comparator — over most of the mass
+   (72% of post-plant kills fall in the first 20s where `t/45` is nearly flat) it behaves like *a constant per
+   post-plant kill*, i.e. roughly a **count** of post-plant kills, which is a genuinely different feature from the
+   `K`-weighted sum. Residual variance against the flat twin lands **above 0.3%**, far clear of the floor. This is
+   the first arm I expect to be comfortably testable against a level-matched comparator.
+
+2. **`ADD-T` does not beat its level-matched flat twin** — INCONCLUSIVE or HARM. The distinctive part of `t/45` is
+   the late tail, which is 1.02% of events, and `K(s)` already prices post-plant kills at 1.018x against a measured
+   1.023x swing, leaving little room for any additional term.
+
+3. **`ADD-S` and `ADD-TS` are HARM** against their flat twin, following declaration 9.
+
+4. **`ADD-TS` does not beat `ADD-T`** — the side split adds damage, not information.
+
+**The falsifier, stated plainly:** if `ADD-T` beats its level-matched flat twin with an interval excluding zero,
+that is **the first structure in this entire investigation to beat a flat constant**, and it reopens the whole
+shape question rather than closing it.
+
+#### What this entry does not do
+
+No constant is frozen, `webapp/app/` is untouched, `IMPACT_CALCULATION_VERSION` stays 3. The new variant lives in
+`scripts/postplant_v4_variants.py` as a wrapper around the shipped `_time_factor`, like every arm before it.
+
+### 2026-09-21 (RESULT, declaration 10) — additive is not neutral, it is actively worse, and the time shape carries nothing
+
+**Every additive arm loses to its level-matched flat twin, every interval excludes zero, and the harm grows with
+how much additive mass is added.**
+
+| arm | vs level-matched twin | 95% interval | verdict | % of C headroom | separability |
+|---|---:|---|---|---:|---:|
+| `ADD-T@1.26` | +1.364339e−03 | [+1.2342e−03, +1.4999e−03] | HARM | 0.227% | 0.0247% **UNTESTABLE** |
+| `ADD-T@1.6` | +3.045884e−03 | [+2.7570e−03, +3.3479e−03] | **HARM** | 0.507% | 0.1259% |
+| `ADD-T@1.9` | +4.432181e−03 | [+4.0161e−03, +4.8729e−03] | **HARM** | 0.738% | 0.2729% |
+| `ADD-S@1.6` | +3.017792e−03 | [+2.8423e−03, +3.1832e−03] | **HARM** | 0.502% | 0.0975% |
+| `ADD-TS@1.6` | +6.960561e−03 | [+6.5461e−03, +7.4085e−03] | **HARM** | 1.159% | 0.1682% |
+| `ADD-TS@1.6` vs `ADD-T@1.6` | +3.914677e−03 | [+3.7001e−03, +4.1350e−03] | **HARM** | — | 0.0776% |
+
+Every additive arm is also worse than the **shipped `P0`**, not merely worse than flat.
+
+**Reproduction:** `F-1.26 vs P0` and `F-1.6 vs P0` returned **−4.118714982721e−04** and **−1.446361904629e−03**,
+bit-for-bit identical to declaration 8. `F-1.9 vs P0` is now a registered contrast (−1.760123e−03) rather than the
+point estimate salvaged from the OS-killed run, and it matches that salvage exactly.
+
+#### Two findings, and the second is the sharper one
+
+**1. Additive is worse than multiplicative, and monotonically so.** At matched mean payout the harm runs
+0.227% → 0.507% → 0.738% of C's headroom as the level goes 1.26 → 1.6 → 1.9. The more additive mass, the worse.
+`ADD-TS@1.6` at **1.159%** is as harmful as `F-0.40 vs P0` (1.157%), the largest harm measured anywhere in this
+investigation.
+
+**2. The time shape carries essentially nothing — measured directly for the first time.** `ADD-T@1.6` rises with
+`t`; `ADD-S@1.6` is **flat in `t`** and differs only by the side split. Their harm against the same twin:
+
+```
+ADD-T@1.6  (rises with t)   +3.0459e-03
+ADD-S@1.6  (flat in t)      +3.0178e-03
+difference                   2.81e-05     <- 0.9% of the effect
+```
+
+Whether the additive term rises with time or ignores time entirely **makes almost no difference**. Every earlier
+entry inferred this from the mass distribution (72% of post-plant kills in the first 20 seconds, 1.02% past t=40);
+this is the first arm pair that isolates the time shape with everything else held equal, and it **confirms the
+inference directly**. The shape is not merely undetectable — at this level of aggregation it is inert.
+
+#### Why additive is harmful rather than merely useless
+
+An additive term pays **the same absolute bonus regardless of how decisive the kill was**. Verified at build time:
+at `alive=(2,4)`, `K=80`, it lifts `T` to 2.68; at `alive=(1,1)`, `K=250`, the same term reaches only 1.49.
+
+So as a *fraction*, it up-weights marginal kills far more than decisive ones. That **partially erases the
+kill-order ordering** — and `K(s)` is the one component this investigation has established is **already correct**
+(mean `K` 1.018x post/pre against a measured swing of 1.023x, while verifiably spike-blind). The additive form
+degrades information that was right, which is why it does not merely fail to help.
+
+This is the same lesson as `D1` and `A1`, in its strongest form yet: **everything that tries to add to `K(s)`
+either cannot be seen, or makes things worse.**
+
+#### Predictions, scored
+
+| declared | outcome |
+|---|---|
+| 1. the gate passes comfortably, separability **above 0.3%** | **FAILED** — measured 0.0247% / 0.1259% / 0.2729% / 0.0975% / 0.1682%. **None reached 0.3%**, and `ADD-T@1.26` came back **UNTESTABLE** |
+| 2. `ADD-T` does not beat its level-matched twin | **held**, and more strongly than declared — HARM at every level, not merely INCONCLUSIVE |
+| 3. `ADD-S` and `ADD-TS` are HARM | **held**, both decisively |
+| 4. `ADD-TS` does not beat `ADD-T` | **held** — +3.915e−03 HARM |
+
+**Prediction 1's reasoning was wrong and is worth recording.** I argued an additive term "behaves like a count of
+post-plant kills, a genuinely different feature from the `K`-weighted sum", and therefore would be comfortably
+testable. The flaw: **the flat twin's `impact_diff` also scales with that count**, and level-matching forces the
+two to share their mean, so the round-to-round variation of both is driven by the same underlying quantity — how
+much post-plant action the round had. The additive column is far more collinear with flat than I predicted.
+
+Note the useful regularity that came out of the miss: **separability grows with additive mass** (0.0247% → 0.1259%
+→ 0.2729% as the level rises), because a larger `alpha` means more deviation from flat. Separability is not a fixed
+property of an *idea*; it scales with how hard the arm is pushed.
+
+The failed cell does not weaken the conclusion. `ADD-T@1.26` is UNTESTABLE, but `ADD-T@1.6` and `ADD-T@1.9` are
+both comfortably testable and both decisively HARM, and the trend across the three is monotone.
+
+**The falsifier did not fire.** Declaration 10 stated that an `ADD-T` win over its twin would be the first
+structure in this investigation to beat a flat constant. It lost at every level.
+
+#### What this does not settle
+
+C is partly circular (declaration 7), so this is a within-round result. `ADD` vs its twin on **T2** was not run and
+would likely be UNTESTABLE at these separabilities against T2's 0.107% floor — `ADD-T@1.26`'s 0.0247% is below even
+C's floor. The additive form is therefore **measured harmful for the within-round question and unmeasured for the
+forward-looking one**, which is the same shape as declaration 9's finding for the side split.
+
+`IMPACT_CALCULATION_VERSION` stays 3, `git diff webapp/app/` is empty, and the version-4 recommendation is
+unchanged: **flat multiplicative constant, no structure, no additive term.**
+
+### 2026-09-21 (RESULT, declaration 11) — the falsifier fired: a cliff DOWN beats a flat constant
+
+**For the first time in this investigation, a structural arm beats a flat constant, clears the gate, and returns an
+interval excluding zero.** Declaration 10 named that outcome as the falsifier. It has happened.
+
+| contrast | point | 95% interval | verdict | separability |
+|---|---:|---|---|---:|
+| **`STEP30@1.6` vs `F-1.6`** | **−2.402741e−03** | [−2.8645e−03, −1.9449e−03] | **IMPROVEMENT** | 0.0768% |
+| **`STEP38@1.6` vs `F-1.6`** | **−1.990558e−03** | [−2.4078e−03, −1.5686e−03] | **IMPROVEMENT** | 0.0572% |
+| `STEP41.5@1.6` vs `F-1.6` | −7.011557e−04 | [−9.2477e−04, −4.8043e−04] | IMPROVEMENT | 0.0136% **UNTESTABLE** |
+| `STEP41.5@1.6` vs `STEP38@1.6` | +1.289403e−03 | [+9.2059e−04, +1.6579e−03] | **HARM** | 0.0482% |
+| `STEP30@1.6` vs `STEP38@1.6` | −4.121825e−04 | [−6.1258e−04, −2.0761e−04] | IMPROVEMENT | 0.0217% **UNTESTABLE** |
+| `P6` vs `F-1.6` | +1.878019e−03 | [+1.4863e−03, +2.2729e−03] | **HARM** | 0.2299% |
+| `P6` vs `F-1.26` | +8.435287e−04 | [+4.8543e−04, +1.2119e−03] | **HARM** | 0.1600% |
+| `P6` vs `P0` | +4.316572e−04 | [+2.6184e−05, +8.2879e−04] | **HARM** | 0.2220% |
+
+All three step arms are level-matched by a kill-weighted norm, so `F-1.6` and `STEP*@1.6` have **the same mean
+post-plant payout** — the contrast is the step shape and nothing else.
+
+#### The size of it
+
+| | gain over shipped `P0`, as % of C's headroom |
+|---|---:|
+| `F-1.26` | 0.069% |
+| `F-1.6` (best flat tested) | 0.241% |
+| `STEP38@1.6` | **0.572%** |
+| `STEP30@1.6` | **0.641%** |
+
+**The cliff adds 0.331–0.400% of headroom on top of the best flat arm — larger than that flat arm's own 0.241%
+gain over the shipped model.** Every previous entry's framing ("no structure beats a constant") is now wrong as a
+general claim, and must be narrowed to the arms that were actually tried.
+
+#### Where the break belongs
+
+- **38 beats 41.5 decisively.** `STEP41.5 vs STEP38` is **+1.289e−03 HARM**, testable at 0.0482%. Moving the cliff
+  to the half-defuse boundary gives back most of the gain. The owner's instinct that 38 and 41.5 were both
+  candidates is **half right**: 38 carries it, 41.5 is measurably worse.
+- **30 vs 38 cannot be separated.** `STEP30 vs STEP38` is −4.122e−04 at **0.0217% — below C's floor, UNTESTABLE.**
+  The point estimate favours 30 and the measured swing does decline from 30s, but this harness cannot tell them
+  apart. **Do not claim 30 over 38.**
+
+#### Part 4 is now dead on both targets
+
+`P6` was a genuine null on T2 (0.220% separability, twice the floor). On C, at 0.2220% separability, it is
+**HARM against every comparator** — the shipped model included. Part 4's `(a,d,t)` table is the only arm with both
+a real null and a real negative on two different targets. **It is finished.**
+
+And note what that separates: the win here is **not** "state×time modelling works". `P6` has far more information
+than `STEP38` and does worse. It is specifically **the cliff** — and `P6`'s per-state normalisation
+(`D / mean_t D`, clamped to [0.05, 2.0], centred at c≈1.287) is precisely what erases a cliff.
+
+#### Three caveats, and the first one is serious
+
+**1. The step profile is IN-SAMPLE INFORMED, so this result is optimistic.** The band multipliers (0.136 for
+38–45s; 0.715 / 0.133 for the two-step) were read off `V_postplant_by_band`, which is computed over the **whole
+corpus**, not per fold. The out-of-fold protocol protects the fitted *coefficient*; it does **not** protect the
+*choice of profile*. A clean test refits the band multipliers on training matches only, per fold, exactly as `A1`
+and `P6` fit theirs. **Until that is run, treat the magnitude as an upper bound.** The direction is not in doubt —
+the shipped model pays 1.75 where the measured swing is 2.54pp, and any correction of that sign helps — but the
+size is not yet earned.
+
+**2. C is partly circular** (declaration 7), so this is a within-round result.
+
+**3. T2 confirmation may be impossible.** Separability is **target-free** (established 2026-09-20), and
+`STEP38 vs F-1.6` sits at **0.0572%**, `STEP30 vs F-1.6` at **0.0768%** — both **above C's 0.0407% floor and below
+T2's 0.107% floor.** So the forward-target check this result needs would most likely return **UNTESTABLE**. The
+lever, from declaration 10's regularity: separability grows with how hard an arm is pushed, so a deeper or earlier
+cliff would raise it. That is the way to make the question askable on T2, and it should be declared before it is
+tried.
+
+#### What this changes
+
+The version-4 recommendation is **no longer "flat constant, no structure"**. It becomes: a flat constant **plus a
+cliff at plant+38**, pending (1) a per-fold refit of the profile and (2) whatever T2 can say. Nothing is frozen and
+`IMPACT_CALCULATION_VERSION` stays 3, but this is the first change with a positive result behind it rather than a
+correctness argument.
+
+The mechanism is not subtle and was visible in the swing table before any arm ran: **the shipped model pays its
+MAXIMUM (1.75) in the window where a kill is worth least (2.54pp against 20.03pp at 20–30s).** It is a sign error,
+and correcting it is worth more than getting the level right.
+
+### 2026-09-21 (OBSERVATIONS, unrun) — three things found while reading the tables, none of them yet tested
+
+Recorded because they came out of reading saved artifacts during discussion, not out of an arm, and would otherwise
+exist only in a conversation. **None of these is a result.** Each is a lead or a defect.
+
+#### 1. The side asymmetry REVERSES with time — which is why `A1` was always going to fail
+
+Mean |swing| by victim side, from `V_postplant_by_band` (Part 4's extractor, so post-resolution seconds are
+correctly excluded):
+
+| band | attacker-victim | defender-victim | ratio |
+|---|---:|---:|---:|
+| 0–10s | 19.61pp | 16.43pp | 1.19 |
+| 10–20s | 20.60pp | 17.35pp | 1.19 |
+| 20–30s | 20.46pp | 18.29pp | 1.12 |
+| 30–38s | 13.89pp | **16.97pp** | **0.82** |
+| 38–45s | 2.54pp | **8.16pp** | **0.31** |
+
+Early, killing an attacker swings ~19% more. Late, killing a **defender** swings **3.2x** more. **The crossover is
+around 30s.**
+
+`A1` applied a *fixed* split (attacker-victim 1.25, defender-victim 0.79) at **all** times. The data says +19%
+early and −69% late, so a constant split has the late region **backwards** — which is a mechanism for declaration
+9's finding that `A1` is measurably HARM, not merely inert. **Side-ness is not wrong; side-ness WITHOUT time is
+wrong.** `A2` banded at t≥30 but was fitted to the same pooled `D`, so it has never been tested with the crossover
+pointing the right way. **A side×time arm with the reversal built in is UNTESTED.**
+
+Caveats: the late bands are dominated by `Xv1` states so composition does some of this work, and these numbers
+exclude terminal kills (see 3).
+
+#### 2. DEFECT — `whole_round_states` counts seconds after the round was already decided
+
+`scripts/postplant_v4_alt_metrics.py`'s `whole_round_states` runs its occupancy loop to `plant + 45`
+**unconditionally**:
+
+```python
+end = max(end, plant + 45.0)      # defused / defuse_time are SELECTed and never used
+for t in range(0, int(end) + 1):
+```
+
+`defused` and `defuse_time` are queried and then never consulted, so every second **after a successful defuse** is
+still counted into `V(a, d, planted)`. Measured on the corpus: **216,465 of 1,958,175 post-plant seconds = 11.05%**
+of the table is post-resolution. Of 43,515 planted rounds, 12,498 (28.7%) are defused and 2,243 (5.2%) exploded.
+
+This is what produces the impossible cells: `1v0|post` has attacker win **0.972**, i.e. attackers lose 2.8% of
+rounds in which the last defender is dead and the spike is planted — only possible if the defuse had already
+landed.
+
+**Scope, which matters:** `app/scoring/postplant_value_table.py` (Part 4's extractor, used by `P6` and by
+`V_postplant_by_band`) is **correct** — it explicitly lowers the horizon to `defuse_time`. The defect is confined
+to `whole_round_states`, i.e. to **`V_whole_round` and METHOD B**.
+
+**Method B is the anchor of the whole reconciliation** (the only estimate with no target, no folds and no free
+coefficient; it is why 1.02 is treated as the true swing ratio). Post-defuse seconds are defender wins, so they
+add defender mass to post-plant states and most likely bias B's post/pre ratio **downward** — magnitude unknown
+until recomputed. **B's 1.023 should be treated as provisional until `whole_round_states` excludes resolved
+seconds.**
+
+#### 3. The banded table has no terminal states, so round-ENDING kills are unpriced by band
+
+`V_postplant_by_band` covers 1–5 × 1–5 only. `0v1` and `1v0` are **absent**, so every kill that takes a side to
+zero is missing from every band number above — including the side table in 1 above.
+
+`V_whole_round` does have them, but is not time-resolved (pre/post only):
+
+| | attacker win % | swing |
+|---|---:|---:|
+| `1v1` post-plant | 0.636 (n=85,236 round-seconds) | — |
+| attacker dies → `0v1` | 0.039 | **−59.7pp** |
+| defender dies → `1v0` | 0.972 | **+33.6pp** |
+
+Those are the largest swings in the game, they are exactly what a 1v1 consists of, and **they cannot currently be
+priced by time band.** (They also come from the defective table in 2.)
+
+**1v1 is the most occupied state at 38–45s** (n=6,026, ahead of `2v1`'s 4,142), and attacker win % in 1v1 runs
+0.550 / 0.562 / 0.633 / 0.787 / **0.960** across the bands — by 38–45s the defender's wincon is gone, which is the
+mechanism behind the 8x swing collapse that `STEP38` exploits.
+
+**What is needed:** rebuild the banded table including `0v1`/`1v0`, over the corrected (resolution-aware) horizon.
+One replay. That would (a) let a 1v1-specific model be priced at all, (b) tell whether the side crossover in 1
+survives once terminal kills are included, and (c) re-anchor method B.
+
+Only occupancy (round-seconds) is saved anywhere; **a count of distinct 1v1 post-plant situations does not exist**
+and needs a pass over `kill_events`.
+
+
+### 2026-09-21 (CORRECTION) — every post-plant v4 measurement scored the LEGACY formula, not rc3
+
+**Found while building declaration 12's assists arm, before anything in it was run.** Every v4 script
+(`run_postplant_v4_report.py`, `postplant_v4_row_motion.py`, `postplant_v4_steps_and_p6_on_c.py`, the additive and
+side runners) replays `build_impact_rows_for_match` with **no scoring configuration**. With no configuration the
+scorer runs the **legacy** formula: no econ component, no assists term (`FormulaWeights()` defaults `assists=0`), no
+trade credit, time folded into `damages + mean(econ, time, swing)`. What has shipped since 2026-09-18 is the rc3
+manifest (`impact_runtime.active_scoring_config()`: A 1 / B 2.5 / C 2.5 / D 100, trade credit on,
+`buy_disruption_v2_30_80_bonus_denial`). HANDOFF.md §2 writes the rc3 formula down as the thing being measured; the
+harness never scored it.
+
+Measured, on the latest match in the local corpus: **185 of 190 rows** score differently under the two; the legacy
+replay has **0** nonzero `econ_component` and `assists_component` rows against 143 and 53 under rc3.
+
+**Scope.** Every v4 contrast, every separability figure, both demonstrated floors (T2 0.107%, C 0.0407%), and every
+row-motion count (including this morning's STEP38 run: 28.9–30.8% of rows) describe the time factor **inside the
+legacy formula**. Direction probably transfers — the time factor is the same function in both — but magnitude does
+not: under rc3 leverage carries B = 2.5 against damage's 1.0, so the time factor is a larger share of Impact than it
+was in the legacy mean. **None of the v4 numbers is withdrawn; all of them are re-labelled "legacy formula".**
+Declaration 12 re-measures the one prior result it leans on (`F-1.00 vs P0`) under rc3 instead of assuming it.
+
+**The ex-ante constraint, which rc3 makes visible.** The buy-disruption econ component reads round N+1, so under
+`use_realized_swing=False` it abstains to exactly 0 (`econ_buy_disruption.score_round`, the leakage gate). Both
+outcome targets need ex-ante scoring, so the honest harness configuration is **rc3 ex-ante**: rc3's weights,
+assists and trade credit, with econ necessarily zero. On a 60-match sample realized vs ex-ante changes 71% of rc3
+rows, so the choice is not cosmetic. Row motion — about stored rows, not prediction — uses rc3 live, unchanged.
+
+### 2026-09-21 (DECLARATION 12) — no time factor: every kill is worth the same, and a decided round pays nothing
+
+**The owner's decision, made before this was measured, and the reason the arms look the way they do.** The time
+factor was meant to say that kills under pressure are worth more. The owner's position after declaration 11: they
+are not — *every fight is under some clock*, pre-plant and post-plant alike, and a phase of the round is not a
+premium. Timing is kept for exactly one purpose: **to recognise kills that can no longer change the round**, which
+get no leverage and no assists credit, and keep full econ. This is consistent with method B (post/pre swing ratio
+1.023, provisional per the OBSERVATIONS entry) and with `K(s)` already pricing post-plant kills at 1.018 of
+pre-plant. It deliberately overrides target C's preference for a post-plant premium, on the grounds that C is
+circular (declaration 7). **That override is a decision, recorded here as one, not a measured result.**
+
+**Closed by that decision, not by measurement** — and moved to a future /stats card, not to Impact:
+the plant+38 cliff (declaration 11), side×time with the ~30s crossover, and a 1v1-by-time model. With no fitted
+parameter left in the design, declaration 11's per-fold profile refit is **moot**. The `whole_round_states` defect
+(method B) stays open; it no longer anchors any decision here.
+
+**"Decided"** (`postplant_v4_variants.round_decided`), exactly these three and nothing else:
+
+1. spike defused, kill at or after `defuse_time`;
+2. real plant (`effective_plant_time`, phantoms excluded), kill at or after plant + 45 — exploded whatever the flags
+   say (C3's cap);
+3. no real plant, outcome is a **Time Win**, kill after 100s. The Time Win condition guards against noisy clocks
+   (14 Elimination Wins carry plant_time > 100s); on the corpus all 338 such post-100s kills are in Time Win rounds,
+   so it removes nothing today.
+
+Not the 38–45s window: at plant+38 a round is *nearly* decided (1v1 attackers win 96%, not 100%), a defender with a
+banked half-defuse can still win until 41.5s, and killing a mid-defuser is the round. The owner chose strictly
+decided over clock-decided.
+
+**Arms**, all scored **rc3 ex-ante** (CORRECTION above), one replay each feeding both targets
+(`scripts/postplant_v4_decl12.py`):
+
+| arm | definition |
+|---|---|
+| `P0` | rc3 as shipped |
+| `F-1.00` | post-plant flat 1.0; decided rounds keep the shipped 0.5 (re-measures the legacy result under rc3) |
+| **`N`** | **`T = 1` everywhere, `T = 0` once decided** — no ramp, no override, no premium |
+| `N+A` | `N`, plus each assist on a kill after the round was decided is removed from the assists component (D = 100 each) |
+
+**Not in any arm, and why.** Damage has no timestamps — it is a per-round total derived from combat score — so
+post-decision damage cannot be separated and stays in. The combat-score assist points inside that damage total
+(Valorant's 25 per non-damaging assist; `FormulaWeights` docstring) stay with it for the same reason. Econ is
+untouched by both arms and is zero under ex-ante on both sides of every contrast. Assistants are mapped to players
+by Riot ID; 112 of 177,781 (0.06%) do not map and are left in.
+
+**Contrasts, gate and floors.** `N vs P0`, `N vs F-1.00`, `N+A vs N`, `F-1.00 vs P0`, each on **T2** (the report's
+`outer_cv`, inner L2 selection, 5 folds, seed 0) and **C** (fixed L2 1.0, declaration 7's features), 2,000-draw
+paired match-clustered bootstrap. Separability is computed once (target-free) **before any bootstrap**; below a
+target's floor the verdict is **UNTESTABLE**. The floors are carried over from the legacy-formula runs and are **not
+re-derived for rc3** — flagged, not fixed; a floor re-derivation is its own declaration if a verdict ends up
+depending on it. Identity gate: the wrapper installed with no variant must reproduce rc3 bit-for-bit on a ~150-match
+sample, or the run stops.
+
+**Predictions**, to be scored afterwards whatever happens:
+
+| # | prediction | confidence |
+|---|---|---|
+| 12.1 | identity gate passes | high |
+| 12.2 | `N vs P0` **[T2]: IMPROVEMENT** | moderate — rests on legacy `F-1.00`, which the formula change could move |
+| 12.3 | `N vs P0` **[C]: HARM**, order 1e-03 | moderate on sign; magnitude not predicted (formula changed) |
+| 12.4 | `F-1.00 vs P0` has the **same sign on each target as it did under legacy** (T2 improvement, C harm) | moderate |
+| 12.5 | `N vs F-1.00`: **UNTESTABLE on both targets** (0.5→0 on ~0.8% of kills) | moderate |
+| 12.6 | `N+A vs N`: **UNTESTABLE on both targets** (~1.1% of assists) | high |
+| 12.7 | row motion (rc3 live): `N` clears section 8's threshold (≥1% of rows or ≥5% of matches reordered) | high |
+
+**Stop rule, fixed now.** Version 4 does **not** ship `N` if `N vs P0` **[T2] is HARM** (interval excluding zero).
+INCONCLUSIVE ships: the design is the owner's conceptual decision and the forward cost is then bounded by the
+interval. C HARM is predicted (12.3) and does not stop anything. `N+A` ships with `N` unless `N+A vs N` [T2] is HARM.
+If `N` is stopped, nothing ships and the finding is written up — including whether it contradicts 12.4, which would
+mean the legacy-formula conclusions did not transfer.
+
+Only after the stop rule clears: edit `_time_factor` in `webapp/app/scoring/impact.py` (and the assists component),
+bump `IMPACT_CALCULATION_VERSION` 3 → 4, code review, rc3-style release path. **Not before.**
+
+
+### 2026-09-21 (RESULT, declaration 12) — no time factor improves BOTH targets under rc3; the legacy "T = 1.00 is refuted" does not transfer
+
+**The stop rule clears. `N` ships; `N+A` ships with it.** `N vs P0` on T2 is an **IMPROVEMENT with the interval
+excluding zero**, and on C — where a HARM was predicted and the owner had decided to ship through it — it is **also
+an IMPROVEMENT**, the largest effect measured in the whole v4 investigation. This is the first design in the
+investigation that beats the shipped model on both targets at once.
+
+Artifacts: `postplant-v4/decl12.json`, `postplant-v4/decl12_row_motion.json`. Scored rc3 ex-ante, 3,198 matches,
+67,251 C rows / 63,633 T2 rows, 2,000 draws. Identity gate passed on 153 matches.
+
+| arm | C log loss | T2 log loss |
+|---|---:|---:|
+| `P0` (rc3) | 0.08678503 | 0.67451429 |
+| `F-1.00` | 0.07804499 | 0.67442468 |
+| **`N`** | **0.07564680** | **0.67442437** |
+| `N+A` | 0.07666090 | 0.67442359 |
+
+Protocol gate, before any bootstrap (floors carried from legacy, not re-derived — no verdict below sits near one):
+`N vs P0` 1.692%, `F-1.00 vs P0` 1.571%, `N vs F-1.00` 0.162% — all testable on both targets; `N+A vs N` **0.0058%**,
+below both floors.
+
+| contrast | T2 | C |
+|---|---|---|
+| **`N vs P0`** | **−8.992e−05 [−1.349e−04, −4.750e−05] IMPROVEMENT** | **−1.114e−02 [−1.229e−02, −9.921e−03] IMPROVEMENT** |
+| `F-1.00 vs P0` | −8.961e−05 [−1.318e−04, −4.782e−05] IMPROVEMENT | −8.740e−03 [−9.812e−03, −7.704e−03] IMPROVEMENT |
+| `N vs F-1.00` | −3.137e−07 [−1.268e−05, +1.188e−05] INCONCLUSIVE | −2.398e−03 [−3.245e−03, −1.526e−03] IMPROVEMENT |
+| `N+A vs N` | UNTESTABLE (point −7.80e−07) | UNTESTABLE (point +1.01e−03 — **not** a harm finding) |
+
+**Scale.** Against the legacy-derived headrooms (rc3's are not re-derived; C's is ~unchanged since P0's C loss moved
+0.0924 → 0.0868 against a 0.6931 coin flip), `N vs P0` is **~1.84% of C's headroom** and **~0.45% of T2's** — about
+5x the cliff's 0.33–0.40% on C, and the cliff was measured on the wrong formula. Still small in absolute terms; the
+standing framing ("stop overpaying post-plant kills") holds, but it is no longer 1/150th-scale on C.
+
+**Where the T2 gain comes from.** Almost entirely from deleting the ramp and override: `F-1.00 vs P0` and `N vs P0`
+agree on T2 to three significant figures, and `N vs F-1.00` is INCONCLUSIVE there. Zeroing decided rounds is
+invisible to the forward target and helps the within-round one.
+
+**Row motion, rc3 live** (section 8 threshold ≥1% rows or ≥5% reordered): `N` **216,804 rows (32.14%)**, **2,301
+matches reordered (72.0%)**, mean |Δ| 97.2 on changed rows; `N+A` 32.22% / 71.9% / 97.3. Clears both limbs by far.
+**Motion is not improvement** — but 72% of matches reordering is what the site will visibly do, versus ~20% the
+legacy-formula runs suggested: under rc3 leverage carries B = 2.5, so a time-factor change moves far more.
+
+#### Predictions, scored
+
+| # | prediction | outcome | |
+|---|---|---|---|
+| 12.1 | identity gate passes | passed, 153 matches | **right** |
+| 12.2 | `N vs P0` [T2] IMPROVEMENT | IMPROVEMENT | **right** |
+| 12.3 | `N vs P0` [C] HARM, ~1e−03 | **IMPROVEMENT, −1.11e−02** | **WRONG — sign and order of magnitude** |
+| 12.4 | `F-1.00 vs P0` keeps legacy signs (T2 improve, C harm) | T2 improve; **C IMPROVEMENT** | **WRONG on C** |
+| 12.5 | `N vs F-1.00` UNTESTABLE on both | testable (0.162%); T2 INCONCLUSIVE, C IMPROVEMENT | **WRONG** |
+| 12.6 | `N+A vs N` UNTESTABLE on both | 0.0058% | **right** |
+| 12.7 | row motion clears section 8 | 32.1% rows / 72.0% reordered | **right** |
+
+**12.3 and 12.4 fail for the same reason, and it is the important finding of the day: the legacy-formula conclusions
+about the LEVEL do not transfer to rc3.** Under legacy, `F-1.00 vs P0` on C was HARM (+9.82e−04) and grounded "T = 1.00
+is refuted", the 1.18–1.35 "joint window", and C's ~1.97 optimum. Under rc3 the same arm is an IMPROVEMENT of
+−8.74e−03, excluding zero. **Those three conclusions are withdrawn as statements about the shipped scorer**; they
+stand only as descriptions of the legacy formula. The shape conclusion (the ramp is wrong) survives and is
+strengthened. Why the sign flips is not established; a plausible mechanism — not tested — is that rc3's trade credit
+already routes post-plant-trade value through `T`, so the ramp double-counts there in a way the legacy mean did not.
+
+**12.5 fails** because zeroing decided rounds is far more separable than its 0.8% kill share suggested: each such
+event moves B × K × 0.5 under rc3. Recorded as a wrong prediction, not explained away.
+
+**Owner's override, revisited.** Declaration 12 recorded shipping through a predicted C harm as a decision. There is
+no C harm to ship through; the override was never exercised. It stays in the record as the reason the design did not
+depend on this outcome.
+
+**Next, per the declaration:** edit `_time_factor` and the assists component, bump `IMPACT_CALCULATION_VERSION` 3 → 4.
+Because the rc3 manifest freezes the scoring sources' digests, an edit to `impact.py` invalidates rc3 verification —
+version 4 has to ship as a new frozen manifest activated with the bump, the rc3 way; flags default off so rc3 and
+legacy stay reproducible.
+
+
+### 2026-09-21 (DECLARATION 13, release) — Impact v4 is implemented behind two flags and must equal an independent reference, row by row
+
+Written and committed **before any equivalence comparison is run** (plan
+`plans/2026-09-21-impact-v4-no-time-factor-plan.md` r5, §3.1). This entry covers the branch-only part of the release:
+the implementation (branch `impact-v4-implementation`, from `4ecf7f0`), the independent reference, and the
+equivalence between them. It fixes what ships **as code**. Declaration 12 and its RESULT fixed what ships **as a
+formula**, and nothing here re-opens them.
+
+#### What is implemented
+
+Two flags on `ImpactScoringConfig` and `build_impact_rows_for_match`, both defaulting to **False**:
+
+- `enable_decided_only_time`: `_time_factor` returns `0.0` if `plant_window.round_decided(round, t)` and `1.0`
+  otherwise, **before every other branch**, including the legacy exploded/defused `0.5`. "Decided" means exactly
+  declaration 12's three cases. The check is ported verbatim from `scripts/postplant_v4_variants.py::round_decided`,
+  with `ROUND_SECONDS = 100.0` and `SPIKE_SECONDS = 45.0`. Combining it with either legacy timing flag raises an error.
+- `remove_post_decided_assists`: for each kill made after the round was decided, each name in
+  `kill_events.source_meta["assistants"]` is mapped to one of this match's players by case-insensitive
+  `Player.display_name`. The assists component then pays `D × (assists − min(n, assists))`. `stat["assists"]`, damage
+  and every other term are untouched.
+
+The implementation makes two choices that the measured reference does not. Both are **declared here as extensions;
+neither was measured**:
+
+1. **The clamp** `min(n, stat["assists"])` (plan R10). The reference subtracts `D × n` with no clamp. The clamp is
+   predicted to fire on **0** rows of the measurement cohort (13.7), so it cannot move the equivalence.
+2. **Ambiguous names are left in.** The reference builds a `{lower(name): match_player}` dict. On a case-insensitive
+   name collision within one match, whichever row the query returned last wins. The implementation instead treats a
+   name that matches two players as **ambiguous**: it removes nothing for that name and reports it, just as it does
+   for an unmapped name. The cohort has **0** such collisions (queried 2026-09-21: no match has two players whose
+   lowercased `display_name` agree), so this cannot move the equivalence either.
+
+Each kill's removed, clamped, unmapped and ambiguous assistants are reported through the existing `kill_observer`
+hook, in that kill's context. The keys are present only when `remove_post_decided_assists` is on. Nothing that is
+reported influences a score.
+
+`kill_order_leverage` keeps the legacy time factor explicitly (plan R8). `postplant_factor.py`'s shim is unchanged.
+On this branch `IMPACT_CALCULATION_VERSION` stays **3** and `ACTIVE_MANIFEST` stays rc3.
+
+#### The measurement cohort (plan §1, "three cohorts")
+
+The cohort is every match in the local copy `valo_v4` (PostgreSQL 18, port 5434; no `impact_scores` rows):
+
+| | |
+|---|---|
+| matches | **3,198**, ids 1..3206 |
+| id list | `sha256(canonical_json(sorted ids))` = `8d97eba943a212bc07d14815470280c898d602f7e670f8e87ec2c559dc9b973b` |
+| per-match fingerprints, **rc3 (v1) contract** | `match_source_fingerprint` at `4ecf7f0` (`app/` identical to `f96aee9`), taken in one REPEATABLE READ snapshot |
+| cohort fingerprint, v1 | `sha256(canonical_json({id: fingerprint}))` = `ff0854b9a8ef94cba1d594f563d440f8e5109661c14a21e880bba34b11dd81aa` |
+| stored at | `~/Documents/valo-backups/v4-release/measurement/cohort_v1.json`, sha256 `8596b903068ba09d88d6e6b0a71c1d9cee469d03e9cc59e9111725e0f20af4d7` |
+
+`canonical_json` is `export_impact_artifact.canonical_json` (sorted keys, no whitespace). The v2 fingerprints of the
+same cohort will be recorded in the RESULT entry once the v2 contract exists. Until then, the v1 fingerprints are what
+pin the cohort.
+
+**The plan states a fact that is no longer literally true.** Plan §2.6 says `git diff origin/main -- webapp/app` is
+empty at `f96aee9`. Since PR #70 merged, it is not: one file differs,
+`app/adapters/trackergg_browserstate_source.py` (ingestion pagination). Every file in `HASHED_SOURCES`, and all of
+`app/scoring`, `app/models` and `app/services`, is byte-identical between `f96aee9` and `origin/main` (checked
+2026-09-21). So `f96aee9`'s scorer is still exactly production rc3's, and the reference is taken there as planned.
+
+#### The new fingerprint contract (plan §2.4, R1)
+
+`SOURCE_FINGERPRINT_VERSION = 2` in `app/scoring/impact_manifest.py`. It differs from v1 in exactly three ways:
+
+- `events` gains a canonical projection of the assistants payload, `(k.source_meta::jsonb -> 'assistants')::text`.
+  It does not take the whole `source_meta`: the scorer reads nothing else in it, and jsonb's text form is canonical.
+- A new `players` query returns each match player's `match_players.id`, `player_id` and `players.display_name`,
+  ordered by `match_players.id`.
+- `app/models/player.py` joins `HASHED_SOURCES`.
+
+The version is recorded in every new manifest (`source_snapshots.fingerprint_version`) and every new export sidecar
+(`inputs.fingerprint_version`). The release tools refuse to compare fingerprints across contracts; a missing version
+reads as 1. `ARTIFACT_CONTRACT_VERSION` goes from 1 to 2, because contract (c) changed.
+
+**Old frozen evidence is not rewritten.** rc3's manifest, sidecars and approvals stay exactly as they are. They no
+longer verify against this branch's code, which is expected: any change to `impact.py` breaks rc3's source digest
+(plan §1).
+
+Release write protection (§2.5): `players` joins the swap's source digests, its lock set and the release write gate.
+
+#### The independent reference (plan §2.6 step 1)
+
+A separate worktree at `f96aee9` gets one **scripts-only** commit, which adds a row-dump mode to
+`scripts/postplant_v4_decl12.py`. At that commit, `git diff f96aee9 -- webapp/app` must be empty. rc3's configuration
+is read as data from `docs/superpowers/impact-rc3/candidate-manifest.json` (`comparators.impact_rc3`), **not**
+through `active_scoring_config()`. The mode dumps every `CalculatedImpact` field for `P0`, `N` and `N+A` on the
+measurement cohort, under both **ex-ante and realized** scoring. That makes six artifacts, stored under
+`~/Documents/valo-backups/v4-release/reference/`. Their sha256s are recorded in an addendum before the comparison
+runs.
+
+#### Predictions (scored in the RESULT entry, whatever happens)
+
+Every comparison is made **row by key** `(round_id, match_player_id)`, within one scoring mode. It covers **every**
+`CalculatedImpact` field except `scoring_version`: all scoring and diagnostic columns, including the non-persisted
+`leverage_component`, `assists_component` and `trade_credit`, and `trade_detail`.
+
+| # | prediction | confidence |
+|---|---|---|
+| 13.1 | with the flags off (`impact_rc3` from `COMPARATORS`), the new code equals reference `P0`: **0 rows differ**, ex-ante **and** realized | high |
+| 13.2 | `impact_v4_n` equals reference `N`: **0 rows differ**, both modes | high |
+| 13.3 | `impact_v4` equals reference `N+A`: **0 rows differ**, both modes | high |
+| 13.4 | the row **sets** are identical in all six pairs: no key appears on only one side, and the row counts are equal | high |
+| 13.5 | `scoring_version`, checked separately, is **3** on every row on both sides (there is no bump on this branch) | high |
+| 13.6 | across the full cohort, the new code with the flags off equals rc3 at the production scorer (reference `P0`, realized). This is the §2.6 step 3 check, run as its own command through the `impact_rc3` comparator | high |
+| 13.7 | the assists clamp fires on **0** (round, player) rows, and there are **0** ambiguous names. **1,960** assists are removed and **2** assistant names on decided kills are unmapped, as declaration 12's `N+A` replay reported | high on the two zeros; moderate on the counts, which the reference replays again |
+| 13.8 | each mutation of a newly fingerprinted input changes the v2 fingerprint: an assistant name, a display name, a match player's `player_id` | high |
+
+**Stop rule.** Any nonzero count in 13.1–13.6 stops the work. The difference is then either explained and eliminated
+in the implementation, or reported. **The reference is never adjusted to match.**
+
+#### Declared at freeze, not here
+
+These items need production, so they are left for the freeze declaration (plan §3.1, §1):
+- the **activation cohort**;
+- the **review cohort's** three rule-exercising match ids;
+- the binding **K4 = K5** chain, and the rehearsal-grade K3 = K4;
+- the **production row-motion tolerance** around 32.1% of rows and 72.0% of matches reordered.
+
+Nothing on this branch reads production. The separability wording stays "below both carried floors" (R5.7).
+
+
+### 2026-09-21 (ADDENDUM to declaration 13) — the reference artifacts, recorded before any comparison
+
+Produced by `scripts/postplant_v4_decl12.py --dump-rows` at **`c470670`** on branch `v4-reference-f96aee9`, a
+scripts-only commit on top of `f96aee9`. At that commit `git diff f96aee9 -- webapp/app` is **empty**, and the script
+itself refuses to run otherwise. The run used Python 3.13.15 against `valo_v4`.
+
+- rc3's configuration was read as data from `docs/superpowers/impact-rc3/candidate-manifest.json`,
+  `comparators.impact_rc3` (LF sha256 `8e5c637b34b2ccb767fe2d16b18017eb8571f158623653c8f9bc4bf2ae10e20c`). It was not
+  verified, and `active_scoring_config()` was not consulted.
+- The cohort is **3,198** matches, and the id-list sha256 is `8d97eba9…b973b`, equal to declaration 13's.
+- Each artifact has one CSV row per `(round_id, match_player_id)`, sorted by that key. It carries every
+  `CalculatedImpact` field, with `trade_detail` as canonical JSON.
+- Each artifact holds **674,530** rows.
+
+| artifact | sha256 |
+|---|---|
+| `ref_P0_exante.csv` | `f286f4b0c21dcb636ffa6f2bbd424503f1640382d39de260fbd6dd40e9dd0ca6` |
+| `ref_N_exante.csv` | `9fd87abfd6157c2d9603c0c06fe9f87b49defaadad0bb803d3d422a83aa1f464` |
+| `ref_NplusA_exante.csv` | `5ace786c36ee7664188a3f54619e40247f46e722baf3ec0e98d3d7c858d10031` |
+| `ref_P0_realized.csv` | `8109eb685970040af390cec2a80d58022a7593e7b7ef00489d129d307496b7bb` |
+| `ref_N_realized.csv` | `4338589db37f50039de6cde6fc502bbf1822c6b784d4cb8edd33bbe29a8da451` |
+| `ref_NplusA_realized.csv` | `c1c2a19346633b68a3ad9fdeab7a56949719560d2610ae97db36e33dbe7b4fbd` |
+| `reference_sidecar.json` | `a82f9d6a95781973d535f9a4cf8d1fe3b74957ade896dc1bb4a468d1cac46303` |
+
+The artifacts are stored in `~/Documents/valo-backups/v4-release/reference/`.
+
+The reference's own `N+A` hook reported **1,960** assists removed and **2** unmapped in each mode. That reproduces
+declaration 12's replay, and it is the reference side of prediction 13.7.
+
+
+### 2026-09-21 (RESULT, declaration 13) — the implementation reproduces the independent reference exactly, in both modes, on every row
+
+**Every prediction held.** All six comparisons are **0 rows differing** over **674,530** rows each, with identical key
+sets and identical `scoring_version`, and each implementation CSV is **byte-identical** to its reference artifact. The
+assists counters match declaration 12's replay exactly. Nothing was adjusted on the reference side, and nothing
+needed to be.
+
+Branch `impact-v4-implementation` (from `4ecf7f0`), Python 3.13.15, `valo_v4` (3,198 matches, id-list sha256
+`8d97eba9…b973b` as declared). Reference: `c470670` on `v4-reference-f96aee9`, whose `webapp/app` is production rc3.
+Artifacts: `~/Documents/valo-backups/v4-release/equivalence/step2_all_pairs.json` and
+`equivalence_step3/step3_flags_off_vs_rc3.json`.
+
+| comparison | comparator scored | rows | rows differing | keys only on one side | bytes equal |
+|---|---|---:|---:|---:|---|
+| `P0` ex-ante | `impact_rc3` (flags off) | 674,530 | **0** | 0 / 0 | yes |
+| `N` ex-ante | `impact_v4_n` | 674,530 | **0** | 0 / 0 | yes |
+| `N+A` ex-ante | `impact_v4` | 674,530 | **0** | 0 / 0 | yes |
+| `P0` realized | `impact_rc3` (flags off) | 674,530 | **0** | 0 / 0 | yes |
+| `N` realized | `impact_v4_n` | 674,530 | **0** | 0 / 0 | yes |
+| `N+A` realized | `impact_v4` | 674,530 | **0** | 0 / 0 | yes |
+| §2.6 step 3, its own command: `P0` realized vs the production scorer | `impact_rc3` | 674,530 | **0** | 0 / 0 | yes |
+
+`scoring_version` was projected out of the row comparison and checked separately: **3 on all 674,530 rows on both
+sides** of every pair, as it must be with no bump on this branch.
+
+The assists hook reported, identically in both modes: **1,960 removed, 0 clamped, 2 unmapped, 0 ambiguous**, over
+3,891 kills made after their round was decided.
+
+#### Predictions, scored
+
+| # | prediction | outcome | |
+|---|---|---|---|
+| 13.1 | flags off = reference `P0`, 0 rows, both modes | 0 and 0 | **right** |
+| 13.2 | `impact_v4_n` = reference `N`, both modes | 0 and 0 | **right** |
+| 13.3 | `impact_v4` = reference `N+A`, both modes | 0 and 0 | **right** |
+| 13.4 | identical row sets and counts in all six pairs | 674,530 each, no key on one side only | **right** |
+| 13.5 | `scoring_version` 3 on every row on both sides | 3 × 674,530 on both | **right** |
+| 13.6 | full-cohort flags-off = rc3, as its own command | 0 rows differing, bytes equal | **right** |
+| 13.7 | clamp 0, ambiguous 0, removed 1,960, unmapped 2 | 0 / 0 / 1,960 / 2 | **right** |
+| 13.8 | each newly fingerprinted input moves the v2 fingerprint | assistant payload, display name and match-player remap each move it; an unrelated match's rename does not; a non-assistants `source_meta` key does not | **right on the v2 half; the v1 half was not measured** |
+
+**13.8, honestly.** The second clause — "and none changes the v1 one except where v1 already read it" — was **not
+measured**, and cannot be on this checkout: v1 fingerprints are computable only by code that predates the contract.
+It is recorded as unmeasured rather than as passed. What is measured is the v2 contract's own behaviour
+(`tests/test_impact_manifest_v4.py`), including that only the `assistants` key of `source_meta` is read.
+
+#### The measurement cohort under the new contract
+
+| | |
+|---|---|
+| cohort fingerprint, **v2** contract | `44367dead07770b2f94f5718442a116457fa9e88757936777e064fd376554001` |
+| per-match v2 fingerprints | `~/Documents/valo-backups/v4-release/measurement/cohort_v2.json`, sha256 `6d8569a945c43ae7e4c134d09a465ae8aac3c30bac872fa9d92e37b54ad5657d` |
+
+The v1 figure declaration 13 pinned (`ff0854b9…81aa`) is unchanged and not rewritten; the two are simply not
+comparable, which is what the version is for.
+
+#### Two departures from declaration 13's letter, both recorded rather than waved through
+
+1. **The assistants projection is computed in Python, not in SQL.** Declaration 13 wrote the contract as
+   `(k.source_meta::jsonb -> 'assistants')::text`. The fingerprint also runs on sqlite (the manifest's own tests use
+   it), where that cast does not exist, so `events` selects `k.source_meta` and the projection is
+   `json.dumps(source_meta["assistants"], sort_keys=True, separators=(",", ":"))`, with `None` when the key is
+   absent. Same content and the same canonical intent; a different text form, which matters to nothing because only
+   v2 code ever computes a v2 fingerprint.
+2. **`build_kwargs()` emits the two flags only when True**, which declaration 13 did not say. It is the same rule the
+   manifest's serialisation follows, and it is load-bearing: the K-chain compares a comparator's kwargs against
+   explicitly built kwargs (`tests/test_export_configuration_sources.py`), and always emitting the keys made rc3's
+   kwargs a different dict. With this rule an rc3 configuration's kwargs are exactly what they were before v4
+   existed.
+
+#### The suite, and the 15 tests that fail on this branch
+
+Offline on **3.11 and 3.13**: identical results on both — 1,366 passed, 3 failed, 13 errors, 77 skipped. With the
+local scratch database `valo_v4_test` on 3.13: 1,430 passed, 4 failed, 13 errors.
+
+- **2 failures are pre-existing**, identical on `origin/main`: `test_default_persistence_path_is_unchanged_legacy`
+  and `test_runtime_default_is_the_live_legacy_formula` (the latter asserts `ACTIVE_MANIFEST is None`, which stopped
+  being true when rc3 was activated).
+- **15 are branch-only, and all 15 have one cause**: `compute_impact_for_match` / `active_scoring_config()` resolve
+  the repository's **rc3** manifest, whose source digests this branch's `impact.py`, `impact_config.py`,
+  `plant_window.py` and `player.py` no longer match (and whose fingerprints are v1). That is exactly what plan §1
+  says must happen to any §2 change. They are the 13 errors in `test_backfill_impact_candidate` (its `world`
+  fixture scores three matches before it monkeypatches `ACTIVE_MANIFEST`),
+  `test_release_candidate_review_rc3::test_site_before_is_what_production_stores_not_a_replay`, and
+  `test_impact_exante_swing::test_builder_matches_stored_values`.
+- **Not grandfathered as environmental.** The same 15 fail on `origin/main` **under Python 3.11**, because rc3's
+  manifest records `python: "3.13"` and fails the same verification there. So the failure is "the active manifest
+  cannot verify against the running checkout", not anything about v4's scoring, and it resolves at activation, when
+  `ACTIVE_MANIFEST` names the v4 manifest frozen from this code. Whether to make those three fixtures pass an
+  explicit configuration instead of resolving the active one is an **owner decision**, left open here.
+- One failure appears on `origin/main` only and is a database-state artifact, not code:
+  `test_every_declared_table_is_gated_for_every_write`, because the scratch database's gate was installed from this
+  branch's SQL and therefore also guards `players`.
+
+
+### 2026-09-21 (ADDENDUM to RESULT, declaration 13) — the equivalence checker could not fail; fixed, and the equivalence re-run through it
+
+**An external read-only review of the branch found that the instrument behind 13.1–13.6 could not fail.** The
+result does not change. What changes is what the result rests on.
+
+**What was wrong** in `scripts/compare_v4_reference.py`, both confirmed by the reviewer:
+
+1. **A corrupted reference could produce a clean report.** The reference CSV was read into a dict, so a duplicate
+   key was silently collapsed. A conflicting duplicate placed before the correct row therefore vanished. The row
+   count was taken from that dict, which hid the duplicate. And `reference_sha256` was **copied from the sidecar**
+   rather than computed from the file actually compared, so `bytes_equal: true` could be reported against a file
+   that had changed.
+2. **A failed equivalence exited 0.** `scoring_version` was only reported. A score difference, an unequal key set or
+   an unexpected version all left the command's exit status at success. Any chain relying on that status would have
+   carried on past this declaration's stop rule.
+
+**Why the recorded result survives regardless.** When the RESULT above was written, byte equality was also checked
+outside the checker: `sha256sum` of each reference file against each implementation file, all six equal. The
+reviewer independently re-hashed and scanned all six pairs as well, and found 674,530 unique keys per pair and
+version 3 throughout. So the claim was true. It was simply not proved by the tool that claimed to prove it.
+
+**The fix** (`6d00d08`, with tests that corrupt the reference and the implementation each way, `test_compare_v4_reference.py`):
+- each reference file is hashed and must equal its pinned sha256 and row count;
+- a duplicate key stops the run;
+- `--expect-scoring-version` is required and is a failure condition on **both** sides;
+- the command exits **1** on any problem, after writing the full report.
+
+The companion review findings (rollback drift on swap entries that predate `players`, `state` discoverability, the
+decided rule on a NULL `plant_time`, malformed `--pairs`) were fixed in `9bb5618`. None of them touches a scoring path.
+
+**The re-run through the fixed checker, `--expect-scoring-version 3`:**
+
+| command | pairs | rows differing | keys on one side only | reference hash (computed from the file) = pinned | exit |
+|---|---|---:|---:|---|---:|
+| all six pairs | P0 / N / N+A × ex-ante / realized | **0** each | 0 / 0 each | yes, all six | **0** |
+| §2.6 step 3, its own command | P0 realized | **0** | 0 / 0 | yes (`8109eb68…`) | **0** |
+
+Every implementation artifact is again byte-identical to its reference. The assists counters are unchanged:
+1,960 removed, 0 clamped, 2 unmapped, 0 ambiguous in both modes.
+
+Reports:
+- `~/Documents/valo-backups/v4-release/equivalence_rerun/step2_all_pairs_hardened.json`, sha256
+  `7364b486caca85d5c33028886b3c33c479c0a1af52d7beebc93832e6f2ef2395`;
+- `equivalence_rerun_step3/step3_flags_off_vs_rc3_hardened.json`, sha256
+  `f6cad5056f4cbe167e3fc06ff877ae679f16cc2063eea18ddcbff9610d3996e0`.
+
+**The lesson worth keeping:** a checker whose only outcome is "pass" is not evidence. Every instrument a declaration
+relies on needs a test showing it can fail, run through the same entry point the declaration uses.
+
+
+### 2026-09-22 (DECLARATION 14, freeze) — v4 is frozen on a sixteen-match review cohort chosen on the restore it is reviewed against
+
+Written and committed **before** `freeze_impact_candidate.py` runs. This is process §F2
+(`SCORING-RELEASE-PROCESS.md`) and plan r5 §3.1–3.2. Gate G3 was given by the owner on 2026-09-22.
+
+#### The state it is frozen from (F0, read-only)
+
+Production `valowithfriendsdb` at 2026-09-22 04:44:55 UTC:
+- alembic `0010`;
+- **3,649 matches**, max id 3657;
+- gate `open` for `impact-rc3`, admin `rc3-runbook`;
+- `impact_scores` 769,120 rows, all `scoring_version` 3;
+- `impact_scores_v1` present, `impact_scores_v3` free.
+
+Backup B0: `B0-v4-valowithfriendsdb.dump`, sha256 `0d1723cf4deffcd47ff0a2184115ea141bdcf69c69c4242ebda13c201d9789f5`.
+
+It was restored into `valo_v4_rehearsal` on the same instance. The restore's gate is closed (`impact-rc3` /
+`v4-runbook`), and its preflight is equal to production's.
+
+#### The review cohort (F1): sixteen matches
+
+- rc3's thirteen: `3104,3129,3130,3131,3113,3118,3121,3114,3115,3116,3117,3120,3133`.
+- Three matches that exercise v4's rules, each the newest qualifying match **on the restore**
+  (`impact-v4/review-cohort.sql`):
+  - **3655**: an assist on a kill after the round was decided. The `impact_v4` scorer removes 1 assist there;
+  - **3652**: a kill after a defuse;
+  - **3642**: a Time Win round with a kill after 100 s.
+
+The cohort is chosen on the restore, frozen from production, and reviewed on the restore. The freeze is therefore
+followed immediately by `verify_source_snapshots` against the restore (F3). A mismatch means re-restore and freeze
+again; the manifest is never edited.
+
+#### The K-chain
+
+- **K3** (`--comparator impact_v4`) and **K4** (`--manifest`), both exported from production at F4, over every match
+  then present. Their common hash is **`PREP_CHAIN`**. It is preparation-grade: it proves the frozen manifest
+  reproduces the comparator on production as it stood then. **No later verification expects it.**
+- **K4 and K5 in the window**, on the gated dataset after the gate closes, are **binding**. Their common hash is
+  **`CHAIN`**, which the window's `verify-build` and `verify-live` expect.
+- The **activation cohort** is every match in production at the moment the gate closes in H1.1.
+
+#### Production row motion
+
+The motion measured on the local corpus (rc3 live, `N+A`) was **32.22% of player-rounds changed and 71.9% of matches
+reordered**; for `N` alone it was 32.14% and 72.0%. The declared tolerance for `impact_v4` on production is:
+
+- **player-rounds changed: 27.2% to 37.2%** (±5 points);
+- **matches reordered: 64.9% to 78.9%** (±7 points).
+
+Why this width: 3,198 of production's 3,649 matches (87.6%) are the measured corpus. If the other 451 moved not at
+all, the row figure would fall to about 28.2%, still inside the band. To pass 37.2%, more than about 73% of their
+rows would have to move, against 32% measured. So the band holds for any plausible mix of new matches, and a result
+outside it means a real change in behaviour.
+
+Row motion is measured on the restore during rehearsal (rehearsal-grade), and **in the window** between the pre-swap
+capture and the swap: the capture (rc3 as stored) against K5's rows (v4), by key. **Outside the band, the swap does
+not happen** until the difference is explained. As always, motion is not improvement.
+
+#### Wording carried
+
+`N+A vs N` stays **UNTESTABLE, below both carried floors** — not "below any plausible rc3 floor" (R5.7). `N+A` ships
+on the owner's concept, not on evidence.
+
+#### Predictions (scored in a RESULT entry, whatever happens)
+
+| # | prediction | confidence |
+|---|---|---|
+| 14.1 | the freeze succeeds from a clean tree, and `verify_source_snapshots` against the restore passes for all 16 matches | high |
+| 14.2 | K3 = K4 on production (`PREP_CHAIN`) | high |
+| 14.3 | the decomposition check on the 16-match cohort reports **0 mismatches** | high |
+| 14.4 | `review-results.json` covers exactly the 16 frozen matches | high |
+| 14.5 | at least one removed post-decided assist and at least one zeroed decided kill are visible in the reviews of 3655 / 3652 / 3642 | high |
+| 14.6 | rehearsal-grade row motion on the restore falls inside the declared band | moderate |
+| 14.7 | in the window, K4 = K5 (binding), and row motion falls inside the band | high on K4 = K5; moderate on motion |
+
+**Stop rule.** Any of 14.1–14.4 failing stops the release at F until the cause is eliminated or reported. 14.7 failing
+means **no swap**.
+
+
+### 2026-09-22 (RESULT, declaration 14 — phase F) — the freeze holds, and the chain closes on production
+
+Phase F of the process is complete. **Predictions 14.1 to 14.5 are all right**; 14.6 and 14.7 belong to rehearsal and
+the window and are not yet scored. Production was only read. Nothing is merged, deployed or activated:
+`IMPACT_CALCULATION_VERSION` is 3 and `ACTIVE_MANIFEST` is still rc3's.
+
+| # | prediction | outcome | |
+|---|---|---|---|
+| 14.1 | the freeze succeeds from a clean tree, and the restore matches all 16 fingerprints | frozen at `f9b5cc0`, manifest LF-sha256 `2f33f137…`; `verify_source_snapshots` on the restore printed "restore matches the freeze" | **right** |
+| 14.2 | K3 = K4 on production (`PREP_CHAIN`) | **EQUAL** `2cd448e2edb3d4616dfd3ce7abf0150a33a851ab126dc21245ef3e430c4424c2` | **right** |
+| 14.3 | the decomposition check reports 0 mismatches | **29,606 checks, 0 mismatches** over the 16 matches | **right** |
+| 14.4 | `review-results.json` covers exactly the 16 frozen matches | exactly the 16 | **right** |
+| 14.5 | a removed post-decided assist and a zeroed decided kill are visible in 3655 / 3652 / 3642 | zeroed decided events 2 / 4 / 2, assists removed 1 / 1 / 3 (−100 / −100 / −300 on the assists component) | **right** |
+| 14.6 | rehearsal-grade row motion inside the declared band | not yet run (§G) | — |
+| 14.7 | in the window, K4 = K5, and row motion inside the band | not yet run (§H) | — |
+
+#### The chain, as it now stands
+
+| link | what it is | value |
+|---|---|---|
+| `PREP_CHAIN` | K3 (comparator `impact_v4`) = K4 (frozen manifest), both on production over the 3,649 matches present at F0, 769,120 player-rounds | `2cd448e2edb3d4616dfd3ce7abf0150a33a851ab126dc21245ef3e430c4424c2` |
+| cohort fingerprint | equal in both sidecars, contract **v2** | `768c86b30b68d77a…` |
+| both exports | revision `2e5140e`, artifact contract 2, `impact_calculation_version` 3 (no bump on the branch) | |
+
+K3 took 45.6 minutes and K4 44.7, each about 23 minutes of scoring and the rest per-match fingerprinting. Both were
+pinned with `--matches` to the id list captured at F0 (sha256 `92077535…`), so a match ingested while they ran could
+not make them differ; production's max match id was 3657 before and after. Each export holds the whole corpus in
+memory, and a first attempt at running both in one job was killed by the machine's low-memory reaper after K3 had
+scored but before it wrote its sidecar. They were rerun one at a time. **That is a lesson for the process: run one
+export per job.**
+
+#### The reviews
+
+Every reconciliation passes: 5,140 checks over the fixed ten, and 450 to 958 per single match. `review-results.json`
+holds all 16. The reviewed "Before" column is what production stores, which is rc3, so the tables are the rc3 → v4
+comparison the owner's G4 look needs.
+
+Across the ten fixed matches, 100 player-rounds: **every one changes** (mean −155, median −115, p5 −915, p95 +371),
+and **6 of 10 matches change at least one player's rank**. The largest single move is −1,949 (match 3115), which also
+swaps rank 1 and 2 there. This is consistent with the corpus measurement behind declaration 12 — about a third of
+rows and about 72% of matches — and it is the visible consequence of removing the post-plant ramp and the
+plant+38..45 override.
+
+**Motion is not improvement.** The evidence that v4 is better is declaration 12's, on both targets; this entry only
+records that the freeze reproduces, that the reviews reconcile, and what the site will look like.

@@ -1,0 +1,17 @@
+{
+  "matches": 3198,
+  "observations": 67251,
+  "dataset_fingerprint": "3198:f9a31bb2df2586ec",
+  "fold_mapping_hash": "cebae50f85e94736",
+  "n_folds": 5,
+  "draws": 2000,
+  "quick": false,
+  "target": "T2",
+  "controls": [
+    "round_result",
+    "score_diff_before",
+    "attacking_is_team_a",
+    "loadout_diff",
+    "full_buy_count_diff"
+  ]
+}

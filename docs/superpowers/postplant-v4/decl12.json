@@ -1,0 +1,112 @@
+{
+  "P0": {
+    "C_log_loss": 0.08678503276049811,
+    "T2_log_loss": 0.6745142892290555,
+    "n_C": 67251,
+    "n_T2": 63633
+  },
+  "F-1.00": {
+    "C_log_loss": 0.07804499367339379,
+    "T2_log_loss": 0.6744246819714446,
+    "n_C": 67251,
+    "n_T2": 63633
+  },
+  "N": {
+    "C_log_loss": 0.07564680026306882,
+    "T2_log_loss": 0.6744243683112784,
+    "n_C": 67251,
+    "n_T2": 63633
+  },
+  "N+A": {
+    "C_log_loss": 0.0766608953182327,
+    "T2_log_loss": 0.6744235885627854,
+    "n_C": 67251,
+    "n_T2": 63633
+  },
+  "_assists": {
+    "removed": 1960,
+    "unmapped": 2
+  },
+  "_gate": {
+    "C_floor": 0.000407,
+    "T2_floor": 0.00107,
+    "pairs": {
+      "N vs P0": {
+        "residual_variance": 0.016922194652765565,
+        "below_C_floor": false,
+        "below_T2_floor": false
+      },
+      "N vs F-1.00": {
+        "residual_variance": 0.001621547576179827,
+        "below_C_floor": false,
+        "below_T2_floor": false
+      },
+      "N+A vs N": {
+        "residual_variance": 5.820907799880537e-05,
+        "below_C_floor": true,
+        "below_T2_floor": true
+      },
+      "F-1.00 vs P0": {
+        "residual_variance": 0.015708004429838884,
+        "below_C_floor": false,
+        "below_T2_floor": false
+      }
+    }
+  },
+  "N vs P0 [T2]": {
+    "point": -8.992091777715316e-05,
+    "lo": -0.00013489539131566753,
+    "hi": -4.749702008396419e-05,
+    "verdict": "IMPROVEMENT",
+    "interval_verdict": "IMPROVEMENT"
+  },
+  "N vs F-1.00 [T2]": {
+    "point": -3.136601661735128e-07,
+    "lo": -1.2676141041986777e-05,
+    "hi": 1.1881157104620666e-05,
+    "verdict": "INCONCLUSIVE",
+    "interval_verdict": "INCONCLUSIVE"
+  },
+  "N+A vs N [T2]": {
+    "point": -7.797484929961129e-07,
+    "lo": -3.2285102092244334e-06,
+    "hi": 1.579743800370069e-06,
+    "verdict": "UNTESTABLE",
+    "interval_verdict": "INCONCLUSIVE"
+  },
+  "F-1.00 vs P0 [T2]": {
+    "point": -8.960725761097965e-05,
+    "lo": -0.00013182846615039656,
+    "hi": -4.782475756038576e-05,
+    "verdict": "IMPROVEMENT",
+    "interval_verdict": "IMPROVEMENT"
+  },
+  "N vs P0 [C]": {
+    "point": -0.01113823249742929,
+    "lo": -0.012285243054468379,
+    "hi": -0.009920577444715844,
+    "verdict": "IMPROVEMENT",
+    "interval_verdict": "IMPROVEMENT"
+  },
+  "N vs F-1.00 [C]": {
+    "point": -0.0023981934103249752,
+    "lo": -0.003245267297048486,
+    "hi": -0.0015262000118212318,
+    "verdict": "IMPROVEMENT",
+    "interval_verdict": "IMPROVEMENT"
+  },
+  "N+A vs N [C]": {
+    "point": 0.00101409505516388,
+    "lo": 0.0008636211134555472,
+    "hi": 0.001180195924042738,
+    "verdict": "UNTESTABLE",
+    "interval_verdict": "HARM"
+  },
+  "F-1.00 vs P0 [C]": {
+    "point": -0.008740039087104315,
+    "lo": -0.00981246025059329,
+    "hi": -0.007703595134045542,
+    "verdict": "IMPROVEMENT",
+    "interval_verdict": "IMPROVEMENT"
+  }
+}

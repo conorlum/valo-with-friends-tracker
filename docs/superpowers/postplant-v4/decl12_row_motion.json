@@ -1,0 +1,21 @@
+{
+  "matches": 3198,
+  "rows": 674530,
+  "config": "impact_rc3 live",
+  "arms": {
+    "N": {
+      "rows_changed": 216804,
+      "rows_changed_pct": 32.141491112330066,
+      "matches_reordered": 2301,
+      "matches_reordered_pct": 71.95121951219512,
+      "mean_abs_delta": 97.15163926864818
+    },
+    "N+A": {
+      "rows_changed": 217330,
+      "rows_changed_pct": 32.21947133559664,
+      "matches_reordered": 2298,
+      "matches_reordered_pct": 71.85741088180113,
+      "mean_abs_delta": 97.327888464547
+    }
+  }
+}

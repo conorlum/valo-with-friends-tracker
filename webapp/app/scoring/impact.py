@@ -6,12 +6,13 @@ import networkx as nx
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
-from app.models import ImpactScore, KillEvent, MatchPlayer, Round, RoundPlayerStat
+from app.models import ImpactScore, KillEvent, MatchPlayer, Player, Round, RoundPlayerStat
 from app.models.match import Team
 from app.scoring import econ_buy_disruption, econ_component, round_rewards
 from app.scoring.agent_economy import free_ability_credits
 from app.scoring.plant_window import attacking_team as _plant_window_attacking_team
 from app.scoring.plant_window import effective_plant_time
+from app.scoring.plant_window import round_decided
 from app.scoring.plant_window import seconds_to_plant
 from app.scoring.preplant_empirical_factor import empirical_preplant_factor
 
@@ -111,7 +112,12 @@ class ImpactInputError(ValueError):
 # Version 2 was never loaded into any database: production's stored rows are
 # version 1, and they are replaced wholesale by the rc3 swap rather than
 # rescored in place.
-IMPACT_CALCULATION_VERSION = 3
+# 4 (2026-09-22): activates the frozen impact-v4 manifest --
+# no time factor (T = 1 for every kill and death, T = 0 once a round is
+# decided) and no assists paid on kills made after the round was
+# decided. Every other term is rc3's. Stored version 3 rows are replaced,
+# not rescored in place; rc3's rows are retained as impact_scores_v3.
+IMPACT_CALCULATION_VERSION = 4
 
 _KILL_ORDER_GRAPH = nx.DiGraph()
 _KILL_ORDER_GRAPH.add_weighted_edges_from(
@@ -268,8 +274,18 @@ def _time_factor(
     is_attacker: bool | None = None, enable_preplant_empirical: bool = False,
     use_realized: bool = True, alive_counts: tuple[int, int] | None = None,
     postplant_factor_table=None, enable_postplant_leverage: bool = False,
-    self_kill: bool = False,
+    self_kill: bool = False, decided_only: bool = False,
 ) -> float:
+    # Impact v4 (declaration 12, arm N; enable_decided_only_time). NO time
+    # factor: every kill and death is worth 1.0 before and after the plant --
+    # no ramp, no plant+38..45 override -- and 0.0 once the round is decided.
+    # It comes BEFORE every other branch, the legacy exploded/defused 0.5
+    # included, because it replaces the whole function rather than adjusting
+    # one regime of it. A self-kill's or environmental death's DEATH side
+    # follows the same rule: the caller never evaluates the kill side for one.
+    if decided_only:
+        return 0.0 if round_decided(round_row, kill_time) else 1.0
+
     # Mirrors the original's chronological state machine (planted/plantedTime/
     # exploded/defused flags updated as the event log is walked), reconstructed
     # from the round's final planted/plant_time/exploded/defuse_time. The
@@ -504,6 +520,66 @@ def _trade_credits_for_round(round_kills: list[dict], team_of: dict) -> dict[int
         for trade, victim_id, share in avenged:
             credits[victim_id] += share * scale * trade["kill_order_bonus_x_time"]
     return credits
+
+
+def _players_by_name(db: Session, match_id: int) -> dict[str, list[int]]:
+    """{lowercased Player.display_name: [match_player_id, ...]} for one match.
+
+    Assistants are stored per kill as Riot IDs (kill_events.source_meta), and
+    they are matched to this match's players case-insensitively, as declaration
+    12's N+A arm measured. A list, not a single id, so a case-insensitive
+    collision is SEEN as ambiguous rather than resolved by whichever row the
+    query happened to return last (the measured reference's dict did that; on
+    the measurement corpus there are no collisions, declaration 13)."""
+
+    by_name: dict[str, list[int]] = defaultdict(list)
+    rows = (db.query(MatchPlayer.id, Player.display_name)
+            .join(Player, Player.id == MatchPlayer.player_id)
+            .filter(MatchPlayer.match_id == match_id)
+            .order_by(MatchPlayer.id))
+    for match_player_id, name in rows:
+        by_name[(name or "").lower()].append(match_player_id)
+    return by_name
+
+
+def _remove_post_decided_assists(
+    round_row, kill: dict, assistants, players_by_name: dict[str, list[int]],
+    round_stats: dict[int, dict], removed: dict[int, int],
+) -> dict:
+    """Impact v4 (declaration 12, arm N+A; remove_post_decided_assists).
+
+    Each assistant on a kill made after the round was decided loses one assist
+    from the assists component, counted into `removed` ({match_player_id: n}).
+    Returns what happened, for kill_observer; nothing returned feeds a score.
+
+    CLAMP (declared in declaration 13 as a defensive extension, plan R10): a
+    player never loses more assists than their scoreboard row records, so the
+    component cannot go below zero. The measured reference subtracted without
+    a clamp; on the measurement corpus the clamp fires on no row. A removal the
+    clamp refuses is reported as `clamped`.
+
+    An assistant who maps to no player (`unmapped`) or to more than one
+    (`ambiguous`) is left in and reported."""
+    decided = round_decided(round_row, kill["event_time_seconds"])
+    report = {"decided": decided, "removed": [], "clamped": [], "unmapped": [], "ambiguous": []}
+    if not decided:
+        return report
+    for name in assistants or ():
+        match_player_ids = players_by_name.get(str(name).lower(), [])
+        if not match_player_ids:
+            report["unmapped"].append(name)
+            continue
+        if len(match_player_ids) > 1:
+            report["ambiguous"].append(name)
+            continue
+        (match_player_id,) = match_player_ids
+        available = (round_stats.get(match_player_id) or {}).get("assists") or 0
+        if removed.get(match_player_id, 0) < available:
+            removed[match_player_id] = removed.get(match_player_id, 0) + 1
+            report["removed"].append(match_player_id)
+        else:
+            report["clamped"].append(match_player_id)
+    return report
 
 
 def _clutch_bucket(own_alive: int, opp_alive: int) -> bool:
@@ -1076,6 +1152,7 @@ def build_impact_rows_for_match(
     enable_econ_component: bool = False, neutralize_econ_terms: bool = False,
     kill_observer=None, econ_observer=None, weights: "FormulaWeights | None" = None,
     econ_model: str | None = None, enable_trade_credit: bool = False,
+    enable_decided_only_time: bool = False, remove_post_decided_assists: bool = False,
 ) -> list[CalculatedImpact]:
     """kill_observer, when given, is called once per kill AFTER that kill has
     been fully scored, with the scorer's own mutated kill dict and the round
@@ -1090,7 +1167,18 @@ def build_impact_rows_for_match(
     enable_econ_component is True: None keeps `separate_econ_legacy`; the
     buy-disruption models live in app.scoring.econ_buy_disruption. Combat
     inputs are validated before any loop indexes them; an unscoreable match
-    raises ImpactInputError before a single row is built."""
+    raises ImpactInputError before a single row is built.
+
+    Impact v4 (declaration 12; both default OFF, and OFF reads nothing new):
+    `enable_decided_only_time` replaces the time factor with 1.0, or 0.0 once
+    the round is decided (_time_factor's `decided_only`), and cannot be
+    combined with either legacy timing candidate. `remove_post_decided_assists`
+    takes each assist on a kill made after the round was decided out of the
+    assists component (_remove_post_decided_assists), and reports what it did
+    in kill_observer's context under "post_decided_assists"."""
+    if enable_decided_only_time and (enable_preplant_empirical or enable_postplant_leverage):
+        raise ValueError("enable_decided_only_time cannot be combined with "
+                         "enable_preplant_empirical or enable_postplant_leverage")
     weights = weights or FormulaWeights()
     resolved_econ_model = _resolve_econ_model(enable_econ_component, econ_model, neutralize_econ_terms)
     bypass_legacy_swing = resolved_econ_model in econ_buy_disruption.BUY_DISRUPTION_MODELS
@@ -1119,6 +1207,10 @@ def build_impact_rows_for_match(
         }
 
     round_kills: dict[int, list[dict]] = defaultdict(list)
+    # remove_post_decided_assists only: {KillEvent.id: assistants}. Kept OUT of
+    # the kill dicts, which kill_observer sees, so a flags-off replay reads and
+    # reports exactly what it did before the flag existed.
+    assistants_by_kill_id: dict[int, list] = {}
     for kill in (
         db.query(KillEvent)
         .join(Round)
@@ -1139,6 +1231,12 @@ def build_impact_rows_for_match(
                 "weapon": kill.weapon,
             }
         )
+        if remove_post_decided_assists:
+            assistants_by_kill_id[kill.id] = (kill.source_meta or {}).get("assistants") or []
+
+    players_by_name = _players_by_name(db, match_id) if remove_post_decided_assists else {}
+    # {round_number: {match_player_id: assists removed}} (remove_post_decided_assists).
+    removed_assists: dict[int, dict[int, int]] = defaultdict(dict)
 
     issues = _combat_input_issues(match_players, round_player_stats, round_kills)
     if issues:
@@ -1285,6 +1383,7 @@ def build_impact_rows_for_match(
                     alive_counts=alive_counts,
                     postplant_factor_table=postplant_factor_table,
                     enable_postplant_leverage=enable_postplant_leverage,
+                    decided_only=enable_decided_only_time,
                 ) if not self_kill else 0
             )
             if neutralize_econ_terms:
@@ -1334,6 +1433,10 @@ def build_impact_rows_for_match(
                 # needs no such flag: `... if not self_kill else 0` above
                 # means _time_factor is never evaluated for a self-kill there.
                 self_kill=self_kill,
+                # Impact v4: a self-kill or environmental death costs K*1
+                # before the round is decided and 0 after (_traded_factor is
+                # 1 for a self-kill), exactly as arm N scored it.
+                decided_only=enable_decided_only_time,
             )
             kill["death_order_bonus_x_swing"] = (
                 death_order_bonus * combined_swing_factor if combined_swing_factor is not None else 0.0
@@ -1346,6 +1449,12 @@ def build_impact_rows_for_match(
 
             plant_time = round_row.plant_time if round_row.planted else None
             kill["is_post_plant"] = plant_time is not None and kill["event_time_seconds"] >= plant_time
+
+            assist_report = None
+            if remove_post_decided_assists:
+                assist_report = _remove_post_decided_assists(
+                    round_row, kill, assistants_by_kill_id.get(kill["id"]), players_by_name,
+                    round_player_stats[round_number], removed_assists[round_number])
 
             if kill_observer is not None:
                 # Alive counts are reported PRE-decrement, which is the state
@@ -1372,6 +1481,10 @@ def build_impact_rows_for_match(
                         "round_outcome": round_row.outcome,
                         "planted": round_row.planted,
                         "plant_time": round_row.plant_time,
+                        # Present only with remove_post_decided_assists on, so
+                        # a flags-off observer sees exactly the old context.
+                        **({"post_decided_assists": assist_report}
+                           if assist_report is not None else {}),
                     },
                 )
 
@@ -1464,7 +1577,11 @@ def build_impact_rows_for_match(
 
             damages = round(damage_and_assists * weights.damage)
             econ_component_value = round(weights.econ * econ_by_player.get(match_player_id, 0.0))
-            assists_component_value = round(weights.assists * stat["assists"])
+            # D x ELIGIBLE assists: with remove_post_decided_assists off,
+            # nothing is ever removed and this is D x the scoreboard count.
+            # stat["assists"] itself is never changed.
+            eligible_assists = stat["assists"] - removed_assists[round_number].get(match_player_id, 0)
+            assists_component_value = round(weights.assists * eligible_assists)
             trade_credit_x_time = (
                 trade_credit_by_round.get(round_number, {}).get(match_player_id, 0.0)
                 * weights.trade_credit_scale

@@ -24,6 +24,24 @@ _SCALAR_KEYS = (
 
 
 class ImpactScore(Base):
+    """One (round, match_player)'s stored Impact.
+
+    Column meanings under Impact v4 (declaration 12; plan 2026-09-21-impact-v4
+    section 2.3, no scoring-column migration -- `scoring_version` from 0010
+    says which formula wrote a row):
+
+    - `time_impact` stays the UNWEIGHTED net `K*T` including trade credit. Under
+      v4's decided-only time factor T is 1 or 0, so it is net kill-order
+      leverage over the kills and deaths that could still change the round.
+    - `post_plant_kill` / `post_plant_death` stay the weighted sums of `K*T`
+      over kills at or after the raw plant time; match pages sum them
+      (services/matches.py). Under v4 a decided event contributes 0 to both.
+    - `damage` is unchanged: a per-round total with no timestamps, so damage
+      and combat-score assist points after the round was decided stay in.
+    - the assists term (D x assists) is not a column; under v4 it counts only
+      assists on kills made before the round was decided.
+    """
+
     __tablename__ = "impact_scores"
 
     # Natural key. The old surrogate `id` was referenced nowhere in app/ or

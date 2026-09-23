@@ -1,0 +1,36 @@
+{
+  "level": 0.4,
+  "late_band": 30,
+  "per_fold": {
+    "0": {
+      "(False, False)": 0.810465,
+      "(True, False)": 1.210683,
+      "(False, True)": 0.579506,
+      "(True, True)": 1.805056
+    },
+    "1": {
+      "(False, False)": 0.809407,
+      "(True, False)": 1.211845,
+      "(False, True)": 0.566063,
+      "(True, True)": 1.818766
+    },
+    "2": {
+      "(False, False)": 0.813144,
+      "(True, False)": 1.208201,
+      "(False, True)": 0.565547,
+      "(True, True)": 1.807921
+    },
+    "3": {
+      "(True, False)": 1.214184,
+      "(False, False)": 0.808837,
+      "(True, True)": 1.813878,
+      "(False, True)": 0.557181
+    },
+    "4": {
+      "(False, False)": 0.81039,
+      "(True, False)": 1.212733,
+      "(False, True)": 0.561697,
+      "(True, True)": 1.80788
+    }
+  }
+}

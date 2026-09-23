@@ -1,0 +1,26 @@
+{
+  "Lf vs P0": {
+    "arm": "Lf",
+    "reference": "P0",
+    "point": -8.989700962702685e-05,
+    "lo": -0.00015701200751728206,
+    "hi": -2.075639779012267e-05,
+    "verdict": "IMPROVEMENT"
+  },
+  "Ff vs P0": {
+    "arm": "Ff",
+    "reference": "P0",
+    "point": -9.259356212254488e-05,
+    "lo": -0.00015968404761201315,
+    "hi": -2.4571382211580076e-05,
+    "verdict": "IMPROVEMENT"
+  },
+  "Ff vs Lf": {
+    "arm": "Ff",
+    "reference": "Lf",
+    "point": -2.6965524955180342e-06,
+    "lo": -7.815864154642194e-06,
+    "hi": 2.36607822805823e-06,
+    "verdict": "INCONCLUSIVE"
+  }
+}

@@ -17,7 +17,12 @@ from sqlalchemy import text
 
 from app.models import Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.models.match import MatchSource, Team
-from app.scoring.impact_manifest import RC3, lf_sha256, match_source_fingerprint
+from app.scoring.impact_manifest import (
+    RC3,
+    SOURCE_FINGERPRINT_VERSION,
+    lf_sha256,
+    match_source_fingerprint,
+)
 from app.scoring.write_gate import install_write_identity, read_gate
 from scripts import freeze_impact_candidate as freezer
 from scripts import swap_impact_scores as swap_tool
@@ -31,6 +36,12 @@ from scripts.export_impact_artifact import (
 from tests._postgres import postgres_session_or_skip
 
 ADMIN = "rc3-runbook"
+#: rc3's layout, which these tests were written against; the tool itself has no
+#: default (Impact v4 plan, section 4.1). tests/test_swap_parameterised_names.py
+#: covers v4's names.
+NAMES = swap_tool.SwapNames.validated(previous="impact_scores_v1",
+                                      rolled_back="impact_scores_rc3_rolled_back")
+V4_LEFTOVERS = ("impact_scores_v3", "impact_scores_v4_rolled_back")
 #: A hash that belongs to no artifact here, for the export-off-the-chain test.
 NOT_THE_CHAIN = "c" * 64
 
@@ -40,7 +51,7 @@ def _empty(session):
     after it: the verification fingerprints EVERY match in the database, so a
     row another test module committed would otherwise change the result."""
     session.rollback()
-    for leftover in (swap_tool.BUILT, swap_tool.PREVIOUS, swap_tool.ROLLED_BACK):
+    for leftover in (swap_tool.BUILT, NAMES.previous, NAMES.rolled_back, *V4_LEFTOVERS):
         if swap_tool._table_exists(session, leftover):
             session.execute(text(f"DROP TABLE {leftover}"))
     for table in ("impact_scores", "round_player_stats", "round_player_spend", "kill_events", "rounds",
@@ -141,6 +152,9 @@ def _export(tmp_path, db, keys, *, impact, scoring_version=3, comparison_sha256=
         "configuration": {"impact_calculation_version": 3},
         "inputs": {
             "database": db.execute(text("SELECT current_database()")).scalar(),
+            # As the exporter records it: fingerprints are only comparable
+            # within one contract (Impact v4 plan, section 2.4).
+            "fingerprint_version": SOURCE_FINGERPRINT_VERSION,
             "match_source_fingerprints": fingerprints,
             "cohort_fingerprint": hashlib.sha256(canonical_json(fingerprints).encode("utf-8")).hexdigest(),
         },
@@ -197,11 +211,11 @@ def _log(db):
 def test_build_then_verify_then_swap_replaces_every_row(db, tmp_path):
     _built_and_verified(db, tmp_path, v1=10, rc3=77)
 
-    swap_tool.swap(db)
+    swap_tool.swap(db, NAMES)
     db.commit()
 
     assert _impacts(db) == [77]
-    assert _impacts(db, swap_tool.PREVIOUS) == [10]
+    assert _impacts(db, NAMES.previous) == [10]
     assert db.execute(text(
         "SELECT count(*) FROM pg_constraint WHERE conname = 'impact_scores_pkey'")).scalar() == 1
     assert _log(db) == [("build", "built"), ("verify-build", "clean"), ("swap", "swapped")]
@@ -218,7 +232,7 @@ def test_the_swapped_table_keeps_the_canonical_not_null_names(db, tmp_path):
 
     before = not_null_names()
     _built_and_verified(db, tmp_path)
-    swap_tool.swap(db)
+    swap_tool.swap(db, NAMES)
     db.commit()
 
     assert before and not_null_names() == before
@@ -226,15 +240,15 @@ def test_the_swapped_table_keeps_the_canonical_not_null_names(db, tmp_path):
 
 def test_rollback_restores_the_previous_rows(db, tmp_path):
     _built_and_verified(db, tmp_path, v1=10, rc3=77)
-    swap_tool.swap(db)
+    swap_tool.swap(db, NAMES)
     db.commit()
 
-    swap_tool.rollback(db)
+    swap_tool.rollback(db, NAMES)
     db.commit()
 
     assert _impacts(db) == [10]
     assert read_gate(db).state == "closed", "a rollback must leave scoring frozen"
-    assert swap_tool._table_exists(db, swap_tool.ROLLED_BACK), "keep the rc3 rows for inspection"
+    assert swap_tool._table_exists(db, NAMES.rolled_back), "keep the rc3 rows for inspection"
     assert _log(db)[-1] == ("rollback", "rolled back")
 
 
@@ -243,11 +257,11 @@ def test_an_interrupted_swap_changes_nothing_and_logs_nothing(db, tmp_path):
     transaction, so a process that dies mid-swap leaves no trace of a swap."""
     _built_and_verified(db, tmp_path, v1=10, rc3=77)
 
-    swap_tool.swap(db)
+    swap_tool.swap(db, NAMES)
     db.rollback()  # the process dies before COMMIT
 
     assert _impacts(db) == [10]
-    assert not swap_tool._table_exists(db, swap_tool.PREVIOUS)
+    assert not swap_tool._table_exists(db, NAMES.previous)
     assert swap_tool._table_exists(db, swap_tool.BUILT), "the built table survives for a retry"
     assert ("swap", "swapped") not in _log(db)
 
@@ -282,7 +296,7 @@ def test_a_swap_without_a_verification_is_refused(db, tmp_path):
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="not a clean verify-build"):
-        swap_tool.swap(db)
+        swap_tool.swap(db, NAMES)
     db.rollback()
     assert _impacts(db) == [10]
 
@@ -297,7 +311,7 @@ def test_a_failed_verification_does_not_authorize_a_swap(db, tmp_path):
     assert _verify_and_record(db, export)["problems"]
 
     with pytest.raises(swap_tool.Refused, match="verify-build failed"):
-        swap_tool.swap(db)
+        swap_tool.swap(db, NAMES)
     db.rollback()
     assert _impacts(db) == [10]
 
@@ -308,7 +322,7 @@ def test_a_rebuild_after_verification_must_be_verified_again(db, tmp_path):
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="not a clean verify-build"):
-        swap_tool.swap(db)
+        swap_tool.swap(db, NAMES)
     db.rollback()
 
 
@@ -318,7 +332,7 @@ def test_a_swap_refuses_while_the_gate_is_open(db, tmp_path):
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="gate is open"):
-        swap_tool.swap(db)
+        swap_tool.swap(db, NAMES)
     db.rollback()
     assert _impacts(db) == [10]
 
@@ -331,20 +345,20 @@ def test_a_gate_opened_after_the_early_check_still_stops_the_swap(db, tmp_path, 
     monkeypatch.setattr(swap_tool, "_require_gate_closed", lambda database, operation: None)
 
     with pytest.raises(swap_tool.Refused, match="gate is open under lock"):
-        swap_tool.swap(db)
+        swap_tool.swap(db, NAMES)
     db.rollback()
     assert _impacts(db) == [10]
 
 
 def test_rollback_refuses_while_the_gate_is_open(db, tmp_path):
     _built_and_verified(db, tmp_path, v1=10, rc3=77)
-    swap_tool.swap(db)
+    swap_tool.swap(db, NAMES)
     db.commit()
     db.execute(text("UPDATE scoring_gate SET state = 'open' WHERE id"))
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="gate is open"):
-        swap_tool.rollback(db)
+        swap_tool.rollback(db, NAMES)
     db.rollback()
     assert _impacts(db) == [77]
 
@@ -353,13 +367,13 @@ def test_rollback_refuses_once_a_match_arrived_after_the_swap(db, tmp_path):
     """D11: restoring the pre-activation table would silently drop the scores of
     anything ingested since, so R1 expires with the first new match."""
     _built_and_verified(db, tmp_path, v1=10, rc3=77)
-    swap_tool.swap(db)
+    swap_tool.swap(db, NAMES)
     db.commit()
     _corpus(db)  # a match ingested after activation
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="ingested after the swap"):
-        swap_tool.rollback(db)
+        swap_tool.rollback(db, NAMES)
     db.rollback()
     assert _impacts(db) == [77]
 
@@ -375,7 +389,7 @@ def test_rollback_refuses_when_the_sources_changed_since_the_swap(db, tmp_path):
     as though nothing were odd.
     """
     keys, _ = _built_and_verified(db, tmp_path, v1=10, rc3=77)
-    swap_tool.swap(db)
+    swap_tool.swap(db, NAMES)
     db.commit()
     db.execute(text("UPDATE round_player_stats SET kills = kills + 1 "
                     "WHERE round_id = :r AND match_player_id = :m"),
@@ -383,7 +397,7 @@ def test_rollback_refuses_when_the_sources_changed_since_the_swap(db, tmp_path):
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="round_player_stats changed since the swap"):
-        swap_tool.rollback(db)
+        swap_tool.rollback(db, NAMES)
     db.rollback()
     assert _impacts(db) == [77], "the rollback must not have happened"
 
@@ -394,14 +408,14 @@ def test_rollback_accepts_source_drift_when_told_to_and_records_it(db, tmp_path)
     them. The override performs the rollback and writes the drift into the log,
     so the decision survives the incident."""
     keys, _ = _built_and_verified(db, tmp_path, v1=10, rc3=77)
-    swap_tool.swap(db)
+    swap_tool.swap(db, NAMES)
     db.commit()
     db.execute(text("UPDATE round_player_stats SET kills = kills + 1 "
                     "WHERE round_id = :r AND match_player_id = :m"),
                {"r": keys[0][0], "m": keys[0][1]})
     db.commit()
 
-    result = swap_tool.rollback(db, accept_source_drift=True)
+    result = swap_tool.rollback(db, NAMES, accept_source_drift=True)
     db.commit()
     assert _impacts(db) == [10], "the v1 scores must be restored"
     assert result["source_drift"] == ["round_player_stats"]
@@ -416,32 +430,32 @@ def test_rollback_refuses_a_retained_table_that_is_not_the_one_set_aside(db, tmp
     impact_scores_v1 carries afterwards. A table dropped and recreated under
     that name has the right name and the wrong contents."""
     _built_and_verified(db, tmp_path, v1=10, rc3=77)
-    swap_tool.swap(db)
+    swap_tool.swap(db, NAMES)
     db.commit()
-    db.execute(text(f"ALTER TABLE {swap_tool.PREVIOUS} RENAME TO impact_scores_v1_moved"))
-    db.execute(text(f"CREATE TABLE {swap_tool.PREVIOUS} "
+    db.execute(text(f"ALTER TABLE {NAMES.previous} RENAME TO impact_scores_v1_moved"))
+    db.execute(text(f"CREATE TABLE {NAMES.previous} "
                     f"(LIKE impact_scores_v1_moved INCLUDING ALL)"))
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="not the one the swap set aside"):
-        swap_tool.rollback(db)
+        swap_tool.rollback(db, NAMES)
     db.rollback()
-    db.execute(text(f"DROP TABLE {swap_tool.PREVIOUS}"))
-    db.execute(text(f"ALTER TABLE impact_scores_v1_moved RENAME TO {swap_tool.PREVIOUS}"))
+    db.execute(text(f"DROP TABLE {NAMES.previous}"))
+    db.execute(text(f"ALTER TABLE impact_scores_v1_moved RENAME TO {NAMES.previous}"))
     db.commit()
 
 
 def test_a_refused_second_swap_does_not_hide_the_real_one_from_rollback(db, tmp_path):
     _built_and_verified(db, tmp_path, v1=10, rc3=77)
-    swap_tool.swap(db)
+    swap_tool.swap(db, NAMES)
     db.commit()
     with pytest.raises(swap_tool.Refused):
-        swap_tool.swap(db)
+        swap_tool.swap(db, NAMES)
     db.rollback()
     swap_tool.record(db, "swap", "refused", {"reason": "already swapped"})  # as main() logs it
     db.commit()
 
-    swap_tool.rollback(db)
+    swap_tool.rollback(db, NAMES)
     db.commit()
     assert _impacts(db) == [10]
 
@@ -580,7 +594,7 @@ def test_verify_refuses_a_table_that_is_not_the_approved_scoring(db, tmp_path):
 
 def test_verify_live_proves_what_the_site_reads_after_the_swap(db, tmp_path):
     keys, export = _built_and_verified(db, tmp_path, v1=10, rc3=77)
-    swap_tool.swap(db)
+    swap_tool.swap(db, NAMES)
     db.commit()
     assert _verify(db, export, table=swap_tool.LIVE)["problems"] == []
 
@@ -605,13 +619,15 @@ def test_a_clean_live_verification_never_authorizes_a_swap(db, tmp_path):
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="not a clean verify-build"):
-        swap_tool.swap(db)
+        swap_tool.swap(db, NAMES)
     db.rollback()
 
 
 def test_the_cli_refuses_a_database_it_was_not_told_to_expect(db, monkeypatch, capsys):
     monkeypatch.setattr(swap_tool, "SessionLocal", postgres_session_or_skip)
-    assert swap_tool.main(["state", "--expect-database", "valo_somewhere_else"]) == swap_tool.EXIT_REFUSED
+    assert swap_tool.main(["state", "--expect-database", "valo_somewhere_else", "--identity", ADMIN,
+                           "--previous-table", NAMES.previous,
+                           "--rolled-back-table", NAMES.rolled_back]) == swap_tool.EXIT_REFUSED
     assert "REFUSED: connected to" in capsys.readouterr().out
 
 
@@ -721,7 +737,7 @@ def test_a_page_holding_the_cache_open_does_not_stall_the_swap(db, tmp_path):
     try:
         reader.execute(text("SELECT count(*) FROM player_view_cache")).scalar()  # holds ACCESS SHARE
 
-        swap_tool.swap(db)
+        swap_tool.swap(db, NAMES)
         db.commit()
 
         assert _impacts(db) == [77]
@@ -739,7 +755,7 @@ def test_the_swap_empties_the_player_cache(db, tmp_path):
                     "VALUES (:p, 'recent', '{}'::jsonb, 1, now())"), {"p": player_id})
     db.commit()
 
-    swap_tool.swap(db)
+    swap_tool.swap(db, NAMES)
     db.commit()
 
     assert db.execute(text("SELECT count(*) FROM player_view_cache")).scalar() == 0
@@ -761,7 +777,7 @@ def test_an_edit_after_a_clean_verification_is_refused(db, tmp_path):
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="changed after verification"):
-        swap_tool.swap(db)
+        swap_tool.swap(db, NAMES)
     db.rollback()
     assert _impacts(db) == [10]
 
@@ -842,7 +858,7 @@ def test_a_verification_without_row_digests_is_refused(db, tmp_path):
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="recorded no row digests"):
-        swap_tool.swap(db)
+        swap_tool.swap(db, NAMES)
     db.rollback()
     assert _impacts(db) == [10]
 
@@ -856,6 +872,6 @@ def test_a_source_row_edited_after_verification_is_refused(db, tmp_path):
     db.commit()
 
     with pytest.raises(swap_tool.Refused, match="round_player_stats changed after verification"):
-        swap_tool.swap(db)
+        swap_tool.swap(db, NAMES)
     db.rollback()
     assert _impacts(db) == [10]

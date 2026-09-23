@@ -1,0 +1,65 @@
+{
+  "P0": {
+    "log_loss": 0.09237380783040487,
+    "n": 67251
+  },
+  "F-1.9": {
+    "log_loss": 0.09061368482950209,
+    "n": 67251
+  },
+  "F-2.2": {
+    "log_loss": 0.09073266747959335,
+    "n": 67251
+  },
+  "F-2.6": {
+    "log_loss": 0.09142512153859005,
+    "n": 67251
+  },
+  "_gate": {
+    "standing_floor_residual_variance": 0.00107,
+    "arms": {
+      "F-1.9": {
+        "r2": 0.9967970343396427,
+        "residual_variance": 0.003202965660357271,
+        "resid_sd_over_signal_sd": 0.05659474940625916,
+        "below_standing_floor": false
+      },
+      "F-2.2": {
+        "r2": 0.9936268480746645,
+        "residual_variance": 0.006373151925335496,
+        "resid_sd_over_signal_sd": 0.07983202318202574,
+        "below_standing_floor": false
+      },
+      "F-2.6": {
+        "r2": 0.9878783008871086,
+        "residual_variance": 0.012121699112891404,
+        "resid_sd_over_signal_sd": 0.11009858815121747,
+        "below_standing_floor": false
+      }
+    }
+  },
+  "F-1.9 vs P0": {
+    "point": -0.0017601230009027802,
+    "lo": -0.0021329656178947316,
+    "hi": -0.001393685435406916,
+    "verdict": "IMPROVEMENT",
+    "residual_variance": 0.003202965660357271,
+    "below_standing_floor": false
+  },
+  "F-2.2 vs P0": {
+    "point": -0.001641140350811518,
+    "lo": -0.00215680873306407,
+    "hi": -0.0011331015259525862,
+    "verdict": "IMPROVEMENT",
+    "residual_variance": 0.006373151925335496,
+    "below_standing_floor": false
+  },
+  "F-2.6 vs P0": {
+    "point": -0.0009486862918148264,
+    "lo": -0.0016587165654232516,
+    "hi": -0.00024499063858818493,
+    "verdict": "IMPROVEMENT",
+    "residual_variance": 0.012121699112891404,
+    "below_standing_floor": false
+  }
+}
