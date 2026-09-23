@@ -638,3 +638,4 @@ rehearses no maintenance path and H1 turns none on.
 | 2026-09-22 | **Swap-to-deploy exposure accepted**, as rc3 did (rc3 §8.4.0). No maintenance mode; the site serves through the interval |
 | 2026-09-22 | **Render disk confirmed on the dashboard: 15 GB, 8.3% used** (~1.25 GB). The plan's ~15 GB from memory was right; H0's storage gate can cite the dashboard |
 | 2026-09-22 | **Gate G5 accepted**, conditional: the rehearsal and the window commands are accepted as they stand, with the real-match ingest left as an explicit open item to close before H0 |
+| 2026-09-22 | **Real-match ingest rehearsal waived.** Phase G ships without it; the first post-G7 ingest is the first test of that path |
