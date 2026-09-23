@@ -1,6 +1,6 @@
 # Impact v4 — release runbook
 
-Status (2026-09-22): **phases A-G done; G4 and G5 approved; H0 checklist in progress. One rehearsal item still open (real-match ingest).**
+Status (2026-09-22): **phases A-G done; G4 and G5 approved; H0 complete. Waiting on the owner to open the activation window (gate G6).**
 Manifest frozen at `2e5140e`. Nothing is merged or deployed. Production runs rc3 (`IMPACT_CALCULATION_VERSION` 3, `ACTIVE_MANIFEST` rc3).
 
 - Process: `../SCORING-RELEASE-PROCESS.md`. This file is v4's instance of it.
@@ -557,7 +557,7 @@ Two corrections to rc3's numbers, for whoever reads this next:
 | retained table name free | **yes**: production holds only `impact_scores` and `impact_scores_v1`; both `impact_scores_v3` and `impact_scores_v4_rolled_back` are free |
 | a separate checkout of the release-tools commit for a database rollback | **`$ART/release-tools`**, a detached worktree at `bcb83b9`. It carries `swap_impact_scores.py` with this release's flags, and its `ACTIVE_MANIFEST` is still rc3's — deliberately, so reverting the deployment and rolling the database back do not disagree |
 | recovery gate: point-in-time restore covers the window, with its retention recorded | **7 days**, carried from rc3 §7.1 ("restore to any timestamp in the past 7 days", cleared 2026-09-17) and confirmed unchanged by the owner on 2026-09-22. **Not re-read on the Render dashboard today** — if that matters to whoever runs the window, re-read it. Recovery restores into a NEW instance, so R3 also repoints the web service and `.env.remote`. Past 7 days, recovery rests on the W0 dump and `impact_scores_v1` |
-| the outstanding rehearsal item | **OUTSTANDING — owner.** Ingest one real tracker.gg match after a swap on the rehearsal and confirm it commits with scores at version 4. Plan agreed 2026-09-22: use a player **not** on the roster, so the match is real and was never ingested — `rYluc1#8898` is a good pick (4 matches with the roster, active to 2026-09-19, so most of their history is absent). Run it from the **activation checkout** against `valo_v4_rehearsal` with the gate open for `impact-v4`. Blocked only on the scraper Chrome profile: two launch attempts on 2026-09-22 left port 9222 closed and no process holding the `ValoMathsScraper` profile, with the daily-driver Chrome already running |
+| the outstanding rehearsal item | **WAIVED, owner decision 2026-09-22.** The real-match ingest is not rehearsed. What that leaves unproven: that ingestion through the tracker.gg adapter commits a match **with scores at version 4**. The neighbouring halves are proven — probe (c) showed a preflighted write is allowed and claims identity `impact-v4`, and the post-ingest rollback refusal is exact — but the adapter's own commit-then-score path is not exercised under v4. Its first real test will be the first match ingested after G7 reopens the gate, on production, with no rehearsal behind it. H1 and I.3 already require that match to carry `scoring_version` 4 and equal its replay, so treat that check as load-bearing rather than routine |
 
 **The activation PR is a real merge, not a fast-forward.** `origin/main` moved to `6f45476` (PR #70) after this branch
 was cut, so `impact-v4-activation` is 6 commits behind it. Nothing in the chain surface differs — PR #70 touched only
