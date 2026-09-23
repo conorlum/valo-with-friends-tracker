@@ -614,6 +614,7 @@ PR **#71** merged 2026-09-23 07:30:16 UTC as `e2453ce`. Render deployed and the 
 | agreement (`verify_cache_matches_scores.py`) | cache agrees with scores, 24 scopes / 12 players, 5.4 s |
 | **acceptance replay** | **3,649 matches replayed, 0 differ** under active configuration `impact_v4`, 27.1 min |
 | page checks | `/` 200, `/health` 200, `/stats` 200 (1.8 s), three roster player pages 200 (0.6-1.0 s) |
+| **`verify-live` again, after acceptance** | **clean**, 23.4 min. `problems: []`, `scoring_versions: [4]`, `read_back_sha256` = `32f3994c...`, `comparison_sha256` = CHAIN, `max_match_id` still **3657** -- nothing was ingested across the entire window, so the activation cohort held from the gate closing to acceptance |
 
 **How the deploy was confirmed to be v4, without a version endpoint.** The app exposes no build or scoring version,
 so "Render says green" and "the running code computes v4" are not the same claim. The check used instead: prewarm
