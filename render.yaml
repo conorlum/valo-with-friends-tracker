@@ -1,8 +1,11 @@
+# The public ValoMaths demo (valomaths.onrender.com) also deploys from this repo, but
+# it is configured by hand in the Render dashboard, outside this Blueprint: it is the
+# old ValoMaths service switched over in place, so its Riot-registered URL never changed.
 services:
   - type: web
     name: valowithfriendstracker
     runtime: python
-    plan: free
+    plan: standard  # a Blueprint sync resets the plan to whatever this says
     rootDir: webapp
     buildCommand: |
       pip install --upgrade pip
@@ -20,37 +23,5 @@ services:
         value: "3.13.5"
       - key: ENABLE_RIOT_TXT
         value: "false"
-      - key: SESSION_COOKIE_HTTPS_ONLY
-        value: "true"
-
-  # The public ValoMaths demo: same code, its own Render Postgres (valomaths-demo-db,
-  # created outside this blueprint like the friends DB) holding only sample data.
-  # Deployed under this temporary name first; see webapp/RENDER_DEPLOY.md for the
-  # cutover that retires the old ValoMaths service.
-  - type: web
-    name: valomaths-demo
-    runtime: python
-    plan: free
-    rootDir: webapp
-    buildCommand: |
-      pip install --upgrade pip
-      pip install -r requirements.txt
-      alembic upgrade head
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
-    autoDeploy: true
-    envVars:
-      - key: DATABASE_URL
-        sync: false  # set manually in the Render dashboard to the DEMO DB's INTERNAL connection string
-      - key: SESSION_SECRET
-        generateValue: true
-      - key: PYTHON_VERSION
-        value: "3.13.5"
-      - key: SITE_NAME
-        value: "ValoMaths"
-      - key: DEMO_MODE
-        value: "true"
-      - key: ENABLE_RIOT_TXT
-        value: "true"
       - key: SESSION_COOKIE_HTTPS_ONLY
         value: "true"
