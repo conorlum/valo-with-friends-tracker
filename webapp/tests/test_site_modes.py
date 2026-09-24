@@ -53,3 +53,29 @@ def test_riot_txt_follows_its_own_setting_not_demo_mode(monkeypatch, demo_mode):
     with pytest.raises(HTTPException) as raised:
         riot_verification()
     assert raised.value.status_code == 404
+
+
+class _FriendshipOwners:
+    """Stands in for db.query(Friendship.owner_player_id).distinct().all()."""
+
+    def __init__(self, owner_ids):
+        self._rows = [(pid,) for pid in owner_ids]
+
+    def query(self, *_):
+        return self
+
+    def distinct(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+def test_demo_stats_roster_is_the_seeded_friend_group(monkeypatch):
+    """tracked_players.json names real friends the demo DB doesn't have, so
+    the Stats page's Friends view would otherwise be empty there."""
+    from app.services import site_stats
+
+    monkeypatch.setattr(settings, "demo_mode", True)
+    monkeypatch.setattr(site_stats, "ROSTER_PATH", None)  # must not be read
+    assert site_stats.resolve_roster_player_ids(_FriendshipOwners([9, 8, 17])) == [8, 9, 17]

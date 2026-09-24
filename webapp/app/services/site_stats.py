@@ -37,7 +37,8 @@ from pathlib import Path
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import Match, MatchPlayer, Player, PlayerViewCache, Round
+from app.config import settings
+from app.models import Friendship, Match, MatchPlayer, Player, PlayerViewCache, Round
 from app.services.eco_followup import compute_pistol_win_followup_eco
 from app.services.enemy_at_11_response import compute_enemy_at_11_response_stats
 from app.services.force_buy_stats import compute_force_buy_stats
@@ -77,7 +78,13 @@ def resolve_roster_player_ids(db: Session) -> list[int]:
     _get_or_create_player is given), matching the roster file's own format
     exactly -- so this is a case-insensitive exact match, not a fuzzy one. An
     entry with no matching Player row (not yet ingested) is silently skipped --
-    this is a best-effort roster lookup, not a data-integrity check."""
+    this is a best-effort roster lookup, not a data-integrity check.
+
+    The public demo has none of those players, so there the roster is its
+    fixed, seeded friend group instead: everyone with a friendship row."""
+    if settings.demo_mode:
+        rows = db.query(Friendship.owner_player_id).distinct().all()
+        return sorted(pid for (pid,) in rows)
     riot_ids = json.loads(ROSTER_PATH.read_text())
     if not riot_ids:
         return []
