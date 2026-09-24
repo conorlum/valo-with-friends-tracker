@@ -24,11 +24,13 @@ import os
 from fastapi import Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from app.config import settings
+
 #: Paths that answer even while blocked.
 ALWAYS_OPEN = ("/health",)
 
 MAINTENANCE_ENV = "MAINTENANCE_MODE"
-MESSAGE = ("ValoWithFriendsTracker is briefly down for a scoring update. "
+MESSAGE = (f"{settings.site_name} is briefly down for a scoring update. "
            "Nothing is lost; matches are still being recorded.")
 
 

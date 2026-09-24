@@ -227,6 +227,15 @@ h1 .badge-score {
   color: var(--critical);
 }
 
+.demo-banner {
+  padding: 0.45rem 1.5rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--ink-secondary);
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border);
+}
+
 .demo-notice {
   text-align: center;
   color: var(--ink-muted);

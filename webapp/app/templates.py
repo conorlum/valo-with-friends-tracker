@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
+from app.config import settings
 from app.db import SessionLocal
 from app.services.auth import get_current_player
 
@@ -25,6 +26,8 @@ templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent / "templates"),
     context_processors=[_inject_current_player],
 )
+templates.env.globals["site_name"] = settings.site_name
+templates.env.globals["demo_mode"] = settings.demo_mode
 
 _AGENT_ICON_SLUGS = {
     "astra", "breach", "brimstone", "chamber", "clove", "cypher", "deadlock",

@@ -1,10 +1,13 @@
 {% extends "base.html" %}
 
-{% block title %}Friends - ValoWithFriendsTracker{% endblock %}
+{% block title %}Friends - {{ site_name }}{% endblock %}
 
 {% block content %}
 <h1>Friends</h1>
 <p class="page-meta">Shoutouts on session and match pages only show your friends (and you) once you're logged in.</p>
+{% if demo_mode %}
+<p class="page-meta">This demo's friend group is fixed, so it can't be edited here.</p>
+{% endif %}
 
 <div class="card">
   <h2>Friends</h2>
@@ -18,10 +21,12 @@
       <tr>
         <td><a class="player-link" href="/players/{{ player.display_name | urlencode }}">{{ player.display_name | strip_tag }}</a></td>
         <td>
+          {% if not demo_mode %}
           <form action="/friends/remove" method="post" class="inline-form">
             <input type="hidden" name="display_name" value="{{ player.display_name }}">
             <button type="submit" class="link-button">Remove</button>
           </form>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}
@@ -32,6 +37,7 @@
   {% endif %}
 </div>
 
+{% if not demo_mode %}
 <div class="card">
   <h2>Add a friend</h2>
   <form class="player-picker" action="/friends/add" method="post">
@@ -44,6 +50,7 @@
     <button type="submit">Add friend</button>
   </form>
 </div>
+{% endif %}
 
 {% if acquaintances %}
 <div class="card">
@@ -59,10 +66,12 @@
         <td><a class="player-link" href="/players/{{ acquaintance.player.display_name | urlencode }}">{{ acquaintance.player.display_name | strip_tag }}</a></td>
         <td>{{ acquaintance.shared_matches }}</td>
         <td>
+          {% if not demo_mode %}
           <form action="/friends/add" method="post" class="inline-form">
             <input type="hidden" name="display_name" value="{{ acquaintance.player.display_name }}">
             <button type="submit" class="link-button">Add as friend</button>
           </form>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}

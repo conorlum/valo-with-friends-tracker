@@ -7,6 +7,11 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg2://valorant:valorant@localhost:5432/valorant_igl_tutor"
     session_secret: str = "dev-only-change-me"
+    # The same codebase serves two sites: the friends tracker and the public
+    # ValoMaths demo (SITE_NAME=ValoMaths, DEMO_MODE=true on its own DB).
+    site_name: str = "ValoWithFriendsTracker"
+    demo_mode: bool = False
+    # Independent of demo_mode: only the service registered with Riot sets it.
     enable_riot_txt: bool = False
     session_cookie_https_only: bool = False
 

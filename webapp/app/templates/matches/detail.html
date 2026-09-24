@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{{ match.external_id }} - ValoWithFriendsTracker{% endblock %}
+{% block title %}{{ match.external_id }} - {{ site_name }}{% endblock %}
 
 {% block content %}
 <h1>{{ match.map_name or match.external_id }}</h1>
@@ -53,7 +53,7 @@
 {% if shoutouts %}
 <div class="card">
   <h2>Shoutouts</h2>
-  <p class="page-meta">One highlight for every player in this match.</p>
+  <p class="page-meta">{% if current_player %}One highlight for you and every friend in this match.{% else %}One highlight for every player in this match.{% endif %}</p>
   <div class="shoutout-rows">
     {% for row in shoutouts | balanced_rows %}
     <div class="shoutout-row">

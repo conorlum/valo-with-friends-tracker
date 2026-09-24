@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
@@ -21,7 +21,7 @@ from app.templates import templates
 # uvicorn configures its own loggers, but the root logger defaults to WARNING.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
-app = FastAPI(title="ValoWithFriendsTracker")
+app = FastAPI(title=settings.site_name)
 # Blocks every page but /health while MAINTENANCE_MODE is set, so a rollback can
 # stop traffic without depending on how the platform behaves while suspended.
 app.middleware("http")(maintenance_middleware)
@@ -55,8 +55,10 @@ def health(db: Session = Depends(get_db)):
     return {"status": "ok"}
 
 
-if settings.enable_riot_txt:
-    @app.get("/riot.txt")
-    @app.get("//riot.txt")
-    def riot_verification():
-        return PlainTextResponse("f212a992-ace0-402a-838d-cad406c48fe2")
+# Checked per request rather than at import, so the setting can be toggled in tests.
+@app.get("/riot.txt")
+@app.get("//riot.txt")
+def riot_verification():
+    if not settings.enable_riot_txt:
+        raise HTTPException(status_code=404)
+    return PlainTextResponse("f212a992-ace0-402a-838d-cad406c48fe2")
