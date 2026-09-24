@@ -13,6 +13,7 @@ from app.services.shoutouts import (
     SUGAR_DADDY_MIN_AVG_PER_ROUND,
     PlayerShoutout,
     assign_shoutouts,
+    display_most_active_as_percentage,
 )
 from app.services.surrender_rounds import NOT_A_SURRENDER_ROUND
 
@@ -573,6 +574,7 @@ def get_match_shoutouts(
 
     roster = [(p.match_player_id, p.display_name, p.agent) for p in summary.players]
     shoutouts = assign_shoutouts(roster, raw_dicts, best_round_impact, anchor)
+    display_most_active_as_percentage(shoutouts, active_round_counts, rounds_played_by_mp)
 
     if viewer_player_id is not None:
         player_id_by_mp: dict[int, int] = {mp.id: mp.player_id for mp in match_players}
