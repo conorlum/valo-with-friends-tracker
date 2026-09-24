@@ -463,9 +463,21 @@ In this order, and no other:
    schedule. Drop the rehearsal databases on the Render instance (v4's two held about 800 MB) and remove the
    rehearsal and release-tools worktrees, each on the owner's say-so. Once ingestion has reopened, neither can be
    used for a rollback any more.
-3. Analysis hygiene: anything reading stored rows asserts a single `scoring_version`
+3. **Rescore the public demo.** `valomaths.onrender.com` deploys the same `main`, so after activation it runs the new
+   scoring code against `valomaths-demo-db`, whose six matches still hold the old scores. It is outside the gate and
+   the release tooling (six sample matches, no ingestion), so rescore it directly, under `.venv313`, through the
+   wrapper that refuses any other database (`webapp/RENDER_DEPLOY.md` §d):
+   ```bash
+   .venv313/Scripts/python.exe scripts/with_demo_db.py scripts/recompute_impact.py
+   .venv313/Scripts/python.exe scripts/with_demo_db.py scripts/recompute_player_views.py
+   ```
+   The site-stats cache does not depend on scoring. If this release also bumped `SITE_STATS_CACHE_SCHEMA_VERSION`,
+   the demo site refills it on its first `/stats` visit. Any refresh run by hand needs `DEMO_MODE=true` in its
+   environment, or the Friends view reads the real roster from `tracked_players.json`, which the demo DB does not
+   have. Then check a demo player page.
+4. Analysis hygiene: anything reading stored rows asserts a single `scoring_version`
    (`load_stored_observations` does not filter).
-4. **Update this document** with anything the release taught you: a new trap in §0, a new rule in §D. That is how the
+5. **Update this document** with anything the release taught you: a new trap in §0, a new rule in §D. That is how the
    next release avoids replanning.
 
 ---

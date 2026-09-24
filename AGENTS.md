@@ -1,15 +1,17 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository. It mirrors CLAUDE.md; keep the two in sync.
 
-## This is the private sister-repo
+## One repo, two deployed sites
 
-This repo is a personal-use fork of `ValorantIGLTutor`/valomaths that adds a tracker.gg-based data source for friend-group match stats. It's kept separate from the public repo because that one is being groomed for Riot API production access (it serves `/riot.txt` for Riot's domain-verification check) and shouldn't also display scraped third-party (tracker.gg) data.
+This repo started as a fork of `conorlum/ValoMaths` (originally `ValorantIGLTutor`) that added a tracker.gg data source for friend-group match stats. Since 2026-09-24 (PRs #74, #75) it is the only codebase: `conorlum/ValoMaths` is archived, and both sites deploy from this repo's `main` on every merge. See `webapp/RENDER_DEPLOY.md`.
 
-- `git remote -v` here has `origin` = this private GitHub repo, and `public` = the original `ValorantIGLTutor` repo. Pull new public-site features in with `git fetch public && git merge public/main`.
-- Runs **local-only** — no cloud deployment. Keep private-only changes additive (new files) rather than editing shared files, so future merges from `public` stay clean.
-- **Docker Compose gotcha**: both this repo's `webapp/` folder and the original repo's `webapp/` folder are literally both named `webapp`, so Docker Compose's default project name (derived from the folder name) collides between the two repos — running plain `docker compose up -d` here can recreate/repoint the *other* repo's Postgres container. Always bring this repo's Postgres up with an explicit project name: `docker compose -p valomaths-private up -d`. It's mapped to host port **5433** (not 5432, which the original repo's Postgres uses) — see `.env`.
-- `app/adapters/trackergg_browserstate_source.py` + `scripts/ingest_trackergg_player.py` — the tracker.gg ingestion pipeline (see below). Not present in the public repo.
+- **`valowithfriendstracker`** (https://valowithfriendstracker.onrender.com): the friends site, with real tracker.gg data in the friends DB. It is managed by `render.yaml`. The `ValoWithFriendsTracker.com` domain does not resolve.
+- **`valomaths`** (https://valomaths.onrender.com): the public ValoMaths demo. It runs with `DEMO_MODE=true` and `SITE_NAME=ValoMaths`, serves `/riot.txt` for Riot's domain verification, and reads `valomaths-demo-db`, which holds sample data only. **That URL is registered with Riot and must never change.** The service is configured by hand in the dashboard, outside `render.yaml`. Never add `load_seed_data.py` to its build command.
+- Code differences between the two sites are settings (`app/config.py`: `demo_mode`, `site_name`, `enable_riot_txt`), not branches or forks. The demo must never show scraped tracker.gg data.
+
+- **This GitHub repo is PUBLIC** (`conorlum/valo-with-friends-tracker`). Treat everything committed here as world-readable. **Never commit a credential** -- `webapp/.env.remote` held the live Render Postgres password in a public repo from 2026-08-26 until it was caught and rotated on 2026-09-03. `.env.*` is now gitignored (with `!.env.example`); that covers `.env.remote` (friends DB) and `.env.demo-remote` (demo DB).
+- **Docker Compose gotcha**: this repo's `webapp/` folder and the old ValoMaths clone's `webapp/` folder share a name, so Docker Compose's default project name (derived from the folder name) collides between the two — running plain `docker compose up -d` here can recreate/repoint the *other* checkout's Postgres container. Always bring this repo's Postgres up with an explicit project name: `docker compose -p valomaths-private up -d`. It's mapped to host port **5433** — see `.env`.
 - Repo name history: this was previously named `valomaths-private` (both on GitHub and as the local folder name). The GitHub repo is now `valo-with-friends-tracker`, and the local folder was renamed to match. Some internal paths (the Docker Compose project name, local Postgres db name) intentionally still use `valomaths`/`valomaths-private` — they're independent of the folder name and don't need to be changed.
 
 ## What this is
@@ -32,7 +34,7 @@ A FastAPI + SQLAlchemy 2.0 + Alembic + Postgres project, independent of the root
 - `app/main.py` — FastAPI app, currently just a `/health` endpoint that round-trips the DB.
 - `alembic/versions/` — schema migrations; `0001_initial_schema.py` creates all 7 tables, `0002_friendships.py` adds `friendships`, `0003_player_view_cache.py` adds `player_view_cache`.
 - `docker-compose.yml` — local Postgres 16 for development.
-- `render.yaml` — Render blueprint for deployment (Postgres + web service, runs `alembic upgrade head` on build).
+- `render.yaml` (repo root) — the Render Blueprint for the `valowithfriendstracker` web service only: it runs `alembic upgrade head` on build, and it declares no databases. A Blueprint sync applies its `plan:` over the dashboard's setting. The `valomaths` service isn't in it (see above).
 - `scripts/seed_demo_matches.py` / `scripts/ingest_demo_match.py` — one-off scripts to bulk- or single-ingest match JSONs from `MatchHTMLJsons/` into the DB via the adapter above. Not part of the deploy path.
 - `seed_data/demo_matches.sql` — the public ValoMaths demo's sample data (six matches plus a fixed sample friend group), a data-only dump at the schema head. `scripts/load_seed_data.py` loads it and `scripts/dump_seed_data.py` regenerates it. Every command against the demo DB goes through `scripts/with_demo_db.py`, which reads `webapp/.env.demo-remote` and refuses to run unless it is connected to `valomaths_demo`. See `load_seed_data.py`'s docstring for the rebuild order.
 
@@ -58,6 +60,14 @@ docker compose -p valomaths-private up -d            # start local Postgres on p
 ```
 
 A `.venv` with `requirements.txt` installed already exists in `webapp/` (includes `playwright`, used by the tracker.gg pipeline below). `.env` already points `DATABASE_URL` at port 5433.
+
+## Changing how Impact is scored
+
+Any change to Impact scoring -- a new term, a changed factor, new weights -- and any release of one follows
+`docs/superpowers/SCORING-RELEASE-PROCESS.md`: declare before measuring, implement behind flags that default off,
+prove equivalence against a reference built from unchanged code, freeze, rehearse, and activate in one gated
+window. Read it before touching `app/scoring/`; plan only the release, not the process. Each release keeps its own
+runbook at `docs/superpowers/impact-<id>/README.md` (rc3 shipped; v4 in progress).
 
 ## tracker.gg ingestion pipeline
 
