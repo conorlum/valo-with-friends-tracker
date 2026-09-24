@@ -1,11 +1,15 @@
 {% extends "base.html" %}
 
-{% block title %}ValoWithFriendsTracker{% endblock %}
+{% block title %}{{ site_name }}{% endblock %}
 
 {% block content %}
 <div class="hero">
-  <h1>ValoWithFriendsTracker</h1>
+  <h1>{{ site_name }}</h1>
+  {% if demo_mode %}
   <p>Look up a player from the sample match data.</p>
+  {% else %}
+  <p>Look up a player to see their matches, sessions and Impact.</p>
+  {% endif %}
 </div>
 
 <form class="search-box" action="/search" method="get">
@@ -14,11 +18,15 @@
 </form>
 
 {% if not_found %}
-<p class="not-found">No player named "{{ search_query }}" in the sample data.</p>
+<p class="not-found">No player named "{{ search_query }}" in {% if demo_mode %}the sample data{% else %}the tracked matches{% endif %}.</p>
 {% endif %}
 
+{% if demo_mode %}
 <p class="demo-notice">
   This is sample data, not a live Riot lookup.
   {% if not current_player %}<a href="/login">Log in</a> to preview a personalized view using one of the sample players.{% endif %}
 </p>
+{% elif not current_player %}
+<p class="demo-notice"><a href="/login">Log in</a> as yourself to see your friends' Shoutouts, sessions and squad.</p>
+{% endif %}
 {% endblock %}

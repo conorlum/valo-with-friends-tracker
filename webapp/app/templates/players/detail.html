@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{{ profile.player.display_name }} - ValoWithFriendsTracker{% endblock %}
+{% block title %}{{ profile.player.display_name }} - {{ site_name }}{% endblock %}
 
 {% block content %}
 <h1>
@@ -8,7 +8,7 @@
   {% if current_player and not is_own_profile %}
   {% if is_friend %}
   <span class="badge badge-score">Friends</span>
-  {% else %}
+  {% elif not demo_mode %}
   <form action="/friends/add" method="post" class="inline-form">
     <input type="hidden" name="display_name" value="{{ profile.player.display_name }}">
     <input type="hidden" name="next" value="/players/{{ profile.player.display_name | urlencode }}">

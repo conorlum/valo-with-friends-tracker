@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_db
 from app.services.auth import get_current_player
 from app.services.friends import add_friend, list_acquaintances, list_friends, remove_friend
@@ -34,6 +35,13 @@ def friends_page(request: Request, db: Session = Depends(get_db)):
     )
 
 
+def _reject_in_demo_mode() -> None:
+    """The demo's friend group is shared by every visitor and feeds the
+    per-player caches, so it is seeded once and never edited through the site."""
+    if settings.demo_mode:
+        raise HTTPException(status_code=403, detail="The demo's friend group can't be edited.")
+
+
 def _safe_next(next: str | None) -> str:
     """Only allow redirecting back to a local path (never an absolute URL,
     to avoid becoming an open redirect)."""
@@ -46,6 +54,7 @@ def _safe_next(next: str | None) -> str:
 def add_friend_route(
     request: Request, display_name: str = Form(...), next: str | None = Form(None), db: Session = Depends(get_db)
 ):
+    _reject_in_demo_mode()
     current_player = get_current_player(request, db)
     if current_player is None:
         return RedirectResponse(url="/login", status_code=303)
@@ -59,6 +68,7 @@ def add_friend_route(
 
 @router.post("/remove")
 def remove_friend_route(request: Request, display_name: str = Form(...), db: Session = Depends(get_db)):
+    _reject_in_demo_mode()
     current_player = get_current_player(request, db)
     if current_player is None:
         return RedirectResponse(url="/login", status_code=303)
