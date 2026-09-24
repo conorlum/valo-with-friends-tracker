@@ -1,16 +1,25 @@
-# Deploying to Render — ValoWithFriendsTracker.com
+# Deploying to Render — two sites from one repo
 
-This deploys `webapp/` as its own site, separate from the public repo's future
-Riot-application domain. Deliberately zero-auth (anyone with the URL can pick
-any seeded player at `/login`).
+`webapp/` is deployed twice from this repo's `main`. Every merge to `main`
+auto-deploys both:
 
-Both the web app and the Postgres database run on **Render**, in the same
-region (Oregon), so the app reaches the DB over Render's internal network.
+| Service | URL | Database | Configured by |
+|---|---|---|---|
+| `valowithfriendstracker` | https://valowithfriendstracker.onrender.com | the friends DB (real tracker.gg data) | `render.yaml` (the DontTellRiotTracker Blueprint) |
+| `valomaths` | https://valomaths.onrender.com | `valomaths-demo-db` (sample data only) | **by hand** in the dashboard — see (d) |
 
-The DB previously lived on Neon, because Render's free tier allows only one
-active free Postgres per account and that slot was already taken. It was
-migrated to a paid Render Postgres on 2026-08-26 — see "Migrating the
-database" below. Two connection strings matter and they are not
+Both are deliberately zero-auth (anyone with the URL can pick any seeded
+player at `/login`). The `ValoWithFriendsTracker.com` custom domain in (a) step 7
+does not resolve; the onrender URL is the real one.
+
+Both web apps and both Postgres databases run on **Render**, in the same
+region (Oregon), so each app reaches its DB over Render's internal network.
+Neither database is in `render.yaml` (deliberate: a `render.yaml` mistake
+should not be able to destroy one).
+
+The friends DB previously lived on Neon. It was migrated to a paid Render
+Postgres on 2026-08-26 — see "Migrating the database" below — and the Neon
+account has since been deleted. Two connection strings matter and they are not
 interchangeable:
 
 - **Internal** (`dpg-xxxx-a`, no domain suffix) — for the web service's
@@ -93,3 +102,42 @@ without Docker, using native PostgreSQL client binaries:
    check `/health`.
 8. Point `webapp/.env.remote` at the new **External** URL so `matches` follows.
 9. Keep the old DB and the dump file for a week before deleting.
+
+## (d) The public ValoMaths demo — `valomaths`
+
+`https://valomaths.onrender.com` is the URL registered with Riot (it serves
+`/riot.txt`), so **it must never change**. An onrender URL belongs to the
+service it was created with. So on 2026-09-24 the old ValoMaths service (which
+built from `conorlum/ValoMaths`) was disconnected from its Blueprint and
+switched to this repo in place, rather than being replaced (PRs #74, #75).
+
+It is **not** in `render.yaml`. Its settings live only in the dashboard.
+Before changing any of them, check **Settings → Source** to confirm you are in
+`valomaths`, not `valowithfriendstracker`:
+
+- **Source** `conorlum/valo-with-friends-tracker`, **Branch** `main`,
+  **Root Directory** `webapp`, Auto-Deploy on commit.
+- **Build Command** `pip install --upgrade pip && pip install -r requirements.txt && alembic upgrade head`.
+  **Never add `scripts/load_seed_data.py` to it** — the old ValoMaths build had
+  that step, and it would reload the seed on every deploy.
+- **Pre-Deploy Command** empty. **Start Command**
+  `uvicorn app.main:app --host 0.0.0.0 --port $PORT`. **Health Check Path** `/health`.
+- **Environment**: `DATABASE_URL` (the demo DB's **Internal** URL),
+  `SITE_NAME=ValoMaths`, `DEMO_MODE=true`, `ENABLE_RIOT_TXT=true`,
+  `SESSION_COOKIE_HTTPS_ONLY=true`, `PYTHON_VERSION=3.13.5`, `SESSION_SECRET`
+  (generated).
+
+**The demo database.** `valomaths-demo-db` (Render Postgres 18, Oregon,
+database name `valomaths_demo`) holds only `seed_data/demo_matches.sql`: six
+matches plus a fixed sample friend group. Run every command against it from a
+dev machine through `scripts/with_demo_db.py`, which reads the External URL
+from `webapp/.env.demo-remote` (gitignored) and refuses to run anywhere else. A
+full rebuild is the sequence in `scripts/load_seed_data.py`'s docstring. After
+a scoring release, it also needs the steps in
+`docs/superpowers/SCORING-RELEASE-PROCESS.md` §J.
+
+**Blueprint syncs set the plan.** A sync applies `render.yaml`'s `plan:` to its
+service, overriding the dashboard. PR #74's sync moved
+`valowithfriendstracker` from Standard to Free this way, so `render.yaml` now
+says `plan: standard`. Change a plan in `render.yaml`, not only in the
+dashboard.
