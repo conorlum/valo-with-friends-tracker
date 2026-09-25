@@ -10,11 +10,14 @@ the export, and this reads it.
 - `--preview` condenses (showing, not refusing, blocking diagnostics), writes a
   self-contained page to `%TEMP%\\valo-replay\\<match uuid>\\preview.html`, and runs the
   scripted checks (tracks for every player present in each round, coverage and gaps, spawn
-  clusters, map discovery, size budget, diagnostics, blob round trip). Exit 1 if any fail.
+  clusters, map discovery, size budget, diagnostics, blob round trip, and the pass-6 checks:
+  the phase cycle, kills outside rounds, ownership, lifecycle, link eligibility). Exit 1 if
+  any fail. The phase-cycle, ownership and lifecycle rules refuse at condense (exit 3).
   The map comes from the export's actor paths, else from the `.vrf` itself, else `--map`.
   The page is local only; open it in a browser to look at the tracks once.
 - `--dry-run` condenses strictly (the `.vrf`'s hash and the parser's BUILD.json must
-  match), loads the matching `matches` rows read-only and runs the linker, and prints its
+  match), checks the replay's link eligibility (and refuses before any DB read when it
+  fails), loads the matching `matches` rows read-only and runs the linker, and prints its
   report. It never writes; run it through `with_friends_db.py --read-only`.
 - Without either flag it stops: storing replays arrives in Stage 2.
 
@@ -95,6 +98,24 @@ def preview_checks(replay: CondensedReplay) -> list[tuple[str, bool, str]]:
     checks.append(("no blocking diagnostics", not blocking, "; ".join(blocking)))
     round_trip = all(fmt.decode_blob(data) == replay.rounds[n] for n, data in replay.encoded_rounds().items())
     checks.append(("every blob decodes back to itself", round_trip, ""))
+    # Pass 6. The phase cycle, ownership and lifecycle refuse at condense, so reaching here
+    # means they held; the lines show what was checked.
+    numbers = report["round_number_at_start"]
+    checks.append(("phase cycle validated, rounds numbered in order (P-a)", True,
+                   f"ClientGamePhaseEnded cross-check {'ran' if report['phase_ended_checked'] else 'NOT run'}; "
+                   f"decoded RoundNumber {'none' if all(n is None for n in numbers) else numbers}"))
+    checks.append(("kills_outside_rounds == 0", report["kills_outside_rounds"] == 0,
+                   f"{report['kills']} kills; excluded {report['kills_excluded']}"))
+    ownership = report["ownership"]
+    checks.append(("pawn ownership validated (P-b)", True,
+                   f"{ownership['claims']} claims on {ownership['pawns']} pawns, "
+                   f"{ownership['possession_intervals']} possession intervals"))
+    life = report["lifecycle"]
+    checks.append(("lifecycle: no contradictions (P-c)", life["contradictions"] == 0,
+                   f"closes {life['closes_by_reason']}; left {life['left']}; unobserved spans "
+                   f"{life['unobserved_spans']}; uncertain lives {life['uncertain_lives']}"))
+    eligibility = replay.link_inputs["eligibility"]
+    checks.append(("link eligibility (P-f)", eligibility["eligible"], "; ".join(eligibility["reasons"])))
     return checks
 
 
@@ -337,6 +358,12 @@ def main(argv: list[str] | None = None, loader_factory=_db_loader) -> int:
         print(f"preview: {page}")
         return 0 if all(ok for _, ok, _ in checks) else 1
 
+    eligibility = replay.link_inputs["eligibility"]
+    if not eligibility["eligible"]:
+        # P-f: the same check the linker makes, before any DB read.
+        print(json.dumps({"status": "refused", "report": {"check": "eligibility",
+                                                          "reasons": eligibility["reasons"]}}, indent=2))
+        return 1
     result = dry_run(replay, loader_factory())
     print(json.dumps({"status": result.status, "report": result.report}, indent=2, default=str))
     return 0 if result.status == "linked" else 1

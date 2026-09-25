@@ -528,9 +528,11 @@ def check_phase_ended(begins: list[tuple[int, int]], export: Export) -> bool:
 # ---------------------------------------------------------------- movement
 
 
-def read_movement(export: Export, players: PlayerTable) -> tuple[dict[int, list[Sample]], dict]:
+def read_movement(export: Export, players: PlayerTable) -> tuple[dict[int, list[Sample]], dict, set]:
+    """Each slot's samples, the row counts, and the channels that carried kept samples (P-f)."""
     by_slot: dict[int, list[Sample]] = defaultdict(list)
     counts = Counter()
+    channels: set = set()
     for row in export.movement:
         data = row.data
         if data.get("error_sentinel"):
@@ -543,9 +545,10 @@ def read_movement(export: Export, players: PlayerTable) -> tuple[dict[int, list[
             counts["unresolved"] += 1
             continue
         counts["kept"] += 1
+        channels.add(data.get("channel"))
         by_slot[slot].append(Sample(row.time_ms, float(position["x"]), float(position["y"]),
                                     float(position.get("z") or 0.0), float(data.get("yaw") or 0.0), pawn))
-    return by_slot, dict(counts)
+    return by_slot, dict(counts), channels
 
 
 def native_hz(samples: dict[int, list[Sample]]) -> int:
@@ -799,6 +802,74 @@ def side_groups(kills: list[Kill], clusters: list[tuple[list[int], list[int]]]) 
     return sides
 
 
+# ---------------------------------------------------------------- eligibility (P-f)
+
+
+def channel_kinds(export: Export, players: PlayerTable, movement_channels: set) -> dict:
+    """channel -> the evidence it carried: phase, lifecycle, kill, movement."""
+    kinds: dict = defaultdict(set)
+    for row in export.events:
+        data = row.data
+        kind = data.get("type")
+        channel = data.get("channel")
+        if kind == "rpc_received" and data.get("function_name") in (RPC_PHASE_BEGIN, RPC_PHASE_ENDED, RPC_SET_PHASE):
+            kinds[channel].add("phase")
+        elif kind == "export_group_received" and data.get("export_group_path") == GAME_STATE_PATH \
+                and "Phase" in (data.get("payload") or {}):
+            kinds[channel].add("phase")
+        elif kind in ("actor_spawned", "actor_closed") and int(data.get("actor_net_guid") or 0) in players.pawn_slot:
+            kinds[channel].add("lifecycle")
+        elif kind == "rpc_received" and data.get("function_name") == RPC_KILLED_ENEMY:
+            kinds[channel].add("kill")
+    for channel in movement_channels:
+        kinds[channel].add("movement")
+    return kinds
+
+
+def eligibility(diagnostics, game: GameState, coverage: dict, kinds: dict) -> dict:
+    """The link-eligibility record carried in link_inputs and enforced by the linker and
+    `--dry-run` (P-f). Partial-bunch errors are classed by the evidence on their channel, with
+    precedence phase > lifecycle/kill > movement > other."""
+    reasons: list[str] = []
+    reasons += [f"blocking diagnostic: {item}" for item in diagnostics.blocking]
+    link_blocking = list(diagnostics.link_blocking)
+    if game.round_results_fallback:
+        link_blocking.append("RoundResults fell back to a raw payload in the fold")
+    reasons += [f"link-blocking: {item}" for item in link_blocking]
+    min_coverage = min((c["min"] for c in coverage.values()), default=1.0)
+    max_gap = max((c["max_gap_s"] for c in coverage.values()), default=0.0)
+    low = sorted((s for s, c in coverage.items() if c["min"] < MIN_ALIVE_COVERAGE), key=int)
+    gaps = sorted((s for s, c in coverage.items() if c["max_gap_s"] > MAX_TRACK_GAP_S), key=int)
+    if low:
+        reasons.append(f"coverage below {MIN_ALIVE_COVERAGE:.0%} for slots {low}")
+    if gaps:
+        reasons.append(f"a track gap over {MAX_TRACK_GAP_S:g} s for slots {gaps}")
+    partial: dict[str, dict] = {}
+    for channel, count in sorted(diagnostics.channels.items(), key=lambda kv: str(kv[0])):
+        carried = kinds.get(channel, set())
+        # PROVISIONAL(D15): the channel classes and their precedence.
+        if "phase" in carried:
+            cls = "phase_validated" if game.phase_ended_checked else "phase_unvalidated"
+            if not game.phase_ended_checked:
+                reasons.append(f"{count} partial-bunch errors on phase channel {channel} with no "
+                               f"ClientGamePhaseEnded cross-check")
+        elif carried & {"lifecycle", "kill"}:
+            cls = "lifecycle_validated"
+        elif "movement" in carried:
+            cls = "movement_coverage"
+        else:
+            cls = "ignored"
+        partial[str(channel)] = {"count": count, "class": cls}
+    return {
+        "eligible": not reasons, "reasons": reasons, "link_blocking": link_blocking,
+        "coverage_ok": not low and not gaps, "min_coverage": min_coverage, "max_gap_s": max_gap,
+        "limits": {"min_alive_coverage": MIN_ALIVE_COVERAGE, "max_track_gap_s": MAX_TRACK_GAP_S},
+        # Condense refuses outright when these fail, so a record that exists says they passed.
+        "phase_cycle_ok": True, "phase_ended_checked": game.phase_ended_checked, "lifecycle_ok": True,
+        "kills_outside_rounds": 0, "partial_errors": partial,
+    }
+
+
 # ---------------------------------------------------------------- entry points
 
 
@@ -835,7 +906,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     match_uuid, match_uuid_source = match_uuid_of(game, export.manifest)
     if not game.windows:
         raise ContractError("rounds", "no round has both InRound and RoundEnding")
-    by_slot, movement_counts = read_movement(export, players)
+    by_slot, movement_counts, movement_channels = read_movement(export, players)
     hz = native_hz(by_slot)
     kills = read_kills(export, players)
     revives = read_revives(export, players)
@@ -1000,6 +1071,8 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
                          if len(players.spawn_xy) == 10 else {}),
         "kills": link_kills,
         "round_results_fallback": game.round_results_fallback,
+        "eligibility": eligibility(diagnostics, game, report["coverage"],
+                                   channel_kinds(export, players, movement_channels)),
     }
     private_players = [{"slot": slot, "subject": players.subjects[slot], "agent": players.agents[slot],
                         "side_group": sides[slot]} for slot in range(10)]

@@ -5,13 +5,16 @@ rows as dataclasses), not on a session. Stage 2 adds the DB layer that loads tho
 under the advisory lock and writes the result. The steps follow
 docs/replay-viewer-plan.md, "Linking":
 
+0. the replay's eligibility (pass 6, P-f): no link-blocking diagnostic, coverage and gap
+   limits met, the phase cycle and lifecycle validated;
 1. exactly one match with `external_id == match_uuid`, else unlinked (none) or refused;
-2. equal played-round sets; when the replay decoded round winners, each equal to the DB's
-   and an equal score (the first real export decoded none: the kill match carries it);
+2. equal played-round sets, complete for the mode's score or a detected surrender (P-e);
+   when the replay decoded round winners, each equal to the DB's;
 3. exactly one assignment of slots to match players that respects agents, the DB's teams
    (every replay kill cross-team) and the kills; proximity (spawn points, tight round-start
    clusters, the condenser's side groups) only checks the survivor (pass 6, P-d);
-4. per-round kill sequences identical after the excluded DB kill classes;
+4. per-round kill sequences identical after the excluded DB kill classes, paired out of
+   time order only within MAX_RESIDUAL_S on both clocks (P-g);
 5. one match-wide clock offset within the limits, with an anchor in every round;
 6. the `riot_subject` backfill, refused on any conflict, for the slots that have a Subject.
 
@@ -33,11 +36,20 @@ MAX_ABS_OFFSET_S = 2.0
 MIN_ANCHORS = 20
 MAX_RESIDUAL_S = 0.75
 MAX_MEDIAN_RESIDUAL_S = 0.25
-TIE_WINDOW_S = 0.1
 # PROVISIONAL(D11): the decoded RoundResults WinningTeam FName per DB team
 # (tracker.gg's Red is team-1: trackergg_browserstate_source._team_for).
 WINNER_FNAME_TO_TEAM = {"Red": "team-1", "Blue": "team-2"}
-FULL_MATCH_ROUNDS = 13
+# PROVISIONAL(D15): a legal final score per mode (winner's rounds, loser's rounds). The crawl
+# keeps Competitive only; Swiftplay is here for completeness and the synthetic tests.
+MODES = ("competitive", "swiftplay")
+
+
+def is_legal_end(mode: str, winner: int, loser: int) -> bool:
+    if mode == "competitive":
+        return (winner == 13 and loser <= 11) or (winner >= 14 and loser >= 12 and winner - loser == 2)
+    if mode == "swiftplay":
+        return winner == 5 and loser <= 4
+    raise Refused("completeness", "no completeness rule for this mode", mode=mode)
 
 
 @dataclass(frozen=True)
@@ -75,6 +87,7 @@ class DbMatch:
     rounds: list[DbRound]
     players: list[DbPlayer]
     kills: list[DbKill]
+    mode: str = "competitive"  # the tracker.gg crawl keeps Competitive matches only
 
 
 @dataclass
@@ -124,21 +137,48 @@ def outcome_winner(outcome: str | None) -> str | None:
 # ---------------------------------------------------------------- step 2: rounds
 
 
-def check_rounds(replay: ReplayLinkView, match: DbMatch) -> list[int]:
-    db_played = sorted(r.number for r in match.rounds if not is_surrender_round(r.outcome))
+def check_completeness(match: DbMatch) -> bool:
+    """P-e: the DB's played rounds against its awarded score and mode. Returns whether the match
+    is a detected surrender; refuses anything else that isn't a complete match.
+
+    The adapter drops tracker.gg's surrender padding rows but keeps its padded `roundsWon`, so a
+    surrender shows rows that reach no legal end under an awarded score that does.
+    PROVISIONAL(D15): the surrender shape is confirmed by finding 26.
+    """
+    wins = Counter(outcome_winner(r.outcome) for r in match.rounds)
+    if wins[None]:
+        raise Refused("completeness", "a DB round has no winner", rounds=wins[None])
+    rows = (wins["team-1"], wins["team-2"])
+    awarded = (match.team1_rounds_won, match.team2_rounds_won)
+    if rows[0] != rows[1] and is_legal_end(match.mode, max(rows), min(rows)):
+        if rows != awarded:
+            raise Refused("score", "the played rounds reach a final score the DB's awarded score differs from",
+                          rows=list(rows), awarded=list(awarded))
+        return False
+    if awarded[0] == awarded[1] or not is_legal_end(match.mode, max(awarded), min(awarded)):
+        raise Refused("completeness", "the played rounds are not a complete match and the awarded score is no "
+                                      "legal end", rows=list(rows), awarded=list(awarded))
+    winner = 0 if awarded[0] > awarded[1] else 1
+    if awarded[1 - winner] != rows[1 - winner] or awarded[winner] < rows[winner]:
+        raise Refused("completeness", "the played rounds don't fit a surrender under the awarded score",
+                      rows=list(rows), awarded=list(awarded))
+    return True
+
+
+def check_rounds(replay: ReplayLinkView, match: DbMatch) -> tuple[list[int], bool]:
+    """(the played rounds, whether the DB match is a detected surrender)."""
+    db_played = sorted(r.number for r in match.rounds)
     replay_played = list(range(1, replay.round_count + 1))
-    if replay.dropped_final_round:
-        surrendered = any(is_surrender_round(r.outcome) for r in match.rounds)
-        ended_early = max(match.team1_rounds_won, match.team2_rounds_won) < FULL_MATCH_ROUNDS
-        if not (surrendered or ended_early):
-            raise Refused("rounds", "the replay's final round has no RoundEnding, and the DB match did not end early")
     if db_played != replay_played:
         raise Refused("rounds", "played round sets differ", replay_rounds=len(replay_played), db_rounds=len(db_played))
+    surrender = check_completeness(match)
+    if replay.dropped_final_round and not surrender:
+        raise Refused("rounds", "the replay's final round has no RoundEnding, and the DB match is no surrender")
     if replay.link_inputs.get("round_results_fallback"):
         raise Refused("round_results", "RoundResults fell back to a raw payload; no winner source")
     if not replay.link_inputs.get("round_results"):
         # No decoded winners at all (the mode's game state isn't decoded): nothing to compare.
-        return replay_played
+        return replay_played, surrender
     db_rounds = {r.number: r for r in match.rounds}
     wins = Counter()
     for n in replay_played:
@@ -150,10 +190,21 @@ def check_rounds(replay: ReplayLinkView, match: DbMatch) -> list[int]:
         if replay_winner != outcome_winner(db_rounds[n].outcome):
             raise Refused("round_results", "a round's winner differs from the DB", round=n)
         wins[replay_winner] += 1
-    if (wins["team-1"], wins["team-2"]) != (match.team1_rounds_won, match.team2_rounds_won):
-        raise Refused("score", "the final score differs from the DB",
-                      replay=[wins["team-1"], wins["team-2"]], db=[match.team1_rounds_won, match.team2_rounds_won])
-    return replay_played
+    rows = Counter(outcome_winner(r.outcome) for r in match.rounds)
+    if (wins["team-1"], wins["team-2"]) != (rows["team-1"], rows["team-2"]):
+        raise Refused("score", "the replay's round winners give another score than the DB's rounds",
+                      replay=[wins["team-1"], wins["team-2"]], db=[rows["team-1"], rows["team-2"]])
+    return replay_played, surrender
+
+
+def check_eligibility(replay: ReplayLinkView) -> None:
+    """P-f step 0: the condenser's eligibility record must be clean (the same check `--dry-run`
+    makes before it loads a row)."""
+    eligibility = replay.link_inputs.get("eligibility")
+    if not eligibility:
+        raise Refused("eligibility", "the replay carries no eligibility record")
+    if not eligibility.get("eligible"):
+        raise Refused("eligibility", "the replay is not eligible to link", reasons=eligibility.get("reasons", []))
 
 
 # ---------------------------------------------------------------- step 3: teams and players
@@ -282,38 +333,32 @@ def split_db_kills(match: DbMatch) -> tuple[dict[int, list[DbKill]], dict[int, l
     return matched, excluded
 
 
-def _tie_groups(items: list, time_of) -> list[list]:
-    groups: list[list] = []
-    for item in items:
-        if groups and time_of(item) - time_of(groups[-1][0]) <= TIE_WINDOW_S:
-            groups[-1].append(item)
-        else:
-            groups.append([item])
-    return groups
-
-
 def match_kills(replay_kills: list[list], db_kills: list[DbKill], mapping: dict[int, int]) -> list[tuple[list, DbKill]] | None:
     """Pairs replay kills [t, killer, victim] with DB kills, or None if the sequences differ.
 
-    Identity and order first, the clock second: both sides sorted by time, kills within
-    TIE_WINDOW_S of a group's first kill compared as a multiset. A replay self-kill (Clove's
-    ult running out, in the first real export) pairs with nothing, as the DB's are excluded.
+    Identity and order first, the clock second (P-g): each replay kill, in time order, pairs
+    with the earliest unused DB kill of the same (killer, victim); the counts must agree; and
+    two pairs may be out of time order only if they are within MAX_RESIDUAL_S of each other on
+    both clocks. Pass 5 grouped 0.1 s ties separately on each side, which refused real jitter.
+    A replay self-kill (Clove's ult running out, in the first real export) pairs with nothing,
+    as the DB's are excluded.
     """
-    ours = _tie_groups(sorted((k for k in replay_kills if k[1] != k[2]), key=lambda k: k[0]), lambda k: k[0])
-    theirs = _tie_groups(sorted(db_kills, key=lambda k: (k.t, k.id)), lambda k: k.t)
-    if len(ours) != len(theirs):
+    ours = sorted((k for k in replay_kills if k[1] != k[2]), key=lambda k: k[0])
+    pool = sorted(db_kills, key=lambda k: (k.t, k.id))
+    if len(ours) != len(pool):
         return None
     pairs = []
-    for mine, dbs in zip(ours, theirs):
-        wanted = Counter((mapping[k[1]], mapping[k[2]]) for k in mine)
-        if wanted != Counter((k.killer, k.victim) for k in dbs):
+    for kill in ours:
+        key = (mapping[kill[1]], mapping[kill[2]])
+        hit = next((d for d in pool if (d.killer, d.victim) == key), None)
+        if hit is None:
             return None
-        pool = list(dbs)
-        for kill in mine:
-            key = (mapping[kill[1]], mapping[kill[2]])
-            hit = next(d for d in pool if (d.killer, d.victim) == key)
-            pool.remove(hit)
-            pairs.append((kill, hit))
+        pool.remove(hit)
+        pairs.append((kill, hit))
+    for i, (a, db_a) in enumerate(pairs):
+        for b, db_b in pairs[i + 1:]:
+            if db_a.t > db_b.t and (b[0] - a[0] > MAX_RESIDUAL_S or db_a.t - db_b.t > MAX_RESIDUAL_S):
+                return None
     return pairs
 
 
@@ -337,7 +382,8 @@ def link(replay: ReplayLinkView, candidates: list[DbMatch], subject_owner: dict[
 
 
 def _link(replay: ReplayLinkView, match: DbMatch, subject_owner: dict[str, int]) -> LinkResult:
-    played = check_rounds(replay, match)
+    check_eligibility(replay)
+    played, surrender = check_rounds(replay, match)
     check_players(replay)
     db_matched, db_excluded = split_db_kills(match)
     replay_kills = {int(n): kills for n, kills in (replay.link_inputs.get("kills") or {}).items()}
@@ -408,7 +454,7 @@ def _link(replay: ReplayLinkView, match: DbMatch, subject_owner: dict[str, int])
         "excluded_db_kills": sum(len(v) for v in db_excluded.values()),
         "agents": {str(slot): db_player[mp].agent for slot, mp in sorted(mapping.items())},
         "side_to_team": orientation, "backfills": len(backfills), "pinned": pins["pinned"],
-        "winners_checked": bool(replay.link_inputs.get("round_results")),
+        "winners_checked": bool(replay.link_inputs.get("round_results")), "surrender": surrender,
     }
     return LinkResult("linked", report, match.match_id, round(offset, 3), kill_map, db_deaths,
                       dict(sorted(mapping.items())), orientation, backfills)

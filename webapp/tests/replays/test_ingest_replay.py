@@ -15,7 +15,7 @@ sys.path.insert(0, str(HERE.parents[1] / "scripts"))
 
 import ingest_replay  # noqa: E402
 from replay_synthetic import AGENT_NAMES, MATCH_UUID, SyntheticMatch, team_of  # noqa: E402
-from test_replay_link import LINK_KILLS, OFFSET, WINNERS  # noqa: E402
+from test_replay_link import LINK_KILLS, OFFSET, ROUNDS, WINNERS  # noqa: E402
 
 from app.db import Base  # noqa: E402
 from app.models import KillEvent, Match, MatchPlayer, Player, Round  # noqa: E402
@@ -24,7 +24,7 @@ from app.replays.contract import load_pin  # noqa: E402
 
 
 def link_match():
-    return SyntheticMatch(rounds=4, kills=copy.deepcopy(LINK_KILLS), winners=dict(WINNERS))
+    return SyntheticMatch(rounds=ROUNDS, kills=copy.deepcopy(LINK_KILLS), winners=dict(WINNERS))
 
 
 @pytest.fixture
@@ -52,7 +52,7 @@ def test_preview_writes_a_page_and_passes_the_scripted_checks(export, capsys):
                                "--parser-dir", str(export["parser"]), "--out", str(out)])
     printed = capsys.readouterr().out
     assert code == 0, printed
-    assert "FAIL" not in printed and printed.count("PASS") == 8
+    assert "FAIL" not in printed and printed.count("PASS") == 13  # 8 from pass 5, 5 from pass 6
     page = (out / "preview.html").read_text(encoding="utf-8")
     assert "<canvas" in page and "data:image/png;base64," in page
     assert MATCH_UUID not in page.lower() and "00000000-0000-4000-8000-0000000000" not in page
@@ -153,8 +153,9 @@ def test_load_link_candidates_reads_the_rows_the_linker_compares(session):
     candidates, owners = ingest_replay.load_link_candidates(session, MATCH_UUID.upper())
     [match] = candidates
     assert owners == {}
-    assert (match.team1_rounds_won, match.team2_rounds_won) == (2, 2)
-    assert [r.number for r in match.rounds] == [1, 2, 3, 4]
+    assert (match.team1_rounds_won, match.team2_rounds_won) == (13, 2)
+    assert [r.number for r in match.rounds] == list(range(1, ROUNDS + 1))
+    assert match.mode == "competitive"
     assert len(match.kills) == sum(len(s) for s in LINK_KILLS.values())
     assert {p.team for p in match.players} == {"team-1", "team-2"}
     assert all(p.riot_subject is None for p in match.players)
