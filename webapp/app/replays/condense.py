@@ -34,6 +34,7 @@ from app.replays.contract import (
     PLAYER_STATE_PATH,
     RPC_KILLED_ENEMY,
     RPC_PHASE_BEGIN,
+    RPC_PHASE_ENDED,
     RPC_RESURRECT,
     RPC_SET_PHASE,
     ContractError,
@@ -59,6 +60,11 @@ MIN_ALIVE_COVERAGE = 0.90
 MAX_TRACK_GAP_S = 3.0
 SPAWN_CLUSTER_RADIUS = 1500.0
 START_POSITION_WINDOW_S = 2.0
+# PROVISIONAL(D15): pass-6 rules the 1b gate freezes. A ClientGamePhaseEnded must sit within
+# this of its ClientGamePhaseBegin (the Swiftplay export shows equal times), and a decoded
+# RoundNumber is 0-based, as D8 assumes for RoundResults (finding 16).
+PHASE_ENDED_TOLERANCE_MS = 0
+ROUND_NUMBER_BASE = 0
 
 MAP_PATH = re.compile(r"/Game/Maps/([^/.]+)/")
 # A player character's archetype, e.g. `Default__Wushu_PC_C` (Jett). Clove's post-death
@@ -280,11 +286,14 @@ def build_players(export: Export, agents_by_code: dict[str, str]) -> PlayerTable
 @dataclass
 class GameState:
     match_uuid: str | None
-    windows: list[tuple[int, int]]          # (InRound ms, RoundEnding ms) per played round
+    # (InRound ms, RoundEnding ms = t_decided, playback end ms = t_end) per played round
+    windows: list[tuple[int, int, int]]
     dropped_final_start: int | None
     round_number_at_start: list[int | None]
     round_results: dict[int, dict]          # decoded index -> merged fields
     round_results_fallback: bool
+    phase_ended_checked: bool = False
+    dropped_final_end: int | None = None    # where the dropped final round's window ends
 
 
 def _history_at(history: list[tuple[int, object]], t_ms: int) -> object | None:
@@ -311,25 +320,19 @@ def read_game_state(export: Export) -> GameState:
         raise ContractError("match_id", "more than one MatchID in one replay")
 
     transitions = [(t, int(p)) for t, p in history.get("Phase", []) if p is not None]
-    for rpc in (RPC_SET_PHASE, RPC_PHASE_BEGIN):
-        transitions += [(row.time_ms, int(row.data["payload"]["NewPhase"])) for row in export.rpcs(rpc)
-                        if isinstance(row.data.get("payload"), dict) and row.data["payload"].get("NewPhase") is not None]
+    begins = [(row.time_ms, int(row.data["payload"]["NewPhase"])) for row in export.rpcs(RPC_PHASE_BEGIN)
+              if isinstance(row.data.get("payload"), dict) and row.data["payload"].get("NewPhase") is not None]
+    transitions += begins
+    transitions += [(row.time_ms, int(row.data["payload"]["NewPhase"])) for row in export.rpcs(RPC_SET_PHASE)
+                    if isinstance(row.data.get("payload"), dict) and row.data["payload"].get("NewPhase") is not None]
     transitions.sort(key=lambda item: item[0])
     collapsed: list[tuple[int, int]] = []
     for t, phase in transitions:
         if not collapsed or collapsed[-1][1] != phase:
             collapsed.append((t, phase))
 
-    windows: list[tuple[int, int]] = []
-    open_start: int | None = None
-    for t, phase in collapsed:
-        if phase == PHASE_IN_ROUND:
-            if open_start is not None:
-                raise ContractError("round_without_end", f"InRound at {open_start} ms has no RoundEnding")
-            open_start = t
-        elif phase == PHASE_ROUND_ENDING and open_start is not None:
-            windows.append((open_start, t))
-            open_start = None
+    phase_ended_checked = check_phase_ended(begins, export)
+    windows, open_start, dropped_end = phase_windows(collapsed, export.end_ms)
 
     fallback = False
     results: dict[int, dict] = {}
@@ -346,8 +349,86 @@ def read_game_state(export: Export) -> GameState:
                 if item.get(key) is not None:
                     merged[key] = item[key]
 
-    numbers = [_history_at(history.get("RoundNumber", []), start) for start, _ in windows]
-    return GameState(match_ids.pop() if match_ids else None, windows, open_start, numbers, results, fallback)
+    numbers = [_history_at(history.get("RoundNumber", []), start) for start, _, _ in windows]
+    for n, number in enumerate(numbers, 1):
+        if number is not None and int(number) != n - 1 + ROUND_NUMBER_BASE:
+            raise ContractError("round_number", f"played round {n} carries RoundNumber {number}, expected "
+                                                f"{n - 1 + ROUND_NUMBER_BASE} (base {ROUND_NUMBER_BASE})")
+    return GameState(match_ids.pop() if match_ids else None, windows, open_start, numbers, results, fallback,
+                     phase_ended_checked, dropped_end)
+
+
+def phase_windows(collapsed: list[tuple[int, int]], end_ms: int) -> tuple[list[tuple[int, int, int]], int | None,
+                                                                            int | None]:
+    """Validated round windows from the collapsed phase sequence (P-a).
+
+    A round is a 4 → 5 cycle with nothing between; its playback runs on to the next phase
+    after the 5 (the recording's end for the last round). Refuses an orphan 5, a second 4
+    while one is open, and a 4 meeting another phase while a later 4 exists. Returns
+    (windows, the dropped final round's start, where that round's window ends).
+    """
+    fours = [i for i, (_, phase) in enumerate(collapsed) if phase == PHASE_IN_ROUND]
+    last_four = fours[-1] if fours else -1
+    windows: list[tuple[int, int, int]] = []
+    open_start: int | None = None
+    pending: tuple[int, int] | None = None
+    dropped: int | None = None
+    dropped_end: int | None = None
+    for i, (t, phase) in enumerate(collapsed):
+        if pending is not None:
+            windows.append((*pending, t))
+            pending = None
+        if phase == PHASE_IN_ROUND:
+            if open_start is not None:
+                raise ContractError("phase_cycle", f"a second InRound at {t} ms while the one at {open_start} ms "
+                                                   f"is open")
+            open_start = t
+        elif phase == PHASE_ROUND_ENDING:
+            if open_start is None:
+                raise ContractError("phase_cycle", f"RoundEnding at {t} ms with no open InRound")
+            pending = (open_start, t)
+            open_start = None
+        elif open_start is not None:
+            if i < last_four:
+                raise ContractError("phase_cycle", f"InRound at {open_start} ms meets phase {phase} at {t} ms "
+                                                   f"before any RoundEnding")
+            # PROVISIONAL(D15): the final InRound (no later 4) may end in another phase, a
+            # surrender's match end (finding 26). It is dropped and reported; a 5 after it
+            # is then an orphan and refuses.
+            dropped = open_start
+            open_start = None
+            dropped_end = t
+    if pending is not None:
+        windows.append((*pending, max(end_ms, pending[1])))
+    if open_start is not None:
+        dropped, dropped_end = open_start, max(end_ms, open_start)
+    elif dropped is not None and dropped_end is None:
+        dropped_end = max(end_ms, dropped)
+    return windows, dropped, dropped_end
+
+
+def check_phase_ended(begins: list[tuple[int, int]], export: Export) -> bool:
+    """Cross-checks each ClientGamePhaseBegin against its ClientGamePhaseEnded (P-a).
+
+    Over the raw rows: the k-th Ended pairs with the k-th Begin within
+    PHASE_ENDED_TOLERANCE_MS, and for k >= 1 its OldPhase is Begin[k-1]'s NewPhase (the first
+    Ended closes a phase that began before the recording). The last Begin may lack its Ended.
+    Returns False when the export has no Ended RPC at all (nothing to check against).
+    """
+    ends = [(row.time_ms, (row.data.get("payload") or {}).get("OldPhase")) for row in export.rpcs(RPC_PHASE_ENDED)]
+    if not ends:
+        return False
+    if len(ends) not in (len(begins), len(begins) - 1):
+        raise ContractError("phase_ended", f"{len(ends)} ClientGamePhaseEnded for {len(begins)} ClientGamePhaseBegin")
+    for k, (t_end, old) in enumerate(ends):
+        t_begin, _ = begins[k]
+        if abs(t_end - t_begin) > PHASE_ENDED_TOLERANCE_MS:
+            raise ContractError("phase_ended", f"phase end {k} at {t_end} ms is {abs(t_end - t_begin)} ms from its "
+                                               f"begin")
+        if k >= 1 and (old is None or int(old) != begins[k - 1][1]):
+            raise ContractError("phase_ended", f"phase end {k} closes phase {old!r}, but phase "
+                                               f"{begins[k - 1][1]} was running")
+    return True
 
 
 # ---------------------------------------------------------------- movement
@@ -643,7 +724,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     round_kills: dict[int, list[Kill]] = {}
     absent: dict[str, list[int]] = {}
     assigned = 0
-    for n, (start, end) in enumerate(game.windows, 1):
+    for n, (start, _, end) in enumerate(game.windows, 1):
         in_round = [k for k in kills if start <= k.t_ms <= end]
         round_kills[n] = in_round
         assigned += len(in_round)
@@ -681,10 +762,19 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     match_spawn["ok"] = match_spawn["sizes"] == [5, 5] and radius <= SPAWN_CLUSTER_RADIUS
     if match_spawn["ok"]:
         clusters.append((first, second))
+    # P-a: every kill falls in one playback window, or in the dropped final round (excluded
+    # with its reason); any other kill refuses.
+    excluded = {"dropped_final_round": 0}
+    if game.dropped_final_start is not None:
+        excluded["dropped_final_round"] = sum(
+            1 for k in kills if game.dropped_final_start <= k.t_ms <= game.dropped_final_end)
+    outside = len(kills) - assigned - excluded["dropped_final_round"]
+    if outside:
+        raise ContractError("kills_outside_rounds", f"{outside} kills fall in no round window")
     sides = side_groups(kills, clusters)
     player_rows = [{"slot": slot, "agent": players.agents[slot], "side": sides[slot]} for slot in range(10)]
 
-    for n, (start, end) in enumerate(game.windows, 1):
+    for n, (start, decided, end) in enumerate(game.windows, 1):
         tracks: dict[str, list] = {}
         alive: dict[str, list] = {}
         for slot in range(10):
@@ -707,7 +797,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
                               "u": u, "v": v})
         rounds[n] = {
             "v": fmt.FORMAT_VERSION, "round": n, "map": game_map.name, "hz": hz,
-            "t_start": 0.0, "t_end": _seconds(end, start),
+            "t_start": 0.0, "t_decided": _seconds(decided, start), "t_end": _seconds(end, start),
             "players": player_rows, "tracks": tracks, "alive": alive, "kills": kill_rows,
             # PROVISIONAL(D9): no plant/defuse source yet; the first export's TimedBomb wasn't decoded.
             "plant": None, "defuse": None,
@@ -733,7 +823,9 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         "round_results_decoded": len(game.round_results),
         "round_results_fallback": game.round_results_fallback,
         "kills": len(kills),
-        "kills_outside_rounds": len(kills) - assigned,
+        "kills_outside_rounds": outside,
+        "kills_excluded": excluded,
+        "phase_ended_checked": game.phase_ended_checked,
         "movement": movement_counts,
         "spawn_checks": spawn_checks,
         "match_spawn_check": match_spawn,

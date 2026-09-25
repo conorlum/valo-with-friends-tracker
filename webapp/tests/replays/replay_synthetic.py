@@ -134,7 +134,7 @@ class SyntheticMatch:
                 continue
             end = start + ROUND_MS
             add(self._phase_state(end, 5, n - 1))
-            add({"type": "export_group_received", "time_ms": end + 50, "packet_id": 8, "actor_net_guid": 50,
+            add({"type": "export_group_received", "time_ms": end, "packet_id": 8, "actor_net_guid": 50,
                  "object_net_guid": 50, "channel": 2,
                  "export_group_path": "/Game/GameModes/Bomb/BombGameState.BombGameState_C",
                  "payload": {"RoundResults": [{"RoundNumber": n - 1, "WinningTeam": self.winners.get(n),
@@ -146,9 +146,15 @@ class SyntheticMatch:
         rows: list[dict] = []
         add = rows.append
 
+        running = [1]  # the phase before the recording began, as in the real export
+
         def phase(t: int, new: int) -> None:
+            # The real export pairs every Begin with an Ended of the running phase, at the same time.
+            add({"type": "rpc_received", "time_ms": t, "packet_id": 6, "actor_net_guid": 2, "object_net_guid": 2,
+                 "channel": 1, "function_name": "ClientGamePhaseEnded", "payload": {"OldPhase": running[0]}})
             add({"type": "rpc_received", "time_ms": t, "packet_id": 6, "actor_net_guid": 2, "object_net_guid": 2,
                  "channel": 1, "function_name": "ClientGamePhaseBegin", "payload": {"NewPhase": new}})
+            running[0] = new
 
         for slot in range(10):
             code = self.agent_codes[slot]
@@ -190,6 +196,13 @@ class SyntheticMatch:
                 "export_group_path": "/Game/GameModes/Bomb/BombGameState.BombGameState_C",
                 "payload": {"Phase": phase, "RoundNumber": round_number}}
 
+    def window_end(self, n: int) -> int:
+        """Where round n's playback window ends: the next phase after its RoundEnding (the next
+        buy phase), or the recording's last event for the final round."""
+        if n < self.rounds:
+            return self.round_start(n + 1) - BUY_MS
+        return max(row["time_ms"] for row in self.events())
+
     def death_ms(self, n: int, slot: int) -> int | None:
         times = [t for t, _, victim in self.kills.get(n, []) if victim == slot]
         return self.round_start(n) + int(round(min(times) * 1000)) if times else None
@@ -202,7 +215,7 @@ class SyntheticMatch:
             for slot in range(10):
                 x0, y0 = self.spawn_position(n, slot)
                 dead = self.death_ms(n, slot)
-                stop = dead if dead is not None else start + ROUND_MS
+                stop = dead if dead is not None else self.window_end(n)
                 gone = self.gone_ms(slot)
                 if gone is not None:
                     stop = min(stop, gone)

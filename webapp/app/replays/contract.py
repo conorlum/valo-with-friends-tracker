@@ -40,6 +40,7 @@ GAME_STATE_PATH = "/Game/GameModes/Bomb/BombGameState.BombGameState_C"
 # Confirmed by the first real export.
 RPC_KILLED_ENEMY = "MulticastNotifyKilledEnemy"
 RPC_PHASE_BEGIN = "ClientGamePhaseBegin"
+RPC_PHASE_ENDED = "ClientGamePhaseEnded"
 CHARACTER_PLAYER_STATE = "PlayerState"
 # Not seen in the first export (no revive happened); the name is from the parser source.
 RPC_SET_PHASE = "MulticastSetPhase"
@@ -211,6 +212,8 @@ class Export:
     manifest: dict
     events: list[Row]
     movement: list[Row]
+    # The last event's time: the recording's end, where the final round's playback stops.
+    end_ms: int = 0
 
     def of_type(self, row_type: str) -> Iterator[Row]:
         return (row for row in self.events if row.data.get("type") == row_type)
@@ -230,7 +233,8 @@ def load_export(export_dir: Path) -> Export:
     if missing:
         raise ContractError("incomplete_export", f"{export_dir} lacks {', '.join(missing)}")
     manifest = json.loads((export_dir / "manifest.json").read_text(encoding="utf-8"))
-    return Export(manifest, read_ndjson(export_dir / "events.ndjson"), read_ndjson(export_dir / "movement.ndjson"))
+    events = read_ndjson(export_dir / "events.ndjson")
+    return Export(manifest, events, read_ndjson(export_dir / "movement.ndjson"), events[-1].time_ms if events else 0)
 
 
 @dataclass

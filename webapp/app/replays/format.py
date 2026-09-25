@@ -2,7 +2,7 @@
 
 A round blob is `gzip(json)` of:
 
-    {"v": 1, "round": 7, "map": "Ascent", "hz": 16, "t_start": 0.0, "t_end": 98.4,
+    {"v": 1, "round": 7, "map": "Ascent", "hz": 16, "t_start": 0.0, "t_decided": 91.4, "t_end": 98.4,
      "players": [{"slot": 0, "agent": "Jett", "side": "A"}, ...],
      "tracks": {"0": [{"t0": 0.0, "u": [4121, 9, -3], "v": [...], "yaw": [...]}, ...]},
      "alive": {"0": [[0.0, 41.3, "kill"]]},
@@ -10,7 +10,8 @@ A round blob is `gzip(json)` of:
      "plant": null, "defuse": null, "util": []}
 
 Every `t` is seconds since the round's `InRound` phase start on the replay's own clock.
-In a track segment the first value of each array is absolute and the rest are
+`t_decided` is the `RoundEnding` phase (the round was decided); playback runs on to
+`t_end`, the next phase, so post-decision kills stay in the blob. In a track segment the first value of each array is absolute and the rest are
 differences from the previous sample, one sample per `1/hz` seconds from `t0`.
 `u`/`v` are ints in 0..10000 of the square minimap; `yaw` is an int in degrees 0..359 in
 minimap space (0 = +u, 90 = +v).
@@ -28,7 +29,7 @@ from pathlib import Path
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 1
+CONDENSE_REVISION = 2
 
 UV_SCALE = 10000
 

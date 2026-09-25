@@ -36,7 +36,7 @@ def test_happy_path(tmp_path):
     assert out.match_uuid == MATCH_UUID
     assert out.map_name == "Ascent" and out.hz == 16 and out.round_count == 3
     assert out.game_branch == "++Ares-Core+release-13.06"
-    assert out.recipe.startswith("2b66c65a7b11.c1.f1.a")
+    assert out.recipe.startswith(f"2b66c65a7b11.c{fmt.CONDENSE_REVISION}.f1.a")
     assert [p["agent"] for p in out.players] == AGENT_NAMES
     assert [p["side_group"] for p in out.players] == ["A"] * 5 + ["B"] * 5
     assert [p["subject"] for p in out.players] == [subject(i) for i in range(10)]
@@ -57,9 +57,10 @@ def test_blobs_hold_no_identities(tmp_path):
 
 def test_round_blob_shape(tmp_path):
     blob = run(tmp_path).rounds[1]
-    assert set(blob) == {"v", "round", "map", "hz", "t_start", "t_end", "players", "tracks", "alive", "kills",
-                         "plant", "defuse", "util"}
-    assert blob["t_start"] == 0.0 and blob["t_end"] == 40.0
+    assert set(blob) == {"v", "round", "map", "hz", "t_start", "t_decided", "t_end", "players", "tracks", "alive",
+                         "kills", "plant", "defuse", "util"}
+    # t_decided is the RoundEnding; playback runs on to the next phase (the next buy, 10 s later).
+    assert blob["t_start"] == 0.0 and blob["t_decided"] == 40.0 and blob["t_end"] == 50.0
     assert blob["players"][0] == {"slot": 0, "agent": "Jett", "side": "A"}
     assert blob["util"] == [] and blob["plant"] is None
 
@@ -102,7 +103,7 @@ def test_a_mid_match_round_without_round_ending_refuses(tmp_path):
               if not (e.get("payload", {}).get("Phase") == 5 and e["time_ms"] == match.round_start(1) + 40_000)]
     with pytest.raises(ContractError) as refused:
         run(tmp_path, match, events=events)
-    assert refused.value.reason == "round_without_end"
+    assert refused.value.reason == "phase_cycle"
 
 
 def test_a_one_round_match(tmp_path):
@@ -230,7 +231,7 @@ def test_tracks_sit_on_the_native_grid(tmp_path):
     [segment] = blob["tracks"]["0"]
     assert segment["t0"] == 0.0
     points = samples_of(blob, 0)
-    assert len(points) == 40 * 16 + 1
+    assert len(points) == 50 * 16 + 1  # to t_end: the next buy phase, 10 s after RoundEnding
     assert points[16][0] == 1.0
 
 
@@ -245,7 +246,7 @@ def test_a_gap_over_one_second_splits_a_segment_and_a_short_gap_does_not(tmp_pat
                                                       and start + 5000 < r["time_ms"] < start + 5500)]
     blob = run(tmp_path / "short", match, movement=short_gap).rounds[1]
     assert len(blob["tracks"]["0"]) == 1
-    assert len(samples_of(blob, 0)) == 40 * 16 + 1, "grid points inside a short gap are filled, not dropped"
+    assert len(samples_of(blob, 0)) == 50 * 16 + 1, "grid points inside a short gap are filled, not dropped"
 
 
 def test_a_teleport_splits_a_segment(tmp_path):
