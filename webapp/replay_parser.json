@@ -15,6 +15,8 @@
   ],
   "cli_project": "src/CliReader/CliReader.csproj",
   "export_schema_version": 8,
-  "supported_replay_builds": [],
-  "notes": "supported_replay_builds is PROVISIONAL(D2): empty until the first successful export shows the exact manifest.replay_build string. The condenser refuses every build until then."
+  "supported_replay_builds": [
+    "++Ares-Core+release-13.06"
+  ],
+  "notes": "supported_replay_builds is PROVISIONAL(D2): taken from the archive README's recorded game branch for the test replay, not yet from an export's manifest.replay_build."
 }
