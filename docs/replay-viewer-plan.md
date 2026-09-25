@@ -110,6 +110,22 @@ Still open (small, with recommendations) at the end.
 | Minimap transform | The prior art uses `u = world.y · xMultiplier + xScalarToAdd`, `v = world.x · yMultiplier + yScalarToAdd` (0..1 of the square `displayIcon`). | Check it at round start. **[export]** |
 | Utility | Typed events for flashes, nearsights and walls carry `caster_subject`/`target_subject`/`trigger_subject` (`ReplayEventJsonWriter.cs:132,178,196,233,253,268,302`). Smokes have descriptors but no typed event. | Recorded in Stage 1a. v1 draws none, but the `util` envelope is fixed now. |
 
+### Stage 1a results (2026-09-25 overnight run)
+
+- **Parser build and tests: PASS.** Upstream `2b66c65` with the `global.json` patch. The `.trx` reports 29 tests:
+  23 executed, 23 passed, 0 failed. The 6 not executed all need a `.vrf` fixture that isn't on this machine, so
+  they are the baseline:
+  `SuppliedVyseYoruFlashReplay_EmitsCompleteRecordedLifecycle`,
+  `SuppliedOmenReynaReplay_MatchesKnownCastAndHitAnchors`,
+  `SuppliedPlacementReplay_EmitsSageDestructionAndVysePlacementLifecycles`,
+  `SuppliedFlashReplay_EmitsCompleteRecordedLifecycle`, `SuppliedHarborReplay_EmitsRecordedNearsightLifecycle`,
+  `SuppliedActivationReplay_EmitsVyseActivationWithTriggerAndActiveDuration`.
+- **Export: not run yet.** The first attempt exited 1 after 1.3 s without creating its output folder. Windows
+  PowerShell 5.1's `Start-Process -ArgumentList` doesn't quote array elements, so a path with a space (the user
+  profile) was split, and the CLI's `AcceptExistingOnly` check refused it. Step 3's command below needs the paths
+  quoted (`"`"$path`""`). `scripts/export_replay.ps1` calls the built binary with `&` instead, which quotes
+  correctly. Findings 1-13 and the gate wait on the export.
+
 ### Exporter contract (what the condenser relies on)
 
 - **Clock:** `time_ms` on every event and movement row, the replay clock in ms. The raw movement `timestamp` is
