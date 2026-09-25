@@ -41,8 +41,8 @@ def _empty_bucket() -> dict[str, int]:
     return {"total": 0, "win": 0}
 
 
-def _team_has_roster_player(match: Match, team: Team, roster_player_ids: set[int]) -> bool:
-    return any(mp.team == team and mp.player_id in roster_player_ids for mp in match.match_players)
+def _team_has_group_player(match: Match, team: Team, group_player_ids: set[int]) -> bool:
+    return any(mp.team == team and mp.player_id in group_player_ids for mp in match.match_players)
 
 
 def _accumulate(buckets: dict[str, dict[str, int]], score: int, won_match: bool) -> None:
@@ -56,8 +56,8 @@ def _match_went_to_ot(match: Match) -> bool:
     return any(r.round_number > LAST_REGULATION_ROUND for r in match.rounds)
 
 
-def compute_score_reached_stats(matches: list[Match], roster_player_ids: set[int]) -> dict:
-    """{"friends": {"buckets": {"0": {"total", "win"}, ..., "12": {...}}, "ot":
+def compute_score_reached_stats(matches: list[Match], group_player_ids: set[int]) -> dict:
+    """{"group": {"buckets": {"0": {"total", "win"}, ..., "12": {...}}, "ot":
     {"total", "count"}}, "all": {...}}. A bucket key N means "this team's
     final round count was >= N" (capped at MAX_DISPLAYED_SCORE -- see module
     docstring), value is whether they went on to win the match. A team's own
@@ -65,35 +65,35 @@ def compute_score_reached_stats(matches: list[Match], roster_player_ids: set[int
     rounds won), so that bucket's win rate is ~50%. "ot" is match-level (one
     sample per decisive match, not per team) -- "total" decisive matches and
     "count" of those that went to overtime."""
-    buckets: dict[str, dict[str, dict[str, int]]] = {"friends": {}, "all": {}}
-    ot: dict[str, dict[str, int]] = {"friends": {"total": 0, "count": 0}, "all": {"total": 0, "count": 0}}
+    buckets: dict[str, dict[str, dict[str, int]]] = {"group": {}, "all": {}}
+    ot: dict[str, dict[str, int]] = {"group": {"total": 0, "count": 0}, "all": {"total": 0, "count": 0}}
 
     for match in matches:
         for team, final_score in ((Team.TEAM_1, match.team1_rounds_won), (Team.TEAM_2, match.team2_rounds_won)):
             won_match = match_win(match, _team_string(team))
             if won_match is None:
                 continue
-            is_roster = _team_has_roster_player(match, team, roster_player_ids)
+            is_group = _team_has_group_player(match, team, group_player_ids)
             for n in range(min(final_score, MAX_DISPLAYED_SCORE) + 1):
                 _accumulate(buckets["all"], n, won_match)
-                if is_roster:
-                    _accumulate(buckets["friends"], n, won_match)
+                if is_group:
+                    _accumulate(buckets["group"], n, won_match)
 
         team1_won = match_win(match, "team-1")
         if team1_won is None:
             continue
         went_to_ot = _match_went_to_ot(match)
-        is_roster_match = any(mp.player_id in roster_player_ids for mp in match.match_players)
+        is_group_match = any(mp.player_id in group_player_ids for mp in match.match_players)
         ot["all"]["total"] += 1
         if went_to_ot:
             ot["all"]["count"] += 1
-        if is_roster_match:
-            ot["friends"]["total"] += 1
+        if is_group_match:
+            ot["group"]["total"] += 1
             if went_to_ot:
-                ot["friends"]["count"] += 1
+                ot["group"]["count"] += 1
 
     return {
-        "friends": {"buckets": buckets["friends"], "ot": ot["friends"]},
+        "group": {"buckets": buckets["group"], "ot": ot["group"]},
         "all": {"buckets": buckets["all"], "ot": ot["all"]},
     }
 

@@ -63,8 +63,8 @@ def _halftime_samples(match: Match) -> list[tuple[Team, int, bool]]:
     return samples
 
 
-def _team_has_roster_player(match: Match, team: Team, roster_player_ids: set[int]) -> bool:
-    return any(mp.team == team and mp.player_id in roster_player_ids for mp in match.match_players)
+def _team_has_group_player(match: Match, team: Team, group_player_ids: set[int]) -> bool:
+    return any(mp.team == team and mp.player_id in group_player_ids for mp in match.match_players)
 
 
 def _accumulate(buckets: dict[str, dict[str, int]], own_half_wins: int, won_match: bool) -> None:
@@ -74,17 +74,17 @@ def _accumulate(buckets: dict[str, dict[str, int]], own_half_wins: int, won_matc
         bucket["win"] += 1
 
 
-def compute_halftime_conversion_stats(matches: list[Match], roster_player_ids: set[int]) -> dict:
-    """{"friends": {"0": {"total", "win"}, ..., "12": {...}}, "all": {...}} --
+def compute_halftime_conversion_stats(matches: list[Match], group_player_ids: set[int]) -> dict:
+    """{"group": {"0": {"total", "win"}, ..., "12": {...}}, "all": {...}} --
     key is the team's OWN round count after 12 rounds (their opponent's is
     implicitly 12 minus that)."""
-    variants: dict[str, dict[str, dict[str, int]]] = {"friends": {}, "all": {}}
+    variants: dict[str, dict[str, dict[str, int]]] = {"group": {}, "all": {}}
 
     for match in matches:
         for team, own_half_wins, won_match in _halftime_samples(match):
             _accumulate(variants["all"], own_half_wins, won_match)
-            if _team_has_roster_player(match, team, roster_player_ids):
-                _accumulate(variants["friends"], own_half_wins, won_match)
+            if _team_has_group_player(match, team, group_player_ids):
+                _accumulate(variants["group"], own_half_wins, won_match)
 
     return variants
 

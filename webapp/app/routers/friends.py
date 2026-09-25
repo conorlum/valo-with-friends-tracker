@@ -8,6 +8,7 @@ from app.services.auth import get_current_player
 from app.services.friends import add_friend, list_acquaintances, list_friends, remove_friend
 from app.services.player_view_cache import invalidate_player_cache
 from app.services.players import get_player_or_404, list_player_display_names
+from app.services.viewer_site_stats_cache import invalidate_viewer_site_stats
 from app.templates import templates
 
 router = APIRouter(prefix="/friends", tags=["friends"])
@@ -62,6 +63,7 @@ def add_friend_route(
     friend = get_player_or_404(db, display_name)
     if add_friend(db, current_player.id, friend.id):
         invalidate_player_cache(db, {current_player.id})
+        invalidate_viewer_site_stats(db, current_player.id)
     db.commit()
     return RedirectResponse(url=_safe_next(next), status_code=303)
 
@@ -76,5 +78,6 @@ def remove_friend_route(request: Request, display_name: str = Form(...), db: Ses
     friend = get_player_or_404(db, display_name)
     if remove_friend(db, current_player.id, friend.id):
         invalidate_player_cache(db, {current_player.id})
+        invalidate_viewer_site_stats(db, current_player.id)
     db.commit()
     return RedirectResponse(url="/friends", status_code=303)

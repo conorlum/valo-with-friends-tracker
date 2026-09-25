@@ -37,7 +37,7 @@ from playwright.sync_api import sync_playwright
 from app.adapters.trackergg_browserstate_source import ingest_recent_matches
 from app.db import SessionLocal
 from app.services.player_view_cache import prewarm_player_cache
-from app.services.site_stats import refresh_site_stats
+from app.services.site_stats import prewarm_viewer_site_stats, refresh_site_stats
 from sqlalchemy import text
 
 CDP_URL = "http://localhost:9222"
@@ -108,6 +108,7 @@ def main(minutes: float) -> None:
             prewarm_player_cache(db, all_dirty)
             print("refreshing site stats cache...")
             refresh_site_stats(db)
+            print(f"pre-warmed Friends stats for {prewarm_viewer_site_stats(db)} viewer(s)")
 
         after_total = total_match_count(db)
         print("\n=== summary ===")

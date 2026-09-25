@@ -29,7 +29,7 @@ from sqlalchemy import text
 from app.adapters.trackergg_browserstate_source import ingest_full_history
 from app.db import SessionLocal
 from app.services.player_view_cache import prewarm_player_cache
-from app.services.site_stats import refresh_site_stats
+from app.services.site_stats import prewarm_viewer_site_stats, refresh_site_stats
 
 CDP_URL = "http://localhost:9222"
 MIN_PLAYER_DELAY_SECONDS = 5
@@ -120,6 +120,7 @@ def main() -> None:
             prewarm_player_cache(db, all_dirty)
             print("refreshing site stats cache...")
             refresh_site_stats(db)
+            print(f"pre-warmed Friends stats for {prewarm_viewer_site_stats(db)} viewer(s)")
 
         print("\n=== final counts ===")
         for riot_id in TARGETS:

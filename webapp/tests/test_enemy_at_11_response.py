@@ -123,7 +123,7 @@ def test_response_round_right_after_enemy_reaches_11_is_sampled():
     rounds = _rounds_to(11, "Team A Wins") + [_round(12, "Team B Wins", team2_loadout=9000, team2_remaining=100)]
     match = _match(rounds)
 
-    result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
+    result = compute_enemy_at_11_response_stats([match], group_player_ids=set())
 
     assert result["all"]["force_buy"]["immediate"] == {"total": 1, "win": 1}
     assert result["all"]["full_save"]["immediate"] == {"total": 0, "win": 0}
@@ -132,7 +132,7 @@ def test_response_round_right_after_enemy_reaches_11_is_sampled():
 def test_trigger_requires_the_response_round_to_exist():
     rounds = _rounds_to(11, "Team A Wins")  # no round 12 recorded
     match = _match(rounds)
-    result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
+    result = compute_enemy_at_11_response_stats([match], group_player_ids=set())
     for tier in result["all"].values():
         assert tier["immediate"]["total"] == 0
 
@@ -140,7 +140,7 @@ def test_trigger_requires_the_response_round_to_exist():
 def test_sample_excluded_when_no_recorded_loadout_stats():
     rounds = _rounds_to(11, "Team A Wins") + [_round(12, "Team B Wins")]  # no loadout on round 12
     match = _match(rounds)
-    result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
+    result = compute_enemy_at_11_response_stats([match], group_player_ids=set())
     for tier in result["all"].values():
         assert tier["immediate"]["total"] == 0
 
@@ -150,7 +150,7 @@ def test_sample_excluded_when_this_round_was_already_a_full_buy():
         _round(12, "Team B Wins", team2_loadout=FULL_BUY_LOADOUT_MIN, team2_remaining=0)
     ]
     match = _match(rounds)
-    result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
+    result = compute_enemy_at_11_response_stats([match], group_player_ids=set())
     for tier in result["all"].values():
         assert tier["immediate"]["total"] == 0
 
@@ -161,7 +161,7 @@ def test_full_save_uses_the_real_win_bonus_when_response_round_is_won():
     the $23500 save target; a naive flat-loss-bonus guess would not."""
     rounds = _rounds_to(11, "Team A Wins") + [_round(12, "Team B Wins", team2_loadout=500, team2_remaining=8500)]
     match = _match(rounds)
-    result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
+    result = compute_enemy_at_11_response_stats([match], group_player_ids=set())
     assert result["all"]["full_save"]["immediate"] == {"total": 1, "win": 1}
 
 
@@ -169,11 +169,11 @@ def test_sample_only_counted_for_friends_when_responding_team_has_a_roster_playe
     rounds = _rounds_to(11, "Team A Wins") + [_round(12, "Team B Wins", team2_loadout=9000, team2_remaining=100)]
     match = _match(rounds)
 
-    friends_of_responder = compute_enemy_at_11_response_stats([match], roster_player_ids={200})
-    assert friends_of_responder["friends"]["force_buy"]["immediate"] == {"total": 1, "win": 1}
+    friends_of_responder = compute_enemy_at_11_response_stats([match], group_player_ids={200})
+    assert friends_of_responder["group"]["force_buy"]["immediate"] == {"total": 1, "win": 1}
 
-    friends_of_enemy = compute_enemy_at_11_response_stats([match], roster_player_ids={100})
-    assert friends_of_enemy["friends"]["force_buy"]["immediate"] == {"total": 0, "win": 0}
+    friends_of_enemy = compute_enemy_at_11_response_stats([match], group_player_ids={100})
+    assert friends_of_enemy["group"]["force_buy"]["immediate"] == {"total": 0, "win": 0}
     assert friends_of_enemy["all"]["force_buy"]["immediate"] == {"total": 1, "win": 1}
 
 
@@ -184,7 +184,7 @@ def test_next_round_and_match_win_recorded_alongside_immediate():
     ]
     match = _match(rounds, team1_rounds_won=11, team2_rounds_won=13)
 
-    result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
+    result = compute_enemy_at_11_response_stats([match], group_player_ids=set())
 
     force_buy = result["all"]["force_buy"]
     assert force_buy["immediate"] == {"total": 1, "win": 1}
@@ -198,7 +198,7 @@ def test_next_round_missing_is_excluded_from_next_but_not_immediate():
     ]  # match ends here, no round 13
     match = _match(rounds)
 
-    result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
+    result = compute_enemy_at_11_response_stats([match], group_player_ids=set())
     force_buy = result["all"]["force_buy"]
     assert force_buy["immediate"] == {"total": 1, "win": 1}
     assert force_buy["next"] == {"total": 0, "win": 0}
@@ -215,7 +215,7 @@ def test_both_teams_reaching_11_contribute_independent_samples():
     )
     match = _match(rounds, team1_rounds_won=12, team2_rounds_won=11)
 
-    result = compute_enemy_at_11_response_stats([match], roster_player_ids=set())
+    result = compute_enemy_at_11_response_stats([match], group_player_ids=set())
     assert result["all"]["force_buy"]["immediate"]["total"] == 1  # team-2's response to team-1 hitting 11
     assert result["all"]["full_save"]["immediate"]["total"] == 1  # team-1's response to team-2 hitting 11
 

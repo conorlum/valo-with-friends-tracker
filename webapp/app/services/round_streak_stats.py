@@ -37,8 +37,8 @@ def _winner_team(outcome: str | None) -> Team | None:
     return None
 
 
-def _team_has_roster_player(match: Match, team: Team, roster_player_ids: set[int]) -> bool:
-    return any(mp.team == team and mp.player_id in roster_player_ids for mp in match.match_players)
+def _team_has_group_player(match: Match, team: Team, group_player_ids: set[int]) -> bool:
+    return any(mp.team == team and mp.player_id in group_player_ids for mp in match.match_players)
 
 
 def _empty_bucket() -> dict[str, int]:
@@ -52,11 +52,11 @@ def _accumulate(buckets: dict[str, dict[str, int]], k: int, won_all: bool) -> No
         bucket["win"] += 1
 
 
-def compute_round_streak_stats(matches: list[Match], roster_player_ids: set[int]) -> dict:
-    """{"friends": {"1": {"total", "win"}, ..., "5": {...}}, "all": {...}} --
+def compute_round_streak_stats(matches: list[Match], group_player_ids: set[int]) -> dict:
+    """{"group": {"1": {"total", "win"}, ..., "5": {...}}, "all": {...}} --
     key k means "won round R, then also won each of R+1..R+k", value is
     whether that k-round follow-up streak actually happened."""
-    variants: dict[str, dict[str, dict[str, int]]] = {"friends": {}, "all": {}}
+    variants: dict[str, dict[str, dict[str, int]]] = {"group": {}, "all": {}}
 
     for match in matches:
         rounds_by_number = {r.round_number: r for r in match.rounds}
@@ -73,7 +73,7 @@ def compute_round_streak_stats(matches: list[Match], roster_player_ids: set[int]
             continue
 
         for team in (Team.TEAM_1, Team.TEAM_2):
-            is_roster = _team_has_roster_player(match, team, roster_player_ids)
+            is_group = _team_has_group_player(match, team, group_player_ids)
             for rn in range(1, max_round + 1):
                 if winners.get(rn) != team:
                     continue
@@ -88,8 +88,8 @@ def compute_round_streak_stats(matches: list[Match], roster_player_ids: set[int]
                         break
                     won_all = won_all and (w == team)
                     _accumulate(variants["all"], k, won_all)
-                    if is_roster:
-                        _accumulate(variants["friends"], k, won_all)
+                    if is_group:
+                        _accumulate(variants["group"], k, won_all)
                     prev_round = next_round
 
     return variants

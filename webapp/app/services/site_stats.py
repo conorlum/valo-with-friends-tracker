@@ -1,213 +1,148 @@
-"""Aggregate stats computed across many players at once (a "whole group" or
-"whole database" view), rather than one player's own profile.
+"""Aggregate stats computed across many players at once, rather than one
+player's own profile -- the /stats page. It shows two populations:
 
-The design goal is to stay cheap regardless of scope: compute_pistol_match_stats
-(app.services.player_profile_types) takes an arbitrary list[MatchPlayer] and
-returns mutually-exclusive win/total buckets, which are simply additive across
-players -- there's no per-player identity in the output. That means:
+  - "All Players": every match in the DB, computed once site-wide and cached
+    as the single site_stats_cache row (get_site_stats / refresh_site_stats;
+    see app.services.site_stats_cache).
+  - "Friends": the LOGGED-IN viewer plus the players on their own Friends
+    page (friendships the viewer owns), computed per viewer and cached one
+    row per viewer in viewer_site_stats_cache (get_viewer_site_stats; see
+    app.services.viewer_site_stats_cache).
 
-  - "friends" scope reuses each roster player's ALREADY-CACHED
-    player_view_cache.pistol_match_stats row (recomputed on every ingest/
-    prewarm anyway, see app.services.player_view_cache) and just sums the raw
-    ints -- no replay, no per-player DB round trip beyond one IN query.
-  - "all players" scope hands compute_pistol_match_stats every MatchPlayer row
-    in the DB in one query (rounds eager-loaded, kill_events/player_stats
-    NOT -- this stat never looks at them), rather than looping per player.
+Every stat is a compute_*(matches, group_player_ids) function returning
+{"group": ..., "all": ...}: "group" counts a sample only when the relevant
+team (or match) included a player from group_player_ids, "all" counts every
+one. The site-wide pass keeps "all"; a viewer's pass loads only the matches
+their group played in and keeps "group".
 
-app.services.eco_followup's pistol-win-followup-eco stat is different: it's
-inherently match+team scoped (not a per-player personal stat), and even its
-"friends" variant needs a full scan of every match (filtered to ones where a
-roster player was on the winning team) -- there's no cheap per-player cache
-row to sum the way pistol_match_stats has. So BOTH variants of that stat are
-computed together, in the SAME one-query match load used for the "all
-players" pistol_match_stats above, and both live in site_stats_cache (a
-single row covering every stat on the /stats page's "All Players" tab, plus
-whichever variant of eco_followup "Friends" needs) via get_site_stats -- see
-app.services.site_stats_cache for the read/write/invalidate contract, and
-app.adapters.trackergg_browserstate_source / scripts/ingest_demo_match.py /
-scripts/seed_demo_matches.py for where it's invalidated (any new match
-changes both cached stats, unconditionally -- unlike player_view_cache's
-per-player invalidation, there's no "was this player already cached" gate).
+pistol_match_stats is the one per-player personal stat: it tallies each
+group member's OWN matches, so a match where two friends were teammates
+counts twice (once per member), and it's the only stat that honours the
+Friends tab's Recent/Career toggle (each member's last RECENT_MATCH_LIMIT
+matches, in load_player_match_data's order).
+
+scripts/tracked_players.json is NOT read here: it only decides which matches
+the tracker.gg scripts crawl, and nothing displayed on the site is defined by
+it.
 """
 
-import json
 import logging
-from pathlib import Path
+from datetime import datetime
 
-from sqlalchemy import func
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.config import settings
-from app.models import Friendship, Match, MatchPlayer, Player, PlayerViewCache, Round
+from app.models import Friendship, Match, MatchPlayer, Round
 from app.services.eco_followup import compute_pistol_win_followup_eco
 from app.services.enemy_at_11_response import compute_enemy_at_11_response_stats
 from app.services.force_buy_stats import compute_force_buy_stats
+from app.services.friends import list_friend_ids
 from app.services.halftime_conversion_stats import compute_halftime_conversion_stats
 from app.services.map_side_stats import compute_map_side_stats
 from app.services.player_data import RECENT_MATCH_LIMIT
 from app.services.player_profile_types import compute_pistol_match_stats
-from app.services.player_view_cache import cache_version
 from app.services.round_combo_stats import compute_round_combo_stats
 from app.services.round_streak_stats import compute_round_streak_stats
 from app.services.score_reached_stats import compute_score_reached_stats
-from app.services.site_stats_cache import get_site_stats_cache, store_site_stats_cache
+from app.services.site_stats_cache import (
+    get_site_stats_cache,
+    invalidate_all_viewer_site_stats,
+    store_site_stats_cache,
+)
+from app.services.viewer_site_stats_cache import (
+    PISTOL_SCOPES,
+    friend_set_hash,
+    get_viewer_site_stats_cache,
+    store_viewer_site_stats_cache,
+)
 
 logger = logging.getLogger(__name__)
 
-ROSTER_PATH = Path(__file__).resolve().parents[2] / "scripts" / "tracked_players.json"
+# Every team/match-scoped stat, keyed as it's stored in both caches.
+GROUP_STAT_COMPUTERS = {
+    "pistol_win_followup_eco": compute_pistol_win_followup_eco,
+    "pistol_round_combos": compute_round_combo_stats,
+    "map_side_stats": compute_map_side_stats,
+    "halftime_conversion": compute_halftime_conversion_stats,
+    "score_reached": compute_score_reached_stats,
+    "round_streaks": compute_round_streak_stats,
+    "force_buy_stats": compute_force_buy_stats,
+    "enemy_at_11_response": compute_enemy_at_11_response_stats,
+}
 
 
-def _empty_pistol_match_stats() -> dict[str, int]:
-    """Zero-valued aggregate with the canonical key set -- pulled from
-    compute_pistol_match_stats itself (rather than a hardcoded key list here)
-    so this module never drifts from that function's own bucket shape."""
-    return compute_pistol_match_stats([])
-
-
-def _merge_pistol_match_stats(per_player: list[dict[str, int]]) -> dict[str, int]:
-    total = _empty_pistol_match_stats()
-    for stats in per_player:
-        for key in total:
-            total[key] += stats.get(key, 0)
-    return total
-
-
-def resolve_roster_player_ids(db: Session) -> list[int]:
-    """tracked_players.json's "Name#Tag" entries -> Player.id. Player.display_name
-    stores the FULL "Name#Tag" string (that's what trackergg_browserstate_source's
-    _get_or_create_player is given), matching the roster file's own format
-    exactly -- so this is a case-insensitive exact match, not a fuzzy one. An
-    entry with no matching Player row (not yet ingested) is silently skipped --
-    this is a best-effort roster lookup, not a data-integrity check.
-
-    The public demo has none of those players, so there the roster is its
-    fixed, seeded friend group instead: everyone with a friendship row."""
-    if settings.demo_mode:
-        rows = db.query(Friendship.owner_player_id).distinct().all()
-        return sorted(pid for (pid,) in rows)
-    riot_ids = json.loads(ROSTER_PATH.read_text())
-    if not riot_ids:
-        return []
-    rows = (
-        db.query(Player.id)
-        .filter(func.lower(Player.display_name).in_([riot_id.lower() for riot_id in riot_ids]))
-        .all()
+def _match_load_options():
+    """match_players and rounds(+player_stats) -- everything every stat here
+    reads. kill_events are NOT loaded: no stat on /stats looks at them."""
+    return (
+        selectinload(Match.match_players),
+        selectinload(Match.rounds).selectinload(Round.player_stats),
     )
-    return [pid for (pid,) in rows]
-
-
-def _load_match_players_for_pistol_stats(
-    db: Session, player_id: int, match_limit: int | None
-) -> list[MatchPlayer]:
-    """Lightweight stand-in for app.services.player_data.load_player_match_data:
-    compute_pistol_match_stats only ever reads mp.team and mp.match.rounds
-    (round_number/outcome) plus match.team1_rounds_won/team2_rounds_won, so
-    this skips that function's much heavier kill_events/player_stats/teammate
-    eager loads entirely."""
-    query = (
-        db.query(MatchPlayer)
-        .filter_by(player_id=player_id)
-        .join(Match, Match.id == MatchPlayer.match_id)
-        .options(selectinload(MatchPlayer.match).selectinload(Match.rounds))
-        .order_by(Match.played_at.desc().nullsfirst(), Match.id.desc())
-    )
-    if match_limit is not None:
-        query = query.limit(match_limit)
-    return query.all()
-
-
-def _raw_pistol_stats_from_cache_row(row: PlayerViewCache | None) -> dict[str, int] | None:
-    """None on any miss/version-mismatch/corruption -- the caller then falls
-    back to a live (still cheap) computation for that one player, same
-    best-effort contract as app.services.player_view_cache."""
-    if row is None or row.version != cache_version():
-        return None
-    data = row.data
-    if not isinstance(data, dict):
-        return None
-    stats = data.get("pistol_match_stats")
-    return stats if isinstance(stats, dict) else None
-
-
-def compute_roster_pistol_match_stats(db: Session, scope: str) -> dict[str, int]:
-    """Sum of every tracked-roster player's OWN pistol_match_stats aggregate
-    (their personal "pistols won -> did my team win the match" bucket), read
-    from player_view_cache where possible. This double-counts a match where
-    two roster friends were teammates (each contributes their own row) --
-    consistent with each input being a per-player personal stat, not a
-    per-match dedup."""
-    match_limit = RECENT_MATCH_LIMIT if scope == "recent" else None
-    player_ids = resolve_roster_player_ids(db)
-    if not player_ids:
-        return _empty_pistol_match_stats()
-
-    cache_rows = {
-        row.player_id: row
-        for row in db.query(PlayerViewCache)
-        .filter(PlayerViewCache.player_id.in_(player_ids), PlayerViewCache.scope == scope)
-        .all()
-    }
-
-    per_player: list[dict[str, int]] = []
-    for player_id in player_ids:
-        raw = _raw_pistol_stats_from_cache_row(cache_rows.get(player_id))
-        if raw is None:
-            match_players = _load_match_players_for_pistol_stats(db, player_id, match_limit)
-            raw = compute_pistol_match_stats(match_players)
-        per_player.append(raw)
-
-    return _merge_pistol_match_stats(per_player)
 
 
 def _load_all_matches(db: Session) -> list[Match]:
-    """Every Match row in the DB, with match_players and rounds(+player_stats)
-    eager-loaded -- the one query shared by every stat this module caches
-    site-wide. kill_events are NOT loaded: neither compute_pistol_match_stats
-    nor compute_pistol_win_followup_eco looks at them."""
-    return (
-        db.query(Match)
-        .options(
-            selectinload(Match.match_players),
-            selectinload(Match.rounds).selectinload(Round.player_stats),
-        )
-        .all()
-    )
+    return db.query(Match).options(*_match_load_options()).all()
 
 
-def compute_all_players_pistol_match_stats(db: Session) -> dict[str, int]:
-    """Every MatchPlayer row in the DB -- career/all-time only (a per-player
-    "recent 30" window doesn't compose into one meaningful global cutoff, so
-    this scope skips that toggle entirely)."""
-    matches = _load_all_matches(db)
-    match_players = [mp for m in matches for mp in m.match_players]
-    return compute_pistol_match_stats(match_players)
+def _load_group_matches(db: Session, player_ids: set[int]) -> list[Match]:
+    """Only the matches at least one of player_ids played in -- every sample a
+    group variant can count comes from one of these. One query plus the
+    selectin batches, however many players are in the group."""
+    if not player_ids:
+        return []
+    group_match_ids = select(MatchPlayer.match_id).where(MatchPlayer.player_id.in_(player_ids))
+    return db.query(Match).filter(Match.id.in_(group_match_ids)).options(*_match_load_options()).all()
+
+
+def _newest_first_key(mp: MatchPlayer):
+    """load_player_match_data's ORDER BY (played_at DESC NULLS FIRST, id
+    DESC), as a key for sorted(..., reverse=True). A missing played_at sorts
+    as the newest match -- that module's pinned convention."""
+    played_at = mp.match.played_at
+    return (played_at is None, played_at or datetime.min, mp.match.id)
+
+
+def compute_group_pistol_match_stats(matches: list[Match], player_ids: set[int], scope: str) -> dict[str, int]:
+    """Sum of every group member's own pistol_match_stats over already-loaded
+    matches. "recent" keeps each member's newest RECENT_MATCH_LIMIT matches,
+    the same window their player page's Recent tab uses; "career" keeps all."""
+    by_player: dict[int, list[MatchPlayer]] = {}
+    for match in matches:
+        for mp in match.match_players:
+            if mp.player_id in player_ids:
+                by_player.setdefault(mp.player_id, []).append(mp)
+
+    selected: list[MatchPlayer] = []
+    for mps in by_player.values():
+        if scope == "recent":
+            mps = sorted(mps, key=_newest_first_key, reverse=True)[:RECENT_MATCH_LIMIT]
+        selected.extend(mps)
+    # compute_pistol_match_stats' buckets are additive across players, so one
+    # call over every member's rows equals the sum of per-member calls.
+    return compute_pistol_match_stats(selected)
+
+
+# --- All Players (site-wide) -------------------------------------------------
 
 
 def _compute_site_stats(db: Session) -> dict:
-    """Both cached stats, from ONE shared match load."""
+    """Every stat's "all" variant, from ONE shared load of every match."""
     matches = _load_all_matches(db)
     match_players = [mp for m in matches for mp in m.match_players]
-    roster_player_ids = set(resolve_roster_player_ids(db))
     return {
         "pistol_match_stats": compute_pistol_match_stats(match_players),
-        "pistol_win_followup_eco": compute_pistol_win_followup_eco(matches, roster_player_ids),
-        "pistol_round_combos": compute_round_combo_stats(matches, roster_player_ids),
-        "map_side_stats": compute_map_side_stats(matches, roster_player_ids),
-        "halftime_conversion": compute_halftime_conversion_stats(matches, roster_player_ids),
-        "score_reached": compute_score_reached_stats(matches, roster_player_ids),
-        "round_streaks": compute_round_streak_stats(matches, roster_player_ids),
-        "force_buy_stats": compute_force_buy_stats(matches, roster_player_ids),
-        "enemy_at_11_response": compute_enemy_at_11_response_stats(matches, roster_player_ids),
+        **{key: compute(matches, set())["all"] for key, compute in GROUP_STAT_COMPUTERS.items()},
     }
 
 
 def refresh_site_stats(db: Session) -> dict:
-    """Unconditional recompute of every stat cached in site_stats_cache,
-    written through. Used both by get_site_stats on a cache miss and by the
-    tracker.gg ingest scripts' post-refresh pre-warm (mirrors
-    app.services.player_view_cache.prewarm_player_cache's role for the
-    per-player cache)."""
+    """Unconditional recompute of the All Players cache, written through, and
+    retirement of every viewer's Friends-tab row in the same commit. Used by
+    get_site_stats on a miss and by the tracker.gg ingest scripts after a run
+    (mirrors app.services.player_view_cache.prewarm_player_cache's role for
+    the per-player cache)."""
     data = _compute_site_stats(db)
+    invalidate_all_viewer_site_stats(db)
     store_site_stats_cache(db, data)
     return data
 
@@ -220,9 +155,66 @@ def get_site_stats(db: Session) -> dict:
     cached = get_site_stats_cache(db)
     if cached is not None:
         return cached
+    data = _compute_site_stats(db)
     try:
-        return refresh_site_stats(db)
+        store_site_stats_cache(db, data)
     except Exception:
         db.rollback()
         logger.exception("site_stats_cache: write-through failed, serving live result uncached")
-        return _compute_site_stats(db)
+    return data
+
+
+# --- Friends (per viewer) -----------------------------------------------------
+
+
+def viewer_group_player_ids(db: Session, viewer_player_id: int) -> set[int]:
+    """The viewer plus everyone on their own Friends page."""
+    return {viewer_player_id} | list_friend_ids(db, viewer_player_id)
+
+
+def compute_viewer_site_stats(db: Session, group_player_ids: set[int]) -> dict:
+    """Every stat's "group" variant for one viewer's group, from one load of
+    just the matches that group played in."""
+    matches = _load_group_matches(db, group_player_ids)
+    return {
+        "pistol_match_stats": {
+            scope: compute_group_pistol_match_stats(matches, group_player_ids, scope) for scope in PISTOL_SCOPES
+        },
+        **{key: compute(matches, group_player_ids)["group"] for key, compute in GROUP_STAT_COMPUTERS.items()},
+    }
+
+
+def get_viewer_site_stats(db: Session, viewer_player_id: int) -> dict:
+    """Same hit / live-recompute / best-effort write-through contract as
+    get_site_stats, keyed by viewer and checked against their current
+    friend set."""
+    group = viewer_group_player_ids(db, viewer_player_id)
+    group_hash = friend_set_hash(group)
+    cached = get_viewer_site_stats_cache(db, viewer_player_id, group_hash)
+    if cached is not None:
+        return cached
+    data = compute_viewer_site_stats(db, group)
+    try:
+        store_viewer_site_stats_cache(db, viewer_player_id, group_hash, data)
+    except Exception:
+        db.rollback()
+        logger.exception("viewer_site_stats_cache: write-through failed for viewer %s", viewer_player_id)
+    return data
+
+
+def prewarm_viewer_site_stats(db: Session) -> int:
+    """Recomputes and stores the Friends tab for every player who owns at
+    least one friendship -- the only viewers whose Friends tab is more than
+    their own matches. Returns how many rows were written. Best-effort per
+    viewer: one failure is logged and skipped."""
+    viewer_ids = sorted(pid for (pid,) in db.query(Friendship.owner_player_id).distinct().all())
+    written = 0
+    for viewer_id in viewer_ids:
+        try:
+            group = viewer_group_player_ids(db, viewer_id)
+            store_viewer_site_stats_cache(db, viewer_id, friend_set_hash(group), compute_viewer_site_stats(db, group))
+            written += 1
+        except Exception:
+            db.rollback()
+            logger.exception("viewer_site_stats_cache: pre-warm failed for viewer %s", viewer_id)
+    return written

@@ -28,7 +28,9 @@ site-wide "All Players" stats cache (app.services.site_stats_cache) is
 refreshed the same way whenever any match was ingested. Pass --no-prewarm to
 skip the per-player pre-warm and let both caches repopulate lazily on next
 visit -- the site-wide refresh isn't gated by --no-prewarm since it's one
-cheap call, not a per-player fan-out.
+cheap call, not a per-player fan-out. That refresh also clears every viewer's
+Friends-tab stats (app.services.viewer_site_stats_cache); those are then
+pre-warmed for every player who owns a friendship, unless --no-prewarm.
 
 Usage:
     .venv\\Scripts\\python.exe scripts\\ingest_trackergg_player.py "NPrightdolphin#NA1" --count 5
@@ -50,7 +52,7 @@ from app.adapters.trackergg_browserstate_source import (
 )
 from app.db import SessionLocal
 from app.services.player_view_cache import prewarm_player_cache
-from app.services.site_stats import refresh_site_stats
+from app.services.site_stats import prewarm_viewer_site_stats, refresh_site_stats
 
 CDP_URL = "http://localhost:9222"
 # Reached fewer than --count with no end-of-history to justify it. Distinct
@@ -113,6 +115,8 @@ def main(riot_id: str, count: int, no_prewarm: bool, ledger_path: Path) -> int:
         if dirty:
             print("refreshing site stats cache...")
             refresh_site_stats(db)
+            if not no_prewarm:
+                print(f"pre-warmed Friends stats for {prewarm_viewer_site_stats(db)} viewer(s)")
     finally:
         ledger.record_end(f"{riot_id}: {ledger.count} added")
         db.close()

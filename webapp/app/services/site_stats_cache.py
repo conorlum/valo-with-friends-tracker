@@ -4,11 +4,10 @@ app.services.player_view_cache: a miss, a stale version, or a corrupt blob all
 degrade to a live recompute (app.services.site_stats), never a 500.
 
 The row holds a dict of independent canonical aggregates, one key per
-whole-database stat shown on that tab (pistol_match_stats,
-pistol_win_followup_eco, pistol_round_combos, map_side_stats,
-halftime_conversion, score_reached, round_streaks, force_buy_stats,
-enemy_at_11_response) -- adding another stat later means adding another key
-to this dict, not redesigning the cache.
+whole-database stat shown on that tab (see STAT_VARIANT_VALIDATORS) -- adding
+another stat later means adding another key to this dict, not redesigning the
+cache. The "Friends" tab is per viewer and cached separately, in
+app.services.viewer_site_stats_cache.
 """
 
 import itertools
@@ -19,6 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.models.site_stats_cache import SITE_STATS_CACHE_ROW_ID, SiteStatsCache
+from app.models.viewer_site_stats_cache import ViewerSiteStatsCache
 from app.services.eco_followup import ECO_NUM_BUCKETS
 from app.services.enemy_at_11_response import BUY_CATEGORIES, RESPONSE_METRICS
 from app.services.force_buy_stats import FORCE_BUY_METRICS
@@ -28,7 +28,7 @@ from app.services.score_reached_stats import MAX_DISPLAYED_SCORE as SCORE_REACHE
 
 logger = logging.getLogger(__name__)
 
-SITE_STATS_CACHE_SCHEMA_VERSION = 19
+SITE_STATS_CACHE_SCHEMA_VERSION = 20
 # Bump when the shape of the stored blob changes (a stat's aggregate keys
 # change, or a stat is renamed/removed), or when compute_pistol_match_stats /
 # compute_pistol_win_followup_eco / compute_round_combo_stats / compute_map_side_stats
@@ -122,6 +122,11 @@ SITE_STATS_CACHE_SCHEMA_VERSION = 19
 # force_buy's despite worse gear; median full_save loadout turned out to be
 # $13,450, barely below force_buy's $17,900. Stored bucket values change,
 # forcing a recompute.
+# v20: the blob holds only the "All Players" population. Each stat key maps
+# straight to its "all" aggregate instead of {"friends": ..., "all": ...} --
+# the Friends tab is now per logged-in viewer and lives in
+# viewer_site_stats_cache (app.services.viewer_site_stats_cache), not in this
+# single site-wide row. Every stat's shape changed, forcing a recompute.
 
 _PISTOL_MATCH_STATS_BUCKET_PREFIXES = ("lost_both", "won_one", "won_both")
 _PISTOL_MATCH_STATS_KEYS = frozenset(
@@ -171,12 +176,6 @@ def _validate_eco_followup_variant(variant: object) -> bool:
     return isinstance(buckets, list) and all(_validate_eco_bucket_row(row) for row in buckets)
 
 
-def _validate_pistol_win_followup_eco(data: object) -> bool:
-    if not isinstance(data, dict) or set(data.keys()) != {"friends", "all"}:
-        return False
-    return _validate_eco_followup_variant(data["friends"]) and _validate_eco_followup_variant(data["all"])
-
-
 _ROUND_COMBO_KEY_SETS = {
     "first_half": {"".join(bits) for bits in itertools.product("WL", repeat=len(FIRST_HALF_ROUNDS))},
     "full": {"".join(bits) for bits in itertools.product("WL", repeat=len(FULL_ROUNDS))},
@@ -205,12 +204,6 @@ def _validate_round_combo_variant(variant: object) -> bool:
     ) and _validate_round_combo_granularity(variant["full"], _ROUND_COMBO_KEY_SETS["full"])
 
 
-def _validate_pistol_round_combos(data: object) -> bool:
-    if not isinstance(data, dict) or set(data.keys()) != {"friends", "all"}:
-        return False
-    return _validate_round_combo_variant(data["friends"]) and _validate_round_combo_variant(data["all"])
-
-
 _MAP_SIDE_BUCKET_KEYS = {"matches", "attack_wins", "defense_wins"}
 
 
@@ -229,12 +222,6 @@ def _validate_map_side_variant(variant: object) -> bool:
     )
 
 
-def _validate_map_side_stats(data: object) -> bool:
-    if not isinstance(data, dict) or set(data.keys()) != {"friends", "all"}:
-        return False
-    return _validate_map_side_variant(data["friends"]) and _validate_map_side_variant(data["all"])
-
-
 _HALFTIME_CONVERSION_VALID_KEYS = {str(i) for i in range(13)}
 
 
@@ -250,14 +237,6 @@ def _validate_halftime_conversion_variant(variant: object) -> bool:
     if not set(variant.keys()) <= _HALFTIME_CONVERSION_VALID_KEYS:
         return False
     return all(_validate_halftime_conversion_bucket(bucket) for bucket in variant.values())
-
-
-def _validate_halftime_conversion(data: object) -> bool:
-    if not isinstance(data, dict) or set(data.keys()) != {"friends", "all"}:
-        return False
-    return _validate_halftime_conversion_variant(data["friends"]) and _validate_halftime_conversion_variant(
-        data["all"]
-    )
 
 
 def _validate_score_reached_bucket(bucket: object) -> bool:
@@ -289,12 +268,6 @@ def _validate_score_reached_variant(variant: object) -> bool:
     return _validate_score_reached_buckets(variant["buckets"]) and _validate_score_reached_ot(variant["ot"])
 
 
-def _validate_score_reached(data: object) -> bool:
-    if not isinstance(data, dict) or set(data.keys()) != {"friends", "all"}:
-        return False
-    return _validate_score_reached_variant(data["friends"]) and _validate_score_reached_variant(data["all"])
-
-
 _ROUND_STREAK_VALID_KEYS = {str(i) for i in range(1, MAX_STREAK + 1)}
 
 
@@ -312,12 +285,6 @@ def _validate_round_streak_variant(variant: object) -> bool:
     return all(_validate_round_streak_bucket(bucket) for bucket in variant.values())
 
 
-def _validate_round_streaks(data: object) -> bool:
-    if not isinstance(data, dict) or set(data.keys()) != {"friends", "all"}:
-        return False
-    return _validate_round_streak_variant(data["friends"]) and _validate_round_streak_variant(data["all"])
-
-
 _FORCE_BUY_VALID_KEYS = set(FORCE_BUY_METRICS)
 
 
@@ -331,12 +298,6 @@ def _validate_force_buy_variant(variant: object) -> bool:
     if not isinstance(variant, dict) or set(variant.keys()) != _FORCE_BUY_VALID_KEYS:
         return False
     return all(_validate_force_buy_bucket(bucket) for bucket in variant.values())
-
-
-def _validate_force_buy_stats(data: object) -> bool:
-    if not isinstance(data, dict) or set(data.keys()) != {"friends", "all"}:
-        return False
-    return _validate_force_buy_variant(data["friends"]) and _validate_force_buy_variant(data["all"])
 
 
 _ENEMY_AT_11_RESPONSE_METRICS = set(RESPONSE_METRICS)
@@ -360,42 +321,27 @@ def _validate_enemy_at_11_variant(variant: object) -> bool:
     return all(_validate_enemy_at_11_tier(variant[category]) for category in BUY_CATEGORIES)
 
 
-def _validate_enemy_at_11_response(data: object) -> bool:
-    if not isinstance(data, dict) or set(data.keys()) != {"friends", "all"}:
-        return False
-    return _validate_enemy_at_11_variant(data["friends"]) and _validate_enemy_at_11_variant(data["all"])
+# One validator per stat, each checking a SINGLE variant (one population's
+# aggregate). The site-wide blob holds each stat's "all" variant under these
+# keys; app.services.viewer_site_stats_cache reuses the same validators for a
+# viewer's group variants.
+STAT_VARIANT_VALIDATORS = {
+    "pistol_match_stats": _validate_pistol_match_stats,
+    "pistol_win_followup_eco": _validate_eco_followup_variant,
+    "pistol_round_combos": _validate_round_combo_variant,
+    "map_side_stats": _validate_map_side_variant,
+    "halftime_conversion": _validate_halftime_conversion_variant,
+    "score_reached": _validate_score_reached_variant,
+    "round_streaks": _validate_round_streak_variant,
+    "force_buy_stats": _validate_force_buy_variant,
+    "enemy_at_11_response": _validate_enemy_at_11_variant,
+}
 
 
 def _validate_blob(data: object) -> bool:
-    if not isinstance(data, dict) or set(data.keys()) != {
-        "pistol_match_stats",
-        "pistol_win_followup_eco",
-        "pistol_round_combos",
-        "map_side_stats",
-        "halftime_conversion",
-        "score_reached",
-        "round_streaks",
-        "force_buy_stats",
-        "enemy_at_11_response",
-    }:
+    if not isinstance(data, dict) or set(data.keys()) != set(STAT_VARIANT_VALIDATORS):
         return False
-    if not _validate_pistol_match_stats(data["pistol_match_stats"]):
-        return False
-    if not _validate_pistol_win_followup_eco(data["pistol_win_followup_eco"]):
-        return False
-    if not _validate_pistol_round_combos(data["pistol_round_combos"]):
-        return False
-    if not _validate_map_side_stats(data["map_side_stats"]):
-        return False
-    if not _validate_halftime_conversion(data["halftime_conversion"]):
-        return False
-    if not _validate_score_reached(data["score_reached"]):
-        return False
-    if not _validate_round_streaks(data["round_streaks"]):
-        return False
-    if not _validate_force_buy_stats(data["force_buy_stats"]):
-        return False
-    return _validate_enemy_at_11_response(data["enemy_at_11_response"])
+    return all(validate(data[key]) for key, validate in STAT_VARIANT_VALIDATORS.items())
 
 
 def get_site_stats_cache(db: Session) -> dict | None:
@@ -427,8 +373,17 @@ def store_site_stats_cache(db: Session, data: dict) -> None:
 
 
 def invalidate_site_stats_cache(db: Session) -> None:
-    """DELETE the singleton row. Does NOT commit -- the caller commits, so
-    the delete lands in the same transaction as whatever match ingestion
-    triggered it (same contract as app.services.player_view_cache.
-    invalidate_player_cache)."""
+    """DELETE the singleton row AND every viewer's Friends-tab row: a new or
+    changed match can move any viewer's numbers, and there's no cheap way to
+    tell whose. Does NOT commit -- the caller commits, so the delete lands in
+    the same transaction as whatever match ingestion triggered it (same
+    contract as app.services.player_view_cache.invalidate_player_cache)."""
     db.query(SiteStatsCache).filter_by(id=SITE_STATS_CACHE_ROW_ID).delete(synchronize_session=False)
+    invalidate_all_viewer_site_stats(db)
+
+
+def invalidate_all_viewer_site_stats(db: Session) -> None:
+    """DELETE every viewer_site_stats_cache row. Does NOT commit. Lives here
+    rather than in app.services.viewer_site_stats_cache so that module can
+    import this one's validators without a cycle."""
+    db.query(ViewerSiteStatsCache).delete(synchronize_session=False)

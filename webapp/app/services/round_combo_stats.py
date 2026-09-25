@@ -100,8 +100,8 @@ def _empty_bucket() -> dict[str, int]:
     return {"total": 0, "win": 0}
 
 
-def _team_has_roster_player(match: Match, team: Team, roster_player_ids: set[int]) -> bool:
-    return any(mp.team == team and mp.player_id in roster_player_ids for mp in match.match_players)
+def _team_has_group_player(match: Match, team: Team, group_player_ids: set[int]) -> bool:
+    return any(mp.team == team and mp.player_id in group_player_ids for mp in match.match_players)
 
 
 def _accumulate(buckets: dict[str, dict[str, int]], combo: str, won_match: bool) -> None:
@@ -111,13 +111,13 @@ def _accumulate(buckets: dict[str, dict[str, int]], combo: str, won_match: bool)
         bucket["win"] += 1
 
 
-def compute_round_combo_stats(matches: list[Match], roster_player_ids: set[int]) -> dict:
-    """{"friends": {"first_half": {...}, "full": {...}}, "all": {...}} --
+def compute_round_combo_stats(matches: list[Match], group_player_ids: set[int]) -> dict:
+    """{"group": {"first_half": {...}, "full": {...}}, "all": {...}} --
     each inner dict is combo_key ("WW", "WLWL", ...) -> {"total", "win"}
     (count of team-perspective samples with that round-outcome pattern, and
     how many of those went on to win the match)."""
     variants: dict[str, dict[str, dict[str, dict[str, int]]]] = {
-        "friends": {"first_half": {}, "full": {}},
+        "group": {"first_half": {}, "full": {}},
         "all": {"first_half": {}, "full": {}},
     }
 
@@ -127,8 +127,8 @@ def compute_round_combo_stats(matches: list[Match], roster_player_ids: set[int])
                 if granularity == "full":
                     combo = _canonical_full_combo(combo)
                 _accumulate(variants["all"][granularity], combo, won_match)
-                if _team_has_roster_player(match, team, roster_player_ids):
-                    _accumulate(variants["friends"][granularity], combo, won_match)
+                if _team_has_group_player(match, team, group_player_ids):
+                    _accumulate(variants["group"][granularity], combo, won_match)
 
     return variants
 
