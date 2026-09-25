@@ -1,0 +1,309 @@
+"""The pure linker on synthetic data: every linking case in the plan's test list."""
+
+import copy
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from replay_synthetic import AGENT_NAMES, MATCH_UUID, SyntheticMatch, subject, team_of  # noqa: E402
+
+from app.replays import link as lk  # noqa: E402
+from app.replays.condense import condense_export_dir  # noqa: E402
+
+# Four rounds, 24 kills (the provisional minimum is 20 anchors).
+LINK_KILLS = {
+    1: [(10.0, 0, 5), (12.0, 1, 6), (15.0, 2, 7), (20.0, 3, 8), (25.0, 4, 9)],
+    2: [(8.0, 5, 0), (9.0, 6, 1), (18.0, 0, 5), (22.0, 7, 2), (30.0, 8, 3), (31.0, 9, 4)],
+    3: [(5.0, 2, 9), (6.0, 9, 2), (6.05, 8, 3), (20.0, 4, 8), (21.0, 0, 7), (22.0, 1, 6), (23.0, 3, 5)],
+    4: [(4.0, 5, 0), (7.0, 6, 1), (9.0, 7, 2), (11.0, 8, 3), (13.0, 9, 4), (14.0, 4, 9)],
+}
+WINNERS = {1: "Red", 2: "Blue", 3: "Red", 4: "Blue"}
+OFFSET = 0.4  # DB clock = replay clock + 0.4 s
+
+
+@pytest.fixture(scope="module")
+def condensed(tmp_path_factory):
+    match = SyntheticMatch(rounds=4, kills=copy.deepcopy(LINK_KILLS), winners=dict(WINNERS))
+    directory = match.write(tmp_path_factory.mktemp("link") / "export")
+    return condense_export_dir(directory, source_sha256=match.source_sha256)
+
+
+def view(condensed, **changes) -> lk.ReplayLinkView:
+    replay = lk.ReplayLinkView(condensed.match_uuid, condensed.round_count,
+                               condensed.report["dropped_final_round"], copy.deepcopy(condensed.players),
+                               copy.deepcopy(condensed.link_inputs))
+    for key, value in changes.items():
+        setattr(replay, key, value)
+    return replay
+
+
+def mp(slot):
+    return 500 + slot
+
+
+def db_match(kills=None, agents=None, extra_kills=(), rounds=None, score=None, subjects=None) -> lk.DbMatch:
+    agents = agents or AGENT_NAMES
+    players = [lk.DbPlayer(mp(s), 900 + s, agents[s], "team-1" if team_of(s) == 0 else "team-2",
+                           (subjects or {}).get(s)) for s in range(10)]
+    kill_rows, next_id = [], 1
+    for n, script in (kills or LINK_KILLS).items():
+        for t, killer, victim in script:
+            kill_rows.append(lk.DbKill(next_id, n, round(t + OFFSET, 3), mp(killer), mp(victim)))
+            next_id += 1
+    kill_rows.extend(extra_kills)
+    rounds = rounds or [lk.DbRound(n, f"Team {'A' if WINNERS[n] == 'Red' else 'B'} Elimination Win")
+                        for n in sorted(WINNERS)]
+    team1 = sum(1 for r in rounds if lk.outcome_winner(r.outcome) == "team-1" and not lk.is_surrender_round(r.outcome))
+    team2 = sum(1 for r in rounds if lk.outcome_winner(r.outcome) == "team-2" and not lk.is_surrender_round(r.outcome))
+    t1, t2 = score or (team1, team2)
+    return lk.DbMatch(42, MATCH_UUID.upper(), t1, t2, rounds, players, kill_rows)
+
+
+def test_happy_path(condensed):
+    result = lk.link(view(condensed), [db_match()], {})
+    assert result.status == "linked", result.report
+    assert result.match_id == 42
+    assert result.clock_offset == pytest.approx(OFFSET)
+    assert result.slot_to_match_player == {s: mp(s) for s in range(10)}
+    assert result.side_to_team == {"A": "team-1", "B": "team-2"}
+    assert result.kill_map["1"] == [1, 2, 3, 4, 5]
+    assert result.db_deaths == {}
+    assert sorted(result.backfills) == [(900 + s, subject(s)) for s in range(10)]
+    assert "subject" not in str(result.report).lower() and "00000000-0000-4000-8000-0000000000" not in str(result.report)
+
+
+def test_no_db_match_stays_unlinked_and_links_later_after_a_crawl(condensed):
+    replay = view(condensed)
+    assert lk.link(replay, [], {}).status == "unlinked"
+    assert lk.link(replay, [db_match()], {}).status == "linked"
+
+
+def test_two_match_rows_refuse(condensed):
+    assert lk.link(view(condensed), [db_match(), db_match()], {}).status == "refused"
+
+
+def test_a_different_match_uuid_never_links(condensed):
+    other = db_match()
+    other.external_id = "00000000-0000-4000-8000-000000000fff"
+    assert lk.link(view(condensed), [other], {}).status == "unlinked"
+
+
+# ------------------------------------------------------------ rounds
+
+
+def test_a_shifted_round_set_refuses(condensed):
+    rounds = [lk.DbRound(n + 1, r.outcome) for n, r in enumerate(db_match().rounds, 0)]
+    result = lk.link(view(condensed), [db_match(rounds=[lk.DbRound(r.number + 1, r.outcome) for r in rounds])], {})
+    assert (result.status, result.report["check"]) == ("refused", "rounds")
+
+
+def test_a_winner_mismatch_refuses(condensed):
+    rounds = db_match().rounds
+    rounds[1] = lk.DbRound(2, "Team A Elimination Win")
+    result = lk.link(view(condensed), [db_match(rounds=rounds, score=(2, 2))], {})
+    assert result.report["check"] == "round_results"
+
+
+def test_a_score_mismatch_refuses(condensed):
+    assert lk.link(view(condensed), [db_match(score=(3, 1))], {}).report["check"] == "score"
+
+
+def test_a_round_results_fallback_refuses_the_link(condensed):
+    replay = view(condensed)
+    replay.link_inputs["round_results_fallback"] = True
+    assert lk.link(replay, [db_match()], {}).report["check"] == "round_results"
+
+
+def test_a_missing_decoded_winner_refuses(condensed):
+    replay = view(condensed)
+    del replay.link_inputs["round_results"]["3"]
+    assert lk.link(replay, [db_match()], {}).report["check"] == "round_results"
+
+
+def test_a_dropped_final_round_needs_an_early_end(condensed):
+    replay = view(condensed, dropped_final_round=True)
+    # 2-2 is an early end (nobody reached 13), so the drop is allowed and the rest still links.
+    assert lk.link(replay, [db_match()], {}).status == "linked"
+    full = db_match(score=(13, 11))
+    result = lk.link(replay, [full], {})
+    assert (result.status, result.report["check"]) == ("refused", "rounds")
+
+
+def test_a_surrendered_db_round_is_not_a_played_round(condensed):
+    rounds = db_match().rounds + [lk.DbRound(5, "Team A Surrendered Win")]
+    assert lk.link(view(condensed, dropped_final_round=True), [db_match(rounds=rounds)], {}).status == "linked"
+
+
+# ------------------------------------------------------------ teams and players
+
+
+def test_an_agent_change_refuses(condensed):
+    agents = list(AGENT_NAMES)
+    agents[2] = "Viper"
+    result = lk.link(view(condensed), [db_match(agents=agents)], {})
+    assert result.report["check"] == "assignment" and result.report["candidates"] == 0
+
+
+def test_a_duplicate_agent_across_teams_still_links(condensed):
+    replay = view(condensed)
+    agents = list(AGENT_NAMES)
+    agents[7] = agents[0]  # Jett on both teams
+    for p in replay.players:
+        p["agent"] = agents[p["slot"]]
+    assert lk.link(replay, [db_match(agents=agents)], {}).status == "linked"
+
+
+def test_a_fully_mirrored_composition_has_two_candidates_before_kills(condensed):
+    replay = view(condensed)
+    mirrored = AGENT_NAMES[:5] * 2
+    for p in replay.players:
+        p["agent"] = mirrored[p["slot"]]
+    match = db_match(agents=mirrored)
+    assert len(lk.assignment_candidates(replay, match)) == 2
+    # The kill sequences tell the two orientations apart, so the full link is still unique.
+    assert lk.link(replay, [match], {}).status == "linked"
+
+
+def test_a_mirrored_composition_with_symmetric_evidence_refuses(condensed):
+    replay = view(condensed)
+    mirrored = AGENT_NAMES[:5] * 2
+    for p in replay.players:
+        p["agent"] = mirrored[p["slot"]]
+    match = db_match(agents=mirrored)
+    # Pretend kills can't tell the orientations apart: both assignments survive.
+    both = lk.assignment_candidates(replay, match)
+    original = lk.match_kills
+    try:
+        lk.match_kills = lambda ours, theirs, mapping: [(k, d) for k, d in zip(sorted(ours), sorted(theirs, key=lambda d: d.t))]
+        result = lk.link(replay, [match], {})
+    finally:
+        lk.match_kills = original
+    assert len(both) == 2
+    assert (result.report["check"], result.report["candidates"]) == ("assignment", 2)
+
+
+def test_a_partition_that_is_not_5_5_refuses(condensed):
+    replay = view(condensed)
+    replay.players[5]["side_group"] = "A"
+    assert lk.link(replay, [db_match()], {}).report["check"] == "partition"
+
+
+def test_a_same_side_replay_kill_refuses(condensed):
+    replay = view(condensed)
+    replay.link_inputs["kills"]["1"].append([30.0, 0, 1])
+    assert lk.link(replay, [db_match()], {}).report["check"] == "partition"
+
+
+def test_a_spawn_cluster_that_disagrees_refuses(condensed):
+    replay = view(condensed)
+    positions = replay.link_inputs["start_positions"]["2"]
+    positions["0"], positions["5"] = positions["5"], positions["0"]
+    result = lk.link(replay, [db_match()], {})
+    assert (result.report["check"], result.report["round"]) == ("partition", 2)
+
+
+def test_a_riot_subject_anchor_must_agree(condensed):
+    good = db_match(subjects={3: subject(3)})
+    assert lk.link(view(condensed), [good], {subject(3): 903}).status == "linked"
+
+
+# ------------------------------------------------------------ kills
+
+
+@pytest.mark.parametrize("extra", [
+    lk.DbKill(900, 2, 35.0, None, mp(2)),        # no killer (spike/fall)
+    lk.DbKill(901, 2, 35.0, mp(2), mp(2)),       # self-kill
+    lk.DbKill(902, 1, 35.0, mp(0), mp(1)),       # teamkill
+])
+def test_each_excluded_db_kill_class_becomes_a_db_death(condensed, extra):
+    result = lk.link(view(condensed), [db_match(extra_kills=[extra])], {})
+    assert result.status == "linked", result.report
+    [death] = result.db_deaths[str(extra.round_number)]
+    assert death == {"slot": extra.victim - 500, "t_db": 35.0}
+
+
+def test_an_unexpected_unmatched_db_death_refuses(condensed):
+    result = lk.link(view(condensed), [db_match(extra_kills=[lk.DbKill(903, 1, 30.0, mp(0), mp(6))])], {})
+    assert result.report["check"] == "assignment"
+
+
+def test_two_swapped_kills_refuse(condensed):
+    kills = copy.deepcopy(LINK_KILLS)
+    kills[2][0], kills[2][1] = (8.0, 6, 1), (9.0, 5, 0)
+    assert lk.link(view(condensed), [db_match(kills=kills)], {}).report["check"] == "assignment"
+
+
+def test_a_tie_group_is_compared_as_a_multiset(condensed):
+    kills = copy.deepcopy(LINK_KILLS)
+    # Round 3's 6.0 / 6.05 kills arrive in the other order in the DB.
+    kills[3][1], kills[3][2] = (6.05, 9, 2), (6.0, 8, 3)
+    assert lk.link(view(condensed), [db_match(kills=kills)], {}).status == "linked"
+
+
+# ------------------------------------------------------------ clock
+
+
+def _shifted(round_shift=None, kill_shift=None):
+    kills = copy.deepcopy(LINK_KILLS)
+    for n, script in kills.items():
+        for i, (t, a, b) in enumerate(script):
+            if round_shift is not None:
+                t += round_shift
+            if kill_shift is not None and (n, i) == kill_shift[0]:
+                t += kill_shift[1]
+            script[i] = (t, a, b)
+    return kills
+
+
+def test_a_3_second_clock_shift_refuses(condensed):
+    result = lk.link(view(condensed), [db_match(kills=_shifted(round_shift=3.0))], {})
+    assert (result.report["check"], result.report["reason"]) == ("clock", "clock offset over the limit")
+
+
+def test_one_large_residual_refuses(condensed):
+    result = lk.link(view(condensed), [db_match(kills=_shifted(kill_shift=((4, 5), 1.0)))], {})
+    assert result.report["check"] == "clock"
+    assert result.report["reason"] == "a residual is over the limit"
+
+
+def test_too_few_anchors_refuse(condensed):
+    replay = view(condensed)
+    short = {n: s for n, s in LINK_KILLS.items() if n <= 2}
+    replay.round_count = 2
+    replay.link_inputs["kills"] = {k: v for k, v in replay.link_inputs["kills"].items() if int(k) <= 2}
+    rounds = [lk.DbRound(n, f"Team {'A' if WINNERS[n] == 'Red' else 'B'} Elimination Win") for n in (1, 2)]
+    result = lk.link(replay, [db_match(kills=short, rounds=rounds)], {})
+    assert (result.report["check"], result.report["anchors"]) == ("clock", 11)
+
+
+def test_a_round_with_no_anchor_refuses(condensed, monkeypatch):
+    monkeypatch.setattr(lk, "MIN_ANCHORS", 1)
+    replay = view(condensed)
+    replay.link_inputs["kills"]["4"] = []
+    kills = copy.deepcopy(LINK_KILLS)
+    kills[4] = []
+    result = lk.link(replay, [db_match(kills=kills)], {})
+    assert (result.report["check"], result.report["rounds"]) == ("clock", [4])
+
+
+# ------------------------------------------------------------ backfill
+
+
+def test_a_player_with_a_different_subject_refuses_with_no_backfills(condensed):
+    result = lk.link(view(condensed), [db_match(subjects={4: "00000000-0000-4000-8000-00000000ffff"})], {})
+    assert result.status == "refused" and result.backfills == []
+
+
+def test_a_subject_owned_by_another_player_refuses_with_no_backfills(condensed):
+    result = lk.link(view(condensed), [db_match()], {subject(4): 12345})
+    assert (result.status, result.report["check"]) == ("refused", "backfill")
+    assert result.backfills == []
+
+
+def test_a_subject_already_on_the_same_player_is_not_backfilled_again(condensed):
+    result = lk.link(view(condensed), [db_match(subjects={4: subject(4)})], {subject(4): 904})
+    assert result.status == "linked"
+    assert (904, subject(4)) not in result.backfills and len(result.backfills) == 9
