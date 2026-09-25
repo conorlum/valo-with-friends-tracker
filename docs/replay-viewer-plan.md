@@ -4,18 +4,66 @@ Goal: play back a round on the minimap in the browser, like valoplant.gg's repla
 `.vrf` replay files parsed with [michel-giehl/ValorantReplayParser](https://github.com/michel-giehl/ValorantReplayParser),
 and tie it to the match and round pages this site already has.
 
-This is the fourth pass.
+This is the fifth pass.
 - **Pass 1** (2026-09-25) was written before anyone had read the parser's source.
 - **Pass 2** read that source (upstream `2b66c65`, 2026-09-23), the prior-art replayer and this repo's code.
 - **Pass 3** applied two independent reviews of pass 2: the exporter contract, the linking rules, demo
   isolation, fixture sanitising and freshness.
-- **Pass 4** (this one) applies the user's decisions of 2026-09-25 (see Decisions). The main change: **replays
+- **Pass 4** applies the user's decisions of 2026-09-25 (see Decisions). The main change: **replays
   come in two ways**, a local ingest from the user's PC and a **friends-only upload** parsed on a private Render
   worker. An uploaded replay plays even if its match isn't in the DB, and links itself later if the match is
   crawled.
+- **Pass 5** (this one, 2026-09-25 evening) records the first real export (the Swiftplay test replay). Its shape
+  differs from what the parser source suggested: **no `Subject`, no round winners, no `MatchID` and no map path
+  are decoded**, because Swiftplay's own player and game state classes are not decoded by the parser. The
+  condenser and linker were reworked to that shape (see "Stage 1a results"), decision 1 is reopened, and
+  "Status and next steps" below lists what remains. Claims still marked **[export]** now need the
+  **competitive** export (Stage 1b).
 
-The test replay's export still hasn't run, so every claim that needs it is marked **[export]**, and each one has
-a stated failure rule.
+## Status and next steps (2026-09-25)
+
+**Where things are:**
+- Branch `overnight/2026-09-25-replay-stage1` (worktree `.worktrees/overnight-2026-09-25-replay-stage1`, based on
+  `replays` @ `1aaa0e3`, not pushed) holds all Stage 1c tooling: `app/replays/{format,contract,condense,link}.py`,
+  `scripts/{ingest_replay,make_replay_fixture,archive_replays,with_friends_db}.py`, the parser build/export
+  scripts, vendored assets, the `.gitignore` rules and 136 replay tests. `de8943c` reworks it to the real export's
+  shape, and `8d37a2c` adds a real fixture (`tests/fixtures/replay/swiftplay`, round 1, movement thinned 8×,
+  identity scan passed; the user decides whether it stays).
+- **Stage 1a: passed** on the Swiftplay replay, with the gate amended as recorded below. `ingest_replay.py
+  --preview` passes 8/8 checks and the user looked at `preview.html` ("nothing glaringly wrong").
+- Full suites under `.venv313` and `.venv`: failing test IDs identical to the pre-work baseline.
+
+**Next, in order:**
+1. **Review this pass** (the reopened decision 1, the amended 1a gate, the linking changes, the work-ahead list).
+2. **Stage 1b (user first):** record, archive and export a competitive match (`archive_replays.py`, then
+   `export_replay.ps1 <uuid>`); crawl it; the agent runs `--preview` and the read-only `--dry-run`, and answers
+   findings 14-23. Findings 21-23 are new and decide decision 1 and the linker's final shape.
+3. **Freeze** the provisional values (see "Provisional values") at the 1b gate.
+4. **Stage 1c PR** from `origin/main`, carrying the plan commits and the overnight branch's tooling.
+5. Stages 2, 3 and 4 as written, with the changes this pass makes.
+
+**Work that can proceed before 1b** (on side branches, merged in stage order; none needs prod or the user):
+- **W-a. Match ID from the `.vrf` header.** The test file holds its match UUID in UTF-16 at byte 48 of the header
+  (and again in ASCII later). Read it there instead of trusting the file name, which an uploader controls.
+  Keep the file name as a cross-check (refuse on disagreement for local ingest). Belongs in the 1c PR.
+- **W-b. A streaming condenser.** It now loads the whole 1.5 GB export into memory and takes about 96 s for
+  a 14-minute match. Stream `movement.ndjson` per pawn and read `events.ndjson` in one pass. Measure peak RAM
+  before and after: that number, plus the parser's, sizes the worker (decision 9). Belongs in the 1c PR.
+- **W-c. The upload worker, standalone** (Stage 3 step 1): `replay_worker/server.py`, `Dockerfile`, README and
+  worker tests (timeout, temp cleanup, queue overflow), run locally against the Swiftplay `.vrf`. No web-service
+  side, no `render.yaml` change. Merged with Stage 3.
+- **W-d. The viewer front end, unlinked mode** (Stage 2 step 5): `static/js/replay.js` and a template driven by
+  stored blobs, grown from the preview page's player, in the site's style, at phone width. Linked-mode names and
+  the kill feed wait for Stage 2's routes. Merged with Stage 2.
+- **W-e. Utility events (optional):** the export has typed flash and nearsight events (4 flashes, 10
+  nearsights in the test match); their caster/target subjects are null, so resolve casters through pawns.
+  Fill `util` with `k: "flash"`/`"nearsight"` (no `v` bump). Merged with Stage 4 or earlier.
+
+**Must wait for 1b:** migration 0012 and `store.py` (the shape of `replay_players.subject` and
+`players.riot_subject` depends on finding 21), freezing the linker limits, and all of Stage 4.
+
+**Open items for the user:** the export's timing line (`exit 0 seconds … peakMB … size …`, printed by
+`export_replay.ps1`) is not yet recorded here; it is finding 13. Keep or drop the committed fixture.
 
 ## The whole path
 
@@ -59,6 +107,16 @@ tests on an export that already exists. So `ingest_replay.py` never calls the pa
 1. **Where the replay's `Subject` goes:** a new column `players.riot_subject` (UUID, unique, nullable). It is
    backfilled only under the rules in Linking step 6. `players.puuid` is left for the Riot API, whose PUUID is
    expected to be a different, encrypted string.
+   **Reopened (pass 5), decided at the 1b gate by finding 21.** The Swiftplay export decodes no Subject: its
+   player state (`Swiftplay_EoRCredits_PlayerState_C`) isn't decoded, and the only identities are inside an
+   undecoded `AllPlayersObfuscatedPlayerInformation` blob on the recorder's own player state. The code already
+   treats the Subject as optional (`replay_players` rows carry `subject = None`, the linker leaves such slots
+   unanchored and backfills nothing). The options at the gate:
+   - competitive decodes `BombPlayerState.Subject` → keep decision 1 as written; `replay_players.subject`
+     becomes **nullable** anyway, for Swiftplay and other modes;
+   - it doesn't → drop `players.riot_subject` and `replay_players.subject` from migration 0012; identity comes
+     only from linking (agent, side and the kill sequence). Decoding the obfuscated blob is a parser change,
+     out of scope.
 2. **The friends DB** is `valowithfriendsdb` (read from `webapp/.env.remote`; only the name was printed). This is
    the value for `with_friends_db.py --expect-database`.
 3. **Parser location:** a pinned build used in two places, the user's PC for local ingest and a private Render
@@ -92,7 +150,10 @@ Still open (small, with recommendations) at the end.
   `requirements.txt`. The web service talks to the worker with the standard library (`urllib.request`), and
   `python-multipart` (already pinned) handles the upload.
 
-### From the parser source (done, to be confirmed by the export)
+### From the parser source (done; checked against the first export in "Stage 1a results")
+
+This table is what the source suggested before any export. Where the Swiftplay export disagreed, "Stage 1a
+results" wins; the `BombPlayerState`/`BombGameState` rows may still hold for competitive (finding 21).
 
 | Question | What the source says | Consequence |
 | --- | --- | --- |
@@ -120,11 +181,71 @@ Still open (small, with recommendations) at the end.
   `SuppliedPlacementReplay_EmitsSageDestructionAndVysePlacementLifecycles`,
   `SuppliedFlashReplay_EmitsCompleteRecordedLifecycle`, `SuppliedHarborReplay_EmitsRecordedNearsightLifecycle`,
   `SuppliedActivationReplay_EmitsVyseActivationWithTriggerAndActiveDuration`.
-- **Export: not run yet.** The first attempt exited 1 after 1.3 s without creating its output folder. Windows
+- **Export: the first attempt failed**, exiting 1 after 1.3 s without creating its output folder. Windows
   PowerShell 5.1's `Start-Process -ArgumentList` doesn't quote array elements, so a path with a space (the user
-  profile) was split, and the CLI's `AcceptExistingOnly` check refused it. Step 3's command below needs the paths
-  quoted (`"`"$path`""`). `scripts/export_replay.ps1` calls the built binary with `&` instead, which quotes
-  correctly. Findings 1-13 and the gate wait on the export.
+  profile) was split, and the CLI's `AcceptExistingOnly` check refused it. Step 3 now uses the scripts, which
+  call the built binary with `&`.
+- **Export: ran 2026-09-25** with `build_replay_parser.ps1` then `export_replay.ps1`. It writes to
+  `%TEMP%\valo-replay\<full match uuid>\` (not the 8-character prefix). `events.ndjson` 814 MB,
+  `movement.ndjson` 721 MB, manifest 0.6 MB, for a 23 MB `.vrf` and a 13 min 51 s match. Wall time and peak
+  memory: **not yet recorded** (finding 13).
+
+**Findings 1-13 (Swiftplay, `++Ares-Core+release-13.06`, Abyss, 9 rounds, 5-4):**
+
+1. **Parse:** `completed_with_warnings`. The sha256 matches the archive README. 0 malformed packets, 76
+   `partial_sequence_error` diagnostics (47 on channel 1, the recorder's replay controller; the rest on object
+   channels 74-221), none suppressed. They are classed **coverage**, not blocking: the per-player coverage checks
+   measure what they cost, and every track was intact. `RoundResults` did **not** decode: there is no
+   `BombGameState` in the export at all.
+2. **Identity:** **no `Subject`**. There is no `BombPlayerState`. Each player is one character pawn for the
+   **whole match** (spawned at 73 ms, never replaced), found by its `actor_spawned.archetype_path`
+   `Default__<Code>_PC_C`, and its character export group carries a `PlayerState` guid pointing at an undecoded
+   `Swiftplay_EoRCredits_PlayerState_C`. 10 players by `PlayerState`, exactly. `Default__Smonk_PostDeath_PC_C`
+   (18 spawns) is Clove's post-death form, not a player, and is excluded. Riot IDs appear only in an undecoded,
+   bit-packed `AllPlayersObfuscatedPlayerInformation` array on the recorder's `BaseReplayPlayerState` (7 of 10
+   UUIDs visible, no link to a pawn).
+3. **Movement:** from `ReplaysClientReceiveRemoteCharacterUpdatesSingleArrayNoAutonomous` RPCs, keyed by
+   `shooter_character_net_guid`. **Native rate 125 Hz.** All 10 players present, the recorder included, with no
+   fog-of-war gaps: alive-time coverage 100% for every player, largest gap 0.04 s. 60,461 movement rows belong to
+   non-player characters (Clove's post-death pawns) and are dropped.
+4. **Rounds:** phases arrive as `ClientGamePhaseBegin`/`ClientGamePhaseEnded` RPCs on the recorder's controller,
+   not `MulticastSetPhase`. Values: 2 (between rounds), 3 (buy, 30 s; 45 s before round 1), **4 (in round, starts
+   at the barrier drop)**, 5 (round ending, 7 s), 6 (side swap, after round 4 in Swiftplay). 9 complete 4→5
+   windows; none dropped. No `RoundNumber`, no `MulticastEndRound`.
+5. **Kills:** 66 `MulticastNotifyKilledEnemy`, all resolved through the pawns, none outside a round window. One is
+   a **self-kill** (round 3, Clove, 15 s after she was killed): most likely her ultimate expiring after a revive.
+   No resurrect RPC was seen, so the replay shows her dead from her first death.
+6. **Agents:** one per player from the archetype code (Viper, Jett ×2, KAY/O, Chamber, Clove ×2, Fade, Reyna,
+   Veto). Duplicate agents were on opposite teams.
+7. **MatchID:** not in the export. The `.vrf` is named by the match UUID, and the same UUID is in the file's
+   header (UTF-16 at byte 48) and later in ASCII (W-a).
+8. **Map:** **not in the export** (no `/Game/Maps/` path in any row). It is in the `.vrf`'s bytes
+   (`/Game/Maps/Infinity/Infinity` = Abyss); `contract.map_codes_in_file` reads it. Uploads keep the file until
+   parsing ends, so this works for them too.
+9. **Transform:** the preview page draws tracks over the minimap with the prior art's transform; the user
+   checked it once and saw nothing wrong.
+10. **Utility:** 4 flashes (8 hits), 10 nearsights (6 hits), 0 walls; `caster_subject`/`target_subject` all null.
+11. **Plant and defuse:** no source. `TimedBomb_C` is in the export but undecoded. Stays null (D9).
+12. **Size at the native rate:** 9 rounds, **194 KB gzipped per match, 40 KB max per round**, with delta encoding
+    and linear fill of skipped grid points, no quantisation. Within budget.
+13. **Parse cost:** `.vrf` 23 MB. Parse wall time and peak memory: to record from `export_replay.ps1`'s last line.
+    The condenser (not yet streaming) takes about 96 s end to end on this machine.
+
+**Other observations:**
+- **One player left** after round 7: that pawn's `actor_closed` arrives in round 8's buy phase. The condenser marks
+  the slot absent (`alive = []`, no track) from then on, and ends an open life with cause `"left"` if it happens
+  mid-round.
+- **Round-start positions are not a reliable side signal.** One team roamed a wide area through every buy phase;
+  a 2-means split of round-start positions failed the 1500-unit radius in all 9 rounds and, in round 4, produced a
+  wrong 5/5 split. The **match-start spawn points** (each pawn's `actor_spawned.location`) form two tight lines
+  (radius 557), and the kills alone connect all ten. Sides now come from kills, the match-start lines and only
+  those round-start clusters that are tight.
+
+**Gate, as amended:** build ✓; parse complete with no blocking diagnostics ✓; 10 players with one agent each
+and every kill resolved ✓ (**"10 distinct Subjects" is replaced by "10 players"**, see decision 1); every round
+has 4→5 ✓; tracks, coverage and gaps ✓; **"two 5/5 clusters at every round start" is replaced by "two 5/5
+spawn lines at match start"** ✓ (per-round clusters reported); map discovered ✓ (**from the `.vrf`**, not actor
+paths); size budget ✓; parse time: pending finding 13.
 
 ### Exporter contract (what the condenser relies on)
 
@@ -133,15 +254,25 @@ Still open (small, with recommendations) at the end.
 - **Order:** file order, then `time_ms`. Rows with equal `time_ms` keep file order.
 - **State:** export-group rows are partial. State at time t is the fold of every earlier update for that actor.
 - **Manifest:** the condenser requires `schema_version == 8`, `source_sha256` equal to the input file's hash,
-  `replay_build` in the pinned parser's supported list, and `parser_version` containing the pinned SHA. Any
-  mismatch refuses.
-- **Diagnostics**, classified in `condense.py`:
-  - *blocking:* `RawPayloadFallback` on `RoundResults`, any diagnostic on `BombPlayerState`, and
-    `malformed_packet_count` or `partial_error_count` above a threshold frozen at Stage 1a. For a replay with no
-    DB match, a `RoundResults` fallback is not blocking: it just can't link;
-  - *coverage:* movement decode errors, which count against the per-player coverage limit;
+  `replay_build` in the pinned parser's supported list, and `parser_version` containing the pinned SHA (a
+  12-character prefix; the real manifest carries the full SHA after `+`). Any mismatch refuses.
+- **Players:** character pawns from `actor_spawned` rows whose archetype is `Default__<Code>_PC_C` (an agent code
+  with no underscore; an unknown code refuses). Pawns are grouped into players by the character's `PlayerState`
+  property, or by a legacy `BombPlayerState.SpawnedCharacter`; exactly 10 players or refuse. A Subject is attached
+  only when a decoded export group on that player state carries one. A pawn's `actor_closed` before the match ends
+  marks a player who left.
+- **Rounds:** `NewPhase` from `ClientGamePhaseBegin` and `MulticastSetPhase` RPCs, plus `BombGameState.Phase` when
+  present; a round is 4 → 5.
+- **Match UUID:** `BombGameState.MatchID` when decoded, else the `.vrf` name (W-a moves this to the header).
+- **Map:** `/Game/Maps/<code>/` in the export's paths, else `/Game/Maps/<code>/<code>` in the `.vrf`'s bytes, else
+  `--map` (preview only).
+- **Diagnostics**, classified in `contract.py`:
+  - *blocking:* any diagnostic on `BombPlayerState`, `malformed_packet_count` above 0, a bad `parse_status`, any
+    suppressed diagnostic, and an unknown code;
+  - *link-blocking:* `RawPayloadFallback` on `RoundResults` (the replay plays but can't link);
+  - *coverage:* `partial_sequence_error` and `incomplete_partial_bunch`, counted per channel. The per-player
+    coverage and gap checks decide whether they matter;
   - *ignored:* everything else, listed by code in the report.
-  An unknown code is blocking until someone classifies it.
 
 ## Architecture
 
@@ -222,15 +353,18 @@ link mapping.
 - **Tracks are segmented and delta-encoded.**
   - The first value of each array is absolute; the rest are differences from the previous sample.
   - A segment is a contiguous run on the `t0 + i/hz` grid, `hz` = the parser's native exported rate (decision 6),
-    measured in Stage 1a. Samples are snapped to the grid, never invented beyond the source's own rate.
+    measured in Stage 1a (125 Hz). Samples are snapped to the grid; grid points the source skipped inside a
+    segment are filled linearly (PROVISIONAL D5), never beyond the source's own rate.
   - A new segment starts at a gap over 1.0 s, a jump over 600 world units between raw moves (teleport; frozen at
     Stage 1a), a death, a revive or a pawn change.
   - Nothing is drawn between segments. The page shows a hollow last-known marker for 2 s, then hides the dot.
 - **Coordinates:** `u`/`v` are ints in 0..10000. `yaw` is already projected into map space (a unit vector through
   the same affine transform), an int in degrees 0..359, interpolated along the shortest arc.
 - **`alive`:** intervals `[from, to, cause]` per slot. `to` is null if they survive. `cause` is `"kill"` (a replay
-  kill) or `"round_end"`. A new interval opens on a resurrect event (`MulticastReceivePlayerResurrectEvent`) or a
-  new pawn for the same Subject. For a linked replay, DB-only deaths (the excluded kill classes) are overlaid at
+  kill), `"left"` (the player's last pawn closed: they left the match) or `"round_end"`. A slot with no pawn left
+  at the round's start has `[]` and no track. A new interval opens on a resurrect event
+  (`MulticastReceivePlayerResurrectEvent`) or a new pawn for the same player. (Pass 5 adds `"left"` and `[]`
+  before any blob is stored, so `v` stays 1.) For a linked replay, DB-only deaths (the excluded kill classes) are overlaid at
   page time from the link's `db_deaths` list.
 - **`kills[].u,v`:** the victim's position.
 - **`util`:** a typed envelope, fixed now: `{"k": "<kind>", "t": …, "by": <slot>, …}`. Readers ignore an unknown
@@ -259,7 +393,7 @@ the DB, because uploaded replays can't be re-parsed (their `.vrf` isn't kept).
 ```
 replays
   id               serial PK
-  match_uuid       uuid unique not null      -- BombGameState.MatchID
+  match_uuid       uuid unique not null      -- MatchID if decoded, else the .vrf header's (W-a)
   match_id         int null unique  FK matches.id ON DELETE SET NULL
   map_name         varchar(64) not null
   round_count      smallint not null
@@ -284,7 +418,7 @@ replay_rounds
 replay_players                               -- private: never served
   replay_id        int FK replays.id ON DELETE CASCADE
   slot             smallint
-  subject          uuid not null
+  subject          uuid null                 -- null when the replay decodes none (Swiftplay); see decision 1
   agent            varchar(32) not null
   side_group       char(1) not null          -- 'A' | 'B'
   match_player_id  int null FK match_players.id ON DELETE SET NULL
@@ -297,7 +431,7 @@ replay_uploads                               -- upload jobs
   source_sha256    char(64), size_bytes int, created_at, finished_at
   replay_id        int null FK replays.id ON DELETE SET NULL
 
-players.riot_subject  uuid null unique       -- decision 1
+players.riot_subject  uuid null unique       -- decision 1 (reopened: dropped if competitive has no Subject)
 ```
 
 - Separate tables, so existing match and round queries never load blobs.
@@ -334,42 +468,52 @@ either way. A refused link never shows site data. The report holds IDs, counts, 
      tracker.gg's padding (`trackergg_browserstate_source.py:679-689`).
    - A dropped final replay round is allowed only if the DB rounds end in a surrender or the DB score shows the
      match ended early.
-   - The **sets of round numbers** must be equal. Every round needs a decoded `RoundResults` winner (kept in the
-     private `link_inputs` of the condensed output, see below) equal to `rounds.outcome`'s winner. The final score
-     must equal `team1_rounds_won`/`team2_rounds_won`.
+   - The **sets of round numbers** must be equal.
+   - *When the replay decoded round winners* (`RoundResults`, kept in the private `link_inputs`): every round's
+     winner must equal `rounds.outcome`'s winner, and the final score must equal
+     `team1_rounds_won`/`team2_rounds_won`. A `RoundResults` fallback refuses.
+   - *When it decoded none* (the Swiftplay export; competitive is finding 21): no winner check. The per-round kill
+     sequences (step 4) carry the proof, and the report records `winners_checked: false`. **Open for the 1b
+     review:** is that enough, or should a replay without winners need a stricter clock limit or more anchors?
 3. **Teams and players.**
-   - Exactly 10 distinct Subjects, one agent each.
-   - *Partition:* built from the replay kills that survive the kill rules (killer and victim on opposite sides),
-     checked against every round's start positions (each round's two spawn clusters = the two side groups). It
-     must be connected and 5/5. Team membership never changes across halftime or overtime.
+   - Exactly 10 players with one agent each; no Subject shared by two players. Subjects may be absent.
+   - *Partition:* built from the replay kills that survive the kill rules (killer and victim on opposite sides;
+     self-kills are skipped), the match-start spawn lines, and the round-start clusters **that were tight**
+     (5/5 within the radius). Only those rounds' start positions go into `link_inputs`, and the linker re-checks
+     them. It must be connected and 5/5. Team membership never changes across halftime or overtime.
    - *Assignment:* try both orientations (A = `team-1`/Red or `team-2`/Blue; `trackergg_browserstate_source.py:
      554-555`) × every agent- and team-respecting bijection from slots to `match_players`. A candidate must match
-     the per-round winners (`WinningTeam` FName, expected `Red`/`Blue` **[export]**), the ordered kills (step 4),
-     and every existing `players.riot_subject` anchor.
+     the per-round winners when decoded (`WinningTeam` FName, expected `Red`/`Blue` **[export]**), the ordered
+     kills (step 4), and every existing `players.riot_subject` anchor for slots that have a Subject. A slot without
+     a Subject is unanchored.
    - **Exactly one** candidate must survive. Zero or more → `refused`. A fully mirrored composition with no
      decoded winners is the expected "more than one" case.
 4. **Kills, per round.**
    - DB kills minus the excluded classes: `killer_match_player_id IS NULL` (`trackergg_browserstate_source.py:
      750`), killer == victim, and same-team pairs. Excluded deaths go into `db_deaths`, and nothing else may be
      unmatched.
+   - Replay self-kills (Clove's ultimate expiring, in the Swiftplay export) are skipped: they pair with nothing,
+     and their `kill_map` entry is null.
    - Both sides are sorted by time. Kills within 0.1 s form a tie group, compared as a multiset. The (killer,
      victim) sequences must be identical. Identity and order are matched first, the clock second.
 5. **Clock.**
-   - One match-wide offset: the median of `db_time − replay_time` over every matched kill, plus DB plant and
-     defuse times.
+   - One match-wide offset: the median of `db_time − replay_time` over every matched kill. (Plant and defuse
+     anchors wait for a replay source for them: finding 11.)
    - Provisional limits, frozen at the Stage 1b gate: |offset| ≤ 2.0 s, ≥ 20 anchors, every residual ≤ 0.75 s,
      median |residual| ≤ 0.25 s.
    - Every round needs one anchor within the limit. No per-round fitting.
-6. **Backfill** of `players.riot_subject`, the last statement, rechecked under lock (`FOR UPDATE`):
+6. **Backfill** of `players.riot_subject` (only for slots with a Subject; nothing if decision 1 drops the
+   column), the last statement, rechecked under lock (`FOR UPDATE`):
    - each linked player's `riot_subject` is NULL or already equal;
    - the incoming Subject belongs to no other player row.
    Either conflict → `refused` for the link (the stored replay stays, unlinked). No substitution, no guessed merge.
 
-The condenser also outputs a private `link_inputs` record per replay: the decoded `RoundResults` per round,
-start-of-round positions per slot, and the replay kill list in slot terms. It's stored in `replays.link_report`
-under a `inputs` key (no Subjects), so a later link needs no parser.
+The condenser also outputs a private `link_inputs` record per replay: the decoded `RoundResults` per round (empty
+when none decoded), start-of-round positions per slot for the tight rounds only, and the replay kill list in slot
+terms. It's stored in `replays.link_report` under a `inputs` key (no Subjects), so a later link needs no parser.
 
-Swiftplay and other non-competitive modes never link, and that's fine: they play unlinked.
+Swiftplay and other non-competitive modes link only if tracker.gg's crawl stored the match (**[1b]**: does the
+crawl keep Swiftplay matches?). Otherwise they play unlinked, which is fine.
 
 ### Upload (friends only)
 
@@ -390,6 +534,11 @@ Swiftplay and other non-competitive modes never link, and that's fine: they play
   - Each job runs the parser with a **180 s timeout** and a memory cap, as a non-root user, then runs the condenser
     and returns the condensed output (blobs + `replay_players` + `link_inputs`) on `GET /jobs/{id}`. The temp
     files are deleted when it finishes, whatever the outcome.
+  - **(pass 5)** The condenser reads the map from the `.vrf` (the export doesn't name it), so the file must stay
+    until condensing ends. The match UUID comes from the `.vrf` header (W-a), **never from the uploaded file
+    name**, which the uploader controls: a renamed file must not claim another match's `match_uuid`.
+  - **(pass 5)** The export is about 65× the `.vrf` (1.5 GB for 23 MB). The worker writes it to a temp directory
+    sized for that, and the condenser streams it (W-b); both go into the plan sizing (decision 9).
   - The worker holds **no DB credentials and no secrets**. It only parses.
 - **The web service** then calls `store.py` (store + link in one transaction) and marks the job `stored` or
   `failed` with a plain reason ("patch 13.07 not supported yet", "not a Valorant replay", "map not recognised",
@@ -518,18 +667,22 @@ Stages 3 and 4 are independent, and either can go first. Upload is listed first 
 
 **Steps:**
 1. The test replay is already archived. The user backs up the archive folder.
-2. The user builds and tests the parser:
+2. The user builds and tests the parser (done 2026-09-25; PowerShell syntax, so run it in a PowerShell window):
    ```
-   ! cd $HOME\rp\parser; dotnet build ValorantReplayParser.sln -c Release; if ($?) { dotnet test ValorantReplayParser.sln -c Release --no-build --logger "trx;LogFileName=$HOME\rp\parser-tests.trx" }
+   cd $HOME\rp\parser; dotnet build ValorantReplayParser.sln -c Release; if ($?) { dotnet test ValorantReplayParser.sln -c Release --no-build --logger "trx;LogFileName=$HOME\rp\parser-tests.trx" }
    ```
    A failed build stops Stage 1a. The agent reads the `.trx` and records the **exact set** of failing tests as the
    baseline. Only tests that need a missing `.vrf` fixture may be in it.
-3. The user exports, measuring time and peak memory for the worker's sizing:
+3. The user builds the pinned parser and exports, from a PowerShell window in the worktree's `webapp\`,
+   measuring time and peak memory for the worker's sizing:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\build_replay_parser.ps1
+   powershell -ExecutionPolicy Bypass -File scripts\export_replay.ps1 <match uuid>
    ```
-   ! cd $HOME\rp\parser; $p = Start-Process dotnet -ArgumentList 'run','-c','Release','--no-build','--project','src\CliReader\CliReader.csproj','--','export',"$HOME\ValorantReplayArchive\d45b2844-d7dd-4efd-bbf7-551854710350.vrf",'--output',"$env:TEMP\valo-replay\d45b2844" -NoNewWindow -PassThru; $h = $p.Handle; $peak = 0; while (-not $p.HasExited) { $p.Refresh(); $peak = [Math]::Max($peak, $p.PeakWorkingSet64); Start-Sleep -Milliseconds 200 }; "exit $($p.ExitCode) seconds $(($p.ExitTime - $p.StartTime).TotalSeconds) peakMB $([int]($peak/1MB))"
-   ```
-   (`dotnet run` launches a child process, so this peak is a lower bound. Stage 3 measures the real value in the
-   worker container.)
+   The export writes `%TEMP%\valo-replay\<match uuid>\` and ends with `exit … seconds … peakMB … size …`. (The
+   pass-4 one-liner here used `Start-Process -ArgumentList`, which splits paths with spaces in Windows
+   PowerShell 5.1; don't use it. Stage 3 measures the real peak in the worker container.) The `!` prefix in
+   Claude Code runs bash, not PowerShell, so these go in a PowerShell window.
 4. The agent answers, with counts and scratch Python scripts, without identities:
    1. `parse_status`; that `source_sha256` equals the archive README's hash; the diagnostics by code, classified;
       whether `RoundResults` decoded.
@@ -547,7 +700,9 @@ Stages 3 and 4 are independent, and either can go first. Upload is listed first 
    12. Scratch condensation at the native rate: gzipped size per round with and without delta encoding.
    13. Parse wall time and peak memory (step 3), and the `.vrf` file size, for decisions 9 and 10.
 
-**Gate (yes/no; any "no" stops and is reported):**
+**Gate (yes/no; any "no" stops and is reported).** Pass 5 amended three items after the Swiftplay export
+("10 players" for "10 distinct Subjects", match-start spawn lines for per-round clusters, the map from the
+`.vrf`); the amended gate and its results are under "Stage 1a results". The original list:
 - The build succeeds, and failing tests ⊆ the missing-fixture baseline.
 - `parse_status` is complete, the hash matches, and there are no blocking diagnostics.
 - 10 distinct Subjects, one agent each, every kill resolved.
@@ -569,12 +724,16 @@ Stages 3 and 4 are independent, and either can go first. Upload is listed first 
 misalign. Then freeze the numbers and JSON v1.
 
 **Steps:**
-1. The user records a competitive match, archives it (copy, compare sha256), backs it up, and exports it as in
-   1a step 3.
-2. `scripts/with_friends_db.py` is written now (the one early repo file), and the user crawls:
+1. The user records a competitive match, archives it with `scripts\archive_replays.py` (verified copy, appended
+   to the archive's `index.json`), backs it up, and exports it as in 1a step 3.
+2. `scripts/with_friends_db.py` (already built on the overnight branch) runs the crawl. From a PowerShell window
+   in `webapp\` (the `!` prefix runs bash, which mangles `.\` paths):
+   ```powershell
+   .\.venv313\Scripts\python.exe scripts\with_friends_db.py --expect-database valowithfriendsdb scripts\ingest_trackergg_player.py "NPrightdolphin#NA1" --count 20
    ```
-   ! cd webapp; .\.venv313\Scripts\python.exe scripts\with_friends_db.py --expect-database valowithfriendsdb scripts\ingest_trackergg_player.py "NPrightdolphin#NA1" --count 20
-   ```
+   The agent then runs `ingest_replay.py --export-dir <dir> --preview`, and the read-only
+   `with_friends_db.py --expect-database valowithfriendsdb --read-only scripts\ingest_replay.py --export-dir <dir>
+   --dry-run`.
 3. The agent runs read-only checks (`with_friends_db.py --read-only`) and a scratch linker, and answers:
    14. `MatchID == matches.external_id`? (If not, stop. A fallback lookup is its own design.)
    15. Are Subjects real (not anonymised) in competitive?
@@ -583,6 +742,15 @@ misalign. Then freeze the numbers and JSON v1.
    18. The clock: offset, residuals, anchors per round. Freeze the limits.
    19. Partition, orientation, assignment: exactly one candidate?
    20. Proposed `riot_subject` backfills and conflicts (reported only).
+   21. **(pass 5)** Does competitive decode what Swiftplay didn't: `BombPlayerState` with `Subject`, and
+       `BombGameState` with `Phase`, `MatchID` and `RoundResults`? The preview report shows it directly
+       (`players.subjects_decoded`, `match_uuid_source`, `round_results_decoded`). This settles decision 1 and
+       whether winners are checked.
+   22. **(pass 5)** Do the Swiftplay observations hold: one pawn per player for the match (or a pawn per round,
+       which the grouping by `PlayerState` also handles), loose round-start positions, tight match-start spawn
+       lines, map only in the `.vrf`, the header match UUID (W-a), 125 Hz?
+   23. **(pass 5)** Without decoded winners, is the kill sequence alone a strong enough proof? Run the gate's
+       corrupted copies with `round_results` emptied, and check that each is still refused.
 
 **Gate:**
 - The scratch linker accepts the competitive match under the frozen limits, with exactly one assignment
@@ -590,7 +758,8 @@ misalign. Then freeze the numbers and JSON v1.
 - Deliberately corrupted copies are each refused: a shifted round number, two kills swapped, an agent changed, a
   3 s clock shift, the wrong match.
 - The limits, index rules, diagnostic classes and JSON v1 (delta encoding, any quantisation, `hz`) are written
-  here and marked **frozen**.
+  here and marked **frozen**, including every `PROVISIONAL(Dn)` value in the code (see "Provisional values").
+- Decision 1 is closed one way or the other (finding 21), and migration 0012's `subject` columns follow it.
 
 **User runs:** the recording and archiving, the export, the crawl.
 
@@ -611,14 +780,37 @@ misalign. Then freeze the numbers and JSON v1.
 - `scripts/ingest_replay.py`: `--export-dir` with `--preview [--map]` and `--dry-run` only. A real write raises
   "not until Stage 2".
 - `scripts/make_replay_fixture.py`, `tests/fixtures/replay/` (both matches, trimmed, synthesised), the unit tests.
+  The fixture maker keeps each character's spawn point and `PlayerState`, adds the map from `--vrf` when the
+  export names none, and thins movement with `--movement-step` (a round at 125 Hz is tens of MB).
 - `.gitignore` additions.
 - Script options with environment-variable defaults for the archive and parser paths (not `app/config.py`).
+- W-a (match UUID from the `.vrf` header) and W-b (a streaming condenser), if built before the PR.
+
+**Status (pass 5):** every file above exists on `overnight/2026-09-25-replay-stage1`, reworked to the real
+export. The Swiftplay fixture is committed there (`8d37a2c`); the competitive one follows 1b. The branch is based
+on `replays`, not `origin/main`: the PR branch is cut fresh and the commits carried over.
+
+**Provisional values** (each marked `PROVISIONAL(Dn)` in the code; the decision log is
+`~/.claude/overnight/2026-09-25-replay-stage1/DECISIONS.md`), frozen at the 1b gate:
+- D2 `supported_replay_builds = ["++Ares-Core+release-13.06"]` (confirmed by the Swiftplay manifest).
+- D5 segment gap 1.0 s, teleport 600 units, linear fill of skipped grid points, native `hz` as the median
+  sample interval (125 Hz measured), size budget 60 KB p95 per round and 1.5 MB per match (measured: 40 KB max,
+  194 KB per match).
+- D6 diagnostics: malformed packets block; partial-bunch errors are coverage.
+- D7 the parser version check uses a 12-character SHA prefix (the manifest carries the full SHA).
+- D8 `RoundResults` index i is round i + 1 (untested: nothing decoded yet).
+- D9 plant and defuse null (no decoded source).
+- D10 slots in order of each player's first pawn (spawn time, then guid); side group A holds slot 0.
+- D11 linker limits |offset| ≤ 2.0 s, ≥ 20 anchors, residual ≤ 0.75 s, median ≤ 0.25 s, tie window 0.1 s;
+  `WinningTeam` `Red` → `team-1`.
+- Pass 5: the spawn-cluster radius 1500 units, applied to both round-start clusters and match-start lines.
 
 **Gate:**
 - The unit tests pass. Failing test IDs under `.venv313` and `.venv` equal the baseline.
 - `ingest_replay.py --export-dir <competitive> --dry-run` (via `with_friends_db.py --read-only`) prints a passing
   report. The agent can run it.
-- `--preview` on the Swiftplay export passes the scripted checks, and the user looks at it once.
+- `--preview` on the Swiftplay export passes the scripted checks, and the user looks at it once (done
+  2026-09-25: 8/8, and the user saw nothing wrong).
 - The fixture scan passes. `git ls-files | grep -iE '\.vrf$|valo-replay|events\.ndjson$'` prints nothing outside
   `tests/fixtures/replay/`.
 - The user merges. Record the merge commit here as the Stage 1 gate commit.
@@ -665,7 +857,8 @@ misalign. Then freeze the numbers and JSON v1.
 - The deploy applies 0012 to both DBs. Check `alembic_version` read-only on both. `valomaths.onrender.com` loads
   with no replay links.
 - The first prod ingest:
-  `! cd webapp; .\.venv313\Scripts\python.exe scripts\with_friends_db.py --expect-database valowithfriendsdb scripts\ingest_replay.py --export-dir $env:TEMP\valo-replay\<uuid>`
+  `.\.venv313\Scripts\python.exe scripts\with_friends_db.py --expect-database valowithfriendsdb scripts\ingest_replay.py --export-dir $env:TEMP\valo-replay\<uuid>`
+  (from a PowerShell window in `webapp\`; the `!` prefix runs bash).
   Then the replay plays on `valowithfriendstracker.onrender.com`.
 
 **User runs:** the merge and the first ingest.
@@ -767,7 +960,8 @@ and trade links (the round page has none).
    figure is only an early estimate). Write it into `render.yaml`'s `plan:`.
 10. **Upload limits:** start with 80 MB per file, 10 uploads per hour per session and IP, and a 180 s parse
    timeout. They are checked against real data before Stage 3 ships:
-   - Stage 1a records the `.vrf` sizes (the Swiftplay test file is 23 MB) and the parse time;
+   - Stage 1a records the `.vrf` sizes (the Swiftplay test file is 23 MB, a 13 min 51 s match) and the parse time
+     (pending: `export_replay.ps1`'s last line);
    - Stage 1b adds the competitive file;
    - the size cap becomes max(80 MB, 2× the largest observed file), and the timeout becomes max(180 s, 3× the
      slowest observed parse in the worker);
@@ -782,8 +976,14 @@ and trade links (the round page has none).
 - **Untrusted uploads:** parsing files from other people. The worker is isolated, private, holds no secrets, runs
   as non-root with a timeout and a memory cap, and handles one job at a time. The code is only as strong as the
   friends who hold it. It can be rotated.
-- **Client-side recording:** the recorder's own pawn or enemies hidden by fog of war may be missing. The Stage 1a
-  gate measures this, and a fail is a no-go.
+- **Client-side recording:** the recorder's own pawn or enemies hidden by fog of war may be missing. Measured on
+  the Swiftplay replay: no gaps (all 10 at 125 Hz, 100% coverage). Stage 1b checks competitive.
+- **Game-state decoding (pass 5):** the parser doesn't decode Swiftplay's player and game state, so that replay
+  has no Subjects, winners or MatchID. If competitive is the same, identity rests only on linking, and a mirrored
+  composition with symmetric kills can't be told apart (refused, not misaligned). Decoding more is an upstream
+  parser change.
+- **Export size (pass 5):** 1.5 GB of NDJSON per 14-minute match. Local exports go to `%TEMP%` and can be deleted
+  after ingest; the worker needs the disk and a streaming condenser.
 - **Cost:** a new paid Render service (decision 9).
 - **Coverage:** only matches someone recorded and ingested or uploaded. "No replay" is the normal state. Strict
   linking means some real matches stay unlinked, with the reason shown.

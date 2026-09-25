@@ -350,3 +350,20 @@ def test_a_replay_self_kill_pairs_with_nothing(swiftplay):
     result = lk.link(replay, [db_match(extra_kills=[lk.DbKill(99, 2, 35.0 + OFFSET, mp(3), mp(3))])], {})
     assert result.status == "linked", result.report
     assert result.kill_map["2"][-1] is None
+
+
+def test_loose_round_start_positions_do_not_refuse_a_correct_link(tmp_path):
+    # As in the first real export: one side roams through the buy phase, so its round-start
+    # positions spread far wider than the cluster radius. Those rounds are no side evidence.
+    match = SyntheticMatch(rounds=4, kills=copy.deepcopy(LINK_KILLS), shape="swiftplay")
+    movement = match.movement()
+    for row in movement:
+        slot = row["shooter_character_net_guid"] - 1000
+        if slot >= 5 and slot % 2:
+            row["position"]["x"] -= 7000.0
+    directory = match.write(tmp_path / "export", movement=movement)
+    replay = condense_export_dir(directory, source_sha256=match.source_sha256,
+                                 vrf_path=match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf"))
+    assert replay.link_inputs["start_positions"] == {}
+    result = lk.link(view(replay), [db_match()], {})
+    assert result.status == "linked", result.report

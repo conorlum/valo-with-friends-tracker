@@ -664,12 +664,14 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         # Only tight clusters are side evidence. In the first real export one side roamed a
         # wide area through the buy phase, and a loose 2-means split put players on the wrong
         # side; kills alone connected all ten.
+        # The linker re-checks the same rounds' start positions against the sides, so it gets
+        # only the rounds used here: a loose round would make it refuse a correct link.
         if sizes == [5, 5] and radius <= SPAWN_CLUSTER_RADIUS:
             clusters.append((first, second))
+            start_positions[str(n)] = uv_starts
         # A round with a player gone can't show two 5/5 clusters; it's reported, not failed.
         spawn_checks[str(n)] = {"sizes": sizes, "max_radius": round(radius, 1), "short_handed": bool(missing),
                                 "ok": (sizes == [5, 5] or bool(missing)) and radius <= SPAWN_CLUSTER_RADIUS}
-        start_positions[str(n)] = uv_starts
         link_kills[str(n)] = [[_seconds(k.t_ms, start), k.killer, k.victim] for k in in_round]
 
     # The pawns' own spawn points at match start: in the first real export the two teams
