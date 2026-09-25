@@ -1,0 +1,670 @@
+"""Condenses a parser export into per-round JSON v1 blobs plus a private player table.
+
+Pure Python over an `Export` (see contract.py); the same code serves local ingest and
+the upload worker. The output holds:
+
+- `rounds`: round number -> the v1 blob (format.py), in replay terms only: slots, agents,
+  unlabelled side groups A/B, replay-clock times. No names, Subjects or PUUIDs;
+- `players`: the private slot table (Subject, agent, side group), never served;
+- `link_inputs`: what a later link needs without the parser (decoded round results, start
+  positions and kills in slot terms). No Subjects;
+- `report`: counts, checks and sizes for the preview and the Stage 1a gate.
+
+Rules marked PROVISIONAL(D<n>) were chosen before any real export existed and are frozen
+at the Stage 1b gate (docs/replay-viewer-plan.md).
+"""
+
+from __future__ import annotations
+
+import bisect
+import json
+import math
+import re
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+from statistics import median
+
+from app.replays import format as fmt
+from app.replays.contract import (
+    GAME_STATE_PATH,
+    PLAYER_STATE_PATH,
+    RPC_KILLED_ENEMY,
+    RPC_RESURRECT,
+    RPC_SET_PHASE,
+    ContractError,
+    Export,
+    ParserPin,
+    check_manifest,
+    classify_diagnostics,
+    fold_export_groups,
+    load_export,
+    load_pin,
+)
+
+# EAresGamePhase (parser source): RoundStarting=3, InRound=4, RoundEnding=5.
+PHASE_IN_ROUND = 4
+PHASE_ROUND_ENDING = 5
+
+# PROVISIONAL(D5): segment rules from the plan, frozen at Stage 1a/1b.
+SEGMENT_GAP_S = 1.0
+TELEPORT_UNITS = 600.0
+# PROVISIONAL(D5): 1a gate limits, reported (not enforced) by the condenser.
+MIN_ALIVE_COVERAGE = 0.90
+MAX_TRACK_GAP_S = 3.0
+SPAWN_CLUSTER_RADIUS = 1500.0
+START_POSITION_WINDOW_S = 2.0
+
+MAP_PATH = re.compile(r"/Game/Maps/([^/.]+)/")
+CHARACTER_PATH = re.compile(r"/Game/Characters/([^/.]+)/")
+
+
+@dataclass(frozen=True)
+class MapInfo:
+    name: str
+    code: str
+    x_mult: float
+    y_mult: float
+    x_add: float
+    y_add: float
+
+    def to_uv(self, x: float, y: float) -> tuple[int, int]:
+        u = y * self.x_mult + self.x_add
+        v = x * self.y_mult + self.y_add
+        return _to_int_uv(u), _to_int_uv(v)
+
+    def yaw_to_map(self, yaw_degrees: float) -> int:
+        """World yaw -> minimap degrees (0 = +u, 90 = +v), through the same affine transform."""
+        rad = math.radians(yaw_degrees)
+        du = math.sin(rad) * self.x_mult  # u follows world y
+        dv = math.cos(rad) * self.y_mult  # v follows world x
+        return int(round(math.degrees(math.atan2(dv, du)))) % 360
+
+
+def _to_int_uv(value: float) -> int:
+    return max(0, min(fmt.UV_SCALE, int(round(value * fmt.UV_SCALE))))
+
+
+def load_maps(static_dir: Path = fmt.STATIC_DIR) -> dict[str, MapInfo]:
+    table = json.loads((static_dir / "data" / "maps.json").read_text(encoding="utf-8"))
+    return {name: MapInfo(name, e["code"], e["xMultiplier"], e["yMultiplier"], e["xScalarToAdd"], e["yScalarToAdd"])
+            for name, e in table.items()}
+
+
+def load_agents(static_dir: Path = fmt.STATIC_DIR) -> dict[str, str]:
+    return json.loads((static_dir / "data" / "agents.json").read_text(encoding="utf-8"))
+
+
+@dataclass
+class CondensedReplay:
+    match_uuid: str
+    map_name: str
+    game_branch: str
+    source_sha256: str
+    recipe: str
+    hz: int
+    rounds: dict[int, dict]
+    players: list[dict]
+    link_inputs: dict
+    report: dict = field(default_factory=dict)
+
+    @property
+    def round_count(self) -> int:
+        return len(self.rounds)
+
+    def encoded_rounds(self) -> dict[int, bytes]:
+        return {n: fmt.encode_blob(blob) for n, blob in self.rounds.items()}
+
+
+@dataclass(frozen=True)
+class Sample:
+    t_ms: int
+    x: float
+    y: float
+    z: float
+    yaw: float
+    pawn: int
+
+
+# ---------------------------------------------------------------- discovery
+
+
+def discover_map(export: Export, maps: dict[str, MapInfo]) -> tuple[MapInfo | None, dict]:
+    by_code = {m.code: m for m in maps.values()}
+    seen: Counter[str] = Counter()
+    for row in export.events:
+        data = row.data
+        for key in ("actor_path", "archetype_path", "object_path", "outer_path"):
+            path = data.get(key)
+            if isinstance(path, str):
+                for code in MAP_PATH.findall(path):
+                    seen[code] += 1
+    known = sorted(code for code in seen if code in by_code)
+    evidence = {"codes_seen": dict(seen.most_common(5)), "known": known}
+    if len(known) == 1:
+        return by_code[known[0]], evidence
+    return None, evidence
+
+
+def _agent_code(export: Export, pawns: set[int]) -> dict[int, str]:
+    codes: dict[int, str] = {}
+    for row in export.of_type("actor_spawned"):
+        guid = int(row.data.get("actor_net_guid", 0))
+        if guid not in pawns:
+            continue
+        for key in ("archetype_path", "actor_path"):
+            path = row.data.get(key)
+            match = CHARACTER_PATH.search(path) if isinstance(path, str) else None
+            if match:
+                codes[guid] = match.group(1)
+                break
+    return codes
+
+
+# ---------------------------------------------------------------- players
+
+
+@dataclass
+class PlayerTable:
+    subjects: list[str]               # slot order
+    spawned: dict[int, str]           # pawn guid -> Subject (SpawnedCharacter)
+    possessed: dict[int, str]         # pawn guid -> Subject (PossessedCharacter), kill resolution only
+    state_subject: dict[int, str]     # player-state actor guid -> Subject
+    pawn_changes: dict[str, list[tuple[int, int]]]  # Subject -> [(time_ms, pawn guid)]
+    agents: dict[str, str]            # Subject -> agent display name
+
+    @property
+    def slot_of(self) -> dict[str, int]:
+        return {subject: slot for slot, subject in enumerate(self.subjects)}
+
+    def resolve(self, guid: int) -> str | None:
+        return self.spawned.get(guid) or self.possessed.get(guid) or self.state_subject.get(guid)
+
+
+def build_players(export: Export, agents_by_code: dict[str, str]) -> PlayerTable:
+    states = fold_export_groups(export.export_groups(PLAYER_STATE_PATH))
+    state_subject = {guid: str(s.values["Subject"]).lower() for guid, s in states.items() if s.values.get("Subject")}
+    subjects = sorted(set(state_subject.values()))
+    if len(subjects) != 10:
+        raise ContractError("subjects", f"{len(subjects)} distinct Subjects, expected 10")
+
+    spawned: dict[int, str] = {}
+    possessed: dict[int, str] = {}
+    pawn_changes: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for guid, state in states.items():
+        subject = state_subject.get(guid)
+        if subject is None:
+            continue
+        for key, target in (("SpawnedCharacter", spawned), ("PossessedCharacter", possessed)):
+            for t_ms, pawn in state.history.get(key, []):
+                if not pawn:
+                    continue
+                pawn = int(pawn)
+                if target.get(pawn, subject) != subject:
+                    raise ContractError("pawn_reused", f"one pawn guid belongs to two Subjects ({key})")
+                target[pawn] = subject
+                if key == "SpawnedCharacter" and (not pawn_changes[subject] or pawn_changes[subject][-1][1] != pawn):
+                    pawn_changes[subject].append((t_ms, pawn))
+
+    codes = _agent_code(export, set(spawned))
+    agents: dict[str, str] = {}
+    for subject in subjects:
+        names = set()
+        for pawn, owner in spawned.items():
+            if owner != subject or pawn not in codes:
+                continue
+            code = codes[pawn]
+            if code not in agents_by_code:
+                raise ContractError("unknown_agent", f"agent code name {code!r} is not in agents.json")
+            names.add(agents_by_code[code])
+        if len(names) != 1:
+            raise ContractError("agent", f"a Subject has {len(names)} agents, expected 1")
+        agents[subject] = names.pop()
+    return PlayerTable(subjects, spawned, possessed, state_subject, dict(pawn_changes), agents)
+
+
+# ---------------------------------------------------------------- rounds
+
+
+@dataclass
+class GameState:
+    match_uuid: str | None
+    windows: list[tuple[int, int]]          # (InRound ms, RoundEnding ms) per played round
+    dropped_final_start: int | None
+    round_number_at_start: list[int | None]
+    round_results: dict[int, dict]          # decoded index -> merged fields
+    round_results_fallback: bool
+
+
+def _history_at(history: list[tuple[int, object]], t_ms: int) -> object | None:
+    value = None
+    for when, item in history:
+        if when > t_ms:
+            break
+        value = item
+    return value
+
+
+def read_game_state(export: Export) -> GameState:
+    rows = list(export.export_groups(GAME_STATE_PATH))
+    folded = fold_export_groups(iter(rows))
+    history: dict[str, list] = defaultdict(list)
+    for state in folded.values():
+        for key, items in state.history.items():
+            history[key].extend(items)
+    for items in history.values():
+        items.sort(key=lambda item: item[0])
+
+    match_ids = {str(v).lower() for _, v in history.get("MatchID", []) if v}
+    if len(match_ids) > 1:
+        raise ContractError("match_id", "more than one MatchID in one replay")
+
+    transitions = [(t, int(p)) for t, p in history.get("Phase", []) if p is not None]
+    transitions += [(row.time_ms, int(row.data["payload"]["NewPhase"])) for row in export.rpcs(RPC_SET_PHASE)
+                    if isinstance(row.data.get("payload"), dict) and row.data["payload"].get("NewPhase") is not None]
+    transitions.sort(key=lambda item: item[0])
+    collapsed: list[tuple[int, int]] = []
+    for t, phase in transitions:
+        if not collapsed or collapsed[-1][1] != phase:
+            collapsed.append((t, phase))
+
+    windows: list[tuple[int, int]] = []
+    open_start: int | None = None
+    for t, phase in collapsed:
+        if phase == PHASE_IN_ROUND:
+            if open_start is not None:
+                raise ContractError("round_without_end", f"InRound at {open_start} ms has no RoundEnding")
+            open_start = t
+        elif phase == PHASE_ROUND_ENDING and open_start is not None:
+            windows.append((open_start, t))
+            open_start = None
+
+    fallback = False
+    results: dict[int, dict] = {}
+    for _, value in history.get("RoundResults", []):
+        if not isinstance(value, list):
+            fallback = True
+            continue
+        for item in value:
+            if not isinstance(item, dict) or "RoundNumber" not in item:
+                fallback = True
+                continue
+            merged = results.setdefault(int(item["RoundNumber"]), {})
+            for key in ("WinningTeam", "WinningTeamRole", "RoundResult"):
+                if item.get(key) is not None:
+                    merged[key] = item[key]
+
+    numbers = [_history_at(history.get("RoundNumber", []), start) for start, _ in windows]
+    return GameState(match_ids.pop() if match_ids else None, windows, open_start, numbers, results, fallback)
+
+
+# ---------------------------------------------------------------- movement
+
+
+def read_movement(export: Export, players: PlayerTable) -> tuple[dict[str, list[Sample]], dict]:
+    by_subject: dict[str, list[Sample]] = defaultdict(list)
+    counts = Counter()
+    for row in export.movement:
+        data = row.data
+        if data.get("error_sentinel"):
+            counts["error_sentinel"] += 1
+            continue
+        pawn = int(data.get("shooter_character_net_guid") or data.get("actor_net_guid") or 0)
+        subject = players.spawned.get(pawn)
+        position = data.get("position") or {}
+        if subject is None or position.get("x") is None or position.get("y") is None:
+            counts["unresolved"] += 1
+            continue
+        counts["kept"] += 1
+        by_subject[subject].append(Sample(row.time_ms, float(position["x"]), float(position["y"]),
+                                          float(position.get("z") or 0.0), float(data.get("yaw") or 0.0), pawn))
+    return by_subject, dict(counts)
+
+
+def native_hz(samples: dict[str, list[Sample]]) -> int:
+    """PROVISIONAL(D5): the exported rate, as the median interval between a player's samples."""
+    gaps = [(b.t_ms - a.t_ms) for rows in samples.values() for a, b in zip(rows, rows[1:])
+            if 0 < b.t_ms - a.t_ms <= 500]
+    if not gaps:
+        raise ContractError("movement", "no movement samples to measure a rate from")
+    return max(1, int(round(1000.0 / median(gaps))))
+
+
+# ---------------------------------------------------------------- per-round assembly
+
+
+@dataclass(frozen=True)
+class Kill:
+    t_ms: int
+    killer: int
+    victim: int
+
+
+def read_kills(export: Export, players: PlayerTable) -> list[Kill]:
+    slot_of = players.slot_of
+    kills = []
+    for row in export.rpcs(RPC_KILLED_ENEMY):
+        payload = row.data.get("payload") or {}
+        killer = players.resolve(int(payload.get("KillerCharacter") or 0))
+        victim = players.resolve(int(payload.get("KilledCharacter") or 0))
+        if killer is None or victim is None:
+            raise ContractError("unresolved_kill", f"a kill at {row.time_ms} ms has no Subject for "
+                                                   f"{'killer' if killer is None else 'victim'}")
+        kills.append(Kill(row.time_ms, slot_of[killer], slot_of[victim]))
+    return kills
+
+
+def read_revives(export: Export, players: PlayerTable) -> list[tuple[int, int]]:
+    slot_of = players.slot_of
+    revives = []
+    for row in export.rpcs(RPC_RESURRECT):
+        payload = row.data.get("payload") or {}
+        subject = players.resolve(int(payload.get("ResurrectedPlayer") or 0))
+        if subject is not None:
+            revives.append((row.time_ms, slot_of[subject]))
+    return revives
+
+
+def _seconds(t_ms: int, start_ms: int) -> float:
+    return round((t_ms - start_ms) / 1000.0, 3)
+
+
+def alive_intervals(start: int, end: int, deaths: list[int], revives: list[int],
+                    pawn_changes: list[int]) -> list[list]:
+    """[[from_ms, to_ms | None, cause]] for one slot in one round window (times absolute)."""
+    events = sorted([(t, 0, "death") for t in deaths] + [(t, 1, "revive") for t in revives + pawn_changes])
+    intervals: list[list] = [[start, None, "round_end"]]
+    for t, _, kind in events:
+        current = intervals[-1]
+        is_open = current[1] is None and current[2] == "round_end"
+        if kind == "death" and is_open:
+            current[1], current[2] = t, "kill"
+        elif kind == "revive" and not is_open:
+            intervals.append([t, None, "round_end"])
+    return intervals
+
+
+def _interval_index(intervals: list[list], t_ms: int, end: int) -> int | None:
+    for i, (lo, hi, _) in enumerate(intervals):
+        if lo <= t_ms <= (hi if hi is not None else end):
+            return i
+    return None
+
+
+def build_segments(samples: list[Sample], intervals: list[list], start: int, end: int,
+                   hz: int, game_map: MapInfo) -> tuple[list[dict], dict]:
+    """Splits a slot's samples into grid-snapped segments; returns them and coverage stats."""
+    runs: list[list[tuple[Sample, int]]] = []
+    previous: tuple[Sample, int] | None = None
+    for sample in samples:
+        if not start <= sample.t_ms <= end:
+            continue
+        interval = _interval_index(intervals, sample.t_ms, end)
+        if interval is None:
+            continue
+        brk = (previous is None
+               or interval != previous[1]
+               or sample.pawn != previous[0].pawn
+               or (sample.t_ms - previous[0].t_ms) / 1000.0 > SEGMENT_GAP_S
+               or math.dist((sample.x, sample.y, sample.z),
+                            (previous[0].x, previous[0].y, previous[0].z)) > TELEPORT_UNITS)
+        if brk:
+            runs.append([])
+        runs[-1].append((sample, interval))
+        previous = (sample, interval)
+
+    segments = []
+    covered_points = 0
+    for run in runs:
+        grid: dict[int, tuple[int, int, int]] = {}
+        for sample, _ in run:
+            k = int(round((sample.t_ms - start) / 1000.0 * hz))
+            u, v = game_map.to_uv(sample.x, sample.y)
+            grid[k] = (u, v, game_map.yaw_to_map(sample.yaw))  # the last sample on a grid point wins
+        keys = sorted(grid)
+        u_list, v_list, yaw_list = [], [], []
+        for a, b in zip(keys, keys[1:] + [None]):
+            ua, va, ya = grid[a]
+            u_list.append(ua), v_list.append(va), yaw_list.append(ya)
+            if b is None:
+                continue
+            # PROVISIONAL(D5): grid points the source skipped inside a segment (< SEGMENT_GAP_S)
+            # are filled linearly, yaw along the shortest arc; never beyond the source's rate.
+            ub, vb, yb = grid[b]
+            turn = (yb - ya + 180) % 360 - 180
+            for step in range(1, b - a):
+                f = step / (b - a)
+                u_list.append(int(round(ua + (ub - ua) * f)))
+                v_list.append(int(round(va + (vb - va) * f)))
+                yaw_list.append(int(round(ya + turn * f)) % 360)
+        covered_points += len(u_list)
+        segments.append(fmt.encode_segment(keys[0] / hz, u_list, v_list, yaw_list))
+
+    alive_s = sum(((hi if hi is not None else end) - lo) / 1000.0 for lo, hi, _ in intervals)
+    max_gap = 0.0
+    for lo, hi, _ in intervals:
+        hi = hi if hi is not None else end
+        bounds = [lo, *(s.t_ms for s in samples if lo <= s.t_ms <= hi), hi]
+        max_gap = max(max_gap, *((b - a) / 1000.0 for a, b in zip(bounds, bounds[1:])))
+    coverage = min(1.0, covered_points / hz / alive_s) if alive_s > 0 else 1.0
+    return segments, {"coverage": round(coverage, 3), "max_gap_s": round(max_gap, 3)}
+
+
+def _last_position(samples: list[Sample], t_ms: int, start: int) -> Sample | None:
+    times = [s.t_ms for s in samples]
+    i = bisect.bisect_right(times, t_ms) - 1
+    if i >= 0 and samples[i].t_ms >= start:
+        return samples[i]
+    return None
+
+
+def two_clusters(points: dict[int, tuple[float, float]]) -> tuple[list[int], list[int], float]:
+    """Deterministic 2-means over start positions: (cluster, cluster, max distance to a centroid)."""
+    slots = sorted(points)
+    if len(slots) < 2:
+        return slots, [], 0.0
+    a, b = max(((p, q) for i, p in enumerate(slots) for q in slots[i + 1:]),
+               key=lambda pq: math.dist(points[pq[0]], points[pq[1]]))
+    centres = [points[a], points[b]]
+    groups: list[list[int]] = [[], []]
+    for _ in range(20):
+        groups = [[], []]
+        for slot in slots:
+            groups[0 if math.dist(points[slot], centres[0]) <= math.dist(points[slot], centres[1]) else 1].append(slot)
+        new = [tuple(sum(points[s][d] for s in g) / len(g) for d in (0, 1)) if g else c
+               for g, c in zip(groups, centres)]
+        if new == centres:
+            break
+        centres = new
+    radius = max((math.dist(points[s], centres[i]) for i, g in enumerate(groups) for s in g), default=0.0)
+    return groups[0], groups[1], radius
+
+
+def side_groups(kills: list[Kill], clusters: list[tuple[list[int], list[int]]]) -> list[str]:
+    """Unlabelled sides A/B per slot: kills are cross-side, spawn clusters are same-side.
+
+    Parity union-find over both kinds of evidence. It must be consistent, connected and 5/5.
+    Group A is the one holding slot 0.
+    """
+    parent = list(range(10))
+    parity = [0] * 10
+
+    def find(x: int) -> tuple[int, int]:
+        p = 0
+        while parent[x] != x:
+            p ^= parity[x]
+            x = parent[x]
+        return x, p
+
+    def join(a: int, b: int, different: int, why: str) -> None:
+        ra, pa = find(a)
+        rb, pb = find(b)
+        if ra == rb:
+            if pa ^ pb != different:
+                raise ContractError("side_groups", f"inconsistent evidence ({why})")
+            return
+        parent[rb] = ra
+        parity[rb] = pa ^ pb ^ different
+
+    for kill in kills:
+        if kill.killer != kill.victim:
+            join(kill.killer, kill.victim, 1, "kill")
+    for first, second in clusters:
+        if len(first) != 5 or len(second) != 5:
+            continue
+        for group in (first, second):
+            for other in group[1:]:
+                join(group[0], other, 0, "spawn cluster")
+        join(first[0], second[0], 1, "spawn clusters")
+
+    roots = {find(slot)[0] for slot in range(10)}
+    if len(roots) != 1:
+        raise ContractError("side_groups", f"evidence leaves {len(roots)} disconnected groups")
+    base = find(0)[1]
+    sides = ["A" if find(slot)[1] == base else "B" for slot in range(10)]
+    if sides.count("A") != 5:
+        raise ContractError("side_groups", f"side groups are {sides.count('A')}/{sides.count('B')}, expected 5/5")
+    return sides
+
+
+# ---------------------------------------------------------------- entry points
+
+
+def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[str, str], recipe: str,
+             map_override: str | None = None) -> CondensedReplay:
+    diagnostics = classify_diagnostics(export.manifest)
+    game_map, map_evidence = discover_map(export, maps)
+    if game_map is None:
+        if map_override is None:
+            raise ContractError("map", "map not recognised from actor paths")
+        if map_override not in maps:
+            raise ContractError("map", f"--map {map_override!r} is not in maps.json")
+        game_map = maps[map_override]
+    elif map_override is not None and map_override != game_map.name:
+        raise ContractError("map", f"--map {map_override!r} disagrees with the discovered {game_map.name!r}")
+
+    players = build_players(export, agents_by_code)
+    game = read_game_state(export)
+    if game.match_uuid is None:
+        raise ContractError("match_id", "no MatchID in the game state")
+    if not game.windows:
+        raise ContractError("rounds", "no round has both InRound and RoundEnding")
+    samples, movement_counts = read_movement(export, players)
+    hz = native_hz(samples)
+    kills = read_kills(export, players)
+    revives = read_revives(export, players)
+    slot_of = players.slot_of
+    by_slot = {slot_of[s]: rows for s, rows in samples.items()}
+    pawn_times = {slot_of[s]: [t for t, _ in changes[1:]] for s, changes in players.pawn_changes.items()}
+
+    rounds: dict[int, dict] = {}
+    link_kills: dict[str, list] = {}
+    start_positions: dict[str, dict] = {}
+    spawn_checks: dict[str, dict] = {}
+    clusters: list[tuple[list[int], list[int]]] = []
+    coverage: dict[int, list[dict]] = defaultdict(list)
+    round_kills: dict[int, list[Kill]] = {}
+    assigned = 0
+    for n, (start, end) in enumerate(game.windows, 1):
+        in_round = [k for k in kills if start <= k.t_ms <= end]
+        round_kills[n] = in_round
+        assigned += len(in_round)
+        world_starts: dict[int, tuple[float, float]] = {}
+        uv_starts: dict[str, list[int]] = {}
+        for slot, rows in by_slot.items():
+            first = next((s for s in rows if start <= s.t_ms <= start + START_POSITION_WINDOW_S * 1000), None)
+            if first is not None:
+                world_starts[slot] = (first.x, first.y)
+                uv_starts[str(slot)] = list(game_map.to_uv(first.x, first.y))
+        first, second, radius = two_clusters(world_starts)
+        clusters.append((first, second))
+        spawn_checks[str(n)] = {"sizes": sorted([len(first), len(second)]), "max_radius": round(radius, 1),
+                                "ok": sorted([len(first), len(second)]) == [5, 5] and radius <= SPAWN_CLUSTER_RADIUS}
+        start_positions[str(n)] = uv_starts
+        link_kills[str(n)] = [[_seconds(k.t_ms, start), k.killer, k.victim] for k in in_round]
+
+    sides = side_groups(kills, clusters)
+    player_rows = [{"slot": slot, "agent": players.agents[subject], "side": sides[slot]}
+                   for slot, subject in enumerate(players.subjects)]
+
+    for n, (start, end) in enumerate(game.windows, 1):
+        tracks: dict[str, list] = {}
+        alive: dict[str, list] = {}
+        for slot in range(10):
+            deaths = [k.t_ms for k in round_kills[n] if k.victim == slot]
+            revived = [t for t, s in revives if s == slot and start <= t <= end]
+            pawns = [t for t in pawn_times.get(slot, []) if start < t <= end]
+            intervals = alive_intervals(start, end, deaths, revived, pawns)
+            alive[str(slot)] = [[_seconds(lo, start), None if hi is None else _seconds(hi, start), cause]
+                                for lo, hi, cause in intervals]
+            segments, stats = build_segments(by_slot.get(slot, []), intervals, start, end, hz, game_map)
+            if segments:
+                tracks[str(slot)] = segments
+            coverage[slot].append({"round": n, **stats})
+        kill_rows = []
+        for i, k in enumerate(round_kills[n]):
+            where = _last_position(by_slot.get(k.victim, []), k.t_ms, start)
+            u, v = game_map.to_uv(where.x, where.y) if where else (None, None)
+            kill_rows.append({"i": i, "t": _seconds(k.t_ms, start), "killer": k.killer, "victim": k.victim,
+                              "u": u, "v": v})
+        rounds[n] = {
+            "v": fmt.FORMAT_VERSION, "round": n, "map": game_map.name, "hz": hz,
+            "t_start": 0.0, "t_end": _seconds(end, start),
+            "players": player_rows, "tracks": tracks, "alive": alive, "kills": kill_rows,
+            # PROVISIONAL(D9): plant/defuse wait for Stage 1a finding 11 (their source in the export).
+            "plant": None, "defuse": None,
+            "util": [],
+        }
+
+    encoded = {n: fmt.encode_blob(blob) for n, blob in rounds.items()}
+    # PROVISIONAL(D8): RoundResults index i (0-based, the decoder's encodedIndex - 1) is played round i + 1.
+    round_results = {str(i + 1): fields for i, fields in sorted(game.round_results.items())}
+    report = {
+        "diagnostics": diagnostics.as_dict(),
+        "map": {"name": game_map.name, **map_evidence},
+        "hz": hz,
+        "rounds": len(rounds),
+        "dropped_final_round": game.dropped_final_start is not None,
+        "round_number_at_start": game.round_number_at_start,
+        "round_results_decoded": len(game.round_results),
+        "round_results_fallback": game.round_results_fallback,
+        "kills": len(kills),
+        "kills_outside_rounds": len(kills) - assigned,
+        "movement": movement_counts,
+        "spawn_checks": spawn_checks,
+        "coverage": {str(slot): {"min": min(r["coverage"] for r in rows),
+                                 "max_gap_s": max(r["max_gap_s"] for r in rows)}
+                     for slot, rows in sorted(coverage.items())},
+        "sizes": fmt.size_report(encoded),
+        "limits": {"min_alive_coverage": MIN_ALIVE_COVERAGE, "max_track_gap_s": MAX_TRACK_GAP_S,
+                   "spawn_cluster_radius": SPAWN_CLUSTER_RADIUS},
+    }
+    link_inputs = {
+        "round_results": round_results,
+        "round_number_at_start": game.round_number_at_start,
+        "start_positions": start_positions,
+        "kills": link_kills,
+        "round_results_fallback": game.round_results_fallback,
+    }
+    private_players = [{"slot": slot, "subject": subject, "agent": players.agents[subject], "side_group": sides[slot]}
+                       for slot, subject in enumerate(players.subjects)]
+    return CondensedReplay(
+        match_uuid=game.match_uuid, map_name=game_map.name, game_branch=str(export.manifest.get("replay_build")),
+        source_sha256=str(export.manifest.get("source_sha256")), recipe=recipe, hz=hz,
+        rounds=rounds, players=private_players, link_inputs=link_inputs, report=report,
+    )
+
+
+def condense_export_dir(export_dir: Path, *, source_sha256: str | None, build: dict | None = None,
+                        map_override: str | None = None, allow_blocking: bool = False,
+                        pin: ParserPin | None = None, static_dir: Path = fmt.STATIC_DIR) -> CondensedReplay:
+    """Checks the contract, then condenses. Blocking diagnostics refuse unless `allow_blocking`
+    (the preview shows them instead)."""
+    pin = pin or load_pin()
+    export = load_export(export_dir)
+    check_manifest(export.manifest, pin, source_sha256, build)
+    blocking = classify_diagnostics(export.manifest).blocking
+    if blocking and not allow_blocking:
+        raise ContractError("blocking_diagnostics", "; ".join(blocking))
+    return condense(export, maps=load_maps(static_dir), agents_by_code=load_agents(static_dir),
+                    recipe=fmt.recipe(pin.commit, fmt.assets_revision(static_dir)), map_override=map_override)
