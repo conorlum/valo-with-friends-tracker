@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from replay_synthetic import AGENT_NAMES, MATCH_UUID, SyntheticMatch, subject, team_of  # noqa: E402
+from replay_synthetic import AGENT_CODES, AGENT_NAMES, MATCH_UUID, SyntheticMatch, subject, team_of  # noqa: E402
 
 from app.replays import link as lk  # noqa: E402
 from app.replays.condense import condense_export_dir  # noqa: E402
@@ -156,53 +156,116 @@ def test_a_duplicate_agent_across_teams_still_links(condensed):
     assert lk.link(replay, [db_match(agents=agents)], {}).status == "linked"
 
 
-def test_a_fully_mirrored_composition_has_two_candidates_before_kills(condensed):
+def test_a_fully_mirrored_composition_is_told_apart_by_the_kills(condensed):
     replay = view(condensed)
     mirrored = AGENT_NAMES[:5] * 2
     for p in replay.players:
         p["agent"] = mirrored[p["slot"]]
     match = db_match(agents=mirrored)
-    assert len(lk.assignment_candidates(replay, match)) == 2
-    # The kill sequences tell the two orientations apart, so the full link is still unique.
-    assert lk.link(replay, [match], {}).status == "linked"
+    # Cross-team kills alone leave several assignments (teams come from the DB, pass 6)...
+    assert len(lk.assignment_candidates(replay, match)) > 1
+    # ...and the ordered kill sequences leave exactly one.
+    result = lk.link(replay, [match], {})
+    assert result.status == "linked" and result.slot_to_match_player == {s: mp(s) for s in range(10)}
 
 
-def test_a_mirrored_composition_with_symmetric_evidence_refuses(condensed):
+def _mutual_kill_match(tmp_path_factory):
+    """Mirrored agents and a really symmetric trace, built as input: in every round, slot i and
+    slot i + 5 (the same agent, opposite teams) kill each other at the same instant."""
+    kills = {n: [k for i in range(5) for k in ((10.0 + 3 * i, i, i + 5), (10.0 + 3 * i, i + 5, i))]
+             for n in (1, 2, 3, 4)}
+    match = SyntheticMatch(rounds=4, kills=kills, winners=dict(WINNERS),
+                           agent_codes=[*AGENT_CODES[:5], *AGENT_CODES[:5]])
+    directory = match.write(tmp_path_factory.mktemp("mutual") / "export")
+    return condense_export_dir(directory, source_sha256=match.source_sha256), kills
+
+
+def test_a_really_symmetric_kill_trace_refuses(tmp_path_factory):
+    replay, kills = _mutual_kill_match(tmp_path_factory)
+    match = db_match(kills=kills, agents=AGENT_NAMES[:5] * 2)
+    result = lk.link(view(replay), [match], {})
+    assert (result.status, result.report["check"]) == ("refused", "assignment")
+    assert result.report["candidates"] > 1 and result.report["unpinned"]
+
+
+def test_two_kill_free_same_agent_opposing_slots_with_crossed_spawn_evidence_refuse(condensed):
+    # The pass-5 review probe: slots 2 and 7 play the same agent on opposite teams, are in no
+    # kill, and their spawn evidence is crossed. Pass 5 linked the wrong assignment.
     replay = view(condensed)
-    mirrored = AGENT_NAMES[:5] * 2
+    agents = list(AGENT_NAMES)
+    agents[7] = agents[2]
     for p in replay.players:
-        p["agent"] = mirrored[p["slot"]]
-    match = db_match(agents=mirrored)
-    # Pretend kills can't tell the orientations apart: both assignments survive.
-    both = lk.assignment_candidates(replay, match)
-    original = lk.match_kills
-    try:
-        lk.match_kills = lambda ours, theirs, mapping: [(k, d) for k, d in zip(sorted(ours), sorted(theirs, key=lambda d: d.t))]
-        result = lk.link(replay, [match], {})
-    finally:
-        lk.match_kills = original
-    assert len(both) == 2
-    assert (result.report["check"], result.report["candidates"]) == ("assignment", 2)
+        p["agent"] = agents[p["slot"]]
+    kills = {n: [k for k in script if 2 not in k[1:] and 7 not in k[1:]] for n, script in LINK_KILLS.items()}
+    replay.link_inputs["kills"] = {n: [k for k in ks if 2 not in k[1:] and 7 not in k[1:]]
+                                   for n, ks in replay.link_inputs["kills"].items()}
+    spawns = replay.link_inputs["spawn_points"]
+    spawns["2"], spawns["7"] = spawns["7"], spawns["2"]
+    for positions in replay.link_inputs["start_positions"].values():
+        positions["2"], positions["7"] = positions["7"], positions["2"]
+    result = lk.link(replay, [db_match(kills=kills, agents=agents)], {})
+    assert (result.status, result.report["check"], result.report["candidates"]) == ("refused", "assignment", 2)
+    assert result.report["unpinned"] == [{"slot": 2, "agent": agents[2]}, {"slot": 7, "agent": agents[2]}]
 
 
-def test_a_partition_that_is_not_5_5_refuses(condensed):
+def test_side_groups_that_disagree_with_the_teams_refuse(condensed):
     replay = view(condensed)
     replay.players[5]["side_group"] = "A"
-    assert lk.link(replay, [db_match()], {}).report["check"] == "partition"
+    result = lk.link(replay, [db_match()], {})
+    assert (result.report["check"], result.report["reason"]) == \
+        ("proximity", "the condenser's side groups disagree with the teams")
 
 
-def test_a_same_side_replay_kill_refuses(condensed):
+def test_an_unresolved_partition_still_links_on_kills(condensed):
+    replay = view(condensed)
+    for p in replay.players:
+        p["side_group"] = None
+    result = lk.link(replay, [db_match()], {})
+    assert result.status == "linked", result.report
+    assert result.side_to_team == {} and result.slot_to_match_player == {s: mp(s) for s in range(10)}
+
+
+def test_a_same_team_replay_kill_leaves_no_candidate(condensed):
     replay = view(condensed)
     replay.link_inputs["kills"]["1"].append([30.0, 0, 1])
-    assert lk.link(replay, [db_match()], {}).report["check"] == "partition"
+    result = lk.link(replay, [db_match()], {})
+    assert (result.report["check"], result.report["candidates"]) == ("assignment", 0)
 
 
-def test_a_spawn_cluster_that_disagrees_refuses(condensed):
+def test_misleading_tight_clusters_refuse_and_never_exclude_a_candidate(condensed):
     replay = view(condensed)
     positions = replay.link_inputs["start_positions"]["2"]
     positions["0"], positions["5"] = positions["5"], positions["0"]
+    assert {s: mp(s) for s in range(10)} in lk.assignment_candidates(replay, db_match())
     result = lk.link(replay, [db_match()], {})
-    assert (result.report["check"], result.report["round"]) == ("partition", 2)
+    assert (result.report["check"], result.report["evidence"], result.report["round"]) == \
+        ("proximity", "round_start_cluster", 2)
+
+
+def test_a_slots_spawn_point_moved_to_the_other_team_refuses(condensed):
+    replay = view(condensed)
+    spawns = replay.link_inputs["spawn_points"]
+    spawns["0"] = list(spawns["5"])
+    result = lk.link(replay, [db_match()], {})
+    assert (result.report["check"], result.report["evidence"]) == ("proximity", "match_start_spawns")
+
+
+def test_spawn_points_are_in_world_units(condensed):
+    spawns = condensed.link_inputs["spawn_points"]
+    assert sorted(spawns, key=int) == [str(s) for s in range(10)]
+    # Team 0 spawns around world (-2000, 500) in the synthetic match: world units, not 0..10000 u/v.
+    assert all(abs(spawns[str(s)][0] + 2000) <= 300.5 for s in range(5))
+
+
+def test_same_team_duplicate_agents_still_link(condensed):
+    replay = view(condensed)
+    agents = list(AGENT_NAMES)
+    agents[1] = agents[0]  # two Jetts on team 1, as a non-competitive mode allows
+    for p in replay.players:
+        p["agent"] = agents[p["slot"]]
+    result = lk.link(replay, [db_match(agents=agents)], {})
+    assert result.status == "linked", result.report
+    assert result.slot_to_match_player == {s: mp(s) for s in range(10)}
 
 
 def test_a_riot_subject_anchor_must_agree(condensed):

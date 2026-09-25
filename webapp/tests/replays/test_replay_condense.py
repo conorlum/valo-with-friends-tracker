@@ -479,3 +479,14 @@ def test_the_real_swiftplay_fixture_condenses():
     assert out.report["kills"] == 8 and out.report["kills_outside_rounds"] == 0
     assert sorted(out.rounds[1]["tracks"], key=int) == [str(s) for s in range(10)]
     assert all(c["min"] >= cd.MIN_ALIVE_COVERAGE for c in out.report["coverage"].values())
+
+
+def test_unresolvable_sides_are_null_and_the_replay_still_condenses(tmp_path):
+    # A kill inside one spawn group contradicts the clusters: no consistent 5/5 partition.
+    # Pass 5 refused the whole condense; pass 6 stores and plays it with neutral colours.
+    kills = {k: list(v) for k, v in DEFAULT_KILLS.items()}
+    kills[1].append((30.0, 0, 1))
+    out = run(tmp_path, SyntheticMatch(kills=kills))
+    assert [p["side_group"] for p in out.players] == [None] * 10
+    assert [p["side"] for p in out.rounds[1]["players"]] == [None] * 10
+    assert out.report["sides"]["resolved"] is False and "inconsistent" in out.report["sides"]["reason"]

@@ -909,7 +909,15 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     outside = len(kills) - assigned - excluded["dropped_final_round"]
     if outside:
         raise ContractError("kills_outside_rounds", f"{outside} kills fall in no round window")
-    sides = side_groups(kills, clusters)
+    # P-d: sides are for display only. If the evidence can't give one consistent, connected
+    # 5/5 partition, every side is null: the replay still stores and plays, with neutral
+    # colours, and the linker never needed them.
+    try:
+        sides: list[str | None] = side_groups(kills, clusters)
+        sides_report = {"resolved": True}
+    except ContractError as unresolved:
+        sides = [None] * 10
+        sides_report = {"resolved": False, "reason": unresolved.detail}
     player_rows = [{"slot": slot, "agent": players.agents[slot], "side": sides[slot]} for slot in range(10)]
 
     uncertain_lives = 0
@@ -969,6 +977,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         "kills_outside_rounds": outside,
         "kills_excluded": excluded,
         "ownership": players.ownership,
+        "sides": sides_report,
         "lifecycle": {**lifecycle.report, "uncertain_lives": uncertain_lives, "contradictions": 0},
         "phase_ended_checked": game.phase_ended_checked,
         "movement": movement_counts,
@@ -985,6 +994,10 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         "round_results": round_results,
         "round_number_at_start": game.round_number_at_start,
         "start_positions": start_positions,
+        # P-d: each slot's match-start spawn point in world units (the cluster radius's units);
+        # the linker checks its assignment against them and never removes a candidate by them.
+        "spawn_points": ({str(slot): [round(x, 1), round(y, 1)] for slot, (x, y) in sorted(players.spawn_xy.items())}
+                         if len(players.spawn_xy) == 10 else {}),
         "kills": link_kills,
         "round_results_fallback": game.round_results_fallback,
     }

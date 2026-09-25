@@ -8,8 +8,9 @@ docs/replay-viewer-plan.md, "Linking":
 1. exactly one match with `external_id == match_uuid`, else unlinked (none) or refused;
 2. equal played-round sets; when the replay decoded round winners, each equal to the DB's
    and an equal score (the first real export decoded none: the kill match carries it);
-3. a consistent 5/5 side partition, and exactly one agent- and team-respecting
-   assignment of slots to match players across both orientations;
+3. exactly one assignment of slots to match players that respects agents, the DB's teams
+   (every replay kill cross-team) and the kills; proximity (spawn points, tight round-start
+   clusters, the condenser's side groups) only checks the survivor (pass 6, P-d);
 4. per-round kill sequences identical after the excluded DB kill classes;
 5. one match-wide clock offset within the limits, with an anchor in every round;
 6. the `riot_subject` backfill, refused on any conflict, for the slots that have a Subject.
@@ -20,11 +21,12 @@ The report holds IDs, counts, agents and reasons only: never a Subject or a name
 from __future__ import annotations
 
 import itertools
+import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from statistics import median
 
-from app.replays.condense import two_clusters
+from app.replays.condense import SPAWN_CLUSTER_RADIUS
 
 # PROVISIONAL(D11): clock limits, frozen at the Stage 1b gate (the plan's provisional numbers).
 MAX_ABS_OFFSET_S = 2.0
@@ -157,57 +159,100 @@ def check_rounds(replay: ReplayLinkView, match: DbMatch) -> list[int]:
 # ---------------------------------------------------------------- step 3: teams and players
 
 
-def check_partition(replay: ReplayLinkView) -> dict[int, str]:
-    sides = {p["slot"]: p["side_group"] for p in replay.players}
+def check_players(replay: ReplayLinkView) -> None:
     named = [p["subject"] for p in replay.players if p.get("subject")]
     if len(replay.players) != 10 or len(set(named)) != len(named) or any(not p.get("agent") for p in replay.players):
         raise Refused("players", "expected 10 players with one agent each and no shared Subject")
-    if Counter(sides.values()) != Counter({"A": 5, "B": 5}):
-        raise Refused("partition", "side groups are not 5/5")
-    for n, kills in (replay.link_inputs.get("kills") or {}).items():
-        for _, killer, victim in kills:
-            if killer != victim and sides[killer] == sides[victim]:
-                raise Refused("partition", "a replay kill is inside one side group", round=int(n))
-    for n, positions in (replay.link_inputs.get("start_positions") or {}).items():
-        if len(positions) != 10:
-            continue
-        first, second, _ = two_clusters({int(s): tuple(uv) for s, uv in positions.items()})
-        groups = {frozenset(first), frozenset(second)}
-        expected = {frozenset(s for s, side in sides.items() if side == g) for g in "AB"}
-        if groups != expected:
-            raise Refused("partition", "a round's spawn clusters disagree with the side groups", round=int(n))
-    return sides
 
 
-def assignment_candidates(replay: ReplayLinkView, match: DbMatch) -> list[tuple[dict[str, str], dict[int, int]]]:
-    """Every (side -> team, slot -> match_player_id) that respects agents, teams and anchors."""
-    slots_by_side = defaultdict(list)
-    for p in replay.players:
-        slots_by_side[p["side_group"]].append(p)
-    players_by_team = defaultdict(list)
-    for p in match.players:
-        players_by_team[p.team].append(p)
+def assignment_candidates(replay: ReplayLinkView, match: DbMatch) -> list[dict[int, int]]:
+    """Every slot -> match_player_id that respects agents, anchors and the DB's teams.
+
+    Teams come from the DB only (P-d): every agent-respecting bijection over all ten players,
+    both teams at once, in which every replay kill (self-kills aside) is cross-team. The
+    condenser's side groups and spawn proximity are not constraints, so they can't exclude
+    the true assignment; `check_proximity` tests the survivor against them instead.
+    """
     anchors = {p.riot_subject: p.match_player_id for p in match.players if p.riot_subject}
-
+    team_of = {p.match_player_id: p.team for p in match.players}
+    subject_of = {p["slot"]: p["subject"] for p in replay.players}
+    kill_pairs = {(killer, victim) for kills in (replay.link_inputs.get("kills") or {}).values()
+                  for _, killer, victim in kills if killer != victim}
     candidates = []
-    for team_of_a in ("team-1", "team-2"):
-        orientation = {"A": team_of_a, "B": "team-2" if team_of_a == "team-1" else "team-1"}
-        per_side: list[list[dict[int, int]]] = []
-        for side, team in orientation.items():
-            per_side.append(_bijections(slots_by_side[side], players_by_team[team]))
-        for left, right in itertools.product(*per_side):
-            mapping = {**left, **right}
-            subject_of = {p["slot"]: p["subject"] for p in replay.players}
-            # A slot without a Subject is free; one with a Subject must sit on its anchor, if any.
-            if all(subject_of[slot] is None or anchors.get(subject_of[slot], mp) == mp
-                   for slot, mp in mapping.items()) and \
-                    all(subject_of[slot] is None or mp not in anchors.values() or anchors.get(subject_of[slot]) == mp
-                        for slot, mp in mapping.items()):
-                candidates.append((orientation, mapping))
+    for mapping in _bijections(replay.players, match.players):
+        if any(team_of[mapping[killer]] == team_of[mapping[victim]] for killer, victim in kill_pairs):
+            continue
+        # A slot without a Subject is free; one with a Subject must sit on its anchor, if any.
+        if all(subject_of[slot] is None or anchors.get(subject_of[slot], mp) == mp
+               for slot, mp in mapping.items()) and \
+                all(subject_of[slot] is None or mp not in anchors.values() or anchors.get(subject_of[slot]) == mp
+                    for slot, mp in mapping.items()):
+            candidates.append(mapping)
     return candidates
 
 
+def pinning(replay: ReplayLinkView, survivors: list[dict[int, int]]) -> dict:
+    """Which slots every survivor maps to the same match player (pinned), and which not."""
+    agent_of = {p["slot"]: p["agent"] for p in replay.players}
+    unpinned = sorted(slot for slot in agent_of if len({m[slot] for m in survivors}) > 1) if survivors else []
+    return {"pinned": sorted(set(agent_of) - set(unpinned)) if survivors else [],
+            "unpinned": [{"slot": slot, "agent": agent_of[slot]} for slot in unpinned]}
+
+
+def _centroid(points: list[tuple[float, float]]) -> tuple[float, float]:
+    return (sum(p[0] for p in points) / len(points), sum(p[1] for p in points) / len(points))
+
+
+def check_proximity(replay: ReplayLinkView, match: DbMatch, mapping: dict[int, int]) -> dict[str, str]:
+    """Checks the surviving assignment against the spatial evidence; returns side -> team.
+
+    - match-start spawn points, partitioned by the survivor's teams: each team within
+      SPAWN_CLUSTER_RADIUS of its own centroid, and every slot nearer its own team's centroid;
+    - each tight round-start cluster: every slot nearer its own team's centroid;
+    - the condenser's side groups, when resolved: one side per team.
+    Any disagreement refuses. None of it ever removed a candidate.
+    """
+    team_of_slot = {slot: next(p.team for p in match.players if p.match_player_id == mp)
+                    for slot, mp in mapping.items()}
+
+    def centroid_rule(points: dict[int, tuple[float, float]], where: dict, radius: float | None) -> None:
+        by_team: dict[str, list[int]] = defaultdict(list)
+        for slot in points:
+            by_team[team_of_slot[slot]].append(slot)
+        if len(by_team) != 2:
+            raise Refused("proximity", "the spatial evidence doesn't hold both teams", **where)
+        centres = {team: _centroid([points[s] for s in slots]) for team, slots in by_team.items()}
+        for team, slots in by_team.items():
+            other = next(t for t in centres if t != team)
+            for slot in slots:
+                own = math.dist(points[slot], centres[team])
+                if radius is not None and own > radius:
+                    raise Refused("proximity", "a team's spawn points are not one tight group", slot=slot, **where)
+                if own > math.dist(points[slot], centres[other]):
+                    raise Refused("proximity", "a slot sits nearer the other team", slot=slot, **where)
+
+    spawn = replay.link_inputs.get("spawn_points") or {}
+    if len(spawn) == 10:
+        centroid_rule({int(s): tuple(xy) for s, xy in spawn.items()}, {"evidence": "match_start_spawns"},
+                      SPAWN_CLUSTER_RADIUS)
+    for n, positions in (replay.link_inputs.get("start_positions") or {}).items():
+        if len(positions) == 10:
+            centroid_rule({int(s): tuple(uv) for s, uv in positions.items()},
+                          {"evidence": "round_start_cluster", "round": int(n)}, None)
+    sides = {p["slot"]: p.get("side_group") for p in replay.players}
+    if all(sides.values()):
+        side_to_team: dict[str, str] = {}
+        for slot, side in sides.items():
+            if side_to_team.setdefault(side, team_of_slot[slot]) != team_of_slot[slot]:
+                raise Refused("proximity", "the condenser's side groups disagree with the teams", slot=slot)
+        if len(set(side_to_team.values())) != len(side_to_team):
+            raise Refused("proximity", "both side groups map to one team")
+        return dict(sorted(side_to_team.items()))
+    return {}
+
+
 def _bijections(slots: list[dict], players: list[DbPlayer]) -> list[dict[int, int]]:
+    """Every agent-respecting slot -> match_player_id bijection."""
     if len(slots) != len(players):
         return []
     if Counter(s["agent"] for s in slots) != Counter(p.agent for p in players):
@@ -293,18 +338,21 @@ def link(replay: ReplayLinkView, candidates: list[DbMatch], subject_owner: dict[
 
 def _link(replay: ReplayLinkView, match: DbMatch, subject_owner: dict[str, int]) -> LinkResult:
     played = check_rounds(replay, match)
-    check_partition(replay)
+    check_players(replay)
     db_matched, db_excluded = split_db_kills(match)
     replay_kills = {int(n): kills for n, kills in (replay.link_inputs.get("kills") or {}).items()}
 
     survivors = []
-    for orientation, mapping in assignment_candidates(replay, match):
+    for mapping in assignment_candidates(replay, match):
         pairs = {n: match_kills(replay_kills.get(n, []), db_matched.get(n, []), mapping) for n in played}
         if all(p is not None for p in pairs.values()):
-            survivors.append((orientation, mapping, pairs))
+            survivors.append((mapping, pairs))
+    pins = pinning(replay, [mapping for mapping, _ in survivors])
     if len(survivors) != 1:
-        raise Refused("assignment", "not exactly one assignment of slots to match players", candidates=len(survivors))
-    orientation, mapping, pairs = survivors[0]
+        raise Refused("assignment", "not exactly one assignment of slots to match players", candidates=len(survivors),
+                      **pins)
+    mapping, pairs = survivors[0]
+    orientation = check_proximity(replay, match, mapping)
     unmatched_db = sum(len(db_matched.get(n, [])) for n in played) - sum(len(p) for p in pairs.values())
     if unmatched_db:
         raise Refused("kills", "DB kills left unmatched", count=unmatched_db)
@@ -359,7 +407,7 @@ def _link(replay: ReplayLinkView, match: DbMatch, subject_owner: dict[str, int])
         "clock_offset": round(offset, 3), "max_residual": round(worst, 3), "median_residual": round(typical, 3),
         "excluded_db_kills": sum(len(v) for v in db_excluded.values()),
         "agents": {str(slot): db_player[mp].agent for slot, mp in sorted(mapping.items())},
-        "side_to_team": orientation, "backfills": len(backfills),
+        "side_to_team": orientation, "backfills": len(backfills), "pinned": pins["pinned"],
         "winners_checked": bool(replay.link_inputs.get("round_results")),
     }
     return LinkResult("linked", report, match.match_id, round(offset, 3), kill_map, db_deaths,
