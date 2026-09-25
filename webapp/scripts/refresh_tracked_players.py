@@ -24,9 +24,11 @@ pre-warm), once each -- not once per match, which would be quadratic over a
 12-player x 20-match refresh. That's still roughly (number of players with
 new matches) x several seconds. The site-wide "All Players" stats cache
 (app.services.site_stats_cache) is refreshed once too, regardless of
---no-prewarm (it's a single cheap call, not a per-player fan-out). Pass
---no-prewarm to skip the per-player pre-warm and let that cache repopulate
-lazily as pages are visited.
+--no-prewarm (it's a single cheap call, not a per-player fan-out). That
+refresh also clears every viewer's Friends-tab stats
+(app.services.viewer_site_stats_cache), which are then pre-warmed for every
+player who owns a friendship. Pass --no-prewarm to skip both pre-warms and let
+those caches repopulate lazily as pages are visited.
 
 Usage:
     .venv\\Scripts\\python.exe scripts\\refresh_tracked_players.py --count 20
@@ -54,7 +56,7 @@ from app.adapters.trackergg_browserstate_source import (
 )
 from app.db import SessionLocal
 from app.services.player_view_cache import prewarm_player_cache
-from app.services.site_stats import refresh_site_stats
+from app.services.site_stats import prewarm_viewer_site_stats, refresh_site_stats
 
 CDP_URL = "http://localhost:9222"
 ROSTER_PATH = Path(__file__).resolve().parent / "tracked_players.json"
@@ -188,6 +190,8 @@ def main(count: int, no_prewarm: bool, ledger_path: Path) -> int:
         if all_dirty:
             print("refreshing site stats cache...")
             refresh_site_stats(db)
+            if not no_prewarm:
+                print(f"pre-warmed Friends stats for {prewarm_viewer_site_stats(db)} viewer(s)")
     finally:
         ledger.record_end(f"{len(results)} player(s) processed")
         db.close()

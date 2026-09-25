@@ -85,9 +85,9 @@ def test_pistol_win_and_followup_round_win_both_recorded():
         _round(5, "Team A Wins", team1_loadout=1000, team1_kills=4),
     ])
 
-    result = compute_pistol_win_followup_eco([match], roster_player_ids=set())
+    result = compute_pistol_win_followup_eco([match], group_player_ids=set())
 
-    assert result["friends"]["buckets"] == []
+    assert result["group"]["buckets"] == []
     idx = eco_bucket_index(13500)
     [[bucket_idx, total, win, wins_ratio_sum_2, wins_ratio_sum_4, match_total, match_win_count]] = result["all"][
         "buckets"
@@ -101,27 +101,27 @@ def test_pistol_win_and_followup_round_win_both_recorded():
     assert match_win_count == 0
 
 
-def test_sample_only_counted_for_friends_when_winning_team_has_a_roster_player():
+def test_sample_only_counted_for_group_when_winning_team_has_a_group_player():
     match = _match([_round(1, "Team A Wins"), _round(2, "Team A Wins", team1_loadout=13500, team1_kills=1)])
 
-    friends_of_winner = compute_pistol_win_followup_eco([match], roster_player_ids={100})
-    assert len(friends_of_winner["friends"]["buckets"]) == 1
+    friends_of_winner = compute_pistol_win_followup_eco([match], group_player_ids={100})
+    assert len(friends_of_winner["group"]["buckets"]) == 1
     assert len(friends_of_winner["all"]["buckets"]) == 1
 
-    friends_of_loser = compute_pistol_win_followup_eco([match], roster_player_ids={200})
-    assert friends_of_loser["friends"]["buckets"] == []
+    friends_of_loser = compute_pistol_win_followup_eco([match], group_player_ids={200})
+    assert friends_of_loser["group"]["buckets"] == []
     assert len(friends_of_loser["all"]["buckets"]) == 1
 
 
 def test_pistol_round_with_no_outcome_is_excluded():
     match = _match([_round(1, None), _round(2, "Team A Wins", team1_loadout=13500, team1_kills=1)])
-    result = compute_pistol_win_followup_eco([match], roster_player_ids=set())
+    result = compute_pistol_win_followup_eco([match], group_player_ids=set())
     assert result["all"]["buckets"] == []
 
 
 def test_followup_round_with_no_recorded_loadout_is_excluded():
     match = _match([_round(1, "Team A Wins"), _round(2, "Team A Wins")])  # no loadout on round 2
-    result = compute_pistol_win_followup_eco([match], roster_player_ids=set())
+    result = compute_pistol_win_followup_eco([match], group_player_ids=set())
     assert result["all"]["buckets"] == []
 
 
@@ -133,7 +133,7 @@ def test_kills_and_wins_rate_normalize_over_a_partial_window():
         _round(2, "Team A Wins", team1_loadout=13500, team1_kills=4),
         _round(3, "Team B Wins", team1_loadout=1000, team1_kills=2),
     ])
-    result = compute_pistol_win_followup_eco([match], roster_player_ids=set())
+    result = compute_pistol_win_followup_eco([match], group_player_ids=set())
     [[_, total, win, wins_ratio_sum_2, wins_ratio_sum_4, _, _]] = result["all"]["buckets"]
     assert total == 1
     assert wins_ratio_sum_2 == 1 / 2  # only round 2 of the 2 available was won
@@ -147,7 +147,7 @@ def test_both_pistol_rounds_contribute_independent_samples():
         _round(13, "Team B Wins"),
         _round(14, "Team B Wins", team2_loadout=16000, team2_kills=1),
     ])
-    result = compute_pistol_win_followup_eco([match], roster_player_ids=set())
+    result = compute_pistol_win_followup_eco([match], group_player_ids=set())
     assert len(result["all"]["buckets"]) == 2
 
 
@@ -156,7 +156,7 @@ def test_match_win_counted_when_the_pistol_winning_team_wins_the_match():
         [_round(1, "Team A Wins"), _round(2, "Team A Wins", team1_loadout=13500, team1_kills=1)],
         team1_rounds_won=13, team2_rounds_won=5,
     )
-    result = compute_pistol_win_followup_eco([match], roster_player_ids=set())
+    result = compute_pistol_win_followup_eco([match], group_player_ids=set())
     [[_, total, _, _, _, match_total, match_win_count]] = result["all"]["buckets"]
     assert total == 1
     assert match_total == 1
@@ -168,7 +168,7 @@ def test_match_win_counted_as_loss_when_the_pistol_winning_team_loses_the_match(
         [_round(1, "Team A Wins"), _round(2, "Team A Wins", team1_loadout=13500, team1_kills=1)],
         team1_rounds_won=11, team2_rounds_won=13,
     )
-    result = compute_pistol_win_followup_eco([match], roster_player_ids=set())
+    result = compute_pistol_win_followup_eco([match], group_player_ids=set())
     [[_, total, _, _, _, match_total, match_win_count]] = result["all"]["buckets"]
     assert total == 1
     assert match_total == 1
@@ -180,7 +180,7 @@ def test_match_win_excluded_from_match_total_when_the_match_is_tied():
         [_round(1, "Team A Wins"), _round(2, "Team A Wins", team1_loadout=13500, team1_kills=1)],
         team1_rounds_won=12, team2_rounds_won=12,
     )
-    result = compute_pistol_win_followup_eco([match], roster_player_ids=set())
+    result = compute_pistol_win_followup_eco([match], group_player_ids=set())
     [[_, total, _, _, _, match_total, match_win_count]] = result["all"]["buckets"]
     assert total == 1  # the sample still counts for the round-level columns
     assert match_total == 0

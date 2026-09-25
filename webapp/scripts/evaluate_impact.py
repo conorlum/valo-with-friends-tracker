@@ -22,7 +22,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from sqlalchemy import func
+
 from app.db import SessionLocal
+from app.models import Player
 from app.services.impact_eval import (
     BASELINE_CANDIDATES,
     BASELINE_DAMAGE,
@@ -52,8 +55,22 @@ from app.services.impact_eval import (
     yardstick_matrix,
 )
 from app.services.impact_stage0 import stage0_report
-from app.services.site_stats import resolve_roster_player_ids
 from app.services.win_probability import econ_increment_report, fit_value_model
+
+ROSTER_PATH = Path(__file__).resolve().parent / "tracked_players.json"
+
+
+def resolve_roster_player_ids(db) -> list[int]:
+    """tracked_players.json's "Name#Tag" entries -> Player.id, case-insensitive
+    exact match; entries not yet ingested are skipped. Moved here from
+    app.services.site_stats when the site stopped displaying anything defined
+    by the crawl roster -- this offline evaluation is its only analysis user."""
+    riot_ids = json.loads(ROSTER_PATH.read_text())
+    if not riot_ids:
+        return []
+    rows = db.query(Player.id).filter(func.lower(Player.display_name).in_([r.lower() for r in riot_ids])).all()
+    return [pid for (pid,) in rows]
+
 
 L2_GRID = [0.01, 0.1, 1.0, 10.0]
 

@@ -16,8 +16,8 @@ it came out ~4 kills/round in every buy-amount bucket -- not discriminating
 enough to be worth showing -- so it was dropped.)
 
 A match contributes 0, 1, or 2 samples (one per pistol round that both had a
-decisive winner AND has a recorded follow-up round). "friends" scope only
-counts a sample when the pistol-winning team included a tracked roster
+decisive winner AND has a recorded follow-up round). "group" scope only
+counts a sample when the pistol-winning team included a group
 player; "all" scope counts every decisive pistol round in the DB. Both are
 computed together in one pass over the same loaded matches -- see
 app.services.site_stats.compute_pistol_win_followup_eco's caller.
@@ -155,14 +155,14 @@ def _encode_buckets(buckets: dict[int, dict[str, float]]) -> list[list]:
     ]
 
 
-def compute_pistol_win_followup_eco(matches: list[Match], roster_player_ids: set[int]) -> dict:
+def compute_pistol_win_followup_eco(matches: list[Match], group_player_ids: set[int]) -> dict:
     """Pure aggregation over already-loaded Match rows (match_players + rounds
     + round.player_stats must be eager-loaded by the caller). Returns
-    {"friends": {"buckets": [...]}, "all": {"buckets": [...]}}, each bucket
+    {"group": {"buckets": [...]}, "all": {"buckets": [...]}}, each bucket
     row JSON-safe as [idx, total, win, wins_ratio_sum_2, wins_ratio_sum_4,
     match_total, match_win] -- match_total/match_win only count samples whose
     match had a decisive outcome, so match_total <= total."""
-    friends_buckets: dict[int, dict[str, float]] = {}
+    group_buckets: dict[int, dict[str, float]] = {}
     all_buckets: dict[int, dict[str, float]] = {}
 
     for match in matches:
@@ -173,8 +173,8 @@ def compute_pistol_win_followup_eco(matches: list[Match], roster_player_ids: set
             winner_player_ids = {mp.player_id for mp in match.match_players if mp.team == winner}
 
             targets = [all_buckets]
-            if winner_player_ids & roster_player_ids:
-                targets.append(friends_buckets)
+            if winner_player_ids & group_player_ids:
+                targets.append(group_buckets)
 
             for buckets in targets:
                 bucket = buckets.setdefault(idx, _empty_bucket_accumulator())
@@ -188,7 +188,7 @@ def compute_pistol_win_followup_eco(matches: list[Match], roster_player_ids: set
                     if won_match:
                         bucket["match_win"] += 1
 
-    return {"friends": {"buckets": _encode_buckets(friends_buckets)}, "all": {"buckets": _encode_buckets(all_buckets)}}
+    return {"group": {"buckets": _encode_buckets(group_buckets)}, "all": {"buckets": _encode_buckets(all_buckets)}}
 
 
 @dataclass

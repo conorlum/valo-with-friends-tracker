@@ -1,8 +1,7 @@
 from app.services.site_stats_cache import (
+    STAT_VARIANT_VALIDATORS,
     _validate_blob,
     _validate_eco_followup_variant,
-    _validate_pistol_round_combos,
-    _validate_pistol_win_followup_eco,
     _validate_round_combo_variant,
 )
 
@@ -13,39 +12,32 @@ _VALID_PISTOL_MATCH_STATS = {
 }
 
 _VALID_ECO_VARIANT = {"buckets": [[0, 10, 4, 12.5, 6.0, 8, 5], [1, 3, 1, 2.0, 1.5, 3, 2]]}
-_VALID_ECO_FOLLOWUP = {"friends": _VALID_ECO_VARIANT, "all": _VALID_ECO_VARIANT}
 
 _VALID_ROUND_COMBO_VARIANT = {
     "first_half": {"WW": {"total": 10, "win": 8}, "WL": {"total": 3, "win": 1}},
     "full": {"WWWW": {"total": 5, "win": 4}, "LLLL": {"total": 6, "win": 1}},
 }
-_VALID_ROUND_COMBOS = {"friends": _VALID_ROUND_COMBO_VARIANT, "all": _VALID_ROUND_COMBO_VARIANT}
 
-# The blob gained six stats after this fixture was written (PRs #39-#53), and
-# until they were added here the fixture itself was invalid: every
-# "rejects ..." test below then passed no matter what the validator did. These
-# six values are what _compute_site_stats returns for a one-match fixture.
+# One population's variant of every other stat -- what _compute_site_stats
+# stores for a one-match fixture.
 _VALID_OTHER_STATS = {
-    "map_side_stats": {"all": {"Bind": {"attack_wins": 8, "defense_wins": 0, "matches": 1}}, "friends": {}},
-    "halftime_conversion": {"all": {}, "friends": {}},
-    "score_reached": {"all": {"buckets": {}, "ot": {"count": 0, "total": 0}},
-                      "friends": {"buckets": {}, "ot": {"count": 0, "total": 0}}},
-    "round_streaks": {"all": {"1": {"total": 7, "win": 7}, "2": {"total": 6, "win": 6}}, "friends": {}},
-    "force_buy_stats": {
-        side: {bucket: {"total": 1, "win": 0} for bucket in ("forced", "next", "next2", "match")}
-        for side in ("all", "friends")
-    },
+    "map_side_stats": {"Bind": {"attack_wins": 8, "defense_wins": 0, "matches": 1}},
+    "halftime_conversion": {},
+    "score_reached": {"buckets": {}, "ot": {"count": 0, "total": 0}},
+    "round_streaks": {"1": {"total": 7, "win": 7}, "2": {"total": 6, "win": 6}},
+    "force_buy_stats": {bucket: {"total": 1, "win": 0} for bucket in ("forced", "next", "next2", "match")},
     "enemy_at_11_response": {
-        side: {choice: {when: {"total": 0, "win": 0} for when in ("immediate", "next", "match")}
-               for choice in ("force_buy", "full_save")}
-        for side in ("all", "friends")
+        choice: {when: {"total": 0, "win": 0} for when in ("immediate", "next", "match")}
+        for choice in ("force_buy", "full_save")
     },
 }
 
+# The site-wide blob holds only the All Players population (v20): each stat
+# maps straight to its "all" aggregate.
 _VALID_BLOB = {
     "pistol_match_stats": _VALID_PISTOL_MATCH_STATS,
-    "pistol_win_followup_eco": _VALID_ECO_FOLLOWUP,
-    "pistol_round_combos": _VALID_ROUND_COMBOS,
+    "pistol_win_followup_eco": _VALID_ECO_VARIANT,
+    "pistol_round_combos": _VALID_ROUND_COMBO_VARIANT,
     **_VALID_OTHER_STATS,
 }
 
@@ -110,10 +102,19 @@ def test_eco_followup_variant_rejects_match_total_greater_than_total():
     assert not _validate_eco_followup_variant({"buckets": [[0, 10, 4, 12.5, 6.0, 11, 5]]})
 
 
-def test_pistol_win_followup_eco_requires_both_friends_and_all_keys():
-    assert _validate_pistol_win_followup_eco(_VALID_ECO_FOLLOWUP)
-    assert not _validate_pistol_win_followup_eco({"friends": _VALID_ECO_VARIANT})
-    assert not _validate_pistol_win_followup_eco({"all": _VALID_ECO_VARIANT})
+def test_blob_validates_without_friends_variants():
+    """Every stat's validator sees the bare "all" aggregate -- there is no
+    Friends population in the site-wide row any more."""
+    assert set(_VALID_BLOB) == set(STAT_VARIANT_VALIDATORS)
+    assert _validate_blob(_VALID_BLOB)
+
+
+def test_blob_rejects_the_old_friends_and_all_shape():
+    """A pre-v20 row nests every team stat as {"friends": ..., "all": ...};
+    it must read as corrupt rather than render a Friends variant as All."""
+    old = {key: ({"friends": value, "all": value} if key != "pistol_match_stats" else value)
+           for key, value in _VALID_BLOB.items()}
+    assert not _validate_blob(old)
 
 
 def test_round_combo_variant_happy_path_validates():
@@ -140,9 +141,3 @@ def test_round_combo_variant_rejects_win_greater_than_total():
 
 def test_round_combo_variant_rejects_missing_granularity_key():
     assert not _validate_round_combo_variant({"first_half": {}})
-
-
-def test_pistol_round_combos_requires_both_friends_and_all_keys():
-    assert _validate_pistol_round_combos(_VALID_ROUND_COMBOS)
-    assert not _validate_pistol_round_combos({"friends": _VALID_ROUND_COMBO_VARIANT})
-    assert not _validate_pistol_round_combos({"all": _VALID_ROUND_COMBO_VARIANT})

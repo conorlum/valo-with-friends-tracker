@@ -59,23 +59,23 @@ def _empty_map_bucket() -> dict[str, int]:
     return {"matches": 0, "attack_wins": 0, "defense_wins": 0}
 
 
-def compute_map_side_stats(matches: list[Match], roster_player_ids: set[int]) -> dict:
+def compute_map_side_stats(matches: list[Match], group_player_ids: set[int]) -> dict:
     """Pure aggregation over already-loaded Match rows (match_players + rounds
     must be eager-loaded by the caller). Returns
-    {"friends": {map_name: {"matches", "attack_wins", "defense_wins"}}, "all": {...}} --
-    "friends" only counts a match if a tracked roster player was in it (either
+    {"group": {map_name: {"matches", "attack_wins", "defense_wins"}}, "all": {...}} --
+    "group" only counts a match if a group player was in it (either
     team), "all" counts every match. A round with no decisive outcome (should
     not happen for real ingested rows, but defensively skipped) contributes to
     neither the match's win/loss buckets."""
-    variants: dict[str, dict[str, dict[str, int]]] = {"friends": {}, "all": {}}
+    variants: dict[str, dict[str, dict[str, int]]] = {"group": {}, "all": {}}
 
     for match in matches:
         map_name = match.map_name or "Unknown"
-        is_friends_match = any(mp.player_id in roster_player_ids for mp in match.match_players)
+        is_group_match = any(mp.player_id in group_player_ids for mp in match.match_players)
 
         targets = [variants["all"]]
-        if is_friends_match:
-            targets.append(variants["friends"])
+        if is_group_match:
+            targets.append(variants["group"])
 
         for buckets in targets:
             bucket = buckets.setdefault(map_name, _empty_map_bucket())

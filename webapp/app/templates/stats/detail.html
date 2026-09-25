@@ -7,9 +7,16 @@
 <p class="page-meta">Stats computed across many players at once, rather than one player's own profile.</p>
 
 <div class="scope-toggle">
+  {% if current_player %}
   <a href="/stats" class="scope-toggle-btn{{ ' active' if group == 'friends' else '' }}">Friends</a>
+  {% else %}
+  <a href="/login" class="scope-toggle-btn scope-toggle-btn-locked" title="{{ friends_login_note }}">Friends (log in)</a>
+  {% endif %}
   <a href="/stats/all" class="scope-toggle-btn{{ ' active' if group == 'all' else '' }}">All Players</a>
 </div>
+{% if not current_player %}
+<p class="page-meta">{{ friends_login_note }}</p>
+{% endif %}
 
 {% if group == 'friends' %}
 <div class="scope-toggle">
@@ -39,7 +46,7 @@
   });
 </script>
 {% else %}
-<p class="page-meta">All-time, across every player ever recorded in the database (not just the tracked friend group).</p>
+<p class="page-meta">All-time, across every player ever recorded in the database (not just you and your friends).</p>
 {% include "stats/_stats_sections.html" %}
 {% endif %}
 {% endblock %}

@@ -14,8 +14,8 @@ short match may not reach every round:
 
 A match contributes 0, 1, or 2 samples (one per pistol round -- 1 and 13 --
 that was decisively lost AND had a recorded, ostensibly-forced follow-up
-round). "friends" scope only counts a sample when the losing team included a
-tracked roster player; "all" scope counts every one. Computed alongside the
+round). "group" scope only counts a sample when the losing team included a
+group player; "all" scope counts every one. Computed alongside the
 other site-wide stats in app.services.site_stats._compute_site_stats, off the
 same shared match load.
 """
@@ -109,8 +109,8 @@ def _pistol_loss_force_samples(match: Match) -> list[tuple[Team, dict[str, bool 
     return samples
 
 
-def _team_has_roster_player(match: Match, team: Team, roster_player_ids: set[int]) -> bool:
-    return any(mp.team == team and mp.player_id in roster_player_ids for mp in match.match_players)
+def _team_has_group_player(match: Match, team: Team, group_player_ids: set[int]) -> bool:
+    return any(mp.team == team and mp.player_id in group_player_ids for mp in match.match_players)
 
 
 def _empty_variant() -> dict[str, dict[str, int]]:
@@ -128,16 +128,16 @@ def _accumulate(variant: dict[str, dict[str, int]], outcomes: dict[str, bool | N
             bucket["win"] += 1
 
 
-def compute_force_buy_stats(matches: list[Match], roster_player_ids: set[int]) -> dict:
-    """{"friends": {"forced": {"total", "win"}, "next": {...}, "next2": {...},
+def compute_force_buy_stats(matches: list[Match], group_player_ids: set[int]) -> dict:
+    """{"group": {"forced": {"total", "win"}, "next": {...}, "next2": {...},
     "match": {...}}, "all": {...}}."""
-    variants = {"friends": _empty_variant(), "all": _empty_variant()}
+    variants = {"group": _empty_variant(), "all": _empty_variant()}
 
     for match in matches:
         for loser, outcomes in _pistol_loss_force_samples(match):
             _accumulate(variants["all"], outcomes)
-            if _team_has_roster_player(match, loser, roster_player_ids):
-                _accumulate(variants["friends"], outcomes)
+            if _team_has_group_player(match, loser, group_player_ids):
+                _accumulate(variants["group"], outcomes)
 
     return variants
 

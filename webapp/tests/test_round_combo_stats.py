@@ -37,7 +37,7 @@ def test_team1_perspective_and_team2_perspective_are_complementary():
         {1: "Team A Wins", 2: "Team A Wins", 13: "Team A Wins", 14: "Team A Wins"},
         team1_rounds_won=13, team2_rounds_won=3,
     )
-    result = compute_round_combo_stats([match], roster_player_ids=set())
+    result = compute_round_combo_stats([match], group_player_ids=set())
 
     first_half = result["all"]["first_half"]
     assert first_half["WW"] == {"total": 1, "win": 1}  # team 1: won both, won match
@@ -50,7 +50,7 @@ def test_team1_perspective_and_team2_perspective_are_complementary():
 
 def test_pistol_round_with_no_decisive_outcome_excludes_the_match():
     match = _match({1: None, 2: "Team A Wins"}, team1_rounds_won=13, team2_rounds_won=3)
-    result = compute_round_combo_stats([match], roster_player_ids=set())
+    result = compute_round_combo_stats([match], group_player_ids=set())
     assert result["all"]["first_half"] == {}
 
 
@@ -58,14 +58,14 @@ def test_missing_round_excludes_the_match_from_that_granularity_only():
     """Round 13/14 never happened (match decided in the first half), so
     first_half still gets a sample but full does not."""
     match = _match({1: "Team A Wins", 2: "Team A Wins"}, team1_rounds_won=13, team2_rounds_won=0)
-    result = compute_round_combo_stats([match], roster_player_ids=set())
+    result = compute_round_combo_stats([match], group_player_ids=set())
     assert result["all"]["first_half"]["WW"] == {"total": 1, "win": 1}
     assert result["all"]["full"] == {}
 
 
 def test_tied_match_excludes_both_teams():
     match = _match({1: "Team A Wins", 2: "Team A Wins"}, team1_rounds_won=12, team2_rounds_won=12)
-    result = compute_round_combo_stats([match], roster_player_ids=set())
+    result = compute_round_combo_stats([match], group_player_ids=set())
     assert result["all"]["first_half"] == {}
 
 
@@ -74,11 +74,11 @@ def test_friends_only_counts_samples_for_the_roster_players_own_team():
         {1: "Team A Wins", 2: "Team A Wins"}, team1_rounds_won=13, team2_rounds_won=3,
         team1_player_id=100, team2_player_id=200,
     )
-    friends_of_team1 = compute_round_combo_stats([match], roster_player_ids={100})
-    assert friends_of_team1["friends"]["first_half"] == {"WW": {"total": 1, "win": 1}}
+    friends_of_team1 = compute_round_combo_stats([match], group_player_ids={100})
+    assert friends_of_team1["group"]["first_half"] == {"WW": {"total": 1, "win": 1}}
 
-    friends_of_team2 = compute_round_combo_stats([match], roster_player_ids={200})
-    assert friends_of_team2["friends"]["first_half"] == {"LL": {"total": 1, "win": 0}}
+    friends_of_team2 = compute_round_combo_stats([match], group_player_ids={200})
+    assert friends_of_team2["group"]["first_half"] == {"LL": {"total": 1, "win": 0}}
     # "all" is unaffected by roster membership either way
     assert friends_of_team2["all"]["first_half"] == {"WW": {"total": 1, "win": 1}, "LL": {"total": 1, "win": 0}}
 
@@ -131,8 +131,8 @@ def test_full_combo_merges_mirrored_halves_regardless_of_which_half_they_happene
         {1: "Team B Wins", 2: "Team A Wins", 13: "Team A Wins", 14: "Team A Wins"},
         team1_rounds_won=13, team2_rounds_won=3,
     )
-    result = compute_round_combo_stats([won_half1, won_half2], roster_player_ids={100})
-    full = result["friends"]["full"]  # team 1 (player 100)'s samples only
+    result = compute_round_combo_stats([won_half1, won_half2], group_player_ids={100})
+    full = result["group"]["full"]  # team 1 (player 100)'s samples only
     assert full == {"WWLW": {"total": 2, "win": 2}}
 
 
@@ -141,6 +141,6 @@ def test_full_combo_same_pattern_both_halves_is_unaffected():
         {1: "Team A Wins", 2: "Team B Wins", 13: "Team A Wins", 14: "Team B Wins"},
         team1_rounds_won=13, team2_rounds_won=3,
     )
-    result = compute_round_combo_stats([match], roster_player_ids=set())
+    result = compute_round_combo_stats([match], group_player_ids=set())
     full = result["all"]["full"]
     assert full == {"WLWL": {"total": 1, "win": 1}, "LWLW": {"total": 1, "win": 0}}

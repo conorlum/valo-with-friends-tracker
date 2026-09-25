@@ -80,7 +80,7 @@ group's games and rarely call a full save at this trigger except in the
 bleakest rounds), not a bucket-boundary problem, and the loadout-cap fix
 above shrank it further (14 -> 3) since a real hard save is even rarer than
 "low spend, high bank" was. Read full_save from "All Players" scope only --
-"friends" scope isn't just thin here, it's too small to report a percentage
+"group" scope isn't just thin here, it's too small to report a percentage
 from at all.
 """
 
@@ -240,8 +240,8 @@ def _enemy_at_11_response_samples(match: Match) -> list[tuple[Team, str, dict[st
     return samples
 
 
-def _team_has_roster_player(match: Match, team: Team, roster_player_ids: set[int]) -> bool:
-    return any(mp.team == team and mp.player_id in roster_player_ids for mp in match.match_players)
+def _team_has_group_player(match: Match, team: Team, group_player_ids: set[int]) -> bool:
+    return any(mp.team == team and mp.player_id in group_player_ids for mp in match.match_players)
 
 
 def _empty_variant() -> dict[str, dict[str, dict[str, int]]]:
@@ -259,21 +259,21 @@ def _accumulate(variant: dict[str, dict[str, dict[str, int]]], category: str, ou
             bucket["win"] += 1
 
 
-def compute_enemy_at_11_response_stats(matches: list[Match], roster_player_ids: set[int]) -> dict:
-    """{"friends": {"force_buy": {"immediate": {"total","win"}, "next":
-    {...}, "match": {...}}, "full_save": {...}}, "all": {...}}. "friends"
+def compute_enemy_at_11_response_stats(matches: list[Match], group_player_ids: set[int]) -> dict:
+    """{"group": {"force_buy": {"immediate": {"total","win"}, "next":
+    {...}, "match": {...}}, "full_save": {...}}, "all": {...}}. "group"
     scope only counts a sample when the RESPONDING team (the one that must
-    decide how to buy) includes a tracked roster player; "all" scope counts
+    decide how to buy) includes a group player; "all" scope counts
     every sample in the DB. A sample that doesn't classify as either
     force_buy or full_save is excluded entirely (see classify_response) --
     not counted in either scope."""
-    variants = {"friends": _empty_variant(), "all": _empty_variant()}
+    variants = {"group": _empty_variant(), "all": _empty_variant()}
 
     for match in matches:
         for responder, category, outcomes in _enemy_at_11_response_samples(match):
             _accumulate(variants["all"], category, outcomes)
-            if _team_has_roster_player(match, responder, roster_player_ids):
-                _accumulate(variants["friends"], category, outcomes)
+            if _team_has_group_player(match, responder, group_player_ids):
+                _accumulate(variants["group"], category, outcomes)
 
     return variants
 

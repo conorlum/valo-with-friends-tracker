@@ -845,6 +845,7 @@ footer {
   text-decoration: none;
 }
 .scope-toggle-btn.active { background: var(--good); color: #ffffff; border-color: var(--good); }
+.scope-toggle-btn-locked { border-style: dashed; opacity: 0.7; }
 
 /* Fight-EV diamond: two segmented toggles (side, benchmark) */
 .fight-ev-controls {
