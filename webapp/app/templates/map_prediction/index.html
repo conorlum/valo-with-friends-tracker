@@ -20,7 +20,7 @@
       <label>
         <input type="checkbox" name="teammate" value="{{ friend.display_name }}"
           {% if friend.display_name in selected_names %}checked{% endif %}>
-        {{ friend.display_name }}
+        {{ friend.display_name | strip_tag }}
       </label>
       {% endfor %}
     </div>

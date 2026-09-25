@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 
-{% block title %}{{ profile.player.display_name }} - {{ site_name }}{% endblock %}
+{% block title %}{{ profile.player.display_name | strip_tag }} - {{ site_name }}{% endblock %}
 
 {% block content %}
 <h1>
-  {{ profile.player.display_name }}
+  {{ profile.player.display_name | strip_tag }}
   {% if current_player and not is_own_profile %}
   {% if is_friend %}
   <span class="badge badge-score">Friends</span>
@@ -76,7 +76,7 @@
     </tbody>
   </table>
   {% else %}
-  <p class="page-meta">No current-act match data yet for {{ profile.player.display_name }}.</p>
+  <p class="page-meta">No current-act match data yet for {{ profile.player.display_name | strip_tag }}.</p>
   {% endif %}
 </div>
 

@@ -1,9 +1,12 @@
 <h3>Round {{ detail.round_number }} &mdash; {{ detail.outcome or "Unknown" }}</h3>
-<p class="page-meta">
-  {% if detail.planted %}Planted at {{ detail.plant_time }}s{% else %}No plant{% endif %}
-  {% if detail.exploded %}<span class="sep">&middot;</span> Exploded{% endif %}
-  {% if detail.defused %}<span class="sep">&middot;</span> Defused at {{ detail.defuse_time }}s{% endif %}
-</p>
+{# Consecutive rows credited to the same team alternate a lighter and darker
+   shade, lighter first -- same rule as the match scoreboard. #}
+{% macro shade(ns, team) -%}
+{%- set ns.run = ns.run + 1 if team == ns.prev else 0 -%}
+{%- set ns.prev = team -%}
+{{ 'shade-light' if ns.run % 2 == 0 else 'shade-dark' }}
+{%- endmacro %}
+{% set kill_ns = namespace(prev=None, run=0) %}
 
 <table>
   <thead>
@@ -11,28 +14,27 @@
   </thead>
   <tbody>
     {% for event in detail.events %}
-    {% if event.kind == "plant" %}
-    <tr class="row-event">
+    {% if event.kind in ("plant", "defuse", "detonate") %}
+    <tr class="row-event{{ ' row-' ~ event.team if event.team else '' }} {{ shade(kill_ns, event.team) }}">
       <td>{{ event.event_time_seconds }}s</td>
-      <td colspan="3">Spike planted</td>
-    </tr>
-    {% elif event.kind == "defuse" %}
-    <tr class="row-event">
-      <td>{{ event.event_time_seconds }}s</td>
-      <td colspan="3">Spike defused</td>
+      <td colspan="3">
+        {{ {"plant": "Spike planted", "defuse": "Spike defused", "detonate": "Spike detonated"}[event.kind] }}
+        {% if event.team %}<span class="row-event-team">by {{ 'Team 1' if event.team == 'team-1' else 'Team 2' }} ({{ 'attackers' if event.team == detail.attacking_team else 'defenders' }})</span>{% endif %}
+      </td>
     </tr>
     {% else %}
     {% set killer_icon = agent_icon_slug(event.killer_agent) %}
     {% set victim_icon = agent_icon_slug(event.death_agent) %}
-    <tr>
-      <td>{{ event.event_time_seconds }}s</td>
-      <td class="agent-cell">
+    {% set killer_cell = ' cell-' ~ event.team if event.team else '' %}
+    <tr class="row-kill {{ shade(kill_ns, event.team) }}">
+      <td class="{{ killer_cell }}">{{ event.event_time_seconds }}s</td>
+      <td class="agent-cell{{ killer_cell }}">
         {% if killer_icon %}<img class="agent-icon" src="/static/img/agents/{{ killer_icon }}.png" alt="{{ event.killer_agent }}" title="{{ event.killer_agent }}">{% endif %}
         {% if event.killer_display_name %}<a href="/players/{{ event.killer_display_name | urlencode }}">{{ event.killer_display_name | strip_tag }}</a>{% else %}?{% endif %}
         {% if not killer_icon %}({{ event.killer_agent or "?" }}){% endif %}
       </td>
-      <td>{{ event.weapon }}</td>
-      <td class="agent-cell">
+      <td class="{{ killer_cell }}">{{ event.weapon }}</td>
+      <td class="agent-cell{{ ' cell-' ~ event.death_team if event.death_team else '' }}">
         {% if victim_icon %}<img class="agent-icon" src="/static/img/agents/{{ victim_icon }}.png" alt="{{ event.death_agent }}" title="{{ event.death_agent }}">{% endif %}
         {% if event.death_display_name %}<a href="/players/{{ event.death_display_name | urlencode }}">{{ event.death_display_name | strip_tag }}</a>{% else %}?{% endif %}
         {% if not victim_icon %}({{ event.death_agent or "?" }}){% endif %}
@@ -49,9 +51,9 @@
 <div class="stat-grid">
   {% for t in detail.team_totals %}
   <div class="stat-tile">
-    <div class="stat-label">{{ 'Team 1' if t.team == 'team-1' else 'Team 2' }} Impact</div>
+    <div class="stat-label"><span class="team-name-{{ t.team }}">{{ 'Team 1' if t.team == 'team-1' else 'Team 2' }}</span> Impact{% if detail.attacking_team %} ({{ 'attack' if t.team == detail.attacking_team else 'defense' }}){% endif %}</div>
     <div class="stat-value {{ 'impact-positive' if t.impact >= 0 else 'impact-negative' }}">{{ t.impact | round | int }}</div>
-    <div class="stat-sub">Kill {{ t.kill_impact | round | int }} / Death {{ t.death_impact | round | int }}</div>
+    <div class="stat-sub">Kill {{ t.kill_impact | round | int }} / Death {{ t.death_impact | death_impact }}</div>
   </div>
   {% endfor %}
 </div>
@@ -61,12 +63,13 @@
     <tr><th>Player</th><th>Agent</th><th>Kill Impact</th><th>Death Impact</th><th>Impact</th></tr>
   </thead>
   <tbody>
+    {% set impact_ns = namespace(prev=None, run=0) %}
     {% for p in detail.player_impacts %}
-    <tr>
+    <tr class="row-{{ p.team }} {{ shade(impact_ns, p.team) }}">
       <td><a href="/players/{{ p.display_name | urlencode }}">{{ p.display_name | strip_tag }}</a></td>
       <td>{{ p.agent }}</td>
       <td>{{ p.kill_impact | round | int }}</td>
-      <td>{{ p.death_impact | round | int }}</td>
+      <td class="{{ 'impact-negative' if p.death_impact | round | int else '' }}">{{ p.death_impact | death_impact }}</td>
       <td>
         <div class="meter-cell">
           <span class="meter-value {{ 'impact-positive' if p.impact >= 0 else 'impact-negative' }}">{{ p.impact | round | int }}</span>

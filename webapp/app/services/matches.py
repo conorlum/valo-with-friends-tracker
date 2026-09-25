@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models import ImpactScore, KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.scoring.impact import FORCE_THRESHOLD
+from app.scoring.plant_window import attacking_team
 from app.services.friends import list_friend_ids
 from app.services.shoutouts import (
     SCAVENGER_MIN_AVG_PER_ROUND,
@@ -24,6 +25,9 @@ _MULTI_KILL_THRESHOLD = 3
 _OP_LOADOUT_THRESHOLD = 5100
 _ENTRY_KILL_WINDOW_SECONDS = 20
 _LATE_KILL_MARK_SECONDS = 60
+# The spike detonates this long after the plant. Rounds only store whether it
+# exploded, so the round log places the detonation at plant_time + this.
+SPIKE_TIMER_SECONDS = 45
 
 
 def _winner_side(outcome: str | None) -> str | None:
@@ -96,6 +100,10 @@ class PlayerSummary:
     traded_by_teammate_ids: dict[int, int] = field(default_factory=dict)
     traded_teammate_names: dict[str, int] = field(default_factory=dict)
     traded_by_teammate_names: dict[str, int] = field(default_factory=dict)
+    player_id: int = 0
+    kills: int = 0
+    deaths: int = 0
+    assists: int = 0
 
 
 @dataclass
@@ -121,12 +129,15 @@ class MatchSummary:
     # but before compute_impact_for_match ran. Callers must handle a miss
     # rather than assume both teams are always present.
     team_summaries_by_team: dict[str, TeamSummary] = field(default_factory=dict)
+    # 'team-1'/'team-2' from the match's final score, None on a tie.
+    winner_team: str | None = None
 
 
 def get_match_summary(db: Session, match: Match) -> MatchSummary:
     rows = (
         db.query(
             MatchPlayer.id,
+            MatchPlayer.player_id,
             Player.display_name,
             MatchPlayer.agent,
             MatchPlayer.team,
@@ -156,7 +167,7 @@ def get_match_summary(db: Session, match: Match) -> MatchSummary:
     round_numbers: set[int] = set()
 
     for (
-        match_player_id, display_name, agent, team, round_number,
+        match_player_id, player_id, display_name, agent, team, round_number,
         impact, kill_impact, death_impact,
         econ_kill, econ_death, clutch_kill, clutch_death,
         post_plant_kill, post_plant_death,
@@ -167,6 +178,7 @@ def get_match_summary(db: Session, match: Match) -> MatchSummary:
         if summary is None:
             summary = PlayerSummary(
                 match_player_id=match_player_id,
+                player_id=player_id,
                 display_name=display_name,
                 agent=agent,
                 team=team.value if hasattr(team, "value") else team,
@@ -213,6 +225,22 @@ def get_match_summary(db: Session, match: Match) -> MatchSummary:
         r.round_number: r.outcome
         for r in db.query(Round).filter_by(match_id=match.id).all()
     }
+
+    for mp_id, kills, deaths, assists in (
+        db.query(
+            RoundPlayerStat.match_player_id,
+            func.sum(RoundPlayerStat.kills),
+            func.sum(RoundPlayerStat.deaths),
+            func.sum(RoundPlayerStat.assists),
+        )
+        .join(MatchPlayer, MatchPlayer.id == RoundPlayerStat.match_player_id)
+        .filter(MatchPlayer.match_id == match.id)
+        .group_by(RoundPlayerStat.match_player_id)
+        .all()
+    ):
+        summary = by_player.get(mp_id)
+        if summary is not None:
+            summary.kills, summary.deaths, summary.assists = kills or 0, deaths or 0, assists or 0
 
     for summary in by_player.values():
         values = summary.impact_by_round.values()
@@ -267,7 +295,145 @@ def get_match_summary(db: Session, match: Match) -> MatchSummary:
         round_outcomes=round_outcomes,
         team_summaries=team_summaries,
         team_summaries_by_team={ts.team: ts for ts in team_summaries},
+        winner_team=match_winner_team(match),
     )
+
+
+def match_winner_team(match: Match) -> str | None:
+    if match.team1_rounds_won > match.team2_rounds_won:
+        return "team-1"
+    if match.team2_rounds_won > match.team1_rounds_won:
+        return "team-2"
+    return None
+
+
+ROUND_END_TYPES = ("elimination", "defuse", "detonate", "time", "surrender")
+
+
+def round_end_type(outcome: str | None) -> str | None:
+    """'elimination'/'defuse'/'detonate'/'time'/'surrender' from an outcome
+    string like "Team B Defuse Win", or None if it isn't one of those."""
+    if not outcome:
+        return None
+    lowered = outcome.lower()
+    for end_type in ROUND_END_TYPES:
+        if end_type[:6] in lowered:  # "surrendered", "elimination", ...
+            return end_type
+    return None
+
+
+def match_round_timeline(summary: MatchSummary) -> list[dict]:
+    """One entry per round in play order for the match page's round strip:
+    {"round_number", "winner" ('team-1'/'team-2'/None), "outcome", "end_type",
+    "team_impact": {'team-1': float|None, 'team-2': float|None}}."""
+    return [
+        {
+            "round_number": rn,
+            "winner": _winner_side(outcome),
+            "outcome": outcome,
+            "end_type": round_end_type(outcome),
+            "team_impact": {
+                team: (ts.impact_by_round.get(rn) if (ts := summary.team_summaries_by_team.get(team)) else None)
+                for team in ("team-1", "team-2")
+            },
+        }
+        for rn, outcome in sorted(summary.round_outcomes.items())
+    ]
+
+
+ROUND_BAR_HEIGHT_PX = 64
+
+
+def round_impact_bars(timeline: list[dict], height_px: int = ROUND_BAR_HEIGHT_PX) -> dict:
+    """Pixel geometry for the round strip's per-round team-Impact bars, on one
+    shared scale across the match so rounds compare at a glance. Bars grow up
+    from a zero line for positive Impact and down for negative; the zero line
+    sits wherever the match's largest positive and negative values put it.
+    Returns {"height", "zero_top", "rounds": {round_number: {team: {"top",
+    "height", "value"}}}}; a team with no Impact that round is left out."""
+    values = [v for r in timeline for v in r["team_impact"].values() if v is not None]
+    max_pos = max([v for v in values if v > 0], default=0.0)
+    max_neg = max([-v for v in values if v < 0], default=0.0)
+    span = max_pos + max_neg
+    zero_top = round(height_px * max_pos / span) if span else height_px
+    px_per_unit = height_px / span if span else 0.0
+    rounds: dict[int, dict[str, dict]] = {}
+    for r in timeline:
+        bars = {}
+        for team, value in r["team_impact"].items():
+            if value is None:
+                continue
+            bar_height = max(1, round(abs(value) * px_per_unit)) if value else 0
+            top = zero_top - bar_height if value > 0 else zero_top
+            bars[team] = {"top": top, "height": bar_height, "value": value}
+        rounds[r["round_number"]] = bars
+    return {"height": height_px, "zero_top": zero_top, "rounds": rounds}
+
+
+LOADOUT_BAR_HEIGHT_PX = 40
+
+
+def round_loadout_bars(econ_by_round: dict, height_px: int = LOADOUT_BAR_HEIGHT_PX) -> dict:
+    """Pixel geometry for the round strip's per-round loadout bars (each
+    team's average per-player loadout), on one 0-to-max scale across the
+    match. `econ_by_round` is economy_graphs.match_econ_rounds' output.
+    Returns {"height", "rounds": {round_number: {team: {"top", "height",
+    "value", "tier"}}}}."""
+    max_loadout = max(
+        (max(row.team1_loadout, row.team2_loadout) for row in econ_by_round.values()), default=0
+    )
+    rounds: dict[int, dict[str, dict]] = {}
+    for round_number, row in econ_by_round.items():
+        bars = {}
+        for team, value, tier in (
+            ("team-1", row.team1_loadout, row.team1_tier_label),
+            ("team-2", row.team2_loadout, row.team2_tier_label),
+        ):
+            bar_height = max(1, round(value / max_loadout * height_px)) if max_loadout and value > 0 else 0
+            bars[team] = {"top": height_px - bar_height, "height": bar_height, "value": value, "tier": tier}
+        rounds[round_number] = bars
+    return {"height": height_px, "rounds": rounds}
+
+
+def cumulative_impact_series(summary: MatchSummary) -> list[dict]:
+    """Per player, their running Impact total after each round, for the
+    match page's line chart. A round a player has no score for carries
+    their previous total forward."""
+    series = []
+    for p in sorted(summary.players, key=lambda p: (p.team, -p.average_impact)):
+        running = 0.0
+        data = []
+        for rn in summary.round_numbers:
+            running += p.impact_by_round.get(rn) or 0.0
+            data.append(round(running, 1))
+        series.append(
+            {"label": p.display_name, "agent": p.agent, "team": p.team, "player_id": p.player_id, "data": data}
+        )
+    return series
+
+
+def get_viewer_team(db: Session, summary: MatchSummary, viewer_player_id: int | None) -> tuple[str | None, str | None]:
+    """(team, label) for the team the logged-in viewer should read as
+    "theirs": the team they played on ("You"), otherwise the team with the
+    most of their friends on it ("Your friends"). (None, None) for a
+    logged-out viewer or a match with none of them in it, so the page falls
+    back to a neutral "Team N won"."""
+    if viewer_player_id is None:
+        return None, None
+    for p in summary.players:
+        if p.player_id == viewer_player_id:
+            return p.team, "You"
+    friend_ids = list_friend_ids(db, viewer_player_id)
+    friends_per_team: dict[str, int] = {}
+    for p in summary.players:
+        if p.player_id in friend_ids:
+            friends_per_team[p.team] = friends_per_team.get(p.team, 0) + 1
+    if not friends_per_team:
+        return None, None
+    ranked = sorted(friends_per_team.items(), key=lambda kv: kv[1], reverse=True)
+    if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+        return None, None  # friends split evenly across both teams
+    return ranked[0][0], "Your friends"
 
 
 def get_match_shoutouts(
@@ -589,7 +755,11 @@ def get_match_shoutouts(
 @dataclass
 class RoundLogEntry:
     event_time_seconds: float
-    kind: str  # "kill", "plant", or "defuse"
+    kind: str  # "kill", "plant", "defuse", or "detonate"
+    # 'team-1'/'team-2': for a kill, the killer's team; for plant/detonate,
+    # the attackers; for defuse, the defenders.
+    team: str | None = None
+    death_team: str | None = None
     killer_display_name: str | None = None
     killer_agent: str | None = None
     death_display_name: str | None = None
@@ -628,6 +798,7 @@ class RoundDetail:
     events: list[RoundLogEntry]
     player_impacts: list[RoundPlayerImpact]
     team_totals: list[RoundTeamTotal]
+    attacking_team: str | None = None
 
 
 def get_round_detail(db: Session, match: Match, round_number: int) -> RoundDetail:
@@ -649,6 +820,16 @@ def get_round_detail(db: Session, match: Match, round_number: int) -> RoundDetai
         mp = match_players.get(match_player_id)
         return players_by_id[mp.player_id].display_name if mp else None
 
+    def _team(match_player_id: int | None) -> str | None:
+        mp = match_players.get(match_player_id) if match_player_id is not None else None
+        if mp is None:
+            return None
+        return mp.team.value if hasattr(mp.team, "value") else mp.team
+
+    attackers_enum = attacking_team(round_row.round_number)
+    attackers = attackers_enum.value if attackers_enum is not None else None
+    defenders = {"team-1": "team-2", "team-2": "team-1"}.get(attackers)
+
     def _agent(match_player_id: int | None) -> str | None:
         if match_player_id is None:
             return None
@@ -665,6 +846,8 @@ def get_round_detail(db: Session, match: Match, round_number: int) -> RoundDetai
         RoundLogEntry(
             event_time_seconds=k.event_time_seconds,
             kind="kill",
+            team=_team(k.killer_match_player_id),
+            death_team=_team(k.death_match_player_id),
             killer_display_name=_display_name(k.killer_match_player_id),
             killer_agent=_agent(k.killer_match_player_id),
             death_display_name=_display_name(k.death_match_player_id),
@@ -674,9 +857,15 @@ def get_round_detail(db: Session, match: Match, round_number: int) -> RoundDetai
         for k in kill_events
     ]
     if round_row.planted and round_row.plant_time is not None:
-        events.append(RoundLogEntry(event_time_seconds=round_row.plant_time, kind="plant"))
+        events.append(RoundLogEntry(event_time_seconds=round_row.plant_time, kind="plant", team=attackers))
+        if round_row.exploded:
+            events.append(
+                RoundLogEntry(
+                    event_time_seconds=round_row.plant_time + SPIKE_TIMER_SECONDS, kind="detonate", team=attackers
+                )
+            )
     if round_row.defused and round_row.defuse_time is not None:
-        events.append(RoundLogEntry(event_time_seconds=round_row.defuse_time, kind="defuse"))
+        events.append(RoundLogEntry(event_time_seconds=round_row.defuse_time, kind="defuse", team=defenders))
     events.sort(key=lambda e: e.event_time_seconds)
 
     impact_scores = db.query(ImpactScore).filter_by(round_id=round_row.id).all()
@@ -717,4 +906,5 @@ def get_round_detail(db: Session, match: Match, round_number: int) -> RoundDetai
         events=events,
         player_impacts=player_impacts,
         team_totals=team_totals,
+        attacking_team=attackers,
     )

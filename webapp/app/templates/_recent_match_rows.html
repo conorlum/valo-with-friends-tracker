@@ -1,0 +1,60 @@
+{# One row per recent match (newest first). Expects `recent_rows` from
+   app.services.recent_match_rows.build_recent_match_rows. Only the first
+   `visible` rows show until "Show all" is clicked; the rest are already in
+   the page, just hidden. #}
+{% set visible = 10 %}
+{% if recent_rows %}
+<div class="table-scroll">
+  <table class="recent-matches">
+    <thead>
+      <tr>
+        <th>Result</th>
+        <th>Map</th>
+        <th>Score</th>
+        <th>Agent</th>
+        <th title="Kills / Deaths / Assists">K / D / A</th>
+        <th>Avg Impact</th>
+        <th>Stand-outs</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in recent_rows %}
+      {% set e = row.entry %}
+      {% set icon = agent_icon_slug(row.agent) if row.agent else None %}
+      <tr class="recent-match recent-match-{{ e.result | lower }}" data-href="/matches/{{ e.external_id }}"
+          onclick="if (!event.target.closest('a')) window.location.href = this.dataset.href;"{% if loop.index > visible %} data-recent-extra hidden{% endif %}>
+        <td><span class="result-pill result-pill-{{ e.result | lower }}">{{ {'W': 'Win', 'L': 'Loss', 'D': 'Draw'}[e.result] }}</span></td>
+        <td>
+          <a class="player-link" href="/matches/{{ e.external_id }}">{{ e.map_name or e.external_id }}</a>
+          {% if e.played_at %}<div class="stat-sub">{{ e.played_at | local_strftime("%b %d, %I:%M %p") }}</div>{% endif %}
+        </td>
+        <td class="recent-score">{{ e.own_rounds }}&ndash;{{ e.enemy_rounds }}</td>
+        <td>
+          {% if icon %}<img class="agent-icon" src="/static/img/agents/{{ icon }}.png" alt="{{ row.agent }}" title="{{ row.agent }}">{% else %}{{ row.agent or '&ndash;' | safe }}{% endif %}
+        </td>
+        <td class="recent-kda">{{ row.kills }} / {{ row.deaths }} / {{ row.assists }}</td>
+        <td>
+          {% if row.average_impact is not none %}
+          <span class="{{ 'impact-positive' if row.average_impact >= 0 else 'impact-negative' }}">{{ row.average_impact | round | int }}</span>
+          {% else %}&ndash;{% endif %}
+        </td>
+        <td>
+          <div class="match-badges">
+            {% for b in row.badges %}
+            <span class="match-badge match-badge-{{ b.kind }}" title="{{ b.title }}">{{ b.label }}</span>
+            {% endfor %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% if recent_rows | length > visible %}
+<button type="button" class="tab-btn recent-matches-toggle"
+        data-more="Show all {{ recent_rows | length }}" data-less="Show {{ visible }}"
+        onclick="const table = this.previousElementSibling.querySelector('table'); const expand = this.textContent.trim() === this.dataset.more; table.querySelectorAll('tr[data-recent-extra]').forEach((r) => { r.hidden = !expand; }); this.textContent = expand ? this.dataset.less : this.dataset.more;">Show all {{ recent_rows | length }}</button>
+{% endif %}
+{% else %}
+<p class="page-meta">No recent matches.</p>
+{% endif %}

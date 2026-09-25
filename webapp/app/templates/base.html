@@ -24,7 +24,7 @@
     </div>
     <span class="nav-auth">
       {% if current_player %}
-        Logged in as <a href="/players/{{ current_player.display_name | urlencode }}">{{ current_player.display_name }}</a>
+        Logged in as <a href="/players/{{ current_player.display_name | urlencode }}">{{ current_player.display_name | strip_tag }}</a>
         <form action="/logout" method="post" class="inline-form"><button type="submit" class="link-button">Log out</button></form>
       {% else %}
         <a href="/login">Log in</a>

@@ -8,6 +8,11 @@ from app.services.matches import (
     get_match_shoutouts,
     get_match_summary,
     get_round_detail,
+    cumulative_impact_series,
+    get_viewer_team,
+    match_round_timeline,
+    round_impact_bars,
+    round_loadout_bars,
     list_matches,
     list_matches_for_player,
 )
@@ -42,16 +47,30 @@ def match_detail(request: Request, external_id: str, db: Session = Depends(get_d
     summary = get_match_summary(db, match)
     current_player = get_current_player(request, db)
     shoutouts = get_match_shoutouts(db, match, summary, current_player.id if current_player else None)
+    viewer_team, viewer_team_label = get_viewer_team(db, summary, current_player.id if current_player else None)
+    rounds_won = {"team-1": match.team1_rounds_won, "team-2": match.team2_rounds_won}
+    scoreboard_teams = [
+        {
+            "team": team,
+            "name": "Team 1" if team == "team-1" else "Team 2",
+            "rounds_won": rounds_won[team],
+            "won": summary.winner_team == team,
+            "viewer_label": viewer_team_label if team == viewer_team else None,
+            "players": [p for p in summary.players if p.team == team],
+        }
+        # Winner first; a tie keeps Team 1 first.
+        for team in sorted(("team-1", "team-2"), key=lambda t: (summary.winner_team != t, t))
+    ]
+    timeline_rounds = match_round_timeline(summary)
+    round_bars = round_impact_bars(timeline_rounds)
+    # The page opens with the first round's detail already showing.
+    initial_round_detail = (
+        get_round_detail(db, match, timeline_rounds[0]["round_number"]) if timeline_rounds else None
+    )
     chart_data = {
         "labels": summary.round_numbers,
-        "series": [
-            {
-                "label": f"{p.display_name} ({p.agent})",
-                "team": p.team,
-                "data": [p.impact_by_round.get(r) for r in summary.round_numbers],
-            }
-            for p in sorted(summary.players, key=lambda p: p.team)
-        ],
+        "series": cumulative_impact_series(summary),
+        "viewer_player_id": current_player.id if current_player else None,
     }
     highlights_chart_data = {
         "labels": ["Econ", "Clutch / High-Impact", "Post-Plant"],
@@ -68,19 +87,9 @@ def match_detail(request: Request, external_id: str, db: Session = Depends(get_d
             for p in summary.players
         },
     }
-    team_chart_data = {
-        "labels": summary.round_numbers,
-        "series": [
-            {
-                "label": "Team 1" if ts.team == "team-1" else "Team 2",
-                "team": ts.team,
-                "data": [ts.impact_by_round.get(r, 0.0) for r in summary.round_numbers],
-            }
-            for ts in summary.team_summaries
-        ],
-    }
     team1_win_graph, team2_win_graph = build_match_round_win_diagrams(match)
     econ_by_round = match_econ_rounds(match)
+    loadout_bars = round_loadout_bars(econ_by_round)
     team1_econ_samples, team2_econ_samples = match_econ_samples(match)
     team1_econ_tier_matrix = build_tier_matrix(team1_econ_samples)
     team2_econ_tier_matrix = build_tier_matrix(team2_econ_samples)
@@ -93,9 +102,16 @@ def match_detail(request: Request, external_id: str, db: Session = Depends(get_d
             "match": match,
             "summary": summary,
             "shoutouts": shoutouts,
+            "viewer_player_id": current_player.id if current_player else None,
+            "viewer_team": viewer_team,
+            "viewer_team_label": viewer_team_label,
+            "scoreboard_teams": scoreboard_teams,
+            "timeline_rounds": timeline_rounds,
+            "round_bars": round_bars,
+            "loadout_bars": loadout_bars,
+            "initial_round_detail": initial_round_detail,
             "chart_data": chart_data,
             "highlights_chart_data": highlights_chart_data,
-            "team_chart_data": team_chart_data,
             "team1_win_graph": team1_win_graph,
             "team2_win_graph": team2_win_graph,
             "econ_by_round": econ_by_round,

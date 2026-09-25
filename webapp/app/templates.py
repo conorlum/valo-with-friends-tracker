@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -74,12 +75,24 @@ def local_strftime(dt, fmt: str) -> str:
 templates.env.filters["local_strftime"] = local_strftime
 
 
+def death_impact(value) -> str:
+    """Death impact is stored as a positive amount that gets subtracted;
+    display it as the signed cost it is, e.g. 136 -> "-136" (0 stays "0")."""
+    rounded = round(value or 0)
+    return f"{-rounded:+d}" if rounded else "0"
+
+
+templates.env.filters["death_impact"] = death_impact
+
+
 def strip_tag(display_name: str | None) -> str:
     """Drops the "#Tag" suffix from a Riot ID for display -- the full name
-    (used for player lookups/links) is kept wherever it's needed for that."""
+    (used for player lookups/links) is kept wherever it's needed for that.
+    Also handles a comma-joined list of IDs ("A#NA1, B C#EUW" -> "A, B C");
+    Riot tags never contain commas, and names may contain spaces."""
     if not display_name:
         return display_name
-    return display_name.split("#", 1)[0]
+    return re.sub(r"#[^,]*", "", display_name)
 
 
 templates.env.filters["strip_tag"] = strip_tag

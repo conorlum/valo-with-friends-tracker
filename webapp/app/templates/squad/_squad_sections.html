@@ -17,6 +17,11 @@
   </div>
 </div>
 
+{% set form = overview.form %}
+{% set form_title = "Squad form" %}
+{% set form_meta = "Match win/loss streaks over your " ~ ("last 30 matches" if scope == 'recent' else "full match history") ~ ", counting only matches with at least one friend on your team." %}
+{% include "_form_card.html" %}
+
 {% if overview.shoutouts %}
 <div class="card">
   <h2>Shoutouts</h2>
@@ -51,6 +56,7 @@
 <div class="card">
   <h2>Your friends, ranked</h2>
   {% if overview.pairs %}
+  <div class="table-scroll">
   <table>
     <thead>
       <tr>
@@ -58,6 +64,7 @@
         <th data-sort="number" aria-sort="descending">Matches Together</th>
         <th data-sort="number">Rounds Together</th>
         <th data-sort="number">Win Rate Together</th>
+        <th data-sort="number" title="Current match win/loss streak with this friend">Match Streak Together</th>
         <th data-sort="number">Avg Round-Win Impact Together</th>
         <th data-sort="number">Clutches Together</th>
         <th data-sort="number">Traded Together</th>
@@ -71,6 +78,11 @@
         <td data-sort-value="{{ p.matches_together }}">{{ p.matches_together }}</td>
         <td data-sort-value="{{ p.rounds_together }}">{{ p.rounds_together }}</td>
         <td data-sort-value="{{ p.win_rate_together }}">{{ (p.win_rate_together * 100) | round | int }}%</td>
+        <td data-sort-value="{{ p.streak_length if p.streak_result == 'W' else -p.streak_length }}">
+          {% if p.streak_result %}
+          <span class="{{ 'text-good' if p.streak_result == 'W' else 'text-critical' }}">{{ p.streak_result }}{{ p.streak_length }}</span>
+          {% else %}&ndash;{% endif %}
+        </td>
         <td data-sort-value="{{ p.avg_round_win_impact_together }}" class="{{ 'impact-positive' if p.avg_round_win_impact_together >= 0 else 'impact-negative' }}">
           {{ p.avg_round_win_impact_together | round | int }}
         </td>
@@ -81,6 +93,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <p class="page-meta">No shared matches with friends yet{% if scope == 'recent' %} in your last 30 matches{% endif %}.</p>
   {% endif %}
