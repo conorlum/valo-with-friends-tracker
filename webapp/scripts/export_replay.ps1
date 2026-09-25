@@ -1,6 +1,6 @@
 # Exports one archived replay with the pinned parser build.
 #
-#   .\scripts\export_replay.ps1 d45b2844-d7dd-4efd-bbf7-551854710350
+#   .\scripts\export_replay.ps1 <match uuid>      # the .vrf's file name without the extension
 #
 # Reads <ArchiveDir>\<uuid>.vrf (default $env:VALO_REPLAY_ARCHIVE, else
 # $HOME\ValorantReplayArchive), runs <ParserDir>\bin\CliReader.exe export, and
