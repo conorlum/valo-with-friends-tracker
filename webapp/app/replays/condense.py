@@ -229,8 +229,6 @@ def build_players(export: Export, agents_by_code: dict[str, str]) -> PlayerTable
         location = row.data.get("location") or {}
         if location.get("x") is not None and location.get("y") is not None:
             spawned_xy.setdefault(guid, (float(location["x"]), float(location["y"])))
-    closed_at = {int(row.data["actor_net_guid"]): row.time_ms for row in export.of_type("actor_closed")
-                 if int(row.data.get("actor_net_guid", 0)) in codes}
 
     # P-b: every non-null claim is kept with its time; contradictions refuse (first-claim-wins
     # would silently pick one side of a conflict).
@@ -296,8 +294,6 @@ def build_players(export: Export, agents_by_code: dict[str, str]) -> PlayerTable
         if kind == "state":
             other_slot[key] = slot
         pawn_changes[slot] = [(spawned_at[p], p) for p in pawns]
-        if pawns[-1] in closed_at:
-            gone_ms[slot] = closed_at[pawns[-1]]
         if pawns[0] in spawned_xy:
             spawn_xy[slot] = spawned_xy[pawns[0]]
     state_slot = {key: slot for slot, ((kind, key), _) in enumerate(ordered) if kind == "state"}
@@ -319,6 +315,63 @@ def build_players(export: Export, agents_by_code: dict[str, str]) -> PlayerTable
                  "possession_intervals": intervals}
     return PlayerTable(subjects, agents, pawn_slot, other_slot, pawn_changes, gone_ms, spawn_xy,
                        dict(possession), ownership)
+
+
+# ---------------------------------------------------------------- lifecycle (P-c)
+
+
+# PROVISIONAL(D15): a close for any reason but dormancy can mean the player left (the parser
+# writes `destroyed`, `dormancy`, or a raw number; ChannelCloseReason.cs). Frozen by finding 25.
+DORMANT_CLOSE = "dormancy"
+
+
+@dataclass
+class Lifecycle:
+    left: dict[int, int]                          # slot -> when their last pawn closed for good
+    unobserved: dict[int, list[tuple[int, int]]]  # slot -> [(from ms, to ms)] alive but unseen
+    report: dict
+
+
+def read_lifecycle(export: Export, players: PlayerTable, last_decided_ms: int, end_ms: int) -> Lifecycle:
+    """Classifies every player pawn's channel close (P-c).
+
+    A close followed by a reopen of the same GUID, or a dormant close, is an unobserved span:
+    the player is alive and unseen. A player left only when their last pawn closes for another
+    reason with no reopen, before the final round was decided (later closes are the match
+    ending). The close of a pawn a later pawn replaces is a pawn change.
+    """
+    spawns: dict[int, list[int]] = defaultdict(list)
+    for row in export.of_type("actor_spawned"):
+        guid = int(row.data.get("actor_net_guid") or 0)
+        if guid in players.pawn_slot:
+            spawns[guid].append(row.time_ms)
+    closes_by_reason: Counter[str] = Counter()
+    left: dict[int, int] = {}
+    unobserved: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for row in export.of_type("actor_closed"):
+        guid = int(row.data.get("actor_net_guid") or 0)
+        slot = players.pawn_slot.get(guid)
+        if slot is None:
+            continue
+        reason = row.data.get("reason")
+        if not reason:
+            raise ContractError("lifecycle", f"character {guid}'s channel close at {row.time_ms} ms has no reason")
+        closes_by_reason[str(reason)] += 1
+        reopen = next((t for t in spawns[guid] if t > row.time_ms), None)
+        if reopen is not None:
+            unobserved[slot].append((row.time_ms, reopen))
+            continue
+        if reason == DORMANT_CLOSE:
+            unobserved[slot].append((row.time_ms, end_ms))
+            continue
+        later_pawn = any(spawned > row.time_ms for spawned, pawn in players.pawn_changes[slot] if pawn != guid)
+        if later_pawn or guid != players.pawn_changes[slot][-1][1] or row.time_ms > last_decided_ms:
+            continue
+        left[slot] = row.time_ms
+    report = {"closes_by_reason": dict(sorted(closes_by_reason.items())),
+              "left": {str(slot): _seconds(t, 0) for slot, t in sorted(left.items())},
+              "unobserved_spans": sum(len(spans) for spans in unobserved.values())}
+    return Lifecycle(left, dict(unobserved), report)
 
 
 # ---------------------------------------------------------------- rounds
@@ -542,14 +595,20 @@ def _seconds(t_ms: int, start_ms: int) -> float:
 
 
 def alive_intervals(start: int, end: int, deaths: list[int], revives: list[int],
-                    pawn_changes: list[int], gone_ms: int | None = None) -> list[list]:
-    """[[from_ms, to_ms | None, cause]] for one slot in one round window (times absolute).
+                    pawn_changes: list[int], gone_ms: int | None = None,
+                    self_kills: list[int] = (), unobserved: list[tuple[int, int]] = ()) -> list[list]:
+    """[[from_ms, to_ms | None, cause(, flags)]] for one slot in one round window (times absolute).
 
     `gone_ms` is when a player who left lost their last pawn: nothing after it, and an
     open interval then ends with cause "left". Gone before the round starts: no intervals.
+    A round's start opens a new life. A second death with no revive or new pawn between
+    refuses (P-c), except a self-kill with no decoded revive (Clove's ult running out after
+    a revive the parser didn't decode): that life is flagged "uncertain" and still ends at
+    its first death. An interval that overlaps an unobserved span is flagged "unobserved".
     """
     if gone_ms is not None and gone_ms <= start:
         return []
+    self_set = set(self_kills)
     events = sorted([(t, 0, "death") for t in deaths] + [(t, 1, "revive") for t in revives + pawn_changes])
     intervals: list[list] = [[start, None, "round_end"]]
     for t, _, kind in events:
@@ -557,6 +616,14 @@ def alive_intervals(start: int, end: int, deaths: list[int], revives: list[int],
         is_open = current[1] is None and current[2] == "round_end"
         if kind == "death" and is_open:
             current[1], current[2] = t, "kill"
+        elif kind == "death":
+            if t not in self_set:
+                raise ContractError("lifecycle", f"a second death at {t} ms with no revive or new pawn since the "
+                                                 f"death at {current[1]} ms")
+            if len(current) == 3:
+                current.append(["uncertain"])
+            elif "uncertain" not in current[3]:
+                current[3].append("uncertain")
         elif kind == "revive" and not is_open:
             intervals.append([t, None, "round_end"])
     if gone_ms is not None and gone_ms <= end:
@@ -564,19 +631,41 @@ def alive_intervals(start: int, end: int, deaths: list[int], revives: list[int],
         last = intervals[-1]
         if last[1] is None or last[1] > gone_ms:
             last[1], last[2] = gone_ms, "left"
+    for interval in intervals:
+        lo, hi = interval[0], interval[1] if interval[1] is not None else end
+        if any(a < hi and b > lo for a, b in unobserved):
+            if len(interval) == 3:
+                interval.append([])
+            if "unobserved" not in interval[3]:
+                interval[3].append("unobserved")
     return intervals
 
 
 def _interval_index(intervals: list[list], t_ms: int, end: int) -> int | None:
-    for i, (lo, hi, _) in enumerate(intervals):
+    for i, interval in enumerate(intervals):
+        lo, hi = interval[0], interval[1]
         if lo <= t_ms <= (hi if hi is not None else end):
             return i
     return None
 
 
+def _uncovered(a: int, b: int, spans: list[tuple[int, int]]) -> int:
+    """The part of [a, b] (ms) outside every unobserved span."""
+    cut = sorted((max(a, lo), min(b, hi)) for lo, hi in spans if lo < b and hi > a)
+    covered, reach = 0, a
+    for lo, hi in cut:
+        lo = max(lo, reach)
+        if hi > lo:
+            covered += hi - lo
+            reach = hi
+    return (b - a) - covered
+
+
 def build_segments(samples: list[Sample], intervals: list[list], start: int, end: int,
-                   hz: int, game_map: MapInfo) -> tuple[list[dict], dict]:
-    """Splits a slot's samples into grid-snapped segments; returns them and coverage stats."""
+                   hz: int, game_map: MapInfo, unobserved: list[tuple[int, int]] = ()) -> tuple[list[dict], dict]:
+    """Splits a slot's samples into grid-snapped segments; returns them and coverage stats.
+
+    Coverage and gaps measure observed alive time: unobserved spans (P-c) don't count."""
     runs: list[list[tuple[Sample, int]]] = []
     previous: tuple[Sample, int] | None = None
     for sample in samples:
@@ -623,12 +712,12 @@ def build_segments(samples: list[Sample], intervals: list[list], start: int, end
         covered_points += len(u_list)
         segments.append(fmt.encode_segment(keys[0] / hz, u_list, v_list, yaw_list))
 
-    alive_s = sum(((hi if hi is not None else end) - lo) / 1000.0 for lo, hi, _ in intervals)
+    alive_s = sum(_uncovered(iv[0], iv[1] if iv[1] is not None else end, unobserved) / 1000.0 for iv in intervals)
     max_gap = 0.0
-    for lo, hi, _ in intervals:
-        hi = hi if hi is not None else end
+    for interval in intervals:
+        lo, hi = interval[0], interval[1] if interval[1] is not None else end
         bounds = [lo, *(s.t_ms for s in samples if lo <= s.t_ms <= hi), hi]
-        max_gap = max(max_gap, *((b - a) / 1000.0 for a, b in zip(bounds, bounds[1:])))
+        max_gap = max(max_gap, *(_uncovered(a, b, unobserved) / 1000.0 for a, b in zip(bounds, bounds[1:])))
     coverage = min(1.0, covered_points / hz / alive_s) if alive_s > 0 else 1.0
     return segments, {"coverage": round(coverage, 3), "max_gap_s": round(max_gap, 3)}
 
@@ -750,6 +839,14 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     hz = native_hz(by_slot)
     kills = read_kills(export, players)
     revives = read_revives(export, players)
+    lifecycle = read_lifecycle(export, players, game.windows[-1][1], max(export.end_ms, game.windows[-1][2]))
+    players.gone_ms = lifecycle.left
+    for kill in kills:
+        for role, slot in (("by", kill.killer), ("of", kill.victim)):
+            gone = players.gone_ms.get(slot)
+            if gone is not None and kill.t_ms >= gone:
+                raise ContractError("lifecycle", f"a kill {role} slot {slot} at {kill.t_ms} ms, after that player "
+                                                 f"left at {gone} ms")
     pawn_times = {slot: [t for t, _ in changes[1:]] for slot, changes in players.pawn_changes.items()}
 
     def present(slot: int, start: int) -> bool:
@@ -815,17 +912,22 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     sides = side_groups(kills, clusters)
     player_rows = [{"slot": slot, "agent": players.agents[slot], "side": sides[slot]} for slot in range(10)]
 
+    uncertain_lives = 0
     for n, (start, decided, end) in enumerate(game.windows, 1):
         tracks: dict[str, list] = {}
         alive: dict[str, list] = {}
         for slot in range(10):
             deaths = [k.t_ms for k in round_kills[n] if k.victim == slot]
+            self_kills = [k.t_ms for k in round_kills[n] if k.victim == slot and k.killer == slot]
             revived = [t for t, s in revives if s == slot and start <= t <= end]
             pawns = [t for t in pawn_times.get(slot, []) if start < t <= end]
-            intervals = alive_intervals(start, end, deaths, revived, pawns, players.gone_ms.get(slot))
-            alive[str(slot)] = [[_seconds(lo, start), None if hi is None else _seconds(hi, start), cause]
-                                for lo, hi, cause in intervals]
-            segments, stats = build_segments(by_slot.get(slot, []), intervals, start, end, hz, game_map)
+            spans = lifecycle.unobserved.get(slot, [])
+            intervals = alive_intervals(start, end, deaths, revived, pawns, players.gone_ms.get(slot),
+                                        self_kills, spans)
+            uncertain_lives += sum(1 for iv in intervals if "uncertain" in (iv[3] if len(iv) > 3 else []))
+            alive[str(slot)] = [[_seconds(iv[0], start), None if iv[1] is None else _seconds(iv[1], start), iv[2],
+                                 *iv[3:]] for iv in intervals]
+            segments, stats = build_segments(by_slot.get(slot, []), intervals, start, end, hz, game_map, spans)
             if segments:
                 tracks[str(slot)] = segments
             if intervals:
@@ -867,6 +969,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         "kills_outside_rounds": outside,
         "kills_excluded": excluded,
         "ownership": players.ownership,
+        "lifecycle": {**lifecycle.report, "uncertain_lives": uncertain_lives, "contradictions": 0},
         "phase_ended_checked": game.phase_ended_checked,
         "movement": movement_counts,
         "spawn_checks": spawn_checks,

@@ -431,7 +431,7 @@ def test_loose_spawn_clusters_are_not_side_evidence(tmp_path):
     # positions spread wider than the cluster radius, and a 2-means split would cross sides.
     # Two more kills connect all ten through kills alone, as the real match's did.
     kills = {k: list(v) for k, v in DEFAULT_KILLS.items()}
-    kills[1] += [(30.0, 0, 6), (31.0, 1, 7)]
+    kills[3] += [(30.0, 0, 6), (31.0, 1, 7)]  # victims still alive in round 3 (P-c: no second deaths)
     match = SyntheticMatch(shape="swiftplay", kills=kills)
     movement = match.movement()
     for row in movement:

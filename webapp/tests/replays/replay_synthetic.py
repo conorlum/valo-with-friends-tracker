@@ -186,7 +186,7 @@ class SyntheticMatch:
         if self.leaver:
             slot, t = self.leaver
             add({"type": "actor_closed", "time_ms": t, "packet_id": 9, "actor_net_guid": self.pawn(1, slot),
-                 "channel": 10 + slot})
+                 "channel": 10 + slot, "reason": "destroyed"})
         rows.extend(self.extra_events)
         return rows
 
