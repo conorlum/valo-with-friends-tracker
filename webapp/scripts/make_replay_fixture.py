@@ -1,11 +1,16 @@
 """Builds a trimmed, identity-free test fixture from a parser export.
 
-    .\\.venv313\\Scripts\\python.exe scripts\\make_replay_fixture.py --export-dir %TEMP%\\valo-replay\\<uuid> --name swiftplay --rounds 2
+    .\\.venv313\\Scripts\\python.exe scripts\\make_replay_fixture.py --export-dir %TEMP%\\valo-replay\\<uuid> --name swiftplay --rounds 2 --vrf <archive .vrf> --movement-step 8
 
 This repository is public, so a fixture is built from an allowlist, never by redaction:
 
-- only the rows and fields the condenser reads (map and character spawns, the player and
-  game state groups, four RPCs, movement), within the first `--rounds` rounds;
+- only the rows and fields the condenser reads (map and character spawns with their
+  spawn points, character closes, each
+  character's `PlayerState` pointer, the player and game state groups, the kill, phase and
+  revive RPCs, movement), within the first `--rounds` rounds. When the export names no map
+  (the first real one didn't), `--vrf` supplies its code as one synthetic map row;
+- `--movement-step N` keeps every Nth movement row per pawn: a full round at the native
+  125 Hz is tens of MB, too much to commit. The fixture's `hz` is lower by that factor;
 - every identity is replaced consistently with a synthetic one: each Subject by
   `00000000-0000-4000-8000-0000000000NN` (in sorted order), the MatchID and the source file
   name by `00000000-0000-4000-8000-00000000f1c5`;
@@ -33,7 +38,7 @@ WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBAPP_ROOT))
 
 from app.replays import contract  # noqa: E402
-from app.replays.condense import PHASE_IN_ROUND, PHASE_ROUND_ENDING, read_game_state  # noqa: E402
+from app.replays.condense import character_code, read_game_state  # noqa: E402
 
 FIXTURES = WEBAPP_ROOT / "tests" / "fixtures" / "replay"
 SYNTHETIC_PREFIX = "00000000-0000-4000-8000-"
@@ -45,7 +50,7 @@ UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-
 USER_PATH = re.compile(r"[A-Za-z]:(?:\\+|/)Users(?:\\+|/)|%USERPROFILE%|/Users/|/home/", re.IGNORECASE)
 RIOT_ID = re.compile(r"[^\s\"'#{}\[\],:]{3,16}#[A-Za-z0-9]{3,5}\b")
 
-KEEP_RPCS = {contract.RPC_KILLED_ENEMY, contract.RPC_SET_PHASE, contract.RPC_END_ROUND, contract.RPC_RESURRECT}
+KEEP_RPCS = {contract.RPC_KILLED_ENEMY, contract.RPC_SET_PHASE, contract.RPC_PHASE_BEGIN, contract.RPC_RESURRECT}
 KEEP_GROUPS = {contract.PLAYER_STATE_PATH, contract.GAME_STATE_PATH}
 PLAYER_FIELDS = {"Subject", "SpawnedCharacter", "PossessedCharacter"}
 GAME_FIELDS = {"MatchID", "Phase", "RoundNumber", "RoundResults"}
@@ -56,7 +61,6 @@ MOVEMENT_FIELDS = ("type", "time_ms", "actor_net_guid", "shooter_character_net_g
 MANIFEST_FIELDS = ("schema_version", "replay_build", "replay_version", "parser_version", "parse_status", "stats",
                    "total_diagnostic_count", "suppressed_diagnostic_count")
 MAP_PATH = re.compile(r"(/Game/Maps/[^/.]+/)")
-CHARACTER_PATH = re.compile(r"(/Game/Characters/[^/.]+/)")
 
 
 class FixtureRefused(Exception):
@@ -94,12 +98,14 @@ def scan_dir(directory: Path, forbidden: set[str] = frozenset()) -> list[str]:
     return hits
 
 
-def _cut_off_ms(export: contract.Export, rounds: int) -> int:
+def _window_ms(export: contract.Export, rounds: int) -> tuple[int, int]:
+    """(where kept movement starts, where every kept row ends)."""
     game = read_game_state(export)
     if len(game.windows) < rounds:
         raise FixtureRefused(f"the export has {len(game.windows)} complete rounds, fewer than {rounds}")
-    # Keep a little past the last kept RoundEnding so its RoundResults update is included.
-    return game.windows[rounds - 1][1] + 2000
+    # Movement from just before the first round (the buy phase before it is dead weight);
+    # everything up to a little past the last kept RoundEnding, so its RoundResults update is included.
+    return game.windows[0][0] - 3000, game.windows[rounds - 1][1] + 2000
 
 
 def _synthesise_payload(payload: dict, allowed: set[str], subjects: dict[str, str]) -> dict:
@@ -118,8 +124,10 @@ def _synthesise_payload(payload: dict, allowed: set[str], subjects: dict[str, st
     return out
 
 
-def build_fixture(export: contract.Export, rounds: int) -> tuple[dict, list[dict], list[dict]]:
-    cut = _cut_off_ms(export, rounds)
+def build_fixture(export: contract.Export, rounds: int, map_code: str | None = None,
+                  movement_step: int = 1) -> tuple[dict, list[dict], list[dict]]:
+    movement_from, cut = _window_ms(export, rounds)
+    pawns = {int(row.data["actor_net_guid"]) for row in export.of_type("actor_spawned") if character_code(row.data)}
     states = contract.fold_export_groups(export.export_groups(contract.PLAYER_STATE_PATH))
     originals = sorted({str(s.values["Subject"]).lower() for s in states.values() if s.values.get("Subject")})
     subjects = {subject: synthetic_subject(i) for i, subject in enumerate(originals)}
@@ -134,13 +142,20 @@ def build_fixture(export: contract.Export, rounds: int) -> tuple[dict, list[dict
         base = {"type": kind, "time_ms": row.time_ms, "actor_net_guid": data.get("actor_net_guid")}
         if kind == "actor_spawned":
             paths = [data.get("actor_path") or "", data.get("archetype_path") or ""]
-            character = next((m.group(1) for p in paths if (m := CHARACTER_PATH.search(p))), None)
+            code = character_code(data)
             game_map = next((m.group(1) for p in paths if (m := MAP_PATH.search(p))), None)
-            if character:
-                events.append({**base, "actor_path": None, "archetype_path": character + "Character"})
+            if code:
+                events.append({**base, "actor_path": None, "archetype_path": f"Default__{code}_PC_C",
+                               "location": data.get("location")})
             elif game_map and not map_kept:
                 events.append({**base, "actor_path": game_map + "Level", "archetype_path": None})
                 map_kept = True
+        elif kind == "actor_closed" and data.get("actor_net_guid") in pawns:
+            events.append(base)
+        elif (kind == "export_group_received" and data.get("actor_net_guid") in pawns
+              and (data.get("payload") or {}).get(contract.CHARACTER_PLAYER_STATE)):
+            events.append({**base, "export_group_path": "Character",
+                           "payload": {contract.CHARACTER_PLAYER_STATE: data["payload"][contract.CHARACTER_PLAYER_STATE]}})
         elif kind == "export_group_received" and data.get("export_group_path") in KEEP_GROUPS:
             allowed = PLAYER_FIELDS if data["export_group_path"] == contract.PLAYER_STATE_PATH else GAME_FIELDS
             payload = _synthesise_payload(data.get("payload") or {}, allowed, subjects)
@@ -150,7 +165,18 @@ def build_fixture(export: contract.Export, rounds: int) -> tuple[dict, list[dict
             payload = {k: v for k, v in (data.get("payload") or {}).items() if k in RPC_FIELDS}
             events.append({**base, "function_name": data["function_name"], "payload": payload})
 
-    movement = [{k: row.data.get(k) for k in MOVEMENT_FIELDS} for row in export.movement if row.time_ms <= cut]
+    if not map_kept and map_code:
+        events.insert(0, {"type": "actor_spawned", "time_ms": 0, "actor_net_guid": 0,
+                          "actor_path": f"/Game/Maps/{map_code}/Level", "archetype_path": None})
+    seen: dict[object, int] = {}
+    movement = []
+    for row in export.movement:
+        pawn = row.data.get("shooter_character_net_guid")
+        if not movement_from <= row.time_ms <= cut or pawn not in pawns:
+            continue
+        seen[pawn] = seen.get(pawn, -1) + 1
+        if seen[pawn] % movement_step == 0:
+            movement.append({k: row.data.get(k) for k in MOVEMENT_FIELDS})
     manifest = {k: export.manifest.get(k) for k in MANIFEST_FIELDS}
     manifest.update({
         "source_file": f"{SYNTHETIC_MATCH}.vrf",
@@ -170,10 +196,15 @@ def write_fixture(out: Path, manifest: dict, events: list[dict], movement: list[
                 handle.write(json.dumps(row, separators=(",", ":")) + "\n")
 
 
-def make_fixture(export_dir: Path, out: Path, rounds: int) -> list[str]:
+def make_fixture(export_dir: Path, out: Path, rounds: int, vrf: Path | None = None,
+                 movement_step: int = 1) -> list[str]:
     export = contract.load_export(export_dir)
     forbidden = original_identities(export)
-    manifest, events, movement = build_fixture(export, rounds)
+    map_code = None
+    if vrf is not None:
+        codes = contract.map_codes_in_file(vrf)
+        map_code = max(codes, key=codes.get) if codes else None
+    manifest, events, movement = build_fixture(export, rounds, map_code, movement_step)
     if out.exists():
         raise FixtureRefused(f"{out} exists; remove it first")
     write_fixture(out, manifest, events, movement)
@@ -189,11 +220,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--export-dir", type=Path, required=True)
     parser.add_argument("--name", required=True, help="fixture folder name, e.g. swiftplay")
     parser.add_argument("--rounds", type=int, default=2)
+    parser.add_argument("--vrf", type=Path, help="the exported .vrf, for the map when the export names none")
+    parser.add_argument("--movement-step", type=int, default=1, help="keep every Nth movement row per pawn")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args(argv)
     out = args.out or FIXTURES / args.name
     try:
-        for line in make_fixture(args.export_dir, out, args.rounds):
+        for line in make_fixture(args.export_dir, out, args.rounds, args.vrf, args.movement_step):
             print(line)
     except (FixtureRefused, contract.ContractError) as refused:
         print(f"REFUSED: {refused}", file=sys.stderr)

@@ -76,7 +76,7 @@ def test_preview_reports_a_failing_check_and_still_writes_the_page(export, capsy
     code = ingest_replay.main(["--export-dir", str(directory), "--preview", "--out", str(out)])
     printed = capsys.readouterr().out
     assert code == 1
-    assert "FAIL  all 10 players have tracks in every round" in printed
+    assert "FAIL  every present player has a track in every round" in printed
     assert (out / "preview.html").exists()
 
 
@@ -86,7 +86,7 @@ def test_preview_takes_a_map_when_actor_paths_do_not_name_it(export, capsys):
     out = export["tmp"] / "preview"
     assert ingest_replay.main(["--export-dir", str(directory), "--preview", "--out", str(out)]) == 3
     assert ingest_replay.main(["--export-dir", str(directory), "--preview", "--map", "Ascent", "--out", str(out)]) == 1
-    assert "FAIL  map discovered from actor paths" in capsys.readouterr().out
+    assert "FAIL  map discovered from the export or the .vrf" in capsys.readouterr().out
 
 
 def test_map_is_for_preview_only(export):

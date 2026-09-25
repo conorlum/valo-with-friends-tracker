@@ -1,8 +1,14 @@
 """A synthetic parser export (schema 8) for the replay tests.
 
 Every identity here is synthetic: Subjects are `00000000-0000-4000-8000-0000000000NN`, the
-match is `00000000-0000-4000-8000-00000000abcd`. Row shapes follow the parser source
-(upstream `2b66c65`), not a real export: see contract.py's PROVISIONAL(D4).
+match is `00000000-0000-4000-8000-00000000abcd`. Two row shapes:
+
+- `shape="legacy"`: what the parser source (upstream `2b66c65`) suggested: BombPlayerState
+  with Subjects, BombGameState with Phase/MatchID/RoundResults, a pawn per round;
+- `shape="swiftplay"`: what the first real export (Swiftplay, 13.06) had: one pawn per player
+  for the whole match, found by its `Default__<Code>_PC_C` archetype and pointing at an
+  undecoded player state through `PlayerState`; phases as `ClientGamePhaseBegin` RPCs; no
+  Subjects, MatchID, RoundResults or map path in the export (the map is in the `.vrf`).
 
 Two teams of five spawn in two clusters on Ascent, walk toward mid at `hz` samples per
 second, and kill each other on a fixed script. Tests edit `SyntheticMatch` fields or the
@@ -58,12 +64,23 @@ class SyntheticMatch:
     drop_final_round_end: bool = False
     extra_events: list[dict] = field(default_factory=list)
     vrf_bytes: bytes = b"synthetic replay bytes"
+    shape: str = "legacy"
+    leaver: tuple[int, int] | None = None   # (slot, ms): that player's pawn closes then (swiftplay shape)
+
+    def __post_init__(self):
+        if self.shape == "swiftplay" and self.vrf_bytes == b"synthetic replay bytes":
+            self.vrf_bytes = f"header /Game/Maps/{self.map_code}/{self.map_code} tail".encode("ascii")
 
     def round_start(self, n: int) -> int:
         return 60_000 + (n - 1) * (BUY_MS + ROUND_MS + GAP_MS) + BUY_MS
 
     def pawn(self, n: int, slot: int) -> int:
+        if self.shape == "swiftplay":
+            return 1000 + slot
         return 1000 + n * 20 + slot
+
+    def gone_ms(self, slot: int) -> int | None:
+        return self.leaver[1] if self.leaver and self.leaver[0] == slot else None
 
     def spawn_position(self, n: int, slot: int) -> tuple[float, float]:
         # Teams swap sides after half (round 3 here stands in for the second half).
@@ -73,6 +90,8 @@ class SyntheticMatch:
         return cx + 300 * math.cos(angle), cy + 300 * math.sin(angle)
 
     def events(self) -> list[dict]:
+        if self.shape == "swiftplay":
+            return self._swiftplay_events()
         rows: list[dict] = []
         add = rows.append
         add({"type": "actor_spawned", "time_ms": 0, "packet_id": 1, "actor_net_guid": 5, "channel": 1,
@@ -94,7 +113,8 @@ class SyntheticMatch:
                 pawn = self.pawn(n, slot)
                 add({"type": "actor_spawned", "time_ms": buy + 10, "packet_id": 4, "actor_net_guid": pawn,
                      "channel": 10 + slot, "is_dynamic": True, "actor_path": None,
-                     "archetype_path": f"/Game/Characters/{self.agent_codes[slot]}/{self.agent_codes[slot]}_PC.Default__{self.agent_codes[slot]}_PC_C"})
+                     "archetype_path": f"/Game/Characters/{self.agent_codes[slot]}/{self.agent_codes[slot]}_PC.Default__{self.agent_codes[slot]}_PC_C",
+                     "location": dict(zip("xyz", (*self.spawn_position(n, slot), 100.0)))})
                 add({"type": "export_group_received", "time_ms": buy + 20, "packet_id": 5,
                      "actor_net_guid": 100 + slot, "object_net_guid": 100 + slot, "channel": 3,
                      "export_group_path": "/Game/GameModes/Bomb/BombPlayerState.BombPlayerState_C",
@@ -122,6 +142,48 @@ class SyntheticMatch:
         rows.extend(self.extra_events)
         return rows
 
+    def _swiftplay_events(self) -> list[dict]:
+        rows: list[dict] = []
+        add = rows.append
+
+        def phase(t: int, new: int) -> None:
+            add({"type": "rpc_received", "time_ms": t, "packet_id": 6, "actor_net_guid": 2, "object_net_guid": 2,
+                 "channel": 1, "function_name": "ClientGamePhaseBegin", "payload": {"NewPhase": new}})
+
+        for slot in range(10):
+            code = self.agent_codes[slot]
+            add({"type": "actor_spawned", "time_ms": 73, "packet_id": 4, "actor_net_guid": self.pawn(1, slot),
+                 "channel": 10 + slot, "is_dynamic": True, "actor_path": None,
+                 "archetype_path": f"Default__{code}_PC_C",
+                 "location": dict(zip("xyz", (*self.spawn_position(1, slot), 100.0)))})
+            add({"type": "export_group_received", "time_ms": 80, "packet_id": 5, "actor_net_guid": self.pawn(1, slot),
+                 "object_net_guid": self.pawn(1, slot), "channel": 10 + slot,
+                 "export_group_path": f"/Game/Characters/{code}/{code}_PC.{code}_PC_C",
+                 "payload": {"PlayerState": 200 + slot, "Controller": 300 + slot, "IsPlayerCharacter": True}})
+        # Clove's post-death form: a character archetype that isn't a player.
+        add({"type": "actor_spawned", "time_ms": 90, "packet_id": 4, "actor_net_guid": 4242, "channel": 60,
+             "is_dynamic": True, "actor_path": None, "archetype_path": "Default__Smonk_PostDeath_PC_C"})
+        for n in range(1, self.rounds + 1):
+            start = self.round_start(n)
+            phase(start - BUY_MS, 3)
+            phase(start, 4)
+            for t, killer, victim in self.kills.get(n, []):
+                at = start + int(round(t * 1000))
+                add({"type": "rpc_received", "time_ms": at, "packet_id": 7, "actor_net_guid": self.pawn(n, killer),
+                     "object_net_guid": self.pawn(n, killer), "channel": 10 + killer,
+                     "function_name": "MulticastNotifyKilledEnemy",
+                     "payload": {"KillerCharacter": self.pawn(n, killer), "KilledCharacter": self.pawn(n, victim),
+                                 "MultikillLevel": 1}})
+            if n == self.rounds and self.drop_final_round_end:
+                continue
+            phase(start + ROUND_MS, 5)
+        if self.leaver:
+            slot, t = self.leaver
+            add({"type": "actor_closed", "time_ms": t, "packet_id": 9, "actor_net_guid": self.pawn(1, slot),
+                 "channel": 10 + slot})
+        rows.extend(self.extra_events)
+        return rows
+
     def _phase_state(self, t: int, phase: int, round_number: int) -> dict:
         return {"type": "export_group_received", "time_ms": t, "packet_id": 9, "actor_net_guid": 50,
                 "object_net_guid": 50, "channel": 2,
@@ -141,6 +203,9 @@ class SyntheticMatch:
                 x0, y0 = self.spawn_position(n, slot)
                 dead = self.death_ms(n, slot)
                 stop = dead if dead is not None else start + ROUND_MS
+                gone = self.gone_ms(slot)
+                if gone is not None:
+                    stop = min(stop, gone)
                 k = 0
                 while True:
                     t = start - 2000 + int(round(k * step))
@@ -180,6 +245,11 @@ class SyntheticMatch:
                 for row in rows:
                     handle.write(json.dumps(row) + "\n")
         return directory
+
+    def write_vrf(self, path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self.vrf_bytes)
+        return path
 
     @property
     def source_sha256(self) -> str:

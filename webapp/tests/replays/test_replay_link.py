@@ -307,3 +307,46 @@ def test_a_subject_already_on_the_same_player_is_not_backfilled_again(condensed)
     result = lk.link(view(condensed), [db_match(subjects={4: subject(4)})], {subject(4): 904})
     assert result.status == "linked"
     assert (904, subject(4)) not in result.backfills and len(result.backfills) == 9
+
+
+# ------------------------------------------------------------ the first real export's shape (Swiftplay)
+
+
+@pytest.fixture(scope="module")
+def swiftplay(tmp_path_factory):
+    """No Subjects and no decoded winners: identity and rounds rest on agents, sides and kills."""
+    match = SyntheticMatch(rounds=4, kills=copy.deepcopy(LINK_KILLS), shape="swiftplay")
+    root = tmp_path_factory.mktemp("swiftplay")
+    directory = match.write(root / "export")
+    return condense_export_dir(directory, source_sha256=match.source_sha256,
+                               vrf_path=match.write_vrf(root / f"{MATCH_UUID}.vrf"))
+
+
+def test_a_replay_without_subjects_or_winners_links_on_kills(swiftplay):
+    assert all(p["subject"] is None for p in swiftplay.players)
+    assert swiftplay.link_inputs["round_results"] == {}
+    result = lk.link(view(swiftplay), [db_match()], {})
+    assert result.status == "linked", result.report
+    assert result.slot_to_match_player == {s: mp(s) for s in range(10)}
+    assert result.backfills == []
+    assert result.report["winners_checked"] is False
+
+
+def test_without_subjects_an_anchored_db_player_does_not_block_the_link(swiftplay):
+    result = lk.link(view(swiftplay), [db_match(subjects={4: subject(4)})], {subject(4): 904})
+    assert result.status == "linked", result.report
+
+
+def test_without_winners_a_changed_kill_still_refuses(swiftplay):
+    kills = copy.deepcopy(LINK_KILLS)
+    kills[2][0] = (8.0, 6, 0)
+    assert lk.link(view(swiftplay), [db_match(kills=kills)], {}).report["check"] == "assignment"
+
+
+def test_a_replay_self_kill_pairs_with_nothing(swiftplay):
+    # Clove's ult running out: the replay reports her killing herself; the DB excludes self-kills.
+    replay = view(swiftplay)
+    replay.link_inputs["kills"]["2"].append([35.0, 3, 3])
+    result = lk.link(replay, [db_match(extra_kills=[lk.DbKill(99, 2, 35.0 + OFFSET, mp(3), mp(3))])], {})
+    assert result.status == "linked", result.report
+    assert result.kill_map["2"][-1] is None

@@ -9,8 +9,9 @@ the export, and this reads it.
 
 - `--preview` condenses (showing, not refusing, blocking diagnostics), writes a
   self-contained page to `%TEMP%\\valo-replay\\<match uuid>\\preview.html`, and runs the
-  scripted checks (tracks for all 10 players in every round, coverage and gaps, spawn
+  scripted checks (tracks for every player present in each round, coverage and gaps, spawn
   clusters, map discovery, size budget, diagnostics, blob round trip). Exit 1 if any fail.
+  The map comes from the export's actor paths, else from the `.vrf` itself, else `--map`.
   The page is local only; open it in a browser to look at the tracks once.
 - `--dry-run` condenses strictly (the `.vrf`'s hash and the parser's BUILD.json must
   match), loads the matching `matches` rows read-only and runs the linker, and prints its
@@ -67,17 +68,26 @@ def preview_checks(replay: CondensedReplay) -> list[tuple[str, bool, str]]:
     report = replay.report
     checks = []
     known = report["map"]["known"]
-    checks.append(("map discovered from actor paths", len(known) == 1, f"known codes {known}"))
-    missing = {n: sorted(set(map(str, range(10))) - set(blob["tracks"])) for n, blob in replay.rounds.items()}
+    checks.append(("map discovered from the export or the .vrf", len(known) == 1,
+                   f"{report['map']['source']}: known codes {known}"))
+    # A player who left (no pawn left in the round) has no alive interval and needs no track.
+    missing = {n: sorted((s for s, iv in blob["alive"].items() if iv and s not in blob["tracks"]), key=int)
+               for n, blob in replay.rounds.items()}
     missing = {n: slots for n, slots in missing.items() if slots}
-    checks.append(("all 10 players have tracks in every round", not missing, f"missing {missing}" if missing else ""))
+    left = report["players"]["left"]
+    checks.append(("every present player has a track in every round", not missing,
+                   f"missing {missing}" if missing else (f"left mid-match: slots {sorted(left, key=int)}" if left else "")))
     low = {s: c["min"] for s, c in report["coverage"].items() if c["min"] < MIN_ALIVE_COVERAGE}
     checks.append((f"alive-time coverage >= {MIN_ALIVE_COVERAGE:.0%} per player", not low, f"low {low}" if low else ""))
     gaps = {s: c["max_gap_s"] for s, c in report["coverage"].items() if c["max_gap_s"] > MAX_TRACK_GAP_S}
     checks.append((f"no track gap > {MAX_TRACK_GAP_S:g} s", not gaps, f"gaps {gaps}" if gaps else ""))
-    bad_spawns = {n: c for n, c in report["spawn_checks"].items() if not c["ok"]}
-    checks.append(("two 5/5 spawn clusters at every round start", not bad_spawns,
-                   f"failing rounds {sorted(bad_spawns)}" if bad_spawns else ""))
+    # Round-start positions proved loose in the first real export (one side roamed through the
+    # buy phase), so the gate is the match-start spawn lines; per-round clusters are reported.
+    spawn = report["match_spawn_check"]
+    loose = sorted((n for n, c in report["spawn_checks"].items() if not c["ok"]), key=int)
+    checks.append(("two 5/5 spawn lines at match start", spawn["ok"],
+                   f"sizes {spawn['sizes']}, radius {spawn['max_radius']}"
+                   + (f"; loose round-start clusters in rounds {loose}" if loose else "")))
     sizes = report["sizes"]
     checks.append(("size budget (p95 per round, total per match)", sizes["fits_budget"],
                    f"p95 {sizes['p95_bytes']} B, total {sizes['total_bytes']} B"))
@@ -267,14 +277,16 @@ def _db_loader():
 # ---------------------------------------------------------------- main
 
 
-def _source_hash(args, manifest: dict, strict: bool) -> str | None:
+def _source(args, manifest: dict, strict: bool) -> tuple[str | None, Path | None]:
+    """(the .vrf's hash, its path), or (None, None) for a preview without the file."""
     vrf = args.vrf or default_archive() / str(manifest.get("source_file") or "")
     if vrf.is_file():
-        return sha256_file(vrf)
+        return sha256_file(vrf), vrf
     if strict:
         raise SystemExit(f"REFUSED: the exported .vrf is not at {vrf}; pass --vrf")
-    print(f"WARNING: no .vrf at {vrf}; the source hash is NOT checked (preview only)")
-    return None
+    print(f"WARNING: no .vrf at {vrf}; the source hash is NOT checked and the map can't be read "
+          f"from it (preview only)")
+    return None, None
 
 
 def _build(args, strict: bool) -> dict | None:
@@ -293,7 +305,7 @@ def main(argv: list[str] | None = None, loader_factory=_db_loader) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--preview", action="store_true")
     mode.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--map", help="the map, when actor paths don't name it (preview only)")
+    parser.add_argument("--map", help="the map, when neither the export nor the .vrf names it (preview only)")
     parser.add_argument("--vrf", type=Path, help="the exported .vrf (default: the archive's copy)")
     parser.add_argument("--parser-dir", type=Path, help="the parser build (default $REPLAY_PARSER_DIR)")
     parser.add_argument("--out", type=Path, help="preview folder (default %%TEMP%%\\valo-replay\\<match uuid>)")
@@ -305,9 +317,10 @@ def main(argv: list[str] | None = None, loader_factory=_db_loader) -> int:
 
     manifest = load_export(args.export_dir).manifest
     strict = args.dry_run
+    source_sha256, vrf_path = _source(args, manifest, strict)
     try:
-        replay = condense_export_dir(args.export_dir, source_sha256=_source_hash(args, manifest, strict),
-                                     build=_build(args, strict), map_override=args.map, allow_blocking=args.preview)
+        replay = condense_export_dir(args.export_dir, source_sha256=source_sha256, build=_build(args, strict),
+                                     map_override=args.map, allow_blocking=args.preview, vrf_path=vrf_path)
     except ContractError as refused:
         print(f"REFUSED: {refused}", file=sys.stderr)
         return 3

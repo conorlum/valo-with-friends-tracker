@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from replay_synthetic import AGENT_NAMES, MATCH_UUID, SyntheticMatch, subject  # noqa: E402
+from replay_synthetic import AGENT_NAMES, DEFAULT_KILLS, MATCH_UUID, SyntheticMatch, subject  # noqa: E402
 
 from app.replays import condense as cd  # noqa: E402
 from app.replays import format as fmt  # noqa: E402
@@ -140,9 +140,29 @@ def test_the_map_comes_from_actor_paths_or_an_override(tmp_path):
         run(tmp_path / "c", SyntheticMatch(), map_override="Bind")
 
 
-def test_nine_subjects_refuse(tmp_path):
+def test_a_player_state_without_a_subject_is_still_a_player(tmp_path):
     match = SyntheticMatch()
     events = [e for e in match.events() if not (e.get("actor_net_guid") == 109 and "Subject" in e.get("payload", {}))]
+    out = run(tmp_path, match, events=events)
+    assert [p["subject"] for p in out.players] == [subject(i) for i in range(9)] + [None]
+    assert out.report["players"]["subjects_decoded"] == 9
+
+
+def test_nine_players_refuse(tmp_path):
+    match = SyntheticMatch()
+    pawns_of_9 = {match.pawn(n, 9) for n in range(1, match.rounds + 1)}
+    events = [e for e in match.events() if not (e["type"] == "actor_spawned" and e["actor_net_guid"] in pawns_of_9)]
+    with pytest.raises(ContractError) as refused:
+        run(tmp_path, match, events=events)
+    assert refused.value.reason == "players"
+
+
+def test_two_players_sharing_a_subject_refuse(tmp_path):
+    match = SyntheticMatch()
+    events = match.events()
+    for e in events:
+        if e.get("actor_net_guid") == 109 and "Subject" in e.get("payload", {}):
+            e["payload"]["Subject"] = subject(0)
     with pytest.raises(ContractError) as refused:
         run(tmp_path, match, events=events)
     assert refused.value.reason == "subjects"
@@ -334,3 +354,127 @@ def test_blocking_diagnostics_refuse_unless_allowed(tmp_path):
     assert refused.value.reason == "blocking_diagnostics"
     out = run(tmp_path / "b", match, allow_blocking=True)
     assert out.report["diagnostics"]["blocking"]
+
+
+# ------------------------------------------------------------ the first real export's shape (Swiftplay)
+
+
+def run_swiftplay(tmp_path, match=None, with_vrf=True, **kwargs):
+    match = match or SyntheticMatch(shape="swiftplay")
+    directory = match.write(tmp_path / "export")
+    vrf = match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf") if with_vrf else None
+    return cd.condense_export_dir(directory, source_sha256=match.source_sha256, vrf_path=vrf, **kwargs)
+
+
+def test_swiftplay_shape_condenses(tmp_path):
+    out = run_swiftplay(tmp_path)
+    assert out.match_uuid == MATCH_UUID and out.report["match_uuid_source"] == "vrf_file_name"
+    assert out.map_name == "Ascent" and out.report["map"]["source"] == "vrf"
+    assert out.round_count == 3 and out.hz == 16
+    assert [p["agent"] for p in out.players] == AGENT_NAMES, "Clove's post-death pawn is not a player"
+    assert [p["subject"] for p in out.players] == [None] * 10
+    assert [p["side_group"] for p in out.players] == ["A"] * 5 + ["B"] * 5
+    assert out.link_inputs["round_results"] == {}
+    for blob in out.rounds.values():
+        assert sorted(blob["tracks"], key=int) == [str(s) for s in range(10)]
+
+
+def test_swiftplay_shape_matches_the_legacy_shape_blob_for_blob(tmp_path):
+    legacy = run(tmp_path / "legacy")
+    swift = run_swiftplay(tmp_path / "swift")
+    assert swift.rounds == legacy.rounds
+
+
+def test_swiftplay_shape_without_the_vrf_needs_a_map(tmp_path):
+    with pytest.raises(ContractError) as refused:
+        run_swiftplay(tmp_path / "a", with_vrf=False)
+    assert refused.value.reason == "map"
+    out = run_swiftplay(tmp_path / "b", with_vrf=False, map_override="Ascent")
+    assert out.report["map"]["source"] == "override"
+
+
+def test_a_vrf_not_named_by_a_match_uuid_refuses(tmp_path):
+    match = SyntheticMatch(shape="swiftplay", manifest_extra={"source_file": "my-replay.vrf"})
+    with pytest.raises(ContractError) as refused:
+        run_swiftplay(tmp_path, match)
+    assert refused.value.reason == "match_id"
+
+
+QUIET_ROUND_3 = {**{k: list(v) for k, v in DEFAULT_KILLS.items() if k != 3}, 3: [(20.0, 4, 8)]}
+
+
+@pytest.mark.parametrize("leave_s, alive", [(-5.0, []), (3.0, [[0.0, 3.0, "left"]])])
+def test_a_player_who_leaves(tmp_path, leave_s, alive):
+    probe = SyntheticMatch(shape="swiftplay")
+    match = SyntheticMatch(shape="swiftplay", kills={k: list(v) for k, v in QUIET_ROUND_3.items()},
+                           leaver=(9, probe.round_start(3) + int(leave_s * 1000)))
+    out = run_swiftplay(tmp_path, match)
+    blob = out.rounds[3]
+    assert blob["alive"]["9"] == alive
+    assert ("9" in blob["tracks"]) == bool(alive)
+    assert out.report["players"]["left"] == {"9": round((probe.round_start(3) + leave_s * 1000) / 1000, 3)}
+    assert out.report["spawn_checks"]["3"]["short_handed"] == (not alive)
+    assert out.rounds[2]["alive"]["9"][0][2] in ("kill", "round_end"), "earlier rounds are untouched"
+
+
+def test_a_self_kill_ends_the_life_but_is_no_side_evidence(tmp_path):
+    kills = {k: list(v) for k, v in DEFAULT_KILLS.items()}
+    kills[1].append((35.0, 3, 3))
+    out = run_swiftplay(tmp_path, SyntheticMatch(shape="swiftplay", kills=kills))
+    assert out.rounds[1]["alive"]["3"] == [[0.0, 35.0, "kill"]]
+    assert [p["side_group"] for p in out.players] == ["A"] * 5 + ["B"] * 5
+
+
+def test_loose_spawn_clusters_are_not_side_evidence(tmp_path):
+    # One side roams during the buy phase (as in the first real export): its round-start
+    # positions spread wider than the cluster radius, and a 2-means split would cross sides.
+    # Two more kills connect all ten through kills alone, as the real match's did.
+    kills = {k: list(v) for k, v in DEFAULT_KILLS.items()}
+    kills[1] += [(30.0, 0, 6), (31.0, 1, 7)]
+    match = SyntheticMatch(shape="swiftplay", kills=kills)
+    movement = match.movement()
+    for row in movement:
+        slot = row["shooter_character_net_guid"] - 1000
+        if slot >= 5 and slot % 2:
+            row["position"]["x"] -= 7000.0
+    directory = match.write(tmp_path / "export", movement=movement)
+    out = cd.condense_export_dir(directory, source_sha256=match.source_sha256,
+                                 vrf_path=match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf"))
+    assert [p["side_group"] for p in out.players] == ["A"] * 5 + ["B"] * 5
+    assert not any(c["ok"] for c in out.report["spawn_checks"].values())
+
+
+def test_match_start_spawn_points_carry_the_sides_when_kills_alone_do_not(tmp_path):
+    # One round of kills leaves the players in several groups; the pawns' tight spawn lines join them.
+    kills = {1: [(10.0, 0, 5), (12.0, 1, 6), (15.0, 2, 7)]}
+    match = SyntheticMatch(shape="swiftplay", rounds=1, kills=kills)
+    movement = match.movement()
+    for row in movement:  # and the round-start positions are loose, as in the real export
+        if (row["shooter_character_net_guid"] - 1000) % 2:
+            row["position"]["x"] -= 7000.0
+    directory = match.write(tmp_path / "export", movement=movement)
+    out = cd.condense_export_dir(directory, source_sha256=match.source_sha256,
+                                 vrf_path=match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf"))
+    assert out.report["match_spawn_check"]["ok"]
+    assert [p["side_group"] for p in out.players] == ["A"] * 5 + ["B"] * 5
+
+
+# ------------------------------------------------------------ the committed real fixture
+
+
+REAL_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "replay" / "swiftplay"
+
+
+@pytest.mark.skipif(not REAL_FIXTURE.exists(), reason="no Swiftplay fixture")
+def test_the_real_swiftplay_fixture_condenses():
+    # Round 1 of a real Swiftplay match on Abyss (13.06), movement thinned to every 8th row.
+    out = cd.condense_export_dir(REAL_FIXTURE, source_sha256=None)
+    assert out.map_name == "Abyss" and out.round_count == 1 and out.hz == 16
+    assert [p["agent"] for p in out.players] == ["Viper", "Jett", "KAY/O", "Chamber", "Clove",
+                                                 "Fade", "Reyna", "Veto", "Jett", "Clove"]
+    assert [p["subject"] for p in out.players] == [None] * 10
+    assert [p["side_group"] for p in out.players] == ["A", "B", "B", "B", "A", "B", "A", "A", "A", "B"]
+    assert out.report["match_spawn_check"]["ok"]
+    assert out.report["kills"] == 8 and out.report["kills_outside_rounds"] == 0
+    assert sorted(out.rounds[1]["tracks"], key=int) == [str(s) for s in range(10)]
+    assert all(c["min"] >= cd.MIN_ALIVE_COVERAGE for c in out.report["coverage"].values())

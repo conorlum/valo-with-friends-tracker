@@ -10,32 +10,46 @@ An export directory holds `manifest.json`, `events.ndjson` and `movement.ndjson`
   order;
 - folds partial export-group updates per actor, in stream order.
 
-Field names and paths below were read from the parser's source (upstream `2b66c65`),
-not yet from a real export: they are PROVISIONAL(D4) until Stage 1a confirms them.
+Field names and paths below were first read from the parser's source (upstream `2b66c65`)
+and then checked against the first real export (a Swiftplay match on 13.06, 2026-09-25).
+What that export showed:
+
+- players are character pawns (`actor_spawned`, archetype `Default__<Code>_PC_C`), each
+  pointing at its player state through the character's `PlayerState` property. The mode's
+  player state (`Swiftplay_EoRCredits_PlayerState_C`) and game state aren't decoded, so
+  there are no Subjects, no `RoundResults` and no `MatchID` in that export. The legacy
+  `BombPlayerState`/`BombGameState` shapes are still read when a replay has them;
+- phases arrive as `ClientGamePhaseBegin` RPCs on the recording's own controller;
+- the map is not named anywhere in the export, only in the `.vrf` (`map_codes_in_file`).
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
 PIN_FILE = Path(__file__).resolve().parents[2] / "replay_parser.json"
 
-# PROVISIONAL(D4): names read from the parser source, confirmed by the first export.
+# Legacy shapes from the parser source; the first real export had neither (see above).
 PLAYER_STATE_PATH = "/Game/GameModes/Bomb/BombPlayerState.BombPlayerState_C"
 GAME_STATE_PATH = "/Game/GameModes/Bomb/BombGameState.BombGameState_C"
+# Confirmed by the first real export.
 RPC_KILLED_ENEMY = "MulticastNotifyKilledEnemy"
+RPC_PHASE_BEGIN = "ClientGamePhaseBegin"
+CHARACTER_PLAYER_STATE = "PlayerState"
+# Not seen in the first export (no revive happened); the name is from the parser source.
 RPC_SET_PHASE = "MulticastSetPhase"
-RPC_END_ROUND = "MulticastEndRound"
 RPC_RESURRECT = "MulticastReceivePlayerResurrectEvent"
 
-# PROVISIONAL(D6): diagnostic thresholds, frozen at Stage 1a/1b. Zero is the strictest
-# choice; the first real export shows the counts a good parse produces.
+# PROVISIONAL(D6): a malformed packet blocks. Partial-bunch errors don't: they drop data on
+# one channel, and the condenser's per-player coverage and gap checks measure what that
+# costs a track. The first export had 76, across the recorder's controller and object
+# channels, with every player's track intact.
 MAX_MALFORMED_PACKETS = 0
-MAX_PARTIAL_ERRORS = 0
 
 KNOWN_DIAGNOSTIC_CODES = frozenset({"partial_sequence_error", "incomplete_partial_bunch", "raw_payload_fallback"})
 GOOD_PARSE_STATUSES = frozenset({"completed", "completed_with_warnings"})
@@ -114,10 +128,12 @@ class DiagnosticReport:
     link_blocking: list[str] = field(default_factory=list)
     coverage: list[str] = field(default_factory=list)
     ignored: dict[str, int] = field(default_factory=dict)
+    channels: dict[int | None, int] = field(default_factory=dict)  # partial-bunch errors per channel
 
     def as_dict(self) -> dict:
         return {"blocking": self.blocking, "link_blocking": self.link_blocking,
-                "coverage": self.coverage, "ignored": dict(sorted(self.ignored.items()))}
+                "coverage": self.coverage, "ignored": dict(sorted(self.ignored.items())),
+                "partial_error_channels": {str(k): n for k, n in sorted(self.channels.items(), key=lambda kv: str(kv[0]))}}
 
 
 def classify_diagnostics(manifest: dict) -> DiagnosticReport:
@@ -128,8 +144,6 @@ def classify_diagnostics(manifest: dict) -> DiagnosticReport:
     stats = manifest.get("stats") or {}
     if stats.get("malformed_packet_count", 0) > MAX_MALFORMED_PACKETS:
         report.blocking.append(f"malformed_packet_count {stats['malformed_packet_count']} > {MAX_MALFORMED_PACKETS}")
-    if stats.get("partial_error_count", 0) > MAX_PARTIAL_ERRORS:
-        report.blocking.append(f"partial_error_count {stats['partial_error_count']} > {MAX_PARTIAL_ERRORS}")
     if manifest.get("suppressed_diagnostic_count", 0):
         # Suppressed diagnostics can't be classified, so they can't be ruled harmless.
         report.blocking.append(f"{manifest['suppressed_diagnostic_count']} suppressed diagnostics")
@@ -145,9 +159,32 @@ def classify_diagnostics(manifest: dict) -> DiagnosticReport:
         elif code == "raw_payload_fallback" and group == GAME_STATE_PATH and name == "RoundResults":
             # A replay with no DB match can still play; it just can't link.
             report.link_blocking.append(where)
+        elif code in ("partial_sequence_error", "incomplete_partial_bunch"):
+            report.ignored[code] = report.ignored.get(code, 0) + 1
+            channel = diagnostic.get("channel_index")
+            report.channels[channel] = report.channels.get(channel, 0) + 1
         else:
             report.ignored[code] = report.ignored.get(code, 0) + 1
+    if report.channels:
+        report.coverage.append(f"{sum(report.channels.values())} partial-bunch errors on "
+                               f"{len(report.channels)} channels (see the coverage checks)")
     return report
+
+
+MAP_IN_FILE = re.compile(rb"/Game/Maps/([A-Za-z0-9_]+)/\1\b")
+
+
+def map_codes_in_file(path: Path) -> dict[str, int]:
+    """Map code -> hits of `/Game/Maps/<code>/<code>` in the `.vrf`'s bytes.
+
+    The export doesn't name the map; the replay's header and level references do.
+    """
+    counts: dict[str, int] = {}
+    with path.open("rb") as handle:
+        for code in MAP_IN_FILE.findall(handle.read()):
+            name = code.decode("ascii")
+            counts[name] = counts.get(name, 0) + 1
+    return counts
 
 
 @dataclass(frozen=True)

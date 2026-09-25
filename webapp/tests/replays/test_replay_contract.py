@@ -81,7 +81,6 @@ def test_diagnostic_classes():
 @pytest.mark.parametrize("extra", [
     {"parse_status": "failed"},
     {"stats": {"malformed_packet_count": contract.MAX_MALFORMED_PACKETS + 1}},
-    {"stats": {"partial_error_count": contract.MAX_PARTIAL_ERRORS + 1}},
     {"suppressed_diagnostic_count": 3},
 ])
 def test_blocking_manifest_states(extra):
@@ -90,6 +89,25 @@ def test_blocking_manifest_states(extra):
 
 def test_completed_with_warnings_is_not_blocking_by_itself():
     assert contract.classify_diagnostics(_manifest(parse_status="completed_with_warnings")).blocking == []
+
+
+def test_partial_bunch_errors_are_coverage_not_blocking():
+    # The first real export: 76 partial_sequence_errors spread over the recorder's and object channels.
+    report = contract.classify_diagnostics(_manifest(
+        parse_status="completed_with_warnings", stats={"partial_error_count": 3},
+        diagnostics=[{"code": "partial_sequence_error", "channel_index": 1},
+                     {"code": "partial_sequence_error", "channel_index": 1},
+                     {"code": "incomplete_partial_bunch", "channel_index": 74}]))
+    assert report.blocking == []
+    assert report.channels == {1: 2, 74: 1}
+    assert report.coverage == ["3 partial-bunch errors on 2 channels (see the coverage checks)"]
+
+
+def test_map_codes_come_from_the_vrf_bytes(tmp_path):
+    vrf = tmp_path / "x.vrf"
+    vrf.write_bytes(b"\x00junk/Game/Maps/Infinity/Infinity\x00/Game/Maps/Infinity_Barriers\x00"
+                    b"/Game/Maps/Infinity/Infinity.Infinity\x00")
+    assert contract.map_codes_in_file(vrf) == {"Infinity": 2}
 
 
 def test_rows_sort_by_time_and_keep_file_order_on_ties(tmp_path):

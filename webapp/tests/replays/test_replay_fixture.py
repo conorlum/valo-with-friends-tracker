@@ -104,3 +104,18 @@ def test_every_committed_fixture_is_identity_free():
     if not FIXTURES.exists():
         pytest.skip("no replay fixtures committed yet (the Swiftplay export is pending)")
     assert mrf.scan_dir(FIXTURES) == []
+
+
+def test_a_swiftplay_shape_fixture_takes_the_map_from_the_vrf_and_thins_movement(tmp_path):
+    match = SyntheticMatch(shape="swiftplay", manifest_extra={"source_file": f"{REAL_MATCH}.vrf"})
+    directory = match.write(tmp_path / "export")
+    vrf = match.write_vrf(tmp_path / f"{REAL_MATCH}.vrf")
+    out = tmp_path / "fixture"
+    mrf.make_fixture(directory, out, rounds=2, vrf=vrf, movement_step=4)
+    assert mrf.scan_dir(out, {REAL_MATCH}) == []
+    fixture = condense_export_dir(out, source_sha256=None)
+    assert fixture.map_name == "Ascent" and fixture.round_count == 2
+    assert fixture.match_uuid == mrf.SYNTHETIC_MATCH
+    assert fixture.hz == 4, "every 4th row of 16 Hz"
+    assert [p["agent"] for p in fixture.players] == [p["agent"] for p in condense_export_dir(
+        directory, source_sha256=None, vrf_path=vrf).players]

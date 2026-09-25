@@ -6,12 +6,13 @@ under the advisory lock and writes the result. The steps follow
 docs/replay-viewer-plan.md, "Linking":
 
 1. exactly one match with `external_id == match_uuid`, else unlinked (none) or refused;
-2. equal played-round sets, each round's decoded winner equal to the DB's, equal score;
+2. equal played-round sets; when the replay decoded round winners, each equal to the DB's
+   and an equal score (the first real export decoded none: the kill match carries it);
 3. a consistent 5/5 side partition, and exactly one agent- and team-respecting
    assignment of slots to match players across both orientations;
 4. per-round kill sequences identical after the excluded DB kill classes;
 5. one match-wide clock offset within the limits, with an anchor in every round;
-6. the `riot_subject` backfill, refused on any conflict.
+6. the `riot_subject` backfill, refused on any conflict, for the slots that have a Subject.
 
 The report holds IDs, counts, agents and reasons only: never a Subject or a name.
 """
@@ -133,6 +134,9 @@ def check_rounds(replay: ReplayLinkView, match: DbMatch) -> list[int]:
         raise Refused("rounds", "played round sets differ", replay_rounds=len(replay_played), db_rounds=len(db_played))
     if replay.link_inputs.get("round_results_fallback"):
         raise Refused("round_results", "RoundResults fell back to a raw payload; no winner source")
+    if not replay.link_inputs.get("round_results"):
+        # No decoded winners at all (the mode's game state isn't decoded): nothing to compare.
+        return replay_played
     db_rounds = {r.number: r for r in match.rounds}
     wins = Counter()
     for n in replay_played:
@@ -155,14 +159,14 @@ def check_rounds(replay: ReplayLinkView, match: DbMatch) -> list[int]:
 
 def check_partition(replay: ReplayLinkView) -> dict[int, str]:
     sides = {p["slot"]: p["side_group"] for p in replay.players}
-    subjects = {p["subject"] for p in replay.players}
-    if len(replay.players) != 10 or len(subjects) != 10 or any(not p.get("agent") for p in replay.players):
-        raise Refused("players", "expected 10 distinct Subjects with one agent each")
+    named = [p["subject"] for p in replay.players if p.get("subject")]
+    if len(replay.players) != 10 or len(set(named)) != len(named) or any(not p.get("agent") for p in replay.players):
+        raise Refused("players", "expected 10 players with one agent each and no shared Subject")
     if Counter(sides.values()) != Counter({"A": 5, "B": 5}):
         raise Refused("partition", "side groups are not 5/5")
     for n, kills in (replay.link_inputs.get("kills") or {}).items():
         for _, killer, victim in kills:
-            if sides[killer] == sides[victim]:
+            if killer != victim and sides[killer] == sides[victim]:
                 raise Refused("partition", "a replay kill is inside one side group", round=int(n))
     for n, positions in (replay.link_inputs.get("start_positions") or {}).items():
         if len(positions) != 10:
@@ -194,8 +198,11 @@ def assignment_candidates(replay: ReplayLinkView, match: DbMatch) -> list[tuple[
         for left, right in itertools.product(*per_side):
             mapping = {**left, **right}
             subject_of = {p["slot"]: p["subject"] for p in replay.players}
-            if all(anchors.get(subject_of[slot], mp) == mp for slot, mp in mapping.items()) and \
-                    all(mp not in anchors.values() or anchors.get(subject_of[slot]) == mp for slot, mp in mapping.items()):
+            # A slot without a Subject is free; one with a Subject must sit on its anchor, if any.
+            if all(subject_of[slot] is None or anchors.get(subject_of[slot], mp) == mp
+                   for slot, mp in mapping.items()) and \
+                    all(subject_of[slot] is None or mp not in anchors.values() or anchors.get(subject_of[slot]) == mp
+                        for slot, mp in mapping.items()):
                 candidates.append((orientation, mapping))
     return candidates
 
@@ -244,9 +251,10 @@ def match_kills(replay_kills: list[list], db_kills: list[DbKill], mapping: dict[
     """Pairs replay kills [t, killer, victim] with DB kills, or None if the sequences differ.
 
     Identity and order first, the clock second: both sides sorted by time, kills within
-    TIE_WINDOW_S of a group's first kill compared as a multiset.
+    TIE_WINDOW_S of a group's first kill compared as a multiset. A replay self-kill (Clove's
+    ult running out, in the first real export) pairs with nothing, as the DB's are excluded.
     """
-    ours = _tie_groups(sorted(replay_kills, key=lambda k: k[0]), lambda k: k[0])
+    ours = _tie_groups(sorted((k for k in replay_kills if k[1] != k[2]), key=lambda k: k[0]), lambda k: k[0])
     theirs = _tie_groups(sorted(db_kills, key=lambda k: (k.t, k.id)), lambda k: k.t)
     if len(ours) != len(theirs):
         return None
@@ -326,6 +334,8 @@ def _link(replay: ReplayLinkView, match: DbMatch, subject_owner: dict[str, int])
     backfills = []
     for slot, mp in sorted(mapping.items()):
         player, subject = db_player[mp], subject_of[slot]
+        if subject is None:
+            continue
         if player.riot_subject is not None and player.riot_subject != subject:
             raise Refused("backfill", "a linked player already has a different Subject", match_player_id=mp)
         owner = subject_owner.get(subject)
@@ -350,6 +360,7 @@ def _link(replay: ReplayLinkView, match: DbMatch, subject_owner: dict[str, int])
         "excluded_db_kills": sum(len(v) for v in db_excluded.values()),
         "agents": {str(slot): db_player[mp].agent for slot, mp in sorted(mapping.items())},
         "side_to_team": orientation, "backfills": len(backfills),
+        "winners_checked": bool(replay.link_inputs.get("round_results")),
     }
     return LinkResult("linked", report, match.match_id, round(offset, 3), kill_map, db_deaths,
                       dict(sorted(mapping.items())), orientation, backfills)
