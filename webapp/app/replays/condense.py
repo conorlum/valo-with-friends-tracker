@@ -184,14 +184,26 @@ class PlayerTable:
     subjects: list[str | None]        # per slot; None when no decoded player state names one
     agents: list[str]                 # per slot, display name
     pawn_slot: dict[int, int]         # player character guid -> slot; tracks follow these
-    other_slot: dict[int, int]        # possessed pawns and player states -> slot, for kills only
+    other_slot: dict[int, int]        # player states -> slot, for kills and revives only
     pawn_changes: dict[int, list[tuple[int, int]]]  # slot -> [(spawn ms, pawn guid)]
     gone_ms: dict[int, int]           # slot -> when its last pawn closed, for a player who left
     spawn_xy: dict[int, tuple[float, float]] = field(default_factory=dict)  # slot -> first pawn's spawn point
+    # P-b: a possessed pawn that isn't one of the player's own characters (a drone, a pet)
+    # resolves only while possessed: pawn -> [(from ms, to ms | None, slot)].
+    possession: dict[int, list[tuple[int, int | None, int]]] = field(default_factory=dict)
+    ownership: dict = field(default_factory=dict)  # counts for the report
 
-    def resolve(self, guid: int) -> int | None:
+    def resolve(self, guid: int, t_ms: int | None = None) -> int | None:
         slot = self.pawn_slot.get(guid)
-        return slot if slot is not None else self.other_slot.get(guid)
+        if slot is not None:
+            return slot
+        slot = self.other_slot.get(guid)
+        if slot is not None:
+            return slot
+        for lo, hi, owner in self.possession.get(guid, []):
+            if t_ms is not None and lo <= t_ms and (hi is None or t_ms < hi):
+                return owner
+        return None
 
 
 def build_players(export: Export, agents_by_code: dict[str, str]) -> PlayerTable:
@@ -220,22 +232,40 @@ def build_players(export: Export, agents_by_code: dict[str, str]) -> PlayerTable
     closed_at = {int(row.data["actor_net_guid"]): row.time_ms for row in export.of_type("actor_closed")
                  if int(row.data.get("actor_net_guid", 0)) in codes}
 
-    state_of: dict[int, int] = {}      # pawn -> player-state guid
-    subject_of_state: dict[int, str] = {}
-    possessed: dict[int, int] = {}     # possessed pawn -> player-state guid
+    # P-b: every non-null claim is kept with its time; contradictions refuse (first-claim-wins
+    # would silently pick one side of a conflict).
+    claims: dict[int, list[tuple[int, int, str]]] = defaultdict(list)  # pawn -> [(ms, player state, source)]
+    subjects_seen: dict[int, list[tuple[int, str]]] = defaultdict(list)  # player state -> [(ms, Subject)]
+    possessions: dict[int, list[tuple[int, int | None]]] = defaultdict(list)  # player state -> [(ms, pawn)]
     for row in export.of_type("export_group_received"):
         payload = row.data.get("payload")
         if not isinstance(payload, dict):
             continue
         guid = int(row.data.get("actor_net_guid") or 0)
         if guid in codes and payload.get(CHARACTER_PLAYER_STATE):
-            state_of.setdefault(guid, int(payload[CHARACTER_PLAYER_STATE]))
+            claims[guid].append((row.time_ms, int(payload[CHARACTER_PLAYER_STATE]), "PlayerState"))
         if payload.get("Subject"):
-            subject_of_state[guid] = str(payload["Subject"]).lower()
+            subjects_seen[guid].append((row.time_ms, str(payload["Subject"]).lower()))
         if payload.get("SpawnedCharacter") and int(payload["SpawnedCharacter"]) in codes:
-            state_of.setdefault(int(payload["SpawnedCharacter"]), guid)
-        if payload.get("PossessedCharacter"):
-            possessed[int(payload["PossessedCharacter"])] = guid
+            claims[int(payload["SpawnedCharacter"])].append((row.time_ms, guid, "SpawnedCharacter"))
+        if "PossessedCharacter" in payload:
+            pawn = int(payload["PossessedCharacter"] or 0) or None
+            possessions[guid].append((row.time_ms, pawn))
+            if pawn in codes:
+                claims[pawn].append((row.time_ms, guid, "PossessedCharacter"))
+    state_of: dict[int, int] = {}      # pawn -> player-state guid
+    for pawn, pawn_claims in claims.items():
+        states = {state for _, state, _ in pawn_claims}
+        if len(states) > 1:
+            sources = sorted({source for _, _, source in pawn_claims})
+            raise ContractError("ownership", f"character {pawn} is claimed by {len(states)} player states "
+                                             f"({', '.join(sources)})")
+        state_of[pawn] = states.pop()
+    subject_of_state: dict[int, str] = {}
+    for state, seen in subjects_seen.items():
+        if len({subject for _, subject in seen}) > 1:
+            raise ContractError("ownership", f"player state {state}'s Subject changes")
+        subject_of_state[state] = seen[0][1]
 
     groups: dict[tuple[str, int], list[int]] = defaultdict(list)
     for pawn in sorted(codes, key=lambda g: (spawned_at[g], g)):
@@ -271,13 +301,24 @@ def build_players(export: Export, agents_by_code: dict[str, str]) -> PlayerTable
         if pawns[0] in spawned_xy:
             spawn_xy[slot] = spawned_xy[pawns[0]]
     state_slot = {key: slot for slot, ((kind, key), _) in enumerate(ordered) if kind == "state"}
-    for pawn, state in possessed.items():
-        if pawn not in pawn_slot and state in state_slot:
-            other_slot[pawn] = state_slot[state]
+    # Possession as intervals: from each PossessedCharacter update to that state's next one.
+    possession: dict[int, list[tuple[int, int | None, int]]] = defaultdict(list)
+    intervals = 0
+    for state, updates in possessions.items():
+        if state not in state_slot:
+            continue
+        for (lo, pawn), following in zip(updates, [*updates[1:], None]):
+            if pawn is None or pawn in pawn_slot:
+                continue
+            possession[pawn].append((lo, following[0] if following else None, state_slot[state]))
+            intervals += 1
     named = [s for s in subjects if s]
     if len(set(named)) != len(named):
         raise ContractError("subjects", "two players share a Subject")
-    return PlayerTable(subjects, agents, pawn_slot, other_slot, pawn_changes, gone_ms, spawn_xy)
+    ownership = {"claims": sum(len(c) for c in claims.values()), "pawns": len(codes),
+                 "possession_intervals": intervals}
+    return PlayerTable(subjects, agents, pawn_slot, other_slot, pawn_changes, gone_ms, spawn_xy,
+                       dict(possession), ownership)
 
 
 # ---------------------------------------------------------------- rounds
@@ -477,8 +518,8 @@ def read_kills(export: Export, players: PlayerTable) -> list[Kill]:
     kills = []
     for row in export.rpcs(RPC_KILLED_ENEMY):
         payload = row.data.get("payload") or {}
-        killer = players.resolve(int(payload.get("KillerCharacter") or 0))
-        victim = players.resolve(int(payload.get("KilledCharacter") or 0))
+        killer = players.resolve(int(payload.get("KillerCharacter") or 0), row.time_ms)
+        victim = players.resolve(int(payload.get("KilledCharacter") or 0), row.time_ms)
         if killer is None or victim is None:
             raise ContractError("unresolved_kill", f"a kill at {row.time_ms} ms has no player for the "
                                                    f"{'killer' if killer is None else 'victim'}")
@@ -490,7 +531,7 @@ def read_revives(export: Export, players: PlayerTable) -> list[tuple[int, int]]:
     revives = []
     for row in export.rpcs(RPC_RESURRECT):
         payload = row.data.get("payload") or {}
-        slot = players.resolve(int(payload.get("ResurrectedPlayer") or 0))
+        slot = players.resolve(int(payload.get("ResurrectedPlayer") or 0), row.time_ms)
         if slot is not None:
             revives.append((row.time_ms, slot))
     return revives
@@ -825,6 +866,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         "kills": len(kills),
         "kills_outside_rounds": outside,
         "kills_excluded": excluded,
+        "ownership": players.ownership,
         "phase_ended_checked": game.phase_ended_checked,
         "movement": movement_counts,
         "spawn_checks": spawn_checks,
