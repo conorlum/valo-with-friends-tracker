@@ -18,11 +18,13 @@ from app.services.economy_graphs import (
 from app.services.fight_ev import PAGE_BOOTSTRAP_DRAWS, serialize_fight_ev_views
 from app.services.friends import get_current_player_and_friendship
 from app.services.map_streaks import compute_map_streaks
+from app.services.match_streaks import compute_form, form_entry
 from app.services.player_data import RECENT_MATCH_LIMIT
 from app.services.player_graphs import build_state_diagrams_from_aggregates, top_kill_order_state_deltas
 from app.services.player_view_cache import CachedPlayerViews, store_player_views
 from app.services.player_views import PlayerViews, compute_player_views
-from app.services.players import get_player_and_cached_views, list_players
+from app.services.players import get_player_and_cached_views, get_player_or_404, list_players
+from app.services.recent_match_rows import build_recent_match_rows, recent_form_entries
 from app.services.request_trace import get_current_trace, log_trace, span, start_trace, submit_traced
 from app.templates import match_label, templates
 
@@ -182,6 +184,7 @@ def _build_profile_context(
         "pistol_match_stats": pistol_match_stats,
         "fight_ev_data": fight_ev_data,
         "scope": scope,
+        "form": compute_form([form_entry(m.match, m.team, m.win) for m in profile.matches]),
     }
     if include_map_streaks:
         context["map_streaks"] = map_streaks
@@ -226,6 +229,15 @@ def player_detail(request: Request, display_name: str, db: Session = Depends(get
         return response
     finally:
         log_trace(trace)
+
+
+@router.get("/{display_name}/recent-matches")
+def player_recent_matches_fragment(request: Request, display_name: str, db: Session = Depends(get_db)):
+    """The Form card's recent-match rows, loaded after the page itself (via
+    htmx) since the badges need per-round data the page cache doesn't hold."""
+    player = get_player_or_404(db, display_name)
+    rows = build_recent_match_rows(db, player.id, recent_form_entries(db, player.id))
+    return templates.TemplateResponse(request, "_recent_match_rows.html", {"recent_rows": rows})
 
 
 @router.get("/{display_name}/career")

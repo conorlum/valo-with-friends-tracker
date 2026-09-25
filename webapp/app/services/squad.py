@@ -1,11 +1,13 @@
 from collections import Counter
 from dataclasses import dataclass, field
 
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, contains_eager, selectinload
 
 from app.models import ImpactScore, Match, MatchPlayer, Player, Round, RoundPlayerStat
 from app.scoring.credit_events import RoundStat, compute_round_credit_events
 from app.services.friends import list_friend_ids
+from app.services.match_streaks import Form, FormEntry, compute_form, form_entry
+from app.services.player_profile_types import match_win
 from app.services.shoutouts import PlayerShoutout, assign_shoutouts
 
 # Minimum shared rounds before a friend is eligible for a shoutout category --
@@ -80,6 +82,9 @@ class PairStats:
     kill_differential_together: int
     sugar_daddy_credits_together: int
     scavenger_credits_together: int
+    # Current match win/loss streak together, e.g. ("W", 3); (None, 0) after a draw.
+    streak_result: str | None = None
+    streak_length: int = 0
 
 
 @dataclass
@@ -89,6 +94,8 @@ class SquadOverview:
     total_rounds_together: int
     pairs: list[PairStats] = field(default_factory=list)
     shoutouts: list[PlayerShoutout] = field(default_factory=list)
+    # Form over the viewer's matches with at least one friend on their team.
+    form: Form = field(default_factory=Form)
 
 
 def _aggregate_pair(
@@ -132,6 +139,8 @@ def build_squad_overview(
     friend_names: dict[int, str],
     friend_agent_counts: dict[int, Counter],
     viewer_match_ids: set[int],
+    squad_form: Form | None = None,
+    pair_forms: dict[int, Form] | None = None,
 ) -> SquadOverview:
     """Pure aggregation: given every friend's shared rounds with the viewer
     (already fetched from the DB), builds the ranked pair list and shoutouts.
@@ -144,6 +153,10 @@ def build_squad_overview(
         for fid, rounds in pair_shared_rounds.items()
     ]
     pairs.sort(key=lambda p: p.matches_together, reverse=True)
+    for p in pairs:
+        pair_form = (pair_forms or {}).get(p.friend_player_id)
+        if pair_form is not None:
+            p.streak_result, p.streak_length = pair_form.current_result, pair_form.current_length
 
     total_rounds_together = sum(p.rounds_together for p in pairs)
 
@@ -171,6 +184,7 @@ def build_squad_overview(
         total_rounds_together=total_rounds_together,
         pairs=pairs,
         shoutouts=shoutouts,
+        form=squad_form or Form(),
     )
 
 
@@ -230,6 +244,7 @@ def get_squad_overview(db: Session, viewer_player_id: int, match_limit: int | No
         db.query(MatchPlayer)
         .filter_by(player_id=viewer_player_id)
         .join(Match, Match.id == MatchPlayer.match_id)
+        .options(contains_eager(MatchPlayer.match))
     )
     if match_limit is not None:
         viewer_mps = list(
@@ -267,6 +282,21 @@ def get_squad_overview(db: Session, viewer_player_id: int, match_limit: int | No
     relevant_match_ids = list(friend_mps_by_match.keys())
     if not relevant_match_ids:
         return build_squad_overview({}, {}, {}, viewer_match_ids)
+
+    # viewer_mps is oldest first, so both lists below are too.
+    squad_entries: list[FormEntry] = []
+    pair_entries: dict[int, list[FormEntry]] = {}
+    for viewer_mp in viewer_mps:
+        friend_mps = friend_mps_by_match.get(viewer_mp.match_id)
+        if not friend_mps:
+            continue
+        team = viewer_mp.team.value if hasattr(viewer_mp.team, "value") else viewer_mp.team
+        entry = form_entry(viewer_mp.match, team, match_win(viewer_mp.match, team))
+        squad_entries.append(entry)
+        for friend_mp in friend_mps:
+            pair_entries.setdefault(friend_mp.player_id, []).append(entry)
+    squad_form = compute_form(squad_entries)
+    pair_forms = {fid: compute_form(entries, recent_count=0) for fid, entries in pair_entries.items()}
 
     pair_shared_rounds: dict[int, list[SharedRound]] = {}
     friend_agent_counts: dict[int, Counter] = {}
@@ -365,4 +395,6 @@ def get_squad_overview(db: Session, viewer_player_id: int, match_limit: int | No
                 )
             friend_agent_counts.setdefault(friend_mp.player_id, Counter())[friend_mp.agent] += 1
 
-    return build_squad_overview(pair_shared_rounds, friend_names, friend_agent_counts, viewer_match_ids)
+    return build_squad_overview(
+        pair_shared_rounds, friend_names, friend_agent_counts, viewer_match_ids, squad_form, pair_forms
+    )

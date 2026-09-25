@@ -5,7 +5,7 @@
 {% block content %}
 <h1>Matches</h1>
 {% if showing_own_matches %}
-<p class="page-meta">Showing matches for <strong>{{ current_player.display_name }}</strong> <span class="sep">&middot;</span> <a href="/matches?all=1">view all matches</a></p>
+<p class="page-meta">Showing matches for <strong>{{ current_player.display_name | strip_tag }}</strong> <span class="sep">&middot;</span> <a href="/matches?all=1">view all matches</a></p>
 {% elif current_player %}
 <p class="page-meta">Showing all matches <span class="sep">&middot;</span> <a href="/matches">view just yours</a></p>
 {% endif %}

@@ -1,0 +1,42 @@
+{# Win/loss form card. Expects `form` (app.services.match_streaks.Form),
+   `form_title`, `form_meta` (one-line description of which matches count),
+   and either `recent_rows` (app.services.recent_match_rows rows, rendered
+   inline) or `recent_rows_url` (a fragment loaded after the page). #}
+<div class="card">
+  <h2>{{ form_title }}</h2>
+  <p class="page-meta">{{ form_meta }}</p>
+  {% if form.total_matches %}
+  <div class="stat-grid stat-grid--cols3">
+    <div class="stat-tile">
+      <div class="stat-label">Current streak</div>
+      {% if form.current_result %}
+      <div class="stat-value {{ 'text-good' if form.current_result == 'W' else 'text-critical' }}">
+        {{ form.current_result }}{{ form.current_length }}
+      </div>
+      <div class="stat-sub">{{ form.current_length }} {{ 'win' if form.current_result == 'W' else 'loss' }}{{ ('s' if form.current_result == 'W' else 'es') if form.current_length != 1 else '' }} in a row</div>
+      {% else %}
+      <div class="stat-value">&ndash;</div>
+      <div class="stat-sub">Last match was a draw</div>
+      {% endif %}
+    </div>
+    <div class="stat-tile">
+      <div class="stat-label">Longest win streak</div>
+      <div class="stat-value text-good">W{{ form.longest_win }}</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-label">Longest loss streak</div>
+      <div class="stat-value text-critical">L{{ form.longest_loss }}</div>
+    </div>
+  </div>
+  <h3 class="form-recent-title">Recent matches</h3>
+  {% if recent_rows is defined and recent_rows is not none %}
+  {% include "_recent_match_rows.html" %}
+  {% elif recent_rows_url %}
+  <div hx-get="{{ recent_rows_url }}" hx-trigger="load" hx-swap="outerHTML">
+    <p class="page-meta">Loading recent matches&hellip;</p>
+  </div>
+  {% endif %}
+  {% else %}
+  <p class="page-meta">No matches yet.</p>
+  {% endif %}
+</div>

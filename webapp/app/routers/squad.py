@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.services.auth import get_current_player
+from app.services.recent_match_rows import build_recent_match_rows
 from app.services.squad import get_squad_overview
 from app.templates import templates
 
@@ -18,8 +19,9 @@ def squad_page(request: Request, db: Session = Depends(get_db)):
     if current_player is None:
         return RedirectResponse(url="/login", status_code=303)
     overview = get_squad_overview(db, current_player.id, match_limit=RECENT_MATCH_LIMIT)
+    recent_rows = build_recent_match_rows(db, current_player.id, overview.form.recent)
     return templates.TemplateResponse(
-        request, "squad/detail.html", {"overview": overview, "scope": "recent"}
+        request, "squad/detail.html", {"overview": overview, "scope": "recent", "recent_rows": recent_rows}
     )
 
 
@@ -29,6 +31,7 @@ def squad_career_fragment(request: Request, db: Session = Depends(get_db)):
     if current_player is None:
         return RedirectResponse(url="/login", status_code=303)
     overview = get_squad_overview(db, current_player.id, match_limit=None)
+    recent_rows = build_recent_match_rows(db, current_player.id, overview.form.recent)
     return templates.TemplateResponse(
-        request, "squad/_squad_sections.html", {"overview": overview, "scope": "career"}
+        request, "squad/_squad_sections.html", {"overview": overview, "scope": "career", "recent_rows": recent_rows}
     )

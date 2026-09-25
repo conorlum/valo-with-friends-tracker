@@ -15,6 +15,7 @@
   --critical: #e0554f;
   --team-1: #3987e5;
   --team-2: #d95926;
+  --party: #9085e9;
   --radius: 10px;
   --radius-sm: 6px;
 }
@@ -923,3 +924,667 @@ footer {
 }
 
 .fight-ev-svg text { font-variant-numeric: tabular-nums; }
+
+/* Match page: result banner */
+.team-name-team-1 { color: var(--team-1); }
+.team-name-team-2 { color: var(--team-2); }
+
+.result-banner {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.5rem 1.5rem;
+  padding: 1.4rem 1.6rem;
+  margin-bottom: 1.5rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  border-left-width: 6px;
+  background: var(--surface);
+}
+
+.result-banner.result-win {
+  border-left-color: var(--good);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--good) 18%, var(--surface)), var(--surface) 70%);
+}
+
+.result-banner.result-loss {
+  border-left-color: var(--critical);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--critical) 18%, var(--surface)), var(--surface) 70%);
+}
+
+.result-banner.result-neutral {
+  border-left-color: var(--border-strong);
+}
+
+.result-banner h1 {
+  font-size: 1rem;
+  color: var(--ink-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+
+.result-headline {
+  font-size: 2.1rem;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+
+.result-win .result-headline { color: var(--good); }
+.result-loss .result-headline { color: var(--critical); }
+
+.result-sub {
+  color: var(--ink-secondary);
+  margin-top: 0.2rem;
+}
+
+.result-score {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.result-score-side {
+  text-align: center;
+  opacity: 0.55;
+}
+
+.result-score-side.is-winner {
+  opacity: 1;
+}
+
+.result-score-num {
+  font-size: 2.8rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.result-score-label {
+  color: var(--ink-secondary);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 0.3rem;
+}
+
+.result-score-sep {
+  font-size: 2rem;
+  color: var(--ink-muted);
+}
+
+.result-meta {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 700px) {
+  .result-banner {
+    grid-template-columns: 1fr;
+    padding: 1.1rem 1.1rem;
+  }
+  .result-headline { font-size: 1.7rem; }
+  .result-score-num { font-size: 2.2rem; }
+}
+
+/* Match page: scoreboard */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.scoreboard-team + .scoreboard-team {
+  margin-top: 1.25rem;
+}
+
+.scoreboard-team-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+
+.scoreboard-rounds {
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.scoreboard-viewer {
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+}
+
+tr.row-viewer td:first-child {
+  box-shadow: inset 3px 0 0 var(--ink);
+}
+
+tr.row-viewer .player-link {
+  font-weight: 700;
+}
+
+/* Match page: round strip -- one line, scrolls sideways. Each round is a
+   column: who won (+ how), both teams' buys, both teams' Impact bars on a
+   shared scale, round number. Row heights here and in .round-strip-labels
+   must match. */
+.round-strip-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.round-strip-key {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+.round-strip-scroll {
+  overflow-x: auto;
+  padding: 4px 4px 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.round-strip {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  width: max-content;
+}
+
+.round-strip-labels {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: 58px;
+  padding-right: 6px;
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* The labels reuse the .rs-row-* classes so their heights and borders
+   match the round blocks; padding-top matches the block's 1px border. */
+.round-strip-labels {
+  padding-top: 1px;
+}
+
+.round-strip-labels > span {
+  display: flex;
+  box-sizing: content-box;
+  align-items: center;
+  justify-content: flex-start;
+  font-size: 0.66rem;
+  color: var(--ink-muted);
+}
+
+.round-strip-break {
+  flex: 0 0 12px;
+}
+
+.round-block {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 56px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+}
+
+.rs-row-result {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+}
+
+.round-block-won-team-1 {
+  background: color-mix(in srgb, var(--team-1) 65%, var(--surface));
+}
+
+.round-block-won-team-2 {
+  background: color-mix(in srgb, var(--team-2) 65%, var(--surface));
+}
+
+
+
+.round-block .rs-row-bars {
+  position: relative;
+  display: block;
+}
+
+.rs-zero {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 1px;
+  background: var(--ink-muted);
+}
+
+.rs-bar {
+  position: absolute;
+  width: 17px;
+  border-radius: 2px;
+}
+
+.rs-bar-team-1 {
+  left: 10px;
+  background: var(--team-1);
+}
+
+.rs-bar-team-2 {
+  right: 10px;
+  background: var(--team-2);
+}
+
+.rs-row-num {
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--ink-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.round-block:hover,
+.round-block.active {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+
+.round-icon {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* Match page: scoreboard view toggle */
+.card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.card-head h2 {
+  margin: 0;
+}
+
+.tab-row--compact {
+  margin-bottom: 0;
+}
+
+.scoreboard-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Round detail: tracker-style kill rows. The killer's cells take the
+   killer's team colour, the victim cell the victim's. */
+td.cell-team-1 {
+  background: color-mix(in srgb, var(--team-1) 24%, transparent);
+}
+
+td.cell-team-2 {
+  background: color-mix(in srgb, var(--team-2) 24%, transparent);
+}
+
+tr.row-kill:hover td.cell-team-1 {
+  background: color-mix(in srgb, var(--team-1) 34%, transparent);
+}
+
+tr.row-kill:hover td.cell-team-2 {
+  background: color-mix(in srgb, var(--team-2) 34%, transparent);
+}
+
+tr.row-kill td.cell-team-1 + td.cell-team-2,
+tr.row-kill td.cell-team-2 + td.cell-team-1 {
+  border-left: 2px solid var(--surface);
+}
+
+tr.row-event.row-team-1 td,
+tr.row-event.row-team-2 td {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.row-event-team {
+  color: var(--ink-secondary);
+  font-weight: 400;
+  margin-left: 0.4rem;
+}
+
+/* Match page: strip eco row */
+.round-block .rs-row-econ {
+  position: relative;
+  display: block;
+}
+
+.rs-row-econ,
+.rs-row-bars {
+  /* The inline height is the bar area; padding and border add to it. */
+  box-sizing: content-box;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Breathing room so a full-height bar never touches the row above or
+   below. The bars are absolutely positioned from the row's padding edge,
+   so they take the same margin-top as the row's padding-top. The pinned
+   labels carry the same padding so the rows stay aligned. */
+.rs-row-econ {
+  padding-top: 5px;
+}
+
+.rs-row-econ > .rs-bar {
+  margin-top: 5px;
+}
+
+.rs-row-bars {
+  padding-top: 10px;
+  padding-bottom: 5px;
+}
+
+.rs-row-bars > .rs-bar,
+.rs-row-bars > .rs-zero {
+  margin-top: 10px;
+}
+
+/* A card section tinted by whichever team's tab is selected. */
+.team-panel {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 0.9rem;
+}
+
+.team-panel-team-1 {
+  border-left-color: var(--team-1);
+}
+
+.team-panel-team-2 {
+  border-left-color: var(--team-2);
+}
+
+.tab-btn-team-1.active {
+  box-shadow: inset 0 -3px 0 var(--team-1);
+}
+
+.tab-btn-team-2.active {
+  box-shadow: inset 0 -3px 0 var(--team-2);
+}
+
+/* Scoreboard: consecutive rows from the same team alternate a lighter and
+   a darker shade (lighter first) so neighbouring rows stay distinguishable.
+   Classes are applied by the match page's shadeTeamRuns(). */
+tr.row-team-1.shade-light td {
+  background: color-mix(in srgb, var(--team-1) 26%, transparent);
+}
+
+tr.row-team-1.shade-dark td {
+  background: color-mix(in srgb, var(--team-1) 12%, transparent);
+}
+
+tr.row-team-2.shade-light td {
+  background: color-mix(in srgb, var(--team-2) 26%, transparent);
+}
+
+tr.row-team-2.shade-dark td {
+  background: color-mix(in srgb, var(--team-2) 12%, transparent);
+}
+
+tr.row-team-1.shade-light:hover td,
+tr.row-team-1.shade-dark:hover td {
+  background: color-mix(in srgb, var(--team-1) 36%, transparent);
+}
+
+tr.row-team-2.shade-light:hover td,
+tr.row-team-2.shade-dark:hover td {
+  background: color-mix(in srgb, var(--team-2) 36%, transparent);
+}
+
+/* Round detail kill log: the light/dark run shading applied to the
+   killer and victim cells (each keeps its own team's colour). */
+tr.row-kill.shade-light td.cell-team-1 {
+  background: color-mix(in srgb, var(--team-1) 30%, transparent);
+}
+
+tr.row-kill.shade-dark td.cell-team-1 {
+  background: color-mix(in srgb, var(--team-1) 15%, transparent);
+}
+
+tr.row-kill.shade-light td.cell-team-2 {
+  background: color-mix(in srgb, var(--team-2) 30%, transparent);
+}
+
+tr.row-kill.shade-dark td.cell-team-2 {
+  background: color-mix(in srgb, var(--team-2) 15%, transparent);
+}
+
+tr.row-kill:hover td.cell-team-1 {
+  background: color-mix(in srgb, var(--team-1) 40%, transparent);
+}
+
+tr.row-kill:hover td.cell-team-2 {
+  background: color-mix(in srgb, var(--team-2) 40%, transparent);
+}
+
+/* Form card: recent-match rows (player + squad pages) */
+.form-recent-title {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  margin: 1.25rem 0 0.4rem;
+}
+
+table.recent-matches td {
+  vertical-align: middle;
+}
+
+tr.recent-match td:first-child {
+  box-shadow: inset 3px 0 0 var(--border-strong);
+}
+
+tr.recent-match-w td:first-child {
+  box-shadow: inset 3px 0 0 var(--good);
+}
+
+tr.recent-match-l td:first-child {
+  box-shadow: inset 3px 0 0 var(--critical);
+}
+
+.result-pill {
+  display: inline-block;
+  min-width: 3.2em;
+  text-align: center;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+}
+
+.result-pill-w {
+  background: color-mix(in srgb, var(--good) 30%, transparent);
+  border-color: var(--good);
+}
+
+.result-pill-l {
+  background: color-mix(in srgb, var(--critical) 30%, transparent);
+  border-color: var(--critical);
+}
+
+.recent-score,
+.recent-kda {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.match-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 180px;
+}
+
+.match-badge {
+  display: inline-block;
+  padding: 0.08rem 0.45rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--ink);
+  background: var(--page);
+  border: 1px solid var(--ink-muted);
+}
+
+.match-badge-good {
+  background: color-mix(in srgb, var(--good) 45%, var(--surface));
+  border-color: var(--good);
+}
+
+.match-badge-bad {
+  background: color-mix(in srgb, var(--critical) 45%, var(--surface));
+  border-color: var(--critical);
+}
+
+/* Whole-row result tint over a grey base, so the coloured badges still
+   stand out; hover deepens each row's own colour. The whole row links to
+   the match. */
+tr.recent-match {
+  cursor: pointer;
+}
+
+tr.recent-match td {
+  background: color-mix(in srgb, var(--ink-muted) 14%, var(--surface));
+}
+
+tr.recent-match-w td {
+  background: color-mix(in srgb, var(--good) 17%, color-mix(in srgb, var(--ink-muted) 10%, var(--surface)));
+}
+
+tr.recent-match-l td {
+  background: color-mix(in srgb, var(--critical) 17%, color-mix(in srgb, var(--ink-muted) 10%, var(--surface)));
+}
+
+tr.recent-match-d:hover td {
+  background: color-mix(in srgb, var(--ink-muted) 26%, var(--surface));
+}
+
+tr.recent-match-w:hover td {
+  background: color-mix(in srgb, var(--good) 30%, var(--surface));
+}
+
+tr.recent-match-l:hover td {
+  background: color-mix(in srgb, var(--critical) 30%, var(--surface));
+}
+
+tr.recent-match + tr.recent-match td {
+  border-top: 2px solid var(--surface);
+}
+
+.match-badge-party {
+  background: color-mix(in srgb, var(--party) 35%, var(--surface));
+  border-color: var(--party);
+}
+
+.recent-matches-toggle {
+  margin-top: 0.75rem;
+}
+
+table.recent-matches .stat-sub {
+  white-space: nowrap;
+  font-size: 0.78rem;
+}
+
+/* Player page: Match Data Highlights with Agents played beside the chart,
+   sized to keep the card about as tall as the chart-only version. */
+.highlights-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.highlights-chart {
+  position: relative;
+  height: 250px;
+}
+
+.highlights-main .stat-grid {
+  margin-top: 0.75rem;
+}
+
+.highlights-main .stat-tile {
+  padding: 0.7rem 0.9rem;
+}
+
+.highlights-main .stat-tile .stat-label {
+  min-height: 0;
+}
+
+.highlights-main .stat-tile .stat-value {
+  font-size: 1.3rem;
+}
+
+.highlights-agents .form-recent-title {
+  margin-top: 0;
+}
+
+.highlights-agents-scroll {
+  max-height: 390px;
+  overflow: auto;
+}
+
+table.compact-table th,
+table.compact-table td {
+  padding: 0.35rem 0.45rem;
+  font-size: 0.8rem;
+}
+
+table.compact-table .agent-icon {
+  width: 22px;
+  height: 22px;
+}
+
+table.compact-table .badge-score {
+  font-size: 0.68rem;
+  padding: 0.05rem 0.35rem;
+}
+
+@media (max-width: 700px) {
+  .highlights-layout {
+    grid-template-columns: 1fr;
+  }
+}

@@ -41,38 +41,77 @@
   </div>
 </div>
 
-<div class="card">
-  <h2>Kill impact vs. death impact by match</h2>
-  <canvas id="player-impact-chart-{{ scope }}" height="90"></canvas>
-</div>
+{% set form_title = "Form" %}
+{% set recent_rows_url = "/players/" ~ (profile.player.display_name | urlencode) ~ "/recent-matches" %}
+{% set form_meta = "Match win/loss streaks over this player's last 30 matches." if scope == 'recent' else "Match win/loss streaks over this player's full match history." %}
+{% include "_form_card.html" %}
 
 <div class="card">
   <h2>Match Data Highlights</h2>
   <p class="page-meta">Average per match, across {{ profile.matches | length }} match{{ "es" if profile.matches | length != 1 else "" }} played.</p>
-  <div style="max-width: 620px; height: 320px; margin: 0 auto;">
-    <canvas id="player-highlights-chart-{{ scope }}"></canvas>
-  </div>
-  <div class="stat-grid">
-    <div class="stat-tile">
-      <div class="stat-label">Traded for teammate</div>
-      <div class="stat-value">{{ profile.avg_traded_teammate | round(1) }}</div>
-      <div class="stat-sub">
-        {% if profile.top_traded_teammate %}
-        {% for name, count in profile.top_traded_teammate %}{{ name }} ({{ count }}){% if not loop.last %}, {% endif %}{% endfor %}
-        {% else %}
-        &mdash;
-        {% endif %}
+  <div class="highlights-layout">
+    <div class="highlights-main">
+      <div class="highlights-chart">
+        <canvas id="player-highlights-chart-{{ scope }}"></canvas>
+      </div>
+      <div class="stat-grid">
+      <div class="stat-tile">
+        <div class="stat-label">Traded for teammate</div>
+        <div class="stat-value">{{ profile.avg_traded_teammate | round(1) }}</div>
+        <div class="stat-sub">
+          {% if profile.top_traded_teammate %}
+          {% for name, count in profile.top_traded_teammate %}<a class="player-link" href="/players/{{ name | urlencode }}">{{ name | strip_tag }}</a> ({{ count }}){% if not loop.last %}, {% endif %}{% endfor %}
+          {% else %}
+          &mdash;
+          {% endif %}
+        </div>
+      </div>
+      <div class="stat-tile">
+        <div class="stat-label">Traded by teammate</div>
+        <div class="stat-value">{{ profile.avg_traded_by_teammate | round(1) }}</div>
+        <div class="stat-sub">
+          {% if profile.top_traded_by_teammate %}
+          {% for name, count in profile.top_traded_by_teammate %}<a class="player-link" href="/players/{{ name | urlencode }}">{{ name | strip_tag }}</a> ({{ count }}){% if not loop.last %}, {% endif %}{% endfor %}
+          {% else %}
+          &mdash;
+          {% endif %}
+        </div>
+      </div>
       </div>
     </div>
-    <div class="stat-tile">
-      <div class="stat-label">Traded by teammate</div>
-      <div class="stat-value">{{ profile.avg_traded_by_teammate | round(1) }}</div>
-      <div class="stat-sub">
-        {% if profile.top_traded_by_teammate %}
-        {% for name, count in profile.top_traded_by_teammate %}{{ name }} ({{ count }}){% if not loop.last %}, {% endif %}{% endfor %}
-        {% else %}
-        &mdash;
-        {% endif %}
+    <div class="highlights-agents">
+      <h3 class="form-recent-title">Agents played</h3>
+      <div class="highlights-agents-scroll">
+        <table class="compact-table">
+          <thead>
+            <tr><th>Agent</th><th>Games</th><th>Win %</th><th title="Avg Impact">Impact</th><th title="Avg Kill Impact">Kill</th><th title="Avg Death Impact">Death</th></tr>
+          </thead>
+          <tbody>
+      {% for s in profile.agent_stats %}
+      {% set icon = agent_icon_slug(s.key) %}
+      <tr>
+        <td>
+          {% if icon %}
+          <img class="agent-icon" src="/static/img/agents/{{ icon }}.png" alt="{{ s.key }}" title="{{ s.key }}">
+          {% else %}
+          {{ s.key }}
+          {% endif %}
+        </td>
+        <td>{{ s.matches_played }}</td>
+        <td>
+          {% if s.win_rate is not none %}
+          {{ (s.win_rate * 100) | round | int }}% <span class="badge badge-score">{{ s.wins }}-{{ s.losses }}</span>
+          {% else %}
+          &ndash;
+          {% endif %}
+        </td>
+        <td class="{{ 'impact-positive' if s.average_impact >= 0 else 'impact-negative' }}">{{ s.average_impact | round | int }}</td>
+        <td>{{ s.average_kill_impact | round | int }}</td>
+        <td class="{{ 'impact-negative' if s.average_death_impact | round | int else '' }}">{{ s.average_death_impact | death_impact }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -81,7 +120,7 @@
 {% if round_win_graph.nodes %}
 <div class="card">
   <h2>Round win rate by game state</h2>
-  <p class="page-meta">Win rate of rounds where {{ profile.player.display_name }} was still alive at each man-advantage state (own side v opponent side).</p>
+  <p class="page-meta">Win rate of rounds where {{ profile.player.display_name | strip_tag }} was still alive at each man-advantage state (own side v opponent side).</p>
   <div class="chart-scroll">
     <svg viewBox="{{ round_win_graph.view_box }}" style="width: 100%; max-width: 620px; height: auto; display: block; margin: 0 auto;">
       {% for edge in round_win_graph.edges %}
@@ -102,17 +141,10 @@
 </div>
 {% endif %}
 
-{% set econ_tier_description = "Win rate of rounds where " ~ profile.player.display_name ~ "'s team bought at each tier (rows), split by what the enemy bought that same round (columns)." %}
-{% include "_econ_tier_matrix.html" %}
-
-{% set pistol_card_title = "Pistols won into match wins" %}
-{% set pistol_card_description = "How often winning 0, 1, or both pistol rounds (round 1 and 13) turned into winning the match, for " ~ profile.player.display_name ~ "." %}
-{% include "_pistol_match_stats_card.html" %}
-
 {% if kill_order_graph.nodes %}
 <div class="card">
   <h2>Kill order graph</h2>
-  <p class="page-meta">Each dot is a round state (your players alive vs. their players alive), arranged so 5v5 sits at the top, 0v0 at the bottom, and lopsided states fan out to the sides. Every kill or death moves {{ profile.player.display_name }} one step along an arrow to the next state, and the number on the arrow is how many times that exact move happened (green = kills, red = deaths).</p>
+  <p class="page-meta">Each dot is a round state (your players alive vs. their players alive), arranged so 5v5 sits at the top, 0v0 at the bottom, and lopsided states fan out to the sides. Every kill or death moves {{ profile.player.display_name | strip_tag }} one step along an arrow to the next state, and the number on the arrow is how many times that exact move happened (green = kills, red = deaths).</p>
   <div class="chart-scroll">
     <svg viewBox="{{ kill_order_graph.view_box }}" style="width: 100%; max-width: 620px; height: auto; display: block; margin: 0 auto;">
       <defs>
@@ -193,7 +225,7 @@
 <div class="card fight-ev-card" data-scope="{{ scope }}">
   <h2>Fight-EV: converting duels into round-win leverage</h2>
   <p class="page-meta" id="fight-ev-meta-{{ scope }}">
-    How often {{ profile.player.display_name }} wins a duel at each game state, compared to how often
+    How often {{ profile.player.display_name | strip_tag }} wins a duel at each game state, compared to how often
     <b id="fight-ev-pool-label-{{ scope }}">all teammates</b> do, weighted by how much that state actually swings
     the round &mdash; on <b id="fight-ev-side-label-{{ scope }}">attacking</b> rounds. Colors are dulled until
     there's enough data to be confident in a direction; a real +/&minus;pp value is always shown either way.
@@ -248,39 +280,12 @@
 </div>
 {% endif %}
 
-<div class="card">
-  <h2>Agents played</h2>
-  <table>
-    <thead>
-      <tr><th>Agent</th><th>Matches</th><th>Win %</th><th>Avg Impact</th><th>Avg Kill Impact</th><th>Avg Death Impact</th></tr>
-    </thead>
-    <tbody>
-      {% for s in profile.agent_stats %}
-      {% set icon = agent_icon_slug(s.key) %}
-      <tr>
-        <td>
-          {% if icon %}
-          <img class="agent-icon" src="/static/img/agents/{{ icon }}.png" alt="{{ s.key }}" title="{{ s.key }}">
-          {% else %}
-          {{ s.key }}
-          {% endif %}
-        </td>
-        <td>{{ s.matches_played }}</td>
-        <td>
-          {% if s.win_rate is not none %}
-          {{ (s.win_rate * 100) | round | int }}% <span class="badge badge-score">{{ s.wins }}-{{ s.losses }}</span>
-          {% else %}
-          &ndash;
-          {% endif %}
-        </td>
-        <td class="{{ 'impact-positive' if s.average_impact >= 0 else 'impact-negative' }}">{{ s.average_impact | round | int }}</td>
-        <td>{{ s.average_kill_impact | round | int }}</td>
-        <td>{{ s.average_death_impact | round | int }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
+{% set econ_tier_description = "Win rate of rounds where " ~ (profile.player.display_name | strip_tag) ~ "'s team bought at each tier (rows), split by what the enemy bought that same round (columns)." %}
+{% include "_econ_tier_matrix.html" %}
+
+{% set pistol_card_title = "Pistols won into match wins" %}
+{% set pistol_card_description = "How often winning 0, 1, or both pistol rounds (round 1 and 13) turned into winning the match, for " ~ (profile.player.display_name | strip_tag) ~ "." %}
+{% include "_pistol_match_stats_card.html" %}
 
 <div class="card">
   <h2>Maps</h2>
@@ -313,31 +318,8 @@
 </div>
 
 <div class="card">
-  <h2>Matches</h2>
-  <table>
-    <thead>
-      <tr><th>Match</th><th>Agent</th><th>KDA</th><th>Avg Impact</th></tr>
-    </thead>
-    <tbody>
-      {% for m in profile.matches | reverse %}
-      {% set icon = agent_icon_slug(m.agent) %}
-      <tr>
-        <td><a href="/matches/{{ m.match.external_id }}">{{ match_label(m.match) }}</a></td>
-        <td>
-          {% if icon %}
-          <img class="agent-icon" src="/static/img/agents/{{ icon }}.png" alt="{{ m.agent }}" title="{{ m.agent }}">
-          {% else %}
-          {{ m.agent }}
-          {% endif %}
-        </td>
-        <td>{{ m.kills }}/{{ m.deaths }}/{{ m.assists }}</td>
-        <td class="{{ 'impact-positive' if m.average_impact >= 0 else 'impact-negative' }}">
-          {{ m.average_impact | round | int }}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <h2>Kill impact vs. death impact by match</h2>
+  <canvas id="player-impact-chart-{{ scope }}" height="90"></canvas>
 </div>
 
 <script type="application/json" id="chart-data-{{ scope }}">
