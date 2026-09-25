@@ -12,7 +12,7 @@
 # contains a space (Start-Process -ArgumentList does not quote array elements in
 # Windows PowerShell 5.1, which is what broke the first Stage 1a export).
 #
-# Third-party code: the user runs this, not an agent.
+# Third-party code, pinned in replay_parser.json. The user or the agent may run it (docs/replay-viewer-plan.md).
 param(
     [Parameter(Mandatory = $true)][string]$Uuid,
     [string]$ArchiveDir = $(if ($env:VALO_REPLAY_ARCHIVE) { $env:VALO_REPLAY_ARCHIVE } else { Join-Path $HOME 'ValorantReplayArchive' }),

@@ -41,12 +41,11 @@ This is the sixth pass.
   scripts, vendored assets, the `.gitignore` rules and 136 replay tests. `de8943c` reworks it to the real export's
   shape, and `8d37a2c` adds a real fixture (`tests/fixtures/replay/swiftplay`, round 1, movement thinned 8×,
   identity scan passed; the user decides whether it stays).
-- **Stage 1a: provisionally passed, two items open.** It ran on the Swiftplay replay, with the gate amended as
+- **Stage 1a: provisionally passed, one item open.** It ran on the Swiftplay replay, with the gate amended as
   recorded below. `ingest_replay.py --preview` passed its 8 scripted checks, and the user looked at `preview.html`
-  ("nothing glaringly wrong"). Still open:
-  - the parse time and memory (finding 13);
-  - the pass-6 preview checks, which have not run yet: round numbering, kills outside rounds, lifecycle
-    contradictions (see P-a to P-c).
+  ("nothing glaringly wrong"). Parse time and memory are recorded (finding 13: 24.9 s, 147 MB). Still open: the
+  pass-6 preview checks, which have not run yet: round numbering, kills outside rounds, lifecycle contradictions
+  (see P-a to P-c).
 
   An 8/8 preview is **not** proof of a correct condense. The reviews built synthetic exports that pass 8/8 and
   are still wrong.
@@ -55,8 +54,8 @@ This is the sixth pass.
 
 **Next, in order:**
 1. **Stage 1b evidence gathering (user first):**
-   - record, archive and export a competitive match (`archive_replays.py`, then `export_replay.ps1 <uuid>`);
-   - crawl it.
+   - the user records a competitive match and runs the crawl;
+   - the agent (or the user) archives it (`archive_replays.py`) and exports it (`export_replay.ps1 <uuid>`).
 
    This doesn't depend on the pass-6 fixes and can start now. **Record two or more competitive matches if
    possible**, because limits frozen from one match are a sample of one (see the 1b gate).
@@ -69,7 +68,7 @@ This is the sixth pass.
 6. Stages 2, 3 and 4 as written, with the changes this pass makes.
 
 **Pass 6 prerequisites** (code on the overnight branch, each with the synthetic case that exposed it as a test;
-all are before the 1b analysis, and none needs prod, the parser or the user):
+all are before the 1b analysis, and none needs prod or the user):
 - **P-a. Phase cycle validation.** See "Exporter contract", Rounds.
   - Refuse any transition outside the expected cycle: `4` not followed by `5` before another phase, a `5` with no
     open `4`, or `4 → 3 → 5`.
@@ -123,8 +122,8 @@ now but isn't a validated deliverable until the named gate:
 - **W-c. The upload worker** (Stage 3 step 1; merged with Stage 3).
   - Can be built now: `replay_worker/server.py`, the queue, timeout, temp cleanup and overflow tests, with a stub
     parser command.
-  - Needs the user: running it against the real `.vrf` runs the parser, which the agent may not do. Docker doesn't
-    run on this machine, so the `Dockerfile` is only built on Render.
+  - Can also be run now against the real `.vrf` with the local parser build (the agent may run the parser; see
+    "The whole path"). Docker doesn't run on this machine, so the `Dockerfile` is only built on Render.
   - Final sizing waits for W-b and the Stage 3 measurement.
   - No web-service side, no `render.yaml` change.
 - **W-d. The viewer front end, unlinked mode** (Stage 2 step 5, prototype). `static/js/replay.js` and a template
@@ -146,10 +145,7 @@ now but isn't a validated deliverable until the named gate:
 - the final JSON v1 reader;
 - all of Stage 4.
 
-**Open items for the user:**
-- The export's timing line (`exit 0 seconds … peakMB … size …`, printed by `export_replay.ps1`) is not yet
-  recorded here; it is finding 13. The first successful export's line was not saved, and neither the manifest nor
-  the output files record the parse time, so the user re-runs the export once to get it.
+**Open items for the user:** none. The parser is the agent's to run now (see "The whole path").
 
 **Settled by the user (2026-09-25, pass 6):** the committed fixture stays, and it needn't be anonymous. The match
 UUID stays in `docs/replay-viewer-handoff.md`: the match and its players are already public on tracker.gg, and
@@ -188,9 +184,12 @@ Storing and linking are separate steps: the stored blob is always the same, and 
 (slot → `match_players.id`, the clock offset, kill → `kill_events.id`). So a replay uploaded before its match is
 crawled can be linked later without the `.vrf`.
 
-In auto mode the agent may not build or run the third-party parser, but it can run the condenser, linker and
-tests on an export that already exists. So `ingest_replay.py` never calls the parser: `scripts/export_replay.ps1`
-(run by the user) does, and `ingest_replay.py --export-dir <dir>` reads its output.
+**The agent may build and run the pinned parser** (the user's permission, 2026-09-25): `build_replay_parser.ps1`,
+the parser's own tests, and `export_replay.ps1`. They read the `.vrf` and write only under `REPLAY_PARSER_DIR` and
+`%TEMP%\valo-replay\`. Pass 5 and earlier said the agent may not. That was a cautious assumption, never an
+observed block. The parser is still kept out of `ingest_replay.py`: `scripts/export_replay.ps1` makes the
+export, and `ingest_replay.py --export-dir <dir>` reads it. The two stay separate steps so an export can be
+condensed again without parsing again, and so the upload worker runs the same two steps.
 
 ## Decisions (settled 2026-09-25)
 
@@ -249,8 +248,7 @@ Still open (small, with recommendations) at the end.
 - Clone the parser to a **short path** (`%USERPROFILE%\rp\parser`). Under the session scratchpad the checkout
   fails with "Filename too long" (MAX_PATH). Use `git -c core.longpaths=true clone`.
 - Decompression is managed code: there's no Oodle DLL to ship, which also makes a Linux worker image possible.
-- In auto mode, the agent may not build or run the third-party parser. The user runs the build and export
-  commands.
+- The agent may build, test and run the pinned parser (see "The whole path"). The user may run them too.
 - **Python dependencies:** the tracker.gg ingest's preflight refuses an environment whose installed packages
   differ from the frozen scoring manifest (`ingest_preflight.py:100-115`). So nothing here adds a package to
   `requirements.txt`. The web service talks to the worker with the standard library (`urllib.request`), and
@@ -293,8 +291,8 @@ results" wins; the `BombPlayerState`/`BombGameState` rows may still hold for com
   call the built binary with `&`.
 - **Export: ran 2026-09-25** with `build_replay_parser.ps1` then `export_replay.ps1`. It writes to
   `%TEMP%\valo-replay\<full match uuid>\` (not the 8-character prefix). `events.ndjson` 814 MB,
-  `movement.ndjson` 721 MB, manifest 0.6 MB, for a 23 MB `.vrf` and a match of about 14 minutes. Wall time and peak
-  memory: **not yet recorded** (finding 13).
+  `movement.ndjson` 721 MB, manifest 0.6 MB, for a 23 MB `.vrf` and a match of about 14 minutes. Wall time 24.9 s and
+  peak working set 147 MB (finding 13, from the agent's re-run on 2026-09-25).
 
 **Findings 1-13 (Swiftplay, `++Ares-Core+release-13.06`, 9 rounds).** Pass 6 dropped some per-match details as
 unneeded; the fixture's identifiability was then accepted (see "Public repo"):
@@ -335,8 +333,12 @@ unneeded; the fixture's identifiability was then accepted (see "Public repo"):
 11. **Plant and defuse:** no source. `TimedBomb_C` is in the export but undecoded. Stays null (D9).
 12. **Size at the native rate:** 9 rounds, **194 KB gzipped per match, 40 KB max per round**, with delta encoding
     and linear fill of skipped grid points, no quantisation. Within budget.
-13. **Parse cost:** `.vrf` 23 MB. Parse wall time and peak memory: to record from `export_replay.ps1`'s last line.
-    The condenser (not yet streaming) takes about 96 s end to end on this machine.
+13. **Parse cost:** `.vrf` 23 MB (23,130,227 bytes). `export_replay.ps1` on this machine: `exit 0 seconds 24.9
+    peakMB 147`. That is well inside the 120 s gate item, with Windows memory as an early estimate only; Stage 3
+    measures the worker container. The peak is sampled every 200 ms from the process's own `PeakWorkingSet64`,
+    so it misses at most the last 200 ms of the run. The export writes 1.5 GB of NDJSON, so disk, not RAM, is the parser's
+    cost. The condenser (not yet streaming) takes about 96 s end to end on this machine: **the condenser, not the
+    parser, is now the slow step**, which makes W-b more important.
 
 **Other observations:**
 - **One player left** mid-match: that pawn's `actor_closed` arrives in a buy phase. The condenser marks
@@ -360,7 +362,7 @@ unneeded; the fixture's identifiability was then accepted (see "Public repo"):
   clusters are reported);
 - map discovered ✓ (**from the `.vrf`**, not actor paths);
 - size budget ✓;
-- parse time: **pending** (finding 13);
+- parse time ✓ (finding 13: 24.9 s, 147 MB peak);
 - **(pass 6) still to run on this export:**
   - the P-a phase-cycle checks, with `kills_outside_rounds == 0`;
   - the P-b ownership checks;
@@ -993,7 +995,7 @@ unaffected.
 
 | Stage | Outcome | Touches prod? | Blocked on |
 | --- | --- | --- | --- |
-| 1a. Parse + render feasibility | Evidence that the Swiftplay replay parses into 10 correct tracks, rounds and kills; parse time and memory measured (scratch only) | No | The export (user) |
+| 1a. Parse + render feasibility | Evidence that the Swiftplay replay parses into 10 correct tracks, rounds and kills; parse time and memory measured (scratch only) | No | The export |
 | 1b. Linking feasibility | Evidence that a competitive replay links exactly; limits and JSON v1 frozen (scratch only) | Read-only | The competitive replay + its crawl (user) |
 | 1c. Tooling PR | Condenser, linker, store logic (no DB yet), fixtures, tests and local scripts on `main` | No | The 1b gate |
 | 2. Local ingest + playback | The friends site plays a locally ingested match, linked; the demo is provably isolated | Migration on merge + the first ingest (user) | 1c merged |
@@ -1057,7 +1059,7 @@ Stages 3 and 4 are independent, and either can go first. Upload is listed first 
 - Parse time ≤ 120 s, with the peak memory and file size recorded here (they size the worker and the upload
   limits, decisions 9-10).
 
-**User runs:** the build/test and export commands.
+**User runs:** nothing required. The agent may run the build/test and export commands (2026-09-25).
 
 ### Stage 1b: linking feasibility (branch `replays`, scratch + read-only prod)
 
@@ -1065,8 +1067,9 @@ Stages 3 and 4 are independent, and either can go first. Upload is listed first 
 misalign. Then freeze the numbers and JSON v1.
 
 **Steps:**
-1. The user records a competitive match, archives it with `scripts\archive_replays.py` (verified copy, appended
-   to the archive's `index.json`), backs it up, and exports it as in 1a step 3.
+1. The user records a competitive match. The agent (or the user) archives it with `scripts\archive_replays.py`
+   (verified copy, appended to the archive's `index.json`) and exports it as in 1a step 3. The user backs up the
+   archive.
 2. `scripts/with_friends_db.py` (already built on the overnight branch) runs the crawl. From a PowerShell window
    in `webapp\` (the `!` prefix runs bash, which mangles `.\` paths):
    ```powershell
@@ -1152,9 +1155,9 @@ the gate is its output, not a prose checklist):
   `PROVISIONAL(Dn)` value in the code (see "Provisional values").
 - Decision 1 is closed by findings 15 **and** 21, and migration 0012's `subject` columns and the backfill switch
   follow it.
-- Stage 1a's open items are closed: finding 13 and the pass-6 checks on the Swiftplay export.
+- Stage 1a's open item is closed: the pass-6 checks on the Swiftplay export (finding 13 is recorded).
 
-**User runs:** the recording and archiving, the export, the crawl.
+**User runs:** the recording, the archive backup, and the crawl (a prod write).
 
 ### Stage 1c: tooling PR (fresh branch from `origin/main`, carrying the `replays` plan commits)
 
@@ -1217,7 +1220,7 @@ on `replays`, not `origin/main`: the PR branch is cut fresh and the commits carr
   - round numbering (P-a), with `kills_outside_rounds == 0`;
   - ownership (P-b) and lifecycle contradictions (P-c);
   - coverage and gaps, now enforced on every path (P-f);
-  - parse time and memory recorded (finding 13).
+  - parse time and memory recorded (finding 13: done).
 - The fixture scan passes, with shape checks (P-h). `git ls-files | grep -iE '\.vrf$|valo-replay|events\.ndjson$'` prints nothing outside
   `tests/fixtures/replay/`.
 - The user merges. Record the merge commit here as the Stage 1 gate commit.
@@ -1374,7 +1377,7 @@ and trade links (the round page has none).
 10. **Upload limits:** start with 80 MB per file, 10 uploads per hour per session and IP, and a 180 s parse
    timeout. They are checked against real data before Stage 3 ships:
    - Stage 1a records the `.vrf` sizes (the Swiftplay test file is 23 MB, a match of about 14 minutes) and the parse time
-     (pending: `export_replay.ps1`'s last line);
+     (24.9 s and 147 MB peak on Windows; finding 13);
    - Stage 1b adds the competitive file;
    - the size cap becomes max(80 MB, 2× the largest observed file), and the timeout becomes max(180 s, 3× the
      slowest observed parse in the worker);

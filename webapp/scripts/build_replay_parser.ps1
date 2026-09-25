@@ -8,7 +8,7 @@
 # <ParserDir>\bin\BUILD.json (commit, SDK version, patch hash). Keep the path
 # short: a deep checkout fails with "Filename too long" on Windows.
 #
-# Third-party code: the user runs this, not an agent.
+# Third-party code, pinned in replay_parser.json. The user or the agent may run it (docs/replay-viewer-plan.md).
 param(
     [string]$ParserDir = $(if ($env:REPLAY_PARSER_DIR) { $env:REPLAY_PARSER_DIR } else { Join-Path $HOME 'rp\parser' })
 )
