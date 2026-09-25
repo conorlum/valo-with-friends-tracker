@@ -184,6 +184,9 @@ class PlayerTable:
 def build_players(export: Export, agents_by_code: dict[str, str]) -> PlayerTable:
     states = fold_export_groups(export.export_groups(PLAYER_STATE_PATH))
     state_subject = {guid: str(s.values["Subject"]).lower() for guid, s in states.items() if s.values.get("Subject")}
+    # PROVISIONAL(D10): slots are the Subjects in sorted order; tracks follow SpawnedCharacter
+    # only (a possessed drone or pet is not the player), and PossessedCharacter just helps
+    # resolve kills. Side group A is the one holding slot 0.
     subjects = sorted(set(state_subject.values()))
     if len(subjects) != 10:
         raise ContractError("subjects", f"{len(subjects)} distinct Subjects, expected 10")
