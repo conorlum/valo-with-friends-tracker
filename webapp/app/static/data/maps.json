@@ -1,0 +1,132 @@
+{
+  "Abyss": {
+    "code": "Infinity",
+    "map_url": "/Game/Maps/Infinity/Infinity",
+    "uuid": "224b0a95-48b9-f703-1bd8-67aca101a61f",
+    "image": "img/maps/Abyss.png",
+    "xMultiplier": 8.1e-05,
+    "yMultiplier": -8.1e-05,
+    "xScalarToAdd": 0.5,
+    "yScalarToAdd": 0.5
+  },
+  "Ascent": {
+    "code": "Ascent",
+    "map_url": "/Game/Maps/Ascent/Ascent",
+    "uuid": "7eaecc1b-4337-bbf6-6ab9-04b8f06b3319",
+    "image": "img/maps/Ascent.png",
+    "xMultiplier": 7e-05,
+    "yMultiplier": -7e-05,
+    "xScalarToAdd": 0.813895,
+    "yScalarToAdd": 0.573242
+  },
+  "Bind": {
+    "code": "Duality",
+    "map_url": "/Game/Maps/Duality/Duality",
+    "uuid": "2c9d57ec-4431-9c5e-2939-8f9ef6dd5cba",
+    "image": "img/maps/Bind.png",
+    "xMultiplier": 5.9e-05,
+    "yMultiplier": -5.9e-05,
+    "xScalarToAdd": 0.576941,
+    "yScalarToAdd": 0.967566
+  },
+  "Breeze": {
+    "code": "Foxtrot",
+    "map_url": "/Game/Maps/Foxtrot/Foxtrot",
+    "uuid": "2fb9a4fd-47b8-4e7d-a969-74b4046ebd53",
+    "image": "img/maps/Breeze.png",
+    "xMultiplier": 7e-05,
+    "yMultiplier": -7e-05,
+    "xScalarToAdd": 0.465123,
+    "yScalarToAdd": 0.833078
+  },
+  "Corrode": {
+    "code": "Rook",
+    "map_url": "/Game/Maps/Rook/Rook",
+    "uuid": "1c18ab1f-420d-0d8b-71d0-77ad3c439115",
+    "image": "img/maps/Corrode.png",
+    "xMultiplier": 7e-05,
+    "yMultiplier": -7e-05,
+    "xScalarToAdd": 0.526158,
+    "yScalarToAdd": 0.5
+  },
+  "Fracture": {
+    "code": "Canyon",
+    "map_url": "/Game/Maps/Canyon/Canyon",
+    "uuid": "b529448b-4d60-346e-e89e-00a4c527a405",
+    "image": "img/maps/Fracture.png",
+    "xMultiplier": 7.8e-05,
+    "yMultiplier": -7.8e-05,
+    "xScalarToAdd": 0.556952,
+    "yScalarToAdd": 1.155886
+  },
+  "Haven": {
+    "code": "Triad",
+    "map_url": "/Game/Maps/Triad/Triad",
+    "uuid": "2bee0dc9-4ffe-519b-1cbd-7fbe763a6047",
+    "image": "img/maps/Haven.png",
+    "xMultiplier": 7.5e-05,
+    "yMultiplier": -7.5e-05,
+    "xScalarToAdd": 1.09345,
+    "yScalarToAdd": 0.642728
+  },
+  "Icebox": {
+    "code": "Port",
+    "map_url": "/Game/Maps/Port/Port",
+    "uuid": "e2ad5c54-4114-a870-9641-8ea21279579a",
+    "image": "img/maps/Icebox.png",
+    "xMultiplier": 7.2e-05,
+    "yMultiplier": -7.2e-05,
+    "xScalarToAdd": 0.460214,
+    "yScalarToAdd": 0.304687
+  },
+  "Lotus": {
+    "code": "Jam",
+    "map_url": "/Game/Maps/Jam/Jam",
+    "uuid": "2fe4ed3a-450a-948b-6d6b-e89a78e680a9",
+    "image": "img/maps/Lotus.png",
+    "xMultiplier": 7.2e-05,
+    "yMultiplier": -7.2e-05,
+    "xScalarToAdd": 0.454789,
+    "yScalarToAdd": 0.917752
+  },
+  "Pearl": {
+    "code": "Pitt",
+    "map_url": "/Game/Maps/Pitt/Pitt",
+    "uuid": "fd267378-4d1d-484f-ff52-77821ed10dc2",
+    "image": "img/maps/Pearl.png",
+    "xMultiplier": 7.8e-05,
+    "yMultiplier": -7.8e-05,
+    "xScalarToAdd": 0.480469,
+    "yScalarToAdd": 0.916016
+  },
+  "Split": {
+    "code": "Bonsai",
+    "map_url": "/Game/Maps/Bonsai/Bonsai",
+    "uuid": "d960549e-485c-e861-8d71-aa9d1aed12a2",
+    "image": "img/maps/Split.png",
+    "xMultiplier": 7.8e-05,
+    "yMultiplier": -7.8e-05,
+    "xScalarToAdd": 0.842188,
+    "yScalarToAdd": 0.697578
+  },
+  "Summit": {
+    "code": "Plummet",
+    "map_url": "/Game/Maps/Plummet/Plummet",
+    "uuid": "756da597-416b-c0f2-f47b-afbdf28670bc",
+    "image": "img/maps/Summit.png",
+    "xMultiplier": 7.5e-05,
+    "yMultiplier": -7.5e-05,
+    "xScalarToAdd": 0.047401,
+    "yScalarToAdd": 0.978891
+  },
+  "Sunset": {
+    "code": "Juliett",
+    "map_url": "/Game/Maps/Juliett/Juliett",
+    "uuid": "92584fbe-486a-b1b2-9faa-39b0f486b498",
+    "image": "img/maps/Sunset.png",
+    "xMultiplier": 7.8e-05,
+    "yMultiplier": -7.8e-05,
+    "xScalarToAdd": 0.5,
+    "yScalarToAdd": 0.515625
+  }
+}
