@@ -1589,3 +1589,80 @@ table.compact-table .badge-score {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- Replay viewer (W-d prototype; templates/replays/, static/js/replay.js) ---- */
+.replay {
+  --replay-side-a: var(--team-1);
+  --replay-side-b: var(--team-2);
+  --replay-neutral: var(--ink-secondary);
+  max-width: 760px;
+  margin: 0 auto;
+  outline: none;
+}
+.replay-header h1 { margin-bottom: 0.25rem; }
+.replay-note { color: var(--ink-muted); margin: 0 0 0.75rem; }
+.replay-stage {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.replay-canvas { display: block; width: 100%; height: auto; aspect-ratio: 1; }
+.replay-controls, .replay-rounds {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.75rem;
+}
+.replay-button, .replay-round, .replay-speed select {
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.75rem;
+  min-height: 2.25rem;
+  cursor: pointer;
+}
+.replay-button:disabled { opacity: 0.4; cursor: default; }
+.replay-button:focus-visible, .replay-round:focus-visible, .replay:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.replay-speed { color: var(--ink-secondary); }
+.replay-clock { color: var(--ink-secondary); font-variant-numeric: tabular-nums; }
+.replay-scrub-wrap { position: relative; margin-top: 0.5rem; }
+.replay-scrub { width: 100%; accent-color: var(--brand); }
+.replay-ticks { position: relative; height: 10px; }
+.replay-tick {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 10px;
+  margin-left: -1px;
+  background: var(--ink-secondary);
+}
+.replay-tick-decided { background: var(--brand); width: 3px; }
+.replay-strip { display: flex; flex-wrap: wrap; gap: 0.35rem; flex: 1; }
+.replay-round { padding: 0.2rem 0.6rem; min-width: 2.25rem; }
+.replay-round.is-current { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
+.replay-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; color: var(--ink-secondary); margin-top: 0.75rem; }
+.replay-key::before {
+  content: "";
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 0.35em;
+  border-radius: 50%;
+  vertical-align: -0.05em;
+}
+.replay-key-a::before { background: var(--replay-side-a); }
+.replay-key-b::before { background: var(--replay-side-b); }
+.replay-key-hollow::before { border: 2px solid var(--ink-secondary); }
+.replay-key-dashed::before { border: 2px dashed var(--ink); }
+.replay-key-kill::before { content: "\00d7"; width: auto; height: auto; border-radius: 0; font-weight: 700; }
+.replay-state { color: var(--ink-muted); margin-left: auto; }
+.replay-help { color: var(--ink-muted); font-size: 0.9em; }
+
+@media (max-width: 700px) {
+  .replay-state { margin-left: 0; }
+  .replay-button, .replay-round { min-height: 2.5rem; }
+}

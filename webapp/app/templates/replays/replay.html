@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{# The replay page. Stage 2 adds the route (GET /replays/{match_uuid}) and the link data; until
+   then only scripts/render_replay_standalone.py renders the player, outside the site. #}
+{% block title %}{{ replay.map_name }} replay &ndash; {{ site_name }}{% endblock %}
+{% block content %}
+{% include "replays/_player.html" %}
+<script src="/static/js/replay.js?v={{ static_version() }}"></script>
+<script>
+  (function () {
+    var root = document.querySelector("[data-replay]");
+    var rounds = {{ replay.round_numbers | tojson }};
+    var viewer = new Replay.ReplayViewer(root, {
+      rounds: rounds,
+      mapImage: "/static/img/maps/{{ replay.map_name }}.png",
+      agentIcon: function (agent) { return "/static/img/agents/" + agent.toLowerCase().replace(/[^a-z]/g, "") + ".png"; },
+      loadRound: function (n) {
+        return fetch("{{ replay.blob_url_prefix }}" + n + ".json").then(function (r) { return r.json(); });
+      }
+    });
+    viewer.showRound(rounds[0]);
+  })();
+</script>
+{% endblock %}
