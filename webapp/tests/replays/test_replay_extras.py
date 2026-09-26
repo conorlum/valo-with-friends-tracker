@@ -139,3 +139,20 @@ def test_owners_pass_from_a_landed_throw_to_its_object_and_on_to_what_spawns_ins
         ("Projectile", "nearest"), ("GameObject", "landed")]
     assert got["Q_Cage_SecondAnchor"] == (None, None), "far from both Omens with no evidence: no owner"
     assert got["4_Wire"] == (None, None)
+
+
+def test_a_landed_object_keeps_its_throw_and_a_drone_its_path(tmp_path):
+    rows = [spawned(20_000, 40, "Default__Projectile_Hunter_Q_RevealBolt_C", 1000, 0), closed(21_000, 40),
+            spawned(21_050, 41, "Default__GameObject_Hunter_Q_SonarBolt_C", 3000, 0),
+            spawned(25_000, 42, "Default__Pawn_Hunter_E_Drone_C", 0, 0), closed(27_000, 42)]
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    drone = [(24_000, 0.0, 0.0), (25_000, 0.0, 0.0), (25_050, 10.0, 0.0), (25_100, 20.0, 0.0), (26_000, 900.0, 0.0),
+             (28_000, 5000.0, 0.0)]
+    extras = build_extras(path, players(), WINDOWS, GAME_MAP, AGENTS, lambda t: {},
+                          lambda guid: drone if guid == 42 else [])
+    bolt, drone_entry = [a for a in extras.rounds[1]["abilities"] if a["kind"] != "Projectile"]
+    assert bolt["thrown"] == {"t0": 10.0, "t1": 11.0, "u": 5000, "v": 6000}
+    # One point per 100 ms, inside the drone's own life (25-27 s) only.
+    assert [p[0] for p in drone_entry["path"]] == [15.0, 15.1, 16.0]
+    assert "thrown" not in drone_entry and extras.report["pawn_paths"] == 1

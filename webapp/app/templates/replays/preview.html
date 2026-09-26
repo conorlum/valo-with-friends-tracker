@@ -8,7 +8,11 @@
 <script>
   (function () {
     var root = document.querySelector("[data-replay]");
-    fetch({{ replay.bundle_url | tojson }}).then(function (r) { return r.json(); }).then(function (bundle) {
+    var json = function (url) { return fetch(url).then(function (r) { return r.json(); }); };
+    Promise.all([json({{ replay.bundle_url | tojson }}),
+                 json("/static/data/abilities.json?v={{ static_version() }}").catch(function () { return {}; })
+    ]).then(function (loaded) {
+      var bundle = loaded[0], abilityIcons = loaded[1];
       var players = {};
       bundle.players.forEach(function (p) { players[String(p.slot)] = p; });
       var rounds = Object.keys(bundle.rounds).map(Number).sort(function (a, b) { return a - b; });
@@ -18,6 +22,7 @@
         agentIcon: function (agent) { return "/static/img/agents/" + agent.toLowerCase().replace(/[^a-z]/g, "") + ".png"; },
         loadRound: function (n) { return bundle.rounds[String(n)]; },
         roundWinner: function (n) { var db = bundle.rounds[String(n)].db; return db && db.winner; },
+        abilityIcons: abilityIcons,
         linked: { players: players, uvPerUnit: bundle.match.uv_per_unit }
       });
       window.viewerReady = window.viewer.showRound(rounds[0]);

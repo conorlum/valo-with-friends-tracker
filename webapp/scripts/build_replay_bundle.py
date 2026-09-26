@@ -47,7 +47,6 @@ from app.replays.condense import (  # noqa: E402
     load_agents,
     load_maps,
     read_game_state,
-    read_movement,
 )
 from app.replays.contract import (  # noqa: E402
     ContractError,
@@ -101,21 +100,33 @@ def condense_strict(export_dir: Path, vrf: Path, build: dict):
 
 class WorldPositions:
     """Each player's world position over the whole recording, buy phases included, thinned to
-    one sample per STEP_MS; `at(t_ms)` gives the samples within 0.5 s of t."""
+    one sample per STEP_MS; `at(t_ms)` gives the samples within 0.5 s of t. The same pass keeps
+    every other pawn's movement (drones, Trailblazer), for `path(guid)`."""
 
     STEP_MS = 100
 
     def __init__(self, export, players):
         self.rows: dict[int, tuple[list[int], list[tuple[float, float]]]] = {}
-        by_slot, _, _ = read_movement(export, players)
+        by_slot: dict[int, list[tuple[int, float, float]]] = defaultdict(list)
+        self.others: dict[int, list[tuple[int, float, float]]] = defaultdict(list)
+        for row in export.movement:
+            data = row.data
+            position = data.get("position") or {}
+            if data.get("error_sentinel") or position.get("x") is None or position.get("y") is None:
+                continue
+            pawn = int(data.get("shooter_character_net_guid") or data.get("actor_net_guid") or 0)
+            slot = players.pawn_slot.get(pawn)
+            target = by_slot[slot] if slot is not None else self.others[pawn]
+            if not target or row.time_ms - target[-1][0] >= self.STEP_MS:
+                target.append((row.time_ms, float(position["x"]), float(position["y"])))
         for slot, samples in by_slot.items():
-            times, points, last = [], [], -self.STEP_MS
-            for sample in samples:
-                if sample.t_ms - last >= self.STEP_MS:
-                    times.append(sample.t_ms)
-                    points.append((sample.x, sample.y))
-                    last = sample.t_ms
-            self.rows[slot] = (times, points)
+            samples.sort()
+            self.rows[slot] = ([t for t, _, _ in samples], [(x, y) for _, x, y in samples])
+        for samples in self.others.values():
+            samples.sort()
+
+    def path(self, guid: int) -> list[tuple[int, float, float]]:
+        return self.others.get(guid, [])
 
     def at(self, t_ms: int) -> dict[int, tuple[float, float]]:
         out = {}
@@ -338,7 +349,8 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         cache.write_bytes(pickle.dumps((replay, players, windows, game_map, agents)))
         print(f"condensed {replay.map_name}, {replay.round_count} rounds ({time.time() - started:.0f} s)")
-    extras = build_extras(args.export_dir / "events.ndjson", players, windows, game_map, agents, positions.at)
+    extras = build_extras(args.export_dir / "events.ndjson", players, windows, game_map, agents, positions.at,
+                          positions.path)
     print(f"extras: {extras.report} ({time.time() - started:.0f} s)")
     if not replay.link_inputs["eligibility"]["eligible"]:
         print(f"REFUSED: link eligibility: {replay.link_inputs['eligibility']['reasons']}", file=sys.stderr)

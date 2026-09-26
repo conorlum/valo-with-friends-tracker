@@ -1,0 +1,176 @@
+{
+  "Astra": {
+    "Astral Form / Cosmic Divide": "/static/img/abilities/astra/ultimate.png",
+    "Gravity Well": "/static/img/abilities/astra/grenade.png",
+    "Nebula  / Dissipate": "/static/img/abilities/astra/ability2.png",
+    "Nova Pulse": "/static/img/abilities/astra/ability1.png"
+  },
+  "Breach": {
+    "Aftershock": "/static/img/abilities/breach/grenade.png",
+    "Fault Line": "/static/img/abilities/breach/ability2.png",
+    "Flashpoint": "/static/img/abilities/breach/ability1.png",
+    "Rolling Thunder": "/static/img/abilities/breach/ultimate.png"
+  },
+  "Brimstone": {
+    "Incendiary": "/static/img/abilities/brimstone/ability1.png",
+    "Orbital Strike": "/static/img/abilities/brimstone/ultimate.png",
+    "Sky Smoke": "/static/img/abilities/brimstone/ability2.png",
+    "Stim Beacon": "/static/img/abilities/brimstone/grenade.png"
+  },
+  "Chamber": {
+    "Headhunter": "/static/img/abilities/chamber/ability1.png",
+    "Rendezvous": "/static/img/abilities/chamber/ability2.png",
+    "Tour De Force": "/static/img/abilities/chamber/ultimate.png",
+    "Trademark": "/static/img/abilities/chamber/grenade.png"
+  },
+  "Clove": {
+    "Meddle": "/static/img/abilities/clove/ability1.png",
+    "Not Dead Yet": "/static/img/abilities/clove/ultimate.png",
+    "Pick-me-up": "/static/img/abilities/clove/grenade.png",
+    "Ruse": "/static/img/abilities/clove/ability2.png"
+  },
+  "Cypher": {
+    "Cyber Cage": "/static/img/abilities/cypher/ability1.png",
+    "Neural Theft": "/static/img/abilities/cypher/ultimate.png",
+    "Spycam": "/static/img/abilities/cypher/ability2.png",
+    "Trapwire": "/static/img/abilities/cypher/grenade.png"
+  },
+  "Deadlock": {
+    "Annihilation": "/static/img/abilities/deadlock/ultimate.png",
+    "Barrier Mesh": "/static/img/abilities/deadlock/grenade.png",
+    "GravNet": "/static/img/abilities/deadlock/ability2.png",
+    "Sonic Sensor": "/static/img/abilities/deadlock/ability1.png"
+  },
+  "Fade": {
+    "Haunt": "/static/img/abilities/fade/ability2.png",
+    "Nightfall": "/static/img/abilities/fade/ultimate.png",
+    "Prowler": "/static/img/abilities/fade/grenade.png",
+    "Seize": "/static/img/abilities/fade/ability1.png"
+  },
+  "Gekko": {
+    "Dizzy": "/static/img/abilities/gekko/ability2.png",
+    "Mosh Pit": "/static/img/abilities/gekko/grenade.png",
+    "Thrash": "/static/img/abilities/gekko/ultimate.png",
+    "Wingman": "/static/img/abilities/gekko/ability1.png"
+  },
+  "Harbor": {
+    "Cove": "/static/img/abilities/harbor/ability2.png",
+    "High Tide": "/static/img/abilities/harbor/ability1.png",
+    "Reckoning": "/static/img/abilities/harbor/ultimate.png",
+    "Storm Surge": "/static/img/abilities/harbor/grenade.png"
+  },
+  "Iso": {
+    "Contingency": "/static/img/abilities/iso/grenade.png",
+    "Double Tap": "/static/img/abilities/iso/ability2.png",
+    "Kill Contract": "/static/img/abilities/iso/ultimate.png",
+    "Undercut": "/static/img/abilities/iso/ability1.png"
+  },
+  "Jett": {
+    "Blade Storm": "/static/img/abilities/jett/ultimate.png",
+    "Cloudburst": "/static/img/abilities/jett/grenade.png",
+    "Tailwind": "/static/img/abilities/jett/ability2.png",
+    "Updraft": "/static/img/abilities/jett/ability1.png"
+  },
+  "KAY/O": {
+    "FLASH/drive": "/static/img/abilities/kayo/ability1.png",
+    "FRAG/ment": "/static/img/abilities/kayo/grenade.png",
+    "NULL/cmd": "/static/img/abilities/kayo/ultimate.png",
+    "ZERO/point": "/static/img/abilities/kayo/ability2.png"
+  },
+  "Killjoy": {
+    "ALARMBOT": "/static/img/abilities/killjoy/ability1.png",
+    "Lockdown": "/static/img/abilities/killjoy/ultimate.png",
+    "Nanoswarm": "/static/img/abilities/killjoy/grenade.png",
+    "TURRET": "/static/img/abilities/killjoy/ability2.png"
+  },
+  "Miks": {
+    "Bassquake": "/static/img/abilities/miks/ultimate.png",
+    "Harmonize": "/static/img/abilities/miks/ability1.png",
+    "M-pulse": "/static/img/abilities/miks/grenade.png",
+    "Waveform": "/static/img/abilities/miks/ability2.png"
+  },
+  "Neon": {
+    "Fast Lane": "/static/img/abilities/neon/grenade.png",
+    "High Gear": "/static/img/abilities/neon/ability2.png",
+    "Overdrive": "/static/img/abilities/neon/ultimate.png",
+    "Relay Bolt": "/static/img/abilities/neon/ability1.png"
+  },
+  "Omen": {
+    "Dark Cover": "/static/img/abilities/omen/ability2.png",
+    "From the Shadows": "/static/img/abilities/omen/ultimate.png",
+    "Paranoia": "/static/img/abilities/omen/ability1.png",
+    "Shrouded Step": "/static/img/abilities/omen/grenade.png"
+  },
+  "Phoenix": {
+    "Blaze": "/static/img/abilities/phoenix/grenade.png",
+    "Curveball": "/static/img/abilities/phoenix/ability2.png",
+    "Hot Hands": "/static/img/abilities/phoenix/ability1.png",
+    "Run it Back": "/static/img/abilities/phoenix/ultimate.png"
+  },
+  "Raze": {
+    "Blast Pack": "/static/img/abilities/raze/ability1.png",
+    "Boom Bot": "/static/img/abilities/raze/grenade.png",
+    "Paint Shells": "/static/img/abilities/raze/ability2.png",
+    "Showstopper": "/static/img/abilities/raze/ultimate.png"
+  },
+  "Reyna": {
+    "Devour": "/static/img/abilities/reyna/ability1.png",
+    "Dismiss": "/static/img/abilities/reyna/ability2.png",
+    "Empress": "/static/img/abilities/reyna/ultimate.png",
+    "Leer": "/static/img/abilities/reyna/grenade.png"
+  },
+  "Sage": {
+    "Barrier Orb": "/static/img/abilities/sage/grenade.png",
+    "Healing Orb": "/static/img/abilities/sage/ability2.png",
+    "Resurrection": "/static/img/abilities/sage/ultimate.png",
+    "Slow Orb": "/static/img/abilities/sage/ability1.png"
+  },
+  "Skye": {
+    "Guiding Light": "/static/img/abilities/skye/ability2.png",
+    "Regrowth": "/static/img/abilities/skye/grenade.png",
+    "Seekers": "/static/img/abilities/skye/ultimate.png",
+    "Trailblazer": "/static/img/abilities/skye/ability1.png"
+  },
+  "Sova": {
+    "Hunter's Fury": "/static/img/abilities/sova/ultimate.png",
+    "Owl Drone": "/static/img/abilities/sova/grenade.png",
+    "Recon Bolt": "/static/img/abilities/sova/ability2.png",
+    "Shock Bolt": "/static/img/abilities/sova/ability1.png"
+  },
+  "Tejo": {
+    "Armageddon": "/static/img/abilities/tejo/ultimate.png",
+    "Guided Salvo": "/static/img/abilities/tejo/ability2.png",
+    "Special Delivery": "/static/img/abilities/tejo/ability1.png",
+    "Stealth Drone": "/static/img/abilities/tejo/grenade.png"
+  },
+  "Veto": {
+    "Chokehold": "/static/img/abilities/veto/ability1.png",
+    "Crosscut": "/static/img/abilities/veto/grenade.png",
+    "Evolution": "/static/img/abilities/veto/ultimate.png",
+    "Interceptor": "/static/img/abilities/veto/ability2.png"
+  },
+  "Viper": {
+    "Poison Cloud": "/static/img/abilities/viper/ability1.png",
+    "Snake Bite": "/static/img/abilities/viper/grenade.png",
+    "Toxic Screen": "/static/img/abilities/viper/ability2.png",
+    "Viper's Pit": "/static/img/abilities/viper/ultimate.png"
+  },
+  "Vyse": {
+    "Arc Rose": "/static/img/abilities/vyse/ability2.png",
+    "Razorvine": "/static/img/abilities/vyse/grenade.png",
+    "Shear": "/static/img/abilities/vyse/ability1.png",
+    "Steel Garden": "/static/img/abilities/vyse/ultimate.png"
+  },
+  "Waylay": {
+    "Convergent Paths": "/static/img/abilities/waylay/ultimate.png",
+    "Lightspeed": "/static/img/abilities/waylay/ability1.png",
+    "Refract": "/static/img/abilities/waylay/ability2.png",
+    "Saturate": "/static/img/abilities/waylay/grenade.png"
+  },
+  "Yoru": {
+    "BLINDSIDE": "/static/img/abilities/yoru/ability1.png",
+    "DIMENSIONAL DRIFT": "/static/img/abilities/yoru/ultimate.png",
+    "FAKEOUT": "/static/img/abilities/yoru/grenade.png",
+    "GATECRASH": "/static/img/abilities/yoru/ability2.png"
+  }
+}

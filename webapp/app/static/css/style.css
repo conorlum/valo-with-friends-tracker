@@ -1669,11 +1669,11 @@ table.compact-table .badge-score {
 
 /* ---- Replay viewer, linked mode (the local preview route, app/routers/replay_preview.py) ---- */
 .replay { --replay-team-1: var(--team-1); --replay-team-2: var(--team-2); --replay-smoke: rgba(214, 218, 226, 0.55); }
-.replay.is-linked { max-width: 1280px; }
+.replay.is-linked { max-width: 1400px; }
 .replay-body { display: block; }
 .replay.is-linked .replay-body {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
   gap: 1.25rem;
   align-items: start;
 }
@@ -1721,7 +1721,33 @@ table.compact-table .badge-score {
 .replay-key-t2::before { background: var(--replay-team-2); }
 .replay-key-smoke::before { background: var(--replay-smoke); }
 .replay-key-area::before { background: color-mix(in srgb, var(--ink-secondary) 35%, transparent); border: 2px solid var(--ink-secondary); }
-.replay-key-device::before { border-radius: 2px; background: var(--ink-secondary); border: 2px solid #fff; }
+.replay-key-badge::before { background: var(--ink-secondary); box-shadow: 0 0 0 2px rgba(12, 12, 16, 0.85); }
+.replay { --replay-unknown: #77787f; }
+.replay-tabs { display: flex; gap: 0.25rem; margin-bottom: 0.5rem; border-bottom: 1px solid var(--border-strong); }
+.replay-tab {
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 0.35rem 0.75rem;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+.replay-tab.is-active { color: var(--ink); border-bottom-color: var(--brand); }
+.replay-tab:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.replay-feed-row.replay-util-row { grid-template-columns: 3.2rem 1.75rem minmax(0, 1fr); align-items: center; }
+.replay-util-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgba(12, 12, 16, 0.85);
+}
+.replay-util-icon img { width: 1.15rem; height: 1.15rem; }
 .replay-key-spike::before { border-radius: 1px; transform: rotate(45deg) scale(0.8); background: var(--brand); }
 
 .replay-side h2 { font-size: 1.05rem; margin: 0 0 0.35rem; }
@@ -1782,3 +1808,7 @@ table.compact-table .badge-score {
 .watch-cell { white-space: nowrap; }
 .watch-cell .muted { color: var(--ink-muted); }
 .watch-link { font-weight: 600; }
+
+/* The replay page gets the full width: the map is the content. */
+main:has(.replay.is-linked) { max-width: 1440px; }
+.replay.is-linked .replay-canvas { width: min(100%, calc(100vh - 240px)); min-width: 280px; margin: 0 auto; }

@@ -189,10 +189,25 @@ def _owner(actor: _Actor, agent: str | None, slots_of_agent: dict[str, list[int]
     return None, None, near
 
 
+PATH_STEP_MS = 100   # a possessable pawn's path (a drone, Trailblazer), one point per this long
+
+
+def _thrown(actor: _Actor, actors: dict[int, _Actor]) -> _Actor | None:
+    """The same agent's projectile that closed within LANDING_MS of this object's spawn: the throw
+    it came from (drawn as an arc from the thrower), whatever the owner evidence said."""
+    if actor.kind == "Projectile" or not actor.code:
+        return None
+    hits = [(abs(p.closed_ms - actor.t_ms), p.guid, p) for p in actors.values()
+            if p.kind == "Projectile" and p.code == actor.code and p.closed_ms is not None
+            and abs(p.closed_ms - actor.t_ms) <= LANDING_MS and p.t_ms <= actor.t_ms]
+    return min(hits)[2] if hits else None
+
+
 def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[int, int, int]],
-                 game_map: MapInfo, agents_by_code: dict[str, str], positions_at) -> Extras:
+                 game_map: MapInfo, agents_by_code: dict[str, str], positions_at, pawn_path=None) -> Extras:
     """`positions_at(t_ms)` -> {slot: (x, y)}: each player's world position at that moment, from
-    the full movement stream (buy phase included, where the round tracks don't reach)."""
+    the full movement stream (buy phase included, where the round tracks don't reach).
+    `pawn_path(guid)` -> [(t_ms, x, y)]: a non-player pawn's movement (a drone), or None."""
     actors, raw_shots = read_raw(events_path)
     agent_code = {code.lower(): name for code, name in agents_by_code.items()}
     slots_of_agent: dict[str, list[int]] = defaultdict(list)
@@ -230,6 +245,21 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             entry["other_d"] = None if near[2] is None else round(near[2])
         if actor.yaw is not None:
             entry["yaw"] = game_map.yaw_to_map(float(actor.yaw))
+        throw = _thrown(actor, actors)
+        if throw is not None:
+            entry["thrown"] = {"t0": _seconds(throw.t_ms, start), "t1": _seconds(throw.closed_ms, start),
+                               **dict(zip(("u", "v"), game_map.to_uv(throw.x, throw.y)))}
+            counts["abilities_thrown"] += 1
+        if actor.kind == "Pawn" and pawn_path is not None:
+            last_t, points = -PATH_STEP_MS, []
+            until = min(actor.closed_ms, end) if actor.closed_ms is not None else end
+            for t_ms, x, y in pawn_path(actor.guid) or []:
+                if max(actor.t_ms, start) <= t_ms <= until and t_ms - last_t >= PATH_STEP_MS:
+                    points.append([_seconds(t_ms, start), *game_map.to_uv(x, y)])
+                    last_t = t_ms
+            if points:
+                entry["path"] = points
+                counts["pawn_paths"] += 1
         out.rounds.setdefault(n, {"abilities": [], "shots": []})["abilities"].append(entry)
         counts["abilities"] += 1
 

@@ -45,8 +45,8 @@
         <span class="replay-key replay-key-t1">Team 1</span>
         <span class="replay-key replay-key-t2">Team 2</span>
         <span class="replay-key replay-key-smoke">Smoke</span>
-        <span class="replay-key replay-key-area">Damage / effect area</span>
-        <span class="replay-key replay-key-device">Device (camera, drone, cage)</span>
+        <span class="replay-key replay-key-area">Effect area</span>
+        <span class="replay-key replay-key-badge">Utility (its icon, in the owner's team colour; grey = owner unknown)</span>
         <span class="replay-key replay-key-spike">Spike</span>
         {% else %}
         <span class="replay-key replay-key-a">Side A</span>
@@ -61,9 +61,18 @@
     </div>
     {% if linked %}
     <aside class="replay-side">
-      <h2>Kill feed</h2>
-      <p class="replay-side-note">Impact: the killer's gain and the victim's loss from each kill (the leverage term of the live score).</p>
-      <ol class="replay-feed" data-replay-feed></ol>
+      <div class="replay-tabs" role="tablist" aria-label="Round events">
+        <button type="button" role="tab" class="replay-tab is-active" data-replay-tab="feed" aria-selected="true">Kill feed</button>
+        <button type="button" role="tab" class="replay-tab" data-replay-tab="util" aria-selected="false">Utility</button>
+      </div>
+      <div data-replay-panel="feed" role="tabpanel">
+        <p class="replay-side-note">Impact: the killer's gain and the victim's loss from each kill (the leverage term of the live score).</p>
+        <ol class="replay-feed" data-replay-feed></ol>
+      </div>
+      <div data-replay-panel="util" role="tabpanel" hidden>
+        <p class="replay-side-note">Placed utility and flashes, by who used it. Click one to jump there.</p>
+        <ol class="replay-feed" data-replay-util></ol>
+      </div>
       <h2>Scoreboard</h2>
       <div class="replay-board" data-replay-board></div>
     </aside>

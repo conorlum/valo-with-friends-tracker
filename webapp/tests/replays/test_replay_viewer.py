@@ -151,9 +151,45 @@ def test_the_linked_mode_helpers():
         }));
       });"""
     got = run_node(script, {})
-    assert got["styles"] == ["smoke", "wire", "hidden", "hidden", "hidden", "spike", "point"]
+    assert got["styles"] == ["smoke", "wire", "hidden", "hidden", "hidden", "spike", "badge"]
     assert got["label"] == "Q Thing"
     assert got["at10"] == 4 and got["at95"] == 0 and got["open"] == 4
     assert got["pairs"] == [[1, 3]], "a wire pairs with its own owner's second anchor"
     assert got["signed"] == ["+12", "\u22124", "0", ""]
     assert got["tally"] == {"0": {"k": 1, "d": 0}, "5": {"k": 0, "d": 2}}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_ability_names_icons_and_drone_paths():
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const style = R.abilityStyle({kind: "Zone", code: "Wraith", name: "4_Smoke", agent: "Omen"});
+        const dart = R.abilityStyle({kind: "GameObject", code: "RemovableObject", name: "GumshoeTrackingDart", agent: null});
+        const path = [[1, 0, 0], [2, 100, 0], [4, 100, 200]];
+        process.stdout.write(JSON.stringify({
+          style: [style.ability, style.agent, style.shape], dart: [dart.agent, dart.ability, dart.label, dart.small],
+          util: [R.utilAbility("phoenix_curveball_left"), R.utilAbility("breach_flashpoint"), R.utilAbility("x")],
+          path: [R.pathAt(path, 1.5), R.pathAt(path, 3), R.pathAt(path, 0.5), R.pathAt(path, 5)]
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["style"] == ["Dark Cover", "Omen", "smoke"]
+    assert got["dart"] == ["Cypher", "Spycam", "Spycam dart", True]
+    assert got["util"] == [{"agent": "Phoenix", "ability": "Curveball"}, {"agent": "Breach", "ability": "Flashpoint"},
+                           {"agent": None, "ability": "x"}]
+    assert got["path"] == [{"u": 50, "v": 0}, {"u": 100, "v": 100}, None, None]
+
+
+def test_every_named_ability_has_a_vendored_icon():
+    """Each ability the viewer names (ABILITY_STYLES, UTIL_ABILITIES) is in abilities.json with a file."""
+    import re
+
+    index = json.loads((WEBAPP / "app" / "static" / "data" / "abilities.json").read_text(encoding="utf-8"))
+    icons = {name: url for table in index.values() for name, url in table.items()}
+    source = REPLAY_JS.read_text(encoding="utf-8")
+    named = set(re.findall(r'ability: "([^"]+)"', source)) | set(re.findall(r'\["[A-Za-z]+", "([^"]+)"\]', source))
+    assert named, "no ability names found"
+    for name in sorted(named):
+        assert name in icons, f"{name} has no icon in abilities.json"
+        assert (WEBAPP / "app" / icons[name].lstrip("/")).is_file(), icons[name]
