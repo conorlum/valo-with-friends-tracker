@@ -21,7 +21,7 @@ def _imports(path: Path) -> set[str]:
 
 def test_replay_code_does_not_import_scoring():
     files = [*REPLAYS.glob("*.py"), *(SCRIPTS / name for name in ("ingest_replay.py", "make_replay_fixture.py",
-                                                                   "replay_gate.py"))]
+                                                                   "replay_gate.py", "render_replay_standalone.py"))]
     for path in files:
         if not path.exists():
             continue

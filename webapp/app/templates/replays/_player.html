@@ -1,0 +1,37 @@
+{# The replay player (W-d prototype, unlinked mode). Context: `replay` with map_name and
+   round_numbers, and `linked` (false until Stage 2). The page supplies the data and starts it. #}
+<section class="replay" data-replay tabindex="0" aria-label="Replay player">
+  <header class="replay-header">
+    <h1>{{ replay.map_name }} replay</h1>
+    <p class="replay-note">
+      {% if linked %}Linked to this match.{% else %}Not linked to a match on this site: agents and side groups only.{% endif %}
+    </p>
+  </header>
+  <div class="replay-stage">
+    <canvas class="replay-canvas" data-replay-canvas width="1024" height="1024" role="img"
+            aria-label="Minimap"></canvas>
+  </div>
+  <div class="replay-controls">
+    <button type="button" class="replay-button" data-replay-play aria-pressed="false">Play</button>
+    <label class="replay-speed">Speed <select data-replay-speed></select></label>
+    <span class="replay-clock" data-replay-clock aria-live="off"></span>
+  </div>
+  <div class="replay-scrub-wrap">
+    <input class="replay-scrub" data-replay-scrub type="range" min="0" max="1000" value="0" aria-label="Time in round">
+    <div class="replay-ticks" data-replay-ticks aria-hidden="true"></div>
+  </div>
+  <div class="replay-rounds" role="group" aria-label="Rounds">
+    <button type="button" class="replay-button" data-replay-prev aria-label="Previous round">&larr;</button>
+    <div class="replay-strip" data-replay-strip></div>
+    <button type="button" class="replay-button" data-replay-next aria-label="Next round">&rarr;</button>
+  </div>
+  <p class="replay-legend">
+    <span class="replay-key replay-key-a">Side A</span>
+    <span class="replay-key replay-key-b">Side B</span>
+    <span class="replay-key replay-key-hollow">Last seen (2 s)</span>
+    <span class="replay-key replay-key-dashed">Partly unseen life</span>
+    <span class="replay-key replay-key-kill">Kill</span>
+    <span class="replay-state" data-replay-state></span>
+  </p>
+  <p class="replay-help">Space plays and pauses; &larr; and &rarr; step 5 s.</p>
+</section>
