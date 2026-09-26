@@ -319,6 +319,89 @@ def build_players(export: Export, agents_by_code: dict[str, str]) -> PlayerTable
                        dict(possession), ownership)
 
 
+# ---------------------------------------------------------------- utility (W-e)
+
+# The parser's typed utility rows: cast rows name the caster, hit rows the target, and both
+# carry the ability actor's GUID, which ties hits to their cast.
+UTIL_KINDS = {
+    "valorant_flash_cast": ("flash", "flash_actor_net_guid", "flash_kind"),
+    "valorant_nearsight_cast": ("nearsight", "nearsight_actor_net_guid", "nearsight_kind"),
+}
+UTIL_HITS = {"valorant_flash_player_hit": "flash_actor_net_guid",
+             "valorant_nearsight_player_hit": "nearsight_actor_net_guid"}
+
+
+@dataclass(frozen=True)
+class UtilCast:
+    t_ms: int
+    kind: str
+    ability: str
+    by: int
+    x: float | None
+    y: float | None
+    targets: tuple[int, ...]
+
+
+def _resolve_actor(players: PlayerTable, character, player_state, t_ms: int) -> int | None:
+    """A caster or target: their character pawn (or a pawn they possess) first, else their player state."""
+    slot = players.resolve(int(character or 0), t_ms) if character else None
+    if slot is None and player_state:
+        slot = players.other_slot.get(int(player_state))
+    return slot
+
+
+def read_util(export: Export, players: PlayerTable) -> tuple[list[UtilCast], dict]:
+    """Flash and nearsight casts with their targets (W-e), and counts for the report.
+
+    PROVISIONAL(D24): a cast whose caster resolves to no player is dropped and counted; a hit
+    whose target resolves to no player is left out of `targets` and counted; a hit with no
+    cast is counted. A caster or target who had left the match refuses, like a kill would (P-c).
+    """
+    counts: Counter[str] = Counter()
+    hits: dict[int, list[int]] = defaultdict(list)
+    for row in export.events:
+        kind = row.data.get("type")
+        if kind in UTIL_HITS:
+            data = row.data
+            slot = _resolve_actor(players, data.get("target_character_net_guid"),
+                                  data.get("target_player_state_net_guid"), row.time_ms)
+            if slot is None:
+                counts["unresolved_targets"] += 1
+                continue
+            gone = players.gone_ms.get(slot)
+            if gone is not None and row.time_ms >= gone:
+                raise ContractError("lifecycle", f"a utility hit on slot {slot} at {row.time_ms} ms, after that "
+                                                 f"player left at {gone} ms")
+            hits[int(data.get(UTIL_HITS[kind]) or 0)].append(slot)
+            counts["hits"] += 1
+    casts: list[UtilCast] = []
+    cast_actors: set[int] = set()
+    for row in export.events:
+        spec = UTIL_KINDS.get(row.data.get("type"))
+        if spec is None:
+            continue
+        short, actor_key, kind_key = spec
+        data = row.data
+        slot = _resolve_actor(players, data.get("caster_character_net_guid"),
+                              data.get("caster_player_state_net_guid"), row.time_ms)
+        actor = int(data.get(actor_key) or 0)
+        cast_actors.add(actor)
+        if slot is None:
+            counts["unresolved_casters"] += 1
+            continue
+        gone = players.gone_ms.get(slot)
+        if gone is not None and row.time_ms >= gone:
+            raise ContractError("lifecycle", f"a {short} by slot {slot} at {row.time_ms} ms, after that player left "
+                                             f"at {gone} ms")
+        location = data.get("location") or {}
+        ability = str(data.get(kind_key) or "")
+        casts.append(UtilCast(row.time_ms, short, ability if ability.replace("_", "").isalnum() else "", slot,
+                              location.get("x"), location.get("y"), tuple(sorted(set(hits.get(actor, []))))))
+        counts[short] += 1
+    counts["orphan_hits"] = sum(len(slots) for actor, slots in hits.items() if actor not in cast_actors)
+    return casts, dict(sorted(counts.items()))
+
+
 # ---------------------------------------------------------------- lifecycle (P-c)
 
 
@@ -731,6 +814,14 @@ def build_segments(samples: list[Sample], intervals: list[list], start: int, end
     return segments, {"coverage": round(coverage, 3), "max_gap_s": round(max_gap, 3)}
 
 
+def _util_entry(cast: UtilCast, start: int, game_map: MapInfo) -> dict:
+    entry = {"k": cast.kind, "t": _seconds(cast.t_ms, start), "by": cast.by, "ability": cast.ability,
+             "targets": list(cast.targets)}
+    if cast.x is not None and cast.y is not None:
+        entry["u"], entry["v"] = game_map.to_uv(float(cast.x), float(cast.y))
+    return entry
+
+
 def _last_position(samples: list[Sample], t_ms: int, start: int) -> Sample | None:
     times = [s.t_ms for s in samples]
     i = bisect.bisect_right(times, t_ms) - 1
@@ -999,6 +1090,9 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     match_spawn["ok"] = match_spawn["sizes"] == [5, 5] and radius <= SPAWN_CLUSTER_RADIUS
     if match_spawn["ok"]:
         clusters.append((first, second))
+    util_casts, util_counts = read_util(export, players)
+    util_counts["outside_rounds"] = sum(1 for c in util_casts
+                                        if not any(s <= c.t_ms <= e for s, _, e in game.windows))
     # P-a: every kill falls in one playback window, or in the dropped final round (excluded
     # with its reason); any other kill refuses.
     excluded = {"dropped_final_round": 0}
@@ -1051,7 +1145,8 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
             "players": player_rows, "tracks": tracks, "alive": alive, "kills": kill_rows,
             # PROVISIONAL(D9): no plant/defuse source yet; the first export's TimedBomb wasn't decoded.
             "plant": None, "defuse": None,
-            "util": [],
+            # W-e: flash and nearsight casts in this window; a new `k` needs no `v` bump.
+            "util": [_util_entry(c, start, game_map) for c in util_casts if start <= c.t_ms <= end],
         }
 
     encoded = {n: fmt.encode_blob(blob) for n, blob in rounds.items()}
@@ -1077,6 +1172,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         "kills_outside_rounds": outside,
         "kills_excluded": excluded,
         "ownership": players.ownership,
+        "util": util_counts,
         "sides": sides_report,
         "lifecycle": {**lifecycle.report, "uncertain_lives": uncertain_lives, "contradictions": 0},
         "phase_ended_checked": game.phase_ended_checked,

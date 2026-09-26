@@ -150,6 +150,13 @@ now but isn't a validated deliverable until the named gate:
   - Fill `util` with `k: "flash"`/`"nearsight"`. That needs no `v` bump, but it is a condenser change, so it
     bumps `CONDENSE_REVISION`.
   - It merges with Stage 4. Pass 5's "or earlier" contradicted "all of Stage 4 waits for 1b", and Stage 4 wins.
+  - **Built (2026-09-25, AFK run, branch `afk/2026-09-25-replay-pass6-util`):** `condense.read_util`. A cast's
+    caster resolves through its character pawn (or a pawn it possesses), else its player state; a hit's target the
+    same way; hits join their cast by the ability actor's GUID. Unresolved casters are dropped and counted,
+    unresolved targets left out and counted, and a caster or target who had left refuses like a kill (P-c). Each
+    round's `util` holds `{"k": "flash" | "nearsight", "t", "by", "u", "v", "ability", "targets"}`;
+    `CONDENSE_REVISION` 3, `v` unchanged. On the Swiftplay export: **4 flashes and 10 nearsights, all casters
+    resolved, 14 hits (8 + 6), no orphan hits, none outside a round**, which matches finding 10.
 
 **Must wait for 1b:**
 - migration 0012 and `store.py`: the shape of `replay_players.subject` and `players.riot_subject` depends on
