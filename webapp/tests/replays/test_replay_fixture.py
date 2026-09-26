@@ -11,7 +11,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1] / "scripts"))
 
 import make_replay_fixture as mrf  # noqa: E402
-from replay_synthetic import MATCH_UUID, SyntheticMatch, subject  # noqa: E402
+from replay_synthetic import MATCH_UUID, SyntheticMatch, subject, vrf_header  # noqa: E402
 
 from app.replays.condense import condense_export_dir  # noqa: E402
 
@@ -165,7 +165,8 @@ def test_every_committed_fixture_is_identity_free():
 
 
 def test_a_swiftplay_shape_fixture_takes_the_map_from_the_vrf_and_thins_movement(tmp_path):
-    match = SyntheticMatch(shape="swiftplay", manifest_extra={"source_file": f"{REAL_MATCH}.vrf"})
+    vrf_bytes = vrf_header(REAL_MATCH) + f"/Game/Maps/Ascent/Ascent {REAL_MATCH}".encode("ascii")
+    match = SyntheticMatch(shape="swiftplay", manifest_extra={"source_file": f"{REAL_MATCH}.vrf"}, vrf_bytes=vrf_bytes)
     directory = match.write(tmp_path / "export")
     vrf = match.write_vrf(tmp_path / f"{REAL_MATCH}.vrf")
     out = tmp_path / "fixture"

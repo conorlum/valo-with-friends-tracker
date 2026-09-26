@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,6 +33,17 @@ SPAWNS = [(-2000.0, 500.0), (6000.0, -1000.0)]  # world (x, y) centre per team
 ROUND_MS = 40_000
 BUY_MS = 30_000
 GAP_MS = 10_000
+
+
+def vrf_header(friendly_name: str) -> bytes:
+    """The `.vrf` header upstream's ReplayInfoReader parses: magic, file version 7, the
+    LocalFileReplay custom version, three ints, a UTF-16 FriendlyName padded with spaces."""
+    out = struct.pack("<IIi", 0x43F4EFDD, 7, 1)
+    out += struct.pack("<IIII", 0x95A4F03E, 0x7E0B49E4, 0xBA43D356, 0x94FF87D9) + struct.pack("<i", 7)
+    out += struct.pack("<iII", 1, 1, 1)
+    name = (friendly_name + " " * 32 + "\0").encode("utf-16-le")
+    out += struct.pack("<i", -(len(name) // 2)) + name
+    return out + struct.pack("<IqIIi", 0, 0, 1, 0, 0)
 
 
 def subject(i: int) -> str:
@@ -68,8 +80,13 @@ class SyntheticMatch:
     leaver: tuple[int, int] | None = None   # (slot, ms): that player's pawn closes then (swiftplay shape)
 
     def __post_init__(self):
-        if self.shape == "swiftplay" and self.vrf_bytes == b"synthetic replay bytes":
-            self.vrf_bytes = f"header /Game/Maps/{self.map_code}/{self.map_code} tail".encode("ascii")
+        if self.vrf_bytes == b"synthetic replay bytes":
+            # A structurally valid header (W-a) naming the match, then its ASCII copy and (for
+            # the Swiftplay shape, whose export names no map) the map path.
+            body = MATCH_UUID.encode("ascii") + b" tail"
+            if self.shape == "swiftplay":
+                body = f"/Game/Maps/{self.map_code}/{self.map_code} ".encode("ascii") + body
+            self.vrf_bytes = vrf_header(MATCH_UUID.upper()) + b"synthetic replay bytes " + body
 
     def round_start(self, n: int) -> int:
         return 60_000 + (n - 1) * (BUY_MS + ROUND_MS + GAP_MS) + BUY_MS

@@ -28,6 +28,7 @@ from pathlib import Path
 from statistics import median
 
 from app.replays import format as fmt
+from app.replays.header import header_match_uuid
 from app.replays.contract import (
     CHARACTER_PLAYER_STATE,
     GAME_STATE_PATH,
@@ -876,19 +877,40 @@ def eligibility(diagnostics, game: GameState, coverage: dict, kinds: dict) -> di
 UUID_SHAPE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
-def match_uuid_of(game: GameState, manifest: dict) -> tuple[str, str]:
-    """(match UUID, where it came from). The game state's MatchID when decoded, else the
-    `.vrf`'s file name: the client names a replay after its match."""
+def match_uuid_of(game: GameState, manifest: dict, header_uuid: str | None = None,
+                  file_names: list[str] | None = None) -> tuple[str, str]:
+    """(match UUID, where it came from).
+
+    The game state's MatchID when decoded, else the `.vrf` header's FriendlyName (W-a). Every
+    source present must agree, and so must `file_names` (the local file's name and the name
+    the export was made from) when given: local ingest passes them, an upload doesn't, since
+    an uploaded file's name means nothing. Without a header (a preview with no `.vrf` at
+    hand) the export's source file name is the last resort, reported as such. The header is
+    an uploader-controlled claim, like the name: only the linker's proof ties it to a match.
+    """
+    sources = {}
     if game.match_uuid is not None:
-        return game.match_uuid, "game_state"
-    stem = Path(str(manifest.get("source_file") or "")).stem.lower()
-    if UUID_SHAPE.match(stem):
-        return stem, "vrf_file_name"
-    raise ContractError("match_id", "no MatchID in the game state, and the .vrf isn't named by a match UUID")
+        sources["game_state"] = game.match_uuid
+    if header_uuid is not None:
+        sources["vrf_header"] = header_uuid
+    if not sources:
+        stem = Path(str(manifest.get("source_file") or "")).stem.lower()
+        if UUID_SHAPE.match(stem):
+            return stem, "vrf_file_name"
+        raise ContractError("match_id", "no MatchID in the game state, no .vrf header, and the .vrf isn't named by "
+                                        "a match UUID")
+    if len(set(sources.values())) > 1:
+        raise ContractError("match_id", "the game state's MatchID and the .vrf header's match UUID disagree")
+    uuid = next(iter(sources.values()))
+    for name in file_names or []:
+        if Path(name).stem.lower() != uuid:
+            raise ContractError("match_id", "the .vrf's file name disagrees with its match UUID (renamed?)")
+    return uuid, next(iter(sources))
 
 
 def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[str, str], recipe: str,
-             map_override: str | None = None, vrf_map_codes: dict[str, int] | None = None) -> CondensedReplay:
+             map_override: str | None = None, vrf_map_codes: dict[str, int] | None = None,
+             header: tuple[str, dict] | None = None, file_names: list[str] | None = None) -> CondensedReplay:
     diagnostics = classify_diagnostics(export.manifest)
     game_map, map_evidence = discover_map(export, maps, vrf_map_codes)
     if game_map is None:
@@ -903,7 +925,8 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
 
     players = build_players(export, agents_by_code)
     game = read_game_state(export)
-    match_uuid, match_uuid_source = match_uuid_of(game, export.manifest)
+    match_uuid, match_uuid_source = match_uuid_of(game, export.manifest, header[0] if header else None,
+                                                  file_names)
     if not game.windows:
         raise ContractError("rounds", "no round has both InRound and RoundEnding")
     by_slot, movement_counts, movement_channels = read_movement(export, players)
@@ -1034,6 +1057,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         "diagnostics": diagnostics.as_dict(),
         "map": {"name": game_map.name, **map_evidence},
         "match_uuid_source": match_uuid_source,
+        "vrf_header": header[1] if header else None,
         "players": {"subjects_decoded": sum(1 for s in players.subjects if s),
                     "left": {str(slot): _seconds(t, 0) for slot, t in sorted(players.gone_ms.items())
                              if t < game.windows[-1][1]},
@@ -1086,17 +1110,22 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
 def condense_export_dir(export_dir: Path, *, source_sha256: str | None, build: dict | None = None,
                         map_override: str | None = None, allow_blocking: bool = False,
                         pin: ParserPin | None = None, static_dir: Path = fmt.STATIC_DIR,
-                        vrf_path: Path | None = None) -> CondensedReplay:
+                        vrf_path: Path | None = None, check_file_name: bool = True) -> CondensedReplay:
     """Checks the contract, then condenses. Blocking diagnostics refuse unless `allow_blocking`
-    (the preview shows them instead). `vrf_path` lets the map come from the replay file when
-    the export doesn't name it."""
+    (the preview shows them instead). `vrf_path` gives the match UUID (its header, W-a) and
+    the map when the export doesn't name it. `check_file_name` (local ingest) also requires the
+    file's own name and the export's source name to agree with the header; the upload worker
+    turns it off."""
     pin = pin or load_pin()
     export = load_export(export_dir)
     check_manifest(export.manifest, pin, source_sha256, build)
     blocking = classify_diagnostics(export.manifest).blocking
     if blocking and not allow_blocking:
         raise ContractError("blocking_diagnostics", "; ".join(blocking))
-    vrf_map_codes = map_codes_in_file(vrf_path) if vrf_path is not None and vrf_path.is_file() else None
+    have_vrf = vrf_path is not None and vrf_path.is_file()
+    vrf_map_codes = map_codes_in_file(vrf_path) if have_vrf else None
+    header = header_match_uuid(vrf_path) if have_vrf else None
+    file_names = [vrf_path.name, str(export.manifest.get("source_file") or "")] if have_vrf and check_file_name else None
     return condense(export, maps=load_maps(static_dir), agents_by_code=load_agents(static_dir),
                     recipe=fmt.recipe(pin.commit, fmt.assets_revision(static_dir)), map_override=map_override,
-                    vrf_map_codes=vrf_map_codes)
+                    vrf_map_codes=vrf_map_codes, header=header, file_names=file_names)

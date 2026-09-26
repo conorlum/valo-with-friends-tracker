@@ -369,7 +369,7 @@ def run_swiftplay(tmp_path, match=None, with_vrf=True, **kwargs):
 
 def test_swiftplay_shape_condenses(tmp_path):
     out = run_swiftplay(tmp_path)
-    assert out.match_uuid == MATCH_UUID and out.report["match_uuid_source"] == "vrf_file_name"
+    assert out.match_uuid == MATCH_UUID and out.report["match_uuid_source"] == "vrf_header"
     assert out.map_name == "Ascent" and out.report["map"]["source"] == "vrf"
     assert out.round_count == 3 and out.hz == 16
     assert [p["agent"] for p in out.players] == AGENT_NAMES, "Clove's post-death pawn is not a player"
@@ -394,11 +394,39 @@ def test_swiftplay_shape_without_the_vrf_needs_a_map(tmp_path):
     assert out.report["map"]["source"] == "override"
 
 
-def test_a_vrf_not_named_by_a_match_uuid_refuses(tmp_path):
+def test_a_vrf_not_named_by_its_header_uuid_refuses_for_local_ingest(tmp_path):
     match = SyntheticMatch(shape="swiftplay", manifest_extra={"source_file": "my-replay.vrf"})
     with pytest.raises(ContractError) as refused:
         run_swiftplay(tmp_path, match)
-    assert refused.value.reason == "match_id"
+    assert refused.value.reason == "match_id" and "file name" in refused.value.detail
+
+
+def test_an_upload_takes_the_header_uuid_whatever_the_file_is_called(tmp_path):
+    match = SyntheticMatch(shape="swiftplay", manifest_extra={"source_file": "my-replay.vrf"})
+    directory = match.write(tmp_path / "export")
+    vrf = match.write_vrf(tmp_path / "upload.vrf")
+    out = cd.condense_export_dir(directory, source_sha256=match.source_sha256, vrf_path=vrf, check_file_name=False)
+    assert out.match_uuid == MATCH_UUID and out.report["match_uuid_source"] == "vrf_header"
+
+
+def test_a_game_state_match_id_that_disagrees_with_the_header_refuses(tmp_path):
+    match = SyntheticMatch()  # the legacy shape decodes a MatchID
+    events = match.events()
+    for row in events:
+        if (row.get("payload") or {}).get("MatchID"):
+            row["payload"]["MatchID"] = "00000000-0000-4000-8000-00000000beef"
+    directory = match.write(tmp_path / "export", events)
+    with pytest.raises(ContractError) as refused:
+        cd.condense_export_dir(directory, source_sha256=match.source_sha256,
+                               vrf_path=match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf"))
+    assert refused.value.reason == "match_id" and "disagree" in refused.value.detail
+
+
+def test_a_vrf_without_a_valid_header_refuses(tmp_path):
+    match = SyntheticMatch(shape="swiftplay", vrf_bytes=b"/Game/Maps/Ascent/Ascent not a replay")
+    with pytest.raises(ContractError) as refused:
+        run_swiftplay(tmp_path, match)
+    assert refused.value.reason == "vrf_header"
 
 
 QUIET_ROUND_3 = {**{k: list(v) for k, v in DEFAULT_KILLS.items() if k != 3}, 3: [(20.0, 4, 8)]}
