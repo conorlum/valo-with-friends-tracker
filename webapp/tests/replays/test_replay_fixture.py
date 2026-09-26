@@ -57,7 +57,14 @@ def test_a_fixture_keeps_the_structure_and_drops_every_identity(tmp_path):
     assert all(p["subject"].startswith(mrf.SYNTHETIC_PREFIX) for p in fixture.players)
 
 
-def test_a_planted_identity_in_an_allowlisted_field_is_caught_and_the_output_deleted(tmp_path):
+def _round_results_rows(out):
+    rows = [json.loads(line) for line in (out / "events.ndjson").read_text().splitlines()]
+    return [r["payload"]["RoundResults"] for r in rows if "RoundResults" in (r.get("payload") or {})]
+
+
+def test_a_planted_identity_in_a_round_results_field_is_replaced_never_copied(tmp_path):
+    # Pass 6 (P-h): a value that fails its shape makes the RoundResults opaque, and an opaque
+    # RoundResults becomes the synthetic marker. Pass 5 copied it and relied on the scanner.
     def plant(events):
         for e in events:
             if "RoundResults" in (e.get("payload") or {}):
@@ -65,9 +72,60 @@ def test_a_planted_identity_in_an_allowlisted_field_is_caught_and_the_output_del
                 break
 
     out = tmp_path / "fixture"
-    with pytest.raises(mrf.FixtureRefused, match="identity scan failed"):
+    mrf.make_fixture(realistic_export(tmp_path, plant), out, rounds=2)
+    text = "".join(p.read_text() for p in out.iterdir())
+    assert REAL_SUBJECTS[3] not in text.lower()
+    assert mrf.FALLBACK_MARKER in _round_results_rows(out)
+    assert mrf.scan_dir(out, {s.lower() for s in REAL_SUBJECTS}) == []
+
+
+def test_an_identity_hidden_in_an_opaque_fallback_payload_is_replaced(tmp_path):
+    # The pass-5 review probe: a raw fallback dict with an encoded identity inside.
+    def plant(events):
+        for e in events:
+            if "RoundResults" in (e.get("payload") or {}):
+                e["payload"]["RoundResults"] = {"raw": "M2YyYTAwMDMtOWMxZC00ZTZiLWE3ZjAtMDAwMzViOGMyZDFl",
+                                                "bits": 184}
+                break
+
+    out = tmp_path / "fixture"
+    mrf.make_fixture(realistic_export(tmp_path, plant), out, rounds=2)
+    text = "".join(p.read_text() for p in out.iterdir())
+    assert "M2YyYTAw" not in text and "raw" not in text
+    assert mrf.FALLBACK_MARKER in _round_results_rows(out)
+
+
+def test_base64_in_an_allowlisted_field_outside_round_results_refuses(tmp_path):
+    def plant(events):
+        events.append({"type": "actor_closed", "time_ms": 1, "actor_net_guid": 1000 + 20 + 3, "channel": 13,
+                       "reason": "U29tZVBsYXllciNOQTE="})
+
+    out = tmp_path / "fixture"
+    with pytest.raises(mrf.FixtureRefused, match="shape"):
         mrf.make_fixture(realistic_export(tmp_path, plant), out, rounds=2)
     assert not out.exists()
+
+
+def test_the_shape_scan_catches_a_nested_unknown_key_and_an_opaque_string(tmp_path):
+    out = tmp_path / "fixture"
+    mrf.make_fixture(realistic_export(tmp_path), out, rounds=1)
+    assert mrf.scan_dir(out) == []
+    events = out / "events.ndjson"
+    rows = [json.loads(line) for line in events.read_text().splitlines()]
+    group = next(r for r in rows if r["type"] == "export_group_received")
+    group["payload"]["Hidden"] = {"nested": 1}
+    rows.append({"type": "actor_closed", "time_ms": 5, "actor_net_guid": 7, "reason": "QWxpY2UjTkEx"})
+    events.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    hits = mrf.scan_dir(out)
+    assert any("Hidden: unexpected key" in hit for hit in hits)
+    assert any(".reason: unexpected value shape" in hit for hit in hits)
+
+
+def test_every_committed_fixture_passes_the_shape_check():
+    if not FIXTURES.exists():
+        pytest.skip("no replay fixtures committed")
+    for manifest in FIXTURES.rglob("manifest.json"):
+        assert mrf.shape_hits(manifest.parent) == [], manifest.parent.name
 
 
 def test_too_few_rounds_refuse(tmp_path):
