@@ -1198,6 +1198,13 @@ the gate is its output, not a prose checklist):
   | a manifest-only `RoundResults` fallback diagnostic | refused (P-f) |
   | coverage cut to 52% for one player | refused (P-f) |
   | the kills truncated to find the smallest prefix that still links uniquely | reported margin |
+- **Built (2026-09-25, AFK run): `scripts/replay_gate.py`.** Every row above runs on a synthetic 15-round,
+  13-2 competitive match and synthetic DB objects, with and without decoded winners, and the condense-level rows
+  also run on a real export (`--export-dir`). On the Swiftplay export: **39 OK, 0 mismatch, 5 waiting for 1b, 1
+  finding** (the export itself refuses at condense under P-c, see "Pass-6 findings"; the four condense-level
+  corruptions of it still refuse at the check the table names). The truncation margin on the synthetic match: 2
+  kills per round with the limits, 1 per round for the assignment alone. What waits for the competitive replay:
+  the base link, every row on its data, and the limits.
 - **Limits.** Freeze them from **two or more** competitive matches if the user records them. With only one, they
   stay `PROVISIONAL` in the code and are marked "frozen from n=1" here, with the observed offset, residual and
   anchor margins, and they are re-checked on the next few ingests.
