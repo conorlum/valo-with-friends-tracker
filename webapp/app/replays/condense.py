@@ -219,10 +219,13 @@ def build_players(export: Export, agents_by_code: dict[str, str]) -> PlayerTable
     spawned_at: dict[int, int] = {}
     spawned_xy: dict[int, tuple[float, float]] = {}
     codes: dict[int, str] = {}
+    # valorant-api.com and the game disagree on case ("Aggrobot" vs the pawn's "AggroBot_PC_C").
+    table_key = {k.lower(): k for k in agents_by_code}
     for row in export.of_type("actor_spawned"):
         code = character_code(row.data)
         if code is None:
             continue
+        code = table_key.get(code.lower(), code)
         if code not in agents_by_code:
             raise ContractError("unknown_agent", f"agent code name {code!r} is not in agents.json")
         guid = int(row.data["actor_net_guid"])
