@@ -1194,6 +1194,15 @@ misalign. Then freeze the numbers and JSON v1.
        against the played `rounds` rows, and what a replay of one shows. This checks P-e's detection rule.
    27. **(pass 6)** Partial-bunch errors by channel and by the evidence they carry (P-f). Do any fall on the
        channel carrying phase RPCs or lifecycle events, and do P-a and P-c still validate?
+   28. **(pass 6 review, 2026-09-25)** Revive evidence for Clove's ult. The pinned parser has descriptors for
+       a character's `Health` (`AresAttributeSet`, `/Script/ShooterGame.AresAttributeSet`) and for
+       `BombPlayerState.bUltimateActive`/`NumUltimatePoints`, but the Swiftplay export carries neither (no
+       attribute-set rows; Swiftplay's player state isn't `BombPlayerState`), and the export already ran with every
+       category on (`parse_profile: default` = `ExportCategory.All`). On the competitive export: do Clove's
+       `bUltimateActive` or `Health` rows appear, and do they mark each undecoded revive? If so, they are the revive
+       source P-c needs, and the "second death with no revive" rule needs no Clove exception (the Swiftplay
+       finding). If not, decoding the revive is an upstream parser change, and the user chooses among the options
+       in the Swiftplay finding.
 
 **Gate** (executable: `scripts/replay_gate.py` or a test module runs every case below and prints the outcomes;
 the gate is its output, not a prose checklist):
