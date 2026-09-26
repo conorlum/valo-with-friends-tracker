@@ -353,7 +353,7 @@ def _resolve_actor(players: PlayerTable, character, player_state, t_ms: int) -> 
 def read_util(export: Export, players: PlayerTable) -> tuple[list[UtilCast], dict]:
     """Flash and nearsight casts with their targets (W-e), and counts for the report.
 
-    PROVISIONAL(D24): a cast whose caster resolves to no player is dropped and counted; a hit
+    The rule (approved 2026-09-25): a cast whose caster resolves to no player is dropped and counted; a hit
     whose target resolves to no player is left out of `targets` and counted; a hit with no
     cast is counted. A caster or target who had left the match refuses, like a kill would (P-c).
     """
