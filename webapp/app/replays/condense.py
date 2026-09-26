@@ -45,6 +45,7 @@ from app.replays.contract import (
     classify_diagnostics,
     fold_export_groups,
     load_export,
+    load_export_streaming,
     load_pin,
     map_codes_in_file,
 )
@@ -549,6 +550,10 @@ def read_movement(export: Export, players: PlayerTable) -> tuple[dict[int, list[
         channels.add(data.get("channel"))
         by_slot[slot].append(Sample(row.time_ms, float(position["x"]), float(position["y"]),
                                     float(position.get("z") or 0.0), float(data.get("yaw") or 0.0), pawn))
+    # Contract order per slot: by time, ties in file order (a no-op when the rows came sorted;
+    # the streaming loader reads movement in file order, W-b).
+    for samples in by_slot.values():
+        samples.sort(key=lambda sample: sample.t_ms)
     return by_slot, dict(counts), channels
 
 
@@ -1110,14 +1115,16 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
 def condense_export_dir(export_dir: Path, *, source_sha256: str | None, build: dict | None = None,
                         map_override: str | None = None, allow_blocking: bool = False,
                         pin: ParserPin | None = None, static_dir: Path = fmt.STATIC_DIR,
-                        vrf_path: Path | None = None, check_file_name: bool = True) -> CondensedReplay:
+                        vrf_path: Path | None = None, check_file_name: bool = True,
+                        streaming: bool = True) -> CondensedReplay:
     """Checks the contract, then condenses. Blocking diagnostics refuse unless `allow_blocking`
     (the preview shows them instead). `vrf_path` gives the match UUID (its header, W-a) and
     the map when the export doesn't name it. `check_file_name` (local ingest) also requires the
     file's own name and the export's source name to agree with the header; the upload worker
-    turns it off."""
+    turns it off. `streaming` (the default, W-b) reads only the rows the condenser needs and
+    streams movement; `streaming=False` loads everything, for the parity test."""
     pin = pin or load_pin()
-    export = load_export(export_dir)
+    export = load_export_streaming(export_dir) if streaming else load_export(export_dir)
     check_manifest(export.manifest, pin, source_sha256, build)
     blocking = classify_diagnostics(export.manifest).blocking
     if blocking and not allow_blocking:

@@ -47,7 +47,7 @@ from app.replays.condense import (  # noqa: E402
     CondensedReplay,
     condense_export_dir,
 )
-from app.replays.contract import ContractError, load_export, sha256_file  # noqa: E402
+from app.replays.contract import ContractError, load_manifest, sha256_file  # noqa: E402
 
 
 def default_archive() -> Path:
@@ -336,7 +336,11 @@ def main(argv: list[str] | None = None, loader_factory=_db_loader) -> int:
     if args.map and not args.preview:
         parser.error("--map is for --preview only")
 
-    manifest = load_export(args.export_dir).manifest
+    try:
+        manifest = load_manifest(args.export_dir)  # not the 1.5 GB of rows: condense streams them
+    except ContractError as refused:
+        print(f"REFUSED: {refused}", file=sys.stderr)
+        return 3
     strict = args.dry_run
     source_sha256, vrf_path = _source(args, manifest, strict)
     try:

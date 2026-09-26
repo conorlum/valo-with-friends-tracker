@@ -227,14 +227,113 @@ class Export:
                 if row.data.get("type") == "rpc_received" and row.data.get("function_name") == function_name)
 
 
-def load_export(export_dir: Path) -> Export:
+def _require_files(export_dir: Path) -> None:
     names = ("manifest.json", "events.ndjson", "movement.ndjson")
     missing = [name for name in names if not (export_dir / name).exists()]
     if missing:
         raise ContractError("incomplete_export", f"{export_dir} lacks {', '.join(missing)}")
-    manifest = json.loads((export_dir / "manifest.json").read_text(encoding="utf-8"))
+
+
+def load_manifest(export_dir: Path) -> dict:
+    _require_files(export_dir)
+    return json.loads((export_dir / "manifest.json").read_text(encoding="utf-8"))
+
+
+def load_export(export_dir: Path) -> Export:
+    """The whole export in memory, in contract order (the reference the streaming loader must
+    match byte for byte; about 1.5 GB of rows for a 14-minute match)."""
+    manifest = load_manifest(export_dir)
     events = read_ndjson(export_dir / "events.ndjson")
     return Export(manifest, events, read_ndjson(export_dir / "movement.ndjson"), events[-1].time_ms if events else 0)
+
+
+# ---------------------------------------------------------------- streaming (W-b)
+
+# The event rows the condenser reads. Everything else (shots, utility paths, the other RPCs:
+# 115k of the first real export's 142k rows, most of its 814 MB) is skipped unparsed.
+STREAM_EVENT_TYPES = frozenset({"actor_spawned", "actor_closed"})
+STREAM_PAYLOAD_KEYS = frozenset({CHARACTER_PLAYER_STATE, "Subject", "SpawnedCharacter", "PossessedCharacter"})
+STREAM_RPCS = frozenset({RPC_KILLED_ENEMY, RPC_PHASE_BEGIN, RPC_PHASE_ENDED, RPC_SET_PHASE, RPC_RESURRECT})
+STREAM_GROUP_PATHS = frozenset({PLAYER_STATE_PATH, GAME_STATE_PATH})
+PATH_KEYS = ("actor_path", "archetype_path", "object_path", "outer_path")
+# Substrings that every kept row's line contains; a line with none of them can't be kept, so it
+# is never parsed. The exact test (`keep_event`) runs on the parsed rows.
+_NEEDLES = tuple(f'"{name}"' for name in (*STREAM_EVENT_TYPES, *STREAM_PAYLOAD_KEYS, *STREAM_RPCS)) + (
+    "BombPlayerState", "BombGameState", "Maps")
+
+
+def keep_event(data: dict) -> bool:
+    """Whether the condenser reads this event row (the streaming loader's exact filter)."""
+    kind = data.get("type")
+    if kind in STREAM_EVENT_TYPES:
+        return True
+    if kind == "rpc_received" and data.get("function_name") in STREAM_RPCS:
+        return True
+    if kind == "export_group_received":
+        payload = data.get("payload")
+        if data.get("export_group_path") in STREAM_GROUP_PATHS:
+            return True
+        if isinstance(payload, dict) and STREAM_PAYLOAD_KEYS.intersection(payload):
+            return True
+    return any(isinstance(data.get(key), str) and "/Game/Maps/" in data[key] for key in PATH_KEYS)
+
+
+class MovementStream:
+    """`movement.ndjson` as a re-iterable stream of Rows, in file order, never held.
+
+    Contract order is by `time_ms` with ties in file order. The condenser only reads movement
+    per slot, and `read_movement` stable-sorts each slot's samples by time, which gives the
+    same lists as a global stable sort would (the first real export is already sorted).
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def __iter__(self) -> Iterator[Row]:
+        with self.path.open("r", encoding="utf-8") as handle:
+            for index, line in enumerate(handle):
+                if line.strip():
+                    data = json.loads(line)
+                    yield Row(index, int(data.get("time_ms", 0)), data)
+
+
+def load_export_streaming(export_dir: Path) -> Export:
+    """The export with only the event rows the condenser reads, and movement as a stream (W-b).
+
+    One pass over `events.ndjson` keeps the rows `keep_event` accepts, then stable-sorts that
+    small subset by `time_ms`. Stable sorting commutes with filtering, so the subset is in the
+    same order as in the full contract-ordered list, and every condenser pass over it sees
+    exactly what it would see in memory. `end_ms` is the last event's time over all rows.
+    """
+    manifest = load_manifest(export_dir)
+    rows = []
+    end_ms = 0
+    with (export_dir / "events.ndjson").open("r", encoding="utf-8") as handle:
+        for index, line in enumerate(handle):
+            if not line.strip():
+                continue
+            if not any(needle in line for needle in _NEEDLES):
+                # The time of every row still counts for end_ms: read just that field.
+                end_ms = max(end_ms, _time_of(line))
+                continue
+            data = json.loads(line)
+            time_ms = int(data.get("time_ms", 0))
+            end_ms = max(end_ms, time_ms)
+            if keep_event(data):
+                rows.append(Row(index, time_ms, data))
+    return Export(manifest, sorted(rows, key=lambda row: row.time_ms), MovementStream(export_dir / "movement.ndjson"),
+                  end_ms)
+
+
+_TIME = re.compile(r'"time_ms"\s*:\s*(-?\d+)')
+
+
+def _time_of(line: str) -> int:
+    """A row's `time_ms` without parsing the row (a skipped row can still end the recording)."""
+    match = _TIME.search(line)
+    if match is None:
+        return int(json.loads(line).get("time_ms", 0))
+    return int(match.group(1))
 
 
 @dataclass

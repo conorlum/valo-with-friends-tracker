@@ -119,6 +119,19 @@ now but isn't a validated deliverable until the named gate:
   - **Parity is the gate:** byte-identical blobs, `players` and `link_inputs` against the in-memory condenser, on
     the fixture and on the real export.
   - Measure peak RAM before and after. That number, plus the parser's, sizes the worker (decision 9).
+  - **Built (2026-09-25, AFK run):** `contract.load_export_streaming`. The parser already writes both files in
+    `time_ms` order (0 inversions in 142,091 event and 887,924 movement rows), but the loader doesn't rely on
+    it: one pass keeps only the event rows the condenser reads (a substring pre-filter skips the rest unparsed),
+    then stable-sorts that small subset; movement is a stream, and each slot's samples are stable-sorted by
+    time. Both give exactly the contract order, so no external sort is needed.
+    - Parity: byte-identical blobs, `players`, `link_inputs` and report on the synthetic exports (both shapes,
+      shuffled files, equal-time rows), on the committed fixture, and on the real Swiftplay export (sha256 of
+      the blobs `95c2a3b4…`, identical for both paths). The real export refuses at condense under P-c (see
+      "Pass-6 findings"), so its parity run used a scratch-only override of that rule, applied to both paths
+      alike; both paths also refuse with the same error without it.
+    - Cost on this machine: in memory 48.8 s and a 6,579 MB peak working set; streaming **28.1 s and 306 MB**.
+      With the parser's 147 MB (finding 13), a worker needs well under 1 GB for this match; Stage 3 measures
+      the container.
 - **W-c. The upload worker** (Stage 3 step 1; merged with Stage 3).
   - Can be built now: `replay_worker/server.py`, the queue, timeout, temp cleanup and overflow tests, with a stub
     parser command.
