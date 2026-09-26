@@ -1,0 +1,141 @@
+"""The local preview's extras: ability objects (with their owners), the spike and shots."""
+
+import json
+
+import pytest
+
+from app.replays.condense import MapInfo, PlayerTable
+from app.replays.extras import TRACER_UNITS, build_extras
+
+# u = y * 1e-4 + 0.5, v = x * 1e-4 + 0.5: world (0, 0) is the minimap's centre.
+GAME_MAP = MapInfo("Testmap", "Test", 1e-4, 1e-4, 0.5, 0.5)
+AGENTS = {"Wraith": "Omen", "Gumshoe": "Cypher", "Hunter": "Sova"}
+# Two rounds: InRound at 10 s and 70 s; each playback window ends 50 s later.
+WINDOWS = [(10_000, 50_000, 60_000), (70_000, 110_000, 120_000)]
+
+
+def players() -> PlayerTable:
+    # Slots 0 and 5 both play Omen; slot 1 is the only Cypher. Pawns 100+slot, player states 200+slot.
+    agents = ["Omen", "Cypher", "Sova", "Jett", "Sage", "Omen", "Reyna", "Killjoy", "Breach", "Viper"]
+    return PlayerTable(subjects=[None] * 10, agents=agents, pawn_slot={100 + s: s for s in range(10)},
+                       other_slot={200 + s: s for s in range(10)}, pawn_changes={}, gone_ms={})
+
+
+def spawned(t_ms, guid, archetype, x, y, yaw=0.0):
+    return {"type": "actor_spawned", "time_ms": t_ms, "actor_net_guid": guid, "archetype_path": archetype,
+            "location": {"x": x, "y": y, "z": 0}, "rotation": {"pitch": 0, "yaw": yaw, "roll": 0}}
+
+
+def instigated(t_ms, guid, pawn):
+    return {"type": "export_group_received", "time_ms": t_ms, "actor_net_guid": guid, "is_actor": True,
+            "payload": {"Instigator": pawn, "Owner": 999}}
+
+
+def closed(t_ms, guid):
+    return {"type": "actor_closed", "time_ms": t_ms, "actor_net_guid": guid, "reason": "destroyed"}
+
+
+def shot(t_ms, state, x, y, dx, dy, gun="Vandal"):
+    return {"type": "valorant_shot_received", "time_ms": t_ms,
+            "shot": {"firing_player_state": state, "location": {"x": x, "y": y, "z": 0},
+                     "attack_vectors": [{"x": dx, "y": dy, "z": 0}], "equippable": {"name": gun}, "num_projectiles": 1}}
+
+
+def run(tmp_path, rows, positions=None):
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return build_extras(path, players(), WINDOWS, GAME_MAP, AGENTS, lambda t_ms: positions or {})
+
+
+def test_the_instigator_names_the_owner_and_the_close_ends_it(tmp_path):
+    extras = run(tmp_path, [spawned(20_000, 7, "Default__Zone_Wraith_4_Smoke_C", 1000, -2000),
+                            instigated(20_000, 7, 105), closed(35_000, 7)])
+    [smoke] = extras.rounds[1]["abilities"]
+    assert (smoke["slot"], smoke["owner_by"], smoke["agent"]) == (5, "instigator", "Omen")
+    assert (smoke["t0"], smoke["t1"]) == (10.0, 25.0)
+    assert (smoke["u"], smoke["v"]) == (3000, 6000)
+
+
+def test_a_lone_agent_owns_its_objects_and_equippables_are_skipped(tmp_path):
+    extras = run(tmp_path, [spawned(20_000, 8, "Default__GameObject_Gumshoe_4_TripWire_C", 0, 0),
+                            spawned(20_000, 9, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0)])
+    [wire] = extras.rounds[1]["abilities"]
+    assert (wire["slot"], wire["owner_by"], wire["t1"]) == (1, "agent", None)
+
+
+def test_two_players_of_one_agent_fall_back_to_the_nearest_with_its_evidence(tmp_path):
+    positions = {0: (5000.0, 5000.0), 5: (100.0, 0.0)}
+    extras = run(tmp_path, [spawned(20_000, 10, "Default__Projectile_Wraith_4_Smoke_C", 0, 0)], positions)
+    [throw] = extras.rounds[1]["abilities"]
+    assert (throw["slot"], throw["owner_by"], throw["owner_d"], throw["other_d"]) == (5, "nearest", 100, 7071)
+
+
+def test_the_nearest_guess_is_scored_where_the_instigator_is_known(tmp_path):
+    positions = {0: (5000.0, 5000.0), 5: (100.0, 0.0)}
+    extras = run(tmp_path, [spawned(20_000, 11, "Default__Zone_Wraith_4_Smoke_C", 0, 0), instigated(20_000, 11, 100)],
+                 positions)
+    assert extras.rounds[1]["abilities"][0]["slot"] == 0
+    assert extras.report["nearest_check_disagree"] == 1
+
+
+def test_a_buy_phase_setup_belongs_to_the_next_round_from_its_start(tmp_path):
+    extras = run(tmp_path, [spawned(65_000, 12, "Default__Pawn_Gumshoe_E_PossessableCamera_C", 0, 0),
+                            spawned(64_000, 13, "Default__Projectile_Gumshoe_Q_CageTrap_C", 0, 0), closed(66_000, 13)])
+    [camera] = extras.rounds[2]["abilities"]
+    assert (camera["t0"], camera["name"]) == (0.0, "E_PossessableCamera")
+    assert extras.report["abilities_buy_phase"] == 1 and extras.report["abilities_buy_phase_only"] == 1
+
+
+def test_a_close_before_a_reused_guid_spawns_is_not_its_close(tmp_path):
+    extras = run(tmp_path, [closed(15_000, 14), spawned(20_000, 14, "Default__GameObject_Hunter_Q_SonarPing_C", 0, 0)])
+    assert extras.rounds[1]["abilities"][0]["t1"] is None
+
+
+def test_the_spike_is_kept_with_its_planter(tmp_path):
+    extras = run(tmp_path, [spawned(40_000, 15, "Default__TimedBomb_C", 0, 0), instigated(40_000, 15, 106),
+                            closed(55_000, 15)])
+    [spike] = extras.rounds[1]["abilities"]
+    assert (spike["kind"], spike["slot"], spike["t0"], spike["t1"]) == ("Bomb", 6, 30.0, 45.0)
+
+
+def test_shots_resolve_their_shooter_and_point_a_tracer_along_the_attack_vector(tmp_path):
+    extras = run(tmp_path, [shot(12_000, 203, 0, 0, 0.0, 2.0), shot(13_000, None, 0, 0, 1, 0),
+                            shot(5_000, 203, 0, 0, 1, 0), shot(14_000, 777, 0, 0, 1, 0)])
+    [one] = extras.rounds[1]["shots"]
+    assert (one["t"], one["slot"], one["gun"], one["u"], one["v"]) == (2.0, 3, "Vandal", 5000, 5000)
+    assert (one["u1"], one["v1"]) == (5000 + round(TRACER_UNITS), 5000)   # +y world is +u
+    assert extras.report["shots_without_shooter"] == 1
+    assert extras.report["shots_outside_rounds"] == 1 and extras.report["shots_unresolved"] == 1
+
+
+@pytest.mark.parametrize("archetype", ["Default__BasePistol_C", "Default__Ability_Melee_Base_C",
+                                       "Default__Wraith_PC_C", "Default__EquippableGroundPickup_C"])
+def test_other_actors_are_ignored(tmp_path, archetype):
+    assert run(tmp_path, [spawned(20_000, 16, archetype, 0, 0)]).rounds == {}
+
+
+def test_a_possessed_pawn_belongs_to_its_possessor(tmp_path):
+    table = players()
+    table.possession[20] = [(21_000, 22_000, 5)]
+    path = tmp_path / "events.ndjson"
+    path.write_text(json.dumps(spawned(20_000, 20, "Default__Pawn_Wraith_E_Thing_C", 0, 0)) + "\n", encoding="utf-8")
+    [pawn] = build_extras(path, table, WINDOWS, GAME_MAP, AGENTS, lambda t: {}).rounds[1]["abilities"]
+    assert (pawn["slot"], pawn["owner_by"]) == (5, "possessed")
+
+
+def test_owners_pass_from_a_landed_throw_to_its_object_and_on_to_what_spawns_inside_it(tmp_path):
+    positions = {0: (5000.0, 5000.0), 5: (10.0, 0.0)}
+    extras = run(tmp_path, [
+        spawned(15_000, 30, "Default__Projectile_Wraith_Q_Cage_C", 0, 0), closed(16_000, 30),  # thrown by slot 5
+        spawned(16_100, 31, "Default__GameObject_Wraith_Q_Cage_C", 3000, 3000),                 # lands far from both
+        spawned(30_000, 32, "Default__Zone_Wraith_Q_Cage_C", 3050, 3000),                       # activates inside it
+        spawned(30_100, 33, "Default__GameObject_Wraith_Q_Cage_SecondAnchor_C", 9000, -9000),  # an unrelated kind
+        spawned(40_000, 34, "Default__GameObject_Wraith_4_Wire_C", 3000, -3000),               # unclear, and...
+        spawned(40_100, 35, "Default__GameObject_Wraith_4_Wire_C", 3500, -3000),               # its pair
+    ], positions)
+    got = {a["name"]: (a["slot"], a["owner_by"]) for a in extras.rounds[1]["abilities"]}
+    assert got["Q_Cage"] == (5, "parent")
+    assert [(a["kind"], a["owner_by"]) for a in extras.rounds[1]["abilities"][:2]] == [
+        ("Projectile", "nearest"), ("GameObject", "landed")]
+    assert got["Q_Cage_SecondAnchor"] == (None, None), "far from both Omens with no evidence: no owner"
+    assert got["4_Wire"] == (None, None)

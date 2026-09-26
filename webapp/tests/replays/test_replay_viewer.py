@@ -37,7 +37,7 @@ def condensed(tmp_path_factory):
 
 def run_node(script: str, payload) -> dict:
     completed = subprocess.run([NODE, "-e", script, str(REPLAY_JS)], input=json.dumps(payload), capture_output=True,
-                               text=True, timeout=60, check=False)
+                               text=True, encoding="utf-8", timeout=60, check=False)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -123,3 +123,37 @@ def test_the_page_templates_parse_and_the_partial_renders():
                  "data-replay-prev", "data-replay-next", "data-replay-speed", "data-replay-ticks"):
         assert hook in html
     assert "Not linked to a match on this site" in html and "<nav" not in html
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_the_linked_mode_helpers():
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const abilities = [
+          {kind: "Zone", code: "Wraith", name: "4_Smoke", slot: 3, t0: 5, t1: 20},
+          {kind: "GameObject", code: "Gumshoe", name: "4_TripWire", slot: 1, t0: 0, t1: null},
+          {kind: "GameObject", code: "Gumshoe", name: "4_TripWire_SecondWire", slot: 6, t0: 0, t1: null},
+          {kind: "GameObject", code: "Gumshoe", name: "4_TripWire_SecondWire", slot: 1, t0: 0.2, t1: null},
+          {kind: "Projectile", code: "Wraith", name: "4_Smoke", slot: 3, t0: 4, t1: 5},
+          {kind: "Bomb", code: "", name: "Spike", slot: 2, t0: 40, t1: null},
+          {kind: "GameObject", code: "Newagent", name: "Q_Thing", slot: 0, t0: 1, t1: 2}
+        ];
+        const pairs = R.pairWires(abilities);
+        process.stdout.write(JSON.stringify({
+          styles: abilities.map(a => R.abilityStyle(a).shape),
+          label: R.abilityStyle(abilities[6]).label,
+          at10: R.abilitiesAt(abilities, 10, 90).length, at95: R.abilitiesAt(abilities, 95, 90).length,
+          open: R.abilitiesAt(abilities, 89, 90).length,
+          pairs: Object.keys(pairs).map(k => [Number(k), abilities.indexOf(pairs[k])]),
+          signed: [R.signed(12.4), R.signed(-3.6), R.signed(0), R.signed(null)],
+          tally: R.tallyAt([{t: 1, killer: 0, victim: 5}, {t: 2, killer: 5, victim: 5}, {t: 9, killer: 1, victim: 6}], 5)
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["styles"] == ["smoke", "wire", "hidden", "hidden", "hidden", "spike", "point"]
+    assert got["label"] == "Q Thing"
+    assert got["at10"] == 4 and got["at95"] == 0 and got["open"] == 4
+    assert got["pairs"] == [[1, 3]], "a wire pairs with its own owner's second anchor"
+    assert got["signed"] == ["+12", "\u22124", "0", ""]
+    assert got["tally"] == {"0": {"k": 1, "d": 0}, "5": {"k": 0, "d": 2}}

@@ -12,7 +12,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.config import settings
 from app.db import get_db
 from app.maintenance import maintenance_middleware
-from app.routers import auth, friends, map_prediction, matches, players, sessions, site_stats, squad
+from app.routers import auth, friends, map_prediction, matches, players, replay_preview, sessions, site_stats, squad
 from app.services.auth import get_current_player
 from app.templates import templates
 
@@ -36,6 +36,8 @@ app.include_router(friends.router)
 app.include_router(map_prediction.router)
 app.include_router(matches.router)
 app.include_router(players.router)
+# Dev-only; 404 unless REPLAY_PREVIEW_DIR is set, and always in demo mode.
+app.include_router(replay_preview.router)
 app.include_router(sessions.router)
 app.include_router(site_stats.router)
 app.include_router(squad.router)

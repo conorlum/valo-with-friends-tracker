@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Local replays &ndash; {{ site_name }}{% endblock %}
+{% block content %}
+<h1>Local replays</h1>
+<p class="replay-note">Dev-only preview: bundles built on this machine by <code>scripts/build_replay_bundle.py</code>.</p>
+{% if bundles %}
+<table class="replay-list">
+  <thead><tr><th>Map</th><th class="num">Score</th><th class="num">Rounds</th><th>Built</th><th></th></tr></thead>
+  <tbody>
+  {% for b in bundles %}
+  <tr>
+    <td>{{ b.map }}</td>
+    <td class="num"><span class="team-name-team-1">{{ b.score[0] }}</span>&ndash;<span class="team-name-team-2">{{ b.score[1] }}</span></td>
+    <td class="num">{{ b.rounds }}</td>
+    <td>{{ b.built_at }}</td>
+    <td><a href="/dev/replays/{{ b.uuid }}">Watch</a> &middot; <a href="/matches/{{ b.uuid }}">Match</a></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No bundles in the preview folder yet.</p>
+{% endif %}
+{% endblock %}

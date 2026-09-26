@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{# The local replay preview (app/routers/replay_preview.py): one linked bundle, fetched once. #}
+{% block title %}{{ replay.map_name }} replay (local preview) &ndash; {{ site_name }}{% endblock %}
+{% block content %}
+<p class="replay-crumbs"><a href="/dev/replays">Local replays</a> &middot; <a href="{{ replay.match_url }}">Match page</a></p>
+{% with linked = true %}{% include "replays/_player.html" %}{% endwith %}
+<script src="/static/js/replay.js?v={{ static_version() }}"></script>
+<script>
+  (function () {
+    var root = document.querySelector("[data-replay]");
+    fetch({{ replay.bundle_url | tojson }}).then(function (r) { return r.json(); }).then(function (bundle) {
+      var players = {};
+      bundle.players.forEach(function (p) { players[String(p.slot)] = p; });
+      var rounds = Object.keys(bundle.rounds).map(Number).sort(function (a, b) { return a - b; });
+      window.viewer = new Replay.ReplayViewer(root, {
+        rounds: rounds,
+        mapImage: "/static/img/maps/" + bundle.match.map + ".png",
+        agentIcon: function (agent) { return "/static/img/agents/" + agent.toLowerCase().replace(/[^a-z]/g, "") + ".png"; },
+        loadRound: function (n) { return bundle.rounds[String(n)]; },
+        roundWinner: function (n) { var db = bundle.rounds[String(n)].db; return db && db.winner; },
+        linked: { players: players, uvPerUnit: bundle.match.uv_per_unit }
+      });
+      window.viewerReady = window.viewer.showRound(rounds[0]);
+    });
+  })();
+</script>
+{% endblock %}

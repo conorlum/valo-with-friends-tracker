@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     # Independent of demo_mode: only the service registered with Riot sets it.
     enable_riot_txt: bool = False
     session_cookie_https_only: bool = False
+    # Dev-only replay preview (app/routers/replay_preview.py): a local folder holding
+    # <match uuid>/bundle.json from scripts/build_replay_bundle.py. Unset (the default) turns the
+    # routes off; demo mode keeps them off whatever this says. Stage 2 replaces it.
+    replay_preview_dir: str | None = None
 
     @field_validator("database_url")
     @classmethod
