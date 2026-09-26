@@ -317,7 +317,8 @@ unneeded; the fixture's identifiability was then accepted (see "Public repo"):
    not `MulticastSetPhase`. Values: 2 (between rounds), 3 (buy, 30 s; 45 s before round 1), **4 (in round, starts
    at the barrier drop)**, 5 (round ending, 7 s), 6 (side swap, after round 4 in Swiftplay). 9 complete 4→5
    windows; none dropped. No `RoundNumber`, no `MulticastEndRound`.
-5. **Kills:** 66 `MulticastNotifyKilledEnemy`, all resolved through the pawns, none outside a round window. One is
+5. **Kills:** 66 `MulticastNotifyKilledEnemy`, all resolved through the pawns (**pass 6:** one was outside pass 5's
+   4 → 5 windows; see "Pass-6 findings on the Swiftplay export"). One is
    a **self-kill** (a Clove, 15 s after she was killed): most likely her ultimate expiring after a revive.
    No resurrect RPC was seen, so the replay shows her dead from her first death. **(pass 6)** That silently drops her revived movement and shortens the life the coverage
    check measures. P-c records such a life as uncertain instead.
@@ -363,12 +364,49 @@ unneeded; the fixture's identifiability was then accepted (see "Public repo"):
 - map discovered ✓ (**from the `.vrf`**, not actor paths);
 - size budget ✓;
 - parse time ✓ (finding 13: 24.9 s, 147 MB peak);
-- **(pass 6) still to run on this export:**
-  - the P-a phase-cycle checks, with `kills_outside_rounds == 0`;
-  - the P-b ownership checks;
-  - the P-c lifecycle checks, which must classify the leaver's close reason and the Clove life.
+- **(pass 6) run on this export, 2026-09-25 (AFK run, branch `afk/2026-09-25-replay-pass6`):**
+  - P-a phase cycle ✓: 9 validated 4 → 5 windows; the `ClientGamePhaseEnded` cross-check ran (37 `Begin`, 37
+    `Ended`, every one at its `Begin`'s time); no decoded `RoundNumber`; no dropped final round.
+  - `kills_outside_rounds == 0` ✓ (66 kills, all inside a playback window).
+  - P-b ownership ✓: 10 `PlayerState` claims on 10 player pawns, no conflict, no possession intervals.
+  - P-c lifecycle ✗ (**refused at condense**): `lifecycle: a second death … with no revive or new pawn`.
+    See "Pass-6 findings on the Swiftplay export" below: three Clove lives have a second death with no decoded
+    revive, and only one of them has the self-kill shape the plan expected.
+  - Finding 25 on the leaver ✓: the only player-pawn channel close is `destroyed`, in a buy phase (602.996 s),
+    and is classified `left` (slot 0 from round 7). Every one of the export's 1,021 `actor_closed` rows is
+    `destroyed`; no `dormancy` close and no reopened GUID, so this export can't show whether a leaver differs from
+    dormancy.
+  - P-f eligibility ✗: slot 9 has a 4.26 s track gap in round 6's post-decision period (the last sample 2.7 s
+    after `RoundEnding`, the next phase 7.0 s after it). Pass 6 extended the playback window, and so the gap
+    measurement, past `RoundEnding`; pass 5 measured to `RoundEnding` (largest gap 0.04 s). The replay plays; it
+    is link-ineligible.
+  - Every other pass-5 line still holds (tracks for every present player, coverage ≥ 94.6%, match-start spawn
+    lines at radius 557, size p95 40 KB and 204 KB per match, no blocking diagnostic, blobs round-trip). The 47
+    partial-bunch errors on channel 1 (phase RPCs and movement) are `phase_validated`; the other 29 fall on
+    channels 74-221, which carry no evidence the condenser reads (`ignored`).
+  - The match UUID now comes from the `.vrf` header (W-a): UTF-16 `FriendlyName`, 106 ASCII copies, equal to
+    the file name.
 
-Stage 1a counts as **passed** only when all of these are ✓.
+Stage 1a counts as **passed** only when all of these are ✓. **It is not passed:** the two ✗ lines above are
+findings for the user (R5: the checks were not loosened). The committed fixture (round 1 only) passes every
+pass-6 check.
+
+#### Pass-6 findings on the Swiftplay export (2026-09-25)
+
+- **Clove's self-revive is not decoded, and not only as a self-kill.** Three rounds have a Clove die twice with
+  no decoded revive in between: round 3 (killed at 40.1 s, then a self-kill at 55.4 s: the expected shape,
+  `uncertain`), and rounds 2 and 8 (killed by an enemy, then killed **again by an enemy** 4-6 s later). The
+  export has no resurrect RPC at all. Each Clove death spawns four `Default__Smonk_PostDeath_PC_C` pawns, which
+  are destroyed at her next death or at round end, so the export does carry indirect evidence of the revived
+  life. Under pass 6's rule ("a second death with no revive refuses, except a self-kill"), this export refuses at
+  condense. A scratch-only run with every such life marked `uncertain` (not committed) condenses and passes
+  every other check.
+- **The post-decision period has track gaps the pre-decision period doesn't.** One 4.26 s gap (slot 9, round 6)
+  in 9 rounds × 10 players, all after `RoundEnding`. With the gap limit (3 s) measured to `t_end`, the export
+  is link-ineligible.
+- **Finding 5 corrected:** there are two self-kills, not one. Besides round 3's, one at 733.0 s (a Fade, that player's first death of the round) falls in
+  round 8's round-ending period, outside pass 5's windows, so pass 5's "none outside a round window" was wrong
+  (its report didn't count `kills_outside_rounds` as a check). In pass 6's playback window it is inside round 8.
 
 ### Exporter contract (what the condenser relies on)
 
