@@ -7,6 +7,7 @@ from starlette.requests import Request
 
 from app.config import settings
 from app.db import SessionLocal
+from app.services.replay_preview import replay_preview_enabled, replay_url
 from app.services.auth import get_current_player
 
 # Fixed display timezone -- the server (Render) runs in UTC, so relying on
@@ -63,6 +64,9 @@ def match_label(match) -> str:
 
 
 templates.env.globals["match_label"] = match_label
+# Dev-only replay preview: off (False / None) unless REPLAY_PREVIEW_DIR is set, and in demo mode.
+templates.env.globals["replay_preview_enabled"] = replay_preview_enabled
+templates.env.globals["replay_url"] = replay_url
 
 
 def local_strftime(dt, fmt: str) -> str:

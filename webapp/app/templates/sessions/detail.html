@@ -322,6 +322,7 @@
 </div>
 {% endif %}
 
+{% set show_watch = replay_preview_enabled() %}
 <div class="card">
   <h2>Matches</h2>
   <table>
@@ -331,6 +332,7 @@
         <th>Score</th>
         <th>Your Team Impact</th>
         <th>Enemy Team Impact</th>
+        {% if show_watch %}<th>Watch</th>{% endif %}
       </tr>
     </thead>
     <tbody>
@@ -346,6 +348,7 @@
         <td><span class="badge badge-score">{{ our_score }} &ndash; {{ enemy_score }}</span></td>
         <td>{{ our_ts.total_impact | round | int if our_ts else "—" }}</td>
         <td>{{ enemy_ts.total_impact | round | int if enemy_ts else "—" }}</td>
+        {% if show_watch %}<td class="watch-cell">{% set watch = replay_url(match.external_id) %}{% if watch %}<a class="watch-link" href="{{ watch }}" onclick="event.stopPropagation()">&#9654; Watch</a>{% else %}<span class="muted" title="No replay for this match">&mdash;</span>{% endif %}</td>{% endif %}
       </tr>
       {% endfor %}
     </tbody>

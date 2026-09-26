@@ -6,25 +6,21 @@ or writes, no migration. Stage 2's stored replays replace them.
 """
 
 import json
-import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from app.config import settings
+from app.services import replay_preview as preview
+from app.services.replay_preview import UUID_SHAPE
 from app.templates import templates
 
 router = APIRouter(prefix="/dev/replays", tags=["replay-preview"])
 
-UUID_SHAPE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-
 
 def preview_root() -> Path:
-    if settings.demo_mode or not settings.replay_preview_dir:
-        raise HTTPException(status_code=404)
-    root = Path(settings.replay_preview_dir)
-    if not root.is_dir():
+    root = preview.preview_root()
+    if root is None:
         raise HTTPException(status_code=404)
     return root
 

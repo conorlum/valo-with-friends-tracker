@@ -83,3 +83,35 @@ def test_the_linked_partial_has_the_feed_board_and_layers():
     unlinked = env.get_template("replays/_player.html").render(replay={"map_name": "Ascent", "round_numbers": [1]},
                                                               linked=False)
     assert "data-replay-feed" not in unlinked and "Not linked to a match on this site" in unlinked
+
+
+def test_replay_url_only_for_matches_with_a_bundle(preview_dir, monkeypatch):
+    from app.services.replay_preview import replay_preview_enabled, replay_url
+
+    assert replay_preview_enabled() is True
+    assert replay_url(UUID) == f"/dev/replays/{UUID}"
+    assert replay_url(UUID.upper()) == f"/dev/replays/{UUID}", "external_id case doesn't matter"
+    assert replay_url("00000000-0000-4000-8000-000000000000") is None
+    assert replay_url("Haven101725908") is None and replay_url(None) is None
+    monkeypatch.setattr(settings, "demo_mode", True)
+    assert replay_preview_enabled() is False and replay_url(UUID) is None
+
+
+class _Match:
+    def __init__(self, external_id):
+        self.external_id, self.map_name, self.played_at = external_id, "Ascent", None
+        self.team1_rounds_won, self.team2_rounds_won = 13, 11
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_the_matches_list_has_a_watch_column_only_when_the_preview_is_on(preview_dir, monkeypatch, enabled):
+    from app.templates import templates
+
+    if not enabled:
+        monkeypatch.setattr(settings, "replay_preview_dir", None)
+    html = templates.env.get_template("matches/list.html").render(
+        matches=[_Match(UUID), _Match("00000000-0000-4000-8000-000000000000")], current_player=None,
+        showing_own_matches=False, static_version=lambda: "1")
+    assert ("<th>Watch</th>" in html) is enabled
+    assert (f'href="/dev/replays/{UUID}"' in html) is enabled
+    assert html.count("watch-link") == (1 if enabled else 0)

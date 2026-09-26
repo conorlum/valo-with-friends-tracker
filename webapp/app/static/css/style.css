@@ -1777,3 +1777,8 @@ table.compact-table .badge-score {
   .replay.is-linked .replay-body { grid-template-columns: minmax(0, 1fr); }
   .replay-feed { max-height: 320px; }
 }
+
+/* Watch column: the local replay preview's link, shown only when the preview is on. */
+.watch-cell { white-space: nowrap; }
+.watch-cell .muted { color: var(--ink-muted); }
+.watch-link { font-weight: 600; }
