@@ -34,7 +34,31 @@ This is the sixth pass.
 
 ## Status and next steps (2026-09-25)
 
-**Where things are:**
+**Pass-6 build (2026-09-25 evening, AFK run; nothing pushed).** The file-level plan is
+`docs/replay-pass6-impl-plan.md`. Four local branches, each cut from the one before it as the plan's stage order
+requires:
+- `afk/2026-09-25-replay-pass6` (from `overnight/2026-09-25-replay-stage1` @ `a43f5fb`), the 1c-bound work:
+  P-a to P-h, W-a (the `.vrf` header), W-b (the streaming condenser: parity on the real export, 28 s and 306 MB
+  instead of 49 s and 6.6 GB), and `scripts/replay_gate.py` (the executable 1b gate: every synthetic row at its
+  expected outcome). The Swiftplay fixture was regenerated with the pass-6 maker.
+- `…-worker` (W-c): `replay_worker/` with its tests; the local run on the real `.vrf` matched local ingest byte
+  for byte. The `Dockerfile` is written, not built.
+- `…-viewer` (W-d): `static/js/replay.js`, `templates/replays/`, and a standalone local page; all 9 Swiftplay
+  rounds render at desktop and phone width. No route.
+- `…-util` (W-e): flash and nearsight `util` entries; the real export's counts match finding 10.
+
+**Stage 1a is still open**, with two findings from the pass-6 checks (see "Pass-6 findings on the Swiftplay
+export"): P-c refuses the export (two Clove lives killed again by an enemy with no decoded revive), and P-f finds
+a 4.26 s gap after `RoundEnding`. Both are for the user to decide; the checks were not loosened. Every other
+pass-6 line passes.
+
+**What 1b still needs:** the competitive recording and crawl (user); the decisions on the two 1a findings; then
+`--preview` and the read-only `--dry-run` on the competitive export, `replay_gate.py --export-dir` on it, the
+link-level gate rows on its real DB rows, findings 14-27, and the freeze of every `PROVISIONAL` value (pass 6 adds
+the D15 set: the phase-cycle tolerance and index base, the final-round rules, the lifecycle close reasons, the
+completeness and surrender rule, the partial-bunch channel classes, and the header's ASCII-copy rule).
+
+**Where things were before the pass-6 build:**
 - Branch `overnight/2026-09-25-replay-stage1` (worktree `.worktrees/overnight-2026-09-25-replay-stage1`, based on
   `replays` @ `1aaa0e3`, not pushed) holds all Stage 1c tooling: `app/replays/{format,contract,condense,link}.py`,
   `scripts/{ingest_replay,make_replay_fixture,archive_replays,with_friends_db}.py`, the parser build/export
