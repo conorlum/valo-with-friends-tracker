@@ -25,3 +25,27 @@ services:
         value: "false"
       - key: SESSION_COOKIE_HTTPS_ONLY
         value: "true"
+      # Stage 3: the friends-only replay upload. The code is set by hand in the dashboard (never
+      # here); without it the upload routes 404. The worker's address comes from its service.
+      - key: REPLAY_UPLOAD_CODE
+        sync: false
+      - key: REPLAY_WORKER_URL
+        fromService:
+          type: pserv
+          name: replay-worker
+          property: hostport
+  # Stage 3: parses uploaded .vrf files (replay_worker/). Private: reachable only from the web
+  # service over Render's private network. No DB credentials and no secrets: it only parses.
+  - type: pserv
+    name: replay-worker
+    runtime: docker
+    dockerfilePath: replay_worker/Dockerfile
+    dockerContext: .
+    # PROVISIONAL(D10): decision 9 wants RAM >= 2x the container's peak parse + condense. Not yet
+    # measured in a container (no Docker here); on Windows the condense peaks near 1 GB (969 MB on
+    # the smallest competitive export), so 4 GB until Render's own measurement.
+    plan: pro
+    autoDeploy: true
+    envVars:
+      - key: REPLAY_WORKER_PORT
+        value: "8080"

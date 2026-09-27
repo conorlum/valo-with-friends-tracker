@@ -30,6 +30,14 @@ templates = Jinja2Templates(
 templates.env.globals["site_name"] = settings.site_name
 templates.env.globals["demo_mode"] = settings.demo_mode
 
+
+def replay_upload_enabled() -> bool:
+    """The "Upload replay" nav link: both upload settings set, and not demo mode (Stage 3)."""
+    return bool(settings.replay_upload_code and settings.replay_worker_url and not settings.demo_mode)
+
+
+templates.env.globals["replay_upload_enabled"] = replay_upload_enabled
+
 _AGENT_ICON_SLUGS = {
     "astra", "breach", "brimstone", "chamber", "clove", "cypher", "deadlock",
     "fade", "gekko", "harbor", "iso", "jett", "kayo", "killjoy", "miks",

@@ -6,6 +6,7 @@ from pathlib import Path
 
 REPLAYS = Path(__file__).resolve().parents[2] / "app" / "replays"
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+WORKER = Path(__file__).resolve().parents[3] / "replay_worker"
 FORBIDDEN = ("app.scoring.impact", "app.scoring.kill_order_leverage", "app.scoring.win_probability")
 
 
@@ -22,7 +23,8 @@ def _imports(path: Path) -> set[str]:
 
 def test_replay_code_does_not_import_scoring():
     files = [*REPLAYS.glob("*.py"), *(SCRIPTS / name for name in ("ingest_replay.py", "make_replay_fixture.py",
-                                                                   "replay_gate.py"))]
+                                                                   "replay_gate.py")),
+             *WORKER.glob("*.py")]
     for path in files:
         if not path.exists():
             continue
@@ -39,6 +41,14 @@ SPLIT_SCORING_ALLOWED = {
     "app.scoring.ingest_preflight", "app.scoring.ingest_preflight.verify_ingest_preflight",
 }
 APP = REPLAYS.parent
+
+
+def test_the_worker_is_covered_and_imports_no_database_code():
+    files = list(WORKER.glob("*.py"))
+    assert files, "replay_worker/ must exist on this branch"
+    for path in files:
+        hits = [name for name in _imports(path) if name.startswith(("sqlalchemy", "app.db", "app.models", "app.config"))]
+        assert hits == [], f"{path.name} imports {hits}"
 
 
 def test_the_per_kill_split_only_reads_impact():

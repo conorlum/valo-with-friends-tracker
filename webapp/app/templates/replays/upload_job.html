@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{# One upload's progress: polls /replays/uploads/<id>/status every 3 s until it's stored or failed. #}
+{% block title %}Replay upload &ndash; {{ site_name }}{% endblock %}
+{% block content %}
+<h1>Replay upload</h1>
+<div class="card">
+  <p data-upload-status aria-live="polite">{% if job.status == "stored" %}Stored.{% elif job.status == "failed" %}Failed: {{ job.error }}{% else %}Parsing&hellip; this takes a few minutes.{% endif %}</p>
+  <p data-upload-link{% if not job.replay_url %} hidden{% endif %}><a href="{{ job.replay_url or '#' }}">&#9654; Watch the replay</a></p>
+  <p><a href="/replays/upload">Upload another</a></p>
+</div>
+<script>
+  (function () {
+    var status = document.querySelector("[data-upload-status]"), link = document.querySelector("[data-upload-link]");
+    var done = {{ (job.status in ("stored", "failed")) | tojson }};
+    function show(body) {
+      if (body.status === "stored") {
+        status.textContent = body.linked ? "Stored and linked to its match." : "Stored. It isn't linked to a match on this site yet (it links after the match is crawled)." + (body.error ? " " + body.error : "");
+        if (body.replay_url) { link.hidden = false; link.querySelector("a").href = body.replay_url; }
+        return true;
+      }
+      if (body.status === "failed") { status.textContent = "Failed: " + (body.error || "unknown error"); return true; }
+      return false;
+    }
+    function poll() {
+      fetch("/replays/uploads/{{ upload_id }}/status").then(function (r) { return r.json(); })
+        .then(function (body) { if (!show(body)) setTimeout(poll, 3000); })
+        .catch(function () { setTimeout(poll, 3000); });
+    }
+    if (!done) setTimeout(poll, 3000);
+  })();
+</script>
+{% endblock %}

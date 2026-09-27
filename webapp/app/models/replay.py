@@ -102,3 +102,4 @@ class ReplayUpload(Base):
                                                  index=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     replay_id: Mapped[int | None] = mapped_column(ForeignKey("replays.id", ondelete="SET NULL"), nullable=True)
+    worker_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # migration 0013
