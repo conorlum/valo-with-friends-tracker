@@ -1254,13 +1254,14 @@ def condense_export_dir(export_dir: Path, *, source_sha256: str | None, build: d
                         map_override: str | None = None, allow_blocking: bool = False,
                         pin: ParserPin | None = None, static_dir: Path = fmt.STATIC_DIR,
                         vrf_path: Path | None = None, check_file_name: bool = True,
-                        streaming: bool = True) -> CondensedReplay:
+                        streaming: bool = True, with_extras: bool = True) -> CondensedReplay:
     """Checks the contract, then condenses. Blocking diagnostics refuse unless `allow_blocking`
     (the preview shows them instead). `vrf_path` gives the match UUID (its header, W-a) and
     the map when the export doesn't name it. `check_file_name` (local ingest) also requires the
     file's own name and the export's source name to agree with the header; the upload worker
     turns it off. `streaming` (the default, W-b) reads only the rows the condenser needs and
-    streams movement; `streaming=False` loads everything, for the parity test."""
+    streams movement; `streaming=False` loads everything, for the parity test. `with_extras` (the
+    default, Stage 2) also stores the round's abilities and shots in `util` (`attach_extras`)."""
     pin = pin or load_pin()
     export = load_export_streaming(export_dir) if streaming else load_export(export_dir)
     check_manifest(export.manifest, pin, source_sha256, build)
@@ -1271,6 +1272,27 @@ def condense_export_dir(export_dir: Path, *, source_sha256: str | None, build: d
     vrf_map_codes = map_codes_in_file(vrf_path) if have_vrf else None
     header = header_match_uuid(vrf_path) if have_vrf else None
     file_names = [vrf_path.name, str(export.manifest.get("source_file") or "")] if have_vrf and check_file_name else None
-    return condense(export, maps=load_maps(static_dir), agents_by_code=load_agents(static_dir),
-                    recipe=fmt.recipe(pin.commit, fmt.assets_revision(static_dir)), map_override=map_override,
-                    vrf_map_codes=vrf_map_codes, header=header, file_names=file_names)
+    maps, agents = load_maps(static_dir), load_agents(static_dir)
+    replay = condense(export, maps=maps, agents_by_code=agents,
+                      recipe=fmt.recipe(pin.commit, fmt.assets_revision(static_dir)), map_override=map_override,
+                      vrf_map_codes=vrf_map_codes, header=header, file_names=file_names)
+    if with_extras:
+        attach_extras(replay, export, export_dir / "events.ndjson", maps[replay.map_name], agents)
+    return replay
+
+
+def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, game_map: MapInfo,
+                  agents_by_code: dict[str, str]) -> None:
+    """Adds each round's ability objects and shots (app/replays/extras.py) to its blob's `util`
+    as the `ability` and `shot` kinds, after the kinds `condense()` wrote, and re-measures the
+    sizes. Another pass over the events file and one over movement, both streamed (W-b)."""
+    from app.replays.extras import WorldPositions, build_extras, util_entries  # extras imports this module
+
+    players = build_players(export, agents_by_code)
+    windows = read_game_state(export).windows
+    positions = WorldPositions(export.movement, players)
+    extras = build_extras(events_path, players, windows, game_map, agents_by_code, positions.at, positions.path)
+    for n, blob in replay.rounds.items():
+        blob["util"] = blob["util"] + util_entries(extras.rounds.get(n, {}))
+    replay.report["extras"] = extras.report
+    replay.report["sizes"] = fmt.size_report(replay.encoded_rounds())

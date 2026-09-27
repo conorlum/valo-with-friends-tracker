@@ -8,7 +8,9 @@ A round blob is `gzip(json)` of:
      "alive": {"0": [[0.0, 41.3, "kill"]]},
      "kills": [{"i": 0, "t": 41.3, "killer": 5, "victim": 0, "u": 4500, "v": 6012}],
      "plant": null, "defuse": null,
-     "util": [{"k": "flash", "t": 12.4, "by": 3, "u": 5120, "v": 4410, "ability": "...", "targets": [6, 8]}]}
+     "util": [{"k": "flash", "t": 12.4, "by": 3, "u": 5120, "v": 4410, "ability": "...", "targets": [6, 8]},
+              {"k": "ability", "t": 3.1, "by": 3, "t1": 21.0, "kind": "Zone", "code": "Wraith", ...},
+              {"k": "shot", "t": 40.2, "by": 5, "u": 4100, "v": 3300, "u1": 4390, "v1": 3310, ...}]}
 
 Every `t` is seconds since the round's `InRound` phase start on the replay's own clock.
 `t_decided` is the `RoundEnding` phase (the round was decided); playback runs on to
@@ -30,7 +32,7 @@ from pathlib import Path
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 4
+CONDENSE_REVISION = 5
 
 UV_SCALE = 10000
 
