@@ -307,7 +307,7 @@
 
   // Kills, deaths and assists-free tallies up to t, per slot, from the blob's kills.
   // Stage 4: the players alive per team at t, from the page's steps [[t, team-1, team-2], ...].
-  function aliveAt(steps, t) {
+  function aliveCountAt(steps, t) {
     var now = null;
     (steps || []).forEach(function (step) { if (step[0] <= t) now = step; });
     return now ? [now[1], now[2]] : null;
@@ -792,7 +792,7 @@
     }
     this.renderBoard();
     if (this.ui.badge) {
-      var alive = aliveAt(blob.alive_steps, t);
+      var alive = aliveCountAt(blob.alive_steps, t);
       this.ui.badge.hidden = !alive;
       if (alive) {
         this.ui.badge.innerHTML = '<span class="team-name-team-1">' + alive[0] + '</span> v <span class="team-name-team-2">' +
@@ -1213,7 +1213,7 @@
   var api = {
     decodeSegment: decodeSegment, decodeRound: decodeRound, trackAt: trackAt, aliveAt: aliveAt,
     lerpYaw: lerpYaw, ReplayViewer: ReplayViewer, SUPPORTED_VERSIONS: SUPPORTED_VERSIONS,
-    abilityStyle: abilityStyle, lineEnds: lineEnds, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, pairWires: pairWires, signed: signed, tallyAt: tallyAt, aliveAt: aliveAt, stateAt: stateAt,
+    abilityStyle: abilityStyle, lineEnds: lineEnds, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, pairWires: pairWires, signed: signed, tallyAt: tallyAt, aliveCountAt: aliveCountAt, stateAt: stateAt,
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil
   };
   global.Replay = api;

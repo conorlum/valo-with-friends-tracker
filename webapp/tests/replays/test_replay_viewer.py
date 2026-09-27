@@ -301,3 +301,19 @@ def test_the_js_reads_stored_abilities_and_shots_back_from_util():
     got = run_node(script, util)
     assert got["extras"] == rounds_extras(util) == extras
     assert got["casts"] == ["flash"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_the_badge_reads_the_steps_and_no_helper_shadows_another():
+    script = """
+      const R = require(process.argv[1]);
+      const src = require("fs").readFileSync(process.argv[1], "utf8");
+      const names = [...src.matchAll(/^  function (\\w+)\\(/gm)].map(m => m[1]);
+      const dupes = names.filter((n, i) => names.indexOf(n) !== i);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const steps = JSON.parse(input);
+        process.stdout.write(JSON.stringify({dupes: dupes, found: names.length >= 15, at: [0, 9.9, 10, 30].map(t => R.aliveCountAt(steps, t)),
+          life: R.aliveAt([[0, 5, "kill"]], 2, 60) !== null}));
+      });"""
+    got = run_node(script, [[0.0, 5, 5], [10.0, 4, 5]])
+    assert got == {"dupes": [], "found": True, "at": [[5, 5], [5, 5], [4, 5], [4, 5]], "life": True}
