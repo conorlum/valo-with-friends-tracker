@@ -1549,8 +1549,8 @@ throwaway PG18 cluster at 127.0.0.1:55432 (no prod writes):
   cleanup are the latter's). Not run here: the Docker build (no Docker) and so the container's memory; the
   Swiftplay upload (it refuses at condense, Stage 1a). Limits set from the six files (decision 10):
   181,035,000 bytes, a 240 s parse timeout, 10 uploads an hour, and 20 minutes before a job counts as
-  stuck (the plan's 10, doubled for the measured job time); the worker's `plan: pro` (4 GB) until Render's
-  own measurement. All `PROVISIONAL(D10)`.
+  stuck (the plan's 10, doubled for the measured job time); the worker's `plan: 4c-8g` (Pro Plus: 8 GB, 4 CPU; about
+  2x headroom at the upload cap) until Render's own measurement. Approved as AFK run decision D10.
 - On Render after merge (user):
   - the worker is not reachable from the internet;
   - it has no `DATABASE_URL` or other secrets in its environment;
