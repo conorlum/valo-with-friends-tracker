@@ -32,6 +32,29 @@ This is the sixth pass.
   dependencies of the work-ahead list. It records the user's call that the real-match fixture needn't be
   anonymous.
 
+## Status and next steps (2026-09-27)
+
+**AFK run `2026-09-27-replay-1b-to-2` built Stages 1b to 4 as stacked local branches; nothing is pushed,
+merged or deployed.** The file-level plan is `docs/replay-stage1b-4-impl-plan.md` (reviewed).
+- `afk/2026-09-27-replay-1b` (from `replay-local-preview` @ `0570183`): the Stage 1b gate on six competitive
+  matches (see "Stage 1b results": every gate row at its expected outcome, findings 14-28), the freeze of every
+  provisional value (unchanged, awaiting approval), and the competitive fixture. Evidence branch; not a PR.
+- `afk/2026-09-27-replay-1c` (from `origin/main` @ `c8b8a36`): **the Stage 1c PR**: the tooling, both fixtures
+  and the tests; no route, migration or viewer. Its gate passed (tests, the read-only `--dry-run` linking a
+  competitive export, the file checks, failing test IDs equal `origin/main`'s).
+- `afk/2026-09-27-replay-2` (from 1c): **the Stage 2 PR**: stored abilities and shots (`CONDENSE_REVISION` 5),
+  migration 0012, the store and link DB layer, the per-kill Impact split (decision 5 as amended), the routes,
+  the viewer and the links. Its pre-merge gate passed on a throwaway cluster (see Stage 2).
+- `afk/2026-09-27-replay-3` (from 2): **the Stage 3 PR**: the worker, the upload, migration 0013 and the
+  `render.yaml` service (written, not applied). The local gate passed (byte-identical to local ingest).
+- `afk/2026-09-27-replay-4` (from 3): **the Stage 4 PR**: the alive-count badge, the annotations and
+  `reingest_replays.py`'s write mode. Its gate passed.
+
+**Next (the user's):** merge 1c; merge 2 (the deploy applies 0012 to both DBs); ingest the six replays into the
+friends DB; merge 3 (creates the paid `replay-worker` service if the Blueprint auto-syncs) and set
+`REPLAY_UPLOAD_CODE`; merge 4. The run's `SUMMARY.md` has the exact commands. Still open from before: Stage
+1a's two Swiftplay findings (not needed for competitive).
+
 ## Status and next steps (2026-09-25)
 
 **Pass-6 build (2026-09-25 evening, AFK run; nothing pushed).** The file-level plan is
