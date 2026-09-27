@@ -1375,26 +1375,30 @@ the gate is its output, not a prose checklist):
 export. The Swiftplay fixture is committed there (`8d37a2c`); the competitive one follows 1b. The branch is based
 on `replays`, not `origin/main`: the PR branch is cut fresh and the commits carried over.
 
-**Provisional values** (each marked `PROVISIONAL(Dn)` in the code; the decision log is
-`~/.claude/overnight/2026-09-25-replay-stage1/DECISIONS.md`), frozen at the 1b gate:
-- D2 `supported_replay_builds = ["++Ares-Core+release-13.06"]` (confirmed by the Swiftplay manifest).
-- D5 segment gap 1.0 s, teleport 600 units, linear fill of skipped grid points, native `hz` as the median
-  sample interval (125 Hz measured), size budget 60 KB p95 per round and 1.5 MB per match (measured: 40 KB max,
-  194 KB per match).
-- D6 diagnostics: malformed packets block. Partial-bunch errors are coverage on movement channels and blocking
-  on phase or lifecycle channels unless P-a/P-c validate (pass 6).
-- D7 the parser version check uses a 12-character SHA prefix (the manifest carries the full SHA).
-- D8 `RoundResults` index i is round i + 1 (untested: nothing decoded yet).
-- D9 plant and defuse null (no decoded source).
-- D10 slots in order of each player's first pawn (spawn time, then guid); side group A holds slot 0; `side` null
-  when unresolved (pass 6).
-- D11 linker limits |offset| ≤ 2.0 s, ≥ 20 anchors, residual ≤ 0.75 s, median ≤ 0.25 s; `WinningTeam` `Red` →
-  `team-1`. Pass 6 replaces the 0.1 s tie window with pairing inside the residual window (P-g). Limits frozen from
-  one match are marked "n=1" (see the 1b gate).
-- Pass 5: the spawn-cluster radius 1500 units, applied to both round-start clusters and match-start lines. Pass 6:
-  a check only, never a constraint on linking (P-d).
-- Pass 6: the lifecycle rules (close reasons that mean "left"), the playback window end (the phase after 5), and
-  the completeness rule per mode (P-c, P-a, P-e).
+**Frozen values (Stage 1b gate, 2026-09-27, n = 6 competitive matches).** Every one is now marked
+`PROVISIONAL(D7)` in the code, one grouped approval (AFK run decision D7); the marker goes when it's approved.
+No value changed at the freeze: the evidence sits well inside every limit, so none needed moving, and
+tightening one on six matches would trade a misalignment risk that the gate already shows is covered for new
+false refusals.
+
+| Was | Value | Evidence (six matches) | Margin |
+| --- | --- | --- | --- |
+| D2 | `supported_replay_builds = ["++Ares-Core+release-13.06"]` (`replay_parser.json`) | all six manifests | the only build seen |
+| D5 | segment gap 1.0 s; teleport 600 units; linear fill; `hz` = median interval | 125 Hz in all six; largest gap 0.029-0.04 s | 25× under the gap |
+| D5 | coverage ≥ 90%, gap ≤ 3 s (eligibility) | 100% coverage, gap ≤ 0.04 s | wide |
+| D5 | size budget 60 KB p95 per round, 1.5 MB per match | c4: p95 39.7-51.1 KB, 558-842 KB per match | re-measured with stored util in Stage 2 (R2) |
+| D6 | malformed packets block; partial-bunch errors by channel class | 0 malformed; 112-161 per match on the phase channel, all `phase_validated` | n/a |
+| D7 | parser version = 12-character SHA prefix | all six | n/a |
+| D8 | `RoundResults` index i is played round i + 1 | 137 rounds, every decoded winner equals the DB's | confirmed |
+| D9 | blob `plant`/`defuse` null; the page uses the DB's times | no decoded plant RPC | unchanged |
+| D10 | slot order by first pawn; side A holds slot 0 | sides resolved in all six | n/a |
+| D11 | \|offset\| ≤ 2.0 s, ≥ 20 anchors, residual ≤ 0.75 s, median ≤ 0.25 s; `Red` → team-1 | offset +0.002 s median, residual ≤ 0.015 s, 141-217 anchors | 50× (residual), 7× (anchors) |
+| D15 | `PHASE_ENDED_TOLERANCE_MS = 0` | every `Ended` at its `Begin`'s time; a moved 5 refuses | exact |
+| D15 | `ROUND_NUMBER_BASE = 0` | no `RoundNumber` decoded at round start | **untested** (nothing to compare) |
+| D15 | lifecycle: any non-dormant close with no reopen = left | no player-pawn close in the six | **untested on competitive** (finding 25) |
+| D15 | final-round rule, channel classes, completeness per mode, header ASCII-copy rule | all six condense, link and pass P-e; ASCII copies present | legacy surrenders refuse (finding 26) |
+| pass 5/6 | spawn radius 1500 units (a check only) | match-start radius 300-612 units | 2.5× |
+| (display) | `replay.js` ability radii | tuned by eye | display only |
 
 **Gate:**
 - The unit tests pass. Failing test IDs under `.venv313` and `.venv` equal the baseline.

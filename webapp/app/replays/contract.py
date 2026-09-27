@@ -50,7 +50,7 @@ RPC_RESURRECT = "MulticastReceivePlayerResurrectEvent"
 # this and no MulticastNotifyKilledEnemy; every other player kill in it and in the Ascent export had both.
 RPC_DAMAGE = frozenset({"MulticastNotifyDamage_Point", "MulticastNotifyDamage_Base"})
 
-# PROVISIONAL(D6): a malformed packet blocks. Partial-bunch errors don't: they drop data on
+# PROVISIONAL(D7): a malformed packet blocks. Partial-bunch errors don't: they drop data on
 # one channel, and the condenser's per-player coverage and gap checks measure what that
 # costs a track. The first export had 76, across the recorder's controller and object
 # channels, with every player's track intact.
