@@ -31,15 +31,15 @@ from statistics import median
 
 from app.replays.condense import SPAWN_CLUSTER_RADIUS
 
-# PROVISIONAL(D7): clock limits, frozen at the Stage 1b gate from six competitive matches (2026-09-27).
+# Clock limits, frozen at the Stage 1b gate from six competitive matches (2026-09-27).
 MAX_ABS_OFFSET_S = 2.0
 MIN_ANCHORS = 20
 MAX_RESIDUAL_S = 0.75
 MAX_MEDIAN_RESIDUAL_S = 0.25
-# PROVISIONAL(D7): the decoded RoundResults WinningTeam FName per DB team
+# The decoded RoundResults WinningTeam FName per DB team
 # (tracker.gg's Red is team-1: trackergg_browserstate_source._team_for).
 WINNER_FNAME_TO_TEAM = {"Red": "team-1", "Blue": "team-2"}
-# PROVISIONAL(D7): a legal final score per mode (winner's rounds, loser's rounds). The crawl
+# A legal final score per mode (winner's rounds, loser's rounds). The crawl
 # keeps Competitive only; Swiftplay is here for completeness and the synthetic tests.
 MODES = ("competitive", "swiftplay")
 
@@ -143,7 +143,7 @@ def check_completeness(match: DbMatch) -> bool:
 
     The adapter drops tracker.gg's surrender padding rows but keeps its padded `roundsWon`, so a
     surrender shows rows that reach no legal end under an awarded score that does.
-    PROVISIONAL(D7): the surrender shape is confirmed by finding 26.
+    The surrender shape is confirmed by finding 26.
     """
     wins = Counter(outcome_winner(r.outcome) for r in match.rounds)
     if wins[None]:

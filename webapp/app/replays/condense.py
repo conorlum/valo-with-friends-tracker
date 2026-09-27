@@ -12,9 +12,9 @@ the upload worker. The output holds:
   positions and kills in slot terms). No Subjects;
 - `report`: counts, checks and sizes for the preview and the Stage 1a gate.
 
-Rules marked PROVISIONAL(D7) were chosen before any real export existed and were frozen at
-the Stage 1b gate from six competitive matches (docs/replay-viewer-plan.md, 2026-09-27); the
-marker stays until that freeze is approved.
+Its rules were chosen before any real export existed and were frozen at the Stage 1b gate
+from six competitive matches (docs/replay-viewer-plan.md, 2026-09-27; approved as AFK run
+decision D7).
 """
 
 from __future__ import annotations
@@ -56,15 +56,15 @@ from app.replays.contract import (
 PHASE_IN_ROUND = 4
 PHASE_ROUND_ENDING = 5
 
-# PROVISIONAL(D7): segment rules from the plan, frozen at the Stage 1b gate (2026-09-27).
+# Segment rules from the plan, frozen at the Stage 1b gate (2026-09-27).
 SEGMENT_GAP_S = 1.0
 TELEPORT_UNITS = 600.0
-# PROVISIONAL(D7): 1a gate limits, reported (not enforced) by the condenser.
+# 1a gate limits, reported (not enforced) by the condenser.
 MIN_ALIVE_COVERAGE = 0.90
 MAX_TRACK_GAP_S = 3.0
 SPAWN_CLUSTER_RADIUS = 1500.0
 START_POSITION_WINDOW_S = 2.0
-# PROVISIONAL(D7): pass-6 rules the 1b gate freezes. A ClientGamePhaseEnded must sit within
+# Pass-6 rules the 1b gate freezes. A ClientGamePhaseEnded must sit within
 # this of its ClientGamePhaseBegin (the Swiftplay export shows equal times), and a decoded
 # RoundNumber is 0-based, as D8 assumes for RoundResults (finding 16).
 PHASE_ENDED_TOLERANCE_MS = 0
@@ -279,7 +279,7 @@ def build_players(export: Export, agents_by_code: dict[str, str]) -> PlayerTable
     if len(groups) != 10:
         raise ContractError("players", f"{len(groups)} players (character pawns by player state), expected 10")
 
-    # PROVISIONAL(D7): slots in order of each player's first pawn (spawn time, then guid):
+    # Slots in order of each player's first pawn (spawn time, then guid):
     # stable for one export and reveals nothing. Tracks follow the player's own characters
     # only; a possessed drone or pet just helps resolve kills. Side group A holds slot 0.
     ordered = sorted(groups.items(), key=lambda kv: (spawned_at[kv[1][0]], kv[1][0]))
@@ -410,7 +410,7 @@ def read_util(export: Export, players: PlayerTable) -> tuple[list[UtilCast], dic
 # ---------------------------------------------------------------- lifecycle (P-c)
 
 
-# PROVISIONAL(D7): a close for any reason but dormancy can mean the player left (the parser
+# A close for any reason but dormancy can mean the player left (the parser
 # writes `destroyed`, `dormancy`, or a raw number; ChannelCloseReason.cs). Frozen by finding 25.
 DORMANT_CLOSE = "dormancy"
 
@@ -576,7 +576,7 @@ def phase_windows(collapsed: list[tuple[int, int]], end_ms: int) -> tuple[list[t
             if i < last_four:
                 raise ContractError("phase_cycle", f"InRound at {open_start} ms meets phase {phase} at {t} ms "
                                                    f"before any RoundEnding")
-            # PROVISIONAL(D7): the final InRound (no later 4) may end in another phase, a
+            # The final InRound (no later 4) may end in another phase, a
             # surrender's match end (finding 26). It is dropped and reported; a 5 after it
             # is then an orphan and refuses.
             dropped = open_start
@@ -646,7 +646,7 @@ def read_movement(export: Export, players: PlayerTable) -> tuple[dict[int, list[
 
 
 def native_hz(samples: dict[int, list[Sample]]) -> int:
-    """PROVISIONAL(D7): the exported rate, as the median interval between a player's samples."""
+    """The exported rate, as the median interval between a player's samples."""
     gaps = [(b.t_ms - a.t_ms) for rows in samples.values() for a, b in zip(rows, rows[1:])
             if 0 < b.t_ms - a.t_ms <= 500]
     if not gaps:
@@ -833,7 +833,7 @@ def build_segments(samples: list[Sample], intervals: list[list], start: int, end
             u_list.append(ua), v_list.append(va), yaw_list.append(ya)
             if b is None:
                 continue
-            # PROVISIONAL(D7): grid points the source skipped inside a segment (< SEGMENT_GAP_S)
+            # Grid points the source skipped inside a segment (< SEGMENT_GAP_S)
             # are filled linearly, yaw along the shortest arc; never beyond the source's rate.
             ub, vb, yb = grid[b]
             turn = (yb - ya + 180) % 360 - 180
@@ -985,7 +985,7 @@ def eligibility(diagnostics, game: GameState, coverage: dict, kinds: dict) -> di
     partial: dict[str, dict] = {}
     for channel, count in sorted(diagnostics.channels.items(), key=lambda kv: str(kv[0])):
         carried = kinds.get(channel, set())
-        # PROVISIONAL(D7): the channel classes and their precedence.
+        # The channel classes and their precedence.
         if "phase" in carried:
             cls = "phase_validated" if game.phase_ended_checked else "phase_unvalidated"
             if not game.phase_ended_checked:
@@ -1184,14 +1184,14 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
             "v": fmt.FORMAT_VERSION, "round": n, "map": game_map.name, "hz": hz,
             "t_start": 0.0, "t_decided": _seconds(decided, start), "t_end": _seconds(end, start),
             "players": player_rows, "tracks": tracks, "alive": alive, "kills": kill_rows,
-            # PROVISIONAL(D7): no plant/defuse source yet; the first export's TimedBomb wasn't decoded.
+            # No plant/defuse source yet; the first export's TimedBomb wasn't decoded.
             "plant": None, "defuse": None,
             # W-e: flash and nearsight casts in this window; a new `k` needs no `v` bump.
             "util": [_util_entry(c, start, game_map) for c in util_casts if start <= c.t_ms <= end],
         }
 
     encoded = {n: fmt.encode_blob(blob) for n, blob in rounds.items()}
-    # PROVISIONAL(D7): RoundResults index i (0-based, the decoder's encodedIndex - 1) is played round i + 1.
+    # RoundResults index i (0-based, the decoder's encodedIndex - 1) is played round i + 1.
     # The first export decoded no RoundResults at all: the linker then checks no winners.
     round_results = {str(i + 1): fields for i, fields in sorted(game.round_results.items())}
     report = {

@@ -1398,8 +1398,8 @@ the gate is its output, not a prose checklist):
 export. The Swiftplay fixture is committed there (`8d37a2c`); the competitive one follows 1b. The branch is based
 on `replays`, not `origin/main`: the PR branch is cut fresh and the commits carried over.
 
-**Frozen values (Stage 1b gate, 2026-09-27, n = 6 competitive matches).** Every one is now marked
-`PROVISIONAL(D7)` in the code, one grouped approval (AFK run decision D7); the marker goes when it's approved.
+**Frozen values (Stage 1b gate, 2026-09-27, n = 6 competitive matches).** Approved as one
+group (AFK run decision D7, 2026-09-27); the code no longer marks them provisional.
 No value changed at the freeze: the evidence sits well inside every limit, so none needed moving, and
 tightening one on six matches would trade a misalignment risk that the gate already shows is covered for new
 false refusals.
