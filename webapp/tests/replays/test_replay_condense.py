@@ -188,6 +188,58 @@ def test_an_unresolved_kill_refuses(tmp_path):
     assert refused.value.reason == "unresolved_kill"
 
 
+def lethal_damage(match, n, t, victim_pawn, killer_pawn, function="MulticastNotifyDamage_Point"):
+    """A lethal damage notify, as the Abyss export sends for some kills with no kill RPC."""
+    return {"type": "rpc_received", "time_ms": match.round_start(n) + int(t * 1000), "packet_id": 1,
+            "actor_net_guid": victim_pawn, "object_net_guid": victim_pawn + 5000, "channel": 72,
+            "function_name": function,
+            "payload": {"AliveAfterDamage": False, "Character": victim_pawn, "DamageKilledTarget": True,
+                        "EventInstigatorPawn": killer_pawn, "DamageDealt": 78}}
+
+
+def test_a_kill_with_only_a_lethal_damage_notify_is_a_kill(tmp_path):
+    match = SyntheticMatch()
+    events = match.events() + [lethal_damage(match, 3, 25.0, match.pawn(3, 0), match.pawn(3, 5))]
+    out = run(tmp_path, match, events=events)
+    assert [25.0, 5, 0] in out.link_inputs["kills"]["3"]
+    assert out.rounds[3]["alive"]["0"] == [[0.0, 25.0, "kill"]]
+    assert out.report["kill_sources"] == {"from_damage": 1, "damage_without_killer": 0}
+
+
+def test_a_lethal_damage_notify_beside_its_kill_rpc_is_not_a_second_kill(tmp_path):
+    match = SyntheticMatch()
+    # Round 1's first kill (10.0 s, slot 0 kills slot 5) also has its damage notify, 3 ms later.
+    events = match.events() + [lethal_damage(match, 1, 10.003, match.pawn(1, 5), match.pawn(1, 0))]
+    out = run(tmp_path, match, events=events)
+    assert [k["victim"] for k in out.rounds[1]["kills"]].count(5) == 1
+    assert out.report["kill_sources"]["from_damage"] == 0
+
+
+def test_lethal_damage_on_an_object_or_with_no_killer_adds_no_kill(tmp_path):
+    match = SyntheticMatch()
+    events = match.events() + [
+        lethal_damage(match, 3, 25.0, 99999, match.pawn(3, 5), "MulticastNotifyDamage_Base"),  # a camera
+        lethal_damage(match, 3, 26.0, match.pawn(3, 0), 99998),                                # no killer
+    ]
+    out = run(tmp_path, match, events=events)
+    assert out.rounds[3]["alive"]["0"] == [[0.0, None, "round_end"]]
+    assert out.report["kill_sources"] == {"from_damage": 0, "damage_without_killer": 1}
+
+
+def test_the_streaming_loader_keeps_lethal_damage_only(tmp_path):
+    from app.replays import contract
+
+    match = SyntheticMatch()
+    lethal = lethal_damage(match, 3, 25.0, match.pawn(3, 0), match.pawn(3, 5))
+    harmless = {**lethal, "payload": {**lethal["payload"], "DamageKilledTarget": False, "AliveAfterDamage": True}}
+    assert contract.keep_event(lethal) and not contract.keep_event(harmless)
+    directory = match.write(tmp_path / "export", match.events() + [lethal, harmless], None)
+    streamed = cd.condense_export_dir(directory, source_sha256=match.source_sha256, streaming=True)
+    in_memory = cd.condense_export_dir(directory, source_sha256=match.source_sha256, streaming=False)
+    assert streamed.encoded_rounds() == in_memory.encoded_rounds()
+    assert streamed.report["kill_sources"]["from_damage"] == 1
+
+
 # ------------------------------------------------------------ side groups
 
 

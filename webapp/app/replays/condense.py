@@ -33,6 +33,7 @@ from app.replays.contract import (
     CHARACTER_PLAYER_STATE,
     GAME_STATE_PATH,
     PLAYER_STATE_PATH,
+    RPC_DAMAGE,
     RPC_KILLED_ENEMY,
     RPC_PHASE_BEGIN,
     RPC_PHASE_ENDED,
@@ -660,9 +661,25 @@ class Kill:
     t_ms: int
     killer: int
     victim: int
+    # "rpc" (MulticastNotifyKilledEnemy) or "damage" (a lethal damage notify with no kill RPC).
+    source: str = "rpc"
 
 
-def read_kills(export: Export, players: PlayerTable) -> list[Kill]:
+# A lethal damage notify and the kill RPC for the same victim are this close in time, or they
+# are two deaths. On the Abyss and Ascent exports every kill RPC had its notify within this.
+DAMAGE_KILL_MATCH_MS = 1000
+
+
+def read_kills(export: Export, players: PlayerTable) -> tuple[list[Kill], dict]:
+    """Every player death with its killer, in time order, and counts for the report.
+
+    From MulticastNotifyKilledEnemy, and from a lethal damage notify (`DamageKilledTarget`) on a
+    player's pawn that has no kill RPC for that victim within DAMAGE_KILL_MATCH_MS: some kills
+    (three of Gekko's on the Abyss export) arrive only that way, and without them the victim
+    plays on as a frozen, living dot until round end. Lethal hits on objects (cameras, walls)
+    resolve to no player and are ignored; one whose killer resolves to no player is skipped
+    and counted.
+    """
     kills = []
     for row in export.rpcs(RPC_KILLED_ENEMY):
         payload = row.data.get("payload") or {}
@@ -672,7 +689,27 @@ def read_kills(export: Export, players: PlayerTable) -> list[Kill]:
             raise ContractError("unresolved_kill", f"a kill at {row.time_ms} ms has no player for the "
                                                    f"{'killer' if killer is None else 'victim'}")
         kills.append(Kill(row.time_ms, killer, victim))
-    return kills
+    counts = {"from_damage": 0, "damage_without_killer": 0}
+    for row in export.events:
+        data = row.data
+        if data.get("type") != "rpc_received" or data.get("function_name") not in RPC_DAMAGE:
+            continue
+        payload = data.get("payload") or {}
+        if payload.get("DamageKilledTarget") is not True:
+            continue
+        victim = players.resolve(int(payload.get("Character") or 0), row.time_ms)
+        if victim is None:
+            continue
+        if any(k.victim == victim and abs(k.t_ms - row.time_ms) <= DAMAGE_KILL_MATCH_MS for k in kills):
+            continue
+        killer = players.resolve(int(payload.get("EventInstigatorPawn") or 0), row.time_ms)
+        if killer is None:
+            counts["damage_without_killer"] += 1
+            continue
+        kills.append(Kill(row.time_ms, killer, victim, "damage"))
+        counts["from_damage"] += 1
+    kills.sort(key=lambda k: k.t_ms)
+    return kills, counts
 
 
 def read_revives(export: Export, players: PlayerTable) -> list[tuple[int, int]]:
@@ -1030,7 +1067,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         raise ContractError("rounds", "no round has both InRound and RoundEnding")
     by_slot, movement_counts, movement_channels = read_movement(export, players)
     hz = native_hz(by_slot)
-    kills = read_kills(export, players)
+    kills, kill_counts = read_kills(export, players)
     revives = read_revives(export, players)
     lifecycle = read_lifecycle(export, players, game.windows[-1][1], max(export.end_ms, game.windows[-1][2]))
     players.gone_ms = lifecycle.left
@@ -1172,6 +1209,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         "round_results_decoded": len(game.round_results),
         "round_results_fallback": game.round_results_fallback,
         "kills": len(kills),
+        "kill_sources": kill_counts,
         "kills_outside_rounds": outside,
         "kills_excluded": excluded,
         "ownership": players.ownership,

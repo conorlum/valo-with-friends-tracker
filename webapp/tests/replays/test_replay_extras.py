@@ -5,7 +5,7 @@ import json
 import pytest
 
 from app.replays.condense import MapInfo, PlayerTable
-from app.replays.extras import TRACER_UNITS, build_extras
+from app.replays.extras import TRACER_UNITS, build_extras, normalize_archetype
 
 # u = y * 1e-4 + 0.5, v = x * 1e-4 + 0.5: world (0, 0) is the minimap's centre.
 GAME_MAP = MapInfo("Testmap", "Test", 1e-4, 1e-4, 0.5, 0.5)
@@ -156,3 +156,26 @@ def test_a_landed_object_keeps_its_throw_and_a_drone_its_path(tmp_path):
     # One point per 100 ms, inside the drone's own life (25-27 s) only.
     assert [p[0] for p in drone_entry["path"]] == [15.0, 15.1, 16.0]
     assert "thrown" not in drone_entry and extras.report["pawn_paths"] == 1
+
+
+@pytest.mark.parametrize("code,name,expected", [
+    ("E", "Aggrobot_DiscTurret_PowerWave", ("Aggrobot", "E_DiscTurret_PowerWave")),
+    ("C", "Grenadier_Flash_Underhand", ("Grenadier", "C_Flash_Underhand")),
+    ("Q", "BountyHunter_Tether_SphereExpansion", ("BountyHunter", "Q_Tether_SphereExpansion")),
+    ("RemovableObject", "GumshoeTrackingDart", ("Gumshoe", "RemovableObject_GumshoeTrackingDart")),
+    ("Wraith", "4_Smoke", ("Wraith", "4_Smoke")),              # the usual shape: unchanged
+    ("E", "Nobody_Thing", ("E", "Nobody_Thing")),              # no known code: unchanged
+    ("Infinity", "Rain_Instance", ("Infinity", "Rain_Instance")),
+])
+def test_archetypes_with_the_slot_letter_first_are_read_as_their_agents(code, name, expected):
+    codes = {"Aggrobot": "Gekko", "Grenadier": "KAY/O", "BountyHunter": "Fade", "Gumshoe": "Cypher",
+             "Wraith": "Omen"}
+    assert normalize_archetype(code, name, codes) == expected
+
+
+def test_a_slot_first_archetype_gets_its_agent_and_owner(tmp_path):
+    extras = run(tmp_path, [spawned(20_000, 7, "Default__GameObject_RemovableObject_GumshoeTrackingDart_C", 0, 0),
+                            spawned(20_000, 8, "Default__Projectile_E_Hunter_Drone_Thing_C", 0, 0)])
+    dart, drone = extras.rounds[1]["abilities"]
+    assert (dart["code"], dart["agent"], dart["slot"]) == ("Gumshoe", "Cypher", 1)
+    assert (drone["code"], drone["name"], drone["agent"], drone["slot"]) == ("Hunter", "E_Drone_Thing", "Sova", 2)

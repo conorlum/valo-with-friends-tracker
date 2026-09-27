@@ -45,6 +45,10 @@ CHARACTER_PLAYER_STATE = "PlayerState"
 # Not seen in the first export (no revive happened); the name is from the parser source.
 RPC_SET_PHASE = "MulticastSetPhase"
 RPC_RESURRECT = "MulticastReceivePlayerResurrectEvent"
+# Confirmed by the Abyss export (81e38a00): a lethal hit's damage notify, which names the victim's
+# pawn (`Character`) and the killer's (`EventInstigatorPawn`). Three of its kills (all Gekko's) had
+# this and no MulticastNotifyKilledEnemy; every other player kill in it and in the Ascent export had both.
+RPC_DAMAGE = frozenset({"MulticastNotifyDamage_Point", "MulticastNotifyDamage_Base"})
 
 # PROVISIONAL(D6): a malformed packet blocks. Partial-bunch errors don't: they drop data on
 # one channel, and the condenser's per-player coverage and gap checks measure what that
@@ -262,7 +266,7 @@ PATH_KEYS = ("actor_path", "archetype_path", "object_path", "outer_path")
 # Substrings that every kept row's line contains; a line with none of them can't be kept, so it
 # is never parsed. The exact test (`keep_event`) runs on the parsed rows.
 _NEEDLES = tuple(f'"{name}"' for name in (*STREAM_EVENT_TYPES, *STREAM_PAYLOAD_KEYS, *STREAM_RPCS)) + (
-    "BombPlayerState", "BombGameState", "Maps")
+    "BombPlayerState", "BombGameState", "Maps", '"DamageKilledTarget"')
 
 
 def keep_event(data: dict) -> bool:
@@ -272,6 +276,9 @@ def keep_event(data: dict) -> bool:
         return True
     if kind == "rpc_received" and data.get("function_name") in STREAM_RPCS:
         return True
+    if kind == "rpc_received" and data.get("function_name") in RPC_DAMAGE:
+        payload = data.get("payload")
+        return isinstance(payload, dict) and payload.get("DamageKilledTarget") is True
     if kind == "export_group_received":
         payload = data.get("payload")
         if data.get("export_group_path") in STREAM_GROUP_PATHS:

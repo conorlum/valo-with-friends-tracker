@@ -85,43 +85,136 @@
 
   // ------------------------------------------------------------ linked-mode helpers (pure; tested in node)
 
-  // Ability archetypes -> the ability they are and how to draw them. `ability` is its display
-  // name (the key in static/data/abilities.json, which gives its icon); `shape` is smoke (a grey
+  // Ability archetypes -> the ability they are and how to draw them. The key is the extras row's
+  // `<code>_<name>` (extras.py normalises slot-first archetypes). `ability` is its display name
+  // (the key in static/data/abilities.json, which gives its icon); `shape` is smoke (a grey
   // disc), area (a team-tinted disc), reveal (a pulsing ring), wire (a line to its paired end),
-  // badge (a team-coloured disc with the ability's glyph) or hidden; `r` is a radius in world
-  // units. First match wins; an unknown archetype is a badge with no glyph.
+  // line (a wall or an aim, from the object's yaw: see lineEnds), badge (a team-coloured disc
+  // with the ability's glyph) or hidden. `r` and `len` are world units. First match wins; an
+  // unknown archetype is a badge with no glyph. Projectiles are never drawn (their object is).
+  // PROVISIONAL: radii are approximate in-game sizes, tuned by eye on the map.
   var ABILITY_STYLES = [
+    // Omen
     [/^Wraith_4_Smoke$/, { ability: "Dark Cover", shape: "smoke", r: 410 }],
     [/^Wraith_Q_NearsightMissile_TrajectoryWarning$/, { ability: "Paranoia", shape: "hidden" }],
-    [/^Smonk_NewSmoke$/, { ability: "Ruse", shape: "smoke", r: 410 }],
+    // Clove (the _PDS smoke is cast after death)
+    [/^Smonk_NewSmoke(_PDS)?$/, { ability: "Ruse", shape: "smoke", r: 410 }],
     [/^Smonk_Q_DecayExplosion$/, { ability: "Meddle", shape: "area", r: 450 }],
+    // Cypher
     [/^Gumshoe_Q_Cage$/, { ability: "Cyber Cage", shape: "smoke", r: 330 }],
     [/^Gumshoe_Q_CageTrap$/, { ability: "Cyber Cage", shape: "badge" }],
     [/^Gumshoe_4_TripWire$/, { ability: "Trapwire", shape: "wire" }],
     [/^Gumshoe_4_TripWire_SecondWire$/, { ability: "Trapwire", shape: "hidden" }],
     [/^Gumshoe_E_PossessableCamera$/, { ability: "Spycam", shape: "badge" }],
-    [/^RemovableObject_GumshoeTrackingDart$/, { ability: "Spycam", agent: "Cypher", shape: "badge", small: true, label: "Spycam dart" }],
+    [/^Gumshoe_RemovableObject_GumshoeTrackingDart$/, { ability: "Spycam", shape: "badge", small: true, label: "Spycam dart" }],
     [/^Gumshoe_X_InterrogateHat$/, { ability: "Neural Theft", shape: "badge" }],
+    // Sova
     [/^Hunter_Q_SonarPing$/, { ability: "Recon Bolt", shape: "reveal", r: 1500 }],
     [/^Hunter_Q_SonarBolt$/, { ability: "Recon Bolt", shape: "hidden" }],
     [/^Hunter_4_ExplosiveBolt_Explosion$/, { ability: "Shock Bolt", shape: "area", r: 350 }],
     [/^Hunter_E_Drone$/, { ability: "Owl Drone", shape: "badge" }],
     [/^Hunter_E_Drone_RevealDart$/, { ability: "Owl Drone", shape: "badge", small: true, label: "Owl Drone dart" }],
+    // Waylay
     [/^Terra_E_RewindTime_RewindTarget$/, { ability: "Refract", shape: "badge", label: "Refract (return point)" }],
     [/^Terra_C_TimeSlowGrenade_Explosion$/, { ability: "Saturate", shape: "area", r: 500 }],
     [/^Terra_X_DelayedBeam/, { ability: "Convergent Paths", shape: "badge" }],
+    // Iso
     [/^Sequoia_E_Shield$/, { ability: "Double Tap", shape: "hidden" }],
     [/^Sequoia_E_Orb$/, { ability: "Double Tap", shape: "badge", label: "Double Tap orb" }],
     [/^Sequoia_4_MovingCover$/, { ability: "Contingency", shape: "badge" }],
     [/^Sequoia_Q_FragileMissile_TrajectoryWarning$/, { ability: "Undercut", shape: "badge" }],
     [/^Sequoia_X_LineCapture$/, { ability: "Kill Contract", shape: "badge" }],
+    // Phoenix
     [/^Phoenix_MolotovFire$/, { ability: "Hot Hands", shape: "area", r: 450 }],
     [/^Phoenix_Q_FlameWallManager/, { ability: "Blaze", shape: "badge" }],
     [/^Phoenix_X_ResTarget/, { ability: "Run it Back", shape: "badge", label: "Run it Back (return point)" }],
+    // Skye
     [/^Guide_4_Heal_AOE$/, { ability: "Regrowth", shape: "area", r: 900 }],
     [/^Guide_E_HawkFlash_FlashSource$/, { ability: "Guiding Light", shape: "badge", unlisted: true }],
-    [/^Guide_Q_PossessableScout$/, { ability: "Trailblazer", shape: "badge" }]
+    [/^Guide_Q_PossessableScout$/, { ability: "Trailblazer", shape: "badge" }],
+    // Astra: stars are placed markers; a fake nebula is a dissipate (a thin, fading smoke).
+    [/^Rift_E_SmokeZone$/, { ability: "Nebula  / Dissipate", shape: "smoke", r: 475, label: "Nebula" }],
+    [/^Rift_E_SmokeZone_Fake$/, { ability: "Nebula  / Dissipate", shape: "smoke", r: 475, faint: true, label: "Dissipate" }],
+    [/^Rift_Q_FlashBurst$/, { ability: "Nova Pulse", shape: "area", r: 475 }],
+    [/^Rift_4_BlackHole$/, { ability: "Gravity Well", shape: "area", r: 475 }],
+    [/^Rift_X_GlobalWall$/, { ability: "Astral Form / Cosmic Divide", shape: "line", dir: "along", full: true, label: "Cosmic Divide" }],
+    [/^Rift_X_Markers$/, { ability: "Astral Form / Cosmic Divide", shape: "badge", small: true, unlisted: true, label: "Astra star" }],
+    // Gekko: globules are what's left to reclaim.
+    [/^Aggrobot_C_ExplodeyPatch$/, { ability: "Mosh Pit", shape: "area", r: 450 }],
+    [/^Aggrobot_SeekerNade$/, { ability: "Wingman", shape: "badge" }],
+    [/^Aggrobot_RollyPolly$/, { ability: "Thrash", shape: "badge" }],
+    [/^Aggrobot_(X_)?Reclaim_Orb/, { ability: "Wingman", shape: "badge", small: true, unlisted: true, label: "Gekko globule" }],
+    // Raze
+    [/^Clay_Q_Explosion$/, { ability: "Blast Pack", shape: "area", r: 450 }],
+    [/^Clay_E_Boomba$/, { ability: "Boom Bot", shape: "badge" }],
+    // Chamber
+    [/^Deadeye_E_Trap$/, { ability: "Trademark", shape: "badge" }],
+    [/^Deadeye_E_Slow_Large$/, { ability: "Trademark", shape: "area", r: 550, label: "Trademark slow" }],
+    [/^Deadeye_E_Teleporter_Tether$/, { ability: "Rendezvous", shape: "badge" }],
+    // Sage: the wall runs across its yaw (every Summit wall's four segments did); segments hidden.
+    [/^Thorne_E_Wall_Fortifying$/, { ability: "Barrier Orb", shape: "line", dir: "across", len: 1040 }],
+    [/^Thorne_E_Wall_Segment_Fortifying$/, { ability: "Barrier Orb", shape: "hidden" }],
+    [/^Thorne_4_SlowField_Production$/, { ability: "Slow Orb", shape: "area", r: 600 }],
+    // Reyna
+    [/^Vampire_4_NearsightAOE_Source$/, { ability: "Leer", shape: "badge" }],
+    [/^Vampire_Q_Heal_HealPool/, { ability: "Devour", shape: "badge", small: true, unlisted: true, label: "Soul orb" }],
+    // Fade
+    [/^BountyHunter_E_LoSReveal_Source_Reactivate$/, { ability: "Haunt", shape: "reveal", r: 1500 }],
+    [/^BountyHunter_Q_Tether_SphereExpansion$/, { ability: "Seize", shape: "area", r: 600 }],
+    [/^BountyHunter_X_WaveForm$/, { ability: "Nightfall", shape: "badge" }],
+    // Veto
+    [/^Pine_4_UsableTeleport$/, { ability: "Crosscut", shape: "badge" }],
+    [/^Pine_Q_SeizeTrap$/, { ability: "Chokehold", shape: "badge" }],
+    [/^Pine_Q_Tether_SphereExpansion$/, { ability: "Chokehold", shape: "area", r: 500 }],
+    [/^Pine_E_RadEater$/, { ability: "Interceptor", shape: "badge" }],
+    // Viper (the screen's direction isn't checked yet: a badge until a replay shows it)
+    [/^Pandemic_E_SmokeScreenManager$/, { ability: "Toxic Screen", shape: "badge" }],
+    [/^Pandemic_AcidMolotov_NewMolotov$/, { ability: "Snake Bite", shape: "area", r: 450 }],
+    // Jett
+    [/^Wushu_4_SmokeZone$/, { ability: "Cloudburst", shape: "smoke", r: 335 }],
+    // Breach: both objects spawn 800 units ahead of Breach along its aim (every cast on Sunset);
+    // the reach isn't decoded, so they are drawn as an aim from Breach, not a blast zone.
+    [/^Breach_E_SweetSpotFissure$/, { ability: "Fault Line", shape: "line", dir: "along", from: -800, len: 800, aim: true }],
+    [/^Breach_X_Shockwave$/, { ability: "Rolling Thunder", shape: "line", dir: "along", from: -800, len: 800, aim: true }],
+    [/^Breach_4_FusionBlast$/, { ability: "Aftershock", shape: "area", r: 300 }],
+    // Tejo
+    [/^Cashew_4_SonarPing$/, { ability: "Stealth Drone", shape: "reveal", r: 1000 }],
+    [/^Cashew_E_Explosion$/, { ability: "Guided Salvo", shape: "area", r: 400 }],
+    [/^Cashew_E_MapMissileMarker/, { ability: "Guided Salvo", shape: "badge", small: true, unlisted: true, label: "Guided Salvo target" }],
+    [/^Cashew_E_AirStrikeMortar$/, { ability: "Guided Salvo", shape: "hidden" }],
+    [/^Cashew_Q_ShellShockGrenade/, { ability: "Special Delivery", shape: "area", r: 500 }],
+    [/^Cashew_X_Segment$/, { ability: "Armageddon", shape: "area", r: 350 }],
+    [/^Cashew_X_SegmentManager$/, { ability: "Armageddon", shape: "hidden" }],
+    // Brimstone
+    [/^Sarge_4_Smoke_Production/, { ability: "Sky Smoke", shape: "smoke", r: 415 }],
+    [/^Sarge_4_SmokeManager/, { ability: "Sky Smoke", shape: "hidden" }],
+    [/^Sarge_Q_Molotov_Production$/, { ability: "Incendiary", shape: "area", r: 450 }],
+    [/^Sarge_E_SpeedStim$/, { ability: "Stim Beacon", shape: "area", r: 500 }],
+    [/^Sarge_X_OrbitalStrike/, { ability: "Orbital Strike", shape: "area", r: 900 }],
+    // Yoru
+    [/^Stealth_4_Decoy_V2$/, { ability: "FAKEOUT", shape: "badge" }],
+    [/^Stealth_DecoySpawner$/, { ability: "FAKEOUT", shape: "hidden" }],
+    // Miks (`Thumper` objects are read as Miks's: see extras.CODE_ALIASES)
+    [/^Iris_E_Smoke$/, { ability: "Waveform", shape: "smoke", r: 400 }],
+    [/^Iris_X_SonicWave$/, { ability: "Bassquake", shape: "badge" }],
+    [/^Iris_Concuss$/, { ability: "M-pulse", shape: "area", r: 500 }],
+    [/^Iris_ConcussPulse$/, { ability: "M-pulse", shape: "hidden" }],
+    [/^Iris_Heal$/, { ability: "Harmonize", shape: "area", r: 500 }]
   ];
+
+  // A line ability's two ends in minimap uv, from its yaw (degrees on the map: 0 = +u, 90 = +v):
+  // `along` the yaw from `from` to `from + len` world units, or `across` it, centred; `full` runs
+  // the length of the map both ways (Astra's divide). Null without a yaw.
+  function lineEnds(a, style, uvPerUnit) {
+    if (a.yaw === null || a.yaw === undefined) return null;
+    var rad = a.yaw * Math.PI / 180, du = Math.cos(rad), dv = Math.sin(rad);
+    if (style.dir === "across") { var tmp = du; du = -dv; dv = tmp; }
+    var lo, hi;
+    if (style.full) { lo = -20000; hi = 20000; }
+    else if (style.dir === "across") { lo = -style.len * uvPerUnit / 2; hi = style.len * uvPerUnit / 2; }
+    else { lo = (style.from || 0) * uvPerUnit; hi = lo + style.len * uvPerUnit; }
+    return [[a.u + du * lo, a.v + dv * lo], [a.u + du * hi, a.v + dv * hi]];
+  }
 
   function abilityStyle(ability) {
     if (ability.kind === "Bomb") return { label: "Spike", shape: "spike" };
@@ -132,7 +225,8 @@
         var style = ABILITY_STYLES[i][1];
         return {
           ability: style.ability, agent: style.agent || ability.agent, shape: style.shape, r: style.r,
-          small: !!style.small, unlisted: !!style.unlisted, label: style.label || style.ability
+          small: !!style.small, unlisted: !!style.unlisted, label: style.label || style.ability,
+          faint: !!style.faint, dir: style.dir, len: style.len, from: style.from, full: !!style.full, aim: !!style.aim
         };
       }
     }
@@ -166,11 +260,24 @@
   }
 
   // Abilities showing at time t: spawned by t and not yet closed (an unclosed one lasts the round).
+  // A brief one (Regrowth's heal pulse lives 0.3 s) stays for ABILITY_MIN_S, fading after its close.
+  var ABILITY_MIN_S = 1.0;
+
   function abilitiesAt(abilities, t, tEnd) {
     return (abilities || []).filter(function (a) {
-      var until = a.t1 === null || a.t1 === undefined ? tEnd : a.t1;
+      var until = a.t1 === null || a.t1 === undefined ? tEnd : Math.max(a.t1, a.t0 + ABILITY_MIN_S);
       return a.t0 <= t && t <= until;
     });
+  }
+
+  // How opaque an ability is at t: fading in over its first 0.25 s, and out after its close
+  // while it lingers (see abilitiesAt).
+  function abilityAlpha(a, t) {
+    var alpha = Math.min(1, Math.max(0, (t - a.t0) / 0.25));
+    if (a.t1 !== null && a.t1 !== undefined && t > a.t1) {
+      alpha *= Math.max(0, 1 - (t - a.t1) / Math.max(0.2, a.t0 + ABILITY_MIN_S - a.t1));
+    }
+    return alpha;
   }
 
   // Trapwire: each first anchor pairs with the unpaired second anchor of the same owner
@@ -686,7 +793,7 @@
     var all = this.current.extras.abilities;
     var smoke = this.css("--replay-smoke", "rgba(214, 218, 226, 0.5)");
     // Areas first, so badges sit on top of them; the spike last.
-    ["smoke", "area", "reveal", "wire", "badge", "spike"].forEach(function (pass) {
+    ["smoke", "area", "reveal", "line", "wire", "badge", "spike"].forEach(function (pass) {
       showing.forEach(function (a) {
         var style = abilityStyle(a);
         if (style.shape !== pass) return;
@@ -694,13 +801,14 @@
         var color = self.ownerColor(a.slot);
         var glyph = self.abilityIcon(style.agent, style.ability);
         var text = self.abilityText(a, style);
-        var age = t - a.t0, fadeIn = Math.min(1, age / 0.25);
+        var age = t - a.t0, fadeIn = abilityAlpha(a, t);
         ctx.save();
         if (pass === "smoke" || pass === "area") {
           var rad = self.uvRadius(style.r) * s;
           ctx.globalAlpha = fadeIn;
           ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI);
           if (pass === "smoke") {
+            if (style.faint) ctx.globalAlpha = 0.45 * fadeIn;
             var grad = ctx.createRadialGradient(x, y, rad * 0.2, x, y, rad);
             grad.addColorStop(0, "rgba(232, 234, 240, 0.72)");
             grad.addColorStop(1, smoke);
@@ -708,7 +816,9 @@
           } else {
             ctx.globalAlpha = 0.3 * fadeIn; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = fadeIn;
           }
-          ctx.lineWidth = 2.5; ctx.strokeStyle = color; ctx.stroke();
+          ctx.lineWidth = 2.5; ctx.strokeStyle = color;
+          if (style.faint) ctx.setLineDash([r / 3, r / 4]);
+          ctx.stroke();
           ctx.restore(); ctx.save();
           self.drawBadge(ctx, x, y, r * 0.52, color, glyph, 0.9 * fadeIn);
           hits.push({ x: x, y: y, r: Math.max(rad, r * 0.6), text: text, area: true });
@@ -719,6 +829,34 @@
           ctx.restore(); ctx.save();
           self.drawBadge(ctx, x, y, r * 0.6, color, glyph);
           hits.push({ x: x, y: y, r: r * 0.8, text: text });
+        } else if (pass === "line") {
+          var ends = lineEnds(a, style, (self.linked && self.linked.uvPerUnit) || 0.75);
+          if (ends) {
+            var x0 = ends[0][0] * s, y0 = ends[0][1] * s, x1 = ends[1][0] * s, y1 = ends[1][1] * s;
+            ctx.globalAlpha = fadeIn; ctx.strokeStyle = color; ctx.lineCap = "round";
+            if (style.aim) {
+              // An aim: dashed from the caster, with an arrowhead where the object spawned.
+              ctx.lineWidth = Math.max(2, r / 5); ctx.setLineDash([r / 3, r / 4]);
+              ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); ctx.setLineDash([]);
+              var ang = Math.atan2(y1 - y0, x1 - x0), head = r * 0.7;
+              var tail = Math.hypot(x1 - x0, y1 - y0) * 2.5;
+              var tx = x1 + tail * Math.cos(ang), ty = y1 + tail * Math.sin(ang);
+              var fadeTail = ctx.createLinearGradient(x1, y1, tx, ty);
+              fadeTail.addColorStop(0, color); fadeTail.addColorStop(1, "rgba(0, 0, 0, 0)");
+              ctx.save(); ctx.strokeStyle = fadeTail; ctx.setLineDash([r / 3, r / 4]);
+              ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(tx, ty); ctx.stroke(); ctx.restore();
+              ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(x1, y1);
+              ctx.lineTo(x1 - head * Math.cos(ang - 0.45), y1 - head * Math.sin(ang - 0.45));
+              ctx.lineTo(x1 - head * Math.cos(ang + 0.45), y1 - head * Math.sin(ang + 0.45));
+              ctx.closePath(); ctx.fill();
+            } else {
+              ctx.lineWidth = Math.max(4, r / 2.2); ctx.globalAlpha = 0.85 * fadeIn;
+              ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+            }
+          }
+          ctx.restore(); ctx.save();
+          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          hits.push({ x: x, y: y, r: r * 0.7, text: text });
         } else if (pass === "wire") {
           var other = self.current.wires[all.indexOf(a)];
           ctx.strokeStyle = color; ctx.lineWidth = Math.max(2.5, r / 4.5);
@@ -1001,7 +1139,7 @@
   var api = {
     decodeSegment: decodeSegment, decodeRound: decodeRound, trackAt: trackAt, aliveAt: aliveAt,
     lerpYaw: lerpYaw, ReplayViewer: ReplayViewer, SUPPORTED_VERSIONS: SUPPORTED_VERSIONS,
-    abilityStyle: abilityStyle, abilitiesAt: abilitiesAt, pairWires: pairWires, signed: signed, tallyAt: tallyAt,
+    abilityStyle: abilityStyle, lineEnds: lineEnds, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, pairWires: pairWires, signed: signed, tallyAt: tallyAt,
     utilAbility: utilAbility, pathAt: pathAt
   };
   global.Replay = api;

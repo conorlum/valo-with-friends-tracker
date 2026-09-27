@@ -165,7 +165,7 @@ def test_ability_names_icons_and_drone_paths():
       const R = require(process.argv[1]);
       let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
         const style = R.abilityStyle({kind: "Zone", code: "Wraith", name: "4_Smoke", agent: "Omen"});
-        const dart = R.abilityStyle({kind: "GameObject", code: "RemovableObject", name: "GumshoeTrackingDart", agent: null});
+        const dart = R.abilityStyle({kind: "GameObject", code: "Gumshoe", name: "RemovableObject_GumshoeTrackingDart", agent: "Cypher"});
         const path = [[1, 0, 0], [2, 100, 0], [4, 100, 200]];
         process.stdout.write(JSON.stringify({
           style: [style.ability, style.agent, style.shape], dart: [dart.agent, dart.ability, dart.label, dart.small],
@@ -193,3 +193,92 @@ def test_every_named_ability_has_a_vendored_icon():
     for name in sorted(named):
         assert name in icons, f"{name} has no icon in abilities.json"
         assert (WEBAPP / "app" / icons[name].lstrip("/")).is_file(), icons[name]
+
+
+# Every non-projectile ability archetype in the seven exports so far (Ascent, Abyss, Split, Summit,
+# Sunset, Haven and the Swiftplay test replay), as extras.py keys it: `<code>_<name>` after
+# normalize_archetype. Each must resolve to a style, not the unknown-archetype fallback.
+SEEN_ARCHETYPES = """
+Aggrobot_Reclaim_Orb_ExplodeyPatch Aggrobot_Reclaim_Orb_SeekerNade Aggrobot_Reclaim_Orb_SeekerNadePlantSuccessful
+Aggrobot_Reclaim_Orb_Turret Aggrobot_X_Reclaim_Orb BountyHunter_E_LoSReveal_Source_Reactivate BountyHunter_X_WaveForm
+Breach_4_FusionBlast Breach_E_SweetSpotFissure Breach_X_Shockwave Cashew_4_SonarPing Cashew_E_AirStrikeMortar
+Cashew_E_Explosion Cashew_E_MapMissileMarker Cashew_E_MapMissileMarker_SecondRocket Cashew_Q_ShellShockGrenade
+Cashew_X_Segment Cashew_X_SegmentManager Clay_Q_Explosion Deadeye_E_Teleporter_Tether Deadeye_E_Trap
+Guide_4_Heal_AOE Guide_E_HawkFlash_FlashSource Gumshoe_4_TripWire Gumshoe_4_TripWire_SecondWire Gumshoe_Q_CageTrap
+Gumshoe_X_InterrogateHat Hunter_4_ExplosiveBolt_Explosion Hunter_E_Drone_RevealDart Hunter_Q_SonarBolt
+Hunter_Q_SonarPing Iris_E_Smoke Iris_X_SonicWave Pandemic_E_SmokeScreenManager Phoenix_Q_FlameWallManager_Production
+Phoenix_X_ResTarget_Production Pine_4_UsableTeleport Pine_Q_SeizeTrap Pine_Q_Tether_SphereExpansion
+BountyHunter_Q_Tether_SphereExpansion Gumshoe_RemovableObject_GumshoeTrackingDart Rift_4_BlackHole Rift_E_SmokeZone
+Rift_E_SmokeZone_Fake Rift_Q_FlashBurst Rift_X_GlobalWall Rift_X_Markers Sarge_4_SmokeManager_Production
+Sarge_4_Smoke_ProductionNEW Sarge_E_SpeedStim Sarge_X_OrbitalStrike_Production Sequoia_4_MovingCover Sequoia_E_Orb
+Sequoia_E_Shield Sequoia_Q_FragileMissile_TrajectoryWarning Sequoia_X_LineCapture Smonk_NewSmoke Smonk_NewSmoke_PDS
+Smonk_Q_DecayExplosion Stealth_DecoySpawner Terra_C_TimeSlowGrenade_Explosion Terra_E_RewindTime_RewindTarget
+Terra_X_DelayedBeam_Beam Thorne_E_Wall_Fortifying Thorne_E_Wall_Segment_Fortifying Iris_Concuss Iris_ConcussPulse
+Iris_Heal Vampire_4_NearsightAOE_Source Vampire_Q_Heal_HealPool_AutoActivate Vampire_Q_Heal_HealPool_High
+Wraith_Q_NearsightMissile_TrajectoryWarning Wushu_4_SmokeZone Aggrobot_C_ExplodeyPatch Deadeye_E_Slow_Large
+Pandemic_AcidMolotov_NewMolotov Phoenix_MolotovFire Sarge_Q_Molotov_Production Thorne_4_SlowField_Production
+Aggrobot_RollyPolly Aggrobot_SeekerNade Clay_E_Boomba Guide_Q_PossessableScout Gumshoe_E_PossessableCamera
+Hunter_E_Drone Pine_E_RadEater Stealth_4_Decoy_V2 Gumshoe_Q_Cage Wraith_4_Smoke
+""".split()
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_every_seen_archetype_has_a_style_naming_a_real_ability():
+    static = WEBAPP / "app" / "static" / "data"
+    agents = json.loads((static / "agents.json").read_text(encoding="utf-8"))
+    icons = json.loads((static / "abilities.json").read_text(encoding="utf-8"))
+    rows = []
+    for key in SEEN_ARCHETYPES:
+        code, _, name = key.partition("_")
+        rows.append({"kind": "GameObject", "code": code, "name": name, "agent": agents[code]})
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        process.stdout.write(JSON.stringify(JSON.parse(input).map(a => R.abilityStyle(a))));
+      });"""
+    styles = run_node(script, rows)
+    for row, style in zip(rows, styles):
+        key = row["code"] + "_" + row["name"]
+        assert style.get("ability"), f"{key} has no style"
+        assert style["ability"] in icons[style["agent"]], f"{key}: {style['ability']!r} isn't one of {style['agent']}'s"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_line_ends_along_across_and_full():
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const at = {u: 5000, v: 5000, yaw: 0};
+        const r = x => x && x.map(p => p.map(Math.round));
+        process.stdout.write(JSON.stringify({
+          across: r(R.lineEnds(at, {dir: "across", len: 1000}, 0.5)),
+          aim: r(R.lineEnds({...at, yaw: 90}, {dir: "along", from: -800, len: 800}, 1)),
+          full: r(R.lineEnds(at, {dir: "along", full: true}, 1)),
+          noYaw: R.lineEnds({u: 1, v: 1}, {dir: "along", len: 1}, 1)
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["across"] == [[5000, 4750], [5000, 5250]]     # a wall centred on the object, across its yaw
+    assert got["aim"] == [[5000, 4200], [5000, 5000]]        # from the caster to where the object spawned
+    assert got["full"] == [[-15000, 5000], [25000, 5000]]
+    assert got["noYaw"] is None
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_a_brief_ability_lingers_a_second_and_fades_after_its_close():
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const pulse = {t0: 10, t1: 10.3}, long = {t0: 10, t1: 20}, open = {t0: 10, t1: null};
+        const at = t => R.abilitiesAt([pulse, long, open], t, 90).length;
+        const a = (x, t) => Math.round(R.abilityAlpha(x, t) * 100) / 100;
+        process.stdout.write(JSON.stringify({
+          shown: [at(10.2), at(10.9), at(11.1), at(20.5)],
+          pulse: [a(pulse, 10.1), a(pulse, 10.3), a(pulse, 10.65), a(pulse, 11)],
+          long: [a(long, 15), a(long, 20)]
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["shown"] == [3, 3, 2, 1]          # the pulse shows until 11 s; the long one until 20 s
+    assert got["pulse"] == [0.4, 1, 0.5, 0]      # fades in over 0.25 s, then out from its close to 11 s
+    assert got["long"] == [1, 1]

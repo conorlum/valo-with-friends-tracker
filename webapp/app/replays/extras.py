@@ -189,6 +189,31 @@ def _owner(actor: _Actor, agent: str | None, slots_of_agent: dict[str, list[int]
     return None, None, near
 
 
+SLOT_LETTERS = frozenset({"C", "Q", "E", "X", "4"})
+# Agents with a second code for some of their objects. Inferred, not decoded: `Thumper` objects
+# (Concuss, ConcussPulse, Heal) carry no Instigator, and appear in exactly the three exports with a
+# Miks (Split, Sunset, Haven) and in none of the four without one.
+CODE_ALIASES = {"Thumper": "Iris"}
+
+
+def normalize_archetype(code: str, name: str, known_codes) -> tuple[str, str]:
+    """(agent code, name) in the usual `<Code>_<Slot>_<Name>` shape. A few archetypes put the slot
+    letter first (`E_Aggrobot_DiscTurret_PowerWave`, `C_Grenadier_Flash`, `Q_BountyHunter_...`) or
+    wrap the agent's name (`RemovableObject_GumshoeTrackingDart`); read as they come, those have
+    no agent, so no owner and no icon. Anything else is returned unchanged."""
+    lowered = {c.lower(): c for c in known_codes}
+    if code in CODE_ALIASES:
+        return CODE_ALIASES[code], name
+    head, _, rest = name.partition("_")
+    if code in SLOT_LETTERS and head.lower() in lowered:
+        return lowered[head.lower()], f"{code}_{rest}" if rest else code
+    if code == "RemovableObject":
+        for low, real in sorted(lowered.items(), key=lambda kv: -len(kv[0])):
+            if name.lower().startswith(low):
+                return real, f"{code}_{name}"
+    return code, name
+
+
 PATH_STEP_MS = 100   # a possessable pawn's path (a drone, Trailblazer), one point per this long
 
 
@@ -210,6 +235,15 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
     `pawn_path(guid)` -> [(t_ms, x, y)]: a non-player pawn's movement (a drone), or None."""
     actors, raw_shots = read_raw(events_path)
     agent_code = {code.lower(): name for code, name in agents_by_code.items()}
+    counts_unknown: Counter[str] = Counter()
+    for guid, actor in list(actors.items()):
+        if actor.code:
+            actor.code, actor.name = normalize_archetype(actor.code, actor.name, agents_by_code)
+            if actor.code.lower() not in agent_code:
+                # Not an agent's: cosmetics such as `Infinity_Rain_Instance`, `Juliett_TheaterLights_Instance`
+                # and `Finisher_Ego2`, which never have an owner. Counted, not drawn.
+                counts_unknown[actor.code] += 1
+                del actors[guid]
     slots_of_agent: dict[str, list[int]] = defaultdict(list)
     for slot, agent in enumerate(players.agents):
         slots_of_agent[agent].append(slot)
@@ -294,6 +328,8 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         out.rounds.setdefault(n, {"abilities": [], "shots": []})["shots"].append(entry)
         counts["shots"] += 1
     out.report = dict(sorted(counts.items()))
+    if counts_unknown:
+        out.report["skipped_not_agent"] = dict(sorted(counts_unknown.items()))
     return out
 
 
