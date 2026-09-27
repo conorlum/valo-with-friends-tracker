@@ -36,11 +36,9 @@ CONDENSE_REVISION = 5
 
 UV_SCALE = 10000
 
-# Size budgets: a reported check in the ingest preview, not a refusal. They keep scrubbing between
-# rounds quick (the viewer fetches one round at a time) and flag a condenser change that bloats
-# rounds. The per-round p95 was 60 KB at the Stage 1b freeze (D7) and 70 KB once rounds stored
-# abilities and shots (R2, approved D9): the six competitive matches are 46.7-63.0 KB per round
-# (Sunset over 60) and 0.65-1.03 MB per match (approved D7).
+# PROVISIONAL(D9): the per-round budget, 60 KB at the Stage 1b freeze (D7), raised to 70 KB when
+# rounds began storing abilities and shots (R2): on the six competitive matches the p95 is
+# 46.7-63.0 KB (Sunset over 60) and every match is 0.65-1.03 MB. PROVISIONAL(D7): the match budget.
 ROUND_BUDGET_P95_BYTES = 70_000
 MATCH_BUDGET_BYTES = 1_500_000
 
