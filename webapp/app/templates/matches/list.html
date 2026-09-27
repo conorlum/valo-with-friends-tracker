@@ -9,22 +9,21 @@
 {% elif current_player %}
 <p class="page-meta">Showing all matches <span class="sep">&middot;</span> <a href="/matches">view just yours</a></p>
 {% endif %}
-{% set show_watch = watchable is defined and watchable %}
-<div class="card">
+{% set show_watch = watchable is defined and watchable %}<div class="card">
 <table>
   <thead>
     <tr>
       <th>Match</th>
-      <th>Score</th>
-      {% if show_watch %}<th>Watch</th>{% endif %}
+      <th>Score</th>{% if show_watch %}
+      <th>Watch</th>{% endif %}
     </tr>
   </thead>
   <tbody>
     {% for match in matches %}
     <tr class="clickable-row" onclick="window.location='/matches/{{ match.external_id }}'">
       <td><a href="/matches/{{ match.external_id }}">{{ match_label(match) }}</a></td>
-      <td><span class="badge badge-score">{{ match.team1_rounds_won }} &ndash; {{ match.team2_rounds_won }}</span></td>
-      {% if show_watch %}<td class="watch-cell">{% if match.external_id and match.external_id.lower() in watchable %}<a class="watch-link" href="/replays/{{ match.external_id.lower() }}" onclick="event.stopPropagation()">&#9654; Watch</a>{% else %}<span class="muted" title="No replay for this match">&mdash;</span>{% endif %}</td>{% endif %}
+      <td><span class="badge badge-score">{{ match.team1_rounds_won }} &ndash; {{ match.team2_rounds_won }}</span></td>{% if show_watch %}
+      <td class="watch-cell">{% if match.external_id and match.external_id.lower() in watchable %}<a class="watch-link" href="/replays/{{ match.external_id.lower() }}" onclick="event.stopPropagation()">&#9654; Watch</a>{% else %}<span class="muted" title="No replay for this match">&mdash;</span>{% endif %}</td>{% endif %}
     </tr>
     {% else %}
     <tr><td colspan="{{ 3 if show_watch else 2 }}">No matches yet.</td></tr>

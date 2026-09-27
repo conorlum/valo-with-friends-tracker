@@ -322,8 +322,7 @@
 </div>
 {% endif %}
 
-{% set show_watch = watchable is defined and watchable %}
-<div class="card">
+{% set show_watch = watchable is defined and watchable %}<div class="card">
   <h2>Matches</h2>
   <table>
     <thead>
@@ -331,8 +330,8 @@
         <th>Match</th>
         <th>Score</th>
         <th>Your Team Impact</th>
-        <th>Enemy Team Impact</th>
-        {% if show_watch %}<th>Watch</th>{% endif %}
+        <th>Enemy Team Impact</th>{% if show_watch %}
+        <th>Watch</th>{% endif %}
       </tr>
     </thead>
     <tbody>
@@ -347,8 +346,8 @@
         <td><a href="/matches/{{ match.external_id }}">{{ match_label(match) }}</a></td>
         <td><span class="badge badge-score">{{ our_score }} &ndash; {{ enemy_score }}</span></td>
         <td>{{ our_ts.total_impact | round | int if our_ts else "—" }}</td>
-        <td>{{ enemy_ts.total_impact | round | int if enemy_ts else "—" }}</td>
-        {% if show_watch %}<td class="watch-cell">{% if match.external_id and match.external_id.lower() in watchable %}<a class="watch-link" href="/replays/{{ match.external_id.lower() }}" onclick="event.stopPropagation()">&#9654; Watch</a>{% else %}<span class="muted" title="No replay for this match">&mdash;</span>{% endif %}</td>{% endif %}
+        <td>{{ enemy_ts.total_impact | round | int if enemy_ts else "—" }}</td>{% if show_watch %}
+        <td class="watch-cell">{% if match.external_id and match.external_id.lower() in watchable %}<a class="watch-link" href="/replays/{{ match.external_id.lower() }}" onclick="event.stopPropagation()">&#9654; Watch</a>{% else %}<span class="muted" title="No replay for this match">&mdash;</span>{% endif %}</td>{% endif %}
       </tr>
       {% endfor %}
     </tbody>
