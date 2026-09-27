@@ -185,7 +185,12 @@ def test_a_full_queue_answers_503(tmp_path, stub):
 def test_limits_and_errors(tmp_path, stub):
     worker, httpd, base = start(tmp_path, stub, max_bytes=1000)
     try:
-        assert post(base, b"\xdd\xef\xf4\x43" + b"x" * 2000)[0] == 413
+        # The worker answers 413 without reading an over-cap body (it may be gigabytes), so the
+        # client can see the connection closed before it reads that answer (a Windows socket race).
+        try:
+            assert post(base, b"\xdd\xef\xf4\x43" + b"x" * 2000)[0] == 413
+        except (ConnectionAbortedError, ConnectionResetError, urllib.error.URLError) as error:
+            assert "10053" in str(error) or "10054" in str(error) or "reset" in str(error).lower(), error
         assert post(base, b"not a replay at all")[0] == 400
         assert get(base, "/jobs/nope")[0] == 404
         status, health = get(base, "/health")
