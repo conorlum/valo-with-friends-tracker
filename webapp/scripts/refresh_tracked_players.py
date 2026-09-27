@@ -56,6 +56,7 @@ from app.adapters.trackergg_browserstate_source import (
 )
 from app.db import SessionLocal
 from app.services.player_view_cache import prewarm_player_cache
+from app.services.replay_impact import link_pending_replays
 from app.services.site_stats import prewarm_viewer_site_stats, refresh_site_stats
 
 CDP_URL = "http://localhost:9222"
@@ -192,6 +193,12 @@ def main(count: int, no_prewarm: bool, ledger_path: Path) -> int:
             refresh_site_stats(db)
             if not no_prewarm:
                 print(f"pre-warmed Friends stats for {prewarm_viewer_site_stats(db)} viewer(s)")
+
+        # Replays whose match this crawl added link now, best-effort: a failure is logged and
+        # never fails the crawl (docs/replay-viewer-plan.md, "Linking later").
+        link_counts = link_pending_replays(SessionLocal)
+        if link_counts:
+            print(f"replays: {link_counts}")
     finally:
         ledger.record_end(f"{len(results)} player(s) processed")
         db.close()

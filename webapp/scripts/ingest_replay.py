@@ -1,8 +1,9 @@
-"""Condenses a parser export, and previews it or dry-runs its link. Stage 1c: no writes.
+"""Condenses a parser export, and previews it, dry-runs its link, or stores and links it.
 
     .\\.venv313\\Scripts\\python.exe scripts\\ingest_replay.py --export-dir %TEMP%\\valo-replay\\<uuid> --preview
     .\\.venv313\\Scripts\\python.exe scripts\\ingest_replay.py --export-dir <dir> --preview --map Ascent
     .\\.venv313\\Scripts\\python.exe scripts\\with_friends_db.py --expect-database valowithfriendsdb --read-only scripts\\ingest_replay.py --export-dir <dir> --dry-run
+    .\\.venv313\\Scripts\\python.exe scripts\\with_friends_db.py --expect-database valowithfriendsdb scripts\\ingest_replay.py --export-dir <dir> [--replace]
 
 The parser is never called from here: `scripts/export_replay.ps1` (run by the user) writes
 the export, and this reads it.
@@ -19,7 +20,12 @@ the export, and this reads it.
   match), checks the replay's link eligibility (and refuses before any DB read when it
   fails), loads the matching `matches` rows read-only and runs the linker, and prints its
   report. It never writes; run it through `with_friends_db.py --read-only`.
-- Without either flag it stops: storing replays arrives in Stage 2.
+- Without either flag it condenses strictly and stores the replay (`app/replays/store.py`: one
+  locked transaction, the dedupe rule, the link), then, once that has committed and only if it
+  linked, stores the per-kill Impact split in its own transaction
+  (`app/services/replay_impact.py`; a failure there leaves the link as it is). `--replace`
+  replaces an existing replay of the match whatever its state (local only). Run it through
+  `with_friends_db.py` (not `--read-only`): it writes.
 
 Options default from the environment: `VALO_REPLAY_ARCHIVE` (the archive holding the
 `.vrf`) and `REPLAY_PARSER_DIR` (the parser build holding `bin/BUILD.json`).
@@ -234,34 +240,10 @@ img.onload = draw; load(sel.value); requestAnimationFrame(tick);
 
 
 def load_link_candidates(session, match_uuid: str) -> tuple[list[lk.DbMatch], dict[str, int]]:
-    """Reads, never writes: the `matches` rows for this UUID and everything the linker compares."""
-    from sqlalchemy import func
+    """Reads, never writes (moved to app/replays/db.py in Stage 2; kept here for the gate)."""
+    from app.replays.db import load_link_candidates as load
 
-    from app.models import KillEvent, Match, MatchPlayer, Player, Round
-
-    candidates = []
-    for match in session.query(Match).filter(func.lower(Match.external_id) == match_uuid.lower()).all():
-        players = []
-        for mp, player in (session.query(MatchPlayer, Player).join(Player, MatchPlayer.player_id == Player.id)
-                           .filter(MatchPlayer.match_id == match.id).all()):
-            team = mp.team.value if hasattr(mp.team, "value") else str(mp.team)
-            # players.riot_subject arrives with migration 0012 (Stage 2); until then there are no anchors.
-            players.append(lk.DbPlayer(mp.id, player.id, mp.agent, team, getattr(player, "riot_subject", None)))
-        rounds = session.query(Round).filter(Round.match_id == match.id).order_by(Round.round_number).all()
-        number_of = {r.id: r.round_number for r in rounds}
-        kills = []
-        if rounds:
-            for kill in session.query(KillEvent).filter(KillEvent.round_id.in_(list(number_of))).all():
-                kills.append(lk.DbKill(kill.id, number_of[kill.round_id], kill.event_time_seconds,
-                                       kill.killer_match_player_id, kill.death_match_player_id))
-        candidates.append(lk.DbMatch(
-            match.id, match.external_id, match.team1_rounds_won, match.team2_rounds_won,
-            [lk.DbRound(r.round_number, r.outcome, r.plant_time, r.defuse_time) for r in rounds], players, kills))
-    owners: dict[str, int] = {}
-    if hasattr(Player, "riot_subject"):
-        owners = {str(s).lower(): pid for pid, s in session.query(Player.id, Player.riot_subject)
-                  .filter(Player.riot_subject.isnot(None)).all()}
-    return candidates, owners
+    return load(session, match_uuid)
 
 
 def dry_run(replay: CondensedReplay, loader) -> lk.LinkResult:
@@ -320,7 +302,34 @@ def _build(args, strict: bool) -> dict | None:
     return None
 
 
-def main(argv: list[str] | None = None, loader_factory=_db_loader) -> int:
+def _store_factory():
+    from app.db import SessionLocal
+
+    return SessionLocal
+
+
+def store(replay: CondensedReplay, replace: bool, session_factory) -> int:
+    """Store + link (one transaction), then the per-kill split in its own. Exit 0 when stored or
+    unchanged, 1 when kept out by the dedupe rule, 3 when refused (demo)."""
+    from app.replays.store import StoreRefused, store_replay
+    from app.services.replay_impact import refresh_replay_impact
+
+    session = session_factory()
+    try:
+        result = store_replay(session, replay, source="local", replace=replace)
+    except StoreRefused as refused:
+        print(f"REFUSED: {refused}", file=sys.stderr)
+        return 3
+    finally:
+        session.close()
+    print(json.dumps({"action": result.action, "replay_id": result.replay_id, "link_status": result.link_status,
+                      "report": result.report}, indent=2, default=str))
+    if result.link_status == "linked" and result.action in ("stored", "replaced"):
+        print(f"per-kill Impact: {refresh_replay_impact(session_factory, result.replay_id)}")
+    return 1 if result.action == "kept_existing" else 0
+
+
+def main(argv: list[str] | None = None, loader_factory=_db_loader, store_factory=_store_factory) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--export-dir", type=Path, required=True)
     mode = parser.add_mutually_exclusive_group()
@@ -330,9 +339,11 @@ def main(argv: list[str] | None = None, loader_factory=_db_loader) -> int:
     parser.add_argument("--vrf", type=Path, help="the exported .vrf (default: the archive's copy)")
     parser.add_argument("--parser-dir", type=Path, help="the parser build (default $REPLAY_PARSER_DIR)")
     parser.add_argument("--out", type=Path, help="preview folder (default %%TEMP%%\\valo-replay\\<match uuid>)")
+    parser.add_argument("--replace", action="store_true",
+                        help="store over an existing replay of this match whatever its state (local only)")
     args = parser.parse_args(argv)
-    if not (args.preview or args.dry_run):
-        raise SystemExit("Storing replays arrives in Stage 2 (docs/replay-viewer-plan.md); use --preview or --dry-run.")
+    if args.replace and (args.preview or args.dry_run):
+        parser.error("--replace is for storing (no --preview or --dry-run)")
     if args.map and not args.preview:
         parser.error("--map is for --preview only")
 
@@ -341,7 +352,7 @@ def main(argv: list[str] | None = None, loader_factory=_db_loader) -> int:
     except ContractError as refused:
         print(f"REFUSED: {refused}", file=sys.stderr)
         return 3
-    strict = args.dry_run
+    strict = not args.preview
     source_sha256, vrf_path = _source(args, manifest, strict)
     try:
         replay = condense_export_dir(args.export_dir, source_sha256=source_sha256, build=_build(args, strict),
@@ -361,6 +372,9 @@ def main(argv: list[str] | None = None, loader_factory=_db_loader) -> int:
             print(f"{'PASS' if ok else 'FAIL'}  {name}{'  (' + detail + ')' if detail else ''}")
         print(f"preview: {page}")
         return 0 if all(ok for _, ok, _ in checks) else 1
+
+    if not args.dry_run:
+        return store(replay, args.replace, store_factory())
 
     eligibility = replay.link_inputs["eligibility"]
     if not eligibility["eligible"]:
