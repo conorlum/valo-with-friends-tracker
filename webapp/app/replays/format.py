@@ -34,7 +34,7 @@ CONDENSE_REVISION = 4
 
 UV_SCALE = 10000
 
-# PROVISIONAL(D7): the plan's size budget, frozen at the Stage 1b gate (2026-09-27).
+# The plan's size budget, frozen at the Stage 1b gate (2026-09-27).
 ROUND_BUDGET_P95_BYTES = 60_000
 MATCH_BUDGET_BYTES = 1_500_000
 

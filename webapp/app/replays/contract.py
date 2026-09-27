@@ -50,7 +50,7 @@ RPC_RESURRECT = "MulticastReceivePlayerResurrectEvent"
 # this and no MulticastNotifyKilledEnemy; every other player kill in it and in the Ascent export had both.
 RPC_DAMAGE = frozenset({"MulticastNotifyDamage_Point", "MulticastNotifyDamage_Base"})
 
-# PROVISIONAL(D7): a malformed packet blocks. Partial-bunch errors don't: they drop data on
+# A malformed packet blocks. Partial-bunch errors don't: they drop data on
 # one channel, and the condenser's per-player coverage and gap checks measure what that
 # costs a track. The first export had 76, across the recorder's controller and object
 # channels, with every player's track intact.
@@ -116,7 +116,7 @@ def check_manifest(manifest: dict, pin: ParserPin, source_sha256: str | None,
     if manifest.get("replay_build") not in pin.supported_builds:
         raise ContractError("replay_build", f"game build {manifest.get('replay_build')!r} is not supported "
                                             f"by the pinned parser (replay_parser.json)")
-    # PROVISIONAL(D7): a 12-character prefix of the pinned commit must appear in parser_version.
+    # A 12-character prefix of the pinned commit must appear in parser_version.
     if pin.commit[:12] not in str(manifest.get("parser_version", "")):
         raise ContractError("parser_version", f"export made by {manifest.get('parser_version')!r}, "
                                               f"not the pinned commit {pin.commit[:12]}")

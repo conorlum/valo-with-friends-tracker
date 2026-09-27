@@ -136,7 +136,7 @@ def ascii_copies(path: Path, match_uuid: str) -> int:
 
 def header_match_uuid(path: Path) -> tuple[str, dict]:
     """(the match UUID, evidence) from a `.vrf`: the structural header, corroborated by an
-    ASCII copy. PROVISIONAL(D7): a header UUID with no ASCII copy refuses."""
+    ASCII copy. A header UUID with no ASCII copy refuses."""
     header = read_header(path)
     copies = ascii_copies(path, header.match_uuid)
     if copies == 0:
