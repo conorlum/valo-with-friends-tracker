@@ -35,7 +35,7 @@ from app.replays.condense import CondensedReplay
 from app.replays.store import StoreRefused, store_replay
 
 VRF_MAGIC = (0x43F4EFDD).to_bytes(4, "little")
-# PROVISIONAL(D10): decision 10's starting limits, checked against the six competitive files.
+# Decision 10's starting limits (approved D10), checked against the six competitive files.
 UPLOADS_PER_HOUR = 10
 # The plan's 10 minutes, doubled: a local job on the smallest competitive file took 179 s (parse
 # 52 s + condense), the largest file is 1.5x its size, and Render's CPU may be slower than this PC's.

@@ -34,7 +34,7 @@ USER worker
 WORKDIR /srv
 # No DB credentials and no secrets: the worker only parses. REPLAY_MEMORY_CAP_MB caps the
 # parser's address space; set it from the Stage 3 container measurement (decision 9).
-# PROVISIONAL(D10), decision 10 from the six competitive files (60-91 MB): the cap is
+# Decision 10 (approved D10), from the six competitive files (60-91 MB): the cap is
 # max(80 MB, 2 x 90.5 MB); the timeout max(180 s, 3 x the slowest parse), the slowest estimated
 # at 79 s from the 52 s measured locally on the 60 MB file, scaled by size.
 ENV REPLAY_PARSER_CMD='["/opt/parser/CliReader", "export", "{vrf}", "--output", "{out}"]' \

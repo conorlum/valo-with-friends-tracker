@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # only (REPLAY_UPLOAD_CODE is `sync: false`), never in the repo.
     replay_upload_code: str | None = None
     replay_worker_url: str | None = None
-    # PROVISIONAL(D10): decision 10's cap, max(80 MB, 2 x the largest observed .vrf): the six
+    # Decision 10's cap (approved D10), max(80 MB, 2 x the largest observed .vrf): the six
     # competitive files are 60-91 MB (90,517,500 bytes the largest).
     replay_upload_max_bytes: int = 181_035_000
 
