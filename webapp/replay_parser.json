@@ -1,0 +1,22 @@
+{
+  "upstream": "https://github.com/michel-giehl/ValorantReplayParser.git",
+  "commit": "2b66c65a7b116154e18ebb84d9f6795f2b080233",
+  "sdk": {
+    "global_json_version": "10.0.301",
+    "installed_tested": "10.0.401"
+  },
+  "patches": [
+    {
+      "file": "global.json",
+      "description": "Let the pinned 10.0.301 SDK roll forward to a newer feature band (10.0.4xx).",
+      "find": "\"rollForward\": \"latestPatch\"",
+      "replace": "\"rollForward\": \"latestFeature\""
+    }
+  ],
+  "cli_project": "src/CliReader/CliReader.csproj",
+  "export_schema_version": 8,
+  "supported_replay_builds": [
+    "++Ares-Core+release-13.06"
+  ],
+  "notes": "supported_replay_builds is PROVISIONAL(D2): taken from the archive README's recorded game branch for the test replay, not yet from an export's manifest.replay_build."
+}
