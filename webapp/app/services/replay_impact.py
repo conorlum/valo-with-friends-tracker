@@ -18,7 +18,7 @@ this runs again.
 
 It runs only from user-run scripts (ingest's write path, `link_replays.py`, the crawl hook),
 after the link commits, in its own session: a scorer error there can't undo a store or a link,
-and the web service never runs the scorer (AFK run decision D3). PROVISIONAL(D3)
+and the web service never runs the scorer (AFK run decision D3, approved).
 
 This is the one replay module that may import scoring code, and only these read-only names;
 tests/replays/test_replay_isolation.py enforces the list, and that nothing here persists.
