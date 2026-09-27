@@ -199,3 +199,16 @@ def test_without_a_mode_it_stores_and_links_then_skips_a_same_file_reingest(expo
     assert session.query(ReplayRound).count() == ROUNDS
     assert ingest_replay.main(args, store_factory=lambda: factory) == 0
     assert '"action": "unchanged"' in capsys.readouterr().out
+
+
+def test_a_refused_scoring_preflight_stops_the_store_before_the_condense(export, monkeypatch, capsys):
+    from app.scoring.ingest_preflight import IngestRefused
+
+    def refuse():
+        raise IngestRefused("the gate is open for 'impact-v4', but this checkout is 'impact-v3'.")
+
+    monkeypatch.setattr(ingest_replay, "condense_export_dir",
+                        lambda *a, **k: pytest.fail("condensed after a refused preflight"))
+    args = ["--export-dir", str(export["dir"]), "--vrf", str(export["vrf"]), "--parser-dir", str(export["parser"])]
+    assert ingest_replay.main(args, store_factory=refuse) == 3
+    assert "REFUSED: the scoring ingest preflight: the gate is open" in capsys.readouterr().err

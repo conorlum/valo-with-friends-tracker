@@ -304,7 +304,9 @@ def _build(args, strict: bool) -> dict | None:
 
 def _store_factory():
     from app.db import SessionLocal
+    from app.services.replay_impact import claim_write_identity
 
+    claim_write_identity(SessionLocal)
     return SessionLocal
 
 
@@ -347,6 +349,17 @@ def main(argv: list[str] | None = None, loader_factory=_db_loader, store_factory
     if args.map and not args.preview:
         parser.error("--map is for --preview only")
 
+    session_factory = None
+    if not (args.preview or args.dry_run):
+        # Before the minutes-long condense, so a refused preflight says so at once.
+        from app.scoring.ingest_preflight import IngestRefused
+
+        try:
+            session_factory = store_factory()
+        except IngestRefused as refused:
+            print(f"REFUSED: the scoring ingest preflight: {refused}", file=sys.stderr)
+            return 3
+
     try:
         manifest = load_manifest(args.export_dir)  # not the 1.5 GB of rows: condense streams them
     except ContractError as refused:
@@ -374,7 +387,7 @@ def main(argv: list[str] | None = None, loader_factory=_db_loader, store_factory
         return 0 if all(ok for _, ok, _ in checks) else 1
 
     if not args.dry_run:
-        return store(replay, args.replace, store_factory())
+        return store(replay, args.replace, session_factory)
 
     eligibility = replay.link_inputs["eligibility"]
     if not eligibility["eligible"]:

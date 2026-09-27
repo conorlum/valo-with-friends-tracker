@@ -37,6 +37,14 @@ def main(argv: list[str] | None = None, session_factory=None) -> int:
         return 3
     if session_factory is None:
         from app.db import SessionLocal as session_factory
+        from app.scoring.ingest_preflight import IngestRefused
+        from app.services.replay_impact import claim_write_identity
+
+        try:
+            claim_write_identity(session_factory)  # the `players.riot_subject` backfill is gated
+        except IngestRefused as refused:
+            print(f"REFUSED: the scoring ingest preflight: {refused}", file=sys.stderr)
+            return 3
     counts = link_pending_replays(session_factory, args.uuid or None, args.refresh_impact)
     print(json.dumps(counts, indent=2, sort_keys=True))
     return 1 if "skipped" in counts or counts.get("failed") else 0

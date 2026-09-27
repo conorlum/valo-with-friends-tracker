@@ -141,6 +141,20 @@ def refresh_replay_impact(session_factory, replay_id: int) -> str:
 
 
 
+def claim_write_identity(session_factory) -> None:
+    """The scoring ingest preflight, as the crawl runs it, for the user-run replay scripts: the link's
+    `players.riot_subject` backfill is behind the release write gate. The identity goes on the
+    engine, so every later session carries it. Raises IngestRefused with the reason."""
+    from app.scoring.ingest_preflight import verify_ingest_preflight
+
+    session = session_factory()
+    try:
+        verify_ingest_preflight(session)
+        session.commit()
+    finally:
+        session.close()
+
+
 def link_pending_replays(session_factory, uuids: list[str] | None = None, refresh_impact: bool = False) -> dict:
     """The link-later pass (`scripts/link_replays.py`, and best-effort after every tracker.gg
     crawl): links each stored replay with `match_id IS NULL` whose match row now exists (or the
