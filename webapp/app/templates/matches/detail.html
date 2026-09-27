@@ -8,7 +8,8 @@
 {% set viewer_lost = viewer_team is not none and summary.winner_team is not none and summary.winner_team != viewer_team %}
 <section class="result-banner {{ 'result-win' if viewer_won else 'result-loss' if viewer_lost else 'result-neutral' }}">
   <div class="result-main">
-    <h1>{{ match.map_name or match.external_id }}</h1>
+    <h1>{{ match.map_name or match.external_id }}</h1>{% if replay_url %}
+    <a class="replay-link-button" href="{{ replay_url }}">&#9654; Replay</a>{% endif %}
     <div class="result-headline">
       {% if viewer_won %}Victory
       {% elif viewer_lost %}Defeat

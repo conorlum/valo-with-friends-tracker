@@ -6,6 +6,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.services.replays import watchable_external_ids
 from app.services.auth import get_current_player
 from app.services.friends import list_friend_ids
 from app.services.session_stats import get_session_stats
@@ -74,6 +75,7 @@ def session_detail(
             "matches_by_id": matches_by_id,
             "friends_enabled": friends,
             "other_session_index": other_session_index,
+            "watchable": watchable_external_ids(db, [m.external_id for m in session.matches]),
         },
     )
     t5 = time.perf_counter()

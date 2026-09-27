@@ -41,9 +41,9 @@ def export(tmp_path):
     return {"dir": directory, "vrf": vrf, "parser": parser_dir, "match": match, "tmp": tmp_path}
 
 
-def test_without_a_mode_it_stops_before_stage_2(export):
-    with pytest.raises(SystemExit, match="Stage 2"):
-        ingest_replay.main(["--export-dir", str(export["dir"])])
+def test_replace_is_only_for_storing(export):
+    with pytest.raises(SystemExit):
+        ingest_replay.main(["--export-dir", str(export["dir"]), "--dry-run", "--replace"])
 
 
 def test_preview_writes_a_page_and_passes_the_scripted_checks(export, capsys):
@@ -181,3 +181,21 @@ def test_dry_run_never_writes(export, session):
                        loader_factory=lambda: (lambda uuid: ingest_replay.load_link_candidates(session, uuid)))
     assert [session.query(t).count() for t in (Player, Match, MatchPlayer, Round, KillEvent)] == before
     assert not session.dirty and not session.new
+
+
+def test_without_a_mode_it_stores_and_links_then_skips_a_same_file_reingest(export, session, capsys):
+    from app.models.replay import Replay, ReplayPlayer, ReplayRound
+
+    Base.metadata.create_all(session.get_bind(), tables=[Replay.__table__, ReplayRound.__table__,
+                                                        ReplayPlayer.__table__])
+    factory = lambda: session  # noqa: E731
+    args = ["--export-dir", str(export["dir"]), "--vrf", str(export["vrf"]), "--parser-dir", str(export["parser"])]
+    session.close = lambda: None  # the one test session serves every step
+    assert ingest_replay.main(args, store_factory=lambda: factory) == 0
+    printed = capsys.readouterr().out
+    body = json.loads(printed[printed.index("{"):printed.index("per-kill")])
+    assert (body["action"], body["link_status"]) == ("stored", "linked")
+    assert "per-kill Impact: " in printed  # best-effort; the sqlite test DB has no scoring data
+    assert session.query(ReplayRound).count() == ROUNDS
+    assert ingest_replay.main(args, store_factory=lambda: factory) == 0
+    assert '"action": "unchanged"' in capsys.readouterr().out

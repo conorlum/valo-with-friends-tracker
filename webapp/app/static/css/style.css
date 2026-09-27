@@ -1589,3 +1589,237 @@ table.compact-table .badge-score {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- Replay viewer (W-d prototype; templates/replays/, static/js/replay.js) ---- */
+.replay {
+  --replay-side-a: var(--team-1);
+  --replay-side-b: var(--team-2);
+  --replay-neutral: var(--ink-secondary);
+  max-width: 760px;
+  margin: 0 auto;
+  outline: none;
+}
+.replay-header h1 { margin-bottom: 0.25rem; }
+.replay-note { color: var(--ink-muted); margin: 0 0 0.75rem; }
+.replay-stage {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.replay-canvas { display: block; width: 100%; height: auto; aspect-ratio: 1; }
+.replay-controls, .replay-rounds {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.75rem;
+}
+.replay-button, .replay-round, .replay-speed select {
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.75rem;
+  min-height: 2.25rem;
+  cursor: pointer;
+}
+.replay-button:disabled { opacity: 0.4; cursor: default; }
+.replay-button:focus-visible, .replay-round:focus-visible, .replay:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.replay-speed { color: var(--ink-secondary); }
+.replay-clock { color: var(--ink-secondary); font-variant-numeric: tabular-nums; }
+.replay-scrub-wrap { position: relative; margin-top: 0.5rem; }
+.replay-scrub { width: 100%; accent-color: var(--brand); }
+.replay-ticks { position: relative; height: 10px; }
+.replay-tick {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 10px;
+  margin-left: -1px;
+  background: var(--ink-secondary);
+}
+.replay-tick-decided { background: var(--brand); width: 3px; }
+.replay-strip { display: flex; flex-wrap: wrap; gap: 0.35rem; flex: 1; }
+.replay-round { padding: 0.2rem 0.6rem; min-width: 2.25rem; }
+.replay-round.is-current { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
+.replay-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; color: var(--ink-secondary); margin-top: 0.75rem; }
+.replay-key::before {
+  content: "";
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 0.35em;
+  border-radius: 50%;
+  vertical-align: -0.05em;
+}
+.replay-key-a::before { background: var(--replay-side-a); }
+.replay-key-b::before { background: var(--replay-side-b); }
+.replay-key-hollow::before { border: 2px solid var(--ink-secondary); }
+.replay-key-dashed::before { border: 2px dashed var(--ink); }
+.replay-key-kill::before { content: "\00d7"; width: auto; height: auto; border-radius: 0; font-weight: 700; }
+.replay-state { color: var(--ink-muted); margin-left: auto; }
+.replay-help { color: var(--ink-muted); font-size: 0.9em; }
+
+@media (max-width: 700px) {
+  .replay-state { margin-left: 0; }
+  .replay-button, .replay-round { min-height: 2.5rem; }
+}
+
+/* ---- Replay viewer, linked mode (the local preview route, app/routers/replay_preview.py) ---- */
+.replay { --replay-team-1: var(--team-1); --replay-team-2: var(--team-2); --replay-smoke: rgba(214, 218, 226, 0.55); }
+.replay.is-linked { max-width: 1400px; }
+.replay-body { display: block; }
+.replay.is-linked .replay-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+  gap: 1.25rem;
+  align-items: start;
+}
+.replay-title-suffix { color: var(--ink-muted); font-size: 0.6em; font-weight: 500; }
+.replay-crumbs { color: var(--ink-muted); margin: 0 0 0.5rem; }
+.replay-stage { position: relative; }
+.replay-tip {
+  position: absolute;
+  max-width: 320px;
+  padding: 0.35rem 0.6rem;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: 0.85rem;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+.replay-banner {
+  margin: 0 0 0.6rem;
+  padding: 0.45rem 0.75rem;
+  border-left: 3px solid var(--border-strong);
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  color: var(--ink-secondary);
+}
+.replay-banner.won-team-1 { border-left-color: var(--team-1); }
+.replay-banner.won-team-2 { border-left-color: var(--team-2); }
+.replay-round.won-team-1:not(.is-current) { box-shadow: inset 0 -3px 0 var(--team-1); }
+.replay-round.won-team-2:not(.is-current) { box-shadow: inset 0 -3px 0 var(--team-2); }
+.replay-tick-plant { background: var(--ink); height: 10px; width: 3px; border-radius: 1px; }
+.replay-layers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0.75rem 0 0;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--ink-secondary);
+}
+.replay-layers legend { padding: 0 0.3rem; color: var(--ink-muted); }
+.replay-layers input { accent-color: var(--brand); }
+.replay-key-t1::before { background: var(--replay-team-1); }
+.replay-key-t2::before { background: var(--replay-team-2); }
+.replay-key-smoke::before { background: var(--replay-smoke); }
+.replay-key-area::before { background: color-mix(in srgb, var(--ink-secondary) 35%, transparent); border: 2px solid var(--ink-secondary); }
+.replay-key-badge::before { background: var(--ink-secondary); box-shadow: 0 0 0 2px rgba(12, 12, 16, 0.85); }
+.replay { --replay-unknown: #77787f; }
+.replay-tabs { display: flex; gap: 0.25rem; margin-bottom: 0.5rem; border-bottom: 1px solid var(--border-strong); }
+.replay-tab {
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 0.35rem 0.75rem;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+.replay-tab.is-active { color: var(--ink); border-bottom-color: var(--brand); }
+.replay-tab:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.replay-feed-row.replay-util-row { grid-template-columns: 3.2rem 1.75rem minmax(0, 1fr); align-items: center; }
+.replay-util-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgba(12, 12, 16, 0.85);
+}
+.replay-util-icon img { width: 1.15rem; height: 1.15rem; }
+.replay-key-spike::before { border-radius: 1px; transform: rotate(45deg) scale(0.8); background: var(--brand); }
+
+.replay-side h2 { font-size: 1.05rem; margin: 0 0 0.35rem; }
+.replay-side h2 + .replay-side-note { margin-top: 0; }
+.replay-side-note { color: var(--ink-muted); font-size: 0.85rem; margin: 0 0 0.5rem; }
+.replay-feed {
+  list-style: none;
+  margin: 0 0 1.25rem;
+  padding: 0;
+  max-height: 420px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.replay-feed-row {
+  display: grid;
+  grid-template-columns: 3.2rem minmax(0, 1fr) auto auto;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.35rem 0.6rem;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.replay-feed-row:first-child { border-top: 0; }
+.replay-feed-row:hover, .replay-feed-row:focus-visible { background: var(--surface-raised); outline: none; }
+.replay-feed-row.is-future { opacity: 0.4; }
+.replay-feed-row.is-recent { background: color-mix(in srgb, var(--brand) 12%, var(--surface)); }
+.replay-feed-empty { padding: 0.5rem 0.6rem; color: var(--ink-muted); }
+.replay-feed-t, .replay-feed-state { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.replay-feed-who { min-width: 0; overflow-wrap: anywhere; }
+.replay-feed-gun { color: var(--ink-secondary); font-size: 0.85em; padding: 0 0.15rem; }
+.replay-person { font-weight: 600; }
+.replay-person.team-1 { color: var(--team-1); }
+.replay-person.team-2 { color: var(--team-2); }
+.replay-impact { font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 600; }
+.replay-impact .pos, .replay-board-team td.num.pos { color: var(--good); }
+.replay-impact .neg, .replay-board-team td.num.neg { color: var(--critical); }
+.replay-board-team { width: 100%; border-collapse: collapse; margin-bottom: 0.75rem; font-size: 0.88rem; }
+.replay-board-team th { text-align: left; color: var(--ink-muted); font-weight: 500; padding: 0.2rem 0.4rem; }
+.replay-board-team td { padding: 0.25rem 0.4rem; border-top: 1px solid var(--border); }
+.replay-board-team .num, .replay-list .num { text-align: right; font-variant-numeric: tabular-nums; }
+.replay-board-team.team-1 { box-shadow: inset 3px 0 0 var(--team-1); }
+.replay-board-team.team-2 { box-shadow: inset 3px 0 0 var(--team-2); }
+.replay-board-team tr.is-dead td { color: var(--ink-muted); }
+.replay-dot { display: inline-block; width: 0.6em; height: 0.6em; border-radius: 50%; margin-right: 0.35em; }
+.replay-board-agent { color: var(--ink-muted); font-size: 0.85em; }
+.replay-board-dead { color: var(--critical); font-size: 0.8em; }
+.replay-list { border-collapse: collapse; }
+.replay-list th, .replay-list td { padding: 0.35rem 0.75rem; border-top: 1px solid var(--border); text-align: left; }
+
+@media (max-width: 960px) {
+  .replay.is-linked .replay-body { grid-template-columns: minmax(0, 1fr); }
+  .replay-feed { max-height: 320px; }
+}
+
+/* Watch column: the local replay preview's link, shown only when the preview is on. */
+.watch-cell { white-space: nowrap; }
+.watch-cell .muted { color: var(--ink-muted); }
+.watch-link { font-weight: 600; }
+/* "Replay" links on the match page header and each round's detail (a linked, valid replay only). */
+.replay-link-button {
+  display: inline-block;
+  margin-top: 0.35rem;
+  padding: 0.2rem 0.7rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.replay-link { font-size: 0.85em; font-weight: 600; margin-left: 0.5rem; }
+
+/* The replay page gets the full width: the map is the content. */
+main:has(.replay.is-linked) { max-width: 1440px; }
+.replay.is-linked .replay-canvas { width: min(100%, calc(100vh - 240px)); min-width: 280px; margin: 0 auto; }

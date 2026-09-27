@@ -1481,6 +1481,31 @@ false refusals.
 - `DEMO_MODE=true` on the same cluster (rows present): the replay routes 404 and no links appear.
 - All tests pass. Failing test IDs equal the baseline.
 
+**Pre-merge gate: run 2026-09-27 (AFK run, branch `afk/2026-09-27-replay-2`), every line PASS.** On a
+throwaway PG18 cluster at 127.0.0.1:55432 (no prod writes):
+- demo seed DB: `seed_data/demo_matches.sql` at 0011 (6 matches, 139 rounds, 1,028 kills), `upgrade head`:
+  every existing table's row count and the `matches`/`rounds`/`kill_events`/`players`/`impact_scores`
+  checksums unchanged (over their 0011 columns; `players.riot_subject` is all NULL); `downgrade -1` and back
+  up, unchanged. PASS 3/3.
+- friends-shaped DB: the six competitive matches' rows (36 players, 60 match players, 137 rounds, 1,370 stat,
+  spend and Impact rows, 1,008 kills) copied read-only from the friends DB with their own IDs (a Python copy,
+  not `pg_dump`), then `upgrade head`: unchanged. PASS 2/2.
+- `ingest_replay.py` (the real write path) on all six exports: each `stored`, `linked`, complete, with its
+  per-kill split stored after the scorer's read-only rerun reconciled with every stored row.
+- link-later: deleting one match's rows unlinked its replay through the trigger (status `unlinked`, offset,
+  kill map, DB-only deaths, per-kill split and `linked_at` cleared, every `replay_players.match_player_id`
+  NULL, `link_report.unlinked = "match deleted"`, `link_inputs` unchanged); its page context then held no site
+  data; restoring the rows and running `link_replays.py` relinked it with the same mapping, offset and kill
+  map, and stored its split again. This unlinked replay stands in for the Swiftplay one, which refuses at
+  condense (Stage 1a findings).
+- `DEMO_MODE=true` with every row present: `/replays/<uuid>`, `/replays/<uuid>/1.json` and
+  `/matches/<id>/replay` 404; the match page and the matches list link no replay.
+- no replay: a match page, the matches list and `/health` render byte-identical HTML to `origin/main` on the
+  same DB (static version strings masked).
+- headless Chromium (Playwright), every round of all six replays at 1280 px and 390 px: a drawn canvas, play,
+  scrub, a kill-feed jump and the next-round button all work, no console or page error: 12/12.
+- tests: failing IDs compared with the `origin/main` baseline in the run's final check.
+
 **Gate (after merge, user-run):**
 - The deploy applies 0012 to both DBs. Check `alembic_version` read-only on both. `valomaths.onrender.com` loads
   with no replay links.

@@ -18,6 +18,7 @@ from app.services.matches import (
 )
 from app.services.economy_graphs import build_pistol_stats, build_tier_matrix, match_econ_rounds, match_econ_samples
 from app.services.player_graphs import build_match_round_win_diagrams
+from app.services.replays import replay_url_for_match, watchable_external_ids
 from app.templates import templates
 
 router = APIRouter(prefix="/matches", tags=["matches"])
@@ -37,7 +38,8 @@ def match_list(
     return templates.TemplateResponse(
         request,
         "matches/list.html",
-        {"matches": matches, "showing_own_matches": showing_own_matches},
+        {"matches": matches, "showing_own_matches": showing_own_matches,
+         "watchable": watchable_external_ids(db, [m.external_id for m in matches])},
     )
 
 
@@ -119,6 +121,7 @@ def match_detail(request: Request, external_id: str, db: Session = Depends(get_d
             "team2_econ_tier_matrix": team2_econ_tier_matrix,
             "team1_econ_pistol_stats": team1_econ_pistol_stats,
             "team2_econ_pistol_stats": team2_econ_pistol_stats,
+            "replay_url": replay_url_for_match(db, match),
         },
     )
 
@@ -128,5 +131,6 @@ def round_detail(request: Request, external_id: str, round_number: int, db: Sess
     match = get_match_or_404(db, external_id)
     detail = get_round_detail(db, match, round_number)
     return templates.TemplateResponse(
-        request, "matches/_round_detail.html", {"match": match, "detail": detail}
+        request, "matches/_round_detail.html",
+        {"match": match, "detail": detail, "replay_url": replay_url_for_match(db, match)}
     )
