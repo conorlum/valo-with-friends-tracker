@@ -151,7 +151,7 @@ def test_a_failed_parse_and_a_stuck_job_fail_with_a_plain_reason(db, tmp_path, s
     finally:
         httpd.shutdown()
     stuck = ReplayUpload(id="00000000-0000-4000-8000-00000000eeee", status="parsing", worker_job_id="gone",
-                         session_key="z", created_at=datetime.now(timezone.utc) - timedelta(minutes=11))
+                         session_key="z", created_at=datetime.now(timezone.utc) - uploads.STUCK_AFTER - timedelta(minutes=1))
     db.add(stuck)
     db.commit()
     stuck = uploads.refresh_job(db, stuck, uploads.WorkerClient("http://127.0.0.1:9", timeout_s=1))
