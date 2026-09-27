@@ -93,7 +93,7 @@
   // line (a wall or an aim, from the object's yaw: see lineEnds), badge (a team-coloured disc
   // with the ability's glyph) or hidden. `r` and `len` are world units. First match wins; an
   // unknown archetype is a badge with no glyph. Projectiles are never drawn (their object is).
-  // PROVISIONAL(D7): radii are approximate in-game sizes, tuned by eye on the map.
+  // Radii are approximate in-game sizes, tuned by eye on the map.
   var ABILITY_STYLES = [
     // Omen
     [/^Wraith_4_Smoke$/, { ability: "Dark Cover", shape: "smoke", r: 410 }],
