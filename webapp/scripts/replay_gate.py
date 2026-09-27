@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import argparse
 import copy
+import itertools
+import pickle
 import sys
+from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -269,6 +272,178 @@ def truncation_margin(replay: cd.CondensedReplay, winners: bool) -> str:
     return "; ".join(f"{k}: {v}" for k, v in found.items())
 
 
+# ---------------------------------------------------------------- link-level rows on a real replay
+
+
+def _db_edit(match: lk.DbMatch, **changes) -> lk.DbMatch:
+    """A copy of a (real) DbMatch with fields replaced; the original is never touched."""
+    return replace(copy.deepcopy(match), **changes)
+
+
+def _slot_teams(base: Outcome, match: lk.DbMatch) -> dict[int, str]:
+    team = {p.match_player_id: p.team for p in match.players}
+    return {slot: team[mp] for slot, mp in (base.mapping or {}).items()}
+
+
+def generic_link_rows(replay: cd.CondensedReplay, match: lk.DbMatch, base: Outcome,
+                      other: lk.DbMatch | None = None) -> list[tuple]:
+    """The gate table's link-level rows built from any linked replay and its DbMatch, real or
+    synthetic: (row, expected text, expectation, db match, view edit), or (row, reason) when
+    the data has no case for that row (reported as N/A, never as OK)."""
+    rows: list[tuple] = []
+    matched, _ = lk.split_db_kills(match)
+    slot_team = _slot_teams(base, match)
+
+    shifted = [lk.DbRound(r.number + 1, r.outcome, r.plant_time, r.defuse_time) for r in match.rounds]
+    shifted_kills = [replace(k, round_number=k.round_number + 1) for k in match.kills]
+    rows.append(("a shifted round number", "refused", expect_refused(),
+                 _db_edit(match, rounds=shifted, kills=shifted_kills), None))
+
+    # Two matched kills of one round, far apart in time, trade (killer, victim).
+    swap = next(((a, b) for n in sorted(matched) for a, b in itertools.combinations(matched[n], 2)
+                 if abs(a.t - b.t) > 2 * lk.MAX_RESIDUAL_S and (a.killer, a.victim) != (b.killer, b.victim)), None)
+    if swap:
+        a, b = swap
+        kills = [replace(k, killer=b.killer, victim=b.victim) if k.id == a.id else
+                 replace(k, killer=a.killer, victim=a.victim) if k.id == b.id else k for k in match.kills]
+        rows.append(("two kills swapped by identity", "refused", expect_refused(), _db_edit(match, kills=kills), None))
+    else:
+        rows.append(("two kills swapped by identity", "no two matched kills of one round 1.5 s apart"))
+
+    # Two matched kills within the pairing window swap times in the DB.
+    close = next(((a, b) for n in sorted(matched) for a, b in zip(matched[n], matched[n][1:])
+                  if 0 < b.t - a.t <= 0.3 and (a.killer, a.victim) != (b.killer, b.victim)), None)
+    if close:
+        a, b = close
+        kills = [replace(k, t=b.t) if k.id == a.id else replace(k, t=a.t) if k.id == b.id else k
+                 for k in match.kills]
+        rows.append(("two kills within the pairing window swapped in order", "linked, same mapping",
+                     expect_linked_same(), _db_edit(match, kills=kills), None))
+    else:
+        rows.append(("two kills within the pairing window swapped in order", "no two kills within 0.3 s"))
+
+    agents = {p.agent for p in match.players}
+    stranger = next(a for a in ("Viper", "Deadlock", "Harbor", "Vyse", "Tejo", "Neon") if a not in agents)
+    players = [replace(p, agent=stranger) if i == 0 else p for i, p in enumerate(match.players)]
+    rows.append(("an agent changed", "refused", expect_refused(), _db_edit(match, players=players), None))
+
+    for shift, expected, check in ((3.0, "refused", expect_refused("clock")),
+                                   (0.5, "linked, same mapping, offset +0.5 s", expect_linked_same(0.5))):
+        kills = [replace(k, t=round(k.t + shift, 3)) for k in match.kills]
+        rows.append((f"a {shift:g} s clock shift", expected, check, _db_edit(match, kills=kills), None))
+
+    if other is not None:
+        rows.append(("the wrong match", "refused", expect_refused(),
+                     _db_edit(other, external_id=match.external_id), None))
+    else:
+        rows.append(("the wrong match", "no second match given"))
+
+    # Two opposing slots with agents unique in the match: same agent, kill-free, spawns crossed.
+    counts = Counter(p["agent"] for p in replay.players)
+    unique = [p["slot"] for p in replay.players if counts[p["agent"]] == 1]
+    pair = next(((a, b) for a in unique for b in unique
+                 if slot_team.get(a) == "team-1" and slot_team.get(b) == "team-2"), None)
+    if pair and base.mapping:
+        a, b = pair
+        agent_a = next(p["agent"] for p in replay.players if p["slot"] == a)
+        mp_a, mp_b = base.mapping[a], base.mapping[b]
+
+        def kill_free(view, a=a, b=b, agent_a=agent_a):
+            for p in view.players:
+                if p["slot"] == b:
+                    p["agent"] = agent_a
+            view.link_inputs["kills"] = {n: [k for k in ks if a not in k[1:] and b not in k[1:]]
+                                         for n, ks in view.link_inputs["kills"].items()}
+            for table in (view.link_inputs.get("spawn_points") or {},
+                          *(view.link_inputs.get("start_positions") or {}).values()):
+                if str(a) in table and str(b) in table:
+                    table[str(a)], table[str(b)] = table[str(b)], table[str(a)]
+
+        players = [replace(p, agent=agent_a) if p.match_player_id == mp_b else p for p in match.players]
+        kills = [k for k in match.kills if not {k.killer, k.victim} & {mp_a, mp_b}]
+        rows.append(("two opposing same-agent slots made kill-free, spawn evidence crossed",
+                     "refused (two candidates)",
+                     lambda o, _b: o.status == "refused" and o.check == "assignment" and o.candidates == 2,
+                     _db_edit(match, players=players, kills=kills), kill_free))
+    else:
+        rows.append(("two opposing same-agent slots made kill-free, spawn evidence crossed",
+                     "no unique-agent slot on each team"))
+
+    spawns = replay.link_inputs.get("spawn_points") or {}
+    if len(spawns) == 10 and base.mapping:
+        enemy = next(s for s in range(10) if slot_team.get(s) != slot_team.get(0))
+
+        def moved_spawn(view, enemy=enemy):
+            view.link_inputs["spawn_points"]["0"] = list(view.link_inputs["spawn_points"][str(enemy)])
+
+        rows.append(("a slot's spawn evidence moved to the other team", "refused (proximity disagrees)",
+                     expect_refused("proximity"), match, moved_spawn))
+    else:
+        rows.append(("a slot's spawn evidence moved to the other team", "no match-start spawn points"))
+
+    last = sorted(r.number for r in match.rounds)[-3:]
+    rows.append(("the DB's last k rounds deleted, score unchanged", "refused (P-e)",
+                 expect_refused("rounds", "completeness", "score"),
+                 _db_edit(match, rounds=[r for r in match.rounds if r.number not in last],
+                          kills=[k for k in match.kills if k.round_number not in last]), None))
+    return rows
+
+
+def generic_truncation_margin(replay: cd.CondensedReplay, match: lk.DbMatch, winners: bool) -> str:
+    """The smallest per-round prefix of matched kills that still links uniquely, both sides
+    trimmed alike: with the anchor minimum, and without it."""
+    matched, excluded = lk.split_db_kills(match)
+    most = max((len(v) for v in matched.values()), default=0)
+    found = {}
+    for label, minimum in (("with limits", lk.MIN_ANCHORS), ("assignment only", 1)):
+        saved = lk.MIN_ANCHORS
+        lk.MIN_ANCHORS = minimum
+        try:
+            for j in range(1, most + 1):
+                keep = {k.id for n, ks in matched.items() for k in ks[:j]} | {k.id for ks in excluded.values() for k in ks}
+
+                def trim(view, j=j):
+                    view.link_inputs["kills"] = {
+                        n: sorted((k for k in ks if k[1] != k[2]), key=lambda k: k[0])[:j] + [k for k in ks if k[1] == k[2]]
+                        for n, ks in view.link_inputs["kills"].items()}
+
+                outcome = link_outcome(replay, _db_edit(match, kills=[k for k in match.kills if k.id in keep]),
+                                       winners=winners, edit=trim)
+                if outcome.status == "linked":
+                    found[label] = f"{j} per round ({len(keep)} DB kills)"
+                    break
+            else:
+                found[label] = "none"
+        finally:
+            lk.MIN_ANCHORS = saved
+    return "; ".join(f"{k}: {v}" for k, v in found.items())
+
+
+def real_link_section(replay: cd.CondensedReplay, match: lk.DbMatch, other: lk.DbMatch | None, variant: str,
+                      record) -> None:
+    """Every link-level gate row on one real replay and its real DB rows, with and without winners."""
+    for winners in (True, False):
+        v = f"{variant}, {'winners' if winners else 'no winners'}"
+        base = link_outcome(replay, match, winners=winners)
+        pins = lk.link(lk.ReplayLinkView(replay.match_uuid, replay.round_count, replay.report["dropped_final_round"],
+                                         copy.deepcopy(replay.players), copy.deepcopy(replay.link_inputs)),
+                       [match], {}).report
+        ok = base.status == "linked" and len(pins.get("pinned", [])) == 10
+        record("the real replay links (one candidate, every slot pinned, eligible)", v, "linked",
+               base.text() + (f" pinned {len(pins.get('pinned', []))}" if base.status == "linked" else ""), ok)
+        if base.status != "linked":
+            continue
+        for row in generic_link_rows(replay, match, base, other):
+            if len(row) == 2:
+                record(row[0], v, "as stated", f"N/A: {row[1]}", None, "N/A")
+                continue
+            name, expected, check, db_row, edit = row
+            outcome = link_outcome(replay, db_row, winners=winners, edit=edit)
+            record(name, v, expected, outcome, check(outcome, base))
+        record("kills truncated: the smallest prefix that still links uniquely", v, "reported margin",
+               generic_truncation_margin(replay, match, winners), True)
+
+
 # ---------------------------------------------------------------- condense-level rows
 
 
@@ -354,15 +529,86 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--export-dir", type=Path, help="a real export for the condense-level rows")
     parser.add_argument("--vrf", type=Path, help="that export's .vrf (map and match UUID)")
     parser.add_argument("--work", type=Path, help="scratch folder (default: a temp folder)")
+    parser.add_argument("--condensed", type=Path, action="append", default=[],
+                        help="a condensed real replay (build_replay_bundle.py's bundle-condensed.pickle); repeatable. "
+                             "With --db, every link-level row runs on it against its real DB rows; the next "
+                             "one's match is its 'wrong match'")
+    parser.add_argument("--db", action="store_true",
+                        help="read the --condensed replays' DB rows (run under with_friends_db.py --read-only)")
+    parser.add_argument("--real-only", action="store_true", help="skip the synthetic rows")
     args = parser.parse_args(argv)
-
-    import tempfile
-    work = args.work or Path(tempfile.mkdtemp(prefix="replay-gate-"))
+    if args.condensed and not args.db:
+        parser.error("--condensed needs --db")
     lines: list[tuple[str, str, str, str, str]] = []
 
     def record(row, variant, expected, outcome: Outcome | str, ok: bool | None, verdict: str | None = None):
         verdict = verdict or ("WAITS" if ok is None else ("OK" if ok else "MISMATCH"))
         lines.append((row, variant, expected, outcome if isinstance(outcome, str) else outcome.text(), verdict))
+
+    if args.condensed:
+        real_link_rows(args.condensed, record, _db_candidates_loader())
+    if args.real_only:
+        return print_lines(lines)
+    return synthetic_and_export_rows(args, lines, record)
+
+
+def load_condensed(path: Path) -> cd.CondensedReplay:
+    # A local scratch file build_replay_bundle.py wrote itself, beside the export: (replay, ...).
+    loaded = pickle.loads(path.read_bytes())
+    return loaded[0] if isinstance(loaded, tuple) else loaded
+
+
+def _db_candidates_loader():
+    """A read-only session's loader: match UUID -> the DbMatch rows the linker compares."""
+    sys.path.insert(0, str(WEBAPP_ROOT / "scripts"))
+    from ingest_replay import _db_loader, load_link_candidates  # noqa: F401  (the dry-run's own reader)
+
+    from sqlalchemy import text
+
+    from app.config import settings
+    from app.db import SessionLocal
+
+    if settings.demo_mode:
+        raise SystemExit("REFUSED: demo mode")
+    session = SessionLocal()
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(text("SET TRANSACTION READ ONLY"))
+
+    def load(match_uuid: str) -> list[lk.DbMatch]:
+        return load_link_candidates(session, match_uuid)[0]
+
+    return load
+
+
+def real_link_rows(paths: list[Path], record, load) -> None:
+    replays = [load_condensed(path) for path in paths]
+    matches = []
+    for replay in replays:
+        rows = load(replay.match_uuid)
+        matches.append(rows[0] if len(rows) == 1 else None)
+    for i, (replay, match) in enumerate(zip(replays, matches)):
+        variant = f"real {replay.match_uuid[:8]} ({replay.map_name})"
+        if match is None:
+            record("the real replay has exactly one DB match", variant, "one row", "none or several", False)
+            continue
+        others = [m for j, m in enumerate(matches) if j != i and m is not None]
+        real_link_section(replay, match, others[0] if others else None, variant, record)
+
+
+def print_lines(lines) -> int:
+    width = [max(len(line[i]) for line in lines) for i in range(4)]
+    for line in lines:
+        print(" | ".join(part.ljust(width[i]) if i < 4 else part for i, part in enumerate(line)))
+    mismatches = sum(1 for line in lines if line[4] == "MISMATCH")
+    print(f"\n{sum(1 for l in lines if l[4] == 'OK')} OK, {mismatches} MISMATCH, "
+          f"{sum(1 for l in lines if l[4] == 'WAITS')} WAITS, {sum(1 for l in lines if l[4] == 'FINDING')} FINDING, "
+          f"{sum(1 for l in lines if l[4] == 'N/A')} N/A")
+    return 1 if mismatches else 0
+
+
+def synthetic_and_export_rows(args, lines, record) -> int:
+    import tempfile
+    work = args.work or Path(tempfile.mkdtemp(prefix="replay-gate-"))
 
     # Link level, synthetic, with and without decoded winners.
     synth = synthetic_replays(work)
@@ -391,6 +637,10 @@ def main(argv: list[str] | None = None) -> int:
                outcome.status == "linked" and outcome.mapping == base.mapping and unobserved == 1)
         record("kills truncated: the smallest prefix that still links uniquely", variant, "reported margin",
                truncation_margin(base_replay, winners), True)
+
+    # The generic rows (what --condensed --db runs on real data), on the synthetic match.
+    wrong = db_match(kills={n: [(t, (a + 1) % 5 + 5 * (a // 5), b) for t, a, b in ks] for n, ks in KILLS.items()})
+    real_link_section(base_replay, db_match(), wrong, "synthetic, generic rows", record)
 
     # Condense level, synthetic Swiftplay shape (with a leaver).
     export, smatch = synthetic_condense_export(work)
@@ -440,13 +690,7 @@ def main(argv: list[str] | None = None) -> int:
                  "the limits frozen from two or more competitive matches"):
         record(name, "competitive", "as stated", "WAITS (1b)", None)
 
-    width = [max(len(line[i]) for line in lines) for i in range(4)]
-    for line in lines:
-        print(" | ".join(part.ljust(width[i]) if i < 4 else part for i, part in enumerate(line)))
-    mismatches = sum(1 for line in lines if line[4] == "MISMATCH")
-    print(f"\n{sum(1 for l in lines if l[4] == 'OK')} OK, {mismatches} MISMATCH, "
-          f"{sum(1 for l in lines if l[4] == 'WAITS')} WAITS, {sum(1 for l in lines if l[4] == 'FINDING')} FINDING")
-    return 1 if mismatches else 0
+    return print_lines(lines)
 
 
 if __name__ == "__main__":
