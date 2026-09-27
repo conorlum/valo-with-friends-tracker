@@ -263,6 +263,13 @@ condensed again without parsing again, and so the upload worker runs the same tw
    Until then, the columns can be created, but the **backfill stays off**. A replay that decodes Subjects for only
    some slots is handled per slot, as the code already does.
 
+   **Closed 2026-09-27 (Stage 1b, findings 15 and 21): keep.** Competitive decodes 10 Subjects per match, and
+   the 6 players seen in two or more of the six competitive replays each carry one stable Subject. The columns
+   stay as written, and the backfill runs under Linking step 6's rules. **(2026-09-27, review B1)** The
+   `players.riot_subject` column is added by migration 0012 only: `app/models/player.py` is a scoring
+   HASHED_SOURCE (`impact_manifest.py:38-57`), so the ORM model is not edited, and replay code reads and writes
+   the column with Core SQL.
+
    Either way, Subjects are compared in one canonical form: lower-case hyphenated strings on both sides. The DB
    loader converts a native `uuid.UUID` from `players.riot_subject`. A probe that passed a native UUID refused a
    correct anchor. Neither choice affects the demo, because both are additive.
@@ -273,8 +280,16 @@ condensed again without parsing again, and so the upload worker runs the same tw
    match the DB doesn't have is **stored and playable**, and links itself once the match is crawled. **Both**
    local ingest and upload are built. Local ingest ships first because it proves the shared code.
 4. **ValoMaths demo:** no replays, and no upload. Enforced in code.
-5. **Impact:** the replay never affects scoring. The page *shows* the stored per-player round Impact. Per-kill
-   Impact is out of scope for this pass.
+5. **Impact:** the replay never affects scoring. The page *shows* the stored per-player round Impact.
+   **Amended 2026-09-27 (the user: "I want to see per kill impact, do what is needed").** The live kill feed also
+   shows each kill's share of the stored round Impact: `leverage × kill_order_bonus_x_time` for the killer and
+   `leverage × death_order_bonus_x_time` for the victim, taken from the **existing** scorer's `kill_observer`
+   in a read-only rerun (`build_impact_rows_for_match`, which writes nothing). The split is stored only when the
+   rerun's persisted fields equal every stored `impact_scores` row and the shares reconcile with them (the death
+   side exactly, the kill side's leverage part within 1 for the rows' integer rounding), and it is shown only
+   while a fingerprint of those rows is unchanged. Nothing in `app/scoring/` or its hashed sources changes, and
+   no Impact value is computed any other way. It runs in user-run scripts only (`app/services/replay_impact.py`;
+   see `docs/replay-stage1b-4-impl-plan.md`).
 6. **Sample rate:** as granular as the parser allows, so the tracks keep the parser's native exported rate (no
    upsampling). The size budget is met with encoding, not by dropping samples (see JSON v1).
 7. **Archive backup:** back up the test replay and the first competitive replay as soon as they're archived, then
@@ -451,6 +466,79 @@ pass-6 check.
 - **Finding 5 corrected:** there are two self-kills, not one. Besides round 3's, one at 733.0 s (a Fade, that player's first death of the round) falls in
   round 8's round-ending period, outside pass 5's windows, so pass 5's "none outside a round window" was wrong
   (its report didn't count `kills_outside_rounds` as a check). In pass 6's playback window it is inside round 8.
+
+### Stage 1b results (2026-09-27, AFK run `2026-09-27-replay-1b-to-2`)
+
+Six competitive matches (`++Ares-Core+release-13.06`), recorded by the user and crawled on 2026-09-26/27, each
+archived, exported and condensed at `CONDENSE_REVISION` 4 (kills also read from lethal damage; see
+`app/replays/condense.py`). Match IDs (their tracker.gg IDs, also the site's match-page keys): Ascent
+`a5549826` (DB match 3671), Abyss `81e38a00` (3670), Split `47a5f123` (3672), Summit `6e52839b` (3673), Sunset
+`88f60040` (3678), Haven `d07225f3` (3677). All figures below are counts; no Subject or name was printed.
+
+**The executable gate.**
+- `replay_gate.py --condensed … --db` (read-only friends DB): **144 OK, 0 MISMATCH, 0 N/A** over the six, with
+  and without decoded winners. Every row of the gate table that is link-level ran on real data: each base
+  replay links with one candidate and all 10 slots pinned; a shifted round number, an identity swap, a changed
+  agent, a 3 s shift, the wrong match (another of the six), two kill-free opposing same-agent slots with
+  crossed spawns (two candidates), a spawn moved to the other team, and the DB's last 3 rounds deleted all
+  refuse; an in-window order swap and a 0.5 s shift link with the same mapping (offset +0.5 s).
+- Truncation margin: **one matched kill per round** already links uniquely in all six, with and without the
+  20-anchor minimum (21-28 rounds, so 21-28 anchors).
+- Condense-level rows on two real exports (`--export-dir`): Ascent **63 OK, 0 MISMATCH**, base `OK` (a phase 4
+  removed, a phase 5 moved past the next 3, a pawn claimed by a second player state: each refused at the check
+  the table names). Abyss: **63 OK, 0 MISMATCH**, base `OK`, the same three refusals. The "kill
+  after a left close" row needs a leaver, and none of the six has one (finding 25); the "dormant close and
+  reopen" row runs on synthetic data only.
+
+**Findings 14-28.**
+- **14.** Match UUID from `BombGameState.MatchID` (`match_uuid_source: game_state`) in all six, agreeing with
+  the `.vrf` header and the file name; `matches.external_id` equals it (case-insensitive).
+- **15. Subjects are real and stable.** 36 distinct players over the six; the 6 who appear in two or more
+  replays each have exactly one Subject across them, and no Subject belongs to two players. (The DB's
+  `players.puuid` is empty for all 60 linked slots, so the recorder-equals-PUUID route isn't available; the
+  two-replay route answers it.) **Decision 1 is closed as "keep"**, and the backfill may run (Linking step 6).
+- **16.** `RoundResults` decode for every round (21-28 per match, no fallback); index i is played round
+  i + 1 (D8 confirmed: every decoded winner equals the DB's); `WinningTeam` values are exactly `Red`/`Blue`
+  (`Red` = team-1 confirmed). No `RoundNumber` is decoded on the game state at round start (all null), so the
+  window-order check has nothing to compare and the index base (D15 `ROUND_NUMBER_BASE`) stays untested.
+- **17.** DB kill classes: 1,003 matched; 5 self-kills (Summit 4, Haven 1), each also a replay self-kill;
+  no killer-less and no team kills in these six. Abyss has 3 kills known only from lethal damage.
+- **18. Clock.** 1,003 anchors: median offset +0.002 s, range −0.001 to +0.015 s; per match max residual
+  0.004-0.013 s, median 0.001 s; **round 1's offset equals the rest** (0.000-0.001 s), so tracker.gg's
+  `roundTime` counts from the barrier drop in round 1 too and needs no special rule. Every round has 5 or more
+  anchors.
+- **19.** Exactly one candidate per match, all 10 slots pinned, proximity agrees. Match-start spawn lines 5/5
+  with radius 300-612 units (limit 1500). **No round-start cluster was tight in any round of any match**
+  (`start_positions` empty), so only the match-start lines check the assignment.
+- **20.** 10 proposed backfills per match (60), no conflicts (reported, not written).
+- **21.** Competitive decodes what Swiftplay didn't: `BombPlayerState` with 10 Subjects per match, and
+  `BombGameState` with `MatchID` and `RoundResults`.
+- **22.** One pawn per player for the whole match (all six); 125 Hz; the map only in the `.vrf`; ownership
+  claims 50-144 per match with 20-115 possession intervals (drones and other possessed pawns), no conflict.
+- **23.** Every link-level row gives the same outcome with `round_results` emptied (the "no winners" half of
+  the 144).
+- **24.** Kills after `RoundEnding`: 8 in all. The 3 cross-team ones (Abyss 1, Sunset 2) are in the DB and
+  match; the 5 self-kills (Summit 4, Haven 1) are excluded on both sides, as designed.
+- **25.** No player-pawn channel closes at all in the six (`closes_by_reason` empty; nobody left), so whether
+  a leaver's close differs from dormancy is **not answerable** from these recordings.
+- **26. Surrender shape: not what P-e assumed, safe.** 37 of 3,673 DB matches have an awarded score that
+  differs from their round rows; in all 37 the rows **exceed** the awarded total and include 2-10
+  "Surrendered Win" padding rows. They predate the adapter's filter (`trackergg_browserstate_source.py:676-688`
+  drops padding at ingest today). A replay of one of these would refuse at "played round sets differ" (safe:
+  refused, never misaligned). No replay of a surrendered match exists to test the other shape.
+- **27.** Partial-bunch errors: 112-161 per match on the recorder's controller channel (phase RPCs), all
+  `phase_validated` (the `ClientGamePhaseEnded` cross-check ran); 69-253 on other channels `ignored`; Haven 40
+  on a kill/lifecycle channel (`lifecycle_validated`). Every match is eligible.
+- **28. Clove's revive decodes in competitive.** Two of the six have a Clove (Ascent, Haven); both condense with
+  0 uncertain lives and 0 lifecycle contradictions, because `MulticastReceivePlayerResurrectEvent` is decoded.
+  The "second death with no revive" rule needs no Clove exception for competitive.
+- **Coverage and size.** Alive-time coverage 100% for every player in every match; largest track gap
+  0.029-0.04 s. At c4 (no stored abilities or shots): p95 39.7-51.1 KB per round, 558-842 KB per match.
+
+**Still open for the user (not closed by this run):** Stage 1a's two Swiftplay findings (P-c refuses the
+Swiftplay export: Clove's revive isn't decoded there; P-f: a 4.26 s post-decision gap). Competitive is
+unaffected (28, coverage above), and the site is competitive-only, so they only matter if Swiftplay replays are
+ever wanted.
 
 ### Exporter contract (what the condenser relies on)
 
@@ -1433,7 +1521,7 @@ first real upload.
    uploads are listed with "re-upload to refresh".
 4. Optional: flash, nearsight and wall `util` kinds (no `v` bump; a `CONDENSE_REVISION` bump; W-e).
 
-**Not in this pass:** per-kill Impact (decision 5), a win-probability line (`win_probability.py` is a
+**Not in this pass:** a win-probability line (`win_probability.py` is a
 between-round match-win model with no alive-count input that must be cross-fitted; `win_probability.py:1-15,36-59`),
 and trade links (the round page has none).
 
@@ -1444,17 +1532,21 @@ and trade links (the round page has none).
   round shows its reason.
 - Round Impact equals `get_round_detail`'s numbers for every round.
 - **No scoring change:** `git diff origin/main -- webapp/app/scoring` is empty.
-- **No new Impact calculation:** a test asserts that nothing under `app/replays/`, `replay_view.py`,
-  `replay_upload.py` or `replay_worker/` imports `app.scoring.impact`, `kill_order_leverage` or
+- **No new Impact calculation:** a test asserts that nothing under `app/replays/`, `app/routers/`,
+  `replay_view.py`, `replay_upload.py` or `replay_worker/` imports `app.scoring.impact`, `kill_order_leverage` or
   `win_probability`. The transitive import of the unchanged `app.scoring.plant_window` through `state_replay`
-  (`state_replay.py:51`) is expected.
+  (`state_replay.py:51`) is expected. **(amended 2026-09-27, decision 5)** The one exception is
+  `app/services/replay_impact.py`, the per-kill split: it may import only `build_impact_rows_for_match`,
+  `PERSISTED_FIELDS`, `FormulaWeights` and `impact_runtime`'s `active_scoring_config`/`active_manifest`, and
+  never `compute_impact_for_match`, a commit or an `add`; a test enforces both. Every HASHED_SOURCES path is
+  unchanged against `origin/main`.
 - `reingest_replays.py --dry-run` lists nothing after a fresh ingest. It lists the local replay after a
   `CONDENSE_REVISION` bump, refuses it after the archive file is corrupted, and lists uploads as "re-upload".
 
 **User runs:** the merge and any prod re-ingest.
 
 ### After this pass
-- Per-kill Impact (a scoring-process decision).
+- Per-kill Impact beyond the display split of decision 5 (amended 2026-09-27): any new per-kill value is a scoring-process decision.
 - Smoke overlays once upstream exports them.
 - A historical "rounds won from this state" rate beside the badge. It must be labelled as a historical rate over a
   stated population, with a minimum sample, and gets its own gate.
