@@ -11,7 +11,7 @@ All paths are under `webapp/` unless they start with `replay_worker/` or `docs/`
 `webapp/` with `.venv313` (`PY` below); the final step also runs both full suites.
 
 ```
-PY = C:\Users\Conor Lum\Documents\GitHub\valo-with-friends-tracker\webapp\.venv313\Scripts\python.exe
+PY = <repo>\webapp\.venv313\Scripts\python.exe
 EXPORT = %TEMP%\valo-replay\d45b2844-d7dd-4efd-bbf7-551854710350
 VRF = %USERPROFILE%\ValorantReplayArchive\d45b2844-d7dd-4efd-bbf7-551854710350.vrf
 ```
