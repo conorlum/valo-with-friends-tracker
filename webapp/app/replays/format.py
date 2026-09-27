@@ -36,8 +36,10 @@ CONDENSE_REVISION = 5
 
 UV_SCALE = 10000
 
-# The plan's size budget, frozen at the Stage 1b gate (2026-09-27).
-ROUND_BUDGET_P95_BYTES = 60_000
+# PROVISIONAL(D9): the per-round budget, 60 KB at the Stage 1b freeze (D7), raised to 70 KB when
+# rounds began storing abilities and shots (R2): on the six competitive matches the p95 is
+# 46.7-63.0 KB (Sunset over 60) and every match is 0.65-1.03 MB. PROVISIONAL(D7): the match budget.
+ROUND_BUDGET_P95_BYTES = 70_000
 MATCH_BUDGET_BYTES = 1_500_000
 
 STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
