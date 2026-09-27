@@ -1,0 +1,81 @@
+{# The replay player. Context: `replay` with map_name and round_numbers, and `linked`. Unlinked
+   (the standalone page) shows agents and side groups only; linked (the local preview route)
+   adds names, the kill feed, the round scoreboard and the layer toggles. The page supplies the
+   data and starts it. #}
+<section class="replay{% if linked %} is-linked{% endif %}" data-replay tabindex="0" aria-label="Replay player">
+  <header class="replay-header">
+    <h1>{{ replay.map_name }} replay{% if replay.title_suffix %} <span class="replay-title-suffix">{{ replay.title_suffix }}</span>{% endif %}</h1>
+    <p class="replay-note">
+      {% if linked %}Linked to this match: names, weapons and Impact come from the match's own rows.{% else %}{{ (replay.reason or "Not linked to a match on this site") | capitalize }}: agents and side groups only.{% endif %}
+    </p>
+  </header>
+  <div class="replay-body">
+    <div class="replay-main">
+      {% if linked %}<p class="replay-banner" data-replay-banner aria-live="polite"></p>{% endif %}
+      <div class="replay-stage">
+        <canvas class="replay-canvas" data-replay-canvas width="1024" height="1024" role="img"
+                aria-label="Minimap"></canvas>
+        <div class="replay-tip" data-replay-tip hidden></div>
+      </div>
+      <div class="replay-controls">
+        <button type="button" class="replay-button" data-replay-play aria-pressed="false">Play</button>
+        <label class="replay-speed">Speed <select data-replay-speed></select></label>
+        <span class="replay-clock" data-replay-clock aria-live="off"></span>
+      </div>
+      <div class="replay-scrub-wrap">
+        <input class="replay-scrub" data-replay-scrub type="range" min="0" max="1000" value="0" aria-label="Time in round">
+        <div class="replay-ticks" data-replay-ticks aria-hidden="true"></div>
+      </div>
+      <div class="replay-rounds" role="group" aria-label="Rounds">
+        <button type="button" class="replay-button" data-replay-prev aria-label="Previous round">&larr;</button>
+        <div class="replay-strip" data-replay-strip></div>
+        <button type="button" class="replay-button" data-replay-next aria-label="Next round">&rarr;</button>
+      </div>
+      {% if linked %}
+      <fieldset class="replay-layers">
+        <legend>Show</legend>
+        <label><input type="checkbox" data-replay-layer="names" checked> Names</label>
+        <label><input type="checkbox" data-replay-layer="abilities" checked> Abilities</label>
+        <label><input type="checkbox" data-replay-layer="tracers" checked> Shot tracers</label>
+        <label><input type="checkbox" data-replay-layer="cones" checked> View direction</label>
+      </fieldset>
+      {% endif %}
+      <p class="replay-legend">
+        {% if linked %}
+        <span class="replay-key replay-key-t1">Team 1</span>
+        <span class="replay-key replay-key-t2">Team 2</span>
+        <span class="replay-key replay-key-smoke">Smoke</span>
+        <span class="replay-key replay-key-area">Effect area</span>
+        <span class="replay-key replay-key-badge">Utility (its icon, in the owner's team colour; grey = owner unknown)</span>
+        <span class="replay-key replay-key-spike">Spike</span>
+        {% else %}
+        <span class="replay-key replay-key-a">Side A</span>
+        <span class="replay-key replay-key-b">Side B</span>
+        {% endif %}
+        <span class="replay-key replay-key-hollow">Last seen (2 s)</span>
+        <span class="replay-key replay-key-dashed">Partly unseen life</span>
+        <span class="replay-key replay-key-kill">Kill</span>
+        <span class="replay-state" data-replay-state></span>
+      </p>
+      <p class="replay-help">Space plays and pauses; &larr; and &rarr; step 5 s.{% if linked %} Click a kill to jump to 3 s before it; hover the map for details.{% endif %}</p>
+    </div>
+    {% if linked %}
+    <aside class="replay-side">
+      <div class="replay-tabs" role="tablist" aria-label="Round events">
+        <button type="button" role="tab" class="replay-tab is-active" data-replay-tab="feed" aria-selected="true">Kill feed</button>
+        <button type="button" role="tab" class="replay-tab" data-replay-tab="util" aria-selected="false">Utility</button>
+      </div>
+      <div data-replay-panel="feed" role="tabpanel">
+        <p class="replay-side-note">Impact: the killer's gain and the victim's loss from each kill (the leverage term of the live score).</p>
+        <ol class="replay-feed" data-replay-feed></ol>
+      </div>
+      <div data-replay-panel="util" role="tabpanel" hidden>
+        <p class="replay-side-note">Placed utility and flashes, by who used it. Click one to jump there.</p>
+        <ol class="replay-feed" data-replay-util></ol>
+      </div>
+      <h2>Scoreboard</h2>
+      <div class="replay-board" data-replay-board></div>
+    </aside>
+    {% endif %}
+  </div>
+</section>

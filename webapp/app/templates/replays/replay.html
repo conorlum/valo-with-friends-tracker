@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{# The replay page (app/routers/replays.py). The page carries the site data (`replay_data`: names,
+   DB outcomes, stats, the kill feed's weapons and per-kill Impact) and fetches each round's stored
+   blob from /replays/<uuid>/<n>.json; `loadRound` joins the two into the round the player draws. #}
+{% block title %}{{ replay.map_name }} replay &ndash; {{ site_name }}{% endblock %}
+{% block content %}
+{% if replay.match_url %}<p class="replay-crumbs"><a href="{{ replay.match_url }}">&larr; Match page</a></p>{% endif %}
+{% include "replays/_player.html" %}
+<script id="replay-data" type="application/json">{{ replay_data | tojson }}</script>
+<script src="/static/js/replay.js?v={{ static_version() }}"></script>
+<script>
+  (function () {
+    var root = document.querySelector("[data-replay]");
+    var data = JSON.parse(document.getElementById("replay-data").textContent);
+    var match = data.match;
+    var json = function (url) { return fetch(url).then(function (r) { if (!r.ok) throw new Error(url + " " + r.status); return r.json(); }); };
+    // The page's site data for round n, merged onto its stored blob (kills by their index).
+    function withSiteData(n, blob) {
+      var site = data.rounds[String(n)];
+      if (!site) return blob;
+      blob.db = site.db;
+      blob.stats = site.stats;
+      (blob.kills || []).forEach(function (k) {
+        var extra = site.kills[String(k.i)];
+        if (extra) Object.keys(extra).forEach(function (key) { k[key] = extra[key]; });
+      });
+      return blob;
+    }
+    json("/static/data/abilities.json?v={{ static_version() }}").catch(function () { return {}; }).then(function (abilityIcons) {
+      window.viewer = new Replay.ReplayViewer(root, {
+        rounds: match.rounds,
+        mapImage: "/static/img/maps/" + match.map + ".png",
+        agentIcon: function (agent) { return "/static/img/agents/" + agent.toLowerCase().replace(/[^a-z]/g, "") + ".png"; },
+        loadRound: function (n) { return json("/replays/" + match.uuid + "/" + n + ".json").then(function (blob) { return withSiteData(n, blob); }); },
+        roundWinner: function (n) { var site = data.rounds[String(n)]; return site && site.db && site.db.winner; },
+        abilityIcons: abilityIcons,
+        linked: match.linked ? { players: data.players, uvPerUnit: match.uv_per_unit } : null
+      });
+      window.viewerReady = window.viewer.showRound({{ start_round }});
+    });
+  })();
+</script>
+{% endblock %}

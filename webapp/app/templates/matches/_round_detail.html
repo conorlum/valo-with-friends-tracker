@@ -1,4 +1,4 @@
-<h3>Round {{ detail.round_number }} &mdash; {{ detail.outcome or "Unknown" }}</h3>
+<h3>Round {{ detail.round_number }} &mdash; {{ detail.outcome or "Unknown" }}{% if replay_url %} <a class="replay-link" href="{{ replay_url }}?round={{ detail.round_number }}">&#9654; Replay</a>{% endif %}</h3>
 {# Consecutive rows credited to the same team alternate a lighter and darker
    shade, lighter first -- same rule as the match scoreboard. #}
 {% macro shade(ns, team) -%}

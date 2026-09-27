@@ -95,7 +95,13 @@ def compute_split(session, match_id: int) -> dict:
     stored = {(s.round_id, s.match_player_id): s for s in session.query(ImpactScore)
               .filter(ImpactScore.round_id.in_(list(number_of)))}
     per_kill = reconcile(observed, rows, stored, number_of, PERSISTED_FIELDS, leverage)
+    # The feed also shows the players alive on each side before the kill, from the same event.
+    for event in observed:
+        context = event.get("context") or {}
+        if "killer_team_alive" in context and int(event["kill"]["id"]) in per_kill:
+            per_kill[int(event["kill"]["id"])] += [context["killer_team_alive"], context["victim_team_alive"]]
     manifest = active_manifest() or {}
+    # kills: {kill_events.id: [gain, loss, killer side alive, victim side alive]}
     return {"v": SPLIT_VERSION, "config": config.config_id,
             "impact_version": manifest.get("activation_impact_calculation_version"),
             "fingerprint": replay_db.impact_fingerprint(session, match_id),
