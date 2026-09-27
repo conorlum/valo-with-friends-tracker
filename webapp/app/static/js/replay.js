@@ -306,6 +306,20 @@
   }
 
   // Kills, deaths and assists-free tallies up to t, per slot, from the blob's kills.
+  // Stage 4: the players alive per team at t, from the page's steps [[t, team-1, team-2], ...].
+  function aliveAt(steps, t) {
+    var now = null;
+    (steps || []).forEach(function (step) { if (step[0] <= t) now = step; });
+    return now ? [now[1], now[2]] : null;
+  }
+
+  // The latest analysis state at or before t (state_replay's man-advantage states).
+  function stateAt(annotations, t) {
+    var now = null;
+    ((annotations && annotations.states) || []).forEach(function (s) { if (s.t <= t) now = s; });
+    return now;
+  }
+
   function tallyAt(kills, t) {
     var out = {};
     (kills || []).forEach(function (k) {
@@ -456,6 +470,7 @@
       self.renderTicks();
       self.renderBanner();
       self.renderFeed();
+      self.renderAnalysis();
       self.renderUtilList();
       self.updateControls();
       self.draw();
@@ -501,6 +516,7 @@
       clock: q("[data-replay-clock]"), strip: q("[data-replay-strip]"), ticks: q("[data-replay-ticks]"),
       prev: q("[data-replay-prev]"), next: q("[data-replay-next]"), state: q("[data-replay-state]"),
       feed: q("[data-replay-feed]"), board: q("[data-replay-board]"), banner: q("[data-replay-banner]"),
+      badge: q("[data-replay-badge]"), analysis: q("[data-replay-analysis]"),
       tip: q("[data-replay-tip]"), util: q("[data-replay-util]")
     };
     SPEEDS.forEach(function (s) {
@@ -537,7 +553,7 @@
         self.draw();
       });
     });
-    [this.ui.feed, this.ui.util].forEach(function (list) {
+    [this.ui.feed, this.ui.util, this.ui.analysis].forEach(function (list) {
       if (!list) return;
       var go = function (e) {
         var row = e.target.closest("[data-seek-t]");
@@ -632,6 +648,34 @@
     banner.className = "replay-banner" + (db.winner ? " won-" + db.winner : "");
   };
 
+  // Stage 4: the round's analysis panel: state_replay's man-advantage states on the replay clock,
+  // the ending at its own DB time, or why the round is excluded from the analysis.
+  ReplayViewer.prototype.renderAnalysis = function () {
+    var panel = this.ui.analysis, blob = this.current.blob;
+    if (!panel) return;
+    var a = blob.annotations;
+    if (!a) { panel.innerHTML = '<li class="replay-feed-empty">No analysis for this round.</li>'; return; }
+    if (a.excluded) {
+      panel.innerHTML = '<li class="replay-feed-empty">Not analysed: ' + escapeHtml(a.excluded.replace(/_/g, " ")) + ".</li>";
+      return;
+    }
+    var rows = a.states.map(function (s) {
+      var note = s.post_plant ? " · post-plant" : "";
+      if (s.decided_by) note += " · decided (" + s.decided_by + ")";
+      return '<li class="replay-feed-row" data-kill-t="' + s.t + '" data-seek-t="' + Math.max(0, s.t - 1) + '" tabindex="0">' +
+        '<span class="replay-feed-t">' + s.t.toFixed(1) + 's</span><span class="replay-feed-state">' +
+        '<span class="team-name-team-1">' + s.alive[0] + '</span>v<span class="team-name-team-2">' + s.alive[1] +
+        "</span></span>" + escapeHtml(note) + "</li>";
+    });
+    if (a.ending && a.ending.cause !== "elimination") {
+      rows.push('<li class="replay-feed-row"' + (typeof a.ending.t === "number" ? ' data-kill-t="' + a.ending.t +
+        '" data-seek-t="' + Math.max(0, a.ending.t - 1) + '" tabindex="0"' : "") + '><span class="replay-feed-t">' +
+        (typeof a.ending.t === "number" ? a.ending.t.toFixed(1) + "s" : "") + "</span>Round ends: " +
+        escapeHtml(a.ending.cause) + "</li>");
+    }
+    panel.innerHTML = rows.join("");
+  };
+
   ReplayViewer.prototype.personHtml = function (slot) {
     var p = this.linked && this.linked.players[String(slot)];
     var team = p ? p.team : "";
@@ -652,6 +696,7 @@
       }
       var state = k.state ? '<span class="replay-feed-state" title="Players alive before the kill (killer\'s side v victim\'s side)">' +
         k.state[0] + "v" + k.state[1] + "</span>" : "";
+      if (k.post_decision) state += ' <span class="replay-feed-post" title="After the round was decided">after the round</span>';
       return '<li class="replay-feed-row" data-kill-t="' + k.t + '" data-seek-t="' + (k.t - 3) + '" data-kill-i="' + k.i + '" tabindex="0">' +
         '<span class="replay-feed-t">' + k.t.toFixed(1) + "s</span>" +
         '<span class="replay-feed-who">' + self.personHtml(k.killer) +
@@ -746,6 +791,14 @@
       });
     }
     this.renderBoard();
+    if (this.ui.badge) {
+      var alive = aliveAt(blob.alive_steps, t);
+      this.ui.badge.hidden = !alive;
+      if (alive) {
+        this.ui.badge.innerHTML = '<span class="team-name-team-1">' + alive[0] + '</span> v <span class="team-name-team-2">' +
+          alive[1] + "</span>" + (t > blob.t_decided ? ' <span class="replay-badge-note">decided</span>' : "");
+      }
+    }
   };
 
   // How many players are drawn live at time t (and last-known), for tests and the page's summary.
@@ -1160,7 +1213,7 @@
   var api = {
     decodeSegment: decodeSegment, decodeRound: decodeRound, trackAt: trackAt, aliveAt: aliveAt,
     lerpYaw: lerpYaw, ReplayViewer: ReplayViewer, SUPPORTED_VERSIONS: SUPPORTED_VERSIONS,
-    abilityStyle: abilityStyle, lineEnds: lineEnds, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, pairWires: pairWires, signed: signed, tallyAt: tallyAt,
+    abilityStyle: abilityStyle, lineEnds: lineEnds, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, pairWires: pairWires, signed: signed, tallyAt: tallyAt, aliveAt: aliveAt, stateAt: stateAt,
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil
   };
   global.Replay = api;

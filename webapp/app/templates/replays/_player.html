@@ -20,7 +20,8 @@
       <div class="replay-controls">
         <button type="button" class="replay-button" data-replay-play aria-pressed="false">Play</button>
         <label class="replay-speed">Speed <select data-replay-speed></select></label>
-        <span class="replay-clock" data-replay-clock aria-live="off"></span>
+        <span class="replay-clock" data-replay-clock aria-live="off"></span>{% if linked %}
+        <span class="replay-badge" data-replay-badge title="Players alive now: Team 1 v Team 2" hidden></span>{% endif %}
       </div>
       <div class="replay-scrub-wrap">
         <input class="replay-scrub" data-replay-scrub type="range" min="0" max="1000" value="0" aria-label="Time in round">
@@ -64,10 +65,15 @@
       <div class="replay-tabs" role="tablist" aria-label="Round events">
         <button type="button" role="tab" class="replay-tab is-active" data-replay-tab="feed" aria-selected="true">Kill feed</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="util" aria-selected="false">Utility</button>
+        <button type="button" role="tab" class="replay-tab" data-replay-tab="analysis" aria-selected="false">Analysis</button>
       </div>
       <div data-replay-panel="feed" role="tabpanel">
         <p class="replay-side-note">Impact: the killer's gain and the victim's loss from each kill (the leverage term of the live score).</p>
         <ol class="replay-feed" data-replay-feed></ol>
+      </div>
+      <div data-replay-panel="analysis" role="tabpanel" hidden>
+        <p class="replay-side-note">The round's man-advantage states, as the site's player pages count them. Click one to jump there.</p>
+        <ol class="replay-feed" data-replay-analysis></ol>
       </div>
       <div data-replay-panel="util" role="tabpanel" hidden>
         <p class="replay-side-note">Placed utility and flashes, by who used it. Click one to jump there.</p>

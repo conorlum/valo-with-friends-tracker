@@ -1808,6 +1808,10 @@ table.compact-table .badge-score {
 .watch-cell { white-space: nowrap; }
 .watch-cell .muted { color: var(--ink-muted); }
 .watch-link { font-weight: 600; }
+/* Stage 4: the live alive count beside the clock, and post-decision kills in the feed. */
+.replay-badge { font-weight: 700; font-variant-numeric: tabular-nums; padding: 0.1rem 0.5rem;
+  border: 1px solid var(--border, currentColor); border-radius: 999px; }
+.replay-badge-note, .replay-feed-post { color: var(--ink-muted); font-size: 0.85em; font-weight: 400; }
 /* "Replay" links on the match page header and each round's detail (a linked, valid replay only). */
 .replay-link-button {
   display: inline-block;
