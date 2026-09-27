@@ -325,7 +325,10 @@ def write_fixture(out: Path, manifest: dict, events: list[dict], movement: list[
 
 def make_fixture(export_dir: Path, out: Path, rounds: int, vrf: Path | None = None,
                  movement_step: int = 1) -> list[str]:
-    export = contract.load_export(export_dir)
+    # Streaming (W-b): a competitive export is ~5 GB of NDJSON, too much to hold. The kept event
+    # rows are every row the condenser reads, a superset of what the fixture copies, so the
+    # identity scan still sees every row an output value could come from.
+    export = contract.load_export_streaming(export_dir)
     forbidden = original_identities(export)
     map_code = None
     if vrf is not None:

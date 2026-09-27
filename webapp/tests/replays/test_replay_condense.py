@@ -582,3 +582,26 @@ def test_the_real_swiftplay_fixture_passes_the_pass_6_checks():
     assert out.report["phase_ended_checked"] is True and out.report["kills_outside_rounds"] == 0
     assert out.report["lifecycle"]["contradictions"] == 0 and out.report["sides"]["resolved"] is True
     assert out.link_inputs["eligibility"]["eligible"] is True
+
+
+COMPETITIVE_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "replay" / "competitive"
+
+
+@pytest.mark.skipif(not COMPETITIVE_FIXTURE.exists(), reason="no competitive fixture")
+def test_the_real_competitive_fixture_condenses_with_decoded_game_state():
+    # Rounds 1-2 of a real competitive match on Ascent (13.06), movement thinned to every 20th
+    # row, identities synthesised (scripts/make_replay_fixture.py). Competitive decodes what
+    # Swiftplay didn't: Subjects, the MatchID and RoundResults (Stage 1b, finding 21).
+    out = cd.condense_export_dir(COMPETITIVE_FIXTURE, source_sha256=None)
+    assert (out.map_name, out.round_count, out.hz) == ("Ascent", 2, 6)
+    assert out.match_uuid == "00000000-0000-4000-8000-00000000f1c5"
+    assert out.report["match_uuid_source"] == "game_state"
+    assert [p["agent"] for p in out.players] == ["Waylay", "Cypher", "Phoenix", "Omen", "Cypher",
+                                                 "Sova", "Iso", "Clove", "Skye", "Omen"]
+    assert all(p["subject"].startswith("00000000-0000-4000-8000-") for p in out.players)
+    assert len({p["subject"] for p in out.players}) == 10
+    assert out.link_inputs["round_results"]["1"]["WinningTeam"] == "Blue"
+    assert out.report["kills"] == 15 and out.report["kills_outside_rounds"] == 0
+    assert out.report["match_spawn_check"]["ok"] and out.report["sides"]["resolved"]
+    assert out.link_inputs["eligibility"]["eligible"] is True
+    assert [len(out.rounds[n]["kills"]) for n in (1, 2)] == [9, 6]

@@ -1,0 +1,24 @@
+{
+  "schema_version": 8,
+  "replay_build": "++Ares-Core+release-13.06",
+  "replay_version": "5.3.2",
+  "parser_version": "0.1.0-alpha.1+2b66c65a7b116154e18ebb84d9f6795f2b080233",
+  "parse_status": "completed_with_warnings",
+  "stats": {
+    "packet_count": 756513,
+    "packets_with_bunches": 756513,
+    "bunch_count": 756513,
+    "malformed_packet_count": 0,
+    "partial_error_count": 210,
+    "total_packet_bytes": 169434187
+  },
+  "total_diagnostic_count": 210,
+  "suppressed_diagnostic_count": 0,
+  "source_file": "00000000-0000-4000-8000-00000000f1c5.vrf",
+  "source_sha256": "ef9123dae4fe8be4d6f38ac44989578fb95a7af34634aa619dd7bea776ac70cf",
+  "diagnostics": [],
+  "fixture": {
+    "rounds": 2,
+    "note": "synthesised by scripts/make_replay_fixture.py"
+  }
+}
