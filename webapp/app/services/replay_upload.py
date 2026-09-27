@@ -37,7 +37,9 @@ from app.replays.store import StoreRefused, store_replay
 VRF_MAGIC = (0x43F4EFDD).to_bytes(4, "little")
 # PROVISIONAL(D10): decision 10's starting limits, checked against the six competitive files.
 UPLOADS_PER_HOUR = 10
-STUCK_AFTER = timedelta(minutes=10)
+# The plan's 10 minutes, doubled: a local job on the smallest competitive file took 179 s (parse
+# 52 s + condense), the largest file is 1.5x its size, and Render's CPU may be slower than this PC's.
+STUCK_AFTER = timedelta(minutes=20)
 WORKER_TIMEOUT_S = 30
 UNFINISHED = ("queued", "parsing")
 

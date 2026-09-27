@@ -1540,6 +1540,17 @@ throwaway PG18 cluster at 127.0.0.1:55432 (no prod writes):
   - a text file, a file over the size cap and an 11th upload in an hour are each refused with a reason;
   - a hung parse is killed at the timeout, and its temp files are gone.
   - the worker's temp directory is empty after every job (decision 8).
+- **Local gate run 2026-09-27 (AFK run, branch `afk/2026-09-27-replay-3`):** `replay_worker/server.py` with the
+  local parser build took the Summit `.vrf` (60 MB) over HTTP: parse 52.3 s, job 179 s, and all 20 stored
+  blobs **byte-identical** to the local ingest's (same recipe, same match UUID from the header); the
+  worker's temp folder was empty afterwards. The text-file, over-cap, 11th-upload, one-at-a-time, failed-parse
+  and stuck-job refusals, and an unlinked upload that stores and dedupes, are tests
+  (`tests/replays/test_replay_upload.py`, `test_replay_worker.py`; the worker's hung-parse kill and temp
+  cleanup are the latter's). Not run here: the Docker build (no Docker) and so the container's memory; the
+  Swiftplay upload (it refuses at condense, Stage 1a). Limits set from the six files (decision 10):
+  181,035,000 bytes, a 240 s parse timeout, 10 uploads an hour, and 20 minutes before a job counts as
+  stuck (the plan's 10, doubled for the measured job time); the worker's `plan: pro` (4 GB) until Render's
+  own measurement. All `PROVISIONAL(D10)`.
 - On Render after merge (user):
   - the worker is not reachable from the internet;
   - it has no `DATABASE_URL` or other secrets in its environment;

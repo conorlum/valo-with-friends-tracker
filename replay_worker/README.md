@@ -35,7 +35,7 @@ web-service side are Stage 3's PR.
 
 `REPLAY_PARSER_CMD` (JSON list with `{vrf}` and `{out}`), `REPLAY_PARSER_BUILD` (a `BUILD.json` to check
 against the pin; unset in the image, which is built from the pin itself), `REPLAY_WORKER_TMP`,
-`REPLAY_TIMEOUT_S` (180), `REPLAY_MAX_BYTES` (80 MB), `REPLAY_QUEUE_SIZE` (5), `REPLAY_MEMORY_CAP_MB`
+`REPLAY_TIMEOUT_S` (180; the image sets 240), `REPLAY_MAX_BYTES` (80 MB; the image sets 181,035,000), `REPLAY_QUEUE_SIZE` (5), `REPLAY_MEMORY_CAP_MB`
 (0 = none), `REPLAY_WORKER_HOST`/`REPLAY_WORKER_PORT`.
 
 ## Running it locally
@@ -53,3 +53,12 @@ condensed output byte-identical to local ingest's; the temp folder was empty aft
 
 Tests: `webapp/tests/replays/test_replay_worker.py` (a stub parser command: success, the timeout, failures,
 queue overflow, the limits).
+
+Measured 2026-09-27 (AFK run) on a competitive replay (Summit, 60 MB `.vrf`, 20 rounds): parse 52.3 s, job
+179 s end to end (the condense now also stores abilities and shots), the stored blobs byte-identical to the
+local ingest's (same recipe), the temp folder empty afterwards. The export needs about 3.5 GB of temp disk
+for that file, so the service's disk must hold roughly 65 times the largest upload. The container's peak
+memory is not measured yet (no Docker here); the Windows condense peaked at 969 MB on this file.
+
+The web side is `webapp/app/services/replay_upload.py` and the upload routes in
+`webapp/app/routers/replays.py`; `render.yaml` declares this service (`replay-worker`, a private service).
