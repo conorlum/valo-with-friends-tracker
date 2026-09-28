@@ -155,7 +155,107 @@ def test_alive_flags_round_trip_through_the_blob_encoder(tmp_path):
     assert fmt.decode_blob(out.encoded_rounds()[1])["alive"]["5"] == [[0.0, 10.0, "kill", ["uncertain"]]]
 
 
+# ------------------------------------------------------------ a disconnect and reconnect
+#
+# The shape of 9b73ca26 (2026-09-28): a player's pawn closes `destroyed`, no reopen, and a new
+# pawn for the same player state spawns later. They are away in between, not alive and unseen.
+
+REJOIN_PAWN = 1109
+
+
+def rejoin(match, slot, t):
+    code = AGENT_CODES[slot]
+    return [{"type": "actor_spawned", "time_ms": t, "actor_net_guid": REJOIN_PAWN, "channel": 70, "is_dynamic": True,
+             "actor_path": None, "archetype_path": f"Default__{code}_PC_C",
+             "location": dict(zip("xyz", (*match.spawn_position(1, slot), 100.0)))},
+            {"type": "export_group_received", "time_ms": t + 5, "actor_net_guid": REJOIN_PAWN,
+             "object_net_guid": REJOIN_PAWN, "channel": 70,
+             "export_group_path": f"/Game/Characters/{code}/{code}_PC.{code}_PC_C",
+             "payload": {"PlayerState": 200 + slot, "Controller": 300 + slot, "IsPlayerCharacter": True}}]
+
+
+def reconnect(match, slot, away_ms, back_ms):
+    """Events for the drop and the rejoin, and movement with nothing between them and the new
+    pawn's GUID after."""
+    match.extra_events += [close(match, slot, away_ms), *rejoin(match, slot, back_ms)]
+    movement = []
+    for row in match.movement():
+        if row["shooter_character_net_guid"] == match.pawn(1, slot):
+            if away_ms < row["time_ms"] < back_ms:
+                continue
+            if row["time_ms"] >= back_ms:
+                row = {**row, "actor_net_guid": REJOIN_PAWN, "object_net_guid": REJOIN_PAWN,
+                       "shooter_character_net_guid": REJOIN_PAWN}
+        movement.append(row)
+    return movement
+
+
+def without_slot(kills, slot, rounds):
+    return {n: [k for k in v if n not in rounds or slot not in k[1:]] for n, v in kills.items()}
+
+
+def test_a_player_away_for_a_whole_round_is_absent_from_it(tmp_path):
+    # Slot 9 dies in round 1 at 25 s, drops after it, misses round 2 and is back for round 3's buy.
+    match = SyntheticMatch(shape="swiftplay", kills=without_slot(DEFAULT_KILLS, 9, {2}))
+    away_ms, back_ms = match.round_start(1) + 30_000, match.round_start(3) - 10_000
+    out = run(tmp_path, match, reconnect(match, 9, away_ms, back_ms))
+    assert out.report["lifecycle"]["away"] == {"9": [[away_ms / 1000, back_ms / 1000]]}
+    assert out.report["lifecycle"]["left"] == {}
+    assert out.report["players"]["absent_by_round"] == {"2": [9]}
+    assert out.rounds[1]["alive"]["9"] == [[0.0, 25.0, "kill"]]
+    assert out.rounds[2]["alive"]["9"] == [] and "9" not in out.rounds[2]["tracks"]
+    assert out.rounds[3]["alive"]["9"] == [[0.0, 5.0, "kill"]] and out.rounds[3]["tracks"]["9"]
+    assert out.link_inputs["eligibility"]["eligible"], out.link_inputs["eligibility"]["reasons"]
+
+
+def test_a_drop_mid_round_ends_that_life_as_left(tmp_path):
+    match = SyntheticMatch(shape="swiftplay", kills=without_slot(DEFAULT_KILLS, 9, {2}))
+    away_ms, back_ms = match.round_start(2) + 5_000, match.round_start(3) - 10_000
+    out = run(tmp_path, match, reconnect(match, 9, away_ms, back_ms))
+    assert out.rounds[2]["alive"]["9"] == [[0.0, 5.0, "left"]]
+    assert out.report["players"]["absent_by_round"] == {}
+    assert out.link_inputs["eligibility"]["eligible"], out.link_inputs["eligibility"]["reasons"]
+
+
+def test_a_rejoin_mid_round_opens_a_life_there(tmp_path):
+    # Away from round 2's buy phase to 10 s into it; the default script has 9 kill at 31 s.
+    match = SyntheticMatch(shape="swiftplay")
+    away_ms, back_ms = match.round_start(2) - 20_000, match.round_start(2) + 10_000
+    out = run(tmp_path, match, reconnect(match, 9, away_ms, back_ms))
+    assert out.rounds[2]["alive"]["9"] == [[10.0, None, "round_end"]]
+    assert out.report["players"]["absent_by_round"] == {"2": [9]}
+    assert out.link_inputs["eligibility"]["eligible"], out.link_inputs["eligibility"]["reasons"]
+
+
+def test_a_kill_by_a_disconnected_player_refuses(tmp_path):
+    match = SyntheticMatch(shape="swiftplay")  # the default script has 9 kill 4 at 31 s in round 2
+    away_ms, back_ms = match.round_start(2) + 5_000, match.round_start(3) - 10_000
+    match.extra_events += [close(match, 9, away_ms), *rejoin(match, 9, back_ms)]
+    error = refused(tmp_path, match)
+    assert error.reason == "lifecycle" and "a kill by slot 9" in error.detail and "disconnected" in error.detail
+
+
 # ------------------------------------------------------------ alive_intervals directly
+
+
+def test_alive_intervals_end_a_life_at_a_disconnect():
+    assert cd.alive_intervals(0, 100, [], [], [], away=[(40, 200)]) == [[0, 40, "left"]]
+
+
+def test_alive_intervals_open_no_life_in_a_round_spent_away():
+    assert cd.alive_intervals(0, 100, [], [], [], away=[(-50, 200)]) == []
+
+
+def test_alive_intervals_open_a_life_at_the_rejoin():
+    assert cd.alive_intervals(0, 100, [], [], [60], away=[(-50, 60)]) == [[60, None, "round_end"]]
+
+
+def test_alive_intervals_drop_and_rejoin_in_one_round():
+    assert cd.alive_intervals(0, 100, [], [], [70], away=[(30, 70)]) == [[0, 30, "left"], [70, None, "round_end"]]
+
+
+def test_alive_intervals_a_drop_after_a_death_changes_nothing():
+    assert cd.alive_intervals(0, 100, [20], [], [], away=[(40, 200)]) == [[0, 20, "kill"]]
 
 
 def test_alive_intervals_flag_only_overlapping_spans():

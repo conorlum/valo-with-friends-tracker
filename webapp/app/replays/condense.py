@@ -196,6 +196,12 @@ class PlayerTable:
     # resolves only while possessed: pawn -> [(from ms, to ms | None, slot)].
     possession: dict[int, list[tuple[int, int | None, int]]] = field(default_factory=dict)
     ownership: dict = field(default_factory=dict)  # counts for the report
+    # slot -> [(from ms, to ms)]: a player who dropped and reconnected, from their pawn's close
+    # to their replacement pawn's spawn (read_lifecycle).
+    away: dict[int, list[tuple[int, int]]] = field(default_factory=dict)
+
+    def away_at(self, slot: int, t_ms: int) -> tuple[int, int] | None:
+        return next(((lo, hi) for lo, hi in self.away.get(slot, []) if lo <= t_ms < hi), None)
 
     def resolve(self, guid: int, t_ms: int | None = None) -> int | None:
         slot = self.pawn_slot.get(guid)
@@ -377,6 +383,10 @@ def read_util(export: Export, players: PlayerTable) -> tuple[list[UtilCast], dic
             if gone is not None and row.time_ms >= gone:
                 raise ContractError("lifecycle", f"a utility hit on slot {slot} at {row.time_ms} ms, after that "
                                                  f"player left at {gone} ms")
+            away = players.away_at(slot, row.time_ms)
+            if away is not None:
+                raise ContractError("lifecycle", f"a utility hit on slot {slot} at {row.time_ms} ms, while that "
+                                                 f"player was disconnected ({away[0]}-{away[1]} ms)")
             hits[int(data.get(UTIL_HITS[kind]) or 0)].append(slot)
             counts["hits"] += 1
     casts: list[UtilCast] = []
@@ -398,6 +408,10 @@ def read_util(export: Export, players: PlayerTable) -> tuple[list[UtilCast], dic
         if gone is not None and row.time_ms >= gone:
             raise ContractError("lifecycle", f"a {short} by slot {slot} at {row.time_ms} ms, after that player left "
                                              f"at {gone} ms")
+        away = players.away_at(slot, row.time_ms)
+        if away is not None:
+            raise ContractError("lifecycle", f"a {short} by slot {slot} at {row.time_ms} ms, while that player was "
+                                             f"disconnected ({away[0]}-{away[1]} ms)")
         location = data.get("location") or {}
         ability = str(data.get(kind_key) or "")
         casts.append(UtilCast(row.time_ms, short, ability if ability.replace("_", "").isalnum() else "", slot,
@@ -420,6 +434,7 @@ class Lifecycle:
     left: dict[int, int]                          # slot -> when their last pawn closed for good
     unobserved: dict[int, list[tuple[int, int]]]  # slot -> [(from ms, to ms)] alive but unseen
     report: dict
+    away: dict[int, list[tuple[int, int]]] = field(default_factory=dict)  # slot -> [(close ms, rejoin ms)]
 
 
 def read_lifecycle(export: Export, players: PlayerTable, last_decided_ms: int, end_ms: int) -> Lifecycle:
@@ -428,7 +443,10 @@ def read_lifecycle(export: Export, players: PlayerTable, last_decided_ms: int, e
     A close followed by a reopen of the same GUID, or a dormant close, is an unobserved span:
     the player is alive and unseen. A player left only when their last pawn closes for another
     reason with no reopen, before the final round was decided (later closes are the match
-    ending). The close of a pawn a later pawn replaces is a pawn change.
+    ending). A pawn that closes that way and is replaced by a later pawn is a disconnect: the
+    player is away from the close until the new pawn spawns. A competitive player keeps one pawn
+    all match, and the first real one (9b73ca26, 2026-09-28) was a player with no pawn for a
+    whole round, whom tracker.gg shows with no buy and no score.
     """
     spawns: dict[int, list[int]] = defaultdict(list)
     for row in export.of_type("actor_spawned"):
@@ -438,6 +456,7 @@ def read_lifecycle(export: Export, players: PlayerTable, last_decided_ms: int, e
     closes_by_reason: Counter[str] = Counter()
     left: dict[int, int] = {}
     unobserved: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    away: dict[int, list[tuple[int, int]]] = defaultdict(list)
     for row in export.of_type("actor_closed"):
         guid = int(row.data.get("actor_net_guid") or 0)
         slot = players.pawn_slot.get(guid)
@@ -454,14 +473,20 @@ def read_lifecycle(export: Export, players: PlayerTable, last_decided_ms: int, e
         if reason == DORMANT_CLOSE:
             unobserved[slot].append((row.time_ms, end_ms))
             continue
-        later_pawn = any(spawned > row.time_ms for spawned, pawn in players.pawn_changes[slot] if pawn != guid)
-        if later_pawn or guid != players.pawn_changes[slot][-1][1] or row.time_ms > last_decided_ms:
+        later_pawns = [spawned for spawned, pawn in players.pawn_changes[slot] if pawn != guid and spawned > row.time_ms]
+        if later_pawns:
+            if row.time_ms <= last_decided_ms:
+                away[slot].append((row.time_ms, min(later_pawns)))
+            continue
+        if guid != players.pawn_changes[slot][-1][1] or row.time_ms > last_decided_ms:
             continue
         left[slot] = row.time_ms
     report = {"closes_by_reason": dict(sorted(closes_by_reason.items())),
               "left": {str(slot): _seconds(t, 0) for slot, t in sorted(left.items())},
+              "away": {str(slot): [[_seconds(lo, 0), _seconds(hi, 0)] for lo, hi in spans]
+                       for slot, spans in sorted(away.items())},
               "unobserved_spans": sum(len(spans) for spans in unobserved.values())}
-    return Lifecycle(left, dict(unobserved), report)
+    return Lifecycle(left, dict(unobserved), report, dict(away))
 
 
 # ---------------------------------------------------------------- rounds
@@ -729,11 +754,15 @@ def _seconds(t_ms: int, start_ms: int) -> float:
 
 def alive_intervals(start: int, end: int, deaths: list[int], revives: list[int],
                     pawn_changes: list[int], gone_ms: int | None = None,
-                    self_kills: list[int] = (), unobserved: list[tuple[int, int]] = ()) -> list[list]:
+                    self_kills: list[int] = (), unobserved: list[tuple[int, int]] = (),
+                    away: list[tuple[int, int]] = ()) -> list[list]:
     """[[from_ms, to_ms | None, cause(, flags)]] for one slot in one round window (times absolute).
 
     `gone_ms` is when a player who left lost their last pawn: nothing after it, and an
     open interval then ends with cause "left". Gone before the round starts: no intervals.
+    `away` spans are a disconnect: a life open at a span's start ends there with cause "left",
+    a round that starts inside one opens no life, and the rejoin (the new pawn, one of
+    `pawn_changes`) opens the next.
     A round's start opens a new life. A second death with no revive or new pawn between
     refuses (P-c), except a self-kill with no decoded revive (Clove's ult running out after
     a revive the parser didn't decode): that life is flagged "uncertain" and still ends at
@@ -742,12 +771,23 @@ def alive_intervals(start: int, end: int, deaths: list[int], revives: list[int],
     if gone_ms is not None and gone_ms <= start:
         return []
     self_set = set(self_kills)
-    events = sorted([(t, 0, "death") for t in deaths] + [(t, 1, "revive") for t in revives + pawn_changes])
-    intervals: list[list] = [[start, None, "round_end"]]
+    events = sorted([(t, 0, "death") for t in deaths] + [(t, 1, "away") for t, _ in away if start < t <= end]
+                    + [(t, 2, "revive") for t in revives + pawn_changes])
+    away_at_start = any(lo <= start < hi for lo, hi in away)
+    intervals: list[list] = [] if away_at_start else [[start, None, "round_end"]]
     for t, _, kind in events:
+        if not intervals:
+            if kind == "death":
+                raise ContractError("lifecycle", f"a death at {t} ms while the player was disconnected")
+            if kind == "revive":
+                intervals.append([t, None, "round_end"])
+            continue
         current = intervals[-1]
         is_open = current[1] is None and current[2] == "round_end"
-        if kind == "death" and is_open:
+        if kind == "away":
+            if is_open:
+                current[1], current[2] = t, "left"
+        elif kind == "death" and is_open:
             current[1], current[2] = t, "kill"
         elif kind == "death":
             if t not in self_set:
@@ -761,8 +801,8 @@ def alive_intervals(start: int, end: int, deaths: list[int], revives: list[int],
             intervals.append([t, None, "round_end"])
     if gone_ms is not None and gone_ms <= end:
         intervals = [iv for iv in intervals if iv[0] < gone_ms]
-        last = intervals[-1]
-        if last[1] is None or last[1] > gone_ms:
+        last = intervals[-1] if intervals else None
+        if last is not None and (last[1] is None or last[1] > gone_ms):
             last[1], last[2] = gone_ms, "left"
     for interval in intervals:
         lo, hi = interval[0], interval[1] if interval[1] is not None else end
@@ -1072,17 +1112,22 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     revives = read_revives(export, players)
     lifecycle = read_lifecycle(export, players, game.windows[-1][1], max(export.end_ms, game.windows[-1][2]))
     players.gone_ms = lifecycle.left
+    players.away = lifecycle.away
     for kill in kills:
         for role, slot in (("by", kill.killer), ("of", kill.victim)):
             gone = players.gone_ms.get(slot)
             if gone is not None and kill.t_ms >= gone:
                 raise ContractError("lifecycle", f"a kill {role} slot {slot} at {kill.t_ms} ms, after that player "
                                                  f"left at {gone} ms")
+            away = players.away_at(slot, kill.t_ms)
+            if away is not None:
+                raise ContractError("lifecycle", f"a kill {role} slot {slot} at {kill.t_ms} ms, while that player "
+                                                 f"was disconnected ({away[0]}-{away[1]} ms)")
     pawn_times = {slot: [t for t, _ in changes[1:]] for slot, changes in players.pawn_changes.items()}
 
     def present(slot: int, start: int) -> bool:
         gone = players.gone_ms.get(slot)
-        return gone is None or gone > start
+        return (gone is None or gone > start) and players.away_at(slot, start) is None
 
     rounds: dict[int, dict] = {}
     link_kills: dict[str, list] = {}
@@ -1165,7 +1210,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
             pawns = [t for t in pawn_times.get(slot, []) if start < t <= end]
             spans = lifecycle.unobserved.get(slot, [])
             intervals = alive_intervals(start, end, deaths, revived, pawns, players.gone_ms.get(slot),
-                                        self_kills, spans)
+                                        self_kills, spans, players.away.get(slot, []))
             uncertain_lives += sum(1 for iv in intervals if "uncertain" in (iv[3] if len(iv) > 3 else []))
             alive[str(slot)] = [[_seconds(iv[0], start), None if iv[1] is None else _seconds(iv[1], start), iv[2],
                                  *iv[3:]] for iv in intervals]
