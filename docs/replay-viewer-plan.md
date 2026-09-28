@@ -131,11 +131,11 @@ all are before the 1b analysis, and none needs prod or the user):
   - A `dormancy` close, or a close followed by a reopen of the same GUID, is **unobserved**, not departed.
   - "Left" needs a non-dormant close with no reopen before the match ends.
   - A non-dormant close with no reopen whose player later gets a **new** pawn is a **disconnect** (`CONDENSE_REVISION`
-    6, 2026-09-28): the player is away from the close to the new pawn's spawn. A life open at the drop ends with
+    7, 2026-09-28): the player is away from the close to the new pawn's spawn. A life open at the drop ends with
     cause `left`, a round that starts while they're away lists them in `absent_by_round` and opens no life, and
     the new pawn opens the next life. The spans are reported as `lifecycle.away`. Found on `9b73ca26` (Split),
     whose revision-5 condense refused to link: one Phoenix had no pawn for all of round 5, which tracker.gg
-    shows as no buy and no score, and revision 5 read that as alive and unseen (0% coverage, a 56 s gap).
+    shows as no buy and no score, and revisions up to 6 read that as alive and unseen (0% coverage, a 56 s gap).
   - Refuse contradictions: a kill by or of a player marked absent, or a second death with no revive between.
   - The Clove case is recorded as an uncertain life (see JSON v1, `alive`), not silently ended.
 - **P-d. Partition out of the linker's hard constraints.** See "Linking", step 3. Enumerate teams from the DB.
@@ -607,7 +607,7 @@ ever wanted.
   - A `dormancy` close, or any close followed by a reopen, is an **unobserved** interval: the player is alive and
     unseen, not gone.
   - A non-dormant close with no reopen, followed later by a new pawn for the same player, is a **disconnect**
-    (revision 6): away until the new pawn spawns. See P-c.
+    (revision 7): away until the new pawn spawns. See P-c.
   - Refuse any contradiction, and count it in the report:
     - a kill by or of a player during a "left" interval or while disconnected;
     - a second death with no revive or new pawn between;
