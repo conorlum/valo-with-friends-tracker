@@ -5,6 +5,12 @@
 <h1>Replay upload</h1>
 <div class="card">
   <p data-upload-status aria-live="polite">{% if job.status == "stored" %}Stored.{% elif job.status == "failed" %}Failed: {{ job.error }}{% else %}Parsing&hellip; this takes a few minutes.{% endif %}</p>
+  {% if job.status not in ("stored", "failed") %}
+  <div class="upload-progress" data-parse-progress>
+    <progress></progress>
+    <p class="page-meta" data-parse-elapsed></p>
+  </div>
+  {% endif %}
   <p data-upload-link{% if not job.replay_url %} hidden{% endif %}><a href="{{ job.replay_url or '#' }}">&#9654; Watch the replay</a></p>
   <p><a href="/replays/upload">Upload another</a></p>
 </div>
@@ -12,7 +18,17 @@
   (function () {
     var status = document.querySelector("[data-upload-status]"), link = document.querySelector("[data-upload-link]");
     var done = {{ (job.status in ("stored", "failed")) | tojson }};
+    // The parser reports no progress of its own, so show the time since the upload was made.
+    var progress = document.querySelector("[data-parse-progress]"), elapsed = document.querySelector("[data-parse-elapsed]");
+    var since = Date.now() - 1000 * {{ elapsed_seconds | tojson }}, ticker = null;
+    function tick() {
+      var s = Math.max(0, Math.floor((Date.now() - since) / 1000));
+      elapsed.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") + " so far. Usually one to three minutes; the page updates by itself.";
+    }
+    if (progress) { tick(); ticker = setInterval(tick, 1000); }
     function show(body) {
+      var finished = body.status === "stored" || body.status === "failed";
+      if (finished && progress) { clearInterval(ticker); progress.hidden = true; }
       if (body.status === "stored") {
         status.textContent = body.linked ? "Stored and linked to its match." : "Stored. It isn't linked to a match on this site yet (it links after the match is crawled)." + (body.error ? " " + body.error : "");
         if (body.replay_url) { link.hidden = false; link.querySelector("a").href = body.replay_url; }

@@ -16,11 +16,62 @@
     <code>%LOCALAPPDATA%\VALORANT\Saved\Demos</code>. It is parsed on the site's private worker and then deleted; only
     the minimap replay is kept. If the match is on this site, the replay links to it; if not, it plays on its own and
     links after the match is crawled.</p>
-  <form method="post" action="/replays/upload" enctype="multipart/form-data" class="upload-form">
+  <form method="post" action="/replays/upload" enctype="multipart/form-data" class="upload-form" data-upload-form>
     <label>Replay file <input type="file" name="file" accept=".vrf" required></label>
     <button type="submit">Upload</button>
   </form>
+  <div class="upload-progress" data-upload-progress hidden>
+    <progress max="100"></progress>
+    <p class="page-meta" data-upload-progress-text aria-live="polite"></p>
+  </div>
+  <p class="upload-error" role="alert" data-upload-error hidden></p>
   <p class="page-meta">Up to {{ max_mb }} MB a file, {{ per_hour }} uploads an hour, one at a time. Parsing takes a few minutes.</p>
   {% endif %}
 </div>
+{% if authorized %}
+<script>
+  // Sends the file with XHR so the upload's own progress can be shown; without JS the form posts as usual.
+  (function () {
+    var form = document.querySelector("[data-upload-form]");
+    var box = document.querySelector("[data-upload-progress]"), bar = box.querySelector("progress");
+    var text = document.querySelector("[data-upload-progress-text]"), errorLine = document.querySelector("[data-upload-error]");
+    var button = form.querySelector("button");
+    function mb(bytes) { return (bytes / 1e6).toFixed(1) + " MB"; }
+    function fail(message) {
+      box.hidden = true; button.disabled = false;
+      errorLine.textContent = message; errorLine.hidden = false;
+    }
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var started = Date.now(), xhr = new XMLHttpRequest();
+      errorLine.hidden = true; button.disabled = true; box.hidden = false;
+      bar.value = 0; text.textContent = "Starting the upload…";
+      xhr.upload.onprogress = function (e) {
+        if (!e.lengthComputable) return;
+        var pct = Math.floor(100 * e.loaded / e.total), secs = (Date.now() - started) / 1000;
+        var left = e.loaded > 0 && secs > 2 ? Math.round((e.total - e.loaded) * secs / e.loaded) : null;
+        bar.value = pct;
+        text.textContent = "Uploading " + mb(e.loaded) + " of " + mb(e.total) + " (" + pct + "%)" +
+          (left !== null && left > 0 ? ", about " + (left >= 60 ? Math.ceil(left / 60) + " min" : left + " s") + " left" : "");
+      };
+      xhr.upload.onload = function () {
+        bar.removeAttribute("value");
+        text.textContent = "Uploaded. Handing it to the parser…";
+      };
+      xhr.onload = function () {
+        // Success is a 303 to the job page, which XHR follows.
+        if (xhr.status === 200 && xhr.responseURL.indexOf("/replays/uploads/") !== -1) {
+          window.location.assign(xhr.responseURL);
+          return;
+        }
+        var alert = new DOMParser().parseFromString(xhr.responseText, "text/html").querySelector("[role=alert]");
+        fail(alert && alert.textContent.trim() ? alert.textContent.trim() : "The upload failed (" + xhr.status + "). Please try again.");
+      };
+      xhr.onerror = function () { fail("The upload was interrupted. Check your connection and try again."); };
+      xhr.open("POST", form.action);
+      xhr.send(new FormData(form));
+    });
+  })();
+</script>
+{% endif %}
 {% endblock %}

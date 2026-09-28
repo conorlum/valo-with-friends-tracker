@@ -21,6 +21,7 @@ No scoring code. Only the upload routes write (an upload's row, and its replay t
 import hashlib
 import re
 import secrets
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -137,8 +138,11 @@ def _status_body(db: Session, upload: ReplayUpload) -> dict:
 def upload_job(request: Request, upload_id: str, db: Session = Depends(get_db)):
     upload = _own_upload_or_404(request, db, upload_id)
     body = _status_body(db, upload)
+    created = upload.created_at if upload.created_at.tzinfo else upload.created_at.replace(tzinfo=timezone.utc)
+    elapsed = max(0, int((datetime.now(timezone.utc) - created).total_seconds()))
     db.rollback()
-    return templates.TemplateResponse(request, "replays/upload_job.html", {"upload_id": upload.id, "job": body})
+    return templates.TemplateResponse(request, "replays/upload_job.html",
+                                      {"upload_id": upload.id, "job": body, "elapsed_seconds": elapsed})
 
 
 @router.get("/replays/uploads/{upload_id}/status")
