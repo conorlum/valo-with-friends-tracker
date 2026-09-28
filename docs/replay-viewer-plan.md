@@ -1606,6 +1606,22 @@ and trade links (the round page has none).
 - `reingest_replays.py --dry-run` lists nothing after a fresh ingest. It lists the local replay after a
   `CONDENSE_REVISION` bump, refuses it after the archive file is corrupted, and lists uploads as "re-upload".
 
+**Gate run 2026-09-27 (AFK run, branch `afk/2026-09-27-replay-4`), every line PASS:**
+- badge tests: a revive, a DB-only death (counted once, on the replay clock), an equal-time double kill (one
+  step), a post-decision kill, a plant/defuse with no kill between (`tests/replays/test_replay_view.py`);
+- annotations equal `replay_round`'s output for every round of the synthetic match, excluded rounds show
+  their reason, a defuse ending sits at its DB time; on the six real matches every round has badge steps from
+  5v5 and annotations (7 of 137 rounds excluded: 6 ambiguous lifecycles, 1 equal-time pair), and on all 127
+  comparable rounds the badge's end state equals the annotations';
+- round Impact on the page equals `get_round_detail`'s for all 137 rounds of the six matches;
+- no scoring change and the amended import gate (decision 5): tests, and the diff checks in the run's final
+  step;
+- `reingest_replays.py`: nothing listed after a fresh ingest, a stale recipe listed and re-ingested from its
+  export, a changed archive file refused, uploads listed as "re-upload";
+- headless Chromium on two matches at both widths: the badge reads "N v M" in every round, the Analysis tab
+  lists states or the reason, no console error (this found and fixed a helper that shadowed the viewer's
+  `aliveAt`).
+
 **User runs:** the merge and any prod re-ingest.
 
 ### After this pass

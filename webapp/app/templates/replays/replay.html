@@ -20,6 +20,8 @@
       if (!site) return blob;
       blob.db = site.db;
       blob.stats = site.stats;
+      blob.alive_steps = site.alive_steps;
+      blob.annotations = site.annotations;
       (blob.kills || []).forEach(function (k) {
         var extra = site.kills[String(k.i)];
         if (extra) Object.keys(extra).forEach(function (key) { k[key] = extra[key]; });

@@ -7,7 +7,9 @@
   sides per slot, and per round the DB outcome, plant and defuse on the replay clock
   (`t_replay = t_db - clock_offset`), each player's stats and stored Impact row, and each kill's
   weapon and per-kill Impact split (shown only while it still describes the stored rows). For an
-  unlinked one: the reason only. Subjects never leave the server.
+  unlinked one: the reason only. Subjects never leave the server. Stage 4 adds, per round, the
+  alive-count steps, `state_replay`'s annotations and which kills came after the round was
+  decided (app/services/replay_view.py).
 
 Everything is off in demo mode: the ValoMaths demo has no replays (decision 4).
 """
@@ -25,6 +27,7 @@ from app.models.replay import Replay, ReplayPlayer, ReplayRound
 from app.replays import db as replay_db
 from app.replays import format as fmt
 from app.replays import link as lk
+from app.services import replay_view
 
 
 def replays_enabled() -> bool:
@@ -151,6 +154,19 @@ def page_context(db, replay: Replay) -> dict:
             "kills": feed,
             "db_deaths": (replay.db_deaths or {}).get(str(n), []),
         }
+    # Stage 4: the live alive-count badge and the man-advantage annotations (replay_view.py).
+    slot_team = {int(slot): p["team"] for slot, p in players.items()}
+    annotations = replay_view.round_annotations(db, match.id, offset)
+    for row in db.query(ReplayRound).filter(ReplayRound.replay_id == replay.id):
+        n = str(row.round_number)
+        if n not in out_rounds:
+            continue
+        blob = fmt.decode_blob(row.data)
+        out_rounds[n]["alive_steps"] = replay_view.alive_steps(blob, slot_team, out_rounds[n]["db_deaths"], offset)
+        out_rounds[n]["annotations"] = annotations.get(row.round_number)
+        for kill in blob.get("kills", []):
+            entry = out_rounds[n]["kills"].setdefault(str(kill["i"]), {})
+            entry["post_decision"] = kill["t"] > blob["t_decided"]
     base.update({"match_id": match.id, "external_id": match.external_id, "clock_offset": offset,
                  "score": [match.team1_rounds_won, match.team2_rounds_won], "side_to_team": side_to_team,
                  "per_kill_impact": bool(split)})
