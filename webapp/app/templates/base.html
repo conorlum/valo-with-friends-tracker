@@ -19,7 +19,8 @@
       <a href="/search">Search</a>
       <a href="/friends">Friends</a>
       <a href="/squad">Squad</a>
-      <a href="/map-prediction">Map Prediction</a>
+      <a href="/map-prediction">Map Prediction</a>{% if replay_upload_enabled() %}
+      <a href="/replays/upload">Upload replay</a>{% endif %}
       {% endif %}
     </div>
     <span class="nav-auth">

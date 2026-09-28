@@ -25,3 +25,30 @@ services:
         value: "false"
       - key: SESSION_COOKIE_HTTPS_ONLY
         value: "true"
+      # Stage 3: the friends-only replay upload. The code is set by hand in the dashboard (never
+      # here); without it the upload routes 404. The worker's address comes from its service.
+      - key: REPLAY_UPLOAD_CODE
+        sync: false
+      - key: REPLAY_WORKER_URL
+        fromService:
+          type: pserv
+          name: replay-worker
+          property: hostport
+  # Stage 3: parses uploaded .vrf files (replay_worker/). Private: reachable only from the web
+  # service over Render's private network. No DB credentials and no secrets: it only parses.
+  - type: pserv
+    name: replay-worker
+    runtime: docker
+    dockerfilePath: replay_worker/Dockerfile
+    dockerContext: .
+    # Not yet measured in a container (no Docker here). On Windows the condense peaks near 1 GB
+    # (969 MB on the smallest, 60 MB export); scaled to the 181 MB upload cap that is ~3 GB before
+    # the parser's own (unmeasured) memory. 8 GB / 4 CPU keeps about 2x headroom over the whole
+    # upload range (AFK run decision D10, 2026-09-27); one job runs at a time. Re-size from
+    # Render's measured peak after real uploads (decision 9). 4c-8g is the Blueprint ID of the
+    # dashboard's "Pro Plus" (4 CPU, 8 GB).
+    plan: 4c-8g
+    autoDeploy: true
+    envVars:
+      - key: REPLAY_WORKER_PORT
+        value: "8080"

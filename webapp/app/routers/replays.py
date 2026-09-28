@@ -9,18 +9,26 @@
   is a cheap 304.
 - `GET /matches/{external_id}/replay`: a redirect to the page when the match has a linked,
   valid replay.
+- Stage 3, the friends-only upload (404 in demo mode and when no code or worker is configured):
+  `GET /replays/upload` (the invite-code form, then the file form), `POST /replays/upload/code`,
+  `POST /replays/upload` (size, magic and rate limits, then to the worker), `GET
+  /replays/uploads/{id}` (the job page) and `GET /replays/uploads/{id}/status` (polled every 3 s;
+  stores the result when the worker is done).
 
-No scoring code and no writes.
+No scoring code. Only the upload routes write (an upload's row, and its replay through store.py).
 """
 
 import hashlib
 import re
+import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse, Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models.replay import ReplayUpload
+from app.services import replay_upload as uploads
 from app.services import replays as replay_service
 from app.services.matches import get_match_or_404
 from app.templates import templates
@@ -41,6 +49,108 @@ def _replay_or_404(db: Session, match_uuid: str):
 
 def etag_of(data: bytes) -> str:
     return '"' + hashlib.sha256(data).hexdigest()[:16] + '"'
+
+
+# ---------------------------------------------------------------- Stage 3: upload (before /replays/{uuid})
+
+
+def _upload_enabled_or_404() -> None:
+    if not uploads.upload_enabled():
+        raise HTTPException(status_code=404)
+
+
+def _session_key(request: Request) -> str:
+    key = request.session.get("replay_upload_sid")
+    if not key:
+        key = secrets.token_hex(16)
+        request.session["replay_upload_sid"] = key
+    return key
+
+
+def _upload_page(request: Request, status_code: int = 200, error: str | None = None):
+    return templates.TemplateResponse(request, "replays/upload.html", {
+        "authorized": bool(request.session.get("replay_upload_ok")), "error": error,
+        "max_mb": uploads.settings.replay_upload_max_bytes // 1_000_000, "per_hour": uploads.UPLOADS_PER_HOUR,
+    }, status_code=status_code)
+
+
+@router.get("/replays/upload")
+def upload_form(request: Request):
+    _upload_enabled_or_404()
+    return _upload_page(request)
+
+
+@router.post("/replays/upload/code")
+def upload_code(request: Request, code: str = Form("")):
+    _upload_enabled_or_404()
+    if not uploads.code_matches(code):
+        return _upload_page(request, 403, "That code isn't right.")
+    request.session["replay_upload_ok"] = True
+    return RedirectResponse("/replays/upload", status_code=303)
+
+
+@router.post("/replays/upload")
+def upload_file(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    _upload_enabled_or_404()
+    if not request.session.get("replay_upload_ok"):
+        return _upload_page(request, 403, "Enter the invite code first.")
+    client_ip = request.client.host if request.client else None
+    try:
+        upload = uploads.create_upload(db, file.file, _session_key(request), client_ip, uploads.client())
+    except ValueError as reason:
+        return _upload_page(request, 400, str(reason).capitalize() + ".")
+    except uploads.LimitExceeded as reason:
+        return _upload_page(request, 429, str(reason).capitalize() + ".")
+    except uploads.WorkerError as reason:
+        return _upload_page(request, 503, f"The replay worker isn't available ({reason}). Please try again later.")
+    finally:
+        file.file.close()
+    return RedirectResponse(f"/replays/uploads/{upload.id}", status_code=303)
+
+
+def _own_upload_or_404(request: Request, db: Session, upload_id: str) -> ReplayUpload:
+    _upload_enabled_or_404()
+    if not UUID_SHAPE.match(upload_id):
+        raise HTTPException(status_code=404)
+    query = db.query(ReplayUpload).filter(ReplayUpload.id == upload_id.lower())
+    if db.get_bind().dialect.name == "postgresql":
+        query = query.with_for_update()
+    upload = query.one_or_none()
+    if upload is None or upload.session_key != request.session.get("replay_upload_sid"):
+        raise HTTPException(status_code=404)
+    return upload
+
+
+def _status_body(db: Session, upload: ReplayUpload) -> dict:
+    body = {"status": upload.status, "error": upload.error}
+    if upload.status == "stored" and upload.replay_id is not None:
+        from app.models.replay import Replay
+
+        replay = db.get(Replay, upload.replay_id)
+        if replay is not None:
+            body["replay_url"] = f"/replays/{str(replay.match_uuid).lower()}"
+            body["linked"] = replay.link_status == "linked"
+    return body
+
+
+@router.get("/replays/uploads/{upload_id}")
+def upload_job(request: Request, upload_id: str, db: Session = Depends(get_db)):
+    upload = _own_upload_or_404(request, db, upload_id)
+    body = _status_body(db, upload)
+    db.rollback()
+    return templates.TemplateResponse(request, "replays/upload_job.html", {"upload_id": upload.id, "job": body})
+
+
+@router.get("/replays/uploads/{upload_id}/status")
+def upload_status(request: Request, upload_id: str, db: Session = Depends(get_db)):
+    upload = _own_upload_or_404(request, db, upload_id)
+    upload = uploads.refresh_job(db, upload, uploads.client())
+    body = _status_body(db, upload)
+    db.rollback()
+    return JSONResponse(body)
+
+
+# ---------------------------------------------------------------- replay pages
 
 
 @router.get("/replays/{match_uuid}/{round_number}.json")

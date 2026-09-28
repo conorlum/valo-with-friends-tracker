@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{# Friends-only replay upload (app/routers/replays.py, Stage 3). #}
+{% block title %}Upload a replay &ndash; {{ site_name }}{% endblock %}
+{% block content %}
+<h1>Upload a replay</h1>
+<div class="card">
+  {% if error %}<p class="upload-error" role="alert">{{ error }}</p>{% endif %}
+  {% if not authorized %}
+  <p class="page-meta">Uploading is for friends of the site: enter the invite code you were given.</p>
+  <form method="post" action="/replays/upload/code" class="upload-form">
+    <label>Invite code <input type="password" name="code" autocomplete="off" required></label>
+    <button type="submit">Continue</button>
+  </form>
+  {% else %}
+  <p class="page-meta">Pick a competitive match's <code>.vrf</code> file from
+    <code>%LOCALAPPDATA%\VALORANT\Saved\Demos</code>. It is parsed on the site's private worker and then deleted; only
+    the minimap replay is kept. If the match is on this site, the replay links to it; if not, it plays on its own and
+    links after the match is crawled.</p>
+  <form method="post" action="/replays/upload" enctype="multipart/form-data" class="upload-form">
+    <label>Replay file <input type="file" name="file" accept=".vrf" required></label>
+    <button type="submit">Upload</button>
+  </form>
+  <p class="page-meta">Up to {{ max_mb }} MB a file, {{ per_hour }} uploads an hour, one at a time. Parsing takes a few minutes.</p>
+  {% endif %}
+</div>
+{% endblock %}
