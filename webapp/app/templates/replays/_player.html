@@ -16,9 +16,11 @@
         <canvas class="replay-canvas" data-replay-canvas width="1024" height="1024" role="img"
                 aria-label="Minimap"></canvas>
         <div class="replay-tip" data-replay-tip hidden></div>
+        <div class="replay-hud" data-replay-hud aria-live="off" hidden></div>
       </div>
       <div class="replay-controls">
         <button type="button" class="replay-button" data-replay-play aria-pressed="false">Play</button>
+        <button type="button" class="replay-button" data-replay-nextkill title="Jump to 1 s before the next kill (N)">Next kill</button>
         <label class="replay-speed">Speed <select data-replay-speed></select></label>
         <span class="replay-clock" data-replay-clock aria-live="off"></span>{% if linked %}
         <span class="replay-badge" data-replay-badge title="Players alive now: Team 1 v Team 2" hidden></span>{% endif %}
@@ -58,7 +60,7 @@
         <span class="replay-key replay-key-kill">Kill</span>
         <span class="replay-state" data-replay-state></span>
       </p>
-      <p class="replay-help">Space plays and pauses; &larr; and &rarr; step 5 s.{% if linked %} Click a kill to jump to 3 s before it; hover the map for details.{% endif %}</p>
+      <p class="replay-help">Space plays and pauses; &larr; and &rarr; step 5 s; N jumps to just before the next kill.{% if linked %} Click a kill to jump to 3 s before it; hover the map for details.{% endif %}</p>
     </div>
     {% if linked %}
     <aside class="replay-side">

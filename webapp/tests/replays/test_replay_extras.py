@@ -123,6 +123,21 @@ def test_a_possessed_pawn_belongs_to_its_possessor(tmp_path):
     assert (pawn["slot"], pawn["owner_by"]) == (5, "possessed")
 
 
+def test_a_dart_fired_from_a_spycam_is_the_cameras_owners_and_so_is_where_it_lands(tmp_path):
+    table = players()
+    table.agents[6] = "Cypher"                      # two Cyphers: no lone-agent owner
+    table.possession[20] = [(21_000, None, 6)]
+    rows = [spawned(20_000, 20, "Default__Pawn_Gumshoe_E_PossessableCamera_C", 0, 0),
+            spawned(25_000, 21, "Default__Projectile_Gumshoe_E_CameraTrackingDart_C", 50, 50), closed(25_100, 21),
+            spawned(25_100, 22, "Default__GameObject_RemovableObject_GumshoeTrackingDart_C", 900, 900)]
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    got = [(a["name"], a["slot"], a["owner_by"])
+           for a in build_extras(path, table, WINDOWS, GAME_MAP, AGENTS, lambda t: {}).rounds[1]["abilities"]]
+    assert got == [("E_PossessableCamera", 6, "possessed"), ("E_CameraTrackingDart", 6, "fired"),
+                   ("RemovableObject_GumshoeTrackingDart", 6, "landed")]
+
+
 def test_owners_pass_from_a_landed_throw_to_its_object_and_on_to_what_spawns_inside_it(tmp_path):
     positions = {0: (5000.0, 5000.0), 5: (10.0, 0.0)}
     extras = run(tmp_path, [
@@ -181,6 +196,161 @@ def test_a_slot_first_archetype_gets_its_agent_and_owner(tmp_path):
     assert (drone["code"], drone["name"], drone["agent"], drone["slot"]) == ("Hunter", "E_Drone_Thing", "Sova", 2)
 
 
+# ---------------------------------------------------------------- Stage 5: equippables, reveals, spike, wall
+
+import base64  # noqa: E402
+
+from app.replays.extras import packed_ints  # noqa: E402
+
+AGENTS5 = {**AGENTS, "BountyHunter": "Fade", "Pandemic": "Viper"}
+
+
+def two_cyphers() -> PlayerTable:
+    # Slots 1 and 6 both play Cypher (one per team); slot 2 is Sova, slot 7 Fade, slot 9 Viper.
+    table = players()
+    table.agents[6] = "Cypher"
+    table.agents[7] = "Fade"
+    return table
+
+
+def effect(t_ms, actor, effect_id, context, container=500):
+    return {"type": "rpc_received", "time_ms": t_ms, "actor_net_guid": actor, "function_name": "MulticastPlayContinuousEffect",
+            "payload": {"EffectId": effect_id, "EffectContainer": container,
+                        "FunctionObjectValues": [{"Name": {"TagName": "FXC.EffectContext"}, "Value": v} for v in context]}}
+
+
+def stop(t_ms, actor, effect_id):
+    return {"type": "rpc_received", "time_ms": t_ms, "actor_net_guid": actor, "function_name": "MulticastStopContinuousEffect",
+            "payload": {"EffectId": effect_id}}
+
+
+def packed(values):
+    out = bytearray(b"\x02\x02\x06")
+    for value in values:
+        while True:
+            more = value >= 0x80
+            out.append(((value & 0x7F) << 1) | int(more))
+            value >>= 7
+            if not more:
+                break
+    return base64.b64encode(bytes(out)).decode()
+
+
+def placement(t_ms, equip, listed):
+    return {"type": "export_group_received", "time_ms": t_ms, "actor_net_guid": equip, "is_actor": False,
+            "payload": {"Actors": {"BitCount": 64, "Data": packed([16, *listed]), "TypeName": "Actors"}}}
+
+
+def run5(tmp_path, rows, table=None, positions=None):
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return build_extras(path, table or two_cyphers(), WINDOWS, GAME_MAP, AGENTS5, lambda t_ms: positions or {})
+
+
+def test_packed_ints_reads_unreal_packed_values():
+    # The Ascent export's first trapwire placement: its list names the second anchor, GUID 3512.
+    assert packed_ints(base64.b64decode("AgIGIHE2AAA=")) == [16, 3512, 0, 0]
+    assert packed_ints(base64.b64decode(packed([16, 5, 300, 70000]))) == [16, 5, 300, 70000]
+
+
+def test_trapwires_take_their_equippables_owner_and_pair_exactly(tmp_path):
+    # Two Cyphers' trapwire equippables (500, 600); each owner's character plays an effect naming theirs.
+    # Both place trips in the buy phase within a second of each other: no nearest guess, no time pairing.
+    rows = [spawned(1_000, 500, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0),
+            spawned(1_000, 600, "Default__Ability_Gumshoe_4_TripWire_C", 9000, 9000),
+            effect(2_000, 101, 1, [500]), effect(2_100, 106, 2, [600]), effect(2_200, 106, 3, [500, 999]),
+            effect(2_300, 101, 4, [500]),
+            spawned(8_000, 700, "Default__GameObject_Gumshoe_4_TripWire_C", 1000, 0),
+            spawned(8_000, 701, "Default__GameObject_Gumshoe_4_TripWire_SecondWire_C", 1000, 400),
+            placement(8_000, 500, [701]),
+            spawned(8_400, 710, "Default__GameObject_Gumshoe_4_TripWire_C", 1200, 0),
+            spawned(8_400, 711, "Default__GameObject_Gumshoe_4_TripWire_SecondWire_C", 1200, -900),
+            placement(8_400, 600, [711])]
+    extras = run5(tmp_path, rows, positions={1: (0.0, 0.0), 6: (0.0, 50.0)})
+    got = {(a["name"], a["u"], a["v"]): a for a in extras.rounds[1]["abilities"]}
+    first = got[("4_TripWire", 5000, 6000)]
+    second = got[("4_TripWire", 5000, 6200)]
+    assert (first["slot"], first["owner_by"], first["end"]) == (1, "equippable", [5400, 6000])
+    assert (second["slot"], second["owner_by"], second["end"]) == (6, "equippable", [4100, 6200])
+    assert {a["slot"] for a in extras.rounds[1]["abilities"] if a["name"].endswith("SecondWire")} == {1, 6}
+    assert extras.report["equippables_effects"] == 2 and extras.report["wires_paired"] == 2
+
+
+def test_an_unvoted_equippable_takes_its_siblings_owner_and_a_knife_is_nobodys(tmp_path):
+    rows = [spawned(1_000, 500, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0),
+            spawned(1_000, 501, "Default__Ability_Gumshoe_Q_CageTrap_C", 20, 0),     # given with it
+            spawned(1_000, 502, "Default__Ability_Melee_Knife_C", 0, 0),
+            effect(2_000, 106, 1, [500]), effect(2_000, 106, 2, [502]),
+            spawned(9_000, 800, "Default__Projectile_Gumshoe_Q_CageTrap_C", 500, 500), placement(9_000, 501, [800])]
+    extras = run5(tmp_path, rows)
+    [cage] = extras.rounds[1]["abilities"]
+    assert (cage["slot"], cage["owner_by"]) == (6, "equippable")
+    assert extras.report["equippables_sibling"] == 1 and extras.report["equippables_unowned"] == 1
+
+
+def test_the_instigator_still_wins_and_is_checked_against_the_equippable(tmp_path):
+    rows = [spawned(1_000, 500, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0), effect(2_000, 101, 1, [500]),
+            spawned(8_000, 700, "Default__GameObject_Gumshoe_4_TripWire_C", 0, 0), instigated(8_000, 700, 106),
+            placement(8_000, 500, [])]
+    [wire] = run5(tmp_path, rows).rounds[1]["abilities"]
+    assert (wire["slot"], wire["owner_by"]) == (6, "instigator")
+    rows[-1] = placement(8_000, 500, [700])
+    extras = run5(tmp_path, rows)
+    assert extras.report["equippable_check_disagree"] == 1
+
+
+def test_a_reveal_is_an_effect_on_a_revealed_character_naming_the_revealer_after_a_reveal_source(tmp_path):
+    ping = "Default__GameObject_Hunter_Q_SonarPing_C"
+    rows = [spawned(20_000, 50, ping, 0, 0), effect(20_800, 108, 1, [102], container=77), stop(22_400, 108, 1),
+            effect(20_900, 104, 2, [102], container=77),                                # no stop: 2 s
+            spawned(40_000, 51, ping, 0, 0), effect(41_000, 108, 3, [102], container=77),
+            effect(41_100, 108, 4, [102], container=77), stop(41_200, 108, 4),       # a second pulse: merged
+            effect(30_000, 109, 5, [102], container=88),                              # no ping before it
+            effect(20_950, 105, 6, [102], container=99)]                              # its container is mostly
+    rows += [effect(10_000 + i, 105, 10 + i, [102], container=99) for i in range(5)]  # elsewhere: not a reveal
+    extras = run5(tmp_path, sorted(rows, key=lambda r: r["time_ms"]))
+    reveals = extras.rounds[1]["reveals"]
+    assert [(r["t0"], r["t1"], r["slot"], r["target"]) for r in reveals] == [
+        (10.8, 12.4, 2, 8), (10.9, 12.9, 2, 4), (31.0, 33.0, 2, 8)]
+    assert reveals[0]["code"] == "Hunter" and reveals[0]["name"] == "Q_SonarPing"
+    assert extras.report["reveal_containers"] == 1
+
+
+def test_defuse_attempts_come_from_the_spikes_effects(tmp_path):
+    rows = [spawned(30_000, 15, "Default__TimedBomb_C", 0, 0), instigated(30_000, 15, 106),
+            effect(35_000, 15, 1, [103]), stop(38_800, 15, 1),                        # held past half: halved
+            effect(40_000, 15, 2, [104]), stop(43_500, 15, 2),
+            {"type": "rpc_received", "time_ms": 43_500, "actor_net_guid": 15, "function_name": "MulticastPlayOneShotEffect",
+             "payload": {"EffectContainer": 3}},
+            closed(50_000, 15)]
+    [spike] = run5(tmp_path, rows).rounds[1]["abilities"]
+    assert spike["defuses"] == [[25.0, 28.8, 3, False], [30.0, 33.5, 4, True]]
+
+
+def test_vipers_wall_keeps_its_line_and_when_it_was_up(tmp_path):
+    wall = 60
+
+    def point(t_ms, x, y):
+        return {"type": "rpc_received", "time_ms": t_ms, "actor_net_guid": wall, "function_name": "MulticastAddSmokeScreenPoint",
+                "payload": {"Translation": {"x": x, "y": y, "z": 0}}}
+
+    def up(t_ms, value):
+        return {"type": "export_group_received", "time_ms": t_ms, "actor_net_guid": wall, "is_actor": True,
+                "payload": {"WallActivated": value, "CurrentFuelLevel": 0.5}}
+
+    rows = [spawned(5_000, wall, "Default__GameObject_Pandemic_E_SmokeScreenManager_C", 0, 0), instigated(5_000, wall, 109),
+            *[point(5_000 + 40 * i, 10.0 * i, 0.0) for i in range(60)],
+            up(15_000, True), up(22_000, False), up(30_000, True), closed(58_000, wall)]
+    [screen] = run5(tmp_path, rows).rounds[1]["abilities"]
+    assert (screen["slot"], screen["t0"]) == (9, 0.0)
+    assert len(screen["points"]) == 48 and screen["points"][0] == [5000, 5000] and screen["points"][-1] == [5000, 5590]
+    assert screen["on"] == [[5.0, 12.0], [20.0, None]]
+    # The first points missing: the line starts at the cast point.
+    rows[2:22] = []
+    [screen] = run5(tmp_path, rows).rounds[1]["abilities"]
+    assert screen["points"][:2] == [[5000, 5000], [5000, 5200]] and len(screen["points"]) == 41
+
+
 # ---------------------------------------------------------------- stored util (Stage 2, R2)
 
 import sys  # noqa: E402
@@ -195,7 +365,7 @@ from app.replays import format as fmt  # noqa: E402
 from app.replays.extras import rounds_extras, util_entries  # noqa: E402
 
 UTIL_KEYS = {"k", "t", "by", "t1", "kind", "code", "name", "agent", "owner_by", "u", "v", "yaw", "thrown", "path",
-             "owner_d", "other_d", "u1", "v1", "gun", "n"}
+             "owner_d", "other_d", "u1", "v1", "gun", "n", "end", "defuses", "points", "on", "target"}
 
 
 def test_util_entries_round_trip_to_the_viewers_shape():
@@ -207,6 +377,10 @@ def test_util_entries_round_trip_to_the_viewers_shape():
     assert util[0]["t"] == 1.5 and util[0]["by"] == 6 and "t0" not in util[0] and "slot" not in util[0]
     assert util[1]["t"] == 3.25 and util[1]["by"] == 2
     assert rounds_extras(util + [{"k": "flash", "t": 1, "by": 0}]) == extras
+    extras["reveals"] = [{"t0": 4.0, "t1": 6.0, "slot": 2, "target": 8, "code": "Hunter", "name": "Q_SonarPing"}]
+    util = util_entries(extras)
+    assert util[1] == {"k": "reveal", "t": 4.0, "by": 2, "t1": 6.0, "target": 8, "code": "Hunter", "name": "Q_SonarPing"}
+    assert rounds_extras(util) == extras
 
 
 def test_condense_stores_ability_objects_in_util_deterministically(tmp_path):

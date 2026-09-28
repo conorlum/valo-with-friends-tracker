@@ -6,8 +6,8 @@
 - `page_context`: what the page renders beside the blobs. For a linked replay: names, teams and
   sides per slot, and per round the DB outcome, plant and defuse on the replay clock
   (`t_replay = t_db - clock_offset`), each player's stats and stored Impact row, and each kill's
-  weapon and per-kill Impact split (shown only while it still describes the stored rows). For an
-  unlinked one: the reason only. Subjects never leave the server. Stage 4 adds, per round, the
+  weapon, assisting slots and per-kill Impact split (shown only while it still describes the stored
+  rows). For an unlinked one: the reason only. Subjects never leave the server. Stage 4 adds, per round, the
   alive-count steps, `state_replay`'s annotations and which kills came after the round was
   decided (app/services/replay_view.py).
 
@@ -133,12 +133,17 @@ def page_context(db, replay: Replay) -> dict:
 
     out_rounds = {}
     kill_map = replay.kill_map or {}
+    # A kill's assistants are stored as the Riot IDs the tracker.gg adapter named the players by.
+    slot_of_name = {p["name"].lower(): p["slot"] for p in players.values() if p.get("name")}
     for r in rounds:
         n = r.round_number
         feed = {}
         for index, kill_id in enumerate(kill_map.get(str(n), [])):
             row = kills.get(kill_id) if kill_id is not None else None
             entry = {"db_id": kill_id, "weapon": row.weapon if row is not None else None}
+            if row is not None and isinstance(row.source_meta, dict):
+                helpers = [slot_of_name.get(str(name).lower()) for name in row.source_meta.get("assistants") or []]
+                entry["assists"] = [slot for slot in helpers if slot is not None]
             share = split.get(kill_id) if kill_id is not None else None
             if share:
                 entry["gain"], entry["loss"] = round(share[0], 1), round(share[1], 1)
