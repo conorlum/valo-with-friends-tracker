@@ -34,6 +34,9 @@ SPLIT_SCORING_ALLOWED = {
     "app.scoring.impact", "app.scoring.impact.PERSISTED_FIELDS", "app.scoring.impact.FormulaWeights",
     "app.scoring.impact.build_impact_rows_for_match", "app.scoring.impact_runtime",
     "app.scoring.impact_runtime.active_manifest", "app.scoring.impact_runtime.active_scoring_config",
+    # The crawl's ingest preflight: checks, then claims the release write gate's identity for the
+    # user-run scripts' `players.riot_subject` backfill. It scores nothing.
+    "app.scoring.ingest_preflight", "app.scoring.ingest_preflight.verify_ingest_preflight",
 }
 APP = REPLAYS.parent
 

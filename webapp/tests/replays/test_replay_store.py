@@ -192,6 +192,23 @@ def test_the_backfill_writes_subjects_and_refuses_a_conflict(db, condensed, tmp_
     assert row.match_id is None and row.clock_offset is None
 
 
+def test_without_a_write_identity_the_link_skips_the_backfill(db, condensed, monkeypatch):
+    # The release write gate refuses `players` writes from a connection with no verified identity
+    # (the web process; a script that skipped the preflight): the link goes ahead without Subjects.
+    with_riot_subject(db)
+    add_match(db)
+    monkeypatch.setattr(replay_db, "may_write_players", lambda session: False)
+    result = store.store_replay(db, condensed, source="local")
+    assert result.link_status == "linked"
+    row = db.get(Replay, result.replay_id)
+    assert row.link_report["backfill"] == "skipped: no release write identity"
+    assert db.execute(text("SELECT count(*) FROM players WHERE riot_subject IS NOT NULL")).scalar() == 0
+
+
+def test_no_gate_means_players_are_writable(db):
+    assert replay_db.may_write_players(db)  # sqlite: no gate, as on a local database without one
+
+
 def test_an_incomplete_round_set_is_invalid(db, condensed):
     add_match(db)
     result = store.store_replay(db, condensed, source="local")

@@ -110,11 +110,17 @@ def write_link(session, replay: Replay, result: lk.LinkResult) -> str:
         clear_link(session, replay, result.status, result.report)
         return result.status
     if BACKFILL_SUBJECTS and result.backfills and has_riot_subject(session):
-        conflict = _backfill(session, result.backfills)
-        if conflict is not None:
-            clear_link(session, replay, "refused", {"check": "backfill", "reason": conflict,
-                                                    "match_id": result.match_id})
-            return "refused"
+        if not may_write_players(session):
+            # `players` is behind the release write gate, and only a checkout whose scoring preflight
+            # passed may write it (the web process never does). The link doesn't need the Subjects,
+            # so it goes ahead without them; `link_replays.py --uuid` fills them in later.
+            result.report = {**(result.report or {}), "backfill": "skipped: no release write identity"}
+        else:
+            conflict = _backfill(session, result.backfills)
+            if conflict is not None:
+                clear_link(session, replay, "refused", {"check": "backfill", "reason": conflict,
+                                                        "match_id": result.match_id})
+                return "refused"
     # Another replay linked to this match (a different recording) keeps it: match_id is unique.
     other = session.query(Replay.id).filter(Replay.match_id == result.match_id, Replay.id != replay.id).first()
     if other is not None:
@@ -133,6 +139,21 @@ def write_link(session, replay: Replay, result: lk.LinkResult) -> str:
         session.query(ReplayPlayer).filter(ReplayPlayer.replay_id == replay.id, ReplayPlayer.slot == slot).update(
             {ReplayPlayer.match_player_id: mp}, synchronize_session=False)
     return "linked"
+
+
+def may_write_players(session) -> bool:
+    """Whether the release write gate (scripts/sql/release_write_gate.sql) would let this connection
+    write `players`: the same rule as its trigger, read without importing scoring code. No gate
+    (sqlite, a local database without it) means no restriction."""
+    if session.get_bind().dialect.name != "postgresql":
+        return True
+    if session.execute(text("SELECT to_regclass('scoring_gate')")).scalar() is None:
+        return True
+    gate = session.execute(text("SELECT state, release_id, admin_id FROM scoring_gate WHERE id")).first()
+    who = session.execute(text("SELECT current_setting('valo.write_release', true)")).scalar()
+    if gate is None or not who:
+        return False
+    return who == gate.admin_id or (gate.state == "open" and who == gate.release_id)
 
 
 def _backfill(session, backfills: list[tuple[int, str]]) -> str | None:
