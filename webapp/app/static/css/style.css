@@ -1823,3 +1823,25 @@ table.compact-table .badge-score {
 /* The replay page gets the full width: the map is the content. */
 main:has(.replay.is-linked) { max-width: 1440px; }
 .replay.is-linked .replay-canvas { width: min(100%, calc(100vh - 240px)); min-width: 280px; margin: 0 auto; }
+
+/* Replay upload: the file's upload progress, then the parse's elapsed time (templates/replays/upload*.html). */
+.upload-progress { margin: 1rem 0 0.5rem; }
+.upload-progress progress {
+  width: 100%;
+  height: 10px;
+  appearance: none;
+  border: none;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--gridline);
+  accent-color: var(--brand);
+}
+.upload-progress progress::-webkit-progress-bar { background: var(--gridline); border-radius: 999px; }
+.upload-progress progress::-webkit-progress-value { background: var(--brand); border-radius: 999px; transition: width 0.2s; }
+.upload-progress progress::-moz-progress-bar { background: var(--brand); border-radius: 999px; }
+.upload-progress progress:indeterminate { background: linear-gradient(90deg, var(--gridline) 30%, var(--brand) 50%, var(--gridline) 70%) 0 0 / 300% 100%; animation: upload-sweep 1.4s linear infinite; }
+.upload-progress progress:indeterminate::-webkit-progress-bar { background: transparent; }
+.upload-progress progress:indeterminate::-moz-progress-bar { background: transparent; }
+@keyframes upload-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .upload-progress progress:indeterminate { animation: none; background: var(--brand); opacity: 0.5; } }
+.upload-progress .page-meta { margin: 0.4rem 0 0; font-variant-numeric: tabular-nums; }
