@@ -1792,7 +1792,46 @@ table.compact-table .badge-score {
 .replay-board-team .num, .replay-list .num { text-align: right; font-variant-numeric: tabular-nums; }
 .replay-board-team.team-1 { box-shadow: inset 3px 0 0 var(--team-1); }
 .replay-board-team.team-2 { box-shadow: inset 3px 0 0 var(--team-2); }
-.replay-board-team tr.is-dead td { color: var(--ink-muted); }
+.replay-board-team tr.is-dead td {
+  color: var(--ink-muted);
+  background: rgba(224, 85, 79, 0.16);
+  background: color-mix(in srgb, var(--critical) 16%, transparent);
+}
+/* The spike panel over the map's top-left corner (replay.js renderHud). */
+.replay-hud {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 13rem;
+  max-width: calc(100% - 1rem);
+  padding: 0.45rem 0.65rem;
+  background: rgba(10, 10, 12, 0.82);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--brand);
+  border-radius: var(--radius-sm);
+  color: #ffffff;
+  font-size: 0.9rem;
+  pointer-events: none;
+}
+.replay-hud-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem; }
+.replay-hud-label { color: rgba(255, 255, 255, 0.7); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.04em; }
+.replay-hud-time { font-variant-numeric: tabular-nums; font-size: 1.05rem; }
+.replay-hud-time.is-low { color: var(--brand); }
+.replay-hud-half, .replay-hud-late {
+  padding: 0 0.35rem;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.14);
+  font-size: 0.78rem;
+}
+.replay-hud-late { background: var(--brand); }
+.replay-hud-done { color: var(--good); }
+.replay-hud-boom { color: var(--brand); }
+.replay-hud-defuse .replay-person { font-weight: 600; }
+.replay-hud-bar { display: block; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.18); overflow: hidden; }
+.replay-hud-bar > span { display: block; height: 100%; }
 .replay-dot { display: inline-block; width: 0.6em; height: 0.6em; border-radius: 50%; margin-right: 0.35em; }
 .replay-board-agent { color: var(--ink-muted); font-size: 0.85em; }
 .replay-board-dead { color: var(--critical); font-size: 0.8em; }

@@ -90,8 +90,8 @@
   // `<code>_<name>` (extras.py normalises slot-first archetypes). `ability` is its display name
   // (the key in static/data/abilities.json, which gives its icon); `shape` is smoke (a grey
   // disc), area (a team-tinted disc), reveal (a pulsing ring), wire (a line to its paired end),
-  // line (a wall or an aim, from the object's yaw: see lineEnds), badge (a team-coloured disc
-  // with the ability's glyph) or hidden. `r` and `len` are world units. First match wins; an
+  // line (a wall or an aim, from the object's yaw: see lineEnds), wall (Viper's screen, along its
+  // laid points), badge (a team-coloured disc with the ability's glyph) or hidden. `r` and `len` are world units. First match wins; an
   // unknown archetype is a badge with no glyph. Projectiles are never drawn (their object is).
   // Radii are approximate in-game sizes, tuned by eye on the map.
   var ABILITY_STYLES = [
@@ -168,8 +168,10 @@
     [/^Pine_Q_SeizeTrap$/, { ability: "Chokehold", shape: "badge" }],
     [/^Pine_Q_Tether_SphereExpansion$/, { ability: "Chokehold", shape: "area", r: 500 }],
     [/^Pine_E_RadEater$/, { ability: "Interceptor", shape: "badge" }],
-    // Viper (the screen's direction isn't checked yet: a badge until a replay shows it)
-    [/^Pandemic_E_SmokeScreenManager$/, { ability: "Toxic Screen", shape: "badge" }],
+    // Viper: the screen is the line it was laid along (`points`), solid while up (`on`).
+    [/^Pandemic_E_SmokeScreenManager$/, { ability: "Toxic Screen", shape: "wall" }],
+    [/^Pandemic_4_SmokeZone$/, { ability: "Poison Cloud", shape: "smoke", r: 450 }],
+    [/^Pandemic_X_Circular$/, { ability: "Viper's Pit", shape: "smoke", r: 900 }],
     [/^Pandemic_AcidMolotov_NewMolotov$/, { ability: "Snake Bite", shape: "area", r: 450 }],
     // Jett
     [/^Wushu_4_SmokeZone$/, { ability: "Cloudburst", shape: "smoke", r: 335 }],
@@ -305,7 +307,6 @@
     return n > 0 ? "+" + n : n < 0 ? "−" + Math.abs(n) : "0";
   }
 
-  // Kills, deaths and assists-free tallies up to t, per slot, from the blob's kills.
   // Stage 4: the players alive per team at t, from the page's steps [[t, team-1, team-2], ...].
   function aliveCountAt(steps, t) {
     var now = null;
@@ -320,14 +321,83 @@
     return now;
   }
 
+  // Kills, deaths and assists up to t, per slot, from the blob's kills (assists: the page's
+  // `assists` slots on each kill, from the match's own kill rows).
   function tallyAt(kills, t) {
     var out = {};
+    var row = function (slot) { return (out[slot] = out[slot] || { k: 0, d: 0, a: 0 }); };
     (kills || []).forEach(function (k) {
       if (k.t > t) return;
-      if (k.killer !== k.victim) (out[k.killer] = out[k.killer] || { k: 0, d: 0 }).k += 1;
-      (out[k.victim] = out[k.victim] || { k: 0, d: 0 }).d += 1;
+      if (k.killer !== k.victim) row(k.killer).k += 1;
+      row(k.victim).d += 1;
+      (k.assists || []).forEach(function (slot) { if (slot !== k.killer && slot !== k.victim) row(slot).a += 1; });
     });
     return out;
+  }
+
+  // Each slot's Impact from kills and deaths up to t (the per-kill split: the killer gains `gain`,
+  // the victim loses `loss`), or null when the round's kills carry no split.
+  function impactAt(kills, t) {
+    var out = {}, any = false;
+    (kills || []).forEach(function (k) {
+      if (typeof k.gain !== "number") return;
+      any = true;
+      if (k.t > t) return;
+      if (k.killer !== k.victim) out[k.killer] = (out[k.killer] || 0) + k.gain;
+      out[k.victim] = (out[k.victim] || 0) - k.loss;
+    });
+    return any ? out : null;
+  }
+
+  // "Next kill": 1 s before the first kill that starts after t (so pressing it again moves on), or null.
+  var NEXT_KILL_LEAD_S = 1;
+
+  function nextKillTime(kills, t) {
+    var next = null;
+    (kills || []).forEach(function (k) {
+      var at = Math.max(0, k.t - NEXT_KILL_LEAD_S);
+      if (at > t + 0.05 && (next === null || at < next)) next = at;
+    });
+    return next;
+  }
+
+  // The spike at t, from its ability row (kind "Bomb": spawned at the plant, with `defuses`
+  // [[from, to | null, slot, finished]]): {plantedAt, slot, left (s to detonation), exploded,
+  // halved, defusing: {slot, elapsed, needed, frac} | null, defused: {slot, t} | null}, or null
+  // before the plant. A defuse takes DEFUSE_S; once one is held HALF_DEFUSE_S the next needs half.
+  var SPIKE_S = 45, DEFUSE_S = 7, HALF_DEFUSE_S = 3.5;
+
+  function spikeAt(abilities, t) {
+    var spike = (abilities || []).filter(function (a) { return a.kind === "Bomb" && a.t0 <= t; })[0];
+    if (!spike) return null;
+    var out = { plantedAt: spike.t0, slot: spike.slot, left: Math.max(0, SPIKE_S - (t - spike.t0)),
+                exploded: false, halved: false, defusing: null, defused: null };
+    (spike.defuses || []).forEach(function (d) {
+      var from = d[0], to = d[1] === null || d[1] === undefined ? Infinity : d[1];
+      if (from > t || out.defused) return;
+      if (d[3] && to <= t) { out.defused = { slot: d[2], t: to }; return; }
+      var held = Math.min(t, to) - from;
+      if (t <= to) {
+        var needed = out.halved ? HALF_DEFUSE_S : DEFUSE_S;
+        out.defusing = { slot: d[2], elapsed: held, needed: needed, frac: Math.min(1, held / needed) };
+      }
+      if (held >= HALF_DEFUSE_S) out.halved = true;
+    });
+    out.exploded = !out.defused && t - spike.t0 >= SPIKE_S;
+    if (out.defused || out.exploded) out.defusing = null;
+    return out;
+  }
+
+  // Whether Viper's wall is up at t, from its `on` spans [[from, to | null], ...].
+  function wallUp(ability, t) {
+    return (ability.on || []).some(function (span) { return span[0] <= t && (span[1] === null || t <= span[1]); });
+  }
+
+  // The reveals showing at t (a reveal without an end shows for 2 s).
+  function revealsAt(reveals, t) {
+    return (reveals || []).filter(function (r) {
+      return r.t0 <= t && t <= (r.t1 === null || r.t1 === undefined ? r.t0 + 2 : r.t1);
+    });
   }
 
   // ------------------------------------------------------------ the viewer
@@ -434,15 +504,18 @@
   var CAST_KINDS = { flash: true, nearsight: true };
 
   function extrasFromUtil(util) {
-    var abilities = [], shots = [];
+    var abilities = [], shots = [], reveals = [];
     (util || []).forEach(function (u) {
-      if (u.k !== "ability" && u.k !== "shot") return;
+      if (u.k !== "ability" && u.k !== "shot" && u.k !== "reveal") return;
       var row = {};
       Object.keys(u).forEach(function (key) { if (key !== "k" && key !== "t" && key !== "by") row[key] = u[key]; });
       row.slot = u.by;
-      if (u.k === "ability") { row.t0 = u.t; abilities.push(row); } else { row.t = u.t; shots.push(row); }
+      if (u.k === "shot") { row.t = u.t; shots.push(row); }
+      else { row.t0 = u.t; (u.k === "ability" ? abilities : reveals).push(row); }
     });
-    return { abilities: abilities, shots: shots };
+    var out = { abilities: abilities, shots: shots };
+    if (reveals.length) out.reveals = reveals;
+    return out;
   }
 
   function castUtil(util) {
@@ -487,6 +560,13 @@
     this.draw();
   };
 
+  // Jumps to 1 s before the next kill in this round, keeping play or pause as it was.
+  ReplayViewer.prototype.nextKill = function () {
+    if (!this.current) return;
+    var at = nextKillTime(this.current.blob.kills, this.t);
+    if (at !== null) this.seek(at);
+  };
+
   ReplayViewer.prototype.toggle = function () {
     if (!this.current) return;
     if (!this.playing && this.t >= this.current.blob.t_end) this.t = 0;
@@ -517,7 +597,8 @@
       prev: q("[data-replay-prev]"), next: q("[data-replay-next]"), state: q("[data-replay-state]"),
       feed: q("[data-replay-feed]"), board: q("[data-replay-board]"), banner: q("[data-replay-banner]"),
       badge: q("[data-replay-badge]"), analysis: q("[data-replay-analysis]"),
-      tip: q("[data-replay-tip]"), util: q("[data-replay-util]")
+      tip: q("[data-replay-tip]"), util: q("[data-replay-util]"), hud: q("[data-replay-hud]"),
+      nextKill: q("[data-replay-nextkill]")
     };
     SPEEDS.forEach(function (s) {
       var option = document.createElement("option");
@@ -532,12 +613,14 @@
       if (self.current) self.seek(self.current.blob.t_end * Number(self.ui.scrub.value) / 1000);
     });
     this.ui.prev.addEventListener("click", function () { self.step(-1); });
+    if (this.ui.nextKill) this.ui.nextKill.addEventListener("click", function () { self.nextKill(); });
     this.ui.next.addEventListener("click", function () { self.step(1); });
     this.root.addEventListener("keydown", function (e) {
       if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.key !== " ") return;
       if (e.key === " ") { e.preventDefault(); self.toggle(); }
       else if (e.key === "ArrowLeft") { e.preventDefault(); self.seek(self.t - STEP_S); }
       else if (e.key === "ArrowRight") { e.preventDefault(); self.seek(self.t + STEP_S); }
+      else if (e.key === "n" || e.key === "N") { e.preventDefault(); self.nextKill(); }
     });
     LAYERS.forEach(function (name) {
       var box = q('[data-replay-layer="' + name + '"]');
@@ -709,27 +792,35 @@
     var board = this.ui.board, blob = this.current.blob, self = this, t = this.t;
     if (!board || !this.linked) return;
     var tally = tallyAt(blob.kills, t);
+    var live = impactAt(blob.kills, t), over = t >= blob.t_end;
     var stats = blob.stats || {};
     var rows = { "team-1": [], "team-2": [] };
     blob.players.forEach(function (p) {
       var info = self.linked.players[String(p.slot)] || {};
       var life = aliveAt(blob.alive[String(p.slot)], t, blob.t_end);
       var s = stats[String(p.slot)] || {};
-      var mine = tally[p.slot] || { k: 0, d: 0 };
-      var impact = typeof s.impact === "number"
-        ? '<td class="num ' + (s.impact > 0 ? "pos" : s.impact < 0 ? "neg" : "") + '">' + signed(s.impact) + "</td>"
+      var mine = tally[p.slot] || { k: 0, d: 0, a: 0 };
+      // Live: the kills' and deaths' Impact so far; at the round's end, the stored round Impact
+      // (which adds damage, assists and trade credit). Without a per-kill split: the stored value.
+      var value = live && !over ? (live[p.slot] || 0) : s.impact;
+      var impact = typeof value === "number"
+        ? '<td class="num ' + (value > 0 ? "pos" : value < 0 ? "neg" : "") + '">' + signed(value) + "</td>"
         : "<td></td>";
       (rows[info.team] || rows["team-1"]).push(
         '<tr class="' + (life ? "" : "is-dead") + '"><td class="replay-board-name">' +
         '<span class="replay-dot" style="background:' + self.slotColor(p.slot) + '"></span>' +
         escapeHtml(info.name || p.agent) + ' <span class="replay-board-agent">' + escapeHtml(p.agent) + "</span>" +
         (life ? "" : ' <span class="replay-board-dead">dead</span>') + "</td>" +
-        '<td class="num">' + mine.k + "/" + mine.d + "</td>" +
+        '<td class="num">' + mine.k + "/" + mine.d + "/" + mine.a + "</td>" +
         '<td class="num">' + (typeof s.loadout === "number" ? s.loadout : "") + "</td>" + impact + "</tr>");
     });
-    var head = '<thead><tr><th>Player</th><th class="num" title="Kills / deaths so far this round">K/D</th>' +
-      '<th class="num" title="Loadout value this round (credits)">Loadout</th>' +
-      '<th class="num" title="Stored Impact for the whole round">Round Impact</th></tr></thead>';
+    var impactTitle = live && !over
+      ? "Impact from kills and deaths so far this round; at the round's end, the stored round Impact (adding damage, assists and trade credit)"
+      : "Stored Impact for the whole round";
+    var head = '<thead><tr><th>Player</th><th class="num" title="Kills / deaths / assists so far this round">K/D/A</th>' +
+      '<th class="num" title="Loadout value at the round&#39;s start (credits): the replay has no live value">Loadout</th>' +
+      '<th class="num" title="' + impactTitle.replace(/'/g, "&#39;") + '">' + (live && !over ? "Impact so far" : "Round Impact") +
+      "</th></tr></thead>";
     board.innerHTML = ["team-1", "team-2"].map(function (team) {
       return '<table class="replay-board-team team-' + team.slice(-1) + '">' + head + "<tbody>" + rows[team].join("") +
         "</tbody></table>";
@@ -745,7 +836,26 @@
       var style = abilityStyle(a);
       if (style.shape === "hidden" || style.shape === "spike" || style.small || style.unlisted) return;
       items.push({ t: a.thrown ? a.thrown.t0 : a.t0, slot: a.slot, agent: style.agent, ability: style.ability,
-        label: style.label, guess: a.owner_by === "nearest" });
+        label: style.label, guess: a.owner_by === "nearest", reveals: style.shape === "reveal" ? [] : null });
+    });
+    // Reveals: named on the revealing ability's row (the same owner and agent, cast up to 5 s
+    // before), or a row of their own (a dart, Neural Theft).
+    (this.current.extras.reveals || []).forEach(function (rv) {
+      var agent = self.agentOf(rv.slot);
+      var row = items.filter(function (it) {
+        return it.reveals && it.slot === rv.slot && it.agent === agent && it.t <= rv.t0 && rv.t0 - it.t <= 5;
+      }).pop();
+      if (!row) {
+        var style = abilityStyle({ kind: "GameObject", code: rv.code, name: rv.name, agent: agent });
+        row = { t: rv.t0, slot: rv.slot, agent: style.agent, ability: style.ability, label: style.label, reveals: [] };
+        items.push(row);
+      }
+      if (row.reveals.indexOf(rv.target) < 0) row.reveals.push(rv.target);
+    });
+    items.forEach(function (it) {
+      if (it.reveals && it.reveals.length) {
+        it.note = "revealed " + it.reveals.map(function (slot) { return self.nameOf(slot).split("#")[0]; }).join(", ");
+      }
     });
     castUtil(blob.util).forEach(function (u) {
       var which = utilAbility(u.ability);
@@ -791,6 +901,8 @@
       });
     }
     this.renderBoard();
+    this.renderHud();
+    if (this.ui.nextKill) this.ui.nextKill.disabled = nextKillTime(blob.kills, t) === null;
     if (this.ui.badge) {
       var alive = aliveCountAt(blob.alive_steps, t);
       this.ui.badge.hidden = !alive;
@@ -867,7 +979,7 @@
     var all = this.current.extras.abilities;
     var smoke = this.css("--replay-smoke", "rgba(214, 218, 226, 0.5)");
     // Areas first, so badges sit on top of them; the spike last.
-    ["smoke", "area", "reveal", "line", "wire", "badge", "spike"].forEach(function (pass) {
+    ["wall", "smoke", "area", "reveal", "line", "wire", "badge", "spike"].forEach(function (pass) {
       showing.forEach(function (a) {
         var style = abilityStyle(a);
         if (style.shape !== pass) return;
@@ -896,6 +1008,25 @@
           ctx.restore(); ctx.save();
           self.drawBadge(ctx, x, y, r * 0.52, color, glyph, 0.9 * fadeIn);
           hits.push({ x: x, y: y, r: Math.max(rad, r * 0.6), text: text, area: true });
+        } else if (pass === "wall") {
+          var pts = a.points || [], up = wallUp(a, t);
+          if (pts.length > 1) {
+            ctx.globalAlpha = fadeIn; ctx.lineCap = "round"; ctx.lineJoin = "round";
+            ctx.beginPath(); ctx.moveTo(pts[0][0] * s, pts[0][1] * s);
+            pts.slice(1).forEach(function (pt) { ctx.lineTo(pt[0] * s, pt[1] * s); });
+            if (up) {
+              // Up: a wide smoke band with the owner's colour down its middle.
+              ctx.strokeStyle = smoke; ctx.lineWidth = Math.max(8, r * 1.1); ctx.stroke();
+              ctx.strokeStyle = color; ctx.lineWidth = Math.max(2.5, r / 4); ctx.stroke();
+            } else {
+              // Down: where it would rise, a thin dashed line.
+              ctx.strokeStyle = color; ctx.globalAlpha = 0.7 * fadeIn; ctx.lineWidth = Math.max(2, r / 6);
+              ctx.setLineDash([r / 3, r / 4]); ctx.stroke(); ctx.setLineDash([]);
+            }
+          }
+          ctx.restore(); ctx.save();
+          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          hits.push({ x: x, y: y, r: r * 0.7, text: text + (up ? " · up now" : " · down now") });
         } else if (pass === "reveal") {
           var reach = self.uvRadius(style.r) * s, pulse = (age % 1.2) / 1.2;
           ctx.globalAlpha = 0.8 * (1 - pulse); ctx.lineWidth = 2.5; ctx.strokeStyle = color;
@@ -932,7 +1063,8 @@
           self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
           hits.push({ x: x, y: y, r: r * 0.7, text: text });
         } else if (pass === "wire") {
-          var other = self.current.wires[all.indexOf(a)];
+          // The far end: the second anchor its placement listed (`end`), else a same-owner pairing.
+          var other = a.end ? { u: a.end[0], v: a.end[1] } : self.current.wires[all.indexOf(a)];
           ctx.strokeStyle = color; ctx.lineWidth = Math.max(2.5, r / 4.5);
           if (other) {
             ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(other.u * s, other.v * s); ctx.stroke();
@@ -964,8 +1096,27 @@
           ctx.globalAlpha = 1;
           ctx.beginPath(); ctx.moveTo(x, y - k); ctx.lineTo(x + k * 0.7, y); ctx.lineTo(x, y + k); ctx.lineTo(x - k * 0.7, y);
           ctx.closePath(); ctx.fill(); ctx.stroke();
+          var state = spikeAt([a], t);
+          if (state && !state.defused && !state.exploded) {
+            // The time left to detonation, as a draining ring.
+            ctx.lineWidth = Math.max(2, r / 5); ctx.strokeStyle = self.css("--brand", "#ff4655"); ctx.globalAlpha = 0.9;
+            ctx.beginPath(); ctx.arc(x, y, k * 1.9, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.left / SPIKE_S); ctx.stroke();
+          }
+          if (state && state.defusing) {
+            // A defuse: a thick ring filling in the defuser's colour, and a line from the defuser.
+            var dcolor = self.ownerColor(state.defusing.slot);
+            var from = trackAt(self.current.tracks[String(state.defusing.slot)], t);
+            if (from) {
+              ctx.globalAlpha = 0.9; ctx.strokeStyle = dcolor; ctx.lineWidth = Math.max(2, r / 5);
+              ctx.beginPath(); ctx.moveTo(from.u * s, from.v * s); ctx.lineTo(x, y); ctx.stroke();
+            }
+            ctx.globalAlpha = 0.35; ctx.lineWidth = Math.max(5, r / 2); ctx.strokeStyle = "#ffffff";
+            ctx.beginPath(); ctx.arc(x, y, k * 2.7, 0, 2 * Math.PI); ctx.stroke();
+            ctx.globalAlpha = 1; ctx.strokeStyle = dcolor;
+            ctx.beginPath(); ctx.arc(x, y, k * 2.7, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.defusing.frac); ctx.stroke();
+          }
           hits.push({ x: x, y: y, r: k * 1.4, text: "Spike planted" + (a.slot !== null ? " by " + self.nameOf(a.slot) : "") +
-            " at " + a.t0.toFixed(1) + " s" });
+            " at " + a.t0.toFixed(1) + " s" + (state && state.halved ? " · half defused" : "") });
         }
         ctx.restore();
       });
@@ -1001,6 +1152,63 @@
       (a.owner_by === "nearest" ? " (nearest " + a.agent + ", a guess)" : "");
     return (style.agent ? style.agent + " · " : "") + style.label + " · " + owner + " · " + a.t0.toFixed(1) + "–" +
       (a.t1 === null || a.t1 === undefined ? "end" : a.t1.toFixed(1)) + " s";
+  };
+
+  ReplayViewer.prototype.agentOf = function (slot) {
+    var row = this.current && this.current.blob.players.filter(function (q) { return q.slot === slot; })[0];
+    return row ? row.agent : null;
+  };
+
+  // A revealed player: a ring in the revealer's colour pulsing out from them, with the revealing
+  // ability's badge at their shoulder, while the reveal lasts.
+  ReplayViewer.prototype.drawReveals = function (ctx, s, r, hits) {
+    var t = this.t, tracks = this.current.tracks, self = this;
+    revealsAt(this.current.extras.reveals, t).forEach(function (rv) {
+      var at = trackAt(tracks[String(rv.target)], t);
+      if (!at) return;
+      var x = at.u * s, y = at.v * s, color = self.ownerColor(rv.slot);
+      var style = abilityStyle({ kind: "GameObject", code: rv.code, name: rv.name, agent: self.agentOf(rv.slot) });
+      var pulse = ((t - rv.t0) % 0.8) / 0.8;
+      ctx.save();
+      ctx.strokeStyle = color; ctx.lineWidth = Math.max(3, r / 3.5);
+      ctx.beginPath(); ctx.arc(x, y, r * 1.45, 0, 2 * Math.PI); ctx.stroke();
+      ctx.globalAlpha = 0.8 * (1 - pulse); ctx.lineWidth = Math.max(2, r / 5);
+      ctx.beginPath(); ctx.arc(x, y, r * (1.45 + 1.3 * pulse), 0, 2 * Math.PI); ctx.stroke();
+      ctx.restore();
+      self.drawBadge(ctx, x + r * 1.15, y - r * 1.15, r * 0.42, color, self.abilityIcon(style.agent, style.ability));
+      hits.push({ x: x, y: y, r: r * 1.5, text: self.nameOf(rv.target) + " revealed by " + self.nameOf(rv.slot) +
+        "'s " + style.label + " · " + rv.t0.toFixed(1) + "–" + (typeof rv.t1 === "number" ? rv.t1.toFixed(1) : "?") + " s" });
+    });
+  };
+
+  // The spike panel over the map: time to detonation, "half defused", and a defuse in progress
+  // with its defuser, time held of time needed and a bar; then "Defused" or "Detonated".
+  ReplayViewer.prototype.renderHud = function () {
+    var hud = this.ui.hud;
+    if (!hud || !this.current) return;
+    var state = spikeAt(this.current.extras.abilities, this.t);
+    if (!state) { hud.hidden = true; return; }
+    hud.hidden = false;
+    var parts = [];
+    if (state.defused) {
+      parts.push('<span class="replay-hud-row"><strong class="replay-hud-done">Defused</strong> by ' +
+        this.personHtml(state.defused.slot) + " at " + state.defused.t.toFixed(1) + " s</span>");
+    } else if (state.exploded) {
+      parts.push('<span class="replay-hud-row"><strong class="replay-hud-boom">Detonated</strong></span>');
+    } else {
+      parts.push('<span class="replay-hud-row"><span class="replay-hud-label">Spike</span> <strong class="replay-hud-time' +
+        (state.left <= 10 ? " is-low" : "") + '">' + state.left.toFixed(1) + " s</strong> to detonation" +
+        (state.halved ? ' <span class="replay-hud-half">half defused</span>' : "") + "</span>");
+    }
+    if (state.defusing) {
+      var d = state.defusing, late = state.left < d.needed - d.elapsed;
+      parts.push('<span class="replay-hud-row replay-hud-defuse"><span class="replay-hud-label">Defusing</span> ' +
+        this.personHtml(d.slot) + ' <strong class="replay-hud-time">' + d.elapsed.toFixed(1) + " / " + d.needed.toFixed(1) +
+        " s</strong>" + (late ? ' <span class="replay-hud-late">too late: it detonates first</span>' : "") + "</span>" +
+        '<span class="replay-hud-bar"><span style="width:' + (100 * d.frac).toFixed(1) + "%;background:" +
+        this.ownerColor(d.slot) + '"></span></span>');
+    }
+    hud.innerHTML = parts.join("");
   };
 
   ReplayViewer.prototype.drawTracers = function (ctx, s, r) {
@@ -1133,6 +1341,8 @@
       hits.push({ x: x, y: y, r: r * 1.2, text: self.nameOf(p.slot) + " · " + p.agent + (life.flags.length ? " · " + life.flags.join(", ") : "") });
     });
 
+    if (this.layers.abilities) this.drawReveals(ctx, s, r, hits);
+
     // Names last, on a dark plate so they read over any part of the map.
     ctx.save();
     ctx.font = "600 " + Math.round(r * 0.8) + "px system-ui, sans-serif";
@@ -1214,7 +1424,8 @@
     decodeSegment: decodeSegment, decodeRound: decodeRound, trackAt: trackAt, aliveAt: aliveAt,
     lerpYaw: lerpYaw, ReplayViewer: ReplayViewer, SUPPORTED_VERSIONS: SUPPORTED_VERSIONS,
     abilityStyle: abilityStyle, lineEnds: lineEnds, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, pairWires: pairWires, signed: signed, tallyAt: tallyAt, aliveCountAt: aliveCountAt, stateAt: stateAt,
-    utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil
+    utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
+    impactAt: impactAt, nextKillTime: nextKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt
   };
   global.Replay = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

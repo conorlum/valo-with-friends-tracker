@@ -1,26 +1,36 @@
 """Ability objects and shots from a parser export, stored in each round blob's `util`.
 
 `condense_export_dir` runs this after `condense()`, so local ingest and the upload worker store
-the same thing. Each round's rows become two `util` kinds (a new `k` needs no format `v` bump):
+the same thing. Each round's rows become three `util` kinds (a new `k` needs no format `v` bump):
 
 - `{"k": "ability", "t": <spawn>, "by": <slot | null>, "t1", "kind", "code", "name", "agent",
-  "owner_by", "u", "v", ["yaw"], ["thrown"], ["path"], ["owner_d", "other_d"]}`;
-- `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`.
+  "owner_by", "u", "v", ["yaw"], ["thrown"], ["path"], ["owner_d", "other_d"], ["end"],
+  ["defuses"], ["points", "on"]}`;
+- `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`;
+- `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`.
 
 - **Abilities.** Every `actor_spawned` whose archetype is `Default__<Kind>_<AgentCode>_<Name>_C`
   with a kind in ABILITY_KINDS (placed objects, zones, patches, projectiles, possessable
   pawns), from its spawn point until its `actor_closed`. The owner is, in order: the slot of
-  the actor's replicated `Instigator` (a character pawn), the one slot playing that agent, or
-  the nearest player of that agent at spawn time (`owner_by` says which). Equippable
-  `Ability_*` actors are the held item, not something in the world, and are skipped.
+  the actor's replicated `Instigator` (a character pawn), its possessor, the owner of the
+  equippable that placed it (Stage 5: `equippable_claims`, exact for every trapwire, setups
+  included), the one slot playing that agent, a parent's owner, or the nearest player of that
+  agent at spawn time (`owner_by` says which). Equippable `Ability_*` actors are the held item,
+  not something in the world: they are not drawn, only read for owners. A trapwire's first
+  anchor carries its second anchor's point (`end`); the planted spike its defuse attempts
+  (`defuses`: [[from, to | null, slot, finished]]); Viper's wall its laid line (`points`) and
+  when it was up (`on`: [[from, to | null]]).
 - **Shots.** `valorant_shot_received` with a `firing_player_state` that resolves to a slot:
   the shot's origin, its first attack vector (a direction) and the gun.
+- **Reveals.** A player revealed by an enemy's recon, haunt, dart or Neural Theft, from when the
+  reveal effect played on their character until it stopped (`find_reveals`).
 
 Times are seconds since the round's InRound start, like the blobs; `u`/`v` are minimap ints.
 """
 
 from __future__ import annotations
 
+import base64
 import bisect
 import json
 import math
@@ -79,49 +89,182 @@ def _seconds(t_ms: int, start: int) -> float:
     return round((t_ms - start) / 1000.0, 3)
 
 
-def read_raw(events_path: Path) -> tuple[dict[int, _Actor], list[dict]]:
-    """One streaming pass: ability actors (with instigators and closes) and raw shot rows."""
+@dataclass
+class _Equip:
+    """An equippable (`Default__Ability_<Code>_<Name>_C`): the held item a player places or throws
+    an ability with. Its owner comes from `votes`: the continuous effects played on a character
+    pawn that name this equippable (slot -> count)."""
+    guid: int
+    t_ms: int
+    code: str
+    name: str
+    x: float
+    y: float
+    votes: Counter = field(default_factory=Counter)
+    slot: int | None = None
+    how: str | None = None
+
+
+@dataclass
+class _Context:
+    """An equippable's placement: the actors it lists as just created (`ActorListTransitionContext`)."""
+    t_ms: int
+    equip: _Equip
+    listed: frozenset[int]
+
+
+@dataclass
+class _Effect:
+    """A continuous effect played on an actor (a character pawn or the planted spike), with the
+    actors its context names and when it stopped."""
+    t_ms: int
+    actor: int
+    effect_id: int | None
+    container: int | None
+    context: tuple[int, ...]
+    stop_ms: int | None = None
+
+
+@dataclass
+class Raw:
+    actors: dict[int, _Actor]
+    shots: list[dict]
+    equips: list[_Equip] = field(default_factory=list)
+    contexts: list[_Context] = field(default_factory=list)
+    effects: list[_Effect] = field(default_factory=list)
+    oneshots: dict[int, list[int]] = field(default_factory=lambda: defaultdict(list))
+    wall_points: dict[int, list[tuple[int, float, float]]] = field(default_factory=lambda: defaultdict(list))
+    wall_states: dict[int, list[tuple[int, bool]]] = field(default_factory=lambda: defaultdict(list))
+
+
+EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
+RPC_PLAY = "MulticastPlayContinuousEffect"
+RPC_STOP = "MulticastStopContinuousEffect"
+RPC_ONESHOT = "MulticastPlayOneShotEffect"
+RPC_WALL_POINT = "MulticastAddSmokeScreenPoint"   # Viper's Toxic Screen, one per point laid
+_RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
+                           '"Actors"', '"WallActivated"')
+
+
+def packed_ints(data: bytes) -> list[int]:
+    """Unreal's SerializeIntPacked values (7 bits a byte, the low bit says another byte follows)
+    after an `ActorListTransitionContext`'s 3-byte header: the list's net GUIDs, after a leading
+    count value. Checked on the Ascent export: every trapwire placement lists its second anchor."""
+    out, i = [], 3
+    while i < len(data):
+        value, shift = 0, 0
+        while i < len(data):
+            byte = data[i]
+            i += 1
+            value |= (byte >> 1) << shift
+            shift += 7
+            if not byte & 1:
+                break
+        out.append(value)
+    return out
+
+
+def _context_values(payload: dict) -> tuple[int, ...]:
+    return tuple(int(fv["Value"]) for fv in payload.get("FunctionObjectValues") or []
+                 if isinstance(fv, dict) and isinstance(fv.get("Value"), int) and fv["Value"])
+
+
+def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
+    """One streaming pass: ability actors (with instigators and closes), raw shot rows, and the
+    evidence Stage 5 reads: equippables with their owners' effects and placements, continuous
+    effects on character pawns (`pawns`) and on the planted spike, and Viper's wall points and
+    on/off states."""
     actors: dict[int, _Actor] = {}
     instigators: dict[int, int] = {}
     closes: dict[int, int] = {}
-    shots: list[dict] = []
+    raw = Raw(actors, [])
+    equip_now: dict[int, _Equip] = {}      # the equippable alive under each GUID
+    bombs: set[int] = set()
+    walls: set[int] = set()
+    open_effects: dict[tuple[int, int], _Effect] = {}
     with events_path.open("r", encoding="utf-8") as handle:
         for line in handle:
-            if not any(needle in line for needle in _NEEDLES):
+            if not any(needle in line for needle in _RAW_NEEDLES):
                 continue
             data = json.loads(line)
             kind = data.get("type")
             t_ms = int(data.get("time_ms", 0))
+            guid = int(data.get("actor_net_guid") or 0)
             if kind == "actor_spawned":
                 archetype = str(data.get("archetype_path") or "")
+                equip_now.pop(guid, None)
+                bombs.discard(guid)
+                walls.discard(guid)
                 match = ABILITY_ARCHETYPE.match(archetype)
                 location = data.get("location") or {}
                 if location.get("x") is None:
+                    continue
+                held = EQUIPPABLE_ARCHETYPE.match(archetype)
+                if held is not None:
+                    equip = _Equip(guid, t_ms, *held.groups(), float(location["x"]), float(location["y"]))
+                    equip_now[guid] = equip
+                    raw.equips.append(equip)
                     continue
                 if match is not None:
                     kind, code, name = match.groups()
                 elif archetype == BOMB_ARCHETYPE:
                     kind, code, name = "Bomb", "", "Spike"
+                    bombs.add(guid)
                 else:
                     continue
-                guid = int(data["actor_net_guid"])
+                if name.endswith("SmokeScreenManager"):
+                    walls.add(guid)
                 rotation = data.get("rotation") or {}
                 actors[guid] = _Actor(guid, t_ms, kind, code, name,
                                       float(location["x"]), float(location["y"]), rotation.get("yaw"))
             elif kind == "actor_closed":
-                closes.setdefault(int(data.get("actor_net_guid") or 0), t_ms)
+                closes.setdefault(guid, t_ms)
             elif kind == "valorant_shot_received":
-                shots.append(data)
-            elif kind == "export_group_received" and data.get("is_actor"):
+                raw.shots.append(data)
+            elif kind == "rpc_received":
+                function = data.get("function_name")
+                payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+                if function == RPC_PLAY and (guid in pawns or guid in bombs):
+                    context = _context_values(payload)
+                    for value in context:
+                        if guid in pawns and value in equip_now:
+                            equip_now[value].votes[guid] += 1
+                    if context:
+                        effect = _Effect(t_ms, guid, payload.get("EffectId"), payload.get("EffectContainer"), context)
+                        raw.effects.append(effect)
+                        open_effects[(guid, effect.effect_id)] = effect
+                elif function == RPC_STOP:
+                    effect = open_effects.pop((guid, payload.get("EffectId")), None)
+                    if effect is not None:
+                        effect.stop_ms = t_ms
+                elif function == RPC_ONESHOT and guid in bombs:
+                    raw.oneshots[guid].append(t_ms)
+                elif function == RPC_WALL_POINT and guid in walls:
+                    point = payload.get("Translation") or {}
+                    if point.get("x") is not None and point.get("y") is not None:
+                        raw.wall_points[guid].append((t_ms, float(point["x"]), float(point["y"])))
+            elif kind == "export_group_received":
                 payload = data.get("payload")
-                if isinstance(payload, dict) and payload.get("Instigator"):
-                    instigators.setdefault(int(data.get("actor_net_guid") or 0), int(payload["Instigator"]))
+                if not isinstance(payload, dict):
+                    continue
+                if data.get("is_actor") and payload.get("Instigator"):
+                    instigators.setdefault(guid, int(payload["Instigator"]))
+                if guid in walls and isinstance(payload.get("WallActivated"), bool):
+                    raw.wall_states[guid].append((t_ms, payload["WallActivated"]))
+                actor_list = payload.get("Actors")
+                if guid in equip_now and isinstance(actor_list, dict) and actor_list.get("Data"):
+                    try:
+                        listed = frozenset(v for v in packed_ints(base64.b64decode(actor_list["Data"]))[1:] if v)
+                    except (ValueError, TypeError):
+                        listed = frozenset()
+                    if listed:
+                        raw.contexts.append(_Context(t_ms, equip_now[guid], listed))
     for guid, actor in actors.items():
         actor.instigator = instigators.get(guid)
         # An actor GUID can be reused after a close: only a close after the spawn counts.
         closed = closes.get(guid)
         actor.closed_ms = closed if closed is not None and closed >= actor.t_ms else None
-    return actors, shots
+    return raw
 
 
 def _nearest(slots: list[int], positions: dict[int, tuple[float, float]], x: float, y: float
@@ -148,12 +291,14 @@ INSIDE_UNITS = 300.0
 
 
 def _owner(actor: _Actor, agent: str | None, slots_of_agent: dict[str, list[int]], players: PlayerTable,
-           positions_at, known: list[tuple[_Actor, int]], counts: Counter):
+           positions_at, known: list[tuple[_Actor, int]], counts: Counter, claimed: int | None = None):
     """(slot, how, nearest evidence). In order: the replicated Instigator; the player possessing
-    this pawn (a camera, a drone); the only player of that agent; for a placed object, the owner
-    of its parent (the object it spawned inside of, the projectile that landed as it spawned, or
-    the anchor it was placed with); a clear nearest player of that agent. Otherwise no owner:
-    drawn neutral, never guessed."""
+    this pawn (a camera, a drone); the owner of the equippable that placed it (`claimed`, see
+    `equippable_claims`); the only player of that agent; for a projectile, the owner of the placed
+    pawn it was fired from (a Spycam's dart); for a placed object, the owner of its
+    parent (the object it spawned inside of, the projectile that landed as it spawned, or the
+    anchor it was placed with); a clear nearest player of that agent. Otherwise no owner: drawn
+    neutral, never guessed."""
     candidates = slots_of_agent.get(agent, []) if agent else []
     near = _nearest(candidates, positions_at(actor.t_ms), actor.x, actor.y) if len(candidates) > 1 else None
     if actor.instigator is not None:
@@ -162,12 +307,26 @@ def _owner(actor: _Actor, agent: str | None, slots_of_agent: dict[str, list[int]
             if near is not None and near[0] is not None:
                 # How the nearest-player guess does where the owner is known.
                 counts["nearest_check_" + ("agree" if near[0] == slot else "disagree")] += 1
+            if claimed is not None:
+                counts["equippable_check_" + ("agree" if claimed == slot else "disagree")] += 1
             return slot, "instigator", near
     possessors = {owner for _, _, owner in players.possession.get(actor.guid, [])}
     if len(possessors) == 1:
         return possessors.pop(), "possessed", near
+    if claimed is not None:
+        if near is not None and near[0] is not None:
+            counts["nearest_check_" + ("agree" if near[0] == claimed else "disagree")] += 1
+        return claimed, "equippable", near
     if len(candidates) == 1:
         return candidates[0], "agent", near
+    if actor.kind == "Projectile":
+        # A shot from a placed pawn of the same agent (a Spycam's tracking dart) is its owner's.
+        fired = [(math.hypot(parent.x - actor.x, parent.y - actor.y), slot) for parent, slot in known
+                 if parent.kind == "Pawn" and parent.code == actor.code and parent.t_ms <= actor.t_ms
+                 and (parent.closed_ms is None or parent.closed_ms >= actor.t_ms)
+                 and math.hypot(parent.x - actor.x, parent.y - actor.y) <= INSIDE_UNITS]
+        if fired:
+            return min(fired)[1], "fired", near
     # A throw is where its thrower stands: only the guess below applies to it, never inheritance.
     if actor.kind != "Projectile":
         inside = [(math.hypot(parent.x - actor.x, parent.y - actor.y), slot) for parent, slot in known
@@ -220,6 +379,191 @@ def normalize_archetype(code: str, name: str, known_codes) -> tuple[str, str]:
 
 PATH_STEP_MS = 100   # a possessable pawn's path (a drone, Trailblazer), one point per this long
 
+# An equippable's placement names what it created: its context lists the actors (a trapwire's
+# second anchor, a thrown projectile) and arrives in the same tick as their spawns (a trapwire's
+# first anchor, a smoke). Within LISTED_MS a listed actor is claimed; within SAME_TICK_MS an
+# unlisted object of the same agent is, when only one owner placed something then.
+LISTED_MS = 100
+SAME_TICK_MS = 20
+# Equippables a player is given together (a Cypher's trapwire, cage and camera at the round's
+# start) spawn at the same moment and place: an unvoted one takes a voted sibling's owner.
+SIBLING_MS = 50
+SIBLING_UNITS = 150.0
+
+
+def resolve_equippables(equips: list[_Equip], players: PlayerTable, agent_code: dict[str, str],
+                        counts: Counter) -> None:
+    """Sets each equippable's owner: the slot whose character played the most continuous effects
+    naming it, when that slot plays the equippable's agent (a melee knife is anyone's); else a
+    voted sibling's (see SIBLING_MS). Unresolved ones stay None."""
+    for equip in equips:
+        votes = Counter()
+        for pawn, n in equip.votes.items():
+            slot = players.pawn_slot.get(pawn)
+            if slot is not None and agent_code.get(equip.code.lower()) == players.agents[slot]:
+                votes[slot] += n
+        if votes:
+            equip.slot, equip.how = votes.most_common(1)[0][0], "effects"
+    voted = [e for e in equips if e.slot is not None]
+    for equip in equips:
+        if equip.slot is not None:
+            continue
+        near = {e.slot for e in voted if e.code == equip.code and abs(e.t_ms - equip.t_ms) <= SIBLING_MS
+                and math.hypot(e.x - equip.x, e.y - equip.y) <= SIBLING_UNITS}
+        if len(near) == 1:
+            equip.slot, equip.how = near.pop(), "sibling"
+    for equip in equips:
+        counts["equippables_" + (equip.how or "unowned")] += 1
+
+
+def equippable_claims(actors: dict[int, _Actor], contexts: list[_Context]) -> dict[int, tuple[int, _Context]]:
+    """{actor guid: (owner slot, the placement it came from)} for the ability actors an owned
+    equippable placed: listed in its context, or spawned in the same tick as its only-owner
+    context of that agent."""
+    owned = sorted((c for c in contexts if c.equip.slot is not None), key=lambda c: c.t_ms)
+    times = [c.t_ms for c in owned]
+    out: dict[int, tuple[int, _Context]] = {}
+    for actor in actors.values():
+        lo = bisect.bisect_left(times, actor.t_ms - LISTED_MS)
+        hi = bisect.bisect_right(times, actor.t_ms + LISTED_MS)
+        near = owned[lo:hi]
+        listed = [c for c in near if actor.guid in c.listed]
+        if listed:
+            best = min(listed, key=lambda c: abs(c.t_ms - actor.t_ms))
+            out[actor.guid] = (best.equip.slot, best)
+            continue
+        same = [c for c in near if c.equip.code.lower() == actor.code.lower()
+                and abs(c.t_ms - actor.t_ms) <= SAME_TICK_MS]
+        if len({c.equip.slot for c in same}) == 1:
+            out[actor.guid] = (same[0].equip.slot, same[0])
+    return out
+
+
+# The objects that reveal enemies (a recon bolt's ping, a haunt, a tracking dart, Neural Theft,
+# Tejo's drone ping). The reveal itself is an effect played on each revealed player's character
+# naming the revealer's character; its container ID varies by replay, so it is found by where it
+# happens (`find_reveals`).
+REVEAL_SOURCES = re.compile(r"^(Hunter_Q_SonarPing|Hunter_E_Drone_RevealDart|BountyHunter_E_LoSReveal.*|"
+                            r"Cashew_4_SonarPing|Gumshoe_RemovableObject_GumshoeTrackingDart|Gumshoe_X_InterrogateHat)$")
+REVEAL_WINDOW_MS = 4000
+REVEAL_MIN_PLAYS = 2
+REVEAL_SHARE = 0.8
+REVEAL_MIN_MS, REVEAL_MAX_MS, REVEAL_DEFAULT_MS = 1000, 6000, 2000
+
+
+def find_reveals(effects: list[_Effect], actors: dict[int, _Actor], players: PlayerTable,
+                 code_of_agent: dict[str, str], counts: Counter) -> list[dict]:
+    """[{t_ms, t1_ms, by, target, code, name}]: players revealed by an enemy's reveal ability.
+
+    A candidate is a continuous effect on one player's character whose context names another
+    player's character (the revealer). An effect container counts as the reveal when at least
+    REVEAL_SHARE of its candidates (and REVEAL_MIN_PLAYS) start within REVEAL_WINDOW_MS after a
+    reveal source of the revealer's agent spawned: on the Ascent export that picks exactly
+    Sova's recon container, on another Fade's haunt ones. Its stop ends the reveal."""
+    sources = sorted((a.t_ms, a.code.lower(), a.code, a.name) for a in actors.values()
+                     if a.code and REVEAL_SOURCES.match(f"{a.code}_{a.name}"))
+    by_container: dict[int | None, list[tuple[_Effect, int, int, tuple | None]]] = defaultdict(list)
+    for effect in effects:
+        target = players.pawn_slot.get(effect.actor)
+        if target is None:
+            continue
+        revealers = [players.pawn_slot[c] for c in effect.context if players.pawn_slot.get(c, target) != target]
+        if not revealers:
+            continue
+        by = revealers[0]
+        code = (code_of_agent.get(players.agents[by]) or "").lower()
+        source = None
+        i = bisect.bisect_right(sources, (effect.t_ms, "￿"))
+        for t, source_code, raw_code, name in reversed(sources[max(0, i - 40):i]):
+            if effect.t_ms - t > REVEAL_WINDOW_MS:
+                break
+            if source_code == code:
+                source = (raw_code, name)
+                break
+        by_container[effect.container].append((effect, by, target, source))
+    out = []
+    for container, plays in by_container.items():
+        hits = [p for p in plays if p[3] is not None]
+        if len(hits) < REVEAL_MIN_PLAYS or len(hits) < REVEAL_SHARE * len(plays):
+            continue
+        counts["reveal_containers"] += 1
+        for effect, by, target, (code, name) in hits:
+            lasted = (effect.stop_ms - effect.t_ms) if effect.stop_ms is not None else REVEAL_DEFAULT_MS
+            t1 = effect.t_ms + min(REVEAL_MAX_MS, max(REVEAL_MIN_MS, lasted))
+            same = [r for r in out if r["by"] == by and r["target"] == target and r["t_ms"] <= effect.t_ms <= r["t1_ms"]]
+            if same:
+                same[0]["t1_ms"] = max(same[0]["t1_ms"], t1)
+                continue
+            out.append({"t_ms": effect.t_ms, "t1_ms": t1, "by": by, "target": target, "code": code, "name": name})
+    counts["reveals"] += len(out)
+    return sorted(out, key=lambda r: (r["t_ms"], r["target"]))
+
+
+# A defuse takes 7 s; one held for DEFUSE_HALF_S or more leaves the spike half defused.
+DEFUSE_ONESHOT_MS = 150
+
+
+def defuse_attempts(bomb: _Actor, effects: list[_Effect], oneshots: dict[int, list[int]],
+                    players: PlayerTable) -> list[tuple[int, int | None, int, bool]]:
+    """[(start ms, stop ms | None, defuser slot, finished)]: the continuous effects played on the
+    planted spike that name a player's character (the defuser). A finished defuse ends with a
+    one-shot effect on the spike (checked on the Ascent export: every DB defuse)."""
+    out = []
+    until = bomb.closed_ms if bomb.closed_ms is not None else float("inf")
+    for effect in effects:
+        if effect.actor != bomb.guid or not bomb.t_ms <= effect.t_ms <= until:
+            continue
+        slots = [players.pawn_slot[c] for c in effect.context if c in players.pawn_slot]
+        if not slots:
+            continue
+        done = effect.stop_ms is not None and any(abs(t - effect.stop_ms) <= DEFUSE_ONESHOT_MS
+                                                  for t in oneshots.get(bomb.guid, []))
+        out.append((effect.t_ms, effect.stop_ms, slots[0], done))
+    return out
+
+
+WALL_MAX_POINTS = 48
+
+
+WALL_START_UNITS = 150.0
+
+
+def wall_line(points: list[tuple[int, float, float]], actor: _Actor) -> list[tuple[float, float]]:
+    """Viper's wall as laid: its points in order, thinned evenly to WALL_MAX_POINTS (ends kept).
+    The wall starts where it was cast (the manager's spawn point); a replay can miss the first
+    points (round 2 of one export began 2,100 units out), so a line that starts further than
+    WALL_START_UNITS away gets the cast point first."""
+    until = actor.closed_ms if actor.closed_ms is not None else float("inf")
+    mine = [(x, y) for t, x, y in points if actor.t_ms <= t <= until]
+    if mine and math.hypot(mine[0][0] - actor.x, mine[0][1] - actor.y) > WALL_START_UNITS:
+        mine.insert(0, (actor.x, actor.y))
+    if len(mine) <= WALL_MAX_POINTS:
+        return mine
+    step = (len(mine) - 1) / (WALL_MAX_POINTS - 1)
+    return [mine[round(i * step)] for i in range(WALL_MAX_POINTS)]
+
+
+def wall_on(states: list[tuple[int, bool]], actor: _Actor, start: int, end: int) -> list[list[float | None]]:
+    """[[on, off | None], ...] in round seconds: when the wall was up (`WallActivated`)."""
+    until = actor.closed_ms if actor.closed_ms is not None else float("inf")
+    spans, since = [], None
+    for t, up in sorted(states):
+        if not actor.t_ms <= t <= until:
+            continue
+        if up and since is None:
+            since = t
+        elif not up and since is not None:
+            spans.append([since, t])
+            since = None
+    if since is not None:
+        spans.append([since, None])
+    out = []
+    for lo, hi in spans:
+        if hi is not None and hi < start:
+            continue
+        out.append([max(0.0, _seconds(lo, start)), None if hi is None else _seconds(min(hi, end), start)])
+    return out
+
 
 def _thrown(actor: _Actor, actors: dict[int, _Actor]) -> _Actor | None:
     """The same agent's projectile that closed within LANDING_MS of this object's spawn: the throw
@@ -237,8 +581,10 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
     """`positions_at(t_ms)` -> {slot: (x, y)}: each player's world position at that moment, from
     the full movement stream (buy phase included, where the round tracks don't reach).
     `pawn_path(guid)` -> [(t_ms, x, y)]: a non-player pawn's movement (a drone), or None."""
-    actors, raw_shots = read_raw(events_path)
+    raw = read_raw(events_path, frozenset(players.pawn_slot))
+    actors, raw_shots = raw.actors, raw.shots
     agent_code = {code.lower(): name for code, name in agents_by_code.items()}
+    code_of_agent = {name: code for code, name in agents_by_code.items()}
     counts_unknown: Counter[str] = Counter()
     for guid, actor in list(actors.items()):
         if actor.code:
@@ -254,12 +600,22 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
 
     out = Extras()
     counts: Counter[str] = Counter()
+    for equip in raw.equips:
+        equip.code, equip.name = normalize_archetype(equip.code, equip.name, agents_by_code)
+    resolve_equippables(raw.equips, players, agent_code, counts)
+    claims = equippable_claims(actors, raw.contexts)
+    # A placement's actors, to find a trapwire's second anchor from its first.
+    placed: dict[int, list[_Actor]] = defaultdict(list)
+    for guid, (_, context) in claims.items():
+        placed[id(context)].append(actors[guid])
     # Actors whose owner came from evidence (or, for a projectile, a clear nearest thrower).
     known: list[tuple[_Actor, int]] = []
     for actor in sorted(actors.values(), key=lambda a: (a.t_ms, a.guid)):
         agent = agent_code.get(actor.code.lower()) if actor.code else None
+        claim = claims.get(actor.guid)
         # Owners first, for every actor, so a buy-phase throw can still hand its owner on.
-        slot, owner_by, near = _owner(actor, agent, slots_of_agent, players, positions_at, known, counts)
+        slot, owner_by, near = _owner(actor, agent, slots_of_agent, players, positions_at, known, counts,
+                                      claimed=claim[0] if claim else None)
         if slot is not None and (owner_by != "nearest" or actor.kind == "Projectile"):
             known.append((actor, slot))
         n = _round_of(actor.t_ms, windows, buy_phase=True)
@@ -283,6 +639,24 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             entry["other_d"] = None if near[2] is None else round(near[2])
         if actor.yaw is not None:
             entry["yaw"] = game_map.yaw_to_map(float(actor.yaw))
+        if claim is not None and actor.name == "4_TripWire":
+            # The trapwire's far end: the second anchor its placement listed.
+            ends = [a for a in placed[id(claim[1])] if a.name == "4_TripWire_SecondWire"]
+            if ends:
+                entry["end"] = list(game_map.to_uv(ends[0].x, ends[0].y))
+                counts["wires_paired"] += 1
+        if actor.kind == "Bomb":
+            attempts = defuse_attempts(actor, raw.effects, raw.oneshots, players)
+            if attempts:
+                entry["defuses"] = [[_seconds(t0, start), None if t1 is None else _seconds(min(t1, end), start),
+                                     by, done] for t0, t1, by, done in attempts]
+                counts["defuse_attempts"] += len(attempts)
+        if actor.name.endswith("SmokeScreenManager"):
+            line = wall_line(raw.wall_points.get(actor.guid, []), actor)
+            if line:
+                entry["points"] = [list(game_map.to_uv(x, y)) for x, y in line]
+                entry["on"] = wall_on(raw.wall_states.get(actor.guid, []), actor, start, end)
+                counts["walls_drawn"] += 1
         throw = _thrown(actor, actors)
         if throw is not None:
             entry["thrown"] = {"t0": _seconds(throw.t_ms, start), "t1": _seconds(throw.closed_ms, start),
@@ -300,6 +674,15 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                 counts["pawn_paths"] += 1
         out.rounds.setdefault(n, {"abilities": [], "shots": []})["abilities"].append(entry)
         counts["abilities"] += 1
+
+    for reveal in find_reveals(raw.effects, actors, players, code_of_agent, counts):
+        n = _round_of(reveal["t_ms"], windows)
+        if n is None:
+            continue
+        start, _, end = windows[n - 1]
+        out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("reveals", []).append({
+            "t0": _seconds(reveal["t_ms"], start), "t1": _seconds(min(reveal["t1_ms"], end), start),
+            "slot": reveal["by"], "target": reveal["target"], "code": reveal["code"], "name": reveal["name"]})
 
     for data in raw_shots:
         t_ms = int(data.get("time_ms", 0))
@@ -396,6 +779,9 @@ def util_entries(round_extras: dict) -> list[dict]:
     for ability in round_extras.get("abilities", []):
         rest = {k: v for k, v in ability.items() if k not in ("t0", "slot")}
         out.append({"k": "ability", "t": ability["t0"], "by": ability["slot"], **rest})
+    for reveal in round_extras.get("reveals", []):
+        rest = {k: v for k, v in reveal.items() if k not in ("t0", "slot")}
+        out.append({"k": "reveal", "t": reveal["t0"], "by": reveal["slot"], **rest})
     for shot in round_extras.get("shots", []):
         rest = {k: v for k, v in shot.items() if k not in ("t", "slot")}
         out.append({"k": "shot", "t": shot["t"], "by": shot["slot"], **rest})
@@ -405,11 +791,16 @@ def util_entries(round_extras: dict) -> list[dict]:
 def rounds_extras(util: list[dict]) -> dict:
     """The inverse of `util_entries`: a stored round's `{"abilities", "shots"}` (the viewer's and
     the tests' shape)."""
-    abilities, shots = [], []
+    abilities, shots, reveals = [], [], []
     for entry in util:
         rest = {k: v for k, v in entry.items() if k not in ("k", "t", "by")}
         if entry.get("k") == "ability":
             abilities.append({"t0": entry["t"], "slot": entry["by"], **rest})
         elif entry.get("k") == "shot":
             shots.append({"t": entry["t"], "slot": entry["by"], **rest})
-    return {"abilities": abilities, "shots": shots}
+        elif entry.get("k") == "reveal":
+            reveals.append({"t0": entry["t"], "slot": entry["by"], **rest})
+    out = {"abilities": abilities, "shots": shots}
+    if reveals:
+        out["reveals"] = reveals
+    return out

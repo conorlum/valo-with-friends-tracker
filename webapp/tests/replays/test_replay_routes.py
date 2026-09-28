@@ -28,7 +28,7 @@ from test_replay_store import TABLES, add_match, condensed  # noqa: E402,F401  (
 
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
-from app.models import Match  # noqa: E402
+from app.models import KillEvent, Match  # noqa: E402
 from app.models.replay import Replay, ReplayRound  # noqa: E402
 from app.replays import store  # noqa: E402
 from app.routers import replays as routes  # noqa: E402
@@ -210,5 +210,10 @@ def test_pg_a_linked_page_has_names_weapons_and_hides_a_stale_split(pg, condense
     replay.kill_impact = {**replay.kill_impact, "fingerprint": "stale"}
     session.commit()
     assert "gain" not in service.page_context(session, replay)["rounds"]["1"]["kills"]["0"]
+    # Assistants (Riot IDs, any case) become slots; a name not in the match is dropped.
+    helper = next(p for p in context["players"].values() if p["name"] == "synthetic-3")
+    session.get(KillEvent, kill_id).source_meta = {"assistants": ["SYNTHETIC-3", "someone-else"]}
+    session.commit()
+    assert service.page_context(session, replay)["rounds"]["1"]["kills"]["0"]["assists"] == [helper["slot"]]
     assert "subject" not in json.dumps(context).lower()
     session.close()

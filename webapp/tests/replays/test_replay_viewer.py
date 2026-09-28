@@ -156,7 +156,7 @@ def test_the_linked_mode_helpers():
     assert got["at10"] == 4 and got["at95"] == 0 and got["open"] == 4
     assert got["pairs"] == [[1, 3]], "a wire pairs with its own owner's second anchor"
     assert got["signed"] == ["+12", "\u22124", "0", ""]
-    assert got["tally"] == {"0": {"k": 1, "d": 0}, "5": {"k": 0, "d": 2}}
+    assert got["tally"] == {"0": {"k": 1, "d": 0, "a": 0}, "5": {"k": 0, "d": 2, "a": 0}}
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
@@ -219,6 +219,7 @@ Wraith_Q_NearsightMissile_TrajectoryWarning Wushu_4_SmokeZone Aggrobot_C_Explode
 Pandemic_AcidMolotov_NewMolotov Phoenix_MolotovFire Sarge_Q_Molotov_Production Thorne_4_SlowField_Production
 Aggrobot_RollyPolly Aggrobot_SeekerNade Clay_E_Boomba Guide_Q_PossessableScout Gumshoe_E_PossessableCamera
 Hunter_E_Drone Pine_E_RadEater Stealth_4_Decoy_V2 Gumshoe_Q_Cage Wraith_4_Smoke
+Pandemic_4_SmokeZone Pandemic_X_Circular
 """.split()
 
 
@@ -317,3 +318,45 @@ def test_the_badge_reads_the_steps_and_no_helper_shadows_another():
       });"""
     got = run_node(script, [[0.0, 5, 5], [10.0, 4, 5]])
     assert got == {"dupes": [], "found": True, "at": [[5, 5], [5, 5], [4, 5], [4, 5]], "life": True}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_stage5_helpers_spike_defuse_kills_impact_reveals_and_the_wall():
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const kills = [{t: 10, killer: 0, victim: 5, gain: 12, loss: 7, assists: [1, 0, 5]},
+                       {t: 20, killer: 6, victim: 1, gain: 9, loss: 4, assists: []},
+                       {t: 20.5, killer: 2, victim: 2, gain: 0, loss: 3}];
+        // Planted at 30; a 3.8 s attempt (halves it), a tap, then the finishing 3.5 s.
+        const spike = {kind: "Bomb", slot: 4, t0: 30, t1: 70,
+                       defuses: [[50, 53.8, 6, false], [54, 54.2, 7, false], [60, 63.5, 7, true]]};
+        const lone = {kind: "Bomb", slot: 4, t0: 30, t1: null, defuses: [[70, null, 6, false]]};
+        const wall = {on: [[5, 12], [20, null]]};
+        const reveals = [{t0: 4, t1: 6, slot: 2, target: 8}, {t0: 9, t1: null, slot: 2, target: 7}];
+        const at = t => { const s = R.spikeAt([spike], t); return s && {left: s.left, halved: s.halved,
+          defusing: s.defusing && [s.defusing.slot, +s.defusing.elapsed.toFixed(2), s.defusing.needed],
+          defused: s.defused, exploded: s.exploded}; };
+        process.stdout.write(JSON.stringify({
+          tally: R.tallyAt(kills, 30), impact: R.impactAt(kills, 15), noSplit: R.impactAt([{t: 1, killer: 0, victim: 1}], 5),
+          next: [0, 8.9, 9, 19, 19.5, 25].map(t => R.nextKillTime(kills, t)),
+          spike: [29, 30, 51, 55, 61, 64].map(at),
+          boom: [74, 75].map(t => R.spikeAt([lone], t)).map(s => [s.defusing && s.defusing.slot, s.exploded]),
+          wall: [4, 5, 12.5, 25].map(t => R.wallUp(wall, t)),
+          reveals: [5, 7, 10.5, 11.5].map(t => R.revealsAt(reveals, t).map(r => r.target))
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["tally"] == {"0": {"k": 1, "d": 0, "a": 0}, "1": {"k": 0, "d": 1, "a": 1}, "5": {"k": 0, "d": 1, "a": 0},
+                            "6": {"k": 1, "d": 0, "a": 0}, "2": {"k": 0, "d": 1, "a": 0}}
+    assert got["impact"] == {"0": 12, "5": -7} and got["noSplit"] is None
+    assert got["next"] == [9, 9, 19, 19.5, None, None]
+    assert got["spike"][0] is None
+    assert got["spike"][1] == {"left": 45, "halved": False, "defusing": None, "defused": None, "exploded": False}
+    assert got["spike"][2]["defusing"] == [6, 1, 7] and not got["spike"][2]["halved"]
+    assert got["spike"][3]["halved"] and got["spike"][3]["defusing"] is None
+    assert got["spike"][4]["defusing"] == [7, 1, 3.5], "after a half defuse the next needs 3.5 s"
+    assert got["spike"][5]["defused"] == {"slot": 7, "t": 63.5} and got["spike"][5]["defusing"] is None
+    assert got["boom"] == [[6, False], [None, True]], "a defuse still going at 45 s is cut off by the detonation"
+    assert got["wall"] == [False, True, False, True]
+    assert got["reveals"] == [[8], [], [7], []]
