@@ -454,6 +454,78 @@ def test_only_a_throw_gets_the_nearest_guess(tmp_path):
     assert got == {"GameObject": (None, None), "Projectile": (2, "nearest")}
 
 
+# ---------------------------------------------------------------- Stage 6: pops and statuses
+
+AGENTS7 = {**AGENTS6, "Grenadier": "KAY/O", "Terra": "Waylay", "Sequoia": "Iso", "Iris": "Miks"}
+
+
+def table7() -> PlayerTable:
+    # Slot 0 KAY/O, 4 Waylay, 5 Iso, 7 Miks (team A: 0, 4, 5, 7); slots 1, 2, 3 are team B.
+    table = players()
+    table.agents[0], table.agents[4], table.agents[5], table.agents[7] = "KAY/O", "Waylay", "Iso", "Miks"
+    return table
+
+
+TEAMS7 = {0: "A", 4: "A", 5: "A", 7: "A", 6: "A", 1: "B", 2: "B", 3: "B", 8: "B", 9: "B"}
+
+
+def run7(tmp_path, rows, teams=TEAMS7):
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    return build_extras(path, table7(), WINDOWS, GAME_MAP, AGENTS7, lambda t_ms: {}, teams=teams)
+
+
+def test_zero_point_is_read_despite_its_casing_and_suppresses_enemies_for_the_games_8_s(tmp_path):
+    pulse = 40
+    rows = [spawned(20_000, pulse, "Default__Gameobject_Grenadier_E_SuppressionPulse_C", 0, 0), instigated(20_000, pulse, 100),
+            oneshot(21_000, pulse, [], 9),                                   # the pulse goes off at +1 s
+            oneshot(21_050, 101, [pulse], 31), oneshot(21_050, 102, [pulse], 31),  # two enemies suppressed
+            oneshot(21_050, 104, [pulse], 31),                               # a teammate: not a status
+            closed(35_000, pulse)]
+    extras = run7(tmp_path, rows)
+    [knife] = extras.rounds[1]["abilities"]
+    assert (knife["kind"], knife["code"], knife["name"], knife["fx"]) == ("GameObject", "Grenadier", "E_SuppressionPulse", [11.0])
+    got = [(st["target"], st["t0"], st["t1"], st["status"], st["slot"], st["from"]) for st in extras.rounds[1]["statuses"]]
+    assert got == [(1, 11.05, 19.05, "suppressed", 0, "object"), (2, 11.05, 19.05, "suppressed", 0, "object")]
+
+
+def test_an_object_named_status_lasts_until_it_stops_and_duplicates_merge(tmp_path):
+    boom = 41
+    rows = [spawned(30_000, boom, "Default__GameObject_Terra_C_TimeSlowGrenade_Explosion_C", 0, 0),
+            instigated(30_000, boom, 104),
+            effect(30_000, 101, 1, [boom], container=7), stop(30_600, 101, 1),
+            effect(30_100, 101, 2, [boom], container=8), stop(30_900, 101, 2),   # a second container, same hit
+            effect(30_000, 105, 3, [boom], container=7), stop(30_600, 105, 3),   # Waylay's teammate
+            closed(40_000, boom)]
+    extras = run7(tmp_path, rows)
+    assert [(st["target"], st["t0"], st["t1"], st["status"]) for st in extras.rounds[1]["statuses"]] == [(1, 20.0, 20.9, "hindered")]
+    assert "fx" not in extras.rounds[1]["abilities"][0], "no effect on itself: it pops at its spawn"
+
+
+def test_a_caster_named_status_is_found_after_its_source_like_isos_fragile(tmp_path):
+    rows = []
+    for i, t in enumerate((20_000, 40_000)):
+        missile = 50 + i
+        rows += [spawned(t, missile, "Default__GameObject_Sequoia_Q_FragileMissile_TrajectoryWarning_C", 0, 0),
+                 instigated(t, missile, 105), closed(t + 1_550, missile),
+                 effect(t + 600, 101 + i, 10 + i, [105], container=70), stop(t + 4_600, 101 + i, 10 + i)]
+    rows += [effect(20_000, 102, 40, [50], container=72), stop(20_300, 102, 40),     # the path warning: not a status
+             effect(52_000, 103, 30, [105], container=71), stop(52_500, 103, 30),   # Iso's, but no source near
+             effect(21_000, 104, 31, [105], container=70), stop(25_000, 104, 31)]   # on Iso's teammate
+    extras = run7(tmp_path, rows)
+    got = [(st["target"], st["t0"], st["t1"], st["status"], st["slot"], st["from"]) for st in extras.rounds[1]["statuses"]]
+    assert got == [(1, 10.6, 14.6, "fragile", 5, "caster"), (2, 30.6, 34.6, "fragile", 5, "caster")]
+
+
+def test_m_pulse_keeps_its_pulses(tmp_path):
+    wave = 42
+    rows = [spawned(20_000, wave, "Default__GameObject_Thumper_Concuss_C", 0, 0), instigated(20_000, wave, 107),
+            oneshot(20_000, wave, [], 5), effect(20_010, wave, 1, [], container=6),
+            effect(22_000, wave, 2, [], container=6), effect(24_000, wave, 3, [], container=6), closed(25_000, wave)]
+    [pulse] = run7(tmp_path, rows).rounds[1]["abilities"]
+    assert (pulse["code"], pulse["name"], pulse["fx"]) == ("Iris", "Concuss", [10.0, 12.0, 14.0])
+
+
 # ---------------------------------------------------------------- stored util (Stage 2, R2)
 
 import sys  # noqa: E402
@@ -468,7 +540,8 @@ from app.replays import format as fmt  # noqa: E402
 from app.replays.extras import rounds_extras, util_entries  # noqa: E402
 
 UTIL_KEYS = {"k", "t", "by", "t1", "kind", "code", "name", "agent", "owner_by", "u", "v", "yaw", "thrown", "path",
-             "owner_d", "other_d", "u1", "v1", "gun", "n", "end", "defuses", "points", "on", "target"}
+             "owner_d", "other_d", "u1", "v1", "gun", "n", "end", "defuses", "points", "on", "target", "fx",
+             "status", "from"}
 
 
 def test_util_entries_round_trip_to_the_viewers_shape():
@@ -484,6 +557,10 @@ def test_util_entries_round_trip_to_the_viewers_shape():
     util = util_entries(extras)
     assert util[1] == {"k": "reveal", "t": 4.0, "by": 2, "t1": 6.0, "target": 8, "code": "Hunter", "name": "Q_SonarPing"}
     assert rounds_extras(util) == extras
+    extras["statuses"] = [{"t0": 5.0, "t1": 7.0, "slot": 2, "target": 8, "code": "Iris", "name": "Concuss",
+                           "status": "concussed", "from": "object"}]
+    util = util_entries(extras)
+    assert [u["k"] for u in util].count("status") == 1 and rounds_extras(util) == extras
 
 
 def test_condense_stores_ability_objects_in_util_deterministically(tmp_path):

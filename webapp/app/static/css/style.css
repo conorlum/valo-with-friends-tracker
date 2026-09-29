@@ -1816,6 +1816,7 @@ table.compact-table .badge-score {
   font-size: 0.9rem;
   pointer-events: none;
 }
+.replay-key-status::before { border: 2px dashed #f2c230; background: transparent; border-radius: 50%; }
 .replay-hud-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem; }
 .replay-hud-label { color: rgba(255, 255, 255, 0.7); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.04em; }
 .replay-hud-time { font-variant-numeric: tabular-nums; font-size: 1.05rem; }

@@ -7,7 +7,8 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   "owner_by", "u", "v", ["yaw"], ["thrown"], ["path"], ["owner_d", "other_d"], ["end"],
   ["defuses"], ["points", "on"]}`;
 - `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`;
-- `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`.
+- `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
+- `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`.
 
 - **Abilities.** Every `actor_spawned` whose archetype is `Default__<Kind>_<AgentCode>_<Name>_C`
   with a kind in ABILITY_KINDS (placed objects, zones, patches, projectiles, possessable
@@ -28,6 +29,10 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
 - **Reveals.** Each time a player was revealed by an enemy's recon, haunt, dart or Neural Theft,
   at that moment: a continuous reveal until it stopped, a ping (a drone dart's hit and its two
   pulses, Neural Theft's +3 s and +7 s) for PING_MS (`find_reveals`, `dart_tags`).
+- **Pops and statuses** (Stage 6, docs/replay-status-effects-plan.md). An ability that goes off in an
+  instant but lives on in the replay keeps the times it played effects on itself (`fx`); a player an
+  enemy's ability concussed, hindered, suppressed, made fragile, tethered, decayed or slowed gets a
+  `status` row for as long as it lasted (`find_statuses`).
 
 Times are seconds since the round's InRound start, like the blobs; `u`/`v` are minimap ints.
 """
@@ -46,7 +51,8 @@ from pathlib import Path
 from app.replays import format as fmt
 from app.replays.condense import MapInfo, PlayerTable
 
-ABILITY_ARCHETYPE = re.compile(r"^Default__(GameObject|Projectile|Zone|Patch|Pawn)_([A-Za-z0-9]+)_(.+)_C$")
+# `Gameobject_` (lower-case o) is how KAY/O's ZERO/point pulse is spelled; it is read as GameObject.
+ABILITY_ARCHETYPE = re.compile(r"^Default__(GameObject|Gameobject|Projectile|Zone|Patch|Pawn)_([A-Za-z0-9]+)_(.+)_C$")
 ABILITY_KINDS = ("GameObject", "Projectile", "Zone", "Patch", "Pawn")
 # The planted spike: its spawn point is the plant site, its close the explosion or defuse.
 BOMB_ARCHETYPE = "Default__TimedBomb_C"
@@ -142,6 +148,8 @@ class Raw:
     wall_states: dict[int, list[tuple[int, bool]]] = field(default_factory=lambda: defaultdict(list))
     # Effects played on ability objects (a Chamber trap firing): guid -> times.
     object_effects: dict[int, list[int]] = field(default_factory=lambda: defaultdict(list))
+    # One-shot effects played on ability objects (a Fault Line firing, a ZERO/point pulse): guid -> times.
+    object_oneshots: dict[int, list[int]] = field(default_factory=lambda: defaultdict(list))
     # Lethal hits: (time, the killer's pawn).
     kills: list[tuple[int, int]] = field(default_factory=list)
     # A plant starting: (time, the planter's pawn), an effect naming the carried spike on its character.
@@ -225,6 +233,7 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     continue
                 if match is not None:
                     kind, code, name = match.groups()
+                    kind = "GameObject" if kind == "Gameobject" else kind
                 elif archetype == BOMB_ARCHETYPE:
                     kind, code, name = "Bomb", "", "Spike"
                     bombs.add(guid)
@@ -260,6 +269,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     if context:
                         raw.effects.append(_Effect(t_ms, guid, None, payload.get("EffectContainer"), context,
                                                    oneshot=True))
+                elif function == RPC_ONESHOT and guid in actors and guid not in bombs:
+                    raw.object_oneshots[guid].append(t_ms)
                 elif function == RPC_STOP:
                     effect = open_effects.pop((guid, payload.get("EffectId")), None)
                     if effect is not None:
@@ -640,6 +651,166 @@ def dart_tags(actors: dict[int, _Actor], claims: dict[int, tuple[int, "_Context"
     return out
 
 
+# ---------------------------------------------------------------- Stage 6: pops and statuses
+
+# Abilities that go off in an instant (or pulse) but whose object lives on in the replay: they keep
+# the times of the effects they play on themselves (`fx`, round seconds), which the viewer draws as
+# pops. Measured: M-pulse pulses at +0/+2/+4 s, Fault Line fires at +1.1 s, ZERO/point at +1.0 s.
+POP_ARCHETYPES = re.compile(r"^(Terra_C_TimeSlowGrenade_Explosion|Iris_Concuss|Cashew_Q_ShellShockGrenade|"
+                            r"Breach_E_SweetSpotFissure|Breach_X_Shockwave|Breach_4_FusionBlast|Rift_Q_FlashBurst|"
+                            r"Grenadier_E_SuppressionPulse|Smonk_Q_DecayExplosion)$")
+FX_GAP_MS = 200
+
+# The abilities whose hit puts a status on a player, and which status (see find_statuses).
+STATUS_OBJECTS = (
+    (re.compile(r"^Terra_C_TimeSlowGrenade_Explosion$"), "hindered"),
+    (re.compile(r"^Iris_Concuss$"), "concussed"),
+    (re.compile(r"^Cashew_Q_ShellShockGrenade$"), "concussed"),
+    (re.compile(r"^Grenadier_E_SuppressionPulse$"), "suppressed"),
+    # Undercut: effects naming the missile are the path warning (0.2-1 s, on anyone in its path);
+    # the Fragile itself names Iso and lasts 4.0 s, so only the caster-named shape counts.
+    (re.compile(r"^Sequoia_Q_FragileMissile_TrajectoryWarning$"), "fragile"),
+    (re.compile(r"^(BountyHunter|Pine)_Q_Tether_SphereExpansion$"), "tethered"),
+    (re.compile(r"^Aggrobot_E_DiscTurret_PowerWave$"), "concussed"),
+    (re.compile(r"^Breach_(E_SweetSpotFissure|X_Shockwave)$"), "concussed"),
+    (re.compile(r"^Rift_Q_FlashBurst$"), "concussed"),
+    (re.compile(r"^Smonk_Q_DecayExplosion$"), "decayed"),
+    (re.compile(r"^(Deadeye_E_Slow_Large|Thorne_4_SlowField_Production)$"), "slowed"),
+)
+CASTER_ONLY = re.compile(r"^Sequoia_Q_FragileMissile_TrajectoryWarning$")
+# Agents in no archived replay yet (Neon, Deadlock, Harbor) and Astra: any of their objects that
+# hits an enemy is shown as a status, named after the object, until a replay names them.
+STATUS_AGENTS = frozenset({"Sprinter", "Cable", "Mage", "Rift"})
+# A caster-named status (Iso's Fragile, Gekko's concuss) counts within this long after its source.
+STATUS_WINDOW_MS = 3000
+STATUS_SHARE = 0.8
+STATUS_MIN_PLAYS = 2
+STATUS_MERGE_MS = 300
+# A one-shot marks only the moment of the hit: shown for STATUS_PING_MS, or for the status's own
+# duration where it matters and the replay doesn't carry it (a game value, not measured).
+STATUS_PING_MS = 1000
+STATUS_KNOWN_MS = {"suppressed": 8000}
+
+
+def status_of(actor: _Actor) -> str | None:
+    key = f"{actor.code}_{actor.name}"
+    for pattern, label in STATUS_OBJECTS:
+        if pattern.match(key):
+            return label
+    if actor.code in STATUS_AGENTS and actor.kind != "Pawn":
+        return "hit"
+    return None
+
+
+def pop_times(actor: _Actor, raw: "Raw") -> list[int]:
+    """The distinct moments (ms) a pop ability played an effect on itself, FX_GAP_MS apart."""
+    until = actor.closed_ms if actor.closed_ms is not None else float("inf")
+    times = sorted(t for t in raw.object_effects.get(actor.guid, []) + raw.object_oneshots.get(actor.guid, [])
+                   if actor.t_ms <= t <= until)
+    out: list[int] = []
+    for t in times:
+        if not out or t - out[-1] >= FX_GAP_MS:
+            out.append(t)
+    return out
+
+
+def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: dict[int, int | None],
+                  players: PlayerTable, counts: Counter, equips: list[_Equip] = (),
+                  teams: dict[int, str | None] | None = None) -> list[dict]:
+    """[{t_ms, t1_ms, by, target, code, name, status, from}]: players an enemy's ability put a status
+    on, from when to when. Two shapes, both effects played on the hit player's character:
+
+    - naming the ability object ("object"): a live object whose status_of is known. The applier is
+      the object's owner (`owner_of`, guid -> slot; None when unknown).
+    - naming the caster ("caster"): the caster's character, player state or owned equippable, in a
+      container that plays at least STATUS_SHARE of the time within STATUS_WINDOW_MS after one of
+      that caster's status objects spawned (Iso's Fragile, Gekko's concuss). The source is that object.
+
+    Never the applier themself, and with `teams`, only their enemies. A continuous effect lasts until
+    it stops; a one-shot STATUS_PING_MS, or STATUS_KNOWN_MS for its status. Overlapping ones from the
+    same source on the same player merge."""
+    def alive(actor: _Actor, t_ms: int) -> bool:
+        return actor.t_ms <= t_ms and (actor.closed_ms is None or t_ms <= actor.closed_ms)
+
+    def enemies(by: int | None, target: int) -> bool:
+        if by is not None and by == target:
+            return False
+        return not (teams and by is not None and teams.get(by) is not None and teams.get(by) == teams.get(target))
+
+    def span(effect: _Effect, label: str) -> int:
+        if effect.oneshot:
+            return STATUS_KNOWN_MS.get(label, STATUS_PING_MS)
+        return (effect.stop_ms - effect.t_ms) if effect.stop_ms is not None else STATUS_PING_MS
+
+    equip_slot: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for equip in equips:
+        if equip.slot is not None:
+            equip_slot[equip.guid].append((equip.t_ms, equip.slot))
+
+    def caster(value: int, t_ms: int) -> int | None:
+        slot = players.pawn_slot.get(value)
+        if slot is None:
+            slot = players.other_slot.get(value)
+        if slot is None:
+            held = [s for t, s in equip_slot.get(value, []) if t <= t_ms]
+            slot = held[-1] if held else None
+        return slot
+
+    sources = sorted((a.t_ms, a.guid) for a in actors.values() if a.code and status_of(a))
+    source_times = [t for t, _ in sources]
+    hits: list[tuple[int, int, int, int, str, str]] = []   # (t, t1, source guid, target, status, from)
+    by_container: dict[tuple, list] = defaultdict(list)
+    for effect in effects:
+        target = players.pawn_slot.get(effect.actor)
+        if target is None:
+            continue
+        named = [actors[v] for v in effect.context if v in actors and alive(actors[v], effect.t_ms)
+                 and status_of(actors[v])]
+        if named:
+            source = named[0]
+            label = status_of(source)
+            if CASTER_ONLY.match(f"{source.code}_{source.name}"):
+                continue
+            if enemies(owner_of.get(source.guid), target):
+                hits.append((effect.t_ms, effect.t_ms + span(effect, label), source.guid, target, label, "object"))
+            continue
+        casters = [slot for v in effect.context if (slot := caster(v, effect.t_ms)) is not None and slot != target]
+        if not casters or not enemies(casters[0], target):
+            continue
+        i = bisect.bisect_right(source_times, effect.t_ms)
+        source = None
+        for t, guid in reversed(sources[max(0, i - 60):i]):
+            if effect.t_ms - t > STATUS_WINDOW_MS:
+                break
+            if owner_of.get(guid) == casters[0]:
+                source = guid
+                break
+        by_container[(effect.container, effect.oneshot)].append((effect, target, source))
+    for plays in by_container.values():
+        inside = [p for p in plays if p[2] is not None]
+        if len(inside) < STATUS_MIN_PLAYS or len(inside) < STATUS_SHARE * len(plays):
+            continue
+        counts["status_containers"] += 1
+        for effect, target, source in inside:
+            label = status_of(actors[source])
+            hits.append((effect.t_ms, effect.t_ms + span(effect, label), source, target, label, "caster"))
+    merged: dict[tuple[int, int], list[list]] = defaultdict(list)
+    for t, t1, source, target, label, how in sorted(hits):
+        runs = merged[(source, target)]
+        if runs and t <= runs[-1][1] + STATUS_MERGE_MS:
+            runs[-1][1] = max(runs[-1][1], t1)
+        else:
+            runs.append([t, t1, label, how])
+    out = []
+    for (source, target), runs in merged.items():
+        actor = actors[source]
+        for t, t1, label, how in runs:
+            out.append({"t_ms": t, "t1_ms": t1, "by": owner_of.get(source), "target": target, "code": actor.code,
+                        "name": actor.name, "status": label, "from": how})
+            counts[f"statuses_{how}"] += 1
+    return sorted(out, key=lambda r: (r["t_ms"], r["target"]))
+
+
 # A defuse takes 7 s; one held for DEFUSE_HALF_S or more leaves the spike half defused.
 DEFUSE_ONESHOT_MS = 150
 
@@ -760,6 +931,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         placed[id(context)].append(actors[guid])
     # Actors whose owner came from evidence (or, for a projectile, a clear nearest thrower).
     known: list[tuple[_Actor, int]] = []
+    owner_of: dict[int, int | None] = {}
     for actor in sorted(actors.values(), key=lambda a: (a.t_ms, a.guid)):
         agent = agent_code.get(actor.code.lower()) if actor.code else None
         claim = claims.get(actor.guid)
@@ -769,6 +941,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                                       claimed=claim[0] if claim else None, caused=caused)
         if slot is not None and (owner_by != "nearest" or actor.kind == "Projectile"):
             known.append((actor, slot))
+        owner_of[actor.guid] = slot
         n = _round_of(actor.t_ms, windows, buy_phase=True)
         if n is None:
             counts["abilities_outside_rounds"] += 1
@@ -808,6 +981,11 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                 entry["points"] = [list(game_map.to_uv(x, y)) for x, y in line]
                 entry["on"] = wall_on(raw.wall_states.get(actor.guid, []), actor, start, end)
                 counts["walls_drawn"] += 1
+        if POP_ARCHETYPES.match(f"{actor.code}_{actor.name}"):
+            fx = [max(0.0, _seconds(t, start)) for t in pop_times(actor, raw) if t <= end]
+            if fx:
+                entry["fx"] = fx
+                counts["abilities_with_fx"] += 1
         throw = _thrown(actor, actors)
         if throw is not None:
             entry["thrown"] = {"t0": _seconds(throw.t_ms, start), "t1": _seconds(throw.closed_ms, start),
@@ -839,6 +1017,16 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("reveals", []).append({
             "t0": _seconds(reveal["t_ms"], start), "t1": _seconds(min(reveal["t1_ms"], end), start),
             "slot": reveal["by"], "target": reveal["target"], "code": reveal["code"], "name": reveal["name"]})
+
+    for status in find_statuses(raw.effects, actors, owner_of, players, counts, raw.equips, teams):
+        n = _round_of(status["t_ms"], windows)
+        if n is None:
+            continue
+        start, _, end = windows[n - 1]
+        out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("statuses", []).append({
+            "t0": _seconds(status["t_ms"], start), "t1": _seconds(min(status["t1_ms"], end), start),
+            "slot": status["by"], "target": status["target"], "code": status["code"], "name": status["name"],
+            "status": status["status"], "from": status["from"]})
 
     for data in raw_shots:
         t_ms = int(data.get("time_ms", 0))
@@ -938,6 +1126,9 @@ def util_entries(round_extras: dict) -> list[dict]:
     for reveal in round_extras.get("reveals", []):
         rest = {k: v for k, v in reveal.items() if k not in ("t0", "slot")}
         out.append({"k": "reveal", "t": reveal["t0"], "by": reveal["slot"], **rest})
+    for status in round_extras.get("statuses", []):
+        rest = {k: v for k, v in status.items() if k not in ("t0", "slot")}
+        out.append({"k": "status", "t": status["t0"], "by": status["slot"], **rest})
     for shot in round_extras.get("shots", []):
         rest = {k: v for k, v in shot.items() if k not in ("t", "slot")}
         out.append({"k": "shot", "t": shot["t"], "by": shot["slot"], **rest})
@@ -947,7 +1138,7 @@ def util_entries(round_extras: dict) -> list[dict]:
 def rounds_extras(util: list[dict]) -> dict:
     """The inverse of `util_entries`: a stored round's `{"abilities", "shots"}` (the viewer's and
     the tests' shape)."""
-    abilities, shots, reveals = [], [], []
+    abilities, shots, reveals, statuses = [], [], [], []
     for entry in util:
         rest = {k: v for k, v in entry.items() if k not in ("k", "t", "by")}
         if entry.get("k") == "ability":
@@ -956,7 +1147,11 @@ def rounds_extras(util: list[dict]) -> dict:
             shots.append({"t": entry["t"], "slot": entry["by"], **rest})
         elif entry.get("k") == "reveal":
             reveals.append({"t0": entry["t"], "slot": entry["by"], **rest})
+        elif entry.get("k") == "status":
+            statuses.append({"t0": entry["t"], "slot": entry["by"], **rest})
     out = {"abilities": abilities, "shots": shots}
     if reveals:
         out["reveals"] = reveals
+    if statuses:
+        out["statuses"] = statuses
     return out

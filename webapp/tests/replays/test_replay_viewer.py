@@ -219,7 +219,7 @@ Wraith_Q_NearsightMissile_TrajectoryWarning Wushu_4_SmokeZone Aggrobot_C_Explode
 Pandemic_AcidMolotov_NewMolotov Phoenix_MolotovFire Sarge_Q_Molotov_Production Thorne_4_SlowField_Production
 Aggrobot_RollyPolly Aggrobot_SeekerNade Clay_E_Boomba Guide_Q_PossessableScout Gumshoe_E_PossessableCamera
 Hunter_E_Drone Pine_E_RadEater Stealth_4_Decoy_V2 Gumshoe_Q_Cage Wraith_4_Smoke
-Pandemic_4_SmokeZone Pandemic_X_Circular
+Pandemic_4_SmokeZone Pandemic_X_Circular Grenadier_E_SuppressionPulse
 """.split()
 
 
@@ -363,3 +363,31 @@ def test_stage5_helpers_spike_defuse_kills_impact_reveals_and_the_wall():
     assert got["boom"] == [[6, False], [None, True]], "a defuse still going at 45 s is cut off by the detonation"
     assert got["wall"] == [False, True, False, True]
     assert got["reveals"] == [[8], [], [7], []]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_pops_show_only_until_they_went_off_and_statuses_read_back():
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const saturate = {kind: "GameObject", code: "Terra", name: "C_TimeSlowGrenade_Explosion", t0: 10, t1: 20};
+        const mpulse = {kind: "GameObject", code: "Iris", name: "Concuss", t0: 30, t1: 35, fx: [30, 32, 34]};
+        const fault = {kind: "GameObject", code: "Breach", name: "E_SweetSpotFissure", t0: 50, t1: 56.1, fx: [50, 51.1]};
+        const smoke = {kind: "Zone", code: "Wraith", name: "4_Smoke", t0: 10, t1: 25};
+        const all = [saturate, mpulse, fault, smoke];
+        const util = [{k: "status", t: 5, by: 2, t1: 7, target: 8, code: "Iris", name: "Concuss", status: "concussed", from: "object"}];
+        const extras = R.extrasFromUtil(util);
+        process.stdout.write(JSON.stringify({
+          at: [10.5, 11.5, 33, 34.7, 51.5, 52, 20].map(t => R.abilitiesAt(all, t, 90).map(a => a.name)),
+          until: [R.popUntil(saturate, 1), R.popUntil(mpulse, 0.8), R.popUntil(fault, 0.8)],
+          statuses: extras.statuses, on: [4.9, 6, 7.1].map(t => R.statusesAt(extras.statuses, t).length),
+          styles: [R.statusStyle("concussed").label, R.statusStyle("gravnet").label]
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["at"] == [["C_TimeSlowGrenade_Explosion", "4_Smoke"], ["4_Smoke"], ["Concuss"], ["Concuss"],
+                         ["E_SweetSpotFissure"], [], ["4_Smoke"]]
+    assert got["until"] == [11, 34.8, 51.9]
+    assert got["statuses"] == [{"t0": 5, "slot": 2, "t1": 7, "target": 8, "code": "Iris", "name": "Concuss",
+                                "status": "concussed", "from": "object"}]
+    assert got["on"] == [0, 1, 0] and got["styles"] == ["CONCUSSED", "GRAVNET"]
