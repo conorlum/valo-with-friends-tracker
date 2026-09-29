@@ -33,7 +33,8 @@ def main(out: Path) -> None:
         g = json.loads((geo / f"{name}.json").read_text())
         r = risk.get(name) or {}
         maps[name] = {
-            "image": b64(png), "labels": b64(geo / f"{name}.labels.png"), "image_sha": g["image_sha"],
+            "image": b64(png), "labels": b64(geo / f"{name}.labels.png"), "walk": b64(geo / f"{name}.walk.png"),
+            "image_sha": g["image_sha"],
             "params": g["params"],
             "candidates": [{**c, **((r.get("candidates") or {}).get(str(c["id"])) or {})} for c in g["candidates"]],
             "lines": [[*l["a"], *l["b"], int(l["hard"]), l["crossed"]] for l in r.get("lines", [])],

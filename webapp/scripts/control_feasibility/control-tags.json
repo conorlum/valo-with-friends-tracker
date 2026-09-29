@@ -1,0 +1,36 @@
+{
+ "version": 1,
+ "exported": "2026-09-29T20:59:47.881Z",
+ "maps": {
+  "Abyss": {
+   "image_sha": "466a3d18f78c",
+   "params": {
+    "glyph_saturation": 40,
+    "line_lum": 175,
+    "edge_px": 3,
+    "min_closed_px": 4,
+    "min_line_px": 12,
+    "min_edge_closed_px": 60,
+    "min_void_px": 20
+   },
+   "tags": [
+    {
+     "id": 53,
+     "tag": "seeacross",
+     "kind": "void",
+     "bbox": [448, 53, 509, 113],
+     "centre": [478.5, 83.2],
+     "px": 3756
+    },
+    {
+     "id": 59,
+     "tag": "seeacross",
+     "kind": "void",
+     "bbox": [417, 447, 641, 526],
+     "centre": [523.5, 490.5],
+     "px": 7495
+    }
+   ]
+  }
+ }
+}
