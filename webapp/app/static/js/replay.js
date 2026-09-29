@@ -88,7 +88,7 @@
 
   // Ability archetypes -> the ability they are and how to draw them. The key is the extras row's
   // `<code>_<name>` (extras.py normalises slot-first archetypes). `ability` is its display name
-  // (the key in static/data/abilities.json, which gives its icon); `shape` is smoke (a grey
+  // (the key in static/data/abilities.json, which gives its icon); `shape` is smoke (a dark
   // disc), area (a team-tinted disc), reveal (a pulsing ring), wire (a line to its paired end),
   // line (a wall or an aim, from the object's yaw: see lineEnds), wall (Viper's screen, along its
   // laid points), badge (a team-coloured disc with the ability's glyph) or hidden. `pop` (seconds):
@@ -1060,7 +1060,8 @@
     var blob = this.current.blob, t = this.t, self = this;
     var showing = abilitiesAt(this.current.extras.abilities, t, blob.t_end);
     var all = this.current.extras.abilities;
-    var smoke = this.css("--replay-smoke", "rgba(214, 218, 226, 0.5)");
+    var smoke = this.css("--replay-smoke", "rgba(16, 18, 24, 0.6)");
+    var smokeCore = this.css("--replay-smoke-core", "rgba(16, 18, 24, 0.84)");
     // Areas first, so badges sit on top of them; the spike last.
     ["wall", "smoke", "area", "reveal", "line", "wire", "badge", "spike"].forEach(function (pass) {
       showing.forEach(function (a) {
@@ -1099,7 +1100,7 @@
           if (pass === "smoke") {
             if (style.faint) ctx.globalAlpha = 0.45 * fadeIn;
             var grad = ctx.createRadialGradient(x, y, rad * 0.2, x, y, rad);
-            grad.addColorStop(0, "rgba(232, 234, 240, 0.72)");
+            grad.addColorStop(0, smokeCore);   // a dark tint: a smoke reads apart from other util
             grad.addColorStop(1, smoke);
             ctx.fillStyle = grad; ctx.fill();
           } else {
