@@ -427,12 +427,16 @@ def test_a_chamber_slow_is_its_traps_or_its_ult_kills(tmp_path):
     rows = [spawned(12_000, 70, "Default__GameObject_Deadeye_E_Trap_C", 0, 0), instigated(12_000, 70, 103),
             spawned(12_000, 71, "Default__GameObject_Deadeye_E_Trap_C", 3000, 0), instigated(12_000, 71, 109),
             effect(30_000, 70, 1, [], container=1), {**effect(30_000, 70, 1, [5]), "payload": {"EffectId": 1}},
+            spawned(30_900, 75, "Default__Projectile_Deadeye_4_Trap_Dart_C", 150, 0),  # the dart trap 70 shot
             spawned(30_920, 72, "Default__Patch_Deadeye_E_Slow_Large_C", 900, 0),   # 0.92 s after trap 70 fired
             kill, spawned(40_000, 73, "Default__Patch_Deadeye_E_Slow_Large_C", 5000, 5000),  # the ult's kill
-            spawned(50_000, 74, "Default__Patch_Deadeye_E_Slow_Large_C", 200, 0)]   # neither: no owner, no guess
-    got = [(a["slot"], a["owner_by"]) for a in run6(tmp_path, rows, positions={3: (200.0, 0.0), 9: (9000.0, 0.0)})
-           .rounds[1]["abilities"] if a["name"] == "E_Slow_Large"]
+            spawned(50_000, 74, "Default__Patch_Deadeye_E_Slow_Large_C", 200, 0),   # neither: no owner, no guess
+            spawned(55_000, 76, "Default__Projectile_Deadeye_4_Trap_Dart_C", 9000, 0)]  # no trap fired: no guess
+    abilities = run6(tmp_path, rows, positions={3: (200.0, 0.0), 9: (9000.0, 0.0)}).rounds[1]["abilities"]
+    got = [(a["slot"], a["owner_by"]) for a in abilities if a["name"] == "E_Slow_Large"]
     assert got == [(3, "triggered"), (9, "ult_kill"), (None, None)]
+    darts = [(a["slot"], a["owner_by"]) for a in abilities if a["name"] == "4_Trap_Dart"]
+    assert darts == [(3, "triggered"), (None, None)], "not the nearest Chamber (9 stands on the second dart)"
 
 
 def test_the_planter_is_whoever_started_planting_four_seconds_before(tmp_path):

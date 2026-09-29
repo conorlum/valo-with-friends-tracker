@@ -492,10 +492,13 @@ def equippable_claims(actors: dict[int, _Actor], contexts: list[_Context]) -> di
     return out
 
 
-# Objects set off by another of the same agent's: Chamber's slow appears 0.91-0.94 s after a trap
-# fires (the trap plays an effect; checked on Summit and Abyss). A slow with no trap firing comes
-# from the ult: it appears in the same tick as the ult's kill. (code, name) -> (parent name, window ms).
-TRIGGERED_BY = {("Deadeye", "E_Slow_Large"): ("E_Trap", 800, 1100)}
+# Objects set off by another of the same agent's. A Chamber trap that fires (it plays an effect)
+# shoots a dart 0.90-0.91 s later from about 150 units away, and its slow lands where the dart hits,
+# 0.91-0.94 s after (checked on Summit and Abyss: every dart and trap slow follows exactly one trap).
+# A slow with no trap firing comes from the ult: it appears in the same tick as the ult's kill.
+# (code, name) -> (parent name, window ms).
+TRIGGERED_BY = {("Deadeye", "E_Slow_Large"): ("E_Trap", 800, 1100),
+                ("Deadeye", "4_Trap_Dart"): ("E_Trap", 800, 1100)}
 KILL_SPAWNED = frozenset({("Deadeye", "E_Slow_Large")})
 # The plant takes 4 s; its start is an effect on the planter's character naming the carried spike.
 PLANT_MS = 4000
