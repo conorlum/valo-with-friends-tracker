@@ -45,6 +45,7 @@
         <th data-sort="number" title="Kills">K</th>
         <th data-sort="number" title="Deaths">D</th>
         <th data-sort="number" title="Assists">A</th>
+        <th data-sort="number" title="Trade kills: killed the enemy who killed a teammate within 6 seconds">Trades</th>
         <th data-sort="number" aria-sort="descending">Avg Impact</th>
         <th data-sort="number">Avg Kill Impact</th>
         <th data-sort="number">Avg Death Impact</th>
@@ -66,6 +67,7 @@
         <td data-sort-value="{{ p.kills }}">{{ p.kills }}</td>
         <td data-sort-value="{{ p.deaths }}">{{ p.deaths }}</td>
         <td data-sort-value="{{ p.assists }}">{{ p.assists }}</td>
+        <td data-sort-value="{{ p.traded_teammate }}">{{ p.traded_teammate }}</td>
         <td data-sort-value="{{ p.average_impact }}" class="{{ 'impact-positive' if p.average_impact >= 0 else 'impact-negative' }}">
           {{ p.average_impact | round | int }}
         </td>
