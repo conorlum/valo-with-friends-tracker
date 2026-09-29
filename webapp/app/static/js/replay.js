@@ -88,10 +88,12 @@
 
   // Ability archetypes -> the ability they are and how to draw them. The key is the extras row's
   // `<code>_<name>` (extras.py normalises slot-first archetypes). `ability` is its display name
-  // (the key in static/data/abilities.json, which gives its icon); `shape` is smoke (a grey
+  // (the key in static/data/abilities.json, which gives its icon); `shape` is smoke (a dark
   // disc), area (a team-tinted disc), reveal (a pulsing ring), wire (a line to its paired end),
   // line (a wall or an aim, from the object's yaw: see lineEnds), wall (Viper's screen, along its
-  // laid points), badge (a team-coloured disc with the ability's glyph) or hidden. `r` and `len` are world units. First match wins; an
+  // laid points), badge (a team-coloured disc with the ability's glyph) or hidden. `pop` (seconds):
+  // the ability goes off in an instant though its object lives on, so it shows only until that long
+  // after its last pop (see popTimes), each pop drawn as a burst. `r` and `len` are world units. First match wins; an
   // unknown archetype is a badge with no glyph. Projectiles are never drawn (their object is).
   // Radii are approximate in-game sizes, tuned by eye on the map.
   var ABILITY_STYLES = [
@@ -100,7 +102,7 @@
     [/^Wraith_Q_NearsightMissile_TrajectoryWarning$/, { ability: "Paranoia", shape: "hidden" }],
     // Clove (the _PDS smoke is cast after death)
     [/^Smonk_NewSmoke(_PDS)?$/, { ability: "Ruse", shape: "smoke", r: 410 }],
-    [/^Smonk_Q_DecayExplosion$/, { ability: "Meddle", shape: "area", r: 450 }],
+    [/^Smonk_Q_DecayExplosion$/, { ability: "Meddle", shape: "area", r: 450, pop: 1.0 }],
     // Cypher
     [/^Gumshoe_Q_Cage$/, { ability: "Cyber Cage", shape: "smoke", r: 330 }],
     [/^Gumshoe_Q_CageTrap$/, { ability: "Cyber Cage", shape: "badge" }],
@@ -117,7 +119,7 @@
     [/^Hunter_E_Drone_RevealDart$/, { ability: "Owl Drone", shape: "badge", small: true, label: "Owl Drone dart" }],
     // Waylay
     [/^Terra_E_RewindTime_RewindTarget$/, { ability: "Refract", shape: "badge", label: "Refract (return point)" }],
-    [/^Terra_C_TimeSlowGrenade_Explosion$/, { ability: "Saturate", shape: "area", r: 500 }],
+    [/^Terra_C_TimeSlowGrenade_Explosion$/, { ability: "Saturate", shape: "area", r: 500, pop: 1.0 }],
     [/^Terra_X_DelayedBeam/, { ability: "Convergent Paths", shape: "badge" }],
     // Iso
     [/^Sequoia_E_Shield$/, { ability: "Double Tap", shape: "hidden" }],
@@ -136,7 +138,7 @@
     // Astra: stars are placed markers; a fake nebula is a dissipate (a thin, fading smoke).
     [/^Rift_E_SmokeZone$/, { ability: "Nebula  / Dissipate", shape: "smoke", r: 475, label: "Nebula" }],
     [/^Rift_E_SmokeZone_Fake$/, { ability: "Nebula  / Dissipate", shape: "smoke", r: 475, faint: true, label: "Dissipate" }],
-    [/^Rift_Q_FlashBurst$/, { ability: "Nova Pulse", shape: "area", r: 475 }],
+    [/^Rift_Q_FlashBurst$/, { ability: "Nova Pulse", shape: "area", r: 475, pop: 1.0 }],
     [/^Rift_4_BlackHole$/, { ability: "Gravity Well", shape: "area", r: 475 }],
     [/^Rift_X_GlobalWall$/, { ability: "Astral Form / Cosmic Divide", shape: "line", dir: "along", full: true, label: "Cosmic Divide" }],
     [/^Rift_X_Markers$/, { ability: "Astral Form / Cosmic Divide", shape: "badge", small: true, unlisted: true, label: "Astra star" }],
@@ -177,15 +179,19 @@
     [/^Wushu_4_SmokeZone$/, { ability: "Cloudburst", shape: "smoke", r: 335 }],
     // Breach: both objects spawn 800 units ahead of Breach along its aim (every cast on Sunset);
     // the reach isn't decoded, so they are drawn as an aim from Breach, not a blast zone.
-    [/^Breach_E_SweetSpotFissure$/, { ability: "Fault Line", shape: "line", dir: "along", from: -800, len: 800, aim: true }],
-    [/^Breach_X_Shockwave$/, { ability: "Rolling Thunder", shape: "line", dir: "along", from: -800, len: 800, aim: true }],
-    [/^Breach_4_FusionBlast$/, { ability: "Aftershock", shape: "area", r: 300 }],
+    // Fault Line fires 1.1 s after the cast (its own effect); Rolling Thunder records none, so its
+    // wave shows 1.5 s. Aftershock's blasts hit 2.2 and 2.8 s after it sticks: 3 s in all.
+    [/^Breach_E_SweetSpotFissure$/, { ability: "Fault Line", shape: "line", dir: "along", from: -800, len: 800, aim: true, pop: 0.8 }],
+    [/^Breach_X_Shockwave$/, { ability: "Rolling Thunder", shape: "line", dir: "along", from: -800, len: 800, aim: true, pop: 1.5 }],
+    [/^Breach_4_FusionBlast$/, { ability: "Aftershock", shape: "area", r: 300, pop: 3.0 }],
+    // KAY/O: ZERO/point's knife pulses 1 s after it sticks; its object lingers 15 s in the replay.
+    [/^Grenadier_E_SuppressionPulse$/, { ability: "ZERO/point", shape: "area", r: 700, pop: 1.0 }],
     // Tejo
     [/^Cashew_4_SonarPing$/, { ability: "Stealth Drone", shape: "reveal", r: 1000 }],
     [/^Cashew_E_Explosion$/, { ability: "Guided Salvo", shape: "area", r: 400 }],
     [/^Cashew_E_MapMissileMarker/, { ability: "Guided Salvo", shape: "badge", small: true, unlisted: true, label: "Guided Salvo target" }],
     [/^Cashew_E_AirStrikeMortar$/, { ability: "Guided Salvo", shape: "hidden" }],
-    [/^Cashew_Q_ShellShockGrenade/, { ability: "Special Delivery", shape: "area", r: 500 }],
+    [/^Cashew_Q_ShellShockGrenade/, { ability: "Special Delivery", shape: "area", r: 500, pop: 0.8 }],
     [/^Cashew_X_Segment$/, { ability: "Armageddon", shape: "area", r: 350 }],
     [/^Cashew_X_SegmentManager$/, { ability: "Armageddon", shape: "hidden" }],
     // Brimstone
@@ -200,7 +206,8 @@
     // Miks (`Thumper` objects are read as Miks's: see extras.CODE_ALIASES)
     [/^Iris_E_Smoke$/, { ability: "Waveform", shape: "smoke", r: 400 }],
     [/^Iris_X_SonicWave$/, { ability: "Bassquake", shape: "badge" }],
-    [/^Iris_Concuss$/, { ability: "M-pulse", shape: "area", r: 500 }],
+    // M-pulse pulses at +0, +2 and +4 s (its own effects): a ring each, not a 5 s disc.
+    [/^Iris_Concuss$/, { ability: "M-pulse", shape: "area", r: 500, pop: 0.8 }],
     [/^Iris_ConcussPulse$/, { ability: "M-pulse", shape: "hidden" }],
     [/^Iris_Heal$/, { ability: "Harmonize", shape: "area", r: 500 }]
   ];
@@ -229,7 +236,8 @@
         return {
           ability: style.ability, agent: style.agent || ability.agent, shape: style.shape, r: style.r,
           small: !!style.small, unlisted: !!style.unlisted, label: style.label || style.ability,
-          faint: !!style.faint, dir: style.dir, len: style.len, from: style.from, full: !!style.full, aim: !!style.aim
+          faint: !!style.faint, dir: style.dir, len: style.len, from: style.from, full: !!style.full, aim: !!style.aim,
+          pop: style.pop
         };
       }
     }
@@ -269,8 +277,43 @@
   function abilitiesAt(abilities, t, tEnd) {
     return (abilities || []).filter(function (a) {
       var until = a.t1 === null || a.t1 === undefined ? tEnd : Math.max(a.t1, a.t0 + ABILITY_MIN_S);
+      var pop = a.kind === "Projectile" || a.kind === "Bomb" || !a.name ? undefined : abilityStyle(a).pop;
+      if (pop !== undefined) until = Math.min(until, popUntil(a, pop));
+      // Shot and destroyed before its object closed (a camera, a trip): going off never counts.
+      if (typeof a.gone === "number") until = Math.min(until, a.gone + GONE_S);
       return a.t0 <= t && t <= until;
     });
+  }
+
+  var GONE_S = 0.6;
+
+  // When a pop ability went off: the effects it played on itself (`fx`), or its spawn.
+  function popTimes(a) {
+    return a.fx && a.fx.length ? a.fx : [a.t0];
+  }
+
+  function popUntil(a, pop) {
+    var pops = popTimes(a);
+    return pops[pops.length - 1] + pop;
+  }
+
+  // The statuses on players at t (concussed, hindered, suppressed, fragile, tethered, decayed, slowed).
+  function statusesAt(statuses, t) {
+    return (statuses || []).filter(function (st) {
+      return st.t0 <= t && t <= (typeof st.t1 === "number" ? st.t1 : st.t0 + 1);
+    });
+  }
+
+  // Each status's colour and its label (drawn beside the colour, never colour alone).
+  var STATUS_STYLES = {
+    concussed: { color: "#f2c230", label: "CONCUSSED" }, hindered: { color: "#4da3ff", label: "HINDERED" },
+    suppressed: { color: "#b06cff", label: "SUPPRESSED" }, fragile: { color: "#ff5ea8", label: "FRAGILE" },
+    tethered: { color: "#2cd5c4", label: "TETHERED" }, decayed: { color: "#c0463f", label: "DECAYED" },
+    slowed: { color: "#7cc9ff", label: "SLOWED" }, hit: { color: "#e8e8e8", label: "HIT" }
+  };
+
+  function statusStyle(name) {
+    return STATUS_STYLES[name] || { color: "#e8e8e8", label: String(name || "status").toUpperCase() };
   }
 
   // How opaque an ability is at t: fading in over its first 0.25 s, and out after its close
@@ -359,6 +402,17 @@
       if (at > t + 0.05 && (next === null || at < next)) next = at;
     });
     return next;
+  }
+
+  // "Previous kill": 1 s before the last kill whose lead-in starts before t (so pressing it again
+  // keeps going back), or null before the round's first kill.
+  function prevKillTime(kills, t) {
+    var prev = null;
+    (kills || []).forEach(function (k) {
+      var at = Math.max(0, k.t - NEXT_KILL_LEAD_S);
+      if (at < t - 0.05 && (prev === null || at > prev)) prev = at;
+    });
+    return prev;
   }
 
   // The spike at t, from its ability row (kind "Bomb": spawned at the plant, with `defuses`
@@ -504,17 +558,19 @@
   var CAST_KINDS = { flash: true, nearsight: true };
 
   function extrasFromUtil(util) {
-    var abilities = [], shots = [], reveals = [];
+    var abilities = [], shots = [], reveals = [], statuses = [];
+    var into = { ability: abilities, reveal: reveals, status: statuses };
     (util || []).forEach(function (u) {
-      if (u.k !== "ability" && u.k !== "shot" && u.k !== "reveal") return;
+      if (u.k !== "shot" && !into[u.k]) return;
       var row = {};
       Object.keys(u).forEach(function (key) { if (key !== "k" && key !== "t" && key !== "by") row[key] = u[key]; });
       row.slot = u.by;
       if (u.k === "shot") { row.t = u.t; shots.push(row); }
-      else { row.t0 = u.t; (u.k === "ability" ? abilities : reveals).push(row); }
+      else { row.t0 = u.t; into[u.k].push(row); }
     });
     var out = { abilities: abilities, shots: shots };
     if (reveals.length) out.reveals = reveals;
+    if (statuses.length) out.statuses = statuses;
     return out;
   }
 
@@ -567,6 +623,13 @@
     if (at !== null) this.seek(at);
   };
 
+  // Jumps to 1 s before the previous kill in this round.
+  ReplayViewer.prototype.prevKill = function () {
+    if (!this.current) return;
+    var at = prevKillTime(this.current.blob.kills, this.t);
+    if (at !== null) this.seek(at);
+  };
+
   ReplayViewer.prototype.toggle = function () {
     if (!this.current) return;
     if (!this.playing && this.t >= this.current.blob.t_end) this.t = 0;
@@ -598,7 +661,7 @@
       feed: q("[data-replay-feed]"), board: q("[data-replay-board]"), banner: q("[data-replay-banner]"),
       badge: q("[data-replay-badge]"), analysis: q("[data-replay-analysis]"),
       tip: q("[data-replay-tip]"), util: q("[data-replay-util]"), hud: q("[data-replay-hud]"),
-      nextKill: q("[data-replay-nextkill]")
+      nextKill: q("[data-replay-nextkill]"), prevKill: q("[data-replay-prevkill]")
     };
     SPEEDS.forEach(function (s) {
       var option = document.createElement("option");
@@ -614,6 +677,7 @@
     });
     this.ui.prev.addEventListener("click", function () { self.step(-1); });
     if (this.ui.nextKill) this.ui.nextKill.addEventListener("click", function () { self.nextKill(); });
+    if (this.ui.prevKill) this.ui.prevKill.addEventListener("click", function () { self.prevKill(); });
     this.ui.next.addEventListener("click", function () { self.step(1); });
     this.root.addEventListener("keydown", function (e) {
       if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.key !== " ") return;
@@ -621,6 +685,7 @@
       else if (e.key === "ArrowLeft") { e.preventDefault(); self.seek(self.t - STEP_S); }
       else if (e.key === "ArrowRight") { e.preventDefault(); self.seek(self.t + STEP_S); }
       else if (e.key === "n" || e.key === "N") { e.preventDefault(); self.nextKill(); }
+      else if (e.key === "b" || e.key === "B") { e.preventDefault(); self.prevKill(); }
     });
     LAYERS.forEach(function (name) {
       var box = q('[data-replay-layer="' + name + '"]');
@@ -852,10 +917,31 @@
       }
       if (row.reveals.indexOf(rv.target) < 0) row.reveals.push(rv.target);
     });
-    items.forEach(function (it) {
-      if (it.reveals && it.reveals.length) {
-        it.note = "revealed " + it.reveals.map(function (slot) { return self.nameOf(slot).split("#")[0]; }).join(", ");
+    // Statuses: named on the ability's row (the same owner and ability, up to 6 s before), or a row
+    // of their own.
+    (this.current.extras.statuses || []).forEach(function (st) {
+      var agent = self.agentOf(st.slot);
+      var style = abilityStyle({ kind: "GameObject", code: st.code, name: st.name, agent: agent });
+      var row = items.filter(function (it) {
+        return it.slot === st.slot && it.ability === style.ability && it.t <= st.t0 + 0.05 && st.t0 - it.t <= 6;
+      }).pop();
+      if (!row) {
+        row = { t: st.t0, slot: st.slot, agent: style.agent, ability: style.ability, label: style.label };
+        items.push(row);
       }
+      row.statuses = row.statuses || {};
+      var hit = row.statuses[st.status] = row.statuses[st.status] || [];
+      if (hit.indexOf(st.target) < 0) hit.push(st.target);
+    });
+    items.forEach(function (it) {
+      var notes = [];
+      if (it.reveals && it.reveals.length) {
+        notes.push("revealed " + it.reveals.map(function (slot) { return self.nameOf(slot).split("#")[0]; }).join(", "));
+      }
+      Object.keys(it.statuses || {}).forEach(function (status) {
+        notes.push(status + " " + it.statuses[status].map(function (slot) { return self.nameOf(slot).split("#")[0]; }).join(", "));
+      });
+      if (notes.length) it.note = notes.join(" · ");
     });
     castUtil(blob.util).forEach(function (u) {
       var which = utilAbility(u.ability);
@@ -903,6 +989,7 @@
     this.renderBoard();
     this.renderHud();
     if (this.ui.nextKill) this.ui.nextKill.disabled = nextKillTime(blob.kills, t) === null;
+    if (this.ui.prevKill) this.ui.prevKill.disabled = prevKillTime(blob.kills, t) === null;
     if (this.ui.badge) {
       var alive = aliveCountAt(blob.alive_steps, t);
       this.ui.badge.hidden = !alive;
@@ -977,7 +1064,8 @@
     var blob = this.current.blob, t = this.t, self = this;
     var showing = abilitiesAt(this.current.extras.abilities, t, blob.t_end);
     var all = this.current.extras.abilities;
-    var smoke = this.css("--replay-smoke", "rgba(214, 218, 226, 0.5)");
+    var smoke = this.css("--replay-smoke", "rgba(16, 18, 24, 0.6)");
+    var smokeCore = this.css("--replay-smoke-core", "rgba(16, 18, 24, 0.84)");
     // Areas first, so badges sit on top of them; the spike last.
     ["wall", "smoke", "area", "reveal", "line", "wire", "badge", "spike"].forEach(function (pass) {
       showing.forEach(function (a) {
@@ -989,14 +1077,34 @@
         var text = self.abilityText(a, style);
         var age = t - a.t0, fadeIn = abilityAlpha(a, t);
         ctx.save();
-        if (pass === "smoke" || pass === "area") {
+        if ((pass === "smoke" || pass === "area") && style.pop !== undefined) {
+          // A pop: a dashed outline while it is set (before its first pop), then a burst at each pop.
+          var prad = self.uvRadius(style.r) * s, pops = popTimes(a);
+          ctx.strokeStyle = color; ctx.fillStyle = color;
+          if (t < pops[0]) {
+            ctx.globalAlpha = 0.7 * fadeIn; ctx.lineWidth = 2; ctx.setLineDash([r / 3, r / 4]);
+            ctx.beginPath(); ctx.arc(x, y, prad, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+          }
+          pops.forEach(function (p) {
+            if (t < p || t > p + style.pop) return;
+            var f = (t - p) / style.pop;
+            ctx.globalAlpha = 0.35 * (1 - f); ctx.beginPath(); ctx.arc(x, y, prad * (0.35 + 0.65 * f), 0, 2 * Math.PI); ctx.fill();
+            ctx.globalAlpha = 1 - f; ctx.lineWidth = Math.max(2.5, r / 4);
+            ctx.beginPath(); ctx.arc(x, y, prad * (0.35 + 0.65 * f), 0, 2 * Math.PI); ctx.stroke();
+          });
+          ctx.restore(); ctx.save();
+          var popFade = Math.min(1, Math.max(0, (popUntil(a, style.pop) - t) / 0.3));
+          self.drawBadge(ctx, x, y, r * 0.52, color, glyph, 0.9 * fadeIn * popFade);
+          hits.push({ x: x, y: y, r: Math.max(prad, r * 0.6), text: text + " · went off at " +
+            pops.map(function (p) { return p.toFixed(1); }).join(", ") + " s", area: true });
+        } else if (pass === "smoke" || pass === "area") {
           var rad = self.uvRadius(style.r) * s;
           ctx.globalAlpha = fadeIn;
           ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI);
           if (pass === "smoke") {
             if (style.faint) ctx.globalAlpha = 0.45 * fadeIn;
             var grad = ctx.createRadialGradient(x, y, rad * 0.2, x, y, rad);
-            grad.addColorStop(0, "rgba(232, 234, 240, 0.72)");
+            grad.addColorStop(0, smokeCore);   // a dark tint: a smoke reads apart from other util
             grad.addColorStop(1, smoke);
             ctx.fillStyle = grad; ctx.fill();
           } else {
@@ -1058,6 +1166,15 @@
               ctx.lineWidth = Math.max(4, r / 2.2); ctx.globalAlpha = 0.85 * fadeIn;
               ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
             }
+            if (style.pop !== undefined) {
+              // Where it goes off (Fault Line's fissure, Rolling Thunder's wave): a burst at each pop.
+              popTimes(a).forEach(function (p) {
+                if (t < p || t > p + style.pop) return;
+                var f = (t - p) / style.pop;
+                ctx.save(); ctx.globalAlpha = 1 - f; ctx.lineWidth = Math.max(2.5, r / 4); ctx.setLineDash([]);
+                ctx.beginPath(); ctx.arc(x1, y1, r * (0.8 + 2.4 * f), 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
+              });
+            }
           }
           ctx.restore(); ctx.save();
           self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
@@ -1070,9 +1187,15 @@
             ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(other.u * s, other.v * s); ctx.stroke();
             ctx.fillStyle = color; ctx.beginPath(); ctx.arc(other.u * s, other.v * s, r * 0.22, 0, 2 * Math.PI); ctx.fill();
           }
+          if (typeof a.gone === "number" && t >= a.gone && other) {
+            // It was shot and destroyed: a burst across the wire as it goes.
+            var f = Math.min(1, (t - a.gone) / GONE_S), mx = (x + other.u * s) / 2, my = (y + other.v * s) / 2;
+            ctx.globalAlpha = 1 - f; ctx.lineWidth = Math.max(2.5, r / 4);
+            ctx.beginPath(); ctx.arc(mx, my, r * (0.8 + 2.2 * f), 0, 2 * Math.PI); ctx.stroke();
+          }
           ctx.restore(); ctx.save();
           self.drawBadge(ctx, x, y, r * 0.56, color, glyph);
-          hits.push({ x: x, y: y, r: r * 0.75, text: text });
+          hits.push({ x: x, y: y, r: r * 0.75, text: text + (typeof a.gone === "number" ? " · gone at " + a.gone.toFixed(1) + " s" : "") });
         } else if (pass === "badge") {
           var radius = r * (style.small ? 0.42 : 0.62);
           if (a.path) {
@@ -1178,6 +1301,41 @@
       self.drawBadge(ctx, x + r * 1.15, y - r * 1.15, r * 0.42, color, self.abilityIcon(style.agent, style.ability));
       hits.push({ x: x, y: y, r: r * 1.5, text: self.nameOf(rv.target) + " revealed by " + self.nameOf(rv.slot) +
         "'s " + style.label + " · " + rv.t0.toFixed(1) + "–" + (typeof rv.t1 === "number" ? rv.t1.toFixed(1) : "?") + " s" });
+    });
+  };
+
+  // A player under an enemy's status: a dashed ring in the status's colour turning around them, its
+  // name in a chip above them (several stack), a burst when it lands, and the ability's badge.
+  ReplayViewer.prototype.drawStatuses = function (ctx, s, r, hits) {
+    var t = this.t, tracks = this.current.tracks, self = this, stacked = {};
+    statusesAt(this.current.extras.statuses, t).forEach(function (st) {
+      var at = trackAt(tracks[String(st.target)], t);
+      if (!at) return;
+      var x = at.u * s, y = at.v * s, look = statusStyle(st.status);
+      var style = abilityStyle({ kind: "GameObject", code: st.code, name: st.name, agent: self.agentOf(st.slot) });
+      var row = stacked[st.target] = (stacked[st.target] || 0) + 1;
+      ctx.save();
+      ctx.strokeStyle = look.color; ctx.lineWidth = Math.max(2.5, r / 4.5);
+      ctx.setLineDash([r / 2.5, r / 4]); ctx.lineDashOffset = -(t * r * 2);
+      ctx.beginPath(); ctx.arc(x, y, r * (1.25 + 0.3 * row), 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+      var age = t - st.t0;
+      if (age < 0.5) {
+        ctx.globalAlpha = 1 - age / 0.5; ctx.lineWidth = Math.max(3, r / 3);
+        ctx.beginPath(); ctx.arc(x, y, r * (1.2 + 2 * age / 0.5), 0, 2 * Math.PI); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      ctx.font = "700 " + Math.round(r * 0.62) + "px system-ui, sans-serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      var w = ctx.measureText(look.label).width + r * 0.5, h = r * 0.85, cy = y - r * (1.35 + 0.95 * row);
+      ctx.fillStyle = "rgba(10, 10, 12, 0.85)"; ctx.fillRect(x - w / 2, cy - h / 2, w, h);
+      ctx.fillStyle = look.color; ctx.fillRect(x - w / 2, cy - h / 2, r * 0.18, h);
+      ctx.fillText(look.label, x + r * 0.05, cy + r * 0.03);
+      ctx.restore();
+      self.drawBadge(ctx, x - r * 1.15, y - r * 1.15, r * 0.4, self.ownerColor(st.slot),
+        self.abilityIcon(style.agent, style.ability));
+      hits.push({ x: x, y: y, r: r * 1.5, text: self.nameOf(st.target) + " " + st.status + " by " +
+        (st.slot === null || st.slot === undefined ? "an unknown owner" : self.nameOf(st.slot)) + "'s " + style.label +
+        " · " + st.t0.toFixed(1) + "–" + (typeof st.t1 === "number" ? st.t1.toFixed(1) : "?") + " s" });
     });
   };
 
@@ -1341,7 +1499,10 @@
       hits.push({ x: x, y: y, r: r * 1.2, text: self.nameOf(p.slot) + " · " + p.agent + (life.flags.length ? " · " + life.flags.join(", ") : "") });
     });
 
-    if (this.layers.abilities) this.drawReveals(ctx, s, r, hits);
+    if (this.layers.abilities) {
+      this.drawReveals(ctx, s, r, hits);
+      this.drawStatuses(ctx, s, r, hits);
+    }
 
     // Names last, on a dark plate so they read over any part of the map.
     ctx.save();
@@ -1425,7 +1586,8 @@
     lerpYaw: lerpYaw, ReplayViewer: ReplayViewer, SUPPORTED_VERSIONS: SUPPORTED_VERSIONS,
     abilityStyle: abilityStyle, lineEnds: lineEnds, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, pairWires: pairWires, signed: signed, tallyAt: tallyAt, aliveCountAt: aliveCountAt, stateAt: stateAt,
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
-    impactAt: impactAt, nextKillTime: nextKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt
+    impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,
+    popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle
   };
   global.Replay = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

@@ -1336,7 +1336,10 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
     players = build_players(export, agents_by_code)
     windows = read_game_state(export).windows
     positions = WorldPositions(export.movement, players)
-    extras = build_extras(events_path, players, windows, game_map, agents_by_code, positions.at, positions.path)
+    first = replay.rounds[min(replay.rounds)] if replay.rounds else {"players": []}
+    teams = {row["slot"]: row.get("side") for row in first.get("players", [])}
+    extras = build_extras(events_path, players, windows, game_map, agents_by_code, positions.at, positions.path,
+                          teams=teams)
     for n, blob in replay.rounds.items():
         blob["util"] = blob["util"] + util_entries(extras.rounds.get(n, {}))
     replay.report["extras"] = extras.report

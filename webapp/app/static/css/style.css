@@ -1668,7 +1668,9 @@ table.compact-table .badge-score {
 }
 
 /* ---- Replay viewer, linked mode (the local preview route, app/routers/replay_preview.py) ---- */
-.replay { --replay-team-1: var(--team-1); --replay-team-2: var(--team-2); --replay-smoke: rgba(214, 218, 226, 0.55); }
+/* Smokes (and Viper's raised wall) are a dark tint, so they read apart from every other util at a glance. */
+.replay { --replay-team-1: var(--team-1); --replay-team-2: var(--team-2); --replay-smoke: rgba(16, 18, 24, 0.6);
+  --replay-smoke-core: rgba(16, 18, 24, 0.84); }
 .replay.is-linked { max-width: 1400px; }
 .replay-body { display: block; }
 .replay.is-linked .replay-body {
@@ -1719,7 +1721,7 @@ table.compact-table .badge-score {
 .replay-layers input { accent-color: var(--brand); }
 .replay-key-t1::before { background: var(--replay-team-1); }
 .replay-key-t2::before { background: var(--replay-team-2); }
-.replay-key-smoke::before { background: var(--replay-smoke); }
+.replay-key-smoke::before { background: var(--replay-smoke-core); border: 2px solid var(--ink-secondary); }
 .replay-key-area::before { background: color-mix(in srgb, var(--ink-secondary) 35%, transparent); border: 2px solid var(--ink-secondary); }
 .replay-key-badge::before { background: var(--ink-secondary); box-shadow: 0 0 0 2px rgba(12, 12, 16, 0.85); }
 .replay { --replay-unknown: #77787f; }
@@ -1816,6 +1818,7 @@ table.compact-table .badge-score {
   font-size: 0.9rem;
   pointer-events: none;
 }
+.replay-key-status::before { border: 2px dashed #f2c230; background: transparent; border-radius: 50%; }
 .replay-hud-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem; }
 .replay-hud-label { color: rgba(255, 255, 255, 0.7); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.04em; }
 .replay-hud-time { font-variant-numeric: tabular-nums; font-size: 1.05rem; }
