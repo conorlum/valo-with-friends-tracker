@@ -531,7 +531,7 @@ def damage(t_ms, victim, causer, lethal=False):
             "payload": {"DamageCauser": causer, "DamageDealt": 5, "DamageKilledTarget": lethal}}
 
 
-def test_a_trapwire_tethers_then_goes_off_revealing_and_concussing_and_is_gone(tmp_path):
+def test_a_trapwire_tethers_then_goes_off_revealing_and_concussing_and_stays_until_shot(tmp_path):
     # Cypher 1's trip (anchors 60, 61; team B) catches enemy 4 (team A).
     rows = [spawned(1_000, 500, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0), effect(2_000, 101, 1, [500]),
             spawned(8_000, 60, "Default__GameObject_Gumshoe_4_TripWire_C", 0, 0),
@@ -545,7 +545,10 @@ def test_a_trapwire_tethers_then_goes_off_revealing_and_concussing_and_is_gone(t
     assert got == [(4, 12.84, 13.54, "tethered", 1, "4_TripWire"), (4, 13.54, 14.54, "concussed", 1, "4_TripWire")]
     assert [(r["t0"], r["slot"], r["target"], r["name"]) for r in extras.rounds[1]["reveals"]] == [(13.54, 1, 4, "4_TripWire")]
     [wire] = [a for a in extras.rounds[1]["abilities"] if a["name"] == "4_TripWire"]
-    assert wire["gone"] == 13.54, "the anchor that dealt the damage was the second: the wire is gone all the same"
+    assert "gone" not in wire, "going off doesn't use a trip up"
+    rows.append(damage(40_000, 61, 999, lethal=True))                       # then its second anchor is shot
+    [wire] = [a for a in run7(tmp_path, rows).rounds[1]["abilities"] if a["name"] == "4_TripWire"]
+    assert wire["gone"] == 30.0, "either anchor destroyed takes the wire"
 
 
 def test_utility_shot_and_destroyed_is_gone(tmp_path):

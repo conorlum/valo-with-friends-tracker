@@ -118,7 +118,7 @@ Still not found: Breach's concuss (Fault Line, Rolling Thunder) and Astra's Nova
 show on the hit players in these recordings (Nova has only 4 casts), so they get their pops but no
 status. Neon, Deadlock and Harbor still have no replay.
 
-## Added: trapwires, used-up and destroyed utility (2026-09-28)
+## Added: trapwires, destroyed utility (2026-09-28)
 
 Haven round 8's first kill: Jett walked into NPrightdolphin's trip at 12.84 s (tether effects on Jett
 naming both anchors; an alert on the Cypher's character), didn't break it, and it went off at 13.54 s
@@ -127,6 +127,7 @@ naming both anchors; an alert on the Cypher's character), didn't break it, and i
 - A trip is now a status source: **tethered** while caught (its continuous effects), **concussed** when
   it goes off (its one-shots), and going off also **reveals** the player (a reveal ping). Its two anchors
   count as one source. Haven: 13 tethers, 8 went off.
-- An ability object shot and destroyed (a lethal hit on the object), or a trip that went off (it dealt
-  damage), gets `gone`; the viewer hides it 0.6 s after (a trip bursts as it goes). The replay keeps
-  both objects until the round ends.
+- An ability object shot and destroyed (a lethal hit on the object) gets `gone`; the viewer hides it
+  0.6 s after (a trip bursts as it goes). The replay keeps it until the round ends. Going off never
+  counts (corrected 2026-09-29): a trip that went off stays armed until it's shot, as does a Vyse flash
+  or a Killjoy turret that keeps firing.

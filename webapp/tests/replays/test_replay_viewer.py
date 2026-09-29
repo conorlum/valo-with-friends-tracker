@@ -390,7 +390,7 @@ def test_pops_show_only_until_they_went_off_and_statuses_read_back():
     assert got["at"] == [["C_TimeSlowGrenade_Explosion", "4_Smoke"], ["4_Smoke"], ["Concuss"], ["Concuss"],
                          ["E_SweetSpotFissure"], [], ["4_Smoke"]]
     assert got["until"] == [11, 34.8, 51.9]
-    assert got["wire"] == [1, 1, 0], "a trip that went off shows its burst, then goes"
+    assert got["wire"] == [1, 1, 0], "a trip that was shot shows its burst, then goes"
     assert got["statuses"] == [{"t0": 5, "slot": 2, "t1": 7, "target": 8, "code": "Iris", "name": "Concuss",
                                 "status": "concussed", "from": "object"}]
     assert got["on"] == [0, 1, 0] and got["styles"] == ["CONCUSSED", "GRAVNET"]

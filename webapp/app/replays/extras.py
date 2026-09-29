@@ -33,7 +33,8 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   instant but lives on in the replay keeps the times it played effects on itself (`fx`); a player an
   enemy's ability concussed, hindered, suppressed, made fragile, tethered, decayed or slowed gets a
   `status` row for as long as it lasted (`find_statuses`). A trapwire tethers, then when it goes off
-  concusses and reveals. An ability object used up or shot before its object closes has `gone`.
+  concusses and reveals (and stays armed). An ability object shot and destroyed before its object
+  closes has `gone`.
 
 Times are seconds since the round's InRound start, like the blobs; `u`/`v` are minimap ints.
 """
@@ -153,8 +154,6 @@ class Raw:
     object_oneshots: dict[int, list[int]] = field(default_factory=lambda: defaultdict(list))
     # Lethal hits: (time, the killer's pawn).
     kills: list[tuple[int, int]] = field(default_factory=list)
-    # Damage an ability object dealt to a character (a trapwire going off): object guid -> [(time, victim pawn)].
-    object_damage: dict[int, list[tuple[int, int]]] = field(default_factory=lambda: defaultdict(list))
     # Ability objects shot and destroyed (a lethal hit on the object itself): guid -> time.
     destroyed: dict[int, int] = field(default_factory=dict)
     # A plant starting: (time, the planter's pawn), an effect naming the carried spike on its character.
@@ -169,8 +168,7 @@ RPC_WALL_POINT = "MulticastAddSmokeScreenPoint"   # Viper's Toxic Screen, one pe
 # The carried spike: its equippable is named by an effect on the planter's character as the plant begins.
 BOMB_EQUIPPABLE_ARCHETYPE = "Default__BombEquippable_C"
 _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
-                           '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true',
-                           '"DamageCauser"')
+                           '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true')
 
 
 def packed_ints(data: bytes) -> list[int]:
@@ -289,12 +287,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                         raw.wall_points[guid].append((t_ms, float(point["x"]), float(point["y"])))
                 if payload.get("DamageKilledTarget") is True and payload.get("EventInstigatorPawn"):
                     raw.kills.append((t_ms, int(payload["EventInstigatorPawn"])))
-                if function and function.startswith("MulticastNotifyDamage"):
-                    causer = int(payload.get("DamageCauser") or 0)
-                    if causer in actors and guid in pawns:
-                        raw.object_damage[causer].append((t_ms, guid))
-                    if payload.get("DamageKilledTarget") is True and guid in actors:
-                        raw.destroyed.setdefault(guid, t_ms)
+                if function and function.startswith("MulticastNotifyDamage") and guid in actors                         and payload.get("DamageKilledTarget") is True:
+                    raw.destroyed.setdefault(guid, t_ms)
             elif kind == "export_group_received":
                 payload = data.get("payload")
                 if not isinstance(payload, dict):
@@ -992,10 +986,9 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                 entry["end"] = list(game_map.to_uv(ends[0].x, ends[0].y))
                 counts["wires_paired"] += 1
                 parts.append(ends[0])
-        # Gone before its object closes: shot and destroyed, or (a trapwire, either anchor) gone off.
+        # Gone before its object closes: shot and destroyed (for a trapwire, either anchor). Going off
+        # doesn't use utility up: a trip, a Vyse flash or a Killjoy turret stays until it's destroyed.
         gone = [raw.destroyed[a.guid] for a in parts if a.guid in raw.destroyed and a.t_ms <= raw.destroyed[a.guid]]
-        if TRIP.match(f"{actor.code}_{actor.name}"):
-            gone += [t for a in parts for t, _ in raw.object_damage.get(a.guid, []) if a.t_ms <= t]
         if gone and (actor.closed_ms is None or min(gone) < actor.closed_ms):
             entry["gone"] = max(0.0, _seconds(min(min(gone), end), start))
             counts["abilities_gone_early"] += 1
