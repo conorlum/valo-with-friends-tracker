@@ -51,6 +51,12 @@ class LeaderboardEntry:
     rounds_won: int = 0
     rounds_lost: int = 0
     agents: list[str] = field(default_factory=list)
+    kills: int = 0
+    deaths: int = 0
+    assists: int = 0
+    # Trade kills: kills on the enemy who killed a teammate within
+    # TRADE_WINDOW_SECONDS (the impact scorer's traded_teammate count).
+    trades: int = 0
 
 
 @dataclass
@@ -194,8 +200,15 @@ def get_session_stats(
     t7 = time.perf_counter()
     kda_rows = _build_kda_rows(db, match_ids, our_mp_to_player, players_by_id)
     t8 = time.perf_counter()
+    kda_by_player = {row.player_id: row for row in kda_rows}
+    # The full roster, not fun_stats_mp_to_player: every leaderboard row gets a count.
+    trades_by_player, _traded_by = _build_trade_stats(db, our_mp_to_player, players_by_id)
     for entry in leaderboard:
         entry.agents = agents_by_player.get(entry.player_id, [])
+        kda = kda_by_player.get(entry.player_id)
+        if kda is not None:
+            entry.kills, entry.deaths, entry.assists = kda.total_kills, kda.total_deaths, kda.total_assists
+        entry.trades = trades_by_player.get(entry.player_id, 0)
     for row in kda_rows:
         row.agents = agents_by_player.get(row.player_id, [])
 
