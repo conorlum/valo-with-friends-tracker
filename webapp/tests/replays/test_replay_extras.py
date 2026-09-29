@@ -304,14 +304,14 @@ def test_a_reveal_is_an_effect_on_a_revealed_character_naming_the_revealer_after
     rows = [spawned(20_000, 50, ping, 0, 0), effect(20_800, 108, 1, [102], container=77), stop(22_400, 108, 1),
             effect(20_900, 104, 2, [102], container=77),                                # no stop: 2 s
             spawned(40_000, 51, ping, 0, 0), effect(41_000, 108, 3, [102], container=77),
-            effect(41_100, 108, 4, [102], container=77), stop(41_200, 108, 4),       # a second pulse: merged
+            effect(41_100, 108, 4, [102], container=77), stop(41_200, 108, 4),       # a second pulse: its own
             effect(30_000, 109, 5, [102], container=88),                              # no ping before it
             effect(20_950, 105, 6, [102], container=99)]                              # its container is mostly
     rows += [effect(10_000 + i, 105, 10 + i, [102], container=99) for i in range(5)]  # elsewhere: not a reveal
     extras = run5(tmp_path, sorted(rows, key=lambda r: r["time_ms"]))
     reveals = extras.rounds[1]["reveals"]
     assert [(r["t0"], r["t1"], r["slot"], r["target"]) for r in reveals] == [
-        (10.8, 12.4, 2, 8), (10.9, 12.9, 2, 4), (31.0, 33.0, 2, 8)]
+        (10.8, 12.4, 2, 8), (10.9, 12.9, 2, 4), (31.0, 33.0, 2, 8), (31.1, 32.1, 2, 8)]
     assert reveals[0]["code"] == "Hunter" and reveals[0]["name"] == "Q_SonarPing"
     assert extras.report["reveal_containers"] == 1
 
@@ -349,6 +349,105 @@ def test_vipers_wall_keeps_its_line_and_when_it_was_up(tmp_path):
     rows[2:22] = []
     [screen] = run5(tmp_path, rows).rounds[1]["abilities"]
     assert screen["points"][:2] == [[5000, 5000], [5000, 5200]] and len(screen["points"]) == 41
+
+
+# ---------------------------------------------------------------- owners by chain and cause, reveal pings
+
+AGENTS6 = {**AGENTS5, "Deadeye": "Chamber"}
+
+
+def table6() -> PlayerTable:
+    # Slots 2 and 8 both play Sova, 3 and 9 both Chamber, 1 and 6 both Cypher.
+    table = players()
+    table.agents[6], table.agents[8], table.agents[3], table.agents[9] = "Cypher", "Sova", "Chamber", "Chamber"
+    return table
+
+
+def run6(tmp_path, rows, positions=None, teams=None):
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    return build_extras(path, table6(), WINDOWS, GAME_MAP, AGENTS6, lambda t_ms: positions or {}, teams=teams)
+
+
+def oneshot(t_ms, actor, context, container):
+    return {"type": "rpc_received", "time_ms": t_ms, "actor_net_guid": actor, "function_name": "MulticastPlayOneShotEffect",
+            "payload": {"EffectContainer": container,
+                        "FunctionObjectValues": [{"Name": {"TagName": "FXC.EffectContext"}, "Value": v} for v in context]}}
+
+
+def test_two_sovas_droning_at_once_each_own_their_darts_through_the_chain(tmp_path):
+    # Sova -> deploy-drone equippable -> drone -> the drone's own equippable -> dart. No possession
+    # is decoded and the dart lands on the other Sova, so no guess could get this right.
+    rows = []
+    for sova, pawn, deploy, drone, kit in ((2, 102, 500, 600, 700), (8, 108, 510, 610, 710)):
+        rows += [spawned(1_000, deploy, "Default__Ability_Hunter_E_DeployDrone_C", 0, 0), effect(2_000, pawn, sova, [deploy]),
+                 spawned(20_000, drone, f"Default__Pawn_Hunter_E_Drone_C", 100 * sova, 0), placement(20_000, deploy, [drone]),
+                 spawned(20_000, kit, "Default__Ability_Hunter_E_Drone_Abilities_C", 100 * sova, 0),
+                 placement(20_050, kit, [drone])]
+    rows += [spawned(24_000, 800, "Default__GameObject_Hunter_E_Drone_RevealDart_C", 200, 0), placement(24_000, 710, [102])]
+    extras = run6(tmp_path, rows, positions={2: (200.0, 0.0), 8: (5000.0, 0.0)})
+    got = {a["name"]: (a["slot"], a["owner_by"]) for a in extras.rounds[1]["abilities"] if a["name"] == "E_Drone_RevealDart"}
+    assert got == {"E_Drone_RevealDart": (8, "equippable")}
+    assert extras.report["equippables_lists"] == 2
+    # The hit itself is a reveal: Sova 8's dart tagged Sova 2 at 24 s.
+    assert [(r["t0"], r["t1"], r["slot"], r["target"]) for r in extras.rounds[1]["reveals"]] == [(14.0, 15.0, 8, 2)]
+
+
+def test_dart_and_neural_theft_pings_are_reveals_at_their_own_moments(tmp_path):
+    rows = [  # A drone dart's pings name the shooter's player state (208), 1.6 s and 2.8 s after the hit.
+        spawned(20_000, 60, "Default__GameObject_Hunter_E_Drone_RevealDart_C", 0, 0),
+        oneshot(21_600, 104, [208], 31), oneshot(22_800, 104, [208], 31),
+        # Neural Theft's pings name Cypher 6's ult equippable, at +3 s and +7 s.
+        spawned(1_000, 900, "Default__Ability_Gumshoe_X_InterrogateV2_C", 0, 0), effect(2_000, 106, 1, [900]),
+        spawned(40_000, 61, "Default__GameObject_Gumshoe_X_InterrogateHat_C", 0, 0),
+        oneshot(43_000, 101, [900], 32), oneshot(43_000, 105, [900], 32),
+        oneshot(47_000, 101, [900], 32), oneshot(47_000, 105, [900], 32)]
+    reveals = run6(tmp_path, rows).rounds[1]["reveals"]
+    assert [(r["t0"], r["t1"], r["slot"], r["target"], r["name"]) for r in reveals] == [
+        (11.6, 12.6, 8, 4, "E_Drone_RevealDart"), (12.8, 13.8, 8, 4, "E_Drone_RevealDart"),
+        (33.0, 34.0, 6, 1, "X_InterrogateHat"), (33.0, 34.0, 6, 5, "X_InterrogateHat"),
+        (37.0, 38.0, 6, 1, "X_InterrogateHat"), (37.0, 38.0, 6, 5, "X_InterrogateHat")]
+
+
+def test_a_reveal_counts_only_the_revealers_enemies(tmp_path):
+    # Neural Theft's ping reaches Cypher 6's enemies (team A: 1, 5); its "ult active" effect, also
+    # naming the ult, plays on everyone, teammate 7 (team B, like 6) included.
+    teams = {1: "A", 5: "A", 6: "B", 7: "B"}
+    rows = [spawned(1_000, 900, "Default__Ability_Gumshoe_X_InterrogateV2_C", 0, 0), effect(2_000, 106, 1, [900]),
+            spawned(40_000, 61, "Default__GameObject_Gumshoe_X_InterrogateHat_C", 0, 0),
+            oneshot(43_000, 101, [900], 32), oneshot(43_000, 105, [900], 32), oneshot(43_000, 107, [900], 32),
+            oneshot(47_000, 101, [900], 32), oneshot(47_000, 105, [900], 32), oneshot(47_000, 107, [900], 32)]
+    assert {r["target"] for r in run6(tmp_path, rows, teams=teams).rounds[1]["reveals"]} == {1, 5}
+    assert {r["target"] for r in run6(tmp_path, rows).rounds[1]["reveals"]} == {1, 5, 7}, "no teams: no filter"
+
+
+def test_a_chamber_slow_is_its_traps_or_its_ult_kills(tmp_path):
+    kill = {"type": "rpc_received", "time_ms": 40_000, "actor_net_guid": 101, "function_name": "MulticastNotifyDamage_Point",
+            "payload": {"DamageKilledTarget": True, "EventInstigatorPawn": 109, "Character": 101}}
+    rows = [spawned(12_000, 70, "Default__GameObject_Deadeye_E_Trap_C", 0, 0), instigated(12_000, 70, 103),
+            spawned(12_000, 71, "Default__GameObject_Deadeye_E_Trap_C", 3000, 0), instigated(12_000, 71, 109),
+            effect(30_000, 70, 1, [], container=1), {**effect(30_000, 70, 1, [5]), "payload": {"EffectId": 1}},
+            spawned(30_920, 72, "Default__Patch_Deadeye_E_Slow_Large_C", 900, 0),   # 0.92 s after trap 70 fired
+            kill, spawned(40_000, 73, "Default__Patch_Deadeye_E_Slow_Large_C", 5000, 5000),  # the ult's kill
+            spawned(50_000, 74, "Default__Patch_Deadeye_E_Slow_Large_C", 200, 0)]   # neither: no owner, no guess
+    got = [(a["slot"], a["owner_by"]) for a in run6(tmp_path, rows, positions={3: (200.0, 0.0), 9: (9000.0, 0.0)})
+           .rounds[1]["abilities"] if a["name"] == "E_Slow_Large"]
+    assert got == [(3, "triggered"), (9, "ult_kill"), (None, None)]
+
+
+def test_the_planter_is_whoever_started_planting_four_seconds_before(tmp_path):
+    rows = [spawned(20_000, 80, "Default__BombEquippable_C", 0, 0),
+            effect(36_000, 104, 1, [80]), spawned(40_000, 81, "Default__TimedBomb_C", 0, 0)]
+    [spike] = run6(tmp_path, rows).rounds[1]["abilities"]
+    assert (spike["slot"], spike["owner_by"]) == (4, "planted")
+
+
+def test_only_a_throw_gets_the_nearest_guess(tmp_path):
+    rows = [spawned(20_000, 90, "Default__GameObject_Hunter_E_Drone_RevealDart_C", 0, 0),
+            spawned(20_000, 91, "Default__Projectile_Hunter_Q_RevealBolt_C", 0, 0)]
+    got = {a["kind"]: (a["slot"], a["owner_by"]) for a in
+           run6(tmp_path, rows, positions={2: (10.0, 0.0), 8: (5000.0, 0.0)}).rounds[1]["abilities"]}
+    assert got == {"GameObject": (None, None), "Projectile": (2, "nearest")}
 
 
 # ---------------------------------------------------------------- stored util (Stage 2, R2)

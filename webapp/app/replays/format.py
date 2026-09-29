@@ -32,7 +32,7 @@ from pathlib import Path
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 7
+CONDENSE_REVISION = 8
 
 UV_SCALE = 10000
 
