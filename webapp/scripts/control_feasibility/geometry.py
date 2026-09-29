@@ -36,6 +36,7 @@ MIN_CLOSED_PX = 4
 MIN_LINE_PX = 12
 # A closed shape this small that touches the edge band is anti-aliasing on a curved wall.
 MIN_EDGE_CLOSED_PX = 60
+MIN_VOID_PX = 20
 
 
 def masks(rgba: np.ndarray) -> dict[str, np.ndarray]:
@@ -85,6 +86,18 @@ def candidates(m: dict[str, np.ndarray]) -> tuple[np.ndarray, list[dict]]:
         mask = np.zeros_like(loose)
         mask[sl] = loose_lab[sl] == i
         add(mask, "line")
+    # Void inside the map (not joined to the outside): a wall block by default, or a drop that can
+    # be seen across (Abyss's chasms), which only a person can tell apart.
+    void = ~opaque
+    void_lab, n_void = ndimage.label(void)
+    border = set(np.unique(np.r_[void_lab[0], void_lab[-1], void_lab[:, 0], void_lab[:, -1]])) - {0}
+    void_sizes = ndimage.sum(void, void_lab, range(1, n_void + 1))
+    for i, sl in enumerate(ndimage.find_objects(void_lab), start=1):
+        if i in border or void_sizes[i - 1] < MIN_VOID_PX:
+            continue
+        mask = np.zeros_like(void)
+        mask[sl] = void_lab[sl] == i
+        add(mask, "void")
     return labels, out
 
 
@@ -92,7 +105,7 @@ def render(rgba: np.ndarray, m: dict[str, np.ndarray], labels: np.ndarray, cands
     base = np.zeros(rgba.shape[:2] + (3,), np.uint8)
     base[m["opaque"]] = (70, 70, 70)
     base[m["glyph"]] = (120, 40, 140)
-    colours = {"closed": (40, 110, 230), "line": (240, 170, 30)}
+    colours = {"closed": (40, 110, 230), "line": (240, 170, 30), "void": (25, 25, 25)}
     for c in cands:
         base[labels == c["id"]] = colours[c["kind"]]
     return Image.fromarray(base)
@@ -117,15 +130,16 @@ def main(out_dir: Path) -> None:
         summary = {"map": name, "image_sha": digest,
                    "params": {"glyph_saturation": GLYPH_SATURATION, "line_lum": LINE_LUM, "edge_px": EDGE_PX,
                               "min_closed_px": MIN_CLOSED_PX, "min_line_px": MIN_LINE_PX,
-                              "min_edge_closed_px": MIN_EDGE_CLOSED_PX},
+                              "min_edge_closed_px": MIN_EDGE_CLOSED_PX, "min_void_px": MIN_VOID_PX},
                    "opaque_px": int(m["opaque"].sum()), "glyph_px": int(m["glyph"].sum()),
                    "line_px": int(m["line"].sum()),
                    "closed": sum(c["kind"] == "closed" for c in cands),
-                   "lines": sum(c["kind"] == "line" for c in cands), "candidates": cands}
+                   "lines": sum(c["kind"] == "line" for c in cands),
+                   "voids": sum(c["kind"] == "void" for c in cands), "candidates": cands}
         (geo / f"{name}.json").write_text(json.dumps(summary))
-        index[name] = {k: summary[k] for k in ("image_sha", "opaque_px", "glyph_px", "closed", "lines")}
-        print(f"{name}: {summary['closed']} closed, {summary['lines']} line candidates, "
-              f"{summary['glyph_px']} glyph px", flush=True)
+        index[name] = {k: summary[k] for k in ("image_sha", "opaque_px", "glyph_px", "closed", "lines", "voids")}
+        print(f"{name}: {summary['closed']} closed, {summary['lines']} line, {summary['voids']} inner-void "
+              f"candidates, {summary['glyph_px']} glyph px", flush=True)
     (geo / "index.json").write_text(json.dumps(index, indent=1))
 
 

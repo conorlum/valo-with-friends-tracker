@@ -52,6 +52,8 @@
     <span><span class="sw" style="background:var(--seeover)"></span>see-over</span>
     <span><span class="sw" style="background:var(--walkable)"></span>walkable</span>
     <span><span class="sw" style="background:var(--glyph)"></span>glyph</span>
+    <span><span class="sw" style="background:#462828"></span>inner black area (wall)</span>
+    <span><span class="sw" style="background:#be6eff"></span>see-across</span>
   </span>
 </header>
 <main>
@@ -74,6 +76,7 @@
         <button data-tag="seeover"><span class="sw" style="background:var(--seeover)"></span>See-over <kbd>2</kbd></button>
         <button data-tag="walkable"><span class="sw" style="background:var(--walkable)"></span>Walkable <kbd>3</kbd></button>
         <button data-tag="glyph"><span class="sw" style="background:var(--glyph)"></span>Glyph <kbd>4</kbd></button>
+        <button data-tag="seeacross"><span class="sw" style="background:#be6eff"></span>See-across (void) <kbd>5</kbd></button>
         <button data-tag=""><span class="sw" style="background:var(--untagged)"></span>Clear <kbd>0</kbd></button>
         <button id="next">Next untagged <kbd>N</kbd></button>
       </div>
@@ -94,7 +97,7 @@
 var DATA = /*DATA*/null;
 var TAGS_KEY = "control-tags-v1";
 var COLOURS = { cover: [229, 72, 77], seeover: [245, 165, 36], walkable: [48, 164, 108], glyph: [139, 141, 152],
-                "": [58, 160, 255] };
+                seeacross: [190, 110, 255], "": [58, 160, 255], void: [70, 40, 40] };
 var tags = loadTags();
 var state = { map: null, labels: null, selected: 0 };
 var $ = function (id) { return document.getElementById(id); };
@@ -142,8 +145,9 @@ function paintTint() {
   for (var i = 0; i < labels.length; i++) {
     var id = labels[i];
     if (!id) continue;
-    var col = COLOURS[t[id] || ""];
-    var a = id === state.selected ? 255 : (t[id] ? 200 : 150);
+    var isVoid = state.byId[id] && state.byId[id].kind === "void";
+    var col = t[id] ? COLOURS[t[id]] : (isVoid ? COLOURS.void : COLOURS[""]);
+    var a = id === state.selected ? 255 : (t[id] ? 200 : (isVoid ? 110 : 150));
     d[i * 4] = col[0]; d[i * 4 + 1] = col[1]; d[i * 4 + 2] = col[2]; d[i * 4 + 3] = a;
   }
   ctx.putImageData(img, 0, 0);
@@ -152,7 +156,11 @@ function paintTint() {
 function blocks(line) {
   if (line[4]) return true;
   var t = mapTags();
-  return line[5].some(function (id) { return t[id] === "cover"; });
+  return line[5].some(function (id) {
+    var c = state.byId[id];
+    if (c && c.kind === "void") return t[id] !== "seeacross";
+    return t[id] === "cover";
+  });
 }
 
 function paintOverlay() {
@@ -182,7 +190,8 @@ function updateStats() {
     $("stat").textContent = (share * 100).toFixed(1) + "% blocked";
     $("stat").className = "big " + (share <= 0.02 ? "ok" : "bad");
     $("statNote").textContent = blocked + " of " + lines.length + " non-wallbang bullet kills from " + m.replays +
-      " replay(s): " + walls + " by walls, " + (blocked - walls) + " by tagged cover.";
+      " replay(s): " + walls + " by outer walls, " + (blocked - walls) +
+      " by black areas inside the map or tagged cover.";
   }
   var t = mapTags(), counts = { cover: 0, seeover: 0, walkable: 0, glyph: 0, "": 0 };
   m.candidates.forEach(function (c) { counts[t[c.id] || ""]++; });
@@ -195,7 +204,8 @@ function showSelected() {
   var c = state.byId && state.byId[state.selected];
   if (!c) { $("sel").textContent = "Click a shape on the map."; return; }
   var through = DATA[state.map].lines.filter(function (l) { return l[5].indexOf(c.id) >= 0 && !l[4]; }).length;
-  $("sel").innerHTML = "<b>#" + c.id + "</b> " + (c.kind === "closed" ? "closed shape" : "drawn line") +
+  var kinds = { closed: "closed shape", line: "drawn line", "void": "black area inside the map (a wall unless see-across)" };
+  $("sel").innerHTML = "<b>#" + c.id + "</b> " + kinds[c.kind] +
     ", " + c.px + " px<br>Tag: <b>" + (tagOf(c.id) || "untagged") + "</b><br>" +
     "Kill lines through it: <b>" + through + "</b>" + (through ? " (these would be blocked as cover)" : "") + "<br>" +
     "Player samples inside: <b>" + (c.occupancy || 0) + "</b>" + (c.occupancy ? " (people stood here)" : "");
@@ -232,7 +242,7 @@ document.querySelectorAll("[data-tag]").forEach(function (b) {
 });
 $("next").addEventListener("click", nextUntagged);
 document.addEventListener("keydown", function (e) {
-  var keys = { "1": "cover", "2": "seeover", "3": "walkable", "4": "glyph", "0": "" };
+  var keys = { "1": "cover", "2": "seeover", "3": "walkable", "4": "glyph", "5": "seeacross", "0": "" };
   if (e.key in keys) setTag(keys[e.key]);
   else if (e.key === "n" || e.key === "N") nextUntagged();
 });

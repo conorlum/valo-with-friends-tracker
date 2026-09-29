@@ -21,7 +21,7 @@ def img(path: Path, alt: str) -> str:
     if not path.is_file():
         return f'<p class="muted">({html.escape(alt)}: not built)</p>'
     data = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f'<img src="data:image/png;base64,{data}" alt="{html.escape(alt)}" loading="lazy">'
+    return f'<img src="data:image/png;base64,{data}" alt="{html.escape(alt)}">'
 
 
 def pct(x: float | None) -> str:
@@ -47,16 +47,20 @@ def main(out: Path) -> None:
             verdict = ('<span class="ok">passes</span>' if r["passes_alpha"] else '<span class="bad">over the bar</span>')
             rows.append(f"<tr><td>{name}</td><td>{r['replays']}</td><td>{r['qualifying']}</td>"
                         f"<td>{r['blocked_alpha']} ({pct(r['blocked_alpha_share'])})</td><td>{verdict}</td>"
+                        f"<td>{pct(r['blocked_if_every_inner_void_is_see_across_share'])}</td>"
                         f"<td>{pct(r['blocked_if_every_candidate_is_cover_share'])}</td>"
-                        f"<td>{g['closed']} + {g['lines']}</td><td>{occupied}</td></tr>")
+                        f"<td>{g['closed']} + {g['lines']} + {g['voids']}</td><td>{occupied}</td></tr>")
         else:
             rows.append(f"<tr><td>{name}</td><td>0</td><td>–</td><td>–</td><td class='muted'>no replay: waits</td>"
-                        f"<td>–</td><td>{g['closed']} + {g['lines']}</td><td>–</td></tr>")
+                        f"<td>–</td><td>–</td><td>{g['closed']} + {g['lines']} + {g['voids']}</td><td>–</td></tr>")
 
     dz_rows = []
     for name, r in sorted(risk.items()):
-        for dz in r.get("blocked_alpha_dz", []):
-            dz_rows.append(f"<tr><td>{name}</td><td>{dz:+d} cm</td></tr>")
+        dzs = [abs(d) for d in r.get("blocked_alpha_dz", [])]
+        if dzs:
+            high = sum(d >= 150 for d in dzs)
+            dz_rows.append(f"<tr><td>{name}</td><td>{len(dzs)}</td><td>{sorted(dzs)[len(dzs) // 2]} cm</td>"
+                           f"<td>{high} ({high / len(dzs):.0%})</td></tr>")
 
     util_rows = []
     for o in util.get("objects", []):
@@ -73,12 +77,24 @@ def main(out: Path) -> None:
                 status_rows.append(f"<tr><td>{html.escape(o['object'])}</td><td>{o['while_owner_alive']}</td>"
                                    f"<td>{o['after_owner_died']}</td><td>{ex}</td></tr>")
     sides = util.get("sides", {})
+    timing_rows = []
+    for path in sorted(out.glob("engine_timing_*.json")):
+        t = load(path)
+        ms = t["ms_per_tick"]
+        per100 = {hz: (ms["vision"] + ms["base"]) * 16 * 100 / 1000 + ms["counterfactual"] * hz * 100 / 1000
+                  for hz in (16, 2, 1)}
+        timing_rows.append(f"<tr><td>{t['map']} r{t['round']}</td><td>{t['walkable_cells']}</td>"
+                           f"<td>{t['visibility_build_s']} s, {t['visibility_mb']} MB</td><td>{ms['vision']}</td>"
+                           f"<td>{ms['base']}</td><td>{ms['counterfactual']}</td>"
+                           f"<td>{ms['counterfactual'] / (ms['vision'] + ms['base']):.1f}x</td>"
+                           f"<td>{per100[16]:.0f} s / {per100[2]:.0f} s / {per100[1]:.0f} s</td></tr>")
 
     per_map = []
     for name in sorted(index):
         per_map.append(f"<details><summary>{name}</summary><div class='pair'>"
                        f"<figure>{img(geo / f'{name}.render.png', name + ' candidates')}<figcaption>Candidates: "
-                       f"blue closed shapes, amber drawn lines, purple colour glyphs (void).</figcaption></figure>"
+                       f"blue closed shapes, amber drawn lines, purple colour glyphs (void). Inner black areas are "
+                       f"picked in the tagger.</figcaption></figure>"
                        f"<figure>{img(out / 'risk1' / f'{name}.png', name + ' kill lines')}<figcaption>Kill lines on "
                        f"walls only: red blocked, green clear.</figcaption></figure></div></details>")
 
@@ -102,7 +118,8 @@ h1 {{ font-size:24px; margin:0 0 4px; }} h2 {{ font-size:18px; margin:32px 0 8px
 table {{ border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; background:var(--panel); }}
 th,td {{ border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }}
 th {{ font-size:13px; color:var(--muted); font-weight:600; }}
-.scroll {{ overflow-x:auto; }}
+.scroll {{ overflow-x:auto; }} code {{ overflow-wrap:anywhere; }}
+main > table {{ display:block; overflow-x:auto; }}
 details {{ background:var(--panel); border:1px solid var(--line); border-radius:8px; margin:8px 0; padding:8px 12px; }}
 summary {{ cursor:pointer; font-weight:600; }}
 .pair {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:12px; margin-top:8px; }}
@@ -113,16 +130,37 @@ figcaption {{ font-size:13px; color:var(--muted); }}
 <h1>Map control, Stage 0a: geometry</h1>
 <p class="muted">Feasibility report for docs/replay-map-control-plan.md. No product code. Built from the local exports and
 minimaps by webapp/scripts/control_feasibility/.</p>
+<div class="callout"><b>Findings</b>
+<ul>
+<li>Walls alone pass the 2% bar on Ascent, Split, Sunset and Haven (0–0.5%), with the replay's own wallbang flag.
+The earlier 2.5–4.7% numbers counted wallbangs.</li>
+<li>Summit (5.7%) and Abyss (17%) fail on black areas inside the map: windows, ledges and drops you can see across.
+Tagging those see-across takes Summit to 0% and Abyss to 5.5%; Abyss's rest crosses the outer void.</li>
+<li>Tagging every detected shape as cover would block 14–42% of kill lines, so cover must be tagged one shape at a
+time, and each tag checked against the bar (the tagger shows it live).</li>
+<li>Seven maps have no replay and wait for one (Q59).</li>
+<li>Placed utility: objects stay in the replay after their owner dies, but Cypher's trips applied nothing after his
+death (51 statuses while alive, 0 after). Killjoy's and Chamber's pieces leave no status data, so they can't be
+checked this way. That fits Q71.</li>
+<li>No null sides in 1,370 player-rounds.</li>
+<li>Early timing: the full counterfactual costs 1.4–2.1x the base engine per tick (no smokes yet): right at Q69's
+2x line, so the incremental version matters.</li>
+</ul></div>
 
 <h2>1. Kill-line test on walls only (Risk 1)</h2>
 <p>Qualifying kills are lethal bullet hits (<code>MulticastNotifyDamage_Point</code>) with the replay's own
 <code>IsWallPenetration</code> false, both positions within 100 ms of the kill. Bar: 2% or less blocked per map.
-"Every candidate as cover" is the worst case if every detected shape were tagged cover.</p>
+"Walls" are the minimap's black areas. Black areas inside the map are candidates too: walls by default, or
+drops and windows you can see across once tagged. The next column is the best case if every one were see-across;
+"every candidate as cover" is the worst case if every shape were tagged cover.</p>
 <div class="scroll"><table><tr><th>Map</th><th>Replays</th><th>Qualifying kills</th><th>Blocked by walls</th>
-<th>Walls-only verdict</th><th>Every candidate as cover</th><th>Candidates (closed + line)</th><th>Candidates people stood in</th></tr>
+<th>Walls-only verdict</th><th>If every inner black area were see-across</th><th>Every candidate as cover</th>
+<th>Candidates (closed + line + inner black)</th><th>Candidates people stood in</th></tr>
 {''.join(rows)}</table></div>
-<p class="muted">Height difference (killer z − victim z) for each wall-blocked line, since the replay export does carry z:</p>
-<div class="scroll"><table><tr><th>Map</th><th>dz</th></tr>{''.join(dz_rows) or '<tr><td colspan=2>none</td></tr>'}</table></div>
+<p class="muted">Height difference between killer and victim on the wall-blocked lines. The replay export carries z
+(the blob doesn't), so elevation could later explain or excuse these lines:</p>
+<div class="scroll"><table><tr><th>Map</th><th>Blocked lines</th><th>Median |dz|</th><th>|dz| ≥ 1.5 m</th></tr>
+{''.join(dz_rows) or '<tr><td colspan=4>none</td></tr>'}</table></div>
 
 <h2>2. Tagging</h2>
 <p>Open <code>tagger.html</code> in this folder. Click a shape, press 1 cover, 2 see-over, 3 walkable, 4 glyph. The
@@ -142,7 +180,15 @@ condenser):</p>
 <p>{sides.get('null', '–')} null sides in {sides.get('players', '–')} player-rounds over {sides.get('rounds', '–')} rounds
 (six bundles).</p>
 
-<h2>5. Per map</h2>
+<h2>5. Early engine timing (Stage 0b groundwork)</h2>
+<p>One CPU core, walls-only mask, <b>no smokes</b> and no contest rules: just vision, the flood fill and Safe, then
+the full counterfactual (both teams' fills per removed player, vision reused). Q69's rule: stay at 16 Hz if the
+counterfactual costs no more than about 2x the base.</p>
+<div class="scroll"><table><tr><th>Round</th><th>Walkable cells</th><th>Visibility build</th><th>Vision ms/tick</th>
+<th>Fill + Safe ms/tick</th><th>Counterfactual ms/tick</th><th>Counterfactual vs base</th>
+<th>Per 100 s round (cf at 16 / 2 / 1 Hz)</th></tr>{''.join(timing_rows) or '<tr><td colspan=8>not run</td></tr>'}</table></div>
+
+<h2>6. Per map</h2>
 {''.join(per_map)}
 </main></body></html>"""
     (out / "report.html").write_text(page, encoding="utf-8")

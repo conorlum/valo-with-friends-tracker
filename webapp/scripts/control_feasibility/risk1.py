@@ -78,6 +78,7 @@ def main(out: Path) -> None:
         enc = np.array(Image.open(geo / f"{name}.labels.png")).astype(np.int32)
         labels = enc[..., 0] + 256 * enc[..., 1]
         cands = json.loads((geo / f"{name}.json").read_text())["candidates"]
+        kind = {c["id"]: c["kind"] for c in cands}
         occupancy = Counter()
         for u, v in positions[name]:
             x, y = px({"u": u, "v": v})
@@ -93,18 +94,24 @@ def main(out: Path) -> None:
             a, b = px(k["killer_pos"]), px(k["victim_pos"])
             pts = line(a, b)
             crossed = sorted({int(labels[y, x]) for x, y in pts if labels[y, x]})
-            lines.append({"a": a, "b": b, "wall": any(not walk[y, x] for x, y in pts), "crossed": crossed,
+            # "hard": the outside void or a glyph, which no tag changes. Inner voids are candidates:
+            # walls unless tagged see-across.
+            hard = any(not walk[y, x] and not labels[y, x] for x, y in pts)
+            voids = any(kind.get(c) == "void" for c in crossed)
+            lines.append({"a": a, "b": b, "hard": hard, "wall": hard or voids, "crossed": crossed,
                           "dz": k["killer_pos"]["z"] - k["victim_pos"]["z"], "replay": k["replay"][:8],
                           "t_ms": k["t_ms"]})
         n = len(lines)
         wall = sum(l["wall"] for l in lines)
-        all_cover = sum(l["wall"] or bool(l["crossed"]) for l in lines)
-        crossings = Counter(c for l in lines if not l["wall"] for c in l["crossed"])
+        hard = sum(l["hard"] for l in lines)
+        all_cover = sum(l["wall"] or any(kind.get(c) != "void" for c in l["crossed"]) for l in lines)
+        crossings = Counter(c for l in lines if not l["hard"] for c in l["crossed"])
         replays = sorted({k["replay"] for k in by_map[name]})
         result["maps"][name] = {
             "replays": len(replays), "kills": len(by_map[name]), "qualifying": n, "skipped": dict(skipped),
             "blocked_alpha": wall, "blocked_alpha_share": round(wall / n, 4) if n else None,
             "passes_alpha": bool(n) and wall / n <= BAR,
+            "blocked_if_every_inner_void_is_see_across_share": round(hard / n, 4) if n else None,
             "blocked_if_every_candidate_is_cover_share": round(all_cover / n, 4) if n else None,
             "blocked_alpha_dz": [l["dz"] for l in lines if l["wall"]],
             "candidates": {str(c["id"]): {"crossings": crossings.get(c["id"], 0),
@@ -119,7 +126,8 @@ def main(out: Path) -> None:
         canvas.save(out / "risk1" / f"{name}.png")
         share = f"{wall / n:.1%}" if n else "n/a"
         print(f"{name}: {len(replays)} replays, {n} qualifying of {len(by_map[name])} kills, alpha blocked {wall} "
-              f"({share}), every-candidate-as-cover {all_cover / n if n else 0:.1%}, skipped {dict(skipped)}")
+              f"({share}), if inner voids seen across {hard / n if n else 0:.1%}, "
+              f"every-candidate-as-cover {all_cover / n if n else 0:.1%}, skipped {dict(skipped)}")
     (out / "risk1.json").write_text(json.dumps(result))
 
 

@@ -36,7 +36,7 @@ def main(out: Path) -> None:
             "image": b64(png), "labels": b64(geo / f"{name}.labels.png"), "image_sha": g["image_sha"],
             "params": g["params"],
             "candidates": [{**c, **((r.get("candidates") or {}).get(str(c["id"])) or {})} for c in g["candidates"]],
-            "lines": [[*l["a"], *l["b"], int(l["wall"]), l["crossed"]] for l in r.get("lines", [])],
+            "lines": [[*l["a"], *l["b"], int(l["hard"]), l["crossed"]] for l in r.get("lines", [])],
             "replays": r.get("replays", 0),
         }
     html = TEMPLATE.read_text(encoding="utf-8").replace("/*DATA*/null", json.dumps(maps))
