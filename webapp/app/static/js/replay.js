@@ -361,6 +361,17 @@
     return next;
   }
 
+  // "Previous kill": 1 s before the last kill whose lead-in starts before t (so pressing it again
+  // keeps going back), or null before the round's first kill.
+  function prevKillTime(kills, t) {
+    var prev = null;
+    (kills || []).forEach(function (k) {
+      var at = Math.max(0, k.t - NEXT_KILL_LEAD_S);
+      if (at < t - 0.05 && (prev === null || at > prev)) prev = at;
+    });
+    return prev;
+  }
+
   // The spike at t, from its ability row (kind "Bomb": spawned at the plant, with `defuses`
   // [[from, to | null, slot, finished]]): {plantedAt, slot, left (s to detonation), exploded,
   // halved, defusing: {slot, elapsed, needed, frac} | null, defused: {slot, t} | null}, or null
@@ -567,6 +578,13 @@
     if (at !== null) this.seek(at);
   };
 
+  // Jumps to 1 s before the previous kill in this round.
+  ReplayViewer.prototype.prevKill = function () {
+    if (!this.current) return;
+    var at = prevKillTime(this.current.blob.kills, this.t);
+    if (at !== null) this.seek(at);
+  };
+
   ReplayViewer.prototype.toggle = function () {
     if (!this.current) return;
     if (!this.playing && this.t >= this.current.blob.t_end) this.t = 0;
@@ -598,7 +616,7 @@
       feed: q("[data-replay-feed]"), board: q("[data-replay-board]"), banner: q("[data-replay-banner]"),
       badge: q("[data-replay-badge]"), analysis: q("[data-replay-analysis]"),
       tip: q("[data-replay-tip]"), util: q("[data-replay-util]"), hud: q("[data-replay-hud]"),
-      nextKill: q("[data-replay-nextkill]")
+      nextKill: q("[data-replay-nextkill]"), prevKill: q("[data-replay-prevkill]")
     };
     SPEEDS.forEach(function (s) {
       var option = document.createElement("option");
@@ -614,6 +632,7 @@
     });
     this.ui.prev.addEventListener("click", function () { self.step(-1); });
     if (this.ui.nextKill) this.ui.nextKill.addEventListener("click", function () { self.nextKill(); });
+    if (this.ui.prevKill) this.ui.prevKill.addEventListener("click", function () { self.prevKill(); });
     this.ui.next.addEventListener("click", function () { self.step(1); });
     this.root.addEventListener("keydown", function (e) {
       if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.key !== " ") return;
@@ -621,6 +640,7 @@
       else if (e.key === "ArrowLeft") { e.preventDefault(); self.seek(self.t - STEP_S); }
       else if (e.key === "ArrowRight") { e.preventDefault(); self.seek(self.t + STEP_S); }
       else if (e.key === "n" || e.key === "N") { e.preventDefault(); self.nextKill(); }
+      else if (e.key === "b" || e.key === "B") { e.preventDefault(); self.prevKill(); }
     });
     LAYERS.forEach(function (name) {
       var box = q('[data-replay-layer="' + name + '"]');
@@ -903,6 +923,7 @@
     this.renderBoard();
     this.renderHud();
     if (this.ui.nextKill) this.ui.nextKill.disabled = nextKillTime(blob.kills, t) === null;
+    if (this.ui.prevKill) this.ui.prevKill.disabled = prevKillTime(blob.kills, t) === null;
     if (this.ui.badge) {
       var alive = aliveCountAt(blob.alive_steps, t);
       this.ui.badge.hidden = !alive;
@@ -1425,7 +1446,7 @@
     lerpYaw: lerpYaw, ReplayViewer: ReplayViewer, SUPPORTED_VERSIONS: SUPPORTED_VERSIONS,
     abilityStyle: abilityStyle, lineEnds: lineEnds, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, pairWires: pairWires, signed: signed, tallyAt: tallyAt, aliveCountAt: aliveCountAt, stateAt: stateAt,
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
-    impactAt: impactAt, nextKillTime: nextKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt
+    impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt
   };
   global.Replay = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

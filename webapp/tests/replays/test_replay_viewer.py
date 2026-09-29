@@ -340,6 +340,7 @@ def test_stage5_helpers_spike_defuse_kills_impact_reveals_and_the_wall():
         process.stdout.write(JSON.stringify({
           tally: R.tallyAt(kills, 30), impact: R.impactAt(kills, 15), noSplit: R.impactAt([{t: 1, killer: 0, victim: 1}], 5),
           next: [0, 8.9, 9, 19, 19.5, 25].map(t => R.nextKillTime(kills, t)),
+          prev: [0, 9, 9.5, 19, 19.5, 25].map(t => R.prevKillTime(kills, t)),
           spike: [29, 30, 51, 55, 61, 64].map(at),
           boom: [74, 75].map(t => R.spikeAt([lone], t)).map(s => [s.defusing && s.defusing.slot, s.exploded]),
           wall: [4, 5, 12.5, 25].map(t => R.wallUp(wall, t)),
@@ -351,6 +352,8 @@ def test_stage5_helpers_spike_defuse_kills_impact_reveals_and_the_wall():
                             "6": {"k": 1, "d": 0, "a": 0}, "2": {"k": 0, "d": 1, "a": 0}}
     assert got["impact"] == {"0": 12, "5": -7} and got["noSplit"] is None
     assert got["next"] == [9, 9, 19, 19.5, None, None]
+    # Back from a kill's lead-in goes to the kill before it; before the first kill there's nothing.
+    assert got["prev"] == [None, None, 9, 9, 19, 19.5]
     assert got["spike"][0] is None
     assert got["spike"][1] == {"left": 45, "halved": False, "defusing": None, "defused": None, "exploded": False}
     assert got["spike"][2]["defusing"] == [6, 1, 7] and not got["spike"][2]["halved"]
