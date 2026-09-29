@@ -117,3 +117,16 @@ Changed during implementation: Undercut's object-named effects turned out to be 
 Still not found: Breach's concuss (Fault Line, Rolling Thunder) and Astra's Nova Pulse concuss don't
 show on the hit players in these recordings (Nova has only 4 casts), so they get their pops but no
 status. Neon, Deadlock and Harbor still have no replay.
+
+## Added: trapwires, used-up and destroyed utility (2026-09-28)
+
+Haven round 8's first kill: Jett walked into NPrightdolphin's trip at 12.84 s (tether effects on Jett
+naming both anchors; an alert on the Cypher's character), didn't break it, and it went off at 13.54 s
+(one-shots naming it on Jett, 5 damage), 0.37 s before the kill. No scan touched Jett that round.
+
+- A trip is now a status source: **tethered** while caught (its continuous effects), **concussed** when
+  it goes off (its one-shots), and going off also **reveals** the player (a reveal ping). Its two anchors
+  count as one source. Haven: 13 tethers, 8 went off.
+- An ability object shot and destroyed (a lethal hit on the object), or a trip that went off (it dealt
+  damage), gets `gone`; the viewer hides it 0.6 s after (a trip bursts as it goes). The replay keeps
+  both objects until the round ends.

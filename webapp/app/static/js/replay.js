@@ -279,9 +279,13 @@
       var until = a.t1 === null || a.t1 === undefined ? tEnd : Math.max(a.t1, a.t0 + ABILITY_MIN_S);
       var pop = a.kind === "Projectile" || a.kind === "Bomb" || !a.name ? undefined : abilityStyle(a).pop;
       if (pop !== undefined) until = Math.min(until, popUntil(a, pop));
+      // Used up or shot before its object closed (a trapwire gone off, a camera destroyed).
+      if (typeof a.gone === "number") until = Math.min(until, a.gone + GONE_S);
       return a.t0 <= t && t <= until;
     });
   }
+
+  var GONE_S = 0.6;
 
   // When a pop ability went off: the effects it played on itself (`fx`), or its spawn.
   function popTimes(a) {
@@ -1183,9 +1187,15 @@
             ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(other.u * s, other.v * s); ctx.stroke();
             ctx.fillStyle = color; ctx.beginPath(); ctx.arc(other.u * s, other.v * s, r * 0.22, 0, 2 * Math.PI); ctx.fill();
           }
+          if (typeof a.gone === "number" && t >= a.gone && other) {
+            // It went off (or was shot): a burst across the wire as it goes.
+            var f = Math.min(1, (t - a.gone) / GONE_S), mx = (x + other.u * s) / 2, my = (y + other.v * s) / 2;
+            ctx.globalAlpha = 1 - f; ctx.lineWidth = Math.max(2.5, r / 4);
+            ctx.beginPath(); ctx.arc(mx, my, r * (0.8 + 2.2 * f), 0, 2 * Math.PI); ctx.stroke();
+          }
           ctx.restore(); ctx.save();
           self.drawBadge(ctx, x, y, r * 0.56, color, glyph);
-          hits.push({ x: x, y: y, r: r * 0.75, text: text });
+          hits.push({ x: x, y: y, r: r * 0.75, text: text + (typeof a.gone === "number" ? " · gone at " + a.gone.toFixed(1) + " s" : "") });
         } else if (pass === "badge") {
           var radius = r * (style.small ? 0.42 : 0.62);
           if (a.path) {

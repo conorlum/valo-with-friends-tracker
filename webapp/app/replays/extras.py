@@ -5,7 +5,7 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
 
 - `{"k": "ability", "t": <spawn>, "by": <slot | null>, "t1", "kind", "code", "name", "agent",
   "owner_by", "u", "v", ["yaw"], ["thrown"], ["path"], ["owner_d", "other_d"], ["end"],
-  ["defuses"], ["points", "on"]}`;
+  ["defuses"], ["points", "on"], ["fx"], ["gone"]}`;
 - `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`;
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
 - `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`.
@@ -32,7 +32,8 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
 - **Pops and statuses** (Stage 6, docs/replay-status-effects-plan.md). An ability that goes off in an
   instant but lives on in the replay keeps the times it played effects on itself (`fx`); a player an
   enemy's ability concussed, hindered, suppressed, made fragile, tethered, decayed or slowed gets a
-  `status` row for as long as it lasted (`find_statuses`).
+  `status` row for as long as it lasted (`find_statuses`). A trapwire tethers, then when it goes off
+  concusses and reveals. An ability object used up or shot before its object closes has `gone`.
 
 Times are seconds since the round's InRound start, like the blobs; `u`/`v` are minimap ints.
 """
@@ -152,6 +153,10 @@ class Raw:
     object_oneshots: dict[int, list[int]] = field(default_factory=lambda: defaultdict(list))
     # Lethal hits: (time, the killer's pawn).
     kills: list[tuple[int, int]] = field(default_factory=list)
+    # Damage an ability object dealt to a character (a trapwire going off): object guid -> [(time, victim pawn)].
+    object_damage: dict[int, list[tuple[int, int]]] = field(default_factory=lambda: defaultdict(list))
+    # Ability objects shot and destroyed (a lethal hit on the object itself): guid -> time.
+    destroyed: dict[int, int] = field(default_factory=dict)
     # A plant starting: (time, the planter's pawn), an effect naming the carried spike on its character.
     plant_starts: list[tuple[int, int]] = field(default_factory=list)
 
@@ -164,7 +169,8 @@ RPC_WALL_POINT = "MulticastAddSmokeScreenPoint"   # Viper's Toxic Screen, one pe
 # The carried spike: its equippable is named by an effect on the planter's character as the plant begins.
 BOMB_EQUIPPABLE_ARCHETYPE = "Default__BombEquippable_C"
 _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
-                           '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true')
+                           '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true',
+                           '"DamageCauser"')
 
 
 def packed_ints(data: bytes) -> list[int]:
@@ -283,6 +289,12 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                         raw.wall_points[guid].append((t_ms, float(point["x"]), float(point["y"])))
                 if payload.get("DamageKilledTarget") is True and payload.get("EventInstigatorPawn"):
                     raw.kills.append((t_ms, int(payload["EventInstigatorPawn"])))
+                if function and function.startswith("MulticastNotifyDamage"):
+                    causer = int(payload.get("DamageCauser") or 0)
+                    if causer in actors and guid in pawns:
+                        raw.object_damage[causer].append((t_ms, guid))
+                    if payload.get("DamageKilledTarget") is True and guid in actors:
+                        raw.destroyed.setdefault(guid, t_ms)
             elif kind == "export_group_received":
                 payload = data.get("payload")
                 if not isinstance(payload, dict):
@@ -662,7 +674,11 @@ POP_ARCHETYPES = re.compile(r"^(Terra_C_TimeSlowGrenade_Explosion|Iris_Concuss|C
 FX_GAP_MS = 200
 
 # The abilities whose hit puts a status on a player, and which status (see find_statuses).
+# A trapwire tethers whoever walks into it (effects naming its anchors while they're caught), and if
+# they don't break it, goes off: one-shots naming it on them (the reveal and concuss) and 5 damage.
+TRIP = re.compile(r"^Gumshoe_4_TripWire(_SecondWire)?$")
 STATUS_OBJECTS = (
+    (TRIP, "tethered"),
     (re.compile(r"^Terra_C_TimeSlowGrenade_Explosion$"), "hindered"),
     (re.compile(r"^Iris_Concuss$"), "concussed"),
     (re.compile(r"^Cashew_Q_ShellShockGrenade$"), "concussed"),
@@ -692,8 +708,10 @@ STATUS_PING_MS = 1000
 STATUS_KNOWN_MS = {"suppressed": 8000}
 
 
-def status_of(actor: _Actor) -> str | None:
+def status_of(actor: _Actor, oneshot: bool = False) -> str | None:
     key = f"{actor.code}_{actor.name}"
+    if oneshot and TRIP.match(key):
+        return "concussed"   # a trip's one-shots on a player are it going off
     for pattern, label in STATUS_OBJECTS:
         if pattern.match(key):
             return label
@@ -768,7 +786,7 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
                  and status_of(actors[v])]
         if named:
             source = named[0]
-            label = status_of(source)
+            label = status_of(source, effect.oneshot)
             if CASTER_ONLY.match(f"{source.code}_{source.name}"):
                 continue
             if enemies(owner_of.get(source.guid), target):
@@ -794,19 +812,22 @@ def find_statuses(effects: list[_Effect], actors: dict[int, _Actor], owner_of: d
         for effect, target, source in inside:
             label = status_of(actors[source])
             hits.append((effect.t_ms, effect.t_ms + span(effect, label), source, target, label, "caster"))
-    merged: dict[tuple[int, int], list[list]] = defaultdict(list)
+    # One run per (source, target, status): a trip's two anchors count as one source, its tether and
+    # its going off as two statuses.
+    merged: dict[tuple, list[list]] = defaultdict(list)
     for t, t1, source, target, label, how in sorted(hits):
-        runs = merged[(source, target)]
+        actor = actors[source]
+        key = (actor.code, actor.name.replace("_SecondWire", ""), owner_of.get(source), target, label)
+        runs = merged[key]
         if runs and t <= runs[-1][1] + STATUS_MERGE_MS:
             runs[-1][1] = max(runs[-1][1], t1)
         else:
-            runs.append([t, t1, label, how])
+            runs.append([t, t1, how])
     out = []
-    for (source, target), runs in merged.items():
-        actor = actors[source]
-        for t, t1, label, how in runs:
-            out.append({"t_ms": t, "t1_ms": t1, "by": owner_of.get(source), "target": target, "code": actor.code,
-                        "name": actor.name, "status": label, "from": how})
+    for (code, name, by, target, label), runs in merged.items():
+        for t, t1, how in runs:
+            out.append({"t_ms": t, "t1_ms": t1, "by": by, "target": target, "code": code,
+                        "name": name, "status": label, "from": how})
             counts[f"statuses_{how}"] += 1
     return sorted(out, key=lambda r: (r["t_ms"], r["target"]))
 
@@ -963,12 +984,21 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             entry["other_d"] = None if near[2] is None else round(near[2])
         if actor.yaw is not None:
             entry["yaw"] = game_map.yaw_to_map(float(actor.yaw))
+        parts = [actor]
         if claim is not None and actor.name == "4_TripWire":
             # The trapwire's far end: the second anchor its placement listed.
             ends = [a for a in placed[id(claim[1])] if a.name == "4_TripWire_SecondWire"]
             if ends:
                 entry["end"] = list(game_map.to_uv(ends[0].x, ends[0].y))
                 counts["wires_paired"] += 1
+                parts.append(ends[0])
+        # Gone before its object closes: shot and destroyed, or (a trapwire, either anchor) gone off.
+        gone = [raw.destroyed[a.guid] for a in parts if a.guid in raw.destroyed and a.t_ms <= raw.destroyed[a.guid]]
+        if TRIP.match(f"{actor.code}_{actor.name}"):
+            gone += [t for a in parts for t, _ in raw.object_damage.get(a.guid, []) if a.t_ms <= t]
+        if gone and (actor.closed_ms is None or min(gone) < actor.closed_ms):
+            entry["gone"] = max(0.0, _seconds(min(min(gone), end), start))
+            counts["abilities_gone_early"] += 1
         if actor.kind == "Bomb":
             attempts = defuse_attempts(actor, raw.effects, raw.oneshots, players)
             if attempts:
@@ -1018,7 +1048,18 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             "t0": _seconds(reveal["t_ms"], start), "t1": _seconds(min(reveal["t1_ms"], end), start),
             "slot": reveal["by"], "target": reveal["target"], "code": reveal["code"], "name": reveal["name"]})
 
-    for status in find_statuses(raw.effects, actors, owner_of, players, counts, raw.equips, teams):
+    statuses = find_statuses(raw.effects, actors, owner_of, players, counts, raw.equips, teams)
+    for status in statuses:
+        if status["code"] == "Gumshoe" and status["name"] == "4_TripWire" and status["status"] == "concussed":
+            # Going off reveals the player it caught (it's also a concuss).
+            n = _round_of(status["t_ms"], windows)
+            if n is not None:
+                start, _, end = windows[n - 1]
+                out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("reveals", []).append({
+                    "t0": _seconds(status["t_ms"], start), "t1": _seconds(min(status["t_ms"] + PING_MS, end), start),
+                    "slot": status["by"], "target": status["target"], "code": "Gumshoe", "name": "4_TripWire"})
+                counts["reveals_trip"] += 1
+    for status in statuses:
         n = _round_of(status["t_ms"], windows)
         if n is None:
             continue

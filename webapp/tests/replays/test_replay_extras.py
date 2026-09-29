@@ -526,6 +526,37 @@ def test_m_pulse_keeps_its_pulses(tmp_path):
     assert (pulse["code"], pulse["name"], pulse["fx"]) == ("Iris", "Concuss", [10.0, 12.0, 14.0])
 
 
+def damage(t_ms, victim, causer, lethal=False):
+    return {"type": "rpc_received", "time_ms": t_ms, "actor_net_guid": victim, "function_name": "MulticastNotifyDamage_Point",
+            "payload": {"DamageCauser": causer, "DamageDealt": 5, "DamageKilledTarget": lethal}}
+
+
+def test_a_trapwire_tethers_then_goes_off_revealing_and_concussing_and_is_gone(tmp_path):
+    # Cypher 1's trip (anchors 60, 61; team B) catches enemy 4 (team A).
+    rows = [spawned(1_000, 500, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0), effect(2_000, 101, 1, [500]),
+            spawned(8_000, 60, "Default__GameObject_Gumshoe_4_TripWire_C", 0, 0),
+            spawned(8_000, 61, "Default__GameObject_Gumshoe_4_TripWire_SecondWire_C", 0, 400), placement(8_000, 500, [61]),
+            effect(22_840, 104, 5, [60], container=4895), effect(22_840, 104, 6, [61], container=4907),  # caught
+            oneshot(22_840, 101, [61], 4919),                                   # the owner's alert: not a status
+            oneshot(23_540, 104, [60], 5173), oneshot(23_540, 104, [61], 5173), damage(23_540, 104, 61),
+            stop(23_540, 104, 5), stop(23_540, 104, 6)]
+    extras = run7(tmp_path, rows)
+    got = [(st["target"], st["t0"], st["t1"], st["status"], st["slot"], st["name"]) for st in extras.rounds[1]["statuses"]]
+    assert got == [(4, 12.84, 13.54, "tethered", 1, "4_TripWire"), (4, 13.54, 14.54, "concussed", 1, "4_TripWire")]
+    assert [(r["t0"], r["slot"], r["target"], r["name"]) for r in extras.rounds[1]["reveals"]] == [(13.54, 1, 4, "4_TripWire")]
+    [wire] = [a for a in extras.rounds[1]["abilities"] if a["name"] == "4_TripWire"]
+    assert wire["gone"] == 13.54, "the anchor that dealt the damage was the second: the wire is gone all the same"
+
+
+def test_utility_shot_and_destroyed_is_gone(tmp_path):
+    rows = [spawned(20_000, 70, "Default__Pawn_Gumshoe_E_PossessableCamera_C", 0, 0), instigated(20_000, 70, 101),
+            damage(30_000, 70, 999, lethal=True), closed(55_000, 70),
+            spawned(20_000, 71, "Default__Pawn_Gumshoe_E_PossessableCamera_C", 0, 0), instigated(20_000, 71, 101),
+            damage(30_000, 71, 999)]                                            # hit but not destroyed
+    cams = run7(tmp_path, rows).rounds[1]["abilities"]
+    assert [c.get("gone") for c in cams] == [20.0, None]
+
+
 # ---------------------------------------------------------------- stored util (Stage 2, R2)
 
 import sys  # noqa: E402

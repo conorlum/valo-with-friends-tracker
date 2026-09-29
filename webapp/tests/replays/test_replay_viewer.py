@@ -374,11 +374,13 @@ def test_pops_show_only_until_they_went_off_and_statuses_read_back():
         const mpulse = {kind: "GameObject", code: "Iris", name: "Concuss", t0: 30, t1: 35, fx: [30, 32, 34]};
         const fault = {kind: "GameObject", code: "Breach", name: "E_SweetSpotFissure", t0: 50, t1: 56.1, fx: [50, 51.1]};
         const smoke = {kind: "Zone", code: "Wraith", name: "4_Smoke", t0: 10, t1: 25};
+        const wire = {kind: "GameObject", code: "Gumshoe", name: "4_TripWire", t0: 0, t1: 90, gone: 13.5};
         const all = [saturate, mpulse, fault, smoke];
         const util = [{k: "status", t: 5, by: 2, t1: 7, target: 8, code: "Iris", name: "Concuss", status: "concussed", from: "object"}];
         const extras = R.extrasFromUtil(util);
         process.stdout.write(JSON.stringify({
           at: [10.5, 11.5, 33, 34.7, 51.5, 52, 20].map(t => R.abilitiesAt(all, t, 90).map(a => a.name)),
+          wire: [13, 14, 14.2].map(t => R.abilitiesAt([wire], t, 90).length),
           until: [R.popUntil(saturate, 1), R.popUntil(mpulse, 0.8), R.popUntil(fault, 0.8)],
           statuses: extras.statuses, on: [4.9, 6, 7.1].map(t => R.statusesAt(extras.statuses, t).length),
           styles: [R.statusStyle("concussed").label, R.statusStyle("gravnet").label]
@@ -388,6 +390,7 @@ def test_pops_show_only_until_they_went_off_and_statuses_read_back():
     assert got["at"] == [["C_TimeSlowGrenade_Explosion", "4_Smoke"], ["4_Smoke"], ["Concuss"], ["Concuss"],
                          ["E_SweetSpotFissure"], [], ["4_Smoke"]]
     assert got["until"] == [11, 34.8, 51.9]
+    assert got["wire"] == [1, 1, 0], "a trip that went off shows its burst, then goes"
     assert got["statuses"] == [{"t0": 5, "slot": 2, "t1": 7, "target": 8, "code": "Iris", "name": "Concuss",
                                 "status": "concussed", "from": "object"}]
     assert got["on"] == [0, 1, 0] and got["styles"] == ["CONCUSSED", "GRAVNET"]
