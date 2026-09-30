@@ -19,9 +19,9 @@
   },
   "Ascent": {
    "image_sha": "287357fcfce2",
-   "sight_sha": "b94cdfc70064",
-   "walk_sha": "d2af707dfed7",
-   "walkable_cells": 5302,
+   "sight_sha": "1a982c9423cd",
+   "walk_sha": "d9f16f42e3b3",
+   "walkable_cells": 5296,
    "cell_m": 1.116,
    "tags": 0,
    "see_across_paint": false,
@@ -32,7 +32,10 @@
     "blocked": 2,
     "share": 0.0042,
     "passes": true
-   }
+   },
+   "paints": [
+    "cover_paint"
+   ]
   },
   "Bind": {
    "image_sha": "84f5ff72aa58",
