@@ -75,8 +75,9 @@ A fresh reviewer found 2 blockers and 6 should-fixes; all applied.
   `knew_b` (same per-tick encoding as `states`), with their own offsets in a header key `knew_checkpoints`. Old
   rows and old viewers read the true view exactly as today; the viewer shows the picker only when the streams are
   there. No further revision: this branch stacks on the space-taken branch, which already bumps
-  `CONTROL_REVISION` to 2 (unreleased), so one recompute fills both. `compute_control.py --no-knew` computes
-  without it (true view only).
+  `CONTROL_REVISION` to 2 (unreleased), so one recompute fills both. If revision 2 ships and is recomputed before
+  this branch lands, this branch needs its own bump. (A `--no-knew` flag was dropped: rows computed with it would
+  look fresh and never get their knowledge streams.)
 - **B2 Unknown enemies are a region, not absent (tier 2, card D7).** "Absent" made the whole map T's safe space at
   every round start. Instead, an enemy T doesn't see now is a **possible-positions region**: from where T last saw
   them (or their spawn position at the round start, if never seen), through walkable cells T doesn't watch, out to
