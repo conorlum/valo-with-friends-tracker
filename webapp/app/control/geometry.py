@@ -21,8 +21,9 @@ CORNER_TOLERANCE_M of wall in total. The cell-to-cell visibility bitsets (each w
 360-degree view, about 11 MB a map) are built on demand into a local cache keyed by a hash of the
 masks and these parameters, never committed (R2).
 
-Local tooling only: neither the web app nor the upload worker imports `app.control`, which needs
-numpy, scipy and Pillow (tests/replays/test_control_isolation.py).
+Never imported by the web app or the upload worker's server, since `app.control` needs numpy, scipy
+and Pillow (tests/replays/test_control_isolation.py): it runs in scripts/compute_control.py and in
+the worker's control children (replay_worker/control_job.py), which have their own interpreter.
 """
 
 from __future__ import annotations
@@ -176,16 +177,28 @@ class MapMasks:
 
 
 def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
-    """The sight and traversal masks of one minimap (RGBA, PX x PX) and its `tags.json` entry."""
+    """The sight and traversal masks of one minimap (RGBA, PX x PX) and its `tags.json` entry.
+
+    Besides tags, an entry may carry hand paint (PAINT_GRID bits each, drawn with
+    scripts/control_tagger.py): `see_across_paint` opens sight over black; `cover_paint` blocks sight
+    and walking like a `cover` tag (see-across can't open it); `cant_walk_paint` only removes walkable
+    ground (a drop you can see across, a ledge); `uncertain_paint` changes neither mask (a note of
+    where the 2D map is doubtful; build_control_geometry.py counts it)."""
     entry = entry or {}
     base = _base_masks(rgba, GLYPH_SATURATION, DETECTOR_DEFAULTS["line_lum"])
     shapes = tag_shapes(rgba, entry)
-    sight = ~base["opaque"] | shapes["cover"]
+    # What each Stage 6 paint means; no map has one yet, so no stored round changes.
+    cover = shapes["cover"]
+    if entry.get("cover_paint"):
+        cover = cover | unpack_paint(entry["cover_paint"])
+    sight = ~base["opaque"] | cover
     see_across = shapes["seeacross"].copy()
     if entry.get("see_across_paint"):
         see_across |= unpack_paint(entry["see_across_paint"])
-    sight &= ~see_across | shapes["cover"]
-    walk = base["opaque"] & ~shapes["cover"]
+    sight &= ~see_across | cover
+    walk = base["opaque"] & ~cover
+    if entry.get("cant_walk_paint"):
+        walk &= ~unpack_paint(entry["cant_walk_paint"])
     return MapMasks(sight, walk)
 
 

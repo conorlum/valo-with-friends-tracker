@@ -1927,3 +1927,5 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 .replay-key-heat::before { border-radius: 2px; background: var(--key); }
 .replay-key-heat.replay-key-heat-contested::before { border-radius: 2px; background: repeating-linear-gradient(45deg, var(--kx) 0 3px, var(--ky) 3px 6px); }
 .replay-heatmap-sample { color: var(--ink-muted); font-size: 0.85rem; }
+/* /stats map control placeholder (map control Stage 7) */
+.map-control-soon { margin-left: 0.4rem; font-size: 0.72rem; vertical-align: middle; background: transparent; border: 1px solid var(--border-strong); color: var(--ink-secondary); }

@@ -41,6 +41,17 @@ def test_the_worker_copied_code_stays_stdlib_only():
         assert not heavy, f"{path.name} imports {sorted(heavy)}"
 
 
+def test_the_worker_server_never_loads_the_engine():
+    # Map control runs in child processes (replay_worker/control_job.py) with their own interpreter;
+    # the server itself stays importable where there is no numpy (docs/map-control-worker-plan.md).
+    code = ("import sys, replay_worker.server; "
+            "print(sorted(m for m in sys.modules if m.split('.')[0] in ('numpy', 'scipy', 'PIL') "
+            "or m.startswith(('app.control', 'replay_worker.control_job'))))")
+    out = subprocess.run([sys.executable, "-c", code], cwd=WEBAPP.parent, capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().splitlines()[-1] == "[]"
+
+
 def test_the_web_apps_control_views_import_nothing_heavy():
     # numpy is already loaded by the web app (fight-EV), so the runtime check above can't see it.
     for path in (WEBAPP / "app" / "services" / "replay_control.py",

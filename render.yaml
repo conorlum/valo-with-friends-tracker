@@ -34,6 +34,10 @@ services:
           type: pserv
           name: replay-worker
           property: hostport
+      # Map control for new replays on the worker (docs/map-control-worker-plan.md). Off until the
+      # user turns it on: uncomment (or set it in the dashboard) once the new worker image is built.
+      # - key: REPLAY_CONTROL_REMOTE
+      #   value: "true"
   # Stage 3: parses uploaded .vrf files (replay_worker/). Private: reachable only from the web
   # service over Render's private network. No DB credentials and no secrets: it only parses.
   - type: pserv

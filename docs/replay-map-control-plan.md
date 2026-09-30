@@ -626,7 +626,14 @@ Each stage is a PR, or a commit on this branch, with tests. A stage that changes
    - The per-player table and click-to-highlight.
    - Check visually with the local harness (Chrome screenshots time out on these pages).
    - Claude lists rounds and the user picks the review set to tune the rules.
+   - **Built 2026-09-30 (AFK run; steps in `docs/map-control-stages-4-7-impl.md`).** The layer, the Control tab
+     (round and match), click-to-highlight, `/replays/{uuid}/control/players.json`, and a local preview
+     (`scripts/export_replay_preview.py` + `render_replay_standalone.py`). No rule changed; the tuning shortlist
+     is with the user.
 5. **Match heatmap.** Built from the stored per-section totals, with time sections and the side/team toggle.
+   **Built 2026-09-30:** `/replays/{uuid}/control/heatmap.json` and the section under the player.
 6. **Polished drawing page.** Over the minimap: see-across, can't-walk, cover and uncertain zones, beyond the
-   minimal tagging page from 0a.
-7. **/stats placeholder.** The "Coming soon" card next to the map side card, hidden in demo mode.
+   minimal tagging page from 0a. **Built 2026-09-30** on its own branch: `scripts/control_tagger.py` (a local
+   tool) and the cover, can't-walk and uncertain paints in `geometry.masks`.
+7. **/stats placeholder.** The "Coming soon" card next to the map side card, hidden in demo mode. **Built
+   2026-09-30** on its own branch; the per-map aggregate that replaces it is on a later branch.

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -71,6 +71,27 @@ def friends_career_fragment(request: Request, db: Session = Depends(get_db)):
         return HTMLResponse(f'<p class="page-meta">{FRIENDS_LOGIN_NOTE}</p>')
     context = _friends_context(db, viewer.id, "career")
     return templates.TemplateResponse(request, "stats/_stats_sections.html", context)
+
+
+@router.get("/map-control")
+def map_control_fragment(request: Request, group: str = "all", db: Session = Depends(get_db)):
+    """The map control card's table (docs/replay-map-control-plan.md, "Heatmaps"; R3.4), loaded by htmx.
+    Friends: replays with the viewer or their friendships in them (never tracked_players.json). 404 on
+    the demo site, where there are no replays."""
+    from app.config import settings
+    from app.services import replay_control_views as control_views
+    from app.services.site_stats import viewer_group_player_ids
+
+    if settings.demo_mode:
+        raise HTTPException(status_code=404)
+    viewer = get_current_player(request, db) if group == "friends" else None
+    if group == "friends" and viewer is not None:
+        ids = control_views.friends_replay_ids(db, viewer_group_player_ids(db, viewer.id))
+        rows, label = control_views.map_aggregate(db, ids), "replays with you or your friends in them"
+    else:
+        rows, label = control_views.map_aggregate(db), "every uploaded replay"
+    return templates.TemplateResponse(request, "stats/_map_control_table.html", {
+        "rows": rows, "label": label, "min_rounds": control_views.MIN_ROUNDS_PER_MAP})
 
 
 @router.get("/all")

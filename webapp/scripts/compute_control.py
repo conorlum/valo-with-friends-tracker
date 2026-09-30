@@ -1,6 +1,8 @@
 """Computes and stores map control for every replay round that has none, or whose inputs changed
 (docs/replay-map-control-plan.md, "Where it runs"; Stage 3). A local command: never part of the
-upload job, and the web app never runs the engine.
+upload job, and the web app never runs the engine. New rounds of linked replays can also be computed
+on the replay worker (docs/map-control-worker-plan.md, off unless REPLAY_CONTROL_REMOTE is set);
+stale rounds are always this command's.
 
     .\\.venv313\\Scripts\\python.exe scripts\\with_friends_db.py --expect-database valowithfriendsdb --read-only scripts\\compute_control.py --dry-run
     .\\.venv313\\Scripts\\python.exe scripts\\with_friends_db.py --expect-database valowithfriendsdb scripts\\compute_control.py
@@ -37,13 +39,13 @@ import ctypes
 import os
 import sys
 import time
-import traceback
-from datetime import datetime, timezone
 from collections import Counter
 from pathlib import Path
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBAPP_ROOT))
+
+from app.control.task import compute_task, peak_memory  # noqa: E402,F401  (stdlib at import; the engine loads per task)
 
 GB = 1024 ** 3
 FIRST_PEAK_GUESS = 0.5 * GB    # a worker's peak before one is measured (real rounds: ~0.2 GB)
@@ -78,33 +80,6 @@ def free_memory() -> int | None:
     return None
 
 
-def peak_memory() -> int | None:
-    """This process's peak working set in bytes."""
-    if sys.platform == "win32":
-        class Counters(ctypes.Structure):
-            _fields_ = [("cb", ctypes.c_ulong), ("PageFaultCount", ctypes.c_ulong),
-                        ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
-                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                        ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
-        counters = Counters()
-        counters.cb = ctypes.sizeof(Counters)
-        # Declared types: an undeclared HANDLE is truncated to 32 bits on 64-bit Windows.
-        current = ctypes.windll.kernel32.GetCurrentProcess
-        current.restype = ctypes.c_void_p
-        info = ctypes.windll.psapi.GetProcessMemoryInfo
-        info.argtypes = [ctypes.c_void_p, ctypes.POINTER(Counters), ctypes.c_ulong]
-        if info(current(), ctypes.byref(counters), counters.cb):
-            return int(counters.PeakWorkingSetSize)
-        return None
-    try:
-        import resource
-
-        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
-    except (ImportError, OSError):
-        return None
-
-
 def room_for_one(free: int | None, headroom: int, peak: float, young: int) -> bool:
     """Whether another round fits: free RAM, less what the `young` rounds (started too recently to
     have allocated yet) will still take, covers the headroom plus one more peak."""
@@ -131,31 +106,8 @@ def eta_seconds(finished: list[float], remaining: int, window: int = ETA_WINDOW)
 
 
 # ---------------------------------------------------------------- one round, in a worker
-
-_GEOMETRY: dict = {}
-
-
-def compute_task(task: dict) -> dict:
-    """Runs in a worker process: blob and link in, the row's bytes (or its failure) out."""
-    started = time.time()
-    try:
-        from app.control import engine, geometry
-        from app.control.encode import encode_data, encode_summary
-        from app.replays import format as fmt
-
-        name = task["map"]
-        if name not in _GEOMETRY:
-            _GEOMETRY[name] = geometry.visibility(geometry.load_geometry(name))
-        blob = fmt.decode_blob(task["blob"])
-        link = engine.ControlLink(sides={int(s): side for s, side in task["link"]["sides"].items()},
-                                  db_deaths=tuple((int(s), float(t)) for s, t in task["link"]["db_deaths"]))
-        rc = engine.compute_round(blob, _GEOMETRY[name], link)
-        result = {"status": "ok", "data": encode_data(rc, blob), "summary": encode_summary(rc, blob),
-                  "missing": dict(rc.missing_inputs)}
-    except Exception as error:  # noqa: BLE001 - stored as the round's failure
-        result = {"status": "failed", "error": f"{type(error).__name__}: {error}\n{traceback.format_exc()[-1500:]}"}
-    result.update({"key": task["key"], "seconds": time.time() - started, "peak": peak_memory()})
-    return result
+# app/control/task.py (shared with the replay worker's control child): blob and link in, the
+# row's bytes (or its failure) out, run in the pool's processes.
 
 
 # ---------------------------------------------------------------- the run
@@ -183,26 +135,10 @@ def describe(planned) -> list[str]:
 
 
 def store_result(session_factory, planned, result: dict) -> str:
-    from sqlalchemy.exc import IntegrityError
+    """app/services/replay_control_store.py, with the fingerprint the round was planned with."""
+    from app.services.replay_control_store import store_round
 
-    from app.models.replay import ReplayRoundControl
-    from app.replays import control_format as cf
-
-    session = session_factory()
-    try:
-        ok = result["status"] == "ok"
-        session.merge(ReplayRoundControl(
-            replay_id=planned.replay_id, round_number=planned.round_number, status=result["status"],
-            fingerprint=planned.fingerprint, data_version=cf.DATA_VERSION if ok else None,
-            data=result.get("data"), summary=result.get("summary"), error=result.get("error"),
-            computed_at=datetime.now(timezone.utc)))
-        session.commit()
-        return "stored"
-    except IntegrityError:
-        session.rollback()
-        return "skipped: the replay changed while computing (re-ingested?)"
-    finally:
-        session.close()
+    return store_round(session_factory, planned.replay_id, planned.round_number, planned.fingerprint, result)
 
 
 def run(planned, args, session_factory) -> int:
