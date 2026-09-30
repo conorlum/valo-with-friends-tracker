@@ -33,8 +33,10 @@
     "share": 0.0042,
     "passes": true
    },
+   "barrier_sha": "5834141b5141",
    "paints": [
-    "cover_paint"
+    "cover_paint",
+    "barrier_paint"
    ]
   },
   "Bind": {
