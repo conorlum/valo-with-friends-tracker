@@ -778,6 +778,17 @@
       });
     });
     if (!this.control) this.layers.control = false;
+    this.controlView = "true";
+    this.ui.controlView = q("[data-replay-control-view]");
+    this.ui.controlViewWrap = q("[data-replay-control-view-wrap]");
+    if (this.ui.controlView) {
+      this.ui.controlView.addEventListener("change", function () {
+        self.controlView = self.ui.controlView.value;
+        self.controlPaint = null;
+        self.refreshControl();
+        self.draw();
+      });
+    }
     Array.prototype.forEach.call(this.root.querySelectorAll("[data-replay-control-scope]"), function (button) {
       button.addEventListener("click", function () {
         self.controlScope = button.getAttribute("data-replay-control-scope");
@@ -1530,6 +1541,7 @@
     var self = this, n = this.number, i = this.rounds.indexOf(n);
     var prev = this.rounds[i - 1], next = this.rounds[i + 1];
     if (this.ui.controlLegend) this.ui.controlLegend.hidden = !this.layers.control;
+    if (this.ui.controlViewWrap && !this.layers.control) this.ui.controlViewWrap.hidden = true;
     this.controlCache.keep([prev, n, next]);
     if (!this.layers.control && this.highlight === null) { this.setControlStatus(""); return; }
     if (!this.controlCache.ready(n)) this.setControlStatus("Loading map control…");
@@ -1538,6 +1550,12 @@
       var text = value.status === "ok"
         ? (value.stale ? "Computed from older inputs; it will be refreshed." : "")
         : CONTROL_STATUS[value.status] || CONTROL_STATUS.unavailable;
+      self.showControlViews(value);
+      var knowing = value.status === "ok" ? self.knowingGroup(value) : null;
+      if (knowing) {
+        text = (text ? text + " " : "") + "Showing what " + self.groupName(knowing) + " knew: enemies it saw are " +
+          "exact; others could be anywhere they could have run to unseen. The table and highlight stay true.";
+      }
       if (value.status === "ok" && self.highlight !== null) {
         text = (text ? text + " " : "") + "Showing " + self.nameOf(self.highlight).split("#")[0] +
           "'s control (filled) and coverage (outlined): click them again or press Esc to clear.";
@@ -1546,6 +1564,23 @@
       self.draw();
     });
     if (next !== undefined && this.layers.control) this.controlCache.get(next);
+  };
+
+  // "Team 1" / "Team 2" for a side group, from the linked players; else "side A" / "side B".
+  ReplayViewer.prototype.groupName = function (group) {
+    var team = controlApi().groupTeams(this.linked && this.linked.players)[group];
+    return team ? team.replace("team-", "Team ") : "side " + group;
+  };
+
+  // The "as ... knew it" picker: shown only for a round stored with the knowledge streams.
+  ReplayViewer.prototype.showControlViews = function (value) {
+    var wrap = this.ui.controlViewWrap, select = this.ui.controlView, self = this;
+    if (!wrap || !select) return;
+    var has = !!(value && value.status === "ok" && value.parsed.knew_a && value.parsed.knew_b);
+    wrap.hidden = !has || !this.layers.control;
+    Array.prototype.forEach.call(select.querySelectorAll("[data-knew-group]"), function (option) {
+      option.textContent = self.groupName(option.getAttribute("data-knew-group")) + " knew it";
+    });
   };
 
   // Group (A/B) -> the RGB its players are drawn in: their team's colour, else the side's.
@@ -1571,20 +1606,22 @@
 
   // Paints the layer (and the highlight) for the tick at t into offscreen images, only when the
   // round, the tick, the highlight or the switches change, then draws them over the map.
-  ReplayViewer.prototype.drawControl = function (ctx, size) {
+  ReplayViewer.prototype.drawControl = function (ctx, size, hits) {
     if (!this.control || (!this.layers.control && this.highlight === null)) return;
     var value = this.controlCache.ready(this.number);
     if (!value) return;
     var C = controlApi(), parsed = value.parsed, tick = C.tickAt(parsed.times, this.t);
     if (tick < 0) return;
-    var key = [this.number, tick, this.layers.control, this.highlight].join(":");
+    var knowing = this.knowingGroup(value);
+    var key = [this.number, tick, this.layers.control, this.highlight, knowing].join(":");
     if (this.controlPaint !== key) {
       this.controlPaint = key;
       var colors = this.controlColors();
       if (this.layers.control) {
         var img = this.controlCanvas("states");
         img.data = img.data || img.ctx.createImageData(CONTROL_PX, CONTROL_PX);
-        C.paintStates(img.data.data, CONTROL_PX, parsed.walk, value.cursor.states(tick), colors);
+        var codes = knowing ? value.cursor.knew("knew_" + knowing.toLowerCase(), tick) : value.cursor.states(tick);
+        C.paintStates(img.data.data, CONTROL_PX, parsed.walk, codes, colors);
         img.ctx.putImageData(img.data, 0, 0);
       }
       if (this.highlight !== null) {
@@ -1601,6 +1638,35 @@
     if (this.layers.control) ctx.drawImage(this.controlCanvas("states").canvas, 0, 0, size, size);
     if (this.highlight !== null) ctx.drawImage(this.controlCanvas("highlight").canvas, 0, 0, size, size);
     ctx.restore();
+    if (knowing && this.layers.control) this.drawLostEnemies(ctx, size, value, knowing, hits || []);
+  };
+
+  // The side group whose picture the layer shows ("A" / "B"), or null for the true positions (also
+  // for a row stored without the knowledge streams).
+  ReplayViewer.prototype.knowingGroup = function (value) {
+    if (!this.controlView || this.controlView === "true") return null;
+    var parsed = value && value.parsed;
+    return parsed && parsed["knew_" + this.controlView.toLowerCase()] ? this.controlView : null;
+  };
+
+  // In a team's picture: each enemy it just lost sight of, as a dashed diamond at the last-seen point
+  // fading over the header's knew_fade_s.
+  ReplayViewer.prototype.drawLostEnemies = function (ctx, size, value, group, hits) {
+    var header = value.parsed.header, fade = header.knew_fade_s || 3, s = size / UV, self = this;
+    var r = size / 48 / Math.sqrt(this.view.k);
+    controlApi().lostAt((header.knew || {})[group], this.t, fade).forEach(function (lost) {
+      var x = lost.u * s, y = lost.v * s, k = r * 1.1;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0.15, 1 - lost.age / fade);
+      ctx.strokeStyle = self.slotColor(lost.slot);
+      ctx.lineWidth = Math.max(2, r / 4);
+      ctx.setLineDash([r / 3, r / 4]);
+      ctx.beginPath(); ctx.moveTo(x, y - k); ctx.lineTo(x + k, y); ctx.lineTo(x, y + k); ctx.lineTo(x - k, y); ctx.closePath();
+      ctx.stroke();
+      ctx.restore();
+      hits.push({ x: x, y: y, r: k, text: self.nameOf(lost.slot) + " last seen here " +
+        lost.age.toFixed(1) + " s ago" });
+    });
   };
 
   // A click on a player (their dot on the map, or their row in the Control tab) highlights them;
@@ -1842,7 +1908,7 @@
     var r = size / 48 / Math.sqrt(view.k);   // zoomed marks grow, but only by the square root
     var hits = [];
 
-    this.drawControl(ctx, size);   // map control: under everything else
+    this.drawControl(ctx, size, hits);   // map control: under everything else
 
     if (this.layers.abilities) {
       this.drawAbilities(ctx, s, r, hits);
@@ -1877,12 +1943,16 @@
     });
 
     var labels = [];
+    // In a team's picture (R3.3) the true enemy dots are dimmed: that team didn't see them all.
+    var knowing = this.layers.control && this.controlCache ? this.knowingGroup(this.controlCache.ready(this.number)) : null;
     blob.players.forEach(function (p) {
       var slot = String(p.slot);
       var at = trackAt(tracks[slot], t);
       if (!at) return;
       var life = aliveAt(blob.alive[slot], t, blob.t_end);
       var x = at.u * s, y = at.v * s, color = self.slotColor(p.slot, p.side);
+      var dim = knowing && p.side !== knowing ? 0.35 : 1;
+      ctx.globalAlpha = dim;
       ctx.fillStyle = color;
       ctx.strokeStyle = color;
       ctx.lineWidth = Math.max(2, r / 5);
@@ -1892,9 +1962,9 @@
       }
       var rad = at.yaw * Math.PI / 180;
       if (self.layers.cones) {
-        ctx.globalAlpha = 0.35;
+        ctx.globalAlpha = 0.35 * dim;
         ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r * 2.4, rad - 0.4, rad + 0.4); ctx.closePath(); ctx.fill();
-        ctx.globalAlpha = 1;
+        ctx.globalAlpha = dim;
       }
       ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill();
       var img = self.icon(p.agent);
@@ -1927,6 +1997,7 @@
       hits.push({ x: x, y: y, r: r * 1.2, slot: p.slot, text: self.nameOf(p.slot) + " · " + p.agent +
         (life.flags.length ? " · " + life.flags.join(", ") : "") + (self.control ? " · click to show their control" : "") });
     });
+    ctx.globalAlpha = 1;
 
     if (this.layers.abilities) {
       this.drawReveals(ctx, s, r, hits);

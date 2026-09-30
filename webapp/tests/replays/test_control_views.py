@@ -321,6 +321,7 @@ def test_pg_a_linked_page_offers_the_layer_only_on_a_map_that_has_it(pg, condens
     assert 'data-replay-layer="control"' in shown and "/static/js/replay_control.js" in shown
     assert 'data-replay-tab="control"' in shown and "loadControlPlayers" in shown
     assert "data-replay-heatmap" in shown and "loadHeatmap" in shown
+    assert "data-replay-control-view" in shown          # the "as ... knew it" picker (shown once a row has it)
     assert ("cover not reviewed" in shown) == (not rc.map_layer(replay.map_name)["cover_reviewed"])
     monkeypatch.setattr(rc, "map_layer", lambda name: None)
     shown = page()
