@@ -37,7 +37,6 @@ import ctypes
 import os
 import sys
 import time
-from datetime import datetime, timezone
 from collections import Counter
 from pathlib import Path
 
@@ -134,26 +133,10 @@ def describe(planned) -> list[str]:
 
 
 def store_result(session_factory, planned, result: dict) -> str:
-    from sqlalchemy.exc import IntegrityError
+    """app/services/replay_control_store.py, with the fingerprint the round was planned with."""
+    from app.services.replay_control_store import store_round
 
-    from app.models.replay import ReplayRoundControl
-    from app.replays import control_format as cf
-
-    session = session_factory()
-    try:
-        ok = result["status"] == "ok"
-        session.merge(ReplayRoundControl(
-            replay_id=planned.replay_id, round_number=planned.round_number, status=result["status"],
-            fingerprint=planned.fingerprint, data_version=cf.DATA_VERSION if ok else None,
-            data=result.get("data"), summary=result.get("summary"), error=result.get("error"),
-            computed_at=datetime.now(timezone.utc)))
-        session.commit()
-        return "stored"
-    except IntegrityError:
-        session.rollback()
-        return "skipped: the replay changed while computing (re-ingested?)"
-    finally:
-        session.close()
+    return store_round(session_factory, planned.replay_id, planned.round_number, planned.fingerprint, result)
 
 
 def run(planned, args, session_factory) -> int:
