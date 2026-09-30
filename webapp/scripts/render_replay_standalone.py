@@ -5,14 +5,20 @@
 
 Dev-only (W-d): the page inlines the site's `style.css`, `static/js/replay.js`, the player partial
 (`templates/replays/_player.html`), the minimap and agent icons, and every round's blob, so it
-opens from disk with no server. It shows slots, agents and side groups only: no names,
-Subjects or match identifiers. Written under `%TEMP%\\valo-replay\\` by default, never the repo.
+opens from disk with no server. From blobs alone it shows slots, agents and side groups only: no
+names, Subjects or match identifiers. Written under `%TEMP%\\valo-replay\\` by default, never the repo.
+
+A `--blobs` folder written by scripts/export_replay_preview.py also holds the page's site data
+(`context.json`) and map control (`N.control.bin`, `control_players.json`, `control_heatmap_*.json`):
+then the page is the linked one, with player names, the kill feed and the control layer, table and
+heatmap (docs/map-control-stages-4-7-impl.md, S4.5). Such a page names real players: keep it local.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import gzip
 import json
 import os
 import sys
@@ -48,18 +54,45 @@ def load_blobs(folder: Path) -> dict[int, dict]:
     return blobs
 
 
-def render(blobs: dict[int, dict]) -> str:
+def load_site(folder: Path) -> dict | None:
+    """What scripts/export_replay_preview.py wrote beside the blobs: the page's site data and the
+    round control (inlined un-gzipped, as a browser receives it), or None."""
+    context_path = folder / "context.json"
+    if not context_path.is_file():
+        return None
+    site = {"context": json.loads(context_path.read_text(encoding="utf-8")), "control": {}, "players": None,
+            "heatmaps": {}}
+    for path in folder.glob("*.control.bin"):
+        site["control"][path.name.split(".")[0]] = base64.b64encode(gzip.decompress(path.read_bytes())).decode("ascii")
+    if (folder / "control_players.json").is_file():
+        site["players"] = json.loads((folder / "control_players.json").read_text(encoding="utf-8"))
+    for path in folder.glob("control_heatmap_*.json"):
+        site["heatmaps"][path.stem.split("_")[-1]] = json.loads(path.read_text(encoding="utf-8"))
+    return site
+
+
+def render(blobs: dict[int, dict], site: dict | None = None) -> str:
     first = blobs[min(blobs)]
     map_name = first["map"]
     env = Environment(loader=FileSystemLoader(str(APP / "templates")), autoescape=select_autoescape(["html"]))
+    match = (site or {}).get("context", {}).get("match") or {}
+    linked = bool(site and match.get("linked"))
+    control = match.get("control") if linked else None
     player = env.get_template("replays/_player.html").render(
-        replay={"map_name": map_name, "round_numbers": sorted(blobs)}, linked=False)
+        replay={"map_name": map_name, "round_numbers": sorted(blobs)}, linked=linked, control=control)
     agents = sorted({p["agent"] for blob in blobs.values() for p in blob["players"]})
     icons = {a: data_uri(APP / "static" / "img" / "agents" / f"{agent_icon_name(a)}.png") for a in agents}
     payload = {"rounds": {str(n): blob for n, blob in blobs.items()},
                "map": data_uri(APP / "static" / "img" / "maps" / f"{map_name}.png"), "icons": icons}
+    if linked:
+        payload["site"] = site["context"]
+        payload["control"] = site["control"] if control else {}
+        payload["controlPlayers"] = site["players"] if control else None
+        payload["heatmaps"] = site["heatmaps"] if control else {}
     style = (APP / "static" / "css" / "style.css").read_text(encoding="utf-8")
     script = (APP / "static" / "js" / "replay.js").read_text(encoding="utf-8")
+    if control:
+        script += "\n" + (APP / "static" / "js" / "replay_control.js").read_text(encoding="utf-8")
     data = json.dumps(payload, separators=(",", ":")).replace("</", "<\\/")
     return PAGE.replace("__TITLE__", f"{map_name} replay (local preview)").replace("__STYLE__", style) \
         .replace("__PLAYER__", player).replace("__SCRIPT__", script).replace("__DATA__", data)
@@ -83,12 +116,30 @@ __SCRIPT__
   (function () {
     var data = window.REPLAY_DATA;
     var rounds = Object.keys(data.rounds).map(Number).sort(function (a, b) { return a - b; });
-    window.viewer = new Replay.ReplayViewer(document.querySelector("[data-replay]"), {
+    var site = data.site, match = site ? site.match : null;
+    var options = {
       rounds: rounds,
       mapImage: data.map,
       agentIcon: function (agent) { return data.icons[agent] || null; },
-      loadRound: function (n) { return data.rounds[String(n)]; }
-    });
+      loadRound: function (n) {
+        var blob = JSON.parse(JSON.stringify(data.rounds[String(n)]));
+        return site ? Replay.withSiteData(site.rounds[String(n)], blob) : blob;
+      }
+    };
+    if (site && match.linked) {
+      options.linked = { players: site.players, uvPerUnit: match.uv_per_unit };
+      options.roundWinner = function (n) { var r = site.rounds[String(n)]; return r && r.db && r.db.winner; };
+    }
+    if (site && match.control && window.ReplayControl) {
+      options.control = match.control;
+      options.loadControl = function (n) {
+        var raw = data.control[String(n)];
+        return raw ? { status: "ok", buffer: ReplayControl.base64Bytes(raw), stale: false } : { status: "not_ready" };
+      };
+      options.loadControlPlayers = function () { return data.controlPlayers; };
+      options.loadHeatmap = function (view) { return data.heatmaps[view] || null; };
+    }
+    window.viewer = new Replay.ReplayViewer(document.querySelector("[data-replay]"), options);
     window.viewerReady = window.viewer.showRound(rounds[0]);
   })();
 </script>
@@ -104,8 +155,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--vrf", type=Path, help="the export's .vrf (its map and match UUID)")
     parser.add_argument("--out", type=Path, help="the page to write (default under %%TEMP%%\\valo-replay\\)")
     args = parser.parse_args(argv)
+    site = None
     if args.blobs:
         blobs = load_blobs(args.blobs)
+        site = load_site(args.blobs)
         name = args.blobs.name
     else:
         try:
@@ -117,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         name = replay.match_uuid
     out = args.out or Path(os.environ.get("TEMP") or tempfile.gettempdir()) / "valo-replay" / name / "replay-standalone.html"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(blobs), encoding="utf-8")
+    out.write_text(render(blobs, site), encoding="utf-8")
     print(f"{len(blobs)} rounds -> {out}")
     return 0
 
