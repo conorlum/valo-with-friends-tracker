@@ -493,7 +493,8 @@
         if (held > 0) lost.share = shared / held;
       }
       out[team].push({ slot: Number(slot), control: p.control_m2, active: p.active_m2, passive: p.passive_m2,
-                       ratio: p.active_ratio, lost: lost, alive: p.alive_s });
+                       ratio: p.active_ratio, lost: lost, alive: p.alive_s,
+                       taken: scope === "match" ? p.taken_per_round_m2 : p.taken_m2 });
     });
     Object.keys(src.redundant_m2 || {}).forEach(function (group) {
       out.redundant[groupTeam[group] || (group === "B" ? "team-2" : "team-1")] = src.redundant_m2[group];
@@ -1669,7 +1670,9 @@
       '. The share can pass 100%: ground that flips to the enemy counts twice, and ground the enemy gains that the team never held counts too.">' +
       (scope === "match" ? "Lost/death" : "Lost") + "</th>" +
       '<th class="num" title="Average m² in their held cone / of passive vision and their own live utility">Cover a/p</th>' +
-      '<th class="num" title="Active coverage ÷ (active + passive)">Act %</th></tr></thead>';
+      '<th class="num" title="Active coverage ÷ (active + passive)">Act %</th>' +
+      '<th class="num" title="Space taken: ground that was the enemy&#39;s or nobody&#39;s and became the team&#39;s while this player saw it (m²' +
+      (scope === "match" ? ", per round" : "") + ')">Taken</th></tr></thead>';
     box.innerHTML = (rows.stale ? '<p class="replay-side-note">Computed from older inputs; it will be refreshed.</p>' : "") +
       ["team-1", "team-2"].map(function (team) {
         var body = rows[team].map(function (r) {
@@ -1684,11 +1687,12 @@
             '"></span>' + escapeHtml(self.nameOf(r.slot).split("#")[0]) + "</td>" + signedCell(r.control) +
             (now ? (typeof nowValue === "number" ? signedCell(nowValue) : '<td class="num">—</td>') : "") +
             '<td class="num">' + lost + "</td>" + '<td class="num">' + num(r.active) + " / " + num(r.passive) + "</td>" +
-            '<td class="num">' + (typeof r.ratio === "number" ? Math.round(100 * r.ratio) + "%" : "—") + "</td></tr>";
+            '<td class="num">' + (typeof r.ratio === "number" ? Math.round(100 * r.ratio) + "%" : "—") + "</td>" +
+            '<td class="num">' + num(r.taken) + "</td></tr>";
         }).join("");
         var redundant = rows.redundant[team];
         var foot = '<tr class="replay-control-redundant"><td title="The team&#39;s own area minus its players&#39; control: space two or more of them hold at once, or none alone">Redundant</td>' +
-          signedCell(redundant) + '<td colspan="' + (now ? 4 : 3) + '"></td></tr>';
+          signedCell(redundant) + '<td colspan="' + (now ? 5 : 4) + '"></td></tr>';
         return '<table class="replay-board-team replay-control-team team-' + team.slice(-1) + '">' + head +
           "<tbody>" + body + foot + "</tbody></table>";
       }).join("");
