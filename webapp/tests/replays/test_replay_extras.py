@@ -173,6 +173,25 @@ def test_a_landed_object_keeps_its_throw_and_a_drone_its_path(tmp_path):
     assert "thrown" not in drone_entry and extras.report["pawn_paths"] == 1
 
 
+def test_a_pawn_carries_when_it_was_possessed_and_its_facing_over_time(tmp_path):
+    # Map control's inputs (revision 10): a camera in use only while possessed, facing its yaw.
+    rows = [spawned(12_000, 42, "Default__Pawn_Gumshoe_E_PossessableCamera_C", 0, 0, yaw=90.0)]
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    table = players()
+    table.possession[42] = [(5_000, 9_000, 1), (20_000, 23_000, 1), (40_000, None, 1)]
+    # World yaw 90 is +y, which is +u on this map: minimap 0. It turns to world 0 (+v, minimap 90).
+    yaws = [(19_000, 90.0), (20_000, 90.0), (20_050, 60.0), (20_200, 89.5), (21_000, 0.0), (21_100, 1.0)]
+    extras = build_extras(path, table, WINDOWS, GAME_MAP, AGENTS, lambda t: {}, lambda guid: [],
+                          pawn_yaws=lambda guid: yaws if guid == 42 else [])
+    [camera] = extras.rounds[1]["abilities"]
+    # The buy-phase possession (5-9 s) ended before the round; the last one is open-ended.
+    assert camera["possessed"] == [[10.0, 13.0], [30.0, None]]
+    # A point when it turned YAW_STEP_DEG or more (20.0 s and 21.1 s didn't), at most one per PATH_STEP_MS.
+    assert camera["yaws"] == [[9.0, 0], [10.05, 30], [10.2, 0], [11.0, 90]]
+    assert extras.report["pawns_possessed"] == 1
+
+
 @pytest.mark.parametrize("code,name,expected", [
     ("E", "Aggrobot_DiscTurret_PowerWave", ("Aggrobot", "E_DiscTurret_PowerWave")),
     ("C", "Grenadier_Flash_Underhand", ("Grenadier", "C_Flash_Underhand")),

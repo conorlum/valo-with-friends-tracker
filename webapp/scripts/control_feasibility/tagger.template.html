@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cover Tagger</title>
+<style>
+  :root {
+    --bg: #15171b; --panel: #1f2228; --text: #e6e8eb; --muted: #9aa1ab; --line: #333842;
+    --cover: #e5484d; --seeover: #f5a524; --walkable: #30a46c; --glyph: #8b8d98; --untagged: #3aa0ff;
+    --good: #30a46c; --critical: #e5484d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+  header { display: flex; gap: 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line);
+           flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  select, button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+                   padding: 5px 10px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  main { display: flex; gap: 16px; padding: 16px; flex-wrap: wrap; }
+  .stage { position: relative; width: min(1024px, 100%); aspect-ratio: 1; flex: none; }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+  #overlay { cursor: crosshair; touch-action: none; }
+  #paint { opacity: 0.55; }
+  button.active { border-color: #be6eff; box-shadow: 0 0 0 1px #be6eff inset; }
+  aside { flex: 1; min-width: 280px; max-width: 460px; display: flex; flex-direction: column; gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
+  .big { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .ok { color: var(--good); } .bad { color: var(--critical); } .muted { color: var(--muted); }
+  .tags { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .tags button { text-align: left; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+  kbd { background: #2a2e36; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td { padding: 2px 0; } td:last-child { text-align: right; }
+  label { display: flex; gap: 6px; align-items: center; }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cover tagger</h1>
+  <select id="map"></select>
+  <label><input type="checkbox" id="showLines" checked> kill lines</label>
+  <label><input type="checkbox" id="onlyBlocked"> blocked only</label>
+  <button id="export">Export tags</button>
+  <button id="importBtn">Import tags</button>
+  <input type="file" id="importFile" accept="application/json" hidden>
+  <span class="legend">
+    <span><span class="sw" style="background:var(--untagged)"></span>untagged</span>
+    <span><span class="sw" style="background:var(--cover)"></span>cover</span>
+    <span><span class="sw" style="background:var(--seeover)"></span>see-over</span>
+    <span><span class="sw" style="background:var(--walkable)"></span>walkable</span>
+    <span><span class="sw" style="background:var(--glyph)"></span>glyph</span>
+    <span><span class="sw" style="background:#462828"></span>inner black area (wall)</span>
+    <span><span class="sw" style="background:#be6eff"></span>see-across</span>
+  </span>
+</header>
+<main>
+  <div class="stage">
+    <canvas id="base" width="1024" height="1024"></canvas>
+    <canvas id="tint" width="1024" height="1024"></canvas>
+    <canvas id="paint" width="256" height="256"></canvas>
+    <canvas id="overlay" width="1024" height="1024"></canvas>
+  </div>
+  <aside>
+    <div class="card">
+      <h2>Mode</h2>
+      <div class="tags">
+        <button id="modeSelect" data-mode="select">Select shapes <kbd>S</kbd></button>
+        <button id="modePaint" data-mode="paint"><span class="sw" style="background:#be6eff"></span>Paint see-across <kbd>P</kbd></button>
+        <button id="modeErase" data-mode="erase">Erase paint <kbd>E</kbd></button>
+        <label>Brush <input type="range" id="brush" min="3" max="60" value="14"> <span id="brushPx">14</span> px</label>
+      </div>
+      <div class="muted" style="font-size:13px;margin-top:6px">Paint any black area you can see across, inside the map or
+        outside it (Abyss's drops). Kill lines pass through painted black; unpainted black is a wall.</div>
+    </div>
+    <div class="card">
+      <h2>Kill-line test (bar 2%)</h2>
+      <div id="stat" class="big">–</div>
+      <div id="statNote" class="muted"></div>
+    </div>
+    <div class="card">
+      <h2>Selected candidate</h2>
+      <div id="sel" class="muted">Click a shape on the map.</div>
+      <div class="tags" style="margin-top:8px">
+        <button data-tag="cover"><span class="sw" style="background:var(--cover)"></span>Cover <kbd>1</kbd></button>
+        <button data-tag="seeover"><span class="sw" style="background:var(--seeover)"></span>See-over <kbd>2</kbd></button>
+        <button data-tag="walkable"><span class="sw" style="background:var(--walkable)"></span>Walkable <kbd>3</kbd></button>
+        <button data-tag="glyph"><span class="sw" style="background:var(--glyph)"></span>Glyph <kbd>4</kbd></button>
+        <button data-tag="seeacross"><span class="sw" style="background:#be6eff"></span>See-across (void) <kbd>5</kbd></button>
+        <button data-tag=""><span class="sw" style="background:var(--untagged)"></span>Clear <kbd>0</kbd></button>
+        <button id="next">Next untagged <kbd>N</kbd></button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>This map</h2>
+      <table id="counts"></table>
+    </div>
+    <div class="card muted" style="font-size:13px">
+      Walls (alpha) always block. A shape blocks sight only once tagged <b>cover</b>. Shapes players stood in
+      ("occupied") are usually boxes you can stand on or floor, not full cover. Kill lines through the selected
+      shape are drawn thicker. Tags live in this browser; <b>Export tags</b> writes <code>control-tags.json</code>
+      for Stage 1.
+    </div>
+  </aside>
+</main>
+<script>
+var DATA = /*DATA*/null;
+var TAGS_KEY = "control-tags-v1";
+var COLOURS = { cover: [229, 72, 77], seeover: [245, 165, 36], walkable: [48, 164, 108], glyph: [139, 141, 152],
+                seeacross: [190, 110, 255], "": [58, 160, 255], void: [70, 40, 40] };
+var PAINT_KEY = "control-paint-v1";
+var P = 256, PCELL = 1024 / P;          // see-across paint grid: 256 x 256 cells of 4 px
+var END_SKIP = 3;                        // same as risk1.py: ignore 3 px at each end of a kill line
+var tags = loadTags();
+var paints = loadPaints();               // map -> Uint8Array(P * P), 1 = see-across
+var state = { map: null, labels: null, walk: null, selected: 0, mode: "select", brush: 14, linePx: [] };
+var $ = function (id) { return document.getElementById(id); };
+
+function loadTags() {
+  try { return JSON.parse(localStorage.getItem(TAGS_KEY)) || {}; } catch (e) { return {}; }
+}
+function saveTags() {
+  try { localStorage.setItem(TAGS_KEY, JSON.stringify(tags)); } catch (e) { /* private window */ }
+}
+function packPaint(arr) {
+  var bytes = new Uint8Array(arr.length / 8);
+  for (var i = 0; i < arr.length; i++) if (arr[i]) bytes[i >> 3] |= 1 << (i & 7);
+  var s = ""; for (var j = 0; j < bytes.length; j++) s += String.fromCharCode(bytes[j]);
+  return btoa(s);
+}
+function unpackPaint(b64) {
+  var s = atob(b64), arr = new Uint8Array(P * P);
+  for (var i = 0; i < arr.length; i++) arr[i] = (s.charCodeAt(i >> 3) >> (i & 7)) & 1;
+  return arr;
+}
+function loadPaints() {
+  var out = {};
+  try {
+    var raw = JSON.parse(localStorage.getItem(PAINT_KEY)) || {};
+    Object.keys(raw).forEach(function (k) { out[k] = unpackPaint(raw[k]); });
+  } catch (e) { /* none yet */ }
+  return out;
+}
+function savePaints() {
+  try {
+    var raw = {};
+    Object.keys(paints).forEach(function (k) { if (paints[k].some(function (v) { return v; })) raw[k] = packPaint(paints[k]); });
+    localStorage.setItem(PAINT_KEY, JSON.stringify(raw));
+  } catch (e) { /* private window */ }
+}
+function mapPaint() { return (paints[state.map] = paints[state.map] || new Uint8Array(P * P)); }
+function painted(i) { var x = i & 1023, y = i >> 10; return mapPaint()[(y >> 2) * P + (x >> 2)] === 1; }
+
+// A kill line's pixels, rasterised like risk1.py (numpy linspace + round), ends trimmed.
+function linePixels(l) {
+  var n = Math.max(Math.abs(l[2] - l[0]), Math.abs(l[3] - l[1]));
+  var out = [];
+  for (var i = END_SKIP; i <= n - END_SKIP; i++) {
+    var x = Math.round(l[0] + (l[2] - l[0]) * i / n), y = Math.round(l[1] + (l[3] - l[1]) * i / n);
+    out.push(y * 1024 + x);
+  }
+  return out;
+}
+function mapTags() { return (tags[state.map] = tags[state.map] || {}); }
+function tagOf(id) { return mapTags()[id] || ""; }
+
+function loadImage(b64) {
+  return new Promise(function (resolve) {
+    var img = new Image();
+    img.onload = function () { resolve(img); };
+    img.src = "data:image/png;base64," + b64;
+  });
+}
+
+function selectMap(name) {
+  state.map = name; state.selected = 0;
+  var m = DATA[name];
+  Promise.all([loadImage(m.image), loadImage(m.labels), loadImage(m.walk)]).then(function (imgs) {
+    var base = $("base").getContext("2d");
+    base.fillStyle = "#0d0e10"; base.fillRect(0, 0, 1024, 1024);
+    base.drawImage(imgs[0], 0, 0);
+    var c = document.createElement("canvas"); c.width = c.height = 1024;
+    var cx = c.getContext("2d"); cx.drawImage(imgs[1], 0, 0);
+    var px = cx.getImageData(0, 0, 1024, 1024).data;
+    var labels = new Int32Array(1024 * 1024);
+    for (var i = 0; i < labels.length; i++) labels[i] = px[i * 4] + 256 * px[i * 4 + 1];
+    cx.clearRect(0, 0, 1024, 1024); cx.drawImage(imgs[2], 0, 0);
+    var wp = cx.getImageData(0, 0, 1024, 1024).data, walk = new Uint8Array(1024 * 1024);
+    for (var k = 0; k < walk.length; k++) walk[k] = wp[k * 4] > 127 ? 1 : 0;
+    state.labels = labels; state.walk = walk;
+    state.byId = {};
+    m.candidates.forEach(function (cand) { state.byId[cand.id] = cand; });
+    state.linePx = m.lines.map(linePixels);
+    paintTint(); drawPaint(); paintOverlay(); updateStats(); showSelected();
+  });
+}
+
+function paintTint() {
+  var ctx = $("tint").getContext("2d");
+  var img = ctx.createImageData(1024, 1024);
+  var d = img.data, labels = state.labels, t = mapTags();
+  for (var i = 0; i < labels.length; i++) {
+    var id = labels[i];
+    if (!id) continue;
+    var isVoid = state.byId[id] && state.byId[id].kind === "void";
+    var col = t[id] ? COLOURS[t[id]] : (isVoid ? COLOURS.void : COLOURS[""]);
+    var a = id === state.selected ? 255 : (t[id] ? 200 : (isVoid ? 110 : 150));
+    d[i * 4] = col[0]; d[i * 4 + 1] = col[1]; d[i * 4 + 2] = col[2]; d[i * 4 + 3] = a;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+// Why a line is blocked: "outer" (black outside the map, unpainted), "void" (inner black area, not
+// see-across), "cover" (a shape tagged cover), or "" (clear).
+function blockReason(li) {
+  var t = mapTags(), pxs = state.linePx[li], labels = state.labels, walk = state.walk;
+  var reason = "";
+  for (var k = 0; k < pxs.length; k++) {
+    var p = pxs[k], id = labels[p];
+    if (id) {
+      var c = state.byId[id];
+      if (c && c.kind === "void") {
+        if (t[id] !== "seeacross" && !painted(p)) return "void";
+      } else if (t[id] === "cover") {
+        reason = "cover";
+      }
+    } else if (!walk[p] && !painted(p)) {
+      return "outer";
+    }
+  }
+  return reason;
+}
+function blocks(line, li) { return blockReason(li) !== ""; }
+
+function paintOverlay() {
+  var ctx = $("overlay").getContext("2d");
+  ctx.clearRect(0, 0, 1024, 1024);
+  if (!$("showLines").checked) return;
+  var only = $("onlyBlocked").checked;
+  DATA[state.map].lines.forEach(function (l, li) {
+    var b = blocks(l, li), through = state.selected && l[5].indexOf(state.selected) >= 0;
+    if (only && !b && !through) return;
+    ctx.strokeStyle = b ? "rgba(229,72,77,0.9)" : (through ? "rgba(255,255,255,0.95)" : "rgba(48,164,108,0.45)");
+    ctx.lineWidth = through ? 2.5 : 1;
+    ctx.beginPath(); ctx.moveTo(l[0] + 0.5, l[1] + 0.5); ctx.lineTo(l[2] + 0.5, l[3] + 0.5); ctx.stroke();
+  });
+}
+
+function updateStats() {
+  var m = DATA[state.map], lines = m.lines;
+  if (!lines.length) {
+    $("stat").textContent = "no replays";
+    $("stat").className = "big muted";
+    $("statNote").textContent = "This map has no replay yet, so tags can't be checked. It gets the layer after its first replay passes.";
+  } else {
+    var why = { outer: 0, "void": 0, cover: 0 };
+    lines.forEach(function (l, li) { var r = blockReason(li); if (r) why[r]++; });
+    var blocked = why.outer + why["void"] + why.cover;
+    var share = blocked / lines.length;
+    $("stat").textContent = (share * 100).toFixed(1) + "% blocked";
+    $("stat").className = "big " + (share <= 0.02 ? "ok" : "bad");
+    $("statNote").textContent = blocked + " of " + lines.length + " non-wallbang bullet kills from " + m.replays +
+      " replay(s): " + why.outer + " by black outside the map, " + why["void"] + " by black areas inside it, " +
+      why.cover + " by tagged cover.";
+  }
+  var t = mapTags(), counts = { cover: 0, seeover: 0, walkable: 0, glyph: 0, "": 0 };
+  m.candidates.forEach(function (c) { counts[t[c.id] || ""]++; });
+  $("counts").innerHTML = [["Candidates", m.candidates.length], ["Untagged", counts[""]], ["Cover", counts.cover],
+    ["See-over", counts.seeover], ["Walkable", counts.walkable], ["Glyph", counts.glyph]]
+    .map(function (r) { return "<tr><td>" + r[0] + "</td><td>" + r[1] + "</td></tr>"; }).join("");
+}
+
+function showSelected() {
+  var c = state.byId && state.byId[state.selected];
+  if (!c) { $("sel").textContent = "Click a shape on the map."; return; }
+  var through = DATA[state.map].lines.filter(function (l) { return l[5].indexOf(c.id) >= 0 && !l[4]; }).length;
+  var kinds = { closed: "closed shape", line: "drawn line", "void": "black area inside the map (a wall unless see-across)" };
+  $("sel").innerHTML = "<b>#" + c.id + "</b> " + kinds[c.kind] +
+    ", " + c.px + " px<br>Tag: <b>" + (tagOf(c.id) || "untagged") + "</b><br>" +
+    "Kill lines through it: <b>" + through + "</b>" + (through ? " (these would be blocked as cover)" : "") + "<br>" +
+    "Player samples inside: <b>" + (c.occupancy || 0) + "</b>" + (c.occupancy ? " (people stood here)" : "");
+  $("sel").className = "";
+}
+
+function setTag(tag) {
+  if (!state.selected) return;
+  if (tag) mapTags()[state.selected] = tag; else delete mapTags()[state.selected];
+  saveTags(); paintTint(); paintOverlay(); updateStats(); showSelected();
+}
+
+function nextUntagged() {
+  var list = DATA[state.map].candidates, t = mapTags();
+  var start = list.findIndex(function (c) { return c.id === state.selected; });
+  for (var k = 1; k <= list.length; k++) {
+    var c = list[(start + k + list.length) % list.length];
+    if (!t[c.id]) { state.selected = c.id; paintTint(); paintOverlay(); showSelected(); return; }
+  }
+}
+
+function drawPaint() {
+  var ctx = $("paint").getContext("2d"), img = ctx.createImageData(P, P), d = img.data, arr = mapPaint();
+  for (var i = 0; i < arr.length; i++) if (arr[i]) {
+    d[i * 4] = 190; d[i * 4 + 1] = 110; d[i * 4 + 2] = 255; d[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+function toMap(e) {
+  var r = $("overlay").getBoundingClientRect();
+  return [(e.clientX - r.left) / r.width * 1024, (e.clientY - r.top) / r.height * 1024];
+}
+function dab(x, y) {
+  var arr = mapPaint(), v = state.mode === "paint" ? 1 : 0, rad = state.brush / PCELL;
+  var cx = x / PCELL, cy = y / PCELL;
+  for (var gy = Math.max(0, Math.floor(cy - rad)); gy <= Math.min(P - 1, Math.ceil(cy + rad)); gy++)
+    for (var gx = Math.max(0, Math.floor(cx - rad)); gx <= Math.min(P - 1, Math.ceil(cx + rad)); gx++)
+      if ((gx + 0.5 - cx) * (gx + 0.5 - cx) + (gy + 0.5 - cy) * (gy + 0.5 - cy) <= rad * rad) arr[gy * P + gx] = v;
+}
+function setMode(mode) {
+  state.mode = mode;
+  ["Select", "Paint", "Erase"].forEach(function (n) {
+    $("mode" + n).classList.toggle("active", $("mode" + n).getAttribute("data-mode") === mode);
+  });
+}
+var stroke = null;
+$("overlay").addEventListener("pointerdown", function (e) {
+  if (state.mode === "select") return;
+  var p = toMap(e); stroke = p; dab(p[0], p[1]); drawPaint();
+  $("overlay").setPointerCapture(e.pointerId);
+});
+$("overlay").addEventListener("pointermove", function (e) {
+  if (!stroke) return;
+  var p = toMap(e), dx = p[0] - stroke[0], dy = p[1] - stroke[1];
+  var steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 3));
+  for (var s = 1; s <= steps; s++) dab(stroke[0] + dx * s / steps, stroke[1] + dy * s / steps);
+  stroke = p; drawPaint();
+});
+function endStroke() {
+  if (!stroke) return;
+  stroke = null; savePaints(); paintOverlay(); updateStats();
+}
+$("overlay").addEventListener("pointerup", endStroke);
+$("overlay").addEventListener("pointercancel", endStroke);
+$("brush").addEventListener("input", function () { state.brush = +this.value; $("brushPx").textContent = this.value; });
+["Select", "Paint", "Erase"].forEach(function (n) {
+  $("mode" + n).addEventListener("click", function () { setMode(this.getAttribute("data-mode")); });
+});
+
+$("overlay").addEventListener("click", function (e) {
+  if (state.mode !== "select") return;
+  var r = e.target.getBoundingClientRect();
+  var x = Math.floor((e.clientX - r.left) / r.width * 1024), y = Math.floor((e.clientY - r.top) / r.height * 1024);
+  var best = 0;
+  for (var dy = -4; dy <= 4 && !best; dy++) for (var dx = -4; dx <= 4 && !best; dx++) {
+    var xx = x + dx, yy = y + dy;
+    if (xx >= 0 && yy >= 0 && xx < 1024 && yy < 1024) best = state.labels[yy * 1024 + xx];
+  }
+  state.selected = best; paintTint(); paintOverlay(); showSelected();
+});
+document.querySelectorAll("[data-tag]").forEach(function (b) {
+  b.addEventListener("click", function () { setTag(b.getAttribute("data-tag")); });
+});
+$("next").addEventListener("click", nextUntagged);
+document.addEventListener("keydown", function (e) {
+  var keys = { "1": "cover", "2": "seeover", "3": "walkable", "4": "glyph", "5": "seeacross", "0": "" };
+  var modes = { s: "select", p: "paint", e: "erase" };
+  if (e.key in keys) setTag(keys[e.key]);
+  else if (e.key === "n" || e.key === "N") nextUntagged();
+  else if (e.key.toLowerCase() in modes) setMode(modes[e.key.toLowerCase()]);
+});
+$("showLines").addEventListener("change", paintOverlay);
+$("onlyBlocked").addEventListener("change", paintOverlay);
+$("map").addEventListener("change", function () { selectMap(this.value); });
+
+$("export").addEventListener("click", function () {
+  var out = { version: 1, exported: new Date().toISOString(), maps: {} };
+  Object.keys(DATA).forEach(function (name) {
+    var t = tags[name] || {};
+    var byId = {};
+    DATA[name].candidates.forEach(function (c) { byId[c.id] = c; });
+    var rows = Object.keys(t).map(function (id) {
+      var c = byId[id] || {};
+      return { id: +id, tag: t[id], kind: c.kind, bbox: c.bbox, centre: c.centre, px: c.px };
+    });
+    var paint = paints[name] && paints[name].some(function (v) { return v; }) ? packPaint(paints[name]) : null;
+    if (rows.length || paint) {
+      out.maps[name] = { image_sha: DATA[name].image_sha, params: DATA[name].params, tags: rows };
+      // see-across paint: 256 x 256 cells of 4 px, row-major, 1 bit each (LSB first), base64
+      if (paint) out.maps[name].see_across_paint = paint;
+    }
+  });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1)], { type: "application/json" }));
+  a.download = "control-tags.json"; a.click();
+});
+$("importBtn").addEventListener("click", function () { $("importFile").click(); });
+$("importFile").addEventListener("change", function () {
+  var f = this.files[0]; if (!f) return;
+  f.text().then(function (text) {
+    var data = JSON.parse(text);
+    Object.keys(data.maps || {}).forEach(function (name) {
+      if (!DATA[name]) return;
+      if (data.maps[name].image_sha !== DATA[name].image_sha) { console.warn(name + ": minimap changed; skipped"); return; }
+      tags[name] = {};
+      data.maps[name].tags.forEach(function (r) { tags[name][r.id] = r.tag; });
+      if (data.maps[name].see_across_paint) paints[name] = unpackPaint(data.maps[name].see_across_paint);
+    });
+    saveTags(); savePaints(); selectMap(state.map);
+  });
+});
+
+Object.keys(DATA).forEach(function (name) {
+  var o = document.createElement("option");
+  o.value = name; o.textContent = name + (DATA[name].replays ? " (" + DATA[name].replays + " replay" +
+    (DATA[name].replays > 1 ? "s" : "") + ")" : " (no replays)");
+  $("map").appendChild(o);
+});
+var first = Object.keys(DATA).find(function (n) { return DATA[n].replays; }) || Object.keys(DATA)[0];
+$("map").value = first;
+setMode("select");
+selectMap(first);
+</script>
+</body>
+</html>

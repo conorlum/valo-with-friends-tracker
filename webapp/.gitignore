@@ -8,3 +8,4 @@ captured_state/
 scripts/.dumps/
 .impact_eval_cache/
 ingest_ledgers/
+.control_cache/
