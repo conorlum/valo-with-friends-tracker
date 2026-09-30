@@ -1,0 +1,14 @@
+{# Map control on /stats (docs/replay-map-control-plan.md, "Heatmaps"; R3.4): how much of each map attack
+   and defense held, from the stored replay control, loaded after the page. The replay viewer is off on
+   the demo site, so this card is too. #}
+{% if not demo_mode %}
+{% set mc_group = "all" if group == "all" else "friends" %}
+<div class="card map-control-card">
+  <h2>Map control by map</h2>
+  <p class="page-meta">Which side holds more of each map, from uploaded replays' positions. Replays show it round by
+    round: open a match's replay and turn on <strong>Map control</strong>. Per-player numbers are coming.</p>
+  <div hx-get="/stats/map-control?group={{ mc_group }}" hx-trigger="load" hx-swap="innerHTML">
+    <p class="page-meta htmx-indicator">Loading map control&hellip;</p>
+  </div>
+</div>
+{% endif %}
