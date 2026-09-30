@@ -341,7 +341,8 @@ Each needs a condenser change, a `CONDENSE_REVISION` bump and a re-ingest that t
 Stage 2 consumes them.
 
 - Flash and nearsight per-target durations: `initial_duration_seconds` on `valorant_flash_player_hit`;
-  nearsight's `configured_duration_seconds` on its hit rows.
+  nearsight's `configured_duration_seconds` on its hit rows. Also the **hit time**: a blob `flash` or `nearsight`
+  row's `t` is the cast (`read_util` keeps only the cast row's time), so a flash's blind starts at an unknown pop.
 - Camera and drone in-use intervals (`PlayerTable.possession`).
 - Camera and turret yaw over time. Pawn paths today are x/y only, one point per 100 ms (`PATH_STEP_MS`,
   `extras.py:433`; built at `extras.py:1017–1021`).
@@ -528,6 +529,13 @@ Each stage is a PR, or a commit on this branch, with tests. A stage that changes
    - The frontier smoke approximation, its cost, and its difference from the exact recheck on one round (Q70).
    - A list of inputs the condenser does not extract yet.
    - **Gate:** the user reviews the report before Stage 1.
+   - **Measured 2026-09-29, gate pending.** Tooling: `engine_proto.py`, `encode_control.py`, `report_0b.py`. Three
+     rounds (Ascent r4 at 16 Hz, Ascent r23 and Summit r19 at 4 Hz), walls only. The incremental counterfactual
+     costs 0.22–0.74x the base, so 16 Hz holds (Q69); the full recompute is 1.0–4.3x. About 3.5 core-minutes for an
+     average round. The Q70 frontier misses up to 2.6% of cells (sight leaves the free space across wall corners
+     too); seeing from the fill's whole boundary stays under 1% (open: Q73). Everything at 16 Hz is ~610 KB per
+     100 s; states at 16 Hz with highlight masks at 2 Hz is ~390 KB (open: Q74). Browser decode is tens of ms per
+     round. The run found flash and nearsight rows carry the cast time, not the hit (see Inputs the blob lacks).
 1. **Map geometry assets.**
    - A script that builds each map's sight and traversal masks from alpha plus tags, specials, the uncertain badge
      and visibility bitsets into `app/static/data/control/`.
