@@ -16,7 +16,7 @@ sys.path.insert(0, str(HERE.parents[0]))
 from replay_synthetic import MATCH_UUID  # noqa: E402
 from test_control_store import db, factory, linked  # noqa: E402,F401  (fixtures)
 from test_replay_routes import request, status_of  # noqa: E402
-from test_replay_store import condensed  # noqa: E402,F401  (fixture)
+from test_replay_store import condensed, pg  # noqa: E402,F401  (fixtures)
 
 from app.config import settings  # noqa: E402
 from app.models.replay import ReplayRoundControl  # noqa: E402
@@ -168,6 +168,37 @@ def test_demo_mode_and_unknown_replays_are_plain_404s(db, linked, monkeypatch):
     assert status_of(lambda: call_players(db, uuid="not-a-uuid")) == 404
     monkeypatch.setattr(settings, "demo_mode", True)
     assert status_of(lambda: call_players(db)) == 404
+
+
+def test_pg_a_linked_page_offers_the_layer_only_on_a_map_that_has_it(pg, condensed, monkeypatch):
+    from test_replay_store import add_match
+
+    from app.models.replay import Replay
+    from app.replays import store
+
+    monkeypatch.setattr(settings, "demo_mode", False)
+    from app.templates import templates
+
+    session = pg()
+    add_match(session)
+    replay = session.get(Replay, store.store_replay(session, condensed, source="local").replay_id)
+
+    def page() -> str:
+        # The route's context, rendered without the site's context processor (it opens the app's DB).
+        seen = {}
+        monkeypatch.setattr(routes.templates, "TemplateResponse", lambda req, name, ctx, **kw: seen.update(ctx))
+        routes.replay_page(request(), MATCH_UUID, session)
+        return templates.env.get_template("replays/replay.html").render(**seen, request=request())
+
+    shown = page()
+    assert 'data-replay-layer="control"' in shown and "/static/js/replay_control.js" in shown
+    assert 'data-replay-tab="control"' in shown and "loadControlPlayers" in shown
+    assert ("cover not reviewed" in shown) == (not rc.map_layer(replay.map_name)["cover_reviewed"])
+    monkeypatch.setattr(rc, "map_layer", lambda name: None)
+    shown = page()
+    assert "data-replay-layer" in shown and 'data-replay-layer="control"' not in shown
+    assert "replay_control.js" not in shown and 'data-replay-tab="control"' not in shown
+    session.close()
 
 
 @pytest.mark.parametrize("path", ["/replays/{match_uuid}/control/players.json"])

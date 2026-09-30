@@ -1891,3 +1891,22 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 @keyframes upload-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
 @media (prefers-reduced-motion: reduce) { .upload-progress progress:indeterminate { animation: none; background: var(--brand); opacity: 0.5; } }
 .upload-progress .page-meta { margin: 0.4rem 0 0; font-variant-numeric: tabular-nums; }
+
+/* Map control (docs/replay-map-control-plan.md, "Cell states"; Stage 4) */
+.replay-control-badge { font-size: 0.78rem; padding: 0.05rem 0.45rem; border: 1px dashed var(--ink-muted); border-radius: 999px; color: var(--ink-secondary); align-self: center; }
+.replay-control-status { color: var(--ink-muted); font-size: 0.85rem; align-self: center; }
+.replay-control-status:empty { display: none; }
+.replay-control-legend { margin-top: 0.4rem; }
+.replay-control-legend-note { color: var(--ink-muted); font-size: 0.85rem; }
+.replay-key-ctl-active::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-team-1) 55%, transparent) 50%, color-mix(in srgb, var(--replay-team-2) 55%, transparent) 50%); }
+.replay-key-ctl-safe::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-team-1) 30%, transparent) 50%, color-mix(in srgb, var(--replay-team-2) 30%, transparent) 50%); }
+.replay-key-ctl-passive::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-team-1) 15%, transparent) 50%, color-mix(in srgb, var(--replay-team-2) 15%, transparent) 50%); border: 1px solid var(--border-strong); }
+.replay-key-ctl-contested::before { border-radius: 2px; background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--replay-team-1) 60%, transparent) 0 3px, color-mix(in srgb, var(--replay-team-2) 60%, transparent) 3px 6px); }
+.replay-control-switch { display: flex; gap: 0.35rem; margin-bottom: 0.5rem; }
+.replay-control-switch .replay-button.is-active { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+.replay-control-team td.num.pos { color: var(--good); }
+.replay-control-team td.num.neg { color: var(--critical); }
+.replay-control-row { cursor: pointer; }
+.replay-control-row:hover td, .replay-control-row:focus-visible td { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.replay-control-row.is-highlighted td { background: color-mix(in srgb, var(--brand) 16%, transparent); }
+.replay-control-redundant td { color: var(--ink-muted); font-size: 0.85rem; }

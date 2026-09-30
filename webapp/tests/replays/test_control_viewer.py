@@ -232,6 +232,45 @@ def test_the_control_cache_is_bounded_and_keeps_only_ok_answers(stored):
     assert got["tick0"] == stored["header"]["cells"]
 
 
+REPLAY_JS = WEBAPP / "app" / "static" / "js" / "replay.js"
+
+
+def test_the_control_table_groups_players_by_team_and_sums_lost_control():
+    tables = {
+        "rounds": {"3": {"status": "ok", "stale": True, "redundant_m2": {"A": -12.5, "B": 4.0}, "players": {
+            "5": {"team": "B", "control_m2": 80.0, "active_m2": 10.0, "passive_m2": 30.0, "active_ratio": 0.25,
+                  "alive_s": 40.0, "lost": []},
+            "0": {"team": "A", "control_m2": -3.0, "active_m2": 5.0, "passive_m2": 15.0, "active_ratio": None,
+                  "alive_s": 12.0, "lost": [{"control_m2": 30.0, "share_of_team": 0.1},
+                                            {"control_m2": 2.0, "share_of_team": None}]}}},
+                   "4": {"status": "missing"}},
+        "match": {"redundant_m2": {"A": 1.0}, "players": {
+            "0": {"team": "A", "control_m2": 20.0, "deaths": 2, "lost_m2": 32.0, "lost_mean_share": 0.1},
+            "5": {"team": "B", "control_m2": 50.0, "deaths": 0, "lost_m2": 0.0, "lost_mean_share": None}}}}
+    body = """
+      function run(p) {
+        return {round: C.controlRows(p.tables, "round", 3, p.groupTeam), missing: C.controlRows(p.tables, "round", 4, p.groupTeam),
+                match: C.controlRows(p.tables, "match", 3, p.groupTeam)};
+      }"""
+    got = run_node(body, {"tables": tables, "groupTeam": {"A": "team-2", "B": "team-1"}}, js=REPLAY_JS)
+    rnd = got["round"]
+    assert [r["slot"] for r in rnd["team-1"]] == [5] and [r["slot"] for r in rnd["team-2"]] == [0]
+    assert rnd["team-2"][0]["lost"] == {"m2": 32.0, "share": 0.1, "deaths": 2}
+    assert rnd["team-1"][0]["lost"] is None
+    assert rnd["redundant"] == {"team-2": -12.5, "team-1": 4.0} and rnd["stale"] is True
+    assert got["missing"] is None
+    assert got["match"]["team-2"][0]["lost"] == {"m2": 32.0, "share": 0.1, "deaths": 2}
+    assert got["match"]["team-1"][0]["lost"] is None
+
+
+def test_site_data_merges_onto_a_blob_by_kill_index():
+    body = "function run(p) { return C.withSiteData(p.site, p.blob); }"
+    got = run_node(body, {"site": {"db": {"winner": "team-1"}, "stats": {}, "alive_steps": [], "annotations": None,
+                                   "kills": {"1": {"weapon": "Vandal"}}},
+                          "blob": {"kills": [{"i": 0}, {"i": 1}]}}, js=REPLAY_JS)
+    assert got["db"] == {"winner": "team-1"} and got["kills"] == [{"i": 0}, {"i": 1, "weapon": "Vandal"}]
+
+
 def test_side_groups_map_to_teams():
     got = run_node("function run(p) { return C.groupTeams(p.players); }",
                    {"players": {"0": {"side": "A", "team": "team-2"}, "5": {"side": "B", "team": "team-1"}}})
