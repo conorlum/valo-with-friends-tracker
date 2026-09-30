@@ -41,6 +41,15 @@ def test_the_worker_copied_code_stays_stdlib_only():
         assert not heavy, f"{path.name} imports {sorted(heavy)}"
 
 
+def test_the_web_apps_control_views_import_nothing_heavy():
+    # numpy is already loaded by the web app (fight-EV), so the runtime check above can't see it.
+    for path in (WEBAPP / "app" / "services" / "replay_control.py",
+                 WEBAPP / "app" / "services" / "replay_control_views.py",
+                 WEBAPP / "app" / "routers" / "replays.py"):
+        bad = {name for name in _imports(path) if name.split(".")[0] in HEAVY or name.startswith("app.control")}
+        assert not bad, f"{path.name} imports {sorted(bad)}"
+
+
 def test_control_does_not_import_scoring():
     for path in CONTROL.glob("*.py"):
         scoring = {name for name in _imports(path) if name.startswith("app.scoring")}
