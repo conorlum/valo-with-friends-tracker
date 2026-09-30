@@ -954,7 +954,8 @@ class RoundControl:
     coverage_masks: np.ndarray      # ticks x 10 x walkable cells: active or passive coverage
     sections: list
     players: dict                   # slot -> PlayerStats
-    redundant_m2s: dict             # side group -> m2*s
+    # PROVISIONAL(D7): side group -> m2*s of the team's own area minus its players' control (signed)
+    redundant_m2s: dict
     group_side: dict                # side group -> "attack" / "defense" (from the link)
     cell_m2: float
     missing_inputs: dict
