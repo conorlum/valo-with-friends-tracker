@@ -31,6 +31,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -57,6 +58,7 @@ CORNER_TOLERANCE_M = 0.3       # Q72: a line through less wall than this, in tot
 RAY_STEP_DEG = 0.5
 RAY_STEP_PX = 2
 RAY_MAX_PX = 1500
+WALL_SIMPLIFY_PX = 4.0         # a utility wall's laid line, kept to within half a cell (~0.5 m)
 # The kill-line check (Risk 1) skips this many pixels at each end, like 0a's harness.
 LINE_END_SKIP_PX = 3
 
@@ -283,20 +285,107 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR) -> Geometry:
 # ---------------------------------------------------------------- sight lines
 
 
+@dataclass(frozen=True, eq=False)
+class Wall:
+    """A laid wall of utility (Viper's Toxic Screen) while it is up: a polyline in px that blocks
+    sight outright, with no corner tolerance. It rides in the `smokes` lists beside the circles."""
+    segs: np.ndarray    # K x 4: x0, y0, x1, y1 px
+
+    @classmethod
+    def from_points(cls, points_px, tolerance_px: float = WALL_SIMPLIFY_PX) -> Wall | None:
+        """The polyline through the points, simplified (Douglas-Peucker) to within `tolerance_px`:
+        the pairwise check costs one pass per segment, and a laid wall is nearly straight."""
+        pts = np.asarray(points_px, float)
+        if len(pts) < 2:
+            return None
+        pts = pts[_simplify(pts, tolerance_px)]
+        return cls(np.hstack([pts[:-1], pts[1:]]))
+
+
+def _simplify(pts: np.ndarray, tol: float) -> list[int]:
+    """Indices of the points Douglas-Peucker keeps (both ends always)."""
+    keep, stack = {0, len(pts) - 1}, [(0, len(pts) - 1)]
+    while stack:
+        i, j = stack.pop()
+        if j - i < 2:
+            continue
+        (ax, ay), (bx, by) = pts[i], pts[j]
+        mid = pts[i + 1:j]
+        length = math.hypot(bx - ax, by - ay)
+        if length < 1e-9:
+            dist = np.hypot(mid[:, 0] - ax, mid[:, 1] - ay)
+        else:
+            dist = np.abs((bx - ax) * (mid[:, 1] - ay) - (by - ay) * (mid[:, 0] - ax)) / length
+        k = int(np.argmax(dist))
+        if dist[k] > tol:
+            keep.add(i + 1 + k)
+            stack += [(i, i + 1 + k), (i + 1 + k, j)]
+    return sorted(keep)
+
+
+def _cross(ax, ay, bx, by):
+    return ax * by - ay * bx
+
+
+def wall_hit_px(wall: Wall, x: float, y: float, dx: np.ndarray, dy: np.ndarray) -> np.ndarray:
+    """Per ray (unit direction dx, dy from (x, y)): the distance in px to the wall's first segment
+    it crosses, or inf."""
+    best = np.full(len(dx), np.inf)
+    for x0, y0, x1, y1 in wall.segs:
+        ex, ey = x1 - x0, y1 - y0
+        den = _cross(dx, dy, ex, ey)
+        ok = np.abs(den) > 1e-9
+        den = np.where(ok, den, 1.0)
+        fx, fy = x0 - x, y0 - y
+        t = _cross(fx, fy, ex, ey) / den          # along the ray
+        s = _cross(fx, fy, dx, dy) / den          # along the segment
+        hit = ok & (t >= 0) & (s >= 0) & (s <= 1)
+        best = np.where(hit & (t < best), t, best)
+    return best
+
+
+def wall_blocks(p: np.ndarray, q: np.ndarray, wall: Wall) -> np.ndarray:
+    """S x N: does the segment from each p (S x 2) to each q (N x 2) cross the wall?"""
+    out = np.zeros((len(p), len(q)), bool)
+    for x0, y0, x1, y1 in wall.segs:
+        ex, ey = x1 - x0, y1 - y0
+        # the wall's line must split p from q: only opposite-side pairs are checked further
+        sp = _cross(ex, ey, p[:, 0] - x0, p[:, 1] - y0)
+        sq = _cross(ex, ey, q[:, 0] - x0, q[:, 1] - y0)
+        for ps, qs in ((sp >= 0, sq <= 0), (sp <= 0, sq >= 0)):
+            pi, qi = np.flatnonzero(ps), np.flatnonzero(qs)
+            if not len(pi) or not len(qi):
+                continue
+            px_, py_ = p[pi, 0][:, None], p[pi, 1][:, None]
+            # the sight line p -> q must split the wall's two ends: cross(q - p, end - p) changes sign
+            ax, ay = x0 - px_, y0 - py_
+            bx, by = x1 - px_, y1 - py_
+            qx, qy = q[qi, 0][None, :] - px_, q[qi, 1][None, :] - py_
+            hit = (qx * ay - qy * ax) * (qx * by - qy * bx) <= 0
+            out[np.ix_(pi, qi)] |= hit
+    return out
+
+
 def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list) -> np.ndarray:
     """Flat GRID*GRID cells seen from (x, y) px along the given rays. Walls stop a ray once it has
     crossed more than the corner tolerance; a hollow smoke stops it at its edge (from inside or out),
-    a solid one as soon as it is inside. `smokes` are (x, y, radius px, solid)."""
+    a solid one as soon as it is inside; a utility `Wall` where it crosses it. `smokes` are
+    (x, y, radius px, solid) or `Wall`s."""
     a = np.deg2rad(angles_deg)
     dx, dy = np.cos(a), np.sin(a)
     seen = np.zeros(GRID * GRID, bool)
     live = np.ones(len(a), bool)
     hits = np.zeros(len(a), np.int16)
+    reach = np.full(len(a), np.inf)
+    for s in smokes:
+        if isinstance(s, Wall):
+            reach = np.minimum(reach, wall_hit_px(s, x, y, dx, dy))
+    smokes = [s for s in smokes if not isinstance(s, Wall)]
     started_in = [(x - s[0]) ** 2 + (y - s[1]) ** 2 < s[2] ** 2 for s in smokes]
     for step in range(0, RAY_MAX_PX, RAY_STEP_PX):
         px = x + dx * step
         py = y + dy * step
-        live &= (px >= 0) & (px < PX) & (py >= 0) & (py < PX)
+        live &= (px >= 0) & (px < PX) & (py >= 0) & (py < PX) & (step < reach)
         pxc = np.clip(px, 0, PX - 1).astype(np.int32)
         pyc = np.clip(py, 0, PX - 1).astype(np.int32)
         if step > 3:

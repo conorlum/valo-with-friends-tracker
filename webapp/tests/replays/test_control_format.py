@@ -22,7 +22,7 @@ from tests.replays.control_toys import blob, door_hall
 # is then stale and recomputed) and add the new revision's digest here.
 # 2: space taken, what each team knew (KNEW_*) and remembered ground (D6: DECAY_MPS). Unreleased,
 # so re-pinned in place.
-PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68"}
+PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "076394154b7ea2bf"}
 
 
 def _constants_digest() -> str:

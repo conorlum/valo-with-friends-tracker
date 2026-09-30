@@ -12,7 +12,8 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   the grid too. Integrals weight each tick by the time to the next one, clipped at the live round's
   and each heatmap section's edges.
 - **Vision.** Each alive player's 103-degree view, raycast on the sight mask with smokes (hollow or
-  solid) and the Q72 corner tolerance (geometry.py). The held cone's width follows the
+  solid), Viper's wall while it is up (its laid line; no corner tolerance) and the Q72 corner
+  tolerance (geometry.py). The held cone's width follows the
   movement over SPEED_WINDOW_S. Flashed: nothing. Nearsighted: a bubble. Concussed, stunned or
   revealed: all of it passive (Q42, Q57).
 - **Memory (D6).** Ground a player saw and looked away from stays theirs as passive control. Each tick
@@ -53,7 +54,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from scipy import ndimage
 
-from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, cast, visibility
+from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, Wall, cast, visibility, wall_blocks
 from app.replays.control_format import CONTROL_REVISION  # noqa: F401 - stdlib-only, so the web app can read it
 
 TICK_STEP_S = 0.5
@@ -108,6 +109,7 @@ DAMAGE_ZONES = [(re.compile(p), r) for p, r in [
     (r"^Cashew_E_Explosion$", 400)]]
 # Flown drones: (cone half-angle, range in m or None).
 DRONES = {"Hunter_E_Drone": (FOV_HALF, None), "Guide_Q_PossessableScout": (45.0, 22.5)}
+VIPER_WALL = "Pandemic_E_SmokeScreenManager"   # the condenser's `points` and `on` (extras.py)
 CAMERA = "Gumshoe_E_PossessableCamera"
 TURRET = "Killjoy_E_Turret"
 TRIPWIRE = "Gumshoe_4_TripWire"
@@ -227,6 +229,7 @@ class RoundInputs:
             self.tracks[int(s)] = tuple(np.concatenate([p[i] for p in parts]) for i in range(4))
         self.lives = self._lives()
         self.smokes, self.damage_zones, self.watchers = [], [], []
+        self.walls: list[tuple[float, float, Wall]] = []
         self.flashed, self.nearsight = defaultdict(list), defaultdict(list)
         self.downgraded, self.contest_status = defaultdict(list), defaultdict(list)
         self.hit_contest = defaultdict(list)
@@ -306,6 +309,8 @@ class RoundInputs:
                 if e.get("kind") == "Projectile":
                     continue
                 t0, t1 = _span(e["t"], end)
+                if key == VIPER_WALL and e.get("points"):
+                    self._wall(e, end)
                 for pat, r, solid in SMOKES:
                     if pat.match(key):
                         self.smokes.append((t0, t1, e["u"] * px_per_uv, e["v"] * px_per_uv,
@@ -425,8 +430,21 @@ class RoundInputs:
             self.watchers.append(Watcher("turret", by, t0, t1, x=x, y=y, yaw=e.get("yaw"), yaws=e.get("yaws"),
                                          half=TURRET_HALF))
 
+    def _wall(self, e: dict, end: float) -> None:
+        """Viper's wall blocks sight while it is up (`on`), along its laid line (`points`)."""
+        wall = Wall.from_points([(u * PX / 10000, v * PX / 10000) for u, v in e["points"]])
+        if wall is None:
+            return
+        for a, b in e.get("on") or []:
+            b = end if b is None else min(b, end)
+            if b > a:
+                self.walls.append((*_span(a, b), wall))
+                self.events += [a, b]
+
     def smokes_at(self, t: float) -> list:
-        return [(x, y, r, solid) for t0, t1, x, y, r, solid in self.smokes if t0 <= t < t1]
+        """What blocks sight at t: the smokes as (x, y, r, solid), then the walls that are up."""
+        return ([(x, y, r, solid) for t0, t1, x, y, r, solid in self.smokes if t0 <= t < t1]
+                + [w for t0, t1, w in self.walls if t0 <= t < t1])
 
     # --- ticks
 
@@ -500,7 +518,9 @@ def sector(geo: Geometry, x: float, y: float, yaw: float, half: float) -> np.nda
 
 
 def smoke_blocks(p: np.ndarray, q: np.ndarray, smoke) -> np.ndarray:
-    """S x N: does the segment from each p (S x 2) to each q (N x 2) cross the smoke?"""
+    """S x N: does the segment from each p (S x 2) to each q (N x 2) cross the smoke (or wall)?"""
+    if isinstance(smoke, Wall):
+        return wall_blocks(p, q, smoke)
     sx, sy, r, solid = smoke
     dx = q[None, :, 0] - p[:, None, 0]
     dy = q[None, :, 1] - p[:, None, 1]

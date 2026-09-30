@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from app.control import engine as ce
-from app.control.geometry import GRID, cast
+from app.control.geometry import GRID, Wall, cast
 from app.services.replay_view import alive_steps
 from tests.replays.control_toys import blob, door_hall, midwall_hall, open_hall, two_rooms, uv
 
@@ -65,6 +65,32 @@ def test_hollow_and_solid_smokes():
     tk = tick(geo, players, util=[ability("Wraith", "4_Smoke", 250, 200, 5)])
     assert not tk.holders[0].raw[c(350, 200)]
     assert tick(geo, players).holders[0].raw[c(350, 200)]
+
+
+def test_a_utility_wall_blocks_sight_where_it_crosses():
+    geo = open_hall()
+    c = lambda x, y: geo.cell_of_px(x, y)  # noqa: E731
+    wall = Wall.from_points([(250.0, 120.0), (250.0, 240.0)])
+    seen = cast(geo, 150.0, 200.0, np.arange(-10, 10.01, 0.5), [wall])
+    assert seen[c(240, 200)] and not seen[c(262, 200)] and not seen[c(350, 200)]
+    # beyond the wall's end, sight goes round it
+    past_end = cast(geo, 150.0, 270.0, np.arange(-2, 2.01, 0.5), [wall])
+    assert past_end[c(350, 270)]
+    # the same wall in the pairwise check the fills use
+    p, q = np.array([[150.0, 200.0]]), np.array([[350.0, 200.0], [350.0, 300.0], [200.0, 200.0]])   # 2nd: y 250 at the wall
+    assert ce.smoke_blocks(p, q, wall).tolist() == [[True, False, False]]
+
+
+def test_vipers_wall_blocks_only_while_it_is_up():
+    geo = open_hall()
+    c = lambda x, y: geo.cell_of_px(x, y)  # noqa: E731
+    players = {0: still("A", 150, 200, 0), 4: still("A", 150, 120, 90), 5: still("B", 400, 110, 90)}
+    points = [list(uv(250, 100)), list(uv(250, 292))]
+    wall = ability("Pandemic", "E_SmokeScreenManager", 250, 120, 4, t=0.0, t1=10.0, kind="GameObject",
+                   points=points, on=[[2.0, 5.0], [7.0, None]])
+    seen = {t: tick(geo, players, t=t, util=[wall]).holders[0].raw[c(350, 200)] for t in (1.0, 3.0, 6.0, 8.0)}
+    assert seen == {1.0: True, 3.0: False, 6.0: True, 8.0: False}
+    assert {2.0, 5.0, 7.0} <= set(ce.RoundInputs(blob(players, util=[wall]), geo).tick_times().tolist())
 
 
 # ---------------------------------------------------------------- safe space
