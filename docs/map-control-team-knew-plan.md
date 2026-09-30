@@ -67,6 +67,41 @@ lurker), and ground T concedes to an enemy who already left (a stale last-known)
 - It changes the stored format, so it lands on its own branch after R3.2, and old viewers must still read the
   true view: the decoder has to accept version 1 and version 2.
 
+## Revised after the P2 review (2026-09-30): these override the sections above
+
+A fresh reviewer found 2 blockers and 6 should-fixes; all applied.
+
+- **B1 No format break.** `DATA_VERSION` stays 1: the knowledge picture is two *optional* streams, `knew_a` and
+  `knew_b` (same per-tick encoding as `states`), with their own offsets in a header key `knew_checkpoints`. Old
+  rows and old viewers read the true view exactly as today; the viewer shows the picker only when the streams are
+  there. No further revision: this branch stacks on the space-taken branch, which already bumps
+  `CONTROL_REVISION` to 2 (unreleased), so one recompute fills both. `compute_control.py --no-knew` computes
+  without it (true view only).
+- **B2 Unknown enemies are a region, not absent (tier 2, card D7).** "Absent" made the whole map T's safe space at
+  every round start. Instead, an enemy T doesn't see now is a **possible-positions region**: from where T last saw
+  them (or their spawn position at the round start, if never seen), through walkable cells T doesn't watch, out to
+  the distance they could have run since (`KNEW_RUN_MPS` 6.75 m/s x the time since). The region is a source of the
+  enemy's free space (so T's safe space ends where an unknown enemy could be) but has no vision of its own. A seen
+  enemy is exact (true position and view); for `KNEW_FADE_S` (3 s) after a sighting they also keep their last
+  view as passive. The "all enemies dead" rule applies only when they really are all dead.
+- **S3 Vision is reused.** Knowledge is tracked causally inside `compute_round`'s tick loop (per team, a last-seen
+  record per enemy: time, cell, position, yaw, body view), and each team's picture is a `compose` on a tick derived
+  from the base tick's holders (no recasting): T's own holders unchanged; seen enemies as they are; recently lost
+  ones with their stored last view as passive; everyone else only as region seeds.
+- **S4 Utility and reveals.** An enemy's placed watchers count only while their owner is seen (a simplification:
+  "seen once" utility would need per-object sighting; noted on D7). Reveals keep their `by` so "a T reveal on e"
+  marks e as seen.
+- **S5 Contests in the picture.** `sees` is recomputed from the known holders only (T can't be contested by an
+  enemy it doesn't know is there); last-known views don't contest; damage on T's players still does (T feels the
+  hits). Sightings are checked on control ticks only (0.5 s plus events), so a peek between ticks with no shot is
+  missed.
+- **S6 Viewer.** The header carries each team's sightings (`knew: {A: {slot: [[t0, t1], ...]}, B: ...}`) for
+  markers: a lost enemy is a dashed diamond at their last-seen point, fading over `KNEW_FADE_S`. In a knowledge
+  picture the true enemy dots are drawn dimmed, and the Control table and highlight stay true-view (labelled).
+- **S7 Storage** is measured on real rounds in the build (p90 and max against 400 KB); the knowledge streams store
+  only cells where they differ from the true state at that tick (a diff), which is usually small.
+- **Cost:** about +55-70% of the per-round compute with vision reused.
+
 ## Build order
 
 1. Knowledge pass + `Tick(view=...)` + toy tests (an unseen lurker is absent; a lost enemy lingers passive for the
