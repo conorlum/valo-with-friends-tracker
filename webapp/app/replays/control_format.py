@@ -38,7 +38,7 @@ import hashlib
 import json
 import struct
 
-CONTROL_REVISION = 1
+CONTROL_REVISION = 2
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 

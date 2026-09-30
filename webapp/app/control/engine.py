@@ -917,6 +917,7 @@ class PlayerStats:
     active_m2s: float = 0.0
     passive_m2s: float = 0.0
     control_m2s: float = 0.0
+    taken_m2: float = 0.0     # space taken (CONTROL_REVISION 2): see compute_round
     deaths: list = field(default_factory=list)
 
     def per_second(self, value: float) -> float | None:
@@ -933,7 +934,7 @@ class PlayerStats:
                 "control_m2s": _r(self.control_m2s),
                 "active_m2": _r(self.per_second(self.active_m2s)), "passive_m2": _r(self.per_second(self.passive_m2s)),
                 "control_m2": _r(self.per_second(self.control_m2s)), "active_ratio": _r(self.active_ratio, 3),
-                "deaths": self.deaths}
+                "taken_m2": _r(self.taken_m2), "deaths": self.deaths}
 
 
 def _r(value, digits: int = 1):
@@ -1012,6 +1013,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         i = index.get(round(snap_before(t), 6))
         if i is not None:
             death_ticks[i].append((slot, t))
+    prev_state = None
 
     for n, t in enumerate(times):
         t = float(t)
@@ -1024,6 +1026,9 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         timings["coverage"] += time.perf_counter() - b
         state = base["state"]
         states[n] = state[walk_flat]
+        if prev_state is not None and rnd.t_start < t <= rnd.t_decided:
+            _credit_taken(tick, cov, prev_state, state, players, cell_m2)
+        prev_state = state
         live_w = max(0.0, min(t + weights[n], rnd.t_decided) - max(t, rnd.t_start))
         owned = {s: float((score(state, s) > 0).sum()) for s in ("A", "B")}
         ctl_sum = {"A": 0.0, "B": 0.0}
@@ -1079,6 +1084,28 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     return RoundControl(blob.get("round"), blob.get("map", geo.name), times, weights, walk_cells, states, control,
                         control_masks, coverage_masks, sections, players, redundant, dict(rnd.group_side), cell_m2,
                         missing, {**timings, "branches": dict(branches)}, cf_check)
+
+
+def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, players: dict, cell_m2: float) -> None:
+    """Space taken (the plan's stretch stat; docs/map-control-space-taken-impl.md): cells that were the
+    enemy's or nobody's at the previous tick and are the team's now, shared evenly among the team's
+    players whose coverage (active, passive or own utility) includes them at this tick. Ground that
+    became the team's with nobody watching it (the lines moved) is taken by nobody."""
+    # PROVISIONAL(D6): contested -> ours doesn't count ("from the enemy or nobody"); unwatched flips go to nobody.
+    for side in ("A", "B"):
+        hs = [h for h in tick.holders.values() if h.team == side and h.slot in cov]
+        if not hs:
+            continue
+        before = score(prev, side)
+        flipped = (score(state, side) > 0) & ((before < 0) | (prev == NONE))
+        if not flipped.any():
+            continue
+        seen = {h.slot: cov[h.slot][2] | cov[h.slot][3] for h in hs}
+        count = sum(m.astype(np.int16) for m in seen.values())
+        for h in hs:
+            mine = flipped & seen[h.slot]
+            if mine.any():
+                players[h.slot].taken_m2 += float((1.0 / count[mine]).sum()) * cell_m2
 
 
 def _lost(state: np.ndarray, cf_state: np.ndarray, side: str, drop: np.ndarray, last: bool, owned: float,
