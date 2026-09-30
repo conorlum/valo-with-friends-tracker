@@ -55,12 +55,13 @@ def map_layer(map_name: str) -> dict | None:
 
 def geometry_inputs(map_name: str) -> dict | None:
     """Everything app/control/geometry.py's `load_geometry` reads for a map: the built masks (by
-    index.json's hashes), the specials from tags.json and the scale from maps.json."""
+    index.json's hashes; `barrier` is None for a map with no barrier paint), the specials from
+    tags.json and the scale from maps.json."""
     index, tags, maps = _assets()
     entry = index.get(map_name)
     if entry is None:
         return None
-    return {"sight": entry.get("sight_sha"), "walk": entry.get("walk_sha"),
+    return {"sight": entry.get("sight_sha"), "walk": entry.get("walk_sha"), "barrier": entry.get("barrier_sha"),
             "specials": (tags.get(map_name) or {}).get("specials") or [],
             "scale": (maps.get(map_name) or {}).get("xMultiplier")}
 

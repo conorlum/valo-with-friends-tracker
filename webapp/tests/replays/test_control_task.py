@@ -39,7 +39,7 @@ def test_a_round_gives_the_same_bytes_as_the_engine(toy):
     rc = engine.compute_round(data, toy, engine.ControlLink(sides={0: "attack", 5: "defense"}))
     assert result["data"] == encode_data(rc, data) and result["summary"] == encode_summary(rc, data)
     geo = result["geometry"]
-    assert set(geo) == {"sight", "walk", "specials", "scale"} and len(geo["sight"]) == 12
+    assert set(geo) == {"sight", "walk", "barrier", "specials", "scale"} and len(geo["sight"]) == 12
     assert geo["specials"] == [] and geo["scale"] is None       # a toy map isn't in maps.json
 
 

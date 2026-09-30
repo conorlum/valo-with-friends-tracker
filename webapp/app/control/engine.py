@@ -72,6 +72,9 @@ KNEW_FADE_S = 3.0
 # Remembered ground (D6, 2026-09-30): what a player saw and looked away from stays theirs as passive
 # control, and open ground eats into it at a quiet walk, Valorant's shift-walk (approximate).
 DECAY_MPS = 3.5
+# When the buy-phase barriers drop, each team remembers its side of them (the barrier paint), spared
+# decay for this long (the user's call, 2026-09-30: passive, with a short grace before it erodes).
+BARRIER_GRACE_S = 5.0
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
 FAST_TURN_DPS = 90.0
 SPEED_WINDOW_S = 0.25
@@ -1048,11 +1051,34 @@ class Memory:
         self.cells: dict[int, np.ndarray] = {}    # slot -> flat remembered cells
         self.carry = {"A": 0.0, "B": 0.0}         # metres of decay not yet a whole cell step
         self.t: float | None = None
+        self.held = np.zeros(GRID * GRID, bool)   # the barrier start's ground, spared decay until BARRIER_GRACE_S
+
+    def start(self, tick: Tick) -> None:
+        """The barriers drop: each team remembers the ground on its side of them (the 4-connected
+        walkable region around its players, cut by the barrier paint), shared out to its players by
+        walking distance. Nothing without a barrier paint."""
+        if self.geo.barrier is None:
+            return
+        open_ = self.geo.walk & ~self.geo.barrier
+        regions, _ = ndimage.label(open_)
+        for side in ("A", "B"):
+            hs = [h for h in tick.holders.values() if h.team == side and open_.ravel()[h.cell]]
+            ids = {int(regions.ravel()[h.cell]) for h in hs}
+            if not hs:
+                continue
+            area = np.isin(regions, list(ids))
+            for slot, share in _share_by_walk(area, {h.slot: h.cell for h in hs}).items():
+                self.cells[slot] = share.ravel()
+            self.held |= area.ravel()
 
     def apply(self, tick: Tick) -> None:
         walk = self.geo.walk.ravel()
+        if self.t is None:
+            self.start(tick)
         dt = 0.0 if self.t is None else max(0.0, tick.t - self.t)
         self.t = tick.t
+        if self.held.any() and tick.t >= BARRIER_GRACE_S:
+            self.held[:] = False
         for s in [s for s in self.cells if s not in tick.holders]:
             del self.cells[s]                     # memory dies with its player
         for side in ("A", "B"):
@@ -1074,7 +1100,7 @@ class Memory:
                     open_ = walk & ~live & ~mem
                     if open_.any():
                         reached = ndimage.binary_dilation(open_.reshape(GRID, GRID), EIGHT, iterations=steps,
-                                                          mask=(mem | open_).reshape(GRID, GRID)).ravel()
+                                                          mask=((mem & ~self.held) | open_).reshape(GRID, GRID)).ravel()
                         for h in hs:
                             if h.slot in self.cells:
                                 self.cells[h.slot] &= ~reached
@@ -1085,6 +1111,28 @@ class Memory:
                     self.cells[h.slot] |= seen
                 else:
                     self.cells[h.slot] = seen
+
+
+def _share_by_walk(area: np.ndarray, starts: dict[int, int]) -> dict[int, np.ndarray]:
+    """Each cell of `area` (GRID x GRID) to the start cell nearest it in 4-connected walking steps;
+    a tie goes to the lower slot. Cells no start can reach go to nobody."""
+    owner = np.full(area.shape, -1, np.int16)
+    fronts = {}
+    for slot, cell in sorted(starts.items()):
+        y, x = divmod(cell, GRID)
+        if owner[y, x] < 0:
+            owner[y, x] = slot
+            fronts[slot] = owner == slot
+    while fronts:
+        grown = {}
+        for slot, front in sorted(fronts.items()):
+            new = ndimage.binary_dilation(front, mask=area & (owner < 0))
+            new &= owner < 0
+            if new.any():
+                owner[new] = slot
+                grown[slot] = new
+        fronts = grown
+    return {slot: owner == slot for slot in starts if (owner == slot).any()}
 
 
 def score(state: np.ndarray, side: str) -> np.ndarray:

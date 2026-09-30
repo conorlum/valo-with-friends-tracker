@@ -1,6 +1,8 @@
 """Stage 2 control rules (app/control/engine.py) on toy maps, one or more tests per rule in
 docs/replay-map-control-plan.md's Stage 2 list. Positions are minimap pixels; cells are 8 px."""
 
+import copy
+
 import numpy as np
 import pytest
 
@@ -420,6 +422,56 @@ def test_seen_again_is_live_and_memory_dies_with_its_player():
     back = _sees(0, "A", [])
     mem.apply(_Tk(1.5, back))
     assert not back.passive.any(), "a new life starts with no memory"
+
+
+def _at(slot, team, geo, x, y, cells=()):
+    h = _sees(slot, team, cells)
+    h.cell = geo.cell_of_px(x, y)
+    return h
+
+
+def _barrier_hall():
+    """The open hall with a barrier line down x 256: A starts west of it, B east."""
+    geo = copy.copy(open_hall())    # open_hall() is shared: don't leave a barrier on it
+    geo.barrier = np.zeros((GRID, GRID), bool)
+    geo.barrier[:, geo.cell_of_px(256, 200) % GRID] = True
+    return geo
+
+
+def test_the_barrier_start_gives_each_team_its_side_as_passive_with_a_grace():
+    geo = _barrier_hall()
+    west, east = _halves(geo)
+    line = geo.barrier.ravel()
+    mem = ce.Memory(geo)
+    mem.apply(_Tk(0.0, _at(0, "A", geo, 150, 200), _at(5, "B", geo, 400, 200)))
+    a, b = _at(0, "A", geo, 150, 200), _at(5, "B", geo, 400, 200)
+    mem.apply(_Tk(ce.BARRIER_GRACE_S - 0.5, a, b))
+    assert a.passive[west].all() and not a.passive[east].any(), "A holds its whole side, passive"
+    assert b.passive[east[~line[east]]].all() and not b.passive[west].any()
+    assert not (a.passive | b.passive)[line].any(), "the barrier line itself is nobody's"
+    # after the grace, the other side's open ground erodes it from the barrier inwards
+    late = _at(0, "A", geo, 150, 200)
+    mem.apply(_Tk(ce.BARRIER_GRACE_S + 2.0, late, _at(5, "B", geo, 400, 200)))
+    assert not late.passive[geo.cell_of_px(248, 200)], "next to the barrier: decayed"
+    assert late.passive[geo.cell_of_px(110, 200)], "deep in A's side: still held"
+
+
+def test_no_barrier_paint_means_no_start_memory():
+    geo = open_hall()
+    mem = ce.Memory(geo)
+    mem.apply(_Tk(0.0, _at(0, "A", geo, 150, 200)))
+    a = _at(0, "A", geo, 150, 200)
+    mem.apply(_Tk(1.0, a))
+    assert not a.passive.any()
+
+
+def test_the_start_is_shared_by_walking_distance():
+    geo = _barrier_hall()
+    area = geo.walk & ~geo.barrier
+    area[:, geo.cell_of_px(256, 200) % GRID:] = False
+    shares = ce._share_by_walk(area, {0: geo.cell_of_px(120, 120), 1: geo.cell_of_px(120, 280)})
+    assert shares[0].ravel()[geo.cell_of_px(130, 110)] and shares[1].ravel()[geo.cell_of_px(130, 290)]
+    assert not (shares[0] & shares[1]).any() and ((shares[0] | shares[1]) == area).all()
 
 
 def test_a_turn_leaves_the_ground_behind_covered():

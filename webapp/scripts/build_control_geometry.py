@@ -5,6 +5,7 @@ For every minimap in `app/static/img/maps/` (or `--map`), from it and its entry 
 
 - `<Map>.sight.png` and `<Map>.walk.png` (1024 px, 1-bit) beside `tags.json`: the sight mask (walls,
   glyphs, cover; see-across opened) and the traversal mask (app/control/geometry.py);
+- `<Map>.barrier.png`, when the map has a barrier paint: the buy-phase barrier lines;
 - `index.json`: per map the mask hashes, walkable cells, cell size, the "cover not reviewed" badge
   (`cover_reviewed`), the specials, and the Risk 1 kill-line result from
   `tests/fixtures/control/kill_lines.json` (blocked share against the 2% bar), when the map has lines.
@@ -61,8 +62,16 @@ def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path) -> di
            "tags": len(entry.get("tags") or []), "see_across_paint": bool(entry.get("see_across_paint")),
            "cover_reviewed": bool(entry.get("cover_reviewed")), "specials": entry.get("specials") or [],
            "kill_lines": kill_line_result(m.sight, lines) if lines else None}
+    # The buy-phase barriers (their own mask; neither sight nor walk): only when painted.
+    barrier_path = asset_dir / f"{name}.barrier.png"
+    if entry.get("barrier_paint"):
+        barrier = cg.unpack_paint(entry["barrier_paint"])
+        cg.write_mask_png(barrier_path, barrier)
+        row["barrier_sha"] = hashlib.sha256(np.packbits(barrier).tobytes()).hexdigest()[:12]
+    elif barrier_path.is_file():
+        barrier_path.unlink()
     # The Stage 6 paints, only when a map has any (so earlier entries stay as they were).
-    paints = [key for key in ("cover_paint", "cant_walk_paint", "uncertain_paint") if entry.get(key)]
+    paints = [key for key in ("cover_paint", "cant_walk_paint", "uncertain_paint", "barrier_paint") if entry.get(key)]
     if paints:
         row["paints"] = paints
     if entry.get("uncertain_paint"):

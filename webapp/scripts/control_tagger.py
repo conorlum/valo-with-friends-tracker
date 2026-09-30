@@ -9,7 +9,8 @@ params), the current `app/static/data/control/tags.json` and the Risk 1 kill lin
 
 - tag candidates cover, see-over, walkable, glyph or see-across (or untag them);
 - paint and erase see-across, cover, can't-walk and uncertain zones with a brush (geometry.masks: cover paint
-  blocks sight and walking, can't-walk only walking, uncertain neither);
+  blocks sight and walking, can't-walk only walking, uncertain neither), and the buy-phase barrier lines
+  (their own mask: the engine gives each team its side of them when they drop);
 - watch the kill-line test live against the 2% bar, with the blocked lines drawn, and the resulting sight and
   walk masks as overlays; undo; tick "cover reviewed" (which clears the map's badge);
 - export the whole `tags.json` (every map, unknown fields kept).

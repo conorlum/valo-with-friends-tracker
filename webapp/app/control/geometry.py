@@ -9,6 +9,10 @@ Two masks per map, both 1024 x 1024 over the square minimap (the replay's u/v, 0
 - **walk** (True is walkable): opaque minus glyphs, minus `cover` shapes. See-across areas stay
   unwalkable: they are drops.
 
+A third, optional mask, **barrier** (`<Map>.barrier.png`, from the `barrier_paint`), marks the
+buy-phase barrier lines. It changes neither sight nor walking: the engine uses it once a round, to
+give each team the ground on its side of the barriers when they drop.
+
 The hand inputs live in `app/static/data/control/tags.json`. A tag names one of the 0a candidate
 detector's shapes by id (`scripts/control_feasibility/geometry.py`); ids depend on the detector's
 parameters, so each map's entry keeps the ones it was tagged with, and `masks()` re-runs the detector
@@ -234,6 +238,8 @@ class Geometry:
     row_of: np.ndarray = None      # flat cell -> row index, -1 if not walkable
     visibility_source: str | None = None  # "cache" or "built", once loaded
     visibility_s: float = 0.0
+    barrier: np.ndarray | None = None     # GRID x GRID: the buy-phase barrier lines (barrier paint), if painted
+    barrier_sha: str | None = None        # index.json's `barrier_sha` for it
 
     @property
     def cell_m(self) -> float:
@@ -278,8 +284,20 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR) -> Geometry:
         raise GeometryError(f"no control geometry for {name!r}; run scripts/build_control_geometry.py")
     scale = json.loads(MAPS_JSON.read_text(encoding="utf-8"))[name]["xMultiplier"]
     entry = load_tags(asset_dir).get("maps", {}).get(name, {})
-    return geometry_from_masks(name, read_mask_png(sight_path), read_mask_png(walk_path), scale,
-                               entry.get("specials") or [])
+    geo = geometry_from_masks(name, read_mask_png(sight_path), read_mask_png(walk_path), scale,
+                              entry.get("specials") or [])
+    barrier_path = asset_dir / f"{name}.barrier.png"
+    if barrier_path.is_file():
+        barrier_px = read_mask_png(barrier_path)
+        geo.barrier = barrier_cells(barrier_px)
+        geo.barrier_sha = hashlib.sha256(np.packbits(barrier_px).tobytes()).hexdigest()[:12]
+    return geo
+
+
+def barrier_cells(barrier_px: np.ndarray) -> np.ndarray:
+    """GRID x GRID: every cell the barrier paint touches (a line one cell wide still cuts a
+    4-connected fill)."""
+    return barrier_px.reshape(GRID, CELL, GRID, CELL).any((1, 3))
 
 
 # ---------------------------------------------------------------- sight lines

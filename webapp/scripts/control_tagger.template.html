@@ -8,7 +8,7 @@
   :root {
     --bg: #15171b; --panel: #1f2228; --text: #e6e8eb; --muted: #9aa1ab; --line: #333842;
     --cover: #e5484d; --seeover: #f5a524; --walkable: #30a46c; --glyph: #8b8d98; --seeacross: #be6eff;
-    --untagged: #3aa0ff; --cantwalk: #ffd166; --uncertain: #2cd5c4; --good: #30a46c; --critical: #e5484d;
+    --untagged: #3aa0ff; --cantwalk: #ffd166; --uncertain: #2cd5c4; --barrier: #ff7ad9; --good: #30a46c; --critical: #e5484d;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
@@ -69,12 +69,15 @@
         <button data-mode="cover_paint"><span class="sw" style="background:var(--cover)"></span>Cover <kbd>C</kbd></button>
         <button data-mode="cant_walk_paint"><span class="sw" style="background:var(--cantwalk)"></span>Can't walk <kbd>W</kbd></button>
         <button data-mode="uncertain_paint"><span class="sw" style="background:var(--uncertain)"></span>Uncertain <kbd>U</kbd></button>
+        <button data-mode="barrier_paint"><span class="sw" style="background:var(--barrier)"></span>Barrier <kbd>B</kbd></button>
       </div>
       <p style="margin:8px 0 0"><label>Brush <input type="range" id="brush" min="3" max="60" value="14"> <span id="brushPx">14</span> px</label></p>
       <p class="note">Erase clears the paint kind you painted last (<span id="eraseKind">see-across</span>).
         <b>See-across</b>: black you can see over (drops, gaps). <b>Cover</b>: blocks sight and walking.
         <b>Can't walk</b>: floor nobody can stand on; sight is unchanged. <b>Uncertain</b>: a note where the
-        flat map may be wrong; it changes nothing.</p>
+        flat map may be wrong; it changes nothing. <b>Barrier</b>: the buy-phase barrier lines, one unbroken
+        stroke right across each gap; when they drop, each team holds its side of them. Sight and walking
+        are unchanged.</p>
     </div>
     <div class="card">
       <h2>Kill-line test (bar 2%)</h2>
@@ -119,9 +122,9 @@
   var COLOURS = { cover: [229, 72, 77], seeover: [245, 165, 36], walkable: [48, 164, 108], glyph: [139, 141, 152],
                   seeacross: [190, 110, 255], "": [58, 160, 255], "void": [70, 40, 40] };
   var PAINT_COLOURS = { see_across_paint: [190, 110, 255], cover_paint: [229, 72, 77], cant_walk_paint: [255, 209, 102],
-                        uncertain_paint: [44, 213, 196] };
+                        uncertain_paint: [44, 213, 196], barrier_paint: [255, 122, 217] };
   var PAINT_NAMES = { see_across_paint: "see-across", cover_paint: "cover", cant_walk_paint: "can't walk",
-                      uncertain_paint: "uncertain" };
+                      uncertain_paint: "uncertain", barrier_paint: "barrier" };
   var STORE = "control-tagger-v2:" + JSON.stringify(DATA.tags).length;
   var $ = function (id) { return document.getElementById(id); };
   var maps = {}, edits = {}, loaded = {}, undo = [], state = { map: null, selected: 0, mode: "select",
@@ -360,7 +363,7 @@
     if (e.target && /^(INPUT|SELECT)$/.test(e.target.tagName) && e.target.type !== "checkbox") return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); doUndo(); return; }
     var keys = { "1": "cover", "2": "seeover", "3": "walkable", "4": "glyph", "5": "seeacross", "0": "" };
-    var modes = { s: "select", e: "erase", p: "see_across_paint", c: "cover_paint", w: "cant_walk_paint", u: "uncertain_paint" };
+    var modes = { s: "select", e: "erase", p: "see_across_paint", c: "cover_paint", w: "cant_walk_paint", u: "uncertain_paint", b: "barrier_paint" };
     if (e.key in keys) setTag(keys[e.key]);
     else if (e.key === "n" || e.key === "N") nextUntagged();
     else if (e.key.toLowerCase() in modes) setMode(modes[e.key.toLowerCase()]);

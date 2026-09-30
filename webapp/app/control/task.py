@@ -64,7 +64,7 @@ def geometry_used(geo) -> dict:
     scale = (json.loads(geometry.MAPS_JSON.read_text(encoding="utf-8")).get(geo.name) or {}).get("xMultiplier")
     return {"sight": hashlib.sha256(np.packbits(geo.sight).tobytes()).hexdigest()[:12],
             "walk": hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12],
-            "specials": list(geo.specials), "scale": scale}
+            "barrier": geo.barrier_sha, "specials": list(geo.specials), "scale": scale}
 
 
 def _load(name: str):

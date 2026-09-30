@@ -96,9 +96,14 @@ def test_ascent_walls_only_blocks_the_same_lines_as_index_json():
 def test_every_paint_composes_exactly_like_geometry():
     entry = {**TAGS["maps"]["Ascent"], "cover_paint": paint_rect(440, 380, 520, 460),
              "cant_walk_paint": paint_rect(300, 300, 360, 420), "uncertain_paint": paint_rect(0, 0, 1024, 1024),
-             "see_across_paint": paint_rect(430, 370, 600, 600)}
+             "see_across_paint": paint_rect(430, 370, 600, 600), "barrier_paint": paint_rect(0, 0, 1024, 1024)}
     got = check("Ascent", entry)
     assert len(got["blocked"]) > 2, "the cover paint should block some kill lines"
+    # a barrier paint changes neither mask
+    bare = {k: v for k, v in entry.items() if k != "barrier_paint"}
+    rgba = np.array(Image.open(cg.MINIMAP_DIR / "Ascent.png").convert("RGBA"))
+    with_barrier, without = cg.masks(rgba, entry), cg.masks(rgba, bare)
+    assert (with_barrier.sight == without.sight).all() and (with_barrier.walk == without.walk).all()
 
 
 def test_a_candidate_tag_composes_exactly_like_geometry():
