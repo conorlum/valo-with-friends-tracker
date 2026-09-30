@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Map Control Geometry</title>
+<style>
+  :root {
+    --bg: #15171b; --panel: #1f2228; --text: #e6e8eb; --muted: #9aa1ab; --line: #333842;
+    --cover: #e5484d; --seeover: #f5a524; --walkable: #30a46c; --glyph: #8b8d98; --seeacross: #be6eff;
+    --untagged: #3aa0ff; --cantwalk: #ffd166; --uncertain: #2cd5c4; --good: #30a46c; --critical: #e5484d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+  header { display: flex; gap: 12px 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  select, button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  button.active { border-color: var(--seeacross); box-shadow: 0 0 0 1px var(--seeacross) inset; }
+  main { display: flex; gap: 16px; padding: 16px; flex-wrap: wrap; }
+  .stage { position: relative; width: min(1024px, 100%); aspect-ratio: 1; flex: none; background: #0d0e10; }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+  #overlay { cursor: crosshair; touch-action: none; }
+  aside { flex: 1; min-width: 280px; max-width: 460px; display: flex; flex-direction: column; gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
+  .big { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .ok { color: var(--good); } .bad { color: var(--critical); } .muted { color: var(--muted); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .grid button { text-align: left; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  kbd { background: #2a2e36; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td { padding: 2px 0; } td:last-child { text-align: right; }
+  label { display: inline-flex; gap: 6px; align-items: center; }
+  .note { font-size: 13px; color: var(--muted); }
+  .note code { color: var(--text); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Map control geometry</h1>
+  <select id="map" aria-label="Map"></select>
+  <label><input type="checkbox" id="showCandidates" checked> shapes</label>
+  <label><input type="checkbox" id="showPaint" checked> paint</label>
+  <label><input type="checkbox" id="showSight"> sight mask</label>
+  <label><input type="checkbox" id="showWalk"> can't walk</label>
+  <label><input type="checkbox" id="showLines" checked> kill lines</label>
+  <label><input type="checkbox" id="onlyBlocked"> blocked only</label>
+  <button id="undo" disabled>Undo <kbd>Ctrl Z</kbd></button>
+  <button id="export">Export tags.json</button>
+  <button id="importBtn">Import</button>
+  <input type="file" id="importFile" accept="application/json" hidden>
+</header>
+<main>
+  <div class="stage">
+    <canvas id="base" width="1024" height="1024"></canvas>
+    <canvas id="tint" width="1024" height="1024"></canvas>
+    <canvas id="overlay" width="1024" height="1024" aria-label="Map: click a shape to select it, or drag to paint"></canvas>
+  </div>
+  <aside>
+    <div class="card">
+      <h2>Tool</h2>
+      <div class="grid">
+        <button data-mode="select">Select shapes <kbd>S</kbd></button>
+        <button data-mode="erase">Erase paint <kbd>E</kbd></button>
+        <button data-mode="see_across_paint"><span class="sw" style="background:var(--seeacross)"></span>See-across <kbd>P</kbd></button>
+        <button data-mode="cover_paint"><span class="sw" style="background:var(--cover)"></span>Cover <kbd>C</kbd></button>
+        <button data-mode="cant_walk_paint"><span class="sw" style="background:var(--cantwalk)"></span>Can't walk <kbd>W</kbd></button>
+        <button data-mode="uncertain_paint"><span class="sw" style="background:var(--uncertain)"></span>Uncertain <kbd>U</kbd></button>
+      </div>
+      <p style="margin:8px 0 0"><label>Brush <input type="range" id="brush" min="3" max="60" value="14"> <span id="brushPx">14</span> px</label></p>
+      <p class="note">Erase clears the paint kind you painted last (<span id="eraseKind">see-across</span>).
+        <b>See-across</b>: black you can see over (drops, gaps). <b>Cover</b>: blocks sight and walking.
+        <b>Can't walk</b>: floor nobody can stand on; sight is unchanged. <b>Uncertain</b>: a note where the
+        flat map may be wrong; it changes nothing.</p>
+    </div>
+    <div class="card">
+      <h2>Kill-line test (bar 2%)</h2>
+      <div id="stat" class="big">–</div>
+      <div id="statNote" class="note"></div>
+    </div>
+    <div class="card">
+      <h2>Selected shape</h2>
+      <div id="sel" class="note">Click a shape on the map (Select tool).</div>
+      <div class="grid" style="margin-top:8px">
+        <button data-tag="cover"><span class="sw" style="background:var(--cover)"></span>Cover <kbd>1</kbd></button>
+        <button data-tag="seeover"><span class="sw" style="background:var(--seeover)"></span>See-over <kbd>2</kbd></button>
+        <button data-tag="walkable"><span class="sw" style="background:var(--walkable)"></span>Walkable <kbd>3</kbd></button>
+        <button data-tag="glyph"><span class="sw" style="background:var(--glyph)"></span>Glyph <kbd>4</kbd></button>
+        <button data-tag="seeacross"><span class="sw" style="background:var(--seeacross)"></span>See-across <kbd>5</kbd></button>
+        <button data-tag=""><span class="sw" style="background:var(--untagged)"></span>Untag <kbd>0</kbd></button>
+        <button id="next">Next untagged <kbd>N</kbd></button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>This map</h2>
+      <p style="margin:0 0 8px"><label><input type="checkbox" id="reviewed"> Cover reviewed (clears the site's
+        "cover not reviewed" badge)</label></p>
+      <table id="counts"></table>
+    </div>
+    <div class="card note">
+      Walls (transparent pixels) always block sight. A shape blocks only once tagged <b>cover</b>. Edits stay in
+      this browser until you export. Then copy the file over <code>app/static/data/control/tags.json</code> and run
+      <code>scripts/build_control_geometry.py</code>; changed maps' stored rounds go stale until
+      <code>scripts/compute_control.py</code> runs.
+    </div>
+  </aside>
+</main>
+<script>
+/*CORE*/
+</script>
+<script>
+(function () {
+  "use strict";
+  var DATA = /*DATA*/null;
+  var T = window.TaggerCore, PX = T.PX, P = T.P;
+  var COLOURS = { cover: [229, 72, 77], seeover: [245, 165, 36], walkable: [48, 164, 108], glyph: [139, 141, 152],
+                  seeacross: [190, 110, 255], "": [58, 160, 255], "void": [70, 40, 40] };
+  var PAINT_COLOURS = { see_across_paint: [190, 110, 255], cover_paint: [229, 72, 77], cant_walk_paint: [255, 209, 102],
+                        uncertain_paint: [44, 213, 196] };
+  var PAINT_NAMES = { see_across_paint: "see-across", cover_paint: "cover", cant_walk_paint: "can't walk",
+                      uncertain_paint: "uncertain" };
+  var STORE = "control-tagger-v2:" + JSON.stringify(DATA.tags).length;
+  var $ = function (id) { return document.getElementById(id); };
+  var maps = {}, edits = {}, loaded = {}, undo = [], state = { map: null, selected: 0, mode: "select",
+    lastPaint: "see_across_paint", brush: 14, masks: null, risk: null, byId: {} };
+
+  function cellsCopy(p) { return p ? new Uint8Array(p) : null; }
+  function snapshot(e) {
+    var paints = {};
+    T.PAINTS.forEach(function (k) { paints[k] = cellsCopy(e.paints[k]); });
+    return { touched: e.touched, tags: Object.assign({}, e.tags), paints: paints, cover_reviewed: e.cover_reviewed };
+  }
+  function save() {
+    try {
+      var out = {};
+      Object.keys(edits).forEach(function (name) {
+        var e = edits[name];
+        if (!e.touched) return;
+        var paints = {};
+        T.PAINTS.forEach(function (k) { paints[k] = e.paints[k] ? T.packPaint(e.paints[k]) : null; });
+        out[name] = { tags: e.tags, paints: paints, cover_reviewed: e.cover_reviewed };
+      });
+      localStorage.setItem(STORE, JSON.stringify(out));
+    } catch (err) { /* private window: edits last until the page closes */ }
+  }
+  function restore() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(STORE)) || {};
+      Object.keys(raw).forEach(function (name) {
+        if (!edits[name]) return;
+        var r = raw[name], paints = {};
+        T.PAINTS.forEach(function (k) { paints[k] = r.paints[k] ? T.unpackPaint(r.paints[k]) : null; });
+        edits[name] = { touched: true, tags: r.tags, paints: paints, cover_reviewed: r.cover_reviewed };
+      });
+    } catch (err) { /* nothing saved */ }
+  }
+
+  function mapEdits() { return edits[state.map]; }
+  function beforeChange() {
+    undo.push({ map: state.map, edits: snapshot(mapEdits()) });
+    if (undo.length > 60) undo.shift();
+    $("undo").disabled = false;
+  }
+  function changed() { mapEdits().touched = true; save(); recompute(); }
+
+  function loadImage(b64) {
+    return new Promise(function (resolve) { var img = new Image(); img.onload = function () { resolve(img); }; img.src = "data:image/png;base64," + b64; });
+  }
+
+  function ensureMap(name) {
+    if (!maps[name]) {
+      var m = DATA.maps[name];
+      maps[name] = { candidates: m.candidates, params: m.params, image_sha: m.image_sha, lines: m.lines,
+                     labels: T.rleDecode(m.labels, Int32Array), opaque: T.rleDecode(m.opaque) };
+    }
+    return maps[name];
+  }
+
+  function selectMap(name) {
+    state.map = name; state.selected = 0;
+    var map = ensureMap(name);
+    state.byId = {};
+    map.candidates.forEach(function (c) { state.byId[c.id] = c; });
+    $("reviewed").checked = !!mapEdits().cover_reviewed;
+    loadImage(DATA.maps[name].image).then(function (img) {
+      var base = $("base").getContext("2d");
+      base.clearRect(0, 0, PX, PX); base.drawImage(img, 0, 0, PX, PX);
+    });
+    recompute();
+  }
+
+  function recompute() {
+    var map = maps[state.map];
+    state.masks = T.compose(map, mapEdits());
+    state.risk = T.riskOne(state.masks.sight, map.lines);
+    state.blocked = {};
+    state.risk.blocked.forEach(function (k) { state.blocked[k] = true; });
+    paintTint(); paintOverlay(); updateStats(); showSelected();
+  }
+
+  function paintTint() {
+    var ctx = $("tint").getContext("2d"), img = ctx.createImageData(PX, PX), d = img.data;
+    var map = maps[state.map], e = mapEdits(), labels = map.labels, m = state.masks;
+    var showC = $("showCandidates").checked, showP = $("showPaint").checked;
+    var showS = $("showSight").checked, showW = $("showWalk").checked;
+    for (var i = 0; i < PX * PX; i++) {
+      var col = null, a = 0;
+      if (showS && m.sight[i] && map.opaque[i]) { col = [229, 72, 77]; a = 150; }       // blocks inside the map
+      if (showW && !m.walk[i] && map.opaque[i]) { col = [255, 209, 102]; a = 110; }
+      var id = labels[i];
+      if (showC && id) {
+        var c = state.byId[id], tag = e.tags[id] || "";
+        col = tag ? COLOURS[tag] : (c && c.kind === "void" ? COLOURS["void"] : COLOURS[""]);
+        a = id === state.selected ? 255 : tag ? 200 : (c && c.kind === "void" ? 110 : 140);
+      }
+      if (showP) {
+        var cell = ((i >> 10) >> 2) * P + ((i & 1023) >> 2);
+        for (var k = 0; k < T.PAINTS.length; k++) {
+          var p = e.paints[T.PAINTS[k]];
+          if (p && p[cell]) { col = PAINT_COLOURS[T.PAINTS[k]]; a = 150; }
+        }
+      }
+      if (col) { d[i * 4] = col[0]; d[i * 4 + 1] = col[1]; d[i * 4 + 2] = col[2]; d[i * 4 + 3] = a; }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
+  function paintOverlay() {
+    var ctx = $("overlay").getContext("2d");
+    ctx.clearRect(0, 0, PX, PX);
+    if (!$("showLines").checked) return;
+    var only = $("onlyBlocked").checked;
+    maps[state.map].lines.forEach(function (l, k) {
+      var b = !!state.blocked[k];
+      if (only && !b) return;
+      ctx.strokeStyle = b ? "rgba(229,72,77,0.95)" : "rgba(48,164,108,0.45)";
+      ctx.lineWidth = b ? 2.5 : 1;
+      ctx.beginPath(); ctx.moveTo(l[0] + 0.5, l[1] + 0.5); ctx.lineTo(l[2] + 0.5, l[3] + 0.5); ctx.stroke();
+    });
+  }
+
+  function paintedCells(p) { var n = 0; if (p) for (var i = 0; i < p.length; i++) n += p[i]; return n; }
+
+  function updateStats() {
+    var map = maps[state.map], r = state.risk, e = mapEdits();
+    if (!r.qualifying) {
+      $("stat").textContent = "no replays"; $("stat").className = "big muted";
+      $("statNote").textContent = "This map has no replay yet, so its geometry can't be checked. It gets the layer once its first replay passes.";
+    } else {
+      $("stat").textContent = (100 * r.share).toFixed(1) + "% blocked";
+      $("stat").className = "big " + (r.passes ? "ok" : "bad");
+      $("statNote").textContent = r.blocked.length + " of " + r.qualifying + " non-wallbang bullet kills from the replays are blocked by this geometry (drawn thick red). " +
+        (r.passes ? "Passes the 2% bar." : "Over the 2% bar: the map would lose the layer.");
+    }
+    var counts = { cover: 0, seeover: 0, walkable: 0, glyph: 0, seeacross: 0, "": 0 };
+    map.candidates.forEach(function (c) { counts[e.tags[c.id] || ""]++; });
+    var before = loaded[state.map], changedTags = 0;
+    Object.keys(Object.assign({}, before.tags, e.tags)).forEach(function (id) { if ((before.tags[id] || "") !== (e.tags[id] || "")) changedTags++; });
+    var rows = [["Shapes", map.candidates.length], ["Untagged", counts[""]], ["Cover", counts.cover], ["See-over", counts.seeover],
+                ["Walkable", counts.walkable], ["Glyph", counts.glyph], ["See-across", counts.seeacross]];
+    T.PAINTS.forEach(function (k) { rows.push(["Painted " + PAINT_NAMES[k] + " (cells of 4 px)", paintedCells(e.paints[k])]); });
+    rows.push(["Tags changed since loading", changedTags]);
+    $("counts").innerHTML = rows.map(function (r) { return "<tr><td>" + r[0] + "</td><td>" + r[1] + "</td></tr>"; }).join("");
+  }
+
+  function showSelected() {
+    var c = state.byId[state.selected];
+    if (!c) { $("sel").textContent = "Click a shape on the map (Select tool)."; return; }
+    var kinds = { closed: "closed shape", line: "drawn line", "void": "black area inside the map (a wall unless see-across)" };
+    $("sel").innerHTML = "<b>#" + c.id + "</b> " + kinds[c.kind] + ", " + c.px + " px<br>Tag: <b>" +
+      (mapEdits().tags[c.id] || "untagged") + "</b>";
+  }
+
+  function setTag(tag) {
+    if (!state.selected) return;
+    beforeChange();
+    if (tag) mapEdits().tags[state.selected] = tag; else delete mapEdits().tags[state.selected];
+    changed();
+  }
+
+  function nextUntagged() {
+    var list = maps[state.map].candidates, tags = mapEdits().tags;
+    var start = list.findIndex(function (c) { return c.id === state.selected; });
+    for (var k = 1; k <= list.length; k++) {
+      var c = list[(start + k + list.length) % list.length];
+      if (!tags[c.id]) { state.selected = c.id; paintTint(); showSelected(); return; }
+    }
+  }
+
+  function setMode(mode) {
+    state.mode = mode;
+    if (mode !== "select" && mode !== "erase") { state.lastPaint = mode; $("eraseKind").textContent = PAINT_NAMES[mode]; }
+    Array.prototype.forEach.call(document.querySelectorAll("[data-mode]"), function (b) {
+      b.classList.toggle("active", b.getAttribute("data-mode") === mode);
+    });
+  }
+
+  function toMap(e) {
+    var r = $("overlay").getBoundingClientRect();
+    return [(e.clientX - r.left) / r.width * PX, (e.clientY - r.top) / r.height * PX];
+  }
+
+  function dab(x, y) {
+    var kind = state.mode === "erase" ? state.lastPaint : state.mode, e = mapEdits();
+    var cells = e.paints[kind] = e.paints[kind] || new Uint8Array(P * P);
+    var v = state.mode === "erase" ? 0 : 1, rad = state.brush / (PX / P), cx = x / (PX / P), cy = y / (PX / P);
+    for (var gy = Math.max(0, Math.floor(cy - rad)); gy <= Math.min(P - 1, Math.ceil(cy + rad)); gy++)
+      for (var gx = Math.max(0, Math.floor(cx - rad)); gx <= Math.min(P - 1, Math.ceil(cx + rad)); gx++)
+        if ((gx + 0.5 - cx) * (gx + 0.5 - cx) + (gy + 0.5 - cy) * (gy + 0.5 - cy) <= rad * rad) cells[gy * P + gx] = v;
+  }
+
+  var stroke = null;
+  $("overlay").addEventListener("pointerdown", function (e) {
+    if (state.mode === "select") return;
+    beforeChange();
+    var p = toMap(e); stroke = p; dab(p[0], p[1]); paintTint();
+    $("overlay").setPointerCapture(e.pointerId);
+  });
+  $("overlay").addEventListener("pointermove", function (e) {
+    if (!stroke) return;
+    var p = toMap(e), dx = p[0] - stroke[0], dy = p[1] - stroke[1];
+    var steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 3));
+    for (var s = 1; s <= steps; s++) dab(stroke[0] + dx * s / steps, stroke[1] + dy * s / steps);
+    stroke = p; paintTint();
+  });
+  function endStroke() { if (!stroke) return; stroke = null; changed(); }
+  $("overlay").addEventListener("pointerup", endStroke);
+  $("overlay").addEventListener("pointercancel", endStroke);
+  $("overlay").addEventListener("click", function (e) {
+    if (state.mode !== "select") return;
+    var p = toMap(e), x = Math.floor(p[0]), y = Math.floor(p[1]), best = 0, labels = maps[state.map].labels;
+    for (var dy = -4; dy <= 4 && !best; dy++) for (var dx = -4; dx <= 4 && !best; dx++) {
+      var xx = x + dx, yy = y + dy;
+      if (xx >= 0 && yy >= 0 && xx < PX && yy < PX) best = labels[yy * PX + xx];
+    }
+    state.selected = best; paintTint(); showSelected();
+  });
+  $("brush").addEventListener("input", function () { state.brush = +this.value; $("brushPx").textContent = this.value; });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-mode]"), function (b) {
+    b.addEventListener("click", function () { setMode(b.getAttribute("data-mode")); });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-tag]"), function (b) {
+    b.addEventListener("click", function () { setTag(b.getAttribute("data-tag")); });
+  });
+  $("next").addEventListener("click", nextUntagged);
+  $("undo").addEventListener("click", doUndo);
+  function doUndo() {
+    var last = undo.pop();
+    if (!last) return;
+    edits[last.map] = last.edits;
+    save();
+    if (last.map !== state.map) { $("map").value = last.map; selectMap(last.map); } else { $("reviewed").checked = !!mapEdits().cover_reviewed; recompute(); }
+    $("undo").disabled = !undo.length;
+  }
+  $("reviewed").addEventListener("change", function () { beforeChange(); mapEdits().cover_reviewed = this.checked; changed(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.target && /^(INPUT|SELECT)$/.test(e.target.tagName) && e.target.type !== "checkbox") return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); doUndo(); return; }
+    var keys = { "1": "cover", "2": "seeover", "3": "walkable", "4": "glyph", "5": "seeacross", "0": "" };
+    var modes = { s: "select", e: "erase", p: "see_across_paint", c: "cover_paint", w: "cant_walk_paint", u: "uncertain_paint" };
+    if (e.key in keys) setTag(keys[e.key]);
+    else if (e.key === "n" || e.key === "N") nextUntagged();
+    else if (e.key.toLowerCase() in modes) setMode(modes[e.key.toLowerCase()]);
+  });
+  ["showCandidates", "showPaint", "showSight", "showWalk"].forEach(function (id) { $(id).addEventListener("change", paintTint); });
+  $("showLines").addEventListener("change", paintOverlay);
+  $("onlyBlocked").addEventListener("change", paintOverlay);
+  $("map").addEventListener("change", function () { selectMap(this.value); });
+
+  $("export").addEventListener("click", function () {
+    Object.keys(edits).forEach(ensureMap);
+    var out = T.exportTags(DATA.tags, maps, edits);
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1) + "\n"], { type: "application/json" }));
+    a.download = "tags.json"; a.click();
+  });
+  $("importBtn").addEventListener("click", function () { $("importFile").click(); });
+  $("importFile").addEventListener("change", function () {
+    var f = this.files[0];
+    if (!f) return;
+    f.text().then(function (text) {
+      var data = JSON.parse(text);
+      Object.keys(data.maps || {}).forEach(function (name) {
+        if (!DATA.maps[name]) return;
+        var entry = data.maps[name];
+        if (entry.image_sha && entry.image_sha !== DATA.maps[name].image_sha) { console.warn(name + ": the minimap changed; skipped"); return; }
+        var e = T.editsFrom(entry);
+        e.touched = true;
+        edits[name] = e;
+      });
+      save(); selectMap(state.map);
+    });
+  });
+
+  Object.keys(DATA.maps).forEach(function (name) {
+    edits[name] = T.editsFrom((DATA.tags.maps || {})[name]);
+    loaded[name] = T.editsFrom((DATA.tags.maps || {})[name]);
+    var o = document.createElement("option");
+    var n = DATA.maps[name].lines.length;
+    o.value = name; o.textContent = name + (n ? " (" + n + " kill lines)" : " (no replays)");
+    $("map").appendChild(o);
+  });
+  restore();
+  var first = Object.keys(DATA.maps).find(function (n) { return DATA.maps[n].lines.length; }) || Object.keys(DATA.maps)[0];
+  $("map").value = first;
+  setMode("select");
+  selectMap(first);
+  window.tagger = { state: state, edits: edits, maps: maps, setMode: setMode, selectMap: selectMap, dab: dab, changed: changed };
+})();
+</script>
+</body>
+</html>

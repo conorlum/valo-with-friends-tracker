@@ -177,16 +177,28 @@ class MapMasks:
 
 
 def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
-    """The sight and traversal masks of one minimap (RGBA, PX x PX) and its `tags.json` entry."""
+    """The sight and traversal masks of one minimap (RGBA, PX x PX) and its `tags.json` entry.
+
+    Besides tags, an entry may carry hand paint (PAINT_GRID bits each, drawn with
+    scripts/control_tagger.py): `see_across_paint` opens sight over black; `cover_paint` blocks sight
+    and walking like a `cover` tag (see-across can't open it); `cant_walk_paint` only removes walkable
+    ground (a drop you can see across, a ledge); `uncertain_paint` changes neither mask (a note of
+    where the 2D map is doubtful; build_control_geometry.py counts it)."""
     entry = entry or {}
     base = _base_masks(rgba, GLYPH_SATURATION, DETECTOR_DEFAULTS["line_lum"])
     shapes = tag_shapes(rgba, entry)
-    sight = ~base["opaque"] | shapes["cover"]
+    # What each Stage 6 paint means; no map has one yet, so no stored round changes.
+    cover = shapes["cover"]
+    if entry.get("cover_paint"):
+        cover = cover | unpack_paint(entry["cover_paint"])
+    sight = ~base["opaque"] | cover
     see_across = shapes["seeacross"].copy()
     if entry.get("see_across_paint"):
         see_across |= unpack_paint(entry["see_across_paint"])
-    sight &= ~see_across | shapes["cover"]
-    walk = base["opaque"] & ~shapes["cover"]
+    sight &= ~see_across | cover
+    walk = base["opaque"] & ~cover
+    if entry.get("cant_walk_paint"):
+        walk &= ~unpack_paint(entry["cant_walk_paint"])
     return MapMasks(sight, walk)
 
 

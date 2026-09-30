@@ -454,9 +454,69 @@
     });
   }
 
+  // The page's site data for one round (its `rounds[n]`: DB outcome, stats, alive steps,
+  // annotations, and per-kill fields by the kill's index) merged onto the stored blob.
+  function withSiteData(site, blob) {
+    if (!site) return blob;
+    blob.db = site.db;
+    blob.stats = site.stats;
+    blob.alive_steps = site.alive_steps;
+    blob.annotations = site.annotations;
+    (blob.kills || []).forEach(function (k) {
+      var extra = site.kills && site.kills[String(k.i)];
+      if (extra) Object.keys(extra).forEach(function (key) { k[key] = extra[key]; });
+    });
+    return blob;
+  }
+
+  // Map control's table (Stage 4), from /replays/{uuid}/control/players.json: one list of rows per
+  // team, and each team's redundant control. `scope` is "round" (round `n`) or "match";
+  // groupTeam maps the summaries' side groups (A/B) to "team-1" / "team-2". Null when the round has
+  // no stored control.
+  function controlRows(tables, scope, n, groupTeam) {
+    var src = scope === "match" ? tables && tables.match : tables && tables.rounds && tables.rounds[String(n)];
+    if (!src || (scope !== "match" && src.status !== "ok")) return null;
+    var out = { "team-1": [], "team-2": [], redundant: {}, stale: !!src.stale };
+    Object.keys(src.players || {}).sort(function (a, b) { return a - b; }).forEach(function (slot) {
+      var p = src.players[slot], team = groupTeam[p.team] || (p.team === "B" ? "team-2" : "team-1");
+      var lost = null;
+      if (scope === "match") {
+        // Per death on average, and the summed loss over the summed area held (a ratio of sums).
+        lost = p.deaths ? { m2: p.lost_mean_m2, share: p.lost_share, deaths: p.deaths } : null;
+      } else if ((p.lost || []).length) {
+        var shared = 0, held = 0;
+        lost = { m2: 0, share: null, deaths: p.lost.length };
+        p.lost.forEach(function (d) {
+          lost.m2 += d.control_m2 || 0;
+          if (d.share_of_team) { shared += d.control_m2 || 0; held += (d.control_m2 || 0) / d.share_of_team; }
+        });
+        if (held > 0) lost.share = shared / held;
+      }
+      out[team].push({ slot: Number(slot), control: p.control_m2, active: p.active_m2, passive: p.passive_m2,
+                       ratio: p.active_ratio, lost: lost, alive: p.alive_s });
+    });
+    Object.keys(src.redundant_m2 || {}).forEach(function (group) {
+      out.redundant[groupTeam[group] || (group === "B" ? "team-2" : "team-1")] = src.redundant_m2[group];
+    });
+    return out;
+  }
+
   // ------------------------------------------------------------ the viewer
 
-  var LAYERS = ["names", "abilities", "tracers", "cones"];
+  var LAYERS = ["names", "abilities", "tracers", "cones", "control"];
+  var CONTROL_KEEP = 3;    // rounds of decoded control kept: the current one and its neighbours
+  var CONTROL_PX = 512;    // the layer's offscreen image (4 px a cell)
+  var CONTROL_STATUS = {
+    not_ready: "Map control isn't ready for this round yet.",
+    failed: "Map control couldn't be computed for this round.",
+    unavailable: "Map control isn't available for this round.",
+    error: "Map control couldn't be loaded."
+  };
+
+  function controlApi() {
+    if (global.ReplayControl) return global.ReplayControl;
+    return typeof require === "function" ? require("./replay_control.js") : null;
+  }
   var TRACER_S = 0.25;     // a shot's tracer fades over this long
   var KILL_LINE_S = 1.5;   // a kill's killer-to-victim line fades over this long
 
@@ -471,7 +531,14 @@
     this.playing = false;
     this.current = null;
     this.icons = {};
-    this.layers = { names: true, abilities: true, tracers: true, cones: true };
+    this.layers = { names: true, abilities: true, tracers: true, cones: true, control: false };
+    // Map control (Stage 4): off by default; the page's match.control says the map has it.
+    this.control = options.control && options.loadControl && controlApi() ? options.control : null;
+    this.controlCache = this.control ? new (controlApi().ControlCache)(options.loadControl, CONTROL_KEEP) : null;
+    this.controlPaint = null;                      // what the offscreen images show
+    this.controlScope = "round";
+    this.controlTables = null;                     // the players.json answer, once loaded
+    this.highlight = null;                         // the slot whose control is highlighted
     this.canvas = root.querySelector("[data-replay-canvas]");
     this.ctx = this.canvas.getContext("2d");
     this.map = new Image();
@@ -601,6 +668,9 @@
       self.renderFeed();
       self.renderAnalysis();
       self.renderUtilList();
+      self.controlPaint = null;
+      self.refreshControl();
+      self.renderControlTable();
       self.updateControls();
       self.draw();
       var next = self.rounds[self.rounds.indexOf(n) + 1];
@@ -661,7 +731,9 @@
       feed: q("[data-replay-feed]"), board: q("[data-replay-board]"), banner: q("[data-replay-banner]"),
       badge: q("[data-replay-badge]"), analysis: q("[data-replay-analysis]"),
       tip: q("[data-replay-tip]"), util: q("[data-replay-util]"), hud: q("[data-replay-hud]"),
-      nextKill: q("[data-replay-nextkill]"), prevKill: q("[data-replay-prevkill]")
+      nextKill: q("[data-replay-nextkill]"), prevKill: q("[data-replay-prevkill]"),
+      controlStatus: q("[data-replay-control-status]"), controlLegend: q("[data-replay-control-legend]"),
+      controlTable: q("[data-replay-control-table]")
     };
     SPEEDS.forEach(function (s) {
       var option = document.createElement("option");
@@ -686,6 +758,7 @@
       else if (e.key === "ArrowRight") { e.preventDefault(); self.seek(self.t + STEP_S); }
       else if (e.key === "n" || e.key === "N") { e.preventDefault(); self.nextKill(); }
       else if (e.key === "b" || e.key === "B") { e.preventDefault(); self.prevKill(); }
+      else if (e.key === "Escape" && self.highlight !== null) { e.preventDefault(); self.setHighlight(null); }
     });
     LAYERS.forEach(function (name) {
       var box = q('[data-replay-layer="' + name + '"]');
@@ -698,9 +771,33 @@
       box.addEventListener("change", function () {
         self.layers[name] = box.checked;
         try { global.localStorage.setItem("replay-layer-" + name, box.checked ? "1" : "0"); } catch (err) { /* ignore */ }
+        if (name === "control") self.refreshControl();
         self.draw();
       });
     });
+    if (!this.control) this.layers.control = false;
+    Array.prototype.forEach.call(this.root.querySelectorAll("[data-replay-control-scope]"), function (button) {
+      button.addEventListener("click", function () {
+        self.controlScope = button.getAttribute("data-replay-control-scope");
+        Array.prototype.forEach.call(self.root.querySelectorAll("[data-replay-control-scope]"), function (b) {
+          var on = b === button;
+          b.classList.toggle("is-active", on);
+          b.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+        self.renderControlTable();
+      });
+    });
+    if (this.ui.controlTable) {
+      var pick = function (e) {
+        var row = e.target.closest("[data-control-slot]");
+        if (!row || (e.type === "keydown" && e.key !== "Enter")) return;
+        if (e.type === "keydown") e.preventDefault();
+        self.setHighlight(Number(row.getAttribute("data-control-slot")));
+      };
+      this.ui.controlTable.addEventListener("click", pick);
+      this.ui.controlTable.addEventListener("keydown", pick);
+    }
+    this.canvas.addEventListener("click", function (e) { self.onCanvasClick(e); });
     [this.ui.feed, this.ui.util, this.ui.analysis].forEach(function (list) {
       if (!list) return;
       var go = function (e) {
@@ -728,6 +825,8 @@
     Array.prototype.forEach.call(this.root.querySelectorAll("[data-replay-panel]"), function (panel) {
       panel.hidden = panel.getAttribute("data-replay-panel") !== name;
     });
+    this.tab = name;
+    if (name === "control") this.loadControlTables();
   };
 
   ReplayViewer.prototype.step = function (delta) {
@@ -988,6 +1087,11 @@
     }
     this.renderBoard();
     this.renderHud();
+    if (this.tab === "control" && this.controlScope === "round" && this.controlTables) {
+      var value = this.controlCache && this.controlCache.ready(this.number);
+      var nowTick = value ? controlApi().tickAt(value.parsed.times, t) : null;
+      if (nowTick !== this.controlNowTick) { this.controlNowTick = nowTick; this.renderControlTable(); }
+    }
     if (this.ui.nextKill) this.ui.nextKill.disabled = nextKillTime(blob.kills, t) === null;
     if (this.ui.prevKill) this.ui.prevKill.disabled = prevKillTime(blob.kills, t) === null;
     if (this.ui.badge) {
@@ -1411,6 +1515,196 @@
     });
   };
 
+  // ------------------------------------------------------------ map control (Stage 4)
+
+  ReplayViewer.prototype.setControlStatus = function (text) {
+    if (this.ui.controlStatus) this.ui.controlStatus.textContent = text || "";
+  };
+
+  // Loads the current round's control when the layer or a highlight needs it, keeps only this
+  // round and its neighbours, and prefetches the next round while the layer is on.
+  ReplayViewer.prototype.refreshControl = function () {
+    if (!this.control || !this.current) return;
+    var self = this, n = this.number, i = this.rounds.indexOf(n);
+    var prev = this.rounds[i - 1], next = this.rounds[i + 1];
+    if (this.ui.controlLegend) this.ui.controlLegend.hidden = !this.layers.control;
+    this.controlCache.keep([prev, n, next]);
+    if (!this.layers.control && this.highlight === null) { this.setControlStatus(""); return; }
+    if (!this.controlCache.ready(n)) this.setControlStatus("Loading map control…");
+    this.controlCache.get(n).then(function (value) {
+      if (self.number !== n || value.status === "aborted") return;
+      var text = value.status === "ok"
+        ? (value.stale ? "Computed from older inputs; it will be refreshed." : "")
+        : CONTROL_STATUS[value.status] || CONTROL_STATUS.unavailable;
+      if (value.status === "ok" && self.highlight !== null) {
+        text = (text ? text + " " : "") + "Showing " + self.nameOf(self.highlight).split("#")[0] +
+          "'s control (filled) and coverage (outlined): click them again or press Esc to clear.";
+      }
+      self.setControlStatus(text);
+      self.draw();
+    });
+    if (next !== undefined && this.layers.control) this.controlCache.get(next);
+  };
+
+  // Group (A/B) -> the RGB its players are drawn in: their team's colour, else the side's.
+  ReplayViewer.prototype.controlColors = function () {
+    var C = controlApi(), teams = C.groupTeams(this.linked && this.linked.players), self = this, out = {};
+    "AB".split("").forEach(function (group) {
+      var css = teams[group] ? self.css(teams[group] === "team-1" ? "--replay-team-1" : "--replay-team-2", "")
+        : self.color(group);
+      out[group.toLowerCase()] = C.hexRgb(css || self.color(group));
+    });
+    return out;
+  };
+
+  ReplayViewer.prototype.controlCanvas = function (key) {
+    this.controlImages = this.controlImages || {};
+    if (!this.controlImages[key]) {
+      var c = document.createElement("canvas");
+      c.width = c.height = CONTROL_PX;
+      this.controlImages[key] = { canvas: c, ctx: c.getContext("2d"), data: null };
+    }
+    return this.controlImages[key];
+  };
+
+  // Paints the layer (and the highlight) for the tick at t into offscreen images, only when the
+  // round, the tick, the highlight or the switches change, then draws them over the map.
+  ReplayViewer.prototype.drawControl = function (ctx, size) {
+    if (!this.control || (!this.layers.control && this.highlight === null)) return;
+    var value = this.controlCache.ready(this.number);
+    if (!value) return;
+    var C = controlApi(), parsed = value.parsed, tick = C.tickAt(parsed.times, this.t);
+    if (tick < 0) return;
+    var key = [this.number, tick, this.layers.control, this.highlight].join(":");
+    if (this.controlPaint !== key) {
+      this.controlPaint = key;
+      var colors = this.controlColors();
+      if (this.layers.control) {
+        var img = this.controlCanvas("states");
+        img.data = img.data || img.ctx.createImageData(CONTROL_PX, CONTROL_PX);
+        C.paintStates(img.data.data, CONTROL_PX, parsed.walk, value.cursor.states(tick), colors);
+        img.ctx.putImageData(img.data, 0, 0);
+      }
+      if (this.highlight !== null) {
+        var hl = this.controlCanvas("highlight"), slot = this.highlight;
+        var group = (this.current.blob.players.filter(function (p) { return p.slot === slot; })[0] || {}).side;
+        hl.data = hl.data || hl.ctx.createImageData(CONTROL_PX, CONTROL_PX);
+        C.paintHighlight(hl.data.data, CONTROL_PX, parsed.walk, value.cursor.mask("control", slot, tick),
+          value.cursor.mask("coverage", slot, tick), colors[String(group || "A").toLowerCase()] || colors.a);
+        hl.ctx.putImageData(hl.data, 0, 0);
+      }
+    }
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    if (this.layers.control) ctx.drawImage(this.controlCanvas("states").canvas, 0, 0, size, size);
+    if (this.highlight !== null) ctx.drawImage(this.controlCanvas("highlight").canvas, 0, 0, size, size);
+    ctx.restore();
+  };
+
+  // A click on a player (their dot on the map, or their row in the Control tab) highlights them;
+  // the same click again clears it.
+  ReplayViewer.prototype.setHighlight = function (slot) {
+    if (!this.control) return;
+    this.highlight = slot === null || slot === this.highlight ? null : slot;
+    this.controlPaint = null;
+    this.refreshControl();
+    this.renderControlTable();
+    this.draw();
+  };
+
+  ReplayViewer.prototype.onCanvasClick = function (e) {
+    if (!this.control || !this.hits) return;
+    var rect = this.canvas.getBoundingClientRect(), scale = this.canvas.width / rect.width, v = this.view;
+    var x = (e.clientX - rect.left) * scale / v.k + v.ox, y = (e.clientY - rect.top) * scale / v.k + v.oy;
+    var best = null;
+    this.hits.forEach(function (h) {
+      if (h.slot === undefined) return;
+      var d = Math.hypot(h.x - x, h.y - y);
+      if (d <= h.r && (!best || d < best.d)) best = { slot: h.slot, d: d };
+    });
+    if (best) this.setHighlight(best.slot);
+  };
+
+  ReplayViewer.prototype.loadControlTables = function () {
+    if (!this.control || !this.options.loadControlPlayers || this.controlTablesAsked) return;
+    var self = this;
+    this.controlTablesAsked = true;
+    if (this.ui.controlTable) this.ui.controlTable.innerHTML = '<p class="replay-feed-empty">Loading…</p>';
+    Promise.resolve(this.options.loadControlPlayers()).then(function (tables) {
+      self.controlTables = tables;
+      self.renderControlTable();
+    }, function () {
+      self.controlTablesAsked = false;   // ask again next time the tab opens
+      if (self.ui.controlTable) self.ui.controlTable.innerHTML = '<p class="replay-feed-empty">Control numbers couldn\'t be loaded.</p>';
+    });
+  };
+
+  function num(value) {
+    return typeof value === "number" ? String(Math.round(value)) : "—";
+  }
+
+  function signedCell(value) {
+    if (typeof value !== "number") return '<td class="num">—</td>';
+    var cls = value > 0.5 ? "pos" : value < -0.5 ? "neg" : "";
+    return '<td class="num ' + cls + '">' + (signed(value) || "0") + "</td>";
+  }
+
+  ReplayViewer.prototype.renderControlTable = function () {
+    var box = this.ui.controlTable, self = this;
+    if (!box || !this.controlTables || !this.current) return;
+    var scope = this.controlScope, groupTeam = controlApi().groupTeams(this.linked && this.linked.players);
+    var rows = controlRows(this.controlTables, scope, this.number, groupTeam);
+    if (!rows) {
+      box.innerHTML = '<p class="replay-feed-empty">No map control stored for this round yet.</p>';
+      return;
+    }
+    var now = scope === "round" ? this.controlNow() : null;
+    var head = "<thead><tr><th>Player</th>" +
+      '<th class="num" title="Average m² the team would lose if this player died, while alive (signed)">Control</th>' +
+      (now ? '<th class="num" title="Control at this moment (m²)">Now</th>' : "") +
+      '<th class="num" title="What the team lost at this player&#39;s death' + (scope === "match"
+        ? "s: m² per death on average, and all of it as a share of what the team held at those deaths"
+        : ": m², and as a share of what the team held then") +
+      '. The share can pass 100%: ground that flips to the enemy counts twice, and ground the enemy gains that the team never held counts too.">' +
+      (scope === "match" ? "Lost/death" : "Lost") + "</th>" +
+      '<th class="num" title="Average m² in their held cone / of passive vision and their own live utility">Cover a/p</th>' +
+      '<th class="num" title="Active coverage ÷ (active + passive)">Act %</th></tr></thead>';
+    box.innerHTML = (rows.stale ? '<p class="replay-side-note">Computed from older inputs; it will be refreshed.</p>' : "") +
+      ["team-1", "team-2"].map(function (team) {
+        var body = rows[team].map(function (r) {
+          // The stored share, shown even past 100% (the tooltip says why).
+          var lost = r.lost ? Math.round(r.lost.m2) + (typeof r.lost.share === "number"
+            ? ' <span class="replay-control-share">' + Math.round(100 * r.lost.share) + "%</span>" : "") : "—";
+          var nowValue = now ? now[r.slot] : undefined;
+          return '<tr data-control-slot="' + r.slot + '" tabindex="0" class="replay-control-row' +
+            (self.highlight === r.slot ? " is-highlighted" : "") + '" aria-pressed="' + (self.highlight === r.slot) + '">' +
+            '<td class="replay-board-name" title="' + escapeHtml(self.nameOf(r.slot)) + (scope === "match" && r.lost
+              ? " · " + r.lost.deaths + " deaths" : "") + '"><span class="replay-dot" style="background:' + self.slotColor(r.slot) +
+            '"></span>' + escapeHtml(self.nameOf(r.slot).split("#")[0]) + "</td>" + signedCell(r.control) +
+            (now ? (typeof nowValue === "number" ? signedCell(nowValue) : '<td class="num">—</td>') : "") +
+            '<td class="num">' + lost + "</td>" + '<td class="num">' + num(r.active) + " / " + num(r.passive) + "</td>" +
+            '<td class="num">' + (typeof r.ratio === "number" ? Math.round(100 * r.ratio) + "%" : "—") + "</td></tr>";
+        }).join("");
+        var redundant = rows.redundant[team];
+        var foot = '<tr class="replay-control-redundant"><td title="The team&#39;s own area minus its players&#39; control: space two or more of them hold at once, or none alone">Redundant</td>' +
+          signedCell(redundant) + '<td colspan="' + (now ? 4 : 3) + '"></td></tr>';
+        return '<table class="replay-board-team replay-control-team team-' + team.slice(-1) + '">' + head +
+          "<tbody>" + body + foot + "</tbody></table>";
+      }).join("");
+  };
+
+  // Each alive slot's control (m²) at the current tick, from the round's stored header, or null.
+  ReplayViewer.prototype.controlNow = function () {
+    var value = this.controlCache && this.controlCache.ready(this.number);
+    if (!value) return null;
+    var tick = controlApi().tickAt(value.parsed.times, this.t), out = {};
+    if (tick < 0) return null;
+    (value.parsed.header.control_m2 || []).forEach(function (series, slot) {
+      if (series && typeof series[tick] === "number") out[slot] = series[tick];
+    });
+    return out;
+  };
+
   ReplayViewer.prototype.draw = function () {
     var ctx = this.ctx, size = this.canvas.width, s = size / UV, view = this.view;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1421,6 +1715,8 @@
     var blob = this.current.blob, tracks = this.current.tracks, t = this.t, self = this;
     var r = size / 48 / Math.sqrt(view.k);   // zoomed marks grow, but only by the square root
     var hits = [];
+
+    this.drawControl(ctx, size);   // map control: under everything else
 
     if (this.layers.abilities) {
       this.drawAbilities(ctx, s, r, hits);
@@ -1496,7 +1792,14 @@
         ctx.restore();
       }
       if (self.linked && self.layers.names) labels.push({ x: x, y: y + r * 1.25, text: self.nameOf(p.slot) });
-      hits.push({ x: x, y: y, r: r * 1.2, text: self.nameOf(p.slot) + " · " + p.agent + (life.flags.length ? " · " + life.flags.join(", ") : "") });
+      if (self.highlight === p.slot) {
+        ctx.save();
+        ctx.strokeStyle = "#ffffff"; ctx.lineWidth = Math.max(2.5, r / 4);
+        ctx.beginPath(); ctx.arc(x, y, r * 1.6, 0, 2 * Math.PI); ctx.stroke();
+        ctx.restore();
+      }
+      hits.push({ x: x, y: y, r: r * 1.2, slot: p.slot, text: self.nameOf(p.slot) + " · " + p.agent +
+        (life.flags.length ? " · " + life.flags.join(", ") : "") + (self.control ? " · click to show their control" : "") });
     });
 
     if (this.layers.abilities) {
@@ -1587,7 +1890,8 @@
     abilityStyle: abilityStyle, lineEnds: lineEnds, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, pairWires: pairWires, signed: signed, tallyAt: tallyAt, aliveCountAt: aliveCountAt, stateAt: stateAt,
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
     impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,
-    popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle
+    popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle,
+    controlRows: controlRows, withSiteData: withSiteData
   };
   global.Replay = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
