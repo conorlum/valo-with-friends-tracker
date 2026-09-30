@@ -138,7 +138,7 @@ def match_table(summaries: dict[int, dict]) -> dict:
             "active_ratio": _ratio(a["active_m2s"], a["passive_m2s"]),
             "deaths": a["deaths"], "lost_m2": round(a["lost_m2"], 1),
             "lost_mean_m2": round(a["lost_m2"] / a["deaths"], 1) if a["deaths"] else None,
-            # PROVISIONAL(D2): a ratio of sums; a mean of per-death shares is dominated by deaths when the
+            # A ratio of sums; a mean of per-death shares is dominated by deaths when the
             # team held little (stored shares pass 100% then).
             "lost_share": round(a["shared_lost_m2"] / a["held_m2"], 4) if a["held_m2"] > 0 else None,
         }
