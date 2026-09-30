@@ -20,8 +20,9 @@ from tests.replays.control_toys import blob, door_hall
 # CONTROL_REVISION -> the digest of the engine's and geometry's constants it was released with.
 # Changed a constant? Bump CONTROL_REVISION in app/replays/control_format.py (every stored round
 # is then stale and recomputed) and add the new revision's digest here.
-# 2: space taken (a new stored stat) and remembered ground (D6: DECAY_MPS). Unreleased, so re-pinned in place.
-PINNED = {1: "956a0fb740a1cee8", 2: "fcce9edaf1ebe626"}
+# 2: space taken, what each team knew (KNEW_*) and remembered ground (D6: DECAY_MPS). Unreleased,
+# so re-pinned in place.
+PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68"}
 
 
 def _constants_digest() -> str:
@@ -103,6 +104,24 @@ def test_data_round_trips_every_tick(round_control):
         want = [None if np.isnan(v) else round(float(v), 1) for v in rc.control[:, slot]]
         assert header["control_m2"][slot] == want
     assert header["group_side"] == {"A": "attack", "B": "defense"}
+
+
+def test_what_each_team_knew_round_trips_as_optional_streams(round_control):
+    rc, data = round_control
+    header, streams = cf.unpack_data(encode_data(rc, data))
+    n_ticks, cells = len(rc.ticks), len(rc.walk_cells)
+    true = cf.decode_states(streams["states"], n_ticks, cells)
+    for group in ("A", "B"):
+        got = cf.decode_knew(streams[f"knew_{group.lower()}"], true)
+        assert np.array_equal(np.array(got), rc.knew_states[group]), group
+    assert [c[0] for c in header["knew_checkpoints"]] == [c[0] for c in header["checkpoints"]]
+    assert set(header["knew"]) == {"A", "B"} and header["knew_fade_s"] > 0
+    # a row computed without them has the three streams only, and reads the same
+    plain = ce.compute_round(data, door_hall(), ce.ControlLink(sides={0: "attack", 1: "attack", 5: "defense",
+                                                                         6: "defense"}), knowledge=False)
+    h2, s2 = cf.unpack_data(encode_data(plain, data))
+    assert set(s2) == {"states", "coverage", "control"} and "knew" not in h2
+    assert cf.decode_states(s2["states"], n_ticks, cells) == true
 
 
 def test_a_checkpoint_offset_lets_a_reader_start_there(round_control):

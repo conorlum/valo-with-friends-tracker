@@ -14,6 +14,11 @@ One `replay_round_control` row per round (migration 0014):
     the walkable cells (MSB first), else a varint count of flipped cells and their varint index gaps.
   Checkpoints are the first tick and the first tick at or after every CHECKPOINT_S, so the viewer can
   seek: `header["checkpoints"]` gives each one's tick and byte offset in each stream.
+  - Optional, **knew_a** and **knew_b** (R3.3, docs/map-control-team-knew-plan.md): each side group's
+    picture of the round, per tick the cells where it differs from that tick's true state (a varint
+    count, then per cell a varint index gap and its code byte). `header["knew_checkpoints"]` gives
+    each checkpoint's tick and offsets in the two; `header["knew"]` each group's sightings of each
+    enemy slot, `[[t0, t1, u, v], ...]` (u, v at the last sighting). A row without them reads as before.
 - **`summary`**, gzip JSON, never served whole: the per-section heatmap totals and the per-player
   stats (Stages 4-5 read these instead of replaying ticks). A section's totals are, for each state
   but `none` (the section's seconds minus the rest), a varint count of cells, then per cell a varint
@@ -94,7 +99,8 @@ def read_varint(buf: bytes, pos: int) -> tuple[int, int]:
 
 def pack_data(header: dict, streams: dict[str, bytes]) -> bytes:
     """gzip(MAGIC, version, header length, header, states, coverage, control)."""
-    order = ("states", "coverage", "control")
+    # the three always there, then optional ones (what each team knew: knew_a, knew_b) by name
+    order = ("states", "coverage", "control") + tuple(sorted(set(streams) - {"states", "coverage", "control"}))
     offset, where = 0, {}
     for name in order:
         where[name] = [offset, len(streams[name])]
@@ -144,6 +150,23 @@ def decode_states(stream: bytes, ticks: int, cells: int) -> list[list[int]]:
                 cur[c] = stream[pos]
                 pos += 1
         frames.append(list(cur))
+    return frames
+
+
+def decode_knew(stream: bytes, true_frames: list[list[int]]) -> list[list[int]]:
+    """A team's picture per tick (the optional `knew_a` / `knew_b` streams, R3.3): each tick is the true
+    state with the stored cells replaced (reference decoder)."""
+    frames, pos = [], 0
+    for base in true_frames:
+        cur = list(base)
+        count, pos = read_varint(stream, pos)
+        c = -1
+        for _ in range(count):
+            gap, pos = read_varint(stream, pos)
+            c += gap + 1
+            cur[c] = stream[pos]
+            pos += 1
+        frames.append(cur)
     return frames
 
 

@@ -43,11 +43,12 @@ rows) are used when present; older blobs fall back to 0b's placeholders, counted
 
 from __future__ import annotations
 
+import copy
 import math
 import re
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from scipy import ndimage
@@ -62,6 +63,11 @@ SECTION_S = 10.0
 
 FOV_HALF = 51.5
 RUN_MPS, WALK_MPS = 5.0, 1.5
+# "What the team knew" (docs/map-control-team-knew-plan.md; D7, approved): an enemy the team isn't
+# seeing could be anywhere it could have run to since (at this speed) through ground the team doesn't
+# watch; a just-lost enemy keeps their last view as passive for KNEW_FADE_S.
+KNEW_RUN_MPS = 6.75
+KNEW_FADE_S = 3.0
 # Remembered ground (D6, 2026-09-30): what a player saw and looked away from stays theirs as passive
 # control, and open ground eats into it at a quiet walk, Valorant's shift-walk (approximate).
 DECAY_MPS = 3.5
@@ -228,6 +234,7 @@ class RoundInputs:
         self.events: list[float] = []
         self.shot_times: list[float] = []
         self.plant: float | None = None
+        self.reveals: list[tuple[float, float, int | None, int]] = []   # (t0, t1, by, target)
         self._read_util()
 
     # --- lives
@@ -314,6 +321,7 @@ class RoundInputs:
                 self._nearsight(e)
             elif k == "reveal":
                 self.downgraded[e["target"]].append(_span(e["t"], e["t1"]))
+                self.reveals.append((*_span(e["t"], e["t1"]), e.get("by"), e["target"]))
                 self.events += [e["t"], e["t1"]]
             elif k == "status":
                 if e.get("status") in DOWNGRADE_STATUSES:
@@ -591,6 +599,11 @@ class Tick:
         self.sees = {e.slot: {h.slot for h in self.holders.values() if h.team != e.team and e.body[h.cell]}
                      for e in self.holders.values()}
         self._dist: dict[int, np.ndarray] = {}
+        # side -> flat cells an unknown enemy could be in: extra sources of that side's free space
+        # (a team's knowledge picture only; see `knowledge_tick`)
+        self.seeds: dict[str, np.ndarray] = {}
+        # side -> flat cells claimed as passive by no player (a just-lost enemy's remembered view)
+        self.extra_passive: dict[str, np.ndarray] = {}
 
     def _watch(self, s: int, t: float) -> np.ndarray:
         geo, rnd = self.geo, self.rnd
@@ -635,6 +648,9 @@ class Tick:
             active |= h.active
             passive |= h.passive | h.watch
             raw |= h.raw | h.watch
+        extra = self.extra_passive.get(side) if removed is None else None
+        if extra is not None:
+            passive |= extra
         passive &= ~active
         return active, passive, active | passive, raw
 
@@ -673,12 +689,18 @@ class Tick:
         open_ = self.geo.walk & ~watched
         for h in self.team(side, removed):
             open_.flat[h.cell] = True
+        seed = self.seeds.get(side) if removed is None else None
+        if seed is not None:
+            open_ |= seed.reshape(GRID, GRID)
         return open_
 
     def fill(self, side: str, blocked_by: np.ndarray, removed: int | None) -> Fill | None:
         """`side`'s free space through walkable cells `blocked_by` (the other team's watched cells) misses."""
         hs = self.team(side, removed)
-        if not hs:
+        seed = self.seeds.get(side) if removed is None else None
+        if seed is not None and not seed.any():
+            seed = None
+        if not hs and seed is None:
             return None
         watched = blocked_by.reshape(GRID, GRID)
         lab, _ = ndimage.label(self._open(side, watched, removed))
@@ -686,6 +708,10 @@ class Tick:
         by_reach: dict[frozenset, list[int]] = defaultdict(list)
         for h in hs:
             by_reach[frozenset(self._reach(lab, {int(lab.flat[h.cell])}))].append(h.slot)
+        if seed is not None:   # an unknown enemy's possible positions: a source with no player in it
+            for label in set(np.unique(lab.ravel()[seed]).tolist()) - {0}:
+                # slot -1: someone unseen, so an entry's way back (compose) can lead here too
+                by_reach[frozenset(self._reach(lab, {label}))].append(-1)
         comps = []
         for labels, slots in by_reach.items():
             mask = np.isin(lab, list(labels))
@@ -888,6 +914,110 @@ class Tick:
         return out
 
 
+# ---------------------------------------------------------------- what the team knew (R3.3)
+
+
+def possible_region(geo: Geometry, start: int, watched: np.ndarray, steps: int) -> np.ndarray:
+    """Flat cells an enemy last at `start` could be in now: at most `steps` 8-connected moves through
+    walkable cells the team doesn't watch (`watched`, flat). `start` itself always counts."""
+    open_ = geo.walk & ~watched.reshape(GRID, GRID)
+    region = np.zeros((GRID, GRID), bool)
+    region.flat[start] = True
+    front = region.copy()
+    for _ in range(max(0, int(steps))):
+        nxt = ndimage.binary_dilation(front, EIGHT) & open_ & ~region
+        if not nxt.any():
+            break
+        region |= nxt
+        front = nxt
+    return region.ravel()
+
+
+class Knowledge:
+    """One team's picture of the enemy, built tick by tick (docs/map-control-team-knew-plan.md).
+
+    An enemy the team sees now (a player's view after flashes, one of its watchers, or its reveal) is
+    exact. Every other live enemy is a region of where they could be: from where the team last saw
+    them (or their start position, if never), through ground the team doesn't watch, as far as
+    KNEW_RUN_MPS since. A just-lost enemy also keeps their last view, as passive only, for
+    KNEW_FADE_S. Deaths are known (the kill feed)."""
+
+    def __init__(self, rnd: RoundInputs, side: str):
+        self.rnd, self.side = rnd, side
+        self.enemy = "B" if side == "A" else "A"
+        self.last: dict[int, tuple] = {}                 # slot -> (t, cell, body, x, y)
+        self.sightings: dict[int, list] = defaultdict(list)   # slot -> [[t0, t1, u, v], ...]
+        self.prev_t: float | None = None
+        self.start: dict[int, int] = {}
+        for s, team in rnd.team.items():
+            if team != self.enemy:
+                continue
+            p = rnd.pos(s, rnd.t_start)
+            tr = rnd.tracks.get(s)
+            if p is None and tr is not None and len(tr[0]):
+                p = (tr[1][0] * PX / 10000, tr[2][0] * PX / 10000)
+            if p is not None:
+                self.start[s] = rnd.geo.cell_of_px(p[0], p[1])
+
+    def seen_now(self, tick: Tick, t: float) -> set[int]:
+        mine = [h for h in tick.holders.values() if h.team == self.side]
+        seen = set()
+        for e in tick.holders.values():
+            if e.team != self.enemy:
+                continue
+            if any(e.slot in tick.sees.get(h.slot, ()) or h.watch[e.cell] for h in mine) or any(
+                    t0 <= t < t1 and target == e.slot and self.rnd.team.get(by) == self.side
+                    for t0, t1, by, target in self.rnd.reveals):
+                seen.add(e.slot)
+        return seen
+
+    def tick_for(self, tick: Tick, t: float) -> Tick:
+        """The tick as this team knew it: vision reused, enemy holders and seeds replaced."""
+        geo = self.rnd.geo
+        seen = self.seen_now(tick, t)
+        for s in seen:
+            e = tick.holders[s]
+            self.last[s] = (t, e.cell, e.body, e.x, e.y)
+            u, v = round(e.x * 10000 / PX), round(e.y * 10000 / PX)
+            runs = self.sightings[s]
+            if runs and self.prev_t is not None and runs[-1][1] == self.prev_t:
+                runs[-1][1], runs[-1][2], runs[-1][3] = round(t, 4), u, v
+            else:
+                runs.append([round(t, 4), round(t, 4), u, v])
+        # a seen enemy brings their live view only: their remembered ground (D6) is theirs to know
+        holders = {s: h if h.team == self.side else replace(h, passive=h.body & ~h.active)
+                   for s, h in tick.holders.items() if h.team == self.side or s in seen}
+        watched = np.zeros(GRID * GRID, bool)
+        for h in tick.holders.values():
+            if h.team == self.side:
+                watched |= h.active | h.passive | h.watch
+        seed = np.zeros(GRID * GRID, bool)
+        remembered = np.zeros(GRID * GRID, bool)
+        for s, team in self.rnd.team.items():
+            if team != self.enemy or s in seen or not self.rnd.alive(s, t):
+                continue
+            if s in self.last:
+                t0, cell, body, _, _ = self.last[s]
+                if t - t0 <= KNEW_FADE_S:
+                    remembered |= body     # their last view, as passive claims only: not a player
+            elif s in self.start:
+                t0, cell = self.rnd.t_start, self.start[s]
+            else:
+                continue
+            seed |= possible_region(geo, cell, watched, KNEW_RUN_MPS * max(0.0, t - t0) / geo.cell_m)
+        seed &= ~watched       # a possible position never opens a hole in what the team watches
+        self.prev_t = t
+        kt = copy.copy(tick)
+        kt.holders = holders
+        # only enemies the team sees can contest its players
+        kt.sees = {x.slot: {h.slot for h in holders.values() if h.team != x.team and x.body[h.cell]}
+                   for x in holders.values()}
+        kt._dist = {}
+        kt.seeds = {self.enemy: seed} if seed.any() else {}
+        kt.extra_passive = {self.enemy: remembered} if remembered.any() else {}
+        return kt
+
+
 class Memory:
     """Remembered ground across a round's ticks (D6). `apply` runs on each tick in time order, after
     the tick's vision and before `compose`: it decays the memory by the time since the last tick, adds
@@ -1018,6 +1148,9 @@ class RoundControl:
     timings: dict                   # seconds in total, by part
     cf_check: dict                  # incremental vs full on the checked ticks
     revision: int = CONTROL_REVISION
+    # what each side group knew (R3.3): ticks x walkable cells, and each enemy's sightings
+    knew_states: dict | None = None     # side group -> uint8 states in that team's picture
+    knew_sightings: dict | None = None  # side group -> {enemy slot: [[t0, t1, u, v], ...]}
 
 
 def _section_bounds(rnd: RoundInputs) -> list[tuple[str, float, float]]:
@@ -1040,9 +1173,10 @@ def _section_bounds(rnd: RoundInputs) -> list[tuple[str, float, float]]:
 
 
 def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
-                  ticks: np.ndarray | None = None, full_every: int = 0) -> RoundControl:
+                  ticks: np.ndarray | None = None, full_every: int = 0, knowledge: bool = True) -> RoundControl:
     """Control for one round. `ticks` overrides the Q75 schedule (tests, parity checks);
-    `full_every` N > 0 also runs the full counterfactual on every Nth tick and compares."""
+    `full_every` N > 0 also runs the full counterfactual on every Nth tick and compares. `knowledge`
+    also builds each team's picture of the round (R3.3): what it knew, not the true positions."""
     visibility(geo)
     rnd = RoundInputs(blob, geo, link)
     times = rnd.tick_times() if ticks is None else np.asarray(ticks, float)
@@ -1071,6 +1205,8 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
             death_ticks[i].append((slot, t))
     prev_state = None
     memory = Memory(geo)
+    know = {side: Knowledge(rnd, side) for side in ("A", "B")} if knowledge else {}
+    knew_states = {side: np.zeros((n_ticks, n_walk), np.uint8) for side in know}
 
     for n, t in enumerate(times):
         t = float(t)
@@ -1089,7 +1225,12 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         if prev_state is not None and rnd.t_start < t <= rnd.t_decided:
             _credit_taken(tick, cov, prev_state, state, players, cell_m2)
         prev_state = state
-        live_w = max(0.0, min(t + weights[n], rnd.t_decided) - max(t, rnd.t_start))
+        if know:
+            k0 = time.perf_counter()
+            for side, kn in know.items():
+                knew_states[side][n] = kn.tick_for(tick, t).compose()["state"][walk_flat]
+            timings["knowledge"] += time.perf_counter() - k0
+        live_w =max(0.0, min(t + weights[n], rnd.t_decided) - max(t, rnd.t_start))
         owned = {s: float((score(state, s) > 0).sum()) for s in ("A", "B")}
         ctl_sum = {"A": 0.0, "B": 0.0}
         dying = {slot: t_death for slot, t_death in death_ticks.get(n, [])}
@@ -1143,7 +1284,10 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     missing = dict(rnd.missing)
     return RoundControl(blob.get("round"), blob.get("map", geo.name), times, weights, walk_cells, states, control,
                         control_masks, coverage_masks, sections, players, redundant, dict(rnd.group_side), cell_m2,
-                        missing, {**timings, "branches": dict(branches)}, cf_check)
+                        missing, {**timings, "branches": dict(branches)}, cf_check,
+                        knew_states=knew_states or None,
+                        knew_sightings={side: {s: runs for s, runs in kn.sightings.items()}
+                                        for side, kn in know.items()} or None)
 
 
 def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, players: dict, cell_m2: float,
