@@ -186,7 +186,7 @@ def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
     entry = entry or {}
     base = _base_masks(rgba, GLYPH_SATURATION, DETECTOR_DEFAULTS["line_lum"])
     shapes = tag_shapes(rgba, entry)
-    # PROVISIONAL(D3): what each Stage 6 paint means; no map has one yet, so no stored round changes.
+    # What each Stage 6 paint means; no map has one yet, so no stored round changes.
     cover = shapes["cover"]
     if entry.get("cover_paint"):
         cover = cover | unpack_paint(entry["cover_paint"])
