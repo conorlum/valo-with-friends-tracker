@@ -30,7 +30,7 @@ from app.replays import control_format as cf
 from app.services import replay_control
 
 # Bumped when these views' output changes for the same rows, so ETags change with it.
-VIEWS_VERSION = 1
+VIEWS_VERSION = 2
 
 
 @dataclass
@@ -105,6 +105,7 @@ def round_table(summary: dict) -> dict:
             "team": p.get("team"), "side": p.get("side"), "alive_s": p.get("alive_s"),
             "control_m2": p.get("control_m2"), "active_m2": p.get("active_m2"), "passive_m2": p.get("passive_m2"),
             "active_ratio": p.get("active_ratio"),
+            "taken_m2": p.get("taken_m2"),          # None before CONTROL_REVISION 2
             "lost": [{"t": d.get("t"), "control_m2": d.get("control_m2"), "share_of_team": d.get("share_of_team"),
                       "by_level_m2": d.get("by_level_m2"), "went_to_m2": d.get("went_to_m2")} for d in deaths],
         }
@@ -132,6 +133,9 @@ def match_table(summaries: dict[int, dict]) -> dict:
             a["rounds"] += 1
             for key in ("alive_s", "active_m2s", "passive_m2s", "control_m2s"):
                 a[key] += float(p.get(key) or 0.0)
+            if p.get("taken_m2") is not None:
+                a["taken_m2"] = a.get("taken_m2", 0.0) + float(p["taken_m2"])
+                a["taken_rounds"] = a.get("taken_rounds", 0) + 1
             for d in _deaths(p):
                 lost, share = float(d.get("control_m2") or 0.0), d.get("share_of_team")
                 a["deaths"] += 1
@@ -147,6 +151,9 @@ def match_table(summaries: dict[int, dict]) -> dict:
             "active_m2": _per_second(a["active_m2s"], a["alive_s"]),
             "passive_m2": _per_second(a["passive_m2s"], a["alive_s"]),
             "active_ratio": _ratio(a["active_m2s"], a["passive_m2s"]),
+            # space taken: summed over the rounds that store it, and per such round
+            "taken_m2": round(a["taken_m2"], 1) if "taken_m2" in a else None,
+            "taken_per_round_m2": round(a["taken_m2"] / a["taken_rounds"], 1) if "taken_m2" in a else None,
             "deaths": a["deaths"], "lost_m2": round(a["lost_m2"], 1),
             "lost_mean_m2": round(a["lost_m2"] / a["deaths"], 1) if a["deaths"] else None,
             # A ratio of sums; a mean of per-death shares is dominated by deaths when the

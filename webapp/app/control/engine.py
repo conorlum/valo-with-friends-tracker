@@ -15,6 +15,10 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   solid) and the Q72 corner tolerance (geometry.py). The held cone's width follows the
   movement over SPEED_WINDOW_S. Flashed: nothing. Nearsighted: a bubble. Concussed, stunned or
   revealed: all of it passive (Q42, Q57).
+- **Memory (D6).** Ground a player saw and looked away from stays theirs as passive control. Each tick
+  the team's remembered ground is eaten in from open ground (walkable, neither held live nor
+  remembered by the team) at DECAY_MPS, in 8-connected walking steps, the way an enemy would walk in;
+  ground walled off by live control doesn't decay. Memory dies with its player.
 - **Watchers** (passive): trips, alarmbots, Chamber traps, Killjoy's turret, Cypher's camera while
   he is in it, and flown drones; a camera or drone in use replaces its owner's own view. Placed
   utility dies with its owner (Q71): a watcher counts only while its owner is alive.
@@ -58,6 +62,9 @@ SECTION_S = 10.0
 
 FOV_HALF = 51.5
 RUN_MPS, WALK_MPS = 5.0, 1.5
+# Remembered ground (D6, 2026-09-30): what a player saw and looked away from stays theirs as passive
+# control, and open ground eats into it at a quiet walk, Valorant's shift-walk (approximate).
+DECAY_MPS = 3.5
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
 FAST_TURN_DPS = 90.0
 SPEED_WINDOW_S = 0.25
@@ -881,6 +888,55 @@ class Tick:
         return out
 
 
+class Memory:
+    """Remembered ground across a round's ticks (D6). `apply` runs on each tick in time order, after
+    the tick's vision and before `compose`: it decays the memory by the time since the last tick, adds
+    what is left to each holder's passive cells, then remembers what they see now."""
+
+    def __init__(self, geo: Geometry):
+        self.geo = geo
+        self.cells: dict[int, np.ndarray] = {}    # slot -> flat remembered cells
+        self.carry = {"A": 0.0, "B": 0.0}         # metres of decay not yet a whole cell step
+        self.t: float | None = None
+
+    def apply(self, tick: Tick) -> None:
+        walk = self.geo.walk.ravel()
+        dt = 0.0 if self.t is None else max(0.0, tick.t - self.t)
+        self.t = tick.t
+        for s in [s for s in self.cells if s not in tick.holders]:
+            del self.cells[s]                     # memory dies with its player
+        for side in ("A", "B"):
+            hs = [h for h in tick.holders.values() if h.team == side]
+            live = np.zeros(GRID * GRID, bool)
+            mem = np.zeros(GRID * GRID, bool)
+            for h in hs:
+                live |= h.active | h.passive | h.watch
+                if h.slot in self.cells:
+                    self.cells[h.slot] &= ~(h.active | h.passive)    # seen again: live, not memory
+                    mem |= self.cells[h.slot]
+            if not mem.any():
+                self.carry[side] = 0.0
+            else:
+                self.carry[side] += DECAY_MPS * dt
+                steps = int(self.carry[side] // self.geo.cell_m)
+                if steps:
+                    self.carry[side] -= steps * self.geo.cell_m
+                    open_ = walk & ~live & ~mem
+                    if open_.any():
+                        reached = ndimage.binary_dilation(open_.reshape(GRID, GRID), EIGHT, iterations=steps,
+                                                          mask=(mem | open_).reshape(GRID, GRID)).ravel()
+                        for h in hs:
+                            if h.slot in self.cells:
+                                self.cells[h.slot] &= ~reached
+            for h in hs:
+                seen = (h.active | h.passive) & walk
+                if h.slot in self.cells:
+                    h.passive = h.passive | (self.cells[h.slot] & ~h.active)
+                    self.cells[h.slot] |= seen
+                else:
+                    self.cells[h.slot] = seen
+
+
 def score(state: np.ndarray, side: str) -> np.ndarray:
     """Q62: ours +1, contested and nobody 0, theirs -1."""
     a = (state >= A_PASSIVE) & (state <= A_ACTIVE)
@@ -917,6 +973,7 @@ class PlayerStats:
     active_m2s: float = 0.0
     passive_m2s: float = 0.0
     control_m2s: float = 0.0
+    taken_m2: float = 0.0     # space taken (CONTROL_REVISION 2): see compute_round
     deaths: list = field(default_factory=list)
 
     def per_second(self, value: float) -> float | None:
@@ -933,7 +990,7 @@ class PlayerStats:
                 "control_m2s": _r(self.control_m2s),
                 "active_m2": _r(self.per_second(self.active_m2s)), "passive_m2": _r(self.per_second(self.passive_m2s)),
                 "control_m2": _r(self.per_second(self.control_m2s)), "active_ratio": _r(self.active_ratio, 3),
-                "deaths": self.deaths}
+                "taken_m2": _r(self.taken_m2), "deaths": self.deaths}
 
 
 def _r(value, digits: int = 1):
@@ -1012,10 +1069,15 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         i = index.get(round(snap_before(t), 6))
         if i is not None:
             death_ticks[i].append((slot, t))
+    prev_state = None
+    memory = Memory(geo)
 
     for n, t in enumerate(times):
         t = float(t)
         tick = Tick(rnd, t, timings)
+        a = time.perf_counter()
+        memory.apply(tick)
+        timings["memory"] += time.perf_counter() - a
         a = time.perf_counter()
         base = tick.compose()
         b = time.perf_counter()
@@ -1024,6 +1086,9 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         timings["coverage"] += time.perf_counter() - b
         state = base["state"]
         states[n] = state[walk_flat]
+        if prev_state is not None and rnd.t_start < t <= rnd.t_decided:
+            _credit_taken(tick, cov, prev_state, state, players, cell_m2)
+        prev_state = state
         live_w = max(0.0, min(t + weights[n], rnd.t_decided) - max(t, rnd.t_start))
         owned = {s: float((score(state, s) > 0).sum()) for s in ("A", "B")}
         ctl_sum = {"A": 0.0, "B": 0.0}
@@ -1079,6 +1144,36 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     return RoundControl(blob.get("round"), blob.get("map", geo.name), times, weights, walk_cells, states, control,
                         control_masks, coverage_masks, sections, players, redundant, dict(rnd.group_side), cell_m2,
                         missing, {**timings, "branches": dict(branches)}, cf_check)
+
+
+def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, players: dict, cell_m2: float,
+                  already: dict | None = None) -> None:
+    """Space taken (the plan's stretch stat; docs/map-control-space-taken-impl.md): cells that were the
+    enemy's or nobody's at the previous tick and are the team's now, shared evenly among the team's
+    players whose coverage (active, passive or own utility) includes them at this tick. Ground that
+    became the team's with nobody watching it (the lines moved) is taken by nobody. Every flip counts
+    (D6, 2026-09-30): memory keeps ground a cone swept past, so a flip is ground really won, and ground
+    that decayed and was won back counts again. With `already` (slot -> the cells credited so far),
+    each cell counts once per player instead (the earlier rule, kept for comparisons)."""
+    # Contested -> ours doesn't count ("from the enemy or nobody"); unwatched flips go to nobody.
+    for side in ("A", "B"):
+        hs = [h for h in tick.holders.values() if h.team == side and h.slot in cov]
+        if not hs:
+            continue
+        before = score(prev, side)
+        flipped = (score(state, side) > 0) & ((before < 0) | (prev == NONE))
+        if not flipped.any():
+            continue
+        seen = {h.slot: cov[h.slot][2] | cov[h.slot][3] for h in hs}
+        count = sum(m.astype(np.int16) for m in seen.values())
+        for h in hs:
+            mine = flipped & seen[h.slot]
+            if already is not None:
+                done = already.setdefault(h.slot, np.zeros(len(state), bool))
+                mine &= ~done
+                done |= mine
+            if mine.any():
+                players[h.slot].taken_m2 += float((1.0 / count[mine]).sum()) * cell_m2
 
 
 def _lost(state: np.ndarray, cf_state: np.ndarray, side: str, drop: np.ndarray, last: bool, owned: float,

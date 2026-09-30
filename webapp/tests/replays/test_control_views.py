@@ -83,6 +83,17 @@ def test_a_round_is_averaged_over_its_own_times():
     assert table["redundant_m2"] == {"A": 20.0, "B": -10.0}
 
 
+def test_space_taken_when_the_summary_has_it():
+    with_taken = summary(1, [dict(player(0, "A", "attack", 20.0, 1.0, 1.0, 1.0), taken_m2=30.0),
+                             player(5, "B", "defense", 20.0, 1.0, 1.0, 1.0)], {})
+    other = summary(2, [dict(player(0, "A", "defense", 20.0, 1.0, 1.0, 1.0), taken_m2=10.0)], {})
+    assert views.round_table(with_taken)["players"]["0"]["taken_m2"] == 30.0
+    assert views.round_table(with_taken)["players"]["5"]["taken_m2"] is None     # a revision-1 row
+    match = views.match_table({1: with_taken, 2: other})["players"]
+    assert (match["0"]["taken_m2"], match["0"]["taken_per_round_m2"]) == (40.0, 20.0)
+    assert match["5"]["taken_m2"] is None and match["5"]["taken_per_round_m2"] is None
+
+
 def test_the_live_time_comes_from_the_sections_not_t_decided():
     body = dict(ROUND_1, t_decided=None)
     assert views.round_table(body)["live_s"] == 40.0

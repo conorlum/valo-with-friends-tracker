@@ -116,3 +116,68 @@ def test_lost_control_at_a_death_and_the_redundant_total():
     stats = rc.players[2].as_dict()
     assert stats["control_m2"] == pytest.approx(rc.players[2].control_m2s / 1.2, abs=0.1)
     assert stats["active_ratio"] is not None and 0 <= stats["active_ratio"] <= 1
+
+
+# ---------------------------------------------------------------- space taken (CONTROL_REVISION 2)
+
+
+class _Holder:
+    def __init__(self, slot, team):
+        self.slot, self.team = slot, team
+
+
+class _Tick:
+    def __init__(self, *holders):
+        self.holders = {h.slot: h for h in holders}
+
+
+def _cov(sees, n=8):
+    mask = np.zeros(n, bool)
+    mask[list(sees)] = True
+    return (0.0, 0.0, mask, np.zeros(n, bool))
+
+
+def _taken(prev, now, holders, cov, cell_m2=2.0):
+    players = {h.slot: ce.PlayerStats(h.slot, h.team, None) for h in holders}
+    ce._credit_taken(_Tick(*holders), cov, np.array(prev, np.uint8), np.array(now, np.uint8), players, cell_m2)
+    return {s: p.taken_m2 for s, p in players.items()}
+
+
+def test_space_taken_counts_flips_from_the_enemy_or_nobody_to_the_team():
+    N, AP, AS, BA, C = ce.NONE, ce.A_PASSIVE, ce.A_SAFE, ce.B_ACTIVE, ce.CONTESTED
+    prev = [N, BA, AP, C, N, BA, N, N]
+    now = [AP, AS, AS, AP, N, BA, AS, AP]
+    # cells 0 (nobody->ours) and 1 (theirs->ours) count; 2 was already ours; 3 was contested
+    # (not "the enemy or nobody"); 4, 5 didn't become ours; 6 is ours but nobody sees it; 7 ours, seen
+    got = _taken(prev, now, [_Holder(0, "A")], {0: _cov([0, 1, 2, 3, 4, 5, 7])})
+    assert got == {0: 3 * 2.0}
+
+
+def test_shared_cells_split_evenly_and_the_other_team_is_separate():
+    N, AP, BP = ce.NONE, ce.A_PASSIVE, ce.B_PASSIVE
+    prev, now = [N, N, N, AP], [AP, AP, BP, BP]
+    holders = [_Holder(0, "A"), _Holder(1, "A"), _Holder(5, "B")]
+    got = _taken(prev, now, holders, {0: _cov([0, 1], 4), 1: _cov([1], 4), 5: _cov([2, 3], 4)}, cell_m2=1.0)
+    assert got == {0: 1.5, 1: 0.5, 5: 2.0}      # B took cell 2 from nobody and cell 3 from A
+
+
+def test_each_cell_counts_once_per_player_per_round():
+    N, AP = ce.NONE, ce.A_PASSIVE
+    players = {0: ce.PlayerStats(0, "A", None)}
+    already = {}
+    tick, cov = _Tick(_Holder(0, "A")), {0: _cov([0, 1], 4)}
+    for prev, now in (([N, N, N, N], [AP, N, N, N]), ([AP, N, N, N], [N, N, N, N]), ([N, N, N, N], [AP, AP, N, N])):
+        ce._credit_taken(tick, cov, np.array(prev, np.uint8), np.array(now, np.uint8), players, 1.0, already)
+    assert players[0].taken_m2 == 2.0, "cell 0 lost and retaken counts once; cell 1 once"
+
+
+def test_space_taken_accrues_only_in_the_live_round():
+    geo = open_hall()
+    # A0 looks west, then turns east at 1 s onto the hall B doesn't hold.
+    pts = [(0.0, 150, 200, 180), (1.0, 150, 200, 0)]
+    players = {0: ("A", pts), 5: still("B", 400, 110, 90)}
+    before = ce.compute_round(blob(players, t_end=3.0, t_decided=0.9), geo)
+    live = ce.compute_round(blob(players, t_end=3.0, t_decided=3.0), geo)
+    assert before.players[0].taken_m2 == 0, "the turn came after the round was decided"
+    assert live.players[0].taken_m2 > 0
+    assert live.players[0].as_dict()["taken_m2"] == pytest.approx(live.players[0].taken_m2, abs=0.05)

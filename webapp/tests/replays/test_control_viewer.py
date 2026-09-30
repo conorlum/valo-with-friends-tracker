@@ -261,6 +261,18 @@ def test_the_control_table_groups_players_by_team_and_sums_lost_control():
     assert got["missing"] is None
     assert got["match"]["team-2"][0]["lost"] == {"m2": 16.0, "share": 0.1, "deaths": 2}
     assert got["match"]["team-1"][0]["lost"] is None
+    # space taken (CONTROL_REVISION 2): per round, or per round on average for the match; absent before
+    assert rnd["team-1"][0].get("taken") is None
+
+
+def test_the_control_table_carries_space_taken():
+    tables = {"rounds": {"1": {"status": "ok", "redundant_m2": {}, "players": {
+        "0": {"team": "A", "control_m2": 1.0, "taken_m2": 42.0, "lost": []}}}},
+              "match": {"redundant_m2": {}, "players": {"0": {"team": "A", "taken_m2": 84.0, "taken_per_round_m2": 42.0,
+                                                               "deaths": 0}}}}
+    body = """function run(p) { return [C.controlRows(p.t, "round", 1, {}), C.controlRows(p.t, "match", 1, {})]; }"""
+    rnd, match = run_node(body, {"t": tables}, js=REPLAY_JS)
+    assert rnd["team-1"][0]["taken"] == 42.0 and match["team-1"][0]["taken"] == 42.0
 
 
 def test_site_data_merges_onto_a_blob_by_kill_index():

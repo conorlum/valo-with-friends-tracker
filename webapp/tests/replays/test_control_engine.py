@@ -326,3 +326,81 @@ def test_a_blob_with_no_sides_takes_the_links_or_refuses():
     assert rnd.team == {0: "A", 5: "B"} and rnd.group_side == {"A": "attack", "B": "defense"}
     with pytest.raises(ce.ControlError):
         ce.RoundInputs(b, geo)
+
+
+# ---------------------------------------------------------------- memory (D6)
+
+
+class _Tk:
+    def __init__(self, t, *holders):
+        self.t, self.holders = t, {h.slot: h for h in holders}
+
+
+def _sees(slot, team, cells):
+    z = np.zeros(GRID * GRID, bool)
+    view = z.copy()
+    view[np.asarray(cells, int)] = True
+    return ce.Holder(slot, team, 0, 0.0, 0.0, view.copy(), z.copy(), z.copy(), view.copy(), view.copy(), False, "hold")
+
+
+def _halves(geo):
+    walk = np.flatnonzero(geo.walk.ravel())
+    x = walk % GRID
+    mid = geo.cell_of_px(256, 200) % GRID
+    return walk[x < mid], walk[x >= mid]
+
+
+def test_ground_looked_away_from_stays_passive_and_open_ground_eats_in_at_a_walk():
+    geo = open_hall()
+    west, east = _halves(geo)
+    mem = ce.Memory(geo)
+    mem.apply(_Tk(0.0, _sees(0, "A", west)))
+    blind = _sees(0, "A", [])
+    mem.apply(_Tk(1.0, blind))
+    assert not blind.active.any(), "looking away: nothing is active"
+    steps = int(ce.DECAY_MPS * 1.0 // geo.cell_m)
+    assert steps >= 1
+    edge = geo.cell_of_px(256, 200)
+    near = [edge - k for k in range(1, steps + 1)]
+    deep = geo.cell_of_px(110, 200)
+    assert blind.passive[deep], "far from open ground: still held, as passive"
+    assert not blind.passive[near].any(), "the strip next to open ground decayed at DECAY_MPS"
+    assert blind.passive[edge - steps - 1]
+    later = _sees(0, "A", [])
+    mem.apply(_Tk(30.0, later))
+    assert not later.passive.any(), "given time, open ground eats all of it"
+
+
+def test_memory_walled_off_by_live_control_does_not_decay():
+    geo = open_hall()
+    west, east = _halves(geo)
+    mem = ce.Memory(geo)
+    mem.apply(_Tk(0.0, _sees(0, "A", west), _sees(1, "A", east)))
+    a0, a1 = _sees(0, "A", []), _sees(1, "A", east)
+    mem.apply(_Tk(30.0, a0, a1))
+    assert a0.passive[west].all(), "a teammate holds everything else: no open ground to eat in from"
+
+
+def test_seen_again_is_live_and_memory_dies_with_its_player():
+    geo = open_hall()
+    west, _ = _halves(geo)
+    mem = ce.Memory(geo)
+    mem.apply(_Tk(0.0, _sees(0, "A", west)))
+    again = _sees(0, "A", west)
+    mem.apply(_Tk(0.5, again))
+    assert again.active[west].all() and not again.passive.any()
+    mem.apply(_Tk(1.0, _sees(5, "B", [])))
+    assert 0 not in mem.cells
+    back = _sees(0, "A", [])
+    mem.apply(_Tk(1.5, back))
+    assert not back.passive.any(), "a new life starts with no memory"
+
+
+def test_a_turn_leaves_the_ground_behind_covered():
+    geo = open_hall()
+    players = {0: ("A", [(0.0, 150, 200, 180), (1.0, 150, 200, 0)]), 5: still("B", 400, 110, 90)}
+    rc = ce.compute_round(blob(players, t_end=2.0), geo, ticks=[0.5, 1.0, 1.5])
+    col = int(np.searchsorted(rc.walk_cells, geo.cell_of_px(110, 200)))
+    assert rc.coverage_masks[0, 0, col], "seen while facing west"
+    assert rc.coverage_masks[2, 0, col], "still covered, as memory, after turning east"
+    assert rc.states[2, col] in A_OWN
