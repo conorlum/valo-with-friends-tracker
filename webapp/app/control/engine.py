@@ -1013,7 +1013,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         i = index.get(round(snap_before(t), 6))
         if i is not None:
             death_ticks[i].append((slot, t))
-    prev_state = None
+    prev_state, taken_cells = None, {}
 
     for n, t in enumerate(times):
         t = float(t)
@@ -1027,7 +1027,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         state = base["state"]
         states[n] = state[walk_flat]
         if prev_state is not None and rnd.t_start < t <= rnd.t_decided:
-            _credit_taken(tick, cov, prev_state, state, players, cell_m2)
+            _credit_taken(tick, cov, prev_state, state, players, cell_m2, taken_cells)
         prev_state = state
         live_w = max(0.0, min(t + weights[n], rnd.t_decided) - max(t, rnd.t_start))
         owned = {s: float((score(state, s) > 0).sum()) for s in ("A", "B")}
@@ -1086,12 +1086,16 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                         missing, {**timings, "branches": dict(branches)}, cf_check)
 
 
-def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, players: dict, cell_m2: float) -> None:
+def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, players: dict, cell_m2: float,
+                  already: dict | None = None) -> None:
     """Space taken (the plan's stretch stat; docs/map-control-space-taken-impl.md): cells that were the
     enemy's or nobody's at the previous tick and are the team's now, shared evenly among the team's
     players whose coverage (active, passive or own utility) includes them at this tick. Ground that
-    became the team's with nobody watching it (the lines moved) is taken by nobody."""
-    # PROVISIONAL(D6): contested -> ours doesn't count ("from the enemy or nobody"); unwatched flips go to nobody.
+    became the team's with nobody watching it (the lines moved) is taken by nobody. With `already`
+    (slot -> the cells credited so far this round), each cell counts once per player per round: a
+    cone sweeping back and forth over the same ground would otherwise count it every time."""
+    # PROVISIONAL(D6): contested -> ours doesn't count ("from the enemy or nobody"); unwatched flips go
+    # to nobody; each cell once per player per round.
     for side in ("A", "B"):
         hs = [h for h in tick.holders.values() if h.team == side and h.slot in cov]
         if not hs:
@@ -1104,6 +1108,10 @@ def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, pl
         count = sum(m.astype(np.int16) for m in seen.values())
         for h in hs:
             mine = flipped & seen[h.slot]
+            if already is not None:
+                done = already.setdefault(h.slot, np.zeros(len(state), bool))
+                mine &= ~done
+                done |= mine
             if mine.any():
                 players[h.slot].taken_m2 += float((1.0 / count[mine]).sum()) * cell_m2
 

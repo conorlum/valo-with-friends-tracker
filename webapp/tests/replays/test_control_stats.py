@@ -161,14 +161,23 @@ def test_shared_cells_split_evenly_and_the_other_team_is_separate():
     assert got == {0: 1.5, 1: 0.5, 5: 2.0}      # B took cell 2 from nobody and cell 3 from A
 
 
+def test_each_cell_counts_once_per_player_per_round():
+    N, AP = ce.NONE, ce.A_PASSIVE
+    players = {0: ce.PlayerStats(0, "A", None)}
+    already = {}
+    tick, cov = _Tick(_Holder(0, "A")), {0: _cov([0, 1], 4)}
+    for prev, now in (([N, N, N, N], [AP, N, N, N]), ([AP, N, N, N], [N, N, N, N]), ([N, N, N, N], [AP, AP, N, N])):
+        ce._credit_taken(tick, cov, np.array(prev, np.uint8), np.array(now, np.uint8), players, 1.0, already)
+    assert players[0].taken_m2 == 2.0, "cell 0 lost and retaken counts once; cell 1 once"
+
+
 def test_space_taken_accrues_only_in_the_live_round():
     geo = open_hall()
-    # A0 looks west, then turns east at 1 s onto the hall B doesn't hold; the round is decided at 2 s,
-    # and A0 turns back and forth after that too.
-    pts = [(0.0, 150, 200, 180), (1.0, 150, 200, 0), (2.5, 150, 200, 180), (3.0, 150, 200, 0)]
+    # A0 looks west, then turns east at 1 s onto the hall B doesn't hold.
+    pts = [(0.0, 150, 200, 180), (1.0, 150, 200, 0)]
     players = {0: ("A", pts), 5: still("B", 400, 110, 90)}
-    rc = ce.compute_round(blob(players, t_end=4.0, t_decided=2.0), geo)
-    decided = ce.compute_round(blob(players, t_end=4.0, t_decided=4.0), geo)
-    assert rc.players[0].taken_m2 > 0
-    assert decided.players[0].taken_m2 > rc.players[0].taken_m2, "the turns after 2 s count only when live"
-    assert rc.players[0].as_dict()["taken_m2"] == pytest.approx(rc.players[0].taken_m2, abs=0.05)
+    before = ce.compute_round(blob(players, t_end=3.0, t_decided=0.9), geo)
+    live = ce.compute_round(blob(players, t_end=3.0, t_decided=3.0), geo)
+    assert before.players[0].taken_m2 == 0, "the turn came after the round was decided"
+    assert live.players[0].taken_m2 > 0
+    assert live.players[0].as_dict()["taken_m2"] == pytest.approx(live.players[0].taken_m2, abs=0.05)
