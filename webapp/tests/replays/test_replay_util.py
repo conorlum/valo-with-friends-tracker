@@ -98,7 +98,24 @@ def test_util_reaches_readers_through_known_kinds_and_holds_no_identity(tmp_path
     assert fmt.known_util(blob) == [], "a reader that knows no kinds ignores them"
     text = json.dumps(blob)
     assert "subject" not in text.lower() and "00000000-0000-4000-8000-0000000000" not in text
-    assert blob["v"] == 1 and out.recipe.split(".")[1] == f"c{fmt.CONDENSE_REVISION}" == "c9"
+    assert blob["v"] == 1 and out.recipe.split(".")[1] == f"c{fmt.CONDENSE_REVISION}" == "c10"
+
+
+def test_hits_carry_their_own_time_and_duration(tmp_path):
+    # Map control's input (revision 10): the blind starts at the hit, not the cast, and lasts the
+    # victim's own recorded time; a nearsight lasting until removed has no duration.
+    match = SyntheticMatch(shape="swiftplay")
+    start = match.round_start(1)
+    flash_hit = {**hit(match, start + 5900, 6), "initial_duration_seconds": 1.4039224}
+    weak_hit = {**hit(match, start + 5900, 7), "initial_duration_seconds": 0.045}
+    leer = {**hit(match, start + 9000, 8, kind="nearsight", actor=8900), "configured_duration_seconds": None,
+            "duration_until_removed": True}
+    paranoia = {**hit(match, start + 9500, 9, kind="nearsight", actor=8900), "configured_duration_seconds": 2}
+    match.extra_events += [cast(match, start + 5000, 2), flash_hit, weak_hit,
+                           cast(match, start + 8000, 3, kind="nearsight", actor=8900), leer, paranoia]
+    flash, nearsight = run(tmp_path, match).rounds[1]["util"]
+    assert flash["hits"] == [[6, 5.9, 1.404], [7, 5.9, 0.045]] and flash["targets"] == [6, 7]
+    assert nearsight["hits"] == [[8, 9.0, None], [9, 9.5, 2.0]]
 
 
 def test_the_streaming_loader_keeps_the_util_rows(tmp_path):

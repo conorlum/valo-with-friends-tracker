@@ -5,7 +5,8 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
 
 - `{"k": "ability", "t": <spawn>, "by": <slot | null>, "t1", "kind", "code", "name", "agent",
   "owner_by", "u", "v", ["yaw"], ["thrown"], ["path"], ["owner_d", "other_d"], ["end"],
-  ["defuses"], ["points", "on"], ["fx"], ["gone"]}`;
+  ["defuses"], ["points", "on"], ["fx"], ["gone"], ["possessed"], ["yaws"]}` (`possessed` and `yaws`,
+  on pawns, are map control's inputs: `_control_inputs`);
 - `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`;
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
 - `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`.
@@ -431,6 +432,8 @@ def normalize_archetype(code: str, name: str, known_codes) -> tuple[str, str]:
 
 
 PATH_STEP_MS = 100   # a possessable pawn's path (a drone, Trailblazer), one point per this long
+# Map control (revision 10): a pawn's facing over time (`yaws`) keeps a point when it turned this far.
+YAW_STEP_DEG = 2
 
 # An equippable's placement names what it created: its context lists the actors (a trapwire's
 # second anchor, a thrown projectile) and arrives in the same tick as their spawns (a trapwire's
@@ -903,12 +906,42 @@ def _thrown(actor: _Actor, actors: dict[int, _Actor]) -> _Actor | None:
     return min(hits)[2] if hits else None
 
 
+def _control_inputs(entry: dict, actor: _Actor, players: PlayerTable, pawn_yaws, game_map: MapInfo,
+                    start: int, end: int, counts: Counter) -> None:
+    """Map control's inputs on a pawn row (docs/replay-map-control-plan.md, "Inputs the blob lacks"):
+    `possessed`, when a player was in it (a camera, a drone), from PlayerTable.possession, in round
+    seconds clipped to the round; and `yaws`, its minimap facing over time from its movement rows, a
+    point when it turned YAW_STEP_DEG or more, at most one per PATH_STEP_MS."""
+    until = min(actor.closed_ms, end) if actor.closed_ms is not None else end
+    spans = []
+    for lo, hi, _ in players.possession.get(actor.guid, []):
+        if (hi is not None and hi < max(actor.t_ms, start)) or lo > until:
+            continue
+        spans.append([max(0.0, _seconds(max(lo, start), start)), None if hi is None else _seconds(min(hi, until), start)])
+    entry["possessed"] = spans
+    if spans:
+        counts["pawns_possessed"] += 1
+    if pawn_yaws is None:
+        return
+    yaws, last_t, last_yaw = [], -PATH_STEP_MS, None
+    for t_ms, yaw in pawn_yaws(actor.guid) or []:
+        if not max(actor.t_ms, start) <= t_ms <= until or t_ms - last_t < PATH_STEP_MS:
+            continue
+        mapped = game_map.yaw_to_map(float(yaw))
+        if last_yaw is None or abs((mapped - last_yaw + 180) % 360 - 180) >= YAW_STEP_DEG:
+            yaws.append([_seconds(t_ms, start), mapped])
+            last_t, last_yaw = t_ms, mapped
+    entry["yaws"] = yaws
+    counts["pawn_yaw_points"] += len(yaws)
+
+
 def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[int, int, int]],
                  game_map: MapInfo, agents_by_code: dict[str, str], positions_at, pawn_path=None,
-                 teams: dict[int, str | None] | None = None) -> Extras:
+                 teams: dict[int, str | None] | None = None, pawn_yaws=None) -> Extras:
     """`positions_at(t_ms)` -> {slot: (x, y)}: each player's world position at that moment, from
     the full movement stream (buy phase included, where the round tracks don't reach).
     `pawn_path(guid)` -> [(t_ms, x, y)]: a non-player pawn's movement (a drone), or None.
+    `pawn_yaws(guid)` -> [(t_ms, world yaw)]: its facing, for map control's `yaws`, or None.
     `teams`: slot -> the condenser's side group (None when unresolved), so reveals count enemies only."""
     raw = read_raw(events_path, frozenset(players.pawn_slot))
     actors, raw_shots = raw.actors, raw.shots
@@ -1024,6 +1057,8 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             if points:
                 entry["path"] = points
                 counts["pawn_paths"] += 1
+        if actor.kind == "Pawn":
+            _control_inputs(entry, actor, players, pawn_yaws, game_map, start, end, counts)
         out.rounds.setdefault(n, {"abilities": [], "shots": []})["abilities"].append(entry)
         counts["abilities"] += 1
 
@@ -1112,7 +1147,8 @@ class WorldPositions:
     one sample per STEP_MS; `at(t_ms)` gives the samples within 0.5 s of t. The same pass keeps
     every other pawn's movement (drones, Trailblazer), for `path(guid)`. `movement` is iterated
     once: the streaming loader's movement is a re-iterable stream, so this is a second pass over
-    the file, never a copy of it."""
+    the file, never a copy of it. Other pawns also keep their yaw at the same samples (`yaws`), for
+    map control's facing of a camera, turret or drone."""
 
     STEP_MS = 100
 
@@ -1120,6 +1156,7 @@ class WorldPositions:
         self.rows: dict[int, tuple[list[int], list[tuple[float, float]]]] = {}
         by_slot: dict[int, list[tuple[int, float, float]]] = defaultdict(list)
         self.others: dict[int, list[tuple[int, float, float]]] = defaultdict(list)
+        self.other_yaws: dict[int, list[tuple[int, float]]] = defaultdict(list)
         for row in movement:
             data = row.data
             position = data.get("position") or {}
@@ -1130,14 +1167,21 @@ class WorldPositions:
             target = by_slot[slot] if slot is not None else self.others[pawn]
             if not target or row.time_ms - target[-1][0] >= self.STEP_MS:
                 target.append((row.time_ms, float(position["x"]), float(position["y"])))
+                if slot is None and data.get("yaw") is not None:
+                    self.other_yaws[pawn].append((row.time_ms, float(data["yaw"])))
         for slot, samples in by_slot.items():
             samples.sort()
             self.rows[slot] = ([t for t, _, _ in samples], [(x, y) for _, x, y in samples])
         for samples in self.others.values():
             samples.sort()
+        for samples in self.other_yaws.values():
+            samples.sort()
 
     def path(self, guid: int) -> list[tuple[int, float, float]]:
         return self.others.get(guid, [])
+
+    def yaws(self, guid: int) -> list[tuple[int, float]]:
+        return self.other_yaws.get(guid, [])
 
     def at(self, t_ms: int) -> dict[int, tuple[float, float]]:
         out = {}

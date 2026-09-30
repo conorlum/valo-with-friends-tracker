@@ -277,8 +277,9 @@ def keep_event(data: dict) -> bool:
     if kind == "rpc_received" and data.get("function_name") in STREAM_RPCS:
         return True
     if kind == "rpc_received" and data.get("function_name") in RPC_DAMAGE:
-        payload = data.get("payload")
-        return isinstance(payload, dict) and payload.get("DamageKilledTarget") is True
+        # Every damage notify: lethal ones are kills (read_kills), and all of them are the blob's
+        # `damage` runs (read_damage; about 2,300 rows a match).
+        return isinstance(data.get("payload"), dict)
     if kind == "export_group_received":
         payload = data.get("payload")
         if data.get("export_group_path") in STREAM_GROUP_PATHS:

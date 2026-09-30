@@ -342,6 +342,19 @@ UTIL_HITS = {"valorant_flash_player_hit": "flash_actor_net_guid",
              "valorant_nearsight_player_hit": "nearsight_actor_net_guid"}
 
 
+def _hit_duration(data: dict) -> float | None:
+    """A hit's own duration in seconds: a flash's blind (`initial_duration_seconds`, which already
+    says how badly the victim was flashed), a nearsight's configured length; None when unknown or
+    lasting until removed (Reyna's Leer)."""
+    if data.get("type") == "valorant_flash_player_hit":
+        value = data.get("initial_duration_seconds")
+    elif data.get("duration_until_removed"):
+        value = None
+    else:
+        value = data.get("configured_duration_seconds")
+    return round(float(value), 3) if isinstance(value, (int, float)) else None
+
+
 @dataclass(frozen=True)
 class UtilCast:
     t_ms: int
@@ -351,6 +364,8 @@ class UtilCast:
     x: float | None
     y: float | None
     targets: tuple[int, ...]
+    # Map control's input (revision 10): each hit as (target slot, hit ms, duration s | None).
+    hits: tuple[tuple[int, int, float | None], ...] = ()
 
 
 def _resolve_actor(players: PlayerTable, character, player_state, t_ms: int) -> int | None:
@@ -370,6 +385,7 @@ def read_util(export: Export, players: PlayerTable) -> tuple[list[UtilCast], dic
     """
     counts: Counter[str] = Counter()
     hits: dict[int, list[int]] = defaultdict(list)
+    timed: dict[int, set[tuple[int, int, float | None]]] = defaultdict(set)
     for row in export.events:
         kind = row.data.get("type")
         if kind in UTIL_HITS:
@@ -387,7 +403,9 @@ def read_util(export: Export, players: PlayerTable) -> tuple[list[UtilCast], dic
             if away is not None:
                 raise ContractError("lifecycle", f"a utility hit on slot {slot} at {row.time_ms} ms, while that "
                                                  f"player was disconnected ({away[0]}-{away[1]} ms)")
-            hits[int(data.get(UTIL_HITS[kind]) or 0)].append(slot)
+            actor = int(data.get(UTIL_HITS[kind]) or 0)
+            hits[actor].append(slot)
+            timed[actor].add((slot, row.time_ms, _hit_duration(data)))
             counts["hits"] += 1
     casts: list[UtilCast] = []
     cast_actors: set[int] = set()
@@ -415,7 +433,8 @@ def read_util(export: Export, players: PlayerTable) -> tuple[list[UtilCast], dic
         location = data.get("location") or {}
         ability = str(data.get(kind_key) or "")
         casts.append(UtilCast(row.time_ms, short, ability if ability.replace("_", "").isalnum() else "", slot,
-                              location.get("x"), location.get("y"), tuple(sorted(set(hits.get(actor, []))))))
+                              location.get("x"), location.get("y"), tuple(sorted(set(hits.get(actor, [])))),
+                              tuple(sorted(timed.get(actor, ()), key=lambda h: (h[1], h[0], -1.0 if h[2] is None else h[2])))))
         counts[short] += 1
     counts["orphan_hits"] = sum(len(slots) for actor, slots in hits.items() if actor not in cast_actors)
     return casts, dict(sorted(counts.items()))
@@ -748,6 +767,71 @@ def read_revives(export: Export, players: PlayerTable) -> list[tuple[int, int]]:
     return revives
 
 
+# Map control's damage input (docs/replay-map-control-plan.md, "Inputs the blob lacks"): hits in a
+# row from one attacker on one player, of one kind, this close together are one run.
+DAMAGE_MERGE_MS = 500
+
+
+@dataclass
+class DamageRun:
+    t_ms: int
+    t1_ms: int
+    by: int
+    target: int
+    src: str        # "gun" (MulticastNotifyDamage_Point) or "ability" (_Base: mollies and the like)
+    wall: bool      # a wallbang (IsWallPenetration; only gun hits carry it)
+    n: int = 1
+
+
+def read_damage(export: Export, players: PlayerTable) -> tuple[list[DamageRun], dict]:
+    """Every damage notify on a player's own character, as runs (DamageRun), and counts.
+
+    The attacker is the instigating pawn's player (a drone or pet resolves to its possessor), else
+    the `DamagerPlayerState`'s. A hit whose attacker resolves to no player is dropped, and so is one
+    a player took from themself (their own molly; spike and fall damage name no other player)."""
+    counts: Counter[str] = Counter()
+    hits: list[tuple[int, int, int, str, bool]] = []
+    for row in export.events:
+        data = row.data
+        if data.get("type") != "rpc_received" or data.get("function_name") not in RPC_DAMAGE:
+            continue
+        payload = data.get("payload") or {}
+        target = players.pawn_slot.get(int(payload.get("Character") or 0))
+        if target is None:
+            continue   # an object (a camera, a wall) or a possessed pawn
+        by = players.resolve(int(payload.get("EventInstigatorPawn") or 0), row.time_ms)
+        if by is None and payload.get("DamagerPlayerState"):
+            by = players.other_slot.get(int(payload["DamagerPlayerState"]))
+        if by is None:
+            counts["damage_unresolved"] += 1
+            continue
+        if by == target:
+            counts["damage_self"] += 1
+            continue
+        point = data.get("function_name") == "MulticastNotifyDamage_Point"
+        hits.append((row.time_ms, by, target, "gun" if point else "ability", payload.get("IsWallPenetration") is True))
+        counts["damage_hits"] += 1
+    runs: list[DamageRun] = []
+    open_runs: dict[tuple, DamageRun] = {}
+    for t_ms, by, target, src, wall in sorted(hits):
+        key = (by, target, src, wall)
+        run = open_runs.get(key)
+        if run is not None and t_ms - run.t1_ms <= DAMAGE_MERGE_MS:
+            run.t1_ms, run.n = t_ms, run.n + 1
+            continue
+        run = DamageRun(t_ms, t_ms, by, target, src, wall)
+        open_runs[key] = run
+        runs.append(run)
+    counts["damage_runs"] = len(runs)
+    counts["wallbang_runs"] = sum(r.wall for r in runs)
+    return runs, dict(sorted(counts.items()))
+
+
+def _damage_entry(run: DamageRun, start: int) -> dict:
+    return {"k": "damage", "t": _seconds(run.t_ms, start), "t1": _seconds(run.t1_ms, start), "by": run.by,
+            "target": run.target, "src": run.src, "wall": run.wall, "n": run.n}
+
+
 def _seconds(t_ms: int, start_ms: int) -> float:
     return round((t_ms - start_ms) / 1000.0, 3)
 
@@ -897,7 +981,8 @@ def build_segments(samples: list[Sample], intervals: list[list], start: int, end
 
 def _util_entry(cast: UtilCast, start: int, game_map: MapInfo) -> dict:
     entry = {"k": cast.kind, "t": _seconds(cast.t_ms, start), "by": cast.by, "ability": cast.ability,
-             "targets": list(cast.targets)}
+             "targets": list(cast.targets),
+             "hits": [[slot, _seconds(t_ms, start), duration] for slot, t_ms, duration in cast.hits]}
     if cast.x is not None and cast.y is not None:
         entry["u"], entry["v"] = game_map.to_uv(float(cast.x), float(cast.y))
     return entry
@@ -1179,6 +1264,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     util_casts, util_counts = read_util(export, players)
     util_counts["outside_rounds"] = sum(1 for c in util_casts
                                         if not any(s <= c.t_ms <= e for s, _, e in game.windows))
+    damage_runs, damage_counts = read_damage(export, players)
     # P-a: every kill falls in one playback window, or in the dropped final round (excluded
     # with its reason); any other kill refuses.
     excluded = {"dropped_final_round": 0}
@@ -1231,8 +1317,10 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
             "players": player_rows, "tracks": tracks, "alive": alive, "kills": kill_rows,
             # No plant/defuse source yet; the first export's TimedBomb wasn't decoded.
             "plant": None, "defuse": None,
-            # W-e: flash and nearsight casts in this window; a new `k` needs no `v` bump.
-            "util": [_util_entry(c, start, game_map) for c in util_casts if start <= c.t_ms <= end],
+            # W-e: flash and nearsight casts in this window; a new `k` needs no `v` bump. Map control
+            # (revision 10): the damage runs that start in it.
+            "util": [_util_entry(c, start, game_map) for c in util_casts if start <= c.t_ms <= end]
+                    + [_damage_entry(r, start) for r in damage_runs if start <= r.t_ms <= end],
         }
 
     encoded = {n: fmt.encode_blob(blob) for n, blob in rounds.items()}
@@ -1260,6 +1348,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         "kills_excluded": excluded,
         "ownership": players.ownership,
         "util": util_counts,
+        "damage": damage_counts,
         "sides": sides_report,
         "lifecycle": {**lifecycle.report, "uncertain_lives": uncertain_lives, "contradictions": 0},
         "phase_ended_checked": game.phase_ended_checked,
@@ -1339,7 +1428,7 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
     first = replay.rounds[min(replay.rounds)] if replay.rounds else {"players": []}
     teams = {row["slot"]: row.get("side") for row in first.get("players", [])}
     extras = build_extras(events_path, players, windows, game_map, agents_by_code, positions.at, positions.path,
-                          teams=teams)
+                          teams=teams, pawn_yaws=positions.yaws)
     for n, blob in replay.rounds.items():
         blob["util"] = blob["util"] + util_entries(extras.rounds.get(n, {}))
     replay.report["extras"] = extras.report

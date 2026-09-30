@@ -10,7 +10,10 @@ A round blob is `gzip(json)` of:
      "plant": null, "defuse": null,
      "util": [{"k": "flash", "t": 12.4, "by": 3, "u": 5120, "v": 4410, "ability": "...", "targets": [6, 8]},
               {"k": "ability", "t": 3.1, "by": 3, "t1": 21.0, "kind": "Zone", "code": "Wraith", ...},
-              {"k": "shot", "t": 40.2, "by": 5, "u": 4100, "v": 3300, "u1": 4390, "v1": 3310, ...}]}
+              {"k": "shot", "t": 40.2, "by": 5, "u": 4100, "v": 3300, "u1": 4390, "v1": 3310, ...},
+              {"k": "damage", "t": 40.1, "t1": 40.3, "by": 5, "target": 1, "src": "gun", "wall": false, "n": 3}]}
+
+A `flash`/`nearsight` row's `hits` is `[[target slot, hit t, duration s | null], ...]` (revision 10).
 
 Every `t` is seconds since the round's `InRound` phase start on the replay's own clock.
 `t_decided` is the `RoundEnding` phase (the round was decided); playback runs on to
@@ -32,7 +35,7 @@ from pathlib import Path
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 9
+CONDENSE_REVISION = 10   # 10: map control's inputs (hits, possessed, yaws, damage runs)
 
 UV_SCALE = 10000
 

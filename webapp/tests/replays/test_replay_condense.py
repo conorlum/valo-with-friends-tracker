@@ -226,18 +226,52 @@ def test_lethal_damage_on_an_object_or_with_no_killer_adds_no_kill(tmp_path):
     assert out.report["kill_sources"] == {"from_damage": 0, "damage_without_killer": 1}
 
 
-def test_the_streaming_loader_keeps_lethal_damage_only(tmp_path):
+def test_the_streaming_loader_keeps_every_damage_notify(tmp_path):
     from app.replays import contract
 
     match = SyntheticMatch()
     lethal = lethal_damage(match, 3, 25.0, match.pawn(3, 0), match.pawn(3, 5))
-    harmless = {**lethal, "payload": {**lethal["payload"], "DamageKilledTarget": False, "AliveAfterDamage": True}}
-    assert contract.keep_event(lethal) and not contract.keep_event(harmless)
+    harmless = {**lethal, "time_ms": lethal["time_ms"] - 3000,
+                "payload": {**lethal["payload"], "DamageKilledTarget": False, "AliveAfterDamage": True}}
+    assert contract.keep_event(lethal) and contract.keep_event(harmless)
     directory = match.write(tmp_path / "export", match.events() + [lethal, harmless], None)
     streamed = cd.condense_export_dir(directory, source_sha256=match.source_sha256, streaming=True)
     in_memory = cd.condense_export_dir(directory, source_sha256=match.source_sha256, streaming=False)
     assert streamed.encoded_rounds() == in_memory.encoded_rounds()
     assert streamed.report["kill_sources"]["from_damage"] == 1
+    runs = [u for u in streamed.rounds[3]["util"] if u["k"] == "damage"]
+    assert [(u["t"], u["by"], u["target"], u["n"]) for u in runs] == [(22.0, 5, 0, 1), (25.0, 5, 0, 1)]
+
+
+def damage(match, n, t, victim_pawn, attacker_pawn, *, point=True, wall=False, state=None):
+    row = lethal_damage(match, n, t, victim_pawn, attacker_pawn,
+                        "MulticastNotifyDamage_Point" if point else "MulticastNotifyDamage_Base")
+    row["payload"] = {**row["payload"], "DamageKilledTarget": False, "AliveAfterDamage": True,
+                      "DamagerPlayerState": state}
+    if point:
+        row["payload"]["IsWallPenetration"] = wall
+    return row
+
+
+def test_damage_hits_become_runs_by_attacker_target_kind_and_wallbang(tmp_path):
+    match = SyntheticMatch()
+    p = lambda slot: match.pawn(2, slot)  # noqa: E731
+    events = match.events() + [
+        damage(match, 2, 3.0, p(1), p(6)), damage(match, 2, 3.2, p(1), p(6)), damage(match, 2, 3.6, p(1), p(6)),
+        damage(match, 2, 4.5, p(1), p(6)),                               # 0.9 s later: a new run
+        damage(match, 2, 3.1, p(1), p(6), wall=True),                    # a wallbang is its own run
+        damage(match, 2, 5.0, p(2), p(7), point=False), damage(match, 2, 5.25, p(2), p(7), point=False),
+        damage(match, 2, 6.0, p(3), 99999, state=None),                  # no attacker: dropped
+        damage(match, 2, 6.5, p(3), p(3), point=False),                  # their own molly: dropped
+        damage(match, 2, 7.0, 99999, p(8)),                              # an object: not a player
+    ]
+    out = run(tmp_path, match, events=events)
+    runs = [(u["t"], u["t1"], u["by"], u["target"], u["src"], u["wall"], u["n"])
+            for u in out.rounds[2]["util"] if u["k"] == "damage"]
+    assert runs == [(3.0, 3.6, 6, 1, "gun", False, 3), (3.1, 3.1, 6, 1, "gun", True, 1),
+                    (4.5, 4.5, 6, 1, "gun", False, 1), (5.0, 5.25, 7, 2, "ability", False, 2)]
+    assert out.report["damage"]["damage_unresolved"] == 1 and out.report["damage"]["damage_self"] == 1
+    assert out.report["damage"]["wallbang_runs"] == 1
 
 
 # ------------------------------------------------------------ side groups
