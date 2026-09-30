@@ -474,6 +474,55 @@ def test_the_start_is_shared_by_walking_distance():
     assert not (shares[0] & shares[1]).any() and ((shares[0] | shares[1]) == area).all()
 
 
+def _band(geo, x0, x1, y0=96, y1=296):
+    """Flat walkable cells whose centres lie in the px box."""
+    cx, cy = geo.centres[:, 0], geo.centres[:, 1]
+    return geo.walk.ravel() & (cx >= x0) & (cx < x1) & (cy >= y0) & (cy < y1)
+
+
+def _lines(geo, views: dict):
+    """A tick on the open hall whose holders see exactly `views`: {slot: (team, x, y, active flat)}."""
+    tk = tick(geo, {s: still(team, x, y, 0) for s, (team, x, y, _) in views.items()})
+    z = np.zeros(GRID * GRID, bool)
+    tk.holders = {s: ce.Holder(s, team, geo.cell_of_px(x, y), x, y, act.copy(), z.copy(), z.copy(), act.copy(),
+                               act.copy(), False, "hold") for s, (team, x, y, act) in views.items()}
+    tk._back = {}
+    return tk
+
+
+def test_backfill_fills_behind_an_unbroken_line_as_passive():
+    geo = open_hall()
+    tk = _lines(geo, {0: ("A", 150, 200, _band(geo, 240, 256)), 5: ("B", 400, 200, _band(geo, 300, 316))})
+    back = tk.backfill("A")
+    behind = geo.cell_of_px(120, 120)
+    assert set(back) == {0} and back[0][behind], "west of A's line is A's"
+    assert not back[0][geo.cell_of_px(280, 200)], "between the lines: B can walk there"
+    state = tk.compose()["state"]
+    assert at(geo, state, 120, 120) in A_OWN
+    act, psv, _, pas = tk.coverage()[0]
+    assert pas[behind] and psv > 0, "the player's own coverage shows it, as passive"
+
+
+def test_no_backfill_through_a_gap_or_over_enemy_control():
+    geo = open_hall()
+    gap = _band(geo, 240, 256, 96, 250)       # the line stops short of the south wall
+    assert _lines(geo, {0: ("A", 150, 200, gap), 5: ("B", 400, 200, _band(geo, 300, 316))}).backfill("A") == {}
+    seen_by_b = _band(geo, 96, 140, 96, 150)
+    tk = _lines(geo, {0: ("A", 150, 200, _band(geo, 240, 256)), 5: ("B", 400, 200, _band(geo, 300, 316) | seen_by_b)})
+    back = tk.backfill("A")[0]
+    assert not back[seen_by_b].any() and back[geo.cell_of_px(200, 250)]
+
+
+def test_backfill_goes_to_the_nearer_players_line_and_opens_without_them():
+    geo = open_hall()
+    north, south = _band(geo, 240, 256, 96, 200), _band(geo, 240, 256, 200, 296)
+    tk = _lines(geo, {0: ("A", 200, 120, north), 1: ("A", 200, 280, south), 5: ("B", 400, 200, _band(geo, 300, 316))})
+    back = tk.backfill("A")
+    assert back[0][geo.cell_of_px(230, 110)] and back[1][geo.cell_of_px(230, 290)]
+    assert not (back[0] & back[1]).any()
+    assert tk.backfill("A", removed=1) == {}, "without the south line, B can walk round: no pocket"
+
+
 def test_a_turn_leaves_the_ground_behind_covered():
     geo = open_hall()
     players = {0: ("A", [(0.0, 150, 200, 180), (1.0, 150, 200, 0)]), 5: still("B", 400, 110, 90)}

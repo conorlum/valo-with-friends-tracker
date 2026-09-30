@@ -19,7 +19,13 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
 - **Memory (D6).** Ground a player saw and looked away from stays theirs as passive control. Each tick
   the team's remembered ground is eaten in from open ground (walkable, neither held live nor
   remembered by the team) at DECAY_MPS, in 8-connected walking steps, the way an enemy would walk in;
-  ground walled off by live control doesn't decay. Memory dies with its player.
+  ground walled off by live control doesn't decay. Memory dies with its player. When the buy-phase
+  barriers drop, each team remembers its side of them (the barrier paint), spared decay for
+  BARRIER_GRACE_S.
+- **Backfill.** Ground behind a player's watched line, back to the team's control, that no enemy can
+  walk into without crossing the team's claims (and the enemy doesn't claim), is passive control of
+  the player nearest it from their live view (`Tick.backfill`). Recomputed each tick, never remembered;
+  where it is already the team's Safe ground it credits nobody (coverage), as before.
 - **Watchers** (passive): trips, alarmbots, Chamber traps, Killjoy's turret, Cypher's camera while
   he is in it, and flown drones; a camera or drone in use replaces its owner's own view. Placed
   utility dies with its owner (Q71): a watcher counts only while its owner is alive.
@@ -627,6 +633,67 @@ class Tick:
         self.seeds: dict[str, np.ndarray] = {}
         # side -> flat cells claimed as passive by no player (a just-lost enemy's remembered view)
         self.extra_passive: dict[str, np.ndarray] = {}
+        self._back: dict[str, dict[int, np.ndarray]] = {}
+        self._safe: dict[str, np.ndarray] = {}    # side -> its Safe cells, from the full compose
+
+    def backfill(self, side: str, removed: int | None = None) -> dict[int, np.ndarray]:
+        """Backfill (the user's rule, 2026-09-30): ground behind a player's watched line, back to the
+        team's control, becomes that player's passive control. A pocket is walkable ground the team
+        doesn't claim (live, remembered or watched) that no enemy (nor, in a team's knowledge picture,
+        an unseen enemy's possible position) can walk into without crossing the team's claims, less
+        the enemy's own claims. Each pocket cell goes to the player nearest it in 4-connected steps from
+        their live view (ties to the lower slot); a pocket no live view borders goes to nobody.
+        Returns slot -> flat cells. With `removed`: a player with no share only shrinks the others' to
+        what is still a pocket without them; one with a share has it split again among the rest."""
+        if side not in self._back:
+            self._back[side] = self._backfill_shares(side, None)
+        shares = self._back[side]
+        if removed is None or not shares:
+            return shares
+        if removed in shares:
+            return self._backfill_shares(side, removed)
+        pocket = self._pocket(side, removed)
+        return {s: m & pocket for s, m in shares.items() if (m & pocket).any()}
+
+    def _pocket(self, side: str, removed: int | None) -> np.ndarray:
+        other = "B" if side == "A" else "A"
+        own = np.zeros(GRID * GRID, bool)
+        enemy = np.zeros(GRID * GRID, bool)
+        for h in self.team(side, removed):
+            own |= h.active | h.passive | h.watch
+        for e in self.team(other, removed):
+            enemy |= e.active | e.passive | e.watch
+        extra = self.extra_passive.get(other) if removed is None else None
+        if extra is not None:
+            enemy |= extra
+        lab, _ = ndimage.label(self.geo.walk & ~own.reshape(GRID, GRID))
+        sources = {int(lab.flat[e.cell]) for e in self.team(other, removed)}
+        seed = self.seeds.get(other) if removed is None else None
+        if seed is not None:
+            sources |= set(np.unique(lab.ravel()[seed]).tolist())
+        reach = self._reach(lab, sources - {0})
+        return ((lab > 0) & ~np.isin(lab, list(reach))).ravel() & ~enemy
+
+    def _backfill_shares(self, side: str, removed: int | None) -> dict[int, np.ndarray]:
+        pocket = self._pocket(side, removed).reshape(GRID, GRID)
+        if not pocket.any():
+            return {}
+        owner = np.full((GRID, GRID), -1, np.int16)
+        fronts = {}
+        for h in sorted(self.team(side, removed), key=lambda h: h.slot):
+            first = ndimage.binary_dilation(h.active.reshape(GRID, GRID)) & pocket & (owner < 0)
+            if first.any():
+                owner[first] = h.slot
+                fronts[h.slot] = first
+        while fronts:
+            grown = {}
+            for slot, front in sorted(fronts.items()):
+                new = ndimage.binary_dilation(front) & pocket & (owner < 0)
+                if new.any():
+                    owner[new] = slot
+                    grown[slot] = new
+            fronts = grown
+        return {int(s): (owner == s).ravel() for s in np.unique(owner[owner >= 0]).tolist()}
 
     def _watch(self, s: int, t: float) -> np.ndarray:
         geo, rnd = self.geo, self.rnd
@@ -671,6 +738,8 @@ class Tick:
             active |= h.active
             passive |= h.passive | h.watch
             raw |= h.raw | h.watch
+        for share in self.backfill(side, removed).values():
+            passive |= share
         extra = self.extra_passive.get(side) if removed is None else None
         if extra is not None:
             passive |= extra
@@ -872,6 +941,8 @@ class Tick:
             f_enemy = fills[other]
             safe = walk.ravel() if f_enemy is None else f_enemy.safe(walk).ravel()
             lv[safe] = np.maximum(lv[safe], 2)
+            if removed is None:
+                self._safe[side] = safe & walk.ravel()
             lv[active] = 3
             lv[~walk.ravel()] = 0
             level[side] = lv
@@ -927,10 +998,14 @@ class Tick:
             hs = self.team(side, None)
             if not hs:
                 continue
+            # backfill on ground the team already holds as Safe stays the team's, credited to nobody
+            safe = self._safe.get(side)
+            back = {s: m & ~safe if safe is not None else m for s, m in self.backfill(side).items()}
+            none = np.zeros(GRID * GRID, bool)
             n_act = sum(h.active.astype(np.int8) for h in hs)
-            n_pas = sum((h.passive | h.watch).astype(np.int8) for h in hs)
+            n_pas = sum((h.passive | h.watch | back.get(h.slot, none)).astype(np.int8) for h in hs)
             for h in hs:
-                pas = (h.passive | h.watch) & ~h.active
+                pas = (h.passive | h.watch | back.get(h.slot, none)) & ~h.active
                 act = float((1 / n_act[h.active]).sum()) if h.active.any() else 0.0
                 psv = float((1 / n_pas[pas]).sum()) if pas.any() else 0.0
                 out[h.slot] = (act, psv, h.active, pas)
@@ -1036,6 +1111,7 @@ class Knowledge:
         kt.sees = {x.slot: {h.slot for h in holders.values() if h.team != x.team and x.body[h.cell]}
                    for x in holders.values()}
         kt._dist = {}
+        kt._back, kt._safe = {}, {}    # backfill again, against what the team knew
         kt.seeds = {self.enemy: seed} if seed.any() else {}
         kt.extra_passive = {self.enemy: remembered} if remembered.any() else {}
         return kt
