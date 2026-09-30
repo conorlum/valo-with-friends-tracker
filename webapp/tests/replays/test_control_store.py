@@ -58,10 +58,11 @@ def linked(db, condensed):
     return replay
 
 
-def put_row(db, replay, n, status="ok", fingerprint=None, data=b"x"):
+def put_row(db, replay, n, status="ok", fingerprint=None, data=b"x", data_version=cf.DATA_VERSION):
     groups = rc.side_groups(db, replay)
     row = ReplayRoundControl(replay_id=replay.id, round_number=n, status=status,
                              fingerprint=fingerprint or rc.round_fingerprint(replay, groups, n),
+                             data_version=data_version if status == "ok" else None,
                              data=gzip.compress(data) if status == "ok" else None,
                              summary=cf.pack_summary({}) if status == "ok" else None,
                              error=None if status == "ok" else "ControlError: boom")
@@ -116,10 +117,19 @@ def test_condense_revision_is_read_from_the_recipe():
     assert rc.condense_revision("2b66c65a7b11.c10.f1.a9965d90c") == 10
     assert rc.condense_revision("2b66c65a7b11.c9.f1.a9965d90c") == 9
     assert rc.condense_revision("nothing") is None
+    assert rc.condense_revision("c20417733181.c9.f1.a9965d90c") == 9, "a parser commit can look like c<digits>"
+
+
+def test_the_geometry_inputs_are_what_the_engine_loads():
+    inputs = rc.geometry_inputs("Ascent")
+    _, tags, maps = rc._assets()
+    assert inputs["scale"] == maps["Ascent"]["xMultiplier"]
+    assert inputs["specials"] == ((tags.get("Ascent") or {}).get("specials") or [])
+    assert inputs["sight"] and inputs["walk"]
 
 
 def test_only_maps_that_passed_the_kill_line_test_have_the_layer():
-    index = rc._index()
+    index = rc._assets()[0]
     for name, entry in index.items():
         has = rc.map_layer(name) is not None
         assert has == bool((entry.get("kill_lines") or {}).get("passes")), name
@@ -155,7 +165,7 @@ def test_rounds_that_cannot_be_computed_are_listed_not_planned(db, linked, monke
     assert {p.reason for p in planned} == {"no_map"} and not any(p.computable for p in planned)
     assert rc.nudge(db) is None
     monkeypatch.undo()
-    linked.recipe = linked.recipe.replace(f"c{rc.condense_revision(linked.recipe)}", "c9")
+    linked.recipe = linked.recipe.replace(f".c{rc.condense_revision(linked.recipe)}.", ".c9.")
     db.commit()
     assert {p.reason for p in rc.plan(db)} == {"old_blob"}
     lines = compute_control.describe(rc.plan(db))
@@ -245,6 +255,20 @@ def test_a_stale_row_is_still_served_but_flagged(db, linked):
     assert response.status_code == 200 and response.headers["x-control-stale"] == "1"
 
 
+def test_a_row_in_an_older_byte_format_is_not_ready_and_planned(db, linked):
+    put_row(db, linked, 1, data_version=cf.DATA_VERSION - 1)
+    assert call(db, 1).status_code == 202, "the viewer can't decode it"
+    assert (1, "stale") in [(p.round_number, p.reason) for p in rc.plan(db)]
+
+
+def test_a_blob_before_revision_10_is_a_404_that_says_why(db, linked):
+    put_row(db, linked, 1)
+    linked.recipe = linked.recipe.replace(f".c{rc.condense_revision(linked.recipe)}.", ".c9.")
+    db.commit()
+    response = call(db, 1)
+    assert response.status_code == 404 and json.loads(response.body) == {"status": "old_blob"}
+
+
 def test_a_failed_round_says_so_without_a_retry(db, linked):
     put_row(db, linked, 1, status="failed")
     response = call(db, 1)
@@ -291,6 +315,15 @@ def test_worker_count_leaves_a_core_and_the_headroom():
     assert compute_control.worker_count(None, 1, 64 * gb, 4 * gb, gb) == 1
 
 
+def test_rounds_just_started_count_against_the_headroom():
+    gb = compute_control.GB
+    assert compute_control.room_for_one(10 * gb, 4 * gb, gb, 0)
+    assert compute_control.room_for_one(10 * gb, 4 * gb, gb, 5), "6 GB spare: 5 young rounds plus this one"
+    assert not compute_control.room_for_one(10 * gb, 4 * gb, gb, 6)
+    assert not compute_control.room_for_one(4.5 * gb, 4 * gb, gb, 0)
+    assert compute_control.room_for_one(None, 4 * gb, gb, 9), "no reading: no gate"
+
+
 def test_memory_probes_read_something_on_this_machine():
     free, peak = compute_control.free_memory(), compute_control.peak_memory()
     if sys.platform == "win32":  # the machine that runs it; None there once hid a truncated handle
@@ -303,6 +336,7 @@ def test_a_result_is_stored_and_a_rerun_replaces_it(factory, db, linked):
     [planned] = rc.plan(db, rounds={1})
     ok = {"status": "ok", "data": gzip.compress(b"d"), "summary": cf.pack_summary({})}
     assert compute_control.store_result(factory, planned, ok) == "stored"
+    assert db.get(ReplayRoundControl, (linked.id, 1)).data_version == cf.DATA_VERSION
     failed = {"status": "failed", "error": "ControlError: boom"}
     assert compute_control.store_result(factory, planned, failed) == "stored"
     db.expire_all()

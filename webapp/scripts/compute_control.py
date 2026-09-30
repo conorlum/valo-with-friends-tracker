@@ -46,6 +46,7 @@ GB = 1024 ** 3
 FIRST_PEAK_GUESS = 0.5 * GB    # a worker's peak before one is measured (real rounds: ~0.2 GB)
 POLL_S = 0.5
 WAIT_NOTE_S = 60
+YOUNG_S = 30                  # a round started this recently may not have allocated its memory yet
 
 
 # ---------------------------------------------------------------- memory
@@ -99,6 +100,12 @@ def peak_memory() -> int | None:
         return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
     except (ImportError, OSError):
         return None
+
+
+def room_for_one(free: int | None, headroom: int, peak: float, young: int) -> bool:
+    """Whether another round fits: free RAM, less what the `young` rounds (started too recently to
+    have allocated yet) will still take, covers the headroom plus one more peak."""
+    return free is None or free - headroom - young * peak >= peak
 
 
 def worker_count(requested: int | None, cores: int, free: int | None, headroom: int, peak: float) -> int:
@@ -165,13 +172,16 @@ def store_result(session_factory, planned, result: dict) -> str:
     from sqlalchemy.exc import IntegrityError
 
     from app.models.replay import ReplayRoundControl
+    from app.replays import control_format as cf
 
     session = session_factory()
     try:
+        ok = result["status"] == "ok"
         session.merge(ReplayRoundControl(
             replay_id=planned.replay_id, round_number=planned.round_number, status=result["status"],
-            fingerprint=planned.fingerprint, data=result.get("data"), summary=result.get("summary"),
-            error=result.get("error"), computed_at=datetime.now(timezone.utc)))
+            fingerprint=planned.fingerprint, data_version=cf.DATA_VERSION if ok else None,
+            data=result.get("data"), summary=result.get("summary"), error=result.get("error"),
+            computed_at=datetime.now(timezone.utc)))
         session.commit()
         return "stored"
     except IntegrityError:
@@ -185,6 +195,7 @@ def run(planned, args, session_factory) -> int:
     import multiprocessing
 
     from app.control import geometry
+    from app.models.replay import ReplayRound
 
     todo = [p for p in planned if p.computable]
     for name in sorted({p.map_name for p in todo}):
@@ -192,46 +203,43 @@ def run(planned, args, session_factory) -> int:
         geo = geometry.visibility(geometry.load_geometry(name))
         print(f"{name}: visibility {geo.visibility_source} in {time.time() - started:.0f}s", flush=True)
 
-    tasks = []
-    session = session_factory()
-    try:
-        from app.services.replay_control import round_blob_bytes
-
-        for i, p in enumerate(todo):
-            tasks.append({"key": i, "map": p.map_name, "blob": round_blob_bytes(session, p.replay_id, p.round_number),
-                          "link": p.link})
-    finally:
-        session.rollback()
-        session.close()
-
     headroom = int(args.headroom_gb * GB)
     cores = os.cpu_count() or 2
     peak = FIRST_PEAK_GUESS
     most = worker_count(args.workers, cores, free_memory(), headroom, peak)
-    print(f"{len(tasks)} round(s), up to {most} worker(s) ({cores} cores, keeping {args.headroom_gb:g} GB free)",
+    print(f"{len(todo)} round(s), up to {most} worker(s) ({cores} cores, keeping {args.headroom_gb:g} GB free)",
           flush=True)
+    reader = session_factory()   # blobs are read as their rounds start, not all up front
     pool = multiprocessing.get_context("spawn").Pool(processes=most)
-    pending, running = list(reversed(tasks)), {}
+    pending, running = list(reversed(range(len(todo)))), {}   # key -> (AsyncResult, start time)
     done, failed, sizes, started, measured = 0, [], [], time.time(), False
     last_wait_note = 0.0
     try:
         while pending or running:
-            limit = most if measured else 1           # the first round measures a worker's peak
+            limit = most if measured else 1           # the first ok round measures a worker's peak
             while pending and len(running) < limit:
-                free = free_memory()
-                if free is not None and free - headroom < peak and running:
-                    break
-                if free is not None and free - headroom < peak and not running:
-                    if time.time() - last_wait_note > WAIT_NOTE_S:
-                        print(f"  waiting: {free / GB:.1f} GB free, need {(headroom + peak) / GB:.1f}", flush=True)
+                young = sum(1 for _, t0 in running.values() if time.time() - t0 < YOUNG_S)
+                if not room_for_one(free_memory(), headroom, peak, young):
+                    if not running and time.time() - last_wait_note > WAIT_NOTE_S:
+                        print(f"  waiting for {(headroom + peak) / GB:.1f} GB free", flush=True)
                         last_wait_note = time.time()
                     break
-                task = pending.pop()
-                running[task["key"]] = pool.apply_async(compute_task, (task,))
-            for key in [k for k, r in running.items() if r.ready()]:
-                result = running.pop(key).get()
+                key = pending.pop()
                 p = todo[key]
-                if result.get("peak"):
+                row = reader.get(ReplayRound, (p.replay_id, p.round_number))
+                blob = None if row is None else row.data
+                reader.rollback()
+                if blob is None:
+                    done += 1
+                    print(f"[{done}/{len(todo)}] {p.match_uuid[:8]} r{p.round_number}: skipped, the round is gone "
+                          f"(re-ingested?); rerun to pick it up", flush=True)
+                    continue
+                task = {"key": key, "map": p.map_name, "blob": blob, "link": p.link}
+                running[key] = (pool.apply_async(compute_task, (task,)), time.time())
+            for key in [k for k, (r, _) in running.items() if r.ready()]:
+                result = running.pop(key)[0].get()
+                p = todo[key]
+                if result["status"] == "ok" and result.get("peak"):
                     peak = max(peak if measured else 0, result["peak"] * 1.2)
                     measured = True
                 outcome = store_result(session_factory, p, result)
@@ -253,6 +261,8 @@ def run(planned, args, session_factory) -> int:
         print("stopped: finished rounds are stored; rerun to resume", flush=True)
         pool.terminate()
         return 1
+    finally:
+        reader.close()
     pool.close()
     pool.join()
     print(f"done in {_fmt_s(time.time() - started)}: {len(sizes)} ok, {len(failed)} failed", flush=True)

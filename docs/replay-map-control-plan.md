@@ -605,7 +605,8 @@ Each stage is a PR, or a commit on this branch, with tests. A stage that changes
      - **Endpoint** `GET /replays/{uuid}/{n}/control.bin`: the bytes with gzip, ETag and 304 like
        `{n}.json`; a stale row is still served, with `X-Control-Stale: 1` (tuning bumps the revision
        often; a blank layer until a 3-hour recompute would be worse). Otherwise JSON `status`: 202
-       `not_ready` with `Retry-After`, 422 `failed`, 404 `no_map`. The replay page's `match.control`
+       `not_ready` with `Retry-After` (also a row in an older byte format, `data_version`, which
+       a current viewer can't decode), 422 `failed`, 404 `no_map` or `old_blob`. The replay page's `match.control`
        says up front whether the map has the layer, so the viewer hides the toggle instead.
      - **A failed round** is stored as `failed` with its error, and skipped by later runs until its
        inputs change (a fix bumps the revision) or `--retry-failed`.

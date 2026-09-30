@@ -78,7 +78,7 @@ class ReplayRoundControl(Base):
     __tablename__ = "replay_round_control"
     __table_args__ = (
         CheckConstraint("status IN ('ok', 'failed')", name="ck_replay_round_control_status"),
-        CheckConstraint("status <> 'ok' OR (data IS NOT NULL AND summary IS NOT NULL)",
+        CheckConstraint("status <> 'ok' OR (data IS NOT NULL AND summary IS NOT NULL AND data_version IS NOT NULL)",
                         name="ck_replay_round_control_ok_has_data"),
         ForeignKeyConstraint(["replay_id", "round_number"], ["replay_rounds.replay_id", "replay_rounds.round_number"],
                              ondelete="CASCADE", name="fk_replay_round_control_round"),
@@ -88,6 +88,7 @@ class ReplayRoundControl(Base):
     round_number: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
     status: Mapped[str] = mapped_column(String(8), nullable=False)
     fingerprint: Mapped[str] = mapped_column(String(16), nullable=False)
+    data_version: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)  # control_format.DATA_VERSION
     data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     summary: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

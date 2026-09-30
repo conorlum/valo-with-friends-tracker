@@ -6,7 +6,8 @@ Create Date: 2026-09-30
 
 Map control's storage (docs/replay-map-control-plan.md, "Storage"; Stage 3): one row per replay
 round, written only by scripts/compute_control.py. `status` is 'ok' (with `data`, the served
-bytes, and `summary`, the heatmap totals and per-player stats) or 'failed' (with `error`), and
+bytes, in byte format `data_version`, and `summary`, the heatmap totals and per-player stats) or
+'failed' (with `error`), and
 `fingerprint` hashes the row's inputs (app/replays/control_format.py) so a stale row is found and
 recomputed.
 
@@ -35,6 +36,7 @@ def upgrade() -> None:
         sa.Column("round_number", sa.SmallInteger(), primary_key=True),
         sa.Column("status", sa.String(length=8), nullable=False),
         sa.Column("fingerprint", sa.String(length=16), nullable=False),
+        sa.Column("data_version", sa.SmallInteger(), nullable=True),
         sa.Column("data", sa.LargeBinary(), nullable=True),
         sa.Column("summary", sa.LargeBinary(), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
@@ -42,7 +44,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["replay_id", "round_number"], ["replay_rounds.replay_id", "replay_rounds.round_number"],
                                 ondelete="CASCADE", name="fk_replay_round_control_round"),
         sa.CheckConstraint("status IN ('ok', 'failed')", name="ck_replay_round_control_status"),
-        sa.CheckConstraint("status <> 'ok' OR (data IS NOT NULL AND summary IS NOT NULL)",
+        sa.CheckConstraint("status <> 'ok' OR (data IS NOT NULL AND summary IS NOT NULL AND data_version IS NOT NULL)",
                            name="ck_replay_round_control_ok_has_data"),
     )
 
