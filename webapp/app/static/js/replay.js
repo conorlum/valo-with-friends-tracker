@@ -543,10 +543,11 @@
     this.ctx = this.canvas.getContext("2d");
     this.map = new Image();
     this.view = { k: 1, ox: 0, oy: 0 };          // canvas px = (map px - o) * k
-    this.map.onload = (function () { this.fitView(); this.draw(); }).bind(this);
+    this.map.onload = (function () { this.fitView(); this.draw(); if (this.heat) this.paintHeatmap(); }).bind(this);
     this.map.src = options.mapImage;
     this.hover = null;
     this.bindControls();
+    this.bindHeatmap();
     this.lastFrame = null;
     this.tick = this.tick.bind(this);
     requestAnimationFrame(this.tick);
@@ -1703,6 +1704,127 @@
       if (series && typeof series[tick] === "number") out[slot] = series[tick];
     });
     return out;
+  };
+
+  // ------------------------------------------------------------ the match heatmap (Stage 5)
+
+  var HEAT_LABELS = { attack: "Attack", defense: "Defense", "team-1": "Team 1", "team-2": "Team 2" };
+
+  ReplayViewer.prototype.bindHeatmap = function () {
+    var box = this.root.querySelector("[data-replay-heatmap]");
+    if (!box || !this.control || !this.options.loadHeatmap) return;
+    var self = this, q = function (sel) { return box.querySelector(sel); };
+    var canvas = q("[data-replay-heatmap-canvas]");
+    this.heat = { box: box, view: q("[data-replay-heatmap-view]"), mode: q("[data-replay-heatmap-mode]"),
+                  section: q("[data-replay-heatmap-section]"), canvas: canvas, ctx: canvas.getContext("2d"),
+                  tip: q("[data-replay-heatmap-tip]"), legend: q("[data-replay-heatmap-legend]"), data: {}, shown: null };
+    box.addEventListener("toggle", function () { if (box.open) self.loadHeatmap(); });
+    this.heat.view.addEventListener("change", function () { self.loadHeatmap(); });
+    this.heat.mode.addEventListener("change", function () { self.paintHeatmap(); });
+    this.heat.section.addEventListener("change", function () { self.paintHeatmap(); });
+    canvas.addEventListener("mousemove", function (e) { self.heatTip(e); });
+    canvas.addEventListener("mouseleave", function () { self.heat.tip.hidden = true; });
+    if (box.open) this.loadHeatmap();
+  };
+
+  ReplayViewer.prototype.loadHeatmap = function () {
+    var heat = this.heat, self = this, view = heat.view.value, C = controlApi();
+    if (heat.data[view]) { this.showHeatmap(view); return; }
+    heat.legend.textContent = "Loading…";
+    Promise.resolve(this.options.loadHeatmap(view)).then(function (body) {
+      if (!body || body.status !== "ok" || !body.sections.length) {
+        heat.legend.textContent = "No map control is stored for this match yet.";
+        return;
+      }
+      var walk = C.walkCells({ walk: body.walk });
+      heat.data[view] = {
+        labels: body.labels, walk: walk, index: C.cellIndex(walk), used: body.rounds_used, skipped: body.rounds_skipped,
+        sections: body.sections.map(function (s) {
+          return { key: s.key, label: s.label, seconds: s.seconds, rounds: s.rounds,
+                   x: C.base64Bytes(s.x), y: C.base64Bytes(s.y), contested: C.base64Bytes(s.contested) };
+        })
+      };
+      if (heat.view.value === view) self.showHeatmap(view);
+    }, function () { heat.legend.textContent = "The heatmap couldn't be loaded."; });
+  };
+
+  ReplayViewer.prototype.showHeatmap = function (view) {
+    var heat = this.heat, data = heat.data[view], was = heat.section.value;
+    heat.shown = view;
+    heat.section.innerHTML = data.sections.map(function (s) {
+      return '<option value="' + escapeHtml(s.key) + '">' + escapeHtml(s.label) + " (" + s.rounds + " round" +
+        (s.rounds === 1 ? "" : "s") + ")</option>";
+    }).join("");
+    if (was && data.sections.some(function (s) { return s.key === was; })) heat.section.value = was;
+    heat.mode.querySelector("[data-label-x]").textContent = HEAT_LABELS[data.labels.x] || data.labels.x;
+    heat.mode.querySelector("[data-label-y]").textContent = HEAT_LABELS[data.labels.y] || data.labels.y;
+    this.paintHeatmap();
+  };
+
+  ReplayViewer.prototype.heatColors = function (labels) {
+    var C = controlApi(), self = this, pick = function (label) {
+      var name = label === "attack" ? "--replay-attack" : label === "defense" ? "--replay-defense"
+        : label === "team-1" ? "--replay-team-1" : "--replay-team-2";
+      return C.hexRgb(self.css(name, "#bbbbbb"));
+    };
+    return { x: pick(labels.x), y: pick(labels.y) };
+  };
+
+  ReplayViewer.prototype.heatSection = function () {
+    var data = this.heat && this.heat.shown && this.heat.data[this.heat.shown];
+    if (!data) return null;
+    var key = this.heat.section.value;
+    return { data: data, section: data.sections.filter(function (s) { return s.key === key; })[0] || data.sections[0] };
+  };
+
+  ReplayViewer.prototype.paintHeatmap = function () {
+    var heat = this.heat, found = this.heatSection();
+    if (!found) return;
+    var C = controlApi(), data = found.data, sec = found.section, mode = heat.mode.value;
+    var colors = this.heatColors(data.labels);
+    var img = this.controlCanvas("heat");
+    img.data = img.data || img.ctx.createImageData(CONTROL_PX, CONTROL_PX);
+    C.paintHeatmap(img.data.data, CONTROL_PX, data.walk, sec, mode, colors);
+    img.ctx.putImageData(img.data, 0, 0);
+    var ctx = heat.ctx, size = heat.canvas.width, v = this.view;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, size, size);
+    ctx.setTransform(v.k, 0, 0, v.k, -v.ox * v.k, -v.oy * v.k);
+    if (this.map.complete && this.map.naturalWidth) ctx.drawImage(this.map, 0, 0, size, size);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img.canvas, 0, 0, size, size);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    var name = function (label) { return HEAT_LABELS[label] || label; };
+    var keys = mode === "lead" ? ["x", "y", "contested"] : [mode];
+    heat.legend.innerHTML = keys.map(function (k) {
+      var cls = k === "contested" ? "replay-key replay-key-heat-contested" : "replay-key";
+      var style = k === "contested"
+        ? ' style="--kx:rgb(' + colors.x.join(",") + ");--ky:rgb(" + colors.y.join(",") + ')"'
+        : ' style="--key:rgb(' + colors[k].join(",") + ')"';
+      return '<span class="' + cls + ' replay-key-heat"' + style + ">" + (k === "contested" ? "Contested" : name(data.labels[k])) + "</span>";
+    }).join("") + '<span class="replay-heatmap-sample">' + (mode === "lead" ? "Colour: who held each cell longest; stronger = longer. "
+      : "Stronger = a larger share of the time. ") + sec.seconds.toFixed(0) + " s over " + sec.rounds + " round" +
+      (sec.rounds === 1 ? "" : "s") + (data.skipped.length ? "; " + data.skipped.length + " round(s) left out (older map geometry)" : "") + ".</span>";
+    heat.canvas.setAttribute("aria-label", "Match heatmap, " + sec.label + ", " + (mode === "lead" ? "who held each part longest" : mode));
+  };
+
+  ReplayViewer.prototype.heatTip = function (e) {
+    var heat = this.heat, found = this.heatSection();
+    if (!found) return;
+    var rect = heat.canvas.getBoundingClientRect(), scale = heat.canvas.width / rect.width, v = this.view;
+    var x = ((e.clientX - rect.left) * scale / v.k + v.ox) / heat.canvas.width * controlApi().GRID;
+    var y = ((e.clientY - rect.top) * scale / v.k + v.oy) / heat.canvas.height * controlApi().GRID;
+    var cell = Math.floor(y) * controlApi().GRID + Math.floor(x), k = found.data.index[cell];
+    if (!(x >= 0 && y >= 0 && x < controlApi().GRID && y < controlApi().GRID) || k < 0) { heat.tip.hidden = true; return; }
+    var sec = found.section, labels = found.data.labels;
+    var pct = function (b) { return Math.round(100 * b / 255) + "%"; };
+    var nobody = Math.max(0, 255 - sec.x[k] - sec.y[k] - sec.contested[k]);
+    heat.tip.textContent = (HEAT_LABELS[labels.x] || labels.x) + " " + pct(sec.x[k]) + " · " + (HEAT_LABELS[labels.y] || labels.y) +
+      " " + pct(sec.y[k]) + " · contested " + pct(sec.contested[k]) + " · nobody " + pct(nobody);
+    heat.tip.hidden = false;
+    var stage = heat.tip.parentNode.getBoundingClientRect();
+    heat.tip.style.left = Math.max(4, Math.min(e.clientX - rect.left + 14, stage.width - heat.tip.offsetWidth - 4)) + "px";
+    heat.tip.style.top = Math.max(4, e.clientY - rect.top - heat.tip.offsetHeight - 10) + "px";
   };
 
   ReplayViewer.prototype.draw = function () {

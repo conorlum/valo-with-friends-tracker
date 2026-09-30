@@ -114,4 +114,28 @@
     </aside>
     {% endif %}
   </div>
+  {% if linked and control %}
+  <details class="replay-heatmap" data-replay-heatmap>
+    <summary>Match heatmap: who held each part of the map</summary>
+    <div class="replay-heatmap-controls">
+      <label>Split by <select data-replay-heatmap-view>
+        <option value="side" selected>Attack / defense</option>
+        <option value="team">Team 1 / team 2</option>
+      </select></label>
+      <label>Show <select data-replay-heatmap-mode>
+        <option value="lead" selected>Who held it most</option>
+        <option value="x" data-label-x>Attack</option>
+        <option value="y" data-label-y>Defense</option>
+        <option value="contested">Contested</option>
+      </select></label>
+      <label>Time <select data-replay-heatmap-section></select></label>
+    </div>
+    <div class="replay-heatmap-stage">
+      <canvas class="replay-canvas" data-replay-heatmap-canvas width="1024" height="1024" role="img" aria-label="Match heatmap"></canvas>
+      <div class="replay-tip" data-replay-heatmap-tip hidden></div>
+    </div>
+    <p class="replay-legend" data-replay-heatmap-legend></p>
+    <p class="replay-side-note" data-replay-heatmap-note>The share of each section's time that each cell spent held by each side (any level: in a cone, safe or seen), or contested; only the live round counts. Sections run 10 s by the round clock up to the plant, then 10 s by the spike clock. Hover for the numbers.</p>
+  </details>
+  {% endif %}
 </section>
