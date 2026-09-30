@@ -17,6 +17,8 @@
 - `GET /replays/{match_uuid}/control/players.json`: the Control tab's numbers, per round and per
   match, from the stored summaries (never the ticks), with an ETag over the rows and which are
   stale; the same 404s (`no_map`, `old_blob`) as `control.bin`, and `unlinked`.
+- `GET /replays/{match_uuid}/control/heatmap.json?view=side|team`: the match heatmap, the same
+  way (400 for another view).
 - `GET /matches/{external_id}/replay`: a redirect to the page when the match has a linked,
   valid replay.
 - Stage 3, the friends-only upload (404 in demo mode and when no code or worker is configured):
@@ -28,7 +30,9 @@
 No scoring code. Only the upload routes write (an upload's row, and its replay through store.py).
 """
 
+import gzip
 import hashlib
+import json
 import re
 import secrets
 from datetime import datetime, timezone
@@ -222,9 +226,15 @@ def _control_replay_or_404(db: Session, match_uuid: str):
 
 
 def _json_with_etag(request: Request, body: dict, etag: str) -> Response:
-    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    """JSON with an ETag and a 304 for a match; gzipped when the client takes it (a heatmap is
+    ~400 KB of base64, and the app has no compression middleware)."""
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache", "Vary": "Accept-Encoding"}
     if etag in [tag.strip() for tag in request.headers.get("if-none-match", "").split(",")]:
         return Response(status_code=304, headers=headers)
+    if "gzip" in request.headers.get("accept-encoding", "").lower():
+        raw = json.dumps(body, separators=(",", ":")).encode("utf-8")
+        return Response(content=gzip.compress(raw, compresslevel=6), media_type="application/json",
+                        headers={**headers, "Content-Encoding": "gzip"})
     return JSONResponse(body, headers=headers)
 
 
@@ -236,6 +246,22 @@ def replay_control_players(request: Request, match_uuid: str, db: Session = Depe
         return refused
     loaded = control_views.load_round_summaries(db, replay)
     return _json_with_etag(request, control_views.player_tables(replay, loaded), loaded.etag)
+
+
+@router.get("/replays/{match_uuid}/control/heatmap.json")
+def replay_control_heatmap(request: Request, match_uuid: str, view: str = "side", db: Session = Depends(get_db)):
+    """The match heatmap (Stage 5): per time section, the share of time each cell was held by
+    attack/defense (`view=side`) or team 1/team 2 (`view=team`), or contested."""
+    replay, refused = _control_replay_or_404(db, match_uuid)
+    if refused is not None:
+        return refused
+    if view not in control_views.HEATMAP_VIEWS:
+        return JSONResponse({"status": "bad_view", "views": list(control_views.HEATMAP_VIEWS)}, status_code=400)
+    loaded = control_views.load_round_summaries(db, replay)
+    etag = loaded.etag[:-1] + ":" + view + '"'
+    if etag in [tag.strip() for tag in request.headers.get("if-none-match", "").split(",")]:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, no-cache"})
+    return _json_with_etag(request, control_views.match_heatmap_for(db, replay, view, loaded), etag)
 
 
 @router.get("/replays/{match_uuid}")

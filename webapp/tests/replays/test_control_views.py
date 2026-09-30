@@ -2,9 +2,11 @@
 S4.1 and S5.1): the player tables and their endpoint. SQLite, no engine: summaries are made up in
 the shape app/control/encode.py stores."""
 
+import base64
 import gzip
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,14 @@ from app.replays import control_format as cf  # noqa: E402
 from app.routers import replays as routes  # noqa: E402
 from app.services import replay_control as rc  # noqa: E402
 from app.services import replay_control_views as views  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def fresh_heatmap_cache():
+    # Rows in separate in-memory databases can share a replay id, fingerprint and (whole-second) time.
+    views._HEATMAPS.clear()
+    yield
+    views._HEATMAPS.clear()
 
 
 def player(slot, team, side, alive, active, passive, control, deaths=()):
@@ -168,6 +178,112 @@ def test_demo_mode_and_unknown_replays_are_plain_404s(db, linked, monkeypatch):
     assert status_of(lambda: call_players(db, uuid="not-a-uuid")) == 404
     monkeypatch.setattr(settings, "demo_mode", True)
     assert status_of(lambda: call_players(db)) == 404
+
+
+# ---------------------------------------------------------------- the match heatmap (S5.1)
+
+WALK = base64.b64encode(bytes([0b11110000]) + bytes(cf.GRID * cf.GRID // 8 - 1)).decode()      # cells 0-3
+OTHER_WALK = base64.b64encode(bytes([0b11101000]) + bytes(cf.GRID * cf.GRID // 8 - 1)).decode()  # 4 other cells
+
+
+def section(key, seconds, by_state):
+    """by_state: {state name: {cell: seconds}} -> a stored section."""
+    states = [sorted((c, round(s * cf.GRID_HZ)) for c, s in by_state.get(name, {}).items())
+              for name in cf.STATE_NAMES[1:]]
+    return {"key": key, "t0": 0.0, "t1": seconds, "seconds": seconds, "totals": cf.encode_totals(states)}
+
+
+HEAT_1 = summary(1, [], {}, group_side={"A": "attack", "B": "defense"}, sections=[
+    section("r0", 10.0, {"a_active": {0: 10.0}, "b_safe": {1: 5.0}, "contested": {2: 10.0}}),
+    section("r1", 5.0, {"contested_active": {2: 5.0}})])
+HEAT_2 = summary(2, [], {}, group_side={"A": "defense", "B": "attack"}, sections=[
+    section("r0", 10.0, {"a_passive": {0: 10.0}, "b_active": {3: 10.0}})])
+
+
+def put_heat(db, replay, n, body, walk=WALK):
+    data = cf.pack_data({"walk": walk, "cells": body["cells"]}, {"states": b"", "coverage": b"", "control": b""})
+    groups = rc.side_groups(db, replay)
+    db.merge(ReplayRoundControl(replay_id=replay.id, round_number=n, status="ok",
+                                fingerprint=rc.round_fingerprint(replay, groups, n), data_version=cf.DATA_VERSION,
+                                data=data, summary=cf.pack_summary(body)))
+    db.commit()
+
+
+def shares(text):
+    return list(base64.b64decode(text))
+
+
+def call_heatmap(db, view="side", headers=None):
+    return routes.replay_control_heatmap(request(headers), MATCH_UUID, view, db)
+
+
+def test_the_heatmap_sums_rounds_by_side(db, linked):
+    put_heat(db, linked, 1, dict(HEAT_1, cells=4))
+    put_heat(db, linked, 2, dict(HEAT_2, cells=4))
+    body = json.loads(call_heatmap(db).body)
+    assert body["labels"] == {"x": "attack", "y": "defense"} and body["walk"] == WALK
+    assert body["rounds_used"] == [1, 2] and body["rounds_skipped"] == []
+    by_key = {s["key"]: s for s in body["sections"]}
+    assert [s["key"] for s in body["sections"]] == ["all", "r0", "r1"]
+    r0 = by_key["r0"]
+    assert r0["seconds"] == 20.0 and r0["rounds"] == 2 and r0["label"] == "0–10 s"
+    assert shares(r0["x"]) == [128, 0, 0, 128]        # attack: A's cell 0 in round 1, B's cell 3 in round 2
+    assert shares(r0["y"]) == [128, 64, 0, 0]         # defense: B's cell 1 (5 s) in round 1, A's cell 0 in round 2
+    assert shares(r0["contested"]) == [0, 0, 128, 0]
+    whole = by_key["all"]
+    assert whole["seconds"] == 25.0 and whole["rounds"] == 2
+    assert shares(whole["contested"]) == [0, 0, 153, 0]   # 15 s of 25
+
+
+def test_the_team_view_maps_side_groups_by_the_link(db, linked):
+    put_heat(db, linked, 1, dict(HEAT_1, cells=4))
+    put_heat(db, linked, 2, dict(HEAT_2, cells=4))
+    a_team = linked.link_report["side_to_team"]["A"]
+    body = json.loads(call_heatmap(db, "team").body)
+    assert body["labels"] == {"x": "team-1", "y": "team-2"}
+    r0 = {s["key"]: s for s in body["sections"]}["r0"]
+    a_shares, b_shares = [255, 0, 0, 0], [0, 64, 0, 128]
+    assert (shares(r0["x"]), shares(r0["y"])) == ((a_shares, b_shares) if a_team == "team-1" else (b_shares, a_shares))
+
+
+def test_a_round_with_other_walkable_cells_is_skipped_not_misplaced(db, linked):
+    put_heat(db, linked, 1, dict(HEAT_1, cells=4))
+    put_heat(db, linked, 2, dict(HEAT_2, cells=4), walk=OTHER_WALK)   # same count, different cells
+    db.get(ReplayRoundControl, (linked.id, 1)).computed_at = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    db.commit()
+    body = json.loads(call_heatmap(db).body)
+    assert body["rounds_used"] == [1] and body["rounds_skipped"] == [2] and body["walk"] == WALK
+
+
+def test_the_heatmap_view_is_checked_and_etagged(db, linked):
+    put_heat(db, linked, 1, dict(HEAT_1, cells=4))
+    bad = call_heatmap(db, "diagonal")
+    assert bad.status_code == 400 and json.loads(bad.body)["status"] == "bad_view"
+    first = call_heatmap(db, "side")
+    assert first.status_code == 200
+    assert call_heatmap(db, "side", {"If-None-Match": first.headers["etag"]}).status_code == 304
+    assert call_heatmap(db, "team").headers["etag"] != first.headers["etag"]
+    zipped = call_heatmap(db, "side", {"Accept-Encoding": "gzip, br"})
+    assert zipped.headers["content-encoding"] == "gzip"
+    assert json.loads(gzip.decompress(zipped.body)) == json.loads(first.body)
+
+
+def test_the_heatmap_404s_like_the_other_control_routes(db, linked, monkeypatch):
+    monkeypatch.setattr(rc, "map_layer", lambda name: None)
+    assert json.loads(call_heatmap(db).body) == {"status": "no_map"}
+    monkeypatch.undo()
+    monkeypatch.setattr(settings, "demo_mode", True)
+    assert status_of(lambda: call_heatmap(db)) == 404
+
+
+def test_no_rows_is_a_missing_heatmap(db, linked):
+    body = json.loads(call_heatmap(db).body)
+    assert body["status"] == "missing" and body["sections"] == []
+
+
+def test_read_walk_reads_only_the_header():
+    data = cf.pack_data({"walk": WALK, "cells": 4}, {"states": b"s" * 100000, "coverage": b"", "control": b""})
+    assert views.read_walk(data) == WALK
 
 
 def test_pg_a_linked_page_offers_the_layer_only_on_a_map_that_has_it(pg, condensed, monkeypatch):
