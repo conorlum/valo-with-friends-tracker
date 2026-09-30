@@ -1,4 +1,5 @@
-{# The replay player. Context: `replay` with map_name and round_numbers, and `linked`. Unlinked
+{# The replay player. Context: `replay` with map_name and round_numbers, `linked`, and `control`
+   (the page's match.control: set when the map has the control layer). Unlinked
    (the standalone page) shows agents and side groups only; linked (the local preview route)
    adds names, the kill feed, the round scoreboard and the layer toggles. The page supplies the
    data and starts it. #}
@@ -42,7 +43,21 @@
         <label><input type="checkbox" data-replay-layer="abilities" checked> Abilities</label>
         <label><input type="checkbox" data-replay-layer="tracers" checked> Shot tracers</label>
         <label><input type="checkbox" data-replay-layer="cones" checked> View direction</label>
+        {% if control %}
+        <label><input type="checkbox" data-replay-layer="control"> Map control</label>
+        {% if not control.cover_reviewed %}<span class="replay-control-badge" title="This map's boxes and crates aren't tagged yet: sight passes through them, so control near them is too generous.">cover not reviewed</span>{% endif %}
+        <span class="replay-control-status" data-replay-control-status aria-live="polite"></span>
+        {% endif %}
       </fieldset>
+      {% if control %}
+      <p class="replay-legend replay-control-legend" data-replay-control-legend hidden>
+        <span class="replay-key replay-key-ctl-active">Held in a cone</span>
+        <span class="replay-key replay-key-ctl-safe">Safe (behind the lines)</span>
+        <span class="replay-key replay-key-ctl-passive">Seen (passive)</span>
+        <span class="replay-key replay-key-ctl-contested">Contested (both teams)</span>
+        <span class="replay-control-legend-note">Team colours as the players. Control is computed from true positions.</span>
+      </p>
+      {% endif %}
       {% endif %}
       <p class="replay-legend">
         {% if linked %}
@@ -70,6 +85,7 @@
         <button type="button" role="tab" class="replay-tab is-active" data-replay-tab="feed" aria-selected="true">Kill feed</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="util" aria-selected="false">Utility</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="analysis" aria-selected="false">Analysis</button>
+        {% if control %}<button type="button" role="tab" class="replay-tab" data-replay-tab="control" aria-selected="false">Control</button>{% endif %}
       </div>
       <div data-replay-panel="feed" role="tabpanel">
         <p class="replay-side-note">Impact: the killer's gain and the victim's loss from each kill (the leverage term of the live score).</p>
@@ -79,6 +95,16 @@
         <p class="replay-side-note">The round's man-advantage states, as the site's player pages count them. Click one to jump there.</p>
         <ol class="replay-feed" data-replay-analysis></ol>
       </div>
+      {% if control %}
+      <div data-replay-panel="control" role="tabpanel" hidden>
+        <div class="replay-control-switch" role="group" aria-label="Control table scope">
+          <button type="button" class="replay-button is-active" data-replay-control-scope="round" aria-pressed="true">This round</button>
+          <button type="button" class="replay-button" data-replay-control-scope="match" aria-pressed="false">Whole match</button>
+        </div>
+        <p class="replay-side-note">Average m² while alive, live round only. <strong>Control</strong>: what the team would lose if the player died (signed). <strong>Lost</strong>: what the team did lose at their death. <strong>Cover a/p</strong>: what they watched in their cone / passively, shared cells split evenly. Click a player to see their control on the map.</p>
+        <div class="replay-control-table" data-replay-control-table></div>
+      </div>
+      {% endif %}
       <div data-replay-panel="util" role="tabpanel" hidden>
         <p class="replay-side-note">Placed utility and flashes, by who used it. Click one to jump there.</p>
         <ol class="replay-feed" data-replay-util></ol>

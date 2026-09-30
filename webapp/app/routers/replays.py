@@ -14,6 +14,9 @@
   by a local command, scripts/compute_control.py; also a row in an older byte format), 422
   `failed`, and 404 `no_map` when the map has no control layer yet or `old_blob` when the replay
   predates condenser revision 10 (re-ingest or re-upload it). The page's `match.control` says the last up front.
+- `GET /replays/{match_uuid}/control/players.json`: the Control tab's numbers, per round and per
+  match, from the stored summaries (never the ticks), with an ETag over the rows and which are
+  stale; the same 404s (`no_map`, `old_blob`) as `control.bin`, and `unlinked`.
 - `GET /matches/{external_id}/replay`: a redirect to the page when the match has a linked,
   valid replay.
 - Stage 3, the friends-only upload (404 in demo mode and when no code or worker is configured):
@@ -36,7 +39,9 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.replay import ReplayUpload
+from app.replays import db as replay_db
 from app.services import replay_control as control_service
+from app.services import replay_control_views as control_views
 from app.services import replay_upload as uploads
 from app.services import replays as replay_service
 from app.services.matches import get_match_or_404
@@ -203,6 +208,36 @@ def replay_round_control(request: Request, match_uuid: str, round_number: int, d
                         {"X-Control-Stale": "1"} if answer.stale else None)
 
 
+def _control_replay_or_404(db: Session, match_uuid: str):
+    """The replay, when its map has the layer and its blob can have control; else a 404 that says why."""
+    replay = _replay_or_404(db, match_uuid)
+    if control_service.map_layer(replay.map_name) is None:
+        return replay, JSONResponse({"status": "no_map"}, status_code=404)
+    if control_service.blob_too_old(replay):
+        return replay, JSONResponse({"status": "old_blob"}, status_code=404)
+    if not replay_db.is_linked(replay):
+        # Sides and teams come from the link: an unlinked replay's tables and heatmap can't name them.
+        return replay, JSONResponse({"status": "unlinked"}, status_code=404)
+    return replay, None
+
+
+def _json_with_etag(request: Request, body: dict, etag: str) -> Response:
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if etag in [tag.strip() for tag in request.headers.get("if-none-match", "").split(",")]:
+        return Response(status_code=304, headers=headers)
+    return JSONResponse(body, headers=headers)
+
+
+@router.get("/replays/{match_uuid}/control/players.json")
+def replay_control_players(request: Request, match_uuid: str, db: Session = Depends(get_db)):
+    """Every round's per-player control table and the match's (app/services/replay_control_views.py)."""
+    replay, refused = _control_replay_or_404(db, match_uuid)
+    if refused is not None:
+        return refused
+    loaded = control_views.load_round_summaries(db, replay)
+    return _json_with_etag(request, control_views.player_tables(replay, loaded), loaded.etag)
+
+
 @router.get("/replays/{match_uuid}")
 def replay_page(request: Request, match_uuid: str, db: Session = Depends(get_db)):
     replay = _replay_or_404(db, match_uuid)
@@ -216,7 +251,8 @@ def replay_page(request: Request, match_uuid: str, db: Session = Depends(get_db)
                    "title_suffix": None, "linked": context["match"]["linked"],
                    "match_url": (f"/matches/{context['match']['external_id']}" if context["match"]["linked"] else None),
                    "reason": context["match"].get("reason")},
-        "linked": context["match"]["linked"], "replay_data": context, "start_round": start})
+        "linked": context["match"]["linked"], "replay_data": context, "start_round": start,
+        "control": context["match"]["control"] if context["match"]["linked"] else None})
 
 
 @router.get("/matches/{external_id}/replay")
