@@ -374,6 +374,8 @@ Handled one at a time, as they come up (Q45):
 - **Harbor's walls:** Harbor isn't in any archived replay, so his objects aren't parsed (`extras.py:691`).
 - **Breach and Astra concusses:** unproven in the exports.
 - **Fade's Prowler:** no pawn in the exports.
+- **Tejo's Stealth Drone and Deadlock's sensor:** neither appears in the archived replays, so their archetype
+  names are unknown and Stage 2 doesn't model them yet.
 
 ## Compute
 
@@ -549,10 +551,15 @@ Each stage is a PR, or a commit on this branch, with tests. A stage that changes
      round. The run found flash and nearsight rows carry the cast time, not the hit (see Inputs the blob lacks).
      Settled with the user: Q73 (boundary Safe) and Q75 (0.5 s plus event ticks, which also settles Q74).
 1. **Map geometry assets.**
-   - A script that builds each map's sight and traversal masks from alpha plus tags, specials, the uncertain badge
-     and visibility bitsets into `app/static/data/control/`.
+   - A script that builds each map's sight and traversal masks from alpha plus tags, specials and the uncertain
+     badge into `app/static/data/control/` (`scripts/build_control_geometry.py`; the hand inputs are its
+     `tags.json`, the summary its `index.json`).
+   - The visibility bitsets (about 11 MB a map) are **not committed** (settled 2026-09-29, R2): they are built on
+     demand into a gitignored local cache (`webapp/.control_cache/`), keyed by a hash of the masks and the build
+     parameters, so a changed mask or parameter rebuilds them.
    - Tests: known sight lines are clear; lines through a wall or a tagged cover shape are blocked; see-over shapes
      don't block.
+   - Implementation steps: `docs/map-control-stages-1-2-impl.md`.
 2. **Control engine.** `app/replays/control.py`: blob and link data in; per-tick states, per-section totals and
    per-player stats out.
    - Synthetic unit tests on toy grids, one or more per rule:

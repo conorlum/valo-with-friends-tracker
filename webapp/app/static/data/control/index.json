@@ -1,0 +1,194 @@
+{
+ "maps": {
+  "Abyss": {
+   "image_sha": "466a3d18f78c",
+   "sight_sha": "8342f6714685",
+   "walk_sha": "42d1d3f29a3c",
+   "walkable_cells": 6846,
+   "cell_m": 0.965,
+   "tags": 2,
+   "see_across_paint": true,
+   "cover_reviewed": false,
+   "specials": [],
+   "kill_lines": {
+    "qualifying": 200,
+    "blocked": 0,
+    "share": 0.0,
+    "passes": true
+   }
+  },
+  "Ascent": {
+   "image_sha": "287357fcfce2",
+   "sight_sha": "b94cdfc70064",
+   "walk_sha": "d2af707dfed7",
+   "walkable_cells": 5302,
+   "cell_m": 1.116,
+   "tags": 0,
+   "see_across_paint": false,
+   "cover_reviewed": false,
+   "specials": [],
+   "kill_lines": {
+    "qualifying": 476,
+    "blocked": 2,
+    "share": 0.0042,
+    "passes": true
+   }
+  },
+  "Bind": {
+   "image_sha": "84f5ff72aa58",
+   "sight_sha": "8e9f1fc13fec",
+   "walk_sha": "59c0154fc89d",
+   "walkable_cells": 4163,
+   "cell_m": 1.324,
+   "tags": 0,
+   "see_across_paint": false,
+   "cover_reviewed": false,
+   "specials": [],
+   "kill_lines": null
+  },
+  "Breeze": {
+   "image_sha": "82c6472afe6f",
+   "sight_sha": "a112074736d2",
+   "walk_sha": "439038d9b82b",
+   "walkable_cells": 6448,
+   "cell_m": 1.116,
+   "tags": 0,
+   "see_across_paint": false,
+   "cover_reviewed": false,
+   "specials": [],
+   "kill_lines": null
+  },
+  "Corrode": {
+   "image_sha": "9f9ed010f502",
+   "sight_sha": "546e46286858",
+   "walk_sha": "04aad81276ad",
+   "walkable_cells": 5744,
+   "cell_m": 1.116,
+   "tags": 0,
+   "see_across_paint": false,
+   "cover_reviewed": false,
+   "specials": [],
+   "kill_lines": null
+  },
+  "Fracture": {
+   "image_sha": "d41e013eca94",
+   "sight_sha": "c4d5aa47ca61",
+   "walk_sha": "61afa6aa6628",
+   "walkable_cells": 5671,
+   "cell_m": 1.002,
+   "tags": 0,
+   "see_across_paint": false,
+   "cover_reviewed": false,
+   "specials": [],
+   "kill_lines": null
+  },
+  "Haven": {
+   "image_sha": "f8ccc9cfffaf",
+   "sight_sha": "4b33f5f8746f",
+   "walk_sha": "456ddf172cf3",
+   "walkable_cells": 5837,
+   "cell_m": 1.042,
+   "tags": 0,
+   "see_across_paint": false,
+   "cover_reviewed": false,
+   "specials": [],
+   "kill_lines": {
+    "qualifying": 148,
+    "blocked": 0,
+    "share": 0.0,
+    "passes": true
+   }
+  },
+  "Icebox": {
+   "image_sha": "85b9cef26829",
+   "sight_sha": "748966afbe52",
+   "walk_sha": "87ebfd069462",
+   "walkable_cells": 6811,
+   "cell_m": 1.085,
+   "tags": 0,
+   "see_across_paint": false,
+   "cover_reviewed": false,
+   "specials": [],
+   "kill_lines": null
+  },
+  "Lotus": {
+   "image_sha": "d533af2a6fbc",
+   "sight_sha": "39a88a11dd2f",
+   "walk_sha": "1bbf00db2ac5",
+   "walkable_cells": 5643,
+   "cell_m": 1.085,
+   "tags": 0,
+   "see_across_paint": false,
+   "cover_reviewed": false,
+   "specials": [],
+   "kill_lines": null
+  },
+  "Pearl": {
+   "image_sha": "5e0e7d4a80d8",
+   "sight_sha": "68e221537cb1",
+   "walk_sha": "21d5594157a5",
+   "walkable_cells": 6664,
+   "cell_m": 1.002,
+   "tags": 0,
+   "see_across_paint": false,
+   "cover_reviewed": false,
+   "specials": [],
+   "kill_lines": null
+  },
+  "Split": {
+   "image_sha": "cc1022703536",
+   "sight_sha": "f6b62d344ccd",
+   "walk_sha": "87c9ddfd6702",
+   "walkable_cells": 5708,
+   "cell_m": 1.002,
+   "tags": 0,
+   "see_across_paint": false,
+   "cover_reviewed": false,
+   "specials": [],
+   "kill_lines": {
+    "qualifying": 275,
+    "blocked": 1,
+    "share": 0.0036,
+    "passes": true
+   }
+  },
+  "Summit": {
+   "image_sha": "e3ceb9a90958",
+   "sight_sha": "2b8c041fa4c9",
+   "walk_sha": "d08f3913fac4",
+   "walkable_cells": 6040,
+   "cell_m": 1.042,
+   "tags": 0,
+   "see_across_paint": false,
+   "cover_reviewed": false,
+   "specials": [],
+   "kill_lines": {
+    "qualifying": 297,
+    "blocked": 1,
+    "share": 0.0034,
+    "passes": true
+   }
+  },
+  "Sunset": {
+   "image_sha": "1188642e2f94",
+   "sight_sha": "bdc24f5921b1",
+   "walk_sha": "bcdbfd256bb6",
+   "walkable_cells": 6207,
+   "cell_m": 1.002,
+   "tags": 0,
+   "see_across_paint": false,
+   "cover_reviewed": false,
+   "specials": [],
+   "kill_lines": {
+    "qualifying": 204,
+    "blocked": 1,
+    "share": 0.0049,
+    "passes": true
+   }
+  }
+ },
+ "version": 1,
+ "geometry_version": 1,
+ "grid": 128,
+ "px": 1024
+}
