@@ -1891,3 +1891,6 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 @keyframes upload-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
 @media (prefers-reduced-motion: reduce) { .upload-progress progress:indeterminate { animation: none; background: var(--brand); opacity: 0.5; } }
 .upload-progress .page-meta { margin: 0.4rem 0 0; font-variant-numeric: tabular-nums; }
+
+/* /stats map control placeholder (map control Stage 7) */
+.map-control-soon { margin-left: 0.4rem; font-size: 0.72rem; vertical-align: middle; background: transparent; border: 1px solid var(--border-strong); color: var(--ink-secondary); }
