@@ -187,7 +187,7 @@ def _unstarted(session) -> int:
 def _submit(session, client, state: State, now: float, counts: dict) -> None:
     if len(state.in_flight) >= IN_FLIGHT or not _unstarted(session):
         return
-    # PROVISIONAL(D5): linked replays only; an upload waits for the crawl that links it.
+    # Linked replays only; an upload waits for the crawl that links it.
     todo = [p for p in replay_control.plan(session) if p.computable and p.reason == "missing"
             and (p.link or {}).get("linked")]
     todo.sort(key=lambda p: (-p.replay_id, p.round_number))
