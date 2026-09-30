@@ -131,6 +131,55 @@
     return s.cur;
   };
 
+  // What a side group knew at tick i (the optional `knew_a` / `knew_b` streams, R3.3): the true state
+  // with that tick's stored cells replaced; null when the row has no such stream. Each tick stands
+  // alone, so reading one only skips over the ticks since the nearest checkpoint.
+  Cursor.prototype.knew = function (name, i) {
+    var stream = this.p[name], cps = this.p.header.knew_checkpoints;
+    if (!stream || !cps) return null;
+    var col = name === "knew_a" ? 1 : 2;
+    var base = this.states(i), out = this.knewBuf || (this.knewBuf = new Uint8Array(this.p.cells));
+    out.set(base);
+    this.kn = this.kn || {};
+    var k = this.kn[name], best = 0;
+    for (var c = 0; c < cps.length && cps[c][0] <= i; c++) best = c;
+    if (!k || k.tick > i || cps[best][0] > k.tick) k = this.kn[name] = { tick: cps[best][0], pos: cps[best][col] };
+    var r, count, j;
+    while (k.tick < i) {
+      r = readVarint(stream, k.pos);
+      count = r[0];
+      var pos = r[1];
+      for (j = 0; j < count; j++) pos = readVarint(stream, pos)[1] + 1;
+      k.pos = pos;
+      k.tick += 1;
+    }
+    r = readVarint(stream, k.pos);
+    count = r[0];
+    var at = r[1], cell = -1;
+    for (j = 0; j < count; j++) {
+      r = readVarint(stream, at);
+      cell += r[0] + 1;
+      out[cell] = stream[r[1]];
+      at = r[1] + 1;
+    }
+    return out;
+  };
+
+  // Each enemy slot's sightings by a group ({slot: [[t0, t1, u, v], ...]}): the ones lost within
+  // `fade` seconds before t, as {slot, u, v, age} (a just-lost enemy's last-seen point).
+  function lostAt(sightings, t, fade) {
+    var out = [];
+    Object.keys(sightings || {}).forEach(function (slot) {
+      var runs = sightings[slot], now = null, last = null;
+      for (var i = 0; i < runs.length; i++) {
+        if (runs[i][0] <= t && t <= runs[i][1]) now = runs[i];
+        if (runs[i][1] < t) last = runs[i];
+      }
+      if (!now && last && t - last[1] <= fade) out.push({ slot: Number(slot), u: last[2], v: last[3], age: t - last[1] });
+    });
+    return out;
+  }
+
   // One slot's coverage or control mask at tick i (a Uint8Array of 0/1 over the walkable cells).
   Cursor.prototype.mask = function (name, slot, i) {
     var key = name + ":" + slot, m = this.mk[key], stream = this.p[name], cells = this.p.cells;
@@ -355,7 +404,7 @@
 
   var api = {
     STATE_NAMES: STATE_NAMES, GRID: GRID, SLOTS: SLOTS, readVarint: readVarint, parse: parse, walkCells: walkCells,
-    tickAt: tickAt, Cursor: Cursor, ControlCache: ControlCache, hexRgb: hexRgb, paintStates: paintStates, paintHighlight: paintHighlight,
+    tickAt: tickAt, Cursor: Cursor, ControlCache: ControlCache, lostAt: lostAt, hexRgb: hexRgb, paintStates: paintStates, paintHighlight: paintHighlight,
     groupTeams: groupTeams, base64Bytes: base64Bytes, paintHeatmap: paintHeatmap, cellIndex: cellIndex,
     HEAT_MAX_ALPHA: HEAT_MAX_ALPHA, LEVEL_ALPHA: LEVEL_ALPHA, CONTESTED_ALPHA: CONTESTED_ALPHA,
     STRIPE_PX: STRIPE_PX

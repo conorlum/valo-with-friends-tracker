@@ -9,7 +9,7 @@ import base64
 
 import numpy as np
 
-from app.control.engine import GRID_HZ, N_STATES, RoundControl
+from app.control.engine import GRID_HZ, KNEW_FADE_S, N_STATES, RoundControl
 from app.control.geometry import GRID
 from app.replays import control_format as cf
 
@@ -68,6 +68,19 @@ def encode_masks(masks: np.ndarray, checkpoints: list[int]) -> tuple[bytes, list
     return bytes(out), offsets
 
 
+def encode_knew(knew: np.ndarray, states: np.ndarray, checkpoints: list[int]) -> tuple[bytes, list[int]]:
+    """A team's picture, each tick as the cells where it differs from the true state then: a varint
+    count, then per cell a varint index gap and its code byte. Ticks stand alone; the offsets are
+    those of the checkpoint ticks, for seeking."""
+    out, offsets, full = bytearray(), [], set(checkpoints)
+    for i in range(len(states)):
+        if i in full:
+            offsets.append(len(out))
+        changed = np.flatnonzero(knew[i] != states[i])
+        _gaps(changed, out, knew[i][changed])
+    return bytes(out), offsets
+
+
 def _grid_units(t: float) -> int:
     return int(round(float(t) * GRID_HZ))
 
@@ -90,7 +103,18 @@ def encode_data(rc: RoundControl, blob: dict) -> bytes:
               "checkpoint_s": cf.CHECKPOINT_S,
               "checkpoints": [[t, a, b, c] for t, a, b, c in zip(checkpoints, s_off, v_off, c_off)],
               "states": list(cf.STATE_NAMES), "group_side": rc.group_side, "control_m2": control_m2}
-    return cf.pack_data(header, {"states": states, "coverage": coverage, "control": control})
+    streams = {"states": states, "coverage": coverage, "control": control}
+    if rc.knew_states:
+        # What each side group knew (R3.3): optional streams, so rows without them read as before.
+        offsets = {}
+        for group in ("A", "B"):
+            name = f"knew_{group.lower()}"
+            streams[name], offsets[name] = encode_knew(rc.knew_states[group], rc.states, checkpoints)
+        header["knew_checkpoints"] = [[t, a, b] for t, a, b in zip(checkpoints, offsets["knew_a"], offsets["knew_b"])]
+        header["knew"] = {group: {str(s): runs for s, runs in sorted(rc.knew_sightings[group].items())}
+                          for group in ("A", "B")}
+        header["knew_fade_s"] = KNEW_FADE_S
+    return cf.pack_data(header, streams)
 
 
 def encode_summary(rc: RoundControl, blob: dict) -> bytes:

@@ -104,6 +104,24 @@ def test_data_round_trips_every_tick(round_control):
     assert header["group_side"] == {"A": "attack", "B": "defense"}
 
 
+def test_what_each_team_knew_round_trips_as_optional_streams(round_control):
+    rc, data = round_control
+    header, streams = cf.unpack_data(encode_data(rc, data))
+    n_ticks, cells = len(rc.ticks), len(rc.walk_cells)
+    true = cf.decode_states(streams["states"], n_ticks, cells)
+    for group in ("A", "B"):
+        got = cf.decode_knew(streams[f"knew_{group.lower()}"], true)
+        assert np.array_equal(np.array(got), rc.knew_states[group]), group
+    assert [c[0] for c in header["knew_checkpoints"]] == [c[0] for c in header["checkpoints"]]
+    assert set(header["knew"]) == {"A", "B"} and header["knew_fade_s"] > 0
+    # a row computed without them has the three streams only, and reads the same
+    plain = ce.compute_round(data, door_hall(), ce.ControlLink(sides={0: "attack", 1: "attack", 5: "defense",
+                                                                         6: "defense"}), knowledge=False)
+    h2, s2 = cf.unpack_data(encode_data(plain, data))
+    assert set(s2) == {"states", "coverage", "control"} and "knew" not in h2
+    assert cf.decode_states(s2["states"], n_ticks, cells) == true
+
+
 def test_a_checkpoint_offset_lets_a_reader_start_there(round_control):
     rc, data = round_control
     header, streams = cf.unpack_data(encode_data(rc, data))

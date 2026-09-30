@@ -96,6 +96,37 @@ def test_the_js_decoder_seeks_in_any_order(stored):
     _check(stored, got, order, [1, 6])
 
 
+def test_the_js_decoder_reads_what_each_team_knew(stored):
+    _, streams = cf.unpack_data(gzip.compress(base64.b64decode(stored["raw"])))
+    expected = {name: cf.decode_knew(streams[name], stored["states"]) for name in ("knew_a", "knew_b")}
+    order = list(range(stored["ticks"]))
+    shuffled = order[:]
+    random.Random(3).shuffle(shuffled)
+    body = """
+      function run(p) {
+        const parsed = C.parse(C.base64Bytes(p.raw)), cur = new C.Cursor(parsed), out = {knew_a: {}, knew_b: {}};
+        for (const i of p.order) for (const name of ["knew_a", "knew_b"]) out[name][i] = Array.from(cur.knew(name, i));
+        out.none = cur.knew("knew_c", 0);
+        return out;
+      }"""
+    for seq in (order, shuffled):
+        got = run_node(body, {"raw": stored["raw"], "order": seq})
+        for name in ("knew_a", "knew_b"):
+            for i in seq:
+                assert got[name][str(i)] == expected[name][i], f"{name} tick {i}"
+        assert got["none"] is None
+
+
+def test_a_just_lost_enemy_is_placed_at_its_last_sighting_while_it_fades():
+    body = "function run(p) { return p.ts.map(t => C.lostAt(p.s, t, 3)); }"
+    sightings = {"5": [[1.0, 2.0, 100, 200], [6.0, 7.0, 300, 400]]}
+    got = run_node(body, {"s": sightings, "ts": [0.5, 1.5, 3.0, 5.5, 6.5, 9.0, 11.0]})
+    assert got[0] == [] and got[1] == []                          # before any sighting; seen now
+    assert got[2] == [{"slot": 5, "u": 100, "v": 200, "age": 1.0}]
+    assert got[3] == []                                           # faded (3.5 s after)
+    assert got[4] == [] and got[5] == [{"slot": 5, "u": 300, "v": 400, "age": 2.0}] and got[6] == []
+
+
 def test_a_wrong_magic_or_version_throws(stored):
     raw = bytearray(base64.b64decode(stored["raw"]))
     bad_magic, bad_version = bytearray(raw), bytearray(raw)
