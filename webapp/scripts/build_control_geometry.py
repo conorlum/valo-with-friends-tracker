@@ -54,13 +54,20 @@ def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path) -> di
     cg.write_mask_png(asset_dir / f"{name}.walk.png", m.walk)
     scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))[name]["xMultiplier"]
     geo = cg.geometry_from_masks(name, m.sight, m.walk, scale)
-    return {"image_sha": image_sha,
-            "sight_sha": hashlib.sha256(np.packbits(m.sight).tobytes()).hexdigest()[:12],
-            "walk_sha": hashlib.sha256(np.packbits(m.walk).tobytes()).hexdigest()[:12],
-            "walkable_cells": int(geo.walk.sum()), "cell_m": round(geo.cell_m, 3),
-            "tags": len(entry.get("tags") or []), "see_across_paint": bool(entry.get("see_across_paint")),
-            "cover_reviewed": bool(entry.get("cover_reviewed")), "specials": entry.get("specials") or [],
-            "kill_lines": kill_line_result(m.sight, lines) if lines else None}
+    row = {"image_sha": image_sha,
+           "sight_sha": hashlib.sha256(np.packbits(m.sight).tobytes()).hexdigest()[:12],
+           "walk_sha": hashlib.sha256(np.packbits(m.walk).tobytes()).hexdigest()[:12],
+           "walkable_cells": int(geo.walk.sum()), "cell_m": round(geo.cell_m, 3),
+           "tags": len(entry.get("tags") or []), "see_across_paint": bool(entry.get("see_across_paint")),
+           "cover_reviewed": bool(entry.get("cover_reviewed")), "specials": entry.get("specials") or [],
+           "kill_lines": kill_line_result(m.sight, lines) if lines else None}
+    # The Stage 6 paints, only when a map has any (so earlier entries stay as they were).
+    paints = [key for key in ("cover_paint", "cant_walk_paint", "uncertain_paint") if entry.get(key)]
+    if paints:
+        row["paints"] = paints
+    if entry.get("uncertain_paint"):
+        row["uncertain_px"] = int(cg.unpack_paint(entry["uncertain_paint"]).sum())
+    return row
 
 
 def main() -> None:
