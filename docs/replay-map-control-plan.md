@@ -1,6 +1,6 @@
 # Replay map control: plan
 
-Status: design settled with the user (grilling, 2026-09-29, Q1–Q72). Q53–Q68 come from the second review round,
+Status: design settled with the user (grilling, 2026-09-29, Q1–Q72; Q73–Q75 after Stage 0b). Q53–Q68 come from the second review round,
 which also dropped the outline sight mask, the deeper-line rule and the three-way concuss classifier. No code yet.
 Branch `map-control`, worktree `../vwft-map-control`. Several rules are a first draft that the user will judge "in
 action" (Stage 4).
@@ -168,9 +168,8 @@ within about 3 ms:
 
 No thresholds are needed.
 
-**Brief events (Q58).** Control is sampled at 16 Hz. An event shorter than a tick (a 30 ms flash) is snapped to
-the nearest tick and counts as one tick. Against a 10 s heatmap section that is at most 0.6%, so no event-boundary
-recompute.
+**Brief events (Q58, revised by Q75).** A status's start and end are control ticks themselves (snapped to the
+16 Hz grid), so a brief flash gets its own tick and is weighted by its real length.
 
 **The cells a holder lost (Q55).** Loss is judged for the **team**. A cell a teammate or utility still covers
 stays as it was. A cell the team really lost goes to the enemy if the enemy now watches it. Otherwise it is
@@ -237,9 +236,9 @@ The plan's examples:
 control. It is split by level (active, safe or passive) and by where the space went: to the enemy, to contested or
 to nobody.
 
-**Rate.** The user wants the counterfactual **every tick**. It is built for 16 Hz with the incremental
-counterfactual (see [Compute](#compute)). If Stage 0b measures it at more than about 2x the base engine, it falls
-back to 2 Hz (Q69). Lost control is always exact at real deaths.
+**Rate.** The counterfactual runs on every control tick (Q75: every 0.5 s plus event ticks), with the
+incremental method (see [Compute](#compute)). Stage 0b measured it at 0.22–0.74x the base engine. Lost control is
+always exact at real deaths, which are event ticks.
 
 ### Coverage: what the player watched (Q60)
 
@@ -333,7 +332,8 @@ The model runs on a grid over the square minimap (the replay's `u`/`v` space, 0.
 ### Recording rate
 
 `blob.hz` is **125**, not 16 (`condense.py:673,1110`); the "16" in `format.py:5` is only an example. Control is
-computed and stored at **16 Hz**, subsampled from the 125 Hz tracks (Q36).
+computed and stored on the Q75 schedule (every 0.5 s plus event ticks on the 16 Hz grid), sampled from the 125 Hz
+tracks. This replaces Q36's 16 Hz.
 
 ### Inputs the blob lacks
 
@@ -377,7 +377,7 @@ Handled one at a time, as they come up (Q45):
 
 ## Compute
 
-### Per tick, at 16 Hz
+### Per control tick (Q75: every 0.5 s plus event ticks)
 
 For each team T against enemy team E:
 
@@ -388,32 +388,24 @@ For each team T against enemy team E:
 4. **Safe space.** E's free space by flood fill, then Safe(T) from the visibility bitsets, with smokes and walls.
 5. **Contest and loss rules**, cells both teams claim, and the entry's way back.
 6. **One state per walkable cell.**
-7. **Per player:** coverage (shared cells split evenly) every tick, and control by counterfactual at the rate the
-   user picks.
+7. **Per player:** coverage (shared cells split evenly) and control by counterfactual, on every control tick.
 
 ### Cost
 
-Estimates, not measurements, on one CPU core and without smokes:
+Measured in Stage 0b, one core, walls only, boundary Safe (Q73):
 
-- **Base:** about 8 ms per team per tick for the flood fill plus the bitset OR at 128, and 15–40 ms for vision (a
-  naive numpy raycast of 10 full views measured about 40 ms). That is 51–166 s per 100 s round at 16 Hz.
-- **Counterfactual, full recompute:** 10 players × 2 fills (both teams) ≈ 160 ms per tick; the vision is reused.
-
-| Counterfactual rate | Per round | All 10 replays (~230 rounds) |
-|---|---|---|
-| 16 Hz | 5–7 min | about 20–27 h |
-| 2 Hz (the rest at 16 Hz) | 1.4–3.3 min | about 5–13 h |
-| 1 Hz | 1.1–3 min | about 4–12 h |
-
-- Rounds are independent, so this parallelises: on 8 cores the full set is about 3 h at 16 Hz, one new replay
-  about 20 minutes.
-- **Incremental counterfactual.** Keep a per-cell watcher count and, per player, the cells only they watch. If
-  those don't touch E's free-space frontier, T's fill is unchanged; if the player shares a fill component with a
-  teammate, E's fill is unchanged; otherwise extend the base fill from its frontier and OR only the newly free
-  cells. Most players on most ticks then cost little. Opening a key choke or removing a last seed can still need a
-  full fill, so Stage 0 times the worst cases too.
-- **Smokes** are likely the largest cost: the OR of free-space rows can't subtract a smoke, so the pairs crossing
-  a smoke need rechecking (about 17M pair checks per smoked tick, naively).
+- **Per tick:** vision (raycast, 10 views) 60–90 ms, base (fills, Safe with smokes, contests) 50–90 ms, the
+  incremental counterfactual 45–95 ms (0.47–0.74x the base; a full recompute is 2.3–4.3x).
+- **Per round**, at 3.2 ticks a second (Q75): about 45 s for an average 70 s round. The ~230 rounds of the ten
+  replays take about 3 core-hours, about 20 minutes on 8 cores; one new replay takes a couple of minutes.
+- **Incremental counterfactual.** Removing player p: the enemy's fill is kept when the cells only p watched don't
+  touch it, else relabelled and its sight extended from the newly free boundary cells. p's own fill drops p's
+  component unless a teammate shares it. **Exception:** if p stood inside enemy vision, their forced-open cell may
+  have bridged the fill, so it is recomputed (0b found this bug). It matched the full recompute on 95–98.5% of
+  player-ticks; the rest differ by at most ~100 cells, from sight the incremental method keeps from cells that
+  stopped being on the boundary.
+- **Smokes:** seen-from checks each boundary cell's sight to each target against every active smoke's disc
+  (segment-disc test), only for targets the static rows say it sees.
 - **Tuning.** A `CONTROL_REVISION` bump recomputes everything. Stage 4 tunes on a handful of rounds the user
   knows, and recomputes the full set only when a rule settles.
 
@@ -437,10 +429,11 @@ A separate table, `replay_round_control`, keeps the round blobs inside their 70 
 - **Fingerprint.** Each row fingerprints its inputs: the blob recipe, the link data (sides, DB-only deaths), the
   geometry and its tags, the parameters and `CONTROL_REVISION`. A mismatch means recompute.
 - **Deletes.** `ON DELETE CASCADE` from the replay, plus an explicit delete in `store.py:_delete`.
-- **`data`.** gzip of the per-tick states at 16 Hz. Ticks after the first are stored as changes only, with **seek
-  checkpoints**. The user accepts about 150–400 KB per round (Q36).
-- **Per-player masks.** Each player's control cells (at the counterfactual rate) and coverage cells, for the
-  click-to-highlight, with their own checkpoints. They count toward the 150–400 KB.
+- **`data`.** gzip of the states on the control ticks (Q75), with each tick's time. Ticks after a checkpoint are
+  stored as changed cells only (varint index gap, then the 4-bit code); a full frame every ~2.5 s is a **seek
+  checkpoint**. The user accepts about 150–400 KB per round (Q36); 0b measured ~190 KB for an average round.
+- **Per-player masks.** Each player's control cells and coverage cells on the same ticks, for the
+  click-to-highlight: a bitmask at each checkpoint, then flipped cells. They are in the ~190 KB.
 - **Per round, also stored.** Per-cell time totals by state, per heatmap time section and side, and the
   per-player stats, so heatmaps and tables never replay the ticks.
 
@@ -475,6 +468,24 @@ A separate table, `replay_round_control`, keeps the round blobs inside their 70 
    per-smoke shadows.
 3. **Utility after its owner dies (Q71).** The user is sure: everything placed dies with its owner. Only
    throwables already in flight still pop. Stage 0a confirms it in the exports as a data check, not a decision.
+
+## Settled after Stage 0b (Q73–Q75)
+
+1. **Where Safe is seen from (Q73).** From the whole boundary of the enemy's free space: every free cell next to
+   anything not free (the team's vision, walls, other pockets), smoke-aware. It replaces Q70's frontier, which missed
+   up to 2.6% of cells because sight also leaves the free space across wall corners (Q72's tolerance). The boundary
+   stayed under 1% of the exact recheck on every sampled tick (max 0.85%). The cheap way: see from the frontier
+   first, then recheck from the rest of the boundary only the targets it missed.
+2. **When control is computed (Q75, which also settles Q74).** Not every 16 Hz tick. Every 0.5 s, plus a tick at
+   each event, snapped to the 16 Hz grid:
+   - each death;
+   - each ability's placement, throw and end, each flash or nearsight (at the hit once the blob carries it), and each
+     status or reveal's start and end;
+   - shots, at most one tick per 0.25 s window.
+   On the three 0b replays that is 3.2 ticks a second (20% of 16 Hz). States, per-player masks and per-player
+   numbers all use the same ticks: about 275 KB per 100 s, ~190 KB for an average round, and about 45 core-seconds
+   per average round. Integrals (m²·s, heatmap sections) weight each tick by the time to the next one. The viewer
+   holds the last state, so the layer's cones can trail a fast turn by up to 0.5 s; the user judges that in Stage 4.
 
 ## Open items
 
@@ -533,9 +544,10 @@ Each stage is a PR, or a commit on this branch, with tests. A stage that changes
      rounds (Ascent r4 at 16 Hz, Ascent r23 and Summit r19 at 4 Hz), walls only. The incremental counterfactual
      costs 0.22–0.74x the base, so 16 Hz holds (Q69); the full recompute is 1.0–4.3x. About 3.5 core-minutes for an
      average round. The Q70 frontier misses up to 2.6% of cells (sight leaves the free space across wall corners
-     too); seeing from the fill's whole boundary stays under 1% (open: Q73). Everything at 16 Hz is ~610 KB per
-     100 s; states at 16 Hz with highlight masks at 2 Hz is ~390 KB (open: Q74). Browser decode is tens of ms per
+     too); seeing from the fill's whole boundary stays under 1% (Q73). Everything at 16 Hz is ~610 KB per
+     100 s; on Q75's schedule it is ~275 KB per 100 s. Browser decode is tens of ms per
      round. The run found flash and nearsight rows carry the cast time, not the hit (see Inputs the blob lacks).
+     Settled with the user: Q73 (boundary Safe) and Q75 (0.5 s plus event ticks, which also settles Q74).
 1. **Map geometry assets.**
    - A script that builds each map's sight and traversal masks from alpha plus tags, specials, the uncertain badge
      and visibility bitsets into `app/static/data/control/`.
