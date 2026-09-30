@@ -7,6 +7,13 @@
   (`Content-Encoding: gzip`), with `ETag` = the first 16 hex of their sha256 and
   `Cache-Control: private, no-cache`, so a replacement is seen at once and an unchanged round
   is a cheap 304.
+- `GET /replays/{match_uuid}/{n}/control.bin`: the round's stored map control
+  (docs/replay-map-control-plan.md, "Delivery"; app/replays/control_format.py), with the same
+  gzip, ETag and caching, plus `X-Control-Stale: 1` when its inputs have changed since it was
+  computed. Otherwise JSON `{"status": ...}`: 202 `not_ready` (with `Retry-After`; it is computed
+  by a local command, scripts/compute_control.py; also a row in an older byte format), 422
+  `failed`, and 404 `no_map` when the map has no control layer yet or `old_blob` when the replay
+  predates condenser revision 10 (re-ingest or re-upload it). The page's `match.control` says the last up front.
 - `GET /matches/{external_id}/replay`: a redirect to the page when the match has a linked,
   valid replay.
 - Stage 3, the friends-only upload (404 in demo mode and when no code or worker is configured):
@@ -29,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.replay import ReplayUpload
+from app.services import replay_control as control_service
 from app.services import replay_upload as uploads
 from app.services import replays as replay_service
 from app.services.matches import get_match_or_404
@@ -163,11 +171,36 @@ def replay_round(request: Request, match_uuid: str, round_number: int, db: Sessi
     data = replay_service.round_blob(db, replay, round_number)
     if data is None:
         raise HTTPException(status_code=404)
+    return _stored_gzip(request, data, "application/json")
+
+
+def _stored_gzip(request: Request, data: bytes, media_type: str, headers: dict | None = None) -> Response:
+    """Stored gzip bytes as they are, with an ETag of their sha256 and a 304 for a match."""
     etag = etag_of(data)
-    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache", **(headers or {})}
     if etag in [tag.strip() for tag in request.headers.get("if-none-match", "").split(",")]:
         return Response(status_code=304, headers=headers)
-    return Response(content=data, media_type="application/json", headers={**headers, "Content-Encoding": "gzip"})
+    return Response(content=data, media_type=media_type, headers={**headers, "Content-Encoding": "gzip"})
+
+
+CONTROL_RETRY_AFTER_S = 600
+
+
+@router.get("/replays/{match_uuid}/{round_number}/control.bin")
+def replay_round_control(request: Request, match_uuid: str, round_number: int, db: Session = Depends(get_db)):
+    replay = _replay_or_404(db, match_uuid)
+    if not 1 <= round_number <= replay.round_count:
+        raise HTTPException(status_code=404)
+    answer = control_service.round_control(db, replay, round_number)
+    if answer.status in ("no_map", "old_blob"):
+        return JSONResponse({"status": answer.status}, status_code=404)
+    if answer.status == "not_ready":
+        return JSONResponse({"status": "not_ready"}, status_code=202,
+                            headers={"Retry-After": str(CONTROL_RETRY_AFTER_S), "Cache-Control": "no-store"})
+    if answer.status == "failed":
+        return JSONResponse({"status": "failed"}, status_code=422, headers={"Cache-Control": "no-store"})
+    return _stored_gzip(request, answer.row.data, "application/octet-stream",
+                        {"X-Control-Stale": "1"} if answer.stale else None)
 
 
 @router.get("/replays/{match_uuid}")

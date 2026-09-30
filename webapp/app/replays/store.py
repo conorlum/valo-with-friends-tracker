@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from sqlalchemy import insert, text
 
 from app.config import settings
-from app.models.replay import Replay, ReplayPlayer, ReplayRound
+from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundControl
 from app.replays import db as replay_db
 from app.replays import format as fmt
 from app.replays.condense import CondensedReplay
@@ -70,6 +70,8 @@ def _insert(session, condensed: CondensedReplay, source: str) -> Replay:
 
 
 def _delete(session, row: Replay) -> None:
+    # Map control first: its rows reference the rounds (migration 0014 cascades too; SQLite tests do not).
+    session.query(ReplayRoundControl).filter(ReplayRoundControl.replay_id == row.id).delete(synchronize_session=False)
     session.query(ReplayRound).filter(ReplayRound.replay_id == row.id).delete(synchronize_session=False)
     session.query(ReplayPlayer).filter(ReplayPlayer.replay_id == row.id).delete(synchronize_session=False)
     session.delete(row)

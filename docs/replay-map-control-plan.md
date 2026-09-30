@@ -591,6 +591,36 @@ Each stage is a PR, or a commit on this branch, with tests. A stage that changes
    - The control command, local and uploaded replays, recomputing rows whose fingerprint is stale.
    - The control endpoint.
    - The user runs it on prod; Claude verifies it read-only.
+   - **Settled with the user (2026-09-30), and built:**
+     - **Rows.** One per round (migration 0014), keyed and cascaded on `replay_rounds`; `status` `ok` or
+       `failed`; `data` (the served bytes), `summary` (gzip JSON: per-section totals and per-player stats),
+       `fingerprint`, `error`, `computed_at`. Formats in `app/replays/control_format.py` (stdlib only).
+     - **Heatmap totals** are sparse per state (`none` is the rest), in whole 1/16 s: the same numbers the
+       ticks integrate, in a varint each. If a round's summary passes ~100 KB, back to the user.
+     - **Freshness.** The fingerprint covers `CONTROL_REVISION`, the formats, the blob's recipe and source,
+       the link (each slot's side that round, DB-only deaths on the replay clock) and the map's mask
+       hashes and specials. `CONTROL_REVISION` moved to `control_format.py` so the web app can judge
+       staleness without numpy; a test pins the engine's and geometry's constants to it. Blobs before
+       condenser revision 10 are refused (`old_blob`), not computed with placeholders.
+     - **Endpoint** `GET /replays/{uuid}/{n}/control.bin`: the bytes with gzip, ETag and 304 like
+       `{n}.json`; a stale row is still served, with `X-Control-Stale: 1` (tuning bumps the revision
+       often; a blank layer until a 3-hour recompute would be worse). Otherwise JSON `status`: 202
+       `not_ready` with `Retry-After` (also a row in an older byte format, `data_version`, which
+       a current viewer can't decode), 422 `failed`, 404 `no_map` or `old_blob`. The replay page's `match.control`
+       says up front whether the map has the layer, so the viewer hides the toggle instead.
+     - **A failed round** is stored as `failed` with its error, and skipped by later runs until its
+       inputs change (a fix bumps the revision) or `--retry-failed`.
+     - **A map without the layer** (`no_map`): its rounds are listed, never computed. The user uploads
+       each new map's first replay themselves.
+     - **The command** `scripts/compute_control.py` through `with_friends_db.py`: commits per round, so a
+       stop resumes; flushed progress with an ETA; workers up to cores - 1, keeping 4 GB free, each round
+       started only while free RAM covers the headroom plus a worker's measured peak (games share the
+       machine). Run in a normal terminal, not `!` (30-minute background limit).
+     - **Nudges**, not automation: `reingest_replays.py` and `refresh_replays.ps1` print one line when
+       rounds need control.
+     - **Later, its own stage after Stage 4:** uploads get control on Render by reusing the replay worker
+       (4 CPU / 8 GB, idle between parses, credential-free): the web app queues rounds, the worker returns
+       bytes, uploads keep priority. Full recomputes after a revision bump stay local.
 4. **Replay layer and player table.**
    - The toggle, the fetch, the drawing, the "control not ready" state and the "cover not reviewed" badge.
    - The per-player table and click-to-highlight.

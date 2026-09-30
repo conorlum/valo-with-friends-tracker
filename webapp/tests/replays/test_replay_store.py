@@ -23,14 +23,14 @@ from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models import KillEvent, Match, MatchPlayer, Player, Round  # noqa: E402
 from app.models.match import MatchSource, Team  # noqa: E402
-from app.models.replay import Replay, ReplayPlayer, ReplayRound  # noqa: E402
+from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundControl  # noqa: E402
 from app.replays import condense as cd  # noqa: E402
 from app.replays import db as replay_db  # noqa: E402
 from app.replays import format as fmt  # noqa: E402
 from app.replays import store  # noqa: E402
 
 TABLES = [Player.__table__, Match.__table__, MatchPlayer.__table__, Round.__table__, KillEvent.__table__,
-          Replay.__table__, ReplayRound.__table__, ReplayPlayer.__table__]
+          Replay.__table__, ReplayRound.__table__, ReplayRoundControl.__table__, ReplayPlayer.__table__]
 
 
 @pytest.fixture(scope="module")
