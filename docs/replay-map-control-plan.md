@@ -1,6 +1,6 @@
 # Replay map control: plan
 
-Status: design settled with the user (grilling, 2026-09-29, Q1–Q71). Q53–Q68 come from the second review round,
+Status: design settled with the user (grilling, 2026-09-29, Q1–Q72). Q53–Q68 come from the second review round,
 which also dropped the outline sight mask, the deeper-line rule and the three-way concuss classifier. No code yet.
 Branch `map-control`, worktree `../vwft-map-control`. Several rules are a first draft that the user will judge "in
 action" (Stage 4).
@@ -56,6 +56,10 @@ Control is about vision, not about who can get somewhere first.
 
 - **Walls** come from the minimap's alpha channel, and **cover** from hand-tagged shapes on top of it (see
   [Map geometry](#map-geometry)). Both are 2D only: no elevation.
+- **Corner tolerance (Q72).** Sight runs between bodies, not centre points. A line that crosses less than about
+  **0.3 m** of wall or cover in total (half a player's width, a tunable constant) counts as clear. A peek shows part
+  of the body past a corner while its centre is still behind it; in Stage 0a the only two blocked non-wallbang kills
+  on flat ground clipped a corner by one pixel (about 14 cm).
 - Smokes block sight into and through them.
   - Most smokes are **hollow**: a player inside sees out to the smoke's edge from the inside, and nobody sees in
     from outside.
@@ -508,6 +512,13 @@ Each stage is a PR, or a commit on this branch, with tests. A stage that changes
    - Whether trips, the turret and the camera stay active after their owner dies.
    - How often a replay's side is null.
    - **Gate:** the user reviews the geometry report before 0b.
+   - **Done 2026-09-29.** Tooling in `webapp/scripts/control_feasibility/`; tags in its `control-tags.json`. All six
+     maps with replays pass on walls: Haven 0%, Summit 0.3%, Ascent 0.4%, Split 0.4%, Sunset 0.5%. Abyss passes at
+     0% with the user's see-across tags and edge paint, cleaned by `clean_paint.py`. What's left blocked is two
+     corner peeks (hence Q72) and three shots over an edge from 1.8–4 m higher or lower (the known 2D limit).
+     Placed utility stays in the replay after its owner dies, but Cypher's trips applied nothing after his death
+     (51 statuses while alive, 0 after), which fits Q71. No null sides in 1,370 player-rounds. Early timing: the full
+     counterfactual costs 1.4–2.1x the base engine per tick, without smokes.
 0b. **Engine feasibility.** No product code.
    - A full per-tick prototype on one real round: safe space with smokes, the contest rules, the entry's way back,
      coverage and the counterfactual.
