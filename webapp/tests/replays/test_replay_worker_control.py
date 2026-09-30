@@ -198,6 +198,26 @@ def test_settings_from_the_environment():
     assert server.Settings.from_env({}).control_workers == 2      # never the core count
 
 
+def test_the_image_builds_a_control_venv_with_the_web_apps_pins():
+    """No Docker here (the first build is Render's), so the Dockerfile is checked as text."""
+    import re
+
+    dockerfile = (REPO / "replay_worker" / "Dockerfile").read_text(encoding="utf-8")
+    pins = dict(re.findall(r"^(numpy|scipy|Pillow)==(\S+)$", (REPO / "webapp" / "requirements.txt")
+                           .read_text(encoding="utf-8"), re.M))
+    assert set(pins) == {"numpy", "scipy", "Pillow"}
+    install = re.search(r"/opt/control-venv/bin/pip install ([^\n]+)", dockerfile).group(1)
+    assert "--only-binary=:all:" in install
+    assert sorted(re.findall(r"(numpy|scipy|Pillow)==(\S+)", install)) == sorted(pins.items())
+    assert "python3-venv" in dockerfile and "COPY webapp/app/control /srv/webapp/app/control" in dockerfile
+    assert re.search(r'RUN PYTHONPATH=\S+ /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine',
+                     dockerfile)
+    assert "REPLAY_CONTROL_CMD='[\"/opt/control-venv/bin/python\", \"-m\", \"replay_worker.control_job\"]'" in dockerfile
+    assert "CONTROL_CACHE_DIR=/jobs/control_cache" in dockerfile and "chown -R worker /jobs" in dockerfile
+    # the server itself still runs on the system python3, without the venv
+    assert dockerfile.rstrip().endswith('CMD ["python3", "-m", "replay_worker.server"]')
+
+
 def test_the_child_returns_the_tasks_bytes_in_base64(monkeypatch):
     from control_toys import blob, open_hall
 

@@ -157,6 +157,13 @@ sections above where they differ.
 - The memory cap counts address space: a hit is an infra failure (retried up to 3 times), and the in-process
   control_job test also runs under the cap on Linux (skipped on Windows).
 
+### What step 5 found
+
+`pip download --only-binary=:all:` for Linux x86-64: numpy 2.4.6, scipy 1.18.1 and Pillow 10.4.0 all have wheels
+for Python 3.12 and 3.13, but **scipy 1.18.1 has none for 3.11**. So the build works if the .NET 10 runtime image's
+`python3` is 3.12 or newer (Ubuntu 24.04's is 3.12) and fails at the pip step, loudly, if it is 3.11 (Debian 12).
+If that happens, pin scipy for the worker only to 1.17.1 (the newest with 3.11 wheels): control is display-only.
+
 ## User-only steps (tier 3)
 
 1. Merge; Render builds the new worker image (its first with numpy, scipy and Pillow). Check its build log for the

@@ -1,6 +1,8 @@
 """Computes and stores map control for every replay round that has none, or whose inputs changed
 (docs/replay-map-control-plan.md, "Where it runs"; Stage 3). A local command: never part of the
-upload job, and the web app never runs the engine.
+upload job, and the web app never runs the engine. New rounds of linked replays can also be computed
+on the replay worker (docs/map-control-worker-plan.md, off unless REPLAY_CONTROL_REMOTE is set);
+stale rounds are always this command's.
 
     .\\.venv313\\Scripts\\python.exe scripts\\with_friends_db.py --expect-database valowithfriendsdb --read-only scripts\\compute_control.py --dry-run
     .\\.venv313\\Scripts\\python.exe scripts\\with_friends_db.py --expect-database valowithfriendsdb scripts\\compute_control.py
