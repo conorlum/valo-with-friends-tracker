@@ -1742,7 +1742,7 @@
     box.innerHTML = (rows.stale ? '<p class="replay-side-note">Computed from older inputs; it will be refreshed.</p>' : "") +
       ["team-1", "team-2"].map(function (team) {
         var body = rows[team].map(function (r) {
-          // PROVISIONAL(D2): the stored share, shown even past 100% (the tooltip says why).
+          // The stored share, shown even past 100% (the tooltip says why).
           var lost = r.lost ? Math.round(r.lost.m2) + (typeof r.lost.share === "number"
             ? ' <span class="replay-control-share">' + Math.round(100 * r.lost.share) + "%</span>" : "") : "—";
           var nowValue = now ? now[r.slot] : undefined;
