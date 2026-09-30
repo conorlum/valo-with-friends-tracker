@@ -35,7 +35,8 @@
             return r.arrayBuffer().then(function (buffer) { return { status: "ok", buffer: buffer, stale: stale }; });
           });
         },
-        loadControlPlayers: function () { return json("/replays/" + match.uuid + "/control/players.json"); }{% endif %}
+        loadControlPlayers: function () { return json("/replays/" + match.uuid + "/control/players.json"); },
+        loadHeatmap: function (view) { return json("/replays/" + match.uuid + "/control/heatmap.json?view=" + view); }{% endif %}
       });
       window.viewerReady = window.viewer.showRound({{ start_round }});
     });
