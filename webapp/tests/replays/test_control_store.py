@@ -306,13 +306,25 @@ def test_the_page_says_up_front_whether_the_map_has_the_layer(db, condensed, mon
 # ---------------------------------------------------------------- the command's pieces
 
 
-def test_worker_count_leaves_a_core_and_the_headroom():
-    gb = compute_control.GB
-    assert compute_control.worker_count(None, 8, None, 4 * gb, gb) == 7
-    assert compute_control.worker_count(None, 8, 10 * gb, 4 * gb, 1.5 * gb) == 4
-    assert compute_control.worker_count(None, 8, 3 * gb, 4 * gb, gb) == 1, "always at least one"
-    assert compute_control.worker_count(2, 8, 64 * gb, 4 * gb, gb) == 2
-    assert compute_control.worker_count(None, 1, 64 * gb, 4 * gb, gb) == 1
+def test_the_pool_leaves_a_core_and_memory_never_sizes_it():
+    # Memory decides how many run at once (room_for_one), with the measured peak; sizing the pool
+    # from a startup guess once held a 12-core run to 8 workers for its whole length.
+    assert compute_control.worker_count(None, 12) == 11
+    assert compute_control.worker_count(2, 12) == 2
+    assert compute_control.worker_count(None, 1) == 1, "always at least one"
+
+
+def test_the_eta_leaves_out_the_solo_first_round_and_follows_the_recent_pace():
+    eta = compute_control.eta_seconds
+    assert eta([], 10) is None and eta([184.0], 10) is None
+    assert eta([184.0, 200.0], 10) is None, "one parallel finish gives no rate yet"
+    # After a 184 s solo first round, rounds finish every 10 s: 10 left is 100 s, not
+    # (elapsed / done) * left, which the solo round would inflate.
+    assert eta([184.0, 200.0, 210.0, 220.0], 10) == pytest.approx(100.0)
+    # Only the last ETA_WINDOW finishes count: a slow stretch (60 s apart) then a fast one (5 s).
+    slow = [184.0 + 60 * i for i in range(1, 30)]
+    fast = [slow[-1] + 5 * i for i in range(1, compute_control.ETA_WINDOW + 2)]
+    assert eta([184.0, *slow, *fast], 4) == pytest.approx(20.0)
 
 
 def test_rounds_just_started_count_against_the_headroom():

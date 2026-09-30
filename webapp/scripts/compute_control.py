@@ -16,10 +16,13 @@ minutes in the background). About 45 core-seconds per average round.
   listed, never computed. `--match <uuid>` and `--round <n>` (repeatable) narrow the set.
 - **Stops safely.** Each round is committed as it finishes, so stopping and rerunning resumes.
   A round the engine raises on is stored as `failed` with its error (the endpoint says so).
-- **Workers.** At most one per core but one, keeping `--headroom-gb` (default 4) of RAM free for
-  whatever else is running. The first round measures a worker's peak memory; after that a round
-  starts only while free RAM covers the headroom plus that peak, so a game that starts mid-run
-  slows it down instead of crashing it. `--workers N` sets the most at once.
+- **Workers.** A pool of one per core but one (`--workers N` sets it), keeping `--headroom-gb`
+  (default 4) of RAM free for whatever else is running. The first round runs alone and measures a
+  worker's peak memory; after that a round starts only while free RAM covers the headroom plus
+  that peak (and the peaks of rounds just started), so a game that starts mid-run slows it down
+  instead of crashing it, and it speeds up again when the game ends.
+- **ETA** from the last 20 rounds' finish times, not counting the first (solo) round, so it
+  follows the current map's pace (an Abyss round takes about twice an Ascent one).
 - Each map's visibility bitsets are built (or loaded from `webapp/.control_cache/`) once, before
   the workers start.
 
@@ -108,12 +111,23 @@ def room_for_one(free: int | None, headroom: int, peak: float, young: int) -> bo
     return free is None or free - headroom - young * peak >= peak
 
 
-def worker_count(requested: int | None, cores: int, free: int | None, headroom: int, peak: float) -> int:
-    """At most `requested` (else cores - 1), and no more than the free RAM above the headroom holds."""
-    most = requested or max(1, cores - 1)
-    if free is None:
-        return most
-    return max(1, min(most, int((free - headroom) // peak)))
+def worker_count(requested: int | None, cores: int) -> int:
+    """The pool: `requested`, else one per core but one. Memory never sizes it (a startup guess
+    would fix the pool too small for the whole run); `room_for_one` decides how many run at once."""
+    return max(1, requested or cores - 1)
+
+
+ETA_WINDOW = 20
+
+
+def eta_seconds(finished: list[float], remaining: int, window: int = ETA_WINDOW) -> float | None:
+    """Seconds left at the recent rate: rounds finished per second over the last `window` finish
+    times, leaving out the first round's (it runs alone, to measure a worker's memory). None
+    until two parallel finishes give a rate."""
+    times = finished[1:][-(window + 1):]
+    if len(times) < 2 or times[-1] <= times[0]:
+        return None
+    return remaining * (times[-1] - times[0]) / (len(times) - 1)
 
 
 # ---------------------------------------------------------------- one round, in a worker
@@ -206,13 +220,13 @@ def run(planned, args, session_factory) -> int:
     headroom = int(args.headroom_gb * GB)
     cores = os.cpu_count() or 2
     peak = FIRST_PEAK_GUESS
-    most = worker_count(args.workers, cores, free_memory(), headroom, peak)
-    print(f"{len(todo)} round(s), up to {most} worker(s) ({cores} cores, keeping {args.headroom_gb:g} GB free)",
-          flush=True)
+    most = worker_count(args.workers, cores)
+    print(f"{len(todo)} round(s), up to {most} at once ({cores} cores), fewer while under {args.headroom_gb:g} GB "
+          f"would be free", flush=True)
     reader = session_factory()   # blobs are read as their rounds start, not all up front
     pool = multiprocessing.get_context("spawn").Pool(processes=most)
     pending, running = list(reversed(range(len(todo)))), {}   # key -> (AsyncResult, start time)
-    done, failed, sizes, started, measured = 0, [], [], time.time(), False
+    done, failed, sizes, started, measured, finished = 0, [], [], time.time(), False, []
     last_wait_note = 0.0
     try:
         while pending or running:
@@ -244,8 +258,8 @@ def run(planned, args, session_factory) -> int:
                     measured = True
                 outcome = store_result(session_factory, p, result)
                 done += 1
-                elapsed = time.time() - started
-                eta = elapsed / done * (len(todo) - done)
+                finished.append(time.time())
+                eta = eta_seconds(finished, len(todo) - done)
                 if result["status"] == "ok":
                     sizes.append((len(result["data"]), len(result["summary"])))
                     what = f"ok {result['seconds']:.0f}s, data {sizes[-1][0] / 1000:.0f} KB, summary {sizes[-1][1] / 1000:.0f} KB"
@@ -254,8 +268,9 @@ def run(planned, args, session_factory) -> int:
                     what = f"FAILED: {result['error'].splitlines()[0]}"
                 if outcome != "stored":
                     what += f" ({outcome})"
+                left = "measuring" if eta is None else _fmt_s(eta)
                 print(f"[{done}/{len(todo)}] {p.match_uuid[:8]} r{p.round_number} {p.map_name}: {what}; "
-                      f"ETA {_fmt_s(eta)}", flush=True)
+                      f"ETA {left}", flush=True)
             time.sleep(POLL_S)
     except KeyboardInterrupt:
         print("stopped: finished rounds are stored; rerun to resume", flush=True)
