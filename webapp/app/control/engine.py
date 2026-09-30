@@ -79,7 +79,7 @@ FLASH_DEFAULT_S = 1.5
 FLASH_FUSE_S = 0.5
 NEARSIGHT_S = {"omen_paranoia": 2.0}
 NEARSIGHT_DEFAULT_S = 1.0      # also a hit with no configured duration (Reyna's Leer)
-# PROVISIONAL(D6): how long one enemy ability-damage hit keeps its victim contested past the hit.
+# How long one enemy ability-damage hit keeps its victim contested past the hit.
 DAMAGE_CONTEST_PAD_S = 0.5
 
 # `<code>_<name>` -> (radius in world units, solid). Radii are the viewer's (replay.js ABILITY_STYLES).
