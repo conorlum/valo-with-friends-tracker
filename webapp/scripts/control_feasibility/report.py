@@ -132,10 +132,11 @@ figcaption {{ font-size:13px; color:var(--muted); }}
 minimaps by webapp/scripts/control_feasibility/.</p>
 <div class="callout"><b>Findings</b>
 <ul>
-<li>Walls alone pass the 2% bar on Ascent, Split, Sunset and Haven (0–0.5%), with the replay's own wallbang flag.
-The earlier 2.5–4.7% numbers counted wallbangs.</li>
-<li>Summit (5.7%) and Abyss (17%) fail on black areas inside the map: windows, ledges and drops you can see across.
-Tagging those see-across takes Summit to 0% and Abyss to 5.5%; Abyss's rest crosses the outer void.</li>
+<li>Walls alone pass the 2% bar on Ascent, Split, Sunset, Haven and Summit (0–0.5%), with the replay's own
+wallbang flag. The earlier 2.5–4.7% numbers counted wallbangs. (Summit first showed 5.7%: a colour-glyph
+threshold of 40 caught the spike site's tint; it is now 80.)</li>
+<li>Abyss (17% on walls) fails on its drops. With the user's see-across tags and edge paint (cleaned by
+clean_paint.py) it is at 0% of 200 kill lines.</li>
 <li>Tagging every detected shape as cover would block 14–42% of kill lines, so cover must be tagged one shape at a
 time, and each tag checked against the bar (the tagger shows it live).</li>
 <li>Seven maps have no replay and wait for one (Q59).</li>

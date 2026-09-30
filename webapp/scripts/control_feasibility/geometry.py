@@ -1,4 +1,4 @@
-"""Stage 0a (docs/replay-map-control-plan.md, Q53): alpha masks and cover candidates for every map.
+﻿"""Stage 0a (docs/replay-map-control-plan.md, Q53): alpha masks and cover candidates for every map.
 
 Feasibility tooling, not product code. For each minimap `app/static/img/maps/<Map>.png`:
 
@@ -29,7 +29,7 @@ from PIL import Image
 from scipy import ndimage
 
 MAPS_DIR = Path(__file__).resolve().parents[2] / "app" / "static" / "img" / "maps"
-GLYPH_SATURATION = 40
+GLYPH_SATURATION = 80  # Bind's lanes are ~144; spike-site tints reach 41
 LINE_LUM = 175
 EDGE_PX = 3
 MIN_CLOSED_PX = 4
