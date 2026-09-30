@@ -9,7 +9,8 @@
   weapon, assisting slots and per-kill Impact split (shown only while it still describes the stored
   rows). For an unlinked one: the reason only. Subjects never leave the server. Stage 4 adds, per round, the
   alive-count steps, `state_replay`'s annotations and which kills came after the round was
-  decided (app/services/replay_view.py).
+  decided (app/services/replay_view.py). Stage 3 of map control adds `match.control`: whether the
+  map has the control layer (app/services/replay_control.py).
 
 Everything is off in demo mode: the ValoMaths demo has no replays (decision 4).
 """
@@ -27,7 +28,7 @@ from app.models.replay import Replay, ReplayPlayer, ReplayRound
 from app.replays import db as replay_db
 from app.replays import format as fmt
 from app.replays import link as lk
-from app.services import replay_view
+from app.services import replay_control, replay_view
 
 
 def replays_enabled() -> bool:
@@ -90,7 +91,8 @@ def page_context(db, replay: Replay) -> dict:
     uuid = str(replay.match_uuid).lower()
     base = {"uuid": uuid, "map": replay.map_name, "rounds": list(range(1, replay.round_count + 1)),
             "source_sha256": replay.source_sha256, "uv_per_unit": _uv_per_unit().get(replay.map_name),
-            "linked": replay_db.is_linked(replay), "status": replay.link_status}
+            "linked": replay_db.is_linked(replay), "status": replay.link_status,
+            "control": replay_control.map_layer(replay.map_name)}
     if not base["linked"]:
         report = replay.link_report or {}
         base["reason"] = ("not linked to a match on this site" if replay.link_status == "unlinked"

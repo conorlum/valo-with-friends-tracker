@@ -7,7 +7,9 @@ upload the newest replays the friends site doesn't have yet.
   2. archive_replays.py            (copies new .vrf files out of Valorant's Demos folder, which
      the game prunes);
   3. upload_replays.py --count N   (uploads up to N replays not on the site, one at a time,
-     waiting for each to be stored; about 6-7 minutes each).
+     waiting for each to be stored; about 6-7 minutes each);
+then one read-only line saying whether rounds need map control (scripts\compute_control.py, which
+you run yourself).
 
 A crawl that fails or falls short is reported and the uploads still run: a replay whose match
 isn't crawled is stored anyway and links after a later crawl.
@@ -40,4 +42,8 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "== 3/3: uploading up to $Count replay(s) not on the site"
 & $python "scripts\upload_replays.py" --count $Count
-exit $LASTEXITCODE
+$uploadExit = $LASTEXITCODE
+
+# Map control is a separate local command (scripts\compute_control.py); only say when it's due.
+& $python "scripts\with_friends_db.py" --expect-database valowithfriendsdb --read-only "scripts\compute_control.py" --dry-run --brief
+exit $uploadExit

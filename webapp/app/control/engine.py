@@ -49,8 +49,7 @@ import numpy as np
 from scipy import ndimage
 
 from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, cast, visibility
-
-CONTROL_REVISION = 1
+from app.replays.control_format import CONTROL_REVISION  # noqa: F401 - stdlib-only, so the web app can read it
 
 TICK_STEP_S = 0.5
 GRID_HZ = 16

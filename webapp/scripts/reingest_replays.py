@@ -91,10 +91,26 @@ def main(argv: list[str] | None = None, session_factory=None) -> int:
         session.rollback()
         session.close()
     print(json.dumps(entries, indent=2))
-    print(f"{len(entries)} replay(s) to refresh")
-    if args.dry_run:
-        return 0
-    return reingest(entries, args, session_factory)
+    print(f"{len(entries)} replay(s) to refresh", flush=True)
+    status = 0 if args.dry_run else reingest(entries, args, session_factory)
+    print_control_nudge(session_factory)
+    return status
+
+
+def print_control_nudge(session_factory) -> None:
+    """Map control is its own command (scripts/compute_control.py); say when rounds need it."""
+    from app.services.replay_control import nudge
+
+    session = session_factory()
+    try:
+        line = nudge(session)
+    except Exception as error:  # noqa: BLE001 - a nudge never fails the run (e.g. before migration 0014)
+        line = f"Map control: couldn't check ({type(error).__name__})"
+    finally:
+        session.rollback()
+        session.close()
+    if line:
+        print(line, flush=True)
 
 
 def default_export_root() -> Path:
@@ -122,19 +138,19 @@ def reingest(entries: list[dict], args, session_factory) -> int:
         uuid = entry["match_uuid"].lower()
         export_dir, vrf = root / uuid, archive / f"{uuid}.vrf"
         if build is None:
-            print(f"{uuid}: no parser build at {build_path}")
+            print(f"{uuid}: no parser build at {build_path}", flush=True)
             problems += 1
             continue
         try:
             load_manifest(export_dir)
         except (ContractError, OSError):
-            print(f"{uuid}: no export at {export_dir}: run scripts\\export_replay.ps1 {uuid} first")
+            print(f"{uuid}: no export at {export_dir}: run scripts\\export_replay.ps1 {uuid} first", flush=True)
             problems += 1
             continue
         try:
             condensed = condense_export_dir(export_dir, source_sha256=_sha256(vrf), build=build, vrf_path=vrf)
         except ContractError as refused:
-            print(f"{uuid}: REFUSED at condense: {refused}")
+            print(f"{uuid}: REFUSED at condense: {refused}", flush=True)
             problems += 1
             continue
         session = session_factory()
@@ -143,7 +159,7 @@ def reingest(entries: list[dict], args, session_factory) -> int:
         finally:
             session.close()
         split = refresh_replay_impact(session_factory, result.replay_id) if result.link_status == "linked" else "-"
-        print(f"{uuid}: {result.action}, {result.link_status}, per-kill Impact {split}")
+        print(f"{uuid}: {result.action}, {result.link_status}, per-kill Impact {split}", flush=True)
     return 1 if problems else 0
 
 
