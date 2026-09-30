@@ -281,6 +281,68 @@ def test_no_rows_is_a_missing_heatmap(db, linked):
     assert body["status"] == "missing" and body["sections"] == []
 
 
+# ---------------------------------------------------------------- the /stats per-map aggregate (R3.4)
+
+
+@pytest.fixture
+def fresh_sums():
+    views._ROUND_SUMS.clear()
+    yield
+    views._ROUND_SUMS.clear()
+
+
+def test_the_map_aggregate_sums_live_cell_seconds_by_side(db, linked, fresh_sums, monkeypatch):
+    put_heat(db, linked, 1, dict(HEAT_1, cells=4))
+    put_heat(db, linked, 2, dict(HEAT_2, cells=4))
+    [row] = views.map_aggregate(db)
+    assert (row["map"], row["replays"], row["rounds"]) == (linked.map_name, 1, 2)
+    assert row["enough"] is False                          # one replay is one pairing of teams
+    # cell-seconds: (10 + 5 + 10) s x 4 cells = 100. Attack: A's 10 (r1) + B's 10 (r2); defense: B's 5 (r1)
+    # + A's 10 (r2); contested: 10 + 5 (r1).
+    assert row["shares"] == {"attack": 0.2, "defense": 0.15, "contested": 0.15, "nobody": 0.5}
+    monkeypatch.setattr(views, "MIN_REPLAYS_PER_MAP", 1)
+    assert views.map_aggregate(db)[0]["enough"] is True
+    assert views.map_aggregate(db, set()) == [] and views.map_aggregate(db, {linked.id + 1}) == []
+
+
+def test_unlinked_replays_are_left_out(db, linked, fresh_sums):
+    put_heat(db, linked, 1, dict(HEAT_1, cells=4))
+    linked.link_status = "unlinked"
+    db.commit()
+    assert views.map_aggregate(db) == []
+
+
+def test_friends_are_the_players_in_the_replay_not_a_roster(db, linked):
+    from app.models import MatchPlayer
+    from app.models.replay import ReplayPlayer
+
+    ids = {pid for (pid,) in db.query(MatchPlayer.player_id).join(
+        ReplayPlayer, ReplayPlayer.match_player_id == MatchPlayer.id).filter(ReplayPlayer.replay_id == linked.id)}
+    assert ids
+    assert views.friends_replay_ids(db, {next(iter(ids))}) == {linked.id}
+    assert views.friends_replay_ids(db, {max(ids) + 1000}) == set() and views.friends_replay_ids(db, set()) == set()
+
+
+def test_the_stats_fragment_404s_in_demo_mode(db, linked, monkeypatch):
+    from app.routers import site_stats
+
+    monkeypatch.setattr(settings, "demo_mode", True)
+    assert status_of(lambda: site_stats.map_control_fragment(request(), "all", db)) == 404
+
+
+def test_the_stats_fragment_lists_the_maps(db, linked, fresh_sums, monkeypatch):
+    from app.routers import site_stats
+    from app.templates import templates
+
+    put_heat(db, linked, 1, dict(HEAT_1, cells=4))
+    seen = {}
+    monkeypatch.setattr(site_stats.templates, "TemplateResponse", lambda req, name, ctx, **kw: seen.update(ctx, name=name))
+    site_stats.map_control_fragment(request(), "all", db)
+    assert seen["name"] == "stats/_map_control_table.html" and seen["rows"][0]["map"] == linked.map_name
+    html = templates.env.get_template(seen["name"]).render(**seen)
+    assert linked.map_name in html and "needs 2+ replays" in html
+
+
 def test_read_walk_reads_only_the_header():
     data = cf.pack_data({"walk": WALK, "cells": 4}, {"states": b"s" * 100000, "coverage": b"", "control": b""})
     assert views.read_walk(data) == WALK

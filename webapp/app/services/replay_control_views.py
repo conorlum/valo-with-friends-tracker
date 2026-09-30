@@ -376,3 +376,99 @@ def match_heatmap_for(db, replay: Replay, view: str, loaded: RoundSummaries | No
         _HEATMAPS.move_to_end(key)
     side_to_team = (replay.link_report or {}).get("side_to_team") or {}
     return match_heatmap(totals, view, {g: str(t) for g, t in side_to_team.items()})
+
+
+# ---------------------------------------------------------------- the /stats per-map aggregate (R3.4)
+
+# A map shows numbers once this many replays (separate matches) have stored control: one replay is one
+# pairing of teams and can't speak for the map. PROVISIONAL(D8).
+MIN_REPLAYS_PER_MAP = 2
+_ROUND_SUMS: OrderedDict = OrderedDict()     # row version -> (units per channel, cell-seconds)
+_ROUND_SUMS_SIZE = 2048
+
+
+def _round_sums(summary: dict) -> tuple[list[int], float]:
+    """Over a round's whole live time: 1/GRID_HZ-second cell units held by side group A, by B, and
+    contested, and the cell-seconds they are shares of (seconds x walkable cells)."""
+    units, cell_s = [0, 0, 0], 0.0
+    for sec in summary.get("sections") or []:
+        cell_s += float(sec["seconds"]) * int(summary["cells"])
+        buf, pos = base64.b64decode(sec["totals"]), 0
+        for state in range(1, len(cf.STATE_NAMES)):
+            count, pos = cf.read_varint(buf, pos)
+            total = 0
+            for _ in range(count):
+                _, pos = cf.read_varint(buf, pos)
+                value, pos = cf.read_varint(buf, pos)
+                total += value
+            units[_CHANNEL[state]] += total
+    return units, cell_s
+
+
+def map_aggregate(db, replay_ids: set[int] | None = None) -> list[dict]:
+    """Per map with stored control: replays, live rounds, and the share of all live cell-seconds attack
+    held, defense held, contested and nobody held, over the linked replays (all, or `replay_ids`).
+    Summaries are read only for rows not already summed in this process (keyed by their version)."""
+    query = (db.query(ReplayRoundControl.replay_id, ReplayRoundControl.round_number, ReplayRoundControl.fingerprint,
+                      ReplayRoundControl.computed_at, Replay.map_name)
+             .join(Replay, Replay.id == ReplayRoundControl.replay_id)
+             .filter(ReplayRoundControl.status == "ok", Replay.link_status == "linked"))
+    if replay_ids is not None:
+        if not replay_ids:
+            return []
+        query = query.filter(ReplayRoundControl.replay_id.in_(sorted(replay_ids)))
+    rows = query.all()
+    wanted = {f"{r.replay_id}:{r.round_number}:{r.fingerprint}:{r.computed_at}": r for r in rows}
+    missing = [r for key, r in wanted.items() if key not in _ROUND_SUMS]
+    for start in range(0, len(missing), 50):
+        chunk = missing[start:start + 50]
+        found = (db.query(ReplayRoundControl.replay_id, ReplayRoundControl.round_number, ReplayRoundControl.summary)
+                 .filter(ReplayRoundControl.replay_id.in_({r.replay_id for r in chunk})).all())
+        by_round = {(f.replay_id, f.round_number): f.summary for f in found}
+        for r in chunk:
+            try:
+                summary = cf.unpack_summary(by_round[(r.replay_id, r.round_number)])
+                units, cell_s = _round_sums(summary)
+                a_attacks = (summary.get("group_side") or {}).get("A") == "attack"
+            except (KeyError, cf.ControlFormatError, ValueError, OSError):
+                continue
+            _ROUND_SUMS[f"{r.replay_id}:{r.round_number}:{r.fingerprint}:{r.computed_at}"] = (units, cell_s, a_attacks)
+    while len(_ROUND_SUMS) > _ROUND_SUMS_SIZE:
+        _ROUND_SUMS.popitem(last=False)
+    per_map: dict[str, dict] = {}
+    for key, r in wanted.items():
+        sums = _ROUND_SUMS.get(key)
+        if sums is None:
+            continue
+        (a, b, contested), cell_s, a_attacks = sums
+        m = per_map.setdefault(r.map_name, {"map": r.map_name, "replays": set(), "rounds": 0, "attack": 0,
+                                            "defense": 0, "contested": 0, "cell_s": 0.0})
+        m["replays"].add(r.replay_id)
+        m["rounds"] += 1
+        m["attack"] += a if a_attacks else b
+        m["defense"] += b if a_attacks else a
+        m["contested"] += contested
+        m["cell_s"] += cell_s
+    out = []
+    for name in sorted(per_map):
+        m = per_map[name]
+        total = m["cell_s"] * cf.GRID_HZ
+        shares = {k: (m[k] / total if total else 0.0) for k in ("attack", "defense", "contested")}
+        shares["nobody"] = max(0.0, 1.0 - sum(shares.values()))
+        out.append({"map": name, "replays": len(m["replays"]), "rounds": m["rounds"],
+                    "enough": len(m["replays"]) >= MIN_REPLAYS_PER_MAP,
+                    "shares": {k: round(v, 4) for k, v in shares.items()}})
+    return out
+
+
+def friends_replay_ids(db, player_ids: set[int]) -> set[int]:
+    """Replays in which any of these players played (the /stats Friends group: the viewer and their
+    friendships, never tracked_players.json)."""
+    from app.models import MatchPlayer
+    from app.models.replay import ReplayPlayer
+
+    if not player_ids:
+        return set()
+    return {rid for (rid,) in db.query(ReplayPlayer.replay_id)
+            .join(MatchPlayer, MatchPlayer.id == ReplayPlayer.match_player_id)
+            .filter(MatchPlayer.player_id.in_(sorted(player_ids))).distinct()}
