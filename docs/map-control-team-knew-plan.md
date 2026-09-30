@@ -78,7 +78,7 @@ A fresh reviewer found 2 blockers and 6 should-fixes; all applied.
   `CONTROL_REVISION` to 2 (unreleased), so one recompute fills both. If revision 2 ships and is recomputed before
   this branch lands, this branch needs its own bump. (A `--no-knew` flag was dropped: rows computed with it would
   look fresh and never get their knowledge streams.)
-- **B2 Unknown enemies are a region, not absent (tier 2, card D7).** "Absent" made the whole map T's safe space at
+- **B2 Unknown enemies are a region, not absent (tier 2, card D7: approved 2026-09-30).** "Absent" made the whole map T's safe space at
   every round start. Instead, an enemy T doesn't see now is a **possible-positions region**: from where T last saw
   them (or their spawn position at the round start, if never seen), through walkable cells T doesn't watch, out to
   the distance they could have run since (`KNEW_RUN_MPS` 6.75 m/s x the time since). The region is a source of the

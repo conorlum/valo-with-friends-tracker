@@ -59,7 +59,7 @@ SECTION_S = 10.0
 
 FOV_HALF = 51.5
 RUN_MPS, WALK_MPS = 5.0, 1.5
-# "What the team knew" (docs/map-control-team-knew-plan.md). PROVISIONAL(D7): an enemy the team isn't
+# "What the team knew" (docs/map-control-team-knew-plan.md; D7, approved): an enemy the team isn't
 # seeing could be anywhere it could have run to since (at this speed) through ground the team doesn't
 # watch; a just-lost enemy keeps their last view as passive for KNEW_FADE_S.
 KNEW_RUN_MPS = 6.75
