@@ -187,7 +187,7 @@ on the base commit) and W1–W2 (this plan and its review) are done.
   `format.py` (revision 10, the docstring's util kinds), tests in `test_replay_condense.py`, `test_replay_extras.py`
   and `test_replay_streaming.py` (synthetic rows), and `test_replay_util.py:101`'s recipe assertion.
 - Check: the new tests pass; `pytest tests/replays` passes; one real export condensed locally (a run-folder
-  script, never stored) shows each new field populated with counts logged, flash durations within 0.03–2.3 s, and
+  script, never stored) shows each new field populated with counts logged, flash durations within 0.025–2.3 s, and
   the round size p95 before and after (see Size above).
 - Depends on: W2. Runs one export at a time (about 1 GB peak).
 
