@@ -8,6 +8,9 @@ each player stands still (or walks a straight line) and faces a fixed direction.
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 import numpy as np
 
 from app.control.geometry import PX, geometry_from_masks, visibility
@@ -16,6 +19,30 @@ TOY_SCALE = 7e-5          # Ascent's: 0.14 m per pixel, 1.12 m cells
 HZ = 16
 
 _CACHE: dict = {}
+_DIR = Path(tempfile.mkdtemp(prefix="control-toys-"))
+
+# A hall of 40 x 25 cells (x 96-416, y 96-296 px; cells are 8 px).
+HALL = (96, 96, 416, 296)
+
+
+def open_hall():
+    return toy_geometry("Open", [HALL])
+
+
+def door_hall():
+    """The hall split by a wall at x 200-216 (cells 25-26), with a one-cell door at the south
+    end (y 288-296, row 36). West of it: 12 columns nobody can reach but through the door."""
+    return toy_geometry("Door", [HALL], [(200, 96, 216, 288)])
+
+
+def midwall_hall():
+    """A wall from the north edge down to y 248 at x 248-264: its two sides share the south strip."""
+    return toy_geometry("Midwall", [HALL], [(248, 96, 264, 248)])
+
+
+def two_rooms(specials=None):
+    """Two 10 x 10-cell rooms with void between them, optionally joined by `specials`."""
+    return toy_geometry("Rooms", [(96, 96, 176, 176), (304, 96, 384, 176)], specials=specials)
 
 
 def rect_mask(rects) -> np.ndarray:
@@ -34,7 +61,7 @@ def toy_geometry(name: str, floors, walls=(), cache_dir=None, specials=None, sca
     floor = rect_mask(floors)
     wall = rect_mask(walls)
     geo = geometry_from_masks(name, ~floor | wall, floor & ~wall, scale, specials)
-    visibility(geo, cache_dir)
+    visibility(geo, cache_dir or _DIR)
     _CACHE[key] = geo
     return geo
 
