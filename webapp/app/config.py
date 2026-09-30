@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # Decision 10's cap (approved D10), max(80 MB, 2 x the largest observed .vrf): the six
     # competitive files are 60-91 MB (90,517,500 bytes the largest).
     replay_upload_max_bytes: int = 181_035_000
+    # Map control for new replays on the replay worker (docs/map-control-worker-plan.md). Off by
+    # default; needs REPLAY_WORKER_URL too, and is always off in demo mode.
+    replay_control_remote: bool = False
 
     @field_validator("database_url")
     @classmethod

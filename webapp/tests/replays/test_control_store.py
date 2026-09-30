@@ -373,6 +373,21 @@ def test_a_result_for_a_replay_that_went_away_is_skipped(factory, db, linked):
     assert compute_control.store_result(with_foreign_keys, planned, ok).startswith("skipped")
 
 
+def test_a_remote_result_is_stored_only_while_its_inputs_are_current(factory, db, linked, monkeypatch):
+    from app.services.replay_control_store import store_round
+
+    [planned] = rc.plan(db, rounds={1})
+    ok = {"status": "ok", "data": gzip.compress(b"d"), "summary": cf.pack_summary({})}
+    # the inputs moved while it computed (a new link, new geometry): nothing is stored
+    assert store_round(factory, linked.id, 1, "0" * 16, ok, require_current=True).startswith("skipped: its inputs")
+    assert db.get(ReplayRoundControl, (linked.id, 1)) is None
+    assert store_round(factory, linked.id, 1, planned.fingerprint, ok, require_current=True) == "stored"
+    # a second copy (the local command, or a duplicate job) finds the current row there already
+    assert store_round(factory, linked.id, 1, planned.fingerprint, ok, require_current=True) == "skipped: already stored"
+    assert store_round(factory, linked.id + 99, 1, planned.fingerprint, ok, require_current=True) == \
+        "skipped: the replay is gone"
+
+
 def test_dry_run_lists_and_writes_nothing(factory, db, linked, capsys):
     assert compute_control.main(["--dry-run"], session_factory=factory) == 0
     out = capsys.readouterr().out

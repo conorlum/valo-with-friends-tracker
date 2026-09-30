@@ -21,8 +21,9 @@ CORNER_TOLERANCE_M of wall in total. The cell-to-cell visibility bitsets (each w
 360-degree view, about 11 MB a map) are built on demand into a local cache keyed by a hash of the
 masks and these parameters, never committed (R2).
 
-Local tooling only: neither the web app nor the upload worker imports `app.control`, which needs
-numpy, scipy and Pillow (tests/replays/test_control_isolation.py).
+Never imported by the web app or the upload worker's server, since `app.control` needs numpy, scipy
+and Pillow (tests/replays/test_control_isolation.py): it runs in scripts/compute_control.py and in
+the worker's control children (replay_worker/control_job.py), which have their own interpreter.
 """
 
 from __future__ import annotations

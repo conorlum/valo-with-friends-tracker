@@ -20,16 +20,25 @@ RUN dotnet publish src/CliReader -c Release -o /out
 
 # ---- 3. the runtime: .NET runtime + Python, the condenser, the server ------------------------------
 FROM mcr.microsoft.com/dotnet/runtime:10.0
-RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home /srv worker
+# Map control's own interpreter (docs/map-control-worker-plan.md): numpy, scipy and Pillow at
+# webapp/requirements.txt's versions, wheels only (a missing wheel fails the build rather than
+# compiling). The server keeps running on the system python3, which has none of them.
+RUN python3 -m venv /opt/control-venv \
+ && /opt/control-venv/bin/pip install --no-cache-dir --only-binary=:all: numpy==2.4.6 scipy==1.18.1 Pillow==10.4.0
 COPY --from=parser /out /opt/parser
-# Only what the condenser reads: app/replays (stdlib only), the vendored map/agent tables and the pin.
+# Only what the condenser reads: app/replays (stdlib only), the vendored map/agent tables and the pin;
+# and the control engine, run only by the control venv's children.
 COPY webapp/app/__init__.py /srv/webapp/app/__init__.py
 COPY webapp/app/replays /srv/webapp/app/replays
+COPY webapp/app/control /srv/webapp/app/control
 COPY webapp/app/static/data /srv/webapp/app/static/data
 COPY webapp/replay_parser.json /srv/webapp/replay_parser.json
 COPY replay_worker /srv/replay_worker
-RUN mkdir -p /jobs && chown worker /jobs
+# The smoke test: the control venv imports the engine, or the build fails here (not silently later).
+RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine, app.control.task, replay_worker.control_job"
+RUN mkdir -p /jobs/control_cache && chown -R worker /jobs
 USER worker
 WORKDIR /srv
 # No DB credentials and no secrets: the worker only parses. REPLAY_MEMORY_CAP_MB caps the
@@ -45,6 +54,9 @@ ENV REPLAY_PARSER_CMD='["/opt/parser/CliReader", "export", "{vrf}", "--output", 
     REPLAY_MEMORY_CAP_MB=0 \
     REPLAY_WORKER_HOST=0.0.0.0 \
     REPLAY_WORKER_PORT=8080 \
+    REPLAY_CONTROL_CMD='["/opt/control-venv/bin/python", "-m", "replay_worker.control_job"]' \
+    REPLAY_CONTROL_WORKERS=2 \
+    CONTROL_CACHE_DIR=/jobs/control_cache \
     PYTHONUNBUFFERED=1
 EXPOSE 8080
 CMD ["python3", "-m", "replay_worker.server"]

@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
@@ -21,7 +22,20 @@ from app.templates import templates
 # uvicorn configures its own loggers, but the root logger defaults to WARNING.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
-app = FastAPI(title=settings.site_name)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Map control for new replays on the replay worker: off unless REPLAY_CONTROL_REMOTE is set
+    # (app/services/replay_control_remote.py; the engine is never imported by the web app).
+    from app.db import SessionLocal
+    from app.services import replay_control_remote
+
+    stop = replay_control_remote.start(SessionLocal)
+    yield
+    if stop is not None:
+        stop.set()
+
+
+app = FastAPI(title=settings.site_name, lifespan=lifespan)
 # Blocks every page but /health while MAINTENANCE_MODE is set, so a rollback can
 # stop traffic without depending on how the platform behaves while suspended.
 app.middleware("http")(maintenance_middleware)

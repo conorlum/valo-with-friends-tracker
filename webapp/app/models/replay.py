@@ -72,8 +72,11 @@ class ReplayRound(Base):
 
 
 class ReplayRoundControl(Base):
-    """Map control for one round (migration 0014; app/replays/control_format.py). Written only by
-    scripts/compute_control.py; `data` is served as is, `summary` is read by the heatmaps and tables."""
+    """Map control for one round (migration 0014; app/replays/control_format.py). Written by
+    scripts/compute_control.py, and for new rounds by the web app's dispatcher from the replay
+    worker's results (app/services/replay_control_remote.py), both through
+    app/services/replay_control_store.py; `data` is served as is, `summary` is read by the heatmaps
+    and tables."""
 
     __tablename__ = "replay_round_control"
     __table_args__ = (
