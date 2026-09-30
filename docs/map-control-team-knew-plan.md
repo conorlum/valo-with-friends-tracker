@@ -102,6 +102,16 @@ A fresh reviewer found 2 blockers and 6 should-fixes; all applied.
   only cells where they differ from the true state at that tick (a diff), which is usually small.
 - **Cost:** about +55-70% of the per-round compute with vision reused.
 
+## What the build found (Ascent round 4, recomputed locally, no DB writes)
+
+- **Compute:** 118-126 s with knowledge against 63 s without: about 2x, not the +60% estimated.
+- **Size:** 399 KB gzipped with both pictures; each differs from the truth on about a third of the cells per tick
+  (1,605 and 1,215 of 5,302), so the streams are large. Storing them as their own changes (like `states`) made the
+  raw streams smaller (933 against 2,049 KB) but the gzipped row larger (435 KB), so the diff against the truth
+  stays. A ~95 s round is at the 400 KB the user accepted; longer rounds will pass it (card D7).
+- **The picture:** 30 s in, a team's safe space is gone: enemies it hasn't seen for a while could be anywhere it
+  doesn't watch, so only what it watches is its own. Early in a round and right after sightings the fog is small.
+
 ## Build order
 
 1. Knowledge pass + `Tick(view=...)` + toy tests (an unseen lurker is absent; a lost enemy lingers passive for the
