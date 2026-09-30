@@ -293,6 +293,33 @@ def test_the_preview_page_inlines_control_from_an_export_folder(tmp_path, round_
     assert 'data-replay-layer="control"' not in standalone.render(standalone.load_blobs(tmp_path))
 
 
+HEAT = """
+  function run(p) {
+    const size = 256, rgba = new Uint8Array(size * size * 4), out = {};
+    const shares = {x: Uint8Array.from(p.x), y: Uint8Array.from(p.y), contested: Uint8Array.from(p.c)};
+    for (const mode of ["lead", "x", "y", "contested"]) {
+      C.paintHeatmap(rgba, size, Int32Array.from(p.walk), shares, mode, {x: [200, 0, 0], y: [0, 0, 200]});
+      out[mode] = p.walk.map(cell => Array.from(rgba.subarray((cell * 2) * 4, (cell * 2) * 4 + 4)));
+    }
+    out.index = Array.from(C.cellIndex(Int32Array.from(p.walk)).subarray(0, 6));
+    return out;
+  }
+"""
+
+
+def test_the_heatmap_paints_the_leader_or_one_share():
+    # cells 0-3 on the top row, 2 px each at size 256: x leads, y leads, contested leads, nothing
+    got = run_node(HEAT, {"walk": [0, 1, 2, 3], "x": [200, 10, 50, 0], "y": [20, 100, 60, 0], "c": [0, 0, 90, 0]})
+    alpha = lambda share: int(0.85 * share + 0.5)  # noqa: E731  (JS Math.round)
+    assert got["lead"][0] == [200, 0, 0, alpha(200)]
+    assert got["lead"][1] == [0, 0, 200, alpha(100)]
+    assert got["lead"][2][3] == alpha(90) and got["lead"][2][:3] in ([200, 0, 0], [0, 0, 200])
+    assert got["lead"][3] == [0, 0, 0, 0]
+    assert got["x"][1] == [200, 0, 0, alpha(10)] and got["y"][0] == [0, 0, 200, alpha(20)]
+    assert got["contested"][0] == [0, 0, 0, 0] and got["contested"][2][3] == alpha(90)
+    assert got["index"] == [0, 1, 2, 3, -1, -1]
+
+
 def test_side_groups_map_to_teams():
     got = run_node("function run(p) { return C.groupTeams(p.players); }",
                    {"players": {"0": {"side": "A", "team": "team-2"}, "5": {"side": "B", "team": "team-1"}}})

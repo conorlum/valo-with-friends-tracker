@@ -1915,3 +1915,17 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 .replay-control-team th, .replay-control-team td { padding: 0.2rem 0.2rem; white-space: nowrap; }
 .replay-control-team td.replay-board-name { max-width: 7.5rem; overflow: hidden; text-overflow: ellipsis; }
 .replay-control-share { color: var(--ink-muted); font-size: 0.78rem; }
+
+/* Match heatmap (Stage 5) */
+.replay { --replay-attack: #e8a33d; --replay-defense: #8f7cf7; }
+.replay-heatmap { margin-top: 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.5rem 0.75rem; }
+.replay-heatmap summary { cursor: pointer; font-weight: 600; }
+.replay-heatmap-controls { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; margin: 0.6rem 0; color: var(--ink-secondary); }
+.replay-heatmap-controls select { font: inherit; }
+.replay-heatmap-stage { position: relative; max-width: 640px; }
+.replay .replay-heatmap-stage .replay-canvas { width: 100%; height: auto; min-width: 0; margin: 0; }
+.replay-key-heat::before { border-radius: 2px; background: var(--key); }
+.replay-key-heat.replay-key-heat-contested::before { border-radius: 2px; background: repeating-linear-gradient(45deg, var(--kx) 0 3px, var(--ky) 3px 6px); }
+.replay-heatmap-sample { color: var(--ink-muted); font-size: 0.85rem; }
+/* /stats map control placeholder (map control Stage 7) */
+.map-control-soon { margin-left: 0.4rem; font-size: 0.72rem; vertical-align: middle; background: transparent; border: 1px solid var(--border-strong); color: var(--ink-secondary); }

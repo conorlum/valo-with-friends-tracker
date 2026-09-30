@@ -1,0 +1,36 @@
+{# The map control card's table (app/routers/site_stats.py map_control_fragment). Context: rows (map,
+   replays, rounds, enough, shares {attack, defense, contested, nobody}), label, min_rounds. #}
+{% if rows %}
+<table class="map-control-table">
+  <thead>
+    <tr>
+      <th>Map</th>
+      <th class="num">Replays</th>
+      <th class="num">Rounds</th>
+      <th class="num" title="Share of the map's ground x live time attack held (in a cone, safe or seen)">Attack held</th>
+      <th class="num" title="The same for defense">Defense held</th>
+      <th class="num" title="Held by both at once: fought over">Contested</th>
+      <th class="num" title="Held by nobody">Nobody</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <td>{{ row.map }}</td>
+      <td class="num">{{ row.replays }}</td>
+      <td class="num">{{ row.rounds }}</td>
+      {% if row.enough %}
+      {% for key in ("attack", "defense", "contested", "nobody") %}
+      <td class="num">{{ (row.shares[key] * 100) | round | int }}%</td>
+      {% endfor %}
+      {% else %}
+      <td class="num page-meta" colspan="4">needs {{ min_rounds }}+ rounds</td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="page-meta">Over the live time of every round (from the round start until it was decided) in {{ label }}. A map shows numbers once it has {{ min_rounds }} rounds. The numbers use the replays' stored map control, which is still a first draft of the rules.</p>
+{% else %}
+<p class="page-meta">No replay in {{ label }} has map control yet.</p>
+{% endif %}

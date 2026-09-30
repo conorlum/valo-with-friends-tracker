@@ -305,6 +305,44 @@
     }
   }
 
+  // The match heatmap (Stage 5): shares are 0-255 per walkable cell (heatmap.json's x, y and
+  // contested). Mode "lead" paints each cell in the colour of whichever holds it longest (contested:
+  // stripes of both), opacity by that share; "x", "y" or "contested" paints that one share alone.
+  var HEAT_MAX_ALPHA = 0.85;
+
+  function paintHeatmap(rgba, size, walk, shares, mode, colors) {
+    var px = size / GRID;
+    rgba.fill(0);
+    for (var k = 0; k < walk.length; k++) {
+      var x = shares.x[k], y = shares.y[k], c = shares.contested[k], v, which;
+      if (mode === "lead") {
+        v = Math.max(x, y, c);
+        which = v === 0 ? null : c === v ? "contested" : x >= y ? "x" : "y";
+      } else {
+        v = shares[mode][k];
+        which = v ? mode : null;
+      }
+      if (!which) continue;
+      var a = Math.round(HEAT_MAX_ALPHA * v), cell = walk[k];
+      var cx = (cell % GRID) * px, cy = Math.floor(cell / GRID) * px;
+      for (var yy = cy; yy < cy + px; yy++) {
+        for (var xx = cx; xx < cx + px; xx++) {
+          var rgb = which === "contested" ? (Math.floor((xx + yy) / STRIPE_PX) % 2 ? colors.y : colors.x) : colors[which];
+          var o = (yy * size + xx) * 4;
+          rgba[o] = rgb[0]; rgba[o + 1] = rgb[1]; rgba[o + 2] = rgb[2]; rgba[o + 3] = a;
+        }
+      }
+    }
+    return rgba;
+  }
+
+  // Map cell (row-major GRID x GRID) -> its index among the walkable cells, or -1.
+  function cellIndex(walk) {
+    var out = new Int32Array(GRID * GRID).fill(-1);
+    for (var k = 0; k < walk.length; k++) out[walk[k]] = k;
+    return out;
+  }
+
   // Side group -> "team-1" / "team-2", from the linked players ({slot: {side, team}}).
   function groupTeams(players) {
     var out = {};
@@ -318,7 +356,8 @@
   var api = {
     STATE_NAMES: STATE_NAMES, GRID: GRID, SLOTS: SLOTS, readVarint: readVarint, parse: parse, walkCells: walkCells,
     tickAt: tickAt, Cursor: Cursor, ControlCache: ControlCache, hexRgb: hexRgb, paintStates: paintStates, paintHighlight: paintHighlight,
-    groupTeams: groupTeams, base64Bytes: base64Bytes, LEVEL_ALPHA: LEVEL_ALPHA, CONTESTED_ALPHA: CONTESTED_ALPHA,
+    groupTeams: groupTeams, base64Bytes: base64Bytes, paintHeatmap: paintHeatmap, cellIndex: cellIndex,
+    HEAT_MAX_ALPHA: HEAT_MAX_ALPHA, LEVEL_ALPHA: LEVEL_ALPHA, CONTESTED_ALPHA: CONTESTED_ALPHA,
     STRIPE_PX: STRIPE_PX
   };
   global.ReplayControl = api;
