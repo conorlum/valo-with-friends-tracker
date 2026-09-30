@@ -88,8 +88,64 @@ web app (has DB)                                   replay worker (no DB, no secr
 - **Engine differences from local:** the same code and pins; control is display-only, so a last-digit
   difference in a float wouldn't matter anyway.
 
+## Revised after the P2 review (2026-09-30)
+
+A fresh reviewer found 3 blockers and 7 should-fixes; all applied except N2 (rejected, below). These override the
+sections above where they differ.
+
+- **B1 One visibility build per map.** The runner runs a map's first round alone ("warming"), with its own long
+  timeout (`REPLAY_CONTROL_WARM_TIMEOUT_S`, 1800 s), before any other child of that map starts. A child whose cache
+  load fails deletes the cache file and reports an infrastructure error (retried).
+- **B2 A fixed pool.** `REPLAY_CONTROL_WORKERS` (default 2), never from `os.cpu_count()` (a container reports the
+  host's cores). Children run with `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` and `MKL_NUM_THREADS` = 1.
+- **B3 The image.** Install `python3-venv`; `pip install --only-binary=:all:` with the requirements.txt pins, so a
+  missing wheel fails the build; a smoke step `RUN /opt/control-venv/bin/python -c "import numpy, scipy, PIL,
+  app.control.engine, app.control.task"`. `compute_task` moves to `app/control/task.py` (the local command and the
+  child both import it); `webapp/app/control` is copied into the image.
+- **S1 Unlinked uploads (tier 2, a card).** Control needs each slot's side from the link; an upload is often
+  stored unlinked and linked by the next crawl, which would make a just-computed row stale (and stale is
+  local-only). The dispatcher takes **linked replays only**; an upload's rounds are sent once the crawl links it
+  (they are still `missing` then).
+- **S2 Geometry skew.** The child returns the geometry it used (sight and walk mask hashes, specials, scale); the
+  dispatcher drops a result unless they equal the web app's `geometry_inputs(map)`.
+- **S3 The lock.** `pg_try_advisory_xact_lock` inside each cycle's transaction, skipped on SQLite; duplicates across
+  instances are made harmless by S5's dedupe anyway.
+- **S4 Failure kinds.** The child reports `error_kind`: `engine` (a `ControlError` or format error: stored
+  `failed`, like local) or `infra` (anything else: memory, missing assets, cache, import: retried, up to 3 times
+  per round and fingerprint, with backoff, then left for the local command).
+- **S5 Dedupe and sizing.** Each task carries a key (replay id, round, fingerprint); the worker returns the existing
+  job for a key it already has. The worker's control queue (`REPLAY_CONTROL_QUEUE`, 32) is larger than the
+  dispatcher's in-flight limit (8).
+- **S6 Store checks.** At collect time, under the replay's advisory lock, the round's fingerprint is recomputed;
+  the result is stored only if it still matches the planned one and no row with that fingerprint exists. The store
+  function moves to `app/services/replay_control_store.py` (the local command uses it too).
+- **S7 Tests without Docker, and a way to check.** One dispatcher cycle is a plain function tested on SQLite with a
+  fake worker client; the runner is tested with a stub child command; the isolation test also checks that
+  importing `replay_worker.server` loads no numpy and no `app.control`. The dispatcher logs one line per cycle that
+  did something (sent, stored, dropped and why).
+- **N1 Cheap cycles.** A cycle first counts rounds of linked replays with no control row (one query); `plan()` runs
+  only when that is above zero. Docstrings that say rows are written only by `compute_control.py` are updated.
+- **N2 rejected:** rebasing the runtime image on `python:3.13-slim` with a self-contained parser would unify the
+  Pythons, but it rebuilds the parse path's image, which the settled "uploads keep priority" (and reliability)
+  argues against changing in the same step. It can be its own change later.
+
+## Implementation steps (P3)
+
+| Step | Files | Check |
+|---|---|---|
+| 1. Move `compute_task` to `app/control/task.py`; `compute_control.py` imports it; the task reports `error_kind` and the geometry it used | `app/control/task.py`, `scripts/compute_control.py`, tests | `pytest tests/replays/test_control_store.py tests/replays/test_control_task.py` passes; the local command's behaviour is unchanged |
+| 2. Move `store_result` to `app/services/replay_control_store.py` with the S6 checks | that file, `scripts/compute_control.py`, tests | store tests: a matching result is stored; a changed fingerprint or an existing current row is not |
+| 3. The worker: `ControlRunner` (queue, dedupe, warm-up per map, fixed pool, timeouts, nice, env), `POST /control`, `GET /control/{id}`, `/health`; `replay_worker/control_job.py` (stdin task -> stdout result, run by the venv) | `replay_worker/server.py`, `replay_worker/control_job.py`, `tests/replays/test_replay_worker.py` | stub-command tests: dedupe, the pool never exceeds its size, warm-up runs alone, timeout kills, disabled -> 404; `control_job` in-process on a toy map returns the same bytes as `compute_task` |
+| 4. The dispatcher: `cycle()` (collect, check, store, submit) and the lifespan thread | `app/services/replay_control_remote.py`, `app/main.py`, `app/config.py` | SQLite tests with a fake client: submit linked missing rounds only; store; drop on revision or geometry skew; 404 re-ask; 503 stops; engine vs infra failures; off by default and in demo mode |
+| 5. The image and config | `replay_worker/Dockerfile`, `render.yaml` (a commented, off-by-default env var), docs | `docker` isn't available here: the Dockerfile is reviewed by reading; the isolation test covers the server |
+| 6. Isolation | `tests/replays/test_control_isolation.py` | importing `replay_worker.server` loads no numpy or `app.control`; the web app still doesn't import the engine |
+
 ## User-only steps (tier 3)
 
-1. Merge; Render builds the new worker image (its first build with numpy, scipy and Pillow).
-2. Set `REPLAY_CONTROL_REMOTE=1` on the `valowithfriendstracker` web service (dashboard or render.yaml).
-3. Upload a replay and watch its rounds fill in (`GET /replays/{uuid}/{n}/control.bin` goes 202 -> 200).
+1. Merge; Render builds the new worker image (its first with numpy, scipy and Pillow). Check its build log for the
+   smoke import line.
+2. Optional first: `compute_control.py --dry-run` (read-only) shows how many rounds are missing, since turning the
+   dispatcher on sends every missing round of a linked replay, not only new uploads.
+3. Set `REPLAY_CONTROL_REMOTE=1` on the `valowithfriendstracker` web service.
+4. Upload a replay on a map with the layer (not a `no_map` map); once it is linked, its rounds fill in
+   (`control.bin` goes 202 -> 200). The web service log shows the dispatcher's lines.
