@@ -769,6 +769,7 @@ def read_revives(export: Export, players: PlayerTable) -> list[tuple[int, int]]:
 
 # Map control's damage input (docs/replay-map-control-plan.md, "Inputs the blob lacks"): hits in a
 # row from one attacker on one player, of one kind, this close together are one run.
+# PROVISIONAL(D6): the merge window.
 DAMAGE_MERGE_MS = 500
 
 

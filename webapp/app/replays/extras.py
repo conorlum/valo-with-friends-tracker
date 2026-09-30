@@ -433,6 +433,7 @@ def normalize_archetype(code: str, name: str, known_codes) -> tuple[str, str]:
 
 PATH_STEP_MS = 100   # a possessable pawn's path (a drone, Trailblazer), one point per this long
 # Map control (revision 10): a pawn's facing over time (`yaws`) keeps a point when it turned this far.
+# PROVISIONAL(D6): the turn step.
 YAW_STEP_DEG = 2
 
 # An equippable's placement names what it created: its context lists the actors (a trapwire's
