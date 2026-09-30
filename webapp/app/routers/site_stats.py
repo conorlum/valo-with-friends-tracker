@@ -91,7 +91,7 @@ def map_control_fragment(request: Request, group: str = "all", db: Session = Dep
     else:
         rows, label = control_views.map_aggregate(db), "every uploaded replay"
     return templates.TemplateResponse(request, "stats/_map_control_table.html", {
-        "rows": rows, "label": label, "min_replays": control_views.MIN_REPLAYS_PER_MAP})
+        "rows": rows, "label": label, "min_rounds": control_views.MIN_ROUNDS_PER_MAP})
 
 
 @router.get("/all")

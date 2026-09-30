@@ -296,12 +296,14 @@ def test_the_map_aggregate_sums_live_cell_seconds_by_side(db, linked, fresh_sums
     put_heat(db, linked, 2, dict(HEAT_2, cells=4))
     [row] = views.map_aggregate(db)
     assert (row["map"], row["replays"], row["rounds"]) == (linked.map_name, 1, 2)
-    assert row["enough"] is False                          # one replay is one pairing of teams
+    assert row["enough"] is False                          # 2 rounds, under MIN_ROUNDS_PER_MAP
     # cell-seconds: (10 + 5 + 10) s x 4 cells = 100. Attack: A's 10 (r1) + B's 10 (r2); defense: B's 5 (r1)
     # + A's 10 (r2); contested: 10 + 5 (r1).
     assert row["shares"] == {"attack": 0.2, "defense": 0.15, "contested": 0.15, "nobody": 0.5}
-    monkeypatch.setattr(views, "MIN_REPLAYS_PER_MAP", 1)
-    assert views.map_aggregate(db)[0]["enough"] is True
+    monkeypatch.setattr(views, "MIN_ROUNDS_PER_MAP", 2)
+    assert views.map_aggregate(db)[0]["enough"] is True    # the count is rounds, not replays (D8)
+    monkeypatch.setattr(views, "MIN_ROUNDS_PER_MAP", 3)
+    assert views.map_aggregate(db)[0]["enough"] is False
     assert views.map_aggregate(db, set()) == [] and views.map_aggregate(db, {linked.id + 1}) == []
 
 
@@ -340,7 +342,7 @@ def test_the_stats_fragment_lists_the_maps(db, linked, fresh_sums, monkeypatch):
     site_stats.map_control_fragment(request(), "all", db)
     assert seen["name"] == "stats/_map_control_table.html" and seen["rows"][0]["map"] == linked.map_name
     html = templates.env.get_template(seen["name"]).render(**seen)
-    assert linked.map_name in html and "needs 2+ replays" in html
+    assert linked.map_name in html and "needs 40+ rounds" in html
 
 
 def test_read_walk_reads_only_the_header():

@@ -1,5 +1,5 @@
 {# The map control card's table (app/routers/site_stats.py map_control_fragment). Context: rows (map,
-   replays, rounds, enough, shares {attack, defense, contested, nobody}), label, min_replays. #}
+   replays, rounds, enough, shares {attack, defense, contested, nobody}), label, min_rounds. #}
 {% if rows %}
 <table class="map-control-table">
   <thead>
@@ -24,13 +24,13 @@
       <td class="num">{{ (row.shares[key] * 100) | round | int }}%</td>
       {% endfor %}
       {% else %}
-      <td class="num page-meta" colspan="4">needs {{ min_replays }}+ replays</td>
+      <td class="num page-meta" colspan="4">needs {{ min_rounds }}+ rounds</td>
       {% endif %}
     </tr>
     {% endfor %}
   </tbody>
 </table>
-<p class="page-meta">Over the live time of every round (from the round start until it was decided) in {{ label }}. A map shows numbers once it has {{ min_replays }} replays: one match is one pairing of teams. The numbers use the replays' stored map control, which is still a first draft of the rules.</p>
+<p class="page-meta">Over the live time of every round (from the round start until it was decided) in {{ label }}. A map shows numbers once it has {{ min_rounds }} rounds. The numbers use the replays' stored map control, which is still a first draft of the rules.</p>
 {% else %}
 <p class="page-meta">No replay in {{ label }} has map control yet.</p>
 {% endif %}

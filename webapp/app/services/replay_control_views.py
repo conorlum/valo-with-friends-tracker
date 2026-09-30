@@ -380,9 +380,9 @@ def match_heatmap_for(db, replay: Replay, view: str, loaded: RoundSummaries | No
 
 # ---------------------------------------------------------------- the /stats per-map aggregate (R3.4)
 
-# A map shows numbers once this many replays (separate matches) have stored control: one replay is one
-# pairing of teams and can't speak for the map. PROVISIONAL(D8).
-MIN_REPLAYS_PER_MAP = 2
+# A map shows numbers once this many rounds with stored control are summed (D8, 2026-09-30: a round
+# count, not a replay count). Nothing is refused: a map below it lists its replays and rounds only.
+MIN_ROUNDS_PER_MAP = 40
 _ROUND_SUMS: OrderedDict = OrderedDict()     # row version -> (units per channel, cell-seconds)
 _ROUND_SUMS_SIZE = 2048
 
@@ -456,7 +456,7 @@ def map_aggregate(db, replay_ids: set[int] | None = None) -> list[dict]:
         shares = {k: (m[k] / total if total else 0.0) for k in ("attack", "defense", "contested")}
         shares["nobody"] = max(0.0, 1.0 - sum(shares.values()))
         out.append({"map": name, "replays": len(m["replays"]), "rounds": m["rounds"],
-                    "enough": len(m["replays"]) >= MIN_REPLAYS_PER_MAP,
+                    "enough": m["rounds"] >= MIN_ROUNDS_PER_MAP,
                     "shares": {k: round(v, 4) for k, v in shares.items()}})
     return out
 
