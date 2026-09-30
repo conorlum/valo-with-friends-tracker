@@ -88,9 +88,9 @@ def test_the_match_sums_integrals_before_dividing():
     assert p0["active_m2"] == 20.0 and p0["passive_m2"] == 36.0
     assert p0["active_ratio"] == 0.357                         # 1000 / 2800
     assert p0["deaths"] == 2 and p0["lost_m2"] == 40.0         # the death after the round was decided is left out
-    assert p0["lost_mean_m2"] == 20.0 and p0["lost_mean_share"] == 0.2
+    assert p0["lost_mean_m2"] == 20.0 and p0["lost_share"] == 0.12        # 40 m² of 300 + 33.3 held
     p5 = table["players"]["5"]
-    assert p5["control_m2"] == 8.4 and p5["deaths"] == 0 and p5["lost_mean_m2"] is None
+    assert p5["control_m2"] == 8.4 and p5["deaths"] == 0 and p5["lost_mean_m2"] is None and p5["lost_share"] is None
     assert table["live_s"] == 100.0
     assert table["redundant_m2"] == {"A": 10.0, "B": -4.0}     # (800 + 200) / 100, (-400 + 0) / 100
 

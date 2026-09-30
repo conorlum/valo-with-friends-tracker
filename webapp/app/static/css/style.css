@@ -1910,3 +1910,8 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 .replay-control-row:hover td, .replay-control-row:focus-visible td { background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .replay-control-row.is-highlighted td { background: color-mix(in srgb, var(--brand) 16%, transparent); }
 .replay-control-redundant td { color: var(--ink-muted); font-size: 0.85rem; }
+.replay-control-table { overflow-x: auto; }
+.replay-control-team { font-size: 0.8rem; }
+.replay-control-team th, .replay-control-team td { padding: 0.2rem 0.2rem; white-space: nowrap; }
+.replay-control-team td.replay-board-name { max-width: 7.5rem; overflow: hidden; text-overflow: ellipsis; }
+.replay-control-share { color: var(--ink-muted); font-size: 0.78rem; }

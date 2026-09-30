@@ -245,8 +245,8 @@ def test_the_control_table_groups_players_by_team_and_sums_lost_control():
                                             {"control_m2": 2.0, "share_of_team": None}]}}},
                    "4": {"status": "missing"}},
         "match": {"redundant_m2": {"A": 1.0}, "players": {
-            "0": {"team": "A", "control_m2": 20.0, "deaths": 2, "lost_m2": 32.0, "lost_mean_share": 0.1},
-            "5": {"team": "B", "control_m2": 50.0, "deaths": 0, "lost_m2": 0.0, "lost_mean_share": None}}}}
+            "0": {"team": "A", "control_m2": 20.0, "deaths": 2, "lost_m2": 32.0, "lost_mean_m2": 16.0, "lost_share": 0.1},
+            "5": {"team": "B", "control_m2": 50.0, "deaths": 0, "lost_m2": 0.0, "lost_mean_m2": None, "lost_share": None}}}}
     body = """
       function run(p) {
         return {round: C.controlRows(p.tables, "round", 3, p.groupTeam), missing: C.controlRows(p.tables, "round", 4, p.groupTeam),
@@ -259,7 +259,7 @@ def test_the_control_table_groups_players_by_team_and_sums_lost_control():
     assert rnd["team-1"][0]["lost"] is None
     assert rnd["redundant"] == {"team-2": -12.5, "team-1": 4.0} and rnd["stale"] is True
     assert got["missing"] is None
-    assert got["match"]["team-2"][0]["lost"] == {"m2": 32.0, "share": 0.1, "deaths": 2}
+    assert got["match"]["team-2"][0]["lost"] == {"m2": 16.0, "share": 0.1, "deaths": 2}
     assert got["match"]["team-1"][0]["lost"] is None
 
 
@@ -269,6 +269,28 @@ def test_site_data_merges_onto_a_blob_by_kill_index():
                                    "kills": {"1": {"weapon": "Vandal"}}},
                           "blob": {"kills": [{"i": 0}, {"i": 1}]}}, js=REPLAY_JS)
     assert got["db"] == {"winner": "team-1"} and got["kills"] == [{"i": 0}, {"i": 1, "weapon": "Vandal"}]
+
+
+def test_the_preview_page_inlines_control_from_an_export_folder(tmp_path, round_control):
+    sys.path.insert(0, str(WEBAPP / "scripts"))
+    import render_replay_standalone as standalone
+
+    rc, blob = round_control
+    from app.replays import format as fmt
+
+    (tmp_path / "1.json.gz").write_bytes(fmt.encode_blob({**blob, "v": 1, "round": 1, "map": "Ascent", "hz": 16,
+                                                         "tracks": {}, "alive": {}, "kills": []}))
+    (tmp_path / "1.control.bin").write_bytes(encode_data(rc, blob))
+    context = {"match": {"linked": True, "control": {"cover_reviewed": False}, "uv_per_unit": 0.75, "rounds": [1]},
+               "players": {}, "rounds": {"1": {"db": None, "stats": {}, "kills": {}}}}
+    (tmp_path / "context.json").write_text(json.dumps(context), encoding="utf-8")
+    (tmp_path / "control_players.json").write_text(json.dumps({"rounds": {}, "match": {}}), encoding="utf-8")
+    site = standalone.load_site(tmp_path)
+    assert site["control"]["1"] == base64.b64encode(gzip.decompress(encode_data(rc, blob))).decode("ascii")
+    page = standalone.render(standalone.load_blobs(tmp_path), site)
+    assert 'data-replay-layer="control"' in page and "cover not reviewed" in page
+    assert "global.ReplayControl = api" in page and site["control"]["1"] in page
+    assert 'data-replay-layer="control"' not in standalone.render(standalone.load_blobs(tmp_path))
 
 
 def test_side_groups_map_to_teams():

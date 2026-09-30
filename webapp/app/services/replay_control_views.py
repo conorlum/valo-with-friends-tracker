@@ -104,8 +104,9 @@ def round_table(summary: dict) -> dict:
 
 def match_table(summaries: dict[int, dict]) -> dict:
     """The whole match: m²·s summed over rounds, divided by the summed seconds alive (or live, for
-    redundant control); lost control as the live deaths, their summed m² and their mean share of
-    the team. Side groups keep their players all match, so redundant control is per group."""
+    redundant control); lost control as the live deaths, their mean m², and their summed m² over the
+    summed area the team held at those deaths. Side groups keep their players all match, so
+    redundant control is per group."""
     acc: dict[str, dict] = {}
     redundant: dict[str, float] = {}
     live_total = 0.0
@@ -115,15 +116,18 @@ def match_table(summaries: dict[int, dict]) -> dict:
             redundant[group] = redundant.get(group, 0.0) + float(v)
         for slot, p in (summary.get("players") or {}).items():
             a = acc.setdefault(slot, {"team": p.get("team"), "alive_s": 0.0, "active_m2s": 0.0, "passive_m2s": 0.0,
-                                      "control_m2s": 0.0, "rounds": 0, "deaths": 0, "lost_m2": 0.0, "shares": []})
+                                      "control_m2s": 0.0, "rounds": 0, "deaths": 0, "lost_m2": 0.0,
+                                      "shared_lost_m2": 0.0, "held_m2": 0.0})
             a["rounds"] += 1
             for key in ("alive_s", "active_m2s", "passive_m2s", "control_m2s"):
                 a[key] += float(p.get(key) or 0.0)
             for d in _deaths(p):
+                lost, share = float(d.get("control_m2") or 0.0), d.get("share_of_team")
                 a["deaths"] += 1
-                a["lost_m2"] += float(d.get("control_m2") or 0.0)
-                if d.get("share_of_team") is not None:
-                    a["shares"].append(float(d["share_of_team"]))
+                a["lost_m2"] += lost
+                if share:  # the team's own area at the death is lost / share
+                    a["shared_lost_m2"] += lost
+                    a["held_m2"] += lost / float(share)
     players = {}
     for slot, a in sorted(acc.items(), key=lambda kv: int(kv[0])):
         players[slot] = {
@@ -134,7 +138,9 @@ def match_table(summaries: dict[int, dict]) -> dict:
             "active_ratio": _ratio(a["active_m2s"], a["passive_m2s"]),
             "deaths": a["deaths"], "lost_m2": round(a["lost_m2"], 1),
             "lost_mean_m2": round(a["lost_m2"] / a["deaths"], 1) if a["deaths"] else None,
-            "lost_mean_share": round(sum(a["shares"]) / len(a["shares"]), 4) if a["shares"] else None,
+            # PROVISIONAL(D2): a ratio of sums; a mean of per-death shares is dominated by deaths when the
+            # team held little (stored shares pass 100% then).
+            "lost_share": round(a["shared_lost_m2"] / a["held_m2"], 4) if a["held_m2"] > 0 else None,
         }
     return {"rounds": len(summaries), "live_s": round(live_total, 3), "players": players,
             "redundant_m2": {group: _per_second(v, live_total) for group, v in sorted(redundant.items())}}

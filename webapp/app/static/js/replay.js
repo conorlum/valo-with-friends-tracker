@@ -481,13 +481,16 @@
       var p = src.players[slot], team = groupTeam[p.team] || (p.team === "B" ? "team-2" : "team-1");
       var lost = null;
       if (scope === "match") {
-        lost = p.deaths ? { m2: p.lost_m2, share: p.lost_mean_share, deaths: p.deaths } : null;
+        // Per death on average, and the summed loss over the summed area held (a ratio of sums).
+        lost = p.deaths ? { m2: p.lost_mean_m2, share: p.lost_share, deaths: p.deaths } : null;
       } else if ((p.lost || []).length) {
+        var shared = 0, held = 0;
         lost = { m2: 0, share: null, deaths: p.lost.length };
         p.lost.forEach(function (d) {
           lost.m2 += d.control_m2 || 0;
-          if (typeof d.share_of_team === "number") lost.share = (lost.share || 0) + d.share_of_team;
+          if (d.share_of_team) { shared += d.control_m2 || 0; held += (d.control_m2 || 0) / d.share_of_team; }
         });
+        if (held > 0) lost.share = shared / held;
       }
       out[team].push({ slot: Number(slot), control: p.control_m2, active: p.active_m2, passive: p.passive_m2,
                        ratio: p.active_ratio, lost: lost, alive: p.alive_s });
@@ -1659,28 +1662,32 @@
     var head = "<thead><tr><th>Player</th>" +
       '<th class="num" title="Average m² the team would lose if this player died, while alive (signed)">Control</th>' +
       (now ? '<th class="num" title="Control at this moment (m²)">Now</th>' : "") +
-      '<th class="num" title="What the team lost at this player&#39;s death' + (scope === "match" ? "s (total m², mean share of the team&#39;s control)" : " (m², share of the team&#39;s control)") + '">Lost</th>' +
-      '<th class="num" title="Average m² in their held cone">Active</th>' +
-      '<th class="num" title="Average m² of passive vision and their own live utility">Passive</th>' +
-      '<th class="num" title="Active ÷ (active + passive)">Active %</th></tr></thead>';
+      '<th class="num" title="What the team lost at this player&#39;s death' + (scope === "match"
+        ? "s: m² per death on average, and all of it as a share of what the team held at those deaths"
+        : ": m², and as a share of what the team held then") +
+      '. The share can pass 100%: ground that flips to the enemy counts twice, and ground the enemy gains that the team never held counts too.">' +
+      (scope === "match" ? "Lost/death" : "Lost") + "</th>" +
+      '<th class="num" title="Average m² in their held cone / of passive vision and their own live utility">Cover a/p</th>' +
+      '<th class="num" title="Active coverage ÷ (active + passive)">Act %</th></tr></thead>';
     box.innerHTML = (rows.stale ? '<p class="replay-side-note">Computed from older inputs; it will be refreshed.</p>' : "") +
       ["team-1", "team-2"].map(function (team) {
         var body = rows[team].map(function (r) {
-          var lost = r.lost ? Math.round(r.lost.m2) + " m²" + (typeof r.lost.share === "number"
-            ? " · " + Math.round(100 * r.lost.share) + "%" : "") + (scope === "match" ? " (" + r.lost.deaths + ")" : "") : "—";
+          // PROVISIONAL(D2): the stored share, shown even past 100% (the tooltip says why).
+          var lost = r.lost ? Math.round(r.lost.m2) + (typeof r.lost.share === "number"
+            ? ' <span class="replay-control-share">' + Math.round(100 * r.lost.share) + "%</span>" : "") : "—";
           var nowValue = now ? now[r.slot] : undefined;
           return '<tr data-control-slot="' + r.slot + '" tabindex="0" class="replay-control-row' +
             (self.highlight === r.slot ? " is-highlighted" : "") + '" aria-pressed="' + (self.highlight === r.slot) + '">' +
-            '<td class="replay-board-name"><span class="replay-dot" style="background:' + self.slotColor(r.slot) + '"></span>' +
-            escapeHtml(self.nameOf(r.slot).split("#")[0]) + "</td>" + signedCell(r.control) +
+            '<td class="replay-board-name" title="' + escapeHtml(self.nameOf(r.slot)) + (scope === "match" && r.lost
+              ? " · " + r.lost.deaths + " deaths" : "") + '"><span class="replay-dot" style="background:' + self.slotColor(r.slot) +
+            '"></span>' + escapeHtml(self.nameOf(r.slot).split("#")[0]) + "</td>" + signedCell(r.control) +
             (now ? (typeof nowValue === "number" ? signedCell(nowValue) : '<td class="num">—</td>') : "") +
-            '<td class="num">' + lost + "</td>" + '<td class="num">' + num(r.active) + "</td>" +
-            '<td class="num">' + num(r.passive) + "</td>" +
+            '<td class="num">' + lost + "</td>" + '<td class="num">' + num(r.active) + " / " + num(r.passive) + "</td>" +
             '<td class="num">' + (typeof r.ratio === "number" ? Math.round(100 * r.ratio) + "%" : "—") + "</td></tr>";
         }).join("");
         var redundant = rows.redundant[team];
-        var foot = '<tr class="replay-control-redundant"><td title="The team&#39;s own area minus its players&#39; control: space two or more of them hold at once, or none alone">Redundant (team)</td>' +
-          signedCell(redundant) + '<td colspan="' + (now ? 5 : 4) + '"></td></tr>';
+        var foot = '<tr class="replay-control-redundant"><td title="The team&#39;s own area minus its players&#39; control: space two or more of them hold at once, or none alone">Redundant</td>' +
+          signedCell(redundant) + '<td colspan="' + (now ? 4 : 3) + '"></td></tr>';
         return '<table class="replay-board-team replay-control-team team-' + team.slice(-1) + '">' + head +
           "<tbody>" + body + foot + "</tbody></table>";
       }).join("");
