@@ -39,3 +39,18 @@ per-player dict gains a key, so `SUMMARY_VERSION` and `DATA_VERSION` stay.
    - **Check:** node test of `controlRows` with and without the field.
 4. **Local proof on real data:** recompute two real rounds locally (no DB write: `compute_task` on blobs fetched
    read-only) and look at the numbers: taken > 0 for entries and rotations, ~0 for a passive anchor.
+
+## Review (D6, 2026-09-30): memory, and every flip counts
+
+Counting every flip first overshot the map (an Ascent defender "took" 10,827 m² in 94 s on a ~6,600 m² map),
+because cells flickered in and out of view as cones moved. The build counted each cell once per player per round.
+The review fixed the cause instead. Control now has **memory**: ground a player looked away from stays theirs as
+passive, and open ground (walkable, neither held live nor remembered by the team) eats into it at a shift-walk
+(`DECAY_MPS` 3.5 m/s, 8-connected steps), toward the team's live control. Ground walled off by live control doesn't
+decay, and memory dies with its player. Memory is real passive control everywhere: map states, safe space,
+contests, coverage and control. With it, **every flip counts** again: ground that decayed and was won back is
+won again. Still revision 2 (unreleased), with its constants digest re-pinned.
+
+Local recompute (no DB writes): Ascent r4's largest is 6,349 m² in 94 s (was 10,827 with every flip and no memory,
+2,920 once per cell), and Split r17's attack still leads (1,700 / 1,290 m²). The largest is under the map's area
+but not far from it: a defender re-watching ground that decays retakes it each time.

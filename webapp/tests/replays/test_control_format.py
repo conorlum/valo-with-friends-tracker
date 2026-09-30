@@ -20,7 +20,9 @@ from tests.replays.control_toys import blob, door_hall
 # CONTROL_REVISION -> the digest of the engine's and geometry's constants it was released with.
 # Changed a constant? Bump CONTROL_REVISION in app/replays/control_format.py (every stored round
 # is then stale and recomputed) and add the new revision's digest here.
-PINNED = {1: "956a0fb740a1cee8", 2: "157208baa518ffeb"}  # 2: space taken, and what each team knew (KNEW_*)
+# 2: space taken, what each team knew (KNEW_*) and remembered ground (D6: DECAY_MPS). Unreleased,
+# so re-pinned in place.
+PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68"}
 
 
 def _constants_digest() -> str:
