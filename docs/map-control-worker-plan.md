@@ -140,6 +140,23 @@ sections above where they differ.
 | 5. The image and config | `replay_worker/Dockerfile`, `render.yaml` (a commented, off-by-default env var), docs | `docker` isn't available here: the Dockerfile is reviewed by reading; the isolation test covers the server |
 | 6. Isolation | `tests/replays/test_control_isolation.py` | importing `replay_worker.server` loads no numpy or `app.control`; the web app still doesn't import the engine |
 
+### After the re-check (P2 re-check + P4, no blockers)
+
+- **A map goes cold again** after any infra failure of one of its rounds, or when its warming child ends with no
+  cache file: the next round of that map warms alone (stub-command test in step 3).
+- **Paths in the image:** `ENV PYTHONPATH=/srv/webapp` for the smoke `RUN` and the child command
+  (`REPLAY_CONTROL_CMD=["/opt/control-venv/bin/python","-m","replay_worker.control_job"]`), and
+  `ENV CONTROL_CACHE_DIR=/jobs/control_cache` (`/jobs` is the worker user's; `/srv/webapp` isn't writable).
+- **Only numpy, scipy and Pillow** go into the venv, at requirements.txt's versions (not the whole file).
+- **Step 5's checks:** a test that reads the Dockerfile (the three pins equal requirements.txt's,
+  `--only-binary=:all:`, `COPY webapp/app/control`, the smoke `RUN`, the ENV lines); and, when the network allows,
+  `pip download --only-binary=:all:` of the three pins for Linux x86-64 on Python 3.11, 3.12 and 3.13 (the base
+  image's `python3` is unverified here; Ubuntu 24.04's would be 3.12).
+- **Isolation after steps 1, 2 and 4**, not only 6; the web app's new modules never import `app.control.task`.
+- **A last step:** the full suite on `.venv313`, failure set compared by name with the base.
+- The memory cap counts address space: a hit is an infra failure (retried up to 3 times), and the in-process
+  control_job test also runs under the cap on Linux (skipped on Windows).
+
 ## User-only steps (tier 3)
 
 1. Merge; Render builds the new worker image (its first with numpy, scipy and Pillow). Check its build log for the
