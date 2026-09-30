@@ -70,6 +70,40 @@ def test_see_across_tag_and_paint_open_a_void_but_keep_it_unwalkable():
     assert not painted.walk[620, 320]
 
 
+def paint_rect(x0, y0, x1, y1) -> str:
+    """A paint string (PAINT_GRID bits, little bit order) over the pixels x0..x1, y0..y1."""
+    cells = np.zeros((cg.PAINT_GRID, cg.PAINT_GRID), bool)
+    cells[y0 // 4:y1 // 4, x0 // 4:x1 // 4] = True
+    return base64.b64encode(np.packbits(cells.ravel().astype(np.uint8), bitorder="little").tobytes()).decode()
+
+
+def test_cover_paint_blocks_sight_and_walking_like_a_cover_tag():
+    rgba, line = minimap(), ((600, 400), (800, 400))
+    plain = cg.masks(rgba)
+    assert not cg.line_blocked(plain.sight, *line) and plain.walk[400, 700]
+    painted = cg.masks(rgba, {"cover_paint": paint_rect(680, 380, 720, 420)})
+    assert cg.line_blocked(painted.sight, *line)
+    assert not painted.walk[400, 700] and painted.walk[400, 600]
+    # see-across paint over it can't open painted cover
+    both = cg.masks(rgba, {"cover_paint": paint_rect(680, 380, 720, 420),
+                           "see_across_paint": paint_rect(600, 300, 800, 500)})
+    assert cg.line_blocked(both.sight, *line)
+
+
+def test_cant_walk_paint_only_removes_walkable_ground():
+    rgba = minimap()
+    painted = cg.masks(rgba, {"cant_walk_paint": paint_rect(680, 380, 720, 420)})
+    plain = cg.masks(rgba)
+    assert not painted.walk[400, 700] and painted.walk[400, 600]
+    assert np.array_equal(painted.sight, plain.sight)
+
+
+def test_uncertain_paint_changes_neither_mask():
+    rgba = minimap()
+    painted, plain = cg.masks(rgba, {"uncertain_paint": paint_rect(100, 100, 900, 900)}), cg.masks(rgba)
+    assert np.array_equal(painted.sight, plain.sight) and np.array_equal(painted.walk, plain.walk)
+
+
 def test_a_glyph_is_a_wall_and_not_walkable():
     m = cg.masks(minimap())
     assert m.sight[710, 710] and not m.walk[710, 710]
