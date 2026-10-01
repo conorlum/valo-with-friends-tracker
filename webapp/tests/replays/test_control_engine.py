@@ -215,7 +215,9 @@ def test_concuss_and_reveal_downgrade_to_passive(row):
     players = {0: still("A", 150, 200, 0), 5: still("B", 400, 110, 90)}
     rnd = ce.RoundInputs(blob(players, util=[row]), geo)
     during, after = ce.Tick(rnd, 1.0).holders[0], ce.Tick(rnd, 2.5).holders[0]
-    assert not during.active.any() and (during.passive == during.body).all() and during.body.any()
+    assert not during.active.any() and during.passive[during.body].all() and during.body.any()
+    # the presence bubble stays while concussed or revealed (the user's call, 2026-10-01)
+    assert during.passive[geo.cell_of_px(150 - round(1.5 / geo.m_per_px), 200)]
     assert after.active.any()
 
 
