@@ -675,6 +675,9 @@ class Tick:
         # side -> flat cells where an enemy of that side could be (Unknown; set by compute_round). None
         # for a tick built on its own: then Safe is the instant flood (Q73), as before unknown.
         self.unknown: dict[str, np.ndarray] | None = None
+        # flat cells in a pinch (Unknown.sealed) at this tick, so the counterfactual's unknown keeps them
+        # shut too; set with `unknown` by compute_round
+        self.sealed: np.ndarray | None = None
         self._usafe: dict = {}   # side, or (side, removed slot) -> its Safe cells from unknown
         self._ucf: dict[tuple[str, int], np.ndarray] = {}   # (side, removed slot) -> unknown_without
 
@@ -905,10 +908,13 @@ class Tick:
                 others |= self._live_of(h)
             held = others | self._live_of(self.holders[removed])
             src = self.unknown[side].copy()
+            shut = np.zeros(GRID * GRID, bool) if self.sealed is None else self.sealed.copy()
             for e in self.holders.values():
                 if e.team != side:
                     src[e.cell] = True
-            gained = self._flood(src & ~others, walk & ~others) & ~self._flood(src & ~held, walk & ~held)
+                    shut[e.cell] = False       # as in Unknown.apply: one standing in a pinch is in it
+            open_ = walk & ~shut               # a sealed pinch stays shut without them too
+            gained = self._flood(src & ~others, open_ & ~others) & ~self._flood(src & ~held, open_ & ~held)
             self._ucf[key] = self.unknown[side] | gained
         return self._ucf[key]
 
@@ -1662,6 +1668,36 @@ def _section_bounds(rnd: RoundInputs) -> list[tuple[str, float, float]]:
     return out
 
 
+class TickRunner:
+    """What each tick of a round needs before `compose`, in time order: on the first tick the barrier
+    drop (each team's start ground, to both), then the unknown, then remembered ground on top of it.
+    compute_round and the scene renderer (scripts/render_control_scenes.py) both step through this, so a
+    scene can't drift from the stored result (the code review, 2026-10-01: it once skipped both)."""
+
+    def __init__(self, geo: Geometry):
+        self.geo = geo
+        self.memory = Memory(geo)
+        self.unknown = Unknown(geo)
+        self.started = False
+
+    def step(self, tick: "Tick", timings: dict | None = None) -> "Tick":
+        timings = timings if timings is not None else defaultdict(float)
+        a = time.perf_counter()
+        if not self.started:
+            areas = barrier_start(self.geo, tick)
+            self.memory.begin(areas)
+            self.unknown.begin(areas)
+            self.started = True
+        self.unknown.apply(tick)              # before memory: live vision only clears it
+        timings["unknown"] += time.perf_counter() - a
+        a = time.perf_counter()
+        self.memory.apply(tick, self.unknown.cells)
+        timings["memory"] += time.perf_counter() - a
+        tick.unknown = {side: cells.copy() for side, cells in self.unknown.cells.items()}
+        tick.sealed = self.unknown.sealed(tick.smokes)   # cached per smokes: the one apply just used
+        return tick
+
+
 def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                   ticks: np.ndarray | None = None, full_every: int = 0, knowledge: bool = True) -> RoundControl:
     """Control for one round. `ticks` overrides the Q75 schedule (tests, parity checks);
@@ -1694,26 +1730,14 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         if i is not None:
             death_ticks[i].append((slot, t))
     prev_state = None
-    memory = Memory(geo)
-    unknown = Unknown(geo)
+    runner = TickRunner(geo)
     unknown_masks = {side: np.zeros((n_ticks, n_walk), bool) for side in ("A", "B")}
     know ={side: Knowledge(rnd, side) for side in ("A", "B")} if knowledge else {}
     knew_states = {side: np.zeros((n_ticks, n_walk), np.uint8) for side in know}
 
     for n, t in enumerate(times):
         t = float(t)
-        tick = Tick(rnd, t, timings)
-        a = time.perf_counter()
-        if n == 0:
-            areas = barrier_start(geo, tick)
-            memory.begin(areas)
-            unknown.begin(areas)
-        unknown.apply(tick)                   # before memory: live vision only clears it
-        timings["unknown"] += time.perf_counter() - a
-        a = time.perf_counter()
-        memory.apply(tick, unknown.cells)
-        timings["memory"] += time.perf_counter() - a
-        tick.unknown = {side: cells.copy() for side, cells in unknown.cells.items()}
+        tick = runner.step(Tick(rnd, t, timings), timings)
         for side in ("A", "B"):
             unknown_masks[side][n] = tick.unknown[side][walk_flat]
         a = time.perf_counter()

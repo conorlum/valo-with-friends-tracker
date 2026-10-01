@@ -83,6 +83,19 @@ def test_a_utility_wall_blocks_sight_where_it_crosses():
     assert ce.smoke_blocks(p, q, wall).tolist() == [[True, False, False]]
 
 
+def test_a_sight_line_on_a_walls_own_line_is_not_blocked_by_it():
+    """The code review (2026-10-01): a sight line collinear with a wall segment counted as crossing it even
+    far from it ((100,100)-(108,108) against a wall from (200,200) to (240,240)), and the pairwise check then
+    disagreed with the rays, which never stop on a parallel wall."""
+    wall = Wall(segs=np.array([[200.0, 200.0, 240.0, 240.0]]))
+    p = np.array([[100.0, 100.0]])
+    q = np.array([[108.0, 108.0], [300.0, 300.0], [230.0, 210.0], [210.0, 230.0]])
+    # on the line: not blocked, near or past the wall; off it, crossing the wall: blocked
+    assert ce.smoke_blocks(p, q, wall).tolist() == [[False, False, False, False]]
+    across = np.array([[230.0, 200.0]])
+    assert ce.smoke_blocks(across, np.array([[200.0, 230.0], [300.0, 200.0]]), wall).tolist() == [[True, False]]
+
+
 def test_vipers_wall_blocks_only_while_it_is_up():
     geo = open_hall()
     c = lambda x, y: geo.cell_of_px(x, y)  # noqa: E731

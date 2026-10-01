@@ -5,7 +5,8 @@
 `--code` is a webapp folder whose `app` is imported (this checkout, or main's code exported with
 `git archive --format=tar -o main.tar origin/main app` run from webapp/ and extracted under a folder's
 `webapp/`), so the same scenes render with either version. Each scene replays the round's ticks up to t
-(memory needs every earlier tick), composes the state at t and draws it over the minimap: attack red,
+(memory and unknown need every earlier tick; through `engine.TickRunner`, the steps compute_round takes,
+when the code has it), composes the state at t and draws it over the minimap: attack red,
 defense blue (light = passive, mid = safe, strong = active), contested purple; players as dots with a
 facing line; smokes as circles; Viper's wall (from the blob) as a white line. It writes
 <map>_<uuid8>_r<round>_<t>_<label>.png and summary_<label>.json (each side's held m2 per scene).
@@ -55,11 +56,18 @@ for spec in args.scenes:
     rnd = engine.RoundInputs(blob, geo, ctl)
     t_at = engine.snap(float(t_req))
     started = time.perf_counter()
-    memory = engine.Memory(geo)
-    for t in [float(t) for t in rnd.tick_times() if t < t_at]:
-        memory.apply(engine.Tick(rnd, t))
-    tick = engine.Tick(rnd, t_at)
-    memory.apply(tick)
+    times = [float(t) for t in rnd.tick_times() if t < t_at] + [t_at]
+    if hasattr(engine, "TickRunner"):
+        # the same steps as compute_round (barrier drop, unknown, then memory), so the scene is the stored state
+        runner = engine.TickRunner(geo)
+        for t in times:
+            tick = runner.step(engine.Tick(rnd, t))
+    else:
+        # code from before the barrier drop and unknown (e.g. main's, for a "before" picture): memory only
+        memory = engine.Memory(geo)
+        for t in times:
+            tick = engine.Tick(rnd, t)
+            memory.apply(tick)
     state = tick.compose()["state"]
     side_of = {g: rnd.group_side.get(g) for g in ("A", "B")}
     img = Image.open(args.code / "app" / "static" / "img" / "maps" / f"{replay.map_name}.png").convert("RGBA")

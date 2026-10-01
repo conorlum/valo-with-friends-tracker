@@ -343,6 +343,21 @@ def test_the_spawn_is_held_until_an_enemy_could_have_walked_there():
     assert rc.unknown["A"].shape == rc.states.shape
 
 
+def test_stepping_a_tick_runner_gives_the_stored_state():
+    """scripts/render_control_scenes.py composes a scene by stepping engine.TickRunner up to t. The code
+    review (2026-10-01): it used to apply memory alone (no barrier drop, no unknown) and differed from
+    compute_round on 695 cells of this toy at 2 s."""
+    geo = _barrier_hall()
+    players = {0: still("A", 120, 200, 180), 5: still("B", 400, 200, 0)}
+    b = blob(players, t_end=6.0)
+    rc = ce.compute_round(b, geo, ticks=[0.0, 1.0, 2.0])
+    rnd = ce.RoundInputs(b, geo)
+    runner = ce.TickRunner(geo)
+    for t in (0.0, 1.0, 2.0):
+        tick = runner.step(ce.Tick(rnd, t))
+    assert np.array_equal(tick.compose()["state"][rc.walk_cells], rc.states[2])
+
+
 # ---------------------------------------------------------------- backfill and Safe (Task 3)
 
 from tests.replays.control_toys import midwall_hall  # noqa: E402
@@ -416,6 +431,25 @@ def test_a_player_holding_a_choke_controls_the_ground_behind_it():
     base, cf = tk.compose()["state"], tk.compose(removed=0)["state"]
     assert int(base[behind]) in A_OWN and int(cf[behind]) not in A_OWN
     assert tk.compose(removed=0, base=tk.compose(), full=False)["state"][behind] == cf[behind]
+
+
+def test_without_a_player_unknown_still_cant_squeeze_through_a_sealed_pinch():
+    """The code review (2026-10-01): the counterfactual flooded through a pinch the seal closes, so the
+    player watching it was credited with holding the pocket behind it. A1 watches the 1.1 m strip between
+    the screen and the block; without them the strip is still sealed (GAP_SEAL_M), so the pocket stays clear."""
+    from app.control.geometry import Wall
+    from tests.replays.control_toys import HALL, toy_geometry
+
+    geo = toy_geometry("Pinch208", [HALL], [(300, 208, 316, 296)])
+    north = geo.walk.ravel() & (geo.centres[:, 1] < 200)
+    strip = _band(geo, 296, 320, 196, 212)
+    tk = _lines(geo, {0: ("A", 150, 150, north), 1: ("A", 290, 180, strip), 5: ("B", 400, 280, np.zeros(GRID * GRID, bool))})
+    tk.live = {}
+    tk.smokes = [Wall(segs=np.array([[96.0, 200.0, 416.0, 200.0]]))]
+    tk.unknown = {"A": _band(geo, 320, 416, 208, 296), "B": np.zeros(GRID * GRID, bool)}
+    tk.sealed = ce.Unknown(geo).sealed(tk.smokes)
+    assert tk.sealed[strip].any(), "the strip is a pinch"
+    assert not tk.unknown_without("A", 1)[_col(geo, 200, 260)], "the pocket behind the sealed strip"
 
 
 def test_ground_unknown_could_reach_anyway_is_not_a_players_control():

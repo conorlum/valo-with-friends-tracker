@@ -386,6 +386,9 @@ def wall_blocks(p: np.ndarray, q: np.ndarray, wall: Wall) -> np.ndarray:
             bx, by = x1 - px_, y1 - py_
             qx, qy = q[qi, 0][None, :] - px_, q[qi, 1][None, :] - py_
             hit = (qx * ay - qy * ax) * (qx * by - qy * bx) <= 0
+            # a sight line on the wall's own line runs along it, never through it (as `wall_hit_px`,
+            # where a parallel ray never hits): both cross products above are 0 for it
+            hit &= ~((sp[pi] == 0)[:, None] & (sq[qi] == 0)[None, :])
             out[np.ix_(pi, qi)] |= hit
     return out
 
