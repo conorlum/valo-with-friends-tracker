@@ -31,7 +31,13 @@ Both come from asking "is anyone looking at this?" instead of "could an enemy ha
    length (one cell straight, sqrt(2) diagonal) over the speed. It replaced whole 8-connected steps per tick,
    which ran diagonals ~41% fast (in round 2 of the sample, 20% of cells turned unknown over 0.5 s before a
    true walk could reach them). Ground T watched on one tick and not the next is entered from the later tick
-   on, never earlier. Walls stop it; smokes don't (you can walk through a smoke). It follows the map's
+   on, never earlier. Walls stop it; smokes don't (you can walk through a smoke), but a pinch between a
+   smoke's edge or a wall ability's line and the map's wall narrower than `GAP_SEAL_M` = 1.5 m is sealed
+   (the user's call, 2026-10-01: in round 2 of the sample, Viper's screen passed 1.26 m from a wall corner
+   5 m from Momomimo and the unknown squeezed through it into the pocket behind the screen; anyone doing
+   that would be seen). A pinch is the shortest segment from the blocker's edge to the wall's face that
+   crosses open floor (its middle a third of its length from any wall), so a screen across a door or a
+   smoke filling a corridor seals nothing: the gas stays walkable. It follows the map's
    specials (teleporters, ropes, drops) the way the Safe fill links them, as one straight step; a one-way
    special carries it one way.
 3. **Clearing.** T's live control clears it on contact and stops it: the active and passive vision of T's

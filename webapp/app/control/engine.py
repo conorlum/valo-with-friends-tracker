@@ -28,7 +28,8 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
 - **Unknown (2026-10-01; docs/map-control-unknown-plan.md).** Each team's unknown is where an enemy
   could be: pushed out by the enemy's live players, the enemy's side of the barriers at the drop, and
   its own spread at UNKNOWN_MPS (each cell no sooner than a walk of its true length, diagonals sqrt(2);
-  across specials, through smokes). The team's live control clears it on contact.
+  across specials, through smokes but not through a pinch under GAP_SEAL_M between a smoke or wall
+  ability and the map's wall). The team's live control clears it on contact.
 - **Watchers** (passive): trips, alarmbots, Chamber traps, Killjoy's turret, Cypher's camera while
   he is in it, and flown drones; a camera or drone in use replaces its owner's own view. Placed
   utility dies with its owner (Q71): a watcher counts only while its owner is alive.
@@ -86,6 +87,10 @@ UNKNOWN_MPS = 3.24
 # Presence (the user's call, 2026-10-01): an enemy can't walk past a player within arm's reach unseen, so
 # each live player holds the walkable ground within this radius as passive (not while flashed).
 PRESENCE_M = 4.0
+# A pinch between a sight blocker (a smoke's edge, a wall ability's line) and the map's wall narrower than
+# this is sealed to the unknown: nobody squeezes through it unseen (the user's call, 2026-10-01). The gas
+# itself stays walkable.
+GAP_SEAL_M = 1.5
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
 FAST_TURN_DPS = 90.0
 SPEED_WINDOW_S = 0.25
@@ -1302,6 +1307,63 @@ class Unknown:
         self._room = {"A": None, "B": None}        # the last tick's room, to see what was freed since
         self.t: float | None = None
         self.links = special_links(geo)
+        # the map wall's face (unwalkable pixels beside a walkable one, at their centres) and each pixel's
+        # distance to the nearest unwalkable one, for the pinches of GAP_SEAL_M
+        wp = geo.walk_px.astype(bool)
+        face = ~wp & ndimage.binary_dilation(wp)
+        fy, fx = np.nonzero(face)
+        self.face = np.stack([fx + 0.5, fy + 0.5], axis=1)
+        self.to_wall_px = ndimage.distance_transform_edt(wp)
+        self._sealed_key, self._sealed = None, np.zeros(GRID * GRID, bool)
+
+    def sealed(self, smokes) -> np.ndarray:
+        """Flat cells in a pinch narrower than GAP_SEAL_M between one of `smokes` (the tick's sight
+        blockers: smoke circles and wall abilities) and the map's wall. For each point of the wall's face
+        that close to a blocker, the shortest segment from the blocker's edge to it spans a pinch when it
+        crosses open floor (its middle is walkable, outside the gas, and at least a third of its length from
+        any wall: a segment hugging a wall's face, where a screen meets a door's jamb, spans nothing). The
+        cells it crosses are sealed, two cells thick so no diagonal step slips between them. The gas itself
+        stays walkable: a screen across a door or a smoke filling a corridor seals nothing."""
+        key = tuple(repr(s) for s in smokes or ())
+        if key == self._sealed_key:
+            return self._sealed
+        out = np.zeros(GRID * GRID, bool)
+        reach = GAP_SEAL_M / self.geo.m_per_px
+        wp = self.geo.walk_px
+        for smoke in smokes or ():
+            if isinstance(smoke, Wall):
+                feet = []
+                for x0, y0, x1, y1 in smoke.segs:
+                    dx, dy = x1 - x0, y1 - y0
+                    f = np.clip(((self.face[:, 0] - x0) * dx + (self.face[:, 1] - y0) * dy)
+                                / max(dx * dx + dy * dy, 1e-6), 0, 1)
+                    feet.append(np.stack([x0 + f * dx, y0 + f * dy], axis=1))
+                lens = np.stack([np.hypot(*(self.face - ft).T) for ft in feet])
+                foot = np.stack(feet)[lens.argmin(0), np.arange(len(self.face))]
+                inside = np.zeros(len(self.face), bool)
+            else:
+                sx, sy, r, _ = smoke
+                d = np.hypot(self.face[:, 0] - sx, self.face[:, 1] - sy)
+                foot = np.array([sx, sy]) + (self.face - [sx, sy]) * (r / np.maximum(d, 1e-6))[:, None]
+                inside = d <= r
+            seg = self.face - foot
+            length = np.hypot(seg[:, 0], seg[:, 1])
+            keep = ~inside & (length > 0.5) & (length < reach)
+            mid = foot + seg / 2
+            mx = np.clip(mid[:, 0].astype(int), 0, wp.shape[1] - 1)
+            my = np.clip(mid[:, 1].astype(int), 0, wp.shape[0] - 1)
+            keep &= wp[my, mx] & (self.to_wall_px[my, mx] >= length / 3)
+            if not isinstance(smoke, Wall):
+                keep &= np.hypot(mid[:, 0] - sx, mid[:, 1] - sy) > r
+            for a, s, n in zip(foot[keep], seg[keep], length[keep]):
+                k = np.linspace(0.0, 1.0, int(n // 2) + 2)[:, None]
+                side = np.array([-s[1], s[0]]) / n * (CELL / 2)       # half a cell to each side: two thick
+                for off in (-side, 0 * side, side):
+                    pts = a + k * s + off
+                    out[[self.geo.cell_of_px(x, y) for x, y in pts]] = True
+        out &= self.geo.walk.ravel()
+        self._sealed_key, self._sealed = key, out
+        return out
 
     def begin(self, areas: dict) -> None:
         for side in ("A", "B"):
@@ -1312,6 +1374,7 @@ class Unknown:
     def apply(self, tick) -> None:
         walk = self.geo.walk.ravel()
         t = self.t = tick.t
+        pinched = self.sealed(getattr(tick, "smokes", None))
         for side in ("A", "B"):
             reached = self.reached[side]
             reached[self.cells[side] & ~np.isfinite(reached)] = t    # the barrier drop's ground: there now
@@ -1320,13 +1383,15 @@ class Unknown:
                 self.cells[side] = np.zeros(GRID * GRID, bool)   # nobody left: nobody could be anywhere
                 continue
             live = np.zeros(GRID * GRID, bool)
+            shut = pinched.copy()
             for h in tick.holders.values():
                 if h.team == side:
                     live |= h.active | h.passive | h.watch
                     live[h.cell] = True
                 else:
                     reached[h.cell] = min(reached[h.cell], t)   # an enemy pushes it out from where they stand
-            room = walk & ~live
+                    shut[h.cell] = False                       # one standing in a pinch is in it
+            room = walk & ~live & ~shut
             free = self.free_since[side]
             if free is None:
                 free = np.full(GRID * GRID, t)

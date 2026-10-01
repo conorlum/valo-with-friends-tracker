@@ -13,10 +13,10 @@ from tests.replays.control_toys import open_hall, two_rooms, uv
 
 
 class _Tk:
-    """Just what Unknown and Memory read from a tick: its time and holders."""
+    """Just what Unknown and Memory read from a tick: its time, holders and what blocks sight."""
 
-    def __init__(self, t, *holders):
-        self.t, self.holders = t, {h.slot: h for h in holders}
+    def __init__(self, t, *holders, smokes=()):
+        self.t, self.holders, self.smokes = t, {h.slot: h for h in holders}, list(smokes)
 
 
 def _at(slot, team, geo, x, y, cells=()):
@@ -74,6 +74,41 @@ def test_unknown_walks_diagonals_at_their_true_length():
     assert at(5, 0) and not at(6, 0), "straight: 5 cells"
     assert at(4, 4) and not at(5, 5), "diagonal: 4 steps, not 5"
     assert at(4, 2) and not at(5, 3), "between: octile length (5.4 m reached, 7.0 m not)"
+
+
+@pytest.mark.parametrize("block_top, sealed", [(208, True), (224, False)])
+def test_unknown_cannot_squeeze_through_a_pinch_between_a_smoke_and_a_wall(block_top, sealed):
+    """A screen across the hall at y 200; A watches everything north of it. South of it a map wall block
+    (x 300-316, down from `block_top`) shuts a west pocket off from B but for the strip between the
+    block and the screen: 1.1 m wide, under GAP_SEAL_M, nobody squeezes through unseen (the user's call,
+    2026-10-01); 2.8 m wide, they can. Smokes stay walkable: the strip is sealed, not the gas."""
+    from app.control.geometry import Wall
+    from tests.replays.control_toys import HALL, toy_geometry
+
+    geo = toy_geometry(f"Pinch{block_top}", [HALL], [(300, block_top, 316, 296)])
+    north = geo.walk.ravel() & (geo.centres[:, 1] < 200)
+    screen = Wall(segs=np.array([[96.0, 200.0, 416.0, 200.0]]))
+    unk = ce.Unknown(geo)
+    for t in (0.0, 30.0):
+        unk.apply(_Tk(t, _at(0, "A", geo, 150, 150, north), _at(5, "B", geo, 400, 280), smokes=[screen]))
+    assert unk.cells["A"][geo.cell_of_px(360, 260)], "B's side of the block is unknown"
+    assert unk.cells["A"][geo.cell_of_px(200, 260)] != sealed, "the pocket: only through the strip"
+
+
+def test_a_screen_across_a_narrow_door_or_a_smoke_filling_a_corridor_stays_walkable():
+    """A pinch is a gap beside the gas with the wall across from it. A screen laid across a 2.2 m door, or
+    a smoke filling a 2.2 m corridor, leaves no such gap: the unknown walks through the gas as ever."""
+    from app.control.geometry import Wall
+    from tests.replays.control_toys import HALL, toy_geometry
+
+    geo = toy_geometry("Door16", [HALL], [(200, 96, 216, 200), (200, 216, 216, 296)])   # door y 200-216
+    screen = Wall(segs=np.array([[208.0, 96.0, 208.0, 296.0]]))
+    smoke = (208.0, 208.0, 3.0 / geo.m_per_px, False)
+    for blockers in ([screen], [smoke]):
+        unk = ce.Unknown(geo)
+        for t in (0.0, 30.0):
+            unk.apply(_Tk(t, _at(0, "A", geo, 120, 120), _at(5, "B", geo, 400, 280), smokes=blockers))
+        assert unk.cells["A"][geo.cell_of_px(150, 250)], f"through the door past {blockers[0]!r}"
 
 
 def test_live_vision_pushes_unknown_back_and_it_refills_when_they_look_away():
