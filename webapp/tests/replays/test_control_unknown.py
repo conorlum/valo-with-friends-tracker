@@ -85,13 +85,26 @@ def test_a_dead_enemy_stops_pushing_unknown_but_what_is_out_stays():
     geo = open_hall()
     unk = ce.Unknown(geo)
     a = lambda: _at(0, "A", geo, 120, 200)  # noqa: E731
-    unk.apply(_Tk(0.0, a(), _at(5, "B", geo, 400, 200)))
-    unk.apply(_Tk(1.0, a(), _at(5, "B", geo, 400, 200)))
+    far = lambda: _at(6, "B", geo, 400, 110)  # noqa: E731   (a teammate of B's who stays alive)
+    unk.apply(_Tk(0.0, a(), _at(5, "B", geo, 400, 280), far()))
+    unk.apply(_Tk(1.0, a(), _at(5, "B", geo, 400, 280), far()))
     before = unk.cells["A"].copy()
-    unk.apply(_Tk(2.0, a()))                 # B is dead: no holder
+    unk.apply(_Tk(2.0, a(), far()))          # B5 is dead: no holder
     after = unk.cells["A"]
     assert after[before].all(), "what was out stays"
     assert after.sum() > before.sum(), "and keeps spreading from itself"
+
+
+def test_unknown_clears_when_the_whole_enemy_team_is_dead():
+    geo = open_hall()
+    unk = ce.Unknown(geo)
+    a = lambda: _at(0, "A", geo, 120, 200)  # noqa: E731
+    unk.apply(_Tk(0.0, a(), _at(5, "B", geo, 400, 200)))
+    unk.apply(_Tk(1.0, a(), _at(5, "B", geo, 400, 200)))
+    assert unk.cells["A"].any()
+    unk.apply(_Tk(1.5, a()))
+    assert not unk.cells["A"].any(), "nobody left: nobody could be anywhere"
+    assert unk.cells["B"].any(), "A is alive: B's unknown is untouched"
 
 
 def test_without_barrier_paint_unknown_starts_at_the_enemies_alone():
@@ -198,3 +211,96 @@ def test_the_spawn_is_held_until_an_enemy_could_have_walked_there():
     assert rc.states[2, col(160)] in A_OWN, "deep in A's side: still held at 2 s"
     assert rc.unknown["A"][2, col(240)] and not rc.unknown["A"][2, col(160)]
     assert rc.unknown["A"].shape == rc.states.shape
+
+
+# ---------------------------------------------------------------- backfill and Safe (Task 3)
+
+from tests.replays.control_toys import midwall_hall  # noqa: E402
+
+
+def _band(geo, x0, x1, y0=96, y1=296):
+    cx, cy = geo.centres[:, 0], geo.centres[:, 1]
+    return geo.walk.ravel() & (cx >= x0) & (cx < x1) & (cy >= y0) & (cy < y1)
+
+
+def _tick(geo, players, t=1.0, **kw):
+    return ce.Tick(ce.RoundInputs(blob(players, **kw), geo), t)
+
+
+def _lines(geo, views: dict):
+    """A tick whose holders see exactly `views`: {slot: (team, x, y, active flat)}."""
+    tk = _tick(geo, {s: still(team, x, y, 0) for s, (team, x, y, _) in views.items()})
+    z = np.zeros(GRID * GRID, bool)
+    tk.holders = {s: ce.Holder(s, team, geo.cell_of_px(x, y), x, y, act.copy(), z.copy(), z.copy(), act.copy(),
+                               act.copy(), False, "hold") for s, (team, x, y, act) in views.items()}
+    tk._back = {}
+    return tk
+
+
+def test_backfill_never_claims_where_an_enemy_could_be():
+    geo = open_hall()
+    tk = _lines(geo, {0: ("A", 150, 200, _band(geo, 240, 256)), 5: ("B", 400, 200, _band(geo, 300, 316))})
+    assert tk.backfill("A")[0][_col(geo, 110, 120)], "without unknown: behind A's line is A's"
+    strip = _band(geo, 96, 140)
+    tk.unknown = {"A": strip.copy(), "B": np.zeros(GRID * GRID, bool)}
+    tk._back = {}
+    back = tk.backfill("A")[0]
+    assert not back[strip].any() and back[_col(geo, 200, 250)]
+
+
+def test_safe_is_what_unknown_cannot_see():
+    geo = midwall_hall()       # a wall down x 248-264 from the north wall to y 248: a gap to the south
+    tk = _tick(geo, {0: still("A", 120, 120, 180), 5: still("B", 400, 120, 0)})
+    tk.unknown = {"A": _band(geo, 300, 400, 96, 160), "B": np.zeros(GRID * GRID, bool)}
+    safe = tk.unknown_safe("A")
+    assert safe[_col(geo, 150, 120)], "behind the wall from unknown: Safe"
+    assert not safe[_col(geo, 350, 120)], "unknown itself is not Safe"
+    assert not safe[_col(geo, 330, 250)], "unknown sees it"
+    assert tk.unknown_safe("B")[_col(geo, 350, 120)], "a team with no unknown: all Safe"
+    # through compose: give B an unknown over the west half, so B isn't Safe there and nothing is contested
+    tk.unknown["B"] = _band(geo, 96, 248)
+    tk._usafe = {}
+    state = tk.compose()["state"]
+    assert int(state[_col(geo, 150, 120)]) == ce.A_SAFE
+
+
+def test_a_smoke_hides_ground_from_unknown():
+    geo = open_hall()
+    smoke = {"k": "ability", "t": 0.0, "t1": 10.0, "by": 5, "kind": "Zone", "code": "Wraith", "name": "4_Smoke",
+             "u": uv(250, 200)[0], "v": uv(250, 200)[1]}
+    tk = _tick(geo, {0: still("A", 120, 120, 180), 5: still("B", 400, 120, 0)}, util=[smoke])
+    tk.unknown = {"A": _band(geo, 300, 316, 192, 208), "B": np.zeros(GRID * GRID, bool)}
+    safe = tk.unknown_safe("A")
+    assert safe[_col(geo, 150, 200)], "straight through the smoke: hidden"
+    assert not safe[_col(geo, 290, 200)], "this side of the smoke: seen"
+
+
+def test_a_player_holding_a_choke_controls_the_ground_behind_it():
+    from tests.replays.control_toys import door_hall
+    geo = door_hall()          # a wall at x 200-216 with a one-cell door at its south end (y 288-296)
+    tk = _tick(geo, {0: still("A", 208, 292, 0), 5: still("B", 400, 150, 180)})
+    tk.unknown = {"A": _band(geo, 300, 416), "B": _band(geo, 96, 200)}
+    behind = _col(geo, 120, 120)
+    without = tk.unknown_without("A", 0)
+    assert without[behind] and not tk.unknown["A"][behind], "without A in the door, unknown pours into the west room"
+    base, cf = tk.compose()["state"], tk.compose(removed=0)["state"]
+    assert int(base[behind]) in A_OWN and int(cf[behind]) not in A_OWN
+    assert tk.compose(removed=0, base=tk.compose(), full=False)["state"][behind] == cf[behind]
+
+
+def test_ground_unknown_could_reach_anyway_is_not_a_players_control():
+    geo = open_hall()
+    tk = _tick(geo, {0: still("A", 150, 200, 180), 5: still("B", 400, 200, 0)})
+    tk.unknown = {"A": _band(geo, 400, 416), "B": np.zeros(GRID * GRID, bool)}
+    gained = tk.unknown_without("A", 0) & ~tk.unknown["A"]
+    assert gained.any()
+    assert not (gained & ~tk.live[0]).any(), "only the cells their own live control held back"
+
+
+def test_the_knowledge_views_use_the_same_unknown():
+    geo = open_hall()
+    rnd = ce.RoundInputs(blob({0: still("A", 120, 200, 0), 5: still("B", 400, 200, 180)}), geo)
+    tk = ce.Tick(rnd, 1.0)
+    tk.unknown = {"A": _band(geo, 300, 316), "B": _band(geo, 100, 116)}
+    kt = ce.Knowledge(rnd, "A").tick_for(tk, 1.0)
+    assert kt.unknown is tk.unknown

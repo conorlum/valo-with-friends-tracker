@@ -23,7 +23,8 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
 - **Backfill.** Ground behind a player's watched line, back to the team's control, that no enemy can
   walk into without crossing the team's claims (and the enemy doesn't claim), is passive control of
   the player nearest it from their live view (`Tick.backfill`). Recomputed each tick, never remembered;
-  where it is already the team's Safe ground it credits nobody (coverage), as before.
+  where it is already the team's Safe ground it credits nobody (coverage), as before. Never on a cell
+  in the team's unknown.
 - **Unknown (2026-10-01; docs/map-control-unknown-plan.md).** Each team's unknown is where an enemy
   could be: pushed out by the enemy's live players, the enemy's side of the barriers at the drop, and
   its own spread at UNKNOWN_MPS (8-connected, across specials, through smokes). The team's live
@@ -31,9 +32,10 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
 - **Watchers** (passive): trips, alarmbots, Chamber traps, Killjoy's turret, Cypher's camera while
   he is in it, and flown drones; a camera or drone in use replaces its owner's own view. Placed
   utility dies with its owner (Q71): a watcher counts only while its owner is alive.
-- **Safe (Q73).** Each team's free space is a flood fill from its alive players through walkable
-  cells the other team doesn't watch (map specials link cells); the other team's Safe is what no
-  free cell sees. Seen from the fill's boundary, smoke-aware: the frontier (next to the team's
+- **Safe (Q73; 2026-10-01).** A team's Safe ground is what no cell of its unknown sees, smoke-aware,
+  from the unknown's boundary. A tick built without unknown (tests) falls back to the instant flood:
+  each team's free space from its alive players through walkable cells the other team doesn't watch
+  (map specials link cells); the other team's Safe is what no free cell sees. Seen from the fill's boundary, smoke-aware: the frontier (next to the team's
   vision) first, then the rest of the boundary for the targets it missed.
 - **Contests.** Both teams claiming a cell (Q40, Q55); a holder an enemy sees, stands in enemy
   damage utility, took a wallbang, or has a contesting status (their cells, unless steady cover
@@ -636,6 +638,13 @@ class Tick:
                 for t0, t1, zx, zy, r, by in rnd.damage_zones)
             self.holders[s] = Holder(s, rnd.team[s], cell, x, y, active, passive, watch, raw, body, flagged, mode)
         timings["vision"] += time.perf_counter() - started
+        # slot -> the live control that holds unknown back: vision, watchers and their own cell (before
+        # Memory adds remembered ground to `passive`)
+        self.live: dict[int, np.ndarray] = {}
+        for s, h in self.holders.items():
+            lv = h.active | h.passive | h.watch
+            lv[h.cell] = True
+            self.live[s] = lv
         # enemy sight of each holder: sees[e] = the holders e's body view reaches
         self.sees = {e.slot: {h.slot for h in self.holders.values() if h.team != e.team and e.body[h.cell]}
                      for e in self.holders.values()}
@@ -650,7 +659,8 @@ class Tick:
         # side -> flat cells where an enemy of that side could be (Unknown; set by compute_round). None
         # for a tick built on its own: then Safe is the instant flood (Q73), as before unknown.
         self.unknown: dict[str, np.ndarray] | None = None
-        self._usafe: dict[str, np.ndarray] = {}   # side -> its Safe cells from unknown
+        self._usafe: dict = {}   # side, or (side, removed slot) -> its Safe cells from unknown
+        self._ucf: dict[tuple[str, int], np.ndarray] = {}   # (side, removed slot) -> unknown_without
 
     def backfill(self, side: str, removed: int | None = None) -> dict[int, np.ndarray]:
         """Backfill (the user's rule, 2026-09-30): ground behind a player's watched line, back to the
@@ -688,7 +698,10 @@ class Tick:
         if seed is not None:
             sources |= set(np.unique(lab.ravel()[seed]).tolist())
         reach = self._reach(lab, sources - {0})
-        return ((lab > 0) & ~np.isin(lab, list(reach))).ravel() & ~enemy
+        pocket = ((lab > 0) & ~np.isin(lab, list(reach))).ravel() & ~enemy
+        if self.unknown is not None:
+            pocket &= ~self.unknown_for(side, removed)   # never where an enemy could be (docs/map-control-unknown-plan.md)
+        return pocket
 
     def _backfill_shares(self, side: str, removed: int | None) -> dict[int, np.ndarray]:
         pocket = self._pocket(side, removed).reshape(GRID, GRID)
@@ -832,6 +845,68 @@ class Tick:
         rim = mask & ndimage.binary_dilation(~mask, EIGHT) & ~edge
         return first | seen_from(self.geo, np.flatnonzero(rim), self.smokes, skip=mask.ravel() | first)
 
+    def unknown_for(self, side: str, removed: int | None = None) -> np.ndarray:
+        """`side`'s unknown at this tick, or in the counterfactual without `removed` when they are on
+        `side` (`unknown_without`)."""
+        if removed is not None and removed in self.holders and self.holders[removed].team == side:
+            return self.unknown_without(side, removed)
+        return self.unknown[side]
+
+    def unknown_without(self, side: str, removed: int) -> np.ndarray:
+        """The counterfactual's unknown (the user's rule, 2026-10-01): unknown comes only from its sources
+        (the unknown already out and the enemy's players), and without `removed` there is less live
+        control to hold it back. What its sources can walk to without them, but not with them (instantly,
+        8-connected and across specials), joins the unknown; ground it could reach anyway but hasn't yet
+        is not theirs to hold."""
+        key = (side, removed)
+        if key not in self._ucf:
+            walk = self.geo.walk.ravel()
+            others = np.zeros(GRID * GRID, bool)
+            for h in self.team(side, removed):
+                others |= self._live_of(h)
+            held = others | self._live_of(self.holders[removed])
+            src = self.unknown[side].copy()
+            for e in self.holders.values():
+                if e.team != side:
+                    src[e.cell] = True
+            gained = self._flood(src & ~others, walk & ~others) & ~self._flood(src & ~held, walk & ~held)
+            self._ucf[key] = self.unknown[side] | gained
+        return self._ucf[key]
+
+    def _live_of(self, h: Holder) -> np.ndarray:
+        if h.slot in self.live:
+            return self.live[h.slot]
+        lv = h.active | h.passive | h.watch
+        lv[h.cell] = True
+        return lv
+
+    def _flood(self, src: np.ndarray, room: np.ndarray) -> np.ndarray:
+        """Flat cells of `room` connected (8-connected, and across the map's specials) to `src`."""
+        lab, _ = ndimage.label(room.reshape(GRID, GRID), EIGHT)
+        labels = set(np.unique(lab.ravel()[src & room]).tolist()) - {0}
+        if not labels:
+            return np.zeros(GRID * GRID, bool)
+        return np.isin(lab, list(self._reach(lab, labels))).ravel()
+
+    def unknown_safe(self, side: str, removed: int | None = None) -> np.ndarray:
+        """Safe (docs/map-control-unknown-plan.md): walkable cells outside `side`'s unknown that no cell of
+        it sees, smoke-aware (`comp_seen`'s boundary method, Q73); with `removed` on `side`, from the
+        counterfactual's unknown. Cached for the tick; the knowledge pictures share it."""
+        unk_flat = self.unknown_for(side, removed)
+        key = side if unk_flat is self.unknown[side] else (side, removed)
+        if key not in self._usafe:
+            walk = self.geo.walk
+            unk = unk_flat.reshape(GRID, GRID)
+            if not unk.any():
+                self._usafe[key] = walk.ravel().copy()
+            else:
+                watched = np.zeros(GRID * GRID, bool)
+                for h in self.team(side, removed):
+                    watched |= h.active | h.passive | h.watch
+                seen = self.comp_seen(unk, watched.reshape(GRID, GRID))
+                self._usafe[key] = (walk & ~unk).ravel() & ~seen
+        return self._usafe[key]
+
     def dist_from(self, h: Holder) -> np.ndarray:
         """Walking distance (8-connected cells) from a holder, cached for the tick."""
         if h.slot not in self._dist:
@@ -947,7 +1022,10 @@ class Tick:
             lv = np.zeros(GRID * GRID, np.int8)
             lv[passive] = 1
             f_enemy = fills[other]
-            safe = walk.ravel() if f_enemy is None else f_enemy.safe(walk).ravel()
+            if self.unknown is not None:
+                safe = self.unknown_safe(side, removed)
+            else:
+                safe = walk.ravel() if f_enemy is None else f_enemy.safe(walk).ravel()
             lv[safe] = np.maximum(lv[safe], 2)
             if removed is None:
                 self._safe[side] = safe & walk.ravel()
@@ -1186,6 +1264,9 @@ class Unknown:
         dt = 0.0 if self.t is None else max(0.0, tick.t - self.t)
         self.t = tick.t
         for side in ("A", "B"):
+            if not self._enemy_alive(tick, side):
+                self.cells[side] = np.zeros(GRID * GRID, bool)   # nobody left: nobody could be anywhere
+                continue
             live = np.zeros(GRID * GRID, bool)
             unk = self.cells[side].copy()
             for h in tick.holders.values():
@@ -1199,6 +1280,15 @@ class Unknown:
             steps = int(self.carry[side] // self.geo.cell_m)
             self.carry[side] -= steps * self.geo.cell_m
             self.cells[side] = self._spread(unk & room, room, steps)
+
+    @staticmethod
+    def _enemy_alive(tick, side: str) -> bool:
+        """Any enemy of `side` alive at the tick: from the round's lives when the tick has them (a live
+        player can lack a position sample), else from its holders."""
+        rnd = getattr(tick, "rnd", None)
+        if rnd is not None:
+            return any(team != side and rnd.alive(s, tick.t) for s, team in rnd.team.items())
+        return any(h.team != side for h in tick.holders.values())
 
     def _spread(self, cells: np.ndarray, room: np.ndarray, steps: int) -> np.ndarray:
         g, r = cells.reshape(GRID, GRID), room.reshape(GRID, GRID)
