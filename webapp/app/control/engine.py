@@ -506,6 +506,7 @@ class Holder:
     body: np.ndarray         # body view after statuses (what they can see: enemy sight of a holder)
     flagged: bool            # enemy damage, a wallbang or a contesting status on them
     mode: str
+    memory: np.ndarray | None = None   # the remembered part of `passive` (Memory.apply), flat
 
 
 @dataclass
@@ -763,9 +764,12 @@ class Tick:
     def claims(self, side: str, removed: int | None):
         z = np.zeros(GRID * GRID, bool)
         active, passive, raw = z.copy(), z.copy(), z.copy()
+        # in the counterfactual, the unknown that pours in also ends teammates' remembered ground (rule 4)
+        eaten = self.unknown_for(side, removed) if self.unknown is not None and removed is not None else None
         for h in self.team(side, removed):
             active |= h.active
-            passive |= h.passive | h.watch
+            mine = h.passive if eaten is None or h.memory is None else h.passive & ~(h.memory & eaten)
+            passive |= mine | h.watch
             raw |= h.raw | h.watch
         for share in self.backfill(side, removed).values():
             passive |= share
@@ -1023,7 +1027,8 @@ class Tick:
             lv[passive] = 1
             f_enemy = fills[other]
             if self.unknown is not None:
-                safe = self.unknown_safe(side, removed)
+                # nobody alive on the side: it holds nothing, Safe included
+                safe = self.unknown_safe(side, removed) if self.team(side, removed) else np.zeros(GRID * GRID, bool)
             else:
                 safe = walk.ravel() if f_enemy is None else f_enemy.safe(walk).ravel()
             lv[safe] = np.maximum(lv[safe], 2)
@@ -1332,7 +1337,8 @@ class Memory:
         for h in tick.holders.values():
             seen = (h.active | h.passive) & walk
             if h.slot in self.cells:
-                h.passive = h.passive | (self.cells[h.slot] & ~h.active)
+                h.memory = self.cells[h.slot] & ~h.active
+                h.passive = h.passive | h.memory
                 self.cells[h.slot] |= seen
             else:
                 self.cells[h.slot] = seen

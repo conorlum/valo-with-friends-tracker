@@ -297,6 +297,34 @@ def test_ground_unknown_could_reach_anyway_is_not_a_players_control():
     assert not (gained & ~tk.live[0]).any(), "only the cells their own live control held back"
 
 
+def test_a_dead_team_holds_no_safe_ground():
+    geo = midwall_hall()       # the wall hides the west half's north from A's unknown in the east
+    tk = _tick(geo, {0: still("A", 150, 200, 0), 5: still("B", 400, 120, 0)}, deaths={0: 0.5})
+    assert 0 not in tk.holders
+    tk.unknown = {"A": _band(geo, 300, 400, 96, 160), "B": np.zeros(GRID * GRID, bool)}
+    assert tk.unknown_safe("A")[_col(geo, 150, 120)], "the hidden ground is outside A's unknown's sight"
+    state = tk.compose()["state"]
+    walk = geo.walk.ravel()
+    assert not np.isin(state[walk], A_OWN).any(), "nobody alive on A: A holds nothing"
+    assert not np.isin(state[walk], (ce.CONTESTED, ce.CONTESTED_ACTIVE)).any()
+
+
+def test_without_a_player_unknown_eats_a_teammates_remembered_ground_behind_them():
+    from tests.replays.control_toys import door_hall
+    geo = door_hall()          # A0 holds the one-cell door; A1 stands in the west room facing its west wall
+    tk = _tick(geo, {0: still("A", 208, 292, 0), 1: still("A", 104, 200, 180), 5: still("B", 400, 150, 180)})
+    tk.unknown = {"A": _band(geo, 300, 416), "B": _band(geo, 96, 200)}
+    room = _band(geo, 96, 200)
+    mem = ce.Memory(geo)
+    mem.cells[1] = room.copy()            # A1 saw the whole west room earlier
+    mem.apply(tk, tk.unknown)
+    behind = _col(geo, 180, 120)
+    assert not tk.live[1][behind] and tk.holders[1].passive[behind], "remembered, not seen now"
+    base, cf = tk.compose()["state"], tk.compose(removed=0)["state"]
+    assert int(base[behind]) in A_OWN
+    assert int(cf[behind]) not in A_OWN, "without A0, unknown reaches it and the memory ends"
+
+
 def test_the_knowledge_views_use_the_same_unknown():
     geo = open_hall()
     rnd = ce.RoundInputs(blob({0: still("A", 120, 200, 0), 5: still("B", 400, 200, 180)}), geo)
