@@ -1,3 +1,7 @@
+/* `hidden` always hides: a class's own display (the replay's spike panel is flex) would beat the
+   browser's [hidden] rule and leave a hidden element on screen. */
+[hidden] { display: none !important; }
+
 :root {
   color-scheme: dark;
   --page: #0d0d0d;

@@ -159,6 +159,15 @@ def test_the_linked_mode_helpers():
     assert got["tally"] == {"0": {"k": 1, "d": 0, "a": 0}, "5": {"k": 0, "d": 2, "a": 0}}
 
 
+def test_hidden_wins_over_a_class_display():
+    """The spike panel (`.replay-hud`, display: flex) stayed on screen, showing the last round's defuse,
+    after a change of round set it `hidden`: an author `display` beats the browser's own [hidden] rule."""
+    import re
+
+    css = (WEBAPP / "app" / "static" / "css" / "style.css").read_text(encoding="utf-8")
+    assert re.search(r"(^|\n)\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}", css)
+
+
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_sentinel_utility_goes_down_when_its_owner_dies():
     """Placed sentinel utility dies with its owner (the engine's Q71 set): the viewer greys it from the
