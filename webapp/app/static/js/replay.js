@@ -287,6 +287,15 @@
 
   var GONE_S = 0.6;
 
+  // Placed sentinel utility that dies with its owner (the control engine's Q71 set: Cypher's trip and
+  // camera, Killjoy's turret and alarmbot, Chamber's trap). Drawn grey from the owner's death on.
+  var DIES_WITH_OWNER = /^(Gumshoe_4_TripWire|Gumshoe_E_PossessableCamera|Killjoy_E_Turret|Killjoy_Q_StealthAlarmbot|Deadeye_E_Trap)$/;
+
+  function utilDownAt(a, alive, t, tEnd) {
+    if (a.slot === null || a.slot === undefined || !DIES_WITH_OWNER.test(a.code + "_" + a.name)) return false;
+    return !aliveAt((alive || {})[String(a.slot)], t, tEnd);
+  }
+
   // When a pop ability went off: the effects it played on itself (`fx`), or its spawn.
   function popTimes(a) {
     return a.fx && a.fx.length ? a.fx : [a.t0];
@@ -1202,6 +1211,10 @@
         var color = self.ownerColor(a.slot);
         var glyph = self.abilityIcon(style.agent, style.ability);
         var text = self.abilityText(a, style);
+        if (utilDownAt(a, blob.alive, t, blob.t_end)) {
+          color = self.css("--replay-util-down", "#7d828c");   // its owner is dead: it went down with them
+          text += " · down (owner dead)";
+        }
         var age = t - a.t0, fadeIn = abilityAlpha(a, t);
         ctx.save();
         if ((pass === "smoke" || pass === "area") && style.pop !== undefined) {
@@ -2115,7 +2128,7 @@
     abilityStyle: abilityStyle, lineEnds: lineEnds, abilitiesAt: abilitiesAt, abilityAlpha: abilityAlpha, pairWires: pairWires, signed: signed, tallyAt: tallyAt, aliveCountAt: aliveCountAt, stateAt: stateAt,
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
     impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,
-    popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle,
+    popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle, utilDownAt: utilDownAt,
     controlRows: controlRows, withSiteData: withSiteData
   };
   global.Replay = api;
