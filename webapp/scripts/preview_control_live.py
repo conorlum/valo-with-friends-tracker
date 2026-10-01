@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         tasks.append({"key": n, "map": ctx["match"]["map"], "blob": blob, "link": link_for(ctx, n)})
     print(f"{ctx['match']['map']}: rounds {args.rounds} at revision {cf.CONTROL_REVISION}", flush=True)
     started, results = time.time(), {}
-    with multiprocessing.Pool(len(tasks)) as pool:
+    with multiprocessing.Pool(min(len(tasks), os.cpu_count() or 1)) as pool:
         for r in pool.imap_unordered(compute_task, tasks):
             print(f"  r{r['key']}: {r['status']} {r['seconds']:.0f}s {r.get('error', '')[:600]}", flush=True)
             results[r["key"]] = r
