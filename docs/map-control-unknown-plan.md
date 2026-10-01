@@ -60,3 +60,24 @@ picker: Unknown off / Team 1 / Team 2 / both (default both). Shown only for rows
   public data (no DB writes), against the user's two screenshots. **No full-corpus recompute until the user says
   the sample looks right.**
 - Storage: two more optional streams per row; whatever size they cost is accepted, measured and reported.
+
+## Decided while building (2026-10-01)
+
+- **Control's counterfactual.** Unknown comes only from its sources (the unknown already out and the enemy's
+  players). Without a player there is less live control to hold it back: what the sources can walk to without
+  them, but not with them, joins the unknown for that counterfactual. Ground it could reach anyway but hasn't
+  yet isn't the player's to hold. (`Tick.unknown_without`.)
+- **The whole enemy team dead:** that team's unknown clears to nothing.
+- **Maps without barrier paint** (Bind, Breeze, Corrode, Fracture, Icebox, Lotus, Pearl at the time): the user
+  paints them. Until then their unknown starts from the enemies' own cells only.
+
+## What the sample showed (Ascent 6f12db3e, rounds 1-2, computed locally, no DB writes)
+
+- Compute: r1 86 s, r2 123 s (revision 3 before unknown: 82 s and 103 s).
+- Size: r1 283 KB gzipped (unknown_a 54 KB, unknown_b 47 KB raw); r2 315 KB gzipped (unknown_a 61 KB,
+  unknown_b 49 KB raw). Before unknown, revision 3's r1 was larger (its states stream alone was 380 KB raw).
+- Defenders' start ground kept, round 1 (of 2,924 cells): 0 s 2,924; 2 s 2,743; 4 s 2,741; 6 s 2,681; 8 s 2,577;
+  10 s 2,428; 12 s 2,512; 14 s 2,234; 16 s 1,815; 18 s 1,517; 20 s 1,808; 22 s 1,288; 24 s 542; 26 s 764.
+- What it loses goes to the defenders' unknown, not to the attackers: of those cells, 290 are in B's unknown at
+  10 s, 690 at 14 s, 1,407 at 18 s, 1,116 at 20 s (the Miks glance clears what it sees), 1,636 at 22 s and
+  2,298 at 24 s; attacker-held stays under 200 throughout.
