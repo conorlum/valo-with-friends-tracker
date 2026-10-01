@@ -26,6 +26,10 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   walk into without crossing the team's claims (and the enemy doesn't claim), is passive control of
   the player nearest it from their live view (`Tick.backfill`). Recomputed each tick, never remembered;
   where it is already the team's Safe ground it credits nobody (coverage), as before.
+- **Unknown (2026-10-01; docs/map-control-unknown-plan.md).** Each team's unknown is where an enemy
+  could be: pushed out by the enemy's live players, the enemy's side of the barriers at the drop, and
+  its own spread at UNKNOWN_MPS (8-connected, across specials, through smokes). The team's live
+  control clears it on contact.
 - **Watchers** (passive): trips, alarmbots, Chamber traps, Killjoy's turret, Cypher's camera while
   he is in it, and flown drones; a camera or drone in use replaces its owner's own view. Placed
   utility dies with its owner (Q71): a watcher counts only while its owner is alive.
@@ -81,6 +85,9 @@ DECAY_MPS = 3.5
 # When the buy-phase barriers drop, each team remembers its side of them (the barrier paint), spared
 # decay for this long (the user's call, 2026-09-30: passive, with a short grace before it erodes).
 BARRIER_GRACE_S = 5.0
+# Unknown (docs/map-control-unknown-plan.md, 2026-10-01): where an enemy of a team could be. It spreads
+# at Valorant's shift-walk, the speed an enemy can move without being heard.
+UNKNOWN_MPS = 3.5
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
 FAST_TURN_DPS = 90.0
 SPEED_WINDOW_S = 0.25
@@ -578,6 +585,19 @@ def _yaw_at(w: Watcher, t: float, default: float) -> float:
     return float(w.yaw) if w.yaw is not None else default
 
 
+def special_links(geo: Geometry) -> list[tuple[int, int, bool]]:
+    """The map's specials (teleporters, ropes, drops) as (cell a, cell b, one way)."""
+    out = []
+    for sp in geo.specials:
+        try:
+            a = geo.cell_of_px(*geo.px_of_uv(*sp["a"]))
+            b = geo.cell_of_px(*geo.px_of_uv(*sp["b"]))
+        except (KeyError, TypeError):
+            continue
+        out.append((a, b, bool(sp.get("one_way"))))
+    return out
+
+
 class Tick:
     """The inputs of one tick, and `compose` (the state) with or without a removed player."""
 
@@ -747,15 +767,7 @@ class Tick:
         return active, passive, active | passive, raw
 
     def _links(self) -> list[tuple[int, int, bool]]:
-        out = []
-        for sp in self.geo.specials:
-            try:
-                a = self.geo.cell_of_px(*self.geo.px_of_uv(*sp["a"]))
-                b = self.geo.cell_of_px(*self.geo.px_of_uv(*sp["b"]))
-            except (KeyError, TypeError):
-                continue
-            out.append((a, b, bool(sp.get("one_way"))))
-        return out
+        return special_links(self.geo)
 
     def _reach(self, lab: np.ndarray, start: set[int]) -> set[int]:
         """Labels reachable from `start` through the map's specials (teleporters, ropes, drops)."""
@@ -1115,6 +1127,96 @@ class Knowledge:
         kt.seeds = {self.enemy: seed} if seed.any() else {}
         kt.extra_passive = {self.enemy: remembered} if remembered.any() else {}
         return kt
+
+
+def barrier_start(geo: Geometry, tick) -> dict[str, tuple[np.ndarray, dict[int, int]]]:
+    """The barriers drop: side -> (its start ground, flat: the 4-connected walkable region around its
+    players, cut by the barrier paint; {slot: start cell}). A side whose ground reaches an enemy's start
+    (the paint has a gap) is left out and counted; no paint, no start ground."""
+    if geo.barrier is None:
+        return {}
+    open_ = geo.walk & ~geo.barrier
+    regions, _ = ndimage.label(open_)
+    out = {}
+    for side in ("A", "B"):
+        hs = [h for h in tick.holders.values() if h.team == side and open_.ravel()[h.cell]]
+        ids = {int(regions.ravel()[h.cell]) for h in hs}
+        if not hs:
+            continue
+        starts = {h.slot: h.cell for h in hs}
+        # a player pressed against a barrier can stand on a line cell: they start from the
+        # neighbouring open cell in their teammates' ground
+        for h in tick.holders.values():
+            if h.team == side and h.slot not in starts and geo.barrier.ravel()[h.cell]:
+                y, x = divmod(h.cell, GRID)
+                for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1),
+                               (y - 1, x - 1), (y - 1, x + 1), (y + 1, x - 1), (y + 1, x + 1)):
+                    if 0 <= ny < GRID and 0 <= nx < GRID and int(regions[ny, nx]) in ids:
+                        starts[h.slot] = ny * GRID + nx
+                        break
+        area = np.isin(regions, list(ids))
+        if any(area.ravel()[e.cell] for e in tick.holders.values() if e.team != side):
+            # the paint has a gap: this side's ground reaches an enemy's start, so it means nothing
+            tick.rnd.missing["barrier paint leaks (no start ground)"] += 1
+            continue
+        out[side] = (area.ravel(), starts)
+    return out
+
+
+class Unknown:
+    """Each team's unknown across a round's ticks (docs/map-control-unknown-plan.md): the cells where an
+    enemy of the team could be. `begin` takes the barrier drop (each team's unknown is the enemy's start
+    ground). `apply` runs on each tick in time order, after the tick's vision and before Memory.apply:
+    the enemy's live players push it out from their own cells, it spreads at UNKNOWN_MPS through
+    walkable cells in 8-connected steps and across the map's specials, and the team's live control
+    (its players' active and passive vision, their watchers and their own cells) clears it and stops it.
+    Smokes don't stop it: you can walk through a smoke."""
+
+    def __init__(self, geo: Geometry):
+        self.geo = geo
+        self.cells = {"A": np.zeros(GRID * GRID, bool), "B": np.zeros(GRID * GRID, bool)}
+        self.carry = {"A": 0.0, "B": 0.0}         # metres of spread not yet a whole cell step
+        self.t: float | None = None
+        self.links = special_links(geo)
+
+    def begin(self, areas: dict) -> None:
+        for side in ("A", "B"):
+            other = "B" if side == "A" else "A"
+            if other in areas:
+                self.cells[side] = areas[other][0].copy()
+
+    def apply(self, tick) -> None:
+        walk = self.geo.walk.ravel()
+        dt = 0.0 if self.t is None else max(0.0, tick.t - self.t)
+        self.t = tick.t
+        for side in ("A", "B"):
+            live = np.zeros(GRID * GRID, bool)
+            unk = self.cells[side].copy()
+            for h in tick.holders.values():
+                if h.team == side:
+                    live |= h.active | h.passive | h.watch
+                    live[h.cell] = True
+                else:
+                    unk[h.cell] = True            # an enemy pushes it out from where they stand
+            room = walk & ~live
+            self.carry[side] += UNKNOWN_MPS * dt
+            steps = int(self.carry[side] // self.geo.cell_m)
+            self.carry[side] -= steps * self.geo.cell_m
+            self.cells[side] = self._spread(unk & room, room, steps)
+
+    def _spread(self, cells: np.ndarray, room: np.ndarray, steps: int) -> np.ndarray:
+        g, r = cells.reshape(GRID, GRID), room.reshape(GRID, GRID)
+        for _ in range(steps):
+            nxt = ndimage.binary_dilation(g, EIGHT) & r
+            for a, b, one_way in self.links:
+                if g.flat[a] and r.flat[b]:
+                    nxt.flat[b] = True
+                if not one_way and g.flat[b] and r.flat[a]:
+                    nxt.flat[a] = True
+            if np.array_equal(nxt, g):
+                break
+            g = nxt
+        return g.ravel().copy()
 
 
 class Memory:
