@@ -176,6 +176,39 @@ def test_spotting_an_enemy_shrinks_their_unknown_to_where_they_stand(via):
     assert not unk.cells["A"][_col(geo, 200, 280)]
 
 
+@pytest.mark.parametrize("pocket, kept", [(1, False), (2, False), (3, True)])
+def test_a_pocket_of_unknown_vision_has_eaten_down_to_a_1x2_is_dropped(pocket, kept):
+    """Round 3 of the sample at 98.0 s: vision had eaten a pocket down to 2 cells, and it grew back as the
+    ground round it was freed. A piece of a team's unknown of at most DROP_PIECE_CELLS with no enemy in it
+    is dropped for good (the user's call, 2026-10-01: a real enemy there makes unknown of their own)."""
+    geo = open_hall()
+    unk = ce.Unknown(geo)
+    b = lambda: _at(5, "B", geo, 400, 200)  # noqa: E731
+    for t in (0.0, 30.0):
+        unk.apply(_Tk(t, _at(0, "A", geo, 120, 120), b()))
+    hole = [geo.cell_of_px(200 + 8 * k, 200) for k in range(pocket)]
+    east = geo.walk.ravel() & (geo.centres[:, 0] > 330)
+    view = geo.walk.ravel() & ~east
+    view[hole] = False
+    unk.apply(_Tk(30.5, _at(0, "A", geo, 120, 120, view), b()))
+    assert (unk.cells["A"][hole] == kept).all()
+    assert unk.cells["A"][_col(geo, 400)], "the big piece, with B in it, stays"
+    unk.apply(_Tk(31.0, _at(0, "A", geo, 120, 120, view), b()))
+    assert (unk.cells["A"][hole] == kept).all(), "a dropped pocket doesn't come back"
+
+
+def test_a_pocket_with_an_enemy_in_it_stays_however_small():
+    geo = open_hall()
+    unk = ce.Unknown(geo)
+    b = lambda: _at(5, "B", geo, 200, 200)  # noqa: E731
+    for t in (0.0, 30.0):
+        unk.apply(_Tk(t, _at(0, "A", geo, 120, 120), b()))
+    view = geo.walk.ravel().copy()
+    view[_col(geo, 200)] = False                 # A sees all but the cell B stands in
+    unk.apply(_Tk(30.5, _at(0, "A", geo, 120, 120, view), b()))
+    assert np.flatnonzero(unk.cells["A"]).tolist() == [_col(geo, 200)]
+
+
 def test_each_enemy_is_tracked_on_their_own():
     """Two enemies spotted at different moments: neither tick sees both, yet each one's unknown is cut back
     to their own spot, so the far end of the hall is clear."""

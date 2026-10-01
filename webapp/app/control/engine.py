@@ -92,6 +92,9 @@ PRESENCE_M = 4.0
 # this is sealed to the unknown: nobody squeezes through it unseen (the user's call, 2026-10-01). The gas
 # itself stays walkable.
 GAP_SEAL_M = 1.5
+# A piece of a team's unknown this small (cells, 8-connected; a 1x2) with no enemy in it is dropped
+# (the user's call, 2026-10-01: what vision has eaten down to that is gone).
+DROP_PIECE_CELLS = 2
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
 FAST_TURN_DPS = 90.0
 SPEED_WINDOW_S = 0.25
@@ -1426,7 +1429,30 @@ class Unknown:
                 reached = self._spread(reached, room, free, t, self.seen[side].get(slot))
                 self.reached[side][slot] = reached
                 cells |= np.isfinite(reached)
-            self.cells[side] = cells
+            self.cells[side] = self._drop_pieces(side, cells, tick)
+
+    def _drop_pieces(self, side: str, cells: np.ndarray, tick) -> np.ndarray:
+        """`cells` less its 8-connected pieces of at most DROP_PIECE_CELLS that no enemy stands in (the
+        user's call, 2026-10-01: what vision has eaten down to that is gone; a real enemy there makes
+        unknown of their own). Dropped from every enemy's unknown, and a sighting inside one with it."""
+        lab, n = ndimage.label(cells.reshape(GRID, GRID), EIGHT)
+        if not n:
+            return cells
+        lab = lab.ravel()
+        size = np.bincount(lab)
+        small = size <= DROP_PIECE_CELLS
+        small[0] = False
+        for h in tick.holders.values():
+            if h.team != side:
+                small[lab[h.cell]] = False
+        if not small.any():
+            return cells
+        drop = small[lab]
+        for slot, reached in self.reached[side].items():
+            reached[drop] = np.inf
+            if slot in self.seen[side] and drop[self.seen[side][slot][0]]:
+                del self.seen[side][slot]
+        return cells & ~drop
 
     @staticmethod
     def _enemies(tick, side: str) -> set[int]:

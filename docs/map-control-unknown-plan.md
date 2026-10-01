@@ -60,7 +60,16 @@ Both come from asking "is anyone looking at this?" instead of "could an enemy ha
    couldn't tell whose ground was whose. Measured on that moment: 0 cells while S1mpLy is in sight, where it
    was ~4,880; the unknown part of the round's compute went from 0.2 s to 0.7 s (of ~100 s). Remembered
    ground still dies with its player.
-8. **Views.** The same unknown is used in the true view and in both "as Team X knew it" views.
+8. **Crumbs are dropped** (2026-10-01, round 3 at 98.0 s: vision had eaten a pocket down to 2 cells and it
+   grew back to 15 as the ground round it was freed). A piece of a team's unknown (8-connected) of at most
+   `DROP_PIECE_CELLS` = 2 cells (a 1x2) with no live enemy standing in it is dropped for good, from every
+   enemy's unknown (and a sighting inside it with it). A piece with an enemy in it stays however small:
+   an enemy just out of sight is a 1-cell piece, and dropping it every tick would mean they never make
+   any. Measured on the whole sample (22 rounds, both teams, 13,350 team-ticks) before the change:
+   enemy-free pieces of at most 1 / 2 / 3 / 4 / 6 / 8 / 12 cells came up 2,113 / 3,026 / 3,985 / 4,811 /
+   6,533 / 7,613 / 9,746 times; at 2 cells, 614 of them grew on the next tick and 216 were part of more
+   than 50 cells on it (joined the main unknown as watched ground was freed: the cost of the cap).
+9. **Views.** The same unknown is used in the true view and in both "as Team X knew it" views.
 
 ## Drawing
 
@@ -97,6 +106,16 @@ picker: Unknown off / Team 1 / Team 2 / both (default both). Shown only for rows
   user painted cover on Ascent's thin walls. Four strokes ran into doorways and blocked real kill lines
   (centre-to-centre, non-wallbang; 25/476 against the 2% bar); their door ends were trimmed by 4-20 px to 6/476.
   Two of them (x 272-287 and 312-335, y 528-535) kept only 4 px each: worth a look in the tagger.
+- **Elevation the 2D map can't show** (round 3 at 80-82 s: D, running at (418, 268), had the far room past
+  the doorway at (145-187, 380) as passive sight 40 m away, and it came out contested; the user: not
+  visible in game, because of elevation). The rays thread between two wall corners within the 0.3 m
+  tolerance. Painting the whole stair edge they cross (y 309, x 326-369) blocked a real kill line
+  ((355, 317) to (436, 165)). The same lines come from 17 of the 158 cells of that upper corridor
+  (x 368-435, y 200-367; S1mpLy at (424, 282) at 79.5 s too), and all of them cross the stair edge at
+  x 328-358, the kill line at 359. So: cover on the stair edge x 324-355 (y 308-311), plus one 4 px
+  cell at each corner the rays thread (272-275, 332-335) and (184-187, 376-379) for the last 3. Cells of
+  the upper corridor that see into the room: 26 to 0; kill lines still 9/476; 4 walkable cells lost
+  (cover blocks walking too, so the edge is crossed only at x 356-369 now).
 
 - **Presence bubble** (after the first look): each live player holds the walkable ground within `PRESENCE_M`
   = 4 m that they can walk to and see (all round them, smoke-aware: anything that blocks sight stops it) as

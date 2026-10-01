@@ -84,6 +84,10 @@ def main(argv: list[str] | None = None) -> int:
         (out / f"{n}.json.gz").write_bytes(blob)
         tasks.append({"key": n, "map": ctx["match"]["map"], "blob": blob, "link": link_for(ctx, n)})
     print(f"{ctx['match']['map']}: rounds {args.rounds} at revision {cf.CONTROL_REVISION}", flush=True)
+    from app.control import geometry
+    # the visibility bitsets once, before the workers (as compute_control does): after a geometry change
+    # every worker would build them at once and race on the cache file
+    geometry.visibility(geometry.load_geometry(ctx["match"]["map"]))
     started, results = time.time(), {}
     with multiprocessing.Pool(min(len(tasks), os.cpu_count() or 1)) as pool:
         for r in pool.imap_unordered(compute_task, tasks):

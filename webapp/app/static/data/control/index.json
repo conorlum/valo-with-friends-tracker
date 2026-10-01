@@ -23,9 +23,9 @@
   },
   "Ascent": {
    "image_sha": "287357fcfce2",
-   "sight_sha": "6652c32db7b2",
-   "walk_sha": "548a6495a0fb",
-   "walkable_cells": 5220,
+   "sight_sha": "a8a4d10ea0ad",
+   "walk_sha": "791c0eb3f7f5",
+   "walkable_cells": 5216,
    "cell_m": 1.116,
    "tags": 0,
    "see_across_paint": false,
