@@ -456,6 +456,16 @@ def test_the_barrier_start_gives_each_team_its_side_as_passive_with_a_grace():
     assert late.passive[geo.cell_of_px(110, 200)], "deep in A's side: still held"
 
 
+def test_a_leaking_barrier_gives_no_start_ground():
+    geo = _barrier_hall()
+    geo.barrier[: geo.cell_of_px(0, 150) // GRID, :] = False     # the line stops at y 150: a gap to the north wall
+    rnd = ce.RoundInputs(blob({0: still("A", 150, 200, 0), 5: still("B", 400, 200, 180)}), geo)
+    tk = ce.Tick(rnd, 0.0)
+    mem = ce.Memory(geo)
+    mem.start(tk)
+    assert mem.cells == {} and rnd.missing["barrier paint leaks (no start ground)"] == 2
+
+
 def test_no_barrier_paint_means_no_start_memory():
     geo = open_hall()
     mem = ce.Memory(geo)

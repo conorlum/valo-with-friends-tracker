@@ -1143,6 +1143,10 @@ class Memory:
             if not hs:
                 continue
             area = np.isin(regions, list(ids))
+            if any(area.ravel()[e.cell] for e in tick.holders.values() if e.team != side):
+                # the paint has a gap: this side's ground reaches an enemy's start, so it means nothing
+                tick.rnd.missing["barrier paint leaks (no start ground)"] += 1
+                continue
             for slot, share in _share_by_walk(area, {h.slot: h.cell for h in hs}).items():
                 self.cells[slot] = share.ravel()
             self.held |= area.ravel()

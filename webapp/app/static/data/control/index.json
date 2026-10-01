@@ -15,7 +15,11 @@
     "blocked": 0,
     "share": 0.0,
     "passes": true
-   }
+   },
+   "barrier_sha": "c7423c995f47",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Ascent": {
    "image_sha": "287357fcfce2",
@@ -102,7 +106,11 @@
     "blocked": 0,
     "share": 0.0,
     "passes": true
-   }
+   },
+   "barrier_sha": "64f32e7a2662",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Icebox": {
    "image_sha": "85b9cef26829",
