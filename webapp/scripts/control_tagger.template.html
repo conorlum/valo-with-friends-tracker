@@ -455,6 +455,8 @@
     $("map").appendChild(o);
   });
   restore();
+  // with round starts to draw barriers against, the kill lines start hidden (they clutter the dots)
+  if (Object.keys(DATA.maps).some(function (n) { return (DATA.maps[n].starts || []).length; })) $("showLines").checked = false;
   // the link's #Map opens on that map; otherwise the first map with replays
   var asked = decodeURIComponent((location.hash || "").slice(1));
   var first = DATA.maps[asked] ? asked
