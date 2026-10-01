@@ -29,7 +29,8 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   could be: pushed out by the enemy's live players, the enemy's side of the barriers at the drop, and
   its own spread at UNKNOWN_MPS (each cell no sooner than a walk of its true length, diagonals sqrt(2);
   across specials, through smokes but not through a pinch under GAP_SEAL_M between a smoke or wall
-  ability and the map's wall). The team's live control clears it on contact.
+  ability and the map's wall). The team's live control clears it on contact. It is kept per enemy: one
+  the team spots starts again from where they were seen, and a dead one's goes with them.
 - **Watchers** (passive): trips, alarmbots, Chamber traps, Killjoy's turret, Cypher's camera while
   he is in it, and flown drones; a camera or drone in use replaces its owner's own view. Placed
   utility dies with its owner (Q71): a watcher counts only while its owner is alive.
@@ -1297,12 +1298,19 @@ class Unknown:
     the earliest time an enemy could have been there (`reached`), and a neighbour joins at that time plus
     its step's true length (a cell straight, sqrt(2) diagonal; a special one cell) over UNKNOWN_MPS, but
     never before it was last free: ground the team watched on the tick before is entered from this tick
-    on. Exact at any tick spacing, so nothing is carried between ticks."""
+    on. Exact at any tick spacing, so nothing is carried between ticks.
+
+    Each enemy has their own (the user's call, 2026-10-01; the team's unknown is all of them together): one
+    the team spots, in a player's active sight or a watcher, can only be where they stand, so theirs starts
+    again from that spot and time and walks out from it once they're out of sight. A dead enemy's goes with
+    them."""
 
     def __init__(self, geo: Geometry):
         self.geo = geo
         self.cells = {"A": np.zeros(GRID * GRID, bool), "B": np.zeros(GRID * GRID, bool)}
-        self.reached = {"A": np.full(GRID * GRID, np.inf), "B": np.full(GRID * GRID, np.inf)}
+        self.reached: dict[str, dict[int, np.ndarray]] = {"A": {}, "B": {}}   # side -> enemy slot -> flat
+        self.seen: dict[str, dict[int, tuple[int, float]]] = {"A": {}, "B": {}}   # enemy slot -> (cell, t) last spotted
+        self._start = {"A": None, "B": None}       # the barrier drop's ground, for each enemy's first tick
         self.free_since = {"A": None, "B": None}   # flat: when each cell was last not the team's live control
         self._room = {"A": None, "B": None}        # the last tick's room, to see what was freed since
         self.t: float | None = None
@@ -1370,26 +1378,29 @@ class Unknown:
             other = "B" if side == "A" else "A"
             if other in areas:
                 self.cells[side] = areas[other][0].copy()
+                self._start[side] = areas[other][0].copy()
 
     def apply(self, tick) -> None:
         walk = self.geo.walk.ravel()
         t = self.t = tick.t
         pinched = self.sealed(getattr(tick, "smokes", None))
         for side in ("A", "B"):
-            reached = self.reached[side]
-            reached[self.cells[side] & ~np.isfinite(reached)] = t    # the barrier drop's ground: there now
-            if not self._enemy_alive(tick, side):
-                reached[:] = np.inf
+            enemies = self._enemies(tick, side)
+            for gone in set(self.reached[side]) - enemies:   # dead: nowhere
+                del self.reached[side][gone]
+                self.seen[side].pop(gone, None)
+            if not enemies:
                 self.cells[side] = np.zeros(GRID * GRID, bool)   # nobody left: nobody could be anywhere
                 continue
             live = np.zeros(GRID * GRID, bool)
+            spots = np.zeros(GRID * GRID, bool)
             shut = pinched.copy()
             for h in tick.holders.values():
                 if h.team == side:
                     live |= h.active | h.passive | h.watch
                     live[h.cell] = True
+                    spots |= h.active | h.watch
                 else:
-                    reached[h.cell] = min(reached[h.cell], t)   # an enemy pushes it out from where they stand
                     shut[h.cell] = False                       # one standing in a pinch is in it
             room = walk & ~live & ~shut
             free = self.free_since[side]
@@ -1398,23 +1409,46 @@ class Unknown:
             else:
                 free = np.where(room & ~self._room[side], t, free)   # freed since the last tick: from now
             self.free_since[side], self._room[side] = free, room
-            reached[~room] = np.inf
-            self.reached[side] = self._spread(reached, room, free, t)
-            self.cells[side] = np.isfinite(self.reached[side])
+            cells = np.zeros(GRID * GRID, bool)
+            for slot in sorted(enemies):
+                reached = self.reached[side].get(slot)
+                if reached is None:
+                    reached = np.full(GRID * GRID, np.inf)
+                    if self._start[side] is not None:
+                        reached[self._start[side]] = t        # the barrier drop's ground: there now
+                h = tick.holders.get(slot)
+                if h is not None and spots[h.cell]:
+                    reached = np.full(GRID * GRID, np.inf)    # spotted: there, and nowhere else
+                    self.seen[side][slot] = (h.cell, t)
+                if h is not None:
+                    reached[h.cell] = min(reached[h.cell], t)   # an enemy pushes it out from where they stand
+                reached[~room] = np.inf
+                reached = self._spread(reached, room, free, t, self.seen[side].get(slot))
+                self.reached[side][slot] = reached
+                cells |= np.isfinite(reached)
+            self.cells[side] = cells
 
     @staticmethod
-    def _enemy_alive(tick, side: str) -> bool:
-        """Any enemy of `side` alive at the tick: from the round's lives when the tick has them (a live
+    def _enemies(tick, side: str) -> set[int]:
+        """The enemies of `side` alive at the tick: from the round's lives when the tick has them (a live
         player can lack a position sample), else from its holders."""
         rnd = getattr(tick, "rnd", None)
         if rnd is not None:
-            return any(team != side and rnd.alive(s, tick.t) for s, team in rnd.team.items())
-        return any(h.team != side for h in tick.holders.values())
+            return {s for s, team in rnd.team.items() if team != side and rnd.alive(s, tick.t)}
+        return {h.slot for h in tick.holders.values() if h.team != side}
 
-    def _spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float) -> np.ndarray:
+    def _spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float,
+                seen: tuple[int, float] | None = None) -> np.ndarray:
         """`reached` relaxed through `room` up to time `t`: each cell's earliest arrival from a
-        neighbour (after the cell was last freed); arrivals later than `t` are not there yet."""
+        neighbour (after the cell was last freed); arrivals later than `t` are not there yet. `seen`
+        (cell, time), where the enemy was last spotted, is a source from that time even while the team
+        still watches that cell or has just freed it (they were in it); it is in the result only once it is
+        in `room`."""
         g = reached.reshape(GRID, GRID).copy()
+        if seen is not None:
+            g.flat[seen[0]] = min(g.flat[seen[0]], seen[1])
+        if not np.isfinite(g).any():
+            return g.ravel()
         f = free.reshape(GRID, GRID)
         r = room.reshape(GRID, GRID)
         straight = self.geo.cell_m / UNKNOWN_MPS

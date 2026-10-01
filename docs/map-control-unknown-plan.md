@@ -50,7 +50,15 @@ Both come from asking "is anyone looking at this?" instead of "could an enemy ha
 5. **Backfill** never claims a cell in the team's unknown.
 6. **Safe.** T's ground is Safe when no cell of T's unknown has line of sight to it (smoke-aware). This replaces
    the instant flood from the enemy's players.
-7. **Deaths.** A dead enemy stops pushing out unknown; what is already out stays until T clears it. Remembered
+7. **Each enemy on their own** (changed 2026-10-01, after round 4 of the sample at 56.5 s: S1mpLy, the
+   attackers' last player, was in NPrightdolphin's sight and the defenders' unknown still covered ~4,880
+   cells). T's unknown is the union of one unknown per live enemy. An enemy T spots (in a T player's active
+   sight or a T watcher) can only be where they stand: theirs starts again from that cell and time, and walks
+   out from it once they are out of sight (the sighting is a source from its own time, even on ground T only
+   just stopped watching). With that tracking a dead enemy's unknown goes with them; this replaces the first
+   rule here, "a dead enemy stops pushing; what is out stays", which was there because one shared unknown
+   couldn't tell whose ground was whose. Measured on that moment: 0 cells while S1mpLy is in sight, where it
+   was ~4,880; the unknown part of the round's compute went from 0.2 s to 0.7 s (of ~100 s). Remembered
    ground still dies with its player.
 8. **Views.** The same unknown is used in the true view and in both "as Team X knew it" views.
 

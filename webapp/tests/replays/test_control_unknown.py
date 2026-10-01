@@ -119,8 +119,9 @@ def test_live_vision_pushes_unknown_back_and_it_refills_when_they_look_away():
     for t in (0.0, 30.0):                    # 30 s: the whole hall but A's own cell
         unk.apply(_Tk(t, _at(0, "A", geo, 120, 200), b()))
     assert unk.cells["A"][_col(geo, 200)] and not unk.cells["A"][_col(geo, 120)], "a player's own cell is clear"
-    unk.apply(_Tk(30.1, _at(0, "A", geo, 120, 200, east), b()))    # A sees the east half (and B in it)
-    assert not unk.cells["A"][east].any(), "cleared as far as they see"
+    band = east[geo.centres[east, 0] < 330]                         # x 256-330: short of B at 400
+    unk.apply(_Tk(30.1, _at(0, "A", geo, 120, 200, band), b()))    # A sees a band, not B
+    assert not unk.cells["A"][band].any(), "cleared as far as they see"
     assert unk.cells["A"][_col(geo, 200)], "the west half they don't see stays unknown"
     unk.apply(_Tk(31.1, _at(0, "A", geo, 120, 200), b()))           # they look away
     assert not unk.cells["A"][_col(geo, 260)], "the ground is free from this tick on: nobody is in it yet"
@@ -131,18 +132,64 @@ def test_live_vision_pushes_unknown_back_and_it_refills_when_they_look_away():
     assert unk.cells["A"][_col(geo, 400)], "and from B again"
 
 
-def test_a_dead_enemy_stops_pushing_unknown_but_what_is_out_stays():
+def test_a_dead_enemys_unknown_goes_with_them_and_their_teammates_stays():
+    """Each enemy has their own unknown (the user's call, 2026-10-01), so a dead one's is dropped whole."""
     geo = open_hall()
     unk = ce.Unknown(geo)
     a = lambda: _at(0, "A", geo, 120, 200)  # noqa: E731
     far = lambda: _at(6, "B", geo, 400, 110)  # noqa: E731   (a teammate of B's who stays alive)
     unk.apply(_Tk(0.0, a(), _at(5, "B", geo, 400, 280), far()))
     unk.apply(_Tk(1.0, a(), _at(5, "B", geo, 400, 280), far()))
-    before = unk.cells["A"].copy()
+    assert unk.cells["A"][_col(geo, 400, 280)]
     unk.apply(_Tk(2.0, a(), far()))          # B5 is dead: no holder
     after = unk.cells["A"]
-    assert after[before].all(), "what was out stays"
-    assert after.sum() > before.sum(), "and keeps spreading from itself"
+    assert not after[_col(geo, 400, 280)], "B5's ground: out of B6's walk in 2 s"
+    assert after[_col(geo, 400, 110)] and after[_col(geo, 400, 110) + GRID * 3], "B6's stays and spreads"
+
+
+def _spot(slot, team, geo, x, y, cells, via="active"):
+    """A holder at (x, y) px that sees `cells` with their own eyes (`active`) or through a watcher (`watch`)."""
+    h = _at(slot, team, geo, x, y)
+    view = np.zeros(GRID * GRID, bool)
+    view[np.asarray(cells, int)] = True
+    setattr(h, via, view)
+    return h
+
+
+@pytest.mark.parametrize("via", ["active", "watch"])
+def test_spotting_an_enemy_shrinks_their_unknown_to_where_they_stand(via):
+    """Round 4 of the sample at 56.5 s: S1mpLy, the attackers' last player, was in NPrightdolphin's sight
+    and their unknown still covered the map. Spotted (by a player's eyes or a watcher), an enemy can
+    only be where they stand; out of sight again, their unknown walks out from there."""
+    geo = open_hall()
+    unk = ce.Unknown(geo)
+    b = lambda: _at(5, "B", geo, 400, 200)  # noqa: E731
+    for t in (0.0, 30.0):
+        unk.apply(_Tk(t, _at(0, "A", geo, 120, 120), b()))
+    assert unk.cells["A"][_col(geo, 200, 280)], "30 s unseen: anywhere in the hall"
+    unk.apply(_Tk(30.5, _spot(0, "A", geo, 120, 120, [_col(geo, 400)], via), b()))
+    assert not unk.cells["A"].any(), "spotted: B is where A sees them, nowhere else"
+    unk.apply(_Tk(31.5, _at(0, "A", geo, 120, 120), b()))
+    steps = int(ce.UNKNOWN_MPS * 1.0 // geo.cell_m)
+    assert unk.cells["A"][_col(geo, 400) - steps] and not unk.cells["A"][_col(geo, 400) - steps - 1], \
+        "a second later: a second's walk from where they were seen"
+    assert not unk.cells["A"][_col(geo, 200, 280)]
+
+
+def test_each_enemy_is_tracked_on_their_own():
+    """Two enemies spotted at different moments: neither tick sees both, yet each one's unknown is cut back
+    to their own spot, so the far end of the hall is clear."""
+    geo = open_hall()
+    unk = ce.Unknown(geo)
+    b5, b6 = (lambda: _at(5, "B", geo, 400, 120)), (lambda: _at(6, "B", geo, 400, 280))
+    for t in (0.0, 30.0):
+        unk.apply(_Tk(t, _at(0, "A", geo, 120, 200), b5(), b6()))
+    far = _col(geo, 150, 280)
+    unk.apply(_Tk(30.5, _spot(0, "A", geo, 120, 200, [_col(geo, 400, 120)]), b5(), b6()))
+    assert unk.cells["A"][far], "B6 unseen: still anywhere"
+    unk.apply(_Tk(31.0, _spot(0, "A", geo, 120, 200, [_col(geo, 400, 280)]), b5(), b6()))
+    assert not unk.cells["A"][far], "B5 seen 0.5 s ago and B6 now: nobody can be at the far end"
+    assert unk.cells["A"][_col(geo, 400, 120) - 1], "B5 half a second's walk from where they were seen"
 
 
 def test_unknown_clears_when_the_whole_enemy_team_is_dead():
