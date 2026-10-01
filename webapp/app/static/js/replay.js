@@ -789,6 +789,16 @@
         self.draw();
       });
     }
+    this.unknownView = "both";
+    this.ui.controlUnknown = q("[data-replay-control-unknown]");
+    this.ui.controlUnknownWrap = q("[data-replay-control-unknown-wrap]");
+    if (this.ui.controlUnknown) {
+      this.ui.controlUnknown.addEventListener("change", function () {
+        self.unknownView = self.ui.controlUnknown.value;
+        self.controlPaint = null;
+        self.draw();
+      });
+    }
     Array.prototype.forEach.call(this.root.querySelectorAll("[data-replay-control-scope]"), function (button) {
       button.addEventListener("click", function () {
         self.controlScope = button.getAttribute("data-replay-control-scope");
@@ -1542,6 +1552,7 @@
     var prev = this.rounds[i - 1], next = this.rounds[i + 1];
     if (this.ui.controlLegend) this.ui.controlLegend.hidden = !this.layers.control;
     if (this.ui.controlViewWrap && !this.layers.control) this.ui.controlViewWrap.hidden = true;
+    if (this.ui.controlUnknownWrap && !this.layers.control) this.ui.controlUnknownWrap.hidden = true;
     this.controlCache.keep([prev, n, next]);
     if (!this.layers.control && this.highlight === null) { this.setControlStatus(""); return; }
     if (!this.controlCache.ready(n)) this.setControlStatus("Loading map control…");
@@ -1581,6 +1592,14 @@
     Array.prototype.forEach.call(select.querySelectorAll("[data-knew-group]"), function (option) {
       option.textContent = self.groupName(option.getAttribute("data-knew-group")) + " knew it";
     });
+    var uwrap = this.ui.controlUnknownWrap, uselect = this.ui.controlUnknown;
+    if (uwrap && uselect) {
+      var hasUnknown = !!(value && value.status === "ok" && value.parsed.unknown_a && value.parsed.unknown_b);
+      uwrap.hidden = !hasUnknown || !this.layers.control;
+      Array.prototype.forEach.call(uselect.querySelectorAll("[data-unknown-group]"), function (option) {
+        option.textContent = self.groupName(option.getAttribute("data-unknown-group")) + "'s";
+      });
+    }
   };
 
   // Group (A/B) -> the RGB its players are drawn in: their team's colour, else the side's.
@@ -1613,7 +1632,8 @@
     var C = controlApi(), parsed = value.parsed, tick = C.tickAt(parsed.times, this.t);
     if (tick < 0) return;
     var knowing = this.knowingGroup(value);
-    var key = [this.number, tick, this.layers.control, this.highlight, knowing].join(":");
+    var key = [this.number, tick, this.layers.control, this.highlight, knowing, this.unknownView].join(":");
+    var showUnknown = !!(this.layers.control && this.unknownView !== "off" && parsed.unknown_a && parsed.unknown_b);
     if (this.controlPaint !== key) {
       this.controlPaint = key;
       var colors = this.controlColors();
@@ -1623,6 +1643,13 @@
         var codes = knowing ? value.cursor.knew("knew_" + knowing.toLowerCase(), tick) : value.cursor.states(tick);
         C.paintStates(img.data.data, CONTROL_PX, parsed.walk, codes, colors);
         img.ctx.putImageData(img.data, 0, 0);
+      }
+      if (showUnknown) {
+        var uk = this.controlCanvas("unknown");
+        uk.data = uk.data || uk.ctx.createImageData(CONTROL_PX, CONTROL_PX);
+        C.paintUnknown(uk.data.data, CONTROL_PX, parsed.walk, value.cursor.unknown("unknown_a", tick),
+          value.cursor.unknown("unknown_b", tick), colors, this.unknownView);
+        uk.ctx.putImageData(uk.data, 0, 0);
       }
       if (this.highlight !== null) {
         var hl = this.controlCanvas("highlight"), slot = this.highlight;
@@ -1636,6 +1663,7 @@
     ctx.save();
     ctx.imageSmoothingEnabled = false;
     if (this.layers.control) ctx.drawImage(this.controlCanvas("states").canvas, 0, 0, size, size);
+    if (showUnknown) ctx.drawImage(this.controlCanvas("unknown").canvas, 0, 0, size, size);
     if (this.highlight !== null) ctx.drawImage(this.controlCanvas("highlight").canvas, 0, 0, size, size);
     ctx.restore();
     if (knowing && this.layers.control) this.drawLostEnemies(ctx, size, value, knowing, hits || []);

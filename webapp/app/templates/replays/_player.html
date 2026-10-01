@@ -51,6 +51,13 @@
             <option value="A" data-knew-group="A">side A knew it</option>
             <option value="B" data-knew-group="B">side B knew it</option>
           </select></label>
+        <label class="replay-control-view" data-replay-control-unknown-wrap hidden>unknown
+          <select data-replay-control-unknown aria-label="Whose unknown to hatch: where that team's enemies could be">
+            <option value="both" selected>both teams</option>
+            <option value="A" data-unknown-group="A">side A's</option>
+            <option value="B" data-unknown-group="B">side B's</option>
+            <option value="off">off</option>
+          </select></label>
         {% if not control.cover_reviewed %}<span class="replay-control-badge" title="This map's boxes and crates aren't tagged yet: sight passes through them, so control near them is too generous.">cover not reviewed</span>{% endif %}
         <span class="replay-control-status" data-replay-control-status aria-live="polite"></span>
         {% endif %}
@@ -61,6 +68,7 @@
         <span class="replay-key replay-key-ctl-safe">Safe (behind the lines)</span>
         <span class="replay-key replay-key-ctl-passive">Seen (passive)</span>
         <span class="replay-key replay-key-ctl-contested">Contested (both teams)</span>
+        <span class="replay-key replay-key-ctl-unknown">Unknown (an enemy could be here; hatched in the enemy's colour)</span>
         <span class="replay-control-legend-note">Team colours as the players. Control is computed from true positions.</span>
       </p>
       {% endif %}
