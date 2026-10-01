@@ -73,6 +73,22 @@ def test_the_code_is_checked_and_remembered_in_the_session(db):
     assert uploads.code_matches("letmein") and not uploads.code_matches("") and not uploads.code_matches(None)
 
 
+def test_the_upload_page_takes_a_batch_of_up_to_the_hourly_limit(db):
+    """Several files at once (the user's call, 2026-10-01): the page picks up to UPLOADS_PER_HOUR and
+    sends them one after another, each parsed before the next (the server allows one unfinished upload
+    a session)."""
+    body = routes.upload_form(request({"replay_upload_ok": True})).body.decode()
+    assert 'type="file" name="file" accept=".vrf" multiple' in body
+    assert f'data-max-files="{uploads.UPLOADS_PER_HOUR}"' in body
+    assert f"Up to {uploads.UPLOADS_PER_HOUR} files at a time" in body
+
+
+def test_the_upload_cap_is_200_mb():
+    from app.config import Settings
+
+    assert Settings.model_fields["replay_upload_max_bytes"].default == 200_000_000
+
+
 def test_an_upload_without_the_code_is_refused(db):
     class FakeFile:
         file = io.BytesIO(vrf_bytes())

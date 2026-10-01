@@ -16,60 +16,156 @@
     <code>%LOCALAPPDATA%\VALORANT\Saved\Demos</code>. It is parsed on the site's private worker and then deleted; only
     the minimap replay is kept. If the match is on this site, the replay links to it; if not, it plays on its own and
     links after the match is crawled.</p>
-  <form method="post" action="/replays/upload" enctype="multipart/form-data" class="upload-form" data-upload-form>
-    <label>Replay file <input type="file" name="file" accept=".vrf" required></label>
+  <form method="post" action="/replays/upload" enctype="multipart/form-data" class="upload-form" data-upload-form
+        data-max-files="{{ per_hour }}" data-max-bytes="{{ max_mb * 1000000 }}">
+    <label>Replay files <input type="file" name="file" accept=".vrf" multiple required></label>
     <button type="submit">Upload</button>
   </form>
-  <div class="upload-progress" data-upload-progress hidden>
-    <progress max="100"></progress>
-    <p class="page-meta" data-upload-progress-text aria-live="polite"></p>
-  </div>
   <p class="upload-error" role="alert" data-upload-error hidden></p>
-  <p class="page-meta">Up to {{ max_mb }} MB a file, {{ per_hour }} uploads an hour, one at a time. Parsing takes a few minutes.</p>
+  <ol class="upload-batch" data-upload-batch hidden></ol>
+  <p class="page-meta" data-upload-summary aria-live="polite" hidden></p>
+  <p class="page-meta">Up to {{ per_hour }} files at a time, {{ max_mb }} MB a file, {{ per_hour }} uploads an hour. They
+    go one after another: each is parsed (a few minutes) before the next is sent, so keep this page open.</p>
   {% endif %}
 </div>
 {% if authorized %}
 <script>
-  // Sends the file with XHR so the upload's own progress can be shown; without JS the form posts as usual.
+  // A batch, in series (the server allows one unfinished upload a session): each file is sent with XHR so its
+  // upload progress shows, then its parse is polled until it is stored or failed, then the next goes. Without JS
+  // the form posts the first file as before.
   (function () {
-    var form = document.querySelector("[data-upload-form]");
-    var box = document.querySelector("[data-upload-progress]"), bar = box.querySelector("progress");
-    var text = document.querySelector("[data-upload-progress-text]"), errorLine = document.querySelector("[data-upload-error]");
-    var button = form.querySelector("button");
+    var form = document.querySelector("[data-upload-form]"), input = form.querySelector("input[type=file]");
+    var button = form.querySelector("button"), errorLine = document.querySelector("[data-upload-error]");
+    var list = document.querySelector("[data-upload-batch]"), summary = document.querySelector("[data-upload-summary]");
+    var maxFiles = Number(form.dataset.maxFiles), maxBytes = Number(form.dataset.maxBytes), running = false;
     function mb(bytes) { return (bytes / 1e6).toFixed(1) + " MB"; }
-    function fail(message) {
-      box.hidden = true; button.disabled = false;
-      errorLine.textContent = message; errorLine.hidden = false;
+    function clock(s) { return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
+
+    function row(file) {
+      var li = document.createElement("li");
+      li.innerHTML = '<div class="upload-name"></div><div class="upload-progress"><progress max="100"></progress>' +
+        '<p class="page-meta" aria-live="polite">Waiting.</p></div><p class="upload-error" hidden></p>';
+      li.querySelector(".upload-name").textContent = file.name + " (" + mb(file.size) + ")";
+      list.appendChild(li);
+      var bar = li.querySelector("progress"), text = li.querySelector(".page-meta"), err = li.querySelector(".upload-error");
+      bar.value = 0;
+      return {
+        progress: function (pct, message) {
+          if (pct === null) bar.removeAttribute("value"); else bar.value = pct;
+          text.textContent = message;
+        },
+        done: function (message, href) {
+          li.querySelector(".upload-progress").hidden = true;
+          err.hidden = false; err.removeAttribute("role"); err.className = "page-meta";
+          err.textContent = message + " ";
+          if (href) {
+            var a = document.createElement("a");
+            a.href = href; a.textContent = "▶ Watch the replay"; err.appendChild(a);
+          }
+        },
+        fail: function (message) {
+          li.querySelector(".upload-progress").hidden = true;
+          err.hidden = false; err.textContent = message;
+        }
+      };
     }
+
+    // Sends one file. Resolves {id} on success, or {error, stop} (stop: the rest of the batch can't go either).
+    function send(file, r) {
+      return new Promise(function (resolve) {
+        var started = Date.now(), xhr = new XMLHttpRequest(), body = new FormData();
+        body.append("file", file);
+        r.progress(0, "Starting the upload…");
+        xhr.upload.onprogress = function (e) {
+          if (!e.lengthComputable) return;
+          var pct = Math.floor(100 * e.loaded / e.total), secs = (Date.now() - started) / 1000;
+          var left = e.loaded > 0 && secs > 2 ? Math.round((e.total - e.loaded) * secs / e.loaded) : null;
+          r.progress(pct, "Uploading " + mb(e.loaded) + " of " + mb(e.total) + " (" + pct + "%)" +
+            (left !== null && left > 0 ? ", about " + (left >= 60 ? Math.ceil(left / 60) + " min" : left + " s") + " left" : ""));
+        };
+        xhr.upload.onload = function () { r.progress(null, "Uploaded. Handing it to the parser…"); };
+        xhr.onload = function () {
+          // Success is a 303 to the job page, which XHR follows.
+          var id = xhr.status === 200 && /\/replays\/uploads\/([0-9a-f-]{36})/i.exec(xhr.responseURL);
+          if (id) { resolve({ id: id[1] }); return; }
+          var alert = new DOMParser().parseFromString(xhr.responseText, "text/html").querySelector("[role=alert]");
+          var message = alert && alert.textContent.trim() ? alert.textContent.trim() : "The upload failed (" + xhr.status + ").";
+          // 400: this file is the problem; anything else (the code, the hourly limit, the worker) stops the batch.
+          resolve({ error: message, stop: xhr.status !== 400 });
+        };
+        xhr.onerror = function () { resolve({ error: "The upload was interrupted. Check your connection.", stop: true }); };
+        xhr.open("POST", form.action);
+        xhr.send(body);
+      });
+    }
+
+    // Polls one upload's parse until it is stored or failed. Resolves its status body.
+    function parse(id, r) {
+      var since = Date.now();
+      return new Promise(function (resolve) {
+        function poll() {
+          r.progress(null, "Parsing: " + clock(Math.floor((Date.now() - since) / 1000)) + " so far (usually one to three minutes).");
+          fetch("/replays/uploads/" + id + "/status").then(function (res) { return res.json(); })
+            .then(function (body) {
+              if (body.status === "stored" || body.status === "failed") resolve(body);
+              else setTimeout(poll, 3000);
+            })
+            .catch(function () { setTimeout(poll, 3000); });
+        }
+        poll();
+      });
+    }
+
+    function finish(stored, failed, skipped) {
+      running = false; button.disabled = false; input.disabled = false;
+      summary.hidden = false;
+      summary.textContent = "Done: " + stored + " stored" + (failed ? ", " + failed + " failed" : "") +
+        (skipped ? ", " + skipped + " not sent" : "") + ".";
+    }
+
     form.addEventListener("submit", function (event) {
       event.preventDefault();
-      var started = Date.now(), xhr = new XMLHttpRequest();
-      errorLine.hidden = true; button.disabled = true; box.hidden = false;
-      bar.value = 0; text.textContent = "Starting the upload…";
-      xhr.upload.onprogress = function (e) {
-        if (!e.lengthComputable) return;
-        var pct = Math.floor(100 * e.loaded / e.total), secs = (Date.now() - started) / 1000;
-        var left = e.loaded > 0 && secs > 2 ? Math.round((e.total - e.loaded) * secs / e.loaded) : null;
-        bar.value = pct;
-        text.textContent = "Uploading " + mb(e.loaded) + " of " + mb(e.total) + " (" + pct + "%)" +
-          (left !== null && left > 0 ? ", about " + (left >= 60 ? Math.ceil(left / 60) + " min" : left + " s") + " left" : "");
-      };
-      xhr.upload.onload = function () {
-        bar.removeAttribute("value");
-        text.textContent = "Uploaded. Handing it to the parser…";
-      };
-      xhr.onload = function () {
-        // Success is a 303 to the job page, which XHR follows.
-        if (xhr.status === 200 && xhr.responseURL.indexOf("/replays/uploads/") !== -1) {
-          window.location.assign(xhr.responseURL);
-          return;
+      var files = Array.prototype.slice.call(input.files);
+      errorLine.hidden = true;
+      if (!files.length) return;
+      if (files.length > maxFiles) {
+        errorLine.textContent = "Pick at most " + maxFiles + " files at a time.";
+        errorLine.hidden = false;
+        return;
+      }
+      running = true; button.disabled = true; input.disabled = true;
+      list.innerHTML = ""; list.hidden = false; summary.hidden = true;
+      var rows = files.map(row), stored = 0, failed = 0;
+      (function next(i) {
+        if (i >= files.length) { finish(stored, failed, 0); return; }
+        var file = files[i], r = rows[i];
+        if (file.size > maxBytes) {
+          failed++; r.fail("Over the " + Math.floor(maxBytes / 1e6) + " MB limit: not sent.");
+          next(i + 1); return;
         }
-        var alert = new DOMParser().parseFromString(xhr.responseText, "text/html").querySelector("[role=alert]");
-        fail(alert && alert.textContent.trim() ? alert.textContent.trim() : "The upload failed (" + xhr.status + "). Please try again.");
-      };
-      xhr.onerror = function () { fail("The upload was interrupted. Check your connection and try again."); };
-      xhr.open("POST", form.action);
-      xhr.send(new FormData(form));
+        send(file, r).then(function (sent) {
+          if (sent.error) {
+            failed++; r.fail(sent.error);
+            if (sent.stop) {
+              for (var k = i + 1; k < files.length; k++) rows[k].fail("Not sent: the batch stopped at the file above.");
+              finish(stored, failed, files.length - i - 1); return;
+            }
+            next(i + 1); return;
+          }
+          parse(sent.id, r).then(function (body) {
+            if (body.status === "stored") {
+              stored++;
+              r.done(body.linked ? "Stored and linked to its match." : "Stored (it links after the match is crawled).", body.replay_url);
+            } else {
+              failed++; r.fail("Failed: " + (body.error || "unknown error"));
+            }
+            next(i + 1);
+          });
+        });
+      })(0);
+    });
+    window.addEventListener("beforeunload", function (event) {
+      if (running) { event.preventDefault(); event.returnValue = ""; }
     });
   })();
 </script>

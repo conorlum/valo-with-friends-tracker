@@ -19,9 +19,10 @@ class Settings(BaseSettings):
     # only (REPLAY_UPLOAD_CODE is `sync: false`), never in the repo.
     replay_upload_code: str | None = None
     replay_worker_url: str | None = None
-    # Decision 10's cap (approved D10), max(80 MB, 2 x the largest observed .vrf): the six
-    # competitive files are 60-91 MB (90,517,500 bytes the largest).
-    replay_upload_max_bytes: int = 181_035_000
+    # Decision 10's cap was max(80 MB, 2 x the largest observed .vrf) = 181,035,000 bytes (the six
+    # competitive files were 60-91 MB); rounded up to 200 MB (the user's call, 2026-10-01). The
+    # worker's REPLAY_MAX_BYTES (replay_worker/Dockerfile) must match.
+    replay_upload_max_bytes: int = 200_000_000
     # Map control for new replays on the replay worker (docs/map-control-worker-plan.md). Off by
     # default; needs REPLAY_WORKER_URL too, and is always off in demo mode.
     replay_control_remote: bool = False
