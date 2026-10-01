@@ -47,8 +47,10 @@
   <label><input type="checkbox" id="showSight"> sight mask</label>
   <label><input type="checkbox" id="showWalk"> can't walk</label>
   <label><input type="checkbox" id="showLines" checked> kill lines</label>
+  <label title="where each player stood at round start (t = 0), pressed against the barriers: attackers yellow, defenders cyan"><input type="checkbox" id="showStarts" checked> round starts</label>
   <label><input type="checkbox" id="onlyBlocked"> blocked only</label>
   <button id="undo" disabled>Undo <kbd>Ctrl Z</kbd></button>
+  <button id="clearBarriers" title="remove this map's barrier paint, to redraw it as thin lines (undo brings it back)">Clear barriers</button>
   <button id="export">Export tags.json</button>
   <button id="importBtn">Import</button>
   <input type="file" id="importFile" accept="application/json" hidden>
@@ -75,9 +77,9 @@
       <p class="note">Erase clears the paint kind you painted last (<span id="eraseKind">see-across</span>).
         <b>See-across</b>: black you can see over (drops, gaps). <b>Cover</b>: blocks sight and walking.
         <b>Can't walk</b>: floor nobody can stand on; sight is unchanged. <b>Uncertain</b>: a note where the
-        flat map may be wrong; it changes nothing. <b>Barrier</b>: the buy-phase barrier lines, one unbroken
-        stroke right across each gap; when they drop, each team holds its side of them. Sight and walking
-        are unchanged.</p>
+        flat map may be wrong; it changes nothing. <b>Barrier</b>: the buy-phase barrier lines. Press, drag and
+        release to draw one straight, thin line right across each gap, touching the walls at both ends; when
+        they drop, each team holds its side of them. Sight and walking are unchanged.</p>
     </div>
     <div class="card">
       <h2>Kill-line test (bar 2%)</h2>
@@ -125,7 +127,13 @@
                         uncertain_paint: [44, 213, 196], barrier_paint: [255, 122, 217] };
   var PAINT_NAMES = { see_across_paint: "see-across", cover_paint: "cover", cant_walk_paint: "can't walk",
                       uncertain_paint: "uncertain", barrier_paint: "barrier" };
-  var STORE = "control-tagger-v2:" + JSON.stringify(DATA.tags).length;
+  // Saved edits belong to the exact tags.json the page was built from: a rebuilt page starts fresh,
+  // so edits saved against older paint can't come back over newer paint.
+  var STORE = "control-tagger-v3:" + (function (s) {
+    var h = 5381;
+    for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+    return h.toString(36) + "." + s.length;
+  })(JSON.stringify(DATA.tags));
   var $ = function (id) { return document.getElementById(id); };
   var maps = {}, edits = {}, loaded = {}, undo = [], state = { map: null, selected: 0, mode: "select",
     lastPaint: "see_across_paint", brush: 14, masks: null, risk: null, byId: {} };
@@ -234,6 +242,12 @@
   function paintOverlay() {
     var ctx = $("overlay").getContext("2d");
     ctx.clearRect(0, 0, PX, PX);
+    if ($("showStarts").checked) {
+      (maps[state.map].starts || []).forEach(function (s) {
+        ctx.fillStyle = s[0] ? "rgba(255,214,0,0.9)" : "rgba(0,229,200,0.9)";
+        ctx.fillRect(s[1] - 2.5, s[2] - 2.5, 5, 5);
+      });
+    }
     if (!$("showLines").checked) return;
     var only = $("onlyBlocked").checked;
     maps[state.map].lines.forEach(function (l, k) {
@@ -315,21 +329,49 @@
         if ((gx + 0.5 - cx) * (gx + 0.5 - cx) + (gy + 0.5 - cy) * (gy + 0.5 - cy) <= rad * rad) cells[gy * P + gx] = v;
   }
 
+  // Barrier mode draws one straight line, a single paint cell wide, from press to release.
+  var line = null;
+  function lineCells(cells, x0, y0, x1, y1) {
+    var c = PX / P, n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / c * 2));
+    for (var s = 0; s <= n; s++) {
+      var gx = Math.floor((x0 + (x1 - x0) * s / n) / c), gy = Math.floor((y0 + (y1 - y0) * s / n) / c);
+      if (gx >= 0 && gy >= 0 && gx < P && gy < P) cells[gy * P + gx] = 1;
+    }
+  }
+  function drawLine(p) {
+    var e = mapEdits(), cells = e.paints.barrier_paint;
+    cells.set(line.before);
+    lineCells(cells, line.from[0], line.from[1], p[0], p[1]);
+    paintTint();
+  }
+
   var stroke = null;
   $("overlay").addEventListener("pointerdown", function (e) {
     if (state.mode === "select") return;
     beforeChange();
-    var p = toMap(e); stroke = p; dab(p[0], p[1]); paintTint();
+    var p = toMap(e);
+    if (state.mode === "barrier_paint") {
+      var ed = mapEdits();
+      ed.paints.barrier_paint = ed.paints.barrier_paint || new Uint8Array(P * P);
+      line = { from: p, before: ed.paints.barrier_paint.slice() };
+      drawLine(p);
+    } else {
+      stroke = p; dab(p[0], p[1]); paintTint();
+    }
     $("overlay").setPointerCapture(e.pointerId);
   });
   $("overlay").addEventListener("pointermove", function (e) {
+    if (line) { drawLine(toMap(e)); return; }
     if (!stroke) return;
     var p = toMap(e), dx = p[0] - stroke[0], dy = p[1] - stroke[1];
     var steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 3));
     for (var s = 1; s <= steps; s++) dab(stroke[0] + dx * s / steps, stroke[1] + dy * s / steps);
     stroke = p; paintTint();
   });
-  function endStroke() { if (!stroke) return; stroke = null; changed(); }
+  function endStroke() {
+    if (line) { line = null; changed(); return; }
+    if (!stroke) return; stroke = null; changed();
+  }
   $("overlay").addEventListener("pointerup", endStroke);
   $("overlay").addEventListener("pointercancel", endStroke);
   $("overlay").addEventListener("click", function (e) {
@@ -350,6 +392,11 @@
   });
   $("next").addEventListener("click", nextUntagged);
   $("undo").addEventListener("click", doUndo);
+  $("clearBarriers").addEventListener("click", function () {
+    beforeChange();
+    mapEdits().paints.barrier_paint = new Uint8Array(P * P);
+    paintTint(); changed();
+  });
   function doUndo() {
     var last = undo.pop();
     if (!last) return;
@@ -370,6 +417,7 @@
   });
   ["showCandidates", "showPaint", "showSight", "showWalk"].forEach(function (id) { $(id).addEventListener("change", paintTint); });
   $("showLines").addEventListener("change", paintOverlay);
+  $("showStarts").addEventListener("change", paintOverlay);
   $("onlyBlocked").addEventListener("change", paintOverlay);
   $("map").addEventListener("change", function () { selectMap(this.value); });
 
