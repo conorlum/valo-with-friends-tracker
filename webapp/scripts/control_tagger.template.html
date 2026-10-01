@@ -455,7 +455,10 @@
     $("map").appendChild(o);
   });
   restore();
-  var first = Object.keys(DATA.maps).find(function (n) { return DATA.maps[n].lines.length; }) || Object.keys(DATA.maps)[0];
+  // the link's #Map opens on that map; otherwise the first map with replays
+  var asked = decodeURIComponent((location.hash || "").slice(1));
+  var first = DATA.maps[asked] ? asked
+    : Object.keys(DATA.maps).find(function (n) { return DATA.maps[n].lines.length; }) || Object.keys(DATA.maps)[0];
   $("map").value = first;
   setMode("select");
   selectMap(first);
