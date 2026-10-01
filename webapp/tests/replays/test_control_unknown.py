@@ -57,7 +57,7 @@ def test_unknown_spreads_from_an_enemy_at_a_shift_walk():
     assert np.flatnonzero(unk.cells["A"]).tolist() == [e], "at once: only the enemy's own cell"
     unk.apply(_Tk(1.0, a(), b()))
     steps = int(ce.UNKNOWN_MPS * 1.0 // geo.cell_m)
-    assert steps == 3
+    assert steps >= 2, "the toy spreads more than one step in a second"
     assert unk.cells["A"][e - steps] and not unk.cells["A"][e - steps - 1], "8-connected steps at UNKNOWN_MPS"
     assert unk.cells["B"][_col(geo, 120) + steps], "each team's unknown comes from the other team's players"
 

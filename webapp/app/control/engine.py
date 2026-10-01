@@ -80,8 +80,9 @@ RUN_MPS, WALK_MPS = 5.0, 1.5
 KNEW_RUN_MPS = 6.75
 KNEW_FADE_S = 3.0
 # Unknown (docs/map-control-unknown-plan.md, 2026-10-01): where an enemy of a team could be. It spreads
-# at Valorant's shift-walk, the speed an enemy can move without being heard.
-UNKNOWN_MPS = 3.5
+# at shift-walk with a rifle out (the user's call, 2026-10-01): measured from replay tracks, walking is
+# 0.60 x running in every tier, knife 6.75 -> 4.05, pistol 5.73 -> 3.43, rifle 5.40 -> 3.24 m/s.
+UNKNOWN_MPS = 3.24
 # Presence (the user's call, 2026-10-01): an enemy can't walk past a player within arm's reach unseen, so
 # each live player holds the walkable ground within this radius as passive (not while flashed).
 PRESENCE_M = 4.0

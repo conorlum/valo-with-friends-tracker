@@ -23,7 +23,9 @@ Both come from asking "is anyone looking at this?" instead of "could an enemy ha
 1. **Sources.** The enemy's live players push it out from their true positions, every tick. At the barrier
    drop, T's unknown is the enemy's side of the barriers (the enemy's start ground). It also spreads from
    itself.
-2. **Speed.** It spreads at Valorant's shift-walk, `UNKNOWN_MPS` = 3.5 m/s (silent movement), through walkable
+2. **Speed.** It spreads at shift-walk with a rifle out, `UNKNOWN_MPS` = 3.24 m/s (silent movement; was 3.5,
+   changed 2026-10-01: measured from replay tracks, walk is 0.60 x run in every tier: knife 6.75 -> 4.05,
+   pistol 5.73 -> 3.43, rifle 5.40 -> 3.24; the user chose rifle-walk over a knife/gun toggle), through walkable
    cells in 8-connected steps. Walls stop it; smokes don't (you can walk through a smoke). It follows the map's
    specials (teleporters, ropes, drops) the way the Safe fill links them; a one-way special carries it one way.
 3. **Clearing.** T's live control clears it on contact and stops it: the active and passive vision of T's
