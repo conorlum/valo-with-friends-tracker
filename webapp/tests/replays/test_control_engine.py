@@ -456,6 +456,17 @@ def test_the_barrier_start_gives_each_team_its_side_as_passive_with_a_grace():
     assert late.passive[geo.cell_of_px(110, 200)], "deep in A's side: still held"
 
 
+def test_a_player_pressed_on_the_barrier_line_still_gets_a_share():
+    geo = _barrier_hall()
+    west, _ = _halves(geo)
+    mem = ce.Memory(geo)
+    on_line = _at(1, "A", geo, 258, 120)
+    assert geo.barrier.ravel()[on_line.cell]
+    mem.start(_Tk(0.0, _at(0, "A", geo, 150, 250), on_line, _at(5, "B", geo, 400, 200)))
+    assert mem.cells[1].any() and set(np.flatnonzero(mem.cells[1])) <= set(west.tolist())
+    assert mem.cells[1][geo.cell_of_px(248, 120)], "the ground next to them on their side is theirs"
+
+
 def test_a_leaking_barrier_gives_no_start_ground():
     geo = _barrier_hall()
     geo.barrier[: geo.cell_of_px(0, 150) // GRID, :] = False     # the line stops at y 150: a gap to the north wall

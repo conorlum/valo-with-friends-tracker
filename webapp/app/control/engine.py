@@ -1142,12 +1142,23 @@ class Memory:
             ids = {int(regions.ravel()[h.cell]) for h in hs}
             if not hs:
                 continue
+            starts = {h.slot: h.cell for h in hs}
+            # a player pressed against a barrier can stand on a line cell: they start from the
+            # neighbouring open cell in their teammates' ground
+            for h in tick.holders.values():
+                if h.team == side and h.slot not in starts and self.geo.barrier.ravel()[h.cell]:
+                    y, x = divmod(h.cell, GRID)
+                    for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1),
+                                   (y - 1, x - 1), (y - 1, x + 1), (y + 1, x - 1), (y + 1, x + 1)):
+                        if 0 <= ny < GRID and 0 <= nx < GRID and int(regions[ny, nx]) in ids:
+                            starts[h.slot] = ny * GRID + nx
+                            break
             area = np.isin(regions, list(ids))
             if any(area.ravel()[e.cell] for e in tick.holders.values() if e.team != side):
                 # the paint has a gap: this side's ground reaches an enemy's start, so it means nothing
                 tick.rnd.missing["barrier paint leaks (no start ground)"] += 1
                 continue
-            for slot, share in _share_by_walk(area, {h.slot: h.cell for h in hs}).items():
+            for slot, share in _share_by_walk(area, starts).items():
                 self.cells[slot] = share.ravel()
             self.held |= area.ravel()
 
