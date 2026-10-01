@@ -26,8 +26,14 @@ Both come from asking "is anyone looking at this?" instead of "could an enemy ha
 2. **Speed.** It spreads at shift-walk with a rifle out, `UNKNOWN_MPS` = 3.24 m/s (silent movement; was 3.5,
    changed 2026-10-01: measured from replay tracks, walk is 0.60 x run in every tier: knife 6.75 -> 4.05,
    pistol 5.73 -> 3.43, rifle 5.40 -> 3.24; the user chose rifle-walk over a knife/gun toggle), through walkable
-   cells in 8-connected steps. Walls stop it; smokes don't (you can walk through a smoke). It follows the map's
-   specials (teleporters, ropes, drops) the way the Safe fill links them; a one-way special carries it one way.
+   cells. Everything in it must be reachable at that speed (the user's rule, 2026-10-01): each unknown cell
+   keeps the earliest time an enemy could be there, and a neighbour joins at that time plus the step's true
+   length (one cell straight, sqrt(2) diagonal) over the speed. It replaced whole 8-connected steps per tick,
+   which ran diagonals ~41% fast (in round 2 of the sample, 20% of cells turned unknown over 0.5 s before a
+   true walk could reach them). Ground T watched on one tick and not the next is entered from the later tick
+   on, never earlier. Walls stop it; smokes don't (you can walk through a smoke). It follows the map's
+   specials (teleporters, ropes, drops) the way the Safe fill links them, as one straight step; a one-way
+   special carries it one way.
 3. **Clearing.** T's live control clears it on contact and stops it: the active and passive vision of T's
    players, T's watchers (trips, cameras, turret, drones, alarmbots), and each T player's own cell. A reveal
    counts only for the cells it saw. An enemy T sees pushes out nothing until they step out of sight.

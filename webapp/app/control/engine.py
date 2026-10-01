@@ -27,8 +27,8 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   in the team's unknown.
 - **Unknown (2026-10-01; docs/map-control-unknown-plan.md).** Each team's unknown is where an enemy
   could be: pushed out by the enemy's live players, the enemy's side of the barriers at the drop, and
-  its own spread at UNKNOWN_MPS (8-connected, across specials, through smokes). The team's live
-  control clears it on contact.
+  its own spread at UNKNOWN_MPS (each cell no sooner than a walk of its true length, diagonals sqrt(2);
+  across specials, through smokes). The team's live control clears it on contact.
 - **Watchers** (passive): trips, alarmbots, Chamber traps, Killjoy's turret, Cypher's camera while
   he is in it, and flown drones; a camera or drone in use replaces its owner's own view. Placed
   utility dies with its owner (Q71): a watcher counts only while its owner is alive.
@@ -1284,14 +1284,22 @@ class Unknown:
     enemy of the team could be. `begin` takes the barrier drop (each team's unknown is the enemy's start
     ground). `apply` runs on each tick in time order, after the tick's vision and before Memory.apply:
     the enemy's live players push it out from their own cells, it spreads at UNKNOWN_MPS through
-    walkable cells in 8-connected steps and across the map's specials, and the team's live control
-    (its players' active and passive vision, their watchers and their own cells) clears it and stops it.
-    Smokes don't stop it: you can walk through a smoke."""
+    walkable cells and across the map's specials, and the team's live control (its players' active and
+    passive vision, their watchers and their own cells) clears it and stops it. Smokes don't stop it:
+    you can walk through a smoke.
+
+    Everything in it is reachable at UNKNOWN_MPS (the user's rule, 2026-10-01): each unknown cell keeps
+    the earliest time an enemy could have been there (`reached`), and a neighbour joins at that time plus
+    its step's true length (a cell straight, sqrt(2) diagonal; a special one cell) over UNKNOWN_MPS, but
+    never before it was last free: ground the team watched on the tick before is entered from this tick
+    on. Exact at any tick spacing, so nothing is carried between ticks."""
 
     def __init__(self, geo: Geometry):
         self.geo = geo
         self.cells = {"A": np.zeros(GRID * GRID, bool), "B": np.zeros(GRID * GRID, bool)}
-        self.carry = {"A": 0.0, "B": 0.0}         # metres of spread not yet a whole cell step
+        self.reached = {"A": np.full(GRID * GRID, np.inf), "B": np.full(GRID * GRID, np.inf)}
+        self.free_since = {"A": None, "B": None}   # flat: when each cell was last not the team's live control
+        self._room = {"A": None, "B": None}        # the last tick's room, to see what was freed since
         self.t: float | None = None
         self.links = special_links(geo)
 
@@ -1303,25 +1311,31 @@ class Unknown:
 
     def apply(self, tick) -> None:
         walk = self.geo.walk.ravel()
-        dt = 0.0 if self.t is None else max(0.0, tick.t - self.t)
-        self.t = tick.t
+        t = self.t = tick.t
         for side in ("A", "B"):
+            reached = self.reached[side]
+            reached[self.cells[side] & ~np.isfinite(reached)] = t    # the barrier drop's ground: there now
             if not self._enemy_alive(tick, side):
+                reached[:] = np.inf
                 self.cells[side] = np.zeros(GRID * GRID, bool)   # nobody left: nobody could be anywhere
                 continue
             live = np.zeros(GRID * GRID, bool)
-            unk = self.cells[side].copy()
             for h in tick.holders.values():
                 if h.team == side:
                     live |= h.active | h.passive | h.watch
                     live[h.cell] = True
                 else:
-                    unk[h.cell] = True            # an enemy pushes it out from where they stand
+                    reached[h.cell] = min(reached[h.cell], t)   # an enemy pushes it out from where they stand
             room = walk & ~live
-            self.carry[side] += UNKNOWN_MPS * dt
-            steps = int(self.carry[side] // self.geo.cell_m)
-            self.carry[side] -= steps * self.geo.cell_m
-            self.cells[side] = self._spread(unk & room, room, steps)
+            free = self.free_since[side]
+            if free is None:
+                free = np.full(GRID * GRID, t)
+            else:
+                free = np.where(room & ~self._room[side], t, free)   # freed since the last tick: from now
+            self.free_since[side], self._room[side] = free, room
+            reached[~room] = np.inf
+            self.reached[side] = self._spread(reached, room, free, t)
+            self.cells[side] = np.isfinite(self.reached[side])
 
     @staticmethod
     def _enemy_alive(tick, side: str) -> bool:
@@ -1332,19 +1346,28 @@ class Unknown:
             return any(team != side and rnd.alive(s, tick.t) for s, team in rnd.team.items())
         return any(h.team != side for h in tick.holders.values())
 
-    def _spread(self, cells: np.ndarray, room: np.ndarray, steps: int) -> np.ndarray:
-        g, r = cells.reshape(GRID, GRID), room.reshape(GRID, GRID)
-        for _ in range(steps):
-            nxt = ndimage.binary_dilation(g, EIGHT) & r
+    def _spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float) -> np.ndarray:
+        """`reached` relaxed through `room` up to time `t`: each cell's earliest arrival from a
+        neighbour (after the cell was last freed); arrivals later than `t` are not there yet."""
+        g = reached.reshape(GRID, GRID).copy()
+        f = free.reshape(GRID, GRID)
+        r = room.reshape(GRID, GRID)
+        straight = self.geo.cell_m / UNKNOWN_MPS
+        while True:
+            best = g.copy()
+            for dy, dx in ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)):
+                src = np.full((GRID, GRID), np.inf)
+                src[max(dy, 0):GRID + min(dy, 0), max(dx, 0):GRID + min(dx, 0)] = \
+                    g[max(-dy, 0):GRID + min(-dy, 0), max(-dx, 0):GRID + min(-dx, 0)]
+                np.minimum(best, np.maximum(src, f) + straight * (math.sqrt(2) if dy and dx else 1.0), out=best)
             for a, b, one_way in self.links:
-                if g.flat[a] and r.flat[b]:
-                    nxt.flat[b] = True
-                if not one_way and g.flat[b] and r.flat[a]:
-                    nxt.flat[a] = True
-            if np.array_equal(nxt, g):
-                break
-            g = nxt
-        return g.ravel().copy()
+                best.flat[b] = min(best.flat[b], max(g.flat[a], f.flat[b]) + straight)
+                if not one_way:
+                    best.flat[a] = min(best.flat[a], max(g.flat[b], f.flat[a]) + straight)
+            best[~r | (best > t)] = np.inf
+            if np.array_equal(best, g):
+                return best.ravel()
+            g = best
 
 
 class Memory:

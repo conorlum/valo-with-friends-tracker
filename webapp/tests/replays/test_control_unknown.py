@@ -62,6 +62,20 @@ def test_unknown_spreads_from_an_enemy_at_a_shift_walk():
     assert unk.cells["B"][_col(geo, 120) + steps], "each team's unknown comes from the other team's players"
 
 
+def test_unknown_walks_diagonals_at_their_true_length():
+    """Everything in the unknown is reachable at UNKNOWN_MPS: a diagonal step is sqrt(2) cells long, so in
+    2 s (6.48 m) an enemy gets 5 cells (5.6 m) west but only 4 diagonal steps (6.3 m), not 5 (7.9 m)."""
+    geo = open_hall()
+    unk = ce.Unknown(geo)
+    a, b = (lambda: _at(0, "A", geo, 120, 120)), (lambda: _at(5, "B", geo, 404, 284))
+    for t in (0.0, 2.0):
+        unk.apply(_Tk(t, a(), b()))
+    at = lambda dx, dy: unk.cells["A"][geo.cell_of_px(404 - 8 * dx, 284 - 8 * dy)]  # noqa: E731
+    assert at(5, 0) and not at(6, 0), "straight: 5 cells"
+    assert at(4, 4) and not at(5, 5), "diagonal: 4 steps, not 5"
+    assert at(4, 2) and not at(5, 3), "between: octile length (5.4 m reached, 7.0 m not)"
+
+
 def test_live_vision_pushes_unknown_back_and_it_refills_when_they_look_away():
     geo = open_hall()
     west, east = _halves(geo)
@@ -74,10 +88,11 @@ def test_live_vision_pushes_unknown_back_and_it_refills_when_they_look_away():
     assert not unk.cells["A"][east].any(), "cleared as far as they see"
     assert unk.cells["A"][_col(geo, 200)], "the west half they don't see stays unknown"
     unk.apply(_Tk(31.1, _at(0, "A", geo, 120, 200), b()))           # they look away
-    steps = 3     # 3.5 m/s for 1 s is 3 whole 1.12 m cells; the carry left from earlier ticks is under a cell
-    for k in range(steps):
+    assert not unk.cells["A"][_col(geo, 260)], "the ground is free from this tick on: nobody is in it yet"
+    unk.apply(_Tk(32.1, _at(0, "A", geo, 120, 200), b()))
+    for k in range(2):      # cell k + 1 east of the old line is reached at 31.1 + (k + 1) x 1.12 m / 3.24 m/s
         assert unk.cells["A"][_col(geo, 256 + 8 * k + 4)], f"refilled {k + 1} cell(s) east of the old line"
-    assert not unk.cells["A"][_col(geo, 300)], "not yet further"
+    assert not unk.cells["A"][_col(geo, 256 + 8 * 2 + 4)], "the third at 32.13 s: not yet"
     assert unk.cells["A"][_col(geo, 400)], "and from B again"
 
 
