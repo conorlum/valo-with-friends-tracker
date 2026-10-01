@@ -82,6 +82,9 @@ KNEW_FADE_S = 3.0
 # Unknown (docs/map-control-unknown-plan.md, 2026-10-01): where an enemy of a team could be. It spreads
 # at Valorant's shift-walk, the speed an enemy can move without being heard.
 UNKNOWN_MPS = 3.5
+# Presence (the user's call, 2026-10-01): an enemy can't walk past a player within arm's reach unseen, so
+# each live player holds the walkable ground within this radius as passive (not while flashed).
+PRESENCE_M = 2.0
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
 FAST_TURN_DPS = 90.0
 SPEED_WINDOW_S = 0.25
@@ -632,6 +635,8 @@ class Tick:
             else:
                 active = body & sector(geo, x, y, yaw, CONE_HALF[mode])
             passive = body & ~active
+            if not _during(rnd.flashed[s], t):
+                passive |= self._presence(x, y, cell) & ~active
             watch = self._watch(s, t)
             enemy = "B" if rnd.team[s] == "A" else "A"
             flagged = _during(rnd.contest_status[s], t) or _during(rnd.hit_contest[s], t) or any(
@@ -662,6 +667,17 @@ class Tick:
         self.unknown: dict[str, np.ndarray] | None = None
         self._usafe: dict = {}   # side, or (side, removed slot) -> its Safe cells from unknown
         self._ucf: dict[tuple[str, int], np.ndarray] = {}   # (side, removed slot) -> unknown_without
+
+    def _presence(self, x: float, y: float, cell: int) -> np.ndarray:
+        """Walkable cells within PRESENCE_M of (x, y) px, reached by walking from the player's cell
+        (8-connected), so the bubble doesn't pass through walls."""
+        geo = self.geo
+        start = np.zeros((GRID, GRID), bool)
+        start.flat[cell] = True
+        steps = int(math.ceil(PRESENCE_M / geo.cell_m)) + 1
+        reach = ndimage.binary_dilation(start, EIGHT, iterations=steps, mask=geo.walk).ravel()
+        r = PRESENCE_M / geo.m_per_px
+        return reach & (((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) <= r * r)
 
     def backfill(self, side: str, removed: int | None = None) -> dict[int, np.ndarray]:
         """Backfill (the user's rule, 2026-09-30): ground behind a player's watched line, back to the

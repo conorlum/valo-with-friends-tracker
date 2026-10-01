@@ -325,6 +325,30 @@ def test_without_a_player_unknown_eats_a_teammates_remembered_ground_behind_them
     assert int(cf[behind]) not in A_OWN, "without A0, unknown reaches it and the memory ends"
 
 
+def test_a_player_holds_a_presence_bubble_behind_them():
+    geo = open_hall()
+    m = geo.m_per_px
+    tk = _tick(geo, {0: still("A", 300, 200, 0), 5: still("B", 120, 120, 0)})      # A faces east
+    a = tk.holders[0]
+    assert ce.PRESENCE_M == 2.0
+    walk = geo.walk.ravel()
+    d = np.hypot(geo.centres[:, 0] - 300, geo.centres[:, 1] - 200) * m
+    bubble = walk & (d <= ce.PRESENCE_M)
+    assert (a.passive | a.active)[bubble].all(), "within 2 m, all round them, is held"
+    assert a.passive[_col(geo, 300 - round(1.5 / m), 200)], "1.5 m behind: passive"
+    assert not (a.passive | a.active)[_col(geo, 300 - round(3.5 / m), 200)], "3.5 m behind: not held"
+    assert tk.live[0][bubble].all(), "and it holds unknown back"
+
+
+def test_a_flashed_player_has_no_presence_bubble():
+    geo = open_hall()
+    flash = {"k": "flash", "t": 0.5, "by": 5, "ability": "Phoenix_Q", "hits": [[0, 0.5, 2.5]]}
+    tk = _tick(geo, {0: still("A", 300, 200, 0), 5: still("B", 120, 120, 0)}, util=[flash])
+    assert ce._during(tk.rnd.flashed[0], 1.0)
+    a = tk.holders[0]
+    assert not a.passive[_col(geo, 300 - round(1.5 / geo.m_per_px), 200)], "flashed: nothing, as before"
+
+
 def test_the_knowledge_views_use_the_same_unknown():
     geo = open_hall()
     rnd = ce.RoundInputs(blob({0: still("A", 120, 200, 0), 5: still("B", 400, 200, 180)}), geo)
