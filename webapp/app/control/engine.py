@@ -16,12 +16,10 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   tolerance (geometry.py). The held cone's width follows the
   movement over SPEED_WINDOW_S. Flashed: nothing. Nearsighted: a bubble. Concussed, stunned or
   revealed: all of it passive (Q42, Q57).
-- **Memory (D6).** Ground a player saw and looked away from stays theirs as passive control. Each tick
-  the team's remembered ground is eaten in from open ground (walkable, neither held live nor
-  remembered by the team) at DECAY_MPS, in 8-connected walking steps, the way an enemy would walk in;
-  ground walled off by live control doesn't decay. Memory dies with its player. When the buy-phase
-  barriers drop, each team remembers its side of them (the barrier paint), spared decay for
-  BARRIER_GRACE_S.
+- **Memory (D6).** Ground a player saw and looked away from stays theirs as passive control until
+  the team's unknown reaches it (2026-10-01; it replaced decay from open ground). Memory dies with
+  its player. When the buy-phase barriers drop, each team remembers its side of them (the barrier
+  paint).
 - **Backfill.** Ground behind a player's watched line, back to the team's control, that no enemy can
   walk into without crossing the team's claims (and the enemy doesn't claim), is passive control of
   the player nearest it from their live view (`Tick.backfill`). Recomputed each tick, never remembered;
@@ -79,12 +77,6 @@ RUN_MPS, WALK_MPS = 5.0, 1.5
 # watch; a just-lost enemy keeps their last view as passive for KNEW_FADE_S.
 KNEW_RUN_MPS = 6.75
 KNEW_FADE_S = 3.0
-# Remembered ground (D6, 2026-09-30): what a player saw and looked away from stays theirs as passive
-# control, and open ground eats into it at a quiet walk, Valorant's shift-walk (approximate).
-DECAY_MPS = 3.5
-# When the buy-phase barriers drop, each team remembers its side of them (the barrier paint), spared
-# decay for this long (the user's call, 2026-09-30: passive, with a short grace before it erodes).
-BARRIER_GRACE_S = 5.0
 # Unknown (docs/map-control-unknown-plan.md, 2026-10-01): where an enemy of a team could be. It spreads
 # at Valorant's shift-walk, the speed an enemy can move without being heard.
 UNKNOWN_MPS = 3.5
@@ -655,6 +647,10 @@ class Tick:
         self.extra_passive: dict[str, np.ndarray] = {}
         self._back: dict[str, dict[int, np.ndarray]] = {}
         self._safe: dict[str, np.ndarray] = {}    # side -> its Safe cells, from the full compose
+        # side -> flat cells where an enemy of that side could be (Unknown; set by compute_round). None
+        # for a tick built on its own: then Safe is the instant flood (Q73), as before unknown.
+        self.unknown: dict[str, np.ndarray] | None = None
+        self._usafe: dict[str, np.ndarray] = {}   # side -> its Safe cells from unknown
 
     def backfill(self, side: str, removed: int | None = None) -> dict[int, np.ndarray]:
         """Backfill (the user's rule, 2026-09-30): ground behind a player's watched line, back to the
@@ -1220,90 +1216,36 @@ class Unknown:
 
 
 class Memory:
-    """Remembered ground across a round's ticks (D6). `apply` runs on each tick in time order, after
-    the tick's vision and before `compose`: it decays the memory by the time since the last tick, adds
-    what is left to each holder's passive cells, then remembers what they see now."""
+    """Remembered ground across a round's ticks (D6). `begin` takes the barrier drop (each team
+    remembers its side, shared out to its players by walking distance). `apply` runs on each tick in
+    time order, after Unknown.apply and before `compose`: it drops what the team's unknown has
+    reached, adds what is left to each holder's passive cells, then remembers what they see now."""
 
     def __init__(self, geo: Geometry):
         self.geo = geo
         self.cells: dict[int, np.ndarray] = {}    # slot -> flat remembered cells
-        self.carry = {"A": 0.0, "B": 0.0}         # metres of decay not yet a whole cell step
-        self.t: float | None = None
-        self.held = np.zeros(GRID * GRID, bool)   # the barrier start's ground, spared decay until BARRIER_GRACE_S
 
-    def start(self, tick: Tick) -> None:
-        """The barriers drop: each team remembers the ground on its side of them (the 4-connected
-        walkable region around its players, cut by the barrier paint), shared out to its players by
-        walking distance. Nothing without a barrier paint."""
-        if self.geo.barrier is None:
-            return
-        open_ = self.geo.walk & ~self.geo.barrier
-        regions, _ = ndimage.label(open_)
-        for side in ("A", "B"):
-            hs = [h for h in tick.holders.values() if h.team == side and open_.ravel()[h.cell]]
-            ids = {int(regions.ravel()[h.cell]) for h in hs}
-            if not hs:
-                continue
-            starts = {h.slot: h.cell for h in hs}
-            # a player pressed against a barrier can stand on a line cell: they start from the
-            # neighbouring open cell in their teammates' ground
-            for h in tick.holders.values():
-                if h.team == side and h.slot not in starts and self.geo.barrier.ravel()[h.cell]:
-                    y, x = divmod(h.cell, GRID)
-                    for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1),
-                                   (y - 1, x - 1), (y - 1, x + 1), (y + 1, x - 1), (y + 1, x + 1)):
-                        if 0 <= ny < GRID and 0 <= nx < GRID and int(regions[ny, nx]) in ids:
-                            starts[h.slot] = ny * GRID + nx
-                            break
-            area = np.isin(regions, list(ids))
-            if any(area.ravel()[e.cell] for e in tick.holders.values() if e.team != side):
-                # the paint has a gap: this side's ground reaches an enemy's start, so it means nothing
-                tick.rnd.missing["barrier paint leaks (no start ground)"] += 1
-                continue
-            for slot, share in _share_by_walk(area, starts).items():
+    def begin(self, areas: dict) -> None:
+        for _, (area, starts) in areas.items():
+            for slot, share in _share_by_walk(area.reshape(GRID, GRID), starts).items():
                 self.cells[slot] = share.ravel()
-            self.held |= area.ravel()
 
-    def apply(self, tick: Tick) -> None:
+    def apply(self, tick, unknown: dict | None = None) -> None:
         walk = self.geo.walk.ravel()
-        if self.t is None:
-            self.start(tick)
-        dt = 0.0 if self.t is None else max(0.0, tick.t - self.t)
-        self.t = tick.t
-        if self.held.any() and tick.t >= BARRIER_GRACE_S:
-            self.held[:] = False
         for s in [s for s in self.cells if s not in tick.holders]:
             del self.cells[s]                     # memory dies with its player
-        for side in ("A", "B"):
-            hs = [h for h in tick.holders.values() if h.team == side]
-            live = np.zeros(GRID * GRID, bool)
-            mem = np.zeros(GRID * GRID, bool)
-            for h in hs:
-                live |= h.active | h.passive | h.watch
-                if h.slot in self.cells:
-                    self.cells[h.slot] &= ~(h.active | h.passive)    # seen again: live, not memory
-                    mem |= self.cells[h.slot]
-            if not mem.any():
-                self.carry[side] = 0.0
+        for h in tick.holders.values():
+            if h.slot in self.cells:
+                self.cells[h.slot] &= ~(h.active | h.passive)    # seen again: live, not memory
+                if unknown is not None:
+                    self.cells[h.slot] &= ~unknown[h.team]       # an enemy could be there now
+        for h in tick.holders.values():
+            seen = (h.active | h.passive) & walk
+            if h.slot in self.cells:
+                h.passive = h.passive | (self.cells[h.slot] & ~h.active)
+                self.cells[h.slot] |= seen
             else:
-                self.carry[side] += DECAY_MPS * dt
-                steps = int(self.carry[side] // self.geo.cell_m)
-                if steps:
-                    self.carry[side] -= steps * self.geo.cell_m
-                    open_ = walk & ~live & ~mem
-                    if open_.any():
-                        reached = ndimage.binary_dilation(open_.reshape(GRID, GRID), EIGHT, iterations=steps,
-                                                          mask=((mem & ~self.held) | open_).reshape(GRID, GRID)).ravel()
-                        for h in hs:
-                            if h.slot in self.cells:
-                                self.cells[h.slot] &= ~reached
-            for h in hs:
-                seen = (h.active | h.passive) & walk
-                if h.slot in self.cells:
-                    h.passive = h.passive | (self.cells[h.slot] & ~h.active)
-                    self.cells[h.slot] |= seen
-                else:
-                    self.cells[h.slot] = seen
+                self.cells[h.slot] = seen
 
 
 def _share_by_walk(area: np.ndarray, starts: dict[int, int]) -> dict[int, np.ndarray]:
@@ -1412,6 +1354,7 @@ class RoundControl:
     # what each side group knew (R3.3): ticks x walkable cells, and each enemy's sightings
     knew_states: dict | None = None     # side group -> uint8 states in that team's picture
     knew_sightings: dict | None = None  # side group -> {enemy slot: [[t0, t1, u, v], ...]}
+    unknown: dict | None = None         # side group -> ticks x walkable cells, bool: its unknown
 
 
 def _section_bounds(rnd: RoundInputs) -> list[tuple[str, float, float]]:
@@ -1466,15 +1409,27 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
             death_ticks[i].append((slot, t))
     prev_state = None
     memory = Memory(geo)
-    know = {side: Knowledge(rnd, side) for side in ("A", "B")} if knowledge else {}
+    unknown = Unknown(geo)
+    unknown_masks = {side: np.zeros((n_ticks, n_walk), bool) for side in ("A", "B")}
+    know ={side: Knowledge(rnd, side) for side in ("A", "B")} if knowledge else {}
     knew_states = {side: np.zeros((n_ticks, n_walk), np.uint8) for side in know}
 
     for n, t in enumerate(times):
         t = float(t)
         tick = Tick(rnd, t, timings)
         a = time.perf_counter()
-        memory.apply(tick)
+        if n == 0:
+            areas = barrier_start(geo, tick)
+            memory.begin(areas)
+            unknown.begin(areas)
+        unknown.apply(tick)                   # before memory: live vision only clears it
+        timings["unknown"] += time.perf_counter() - a
+        a = time.perf_counter()
+        memory.apply(tick, unknown.cells)
         timings["memory"] += time.perf_counter() - a
+        tick.unknown = {side: cells.copy() for side, cells in unknown.cells.items()}
+        for side in ("A", "B"):
+            unknown_masks[side][n] = tick.unknown[side][walk_flat]
         a = time.perf_counter()
         base = tick.compose()
         b = time.perf_counter()
@@ -1546,7 +1501,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     return RoundControl(blob.get("round"), blob.get("map", geo.name), times, weights, walk_cells, states, control,
                         control_masks, coverage_masks, sections, players, redundant, dict(rnd.group_side), cell_m2,
                         missing, {**timings, "branches": dict(branches)}, cf_check,
-                        knew_states=knew_states or None,
+                        knew_states=knew_states or None, unknown=unknown_masks,
                         knew_sightings={side: {s: runs for s, runs in kn.sightings.items()}
                                         for side, kn in know.items()} or None)
 

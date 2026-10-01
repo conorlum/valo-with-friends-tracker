@@ -155,3 +155,46 @@ def test_spread_does_not_depend_on_tick_spacing(hz):
     steps = int(ce.UNKNOWN_MPS * 2.0 // geo.cell_m)
     e = _col(geo, 400)
     assert unk.cells["A"][e - steps] and not unk.cells["A"][e - steps - 1]
+
+
+# ---------------------------------------------------------------- remembered ground (Task 2)
+
+from tests.replays.control_toys import blob  # noqa: E402
+
+A_OWN = (ce.A_PASSIVE, ce.A_SAFE, ce.A_ACTIVE)
+
+
+def still(side, x, y, yaw):
+    return side, [(0.0, x, y, yaw)]
+
+
+def test_remembered_ground_lasts_until_unknown_reaches_it():
+    geo = open_hall()
+    west, _ = _halves(geo)
+    z = np.zeros(GRID * GRID, bool)
+    mem = ce.Memory(geo)
+    mem.apply(_Tk(0.0, _at(0, "A", geo, 120, 200, west)), {"A": z, "B": z})
+    blind = _at(0, "A", geo, 120, 200)
+    mem.apply(_Tk(30.0, blind), {"A": z, "B": z})
+    assert blind.passive[west].all(), "no enemy could have got there: still held after 30 s"
+    reached = z.copy()
+    reached[west[west % GRID >= 28]] = True           # unknown has walked into the west half's last 4 columns
+    eaten = _at(0, "A", geo, 120, 200)
+    mem.apply(_Tk(31.0, eaten), {"A": reached, "B": z})
+    assert not eaten.passive[reached].any(), "unknown eats remembered ground"
+    held = np.zeros(GRID * GRID, bool)
+    held[west] = True
+    assert eaten.passive[held & ~reached].all(), "and nothing else"
+
+
+def test_the_spawn_is_held_until_an_enemy_could_have_walked_there():
+    geo = _barrier_hall()
+    # each team faces its own back wall: nobody watches the barrier
+    players = {0: still("A", 120, 200, 180), 5: still("B", 400, 200, 0)}
+    rc = ce.compute_round(blob(players, t_end=6.0), geo, ticks=[0.0, 1.0, 2.0])
+    col = lambda x: int(np.searchsorted(rc.walk_cells, _col(geo, x)))   # noqa: E731
+    assert rc.states[0, col(248)] in A_OWN and rc.states[0, col(160)] in A_OWN, "at the drop: A's whole side"
+    assert rc.states[1, col(248)] not in A_OWN, "1 s later the cell by the barrier is gone: no grace"
+    assert rc.states[2, col(160)] in A_OWN, "deep in A's side: still held at 2 s"
+    assert rc.unknown["A"][2, col(240)] and not rc.unknown["A"][2, col(160)]
+    assert rc.unknown["A"].shape == rc.states.shape
