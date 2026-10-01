@@ -147,6 +147,12 @@ def candidates(rgba: np.ndarray, params: dict) -> tuple[np.ndarray, list[dict]]:
     return labels, out
 
 
+def pack_paint(cells: np.ndarray) -> str:
+    """A PAINT_GRID x PAINT_GRID cell mask as a paint string (the inverse of `unpack_paint` on its cells)."""
+    return base64.b64encode(np.packbits(np.asarray(cells, bool).ravel().astype(np.uint8),
+                                        bitorder="little").tobytes()).decode("ascii")
+
+
 def unpack_paint(b64: str) -> np.ndarray:
     """A see-across paint string (256 x 256 bits, little bit order) as a 1024 x 1024 pixel mask."""
     raw = np.frombuffer(base64.b64decode(b64), np.uint8)
