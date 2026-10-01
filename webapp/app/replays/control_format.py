@@ -170,11 +170,12 @@ def decode_knew(stream: bytes, true_frames: list[list[int]]) -> list[list[int]]:
     return frames
 
 
-def decode_masks(stream: bytes, ticks: int, cells: int, checkpoints: list[int]) -> list[list[list[int]]]:
+def decode_masks(stream: bytes, ticks: int, cells: int, checkpoints: list[int],
+                 slots: int = SLOTS) -> list[list[list[int]]]:
     """Every tick's per-slot masks, as lists of 0/1 (reference decoder)."""
     full = set(checkpoints)
     width = (cells + 7) >> 3
-    frames, cur, pos = [], [[0] * cells for _ in range(SLOTS)], 0
+    frames, cur, pos = [], [[0] * cells for _ in range(slots)], 0
     for i in range(ticks):
         for mask in cur:
             if i in full:
@@ -190,6 +191,12 @@ def decode_masks(stream: bytes, ticks: int, cells: int, checkpoints: list[int]) 
                     mask[c] ^= 1
         frames.append([list(m) for m in cur])
     return frames
+
+
+def decode_unknown(stream: bytes, ticks: int, cells: int, checkpoints: list[int]) -> list[list[int]]:
+    """A side group's unknown per tick (the optional `unknown_a` / `unknown_b` streams; 1 where an enemy of
+    that group could be): decode_masks with one slot (reference decoder; the viewer's is replay_control.js)."""
+    return [frame[0] for frame in decode_masks(stream, ticks, cells, checkpoints, slots=1)]
 
 
 # ---------------------------------------------------------------- summary (heatmaps and per-player stats)

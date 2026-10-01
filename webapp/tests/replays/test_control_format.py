@@ -3,6 +3,7 @@ RoundControl from a toy map round-trips through `data` and `summary`, and the en
 are pinned to CONTROL_REVISION."""
 
 import base64
+import dataclasses
 import gzip
 import hashlib
 import json
@@ -107,6 +108,26 @@ def test_data_round_trips_every_tick(round_control):
     assert header["group_side"] == {"A": "attack", "B": "defense"}
 
 
+def test_each_teams_unknown_round_trips_as_optional_streams(round_control):
+    rc, data = round_control
+    header, streams = cf.unpack_data(encode_data(rc, data))
+    n_ticks, cells = len(rc.ticks), len(rc.walk_cells)
+    checkpoints = [c[0] for c in header["checkpoints"]]
+    assert [c[0] for c in header["unknown_checkpoints"]] == checkpoints
+    for group in ("A", "B"):
+        got = cf.decode_unknown(streams[f"unknown_{group.lower()}"], n_ticks, cells, checkpoints)
+        assert np.array_equal(np.array(got, bool), rc.unknown[group]), group
+        assert rc.unknown[group].any(), f"the toy round should exercise {group}'s unknown"
+
+
+def test_a_row_without_unknown_reads_as_before(round_control):
+    rc, data = round_control
+    header, streams = cf.unpack_data(encode_data(dataclasses.replace(rc, unknown=None), data))
+    assert "unknown_a" not in streams and "unknown_checkpoints" not in header
+    n_ticks, cells = len(rc.ticks), len(rc.walk_cells)
+    assert np.array_equal(np.array(cf.decode_states(streams["states"], n_ticks, cells)), rc.states)
+
+
 def test_what_each_team_knew_round_trips_as_optional_streams(round_control):
     rc, data = round_control
     header, streams = cf.unpack_data(encode_data(rc, data))
@@ -120,7 +141,7 @@ def test_what_each_team_knew_round_trips_as_optional_streams(round_control):
     # a row computed without them has the three streams only, and reads the same
     plain = ce.compute_round(data, door_hall(), ce.ControlLink(sides={0: "attack", 1: "attack", 5: "defense",
                                                                          6: "defense"}), knowledge=False)
-    h2, s2 = cf.unpack_data(encode_data(plain, data))
+    h2, s2 = cf.unpack_data(encode_data(dataclasses.replace(plain, unknown=None), data))
     assert set(s2) == {"states", "coverage", "control"} and "knew" not in h2
     assert cf.decode_states(s2["states"], n_ticks, cells) == true
 

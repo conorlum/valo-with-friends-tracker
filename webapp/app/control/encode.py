@@ -114,6 +114,15 @@ def encode_data(rc: RoundControl, blob: dict) -> bytes:
         header["knew"] = {group: {str(s): runs for s, runs in sorted(rc.knew_sightings[group].items())}
                           for group in ("A", "B")}
         header["knew_fade_s"] = KNEW_FADE_S
+    if rc.unknown:
+        # Each side group's unknown (docs/map-control-unknown-plan.md): optional streams, one mask a tick
+        # in encode_masks' format with a single slot, so rows without them read as before.
+        offsets = {}
+        for group in ("A", "B"):
+            name = f"unknown_{group.lower()}"
+            streams[name], offsets[name] = encode_masks(rc.unknown[group][:, None, :], checkpoints)
+        header["unknown_checkpoints"] = [[t, a, b] for t, a, b in
+                                         zip(checkpoints, offsets["unknown_a"], offsets["unknown_b"])]
     return cf.pack_data(header, streams)
 
 
