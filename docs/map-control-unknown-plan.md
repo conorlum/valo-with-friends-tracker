@@ -69,10 +69,16 @@ picker: Unknown off / Team 1 / Team 2 / both (default both). Shown only for rows
   yet isn't the player's to hold. (`Tick.unknown_without`.)
 - **The whole enemy team dead:** that team's unknown clears to nothing.
 - **Maps without barrier paint** (Bind, Breeze, Corrode, Fracture, Icebox, Lotus, Pearl at the time): the user
-  paints them. Until then their unknown starts from the enemies' own cells only.
+  painted them the same day, so every map now has barriers. A map without paint would start its unknown from
+  the enemies' own cells only.
+- **Missing thin walls** (Ascent, round 1 at 51.7 s: Osmin saw through one) are map tagging, not engine: the
+  user painted cover on Ascent's thin walls. Four strokes ran into doorways and blocked real kill lines
+  (centre-to-centre, non-wallbang; 25/476 against the 2% bar); their door ends were trimmed by 4-20 px to 6/476.
+  Two of them (x 272-287 and 312-335, y 528-535) kept only 4 px each: worth a look in the tagger.
 
 - **Presence bubble** (after the first look): each live player holds the walkable ground within `PRESENCE_M`
-  = 4 m (by walking, so not through walls) as passive, so unknown can't slip past within reach. Tried 2, 4 and
+  = 4 m that they can walk to and see (all round them, smoke-aware: anything that blocks sight stops it) as
+  passive, so unknown can't slip past within reach. Tried 2, 4 and
   6 m on Ascent round 1 (Momo, 15-18 s): 2 m let unknown wrap behind her; 4 and 6 m held it on one flank; 4 m
   chosen "for now". Kept while concussed or revealed; not while flashed.
 - **Neutral ground:** where both teams would be Safe (neither unknown sees it), it is nobody's, not contested.
