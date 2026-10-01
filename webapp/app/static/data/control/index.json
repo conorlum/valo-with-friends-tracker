@@ -163,7 +163,11 @@
     "blocked": 1,
     "share": 0.0036,
     "passes": true
-   }
+   },
+   "barrier_sha": "e56e6d184b84",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Summit": {
    "image_sha": "e3ceb9a90958",
