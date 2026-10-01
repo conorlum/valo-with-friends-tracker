@@ -325,6 +325,22 @@ def test_without_a_player_unknown_eats_a_teammates_remembered_ground_behind_them
     assert int(cf[behind]) not in A_OWN, "without A0, unknown reaches it and the memory ends"
 
 
+def test_a_seen_player_does_not_contest_ground_they_only_remember():
+    geo = midwall_hall()       # a wall down x 248-264 from the north wall to y 248
+    # A0 and B5 face each other through the south gap: each is seen, so each one's live lines are contested
+    tk = _tick(geo, {0: still("A", 150, 270, 0), 5: still("B", 400, 270, 180)})
+    assert 0 in tk.sees[5] and 5 in tk.sees[0]
+    # each team's unknown is the other's half: B could be anywhere east, A anywhere west
+    tk.unknown = {"A": _band(geo, 264, 416), "B": _band(geo, 96, 248)}
+    corner = _band(geo, 380, 416, 96, 130)            # behind B, out of everyone's view
+    assert not tk.holders[5].body[corner].any() and not tk.holders[0].body[corner].any()
+    mem = ce.Memory(geo)
+    mem.cells[5] = corner.copy()                      # B5 saw that corner earlier
+    mem.apply(tk, tk.unknown)
+    state = tk.compose()["state"]
+    assert np.isin(state[corner], (ce.B_PASSIVE, ce.B_SAFE)).all(), "remembered ground stays B's in a fight"
+
+
 def test_ground_safe_for_both_teams_is_nobodys():
     from tests.replays.control_toys import door_hall
     geo = door_hall()          # the west room is hidden from the east hall but through the door

@@ -1069,10 +1069,12 @@ class Tick:
             fought = np.zeros(GRID * GRID, bool)
             for h in hs:
                 steady |= h.watch
+                # a seen holder's live lines are fought over; ground they only remember is not (2026-10-01)
+                live = h.active | (h.passive if h.memory is None else h.passive & ~h.memory)
                 if is_contested[h.slot]:
-                    fought |= h.active | h.passive
+                    fought |= live
                 else:
-                    steady |= h.active | h.passive
+                    steady |= live
             contested |= fought & ~steady
             # the entry's way back (Q56): `other`'s players standing in `side`'s vision
             watched = cl[side][2]
