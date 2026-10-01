@@ -17,22 +17,43 @@
     the minimap replay is kept. If the match is on this site, the replay links to it; if not, it plays on its own and
     links after the match is crawled.</p>
   <form method="post" action="/replays/upload" enctype="multipart/form-data" class="upload-form" data-upload-form
-        data-max-files="{{ per_hour }}" data-max-bytes="{{ max_mb * 1000000 }}">
+        data-max-files="{{ batch_files }}" data-max-bytes="{{ max_mb * 1000000 }}">
     <label>Replay files <input type="file" name="file" accept=".vrf" multiple required></label>
     <button type="submit">Upload</button>
   </form>
   <p class="upload-error" role="alert" data-upload-error hidden></p>
   <ol class="upload-batch" data-upload-batch hidden></ol>
   <p class="page-meta" data-upload-summary aria-live="polite" hidden></p>
-  <p class="page-meta">Up to {{ per_hour }} files at a time, {{ max_mb }} MB a file, {{ per_hour }} uploads an hour. They
-    go one after another: each is parsed (a few minutes) before the next is sent, so keep this page open.</p>
+  <p class="page-meta">Up to {{ batch_files }} files at a time, {{ max_mb }} MB a file, {{ per_hour }} uploads an hour.
+    Keep this page open while the files are sent; once they are, you can close it: each is parsed (a few minutes)
+    and saved on its own.</p>
   {% endif %}
 </div>
+{% if authorized and recent %}
+<div class="card">
+  <h2>Your recent uploads</h2>
+  <ul class="upload-batch">
+    {% for up in recent %}
+    <li data-upload-id="{{ up.id }}" data-upload-status="{{ up.status }}">
+      <div class="upload-name">{{ up.created_at.strftime("%b %d, %H:%M") }} UTC <span class="page-meta">{{ up.id }}</span></div>
+      <p class="page-meta" data-upload-line>
+        {%- if up.status == "queued" %}Waiting for the parser.
+        {%- elif up.status == "parsing" %}Parsing.
+        {%- elif up.status == "stored" %}{% if up.linked %}Stored and linked to its match.{% else %}Stored (it links after the match is crawled).{% endif %}
+          {% if up.replay_url %}<a href="{{ up.replay_url }}">&#9654; Watch the replay</a>{% endif %}
+        {%- else %}Failed: {{ up.error or "unknown error" }}{% endif -%}
+      </p>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
 {% if authorized %}
 <script>
-  // A batch, in series (the server allows one unfinished upload a session): each file is sent with XHR so its
-  // upload progress shows, then its parse is polled until it is stored or failed, then the next goes. Without JS
-  // the form posts the first file as before.
+  // A batch (up to BATCH_FILES, the worker's queue size): the files are sent one after another with XHR so each
+  // one's upload progress shows; once sent, the page may close: the site's background collector parses and stores
+  // them (app/services/replay_upload.py `collect`). While the page is open each row (and each unfinished recent
+  // upload) polls its status. Without JS the form posts the first file as before.
   (function () {
     var form = document.querySelector("[data-upload-form]"), input = form.querySelector("input[type=file]");
     var button = form.querySelector("button"), errorLine = document.querySelector("[data-upload-error]");
@@ -99,29 +120,60 @@
       });
     }
 
-    // Polls one upload's parse until it is stored or failed. Resolves its status body.
-    function parse(id, r) {
+    // Follows one sent upload until it is stored or failed (only while the page is open; the site finishes it anyway).
+    function watch(id, r) {
       var since = Date.now();
-      return new Promise(function (resolve) {
-        function poll() {
-          r.progress(null, "Parsing: " + clock(Math.floor((Date.now() - since) / 1000)) + " so far (usually one to three minutes).");
-          fetch("/replays/uploads/" + id + "/status").then(function (res) { return res.json(); })
-            .then(function (body) {
-              if (body.status === "stored" || body.status === "failed") resolve(body);
-              else setTimeout(poll, 3000);
-            })
-            .catch(function () { setTimeout(poll, 3000); });
-        }
-        poll();
-      });
+      function poll() {
+        fetch("/replays/uploads/" + id + "/status").then(function (res) { return res.json(); })
+          .then(function (body) {
+            if (body.status === "stored") {
+              r.done(body.linked ? "Stored and linked to its match." : "Stored (it links after the match is crawled).", body.replay_url);
+            } else if (body.status === "failed") {
+              r.fail("Failed: " + (body.error || "unknown error"));
+            } else {
+              r.progress(null, body.status === "queued" ? "Sent. Waiting for the parser (files go one at a time)." :
+                "Parsing: " + clock(Math.floor((Date.now() - since) / 1000)) + " since sent (usually one to three minutes each).");
+              setTimeout(poll, 3000);
+            }
+          })
+          .catch(function () { setTimeout(poll, 3000); });
+      }
+      r.progress(null, "Sent. Waiting for the parser (files go one at a time).");
+      setTimeout(poll, 3000);
     }
 
-    function finish(stored, failed, skipped) {
+    function finish(sent, failed, skipped) {
       running = false; button.disabled = false; input.disabled = false;
       summary.hidden = false;
-      summary.textContent = "Done: " + stored + " stored" + (failed ? ", " + failed + " failed" : "") +
-        (skipped ? ", " + skipped + " not sent" : "") + ".";
+      summary.textContent = (sent ? sent + " sent: you can close this page now; each is parsed and saved on its own" +
+        " (see your recent uploads when you come back)" : "Nothing was sent") +
+        (failed ? "; " + failed + " failed" : "") + (skipped ? ", " + skipped + " not sent" : "") + ".";
     }
+
+    // The recent uploads still waiting or parsing: keep their lines current while the page is open.
+    Array.prototype.forEach.call(document.querySelectorAll("[data-upload-id]"), function (li) {
+      var status = li.dataset.uploadStatus;
+      if (status !== "queued" && status !== "parsing") return;
+      var line = li.querySelector("[data-upload-line]");
+      (function poll() {
+        fetch("/replays/uploads/" + li.dataset.uploadId + "/status").then(function (res) { return res.json(); })
+          .then(function (body) {
+            if (body.status === "queued") line.textContent = "Waiting for the parser.";
+            else if (body.status === "parsing") line.textContent = "Parsing.";
+            else {
+              line.textContent = body.status === "stored" ? (body.linked ? "Stored and linked to its match. " :
+                "Stored (it links after the match is crawled). ") : "Failed: " + (body.error || "unknown error");
+              if (body.replay_url) {
+                var a = document.createElement("a");
+                a.href = body.replay_url; a.textContent = "▶ Watch the replay"; line.appendChild(a);
+              }
+              return;
+            }
+            setTimeout(poll, 5000);
+          })
+          .catch(function () { setTimeout(poll, 5000); });
+      })();
+    });
 
     form.addEventListener("submit", function (event) {
       event.preventDefault();
@@ -135,9 +187,9 @@
       }
       running = true; button.disabled = true; input.disabled = true;
       list.innerHTML = ""; list.hidden = false; summary.hidden = true;
-      var rows = files.map(row), stored = 0, failed = 0;
+      var rows = files.map(row), sentCount = 0, failed = 0;
       (function next(i) {
-        if (i >= files.length) { finish(stored, failed, 0); return; }
+        if (i >= files.length) { finish(sentCount, failed, 0); return; }
         var file = files[i], r = rows[i];
         if (file.size > maxBytes) {
           failed++; r.fail("Over the " + Math.floor(maxBytes / 1e6) + " MB limit: not sent.");
@@ -148,19 +200,13 @@
             failed++; r.fail(sent.error);
             if (sent.stop) {
               for (var k = i + 1; k < files.length; k++) rows[k].fail("Not sent: the batch stopped at the file above.");
-              finish(stored, failed, files.length - i - 1); return;
+              finish(sentCount, failed, files.length - i - 1); return;
             }
             next(i + 1); return;
           }
-          parse(sent.id, r).then(function (body) {
-            if (body.status === "stored") {
-              stored++;
-              r.done(body.linked ? "Stored and linked to its match." : "Stored (it links after the match is crawled).", body.replay_url);
-            } else {
-              failed++; r.fail("Failed: " + (body.error || "unknown error"));
-            }
-            next(i + 1);
-          });
+          sentCount++;
+          watch(sent.id, r);
+          next(i + 1);
         });
       })(0);
     });

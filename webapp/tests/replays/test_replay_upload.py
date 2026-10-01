@@ -73,14 +73,13 @@ def test_the_code_is_checked_and_remembered_in_the_session(db):
     assert uploads.code_matches("letmein") and not uploads.code_matches("") and not uploads.code_matches(None)
 
 
-def test_the_upload_page_takes_a_batch_of_up_to_the_hourly_limit(db):
-    """Several files at once (the user's call, 2026-10-01): the page picks up to UPLOADS_PER_HOUR and
-    sends them one after another, each parsed before the next (the server allows one unfinished upload
-    a session)."""
-    body = routes.upload_form(request({"replay_upload_ok": True})).body.decode()
+def test_the_upload_page_takes_a_batch_of_up_to_batch_files(db):
+    """Several files at once (the user's call, 2026-10-01): the page sends up to BATCH_FILES (the
+    worker's queue size) one after another, then can be closed: the parses finish on their own."""
+    body = routes.upload_form(request({"replay_upload_ok": True}), db).body.decode()
     assert 'type="file" name="file" accept=".vrf" multiple' in body
-    assert f'data-max-files="{uploads.UPLOADS_PER_HOUR}"' in body
-    assert f"Up to {uploads.UPLOADS_PER_HOUR} files at a time" in body
+    assert f'data-max-files="{uploads.BATCH_FILES}"' in body
+    assert f"Up to {uploads.BATCH_FILES} files at a time" in body
 
 
 def test_the_upload_cap_is_200_mb():
@@ -106,7 +105,7 @@ def test_a_text_file_and_an_oversized_file_are_refused_with_a_reason(db, monkeyp
     assert db.query(ReplayUpload).count() == 0
 
 
-def test_the_eleventh_upload_in_an_hour_and_a_second_unfinished_one_are_refused(db):
+def test_the_eleventh_upload_in_an_hour_and_a_sixth_waiting_one_are_refused(db):
     now = datetime.now(timezone.utc)
     for i in range(uploads.UPLOADS_PER_HOUR):
         db.add(ReplayUpload(id=f"00000000-0000-4000-8000-{i:012d}", status="stored", session_key="s",
@@ -118,10 +117,14 @@ def test_the_eleventh_upload_in_an_hour_and_a_second_unfinished_one_are_refused(
         uploads.check_limits(db, "other-session", "ip")  # per IP too
     uploads.check_limits(db, "other-session", "other-ip")
     uploads.check_limits(db, "s", "ip", now=now + timedelta(hours=2))  # an hour later it's fine again
-    db.add(ReplayUpload(id="00000000-0000-4000-8000-00000000ffff", status="parsing", session_key="t",
-                        client_ip="x", created_at=now))
-    db.commit()
-    with pytest.raises(uploads.LimitExceeded, match="one upload at a time"):
+    # A batch (the user's call, 2026-10-01): up to BATCH_FILES of a session's uploads may wait at once,
+    # the worker's queue size, so a whole batch is handed over and the page can be closed.
+    for i in range(uploads.BATCH_FILES):
+        uploads.check_limits(db, "t", "y")
+        db.add(ReplayUpload(id=f"00000000-0000-4000-8000-0000000ff{i:03d}", status="queued", session_key="t",
+                            client_ip="x", created_at=now))
+        db.commit()
+    with pytest.raises(uploads.LimitExceeded, match=f"{uploads.BATCH_FILES} uploads waiting"):
         uploads.check_limits(db, "t", "y")
 
 
@@ -172,6 +175,63 @@ def test_a_failed_parse_and_a_stuck_job_fail_with_a_plain_reason(db, tmp_path, s
     db.commit()
     stuck = uploads.refresh_job(db, stuck, uploads.WorkerClient("http://127.0.0.1:9", timeout_s=1))
     assert (stuck.status, stuck.error) == ("failed", "failed: please re-upload")
+
+
+def test_a_job_the_worker_still_holds_waits_its_turn_and_shows_where_it_is(db):
+    """Behind up to BATCH_FILES - 1 others, a job can wait longer than STUCK_AFTER before its parse
+    starts: while the worker reports it queued or parsing it is alive (the worker times the parse
+    out itself), and the upload's status follows the worker's."""
+
+    class Holding:
+        def __init__(self, status):
+            self.status = status
+
+        def job(self, _id):
+            return {"status": self.status}
+
+    old = datetime.now(timezone.utc) - uploads.STUCK_AFTER - timedelta(minutes=5)
+    upload = ReplayUpload(id="00000000-0000-4000-8000-00000000dddd", status="parsing", worker_job_id="j",
+                          session_key="z", created_at=old)
+    db.add(upload)
+    db.commit()
+    upload = uploads.refresh_job(db, upload, Holding("queued"))
+    assert upload.status == "queued", "waiting in the worker's line, not stuck"
+    upload = uploads.refresh_job(db, upload, Holding("parsing"))
+    assert upload.status == "parsing"
+    gone = uploads.refresh_job(db, upload, Holding("queued"),
+                               now=old + uploads.STUCK_AFTER * uploads.BATCH_FILES + timedelta(minutes=1))
+    assert (gone.status, gone.error) == ("failed", "failed: please re-upload"), "but not forever"
+
+
+def test_finished_uploads_are_stored_with_no_page_open(db, tmp_path, stub):  # noqa: F811
+    """Upload and forget (the user's call, 2026-10-01): `collect` (the web app's background pass)
+    stores every finished upload, so nobody has to keep the page open."""
+    worker, httpd, base = start(tmp_path, stub, "ok")
+    try:
+        client = uploads.WorkerClient(base)
+        upload = uploads.create_upload(db, io.BytesIO(vrf_bytes()), "sess", "ip", client)
+        for _ in range(200):
+            uploads.collect(db, client)
+            db.expire_all()
+            if db.get(ReplayUpload, upload.id).status not in uploads.UNFINISHED:
+                break
+            time.sleep(0.1)
+        stored = db.get(ReplayUpload, upload.id)
+        assert stored.status == "stored", stored.error
+        assert db.get(Replay, stored.replay_id).source == "upload"
+    finally:
+        httpd.shutdown()
+
+
+def test_the_upload_page_lists_the_sessions_recent_uploads(db):
+    db.add(ReplayUpload(id="00000000-0000-4000-8000-00000000abcd", status="queued", session_key="mine",
+                        created_at=datetime.now(timezone.utc)))
+    db.add(ReplayUpload(id="00000000-0000-4000-8000-00000000abce", status="queued", session_key="theirs",
+                        created_at=datetime.now(timezone.utc)))
+    db.commit()
+    body = routes.upload_form(request({"replay_upload_ok": True, "replay_upload_sid": "mine"}), db).body.decode()
+    assert "00000000-0000-4000-8000-00000000abcd" in body and "Waiting for the parser" in body
+    assert "00000000-0000-4000-8000-00000000abce" not in body
 
 
 def test_an_unreachable_worker_fails_the_upload_at_once(db):

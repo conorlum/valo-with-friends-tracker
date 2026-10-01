@@ -35,7 +35,7 @@ import hashlib
 import json
 import re
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -85,17 +85,34 @@ def _session_key(request: Request) -> str:
     return key
 
 
-def _upload_page(request: Request, status_code: int = 200, error: str | None = None):
+RECENT_UPLOADS = timedelta(days=1)
+
+
+def _recent_uploads(db: Session | None, request: Request) -> list[dict]:
+    """This session's uploads from the last RECENT_UPLOADS, newest first, as the page lists them."""
+    key = request.session.get("replay_upload_sid")
+    if db is None or not key:
+        return []
+    since = datetime.now(timezone.utc) - RECENT_UPLOADS
+    rows = (db.query(ReplayUpload).filter(ReplayUpload.session_key == key, ReplayUpload.created_at >= since)
+            .order_by(ReplayUpload.created_at.desc()).limit(20).all())
+    out = [{"id": row.id, "created_at": row.created_at, **_status_body(db, row)} for row in rows]
+    db.rollback()
+    return out
+
+
+def _upload_page(request: Request, status_code: int = 200, error: str | None = None, db: Session | None = None):
     return templates.TemplateResponse(request, "replays/upload.html", {
         "authorized": bool(request.session.get("replay_upload_ok")), "error": error,
         "max_mb": uploads.settings.replay_upload_max_bytes // 1_000_000, "per_hour": uploads.UPLOADS_PER_HOUR,
+        "batch_files": uploads.BATCH_FILES, "recent": _recent_uploads(db, request),
     }, status_code=status_code)
 
 
 @router.get("/replays/upload")
-def upload_form(request: Request):
+def upload_form(request: Request, db: Session = Depends(get_db)):
     _upload_enabled_or_404()
-    return _upload_page(request)
+    return _upload_page(request, db=db)
 
 
 @router.post("/replays/upload/code")

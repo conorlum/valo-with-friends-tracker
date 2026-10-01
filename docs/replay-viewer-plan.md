@@ -1001,7 +1001,9 @@ only if competitive also decodes no winners (finding 21).
 - **`POST /replays/upload`** (friends service; 404 in demo mode or when no code is configured):
   - it takes a multipart `UploadFile` (already spooled to disk by `python-multipart`);
   - refuses over 80 MB, or if the file doesn't start with the replay magic bytes;
-  - rate limit: 10 uploads per hour per session and per IP, and one job at a time per session;
+  - rate limit: 10 uploads per hour per session and per IP, and one job at a time per session (2026-10-01:
+    up to 5 waiting per session, a batch the size of the worker's queue; a background collector in the web
+    app stores finished parses, so the page can close once the files are sent);
   - it computes the sha256, creates a `replay_uploads` row (`queued`) and streams the file to the worker with
     `urllib.request`;
   - it returns the job page `/replays/uploads/{id}`, which polls a small status endpoint every 3 s.

@@ -27,12 +27,15 @@ async def lifespan(_app: FastAPI):
     # Map control for new replays on the replay worker: off unless REPLAY_CONTROL_REMOTE is set
     # (app/services/replay_control_remote.py; the engine is never imported by the web app).
     from app.db import SessionLocal
-    from app.services import replay_control_remote
+    from app.services import replay_control_remote, replay_upload
 
-    stop = replay_control_remote.start(SessionLocal)
+    stops = [replay_control_remote.start(SessionLocal),
+             # Replay uploads finish with no page open (app/services/replay_upload.py `collect`).
+             replay_upload.start(SessionLocal)]
     yield
-    if stop is not None:
-        stop.set()
+    for stop in stops:
+        if stop is not None:
+            stop.set()
 
 
 app = FastAPI(title=settings.site_name, lifespan=lifespan)
