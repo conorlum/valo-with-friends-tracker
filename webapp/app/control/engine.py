@@ -1053,6 +1053,11 @@ class Tick:
             lv[active] = 3
             lv[~walk.ravel()] = 0
             level[side] = lv
+        if self.unknown is not None:
+            # ground both teams hold only as Safe (neither unknown sees it) is nobody's (the user's call, 2026-10-01)
+            both = (level["A"] == 2) & (level["B"] == 2)
+            level["A"][both] = 0
+            level["B"][both] = 0
         contested = (level["A"] > 0) & (level["B"] > 0)
         for side in ("A", "B"):
             other = "B" if side == "A" else "A"

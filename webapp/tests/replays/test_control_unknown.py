@@ -325,6 +325,16 @@ def test_without_a_player_unknown_eats_a_teammates_remembered_ground_behind_them
     assert int(cf[behind]) not in A_OWN, "without A0, unknown reaches it and the memory ends"
 
 
+def test_ground_safe_for_both_teams_is_nobodys():
+    from tests.replays.control_toys import door_hall
+    geo = door_hall()          # the west room is hidden from the east hall but through the door
+    tk = _tick(geo, {0: still("A", 400, 280, 0), 5: still("B", 380, 120, 0)})
+    tk.unknown = {"A": _band(geo, 300, 416, 96, 160), "B": _band(geo, 300, 416, 96, 160)}
+    room = _col(geo, 120, 120)
+    assert tk.unknown_safe("A")[room] and tk.unknown_safe("B")[room], "neither unknown sees the west room"
+    assert int(tk.compose()["state"][room]) == ce.NONE, "Safe for both cancels out: nobody's"
+
+
 def test_a_player_holds_a_presence_bubble_behind_them():
     geo = open_hall()
     m = geo.m_per_px

@@ -116,7 +116,9 @@ def test_all_enemies_dead_makes_the_whole_map_the_teams():
 
 def test_a_holders_death_loses_the_space_on_the_next_tick():
     geo = door_hall()
-    players = {0: still("A", 204, 292, 0), 5: still("B", 400, 150, 180)}
+    # B faces away (east), so A at the door is out of B's sight and pushes out B's unknown (2026-10-01:
+    # with B staring at A all round, B would have no unknown and be Safe in the west room too)
+    players = {0: still("A", 204, 292, 0), 5: still("B", 400, 150, 0)}
     rc = ce.compute_round(blob(players, t_end=2.0, deaths={0: 1.2}), geo)
     times = rc.ticks.tolist()
     assert 1.1875 in times and 1.25 in times
