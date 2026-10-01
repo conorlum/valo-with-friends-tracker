@@ -341,6 +341,19 @@ def test_a_seen_player_does_not_contest_ground_they_only_remember():
     assert np.isin(state[corner], (ce.B_PASSIVE, ce.B_SAFE)).all(), "remembered ground stays B's in a fight"
 
 
+def test_a_seen_player_contests_their_lines_only_where_an_enemy_could_be():
+    geo = midwall_hall()       # a wall down x 248-264 from the north wall to y 248
+    # A0 and B5 face each other through the south gap; A0 also sees north-east of the west half, B5 doesn't
+    tk = _tick(geo, {0: still("A", 150, 270, 0), 5: still("B", 400, 270, 180)})
+    spot = _col(geo, 230, 200)
+    assert 0 in tk.sees[5] and tk.holders[0].body[spot] and not tk.holders[5].body[spot]
+    tk.unknown = {"A": _band(geo, 264, 416), "B": _band(geo, 96, 248)}
+    assert int(tk.compose()["state"][spot]) in A_OWN, "no enemy could be there: A's, fight or no fight"
+    tk.unknown["A"] = _band(geo, 264, 416) | _band(geo, 210, 248, 180, 220)
+    tk._usafe, tk._back = {}, {}
+    assert int(tk.compose()["state"][spot]) in (ce.CONTESTED, ce.CONTESTED_ACTIVE), "an enemy could be there"
+
+
 def test_ground_safe_for_both_teams_is_nobodys():
     from tests.replays.control_toys import door_hall
     geo = door_hall()          # the west room is hidden from the east hall but through the door
@@ -356,13 +369,13 @@ def test_a_player_holds_a_presence_bubble_behind_them():
     m = geo.m_per_px
     tk = _tick(geo, {0: still("A", 300, 200, 0), 5: still("B", 120, 120, 0)})      # A faces east
     a = tk.holders[0]
-    assert ce.PRESENCE_M == 2.0
+    assert ce.PRESENCE_M == 4.0
     walk = geo.walk.ravel()
     d = np.hypot(geo.centres[:, 0] - 300, geo.centres[:, 1] - 200) * m
     bubble = walk & (d <= ce.PRESENCE_M)
-    assert (a.passive | a.active)[bubble].all(), "within 2 m, all round them, is held"
+    assert (a.passive | a.active)[bubble].all(), "within the radius, all round them, is held"
     assert a.passive[_col(geo, 300 - round(1.5 / m), 200)], "1.5 m behind: passive"
-    assert not (a.passive | a.active)[_col(geo, 300 - round(3.5 / m), 200)], "3.5 m behind: not held"
+    assert not (a.passive | a.active)[_col(geo, 300 - round(5.5 / m), 200)], "5.5 m behind: not held"
     assert tk.live[0][bubble].all(), "and it holds unknown back"
 
 

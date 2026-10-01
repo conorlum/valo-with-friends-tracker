@@ -24,7 +24,7 @@ from tests.replays.control_toys import blob, door_hall
 # 2: space taken, what each team knew (KNEW_*) and remembered ground (D6: DECAY_MPS). Unreleased,
 # so re-pinned in place. 3: barriers, backfill and unknown (UNKNOWN_MPS; DECAY_MPS and BARRIER_GRACE_S
 # removed) and presence (PRESENCE_M). Unreleased, so re-pinned in place.
-PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "ada6dfa2e61f64ea"}
+PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "c2319e37efd8aeb4"}
 
 
 def _constants_digest() -> str:

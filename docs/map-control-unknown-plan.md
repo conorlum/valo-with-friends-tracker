@@ -71,6 +71,14 @@ picker: Unknown off / Team 1 / Team 2 / both (default both). Shown only for rows
 - **Maps without barrier paint** (Bind, Breeze, Corrode, Fracture, Icebox, Lotus, Pearl at the time): the user
   paints them. Until then their unknown starts from the enemies' own cells only.
 
+- **Presence bubble** (after the first look): each live player holds the walkable ground within `PRESENCE_M`
+  = 4 m (by walking, so not through walls) as passive, so unknown can't slip past within reach. Tried 2, 4 and
+  6 m on Ascent round 1 (Momo, 15-18 s): 2 m let unknown wrap behind her; 4 and 6 m held it on one flank; 4 m
+  chosen "for now". Kept while concussed or revealed; not while flashed.
+- **Neutral ground:** where both teams would be Safe (neither unknown sees it), it is nobody's, not contested.
+- **A seen player** (a duel) has their lines contested only where their team's unknown is, and never their
+  remembered ground (that flashed whole rooms to contested for a tick: round 2, 48 s).
+
 ## What the sample showed (Ascent 6f12db3e, rounds 1-2, computed locally, no DB writes)
 
 - Compute: r1 86 s, r2 123 s (revision 3 before unknown: 82 s and 103 s).

@@ -84,7 +84,7 @@ KNEW_FADE_S = 3.0
 UNKNOWN_MPS = 3.5
 # Presence (the user's call, 2026-10-01): an enemy can't walk past a player within arm's reach unseen, so
 # each live player holds the walkable ground within this radius as passive (not while flashed).
-PRESENCE_M = 2.0
+PRESENCE_M = 4.0
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
 FAST_TURN_DPS = 90.0
 SPEED_WINDOW_S = 0.25
@@ -1033,7 +1033,13 @@ class Tick:
                 added = free & ~old.free
                 edge = added & ndimage.binary_dilation(~free, EIGHT)
                 seen = old.seen | seen_from(geo, np.flatnonzero(edge), self.smokes, skip=free.ravel())
-                fills[side] = Fill(free, [], seen)
+                # the components and their players, as `fill` groups them: the entry's way back (Q56)
+                # reads which players share a component (only their seen sets are left out)
+                by_reach: dict[frozenset, list[int]] = defaultdict(list)
+                for h in self.team(side, removed):
+                    by_reach[frozenset(self._reach(lab, {int(lab.flat[h.cell])}))].append(h.slot)
+                comps = [(np.isin(lab, list(ls)), None, slots) for ls, slots in by_reach.items()]
+                fills[side] = Fill(free, comps, seen)
                 stats["enemy_fill_extended"] += 1
         level = {}
         for side in ("A", "B"):
@@ -1075,6 +1081,9 @@ class Tick:
                     fought |= live
                 else:
                     steady |= live
+            if self.unknown is not None:
+                # only where an enemy could be (the user's call, 2026-10-01): enclosed ground stays theirs
+                fought &= self.unknown_for(side, removed)
             contested |= fought & ~steady
             # the entry's way back (Q56): `other`'s players standing in `side`'s vision
             watched = cl[side][2]
