@@ -184,7 +184,11 @@
     "blocked": 1,
     "share": 0.0034,
     "passes": true
-   }
+   },
+   "barrier_sha": "6e8a726dd39b",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Sunset": {
    "image_sha": "1188642e2f94",
@@ -201,7 +205,11 @@
     "blocked": 1,
     "share": 0.0049,
     "passes": true
-   }
+   },
+   "barrier_sha": "02adc35320f7",
+   "paints": [
+    "barrier_paint"
+   ]
   }
  },
  "version": 1,
