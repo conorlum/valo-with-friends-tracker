@@ -379,6 +379,20 @@ def test_a_player_holds_a_presence_bubble_behind_them():
     assert tk.live[0][bubble].all(), "and it holds unknown back"
 
 
+def test_the_presence_bubble_stops_at_anything_that_blocks_sight():
+    geo = open_hall()
+    m = geo.m_per_px
+    smoke = {"k": "ability", "t": 0.0, "t1": 10.0, "by": 5, "kind": "Zone", "code": "Wraith", "name": "4_Smoke",
+             "u": uv(270, 200)[0], "v": uv(270, 200)[1]}
+    # A faces east; a smoke sits just behind them (west), so the ground past it is out of their sight
+    tk = _tick(geo, {0: still("A", 300, 200, 0), 5: still("B", 120, 120, 0)}, util=[smoke])
+    a = tk.holders[0]
+    past = _col(geo, 300 - round(3.8 / m), 200)       # 3.8 m behind them, beyond the smoke's far edge
+    los = ce.seen_from(geo, np.array([a.cell]), tk.smokes)
+    assert not los[past], "the smoke hides it"
+    assert not a.passive[past], "so the bubble doesn't hold it"
+
+
 def test_a_flashed_player_has_no_presence_bubble():
     geo = open_hall()
     flash = {"k": "flash", "t": 0.5, "by": 5, "ability": "Phoenix_Q", "hits": [[0, 0.5, 2.5]]}

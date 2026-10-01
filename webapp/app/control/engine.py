@@ -670,14 +670,18 @@ class Tick:
 
     def _presence(self, x: float, y: float, cell: int) -> np.ndarray:
         """Walkable cells within PRESENCE_M of (x, y) px, reached by walking from the player's cell
-        (8-connected), so the bubble doesn't pass through walls."""
+        (8-connected) and in their line of sight (smoke-aware, all round them): anything that blocks
+        sight stops the bubble (the user's call, 2026-10-01)."""
         geo = self.geo
         start = np.zeros((GRID, GRID), bool)
         start.flat[cell] = True
         steps = int(math.ceil(PRESENCE_M / geo.cell_m)) + 1
         reach = ndimage.binary_dilation(start, EIGHT, iterations=steps, mask=geo.walk).ravel()
         r = PRESENCE_M / geo.m_per_px
-        return reach & (((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) <= r * r)
+        near = reach & (((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) <= r * r)
+        sight = seen_from(geo, np.array([cell]), self.smokes)
+        sight[cell] = True
+        return near & sight
 
     def backfill(self, side: str, removed: int | None = None) -> dict[int, np.ndarray]:
         """Backfill (the user's rule, 2026-09-30): ground behind a player's watched line, back to the
