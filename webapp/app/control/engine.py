@@ -525,8 +525,8 @@ class Holder:
 @dataclass
 class Fill:
     free: np.ndarray                             # GRID x GRID
-    comps: list = field(default_factory=list)    # (mask GRID x GRID, seen flat, slots in it)
-    seen: np.ndarray = None                      # flat
+    comps: list = field(default_factory=list)    # (mask GRID x GRID, seen flat or None, slots in it)
+    seen: np.ndarray = None                      # flat; None on a tick with unknown (nothing reads it)
 
     def safe(self, walk: np.ndarray) -> np.ndarray:
         return walk & ~self.seen.reshape(GRID, GRID) & ~self.free
@@ -859,14 +859,19 @@ class Tick:
             for label in set(np.unique(lab.ravel()[seed]).tolist()) - {0}:
                 # slot -1: someone unseen, so an entry's way back (compose) can lead here too
                 by_reach[frozenset(self._reach(lab, {label}))].append(-1)
+        # what the fill sees is the old Safe (Fill.safe); with unknown, Safe is unknown_safe and nothing
+        # reads it, so it isn't computed (the components and their players still are: the way back)
+        need_seen = self.unknown is None
         comps = []
         for labels, slots in by_reach.items():
             mask = np.isin(lab, list(labels))
             free |= mask
-            comps.append((mask, self.comp_seen(mask, watched), slots))
-        seen = np.zeros(GRID * GRID, bool)
-        for _, s, _ in comps:
-            seen |= s
+            comps.append((mask, self.comp_seen(mask, watched) if need_seen else None, slots))
+        seen = None
+        if need_seen:
+            seen = np.zeros(GRID * GRID, bool)
+            for _, s, _ in comps:
+                seen |= s
         return Fill(free, comps, seen)
 
     def comp_seen(self, mask: np.ndarray, watched: np.ndarray) -> np.ndarray:
@@ -1024,10 +1029,11 @@ class Tick:
                     stats["own_fill_same"] += 1
                 else:
                     free = np.zeros((GRID, GRID), bool)
-                    seen = np.zeros(GRID * GRID, bool)
+                    seen = None if old.seen is None else np.zeros(GRID * GRID, bool)
                     for m, s, _ in keep:
                         free |= m
-                        seen |= s
+                        if seen is not None:
+                            seen |= s
                     fills[side] = Fill(free, keep, seen)
                     stats["own_fill_dropped_comp"] += 1
             else:
@@ -1044,9 +1050,11 @@ class Tick:
                 lab, _ = ndimage.label(self._open(side, watched, removed))
                 labels = self._reach(lab, {int(lab.flat[h.cell]) for h in self.team(side, removed)})
                 free = np.isin(lab, list(labels))
-                added = free & ~old.free
-                edge = added & ndimage.binary_dilation(~free, EIGHT)
-                seen = old.seen | seen_from(geo, np.flatnonzero(edge), self.smokes, skip=free.ravel())
+                seen = None
+                if old.seen is not None:   # only without unknown (see `fill`)
+                    added = free & ~old.free
+                    edge = added & ndimage.binary_dilation(~free, EIGHT)
+                    seen = old.seen | seen_from(geo, np.flatnonzero(edge), self.smokes, skip=free.ravel())
                 # the components and their players, as `fill` groups them: the entry's way back (Q56)
                 # reads which players share a component (only their seen sets are left out)
                 by_reach: dict[frozenset, list[int]] = defaultdict(list)
@@ -1155,17 +1163,14 @@ class Tick:
 def possible_region(geo: Geometry, start: int, watched: np.ndarray, steps: int) -> np.ndarray:
     """Flat cells an enemy last at `start` could be in now: at most `steps` 8-connected moves through
     walkable cells the team doesn't watch (`watched`, flat). `start` itself always counts."""
-    open_ = geo.walk & ~watched.reshape(GRID, GRID)
     region = np.zeros((GRID, GRID), bool)
     region.flat[start] = True
-    front = region.copy()
-    for _ in range(max(0, int(steps))):
-        nxt = ndimage.binary_dilation(front, EIGHT) & open_ & ~region
-        if not nxt.any():
-            break
-        region |= nxt
-        front = nxt
-    return region.ravel()
+    n = max(0, int(steps))
+    if n == 0:   # scipy reads iterations < 1 as "until nothing changes"
+        return region.ravel()
+    # one masked dilation, n steps (it leaves cells outside the mask as they were: `start` stays)
+    open_ = geo.walk & ~watched.reshape(GRID, GRID)
+    return ndimage.binary_dilation(region, EIGHT, iterations=n, mask=open_).ravel()
 
 
 class Knowledge:
