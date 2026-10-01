@@ -16,7 +16,7 @@
     "share": 0.0,
     "passes": true
    },
-   "barrier_sha": "c7423c995f47",
+   "barrier_sha": "279e647ec456",
    "paints": [
     "barrier_paint"
    ]
@@ -37,7 +37,7 @@
     "share": 0.0042,
     "passes": true
    },
-   "barrier_sha": "5834141b5141",
+   "barrier_sha": "77b049460968",
    "paints": [
     "cover_paint",
     "barrier_paint"
