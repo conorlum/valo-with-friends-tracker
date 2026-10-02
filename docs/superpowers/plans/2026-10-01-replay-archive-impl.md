@@ -120,7 +120,7 @@ the routes ends `replaced`/`unchanged` with the archived file in place; the scri
 ## S7. The promise, the deploy config and the docs
 
 - `upload.html`: the new promise (tier 2 wording). `replay_upload.py` and `server.py` docstrings.
-- `render.yaml`: worker `disk: {name: replay-archive, mountPath: /var/replay, sizeGB: 25}`, worker env
+- `render.yaml`: worker `disk: {name: replay-archive, mountPath: /var/replay, sizeGB: 50}`, worker env
   `REPLAY_ARCHIVE_DIR=/var/replay`; web env `REPLAY_ADMIN_TOKEN` (`sync: false`).
 - `replay_worker/Dockerfile`: an entrypoint (`replay_worker/entrypoint.sh`) run as root: `chown` the mount
   when `REPLAY_ARCHIVE_DIR` is set, then `exec setpriv --reuid=10001 --regid=10001 --init-groups python3 -m

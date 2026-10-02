@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 GB = 1024 ** 3
-# The reserve, slack and TTLs below, and the 25 GB disk in render.yaml.
+# The reserve, slack and TTLs below, and the 50 GB disk in render.yaml.
 PARSE_RESERVE_FACTOR = 70      # a parse needs about 65x the upload (README); the running parse at the cap
 ARCHIVE_SLACK = 5 * GB
 PENDING_TTL_S = 2 * 86400      # pending bytes come out of the archive's budget, so they don't wait long

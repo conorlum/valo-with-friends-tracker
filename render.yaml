@@ -60,13 +60,12 @@ services:
     autoDeploy: true
     # The .vrf archive (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 1). Only files
     # under the mount persist across deploys; a disk means no zero-downtime deploys and one instance, and
-    # it can grow but never shrink. 25 GB (100 matches x the 200 MB cap, plus 5 GB) keeps about 6.4 GB of
-    # archive (~35 cap-size matches, ~70 typical) after the parse reserve. The worker uses it only once
-    # REPLAY_ARCHIVE_DIR is set (below).
+    # it can grow but never shrink. 50 GB keeps about 31 GB of archive (~350 matches) after the parse
+    # reserve. The worker uses it only once REPLAY_ARCHIVE_DIR is set (below).
     disk:
       name: replay-archive
       mountPath: /var/replay
-      sizeGB: 25
+      sizeGB: 50
     envVars:
       - key: REPLAY_WORKER_PORT
         value: "8080"
