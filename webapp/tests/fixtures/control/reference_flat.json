@@ -1,0 +1,32 @@
+{
+ "rounds": {
+  "barrier": {
+   "data": "d2b058d62fe1d1eb",
+   "summary": "b7d2859ac3abad44"
+  },
+  "door": {
+   "data": "e49e291da8804d41",
+   "summary": "b3293d0f2d52537f"
+  },
+  "midwall": {
+   "data": "0dd9c12a483dbb17",
+   "summary": "d7b8e752f4de9e59"
+  },
+  "open": {
+   "data": "62d7a2203a9c5af3",
+   "summary": "9a0fd099c0602487"
+  },
+  "pawns": {
+   "data": "37a3a09c87c2a514",
+   "summary": "4eec908ffb56589b"
+  },
+  "rooms": {
+   "data": "bcdadc48a07b6a26",
+   "summary": "7376847783a3fb9a"
+  },
+  "setups": {
+   "data": "1d4f03d0dfae1b98",
+   "summary": "5e761f5c95d63f34"
+  }
+ }
+}

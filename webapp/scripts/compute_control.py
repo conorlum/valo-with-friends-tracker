@@ -15,7 +15,8 @@ minutes in the background). About 45 core-seconds per average round.
   CONTROL_REVISION). A round that failed with the current inputs is skipped, since it would fail
   again, unless `--retry-failed`; `--force` recomputes everything chosen. Rounds of a map without
   the control layer (`no_map`) and blobs from before condenser revision 10 (`old_blob`) are
-  listed, never computed. `--match <uuid>` and `--round <n>` (repeatable) narrow the set.
+  listed, never computed. `--match <uuid>`, `--map <Map>` and `--round <n>` (repeatable) narrow the
+  set; after committing one map's heights, `--map <Map>` recomputes just that map's stale rounds.
 - **Stops safely.** Each round is committed as it finishes, so stopping and rerunning resumes.
   A round the engine raises on is stored as `failed` with its error (the endpoint says so).
 - **Workers.** A pool of one per core but one (`--workers N` sets it), keeping `--headroom-gb`
@@ -231,6 +232,7 @@ def main(argv: list[str] | None = None, session_factory=None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="list what would be computed; write nothing")
     parser.add_argument("--brief", action="store_true", help="with --dry-run: one line, for the replay scripts")
     parser.add_argument("--match", help="only this match UUID")
+    parser.add_argument("--map", dest="map_name", help="only this map's replays (e.g. after its heights changed)")
     parser.add_argument("--round", type=int, action="append", dest="rounds", help="only this round (repeatable)")
     parser.add_argument("--force", action="store_true", help="recompute every chosen round")
     parser.add_argument("--retry-failed", action="store_true", help="also retry rounds that failed with these inputs")
@@ -257,6 +259,8 @@ def main(argv: list[str] | None = None, session_factory=None) -> int:
         planned = replay_control.plan(session, match_uuid=args.match,
                                       rounds=set(args.rounds) if args.rounds else None,
                                       force=args.force, retry_failed=args.retry_failed)
+        if args.map_name:
+            planned = [p for p in planned if p.map_name == args.map_name]
     finally:
         session.rollback()
         session.close()

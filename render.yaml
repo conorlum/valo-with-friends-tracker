@@ -51,7 +51,7 @@ services:
     dockerfilePath: replay_worker/Dockerfile
     dockerContext: .
     # Not yet measured in a container (no Docker here). On Windows the condense peaks near 1 GB
-    # (969 MB on the smallest, 60 MB export); scaled to the 181 MB upload cap that is ~3 GB before
+    # (969 MB on the smallest, 60 MB export); scaled to the 200 MB upload cap that is ~3.3 GB before
     # the parser's own (unmeasured) memory. 8 GB / 4 CPU keeps about 2x headroom over the whole
     # upload range (AFK run decision D10, 2026-09-27); one job runs at a time. Re-size from
     # Render's measured peak after real uploads (decision 9). 4c-8g is the Blueprint ID of the

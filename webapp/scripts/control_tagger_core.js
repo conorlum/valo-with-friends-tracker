@@ -15,7 +15,7 @@
   "use strict";
 
   var PX = 1024, P = 256, END_SKIP = 3, BAR = 0.02;
-  var PAINTS = ["see_across_paint", "cover_paint", "cant_walk_paint", "uncertain_paint"];
+  var PAINTS = ["see_across_paint", "cover_paint", "cant_walk_paint", "uncertain_paint", "barrier_paint"];
   var TAG_KINDS = ["cover", "seeover", "walkable", "glyph", "seeacross"];
 
   function base64Bytes(text) {

@@ -28,6 +28,39 @@ def test_the_possible_region_grows_with_time_and_stops_at_watched_ground():
     assert not (blocked.reshape(GRID, GRID)[:, start % GRID + 1:]).any()
 
 
+def _region_step_by_step(geo, start, watched, steps):
+    """possible_region as it was first written: one frontier step at a time (the reference)."""
+    from scipy import ndimage
+
+    open_ = geo.walk & ~watched.reshape(GRID, GRID)
+    region = np.zeros((GRID, GRID), bool)
+    region.flat[start] = True
+    front = region.copy()
+    for _ in range(max(0, int(steps))):
+        nxt = ndimage.binary_dilation(front, ce.EIGHT) & open_ & ~region
+        if not nxt.any():
+            break
+        region |= nxt
+        front = nxt
+    return region.ravel()
+
+
+def test_the_possible_region_matches_walking_it_step_by_step():
+    """One masked dilation (13x faster, the optimisation review of 2026-10-01) gives exactly the region of
+    the step-by-step walk, including 0 steps, fractional steps and a start the team watches."""
+    geo = open_hall()
+    rng = np.random.default_rng(7)
+    walk = np.flatnonzero(geo.walk.ravel())
+    for k in range(60):
+        start = int(rng.choice(walk))
+        watched = rng.random(GRID * GRID) < (0.05 + 0.3 * rng.random())
+        if k % 3 == 0:
+            watched[start] = True
+        steps = [0, 0.4, 1, 2.7, 5, 40][k % 6]
+        assert np.array_equal(ce.possible_region(geo, start, watched, steps),
+                              _region_step_by_step(geo, start, watched, steps)), (k, start, steps)
+
+
 def test_when_every_enemy_is_seen_the_picture_is_the_truth():
     geo = open_hall()
     players = {0: still("A", 150, 200, 0), 5: still("B", 380, 200, 180)}     # face to face

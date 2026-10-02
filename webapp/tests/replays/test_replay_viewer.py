@@ -159,6 +159,43 @@ def test_the_linked_mode_helpers():
     assert got["tally"] == {"0": {"k": 1, "d": 0, "a": 0}, "5": {"k": 0, "d": 2, "a": 0}}
 
 
+def test_hidden_wins_over_a_class_display():
+    """The spike panel (`.replay-hud`, display: flex) stayed on screen, showing the last round's defuse,
+    after a change of round set it `hidden`: an author `display` beats the browser's own [hidden] rule."""
+    import re
+
+    css = (WEBAPP / "app" / "static" / "css" / "style.css").read_text(encoding="utf-8")
+    assert re.search(r"(^|\n)\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}", css)
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_sentinel_utility_goes_down_when_its_owner_dies():
+    """Placed sentinel utility dies with its owner (the engine's Q71 set): the viewer greys it from the
+    owner's death on. Other utility, and a live owner's, stays up."""
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const alive = {"3": [[0, 20, "kill"]], "4": [[0, null, "round_end"]]};
+        const util = (code, name, slot) => ({kind: "GameObject", code: code, name: name, slot: slot});
+        const down = (a, t) => R.utilDownAt(a, alive, t, 90);
+        const trip = util("Gumshoe", "4_TripWire", 3);
+        process.stdout.write(JSON.stringify({
+          trip: [down(trip, 10), down(trip, 20.5), down(trip, 60)],
+          set: [down(util("Gumshoe", "E_PossessableCamera", 3), 30), down(util("Killjoy", "E_Turret", 3), 30),
+                down(util("Killjoy", "Q_StealthAlarmbot", 3), 30), down(util("Deadeye", "E_Trap", 3), 30)],
+          live_owner: down(util("Gumshoe", "4_TripWire", 4), 60),
+          not_sentinel: [down(util("Wraith", "4_Smoke", 3), 30), down(util("Hunter", "E_Drone", 3), 30)],
+          no_owner: down(util("Gumshoe", "4_TripWire", null), 30)
+        }));
+      });"""
+    got = run_node(script, {})
+    assert got["trip"] == [False, True, True]
+    assert got["set"] == [True, True, True, True]
+    assert got["live_owner"] is False
+    assert got["not_sentinel"] == [False, False]
+    assert got["no_owner"] is False
+
+
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_ability_names_icons_and_drone_paths():
     script = """

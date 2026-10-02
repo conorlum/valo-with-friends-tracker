@@ -117,6 +117,65 @@ def test_the_js_decoder_reads_what_each_team_knew(stored):
         assert got["none"] is None
 
 
+def test_the_js_decoder_reads_each_teams_unknown(stored):
+    _, streams = cf.unpack_data(gzip.compress(base64.b64decode(stored["raw"])))
+    checkpoints = [c[0] for c in stored["header"]["checkpoints"]]
+    expected = {name: cf.decode_unknown(streams[name], stored["ticks"], stored["header"]["cells"], checkpoints)
+                for name in ("unknown_a", "unknown_b")}
+    order = list(range(stored["ticks"]))
+    shuffled = order[:]
+    random.Random(5).shuffle(shuffled)
+    body = """
+      function run(p) {
+        const parsed = C.parse(C.base64Bytes(p.raw)), cur = new C.Cursor(parsed), out = {unknown_a: {}, unknown_b: {}};
+        for (const i of p.order) for (const name of ["unknown_a", "unknown_b"]) out[name][i] = Array.from(cur.unknown(name, i));
+        out.none = cur.unknown("unknown_c", 0);
+        return out;
+      }"""
+    for seq in (order, shuffled):
+        got = run_node(body, {"raw": stored["raw"], "order": seq})
+        for name in ("unknown_a", "unknown_b"):
+            for i in seq:
+                assert got[name][str(i)] == expected[name][i], f"{name} tick {i}"
+        assert got["none"] is None
+
+
+def test_unknown_is_hatched_in_the_enemys_colour_and_crosshatched_where_both():
+    body = """
+      function run(p) {
+        const size = 512, rgba = new Uint8Array(size * size * 4), colors = {a: [200, 10, 10], b: [10, 10, 200]};
+        const walk = Int32Array.from([0, 1, 2]);                 // three cells along the top row, 4 px each
+        const a = Uint8Array.from([1, 0, 1]), b = Uint8Array.from([0, 1, 1]);
+        const px = (x, y) => Array.from(rgba.subarray((y * size + x) * 4, (y * size + x) * 4 + 4));
+        const out = {};
+        for (const show of ["both", "A", "B"]) {
+          C.paintUnknown(rgba, size, walk, a, b, colors, show);
+          out[show] = [];
+          for (let y = 0; y < 4; y++) for (let x = 0; x < 12; x++) out[show].push(px(x, y));
+        }
+        C.paintUnknown(rgba, size, walk, null, null, colors, "both");
+        out.blank = !Array.from(rgba).some(v => v);
+        out.hatch = C.HATCH_PX;
+        return out;
+      }"""
+    got = run_node(body, {})
+    n = got["hatch"]
+
+    def cell(show, k):
+        return [got[show][y * 12 + x] for y in range(4) for x in range(4 * k, 4 * k + 4)]
+
+    def colours(pixels):
+        return {tuple(p[:3]) for p in pixels if p[3]}
+
+    assert colours(cell("both", 0)) == {(10, 10, 200)}, "A's unknown in B's colour"
+    assert colours(cell("both", 1)) == {(200, 10, 10)}, "B's unknown in A's colour"
+    assert colours(cell("both", 2)) == {(10, 10, 200), (200, 10, 10)}, "both: cross-hatched"
+    lit = [p for p in cell("both", 0) if p[3]]
+    assert 0 < len(lit) < 16 and len({p[3] for p in lit}) == 1, "a hatch, not a fill, at one opacity"
+    assert colours(cell("A", 1)) == set() and colours(cell("B", 0)) == set(), "the toggle shows one team"
+    assert got["blank"] and n >= 3
+
+
 def test_a_just_lost_enemy_is_placed_at_its_last_sighting_while_it_fades():
     body = "function run(p) { return p.ts.map(t => C.lostAt(p.s, t, 3)); }"
     sightings = {"5": [[1.0, 2.0, 100, 200], [6.0, 7.0, 300, 400]]}

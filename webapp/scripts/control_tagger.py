@@ -9,7 +9,10 @@ params), the current `app/static/data/control/tags.json` and the Risk 1 kill lin
 
 - tag candidates cover, see-over, walkable, glyph or see-across (or untag them);
 - paint and erase see-across, cover, can't-walk and uncertain zones with a brush (geometry.masks: cover paint
-  blocks sight and walking, can't-walk only walking, uncertain neither);
+  blocks sight and walking, can't-walk only walking, uncertain neither), and the buy-phase barrier lines
+  (their own mask: the engine gives each team its side of them when they drop; drawn roughly, then
+  placed from the replays' round starts by scripts/place_control_barriers.py, whose `--starts` file
+  can also be passed here to draw those positions);
 - watch the kill-line test live against the 2% bar, with the blocked lines drawn, and the resulting sight and
   walk masks as overlays; undo; tick "cover reviewed" (which clears the map's badge);
 - export the whole `tags.json` (every map, unknown fields kept).
@@ -73,11 +76,15 @@ def map_data(name: str, entry: dict, lines: list) -> dict:
             "lines": lines}
 
 
-def build(tags: dict, lines_by_map: dict, names: list[str] | None = None) -> dict:
+def build(tags: dict, lines_by_map: dict, names: list[str] | None = None, starts: dict | None = None) -> dict:
     names = names or sorted(p.stem for p in cg.MINIMAP_DIR.glob("*.png")
                             if p.stem in json.loads(cg.MAPS_JSON.read_text(encoding="utf-8")))
-    return {name: map_data(name, (tags.get("maps") or {}).get(name) or {}, lines_by_map.get(name) or [])
+    maps = {name: map_data(name, (tags.get("maps") or {}).get(name) or {}, lines_by_map.get(name) or [])
             for name in names}
+    for name, rows in (starts or {}).items():
+        if name in maps:   # [1 attack | 0 defense, x px, y px]
+            maps[name]["starts"] = [[1 if side == "attack" else 0, round(x, 1), round(y, 1)] for side, x, y in rows]
+    return maps
 
 
 def render(tags: dict, maps: dict) -> str:
@@ -91,10 +98,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, help="the page to write (default under %%TEMP%%)")
     parser.add_argument("--tags", type=Path, default=cg.ASSET_DIR / "tags.json", help="the tags.json to start from")
     parser.add_argument("--map", action="append", help="only this map (repeatable)")
+    parser.add_argument("--starts", type=Path, help="round-start positions to draw, {map: [[side, x px, y px], ...]} "
+                                                    "(players at t = 0 stand pressed against the barriers)")
     args = parser.parse_args(argv)
     tags = json.loads(args.tags.read_text(encoding="utf-8"))
     lines = json.loads(KILL_LINES.read_text(encoding="utf-8"))["maps"] if KILL_LINES.is_file() else {}
-    maps = build(tags, lines, args.map)
+    starts = json.loads(args.starts.read_text(encoding="utf-8")) if args.starts else None
+    maps = build(tags, lines, args.map, starts)
     out = args.out or Path(os.environ.get("TEMP") or tempfile.gettempdir()) / "valo-control-tagger" / "control-tagger.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render(tags, maps), encoding="utf-8")

@@ -15,13 +15,17 @@
     "blocked": 0,
     "share": 0.0,
     "passes": true
-   }
+   },
+   "barrier_sha": "279e647ec456",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Ascent": {
    "image_sha": "287357fcfce2",
-   "sight_sha": "b94cdfc70064",
-   "walk_sha": "d2af707dfed7",
-   "walkable_cells": 5302,
+   "sight_sha": "6652c32db7b2",
+   "walk_sha": "548a6495a0fb",
+   "walkable_cells": 5220,
    "cell_m": 1.116,
    "tags": 0,
    "see_across_paint": false,
@@ -29,10 +33,15 @@
    "specials": [],
    "kill_lines": {
     "qualifying": 476,
-    "blocked": 2,
-    "share": 0.0042,
+    "blocked": 9,
+    "share": 0.0189,
     "passes": true
-   }
+   },
+   "barrier_sha": "77b049460968",
+   "paints": [
+    "cover_paint",
+    "barrier_paint"
+   ]
   },
   "Bind": {
    "image_sha": "84f5ff72aa58",
@@ -44,7 +53,11 @@
    "see_across_paint": false,
    "cover_reviewed": false,
    "specials": [],
-   "kill_lines": null
+   "kill_lines": null,
+   "barrier_sha": "17f178122d9f",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Breeze": {
    "image_sha": "82c6472afe6f",
@@ -56,7 +69,11 @@
    "see_across_paint": false,
    "cover_reviewed": false,
    "specials": [],
-   "kill_lines": null
+   "kill_lines": null,
+   "barrier_sha": "72fcdd722d37",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Corrode": {
    "image_sha": "9f9ed010f502",
@@ -68,7 +85,11 @@
    "see_across_paint": false,
    "cover_reviewed": false,
    "specials": [],
-   "kill_lines": null
+   "kill_lines": null,
+   "barrier_sha": "2b9ac9333692",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Fracture": {
    "image_sha": "d41e013eca94",
@@ -80,7 +101,11 @@
    "see_across_paint": false,
    "cover_reviewed": false,
    "specials": [],
-   "kill_lines": null
+   "kill_lines": null,
+   "barrier_sha": "a2716b8b2641",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Haven": {
    "image_sha": "f8ccc9cfffaf",
@@ -97,7 +122,11 @@
     "blocked": 0,
     "share": 0.0,
     "passes": true
-   }
+   },
+   "barrier_sha": "531ebcdcc30b",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Icebox": {
    "image_sha": "85b9cef26829",
@@ -109,7 +138,11 @@
    "see_across_paint": false,
    "cover_reviewed": false,
    "specials": [],
-   "kill_lines": null
+   "kill_lines": null,
+   "barrier_sha": "1458d8224f08",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Lotus": {
    "image_sha": "d533af2a6fbc",
@@ -121,7 +154,13 @@
    "see_across_paint": false,
    "cover_reviewed": false,
    "specials": [],
-   "kill_lines": null
+   "kill_lines": null,
+   "barrier_sha": "0799f99c0abb",
+   "paints": [
+    "uncertain_paint",
+    "barrier_paint"
+   ],
+   "uncertain_px": 592
   },
   "Pearl": {
    "image_sha": "5e0e7d4a80d8",
@@ -133,7 +172,11 @@
    "see_across_paint": false,
    "cover_reviewed": false,
    "specials": [],
-   "kill_lines": null
+   "kill_lines": null,
+   "barrier_sha": "5f42c32c5c72",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Split": {
    "image_sha": "cc1022703536",
@@ -150,7 +193,11 @@
     "blocked": 1,
     "share": 0.0036,
     "passes": true
-   }
+   },
+   "barrier_sha": "22e3b2d9539a",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Summit": {
    "image_sha": "e3ceb9a90958",
@@ -167,7 +214,11 @@
     "blocked": 1,
     "share": 0.0034,
     "passes": true
-   }
+   },
+   "barrier_sha": "6e8a726dd39b",
+   "paints": [
+    "barrier_paint"
+   ]
   },
   "Sunset": {
    "image_sha": "1188642e2f94",
@@ -184,7 +235,11 @@
     "blocked": 1,
     "share": 0.0049,
     "passes": true
-   }
+   },
+   "barrier_sha": "02adc35320f7",
+   "paints": [
+    "barrier_paint"
+   ]
   }
  },
  "version": 1,

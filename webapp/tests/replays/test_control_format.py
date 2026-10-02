@@ -3,6 +3,7 @@ RoundControl from a toy map round-trips through `data` and `summary`, and the en
 are pinned to CONTROL_REVISION."""
 
 import base64
+import dataclasses
 import gzip
 import hashlib
 import json
@@ -13,6 +14,8 @@ import pytest
 
 from app.control import engine as ce
 from app.control import geometry as cg
+from app.control import heights as hc
+from app.control import topology as ct
 from app.control.encode import checkpoint_ticks, encode_data, encode_summary
 from app.replays import control_format as cf
 from tests.replays.control_toys import blob, door_hall
@@ -21,8 +24,12 @@ from tests.replays.control_toys import blob, door_hall
 # Changed a constant? Bump CONTROL_REVISION in app/replays/control_format.py (every stored round
 # is then stale and recomputed) and add the new revision's digest here.
 # 2: space taken, what each team knew (KNEW_*) and remembered ground (D6: DECAY_MPS). Unreleased,
-# so re-pinned in place.
-PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68"}
+# so re-pinned in place. 3: barriers, backfill and unknown (UNKNOWN_MPS; DECAY_MPS and BARRIER_GRACE_S
+# removed), presence (PRESENCE_M), rifle-walk UNKNOWN_MPS, GAP_SEAL_M and DROP_PIECE_CELLS. Unreleased, so
+# re-pinned in place. The digest also covers the height constants (app/control/heights.py) from 2026-10-02.
+# 4: heights (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4): the per-floor engine and its
+# start values. Unreleased, so re-pinned in place as its steps land.
+PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4: "237677656d71ca9f"}
 
 
 def _constants_digest() -> str:
@@ -40,7 +47,7 @@ def _constants_digest() -> str:
         return value
 
     constants = {}
-    for module in (ce, cg):
+    for module in (ce, cg, hc, ct):
         for name, value in sorted(vars(module).items()):
             if name.isupper() and not name.startswith("_") and name != "CONTROL_REVISION":
                 if isinstance(value, (int, float, str, bool, tuple, list, dict, set, frozenset, np.ndarray)):
@@ -106,6 +113,26 @@ def test_data_round_trips_every_tick(round_control):
     assert header["group_side"] == {"A": "attack", "B": "defense"}
 
 
+def test_each_teams_unknown_round_trips_as_optional_streams(round_control):
+    rc, data = round_control
+    header, streams = cf.unpack_data(encode_data(rc, data))
+    n_ticks, cells = len(rc.ticks), len(rc.walk_cells)
+    checkpoints = [c[0] for c in header["checkpoints"]]
+    assert [c[0] for c in header["unknown_checkpoints"]] == checkpoints
+    for group in ("A", "B"):
+        got = cf.decode_unknown(streams[f"unknown_{group.lower()}"], n_ticks, cells, checkpoints)
+        assert np.array_equal(np.array(got, bool), rc.unknown[group]), group
+        assert rc.unknown[group].any(), f"the toy round should exercise {group}'s unknown"
+
+
+def test_a_row_without_unknown_reads_as_before(round_control):
+    rc, data = round_control
+    header, streams = cf.unpack_data(encode_data(dataclasses.replace(rc, unknown=None), data))
+    assert "unknown_a" not in streams and "unknown_checkpoints" not in header
+    n_ticks, cells = len(rc.ticks), len(rc.walk_cells)
+    assert np.array_equal(np.array(cf.decode_states(streams["states"], n_ticks, cells)), rc.states)
+
+
 def test_what_each_team_knew_round_trips_as_optional_streams(round_control):
     rc, data = round_control
     header, streams = cf.unpack_data(encode_data(rc, data))
@@ -119,7 +146,7 @@ def test_what_each_team_knew_round_trips_as_optional_streams(round_control):
     # a row computed without them has the three streams only, and reads the same
     plain = ce.compute_round(data, door_hall(), ce.ControlLink(sides={0: "attack", 1: "attack", 5: "defense",
                                                                          6: "defense"}), knowledge=False)
-    h2, s2 = cf.unpack_data(encode_data(plain, data))
+    h2, s2 = cf.unpack_data(encode_data(dataclasses.replace(plain, unknown=None), data))
     assert set(s2) == {"states", "coverage", "control"} and "knew" not in h2
     assert cf.decode_states(s2["states"], n_ticks, cells) == true
 
