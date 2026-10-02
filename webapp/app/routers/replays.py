@@ -141,6 +141,8 @@ def _own_upload_or_404(request: Request, db: Session, upload_id: str) -> ReplayU
 
 def _status_body(db: Session, upload: ReplayUpload) -> dict:
     body = {"status": upload.status, "error": upload.error}
+    if upload.store_outcome == "kept_existing":
+        body["kept_existing"] = True  # this recording wasn't stored; `error` holds the store's reason
     if upload.status == "stored" and upload.replay_id is not None:
         from app.models.replay import Replay
 

@@ -259,23 +259,23 @@ class Archive:
         outcome = body.get("outcome")
         if outcome not in OUTCOMES:
             return 400, {"error": f"outcome must be one of {OUTCOMES}"}
-        match_uuid = str(body.get("match_uuid") or "").lower()
-        if match_uuid != str(meta["match_uuid"]).lower():
-            self.log(f"archive: ack for job {job_id} refused: match uuid {match_uuid!r} is not the job's")
+        match_uuid = str(meta["match_uuid"]).lower()
+        if outcome not in KEEPING:
+            # Dropping a file is always safe, and a refused store may not know the match uuid.
+            self._drop_pending(job_id)
+            return 200, {"archived": False, "result": "deleted"}
+        if str(body.get("match_uuid") or "").lower() != match_uuid:
+            self.log(f"archive: ack for job {job_id} refused: match uuid {body.get('match_uuid')!r} is not the job's")
             return 409, {"error": "the match uuid is not this job's"}
-        if outcome in KEEPING:
-            if body.get("sha256") != meta.get("sha256"):
-                self.log(f"archive: ack for job {job_id} refused: sha256 is not the job's")
-                return 409, {"error": "the sha256 is not this job's file"}
-            if not isinstance(body.get("replay_id"), int):
-                return 400, {"error": "replay_id is required for this outcome"}
+        if body.get("sha256") != meta.get("sha256"):
+            self.log(f"archive: ack for job {job_id} refused: sha256 is not the job's")
+            return 409, {"error": "the sha256 is not this job's file"}
+        if not isinstance(body.get("replay_id"), int):
+            return 400, {"error": "replay_id is required for this outcome"}
         pending = self.pending / f"{job_id}.vrf"
         if match_uuid in self.tombstones:
             self._drop_pending(job_id)
             return 200, {"archived": False, "result": "refused", "reason": "deleted on request"}
-        if outcome not in KEEPING:
-            self._drop_pending(job_id)
-            return 200, {"archived": False, "result": "deleted"}
         replay_id = body["replay_id"]
         entry = self.index.get(match_uuid)
         if entry is not None and replay_id < int(entry.get("replay_id") or 0):
