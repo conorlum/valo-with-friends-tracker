@@ -595,7 +595,7 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                     add = entered & (pend_hi[:, k] >= pend_lo[:, k])
                     if add.any():
                         rows = index[add]
-                        prev = np.maximum(used[add] - 1, 0)
+                        prev = np.clip(used[add] - 1, 0, SLAB_SLOTS - 1)
                         # a plate that carries on from the last one (the next cell of a bridge) widens its
                         # interval; anything else takes a new slot, or the last one when they are used up
                         joins = (used[add] > 0) & (pend_lo[add, k] <= hi[rows, prev] + 1e-6) \
@@ -603,7 +603,7 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                         slot = np.where(joins, prev, np.minimum(used[add], SLAB_SLOTS - 1))
                         lo[rows, slot] = np.minimum(lo[rows, slot], pend_lo[add, k])
                         hi[rows, slot] = np.maximum(hi[rows, slot], pend_hi[add, k])
-                        used[add] += ~joins
+                        used[add] = np.minimum(used[add] + ~joins, SLAB_SLOTS)
                 if upper:
                     pend_lo[entered] = np.inf
                     pend_hi[entered] = -np.inf

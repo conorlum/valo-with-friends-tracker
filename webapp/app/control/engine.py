@@ -49,6 +49,13 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   `full_every` also runs the full recompute, to measure the difference.
 - **Stats (Q50, Q66)** count the live round only (`t_start` to `t_decided`).
 
+**Heights** (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4). On a map with a
+height asset every per-place array is per node (a floor of a cell; geometry.py), a player stands on the
+floor under their own z and sees from their own eye height, an enemy is spotted on the node they stand on,
+and walking, the unknown, memory, backfill and Safe keep floors apart (topology.py). Only the stored
+result is per cell: `collapse_states`. A round without z (before condenser revision 11) uses each cell's
+lowest floor and is counted in `missing_inputs`. A map without an asset is untouched by any of this.
+
 Inputs the condenser added in revision 10 (flash/nearsight `hits`, `possessed`, `yaws`, `damage`
 rows) are used when present; older blobs fall back to 0b's placeholders, counted in
 `missing_inputs`. Local tooling only: the web app never imports this module.
@@ -65,6 +72,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 from scipy import ndimage
+from app.control import heights as hc
 from app.control import topology
 from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, Wall, cast, visibility, wall_blocks
 from app.replays.control_format import CONTROL_REVISION  # noqa: F401 - stdlib-only, so the web app can read it
@@ -246,10 +254,16 @@ class RoundInputs:
             if slot in self.team:
                 self.group_side.setdefault(self.team[slot], side)
         self.tracks = {}
+        self.heights: dict[int, np.ndarray] = {}     # slot -> position-z per sample, metres above the map's origin
+        origin = geo.heights.origin_z if geo.heights is not None else 0
         for s, segs in (blob.get("tracks") or {}).items():
             parts = [(g["t0"] + np.arange(len(g["u"])) / self.hz, _decode(g["u"]), _decode(g["v"]),
                       np.mod(_decode(g["yaw"]), 360)) for g in segs]
             self.tracks[int(s)] = tuple(np.concatenate([p[i] for p in parts]) for i in range(4))
+            if geo.heights is not None and segs:
+                # NaN where a segment was stored without z (before revision 11, or the parser gave none)
+                self.heights[int(s)] = np.concatenate([
+                    (_decode(g["z"]) - origin) / 10.0 if "z" in g else np.full(len(g["u"]), np.nan) for g in segs])
         self.lives = self._lives()
         self.smokes, self.damage_zones, self.watchers = [], [], []
         self.walls: list[tuple[float, float, Wall]] = []
@@ -262,6 +276,11 @@ class RoundInputs:
         self.plant: float | None = None
         self.reveals: list[tuple[float, float, int | None, int]] = []   # (t0, t1, by, target)
         self._read_util()
+        if geo.heights is not None:
+            if any(np.isnan(z).any() for z in self.heights.values()):
+                self.missing["approximate heights (a player's track has no z: lowest floor used)"] += 1
+            if geo.height_unknown:
+                self.missing["height asset built on another walk mask (flat 2D in the cells it lacks)"] += 1
 
     # --- lives
 
@@ -289,7 +308,8 @@ class RoundInputs:
 
     # --- positions
 
-    def pos(self, s: int, t: float):
+    def _sample(self, s: int, t: float) -> int | None:
+        """The index of slot s's sample nearest t (within a sample and a half), or None."""
         tr = self.tracks.get(s)
         if tr is None:
             return None
@@ -300,9 +320,26 @@ class RoundInputs:
             if 0 <= j < len(ts) and abs(ts[j] - t) <= 1.5 / self.hz and \
                     (best is None or abs(ts[j] - t) < abs(ts[best] - t)):
                 best = j
+        return best
+
+    def pos(self, s: int, t: float):
+        best = self._sample(s, t)
         if best is None:
             return None
+        tr = self.tracks[s]
         return tr[1][best] * PX / 10000, tr[2][best] * PX / 10000, float(tr[3][best])
+
+    def height(self, s: int, t: float) -> float | None:
+        """Slot s's position-z at t in metres above the map's origin; None on a flat map, or when the
+        round has no z for them there."""
+        best = self._sample(s, t) if s in self.heights else None
+        if best is None or np.isnan(self.heights[s][best]):
+            return None
+        return float(self.heights[s][best])
+
+    def node(self, s: int, t: float, x: float, y: float) -> int:
+        """The node slot s stands on at t: the floor of their cell under their z (the lowest without z)."""
+        return self.geo.node_at(self.geo.cell_of_px(x, y), self.height(s, t))
 
     def movement(self, s: int, t: float, now) -> str:
         before = self.pos(s, t - SPEED_WINDOW_S)
@@ -421,7 +458,7 @@ class RoundInputs:
             ys = np.linspace(a[1], b[1], n)
             cells = np.unique((ys // CELL).astype(int).clip(0, GRID - 1) * GRID
                               + (xs // CELL).astype(int).clip(0, GRID - 1))
-            self.watchers.append(Watcher("trip", by, t0, t1, cells=cells))
+            self.watchers.append(Watcher("trip", by, t0, t1, cells=_every_floor(geo, cells)))
         elif key in AREA_TRIPS:
             r_px = AREA_TRIPS[key] / geo.m_per_px
             c = geo.cell_of_px(x, y)
@@ -509,7 +546,7 @@ def path_at(path: list, t: float):
 class Holder:
     slot: int
     team: str
-    cell: int
+    cell: int                # the node they stand on (a cell on a flat map; a floor of one with heights)
     x: float
     y: float
     active: np.ndarray       # flat GRID*GRID, after statuses
@@ -602,7 +639,37 @@ def special_links(geo: Geometry) -> list[tuple[int, int, bool]]:
             b = geo.cell_of_px(*geo.px_of_uv(*sp["b"]))
         except (KeyError, TypeError):
             continue
-        out.append((a, b, bool(sp.get("one_way"))))
+        if geo.heights is None:
+            out.append((a, b, bool(sp.get("one_way"))))
+        else:   # the 2D specials apply to every floor of their cells (the spec: "Walking per floor")
+            out += [(int(na), int(nb), bool(sp.get("one_way")))
+                    for na in geo.node_of[a] if na >= 0 for nb in geo.node_of[b] if nb >= 0]
+    return out
+
+
+def _every_floor(geo: Geometry, cells: np.ndarray) -> np.ndarray:
+    """Flat cells as node indices: every floor of each (the cells themselves on a flat map)."""
+    if geo.heights is None:
+        return cells
+    nodes = geo.node_of[cells].ravel()
+    return nodes[nodes >= 0]
+
+
+def collapse_states(geo: Geometry, state: np.ndarray) -> np.ndarray:
+    """A tick's node states as cell states, for the stored picture (the spec's two-floor rule): a cell
+    whose floors all agree has that state; otherwise it is contested, CONTESTED_ACTIVE when any of its
+    floors is active for either team (or contested-active). Nobody's against held counts as disagreeing.
+    A flat map's states are returned as they are."""
+    # PROVISIONAL(D6): the two-floor site picture rule.
+    if geo.n == GRID * GRID:
+        return state
+    out = state[: GRID * GRID].copy()
+    cells = geo.node_cell[GRID * GRID:]
+    upper = state[GRID * GRID:]
+    differs = np.zeros(GRID * GRID, bool)
+    differs[cells[upper != out[cells]]] = True
+    active = np.isin(state, (A_ACTIVE, B_ACTIVE, CONTESTED_ACTIVE))
+    out[differs] = np.where(geo.to_cells(active)[differs], CONTESTED_ACTIVE, CONTESTED)
     return out
 
 
@@ -614,6 +681,7 @@ class Tick:
         self.topo = topology.of(geo)
         self.rnd, self.t = rnd, t
         self.smokes = rnd.smokes_at(t)
+        self.fallbacks: dict = {}     # "unresolved_rays": rays that met unresolved terrain and went 2D
         timings = timings if timings is not None else defaultdict(float)
         started = time.perf_counter()
         self.holders: dict[int, Holder] = {}
@@ -629,12 +697,13 @@ class Tick:
             if p is None:
                 continue
             x, y, yaw = p
-            cell = geo.cell_of_px(x, y)
+            cell = rnd.node(s, t, x, y)
             mode = rnd.movement(s, t, p)
             if s in using:
                 raw = np.zeros(geo.n, bool)  # in a camera or drone: their own view doesn't count
             else:
-                raw = cast(geo, x, y, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes)
+                raw = cast(geo, x, y, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes,
+                           eye_z=self._eye(s, t, cell), own=cell, record=self.fallbacks)
             body = raw.copy()
             if _during(rnd.flashed[s], t):
                 body[:] = False
@@ -681,6 +750,16 @@ class Tick:
         self.sealed: np.ndarray | None = None
         self._usafe: dict = {}   # side, or (side, removed slot) -> its Safe cells from unknown
         self._ucf: dict[tuple[str, int], np.ndarray] = {}   # (side, removed slot) -> unknown_without
+
+    def _eye(self, s: int, t: float, node: int) -> float | None:
+        """Slot s's eye height: their own z + EYE_M, the floor they stand on without z, None (2D) on a
+        flat map or an unresolved cell."""
+        if self.geo.heights is None:
+            return None
+        z = self.rnd.height(s, t)
+        if z is None:
+            z = self.geo.node_z[node]
+        return None if np.isnan(z) else float(z) + hc.EYE_M
 
     def _presence(self, x: float, y: float, cell: int) -> np.ndarray:
         """Walkable cells within PRESENCE_M of (x, y) px, reached by walking from the player's cell
@@ -814,7 +893,7 @@ class Tick:
         return active, passive, active | passive, raw
 
     def _links(self) -> list[tuple[int, int, bool]]:
-        return special_links(self.geo)
+        return special_links(self.geo) + self.topo.links
 
     def _reach(self, lab: np.ndarray, start: set[int]) -> set[int]:
         """Labels reachable from `start` through the map's specials (teleporters, ropes, drops)."""
@@ -1182,7 +1261,7 @@ class Knowledge:
             if p is None and tr is not None and len(tr[0]):
                 p = (tr[1][0] * PX / 10000, tr[2][0] * PX / 10000)
             if p is not None:
-                self.start[s] = rnd.geo.cell_of_px(p[0], p[1])
+                self.start[s] = rnd.node(s, rnd.t_start, p[0], p[1])
 
     def seen_now(self, tick: Tick, t: float) -> set[int]:
         mine = [h for h in tick.holders.values() if h.team == self.side]
@@ -1670,8 +1749,8 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     times = rnd.tick_times() if ticks is None else np.asarray(ticks, float)
     nxt = np.append(times[1:], rnd.t_end)
     weights = np.maximum(nxt - times, 0.0)
-    walk_flat = geo.walk_n
-    walk_cells = np.flatnonzero(geo.walk.ravel())
+    walk_flat = geo.walk.ravel()             # the stored result is per walkable cell
+    walk_cells = np.flatnonzero(walk_flat)
     n_walk, n_ticks = len(walk_cells), len(times)
     cell_m2 = geo.cell_m ** 2
     states = np.zeros((n_ticks, n_walk), np.uint8)
@@ -1701,7 +1780,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         t = float(t)
         tick = runner.step(Tick(rnd, t, timings), timings)
         for side in ("A", "B"):
-            unknown_masks[side][n] = tick.unknown[side][walk_flat]
+            unknown_masks[side][n] = geo.to_cells(tick.unknown[side])[walk_flat]
         a = time.perf_counter()
         base = tick.compose()
         b = time.perf_counter()
@@ -1709,14 +1788,14 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         timings["base"] += b - a
         timings["coverage"] += time.perf_counter() - b
         state = base["state"]
-        states[n] = state[walk_flat]
+        states[n] = collapse_states(geo, state)[walk_flat]
         if prev_state is not None and rnd.t_start < t <= rnd.t_decided:
             _credit_taken(tick, cov, prev_state, state, players, cell_m2)
         prev_state = state
         if know:
             k0 = time.perf_counter()
             for side, kn in know.items():
-                knew_states[side][n] = kn.tick_for(tick, t).compose()["state"][walk_flat]
+                knew_states[side][n] = collapse_states(geo, kn.tick_for(tick, t).compose()["state"])[walk_flat]
             timings["knowledge"] += time.perf_counter() - k0
         live_w =max(0.0, min(t + weights[n], rnd.t_decided) - max(t, rnd.t_start))
         owned = {s: float((score(state, s) > 0).sum()) for s in ("A", "B")}
@@ -1725,7 +1804,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         for s, h in tick.holders.items():
             side = h.team
             act, psv, act_mask, pas_mask = cov[s]
-            coverage_masks[n, s] = (act_mask | pas_mask)[walk_flat]
+            coverage_masks[n, s] = geo.to_cells(act_mask | pas_mask)[walk_flat]
             c0 = time.perf_counter()
             cf = tick.compose(removed=s, base=base, full=False, stats=branches)
             timings["cf_incremental"] += time.perf_counter() - c0
@@ -1745,7 +1824,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                 drop = base_score - score(cf["state"], side)
             value = float(drop.sum())
             control[n, s] = value * cell_m2
-            control_masks[n, s] = (drop > 0)[walk_flat]
+            control_masks[n, s] = geo.to_cells(drop > 0)[walk_flat]
             ctl_sum[side] += value
             if s in dying:
                 players[s].deaths.append(_lost(state, cf["state"], side, drop, last, owned[side], cell_m2,
