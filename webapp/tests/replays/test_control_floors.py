@@ -86,6 +86,29 @@ def test_an_enemy_in_the_tunnel_is_not_spotted_from_the_bridge_side_or_from_righ
     assert 5 in as_2d.sees[0], "in 2D the same enemy is spotted: this is what heights fix"
 
 
+def test_an_enemy_above_their_floor_is_spotted_at_their_own_height():
+    # From 2 m back on a 4 m ledge, a body standing on the ground 3 m out is hidden by the ledge's edge. The
+    # same enemy 2.4 m up (boosted, mid-jump, on a Sage wall) shows over it: spotting uses their real height.
+    geo = ledge()
+    x = 256 - 2 / 0.14
+    out = x + 3 / 0.14
+    on_ground = tick(geo, {0: still("A", x, Y, 0, 4.0), 5: still("B", out, Y, 180, 0.0)})
+    assert not on_ground.holders[0].body[on_ground.holders[5].cell], "the ground there is hidden, and stays hidden"
+    assert 5 not in on_ground.sees[0] and on_ground.direct == {}
+    raised = tick(geo, {0: still("A", x, Y, 0, 4.0), 5: still("B", out, Y, 180, 2.4)})
+    assert raised.holders[5].cell == on_ground.holders[5].cell and not raised.holders[0].body[raised.holders[5].cell]
+    assert 5 in raised.sees[0] and raised.direct == {(0, 5): True}, "seen, and in the active cone"
+    away = tick(geo, {0: still("A", x, Y, 180, 4.0), 5: still("B", out, Y, 180, 2.4)})
+    assert 5 not in away.sees[0], "not behind the viewer"
+    flashed = tick(geo, {0: still("A", x, Y, 0, 4.0), 5: still("B", out, Y, 180, 2.4)},
+                   util=[{"k": "flash", "t": 0.0, "by": 5, "hits": [[0, 0.5, 2.0]]}])
+    assert 5 not in flashed.sees[0], "nor by a flashed viewer"
+    # the unknown takes it as a sighting too: the enemy is there, and nowhere else
+    unknown = ce.Unknown(geo)
+    unknown.apply(raised)
+    assert unknown.seen["A"][5][0] == raised.holders[5].cell
+
+
 def test_seeing_the_bridge_clears_the_bridges_unknown_and_not_the_tunnels():
     geo = bridge()
     tops = [node(geo, x, floor=1) for x in range(244, 288, 8)]

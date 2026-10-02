@@ -74,7 +74,7 @@ import numpy as np
 from scipy import ndimage
 from app.control import heights as hc
 from app.control import topology
-from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, Wall, cast, visibility, wall_blocks
+from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, Wall, cast, los, visibility, wall_blocks
 from app.replays.control_format import CONTROL_REVISION  # noqa: F401 - stdlib-only, so the web app can read it
 
 TICK_STEP_S = 0.5
@@ -796,6 +796,7 @@ class Tick:
         timings = timings if timings is not None else defaultdict(float)
         started = time.perf_counter()
         self.holders: dict[int, Holder] = {}
+        looks: dict[int, tuple] = {}   # slot -> (yaw, eye, flashed, nearsighted, active cone's half or None)
         using = {}   # owner -> the camera or drone they're in
         for w in rnd.watchers:
             if w.kind in ("drone", "camera") and w.t0 <= t < w.t1 and rnd.alive(w.by, t):
@@ -834,6 +835,11 @@ class Tick:
                 t0 <= t < t1 and (x - zx) ** 2 + (y - zy) ** 2 < r * r and rnd.team.get(by) == enemy
                 for t0, t1, zx, zy, r, by in rnd.damage_zones)
             self.holders[s] = Holder(s, rnd.team[s], cell, x, y, active, passive, watch, raw, body, flagged, mode)
+            if geo.heights is not None and s not in using:
+                looks[s] = (yaw, self._eye(s, t, cell), _during(rnd.flashed[s], t), _during(rnd.nearsight[s], t),
+                            None if _during(rnd.downgraded[s], t) else CONE_HALF[mode])
+        # (viewer, enemy) -> in the viewer's active cone: enemies seen at their own height, above their floor
+        self.direct: dict[tuple[int, int], bool] = self._direct(looks) if looks else {}
         timings["vision"] += time.perf_counter() - started
         # slot -> the live control that holds unknown back: vision, watchers and their own cell (before
         # Memory adds remembered ground to `passive`)
@@ -843,7 +849,8 @@ class Tick:
             lv[h.cell] = True
             self.live[s] = lv
         # enemy sight of each holder: sees[e] = the holders e's body view reaches
-        self.sees = {e.slot: {h.slot for h in self.holders.values() if h.team != e.team and e.body[h.cell]}
+        self.sees = {e.slot: {h.slot for h in self.holders.values()
+                              if h.team != e.team and (e.body[h.cell] or (e.slot, h.slot) in self.direct)}
                      for e in self.holders.values()}
         self._dist: dict[int, np.ndarray] = {}
         # side -> flat cells an unknown enemy could be in: extra sources of that side's free space
@@ -871,6 +878,31 @@ class Tick:
         if z is None:
             z = self.geo.node_z[node]
         return None if np.isnan(z) else float(z) + hc.EYE_M
+
+    def _direct(self, looks: dict) -> dict[tuple[int, int], bool]:
+        """Enemies a player sees at the enemy's own height (a map with heights only). The view over nodes
+        tests a body standing on each floor, which is right for ground and for anyone standing on it; an
+        enemy above their floor (mid-jump, boosted, on a Sage wall) is tested here by the one exact line
+        from the viewer's eye to their real body, under the same limits as the view: the field of view,
+        a flash, nearsight, smokes and walls. It only ever adds a sighting."""
+        geo, rnd, t = self.geo, self.rnd, self.t
+        out = {}
+        for s, (yaw, eye, flashed, nearsighted, cone) in looks.items():
+            if eye is None or flashed:
+                continue
+            e = self.holders[s]
+            for h in self.holders.values():
+                z = rnd.height(h.slot, t) if h.team != e.team else None
+                floor = geo.node_z[h.cell]
+                if z is None or np.isnan(floor) or z - floor <= hc.STAND_TOL_M or e.body[h.cell]:
+                    continue
+                dx, dy = h.x - e.x, h.y - e.y
+                off = abs((math.degrees(math.atan2(dy, dx)) - yaw + 180) % 360 - 180)
+                if off > FOV_HALF or (nearsighted and math.hypot(dx, dy) * geo.m_per_px >= NEARSIGHT_RADIUS_M):
+                    continue
+                if los(geo, (e.x, e.y, eye), (h.x, h.y, z + hc.BODY_M), self.smokes, record=self.fallbacks):
+                    out[(s, h.slot)] = cone is not None and off <= cone
+        return out
 
     def _presence(self, x: float, y: float, cell: int) -> np.ndarray:
         """Walkable cells within PRESENCE_M of (x, y) px, reached by walking from the player's cell
@@ -1449,7 +1481,8 @@ class Knowledge:
         kt = copy.copy(tick)
         kt.holders = holders
         # only enemies the team sees can contest its players
-        kt.sees = {x.slot: {h.slot for h in holders.values() if h.team != x.team and x.body[h.cell]}
+        kt.sees = {x.slot: {h.slot for h in holders.values()
+                            if h.team != x.team and (x.body[h.cell] or (x.slot, h.slot) in tick.direct)}
                    for x in holders.values()}
         kt._dist = {}
         kt._back, kt._safe = {}, {}    # backfill again, against what the team knew
@@ -1626,7 +1659,10 @@ class Unknown:
                     if self._start[side] is not None:
                         reached[self._start[side]] = t        # the barrier drop's ground: there now
                 h = tick.holders.get(slot)
-                if h is not None and spots[h.cell]:
+                # in an active view or a watcher's; or seen at their own height in an active cone (Tick._direct)
+                in_cone = any(active and target == slot and viewer in tick.holders and tick.holders[viewer].team == side
+                              for (viewer, target), active in getattr(tick, "direct", {}).items())
+                if h is not None and (spots[h.cell] or in_cone):
                     reached = np.full(n, np.inf)    # spotted: there, and nowhere else
                     self.seen[side][slot] = (h.cell, t)
                 if h is not None:
