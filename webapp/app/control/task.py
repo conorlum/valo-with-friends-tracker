@@ -54,7 +54,8 @@ def peak_memory() -> int | None:
 
 def geometry_used(geo) -> dict:
     """The geometry a round was computed with: the mask hashes build_control_geometry.py records,
-    the specials and the scale (app/services/replay_control.py `geometry_inputs`)."""
+    the specials, the scale and, on a map with heights, their digest (app/services/replay_control.py
+    `geometry_inputs`)."""
     import json
 
     import numpy as np
@@ -62,16 +63,20 @@ def geometry_used(geo) -> dict:
     from app.control import geometry
 
     scale = (json.loads(geometry.MAPS_JSON.read_text(encoding="utf-8")).get(geo.name) or {}).get("xMultiplier")
-    return {"sight": hashlib.sha256(np.packbits(geo.sight).tobytes()).hexdigest()[:12],
+    used = {"sight": hashlib.sha256(np.packbits(geo.sight).tobytes()).hexdigest()[:12],
             "walk": hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12],
-            "specials": list(geo.specials), "scale": scale}
+            "barrier": geo.barrier_sha, "specials": list(geo.specials), "scale": scale}
+    if geo.height_sha:
+        used["height"] = geo.height_sha
+    return used
 
 
-def _load(name: str):
+def _load(name: str, heights: str | None = None):
     from app.control import geometry
 
-    if name not in _GEOMETRY:
-        geo = geometry.load_geometry(name)
+    key = name if heights is None else (name, heights)     # a map's own geometry is keyed by its name
+    if key not in _GEOMETRY:
+        geo = geometry.load_geometry(name, heights=Path(heights) if heights else None)
         try:
             geometry.visibility(geo)
         except Exception:
@@ -82,8 +87,8 @@ def _load(name: str):
                 except OSError:
                     pass
             raise
-        _GEOMETRY[name] = geo
-    return _GEOMETRY[name]
+        _GEOMETRY[key] = geo
+    return _GEOMETRY[key]
 
 
 def compute_task(task: dict) -> dict:
@@ -99,7 +104,7 @@ def compute_task(task: dict) -> dict:
         return {"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}",
                 "key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()}
     try:
-        geo = _load(task["map"])
+        geo = _load(task["map"], task.get("heights"))
         blob = fmt.decode_blob(task["blob"])
         link = engine.ControlLink(sides={int(s): side for s, side in task["link"]["sides"].items()},
                                   db_deaths=tuple((int(s), float(t)) for s, t in task["link"]["db_deaths"]))

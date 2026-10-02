@@ -1,0 +1,11 @@
+{
+ "note": "Sightlines that are impossible in game (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4, the must-block set): a map's heights are committed only if every line here is blocked, or the failures are listed and accepted by the user. viewer and target are [x px, y px, world z in decimetres (position-z), or null until a match at condenser revision 11 gives it]. A null height is reported as not checked, never as passing.",
+ "lines": [
+  {"map": "Ascent", "viewer": [424, 282, null], "target": [166, 380, null],
+   "source": "case 1: round 3 of the Ascent sample at 79.5 s, the upper corridor to the far room past the doorway (the user: not visible in game, because of elevation)"},
+  {"map": "Ascent", "viewer": [418, 268, null], "target": [150, 380, null],
+   "source": "case 1: round 3 at 80-82 s, D running on the upper corridor"},
+  {"map": "Ascent", "viewer": [400, 330, null], "target": [185, 380, null],
+   "source": "case 1: the corridor's south end (x 368-435, y 200-367) to the room's east side"}
+ ]
+}

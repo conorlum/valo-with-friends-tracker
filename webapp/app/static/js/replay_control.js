@@ -165,6 +165,40 @@
     return out;
   };
 
+  // A side group's unknown at tick i (the optional `unknown_a` / `unknown_b` streams: 1 where an enemy of
+  // that group could be; docs/map-control-unknown-plan.md); null when the row has no such stream. One
+  // slot in the coverage/control mask format, with its own checkpoint offsets.
+  Cursor.prototype.unknown = function (name, i) {
+    var stream = this.p[name], cps = this.p.header.unknown_checkpoints;
+    if (!stream || !cps) return null;
+    var col = name === "unknown_a" ? 1 : 2, cells = this.p.cells, width = (cells + 7) >> 3, best = 0;
+    for (var c = 0; c < cps.length && cps[c][0] <= i; c++) best = c;
+    this.uk = this.uk || {};
+    var m = this.uk[name];
+    if (!m || m.tick > i || cps[best][0] > m.tick + 1) {
+      m = this.uk[name] = { tick: cps[best][0] - 1, pos: cps[best][col], cur: m ? m.cur : new Uint8Array(cells) };
+    }
+    while (m.tick < i) {
+      var tick = m.tick + 1, pos = m.pos;
+      if (this.isCp[tick] !== undefined) {
+        for (var k = 0; k < cells; k++) m.cur[k] = stream[pos + (k >> 3)] >> (7 - (k & 7)) & 1;
+        pos += width;
+      } else {
+        var r = readVarint(stream, pos), count = r[0], cell = -1;
+        pos = r[1];
+        for (var j = 0; j < count; j++) {
+          r = readVarint(stream, pos);
+          pos = r[1];
+          cell += r[0] + 1;
+          m.cur[cell] ^= 1;
+        }
+      }
+      m.pos = pos;
+      m.tick = tick;
+    }
+    return m.cur;
+  };
+
   // Each enemy slot's sightings by a group ({slot: [[t0, t1, u, v], ...]}): the ones lost within
   // `fade` seconds before t, as {slot, u, v, age} (a just-lost enemy's last-seen point).
   function lostAt(sightings, t, fade) {
@@ -319,6 +353,32 @@
     return rgba;
   }
 
+  // Each side group's unknown as a hatch in the enemy's colour (docs/map-control-unknown-plan.md): A's
+  // unknown in B's colour along "/" lines, B's in A's colour along "\" lines, so a cell in both teams'
+  // unknown is cross-hatched. `show` is "A", "B" or "both"; a or b may be null (no stream).
+  var HATCH_PX = 4, HATCH_ALPHA = 0.55;
+
+  function paintUnknown(rgba, size, walk, a, b, colors, show) {
+    var px = size / GRID, alpha = Math.round(HATCH_ALPHA * 255);
+    rgba.fill(0);
+    for (var k = 0; k < walk.length; k++) {
+      var inA = !!(a && a[k]) && show !== "B", inB = !!(b && b[k]) && show !== "A";
+      if (!inA && !inB) continue;
+      var cell = walk[k], cx = (cell % GRID) * px, cy = Math.floor(cell / GRID) * px;
+      for (var y = cy; y < cy + px; y++) {
+        for (var x = cx; x < cx + px; x++) {
+          var rgb = null;
+          if (inA && (x + y) % HATCH_PX === 0) rgb = colors.b;
+          else if (inB && ((x - y) % HATCH_PX + HATCH_PX) % HATCH_PX === 0) rgb = colors.a;
+          if (!rgb) continue;
+          var o = (y * size + x) * 4;
+          rgba[o] = rgb[0]; rgba[o + 1] = rgb[1]; rgba[o + 2] = rgb[2]; rgba[o + 3] = alpha;
+        }
+      }
+    }
+    return rgba;
+  }
+
   // One player's highlight: their control cells filled (60%), and the edge of their coverage-only
   // cells outlined lighter (the pixels of a covered cell next to an uncovered one).
   var HIGHLIGHT_FILL = 0.6, HIGHLIGHT_EDGE = 0.9;
@@ -407,7 +467,7 @@
     tickAt: tickAt, Cursor: Cursor, ControlCache: ControlCache, lostAt: lostAt, hexRgb: hexRgb, paintStates: paintStates, paintHighlight: paintHighlight,
     groupTeams: groupTeams, base64Bytes: base64Bytes, paintHeatmap: paintHeatmap, cellIndex: cellIndex,
     HEAT_MAX_ALPHA: HEAT_MAX_ALPHA, LEVEL_ALPHA: LEVEL_ALPHA, CONTESTED_ALPHA: CONTESTED_ALPHA,
-    STRIPE_PX: STRIPE_PX
+    STRIPE_PX: STRIPE_PX, paintUnknown: paintUnknown, HATCH_PX: HATCH_PX, HATCH_ALPHA: HATCH_ALPHA
   };
   global.ReplayControl = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

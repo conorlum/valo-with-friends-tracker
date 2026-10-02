@@ -60,7 +60,7 @@ and `server.py` (the jobs). Web side: `webapp/app/services/replay_upload.py` (`s
 
 `REPLAY_PARSER_CMD` (JSON list with `{vrf}` and `{out}`), `REPLAY_PARSER_BUILD` (a `BUILD.json` to check
 against the pin; unset in the image, which is built from the pin itself), `REPLAY_WORKER_TMP`,
-`REPLAY_TIMEOUT_S` (180; the image sets 240), `REPLAY_MAX_BYTES` (80 MB; the image sets 181,035,000), `REPLAY_QUEUE_SIZE` (5), `REPLAY_MEMORY_CAP_MB`
+`REPLAY_TIMEOUT_S` (180; the image sets 240), `REPLAY_MAX_BYTES` (80 MB; the image sets 200,000,000), `REPLAY_QUEUE_SIZE` (5), `REPLAY_MEMORY_CAP_MB`
 (0 = none), `REPLAY_WORKER_HOST`/`REPLAY_WORKER_PORT`, `REPLAY_ARCHIVE_DIR` (unset: no archive),
 `REPLAY_ARCHIVE_REQUIRE_MOUNT` (1).
 

@@ -128,7 +128,8 @@ def task_key(replay_id: int, round_number: int, fingerprint: str) -> str:
 def _matches_geometry(result: dict, map_name: str) -> bool:
     mine = replay_control.geometry_inputs(map_name)
     used = result.get("geometry") or {}
-    return mine is not None and all(used.get(k) == mine.get(k) for k in ("sight", "walk", "specials", "scale"))
+    return mine is not None and all(used.get(k) == mine.get(k)
+                                    for k in ("sight", "walk", "barrier", "specials", "scale", "height"))
 
 
 def _collect(session_factory, client, state: State, now: float, counts: dict) -> None:

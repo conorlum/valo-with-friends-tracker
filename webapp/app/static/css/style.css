@@ -1,3 +1,7 @@
+/* `hidden` always hides: a class's own display (the replay's spike panel is flex) would beat the
+   browser's [hidden] rule and leave a hidden element on screen. */
+[hidden] { display: none !important; }
+
 :root {
   color-scheme: dark;
   --page: #0d0d0d;
@@ -1913,6 +1917,7 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 .replay-key-ctl-safe::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-team-1) 30%, transparent) 50%, color-mix(in srgb, var(--replay-team-2) 30%, transparent) 50%); }
 .replay-key-ctl-passive::before { border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--replay-team-1) 15%, transparent) 50%, color-mix(in srgb, var(--replay-team-2) 15%, transparent) 50%); border: 1px solid var(--border-strong); }
 .replay-key-ctl-contested::before { border-radius: 2px; background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--replay-team-1) 60%, transparent) 0 3px, color-mix(in srgb, var(--replay-team-2) 60%, transparent) 3px 6px); }
+.replay-key-ctl-unknown::before { border-radius: 2px; background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--replay-team-1) 70%, transparent) 0 1px, transparent 1px 4px), repeating-linear-gradient(-45deg, color-mix(in srgb, var(--replay-team-2) 70%, transparent) 0 1px, transparent 1px 4px); border: 1px solid var(--border-strong); }
 .replay-control-switch { display: flex; gap: 0.35rem; margin-bottom: 0.5rem; }
 .replay-control-switch .replay-button.is-active { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
 .replay-control-team td.num.pos { color: var(--good); }

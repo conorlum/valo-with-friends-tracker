@@ -7,8 +7,9 @@ Reads `<match uuid>.vrf` files from Valorant's Demos folder (`--source`, default
 `%LOCALAPPDATA%\\VALORANT\\Saved\\Demos`), newest first, and skips any whose replay page
 (`/replays/<uuid>`) already exists on the site. Each of the first `--count` left is uploaded
 the way the browser does it: the invite code, the file, then the job's status polled until it
-is stored or failed. One at a time, because the site allows one unfinished upload per session.
-Polling is what stores a finished parse, so this waits for each job instead of leaving it.
+is stored or failed, one at a time. (Since 2026-10-01 the site stores finished parses by itself
+and takes up to 5 waiting uploads a session, so waiting is no longer required; it is kept so the
+script reports each result.)
 
 The invite code comes from `$REPLAY_UPLOAD_CODE`, else a `REPLAY_UPLOAD_CODE=` line in
 `webapp/.env.remote` (gitignored; this repository is public), else a prompt.
