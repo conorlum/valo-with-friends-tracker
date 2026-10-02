@@ -69,7 +69,7 @@ services:
     envVars:
       - key: REPLAY_WORKER_PORT
         value: "8080"
-      # PROVISIONAL(D5): off in the Blueprint; turned on in the dashboard after the friends' message.
+      # Off in the Blueprint; turned on in the dashboard after the friends' message.
       # Off until the friends have been told their files are kept (the spec's rollout): uncomment (or
       # set it in the dashboard) to turn the archive on. Without it the worker parses and deletes, as before.
       # - key: REPLAY_ARCHIVE_DIR
