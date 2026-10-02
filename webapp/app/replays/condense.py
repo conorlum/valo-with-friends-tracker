@@ -936,8 +936,7 @@ def build_segments(samples: list[Sample], intervals: list[list], start: int, end
                or interval != previous[1]
                or sample.pawn != previous[0].pawn
                or (sample.t_ms - previous[0].t_ms) / 1000.0 > SEGMENT_GAP_S
-               # a segment has a height for every sample or for none (revision 11): a mixed run splits
-               or (sample.z is None) != (previous[0].z is None)
+               # a missing height counts as 0 here, as before revision 11, so the runs are the same
                or math.dist((sample.x, sample.y, sample.z or 0.0),
                             (previous[0].x, previous[0].y, previous[0].z or 0.0)) > TELEPORT_UNITS)
         if brk:
@@ -955,7 +954,9 @@ def build_segments(samples: list[Sample], intervals: list[list], start: int, end
             # the last sample on a grid point wins; z in decimetres of world z, as the parser gave it
             grid[k] = (u, v, game_map.yaw_to_map(sample.yaw), None if sample.z is None else int(round(sample.z / 10.0)))
         keys = sorted(grid)
-        has_z = grid[keys[0]][3] is not None      # the whole run or none of it (see `brk`)
+        # A segment has a height for every sample or for none (revision 11). A run with any sample
+        # missing one stores none: splitting it would move the positions revision 10 stored.
+        has_z = all(sample.z is not None for sample, _ in run)
         u_list, v_list, yaw_list, z_list = [], [], [], []
         for a, b in zip(keys, keys[1:] + [None]):
             ua, va, ya, za = grid[a]

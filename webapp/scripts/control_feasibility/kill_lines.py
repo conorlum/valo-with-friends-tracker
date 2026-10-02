@@ -72,7 +72,7 @@ def main(export_dir: Path, out_dir: Path) -> None:
         if s is None:
             return None
         u, v = game_map.to_uv(s.x, s.y)
-        return {"u": u, "v": v, "z": round(s.z), "dt_ms": s.t_ms - t_ms}
+        return {"u": u, "v": v, "z": round(s.z or 0.0), "dt_ms": s.t_ms - t_ms}
 
     out_kills = []
     for k in kills:
@@ -88,7 +88,7 @@ def main(export_dir: Path, out_dir: Path) -> None:
         for s in rows:
             if s.t_ms - last >= POSITION_STEP_MS:
                 u, v = game_map.to_uv(s.x, s.y)
-                pts.append([s.t_ms, u, v, round(s.z)])
+                pts.append([s.t_ms, u, v, round(s.z or 0.0)])  # a missing height is 0 here, as before revision 11
                 last = s.t_ms
         positions[str(slot)] = pts
     uuid = export_dir.name
