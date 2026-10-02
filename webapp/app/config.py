@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # Map control for new replays on the replay worker (docs/map-control-worker-plan.md). Off by
     # default; needs REPLAY_WORKER_URL too, and is always off in demo mode.
     replay_control_remote: bool = False
+    # The operator's secret for /admin/replays/* (app/routers/replay_admin.py: deleting a match on
+    # request, reparsing from the .vrf archive). Unset: those routes 404. Set in the Render dashboard
+    # only (`sync: false`), never in the repo, and never the friends' upload code.
+    replay_admin_token: str | None = None
 
     @field_validator("database_url")
     @classmethod

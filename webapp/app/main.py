@@ -13,7 +13,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.config import settings
 from app.db import get_db
 from app.maintenance import maintenance_middleware
-from app.routers import auth, friends, map_prediction, matches, players, replays, sessions, site_stats, squad
+from app.routers import (auth, friends, map_prediction, matches, players, replay_admin, replays, sessions, site_stats,
+                         squad)
 from app.services.auth import get_current_player
 from app.templates import templates
 
@@ -26,12 +27,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 async def lifespan(_app: FastAPI):
     # Map control for new replays on the replay worker: off unless REPLAY_CONTROL_REMOTE is set
     # (app/services/replay_control_remote.py; the engine is never imported by the web app).
+    # The .vrf archive's sync (acks re-sent, tombstones pushed): on whenever uploads are
+    # (app/services/replay_archive_sync.py); it does nothing while the worker's archive is off.
     from app.db import SessionLocal
-    from app.services import replay_control_remote, replay_upload
+    from app.services import replay_archive_sync, replay_control_remote
 
-    stops = [replay_control_remote.start(SessionLocal),
-             # Replay uploads finish with no page open (app/services/replay_upload.py `collect`).
-             replay_upload.start(SessionLocal)]
+    stops = [replay_control_remote.start(SessionLocal), replay_archive_sync.start(SessionLocal)]
     yield
     for stop in stops:
         if stop is not None:
@@ -54,6 +55,7 @@ app.include_router(map_prediction.router)
 app.include_router(matches.router)
 app.include_router(players.router)
 # Replays: every route 404s in demo mode (docs/replay-viewer-plan.md, decision 4).
+app.include_router(replay_admin.router)
 app.include_router(replays.router)
 app.include_router(sessions.router)
 app.include_router(site_stats.router)

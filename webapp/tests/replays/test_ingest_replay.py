@@ -184,10 +184,10 @@ def test_dry_run_never_writes(export, session):
 
 
 def test_without_a_mode_it_stores_and_links_then_skips_a_same_file_reingest(export, session, capsys):
-    from app.models.replay import Replay, ReplayPlayer, ReplayRound
+    from app.models.replay import Replay, ReplayDeletion, ReplayPlayer, ReplayRound
 
     Base.metadata.create_all(session.get_bind(), tables=[Replay.__table__, ReplayRound.__table__,
-                                                        ReplayPlayer.__table__])
+                                                        ReplayPlayer.__table__, ReplayDeletion.__table__])
     factory = lambda: session  # noqa: E731
     args = ["--export-dir", str(export["dir"]), "--vrf", str(export["vrf"]), "--parser-dir", str(export["parser"])]
     session.close = lambda: None  # the one test session serves every step

@@ -39,7 +39,10 @@ COPY replay_worker /srv/replay_worker
 # The smoke test: the control venv imports the engine, or the build fails here (not silently later).
 RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine, app.control.task, replay_worker.control_job"
 RUN mkdir -p /jobs/control_cache && chown -R worker /jobs
-USER worker
+# No `USER worker` here: the entrypoint starts as root only to chown the .vrf archive's disk (Render
+# mounts it root-owned), then drops to `worker` with setpriv before the server starts. This guard fails
+# the build if the image ever stops shipping setpriv (util-linux).
+RUN command -v setpriv
 WORKDIR /srv
 # No DB credentials and no secrets: the worker only parses. REPLAY_MEMORY_CAP_MB caps the
 # parser's address space; set it from the Stage 3 container measurement (decision 9).
@@ -61,4 +64,5 @@ ENV REPLAY_PARSER_CMD='["/opt/parser/CliReader", "export", "{vrf}", "--output", 
     CONTROL_CACHE_DIR=/jobs/control_cache \
     PYTHONUNBUFFERED=1
 EXPOSE 8080
+ENTRYPOINT ["sh", "/srv/replay_worker/entrypoint.sh"]
 CMD ["python3", "-m", "replay_worker.server"]

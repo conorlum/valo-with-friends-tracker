@@ -1895,13 +1895,12 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 @keyframes upload-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
 @media (prefers-reduced-motion: reduce) { .upload-progress progress:indeterminate { animation: none; background: var(--brand); opacity: 0.5; } }
 .upload-progress .page-meta { margin: 0.4rem 0 0; font-variant-numeric: tabular-nums; }
-/* A batch: one row per file, sent one after another. */
-.upload-batch { list-style: none; margin: 1rem 0 0.5rem; padding: 0; }
-.upload-batch li { padding: 0.6rem 0; border-top: 1px solid var(--gridline); }
-.upload-batch li:first-child { border-top: none; }
-.upload-batch .upload-name { font-weight: 600; overflow-wrap: anywhere; }
-.upload-batch .upload-progress { margin: 0.4rem 0 0; }
-.upload-batch .upload-error { margin: 0.3rem 0 0; }
+/* A batch: one row per file, its upload progress and then its job's state. */
+.upload-list { list-style: none; margin: 0; padding: 0; }
+.upload-list li { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; align-items: baseline; padding: 0.5rem 0; border-top: 1px solid var(--gridline); }
+.upload-list li:first-child { border-top: none; }
+.upload-list .upload-name { font-weight: 600; overflow-wrap: anywhere; }
+.upload-list .upload-row-status { color: var(--ink-secondary); font-variant-numeric: tabular-nums; flex: 1 1 16rem; }
 
 /* Map control (docs/replay-map-control-plan.md, "Cell states"; Stage 4) */
 .replay-control-badge { font-size: 0.78rem; padding: 0.05rem 0.45rem; border: 1px dashed var(--ink-muted); border-radius: 999px; color: var(--ink-secondary); align-self: center; }

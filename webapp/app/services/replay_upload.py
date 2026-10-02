@@ -2,22 +2,26 @@
 
 - `upload_enabled`: both `REPLAY_UPLOAD_CODE` and `REPLAY_WORKER_URL` set, and not demo mode.
 - `code_matches`: a constant-time compare of the invite code (the site's only gate).
-- `check_limits`: at most UPLOADS_PER_HOUR per session and per IP, and BATCH_FILES unfinished jobs
+- `check_limits`: at most UPLOADS_PER_HOUR per session and per IP, and MAX_UNFINISHED unfinished jobs
   per session (a batch), counted from `replay_uploads`.
 - `WorkerClient`: the private worker over `urllib` (standard library only): stream the file to
   `POST /jobs`, read `GET /jobs/{id}`.
-- `refresh_job`: one status poll. It asks the worker; when the job is done it stores the result
-  with the same `store_replay` as local ingest (one locked transaction, the dedupe rule, the link),
-  and marks the upload `stored` or `failed` with a plain reason. While the worker holds the job its
-  status follows the worker's (`queued`, `parsing`); a job the worker has lost (or can't be asked
-  about) after STUCK_AFTER, or still held after STUCK_AFTER x BATCH_FILES, becomes
-  `failed: please re-upload`.
-- `collect` / `start`: upload and forget (2026-10-01). A background thread refreshes every
-  unfinished upload every COLLECT_S, so results are stored with no page open.
+- `refresh_job`: the job page's status poll. It asks the worker; when the job is done it stores
+  the result with the same `store_replay` as local ingest (one locked transaction, the dedupe rule,
+  the link), and marks the upload `stored` or `failed` with a plain reason. A job still parsing
+  after STUCK_AFTER (or still queued after QUEUED_STUCK_AFTER) becomes `failed: please re-upload`.
+- `collect_unfinished`: the same poll for every unfinished upload, from the archive sync thread, so a
+  result is stored when its page was closed.
 
-Uploaded `.vrf` files are never kept here: the request's spooled file goes to the worker, which
-deletes its copy when the job ends (decision 8). Nothing here runs the scorer: an uploaded
-replay's per-kill Impact comes from the next crawl's link pass (run decision D3).
+- `send_ack`: right after a result is stored (or refused), tells the worker what happened, so it archives
+  the file or deletes it (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 1). Best
+  effort: the worker's answer goes in `archive_ack`, and app/services/replay_archive_sync.py re-sends any
+  that is still null. A `kept_existing` result is shown as such, with the store's own reason.
+
+Uploaded `.vrf` files are never kept here: the request's spooled file goes to the worker. With its
+archive disk on, the worker keeps the accepted recording of each match privately; with it off, it
+deletes its copy when the job ends (decision 8). Nothing here runs the scorer: an uploaded replay's
+per-kill Impact comes from the next crawl's link pass (run decision D3).
 """
 
 from __future__ import annotations
@@ -41,15 +45,17 @@ from app.replays.store import StoreRefused, store_replay
 VRF_MAGIC = (0x43F4EFDD).to_bytes(4, "little")
 # Decision 10's starting limits (approved D10), checked against the six competitive files.
 UPLOADS_PER_HOUR = 10
-# A batch (the user's call, 2026-10-01): a session's uploads that may wait at once, the worker's
-# queue size (REPLAY_QUEUE_SIZE, replay_worker/Dockerfile), so a whole batch is handed over at once.
-BATCH_FILES = 5
 # The plan's 10 minutes, doubled: a local job on the smallest competitive file took 179 s (parse
 # 52 s + condense), the largest file is 1.5x its size, and Render's CPU may be slower than this PC's.
 STUCK_AFTER = timedelta(minutes=20)
+# A job the worker still reports as queued is waiting behind others (a batch of MAX_UNFINISHED at the cap is
+# several parses), not stuck: it gets longer.
+QUEUED_STUCK_AFTER = timedelta(minutes=60)
 WORKER_TIMEOUT_S = 30
+ACK_TIMEOUT_S = 5  # the ack is sent inside the uploader's status poll; a slow worker is retried later
 UNFINISHED = ("queued", "parsing")
-COLLECT_S = 5.0
+MAX_UNFINISHED = 5  # a batch: one session's uploads in progress at once, the worker's own queue size
+RECENT_LISTED = timedelta(hours=24)  # the upload page lists this session's uploads from this long ago
 
 REASONS = {
     "parse timed out": "parse timed out: please try again",
@@ -79,12 +85,21 @@ def check_limits(db, session_key: str, client_ip: str | None, now: datetime | No
     if recent.filter(or_(*who)).count() >= UPLOADS_PER_HOUR:
         raise LimitExceeded(f"at most {UPLOADS_PER_HOUR} uploads an hour: please try later")
     if db.query(ReplayUpload).filter(ReplayUpload.session_key == session_key,
-                                     ReplayUpload.status.in_(UNFINISHED)).count() >= BATCH_FILES:
-        raise LimitExceeded(f"at most {BATCH_FILES} uploads waiting at a time: wait for one to finish")
+                                     ReplayUpload.status.in_(UNFINISHED)).count() >= MAX_UNFINISHED:
+        raise LimitExceeded(f"{MAX_UNFINISHED} uploads at a time: wait for one to finish")
 
 
 class WorkerError(Exception):
     pass
+
+
+class WorkerRefused(WorkerError):
+    """The worker answered 4xx: a final answer, never worth sending again."""
+
+    def __init__(self, reason: str, status: int, body: dict):
+        super().__init__(reason)
+        self.status = status
+        self.body = body
 
 
 class WorkerClient:
@@ -102,16 +117,43 @@ class WorkerClient:
     def job(self, job_id: str) -> dict:
         return self._call(urllib.request.Request(f"{self.base}/jobs/{job_id}"))
 
-    def _call(self, request) -> dict:
+    def health(self) -> dict:
+        return self._call(urllib.request.Request(f"{self.base}/health"))
+
+    def archive(self) -> dict:
+        return self._call(urllib.request.Request(f"{self.base}/archive"))
+
+    def ack(self, job_id: str, body: dict) -> dict:
+        return self._post_json(f"/jobs/{job_id}/ack", body, timeout=ACK_TIMEOUT_S)
+
+    def reparse(self, match_uuid: str) -> dict:
+        return self._post_json("/reparse", {"match_uuid": match_uuid})
+
+    def delete(self, match_uuid: str) -> dict:
+        return self._post_json("/archive/delete", {"match_uuid": match_uuid})
+
+    def tombstones(self, match_uuids: list[str]) -> dict:
+        return self._post_json("/archive/tombstones", {"match_uuids": match_uuids})
+
+    def _post_json(self, path: str, body: dict, timeout: float | None = None) -> dict:
+        data = json.dumps(body).encode("utf-8")
+        request = urllib.request.Request(f"{self.base}{path}", data=data, method="POST",
+                                         headers={"Content-Type": "application/json"})
+        return self._call(request, timeout)
+
+    def _call(self, request, timeout: float | None = None) -> dict:
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=timeout or self.timeout) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as error:
             try:
                 body = json.loads(error.read() or b"{}")
             except ValueError:
                 body = {}
-            raise WorkerError(body.get("error") or f"worker answered {error.code}") from error
+            reason = body.get("error") or f"worker answered {error.code}"
+            if 400 <= error.code < 500:
+                raise WorkerRefused(reason, error.code, body) from error
+            raise WorkerError(reason) from error
         except (urllib.error.URLError, OSError, ValueError) as error:
             raise WorkerError("the replay worker is unreachable") from error
 
@@ -181,79 +223,124 @@ def refresh_job(db, upload: ReplayUpload, worker: WorkerClient, now: datetime | 
         job = {"status": "unknown"}
     status = job.get("status")
     if status == "done":
+        match_uuid = None
         try:
             condensed = condensed_from_result(job["result"])
+            match_uuid = condensed.match_uuid.lower()
             if condensed.source_sha256 != upload.source_sha256:
                 raise ValueError("the worker parsed another file")
             result = store_replay(db, condensed, source="upload")
         except (StoreRefused, ValueError, KeyError) as error:
             db.rollback()
-            return _finish(db, upload, "failed", f"could not store it: {error}")
+            upload = db.get(ReplayUpload, upload.id)
+            upload.store_outcome = "failed"
+            upload = _finish(db, upload, "failed", f"could not store it: {error}")
+            send_ack(db, upload, worker, match_uuid=match_uuid)
+            return upload
         upload = db.get(ReplayUpload, upload.id)
         upload.replay_id = result.replay_id
-        note = None if result.action != "kept_existing" else "a linked replay of this match already exists"
-        return _finish(db, upload, "stored", note)
+        upload.store_outcome = result.action
+        note = None
+        if result.action == "kept_existing":
+            note = (result.report or {}).get("reason") or "a linked replay of this match already exists"
+        upload = _finish(db, upload, "stored", note)
+        send_ack(db, upload, worker)
+        return upload
     if status == "failed":
         reason = job.get("error") or "parse failed"
         return _finish(db, upload, "failed", REASONS.get(reason, reason))
-    held = status in UNFINISHED   # the worker has it: waiting its turn or parsing (it times parses out)
-    if now - created > (STUCK_AFTER * BATCH_FILES if held else STUCK_AFTER):
+    if now - created > (QUEUED_STUCK_AFTER if status == "queued" else STUCK_AFTER):
         return _finish(db, upload, "failed", "failed: please re-upload")
-    if held and upload.status != status:
-        upload.status = status
-        db.commit()
     return upload
 
 
-def collect(db, worker: WorkerClient) -> int:
-    """One background pass: refresh every unfinished upload, each under a row lock (the status route
-    takes the same lock), so a finished one is stored once with no page open. Returns how many
-    finished in this pass."""
+def collect_unfinished(session_factory, worker: WorkerClient, now: datetime | None = None) -> int:
+    """Stores the result of every finished upload nobody's page is polling (a closed tab), with the same
+    `refresh_job` the page uses; returns how many finished. Each upload's row is locked first, so the page
+    and this never store one result twice. An upload with no worker job yet is still streaming to the
+    worker: it is left alone until it is stuck."""
+    now = now or datetime.now(timezone.utc)
+    session = session_factory()
     finished = 0
-    ids = [row.id for row in db.query(ReplayUpload.id).filter(ReplayUpload.status.in_(UNFINISHED))]
-    db.rollback()
-    for upload_id in ids:
-        query = db.query(ReplayUpload).filter(ReplayUpload.id == upload_id)
-        if db.get_bind().dialect.name == "postgresql":
-            query = query.with_for_update()
-        upload = query.one_or_none()
-        if upload is None or upload.status not in UNFINISHED:
-            db.rollback()
-            continue
-        upload = refresh_job(db, upload, worker)
-        finished += upload.status not in UNFINISHED
-        db.rollback()
-    return finished
-
-
-def start(session_factory):
-    """Starts the background collector when uploads are on; returns its stop event (or None)."""
-    import logging
-    import threading
-
-    if not upload_enabled():
-        return None
-    log = logging.getLogger(__name__)
-    stop = threading.Event()
-
-    def run() -> None:
-        while not stop.wait(COLLECT_S):
-            db = session_factory()
-            try:
-                done = collect(db, client())
-                if done:
-                    log.info("replay uploads: %d finished", done)
-            except Exception:  # noqa: BLE001 - the collector must never take the site down
-                log.exception("replay upload collect failed")
-            finally:
-                db.close()
-
-    threading.Thread(target=run, name="upload-collect", daemon=True).start()
-    log.info("replay upload collector on: every %ss", COLLECT_S)
-    return stop
+    try:
+        ids = [upload_id for (upload_id,) in
+               session.query(ReplayUpload.id).filter(ReplayUpload.status.in_(UNFINISHED))
+               .order_by(ReplayUpload.created_at)]
+        session.rollback()
+        for upload_id in ids:
+            query = session.query(ReplayUpload).filter(ReplayUpload.id == upload_id).populate_existing()
+            if session.get_bind().dialect.name == "postgresql":
+                query = query.with_for_update()
+            upload = query.one_or_none()
+            if upload is None or upload.status not in UNFINISHED:
+                session.rollback()
+                continue
+            if upload.worker_job_id is None:
+                created = upload.created_at if upload.created_at.tzinfo else upload.created_at.replace(
+                    tzinfo=timezone.utc)
+                if now - created > STUCK_AFTER:
+                    _finish(session, upload, "failed", "failed: please re-upload")
+                    finished += 1
+                session.rollback()
+                continue
+            if refresh_job(session, upload, worker, now).status not in UNFINISHED:
+                finished += 1
+            session.rollback()  # releases the row lock when nothing changed
+        return finished
+    finally:
+        session.rollback()
+        session.close()
 
 
 def _finish(db, upload: ReplayUpload, status: str, error: str | None) -> ReplayUpload:
     upload.status, upload.error, upload.finished_at = status, error, datetime.now(timezone.utc)
     db.commit()
     return upload
+
+
+def ack_body(db, upload: ReplayUpload, match_uuid: str | None = None) -> dict | None:
+    """The ack for one collected upload, from what the DB holds now (so a re-send carries the current
+    replay id and, once the replay links, the match's date). None when there is nothing to ack."""
+    from app.models.match import Match
+    from app.models.replay import Replay
+
+    outcome = upload.store_outcome
+    if not outcome or not upload.worker_job_id:
+        return None
+    replay = db.get(Replay, upload.replay_id) if upload.replay_id is not None else None
+    if outcome in ("stored", "replaced", "unchanged") and replay is None:
+        outcome = "failed"  # the replay is gone (deleted on request): the worker drops the file
+    body = {"match_uuid": (replay.match_uuid if replay is not None else match_uuid) or "", "sha256": None,
+            "outcome": outcome, "replay_id": None, "played_at": None}
+    if replay is not None and outcome in ("stored", "replaced", "unchanged"):
+        body.update(sha256=replay.source_sha256, replay_id=replay.id)
+        match = db.get(Match, replay.match_id) if replay.match_id is not None else None
+        if match is not None and match.played_at is not None:
+            played = match.played_at if match.played_at.tzinfo else match.played_at.replace(tzinfo=timezone.utc)
+            body["played_at"] = played.isoformat()
+    return body
+
+
+def send_ack(db, upload: ReplayUpload, worker: WorkerClient, match_uuid: str | None = None) -> str | None:
+    """Best effort: records the worker's answer in `archive_ack`; leaves it null when the worker can't be
+    reached (or asks to be asked again), for replay_archive_sync to re-send."""
+    body = ack_body(db, upload, match_uuid)
+    if body is None:
+        return None
+    try:
+        answer = worker.ack(upload.worker_job_id, body)
+        if answer.get("reason") == "archive off":
+            recorded = "off"
+        else:
+            recorded = answer.get("result") or ("archived" if answer.get("archived") else "answered")
+            if answer.get("reason"):
+                recorded += f": {answer['reason']}"
+    except WorkerRefused as refused:
+        recorded = f"refused: {refused}"
+    except WorkerError:
+        db.rollback()
+        return None
+    upload = db.get(ReplayUpload, upload.id)
+    upload.archive_ack = recorded[:160]
+    db.commit()
+    return recorded

@@ -4,7 +4,7 @@
 {% block content %}
 <h1>Replay upload</h1>
 <div class="card">
-  <p data-upload-status aria-live="polite">{% if job.status == "stored" %}Stored.{% elif job.status == "failed" %}Failed: {{ job.error }}{% else %}Parsing&hellip; this takes a few minutes.{% endif %}</p>
+  <p data-upload-status aria-live="polite">{% if job.kept_existing %}Not stored: {{ job.error }}.{% elif job.status == "stored" %}Stored.{% elif job.status == "failed" %}Failed: {{ job.error }}{% else %}Parsing&hellip; this takes a few minutes.{% endif %}</p>
   {% if job.status not in ("stored", "failed") %}
   <div class="upload-progress" data-parse-progress>
     <progress></progress>
@@ -30,7 +30,8 @@
       var finished = body.status === "stored" || body.status === "failed";
       if (finished && progress) { clearInterval(ticker); progress.hidden = true; }
       if (body.status === "stored") {
-        status.textContent = body.linked ? "Stored and linked to its match." : "Stored. It isn't linked to a match on this site yet (it links after the match is crawled)." + (body.error ? " " + body.error : "");
+        // kept_existing: this recording wasn't stored; the link goes to the one already on the site.
+        status.textContent = body.kept_existing ? "Not stored: " + body.error + "." : body.linked ? "Stored and linked to its match." : "Stored. It isn't linked to a match on this site yet (it links after the match is crawled)." + (body.error ? " " + body.error : "");
         if (body.replay_url) { link.hidden = false; link.querySelector("a").href = body.replay_url; }
         return true;
       }

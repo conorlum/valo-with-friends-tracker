@@ -13,205 +13,150 @@
   </form>
   {% else %}
   <p class="page-meta">Pick a competitive match's <code>.vrf</code> file from
-    <code>%LOCALAPPDATA%\VALORANT\Saved\Demos</code>. It is parsed on the site's private worker and then deleted; only
-    the minimap replay is kept. If the match is on this site, the replay links to it; if not, it plays on its own and
-    links after the match is crawled.</p>
-  <form method="post" action="/replays/upload" enctype="multipart/form-data" class="upload-form" data-upload-form
-        data-max-files="{{ batch_files }}" data-max-bytes="{{ max_mb * 1000000 }}">
-    <label>Replay files <input type="file" name="file" accept=".vrf" multiple required></label>
+    <code>%LOCALAPPDATA%\VALORANT\Saved\Demos</code>. It is parsed on the site's private worker into the minimap
+    replay. If the match is on this site, the replay links to it; if not, it plays on its own and links after the match
+    is crawled.</p>
+  {# The wording of the archive promise (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 1). #}
+  <p class="page-meta" data-archive-promise><strong>What is kept:</strong> the site also keeps the <code>.vrf</code> file
+    itself, privately on that worker, so new features can be built from your matches later. A <code>.vrf</code> holds
+    the whole match, including every player's name and movement. It is never shown, shared or downloadable. When space
+    runs out, the oldest matches are deleted first. If you want a match removed, ask, and its file and its replay are
+    both deleted (a copy in the worker's automatic disk backups can outlive that until the backup expires).</p>
+  <form method="post" action="/replays/upload" enctype="multipart/form-data" class="upload-form" data-upload-form>
+    <label>Replay files (up to {{ max_files }}) <input type="file" name="file" accept=".vrf" multiple required></label>
     <button type="submit">Upload</button>
   </form>
   <p class="upload-error" role="alert" data-upload-error hidden></p>
-  <ol class="upload-batch" data-upload-batch hidden></ol>
-  <p class="page-meta" data-upload-summary aria-live="polite" hidden></p>
-  <p class="page-meta">Up to {{ batch_files }} files at a time, {{ max_mb }} MB a file, {{ per_hour }} uploads an hour.
-    Keep this page open while the files are sent; once they are, you can close it: each is parsed (a few minutes)
-    and saved on its own.</p>
+  <p class="page-meta">Up to {{ max_files }} files at a time, {{ max_mb }} MB each, {{ per_hour }} uploads an hour. They upload
+    one after another, and each takes a minute or more to parse. Keep this page open to watch them; if you close it,
+    finished ones are still stored within a few minutes, and reopening this page shows how each one went.</p>
   {% endif %}
 </div>
-{% if authorized and recent %}
-<div class="card">
-  <h2>Your recent uploads</h2>
-  <ul class="upload-batch">
-    {% for up in recent %}
-    <li data-upload-id="{{ up.id }}" data-upload-status="{{ up.status }}">
-      <div class="upload-name">{{ up.created_at.strftime("%b %d, %H:%M") }} UTC <span class="page-meta">{{ up.id }}</span></div>
-      <p class="page-meta" data-upload-line>
-        {%- if up.status == "queued" %}Waiting for the parser.
-        {%- elif up.status == "parsing" %}Parsing.
-        {%- elif up.status == "stored" %}{% if up.linked %}Stored and linked to its match.{% else %}Stored (it links after the match is crawled).{% endif %}
-          {% if up.replay_url %}<a href="{{ up.replay_url }}">&#9654; Watch the replay</a>{% endif %}
-        {%- else %}Failed: {{ up.error or "unknown error" }}{% endif -%}
-      </p>
+{% if authorized %}
+{# This session's uploads (the last day's), newest first; the script adds a row per new file and keeps
+   unfinished rows up to date from /replays/uploads/<id>/status. #}
+<div class="card" data-upload-section{% if not uploads %} hidden{% endif %}>
+  <h2>Your uploads</h2>
+  <ul class="upload-list" data-upload-list>
+    {% for row in uploads %}
+    <li data-upload-id="{{ row.id }}" data-job='{{ row | tojson }}'>
+      <span class="upload-name">Upload at <time datetime="{{ row.created_at }}">{{ row.created_at }}</time> &middot; {{ row.size_mb }} MB</span>
+      <span class="upload-row-status" data-row-status></span>
+      <a data-row-link hidden href="#">&#9654; Watch</a>
     </li>
     {% endfor %}
   </ul>
 </div>
-{% endif %}
-{% if authorized %}
 <script>
-  // A batch (up to BATCH_FILES, the worker's queue size): the files are sent one after another with XHR so each
-  // one's upload progress shows; once sent, the page may close: the site's background collector parses and stores
-  // them (app/services/replay_upload.py `collect`). While the page is open each row (and each unfinished recent
-  // upload) polls its status. Without JS the form posts the first file as before.
+  // Sends a batch one file at a time with XHR (so each file's progress shows), then polls each job until it is
+  // stored or failed. Without JS the form posts the first file and goes to its job page, as before.
   (function () {
     var form = document.querySelector("[data-upload-form]"), input = form.querySelector("input[type=file]");
     var button = form.querySelector("button"), errorLine = document.querySelector("[data-upload-error]");
-    var list = document.querySelector("[data-upload-batch]"), summary = document.querySelector("[data-upload-summary]");
-    var maxFiles = Number(form.dataset.maxFiles), maxBytes = Number(form.dataset.maxBytes), running = false;
-    function mb(bytes) { return (bytes / 1e6).toFixed(1) + " MB"; }
-    function clock(s) { return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
+    var section = document.querySelector("[data-upload-section]"), list = document.querySelector("[data-upload-list]");
+    var maxFiles = {{ max_files | tojson }}, maxBytes = {{ (max_mb * 1000000) | tojson }};
+    var BUSY_RETRY_MS = 20000, POLL_MS = 3000;
 
-    function row(file) {
-      var li = document.createElement("li");
-      li.innerHTML = '<div class="upload-name"></div><div class="upload-progress"><progress max="100"></progress>' +
-        '<p class="page-meta" aria-live="polite">Waiting.</p></div><p class="upload-error" hidden></p>';
-      li.querySelector(".upload-name").textContent = file.name + " (" + mb(file.size) + ")";
-      list.appendChild(li);
-      var bar = li.querySelector("progress"), text = li.querySelector(".page-meta"), err = li.querySelector(".upload-error");
-      bar.value = 0;
-      return {
-        progress: function (pct, message) {
-          if (pct === null) bar.removeAttribute("value"); else bar.value = pct;
-          text.textContent = message;
-        },
-        done: function (message, href) {
-          li.querySelector(".upload-progress").hidden = true;
-          err.hidden = false; err.removeAttribute("role"); err.className = "page-meta";
-          err.textContent = message + " ";
-          if (href) {
-            var a = document.createElement("a");
-            a.href = href; a.textContent = "▶ Watch the replay"; err.appendChild(a);
-          }
-        },
-        fail: function (message) {
-          li.querySelector(".upload-progress").hidden = true;
-          err.hidden = false; err.textContent = message;
-        }
-      };
+    function mb(bytes) { return (bytes / 1e6).toFixed(1) + " MB"; }
+    function setStatus(row, text) { row.querySelector("[data-row-status]").textContent = text; }
+    function finished(body) { return body.status === "stored" || body.status === "failed"; }
+
+    function showJob(row, body) {
+      var link = row.querySelector("[data-row-link]");
+      if (body.status === "stored") {
+        // kept_existing: this recording wasn't stored; the link goes to the one already on the site.
+        setStatus(row, body.kept_existing ? "Not stored: " + body.error + "." : body.linked ? "Stored and linked to its match." :
+          "Stored. It links to its match after the match is crawled.");
+        if (body.replay_url) { link.hidden = false; link.href = body.replay_url; }
+      } else if (body.status === "failed") {
+        setStatus(row, "Failed: " + (body.error || "unknown error"));
+      } else {
+        setStatus(row, "Parsing… usually one to three minutes, longer while earlier files are parsed.");
+      }
     }
 
-    // Sends one file. Resolves {id} on success, or {error, stop} (stop: the rest of the batch can't go either).
-    function send(file, r) {
+    function poll(row) {
+      fetch("/replays/uploads/" + row.dataset.uploadId + "/status").then(function (r) { return r.json(); })
+        .then(function (body) { showJob(row, body); if (!finished(body)) setTimeout(function () { poll(row); }, POLL_MS); })
+        .catch(function () { setTimeout(function () { poll(row); }, POLL_MS); });
+    }
+
+    function newRow(name) {
+      var row = document.createElement("li");
+      row.innerHTML = '<span class="upload-name"></span> <span class="upload-row-status" data-row-status></span> ' +
+        '<a data-row-link hidden href="#">&#9654; Watch</a>';
+      row.querySelector(".upload-name").textContent = name;
+      list.insertBefore(row, list.firstChild);
+      section.hidden = false;
+      return row;
+    }
+
+    // One file: resolves when the site has taken it (polling starts) or refused it.
+    function send(file, row, retried) {
       return new Promise(function (resolve) {
-        var started = Date.now(), xhr = new XMLHttpRequest(), body = new FormData();
-        body.append("file", file);
-        r.progress(0, "Starting the upload…");
+        var xhr = new XMLHttpRequest(), started = Date.now();
         xhr.upload.onprogress = function (e) {
           if (!e.lengthComputable) return;
           var pct = Math.floor(100 * e.loaded / e.total), secs = (Date.now() - started) / 1000;
           var left = e.loaded > 0 && secs > 2 ? Math.round((e.total - e.loaded) * secs / e.loaded) : null;
-          r.progress(pct, "Uploading " + mb(e.loaded) + " of " + mb(e.total) + " (" + pct + "%)" +
+          setStatus(row, "Uploading " + mb(e.loaded) + " of " + mb(e.total) + " (" + pct + "%)" +
             (left !== null && left > 0 ? ", about " + (left >= 60 ? Math.ceil(left / 60) + " min" : left + " s") + " left" : ""));
         };
-        xhr.upload.onload = function () { r.progress(null, "Uploaded. Handing it to the parser…"); };
+        xhr.upload.onload = function () { setStatus(row, "Uploaded. Handing it to the parser…"); };
         xhr.onload = function () {
-          // Success is a 303 to the job page, which XHR follows.
-          var id = xhr.status === 200 && /\/replays\/uploads\/([0-9a-f-]{36})/i.exec(xhr.responseURL);
-          if (id) { resolve({ id: id[1] }); return; }
-          var alert = new DOMParser().parseFromString(xhr.responseText, "text/html").querySelector("[role=alert]");
-          var message = alert && alert.textContent.trim() ? alert.textContent.trim() : "The upload failed (" + xhr.status + ").";
-          // 400: this file is the problem; anything else (the code, the hourly limit, the worker) stops the batch.
-          resolve({ error: message, stop: xhr.status !== 400 });
+          var body = {};
+          try { body = JSON.parse(xhr.responseText); } catch (e) { body = {}; }
+          if (xhr.status === 200 && body.upload_id) {
+            row.dataset.uploadId = body.upload_id;
+            showJob(row, {status: "parsing"});
+            setTimeout(function () { poll(row); }, POLL_MS);
+            return resolve();
+          }
+          if (xhr.status === 503 && !retried) {
+            setStatus(row, "The worker is busy. Trying again in a moment…");
+            return setTimeout(function () { send(file, row, true).then(resolve); }, BUSY_RETRY_MS);
+          }
+          setStatus(row, "Not uploaded: " + (body.error || "the upload failed (" + xhr.status + ")."));
+          resolve();
         };
-        xhr.onerror = function () { resolve({ error: "The upload was interrupted. Check your connection.", stop: true }); };
+        xhr.onerror = function () { setStatus(row, "Not uploaded: the upload was interrupted. Check your connection."); resolve(); };
+        var data = new FormData();
+        data.append("file", file);
         xhr.open("POST", form.action);
-        xhr.send(body);
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.send(data);
       });
     }
 
-    // Follows one sent upload until it is stored or failed (only while the page is open; the site finishes it anyway).
-    function watch(id, r) {
-      var since = Date.now();
-      function poll() {
-        fetch("/replays/uploads/" + id + "/status").then(function (res) { return res.json(); })
-          .then(function (body) {
-            if (body.status === "stored") {
-              r.done(body.linked ? "Stored and linked to its match." : "Stored (it links after the match is crawled).", body.replay_url);
-            } else if (body.status === "failed") {
-              r.fail("Failed: " + (body.error || "unknown error"));
-            } else {
-              r.progress(null, body.status === "queued" ? "Sent. Waiting for the parser (files go one at a time)." :
-                "Parsing: " + clock(Math.floor((Date.now() - since) / 1000)) + " since sent (usually one to three minutes each).");
-              setTimeout(poll, 3000);
-            }
-          })
-          .catch(function () { setTimeout(poll, 3000); });
-      }
-      r.progress(null, "Sent. Waiting for the parser (files go one at a time).");
-      setTimeout(poll, 3000);
-    }
-
-    function finish(sent, failed, skipped) {
-      running = false; button.disabled = false; input.disabled = false;
-      summary.hidden = false;
-      summary.textContent = (sent ? sent + " sent: you can close this page now; each is parsed and saved on its own" +
-        " (see your recent uploads when you come back)" : "Nothing was sent") +
-        (failed ? "; " + failed + " failed" : "") + (skipped ? ", " + skipped + " not sent" : "") + ".";
-    }
-
-    // The recent uploads still waiting or parsing: keep their lines current while the page is open.
-    Array.prototype.forEach.call(document.querySelectorAll("[data-upload-id]"), function (li) {
-      var status = li.dataset.uploadStatus;
-      if (status !== "queued" && status !== "parsing") return;
-      var line = li.querySelector("[data-upload-line]");
-      (function poll() {
-        fetch("/replays/uploads/" + li.dataset.uploadId + "/status").then(function (res) { return res.json(); })
-          .then(function (body) {
-            if (body.status === "queued") line.textContent = "Waiting for the parser.";
-            else if (body.status === "parsing") line.textContent = "Parsing.";
-            else {
-              line.textContent = body.status === "stored" ? (body.linked ? "Stored and linked to its match. " :
-                "Stored (it links after the match is crawled). ") : "Failed: " + (body.error || "unknown error");
-              if (body.replay_url) {
-                var a = document.createElement("a");
-                a.href = body.replay_url; a.textContent = "▶ Watch the replay"; line.appendChild(a);
-              }
-              return;
-            }
-            setTimeout(poll, 5000);
-          })
-          .catch(function () { setTimeout(poll, 5000); });
-      })();
-    });
-
     form.addEventListener("submit", function (event) {
       event.preventDefault();
-      var files = Array.prototype.slice.call(input.files);
-      errorLine.hidden = true;
-      if (!files.length) return;
-      if (files.length > maxFiles) {
-        errorLine.textContent = "Pick at most " + maxFiles + " files at a time.";
-        errorLine.hidden = false;
-        return;
-      }
-      running = true; button.disabled = true; input.disabled = true;
-      list.innerHTML = ""; list.hidden = false; summary.hidden = true;
-      var rows = files.map(row), sentCount = 0, failed = 0;
-      (function next(i) {
-        if (i >= files.length) { finish(sentCount, failed, 0); return; }
-        var file = files[i], r = rows[i];
-        if (file.size > maxBytes) {
-          failed++; r.fail("Over the " + Math.floor(maxBytes / 1e6) + " MB limit: not sent.");
-          next(i + 1); return;
-        }
-        send(file, r).then(function (sent) {
-          if (sent.error) {
-            failed++; r.fail(sent.error);
-            if (sent.stop) {
-              for (var k = i + 1; k < files.length; k++) rows[k].fail("Not sent: the batch stopped at the file above.");
-              finish(sentCount, failed, files.length - i - 1); return;
-            }
-            next(i + 1); return;
-          }
-          sentCount++;
-          watch(sent.id, r);
-          next(i + 1);
-        });
-      })(0);
+      var files = Array.prototype.slice.call(input.files), problem = null;
+      if (!files.length) problem = "Pick at least one .vrf file.";
+      else if (files.length > maxFiles) problem = "Pick at most " + maxFiles + " files at a time.";
+      files.forEach(function (file) {
+        if (!problem && !/\.vrf$/i.test(file.name)) problem = file.name + " isn't a .vrf replay file.";
+        if (!problem && file.size > maxBytes) problem = file.name + " is over the " + mb(maxBytes) + " limit.";
+      });
+      errorLine.hidden = !problem;
+      if (problem) { errorLine.textContent = problem; return; }
+      button.disabled = true;
+      var rows = files.map(function (file) {
+        var row = newRow(file.name + " · " + mb(file.size));
+        setStatus(row, "Waiting to upload…");
+        return row;
+      });
+      files.reduce(function (chain, file, i) {
+        return chain.then(function () { return send(file, rows[i]); });
+      }, Promise.resolve()).then(function () { button.disabled = false; form.reset(); });
     });
-    window.addEventListener("beforeunload", function (event) {
-      if (running) { event.preventDefault(); event.returnValue = ""; }
+
+    // Rows the server listed: local times, then the current state of each, polling the unfinished ones.
+    Array.prototype.forEach.call(list.querySelectorAll("li[data-upload-id]"), function (row) {
+      var time = row.querySelector("time");
+      if (time) time.textContent = new Date(time.getAttribute("datetime")).toLocaleString();
+      var body = JSON.parse(row.dataset.job);
+      showJob(row, body);
+      if (!finished(body)) setTimeout(function () { poll(row); }, POLL_MS);
     });
   })();
 </script>

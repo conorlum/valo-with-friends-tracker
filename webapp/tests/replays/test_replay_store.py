@@ -23,14 +23,15 @@ from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models import KillEvent, Match, MatchPlayer, Player, Round  # noqa: E402
 from app.models.match import MatchSource, Team  # noqa: E402
-from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundControl  # noqa: E402
+from app.models.replay import Replay, ReplayDeletion, ReplayPlayer, ReplayRound, ReplayRoundControl  # noqa: E402
 from app.replays import condense as cd  # noqa: E402
 from app.replays import db as replay_db  # noqa: E402
 from app.replays import format as fmt  # noqa: E402
 from app.replays import store  # noqa: E402
 
 TABLES = [Player.__table__, Match.__table__, MatchPlayer.__table__, Round.__table__, KillEvent.__table__,
-          Replay.__table__, ReplayRound.__table__, ReplayRoundControl.__table__, ReplayPlayer.__table__]
+          Replay.__table__, ReplayRound.__table__, ReplayRoundControl.__table__, ReplayPlayer.__table__,
+          ReplayDeletion.__table__]
 
 
 @pytest.fixture(scope="module")
@@ -94,6 +95,15 @@ def test_a_store_links_and_writes_the_mapping(db, condensed):
     blobs = {r.round_number: r.data for r in db.query(ReplayRound)}
     assert blobs == condensed.encoded_rounds()
     assert "synthetic-" not in str(row.link_report)
+
+
+@pytest.mark.parametrize("source,replace", [("upload", False), ("local", False), ("local", True)])
+def test_a_match_deleted_on_request_is_refused_by_every_store(db, condensed, source, replace):
+    db.add(ReplayDeletion(match_uuid=condensed.match_uuid.lower(), reason="asked"))
+    db.commit()
+    with pytest.raises(store.StoreRefused, match="deleted on request"):
+        store.store_replay(db, condensed, source=source, replace=replace)
+    assert db.query(Replay).count() == 0
 
 
 def test_an_unknown_match_is_stored_unlinked_and_links_later(db, condensed):
