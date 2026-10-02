@@ -1,8 +1,8 @@
 # Timing gaps from unknown space: design
 
 Written 2026-10-02. Status: design agreed in conversation, stress-tested in four rounds of questions, and
-revised after an external review of the first draft (24 findings; the code-based ones were re-checked against
-the source before being accepted). Awaiting the owner's review of this file. No code exists yet.
+revised after two external reviews (the code-based findings were re-checked against the source before being
+accepted). Revised again after the rebase onto main, to build on the engine's own unknown. No code exists yet.
 
 ## Purpose
 
@@ -20,9 +20,9 @@ nothing here claims any. Every count the system shows carries its sample size.
 | 1 | One detector runs over every round for both teams. "Enemy gaps on a map", "my team's leaks" and "one opponent in one match" are filters on one table. |
 | 2 | A gap's target is always an enemy player's back. Sites and the spike are not targets. |
 | 3 | Two kinds of row are recorded: **predicted gaps** (unknown space behind a player) and **back-shots** (a player really shot from behind by an untracked enemy). One kind may be pruned later. |
-| 4 | Unknown space spreads at gun-out shift-walk speed only. |
+| 4 | Unknown space is the engine's unknown, which spreads at rifle-out shift-walk speed (`UNKNOWN_MPS`, 3.24 m/s). |
 | 5 | "Behind" is the rear 120 degrees: within 60 degrees either side of directly behind the player. A predicted gap also needs a clear line to the player; a back-shot does not, so wall-bangs count. No range limit; the distance is stored. |
-| 6 | Unknown space collapses on sight, and to a small area on a kill, a spike plant, audible movement, gunfire, and gun damage to a teammate (a player who is shot can work out roughly where from, even with no gun noise). Ability damage does not change it. Remembered ground does not count as sight. |
+| 6 | Unknown space collapses on sight, and to a small area on a kill, a spike plant, audible movement, gunfire, and gun damage to a teammate (a player who is shot can work out roughly where from, even with no gun noise). Ability damage does not change it. Remembered ground does not count as sight. These rules are added to the engine's unknown, so the viewer and control change too. |
 | 7 | A gap needs at least 5 s since the enemy was last located. This applies to both kinds of row and to every kind of locating event. The one exception is the start of the round: an enemy who has not been located at all this round needs no wait. |
 | 8 | A predicted gap records three levels of use: an enemy stood in it, shot the victim, killed the victim. Each keeps its first occurrence, with its own enemy and time. |
 | 9 | Every gap is kept, including ones that qualified for under a second; those are flagged as flickers and hidden by default. Each gap stores how close the candidate enemies really were, and context, so pruning is a filter. |
@@ -30,64 +30,84 @@ nothing here claims any. Every count the system shows carries its sample size.
 | 11 | A predicted gap fires once and stays latched. It closes only after its unknown space has had no line to the victim for 5 s, so a quick look back does not re-arm it. |
 | 12 | Patterns are route-based and match on the full choke sequence. |
 | 13 | Chokes are auto-detected per map and hand-corrected. Route-shape closeness is a second way to match routes. |
-| 14 | The detector rides along with the control compute through an observer hook, and each round's tick records are cached locally so the detector can be re-run alone. |
+| 14 | The detector reads the engine's unknown through an observer hook on the control compute, and each round's tick records are cached locally so the detector can be re-run alone. |
 | 15 | First version includes stored rows, a replay-viewer layer and a pattern page. The viewer draws the spot and the route, not the exposed cells. |
 | 16 | The pattern page shows Friends and Everyone, as `/stats` does. Friends is resolved per viewer at query time; no player id is stored on a gap row. |
 
-## Prerequisite
+## Built on the engine's unknown
 
-The control-heights work (parts 2-5) changes `app/control/engine.py` and is in review. This branch was cut
-before it. Rebase onto `origin/main` once that work has merged, before any engine change in this design is
-implemented. Engine names quoted below are from the pre-heights engine and must be re-checked after the
-rebase, including the line-of-sight rule.
+Rebased onto `origin/main` on 2026-10-02, after the control-heights work merged. Main by then had its own
+unknown (`Unknown` in `app/control/engine.py`; design in `docs/map-control-unknown-plan.md`): one region per
+enemy with each cell's earliest arrival time, spreading causally at `UNKNOWN_MPS` = 3.24 m/s (rifle-out
+shift-walk, measured from replay tracks on 2026-10-01), with true diagonal lengths, the map's specials, the
+per-floor nodes of the heights work, sealed pinches beside smokes, and clearing by live control only. The
+owner's call (2026-10-02): **gaps use that unknown**, and the new locating rules are **added to the engine
+itself**, so the viewer's unknown hatch, Safe and control all change with it.
+
+What the engine's unknown keeps, and gaps therefore inherit:
+- At the barrier drop, each enemy's region is their team's start ground behind the barriers.
+- Every tick each enemy's region is also pushed out from their true position (the owner confirmed keeping
+  this for gaps: a player who ran somewhere creates unknown there as they arrive).
+- Pieces of at most 2 cells with no enemy in them are dropped.
+- A spotted enemy (in an active view or a watcher) restarts from where they stand.
+
+Consequences:
+- `CONTROL_REVISION` goes from 4 to 5, the pinned constants digest and the flat-map reference bytes are
+  re-pinned, and every round's control is recomputed (about 45 core-seconds per average round,
+  `scripts/compute_control.py`).
+- The replay worker's control child computes control only; gaps for rounds it computes are filled by the
+  next `compute_control.py` run (section 7).
 
 ## Limits
 
-- Awareness is modelled from vision plus four sound and feed rules (kills, plant, audible movement, gunfire).
-  Hearing ignores walls and masking by other noise.
+- Awareness is modelled from vision plus five sound and feed rules (kills, plant, audible movement, gunfire,
+  gun damage). Hearing ignores walls and masking by other noise.
 - A sound collapses the unknown space of the enemy who really made it. A real team hears "a player is here",
   not which one. The enemies named on a gap's candidate list should therefore be read as "one of the
   unaccounted-for enemies". Anonymous handling is a stretch goal.
-- Timing is only as fine as control ticks: every 0.5 s plus event ticks, which are irregular. Rules below are
-  stated in seconds, never in tick counts.
+- Locating events are applied at control ticks. Damage-run starts are added to the tick schedule so that
+  each one has a tick; other events are applied at the first tick at or after them, from the enemy's
+  position and the time of the event itself.
 - Damage is stored as runs (hits within 500 ms of each other merge), so a back-shot is judged at a run's
   start. A hit later in a run cannot be judged on its own.
 - Causes name the player whose view or utility released a cell, not which trip or camera.
-- The unknown space is not the replay viewer's "could be here" region. That one spreads at `KNEW_RUN_MPS`
-  (6.75 m/s), ignores sound, treats remembered ground as watched, and is rebuilt each tick from the last-seen
-  cell. The two will disagree on screen, by design.
+- The engine's knowledge views ("as Team X knew it", `Knowledge`, `KNEW_RUN_MPS`) are a separate picture and
+  are not changed.
 
 ## Components
 
 ### 1. Reference figures
 
-Named constants in the gap module. None is taken from memory; each is measured or sourced and the source is
-recorded beside it.
+Named constants. None is taken from memory; each is measured or sourced and the source is recorded beside it.
+Those that change the unknown live in `engine.py` and are covered by the pinned constants digest; the rest
+live in the gap module.
 
-| Constant | Meaning | Source |
-|----------|---------|--------|
-| `GAP_WALK_MPS` | Gun-out shift-walk speed. | Measured from player tracks in stored replays, cross-checked against the Valorant wiki (valorant.fandom.com). The engine's `DECAY_MPS = 3.5` and a quoted 2.9 m/s are both unverified. |
-| `FOOTSTEP_RANGE_M` | How far audible movement is heard. Equal to the spike explosion radius. | Valorant wiki; checked by the owner. |
-| Gun hearing ranges | Per gun, how far its fire is heard, including silenced guns. | A small checked-in table built from the Valorant wiki weapon pages, shown to the owner to check against the buy menu before use. |
-| `MIN_UNSEEN_S` | Minimum time since the enemy was last located for a gap to count. | 5 s, the owner's figure. |
-| `CLOSE_AFTER_S` | How long a gap's unknown space must have no line to the victim before the gap closes. | 5 s. |
-| `KILL_AREA_M`, `PLANT_AREA_M`, `SHOT_AREA_M` | Radius the unknown space collapses to. | 5 m each. |
-| `DAMAGE_AREA_M` | Radius the unknown space collapses to when a teammate takes gun damage. | Proposed 10 m: the victim knows a direction, not a spot. |
-| `FOOTSTEP_AREA_M` | Radius the unknown space collapses to on audible movement. | Proposed 10 m. |
-| `FLICKER_S` | A gap that qualified for less than this in total is flagged as a flicker. | Proposed 1 s. |
-| `RESULT_WINDOW_S` | How long after standing in a gap a shot or kill still counts. | Proposed 3 s. |
-| `SPEED_WINDOW_S`, `SPEED_MARGIN` | The window speed is measured over, and how far above walk speed counts as audible. | Proposed 0.5 s and 15%. |
-| `SHOT_LOOKBACK_S` | A shooter's own gunfire this soon before their damage is ignored when judging a back-shot. | Proposed 0.5 s. |
-| `SHAPE_THRESHOLD_M` | How close two no-choke routes must be to group together. | Proposed 4 m. |
+| Constant | Where | Meaning | Source |
+|----------|-------|---------|--------|
+| `UNKNOWN_MPS` | engine, exists | Spread speed: rifle-out shift-walk, 3.24 m/s. | Measured 2026-10-01 (`docs/map-control-unknown-plan.md`). |
+| `AUDIBLE_MPS` | engine | Movement faster than this is heard. | Proposed 4.5 m/s: above the fastest shift-walk (knife, 4.05 m/s) and below the slowest run measured (rifle, 5.40 m/s), from the same measurement. |
+| `FOOTSTEP_RANGE_M` | engine | How far audible movement is heard. Equal to the spike explosion radius. | Valorant wiki; checked by the owner. |
+| Gun hearing ranges | engine | Per gun, how far its fire is heard, including silenced guns. | A small checked-in table built from the Valorant wiki weapon pages, shown to the owner to check against the buy menu before use. |
+| `KILL_AREA_M`, `PLANT_AREA_M`, `SHOT_AREA_M` | engine | Radius the unknown collapses to. | 5 m each. |
+| `DAMAGE_AREA_M` | engine | Radius the unknown collapses to when a teammate takes gun damage. | Proposed 10 m: the victim knows a direction, not a spot. |
+| `FOOTSTEP_AREA_M` | engine | Radius the unknown collapses to on audible movement. | Proposed 10 m. |
+| `AUDIBLE_WINDOW_S` | engine | The window movement speed is measured over. | Proposed 0.5 s. |
+| `MIN_UNSEEN_S` | gaps | Minimum time since the enemy was last located for a gap to count. | 5 s, the owner's figure. |
+| `CLOSE_AFTER_S` | gaps | How long a gap's unknown space must have no line to the victim before the gap closes. | 5 s. |
+| `FLICKER_S` | gaps | A gap that qualified for less than this in total is flagged as a flicker. | Proposed 1 s. |
+| `RESULT_WINDOW_S` | gaps | How long after standing in a gap a shot or kill still counts. | Proposed 3 s. |
+| `SHOT_LOOKBACK_S` | gaps | A shooter's own gunfire this soon before their damage is ignored when judging a back-shot. | Proposed 0.5 s. |
+| `SHAPE_THRESHOLD_M` | gaps | How close two no-choke routes must be to group together. | Proposed 4 m. |
 
-All are tunable by re-running the detector from the tick cache.
+The gap module's constants are tunable by re-running the detector from the tick cache. The engine's need a
+control recompute.
 
 ### 2. Chokes
 
 **Detection.** `scripts/build_chokes.py` reads a map's walkable grid and finds narrow passages: places where
 the walkable width reaches a local minimum along a corridor. Each choke is a short line of cells across the
 passage with an id and a name. Auto-detected chokes are named by number. The map's special links
-(teleporters, ropes, drops) are each a choke.
+(teleporters, ropes, drops) are each a choke. On a map with heights a choke covers every floor of its cells.
 
 **Asset.** `static/data/control/<Map>.chokes.json`, checked in beside the existing sight and walk masks.
 
@@ -95,101 +115,91 @@ passage with an id and a name. Auto-detected chokes are named by number. The map
 Hand edits are kept when detection is re-run: a choke marked as edited or deleted is not regenerated.
 
 **Freshness.** The asset's hash is part of the gap fingerprint, so editing a map's chokes marks that map's
-gap rows stale.
+gap rows stale. Chokes do not affect control.
 
 ### 3. Engine observer hook and tick cache
 
 `compute_round` takes an optional observer. With none given, its behaviour and output are unchanged. With one,
-each control tick it passes a plain record, taken **before** `Memory.apply` adds remembered ground:
+each control tick, after `TickRunner.step`, it passes a plain record:
 
 - the time
-- each live player's slot, team, cell, position and facing (the yaw from `RoundInputs.pos`; `Holder` does not
+- each live player's slot, team, node, position and facing (the yaw from `RoundInputs.pos`; `Holder` does not
   keep it)
-- for each live player, two masks: the cells their own view covers after flashes and nearsight, and the cells
-  their live utility watches. A team's observed mask is the union over its players. This also gives the
-  attribution the cause needs: which player, and whether by view or by utility.
-- which enemy slots each team sees this tick (`Knowledge.seen_now`)
+- for each live player, two masks taken from the tick before remembered ground is added: their own view
+  (`active | passive`, which includes the presence bubble) and their live utility (`watch`). A team's
+  observed mask is the union, plus each player's own node, exactly the engine's `Tick.live`. The split gives
+  the attribution a cause needs: which player, and whether by view or by utility.
+- each enemy's unknown, per team: the node indices currently in it and, for each, the id of its arrival entry
+  (section 4)
+- the arrival entries appended since the previous tick, and the locating events applied at this tick
 - the active smokes
 
 A player with no position sample at a tick is absent from that tick's record.
 
-The gap module also reads from the round blob: player tracks, lives, kills, the spike plant (the bomb entry in
-the ability data, not the unused top-level field), shot rows and damage runs.
+The gap module also reads from the round blob: player tracks, lives, kills and damage runs.
 
-**Line of sight.** "A clear line from cell C to player P" means C is among the cells visible from P's position
-in any direction, smokes included, computed with the engine's ray cast over a full circle. One convention,
-used everywhere below.
+**Line of sight.** "A clear line from node N to player P" means N is among the nodes P's eye sees in any
+direction, smokes included: the engine's `cast` over a full circle from P's position, with P's eye height on a
+map with heights. One convention, used everywhere below.
 
 **Tick cache.** The compute writes each round's tick records to a file under the existing `.control_cache`
-folder, keyed by replay id, round number and the round's control fingerprint. It is local, gitignored and
-never in the database. A script re-runs the detector over cached rounds without running the engine. A round
-whose cache file is missing or keyed to an old fingerprint is recomputed through the engine.
+folder, keyed by replay id, round number and the round's control fingerprint. Unknowns are stored as changes
+from the previous tick. It is local, gitignored and never in the database. A script re-runs the detector over
+cached rounds without running the engine. A round whose cache file is missing or keyed to an old fingerprint
+is recomputed through the engine. The cache's size per round is measured in the preview; if it is too large
+to keep for every round, the plan's preview step decides a retention rule with the owner.
 
-### 4. Unknown space
+### 4. Changes to the engine's unknown
 
-For each team T and each live enemy E that T has not located, the detector keeps a region of cells E could be
-in.
+**Route history.** The spread (`topology.spread`, both topologies) also returns, for each node it reaches,
+the neighbour or link its arrival came from. `Unknown` turns every new or changed arrival into an entry in an
+append-only log per team: (node, arrival time, the parent's entry id, the choke sequence id). Entries are
+added in arrival-time order within a tick, so an entry only ever points to one added before it, a route can
+never loop, and a later clearing or re-entry cannot alter an earlier route. A source entry (barrier ground,
+an enemy's own position, a sighting, an area collapse) has no parent. When two arrivals tie, the existing
+spread's choice stands; the parent recorded is the lowest-numbered neighbour giving that time.
 
-**Spread.**
-- Before anything is known, the region starts at E's cell at the start of the live round. The buy phase is
-  not part of the round clock. If E has no position at that moment, the region starts at E's first track
-  sample, at that sample's time, as the engine's own knowledge picture does.
-- The spread is causal. Each tick, the existing region advances by the distance `GAP_WALK_MPS` covers in the
-  time since the previous tick, through walkable cells T is not observing at this tick. Distance not yet
-  amounting to a step is carried forward. Ground that was observed until now can only be entered from now:
-  time spent waiting behind an observed choke is not banked as travel beyond it.
-- A sideways step costs one cell width. A diagonal step costs 1.41 cell widths and may not cut a corner
-  between two blocked cells. The map's special links are edges with the engine's direction rules and zero
-  length.
-- A region cell that T observes this tick is cleared, because E was not seen there. It can be re-entered
-  later from neighbouring region cells.
-- **History.** Every arrival is appended to a log as (cell, time, the earlier log entry it came from, the
-  choke sequence so far). Entries are never changed, and an entry can only point to one appended before it,
-  so a route can never loop and a later clearing or re-entry cannot alter it. Times never increase going
-  back along a route; they are equal across zero-length steps. When two arrivals tie, the one from the
-  lower-numbered cell wins.
-- **Choke sequence per cell.** An entry's choke sequence is its parent's, plus the choke if the cell lies on
-  one. Every region cell therefore carries its own route and sequence without any tracing.
+**Choke sequence per entry.** An entry's choke sequence is its parent's, plus the choke if its node lies on
+one, interned as an id per round. Every unknown node therefore carries its own route and sequence without
+tracing. The engine reads choke membership from the choke asset when it is present; without one, every
+sequence is empty. This bookkeeping does not change which nodes are unknown or when.
 
-**Locating E.** Each of these resets the region and its clock. An area reset is a flood from E's true cell
-through unobserved walkable cells out to the radius, at no time cost, so every route still begins at E's true
-position at that moment.
+**Locating events.** Each of these restarts that enemy's region, like a sighting does today, but as an area:
+the region becomes the unobserved walkable nodes within the radius of the enemy's true position, reached by
+walking from it, all at the time of the event, and it spreads on from there.
 
 | Event | Region becomes |
 |-------|----------------|
-| T sees E (a player's view, a watcher, a reveal) | E's cell. |
-| E kills a T player | Within `KILL_AREA_M` of E. |
-| E plants the spike | Within `PLANT_AREA_M` of the plant. |
-| E moves faster than shift-walk within `FOOTSTEP_RANGE_M` of any live T player | Within `FOOTSTEP_AREA_M` of E. |
-| E fires a gun within that gun's hearing range of any live T player | Within `SHOT_AREA_M` of E. |
-| E damages a T player with a gun, heard or not, through a wall or not | Within `DAMAGE_AREA_M` of E. |
+| The team sees E (active view, a watcher, `Tick.direct`) | E's node (unchanged). |
+| E kills a player of the team | Within `KILL_AREA_M` of E. |
+| E plants the spike | Within `PLANT_AREA_M` of E. |
+| E moves faster than `AUDIBLE_MPS` within `FOOTSTEP_RANGE_M` of a live player of the team | Within `FOOTSTEP_AREA_M` of E. |
+| E fires a gun within that gun's hearing range of a live player of the team | Within `SHOT_AREA_M` of E. |
+| E damages a player of the team with a gun, heard or not, through a wall or not | Within `DAMAGE_AREA_M` of E. |
 
-**The 5 s wait.** After any of these, E cannot be the source of a gap or a back-shot for `MIN_UNSEEN_S`. The
-start of the round is not a locating event: an enemy who has not been located at all this round needs no
-wait. An enemy who comes back to life counts as located at that moment.
+Positions come from the player tracks at the event's time. A kill row's own coordinates are the victim's, so
+the killer's position is read from the killer's track. The planter is the bomb entry's owner in the ability
+data (not the unused top-level `plant` field).
 
-Positions for these events come from the player tracks at the event's time. A kill row's own coordinates are
-the victim's, so the killer's position is read from the killer's track.
+Every locating event, sighting included, is recorded per team and enemy as (time, kind), and is passed to the
+observer. The gaps' 5 s wait is read from this record.
 
-**Timeline.** The detector runs on its own timeline: every control tick plus every kill, plant, shot and
-damage-run start from the blob, in time order. Control does not schedule a tick for every shot or for damage,
-so at an event between ticks the detector uses the observation masks of the latest tick at or before it and
-track positions at the event's exact time.
+**The 5 s wait (gaps only).** After any locating event, E cannot be the source of a gap or a back-shot for
+`MIN_UNSEEN_S`. The barrier drop is not a locating event: an enemy who has not been located at all this round
+needs no wait. An enemy who comes back to life counts as located at that moment.
 
 **Order of events.** Anything that is judged at an event (a back-shot, a level of use, a gap's opening) is
-judged against what T knew immediately before that event. The event's own locating effect and any death are
-applied afterwards. Events at the same time are processed in the order: judge, then sight, sound and plant,
-then deaths.
+judged against the locating record and the unknown as they stood before that event. The event's own locating
+effect is applied afterwards.
 
 **Movement speed.** A player's speed at a moment is the straight-line distance between their positions
-`SPEED_WINDOW_S` (0.5 s) apart, within one track segment, divided by that time. Movement is audible when
-that speed exceeds `GAP_WALK_MPS` by more than `SPEED_MARGIN` (proposed 15%). The same estimator gives a
+`AUDIBLE_WINDOW_S` apart, within one track segment, divided by that time. The same estimator gives a
 back-shot's peak speed. Tracks are quantised and short gaps inside a segment are interpolated, so this is an
-estimate; the margin exists for that reason.
+estimate.
 
-**Lives.** When E dies the region is removed. If E comes back to life, a new region starts at E's cell at
-that moment with the clock at zero, as if located there; if E has no position then, it starts at the first
-sample of the new life. A victim who comes back is a new victim for latch purposes.
+**Lives.** The engine already removes a dead enemy's region. If E comes back to life, their region restarts at
+their position at that moment, as a locating event; with no position then, at the first sample of the new
+life. A victim who comes back is a new victim for latch purposes.
 
 **Missing or unreliable data.**
 - Speed is measured only within a track segment. A break between segments is never bridged, so a teleport is
@@ -198,7 +208,7 @@ sample of the new life. A victim who comes back is a new victim for latch purpos
   and their distance from a gap's spot is stored as unknown.
 - A shot with no gun recorded uses the longest hearing range in the table.
 - A plant with no resolved planter locates nobody.
-- Each round's gap run records how many of each of these it met.
+- Each case is counted in the round's existing `missing` inputs, and the gap run records the same counts.
 
 ### 5. Predicted gaps
 
@@ -352,7 +362,8 @@ Because rows hold slots and not player ids, a changed link cannot leave stale id
   control result is returned unchanged.
 - The parent replaces a round's gap run row and all its gap rows in one transaction.
 - The planner also selects rounds whose control row is fresh but whose gap run is missing or stale. Those run
-  from the tick cache when it is present and current, and through the engine otherwise.
+  from the tick cache when it is present and current, and through the engine otherwise (without rewriting
+  the control row). This is how rounds computed by the replay worker's control child get their gaps.
 
 ### 8. Viewer layer
 
@@ -401,10 +412,12 @@ Because rows hold slots and not player ids, a changed link cannot leave stale id
 
 ## Testing
 
-- **Unknown space**: hand-built small grids with scripted ticks: the spread held back by an observed choke
-  and released; remembered ground not blocking the spread; diagonal cost and corner cutting; special links;
-  clearing of observed cells; route history surviving a clear and re-entry; each locating event, its area and
-  its origin; a second life; each missing-data rule.
+- **Engine unknown**: the existing unknown tests keep passing. New, on the toy maps: the spread's parents on
+  both topologies (flat and with heights); route history surviving a clear and re-entry; choke sequences
+  along a route; the route bookkeeping leaving which nodes are unknown unchanged; each locating event, its
+  area and its origin; a second life; each missing-data rule.
+- **Control revision**: `CONTROL_REVISION` 5 with a re-pinned constants digest; the flat-map reference rounds
+  re-pinned, with the differences explained by the new locating rules only.
 - **Event order**: a shot that is both a back-shot and a locating event; a kill that closes a gap it used.
 - **Predicted gaps**: the rear 120 degrees boundary; the 5 s minimum; two neighbouring cells with different choke sequences giving two gaps; merging across enemies;
   the latch; a different choke sequence opening a second gap; each consequence of the close rule; the flicker
@@ -421,17 +434,18 @@ Because rows hold slots and not player ids, a changed link cannot leave stale id
 
 ## Build order
 
-1. Rebase onto `origin/main` after the control-heights work merges.
-2. Reference figures: measure the shift-walk speed, source the footstep range and the gun hearing table, and
-   have the owner check the table.
-3. Choke detection, asset and tagger mode.
-4. Observer hook and tick cache.
-5. Unknown space, predicted gaps and back-shots, developed against cached rounds.
-6. Storage and the compute script.
-7. Preview one or two rounds, then the full recompute. Its cost is not yet measured; the last recorded figure
-   is about two minutes of compute per round.
-8. Viewer layer.
-9. Pattern page.
+1. Reference figures: source the footstep range and the gun hearing table, and have the owner check the
+   table.
+2. Choke detection, asset and tagger mode.
+3. Engine: route history and choke sequences in the unknown (output unchanged).
+4. Engine: the locating events; `CONTROL_REVISION` 5.
+5. Observer hook and tick cache.
+6. Predicted gaps and back-shots, developed against cached rounds.
+7. Storage and the compute script.
+8. Preview one or two rounds in the viewer, then the full recompute of control and gaps (about 45
+   core-seconds per round for control, plus the detector's measured cost).
+9. Viewer layer.
+10. Pattern page.
 
 ## Stretch goals
 
