@@ -445,6 +445,27 @@ def test_a_preview_never_writes_inside_the_repository(tmp_path, capsys, no_pictu
         command.main(["--map", "Ascent", "--blobs-dir", str(blobs), "--out", str(tmp_path / "x")], asset_dir=assets)
 
 
+def test_only_a_preview_may_make_floors_from_one_match(tmp_path, capsys, no_picture):
+    # One match can't make a floor (FLOOR_MIN_MATCHES), so a map with a single match shows nothing; a
+    # preview may relax that to look at it, and says so in what it writes.
+    assets = toy_assets(tmp_path)
+    one_match = height_rounds(lambda m, n: {k: sweep(k) for k in range(9)}, matches=1, rounds=6)
+    blobs = write_blobs(tmp_path / "blobs", one_match)
+    out_dir = tmp_path / "preview"
+    base = ["--map", "Ascent", "--blobs-dir", str(blobs)]
+    assert command.main([*base, "--preview", "--out", str(out_dir)], asset_dir=assets) == 0
+    assert not hc.load_asset(out_dir / "Ascent.height.npz").supported.any(), "the real rule: no floors"
+    assert command.main([*base, "--preview", "--out", str(out_dir), "--preview-min-matches", "1"],
+                        asset_dir=assets) == 0
+    assert "PREVIEW RULE" in capsys.readouterr().out
+    relaxed = hc.load_asset(out_dir / "Ascent.height.npz")
+    assert relaxed.supported.sum() > 900 and relaxed.meta["preview_min_matches"] == 1
+    assert hc.FLOOR_MIN_MATCHES == 2, "the rule is put back"
+    with pytest.raises(SystemExit):
+        command.main([*base, "--preview-min-matches", "1"], asset_dir=assets)
+    assert not (assets / "Ascent.height.npz").exists()
+
+
 def test_the_report_prints_air_only_floors_and_the_counts():
     b = hb.build(covered_rounds({9: level_walk(320, 328, 6.0, side="B")}), GEO)
     lines = hb.report_lines("Toy", b.report)

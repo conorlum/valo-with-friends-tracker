@@ -16,6 +16,8 @@ Committing the asset is what turns the map's heights on; its rounds are then sta
 
 With `--preview --out <dir>` it builds below the bar too and writes the asset and the report under `<dir>`
 only, which must be outside the repository: a preview is for looking, never for committing.
+`--preview-min-matches 1` also lets a preview make floors from a single match (the real rule is two, so one
+match's Sage wall or boost can't become a floor); the asset records that it was built that way.
 
 Either way the review picture goes to `%TEMP%\\valo-replay\\heights\\<Map>.height.png` (never committed),
 and every unresolved area is printed as a `WARNING` line: those cells keep today's flat sight and walking.
@@ -96,7 +98,12 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
     parser.add_argument("--blobs-dir", type=Path, help="local round blobs, <match>/<n>.json.gz (default: the database)")
     parser.add_argument("--preview", action="store_true", help="build below the bar too; write only under --out")
     parser.add_argument("--out", type=Path, help="with --preview: the folder to write to, outside the repository")
+    parser.add_argument("--preview-min-matches", type=int,
+                        help=f"with --preview: matches a floor needs (default {hc.FLOOR_MIN_MATCHES}), to look at a "
+                             f"map that has too few yet")
     args = parser.parse_args(argv)
+    if args.preview_min_matches is not None and not args.preview:
+        parser.error("--preview-min-matches is for --preview only")
     asset_dir = asset_dir or cg.ASSET_DIR
     if args.preview:
         if args.out is None:
@@ -112,7 +119,17 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
     print(f"{args.map}: {len(rounds)} rounds read in {time.perf_counter() - started:.1f}s"
           + "".join(f", {n} skipped ({why})" for why, n in skipped.items() if n), flush=True)
     started = time.perf_counter()
-    build = hb.build(rounds, geo)
+    rule = hc.FLOOR_MIN_MATCHES
+    try:
+        if args.preview_min_matches is not None:
+            hc.FLOOR_MIN_MATCHES = args.preview_min_matches     # a preview's own, looser rule: never an asset's
+            print(f"PREVIEW RULE: a floor needs {args.preview_min_matches} match(es), not {rule}", flush=True)
+        build = hb.build(rounds, geo)
+    finally:
+        hc.FLOOR_MIN_MATCHES = rule
+    if args.preview_min_matches is not None:
+        build.asset.meta["preview_min_matches"] = args.preview_min_matches
+        build.report["preview_min_matches"] = args.preview_min_matches
     for line in hb.report_lines(args.map, build.report):
         print(line, flush=True)
     print(f"  built in {time.perf_counter() - started:.1f}s", flush=True)
