@@ -123,7 +123,7 @@ def reingest(entries: list[dict], args, session_factory) -> int:
     """Re-ingests every entry marked for it; returns 1 if any failed or needs the user first."""
     from app.replays.condense import condense_export_dir
     from app.replays.contract import ContractError, load_manifest
-    from app.replays.store import store_replay
+    from app.replays.store import StoreRefused, store_replay
     from app.services.replay_impact import refresh_replay_impact
 
     archive = args.archive or default_archive()
@@ -156,6 +156,10 @@ def reingest(entries: list[dict], args, session_factory) -> int:
         session = session_factory()
         try:
             result = store_replay(session, condensed, source="local", replace=True)
+        except StoreRefused as refused:  # e.g. a match deleted on request: the rest still run
+            print(f"{uuid}: REFUSED at store: {refused}", flush=True)
+            problems += 1
+            continue
         finally:
             session.close()
         split = refresh_replay_impact(session_factory, result.replay_id) if result.link_status == "linked" else "-"

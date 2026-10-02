@@ -8,7 +8,7 @@ from app.models.friendship import Friendship
 from app.models.player_view_cache import PlayerViewCache
 from app.models.site_stats_cache import SiteStatsCache
 from app.models.viewer_site_stats_cache import ViewerSiteStatsCache
-from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundControl, ReplayUpload
+from app.models.replay import Replay, ReplayDeletion, ReplayPlayer, ReplayRound, ReplayRoundControl, ReplayUpload
 
 __all__ = [
     "Player",
@@ -28,4 +28,5 @@ __all__ = [
     "ReplayRoundControl",
     "ReplayPlayer",
     "ReplayUpload",
+    "ReplayDeletion",
 ]
