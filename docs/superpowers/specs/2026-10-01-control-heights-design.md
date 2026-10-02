@@ -67,87 +67,119 @@ own; parts 2-4 are each useful only with the ones before.
 
 ### 1. The .vrf archive
 
+Revised 2026-10-01 after the part-1 review (`docs/superpowers/plans/2026-10-01-replay-archive-plan-review.md`).
+
 Today the worker writes each upload into a temp folder, deletes the folder before it publishes the result
 (`replay_worker/server.py`, `_run`), keeps its job table in memory, and is never told whether the web app
 stored the result. The web app marks an upload `stored` even when `store_replay` returned `kept_existing`,
-i.e. this file was rejected in favour of another (`app/services/replay_upload.py`, `collect`). The archive
-needs all of that changed.
+i.e. this file was rejected in favour of another (`app/services/replay_upload.py`, `refresh_job`). The
+archive needs all of that changed.
+
+**The switch.** The archive is on only when `REPLAY_ARCHIVE_DIR` is set, is a mount point, and a
+create-and-rename probe under it succeeds. Otherwise the worker behaves exactly as today: temp folders under
+`REPLAY_WORKER_TMP`, deleted when the job ends, an in-memory job table, nothing kept; an ack answers
+`{"archived": false, "reason": "archive off"}` and the web app records that and moves on. `/health` reports
+`archive: {"enabled", "reason"?, "kept", "bytes", "oldest_played_at", "budget_bytes", "boot_id"}`. A failed probe
+never crashes the worker: uploads keep working without the archive.
 
 **The disk.** A Render persistent disk on the `replay-worker` service (`render.yaml`: `disk`, mounted at
-`/var/replay`), 50 GB to start (an open question). Only files under the mount persist, and a service with a
-disk stops its old instance before starting the new one on deploy. The disk holds:
+`/var/replay`), 50 GB to start (an open question; a Render disk can grow but never shrink). Only files under
+the mount persist, and a service with a disk stops its old instance before starting the new one on deploy (no
+zero-downtime deploy, one instance). The disk holds:
 
-- `jobs/<job id>/`: every job's working folder (the upload, the export, `job.json` with its state, and
-  `result.json` when done). Parsing scratch moves here from the container's temp dir, so it is reserved and
-  accounted for in the same place.
+- `jobs/<job id>/`: every job's working folder (`upload.vrf`, the parser's `export/`, `job.json` with its
+  state, and `result.json` when done). The export is deleted the moment the condenser returns, so a finished
+  job holds only its small result.
 - `pending/<job id>.vrf` + `<job id>.json`: a parsed upload waiting for the web app's acknowledgement.
 - `archive/<match uuid>.vrf` and `archive/index.json`: per match, the accepted file's sha256, its size, the
-  match's date (from the parse result), the time it was accepted, and the acknowledgement that put it there.
-- `tombstones.json`: a local copy of the deleted-match list (below; the web app's table is the authority).
+  map, the match's date (`played_at`, sent by the web app in the ack), the time it was accepted, and the
+  `replay_id` of the stored replay it belongs to.
+- `tombstones.json`: the worker's copy of the deleted-match list (the web app's `replay_deletions` table is
+  the authority, and pushes it).
+- `acks/<job id>.json`: the answer given to each ack, so a repeated ack gets the same answer.
 
-The worker runs as a non-root user. On start it checks that it can create and rename files under the mount
-and fails its health check with a clear message if not; the plan picks the mechanism that gives it ownership
-(entrypoint `chown` before dropping privileges, or the disk's mount owner), verified on the first deploy.
+The image's user is uid 10001. A Render disk mounts root-owned, so the container starts as root, an entrypoint
+`chown`s the mount to 10001 and then drops to it with `setpriv`; the server never runs as root. Verified on the
+first deploy (no Docker on the development machine): `/health` says `archive.enabled: true`.
 
-**Space.** A parse needs about 65 times the upload (`replay_worker/README.md`); uploads are capped at 200 MB
-(`replay_upload_max_bytes`), so one parse can need about 13 GB. The worker parses one job at a time.
+**Space.** A parse needs about 65 times the upload (`replay_worker/README.md`); uploads are capped at
+181,035,000 bytes (`replay_upload_max_bytes`, `REPLAY_MAX_BYTES`), so one parse can need about 12 GB. The worker
+parses one job at a time. Space is budgeted from the worker's own accounting, never from free space measured
+mid-parse:
 
-- `PARSE_RESERVE` = 70 x the size of the largest job that could run next (the upload plus the export, with
-  margin), plus the raw size of every queued upload.
-- The worker refuses a new upload (`503`, "busy, try again shortly"; the upload page says so) unless free space
-  stays above `PARSE_RESERVE` after accepting it.
-- Eviction runs before each parse and after each archive write: while free space is below `PARSE_RESERVE` +
-  `ARCHIVE_SLACK` (5 GB), delete the archived file whose match was played earliest. Eviction never touches
-  `jobs/` or `pending/`. With a 50 GB disk this leaves roughly 30 GB for the archive, about 350 matches at
-  today's file sizes; the report on `/status` says how many are kept and the oldest match date.
+- `PARSE_RESERVE` = 70 x the cap (the running parse at its largest) + `queue_size` x the cap (uploads waiting).
+- `archive budget` = the disk's total − `PARSE_RESERVE` − `ARCHIVE_SLACK` (5 GB) − the bytes in `pending/`.
+- Eviction runs before each parse and after each archive write: while the archive's bytes exceed the budget,
+  delete the archived file whose match was played earliest (`played_at`, else its accept time). Eviction
+  never touches `jobs/` or `pending/`.
+- The worker refuses a new upload (`503`, "the worker is busy, try again soon"; the upload page already shows
+  the worker's reason) when the bytes held by `jobs/` and `pending/` plus the new upload would eat into the
+  parse reserve, i.e. `jobs + pending + upload > total − ARCHIVE_SLACK − 70 x the cap`. The archive itself
+  never refuses an upload; it is evicted instead.
+- With a 50 GB disk the budget is about 50 − 12.7 − 0.9 − 5 ≈ 31 GB of archive, about 350 matches at today's
+  file sizes; `/health` says how many are kept and the oldest match date.
 
 **Restarts.** A job's state lives in its `job.json`. On start the worker re-queues `queued` and `parsing` jobs
-(a parse restarts from the beginning) and reloads `done` and `failed` jobs whose results haven't been
-collected, so a deploy loses nothing that was accepted. A job no one collects within `UNCOLLECTED_TTL`
-(7 days) is deleted with a log line; so is a pending file no one acknowledges within `PENDING_TTL` (7 days).
+in creation order (a parse restarts from the beginning; one that no longer fits the queue fails with "please
+re-upload") and reloads `done` and `failed` jobs with their results, so a deploy loses nothing that was
+accepted. A job folder older than `UNCOLLECTED_TTL` (7 days) is deleted with a log line; so is a pending file
+no one acknowledges within `PENDING_TTL` (2 days, since pending bytes come out of the archive's budget), and an
+ack record after 7 days. Stray temp files in `archive/` are removed on start.
 
-**The acknowledgement.** After it collects a job, the web app tells the worker what happened:
+**The acknowledgement.** Right after it stores a job's result, the web app tells the worker what happened:
 
 ```
-POST /jobs/<job id>/ack   {"match_uuid", "sha256", "outcome", "accepted_at"}
+POST /jobs/<job id>/ack   {"match_uuid", "sha256", "outcome", "replay_id", "played_at"}
   outcome: stored | replaced | unchanged | kept_existing | failed
+  sha256 / replay_id: the stored replay the DB holds now (null for failed)
 ```
 
-- The worker checks the job id, the match uuid (from its own result) and the sha256 (its own hash of the
-  upload); any mismatch is refused and logged.
-- `stored` / `replaced`: the pending file is archived. It is copied to a temp name in `archive/`, hashed from
-  disk, and renamed into place (atomic on one volume), then `index.json` is rewritten the same way.
-- **Newer wins.** An ack whose `accepted_at` (the stored replay's update time, from the web app) is older than
-  the archived file's is a delayed one; its pending file is deleted and the archive is left alone.
-- `unchanged`: the same file as the stored one. Archived if the match has no archived file yet, else deleted.
+- The worker checks the job id, the match uuid (from its own result) and, for `stored`/`replaced`/`unchanged`,
+  that `sha256` equals its own hash of the upload; any mismatch is refused (`409`) and logged.
+- Every mutation of `archive/` and `index.json` happens under one lock (acks, eviction, deletion, sync).
+- `stored` / `replaced`, and `unchanged` when the match has no archived file: the pending file is archived. It
+  is copied to a temp name in `archive/`, hashed from disk, and renamed into place (atomic on one volume),
+  then `index.json` is rewritten the same way.
+- **Newer wins.** The version is `replay_id`: every store or replace inserts a new `replays` row inside the
+  store's advisory lock, so a larger id is the newer file. An ack whose `replay_id` is smaller than the
+  archived entry's is a delayed one: its pending file is deleted and the archive is left alone.
+- `unchanged` when the match already has an archived file: the pending file is deleted (same bytes).
 - `kept_existing` / `failed`: the pending file is deleted; nothing is archived.
-- Acks are idempotent: the same ack twice changes nothing and returns the same answer.
-- The web app records each upload's ack (`replay_uploads.archive_ack`: null until the worker confirms) and
-  re-sends missing acks on every collector pass, so a lost ack or a worker restart is recovered by the next
-  pass. `kept_existing` uploads are shown as such ("a linked replay of this match already exists"), not as
-  plain stored.
+- A tombstoned match's ack is refused and its pending file deleted.
+- Acks are idempotent: the same ack twice changes nothing and returns the same answer (from `acks/`).
+- The web app records each upload's store outcome (`replay_uploads.store_outcome`) and the worker's answer
+  (`replay_uploads.archive_ack`: null until the worker answers). A background thread in the web app (the
+  `replay_control_remote` pattern) re-sends missing acks every few minutes for uploads finished within
+  `PENDING_TTL`, so a lost ack or a worker restart is recovered. `kept_existing` uploads are shown as such,
+  with the store's own reason ("a linked replay of this match already exists", or "the new recording did not
+  link, so it doesn't replace the existing unlinked one"), not as plain stored.
 
-**Re-parse from the archive.** A new worker job kind, `reparse`, takes a match uuid, copies the archived file
-into a job folder, runs today's parser and condenser, and returns the result exactly like an upload; the web
-app's collector stores it and acks it (outcome `replaced` or `unchanged`; the archived file stays, since it is
-the same bytes). A local command `scripts/reparse_archive.py [--map M] [--since DATE] [--match UUID]` queues
-them through the web app, one at a time, sharing the worker's queue with uploads (uploads first).
+**Re-parse from the archive.** A worker job kind, `reparse`: `POST /reparse {"match_uuid"}` copies the
+archived file into a job folder and queues it behind every waiting upload; it runs today's parser and
+condenser and returns the result exactly like an upload. The web app's admin routes create a
+`replay_uploads` row for it and collect it with the same `refresh_job`, which stores it and acks it (outcome
+`replaced` or `unchanged`; the archived file stays, since it is the same bytes, and its entry takes the new
+`replay_id`). A local command `scripts/reparse_archive.py [--map M] [--since DATE] [--match UUID]` lists the
+archive through the web app, then queues and polls one match at a time.
 
-**Deletion on request.** `scripts/delete_replay_data.py <match uuid>` (operator only, through the web app's
-private admin route with the worker token; never a public route):
+**Deletion on request.** `scripts/delete_replay_data.py <match uuid> [--reason R]` (operator only, through the
+web app's admin route, authenticated by the `REPLAY_ADMIN_TOKEN` secret; never a public route):
 
 - adds the match to `replay_deletions` (match uuid, time, reason) in the web app's DB: the tombstone;
-- deletes the stored replay, its rounds and its control rows;
-- tells the worker to cancel any queued or parsing job and any pending file for that match and delete the
-  archived file;
-- from then on, an upload, a reparse or an ack for a tombstoned match is refused, with a clear message.
+- deletes the stored replay, its rounds, players and control rows;
+- pushes the deletion to the worker, which deletes any pending and archived file for that match, records the
+  tombstone, and drops the result of any job for that match as it finishes (a queued upload's match isn't
+  known until it is parsed);
+- from then on, a store of that match is refused inside `store_replay` (upload, reparse or local ingest), its
+  ack is refused, and a reparse of it is refused, each with a clear message.
 
-The worker fetches the tombstone list from the web app on start and every hour, and deletes any archived or
-pending file it finds for a tombstoned match. That covers a restored disk snapshot: Render snapshots persistent
-disks automatically, so a deleted file survives in older snapshots until they expire, and a restored snapshot
-would bring both the file and an older local `tombstones.json` back. The web app's table is what the worker
-trusts. The upload page and this spec say plainly that deleted files can live on in snapshots for Render's
-retention period.
+Tombstones are **pushed**, never pulled: the worker holds no secret and no route to the web app. The worker
+reports a fresh `boot_id` on each start; whenever the web app's thread sees a new one, it pushes the full
+tombstone list, and the worker deletes any archived or pending file it holds for a tombstoned match. That
+covers a restored disk snapshot: Render snapshots persistent disks automatically, so a deleted file survives in
+older snapshots until they expire, and a restored snapshot brings both the file and an older
+`tombstones.json` back; the restore restarts the worker, and the next sync deletes it. The upload page and this
+spec say plainly that deleted files can live on in snapshots for Render's retention period.
 
 **The upload page's promise changes first.** It says today: "It is parsed on the site's private worker and
 then deleted; only the minimap replay is kept." It will say the file is kept privately on the site's worker to
@@ -365,18 +397,21 @@ Walls stay infinitely tall and smokes stay columns; both are acknowledged limita
   returns four values; a segment with a missing z sample is split; utility spawn z, drone path z and both
   trip anchors' z survive the condenser; the recipe changes with revision 11; the JS decoder ignores z.
 - **Archive** (stub worker, as the upload tests do):
+  - with no archive dir (or one that isn't a mount, or fails the probe) the worker behaves as today: the job
+    folder is gone when the job ends, nothing in `pending/`, and an ack answers "archive off";
   - a stored job's file is archived only after its `stored` ack; a `kept_existing` or `failed` ack deletes it;
     a mismatched job id, match uuid or sha256 is refused;
-  - the same ack twice is a no-op; a delayed older ack doesn't replace a newer file; a lost ack is re-sent by
-    the next collector pass;
+  - the same ack twice is a no-op; a delayed older ack (smaller `replay_id`) doesn't replace a newer file; a
+    lost ack is re-sent by the web app's next sync pass;
   - a restart re-queues queued and parsing jobs and reloads uncollected results; TTLs delete what nobody
     collects;
-  - an upload that would leave less than the parse reserve is refused; eviction deletes the earliest-played
-    match first and never touches `jobs/` or `pending/`;
+  - an upload that would eat into the parse reserve is refused; eviction deletes the earliest-played match
+    first and never touches `jobs/` or `pending/`;
   - a reparse stores like an upload and leaves the archived file in place;
-  - a deletion removes the stored replay, the control rows, the pending and archived files and the queued job;
-    a later upload, reparse or ack for that match is refused; a "restored" archive file for a tombstoned match
-    is deleted on the next tombstone sync.
+  - a deletion removes the stored replay, the control rows, the pending and archived files, and drops a
+    finishing job's result; a later store, reparse or ack for that match is refused; a "restored" archive file
+    for a tombstoned match is deleted on the next tombstone push (a new `boot_id`);
+  - `kept_existing` uploads show the store's reason.
 - **Height build** on toy maps (`tests/replays/control_toys.py`):
   - two floors at 0 and 5 m make two floors, and still do with airborne samples between them;
   - repeated jumps, a rope climb, a boost and a fall make no floor;
