@@ -138,7 +138,7 @@ class Sample:
     t_ms: int
     x: float
     y: float
-    z: float
+    z: float | None      # world z, or None when the parser gave none (never read as 0)
     yaw: float
     pawn: int
 
@@ -680,8 +680,9 @@ def read_movement(export: Export, players: PlayerTable) -> tuple[dict[int, list[
             continue
         counts["kept"] += 1
         channels.add(data.get("channel"))
+        z = position.get("z")
         by_slot[slot].append(Sample(row.time_ms, float(position["x"]), float(position["y"]),
-                                    float(position.get("z") or 0.0), float(data.get("yaw") or 0.0), pawn))
+                                    None if z is None else float(z), float(data.get("yaw") or 0.0), pawn))
     # Contract order per slot: by time, ties in file order (a no-op when the rows came sorted;
     # the streaming loader reads movement in file order, W-b).
     for samples in by_slot.values():
@@ -935,8 +936,10 @@ def build_segments(samples: list[Sample], intervals: list[list], start: int, end
                or interval != previous[1]
                or sample.pawn != previous[0].pawn
                or (sample.t_ms - previous[0].t_ms) / 1000.0 > SEGMENT_GAP_S
-               or math.dist((sample.x, sample.y, sample.z),
-                            (previous[0].x, previous[0].y, previous[0].z)) > TELEPORT_UNITS)
+               # a segment has a height for every sample or for none (revision 11): a mixed run splits
+               or (sample.z is None) != (previous[0].z is None)
+               or math.dist((sample.x, sample.y, sample.z or 0.0),
+                            (previous[0].x, previous[0].y, previous[0].z or 0.0)) > TELEPORT_UNITS)
         if brk:
             runs.append([])
         runs[-1].append((sample, interval))
@@ -945,29 +948,32 @@ def build_segments(samples: list[Sample], intervals: list[list], start: int, end
     segments = []
     covered_points = 0
     for run in runs:
-        grid: dict[int, tuple[int, int, int]] = {}
+        grid: dict[int, tuple[int, int, int, int | None]] = {}
         for sample, _ in run:
             k = int(round((sample.t_ms - start) / 1000.0 * hz))
             u, v = game_map.to_uv(sample.x, sample.y)
-            grid[k] = (u, v, game_map.yaw_to_map(sample.yaw))  # the last sample on a grid point wins
+            # the last sample on a grid point wins; z in decimetres of world z, as the parser gave it
+            grid[k] = (u, v, game_map.yaw_to_map(sample.yaw), None if sample.z is None else int(round(sample.z / 10.0)))
         keys = sorted(grid)
-        u_list, v_list, yaw_list = [], [], []
+        has_z = grid[keys[0]][3] is not None      # the whole run or none of it (see `brk`)
+        u_list, v_list, yaw_list, z_list = [], [], [], []
         for a, b in zip(keys, keys[1:] + [None]):
-            ua, va, ya = grid[a]
-            u_list.append(ua), v_list.append(va), yaw_list.append(ya)
+            ua, va, ya, za = grid[a]
+            u_list.append(ua), v_list.append(va), yaw_list.append(ya), z_list.append(za)
             if b is None:
                 continue
             # Grid points the source skipped inside a segment (< SEGMENT_GAP_S)
             # are filled linearly, yaw along the shortest arc; never beyond the source's rate.
-            ub, vb, yb = grid[b]
+            ub, vb, yb, zb = grid[b]
             turn = (yb - ya + 180) % 360 - 180
             for step in range(1, b - a):
                 f = step / (b - a)
                 u_list.append(int(round(ua + (ub - ua) * f)))
                 v_list.append(int(round(va + (vb - va) * f)))
                 yaw_list.append(int(round(ya + turn * f)) % 360)
+                z_list.append(int(round(za + (zb - za) * f)) if has_z else None)
         covered_points += len(u_list)
-        segments.append(fmt.encode_segment(keys[0] / hz, u_list, v_list, yaw_list))
+        segments.append(fmt.encode_segment(keys[0] / hz, u_list, v_list, yaw_list, z_list if has_z else None))
 
     alive_s = sum(_uncovered(iv[0], iv[1] if iv[1] is not None else end, unobserved) / 1000.0 for iv in intervals)
     max_gap = 0.0
