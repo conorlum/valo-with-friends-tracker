@@ -2,7 +2,9 @@
 design.md, part 1). The worker holds no secret and never calls the web app, so the web app pushes: a daemon
 thread runs `cycle` every CYCLE_S while uploads are enabled.
 
-1. `GET /health`. The archive off: nothing to do.
+1. `GET /health`. The worker unreachable: nothing to do.
+1a. Collect every finished upload whose page was closed (`replay_upload.collect_unfinished`), whether or not
+   the archive is on. The archive off: nothing more to do.
 2. A `boot_id` this process hasn't synced (a first run, a restart or deploy, a restored disk snapshot): push the
    full `replay_deletions` list. The worker deletes any archived or pending file of a listed match, so a
    restored snapshot can't bring back a deleted recording for longer than one cycle.
@@ -40,11 +42,15 @@ def enabled() -> bool:
 
 def cycle(session_factory, client: uploads.WorkerClient, state: State, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
-    counts = {"tombstones_pushed": 0, "acks_sent": 0, "acks_unsent": 0}
+    counts = {"collected": 0, "tombstones_pushed": 0, "acks_sent": 0, "acks_unsent": 0}
     try:
         archive = client.health().get("archive") or {}
     except uploads.WorkerError:
         return counts
+    try:
+        counts["collected"] = uploads.collect_unfinished(session_factory, client, now)
+    except uploads.WorkerError:
+        log.warning("archive sync: the worker stopped answering while collecting uploads")
     if not archive.get("enabled"):
         return counts
     session = session_factory()

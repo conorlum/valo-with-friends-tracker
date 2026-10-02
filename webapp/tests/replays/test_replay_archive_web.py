@@ -250,6 +250,23 @@ def test_the_scripts_select_and_describe_themselves(capsys):
     assert "usage" in capsys.readouterr().out
 
 
+def test_the_sync_collects_a_finished_upload_even_with_the_archive_off(engine, db, tmp_path, stub):  # noqa: F811
+    worker, httpd, base = start(tmp_path, stub)
+    try:
+        client = uploads.WorkerClient(base)
+        upload = uploads.create_upload(db, io.BytesIO(vrf_bytes()), "sess", None, client)
+        for _ in range(300):
+            if client.job(upload.worker_job_id)["status"] not in uploads.UNFINISHED:
+                break
+            time.sleep(0.1)
+        counts = sync.cycle(sessionmaker(bind=engine), client, sync.State())
+        assert counts["collected"] == 1
+        db.expire_all()
+        assert db.get(ReplayUpload, upload.id).status == "stored"
+    finally:
+        httpd.shutdown()
+
+
 def test_the_sync_does_nothing_while_the_archive_is_off(engine, tmp_path, stub):  # noqa: F811
     worker, httpd, base = start(tmp_path, stub)
     try:

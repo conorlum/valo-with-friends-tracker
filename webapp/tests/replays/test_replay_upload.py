@@ -3,6 +3,7 @@ and store-on-completion, against the real worker with a stub parser (tests/repla
 test_replay_worker.py's) and a throwaway sqlite store. Routes are called directly."""
 
 import io
+import json
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -44,9 +45,18 @@ def vrf_bytes() -> bytes:
     return SyntheticMatch(shape="swiftplay").vrf_bytes
 
 
-def request(session: dict | None = None) -> Request:
-    return Request({"type": "http", "method": "POST", "path": "/", "query_string": b"", "headers": [],
+def request(session: dict | None = None, accept: str | None = None) -> Request:
+    headers = [(b"accept", accept.encode())] if accept else []
+    return Request({"type": "http", "method": "POST", "path": "/", "query_string": b"", "headers": headers,
                     "session": {} if session is None else session, "client": ("10.0.0.1", 1234)})
+
+
+def wait_until_done(client, job_id: str) -> None:
+    for _ in range(200):
+        if client.job(job_id)["status"] not in uploads.UNFINISHED:
+            return
+        time.sleep(0.1)
+    raise AssertionError("the worker never finished the job")
 
 
 def status_of(call) -> int:
@@ -90,7 +100,7 @@ def test_a_text_file_and_an_oversized_file_are_refused_with_a_reason(db, monkeyp
     assert db.query(ReplayUpload).count() == 0
 
 
-def test_the_eleventh_upload_in_an_hour_and_a_second_unfinished_one_are_refused(db):
+def test_the_eleventh_upload_in_an_hour_and_a_sixth_unfinished_one_are_refused(db):
     now = datetime.now(timezone.utc)
     for i in range(uploads.UPLOADS_PER_HOUR):
         db.add(ReplayUpload(id=f"00000000-0000-4000-8000-{i:012d}", status="stored", session_key="s",
@@ -102,10 +112,16 @@ def test_the_eleventh_upload_in_an_hour_and_a_second_unfinished_one_are_refused(
         uploads.check_limits(db, "other-session", "ip")  # per IP too
     uploads.check_limits(db, "other-session", "other-ip")
     uploads.check_limits(db, "s", "ip", now=now + timedelta(hours=2))  # an hour later it's fine again
-    db.add(ReplayUpload(id="00000000-0000-4000-8000-00000000ffff", status="parsing", session_key="t",
-                        client_ip="x", created_at=now))
+    # A batch: up to MAX_UNFINISHED of one session's uploads may be in progress at once.
+    for i in range(uploads.MAX_UNFINISHED - 1):
+        db.add(ReplayUpload(id=f"00000000-0000-4000-8000-0000000ff{i:03d}", status="parsing", session_key="t",
+                            client_ip=f"x{i}", created_at=now - timedelta(hours=3)))
     db.commit()
-    with pytest.raises(uploads.LimitExceeded, match="one upload at a time"):
+    uploads.check_limits(db, "t", "y")
+    db.add(ReplayUpload(id="00000000-0000-4000-8000-00000000ffff", status="queued", session_key="t",
+                        client_ip="x", created_at=now - timedelta(hours=3)))
+    db.commit()
+    with pytest.raises(uploads.LimitExceeded, match=f"{uploads.MAX_UNFINISHED} uploads at a time"):
         uploads.check_limits(db, "t", "y")
 
 
@@ -171,3 +187,93 @@ def test_another_session_cannot_see_an_upload(db):
     db.commit()
     other = request({"replay_upload_sid": "someone-else"})
     assert status_of(lambda: routes.upload_job(other, "00000000-0000-4000-8000-00000000abab", db)) == 404
+
+
+# ---------------------------------------------------------------- batch upload
+
+
+def test_a_finished_upload_is_collected_with_no_page_open(db, tmp_path, stub):  # noqa: F811
+    worker, httpd, base = start(tmp_path, stub, "ok")
+    try:
+        client = uploads.WorkerClient(base)
+        upload = uploads.create_upload(db, io.BytesIO(vrf_bytes()), "sess", "ip", client)
+        wait_until_done(client, upload.worker_job_id)
+        factory = sessionmaker(bind=db.get_bind())
+        assert uploads.collect_unfinished(factory, client) == 1
+        db.expire_all()
+        assert db.get(ReplayUpload, upload.id).status == "stored"
+        assert db.query(Replay).count() == 1
+        assert uploads.collect_unfinished(factory, client) == 0, "a collected upload is not stored twice"
+    finally:
+        httpd.shutdown()
+
+
+def test_an_upload_still_streaming_to_the_worker_is_left_alone_until_it_is_stuck(db):
+    now = datetime.now(timezone.utc)
+    db.add(ReplayUpload(id="00000000-0000-4000-8000-00000000cc01", status="queued", session_key="s",
+                        created_at=now - timedelta(minutes=2)))
+    db.add(ReplayUpload(id="00000000-0000-4000-8000-00000000cc02", status="queued", session_key="s",
+                        created_at=now - uploads.STUCK_AFTER - timedelta(minutes=1)))
+    db.commit()
+    factory = sessionmaker(bind=db.get_bind())
+    assert uploads.collect_unfinished(factory, uploads.WorkerClient("http://127.0.0.1:9", timeout_s=1)) == 1
+    db.expire_all()
+    assert db.get(ReplayUpload, "00000000-0000-4000-8000-00000000cc01").status == "queued"
+    old = db.get(ReplayUpload, "00000000-0000-4000-8000-00000000cc02")
+    assert (old.status, old.error) == ("failed", "failed: please re-upload")
+
+
+def test_a_job_waiting_in_the_worker_queue_gets_longer_before_it_is_stuck(db):
+    class QueuedWorker:
+        def job(self, job_id):
+            return {"id": job_id, "status": "queued"}
+
+    now = datetime.now(timezone.utc)
+    waiting = ReplayUpload(id="00000000-0000-4000-8000-00000000dd01", status="parsing", worker_job_id="j1",
+                           session_key="s", created_at=now - uploads.STUCK_AFTER - timedelta(minutes=1))
+    forgotten = ReplayUpload(id="00000000-0000-4000-8000-00000000dd02", status="parsing", worker_job_id="j2",
+                             session_key="s", created_at=now - uploads.QUEUED_STUCK_AFTER - timedelta(minutes=1))
+    db.add_all([waiting, forgotten])
+    db.commit()
+    assert uploads.refresh_job(db, waiting, QueuedWorker()).status == "parsing"
+    assert uploads.refresh_job(db, forgotten, QueuedWorker()).status == "failed"
+
+
+def test_the_upload_post_answers_json_for_the_batch_page(db, tmp_path, stub, monkeypatch):  # noqa: F811
+    worker, httpd, base = start(tmp_path, stub, "ok")
+    monkeypatch.setattr(settings, "replay_worker_url", base)
+    session = {"replay_upload_ok": True}
+
+    class FakeFile:
+        def __init__(self, data):
+            self.file = io.BytesIO(data)
+
+    try:
+        response = routes.upload_file(request(session, "application/json"), FakeFile(vrf_bytes()), db)
+        body = json.loads(response.body)
+        assert response.status_code == 200 and body["upload_id"]
+        assert body["status_url"] == f"/replays/uploads/{body['upload_id']}/status"
+        refused = routes.upload_file(request(session, "application/json"), FakeFile(b"not a replay"), db)
+        assert refused.status_code == 400 and "not a valorant replay" in json.loads(refused.body)["error"].lower()
+        # Without the header the form post still redirects to the job page.
+        plain = routes.upload_file(request(session), FakeFile(b"not a replay"), db)
+        assert plain.status_code == 400 and plain.media_type == "text/html"
+    finally:
+        httpd.shutdown()
+
+
+def test_the_upload_page_lists_this_sessions_recent_uploads(db):
+    now = datetime.now(timezone.utc)
+    db.add_all([
+        ReplayUpload(id="00000000-0000-4000-8000-00000000ee01", status="parsing", session_key="mine",
+                     size_bytes=76_000_000, created_at=now - timedelta(minutes=3)),
+        ReplayUpload(id="00000000-0000-4000-8000-00000000ee02", status="stored", session_key="mine",
+                     created_at=now - timedelta(days=2)),
+        ReplayUpload(id="00000000-0000-4000-8000-00000000ee03", status="parsing", session_key="theirs",
+                     created_at=now),
+    ])
+    db.commit()
+    response = routes.upload_form(request({"replay_upload_ok": True, "replay_upload_sid": "mine"}), db)
+    assert [row["id"] for row in response.context["uploads"]] == ["00000000-0000-4000-8000-00000000ee01"]
+    assert b"00000000-0000-4000-8000-00000000ee01" in response.body
+    assert routes.upload_form(request({}), db).context["uploads"] == []
