@@ -25,18 +25,44 @@ web-service side are Stage 3's PR.
 ## Behaviour
 
 - One job runs at a time; `REPLAY_QUEUE_SIZE` more wait, and the next upload gets `503`.
-- Each job has its own temp folder (the upload plus the export, about 65 times the file). It is deleted when
-  the job ends, whatever happened, **before** the job reads as finished.
+- Each job has its own temp folder (the upload plus the export, about 65 times the file). With the archive
+  off it is deleted when the job ends, whatever happened, **before** the job reads as finished. With it on,
+  see "The .vrf archive" below.
 - The parser runs with a timeout that kills its whole process tree, and on Linux an address-space cap
   (`REPLAY_MEMORY_CAP_MB`). Windows has no cap; `/health` says so.
 - Up to 50 finished jobs stay readable; older ones are forgotten.
+
+## The .vrf archive
+
+Design: `docs/superpowers/specs/2026-10-01-control-heights-design.md`, part 1. Code: `archive.py` (the store)
+and `server.py` (the jobs). Web side: `webapp/app/services/replay_upload.py` (`send_ack`),
+`webapp/app/services/replay_archive_sync.py`, `webapp/app/routers/replay_admin.py`.
+
+- **On only when** `REPLAY_ARCHIVE_DIR` is set, is a mount point, and a create+rename probe works
+  (`REPLAY_ARCHIVE_REQUIRE_MOUNT=0` skips the mount check, for tests). Otherwise everything above holds
+  unchanged and `/health` says why the archive is off.
+- On Render: the `replay-archive` disk at `/var/replay` (`render.yaml`, 50 GB). The image starts as root,
+  `entrypoint.sh` chowns the mount to `worker`, then drops to it with `setpriv`.
+- Layout: `jobs/<id>/` (upload, export, `job.json`, `result.json`), `pending/<id>.vrf` (parsed, waiting for
+  the web app's ack), `archive/<match uuid>.vrf` + `archive/index.json`, `acks/`, `tombstones.json`.
+- The export is deleted as soon as the condenser returns. A restart re-queues queued/parsing jobs and reloads
+  finished ones. Pending files nobody acks go after 2 days, uncollected jobs and ack records after 7.
+- Space: the archive may use the disk's total less `70 x REPLAY_MAX_BYTES + REPLAY_QUEUE_SIZE x REPLAY_MAX_BYTES`
+  (the parse reserve), 5 GB of slack and what `pending/` holds; the earliest-played match is evicted first.
+  An upload that would eat into the running parse's reserve gets `503`.
+- Routes (unauthenticated like `/jobs`; the service is private): `POST /jobs/{id}/ack`, `POST /reparse`,
+  `GET /archive`, `POST /archive/delete`, `POST /archive/tombstones`. `/health` has an `archive` block
+  (`enabled`, `kept`, `bytes`, `budget_bytes`, `oldest_played_at`, `boot_id`).
+- Tests: `webapp/tests/replays/test_replay_archive.py` (the store), `test_replay_worker_archive.py` (the server),
+  `test_replay_archive_web.py` (the web side).
 
 ## Configuration
 
 `REPLAY_PARSER_CMD` (JSON list with `{vrf}` and `{out}`), `REPLAY_PARSER_BUILD` (a `BUILD.json` to check
 against the pin; unset in the image, which is built from the pin itself), `REPLAY_WORKER_TMP`,
 `REPLAY_TIMEOUT_S` (180; the image sets 240), `REPLAY_MAX_BYTES` (80 MB; the image sets 181,035,000), `REPLAY_QUEUE_SIZE` (5), `REPLAY_MEMORY_CAP_MB`
-(0 = none), `REPLAY_WORKER_HOST`/`REPLAY_WORKER_PORT`.
+(0 = none), `REPLAY_WORKER_HOST`/`REPLAY_WORKER_PORT`, `REPLAY_ARCHIVE_DIR` (unset: no archive),
+`REPLAY_ARCHIVE_REQUIRE_MOUNT` (1).
 
 ## Running it locally
 

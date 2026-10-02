@@ -158,6 +158,14 @@ def test_a_new_worker_boot_gets_the_tombstones_and_a_restored_file_goes(engine, 
         httpd.shutdown()
 
 
+def test_the_upload_page_states_that_the_file_is_kept(db):
+    request = Request({"type": "http", "method": "GET", "path": "/replays/upload", "query_string": b"",
+                       "headers": [], "session": {"replay_upload_ok": True}, "client": ("10.0.0.1", 1)})
+    page = routes.upload_form(request).body.decode("utf-8")
+    assert "data-archive-promise" in page and "keeps the <code>.vrf</code> file" in page
+    assert "then deleted" not in page and "ask, and its file and its replay are" in page
+
+
 def admin_request(token: str | None) -> Request:
     headers = [] if token is None else [(b"authorization", f"Bearer {token}".encode())]
     return Request({"type": "http", "method": "POST", "path": "/", "query_string": b"", "headers": headers})
