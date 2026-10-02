@@ -14,6 +14,20 @@ a `HeightBuild` out:
   is a floor when it has FLOOR_MIN_STANDS stands from FLOOR_MIN_ROUNDS rounds in FLOOR_MIN_MATCHES
   matches. Floors closer than FLOOR_SEP_M, a floor spread over more than FLOOR_SPREAD_MAX_M, or more than
   MAX_FLOORS floors leave the cell unresolved, with the reason.
+- **Unsampled cells.** A walkable cell with no floor takes a ground floor when at least
+  FILL_MIN_NEIGHBOURS cells within FILL_R cells of it (by walking) have floors and all of those floors
+  agree within FILL_TOL_M: their median, and no upper floors. Otherwise it is unresolved. Filling never
+  averages across a drop, and a filled cell never fills another.
+- **Connections.** Floors of neighbouring cells (all 8) within STEP_UP_M connect both ways. A bigger step
+  connects only where it was walked: a stand on one followed within CONNECT_S by a stand on the other, in
+  CONNECT_MIN_ROUNDS rounds. Seen going up it connects both ways (what is climbed can be dropped from);
+  seen only going down it is one-way, a drop. Unresolved cells carry no connections here: the engine
+  gives them today's 2D walking.
+- **Unresolved areas, loudly.** Unresolved cells are grouped into areas (8-connected), each with its size,
+  its bounding box in minimap px and why.
+- **Readiness.** `visited` is the share of walkable cells any sample fell in; `supported` the share with a
+  floor from stands (not filled). A map is ready at HEIGHT_SUPPORTED_MIN supported with no unresolved
+  area larger than UNRESOLVED_MAX cells touching a cell with two floors.
 
 Local tooling only, like the engine: the web app never imports this module.
 """
@@ -23,10 +37,16 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+import hashlib
+from collections import Counter
+
 import numpy as np
+from scipy import ndimage
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 
 from app.control import heights as hc
-from app.control.geometry import GRID, PX, Geometry
+from app.control.geometry import CELL, GRID, PX, Geometry
 
 DM = 10.0     # decimetres per metre: every height in here is whole decimetres unless a name says _m
 
@@ -193,9 +213,12 @@ def all_stands(rounds: list, geo: Geometry) -> tuple[list[Stand], list[int], dic
     match_ids = sorted({str(match) for match, _, _ in rounds})
     round_match = [match_ids.index(str(match)) for match, _, _ in rounds]
     found, counts = [], {"stands": 0, "on_platforms": 0, "rounds": len(rounds), "matches": len(match_ids),
-                         "rounds_without_z": 0}
+                         "rounds_without_z": 0, "visited": np.zeros(GRID * GRID, bool)}
     for i, (_, _, blob) in enumerate(rounds):
         mine = stands(blob, geo, i)
+        for _, _, x, y, _ in _tracks(blob):
+            counts["visited"][(np.clip(y, 0, PX - 1).astype(int) // CELL) * GRID
+                              + np.clip(x, 0, PX - 1).astype(int) // CELL] = True
         if not any("z" in seg for segs in (blob.get("tracks") or {}).values() for seg in segs):
             counts["rounds_without_z"] += 1
         kept = off_platforms(mine, platforms(blob), geo)
@@ -203,3 +226,217 @@ def all_stands(rounds: list, geo: Geometry) -> tuple[list[Stand], list[int], dic
         found += kept
     counts["stands"] = len(found)
     return found, round_match, counts
+
+
+# ---------------------------------------------------------------- fill, connections, areas
+
+
+EIGHT = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+
+def _neighbours(cell: int, walk: np.ndarray):
+    """The walkable cells among `cell`'s eight neighbours (walk: GRID x GRID)."""
+    y, x = divmod(cell, GRID)
+    for dy, dx in EIGHT:
+        ny, nx = y + dy, x + dx
+        if 0 <= ny < GRID and 0 <= nx < GRID and walk[ny, nx]:
+            yield ny * GRID + nx
+
+
+def fill(floors: dict, reasons: dict, geo: Geometry) -> tuple[dict, dict]:
+    """({cell: ground height} for the cells filled from their neighbours, {cell: reason} for every other
+    walkable cell without a floor, `reasons` included)."""
+    walk = geo.walk
+    filled, why = {}, dict(reasons)
+    tol = hc.FILL_TOL_M * DM
+    for cell in np.flatnonzero(walk.ravel()).tolist():
+        if cell in floors or cell in why:
+            continue
+        near, front = {cell}, {cell}
+        for _ in range(hc.FILL_R):
+            front = {n for c in front for n in _neighbours(c, walk)} - near
+            near |= front
+        known = [c for c in near if c in floors]
+        heights = [h for c in known for h, _ in floors[c]]
+        if len(known) < hc.FILL_MIN_NEIGHBOURS:
+            why[cell] = NO_SAMPLES
+        elif max(heights) - min(heights) > tol:
+            why[cell] = NEIGHBOURS_DISAGREE     # a drop or a second floor nearby: never averaged
+        else:
+            filled[cell] = int(round(float(np.median(heights))))
+    return filled, why
+
+
+def _floor_of(heights: list[int], z: int) -> int | None:
+    """The index of the floor a stand at z is on: the nearest within FLOOR_TOL_M."""
+    best = min(range(len(heights)), key=lambda i: abs(heights[i] - z), default=None)
+    return best if best is not None and abs(heights[best] - z) <= hc.FLOOR_TOL_M * DM else None
+
+
+def walked(found: list[Stand], heights: dict) -> dict:
+    """{(cell a, floor a, cell b, floor b): the rounds it was walked in}: a to b, neighbouring cells, from
+    the cells one stand passes through and from one stand to the same player's next within CONNECT_S."""
+    seen: dict[tuple, set] = defaultdict(set)
+
+    def note(a: int, za: int, b: int, zb: int, rnd: int) -> None:
+        ay, ax = divmod(a, GRID)
+        by, bx = divmod(b, GRID)
+        if a == b or abs(ay - by) > 1 or abs(ax - bx) > 1 or a not in heights or b not in heights:
+            return
+        fa, fb = _floor_of(heights[a], za), _floor_of(heights[b], zb)
+        if fa is not None and fb is not None:
+            seen[(a, fa, b, fb)].add(rnd)
+
+    previous: Stand | None = None
+    for s in sorted(found, key=lambda s: (s.round, s.slot, s.t0)):
+        for a, b in zip(s.cells, s.cells[1:]):
+            note(a, s.z, b, s.z, s.round)
+        if previous is not None and (previous.round, previous.slot) == (s.round, s.slot) \
+                and 0 <= s.t0 - previous.t1 <= hc.CONNECT_S:
+            note(previous.cells[-1], previous.z, s.cells[0], s.z, s.round)
+        previous = s
+    return seen
+
+
+def connect(heights: dict, seen: dict, geo: Geometry) -> np.ndarray:
+    """The directed walks between resolved floors, K x 4 (cell a, floor a, cell b, floor b), sorted."""
+    walk = geo.walk
+    step = hc.STEP_UP_M * DM
+    edges = set()
+    for a, floors_a in heights.items():
+        for b in _neighbours(a, walk):
+            if b not in heights:
+                continue
+            for i, ha in enumerate(floors_a):
+                for j, hb in enumerate(heights[b]):
+                    # PROVISIONAL(D4): the spec infers this between ground floors; here between any two
+                    # floors, so a bridge is walkable along itself where few rounds walked it.
+                    if abs(ha - hb) <= step:
+                        edges.add((a, i, b, j))
+                    elif len(seen.get((a, i, b, j), ())) >= hc.CONNECT_MIN_ROUNDS:
+                        edges.add((a, i, b, j))
+                        if hb > ha:
+                            edges.add((b, j, a, i))     # climbed: what is climbed can be dropped from
+    return np.array(sorted(edges), np.int32).reshape(-1, 4)
+
+
+def _bbox(cells: np.ndarray) -> list[int]:
+    ys, xs = np.divmod(cells, GRID)
+    return [int(xs.min()) * CELL, int(ys.min()) * CELL, int(xs.max() + 1) * CELL - 1, int(ys.max() + 1) * CELL - 1]
+
+
+def unresolved_areas(why: dict) -> list[dict]:
+    """The unresolved cells as areas (8-connected), largest first: size, bounding box in minimap px, and
+    why (each reason's cell count)."""
+    mask = np.zeros(GRID * GRID, bool)
+    mask[list(why)] = True
+    lab, n = ndimage.label(mask.reshape(GRID, GRID), np.ones((3, 3), bool))
+    lab = lab.ravel()
+    out = []
+    for k in range(1, n + 1):
+        cells = np.flatnonzero(lab == k)
+        out.append({"cells": int(len(cells)), "bbox": _bbox(cells),
+                    "why": dict(Counter(why[c] for c in cells.tolist()).most_common())})
+    out.sort(key=lambda a: (-a["cells"], a["bbox"]))
+    return out
+
+
+def air_only(heights: dict, why: dict, edges: np.ndarray, geo: Geometry) -> list[dict]:
+    """Floors no walk reaches from the map's main ground: groups of floors cut off from the largest
+    connected piece, counting an unresolved cell as joined to every floor around it (as the engine walks
+    it). Ropes, boosts and teleports aren't connections, so what only they reach is listed here."""
+    ids: dict[tuple, int] = {}
+    for cell, floors in heights.items():
+        for i in range(len(floors)):
+            ids[(cell, i)] = len(ids)
+    for cell in why:
+        ids[(cell, -1)] = len(ids)
+    if not ids:
+        return []
+    pairs = [(ids[(a, i)], ids[(b, j)]) for a, i, b, j in edges.tolist()]
+    for cell in why:
+        for other in _neighbours(cell, geo.walk):
+            if other in heights:
+                pairs += [(ids[(cell, -1)], ids[(other, i)]) for i in range(len(heights[other]))]
+            elif other in why:
+                pairs.append((ids[(cell, -1)], ids[(other, -1)]))
+    rows, cols = zip(*pairs) if pairs else ((), ())
+    graph = coo_matrix((np.ones(len(pairs), bool), (rows, cols)), shape=(len(ids), len(ids)))
+    _, label = connected_components(graph, directed=False)
+    main = int(np.argmax(np.bincount(label)))
+    groups: dict[int, list[tuple]] = defaultdict(list)
+    for key, node in ids.items():
+        if label[node] != main and key[1] >= 0:
+            groups[int(label[node])].append(key)
+    out = []
+    for keys in groups.values():
+        cells = np.array(sorted({c for c, _ in keys}))
+        zs = [heights[c][i] for c, i in keys]
+        out.append({"cells": int(len(cells)), "bbox": _bbox(cells), "z": [int(min(zs)), int(max(zs))]})
+    out.sort(key=lambda a: (-a["cells"], a["bbox"]))
+    return out
+
+
+def readiness(supported: np.ndarray, unresolved: np.ndarray, count: np.ndarray, n_walk: int) -> tuple[float, list]:
+    """(the supported share of walkable cells, why the map is below the bar: empty when it is ready).
+    Flat GRID*GRID arrays: cells with a supported floor, unresolved cells, floors per cell."""
+    by_two = ndimage.binary_dilation((count >= 2).reshape(GRID, GRID), np.ones((3, 3), bool)).ravel()
+    lab, _ = ndimage.label(unresolved.reshape(GRID, GRID), np.ones((3, 3), bool))
+    lab = lab.ravel()
+    sizes = np.bincount(lab)
+    blocking = [int(sizes[k]) for k in set(lab[unresolved & by_two].tolist()) if sizes[k] > hc.UNRESOLVED_MAX]
+    share = float(supported.sum()) / n_walk if n_walk else 0.0
+    not_ready = []
+    if share < hc.HEIGHT_SUPPORTED_MIN:
+        not_ready.append(f"supported {share:.1%} is under {hc.HEIGHT_SUPPORTED_MIN:.0%}")
+    if blocking:
+        not_ready.append(f"{len(blocking)} unresolved area(s) larger than {hc.UNRESOLVED_MAX} cells touch a cell "
+                         f"with two floors (largest {max(blocking)} cells)")
+    return share, not_ready
+
+
+def build(rounds: list, geo: Geometry) -> HeightBuild:
+    """A map's heights from `rounds` = [(match id, round number, blob), ...]. Never refuses: `ready` says
+    whether the map reaches the bar, and `report["not_ready"]` why not."""
+    found, round_match, counts = all_stands(rounds, geo)
+    floors, reasons = cell_floors(found, round_match, geo)
+    filled, why = fill(floors, reasons, geo)
+    heights = {cell: [h for h, _ in got] for cell, got in floors.items()}
+    heights.update({cell: [h] for cell, h in filled.items()})
+    edges = connect(heights, walked(found, heights), geo)
+    walk = geo.walk.ravel()
+    n_walk = int(walk.sum())
+    origin = min((h for hs in heights.values() for h in hs), default=0)
+    asset_floors = -np.ones((GRID * GRID, hc.MAX_FLOORS), np.int16)
+    spread = np.zeros((GRID * GRID, hc.MAX_FLOORS), np.int16)
+    supported = np.zeros(GRID * GRID, bool)
+    unresolved = np.zeros(GRID * GRID, bool)
+    for cell, got in floors.items():
+        supported[cell] = True
+        for i, (h, s) in enumerate(got):
+            asset_floors[cell, i], spread[cell, i] = h - origin, s
+    for cell, h in filled.items():
+        asset_floors[cell, 0] = h - origin
+    unresolved[list(why)] = True
+    count = (asset_floors >= 0).sum(1)
+    areas = unresolved_areas(why)
+    share, not_ready = readiness(supported, unresolved, count, n_walk)
+    visited = counts.pop("visited") & walk
+    pairs = set(map(tuple, edges.tolist()))
+    report = {
+        "walkable_cells": n_walk, "visited_cells": int(visited.sum()), "supported_cells": int(supported.sum()),
+        "filled_cells": len(filled), "unresolved_cells": len(why),
+        "visited": round(float(visited.sum()) / n_walk, 4) if n_walk else 0.0, "supported": round(share, 4),
+        "cells_2_floors": int((count == 2).sum()), "cells_3_floors": int((count == 3).sum()),
+        "refused_cells": sum(1 for r in why.values() if r == TOO_MANY),
+        "unresolved_why": dict(Counter(why.values()).most_common()), "unresolved_areas": areas,
+        "air_only": air_only(heights, why, edges, geo), "edges": int(len(edges)),
+        "one_way_edges": sum(1 for a, i, b, j in pairs if (b, j, a, i) not in pairs),
+        "origin_z": int(origin), **counts, "ready": not not_ready, "not_ready": not_ready,
+    }
+    meta = {"origin_z": int(origin), "stands": counts["stands"], "rounds": counts["rounds"],
+            "matches": counts["matches"],
+            "walk_sha": hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12]}
+    asset = hc.HeightAsset(asset_floors.reshape(GRID, GRID, hc.MAX_FLOORS), spread.reshape(GRID, GRID, hc.MAX_FLOORS),
+                           supported.reshape(GRID, GRID), unresolved.reshape(GRID, GRID), edges, meta)
+    return HeightBuild(asset, report, found, why, not not_ready)
