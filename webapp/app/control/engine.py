@@ -773,7 +773,6 @@ def collapse_states(geo: Geometry, state: np.ndarray) -> np.ndarray:
     whose floors all agree has that state; otherwise it is contested, CONTESTED_ACTIVE when any of its
     floors is active for either team (or contested-active). Nobody's against held counts as disagreeing.
     A flat map's states are returned as they are."""
-    # PROVISIONAL(D6): the two-floor site picture rule.
     if geo.n == GRID * GRID:
         return state
     out = state[: GRID * GRID].copy()
