@@ -35,6 +35,33 @@ def test_segment_arrays_must_match():
         fmt.encode_segment(0.0, [], [], [])
 
 
+def test_a_segment_with_heights_round_trips_and_old_readers_see_four_values():
+    segment = fmt.encode_segment(1.25, [10, 12, 15], [20, 20, 19], [90, 91, 359], z=[30, 30, 27])
+    assert segment["z"] == [30, 0, -3]
+    assert fmt.decode_segment_z(segment, hz=4) == [(1.25, 10, 20, 90, 30), (1.5, 12, 20, 91, 30),
+                                                   (1.75, 15, 19, 359, 27)]
+    assert fmt.decode_segment(segment, hz=4) == [(1.25, 10, 20, 90), (1.5, 12, 20, 91), (1.75, 15, 19, 359)]
+
+
+def test_a_segment_without_heights_decodes_as_before_with_no_z():
+    segment = fmt.encode_segment(1.25, [10, 12], [20, 20], [90, 91])
+    assert "z" not in segment, "a missing height is a missing key, never 0"
+    assert fmt.decode_segment_z(segment, hz=4) == [(1.25, 10, 20, 90, None), (1.5, 12, 20, 91, None)]
+    assert fmt.decode_segment(segment, hz=4) == [(1.25, 10, 20, 90), (1.5, 12, 20, 91)]
+
+
+def test_a_segments_heights_must_cover_every_sample():
+    with pytest.raises(fmt.FormatError):
+        fmt.encode_segment(0.0, [1, 2], [1, 2], [1, 2], z=[5])
+    with pytest.raises(fmt.FormatError):
+        fmt.decode_segment_z({"t0": 0.0, "u": [1, 1], "v": [1, 1], "yaw": [0, 0], "z": [5]}, hz=4)
+
+
+def test_the_recipe_is_revision_11():
+    assert fmt.CONDENSE_REVISION == 11 and fmt.FORMAT_VERSION == 1
+    assert ".c11.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
+
+
 def _blob(**extra):
     blob = {"v": 1, "round": 1, "map": "Ascent", "hz": 16, "t_start": 0.0, "t_end": 1.0, "players": [],
             "tracks": {}, "alive": {}, "kills": [], "plant": None, "defuse": None, "util": []}
