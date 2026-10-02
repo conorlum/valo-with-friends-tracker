@@ -14,6 +14,7 @@ import pytest
 
 from app.control import engine as ce
 from app.control import geometry as cg
+from app.control import heights as hc
 from app.control.encode import checkpoint_ticks, encode_data, encode_summary
 from app.replays import control_format as cf
 from tests.replays.control_toys import blob, door_hall
@@ -24,8 +25,8 @@ from tests.replays.control_toys import blob, door_hall
 # 2: space taken, what each team knew (KNEW_*) and remembered ground (D6: DECAY_MPS). Unreleased,
 # so re-pinned in place. 3: barriers, backfill and unknown (UNKNOWN_MPS; DECAY_MPS and BARRIER_GRACE_S
 # removed), presence (PRESENCE_M), rifle-walk UNKNOWN_MPS, GAP_SEAL_M and DROP_PIECE_CELLS. Unreleased, so
-# re-pinned in place.
-PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "2499e07080176dae"}
+# re-pinned in place. The digest also covers the height constants (app/control/heights.py) from 2026-10-02.
+PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745"}
 
 
 def _constants_digest() -> str:
@@ -43,7 +44,7 @@ def _constants_digest() -> str:
         return value
 
     constants = {}
-    for module in (ce, cg):
+    for module in (ce, cg, hc):
         for name, value in sorted(vars(module).items()):
             if name.isupper() and not name.startswith("_") and name != "CONTROL_REVISION":
                 if isinstance(value, (int, float, str, bool, tuple, list, dict, set, frozenset, np.ndarray)):

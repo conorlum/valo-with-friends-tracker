@@ -184,3 +184,51 @@ def reference_rounds() -> dict:
                                             5: still("B", 400, 200, 180), 6: walk("B", 380, 270, 270, 270, 180)},
                                            t_end=10.0), link)
     return out
+
+
+# ---------------------------------------------------------------- heights (control heights, parts 3-4)
+
+TOY_Z0 = 37          # world decimetres of the toys' "0 m": an offset, so nothing can assume the origin is 0
+
+
+def z_dm(z_m: float) -> int:
+    return TOY_Z0 + int(round(z_m * 10))
+
+
+def z_track(points, t0: float = 0.0, t1: float = 30.0, hz: int = HZ) -> list[dict]:
+    """`track` with heights: `points` = [(t, x px, y px, yaw, z m), ...], z linear between points and
+    stored as the condenser stores it (revision 11: whole decimetres of world z, delta-encoded)."""
+    [segment] = track([p[:4] for p in points], t0, t1, hz)
+    pts = sorted(points)
+    ts = t0 + np.arange(len(segment["u"])) / hz
+    z = [z_dm(v) for v in np.interp(ts, [p[0] for p in pts], [p[4] for p in pts])]
+    segment["z"] = [z[0], *(b - a for a, b in zip(z, z[1:]))]
+    return [segment]
+
+
+def height_blob(players: dict, *, t_end: float = 30.0, util=(), deaths=None, n: int = 1) -> dict:
+    """`blob` whose players carry heights: {slot: (side, [(t, x, y, yaw, z m), ...])}. A player given
+    four-value points has no z (a round from before revision 11)."""
+    out = blob({s: (side, [p[:4] for p in pts]) for s, (side, pts) in players.items()}, t_end=t_end, util=util,
+               deaths=deaths)
+    out["round"] = n
+    for s, (_, pts) in players.items():
+        if len(pts[0]) == 5:
+            out["tracks"][str(s)] = z_track(pts, 0.0, t_end)
+    return out
+
+
+def standing(x: float, y: float, z_m: float, side: str = "A", yaw: int = 0):
+    """A player who stands still at a height for the whole round."""
+    return side, [(0.0, x, y, yaw, z_m)]
+
+
+def height_rounds(make, matches: int = 2, rounds: int = 3) -> list:
+    """[(match id, round number, blob)] for the height build: `make(match index, round number)` gives
+    each round's players ({slot: (side, points)}) or a whole blob."""
+    out = []
+    for m in range(matches):
+        for n in range(1, rounds + 1):
+            made = make(m, n)
+            out.append((f"match-{m}", n, made if "tracks" in made else height_blob(made, t_end=10.0, n=n)))
+    return out
