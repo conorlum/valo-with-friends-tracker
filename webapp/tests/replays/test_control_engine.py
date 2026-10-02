@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from app.control import engine as ce
+from app.control import topology
 from app.control.geometry import GRID, Wall, cast
 from app.services.replay_view import alive_steps
 from tests.replays.control_toys import blob, door_hall, midwall_hall, open_hall, two_rooms, uv
@@ -163,7 +164,7 @@ def test_the_entry_contests_what_they_see_and_their_way_back():
     entry = tk.holders[5]
     watched = base["cl"]["A"][2]
     assert watched[entry.cell], "the entry stands in A's vision"
-    target = np.zeros((GRID, GRID), bool)
+    target = np.zeros(geo.n, bool)   # per node, as the engine keeps everything
     for mask, _, slots in base["fills"]["B"].comps:
         if any(s != 5 for s in slots):
             target |= mask
@@ -458,7 +459,8 @@ def test_the_start_is_shared_by_walking_distance():
     geo = _barrier_hall()
     area = geo.walk & ~geo.barrier
     area[:, geo.cell_of_px(256, 200) % GRID:] = False
-    shares = ce._share_by_walk(area, {0: geo.cell_of_px(120, 120), 1: geo.cell_of_px(120, 280)})
+    area = area.ravel()                      # the engine works on flat node arrays; the topology knows the grid
+    shares = ce._share_by_walk(area, {0: geo.cell_of_px(120, 120), 1: geo.cell_of_px(120, 280)}, topology.of(geo))
     assert shares[0].ravel()[geo.cell_of_px(130, 110)] and shares[1].ravel()[geo.cell_of_px(130, 290)]
     assert not (shares[0] & shares[1]).any() and ((shares[0] | shares[1]) == area).all()
 

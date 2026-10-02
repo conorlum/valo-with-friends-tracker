@@ -65,7 +65,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 from scipy import ndimage
-
+from app.control import topology
 from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, Wall, cast, visibility, wall_blocks
 from app.replays.control_format import CONTROL_REVISION  # noqa: F401 - stdlib-only, so the web app can read it
 
@@ -427,7 +427,7 @@ class RoundInputs:
             c = geo.cell_of_px(x, y)
             near = ((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) < r_px ** 2
             if geo.row_of[c] >= 0:
-                row = np.unpackbits(geo.rows[geo.row_of[c]])[: GRID * GRID].astype(bool)
+                row = np.unpackbits(geo.rows[geo.row_of[c]])[: geo.n].astype(bool)
                 self.watchers.append(Watcher("area", by, t0, t1, cells=np.flatnonzero(near & row)))
         elif key in DRONES and e.get("path"):
             half, rng = DRONES[key]
@@ -524,12 +524,12 @@ class Holder:
 
 @dataclass
 class Fill:
-    free: np.ndarray                             # GRID x GRID
-    comps: list = field(default_factory=list)    # (mask GRID x GRID, seen flat or None, slots in it)
+    free: np.ndarray                             # flat, per node
+    comps: list = field(default_factory=list)    # (mask flat, seen flat or None, slots in it)
     seen: np.ndarray = None                      # flat; None on a tick with unknown (nothing reads it)
 
     def safe(self, walk: np.ndarray) -> np.ndarray:
-        return walk & ~self.seen.reshape(GRID, GRID) & ~self.free
+        return walk & ~self.seen & ~self.free
 
 
 def sector(geo: Geometry, x: float, y: float, yaw: float, half: float) -> np.ndarray:
@@ -565,9 +565,9 @@ def seen_from(geo: Geometry, src: np.ndarray, smokes: list, skip: np.ndarray | N
     `skip` (flat) marks targets that needn't be rechecked (the free space itself)."""
     src = src[geo.row_of[src] >= 0]
     if not len(src):
-        return np.zeros(GRID * GRID, bool)
+        return np.zeros(geo.n, bool)
     packed = geo.rows[geo.row_of[src]]
-    static = np.unpackbits(np.bitwise_or.reduce(packed, axis=0))[: GRID * GRID].astype(bool)
+    static = np.unpackbits(np.bitwise_or.reduce(packed, axis=0))[: geo.n].astype(bool)
     if not smokes:
         return static
     cand = static & ~skip if skip is not None else static.copy()
@@ -578,7 +578,7 @@ def seen_from(geo: Geometry, src: np.ndarray, smokes: list, skip: np.ndarray | N
     q = geo.centres[targets]
     seen_t = np.zeros(len(targets), bool)
     for lo in range(0, len(src), 256):
-        rows = np.unpackbits(packed[lo:lo + 256], axis=1)[:, : GRID * GRID][:, targets].astype(bool)
+        rows = np.unpackbits(packed[lo:lo + 256], axis=1)[:, : geo.n][:, targets].astype(bool)
         p = geo.centres[src[lo:lo + 256]]
         for smoke in smokes:
             rows &= ~smoke_blocks(p, q, smoke)
@@ -611,6 +611,7 @@ class Tick:
 
     def __init__(self, rnd: RoundInputs, t: float, timings: dict | None = None):
         geo = self.geo = rnd.geo
+        self.topo = topology.of(geo)
         self.rnd, self.t = rnd, t
         self.smokes = rnd.smokes_at(t)
         timings = timings if timings is not None else defaultdict(float)
@@ -631,7 +632,7 @@ class Tick:
             cell = geo.cell_of_px(x, y)
             mode = rnd.movement(s, t, p)
             if s in using:
-                raw = np.zeros(GRID * GRID, bool)  # in a camera or drone: their own view doesn't count
+                raw = np.zeros(geo.n, bool)  # in a camera or drone: their own view doesn't count
             else:
                 raw = cast(geo, x, y, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes)
             body = raw.copy()
@@ -641,7 +642,7 @@ class Tick:
                 r = NEARSIGHT_RADIUS_M / geo.m_per_px
                 body &= ((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) < r * r
             if _during(rnd.downgraded[s], t):
-                active = np.zeros(GRID * GRID, bool)
+                active = np.zeros(geo.n, bool)
             else:
                 active = body & sector(geo, x, y, yaw, CONE_HALF[mode])
             passive = body & ~active
@@ -686,10 +687,10 @@ class Tick:
         (8-connected) and in their line of sight (smoke-aware, all round them): anything that blocks
         sight stops the bubble (the user's call, 2026-10-01)."""
         geo = self.geo
-        start = np.zeros((GRID, GRID), bool)
-        start.flat[cell] = True
+        start = np.zeros(geo.n, bool)
+        start[cell] = True
         steps = int(math.ceil(PRESENCE_M / geo.cell_m)) + 1
-        reach = ndimage.binary_dilation(start, EIGHT, iterations=steps, mask=geo.walk).ravel()
+        reach = self.topo.dilate(start, eight=True, iterations=steps, within=geo.walk_n)
         r = PRESENCE_M / geo.m_per_px
         near = reach & (((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) <= r * r)
         sight = seen_from(geo, np.array([cell]), self.smokes)
@@ -717,8 +718,8 @@ class Tick:
 
     def _pocket(self, side: str, removed: int | None) -> np.ndarray:
         other = "B" if side == "A" else "A"
-        own = np.zeros(GRID * GRID, bool)
-        enemy = np.zeros(GRID * GRID, bool)
+        own = np.zeros(self.geo.n, bool)
+        enemy = np.zeros(self.geo.n, bool)
         for h in self.team(side, removed):
             own |= h.active | h.passive | h.watch
         for e in self.team(other, removed):
@@ -726,41 +727,41 @@ class Tick:
         extra = self.extra_passive.get(other) if removed is None else None
         if extra is not None:
             enemy |= extra
-        lab, _ = ndimage.label(self.geo.walk & ~own.reshape(GRID, GRID))
-        sources = {int(lab.flat[e.cell]) for e in self.team(other, removed)}
+        lab = self.topo.label(self.geo.walk_n & ~own)
+        sources = {int(lab[e.cell]) for e in self.team(other, removed)}
         seed = self.seeds.get(other) if removed is None else None
         if seed is not None:
-            sources |= set(np.unique(lab.ravel()[seed]).tolist())
+            sources |= set(np.unique(lab[seed]).tolist())
         reach = self._reach(lab, sources - {0})
-        pocket = ((lab > 0) & ~np.isin(lab, list(reach))).ravel() & ~enemy
+        pocket = ((lab > 0) & ~np.isin(lab, list(reach))) & ~enemy
         if self.unknown is not None:
             pocket &= ~self.unknown_for(side, removed)   # never where an enemy could be (docs/map-control-unknown-plan.md)
         return pocket
 
     def _backfill_shares(self, side: str, removed: int | None) -> dict[int, np.ndarray]:
-        pocket = self._pocket(side, removed).reshape(GRID, GRID)
+        pocket = self._pocket(side, removed)
         if not pocket.any():
             return {}
-        owner = np.full((GRID, GRID), -1, np.int16)
+        owner = np.full(self.geo.n, -1, np.int16)
         fronts = {}
         for h in sorted(self.team(side, removed), key=lambda h: h.slot):
-            first = ndimage.binary_dilation(h.active.reshape(GRID, GRID)) & pocket & (owner < 0)
+            first = self.topo.dilate(h.active) & pocket & (owner < 0)
             if first.any():
                 owner[first] = h.slot
                 fronts[h.slot] = first
         while fronts:
             grown = {}
             for slot, front in sorted(fronts.items()):
-                new = ndimage.binary_dilation(front) & pocket & (owner < 0)
+                new = self.topo.dilate(front) & pocket & (owner < 0)
                 if new.any():
                     owner[new] = slot
                     grown[slot] = new
             fronts = grown
-        return {int(s): (owner == s).ravel() for s in np.unique(owner[owner >= 0]).tolist()}
+        return {int(s): owner == s for s in np.unique(owner[owner >= 0]).tolist()}
 
     def _watch(self, s: int, t: float) -> np.ndarray:
         geo, rnd = self.geo, self.rnd
-        watch = np.zeros(GRID * GRID, bool)
+        watch = np.zeros(geo.n, bool)
         for w in rnd.watchers:
             if w.by != s or not (w.t0 <= t < w.t1):
                 continue
@@ -795,7 +796,7 @@ class Tick:
         return [h for h in self.holders.values() if h.team == side and h.slot != removed]
 
     def claims(self, side: str, removed: int | None):
-        z = np.zeros(GRID * GRID, bool)
+        z = np.zeros(self.geo.n, bool)
         active, passive, raw = z.copy(), z.copy(), z.copy()
         # in the counterfactual, the unknown that pours in also ends teammates' remembered ground (rule 4)
         eaten = self.unknown_for(side, removed) if self.unknown is not None and removed is not None else None
@@ -822,7 +823,7 @@ class Tick:
             return set(start)
         edges: dict[int, set[int]] = defaultdict(set)
         for a, b, one_way in links:
-            la, lb = int(lab.flat[a]), int(lab.flat[b])
+            la, lb = int(lab[a]), int(lab[b])
             if la and lb and la != lb:
                 edges[la].add(lb)
                 if not one_way:
@@ -836,12 +837,12 @@ class Tick:
         return seen
 
     def _open(self, side: str, watched: np.ndarray, removed: int | None) -> np.ndarray:
-        open_ = self.geo.walk & ~watched
+        open_ = self.geo.walk_n & ~watched
         for h in self.team(side, removed):
-            open_.flat[h.cell] = True
+            open_[h.cell] = True
         seed = self.seeds.get(side) if removed is None else None
         if seed is not None:
-            open_ |= seed.reshape(GRID, GRID)
+            open_ |= seed
         return open_
 
     def fill(self, side: str, blocked_by: np.ndarray, removed: int | None) -> Fill | None:
@@ -852,14 +853,14 @@ class Tick:
             seed = None
         if not hs and seed is None:
             return None
-        watched = blocked_by.reshape(GRID, GRID)
-        lab, _ = ndimage.label(self._open(side, watched, removed))
-        free = np.zeros((GRID, GRID), bool)
+        watched = blocked_by
+        lab = self.topo.label(self._open(side, watched, removed))
+        free = np.zeros(self.geo.n, bool)
         by_reach: dict[frozenset, list[int]] = defaultdict(list)
         for h in hs:
-            by_reach[frozenset(self._reach(lab, {int(lab.flat[h.cell])}))].append(h.slot)
+            by_reach[frozenset(self._reach(lab, {int(lab[h.cell])}))].append(h.slot)
         if seed is not None:   # an unknown enemy's possible positions: a source with no player in it
-            for label in set(np.unique(lab.ravel()[seed]).tolist()) - {0}:
+            for label in set(np.unique(lab[seed]).tolist()) - {0}:
                 # slot -1: someone unseen, so an entry's way back (compose) can lead here too
                 by_reach[frozenset(self._reach(lab, {label}))].append(-1)
         # what the fill sees is the old Safe (Fill.safe); with unknown, Safe is unknown_safe and nothing
@@ -872,7 +873,7 @@ class Tick:
             comps.append((mask, self.comp_seen(mask, watched) if need_seen else None, slots))
         seen = None
         if need_seen:
-            seen = np.zeros(GRID * GRID, bool)
+            seen = np.zeros(self.geo.n, bool)
             for _, s, _ in comps:
                 seen |= s
         return Fill(free, comps, seen)
@@ -881,11 +882,11 @@ class Tick:
         """Q73: what a free component sees, from its whole boundary (every free cell next to anything
         not free), smoke-aware. The frontier (next to the team's vision) sees most of it; the rest of
         the boundary rechecks only the targets the frontier missed."""
-        walk = self.geo.walk
-        edge = mask & ndimage.binary_dilation(watched & walk, EIGHT)
-        first = seen_from(self.geo, np.flatnonzero(edge), self.smokes, skip=mask.ravel())
-        rim = mask & ndimage.binary_dilation(~mask, EIGHT) & ~edge
-        return first | seen_from(self.geo, np.flatnonzero(rim), self.smokes, skip=mask.ravel() | first)
+        walk = self.geo.walk_n
+        edge = mask & self.topo.dilate(watched & walk, eight=True)
+        first = seen_from(self.geo, np.flatnonzero(edge), self.smokes, skip=mask)
+        rim = self.topo.edge_out(mask) & ~edge
+        return first | seen_from(self.geo, np.flatnonzero(rim), self.smokes, skip=mask | first)
 
     def unknown_for(self, side: str, removed: int | None = None) -> np.ndarray:
         """`side`'s unknown at this tick, or in the counterfactual without `removed` when they are on
@@ -902,13 +903,13 @@ class Tick:
         is not theirs to hold."""
         key = (side, removed)
         if key not in self._ucf:
-            walk = self.geo.walk.ravel()
-            others = np.zeros(GRID * GRID, bool)
+            walk = self.geo.walk_n
+            others = np.zeros(self.geo.n, bool)
             for h in self.team(side, removed):
                 others |= self._live_of(h)
             held = others | self._live_of(self.holders[removed])
             src = self.unknown[side].copy()
-            shut = np.zeros(GRID * GRID, bool) if self.sealed is None else self.sealed.copy()
+            shut = np.zeros(self.geo.n, bool) if self.sealed is None else self.sealed.copy()
             for e in self.holders.values():
                 if e.team != side:
                     src[e.cell] = True
@@ -927,11 +928,11 @@ class Tick:
 
     def _flood(self, src: np.ndarray, room: np.ndarray) -> np.ndarray:
         """Flat cells of `room` connected (8-connected, and across the map's specials) to `src`."""
-        lab, _ = ndimage.label(room.reshape(GRID, GRID), EIGHT)
-        labels = set(np.unique(lab.ravel()[src & room]).tolist()) - {0}
+        lab = self.topo.label(room, eight=True)
+        labels = set(np.unique(lab[src & room]).tolist()) - {0}
         if not labels:
-            return np.zeros(GRID * GRID, bool)
-        return np.isin(lab, list(self._reach(lab, labels))).ravel()
+            return np.zeros(self.geo.n, bool)
+        return np.isin(lab, list(self._reach(lab, labels)))
 
     def unknown_safe(self, side: str, removed: int | None = None) -> np.ndarray:
         """Safe (docs/map-control-unknown-plan.md): walkable cells outside `side`'s unknown that no cell of
@@ -940,34 +941,22 @@ class Tick:
         unk_flat = self.unknown_for(side, removed)
         key = side if unk_flat is self.unknown[side] else (side, removed)
         if key not in self._usafe:
-            walk = self.geo.walk
-            unk = unk_flat.reshape(GRID, GRID)
+            walk = self.geo.walk_n
+            unk = unk_flat
             if not unk.any():
-                self._usafe[key] = walk.ravel().copy()
+                self._usafe[key] = walk.copy()
             else:
-                watched = np.zeros(GRID * GRID, bool)
+                watched = np.zeros(self.geo.n, bool)
                 for h in self.team(side, removed):
                     watched |= h.active | h.passive | h.watch
-                seen = self.comp_seen(unk, watched.reshape(GRID, GRID))
-                self._usafe[key] = (walk & ~unk).ravel() & ~seen
+                seen = self.comp_seen(unk, watched)
+                self._usafe[key] = (walk & ~unk) & ~seen
         return self._usafe[key]
 
     def dist_from(self, h: Holder) -> np.ndarray:
         """Walking distance (8-connected cells) from a holder, cached for the tick."""
         if h.slot not in self._dist:
-            walk = self.geo.walk
-            dist = np.full((GRID, GRID), -1, np.int32)
-            front = np.zeros((GRID, GRID), bool)
-            front.flat[h.cell] = True
-            seen = front.copy()
-            d = 0
-            while front.any():
-                dist[front] = d
-                d += 1
-                nxt = ndimage.binary_dilation(front, EIGHT) & walk & ~seen
-                seen |= nxt
-                front = nxt
-            self._dist[h.slot] = dist
+            self._dist[h.slot] = self.topo.dist(h.cell)
         return self._dist[h.slot]
 
     def way_back(self, e: Holder, target: np.ndarray, watched_other: np.ndarray) -> np.ndarray:
@@ -976,26 +965,16 @@ class Tick:
         dist = self.dist_from(e)
         reach = target & (dist >= 0)
         if not reach.any():
-            return np.zeros(GRID * GRID, bool)
+            return np.zeros(self.geo.n, bool)
         d = np.where(reach, dist, np.iinfo(np.int32).max)
-        cur = np.unravel_index(int(np.argmin(d)), d.shape)
-        path = np.zeros((GRID, GRID), bool)
+        cur = int(np.argmin(d))
+        path = np.zeros(self.geo.n, bool)
         path[cur] = True
         while dist[cur] > 0:
-            cy, cx = cur
-            best = None
-            for oy in (-1, 0, 1):
-                for ox in (-1, 0, 1):
-                    ny, nx = cy + oy, cx + ox
-                    if 0 <= ny < GRID and 0 <= nx < GRID and dist[ny, nx] == dist[cur] - 1:
-                        best = (ny, nx)
-                        break
-                if best:
-                    break
-            cur = best
+            cur = self.topo.back(dist, cur)
             path[cur] = True
         width = max(1, round(WAY_BACK_WIDTH_M / self.geo.cell_m))
-        return ndimage.binary_dilation(path, EIGHT, iterations=width).ravel() & watched_other
+        return self.topo.dilate(path, eight=True, iterations=width) & watched_other
 
     # --- the state
 
@@ -1003,7 +982,7 @@ class Tick:
                 stats: dict | None = None) -> dict:
         """The tick's cell states. `removed` drops one player (the counterfactual). With `base` and
         not `full`, fills are reused or extended from the base instead of recomputed."""
-        geo, walk = self.geo, self.geo.walk
+        geo, walk = self.geo, self.geo.walk_n
         stats = stats if stats is not None else defaultdict(int)
         cl = {s: self.claims(s, removed) for s in ("A", "B")}
         fills = {}
@@ -1034,8 +1013,8 @@ class Tick:
                     fills[side] = old
                     stats["own_fill_same"] += 1
                 else:
-                    free = np.zeros((GRID, GRID), bool)
-                    seen = None if old.seen is None else np.zeros(GRID * GRID, bool)
+                    free = np.zeros(geo.n, bool)
+                    seen = None if old.seen is None else np.zeros(geo.n, bool)
                     for m, s, _ in keep:
                         free |= m
                         if seen is not None:
@@ -1047,25 +1026,25 @@ class Tick:
                 if old is None:
                     fills[side] = None
                     continue
-                opened = (base["cl"][other][2] & ~cl[other][2]).reshape(GRID, GRID)
-                if not (opened & ndimage.binary_dilation(old.free, EIGHT)).any():
+                opened = base["cl"][other][2] & ~cl[other][2]
+                if not (opened & self.topo.dilate(old.free, eight=True)).any():
                     fills[side] = old
                     stats["enemy_fill_same"] += 1
                     continue
-                watched = cl[other][2].reshape(GRID, GRID)
-                lab, _ = ndimage.label(self._open(side, watched, removed))
-                labels = self._reach(lab, {int(lab.flat[h.cell]) for h in self.team(side, removed)})
+                watched = cl[other][2]
+                lab = self.topo.label(self._open(side, watched, removed))
+                labels = self._reach(lab, {int(lab[h.cell]) for h in self.team(side, removed)})
                 free = np.isin(lab, list(labels))
                 seen = None
                 if old.seen is not None:   # only without unknown (see `fill`)
                     added = free & ~old.free
-                    edge = added & ndimage.binary_dilation(~free, EIGHT)
-                    seen = old.seen | seen_from(geo, np.flatnonzero(edge), self.smokes, skip=free.ravel())
+                    edge = added & self.topo.dilate(~free, eight=True)
+                    seen = old.seen | seen_from(geo, np.flatnonzero(edge), self.smokes, skip=free)
                 # the components and their players, as `fill` groups them: the entry's way back (Q56)
                 # reads which players share a component (only their seen sets are left out)
                 by_reach: dict[frozenset, list[int]] = defaultdict(list)
                 for h in self.team(side, removed):
-                    by_reach[frozenset(self._reach(lab, {int(lab.flat[h.cell])}))].append(h.slot)
+                    by_reach[frozenset(self._reach(lab, {int(lab[h.cell])}))].append(h.slot)
                 comps = [(np.isin(lab, list(ls)), None, slots) for ls, slots in by_reach.items()]
                 fills[side] = Fill(free, comps, seen)
                 stats["enemy_fill_extended"] += 1
@@ -1073,19 +1052,19 @@ class Tick:
         for side in ("A", "B"):
             other = "B" if side == "A" else "A"
             active, passive, _, _ = cl[side]
-            lv = np.zeros(GRID * GRID, np.int8)
+            lv = np.zeros(geo.n, np.int8)
             lv[passive] = 1
             f_enemy = fills[other]
             if self.unknown is not None:
                 # nobody alive on the side: it holds nothing, Safe included
-                safe = self.unknown_safe(side, removed) if self.team(side, removed) else np.zeros(GRID * GRID, bool)
+                safe = self.unknown_safe(side, removed) if self.team(side, removed) else np.zeros(geo.n, bool)
             else:
-                safe = walk.ravel() if f_enemy is None else f_enemy.safe(walk).ravel()
+                safe = walk if f_enemy is None else f_enemy.safe(walk)
             lv[safe] = np.maximum(lv[safe], 2)
             if removed is None:
-                self._safe[side] = safe & walk.ravel()
+                self._safe[side] = safe & walk
             lv[active] = 3
-            lv[~walk.ravel()] = 0
+            lv[~walk] = 0
             level[side] = lv
         if self.unknown is not None:
             # ground both teams hold only as Safe (neither unknown sees it) is nobody's (the user's call, 2026-10-01)
@@ -1099,8 +1078,8 @@ class Tick:
             is_contested = {h.slot: h.flagged or any(e in self.sees and h.slot in self.sees[e]
                                                      for e in (x.slot for x in self.team(other, removed)))
                             for h in hs}
-            steady = np.zeros(GRID * GRID, bool)
-            fought = np.zeros(GRID * GRID, bool)
+            steady = np.zeros(geo.n, bool)
+            fought = np.zeros(geo.n, bool)
             for h in hs:
                 steady |= h.watch
                 # a seen holder's live lines are fought over; ground they only remember is not (2026-10-01)
@@ -1119,7 +1098,7 @@ class Tick:
             for e in self.team(other, removed):
                 if not watched[e.cell]:
                     continue
-                target = np.zeros((GRID, GRID), bool)
+                target = np.zeros(geo.n, bool)
                 if f_other is not None:
                     comps = f_other.comps or [(f_other.free, None, [x.slot for x in self.team(other, removed)])]
                     for m, _, slots in comps:
@@ -1128,14 +1107,14 @@ class Tick:
                 if not target.any():
                     for x in self.team(other, removed):
                         if x.slot != e.slot:
-                            target.flat[x.cell] = True
+                            target[x.cell] = True
                 if target.any():
                     contested |= self.way_back(e, target, watched)
             # cells lost to a status (Q55): nobody else claims them, so they are fought over
             contested |= cl[side][3] & ~cl[side][2] & (level[side] == 0) & (level[other] == 0)
-        contested &= walk.ravel()
+        contested &= walk
         any_active = (level["A"] == 3) | (level["B"] == 3)
-        state = np.zeros(GRID * GRID, np.uint8)
+        state = np.zeros(geo.n, np.uint8)
         state[level["A"] > 0] = level["A"][level["A"] > 0]
         state[level["B"] > 0] = 3 + level["B"][level["B"] > 0]
         state[contested] = np.where(any_active[contested], CONTESTED_ACTIVE, CONTESTED)
@@ -1152,7 +1131,7 @@ class Tick:
             # backfill on ground the team already holds as Safe stays the team's, credited to nobody
             safe = self._safe.get(side)
             back = {s: m & ~safe if safe is not None else m for s, m in self.backfill(side).items()}
-            none = np.zeros(GRID * GRID, bool)
+            none = np.zeros(self.geo.n, bool)
             n_act = sum(h.active.astype(np.int8) for h in hs)
             n_pas = sum((h.passive | h.watch | back.get(h.slot, none)).astype(np.int8) for h in hs)
             for h in hs:
@@ -1169,14 +1148,14 @@ class Tick:
 def possible_region(geo: Geometry, start: int, watched: np.ndarray, steps: int) -> np.ndarray:
     """Flat cells an enemy last at `start` could be in now: at most `steps` 8-connected moves through
     walkable cells the team doesn't watch (`watched`, flat). `start` itself always counts."""
-    region = np.zeros((GRID, GRID), bool)
-    region.flat[start] = True
+    region = np.zeros(geo.n, bool)
+    region[start] = True
     n = max(0, int(steps))
     if n == 0:   # scipy reads iterations < 1 as "until nothing changes"
-        return region.ravel()
+        return region
     # one masked dilation, n steps (it leaves cells outside the mask as they were: `start` stays)
-    open_ = geo.walk & ~watched.reshape(GRID, GRID)
-    return ndimage.binary_dilation(region, EIGHT, iterations=n, mask=open_).ravel()
+    open_ = geo.walk_n & ~watched
+    return topology.of(geo).dilate(region, eight=True, iterations=n, within=open_)
 
 
 class Knowledge:
@@ -1233,12 +1212,12 @@ class Knowledge:
         # a seen enemy brings their live view only: their remembered ground (D6) is theirs to know
         holders = {s: h if h.team == self.side else replace(h, passive=h.body & ~h.active)
                    for s, h in tick.holders.items() if h.team == self.side or s in seen}
-        watched = np.zeros(GRID * GRID, bool)
+        watched = np.zeros(geo.n, bool)
         for h in tick.holders.values():
             if h.team == self.side:
                 watched |= h.active | h.passive | h.watch
-        seed = np.zeros(GRID * GRID, bool)
-        remembered = np.zeros(GRID * GRID, bool)
+        seed = np.zeros(geo.n, bool)
+        remembered = np.zeros(geo.n, bool)
         for s, team in self.rnd.team.items():
             if team != self.enemy or s in seen or not self.rnd.alive(s, t):
                 continue
@@ -1271,31 +1250,31 @@ def barrier_start(geo: Geometry, tick) -> dict[str, tuple[np.ndarray, dict[int, 
     (the paint has a gap) is left out and counted; no paint, no start ground."""
     if geo.barrier is None:
         return {}
-    open_ = geo.walk & ~geo.barrier
-    regions, _ = ndimage.label(open_)
+    topo = topology.of(geo)
+    barrier = geo.to_nodes(geo.barrier.ravel())
+    open_ = geo.walk_n & ~barrier
+    regions = topo.label(open_)
     out = {}
     for side in ("A", "B"):
-        hs = [h for h in tick.holders.values() if h.team == side and open_.ravel()[h.cell]]
-        ids = {int(regions.ravel()[h.cell]) for h in hs}
+        hs = [h for h in tick.holders.values() if h.team == side and open_[h.cell]]
+        ids = {int(regions[h.cell]) for h in hs}
         if not hs:
             continue
         starts = {h.slot: h.cell for h in hs}
         # a player pressed against a barrier can stand on a line cell: they start from the
         # neighbouring open cell in their teammates' ground
         for h in tick.holders.values():
-            if h.team == side and h.slot not in starts and geo.barrier.ravel()[h.cell]:
-                y, x = divmod(h.cell, GRID)
-                for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1),
-                               (y - 1, x - 1), (y - 1, x + 1), (y + 1, x - 1), (y + 1, x + 1)):
-                    if 0 <= ny < GRID and 0 <= nx < GRID and int(regions[ny, nx]) in ids:
-                        starts[h.slot] = ny * GRID + nx
+            if h.team == side and h.slot not in starts and barrier[h.cell]:
+                for near in topo.around(h.cell):
+                    if int(regions[near]) in ids:
+                        starts[h.slot] = near
                         break
         area = np.isin(regions, list(ids))
-        if any(area.ravel()[e.cell] for e in tick.holders.values() if e.team != side):
+        if any(area[e.cell] for e in tick.holders.values() if e.team != side):
             # the paint has a gap: this side's ground reaches an enemy's start, so it means nothing
             tick.rnd.missing["barrier paint leaks (no start ground)"] += 1
             continue
-        out[side] = (area.ravel(), starts)
+        out[side] = (area, starts)
     return out
 
 
@@ -1321,7 +1300,8 @@ class Unknown:
 
     def __init__(self, geo: Geometry):
         self.geo = geo
-        self.cells = {"A": np.zeros(GRID * GRID, bool), "B": np.zeros(GRID * GRID, bool)}
+        self.topo = topology.of(geo)
+        self.cells = {"A": np.zeros(geo.n, bool), "B": np.zeros(geo.n, bool)}
         self.reached: dict[str, dict[int, np.ndarray]] = {"A": {}, "B": {}}   # side -> enemy slot -> flat
         self.seen: dict[str, dict[int, tuple[int, float]]] = {"A": {}, "B": {}}   # enemy slot -> (cell, t) last spotted
         self._start = {"A": None, "B": None}       # the barrier drop's ground, for each enemy's first tick
@@ -1336,7 +1316,7 @@ class Unknown:
         fy, fx = np.nonzero(face)
         self.face = np.stack([fx + 0.5, fy + 0.5], axis=1)
         self.to_wall_px = ndimage.distance_transform_edt(wp)
-        self._sealed_key, self._sealed = None, np.zeros(GRID * GRID, bool)
+        self._sealed_key, self._sealed = None, np.zeros(geo.n, bool)
 
     def sealed(self, smokes) -> np.ndarray:
         """Flat cells in a pinch narrower than GAP_SEAL_M between one of `smokes` (the tick's sight
@@ -1383,7 +1363,7 @@ class Unknown:
                 for off in (-side, 0 * side, side):
                     pts = a + k * s + off
                     out[[self.geo.cell_of_px(x, y) for x, y in pts]] = True
-        out &= self.geo.walk.ravel()
+        out = self.geo.to_nodes(out) & self.geo.walk_n      # a pinch seals every floor of its cells
         self._sealed_key, self._sealed = key, out
         return out
 
@@ -1395,7 +1375,8 @@ class Unknown:
                 self._start[side] = areas[other][0].copy()
 
     def apply(self, tick) -> None:
-        walk = self.geo.walk.ravel()
+        walk = self.geo.walk_n
+        n = self.geo.n
         t = self.t = tick.t
         pinched = self.sealed(getattr(tick, "smokes", None))
         for side in ("A", "B"):
@@ -1404,10 +1385,10 @@ class Unknown:
                 del self.reached[side][gone]
                 self.seen[side].pop(gone, None)
             if not enemies:
-                self.cells[side] = np.zeros(GRID * GRID, bool)   # nobody left: nobody could be anywhere
+                self.cells[side] = np.zeros(n, bool)   # nobody left: nobody could be anywhere
                 continue
-            live = np.zeros(GRID * GRID, bool)
-            spots = np.zeros(GRID * GRID, bool)
+            live = np.zeros(n, bool)
+            spots = np.zeros(n, bool)
             shut = pinched.copy()
             for h in tick.holders.values():
                 if h.team == side:
@@ -1419,20 +1400,20 @@ class Unknown:
             room = walk & ~live & ~shut
             free = self.free_since[side]
             if free is None:
-                free = np.full(GRID * GRID, t)
+                free = np.full(n, t)
             else:
                 free = np.where(room & ~self._room[side], t, free)   # freed since the last tick: from now
             self.free_since[side], self._room[side] = free, room
-            cells = np.zeros(GRID * GRID, bool)
+            cells = np.zeros(n, bool)
             for slot in sorted(enemies):
                 reached = self.reached[side].get(slot)
                 if reached is None:
-                    reached = np.full(GRID * GRID, np.inf)
+                    reached = np.full(n, np.inf)
                     if self._start[side] is not None:
                         reached[self._start[side]] = t        # the barrier drop's ground: there now
                 h = tick.holders.get(slot)
                 if h is not None and spots[h.cell]:
-                    reached = np.full(GRID * GRID, np.inf)    # spotted: there, and nowhere else
+                    reached = np.full(n, np.inf)    # spotted: there, and nowhere else
                     self.seen[side][slot] = (h.cell, t)
                 if h is not None:
                     reached[h.cell] = min(reached[h.cell], t)   # an enemy pushes it out from where they stand
@@ -1446,10 +1427,9 @@ class Unknown:
         """`cells` less its 8-connected pieces of at most DROP_PIECE_CELLS that no enemy stands in (the
         user's call, 2026-10-01: what vision has eaten down to that is gone; a real enemy there makes
         unknown of their own). Dropped from every enemy's unknown, and a sighting inside one with it."""
-        lab, n = ndimage.label(cells.reshape(GRID, GRID), EIGHT)
-        if not n:
+        if not cells.any():
             return cells
-        lab = lab.ravel()
+        lab = self.topo.label(cells, eight=True)
         size = np.bincount(lab)
         small = size <= DROP_PIECE_CELLS
         small[0] = False
@@ -1481,29 +1461,12 @@ class Unknown:
         (cell, time), where the enemy was last spotted, is a source from that time even while the team
         still watches that cell or has just freed it (they were in it); it is in the result only once it is
         in `room`."""
-        g = reached.reshape(GRID, GRID).copy()
+        g = reached.copy()
         if seen is not None:
-            g.flat[seen[0]] = min(g.flat[seen[0]], seen[1])
+            g[seen[0]] = min(g[seen[0]], seen[1])
         if not np.isfinite(g).any():
-            return g.ravel()
-        f = free.reshape(GRID, GRID)
-        r = room.reshape(GRID, GRID)
-        straight = self.geo.cell_m / UNKNOWN_MPS
-        while True:
-            best = g.copy()
-            for dy, dx in ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)):
-                src = np.full((GRID, GRID), np.inf)
-                src[max(dy, 0):GRID + min(dy, 0), max(dx, 0):GRID + min(dx, 0)] = \
-                    g[max(-dy, 0):GRID + min(-dy, 0), max(-dx, 0):GRID + min(-dx, 0)]
-                np.minimum(best, np.maximum(src, f) + straight * (math.sqrt(2) if dy and dx else 1.0), out=best)
-            for a, b, one_way in self.links:
-                best.flat[b] = min(best.flat[b], max(g.flat[a], f.flat[b]) + straight)
-                if not one_way:
-                    best.flat[a] = min(best.flat[a], max(g.flat[b], f.flat[a]) + straight)
-            best[~r | (best > t)] = np.inf
-            if np.array_equal(best, g):
-                return best.ravel()
-            g = best
+            return g
+        return self.topo.spread(g, room, free, t, self.geo.cell_m / UNKNOWN_MPS, self.links)
 
 
 class Memory:
@@ -1518,11 +1481,11 @@ class Memory:
 
     def begin(self, areas: dict) -> None:
         for _, (area, starts) in areas.items():
-            for slot, share in _share_by_walk(area.reshape(GRID, GRID), starts).items():
-                self.cells[slot] = share.ravel()
+            for slot, share in _share_by_walk(area, starts, topology.of(self.geo)).items():
+                self.cells[slot] = share
 
     def apply(self, tick, unknown: dict | None = None) -> None:
-        walk = self.geo.walk.ravel()
+        walk = self.geo.walk_n
         for s in [s for s in self.cells if s not in tick.holders]:
             del self.cells[s]                     # memory dies with its player
         for h in tick.holders.values():
@@ -1540,20 +1503,19 @@ class Memory:
                 self.cells[h.slot] = seen
 
 
-def _share_by_walk(area: np.ndarray, starts: dict[int, int]) -> dict[int, np.ndarray]:
-    """Each cell of `area` (GRID x GRID) to the start cell nearest it in 4-connected walking steps;
-    a tie goes to the lower slot. Cells no start can reach go to nobody."""
-    owner = np.full(area.shape, -1, np.int16)
+def _share_by_walk(area: np.ndarray, starts: dict[int, int], topo) -> dict[int, np.ndarray]:
+    """Each node of `area` (flat) to the start nearest it in 4-connected walking steps; a tie goes to
+    the lower slot. Nodes no start can reach go to nobody."""
+    owner = np.full(len(area), -1, np.int16)
     fronts = {}
     for slot, cell in sorted(starts.items()):
-        y, x = divmod(cell, GRID)
-        if owner[y, x] < 0:
-            owner[y, x] = slot
+        if owner[cell] < 0:
+            owner[cell] = slot
             fronts[slot] = owner == slot
     while fronts:
         grown = {}
         for slot, front in sorted(fronts.items()):
-            new = ndimage.binary_dilation(front, mask=area & (owner < 0))
+            new = topo.dilate(front, within=area & (owner < 0))
             new &= owner < 0
             if new.any():
                 owner[new] = slot
@@ -1708,8 +1670,8 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     times = rnd.tick_times() if ticks is None else np.asarray(ticks, float)
     nxt = np.append(times[1:], rnd.t_end)
     weights = np.maximum(nxt - times, 0.0)
-    walk_flat = geo.walk.ravel()
-    walk_cells = np.flatnonzero(walk_flat)
+    walk_flat = geo.walk_n
+    walk_cells = np.flatnonzero(geo.walk.ravel())
     n_walk, n_ticks = len(walk_cells), len(times)
     cell_m2 = geo.cell_m ** 2
     states = np.zeros((n_ticks, n_walk), np.uint8)

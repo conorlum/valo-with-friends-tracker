@@ -15,6 +15,7 @@ import pytest
 from app.control import engine as ce
 from app.control import geometry as cg
 from app.control import heights as hc
+from app.control import topology as ct
 from app.control.encode import checkpoint_ticks, encode_data, encode_summary
 from app.replays import control_format as cf
 from tests.replays.control_toys import blob, door_hall
@@ -28,7 +29,7 @@ from tests.replays.control_toys import blob, door_hall
 # re-pinned in place. The digest also covers the height constants (app/control/heights.py) from 2026-10-02.
 # 4: heights (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4): the per-floor engine and its
 # start values. Unreleased, so re-pinned in place as its steps land.
-PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4: "63d5a536e28bf212"}
+PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4: "237677656d71ca9f"}
 
 
 def _constants_digest() -> str:
@@ -46,7 +47,7 @@ def _constants_digest() -> str:
         return value
 
     constants = {}
-    for module in (ce, cg, hc):
+    for module in (ce, cg, hc, ct):
         for name, value in sorted(vars(module).items()):
             if name.isupper() and not name.startswith("_") and name != "CONTROL_REVISION":
                 if isinstance(value, (int, float, str, bool, tuple, list, dict, set, frozenset, np.ndarray)):
