@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from sqlalchemy import insert, text
 
 from app.config import settings
-from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundControl
+from app.models.replay import Replay, ReplayDeletion, ReplayPlayer, ReplayRound, ReplayRoundControl
 from app.replays import db as replay_db
 from app.replays import format as fmt
 from app.replays.condense import CondensedReplay
@@ -86,7 +86,10 @@ def store_replay(session, condensed: CondensedReplay, *, source: str, replace: b
     uuid = condensed.match_uuid.lower()
     try:
         replay_db.advisory_lock(session, uuid)
-        existing = session.query(Replay).filter(Replay.match_uuid == uuid).one_or_none()
+        # A match deleted on request never comes back, whoever stores it (upload, reparse or local).
+        if session.get(ReplayDeletion, uuid) is not None:
+            raise StoreRefused("this match was deleted on request")
+        existing =session.query(Replay).filter(Replay.match_uuid == uuid).one_or_none()
         if existing is not None and not replace:
             same_source = existing.source_sha256 == condensed.source_sha256
             if same_source and existing.recipe == condensed.recipe:

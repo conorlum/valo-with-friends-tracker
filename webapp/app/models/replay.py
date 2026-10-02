@@ -131,3 +131,18 @@ class ReplayUpload(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     replay_id: Mapped[int | None] = mapped_column(ForeignKey("replays.id", ondelete="SET NULL"), nullable=True)
     worker_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # migration 0013
+    # Migration 0015 (the .vrf archive): what store_replay did with the result ('stored', 'replaced',
+    # 'unchanged', 'kept_existing', 'failed'), and the worker's answer to the ack (null until it answers).
+    store_outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    archive_ack: Mapped[str | None] = mapped_column(String(160), nullable=True)
+
+
+class ReplayDeletion(Base):
+    """A match deleted on request (scripts/delete_replay_data.py): its tombstone. store_replay refuses it,
+    and the worker is told to delete its archived and pending files (app/services/replay_archive_sync.py)."""
+
+    __tablename__ = "replay_deletions"
+
+    match_uuid: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
