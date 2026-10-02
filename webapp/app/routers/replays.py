@@ -22,8 +22,9 @@
 - `GET /matches/{external_id}/replay`: a redirect to the page when the match has a linked,
   valid replay.
 - Stage 3, the friends-only upload (404 in demo mode and when no code or worker is configured):
-  `GET /replays/upload` (the invite-code form, then the file form), `POST /replays/upload/code`,
-  `POST /replays/upload` (size, magic and rate limits, then to the worker), `GET
+  `GET /replays/upload` (the invite-code form, then the file form for up to 5 files and this session's
+  uploads of the last day), `POST /replays/upload/code`,
+  `POST /replays/upload` (one file: size, magic and rate limits, then to the worker; JSON when asked), `GET
   /replays/uploads/{id}` (the job page) and `GET /replays/uploads/{id}/status` (polled every 3 s;
   stores the result when the worker is done).
 
@@ -85,17 +86,35 @@ def _session_key(request: Request) -> str:
     return key
 
 
-def _upload_page(request: Request, status_code: int = 200, error: str | None = None):
+def _recent_uploads(request: Request, db: Session | None) -> list[dict]:
+    """This session's uploads from the last RECENT_LISTED, newest first, as the page's list shows them."""
+    session_key = request.session.get("replay_upload_sid")
+    if db is None or not session_key:
+        return []
+    since = datetime.now(timezone.utc) - uploads.RECENT_LISTED
+    rows = (db.query(ReplayUpload)
+            .filter(ReplayUpload.session_key == session_key, ReplayUpload.created_at >= since)
+            .order_by(ReplayUpload.created_at.desc()).all())
+    listed = []
+    for upload in rows:
+        created = upload.created_at if upload.created_at.tzinfo else upload.created_at.replace(tzinfo=timezone.utc)
+        listed.append({"id": upload.id, "created_at": created.isoformat(timespec="seconds"),
+                       "size_mb": round((upload.size_bytes or 0) / 1e6, 1), **_status_body(db, upload)})
+    return listed
+
+
+def _upload_page(request: Request, status_code: int = 200, error: str | None = None, db: Session | None = None):
     return templates.TemplateResponse(request, "replays/upload.html", {
         "authorized": bool(request.session.get("replay_upload_ok")), "error": error,
         "max_mb": uploads.settings.replay_upload_max_bytes // 1_000_000, "per_hour": uploads.UPLOADS_PER_HOUR,
+        "max_files": uploads.MAX_UNFINISHED, "uploads": _recent_uploads(request, db),
     }, status_code=status_code)
 
 
 @router.get("/replays/upload")
-def upload_form(request: Request):
+def upload_form(request: Request, db: Session = Depends(get_db)):
     _upload_enabled_or_404()
-    return _upload_page(request)
+    return _upload_page(request, db=db)
 
 
 @router.post("/replays/upload/code")
@@ -109,20 +128,32 @@ def upload_code(request: Request, code: str = Form("")):
 
 @router.post("/replays/upload")
 def upload_file(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """One file. The upload page's script sends a batch one file at a time and asks for JSON (the job's id,
+    or the reason it was refused); a plain form post gets the job page, or the form with the reason."""
     _upload_enabled_or_404()
+    wants_json = "application/json" in request.headers.get("accept", "")
+
+    def refused(status_code: int, message: str):
+        if wants_json:
+            return JSONResponse({"error": message}, status_code=status_code)
+        return _upload_page(request, status_code, message, db=db)
+
     if not request.session.get("replay_upload_ok"):
-        return _upload_page(request, 403, "Enter the invite code first.")
+        return refused(403, "Enter the invite code first.")
     client_ip = request.client.host if request.client else None
     try:
         upload = uploads.create_upload(db, file.file, _session_key(request), client_ip, uploads.client())
     except ValueError as reason:
-        return _upload_page(request, 400, str(reason).capitalize() + ".")
+        return refused(400, str(reason).capitalize() + ".")
     except uploads.LimitExceeded as reason:
-        return _upload_page(request, 429, str(reason).capitalize() + ".")
+        return refused(429, str(reason).capitalize() + ".")
     except uploads.WorkerError as reason:
-        return _upload_page(request, 503, f"The replay worker isn't available ({reason}). Please try again later.")
+        return refused(503, f"The replay worker isn't available ({reason}). Please try again later.")
     finally:
         file.file.close()
+    if wants_json:
+        return JSONResponse({"upload_id": upload.id, "job_url": f"/replays/uploads/{upload.id}",
+                             "status_url": f"/replays/uploads/{upload.id}/status"})
     return RedirectResponse(f"/replays/uploads/{upload.id}", status_code=303)
 
 
