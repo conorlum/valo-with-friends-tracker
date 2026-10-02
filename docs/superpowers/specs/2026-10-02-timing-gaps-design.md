@@ -156,8 +156,9 @@ the neighbour or link its arrival came from. `Unknown` turns every new or change
 append-only log per team: (node, arrival time, the parent's entry id, the choke sequence id). Entries are
 added in arrival-time order within a tick, so an entry only ever points to one added before it, a route can
 never loop, and a later clearing or re-entry cannot alter an earlier route. A source entry (barrier ground,
-an enemy's own position, a sighting, an area collapse) has no parent. When two arrivals tie, the existing
-spread's choice stands; the parent recorded is the lowest-numbered neighbour giving that time.
+an enemy's own position, a sighting, an area collapse) has no parent. When two arrivals tie, the parent
+recorded is the first giving that time in the topology's fixed neighbour order, so a rerun gives the same
+route.
 
 **Choke sequence per entry.** An entry's choke sequence is its parent's, plus the choke if its node lies on
 one, interned as an id per round. Every unknown node therefore carries its own route and sequence without
@@ -261,9 +262,9 @@ until the next moment on the detector's timeline, clipped at `t_close`. A gap wi
 - `route_released`: a cell on the route stopped being observed and the route completed because of it.
   Recorded: the last route cell to be released, when, which player was observing it, whether by view or
   utility, and why they stopped. The reason is one of `died`, `turned`, `moved`, `blinded` (flash or
-  nearsight), `smoked`, `utility_expired`, `utility_destroyed`, `utility_left` (stopped using a camera or
-  drone), `other`. If several players stopped at the same tick, the one whose stop came last is named, lowest
-  slot on a tie.
+  nearsight), `smoked`, `utility_expired` (it ended or was destroyed: the blob does not tell the two apart),
+  `utility_left` (stopped using a camera or drone), `other`. The observer named for a cell is the
+  lowest-numbered player of the team observing it on the last tick it was observed, by view before utility.
 - `victim_turned`: cells of the route were already exposed and the victim turned their back to them.
 - `victim_moved`: the victim moved into a position where cells of the route are exposed behind them.
 - `open_timing`: no cell on the route was ever observed since the enemy was last located. The gap opened
@@ -336,7 +337,7 @@ missing-data cases), `error`, `computed_at`. It separates "computed, no gaps" fr
 | `kind` | `predicted` or `backshot`. |
 | `map` | Map name, for per-map queries without a join. |
 | `victim_slot` | The victim. Player ids are joined from the replay link at query time. |
-| `victim_side` | `attack` or `defence`; null for an unlinked replay, which side filters exclude. |
+| `victim_side` | `attack` or `defense` (the engine's spelling); null for an unlinked replay, which side filters exclude. |
 | `t_open`, `t_last_exposed`, `t_close` | Replay-clock seconds. For a back-shot, `t_open` is the damage run's start and the other two are null. |
 | `spot_cell`, `victim_cell` | Grid cells at the opening tick. For a back-shot, the spot is the shooter's cell. |
 | `distance_m`, `angle_deg` | Spot to victim, and off-facing angle, at the opening tick. |
