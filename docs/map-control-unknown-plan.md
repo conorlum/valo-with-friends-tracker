@@ -116,6 +116,9 @@ picker: Unknown off / Team 1 / Team 2 / both (default both). Shown only for rows
   cell at each corner the rays thread (272-275, 332-335) and (184-187, 376-379) for the last 3. Cells of
   the upper corridor that see into the room: 26 to 0; kill lines still 9/476; 4 walkable cells lost
   (cover blocks walking too, so the edge is crossed only at x 356-369 now).
+  **Reverted 2026-10-02** (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 5): the stroke
+  and the corner cells are out of Ascent's `cover_paint` again (5,220 walkable cells, kill lines 9/476), since
+  players walk on that edge. The sightline is wrong again until the map has heights.
 
 - **Presence bubble** (after the first look): each live player holds the walkable ground within `PRESENCE_M`
   = 4 m that they can walk to and see (all round them, smoke-aware: anything that blocks sight stops it) as
