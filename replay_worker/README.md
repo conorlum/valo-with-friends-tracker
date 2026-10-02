@@ -41,7 +41,7 @@ and `server.py` (the jobs). Web side: `webapp/app/services/replay_upload.py` (`s
 - **On only when** `REPLAY_ARCHIVE_DIR` is set, is a mount point, and a create+rename probe works
   (`REPLAY_ARCHIVE_REQUIRE_MOUNT=0` skips the mount check, for tests). Otherwise everything above holds
   unchanged and `/health` says why the archive is off.
-- On Render: the `replay-archive` disk at `/var/replay` (`render.yaml`, 50 GB). The image starts as root,
+- On Render: the `replay-archive` disk at `/var/replay` (`render.yaml`, 25 GB). The image starts as root,
   `entrypoint.sh` chowns the mount to `worker`, then drops to it with `setpriv`.
 - Layout: `jobs/<id>/` (upload, export, `job.json`, `result.json`), `pending/<id>.vrf` (parsed, waiting for
   the web app's ack), `archive/<match uuid>.vrf` + `archive/index.json`, `acks/`, `tombstones.json`.

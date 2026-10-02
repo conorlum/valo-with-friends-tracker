@@ -83,7 +83,8 @@ create-and-rename probe under it succeeds. Otherwise the worker behaves exactly 
 never crashes the worker: uploads keep working without the archive.
 
 **The disk.** A Render persistent disk on the `replay-worker` service (`render.yaml`: `disk`, mounted at
-`/var/replay`), 50 GB to start (an open question; a Render disk can grow but never shrink). Only files under
+`/var/replay`), 25 GB to start (decided in review, D4: 100 matches x the 200 MB cap plus 5 GB; a Render disk
+can grow but never shrink). Only files under
 the mount persist, and a service with a disk stops its old instance before starting the new one on deploy (no
 zero-downtime deploy, one instance). The disk holds:
 
@@ -116,8 +117,8 @@ mid-parse:
   the worker's reason) when the bytes held by `jobs/` and `pending/` plus the new upload would eat into the
   parse reserve, i.e. `jobs + pending + upload > total − ARCHIVE_SLACK − 70 x the cap`. The archive itself
   never refuses an upload; it is evicted instead.
-- With a 50 GB disk the budget is about 50 − 12.7 − 0.9 − 5 ≈ 31 GB of archive, about 350 matches at today's
-  file sizes; `/health` says how many are kept and the oldest match date.
+- With a 25 GB disk the budget is about 25 − 12.7 − 0.9 − 5 ≈ 6.4 GB of archive, about 35 matches at the
+  upload cap or about 70 at today's file sizes; `/health` says how many are kept and the oldest match date.
 
 **Restarts.** A job's state lives in its `job.json`. On start the worker re-queues `queued` and `parsing` jobs
 in creation order (a parse restarts from the beginning; one that no longer fits the queue fails with "please
@@ -457,8 +458,7 @@ Walls stay infinitely tall and smokes stay columns; both are acknowledged limita
 
 ## Open questions for review
 
-- Disk size: 50 GB leaves about 30 GB of archive (about 350 matches) after the parse reserve; 100 GB would
-  keep about 900.
+- Disk size: decided in review (D4): 25 GB, about 6.4 GB of archive after the parse reserve. It can grow later.
 - **The site picture of a cell with two floors** (proposed): if its floors agree, that state; if one floor is
   unknown, unknown; otherwise contested. The tunnel's state is then visible on the site, at the cost of a
   bridge sometimes showing the tunnel's state.
