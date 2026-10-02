@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     # only (REPLAY_UPLOAD_CODE is `sync: false`), never in the repo.
     replay_upload_code: str | None = None
     replay_worker_url: str | None = None
+    # The last path segment of the friends' how-to, /replays/upload/guide/<key>, which shows the code.
+    # Unset: the page 404s. Set in the Render dashboard only (`sync: false`), never in the repo, so
+    # the page's address is known only to the people it is sent to.
+    replay_upload_guide_key: str | None = None
     # Decision 10's cap (approved D10), max(80 MB, 2 x the largest observed .vrf): the six
     # competitive files are 60-91 MB (90,517,500 bytes the largest).
     replay_upload_max_bytes: int = 181_035_000

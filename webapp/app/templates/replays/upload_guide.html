@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{# The friends' how-to for uploading replays (app/routers/replays.py, Stage 3). Unlisted: nothing on the site links
+   here. It shows the invite code, which comes from the setting and is never written in this file. #}
+{% block title %}How to upload your Valorant replays &ndash; {{ site_name }}{% endblock %}
+{% block content %}
+<h1>How to upload your Valorant replays</h1>
+<div class="card upload-guide">
+  <h2>Step 1: Download the replay in Valorant</h2>
+  <p>Open the Career page in Valorant and find the match under Match History. Click the download arrow on the right
+    side of the match.</p>
+  <p>A match is downloaded once the arrow turns into a play button.</p>
+  <img src="/static/img/upload_guide/1-match-history.png?v={{ static_version() }}" loading="lazy"
+       alt="Match History on the Career page, with download arrows on the right of each match">
+
+  <h2>Step 2: Open the upload page</h2>
+  <ol>
+    <li>Open your browser to the upload link: <a href="/replays/upload">upload page</a></li>
+    <li>Put in the code: <code>{{ invite_code }}</code></li>
+  </ol>
+
+  <h2>Step 3: Go to your replay folder</h2>
+  <ol>
+    <li>Hit the upload button on the page. A file window opens.</li>
+    <li>Click the empty part of the address bar at the top, shown in green below. It turns into a text box.
+      <img src="/static/img/upload_guide/2-address-bar.png?v={{ static_version() }}" loading="lazy"
+           alt="File window with the empty part of the address bar circled in green"></li>
+    <li>Paste in this and press Enter: <code>%LOCALAPPDATA%\VALORANT\Saved\Demos</code></li>
+  </ol>
+  <p>You should now see your replay files. They end in <code>.vrf</code>.</p>
+  <img src="/static/img/upload_guide/3-demos-folder.png?v={{ static_version() }}" loading="lazy"
+       alt="The Demos folder showing a list of .vrf replay files">
+
+  <h2>Step 4: Pick your replays</h2>
+  <p><strong>Only 5 at a time please!</strong></p>
+  <ol>
+    <li>Click the "Date modified" column header so the most recent replays are at the top.</li>
+    <li>Click the first replay you want, then hold Shift and click the last one. Everything in between gets
+      selected.</li>
+    <li>Hit Open.</li>
+  </ol>
+  <img src="/static/img/upload_guide/4-select-replays.png?v={{ static_version() }}" loading="lazy"
+       alt="File window sorted by date modified with three replays selected and the Open button at the bottom">
+
+  <h2>Step 5: Upload and wait</h2>
+  <ol>
+    <li>Click upload on the browser page.</li>
+    <li>Keep the page open until every replay says it is done uploading.</li>
+    <li>Once a replay says "parsing", your side is done and you can close the page.</li>
+  </ol>
+  <p>Then you are done!</p>
+</div>
+{% endblock %}
