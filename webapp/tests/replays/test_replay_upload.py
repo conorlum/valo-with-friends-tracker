@@ -83,6 +83,22 @@ def test_the_code_is_checked_and_remembered_in_the_session(db):
     assert uploads.code_matches("letmein") and not uploads.code_matches("") and not uploads.code_matches(None)
 
 
+def test_the_guide_shows_the_code_is_unlisted_and_is_off_with_the_upload(db, monkeypatch):
+    assert status_of(lambda: routes.upload_guide(request(), "anything")) == 404, "no key set: no page"
+    monkeypatch.setattr(settings, "replay_upload_guide_key", "s3cret-path")
+    assert status_of(lambda: routes.upload_guide(request(), "wrong")) == 404
+    response = routes.upload_guide(request(), "s3cret-path")
+    page = response.body.decode("utf-8")
+    assert "<code>letmein</code>" in page and 'href="/replays/upload"' in page
+    assert response.headers["x-robots-tag"] == "noindex, nofollow"
+    assert "upload/guide" not in routes.upload_form(request(), db).body.decode("utf-8"), "nothing links to it"
+    for shot in ("1-match-history", "2-address-bar", "3-demos-folder", "4-select-replays"):
+        assert f"/static/img/upload_guide/{shot}.png" in page
+        assert (Path(routes.__file__).parents[1] / "static" / "img" / "upload_guide" / f"{shot}.png").is_file()
+    monkeypatch.setattr(settings, "demo_mode", True)
+    assert status_of(lambda: routes.upload_guide(request(), "s3cret-path")) == 404
+
+
 def test_an_upload_without_the_code_is_refused(db):
     class FakeFile:
         file = io.BytesIO(vrf_bytes())

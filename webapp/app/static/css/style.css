@@ -1901,6 +1901,11 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 .upload-list li:first-child { border-top: none; }
 .upload-list .upload-name { font-weight: 600; overflow-wrap: anywhere; }
 .upload-list .upload-row-status { color: var(--ink-secondary); font-variant-numeric: tabular-nums; flex: 1 1 16rem; }
+/* The how-to (replays/upload_guide.html): screenshots never wider than the card. */
+.upload-guide img { display: block; max-width: 100%; height: auto; margin: 0.75rem 0; border: 1px solid var(--gridline); border-radius: 6px; }
+.upload-guide h2 { margin-top: 1.75rem; }
+.upload-guide h2:first-child { margin-top: 0; }
+.upload-guide li { margin: 0.35rem 0; }
 
 /* Map control (docs/replay-map-control-plan.md, "Cell states"; Stage 4) */
 .replay-control-badge { font-size: 0.78rem; padding: 0.05rem 0.45rem; border: 1px dashed var(--ink-muted); border-radius: 999px; color: var(--ink-secondary); align-self: center; }

@@ -29,6 +29,10 @@ services:
       # here); without it the upload routes 404. The worker's address comes from its service.
       - key: REPLAY_UPLOAD_CODE
         sync: false
+      # The key that ends the how-to's address, /replays/upload/guide/<key>. Set by hand in the
+      # dashboard (never here); without it that page 404s.
+      - key: REPLAY_UPLOAD_GUIDE_KEY
+        sync: false
       - key: REPLAY_WORKER_URL
         fromService:
           type: pserv

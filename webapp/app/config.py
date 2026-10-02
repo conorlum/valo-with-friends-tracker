@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     # only (REPLAY_UPLOAD_CODE is `sync: false`), never in the repo.
     replay_upload_code: str | None = None
     replay_worker_url: str | None = None
+    # The last path segment of the friends' how-to, /replays/upload/guide/<key>, which shows the code.
+    # Unset: the page 404s. Set in the Render dashboard only (`sync: false`), never in the repo, so
+    # the page's address is known only to the people it is sent to.
+    replay_upload_guide_key: str | None = None
     # Decision 10's cap was max(80 MB, 2 x the largest observed .vrf) = 181,035,000 bytes (the six
     # competitive files were 60-91 MB); rounded up to 200 MB (the user's call, 2026-10-01). The
     # worker's REPLAY_MAX_BYTES (replay_worker/Dockerfile) must match.

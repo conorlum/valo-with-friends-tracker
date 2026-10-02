@@ -23,7 +23,8 @@
   valid replay.
 - Stage 3, the friends-only upload (404 in demo mode and when no code or worker is configured):
   `GET /replays/upload` (the invite-code form, then the file form for up to 5 files and this session's
-  uploads of the last day), `POST /replays/upload/code`,
+  uploads of the last day), `GET /replays/upload/guide/{key}` (the unlisted how-to, which shows the code),
+  `POST /replays/upload/code`,
   `POST /replays/upload` (one file: size, magic and rate limits, then to the worker; JSON when asked), `GET
   /replays/uploads/{id}` (the job page) and `GET /replays/uploads/{id}/status` (polled every 3 s;
   stores the result when the worker is done).
@@ -115,6 +116,18 @@ def _upload_page(request: Request, status_code: int = 200, error: str | None = N
 def upload_form(request: Request, db: Session = Depends(get_db)):
     _upload_enabled_or_404()
     return _upload_page(request, db=db)
+
+
+@router.get("/replays/upload/guide/{key}")
+def upload_guide(request: Request, key: str):
+    """The friends' how-to. Unlisted: its address ends in a key set only in the dashboard, no page links
+    here, and crawlers are told not to index it. It shows the code."""
+    _upload_enabled_or_404()
+    if not uploads.guide_key_matches(key):
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse(request, "replays/upload_guide.html",
+                                      {"invite_code": uploads.settings.replay_upload_code},
+                                      headers={"X-Robots-Tag": "noindex, nofollow"})
 
 
 @router.post("/replays/upload/code")

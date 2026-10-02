@@ -72,6 +72,11 @@ def code_matches(given: str | None) -> bool:
     return bool(expected) and hmac.compare_digest((given or "").encode("utf-8"), expected.encode("utf-8"))
 
 
+def guide_key_matches(given: str | None) -> bool:
+    expected = settings.replay_upload_guide_key or ""
+    return bool(expected) and hmac.compare_digest((given or "").encode("utf-8"), expected.encode("utf-8"))
+
+
 class LimitExceeded(Exception):
     pass
 
