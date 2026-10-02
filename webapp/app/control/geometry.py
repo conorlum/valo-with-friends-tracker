@@ -535,8 +535,8 @@ def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes
 
 def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list, eye: float,
                   own: int | None, record: dict | None) -> np.ndarray:
-    """`cast` on nodes, with the height test. PROVISIONAL(D4): the own-cell and target-cell plate rule
-    below is not the spec's wording (it exempts both cells); see the commit and the decision. Per ray: `hor`, the steepest slope from the eye to the
+    """`cast` on nodes, with the height test. The own-cell and target-cell plate rule below is not the
+    spec's wording (it exempts both cells, which fails its own tunnel test). Per ray: `hor`, the steepest slope from the eye to the
     ground passed so far (a cell's ground is its lowest floor's position-z - STAND_M - LEDGE_M; the
     viewer's own cell and the cell being tested don't count), and blocked slope intervals, one per upper
     floor passed: the slopes at which a line is at the plate's height (position-z - STAND_M) somewhere

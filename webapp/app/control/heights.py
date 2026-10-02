@@ -36,9 +36,8 @@ import numpy as np
 HEIGHT_VERSION = 1
 MAX_FLOORS = 3
 
-# PROVISIONAL(D4): every value from here to KILL_SAMPLE_S is a start value awaiting the user's approval
-# (one card, with the numbers measured on three Lotus matches). STAND_APEX_S, PLATFORMS, PLATFORM_R_M and
-# NODE_SNAP_M are not in the spec: they fill gaps it left.
+# Every value from here to KILL_SAMPLE_S is a start value (approved 2026-10-02, to be tuned on real
+# data). STAND_APEX_S, PLATFORMS, PLATFORM_R_M and NODE_SNAP_M are not in the spec: they fill gaps it left.
 
 # --- sight (part 4)
 EYE_M = 0.7                # eye above the position (about 1.6 m above the feet)

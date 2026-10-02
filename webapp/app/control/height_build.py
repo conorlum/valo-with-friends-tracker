@@ -309,7 +309,7 @@ def connect(heights: dict, seen: dict, geo: Geometry) -> np.ndarray:
                 continue
             for i, ha in enumerate(floors_a):
                 for j, hb in enumerate(heights[b]):
-                    # PROVISIONAL(D4): the spec infers this between ground floors; here between any two
+                    # The spec infers this between ground floors; here between any two
                     # floors, so a bridge is walkable along itself where few rounds walked it.
                     if abs(ha - hb) <= step:
                         edges.add((a, i, b, j))
