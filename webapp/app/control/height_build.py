@@ -500,3 +500,91 @@ def picture(build_: HeightBuild, geo: Geometry, path) -> None:
         if cy + 1 < GRID and has[cy + 1, cx] and abs(ground[cy, cx] - ground[cy + 1, cx]) > step:
             img[(cy + 1) * CELL - 1:(cy + 1) * CELL + 1, cx * CELL:(cx + 1) * CELL] = 0
     Image.fromarray(img).save(path)
+
+
+# ---------------------------------------------------------------- the checks before an asset is committed
+
+
+def kill_line_check(rounds: list, geo: Geometry) -> dict:
+    """Risk 1 with heights (the spec's "The kill-line check"): of the kills where both killer and victim
+    have a position sample with z within KILL_SAMPLE_S, both stand on resolved cells, and the line is
+    clear in 2D (walls, smokes and wall abilities) today, how many the heights block. A kill line is
+    blocked only if the killer's eye sees neither the victim's body nor their head. `geo` has the
+    heights; excluded kills are counted by reason."""
+    from app.control import engine
+
+    excluded: Counter = Counter()
+    qualifying = blocked = 0
+    examples = []
+    for match, n, blob in rounds:
+        rnd = engine.RoundInputs(blob, geo)
+        for kill in blob.get("kills") or []:
+            t, killer, victim = kill.get("t"), kill.get("killer"), kill.get("victim")
+            if t is None or killer is None or victim is None or killer == victim:
+                excluded["no killer"] += 1
+                continue
+            ends = []
+            for slot in (killer, victim):
+                i = rnd._sample(slot, t) if slot in rnd.tracks else None
+                if i is None or abs(rnd.tracks[slot][0][i] - t) > hc.KILL_SAMPLE_S:
+                    ends = None
+                    break
+                z = rnd.heights.get(slot)
+                if z is None or np.isnan(z[i]):
+                    ends = None
+                    break
+                ends.append((rnd.tracks[slot][1][i] * PX / 10000, rnd.tracks[slot][2][i] * PX / 10000, float(z[i])))
+            if ends is None:
+                excluded["no position with z near the kill"] += 1
+                continue
+            (kx, ky, kz), (vx, vy, vz) = ends
+            if geo.unresolved[geo.cell_of_px(kx, ky)] or geo.unresolved[geo.cell_of_px(vx, vy)]:
+                excluded["on an unresolved cell"] += 1
+                continue
+            smokes = rnd.smokes_at(engine.snap(t))
+            if not geo_los(geo, (kx, ky, None), (vx, vy, None), smokes):
+                excluded["blocked in 2D (wall or smoke)"] += 1
+                continue
+            qualifying += 1
+            eye = kz + hc.EYE_M
+            if not geo_los(geo, (kx, ky, eye), (vx, vy, vz + hc.BODY_M), smokes) and \
+                    not geo_los(geo, (kx, ky, eye), (vx, vy, vz + hc.EYE_M), smokes):
+                blocked += 1
+                if len(examples) < 10:
+                    examples.append({"match": str(match), "round": n, "t": round(float(t), 2),
+                                     "killer_px": [round(kx), round(ky)], "victim_px": [round(vx), round(vy)],
+                                     "z": [round(kz, 1), round(vz, 1)]})
+    share = blocked / qualifying if qualifying else 0.0
+    return {"qualifying": qualifying, "blocked": blocked, "share": round(share, 4),
+            "passes": qualifying > 0 and share <= hc.KILL_LINE_BAR, "excluded": dict(excluded.most_common()),
+            "examples": examples}
+
+
+def geo_los(geo: Geometry, a: tuple, b: tuple, smokes) -> bool:
+    from app.control.geometry import los
+
+    return los(geo, a, b, smokes)
+
+
+def must_block_check(lines: list, geo: Geometry, map_name: str) -> dict:
+    """The hand-listed sightlines that are impossible in game (tests/replays/control_must_block.json):
+    each must be blocked. A line whose viewer or target height is still unknown (null) is listed as not
+    checked, never as passing."""
+    results = []
+    for line in lines:
+        if line.get("map") != map_name:
+            continue
+        vx, vy, vz = line["viewer"]
+        tx, ty, tz = line["target"]
+        if vz is None or tz is None:
+            results.append({"source": line.get("source"), "checked": False})
+            continue
+        origin = geo.heights.origin_z if geo.heights is not None else 0
+        eye = (vz - origin) / 10.0 + hc.EYE_M
+        body = (tz - origin) / 10.0 + hc.BODY_M
+        results.append({"source": line.get("source"), "checked": True,
+                        "blocked": not geo_los(geo, (vx, vy, eye), (tx, ty, body), [])})
+    checked = [r for r in results if r["checked"]]
+    return {"lines": len(results), "checked": len(checked), "blocked": sum(r["blocked"] for r in checked),
+            "passes": all(r["blocked"] for r in checked), "unchecked": len(results) - len(checked),
+            "results": results}

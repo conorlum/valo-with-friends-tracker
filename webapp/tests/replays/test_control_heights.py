@@ -338,8 +338,12 @@ import build_control_heights as command  # noqa: E402
 
 
 def covered_rounds(extra=None):
-    """A hall walked end to end at 0 m in six rounds of two matches (ready), plus `extra` players."""
-    return height_rounds(lambda m, n: {**{k: sweep(k) for k in range(9)}, **(extra or {})})
+    """A hall walked end to end at 0 m in six rounds of two matches (ready), plus `extra` players. Each
+    round has one kill across the open hall (it qualifies for the kill-line check and isn't blocked)."""
+    rounds = height_rounds(lambda m, n: {**{k: sweep(k) for k in range(9)}, **(extra or {})})
+    for _, _, blob in rounds:
+        blob["kills"] = [{"i": 0, "t": 5.0, "killer": 0, "victim": 5}]
+    return rounds
 
 
 def test_the_asset_round_trips_and_its_digest_is_stable(tmp_path):
@@ -481,3 +485,97 @@ def test_no_real_maps_heights_are_committed():
     with_heights = sorted(name for name, entry in index.items() if "height_sha" in entry)
     files = sorted(p.name for p in cg.ASSET_DIR.glob("*.height.npz"))
     assert [f"{name}.height.npz" for name in with_heights] == files, "every asset has its index entry and back"
+
+
+
+# ---------------------------------------------------------------- the kill-line check and the must-block set
+
+M_PX = 1 / 0.14
+
+
+def ledge_geo():
+    from tests.replays.control_toys import toy_heights
+
+    return toy_heights("Ledge", [(96, 96, 416, 296)], ground=[((96, 96, 256, 296), 4.0)])
+
+
+def kill_round(kills, players, n=1, t_end=10.0):
+    blob = height_blob(players, t_end=t_end, n=n)
+    blob["kills"] = [{"i": i, "t": t, "killer": k, "victim": v} for i, (t, k, v) in enumerate(kills)]
+    return ("m", n, blob)
+
+
+def test_kill_lines_count_qualifying_and_excluded_kills_and_block_only_when_body_and_head_are_hidden():
+    geo = ledge_geo()
+    x = 256 - 2 * M_PX
+    players = {0: standing(x, 204, 4.0),                         # on the ledge, 2 m back from its edge
+               5: standing(x + 3 * M_PX, 204, 0.0, "B"),          # just below it: body and head hidden
+               6: standing(x + 10 * M_PX, 204, 0.0, "B"),         # far out: seen
+               7: ("B", [(0.0, 300, 150, 0)]),                    # no z
+               8: standing(x + 10 * M_PX, 120, 0.0, "B")}
+    rounds = [kill_round([(2.0, 0, 5), (3.0, 0, 6), (4.0, 0, 7), (5.0, 0, 0)], players)]
+    result = hb.kill_line_check(rounds, geo)
+    assert (result["qualifying"], result["blocked"]) == (2, 1) and result["share"] == 0.5 and not result["passes"]
+    assert result["excluded"] == {"no position with z near the kill": 1, "no killer": 1}
+    assert result["examples"][0]["victim_px"] == [round(x + 3 * M_PX), 204]
+    # the head is enough: somewhere out from the ledge the body is hidden but the head isn't, and a kill there
+    # is not blocked
+    from app.control import geometry as cg
+
+    eye = 4.0 + hc.EYE_M
+    hidden_body_seen_head = [d for d in np.arange(3.0, 9.0, 0.05)
+                             if not cg.los(geo, (x, 204, eye), (x + d * M_PX, 204, hc.BODY_M))
+                             and cg.los(geo, (x, 204, eye), (x + d * M_PX, 204, hc.EYE_M))]
+    assert hidden_body_seen_head, "the band where only the head shows"
+    near = standing(x + hidden_body_seen_head[len(hidden_body_seen_head) // 2] * M_PX, 204, 0.0, "B")
+    assert hb.kill_line_check([kill_round([(2.0, 0, 5)], {0: players[0], 5: near})], geo)["blocked"] == 0
+
+
+def test_a_kill_through_a_wall_or_on_unresolved_ground_does_not_qualify():
+    from tests.replays.control_toys import toy_heights
+
+    walled = toy_heights("WallLedge", [(96, 96, 416, 296)], walls=[(300, 96, 316, 296)],
+                         ground=[((0, 0, 1024, 1024), 0.0)])
+    result = hb.kill_line_check([kill_round([(2.0, 0, 5)], {0: standing(200, 204, 0.0), 5: standing(380, 204, 0.0, "B")})],
+                                walled)
+    assert result["qualifying"] == 0 and result["excluded"] == {"blocked in 2D (wall or smoke)": 1}
+    rough = toy_heights("RoughLedge", [(96, 96, 416, 296)], ground=[((96, 96, 256, 296), 4.0)],
+                        unresolved=[(368, 96, 416, 296)])
+    result = hb.kill_line_check([kill_round([(2.0, 0, 5)], {0: standing(200, 204, 4.0), 5: standing(380, 204, 0.0, "B")})],
+                                rough)
+    assert result["excluded"] == {"on an unresolved cell": 1}
+
+
+def test_a_must_block_line_that_is_not_blocked_fails_and_an_unknown_height_is_not_checked():
+    geo = ledge_geo()
+    x = 256 - 2 * M_PX
+    lines = [{"map": "Ledge", "viewer": [x, 204, z_dm(4.0)], "target": [x + 3 * M_PX, 204, z_dm(0.0)], "source": "hidden"},
+             {"map": "Ledge", "viewer": [x, 204, None], "target": [x + 3 * M_PX, 204, z_dm(0.0)], "source": "no z"},
+             {"map": "Other", "viewer": [1, 1, 1], "target": [2, 2, 2], "source": "another map"}]
+    result = hb.must_block_check(lines, geo, "Ledge")
+    assert (result["lines"], result["checked"], result["blocked"], result["unchecked"]) == (2, 1, 1, 1) and result["passes"]
+    lines.append({"map": "Ledge", "viewer": [x, 204, z_dm(4.0)], "target": [x + 10 * M_PX, 204, z_dm(0.0)],
+                  "source": "seen"})
+    result = hb.must_block_check(lines, geo, "Ledge")
+    assert not result["passes"] and [r["source"] for r in result["results"] if r["checked"] and not r["blocked"]] == ["seen"]
+
+
+def test_the_committed_must_block_set_is_well_formed():
+    data = json.loads((WEBAPP / "tests" / "replays" / "control_must_block.json").read_text(encoding="utf-8"))
+    assert data["lines"] and all(line["map"] and len(line["viewer"]) == 3 and len(line["target"]) == 3
+                                 and line["source"] for line in data["lines"])
+    assert any(line["map"] == "Ascent" and "case 1" in line["source"] for line in data["lines"])
+
+
+def test_the_command_refuses_a_map_that_fails_the_kill_lines_unless_accepted(tmp_path, capsys, no_picture, monkeypatch):
+    assets = toy_assets(tmp_path)
+    blobs = write_blobs(tmp_path / "blobs", covered_rounds())
+    failing = {"qualifying": 10, "blocked": 5, "share": 0.5, "passes": False, "excluded": {}, "examples": []}
+    monkeypatch.setattr(hb, "kill_line_check", lambda rounds, geo: failing)
+    assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs)], asset_dir=assets) == 2
+    captured = capsys.readouterr()
+    assert "kill lines: 5/10 blocked" in captured.out and "FAIL" in captured.out and "kill_lines" in captured.err
+    assert not (assets / "Ascent.height.npz").exists()
+    assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs), "--accept-failures"], asset_dir=assets) == 0
+    entry = json.loads((assets / "index.json").read_text(encoding="utf-8"))["maps"]["Ascent"]
+    assert entry["height"]["kill_lines"]["share"] == 0.5 and "must_block" in entry["height"]

@@ -19,6 +19,12 @@ only, which must be outside the repository: a preview is for looking, never for 
 `--preview-min-matches 1` also lets a preview make floors from a single match (the real rule is two, so one
 match's Sage wall or boost can't become a floor); the asset records that it was built that way.
 
+Before writing, it runs the two checks on the new heights: the kill lines of the rounds it read (both
+ends with z, on resolved cells, clear in 2D; at most 2% may be blocked) and the must-block set
+(`tests/replays/control_must_block.json`: sightlines impossible in game, each of which must be blocked).
+A map that fails either is refused unless `--accept-failures` (the user has looked at the listed
+failures and accepts them). A must-block line whose heights aren't known yet is listed as not checked.
+
 Either way the review picture goes to `%TEMP%\\valo-replay\\heights\\<Map>.height.png` (never committed),
 and every unresolved area is printed as a `WARNING` line: those cells keep today's flat sight and walking.
 Exits 0 when written, 2 when refused.
@@ -44,6 +50,7 @@ from app.control import heights as hc  # noqa: E402
 from app.replays import format as fmt  # noqa: E402
 
 MIN_REVISION = 11
+MUST_BLOCK = WEBAPP_ROOT / "tests" / "replays" / "control_must_block.json"
 
 
 def blob_rounds(directory: Path, map_name: str) -> tuple[list, dict]:
@@ -92,12 +99,38 @@ def index_entry(build: hb.HeightBuild) -> dict:
     return {"height_sha": build.asset.digest, "height": build.report}
 
 
+def run_checks(map_name: str, flat_geo, build: hb.HeightBuild, rounds: list) -> dict:
+    """The kill-line and must-block checks on the new heights; printed, and stored in the report."""
+    import copy
+
+    geo = cg.attach_heights(copy.copy(flat_geo), build.asset)
+    kills = hb.kill_line_check(rounds, geo)
+    lines = json.loads(MUST_BLOCK.read_text(encoding="utf-8"))["lines"] if MUST_BLOCK.is_file() else []
+    must = hb.must_block_check(lines, geo, map_name)
+    excluded = ", ".join(f"{why} {n}" for why, n in kills["excluded"].items()) or "none"
+    print(f"  kill lines: {kills['blocked']}/{kills['qualifying']} blocked by heights ({kills['share']:.1%}, "
+          f"bar {hc.KILL_LINE_BAR:.0%}): {'PASS' if kills['passes'] else 'FAIL'}"
+          f"{' (no qualifying kill: nothing was checked)' if not kills['qualifying'] else ''}; excluded: {excluded}",
+          flush=True)
+    for example in kills["examples"]:
+        print(f"    blocked: {example}", flush=True)
+    print(f"  must-block: {must['blocked']}/{must['checked']} blocked, {must['unchecked']} not checked (no heights "
+          f"yet): {'PASS' if must['passes'] else 'FAIL'}", flush=True)
+    for result in must["results"]:
+        if result["checked"] and not result["blocked"]:
+            print(f"    NOT blocked: {result['source']}", flush=True)
+    build.report["kill_lines"], build.report["must_block"] = kills, must
+    return {"kill_lines": kills, "must_block": must}
+
+
 def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_factory=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--map", required=True)
     parser.add_argument("--blobs-dir", type=Path, help="local round blobs, <match>/<n>.json.gz (default: the database)")
     parser.add_argument("--preview", action="store_true", help="build below the bar too; write only under --out")
     parser.add_argument("--out", type=Path, help="with --preview: the folder to write to, outside the repository")
+    parser.add_argument("--accept-failures", action="store_true",
+                        help="write even if the kill-line or must-block check fails (after reading its failures)")
     parser.add_argument("--preview-min-matches", type=int,
                         help=f"with --preview: matches a floor needs (default {hc.FLOOR_MIN_MATCHES}), to look at a "
                              f"map that has too few yet")
@@ -133,6 +166,7 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
     for line in hb.report_lines(args.map, build.report):
         print(line, flush=True)
     print(f"  built in {time.perf_counter() - started:.1f}s", flush=True)
+    checks = run_checks(args.map, geo, build, rounds)
     png = picture_path(args.map)
     hb.picture(build, geo, png)
     print(f"  picture: {png}", flush=True)
@@ -146,6 +180,11 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
     if not build.ready:
         print(f"REFUSED: {args.map} is below the bar ({'; '.join(build.report['not_ready'])}); nothing written. "
               f"Use --preview --out <dir> to look at it.", file=sys.stderr)
+        return 2
+    failed = [name for name in ("kill_lines", "must_block") if not checks[name]["passes"]]
+    if failed and not args.accept_failures:
+        print(f"REFUSED: {args.map} fails {' and '.join(failed)} (above); nothing written. Look at the failures, "
+              f"and pass --accept-failures only if you accept them.", file=sys.stderr)
         return 2
     hc.save_asset(asset_dir / f"{args.map}.height.npz", build.asset)
     index_path = asset_dir / "index.json"
