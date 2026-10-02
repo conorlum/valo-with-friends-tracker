@@ -401,3 +401,18 @@ def test_dry_run_lists_and_writes_nothing(factory, db, linked, capsys):
 def test_the_command_refuses_to_write_in_demo_mode(factory, linked, monkeypatch, capsys):
     monkeypatch.setattr(settings, "demo_mode", True)
     assert compute_control.main([], session_factory=factory) == 3
+
+
+def test_the_height_build_reads_a_maps_rounds_with_heights_and_skips_older_recipes(factory, db, linked):
+    # scripts/build_control_heights.py (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 3):
+    # rounds of the map at condenser revision 11 or later, by (match uuid, round number); it only reads.
+    import build_control_heights
+
+    rounds, skipped = build_control_heights.db_rounds(linked.map_name, factory)
+    assert [(match, n) for match, n, _ in rounds] == [(MATCH_UUID, n) for n in range(1, linked.round_count + 1)]
+    assert all("z" in seg for _, _, blob in rounds for segs in blob["tracks"].values() for seg in segs)
+    assert skipped == {"old_revision": 0}
+    assert build_control_heights.db_rounds("Bind", factory) == ([], {"old_revision": 0})
+    linked.recipe = linked.recipe.replace(".c11.", ".c10.")
+    db.commit()
+    assert build_control_heights.db_rounds(linked.map_name, factory) == ([], {"old_revision": 1})

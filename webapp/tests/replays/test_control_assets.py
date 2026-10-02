@@ -51,3 +51,25 @@ def test_the_index_lists_every_map_with_the_badge_flag():
         assert row["specials"] == []
         assert (row["kill_lines"] is not None) == (name in LINES)
     assert all(INDEX["maps"][n]["kill_lines"]["passes"] for n in LINES)
+
+
+def test_a_rebuilt_index_entry_keeps_its_height_fields_and_warns_when_the_walk_mask_moved():
+    # scripts/build_control_heights.py writes `height_sha` and `height` into a map's entry; rebuilding the
+    # masks must not drop them (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 3).
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    import build_control_geometry as build
+
+    previous = {"sight_sha": "old", "walk_sha": "aaa", "height_sha": "0123456789ab",
+                "height": {"supported": 0.7, "walk_sha": "aaa"}}
+    row = {"sight_sha": "new", "walk_sha": "aaa"}
+    assert build.keep_heights("Ascent", row, previous) == []
+    assert row == {"sight_sha": "new", "walk_sha": "aaa", "height_sha": "0123456789ab",
+                   "height": {"supported": 0.7, "walk_sha": "aaa"}}
+    moved = {"sight_sha": "new", "walk_sha": "bbb"}
+    [warning] = build.keep_heights("Ascent", moved, previous)
+    assert warning.startswith("WARNING Ascent") and "aaa" in warning and "bbb" in warning
+    assert moved["height_sha"] == "0123456789ab", "kept all the same: the unknown cells fall back to 2D"
+    plain = {"sight_sha": "new", "walk_sha": "bbb"}
+    assert build.keep_heights("Bind", plain, {"sight_sha": "old"}) == [] and "height_sha" not in plain

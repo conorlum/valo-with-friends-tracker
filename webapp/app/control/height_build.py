@@ -437,6 +437,66 @@ def build(rounds: list, geo: Geometry) -> HeightBuild:
     meta = {"origin_z": int(origin), "stands": counts["stands"], "rounds": counts["rounds"],
             "matches": counts["matches"],
             "walk_sha": hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12]}
+    report["walk_sha"] = meta["walk_sha"]
     asset = hc.HeightAsset(asset_floors.reshape(GRID, GRID, hc.MAX_FLOORS), spread.reshape(GRID, GRID, hc.MAX_FLOORS),
                            supported.reshape(GRID, GRID), unresolved.reshape(GRID, GRID), edges, meta)
     return HeightBuild(asset, report, found, why, not not_ready)
+
+
+# ---------------------------------------------------------------- the report, for the user
+
+
+def report_lines(name: str, report: dict) -> list[str]:
+    """The build's result as printed lines; every unresolved area is a WARNING line (the spec: loudly)."""
+    r = report
+    out = [f"{name}: {r['stands']} stands from {r['rounds']} rounds of {r['matches']} matches"
+           + (f" ({r['rounds_without_z']} rounds without heights)" if r["rounds_without_z"] else "")
+           + (f", {r['on_platforms']} stands by a platform dropped" if r["on_platforms"] else ""),
+           f"  visited {r['visited']:.1%} of {r['walkable_cells']} walkable cells, supported {r['supported']:.1%} "
+           f"(bar {hc.HEIGHT_SUPPORTED_MIN:.0%}), filled {r['filled_cells']}, unresolved {r['unresolved_cells']}",
+           f"  cells with 2 floors: {r['cells_2_floors']}, with 3: {r['cells_3_floors']}, refused (more than "
+           f"{hc.MAX_FLOORS}): {r['refused_cells']}; walks {r['edges']} ({r['one_way_edges']} one-way)"]
+    for area in r["air_only"]:
+        out.append(f"  reached only through the air: {area['cells']} cells at px {area['bbox']}, "
+                   f"z {area['z'][0]}..{area['z'][1]} dm")
+    for area in r["unresolved_areas"]:
+        why = ", ".join(f"{reason} {n}" for reason, n in area["why"].items())
+        out.append(f"WARNING {name}: unresolved area of {area['cells']} cells at px {area['bbox']} ({why}): "
+                   f"flat 2D sight and walking there")
+    out.append(f"  {'READY' if r['ready'] else 'NOT READY: ' + '; '.join(r['not_ready'])}")
+    return out
+
+
+def picture(build_: HeightBuild, geo: Geometry, path) -> None:
+    """The review picture: the map coloured by ground height (blue low to yellow high), cells with an
+    upper floor outlined in white (three floors in magenta), drops of more than STEP_UP_M between
+    neighbouring ground cells marked in black, unresolved cells in red. For spotting a cave whose roof
+    nobody stands on; never committed."""
+    from PIL import Image
+
+    asset = build_.asset
+    ground = asset.floors[..., 0].astype(float)
+    has = ground >= 0
+    top = max(float(ground[has].max()), 1.0) if has.any() else 1.0
+    f = np.clip(ground / top, 0, 1)
+    rgb = np.zeros((GRID, GRID, 3), np.uint8)
+    rgb[..., 0] = (40 + 215 * f).astype(np.uint8)
+    rgb[..., 1] = (90 + 150 * f).astype(np.uint8)
+    rgb[..., 2] = (200 - 170 * f).astype(np.uint8)
+    rgb[~has] = (24, 24, 28)
+    rgb[geo.walk & ~has & ~asset.unresolved] = (70, 70, 78)
+    rgb[asset.unresolved] = (220, 40, 40)
+    img = np.repeat(np.repeat(rgb, CELL, 0), CELL, 1)
+    count = asset.floor_count()
+    for cy, cx in zip(*np.nonzero(count >= 2)):
+        colour = (255, 255, 255) if count[cy, cx] == 2 else (255, 0, 255)
+        y0, x0 = cy * CELL, cx * CELL
+        img[y0, x0:x0 + CELL] = img[y0 + CELL - 1, x0:x0 + CELL] = colour
+        img[y0:y0 + CELL, x0] = img[y0:y0 + CELL, x0 + CELL - 1] = colour
+    step = hc.STEP_UP_M * DM
+    for cy, cx in zip(*np.nonzero(has)):
+        if cx + 1 < GRID and has[cy, cx + 1] and abs(ground[cy, cx] - ground[cy, cx + 1]) > step:
+            img[cy * CELL:(cy + 1) * CELL, (cx + 1) * CELL - 1:(cx + 1) * CELL + 1] = 0
+        if cy + 1 < GRID and has[cy + 1, cx] and abs(ground[cy, cx] - ground[cy + 1, cx]) > step:
+            img[(cy + 1) * CELL - 1:(cy + 1) * CELL + 1, cx * CELL:(cx + 1) * CELL] = 0
+    Image.fromarray(img).save(path)

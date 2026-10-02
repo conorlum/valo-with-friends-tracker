@@ -9,6 +9,7 @@ For every minimap in `app/static/img/maps/` (or `--map`), from it and its entry 
 - `index.json`: per map the mask hashes, walkable cells, cell size, the "cover not reviewed" badge
   (`cover_reviewed`), the specials, and the Risk 1 kill-line result from
   `tests/fixtures/control/kill_lines.json` (blocked share against the 2% bar), when the map has lines.
+  A map's height fields (`height_sha`, `height`; scripts/build_control_heights.py writes them) are kept.
 
 With `--bitsets`, also builds (or finds) each map's cell-to-cell visibility bitsets in the local cache
 (`webapp/.control_cache/`, or `CONTROL_CACHE_DIR`). They are never committed (R2): about 11 MB a map,
@@ -79,6 +80,18 @@ def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path) -> di
     return row
 
 
+def keep_heights(name: str, row: dict, previous: dict) -> list[str]:
+    """Carries a map's height fields (`height_sha`, `height`: scripts/build_control_heights.py's) over into
+    its rebuilt entry, and returns a WARNING line when the walk mask is no longer the one the heights were
+    built on: the cells they don't know fall back to flat 2D until the heights are rebuilt."""
+    row.update({key: value for key, value in previous.items() if key.startswith("height")})
+    built_on = (row.get("height") or {}).get("walk_sha")
+    if built_on and built_on != row["walk_sha"]:
+        return [f"WARNING {name}: its heights were built on walk mask {built_on}, which is now {row['walk_sha']}; "
+                f"rebuild them (scripts/build_control_heights.py --map {name})"]
+    return []
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--map", action="append", help="only this map (repeatable); the index keeps the others")
@@ -98,6 +111,8 @@ def main() -> None:
     index.update({"version": 1, "geometry_version": cg.GEOMETRY_VERSION, "grid": cg.GRID, "px": cg.PX})
     for name in wanted:
         row = build_map(name, tags.get("maps", {}).get(name, {}), lines.get(name), asset_dir)
+        for warning in keep_heights(name, row, index["maps"].get(name) or {}):
+            print(warning, flush=True)
         index["maps"][name] = row
         kl = row["kill_lines"]
         verdict = f"kill lines {kl['blocked']}/{kl['qualifying']} blocked ({kl['share']:.1%})" if kl else "no kill lines"

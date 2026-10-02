@@ -1,11 +1,17 @@
 """The height build on toy maps (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 3):
 stands, floors, fill, connections, unresolved areas, readiness, the asset and the command."""
 
+import json
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 
+from app.control import geometry as cg
 from app.control import height_build as hb
 from app.control import heights as hc
+from app.replays import format as fmt
 from tests.replays.control_toys import (HZ, TOY_Z0, height_blob, height_rounds, open_hall, standing, toy_ability,
                                         z_dm)
 
@@ -321,3 +327,136 @@ def test_a_large_unresolved_area_beside_two_floors_keeps_a_map_below_the_bar():
     assert len(why) == 1 and "15 cells" in why[0] and share > 0.99
     unresolved[[cell(c, 22) for c in range(20, 25)]] = False                             # 10 cells left
     assert hb.readiness(supported, unresolved, count, n)[1] == [], "at or under UNRESOLVED_MAX"
+
+
+# ---------------------------------------------------------------- the asset and the command
+
+WEBAPP = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(WEBAPP / "scripts"))
+
+import build_control_heights as command  # noqa: E402
+
+
+def covered_rounds(extra=None):
+    """A hall walked end to end at 0 m in six rounds of two matches (ready), plus `extra` players."""
+    return height_rounds(lambda m, n: {**{k: sweep(k) for k in range(9)}, **(extra or {})})
+
+
+def test_the_asset_round_trips_and_its_digest_is_stable(tmp_path):
+    b = hb.build(covered_rounds({9: level_walk(320, 328, 6.0, side="B")}), GEO)
+    hc.save_asset(tmp_path / "Toy.height.npz", b.asset)
+    back = hc.load_asset(tmp_path / "Toy.height.npz")
+    for name in ("floors", "spread", "supported", "unresolved", "edges"):
+        assert (getattr(back, name) == getattr(b.asset, name)).all(), name
+    assert back.floors.dtype == np.int16 and back.floors.shape == (GRID, GRID, hc.MAX_FLOORS)
+    assert back.meta["origin_z"] == z_dm(0.0) and back.meta["units"] == "dm" and back.meta["stand_m"] == hc.STAND_M
+    assert back.meta["rounds"] == 6 and back.meta["matches"] == 2 and len(back.meta["walk_sha"]) == 12
+    assert back.digest == b.asset.digest and len(back.digest) == 12
+    again = hb.build(covered_rounds({9: level_walk(320, 328, 6.0, side="B")}), GEO)
+    assert again.asset.digest == b.asset.digest, "the same rounds give the same asset"
+    other = hb.build(covered_rounds(), GEO)
+    assert other.asset.digest != b.asset.digest, "a different floor is a different digest"
+
+
+def test_an_asset_of_another_version_is_refused(tmp_path):
+    b = hb.build(covered_rounds(), GEO)
+    b.asset.meta["version"] = hc.HEIGHT_VERSION + 1
+    hc.save_asset(tmp_path / "Toy.height.npz", b.asset)
+    with pytest.raises(hc.HeightError):
+        hc.load_asset(tmp_path / "Toy.height.npz")
+
+
+def toy_assets(tmp_path, name="Ascent"):
+    """An asset folder holding the open hall's masks under a real map's name (the scale comes from
+    maps.json, and the toys use Ascent's), with an index and no tags."""
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    cg.write_mask_png(assets / f"{name}.sight.png", GEO.sight)
+    cg.write_mask_png(assets / f"{name}.walk.png", GEO.walk_px)
+    (assets / "tags.json").write_text(json.dumps({"maps": {}}), encoding="utf-8")
+    (assets / "index.json").write_text(json.dumps({"maps": {name: {"sight_sha": "s", "walk_sha": "w"}}}),
+                                       encoding="utf-8")
+    return assets
+
+
+def write_blobs(directory, rounds, name="Ascent"):
+    for match, n, blob in rounds:
+        (directory / match).mkdir(parents=True, exist_ok=True)
+        (directory / match / f"{n}.json.gz").write_bytes(fmt.encode_blob({**blob, "map": name}))
+    return directory
+
+
+@pytest.fixture
+def no_picture(monkeypatch, tmp_path):
+    monkeypatch.setattr(command, "picture_path", lambda name: tmp_path / f"{name}.height.png")
+
+
+def test_the_command_writes_a_ready_maps_asset_and_index_entry(tmp_path, capsys, no_picture):
+    assets = toy_assets(tmp_path)
+    blobs = write_blobs(tmp_path / "blobs", covered_rounds())
+    write_blobs(blobs, [("other", 1, height_blob({0: standing(X, Y, 9.0)}, t_end=5.0))], name="Bind")
+    assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs)], asset_dir=assets) == 0
+    out = capsys.readouterr().out
+    assert "6 rounds read" in out and "1 skipped (other_map)" in out and "READY" in out and "WROTE" in out
+    asset = hc.load_asset(assets / "Ascent.height.npz")
+    entry = json.loads((assets / "index.json").read_text(encoding="utf-8"))["maps"]["Ascent"]
+    assert entry["height_sha"] == asset.digest and entry["sight_sha"] == "s", "the entry's other fields stay"
+    assert entry["height"]["ready"] is True and entry["height"]["supported"] >= 0.95
+    assert entry["height"]["walk_sha"] == asset.meta["walk_sha"]
+    assert (tmp_path / "Ascent.height.png").stat().st_size > 0, "the review picture"
+
+
+def test_the_command_refuses_a_map_below_the_bar_and_writes_nothing(tmp_path, capsys, no_picture):
+    assets = toy_assets(tmp_path)
+    blobs = write_blobs(tmp_path / "blobs", height_rounds(lambda m, n: {0: level_walk(100, 192, 0.0)}))
+    before = (assets / "index.json").read_text(encoding="utf-8")
+    assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs)], asset_dir=assets) == 2
+    captured = capsys.readouterr()
+    assert "REFUSED" in captured.err and "below the bar" in captured.err and "NOT READY" in captured.out
+    assert "WARNING Ascent: unresolved area of" in captured.out, "unresolved areas are printed loudly"
+    assert not (assets / "Ascent.height.npz").exists()
+    assert (assets / "index.json").read_text(encoding="utf-8") == before
+
+
+def test_a_preview_builds_below_the_bar_and_writes_only_under_out(tmp_path, capsys, no_picture):
+    assets = toy_assets(tmp_path)
+    blobs = write_blobs(tmp_path / "blobs", height_rounds(lambda m, n: {0: level_walk(100, 192, 0.0)}))
+    before = (assets / "index.json").read_text(encoding="utf-8")
+    out_dir = tmp_path / "preview"
+    assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs), "--preview", "--out", str(out_dir)],
+                        asset_dir=assets) == 0
+    assert "PREVIEW written" in capsys.readouterr().out
+    assert hc.load_asset(out_dir / "Ascent.height.npz").unresolved.any()
+    assert json.loads((out_dir / "Ascent.height.json").read_text(encoding="utf-8"))["height"]["ready"] is False
+    assert not (assets / "Ascent.height.npz").exists()
+    assert (assets / "index.json").read_text(encoding="utf-8") == before
+
+
+def test_a_preview_never_writes_inside_the_repository(tmp_path, capsys, no_picture):
+    assets = toy_assets(tmp_path)
+    blobs = write_blobs(tmp_path / "blobs", covered_rounds())
+    inside = WEBAPP / "app" / "static" / "data" / "control" / "preview-should-not-exist"
+    assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs), "--preview", "--out", str(inside)],
+                        asset_dir=assets) == 2
+    assert "inside the repository" in capsys.readouterr().err and not inside.exists()
+    with pytest.raises(SystemExit):
+        command.main(["--map", "Ascent", "--blobs-dir", str(blobs), "--preview"], asset_dir=assets)
+    with pytest.raises(SystemExit):
+        command.main(["--map", "Ascent", "--blobs-dir", str(blobs), "--out", str(tmp_path / "x")], asset_dir=assets)
+
+
+def test_the_report_prints_air_only_floors_and_the_counts():
+    b = hb.build(covered_rounds({9: level_walk(320, 328, 6.0, side="B")}), GEO)
+    lines = hb.report_lines("Toy", b.report)
+    assert lines[0].startswith("Toy: ") and "6 rounds of 2 matches" in lines[0]
+    assert any("reached only through the air: 2 cells" in line for line in lines)
+    assert any("cells with 2 floors: 2" in line for line in lines) and lines[-1].strip() == "READY"
+
+
+def test_no_real_maps_heights_are_committed():
+    # A committed asset turns a map's heights on (spec: "built by a command and committed"). None is
+    # committed by the build's own tests or by a preview; this fails loudly if one slips in unreviewed.
+    index = json.loads((cg.ASSET_DIR / "index.json").read_text(encoding="utf-8"))["maps"]
+    with_heights = sorted(name for name, entry in index.items() if "height_sha" in entry)
+    files = sorted(p.name for p in cg.ASSET_DIR.glob("*.height.npz"))
+    assert [f"{name}.height.npz" for name in with_heights] == files, "every asset has its index entry and back"
