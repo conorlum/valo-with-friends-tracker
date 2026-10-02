@@ -115,7 +115,7 @@ def run_checks(map_name: str, flat_geo, build: hb.HeightBuild, rounds: list) -> 
     for example in kills["examples"]:
         print(f"    blocked: {example}", flush=True)
     print(f"  must-block: {must['blocked']}/{must['checked']} blocked, {must['unchecked']} not checked (no heights "
-          f"yet): {'PASS' if must['passes'] else 'FAIL'}", flush=True)
+          f"yet: fill them in {MUST_BLOCK.name}): {'PASS' if must['passes'] else 'FAIL'}", flush=True)
     for result in must["results"]:
         if result["checked"] and not result["blocked"]:
             print(f"    NOT blocked: {result['source']}", flush=True)
@@ -141,7 +141,9 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
     if args.preview:
         if args.out is None:
             parser.error("--preview needs --out")
-        if args.out.resolve().is_relative_to(REPO_ROOT.resolve()):
+        out = args.out.resolve()
+        # this checkout, or any other one (the main checkout and its worktrees each have a `.git`)
+        if out.is_relative_to(REPO_ROOT.resolve()) or any((folder / ".git").exists() for folder in (out, *out.parents)):
             print(f"REFUSED: --out {args.out} is inside the repository; a preview is never committed", file=sys.stderr)
             return 2
     elif args.out is not None:

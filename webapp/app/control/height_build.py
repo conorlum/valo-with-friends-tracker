@@ -141,12 +141,21 @@ def platforms(blob: dict) -> list[tuple[float, float, float, float]]:
 
 
 def off_platforms(found: list[Stand], plats: list, geo: Geometry) -> list[Stand]:
-    """`found` without the stands within PLATFORM_R_M of a platform that was up during them."""
+    """`found` without the cells within PLATFORM_R_M of a platform that was up during the stand: a stand
+    left with no cell is dropped. By cell, not by the stand's mean position: a long level walk that starts
+    on a wall has its mean far from it."""
     if not plats:
         return found
-    r2 = (hc.PLATFORM_R_M / geo.m_per_px) ** 2
-    return [s for s in found
-            if not any(t0 <= s.t1 and s.t0 <= t1 and (s.x - x) ** 2 + (s.y - y) ** 2 <= r2 for t0, t1, x, y in plats)]
+    r2 = (hc.PLATFORM_R_M / geo.m_per_px + CELL) ** 2      # a cell's centre is within a cell of its samples
+    out = []
+    for s in found:
+        near = [(x, y) for t0, t1, x, y in plats if t0 <= s.t1 and s.t0 <= t1]
+        cells = tuple(c for c in s.cells
+                      if not any(((c % GRID + 0.5) * CELL - x) ** 2 + ((c // GRID + 0.5) * CELL - y) ** 2 <= r2
+                                 for x, y in near)) if near else s.cells
+        if cells:
+            out.append(s if cells == s.cells else Stand(s.round, s.slot, s.t0, s.t1, s.z, cells, s.x, s.y))
+    return out
 
 
 def group_cell(z: np.ndarray, rounds: np.ndarray, matches: np.ndarray) -> tuple[list[tuple[int, int]], str | None]:
@@ -525,8 +534,11 @@ def kill_line_check(rounds: list, geo: Geometry) -> dict:
                 continue
             ends = []
             for slot in (killer, victim):
-                i = rnd._sample(slot, t) if slot in rnd.tracks else None
-                if i is None or abs(rnd.tracks[slot][0][i] - t) > hc.KILL_SAMPLE_S:
+                # the nearest sample within KILL_SAMPLE_S (wider than the engine's own sample-and-a-half)
+                ts = rnd.tracks[slot][0] if slot in rnd.tracks else np.zeros(0)
+                at = int(np.searchsorted(ts, t))
+                i = min((j for j in (at - 1, at) if 0 <= j < len(ts)), key=lambda j: abs(ts[j] - t), default=None)
+                if i is None or abs(ts[i] - t) > hc.KILL_SAMPLE_S:
                     ends = None
                     break
                 z = rnd.heights.get(slot)
@@ -569,7 +581,7 @@ def geo_los(geo: Geometry, a: tuple, b: tuple, smokes) -> bool:
 def must_block_check(lines: list, geo: Geometry, map_name: str) -> dict:
     """The hand-listed sightlines that are impossible in game (tests/replays/control_must_block.json):
     each must be blocked. A line whose viewer or target height is still unknown (null) is listed as not
-    checked, never as passing."""
+    checked, never as passing: a map with one fails the check until its heights are filled in."""
     results = []
     for line in lines:
         if line.get("map") != map_name:
@@ -586,5 +598,6 @@ def must_block_check(lines: list, geo: Geometry, map_name: str) -> dict:
                         "blocked": not geo_los(geo, (vx, vy, eye), (tx, ty, body), [])})
     checked = [r for r in results if r["checked"]]
     return {"lines": len(results), "checked": len(checked), "blocked": sum(r["blocked"] for r in checked),
-            "passes": all(r["blocked"] for r in checked), "unchecked": len(results) - len(checked),
+            "passes": len(checked) == len(results) and all(r["blocked"] for r in checked),
+            "unchecked": len(results) - len(checked),
             "results": results}

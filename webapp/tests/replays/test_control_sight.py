@@ -143,6 +143,21 @@ def test_the_tunnel_and_the_bridge_see_along_their_own_level_and_not_each_other(
     assert cg.los(geo, (260, Y, eye(0.0)), (350, Y, body(0.0))) and cg.los(geo, (260, Y, eye(4.0)), (200, Y, body(4.0)))
 
 
+def test_a_slab_blocks_a_line_only_inside_its_own_cells_and_the_same_both_ways():
+    geo = bridge()      # the deck's last cell is x 280-288; its plate is at 3.1 m
+    low, high = (287.5, Y, 0.7), (290.0, Y, 4.3)       # crosses 3.1 m at x 289.2, past the deck's edge
+    assert cg.los(geo, low, high) and cg.los(geo, high, low)
+    low, high = (281.0, Y, 0.7), (287.0, Y, 4.3)       # crosses it at x 285, inside the deck
+    assert not cg.los(geo, low, high) and not cg.los(geo, high, low)
+
+
+def test_straight_up_or_down_a_slab_is_in_the_way():
+    geo = bridge()
+    assert not cg.los(geo, (260, Y, 0.7), (260, Y, 4.3)) and not cg.los(geo, (260, Y, 4.3), (260, Y, 0.7))
+    assert cg.los(geo, (260, Y, 0.2), (260, Y, 2.0)), "both under the deck"
+    assert cg.los(geo, (350, Y, 0.7), (350, Y, 4.3)), "no deck here"
+
+
 def test_from_outside_the_bridge_hides_what_is_on_it_past_its_edge_and_shows_the_tunnel():
     geo = bridge()
     seen = cg.cast(geo, 330, Y, WEST + FAN, [], eye_z=eye(0.0))

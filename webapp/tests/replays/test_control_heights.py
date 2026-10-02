@@ -121,6 +121,19 @@ def test_stands_by_a_sage_wall_are_dropped():
     assert heights_m(floors_at(without)[0]) == [0.0, 3.0], "the same stands with no wall are two floors"
 
 
+def test_a_level_walk_that_starts_on_a_sage_wall_keeps_only_its_cells_away_from_it():
+    # The stand's mean position is far from the wall, but its first cells are on it.
+    wall = toy_ability("Thorne", "E_Wall_Fortifying", X, Y, 1, t=0.0, t1=10.0, kind="GameObject")
+    walk = ("A", [(0.0, X, Y, 0, 3.0), (10.0, 404, Y, 0, 3.0)])
+    rounds = height_rounds(lambda m, n: height_blob({k: walk for k in range(3)}, t_end=10.0, util=[wall], n=n))
+    found, _, counts = hb.all_stands(rounds, GEO)
+    far = GEO.cell_of_px(396, Y)
+    assert len(found) == 18 and counts["on_platforms"] == 0, "the stands stay"
+    assert all(CELL not in s.cells and CELL + 4 not in s.cells and far in s.cells for s in found)
+    assert floors_at(rounds) == (None, None), "no floor at the wall"
+    assert heights_m(floors_at(rounds, cell=far)[0]) == [3.0], "the ground far from it is still learnt"
+
+
 def test_crouching_stays_on_its_floor():
     floors, why = floors_at(height_rounds(lambda m, n: {0: standing(X, Y, 0.0), 1: standing(X, Y, -0.3)}))
     assert why is None and len(floors) == 1 and heights_m(floors)[0] in (-0.3, -0.2, -0.1, 0.0)
@@ -393,6 +406,22 @@ def write_blobs(directory, rounds, name="Ascent"):
 @pytest.fixture
 def no_picture(monkeypatch, tmp_path):
     monkeypatch.setattr(command, "picture_path", lambda name: tmp_path / f"{name}.height.png")
+    # the toy map is called Ascent: the real Ascent's must-block lines aren't its own
+    monkeypatch.setattr(command, "MUST_BLOCK", tmp_path / "no-must-block.json")
+
+
+def test_the_command_refuses_a_map_whose_must_block_lines_cant_be_checked_yet(tmp_path, capsys, no_picture, monkeypatch):
+    assets = toy_assets(tmp_path)
+    blobs = write_blobs(tmp_path / "blobs", covered_rounds())
+    lines = tmp_path / "must-block.json"
+    lines.write_text(json.dumps({"lines": [{"map": "Ascent", "viewer": [X, Y, None], "target": [X + 40, Y, None],
+                                            "source": "heights not known yet"}]}), encoding="utf-8")
+    monkeypatch.setattr(command, "MUST_BLOCK", lines)
+    assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs)], asset_dir=assets) == 2
+    captured = capsys.readouterr()
+    assert "0/0 blocked, 1 not checked" in captured.out and "FAIL" in captured.out and "must_block" in captured.err
+    assert not (assets / "Ascent.height.npz").exists()
+    assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs), "--accept-failures"], asset_dir=assets) == 0
 
 
 def test_the_command_writes_a_ready_maps_asset_and_index_entry(tmp_path, capsys, no_picture):
@@ -443,6 +472,11 @@ def test_a_preview_never_writes_inside_the_repository(tmp_path, capsys, no_pictu
     assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs), "--preview", "--out", str(inside)],
                         asset_dir=assets) == 2
     assert "inside the repository" in capsys.readouterr().err and not inside.exists()
+    (tmp_path / "other-checkout" / ".git").mkdir(parents=True)      # the main checkout, or another worktree
+    elsewhere = tmp_path / "other-checkout" / "webapp" / "app" / "static" / "data" / "control"
+    assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs), "--preview", "--out", str(elsewhere)],
+                        asset_dir=assets) == 2
+    assert "inside the repository" in capsys.readouterr().err and not elsewhere.exists()
     with pytest.raises(SystemExit):
         command.main(["--map", "Ascent", "--blobs-dir", str(blobs), "--preview"], asset_dir=assets)
     with pytest.raises(SystemExit):
@@ -546,14 +580,45 @@ def test_a_kill_through_a_wall_or_on_unresolved_ground_does_not_qualify():
     assert result["excluded"] == {"on an unresolved cell": 1}
 
 
-def test_a_must_block_line_that_is_not_blocked_fails_and_an_unknown_height_is_not_checked():
+def test_a_kill_counts_with_a_sample_a_little_before_it():
+    # KILL_SAMPLE_S is 0.25 s: positions two samples (0.125 s) before the kill still count, though the
+    # engine's own lookup takes only a sample and a half.
+    geo = ledge_geo()
+    x = 256 - 2 * M_PX
+    _, n, blob = kill_round([(2.0, 0, 6)], {0: standing(x, 204, 4.0), 6: standing(x + 10 * M_PX, 204, 0.0, "B")})
+    for segs in blob["tracks"].values():
+        [seg] = segs
+        for key in ("u", "v", "yaw", "z"):
+            seg[key] = seg[key][: int(1.875 * HZ) + 1]
+    result = hb.kill_line_check([("m", n, blob)], geo)
+    assert (result["qualifying"], result["excluded"]) == (1, {})
+
+
+def test_the_checks_run_on_a_round_whose_alarmbot_has_no_height(tmp_path, capsys):
+    # The build's checks use a geometry that just had heights attached: it has no visibility rows yet.
+    import copy
+
+    geo = copy.copy(ledge_geo())
+    geo.rows = geo.row_of = None
+    bot = toy_ability("Killjoy", "Q_StealthAlarmbot", 300, 204, 0, kind="GameObject")
+    blob = height_blob({0: standing(120, 204, 4.0), 6: standing(380, 204, 0.0, "B")}, t_end=10.0, util=[bot])
+    blob["kills"] = [{"i": 0, "t": 2.0, "killer": 6, "victim": 0}]
+    assert hb.kill_line_check([("m", 1, blob)], geo)["qualifying"] == 1, "it runs: no rows are needed"
+
+
+def test_a_must_block_line_that_is_not_blocked_fails_and_so_does_an_unknown_height():
     geo = ledge_geo()
     x = 256 - 2 * M_PX
     lines = [{"map": "Ledge", "viewer": [x, 204, z_dm(4.0)], "target": [x + 3 * M_PX, 204, z_dm(0.0)], "source": "hidden"},
-             {"map": "Ledge", "viewer": [x, 204, None], "target": [x + 3 * M_PX, 204, z_dm(0.0)], "source": "no z"},
              {"map": "Other", "viewer": [1, 1, 1], "target": [2, 2, 2], "source": "another map"}]
     result = hb.must_block_check(lines, geo, "Ledge")
-    assert (result["lines"], result["checked"], result["blocked"], result["unchecked"]) == (2, 1, 1, 1) and result["passes"]
+    assert (result["lines"], result["checked"], result["blocked"], result["unchecked"]) == (1, 1, 1, 0) and result["passes"]
+    unknown = [{"map": "Ledge", "viewer": [x, 204, None], "target": [x + 3 * M_PX, 204, z_dm(0.0)], "source": "no z"}]
+    result = hb.must_block_check(lines + unknown, geo, "Ledge")
+    assert (result["checked"], result["blocked"], result["unchecked"]) == (1, 1, 1) and not result["passes"], \
+        "a required line that can't be checked yet is not a pass"
+    assert not hb.must_block_check(unknown, geo, "Ledge")["passes"], "nor is a map with nothing checked"
+    assert hb.must_block_check([], geo, "Ledge")["passes"], "a map with no required lines has nothing to fail"
     lines.append({"map": "Ledge", "viewer": [x, 204, z_dm(4.0)], "target": [x + 10 * M_PX, 204, z_dm(0.0)],
                   "source": "seen"})
     result = hb.must_block_check(lines, geo, "Ledge")

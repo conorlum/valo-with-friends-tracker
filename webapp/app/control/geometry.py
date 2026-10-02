@@ -670,7 +670,12 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     (ax, ay, az), (bx, by, bz) = a, b
     length = math.hypot(bx - ax, by - ay)
     if length < 1e-9:
-        return True
+        # straight up or down: only the cell's own plates can be in the way
+        cell = geo.cell_of_px(ax, ay)
+        if geo.heights is None or az is None or bz is None or geo.unresolved[cell]:
+            return True
+        return not any(node >= 0 and (az - (geo.node_z[node] - hc.STAND_M)) * (bz - (geo.node_z[node] - hc.STAND_M)) < 0
+                       for node in geo.node_of[cell, 1:])
     ux, uy = (bx - ax) / length, (by - ay) / length
     circles = [s for s in smokes if not isinstance(s, Wall)]
     for wall in (s for s in smokes if isinstance(s, Wall)):
@@ -712,8 +717,17 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
             if not math.isnan(ground) and (ground - az) / d > slope:
                 return False
     for cell, first, last in spans:
-        d0 = 0.0 if cell == src else max(first - step_m, 0.0)
-        d1 = total if cell == dst else (last + step_m if cell == src else last)
+        # where the line is inside the plate's own cell, exactly: the same both ways along the line, and
+        # never past the cell's edge (a sample step of padding once blocked a crossing beside a slab)
+        t0, t1 = 0.0, length
+        for p, u, c in ((ax, ux, cell % GRID), (ay, uy, cell // GRID)):
+            if abs(u) > 1e-12:
+                near, far = sorted(((c * CELL - p) / u, ((c + 1) * CELL - p) / u))
+                t0, t1 = max(t0, near), min(t1, far)
+        if t1 < t0:
+            t0, t1 = first / geo.m_per_px, last / geo.m_per_px     # a clipped sample off the map's edge
+        d0 = 0.0 if cell == src else t0 * geo.m_per_px
+        d1 = total if cell == dst else t1 * geo.m_per_px
         h0, h1 = az + slope * d0, az + slope * d1
         for node in geo.node_of[cell, 1:]:
             if node >= 0:

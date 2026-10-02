@@ -477,10 +477,9 @@ class RoundInputs:
             elif geo.walk_n[node]:
                 # it reaches nodes by walking on its own floor, and sees them with the ray test
                 self._no_z(z)
-                if eye is None:
-                    seen = np.unpackbits(geo.rows[geo.row_of[node]])[: geo.n].astype(bool)
-                else:
-                    seen = cast(geo, x, y, np.arange(0, 360, RAY_STEP_DEG), [], eye_z=eye, own=node)
+                # with no z (eye None) the cast is the 2D one; it needs no visibility rows, which a
+                # geometry that just had heights attached doesn't have yet (the height build's checks)
+                seen = cast(geo, x, y, np.arange(0, 360, RAY_STEP_DEG), [], eye_z=eye, own=node)
                 start = np.zeros(geo.n, bool)
                 start[node] = True
                 steps = int(math.ceil(AREA_TRIPS[key] / geo.cell_m)) + 1
