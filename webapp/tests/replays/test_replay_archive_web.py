@@ -23,6 +23,7 @@ from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models.replay import Replay, ReplayDeletion, ReplayUpload  # noqa: E402
 from app.routers import replays as routes  # noqa: E402
+from app.services import replay_archive_sync as sync  # noqa: E402
 from app.services import replay_upload as uploads  # noqa: E402
 
 
@@ -114,5 +115,50 @@ def test_an_unreachable_worker_leaves_the_ack_unsent(db, tmp_path, stub, monkeyp
         upload = collect(db, client, vrf_bytes())
         assert (upload.status, upload.store_outcome, upload.archive_ack) == ("stored", "stored", None)
         assert len(list((disk / "pending").glob("*.vrf"))) == 1
+    finally:
+        httpd.shutdown()
+
+
+def test_the_sync_resends_a_lost_ack(engine, db, tmp_path, stub, monkeypatch):  # noqa: F811
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    try:
+        lossy = uploads.WorkerClient(base)
+        monkeypatch.setattr(lossy, "ack", lambda *_: (_ for _ in ()).throw(uploads.WorkerError("lost")))
+        upload = collect(db, lossy, vrf_bytes())
+        assert upload.archive_ack is None
+        counts = sync.cycle(sessionmaker(bind=engine), uploads.WorkerClient(base), sync.State())
+        assert counts["acks_sent"] == 1
+        db.expire_all()
+        assert db.get(ReplayUpload, upload.id).archive_ack == "archived"
+        assert (disk / "archive" / f"{MATCH_UUID}.vrf").exists() and not list((disk / "pending").iterdir())
+        # Answered acks aren't sent again.
+        assert sync.cycle(sessionmaker(bind=engine), uploads.WorkerClient(base), sync.State())["acks_sent"] == 0
+    finally:
+        httpd.shutdown()
+
+
+def test_a_new_worker_boot_gets_the_tombstones_and_a_restored_file_goes(engine, db, tmp_path, stub):  # noqa: F811
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    try:
+        client = uploads.WorkerClient(base)
+        collect(db, client, vrf_bytes())
+        assert (disk / "archive" / f"{MATCH_UUID}.vrf").exists()
+        # As after a restored snapshot: the web app's table lists the match, the worker's copy doesn't.
+        db.add(ReplayDeletion(match_uuid=MATCH_UUID, reason="asked"))
+        db.commit()
+        state = sync.State()
+        assert sync.cycle(sessionmaker(bind=engine), client, state)["tombstones_pushed"] == 1
+        assert not (disk / "archive" / f"{MATCH_UUID}.vrf").exists()
+        assert state.synced_boot_id == worker.archive.boot_id
+        assert sync.cycle(sessionmaker(bind=engine), client, state)["tombstones_pushed"] == 0, "once per boot"
+    finally:
+        httpd.shutdown()
+
+
+def test_the_sync_does_nothing_while_the_archive_is_off(engine, tmp_path, stub):  # noqa: F811
+    worker, httpd, base = start(tmp_path, stub)
+    try:
+        counts = sync.cycle(sessionmaker(bind=engine), uploads.WorkerClient(base), sync.State())
+        assert not any(counts.values())
     finally:
         httpd.shutdown()
