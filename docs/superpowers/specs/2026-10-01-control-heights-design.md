@@ -197,7 +197,8 @@ Everything that can watch or stand gets a height. Missing heights are stored as 
 
 - **Players:** each track segment gains `"z"`: one value per sample, in decimetres of the game's world z,
   delta-encoded like `u` and `v`. A sample whose z the parser didn't give breaks the segment's z (the segment
-  carries `z` only when every sample has one; a mixed segment is split).
+  carries `z` only when every sample has one; a mixed segment stores none, since splitting it would move the
+  positions revision 10 stored: PR #106 review).
 - **Utility actors:** every utility entry gains its spawn `"z"` (`app/replays/extras.py` reads `location.z`
   next to x and y); a thrown entry gains `"z"` at the landing point.
 - **Moving watchers:** a drone's (pawn's) `path` points gain z: `[t, u, v, z]`.
@@ -379,8 +380,9 @@ Walls stay infinitely tall and smokes stay columns; both are acknowledged limita
   heights exist: the stairs are wrong in the meantime, which the user accepted.
 - **Order:**
   1. The archive, its ack protocol, the deletion command and the upload page text (part 1); tell the friends.
-  2. Condenser revision 11 (part 2), deployed; friends re-upload what their Demos folders still hold, and
-     `reparse_archive.py` covers everything archived since step 1.
+  2. Condenser revision 11 (part 2), deployed; `reparse_archive.py` brings every archived upload to it. No
+     re-upload request to friends (2026-10-02): every stored upload is already in the archive, and the
+     rest are the user's own local ingests (`reingest_replays.py`).
   3. Heights (part 3) for the first map that reaches the bar, with an Ascent `.vrf` checked for case 1 as
      soon as one exists; reviewed on its picture, its unresolved areas and its numbers.
   4. The engine (part 4) behind the asset's presence; previewed locally (`preview_control_live.py`) against
@@ -394,7 +396,7 @@ Walls stay infinitely tall and smokes stay columns; both are acknowledged limita
 ## Testing
 
 - **Format:** a segment with z round-trips; a blob without z decodes as before, and `decode_segment` still
-  returns four values; a segment with a missing z sample is split; utility spawn z, drone path z and both
+  returns four values; a segment with a missing z sample stores no z and the same times and positions; utility spawn z, drone path z and both
   trip anchors' z survive the condenser; the recipe changes with revision 11; the JS decoder ignores z.
 - **Archive** (stub worker, as the upload tests do):
   - with no archive dir (or one that isn't a mount, or fails the probe) the worker behaves as today: the job

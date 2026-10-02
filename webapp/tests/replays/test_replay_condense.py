@@ -344,6 +344,101 @@ def test_a_teleport_splits_a_segment(tmp_path):
     assert len(run(tmp_path, match, movement=movement).rounds[1]["tracks"]["0"]) == 2
 
 
+# Heights (revision 11; docs/superpowers/specs/2026-10-01-control-heights-design.md, part 2)
+
+
+def heights_of(blob, slot):
+    return [[z for *_, z in fmt.decode_segment_z(seg, blob["hz"])] for seg in blob["tracks"].get(str(slot), [])]
+
+
+def test_every_segment_keeps_its_height_in_decimetres(tmp_path):
+    match = SyntheticMatch()
+    movement = match.movement()
+    start = match.round_start(1)
+    for row in movement:
+        if row["shooter_character_net_guid"] == match.pawn(1, 0) and row["time_ms"] >= start + 5000:
+            row["position"]["z"] = 304.0     # up a 2 m step (well under TELEPORT_UNITS)
+    blob = run(tmp_path, match, movement=movement).rounds[1]
+    [zs] = heights_of(blob, 0)
+    assert zs[0] == 10 and zs[-1] == 30 and set(zs) == {10, 30}, "world z / 10, rounded, no map offset"
+    assert all("z" in seg for segs in blob["tracks"].values() for seg in segs)
+    assert len(samples_of(blob, 0)[0]) == 4, "decode_segment still returns four values"
+
+
+def without_heights(blob):
+    return {slot: [{k: v for k, v in seg.items() if k != "z"} for seg in segs] for slot, segs in blob["tracks"].items()}
+
+
+def test_a_sample_without_a_height_leaves_its_run_without_heights_and_moves_nothing(tmp_path):
+    match = SyntheticMatch()
+    start = match.round_start(1)
+    # off-grid times (16 Hz is 62.5 ms), so several samples land on one grid point and others are filled
+    movement = [dict(r, time_ms=r["time_ms"] + 17, position=dict(r["position"])) for r in match.movement()]
+    movement = [r for r in movement if not (r["shooter_character_net_guid"] == match.pawn(1, 0)
+                                            and start + 6000 < r["time_ms"] < start + 6400)]
+    reference = run(tmp_path / "all", match, movement=[dict(r, position=dict(r["position"])) for r in movement])
+    for row in movement:
+        if row["shooter_character_net_guid"] == match.pawn(1, 0) and start + 5000 <= row["time_ms"] < start + 7000:
+            del row["position"]["z"]
+    blob = run(tmp_path / "mixed", match, movement=movement).rounds[1]
+    assert without_heights(blob) == without_heights(reference.rounds[1]), "times and positions as with every height"
+    assert not any("z" in seg for seg in blob["tracks"]["0"]), "missing, never zero and never invented"
+    assert all("z" in seg for seg in blob["tracks"]["1"]), "the other players are untouched"
+
+
+def test_heights_never_change_the_stored_times_and_positions(tmp_path):
+    match = SyntheticMatch()
+    start = match.round_start(1)
+    movement = match.movement()
+    mine = [r for r in movement if r["shooter_character_net_guid"] == match.pawn(1, 0)]
+    # the reviewer's two cases: a height that comes and goes within one grid point, and across a filled gap
+    extra = [dict(mine[0], time_ms=start + 3000 + ms, position=dict(mine[0]["position"], x=mine[0]["position"]["x"] + ms))
+             for ms in (10, 20)]
+    del extra[0]["position"]["z"]
+    gap = [r for r in movement + extra if not (r["shooter_character_net_guid"] == match.pawn(1, 0)
+                                               and start + 8000 < r["time_ms"] < start + 8250)]
+    for row in gap:
+        if row["shooter_character_net_guid"] == match.pawn(1, 0) and row["time_ms"] >= start + 8250:
+            row["position"].pop("z", None)
+    flat = [dict(r, position={k: v for k, v in r["position"].items() if k != "z"}) for r in gap]
+    with_z = run(tmp_path / "z", match, movement=gap).rounds[1]
+    assert without_heights(with_z) == run(tmp_path / "flat", match, movement=flat).rounds[1]["tracks"]
+
+
+def test_a_match_without_any_height_stores_none(tmp_path):
+    match = SyntheticMatch()
+    movement = match.movement()
+    for row in movement:
+        row["position"].pop("z")
+    out = run(tmp_path, match, movement=movement)
+    assert not any("z" in seg for blob in out.rounds.values() for segs in blob["tracks"].values() for seg in segs)
+    assert len(out.rounds[1]["tracks"]["0"]) == 1, "missing heights alone split nothing"
+
+
+def test_a_filled_grid_point_takes_the_height_between_its_neighbours(tmp_path):
+    match = SyntheticMatch()
+    start = match.round_start(1)
+    movement = [r for r in match.movement() if not (r["shooter_character_net_guid"] == match.pawn(1, 0)
+                                                    and start + 5000 < r["time_ms"] < start + 5500)]
+    for row in movement:
+        if row["shooter_character_net_guid"] == match.pawn(1, 0) and row["time_ms"] >= start + 5500:
+            row["position"]["z"] = 500.0
+    blob = run(tmp_path, match, movement=movement).rounds[1]
+    [zs] = heights_of(blob, 0)
+    assert len(zs) == 50 * 16 + 1
+    assert zs[80] == 10 and zs[88] == 50 and zs[84] == 30, "linear between the samples either side of the gap"
+
+
+def test_a_teleport_still_splits_when_heights_are_missing(tmp_path):
+    match = SyntheticMatch()
+    movement = match.movement()
+    for row in movement:
+        row["position"].pop("z")
+        if row["shooter_character_net_guid"] == match.pawn(1, 0) and row["time_ms"] >= match.round_start(1) + 5000:
+            row["position"]["x"] += cd.TELEPORT_UNITS + 100
+    assert len(run(tmp_path, match, movement=movement).rounds[1]["tracks"]["0"]) == 2
+
+
 def test_samples_after_death_are_dropped(tmp_path):
     match = SyntheticMatch()
     movement = match.movement()

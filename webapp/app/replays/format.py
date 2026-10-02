@@ -22,6 +22,13 @@ differences from the previous sample, one sample per `1/hz` seconds from `t0`.
 `u`/`v` are ints in 0..10000 of the square minimap; `yaw` is an int in degrees 0..359 in
 minimap space (0 = +u, 90 = +v).
 
+Heights (revision 11; docs/superpowers/specs/2026-10-01-control-heights-design.md, part 2) are optional
+keys, all ints in decimetres of the game's world z (no map offset). A missing height is a missing
+key, never 0. A track segment has `"z"` (delta-encoded like `u`) only when every one of its samples
+had one. An `ability` row has `"z"` (its spawn, i.e. where a thrown one landed), `"z"` inside
+`thrown` (the throw's own spawn), `"end_z"` beside a tripwire's `end`, and a fourth value on each
+`path` point, `[t, u, v, z]`.
+
 `FORMAT_VERSION` changes only when the shape changes. `CONDENSE_REVISION` changes with
 any condenser change. Staleness is inequality with the current recipe, never ordering.
 """
@@ -35,7 +42,7 @@ from pathlib import Path
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 10   # 10: map control's inputs (hits, possessed, yaws, damage runs)
+CONDENSE_REVISION = 11   # 10: map control's inputs (hits, possessed, yaws, damage runs); 11: heights (z)
 
 UV_SCALE = 10000
 
@@ -84,10 +91,16 @@ def decode_yaw_deltas(values: list[int]) -> list[int]:
     return [yaw % 360 for yaw in delta_decode(values)]
 
 
-def encode_segment(t0: float, u: list[int], v: list[int], yaw: list[int]) -> dict:
+def encode_segment(t0: float, u: list[int], v: list[int], yaw: list[int], z: list[int] | None = None) -> dict:
+    """`z` (decimetres of world z) is all of the segment's samples or None: a segment never mixes."""
     if not (len(u) == len(v) == len(yaw)) or not u:
         raise FormatError("a segment needs equal, non-empty u/v/yaw arrays")
-    return {"t0": round(t0, 3), "u": delta_encode(u), "v": delta_encode(v), "yaw": encode_yaw_deltas(yaw)}
+    segment = {"t0": round(t0, 3), "u": delta_encode(u), "v": delta_encode(v), "yaw": encode_yaw_deltas(yaw)}
+    if z is not None:
+        if len(z) != len(u):
+            raise FormatError("a segment's z needs one value per sample")
+        segment["z"] = delta_encode(z)
+    return segment
 
 
 def decode_segment(segment: dict, hz: int) -> list[tuple[float, int, int, int]]:
@@ -98,6 +111,18 @@ def decode_segment(segment: dict, hz: int) -> list[tuple[float, int, int, int]]:
     if not (len(u) == len(v) == len(yaw)):
         raise FormatError("segment arrays differ in length")
     return [(round(segment["t0"] + i / hz, 6), u[i], v[i], yaw[i]) for i in range(len(u))]
+
+
+def decode_segment_z(segment: dict, hz: int) -> list[tuple[float, int, int, int, int | None]]:
+    """A segment's samples as (t, u, v, yaw, z): z in decimetres of world z, or None for every
+    sample of a segment stored without heights (before revision 11, or the parser gave none)."""
+    samples = decode_segment(segment, hz)
+    if "z" not in segment:
+        return [(*sample, None) for sample in samples]
+    z = delta_decode(segment["z"])
+    if len(z) != len(samples):
+        raise FormatError("segment arrays differ in length")
+    return [(*sample, z[i]) for i, sample in enumerate(samples)]
 
 
 def encode_blob(blob: dict) -> bytes:

@@ -4,9 +4,11 @@
 the same thing. Each round's rows become three `util` kinds (a new `k` needs no format `v` bump):
 
 - `{"k": "ability", "t": <spawn>, "by": <slot | null>, "t1", "kind", "code", "name", "agent",
-  "owner_by", "u", "v", ["yaw"], ["thrown"], ["path"], ["owner_d", "other_d"], ["end"],
+  "owner_by", "u", "v", ["z"], ["yaw"], ["thrown"], ["path"], ["owner_d", "other_d"], ["end", "end_z"],
   ["defuses"], ["points", "on"], ["fx"], ["gone"], ["possessed"], ["yaws"]}` (`possessed` and `yaws`,
-  on pawns, are map control's inputs: `_control_inputs`);
+  on pawns, are map control's inputs: `_control_inputs`; `z`, `end_z`, `thrown.z` and a path point's
+  fourth value are heights in decimetres of world z, each left out when the export gave none:
+  format.py, revision 11);
 - `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`;
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
 - `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`.
@@ -78,6 +80,7 @@ class _Actor:
     yaw: float | None
     instigator: int | None = None
     closed_ms: int | None = None
+    z: float | None = None     # world z at spawn, or None when the export gave none
 
 
 @dataclass
@@ -100,6 +103,11 @@ def _round_of(t_ms: int, windows: list[tuple[int, int, int]], buy_phase: bool = 
 
 def _seconds(t_ms: int, start: int) -> float:
     return round((t_ms - start) / 1000.0, 3)
+
+
+def _dm(z: float) -> int:
+    """World z (cm) as the blob stores a height: whole decimetres, no map offset."""
+    return int(round(z / 10.0))
 
 
 @dataclass
@@ -248,7 +256,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     walls.add(guid)
                 rotation = data.get("rotation") or {}
                 actors[guid] = _Actor(guid, t_ms, kind, code, name,
-                                      float(location["x"]), float(location["y"]), rotation.get("yaw"))
+                                      float(location["x"]), float(location["y"]), rotation.get("yaw"),
+                                      z=None if location.get("z") is None else float(location["z"]))
             elif kind == "actor_closed":
                 closes.setdefault(guid, t_ms)
             elif kind == "valorant_shot_received":
@@ -940,7 +949,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                  teams: dict[int, str | None] | None = None, pawn_yaws=None) -> Extras:
     """`positions_at(t_ms)` -> {slot: (x, y)}: each player's world position at that moment, from
     the full movement stream (buy phase included, where the round tracks don't reach).
-    `pawn_path(guid)` -> [(t_ms, x, y)]: a non-player pawn's movement (a drone), or None.
+    `pawn_path(guid)` -> [(t_ms, x, y[, z | None])]: a non-player pawn's movement (a drone), or None.
     `pawn_yaws(guid)` -> [(t_ms, world yaw)]: its facing, for map control's `yaws`, or None.
     `teams`: slot -> the condenser's side group (None when unresolved), so reveals count enemies only."""
     raw = read_raw(events_path, frozenset(players.pawn_slot))
@@ -1005,6 +1014,8 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                  "t1": _seconds(min(actor.closed_ms, end), start) if actor.closed_ms is not None else None,
                  "kind": actor.kind, "code": actor.code, "name": actor.name, "agent": agent,
                  "slot": slot, "owner_by": owner_by, "u": u, "v": v}
+        if actor.z is not None:
+            entry["z"] = _dm(actor.z)
         if owner_by == "nearest":
             # The guess's evidence: world units to the owner and to the other player of that agent.
             entry["owner_d"] = round(near[1])
@@ -1017,6 +1028,8 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             ends = [a for a in placed[id(claim[1])] if a.name == "4_TripWire_SecondWire"]
             if ends:
                 entry["end"] = list(game_map.to_uv(ends[0].x, ends[0].y))
+                if ends[0].z is not None:
+                    entry["end_z"] = _dm(ends[0].z)
                 counts["wires_paired"] += 1
                 parts.append(ends[0])
         # Gone before its object closes: shot and destroyed (for a trapwire, either anchor). Going off
@@ -1046,13 +1059,18 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         if throw is not None:
             entry["thrown"] = {"t0": _seconds(throw.t_ms, start), "t1": _seconds(throw.closed_ms, start),
                                **dict(zip(("u", "v"), game_map.to_uv(throw.x, throw.y)))}
+            if throw.z is not None:
+                entry["thrown"]["z"] = _dm(throw.z)
             counts["abilities_thrown"] += 1
         if actor.kind == "Pawn" and pawn_path is not None:
             last_t, points = -PATH_STEP_MS, []
             until = min(actor.closed_ms, end) if actor.closed_ms is not None else end
-            for t_ms, x, y in pawn_path(actor.guid) or []:
+            for t_ms, x, y, *height in pawn_path(actor.guid) or []:
                 if max(actor.t_ms, start) <= t_ms <= until and t_ms - last_t >= PATH_STEP_MS:
-                    points.append([_seconds(t_ms, start), *game_map.to_uv(x, y)])
+                    point = [_seconds(t_ms, start), *game_map.to_uv(x, y)]
+                    if height and height[0] is not None:
+                        point.append(_dm(height[0]))     # [t, u, v, z]; three values when it had no height
+                    points.append(point)
                     last_t = t_ms
             if points:
                 entry["path"] = points
@@ -1155,7 +1173,7 @@ class WorldPositions:
     def __init__(self, movement, players: PlayerTable):
         self.rows: dict[int, tuple[list[int], list[tuple[float, float]]]] = {}
         by_slot: dict[int, list[tuple[int, float, float]]] = defaultdict(list)
-        self.others: dict[int, list[tuple[int, float, float]]] = defaultdict(list)
+        self.others: dict[int, list[tuple[int, float, float, float | None]]] = defaultdict(list)
         self.other_yaws: dict[int, list[tuple[int, float]]] = defaultdict(list)
         for row in movement:
             data = row.data
@@ -1166,18 +1184,23 @@ class WorldPositions:
             slot = players.pawn_slot.get(pawn)
             target = by_slot[slot] if slot is not None else self.others[pawn]
             if not target or row.time_ms - target[-1][0] >= self.STEP_MS:
-                target.append((row.time_ms, float(position["x"]), float(position["y"])))
+                point = (row.time_ms, float(position["x"]), float(position["y"]))
+                if slot is None:
+                    # a drone's height rides along (revision 11), None when the row had none
+                    z = position.get("z")
+                    point = (*point, None if z is None else float(z))
+                target.append(point)
                 if slot is None and data.get("yaw") is not None:
                     self.other_yaws[pawn].append((row.time_ms, float(data["yaw"])))
         for slot, samples in by_slot.items():
             samples.sort()
             self.rows[slot] = ([t for t, _, _ in samples], [(x, y) for _, x, y in samples])
         for samples in self.others.values():
-            samples.sort()
+            samples.sort(key=lambda sample: sample[:3])     # a missing height (None) doesn't order
         for samples in self.other_yaws.values():
             samples.sort()
 
-    def path(self, guid: int) -> list[tuple[int, float, float]]:
+    def path(self, guid: int) -> list[tuple[int, float, float, float | None]]:
         return self.others.get(guid, [])
 
     def yaws(self, guid: int) -> list[tuple[int, float]]:

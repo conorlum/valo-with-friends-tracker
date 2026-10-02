@@ -21,9 +21,11 @@ def players() -> PlayerTable:
                        other_slot={200 + s: s for s in range(10)}, pawn_changes={}, gone_ms={})
 
 
-def spawned(t_ms, guid, archetype, x, y, yaw=0.0):
+def spawned(t_ms, guid, archetype, x, y, yaw=0.0, z=0):
+    """`z=None` leaves the height out of the row, as an export without one would."""
+    location = {"x": x, "y": y} if z is None else {"x": x, "y": y, "z": z}
     return {"type": "actor_spawned", "time_ms": t_ms, "actor_net_guid": guid, "archetype_path": archetype,
-            "location": {"x": x, "y": y, "z": 0}, "rotation": {"pitch": 0, "yaw": yaw, "roll": 0}}
+            "location": location, "rotation": {"pitch": 0, "yaw": yaw, "roll": 0}}
 
 
 def instigated(t_ms, guid, pawn):
@@ -167,10 +169,55 @@ def test_a_landed_object_keeps_its_throw_and_a_drone_its_path(tmp_path):
     extras = build_extras(path, players(), WINDOWS, GAME_MAP, AGENTS, lambda t: {},
                           lambda guid: drone if guid == 42 else [])
     bolt, drone_entry = [a for a in extras.rounds[1]["abilities"] if a["kind"] != "Projectile"]
-    assert bolt["thrown"] == {"t0": 10.0, "t1": 11.0, "u": 5000, "v": 6000}
+    assert bolt["thrown"] == {"t0": 10.0, "t1": 11.0, "u": 5000, "v": 6000, "z": 0}
     # One point per 100 ms, inside the drone's own life (25-27 s) only.
     assert [p[0] for p in drone_entry["path"]] == [15.0, 15.1, 16.0]
     assert "thrown" not in drone_entry and extras.report["pawn_paths"] == 1
+
+
+def test_heights_survive_on_the_spawn_the_throw_the_drone_path_and_both_trip_anchors(tmp_path):
+    # Revision 11 (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 2): decimetres of
+    # world z, as the export gave it.
+    rows = [spawned(20_000, 40, "Default__Projectile_Hunter_Q_RevealBolt_C", 1000, 0, z=512.0), closed(21_000, 40),
+            spawned(21_050, 41, "Default__GameObject_Hunter_Q_SonarBolt_C", 3000, 0, z=-96.0),
+            spawned(25_000, 42, "Default__Pawn_Hunter_E_Drone_C", 0, 0, z=130.0), closed(27_000, 42),
+            spawned(1_000, 500, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0),
+            effect(2_000, 101, 1, [500]),
+            spawned(8_000, 700, "Default__GameObject_Gumshoe_4_TripWire_C", 1000, 0, z=40.0),
+            spawned(8_000, 701, "Default__GameObject_Gumshoe_4_TripWire_SecondWire_C", 1000, 400, z=245.0),
+            placement(8_000, 500, [701])]
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    drone = [(25_000, 0.0, 0.0, 130.0), (25_100, 20.0, 0.0, 134.0), (25_200, 30.0, 0.0, None), (26_000, 900.0, 0.0, 251.0)]
+    extras = build_extras(path, players(), WINDOWS, GAME_MAP, AGENTS, lambda t: {},
+                          lambda guid: drone if guid == 42 else [])
+    by_name = {a["name"]: a for a in extras.rounds[1]["abilities"]}
+    bolt = by_name["Q_SonarBolt"]
+    assert bolt["z"] == -10 and bolt["thrown"]["z"] == 51, "the landing point's height, and the throw's own"
+    assert by_name["E_Drone"]["z"] == 13
+    assert by_name["E_Drone"]["path"] == [[15.0, 5000, 5000, 13], [15.1, 5000, 5020, 13], [15.2, 5000, 5030],
+                                          [16.0, 5000, 5900, 25]], "a point without a height keeps three values"
+    wire = by_name["4_TripWire"]
+    assert (wire["z"], wire["end"], wire["end_z"]) == (4, [5400, 6000], 24)
+
+
+def test_an_actor_without_a_height_stores_none_never_zero(tmp_path):
+    rows = [spawned(20_000, 40, "Default__Projectile_Hunter_Q_RevealBolt_C", 1000, 0, z=None), closed(21_000, 40),
+            spawned(21_050, 41, "Default__GameObject_Hunter_Q_SonarBolt_C", 3000, 0, z=None),
+            spawned(25_000, 42, "Default__Pawn_Hunter_E_Drone_C", 0, 0, z=None), closed(27_000, 42),
+            spawned(1_000, 500, "Default__Ability_Gumshoe_4_TripWire_C", 0, 0),
+            effect(2_000, 101, 1, [500]),
+            spawned(8_000, 700, "Default__GameObject_Gumshoe_4_TripWire_C", 1000, 0, z=None),
+            spawned(8_000, 701, "Default__GameObject_Gumshoe_4_TripWire_SecondWire_C", 1000, 400, z=None),
+            placement(8_000, 500, [701])]
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    drone = [(25_000, 0.0, 0.0), (25_100, 20.0, 0.0), (26_000, 900.0, 0.0)]     # the old three-value shape
+    extras = build_extras(path, players(), WINDOWS, GAME_MAP, AGENTS, lambda t: {},
+                          lambda guid: drone if guid == 42 else [])
+    for entry in extras.rounds[1]["abilities"]:
+        assert "z" not in entry and "end_z" not in entry and "z" not in entry.get("thrown", {})
+        assert all(len(point) == 3 for point in entry.get("path", []))
 
 
 def test_a_pawn_carries_when_it_was_possessed_and_its_facing_over_time(tmp_path):
@@ -594,7 +641,7 @@ from app.replays.extras import rounds_extras, util_entries  # noqa: E402
 
 UTIL_KEYS = {"k", "t", "by", "t1", "kind", "code", "name", "agent", "owner_by", "u", "v", "yaw", "thrown", "path",
              "owner_d", "other_d", "u1", "v1", "gun", "n", "end", "defuses", "points", "on", "target", "fx",
-             "status", "from"}
+             "status", "from", "z", "end_z"}
 
 
 def test_util_entries_round_trip_to_the_viewers_shape():
