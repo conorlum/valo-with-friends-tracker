@@ -232,3 +232,77 @@ def height_rounds(make, matches: int = 2, rounds: int = 3) -> list:
             made = make(m, n)
             out.append((f"match-{m}", n, made if "tracks" in made else height_blob(made, t_end=10.0, n=n)))
     return out
+
+
+def _cells_in(rect) -> np.ndarray:
+    """Flat cells whose centre lies in the px rectangle (x0, y0, x1, y1)."""
+    from app.control.geometry import CELL, GRID
+
+    x0, y0, x1, y1 = rect
+    ys, xs = np.divmod(np.arange(GRID * GRID), GRID)
+    cx, cy = xs * CELL + CELL / 2, ys * CELL + CELL / 2
+    return np.flatnonzero((cx >= x0) & (cx < x1) & (cy >= y0) & (cy < y1))
+
+
+def toy_heights(name: str, floors, *, ground=(), upper=(), unresolved=(), links=(), walls=(), cache_dir=None,
+                specials=None, slope=None):
+    """A toy geometry with a hand-made height asset (heights.py), visibility built per node.
+
+    Every walkable cell starts at 0 m. `ground` = [(px rect, z m), ...] sets the lowest floor (later
+    entries win); `slope` = (x0 px, x1 px, z0 m, z1 m) makes the ground climb linearly from x0 to x1
+    (z0 before, z1 after); `upper` = [(px rect, z m), ...] adds a floor above (twice for a third);
+    `unresolved` = [px rect, ...] takes the height away (flat 2D there). Floors of neighbouring cells
+    within STEP_UP_M connect, as the build infers; `links` = [((x, y, floor), (x, y, floor), one_way), ...]
+    adds a walked connection between two neighbouring cells (a climb or a drop)."""
+    import copy
+
+    from app.control import height_build as hb
+    from app.control import heights as hc
+    from app.control.geometry import CELL, GRID, attach_heights
+
+    key = ("heights", name, tuple(floors), tuple(walls), repr((ground, upper, unresolved, links, specials, slope)))
+    if key in _CACHE:
+        return _CACHE[key]
+    flat = toy_geometry(name + "-flat", floors, walls, cache_dir, specials)
+    geo = copy.copy(flat)
+    geo.rows = geo.row_of = None
+    walk = geo.walk.ravel()
+    z = {int(c): [0.0] for c in np.flatnonzero(walk)}
+    if slope is not None:
+        x0, x1, z0, z1 = slope
+        for c in z:
+            cx = (c % GRID) * CELL + CELL / 2
+            z[c] = [float(np.interp(cx, [x0, x1], [z0, z1]))]
+    for rect, height in ground:
+        for c in _cells_in(rect):
+            if int(c) in z:
+                z[int(c)] = [float(height)]
+    for rect, height in upper:
+        for c in _cells_in(rect):
+            if int(c) in z:
+                z[int(c)] = sorted(z[int(c)] + [float(height)])
+    gone = {int(c) for rect in unresolved for c in _cells_in(rect) if int(c) in z}
+    for c in gone:
+        del z[c]
+    lowest = min(h for hs in z.values() for h in hs)
+    heights = {c: [int(round((h - lowest) * 10)) for h in hs] for c, hs in z.items()}
+    edges = {tuple(e) for e in hb.connect(heights, {}, geo).tolist()}
+    for (ax, ay, fa), (bx, by, fb), one_way in links:
+        a, b = geo.cell_of_px(ax, ay), geo.cell_of_px(bx, by)
+        edges.add((a, fa, b, fb))
+        if not one_way:
+            edges.add((b, fb, a, fa))
+    asset_floors = -np.ones((GRID * GRID, hc.MAX_FLOORS), np.int16)
+    for c, hs in heights.items():
+        asset_floors[c, : len(hs)] = hs
+    unresolved_mask = np.zeros(GRID * GRID, bool)
+    unresolved_mask[list(gone)] = True
+    asset = hc.HeightAsset(asset_floors.reshape(GRID, GRID, hc.MAX_FLOORS),
+                           np.zeros((GRID, GRID, hc.MAX_FLOORS), np.int16),
+                           (asset_floors[:, 0] >= 0).reshape(GRID, GRID), unresolved_mask.reshape(GRID, GRID),
+                           np.array(sorted(edges), np.int32).reshape(-1, 4), {"origin_z": z_dm(lowest)})
+    attach_heights(geo, asset)
+    geo.name = name
+    visibility(geo, cache_dir or _DIR)
+    _CACHE[key] = geo
+    return geo

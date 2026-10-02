@@ -26,7 +26,9 @@ from tests.replays.control_toys import blob, door_hall
 # so re-pinned in place. 3: barriers, backfill and unknown (UNKNOWN_MPS; DECAY_MPS and BARRIER_GRACE_S
 # removed), presence (PRESENCE_M), rifle-walk UNKNOWN_MPS, GAP_SEAL_M and DROP_PIECE_CELLS. Unreleased, so
 # re-pinned in place. The digest also covers the height constants (app/control/heights.py) from 2026-10-02.
-PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745"}
+# 4: heights (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4): the per-floor engine and its
+# start values. Unreleased, so re-pinned in place as its steps land.
+PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4: "63d5a536e28bf212"}
 
 
 def _constants_digest() -> str:
