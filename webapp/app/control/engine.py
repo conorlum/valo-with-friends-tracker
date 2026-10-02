@@ -960,12 +960,27 @@ class Tick:
     def comp_seen(self, mask: np.ndarray, watched: np.ndarray) -> np.ndarray:
         """Q73: what a free component sees, from its whole boundary (every free cell next to anything
         not free), smoke-aware. The frontier (next to the team's vision) sees most of it; the rest of
-        the boundary rechecks only the targets the frontier missed."""
+        the boundary rechecks only the targets the frontier missed.
+
+        On a flat map the boundary is enough: whatever an interior cell sees, the boundary cell its line
+        of sight leaves through sees too. With heights it isn't: a raised interior node sees over what
+        stops the low boundary (tests/replays/test_control_floors.py has the case). So there every node
+        of the component is a source: after the boundary, the interior rechecks the targets still unseen,
+        which is exact and cheap, since the boundary has seen nearly all of it."""
+        boundary, sources = self.boundary_seen(mask, watched)
+        if self.geo.heights is None:
+            return boundary
+        rest = mask & ~sources
+        return boundary | seen_from(self.geo, np.flatnonzero(rest), self.smokes, skip=mask | boundary)
+
+    def boundary_seen(self, mask: np.ndarray, watched: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(what the component's boundary sees, the boundary nodes it was seen from): the shortcut that is
+        the whole answer on a flat map."""
         walk = self.geo.walk_n
         edge = mask & self.topo.dilate(watched & walk, eight=True)
         first = seen_from(self.geo, np.flatnonzero(edge), self.smokes, skip=mask)
         rim = self.topo.edge_out(mask) & ~edge
-        return first | seen_from(self.geo, np.flatnonzero(rim), self.smokes, skip=mask | first)
+        return first | seen_from(self.geo, np.flatnonzero(rim), self.smokes, skip=mask | first), edge | rim
 
     def unknown_for(self, side: str, removed: int | None = None) -> np.ndarray:
         """`side`'s unknown at this tick, or in the counterfactual without `removed` when they are on

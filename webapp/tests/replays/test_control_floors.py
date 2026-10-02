@@ -252,3 +252,72 @@ def test_a_flat_map_has_no_heights_in_its_round():
     rnd = ce.RoundInputs(blob({0: ("A", [(0.0, 150, 200, 0)]), 5: ("B", [(0.0, 400, 200, 180)])}), open_hall())
     assert rnd.heights == {} and rnd.height(0, 1.0) is None and not rnd.missing.get("approximate heights")
     assert isinstance(topology.of(open_hall()), topology.FlatTopology)
+
+
+# ---------------------------------------------------------------- Safe: every node of the unknown is a source
+
+
+def mound():
+    """Ground at 0 m. A mound 6 m up at x 136-160 (clear of the hall's walls), and further east a ridge 3 m up across the hall at
+    x 200-224. From the low ground west of the ridge nothing east of it is seen; from the mound's top the
+    ground well beyond the ridge is."""
+    return toy_heights("Mound", [HALL], ground=[((136, 150, 160, 250), 6.0), ((200, 96, 224, 296), 3.0)])
+
+
+def region(geo, x0, x1):
+    """Every node whose centre is west of x1 and east of x0: a piece of unknown with the mound inside."""
+    cx = geo.centres[:, 0]
+    return geo.walk_n & (cx >= x0) & (cx < x1)
+
+
+def test_a_raised_node_inside_the_unknown_sees_what_its_boundary_cannot():
+    # The reviewer's case (spec, "Unknown and Safe per floor"): Safe is what no node of a team's unknown
+    # sees. The unknown here is everything west of x 200, with the mound in its middle. Its boundary is low
+    # ground, which the ridge blocks; the mound's top sees over the ridge.
+    geo = mound()
+    tk = tick(geo, {0: still("A", 400, 280, 0, 0.0), 5: still("B", 120, 120, 0, 0.0)})
+    unknown = region(geo, 0, 200)
+    nobody = np.zeros(geo.n, bool)
+    target = node(geo, 330)
+    assert cg.los(geo, (148, Y, 6.0 + 0.7), (330, Y, 0.3)), "the mound's top sees the far ground"
+    assert not cg.los(geo, (196, Y, 0.7), (330, Y, 0.3)), "the unknown's edge doesn't"
+    boundary, sources = tk.boundary_seen(unknown, nobody)
+    assert not sources[node(geo, 148)], "the mound is interior: not a boundary source"
+    assert not boundary[target], "so the boundary shortcut misses it"
+    assert tk.comp_seen(unknown, nobody)[target], "every node as a source: it is seen, so it is not Safe"
+    tk.unknown = {"A": unknown, "B": nobody}
+    assert not tk.unknown_safe("A")[target] and tk.unknown_safe("A")[node(geo, 212)] is not None
+
+
+@pytest.mark.parametrize("make", [bridge, ledge, mound])
+def test_every_node_sees_at_least_what_the_boundary_sees_and_exactly_the_union_of_its_nodes(make):
+    geo = make()
+    tk = tick(geo, {0: still("A", 400, 280, 0, 0.0), 5: still("B", 120, 120, 0, geo.node_z[node(geo, 120, 120)])})
+    nobody = np.zeros(geo.n, bool)
+    rng = np.random.default_rng(3)
+    differs = 0
+    for _ in range(6):
+        x0 = int(rng.integers(96, 300))
+        mask = region(geo, x0, x0 + int(rng.integers(40, 140)))
+        full = tk.comp_seen(mask, nobody)
+        boundary, _ = tk.boundary_seen(mask, nobody)
+        brute = ce.seen_from(geo, np.flatnonzero(mask), [])
+        outside = ~mask
+        assert (full[outside] == brute[outside]).all(), "the every-node check is the union of every node's view"
+        assert not (boundary & ~full).any(), "and never less than the boundary sees"
+        differs += int((full & ~boundary & outside).sum())
+    if make is mound:
+        assert differs > 0, "on the mound the shortcut is wrong, so it is not kept on a map with heights"
+
+
+def test_a_flat_map_keeps_the_boundary_shortcut():
+    from tests.replays.control_toys import blob, open_hall
+
+    geo = open_hall()
+    tk = ce.Tick(ce.RoundInputs(blob({0: ("A", [(0.0, 150, 200, 0)]), 5: ("B", [(0.0, 400, 200, 180)])}), geo), 1.0)
+    mask = geo.walk_n & (geo.centres[:, 0] < 250)
+    nobody = np.zeros(geo.n, bool)
+    assert (tk.comp_seen(mask, nobody) == tk.boundary_seen(mask, nobody)[0]).all()
+    # and there the shortcut is exact: nothing outside the mask is seen from inside it that the boundary misses
+    brute = ce.seen_from(geo, np.flatnonzero(mask), [])
+    assert (tk.comp_seen(mask, nobody)[~mask] == brute[~mask]).all()
