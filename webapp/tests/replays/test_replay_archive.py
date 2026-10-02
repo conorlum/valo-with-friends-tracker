@@ -78,7 +78,7 @@ def test_a_mismatched_match_uuid_or_sha256_or_unknown_job_is_refused(tmp_path):
     sha = hold(archive, "j1", UUID_A, b"one")
     assert ack(archive, "j1", UUID_B, sha)[0] == 409
     assert ack(archive, "j1", UUID_A, "0" * 64)[0] == 409
-    assert ack(archive, "nope", UUID_A, sha)[0] == 404
+    assert ack(archive, "nope", UUID_A, sha) == (200, {"archived": False, "result": "nothing held"})
     assert (archive.pending / "j1.vrf").exists(), "a refused ack changes nothing"
     assert ack(archive, "j1", UUID_A, sha)[0] == 200
 
@@ -113,6 +113,18 @@ def test_unchanged_archives_only_when_the_match_has_no_file(tmp_path):
     assert not list(archive.pending.iterdir()) and archive.path_of(UUID_A).read_bytes() == b"same"
 
 
+def test_a_reparse_ack_takes_the_new_replay_id_and_touches_no_file(tmp_path):
+    archive = make(tmp_path)
+    sha = hold(archive, "j1", UUID_A, b"one")
+    ack(archive, "j1", UUID_A, sha, replay_id=1)
+    status, answer = archive.ack("rp", {"match_uuid": UUID_A, "sha256": sha, "outcome": "replaced", "replay_id": 4,
+                                        "played_at": "2026-09-29T10:00:00Z"}, {"match_uuid": UUID_A, "sha256": sha})
+    assert (status, answer) == (200, {"archived": True, "result": "kept"})
+    entry = archive.entries()[0]
+    assert entry["replay_id"] == 4 and entry["played_at"] == "2026-09-29T10:00:00+00:00"
+    assert archive.path_of(UUID_A).read_bytes() == b"one"
+
+
 def test_eviction_takes_the_earliest_played_match_and_never_touches_jobs_or_pending(tmp_path):
     # Budget: total - 70*max - 5*max - slack - pending. max_bytes=1 makes the reserve negligible.
     archive = make(tmp_path, total=arc.ARCHIVE_SLACK + 100 + 75, max_bytes=1, queue_size=5)
@@ -144,8 +156,11 @@ def test_a_deletion_removes_files_and_refuses_later_acks_and_a_restored_file_goe
     sha_b = hold(archive, "j2", UUID_B, b"two")
     removed = archive.delete(UUID_B)
     assert removed["pending"] == ["j2"] and not (archive.pending / "j2.vrf").exists()
-    status, answer = ack(archive, "j2", UUID_B, sha_b)
-    assert status == 404 or answer.get("reason") == "deleted on request"
+    assert ack(archive, "j2", UUID_B, sha_b)[1]["archived"] is False
+    # Even with the server's own record of the job, a deleted match's ack is refused.
+    status, answer = archive.ack("j2b", {"match_uuid": UUID_B, "sha256": sha_b, "outcome": "stored", "replay_id": 2},
+                                 {"match_uuid": UUID_B, "sha256": sha_b})
+    assert (status, answer["reason"]) == (200, "deleted on request") and not archive.has(UUID_B)
     # A later upload of a deleted match never reaches pending.
     hold(archive, "j3", UUID_B, b"two again")
     assert not (archive.pending / "j3.vrf").exists()

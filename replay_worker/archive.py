@@ -247,8 +247,9 @@ class Archive:
                     return record["status"], record["answer"]
                 return 409, {"error": "a different ack for this job was already applied", "first": record["answer"]}
             meta = read_json(self.pending / f"{job_id}.json", None) or job
-            if meta is None:
-                return 404, {"error": "no such job"}
+            if meta is None or not meta.get("match_uuid"):
+                # A failed job, or one long gone: nothing of it is held, and that is a final answer.
+                return 200, {"archived": False, "result": "nothing held"}
             status, answer = self._apply(job_id, body, meta)
             if "result" in answer:  # applied; a refused or malformed ack changes nothing and isn't recorded
                 write_json(record_path, {"body": body, "status": status, "answer": answer, "at": time.time()})
@@ -259,7 +260,7 @@ class Archive:
         if outcome not in OUTCOMES:
             return 400, {"error": f"outcome must be one of {OUTCOMES}"}
         match_uuid = str(body.get("match_uuid") or "").lower()
-        if not meta.get("match_uuid") or match_uuid != str(meta["match_uuid"]).lower():
+        if match_uuid != str(meta["match_uuid"]).lower():
             self.log(f"archive: ack for job {job_id} refused: match uuid {match_uuid!r} is not the job's")
             return 409, {"error": "the match uuid is not this job's"}
         if outcome in KEEPING:
@@ -271,7 +272,7 @@ class Archive:
         pending = self.pending / f"{job_id}.vrf"
         if match_uuid in self.tombstones:
             self._drop_pending(job_id)
-            return 409, {"archived": False, "result": "refused", "reason": "deleted on request"}
+            return 200, {"archived": False, "result": "refused", "reason": "deleted on request"}
         if outcome not in KEEPING:
             self._drop_pending(job_id)
             return 200, {"archived": False, "result": "deleted"}

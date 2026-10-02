@@ -18,10 +18,26 @@ Map control has its own queue and never shares the parse thread: a fixed pool of
 (`python -m replay_worker.control_job`, run by the control venv's interpreter; this process never
 imports numpy or the engine), niced, time- and memory-capped, one map's first round alone.
 
-One job runs at a time; up to `queue_size` more wait. Each job gets its own temp folder (the
-upload and the parser's export, which is about 65x the file). It runs the parser command with a
-timeout that kills the whole process tree and, on Linux, an address-space cap; then condenses
-with the same code as local ingest. The folder is deleted when the job ends, whatever happened.
+One job runs at a time; up to `queue_size` more wait. Each job gets its own folder (the upload and
+the parser's export, which is about 65x the file). It runs the parser command with a timeout that
+kills the whole process tree and, on Linux, an address-space cap; then condenses with the same code
+as local ingest.
+
+The `.vrf` archive (replay_worker/archive.py; docs/superpowers/specs/2026-10-01-control-heights-design.md,
+part 1) is on only when REPLAY_ARCHIVE_DIR is a mounted, writable disk. Off, everything is as before: the
+folder is a temp folder, deleted when the job ends whatever happened, and the job table lives in memory.
+On, job folders live on the disk with a `job.json` each (a restart re-queues or reloads them), the export is
+deleted as soon as the condenser returns, and a parsed upload waits in `pending/` until the web app acks
+what it stored:
+
+    POST /jobs/{id}/ack        {"match_uuid", "sha256", "outcome", "replay_id", "played_at"}: archive or drop
+                               the job's file. Archive off: 200 {"archived": false, "reason": "archive off"}.
+    POST /reparse              {"match_uuid"}: parse the archived file again, behind every waiting upload.
+    GET  /archive              {"files": [...]}: the archive's index.
+    POST /archive/delete       {"match_uuid"}: tombstone a match, delete its pending and archived files.
+    POST /archive/tombstones   {"match_uuids": [...]}: the web app's full list replaces the local copy.
+
+These routes are as unauthenticated as /jobs: the service is private, reachable only from the web service.
 
 Configuration (environment, all optional):
     REPLAY_PARSER_CMD        JSON list, with {vrf} and {out} placeholders
@@ -40,6 +56,8 @@ Configuration (environment, all optional):
     REPLAY_CONTROL_QUEUE     waiting rounds (default 32)
     REPLAY_CONTROL_TIMEOUT_S / REPLAY_CONTROL_WARM_TIMEOUT_S   per round (900) / a map's first (1800)
     REPLAY_CONTROL_MEMORY_MB child address-space cap, Linux only (default 2048)
+    REPLAY_ARCHIVE_DIR       the archive disk's mount point (default unset: no archive)
+    REPLAY_ARCHIVE_REQUIRE_MOUNT  "0" skips the mount-point check (tests and local runs only)
 """
 
 from __future__ import annotations
@@ -70,6 +88,11 @@ if str(WEBAPP) not in sys.path:
 from app.replays.condense import condense_export_dir  # noqa: E402
 from app.replays.contract import ContractError  # noqa: E402
 
+try:  # run as `python -m replay_worker.server` (the container) or imported by the tests
+    from replay_worker import archive as archive_store  # noqa: E402
+except ImportError:  # pragma: no cover - run as a plain script from its folder
+    import archive as archive_store  # type: ignore[no-redef]  # noqa: E402
+
 VRF_MAGIC = (0x43F4EFDD).to_bytes(4, "little")
 DEFAULT_PARSER_CMD = ["CliReader", "export", "{vrf}", "--output", "{out}"]
 FINISHED_KEPT = 50  # finished jobs whose results stay readable (oldest dropped first)
@@ -97,6 +120,10 @@ class Settings:
     control_warm_timeout_s: float = 1800.0
     control_memory_mb: int = 2048
     control_max_bytes: int = 4 * 1024 * 1024
+    # The .vrf archive (replay_worker/archive.py): off unless the directory is a mounted, writable disk.
+    archive_dir: Path | None = None
+    archive_require_mount: bool = True
+    archive_total_bytes: int | None = None  # tests only; the disk's own size otherwise
 
     @classmethod
     def from_env(cls, env=os.environ) -> "Settings":
@@ -120,6 +147,9 @@ class Settings:
         settings.control_warm_timeout_s = float(env.get("REPLAY_CONTROL_WARM_TIMEOUT_S",
                                                         settings.control_warm_timeout_s))
         settings.control_memory_mb = int(env.get("REPLAY_CONTROL_MEMORY_MB", settings.control_memory_mb))
+        if env.get("REPLAY_ARCHIVE_DIR"):
+            settings.archive_dir = Path(env["REPLAY_ARCHIVE_DIR"])
+        settings.archive_require_mount = env.get("REPLAY_ARCHIVE_REQUIRE_MOUNT", "1") != "0"
         return settings
 
 
@@ -135,9 +165,14 @@ class Job:
     created: float = field(default_factory=time.time)
     finished: float | None = None
     parse_seconds: float | None = None
+    kind: str = "upload"            # or "reparse" (archive on only)
+    match_uuid: str | None = None   # known once parsed (a reparse knows it from the start)
+    map: str | None = None
 
     def public(self) -> dict:
         body = {"id": self.id, "status": self.status}
+        if self.kind != "upload":
+            body["kind"] = self.kind
         if self.error:
             body["error"] = self.error
         if self.result is not None:
@@ -175,14 +210,34 @@ def _limit_memory(cap_mb: int):
     return apply
 
 
+class NoSpace(Exception):
+    """The archive disk can't take another upload without eating into the running parse's reserve."""
+
+
 class Worker:
-    """The queue, one worker thread, and the finished jobs' results."""
+    """The queue, one worker thread, and the finished jobs' results. With the archive on, jobs live on
+    its disk with a job.json each, and reparse jobs wait in their own queue behind every upload."""
+
+    SWEEP_EVERY_S = 3600
 
     def __init__(self, settings: Settings):
         self.settings = settings
         self.queue: queue.Queue[Job] = queue.Queue(maxsize=settings.queue_size)
+        self.reparse_queue: queue.Queue[Job] = queue.Queue(maxsize=settings.queue_size)
         self.jobs: dict[str, Job] = {}
         self.lock = threading.Lock()
+        self.wake = threading.Event()
+        self.archive, self.archive_reason = None, "REPLAY_ARCHIVE_DIR is not set"
+        if settings.archive_dir is not None:
+            self.archive, self.archive_reason = archive_store.open_archive(
+                settings.archive_dir, require_mount=settings.archive_require_mount,
+                total_bytes=settings.archive_total_bytes, max_bytes=settings.max_bytes,
+                queue_size=settings.queue_size, log=_log)
+            if self.archive is None:
+                _log(f"archive off: {self.archive_reason}")
+        self.last_sweep = 0.0
+        if self.archive is not None:
+            self._recover()
         self.thread = threading.Thread(target=self._run, name="replay-worker", daemon=True)
         self.thread.start()
 
@@ -192,14 +247,25 @@ class Worker:
             return "none"
         return f"{self.settings.memory_cap_mb} MB" if os.name != "nt" else "unsupported on this OS"
 
+    def archive_status(self) -> dict:
+        if self.archive is None:
+            return {"enabled": False, "reason": self.archive_reason}
+        return self.archive.status()
+
     # -------------------------------------------------------------- intake
 
     def submit(self, body: bytes) -> Job:
         job_id = uuid.uuid4().hex
-        folder = self.settings.temp_root / f"replay-job-{job_id}"
+        if self.archive is None:
+            folder = self.settings.temp_root / f"replay-job-{job_id}"
+        else:
+            if not self.archive.intake_ok(len(body)):
+                raise NoSpace()
+            folder = self.archive.jobs / job_id
         folder.mkdir(parents=True)
         (folder / "upload.vrf").write_bytes(body)
         job = Job(job_id, folder, hashlib.sha256(body).hexdigest(), len(body))
+        self._save(job)
         try:
             self.queue.put_nowait(job)
         except queue.Full:
@@ -207,20 +273,87 @@ class Worker:
             raise
         with self.lock:
             self.jobs[job_id] = job
+        self.wake.set()
+        return job
+
+    def submit_reparse(self, match_uuid: str) -> Job:
+        """Raises LookupError (not archived), PermissionError (deleted on request), queue.Full."""
+        match_uuid = match_uuid.lower()
+        if self.archive is None or not self.archive.has(match_uuid):
+            raise LookupError("this match has no archived file")
+        if self.archive.is_tombstoned(match_uuid):
+            raise PermissionError("this match was deleted on request")
+        job_id = uuid.uuid4().hex
+        folder = self.archive.jobs / job_id
+        folder.mkdir(parents=True)
+        try:
+            with self.archive.lock:
+                shutil.copyfile(self.archive.path_of(match_uuid), folder / "upload.vrf")
+        except FileNotFoundError:  # evicted or deleted since the check
+            shutil.rmtree(folder, ignore_errors=True)
+            raise LookupError("this match has no archived file") from None
+        sha = archive_store.sha256_file(folder / "upload.vrf")
+        job = Job(job_id, folder, sha, (folder / "upload.vrf").stat().st_size, kind="reparse", match_uuid=match_uuid)
+        self._save(job)
+        try:
+            self.reparse_queue.put_nowait(job)
+        except queue.Full:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+        with self.lock:
+            self.jobs[job_id] = job
+        self.wake.set()
         return job
 
     def get(self, job_id: str) -> Job | None:
         with self.lock:
             return self.jobs.get(job_id)
 
+    def ack(self, job_id: str, body: dict) -> tuple[int, dict]:
+        if self.archive is None:
+            return HTTPStatus.OK, {"archived": False, "reason": "archive off"}
+        job = self.get(job_id)
+        if job is not None:
+            record = {"status": job.status, "match_uuid": job.match_uuid, "sha256": job.sha256, "kind": job.kind,
+                      "map": job.map}
+        else:  # forgotten from memory (FINISHED_KEPT) or from before a restart: its record on disk
+            folder = self.archive.jobs / job_id
+            record = archive_store.read_json(folder / "job.json", None) if job_id.isalnum() else None
+        if record is not None and record.get("status") in ("queued", "parsing"):
+            return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "the job isn't finished; ack it again later"}
+        meta = None
+        if record is not None and record.get("status") == "done":
+            meta = {k: record.get(k) for k in ("match_uuid", "sha256", "kind", "map")}
+        return self.archive.ack(job_id, body, meta)
+
     # -------------------------------------------------------------- the job
+
+    def _next(self) -> Job:
+        """Uploads first, then reparses. With the archive off, exactly the old blocking get."""
+        if self.archive is None:
+            return self.queue.get()
+        while True:
+            for source in (self.queue, self.reparse_queue):
+                try:
+                    return source.get_nowait()
+                except queue.Empty:
+                    pass
+            if time.time() - self.last_sweep > self.SWEEP_EVERY_S:
+                self._sweep()
+            self.wake.wait(timeout=1.0)
+            self.wake.clear()
 
     def _run(self) -> None:
         while True:
-            job = self.queue.get()
+            job = self._next()
             status, error, result = "failed", REASON_PARSE, None
             try:
                 job.status = "parsing"
+                self._save(job)
+                if self.archive is not None:
+                    if job.kind == "reparse" and self.archive.is_tombstoned(job.match_uuid):
+                        raise _JobFailed("this match was deleted on request")
+                    self.archive.evict()
                 result, status, error = self._process(job), "done", None
             except _JobFailed as failed:
                 error = failed.reason
@@ -229,12 +362,31 @@ class Worker:
             except Exception:  # noqa: BLE001 - one bad file must not stop the worker
                 traceback.print_exc()
             finally:
-                # The temp folder goes first: a job reads as finished only once it's gone.
-                shutil.rmtree(job.folder, ignore_errors=True)
+                if self.archive is None:
+                    # The temp folder goes first: a job reads as finished only once it's gone.
+                    shutil.rmtree(job.folder, ignore_errors=True)
+                else:
+                    self._settle(job, status, result)
                 job.result, job.error, job.finished = result, error, time.time()
                 job.status = status
+                self._save(job)
                 self._forget_old()
-                self.queue.task_done()
+                (self.queue if job.kind == "upload" else self.reparse_queue).task_done()
+
+    def _settle(self, job: Job, status: str, result: dict | None) -> None:
+        """Archive on: the export goes, the result is written, a parsed upload waits in pending/ for its
+        ack, and anything else of the upload is deleted. Errors here never stop the worker."""
+        try:
+            shutil.rmtree(job.folder / "export", ignore_errors=True)
+            vrf = job.folder / "upload.vrf"
+            if status == "done" and result is not None:
+                archive_store.write_json(job.folder / "result.json", result)
+                if job.kind == "upload":
+                    self.archive.hold_pending(job.id, vrf, {"match_uuid": job.match_uuid, "sha256": job.sha256,
+                                                            "size": job.size, "map": job.map})
+            vrf.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
 
     def _process(self, job: Job) -> dict:
         vrf = job.folder / "upload.vrf"
@@ -260,6 +412,11 @@ class Worker:
             build = json.loads(self.settings.parser_build.read_text(encoding="utf-8-sig"))
         # The match UUID comes from the file's own header, never its name (check_file_name=False).
         replay = condense_export_dir(out, source_sha256=job.sha256, build=build, vrf_path=vrf, check_file_name=False)
+        if self.archive is not None:
+            shutil.rmtree(out, ignore_errors=True)  # the export is ~65x the file; the result is all we need
+            if job.kind == "reparse" and replay.match_uuid.lower() != job.match_uuid:
+                raise _JobFailed("the archived file is another match")
+        job.match_uuid, job.map = replay.match_uuid.lower(), replay.map_name
         return {
             "match_uuid": replay.match_uuid, "map_name": replay.map_name, "game_branch": replay.game_branch,
             "source_sha256": replay.source_sha256, "recipe": replay.recipe, "hz": replay.hz,
@@ -277,6 +434,78 @@ class Worker:
             finished = sorted((j for j in self.jobs.values() if j.finished), key=lambda j: j.finished)
             for job in finished[:-FINISHED_KEPT]:
                 del self.jobs[job.id]
+                if self.archive is not None:
+                    shutil.rmtree(job.folder, ignore_errors=True)
+
+    # -------------------------------------------------------------- the archive's job records
+
+    def _save(self, job: Job) -> None:
+        if self.archive is None:
+            return
+        try:
+            archive_store.write_json(job.folder / "job.json", {
+                "id": job.id, "kind": job.kind, "status": job.status, "error": job.error, "sha256": job.sha256,
+                "size": job.size, "created": job.created, "finished": job.finished,
+                "parse_seconds": job.parse_seconds, "match_uuid": job.match_uuid, "map": job.map})
+        except OSError:
+            traceback.print_exc()
+
+    def _recover(self) -> None:
+        """After a restart: queued and parsing jobs are queued again in creation order (a parse starts
+        over), done and failed ones are readable again. A folder without a job.json is debris."""
+        records = []
+        for folder in self.archive.jobs.iterdir():
+            record = archive_store.read_json(folder / "job.json", None)
+            if not folder.is_dir() or record is None:
+                shutil.rmtree(folder, ignore_errors=True)
+                continue
+            records.append((record.get("created") or 0, folder, record))
+        for _created, folder, record in sorted(records, key=lambda r: r[0]):
+            job = Job(record["id"], folder, record["sha256"], record["size"], status=record["status"],
+                      error=record.get("error"), created=record.get("created") or time.time(),
+                      finished=record.get("finished"), parse_seconds=record.get("parse_seconds"),
+                      kind=record.get("kind") or "upload", match_uuid=record.get("match_uuid"), map=record.get("map"))
+            shutil.rmtree(folder / "export", ignore_errors=True)
+            if job.status in ("queued", "parsing"):
+                job.status = "queued"
+                target = self.queue if job.kind == "upload" else self.reparse_queue
+                try:
+                    if not (folder / "upload.vrf").exists():
+                        raise queue.Full
+                    target.put_nowait(job)
+                except queue.Full:
+                    job.status, job.error, job.finished = "failed", "the worker restarted: please re-upload", time.time()
+                    (folder / "upload.vrf").unlink(missing_ok=True)
+                self._save(job)
+            elif job.status == "done":
+                job.result = archive_store.read_json(folder / "result.json", None)
+                if job.result is None:
+                    job.status, job.error = "failed", REASON_PARSE
+            with self.lock:
+                self.jobs[job.id] = job
+        _log(f"archive on: recovered {len(records)} job(s); {self.queue.qsize()} upload(s) and "
+             f"{self.reparse_queue.qsize()} reparse(s) queued again")
+        self._sweep()
+
+    def _sweep(self) -> None:
+        """Pending files and ack records past their TTL, and finished job folders nobody collected."""
+        self.last_sweep = time.time()
+        try:
+            self.archive.sweep()
+            cutoff = time.time() - archive_store.UNCOLLECTED_TTL_S
+            with self.lock:
+                stale = [j for j in self.jobs.values() if j.finished and j.finished < cutoff]
+                for job in stale:
+                    del self.jobs[job.id]
+            for job in stale:
+                shutil.rmtree(job.folder, ignore_errors=True)
+                _log(f"job {job.id} was never collected; deleted")
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+
+
+def _log(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 # ---------------------------------------------------------------- map control (docs/map-control-worker-plan.md)
@@ -473,7 +702,13 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
                                    "queue_size": worker.settings.queue_size, "memory_cap": worker.memory_cap}}
                 body["control"] = {"enabled": bool(control and control.enabled),
                                    **(control.counts() if control else {})}
+                body["archive"] = worker.archive_status()
                 return self._send(HTTPStatus.OK, body)
+            if self.path == "/archive":
+                if worker.archive is None:
+                    return self._send(HTTPStatus.NOT_FOUND, {"error": "the archive is off"})
+                return self._send(HTTPStatus.OK, {"files": worker.archive.entries(),
+                                                  "status": worker.archive.status()})
             if self.path.startswith("/control/"):
                 job = control.get(self.path[len("/control/"):]) if control and control.enabled else None
                 if job is None:
@@ -489,6 +724,10 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
         def do_POST(self):  # noqa: N802
             if self.path == "/control":
                 return self._control()
+            if self.path.startswith("/jobs/") and self.path.endswith("/ack"):
+                return self._ack(self.path[len("/jobs/"):-len("/ack")])
+            if self.path in ("/reparse", "/archive/delete", "/archive/tombstones"):
+                return self._archive_post()
             if self.path != "/jobs":
                 return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
             length = self.headers.get("Content-Length")
@@ -503,9 +742,55 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
                 return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a Valorant replay"})
             try:
                 job = worker.submit(body)
-            except queue.Full:
+            except (queue.Full, NoSpace):
                 return self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "the worker is busy, try again soon"})
             return self._send(HTTPStatus.ACCEPTED, {"id": job.id, "status": job.status})
+
+        def _json(self, limit: int = 1 << 20) -> dict | None:
+            length = self.headers.get("Content-Length")
+            if length is None or int(length) > limit:
+                self.close_connection = True
+                return None
+            try:
+                body = json.loads(self.rfile.read(int(length)) or b"{}")
+            except ValueError:
+                return None
+            return body if isinstance(body, dict) else None
+
+        def _ack(self, job_id: str):
+            body = self._json()
+            if body is None:
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not an ack"})
+            status, answer = worker.ack(job_id, body)
+            return self._send(status, answer)
+
+        def _archive_post(self):
+            body = self._json()
+            if body is None:
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not JSON"})
+            if worker.archive is None:
+                return self._send(HTTPStatus.NOT_FOUND, {"error": "the archive is off"})
+            if self.path == "/archive/tombstones":
+                uuids = body.get("match_uuids")
+                if not isinstance(uuids, list):
+                    return self._send(HTTPStatus.BAD_REQUEST, {"error": "match_uuids must be a list"})
+                return self._send(HTTPStatus.OK, {"removed": worker.archive.set_tombstones(uuids),
+                                                  "boot_id": worker.archive.boot_id})
+            match_uuid = str(body.get("match_uuid") or "").lower()
+            if not match_uuid:
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "match_uuid is required"})
+            if self.path == "/archive/delete":
+                return self._send(HTTPStatus.OK, {"removed": worker.archive.delete(match_uuid)})
+            try:
+                job = worker.submit_reparse(match_uuid)
+            except LookupError as missing:
+                return self._send(HTTPStatus.NOT_FOUND, {"error": str(missing)})
+            except PermissionError as deleted:
+                return self._send(HTTPStatus.CONFLICT, {"error": str(deleted)})
+            except queue.Full:
+                return self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "the reparse queue is full"})
+            return self._send(HTTPStatus.ACCEPTED, {"id": job.id, "status": job.status, "kind": job.kind,
+                                                    "sha256": job.sha256, "size": job.size})
 
         def _control(self):
             if control is None or not control.enabled:
