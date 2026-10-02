@@ -197,7 +197,8 @@ Everything that can watch or stand gets a height. Missing heights are stored as 
 
 - **Players:** each track segment gains `"z"`: one value per sample, in decimetres of the game's world z,
   delta-encoded like `u` and `v`. A sample whose z the parser didn't give breaks the segment's z (the segment
-  carries `z` only when every sample has one; a mixed segment is split).
+  carries `z` only when every sample has one; a mixed segment stores none, since splitting it would move the
+  positions revision 10 stored: PR #106 review).
 - **Utility actors:** every utility entry gains its spawn `"z"` (`app/replays/extras.py` reads `location.z`
   next to x and y); a thrown entry gains `"z"` at the landing point.
 - **Moving watchers:** a drone's (pawn's) `path` points gain z: `[t, u, v, z]`.
@@ -395,7 +396,7 @@ Walls stay infinitely tall and smokes stay columns; both are acknowledged limita
 ## Testing
 
 - **Format:** a segment with z round-trips; a blob without z decodes as before, and `decode_segment` still
-  returns four values; a segment with a missing z sample is split; utility spawn z, drone path z and both
+  returns four values; a segment with a missing z sample stores no z and the same times and positions; utility spawn z, drone path z and both
   trip anchors' z survive the condenser; the recipe changes with revision 11; the JS decoder ignores z.
 - **Archive** (stub worker, as the upload tests do):
   - with no archive dir (or one that isn't a mount, or fails the probe) the worker behaves as today: the job
