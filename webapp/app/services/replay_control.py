@@ -56,14 +56,18 @@ def map_layer(map_name: str) -> dict | None:
 def geometry_inputs(map_name: str) -> dict | None:
     """Everything app/control/geometry.py's `load_geometry` reads for a map: the built masks (by
     index.json's hashes; `barrier` is None for a map with no barrier paint), the specials from
-    tags.json and the scale from maps.json."""
+    tags.json, the scale from maps.json, and the map's heights by their digest (`height`, only on a
+    map that has them, so a flat map's inputs and its rounds' fingerprints are what they were)."""
     index, tags, maps = _assets()
     entry = index.get(map_name)
     if entry is None:
         return None
-    return {"sight": entry.get("sight_sha"), "walk": entry.get("walk_sha"), "barrier": entry.get("barrier_sha"),
-            "specials": (tags.get(map_name) or {}).get("specials") or [],
-            "scale": (maps.get(map_name) or {}).get("xMultiplier")}
+    inputs = {"sight": entry.get("sight_sha"), "walk": entry.get("walk_sha"), "barrier": entry.get("barrier_sha"),
+              "specials": (tags.get(map_name) or {}).get("specials") or [],
+              "scale": (maps.get(map_name) or {}).get("xMultiplier")}
+    if entry.get("height_sha"):
+        inputs["height"] = entry["height_sha"]
+    return inputs
 
 
 def condense_revision(recipe: str) -> int | None:

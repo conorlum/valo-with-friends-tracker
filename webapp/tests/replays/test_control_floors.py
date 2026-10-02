@@ -459,3 +459,19 @@ def test_an_alarmbot_holds_its_own_floor():
     assert node(geo, 268, floor=0) in under and node(geo, 268, floor=1) not in under
     assert node(geo, 268, floor=1) in on and node(geo, 268, floor=0) not in on
     assert node(geo, 292) in under and node(geo, 292) not in on, "from the bridge it can't walk down to the ground"
+
+
+
+def test_the_task_records_the_heights_and_a_round_counts_looks_into_unresolved_terrain():
+    from app.control import task as ct
+
+    geo = ledge(unresolved=[(256, 96, 264, 296)])
+    assert ct.geometry_used(geo)["height"] == geo.heights.digest
+    from tests.replays.control_toys import open_hall
+
+    assert "height" not in ct.geometry_used(open_hall()), "a flat map's inputs are what they were"
+    players = {0: still("A", 200, Y, 0, 4.0), 5: still("B", 380, 280, 180, 0.0)}
+    rc_ = ce.compute_round(height_blob(players, t_end=3.0), geo)
+    assert rc_.missing_inputs.get("ticks looking through unresolved terrain (2D sight there)", 0) > 0
+    clean = ce.compute_round(height_blob(players, t_end=3.0), ledge())
+    assert "ticks looking through unresolved terrain (2D sight there)" not in clean.missing_inputs

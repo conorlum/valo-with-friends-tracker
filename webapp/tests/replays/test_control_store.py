@@ -416,3 +416,28 @@ def test_the_height_build_reads_a_maps_rounds_with_heights_and_skips_older_recip
     linked.recipe = linked.recipe.replace(".c11.", ".c10.")
     db.commit()
     assert build_control_heights.db_rounds(linked.map_name, factory) == ([], {"old_revision": 1})
+
+
+def test_a_maps_heights_join_its_geometry_inputs_and_only_its_rounds_go_stale(factory, db, linked, monkeypatch):
+    # docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4, "Freshness": a height asset's
+    # digest joins the map's geometry inputs, so committing or rebuilding one map's heights makes only that
+    # map's rounds stale; a map without heights keeps exactly the inputs (and fingerprints) it had.
+    flat = rc.geometry_inputs(linked.map_name)
+    assert "height" not in flat
+    for n in (1, 2):
+        put_row(db, linked, n)
+    assert rc.plan(db) == [p for p in rc.plan(db) if p.round_number > 2]
+    index, tags, maps = rc._assets()
+    monkeypatch.setattr(rc, "_assets", lambda: ({**index, linked.map_name: {**index[linked.map_name],
+                                                                            "height_sha": "0123456789ab"}}, tags, maps))
+    with_heights = rc.geometry_inputs(linked.map_name)
+    assert with_heights == {**flat, "height": "0123456789ab"}
+    assert {p.round_number for p in rc.plan(db) if p.reason == "stale"} == {1, 2}
+    assert rc.geometry_inputs("Bind") == {k: v for k, v in rc.geometry_inputs("Bind").items() if k != "height"}
+
+
+def test_compute_control_can_take_one_map(factory, db, linked, capsys):
+    assert compute_control.main(["--dry-run", "--map", linked.map_name], session_factory=factory) == 0
+    assert f"{MATCH_UUID} r1 {linked.map_name}: missing" in capsys.readouterr().out
+    assert compute_control.main(["--dry-run", "--map", "Bind"], session_factory=factory) == 0
+    assert MATCH_UUID not in capsys.readouterr().out

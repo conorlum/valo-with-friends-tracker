@@ -72,6 +72,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("uuid")
     parser.add_argument("rounds", type=int, nargs="+")
     parser.add_argument("--tag", default=f"rev{cf.CONTROL_REVISION}", help="the output folder's suffix")
+    parser.add_argument("--heights", type=Path,
+                        help="a height asset to preview the map with (scripts/build_control_heights.py --preview); "
+                             "never a committed one's stand-in")
     args = parser.parse_args(argv)
     out = Path(os.environ.get("TEMP") or tempfile.gettempdir()) / "valo-replay" / f"{args.uuid}-{args.tag}"
     out.mkdir(parents=True, exist_ok=True)
@@ -82,12 +85,16 @@ def main(argv: list[str] | None = None) -> int:
     for n in args.rounds:
         blob = fetch(f"{SITE}/replays/{args.uuid}/{n}.json")
         (out / f"{n}.json.gz").write_bytes(blob)
-        tasks.append({"key": n, "map": ctx["match"]["map"], "blob": blob, "link": link_for(ctx, n)})
+        tasks.append({"key": n, "map": ctx["match"]["map"], "blob": blob, "link": link_for(ctx, n),
+                      **({"heights": str(args.heights)} if args.heights else {})})
     print(f"{ctx['match']['map']}: rounds {args.rounds} at revision {cf.CONTROL_REVISION}", flush=True)
     from app.control import geometry
     # the visibility bitsets once, before the workers (as compute_control does): after a geometry change
     # every worker would build them at once and race on the cache file
-    geometry.visibility(geometry.load_geometry(ctx["match"]["map"]))
+    geo = geometry.visibility(geometry.load_geometry(ctx["match"]["map"], heights=args.heights))
+    if args.heights:
+        print(f"heights: {args.heights.name} ({geo.height_sha}), {geo.n - geometry.GRID * geometry.GRID} upper "
+              f"floors, {int(geo.unresolved.sum())} unresolved cells", flush=True)
     started, results = time.time(), {}
     with multiprocessing.Pool(min(len(tasks), os.cpu_count() or 1)) as pool:
         for r in pool.imap_unordered(compute_task, tasks):
@@ -102,6 +109,9 @@ def main(argv: list[str] | None = None) -> int:
         header, streams = cf.unpack_data(r["data"])
         sizes = ", ".join(f"{k} {len(v) // 1024} KB" for k, v in streams.items())
         print(f"  r{n}: {len(r['data']) // 1024} KB gzipped; raw streams: {sizes}", flush=True)
+        for key, count in sorted((r.get("missing") or {}).items()):
+            if "height" in key or "unresolved" in key:
+                print(f"  WARNING r{n}: {key}: {count}", flush=True)
         loaded.summaries[n] = cf.unpack_summary(r["summary"])
         walks[n] = views.read_walk(r["data"])
 

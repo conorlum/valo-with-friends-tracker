@@ -1916,6 +1916,10 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     for n, t in enumerate(times):
         t = float(t)
         tick = runner.step(Tick(rnd, t, timings), timings)
+        if tick.fallbacks.get("unresolved_rays"):
+            # a viewer stood in, or looked through, terrain the heights don't know: 2D sight there (the spec:
+            # "reported where the user will see it"; preview_control_live.py warns on it)
+            rnd.missing["ticks looking through unresolved terrain (2D sight there)"] += 1
         for side in ("A", "B"):
             unknown_masks[side][n] = geo.to_cells(tick.unknown[side])[walk_flat]
         a = time.perf_counter()
