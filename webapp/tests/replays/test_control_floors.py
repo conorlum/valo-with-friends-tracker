@@ -321,3 +321,141 @@ def test_a_flat_map_keeps_the_boundary_shortcut():
     # and there the shortcut is exact: nothing outside the mask is seen from inside it that the boundary misses
     brute = ce.seen_from(geo, np.flatnonzero(mask), [])
     assert (tk.comp_seen(mask, nobody)[~mask] == brute[~mask]).all()
+
+
+# ---------------------------------------------------------------- trips and watchers
+
+from tests.replays.control_toys import toy_ability, uv, z_dm  # noqa: E402
+
+M = 1 / 0.14     # px per metre
+
+
+def trip(geo, a, b, za=None, zb=None):
+    """The nodes a tripwire from a to b (px) watches; za/zb are the anchors' heights in metres."""
+    extra = {} if za is None else {"z": z_dm(za), "end_z": z_dm(zb)}
+    wire = toy_ability("Gumshoe", "4_TripWire", a[0], a[1], 0, kind="GameObject", end=list(uv(*b)), **extra)
+    rnd = ce.RoundInputs(height_blob({0: still("A", 120, 120, 0, 0.0), 5: still("B", 400, 280, 0, 0.0)},
+                                     t_end=5.0, util=[wire]), geo)
+    [w] = rnd.watchers
+    return set(w.cells.tolist()), rnd
+
+
+def columns(geo, nodes):
+    return sorted({int(geo.node_cell[n]) % GRID for n in nodes})
+
+
+def test_a_wire_beside_a_step_extends_to_the_step():
+    # Ground at 0 m, a step up to 1.5 m at x 256. A wire 0.4 m above the ground from x 204 to x 240 (its east
+    # end hangs 2.2 m short of the step): it extends east to the step's face. Its west end has nothing
+    # within 10 m but ... the hall's west wall is 14.5 m away: it stays.
+    geo = toy_heights("TripStep", [HALL], ground=[((256, 96, 416, 296), 1.5)])
+    got, _ = trip(geo, (204, Y), (240, Y), -0.5, -0.5)          # device z: 0.4 m above the ground at -0.9
+    assert columns(geo, got) == list(range(25, 32)), "x 204 on to the foot of the step at x 256: columns 25..31"
+    assert all(geo.node_z[n] in (0.0, 1.5) for n in got)
+
+
+def test_on_a_ramp_a_wire_stops_where_the_ground_reaches_it():
+    # A 20% ramp climbing east from x 200. A level wire 0.4 m above the ground at its east anchor (x 200):
+    # the ground reaches to within TRIP_HIT_M of it 1.5 m on (0.4 - 0.1 = 0.3 m of climb), 2 m with no
+    # tolerance: the spec's "stops at 2 m (within a cell)".
+    geo = toy_heights("TripRamp", [HALL], slope=(200, 200 + 20 * M, 0.0, 4.0))
+    got, _ = trip(geo, (180, Y), (200, Y), -0.5, -0.5)
+    east = max(columns(geo, got)) * 8 + 4
+    assert 1.0 <= (east - 200) / M <= 2.0 + 1.12, (east - 200) / M
+    assert min(columns(geo, got)) == 22, "the west end, on flat ground with no wall in reach, stays at x 180"
+
+
+def test_a_wire_between_two_walls_or_with_nothing_in_reach_does_not_change():
+    walls = toy_heights("TripWalls", [HALL], walls=[(192, 96, 200, 280), (248, 96, 256, 280)],
+                        ground=[((0, 0, 1024, 1024), 0.0)])
+    got, _ = trip(walls, (202, Y), (246, Y), -0.5, -0.5)
+    assert columns(walls, got) == list(range(25, 31)), "x 200-247: it was already wall to wall"
+    geo = toy_heights("TripOpen", [(96, 96, 416, 296)], ground=[((0, 0, 1024, 1024), 0.0)])
+    got, _ = trip(geo, (230, Y), (270, Y), -0.5, -0.5)
+    assert columns(geo, got) == list(range(28, 34)), "nothing within 10 m either way: unchanged"
+
+
+def test_a_wire_does_not_extend_onto_a_stacked_floor_or_across_unresolved_ground():
+    geo = bridge()
+    # under the bridge, in the tunnel: it watches the tunnel's nodes, never the bridge's above it
+    got, _ = trip(geo, (250, 150), (250, 250), -0.5, -0.5)
+    assert all(n < GRID * GRID for n in got) and all(geo.node_z[n] == 0.0 for n in got)
+    # on the bridge: the bridge's nodes, never the tunnel's below it
+    on_top, _ = trip(geo, (250, 150), (250, 250), 3.5, 3.5)
+    assert all(n >= GRID * GRID for n in on_top) and len(on_top) == len(got)
+    # a wire on the low ground east of the bridge, pointing at the tunnel's mouth and on into the tunnel: it
+    # stays on the ground floor all the way (the bridge above is another floor)
+    into, _ = trip(geo, (300, Y), (330, Y), -0.5, -0.5)
+    assert all(geo.node_z[n] == 0.0 for n in into)
+    # the ledge with an unresolved column at its foot (x 256-264): a wire ending 2 m short of it doesn't extend
+    rough = ledge(unresolved=[(256, 96, 264, 296)])
+    got, _ = trip(rough, (300, Y), (284, Y), -0.5, -0.5)
+    assert min(columns(rough, got)) == 35, "x 284 is column 35: no extension across uncertain terrain"
+    clean = ledge()
+    got, _ = trip(clean, (300, Y), (284, Y), -0.5, -0.5)
+    assert min(columns(clean, got)) == 32, "with the terrain known it extends to the foot of the ledge"
+
+
+def test_a_wire_with_no_heights_watches_every_floor_under_its_2d_line_and_marks_the_round():
+    geo = bridge()
+    got, rnd = trip(geo, (250, 150), (250, 250))
+    assert {n >= GRID * GRID for n in got} == {True, False}, "both floors, as in 2D"
+    assert rnd.missing["approximate heights (a watcher has no z: 2D sight used)"] == 1
+    _, with_z = trip(geo, (250, 150), (250, 250), -0.5, -0.5)
+    assert "approximate heights (a watcher has no z: 2D sight used)" not in with_z.missing
+
+
+def camera_view(geo, z_m, t=1.5):
+    extra = {} if z_m is None else {"z": z_dm(z_m)}
+    cam = toy_ability("Gumshoe", "E_PossessableCamera", 260, Y, 0, kind="Pawn", yaw=0, possessed=[[1.0, 4.0]],
+                      yaws=[[0.0, 0]], **extra)
+    rnd = ce.RoundInputs(height_blob({0: still("A", 120, 120, 0, 4.0), 5: still("B", 400, 280, 0, 0.0)},
+                                     t_end=5.0, util=[cam]), geo)
+    return ce.Tick(rnd, t).holders[0].watch, rnd
+
+
+def test_a_camera_watches_from_its_own_height():
+    geo = bridge()
+    low, _ = camera_view(geo, -0.9 + 1.5)          # on the tunnel's wall, 1.5 m above the tunnel floor
+    high, _ = camera_view(geo, 3.1 + 1.5)          # above the bridge's deck
+    assert low[node(geo, 276, floor=0)] and not low[node(geo, 276, floor=1)]
+    assert high[node(geo, 276, floor=1)] and not high[node(geo, 276, floor=0)]
+    flat, rnd = camera_view(geo, None)
+    assert flat[node(geo, 276, floor=0)] and flat[node(geo, 276, floor=1)], "no z: the 2D view, both floors"
+    assert rnd.missing["approximate heights (a watcher has no z: 2D sight used)"] == 1
+
+
+def test_a_drone_watches_from_its_paths_height():
+    geo = bridge()
+
+    def view(z_m):
+        point = lambda t, x: [t, *uv(x, Y)] + ([] if z_m is None else [z_dm(z_m)])   # noqa: E731
+        drone = toy_ability("Hunter", "E_Drone", 300, Y, 0, t=0.0, t1=5.0, kind="Pawn",
+                            path=[point(0.0, 320), point(5.0, 300)], possessed=[[0.0, 5.0]], yaws=[[0.0, 180]])
+        rnd = ce.RoundInputs(height_blob({0: still("A", 120, 120, 0, 4.0), 5: still("B", 400, 280, 0, 0.0)},
+                                         t_end=5.0, util=[drone]), geo)
+        return ce.Tick(rnd, 2.0).holders[0].watch, rnd
+
+    low, rnd = view(0.5)                  # flying low, east of the bridge, looking west into the tunnel
+    assert low[node(geo, 260, floor=0)] and not low[node(geo, 252, floor=1)]
+    assert not any(k.startswith("approximate heights") for k in rnd.missing)
+    high, _ = view(6.0)                   # above the bridge: it sees along the deck
+    assert high[node(geo, 252, floor=1)]
+    flat, rnd = view(None)
+    assert flat[node(geo, 252, floor=1)] and flat[node(geo, 252, floor=0)]
+    assert rnd.missing["approximate heights (a watcher has no z: 2D sight used)"] == 1
+
+
+def test_an_alarmbot_holds_its_own_floor():
+    geo = bridge()
+
+    def held(z_m):
+        bot = toy_ability("Killjoy", "Q_StealthAlarmbot", 260, Y, 0, kind="GameObject", z=z_dm(z_m))
+        rnd = ce.RoundInputs(height_blob({0: still("A", 120, 120, 0, 4.0), 5: still("B", 400, 280, 0, 0.0)},
+                                         t_end=5.0, util=[bot]), geo)
+        return set(rnd.watchers[0].cells.tolist())
+
+    under, on = held(-0.9), held(3.1)
+    assert node(geo, 268, floor=0) in under and node(geo, 268, floor=1) not in under
+    assert node(geo, 268, floor=1) in on and node(geo, 268, floor=0) not in on
+    assert node(geo, 292) in under and node(geo, 292) not in on, "from the bridge it can't walk down to the ground"

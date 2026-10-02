@@ -227,6 +227,9 @@ class Watcher:
     in_use: list | None = None           # [(t0, t1)] a camera or drone is possessed/flown
     half: float = 0.0
     range_m: float | None = None
+    eye: float | None = None             # a fixed device's eye height (m, as node_z); None: 2D
+    node: int | None = None              # the node it sits on (heights only)
+    origin: int = 0                      # the map's origin_z (world dm), for a drone path's heights
 
 
 class RoundInputs:
@@ -450,29 +453,49 @@ class RoundInputs:
         if by is None:
             return
         x, y = e["u"] * px_per_uv, e["v"] * px_per_uv
+        # With heights every watcher gets a floor (the one nearest at or below its z) and an eye (its own z
+        # + DEVICE_EYE_M); one with no z sits on its cell's lowest floor, sees in 2D and marks the round.
+        z = self._device_z(e.get("z"))
+        node = eye = None
+        if geo.heights is not None:
+            node = geo.node_at(geo.cell_of_px(x, y), None if z is None else z + hc.STAND_M)
+            eye = None if z is None or np.isnan(geo.node_z[node]) else z + hc.DEVICE_EYE_M
         if key == TRIPWIRE and e.get("end"):
             a = np.array([x, y])
             b = np.array(e["end"]) * px_per_uv
-            n = int(np.abs(b - a).max()) + 1
-            xs = np.linspace(a[0], b[0], n)
-            ys = np.linspace(a[1], b[1], n)
-            cells = np.unique((ys // CELL).astype(int).clip(0, GRID - 1) * GRID
-                              + (xs // CELL).astype(int).clip(0, GRID - 1))
-            self.watchers.append(Watcher("trip", by, t0, t1, cells=_every_floor(geo, cells)))
+            z_end = self._device_z(e.get("end_z"))
+            self._no_z(z, z_end)
+            self.watchers.append(Watcher("trip", by, t0, t1, cells=self._trip_nodes(a, b, z, z_end)))
         elif key in AREA_TRIPS:
             r_px = AREA_TRIPS[key] / geo.m_per_px
             c = geo.cell_of_px(x, y)
             near = ((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) < r_px ** 2
-            if geo.row_of[c] >= 0:
-                row = np.unpackbits(geo.rows[geo.row_of[c]])[: geo.n].astype(bool)
-                self.watchers.append(Watcher("area", by, t0, t1, cells=np.flatnonzero(near & row)))
+            if geo.heights is None:
+                if geo.row_of[c] >= 0:
+                    row = np.unpackbits(geo.rows[geo.row_of[c]])[: geo.n].astype(bool)
+                    self.watchers.append(Watcher("area", by, t0, t1, cells=np.flatnonzero(near & row)))
+            elif geo.walk_n[node]:
+                # it reaches nodes by walking on its own floor, and sees them with the ray test
+                self._no_z(z)
+                if eye is None:
+                    seen = np.unpackbits(geo.rows[geo.row_of[node]])[: geo.n].astype(bool)
+                else:
+                    seen = cast(geo, x, y, np.arange(0, 360, RAY_STEP_DEG), [], eye_z=eye, own=node)
+                start = np.zeros(geo.n, bool)
+                start[node] = True
+                steps = int(math.ceil(AREA_TRIPS[key] / geo.cell_m)) + 1
+                walked = topology.of(geo).dilate(start, eight=True, iterations=steps, within=geo.walk_n)
+                self.watchers.append(Watcher("area", by, t0, t1, cells=np.flatnonzero(near & seen & walked)))
         elif key in DRONES and e.get("path"):
             half, rng = DRONES[key]
             in_use = [_span(a, b if b is not None else t1) for a, b in e["possessed"]] if "possessed" in e else None
             if in_use is None:
                 self.missing["drone flown intervals (whole life used)"] += 1
+            if geo.heights is not None and any(len(point) < 4 for point in e["path"]):
+                self.missing["approximate heights (a watcher has no z: 2D sight used)"] += 1
             self.watchers.append(Watcher("drone", by, t0, t1, path=e["path"], yaws=e.get("yaws"), in_use=in_use,
-                                         half=half, range_m=rng))
+                                         half=half, range_m=rng,
+                                         origin=geo.heights.origin_z if geo.heights is not None else 0))
         elif key == CAMERA:
             if "possessed" not in e:
                 self.missing["Cypher camera: no in-use intervals (not modelled)"] += 1
@@ -480,15 +503,90 @@ class RoundInputs:
             in_use = [_span(a, b if b is not None else t1) for a, b in e["possessed"]]
             if "yaws" not in e:
                 self.missing["camera yaw over time (placed yaw used)"] += 1
+            self._no_z(z)
             self.watchers.append(Watcher("camera", by, t0, t1, x=x, y=y, yaw=e.get("yaw"), yaws=e.get("yaws"),
-                                         in_use=in_use, half=FOV_HALF))
+                                         in_use=in_use, half=FOV_HALF, eye=eye, node=node))
         elif key == TURRET:
             if "yaws" not in e:
                 self.missing["turret yaw over time (placed yaw used)"] += 1
             if e.get("yaw") is None and not e.get("yaws"):
                 return
+            self._no_z(z)
             self.watchers.append(Watcher("turret", by, t0, t1, x=x, y=y, yaw=e.get("yaw"), yaws=e.get("yaws"),
-                                         half=TURRET_HALF))
+                                         half=TURRET_HALF, eye=eye, node=node))
+
+    def _device_z(self, z_dm) -> float | None:
+        """A stored utility height (world dm) in metres above the map's origin; None on a flat map, and
+        with no stored height."""
+        if self.geo.heights is None:
+            return None
+        if z_dm is None:
+            return None
+        return (z_dm - self.geo.heights.origin_z) / 10.0
+
+    def _no_z(self, *heights) -> None:
+        """Marks the round when a watcher on a map with heights was stored without one."""
+        if self.geo.heights is not None and any(z is None for z in heights):
+            self.missing["approximate heights (a watcher has no z: 2D sight used)"] += 1
+
+    def _trip_nodes(self, a: np.ndarray, b: np.ndarray, za: float | None, zb: float | None) -> np.ndarray:
+        """The nodes a tripwire from a to b (px) watches. On a flat map, or with no anchor heights: the
+        cells under the 2D line (every floor of them). With heights the wire runs between its anchors'
+        heights and each end is first extended (`_trip_end`); it watches, in each cell it crosses, the
+        floor nearest at or below it."""
+        geo = self.geo
+        heights = geo.heights is not None and za is not None and zb is not None
+        if heights:
+            length = float(np.hypot(*(b - a))) * geo.m_per_px
+            slope = (zb - za) / length if length > 0 else 0.0
+            a2, b2 = self._trip_end(a, za, b, zb), self._trip_end(b, zb, a, za)
+            za += -slope * float(np.hypot(*(a2 - a))) * geo.m_per_px
+            zb += slope * float(np.hypot(*(b2 - b))) * geo.m_per_px
+            a, b = a2, b2
+        n = int(np.abs(b - a).max()) + 1
+        xs = np.linspace(a[0], b[0], n)
+        ys = np.linspace(a[1], b[1], n)
+        cells = (ys // CELL).astype(int).clip(0, GRID - 1) * GRID + (xs // CELL).astype(int).clip(0, GRID - 1)
+        if not heights:
+            return _every_floor(geo, np.unique(cells))
+        zs = np.linspace(za, zb, n)
+        return np.unique([geo.node_at(int(c), float(z) + hc.STAND_M) for c, z in zip(cells, zs)])
+
+    def _trip_end(self, end: np.ndarray, z_end: float, other: np.ndarray, z_other: float) -> np.ndarray:
+        """Where a wire's end really is (the spec's "Trips"): from `end` on along the wire's own line, over
+        the floor it was anchored on, to where that floor's ground rises to within TRIP_HIT_M of the wire,
+        or a 2D wall, or a floor that isn't connected to the anchor's; at most TRIP_REACH_M. With none of
+        those in reach, or an unresolved cell on the way, the end stays where it is."""
+        geo = self.geo
+        topo = topology.of(geo)
+        span = float(np.hypot(*(end - other)))
+        if span < 1e-6:
+            return end
+        ux, uy = (end - other) / span
+        slope = (z_end - z_other) / (span * geo.m_per_px)
+        cell = geo.cell_of_px(end[0], end[1])
+        if geo.unresolved[cell]:
+            return end
+        node = geo.node_at(cell, z_end + hc.STAND_M)
+        for step in range(1, int(hc.TRIP_REACH_M / geo.m_per_px) + 1):
+            x, y = end[0] + ux * step, end[1] + uy * step
+            if not (0 <= x < PX and 0 <= y < PX):
+                return end
+            here = np.array([x, y])
+            if geo.sight[int(y), int(x)]:
+                return np.array([x - ux, y - uy])             # a 2D wall: the last open point before it
+            cell = geo.cell_of_px(x, y)
+            if cell != geo.node_cell[node]:
+                if geo.unresolved[cell]:
+                    return end                                # uncertain terrain: no extension
+                onward = [int(m) for m in geo.node_of[cell] if m >= 0 and int(m) in topo.around(node)]
+                if not onward:
+                    return np.array([x - ux, y - uy])         # the anchor's floor ends: its last point
+                node = min(onward, key=lambda m: abs(geo.node_z[m] - geo.node_z[node]))
+            wire = z_end + slope * step * geo.m_per_px
+            if geo.node_z[node] - hc.STAND_M >= wire - hc.TRIP_HIT_M:
+                return here                                   # the ground has risen to the wire
+        return end
 
     def _wall(self, e: dict, end: float) -> None:
         """Viper's wall blocks sight while it is up (`on`), along its laid line (`points`)."""
@@ -537,6 +635,21 @@ def path_at(path: list, t: float):
     if len(path) == 1:
         return path[0][1] * PX / 10000, path[0][2] * PX / 10000, 0.0
     return None
+
+
+def path_z(path: list, t: float) -> float | None:
+    """The stored height (world dm) along a [[t, u, v, z], ...] path at t; None outside it, or where
+    either point beside t was stored without one."""
+    if not path or t < path[0][0] or t > path[-1][0]:
+        return None
+    for i in range(1, len(path)):
+        if path[i][0] >= t:
+            p, q = path[i - 1], path[i]
+            if len(p) < 4 or len(q) < 4:
+                return None
+            f = (t - p[0]) / (q[0] - p[0]) if q[0] > p[0] else 0
+            return p[3] + (q[3] - p[3]) * f
+    return path[0][3] if len(path) == 1 and len(path[0]) > 3 else None
 
 
 # ---------------------------------------------------------------- one tick
@@ -854,7 +967,14 @@ class Tick:
                     continue
                 dx_, dy_, heading = at
                 heading = _yaw_at(w, t, heading) if w.yaws else heading
-                dv = cast(geo, dx_, dy_, heading + np.arange(-w.half, w.half + 1e-9, RAY_STEP_DEG), self.smokes)
+                eye = own = None
+                z_dm = path_z(w.path, t) if geo.heights is not None else None
+                if z_dm is not None:      # a drone watches from its path's own height, over the floor below it
+                    z = (z_dm - w.origin) / 10.0
+                    own = geo.node_at(geo.cell_of_px(dx_, dy_), z + hc.STAND_M)
+                    eye = None if np.isnan(geo.node_z[own]) else z + hc.DEVICE_EYE_M
+                dv = cast(geo, dx_, dy_, heading + np.arange(-w.half, w.half + 1e-9, RAY_STEP_DEG), self.smokes,
+                          eye_z=eye, own=own, record=self.fallbacks)
                 if w.range_m:
                     r = w.range_m / geo.m_per_px
                     dv &= ((geo.centres[:, 0] - dx_) ** 2 + (geo.centres[:, 1] - dy_) ** 2) < r * r
@@ -863,10 +983,12 @@ class Tick:
                 if not _during(w.in_use, t):
                     continue
                 yaw = _yaw_at(w, t, 0.0)
-                watch |= cast(geo, w.x, w.y, yaw + np.arange(-w.half, w.half + 1e-9, RAY_STEP_DEG), self.smokes)
+                watch |= cast(geo, w.x, w.y, yaw + np.arange(-w.half, w.half + 1e-9, RAY_STEP_DEG), self.smokes,
+                              eye_z=w.eye, own=w.node, record=self.fallbacks)
             elif w.kind == "turret":
                 yaw = _yaw_at(w, t, 0.0)
-                watch |= cast(geo, w.x, w.y, yaw + np.arange(-w.half, w.half + 1e-9, RAY_STEP_DEG), self.smokes)
+                watch |= cast(geo, w.x, w.y, yaw + np.arange(-w.half, w.half + 1e-9, RAY_STEP_DEG), self.smokes,
+                              eye_z=w.eye, own=w.node, record=self.fallbacks)
         return watch
 
     # --- building blocks
