@@ -13,7 +13,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.config import settings
 from app.db import get_db
 from app.maintenance import maintenance_middleware
-from app.routers import auth, friends, map_prediction, matches, players, replays, sessions, site_stats, squad
+from app.routers import (auth, friends, map_prediction, matches, players, replay_admin, replays, sessions, site_stats,
+                         squad)
 from app.services.auth import get_current_player
 from app.templates import templates
 
@@ -54,6 +55,7 @@ app.include_router(map_prediction.router)
 app.include_router(matches.router)
 app.include_router(players.router)
 # Replays: every route 404s in demo mode (docs/replay-viewer-plan.md, decision 4).
+app.include_router(replay_admin.router)
 app.include_router(replays.router)
 app.include_router(sessions.router)
 app.include_router(site_stats.router)

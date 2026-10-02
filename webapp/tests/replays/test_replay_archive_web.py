@@ -8,8 +8,10 @@ import time
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from starlette.requests import Request
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -22,6 +24,7 @@ from test_replay_worker_archive import start_archive  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models.replay import Replay, ReplayDeletion, ReplayUpload  # noqa: E402
+from app.routers import replay_admin as admin  # noqa: E402
 from app.routers import replays as routes  # noqa: E402
 from app.services import replay_archive_sync as sync  # noqa: E402
 from app.services import replay_upload as uploads  # noqa: E402
@@ -153,6 +156,90 @@ def test_a_new_worker_boot_gets_the_tombstones_and_a_restored_file_goes(engine, 
         assert sync.cycle(sessionmaker(bind=engine), client, state)["tombstones_pushed"] == 0, "once per boot"
     finally:
         httpd.shutdown()
+
+
+def admin_request(token: str | None) -> Request:
+    headers = [] if token is None else [(b"authorization", f"Bearer {token}".encode())]
+    return Request({"type": "http", "method": "POST", "path": "/", "query_string": b"", "headers": headers})
+
+
+def test_the_admin_routes_exist_only_with_the_right_token(monkeypatch):
+    monkeypatch.setattr(settings, "demo_mode", False)
+    monkeypatch.setattr(settings, "replay_admin_token", None)
+    with pytest.raises(HTTPException) as off:
+        admin.require_admin(admin_request("anything"))
+    assert off.value.status_code == 404
+    monkeypatch.setattr(settings, "replay_admin_token", "s3cret")
+    for given in (None, "wrong", "letmein"):
+        with pytest.raises(HTTPException) as refused:
+            admin.require_admin(admin_request(given))
+        assert refused.value.status_code == 404
+    admin.require_admin(admin_request("s3cret"))
+    monkeypatch.setattr(settings, "demo_mode", True)
+    with pytest.raises(HTTPException):
+        admin.require_admin(admin_request("s3cret"))
+
+
+def test_a_deletion_removes_the_replay_and_the_files_and_blocks_the_match(db, tmp_path, stub, monkeypatch):  # noqa: F811
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    monkeypatch.setattr(settings, "replay_worker_url", base)
+    try:
+        client = uploads.WorkerClient(base)
+        stored = collect(db, client, vrf_bytes())
+        assert (disk / "archive" / f"{MATCH_UUID}.vrf").exists()
+        answer = admin.delete_match({"match_uuid": MATCH_UUID.upper(), "reason": "asked"}, db)
+        assert answer["replay_deleted"] and answer["worker"]["told"] and not answer["already_tombstoned"]
+        assert db.query(Replay).count() == 0 and db.get(ReplayDeletion, MATCH_UUID).reason == "asked"
+        assert db.get(ReplayUpload, stored.id).replay_id is None
+        assert not (disk / "archive" / f"{MATCH_UUID}.vrf").exists()
+        assert admin.delete_match({"match_uuid": MATCH_UUID}, db)["already_tombstoned"], "idempotent"
+        again = collect(db, client, vrf_bytes(), session_key="sess2")
+        assert again.status == "failed" and "deleted on request" in again.error
+        assert not list((disk / "pending").iterdir()) and not (disk / "archive" / f"{MATCH_UUID}.vrf").exists()
+        with pytest.raises(HTTPException) as refused:
+            admin.reparse({"match_uuid": MATCH_UUID}, db)
+        assert refused.value.status_code == 409
+    finally:
+        httpd.shutdown()
+
+
+def test_a_reparse_through_the_admin_routes_stores_and_keeps_the_file(db, tmp_path, stub, monkeypatch):  # noqa: F811
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    monkeypatch.setattr(settings, "replay_worker_url", base)
+    try:
+        stored = collect(db, uploads.WorkerClient(base), vrf_bytes())
+        upload_id = admin.reparse({"match_uuid": MATCH_UUID}, db)["upload_id"]
+        for _ in range(300):
+            state = admin.reparse_status(upload_id, db)
+            if state["status"] not in uploads.UNFINISHED:
+                break
+            time.sleep(0.1)
+        assert state["status"] == "stored", state
+        assert (state["store_outcome"], state["archive_ack"], state["replay_id"]) == ("unchanged", "kept", stored.replay_id)
+        assert (disk / "archive" / f"{MATCH_UUID}.vrf").read_bytes() == vrf_bytes()
+        with pytest.raises(HTTPException) as missing:
+            admin.reparse({"match_uuid": "11111111-0000-4000-8000-000000000000"}, db)
+        assert missing.value.status_code == 404
+    finally:
+        httpd.shutdown()
+
+
+def test_the_scripts_select_and_describe_themselves(capsys):
+    sys.path.insert(0, str(HERE.parents[1] / "scripts"))
+    import delete_replay_data
+    import reparse_archive
+
+    files = [{"match_uuid": "b", "map": "Ascent", "played_at": "2026-09-30T20:00:00+00:00"},
+             {"match_uuid": "a", "map": "Haven", "played_at": None, "accepted_at": "2026-10-01T21:00:00+00:00"},
+             {"match_uuid": "c", "map": "Ascent", "played_at": "2026-09-01T20:00:00+00:00"}]
+    assert [e["match_uuid"] for e in reparse_archive.select(files, "ascent", None, None)] == ["c", "b"]
+    assert [e["match_uuid"] for e in reparse_archive.select(files, None, "2026-09-15", None)] == ["b", "a"]
+    assert [e["match_uuid"] for e in reparse_archive.select(files, None, None, "A")] == ["a"]
+    for module in (delete_replay_data, reparse_archive):
+        with pytest.raises(SystemExit) as shown:
+            module.main(["--help"])
+        assert shown.value.code == 0
+    assert "usage" in capsys.readouterr().out
 
 
 def test_the_sync_does_nothing_while_the_archive_is_off(engine, tmp_path, stub):  # noqa: F811
