@@ -144,7 +144,7 @@ def test_a_watched_sighting_roots_its_neighbours_routes():
 def test_every_tick_of_a_reference_round_keeps_routes_consistent(name):
     """Through a whole toy round (barrier ground, sightings, smokes, deaths): at every tick each enemy's
     unknown nodes are exactly those with an entry, each entry is that node at its arrival time, and its
-    parent is an earlier entry at an earlier time."""
+    parent is an earlier entry at a time no later."""
     geo, blob, link = reference_rounds()[name]
     rnd = ce.RoundInputs(blob, geo, link)
     runner = ce.TickRunner(geo)
@@ -163,7 +163,9 @@ def test_every_tick_of_a_reference_round_keeps_routes_consistent(name):
                 assert np.array_equal(log.t[e], reached[fin])
                 p = log.parent[e]
                 assert (p < e).all()
-                assert (log.t[p[p >= 0]] < log.t[e[p >= 0]]).all()
+                # an area collapse puts every member at the event's time with the centre as parent (spec section 4,
+                # "Locating events"), so a parent's time may equal its child's
+                assert (log.t[p[p >= 0]] <= log.t[e[p >= 0]]).all()
                 checked += int(fin.sum())
     assert checked > 0
 
