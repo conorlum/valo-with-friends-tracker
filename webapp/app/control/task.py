@@ -11,6 +11,12 @@ it, and it would fail again with the same inputs) or the machine's (`infra`: mem
 a bad cache, an import), which is worth retrying elsewhere. `geometry` is what the round was computed
 with, in the terms of app/services/replay_control.py `geometry_inputs`, so a caller can tell whether
 it matches its own.
+
+Timing gaps (docs/superpowers/specs/2026-10-02-timing-gaps-design.md, section 7, "Writer"): a task with
+`"gaps": {"replay_id", "round", "fingerprint" (the control fingerprint)}` also writes the round's tick cache
+and returns `result["gaps"] = {"run", "rows"}`; with `"gaps_only": True` it returns only `status`, `geometry`
+and `gaps` (from the tick cache when it is there, else through the engine) and no control `data`. A gap
+failure is the gap run's (`gaps.run.status == "failed"`) and never changes control's result.
 """
 
 from __future__ import annotations
@@ -91,6 +97,124 @@ def _load(name: str, heights: str | None = None):
     return _GEOMETRY[key]
 
 
+def _cache_path(job: dict, map_name: str) -> Path:
+    from app.gaps import cache
+    from app.services.replay_gaps import engine_key
+
+    return cache.cache_path(job["replay_id"], job["round"], engine_key(job["fingerprint"], map_name))
+
+
+def _plain(value):
+    """Rows and notes as plain Python (numpy scalars and arrays out), so they store as JSON."""
+    import numpy as np
+
+    if isinstance(value, dict):
+        return {_plain(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return _plain(value.tolist())
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+class _CacheFailed(Exception):
+    pass
+
+
+class _CacheGuard:
+    """The tick cache writer behind a guard (R18): an exception while writing a tick or the file stops any
+    further writes, deletes what was written, and becomes the gap run's failure. The engine never sees it."""
+
+    def __init__(self, path: Path | None):
+        from app.gaps import cache
+
+        self.path = None if path is None else Path(path)
+        self.writer = None if path is None else cache.Writer(self.path)
+        self.error: str | None = None
+
+    def __call__(self, record, unknown) -> None:
+        if self.error is None:
+            try:
+                self.writer(record, unknown)
+            except Exception as error:  # noqa: BLE001 - the gap run's failure
+                self._fail(error)
+
+    def close(self, missing: dict | None = None) -> str | None:
+        if self.error is None:
+            try:
+                self.writer.close(dict(missing or {}))
+            except Exception as error:  # noqa: BLE001 - the gap run's failure
+                self._fail(error)
+        return self.error
+
+    def _fail(self, error: Exception) -> None:
+        self.error = f"tick cache: {type(error).__name__}: {error}\n{traceback.format_exc()[-1500:]}"
+        self.writer = None
+        if self.path is None:
+            return
+        for path in (self.path, self.path.with_name(self.path.name + ".tmp")):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
+    """One round's timing gaps (timing-gaps spec, section 7, "Writer"), in their own failure boundary: an error
+    here is the gap run's, never control's. With `guard` (a full run: control was just computed through it),
+    the detector reads back the tick cache the guard wrote, so a full run and a gaps-only run give the same
+    rows. Without (gaps only), it reads the cache when it is there in this format, else runs the engine
+    (writing the cache as it goes). Notes: the detector's cases plus the compute-time missing inputs (R20)."""
+    run = {"fingerprint": "", "gaps_revision": 0, "chokes_hash": None, "notes": {}, "error": None}
+    try:
+        from app.replays import choke_assets
+        from app.services.replay_gaps import GAPS_REVISION, gap_fingerprint
+
+        run.update({"fingerprint": gap_fingerprint(job["fingerprint"], geo.name), "gaps_revision": GAPS_REVISION,
+                    "chokes_hash": choke_assets.asset_hash(geo.name)})
+        if guard is not None and guard.error:
+            raise _CacheFailed(guard.error)
+
+        from app.control import engine
+        from app.gaps import cache, detect, rows
+
+        path = _cache_path(job, geo.name)
+        rnd = engine.RoundInputs(blob, geo, link)
+        det = detect.GapDetector(geo, rnd)
+        missing = None
+        if guard is not None or path.exists():
+            try:
+                missing = cache.read_missing(path)
+            except ValueError:            # a file in another format: a miss, unless this run just wrote it
+                if guard is not None:
+                    raise
+        if missing is not None:
+            for record, logs in cache.replay(path):
+                det.step(record, logs)
+        else:
+            writer = _CacheGuard(path)
+
+            def both(record, unknown):
+                writer(record, unknown)
+                det.step(record, unknown.log)
+
+            rc = engine.compute_round(blob, geo, link, observer=both, knowledge=False)
+            missing = dict(rc.missing_inputs)
+            if writer.close(missing):
+                raise _CacheFailed(writer.error)
+        gaps = det.finish()
+        run.update({"status": "ok", "notes": _plain(dict(det.notes) | dict(missing))})
+        return {"run": run, "rows": _plain(rows.to_rows(gaps, rnd, geo))}
+    except _CacheFailed as error:
+        run.update({"status": "failed", "notes": {}, "error": str(error)})
+    except Exception as error:  # noqa: BLE001 - the gap run's failure, stored with its error
+        run.update({"status": "failed", "notes": {},
+                    "error": f"{type(error).__name__}: {error}\n{traceback.format_exc()[-1500:]}"})
+    return {"run": run, "rows": []}
+
+
 def compute_task(task: dict) -> dict:
     started = time.time()
     try:
@@ -108,9 +232,23 @@ def compute_task(task: dict) -> dict:
         blob = fmt.decode_blob(task["blob"])
         link = engine.ControlLink(sides={int(s): side for s, side in task["link"]["sides"].items()},
                                   db_deaths=tuple((int(s), float(t)) for s, t in task["link"]["db_deaths"]))
-        rc = engine.compute_round(blob, geo, link)
-        result = {"status": "ok", "data": encode_data(rc, blob), "summary": encode_summary(rc, blob),
-                  "missing": dict(rc.missing_inputs), "geometry": geometry_used(geo)}
+        job = task.get("gaps")
+        if job and task.get("gaps_only"):
+            result = {"status": "ok", "geometry": geometry_used(geo), "gaps": _gaps(geo, blob, link, job)}
+        else:
+            guard = None
+            if job:
+                try:
+                    guard = _CacheGuard(_cache_path(job, geo.name))
+                except Exception as error:  # noqa: BLE001 - no cache path: the gap run fails, control runs
+                    guard = _CacheGuard(None)
+                    guard._fail(error)
+            rc = engine.compute_round(blob, geo, link, observer=guard)
+            result = {"status": "ok", "data": encode_data(rc, blob), "summary": encode_summary(rc, blob),
+                      "missing": dict(rc.missing_inputs), "geometry": geometry_used(geo)}
+            if job:
+                guard.close(rc.missing_inputs)
+                result["gaps"] = _gaps(geo, blob, link, job, guard=guard)
     except engine_errors as error:
         result = {"status": "failed", "error_kind": "engine",
                   "error": f"{type(error).__name__}: {error}\n{traceback.format_exc()[-1500:]}"}

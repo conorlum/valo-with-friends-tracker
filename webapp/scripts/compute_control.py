@@ -17,6 +17,13 @@ minutes in the background). About 45 core-seconds per average round.
   the control layer (`no_map`) and blobs from before condenser revision 10 (`old_blob`) are
   listed, never computed. `--match <uuid>`, `--map <Map>` and `--round <n>` (repeatable) narrow the
   set; after committing one map's heights, `--map <Map>` recomputes just that map's stale rounds.
+- **Timing gaps** (docs/superpowers/specs/2026-10-02-timing-gaps-design.md, section 7): every computed
+  round also gets its timing gaps, in their own failure boundary (a gap failure never changes the
+  control row). Also every round whose control is fresh and ok but whose timing gaps are missing or
+  stale (reason `gaps`: new gap rules, an edited choke asset or hearing table; app/services/replay_gaps.py
+  `plan_gaps`): those run from the local tick cache (`webapp/.control_cache/gaps/`) when it is there,
+  else through the engine, without rewriting control. A gap run that failed with the current inputs is
+  skipped unless `--retry-failed`. Like control, gaps are never written to the demo database.
 - **Stops safely.** Each round is committed as it finishes, so stopping and rerunning resumes.
   A round the engine raises on is stored as `failed` with its error (the endpoint says so).
 - **Workers.** A pool of one per core but one (`--workers N` sets it), keeping `--headroom-gb`
@@ -30,7 +37,8 @@ minutes in the background). About 45 core-seconds per average round.
   the workers start.
 
 `--dry-run` reads only and lists the plan; `--brief` prints one line (the replay scripts' nudge).
-Exits 0 when every computed round is ok, 1 when any failed, 3 on the demo database.
+Exits 0 when every computed round is ok, 1 when any failed (control or its gaps, or a gap run that
+could not be stored), 3 on the demo database.
 """
 
 from __future__ import annotations
@@ -164,6 +172,7 @@ def run(planned, args, session_factory) -> int:
     pool = multiprocessing.get_context("spawn").Pool(processes=most)
     pending, running = list(reversed(range(len(todo)))), {}   # key -> (AsyncResult, start time)
     done, failed, sizes, started, measured, finished = 0, [], [], time.time(), False, []
+    gap_runs, gap_failed, gap_unstored = 0, [], []       # R19: counted apart from control's
     last_wait_note = 0.0
     try:
         while pending or running:
@@ -185,21 +194,49 @@ def run(planned, args, session_factory) -> int:
                     print(f"[{done}/{len(todo)}] {p.match_uuid[:8]} r{p.round_number}: skipped, the round is gone "
                           f"(re-ingested?); rerun to pick it up", flush=True)
                     continue
-                task = {"key": key, "map": p.map_name, "blob": blob, "link": p.link}
+                task = {"key": key, "map": p.map_name, "blob": blob, "link": p.link,
+                        "gaps": {"replay_id": p.replay_id, "round": p.round_number, "fingerprint": p.fingerprint},
+                        "gaps_only": p.reason == "gaps"}
                 running[key] = (pool.apply_async(compute_task, (task,)), time.time())
             for key in [k for k, (r, _) in running.items() if r.ready()]:
                 result = running.pop(key)[0].get()
                 p = todo[key]
+                gaps_only = p.reason == "gaps"
                 if result["status"] == "ok" and result.get("peak"):
-                    peak = max(peak if measured else 0, result["peak"] * 1.2)
+                    # a gaps-only round (often read from the tick cache) never lowers the guess
+                    peak = max(peak if measured or gaps_only else 0, result["peak"] * 1.2)
                     measured = True
-                outcome = store_result(session_factory, p, result)
+                outcome = "stored" if gaps_only else store_result(session_factory, p, result)
+                gap_note = ""
+                if result.get("gaps") and outcome == "stored":     # not for a round whose control was skipped
+                    from app.services.replay_gaps_store import store_gaps
+
+                    gap_runs += 1
+                    run_row = result["gaps"]["run"]
+                    rows = result.get("gaps", {}).get("rows", [])
+                    gap_outcome = store_gaps(session_factory, p.replay_id, p.round_number, run_row, rows)
+                    if run_row["status"] != "ok":
+                        gap_failed.append((p, (run_row.get("error") or "failed").splitlines()[0]))
+                        gap_note = f"gaps FAILED: {gap_failed[-1][1]}"
+                    else:
+                        gap_note = f"gaps {len(rows)}"
+                    if gap_outcome != "stored":
+                        gap_unstored.append((p, gap_outcome))
+                        gap_note += f" ({gap_outcome})"
+                elif gaps_only:                # the task failed before its gaps (geometry, the blob)
+                    error = result.get("error") or "no gaps returned"
+                    gap_failed.append((p, error.splitlines()[0]))
+                    gap_note = f"gaps FAILED: {gap_failed[-1][1]}"
                 done += 1
                 finished.append(time.time())
                 eta = eta_seconds(finished, len(todo) - done)
-                if result["status"] == "ok":
+                if gaps_only:
+                    what = f"{result.get('seconds', 0):.0f}s, {gap_note}"
+                elif result["status"] == "ok":
                     sizes.append((len(result["data"]), len(result["summary"])))
                     what = f"ok {result['seconds']:.0f}s, data {sizes[-1][0] / 1000:.0f} KB, summary {sizes[-1][1] / 1000:.0f} KB"
+                    if gap_note:
+                        what += f", {gap_note}"
                 else:
                     failed.append((p, result["error"].splitlines()[0]))
                     what = f"FAILED: {result['error'].splitlines()[0]}"
@@ -224,7 +261,12 @@ def run(planned, args, session_factory) -> int:
               f"summary KB mean {sum(summary) / len(summary) / 1000:.0f}, max {max(summary) / 1000:.0f}", flush=True)
     for p, error in failed:
         print(f"  FAILED {p.match_uuid} r{p.round_number}: {error}", flush=True)
-    return 1 if failed else 0
+    print(f"  timing gaps: {gap_runs} run(s), {len(gap_failed)} failed, {len(gap_unstored)} not stored", flush=True)
+    for p, error in gap_failed:
+        print(f"  GAPS FAILED {p.match_uuid} r{p.round_number}: {error}", flush=True)
+    for p, outcome in gap_unstored:
+        print(f"  GAPS NOT STORED {p.match_uuid} r{p.round_number}: {outcome}", flush=True)
+    return 1 if failed or gap_failed or gap_unstored else 0
 
 
 def main(argv: list[str] | None = None, session_factory=None) -> int:
@@ -261,6 +303,14 @@ def main(argv: list[str] | None = None, session_factory=None) -> int:
                                       force=args.force, retry_failed=args.retry_failed)
         if args.map_name:
             planned = [p for p in planned if p.map_name == args.map_name]
+        # fresh, ok control whose timing gaps are missing or stale (app/services/replay_gaps.py, R17)
+        from app.services import replay_gaps
+
+        every = replay_control.plan(session, match_uuid=args.match,
+                                    rounds=set(args.rounds) if args.rounds else None, force=True)
+        if args.map_name:
+            every = [p for p in every if p.map_name == args.map_name]
+        planned = planned + replay_gaps.plan_gaps(session, planned, every, retry_failed=args.retry_failed)
     finally:
         session.rollback()
         session.close()
