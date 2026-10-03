@@ -2210,7 +2210,9 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     `full_every` N > 0 also runs the full counterfactual on every Nth tick and compares. `knowledge`
     also builds each team's picture of the round (R3.3): what it knew, not the true positions.
     `observer`, when given, is called as observer(record, unknown) after each tick's unknown
-    (app/control/observe.py); it must not change either."""
+    (app/control/observe.py); it must not change either. An observer with an `on_tick` method is called as
+    observer.on_tick(tick, unknown) instead and builds the record itself (observe.record), inside its own
+    failure boundary, so an error there is the observer's and never control's (the tick cache's guard)."""
     visibility(geo)
     rnd = RoundInputs(blob, geo, link)
     times = rnd.tick_times() if ticks is None else np.asarray(ticks, float)
@@ -2247,7 +2249,11 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         t = float(t)
         tick = runner.step(Tick(rnd, t, timings), timings)
         if observer is not None:
-            observer(observe.record(tick, runner.unknown), runner.unknown)
+            on_tick = getattr(observer, "on_tick", None)
+            if on_tick is not None:
+                on_tick(tick, runner.unknown)
+            else:
+                observer(observe.record(tick, runner.unknown), runner.unknown)
         if tick.fallbacks.get("unresolved_rays"):
             # a viewer stood in, or looked through, terrain the heights don't know: 2D sight there (the spec:
             # "reported where the user will see it"; preview_control_live.py warns on it)

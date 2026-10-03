@@ -239,8 +239,8 @@ class _Drive:
         self.logs = {"A": RouteLog(), "B": RouteLog()}
         self.det = gd.GapDetector(geo, self.rnd)
 
-    def entry(self, node, t, parent=-1):
-        return self.logs["A"].add(node, t, parent, -1)
+    def entry(self, node, t, parent=-1, choke=-1):
+        return self.logs["A"].add(node, t, parent, choke)
 
     def tick(self, t, players, unknown, events=(), smokes=()):
         """unknown: {enemy: {node: entry}}; events: [(enemy, t, kind)] for team A."""
@@ -258,12 +258,15 @@ class _Drive:
         return [g for g in self.det.finish() if g.kind == "predicted"]
 
 
-def _released(teammates_before, teammates_after, smokes_after=(), deaths=None, util=()):
+def _released(teammates_before, teammates_after, smokes_after=(), deaths=None, util=(), edit=None):
     """The door hall. Victim 0 stands in the west room facing west. Enemy 5's unknown sits east of the wall
     (no line to the victim) until the door X is released at 3 s; it enters X at 3 s and a cell Y behind the
-    victim at 3.5 s. `teammates_*` give the other A players before and at 3 s (callables of the geometry)."""
+    victim at 3.5 s. `teammates_*` give the other A players before and at 3 s (callables of the geometry).
+    `edit`, when given, is called with the round's RoundInputs before the first tick."""
     geo = door_hall()
     d = _Drive(geo, deaths=deaths, util=util)
+    if edit is not None:
+        edit(d.rnd)
     x_node, y_node, e_node = geo.cell_of_px(208, 292), geo.cell_of_px(190, 240), geo.cell_of_px(300, 250)
     victim = lambda: _pv(geo, 0, "A", 120, 200, 180)                    # noqa: E731
     e0 = d.entry(e_node, 0.0)
@@ -393,6 +396,139 @@ def test_aim_noise_while_the_wait_runs_out_is_not_a_turn():
         d.tick(t, [_pv(geo, 0, "A", 150, 200, 180 + 2 * (i % 2))], {5: {node: e}})
     [g] = d.gaps()
     assert g.t_open == pytest.approx(5.0) and g.cause == "open_timing"
+
+
+def test_spread_from_beside_to_behind_with_aim_jitter_is_not_victim_turned():
+    """Final review I1: the turn test is per cell. The enemy's region sits beside the victim (exposed, in front)
+    and spreads, on the same choke sequence, to a cell behind them that was never exposed in front; the aim
+    jitters by 2 degrees every tick. The victim turned their back on nothing: not `victim_turned`."""
+    geo = open_hall()
+    d = _Drive(geo)
+    beside, behind = geo.cell_of_px(300, 200), geo.cell_of_px(150, 120)
+    eb = d.entry(beside, 0.0)
+    victim = lambda i: _pv(geo, 0, "A", 150, 200, 90 + 2 * (i % 2))     # noqa: E731
+    for i, t in enumerate((0.0, 0.5, 1.0, 1.5, 2.0)):
+        d.tick(t, [victim(i)], {5: {beside: eb}})
+    eh = d.entry(behind, 2.5, eb)
+    d.tick(2.5, [victim(5)], {5: {beside: eb, behind: eh}})
+    [g] = d.gaps()
+    assert g.t_open == pytest.approx(2.5) and g.spot == behind
+    assert g.cause in ("open_timing", "route_released") and g.cause != "victim_turned"
+
+
+# ---------------------------------------------------------------- I3: gap identity and the cause tie order
+
+
+def test_neighbouring_cells_with_different_choke_sequences_are_two_gaps():
+    geo = open_hall()
+    d = _Drive(geo)
+    n1, n2 = geo.cell_of_px(300, 200), geo.cell_of_px(308, 200)
+    e1, e2 = d.entry(n1, 0.0, choke=1), d.entry(n2, 0.0, choke=2)
+    for t in (0.0, 0.5, 1.0):
+        d.tick(t, [_pv(geo, 0, "A", 150, 200, 180)], {5: {n1: e1, n2: e2}})
+    gaps = d.gaps()
+    assert sorted(g.choke_seq for g in gaps) == [(1,), (2,)]
+    assert {g.spot: g.choke_seq for g in gaps} == {n1: (1,), n2: (2,)}
+    assert all(g.t_open == pytest.approx(0.0) and g.candidates.keys() == {5} for g in gaps)
+
+
+def test_two_enemies_on_one_sequence_merge_into_one_gap_with_two_candidates():
+    """One victim life and one choke sequence is one gap, whichever enemies' unknown it is. Its spot is the
+    earliest arrival across the enemies (enemy 6's), and either candidate can stand in it."""
+    geo = open_hall()
+    d = _Drive(geo)
+    n5, n6 = geo.cell_of_px(300, 200), geo.cell_of_px(300, 240)
+    e5, e6 = d.entry(n5, 1.0, choke=1), d.entry(n6, 0.5, choke=1)
+    enemy6 = _pv(geo, 6, "B", 300, 240, 180)
+    for t in (1.0, 1.5, 2.0):
+        d.tick(t, [_pv(geo, 0, "A", 150, 200, 180), enemy6], {5: {n5: e5}, 6: {n6: e6}})
+    [g] = d.gaps()
+    assert g.candidates.keys() == {5, 6} and g.choke_seq == (1,)
+    assert g.spot == n6, "the earliest arrival across enemies"
+    assert g.stood_by == 6 and g.stood_at == pytest.approx(1.0)
+
+
+def test_a_second_sequence_opens_a_second_gap_while_the_first_is_latched():
+    geo = open_hall()
+    d = _Drive(geo)
+    n1, n2 = geo.cell_of_px(300, 200), geo.cell_of_px(300, 240)
+    e1, e2 = d.entry(n1, 0.0, choke=1), d.entry(n2, 1.5, choke=2)
+    victim = lambda: _pv(geo, 0, "A", 150, 200, 180)                    # noqa: E731
+    for t in (0.0, 0.5, 1.0):
+        d.tick(t, [victim()], {5: {n1: e1}})
+    for t in (1.5, 2.0):
+        d.tick(t, [victim()], {5: {n1: e1, n2: e2}})
+    first, second = sorted(d.gaps(), key=lambda g: g.t_open)
+    assert (first.t_open, first.choke_seq) == (pytest.approx(0.0), (1,))
+    assert (second.t_open, second.choke_seq) == (pytest.approx(1.5), (2,))
+    assert first.t_close == pytest.approx(60.0) and second.t_close == pytest.approx(60.0), "both latched"
+
+
+def test_a_teammate_moving_away_is_released_as_moved():
+    g, _ = _released(lambda geo, x: [_pv(geo, 1, "A", 150, 292, 0, view=[x])],
+                     lambda geo, x: [_pv(geo, 1, "A", 150, 250, 0)])
+    assert g.cause == "route_released" and g.cause_detail["reason"] == "moved"
+
+
+def test_a_flashed_teammate_is_released_as_blinded():
+    def flash(rnd):
+        rnd.flashed[1].append((2.9, 4.0))
+
+    g, _ = _released(lambda geo, x: [_pv(geo, 1, "A", 150, 292, 0, view=[x])],
+                     lambda geo, x: [_pv(geo, 1, "A", 150, 292, 0)], edit=flash)
+    assert g.cause == "route_released" and g.cause_detail["reason"] == "blinded"
+
+
+def test_a_camera_left_is_released_as_utility_left():
+    def camera(rnd):
+        rnd.watchers.append(ce.Watcher("camera", 1, 0.0, 60.0, in_use=[(0.0, 3.0)]))
+
+    g, _ = _released(lambda geo, x: [_pv(geo, 1, "A", 150, 120, 0, util=[x])],
+                     lambda geo, x: [_pv(geo, 1, "A", 150, 120, 0)], edit=camera)
+    assert g.cause_detail["by"] == "utility" and g.cause_detail["reason"] == "utility_left"
+
+
+def test_the_cause_tie_order_route_released_before_victim_turned():
+    """A teammate stops watching S at 1.5 s, the route reaches S (anew) at 1.5 s, and the victim turns their
+    back on S (exposed in front at 1.0 s) at 1.5 s: two causes at one time; CAUSE_ORDER puts route_released
+    first. Without the teammate the same turn is `victim_turned`."""
+    geo = open_hall()
+    s_node, p_node = geo.cell_of_px(300, 200), geo.cell_of_px(150, 120)    # P stays beside the victim
+    causes = []
+    for watched in (False, True):
+        d = _Drive(geo)
+        ep = d.entry(p_node, 0.0)
+        old = d.entry(s_node, 0.0, ep)
+        mate = lambda view: [_pv(geo, 1, "A", 120, 250, 0, view=view)] if watched else []   # noqa: E731
+        for t in (0.0, 0.5, 1.0):
+            d.tick(t, [_pv(geo, 0, "A", 150, 200, 0), *mate([s_node])], {5: {p_node: ep, s_node: old}})
+        new = d.entry(s_node, 1.5, ep)
+        d.tick(1.5, [_pv(geo, 0, "A", 150, 200, 180), *mate([])], {5: {p_node: ep, s_node: new}})
+        [g] = d.gaps()
+        assert g.t_open == pytest.approx(1.5) and g.spot == s_node
+        causes.append(g.cause)
+    assert causes == ["victim_turned", "route_released"]
+
+
+def test_the_cause_tie_order_victim_turned_before_victim_moved():
+    """The victim steps to the door and turns at one tick: F (exposed in front from the old spot) is now behind
+    them, and S (no line from the old spot) is newly exposed behind them. Both causes are at 2.5 s;
+    CAUSE_ORDER puts victim_turned first."""
+    geo = door_hall()
+    s_node, f_node = geo.cell_of_px(244, 292), geo.cell_of_px(196, 260)
+    old_sight = cast(geo, 190, 200, gd.FULL_CIRCLE, [])
+    assert not old_sight[s_node] and old_sight[f_node] and cast(geo, 196, 290, gd.FULL_CIRCLE, [])[f_node]
+    causes = []
+    for yaw0 in (140, 90):          # without a turn the same step is `victim_moved`; with one, the tie
+        d = _Drive(geo)
+        es, ef = d.entry(s_node, 0.0), d.entry(f_node, 0.0)
+        for t in (0.0, 0.5, 1.0, 1.5, 2.0):
+            d.tick(t, [_pv(geo, 0, "A", 190, 200, yaw0)], {5: {s_node: es, f_node: ef}})
+        d.tick(2.5, [_pv(geo, 0, "A", 196, 290, 140)], {5: {s_node: es, f_node: ef}})
+        [g] = d.gaps()
+        assert g.t_open == pytest.approx(2.5)
+        causes.append(g.cause)
+    assert causes == ["victim_moved", "victim_turned"]
 
 
 # ---------------------------------------------------------------- R13: a clear line from the real eye

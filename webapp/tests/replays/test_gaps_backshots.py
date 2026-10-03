@@ -241,6 +241,50 @@ def test_the_victim_winning_while_the_gap_is_open():
     assert g.victim_won_at == 4.0, "the first kill of a candidate (7 is not one)"
 
 
+def test_each_level_of_use_counts_only_for_the_enemy_whose_window_it_is():
+    """I3: two candidates, 5 and 6. 5 stood in the gap at 4 s; it closed at 5 s. After the close only 5's
+    window (to 7 s) is open: 6's shot, 6's kill and the victim's kill of 6 are not the gap's; 5's are."""
+    shots = [_shot(6.0, shooter=6), _shot(6.5, shooter=5)]
+    shot = _gap(0, (), t_close=5.0, joined={5: 0.0, 6: 0.0}, stood={5: [4.0]})
+    bs.mark_shots([shot], shots)
+    assert (shot.shot_at, shot.shot_by) == (6.5, 5)
+    killed = _gap(0, (), t_close=5.0, joined={5: 0.0, 6: 0.0}, stood={5: [4.0]})
+    won = _gap(0, (), t_close=5.0, joined={5: 0.0, 6: 0.0}, stood={5: [4.0]})
+    _levels([killed], [(6.8, 6, 0), (6.9, 5, 0)])
+    _levels([won], [(6.6, 0, 6), (6.7, 0, 5)])
+    assert (killed.killed_at, killed.killed_by) == (6.9, 5)
+    assert won.victim_won_at == 6.7
+
+
+def test_no_kill_after_the_round_is_decided_counts():
+    """Final review M4: nothing is detected after t_decided, kills included."""
+    def levels(decided, kills):
+        g = _gap(0, (), t_open=0.0, t_close=8.5, stood={5: [8.0]})
+        gd.GapDetector._levels(SimpleNamespace(gaps=[g], rnd=SimpleNamespace(kills=kills, t_decided=decided)))
+        return g
+
+    assert levels(8.5, [(9.0, 5, 0)]).killed_at is None
+    assert levels(8.5, [(9.0, 0, 5)]).victim_won_at is None
+    assert levels(10.0, [(9.0, 5, 0)]).killed_at == 9.0, "inside the window when the round is still live"
+    assert levels(9.0, [(9.0, 5, 0)]).killed_at == 9.0, "a kill at t_decided is not after it"
+    kills = [{"i": 0, "t": 8.5, "killer": 5, "victim": 0, "u": 0, "v": 0}]
+    gaps = run(open_hall(), _behind_round([_dmg(8.0)], deaths={0: 8.5}, kills=kills, t_decided=8.3))
+    [b] = backshots(gaps)
+    assert b.killed_at is None and b.killed_by is None
+    assert all(g.killed_at is None for g in gaps)
+
+
+def test_open_is_one_closed_interval_for_linking_shot_and_levels():
+    """Final review M5: a gap is open on [t_open, t_close], both ends included, everywhere."""
+    g = _gap(0, (), t_open=0.0, t_close=3.0)
+    assert gd.is_open(g, 0.0) and gd.is_open(g, 3.0) and not gd.is_open(g, 3.01)
+    assert bs.link(GEO, [g], 0, 0, 5, 3.0, (), 0.0, 0.0) is g, "a back-shot at the close links"
+    bs.mark_shots([g], [_shot(3.0)])
+    assert g.shot_at == 3.0
+    _levels([g], [(3.0, 5, 0)])
+    assert g.killed_at == 3.0
+
+
 def test_two_runs_starting_together_are_one_backshot():
     assert len(backshots(run(open_hall(), _behind_round([_dmg(8.0), _dmg(8.0)])))) == 1
 

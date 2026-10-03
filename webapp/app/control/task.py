@@ -123,6 +123,28 @@ class _CacheFailed(Exception):
     pass
 
 
+class _CacheUnreadable(Exception):
+    pass
+
+
+def _replay_cache(cache, path: Path, det) -> dict:
+    """Steps `det` through the tick cache at `path` and returns its stored missing-input counts. Any error
+    while reading the file is raised as _CacheUnreadable; an error in `det.step` propagates unchanged."""
+    try:
+        missing = cache.read_missing(path)
+        ticks = iter(cache.replay(path))
+    except Exception as error:  # noqa: BLE001 - any read error is a miss
+        raise _CacheUnreadable(f"{type(error).__name__}: {error}") from error
+    while True:
+        try:
+            record, logs = next(ticks)
+        except StopIteration:
+            return missing
+        except Exception as error:  # noqa: BLE001 - any read error is a miss
+            raise _CacheUnreadable(f"{type(error).__name__}: {error}") from error
+        det.step(record, logs)
+
+
 class _CacheGuard:
     """The tick cache writer behind a guard (R18): an exception while writing a tick or the file stops any
     further writes, deletes what was written, and becomes the gap run's failure. The engine never sees it."""
@@ -138,6 +160,17 @@ class _CacheGuard:
         if self.error is None:
             try:
                 self.writer(record, unknown)
+            except Exception as error:  # noqa: BLE001 - the gap run's failure
+                self._fail(error)
+
+    def on_tick(self, tick, unknown) -> None:
+        """The engine's hook (compute_round): the tick record is built here, inside the guard (final review M1),
+        so an error building it fails the gap run and never control."""
+        if self.error is None:
+            try:
+                from app.control import observe
+
+                self.writer(observe.record(tick, unknown), unknown)
             except Exception as error:  # noqa: BLE001 - the gap run's failure
                 self._fail(error)
 
@@ -165,8 +198,8 @@ def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
     """One round's timing gaps (timing-gaps spec, section 7, "Writer"), in their own failure boundary: an error
     here is the gap run's, never control's. With `guard` (a full run: control was just computed through it),
     the detector reads back the tick cache the guard wrote, so a full run and a gaps-only run give the same
-    rows. Without (gaps only), it reads the cache when it is there in this format, else runs the engine
-    (writing the cache as it goes). Notes: the detector's cases plus the compute-time missing inputs (R20)."""
+    rows. Without (gaps only), it reads the cache when it is there and readable (an unreadable file is a miss
+    and is deleted), else runs the engine (writing the cache as it goes). Notes: the detector's cases plus the compute-time missing inputs (R20)."""
     run = {"fingerprint": "", "gaps_revision": 0, "chokes_hash": None, "notes": {}, "error": None}
     try:
         from app.replays import choke_assets
@@ -184,16 +217,25 @@ def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
         rnd = engine.RoundInputs(blob, geo, link)
         det = detect.GapDetector(geo, rnd)
         missing = None
-        if guard is not None or path.exists():
-            try:
-                missing = cache.read_missing(path)
-            except ValueError:            # a file in another format: a miss, unless this run just wrote it
-                if guard is not None:
-                    raise
-        if missing is not None:
+        if guard is not None:             # a full run reads back the file it just wrote: any error is the run's
+            missing = cache.read_missing(path)
             for record, logs in cache.replay(path):
                 det.step(record, logs)
-        else:
+        elif path.exists():
+            # gaps only: any error reading the file (another format, truncated, corrupt) is a miss, and the
+            # unreadable file is deleted so the engine run below rewrites it (final review M7). An error in the
+            # detector itself is not a read error and still fails the run.
+            try:
+                missing = _replay_cache(cache, path, det)
+            except _CacheUnreadable:
+                for stale in (path, path.with_name(path.name + ".tmp")):
+                    try:
+                        stale.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                rnd = engine.RoundInputs(blob, geo, link)        # a fresh detector: it may have stepped
+                det, missing = detect.GapDetector(geo, rnd), None
+        if missing is None:
             writer = _CacheGuard(path)
 
             def both(record, unknown):

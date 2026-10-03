@@ -130,6 +130,68 @@ def test_an_observer_exception_leaves_control_ok_and_the_gap_run_failed(tmp_path
     assert not list(tmp_path.glob("*")), "no file, partial or whole"
 
 
+def test_an_error_building_the_tick_record_fails_the_gap_run_not_control(tmp_path, monkeypatch):
+    # final review M1: the record is built inside the guard, so control's result is unchanged
+    from app.control import observe
+    plain = _task(tmp_path, monkeypatch)
+    del plain["gaps"]
+    expected = compute_task(plain)
+    calls = []
+
+    def broken(tick, unknown):
+        calls.append(tick.t)
+        raise IndexError("no eye here")
+
+    monkeypatch.setattr(observe, "record", broken)
+    result = compute_task(_task(tmp_path, monkeypatch))
+    assert result["status"] == "ok" and result["data"] == expected["data"]
+    assert result["summary"] == expected["summary"]
+    assert result["gaps"]["run"]["status"] == "failed" and "no eye here" in result["gaps"]["run"]["error"]
+    assert len(calls) == 1, "no further records after the failure"
+    assert not list(tmp_path.glob("*")), "no file, partial or whole"
+
+
+def _corrupt(path: Path, how: str) -> None:
+    raw = path.read_bytes()
+    if how == "truncated":
+        path.write_bytes(raw[: len(raw) // 2])
+    elif how == "garbage":
+        path.write_bytes(b"not a gzip stream at all")
+    else:                                       # a valid header, then a body that is not a pickle
+        from app.gaps import cache
+        head = {"format": cache.FORMAT, "missing": {}, "ticks": 1}
+        path.write_bytes(gzip.compress(__import__("pickle").dumps(head) + b"\x00garbage"))
+
+
+def test_an_unreadable_cache_is_a_miss_and_is_deleted(tmp_path, monkeypatch):
+    # final review M7: any read error on the gaps-only path is a miss; the file is replaced by the engine run
+    first = compute_task(_task(tmp_path, monkeypatch))
+    [path] = tmp_path.glob("*.ticks.pkl.gz")
+    for how in ("truncated", "garbage", "body"):
+        _corrupt(path, how)
+        broken = path.read_bytes()
+        calls = _engine_calls(monkeypatch)
+        again = compute_task(_task(tmp_path, monkeypatch, gaps_only=True))
+        assert again["gaps"]["run"]["status"] == "ok", (how, again["gaps"]["run"]["error"])
+        assert len(calls) == 1, how
+        assert again["gaps"]["rows"] == first["gaps"]["rows"] and again["gaps"]["run"] == first["gaps"]["run"]
+        assert path.exists() and path.read_bytes() != broken, "the engine run rewrote the file"
+        monkeypatch.undo()
+        from app.gaps import cache
+        monkeypatch.setattr(cache, "cache_dir", lambda: tmp_path)
+
+
+def test_a_detector_error_while_replaying_the_cache_still_fails_the_gap_run(tmp_path, monkeypatch):
+    from app.gaps import detect
+    compute_task(_task(tmp_path, monkeypatch))
+    [path] = tmp_path.glob("*.ticks.pkl.gz")
+    monkeypatch.setattr(detect.GapDetector, "step", lambda self, rec, logs: (_ for _ in ()).throw(KeyError("bug")))
+    calls = _engine_calls(monkeypatch)
+    again = compute_task(_task(tmp_path, monkeypatch, gaps_only=True))
+    assert again["gaps"]["run"]["status"] == "failed" and "bug" in again["gaps"]["run"]["error"]
+    assert calls == [] and path.exists(), "a detector bug is not a cache miss"
+
+
 def test_a_close_exception_leaves_control_ok_and_the_gap_run_failed(tmp_path, monkeypatch):
     from app.gaps import cache
     real_close = cache.Writer.close
@@ -203,16 +265,36 @@ def test_the_gap_fingerprint_moves_with_each_input(monkeypatch, tmp_path):
     assert replay_gaps.gap_fingerprint("c" * 16, "Ascent") != base
 
 
+def _hearing_copy(tmp_path, edit) -> Path:
+    body = json.loads(replay_gaps.HEARING_FILE.read_text(encoding="utf-8"))
+    edit(body)
+    path = tmp_path / "hearing.json"
+    path.write_text(json.dumps(body, indent=4), encoding="utf-8")
+    return path
+
+
 def test_a_hearing_only_edit_changes_the_gap_fingerprint_and_the_engine_key(monkeypatch, tmp_path):
-    # R6: the hearing table is read as a file; an edit with no revision change still makes the round stale
+    # R6 (narrowed by the final review's I2): the hearing table is read as a file; a numeric edit with no
+    # revision change still makes the round stale
     fp, key = replay_gaps.gap_fingerprint("c" * 16, "Ascent"), replay_gaps.engine_key("c" * 16, "Ascent")
-    assert replay_gaps.hearing_hash() == __import__("hashlib").sha256(
-        replay_gaps.HEARING_FILE.read_bytes()).hexdigest()[:16]
-    edited = tmp_path / "hearing.json"
-    edited.write_bytes(replay_gaps.HEARING_FILE.read_bytes() + b"\n")
+    assert len(replay_gaps.hearing_hash()) == 16 and replay_gaps.hearing_hash() != "none"
+    edited = _hearing_copy(tmp_path, lambda b: b["guns"].__setitem__("Phantom", float(b["guns"]["Phantom"]) + 1))
     monkeypatch.setattr(replay_gaps, "HEARING_FILE", edited)
     assert replay_gaps.gap_fingerprint("c" * 16, "Ascent") != fp
     assert replay_gaps.engine_key("c" * 16, "Ascent") != key
+
+
+def test_editing_the_hearing_tables_sources_or_marker_changes_no_fingerprint(monkeypatch, tmp_path):
+    # I2(b): only the numeric view the engine pins is hashed
+    fp, key = replay_gaps.gap_fingerprint("c" * 16, "Ascent"), replay_gaps.engine_key("c" * 16, "Ascent")
+
+    def edit(body):
+        body.pop("PROVISIONAL", None)
+        body["sources"] = {**body.get("sources", {}), "guns": "a corrected citation"}
+
+    monkeypatch.setattr(replay_gaps, "HEARING_FILE", _hearing_copy(tmp_path, edit))
+    assert replay_gaps.gap_fingerprint("c" * 16, "Ascent") == fp
+    assert replay_gaps.engine_key("c" * 16, "Ascent") == key
 
 
 # ---------------------------------------------------------------- the plan (R17)

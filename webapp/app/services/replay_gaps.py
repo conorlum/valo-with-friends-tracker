@@ -9,6 +9,7 @@ app's pattern page can use it. The hearing table is read as a file, never import
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -26,11 +27,17 @@ def _hex16(body: str) -> str:
 
 
 def hearing_hash(path: Path | None = None) -> str:
-    """16 hex of the gun hearing table's bytes (R6), or "none" when there is no table."""
+    """16 hex of the hearing table's numeric view (R6, narrowed by the final review's I2): the same fields, as
+    floats, that app/control/engine.py `HEARING` reads and pins (`footstep_range_m`, `default_gun_m`, `guns`),
+    as sorted JSON. Editing `sources`, the `PROVISIONAL` marker or the file's layout changes nothing the engine
+    uses, so it changes no fingerprint. "none" when there is no table."""
     try:
-        return hashlib.sha256(Path(path or HEARING_FILE).read_bytes()).hexdigest()[:16]
+        body = json.loads(Path(path or HEARING_FILE).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return "none"
+    view = {"footstep_range_m": float(body["footstep_range_m"]), "default_gun_m": float(body["default_gun_m"]),
+            "guns": {str(k): float(v) for k, v in body["guns"].items()}}
+    return _hex16(json.dumps(view, sort_keys=True))
 
 
 def engine_key(control_fingerprint: str, map_name: str) -> str:

@@ -26,7 +26,7 @@ import numpy as np
 
 from app.control import chokes
 from app.control.engine import AUDIBLE_WINDOW_S, PX
-from app.gaps.detect import (BEHIND_DEG, RESULT_WINDOW_S, ROUTE_THIN_S, SHOT_LOOKBACK_S, Gap, off_facing,
+from app.gaps.detect import (BEHIND_DEG, RESULT_WINDOW_S, ROUTE_THIN_S, SHOT_LOOKBACK_S, Gap, is_open, off_facing,
                              round_context)
 from app.replays import choke_assets
 
@@ -75,9 +75,8 @@ def _path(rnd, slot: int, ta: float, tb: float) -> tuple[list, list, float | Non
 def _open_with(g: Gap, victim: int, life: int, shooter: int, t: float) -> bool:
     """g is a predicted gap on this victim life, open at t, with the shooter a candidate by then."""
     joined = g.joined.get(shooter)
-    t_close = g.t_close if g.t_close is not None else float("inf")
     return (g.kind == "predicted" and g.victim == victim and g.life == life and joined is not None
-            and joined <= t and g.t_open <= t < t_close)
+            and joined <= t and is_open(g, t))
 
 
 def link(geo, gaps: list, victim: int, life: int, shooter: int, t: float, seq: tuple | None,
@@ -104,8 +103,7 @@ def mark_shots(gaps: list, shots: list) -> None:
             joined = g.joined.get(shooter)
             if b.victim != g.victim or b.life != g.life or joined is None or joined > b.t_open:
                 continue
-            t_close = g.t_close if g.t_close is not None else float("inf")
-            open_then = g.t_open <= b.t_open < t_close
+            open_then = is_open(g, b.t_open)
             near_stand = any(s <= b.t_open <= s + RESULT_WINDOW_S for s in g.stood_times.get(shooter, ()))
             if open_then or near_stand:
                 g.shot_at, g.shot_by = float(b.t_open), int(shooter)
@@ -149,7 +147,8 @@ def add(det) -> None:
         b.context = {**round_context(rnd, t0, None), "wall": bool(wall),
                      "peak_speed_mps": None if peak is None else round(float(peak), 2)}
         for kt, killer, victim in sorted(rnd.kills):
-            if killer == by and victim == target and t0 <= kt <= t0 + RESULT_WINDOW_S:
+            # a kill after t_decided never counts (final review M4)
+            if killer == by and victim == target and t0 <= kt <= min(t0 + RESULT_WINDOW_S, rnd.t_decided):
                 b.killed_at, b.killed_by = float(kt), int(by)
                 break
         b.linked = link(geo, predicted, target, life, by, t0, seq, pe[0], pe[1])

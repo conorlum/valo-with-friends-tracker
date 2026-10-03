@@ -374,7 +374,7 @@ class GapDetector:
             prev = None                                    # absent last tick: no turn or move to compare
         exposed: dict[int, list] = defaultdict(list)       # seq id -> [(enemy, exposed nodes)]
         quals: dict[int, list] = defaultdict(list)         # seq id -> [(enemy, qualifying nodes)]
-        behind_seqs: set = set()
+        front = np.zeros(self.geo.n, bool)                 # exposed unknown nodes not behind the victim (I1)
         sight = None
         if any((ent >= 0).any() for ent in judged.values()):
             sight = self._sight(p.x, p.y, p.eye_z, p.node, rec.smokes)
@@ -386,14 +386,13 @@ class GapDetector:
                 seqs = log.seq[ent[nodes]]
                 bearing = np.degrees(np.arctan2(cy[nodes] - p.y, cx[nodes] - p.x))
                 behind = np.abs((bearing - p.yaw + 180) % 360 - 180) > BEHIND_DEG
+                front[nodes[~behind]] = True
                 wait = self.wait_over(side, enemy, t)
                 for sid in np.unique(seqs).tolist():
                     m = seqs == sid
                     exposed[sid].append((enemy, nodes[m]))
-                    if (m & behind).any():
-                        behind_seqs.add(sid)
-                        if wait:
-                            quals[sid].append((enemy, nodes[m & behind]))
+                    if wait and (m & behind).any():
+                        quals[sid].append((enemy, nodes[m & behind]))
         for sid, found in sorted(quals.items()):
             key = (p.slot, life, sid)
             g = self.open.get(key)
@@ -428,8 +427,7 @@ class GapDetector:
                 g.checked_at.append(t)
             g._checked = covered
         self._victim_prev[p.slot] = {"t": t, "node": p.node, "yaw": p.yaw, "x": p.x, "y": p.y, "eye_z": p.eye_z,
-                                     "smokes": list(rec.smokes), "sight": sight, "exposed": set(exposed),
-                                     "behind": behind_seqs}
+                                     "smokes": list(rec.smokes), "sight": sight, "front": front}
 
     def _open_gap(self, p, rec, log, sid: int, found: list, life: int, judged: dict, prev) -> Gap:
         side, t = p.team, float(rec.t)
@@ -477,8 +475,10 @@ class GapDetector:
             ready = arrival if since is None else max(arrival, since + MIN_UNSEEN_S)
             options.append((min(ready, t), "open_timing", {}))
         if prev is not None:
-            # turned: cells of this sequence were exposed last tick, none of them behind, and the facing changed
-            if sid in prev["exposed"] and sid not in prev["behind"] and _turned(prev["yaw"], p.yaw):
+            # turned, per cell (final review I1): a node qualifying now was exposed and in front of the victim at
+            # the last tick, and the facing changed. Spread into the rear arc of nodes that were not exposed in
+            # front is not a turn, however the aim jitters.
+            if any(prev["front"][nodes].any() for _, nodes in found) and _turned(prev["yaw"], p.yaw):
                 options.append((t, "victim_turned", {}))
             # moved: a new node, and a qualifying cell that had no line from the old position
             if prev["node"] != p.node:
@@ -529,22 +529,32 @@ class GapDetector:
         """`killed` and the victim's own kill (section 5, Use; ruling D6): a candidate killed the victim, or the
         victim killed a candidate, in `shot`'s window: while the gap was open ([t_open, t_close]) or within
         RESULT_WINDOW_S after that candidate stood in it. A shot is not an anchor. The enemy must be on the
-        candidate list by the kill. First occurrence only."""
+        candidate list by the kill. First occurrence only. A kill after t_decided never counts (final review M4:
+        nothing is detected after that point)."""
+        decided = getattr(self.rnd, "t_decided", math.inf)
         for g in self.gaps:
             if g.kind != "predicted":
                 continue
             for kt, killer, victim in sorted(self.rnd.kills):
+                if kt > decided:
+                    break
                 if victim == g.victim and g.killed_at is None and in_use_window(g, killer, kt):
                     g.killed_at, g.killed_by = float(kt), int(killer)
                 if killer == g.victim and g.victim_won_at is None and in_use_window(g, victim, kt):
                     g.victim_won_at = float(kt)
 
 
+def is_open(g: Gap, t: float) -> bool:
+    """g was open at t: [t_open, t_close], both ends included (a death closing the gap is at t_close). The one
+    definition shared by linking, `shot` and the levels (final review M5)."""
+    t_close = g.t_close if g.t_close is not None else math.inf
+    return g.t_open <= t <= t_close
+
+
 def in_use_window(g: Gap, enemy: int, t: float) -> bool:
-    """`enemy`, a candidate of g by t, acted at t while g was open ([t_open, t_close]; a death closing the gap
-    is at t_close) or within RESULT_WINDOW_S after they stood in it."""
+    """`enemy`, a candidate of g by t, acted at t while g was open (`is_open`) or within RESULT_WINDOW_S after
+    they stood in it."""
     joined = g.joined.get(enemy)
     if joined is None or joined > t:
         return False
-    t_close = g.t_close if g.t_close is not None else math.inf
-    return g.t_open <= t <= t_close or any(s <= t <= s + RESULT_WINDOW_S for s in g.stood_times.get(enemy, ()))
+    return is_open(g, t) or any(s <= t <= s + RESULT_WINDOW_S for s in g.stood_times.get(enemy, ()))
