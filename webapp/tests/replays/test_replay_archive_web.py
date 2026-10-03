@@ -1,5 +1,5 @@
 """The web side of the .vrf archive (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 1):
-the ack sent after a store, `kept_existing` shown as such, the re-send and tombstone sync, and the admin
+the ack sent after a store, `kept_existing` shown to its uploader as stored, the re-send and tombstone sync, and the admin
 routes. Against the real worker with the stub parser and its archive in a temp folder; sqlite store."""
 
 import io
@@ -81,15 +81,16 @@ def test_with_the_archive_off_the_ack_is_recorded_as_off(db, tmp_path, stub):  #
         httpd.shutdown()
 
 
-def test_a_second_recording_kept_out_is_shown_as_such_and_its_file_dropped(db, tmp_path, stub):  # noqa: F811
+def test_a_second_recording_kept_out_looks_stored_to_its_uploader_and_its_file_dropped(db, tmp_path, stub):  # noqa: F811
     worker, httpd, base, disk = start_archive(tmp_path, stub)
     try:
         client = uploads.WorkerClient(base)
         first = collect(db, client, vrf_bytes())
         other = collect(db, client, vrf_bytes() + b"\0" * 16, session_key="sess2")
         assert (other.status, other.store_outcome, other.archive_ack) == ("stored", "kept_existing", "deleted")
-        body = routes._status_body(db, other)
-        assert body["kept_existing"] is True and "did not link" in body["error"]
+        assert "did not link" in other.error, "the reason is kept for the admin"
+        # Friends upload their own recordings of one match: the second uploader sees what the first did.
+        assert routes._status_body(db, other) == routes._status_body(db, first)
         assert list((disk / "pending").iterdir()) == []
         assert (disk / "archive" / f"{MATCH_UUID}.vrf").read_bytes() == vrf_bytes(), "the first stays"
         assert db.query(Replay).one().id == first.replay_id
