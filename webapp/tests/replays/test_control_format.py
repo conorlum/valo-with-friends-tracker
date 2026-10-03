@@ -30,9 +30,10 @@ from tests.replays.control_toys import blob, door_hall
 # 4: heights (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4): the per-floor engine and its
 # start values. Unreleased, so re-pinned in place as its steps land.
 # 5: timing gaps (docs/superpowers/specs/2026-10-02-timing-gaps-design.md, section 4): the unknown's locating
-# events (KILL_AREA_M ... GUN_HEARING_M, from app/control/hearing.json). Unreleased, so re-pinned in place.
+# events (KILL_AREA_M ... GUN_HEARING_M, from app/control/hearing.json: its numeric fields only). Unreleased,
+# so re-pinned in place.
 PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4: "237677656d71ca9f",
-          5: "701a0709f1a2e4dd"}
+          5: "108fef5845985b78"}
 
 
 def _constants_digest() -> str:

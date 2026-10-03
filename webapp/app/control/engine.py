@@ -120,10 +120,14 @@ DAMAGE_AREA_M = 10.0
 FOOTSTEP_AREA_M = 10.0
 AUDIBLE_MPS = 4.5            # above the fastest shift-walk (knife, 4.05 m/s), below the slowest run (rifle, 5.40)
 AUDIBLE_WINDOW_S = 0.5
-HEARING = json.loads((Path(__file__).with_name("hearing.json")).read_text(encoding="utf-8"))
-FOOTSTEP_RANGE_M = float(HEARING["footstep_range_m"])
-GUN_HEARING_M = {str(k): float(v) for k, v in HEARING["guns"].items()}
-GUN_HEARING_DEFAULT_M = float(HEARING["default_gun_m"])     # also a shot with no gun: the table's longest
+_HEARING_FILE = json.loads((Path(__file__).with_name("hearing.json")).read_text(encoding="utf-8"))
+# only the numeric fields (pinned with the other constants): editing a citation in `sources` changes nothing
+HEARING = {"footstep_range_m": float(_HEARING_FILE["footstep_range_m"]),
+           "default_gun_m": float(_HEARING_FILE["default_gun_m"]),
+           "guns": {str(k): float(v) for k, v in _HEARING_FILE["guns"].items()}}
+FOOTSTEP_RANGE_M = HEARING["footstep_range_m"]
+GUN_HEARING_M = dict(HEARING["guns"])
+GUN_HEARING_DEFAULT_M = HEARING["default_gun_m"]     # a gun named but not in the table (a shot with no gun: the longest)
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
 FAST_TURN_DPS = 90.0
 SPEED_WINDOW_S = 0.25
@@ -337,6 +341,24 @@ class RoundInputs:
     def life_end(self, s: int, t: float) -> float:
         return next((b for a, b in self.lives.get(s, []) if a <= t < b), t)
 
+    def revival(self, s: int, t: float) -> tuple[float, float, float] | None:
+        """Where and when slot s, alive at t in a later life, is first located in it (timing gaps, section 4;
+        R14): at the life's start when there is a sample then, else at the first sample since (if by t), as
+        (time, x px, y px); None without one yet."""
+        a = next((a for a, b in self.lives.get(s, []) if a <= t < b), None)
+        if a is None:
+            return None
+        p = self.pos(s, a)
+        if p is not None:
+            return float(a), p[0], p[1]
+        tr = self.tracks.get(s)
+        if tr is None:
+            return None
+        i = int(np.searchsorted(tr[0], a))
+        if i >= len(tr[0]) or tr[0][i] > t:
+            return None
+        return float(tr[0][i]), tr[1][i] * PX / 10000, tr[2][i] * PX / 10000
+
     def deaths(self) -> list[tuple[int, float]]:
         return sorted(((s, b) for s, ivs in self.lives.items() for _, b in ivs if b != math.inf),
                       key=lambda d: (d[1], d[0]))
@@ -500,7 +522,8 @@ class RoundInputs:
             self.hit_contest[target].append(_span(e["t"], t1 + DAMAGE_CONTEST_PAD_S))
         if e.get("src") == "gun":
             self.gun_runs.append((float(e["t"]), float(t1), int(by), int(target), bool(e.get("wall"))))
-            self.events.append(e["t"])       # every gun damage run gets a tick (timing gaps, section 4)
+            # every gun damage run gets a tick, the first at or after its start, so it is applied there (section 4)
+            self.events.append(snap_after(e["t"]))
 
     def miss(self, case: str, slot: int | None) -> None:
         """Count a missing-data case once per (case, slot) per round (R20), however often it is met."""
@@ -1731,7 +1754,7 @@ class Unknown:
                 self.entry[side].pop(gone, None)
                 self._seen_entry[side].pop(gone, None)
                 self._pending[side].discard(gone)
-                if rnd is not None:
+                if locates:
                     self._dead[side].add(gone)
             if not enemies:
                 self.cells[side] = np.zeros(n, bool)   # nobody left: nobody could be anywhere
@@ -1772,8 +1795,11 @@ class Unknown:
                     elif self._start[side] is not None:
                         reached[self._start[side]] = t        # the barrier drop's ground: there now
                         sources.update(dict.fromkeys(np.flatnonzero(self._start[side]).tolist(), t))
-                if slot in self._pending[side] and h is not None:
-                    hits.append((t, "revived", 0.0, h.cell, h.x, h.y))
+                if slot in self._pending[side]:
+                    back = rnd.revival(slot, t)
+                    if back is not None:
+                        tb, x, y = back
+                        hits.append((tb, "revived", 0.0, rnd.node(slot, tb, x, y), x, y))
                 if locates:
                     hits += self._locating(rnd, side, slot, since, t)
                 if hits:
@@ -1843,7 +1869,11 @@ class Unknown:
                 rnd.miss("locating event without a position", slot)
                 continue
             if kind == "gunfire":
-                if not self._heard_by(rnd, side, te, p[0], p[1], GUN_HEARING_M.get(detail, GUN_HEARING_DEFAULT_M)):
+                if detail is None:      # no gun recorded: the longest hearing range in the table (spec)
+                    rng = max(GUN_HEARING_M.values(), default=GUN_HEARING_DEFAULT_M)
+                else:
+                    rng = GUN_HEARING_M.get(detail, GUN_HEARING_DEFAULT_M)
+                if not self._heard_by(rnd, side, te, p[0], p[1], rng):
                     continue
                 radius = SHOT_AREA_M
             else:

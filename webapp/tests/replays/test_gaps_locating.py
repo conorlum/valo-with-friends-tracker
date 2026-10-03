@@ -63,7 +63,30 @@ def test_a_gun_damage_run_gets_its_own_tick():
     geo = open_hall()
     data = blob(_hidden_pair(), t_end=10.0,
                 util=[{"k": "damage", "t": 6.2, "t1": 6.3, "by": 5, "target": 0, "src": "gun", "wall": False, "n": 1}])
-    assert 6.1875 in ce.RoundInputs(data, geo).tick_times().tolist()     # 6.2 on the 1/16 s grid
+    rnd, runner = _runner(geo, data)
+    times = rnd.tick_times().tolist()
+    assert 6.25 in times and 6.1875 not in times     # the first grid tick at or after 6.2, not the nearest
+    for t in times:
+        _step(rnd, runner, float(t))
+        if t == 6.25:
+            break
+    assert runner.unknown.events["A"] == [(5, 6.2, "damage")], "applied at its own tick"
+    assert runner.unknown.located["A"][5] == pytest.approx(6.2)
+
+
+def test_a_shot_with_no_gun_uses_the_longest_range_in_the_table(monkeypatch):
+    """Spec: a gun-less shot uses the table's longest range; a named gun missing from the table, the default."""
+    geo = open_hall()
+    monkeypatch.setattr(ce, "GUN_HEARING_M", {"Quiet": 1.0, "Loud": 100.0})
+    monkeypatch.setattr(ce, "GUN_HEARING_DEFAULT_M", 1.0)
+    for gun, heard in ((None, True), ("Unlisted", False)):
+        shot = {"k": "shot", "t": 6.0, "by": 5, "u": 0, "v": 0}
+        if gun is not None:
+            shot["gun"] = gun
+        rnd, runner = _runner(geo, blob(_hidden_pair(), t_end=10.0, util=[shot]))
+        for t in np.arange(0.0, 6.5, 0.5):
+            _step(rnd, runner, float(t))
+        assert (5 in runner.unknown.located["A"]) is heard, gun
 
 
 def test_ability_damage_locates_nobody():
@@ -197,6 +220,28 @@ def test_a_revived_enemy_without_a_sample_restarts_at_their_first_one():
     back = _unknown_of(runner, "A", 5)
     assert 1 <= back.sum() <= 2
     assert not (back & (np.hypot(geo.centres[:, 0] - 300, geo.centres[:, 1] - 120) > 16)).any()
+
+
+def test_a_revival_between_ticks_is_located_at_the_lifes_start():
+    """Spec: a revived enemy counts as located at that moment: the life's start when there is a sample then
+    (not the tick that notices it), else the first sample of the new life (R14), even between ticks."""
+    from tests.replays.control_toys import barrier_hall
+    geo = barrier_hall()
+    data = blob({0: ("A", [(0.0, 120, 200, 180)]), 5: ("B", [(0.0, 400, 200, 180), (6.0, 300, 120, 180)])},
+                t_end=10.0)
+    data["alive"]["5"] = [[0.0, 3.0, "kill"], [6.1, None, None]]
+    rnd, runner = _runner(geo, data)
+    for t in np.arange(0.0, 7.0, 0.5):
+        _step(rnd, runner, float(t))
+    assert runner.unknown.located["A"][5] == pytest.approx(6.1)
+    # no sample at the start (6.1): the first one, at 6.75, between the ticks 6.5 and 7.0
+    data["tracks"]["5"] = track([(0.0, 400, 200, 180)], 0.0, 3.0) + track([(6.75, 300, 120, 180)], 6.75, 10.0)
+    rnd, runner = _runner(geo, data)
+    for t in np.arange(0.0, 7.5, 0.5):
+        _step(rnd, runner, float(t))
+        if t == 6.5:
+            assert 5 not in runner.unknown.located["A"]
+    assert runner.unknown.located["A"][5] == pytest.approx(6.75)
 
 
 class _RoundTick(_Tk):
