@@ -184,9 +184,11 @@ def _own_upload_or_404(request: Request, db: Session, upload_id: str) -> ReplayU
 
 
 def _status_body(db: Session, upload: ReplayUpload) -> dict:
-    body = {"status": upload.status, "error": upload.error}
-    if upload.store_outcome == "kept_existing":
-        body["kept_existing"] = True  # this recording wasn't stored; `error` holds the store's reason
+    """What the uploader sees. A `kept_existing` upload (a friend's recording of the same match got there
+    first) looks exactly like a stored one: the match has its replay either way, and the link goes to it.
+    The row keeps the real outcome and the store's reason for the admin."""
+    kept_existing = upload.store_outcome == "kept_existing"
+    body = {"status": upload.status, "error": None if kept_existing else upload.error}
     if upload.status == "stored" and upload.replay_id is not None:
         from app.models.replay import Replay
 

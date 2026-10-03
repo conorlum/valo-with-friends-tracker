@@ -64,8 +64,7 @@
     function showJob(row, body) {
       var link = row.querySelector("[data-row-link]");
       if (body.status === "stored") {
-        // kept_existing: this recording wasn't stored; the link goes to the one already on the site.
-        setStatus(row, body.kept_existing ? "Not stored: " + body.error + "." : body.linked ? "Stored and linked to its match." :
+        setStatus(row, body.linked ? "Stored and linked to its match." :
           "Stored. It links to its match after the match is crawled.");
         if (body.replay_url) { link.hidden = false; link.href = body.replay_url; }
       } else if (body.status === "failed") {

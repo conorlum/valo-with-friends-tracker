@@ -16,7 +16,9 @@
 - `send_ack`: right after a result is stored (or refused), tells the worker what happened, so it archives
   the file or deletes it (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 1). Best
   effort: the worker's answer goes in `archive_ack`, and app/services/replay_archive_sync.py re-sends any
-  that is still null. A `kept_existing` result is shown as such, with the store's own reason.
+  that is still null. A `kept_existing` result keeps the store's own reason in `error` for the admin, but its
+  uploader sees it as stored (app/routers/replays.py, `_status_body`): friends upload their own recordings
+  of one match, and whoever is second shouldn't be told so.
 
 Uploaded `.vrf` files are never kept here: the request's spooled file goes to the worker. With its
 archive disk on, the worker keeps the accepted recording of each match privately; with it off, it
