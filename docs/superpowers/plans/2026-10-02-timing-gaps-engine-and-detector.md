@@ -61,11 +61,114 @@ rules in Task 2 already keep hand edits).
 5. **Two rounds of one replay** must never share a tick-cache file. Test in Task 6:
    `test_cache_keys_differ_by_round`.
 
+## Revisions from the plan review (applied 2026-10-02, AFK run W0)
+
+The independent review (`2026-10-02-timing-gaps-engine-and-detector-review.md`, findings R1-R20 below; not the
+run register's R ids) was applied as follows. Every finding was accepted. **Where a revision and a task's code
+snippet disagree, the revision wins**; the snippets are a starting point, and each task's tests must include the
+regression tests the revision names. Each task's own "Review fixes" line says which revisions apply to it.
+
+**Run overrides (AFK run, 2026-10-02).** Work in `C:\Users\User\Documents\GitHub\valo-with-friends-tracker\.worktrees\afk-2026-10-02-timing-gaps`
+on branch `afk/2026-10-02-timing-gaps`, not `.claude\worktrees\timing-gaps`. Owner stop points become: Task 1
+Step 4 a provisional hearing table (`"PROVISIONAL": "D<n>"` key in `hearing.json`) built on and flagged; Task 2
+Step 6's 10-80 range and Task 4 Step 7's 20% budget are flagged for the owner and the build continues; Task 11
+Steps 3 and 5 are left for the owner and never run.
+
+- **R1 (blocker), Task 10.** `CONTROL_TABLES` in `tests/replays/test_control_store.py` is extended with
+  `ReplayRoundGapRun.__table__` and `ReplayGap.__table__` (a named replacement: every existing assertion stays
+  unchanged), and `tests/replays/test_control_store.py` joins Task 10's Step 6 command.
+- **R2 (blocker), Tasks 1 and 9.** Task 1 Step 1 runs `gun_names.py` from the **main checkout's** `webapp\`
+  folder (its `.env` points at local Postgres on 5433; never read or print `.env`), with the script's
+  `sys.path` line pointing at that folder. Task 9 Step 7 rehearses the migration only against the disposable
+  database `valomaths_gaps_test` on localhost:5433, setting `DATABASE_URL=postgresql+psycopg2://valorant:valorant@localhost:5433/valomaths_gaps_test`
+  inline for each of the three alembic commands (the public local credentials of `webapp/docker-compose.yml`).
+  It does not start Docker. Never run alembic against any other database.
+- **R3, Task 2.** A wider span counts only when every along-axis cell for steps `1..WIDEN_CELLS` in that
+  direction is walkable (no jumping a wall corner). Keep the one-door assertion; add
+  `test_a_wall_corner_is_not_a_choke` (the door hall's wall corners give no diagonal choke).
+- **R4, Task 2.** `merge` keeps an auto choke whose cells detection finds again with its id and name; new ids
+  come from an asset-level high-water mark `next_id` saved in the JSON (`{"version": 1, "map", "next_id",
+  "chokes"}`), so ids are never reused, even after every choke was dropped. `merge(existing, detected,
+  next_id) -> (chokes, next_id)`; `load` returns `(chokes, next_id)` or None; `save(name, chokes, next_id)`.
+  Tests: identical detection twice keeps ids; drop-all then re-add gets a fresh id.
+- **R5, Tasks 6 and 10.** The tick cache is keyed by an **engine key**: a 16-hex hash of the control
+  fingerprint, the map's choke asset hash and the hearing hash (R6), not by the control fingerprint alone, so
+  a choke or hearing edit misses the cache and goes through the engine. `cache_path(replay_id, round_number,
+  engine_key, directory)`. `GAPS_REVISION` is deliberately not in the key (re-running the detector alone is
+  the cache's point). Test: a choke edit followed by a gaps-only run does not read the old file.
+- **R6, Task 10.** `replay_gaps.hearing_hash()` (16 hex of `app/control/hearing.json`'s bytes, read as a file:
+  no `app.control` import) goes into `gap_fingerprint` and the engine key. Test: a hearing-only edit changes
+  the gap fingerprint with no revision change.
+- **R7, Task 7.** Pre-event judging, in the detector: at each tick, an enemy with a locating event in
+  `rec.events` is judged (exposure, qualifying, opening, `stood`) against the **previous tick's** entry array
+  for that enemy (the detector keeps a copy) and against the locating history **before** this tick's events;
+  this tick's events are appended to the history only after the victims are processed. Back-shots already use
+  `inclusive=False`. Tests: a same-tick damage event that opens a gap; a kill at the moment of `stood` still
+  counts as `killed`.
+- **R8, Task 5.** `_locating` returns **every** event in the interval (all kinds, time order), the first tick
+  included (interval `(-inf, t]` when there is no previous tick). The region collapse uses the latest event
+  (ties: smaller area); `located` and `events` record all of them. A sighting at the same tick is recorded
+  after them. Tests: damage plus gunfire between two ticks both recorded; an event at time 0 recorded.
+- **R9, Task 7.** An open gap's `t_last_exposed` is updated only from enemies already on its candidate list;
+  new candidates join only by qualifying. Test: a non-candidate with the same sequence during the close timer
+  does not keep the gap open.
+- **R10, Task 7.** At each tick, open gaps are first expired against their previous `t_last_exposed` (close at
+  `t_last_exposed + CLOSE_AFTER_S` if `t` is at or past it, integrating qualified time only to that close),
+  and only then is the tick's exposure consumed. Tests: a sparse timeline (exposed 0, empty 1, exposed 6 gives
+  two gaps, the first closing at 5) and a return exactly at expiry.
+- **R11, Task 7.** `open_timing` is a candidate cause only when no node of the route was observed (released)
+  since the enemy was last located. `victim_turned` and `victim_moved` are judged independently of each other:
+  `victim_moved` when the victim's node changed since the last tick and a route node is exposed now that was
+  not exposed from the old position (exposure is new, not only rotated); `victim_turned` when the route's
+  nodes were exposed last tick and the victim's facing changed. Tie order as in the spec. Tests: a
+  release-delayed arrival gives `route_released`; moving into a new line of sight gives `victim_moved`.
+- **R12, Tasks 6 and 7.** `Tick` keeps `view[s]` (`active | passive` before Memory, presence included) beside
+  `live`; `PlayerView` gains `view`. Attribution is by `view` first, then `utility`, overlap kept (a node in
+  both is credited to view). `checked_at` and "victim sees an enemy" use `view`. `_reason` says `died` only
+  when the observer is no longer alive (`rnd.alive`); a live observer without a position is `other`; `smoked`
+  only when a smoke that started since the last tick blocks the released node from the observer (cast with
+  and without it). Tests: overlap credited to view; missing-position observer not `died`; an unrelated new
+  smoke is not `smoked`.
+- **R13, Tasks 6 and 7.** "A clear line" is a full-circle `geometry.cast` from the victim's real position at
+  their eye height (`PlayerView.eye_z`, the engine's `Tick._eye` value, None on a flat map) with the tick's
+  smokes and `own=p.node`, not `seen_from` over static rows. Computed only for victims who have any enemy
+  unknown this tick. Tests: a raised player and a within-cell corner position change what is exposed. The
+  cost is measured in Task 11's preview.
+- **R14, Task 5.** A revived enemy with no sample at revival keeps a pending new-life origin; the restart
+  (region at their position, `located`, a `revived` event) happens at the first sample of the new life. Test:
+  missing samples across a revival, then the 5 s wait counted from the first sample.
+- **R15, Tasks 4 and 5.** Every source (barrier ground, own position push, sighting cell, area centre) gets a
+  log entry even when the source node is observed (outside `room`); descendants whose spread parent is a
+  source node use that source's entry. Test: a watched centre with reachable unobserved neighbours roots
+  their routes at the centre's entry; clearing and re-entry keep the old trace intact.
+- **R16, Task 8.** Peak speed is the maximum over every unbroken path piece from the last locating (or round
+  start) to `t0`; the candidate distance is from the shooter's real position to `geo.centres[shooter_node]`
+  (the spot), separate from `distance_m` (spot to victim). Tests: an early sprint is the peak; the two
+  distances differ.
+- **R17, Task 10.** `plan_gaps(db, planned_control, every, retry_failed=False)` takes only rounds with a
+  matching **ok** control row (status ok, current fingerprint); it loads gap-run status, skips a current
+  failed gap run unless `retry_failed`. Tests: fresh ok control; current failed control (not gaps-only);
+  current failed gap run (skipped, then retried with `retry_failed`).
+- **R18, Task 10.** The cache writer runs behind a guard observer: an exception in the observer or in
+  `close()` is caught, stops further cache writes, deletes any partial file, and becomes the gap run's
+  failure; control's result is kept. Tests: an observer exception and a `close()` exception both leave
+  control ok and the gap run failed.
+- **R19, Task 10.** `run` binds `rows = result.get("gaps", {}).get("rows", [])`; it counts gap-run failures
+  and gap-store outcomes other than `stored` separately, prints them, and the command returns nonzero when
+  any happened. Test: a failed gap run makes `main` return nonzero.
+- **R20, Tasks 5, 6 and 10.** Missing-data cases are counted once per case and slot per round (a set of
+  `(case, slot)` pairs folded into the counts), not per check: `speed across a track break or missing
+  sample`, `locating event without a position`, plus the plan's shot and plant cases. The tick cache stores
+  the compute-time `missing_inputs` (`Writer.close(missing)`), and both gap paths report those counts in the
+  run's notes. Test: live and cache notes are equal.
+
 ---
 
 ### Task 1: Hearing figures (research, then owner check)
 
 No code. The figures feed Task 5's constants.
+
+Review fixes: R2 (run `gun_names.py` from the main checkout's `webapp\`).
 
 **Files:**
 - Create: `webapp/app/control/hearing.json`
@@ -127,6 +230,8 @@ git commit -F <msg file>   # "Hearing ranges for the timing-gaps locating rules"
 ---
 
 ### Task 2: Chokes
+
+Review fixes: R3, R4.
 
 **Files:**
 - Create: `webapp/app/replays/choke_assets.py` (standard library only: the web app and the stdlib-only
@@ -648,6 +753,8 @@ git commit -F <msg file>   # "Unknown spread: optionally return each arrival's p
 
 ### Task 4: Route history in the engine's unknown (output unchanged)
 
+Review fixes: R15. Step 7's baseline timing is taken **before** any code change in this task.
+
 **Files:**
 - Create: `webapp/app/control/routes.py`
 - Modify: `webapp/app/control/engine.py` (`Unknown.__init__` line ~1548, `Unknown.apply` lines 1624-1674,
@@ -954,6 +1061,8 @@ git commit -F <msg file>   # "Unknown: route history and choke sequences, output
 ---
 
 ### Task 5: Locating events (CONTROL_REVISION 5)
+
+Review fixes: R8, R14, R15, R20.
 
 **Files:**
 - Modify: `webapp/app/control/engine.py` (constants block lines ~80-128; `RoundInputs.__init__` lines
@@ -1369,6 +1478,8 @@ git commit -F <msg file>   # "Unknown: kills, plant, footsteps, gunfire and gun 
 
 ### Task 6: Observer hook and tick cache
 
+Review fixes: R5 (cache key), R12 (`view`), R13 (`eye_z`), R20 (`Writer.close(missing)`).
+
 **Files:**
 - Create: `webapp/app/control/observe.py`
 - Create: `webapp/app/gaps/__init__.py` (empty docstring module)
@@ -1632,6 +1743,8 @@ git commit -F <msg file>   # "compute_round observer and the local tick cache"
 ---
 
 ### Task 7: Predicted gaps
+
+Review fixes: R7, R9, R10, R11, R12, R13.
 
 **Files:**
 - Create: `webapp/app/gaps/detect.py`
@@ -2163,6 +2276,8 @@ git commit -F <msg file>   # "Timing gaps: predicted gaps from the engine's unkn
 
 ### Task 8: Back-shots, linking and levels of use
 
+Review fixes: R16; R7's kill-at-use test lives here if Task 7 cannot express it.
+
 **Files:**
 - Modify (replace the stub): `webapp/app/gaps/backshots.py`
 - Test: `webapp/tests/replays/test_gaps_backshots.py`
@@ -2390,6 +2505,8 @@ git commit -F <msg file>   # "Timing gaps: back-shots, linking and levels of use
 ---
 
 ### Task 9: Storage
+
+Review fixes: R2 (migration rehearsal on `valomaths_gaps_test` only).
 
 **Files:**
 - Modify: `webapp/app/models/replay.py` (add two models after `ReplayRoundControl`)
@@ -2749,6 +2866,9 @@ git commit -F <msg file>   # "Timing gaps: storage (migration 0016)"
 ---
 
 ### Task 10: Computing gaps with control
+
+Review fixes: R1, R5, R6, R17, R18, R19, R20. The interface is `plan_gaps(db, planned_control, every,
+retry_failed=False)`.
 
 **Files:**
 - Create: `webapp/app/services/replay_gaps.py`
