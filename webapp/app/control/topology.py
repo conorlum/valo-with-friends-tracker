@@ -95,28 +95,44 @@ class FlatTopology:
                 if 0 <= ny < GRID and 0 <= nx < GRID]
 
     def spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float, straight: float,
-               links: list) -> np.ndarray:
+               links: list, parents: bool = False):
         """The unknown's arrival times relaxed through `room` up to time `t` (engine.Unknown._spread):
         each node's earliest arrival from a neighbour, after the node was last freed (`free`); a straight
         step costs `straight` seconds, a diagonal sqrt(2) of it, a link (a, b, one way) one straight step.
-        Arrivals later than `t` aren't there yet."""
+        Arrivals later than `t` aren't there yet. With `parents`, also each arrival's source node (-1 for a
+        node whose value came from no neighbour or link here); ties go to the first in SPREAD_ORDER."""
         g = reached.reshape(GRID, GRID).copy()
         f = free.reshape(GRID, GRID)
         r = room.reshape(GRID, GRID)
+        idx = np.arange(GRID * GRID).reshape(GRID, GRID)
+        par = np.full((GRID, GRID), -1, np.int64) if parents else None
         while True:
             best = g.copy()
             for dy, dx in SPREAD_ORDER:
                 src = np.full((GRID, GRID), np.inf)
                 src[max(dy, 0):GRID + min(dy, 0), max(dx, 0):GRID + min(dx, 0)] = \
                     g[max(-dy, 0):GRID + min(-dy, 0), max(-dx, 0):GRID + min(-dx, 0)]
-                np.minimum(best, np.maximum(src, f) + straight * (math.sqrt(2) if dy and dx else 1.0), out=best)
+                cand = np.maximum(src, f) + straight * (math.sqrt(2) if dy and dx else 1.0)
+                if parents:
+                    who = np.full((GRID, GRID), -1, np.int64)
+                    who[max(dy, 0):GRID + min(dy, 0), max(dx, 0):GRID + min(dx, 0)] = \
+                        idx[max(-dy, 0):GRID + min(-dy, 0), max(-dx, 0):GRID + min(-dx, 0)]
+                    better = cand < best
+                    par[better] = who[better]
+                np.minimum(best, cand, out=best)
             for a, b, one_way in links:
-                best.flat[b] = min(best.flat[b], max(g.flat[a], f.flat[b]) + straight)
+                via = max(g.flat[a], f.flat[b]) + straight
+                if parents and via < best.flat[b]:
+                    par.flat[b] = a
+                best.flat[b] = min(best.flat[b], via)
                 if not one_way:
-                    best.flat[a] = min(best.flat[a], max(g.flat[b], f.flat[a]) + straight)
+                    via = max(g.flat[b], f.flat[a]) + straight
+                    if parents and via < best.flat[a]:
+                        par.flat[a] = b
+                    best.flat[a] = min(best.flat[a], via)
             best[~r | (best > t)] = np.inf
             if np.array_equal(best, g):
-                return best.ravel()
+                return (best.ravel(), par.ravel()) if parents else best.ravel()
             g = best
 
 
@@ -214,20 +230,34 @@ class NodeTopology:
         return sorted(straight) + sorted(set(near) - set(straight))
 
     def spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float, straight: float,
-               links: list) -> np.ndarray:
+               links: list, parents: bool = False):
         g = reached.copy()
         cost = self.in_cost * straight
         freed = free[:, None]
+        rows = np.arange(self.n)
+        par = np.full(self.n, -1, np.int64) if parents else None
         while True:
             padded = np.append(g, np.inf)
-            best = np.minimum(g, (np.maximum(padded[self.in_from], freed) + cost).min(1))
+            cand = np.maximum(padded[self.in_from], freed) + cost
+            j = cand.argmin(1)
+            m = cand[rows, j]
+            best = np.minimum(g, m)
+            if parents:
+                better = m < g
+                par[better] = self.in_from[rows[better], j[better]]
             for a, b, one_way in links:
-                best[b] = min(best[b], max(g[a], free[b]) + straight)
+                via = max(g[a], free[b]) + straight
+                if parents and via < best[b]:
+                    par[b] = a
+                best[b] = min(best[b], via)
                 if not one_way:
-                    best[a] = min(best[a], max(g[b], free[a]) + straight)
+                    via = max(g[b], free[a]) + straight
+                    if parents and via < best[a]:
+                        par[a] = b
+                    best[a] = min(best[a], via)
             best[~room | (best > t)] = np.inf
             if np.array_equal(best, g):
-                return best
+                return (best, par) if parents else best
             g = best
 
 
