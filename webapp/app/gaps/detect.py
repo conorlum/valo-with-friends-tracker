@@ -90,6 +90,7 @@ class Gap:
     context: dict = field(default_factory=dict)
     linked: "Gap | None" = None
     stood_times: dict = field(default_factory=lambda: defaultdict(list))   # enemy -> every tick stood in it
+    joined: dict = field(default_factory=dict)        # enemy -> when they joined the candidates (back-shot linking)
     _qual: bool = False               # qualified at the last tick (its state holds until the next)
     _checked: bool = False            # the victim's view covered the spot at the last tick
 
@@ -300,7 +301,7 @@ class GapDetector:
             self._note("release by an observer without a position", slot)
             return out
         if util:
-            out[:] = _CODE[self._util_reason(slot, t)]
+            out[:] = _CODE[self._util_reason(slot, t, nodes)]
             return out
         if any(a <= t < b for a, b in rnd.flashed.get(slot, [])) or \
                 any(a <= t < b for a, b in rnd.nearsight.get(slot, [])):
@@ -333,18 +334,23 @@ class GapDetector:
             self._tick_cache[key] = without & ~with_all
         return self._tick_cache[key]
 
-    def _util_reason(self, slot: int, t: float) -> str:
+    def _util_reason(self, slot: int, t: float, nodes: np.ndarray) -> str:
+        """`utility_left` / `utility_expired` from a watcher of `slot` that could have covered `nodes`: a fixed
+        watcher (trip, alarmbot, trap) only when its `cells` include one of them; a camera, drone or turret
+        (no stored cells: its sight is cast per tick) is not filtered."""
         prev_t = self.prev_t
         if prev_t is None:
             return "other"
-        for w in self.rnd.watchers:
-            if w.by == slot and w.kind in ("camera", "drone") and w.in_use:
+        mine = [w for w in self.rnd.watchers
+                if w.by == slot and (w.cells is None or np.isin(nodes, w.cells).any())]
+        for w in mine:
+            if w.kind in ("camera", "drone") and w.in_use:
                 was = any(a <= prev_t < b for a, b in w.in_use)
                 now = any(a <= t < b for a, b in w.in_use)
                 if was and not now and w.t0 <= t < w.t1:
                     return "utility_left"
-        for w in self.rnd.watchers:
-            if w.by == slot and prev_t < w.t1 <= t:
+        for w in mine:
+            if prev_t < w.t1 <= t:
                 return "utility_expired"
         return "other"
 
@@ -392,6 +398,7 @@ class GapDetector:
                     e = rec.players.get(enemy)
                     sx, sy = self.geo.centres[g.spot]
                     g.candidates[enemy] = None if e is None else round(self._metres(e.x, e.y, sx, sy), 2)
+                    g.joined[int(enemy)] = t
                     if e is None:
                         self._note("candidate without a position", enemy)
             qualifying = set(np.concatenate([nodes for _, nodes in found]).tolist())
@@ -418,13 +425,13 @@ class GapDetector:
     def _open_gap(self, p, rec, log, sid: int, found: list, life: int, judged: dict, prev) -> Gap:
         side, t = p.team, float(rec.t)
         best = None
-        for enemy, nodes in found:                         # the earliest arrival; lowest node, then enemy, on a tie
+        for enemy, nodes in found:       # the earliest arrival; on a tie the lowest cell (spec), then node, enemy
             ent = judged[enemy]
             for node, arrival in zip(nodes.tolist(), log.t[ent[nodes]].tolist()):
-                k = (arrival, node, enemy)
+                k = (arrival, self._cell(node), node, enemy)
                 if best is None or k < best:
                     best = k
-        arrival, spot, enemy = best
+        arrival, _, spot, enemy = best
         entry = int(judged[enemy][spot])
         sx, sy = self.geo.centres[spot]
         g = Gap("predicted", int(p.slot), side, int(sid), tuple(int(c) for c in log.seqs[sid]), t, int(spot),
@@ -441,13 +448,19 @@ class GapDetector:
 
     def _cause(self, p, side, sid, enemy, log, entry, arrival, t, found, prev) -> tuple[str, dict]:
         """Section 5's cause, with R11: `open_timing` only when no route node was released since the enemy
-        was last located; `victim_turned` and `victim_moved` judged independently. The event closest in time
-        to the opening wins; on a tie, CAUSE_ORDER."""
+        was last located in a way that held the route back; `victim_turned` and `victim_moved` judged
+        independently. The event closest in time to the opening wins; on a tie, CAUSE_ORDER.
+
+        A release counts for `route_released` only when the route's own entry at that node arrived at or after
+        it ("the route completed because of it"): a route that reached a node before the node was observed
+        keeps its old entry there, and a later glance at the node did not hold it back (review fix; the
+        fallback to `open_timing` is the controller's ruling D5)."""
         options = []
         since = self.last_located(side, enemy, t)          # before this tick's events (R7)
-        route = log.node[log.trace(entry)]
+        trace = log.trace(entry)
+        route = log.node[trace]
         rel = self.rel_t[side][route]
-        hit = np.isfinite(rel) & (rel >= (since if since is not None else -np.inf))
+        hit = np.isfinite(rel) & (rel >= (since if since is not None else -np.inf)) & (log.t[trace] >= rel)
         if hit.any():
             i = int(np.argmax(np.where(hit, rel, -np.inf)))
             node = int(route[i])

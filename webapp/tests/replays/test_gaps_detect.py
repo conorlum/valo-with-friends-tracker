@@ -12,7 +12,7 @@ from app.control.observe import PlayerView, TickRecord
 from app.control.routes import RouteLog
 from app.gaps import detect as gd
 from app.gaps.rows import to_rows
-from tests.replays.control_toys import blob, door_hall, open_hall
+from tests.replays.control_toys import blob, door_hall, open_hall, toy_ability
 
 
 def run(geo, data, link=None, chokes=None, detector=None):
@@ -258,12 +258,12 @@ class _Drive:
         return [g for g in self.det.finish() if g.kind == "predicted"]
 
 
-def _released(teammates_before, teammates_after, smokes_after=(), deaths=None):
+def _released(teammates_before, teammates_after, smokes_after=(), deaths=None, util=()):
     """The door hall. Victim 0 stands in the west room facing west. Enemy 5's unknown sits east of the wall
     (no line to the victim) until the door X is released at 3 s; it enters X at 3 s and a cell Y behind the
     victim at 3.5 s. `teammates_*` give the other A players before and at 3 s (callables of the geometry)."""
     geo = door_hall()
-    d = _Drive(geo, deaths=deaths)
+    d = _Drive(geo, deaths=deaths, util=util)
     x_node, y_node, e_node = geo.cell_of_px(208, 292), geo.cell_of_px(190, 240), geo.cell_of_px(300, 250)
     victim = lambda: _pv(geo, 0, "A", 120, 200, 180)                    # noqa: E731
     e0 = d.entry(e_node, 0.0)
@@ -320,6 +320,40 @@ def test_only_a_new_smoke_that_blocks_the_node_is_smoked():
     assert g.cause_detail["reason"] == "other", "a new smoke elsewhere is not why"
     g, _ = _released(before, after, smokes_after=[(180.0, 292.0, 6.0, False)])
     assert g.cause_detail["reason"] == "smoked"
+
+
+def test_a_release_that_did_not_hold_the_route_back_is_not_route_released():
+    """Review fix 1 (ruling D5): the route reached X at 1.0 and Y (a child of X's entry) at 1.5. A teammate
+    looks at X from 2.0 to 3.0, but Y keeps its old entry, so the route never waited for that release. The gap
+    opens when the enemy's 5 s wait runs out: `open_timing`, not `route_released` at 3.0."""
+    geo = door_hall()
+    d = _Drive(geo)
+    e_node, x_node, y_node = geo.cell_of_px(300, 250), geo.cell_of_px(208, 292), geo.cell_of_px(190, 240)
+    e0 = d.entry(e_node, 0.0)
+    ex = d.entry(x_node, 1.0, e0)
+    ey = d.entry(y_node, 1.5, ex)
+    victim = lambda: _pv(geo, 0, "A", 120, 200, 180)                    # noqa: E731
+    for t in np.arange(0.0, 5.01, 0.5).tolist():
+        mate = _pv(geo, 1, "A", 150, 292, 0, view=[x_node]) if 2.0 <= t < 3.0 else _pv(geo, 1, "A", 150, 292, 90)
+        unknown = {e_node: e0, y_node: ey} if 2.0 <= t < 3.0 else {e_node: e0, x_node: ex, y_node: ey}
+        d.tick(t, [victim(), mate], {5: unknown}, events=[(5, 0.0, "gunfire")] if t == 0.0 else ())
+    assert d.det.rel_t["A"][x_node] == pytest.approx(3.0), "X was released at 3.0"
+    [g] = [g for g in d.gaps() if g.victim == 0]
+    assert g.t_open == pytest.approx(5.0)
+    assert g.cause == "open_timing" and g.cause != "route_released"
+
+
+def test_utility_expired_needs_a_watcher_that_covered_the_node():
+    """Review fix 3 (minor 2): teammate 1's utility watched the door until 3 s. An alarmbot of theirs that
+    ends at 3 s elsewhere is not why; one beside the door is."""
+    before = lambda geo, x: [_pv(geo, 1, "A", 150, 120, 0, util=[x])]     # noqa: E731
+    after = lambda geo, x: [_pv(geo, 1, "A", 150, 120, 0)]                # noqa: E731
+    far = toy_ability("Killjoy", "Q_StealthAlarmbot", 120, 120, 1, t=0.0, t1=3.0, kind="GameObject")
+    g, _ = _released(before, after, util=[far])
+    assert g.cause_detail["by"] == "utility" and g.cause_detail["reason"] == "other"
+    near = toy_ability("Killjoy", "Q_StealthAlarmbot", 200, 292, 1, t=0.0, t1=3.0, kind="GameObject")
+    g, x_node = _released(before, after, util=[near])
+    assert g.cause_detail["reason"] == "utility_expired"
 
 
 def test_moving_into_a_new_line_of_sight_is_victim_moved():
