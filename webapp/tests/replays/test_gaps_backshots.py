@@ -207,6 +207,52 @@ def test_shot_while_open_or_within_the_window_of_a_stand():
     assert other_life.shot_at is None
 
 
+def _levels(gaps, kills):
+    det = SimpleNamespace(gaps=gaps, rnd=SimpleNamespace(kills=kills))
+    gd.GapDetector._levels(det)
+
+
+def test_a_candidates_kill_while_the_gap_is_open_is_killed_without_a_stand_or_shot():
+    """Ruling D6: `killed` uses `shot`'s window, so an open gap is enough; the anchored reading (3 s after a
+    stand or shot) would miss this kill."""
+    g = _gap(0, (), t_open=0.0, t_close=8.0)
+    _levels([g], [(8.0, 5, 0)])
+    assert (g.killed_at, g.killed_by) == (8.0, 5)
+
+
+def test_killed_after_the_close_needs_a_stand_and_a_shot_is_no_anchor():
+    after_stand = _gap(0, (), t_close=5.0, stood={5: [4.5]})
+    shot_only = _gap(0, (), t_close=5.0)
+    shot_only.shot_at, shot_only.shot_by = 6.0, 5
+    _levels([after_stand, shot_only], [(7.0, 5, 0)])
+    assert after_stand.killed_at == 7.0
+    assert shot_only.killed_at is None
+
+
+def test_levels_need_the_enemy_on_the_list_by_the_kill():
+    g = _gap(0, (), t_open=0.0, t_close=10.0, joined={5: 6.0})
+    _levels([g], [(4.0, 5, 0), (4.5, 0, 5)])
+    assert g.killed_at is None and g.victim_won_at is None
+
+
+def test_the_victim_winning_while_the_gap_is_open():
+    g = _gap(0, (), t_open=0.0, t_close=10.0, joined={5: 0.0, 6: 0.0})
+    _levels([g], [(3.0, 0, 7), (4.0, 0, 6), (5.0, 0, 5)])
+    assert g.victim_won_at == 4.0, "the first kill of a candidate (7 is not one)"
+
+
+def test_two_runs_starting_together_are_one_backshot():
+    assert len(backshots(run(open_hall(), _behind_round([_dmg(8.0), _dmg(8.0)])))) == 1
+
+
+def test_backshot_context_has_the_predicted_rows_keys():
+    gaps = run(open_hall(), _behind_round([_dmg(8.0)]))
+    [b] = backshots(gaps)
+    [g] = [g for g in gaps if g.kind == "predicted" and g.victim == 0]
+    assert b.context["victim_sees_enemy"] is None
+    assert set(b.context) == set(g.context) | {"wall", "peak_speed_mps"}
+
+
 def test_backshot_rows_are_json_safe():
     kills = [{"i": 0, "t": 8.5, "killer": 5, "victim": 0, "u": 0, "v": 0}]
     dets = []

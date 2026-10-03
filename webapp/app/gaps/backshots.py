@@ -18,17 +18,16 @@ Linking: to an open predicted gap on the victim whose candidates include the sho
 same choke sequence first, else the nearest spot. Levels: a predicted gap's `shot` is its first back-shot by a
 candidate while it was open or within RESULT_WINDOW_S of that enemy standing in it; a back-shot itself fills
 only `killed_*` (its shooter killed the victim within RESULT_WINDOW_S). The gaps' `killed_*` and
-`victim_won_at` are set once, by `GapDetector._levels`, which runs after `add` and reads `shot_at`."""
+`victim_won_at` are set once, by `GapDetector._levels` (after `add`), on the same window as `shot`."""
 
 from __future__ import annotations
-
-from collections import Counter
 
 import numpy as np
 
 from app.control import chokes
 from app.control.engine import AUDIBLE_WINDOW_S, PX
-from app.gaps.detect import BEHIND_DEG, MIN_UNSEEN_S, RESULT_WINDOW_S, ROUTE_THIN_S, SHOT_LOOKBACK_S, Gap, off_facing
+from app.gaps.detect import (BEHIND_DEG, RESULT_WINDOW_S, ROUTE_THIN_S, SHOT_LOOKBACK_S, Gap, off_facing,
+                             round_context)
 from app.replays import choke_assets
 
 NO_POSITION = "back-shot check without a position (nothing recorded)"
@@ -132,8 +131,9 @@ def add(det) -> None:
         lookback = t0 - SHOT_LOOKBACK_S
         if not det.wait_over(side, by, t0, inclusive=False, ignore_gunfire_from=lookback):
             continue
-        # two runs starting together (no locating between them): one row
-        if any(b.victim == target and by in b.candidates and t0 - b.t_open < MIN_UNSEEN_S for b in shots):
+        # two runs by one shooter on one victim starting at the same time: the first's damage locating is not
+        # before the second (inclusive=False), so only this keeps them one row. Later follow-ups fail the wait.
+        if any(b.victim == target and by in b.candidates and b.t_open == t0 for b in shots):
             continue
         since = det.last_located(side, by, t0, inclusive=False, ignore_gunfire_from=lookback)
         pieces, node_pieces, peak = _path(rnd, by, rnd.t_start if since is None else since, t0)
@@ -146,10 +146,8 @@ def add(det) -> None:
         b = Gap("backshot", int(target), side, -1, seq, float(t0), int(spot), int(rnd.node(target, t0, pv[0], pv[1])),
                 round(det._metres(pv[0], pv[1], sx, sy), 2), round(angle, 1), pieces, life=life,
                 candidates={int(by): round(det._metres(pe[0], pe[1], sx, sy), 2)})
-        alive = Counter(team for s, team in rnd.team.items() if rnd.alive(s, t0))
-        b.context = {"t_round": round(t0 - rnd.t_start, 3), "alive": {"A": int(alive["A"]), "B": int(alive["B"])},
-                     "spike": "planted" if rnd.plant is not None and rnd.plant <= t0 else "not planted",
-                     "wall": bool(wall), "peak_speed_mps": None if peak is None else round(float(peak), 2)}
+        b.context = {**round_context(rnd, t0, None), "wall": bool(wall),
+                     "peak_speed_mps": None if peak is None else round(float(peak), 2)}
         for kt, killer, victim in sorted(rnd.kills):
             if killer == by and victim == target and t0 <= kt <= t0 + RESULT_WINDOW_S:
                 b.killed_at, b.killed_by = float(kt), int(by)

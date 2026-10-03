@@ -15,8 +15,8 @@ Order within a tick:
    the previous tick's unknown and the locating history before this tick's events (R7).
 4. This tick's events join the locating history.
 
-Back-shots (section 6) are added in `finish` by app/gaps/backshots.py; the use levels that depend on standing
-in a gap (`killed`, `victim_won_at`) are set after them."""
+Back-shots (section 6) are added in `finish` by app/gaps/backshots.py; `killed` and `victim_won_at` are set
+after them, on `shot`'s window (open, or RESULT_WINDOW_S after a stand)."""
 
 from __future__ import annotations
 
@@ -49,6 +49,15 @@ def off_facing(yaw: float, x0: float, y0: float, x1: float, y1: float) -> float:
     """Degrees (0..180) between facing `yaw` from (x0, y0) and the bearing to (x1, y1)."""
     bearing = math.degrees(math.atan2(y1 - y0, x1 - x0))
     return float(abs((bearing - yaw + 180) % 360 - 180))
+
+
+def round_context(rnd, t: float, victim_sees_enemy: bool | None) -> dict:
+    """A row's context at t (section 5 Context, section 7): time into round, alive counts, spike state and
+    whether the victim saw an enemy (None for a back-shot: no view masks after the last tick)."""
+    alive = Counter(team for s, team in rnd.team.items() if rnd.alive(s, t))
+    return {"t_round": round(t - rnd.t_start, 3), "alive": {"A": int(alive["A"]), "B": int(alive["B"])},
+            "spike": "planted" if rnd.plant is not None and rnd.plant <= t else "not planted",
+            "victim_sees_enemy": victim_sees_enemy}
 
 
 def _turned(yaw0: float, yaw1: float) -> bool:
@@ -438,12 +447,8 @@ class GapDetector:
                 int(p.node), round(self._metres(p.x, p.y, sx, sy), 2), round(off_facing(p.yaw, p.x, p.y, sx, sy), 1),
                 self._route(log, entry), life=life, t_last_exposed=t)
         g.cause, g.cause_detail = self._cause(p, side, sid, enemy, log, entry, float(arrival), t, found, prev)
-        rnd = self.rnd
-        alive = Counter(team for s, team in rnd.team.items() if rnd.alive(s, t))
         view = self._view(p)
-        g.context = {"t_round": round(t - rnd.t_start, 3), "alive": {"A": int(alive["A"]), "B": int(alive["B"])},
-                     "spike": "planted" if rnd.plant is not None and rnd.plant <= t else "not planted",
-                     "victim_sees_enemy": any(e.team != side and bool(view[e.node]) for e in rec.players.values())}
+        g.context = round_context(self.rnd, t, any(e.team != side and bool(view[e.node]) for e in rec.players.values()))
         return g
 
     def _cause(self, p, side, sid, enemy, log, entry, arrival, t, found, prev) -> tuple[str, dict]:
@@ -521,18 +526,25 @@ class GapDetector:
         return self._finished
 
     def _levels(self) -> None:
-        """`killed` and the victim's own kill (section 5, Use): a candidate killed the victim, or the victim
-        killed a candidate, within RESULT_WINDOW_S of that candidate standing in the gap (or shooting the
-        victim from it, once back-shots set `shot_at`). First occurrence only."""
+        """`killed` and the victim's own kill (section 5, Use; ruling D6): a candidate killed the victim, or the
+        victim killed a candidate, in `shot`'s window: while the gap was open ([t_open, t_close]) or within
+        RESULT_WINDOW_S after that candidate stood in it. A shot is not an anchor. The enemy must be on the
+        candidate list by the kill. First occurrence only."""
         for g in self.gaps:
             if g.kind != "predicted":
                 continue
-            marks = sorted([(s, e) for e, ts in g.stood_times.items() for s in ts] +
-                           ([(g.shot_at, g.shot_by)] if g.shot_at is not None else []))
             for kt, killer, victim in sorted(self.rnd.kills):
-                if victim == g.victim and killer in g.candidates and g.killed_at is None and \
-                        any(e == killer and s <= kt <= s + RESULT_WINDOW_S for s, e in marks):
+                if victim == g.victim and g.killed_at is None and in_use_window(g, killer, kt):
                     g.killed_at, g.killed_by = float(kt), int(killer)
-                if killer == g.victim and victim in g.candidates and g.victim_won_at is None and \
-                        any(e == victim and s <= kt <= s + RESULT_WINDOW_S for s, e in marks):
+                if killer == g.victim and g.victim_won_at is None and in_use_window(g, victim, kt):
                     g.victim_won_at = float(kt)
+
+
+def in_use_window(g: Gap, enemy: int, t: float) -> bool:
+    """`enemy`, a candidate of g by t, acted at t while g was open ([t_open, t_close]; a death closing the gap
+    is at t_close) or within RESULT_WINDOW_S after they stood in it."""
+    joined = g.joined.get(enemy)
+    if joined is None or joined > t:
+        return False
+    t_close = g.t_close if g.t_close is not None else math.inf
+    return g.t_open <= t <= t_close or any(s <= t <= s + RESULT_WINDOW_S for s in g.stood_times.get(enemy, ()))
