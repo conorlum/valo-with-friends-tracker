@@ -79,6 +79,7 @@ import numpy as np
 from scipy import ndimage
 from app.control import chokes
 from app.control import heights as hc
+from app.control import observe
 from app.control import topology
 from app.control.routes import RouteLog
 from app.replays import choke_assets
@@ -948,7 +949,11 @@ class Tick:
         # slot -> the live control that holds unknown back: vision, watchers and their own cell (before
         # Memory adds remembered ground to `passive`)
         self.live: dict[int, np.ndarray] = {}
+        # slot -> the player's own view (active | passive, presence included), before Memory: what the gap
+        # detector credits to vision (timing gaps, R12)
+        self.view: dict[int, np.ndarray] = {}
         for s, h in self.holders.items():
+            self.view[s] = h.active | h.passive
             lv = h.active | h.passive | h.watch
             lv[h.cell] = True
             self.live[s] = lv
@@ -2199,10 +2204,13 @@ class TickRunner:
 
 
 def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
-                  ticks: np.ndarray | None = None, full_every: int = 0, knowledge: bool = True) -> RoundControl:
+                  ticks: np.ndarray | None = None, full_every: int = 0, knowledge: bool = True,
+                  observer=None) -> RoundControl:
     """Control for one round. `ticks` overrides the Q75 schedule (tests, parity checks);
     `full_every` N > 0 also runs the full counterfactual on every Nth tick and compares. `knowledge`
-    also builds each team's picture of the round (R3.3): what it knew, not the true positions."""
+    also builds each team's picture of the round (R3.3): what it knew, not the true positions.
+    `observer`, when given, is called as observer(record, unknown) after each tick's unknown
+    (app/control/observe.py); it must not change either."""
     visibility(geo)
     rnd = RoundInputs(blob, geo, link)
     times = rnd.tick_times() if ticks is None else np.asarray(ticks, float)
@@ -2238,6 +2246,8 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     for n, t in enumerate(times):
         t = float(t)
         tick = runner.step(Tick(rnd, t, timings), timings)
+        if observer is not None:
+            observer(observe.record(tick, runner.unknown), runner.unknown)
         if tick.fallbacks.get("unresolved_rays"):
             # a viewer stood in, or looked through, terrain the heights don't know: 2D sight there (the spec:
             # "reported where the user will see it"; preview_control_live.py warns on it)
