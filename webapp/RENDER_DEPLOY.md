@@ -77,6 +77,19 @@ ADDS matches — re-running is safe. No redeploy needed; spot-check the live sit
 Postgres first — it requires Docker, which is not installed on the current
 machine. Use `matches` / `refresh_remote.ps1` instead.
 
+### Pulling Render down to local
+
+Local Postgres is a disposable copy of Render for analysis. To make it current:
+
+```powershell
+.\scripts\pull_render_to_local.ps1
+```
+
+It dumps Render (read-only), **wipes** the local `valomaths-private` database,
+restores the dump, diffs every table count and sequence against Render, and
+rebuilds the observation cache. Dumps are kept outside the repo, newest 3, in
+`%LOCALAPPDATA%\valomaths\render-dumps`. Don't ingest into local in between pulls.
+
 ## (c) Migrating the database
 
 Moving the deployed DB to a new host (as was done Neon → Render on 2026-08-26)
