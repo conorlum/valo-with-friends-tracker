@@ -72,8 +72,11 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 from scipy import ndimage
+from app.control import chokes
 from app.control import heights as hc
 from app.control import topology
+from app.control.routes import RouteLog
+from app.replays import choke_assets
 from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, Wall, cast, los, visibility, wall_blocks
 from app.replays.control_format import CONTROL_REVISION  # noqa: F401 - stdlib-only, so the web app can read it
 
@@ -1545,7 +1548,7 @@ class Unknown:
     again from that spot and time and walks out from it once they're out of sight. A dead enemy's goes with
     them."""
 
-    def __init__(self, geo: Geometry):
+    def __init__(self, geo: Geometry, chokes: np.ndarray | None = None):
         self.geo = geo
         self.topo = topology.of(geo)
         self.cells = {"A": np.zeros(geo.n, bool), "B": np.zeros(geo.n, bool)}
@@ -1564,6 +1567,12 @@ class Unknown:
         self.face = np.stack([fx + 0.5, fy + 0.5], axis=1)
         self.to_wall_px = ndimage.distance_transform_edt(wp)
         self._sealed_key, self._sealed = None, np.zeros(geo.n, bool)
+        # route history (timing gaps, section 4): bookkeeping only; it never changes which nodes are unknown
+        self.chokes = chokes if chokes is not None else np.full(geo.n, -1, np.int32)
+        self.log = {"A": RouteLog(), "B": RouteLog()}
+        self.entry: dict[str, dict[int, np.ndarray]] = {"A": {}, "B": {}}   # side -> enemy -> entry per node
+        # side -> enemy -> the entry of their last sighting (self.seen), a source while it lasts
+        self._seen_entry: dict[str, dict[int, int]] = {"A": {}, "B": {}}
 
     def sealed(self, smokes) -> np.ndarray:
         """Flat cells in a pinch narrower than GAP_SEAL_M between one of `smokes` (the tick's sight
@@ -1631,6 +1640,8 @@ class Unknown:
             for gone in set(self.reached[side]) - enemies:   # dead: nowhere
                 del self.reached[side][gone]
                 self.seen[side].pop(gone, None)
+                self.entry[side].pop(gone, None)
+                self._seen_entry[side].pop(gone, None)
             if not enemies:
                 self.cells[side] = np.zeros(n, bool)   # nobody left: nobody could be anywhere
                 continue
@@ -1654,10 +1665,13 @@ class Unknown:
             cells = np.zeros(n, bool)
             for slot in sorted(enemies):
                 reached = self.reached[side].get(slot)
+                before = np.full(n, np.inf) if reached is None else reached.copy()
+                sources: dict[int, float] = {}       # this tick's sources (route history only)
                 if reached is None:
                     reached = np.full(n, np.inf)
                     if self._start[side] is not None:
                         reached[self._start[side]] = t        # the barrier drop's ground: there now
+                        sources.update(dict.fromkeys(np.flatnonzero(self._start[side]).tolist(), t))
                 h = tick.holders.get(slot)
                 # in an active view or a watcher's; or seen at their own height in an active cone (Tick._direct)
                 in_cone = any(active and target == slot and viewer in tick.holders and tick.holders[viewer].team == side
@@ -1665,10 +1679,16 @@ class Unknown:
                 if h is not None and (spots[h.cell] or in_cone):
                     reached = np.full(n, np.inf)    # spotted: there, and nowhere else
                     self.seen[side][slot] = (h.cell, t)
+                    self._seen_entry[side][slot] = self.log[side].add(h.cell, t, -1, int(self.chokes[h.cell]))
+                    before = np.full(n, np.inf)     # every route starts again from the sighting
+                    sources = {}
                 if h is not None:
+                    if t < reached[h.cell]:
+                        sources[h.cell] = t
                     reached[h.cell] = min(reached[h.cell], t)   # an enemy pushes it out from where they stand
                 reached[~room] = np.inf
-                reached = self._spread(reached, room, free, t, self.seen[side].get(slot))
+                reached, parent = self._spread(reached, room, free, t, self.seen[side].get(slot))
+                self._record(side, slot, before, reached, parent, sources)
                 self.reached[side][slot] = reached
                 cells |= np.isfinite(reached)
             self.cells[side] = self._drop_pieces(side, cells, tick)
@@ -1691,8 +1711,11 @@ class Unknown:
         drop = small[lab]
         for slot, reached in self.reached[side].items():
             reached[drop] = np.inf
+            if slot in self.entry[side]:
+                self.entry[side][slot][drop] = -1
             if slot in self.seen[side] and drop[self.seen[side][slot][0]]:
                 del self.seen[side][slot]
+                self._seen_entry[side].pop(slot, None)
         return cells & ~drop
 
     @staticmethod
@@ -1705,18 +1728,72 @@ class Unknown:
         return {h.slot for h in tick.holders.values() if h.team != side}
 
     def _spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float,
-                seen: tuple[int, float] | None = None) -> np.ndarray:
+                seen: tuple[int, float] | None = None) -> tuple[np.ndarray, np.ndarray]:
         """`reached` relaxed through `room` up to time `t`: each cell's earliest arrival from a
         neighbour (after the cell was last freed); arrivals later than `t` are not there yet. `seen`
         (cell, time), where the enemy was last spotted, is a source from that time even while the team
         still watches that cell or has just freed it (they were in it); it is in the result only once it is
-        in `room`."""
+        in `room`. Also each arrival's parent node (topology.spread, `parents`; -1 where none)."""
         g = reached.copy()
         if seen is not None:
             g[seen[0]] = min(g[seen[0]], seen[1])
         if not np.isfinite(g).any():
-            return g
-        return self.topo.spread(g, room, free, t, self.geo.cell_m / UNKNOWN_MPS, self.links)
+            return g, np.full(len(g), -1, np.int64)
+        arr, par = self.topo.spread(g, room, free, t, self.geo.cell_m / UNKNOWN_MPS, self.links, parents=True)
+        if seen is not None and not room[seen[0]]:
+            # topology.spread finds parents among the final arrivals, where a sighting the team still
+            # watches is absent. Every other node outside `room` was cleared before the spread, so an
+            # arrival that came from a neighbour (it beat its starting value) but found no parent there
+            # came from the sighting (R15)
+            orphan = np.isfinite(arr) & (par < 0) & (arr < g)
+            par[orphan] = seen[0]
+        return arr, par
+
+    def _record(self, side: str, slot: int, before: np.ndarray, after: np.ndarray, parent: np.ndarray,
+                sources: dict[int, float]) -> None:
+        """Route history (timing gaps, section 4), bookkeeping only. Logs every node whose arrival is new or
+        changed, in arrival order so each parent's entry exists first, and every one of this tick's
+        `sources` (node -> time: barrier ground, own-position push) even where the team observes it (R15).
+        A source entry has no parent. A node whose spread parent is a source uses that source's entry: the
+        enemy's sighting (self.seen) has one entry for as long as it lasts, made when they were spotted."""
+        log = self.log[side]
+        ent = self.entry[side].get(slot)
+        ent = np.full(len(after), -1, np.int64) if ent is None else ent.copy()
+        fin = np.isfinite(after)
+        ent[~fin] = -1
+        changed = np.flatnonzero(fin & ((~np.isfinite(before)) | (after != before)))
+        observed = [node for node in sources if not fin[node]]
+        if not len(changed) and not observed:
+            self.entry[side][slot] = ent
+            return
+        nodes = np.concatenate([changed, np.asarray(observed, np.int64)])
+        times = np.concatenate([after[changed], np.asarray([sources[x] for x in observed], np.float64)])
+        seen = self.seen[side].get(slot)
+        seen_e = self._seen_entry[side].get(slot)
+        made: dict[int, int] = {}            # source node -> its entry, this tick
+        choke = self.chokes
+        for i in np.lexsort((nodes, times)).tolist():
+            node, tt = int(nodes[i]), float(times[i])
+            p = int(parent[node]) if fin[node] else -1
+            if p < 0:                                        # a source
+                if seen_e is not None and node == seen[0] and tt == seen[1]:
+                    e = seen_e
+                else:
+                    e = log.add(node, tt, -1, int(choke[node]))
+                made[node] = e
+            else:
+                if fin[p]:
+                    pe = int(ent[p])
+                elif p in made:
+                    pe = made[p]
+                elif seen_e is not None and p == seen[0]:
+                    pe = seen_e
+                else:
+                    pe = -1
+                e = log.add(node, tt, pe, int(choke[node]))
+            if fin[node]:
+                ent[node] = e
+        self.entry[side][slot] = ent
 
 
 class Memory:
@@ -1886,10 +1963,10 @@ class TickRunner:
     compute_round and the scene renderer (scripts/render_control_scenes.py) both step through this, so a
     scene can't drift from the stored result (the code review, 2026-10-01: it once skipped both)."""
 
-    def __init__(self, geo: Geometry):
+    def __init__(self, geo: Geometry, chokes: np.ndarray | None = None):
         self.geo = geo
         self.memory = Memory(geo)
-        self.unknown = Unknown(geo)
+        self.unknown = Unknown(geo, chokes)
         self.started = False
 
     def step(self, tick: "Tick", timings: dict | None = None) -> "Tick":
@@ -1942,7 +2019,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         if i is not None:
             death_ticks[i].append((slot, t))
     prev_state = None
-    runner = TickRunner(geo)
+    runner = TickRunner(geo, chokes.node_chokes(geo, choke_assets.load(geo.name)))
     unknown_masks = {side: np.zeros((n_ticks, n_walk), bool) for side in ("A", "B")}
     know ={side: Knowledge(rnd, side) for side in ("A", "B")} if knowledge else {}
     knew_states = {side: np.zeros((n_ticks, n_walk), np.uint8) for side in know}
