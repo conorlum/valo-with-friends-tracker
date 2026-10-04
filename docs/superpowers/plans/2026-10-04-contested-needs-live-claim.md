@@ -654,8 +654,9 @@ $PY scripts/preview_control_live.py 0f452716-1e90-4782-afba-29229fdab922 7 --tag
   contested. That is the existing heights rule, unchanged here. Say if it shows up in a judged round.
 - **The route-back contest (Q56) is not covered by this rule.** An enemy standing in a team's claimed ground
   contests their shortest way back to their team (`way_back`, on the cells that team claims, memory and backfill
-  included), whoever is looking at it. D5 was about two claims meeting, so the plan leaves Q56 as it is (review
-  finding 3, 2026-10-04). Whether a remembered route segment should count is the user's call.
+  included), whoever is looking at it. **The user kept it (2026-10-04):** a seen enemy in the team's ground
+  holds their lane open, which is a live contest, not two inferred claims meeting ("for entries this makes
+  sense"). Don't apply the new rule to `way_back` cells (review finding 3).
 - **Rejected: running the new rule when the tick has no unknown** (review finding 3). `Tick.unknown` is `None`
   only for toy ticks built without one; `TickRunner.step` sets it on every real tick, and knowledge pictures
   copy it. The existing Safe/Safe block is gated the same way, and the older toy tests rely on that fallback.
