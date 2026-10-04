@@ -107,7 +107,7 @@ def _recent_uploads(request: Request, db: Session | None) -> list[dict]:
 def _upload_page(request: Request, status_code: int = 200, error: str | None = None, db: Session | None = None):
     return templates.TemplateResponse(request, "replays/upload.html", {
         "authorized": bool(request.session.get("replay_upload_ok")), "error": error,
-        "max_mb": uploads.settings.replay_upload_max_bytes // 1_000_000, "per_hour": uploads.UPLOADS_PER_HOUR,
+        "max_mb": uploads.settings.replay_upload_max_bytes // 1_000_000,
         "max_files": uploads.MAX_UNFINISHED, "uploads": _recent_uploads(request, db),
     }, status_code=status_code)
 

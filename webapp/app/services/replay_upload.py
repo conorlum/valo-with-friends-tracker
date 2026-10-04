@@ -2,8 +2,8 @@
 
 - `upload_enabled`: both `REPLAY_UPLOAD_CODE` and `REPLAY_WORKER_URL` set, and not demo mode.
 - `code_matches`: a constant-time compare of the invite code (the site's only gate).
-- `check_limits`: at most UPLOADS_PER_HOUR per session and per IP, and MAX_UNFINISHED unfinished jobs
-  per session (a batch), counted from `replay_uploads`.
+- `check_limits`: at most MAX_UNFINISHED unfinished jobs per session (a batch), counted from
+  `replay_uploads`. There is no hourly cap: the batch limit already protects the worker.
 - `WorkerClient`: the private worker over `urllib` (standard library only): stream the file to
   `POST /jobs`, read `GET /jobs/{id}`.
 - `refresh_job`: the job page's status poll. It asks the worker; when the job is done it stores
@@ -37,16 +37,12 @@ import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_
-
 from app.config import settings
 from app.models.replay import ReplayUpload
 from app.replays.condense import CondensedReplay
 from app.replays.store import StoreRefused, store_replay
 
 VRF_MAGIC = (0x43F4EFDD).to_bytes(4, "little")
-# Decision 10's starting limits (approved D10), checked against the six competitive files.
-UPLOADS_PER_HOUR = 10
 # The plan's 10 minutes, doubled: a local job on the smallest competitive file took 179 s (parse
 # 52 s + condense), the largest file is 1.5x its size, and Render's CPU may be slower than this PC's.
 STUCK_AFTER = timedelta(minutes=20)
@@ -83,14 +79,7 @@ class LimitExceeded(Exception):
     pass
 
 
-def check_limits(db, session_key: str, client_ip: str | None, now: datetime | None = None) -> None:
-    now = now or datetime.now(timezone.utc)
-    recent = db.query(ReplayUpload).filter(ReplayUpload.created_at >= now - timedelta(hours=1))
-    who = [ReplayUpload.session_key == session_key]
-    if client_ip:
-        who.append(ReplayUpload.client_ip == client_ip)
-    if recent.filter(or_(*who)).count() >= UPLOADS_PER_HOUR:
-        raise LimitExceeded(f"at most {UPLOADS_PER_HOUR} uploads an hour: please try later")
+def check_limits(db, session_key: str) -> None:
     if db.query(ReplayUpload).filter(ReplayUpload.session_key == session_key,
                                      ReplayUpload.status.in_(UNFINISHED)).count() >= MAX_UNFINISHED:
         raise LimitExceeded(f"{MAX_UNFINISHED} uploads at a time: wait for one to finish")
@@ -190,7 +179,7 @@ def create_upload(db, stream, session_key: str, client_ip: str | None, worker: W
         raise ValueError(f"the file is over the {settings.replay_upload_max_bytes // 1_000_000} MB limit")
     if head != VRF_MAGIC:
         raise ValueError("not a Valorant replay")
-    check_limits(db, session_key, client_ip)
+    check_limits(db, session_key)
     upload = ReplayUpload(id=str(uuid.uuid4()), status="queued", source_sha256=sha, size_bytes=size,
                           session_key=session_key, client_ip=client_ip,
                           created_at=datetime.now(timezone.utc))
