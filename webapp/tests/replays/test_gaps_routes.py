@@ -32,7 +32,8 @@ def test_routelog_grows_past_its_capacity():
 
 
 class _Round:
-    """Just the lives Unknown._enemies reads: slots 0 (A) and 5 (B), alive throughout."""
+    """Just what Unknown reads of the round: the lives (slots 0 (A) and 5 (B), alive throughout) and no watchers."""
+    watchers = []
     team = {0: "A", 5: "B"}
 
     @staticmethod
