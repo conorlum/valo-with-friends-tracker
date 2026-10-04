@@ -10,6 +10,8 @@
  *   round-half-to-even, 3 px trimmed at each end) against the 2% bar.
  * - `exportTags(original, maps, edits)`: the whole tags.json, every map, with untouched maps and
  *   unknown fields exactly as loaded.
+ * - chokes: `selectAt`, `rename`, `remove` (a tombstone), `move`, `add` and `exportAsset` (the
+ *   `<Map>.chokes.json` body app/replays/choke_assets.py `save` writes).
  */
 (function (global) {
   "use strict";
@@ -161,10 +163,102 @@
     return e;
   }
 
+  // ---- Chokes (docs/superpowers/specs/2026-10-02-timing-gaps-design.md, section 2; app/replays/choke_assets.py).
+  // A choke is {id, name, cells, source: "auto" | "hand", deleted}; cells index the 128 x 128 grid (8 px a
+  // cell): cell = row * 128 + col. Every edit returns a new list and leaves its input alone. An edited choke
+  // becomes source "hand", which choke_assets.merge keeps on re-detection; a deleted one stays as a tombstone
+  // with its cells, so the merge's overlap rule stops detection from bringing it back.
+  var G = 128;
+
+  function chokeCopy(c) {
+    return { id: c.id, name: c.name, cells: c.cells.slice(), source: c.source || "auto", deleted: !!c.deleted };
+  }
+
+  function maxId(chokes) {
+    var m = 0;
+    chokes.forEach(function (c) { m = Math.max(m, c.id); });
+    return m;
+  }
+
+  function highWater(chokes, nextId) { return Math.max(nextId || 1, maxId(chokes) + 1); }
+
+  function sortedCells(cells) {
+    var seen = {}, out = [];
+    cells.forEach(function (x) { x = Number(x); if (!seen[x]) { seen[x] = true; out.push(x); } });
+    return out.sort(function (a, b) { return a - b; });
+  }
+
+  function edit(chokes, id, fn) {
+    return chokes.map(function (c) { var d = chokeCopy(c); if (c.id === id) fn(d); return d; });
+  }
+
+  // The live choke whose cells include `cell` (null when none).
+  function selectAt(chokes, cell) {
+    for (var i = 0; i < chokes.length; i++) {
+      var c = chokes[i];
+      if (!c.deleted && c.cells.indexOf(cell) >= 0) return c;
+    }
+    return null;
+  }
+
+  function rename(chokes, id, name) {
+    return edit(chokes, id, function (c) { c.name = String(name); c.source = "hand"; });
+  }
+
+  function remove(chokes, id) {
+    return edit(chokes, id, function (c) { c.deleted = true; c.source = "hand"; });
+  }
+
+  // Shifts a choke's cells by whole cells; cells pushed off the grid are dropped (a move that would drop
+  // every cell is refused). Moving a detected choke away from where detection put it also leaves a
+  // tombstone, with a new id, on those detected cells (once): otherwise re-detection would find the passage
+  // there again and recreate it. `original` is the list as loaded (default: `chokes`), so a choke renamed
+  // (and so already "hand") before its first move still gets its tombstone. Returns {chokes, nextId}.
+  function move(chokes, id, dCol, dRow, nextId, original) {
+    var next = highWater(chokes, nextId), target = null, detected = null;
+    chokes.forEach(function (c) { if (c.id === id) target = c; });
+    if (!target || target.deleted || (!dCol && !dRow)) return { chokes: chokes.map(chokeCopy), nextId: next };
+    (original || chokes).forEach(function (c) {
+      if (c.id === id && !c.deleted && (c.source || "auto") !== "hand") detected = c.cells;
+    });
+    if (detected) {
+      var key = JSON.stringify(sortedCells(detected));
+      chokes.forEach(function (c) { if (c.deleted && JSON.stringify(sortedCells(c.cells)) === key) detected = null; });
+    }
+    var cells = [];
+    target.cells.forEach(function (x) {
+      var col = (x % G) + dCol, row = Math.floor(x / G) + dRow;
+      if (col >= 0 && col < G && row >= 0 && row < G) cells.push(row * G + col);
+    });
+    if (!cells.length) return { chokes: chokes.map(chokeCopy), nextId: next };
+    var out = edit(chokes, id, function (c) { c.cells = sortedCells(cells); c.source = "hand"; });
+    if (detected) {
+      out.push({ id: next, name: String(next), cells: detected.slice(), source: "hand", deleted: true });
+      next += 1;
+    }
+    return { chokes: out, nextId: next };
+  }
+
+  // A new hand choke on `cells`, named by its id. Returns {chokes, nextId}.
+  function add(chokes, cells, nextId) {
+    var next = highWater(chokes, nextId), out = chokes.map(chokeCopy);
+    cells = sortedCells(cells).filter(function (x) { return x >= 0 && x < G * G; });
+    if (!cells.length) return { chokes: out, nextId: next };
+    out.push({ id: next, name: String(next), cells: cells, source: "hand", deleted: false });
+    return { chokes: out, nextId: next + 1 };
+  }
+
+  // choke_assets.save's body: {"version": 1, "map", "next_id", "chokes"} sorted by id, keys in its order.
+  function exportAsset(map, chokes, nextId) {
+    return { version: 1, map: map, next_id: highWater(chokes, nextId),
+             chokes: chokes.map(chokeCopy).sort(function (a, b) { return a.id - b.id; }) };
+  }
+
   var api = {
     PX: PX, P: P, BAR: BAR, PAINTS: PAINTS, TAG_KINDS: TAG_KINDS, rleDecode: rleDecode, unpackPaint: unpackPaint,
     packPaint: packPaint, compose: compose, linePixels: linePixels, riskOne: riskOne, exportTags: exportTags,
-    editsFrom: editsFrom, base64Bytes: base64Bytes, roundHalfEven: roundHalfEven
+    editsFrom: editsFrom, base64Bytes: base64Bytes, roundHalfEven: roundHalfEven,
+    CHOKE_GRID: G, selectAt: selectAt, rename: rename, remove: remove, move: move, add: add, exportAsset: exportAsset
   };
   global.TaggerCore = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

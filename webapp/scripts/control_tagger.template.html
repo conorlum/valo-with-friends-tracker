@@ -9,7 +9,10 @@
     --bg: #15171b; --panel: #1f2228; --text: #e6e8eb; --muted: #9aa1ab; --line: #333842;
     --cover: #e5484d; --seeover: #f5a524; --walkable: #30a46c; --glyph: #8b8d98; --seeacross: #be6eff;
     --untagged: #3aa0ff; --cantwalk: #ffd166; --uncertain: #2cd5c4; --barrier: #ff7ad9; --good: #30a46c; --critical: #e5484d;
+    --choke: #ff9f43; --chokesel: #ffffff; --chokenew: #7ee787;
   }
+  input[type=text] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; min-width: 0; flex: 1; }
+  .row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
   header { display: flex; gap: 12px 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
@@ -19,7 +22,7 @@
   button:disabled { opacity: 0.45; cursor: default; }
   button.active { border-color: var(--seeacross); box-shadow: 0 0 0 1px var(--seeacross) inset; }
   main { display: flex; gap: 16px; padding: 16px; flex-wrap: wrap; }
-  .stage { position: relative; width: min(1024px, 100%); aspect-ratio: 1; flex: none; background: #0d0e10; }
+  .stage { position: relative; width: min(1024px, 100%); aspect-ratio: 1; flex: none; align-self: flex-start; background: #0d0e10; }
   .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
   #overlay { cursor: crosshair; touch-action: none; }
   aside { flex: 1; min-width: 280px; max-width: 460px; display: flex; flex-direction: column; gap: 12px; }
@@ -49,9 +52,11 @@
   <label><input type="checkbox" id="showLines" checked> kill lines</label>
   <label title="where each player stood at round start (t = 0), pressed against the barriers: attackers yellow, defenders cyan"><input type="checkbox" id="showStarts" checked> round starts</label>
   <label><input type="checkbox" id="onlyBlocked"> blocked only</label>
+  <label><input type="checkbox" id="showChokes" checked> chokes</label>
   <button id="undo" disabled>Undo <kbd>Ctrl Z</kbd></button>
   <button id="clearBarriers" title="remove this map's barrier paint, to redraw it as thin lines (undo brings it back)">Clear barriers</button>
   <button id="export">Export tags.json</button>
+  <button id="exportChokes" title="download this map's &lt;Map&gt;.chokes.json">Export chokes</button>
   <button id="importBtn">Import</button>
   <input type="file" id="importFile" accept="application/json" hidden>
 </header>
@@ -72,6 +77,8 @@
         <button data-mode="cant_walk_paint"><span class="sw" style="background:var(--cantwalk)"></span>Can't walk <kbd>W</kbd></button>
         <button data-mode="uncertain_paint"><span class="sw" style="background:var(--uncertain)"></span>Uncertain <kbd>U</kbd></button>
         <button data-mode="barrier_paint"><span class="sw" style="background:var(--barrier)"></span>Barrier <kbd>B</kbd></button>
+        <button data-mode="chokes"><span class="sw" style="background:var(--choke)"></span>Chokes <kbd>K</kbd></button>
+        <button data-mode="choke_paint"><span class="sw" style="background:var(--chokenew)"></span>Paint new choke <kbd>A</kbd></button>
       </div>
       <p style="margin:8px 0 0"><label>Brush <input type="range" id="brush" min="3" max="60" value="14"> <span id="brushPx">14</span> px</label></p>
       <p class="note">Erase clears the paint kind you painted last (<span id="eraseKind">see-across</span>).
@@ -98,6 +105,29 @@
         <button data-tag=""><span class="sw" style="background:var(--untagged)"></span>Untag <kbd>0</kbd></button>
         <button id="next">Next untagged <kbd>N</kbd></button>
       </div>
+    </div>
+    <div class="card" id="chokeCard">
+      <h2>Chokes</h2>
+      <div id="chokeSel" class="note">Chokes tool: click a choke on the map to select it.</div>
+      <div class="row">
+        <input type="text" id="chokeName" aria-label="Choke name" placeholder="name" disabled>
+        <button id="chokeRename" disabled>Rename</button>
+        <button id="chokeDelete" disabled>Delete <kbd>Del</kbd></button>
+      </div>
+      <div class="row">
+        <button id="chokeMake" disabled>Make choke from painted cells</button>
+        <button id="chokeClear" disabled>Clear painted</button>
+      </div>
+      <table id="chokeCounts" style="margin-top:8px"></table>
+      <p class="note" id="chokeFresh"></p>
+      <p class="note">Arrow keys move the selected choke one cell (8 px). <b>Paint new choke</b> paints cells with
+        the brush; <b>Make choke</b> turns them into a new choke named by its number. Edited chokes become hand
+        chokes, and a deleted one stays as a tombstone, so re-detection (<code>scripts/build_chokes.py</code>)
+        never brings them back. <b>Export chokes</b> downloads this map's <code>&lt;Map&gt;.chokes.json</code>:
+        copy it over <code>app/static/data/control/&lt;Map&gt;.chokes.json</code>. Renaming changes no fingerprint.
+        Adding, moving or deleting a choke makes that map's timing-gap rows stale once the copied file is in
+        place, until <code>scripts/compute_control.py</code> recomputes them (from the tick cache, quickly, when
+        it is there).</p>
     </div>
     <div class="card">
       <h2>This map</h2>
@@ -136,7 +166,16 @@
   })(JSON.stringify(DATA.tags));
   var $ = function (id) { return document.getElementById(id); };
   var maps = {}, edits = {}, loaded = {}, undo = [], state = { map: null, selected: 0, mode: "select",
-    lastPaint: "see_across_paint", brush: 14, masks: null, risk: null, byId: {} };
+    lastPaint: "see_across_paint", brush: 14, masks: null, risk: null, byId: {}, choke: 0 };
+  // Chokes: chokeState[map] = {chokes, nextId}; the core's edits return new lists, so an undo entry can hold
+  // the previous state by reference. `pending` is the "Paint new choke" cells (128 x 128, not undoable).
+  var G = T.CHOKE_GRID, CELL = PX / G, CHOKE_MODES = { chokes: 1, choke_paint: 1 };
+  var chokeState = {}, chokeLoaded = {}, pending = new Uint8Array(G * G);
+  var CHOKE_STORE = "control-tagger-chokes-v1:" + (function (s) {
+    var h = 5381;
+    for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+    return h.toString(36) + "." + s.length;
+  })(JSON.stringify(Object.keys(DATA.maps).map(function (n) { return [n, DATA.maps[n].chokes]; })));
 
   function cellsCopy(p) { return p ? new Uint8Array(p) : null; }
   function snapshot(e) {
@@ -169,9 +208,25 @@
     } catch (err) { /* nothing saved */ }
   }
 
+  function saveChokes() {
+    try {
+      var out = {};
+      Object.keys(chokeState).forEach(function (name) {
+        if (chokeState[name] !== chokeLoaded[name]) out[name] = chokeState[name];
+      });
+      localStorage.setItem(CHOKE_STORE, JSON.stringify(out));
+    } catch (err) { /* private window */ }
+  }
+  function restoreChokes() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(CHOKE_STORE)) || {};
+      Object.keys(raw).forEach(function (name) { if (chokeState[name]) chokeState[name] = raw[name]; });
+    } catch (err) { /* nothing saved */ }
+  }
+
   function mapEdits() { return edits[state.map]; }
   function beforeChange() {
-    undo.push({ map: state.map, edits: snapshot(mapEdits()) });
+    undo.push({ map: state.map, edits: snapshot(mapEdits()), chokes: chokeState[state.map] });
     if (undo.length > 60) undo.shift();
     $("undo").disabled = false;
   }
@@ -191,7 +246,7 @@
   }
 
   function selectMap(name) {
-    state.map = name; state.selected = 0;
+    state.map = name; state.selected = 0; state.choke = 0; pending = new Uint8Array(G * G);
     var map = ensureMap(name);
     state.byId = {};
     map.candidates.forEach(function (c) { state.byId[c.id] = c; });
@@ -209,7 +264,7 @@
     state.risk = T.riskOne(state.masks.sight, map.lines);
     state.blocked = {};
     state.risk.blocked.forEach(function (k) { state.blocked[k] = true; });
-    paintTint(); paintOverlay(); updateStats(); showSelected();
+    paintTint(); paintOverlay(); updateStats(); showSelected(); showChoke();
   }
 
   function paintTint() {
@@ -248,6 +303,7 @@
         ctx.fillRect(s[1] - 2.5, s[2] - 2.5, 5, 5);
       });
     }
+    drawChokes(ctx);
     if (!$("showLines").checked) return;
     var only = $("onlyBlocked").checked;
     maps[state.map].lines.forEach(function (l, k) {
@@ -257,6 +313,113 @@
       ctx.lineWidth = b ? 2.5 : 1;
       ctx.beginPath(); ctx.moveTo(l[0] + 0.5, l[1] + 0.5); ctx.lineTo(l[2] + 0.5, l[3] + 0.5); ctx.stroke();
     });
+  }
+
+  // ---- Chokes ----
+  function mapChokes() { return chokeState[state.map]; }
+  function drawChokes(ctx) {
+    var any = false, i;
+    for (i = 0; i < pending.length; i++) if (pending[i]) { any = true; break; }
+    if (any) {
+      ctx.fillStyle = "rgba(126,231,135,0.75)";
+      for (i = 0; i < pending.length; i++) if (pending[i]) ctx.fillRect((i % G) * CELL, Math.floor(i / G) * CELL, CELL, CELL);
+    }
+    if (!$("showChokes").checked) return;
+    ctx.font = "bold 12px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    mapChokes().chokes.forEach(function (c) {
+      if (c.deleted || !c.cells.length) return;
+      var sel = c.id === state.choke, sx = 0, sy = 0;
+      ctx.fillStyle = sel ? "rgba(255,255,255,0.9)" : "rgba(255,159,67,0.75)";
+      ctx.strokeStyle = "rgba(0,0,0,0.6)"; ctx.lineWidth = 1;
+      c.cells.forEach(function (x) {
+        var cx = (x % G) * CELL, cy = Math.floor(x / G) * CELL;
+        ctx.fillRect(cx + 1, cy + 1, CELL - 2, CELL - 2);
+        sx += cx + CELL / 2; sy += cy + CELL / 2;
+      });
+      sx /= c.cells.length; sy /= c.cells.length;
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.strokeText(c.name, sx, sy - 12);
+      ctx.fillStyle = sel ? "#ffffff" : "#ffcf99"; ctx.fillText(c.name, sx, sy - 12);
+    });
+  }
+
+  // What asset_hash sees: id, sorted cells and the tombstone, by id (names and source don't count).
+  function chokeFingerprint(list) {
+    return JSON.stringify(list.map(function (c) {
+      return [c.id, c.cells.slice().sort(function (a, b) { return a - b; }), !!c.deleted];
+    }).sort(function (a, b) { return a[0] - b[0]; }));
+  }
+
+  function showChoke() {
+    var cs = mapChokes(), c = null;
+    cs.chokes.forEach(function (x) { if (x.id === state.choke && !x.deleted) c = x; });
+    if (!c) state.choke = 0;
+    $("chokeSel").innerHTML = c ? "<b>#" + c.id + "</b> “" + c.name.replace(/&/g, "&amp;").replace(/</g, "&lt;") + "”, " + c.cells.length +
+      " cells, " + (c.source === "hand" ? "hand" : "detected") : "Chokes tool: click a choke on the map to select it.";
+    if (document.activeElement !== $("chokeName")) $("chokeName").value = c ? c.name : "";
+    $("chokeName").disabled = $("chokeRename").disabled = $("chokeDelete").disabled = !c;
+    var n = 0;
+    for (var i = 0; i < pending.length; i++) n += pending[i];
+    $("chokeMake").disabled = $("chokeClear").disabled = !n;
+    var live = cs.chokes.filter(function (x) { return !x.deleted; });
+    var rows = [["Chokes", live.length], ["Hand-edited", live.filter(function (x) { return x.source === "hand"; }).length],
+                ["Deleted (tombstones)", cs.chokes.length - live.length], ["Painted for a new choke (cells)", n],
+                ["Next id", Math.max(cs.nextId, cs.chokes.reduce(function (m, x) { return Math.max(m, x.id + 1); }, 1))]];
+    $("chokeCounts").innerHTML = rows.map(function (r) { return "<tr><td>" + r[0] + "</td><td>" + r[1] + "</td></tr>"; }).join("");
+    var base = chokeLoaded[state.map];
+    var stale = chokeFingerprint(cs.chokes) !== chokeFingerprint(base.chokes);
+    var renamed = !stale && JSON.stringify(cs.chokes) !== JSON.stringify(base.chokes);
+    $("chokeFresh").innerHTML = stale ? "<b class=\"bad\">Changed cells or chokes:</b> once copied, this export makes " +
+      state.map + "'s timing gaps stale until <code>scripts/compute_control.py</code> recomputes them."
+      : renamed ? "<b class=\"ok\">Names only:</b> this export keeps every timing-gap row fresh." : "No choke edits on this map.";
+  }
+
+  function setChokes(next) {
+    beforeChange();
+    chokeState[state.map] = next;
+    saveChokes(); paintOverlay(); showChoke();
+  }
+  function chokeRename() {
+    if (!state.choke) return;
+    var name = $("chokeName").value.trim();
+    if (!name) return;
+    var cs = mapChokes();
+    setChokes({ chokes: T.rename(cs.chokes, state.choke, name), nextId: cs.nextId });
+  }
+  function chokeDelete() {
+    if (!state.choke) return;
+    var cs = mapChokes();
+    setChokes({ chokes: T.remove(cs.chokes, state.choke), nextId: cs.nextId });
+    state.choke = 0; showChoke();
+  }
+  function chokeMove(dCol, dRow) {
+    if (!state.choke) return;
+    var cs = mapChokes(), r = T.move(cs.chokes, state.choke, dCol, dRow, cs.nextId, chokeLoaded[state.map].chokes);
+    setChokes({ chokes: r.chokes, nextId: r.nextId });
+  }
+  function chokeMake() {
+    var cells = [];
+    for (var i = 0; i < pending.length; i++) if (pending[i]) cells.push(i);
+    if (!cells.length) return;
+    var cs = mapChokes(), r = T.add(cs.chokes, cells, cs.nextId);
+    pending = new Uint8Array(G * G);
+    state.choke = r.chokes[r.chokes.length - 1].id;
+    setChokes({ chokes: r.chokes, nextId: r.nextId });
+    setMode("chokes");
+  }
+  function chokeDab(x, y) {
+    var rad = state.brush / CELL, cx = x / CELL, cy = y / CELL;
+    for (var gy = Math.max(0, Math.floor(cy - rad)); gy <= Math.min(G - 1, Math.ceil(cy + rad)); gy++)
+      for (var gx = Math.max(0, Math.floor(cx - rad)); gx <= Math.min(G - 1, Math.ceil(cx + rad)); gx++)
+        if ((gx + 0.5 - cx) * (gx + 0.5 - cx) + (gy + 0.5 - cy) * (gy + 0.5 - cy) <= Math.max(rad * rad, 0.5)) pending[gy * G + gx] = 1;
+  }
+  function chokeAt(p) {
+    var x = Math.floor(p[0] / CELL), y = Math.floor(p[1] / CELL), list = mapChokes().chokes, hit = null;
+    hit = T.selectAt(list, y * G + x);   // the cell itself first, then its neighbours
+    for (var dy = -1; dy <= 1 && !hit; dy++) for (var dx = -1; dx <= 1 && !hit; dx++) {
+      var xx = x + dx, yy = y + dy;
+      if (xx >= 0 && yy >= 0 && xx < G && yy < G) hit = T.selectAt(list, yy * G + xx);
+    }
+    return hit;
   }
 
   function paintedCells(p) { var n = 0; if (p) for (var i = 0; i < p.length; i++) n += p[i]; return n; }
@@ -309,7 +472,7 @@
 
   function setMode(mode) {
     state.mode = mode;
-    if (mode !== "select" && mode !== "erase") { state.lastPaint = mode; $("eraseKind").textContent = PAINT_NAMES[mode]; }
+    if (mode !== "select" && mode !== "erase" && !CHOKE_MODES[mode]) { state.lastPaint = mode; $("eraseKind").textContent = PAINT_NAMES[mode]; }
     Array.prototype.forEach.call(document.querySelectorAll("[data-mode]"), function (b) {
       b.classList.toggle("active", b.getAttribute("data-mode") === mode);
     });
@@ -345,9 +508,14 @@
     paintTint();
   }
 
-  var stroke = null;
+  var stroke = null, chokeStroke = null;
   $("overlay").addEventListener("pointerdown", function (e) {
-    if (state.mode === "select") return;
+    if (state.mode === "select" || state.mode === "chokes") return;
+    if (state.mode === "choke_paint") {
+      chokeStroke = toMap(e); chokeDab(chokeStroke[0], chokeStroke[1]); paintOverlay();
+      $("overlay").setPointerCapture(e.pointerId);
+      return;
+    }
     beforeChange();
     var p = toMap(e);
     if (state.mode === "barrier_paint") {
@@ -362,6 +530,13 @@
   });
   $("overlay").addEventListener("pointermove", function (e) {
     if (line) { drawLine(toMap(e)); return; }
+    if (chokeStroke) {
+      var q = toMap(e), qx = q[0] - chokeStroke[0], qy = q[1] - chokeStroke[1];
+      var n = Math.max(1, Math.ceil(Math.hypot(qx, qy) / 3));
+      for (var k = 1; k <= n; k++) chokeDab(chokeStroke[0] + qx * k / n, chokeStroke[1] + qy * k / n);
+      chokeStroke = q; paintOverlay();
+      return;
+    }
     if (!stroke) return;
     var p = toMap(e), dx = p[0] - stroke[0], dy = p[1] - stroke[1];
     var steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 3));
@@ -369,12 +544,19 @@
     stroke = p; paintTint();
   });
   function endStroke() {
+    if (chokeStroke) { chokeStroke = null; showChoke(); return; }
     if (line) { line = null; changed(); return; }
     if (!stroke) return; stroke = null; changed();
   }
   $("overlay").addEventListener("pointerup", endStroke);
   $("overlay").addEventListener("pointercancel", endStroke);
   $("overlay").addEventListener("click", function (e) {
+    if (state.mode === "chokes") {
+      var hit = chokeAt(toMap(e));
+      state.choke = hit ? hit.id : 0;
+      paintOverlay(); showChoke();
+      return;
+    }
     if (state.mode !== "select") return;
     var p = toMap(e), x = Math.floor(p[0]), y = Math.floor(p[1]), best = 0, labels = maps[state.map].labels;
     for (var dy = -4; dy <= 4 && !best; dy++) for (var dx = -4; dx <= 4 && !best; dx++) {
@@ -401,7 +583,8 @@
     var last = undo.pop();
     if (!last) return;
     edits[last.map] = last.edits;
-    save();
+    if (last.chokes) chokeState[last.map] = last.chokes;
+    save(); saveChokes();
     if (last.map !== state.map) { $("map").value = last.map; selectMap(last.map); } else { $("reviewed").checked = !!mapEdits().cover_reviewed; recompute(); }
     $("undo").disabled = !undo.length;
   }
@@ -410,7 +593,12 @@
     if (e.target && /^(INPUT|SELECT)$/.test(e.target.tagName) && e.target.type !== "checkbox") return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); doUndo(); return; }
     var keys = { "1": "cover", "2": "seeover", "3": "walkable", "4": "glyph", "5": "seeacross", "0": "" };
-    var modes = { s: "select", e: "erase", p: "see_across_paint", c: "cover_paint", w: "cant_walk_paint", u: "uncertain_paint", b: "barrier_paint" };
+    var modes = { s: "select", e: "erase", p: "see_across_paint", c: "cover_paint", w: "cant_walk_paint", u: "uncertain_paint", b: "barrier_paint",
+                  k: "chokes", a: "choke_paint" };
+    var arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    if (CHOKE_MODES[state.mode] && state.choke && arrows[e.key]) { e.preventDefault(); chokeMove(arrows[e.key][0], arrows[e.key][1]); return; }
+    if (CHOKE_MODES[state.mode] && state.choke && (e.key === "Delete" || e.key === "Backspace")) { e.preventDefault(); chokeDelete(); return; }
+    if (CHOKE_MODES[state.mode] && (e.key in keys || e.key === "n" || e.key === "N")) return;   // shape tags need the Select tool
     if (e.key in keys) setTag(keys[e.key]);
     else if (e.key === "n" || e.key === "N") nextUntagged();
     else if (e.key.toLowerCase() in modes) setMode(modes[e.key.toLowerCase()]);
@@ -418,6 +606,18 @@
   ["showCandidates", "showPaint", "showSight", "showWalk"].forEach(function (id) { $(id).addEventListener("change", paintTint); });
   $("showLines").addEventListener("change", paintOverlay);
   $("showStarts").addEventListener("change", paintOverlay);
+  $("showChokes").addEventListener("change", paintOverlay);
+  $("chokeRename").addEventListener("click", chokeRename);
+  $("chokeName").addEventListener("keydown", function (e) { if (e.key === "Enter") { chokeRename(); this.blur(); } });
+  $("chokeDelete").addEventListener("click", chokeDelete);
+  $("chokeMake").addEventListener("click", chokeMake);
+  $("chokeClear").addEventListener("click", function () { pending = new Uint8Array(G * G); paintOverlay(); showChoke(); });
+  $("exportChokes").addEventListener("click", function () {
+    var cs = mapChokes(), body = T.exportAsset(state.map, cs.chokes, cs.nextId);
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(body, null, 1) + "\n"], { type: "application/json" }));
+    a.download = state.map + ".chokes.json"; a.click();
+  });
   $("onlyBlocked").addEventListener("change", paintOverlay);
   $("map").addEventListener("change", function () { selectMap(this.value); });
 
@@ -449,12 +649,15 @@
   Object.keys(DATA.maps).forEach(function (name) {
     edits[name] = T.editsFrom((DATA.tags.maps || {})[name]);
     loaded[name] = T.editsFrom((DATA.tags.maps || {})[name]);
+    var ch = DATA.maps[name].chokes || { chokes: [], next_id: 1 };
+    chokeState[name] = chokeLoaded[name] = { chokes: ch.chokes, nextId: ch.next_id };
     var o = document.createElement("option");
     var n = DATA.maps[name].lines.length;
     o.value = name; o.textContent = name + (n ? " (" + n + " kill lines)" : " (no replays)");
     $("map").appendChild(o);
   });
   restore();
+  restoreChokes();
   // with round starts to draw barriers against, the kill lines start hidden (they clutter the dots)
   if (Object.keys(DATA.maps).some(function (n) { return (DATA.maps[n].starts || []).length; })) $("showLines").checked = false;
   // the link's #Map opens on that map; otherwise the first map with replays
@@ -464,7 +667,8 @@
   $("map").value = first;
   setMode("select");
   selectMap(first);
-  window.tagger = { state: state, edits: edits, maps: maps, setMode: setMode, selectMap: selectMap, dab: dab, changed: changed };
+  window.tagger = { state: state, edits: edits, maps: maps, setMode: setMode, selectMap: selectMap, dab: dab, changed: changed,
+                    chokeState: chokeState, chokeMove: chokeMove, chokeDab: chokeDab, chokeMake: chokeMake };
 })();
 </script>
 </body>
