@@ -140,6 +140,7 @@
       {% if gaps %}
       <div data-replay-panel="gaps" role="tabpanel" hidden>
         <p class="replay-side-note">Moments a player's back was open to an enemy who could have got there unseen, and real shots from behind. Click one to jump to when it opened; hover one to see it on the map.</p>
+        <p class="replay-gaps-patterns-link"><a href="/gaps/{{ replay.map_name | urlencode }}" data-replay-gaps-patterns>Patterns on this map</a></p>
         <p class="replay-side-note replay-gaps-status" data-replay-gaps-status aria-live="polite"></p>
         <label class="replay-gaps-flickers"><input type="checkbox" data-replay-gaps-flickers> Show flickers (open under 1 s)</label>
         <div class="replay-gaps-list" data-replay-gaps-list></div>

@@ -1973,3 +1973,23 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 .replay-gaps-kind-used { color: var(--replay-gap-used); }
 .replay-gaps-kind-unused { color: var(--replay-gap-unused); border-style: dashed; }
 .replay-gaps-kind-backshot { color: var(--replay-gap-backshot); }
+
+/* Timing-gaps pattern page (/gaps, /gaps/<map>) */
+.gaps-filters { display: flex; flex-direction: column; gap: 0.75rem; }
+.gaps-filter-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.75rem 1.25rem; }
+.gaps-filter-row label { display: flex; flex-direction: column; gap: 0.25rem; color: var(--ink-secondary); font-size: 0.85rem; }
+.gaps-filter-row label:has(input[type="checkbox"]), .gaps-filter-row fieldset label { flex-direction: row; align-items: center; gap: 0.35rem; }
+.gaps-filter-row select, .gaps-filter-row input[type="number"] { padding: 0.35rem 0.5rem; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--surface); color: var(--ink); }
+.gaps-filter-row fieldset { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.35rem 0.75rem; display: flex; gap: 1rem; }
+.gaps-filter-row legend { color: var(--ink-muted); font-size: 0.78rem; }
+.gaps-filters .page-meta { margin: 0; }
+.gaps-tmax { width: 5rem; }
+.gaps-thin { color: var(--ink); }
+.gaps-layout { display: grid; grid-template-columns: minmax(0, 1fr) 540px; gap: 1.5rem; align-items: start; }
+.gaps-tables { min-width: 0; overflow-x: auto; }
+.gaps-patterns td, .gaps-patterns th { padding: 0.45rem 0.55rem; font-size: 0.85rem; }
+.gaps-map-card { position: sticky; top: 1rem; }
+.gaps-map { width: 100%; height: auto; background: var(--page); border-radius: var(--radius-sm); }
+.gaps-rounds { max-height: 260px; overflow: auto; margin: 0; padding-left: 1.5rem; font-size: 0.85rem; }
+@media (max-width: 1100px) { .gaps-layout { grid-template-columns: 1fr; } .gaps-map-card { position: static; } }
+.replay-gaps-patterns-link { font-size: 0.85rem; margin: 0 0 0.5rem; }
