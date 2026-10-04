@@ -222,6 +222,11 @@ class GapDetector:
         self._tick_cache = {}
         self._expire(t)                                    # R10: against the previous t_last_exposed
         if t >= self.rnd.t_decided:                        # nothing is detected once the round is decided
+            # but events from before it, snapped onto this tick, still join the history (back-shots read it)
+            for side, evs in rec.events.items():
+                for enemy, te, kind in evs:
+                    if te < self.rnd.t_decided:
+                        self.located[side][int(enemy)].append((float(te), str(kind)))
             self._close_all(self.rnd.t_decided)
             self.done = True
             return

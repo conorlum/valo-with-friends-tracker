@@ -289,6 +289,16 @@ def test_two_runs_starting_together_are_one_backshot():
     assert len(backshots(run(open_hall(), _behind_round([_dmg(8.0), _dmg(8.0)])))) == 1
 
 
+def test_damage_just_before_the_decision_still_locates_the_shooter():
+    """Both runs snap to the first tick after t_decided; the first still locates B, so damage on a second
+    victim 10 ms later is not another back-shot (the review of PR #113)."""
+    data = blob({0: ("A", [(0.0, 150, 200, 180)]), 1: ("A", [(0.0, 150, 230, 180)]),
+                 5: ("B", [(0.0, 400, 200, 180)])}, t_end=12.0, util=[_dmg(8.01), _dmg(8.02, target=1)],
+                t_decided=8.03)
+    data["kills"] = []
+    assert len(backshots(run(open_hall(), data))) == 1
+
+
 def test_backshot_context_has_the_predicted_rows_keys():
     gaps = run(open_hall(), _behind_round([_dmg(8.0)]))
     [b] = backshots(gaps)
