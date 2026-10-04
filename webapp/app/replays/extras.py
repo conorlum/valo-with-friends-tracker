@@ -5,10 +5,11 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
 
 - `{"k": "ability", "t": <spawn>, "by": <slot | null>, "t1", "kind", "code", "name", "agent",
   "owner_by", "u", "v", ["z"], ["yaw"], ["thrown"], ["path"], ["owner_d", "other_d"], ["end", "end_z"],
-  ["defuses"], ["points", "on"], ["fx"], ["gone"], ["possessed"], ["yaws"]}` (`possessed` and `yaws`,
-  on pawns, are map control's inputs: `_control_inputs`; `z`, `end_z`, `thrown.z` and a path point's
-  fourth value are heights in decimetres of world z, each left out when the export gave none:
-  format.py, revision 11);
+  ["defuses"], ["points", "on"], ["fx"], ["gone"], ["possessed"], ["yaws"], ["off"]}` (`possessed` and
+  `yaws`, on pawns, are map control's inputs: `_control_inputs`; `z`, `end_z`, `thrown.z` and a path
+  point's fourth value are heights in decimetres of world z, each left out when the export gave none:
+  format.py, revision 11; `off`, on a Killjoy turret or alarmbot, is `[[from, to | null], ...]`: when it
+  was switched off, KJ out of range: `device_off_spans`, revision 12);
 - `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`;
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
 - `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`.
@@ -167,6 +168,9 @@ class Raw:
     destroyed: dict[int, int] = field(default_factory=dict)
     # A plant starting: (time, the planter's pawn), an effect naming the carried spike on its character.
     plant_starts: list[tuple[int, int]] = field(default_factory=list)
+    # Every effect on a Killjoy turret or alarmbot (KJ_DEVICE), for `device_off_spans`: guid ->
+    # [(time, "play" | "stop" | "oneshot", effect id | None, container | None)], from its latest spawn.
+    device_fx: dict[int, list[tuple[int, str, int | None, int | None]]] = field(default_factory=dict)
 
 
 EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
@@ -176,6 +180,7 @@ RPC_ONESHOT = "MulticastPlayOneShotEffect"
 RPC_WALL_POINT = "MulticastAddSmokeScreenPoint"   # Viper's Toxic Screen, one per point laid
 # The carried spike: its equippable is named by an effect on the planter's character as the plant begins.
 BOMB_EQUIPPABLE_ARCHETYPE = "Default__BombEquippable_C"
+_DEVICE_FX = {RPC_PLAY: "play", RPC_STOP: "stop", RPC_ONESHOT: "oneshot"}
 _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
                            '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true')
 
@@ -231,6 +236,9 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 bombs.discard(guid)
                 carried.discard(guid)
                 walls.discard(guid)
+                raw.device_fx.pop(guid, None)
+                if KJ_DEVICE.match(archetype):
+                    raw.device_fx[guid] = []
                 if archetype == BOMB_EQUIPPABLE_ARCHETYPE:
                     carried.add(guid)
                     continue
@@ -265,6 +273,9 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
             elif kind == "rpc_received":
                 function = data.get("function_name")
                 payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+                if guid in raw.device_fx and function in _DEVICE_FX:
+                    raw.device_fx[guid].append((t_ms, _DEVICE_FX[function], payload.get("EffectId"),
+                                                payload.get("EffectContainer")))
                 if function == RPC_PLAY and (guid in pawns or guid in bombs):
                     context = _context_values(payload)
                     for value in context:
@@ -861,6 +872,77 @@ def defuse_attempts(bomb: _Actor, effects: list[_Effect], oneshots: dict[int, li
     return out
 
 
+# Killjoy's turret and alarmbot switch off when she walks out of their range and on again when she
+# comes back (2026-10-04, docs/superpowers/plans/2026-10-04-control-bugs-impl.md). The replay has no
+# flag for it, only effects on the device, whose container IDs vary by replay, so it is found by shape
+# (checked on every device of a Sunset and a Lotus replay, 80 in all):
+# - a turret's *spawn effect* is the continuous one played as it spawns; an alarmbot's *boot effect* the
+#   first one KJ_BOOT_MS after (a turret's own boot starts ~2 s in, an alarmbot's ~1.7 s). The latest play
+#   in that effect's container is the device's watching effect.
+# - Off at T: the watching effect stops and, in that same millisecond, a continuous effect in another
+#   container starts while the watching container doesn't replay (a replay is it coming back on). Not
+#   when that new effect stops within KJ_OFF_MIN_MS, or stops with a one-shot (an alarmbot going off), or
+#   the device closes within KJ_OFF_MIN_MS (destroyed): those are a trigger, an attack or a kill.
+# - On again: that new effect stops while the device is still open (a turret's containers replay then).
+# KJ's death also switches them off; the engine already drops a dead owner's watchers.
+KJ_DEVICE = re.compile(r"^Default__Pawn_Killjoy_(E_Turret|Q_StealthAlarmbot)_C$")
+KJ_SPAWN_FX_MS = 50
+KJ_BOOT_MS = (1400, 2600)
+KJ_OFF_MIN_MS = 1500
+KJ_ONESHOT_MS = 10
+
+
+def device_off_spans(fx: list[tuple[int, str, int | None, int | None]], spawn_ms: int, closed_ms: int | None,
+                     turret: bool) -> list[list[int | None]]:
+    """[[off ms, on ms | None], ...]: when a Killjoy device (`fx` from Raw.device_fx) was switched off; None
+    is off until it closed."""
+    mine = sorted((e for e in fx if e[0] >= spawn_ms and (closed_ms is None or e[0] <= closed_ms)),
+                  key=lambda e: e[0])
+    plays = [(t, eid, cont) for t, kind, eid, cont in mine if kind == "play"]
+    lo, hi = (0, KJ_SPAWN_FX_MS) if turret else KJ_BOOT_MS
+    first = next(((eid, cont) for t, eid, cont in plays if lo <= t - spawn_ms <= hi), None)
+    if first is None:
+        return []
+    stops: dict = defaultdict(list)
+    for t, kind, eid, _ in mine:
+        if kind == "stop":
+            stops[eid].append(t)
+    oneshots = [t for t, kind, _, _ in mine if kind == "oneshot"]
+    watching, container = {first[0]}, first[1]
+    spans: list[list[int | None]] = []
+    off: tuple[int, int] | None = None
+    for t in sorted({e[0] for e in mine}):
+        now = [e for e in mine if e[0] == t]
+        started = [(eid, cont) for _, kind, eid, cont in now if kind == "play"]
+        stopped = {eid for _, kind, eid, _ in now if kind == "stop"}
+        replays = {eid for eid, cont in started if cont == container}
+        if off is not None:
+            if off[1] in stopped and (closed_ms is None or t < closed_ms):
+                spans.append([off[0], t])
+                off = None
+                watching = replays or watching
+            continue
+        if watching & stopped and not replays:
+            for eid, cont in started:
+                if eid in watching:
+                    continue
+                ends = [s for s in stops.get(eid, []) if s > t]
+                end = min(ends) if ends else None
+                if end is not None and end - t <= KJ_OFF_MIN_MS:
+                    continue
+                if closed_ms is not None and closed_ms - t <= KJ_OFF_MIN_MS:
+                    continue
+                if end is not None and any(abs(o - end) <= KJ_ONESHOT_MS for o in oneshots):
+                    continue
+                off = (t, eid)
+                break
+        elif replays:
+            watching = replays
+    if off is not None:
+        spans.append([off[0], None])
+    return spans
+
+
 WALL_MAX_POINTS = 48
 
 
@@ -1050,6 +1132,14 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                 entry["points"] = [list(game_map.to_uv(x, y)) for x, y in line]
                 entry["on"] = wall_on(raw.wall_states.get(actor.guid, []), actor, start, end)
                 counts["walls_drawn"] += 1
+        if actor.guid in raw.device_fx:
+            spans = device_off_spans(raw.device_fx[actor.guid], actor.t_ms, actor.closed_ms,
+                                     turret=actor.name.endswith("E_Turret"))
+            off = [[max(0.0, _seconds(lo, start)), None if hi is None else _seconds(min(hi, end), start)]
+                   for lo, hi in spans if lo <= end and (hi is None or hi >= start)]
+            if off:
+                entry["off"] = off
+                counts["kj_off_spans"] += len(off)
         if POP_ARCHETYPES.match(f"{actor.code}_{actor.name}"):
             fx = [max(0.0, _seconds(t, start)) for t in pop_times(actor, raw) if t <= end]
             if fx:

@@ -29,6 +29,9 @@ had one. An `ability` row has `"z"` (its spawn, i.e. where a thrown one landed),
 `thrown` (the throw's own spawn), `"end_z"` beside a tripwire's `end`, and a fourth value on each
 `path` point, `[t, u, v, z]`.
 
+A Killjoy turret or alarmbot `ability` row has `"off"` (revision 12) when it was switched off (KJ walked out
+of its range): `[[from, to | null], ...]` in round seconds, null meaning until the row's `t1`.
+
 `FORMAT_VERSION` changes only when the shape changes. `CONDENSE_REVISION` changes with
 any condenser change. Staleness is inequality with the current recipe, never ordering.
 """
@@ -42,7 +45,8 @@ from pathlib import Path
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 11   # 10: map control's inputs (hits, possessed, yaws, damage runs); 11: heights (z)
+CONDENSE_REVISION = 12   # 10: map control's inputs (hits, possessed, yaws, damage runs); 11: heights (z);
+                         # 12: Killjoy turret/alarmbot `off` spans (extras.device_off_spans)
 
 UV_SCALE = 10000
 

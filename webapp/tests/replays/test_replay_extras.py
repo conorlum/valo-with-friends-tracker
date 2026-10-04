@@ -641,7 +641,7 @@ from app.replays.extras import rounds_extras, util_entries  # noqa: E402
 
 UTIL_KEYS = {"k", "t", "by", "t1", "kind", "code", "name", "agent", "owner_by", "u", "v", "yaw", "thrown", "path",
              "owner_d", "other_d", "u1", "v1", "gun", "n", "end", "defuses", "points", "on", "target", "fx",
-             "status", "from", "z", "end_z"}
+             "status", "from", "z", "end_z", "off"}
 
 
 def test_util_entries_round_trip_to_the_viewers_shape():
@@ -694,3 +694,93 @@ def test_the_streaming_and_in_memory_paths_store_the_same_util(tmp_path):
     loaded = cd.condense_export_dir(directory, source_sha256=match.source_sha256, streaming=False)
     assert streamed.encoded_rounds() == loaded.encoded_rounds()
     assert [u["k"] for u in streamed.rounds[2]["util"]].count("ability") == 1
+
+
+# ---------------------------------------------------------------- Killjoy devices switched off (revision 12)
+
+from app.replays.extras import device_off_spans  # noqa: E402
+
+# Shapes from the Sunset and Lotus replays (docs/superpowers/plans/2026-10-04-control-bugs-impl.md). Container
+# ids are made up: they vary by replay, so the rule never reads them. A turret spawns at 0 with its spawn
+# effect (container 10) and boots at 2 s (container 11); an alarmbot boots at 1.7 s (container 21).
+TURRET = [(0, "oneshot", None, 9), (0, "play", 1, 10), (2_000, "play", 2, 11)]
+ALARMBOT = [(0, "oneshot", None, 19), (195, "oneshot", None, 20), (1_700, "play", 1, 21)]
+
+
+def off_at(t, *watching, new=50, container=60):
+    """Switched off: the watching effects stop as a new effect starts, in the same millisecond."""
+    return [(t, "play", new, container), *[(t, "stop", w, None) for w in watching]]
+
+
+def back_on(t, off_effect, new_ids=(70, 71), containers=(10, 11)):
+    """Back on: the off effect stops and the spawn and boot containers replay."""
+    return [(t, "stop", off_effect, None), *[(t, "play", i, c) for i, c in zip(new_ids, containers)]]
+
+
+def test_a_turret_switched_off_stays_off_until_it_closes():
+    fx = TURRET + off_at(23_600, 1, 2)
+    assert device_off_spans(fx, 0, 70_000, turret=True) == [[23_600, None]]
+
+
+def test_a_turret_comes_back_on_and_can_go_off_again():
+    fx = TURRET + off_at(29_600, 1, 2) + [(57_700, "play", 40, 61)] + back_on(59_700, 50) \
+        + off_at(62_200, 70, 71, new=80)
+    assert device_off_spans(fx, 0, 72_000, turret=True) == [[29_600, 59_700], [62_200, None]]
+
+
+def test_a_turret_attack_is_not_off():
+    # an enemy in front of it: an effect 8 ms before the boot stops, its partner stopped 0.75 s later; the
+    # spawn effect never stops. Then the boot replays, and later the turret is switched off for real.
+    fx = TURRET + [(5_237, "play", 30, 62), (5_245, "stop", 2, None), (5_245, "play", 31, 63),
+                   (5_995, "stop", 31, None), (6_456, "stop", 30, None), (7_323, "play", 32, 11)] \
+        + off_at(43_900, 1, 32)
+    assert device_off_spans(fx, 0, 90_000, turret=True) == [[43_900, None]]
+
+
+def test_a_turret_destroyed_or_picked_up_soon_after_is_not_off():
+    fx = TURRET + off_at(10_000, 1, 2)
+    assert device_off_spans(fx, 0, 11_000, turret=True) == []
+
+
+def test_an_alarmbot_going_off_is_not_switched_off():
+    # its boot stops as the trigger effect starts; the trigger stops with a one-shot (the alarm), even 1.6 s on
+    fx = ALARMBOT + off_at(80_500, 1, container=64) + [(82_106, "stop", 50, None), (82_106, "oneshot", None, 65)]
+    assert device_off_spans(fx, 0, 82_800, turret=False) == []
+
+
+def test_an_alarmbot_switched_off():
+    fx = ALARMBOT + off_at(36_100, 1)
+    assert device_off_spans(fx, 0, 113_000, turret=False) == [[36_100, None]]
+
+
+def test_a_device_without_its_first_effect_never_reads_off():
+    assert device_off_spans([(0, "oneshot", None, 9)] + off_at(5_000, 1), 0, 60_000, turret=True) == []
+
+
+def test_another_devices_events_under_a_reused_guid_are_ignored():
+    fx = [(t + 100_000, kind, i, c) for t, kind, i, c in TURRET] + off_at(50_000, 1, 2)
+    assert device_off_spans(fx, 100_000, 200_000, turret=True) == []
+
+
+def kj_play(t_ms, guid, effect_id, container):
+    return {"type": "rpc_received", "time_ms": t_ms, "actor_net_guid": guid,
+            "function_name": "MulticastPlayContinuousEffect", "payload": {"EffectId": effect_id, "EffectContainer": container}}
+
+
+def test_the_condenser_stores_a_turrets_off_spans_in_round_seconds(tmp_path):
+    turret, bot = 90, 91
+    rows = [spawned(20_000, turret, "Default__Pawn_Killjoy_E_Turret_C", 0, 0), instigated(20_000, turret, 107),
+            kj_play(20_000, turret, 1, 10), kj_play(22_000, turret, 2, 11),
+            kj_play(31_600, turret, 50, 60), stop(31_600, turret, 1), stop(31_600, turret, 2),
+            stop(35_000, turret, 50), kj_play(35_000, turret, 3, 10), kj_play(35_000, turret, 4, 11),
+            kj_play(41_000, turret, 51, 60), stop(41_000, turret, 3), stop(41_000, turret, 4),
+            closed(65_000, turret),                                            # after the playback window
+            spawned(20_000, bot, "Default__Pawn_Killjoy_Q_StealthAlarmbot_C", 0, 0), instigated(20_000, bot, 107),
+            kj_play(21_700, bot, 1, 21), closed(40_000, bot)]
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["time_ms"])), encoding="utf-8")
+    extras = build_extras(path, players(), WINDOWS, GAME_MAP, {**AGENTS, "Killjoy": "Killjoy"}, lambda t_ms: {})
+    rows_by_name = {a["name"]: a for a in extras.rounds[1]["abilities"]}
+    assert rows_by_name["E_Turret"]["off"] == [[21.6, 25.0], [31.0, None]]
+    assert "off" not in rows_by_name["Q_StealthAlarmbot"]
+    assert extras.report["kj_off_spans"] == 2
