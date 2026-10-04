@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}Gap patterns - {{ site_name }}{% endblock %}
+
+{% block content %}
+<h1>Gap patterns</h1>
+<p class="page-meta">Routes an enemy could have used to reach a player's back unseen, grouped by the chokes they crossed, one page per map. Only rounds from uploaded replays with up-to-date gaps count.</p>
+<p class="page-meta gaps-thin" data-gaps-thin>{{ thin_data_note }}</p>
+
+<div class="card">
+  <table class="gaps-index">
+    <thead><tr><th>Map</th><th>Rounds counted</th><th>Replays</th></tr></thead>
+    <tbody>
+      {% for m in maps %}
+      <tr>
+        <td><a href="/gaps/{{ m.name | urlencode }}">{{ m.name }}</a></td>
+        <td>{{ m.rounds }}</td>
+        <td>{{ m.replays }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3">No map has the map-control layer yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

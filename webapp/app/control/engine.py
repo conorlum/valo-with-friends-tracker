@@ -29,11 +29,16 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   could be: pushed out by the enemy's live players, the enemy's side of the barriers at the drop, and
   its own spread at UNKNOWN_MPS (each cell no sooner than a walk of its true length, diagonals sqrt(2);
   across specials, through smokes but not through a pinch under GAP_SEAL_M between a smoke or wall
-  ability and the map's wall). The team's live control clears it on contact. It is kept per enemy: one
-  the team spots starts again from where they were seen, and a dead one's goes with them.
+  ability and the map's wall). The team's live control clears it on contact; a piece of it with no enemy in it
+  that is at most DROP_PIECE_CELLS, or one cell wide all along (NARROW_ROOM_CELLS), is dropped. It is kept per
+  enemy: one the team spots starts again from where they were seen, and a dead one's goes with them. An enemy is
+  also located, as an area round them, by a kill, the plant, audible movement, gunfire within hearing and gun
+  damage (the timing-gaps spec, section 4); a revived enemy restarts where they stand.
 - **Watchers** (passive): trips, alarmbots, Chamber traps, Killjoy's turret, Cypher's camera while
   he is in it, and flown drones; a camera or drone in use replaces its owner's own view. Placed
-  utility dies with its owner (Q71): a watcher counts only while its owner is alive.
+  utility dies with its owner (Q71): a watcher counts only while its owner is alive. A Killjoy turret or
+  alarmbot doesn't watch while it is switched off (she walked out of its range; the row's `off`, condenser
+  revision 12; an older row is never off).
 - **Safe (Q73; 2026-10-01).** A team's Safe ground is what no cell of its unknown sees, smoke-aware,
   from the unknown's boundary. A tick built without unknown (tests) falls back to the instant flood:
   each team's free space from its alive players through walkable cells the other team doesn't watch
@@ -63,17 +68,24 @@ rows) are used when present; older blobs fall back to 0b's placeholders, counted
 
 from __future__ import annotations
 
+import bisect
 import copy
+import json
 import math
 import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import numpy as np
 from scipy import ndimage
+from app.control import chokes
 from app.control import heights as hc
+from app.control import observe
 from app.control import topology
+from app.control.routes import RouteLog
+from app.replays import choke_assets
 from app.control.geometry import CELL, GRID, PX, RAY_STEP_DEG, Geometry, Wall, cast, los, visibility, wall_blocks
 from app.replays.control_format import CONTROL_REVISION  # noqa: F401 - stdlib-only, so the web app can read it
 
@@ -103,6 +115,26 @@ GAP_SEAL_M = 1.5
 # A piece of a team's unknown this small (cells, 8-connected; a 1x2) with no enemy in it is dropped
 # (the user's call, 2026-10-01: what vision has eaten down to that is gone).
 DROP_PIECE_CELLS = 2
+# So is a piece no wider than one cell all along, whatever its length: no point of its floor
+# has this much of a cell's width of room to anything outside it (Unknown._narrow; the user's call, 2026-10-04).
+NARROW_ROOM_CELLS = 0.55
+# Locating events (docs/superpowers/specs/2026-10-02-timing-gaps-design.md, section 4): what a team hears
+# or learns from the feed collapses that enemy's unknown to an area round them. Ranges: app/control/hearing.json.
+KILL_AREA_M = 5.0
+PLANT_AREA_M = 5.0
+SHOT_AREA_M = 5.0
+DAMAGE_AREA_M = 10.0
+FOOTSTEP_AREA_M = 10.0
+AUDIBLE_MPS = 4.5            # above the fastest shift-walk (knife, 4.05 m/s), below the slowest run (rifle, 5.40)
+AUDIBLE_WINDOW_S = 0.5
+_HEARING_FILE = json.loads((Path(__file__).with_name("hearing.json")).read_text(encoding="utf-8"))
+# only the numeric fields (pinned with the other constants): editing a citation in `sources` changes nothing
+HEARING = {"footstep_range_m": float(_HEARING_FILE["footstep_range_m"]),
+           "default_gun_m": float(_HEARING_FILE["default_gun_m"]),
+           "guns": {str(k): float(v) for k, v in _HEARING_FILE["guns"].items()}}
+FOOTSTEP_RANGE_M = HEARING["footstep_range_m"]
+GUN_HEARING_M = dict(HEARING["guns"])
+GUN_HEARING_DEFAULT_M = HEARING["default_gun_m"]     # a gun named but not in the table (a shot with no gun: the longest)
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
 FAST_TURN_DPS = 90.0
 SPEED_WINDOW_S = 0.25
@@ -230,6 +262,12 @@ class Watcher:
     eye: float | None = None             # a fixed device's eye height (m, as node_z); None: 2D
     node: int | None = None              # the node it sits on (heights only)
     origin: int = 0                      # the map's origin_z (world dm), for a drone path's heights
+    off: list = field(default_factory=list)   # [(t0, t1)] switched off (a KJ device, its owner out of range)
+
+
+def _watching(w: Watcher, t: float) -> bool:
+    """A watcher is up from its placement to its end, except while it is switched off."""
+    return w.t0 <= t < w.t1 and not _during(w.off, t)
 
 
 class RoundInputs:
@@ -256,6 +294,7 @@ class RoundInputs:
         for slot, side in link.sides.items():
             if slot in self.team:
                 self.group_side.setdefault(self.team[slot], side)
+        self._segment: dict[int, np.ndarray] = {}   # slot -> each sample's track segment index
         self.tracks = {}
         self.heights: dict[int, np.ndarray] = {}     # slot -> position-z per sample, metres above the map's origin
         origin = geo.heights.origin_z if geo.heights is not None else 0
@@ -263,6 +302,8 @@ class RoundInputs:
             parts = [(g["t0"] + np.arange(len(g["u"])) / self.hz, _decode(g["u"]), _decode(g["v"]),
                       np.mod(_decode(g["yaw"]), 360)) for g in segs]
             self.tracks[int(s)] = tuple(np.concatenate([p[i] for p in parts]) for i in range(4))
+            self._segment[int(s)] = np.concatenate([np.full(len(g["u"]), i) for i, g in enumerate(segs)]) if segs \
+                else np.zeros(0, int)
             if geo.heights is not None and segs:
                 # NaN where a segment was stored without z (before revision 11, or the parser gave none)
                 self.heights[int(s)] = np.concatenate([
@@ -274,9 +315,17 @@ class RoundInputs:
         self.downgraded, self.contest_status = defaultdict(list), defaultdict(list)
         self.hit_contest = defaultdict(list)
         self.missing: dict[str, int] = defaultdict(int)
+        self._missed: set[tuple[str, int | None]] = set()    # (case, slot) already counted (R20)
         self.events: list[float] = []
         self.shot_times: list[float] = []
         self.plant: float | None = None
+        # locating events (timing gaps, section 4)
+        self.planter: tuple[float, int] | None = None     # (time, slot) of the plant, when its owner is known
+        self.shots: list[tuple[float, int, str | None]] = []                 # (t, by, gun)
+        self.gun_runs: list[tuple[float, float, int, int, bool]] = []       # (t, t1, by, target, wall), enemies only
+        self.kills = [(float(k["t"]), int(k["killer"]), int(k["victim"])) for k in blob.get("kills") or []
+                      if k.get("killer") is not None and k.get("victim") is not None]
+        self._by_slot: dict[int, tuple[list[float], list[tuple]]] | None = None
         self.reveals: list[tuple[float, float, int | None, int]] = []   # (t0, t1, by, target)
         self._read_util()
         if geo.heights is not None:
@@ -304,6 +353,24 @@ class RoundInputs:
 
     def life_end(self, s: int, t: float) -> float:
         return next((b for a, b in self.lives.get(s, []) if a <= t < b), t)
+
+    def revival(self, s: int, t: float) -> tuple[float, float, float] | None:
+        """Where and when slot s, alive at t in a later life, is first located in it (timing gaps, section 4;
+        R14): at the life's start when there is a sample then, else at the first sample since (if by t), as
+        (time, x px, y px); None without one yet."""
+        a = next((a for a, b in self.lives.get(s, []) if a <= t < b), None)
+        if a is None:
+            return None
+        p = self.pos(s, a)
+        if p is not None:
+            return float(a), p[0], p[1]
+        tr = self.tracks.get(s)
+        if tr is None:
+            return None
+        i = int(np.searchsorted(tr[0], a))
+        if i >= len(tr[0]) or tr[0][i] > t:
+            return None
+        return float(tr[0][i]), tr[1][i] * PX / 10000, tr[2][i] * PX / 10000
 
     def deaths(self) -> list[tuple[int, float]]:
         return sorted(((s, b) for s, ivs in self.lives.items() for _, b in ivs if b != math.inf),
@@ -355,6 +422,19 @@ class RoundInputs:
             return "run"
         return "walk" if speed >= WALK_MPS else "hold"
 
+    def speed(self, s: int, t: float) -> float | None:
+        """Metres per second over the last AUDIBLE_WINDOW_S, within one track segment (a break is never
+        bridged, so a teleport is not a footstep); None without two samples in the same segment."""
+        a, b = self._sample(s, t - AUDIBLE_WINDOW_S), self._sample(s, t)
+        if a is None or b is None or self._segment[s][a] != self._segment[s][b]:
+            return None
+        tr = self.tracks[s]
+        dt = tr[0][b] - tr[0][a]
+        if dt <= 0:
+            return None
+        dist_px = math.hypot((tr[1][b] - tr[1][a]) * PX / 10000, (tr[2][b] - tr[2][a]) * PX / 10000)
+        return float(dist_px * self.geo.m_per_px / dt)
+
     # --- utility
 
     def _read_util(self) -> None:
@@ -369,6 +449,10 @@ class RoundInputs:
                     self.events.append(e["thrown"]["t0"])
                 if e.get("kind") == "Bomb" and self.plant is None:
                     self.plant = snap(e["t"])
+                    if e.get("by") is not None:
+                        self.planter = (float(e["t"]), int(e["by"]))
+                    else:
+                        self.miss("plant without a planter (locates nobody)", None)
                 if e.get("kind") == "Projectile":
                     continue
                 t0, t1 = _span(e["t"], end)
@@ -399,6 +483,10 @@ class RoundInputs:
                 self.events += [e["t"], e["t1"]]
             elif k == "shot":
                 self.shot_times.append(e["t"])
+                if e.get("by") is not None:
+                    self.shots.append((float(e["t"]), int(e["by"]), e.get("gun")))
+                    if e.get("gun") is None:
+                        self.miss("shot without a gun (longest hearing range used)", int(e["by"]))
             elif k == "damage":
                 self._damage(e)
         if not any(e.get("k") == "damage" for e in util):
@@ -445,8 +533,54 @@ class RoundInputs:
             self.hit_contest[target].append(_span(e["t"], t1 + WALLBANG_CONTEST_S))
         elif e.get("src") == "ability":
             self.hit_contest[target].append(_span(e["t"], t1 + DAMAGE_CONTEST_PAD_S))
+        if e.get("src") == "gun":
+            self.gun_runs.append((float(e["t"]), float(t1), int(by), int(target), bool(e.get("wall"))))
+            # every gun damage run gets a tick, the first at or after its start, so it is applied there (section 4)
+            self.events.append(snap_after(e["t"]))
+
+    def miss(self, case: str, slot: int | None) -> None:
+        """Count a missing-data case once per (case, slot) per round (R20), however often it is met."""
+        if (case, slot) not in self._missed:
+            self._missed.add((case, slot))
+            self.missing[case] += 1
+
+    def locating_rows(self, slot: int) -> tuple[list[float], list[tuple]]:
+        """Slot's possible locating events, time-sorted, as (times, rows); a row is (t, kind, detail):
+        `kill` (victim), `plant` (None), `damage` (target), `gunfire` (gun)."""
+        if self._by_slot is None:
+            rows: dict[int, list[tuple]] = defaultdict(list)
+            for te, killer, victim in self.kills:
+                rows[killer].append((te, "kill", victim))
+            if self.planter is not None:
+                rows[self.planter[1]].append((self.planter[0], "plant", None))
+            for te, _, by, target, _ in self.gun_runs:
+                rows[by].append((te, "damage", target))
+            for te, by, gun in self.shots:
+                rows[by].append((te, "gunfire", gun))
+            self._by_slot = {}
+            for s, rs in rows.items():
+                rs.sort(key=lambda r: r[0])
+                self._by_slot[s] = ([r[0] for r in rs], rs)
+        return self._by_slot.get(slot, ([], []))
 
     def _watcher(self, e: dict, key: str, t0: float, t1: float) -> None:
+        """Adds the row's watcher, if it is one, with the spans it was switched off (a Killjoy device's
+        `off`, condenser revision 12; a row without it is never off) snapped to the grid, inside its life."""
+        before = len(self.watchers)
+        self._add_watcher(e, key, t0, t1)
+        if len(self.watchers) == before or not e.get("off"):
+            return
+        off = []
+        for a, b in e["off"]:
+            a, b = _span(a, t1 if b is None else b)
+            a, b = max(a, t0), min(b, t1)
+            if b > a:
+                off.append((a, b))
+                self.events += [a, b]
+        for w in self.watchers[before:]:
+            w.off = off
+
+    def _add_watcher(self, e: dict, key: str, t0: float, t1: float) -> None:
         px_per_uv = PX / 10000
         geo = self.geo
         by = e.get("by")
@@ -799,7 +933,7 @@ class Tick:
         looks: dict[int, tuple] = {}   # slot -> (yaw, eye, flashed, nearsighted, active cone's half or None)
         using = {}   # owner -> the camera or drone they're in
         for w in rnd.watchers:
-            if w.kind in ("drone", "camera") and w.t0 <= t < w.t1 and rnd.alive(w.by, t):
+            if w.kind in ("drone", "camera") and _watching(w, t) and rnd.alive(w.by, t):
                 if w.in_use is None or _during(w.in_use, t):
                     using[w.by] = w
         for s in sorted(rnd.team):
@@ -844,7 +978,11 @@ class Tick:
         # slot -> the live control that holds unknown back: vision, watchers and their own cell (before
         # Memory adds remembered ground to `passive`)
         self.live: dict[int, np.ndarray] = {}
+        # slot -> the player's own view (active | passive, presence included), before Memory: what the gap
+        # detector credits to vision (timing gaps, R12)
+        self.view: dict[int, np.ndarray] = {}
         for s, h in self.holders.items():
+            self.view[s] = h.active | h.passive
             lv = h.active | h.passive | h.watch
             lv[h.cell] = True
             self.live[s] = lv
@@ -985,7 +1123,7 @@ class Tick:
         geo, rnd = self.geo, self.rnd
         watch = np.zeros(geo.n, bool)
         for w in rnd.watchers:
-            if w.by != s or not (w.t0 <= t < w.t1):
+            if w.by != s or not _watching(w, t):
                 continue
             if w.kind in ("trip", "area"):
                 watch[w.cells] = True
@@ -1545,7 +1683,7 @@ class Unknown:
     again from that spot and time and walks out from it once they're out of sight. A dead enemy's goes with
     them."""
 
-    def __init__(self, geo: Geometry):
+    def __init__(self, geo: Geometry, chokes: np.ndarray | None = None):
         self.geo = geo
         self.topo = topology.of(geo)
         self.cells = {"A": np.zeros(geo.n, bool), "B": np.zeros(geo.n, bool)}
@@ -1564,6 +1702,18 @@ class Unknown:
         self.face = np.stack([fx + 0.5, fy + 0.5], axis=1)
         self.to_wall_px = ndimage.distance_transform_edt(wp)
         self._sealed_key, self._sealed = None, np.zeros(geo.n, bool)
+        # route history (timing gaps, section 4): bookkeeping only; it never changes which nodes are unknown
+        self.chokes = chokes if chokes is not None else np.full(geo.n, -1, np.int32)
+        self.log = {"A": RouteLog(), "B": RouteLog()}
+        self.entry: dict[str, dict[int, np.ndarray]] = {"A": {}, "B": {}}   # side -> enemy -> entry per node
+        # side -> enemy -> the entry of their last sighting (self.seen), a source while it lasts
+        self._seen_entry: dict[str, dict[int, int]] = {"A": {}, "B": {}}
+        # locating events (timing gaps, section 4)
+        self.located: dict[str, dict[int, float]] = {"A": {}, "B": {}}    # side -> enemy -> last locating time
+        self.events: dict[str, list[tuple[int, float, str]]] = {"A": [], "B": []}   # this tick's (enemy, t, kind)
+        self._prev_t: float | None = None
+        self._dead: dict[str, set[int]] = {"A": set(), "B": set()}      # enemies whose region went with a death
+        self._pending: dict[str, set[int]] = {"A": set(), "B": set()}   # revived, waiting for a first sample (R14)
 
     def sealed(self, smokes) -> np.ndarray:
         """Flat cells in a pinch narrower than GAP_SEAL_M between one of `smokes` (the tick's sight
@@ -1626,17 +1776,27 @@ class Unknown:
         n = self.geo.n
         t = self.t = tick.t
         pinched = self.sealed(getattr(tick, "smokes", None))
+        rnd = getattr(tick, "rnd", None)
+        locates = rnd is not None and hasattr(rnd, "locating_rows")    # a real round (not a test's bare tick)
+        since = -math.inf if self._prev_t is None else self._prev_t   # events in (since, t]: R8
         for side in ("A", "B"):
+            self.events[side] = []
             enemies = self._enemies(tick, side)
             for gone in set(self.reached[side]) - enemies:   # dead: nowhere
                 del self.reached[side][gone]
                 self.seen[side].pop(gone, None)
+                self.entry[side].pop(gone, None)
+                self._seen_entry[side].pop(gone, None)
+                self._pending[side].discard(gone)
+                if locates:
+                    self._dead[side].add(gone)
             if not enemies:
                 self.cells[side] = np.zeros(n, bool)   # nobody left: nobody could be anywhere
                 continue
             live = np.zeros(n, bool)
             spots = np.zeros(n, bool)
             shut = pinched.copy()
+            solid = self._trips(tick, side)
             for h in tick.holders.values():
                 if h.team == side:
                     live |= h.active | h.passive | h.watch
@@ -1654,24 +1814,131 @@ class Unknown:
             cells = np.zeros(n, bool)
             for slot in sorted(enemies):
                 reached = self.reached[side].get(slot)
+                before = np.full(n, np.inf) if reached is None else reached.copy()
+                sources: dict[int, float] = {}       # this tick's sources (route history only)
+                area: np.ndarray | None = None       # an area collapse's nodes; its centre is a source (R15)
+                centre: int | None = None
+                h = tick.holders.get(slot)
+                hits: list[tuple[float, str, float, int, float, float]] = []   # (t, kind, radius m, node, x, y)
                 if reached is None:
                     reached = np.full(n, np.inf)
-                    if self._start[side] is not None:
+                    if slot in self._dead[side]:
+                        # a second life: not the barrier ground again, but where they stand, once they have a
+                        # position (R14: with none yet, at the first sample of the new life)
+                        self._dead[side].discard(slot)
+                        self._pending[side].add(slot)
+                    elif self._start[side] is not None:
                         reached[self._start[side]] = t        # the barrier drop's ground: there now
-                h = tick.holders.get(slot)
+                        sources.update(dict.fromkeys(np.flatnonzero(self._start[side]).tolist(), t))
+                if slot in self._pending[side]:
+                    back = rnd.revival(slot, t)
+                    if back is not None:
+                        tb, x, y = back
+                        hits.append((tb, "revived", 0.0, rnd.node(slot, tb, x, y), x, y))
+                if locates:
+                    hits += self._locating(rnd, side, slot, since, t)
+                if hits:
+                    # every event is recorded, in time order; the region collapses round the latest (on a tie,
+                    # the smaller area)
+                    hits.sort(key=lambda e: (e[0], e[2]))
+                    te, _, radius, centre, x, y = max(hits, key=lambda e: (e[0], -e[2]))
+                    area = self._area(centre, x, y, radius, room, solid)
+                    reached = np.full(n, np.inf)
+                    reached[area] = te
+                    before = np.full(n, np.inf)     # every route starts again from the area's centre
+                    sources = {centre: te}
+                    self.seen[side].pop(slot, None)
+                    self._seen_entry[side].pop(slot, None)
+                    self._pending[side].discard(slot)
+                    self.located[side][slot] = te
+                    self.events[side] += [(slot, e[0], e[1]) for e in hits]
                 # in an active view or a watcher's; or seen at their own height in an active cone (Tick._direct)
                 in_cone = any(active and target == slot and viewer in tick.holders and tick.holders[viewer].team == side
                               for (viewer, target), active in getattr(tick, "direct", {}).items())
                 if h is not None and (spots[h.cell] or in_cone):
                     reached = np.full(n, np.inf)    # spotted: there, and nowhere else
                     self.seen[side][slot] = (h.cell, t)
+                    self._seen_entry[side][slot] = self.log[side].add(h.cell, t, -1, int(self.chokes[h.cell]))
+                    before = np.full(n, np.inf)     # every route starts again from the sighting
+                    sources = {}
+                    area = centre = None
+                    self.located[side][slot] = t
+                    self.events[side].append((slot, t, "seen"))      # after the tick's other events (R8)
                 if h is not None:
+                    if t < reached[h.cell]:
+                        sources[h.cell] = t
                     reached[h.cell] = min(reached[h.cell], t)   # an enemy pushes it out from where they stand
                 reached[~room] = np.inf
-                reached = self._spread(reached, room, free, t, self.seen[side].get(slot))
+                reached, parent = self._spread(reached, room, free, t, self.seen[side].get(slot), solid)
+                self._record(side, slot, before, reached, parent, sources, centre, area)
                 self.reached[side][slot] = reached
                 cells |= np.isfinite(reached)
             self.cells[side] = self._drop_pieces(side, cells, tick)
+        self._prev_t = t
+
+    def _heard_by(self, rnd, side: str, te: float, x: float, y: float, range_m: float) -> bool:
+        """Whether a live player of `side` is within range_m of (x, y) px at te (walls ignored)."""
+        r = range_m / self.geo.m_per_px
+        for s, team in rnd.team.items():
+            if team != side or not rnd.alive(s, te):
+                continue
+            p = rnd.pos(s, te)
+            if p is not None and (p[0] - x) ** 2 + (p[1] - y) ** 2 <= r * r:
+                return True
+        return False
+
+    def _locating(self, rnd, side: str, slot: int, since: float, t: float
+                  ) -> list[tuple[float, str, float, int, float, float]]:
+        """Every event in (since, t] that locates enemy `slot` for `side` (R8), as (time, kind, area radius
+        m, node, x px, y px) at the event's own time and the enemy's position then: a kill of one of the
+        team, the plant, gun damage to one of the team (heard or not), gunfire within that gun's hearing of
+        a live player of the team, and, at t, moving faster than AUDIBLE_MPS within FOOTSTEP_RANGE_M of one.
+        An event without a position for the enemy locates nothing and is counted (R20)."""
+        out = []
+        times, rows = rnd.locating_rows(slot)
+        for te, kind, detail in rows[bisect.bisect_right(times, since):bisect.bisect_right(times, t)]:
+            if kind in ("kill", "damage") and rnd.team.get(detail) != side:
+                continue
+            p = rnd.pos(slot, te)
+            if p is None:
+                rnd.miss("locating event without a position", slot)
+                continue
+            if kind == "gunfire":
+                if detail is None:      # no gun recorded: the longest hearing range in the table (spec)
+                    rng = max(GUN_HEARING_M.values(), default=GUN_HEARING_DEFAULT_M)
+                else:
+                    rng = GUN_HEARING_M.get(detail, GUN_HEARING_DEFAULT_M)
+                if not self._heard_by(rnd, side, te, p[0], p[1], rng):
+                    continue
+                radius = SHOT_AREA_M
+            else:
+                radius = {"kill": KILL_AREA_M, "plant": PLANT_AREA_M, "damage": DAMAGE_AREA_M}[kind]
+            out.append((te, kind, radius, rnd.node(slot, te, p[0], p[1]), p[0], p[1]))
+        v = rnd.speed(slot, t)
+        if v is None:
+            if rnd.alive(slot, t - AUDIBLE_WINDOW_S):    # alive across the window, yet no speed for it
+                rnd.miss("speed across a track break or missing sample", slot)
+        elif v > AUDIBLE_MPS:
+            p = rnd.pos(slot, t)
+            if self._heard_by(rnd, side, t, p[0], p[1], FOOTSTEP_RANGE_M):
+                out.append((t, "footsteps", FOOTSTEP_AREA_M, rnd.node(slot, t, p[0], p[1]), p[0], p[1]))
+        return out
+
+    def _area(self, node: int, x: float, y: float, radius_m: float, room: np.ndarray,
+              solid: np.ndarray | None = None) -> np.ndarray:
+        """Nodes within radius_m of (x, y) px reached by walking from `node` through `room` (the unobserved
+        walkable nodes), plus `node` itself; no diagonal step past a `solid` node (the team's trips), as in
+        the spread."""
+        seed = np.zeros(self.geo.n, bool)
+        seed[node] = True
+        if radius_m <= 0:
+            return seed
+        within = room | seed
+        steps = max(1, int(math.ceil(radius_m / self.geo.cell_m)))
+        grown = self.topo.dilate(seed, eight=True, iterations=steps, within=within, solid=solid)
+        r = radius_m / self.geo.m_per_px
+        near = (self.geo.centres[:, 0] - x) ** 2 + (self.geo.centres[:, 1] - y) ** 2 <= r * r
+        return (grown & within & near) | seed
 
     def _drop_pieces(self, side: str, cells: np.ndarray, tick) -> np.ndarray:
         """`cells` less its 8-connected pieces of at most DROP_PIECE_CELLS that no enemy stands in (the
@@ -1683,6 +1950,7 @@ class Unknown:
         size = np.bincount(lab)
         small = size <= DROP_PIECE_CELLS
         small[0] = False
+        small |= self._narrow(lab, size)
         for h in tick.holders.values():
             if h.team != side:
                 small[lab[h.cell]] = False
@@ -1691,9 +1959,43 @@ class Unknown:
         drop = small[lab]
         for slot, reached in self.reached[side].items():
             reached[drop] = np.inf
+            if slot in self.entry[side]:
+                self.entry[side][slot][drop] = -1
             if slot in self.seen[side] and drop[self.seen[side][slot][0]]:
                 del self.seen[side][slot]
+                self._seen_entry[side].pop(slot, None)
         return cells & ~drop
+
+    def _narrow(self, lab: np.ndarray, size: np.ndarray) -> np.ndarray:
+        """Per piece of `lab`: a sliver nobody stands in, one cell wide all along (the user, Sunset round 15,
+        2026-10-04: a strip of unknown along a wall next to Osmin). No point of its floor (its cells' walkable
+        pixels) is NARROW_ROOM_CELLS of a cell from everything outside it: a straight one-cell strip has half a
+        cell, the judged round 4 corner pocket (three cells of a 2x2) 0.63. Only pieces with no 2x2 block of
+        cells are measured, and never one on a cell with more than one floor: the walk mask is 2D, so it says
+        nothing about how wide one floor is (a tunnel under a bridge)."""
+        out = np.zeros(len(size), bool)
+        layered = np.zeros(GRID * GRID, bool)
+        layered[self.geo.node_cell[GRID * GRID:]] = True
+        stacked = np.zeros(len(size), bool)
+        stacked[np.unique(lab[layered[self.geo.node_cell] & (lab > 0)])] = True
+        grid = np.zeros(GRID * GRID, np.int64)
+        grid[self.geo.node_cell[lab > 0]] = lab[lab > 0]
+        grid = grid.reshape(GRID, GRID)
+        block = grid[:-1, :-1]
+        full = (block > 0) & (grid[1:, :-1] == block) & (grid[:-1, 1:] == block) & (grid[1:, 1:] == block)
+        wide = np.zeros(len(size), bool)
+        wide[np.unique(block[full])] = True
+        for j in np.flatnonzero(~wide & ~stacked & (size > DROP_PIECE_CELLS)):
+            if j == 0:
+                continue
+            rows, cols = np.nonzero(grid == j)
+            r0, c0 = rows.min(), cols.min()
+            mask = np.zeros(((rows.max() - r0 + 3) * CELL, (cols.max() - c0 + 3) * CELL), bool)
+            for r, c in zip(rows, cols):
+                mask[(r - r0 + 1) * CELL:(r - r0 + 2) * CELL, (c - c0 + 1) * CELL:(c - c0 + 2) * CELL] = \
+                    self.geo.walk_px[r * CELL:(r + 1) * CELL, c * CELL:(c + 1) * CELL]
+            out[j] = ndimage.distance_transform_edt(mask).max() < NARROW_ROOM_CELLS * CELL
+        return out
 
     @staticmethod
     def _enemies(tick, side: str) -> set[int]:
@@ -1704,19 +2006,89 @@ class Unknown:
             return {s for s, team in rnd.team.items() if team != side and rnd.alive(s, tick.t)}
         return {h.slot for h in tick.holders.values() if h.team != side}
 
+    def _trips(self, tick, side: str) -> np.ndarray | None:
+        """The cells of `side`'s live trips at the tick (owner alive, Q71): the unknown can't step diagonally
+        past them, so a wire that touches a wall or turns a corner only diagonally still seals (the user,
+        Sunset, 2026-10-04). None on a tick without the round's inputs."""
+        rnd = getattr(tick, "rnd", None)
+        if rnd is None:
+            return None
+        out = np.zeros(self.geo.n, bool)
+        for w in rnd.watchers:
+            if w.kind == "trip" and rnd.team.get(w.by) == side and _watching(w, tick.t) and rnd.alive(w.by, tick.t):
+                out[w.cells] = True
+        return out
+
     def _spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float,
-                seen: tuple[int, float] | None = None) -> np.ndarray:
+                seen: tuple[int, float] | None = None, solid: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         """`reached` relaxed through `room` up to time `t`: each cell's earliest arrival from a
         neighbour (after the cell was last freed); arrivals later than `t` are not there yet. `seen`
         (cell, time), where the enemy was last spotted, is a source from that time even while the team
         still watches that cell or has just freed it (they were in it); it is in the result only once it is
-        in `room`."""
+        in `room`. No diagonal step cuts past a `solid` cell (the team's trips). Also each arrival's parent node
+        (topology.spread, `parents`; -1 where none)."""
         g = reached.copy()
         if seen is not None:
             g[seen[0]] = min(g[seen[0]], seen[1])
         if not np.isfinite(g).any():
-            return g
-        return self.topo.spread(g, room, free, t, self.geo.cell_m / UNKNOWN_MPS, self.links)
+            return g, np.full(len(g), -1, np.int64)
+        arr, par = self.topo.spread(g, room, free, t, self.geo.cell_m / UNKNOWN_MPS, self.links, parents=True,
+                                   solid=solid)
+        if seen is not None and not room[seen[0]]:
+            # topology.spread finds parents among the final arrivals, where a sighting the team still
+            # watches is absent. Every other node outside `room` was cleared before the spread, so an
+            # arrival that came from a neighbour (it beat its starting value) but found no parent there
+            # came from the sighting (R15)
+            orphan = np.isfinite(arr) & (par < 0) & (arr < g)
+            par[orphan] = seen[0]
+        return arr, par
+
+    def _record(self, side: str, slot: int, before: np.ndarray, after: np.ndarray, parent: np.ndarray,
+                sources: dict[int, float], centre: int | None = None, area: np.ndarray | None = None) -> None:
+        """Route history (timing gaps, section 4), bookkeeping only. Logs every node whose arrival is new or
+        changed, in arrival order so each parent's entry exists first, and every one of this tick's
+        `sources` (node -> time: barrier ground, own-position push, an area collapse's centre) even where the
+        team observes it (R15). A source entry has no parent. A node whose spread parent is a source uses
+        that source's entry: the enemy's sighting (self.seen) has one entry for as long as it lasts, made when
+        they were spotted. The other nodes of an area collapse (`area`, all at the centre's time) take the
+        centre's entry as their parent; the centre is logged first among them."""
+        log = self.log[side]
+        ent = self.entry[side].get(slot)
+        ent = np.full(len(after), -1, np.int64) if ent is None else ent.copy()
+        fin = np.isfinite(after)
+        ent[~fin] = -1
+        changed = np.flatnonzero(fin & ((~np.isfinite(before)) | (after != before)))
+        observed = [node for node in sources if not fin[node]]
+        if not len(changed) and not observed:
+            self.entry[side][slot] = ent
+            return
+        nodes = np.concatenate([changed, np.asarray(observed, np.int64)])
+        times = np.concatenate([after[changed], np.asarray([sources[x] for x in observed], np.float64)])
+        first = (nodes != centre) if centre is not None else np.ones(len(nodes), bool)   # the centre first on a tie
+        seen = self.seen[side].get(slot)
+        seen_e = self._seen_entry[side].get(slot)
+        # a source node outside the final arrivals -> its entry (the review of Task 4: never an erased push's)
+        fixed: dict[int, int] = {} if seen_e is None else {seen[0]: seen_e}
+        choke = self.chokes
+        for i in np.lexsort((nodes, first, times)).tolist():
+            node, tt = int(nodes[i]), float(times[i])
+            p = int(parent[node]) if fin[node] else -1
+            if p < 0 and area is not None and node != centre and area[node] and centre in fixed \
+                    and tt == sources[centre]:
+                e = log.add(node, tt, fixed[centre], int(choke[node]))   # a member of the area: from its centre
+            elif p < 0:                                      # a source
+                if seen_e is not None and node == seen[0] and tt == seen[1]:
+                    e = seen_e
+                else:
+                    e = log.add(node, tt, -1, int(choke[node]))
+                if node == centre:
+                    fixed[node] = e
+            else:
+                pe = int(ent[p]) if fin[p] else fixed.get(p, -1)
+                e = log.add(node, tt, pe, int(choke[node]))
+            if fin[node]:
+                ent[node] = e
+        self.entry[side][slot] = ent
 
 
 class Memory:
@@ -1886,10 +2258,10 @@ class TickRunner:
     compute_round and the scene renderer (scripts/render_control_scenes.py) both step through this, so a
     scene can't drift from the stored result (the code review, 2026-10-01: it once skipped both)."""
 
-    def __init__(self, geo: Geometry):
+    def __init__(self, geo: Geometry, chokes: np.ndarray | None = None):
         self.geo = geo
         self.memory = Memory(geo)
-        self.unknown = Unknown(geo)
+        self.unknown = Unknown(geo, chokes)
         self.started = False
 
     def step(self, tick: "Tick", timings: dict | None = None) -> "Tick":
@@ -1911,10 +2283,15 @@ class TickRunner:
 
 
 def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
-                  ticks: np.ndarray | None = None, full_every: int = 0, knowledge: bool = True) -> RoundControl:
+                  ticks: np.ndarray | None = None, full_every: int = 0, knowledge: bool = True,
+                  observer=None) -> RoundControl:
     """Control for one round. `ticks` overrides the Q75 schedule (tests, parity checks);
     `full_every` N > 0 also runs the full counterfactual on every Nth tick and compares. `knowledge`
-    also builds each team's picture of the round (R3.3): what it knew, not the true positions."""
+    also builds each team's picture of the round (R3.3): what it knew, not the true positions.
+    `observer`, when given, is called as observer(record, unknown) after each tick's unknown
+    (app/control/observe.py); it must not change either. An observer with an `on_tick` method is called as
+    observer.on_tick(tick, unknown) instead and builds the record itself (observe.record), inside its own
+    failure boundary, so an error there is the observer's and never control's (the tick cache's guard)."""
     visibility(geo)
     rnd = RoundInputs(blob, geo, link)
     times = rnd.tick_times() if ticks is None else np.asarray(ticks, float)
@@ -1942,7 +2319,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         if i is not None:
             death_ticks[i].append((slot, t))
     prev_state = None
-    runner = TickRunner(geo)
+    runner = TickRunner(geo, chokes.node_chokes(geo, choke_assets.load(geo.name)))
     unknown_masks = {side: np.zeros((n_ticks, n_walk), bool) for side in ("A", "B")}
     know ={side: Knowledge(rnd, side) for side in ("A", "B")} if knowledge else {}
     knew_states = {side: np.zeros((n_ticks, n_walk), np.uint8) for side in know}
@@ -1950,6 +2327,12 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     for n, t in enumerate(times):
         t = float(t)
         tick = runner.step(Tick(rnd, t, timings), timings)
+        if observer is not None:
+            on_tick = getattr(observer, "on_tick", None)
+            if on_tick is not None:
+                on_tick(tick, runner.unknown)
+            else:
+                observer(observe.record(tick, runner.unknown), runner.unknown)
         if tick.fallbacks.get("unresolved_rays"):
             # a viewer stood in, or looked through, terrain the heights don't know: 2D sight there (the spec:
             # "reported where the user will see it"; preview_control_live.py warns on it)

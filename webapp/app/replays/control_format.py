@@ -43,7 +43,7 @@ import hashlib
 import json
 import struct
 
-CONTROL_REVISION = 4
+CONTROL_REVISION = 5
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 

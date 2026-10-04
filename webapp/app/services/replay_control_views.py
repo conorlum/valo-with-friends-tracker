@@ -23,6 +23,7 @@ from array import array
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
+from sqlalchemy import and_
 from sqlalchemy.orm import load_only
 
 from app.models.replay import Replay, ReplayRoundControl
@@ -470,12 +471,15 @@ def map_aggregate(db, replay_ids: set[int] | None = None) -> list[dict]:
 
 def friends_replay_ids(db, player_ids: set[int]) -> set[int]:
     """Replays in which any of these players played (the /stats Friends group: the viewer and their
-    friendships, never tracked_players.json)."""
+    friendships, never tracked_players.json). A replay player's match player counts only while it belongs to the
+    replay's current match (a stale match_player_id from an earlier link does not)."""
     from app.models import MatchPlayer
     from app.models.replay import ReplayPlayer
 
     if not player_ids:
         return set()
     return {rid for (rid,) in db.query(ReplayPlayer.replay_id)
-            .join(MatchPlayer, MatchPlayer.id == ReplayPlayer.match_player_id)
+            .join(Replay, Replay.id == ReplayPlayer.replay_id)
+            .join(MatchPlayer, and_(MatchPlayer.id == ReplayPlayer.match_player_id,
+                                    MatchPlayer.match_id == Replay.match_id))
             .filter(MatchPlayer.player_id.in_(sorted(player_ids))).distinct()}

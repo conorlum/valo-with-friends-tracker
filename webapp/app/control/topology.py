@@ -36,6 +36,23 @@ AROUND_ORDER = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1
 SPREAD_ORDER = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 
 
+def _shift(a: np.ndarray, dy: int, dx: int, fill=False) -> np.ndarray:
+    """`a` moved by (dy, dx) on the grid: out[y, x] = a[y - dy, x - dx], `fill` off the edge."""
+    out = np.full(a.shape, fill, a.dtype)
+    out[max(dy, 0):GRID + min(dy, 0), max(dx, 0):GRID + min(dx, 0)] = \
+        a[max(-dy, 0):GRID + min(-dy, 0), max(-dx, 0):GRID + min(-dx, 0)]
+    return out
+
+
+def _cuts(solid: np.ndarray | None) -> dict:
+    """(dy, dx) -> where a diagonal step of that direction into (y, x) is cut: it passes a `solid` cell (a
+    trip's), (y - dy, x) or (y, x - dx). Empty with no solid cells."""
+    if solid is None or not solid.any():
+        return {}
+    s = solid.reshape(GRID, GRID)
+    return {(dy, dx): _shift(s, dy, 0) | _shift(s, 0, dx) for dy, dx in SPREAD_ORDER if dy and dx}
+
+
 class FlatTopology:
     """A flat map: every cell joins its neighbours in the grid (4 by default, 8 with `eight`)."""
 
@@ -51,9 +68,22 @@ class FlatTopology:
         return lab.ravel()
 
     def dilate(self, mask: np.ndarray, eight: bool = False, iterations: int = 1,
-               within: np.ndarray | None = None) -> np.ndarray:
+               within: np.ndarray | None = None, solid: np.ndarray | None = None) -> np.ndarray:
         """`mask` grown by `iterations` steps, through `within` only when given (nodes outside it keep
-        their own value)."""
+        their own value). With `solid` (and `eight`), no diagonal step past a solid cell, as in `spread`."""
+        cut = _cuts(solid) if eight else {}
+        if cut:
+            cur = mask.reshape(GRID, GRID).astype(bool)
+            w = None if within is None else within.reshape(GRID, GRID)
+            for _ in range(max(1, iterations)):
+                grown = cur.copy()
+                for dy, dx in SPREAD_ORDER:
+                    step = _shift(cur, dy, dx)
+                    if (dy, dx) in cut:
+                        step &= ~cut[dy, dx]
+                    grown |= step
+                cur = grown if w is None else np.where(w, grown, cur)
+            return cur.ravel()
         return ndimage.binary_dilation(mask.reshape(GRID, GRID), EIGHT if eight else None, iterations=iterations,
                                        mask=None if within is None else within.reshape(GRID, GRID)).ravel()
 
@@ -95,20 +125,24 @@ class FlatTopology:
                 if 0 <= ny < GRID and 0 <= nx < GRID]
 
     def spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float, straight: float,
-               links: list) -> np.ndarray:
+               links: list, parents: bool = False, solid: np.ndarray | None = None):
         """The unknown's arrival times relaxed through `room` up to time `t` (engine.Unknown._spread):
         each node's earliest arrival from a neighbour, after the node was last freed (`free`); a straight
         step costs `straight` seconds, a diagonal sqrt(2) of it, a link (a, b, one way) one straight step.
-        Arrivals later than `t` aren't there yet."""
+        A diagonal step may not cut past a `solid` cell (a trip's) beside it. Arrivals later than `t`
+        aren't there yet. With `parents`, also each arrival's source node, taken from the final arrivals:
+        the first neighbour in SPREAD_ORDER that gives exactly that time, then a link; -1 for an unreached
+        node and for one whose value is its starting value."""
         g = reached.reshape(GRID, GRID).copy()
         f = free.reshape(GRID, GRID)
         r = room.reshape(GRID, GRID)
+        cut = _cuts(solid)
         while True:
             best = g.copy()
             for dy, dx in SPREAD_ORDER:
-                src = np.full((GRID, GRID), np.inf)
-                src[max(dy, 0):GRID + min(dy, 0), max(dx, 0):GRID + min(dx, 0)] = \
-                    g[max(-dy, 0):GRID + min(-dy, 0), max(-dx, 0):GRID + min(-dx, 0)]
+                src = _shift(g, dy, dx, np.inf)
+                if (dy, dx) in cut:
+                    src[cut[dy, dx]] = np.inf
                 np.minimum(best, np.maximum(src, f) + straight * (math.sqrt(2) if dy and dx else 1.0), out=best)
             for a, b, one_way in links:
                 best.flat[b] = min(best.flat[b], max(g.flat[a], f.flat[b]) + straight)
@@ -116,8 +150,34 @@ class FlatTopology:
                     best.flat[a] = min(best.flat[a], max(g.flat[b], f.flat[a]) + straight)
             best[~r | (best > t)] = np.inf
             if np.array_equal(best, g):
-                return best.ravel()
+                break
             g = best
+        arr = best.ravel()
+        if not parents:
+            return arr
+        # recompute from the final arrivals, with the same expressions the relaxation used
+        idx = np.arange(GRID * GRID).reshape(GRID, GRID)
+        par = np.full((GRID, GRID), -1, np.int64)
+        todo = np.isfinite(best) & (best < reached.reshape(GRID, GRID))
+        for dy, dx in SPREAD_ORDER:
+            src = np.full((GRID, GRID), np.inf)
+            who = np.full((GRID, GRID), -1, np.int64)
+            ys, xs = slice(max(dy, 0), GRID + min(dy, 0)), slice(max(dx, 0), GRID + min(dx, 0))
+            yo, xo = slice(max(-dy, 0), GRID + min(-dy, 0)), slice(max(-dx, 0), GRID + min(-dx, 0))
+            src[ys, xs] = best[yo, xo]
+            who[ys, xs] = idx[yo, xo]
+            if (dy, dx) in cut:
+                src[cut[dy, dx]] = np.inf
+            hit = todo & (par < 0) & (np.maximum(src, f) + straight * (math.sqrt(2) if dy and dx else 1.0) == best)
+            par[hit] = who[hit]
+        pf = par.ravel()
+        for a, b, one_way in links:
+            if np.isfinite(arr[b]) and arr[b] < reached[b] and pf[b] < 0 and max(arr[a], free[b]) + straight == arr[b]:
+                pf[b] = a
+            if not one_way and np.isfinite(arr[a]) and arr[a] < reached[a] and pf[a] < 0 \
+                    and max(arr[b], free[a]) + straight == arr[a]:
+                pf[a] = b
+        return arr, pf
 
 
 class NodeTopology:
@@ -169,6 +229,14 @@ class NodeTopology:
         column = np.arange(len(dst)) - starts[dst[order]]
         self.in_from[dst[order], column] = src[order]
         self.in_cost[dst[order], column] = np.where(diag[order], math.sqrt(2), 1.0)
+        # a diagonal walk's two side cells (a solid one, a trip's, stops it); GRID * GRID: no side cell
+        none = GRID * GRID
+        self.in_side = np.full((2, n, max(width, 1)), none, np.int64)
+        cs_o, cd_o, dg = cs[order], cd[order], diag[order]
+        self.in_side[0, dst[order], column] = np.where(dg, (cs_o // GRID) * GRID + cd_o % GRID, none)
+        self.in_side[1, dst[order], column] = np.where(dg, (cd_o // GRID) * GRID + cs_o % GRID, none)
+        self._adj = (self._out + self._out.T).tocsc()          # a walk either way, for `_cut`
+        self._cut_key = self._cut_val = None
         # nodes beside a wall or the map's edge: their cell has a neighbour that isn't walkable
         grid = geo.walk
         beside = (grid & ndimage.binary_dilation(~grid, EIGHT)).ravel()
@@ -183,9 +251,36 @@ class NodeTopology:
             lab[nodes] = piece + 1
         return lab
 
+    def _cut(self, solid: np.ndarray) -> np.ndarray:
+        """Per incoming walk (the `in_from` table): a diagonal walk past a `solid` node (a trip's) on its own
+        floor, i.e. one in a side cell that is a walk away from either end of it. A trip on another floor of
+        that cell doesn't cut it. Kept for the last `solid`: a tick's trips are the same for every enemy."""
+        key = solid.tobytes()
+        if key == self._cut_key:
+            return self._cut_val
+        none = GRID * GRID
+        cut = np.zeros(self.in_from.shape, bool)
+        trips = np.flatnonzero(solid)
+        if len(trips):
+            near = self._adj[:, trips].tocoo()        # (node, solid node) a walk apart
+            pairs = np.unique(near.row.astype(np.int64) * (none + 1) + self.geo.node_cell[trips[near.col]])
+            ends = (self.in_from, np.broadcast_to(np.arange(self.n)[:, None], self.in_from.shape))
+            for side in self.in_side:
+                diag = side != none
+                for end in ends:
+                    cut[diag] |= np.isin(end[diag] * (none + 1) + side[diag], pairs)
+        self._cut_key, self._cut_val = key, cut
+        return cut
+
     def dilate(self, mask: np.ndarray, eight: bool = False, iterations: int = 1,
-               within: np.ndarray | None = None) -> np.ndarray:
+               within: np.ndarray | None = None, solid: np.ndarray | None = None) -> np.ndarray:
         cur = mask.astype(bool)
+        if solid is not None and eight and solid.any():   # through the walks `spread` may take (`_cut`)
+            ok = np.isfinite(self.in_cost) & ~self._cut(solid)
+            for _ in range(max(1, iterations)):
+                grown = cur | (np.append(cur, False)[self.in_from] & ok).any(1)
+                cur = grown if within is None else np.where(within, grown, cur)
+            return cur
         step = self._step[eight]
         for _ in range(max(1, iterations)):
             grown = cur | (step @ cur.astype(np.int32) > 0)
@@ -214,9 +309,13 @@ class NodeTopology:
         return sorted(straight) + sorted(set(near) - set(straight))
 
     def spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float, straight: float,
-               links: list) -> np.ndarray:
+               links: list, parents: bool = False, solid: np.ndarray | None = None):
+        """As `FlatTopology.spread`. With `parents`, a node's source is the first of its `in_from` columns
+        (ascending source node id) that gives exactly its final arrival, then a link; -1 as there."""
         g = reached.copy()
         cost = self.in_cost * straight
+        if solid is not None and solid.any():
+            cost = np.where(self._cut(solid), np.inf, cost)
         freed = free[:, None]
         while True:
             padded = np.append(g, np.inf)
@@ -227,8 +326,24 @@ class NodeTopology:
                     best[a] = min(best[a], max(g[b], free[a]) + straight)
             best[~room | (best > t)] = np.inf
             if np.array_equal(best, g):
-                return best
+                break
             g = best
+        if not parents:
+            return best
+        rows = np.arange(self.n)
+        cand = np.maximum(np.append(best, np.inf)[self.in_from], freed) + cost
+        match = cand == best[:, None]
+        j = match.argmax(1)
+        todo = np.isfinite(best) & (best < reached) & match.any(1)
+        par = np.where(todo, self.in_from[rows, j], -1).astype(np.int64)
+        for a, b, one_way in links:
+            if np.isfinite(best[b]) and best[b] < reached[b] and par[b] < 0 \
+                    and max(best[a], free[b]) + straight == best[b]:
+                par[b] = a
+            if not one_way and np.isfinite(best[a]) and best[a] < reached[a] and par[a] < 0 \
+                    and max(best[b], free[a]) + straight == best[a]:
+                par[a] = b
+        return best, par
 
 
 def of(geo: Geometry):

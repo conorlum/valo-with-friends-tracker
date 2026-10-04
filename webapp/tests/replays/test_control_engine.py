@@ -314,6 +314,27 @@ def test_the_turret_watches_a_cone_along_its_yaw():
     assert not first[side]
 
 
+@pytest.mark.parametrize("name, cell", [("E_Turret", (330, 200)), ("Q_StealthAlarmbot", (260, 200))])
+def test_a_killjoy_device_switched_off_doesnt_watch(name, cell):
+    # KJ walked out of range at 2 s and back at 4 s (condenser revision 12's `off`); a row without `off`
+    # (an older blob) watches throughout, exactly as before
+    geo = open_hall()
+    device = ability("Killjoy", name, 250, 200, 0, kind="Pawn", yaw=0, yaws=[[0.0, 0]])
+    players = {0: still("A", 120, 120, 180), 5: still("B", 400, 110, 90)}
+    c = geo.cell_of_px(*cell)
+    rnd = ce.RoundInputs(blob(players, util=[{**device, "off": [[2.0, 4.0]]}]), geo)
+    assert [bool(ce.Tick(rnd, t).holders[0].watch[c]) for t in (1.0, 2.0, 3.5, 4.0, 6.0)] == \
+        [True, False, False, True, True]
+    assert {2.0, 4.0} <= set(rnd.tick_times().tolist())
+    until_close = ce.RoundInputs(blob(players, util=[{**device, "off": [[2.0, None]]}]), geo)
+    assert [bool(ce.Tick(until_close, t).holders[0].watch[c]) for t in (1.0, 9.0)] == [True, False]
+    old = ce.RoundInputs(blob(players, util=[device]), geo)
+    for t in (1.0, 3.0, 6.0):
+        assert np.array_equal(ce.Tick(old, t).holders[0].watch, ce.Tick(ce.RoundInputs(
+            blob(players, util=[{**device, "off": []}]), geo), t).holders[0].watch)
+        assert ce.Tick(old, t).holders[0].watch[c]
+
+
 def test_the_camera_replaces_its_owners_view_while_he_is_in_it():
     geo = open_hall()
     camera = ability("Gumshoe", "E_PossessableCamera", 350, 150, 0, kind="Pawn", yaw=90,

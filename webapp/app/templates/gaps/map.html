@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+
+{% block title %}{{ map_name }} gap patterns - {{ site_name }}{% endblock %}
+
+{% macro count(n, one, many) -%}{{ n }} {{ one if n == 1 else many }}{%- endmacro %}
+
+{% macro kinds(c) -%}
+{%- set parts = [] -%}
+{%- if c.predicted %}{% set _ = parts.append(count(c.predicted, 'predicted gap', 'predicted gaps')) %}{% endif -%}
+{%- if c.backshot %}{% set _ = parts.append(count(c.backshot, 'shot from behind', 'shots from behind')) %}{% endif -%}
+{{ parts | join(' and ') }}
+{%- endmacro %}
+
+{% macro share(s, filtered=False) -%}
+{%- if filtered -%}<span title="The filter keeps only these">all, by the filter</span>
+{%- else -%}{{ s.k }} / {{ s.n }}{%- endif -%}
+{%- endmacro %}
+
+{% macro figure_cells(p) -%}
+{% set pred = p.predicted %}{% set back = p.backshots %}
+<td data-sort-value="{{ pred.n }}">{{ pred.n }}</td>
+<td>{{ share(pred.stood, filters.use == 'stood') }}</td>
+<td>{{ share(pred.shot, filters.use == 'shot') }}</td>
+<td>{{ share(pred.killed, filters.use == 'killed') }}</td>
+<td>{% if pred.cause %}{{ cause_words.get(pred.cause.name, pred.cause.name) }} ({{ pred.cause.k }} / {{ pred.cause.n }}){% else %}&ndash;{% endif %}</td>
+<td>{% if pred.median_t_round is not none %}{{ pred.median_t_round }} s (of {{ pred.t_round_n }}){% else %}&ndash;{% endif %}</td>
+<td data-sort-value="{{ back.n }}">{{ back.n }}</td>
+<td>{{ back.linked }} linked, {{ back.standalone }} standalone (of {{ back.n }})</td>
+<td>{{ share(back.killed, filters.use == 'killed') }}</td>
+{%- endmacro %}
+
+{% macro table_head(first) -%}
+<thead><tr>
+  <th>{{ first }}</th>
+  <th data-sort="number" title="Predicted gaps on this route">Predicted gaps</th>
+  <th title="Of the predicted gaps: an enemy stood on the spot">Stood there</th>
+  <th title="Of the predicted gaps: an enemy shot from behind">Shot</th>
+  <th title="Of the predicted gaps: an enemy killed from behind">Killed</th>
+  <th>Most common reason it opened</th>
+  <th title="Middle value of the time into the round the gap opened">Typical time into round</th>
+  <th data-sort="number" title="Real shots from behind, counted apart from predicted gaps">Shots from behind</th>
+  <th title="Shots from behind that followed a predicted gap / that did not">Linked / standalone</th>
+  <th title="Of the shots from behind: the shot killed">Killed by the shot</th>
+  <th></th>
+</tr></thead>
+{%- endmacro %}
+
+{% block content %}
+<p class="page-meta"><a href="/gaps">All maps</a></p>
+<h1>{{ map_name }} gap patterns</h1>
+<p class="page-meta">Times a player's back was open to an enemy who could have got there unseen, and real shots from behind, grouped by the chokes the enemy's route crossed.</p>
+<p class="page-meta gaps-thin" data-gaps-thin>{{ thin_data_note }}</p>
+
+{% set r = data.rounds %}
+<p class="page-meta" data-gaps-rounds>
+  {{ count(r.counted, 'round', 'rounds') }} from {{ count(r.replays, 'replay', 'replays') }} {{ 'counts' if r.counted == 1 else 'count' }}.
+  Left out: {{ r.left_out.stale }} stale (worked out under older rules or older chokes),
+  {{ r.left_out.failed }} failed, {{ r.left_out.not_computed }} not worked out yet.
+  {% if r.old_blob %}{{ count(r.old_blob, 'round', 'rounds') }} from replays too old to work out {{ 'is' if r.old_blob == 1 else 'are' }} not counted.{% endif %}
+</p>
+
+<form method="get" action="/gaps/{{ map_name | urlencode }}" class="card gaps-filters" data-gaps-filters>
+  <div class="gaps-filter-row">
+    <label>Show
+      <select name="kind">
+        <option value="both"{% if filters.kind == 'both' %} selected{% endif %}>Predicted gaps and shots from behind</option>
+        <option value="predicted"{% if filters.kind == 'predicted' %} selected{% endif %}>Predicted gaps only</option>
+        <option value="backshot"{% if filters.kind == 'backshot' %} selected{% endif %}>Shots from behind only</option>
+      </select>
+    </label>
+    <label>Side of the player
+      <select name="side">
+        <option value="both"{% if filters.side == 'both' %} selected{% endif %}>Both</option>
+        <option value="attack"{% if filters.side == 'attack' %} selected{% endif %}>Attack</option>
+        <option value="defense"{% if filters.side == 'defense' %} selected{% endif %}>Defense</option>
+      </select>
+    </label>
+    <label>Reason it opened
+      <select name="cause">
+        <option value="any"{% if filters.cause == 'any' %} selected{% endif %}>Any</option>
+        {% for key, words in cause_words.items() %}
+        <option value="{{ key }}"{% if filters.cause == key %} selected{% endif %}>{{ words }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>What an enemy did
+      <select name="use">
+        <option value="any"{% if filters.use == 'any' %} selected{% endif %}>Anything or nothing</option>
+        <option value="stood"{% if filters.use == 'stood' %} selected{% endif %}>Stood there</option>
+        <option value="shot"{% if filters.use == 'shot' %} selected{% endif %}>Shot from behind</option>
+        <option value="killed"{% if filters.use == 'killed' %} selected{% endif %}>Killed from behind</option>
+        <option value="unused"{% if filters.use == 'unused' %} selected{% endif %}>Nobody used it</option>
+      </select>
+    </label>
+    <label>Only the first
+      <input type="number" name="t_max" min="0" step="any" value="{{ '%g' | format(filters.t_max) if filters.t_max is not none else '' }}" placeholder="any" class="gaps-tmax"> seconds of the round
+    </label>
+    <label><input type="checkbox" name="flickers" value="1"{% if filters.flickers %} checked{% endif %}> Show flickers (open under 1 s)</label>
+  </div>
+  <div class="gaps-filter-row">
+    <fieldset class="gaps-pop">
+      <legend>Whose rounds</legend>
+      <label><input type="radio" name="pop" value="everyone"{% if data.population == 'everyone' %} checked{% endif %}> Everyone</label>
+      {% if logged_in %}
+      <label><input type="radio" name="pop" value="friends"{% if data.population == 'friends' %} checked{% endif %}> Friends (you and your Friends page)</label>
+      {% endif %}
+    </fieldset>
+    {% if logged_in %}
+    <fieldset class="gaps-dir" data-gaps-dir>
+      <legend>Under Friends</legend>
+      <label><input type="radio" name="dir" value="left"{% if filters.dir == 'left' %} checked{% endif %}> Gaps my group left open</label>
+      <label><input type="radio" name="dir" value="opponents"{% if filters.dir == 'opponents' %} checked{% endif %}> Gaps our opponents left open</label>
+    </fieldset>
+    {% endif %}
+    <button type="submit" class="btn">Apply</button>
+  </div>
+  {% if not logged_in %}<p class="page-meta" data-gaps-login>{{ friends_login_note }}</p>{% endif %}
+</form>
+
+{% set rows = data.rows %}
+<p class="page-meta" data-gaps-population>
+  {% if data.population == 'friends' %}
+  Friends: {% if data.direction == 'left' %}gaps my group left open{% else %}gaps our opponents left open{% endif %} (linked replays only).
+  {% else %}
+  Everyone: every counted round.
+  {% endif %}
+  Matching the filters: {{ count(rows.predicted, 'predicted gap', 'predicted gaps') }} and {{ count(rows.backshot, 'shot from behind', 'shots from behind') }} (counted apart).
+  {% if rows.unknown_seq %}{{ count(rows.unknown_seq, 'shot from behind', 'shots from behind') }} whose route could not be traced {{ 'is' if rows.unknown_seq == 1 else 'are' }} left out.{% endif %}
+</p>
+
+<div class="gaps-layout">
+  <div class="card gaps-map-card" data-gaps-map-panel>
+    <canvas width="512" height="512" class="gaps-map" data-gaps-canvas></canvas>
+    <div class="gaps-map-info">
+      <h2 data-gaps-selected-label>Pick a route to draw it</h2>
+      <p class="page-meta" data-gaps-status aria-live="polite"></p>
+      <ol class="gaps-rounds" data-gaps-rounds-list></ol>
+    </div>
+  </div>
+
+  <div class="gaps-tables">
+    <div class="card">
+      <h2>Routes through chokes</h2>
+      {% if patterns %}
+      <table class="gaps-patterns" data-gaps-patterns>
+        {{ table_head("Route (chokes crossed)") }}
+        <tbody>
+          {% for p in patterns %}
+          <tr data-gaps-row>
+            <td>{{ p.label }}</td>
+            {{ figure_cells(p) }}
+            <td><button type="button" class="link-button" data-gaps-select data-seq="{{ p.key }}" data-label="{{ p.label }}">Show</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="page-meta">No route through a choke matches these filters.</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Routes through no choke</h2>
+      {% if no_choke %}
+      <table class="gaps-patterns">
+        {{ table_head("Route") }}
+        <tbody>
+          <tr data-gaps-row>
+            <td>no choke</td>
+            {{ figure_cells(no_choke) }}
+            <td><button type="button" class="link-button" data-gaps-select data-seq="" data-label="no choke">Show</button></td>
+          </tr>
+        </tbody>
+      </table>
+      {% elif shapes %}
+      <p class="page-meta">Grouped by shape within each side: two routes are in one group when they run within {{ data.shape_threshold_m | int }} m of each other on average.</p>
+      {% for s in shapes %}
+      <h3>{{ s.side_words | capitalize }}</h3>
+      {% if s.cut %}<p class="page-meta">Only the {{ data.shape_cap }} most recent of these were grouped.</p>{% endif %}
+      {% if s.no_route.predicted or s.no_route.backshot %}<p class="page-meta" data-gaps-no-route>Left out, with no stored route: {{ kinds(s.no_route) }}.</p>{% endif %}
+      <table class="gaps-patterns">
+        {{ table_head("Shape group") }}
+        <tbody>
+          {% for g in s.groups %}
+          <tr data-gaps-row>
+            <td>{{ g.label }}</td>
+            {{ figure_cells(g) }}
+            <td><button type="button" class="link-button" data-gaps-select data-shape="{{ s.side }}-{{ g.index }}" data-label="{{ g.label }} ({{ s.side_words }})">Show</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endfor %}
+      {% else %}
+      <p class="page-meta">No route through no choke matches these filters.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<script type="application/json" id="gaps-drawing">{{ drawing | tojson }}</script>
+<script src="/static/js/gap_patterns.js?v={{ static_version() }}"></script>
+{% endblock %}
