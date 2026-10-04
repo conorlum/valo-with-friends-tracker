@@ -9,6 +9,11 @@ written but under %TEMP%.
 --from-cache replays each round's `<n>.ticks.pkl.gz` (written by an earlier run) through the detector, with no
 engine. --no-merge keeps the pre-merge rows (no stack merge, R1). Each round prints its predicted count before
 and after the merge and how many of the folded gaps had the empty choke sequence.
+
+--write-json also writes each round's `<n>.gaps.json` beside the blobs: the viewer's body for the round
+(app/services/replay_gaps_view.py view_rows over app/gaps/rows.py to_rows, plus "status": "ok" and
+"stale": false), which scripts/render_replay_standalone.py inlines as the page's Gaps layer. It names
+real players' slots in a linked folder: keep it under %TEMP%.
 """
 
 from __future__ import annotations
@@ -31,13 +36,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--from-cache", action="store_true",
                         help="replay each round's <n>.ticks.pkl.gz through the detector, without the engine")
     parser.add_argument("--no-merge", action="store_true", help="keep the pre-merge rows (no stack merge)")
+    parser.add_argument("--write-json", action="store_true",
+                        help="write each round's <n>.gaps.json (the viewer's body) beside the blobs")
     args = parser.parse_args(argv)
 
     import preview_control_live as preview
 
     from app.control import engine, geometry
-    from app.gaps import cache, detect
+    from app.gaps import cache, detect, rows as gap_rows
     from app.replays import format as fmt
+    from app.services import replay_gaps_view
 
     ctx = json.loads((args.folder / "context.json").read_text(encoding="utf-8"))
     geo = geometry.visibility(geometry.load_geometry(ctx["match"]["map"]))
@@ -110,7 +118,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {g.kind:9s} t {g.t_open:6.1f}-{(g.t_close or 0):6.1f} victim {g.victim} by {sorted(g.candidates)} "
                   f"seq {g.choke_seq} cause {g.cause} stood {g.stood_by} shot {g.shot_by} killed {g.killed_by} "
                   f"{'FLICKER ' if g.flicker else ''}{f'merged {merged}' if merged else ''}")
+        if args.write_json:
+            body = replay_gaps_view.view_rows(gap_rows.to_rows(gaps, rnd, geo), ctx["match"]["map"])
+            body = {"status": "ok", "stale": False, **body}
+            out = args.folder / f"{n}.gaps.json"
+            out.write_text(json.dumps(body, separators=(",", ":"), default=_plain), encoding="utf-8")
+            print(f"round {n}: {len(body['rows'])} rows -> {out}")
     return 0
+
+
+def _plain(value):
+    """numpy scalars and arrays, and sets, as plain JSON values."""
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    if isinstance(value, (set, frozenset)):
+        return sorted(value)
+    raise TypeError(f"not JSON serialisable: {type(value).__name__}")
 
 
 if __name__ == "__main__":
