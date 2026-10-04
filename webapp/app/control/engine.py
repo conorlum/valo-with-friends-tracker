@@ -33,7 +33,9 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   the team spots starts again from where they were seen, and a dead one's goes with them.
 - **Watchers** (passive): trips, alarmbots, Chamber traps, Killjoy's turret, Cypher's camera while
   he is in it, and flown drones; a camera or drone in use replaces its owner's own view. Placed
-  utility dies with its owner (Q71): a watcher counts only while its owner is alive.
+  utility dies with its owner (Q71): a watcher counts only while its owner is alive. A Killjoy turret or
+  alarmbot doesn't watch while it is switched off (she walked out of its range; the row's `off`, condenser
+  revision 12; an older row is never off).
 - **Safe (Q73; 2026-10-01).** A team's Safe ground is what no cell of its unknown sees, smoke-aware,
   from the unknown's boundary. A tick built without unknown (tests) falls back to the instant flood:
   each team's free space from its alive players through walkable cells the other team doesn't watch
@@ -230,6 +232,12 @@ class Watcher:
     eye: float | None = None             # a fixed device's eye height (m, as node_z); None: 2D
     node: int | None = None              # the node it sits on (heights only)
     origin: int = 0                      # the map's origin_z (world dm), for a drone path's heights
+    off: list = field(default_factory=list)   # [(t0, t1)] switched off (a KJ device, its owner out of range)
+
+
+def _watching(w: Watcher, t: float) -> bool:
+    """A watcher is up from its placement to its end, except while it is switched off."""
+    return w.t0 <= t < w.t1 and not _during(w.off, t)
 
 
 class RoundInputs:
@@ -447,6 +455,23 @@ class RoundInputs:
             self.hit_contest[target].append(_span(e["t"], t1 + DAMAGE_CONTEST_PAD_S))
 
     def _watcher(self, e: dict, key: str, t0: float, t1: float) -> None:
+        """Adds the row's watcher, if it is one, with the spans it was switched off (a Killjoy device's
+        `off`, condenser revision 12; a row without it is never off) snapped to the grid, inside its life."""
+        before = len(self.watchers)
+        self._add_watcher(e, key, t0, t1)
+        if len(self.watchers) == before or not e.get("off"):
+            return
+        off = []
+        for a, b in e["off"]:
+            a, b = _span(a, t1 if b is None else b)
+            a, b = max(a, t0), min(b, t1)
+            if b > a:
+                off.append((a, b))
+                self.events += [a, b]
+        for w in self.watchers[before:]:
+            w.off = off
+
+    def _add_watcher(self, e: dict, key: str, t0: float, t1: float) -> None:
         px_per_uv = PX / 10000
         geo = self.geo
         by = e.get("by")
@@ -799,7 +824,7 @@ class Tick:
         looks: dict[int, tuple] = {}   # slot -> (yaw, eye, flashed, nearsighted, active cone's half or None)
         using = {}   # owner -> the camera or drone they're in
         for w in rnd.watchers:
-            if w.kind in ("drone", "camera") and w.t0 <= t < w.t1 and rnd.alive(w.by, t):
+            if w.kind in ("drone", "camera") and _watching(w, t) and rnd.alive(w.by, t):
                 if w.in_use is None or _during(w.in_use, t):
                     using[w.by] = w
         for s in sorted(rnd.team):
@@ -985,7 +1010,7 @@ class Tick:
         geo, rnd = self.geo, self.rnd
         watch = np.zeros(geo.n, bool)
         for w in rnd.watchers:
-            if w.by != s or not (w.t0 <= t < w.t1):
+            if w.by != s or not _watching(w, t):
                 continue
             if w.kind in ("trip", "area"):
                 watch[w.cells] = True
@@ -1714,7 +1739,7 @@ class Unknown:
             return None
         out = np.zeros(self.geo.n, bool)
         for w in rnd.watchers:
-            if w.kind == "trip" and rnd.team.get(w.by) == side and w.t0 <= tick.t < w.t1 and rnd.alive(w.by, tick.t):
+            if w.kind == "trip" and rnd.team.get(w.by) == side and _watching(w, tick.t) and rnd.alive(w.by, tick.t):
                 out[w.cells] = True
         return out
 
