@@ -431,3 +431,36 @@ def test_pops_show_only_until_they_went_off_and_statuses_read_back():
     assert got["statuses"] == [{"t0": 5, "slot": 2, "t1": 7, "target": 8, "code": "Iris", "name": "Concuss",
                                 "status": "concussed", "from": "object"}]
     assert got["on"] == [0, 1, 0] and got["styles"] == ["CONCUSSED", "GRAVNET"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_clicking_a_round_number_plays_that_round_from_its_start():
+    # The strip's buttons, built with a stub document, on a viewer whose showRound only records the call and,
+    # like the real one, leaves the round paused once loaded. Any round, the current one too, plays from 0.
+    script = """
+      const buttons = [];
+      global.document = {createElement: () => {
+        const b = {attrs: {}, setAttribute(k, v) { this.attrs[k] = v; },
+                   addEventListener(type, fn) { this[type] = fn; }};
+        buttons.push(b);
+        return b;
+      }};
+      const R = require(process.argv[1]);
+      const v = Object.create(R.ReplayViewer.prototype);
+      Object.assign(v, {options: {}, rounds: [1, 2, 3], number: 2, t: 31.0, playing: false, shown: [],
+                        ui: {strip: {innerHTML: "", appendChild() {}}, prev: {}, next: {}}});
+      v.showRound = function (n, t) { this.shown.push([n, t || 0]); this.number = n; this.t = t || 0;
+                                      this.playing = false; return Promise.resolve({}); };
+      v.updateControls = function () {};
+      v.renderStrip();
+      buttons[2].click();
+      setTimeout(() => {
+        const third = {shown: v.shown.slice(), playing: v.playing};
+        v.playing = false; v.t = 12.0;
+        buttons[1].click();                      // the round already showing
+        setTimeout(() => process.stdout.write(JSON.stringify(
+          {third: third, current: {shown: v.shown.slice(1), playing: v.playing, t: v.t}})), 0);
+      }, 0);"""
+    got = run_node(script, None)
+    assert got["third"] == {"shown": [[3, 0]], "playing": True}
+    assert got["current"] == {"shown": [[2, 0]], "playing": True, "t": 0}

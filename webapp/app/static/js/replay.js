@@ -690,6 +690,17 @@
     });
   };
 
+  // A round number in the strip: that round from its start, playing (the current one restarts). Previous and
+  // next keep showing a round paused.
+  ReplayViewer.prototype.playRound = function (n) {
+    var self = this;
+    return this.showRound(n).then(function (round) {
+      self.playing = true;
+      self.updateControls();
+      return round;
+    });
+  };
+
   ReplayViewer.prototype.seek = function (t) {
     if (!this.current) return;
     this.t = Math.max(0, Math.min(this.current.blob.t_end, t));
@@ -878,7 +889,7 @@
         (winner ? " won-" + winner : "");
       button.setAttribute("aria-label", "Round " + n + (winner ? ", won by " + winner.replace("-", " ") : ""));
       if (n === self.number) button.setAttribute("aria-current", "true");
-      button.addEventListener("click", function () { self.showRound(n); });
+      button.addEventListener("click", function () { self.playRound(n); });
       self.ui.strip.appendChild(button);
     });
     this.ui.prev.disabled = this.rounds.indexOf(this.number) <= 0;
