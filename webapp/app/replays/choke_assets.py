@@ -92,6 +92,6 @@ def asset_hash(name: str, asset_dir: Path = ASSET_DIR) -> str | None:
     body = _read(name, asset_dir)
     if body is None:
         return None
-    view = sorted(({"id": int(c["id"]), "cells": [int(x) for x in c["cells"]], "deleted": bool(c.get("deleted", False))}
+    view = sorted(({"id": int(c["id"]), "cells": sorted(int(x) for x in c["cells"]), "deleted": bool(c.get("deleted", False))}
                    for c in body["chokes"]), key=lambda c: c["id"])
     return hashlib.sha256(json.dumps(view, sort_keys=True).encode("utf-8")).hexdigest()[:16]

@@ -68,7 +68,6 @@ def main(argv: list[str] | None = None) -> int:
                 det.step(rec, logs)
                 stepped[0] += time.perf_counter() - t0
             source = "tick cache+detector"
-            notes = dict(det.notes)
         else:
             writer = cache.Writer(cache_path)
 
@@ -81,10 +80,10 @@ def main(argv: list[str] | None = None) -> int:
             control = engine.compute_round(blob, geo, control_link, observer=both, knowledge=False)
             writer.close(missing=control.missing_inputs)
             source = "engine+detector"
-            notes = dict(det.notes)
         t0 = time.perf_counter()
         gaps = det.finish()
         finish_s = time.perf_counter() - t0
+        notes = dict(det.notes)
         total = time.time() - started
         size = cache_path.stat().st_size
         counts = {"predicted": 0, "backshot": 0, "flicker": 0}

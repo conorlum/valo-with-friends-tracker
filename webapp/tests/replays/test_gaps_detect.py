@@ -668,12 +668,14 @@ def test_candidates_joined_and_stood_union_with_the_earliest():
     assert g.checked_at == [4.0], "checked_at from the longest member only"
 
 
-def test_context_is_the_longest_members_with_t_round_and_merged():
+def test_context_is_the_earliest_members_with_t_round_merged_and_route_opened():
     a, b = _mg((1,), 2.0, 10.0), _mg((1, 2), 4.0, 12.0)
+    a.context["alive"] = {"A": 5, "B": 4}
     [g] = gd.merge_stacks([a, b], -10.0)
     assert g.context["t_round"] == pytest.approx(12.0), "recomputed from the merged t_open"
-    assert g.context["seq"] == [1, 2] and g.context["alive"] == {"A": 5, "B": 5}
+    assert g.context["seq"] == [1] and g.context["alive"] == {"A": 5, "B": 4}, "the state at the merged t_open"
     assert g.context["merged"] == [{"choke_seq": [1], "t_open": 2.0}]
+    assert g.context["route_opened"] == 4.0 and g.choke_seq == (1, 2), "route and spot stay the longest member's"
 
 
 def test_a_different_victim_or_life_never_folds():
@@ -714,5 +716,6 @@ def test_merge_off_leaves_the_pre_merge_gaps():
         found[merge] = d.gaps()
     assert _seqs(found[False]) == [(1,), (1, 2)]
     assert all("merged" not in g.context for g in found[False])
+    assert all(sum(b - a for a, b in g.qual_spans) == pytest.approx(g.qualified_s) for g in found[False])
     [g] = found[True]
     assert g.choke_seq == (1, 2) and g.context["merged"] == [{"choke_seq": [1], "t_open": 0.0}]

@@ -662,7 +662,11 @@ def _fold(keep: Gap, folded: list[Gap], t_start: float | None) -> None:
     keep.stood_times = defaultdict(list, {e: sorted(set(ts)) for e, ts in sorted(stood.items())})
     first = min(((g.stood_at, g.stood_by) for g in members if g.stood_at is not None), default=None)
     keep.stood_at, keep.stood_by = first if first is not None else (None, None)
-    context = dict(keep.context)
+    # the context describes the merged t_open: the earliest member's (alive counts, spike, what the victim saw);
+    # spot, route, cause, distance and angle stay the longest member's, opened at `route_opened`
+    context = dict(members[0].context)
+    context.pop("merged", None)
+    context["route_opened"] = keep.t_open
     if t_start is not None:
         context["t_round"] = round(t_open - t_start, 3)
     elif "t_round" in context:
