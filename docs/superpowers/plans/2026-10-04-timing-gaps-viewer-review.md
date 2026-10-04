@@ -20,3 +20,18 @@ One independent review (fresh subagent, read-only) of `2026-10-04-timing-gaps-vi
 | n3 | Sorting by total rows adds predicted and back-shots | A: sort by predicted count, then back-shots |
 | n4 | Missing values in shape ordering, null sides, old_blob rounds | A: `replays.created_at` when no match date; null-side rows get their own shape group; `old_blob` rounds left out of "not yet computed" |
 | n5 | `use` filter reads 100% | A: with a `use` filter the shares for that level are hidden (they are 100% by construction); `use=killed` also applies to back-shots (`killed_at`) |
+
+## Review of the implementation steps
+
+A second fresh subagent reviewed S1-S9 and P1-P2. One blocker, five should-fix, six nits; all accepted
+(folded into plan 2's "Step review applied" paragraph).
+
+| # | Finding | Outcome |
+|---|---------|---------|
+| B1 | The choke-hash change breaks `test_gaps_chokes.py:91` and `choke_assets.py` isn't in S1's files | A: both added to S1; the assertion becomes "a rename keeps the hash; a move or tombstone changes it" |
+| 2 | No step updates `test_control_isolation.py`; its predicate ignores `app.gaps` | A: S2 extends it; P1/P2 add their files |
+| 3 | "Tests pass" can mean skipped (Postgres, node) | A: new web tests on SQLite; checks require 0 skipped among new tests |
+| 4 | S6 changes `page_context`; `test_control_store.py` asserts on it | A: added to S6's check; `t` parsed in `replay_page` |
+| 5 | No pre-merge row for S5 | A: `GapDetector(merge=...)`, `preview_gaps.py --no-merge` |
+| 6 | Files edited by more than one step | A: P2 reruns the viewer tests; S4 uses a new test file |
+| 7-12 | Self-contradicting dependency; repeated hash reads; run `test_gaps_*` after S1; S7 counts by fingerprint; S9 export stales rows; the revision pin is safe | A |

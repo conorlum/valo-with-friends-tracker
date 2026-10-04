@@ -242,6 +242,18 @@ offset, add from painted cells, export shape), `tests/replays/test_control_tagge
 and that the export round-trips through `choke_assets.load`/`merge`). Check: `test_control_tagger.py` passes;
 the page builds. Depends on nothing; last by R3.
 
+**Step review applied** (`2026-10-04-timing-gaps-viewer-review.md`, second table): S1 also edits
+`app/replays/choke_assets.py` and `tests/replays/test_gaps_chokes.py` (a rename keeps the hash; a cell move or a
+tombstone changes it), adds `GapDetector(merge=True)` (S5 and the preview use `merge=False` for the pre-merge
+row; `preview_gaps.py --no-merge`), and its check runs `tests/replays/test_gaps_*.py`. S2 adds
+`replay_gaps_view.py` to `test_control_isolation.py` and extends its predicate to `app.gaps`; depends on S1.
+New web tests (`test_gaps_web.py`, `test_gap_patterns*.py`) use SQLite like `test_control_views.py`, and every
+check means "passed, 0 skipped among the new tests". S6's check adds `test_control_store.py`; `replay_page`
+parses `t`. S4's test is a new `test_gaps_standalone.py`. S7 counts fresh runs by fingerprint
+(`run.fingerprint == gap_fingerprint(control.fingerprint, map)`), not revision. P1 computes `asset_hash` and
+`hearing_hash` once per request. P2's check reruns `test_gaps_viewer.py`, `test_replay_viewer.py` and
+`test_control_isolation.py`. The S9 card says an exported, copied choke edit stales the map's gap rows.
+
 **Full suite** after S3, S6 and at the end: `tests/replays` in two foreground halves, `test_control_*.py` and
 the rest, each with the known base failure deselected; plus `tests/test_*` files a step touched.
 
