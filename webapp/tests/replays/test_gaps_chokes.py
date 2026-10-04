@@ -88,7 +88,11 @@ def test_save_load_and_hash(tmp_path):
     h = ca.asset_hash("Toy", tmp_path)
     assert len(h) == 16
     ca.save("Toy", [ca.Choke(1, "Door", [5, 6])], 7, tmp_path)
-    assert ca.asset_hash("Toy", tmp_path) != h, "renaming a choke changes the hash"
+    assert ca.asset_hash("Toy", tmp_path) == h, "renaming a choke keeps the hash"
+    ca.save("Toy", [ca.Choke(1, "Door", [5, 7])], 7, tmp_path)
+    assert ca.asset_hash("Toy", tmp_path) != h, "moving a choke's cells changes the hash"
+    ca.save("Toy", [ca.Choke(1, "Door", [5, 6], deleted=True)], 7, tmp_path)
+    assert ca.asset_hash("Toy", tmp_path) != h, "a tombstone changes the hash"
     assert ca.load("None", tmp_path) is None and ca.asset_hash("None", tmp_path) is None
 
 

@@ -231,13 +231,13 @@ class _Drive:
     """Hand-made ticks for victim team A against enemy 5 (and 6), with one route log whose entries the test
     makes (each node keeps its entry while it stays unknown)."""
 
-    def __init__(self, geo, slots=None, t_decided=60.0, deaths=None, util=()):
+    def __init__(self, geo, slots=None, t_decided=60.0, deaths=None, util=(), merge=True):
         slots = slots or {0: "A", 1: "A", 2: "A", 5: "B", 6: "B"}
         data = blob({s: (side, [(0.0, 150, 200, 0)]) for s, side in slots.items()},
                     t_end=t_decided + 1.0, t_decided=t_decided, deaths=deaths, util=util)
         self.geo, self.rnd = geo, ce.RoundInputs(data, geo)
         self.logs = {"A": RouteLog(), "B": RouteLog()}
-        self.det = gd.GapDetector(geo, self.rnd)
+        self.det = gd.GapDetector(geo, self.rnd, merge=merge)
 
     def entry(self, node, t, parent=-1, choke=-1):
         return self.logs["A"].add(node, t, parent, choke)
@@ -579,3 +579,140 @@ def test_rows_are_json_safe():
     for g in gaps:
         for value in (g.t_open, g.t_close, g.distance_m, g.angle_deg, g.qualified_s, g.spot, g.victim_node):
             assert type(value) in (int, float), (value, type(value))
+
+
+# ---------------------------------------------------------------- stack merge (R1), on hand-built gaps
+
+
+def _mg(seq, t_open, t_close, victim=0, life=0, spans=None, cand=None, stood=None, kind="predicted", spot=0):
+    """A closed gap. cand: {enemy: (joined, distance)}; stood: {enemy: [times]} (stood_at/by the earliest)."""
+    g = gd.Gap(kind, victim, "A", len(seq), tuple(seq), t_open, spot, 0, 1.0, 150.0, [[[t_open, 0.0, 0.0]]],
+               life=life, t_last_exposed=t_close - gd.CLOSE_AFTER_S, t_close=t_close)
+    for a, b in (spans if spans is not None else [[t_open, t_close]]):
+        g._qualified(a, b)
+    for e, (tj, dist) in (cand if cand is not None else {5: (t_open, 1.0)}).items():
+        g.candidates[e], g.joined[e] = dist, tj
+    for e, ts in (stood or {}).items():
+        g.stood_times[e] = list(ts)
+    if stood:
+        g.stood_at, g.stood_by = min((min(ts), e) for e, ts in stood.items())
+    g.context = {"t_round": t_open, "alive": {"A": 5, "B": 5}, "seq": list(seq)}
+    return g
+
+
+def _seqs(gaps):
+    return sorted(g.choke_seq for g in gaps)
+
+
+def test_a_prefix_gap_folds_into_its_extension():
+    short, long_ = _mg((1,), 0.0, 10.0), _mg((1, 2), 5.0, 15.0)
+    [g] = gd.merge_stacks([short, long_], 0.0)
+    assert g is long_ and g.choke_seq == (1, 2), "the longest member survives with its sequence"
+    assert (g.t_open, g.t_close, g.t_last_exposed) == (0.0, 15.0, 10.0)
+    [g] = gd.merge_stacks([_mg((), 0.0, 10.0), _mg((3,), 2.0, 12.0)], 0.0)
+    assert g.choke_seq == (3,), "the empty sequence is a prefix of every sequence (literal R1)"
+
+
+def test_a_non_prefix_or_equal_sequence_stays():
+    assert _seqs(gd.merge_stacks([_mg((1,), 0.0, 10.0), _mg((2, 1), 0.0, 10.0)], 0.0)) == [(1,), (2, 1)]
+    assert _seqs(gd.merge_stacks([_mg((1, 3), 0.0, 10.0), _mg((1, 2), 0.0, 10.0)], 0.0)) == [(1, 2), (1, 3)]
+    assert len(gd.merge_stacks([_mg((1,), 0.0, 5.0), _mg((1,), 5.0, 10.0)], 0.0)) == 2, "equal is no prefix"
+
+
+def test_no_overlap_stays_and_touching_ends_overlap():
+    assert len(gd.merge_stacks([_mg((1,), 0.0, 4.0), _mg((1, 2), 5.0, 10.0)], 0.0)) == 2
+    assert len(gd.merge_stacks([_mg((1,), 0.0, 5.0), _mg((1, 2), 5.0, 10.0)], 0.0)) == 1, "closed intervals"
+
+
+def test_a_chain_folds_transitively_into_its_longest_member():
+    a, b, c = _mg((1,), 0.0, 4.0), _mg((1, 2), 3.0, 8.0), _mg((1, 2, 3), 7.0, 12.0)
+    [g] = gd.merge_stacks([a, b, c], 0.0)
+    assert g is c and (g.t_open, g.t_close) == (0.0, 12.0), "a reaches c through b, though a and c never overlap"
+    assert g.context["merged"] == [{"choke_seq": [1], "t_open": 0.0}, {"choke_seq": [1, 2], "t_open": 3.0}]
+
+
+def test_two_extensions_the_longest_then_the_earliest():
+    short, mid, longest = _mg((1,), 0.0, 10.0), _mg((1, 2), 1.0, 5.0), _mg((1, 3, 4), 8.0, 12.0)
+    out = gd.merge_stacks([short, mid, longest], 0.0)
+    assert _seqs(out) == [(1, 2), (1, 3, 4)]
+    assert [m["choke_seq"] for m in longest.context["merged"]] == [[1]] and "merged" not in mid.context
+    short, late, early = _mg((1,), 0.0, 10.0), _mg((1, 3), 6.0, 9.0), _mg((1, 2), 2.0, 9.0)
+    out = gd.merge_stacks([short, late, early], 0.0)
+    assert _seqs(out) == [(1, 2), (1, 3)] and early.context["merged"] == [{"choke_seq": [1], "t_open": 0.0}]
+    assert "merged" not in late.context
+    # same length and t_open: the smaller sequence
+    short, b, a = _mg((1,), 0.0, 10.0), _mg((1, 3), 2.0, 9.0), _mg((1, 2), 2.0, 9.0)
+    gd.merge_stacks([short, b, a], 0.0)
+    assert "merged" in a.context and "merged" not in b.context
+
+
+def test_qualified_time_is_the_union_counted_once():
+    [g] = gd.merge_stacks([_mg((1,), 0.0, 10.0, spans=[[0.0, 4.0]]), _mg((1, 2), 2.0, 10.0, spans=[[2.0, 6.0]])],
+                          0.0)
+    assert g.qualified_s == pytest.approx(6.0) and g.qual_spans == [[0.0, 6.0]]
+    [g] = gd.merge_stacks([_mg((1,), 0.0, 6.0, spans=[[0.0, 0.3]]), _mg((1, 2), 0.2, 6.0, spans=[[0.2, 0.6]])],
+                          0.0)
+    assert g.qualified_s == pytest.approx(0.6) and g.flicker, "flicker follows the union"
+
+
+def test_candidates_joined_and_stood_union_with_the_earliest():
+    a = _mg((1,), 0.0, 10.0, cand={5: (0.0, 3.0), 6: (2.0, 4.0)}, stood={5: [1.0]})
+    b = _mg((1, 2), 1.0, 12.0, cand={5: (1.0, 9.0), 7: (1.5, 2.0)}, stood={5: [3.0], 7: [2.5]})
+    b.checked_at = [4.0]
+    a.checked_at = [0.5]
+    [g] = gd.merge_stacks([a, b], 0.0)
+    assert g.candidates == {5: 3.0, 6: 4.0, 7: 2.0}, "each enemy's distance from the member they joined first"
+    assert g.joined == {5: 0.0, 6: 2.0, 7: 1.5}
+    assert dict(g.stood_times) == {5: [1.0, 3.0], 7: [2.5]}
+    assert (g.stood_at, g.stood_by) == (1.0, 5)
+    assert g.checked_at == [4.0], "checked_at from the longest member only"
+
+
+def test_context_is_the_longest_members_with_t_round_and_merged():
+    a, b = _mg((1,), 2.0, 10.0), _mg((1, 2), 4.0, 12.0)
+    [g] = gd.merge_stacks([a, b], -10.0)
+    assert g.context["t_round"] == pytest.approx(12.0), "recomputed from the merged t_open"
+    assert g.context["seq"] == [1, 2] and g.context["alive"] == {"A": 5, "B": 5}
+    assert g.context["merged"] == [{"choke_seq": [1], "t_open": 2.0}]
+
+
+def test_a_different_victim_or_life_never_folds():
+    assert len(gd.merge_stacks([_mg((1,), 0.0, 10.0), _mg((1, 2), 0.0, 10.0, victim=1)], 0.0)) == 2
+    assert len(gd.merge_stacks([_mg((1,), 0.0, 10.0), _mg((1, 2), 0.0, 10.0, life=1)], 0.0)) == 2
+
+
+def test_back_shots_never_merge():
+    shot = _mg((1, 2), 0.0, 10.0, kind="backshot")
+    pred = _mg((1,), 0.0, 10.0)
+    out = gd.merge_stacks([pred, shot], 0.0)
+    assert out == [pred, shot] and "merged" not in shot.context and pred.t_close == 10.0
+    shot = _mg((), 0.0, 10.0, kind="backshot")
+    out = gd.merge_stacks([shot, _mg((1,), 0.0, 10.0)], 0.0)
+    assert len(out) == 2
+
+
+def test_a_back_shot_links_to_the_merged_gap():
+    from app.gaps import backshots as bs
+    from types import SimpleNamespace
+
+    geo = SimpleNamespace(centres=np.array([[0.0, 0.0], [100.0, 0.0]]), m_per_px=0.1)
+    a, b = _mg((1,), 0.0, 10.0, spot=0), _mg((1, 2), 8.0, 15.0, spot=1, cand={6: (8.0, 1.0)})
+    merged = gd.merge_stacks([a, b], 0.0)
+    assert bs.link(geo, merged, 0, 0, 5, 3.0, (1,), 0.0, 0.0) is b, "enemy 5 joined through the folded member"
+
+
+def test_merge_off_leaves_the_pre_merge_gaps():
+    geo = open_hall()
+    found = {}
+    for merge in (True, False):
+        d = _Drive(geo, merge=merge)
+        n1, n2 = geo.cell_of_px(300, 200), geo.cell_of_px(308, 200)
+        e1 = d.entry(n1, 0.0, choke=1)
+        e2 = d.entry(n2, 0.0, parent=e1, choke=2)
+        for t in (0.0, 0.5, 1.0):
+            d.tick(t, [_pv(geo, 0, "A", 150, 200, 180)], {5: {n1: e1, n2: e2}})
+        found[merge] = d.gaps()
+    assert _seqs(found[False]) == [(1,), (1, 2)]
+    assert all("merged" not in g.context for g in found[False])
+    [g] = found[True]
+    assert g.choke_seq == (1, 2) and g.context["merged"] == [{"choke_seq": [1], "t_open": 0.0}]

@@ -86,7 +86,11 @@ def load_next_id(name: str, asset_dir: Path = ASSET_DIR) -> int:
 
 
 def asset_hash(name: str, asset_dir: Path = ASSET_DIR) -> str | None:
-    path = _path(name, asset_dir)
-    if not path.exists():
+    """16 hex of what detection uses: each choke's id, cells and tombstone, sorted by id, as sorted JSON. A
+    rename, a `source` change or the file's layout changes no fingerprint. None when there is no asset."""
+    body = _read(name, asset_dir)
+    if body is None:
         return None
-    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    view = sorted(({"id": int(c["id"]), "cells": [int(x) for x in c["cells"]], "deleted": bool(c.get("deleted", False))}
+                   for c in body["chokes"]), key=lambda c: c["id"])
+    return hashlib.sha256(json.dumps(view, sort_keys=True).encode("utf-8")).hexdigest()[:16]

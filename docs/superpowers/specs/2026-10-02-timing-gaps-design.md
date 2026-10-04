@@ -26,7 +26,7 @@ nothing here claims any. Every count the system shows carries its sample size.
 | 7 | A gap needs at least 5 s since the enemy was last located. This applies to both kinds of row and to every kind of locating event. The one exception is the start of the round: an enemy who has not been located at all this round needs no wait. |
 | 8 | A predicted gap records three levels of use: an enemy stood in it, shot the victim, killed the victim. Each keeps its first occurrence, with its own enemy and time. |
 | 9 | Every gap is kept, including ones that qualified for under a second; those are flagged as flickers and hidden by default. Each gap stores how close the candidate enemies really were, and context, so pruning is a filter. |
-| 10 | One gap per victim and route. Every cell and every enemy reaching the victim by that route belongs to it. |
+| 10 | One gap per victim and route. Every cell and every enemy reaching the victim by that route belongs to it. The reported row is the merged one: a route whose choke sequence is a prefix of a longer route open for the same victim life at an overlapping time is folded into the longest one (R1). |
 | 11 | A predicted gap fires once and stays latched. It closes only after its unknown space has had no line to the victim for 5 s, so a quick look back does not re-arm it. |
 | 12 | Patterns are route-based and match on the full choke sequence. |
 | 13 | Chokes are auto-detected per map and hand-corrected. Route-shape closeness is a second way to match routes. |
@@ -224,7 +224,8 @@ cells reached through different chokes belong to different routes.
 **Identity.** Within one life of the victim, a gap is identified by victim and choke sequence. Every exposed
 cell with that sequence belongs to the one gap, whichever enemy's region it is in and whether or not the
 cells touch. A route that crosses no choke has the empty sequence, so a victim has at most one no-choke gap
-open at a time.
+open at a time. The reported row is the merged one: a gap whose sequence is a prefix of a longer one open for the
+same victim life at an overlapping time is folded into the longest (R1; `merge_stacks`, after every gap closes).
 
 **Open.** A gap fires at the first moment any cell with its sequence qualifies. That moment is its opening
 time. The spot is the qualifying cell with the earliest arrival, lowest cell number on a tie, and the row's
@@ -234,7 +235,8 @@ route is that cell's route. Spot, route and cause are fixed at opening and never
 5 s minimum included. Membership is historical: an enemy stays on the list after their region resets.
 
 **Latch.** While the gap is open, nothing new fires for that victim and choke sequence. If the victim moves
-and a cell with a different choke sequence qualifies, that is a different gap.
+and a cell with a different choke sequence qualifies, that is a different gap; at the end a prefix gap is folded
+into the longest overlapping extension, so the reported row is the merged one.
 
 **Close.** A gap has two times: `t_last_exposed`, the last moment any candidate's cell with its sequence was
 exposed to the victim, and `t_close`, which is `CLOSE_AFTER_S` after that if no such cell became exposed
@@ -420,7 +422,7 @@ Because rows hold slots and not player ids, a changed link cannot leave stale id
 - **Control revision**: `CONTROL_REVISION` 5 with a re-pinned constants digest; the flat-map reference rounds
   re-pinned, with the differences explained by the new locating rules only.
 - **Event order**: a shot that is both a back-shot and a locating event; a kill that closes a gap it used.
-- **Predicted gaps**: the rear 120 degrees boundary; the 5 s minimum; two neighbouring cells with different choke sequences giving two gaps; merging across enemies;
+- **Predicted gaps**: the rear 120 degrees boundary; the 5 s minimum; two neighbouring cells with different choke sequences giving two gaps (when neither is a prefix of the other); merging across enemies; prefix folding (R1: longest, then earliest; union of qualified time; transitive);
   the latch; a different choke sequence opening a second gap; each consequence of the close rule; the flicker
   flag; each cause, each release reason and the tie order; each level of use with different enemies.
 - **Back-shots**: run start only; gun only; wall-bang tagged; the 5 s minimum; follow-up damage not creating

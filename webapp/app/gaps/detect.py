@@ -15,8 +15,12 @@ Order within a tick:
    the previous tick's unknown and the locating history before this tick's events (R7).
 4. This tick's events join the locating history.
 
-Back-shots (section 6) are added in `finish` by app/gaps/backshots.py; `killed` and `victim_won_at` are set
-after them, on `shot`'s window (open, or RESULT_WINDOW_S after a stand)."""
+Stacks (R1): in `finish`, once every gap is closed, a predicted gap whose choke sequence is a prefix of a longer
+sequence open for the same victim life at an overlapping time is folded into the longest one (`merge_stacks`);
+the reported row is the merged one. `GapDetector(merge=False)` keeps the pre-merge rows.
+
+Back-shots (section 6) are added in `finish` by app/gaps/backshots.py, after the merge; `killed` and
+`victim_won_at` are set after them, on `shot`'s window (open, or RESULT_WINDOW_S after a stand)."""
 
 from __future__ import annotations
 
@@ -37,7 +41,7 @@ RESULT_WINDOW_S = 3.0
 SHOT_LOOKBACK_S = 0.5
 BEHIND_DEG = 120.0
 ROUTE_THIN_S = 0.5
-GAPS_REVISION = 1
+GAPS_REVISION = 2    # 2: stack merge (R1)
 TURN_DEG = 1.0      # a facing change of at most this between two ticks is not a turn (aim noise)
 CAUSE_ORDER = ("route_released", "victim_turned", "victim_moved", "open_timing")
 REASONS = ("died", "turned", "moved", "blinded", "smoked", "utility_expired", "utility_left", "other")
@@ -100,6 +104,7 @@ class Gap:
     linked: "Gap | None" = None
     stood_times: dict = field(default_factory=lambda: defaultdict(list))   # enemy -> every tick stood in it
     joined: dict = field(default_factory=dict)        # enemy -> when they joined the candidates (back-shot linking)
+    qual_spans: list = field(default_factory=list)    # [[a, b], ...]: the intervals counted in qualified_s
     _qual: bool = False               # qualified at the last tick (its state holds until the next)
     _checked: bool = False            # the victim's view covered the spot at the last tick
 
@@ -107,13 +112,23 @@ class Gap:
     def flicker(self) -> bool:
         return self.kind == "predicted" and self.qualified_s < FLICKER_S
 
+    def _qualified(self, a: float, b: float) -> None:
+        """Counts [a, b] as qualifying time, kept as a span too (a span continuing the last one extends it)."""
+        if b <= a:
+            return
+        self.qualified_s += b - a
+        if self.qual_spans and self.qual_spans[-1][1] == a:
+            self.qual_spans[-1][1] = b
+        else:
+            self.qual_spans.append([a, b])
+
 
 class GapDetector:
     """`step(rec, logs)` per tick record in time order (an observer, or the tick cache's replay), then
     `finish()` for the gaps. `logs` is side -> RouteLog (Unknown.log)."""
 
-    def __init__(self, geo, rnd):
-        self.geo, self.rnd = geo, rnd
+    def __init__(self, geo, rnd, merge: bool = True):
+        self.geo, self.rnd, self.merge = geo, rnd, merge
         n = geo.n
         self.notes: Counter = Counter()
         self._noted: set = set()
@@ -212,7 +227,7 @@ class GapDetector:
             return
         for g in self.open.values():                       # the last tick's state held until now
             if g._qual and self.prev_t is not None:
-                g.qualified_s += t - self.prev_t
+                g._qualified(self.prev_t, t)
             g._qual = False
         evented = {side: {int(e) for e, _, _ in evs} for side, evs in rec.events.items()}
         for side in ("A", "B"):
@@ -494,7 +509,7 @@ class GapDetector:
         g = self.open.pop(key)
         t_close = min(float(t_close), self.rnd.t_decided)
         if g._qual and self.prev_t is not None:
-            g.qualified_s += max(0.0, t_close - self.prev_t)
+            g._qualified(self.prev_t, t_close)
         g._qual = False
         g.t_close = t_close
 
@@ -520,6 +535,8 @@ class GapDetector:
             self.done = True
         from app.gaps import backshots
 
+        if self.merge:
+            self.gaps = merge_stacks(self.gaps, getattr(self.rnd, "t_start", None))
         backshots.add(self)
         self._levels()
         self._finished = sorted(self.gaps, key=lambda g: (g.t_open, g.victim, g.kind))
@@ -558,3 +575,98 @@ def in_use_window(g: Gap, enemy: int, t: float) -> bool:
     if joined is None or joined > t:
         return False
     return is_open(g, t) or any(s <= t <= s + RESULT_WINDOW_S for s in g.stood_times.get(enemy, ()))
+
+
+# ---------------------------------------------------------------- stack merge (R1)
+
+
+def _is_prefix(a: tuple, b: tuple) -> bool:
+    """a is a strict prefix of b; the empty sequence is a prefix of every longer one."""
+    return len(a) < len(b) and tuple(b[:len(a)]) == tuple(a)
+
+
+def _overlaps(g: Gap, h: Gap) -> bool:
+    """Closed intervals [t_open, t_close] intersect (an unclosed gap runs on)."""
+    gc = g.t_close if g.t_close is not None else math.inf
+    hc = h.t_close if h.t_close is not None else math.inf
+    return g.t_open <= hc and h.t_open <= gc
+
+
+def _union(spans) -> list:
+    out: list = []
+    for a, b in sorted((float(a), float(b)) for a, b in spans):
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def merge_stacks(gaps: list[Gap], t_start: float | None = None) -> list[Gap]:
+    """R1: a predicted gap whose choke sequence is a strict prefix of another open for the same victim and life
+    at an overlapping time folds into its longest such extension (ties: earliest t_open, then the smaller
+    sequence, then list order), resolved transitively. Returns `gaps` without the folded members, in order; the
+    survivor (the longest member) takes the merged times, qualified time (the union of spans, counted once),
+    candidates, joined, stood and `context["merged"]`. Back-shots and gaps with no sequence are untouched."""
+    pred = [g for g in gaps if g.kind == "predicted" and g.choke_seq is not None]
+    order = {id(g): i for i, g in enumerate(pred)}
+    target: dict[int, Gap] = {}
+    for g in pred:
+        ext = [h for h in pred if h is not g and h.victim == g.victim and h.life == g.life
+               and _is_prefix(g.choke_seq, h.choke_seq) and _overlaps(g, h)]
+        if ext:
+            target[id(g)] = min(ext, key=lambda h: (-len(h.choke_seq), h.t_open, tuple(h.choke_seq), order[id(h)]))
+    if not target:
+        return list(gaps)
+
+    def root(g: Gap) -> Gap:
+        while id(g) in target:            # each step is strictly longer, so this ends
+            g = target[id(g)]
+        return g
+
+    groups: dict[int, list[Gap]] = defaultdict(list)
+    for g in pred:
+        if id(g) in target:
+            groups[id(root(g))].append(g)
+    folded = {id(g) for members in groups.values() for g in members}
+    for g in pred:
+        if id(g) in groups:
+            _fold(g, groups[id(g)], t_start)
+    return [g for g in gaps if id(g) not in folded]
+
+
+def _fold(keep: Gap, folded: list[Gap], t_start: float | None) -> None:
+    members = sorted([keep] + folded, key=lambda g: (g.t_open, tuple(g.choke_seq)))
+    t_open = members[0].t_open
+    shift = t_open - keep.t_open
+    exposed = [g.t_last_exposed for g in members if g.t_last_exposed is not None]
+    closes = [g.t_close for g in members]
+    keep.t_last_exposed = max(exposed) if exposed else None
+    keep.t_close = None if any(c is None for c in closes) else max(closes)
+    keep.qual_spans = _union(s for g in members for s in g.qual_spans)
+    keep.qualified_s = sum(b - a for a, b in keep.qual_spans)
+    joined: dict = {}
+    candidates: dict = {}
+    for g in members:                     # in t_open order: on a tie in joined, the earlier member's distance
+        for enemy, dist in g.candidates.items():
+            tj = g.joined.get(enemy, g.t_open)
+            if enemy not in joined or tj < joined[enemy]:
+                joined[enemy], candidates[enemy] = tj, dist
+    keep.joined = {e: joined[e] for e in sorted(joined)}
+    keep.candidates = {e: candidates[e] for e in sorted(candidates)}
+    stood: dict = defaultdict(list)
+    for g in members:
+        for enemy, ts in g.stood_times.items():
+            stood[enemy].extend(ts)
+    keep.stood_times = defaultdict(list, {e: sorted(set(ts)) for e, ts in sorted(stood.items())})
+    first = min(((g.stood_at, g.stood_by) for g in members if g.stood_at is not None), default=None)
+    keep.stood_at, keep.stood_by = first if first is not None else (None, None)
+    context = dict(keep.context)
+    if t_start is not None:
+        context["t_round"] = round(t_open - t_start, 3)
+    elif "t_round" in context:
+        context["t_round"] = round(context["t_round"] + shift, 3)
+    context["merged"] = [{"choke_seq": [int(c) for c in g.choke_seq], "t_open": g.t_open}
+                         for g in members if g is not keep]
+    keep.context = context
+    keep.t_open = t_open

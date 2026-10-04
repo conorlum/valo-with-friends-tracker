@@ -18,7 +18,7 @@ from sqlalchemy.orm import load_only
 from app.models.replay import ReplayRoundControl, ReplayRoundGapRun
 from app.replays import choke_assets
 
-GAPS_REVISION = 1     # keep equal to app.gaps.detect.GAPS_REVISION (tests/replays/test_gaps_task.py pins it)
+GAPS_REVISION = 2     # keep equal to app.gaps.detect.GAPS_REVISION (tests/replays/test_gaps_task.py pins it)
 HEARING_FILE = Path(__file__).resolve().parents[1] / "control" / "hearing.json"
 
 
