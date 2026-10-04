@@ -29,13 +29,16 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   could be: pushed out by the enemy's live players, the enemy's side of the barriers at the drop, and
   its own spread at UNKNOWN_MPS (each cell no sooner than a walk of its true length, diagonals sqrt(2);
   across specials, through smokes but not through a pinch under GAP_SEAL_M between a smoke or wall
-  ability and the map's wall). The team's live control clears it on contact. It is kept per enemy: one
-  the team spots starts again from where they were seen, and a dead one's goes with them. An enemy is also
-  located, as an area round them, by a kill, the plant, audible movement, gunfire within hearing and gun
+  ability and the map's wall). The team's live control clears it on contact; a piece of it with no enemy in it
+  that is at most DROP_PIECE_CELLS, or one cell wide all along (NARROW_ROOM_CELLS), is dropped. It is kept per
+  enemy: one the team spots starts again from where they were seen, and a dead one's goes with them. An enemy is
+  also located, as an area round them, by a kill, the plant, audible movement, gunfire within hearing and gun
   damage (the timing-gaps spec, section 4); a revived enemy restarts where they stand.
 - **Watchers** (passive): trips, alarmbots, Chamber traps, Killjoy's turret, Cypher's camera while
   he is in it, and flown drones; a camera or drone in use replaces its owner's own view. Placed
-  utility dies with its owner (Q71): a watcher counts only while its owner is alive.
+  utility dies with its owner (Q71): a watcher counts only while its owner is alive. A Killjoy turret or
+  alarmbot doesn't watch while it is switched off (she walked out of its range; the row's `off`, condenser
+  revision 12; an older row is never off).
 - **Safe (Q73; 2026-10-01).** A team's Safe ground is what no cell of its unknown sees, smoke-aware,
   from the unknown's boundary. A tick built without unknown (tests) falls back to the instant flood:
   each team's free space from its alive players through walkable cells the other team doesn't watch
@@ -112,6 +115,9 @@ GAP_SEAL_M = 1.5
 # A piece of a team's unknown this small (cells, 8-connected; a 1x2) with no enemy in it is dropped
 # (the user's call, 2026-10-01: what vision has eaten down to that is gone).
 DROP_PIECE_CELLS = 2
+# So is a piece no wider than one cell all along, whatever its length: no point of its floor
+# has this much of a cell's width of room to anything outside it (Unknown._narrow; the user's call, 2026-10-04).
+NARROW_ROOM_CELLS = 0.55
 # Locating events (docs/superpowers/specs/2026-10-02-timing-gaps-design.md, section 4): what a team hears
 # or learns from the feed collapses that enemy's unknown to an area round them. Ranges: app/control/hearing.json.
 KILL_AREA_M = 5.0
@@ -256,6 +262,12 @@ class Watcher:
     eye: float | None = None             # a fixed device's eye height (m, as node_z); None: 2D
     node: int | None = None              # the node it sits on (heights only)
     origin: int = 0                      # the map's origin_z (world dm), for a drone path's heights
+    off: list = field(default_factory=list)   # [(t0, t1)] switched off (a KJ device, its owner out of range)
+
+
+def _watching(w: Watcher, t: float) -> bool:
+    """A watcher is up from its placement to its end, except while it is switched off."""
+    return w.t0 <= t < w.t1 and not _during(w.off, t)
 
 
 class RoundInputs:
@@ -552,6 +564,23 @@ class RoundInputs:
         return self._by_slot.get(slot, ([], []))
 
     def _watcher(self, e: dict, key: str, t0: float, t1: float) -> None:
+        """Adds the row's watcher, if it is one, with the spans it was switched off (a Killjoy device's
+        `off`, condenser revision 12; a row without it is never off) snapped to the grid, inside its life."""
+        before = len(self.watchers)
+        self._add_watcher(e, key, t0, t1)
+        if len(self.watchers) == before or not e.get("off"):
+            return
+        off = []
+        for a, b in e["off"]:
+            a, b = _span(a, t1 if b is None else b)
+            a, b = max(a, t0), min(b, t1)
+            if b > a:
+                off.append((a, b))
+                self.events += [a, b]
+        for w in self.watchers[before:]:
+            w.off = off
+
+    def _add_watcher(self, e: dict, key: str, t0: float, t1: float) -> None:
         px_per_uv = PX / 10000
         geo = self.geo
         by = e.get("by")
@@ -904,7 +933,7 @@ class Tick:
         looks: dict[int, tuple] = {}   # slot -> (yaw, eye, flashed, nearsighted, active cone's half or None)
         using = {}   # owner -> the camera or drone they're in
         for w in rnd.watchers:
-            if w.kind in ("drone", "camera") and w.t0 <= t < w.t1 and rnd.alive(w.by, t):
+            if w.kind in ("drone", "camera") and _watching(w, t) and rnd.alive(w.by, t):
                 if w.in_use is None or _during(w.in_use, t):
                     using[w.by] = w
         for s in sorted(rnd.team):
@@ -1094,7 +1123,7 @@ class Tick:
         geo, rnd = self.geo, self.rnd
         watch = np.zeros(geo.n, bool)
         for w in rnd.watchers:
-            if w.by != s or not (w.t0 <= t < w.t1):
+            if w.by != s or not _watching(w, t):
                 continue
             if w.kind in ("trip", "area"):
                 watch[w.cells] = True
@@ -1767,6 +1796,7 @@ class Unknown:
             live = np.zeros(n, bool)
             spots = np.zeros(n, bool)
             shut = pinched.copy()
+            solid = self._trips(tick, side)
             for h in tick.holders.values():
                 if h.team == side:
                     live |= h.active | h.passive | h.watch
@@ -1839,7 +1869,7 @@ class Unknown:
                         sources[h.cell] = t
                     reached[h.cell] = min(reached[h.cell], t)   # an enemy pushes it out from where they stand
                 reached[~room] = np.inf
-                reached, parent = self._spread(reached, room, free, t, self.seen[side].get(slot))
+                reached, parent = self._spread(reached, room, free, t, self.seen[side].get(slot), solid)
                 self._record(side, slot, before, reached, parent, sources, centre, area)
                 self.reached[side][slot] = reached
                 cells |= np.isfinite(reached)
@@ -1918,6 +1948,7 @@ class Unknown:
         size = np.bincount(lab)
         small = size <= DROP_PIECE_CELLS
         small[0] = False
+        small |= self._narrow(lab, size)
         for h in tick.holders.values():
             if h.team != side:
                 small[lab[h.cell]] = False
@@ -1933,6 +1964,37 @@ class Unknown:
                 self._seen_entry[side].pop(slot, None)
         return cells & ~drop
 
+    def _narrow(self, lab: np.ndarray, size: np.ndarray) -> np.ndarray:
+        """Per piece of `lab`: a sliver nobody stands in, one cell wide all along (the user, Sunset round 15,
+        2026-10-04: a strip of unknown along a wall next to Osmin). No point of its floor (its cells' walkable
+        pixels) is NARROW_ROOM_CELLS of a cell from everything outside it: a straight one-cell strip has half a
+        cell, the judged round 4 corner pocket (three cells of a 2x2) 0.63. Only pieces with no 2x2 block of
+        cells are measured, and never one on a cell with more than one floor: the walk mask is 2D, so it says
+        nothing about how wide one floor is (a tunnel under a bridge)."""
+        out = np.zeros(len(size), bool)
+        layered = np.zeros(GRID * GRID, bool)
+        layered[self.geo.node_cell[GRID * GRID:]] = True
+        stacked = np.zeros(len(size), bool)
+        stacked[np.unique(lab[layered[self.geo.node_cell] & (lab > 0)])] = True
+        grid = np.zeros(GRID * GRID, np.int64)
+        grid[self.geo.node_cell[lab > 0]] = lab[lab > 0]
+        grid = grid.reshape(GRID, GRID)
+        block = grid[:-1, :-1]
+        full = (block > 0) & (grid[1:, :-1] == block) & (grid[:-1, 1:] == block) & (grid[1:, 1:] == block)
+        wide = np.zeros(len(size), bool)
+        wide[np.unique(block[full])] = True
+        for j in np.flatnonzero(~wide & ~stacked & (size > DROP_PIECE_CELLS)):
+            if j == 0:
+                continue
+            rows, cols = np.nonzero(grid == j)
+            r0, c0 = rows.min(), cols.min()
+            mask = np.zeros(((rows.max() - r0 + 3) * CELL, (cols.max() - c0 + 3) * CELL), bool)
+            for r, c in zip(rows, cols):
+                mask[(r - r0 + 1) * CELL:(r - r0 + 2) * CELL, (c - c0 + 1) * CELL:(c - c0 + 2) * CELL] = \
+                    self.geo.walk_px[r * CELL:(r + 1) * CELL, c * CELL:(c + 1) * CELL]
+            out[j] = ndimage.distance_transform_edt(mask).max() < NARROW_ROOM_CELLS * CELL
+        return out
+
     @staticmethod
     def _enemies(tick, side: str) -> set[int]:
         """The enemies of `side` alive at the tick: from the round's lives when the tick has them (a live
@@ -1942,19 +2004,34 @@ class Unknown:
             return {s for s, team in rnd.team.items() if team != side and rnd.alive(s, tick.t)}
         return {h.slot for h in tick.holders.values() if h.team != side}
 
+    def _trips(self, tick, side: str) -> np.ndarray | None:
+        """The cells of `side`'s live trips at the tick (owner alive, Q71): the unknown can't step diagonally
+        past them, so a wire that touches a wall or turns a corner only diagonally still seals (the user,
+        Sunset, 2026-10-04). None on a tick without the round's inputs."""
+        rnd = getattr(tick, "rnd", None)
+        if rnd is None:
+            return None
+        out = np.zeros(self.geo.n, bool)
+        for w in rnd.watchers:
+            if w.kind == "trip" and rnd.team.get(w.by) == side and _watching(w, tick.t) and rnd.alive(w.by, tick.t):
+                out[w.cells] = True
+        return out
+
     def _spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float,
-                seen: tuple[int, float] | None = None) -> tuple[np.ndarray, np.ndarray]:
+                seen: tuple[int, float] | None = None, solid: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         """`reached` relaxed through `room` up to time `t`: each cell's earliest arrival from a
         neighbour (after the cell was last freed); arrivals later than `t` are not there yet. `seen`
         (cell, time), where the enemy was last spotted, is a source from that time even while the team
         still watches that cell or has just freed it (they were in it); it is in the result only once it is
-        in `room`. Also each arrival's parent node (topology.spread, `parents`; -1 where none)."""
+        in `room`. No diagonal step cuts past a `solid` cell (the team's trips). Also each arrival's parent node
+        (topology.spread, `parents`; -1 where none)."""
         g = reached.copy()
         if seen is not None:
             g[seen[0]] = min(g[seen[0]], seen[1])
         if not np.isfinite(g).any():
             return g, np.full(len(g), -1, np.int64)
-        arr, par = self.topo.spread(g, room, free, t, self.geo.cell_m / UNKNOWN_MPS, self.links, parents=True)
+        arr, par = self.topo.spread(g, room, free, t, self.geo.cell_m / UNKNOWN_MPS, self.links, parents=True,
+                                   solid=solid)
         if seen is not None and not room[seen[0]]:
             # topology.spread finds parents among the final arrivals, where a sighting the team still
             # watches is absent. Every other node outside `room` was cleared before the spread, so an

@@ -25,6 +25,7 @@ from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun  # noqa: E402
 from app.replays import control_format as cf  # noqa: E402
+from app.replays import format as fmt  # noqa: E402
 from app.replays import store  # noqa: E402
 from app.routers import replays as routes  # noqa: E402
 from app.services import replay_control as rc  # noqa: E402
@@ -413,7 +414,7 @@ def test_the_height_build_reads_a_maps_rounds_with_heights_and_skips_older_recip
     assert all("z" in seg for _, _, blob in rounds for segs in blob["tracks"].values() for seg in segs)
     assert skipped == {"old_revision": 0}
     assert build_control_heights.db_rounds("Bind", factory) == ([], {"old_revision": 0})
-    linked.recipe = linked.recipe.replace(".c11.", ".c10.")
+    linked.recipe = linked.recipe.replace(f".c{fmt.CONDENSE_REVISION}.", ".c10.")
     db.commit()
     assert build_control_heights.db_rounds(linked.map_name, factory) == ([], {"old_revision": 1})
 
