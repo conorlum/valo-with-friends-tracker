@@ -1958,15 +1958,16 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 .replay-key-gap-backshot::before { height: 0; width: 1.1em; border-radius: 0; border-top: 3px solid var(--replay-gap-backshot); vertical-align: 0.2em; }
 .replay-gaps-status:empty { display: none; }
 .replay-gaps-flickers { display: block; color: var(--ink-secondary); font-size: 0.85rem; margin: 0 0 0.5rem; }
-.replay-gaps-list { max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 1.25rem; }
+.replay-gaps-list { max-height: 520px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 1.25rem; }
 .replay-gaps-list:empty { display: none; }
-.replay-gaps-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
-.replay-gaps-table th { position: sticky; top: 0; background: var(--surface); color: var(--ink-secondary); font-weight: 600; text-align: left; vertical-align: bottom; padding: 0.3rem 0.35rem; border-bottom: 1px solid var(--border); }
-.replay-gaps-table td { padding: 0.3rem 0.35rem; border-top: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
-.replay-gaps-row { cursor: pointer; }
-.replay-gaps-row td:first-child { white-space: nowrap; font-variant-numeric: tabular-nums; }
-.replay-gaps-row:hover td, .replay-gaps-row:focus-visible td { background: var(--surface-raised); outline: none; }
-.replay-gaps-row.is-open td { background: color-mix(in srgb, var(--brand) 14%, var(--surface)); }
+.replay-gaps-items { list-style: none; margin: 0; padding: 0; font-size: 0.8rem; }
+.replay-gaps-row { cursor: pointer; padding: 0.45rem 0.55rem; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.replay-gaps-row:first-child { border-top: 0; }
+.replay-gaps-head { font-weight: 600; font-variant-numeric: tabular-nums; margin-bottom: 0.15rem; }
+.replay-gaps-field { color: var(--ink-secondary); line-height: 1.35; }
+.replay-gaps-label { color: var(--ink-tertiary, var(--ink-secondary)); font-weight: 600; }
+.replay-gaps-row:hover, .replay-gaps-row:focus-visible { background: var(--surface-raised); outline: none; }
+.replay-gaps-row.is-open { background: color-mix(in srgb, var(--brand) 14%, var(--surface)); }
 .replay-gaps-row.is-flicker { opacity: 0.7; }
 .replay-gaps-kind { display: inline-block; font-size: 0.72rem; padding: 0 0.35rem; border-radius: 999px; border: 1px solid currentColor; }
 .replay-gaps-kind-used { color: var(--replay-gap-used); }

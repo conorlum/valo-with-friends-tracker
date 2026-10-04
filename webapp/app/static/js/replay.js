@@ -1837,7 +1837,8 @@
   ReplayViewer.prototype.loadGapsFor = function (n) {
     var self = this;
     if (!this.gapsCache[n]) {
-      this.gapsCache[n] = Promise.resolve(this.options.loadGaps(n)).then(function (value) {
+      // a synchronous throw in loadGaps becomes a rejection, so it can't escape into showRound
+      this.gapsCache[n] = new Promise(function (resolve) { resolve(self.options.loadGaps(n)); }).then(function (value) {
         value = value || { status: "not_computed", rows: [], chokes: {} };
         self.gapsReady[n] = value;
         return value;
@@ -1856,6 +1857,9 @@
     if (this.ui.gapsLegend) this.ui.gapsLegend.hidden = !this.layers.gaps;
     if (!this.layers.gaps && this.tab !== "gaps") return;
     var self = this, n = this.number;
+    // re-render the list only when this round's gaps weren't drawn into it yet: a row clicked or entered
+    // (which turns the layer on) keeps its focus
+    var fresh = !this.gapsReady[n] || this.gapsListed !== n;
     if (!this.gapsReady[n]) {
       this.setGapsStatus("Loading gaps…");
       if (this.ui.gapsList) this.ui.gapsList.innerHTML = "";
@@ -1864,7 +1868,7 @@
       if (self.number !== n) return;
       var status = value.status === "ok" && value.stale ? "stale" : value.status;
       self.setGapsStatus(status === "ok" ? "" : GAPS_STATUS[status] || GAPS_STATUS.error);
-      self.renderGapsList();
+      if (fresh || self.gapsListed !== n) { self.renderGapsList(); self.gapsListed = n; }
       self.draw();
     });
   };
@@ -1881,16 +1885,21 @@
       return;
     }
     var nameOf = function (slot) { return self.nameOf(slot).split("#")[0]; };
-    var head = "<thead><tr><th>When (s after the barriers dropped)</th><th>Exposed player</th><th>Could have been</th>" +
-      "<th>Route (chokes crossed)</th><th>Why it opened</th><th>What happened</th></tr></thead>";
-    list.innerHTML = '<table class="replay-gaps-table">' + head + "<tbody>" + rows.map(function (row) {
+    // One block per gap (the side panel is too narrow for six columns): a heading line, then each field
+    // with its plain-words label.
+    var field = function (label, text) {
+      return '<div class="replay-gaps-field"><span class="replay-gaps-label">' + label + "</span> " + escapeHtml(text) + "</div>";
+    };
+    this.gapsOpenKey = null;
+    list.innerHTML = '<ol class="replay-gaps-items">' + rows.map(function (row) {
       var d = G.describe(row, nameOf, chokes), mark = G.markOf(row);
-      return '<tr class="replay-gaps-row is-' + mark + (row.flicker ? " is-flicker" : "") + '" data-gap-seq="' + row.seq +
+      return '<li class="replay-gaps-row is-' + mark + (row.flicker ? " is-flicker" : "") + '" data-gap-seq="' + row.seq +
         '" data-seek-t="' + row.t_open + '" tabindex="0" title="' + escapeHtml(G.summary(row, nameOf, chokes)) + '">' +
-        "<td>" + escapeHtml(d.when) + ' <span class="replay-gaps-kind replay-gaps-kind-' + mark + '">' +
-        escapeHtml(d.kind) + "</span></td><td>" + escapeHtml(d.who) + "</td><td>" + escapeHtml(d.could) + "</td><td>" +
-        escapeHtml(d.route) + "</td><td>" + escapeHtml(d.why) + "</td><td>" + escapeHtml(d.happened) + "</td></tr>";
-    }).join("") + "</tbody></table>";
+        '<div class="replay-gaps-head">' + escapeHtml(d.when) + " after the barriers dropped · exposed: " + escapeHtml(d.who) +
+        ' <span class="replay-gaps-kind replay-gaps-kind-' + mark + '">' + escapeHtml(d.kind) + "</span></div>" +
+        field("Could have been:", d.could) + field("Route (chokes crossed):", d.route) +
+        field("Why it opened:", d.why) + field("What happened:", d.happened) + "</li>";
+    }).join("") + "</ol>";
     this.markOpenGaps();
   };
 
@@ -1898,8 +1907,11 @@
   ReplayViewer.prototype.markOpenGaps = function () {
     var list = this.ui && this.ui.gapsList, value = this.gaps && this.gapsReady[this.number];
     if (!list || !value) return;
-    var open = {};
-    gapsApi().openAt(value.rows, this.t, this.gapsFlickers).forEach(function (row) { open[row.seq] = true; });
+    var open = {}, key = [];
+    gapsApi().openAt(value.rows, this.t, this.gapsFlickers).forEach(function (row) { open[row.seq] = true; key.push(row.seq); });
+    key = this.number + ":" + key.join(",");
+    if (key === this.gapsOpenKey) return;          // every frame while playing: touch the DOM only on a change
+    this.gapsOpenKey = key;
     Array.prototype.forEach.call(list.querySelectorAll("[data-gap-seq]"), function (el) {
       el.classList.toggle("is-open", !!open[el.getAttribute("data-gap-seq")]);
     });
@@ -1957,7 +1969,7 @@
       ctx.stroke();
     });
     ctx.setLineDash([]);
-    if (mark === "backshot" && pieces.length) {
+    if (mark === "backshot" && pieces.length && pieces[pieces.length - 1].length >= 2) {   // one point: no direction
       var last = pieces[pieces.length - 1], tip = last[last.length - 1], from = last[Math.max(0, last.length - 2)];
       var ang = Math.atan2(tip[1] - from[1], tip[0] - from[0]), k = r * 0.8;
       ctx.beginPath();

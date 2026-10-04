@@ -226,6 +226,7 @@ def test_the_partial_with_gaps_has_the_tab_checkbox_legend_and_headings():
 
 def test_the_list_headings_are_plain_words():
     js = (WEBAPP / "app" / "static" / "js" / "replay.js").read_text(encoding="utf-8")
-    for heading in ("When (s after the barriers dropped)", "Exposed player", "Could have been",
-                    "Route (chokes crossed)", "Why it opened", "What happened"):
-        assert "<th>" + heading + "</th>" in js, heading
+    # one block per gap: the heading says what the time is measured from, then each field is labelled
+    assert "after the barriers dropped · exposed: " in js
+    for label in ("Could have been:", "Route (chokes crossed):", "Why it opened:", "What happened:"):
+        assert 'field("' + label + '"' in js, label
