@@ -38,6 +38,21 @@ rule uses only the shape:
 Result on all 80 devices: Sunset round 2's turret (guid 6666) is off from 188976 ms (21.6 s round time) to
 its close; Lotus turret 32224 has two spans (+29.6 to +59.7 s, +62.2 to +68.3 s after spawn).
 
+**Revised after the P4 review (IMPL-REVIEW.md, finding 1; D1).** The boot rule above, as first scripted,
+read two turret attacks as offs and missed two real offs (Lotus 8394 at +43.9 s, after an attack had replayed
+the boot; Lotus 49190 at +8.4 s, an off that began mid-attack). The rule built is:
+
+- **Turret**: the *spawn effect* is the continuous effect played at the spawn ms (Sunset container 4265,
+  Lotus 4677); "current" = the latest play in that container. Off at T: the current spawn effect is stopped
+  at T, a continuous effect E in another container starts at exactly T, the spawn container does not replay
+  at T (that is a reactivation), E is not stopped within OFF_MIN_S, and the device is open OFF_MIN_S past
+  T. Attacks never stop the spawn effect (checked on every turret of both dumps).
+- **Alarmbot** (no spawn effect): the boot rule above with 0 ms tolerance, "current" = the latest play in the
+  boot container, plus the one-shot trigger test.
+- **On again** (both): E is stopped while the device is open.
+- Events are kept only for the two KJ archetypes and only within the actor's own life (GUID reuse).
+- W3's real check prints the table for all 80 devices, checked by eye against kj_sunset.txt/kj_lotus.txt.
+
 ## Steps
 
 ### W3. Condenser: `off` spans on KJ turret and alarmbot rows
@@ -56,9 +71,11 @@ new tests in `tests/replays/test_replay_extras.py`.
   (8 ms early partner, short) is not off; trigger (partner stopped with a one-shot) is not off; destroyed
   1 s after is not off; the death shape (off effect never stopped) stays off to the close; round end clips.
 - Check: `py -m pytest tests/replays/test_replay_extras.py tests/replays/test_replay_format.py
-  tests/replays/test_replay_util.py -q` passes; then `py <run>/tmp_w3_real.py` (reads the two local exports,
-  runs `read_raw` + `device_off_spans`) prints Sunset round 2's turret off span starting within 0.1 s of
-  21.6 s round time and Lotus 32224's two spans. The full condense of the export is W5's.
+  tests/replays/test_replay_util.py tests/replays/test_replay_condense.py tests/replays/test_control_store.py -q`
+  passes (the store file holds the third pin); then
+  `py <run>/tmp_w3_real.py` (feeds the two dumps to the pure rule) prints all 80 devices, Sunset 6666 off from
+  188976 ms, Lotus 32224's two spans, 8394 and 49190's offs, and no off on 53774 / 24636 / 27224. Round time
+  is W5's (from the condensed blob).
 
 ### W4. Engine: watchers don't watch while off
 
@@ -81,8 +98,10 @@ Files: none in the repo; `<run>/tmp_w5_round2.py`.
 
 - Condense the Sunset export locally with this branch (`condense_export_dir` into the run folder, the same
   call `scripts/ingest_replay.py` makes, no DB), take round 2's blob, build the engine's link from the public
-  page (`preview_control_live.link_for`) and compute the round with `compute_task`; print the turret watcher's
-  cell count at 21.0 s and at 22.0 s, and the same from the public (c11) blob for comparison.
+  page (`preview_control_live.link_for`), build `engine.RoundInputs` and a `Tick` at 21.0 and 22.0 s, and
+  print `tick._watch(7, t).sum()` (KJ = slot 7) and `rnd.alive(7, t)` for the new blob and for the public
+  (c11) blob; also the turret row's `off` in round seconds (expect ~21.6). First confirm `check_manifest`
+  accepts the local CliReader export.
 - Check: the printed line shows non-zero then zero for the new blob. Then delete the export folders.
 
 ### W6. The hatched areas the user calls contested (images 5, 14, 15)
@@ -129,6 +148,8 @@ methods on a stub viewer).
 
 - Decided details: clicking any round, the current one included, restarts it from 0 and plays; prev/next
   buttons keep today's behaviour (paused); playback stops at the round's end as today.
+- `playRound` sets `playing = true` in `showRound`'s `.then`. The test builds the strip with a stubbed
+  `document`, fires a button's click listener, awaits, and asserts `playing`.
 - Check: the new test fails on the old JS (`playing` stays false) and passes after; `py -m pytest
   tests/replays/test_replay_viewer.py -q`.
 
