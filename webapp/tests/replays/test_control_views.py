@@ -336,6 +336,21 @@ def test_friends_are_the_players_in_the_replay_not_a_roster(db, linked):
     assert views.friends_replay_ids(db, {max(ids) + 1000}) == set() and views.friends_replay_ids(db, set()) == set()
 
 
+def test_a_stale_match_player_from_an_earlier_link_is_not_a_friend(db, linked):
+    from app.models import Match, MatchPlayer
+    from app.models.match import MatchSource
+    from app.models.replay import ReplayPlayer
+
+    ids = {pid for (pid,) in db.query(MatchPlayer.player_id).join(
+        ReplayPlayer, ReplayPlayer.match_player_id == MatchPlayer.id).filter(ReplayPlayer.replay_id == linked.id)}
+    other = Match(external_id="relinked-elsewhere", source=MatchSource.SCRAPED, map_name=linked.map_name)
+    db.add(other)
+    db.flush()
+    linked.match_id = other.id          # re-linked; replay_players still name the old match's players
+    db.commit()
+    assert views.friends_replay_ids(db, ids) == set()
+
+
 def test_the_stats_fragment_404s_in_demo_mode(db, linked, monkeypatch):
     from app.routers import site_stats
 

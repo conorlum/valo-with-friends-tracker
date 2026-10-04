@@ -15,7 +15,12 @@ params), the current `app/static/data/control/tags.json` and the Risk 1 kill lin
   can also be passed here to draw those positions);
 - watch the kill-line test live against the 2% bar, with the blocked lines drawn, and the resulting sight and
   walk masks as overlays; undo; tick "cover reviewed" (which clears the map's badge);
-- export the whole `tags.json` (every map, unknown fields kept).
+- export the whole `tags.json` (every map, unknown fields kept);
+- in Chokes mode (timing-gaps spec section 2), select, rename, move (arrow keys), delete (a tombstone) and
+  add (paint cells, then "make choke") the map's chokes from `<Map>.chokes.json`, and export that file.
+  Copy it over `app/static/data/control/<Map>.chokes.json`: a rename changes no fingerprint, but adding,
+  moving or deleting a choke makes that map's timing gaps stale until `scripts/compute_control.py`
+  recomputes them. Edited chokes become `source: "hand"`, which re-detection keeps (choke_assets.merge).
 
 Then copy the export over `app/static/data/control/tags.json` and run `scripts/build_control_geometry.py`: the
 masks, index.json and the kill-line results are rebuilt, and every stored round of a changed map goes stale
@@ -35,6 +40,7 @@ import json
 import os
 import sys
 import tempfile
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +50,7 @@ WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBAPP_ROOT))
 
 from app.control import geometry as cg  # noqa: E402
+from app.replays import choke_assets  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "control_tagger.template.html"
@@ -76,11 +83,19 @@ def map_data(name: str, entry: dict, lines: list) -> dict:
             "lines": lines}
 
 
+def choke_data(name: str, asset_dir: Path = choke_assets.ASSET_DIR) -> dict:
+    """The map's `<Map>.chokes.json` as the page edits it: {"chokes": [...], "next_id"} (none: an empty list)."""
+    chokes = choke_assets.load(name, asset_dir) or []
+    return {"chokes": [asdict(c) for c in chokes], "next_id": choke_assets.load_next_id(name, asset_dir)}
+
+
 def build(tags: dict, lines_by_map: dict, names: list[str] | None = None, starts: dict | None = None) -> dict:
     names = names or sorted(p.stem for p in cg.MINIMAP_DIR.glob("*.png")
                             if p.stem in json.loads(cg.MAPS_JSON.read_text(encoding="utf-8")))
     maps = {name: map_data(name, (tags.get("maps") or {}).get(name) or {}, lines_by_map.get(name) or [])
             for name in names}
+    for name in maps:
+        maps[name]["chokes"] = choke_data(name)
     for name, rows in (starts or {}).items():
         if name in maps:   # [1 attack | 0 defense, x px, y px]
             maps[name]["starts"] = [[1 if side == "attack" else 0, round(x, 1), round(y, 1)] for side, x, y in rows]

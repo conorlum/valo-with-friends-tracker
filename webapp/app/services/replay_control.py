@@ -155,10 +155,14 @@ class PlannedRound:
 
 
 def _valid_ids(db, replays: list[Replay]) -> set[int]:
-    """replays.db.is_valid for many replays in one query: rounds 1..round_count, a supported `v`."""
+    """replays.db.is_valid for many replays in one query: rounds 1..round_count, a supported `v`. Only these
+    replays' rounds are counted."""
+    ids = sorted({r.id for r in replays})
+    if not ids:
+        return set()
     counts = {rid: (n, lo, hi) for rid, n, lo, hi in db.query(
         ReplayRound.replay_id, func.count(), func.min(ReplayRound.round_number), func.max(ReplayRound.round_number))
-        .group_by(ReplayRound.replay_id)}
+        .filter(ReplayRound.replay_id.in_(ids)).group_by(ReplayRound.replay_id)}
     return {r.id for r in replays if r.format_version in fmt.SUPPORTED_VERSIONS
             and counts.get(r.id) == (r.round_count, 1, r.round_count)}
 

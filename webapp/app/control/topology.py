@@ -95,11 +95,13 @@ class FlatTopology:
                 if 0 <= ny < GRID and 0 <= nx < GRID]
 
     def spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float, straight: float,
-               links: list) -> np.ndarray:
+               links: list, parents: bool = False):
         """The unknown's arrival times relaxed through `room` up to time `t` (engine.Unknown._spread):
         each node's earliest arrival from a neighbour, after the node was last freed (`free`); a straight
         step costs `straight` seconds, a diagonal sqrt(2) of it, a link (a, b, one way) one straight step.
-        Arrivals later than `t` aren't there yet."""
+        Arrivals later than `t` aren't there yet. With `parents`, also each arrival's source node, taken
+        from the final arrivals: the first neighbour in SPREAD_ORDER that gives exactly that time, then a
+        link; -1 for an unreached node and for one whose value is its starting value."""
         g = reached.reshape(GRID, GRID).copy()
         f = free.reshape(GRID, GRID)
         r = room.reshape(GRID, GRID)
@@ -116,8 +118,32 @@ class FlatTopology:
                     best.flat[a] = min(best.flat[a], max(g.flat[b], f.flat[a]) + straight)
             best[~r | (best > t)] = np.inf
             if np.array_equal(best, g):
-                return best.ravel()
+                break
             g = best
+        arr = best.ravel()
+        if not parents:
+            return arr
+        # recompute from the final arrivals, with the same expressions the relaxation used
+        idx = np.arange(GRID * GRID).reshape(GRID, GRID)
+        par = np.full((GRID, GRID), -1, np.int64)
+        todo = np.isfinite(best) & (best < reached.reshape(GRID, GRID))
+        for dy, dx in SPREAD_ORDER:
+            src = np.full((GRID, GRID), np.inf)
+            who = np.full((GRID, GRID), -1, np.int64)
+            ys, xs = slice(max(dy, 0), GRID + min(dy, 0)), slice(max(dx, 0), GRID + min(dx, 0))
+            yo, xo = slice(max(-dy, 0), GRID + min(-dy, 0)), slice(max(-dx, 0), GRID + min(-dx, 0))
+            src[ys, xs] = best[yo, xo]
+            who[ys, xs] = idx[yo, xo]
+            hit = todo & (par < 0) & (np.maximum(src, f) + straight * (math.sqrt(2) if dy and dx else 1.0) == best)
+            par[hit] = who[hit]
+        pf = par.ravel()
+        for a, b, one_way in links:
+            if np.isfinite(arr[b]) and arr[b] < reached[b] and pf[b] < 0 and max(arr[a], free[b]) + straight == arr[b]:
+                pf[b] = a
+            if not one_way and np.isfinite(arr[a]) and arr[a] < reached[a] and pf[a] < 0 \
+                    and max(arr[b], free[a]) + straight == arr[a]:
+                pf[a] = b
+        return arr, pf
 
 
 class NodeTopology:
@@ -214,7 +240,9 @@ class NodeTopology:
         return sorted(straight) + sorted(set(near) - set(straight))
 
     def spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float, straight: float,
-               links: list) -> np.ndarray:
+               links: list, parents: bool = False):
+        """As `FlatTopology.spread`. With `parents`, a node's source is the first of its `in_from` columns
+        (ascending source node id) that gives exactly its final arrival, then a link; -1 as there."""
         g = reached.copy()
         cost = self.in_cost * straight
         freed = free[:, None]
@@ -227,8 +255,24 @@ class NodeTopology:
                     best[a] = min(best[a], max(g[b], free[a]) + straight)
             best[~room | (best > t)] = np.inf
             if np.array_equal(best, g):
-                return best
+                break
             g = best
+        if not parents:
+            return best
+        rows = np.arange(self.n)
+        cand = np.maximum(np.append(best, np.inf)[self.in_from], freed) + cost
+        match = cand == best[:, None]
+        j = match.argmax(1)
+        todo = np.isfinite(best) & (best < reached) & match.any(1)
+        par = np.where(todo, self.in_from[rows, j], -1).astype(np.int64)
+        for a, b, one_way in links:
+            if np.isfinite(best[b]) and best[b] < reached[b] and par[b] < 0 \
+                    and max(best[a], free[b]) + straight == best[b]:
+                par[b] = a
+            if not one_way and np.isfinite(best[a]) and best[a] < reached[a] and par[a] < 0 \
+                    and max(best[b], free[a]) + straight == best[a]:
+                par[a] = b
+        return best, par
 
 
 def of(geo: Geometry):

@@ -12,6 +12,13 @@ A `--blobs` folder written by scripts/export_replay_preview.py also holds the pa
 (`context.json`) and map control (`N.control.bin`, `control_players.json`, `control_heatmap_*.json`):
 then the page is the linked one, with player names, the kill feed and the control layer, table and
 heatmap (docs/map-control-stages-4-7-impl.md, S4.5). Such a page names real players: keep it local.
+
+When that folder also holds timing gaps (`N.gaps.json`, written by `scripts/preview_gaps.py
+--write-json`), the linked page offers the Gaps layer, tab and list too (inlining `replay_gaps.js`);
+a round with no `N.gaps.json` shows as not computed.
+
+The page opens on its first round at 0 s, or where its URL hash says: `replay-standalone.html#round=2&t=7.5`
+opens round 2 at 7.5 s (either part may be left out), for pointing someone at a moment.
 """
 
 from __future__ import annotations
@@ -56,12 +63,15 @@ def load_blobs(folder: Path) -> dict[int, dict]:
 
 def load_site(folder: Path) -> dict | None:
     """What scripts/export_replay_preview.py wrote beside the blobs: the page's site data and the
-    round control (inlined un-gzipped, as a browser receives it), or None."""
+    round control (inlined un-gzipped, as a browser receives it) and timing gaps (round -> the
+    gaps.json body scripts/preview_gaps.py --write-json wrote), or None."""
     context_path = folder / "context.json"
     if not context_path.is_file():
         return None
     site = {"context": json.loads(context_path.read_text(encoding="utf-8")), "control": {}, "players": None,
-            "heatmaps": {}}
+            "heatmaps": {}, "gaps": {}}
+    for path in folder.glob("*.gaps.json"):
+        site["gaps"][path.name.split(".")[0]] = json.loads(path.read_text(encoding="utf-8"))
     for path in folder.glob("*.control.bin"):
         site["control"][path.name.split(".")[0]] = base64.b64encode(gzip.decompress(path.read_bytes())).decode("ascii")
     if (folder / "control_players.json").is_file():
@@ -78,8 +88,9 @@ def render(blobs: dict[int, dict], site: dict | None = None) -> str:
     match = (site or {}).get("context", {}).get("match") or {}
     linked = bool(site and match.get("linked"))
     control = match.get("control") if linked else None
+    gaps = bool(linked and site.get("gaps"))
     player = env.get_template("replays/_player.html").render(
-        replay={"map_name": map_name, "round_numbers": sorted(blobs)}, linked=linked, control=control)
+        replay={"map_name": map_name, "round_numbers": sorted(blobs)}, linked=linked, control=control, gaps=gaps)
     agents = sorted({p["agent"] for blob in blobs.values() for p in blob["players"]})
     icons = {a: data_uri(APP / "static" / "img" / "agents" / f"{agent_icon_name(a)}.png") for a in agents}
     payload = {"rounds": {str(n): blob for n, blob in blobs.items()},
@@ -89,8 +100,12 @@ def render(blobs: dict[int, dict], site: dict | None = None) -> str:
         payload["control"] = site["control"] if control else {}
         payload["controlPlayers"] = site["players"] if control else None
         payload["heatmaps"] = site["heatmaps"] if control else {}
+    if gaps:
+        payload["gaps"] = site["gaps"]
     style = (APP / "static" / "css" / "style.css").read_text(encoding="utf-8")
     script = (APP / "static" / "js" / "replay.js").read_text(encoding="utf-8")
+    if gaps:   # before replay.js, as the site's pages include it
+        script = (APP / "static" / "js" / "replay_gaps.js").read_text(encoding="utf-8") + "\n" + script
     if control:
         script += "\n" + (APP / "static" / "js" / "replay_control.js").read_text(encoding="utf-8")
     data = json.dumps(payload, separators=(",", ":")).replace("</", "<\\/")
@@ -139,8 +154,24 @@ __SCRIPT__
       options.loadControlPlayers = function () { return data.controlPlayers; };
       options.loadHeatmap = function (view) { return data.heatmaps[view] || null; };
     }
+    if (site && match.linked && data.gaps && window.ReplayGaps) {
+      options.gaps = true;
+      options.loadGaps = function (n) {
+        return Promise.resolve(data.gaps[String(n)] || { status: "not_computed", stale: false, rows: [], chokes: {} });
+      };
+    }
+    // An optional "#round=N&t=T" in the URL opens round N at T seconds.
+    var start = {};
+    String(window.location.hash || "").replace(/^#/, "").split("&").forEach(function (part) {
+      var kv = part.split("=");
+      if (kv.length === 2 && kv[1] !== "" && isFinite(Number(kv[1]))) start[kv[0]] = Number(kv[1]);
+    });
+    var first = rounds.indexOf(start.round) >= 0 ? start.round : rounds[0];
     window.viewer = new Replay.ReplayViewer(document.querySelector("[data-replay]"), options);
-    window.viewerReady = window.viewer.showRound(rounds[0]);
+    window.viewerReady = window.viewer.showRound(first).then(function (round) {
+      if (start.t !== undefined) window.viewer.seek(start.t);
+      return round;
+    });
   })();
 </script>
 </body></html>

@@ -23,14 +23,14 @@ from test_replay_store import TABLES, add_match, condensed, pg  # noqa: E402,F40
 import compute_control  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
-from app.models.replay import Replay, ReplayRoundControl  # noqa: E402
+from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun  # noqa: E402
 from app.replays import control_format as cf  # noqa: E402
 from app.replays import store  # noqa: E402
 from app.routers import replays as routes  # noqa: E402
 from app.services import replay_control as rc  # noqa: E402
 from app.services import replays as service  # noqa: E402
 
-CONTROL_TABLES = TABLES
+CONTROL_TABLES = TABLES + [ReplayRoundGapRun.__table__, ReplayGap.__table__]   # R1: the timing-gaps tables
 
 
 @pytest.fixture

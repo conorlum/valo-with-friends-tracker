@@ -1,0 +1,33 @@
+{
+  "PROVISIONAL": "D3: kept tunable; the owner is testing sound ranges in game. No recompute (D8) until these figures are set. Revision 5 is unreleased, so a figure change re-pins PINNED[5] in tests/replays/test_control_format.py in place, no revision bump.",
+  "footstep_range_m": 50.0,
+  "default_gun_m": 1000.0,
+  "guns": {
+    "Phantom": 40.0,
+    "Spectre": 40.0,
+    "Ghost": 40.0,
+    "Vandal": 1000.0,
+    "Classic": 1000.0,
+    "Odin": 1000.0,
+    "Stinger": 1000.0,
+    "Sheriff": 1000.0,
+    "Bulldog": 1000.0,
+    "Ares": 1000.0,
+    "Guardian": 1000.0,
+    "Compact Pistol": 1000.0,
+    "Frenzy": 1000.0,
+    "Marshal": 1000.0,
+    "Operator": 1000.0,
+    "Judge": 1000.0,
+    "Headhunter": 1000.0,
+    "Outlaw": 1000.0,
+    "Shorty": 1000.0,
+    "Tour de Force": 1000.0,
+    "Bucky": 1000.0
+  },
+  "sources": {
+    "footstep_range_m": "No figure on the Valorant wiki (https://valorant.fandom.com/wiki/Spike says only that the explosion radius is 'about the same as the player's audio range'). 50 m is community testing of running footsteps, cited by https://www.switchbladegaming.com/valorant/platinum-to-diamond-guide/ from GGameChamps. Owner to check.",
+    "guns": "Silenced guns (Ghost, Spectre, Phantom): 'Firing sound can't be heard at 40m+ except in direction of fire' on https://valorant.fandom.com/wiki/Ghost , https://valorant.fandom.com/wiki/Spectre and https://valorant.fandom.com/wiki/Phantom (the direction-of-fire exception is ignored). No wiki weapon page gives a range for unsilenced guns; 1000 m means heard anywhere on the map. Owner to check.",
+    "gun_names": "The 21 names in shot rows of the 462 replay rounds in local Postgres (2026-10-02). 'Compact Pistol' has no wiki page under that name (probably the Bandit's internal name) and gets default_gun_m; a shot with no gun (2,660 shots) uses default_gun_m."
+  }
+}
