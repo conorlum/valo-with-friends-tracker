@@ -42,7 +42,7 @@ folder). Every one of them is contested today.
 
 The plan was dry-run on 2026-10-04 in a throwaway copy of `afk/2026-10-04-gaps-viewer`, with Task 3's and Task
 4's code applied:
-- all 11 new toy tests passed;
+- all 11 new toy tests passed, and so did the 2 Task 3 tests added after the review;
 - `test_control_unknown.py` and `test_control_engine.py` passed, 77 tests;
 - all four cases passed on the run folder's saved blobs (`tmp_case_states.py`).
 
@@ -69,11 +69,13 @@ that ground after B's memory of it was made, so B's memory ended. The case expec
 ## Review Focus
 
 1. **The counterfactual** (control credit removes one player): `live_claims` must leave out the removed player,
-   or a player's credit for holding a contest disappears. Test: `test_live_claims_leave_out_the_removed_player`
+   or a player's credit for holding a contest disappears. The full and incremental paths must agree. Tests:
+   `test_live_claims_leave_out_the_removed_player`, `test_the_counterfactual_applies_the_rule_full_and_incremental`
    (Task 3).
-2. **Knowledge pictures:** `Tick.extra_passive` (an enemy's remembered view in a team's picture) is inferred. If
-   it counts as live, the team pictures keep fake contests. Test: `test_a_pictures_remembered_enemy_view_is_not_live`
-   (Task 3).
+2. **Knowledge pictures:** `Tick.extra_passive` (an enemy's remembered view in a team's picture) is inferred,
+   and a picture holds only the enemies the team sees. If either counts as live, the team pictures keep fake
+   contests. Tests: `test_a_pictures_remembered_enemy_view_is_not_live`,
+   `test_a_knowledge_picture_counts_only_the_enemies_the_team_sees_as_live` (Task 3).
 3. **Watchers and presence are live:** a trip or turret watching ground, or a player's 4 m presence bubble,
    must keep a real contest and must end enemy memory. Tests: `test_a_live_claim_against_an_inferred_one_stays_contested`
    (Task 3, parametrized over view and watcher) and `test_an_enemy_holding_it_live_ends_remembered_ground`
@@ -173,6 +175,14 @@ def test_a_state_case_checks_each_cells_state():
 def test_a_state_case_off_the_walkable_ground_fails():
     result = cc.check_case(dict(_case("state", [[2, 2]]), states=["none"]), _round())
     assert not result["passes"] and result["wrong"] == [[2, 2]]
+
+
+def test_a_state_case_checks_every_listed_cell_not_just_the_first():
+    """x 160 is A's at 2 s; x 248, by the barrier, is in A's unknown by then (A's unknown has walked to x 240),
+    so it isn't."""
+    case = dict(_case("state", [[160, 200], [248, 200]]), states=["a_passive", "a_safe", "a_active"])
+    result = cc.check_case(case, _round())
+    assert not result["passes"] and result["wrong"] == [[248, 200]]
 ```
 
   In `test_the_committed_cases_are_well_formed`, replace the `expect` assertion line with:
@@ -273,9 +283,23 @@ $PY scripts/control_cases.py
 ```
 
   Expected: the 2 old cases PASS. The 4 new ones FAIL, and every listed cell is contested on the base. The
-  report only names the failing cells; if in doubt, check the state with `tmp_case_states.py`. If a
-  listed cell is not contested on this base (a merge changed the round), replace it with one that is. Use the
-  run folder's `tmp_pick_cells.py`, pointed at this worktree, and record the swap in the commit message.
+  report only names the failing cells.
+  - If in doubt, check the states with
+    `C:\Users\User\.claude\afk\2026-10-04-control-bugs\tmp_case_states.py <this worktree's webapp>`.
+  - If a listed cell is not contested on this base (a merge changed the round), replace it with one that is,
+    of the same claim class. `tmp_pick_cells.py` in the same folder lists each contested cell's claim types;
+    point its `WEBAPP` at this worktree. Record the swap in the commit message.
+
+- [ ] **Step 6b: The gaps baseline** (for Task 5 Step 3), taken before any rule code. First check that the
+  folder `%TEMP%\valo-replay\6f12db3e-b2db-4bca-96e4-a837c85ba5a6-afk-live-claim-base` doesn't exist (if it
+  does, add a suffix). Then:
+
+```bash
+$PY scripts/preview_control_live.py 6f12db3e-b2db-4bca-96e4-a837c85ba5a6 2 --tag afk-live-claim-base
+$PY scripts/preview_gaps.py "%TEMP%\valo-replay\6f12db3e-b2db-4bca-96e4-a837c85ba5a6-afk-live-claim-base"
+```
+
+  Record round 2's predicted count in the run's `LOG.md`.
 
 - [ ] **Step 7: Commit:** `control_cases: 'state' cases; the user's three D5 images as cases (red)`.
 
@@ -385,15 +409,46 @@ def test_live_claims_leave_out_the_removed_player():
     assert tk.live_claims("A")[west].all()
     assert not tk.live_claims("A", removed=0)[west].any(), "without A0 nothing of A's is live there"
     assert tk.live_claims("A", removed=5)[west].all(), "removing an enemy changes nothing of A's"
+
+
+def test_the_counterfactual_applies_the_rule_full_and_incremental():
+    """Control credit recomputes the tick without one player: the rule must hold there too, on both paths."""
+    geo, tk = _hall()
+    west = _band(geo, *WEST_X)
+    tk.unknown = {"A": _band(geo, 380, 416), "B": np.zeros(GRID * GRID, bool)}
+    _remember(tk, geo, [0], west)
+    base = tk.compose()
+    full = tk.compose(removed=1)["state"]
+    inc = tk.compose(removed=1, base=base, full=False)["state"]
+    assert (full[west] == ce.NONE).all(), "without A1, A0's memory against B's Safe is still nobody's"
+    assert np.array_equal(full[west], inc[west]), "the incremental counterfactual agrees"
+
+
+def test_a_knowledge_picture_counts_only_the_enemies_the_team_sees_as_live():
+    from tests.replays.control_toys import blob
+    geo = open_hall()
+    rnd = ce.RoundInputs(blob({0: still("A", 120, 200, 180), 5: still("B", 400, 200, 0)}), geo)
+    tk = ce.Tick(rnd, 1.0)
+    tk.unknown = {"A": _band(geo, 300, 316), "B": _band(geo, 100, 116)}
+    assert 5 not in tk.sees[0] and 0 not in tk.sees[5], "they face apart: neither sees the other"
+    assert tk.live_claims("B")[tk.live[5] & geo.walk_n].all()
+    kt = ce.Knowledge(rnd, "A").tick_for(tk, 1.0)
+    assert 5 not in kt.holders, "A's picture has no unseen B player"
+    assert not kt.live_claims("B").any(), "so nothing of B's is live in it"
 ```
 
-  (`test_a_live_claim_against_an_inferred_one_stays_contested` and the last test pass before and after the
-  change: they guard against the rule reaching too far.)
+  Expected before and after the change:
+  - **Pass before and after:** `test_a_live_claim_against_an_inferred_one_stays_contested`. It guards against
+    the rule reaching too far.
+  - **Fail before, from the missing method alone:** `test_live_claims_leave_out_the_removed_player` and
+    `test_a_knowledge_picture_…`. Both were checked passing with the planned code (2026-10-04 review).
 
 - [ ] **Step 2: Run, expect failures:**
-  `$PY -m pytest tests/replays/test_control_unknown.py -q -k "nobodys or not_live or removed_player or stays_contested"`.
-  - The two `…_is_nobodys` tests and `…_not_live` fail: the cells come out `CONTESTED`.
-  - `test_live_claims_leave_out_the_removed_player` fails with `AttributeError: 'Tick' object has no attribute 'live_claims'`.
+  `$PY -m pytest tests/replays/test_control_unknown.py -q -k "nobodys or not_live or removed_player or stays_contested or counterfactual or knowledge_picture"`.
+  - The two `…_is_nobodys` tests, `…_not_live` and `…_full_and_incremental` fail: the cells come out
+    `CONTESTED`.
+  - `test_live_claims_leave_out_the_removed_player` and `test_a_knowledge_picture_…` fail with
+    `AttributeError: 'Tick' object has no attribute 'live_claims'`.
   - The two `stays_contested` cases pass.
 
 - [ ] **Step 3: Implement.** In `engine.py`, add to `Tick` directly after `_live_of`:
@@ -539,8 +594,13 @@ def test_ground_an_enemy_saw_does_not_come_back_as_memory():
 
 ### Task 5: The rest of the system still agrees
 
-Memory feeds the gaps detector (route releases), the knowledge pictures, and every per-player control figure.
-Check them before handing over.
+The new rule feeds the knowledge pictures and every per-player control figure; check them before handing over.
+The gaps detector should be unaffected:
+- the observer (`app/control/observe.py`) gets `Tick.live`, `Tick.view` and the unknown's entries, none of
+  which hold memory;
+- the engine calls it before `compose`.
+
+Task 5 confirms that (review finding 7, 2026-10-04).
 
 **Files:** none expected. A change found here gets its own fix-and-test commit.
 
@@ -549,21 +609,30 @@ Check them before handing over.
   that test pins the user's earlier call, stop and ask; otherwise update it, quote the old and new assertion in
   the commit message, and keep the case it covered.
 
-- [ ] **Step 2: Gaps on the Ascent round:**
-  `$PY scripts/preview_gaps.py --help`, then run it for `6f12db3e-b2db-4bca-96e4-a837c85ba5a6` round 2 with the
-  flags the gaps-viewer run used (`--from-cache` if its cache is present). Compare the predicted-gap count with
-  the gaps-viewer run's figure: 67 after the stack merge (its SUMMARY.md, W5). If the count changed, note
-  before/after in the hand-over. A change is expected: an enemy's view now ends memory, and the gap detector
-  reads memory. If `GAPS_REVISION` is meant to change when its inputs change (read its comment), bump it in
-  place, since it is unreleased too.
+- [ ] **Step 2: Previews with the new rule, in run-owned folders.** `preview_control_live.py` empties its output
+  folder (`%TEMP%\valo-replay\<uuid>-<tag>`) before writing. Its default tag (`rev5`) is a folder an earlier run
+  owns, so always pass `--tag`, and first check that the folder doesn't exist. If it does, add a suffix
+  (`-2`, `-3`, …) until it doesn't:
 
-- [ ] **Step 3: Look at it.** Run `$PY scripts/preview_control_live.py 6f12db3e-b2db-4bca-96e4-a837c85ba5a6 2`
-  and `$PY scripts/preview_control_live.py 0f452716-1e90-4782-afba-29229fdab922 7`. Open the written
-  `preview.html` pages and check Ascent round 2 at 15.7 s, and Sunset round 7 at 26.4 s and 55.7 s. The
-  circled areas should be plain ground (nobody's, or B's at 26.4 s for the live-view cells), not stripes. Take
-  screenshots for the hand-over.
+```bash
+$PY scripts/preview_control_live.py 6f12db3e-b2db-4bca-96e4-a837c85ba5a6 2 --tag afk-live-claim
+$PY scripts/preview_control_live.py 0f452716-1e90-4782-afba-29229fdab922 7 --tag afk-live-claim
+```
 
-- [ ] **Step 4: Hand over.** Report:
+- [ ] **Step 3: Gaps are unchanged.** Run `$PY scripts/preview_gaps.py "%TEMP%\valo-replay\6f12db3e-b2db-4bca-96e4-a837c85ba5a6-afk-live-claim"`
+  and compare its round 2 predicted count with the base's (Task 2 Step 6b). Expected: equal.
+  - If they differ, investigate it as a regression. Neither change should touch the detector's inputs (see this
+    task's intro). Don't bump `GAPS_REVISION` for it.
+  - The gaps-viewer run's 67 is history from another base, not the comparison.
+
+- [ ] **Step 4: Look at it.** Open the two `preview.html` pages from Step 2. Check Ascent round 2 at 15.7 s, and
+  Sunset round 7 at 26.4 s and 55.7 s. The circled areas should be plain ground, not stripes:
+  - nobody's at Ascent 15.7 s and Sunset 55.7 s;
+  - B's at 26.4 s for the live-view cells, A's for the latest-look cells.
+
+  Take screenshots for the hand-over.
+
+- [ ] **Step 5: Hand over.** Report:
   - the branch and its commits;
   - the six cases;
   - the suite result;
@@ -583,3 +652,11 @@ Check them before handing over.
 - **Two-floor cells:** `collapse_states` shows a cell as contested when its floors disagree, and "nobody's
   against held" counts as disagreeing. A floor this rule clears, under a floor one team holds, still shows as
   contested. That is the existing heights rule, unchanged here. Say if it shows up in a judged round.
+- **The route-back contest (Q56) is not covered by this rule.** An enemy standing in a team's claimed ground
+  contests their shortest way back to their team (`way_back`, on the cells that team claims, memory and backfill
+  included), whoever is looking at it. **The user kept it (2026-10-04):** a seen enemy in the team's ground
+  holds their lane open, which is a live contest, not two inferred claims meeting ("for entries this makes
+  sense"). Don't apply the new rule to `way_back` cells (review finding 3).
+- **Rejected: running the new rule when the tick has no unknown** (review finding 3). `Tick.unknown` is `None`
+  only for toy ticks built without one; `TickRunner.step` sets it on every real tick, and knowledge pictures
+  copy it. The existing Safe/Safe block is gated the same way, and the older toy tests rely on that fallback.
