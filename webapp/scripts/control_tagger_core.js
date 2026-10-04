@@ -10,8 +10,8 @@
  *   round-half-to-even, 3 px trimmed at each end) against the 2% bar.
  * - `exportTags(original, maps, edits)`: the whole tags.json, every map, with untouched maps and
  *   unknown fields exactly as loaded.
- * - chokes: `selectAt`, `rename`, `remove` (a tombstone), `move`, `add` and `exportAsset` (the
- *   `<Map>.chokes.json` body app/replays/choke_assets.py `save` writes).
+ * - chokes: `selectAt`, `rename`, `remove` (a tombstone), `move`, `add`, `exportAsset` (the
+ *   `<Map>.chokes.json` body app/replays/choke_assets.py `save` writes) and `assetText` (its exact text).
  */
 (function (global) {
   "use strict";
@@ -210,21 +210,22 @@
   }
 
   // Shifts a choke's cells by whole cells; cells pushed off the grid are dropped (a move that would drop
-  // every cell is refused). Moving a detected choke away from where detection put it also leaves a
-  // tombstone, with a new id, on those detected cells (once): otherwise re-detection would find the passage
-  // there again and recreate it. `original` is the list as loaded (default: `chokes`), so a choke renamed
-  // (and so already "hand") before its first move still gets its tombstone. Returns {chokes, nextId}.
+  // every cell is refused). A choke's first move in a session also leaves a tombstone, with a new id, on the
+  // cells it had as loaded, whatever its source: otherwise re-detection could find the passage there again
+  // and recreate it (a choke renamed in an earlier session loads as "hand", yet may still sit on detected
+  // cells). `original` is the list as loaded this session (default: `chokes`); a choke not in it (added
+  // this session) gets no tombstone, and none is added while a tombstone with exactly those cells exists,
+  // so later moves add nothing. Returns {chokes, nextId}.
   function move(chokes, id, dCol, dRow, nextId, original) {
-    var next = highWater(chokes, nextId), target = null, detected = null;
+    var next = highWater(chokes, nextId), target = null, loadedCells = null;
     chokes.forEach(function (c) { if (c.id === id) target = c; });
     if (!target || target.deleted || (!dCol && !dRow)) return { chokes: chokes.map(chokeCopy), nextId: next };
-    (original || chokes).forEach(function (c) {
-      if (c.id === id && !c.deleted && (c.source || "auto") !== "hand") detected = c.cells;
-    });
-    if (detected) {
-      var key = JSON.stringify(sortedCells(detected));
-      chokes.forEach(function (c) { if (c.deleted && JSON.stringify(sortedCells(c.cells)) === key) detected = null; });
+    (original || chokes).forEach(function (c) { if (c.id === id && !c.deleted) loadedCells = c.cells; });
+    if (loadedCells) {
+      var key = JSON.stringify(sortedCells(loadedCells));
+      chokes.forEach(function (c) { if (c.deleted && JSON.stringify(sortedCells(c.cells)) === key) loadedCells = null; });
     }
+    var detected = loadedCells;
     var cells = [];
     target.cells.forEach(function (x) {
       var col = (x % G) + dCol, row = Math.floor(x / G) + dRow;
@@ -254,11 +255,21 @@
              chokes: chokes.map(chokeCopy).sort(function (a, b) { return a.id - b.id; }) };
   }
 
+  // The file text exactly as choke_assets.save writes it: json.dumps(body, indent=1) + "\n", whose
+  // ensure_ascii escapes every character outside printable ASCII (and DEL) as \uXXXX. JS strings are
+  // UTF-16, so escaping per code unit gives Python's surrogate pairs for astral characters.
+  function assetText(body) {
+    return JSON.stringify(body, null, 1).replace(/[\u007f-￿]/g, function (ch) {
+      return "\\u" + ("000" + ch.charCodeAt(0).toString(16)).slice(-4);
+    }) + "\n";
+  }
+
   var api = {
     PX: PX, P: P, BAR: BAR, PAINTS: PAINTS, TAG_KINDS: TAG_KINDS, rleDecode: rleDecode, unpackPaint: unpackPaint,
     packPaint: packPaint, compose: compose, linePixels: linePixels, riskOne: riskOne, exportTags: exportTags,
     editsFrom: editsFrom, base64Bytes: base64Bytes, roundHalfEven: roundHalfEven,
-    CHOKE_GRID: G, selectAt: selectAt, rename: rename, remove: remove, move: move, add: add, exportAsset: exportAsset
+    CHOKE_GRID: G, selectAt: selectAt, rename: rename, remove: remove, move: move, add: add, exportAsset: exportAsset,
+    assetText: assetText
   };
   global.TaggerCore = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

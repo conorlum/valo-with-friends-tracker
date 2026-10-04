@@ -169,8 +169,10 @@
     lastPaint: "see_across_paint", brush: 14, masks: null, risk: null, byId: {}, choke: 0 };
   // Chokes: chokeState[map] = {chokes, nextId}; the core's edits return new lists, so an undo entry can hold
   // the previous state by reference. `pending` is the "Paint new choke" cells (128 x 128, not undoable).
+  // chokeHigh[map] is the highest next id this page has handed out: undo never lowers it, so an id
+  // exported once is never given to a different choke after an undo.
   var G = T.CHOKE_GRID, CELL = PX / G, CHOKE_MODES = { chokes: 1, choke_paint: 1 };
-  var chokeState = {}, chokeLoaded = {}, pending = new Uint8Array(G * G);
+  var chokeState = {}, chokeLoaded = {}, chokeHigh = {}, pending = new Uint8Array(G * G);
   var CHOKE_STORE = "control-tagger-chokes-v1:" + (function (s) {
     var h = 5381;
     for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
@@ -212,7 +214,8 @@
     try {
       var out = {};
       Object.keys(chokeState).forEach(function (name) {
-        if (chokeState[name] !== chokeLoaded[name]) out[name] = chokeState[name];
+        if (chokeState[name] !== chokeLoaded[name] || chokeHigh[name] > chokeLoaded[name].nextId)
+          out[name] = { chokes: chokeState[name].chokes, nextId: chokeState[name].nextId, high: chokeHigh[name] };
       });
       localStorage.setItem(CHOKE_STORE, JSON.stringify(out));
     } catch (err) { /* private window */ }
@@ -220,9 +223,14 @@
   function restoreChokes() {
     try {
       var raw = JSON.parse(localStorage.getItem(CHOKE_STORE)) || {};
-      Object.keys(raw).forEach(function (name) { if (chokeState[name]) chokeState[name] = raw[name]; });
+      Object.keys(raw).forEach(function (name) {
+        if (!chokeState[name]) return;
+        chokeState[name] = { chokes: raw[name].chokes, nextId: raw[name].nextId };
+        chokeHigh[name] = Math.max(chokeHigh[name], raw[name].high || 0, raw[name].nextId || 0);
+      });
     } catch (err) { /* nothing saved */ }
   }
+  function chokeNextId() { return Math.max(mapChokes().nextId, chokeHigh[state.map]); }
 
   function mapEdits() { return edits[state.map]; }
   function beforeChange() {
@@ -363,7 +371,7 @@
     var live = cs.chokes.filter(function (x) { return !x.deleted; });
     var rows = [["Chokes", live.length], ["Hand-edited", live.filter(function (x) { return x.source === "hand"; }).length],
                 ["Deleted (tombstones)", cs.chokes.length - live.length], ["Painted for a new choke (cells)", n],
-                ["Next id", Math.max(cs.nextId, cs.chokes.reduce(function (m, x) { return Math.max(m, x.id + 1); }, 1))]];
+                ["Next id", Math.max(chokeNextId(), cs.chokes.reduce(function (m, x) { return Math.max(m, x.id + 1); }, 1))]];
     $("chokeCounts").innerHTML = rows.map(function (r) { return "<tr><td>" + r[0] + "</td><td>" + r[1] + "</td></tr>"; }).join("");
     var base = chokeLoaded[state.map];
     var stale = chokeFingerprint(cs.chokes) !== chokeFingerprint(base.chokes);
@@ -376,6 +384,7 @@
   function setChokes(next) {
     beforeChange();
     chokeState[state.map] = next;
+    chokeHigh[state.map] = Math.max(chokeHigh[state.map], next.nextId);
     saveChokes(); paintOverlay(); showChoke();
   }
   function chokeRename() {
@@ -393,14 +402,14 @@
   }
   function chokeMove(dCol, dRow) {
     if (!state.choke) return;
-    var cs = mapChokes(), r = T.move(cs.chokes, state.choke, dCol, dRow, cs.nextId, chokeLoaded[state.map].chokes);
+    var cs = mapChokes(), r = T.move(cs.chokes, state.choke, dCol, dRow, chokeNextId(), chokeLoaded[state.map].chokes);
     setChokes({ chokes: r.chokes, nextId: r.nextId });
   }
   function chokeMake() {
     var cells = [];
     for (var i = 0; i < pending.length; i++) if (pending[i]) cells.push(i);
     if (!cells.length) return;
-    var cs = mapChokes(), r = T.add(cs.chokes, cells, cs.nextId);
+    var cs = mapChokes(), r = T.add(cs.chokes, cells, chokeNextId());
     pending = new Uint8Array(G * G);
     state.choke = r.chokes[r.chokes.length - 1].id;
     setChokes({ chokes: r.chokes, nextId: r.nextId });
@@ -597,7 +606,7 @@
                   k: "chokes", a: "choke_paint" };
     var arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
     if (CHOKE_MODES[state.mode] && state.choke && arrows[e.key]) { e.preventDefault(); chokeMove(arrows[e.key][0], arrows[e.key][1]); return; }
-    if (CHOKE_MODES[state.mode] && state.choke && (e.key === "Delete" || e.key === "Backspace")) { e.preventDefault(); chokeDelete(); return; }
+    if (CHOKE_MODES[state.mode] && state.choke && e.key === "Delete") { e.preventDefault(); chokeDelete(); return; }
     if (CHOKE_MODES[state.mode] && (e.key in keys || e.key === "n" || e.key === "N")) return;   // shape tags need the Select tool
     if (e.key in keys) setTag(keys[e.key]);
     else if (e.key === "n" || e.key === "N") nextUntagged();
@@ -613,9 +622,9 @@
   $("chokeMake").addEventListener("click", chokeMake);
   $("chokeClear").addEventListener("click", function () { pending = new Uint8Array(G * G); paintOverlay(); showChoke(); });
   $("exportChokes").addEventListener("click", function () {
-    var cs = mapChokes(), body = T.exportAsset(state.map, cs.chokes, cs.nextId);
+    var cs = mapChokes(), body = T.exportAsset(state.map, cs.chokes, chokeNextId());
     var a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(body, null, 1) + "\n"], { type: "application/json" }));
+    a.href = URL.createObjectURL(new Blob([T.assetText(body)], { type: "application/json" }));
     a.download = state.map + ".chokes.json"; a.click();
   });
   $("onlyBlocked").addEventListener("change", paintOverlay);
@@ -651,6 +660,7 @@
     loaded[name] = T.editsFrom((DATA.tags.maps || {})[name]);
     var ch = DATA.maps[name].chokes || { chokes: [], next_id: 1 };
     chokeState[name] = chokeLoaded[name] = { chokes: ch.chokes, nextId: ch.next_id };
+    chokeHigh[name] = ch.next_id;
     var o = document.createElement("option");
     var n = DATA.maps[name].lines.length;
     o.value = name; o.textContent = name + (n ? " (" + n + " kill lines)" : " (no replays)");

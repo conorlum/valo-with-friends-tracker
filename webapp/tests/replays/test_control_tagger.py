@@ -173,10 +173,11 @@ CHOKE_EDITS = """
     const out = {
       selectHit: T.selectAt(p.chokes, 130), selectMiss: T.selectAt(p.chokes, 5), selectDeleted: T.selectAt(p.chokes, 900),
       renamed: T.rename(p.chokes, 1, "A Main"), removed: T.remove(p.chokes, 1),
-      moved: T.move(p.chokes, 1, 1, -1, 5), movedHand: T.move(p.chokes, 2, -2, 0, 5),
+      moved: T.move(p.chokes, 1, 1, -1, 5), movedHand: T.move(p.chokes, 2, -2, 0, 5, [p.chokes[0], p.chokes[2]]),
+      movedLoadedHand: T.move(p.chokes, 2, -2, 0, 5),
       movedOff: T.move(p.chokes, 2, 0, 200, 5), movedLow: T.move(p.chokes, 1, 1, 0, 1),
       movedNone: T.move(p.chokes, 1, 0, 0, 5),
-      movedTwice: T.move(T.move(p.chokes, 1, 1, 0, 5).chokes, 1, 1, 0, 6),
+      movedTwice: T.move(T.move(p.chokes, 1, 1, 0, 5).chokes, 1, 1, 0, 6, p.chokes),
       renamedThenMoved: T.move(T.rename(p.chokes, 1, "A Main"), 1, 0, 1, 5, p.chokes),
       added: T.add(p.chokes, [4000, 3999, 4000], 5), addedLow: T.add(p.chokes, [10], 1), addedNone: T.add(p.chokes, [], 5),
       exported: T.exportAsset("Ascent", [p.chokes[2], p.chokes[0], p.chokes[1]], 2),
@@ -205,9 +206,13 @@ def test_choke_edits_select_rename_delete_move_add_and_export():
     assert moved["chokes"][0] == choke(1, [2, 3, 131], source="hand")
     assert moved["chokes"][3] == choke(5, [129, 130, 258], source="hand", deleted=True)
     assert moved["nextId"] == 6 and len(moved["chokes"]) == 4
-    # a hand choke moves without a tombstone; cells pushed off the grid's edge are dropped, never wrapped
+    # a choke added this session (not in the loaded list) moves without a tombstone; cells pushed off the
+    # grid's edge are dropped, never wrapped
     assert got["movedHand"]["chokes"][1] == choke(2, [125, 253], name="Edge", source="hand")
     assert got["movedHand"]["nextId"] == 5 and len(got["movedHand"]["chokes"]) == 3
+    # a hand choke that was loaded leaves a tombstone on its loaded cells like any other
+    assert got["movedLoadedHand"]["chokes"][1] == choke(2, [125, 253], name="Edge", source="hand")
+    assert got["movedLoadedHand"]["chokes"][3] == choke(5, [127, 255], source="hand", deleted=True)
     assert got["movedOff"]["chokes"] == chokes, "a move that drops every cell is refused"
     assert got["movedNone"] == {"chokes": chokes, "nextId": 5}
     # one tombstone per detected choke, on its detected cells, however many steps it moves
@@ -231,11 +236,12 @@ def test_choke_edits_select_rename_delete_move_add_and_export():
 
 CHOKE_EXPORT = """
   function run(p) {
-    const text = (body) => JSON.stringify(body, null, 1) + "\\n";
+    const text = T.assetText;
     const c = p.chokes, n = p.nextId, a = p.a, b = p.b;
     const moved = T.move(c, b, 0, 1, n), added = T.add(c, p.newCells, n);
     return {
       unchanged: text(T.exportAsset("Ascent", c, n)),
+      unicode: text(T.exportAsset("Ascent", T.rename(c, a, p.unicodeName), n)),
       renamed: text(T.exportAsset("Ascent", T.rename(c, a, "Heaven"), n)),
       moved: text(T.exportAsset("Ascent", moved.chokes, moved.nextId)),
       removed: text(T.exportAsset("Ascent", T.remove(c, a), n)),
@@ -254,12 +260,23 @@ def test_a_choke_export_round_trips_through_choke_assets(tmp_path):
     a, b = live[0]["id"], live[1]["id"]
     used = {x for c in data["chokes"] for x in c["cells"]}
     new_cells = [x for x in range(128 * 64, 128 * 64 + 3) if x not in used]
-    got = run_node(CHOKE_EXPORT, {"chokes": data["chokes"], "nextId": data["next_id"], "a": a, "b": b, "newCells": new_cells})
+    unicode_name = "Café ☕ \U0001F642 \x7f"          # accented, BMP symbol, astral emoji, DEL
+    got = run_node(CHOKE_EXPORT, {"chokes": data["chokes"], "nextId": data["next_id"], "a": a, "b": b, "newCells": new_cells,
+                                  "unicodeName": unicode_name})
 
     # the unchanged export is byte for byte what choke_assets.save writes for the same chokes
     saved = tmp_path / "saved"; saved.mkdir()
     choke_assets.save("Ascent", choke_assets.load("Ascent"), choke_assets.load_next_id("Ascent"), saved)
     assert got["unchanged"] == (saved / "Ascent.chokes.json").read_text(encoding="utf-8")
+    # and so is one with non-ASCII names: escaped as json.dumps's ensure_ascii does, surrogate pairs included
+    loaded = choke_assets.load("Ascent")
+    for c in loaded:
+        if c.id == a:
+            c.name, c.source = unicode_name, "hand"
+    choke_assets.save("Ascent", loaded, choke_assets.load_next_id("Ascent"), saved)
+    expected = (saved / "Ascent.chokes.json").read_text(encoding="utf-8")
+    assert "\\ud83d\\ude42" in expected and "\\u007f" in expected and expected.isascii()
+    assert got["unicode"] == expected
 
     def asset(kind):
         folder = tmp_path / kind; folder.mkdir(exist_ok=True)
@@ -324,6 +341,60 @@ def test_re_detection_keeps_the_hand_edits(tmp_path):
     assert sum(1 for c in merged if not c.deleted) == sum(1 for c in data["chokes"] if not c["deleted"]) - 1
 
 
+CHOKE_SESSION_1 = """
+  function run(p) {
+    return T.assetText(T.exportAsset("Ascent", T.rename(p.chokes, p.moved, "Tree"), p.nextId));
+  }
+"""
+
+CHOKE_SESSION_2 = """
+  function run(p) {
+    const loaded = p.chokes;                                  // the list as this session loaded it
+    const once = T.move(loaded, p.moved, p.dCol, 0, p.nextId, loaded);
+    const twice = T.move(once.chokes, p.moved, p.dCol, 0, once.nextId, loaded);
+    return {once: once, text: T.assetText(T.exportAsset("Ascent", twice.chokes, twice.nextId))};
+  }
+"""
+
+
+def test_a_move_after_export_and_reload_still_leaves_its_tombstone(tmp_path):
+    from app.replays import choke_assets
+
+    data = control_tagger.choke_data("Ascent")
+    autos = [c for c in data["chokes"] if c["source"] == "auto" and not c["deleted"]]
+    detected = [c["cells"] for c in autos]
+    others = {x for c in data["chokes"] for x in c["cells"]}
+
+    def shifted(c, d):
+        return [x + d for x in c["cells"] if 0 <= x % 128 + d < 128]
+
+    def clear(c, d):                                     # shifting by d and by 2d stays whole and touches nothing
+        return all(len(shifted(c, k)) == len(c["cells"]) and not set(shifted(c, k)) & others for k in (d, 2 * d))
+
+    moved, d_col = next((c["id"], d) for c in autos for d in (4, -4, 6, -6, 8, -8) if clear(c, d))
+    old = next(c for c in autos if c["id"] == moved)
+
+    # session 1: rename it (now "hand") and export; session 2 loads that export fresh
+    first = tmp_path / "session1"; first.mkdir()
+    (first / "Ascent.chokes.json").write_text(run_node(CHOKE_SESSION_1, {"chokes": data["chokes"], "nextId": data["next_id"],
+                                                                         "moved": moved}), encoding="utf-8")
+    reloaded = control_tagger.choke_data("Ascent", first)
+    assert next(c for c in reloaded["chokes"] if c["id"] == moved)["source"] == "hand"
+
+    got = run_node(CHOKE_SESSION_2, {"chokes": reloaded["chokes"], "nextId": reloaded["next_id"], "moved": moved, "dCol": d_col})
+    tomb = [c for c in got["once"]["chokes"] if c["deleted"] and c["cells"] == old["cells"]]
+    assert len(tomb) == 1 and tomb[0]["id"] == reloaded["next_id"], "the first move tombstones the loaded cells"
+    second = tmp_path / "session2"; second.mkdir()
+    (second / "Ascent.chokes.json").write_text(got["text"], encoding="utf-8")
+    edited, next_id = choke_assets.load("Ascent", second), choke_assets.load_next_id("Ascent", second)
+    assert sum(1 for c in edited if c.deleted and c.cells == old["cells"]) == 1, "moving twice leaves one tombstone"
+    assert next(c for c in edited if c.id == moved).cells == sorted(shifted(old, 2 * d_col))
+
+    # re-detection finds the old passage again, and the tombstone stops it coming back
+    merged, merged_next = choke_assets.merge(edited, detected, next_id)
+    assert merged_next == next_id and [vars(c) for c in merged] == [vars(c) for c in edited]
+
+
 def test_a_map_without_a_chokes_asset_gets_an_empty_list(tmp_path):
     assert control_tagger.choke_data("Ascent", tmp_path) == {"chokes": [], "next_id": 1}
 
@@ -336,8 +407,9 @@ def test_the_page_builds_with_the_choke_mode(tmp_path):
     assert data["maps"]["Ascent"]["chokes"] == control_tagger.choke_data("Ascent")
     for needle in ('data-mode="chokes"', 'data-mode="choke_paint"', 'id="exportChokes"', 'id="chokeRename"',
                    'id="chokeDelete"', 'id="chokeMake"', "app/static/data/control/&lt;Map&gt;.chokes.json",
-                   "Renaming changes no fingerprint", "scripts/compute_control.py", "T.exportAsset(", 'a.download = state.map + ".chokes.json"'):
+                   "Renaming changes no fingerprint", "scripts/compute_control.py", "T.exportAsset(", "T.assetText(body)", "chokeNextId()", 'a.download = state.map + ".chokes.json"'):
         assert needle in page, needle
+    assert "Backspace" not in page, "only Delete deletes a choke"
     # the page's own script parses
     script = page.split("<script>")[2].split("</script>")[0]
     completed = subprocess.run([NODE, "-e", "new Function(require('fs').readFileSync(0, 'utf8'))"], input=script,
