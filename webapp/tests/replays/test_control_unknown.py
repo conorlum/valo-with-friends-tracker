@@ -203,7 +203,7 @@ def test_a_pocket_of_unknown_vision_has_eaten_down_to_a_1x2_is_dropped(pocket, k
 def test_a_sliver_of_unknown_one_cell_wide_is_dropped(shape, kept):
     """Sunset round 15 at 86 s: a 22-cell strip of A's unknown, one cell wide, along a wall next to Osmin, that
     nobody fits in (the user, 2026-10-04). Any length of one-cell-wide piece with no enemy in it goes; two cells
-    wide stays (PROVISIONAL(D6))."""
+    wide stays."""
     geo = open_hall()
     unk = ce.Unknown(geo)
     enemy_at = (200 + 8 * 3, 200) if shape == "strip_with_enemy" else (400, 200)

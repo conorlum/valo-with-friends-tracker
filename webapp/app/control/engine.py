@@ -106,8 +106,8 @@ GAP_SEAL_M = 1.5
 # A piece of a team's unknown this small (cells, 8-connected; a 1x2) with no enemy in it is dropped
 # (the user's call, 2026-10-01: what vision has eaten down to that is gone).
 DROP_PIECE_CELLS = 2
-# PROVISIONAL(D6): so is a piece no wider than one cell all along, whatever its length: no point of its floor
-# has this much of a cell's width of room to anything outside it (Unknown._narrow).
+# So is a piece no wider than one cell all along, whatever its length: no point of its floor
+# has this much of a cell's width of room to anything outside it (Unknown._narrow; the user's call, 2026-10-04).
 NARROW_ROOM_CELLS = 0.55
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
 FAST_TURN_DPS = 90.0
