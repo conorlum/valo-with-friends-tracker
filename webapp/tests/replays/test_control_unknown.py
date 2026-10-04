@@ -186,7 +186,9 @@ def test_a_pocket_of_unknown_vision_has_eaten_down_to_a_1x2_is_dropped(pocket, k
     b = lambda: _at(5, "B", geo, 400, 200)  # noqa: E731
     for t in (0.0, 30.0):
         unk.apply(_Tk(t, _at(0, "A", geo, 120, 120), b()))
-    hole = [geo.cell_of_px(200 + 8 * k, 200) for k in range(pocket)]
+    # three cells as three of a 2x2 (the judged round 4 corner's shape): a straight 1x3 is a sliver, dropped
+    # whatever its length (test_a_sliver_of_unknown_one_cell_wide_is_dropped)
+    hole = [geo.cell_of_px(*p) for p in [(200, 200), (208, 200), (208, 192)][:pocket]]
     east = geo.walk.ravel() & (geo.centres[:, 0] > 330)
     view = geo.walk.ravel() & ~east
     view[hole] = False
@@ -195,6 +197,28 @@ def test_a_pocket_of_unknown_vision_has_eaten_down_to_a_1x2_is_dropped(pocket, k
     assert unk.cells["A"][_col(geo, 400)], "the big piece, with B in it, stays"
     unk.apply(_Tk(31.0, _at(0, "A", geo, 120, 120, view), b()))
     assert (unk.cells["A"][hole] == kept).all(), "a dropped pocket doesn't come back"
+
+
+@pytest.mark.parametrize("shape, kept", [("strip", False), ("strip_with_enemy", True), ("two_wide", True)])
+def test_a_sliver_of_unknown_one_cell_wide_is_dropped(shape, kept):
+    """Sunset round 15 at 86 s: a 22-cell strip of A's unknown, one cell wide, along a wall next to Osmin, that
+    nobody fits in (the user, 2026-10-04). Any length of one-cell-wide piece with no enemy in it goes; two cells
+    wide stays (PROVISIONAL(D6))."""
+    geo = open_hall()
+    unk = ce.Unknown(geo)
+    enemy_at = (200 + 8 * 3, 200) if shape == "strip_with_enemy" else (400, 200)
+    b = lambda: _at(5, "B", geo, *enemy_at)  # noqa: E731
+    for t in (0.0, 30.0):
+        unk.apply(_Tk(t, _at(0, "A", geo, 120, 120), b()))
+    hole = [geo.cell_of_px(200 + 8 * k, 200) for k in range(10)]
+    if shape == "two_wide":
+        hole += [geo.cell_of_px(200 + 8 * k, 208) for k in range(10)]
+    east = geo.walk.ravel() & (geo.centres[:, 0] > 330)
+    view = geo.walk.ravel() & ~east
+    view[hole] = False
+    unk.apply(_Tk(30.5, _at(0, "A", geo, 120, 120, view), b()))
+    assert (unk.cells["A"][hole] == kept).all()
+    assert unk.cells["A"][_col(geo, 400)], "the big piece stays"
 
 
 def test_a_pocket_with_an_enemy_in_it_stays_however_small():

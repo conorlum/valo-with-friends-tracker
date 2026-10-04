@@ -30,9 +30,10 @@ from tests.replays.control_toys import blob, door_hall
 # 4: heights (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4): the per-floor engine and its
 # start values. Unreleased, so re-pinned in place as its steps land.
 # 5: trips seal (2026-10-04): the unknown can't step diagonally past a live trip's cell; and a Killjoy device
-# doesn't watch while switched off (its row's `off`, condenser revision 12). Rules, no constants.
+# doesn't watch while switched off (its row's `off`, condenser revision 12); a one-cell-wide sliver of unknown with
+# no enemy in it is dropped (NARROW_ROOM_CELLS, 2026-10-04). Unreleased, so re-pinned in place.
 PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4: "237677656d71ca9f",
-          5: "237677656d71ca9f"}
+          5: "2dd4eda26d18ca1f"}
 
 
 def _constants_digest() -> str:

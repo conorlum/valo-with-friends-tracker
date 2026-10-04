@@ -5,6 +5,11 @@
    "match": "0f452716-1e90-4782-afba-29229fdab922", "map": "Sunset", "round": 4, "t": 8.8,
    "side": "A", "expect": "unknown",
    "cells": [[204, 676], [196, 684], [204, 684]],
-   "source": "the user, 2026-10-04: the corner below the wall stub, lower-left of two A players, isn't clear: someone could be standing there. At 7.9-9.1 s it is a piece of exactly 3 cells, one over DROP_PIECE_CELLS, so it is easy to lose."}
+   "source": "the user, 2026-10-04: the corner below the wall stub, lower-left of two A players, isn't clear: someone could be standing there. At 7.9-9.1 s it is a piece of exactly 3 cells, one over DROP_PIECE_CELLS, so it is easy to lose."},
+  {"id": "sunset-r15-sliver-beside-osmin",
+   "match": "0f452716-1e90-4782-afba-29229fdab922", "map": "Sunset", "round": 15, "t": 86.0,
+   "side": "A", "expect": "clear",
+   "cells": [[692, 428], [692, 468], [692, 508], [692, 548]],
+   "source": "the user, 2026-10-04 (review image 9): a thin strip of unknown along a wall next to Osmin where nobody fits. Found by the 2026-10-04 AFK run: at 85.5-87.4 s a piece of A's unknown one cell wide along the wall (x 692, y 420-548), outside Osmin's view and with no enemy in it. Dropped by NARROW_ROOM_CELLS (PROVISIONAL, D6 of that run)."}
  ]
 }

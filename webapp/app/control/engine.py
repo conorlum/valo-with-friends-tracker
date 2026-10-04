@@ -29,7 +29,8 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   could be: pushed out by the enemy's live players, the enemy's side of the barriers at the drop, and
   its own spread at UNKNOWN_MPS (each cell no sooner than a walk of its true length, diagonals sqrt(2);
   across specials, through smokes but not through a pinch under GAP_SEAL_M between a smoke or wall
-  ability and the map's wall). The team's live control clears it on contact. It is kept per enemy: one
+  ability and the map's wall). The team's live control clears it on contact; a piece of it with no enemy in it
+  that is at most DROP_PIECE_CELLS, or one cell wide all along (NARROW_ROOM_CELLS), is dropped. It is kept per enemy: one
   the team spots starts again from where they were seen, and a dead one's goes with them.
 - **Watchers** (passive): trips, alarmbots, Chamber traps, Killjoy's turret, Cypher's camera while
   he is in it, and flown drones; a camera or drone in use replaces its owner's own view. Placed
@@ -105,6 +106,9 @@ GAP_SEAL_M = 1.5
 # A piece of a team's unknown this small (cells, 8-connected; a 1x2) with no enemy in it is dropped
 # (the user's call, 2026-10-01: what vision has eaten down to that is gone).
 DROP_PIECE_CELLS = 2
+# PROVISIONAL(D6): so is a piece no wider than one cell all along, whatever its length: no point of its floor
+# has this much of a cell's width of room to anything outside it (Unknown._narrow).
+NARROW_ROOM_CELLS = 0.55
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
 FAST_TURN_DPS = 90.0
 SPEED_WINDOW_S = 0.25
@@ -1709,6 +1713,7 @@ class Unknown:
         size = np.bincount(lab)
         small = size <= DROP_PIECE_CELLS
         small[0] = False
+        small |= self._narrow(lab, size)
         for h in tick.holders.values():
             if h.team != side:
                 small[lab[h.cell]] = False
@@ -1720,6 +1725,32 @@ class Unknown:
             if slot in self.seen[side] and drop[self.seen[side][slot][0]]:
                 del self.seen[side][slot]
         return cells & ~drop
+
+    def _narrow(self, lab: np.ndarray, size: np.ndarray) -> np.ndarray:
+        """Per piece of `lab`: a sliver nobody stands in, one cell wide all along (the user, Sunset round 15,
+        2026-10-04: a strip of unknown along a wall next to Osmin). No point of its floor (its cells' walkable
+        pixels) is NARROW_ROOM_CELLS of a cell from everything outside it: a straight one-cell strip has half a
+        cell, the judged round 4 corner pocket (three cells of a 2x2) 0.63. Only pieces with no 2x2 block of
+        cells are measured."""
+        out = np.zeros(len(size), bool)
+        grid = np.zeros(GRID * GRID, np.int64)
+        grid[self.geo.node_cell[lab > 0]] = lab[lab > 0]
+        grid = grid.reshape(GRID, GRID)
+        block = grid[:-1, :-1]
+        full = (block > 0) & (grid[1:, :-1] == block) & (grid[:-1, 1:] == block) & (grid[1:, 1:] == block)
+        wide = np.zeros(len(size), bool)
+        wide[np.unique(block[full])] = True
+        for j in np.flatnonzero(~wide & (size > DROP_PIECE_CELLS)):
+            if j == 0:
+                continue
+            rows, cols = np.nonzero(grid == j)
+            r0, c0 = rows.min(), cols.min()
+            mask = np.zeros(((rows.max() - r0 + 3) * CELL, (cols.max() - c0 + 3) * CELL), bool)
+            for r, c in zip(rows, cols):
+                mask[(r - r0 + 1) * CELL:(r - r0 + 2) * CELL, (c - c0 + 1) * CELL:(c - c0 + 2) * CELL] = \
+                    self.geo.walk_px[r * CELL:(r + 1) * CELL, c * CELL:(c + 1) * CELL]
+            out[j] = ndimage.distance_transform_edt(mask).max() < NARROW_ROOM_CELLS * CELL
+        return out
 
     @staticmethod
     def _enemies(tick, side: str) -> set[int]:
