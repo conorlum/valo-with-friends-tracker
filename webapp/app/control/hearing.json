@@ -1,5 +1,5 @@
 {
-  "PROVISIONAL": "D3",
+  "PROVISIONAL": "D3: kept tunable; the owner is testing sound ranges in game. No recompute (D8) until these figures are set. Revision 5 is unreleased, so a figure change re-pins PINNED[5] in tests/replays/test_control_format.py in place, no revision bump.",
   "footstep_range_m": 50.0,
   "default_gun_m": 1000.0,
   "guns": {
