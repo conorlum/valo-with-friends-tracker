@@ -660,6 +660,51 @@ def test_a_map_with_heights_seals_a_wires_end_the_same_way():
     assert np.array_equal(got["floors"][:GRID * GRID], got["flat"])
 
 
+def test_a_wire_on_the_upper_floor_seals_only_that_floor():
+    """Two floors everywhere, the same wire as above but on the upper floor only, and the lower floor's column
+    26 watched (not solid): the upper floor stays sealed at the wall corner, the lower floor's diagonal past
+    it is open (the review of PR #113: a trip used to cut every floor of its cells)."""
+    from app.control import topology
+    from tests.replays.control_toys import toy_heights
+
+    geo = toy_heights("TripCornerTwoFloors", [HALL], upper=[(HALL, 4.0)], walls=[(216, 256, 416, 296)])
+    column = [r * GRID + 26 for r in range(12, 32)]
+    lower, upper = geo.node_of[column, 0], geo.node_of[column, 1]
+    assert (lower >= 0).all() and (upper >= 0).all()
+    solid = np.zeros(geo.n, bool)
+    solid[upper] = True
+    room = geo.walk_n & ~solid
+    room[lower] = False
+    start, east = geo.cell_of_px(120, 280), geo.cell_of_px(380, 200)
+    got = {}
+    for floor in (0, 1):
+        g = np.full(geo.n, np.inf)
+        g[geo.node_of[start, floor]] = 0.0
+        got[floor] = topology.of(geo).spread(g, room, np.zeros(geo.n), 30.0, 0.35, [], solid=solid)
+    assert np.isfinite(got[0][geo.node_of[east, 0]]), "the lower floor walks round the column's end"
+    assert not np.isfinite(got[1][geo.node_of[east, 1]]), "the upper floor's wire still seals"
+
+
+@pytest.mark.parametrize("heights", [False, True])
+def test_a_locating_events_area_does_not_cut_past_a_wires_end(heights):
+    """An area collapse (a kill, a shot) grows through the same walks as the spread: not diagonally past the
+    team's live trip at a wall corner (the review of PR #113)."""
+    from tests.replays.control_toys import toy_heights
+
+    walls = [(216, 256, 416, 296)]
+    geo = toy_heights("TripCornerH", [HALL], walls=walls) if heights else toy_geometry("TripCorner", [HALL], walls)
+    wire = np.zeros(GRID * GRID, bool)
+    wire[[r * GRID + 26 for r in range(12, 32)]] = True
+    solid = wire[geo.node_cell] if heights else wire
+    room = (geo.walk_n if heights else geo.walk.ravel()) & ~solid
+    unk = ce.TickRunner(geo).unknown
+    x, y = 204, 268                                  # just west of the wire's end, below it
+    centre = geo.cell_of_px(x, y)
+    past = geo.cell_of_px(228, 252)                  # east of the wire's end, one diagonal step round it
+    assert unk._area(centre, x, y, 10.0, room)[past], "unsealed, the area reaches round the end"
+    assert not unk._area(centre, x, y, 10.0, room, solid)[past]
+
+
 def test_a_dead_cyphers_wire_seals_nothing():
     geo = open_hall()
     players = {0: still("A", 120, 250, 180), 1: still("A", 110, 110, 180), 5: still("B", 400, 150, 0)}

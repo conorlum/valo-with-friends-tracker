@@ -44,6 +44,15 @@ def _shift(a: np.ndarray, dy: int, dx: int, fill=False) -> np.ndarray:
     return out
 
 
+def _cuts(solid: np.ndarray | None) -> dict:
+    """(dy, dx) -> where a diagonal step of that direction into (y, x) is cut: it passes a `solid` cell (a
+    trip's), (y - dy, x) or (y, x - dx). Empty with no solid cells."""
+    if solid is None or not solid.any():
+        return {}
+    s = solid.reshape(GRID, GRID)
+    return {(dy, dx): _shift(s, dy, 0) | _shift(s, 0, dx) for dy, dx in SPREAD_ORDER if dy and dx}
+
+
 class FlatTopology:
     """A flat map: every cell joins its neighbours in the grid (4 by default, 8 with `eight`)."""
 
@@ -59,9 +68,22 @@ class FlatTopology:
         return lab.ravel()
 
     def dilate(self, mask: np.ndarray, eight: bool = False, iterations: int = 1,
-               within: np.ndarray | None = None) -> np.ndarray:
+               within: np.ndarray | None = None, solid: np.ndarray | None = None) -> np.ndarray:
         """`mask` grown by `iterations` steps, through `within` only when given (nodes outside it keep
-        their own value)."""
+        their own value). With `solid` (and `eight`), no diagonal step past a solid cell, as in `spread`."""
+        cut = _cuts(solid) if eight else {}
+        if cut:
+            cur = mask.reshape(GRID, GRID).astype(bool)
+            w = None if within is None else within.reshape(GRID, GRID)
+            for _ in range(max(1, iterations)):
+                grown = cur.copy()
+                for dy, dx in SPREAD_ORDER:
+                    step = _shift(cur, dy, dx)
+                    if (dy, dx) in cut:
+                        step &= ~cut[dy, dx]
+                    grown |= step
+                cur = grown if w is None else np.where(w, grown, cur)
+            return cur.ravel()
         return ndimage.binary_dilation(mask.reshape(GRID, GRID), EIGHT if eight else None, iterations=iterations,
                                        mask=None if within is None else within.reshape(GRID, GRID)).ravel()
 
@@ -114,12 +136,7 @@ class FlatTopology:
         g = reached.reshape(GRID, GRID).copy()
         f = free.reshape(GRID, GRID)
         r = room.reshape(GRID, GRID)
-        cut = {}
-        if solid is not None and solid.any():
-            s = solid.reshape(GRID, GRID)
-            for dy, dx in SPREAD_ORDER:
-                if dy and dx:      # the step into (y, x) from (y - dy, x - dx) passes (y - dy, x) and (y, x - dx)
-                    cut[dy, dx] = _shift(s, dy, 0) | _shift(s, 0, dx)
+        cut = _cuts(solid)
         while True:
             best = g.copy()
             for dy, dx in SPREAD_ORDER:
@@ -218,6 +235,8 @@ class NodeTopology:
         cs_o, cd_o, dg = cs[order], cd[order], diag[order]
         self.in_side[0, dst[order], column] = np.where(dg, (cs_o // GRID) * GRID + cd_o % GRID, none)
         self.in_side[1, dst[order], column] = np.where(dg, (cd_o // GRID) * GRID + cs_o % GRID, none)
+        self._adj = (self._out + self._out.T).tocsc()          # a walk either way, for `_cut`
+        self._cut_key = self._cut_val = None
         # nodes beside a wall or the map's edge: their cell has a neighbour that isn't walkable
         grid = geo.walk
         beside = (grid & ndimage.binary_dilation(~grid, EIGHT)).ravel()
@@ -232,9 +251,36 @@ class NodeTopology:
             lab[nodes] = piece + 1
         return lab
 
+    def _cut(self, solid: np.ndarray) -> np.ndarray:
+        """Per incoming walk (the `in_from` table): a diagonal walk past a `solid` node (a trip's) on its own
+        floor, i.e. one in a side cell that is a walk away from either end of it. A trip on another floor of
+        that cell doesn't cut it. Kept for the last `solid`: a tick's trips are the same for every enemy."""
+        key = solid.tobytes()
+        if key == self._cut_key:
+            return self._cut_val
+        none = GRID * GRID
+        cut = np.zeros(self.in_from.shape, bool)
+        trips = np.flatnonzero(solid)
+        if len(trips):
+            near = self._adj[:, trips].tocoo()        # (node, solid node) a walk apart
+            pairs = np.unique(near.row.astype(np.int64) * (none + 1) + self.geo.node_cell[trips[near.col]])
+            ends = (self.in_from, np.broadcast_to(np.arange(self.n)[:, None], self.in_from.shape))
+            for side in self.in_side:
+                diag = side != none
+                for end in ends:
+                    cut[diag] |= np.isin(end[diag] * (none + 1) + side[diag], pairs)
+        self._cut_key, self._cut_val = key, cut
+        return cut
+
     def dilate(self, mask: np.ndarray, eight: bool = False, iterations: int = 1,
-               within: np.ndarray | None = None) -> np.ndarray:
+               within: np.ndarray | None = None, solid: np.ndarray | None = None) -> np.ndarray:
         cur = mask.astype(bool)
+        if solid is not None and eight and solid.any():   # through the walks `spread` may take (`_cut`)
+            ok = np.isfinite(self.in_cost) & ~self._cut(solid)
+            for _ in range(max(1, iterations)):
+                grown = cur | (np.append(cur, False)[self.in_from] & ok).any(1)
+                cur = grown if within is None else np.where(within, grown, cur)
+            return cur
         step = self._step[eight]
         for _ in range(max(1, iterations)):
             grown = cur | (step @ cur.astype(np.int32) > 0)
@@ -268,10 +314,8 @@ class NodeTopology:
         (ascending source node id) that gives exactly its final arrival, then a link; -1 as there."""
         g = reached.copy()
         cost = self.in_cost * straight
-        if solid is not None and solid.any():     # a diagonal walk past a solid cell (any floor of it) is cut
-            cells = np.zeros(GRID * GRID + 1, bool)
-            cells[self.geo.node_cell[solid]] = True
-            cost = np.where(cells[self.in_side[0]] | cells[self.in_side[1]], np.inf, cost)
+        if solid is not None and solid.any():
+            cost = np.where(self._cut(solid), np.inf, cost)
         freed = free[:, None]
         while True:
             padded = np.append(g, np.inf)

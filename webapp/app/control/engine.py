@@ -1842,7 +1842,7 @@ class Unknown:
                     # the smaller area)
                     hits.sort(key=lambda e: (e[0], e[2]))
                     te, _, radius, centre, x, y = max(hits, key=lambda e: (e[0], -e[2]))
-                    area = self._area(centre, x, y, radius, room)
+                    area = self._area(centre, x, y, radius, room, solid)
                     reached = np.full(n, np.inf)
                     reached[area] = te
                     before = np.full(n, np.inf)     # every route starts again from the area's centre
@@ -1924,16 +1924,18 @@ class Unknown:
                 out.append((t, "footsteps", FOOTSTEP_AREA_M, rnd.node(slot, t, p[0], p[1]), p[0], p[1]))
         return out
 
-    def _area(self, node: int, x: float, y: float, radius_m: float, room: np.ndarray) -> np.ndarray:
+    def _area(self, node: int, x: float, y: float, radius_m: float, room: np.ndarray,
+              solid: np.ndarray | None = None) -> np.ndarray:
         """Nodes within radius_m of (x, y) px reached by walking from `node` through `room` (the unobserved
-        walkable nodes), plus `node` itself."""
+        walkable nodes), plus `node` itself; no diagonal step past a `solid` node (the team's trips), as in
+        the spread."""
         seed = np.zeros(self.geo.n, bool)
         seed[node] = True
         if radius_m <= 0:
             return seed
         within = room | seed
         steps = max(1, int(math.ceil(radius_m / self.geo.cell_m)))
-        grown = self.topo.dilate(seed, eight=True, iterations=steps, within=within)
+        grown = self.topo.dilate(seed, eight=True, iterations=steps, within=within, solid=solid)
         r = radius_m / self.geo.m_per_px
         near = (self.geo.centres[:, 0] - x) ** 2 + (self.geo.centres[:, 1] - y) ** 2 <= r * r
         return (grown & within & near) | seed
