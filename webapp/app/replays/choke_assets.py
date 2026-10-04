@@ -85,6 +85,7 @@ def load_next_id(name: str, asset_dir: Path = ASSET_DIR) -> int:
     return max(int(body.get("next_id", 1)), max(ids + [0]) + 1)
 
 
+# PROVISIONAL(D2): the hash ignores names, so renaming a choke keeps every gap row fresh.
 def asset_hash(name: str, asset_dir: Path = ASSET_DIR) -> str | None:
     """16 hex of what detection uses: each choke's id, cells and tombstone, sorted by id, as sorted JSON. A
     rename, a `source` change or the file's layout changes no fingerprint. None when there is no asset."""

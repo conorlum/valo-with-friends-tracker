@@ -602,6 +602,7 @@ def _union(spans) -> list:
     return out
 
 
+# PROVISIONAL(D1): the merge's details (empty sequence folds, overlap test, which member's fields survive).
 def merge_stacks(gaps: list[Gap], t_start: float | None = None) -> list[Gap]:
     """R1: a predicted gap whose choke sequence is a strict prefix of another open for the same victim and life
     at an overlapping time folds into its longest such extension (ties: earliest t_open, then the smaller
