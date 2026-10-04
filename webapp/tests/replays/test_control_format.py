@@ -29,7 +29,9 @@ from tests.replays.control_toys import blob, door_hall
 # re-pinned in place. The digest also covers the height constants (app/control/heights.py) from 2026-10-02.
 # 4: heights (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4): the per-floor engine and its
 # start values. Unreleased, so re-pinned in place as its steps land.
-PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4: "237677656d71ca9f"}
+# 5: trips seal (2026-10-04): the unknown can't step diagonally past a live trip's cell. A rule, no constants.
+PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4: "237677656d71ca9f",
+          5: "237677656d71ca9f"}
 
 
 def _constants_digest() -> str:

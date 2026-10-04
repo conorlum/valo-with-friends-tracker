@@ -1,0 +1,10 @@
+{
+ "note": "Real rounds whose unknown the user has judged by eye (docs/map-control-unknown-plan.md). scripts/control_cases.py recomputes each round with this checkout's engine from the friends site's public responses and checks the side group's unknown at the tick at or before t: 'unknown' means every listed cell must be in it, 'clear' means none may be. Cells are [x px, y px] on the 1024 px minimap. Run it after any engine change, before a recompute.",
+ "cases": [
+  {"id": "sunset-r4-corner-below-stub",
+   "match": "0f452716-1e90-4782-afba-29229fdab922", "map": "Sunset", "round": 4, "t": 8.8,
+   "side": "A", "expect": "unknown",
+   "cells": [[204, 676], [196, 684], [204, 684]],
+   "source": "the user, 2026-10-04: the corner below the wall stub, lower-left of two A players, isn't clear: someone could be standing there. At 7.9-9.1 s it is a piece of exactly 3 cells, one over DROP_PIECE_CELLS, so it is easy to lose."}
+ ]
+}

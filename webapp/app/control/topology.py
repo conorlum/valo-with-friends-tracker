@@ -36,6 +36,14 @@ AROUND_ORDER = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1
 SPREAD_ORDER = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 
 
+def _shift(a: np.ndarray, dy: int, dx: int, fill=False) -> np.ndarray:
+    """`a` moved by (dy, dx) on the grid: out[y, x] = a[y - dy, x - dx], `fill` off the edge."""
+    out = np.full(a.shape, fill, a.dtype)
+    out[max(dy, 0):GRID + min(dy, 0), max(dx, 0):GRID + min(dx, 0)] = \
+        a[max(-dy, 0):GRID + min(-dy, 0), max(-dx, 0):GRID + min(-dx, 0)]
+    return out
+
+
 class FlatTopology:
     """A flat map: every cell joins its neighbours in the grid (4 by default, 8 with `eight`)."""
 
@@ -95,20 +103,27 @@ class FlatTopology:
                 if 0 <= ny < GRID and 0 <= nx < GRID]
 
     def spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float, straight: float,
-               links: list) -> np.ndarray:
+               links: list, solid: np.ndarray | None = None) -> np.ndarray:
         """The unknown's arrival times relaxed through `room` up to time `t` (engine.Unknown._spread):
         each node's earliest arrival from a neighbour, after the node was last freed (`free`); a straight
         step costs `straight` seconds, a diagonal sqrt(2) of it, a link (a, b, one way) one straight step.
-        Arrivals later than `t` aren't there yet."""
+        A diagonal step may not cut past a `solid` cell (a trip's) beside it. Arrivals later than `t`
+        aren't there yet."""
         g = reached.reshape(GRID, GRID).copy()
         f = free.reshape(GRID, GRID)
         r = room.reshape(GRID, GRID)
+        cut = {}
+        if solid is not None and solid.any():
+            s = solid.reshape(GRID, GRID)
+            for dy, dx in SPREAD_ORDER:
+                if dy and dx:      # the step into (y, x) from (y - dy, x - dx) passes (y - dy, x) and (y, x - dx)
+                    cut[dy, dx] = _shift(s, dy, 0) | _shift(s, 0, dx)
         while True:
             best = g.copy()
             for dy, dx in SPREAD_ORDER:
-                src = np.full((GRID, GRID), np.inf)
-                src[max(dy, 0):GRID + min(dy, 0), max(dx, 0):GRID + min(dx, 0)] = \
-                    g[max(-dy, 0):GRID + min(-dy, 0), max(-dx, 0):GRID + min(-dx, 0)]
+                src = _shift(g, dy, dx, np.inf)
+                if (dy, dx) in cut:
+                    src[cut[dy, dx]] = np.inf
                 np.minimum(best, np.maximum(src, f) + straight * (math.sqrt(2) if dy and dx else 1.0), out=best)
             for a, b, one_way in links:
                 best.flat[b] = min(best.flat[b], max(g.flat[a], f.flat[b]) + straight)
@@ -169,6 +184,12 @@ class NodeTopology:
         column = np.arange(len(dst)) - starts[dst[order]]
         self.in_from[dst[order], column] = src[order]
         self.in_cost[dst[order], column] = np.where(diag[order], math.sqrt(2), 1.0)
+        # a diagonal walk's two side cells (a solid one, a trip's, stops it); GRID * GRID: no side cell
+        none = GRID * GRID
+        self.in_side = np.full((2, n, max(width, 1)), none, np.int64)
+        cs_o, cd_o, dg = cs[order], cd[order], diag[order]
+        self.in_side[0, dst[order], column] = np.where(dg, (cs_o // GRID) * GRID + cd_o % GRID, none)
+        self.in_side[1, dst[order], column] = np.where(dg, (cd_o // GRID) * GRID + cs_o % GRID, none)
         # nodes beside a wall or the map's edge: their cell has a neighbour that isn't walkable
         grid = geo.walk
         beside = (grid & ndimage.binary_dilation(~grid, EIGHT)).ravel()
@@ -214,9 +235,13 @@ class NodeTopology:
         return sorted(straight) + sorted(set(near) - set(straight))
 
     def spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float, straight: float,
-               links: list) -> np.ndarray:
+               links: list, solid: np.ndarray | None = None) -> np.ndarray:
         g = reached.copy()
         cost = self.in_cost * straight
+        if solid is not None and solid.any():     # a diagonal walk past a solid cell (any floor of it) is cut
+            cells = np.zeros(GRID * GRID + 1, bool)
+            cells[self.geo.node_cell[solid]] = True
+            cost = np.where(cells[self.in_side[0]] | cells[self.in_side[1]], np.inf, cost)
         freed = free[:, None]
         while True:
             padded = np.append(g, np.inf)

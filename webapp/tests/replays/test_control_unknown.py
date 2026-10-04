@@ -573,3 +573,72 @@ def test_the_knowledge_views_use_the_same_unknown():
     tk.unknown = {"A": _band(geo, 300, 316), "B": _band(geo, 100, 116)}
     kt = ce.Knowledge(rnd, "A").tick_for(tk, 1.0)
     assert kt.unknown is tk.unknown
+
+
+# ---------------------------------------------------------------- trips seal (2026-10-04)
+
+from tests.replays.control_toys import HALL, toy_geometry  # noqa: E402
+
+
+def _wire(x0, y0, x1, y1, by=0):
+    u, v = uv(x0, y0)
+    return {"k": "ability", "t": 0.0, "t1": 30.0, "by": by, "kind": "GameObject", "code": "Gumshoe",
+            "name": "4_TripWire", "u": u, "v": v, "end": list(uv(x1, y1))}
+
+
+def _unknown_reaches(geo, players, util, x, y, t_end=20.0):
+    # the last tick a second before the round's end: the wire (like every watcher) stops at t_end
+    rc = ce.compute_round(blob(players, t_end=t_end, util=util), geo, ticks=[0.0, 5.0, 10.0, t_end - 1.0])
+    return bool(rc.unknown["A"][-1, int(np.searchsorted(rc.walk_cells, _col(geo, x, y)))])
+
+
+def test_unknown_cannot_step_diagonally_through_a_wire_laid_at_45_degrees():
+    """A wire's cells are sampled every pixel, so a slanted wire is a 4-connected staircase, except where its line
+    passes exactly through cell corners: there its cells touch only diagonally. This one runs corner to corner
+    all the way (x = y + 56, cells are 8 px). A diagonal step may not cut past a trip cell."""
+    geo = open_hall()
+    players = {0: still("A", 120, 250, 180), 5: still("B", 400, 150, 0)}   # either side of x = y + 56
+    wire = _wire(152, 96, 352, 296)
+    assert _unknown_reaches(geo, players, [], 250, 280), "without the wire, B could walk there"
+    assert not _unknown_reaches(geo, players, [wire], 250, 280), "the wire crosses the hall wall to wall"
+
+
+def test_unknown_cannot_squeeze_between_a_wires_end_and_a_wall_corner():
+    """Round 2 of the Sunset sample at 32.5 s: the wire's last cell touched a wall corner only diagonally, and
+    the unknown stepped round it into the room behind the wire."""
+    geo = toy_geometry("TripCorner", [HALL], [(216, 256, 416, 296)])   # the south-east block is wall
+    players = {0: still("A", 400, 120, 0), 5: still("B", 120, 280, 180)}
+    wire = _wire(212, 96, 212, 255)        # column 26, rows 12-31; the wall starts at column 27, row 32
+    assert _unknown_reaches(geo, players, [], 380, 200), "without the wire, B could walk there"
+    assert not _unknown_reaches(geo, players, [wire], 380, 200), "the only way in is past the wire's end"
+
+
+def test_a_map_with_heights_seals_a_wires_end_the_same_way():
+    """The per-floor topology cuts the same diagonal walks: one floor everywhere spreads as the flat map does."""
+    from app.control import topology
+    from tests.replays.control_toys import toy_heights
+
+    walls = [(216, 256, 416, 296)]
+    flat = toy_geometry("TripCorner", [HALL], walls)
+    floors = toy_heights("TripCornerH", [HALL], walls=walls)
+    assert isinstance(topology.of(floors), topology.NodeTopology)
+    solid = np.zeros(GRID * GRID, bool)
+    solid[[r * GRID + 26 for r in range(12, 32)]] = True
+    got = {}
+    for name, geo in (("flat", flat), ("floors", floors)):
+        node_solid = solid[geo.node_cell] if geo.heights is not None else solid
+        room = geo.walk_n & ~node_solid if geo.heights is not None else geo.walk.ravel() & ~solid
+        g = np.full(geo.n, np.inf)
+        g[geo.cell_of_px(120, 280)] = 0.0
+        got[name] = topology.of(geo).spread(g, room, np.zeros(geo.n), 30.0, 0.35, [], node_solid)
+    east = geo.cell_of_px(380, 200)
+    assert not np.isfinite(got["flat"][east]) and not np.isfinite(got["floors"][east])
+    assert np.array_equal(got["floors"][:GRID * GRID], got["flat"])
+
+
+def test_a_dead_cyphers_wire_seals_nothing():
+    geo = open_hall()
+    players = {0: still("A", 120, 250, 180), 1: still("A", 110, 110, 180), 5: still("B", 400, 150, 0)}
+    rc = ce.compute_round(blob(players, t_end=20.0, util=[_wire(152, 96, 352, 296)], deaths={0: 1.0}), geo,
+                          ticks=[0.0, 5.0, 10.0, 19.0])
+    assert rc.unknown["A"][-1, int(np.searchsorted(rc.walk_cells, _col(geo, 250, 280)))]

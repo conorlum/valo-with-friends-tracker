@@ -1637,6 +1637,7 @@ class Unknown:
             live = np.zeros(n, bool)
             spots = np.zeros(n, bool)
             shut = pinched.copy()
+            solid = self._trips(tick, side)
             for h in tick.holders.values():
                 if h.team == side:
                     live |= h.active | h.passive | h.watch
@@ -1668,7 +1669,7 @@ class Unknown:
                 if h is not None:
                     reached[h.cell] = min(reached[h.cell], t)   # an enemy pushes it out from where they stand
                 reached[~room] = np.inf
-                reached = self._spread(reached, room, free, t, self.seen[side].get(slot))
+                reached = self._spread(reached, room, free, t, self.seen[side].get(slot), solid)
                 self.reached[side][slot] = reached
                 cells |= np.isfinite(reached)
             self.cells[side] = self._drop_pieces(side, cells, tick)
@@ -1704,19 +1705,32 @@ class Unknown:
             return {s for s, team in rnd.team.items() if team != side and rnd.alive(s, tick.t)}
         return {h.slot for h in tick.holders.values() if h.team != side}
 
+    def _trips(self, tick, side: str) -> np.ndarray | None:
+        """The cells of `side`'s live trips at the tick (owner alive, Q71): the unknown can't step diagonally
+        past them, so a wire that touches a wall or turns a corner only diagonally still seals (the user,
+        Sunset, 2026-10-04). None on a tick without the round's inputs."""
+        rnd = getattr(tick, "rnd", None)
+        if rnd is None:
+            return None
+        out = np.zeros(self.geo.n, bool)
+        for w in rnd.watchers:
+            if w.kind == "trip" and rnd.team.get(w.by) == side and w.t0 <= tick.t < w.t1 and rnd.alive(w.by, tick.t):
+                out[w.cells] = True
+        return out
+
     def _spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float,
-                seen: tuple[int, float] | None = None) -> np.ndarray:
+                seen: tuple[int, float] | None = None, solid: np.ndarray | None = None) -> np.ndarray:
         """`reached` relaxed through `room` up to time `t`: each cell's earliest arrival from a
         neighbour (after the cell was last freed); arrivals later than `t` are not there yet. `seen`
         (cell, time), where the enemy was last spotted, is a source from that time even while the team
         still watches that cell or has just freed it (they were in it); it is in the result only once it is
-        in `room`."""
+        in `room`. No diagonal step cuts past a `solid` cell (the team's trips)."""
         g = reached.copy()
         if seen is not None:
             g[seen[0]] = min(g[seen[0]], seen[1])
         if not np.isfinite(g).any():
             return g
-        return self.topo.spread(g, room, free, t, self.geo.cell_m / UNKNOWN_MPS, self.links)
+        return self.topo.spread(g, room, free, t, self.geo.cell_m / UNKNOWN_MPS, self.links, solid)
 
 
 class Memory:
