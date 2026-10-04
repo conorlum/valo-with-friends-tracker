@@ -164,6 +164,87 @@ Export writes the map's chokes JSON in `choke_assets.save`'s shape, for copying 
 editing functions live in `scripts/control_tagger_core.js` (node-tested); merge-on-redetection is already
 `choke_assets.merge`.
 
+## Amendments from review (`2026-10-04-timing-gaps-viewer-review.md`; these override the sections above)
+
+- **Choke hash (1):** `choke_assets.asset_hash` hashes only each choke's `id`, `cells` and `deleted`, as sorted
+  JSON, so a rename changes no fingerprint. Done in S1.
+- **Merged gap (2, 3):** `context.t_round` is recomputed from the merged `t_open`; `context["merged"]` lists each
+  folded member's `choke_seq` and `t_open`; `checked_at` comes from the longest member only. The preview's
+  before/after counts, including how many empty-sequence gaps folded, go on the S1 card. The R4 check uses the
+  pre-merge row.
+- **Start time (4):** `replay_page` takes `t` (seconds) beside `round`, and the page seeks to it after
+  `showRound`. In S6.
+- **ETag (5):** over the whole `gaps.json` body.
+- **Freshness (6):** the current control fingerprint,
+  `replay_control.round_fingerprint(replay, side_groups(db, replay), n)`, as `round_control` uses.
+- **Imports (7):** `replay_gaps_view.py` and the router import neither `app.control` nor `app.gaps`; add them to
+  `tests/replays/test_control_isolation.py`'s list.
+- **Choke names (9):** hovering a list row highlights its chokes, with their names, on the map; the legend
+  says names are numbers until they are renamed in the tagger's choke mode.
+- **Endpoint (n2):** `1 <= round_number <= round_count` as control.bin; tombstoned chokes are left out of
+  `chokes`; the `unlinked` 404 is kept (the page hides layers for an unlinked replay).
+
+## Implementation steps
+
+Python: `webapp\.venv\Scripts\python.exe` from `webapp\` (`PY`). Each step is one commit. "Tests pass" means
+the named files, foreground, with every known base failure deselected.
+
+**S1. Stack merge.** Files: `app/gaps/detect.py` (`Gap.qual_spans`, `merge_stacks`, called in `finish` before
+`backshots.add`; `GAPS_REVISION = 2`), `app/services/replay_gaps.py` (`GAPS_REVISION = 2`), the spec (decision
+10, section 5 Identity and Latch, Testing), `scripts/preview_gaps.py` (`--from-cache`: replay
+`N.ticks.pkl.gz` through the detector, no engine), new tests in `tests/replays/test_gaps_detect.py`
+(a prefix folds; a non-prefix stays; no overlap stays; transitive chain; two extensions → the longest, then the
+earliest; union of qualified time counted once; candidates/joined/stood union; `context["merged"]`; a back-shot
+links to the merged gap). Check: `PY -m pytest tests/replays/test_gaps_detect.py tests/replays/test_gaps_backshots.py
+tests/replays/test_gaps_task.py -q` passes, and `PY scripts/preview_gaps.py --from-cache <preview folder>` prints
+round 1 and 2 counts (before: 96 and 122 predicted), logged.
+
+**S2. View rows.** Files: `app/services/replay_gaps_view.py` (`choke_points(map)`, `cell_xy(cell)`,
+`view_rows(rows, map_name)`), `tests/replays/test_gaps_view.py`. Check: those tests and
+`tests/replays/test_control_isolation.py` pass. Depends on S1 (no; independent) — may run in either order.
+
+**S3. Viewer layer.** Files: `app/static/js/replay_gaps.js` (new), `app/static/js/replay.js` (hooks:
+`LAYERS`, `options.gaps`/`loadGaps`, `drawGaps`, the Gaps tab and list, the flicker switch, seek on click,
+`options.startTime`), `app/templates/replays/_player.html` (checkbox, legend, tab, panel, behind `gaps`),
+`app/static/css/style.css` (gap colours and list), `tests/replays/test_gaps_viewer.py` (node: `openAt`,
+`listRows`, `describe` wording names players and chokes, `rearArc`). Check: `test_gaps_viewer.py`,
+`test_replay_viewer.py`, `test_control_viewer.py` pass. Depends on S2 (the row shape).
+
+**S4. Standalone page.** Files: `scripts/preview_gaps.py` (`--write-json` writes `N.gaps.json` via `to_rows` +
+`view_rows`), `scripts/render_replay_standalone.py` (reads `N.gaps.json`, passes `gaps` and `loadGaps`, inlines
+`replay_gaps.js`), a test in `tests/replays/test_replay_viewer.py` or a new `test_gaps_standalone.py` (render a
+synthetic folder with a gaps file: the page carries the layer). Check: the test passes; the page is written to
+`%TEMP%\valo-replay\<folder>\replay-standalone.html`; a Playwright script in the run folder loads it with no
+console errors, toggles Gaps (canvas pixels change), clicks a list row (the clock moves to its `t_open`), and
+saves screenshots to the run folder. Depends on S1, S3.
+
+**S5. Round 2's first gap (R4).** No repo change unless the fault is in gap code. A screenshot at round 2,
+7.5 s with the layer and the unknown hatch on; the finding goes on a `DECISIONS.md` card. Depends on S4.
+
+**S6. `gaps.json`.** Files: `app/services/replay_gaps.py` (`round_gaps(db, replay, n)` → status, rows),
+`app/routers/replays.py` (the route), `app/services/replays.py` (`page_context` sets `match.gaps`),
+`app/templates/replays/replay.html` (`loadGaps`, `?t=` start time, include `replay_gaps.js`),
+`tests/replays/test_gaps_web.py` (ok / stale / failed / not computed; demo mode 404; no_map / old_blob /
+unlinked 404s; ETag 304). Check: `test_gaps_web.py`, `test_replay_routes.py`, `test_control_views.py` pass.
+Depends on S2, S3.
+
+**S7. Local data and site (R2b).** No repo change. `compute_control.py` batches on `valomaths_gaps_view` (see
+the run's hard rules), match 6f12db3e first; `run_local_site.ps1` in the run folder. Check: a read-only count
+of `ok` gap runs at revision 2 for Ascent in the copy DB ≥ the rounds computed; a Playwright run against the
+local site (started by the script with `-NoBrowser`) loads the viewer with the Gaps layer and no console errors.
+Depends on S1, S6.
+
+**S8. Plan 3** (its own steps in `2026-10-04-timing-gaps-pattern-page.md`). Depends on S6, S7.
+
+**S9. Tagger choke mode.** Files: `scripts/control_tagger.py` (embed chokes), `scripts/control_tagger.template.html`
+(mode UI), `scripts/control_tagger_core.js` (pure choke edits: select, rename, delete as tombstone, move by an
+offset, add from painted cells, export shape), `tests/replays/test_control_tagger.py` (node tests of the edits
+and that the export round-trips through `choke_assets.load`/`merge`). Check: `test_control_tagger.py` passes;
+the page builds. Depends on nothing; last by R3.
+
+**Full suite** after S3, S6 and at the end: `tests/replays` in two foreground halves, `test_control_*.py` and
+the rest, each with the known base failure deselected; plus `tests/test_*` files a step touched.
+
 ## Risks
 
 - **Replay JS size:** `replay.js` is 2,100 lines. The gap code lives in its own file; `replay.js` gets hooks

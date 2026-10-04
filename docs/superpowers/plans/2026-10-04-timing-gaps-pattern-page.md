@@ -83,6 +83,40 @@ pattern page (a pattern aggregates rounds; the viewer link shows who).
 Site copy is tier 1 (judgment.md): plain words, a line saying the data is too thin for conclusions, and every
 figure with its `n`.
 
+## Amendments from review (`2026-10-04-timing-gaps-viewer-review.md`; these override the sections above)
+
+- **Eligibility (6):** a round counts when its run is `ok` and `run.fingerprint ==
+  replay_gaps.gap_fingerprint(<its stored control row's fingerprint>, map)` (one query for both tables; this
+  also catches a changed hearing table). `old_blob` rounds are not counted as "not yet computed".
+- **Imports (7):** `gap_patterns.py` and its router import neither `app.control` nor `app.gaps`; listed in
+  `test_control_isolation.py`.
+- **Size (8):** Ascent will hold about 10k rows. `route` is loaded only for the selected pattern and for
+  empty-sequence rows; the page's time on the local copy is logged.
+- **Sort (n3):** by predicted count, then back-shot count, then sequence.
+- **Missing values (n4):** shape ordering uses `replays.created_at` when there is no match date; null-side rows
+  form their own shape groups.
+- **Use filter (n5):** `use=killed` also selects back-shots with `killed_at`; the share of the filtered level is
+  not shown (it is 100% by construction).
+- **Start time (4):** viewer links carry `?round=n&t=<t_open>` (added by plan 2's S6).
+
+## Implementation steps
+
+**P1. Service.** Files: `app/services/gap_patterns.py` (`eligible_rounds(db, map)` with the left-out counts,
+`load_rows(db, map, filters)`, `friend_slots(db, replay_ids, player_ids)` — the same
+`replay_players.match_player_id → match_players.player_id` join as
+`app/services/replay_control_views.py` `friends_replay_ids`, `apply_population`, `group_patterns`,
+`shape_groups`), `tests/replays/test_gap_patterns.py` (eligibility: ok/stale revision/stale chokes/failed/not
+computed; Friends both directions, logged-out, unlinked, re-linked; filters; figures with `n`; route-shape
+grouping and the 2,000 cap; null `choke_seq` left out). Check: those tests and
+`tests/replays/test_control_isolation.py` pass.
+
+**P2. Page.** Files: `app/routers/gap_patterns.py` (`/gaps`, `/gaps/{map}`; 404 in demo mode and for a map
+without the control layer), `app/main.py` (include the router), `app/templates/gaps/index.html`,
+`app/templates/gaps/map.html`, `app/static/js/gap_patterns.js`, a "Patterns" link in the viewer's Gaps tab,
+`tests/replays/test_gap_patterns_web.py` (demo 404, filters in the query string, logged-out shows Everyone
+only, the thin-data line, the left-out counts). Check: those tests pass; the page renders on the local site
+(Playwright, no console errors, selecting a pattern draws).
+
 ## Risks
 
 - Query cost: rows per map are small (hundreds) for now; one query for runs, one for rows, one for the slot →
