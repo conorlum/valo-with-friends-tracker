@@ -53,6 +53,19 @@
     return key === "" ? [] : String(key).split("-").map(Number);
   }
 
+  // "1 shot from behind", "2 shots from behind".
+  function plural(n, one, many) {
+    return n + " " + (n === 1 ? one : many);
+  }
+
+  // The drawn routes, each kind counted apart (predicted gaps and back-shots are never added together).
+  function onMapText(refs) {
+    var backshots = (refs || []).filter(function (r) { return r.kind === "backshot"; }).length;
+    var predicted = (refs || []).length - backshots;
+    return plural(predicted, "predicted gap", "predicted gaps") + " (amber) and " +
+      plural(backshots, "shot from behind", "shots from behind") + " (magenta) on the map";
+  }
+
   // ---------------------------------------------------------------- page wiring (browser only)
 
   function wire(doc) {
@@ -64,6 +77,7 @@
     var status = doc.querySelector("[data-gaps-status]");
     var list = doc.querySelector("[data-gaps-rounds-list]");
     var heading = doc.querySelector("[data-gaps-selected-label]");
+    var panel = doc.querySelector("[data-gaps-map-panel]");
     var image = new Image();
     var current = null;     // {routes: [{kind, pieces: [[x, y]...]...}], labels: [...]}
     var token = 0;
@@ -116,7 +130,7 @@
     function show(label, routes, refs, labels) {
       current = { routes: routes, labels: labels };
       heading.textContent = label;
-      status.textContent = refs.length + " on the map (amber: predicted gaps, magenta: shots from behind).";
+      status.textContent = onMapText(refs) + ".";
       listRounds(refs);
       draw();
     }
@@ -125,6 +139,7 @@
       var size = canvas.width;
       var label = button.getAttribute("data-label");
       var mine = ++token;
+      if (panel && panel.scrollIntoView) panel.scrollIntoView({ block: "nearest" });
       if (button.hasAttribute("data-shape")) {
         var refs = drawing.shapes[button.getAttribute("data-shape")] || [];
         show(label, refs.map(function (r) { return { kind: r.kind, pieces: [routePath(r.points, size)] }; }), refs, []);
@@ -153,7 +168,7 @@
 
   var api = {
     MAP_PX: MAP_PX, routePath: routePath, routePieces: routePieces, routesUrl: routesUrl, roundLink: roundLink,
-    chokeLabels: chokeLabels, seqOf: seqOf, wire: wire
+    chokeLabels: chokeLabels, seqOf: seqOf, plural: plural, onMapText: onMapText, wire: wire
   };
   global.GapPatterns = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

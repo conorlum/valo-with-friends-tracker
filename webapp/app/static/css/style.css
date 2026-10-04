@@ -1985,11 +1985,14 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 .gaps-filters .page-meta { margin: 0; }
 .gaps-tmax { width: 5rem; }
 .gaps-thin { color: var(--ink); }
-.gaps-layout { display: grid; grid-template-columns: minmax(0, 1fr) 540px; gap: 1.5rem; align-items: start; }
+/* One column: the map panel full width on top, the pattern tables full width under it. */
+.gaps-layout { display: flex; flex-direction: column; gap: 1.5rem; }
 .gaps-tables { min-width: 0; overflow-x: auto; }
 .gaps-patterns td, .gaps-patterns th { padding: 0.45rem 0.55rem; font-size: 0.85rem; }
-.gaps-map-card { position: sticky; top: 1rem; }
+.gaps-map-card { display: grid; grid-template-columns: minmax(0, 512px) minmax(0, 1fr); gap: 1.25rem; align-items: start; scroll-margin-top: 1rem; }
+.gaps-map-info { min-width: 0; }
+.gaps-map-info h2 { margin-top: 0; }
 .gaps-map { width: 100%; height: auto; background: var(--page); border-radius: var(--radius-sm); }
-.gaps-rounds { max-height: 260px; overflow: auto; margin: 0; padding-left: 1.5rem; font-size: 0.85rem; }
-@media (max-width: 1100px) { .gaps-layout { grid-template-columns: 1fr; } .gaps-map-card { position: static; } }
+.gaps-rounds { max-height: 420px; overflow: auto; margin: 0; padding-left: 1.5rem; font-size: 0.85rem; }
+@media (max-width: 900px) { .gaps-map-card { grid-template-columns: minmax(0, 1fr); } .gaps-rounds { max-height: 260px; } }
 .replay-gaps-patterns-link { font-size: 0.85rem; margin: 0 0 0.5rem; }

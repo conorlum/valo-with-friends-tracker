@@ -11,6 +11,7 @@ rows only: no app.control or app.gaps (tests/replays/test_control_isolation.py).
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -62,15 +63,15 @@ def control_maps() -> list[str]:
 
 
 def parse_seq(value: str | None) -> list[int] | None:
-    """`1-2` -> [1, 2]; `` -> [] (the empty sequence); anything else -> None."""
+    """`1-2` -> [1, 2]; `` -> [] (the empty sequence); anything else -> None. ASCII digits only: str.isdigit and
+    int() also take "²" and other scripts' digits."""
     if value is None:
         return None
     if value == "":
         return []
-    parts = value.split("-")
-    if not all(p.isdigit() for p in parts):
+    if not re.fullmatch(r"\d+(-\d+)*", value, re.ASCII):
         return None
-    return [int(p) for p in parts]
+    return [int(p) for p in value.split("-")]
 
 
 def route_label(choke_seq: list[int], chokes: dict) -> str:

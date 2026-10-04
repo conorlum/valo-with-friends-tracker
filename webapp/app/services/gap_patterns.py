@@ -251,14 +251,17 @@ def load_routes(db, rows: list[dict], chunk: int = 200) -> list[dict]:
 
 def friend_slots(db, replay_ids, player_ids) -> dict[int, set[int]]:
     """{replay_id: {slot}} of these players in these replays: the `replay_players.match_player_id ->
-    match_players.player_id` join of replay_control_views.friends_replay_ids. The caller passes linked replays
-    only."""
+    match_players.player_id` join of replay_control_views.friends_replay_ids, counted only while the match player
+    belongs to the replay's current match (a stale match_player_id from an earlier link does not count). The
+    caller passes linked replays only."""
     replay_ids, player_ids = sorted(set(replay_ids)), sorted(set(player_ids))
     if not replay_ids or not player_ids:
         return {}
     out: dict[int, set[int]] = defaultdict(set)
     for rid, slot in (db.query(ReplayPlayer.replay_id, ReplayPlayer.slot)
-                      .join(MatchPlayer, MatchPlayer.id == ReplayPlayer.match_player_id)
+                      .join(Replay, Replay.id == ReplayPlayer.replay_id)
+                      .join(MatchPlayer, and_(MatchPlayer.id == ReplayPlayer.match_player_id,
+                                              MatchPlayer.match_id == Replay.match_id))
                       .filter(ReplayPlayer.replay_id.in_(replay_ids), MatchPlayer.player_id.in_(player_ids))):
         out[rid].add(int(slot))
     return dict(out)
@@ -396,6 +399,19 @@ def route_distance_m(a, b, m_per_px: float) -> float:
     return sum(math.dist(p, q) for p, q in zip(a, b)) / len(a) * m_per_px
 
 
+def _within(founder, pts, m_per_px: float, limit_px: float) -> bool:
+    """route_distance_m(founder, pts) <= SHAPE_THRESHOLD_M, stopping once the running sum of point distances
+    passes `limit_px` (SHAPE_THRESHOLD_M / m_per_px * SHAPE_POINTS, with a hair of slack so float rounding can
+    never reject a pair the full test would accept). A pair that survives gets the full test, so the answer is
+    always route_distance_m's."""
+    total = 0.0
+    for p, q in zip(founder, pts):
+        total += math.dist(p, q)
+        if total > limit_px:
+            return False
+    return route_distance_m(founder, pts, m_per_px) <= SHAPE_THRESHOLD_M
+
+
 def shape_selection(rows: list[dict]) -> tuple[dict[str, list[dict]], dict[str, bool]]:
     """The empty-sequence rows per side ("attack", "defense", "none"), in the fixed order (match date, replay id,
     round, seq), cut to the SHAPE_CAP most recent; and which sides were cut."""
@@ -415,19 +431,21 @@ def shape_groups(rows: list[dict], m_per_px: float, cut: dict[str, bool] | None 
     """{side: {"groups": [...], "cut", "rows", "no_route"}} for the empty choke sequence: greedy, in the fixed
     order, a route joins the first group whose founding route is within SHAPE_THRESHOLD_M (mean distance of the
     16 matching points, in metres), else founds a new group. Rows need `route`. Each group has its figures, its
-    rows' links and their resampled points (minimap pixels) for drawing."""
+    rows' links and their resampled points (minimap pixels) for drawing. `no_route` counts the rows without a
+    stored route by kind ({"predicted": n, "backshot": n}): the kinds are never summed."""
     chosen, was_cut = shape_selection(rows)
+    limit_px = SHAPE_THRESHOLD_M / m_per_px * SHAPE_POINTS * (1 + 1e-9)
     out = {}
     for side, members in chosen.items():
         groups: list[dict] = []
-        no_route = 0
+        no_route = {"predicted": 0, "backshot": 0}
         for row in members:
             pts = resample(row.get("route"))
             if pts is None:
-                no_route += 1
+                no_route["backshot" if row["kind"] == "backshot" else "predicted"] += 1
                 continue
             for g in groups:
-                if route_distance_m(g["founder"], pts, m_per_px) <= SHAPE_THRESHOLD_M:
+                if _within(g["founder"], pts, m_per_px, limit_px):
                     g["members"].append((row, pts))
                     break
             else:

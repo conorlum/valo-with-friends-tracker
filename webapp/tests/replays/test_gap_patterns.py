@@ -2,6 +2,7 @@
 its review amendments). SQLite, no engine and no detector: replays, control rows, gap runs and gap rows are
 written by hand in their stored shapes."""
 
+import random
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -264,6 +265,19 @@ def test_friend_slots_maps_players_to_slots(friends_world):
     assert gp.friend_slots(w["db"], [], {w["viewer"]}) == {} and gp.friend_slots(w["db"], [w["a"].id], set()) == {}
 
 
+def test_a_stale_match_player_from_an_earlier_link_does_not_count(friends_world):
+    w = friends_world
+    db, a = w["db"], w["a"]
+    # Re-linked to another match, its replay_players still point at the old match's players.
+    other = Match(external_id=uuid.uuid4().hex, source=MatchSource.SCRAPED, map_name=MAP, played_at=T0)
+    db.add(other)
+    db.flush()
+    a.match_id = other.id
+    db.commit()
+    assert gp.friend_slots(db, [a.id], {w["viewer"], w["friend"]}) == {}
+    assert seqs(page(db, w["viewer"], pop="friends")) == []
+
+
 # ---------------------------------------------------------------- each filter
 
 
@@ -347,8 +361,8 @@ def test_predicted_count_sorts_before_backshot_count():
 # ---------------------------------------------------------------- route shape
 
 
-def shape_row(seq, route, side="attack", days=0, replay_id=1):
-    return {"choke_seq": [], "victim_side": side, "kind": "predicted", "cause": None, "stood_at": None,
+def shape_row(seq, route, side="attack", days=0, replay_id=1, kind="predicted"):
+    return {"choke_seq": [], "victim_side": side, "kind": kind, "cause": None, "stood_at": None,
             "shot_at": None, "killed_at": None, "linked_seq": None, "context": None, "match_uuid": "u",
             "round_number": 1, "seq": seq, "t_open": 1.0, "replay_id": replay_id,
             "sort_date": T0 + timedelta(days=days), "route": route}
@@ -373,13 +387,40 @@ def test_similar_routes_group_and_a_distant_one_does_not():
             shape_row(5, [])]                                                                 # no route
     out = gp.shape_groups(rows, m_per_px=0.1)
     attack = out["attack"]
-    assert [g["n"] for g in attack["groups"]] == [2, 1] and attack["no_route"] == 1 and attack["cut"] is False
+    assert [g["n"] for g in attack["groups"]] == [2, 1] and attack["cut"] is False
+    assert attack["no_route"] == {"predicted": 1, "backshot": 0}             # by kind, never summed
     assert [r["seq"] for r in attack["groups"][0]["rounds"]] == [0, 1]
     assert len(attack["groups"][0]["rounds"][0]["points"]) == 16
     assert attack["groups"][0]["predicted"]["n"] == 2
     assert [g["n"] for g in out["defense"]["groups"]] == [1] and [g["n"] for g in out["none"]["groups"]] == [1]
     assert all(r["choke_seq"] == [] for r in rows)
     assert gp.shape_groups([dict(rows[0], choke_seq=[1])], 0.1) == {}
+
+
+def test_the_early_exit_gives_the_same_groups_as_the_full_distance():
+    rng = random.Random(7)
+    rows = []
+    for i in range(300):
+        x, y = rng.choice([(100, 100), (500, 500), (800, 200)])
+        pts = [[float(t), x + 12 * t + rng.uniform(-30, 30), y + rng.uniform(-30, 30)] for t in range(rng.randint(1, 6))]
+        rows.append(shape_row(i, [pts], side=rng.choice(["attack", "defense"]),
+                              kind=rng.choice(["predicted", "backshot"])))
+    for scale in (0.05, 0.1, 0.13):
+        groups = {}
+        for row in sorted(rows, key=gp._order):          # the reference: greedy on route_distance_m alone
+            pts = gp.resample(row["route"])
+            side = groups.setdefault(row["victim_side"], [])
+            for g in side:
+                if gp.route_distance_m(g[0], pts, scale) <= gp.SHAPE_THRESHOLD_M:
+                    g.append(pts)
+                    break
+            else:
+                side.append([pts])
+        out = gp.shape_groups(rows, scale)
+        for side, expected in groups.items():
+            got = out[side]["groups"]
+            assert [g["n"] for g in got] == [len(g) for g in expected]
+            assert len(got) > 1 and any(g["n"] > 1 for g in got)
 
 
 def test_shape_grouping_cuts_to_the_most_recent_rows(monkeypatch):

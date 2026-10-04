@@ -51,13 +51,13 @@ def engine_key(control_fingerprint: str, map_name: str) -> str:
 _UNSET = object()
 
 
-def gap_fingerprint(control_fingerprint: str, map_name: str, *, chokes=_UNSET, hearing: str | None = None) -> str:
+def gap_fingerprint(control_fingerprint: str, map_name: str, *, chokes=_UNSET, hearing=_UNSET) -> str:
     """A round's gap run is current while this matches: the control fingerprint, GAPS_REVISION, the map's choke
     asset hash and the hearing table's hash (section 7, "Freshness"). A caller fingerprinting many rounds passes
     `chokes` (asset_hash(map_name), which may be None) and `hearing` (hearing_hash()) once (the pattern page)."""
     if chokes is _UNSET:
         chokes = choke_assets.asset_hash(map_name)
-    if hearing is None:
+    if hearing is _UNSET:
         hearing = hearing_hash()
     return _hex16(f"{control_fingerprint}|{GAPS_REVISION}|{chokes}|{hearing}")
 

@@ -2,6 +2,15 @@
 
 {% block title %}{{ map_name }} gap patterns - {{ site_name }}{% endblock %}
 
+{% macro count(n, one, many) -%}{{ n }} {{ one if n == 1 else many }}{%- endmacro %}
+
+{% macro kinds(c) -%}
+{%- set parts = [] -%}
+{%- if c.predicted %}{% set _ = parts.append(count(c.predicted, 'predicted gap', 'predicted gaps')) %}{% endif -%}
+{%- if c.backshot %}{% set _ = parts.append(count(c.backshot, 'shot from behind', 'shots from behind')) %}{% endif -%}
+{{ parts | join(' and ') }}
+{%- endmacro %}
+
 {% macro share(s, filtered=False) -%}
 {%- if filtered -%}<span title="The filter keeps only these">all, by the filter</span>
 {%- else -%}{{ s.k }} / {{ s.n }}{%- endif -%}
@@ -16,7 +25,7 @@
 <td>{% if pred.cause %}{{ cause_words.get(pred.cause.name, pred.cause.name) }} ({{ pred.cause.k }} / {{ pred.cause.n }}){% else %}&ndash;{% endif %}</td>
 <td>{% if pred.median_t_round is not none %}{{ pred.median_t_round }} s (of {{ pred.t_round_n }}){% else %}&ndash;{% endif %}</td>
 <td data-sort-value="{{ back.n }}">{{ back.n }}</td>
-<td>{{ back.linked }} / {{ back.standalone }}</td>
+<td>{{ back.linked }} linked, {{ back.standalone }} standalone (of {{ back.n }})</td>
 <td>{{ share(back.killed, filters.use == 'killed') }}</td>
 {%- endmacro %}
 
@@ -44,10 +53,10 @@
 
 {% set r = data.rounds %}
 <p class="page-meta" data-gaps-rounds>
-  {{ r.counted }} rounds from {{ r.replays }} replays count.
+  {{ count(r.counted, 'round', 'rounds') }} from {{ count(r.replays, 'replay', 'replays') }} {{ 'counts' if r.counted == 1 else 'count' }}.
   Left out: {{ r.left_out.stale }} stale (worked out under older rules or older chokes),
   {{ r.left_out.failed }} failed, {{ r.left_out.not_computed }} not worked out yet.
-  {% if r.old_blob %}{{ r.old_blob }} rounds from replays too old to work out are not counted.{% endif %}
+  {% if r.old_blob %}{{ count(r.old_blob, 'round', 'rounds') }} from replays too old to work out {{ 'is' if r.old_blob == 1 else 'are' }} not counted.{% endif %}
 </p>
 
 <form method="get" action="/gaps/{{ map_name | urlencode }}" class="card gaps-filters" data-gaps-filters>
@@ -115,11 +124,20 @@
   {% else %}
   Everyone: every counted round.
   {% endif %}
-  {{ rows.total }} match the filters ({{ rows.predicted }} predicted gaps, {{ rows.backshot }} shots from behind; never added together).
-  {% if rows.unknown_seq %}{{ rows.unknown_seq }} shots from behind whose route could not be traced are left out.{% endif %}
+  Matching the filters: {{ count(rows.predicted, 'predicted gap', 'predicted gaps') }} and {{ count(rows.backshot, 'shot from behind', 'shots from behind') }} (counted apart).
+  {% if rows.unknown_seq %}{{ count(rows.unknown_seq, 'shot from behind', 'shots from behind') }} whose route could not be traced {{ 'is' if rows.unknown_seq == 1 else 'are' }} left out.{% endif %}
 </p>
 
 <div class="gaps-layout">
+  <div class="card gaps-map-card" data-gaps-map-panel>
+    <canvas width="512" height="512" class="gaps-map" data-gaps-canvas></canvas>
+    <div class="gaps-map-info">
+      <h2 data-gaps-selected-label>Pick a route to draw it</h2>
+      <p class="page-meta" data-gaps-status aria-live="polite"></p>
+      <ol class="gaps-rounds" data-gaps-rounds-list></ol>
+    </div>
+  </div>
+
   <div class="gaps-tables">
     <div class="card">
       <h2>Routes through chokes</h2>
@@ -159,7 +177,7 @@
       {% for s in shapes %}
       <h3>{{ s.side_words | capitalize }}</h3>
       {% if s.cut %}<p class="page-meta">Only the {{ data.shape_cap }} most recent of these were grouped.</p>{% endif %}
-      {% if s.no_route %}<p class="page-meta">{{ s.no_route }} without a stored route are left out.</p>{% endif %}
+      {% if s.no_route.predicted or s.no_route.backshot %}<p class="page-meta" data-gaps-no-route>Left out, with no stored route: {{ kinds(s.no_route) }}.</p>{% endif %}
       <table class="gaps-patterns">
         {{ table_head("Shape group") }}
         <tbody>
@@ -177,13 +195,6 @@
       <p class="page-meta">No route through no choke matches these filters.</p>
       {% endif %}
     </div>
-  </div>
-
-  <div class="card gaps-map-card">
-    <h2 data-gaps-selected-label>Pick a route to draw it</h2>
-    <canvas width="512" height="512" class="gaps-map" data-gaps-canvas></canvas>
-    <p class="page-meta" data-gaps-status aria-live="polite"></p>
-    <ol class="gaps-rounds" data-gaps-rounds-list></ol>
   </div>
 </div>
 

@@ -165,7 +165,7 @@ def test_the_thin_data_line_and_the_left_out_counts(db, monkeypatch, captured):
     gap(db, replay, 1, 0)
     html = page_html(db, monkeypatch, captured)
     assert routes.THIN_DATA_NOTE in html and "not conclusions" in html
-    assert "1 rounds from 1 replays count." in html
+    assert "1 round from 1 replay counts." in html
     assert "Left out: 2 stale" in html and "1 failed, 1 not worked out yet" in html
 
 
@@ -185,9 +185,30 @@ def test_the_patterns_table_shows_names_and_every_n(db, monkeypatch, captured):
     assert "1 / 2" in row                                 # stood there
     assert "the player turned away (2 / 2)" in row
     assert "1 / 1" in row                                 # the back-shot killed
+    assert "1 linked, 0 standalone (of 1)" in row
     assert "no choke, shape group 1" in html and 'data-shape="attack-1"' in html
+    # predicted gaps and back-shots are counted apart, never added together, with singular nouns for 1
+    assert "Matching the filters: 3 predicted gaps and 1 shot from behind (counted apart)." in html
+    assert "match the filters (" not in html and "never added together" not in html
+    # the map panel comes before the tables
+    assert html.index("data-gaps-map-panel") < html.index("data-gaps-patterns")
     drawing = json.loads(html.split('id="gaps-drawing">', 1)[1].split("</script>", 1)[0])
     assert drawing["map"] == MAP and len(drawing["shapes"]["attack-1"][0]["points"]) == service.SHAPE_POINTS
+
+
+def test_left_out_rows_are_counted_by_kind_in_words(db, monkeypatch, captured):
+    replay = make_replay(db, rounds=1)
+    put_run(db, replay, 1)
+    gap(db, replay, 1, 0, choke_seq=[], route=[[[0.0, 100, 100], [1.0, 300, 100]]])
+    gap(db, replay, 1, 1, choke_seq=[], route=[])                          # no stored route
+    gap(db, replay, 1, 2, choke_seq=[], route=[])
+    gap(db, replay, 1, 3, kind="backshot", choke_seq=[], route=[])
+    gap(db, replay, 1, 4, kind="backshot", choke_seq=None)                 # route not traced
+    html = page_html(db, monkeypatch, captured)
+    assert captured["context"]["data"]["shapes"]["attack"]["no_route"] == {"predicted": 2, "backshot": 1}
+    assert "Left out, with no stored route: 2 predicted gaps and 1 shot from behind." in html
+    assert "1 shot from behind whose route could not be traced is left out." in html
+    assert "Matching the filters: 3 predicted gaps and 2 shots from behind (counted apart)." in html
 
 
 def test_a_filtered_level_says_so_instead_of_a_share(db, monkeypatch, captured):
@@ -210,6 +231,13 @@ def test_route_labels():
     assert routes.route_label([], chokes) == "no choke"
     assert routes.parse_seq("") == [] and routes.parse_seq("3-12") == [3, 12]
     assert routes.parse_seq("a-1") is None and routes.parse_seq("1--2") is None and routes.parse_seq(None) is None
+
+
+@pytest.mark.parametrize("value", ["²", "1-²", "١٢", "1-٣", "１", "1-", "-1", " 1", "1\n"])
+def test_parse_seq_takes_ascii_digits_only(db, monkeypatch, value):
+    assert routes.parse_seq(value) is None
+    logged_in_as(monkeypatch, None)
+    assert routes.gaps_routes(request({"seq": value}), MAP, db).status_code == 400
 
 
 # ---------------------------------------------------------------- routes.json
@@ -271,7 +299,11 @@ def test_the_drawing_helpers_in_node():
         empty: G.routesUrl("Ascent", "", {}),
         link: G.roundLink({match_uuid: "abc", round: 7, t_open: 12.5}),
         labels: G.chokeLabels([3, 9, 3], {"3": {name: "Mid", x: 1, y: 2}}),
-        seq: [G.seqOf(""), G.seqOf("4-10")]
+        seq: [G.seqOf(""), G.seqOf("4-10")],
+        plural: [G.plural(1, "shot", "shots"), G.plural(0, "shot", "shots"), G.plural(2, "shot", "shots")],
+        onMap: G.onMapText([{kind: "predicted"}, {kind: "predicted"}, {kind: "backshot"}]),
+        onMapOne: G.onMapText([{kind: "predicted"}]),
+        onMapNone: G.onMapText([])
       }));
     """
     completed = subprocess.run([NODE, "-e", script, str(PATTERNS_JS)], capture_output=True, text=True,
@@ -286,3 +318,7 @@ def test_the_drawing_helpers_in_node():
     assert got["link"] == "/replays/abc?round=7&t=12.5"
     assert got["labels"] == [{"id": 3, "name": "Mid", "x": 1, "y": 2}]
     assert got["seq"] == [[], [4, 10]]
+    assert got["plural"] == ["1 shot", "0 shots", "2 shots"]
+    assert got["onMap"] == "2 predicted gaps (amber) and 1 shot from behind (magenta) on the map"
+    assert got["onMapOne"] == "1 predicted gap (amber) and 0 shots from behind (magenta) on the map"
+    assert got["onMapNone"] == "0 predicted gaps (amber) and 0 shots from behind (magenta) on the map"
