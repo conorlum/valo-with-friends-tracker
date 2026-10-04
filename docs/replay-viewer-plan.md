@@ -1661,6 +1661,9 @@ and trade links (the round page has none).
    - the size cap becomes max(80 MB, 2× the largest observed file), and the timeout becomes max(180 s, 3× the
      slowest observed parse in the worker);
    - revisit both after the first real uploads.
+   - 2026-10-04: the hourly cap is removed (user decision). It only got in the way of uploading a backlog, and the
+     5-at-a-time batch limit already protects the worker. On Render it was also probably site-wide rather than
+     per person, because `request.client.host` is the proxy's address.
 
 ## Risks
 

@@ -116,29 +116,25 @@ def test_a_text_file_and_an_oversized_file_are_refused_with_a_reason(db, monkeyp
     assert db.query(ReplayUpload).count() == 0
 
 
-def test_the_eleventh_upload_in_an_hour_and_a_sixth_unfinished_one_are_refused(db):
+def test_many_finished_uploads_are_fine_but_a_sixth_unfinished_one_is_refused(db):
     now = datetime.now(timezone.utc)
-    for i in range(uploads.UPLOADS_PER_HOUR):
+    # No hourly cap: any number of finished uploads from one session in the last hour is fine.
+    for i in range(20):
         db.add(ReplayUpload(id=f"00000000-0000-4000-8000-{i:012d}", status="stored", session_key="s",
                             client_ip="ip", created_at=now - timedelta(minutes=5)))
     db.commit()
-    with pytest.raises(uploads.LimitExceeded, match="an hour"):
-        uploads.check_limits(db, "s", "other-ip")
-    with pytest.raises(uploads.LimitExceeded, match="an hour"):
-        uploads.check_limits(db, "other-session", "ip")  # per IP too
-    uploads.check_limits(db, "other-session", "other-ip")
-    uploads.check_limits(db, "s", "ip", now=now + timedelta(hours=2))  # an hour later it's fine again
+    uploads.check_limits(db, "s")
     # A batch: up to MAX_UNFINISHED of one session's uploads may be in progress at once.
     for i in range(uploads.MAX_UNFINISHED - 1):
         db.add(ReplayUpload(id=f"00000000-0000-4000-8000-0000000ff{i:03d}", status="parsing", session_key="t",
                             client_ip=f"x{i}", created_at=now - timedelta(hours=3)))
     db.commit()
-    uploads.check_limits(db, "t", "y")
+    uploads.check_limits(db, "t")
     db.add(ReplayUpload(id="00000000-0000-4000-8000-00000000ffff", status="queued", session_key="t",
                         client_ip="x", created_at=now - timedelta(hours=3)))
     db.commit()
     with pytest.raises(uploads.LimitExceeded, match=f"{uploads.MAX_UNFINISHED} uploads at a time"):
-        uploads.check_limits(db, "t", "y")
+        uploads.check_limits(db, "t")
 
 
 def test_an_upload_parses_on_the_worker_and_is_stored_unlinked(db, tmp_path, stub):  # noqa: F811
