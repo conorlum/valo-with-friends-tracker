@@ -42,7 +42,9 @@
         gaps: true,
         loadGaps: function (n) {
           return fetch("/replays/" + match.uuid + "/" + n + "/gaps.json").then(function (r) {
-            if (r.status !== 200) return { status: "error", stale: false, rows: [], chokes: {} };
+            // a 404 (no layer for this replay) is an answer; anything else (a 5xx) throws, so it's asked again
+            if (r.status === 404) return { status: "error", stale: false, rows: [], chokes: {} };
+            if (r.status !== 200) throw new Error("gaps.json " + r.status);
             return r.json();
           });
         }{% endif %}
