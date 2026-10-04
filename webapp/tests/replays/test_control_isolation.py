@@ -61,7 +61,8 @@ def test_the_web_apps_control_views_import_nothing_heavy():
                  WEBAPP / "app" / "routers" / "replays.py",
                  WEBAPP / "app" / "services" / "replay_gaps.py",
                  WEBAPP / "app" / "services" / "replay_gaps_store.py",
-                 WEBAPP / "app" / "services" / "replay_gaps_view.py"):
+                 WEBAPP / "app" / "services" / "replay_gaps_view.py",
+                 WEBAPP / "app" / "services" / "gap_patterns.py"):
         bad = {name for name in _imports(path)
                if name.split(".")[0] in HEAVY or name.startswith(("app.control", "app.gaps"))}
         assert not bad, f"{path.name} imports {sorted(bad)}"
@@ -70,6 +71,16 @@ def test_the_web_apps_control_views_import_nothing_heavy():
 def test_the_gap_view_rows_load_no_engine_detector_or_numpy():
     # The standalone page and the gaps.json endpoint use replay_gaps_view; it must not pull these in indirectly.
     code = ("import sys, app.services.replay_gaps_view; "
+            "print(sorted(m for m in sys.modules if m.split('.')[0] in ('numpy', 'scipy', 'PIL') "
+            "or m.startswith(('app.control', 'app.gaps'))))")
+    out = subprocess.run([sys.executable, "-c", code], cwd=WEBAPP, capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().splitlines()[-1] == "[]"
+
+
+def test_the_gap_pattern_service_loads_no_engine_detector_or_numpy():
+    # The pattern page (plan 3, review amendment 7): standard library and the DB only, indirectly too.
+    code = ("import sys, app.services.gap_patterns; "
             "print(sorted(m for m in sys.modules if m.split('.')[0] in ('numpy', 'scipy', 'PIL') "
             "or m.startswith(('app.control', 'app.gaps'))))")
     out = subprocess.run([sys.executable, "-c", code], cwd=WEBAPP, capture_output=True, text=True, timeout=120)
