@@ -513,7 +513,7 @@
 
   // ------------------------------------------------------------ the viewer
 
-  var LAYERS = ["names", "abilities", "tracers", "cones", "control"];
+  var LAYERS = ["names", "abilities", "tracers", "cones", "control", "gaps"];
   var CONTROL_KEEP = 3;    // rounds of decoded control kept: the current one and its neighbours
   var CONTROL_PX = 512;    // the layer's offscreen image (4 px a cell)
   var CONTROL_STATUS = {
@@ -526,6 +526,20 @@
   function controlApi() {
     if (global.ReplayControl) return global.ReplayControl;
     return typeof require === "function" ? require("./replay_control.js") : null;
+  }
+
+  // Timing gaps (docs/superpowers/plans/2026-10-04-timing-gaps-viewer.md, section 3): the logic is in
+  // replay_gaps.js; this file only hooks it in.
+  var GAPS_STATUS = {
+    not_computed: "Gaps: not computed for this round yet.",
+    failed: "Gaps: couldn't be computed for this round.",
+    stale: "Gaps: stale, computed under older rules.",
+    error: "Gaps couldn't be loaded."
+  };
+
+  function gapsApi() {
+    if (global.ReplayGaps) return global.ReplayGaps;
+    return typeof require === "function" ? require("./replay_gaps.js") : null;
   }
   var TRACER_S = 0.25;     // a shot's tracer fades over this long
   var KILL_LINE_S = 1.5;   // a kill's killer-to-victim line fades over this long
@@ -541,7 +555,13 @@
     this.playing = false;
     this.current = null;
     this.icons = {};
-    this.layers = { names: true, abilities: true, tracers: true, cones: true, control: false };
+    this.layers = { names: true, abilities: true, tracers: true, cones: true, control: false, gaps: false };
+    // Timing gaps: off by default; the page sets options.gaps when it offers the layer.
+    this.gaps = !!(options.gaps && options.loadGaps && gapsApi());
+    this.gapsCache = {};                           // round -> Promise of {status, stale, rows, chokes}
+    this.gapsReady = {};                           // round -> that value, once loaded
+    this.gapsFlickers = false;                     // the "show flickers" switch
+    this.gapsHover = null;                         // the seq of the list row under the pointer
     // Map control (Stage 4): off by default; the page's match.control says the map has it.
     this.control = options.control && options.loadControl && controlApi() ? options.control : null;
     this.controlCache = this.control ? new (controlApi().ControlCache)(options.loadControl, CONTROL_KEEP) : null;
@@ -682,6 +702,8 @@
       self.controlPaint = null;
       self.refreshControl();
       self.renderControlTable();
+      self.gapsHover = null;
+      self.refreshGaps();
       self.updateControls();
       self.draw();
       var next = self.rounds[self.rounds.indexOf(n) + 1];
@@ -783,10 +805,13 @@
         self.layers[name] = box.checked;
         try { global.localStorage.setItem("replay-layer-" + name, box.checked ? "1" : "0"); } catch (err) { /* ignore */ }
         if (name === "control") self.refreshControl();
+        if (name === "gaps") self.refreshGaps();
         self.draw();
       });
     });
     if (!this.control) this.layers.control = false;
+    if (!this.gaps) this.layers.gaps = false;
+    this.bindGaps();
     this.controlView = "true";
     this.ui.controlView = q("[data-replay-control-view]");
     this.ui.controlViewWrap = q("[data-replay-control-view-wrap]");
@@ -859,6 +884,7 @@
     });
     this.tab = name;
     if (name === "control") this.loadControlTables();
+    if (name === "gaps") this.refreshGaps();
   };
 
   ReplayViewer.prototype.step = function (delta) {
@@ -1124,6 +1150,7 @@
       var nowTick = value ? controlApi().tickAt(value.parsed.times, t) : null;
       if (nowTick !== this.controlNowTick) { this.controlNowTick = nowTick; this.renderControlTable(); }
     }
+    this.markOpenGaps();
     if (this.ui.nextKill) this.ui.nextKill.disabled = nextKillTime(blob.kills, t) === null;
     if (this.ui.prevKill) this.ui.prevKill.disabled = prevKillTime(blob.kills, t) === null;
     if (this.ui.badge) {
@@ -1748,6 +1775,242 @@
     });
   };
 
+  // ------------------------------------------------------------ timing gaps (hooks; logic in replay_gaps.js)
+
+  ReplayViewer.prototype.bindGaps = function () {
+    var self = this, q = function (sel) { return self.root.querySelector(sel); };
+    this.ui.gapsList = q("[data-replay-gaps-list]");
+    this.ui.gapsLegend = q("[data-replay-gaps-legend]");
+    this.ui.gapsFlickers = q("[data-replay-gaps-flickers]");
+    if (!this.gaps) return;
+    if (this.ui.gapsFlickers) {
+      this.ui.gapsFlickers.checked = false;
+      this.ui.gapsFlickers.addEventListener("change", function () {
+        self.gapsFlickers = self.ui.gapsFlickers.checked;
+        self.renderGapsList();
+        self.draw();
+      });
+    }
+    var list = this.ui.gapsList;
+    if (!list) return;
+    var go = function (e) {
+      var row = e.target.closest("[data-gap-seq]");
+      if (!row || (e.type === "keydown" && e.key !== "Enter")) return;
+      if (e.type === "keydown") e.preventDefault();
+      self.setLayer("gaps", true);
+      // Exactly t_open, not a little before: a predicted gap is drawn only from t_open, so a paused viewer
+      // lands on the moment it opened with the gap on the map.
+      self.seek(Number(row.getAttribute("data-seek-t")));
+    };
+    list.addEventListener("click", go);
+    list.addEventListener("keydown", go);
+    var hover = function (e) {
+      var row = e.target.closest && e.target.closest("[data-gap-seq]");
+      var seq = row ? Number(row.getAttribute("data-gap-seq")) : null;
+      if (seq !== self.gapsHover) { self.gapsHover = seq; self.draw(); }
+    };
+    list.addEventListener("mouseover", hover);
+    list.addEventListener("focusin", hover);
+    list.addEventListener("mouseleave", function () { if (self.gapsHover !== null) { self.gapsHover = null; self.draw(); } });
+    list.addEventListener("focusout", function (e) {
+      if (!list.contains(e.relatedTarget) && self.gapsHover !== null) { self.gapsHover = null; self.draw(); }
+    });
+  };
+
+  // Turns a layer on or off as its checkbox would, remembering it the same way.
+  ReplayViewer.prototype.setLayer = function (name, on) {
+    var box = this.root.querySelector('[data-replay-layer="' + name + '"]');
+    if (box) box.checked = on;
+    if (this.layers[name] === on) return;
+    this.layers[name] = on;
+    try { global.localStorage.setItem("replay-layer-" + name, on ? "1" : "0"); } catch (err) { /* ignore */ }
+    if (name === "gaps") this.refreshGaps();
+    this.draw();
+  };
+
+  ReplayViewer.prototype.setGapsStatus = function (text) {
+    Array.prototype.forEach.call(this.root.querySelectorAll("[data-replay-gaps-status]"), function (el) {
+      el.textContent = text || "";
+    });
+  };
+
+  ReplayViewer.prototype.loadGapsFor = function (n) {
+    var self = this;
+    if (!this.gapsCache[n]) {
+      this.gapsCache[n] = Promise.resolve(this.options.loadGaps(n)).then(function (value) {
+        value = value || { status: "not_computed", rows: [], chokes: {} };
+        self.gapsReady[n] = value;
+        return value;
+      }, function () {
+        delete self.gapsCache[n];               // ask again next time
+        return { status: "error", rows: [], chokes: {} };
+      });
+    }
+    return this.gapsCache[n];
+  };
+
+  // Loads the current round's gaps when the layer is on or the Gaps tab is open, then the status line and
+  // the list follow.
+  ReplayViewer.prototype.refreshGaps = function () {
+    if (!this.gaps || !this.current) return;
+    if (this.ui.gapsLegend) this.ui.gapsLegend.hidden = !this.layers.gaps;
+    if (!this.layers.gaps && this.tab !== "gaps") return;
+    var self = this, n = this.number;
+    if (!this.gapsReady[n]) {
+      this.setGapsStatus("Loading gaps…");
+      if (this.ui.gapsList) this.ui.gapsList.innerHTML = "";
+    }
+    this.loadGapsFor(n).then(function (value) {
+      if (self.number !== n) return;
+      var status = value.status === "ok" && value.stale ? "stale" : value.status;
+      self.setGapsStatus(status === "ok" ? "" : GAPS_STATUS[status] || GAPS_STATUS.error);
+      self.renderGapsList();
+      self.draw();
+    });
+  };
+
+  ReplayViewer.prototype.renderGapsList = function () {
+    var list = this.ui.gapsList, value = this.gapsReady[this.number], self = this;
+    if (!list || !value) return;
+    var G = gapsApi(), chokes = value.chokes || {};
+    var rows = G.listRows(value.rows, this.gapsFlickers);
+    if (!rows.length) {
+      var none = value.status === "ok" || value.status === "stale"
+        ? ((value.rows || []).length ? "Only flickers (open under 1 s) in this round." : "No gaps in this round.") : "";
+      list.innerHTML = none ? '<p class="replay-feed-empty">' + none + "</p>" : "";
+      return;
+    }
+    var nameOf = function (slot) { return self.nameOf(slot).split("#")[0]; };
+    var head = "<thead><tr><th>When (s after the barriers dropped)</th><th>Exposed player</th><th>Could have been</th>" +
+      "<th>Route (chokes crossed)</th><th>Why it opened</th><th>What happened</th></tr></thead>";
+    list.innerHTML = '<table class="replay-gaps-table">' + head + "<tbody>" + rows.map(function (row) {
+      var d = G.describe(row, nameOf, chokes), mark = G.markOf(row);
+      return '<tr class="replay-gaps-row is-' + mark + (row.flicker ? " is-flicker" : "") + '" data-gap-seq="' + row.seq +
+        '" data-seek-t="' + row.t_open + '" tabindex="0" title="' + escapeHtml(G.summary(row, nameOf, chokes)) + '">' +
+        "<td>" + escapeHtml(d.when) + ' <span class="replay-gaps-kind replay-gaps-kind-' + mark + '">' +
+        escapeHtml(d.kind) + "</span></td><td>" + escapeHtml(d.who) + "</td><td>" + escapeHtml(d.could) + "</td><td>" +
+        escapeHtml(d.route) + "</td><td>" + escapeHtml(d.why) + "</td><td>" + escapeHtml(d.happened) + "</td></tr>";
+    }).join("") + "</tbody></table>";
+    this.markOpenGaps();
+  };
+
+  // The list rows whose gap is open at the current time get .is-open.
+  ReplayViewer.prototype.markOpenGaps = function () {
+    var list = this.ui && this.ui.gapsList, value = this.gaps && this.gapsReady[this.number];
+    if (!list || !value) return;
+    var open = {};
+    gapsApi().openAt(value.rows, this.t, this.gapsFlickers).forEach(function (row) { open[row.seq] = true; });
+    Array.prototype.forEach.call(list.querySelectorAll("[data-gap-seq]"), function (el) {
+      el.classList.toggle("is-open", !!open[el.getAttribute("data-gap-seq")]);
+    });
+  };
+
+  // The gaps open now (when the layer is on), and the list row under the pointer at full strength
+  // whether or not it is open now, with its chokes named.
+  ReplayViewer.prototype.drawGaps = function (ctx, size, hits) {
+    if (!this.gaps || !this.current) return;
+    var value = this.gapsReady[this.number];
+    if (!value || !(value.rows || []).length) return;
+    var G = gapsApi(), self = this, t = this.t, hoverSeq = this.gapsHover;
+    var shown = this.layers.gaps ? G.openAt(value.rows, t, this.gapsFlickers) : [];
+    var hover = hoverSeq === null ? null : value.rows.filter(function (row) { return row.seq === hoverSeq; })[0] || null;
+    if (hover && shown.indexOf(hover) < 0) shown = shown.concat([hover]);
+    var r = size / 48 / Math.sqrt(this.view.k);
+    var colors = {
+      used: this.css("--replay-gap-used", "#ef4b4b"), unused: this.css("--replay-gap-unused", "#e8b04a"),
+      backshot: this.css("--replay-gap-backshot", "#e04fd8")
+    };
+    shown.forEach(function (row) {
+      self.drawGap(ctx, size, r, row, value.chokes || {}, colors, hover && row !== hover ? 0.35 : 1, hits || []);
+    });
+  };
+
+  ReplayViewer.prototype.drawGap = function (ctx, size, r, row, chokes, colors, alpha, hits) {
+    var G = gapsApi(), self = this, mark = G.markOf(row), color = colors[mark];
+    var px = function (xy) { return G.toCanvas(xy, size); };
+    var pieces = (row.route || []).map(function (piece) {
+      return piece.map(function (pt) { return px([pt[1], pt[2]]); });
+    }).filter(function (piece) { return piece.length; });
+    var nameOf = function (slot) { return self.nameOf(slot).split("#")[0]; };
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    // The victim's back: a wedge from their dot (live now if the gap is open now, else at its opening).
+    var open = G.openAt([row], this.t, true).length > 0;
+    var at = trackAt(this.current.tracks[String(row.victim_slot)], open ? this.t : row.t_open);
+    if (at) {
+      var vx = at.u * size / UV, vy = at.v * size / UV, arc = G.rearArc(at.yaw);
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.22;
+      ctx.beginPath(); ctx.moveTo(vx, vy); ctx.arc(vx, vy, r * 3.2, arc[0], arc[1]); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+    // The route (a predicted gap's modelled route; a back-shot's real path, piece by piece).
+    ctx.lineWidth = Math.max(2, r / 5);
+    ctx.setLineDash(mark === "unused" ? [r / 2, r / 3] : []);
+    pieces.forEach(function (piece) {
+      ctx.beginPath();
+      ctx.moveTo(piece[0][0], piece[0][1]);
+      piece.slice(1).forEach(function (p) { ctx.lineTo(p[0], p[1]); });
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+    if (mark === "backshot" && pieces.length) {
+      var last = pieces[pieces.length - 1], tip = last[last.length - 1], from = last[Math.max(0, last.length - 2)];
+      var ang = Math.atan2(tip[1] - from[1], tip[0] - from[0]), k = r * 0.8;
+      ctx.beginPath();
+      ctx.moveTo(tip[0], tip[1]);
+      ctx.lineTo(tip[0] - k * Math.cos(ang - 0.45), tip[1] - k * Math.sin(ang - 0.45));
+      ctx.lineTo(tip[0] - k * Math.cos(ang + 0.45), tip[1] - k * Math.sin(ang + 0.45));
+      ctx.closePath(); ctx.fill();
+    }
+    // Each choke crossed: a short bar across the route and its name.
+    var flat = [].concat.apply([], pieces);
+    (row.choke_seq || []).forEach(function (id) {
+      var c = chokes[String(id)];
+      if (!c) return;
+      var p = px([c.x, c.y]), dir = 0, best = Infinity;
+      flat.forEach(function (q, i) {
+        var d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        if (d < best) {
+          best = d;
+          var a = flat[Math.max(0, i - 1)], b = flat[Math.min(flat.length - 1, i + 1)];
+          dir = Math.atan2(b[1] - a[1], b[0] - a[0]);
+        }
+      });
+      var nx = -Math.sin(dir) * r * 0.7, ny = Math.cos(dir) * r * 0.7;
+      ctx.lineWidth = Math.max(3, r / 3);
+      ctx.beginPath(); ctx.moveTo(p[0] - nx, p[1] - ny); ctx.lineTo(p[0] + nx, p[1] + ny); ctx.stroke();
+      var label = G.chokeName(id, chokes);
+      ctx.font = "600 " + Math.round(r * 0.7) + "px system-ui, sans-serif";
+      ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      var w = ctx.measureText(label).width + r * 0.4;
+      ctx.fillStyle = "rgba(10, 10, 12, 0.78)";
+      ctx.fillRect(p[0] + r * 0.8, p[1] - r * 0.45, w, r * 0.9);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(label, p[0] + r, p[1]);
+      ctx.fillStyle = color;
+    });
+    // An x where a teammate stopped watching (route_released).
+    if (row.released_xy) {
+      var rx = px(row.released_xy), e = r * 0.55;
+      ctx.lineWidth = Math.max(2.5, r / 4);
+      ctx.beginPath();
+      ctx.moveTo(rx[0] - e, rx[1] - e); ctx.lineTo(rx[0] + e, rx[1] + e);
+      ctx.moveTo(rx[0] + e, rx[1] - e); ctx.lineTo(rx[0] - e, rx[1] + e);
+      ctx.stroke();
+    }
+    // The spot (for a back-shot, the shooter's cell): a ring, and the tooltip.
+    var spot = px(row.spot_xy);
+    ctx.lineWidth = Math.max(2.5, r / 4);
+    ctx.setLineDash(mark === "unused" ? [r / 3, r / 4] : []);
+    ctx.beginPath(); ctx.arc(spot[0], spot[1], r * 0.9, 0, 2 * Math.PI); ctx.stroke();
+    ctx.restore();
+    hits.push({ x: spot[0], y: spot[1], r: r * 1.2, text: G.summary(row, nameOf, chokes) });
+  };
+
   function num(value) {
     return typeof value === "number" ? String(Math.round(value)) : "—";
   }
@@ -1950,6 +2213,7 @@
     var hits = [];
 
     this.drawControl(ctx, size, hits);   // map control: under everything else
+    this.drawGaps(ctx, size, hits);      // timing gaps: over control, under utility and players
 
     if (this.layers.abilities) {
       this.drawAbilities(ctx, s, r, hits);

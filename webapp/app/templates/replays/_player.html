@@ -1,5 +1,6 @@
-{# The replay player. Context: `replay` with map_name and round_numbers, `linked`, and `control`
-   (the page's match.control: set when the map has the control layer). Unlinked
+{# The replay player. Context: `replay` with map_name and round_numbers, `linked`, `control`
+   (the page's match.control: set when the map has the control layer) and `gaps` (optional, linked
+   only: set when the page offers the timing-gaps layer; absent means no Gaps layer). Unlinked
    (the standalone page) shows agents and side groups only; linked (the local preview route)
    adds names, the kill feed, the round scoreboard and the layer toggles. The page supplies the
    data and starts it. #}
@@ -61,6 +62,10 @@
         {% if not control.cover_reviewed %}<span class="replay-control-badge" title="This map's boxes and crates aren't tagged yet: sight passes through them, so control near them is too generous.">cover not reviewed</span>{% endif %}
         <span class="replay-control-status" data-replay-control-status aria-live="polite"></span>
         {% endif %}
+        {% if gaps %}
+        <label><input type="checkbox" data-replay-layer="gaps"> Gaps</label>
+        <span class="replay-control-status" data-replay-gaps-status aria-live="polite"></span>
+        {% endif %}
       </fieldset>
       {% if control %}
       <p class="replay-legend replay-control-legend" data-replay-control-legend hidden>
@@ -70,6 +75,18 @@
         <span class="replay-key replay-key-ctl-contested">Contested (both teams)</span>
         <span class="replay-key replay-key-ctl-unknown">Unknown (an enemy could be here; hatched in the enemy's colour)</span>
         <span class="replay-control-legend-note">Team colours as the players. Control is computed from true positions.</span>
+      </p>
+      {% endif %}
+      {% if gaps %}
+      <p class="replay-legend replay-gaps-legend" data-replay-gaps-legend hidden>
+        <span class="replay-key replay-key-gap-ring">Ring: the spot behind the player an enemy could have reached unseen</span>
+        <span class="replay-key replay-key-gap-wedge">Wedge: the player's back (the 120° they weren't facing)</span>
+        <span class="replay-key replay-key-gap-route">Line: the route an unseen enemy could have taken, with a bar and a name on each choke it crossed (chokes are named by number until they are renamed in the tagger's choke mode)</span>
+        <span class="replay-key replay-key-gap-released">×: where a teammate stopped watching the route</span>
+        <span class="replay-key replay-key-gap-used">Solid red: an enemy did use it (stood there, shot or killed from behind)</span>
+        <span class="replay-key replay-key-gap-unused">Dashed amber: nobody used it</span>
+        <span class="replay-key replay-key-gap-backshot">Magenta: a real shot from behind (the shooter's path, with an arrow at the shot)</span>
+        <span class="replay-control-legend-note">Each gap shows while it is open. Hover a row in the Gaps tab to see it on the map with its chokes named.</span>
       </p>
       {% endif %}
       {% endif %}
@@ -100,6 +117,7 @@
         <button type="button" role="tab" class="replay-tab" data-replay-tab="util" aria-selected="false">Utility</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="analysis" aria-selected="false">Analysis</button>
         {% if control %}<button type="button" role="tab" class="replay-tab" data-replay-tab="control" aria-selected="false">Control</button>{% endif %}
+        {% if gaps %}<button type="button" role="tab" class="replay-tab" data-replay-tab="gaps" aria-selected="false">Gaps</button>{% endif %}
       </div>
       <div data-replay-panel="feed" role="tabpanel">
         <p class="replay-side-note">Impact: the killer's gain and the victim's loss from each kill (the leverage term of the live score).</p>
@@ -117,6 +135,14 @@
         </div>
         <p class="replay-side-note">Average m² while alive, live round only. <strong>Control</strong>: what the team would lose if the player died (signed). <strong>Lost</strong>: what the team did lose at their death. <strong>Cover a/p</strong>: what they watched in their cone / passively, shared cells split evenly. Click a player to see their control on the map.</p>
         <div class="replay-control-table" data-replay-control-table></div>
+      </div>
+      {% endif %}
+      {% if gaps %}
+      <div data-replay-panel="gaps" role="tabpanel" hidden>
+        <p class="replay-side-note">Moments a player's back was open to an enemy who could have got there unseen, and real shots from behind. Click one to jump to when it opened; hover one to see it on the map.</p>
+        <p class="replay-side-note replay-gaps-status" data-replay-gaps-status aria-live="polite"></p>
+        <label class="replay-gaps-flickers"><input type="checkbox" data-replay-gaps-flickers> Show flickers (open under 1 s)</label>
+        <div class="replay-gaps-list" data-replay-gaps-list></div>
       </div>
       {% endif %}
       <div data-replay-panel="util" role="tabpanel" hidden>
