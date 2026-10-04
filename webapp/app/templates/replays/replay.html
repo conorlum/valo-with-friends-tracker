@@ -7,6 +7,7 @@
 {% if replay.match_url %}<p class="replay-crumbs"><a href="{{ replay.match_url }}">&larr; Match page</a></p>{% endif %}
 {% include "replays/_player.html" %}
 <script id="replay-data" type="application/json">{{ replay_data | tojson }}</script>
+{% if gaps %}<script src="/static/js/replay_gaps.js?v={{ static_version() }}"></script>{% endif %}
 <script src="/static/js/replay.js?v={{ static_version() }}"></script>
 {% if control %}<script src="/static/js/replay_control.js?v={{ static_version() }}"></script>{% endif %}
 <script>
@@ -36,9 +37,20 @@
           });
         },
         loadControlPlayers: function () { return json("/replays/" + match.uuid + "/control/players.json"); },
-        loadHeatmap: function (view) { return json("/replays/" + match.uuid + "/control/heatmap.json?view=" + view); }{% endif %}
+        loadHeatmap: function (view) { return json("/replays/" + match.uuid + "/control/heatmap.json?view=" + view); }{% endif %}{% if gaps %},
+        // Timing gaps: a 200 says ok, stale, failed or not_computed itself; any other answer has no layer.
+        gaps: true,
+        loadGaps: function (n) {
+          return fetch("/replays/" + match.uuid + "/" + n + "/gaps.json").then(function (r) {
+            if (r.status !== 200) return { status: "error", stale: false, rows: [], chokes: {} };
+            return r.json();
+          });
+        }{% endif %}
       });
-      window.viewerReady = window.viewer.showRound({{ start_round }});
+      window.viewerReady = window.viewer.showRound({{ start_round }}){% if start_t is not none %}.then(function (round) {
+        window.viewer.seek({{ start_t }});
+        return round;
+      }){% endif %};
     });
   })();
 </script>

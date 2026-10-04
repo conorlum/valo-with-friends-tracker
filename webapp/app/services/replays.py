@@ -10,7 +10,8 @@
   rows). For an unlinked one: the reason only. Subjects never leave the server. Stage 4 adds, per round, the
   alive-count steps, `state_replay`'s annotations and which kills came after the round was
   decided (app/services/replay_view.py). Stage 3 of map control adds `match.control`: whether the
-  map has the control layer (app/services/replay_control.py).
+  map has the control layer (app/services/replay_control.py). Timing gaps add `match.gaps`: the page offers
+  the Gaps layer (a linked replay on a map with control).
 
 Everything is off in demo mode: the ValoMaths demo has no replays (decision 4).
 """
@@ -93,6 +94,9 @@ def page_context(db, replay: Replay) -> dict:
             "source_sha256": replay.source_sha256, "uv_per_unit": _uv_per_unit().get(replay.map_name),
             "linked": replay_db.is_linked(replay), "status": replay.link_status,
             "control": replay_control.map_layer(replay.map_name)}
+    # Timing gaps: offered beside control, linked only (names and sides come from the link; gaps.json 404s
+    # an unlinked replay).
+    base["gaps"] = bool(base["linked"] and base["control"])
     if not base["linked"]:
         report = replay.link_report or {}
         base["reason"] = ("not linked to a match on this site" if replay.link_status == "unlinked"

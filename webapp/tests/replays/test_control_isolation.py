@@ -25,8 +25,10 @@ def _imports(path: Path) -> set[str]:
 
 
 def test_the_web_app_does_not_import_the_engine():
+    # Nor the gap detector: the gaps.json route reads stored rows only (plan amendment 7).
     code = ("import sys, app.main; "
-            "print(sorted(m for m in sys.modules if m == 'scipy' or m.startswith(('scipy.', 'app.control'))))")
+            "print(sorted(m for m in sys.modules if m == 'scipy' "
+            "or m.startswith(('scipy.', 'app.control', 'app.gaps'))))")
     out = subprocess.run([sys.executable, "-c", code], cwd=WEBAPP, capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip().splitlines()[-1] == "[]"

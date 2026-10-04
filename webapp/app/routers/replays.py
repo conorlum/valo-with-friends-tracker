@@ -19,6 +19,9 @@
   stale; the same 404s (`no_map`, `old_blob`) as `control.bin`, and `unlinked`.
 - `GET /replays/{match_uuid}/control/heatmap.json?view=side|team`: the match heatmap, the same
   way (400 for another view).
+- `GET /replays/{match_uuid}/{n}/gaps.json`: the round's timing gaps (`status` ok, stale, failed or
+  not_computed, the view rows and the map's chokes), with an ETag over the whole body; the same 404s as
+  players.json.
 - `GET /matches/{external_id}/replay`: a redirect to the page when the match has a linked,
   valid replay.
 - Stage 3, the friends-only upload (404 in demo mode and when no code or worker is configured):
@@ -35,6 +38,7 @@ No scoring code. Only the upload routes write (an upload's row, and its replay t
 import gzip
 import hashlib
 import json
+import math
 import re
 import secrets
 from datetime import datetime, timezone
@@ -48,6 +52,8 @@ from app.models.replay import ReplayUpload
 from app.replays import db as replay_db
 from app.services import replay_control as control_service
 from app.services import replay_control_views as control_views
+from app.services import replay_gaps as gaps_service
+from app.services import replay_gaps_view as gaps_view
 from app.services import replay_upload as uploads
 from app.services import replays as replay_service
 from app.services.matches import get_match_or_404
@@ -294,6 +300,24 @@ def replay_control_players(request: Request, match_uuid: str, db: Session = Depe
     return _json_with_etag(request, control_views.player_tables(replay, loaded), loaded.etag)
 
 
+@router.get("/replays/{match_uuid}/{round_number}/gaps.json")
+def replay_round_gaps(request: Request, match_uuid: str, round_number: int, db: Session = Depends(get_db)):
+    """The round's timing gaps as the viewer draws them (app/services/replay_gaps_view.py), with the same
+    404s as the control routes. `stale` still has rows; `failed` and `not_computed` have none. The ETag is over
+    the whole body, so a row going stale is a 200 even when the rows are the same."""
+    replay, refused = _control_replay_or_404(db, match_uuid)
+    if refused is not None:
+        return refused
+    if not 1 <= round_number <= replay.round_count:
+        raise HTTPException(status_code=404)
+    status, rows = gaps_service.round_gaps(db, replay, round_number)
+    view = gaps_view.view_rows([gaps_view.row_from_model(row) for row in rows], replay.map_name)
+    body = {"status": status, "stale": status == "stale", "revision": gaps_service.GAPS_REVISION,
+            "rows": view["rows"], "chokes": view["chokes"]}
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return _json_with_etag(request, body, etag_of(canonical))
+
+
 @router.get("/replays/{match_uuid}/control/heatmap.json")
 def replay_control_heatmap(request: Request, match_uuid: str, view: str = "side", db: Session = Depends(get_db)):
     """The match heatmap (Stage 5): per time section, the share of time each cell was held by
@@ -318,13 +342,25 @@ def replay_page(request: Request, match_uuid: str, db: Session = Depends(get_db)
     start = int(start_round) if start_round and start_round.isdigit() else 1
     if start not in context["match"]["rounds"]:
         start = 1
+    linked = context["match"]["linked"]
     return templates.TemplateResponse(request, "replays/replay.html", {
         "replay": {"map_name": replay.map_name, "round_numbers": context["match"]["rounds"],
                    "title_suffix": None, "linked": context["match"]["linked"],
                    "match_url": (f"/matches/{context['match']['external_id']}" if context["match"]["linked"] else None),
                    "reason": context["match"].get("reason")},
-        "linked": context["match"]["linked"], "replay_data": context, "start_round": start,
-        "control": context["match"]["control"] if context["match"]["linked"] else None})
+        "linked": linked, "replay_data": context, "start_round": start,
+        "start_t": start_time(request.query_params.get("t")),
+        "control": context["match"]["control"] if linked else None,
+        "gaps": bool(linked and context["match"].get("gaps"))})
+
+
+def start_time(value: str | None) -> float | None:
+    """`?t=` in seconds into the round, when it is a finite number >= 0; anything else is ignored."""
+    try:
+        t = float(value) if value else None
+    except ValueError:
+        return None
+    return t if t is not None and math.isfinite(t) and t >= 0 else None
 
 
 @router.get("/matches/{external_id}/replay")

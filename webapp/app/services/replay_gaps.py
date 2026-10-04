@@ -2,6 +2,7 @@
 section 7, "Freshness" and "Writer"). A round's gaps are computed with its control; a round whose control is
 fresh and ok but whose gap run is missing or stale (new gap rules, an edited choke asset or hearing table) is
 computed on its own, from the tick cache when it is there, else through the engine without rewriting control.
+`round_gaps` is the gaps.json endpoint's read of one round (section 8).
 
 Standard library and the DB only: no `app.control` import (tests/replays/test_control_isolation.py), so the web
 app's pattern page can use it. The hearing table is read as a file, never imported."""
@@ -15,8 +16,9 @@ from pathlib import Path
 
 from sqlalchemy.orm import load_only
 
-from app.models.replay import ReplayRoundControl, ReplayRoundGapRun
+from app.models.replay import ReplayGap, ReplayRoundControl, ReplayRoundGapRun
 from app.replays import choke_assets
+from app.services import replay_control
 
 GAPS_REVISION = 2     # keep equal to app.gaps.detect.GAPS_REVISION (tests/replays/test_gaps_task.py pins it)
 HEARING_FILE = Path(__file__).resolve().parents[1] / "control" / "hearing.json"
@@ -50,6 +52,26 @@ def gap_fingerprint(control_fingerprint: str, map_name: str) -> str:
     """A round's gap run is current while this matches: the control fingerprint, GAPS_REVISION, the map's choke
     asset hash and the hearing table's hash (section 7, "Freshness")."""
     return _hex16(f"{control_fingerprint}|{GAPS_REVISION}|{choke_assets.asset_hash(map_name)}|{hearing_hash()}")
+
+
+def round_gaps(db, replay, n: int) -> tuple[str, list]:
+    """The gaps.json endpoint's answer for round n: (status, rows). `not_computed` when the round has no gap run,
+    `failed` when its run failed (no rows either way); else its `ReplayGap` rows in seq order, `stale` when the
+    run's fingerprint is not the one the current control fingerprint gives (round_control's freshness test,
+    review amendment 6), and `ok` otherwise. The caller has already checked the map and the blob."""
+    run = (db.query(ReplayRoundGapRun)
+           .options(load_only(ReplayRoundGapRun.status, ReplayRoundGapRun.fingerprint))
+           .filter(ReplayRoundGapRun.replay_id == replay.id, ReplayRoundGapRun.round_number == n)
+           .one_or_none())
+    if run is None:
+        return "not_computed", []
+    if run.status != "ok":
+        return "failed", []
+    rows = (db.query(ReplayGap).filter(ReplayGap.replay_id == replay.id, ReplayGap.round_number == n)
+            .order_by(ReplayGap.seq).all())
+    control = replay_control.round_fingerprint(replay, replay_control.side_groups(db, replay), n)
+    current = None if control is None else gap_fingerprint(control, replay.map_name)
+    return ("ok" if run.fingerprint == current else "stale"), rows
 
 
 def plan_gaps(db, planned_control: list, every: list, retry_failed: bool = False) -> list:
