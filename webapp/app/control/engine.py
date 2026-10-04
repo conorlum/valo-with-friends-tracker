@@ -1731,8 +1731,13 @@ class Unknown:
         2026-10-04: a strip of unknown along a wall next to Osmin). No point of its floor (its cells' walkable
         pixels) is NARROW_ROOM_CELLS of a cell from everything outside it: a straight one-cell strip has half a
         cell, the judged round 4 corner pocket (three cells of a 2x2) 0.63. Only pieces with no 2x2 block of
-        cells are measured."""
+        cells are measured, and never one on a cell with more than one floor: the walk mask is 2D, so it says
+        nothing about how wide one floor is (a tunnel under a bridge)."""
         out = np.zeros(len(size), bool)
+        layered = np.zeros(GRID * GRID, bool)
+        layered[self.geo.node_cell[GRID * GRID:]] = True
+        stacked = np.zeros(len(size), bool)
+        stacked[np.unique(lab[layered[self.geo.node_cell] & (lab > 0)])] = True
         grid = np.zeros(GRID * GRID, np.int64)
         grid[self.geo.node_cell[lab > 0]] = lab[lab > 0]
         grid = grid.reshape(GRID, GRID)
@@ -1740,7 +1745,7 @@ class Unknown:
         full = (block > 0) & (grid[1:, :-1] == block) & (grid[:-1, 1:] == block) & (grid[1:, 1:] == block)
         wide = np.zeros(len(size), bool)
         wide[np.unique(block[full])] = True
-        for j in np.flatnonzero(~wide & (size > DROP_PIECE_CELLS)):
+        for j in np.flatnonzero(~wide & ~stacked & (size > DROP_PIECE_CELLS)):
             if j == 0:
                 continue
             rows, cols = np.nonzero(grid == j)
