@@ -886,6 +886,7 @@ def defuse_attempts(bomb: _Actor, effects: list[_Effect], oneshots: dict[int, li
 # - On again: that new effect stops while the device is still open (a turret's containers replay then).
 # KJ's death also switches them off; the engine already drops a dead owner's watchers.
 KJ_DEVICE = re.compile(r"^Default__Pawn_Killjoy_(E_Turret|Q_StealthAlarmbot)_C$")
+# PROVISIONAL(D2): first-pass figures from two replays; no alarmbot coming back on was seen in either.
 KJ_SPAWN_FX_MS = 50
 KJ_BOOT_MS = (1400, 2600)
 KJ_OFF_MIN_MS = 1500
