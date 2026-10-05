@@ -325,7 +325,8 @@ def test_the_page_carries_the_features_panel_and_the_python_contract(tmp_path):
     for needle in ('data-mode="features"', 'data-preset="trigger"', ">Switch/trigger<", ">Breakable<", ">Zipline<",
                    ">Vertical rope<", 'data-ftool="polygon"', 'data-ftool="link"', 'data-ftool="brush"', 'id="featUndo"',
                    'id="featRedo"', 'id="zoomIn"', 'id="featSaved"', 'id="featImport"', 'id="featExport"',
-                   'id="featDownload"', 'id="featChecklist"', 'id="featIssues"', "Export reviewed annotations"):
+                   'id="featDownload"', 'id="featChecklist"', 'id="featIssues"', "Export reviewed annotations",
+                   'data-layer="grid"', 'data-layer="sight"', "probes are not available", 'id="featHelp"'):
         assert needle in page, needle
     scripts = page.split("<script>")
     assert len(scripts) == 4, "core, the page, the features panel"

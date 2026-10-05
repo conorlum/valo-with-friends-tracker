@@ -142,6 +142,16 @@
         <button id="zoomReset">Fit</button>
         <label title="tint what the features' shown states change: yellow = no longer walkable, red = sight blocked"><input type="checkbox" id="featComposed"> show what blocks</label>
       </div>
+      <div class="row" id="featLayers" aria-label="Feature layers">
+        <label><input type="checkbox" data-layer="features" checked> features</label>
+        <label><input type="checkbox" data-layer="sight" checked> sight blockers</label>
+        <label><input type="checkbox" data-layer="triggers" checked> triggers</label>
+        <label><input type="checkbox" data-layer="routes" checked> routes</label>
+        <label><input type="checkbox" data-layer="base" checked> base corrections</label>
+        <label title="the engine's 128 x 128 cells (8 px): a door must close whole cells, diagonals included"><input type="checkbox" data-layer="grid"> engine grid</label>
+      </div>
+      <p class="note" style="margin:6px 0 0">Route and sight probes are not available in the page: numbers come only from
+        the engine's own (Python) consumer, so the page shows geometry and states, never its own pathing.</p>
       <div class="feat-list" id="featList" aria-label="Features on this map"></div>
       <details class="note" id="featHelp" style="margin-top:8px"><summary>How to annotate a map</summary>
         <ol style="padding-left:18px;margin:6px 0">

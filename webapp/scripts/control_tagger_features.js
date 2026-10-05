@@ -311,6 +311,27 @@
     ctx.beginPath(); ctx.moveTo(mx + ux * s, my + uy * s); ctx.lineTo(mx - uy * s * 0.6, my + ux * s * 0.6); ctx.lineTo(mx + uy * s * 0.6, my - ux * s * 0.6); ctx.closePath(); ctx.fill();
   }
 
+  function layers() {
+    var out = {};
+    Array.prototype.forEach.call(document.querySelectorAll("[data-layer]"), function (b) { out[b.getAttribute("data-layer")] = b.checked; });
+    return out;
+  }
+
+  // Landings and access sites the permanent walk mask doesn't cover: flagged (the minimap may omit the ground),
+  // never snapped anywhere. Restored ground only counts once a bundle publishes it, so it isn't added here.
+  function offGround(m) {
+    var walk = TG.state.masks && TG.state.masks.walk, out = [];
+    if (!walk) return out;
+    (m.routes || []).forEach(function (r) {
+      (r.endpoints || []).concat((r.access && r.access.sites) || []).forEach(function (e) {
+        if (!e.uv) return;
+        var p = pxOf(e.uv), i = Math.min(PX - 1, Math.floor(p[1])) * PX + Math.min(PX - 1, Math.floor(p[0]));
+        if (!walk[i]) out.push(r.id + "." + e.id);
+      });
+    });
+    return out;
+  }
+
   function shownState(f) {
     var name = (ui.sim[mapName()] || {})[f.id];
     return name || ui.editState[f.id] || f.initial_state;
@@ -370,9 +391,14 @@
     ctx.clearRect(0, 0, PX, PX);
     labels = [];
     if (!cur()) { drawLabels(); return; }
-    var m = mf(), overlay = composedOverlay();
+    var m = mf(), overlay = composedOverlay(), L = layers();
     if (overlay) ctx.putImageData(overlay, 0, 0);
-    (m.features || []).forEach(function (f) {
+    if (L.grid) {
+      ctx.strokeStyle = "rgba(255,255,255,0.35)"; ctx.lineWidth = 1 / ui.zoom; ctx.beginPath();
+      for (var g = 0; g <= PX; g += 8) { ctx.moveTo(g, 0); ctx.lineTo(g, PX); ctx.moveTo(0, g); ctx.lineTo(PX, g); }
+      ctx.stroke();
+    }
+    (L.features ? m.features || [] : []).forEach(function (f) {
       var sel = f.id === ui.sel, name = shownState(f), st = (f.states || []).filter(function (s) { return s.name === name; })[0];
       var colour = sel ? "rgba(255,255,255,0.95)" : "rgba(76,201,240,0.9)";
       (f.states || []).forEach(function (s) {
@@ -380,11 +406,11 @@
       });
       if (st) {
         if (st.footprint) drawGeom(st.footprint, colour, st.blocks_movement ? "rgba(76,201,240,0.35)" : "rgba(76,201,240,0.08)");
-        (st.sight || []).forEach(function (o) { drawGeom(o.geometry, (o.bounds || {}).ref === "unresolved" ? "rgba(245,165,36,0.9)" : "rgba(229,72,77,0.95)", null, 3); });
+        if (L.sight) (st.sight || []).forEach(function (o) { drawGeom(o.geometry, (o.bounds || {}).ref === "unresolved" ? "rgba(245,165,36,0.9)" : "rgba(229,72,77,0.95)", null, 3); });
       }
       var edits = f.base_edits || {};
-      if (edits.potential_ground) drawGeom(edits.potential_ground, "rgba(48,164,108,0.9)", "rgba(48,164,108,0.3)", 1);
-      if (edits.remove_sight) drawGeom(edits.remove_sight, "rgba(190,110,255,0.9)", "rgba(190,110,255,0.25)", 1);
+      if (L.base && edits.potential_ground) drawGeom(edits.potential_ground, "rgba(48,164,108,0.9)", "rgba(48,164,108,0.3)", 1);
+      if (L.base && edits.remove_sight) drawGeom(edits.remove_sight, "rgba(190,110,255,0.9)", "rgba(190,110,255,0.25)", 1);
       if (f.rotation) {
         drawGeom(f.rotation.pivot, colour);
         var frac = (ui.rotFrac || {})[f.id], pose = frac ? F.rotationPose(f, frac) : null;
@@ -396,7 +422,7 @@
       var at = centroid(st && st.footprint) || centroid(f.rotation && f.rotation.pivot);
       label((f.name || f.id) + (name ? " · " + name : ""), at, sel ? "#fff" : "#a5e9fb");
     });
-    (m.triggers || []).forEach(function (t) {
+    (L.triggers ? m.triggers || [] : []).forEach(function (t) {
       var sel = t.id === ui.sel, colour = sel ? "#fff" : "rgba(247,37,133,0.95)";
       drawGeom(t.geometry, colour, t.geometry && t.geometry.type !== "point" ? "rgba(247,37,133,0.2)" : colour);
       var from = centroid(t.geometry);
@@ -409,7 +435,7 @@
       });
       label(t.name || t.id, from, colour);
     });
-    (m.routes || []).forEach(function (r) {
+    (L.routes ? m.routes || [] : []).forEach(function (r) {
       var sel = r.id === ui.sel, colour = sel ? "#fff" : "rgba(181,228,140,0.95)";
       if (r.path) drawGeom(r.path, colour, null, 1);
       var pts = {}, stacked = {};
@@ -914,6 +940,9 @@
     if (cur().incompatible) out.push("<b class=\"issue-error\">This map's loaded annotations use another schema version: shown empty, never overwritten.</b>");
     rep.errors.forEach(function (e) { out.push("<span class=\"issue-error\" data-where=\"" + esc(e.where) + "\">✖ " + esc(e.where) + ": " + esc(e.message) + "</span>"); });
     rep.warnings.forEach(function (w) { out.push("<span class=\"issue-warn\" data-where=\"" + esc(w.where) + "\">⚠ " + esc(w.where) + ": " + esc(w.message) + "</span>"); });
+    offGround(m).forEach(function (w) {
+      out.push("<span class=\"issue-warn\" data-where=\"" + esc(w) + "\">⚠ " + esc(w) + ": landing not on walkable ground (the minimap may omit it: restore ground or move the landing; nothing is snapped)</span>");
+    });
     if (ui.message) out.push("<b>" + esc(ui.message) + "</b>");
     $("featIssues").innerHTML = (out.length ? out.join("<br>") : "No errors or open questions on this map.") +
       "<br><span class=\"muted\">" + rep.errors.length + " errors, " + rep.warnings.length + " unresolved or warnings</span>";
@@ -1049,6 +1078,7 @@
   });
   $("featComposed").addEventListener("change", function () { ui.showComposed = this.checked; draw(); });
   window.addEventListener("resize", function () { draw(); });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-layer]"), function (b) { b.addEventListener("change", draw); });
   $("featUndo").addEventListener("click", doUndo);
   $("featRedo").addEventListener("click", doRedo);
   $("zoomIn").addEventListener("click", function () { zoomAt(1.25, stage.clientWidth / 2, stage.clientHeight / 2); });
