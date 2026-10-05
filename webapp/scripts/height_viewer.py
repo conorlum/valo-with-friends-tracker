@@ -144,3 +144,88 @@ def map_payload(name: str, asset_path: Path, wrapper, kind: str, asset_dir: Path
         "walk_stale": asset.meta.get("walk_sha") not in (None, walk_sha),
         "preview_min_matches": asset.meta.get("preview_min_matches"),
     }
+
+
+def sources(directory: Path, committed: bool, names: list[str] | None,
+            asset_dir: Path = cg.ASSET_DIR) -> list[tuple[str, Path, object, str]]:
+    """(map, asset path, the report's {height_sha, height} wrapper or None, kind) for every asset to show.
+    The index.json entry is already that wrapper. A preview report that can't be read is None, with a
+    WARNING; one that reads but isn't a wrapper is passed on for usable_report to refuse."""
+    out = []
+    if committed:
+        index_path = asset_dir / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}) if index_path.is_file() else {}
+        for name, entry in sorted(index.items()):
+            if isinstance(entry, dict) and entry.get("height_sha"):
+                out.append((name, asset_dir / f"{name}.height.npz", entry, "committed"))
+    else:
+        for npz in sorted(directory.glob("*.height.npz")):
+            name = npz.name[: -len(".height.npz")]
+            if names and name not in names:
+                continue
+            report_path = npz.with_name(f"{name}.height.json")
+            wrapper = None
+            if report_path.is_file():
+                try:
+                    wrapper = json.loads(report_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    print(f"WARNING {name}: can't read {report_path.name} ({type(exc).__name__}); showing the "
+                          f"asset alone", flush=True)
+            out.append((name, npz, wrapper, "preview"))
+    return [s for s in out if not names or s[0] in names]
+
+
+def inside_a_repository(path: Path) -> bool:
+    """This checkout, or any other one (build_control_heights.py's --preview guard: the main checkout and
+    each worktree have a `.git`)."""
+    out = path.resolve()
+    return out.is_relative_to(WEBAPP_ROOT.parent.resolve()) or any((f / ".git").exists() for f in (out, *out.parents))
+
+
+def render(maps: dict) -> str:
+    data = json.dumps({"maps": maps}, separators=(",", ":")).replace("</", "<\\/")
+    core = CORE_JS.read_text(encoding="utf-8")
+    return TEMPLATE.read_text(encoding="utf-8").replace("/*CORE*/", core).replace("/*DATA*/null", data)
+
+
+def main(argv: list[str] | None = None, asset_dir: Path = cg.ASSET_DIR) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--dir", type=Path, default=DEFAULT_DIR, help="the preview folder (default under %%TEMP%%)")
+    parser.add_argument("--committed", action="store_true", help="show the committed assets instead of previews")
+    parser.add_argument("--map", action="append", help="only this map (repeatable)")
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="the page to write (default under %%TEMP%%)")
+    args = parser.parse_args(argv)
+    if inside_a_repository(args.out):
+        print(f"REFUSED: --out {args.out} is inside a repository; the page is never written into one", flush=True)
+        return 2
+    index = {}
+    if args.committed and (asset_dir / "index.json").is_file():
+        index = json.loads((asset_dir / "index.json").read_text(encoding="utf-8")).get("maps", {})
+    maps = {}
+    for name, path, wrapper, kind in sources(args.dir, args.committed, args.map, asset_dir):
+        try:
+            payload = map_payload(name, path, wrapper, kind, asset_dir)
+        except (OSError, KeyError, ValueError) as exc:
+            print(f"WARNING {name}: skipped ({type(exc).__name__}: {exc})", flush=True)
+            continue
+        if wrapper is not None and payload["report_note"]:
+            print(f"WARNING {name}: {payload['report_note']}; showing the asset alone", flush=True)
+        if kind == "committed" and payload["height_sha"] != index[name]["height_sha"]:
+            print(f"WARNING {name}: skipped ({path.name} is {payload['height_sha']}, index.json says "
+                  f"{index[name]['height_sha']}; the engine would refuse it)", flush=True)
+            continue
+        maps[name] = payload
+    if not maps:
+        where = "no map has a committed height asset" if args.committed else f"no height assets in {args.dir}"
+        print(f"{where}. Build a preview first, e.g.\n  scripts\\with_friends_db.py --expect-database "
+              f"valowithfriendsdb --read-only scripts\\build_control_heights.py --map Sunset --preview "
+              f"--out \"{DEFAULT_DIR}\"", flush=True)
+        return 2
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(render(maps), encoding="utf-8")
+    print(f"{len(maps)} map(s) -> {args.out} ({args.out.stat().st_size / 1e6:.1f} MB)", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

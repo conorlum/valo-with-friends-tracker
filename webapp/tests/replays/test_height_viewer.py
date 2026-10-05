@@ -294,3 +294,121 @@ def test_colour_matches_picture_ramp():
     for dm, rgb in zip([0, 15, 30, 45], out):
         f = min(max(dm / 30, 0), 1)
         assert rgb == [int(np.uint8(40 + 215 * f)), int(np.uint8(90 + 150 * f)), int(np.uint8(200 - 170 * f))]
+
+
+def write_preview(folder: Path, asset, report=None, name=MAP):
+    """What build_control_heights.py --preview writes: the asset, and its report under the asset's digest."""
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{name}.height.npz"
+    hc.save_asset(path, asset)
+    if report is not None:
+        (folder / f"{name}.height.json").write_text(json.dumps(wrap(path, report)), encoding="utf-8")
+
+
+def test_render_inlines_core_and_escapes_data():
+    html = height_viewer.render({"X": {"name": "</script><b>"}})
+    assert "HeightCore" in html and "/*CORE*/" not in html and "/*DATA*/null" not in html
+    assert "</script><b>" not in html and "<\\/script><b>" in html
+
+
+def test_main_writes_the_page(tmp_path):
+    folder, out = tmp_path / "preview", tmp_path / "out" / "page.html"
+    write_preview(folder, synthetic(), report_for(synthetic()))
+    assert height_viewer.main(["--dir", str(folder), "--out", str(out)]) == 0
+    data = page_data(out)
+    m = data["maps"][MAP]
+    assert m["summary"]["source"] == "report"
+    assert [a["size"] for a in m["areas"] if a["blocking"]] == [13]
+    assert "HeightCore" in out.read_text(encoding="utf-8")
+
+
+def page_data(out: Path) -> dict:
+    """The DATA object the page was rendered with."""
+    return json.loads(out.read_text(encoding="utf-8").split("var DATA = ", 1)[1].split(";\n", 1)[0])
+
+
+def test_main_skips_a_broken_map_and_keeps_the_rest(tmp_path, capsys):
+    folder, out = tmp_path / "preview", tmp_path / "page.html"
+    write_preview(folder, synthetic())                               # good, no report
+    write_preview(folder, synthetic(), name="Nowhere")              # no such map's masks
+    (folder / "Lotus.height.npz").write_bytes(b"not an npz")         # unreadable
+    old = synthetic()
+    old.meta = {**old.meta, "version": 99}                           # an old/unknown HEIGHT_VERSION
+    write_preview(folder, old, name="Split")
+    flat = synthetic()
+    flat.floors = flat.floors.reshape(GRID * GRID, MAXF)             # loads, wrong shape
+    write_preview(folder, flat, name="Haven")
+    assert height_viewer.main(["--dir", str(folder), "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    for name in ("Nowhere", "Lotus", "Split", "Haven"):
+        assert f"WARNING {name}" in printed
+    html = out.read_text(encoding="utf-8")
+    assert f'"{MAP}"' in html
+    assert all(f'"name":"{n}"' not in html for n in ("Nowhere", "Lotus", "Split", "Haven"))
+
+
+def test_main_survives_bad_reports(tmp_path, capsys, monkeypatch):
+    folder, out = tmp_path / "preview", tmp_path / "page.html"
+    write_preview(folder, synthetic(), report_for(synthetic()))                  # Ascent: a good report
+    write_preview(folder, synthetic(), name="Sunset")
+    (folder / "Sunset.height.json").write_text("[]", encoding="utf-8")           # malformed
+    write_preview(folder, synthetic(), name="Split")
+    (folder / "Split.height.json").write_text("{not json", encoding="utf-8")     # not JSON
+    write_preview(folder, synthetic(), name="Haven")
+    (folder / "Haven.height.json").write_text("{}", encoding="utf-8")
+    real = Path.read_text
+
+    def unreadable(self, *a, **k):                                              # Haven's report can't be read
+        if self.name == "Haven.height.json":
+            raise PermissionError("simulated")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    assert height_viewer.main(["--dir", str(folder), "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    for name in ("Sunset", "Split", "Haven"):
+        assert f"WARNING {name}" in printed and "showing the asset alone" in printed
+    monkeypatch.undo()
+    data = page_data(out)
+    assert data["maps"]["Ascent"]["summary"]["source"] == "report"
+    assert {data["maps"][n]["summary"]["source"] for n in ("Sunset", "Split", "Haven")} == {"recomputed"}
+
+
+def test_out_inside_a_repository_is_refused(tmp_path, capsys):
+    folder = tmp_path / "preview"
+    write_preview(folder, synthetic())
+    inside = WEBAPP / "app" / "static" / "data" / "control" / "index.json"     # the worst case
+    before = inside.read_bytes()
+    assert height_viewer.main(["--dir", str(folder), "--out", str(inside)]) == 2
+    assert inside.read_bytes() == before and "REFUSED" in capsys.readouterr().out
+    other = tmp_path / "another-checkout"
+    (other / ".git").mkdir(parents=True)                                         # any folder under a .git
+    assert height_viewer.main(["--dir", str(folder), "--out", str(other / "sub" / "p.html")]) == 2
+    assert not (other / "sub").exists()
+
+
+def test_main_with_nothing_to_show_exits_2(tmp_path, capsys):
+    assert height_viewer.main(["--dir", str(tmp_path / "empty"), "--out", str(tmp_path / "p.html")]) == 2
+    assert "build_control_heights.py" in capsys.readouterr().out
+    assert not (tmp_path / "p.html").exists()
+
+
+def test_map_filter(tmp_path):
+    folder = tmp_path / "preview"
+    write_preview(folder, synthetic())
+    write_preview(folder, synthetic(), name="Sunset")
+    assert [s[0] for s in height_viewer.sources(folder, False, ["Sunset"])] == ["Sunset"]
+
+
+def test_committed_digest_mismatch_is_skipped(tmp_path, capsys):
+    import shutil as sh
+    assets = tmp_path / "control"
+    sh.copytree(cg.ASSET_DIR, assets)
+    hc.save_asset(assets / f"{MAP}.height.npz", synthetic())
+    index = json.loads((assets / "index.json").read_text(encoding="utf-8"))
+    index["maps"][MAP]["height_sha"] = "000000000000"
+    (assets / "index.json").write_text(json.dumps(index), encoding="utf-8")
+    # --map: other maps may have valid committed heights one day, and this test is about MAP's mismatch only
+    assert height_viewer.main(["--committed", "--map", MAP, "--out", str(tmp_path / "p.html")],
+                              asset_dir=assets) == 2
+    assert f"WARNING {MAP}" in capsys.readouterr().out
