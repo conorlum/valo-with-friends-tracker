@@ -23,20 +23,30 @@ owner's 2026-10-05 conversation. Background: `docs/superpowers/specs/2026-10-01-
 ## Requirements (the spec)
 
 1. **Read-only and outside the repo.** It never writes a height asset, `index.json`, tags or the DB. The page
-   goes under `%TEMP%\valo-height-viewer\` by default. It is a local tool, not a site page.
+   goes under `%TEMP%\valo-height-viewer\` by default. It is a local tool, not a site page. An `--out` inside
+   this checkout, or inside any folder with a `.git` above it, is refused (exit 2, nothing written). This is
+   the same guard `build_control_heights.py --preview` uses.
 2. **Sources:**
    - by default, every `<Map>.height.npz` (plus its `<Map>.height.json` report, if present) in the preview
      folder `%TEMP%\valo-replay\heights-preview` (`--dir` overrides);
    - `--committed` reads the committed assets instead: maps whose `index.json` entry has a `height_sha`, with
      the report from that entry's `height`;
    - `--map` (repeatable) narrows either source.
+   - **A report counts only if it belongs to the asset.** Both sources wrap it as `{"height_sha", "height"}`,
+     and it is used only when that `height_sha` equals the loaded asset's digest. Otherwise, or when the report
+     is missing, unreadable or malformed, the map is still shown from its asset alone, with a warning saying
+     why. Support and readiness are then recomputed with `hb.readiness` against the current walk mask and
+     labelled "recomputed".
+   - A map whose asset can't be loaded, has the wrong array shapes, or has no committed sight/walk masks is
+     skipped with a `WARNING`, and the other maps still build.
 3. **Heights over the minimap:** cells coloured by ground height with the build picture's ramp (blue low to
    yellow high, `height_build.picture`), with an opacity slider. There is a legend in metres above the map's
    lowest floor. Unresolved cells are red. Cells filled from neighbours (not supported) are dimmed. Cells with
    two floors are outlined white, three floors magenta.
 4. **Hover** shows, per cell:
    - its grid position and minimap px;
-   - each floor's height in metres, whether the cell is supported or filled, and the floor's spread;
+   - each floor's height in metres, the cell's status written out ("supported" or "filled from neighbours"),
+     and the floor's spread;
    - or why it has no height: unresolved, walkable without a height, or not walkable.
 5. **Reference comparison:** clicking a cell sets the reference to its lowest floor. Clicking the same cell
    again cycles its floors, keys 1/2/3 pick one, and Esc clears. The hover then also shows, for each floor,
@@ -48,17 +58,21 @@ owner's 2026-10-05 conversation. Background: `docs/superpowers/specs/2026-10-01-
    is shaded. The tolerance is a slider from 0.1 to 1.0 m, default 0.3 m.
 7. **Unresolved-area list:**
    - areas are labelled exactly as `height_build.readiness` labels them (8-connected);
-   - each shows its size, bbox and reasons (taken from the report when the report has the same area), and
+   - each shows its size, its full bbox (`[x0, y0, x1, y1]` in minimap px) and its reasons (taken from the report when the report has the same area), and
      whether it **blocks readiness** (more than `UNRESOLVED_MAX` cells, touching a cell with 2+ floors);
    - blocking areas are listed first;
    - clicking an area highlights its cells and scrolls to it.
 8. **Blocked kill lines:** the report's `kill_lines.examples` are listed. Clicking one draws the killer-victim
-   line with both z values (metres above the map's origin, the same scale as the floors).
+   line with both z values (metres above the map's origin, the same scale as the floors). Without a usable
+   report the list reads "kill-line check unavailable (no report for this build)", which is never the same as
+   a report with zero examples ("none").
 9. **Optional drops layer:** marks neighbouring ground cells more than `STEP_UP_M` apart, as the build picture
    does.
 10. **Header:**
     - the map picker, the source kind, and matches/rounds;
-    - the supported share against the bar, and ready / not ready with the reasons;
+    - the supported share against the bar, and ready / not ready with the reasons, labelled "recomputed
+      against the current walk mask" when they didn't come from the build's report;
+    - a warning when the report was missing or ignored, and why;
     - a warning when the asset was built on an older walk mask (`meta.walk_sha` differs from the current
       mask's), and when the preview used `--preview-min-matches`.
 11. **Zoom** 0.75×/1×/2×/3× inside a scrolling stage.
@@ -66,7 +80,8 @@ owner's 2026-10-05 conversation. Background: `docs/superpowers/specs/2026-10-01-
 ## Global Constraints
 
 - Never write inside the repository at run time. The default output is
-  `%TEMP%\valo-height-viewer\height-viewer.html`.
+  `%TEMP%\valo-height-viewer\height-viewer.html`, and `--out` is guarded (Requirement 1). Python's own
+  `__pycache__` is not counted: it is gitignored and every script in the repo writes it.
 - No new dependencies. No network: the page is self-contained (minimap as base64, data inlined).
 - Match `scripts/control_tagger.py` conventions:
   - `render()` replaces `/*CORE*/` and `/*DATA*/null`;
@@ -87,12 +102,18 @@ owner's 2026-10-05 conversation. Background: `docs/superpowers/specs/2026-10-01-
 ## Review Focus
 
 1. **A preview folder with a stray or broken file.**
-   - Cases: a `.npz` of an old `HEIGHT_VERSION`, a map with no committed sight/walk masks, a report `.json`
-     missing or unreadable.
-   - Expected: that map is skipped with a `WARNING` line naming it and the reason. The other maps still build.
-     If no map is left, the script exits 2 and prints the `build_control_heights.py --preview` command to run.
-   - Tests: `test_main_skips_a_broken_map_and_keeps_the_rest`, `test_main_with_nothing_to_show_exits_2`,
-     `test_payload_without_a_report` (Task 1).
+   - Broken assets: a `.npz` that isn't one, a `.npz` of an old `HEIGHT_VERSION`, an asset with wrong array
+     shapes, a map with no committed sight/walk masks. Expected: that map is skipped with a `WARNING` line
+     naming it and the reason, and the other maps still build.
+   - Broken or mismatched reports: a missing report, an unreadable one (a directory in its place), a
+     malformed one (`[]`), or one whose `height_sha` isn't the asset's. Expected: the map is shown from its
+     asset alone, with a warning, and support and readiness are recomputed. A wrong report must never put
+     wrong numbers in the header.
+   - If no map is left, the script exits 2 and prints the `build_control_heights.py --preview` command to run.
+   - Tests:
+     - Task 1: `test_payload_without_a_report`, `test_stale_report_is_ignored`, `test_wrong_shapes_are_refused`;
+     - Task 3: `test_main_skips_a_broken_map_and_keeps_the_rest`, `test_main_survives_bad_reports`,
+       `test_main_with_nothing_to_show_exits_2`.
 2. **The blocking flag disagrees with the build.**
    - Risk: the owner will act on "BLOCKS READINESS", so it must match `height_build.readiness` on the same
      arrays, including the boundary (12 cells touching is fine, 13 blocks) and diagonal touching.
@@ -107,8 +128,15 @@ owner's 2026-10-05 conversation. Background: `docs/superpowers/specs/2026-10-01-
    - Test: `test_compare_boundaries` (Task 2).
 5. **A cell whose floors include an upper floor only (ground −1) or an unresolved cell with stale floors.**
    - Expected: hover lists whatever floors exist. The drops layer and the colour use the ground floor only and
-     skip cells without one, exactly as `picture()` does.
-   - Tests: `test_drops_match_picture_rule`, `test_floors_of_lists_present_floors_only` (Task 2).
+     skip cells without one, exactly as `picture()` does. An unresolved cell's stale ground still counts for
+     drops, as it does in `picture()`.
+   - Tests (Task 2, on the `edge_cases()` fixture with one cell of each kind): `test_floors_of_lists_present_floors_only`
+     and `test_drops_and_colours_match_the_real_picture`. The second compares against the pixels `hb.picture`
+     actually draws, not a copy of its loop.
+6. **An `--out` that points into the repository.**
+   - Expected: refused with exit 2 and nothing written. Otherwise a typo could overwrite `index.json` or an
+     asset.
+   - Test: `test_out_inside_a_repository_is_refused` (Task 3).
 
 ## File Structure
 
@@ -140,9 +168,14 @@ owner's 2026-10-05 conversation. Background: `docs/superpowers/specs/2026-10-01-
   - `rle(values) -> list[int]` (`[value, run, ...]`, same as `control_tagger.rle`);
   - `areas(asset, report: dict | None) -> list[dict]`, each `{"cells": [int], "size": int,
     "bbox": [x0, y0, x1, y1], "blocking": bool, "why": {reason: count}}`;
-  - `map_payload(name, asset_path, report, kind, asset_dir=cg.ASSET_DIR) -> dict`, with keys `name, kind,
-    image, cell_m, origin_z, max_floors, step_up_m, supported_min, floors, spread, supported, unresolved,
-    walk, areas, kill_lines, summary, height_sha, walk_stale, preview_min_matches`.
+  - `usable_report(wrapper, digest) -> tuple[dict | None, str | None]`: the report inside a
+    `{"height_sha", "height"}` wrapper, or `None` plus a note saying why it can't be used;
+  - `map_payload(name, asset_path, wrapper, kind, asset_dir=cg.ASSET_DIR) -> dict`. `wrapper` is the preview
+    `.json`'s parsed object, or the `index.json` entry, or `None`. The result has keys `name, kind, image,
+    cell_m, origin_z, max_floors, step_up_m, supported_min, floors, spread, supported, unresolved, walk,
+    areas, kill_lines (list, or None when there is no usable report), summary (with `source`: "report" |
+    "recomputed"), report_note, height_sha, walk_stale, preview_min_matches`. Raises `ValueError` for an
+    unreadable or wrongly shaped asset, and `OSError`/`KeyError`/`ValueError` for missing map geometry.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -209,6 +242,16 @@ def report_for(asset):
                                          "victim_px": [168, 325], "z": [1.8, 4.0]}]}}
 
 
+def wrap(path, report):
+    """The preview .json's shape (build_control_heights.index_entry): the report under the asset's digest."""
+    return {"height_sha": hc.load_asset(path).digest, "height": report}
+
+
+def walk_cells():
+    walk_px = cg.read_mask_png(cg.ASSET_DIR / f"{MAP}.walk.png")
+    return walk_px.reshape(GRID, cg.CELL, GRID, cg.CELL).mean((1, 3)) > 0.5
+
+
 @pytest.fixture
 def saved(tmp_path):
     asset = synthetic()
@@ -219,12 +262,13 @@ def saved(tmp_path):
 
 def test_payload_carries_the_assets_numbers(saved):
     asset, path = saved
-    p = height_viewer.map_payload(MAP, path, report_for(asset), "preview")
+    p = height_viewer.map_payload(MAP, path, wrap(path, report_for(asset)), "preview")
     assert len(p["floors"]) == GRID * GRID * MAXF
     assert p["floors"][cell(15, 20) * MAXF: cell(15, 20) * MAXF + MAXF] == [10, 40, -1]
     assert p["origin_z"] == 10 and p["max_floors"] == MAXF and p["step_up_m"] == hc.STEP_UP_M
     assert p["height_sha"] == hc.load_asset(path).digest
     assert p["walk_stale"] is True                       # meta says "not-the-current"
+    assert p["summary"]["source"] == "report" and p["report_note"] is None
     assert p["summary"]["matches"] == 5 and p["summary"]["supported"] == 0.707
     assert p["kill_lines"][0]["z"] == [1.8, 4.0]
     assert p["image"] and p["cell_m"] > 0
@@ -249,12 +293,56 @@ def test_areas_take_reasons_from_the_report(saved):
     assert all(a["why"] == {} for a in height_viewer.areas(asset, None))
 
 
+def recomputed(asset):
+    """What the build's own rule says for this asset against the current walk mask."""
+    return hb.readiness(asset.supported.ravel(), asset.unresolved.ravel(), asset.floor_count().ravel(),
+                        int(walk_cells().sum()))
+
+
 def test_payload_without_a_report(saved):
     asset, path = saved
     p = height_viewer.map_payload(MAP, path, None, "preview")
-    assert p["summary"]["matches"] == 5                  # falls back to the asset's meta
-    assert p["summary"]["supported"] is None and p["kill_lines"] == []
+    share, not_ready = recomputed(asset)
+    s = p["summary"]
+    assert s["source"] == "recomputed" and p["report_note"] == "no report"
+    assert s["matches"] == 5                             # from the asset's meta
+    assert s["supported"] == round(share, 4) and s["ready"] is False and s["not_ready"] == not_ready
+    assert any("largest 13" in r for r in s["not_ready"])
+    assert p["kill_lines"] is None                       # unknown, not "none"
     assert len(p["areas"]) == 3
+
+
+def test_stale_report_is_ignored(saved):
+    asset, path = saved
+    lying = {**report_for(asset), "supported": 0.1, "ready": True, "not_ready": []}
+    p = height_viewer.map_payload(MAP, path, {"height_sha": "000000000000", "height": lying}, "preview")
+    assert p["summary"]["source"] == "recomputed"
+    assert p["summary"]["supported"] != 0.1 and p["summary"]["ready"] is False
+    assert "000000000000" in p["report_note"] and p["kill_lines"] is None
+
+
+def test_report_with_an_empty_kill_list_is_none_not_unknown(saved):
+    asset, path = saved
+    report = report_for(asset)
+    report["kill_lines"]["examples"] = []
+    assert height_viewer.map_payload(MAP, path, wrap(path, report), "preview")["kill_lines"] == []
+
+
+@pytest.mark.parametrize("wrapper, note", [([], "not a report"), ({"height_sha": "x"}, "not a report"),
+                                           ({"height": []}, "not a report")])
+def test_malformed_wrappers_are_ignored(saved, wrapper, note):
+    _, path = saved
+    p = height_viewer.map_payload(MAP, path, wrapper, "preview")
+    assert p["summary"]["source"] == "recomputed" and note in p["report_note"]
+
+
+def test_wrong_shapes_are_refused(tmp_path):
+    asset = synthetic()
+    asset.unresolved = asset.unresolved.ravel()          # loads fine, but isn't GRID x GRID
+    path = tmp_path / f"{MAP}.height.npz"
+    hc.save_asset(path, asset)
+    with pytest.raises(ValueError, match="shape"):
+        height_viewer.map_payload(MAP, path, None, "preview")
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -343,24 +431,57 @@ def areas(asset: hc.HeightAsset, report: dict | None) -> list[dict]:
     return out
 
 
-def map_payload(name: str, asset_path: Path, report: dict | None, kind: str,
-                asset_dir: Path = cg.ASSET_DIR) -> dict:
-    """Everything the page shows for one map. Raises OSError/KeyError/ValueError (HeightError included) when
-    the asset or the map's committed geometry can't be read."""
+SHAPES = {"floors": (cg.GRID, cg.GRID, hc.MAX_FLOORS), "spread": (cg.GRID, cg.GRID, hc.MAX_FLOORS),
+          "supported": (cg.GRID, cg.GRID), "unresolved": (cg.GRID, cg.GRID)}
+
+
+def load_checked(asset_path: Path) -> hc.HeightAsset:
+    """The asset, or ValueError: load_asset checks the version but not the shapes."""
     try:
         asset = hc.load_asset(asset_path)
     except Exception as exc:   # BadZipFile, a truncated file, a wrong version: not a usable asset
         raise ValueError(f"{asset_path.name} is not a readable height asset ({exc})") from exc
+    for field_name, shape in SHAPES.items():
+        if getattr(asset, field_name).shape != shape:
+            raise ValueError(f"{asset_path.name}: {field_name} has shape {getattr(asset, field_name).shape}, "
+                             f"not {shape}")
+    return asset
+
+
+def usable_report(wrapper, digest: str) -> tuple[dict | None, str | None]:
+    """The build's report when it belongs to this asset (its wrapper's height_sha is the asset's digest),
+    else None and why. A wrong report must never put its numbers on the page."""
+    if wrapper is None:
+        return None, "no report"
+    if not isinstance(wrapper, dict) or not isinstance(wrapper.get("height"), dict) or "height_sha" not in wrapper:
+        return None, "not a report (expected {height_sha, height})"
+    if wrapper["height_sha"] != digest:
+        return None, f"report is for another build ({wrapper['height_sha']}, this asset is {digest})"
+    return wrapper["height"], None
+
+
+def map_payload(name: str, asset_path: Path, wrapper, kind: str, asset_dir: Path = cg.ASSET_DIR) -> dict:
+    """Everything the page shows for one map. `wrapper` is the preview .json or the index.json entry (both
+    {"height_sha", "height"}), or None. Raises ValueError for an unusable asset, and OSError/KeyError/ValueError
+    when the map's committed geometry can't be read."""
+    asset = load_checked(asset_path)
+    report, report_note = usable_report(wrapper, asset.digest)
     sight = cg.read_mask_png(asset_dir / f"{name}.sight.png")
     walk_px = cg.read_mask_png(asset_dir / f"{name}.walk.png")
     scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))[name]["xMultiplier"]
     geo = cg.geometry_from_masks(name, sight, walk_px, scale)
     walk_sha = hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12]
-    rep = report or {}
-    summary = {"matches": rep.get("matches", asset.meta.get("matches")),
-               "rounds": rep.get("rounds", asset.meta.get("rounds")),
-               "supported": rep.get("supported"), "visited": rep.get("visited"),
-               "ready": rep.get("ready"), "not_ready": rep.get("not_ready") or []}
+    if report is not None:
+        summary = {"source": "report", "matches": report.get("matches", asset.meta.get("matches")),
+                   "rounds": report.get("rounds", asset.meta.get("rounds")), "supported": report.get("supported"),
+                   "ready": report.get("ready"), "not_ready": report.get("not_ready") or []}
+        kill_lines = (report.get("kill_lines") or {}).get("examples", [])
+    else:   # the build's own rule, against the walk mask as it is now
+        share, not_ready = hb.readiness(asset.supported.ravel(), asset.unresolved.ravel(),
+                                        asset.floor_count().ravel(), int(geo.walk.sum()))
+        summary = {"source": "recomputed", "matches": asset.meta.get("matches"), "rounds": asset.meta.get("rounds"),
+                   "supported": round(share, 4), "ready": not not_ready, "not_ready": not_ready}
+        kill_lines = None
     return {
         "name": name, "kind": kind,
         "image": base64.b64encode((cg.MINIMAP_DIR / f"{name}.png").read_bytes()).decode("ascii"),
@@ -372,8 +493,8 @@ def map_payload(name: str, asset_path: Path, report: dict | None, kind: str,
         "unresolved": rle(asset.unresolved.astype(np.uint8)),
         "walk": rle(geo.walk.astype(np.uint8)),
         "areas": areas(asset, report),
-        "kill_lines": (rep.get("kill_lines") or {}).get("examples", []),
-        "summary": summary,
+        "kill_lines": kill_lines,
+        "summary": summary, "report_note": report_note,
         "height_sha": asset.digest,
         "walk_stale": asset.meta.get("walk_sha") not in (None, walk_sha),
         "preview_min_matches": asset.meta.get("preview_min_matches"),
@@ -383,7 +504,7 @@ def map_payload(name: str, asset_path: Path, report: dict | None, kind: str,
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd webapp && .venv\Scripts\python.exe -m pytest tests/replays/test_height_viewer.py -q`
-Expected: 4 passed.
+Expected: 10 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -442,7 +563,30 @@ def run_node(body: str, payload: dict):
 @pytest.fixture
 def payload(saved):
     asset, path = saved
-    return height_viewer.map_payload(MAP, path, report_for(asset), "preview")
+    return height_viewer.map_payload(MAP, path, wrap(path, report_for(asset)), "preview")
+
+
+def edge_cases():
+    """synthetic() plus one cell of each awkward kind (Review Focus 5):
+    - (40, 40): an upper floor at 3.0 m and no ground;
+    - (20, 15): unresolved, but it kept a stale 5.0 m ground, right below the block's (19, 15) at 1.0 m;
+    - (11, 11): a 2.0 m step inside the ground block (a drop on all four sides);
+    - (13, 11): a 0.6 m step (under STEP_UP_M: no drop)."""
+    asset = synthetic()
+    asset.floors[40, 40, 1], asset.spread[40, 40, 1] = 30, 1
+    asset.unresolved[20, 15] = True
+    asset.floors[20, 15, 0], asset.spread[20, 15, 0] = 50, 1
+    asset.floors[11, 11, 0] = 30
+    asset.floors[13, 11, 0] = 16
+    return asset
+
+
+@pytest.fixture
+def edge(tmp_path):
+    asset = edge_cases()
+    path = tmp_path / f"{MAP}.height.npz"
+    hc.save_asset(path, asset)
+    return asset, height_viewer.map_payload(MAP, path, None, "preview")
 
 
 @needs_node
@@ -455,12 +599,15 @@ def test_compare_boundaries():
 
 
 @needs_node
-def test_floors_of_lists_present_floors_only(payload):
+def test_floors_of_lists_present_floors_only(edge):
+    _, p = edge
     out = run_node("function run(p, m) { return p.cells.map(c => H.floorsOf(m, c)); }",
-                   {"payload": payload, "cells": [cell(15, 20), cell(12, 12), cell(0, 0)]})
+                   {"payload": p, "cells": [cell(15, 20), cell(12, 12), cell(0, 0), cell(40, 40), cell(20, 15)]})
     assert out[0] == [{"floor": 0, "z": 1.0, "spread": 0.1}, {"floor": 1, "z": 4.0, "spread": 0.1}]
     assert [f["z"] for f in out[1]] == [1.0]
     assert out[2] == []
+    assert out[3] == [{"floor": 1, "z": 3.0, "spread": 0.1}]          # upper floor only, no ground
+    assert out[4] == [{"floor": 0, "z": 5.0, "spread": 0.1}]          # unresolved, stale floor still listed
 
 
 @needs_node
@@ -483,25 +630,39 @@ def test_same_mask(payload):
 
 
 @needs_node
-def test_drops_match_picture_rule(tmp_path):
-    asset = synthetic()
-    asset.floors[11, 11, 0] = 30                   # a 2.0 m step inside the ground block
-    asset.floors[13, 11, 0] = 16                   # a 0.6 m step: under STEP_UP_M, not a drop
-    path = tmp_path / f"{MAP}.height.npz"
-    hc.save_asset(path, asset)
-    p = height_viewer.map_payload(MAP, path, None, "preview")
-    got = run_node("function run(p, m) { return H.drops(m, m.raw.step_up_m); }", {"payload": p})
-    ground = asset.floors[..., 0].astype(float)
-    has = ground >= 0
-    step = hc.STEP_UP_M * hb.DM
-    want = []
-    for cy, cx in zip(*np.nonzero(has)):          # height_build.picture's own loop
-        c = int(cy * GRID + cx)
-        if cx + 1 < GRID and has[cy, cx + 1] and abs(ground[cy, cx] - ground[cy, cx + 1]) > step:
-            want.append([c, "e"])
-        if cy + 1 < GRID and has[cy + 1, cx] and abs(ground[cy, cx] - ground[cy + 1, cx]) > step:
-            want.append([c, "s"])
-    assert sorted(got) == sorted(want) and len(want) == 4
+def test_drops_and_colours_match_the_real_picture(edge, tmp_path):
+    """Draw hb.picture for the edge-case asset and read its pixels: its black pixels are exactly its drop
+    marks, so the core's drops must cover exactly those pixels; a plain ground cell's centre pixel is its
+    ramp colour, which the core's colour() must equal."""
+    from PIL import Image
+
+    asset, p = edge
+    sight = cg.read_mask_png(cg.ASSET_DIR / f"{MAP}.sight.png")
+    walk_px = cg.read_mask_png(cg.ASSET_DIR / f"{MAP}.walk.png")
+    scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))[MAP]["xMultiplier"]
+    geo = cg.geometry_from_masks(MAP, sight, walk_px, scale)
+    png = tmp_path / "picture.png"
+    hb.picture(hb.HeightBuild(asset, {}), geo, png)
+    img = np.array(Image.open(png).convert("RGB"))
+    black = {(int(y), int(x)) for y, x in zip(*np.nonzero((img == 0).all(-1)))}
+
+    got = run_node("""function run(p, m) {
+      const top = H.groundTop(m);
+      return {drops: H.drops(m, m.raw.step_up_m),
+              colours: p.cells.map(c => H.colour(H.ground(m, c), top))}; }""",
+                   {"payload": p, "cells": [cell(10, 20), cell(11, 11), cell(18, 25)]})
+    C = cg.CELL
+    drawn = set()
+    for c, side in got["drops"]:
+        cy, cx = divmod(c, GRID)
+        if side == "e":
+            drawn |= {(y, x) for y in range(cy * C, (cy + 1) * C) for x in ((cx + 1) * C - 1, (cx + 1) * C)}
+        else:
+            drawn |= {(y, x) for y in ((cy + 1) * C - 1, (cy + 1) * C) for x in range(cx * C, (cx + 1) * C)}
+    assert drawn == black
+    assert len(got["drops"]) == 5                # four round (11, 11), one from (19, 15) to the stale (20, 15)
+    for (y, x), rgb in zip([(10, 20), (11, 11), (18, 25)], got["colours"]):
+        assert rgb == img[y * C + C // 2, x * C + C // 2].tolist()
 
 
 @needs_node
@@ -622,7 +783,7 @@ gives 1, the same as Python.
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd webapp && .venv\Scripts\python.exe -m pytest tests/replays/test_height_viewer.py -q`
-Expected: 10 passed, 0 skipped.
+Expected: 16 passed, 0 skipped.
 
 - [ ] **Step 5: Commit**
 
@@ -643,18 +804,23 @@ git commit -m "Height viewer: JS core (floors, compare, same-height, drops, colo
 **Interfaces:**
 - Consumes: `map_payload` (Task 1), `HeightCore` (Task 2).
 - Produces:
-  - `sources(directory: Path, committed: bool, names: list[str] | None, asset_dir=cg.ASSET_DIR) -> list[tuple[str, Path, dict | None, str]]`;
+  - `sources(directory: Path, committed: bool, names: list[str] | None, asset_dir=cg.ASSET_DIR) -> list[tuple[str, Path, object, str]]`,
+    each `(map, asset path, wrapper or None, kind)`. The wrapper is passed to `map_payload` unvalidated, and
+    `usable_report` decides;
+  - `inside_a_repository(path: Path) -> bool`;
   - `render(maps: dict) -> str`;
-  - `main(argv=None, asset_dir=cg.ASSET_DIR) -> int` (0 written, 2 nothing to show).
+  - `main(argv=None, asset_dir=cg.ASSET_DIR) -> int` (0 written; 2 refused or nothing to show).
 
 - [ ] **Step 1: Append the failing CLI tests**
 
 ```python
 def write_preview(folder: Path, asset, report=None, name=MAP):
+    """What build_control_heights.py --preview writes: the asset, and its report under the asset's digest."""
     folder.mkdir(parents=True, exist_ok=True)
-    hc.save_asset(folder / f"{name}.height.npz", asset)
+    path = folder / f"{name}.height.npz"
+    hc.save_asset(path, asset)
     if report is not None:
-        (folder / f"{name}.height.json").write_text(json.dumps({"height_sha": "x", "height": report}), encoding="utf-8")
+        (folder / f"{name}.height.json").write_text(json.dumps(wrap(path, report)), encoding="utf-8")
 
 
 def test_render_inlines_core_and_escapes_data():
@@ -667,8 +833,16 @@ def test_main_writes_the_page(tmp_path):
     folder, out = tmp_path / "preview", tmp_path / "out" / "page.html"
     write_preview(folder, synthetic(), report_for(synthetic()))
     assert height_viewer.main(["--dir", str(folder), "--out", str(out)]) == 0
-    html = out.read_text(encoding="utf-8")
-    assert f'"{MAP}"' in html and "BLOCKS READINESS" in html
+    data = page_data(out)
+    m = data["maps"][MAP]
+    assert m["summary"]["source"] == "report"
+    assert [a["size"] for a in m["areas"] if a["blocking"]] == [13]
+    assert "HeightCore" in out.read_text(encoding="utf-8")
+
+
+def page_data(out: Path) -> dict:
+    """The DATA object the page was rendered with."""
+    return json.loads(out.read_text(encoding="utf-8").split("var DATA = ", 1)[1].split(";\n", 1)[0])
 
 
 def test_main_skips_a_broken_map_and_keeps_the_rest(tmp_path, capsys):
@@ -676,11 +850,59 @@ def test_main_skips_a_broken_map_and_keeps_the_rest(tmp_path, capsys):
     write_preview(folder, synthetic())                               # good, no report
     write_preview(folder, synthetic(), name="Nowhere")              # no such map's masks
     (folder / "Lotus.height.npz").write_bytes(b"not an npz")         # unreadable
+    old = synthetic()
+    old.meta = {**old.meta, "version": 99}                           # an old/unknown HEIGHT_VERSION
+    write_preview(folder, old, name="Split")
+    flat = synthetic()
+    flat.floors = flat.floors.reshape(GRID * GRID, MAXF)             # loads, wrong shape
+    write_preview(folder, flat, name="Haven")
     assert height_viewer.main(["--dir", str(folder), "--out", str(out)]) == 0
-    err = capsys.readouterr().out
-    assert "WARNING Nowhere" in err and "WARNING Lotus" in err
+    printed = capsys.readouterr().out
+    for name in ("Nowhere", "Lotus", "Split", "Haven"):
+        assert f"WARNING {name}" in printed
     html = out.read_text(encoding="utf-8")
-    assert f'"{MAP}"' in html and '"Nowhere"' not in html
+    assert f'"{MAP}"' in html
+    assert all(f'"name":"{n}"' not in html for n in ("Nowhere", "Lotus", "Split", "Haven"))
+
+
+def test_main_survives_bad_reports(tmp_path, capsys, monkeypatch):
+    folder, out = tmp_path / "preview", tmp_path / "page.html"
+    write_preview(folder, synthetic(), report_for(synthetic()))                  # Ascent: a good report
+    write_preview(folder, synthetic(), name="Sunset")
+    (folder / "Sunset.height.json").write_text("[]", encoding="utf-8")           # malformed
+    write_preview(folder, synthetic(), name="Split")
+    (folder / "Split.height.json").write_text("{not json", encoding="utf-8")     # not JSON
+    write_preview(folder, synthetic(), name="Haven")
+    (folder / "Haven.height.json").write_text("{}", encoding="utf-8")
+    real = Path.read_text
+
+    def unreadable(self, *a, **k):                                              # Haven's report can't be read
+        if self.name == "Haven.height.json":
+            raise PermissionError("simulated")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    assert height_viewer.main(["--dir", str(folder), "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    for name in ("Sunset", "Split", "Haven"):
+        assert f"WARNING {name}" in printed and "showing the asset alone" in printed
+    monkeypatch.undo()
+    data = page_data(out)
+    assert data["maps"]["Ascent"]["summary"]["source"] == "report"
+    assert {data["maps"][n]["summary"]["source"] for n in ("Sunset", "Split", "Haven")} == {"recomputed"}
+
+
+def test_out_inside_a_repository_is_refused(tmp_path, capsys):
+    folder = tmp_path / "preview"
+    write_preview(folder, synthetic())
+    inside = WEBAPP / "app" / "static" / "data" / "control" / "index.json"     # the worst case
+    before = inside.read_bytes()
+    assert height_viewer.main(["--dir", str(folder), "--out", str(inside)]) == 2
+    assert inside.read_bytes() == before and "REFUSED" in capsys.readouterr().out
+    other = tmp_path / "another-checkout"
+    (other / ".git").mkdir(parents=True)                                         # any folder under a .git
+    assert height_viewer.main(["--dir", str(folder), "--out", str(other / "sub" / "p.html")]) == 2
+    assert not (other / "sub").exists()
 
 
 def test_main_with_nothing_to_show_exits_2(tmp_path, capsys):
@@ -704,41 +926,55 @@ def test_committed_digest_mismatch_is_skipped(tmp_path, capsys):
     index = json.loads((assets / "index.json").read_text(encoding="utf-8"))
     index["maps"][MAP]["height_sha"] = "000000000000"
     (assets / "index.json").write_text(json.dumps(index), encoding="utf-8")
-    assert height_viewer.main(["--committed", "--out", str(tmp_path / "p.html")], asset_dir=assets) == 2
+    # --map: other maps may have valid committed heights one day, and this test is about MAP's mismatch only
+    assert height_viewer.main(["--committed", "--map", MAP, "--out", str(tmp_path / "p.html")],
+                              asset_dir=assets) == 2
     assert f"WARNING {MAP}" in capsys.readouterr().out
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `cd webapp && .venv\Scripts\python.exe -m pytest tests/replays/test_height_viewer.py -q`
-Expected: the 6 new tests FAIL with `AttributeError: module 'height_viewer' has no attribute 'render'` (or
+Expected: the 8 new tests FAIL with `AttributeError: module 'height_viewer' has no attribute 'render'` (or
 `'main'`/`'sources'`).
 
 - [ ] **Step 3: Append `sources`, `render` and `main` to `height_viewer.py`**
 
 ```python
 def sources(directory: Path, committed: bool, names: list[str] | None,
-            asset_dir: Path = cg.ASSET_DIR) -> list[tuple[str, Path, dict | None, str]]:
-    """(map, asset path, report or None, kind) for every asset to show, by map name."""
+            asset_dir: Path = cg.ASSET_DIR) -> list[tuple[str, Path, object, str]]:
+    """(map, asset path, the report's {height_sha, height} wrapper or None, kind) for every asset to show.
+    The index.json entry is already that wrapper. A preview report that can't be read is None, with a
+    WARNING; one that reads but isn't a wrapper is passed on for usable_report to refuse."""
     out = []
     if committed:
         index_path = asset_dir / "index.json"
         index = json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}) if index_path.is_file() else {}
         for name, entry in sorted(index.items()):
-            if (entry or {}).get("height_sha"):
-                out.append((name, asset_dir / f"{name}.height.npz", entry.get("height"), "committed"))
+            if isinstance(entry, dict) and entry.get("height_sha"):
+                out.append((name, asset_dir / f"{name}.height.npz", entry, "committed"))
     else:
         for npz in sorted(directory.glob("*.height.npz")):
             name = npz.name[: -len(".height.npz")]
+            if names and name not in names:
+                continue
             report_path = npz.with_name(f"{name}.height.json")
-            report = None
+            wrapper = None
             if report_path.is_file():
                 try:
-                    report = json.loads(report_path.read_text(encoding="utf-8")).get("height")
-                except ValueError:
-                    print(f"WARNING {name}: unreadable report {report_path.name}; showing the asset alone", flush=True)
-            out.append((name, npz, report, "preview"))
+                    wrapper = json.loads(report_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    print(f"WARNING {name}: can't read {report_path.name} ({type(exc).__name__}); showing the "
+                          f"asset alone", flush=True)
+            out.append((name, npz, wrapper, "preview"))
     return [s for s in out if not names or s[0] in names]
+
+
+def inside_a_repository(path: Path) -> bool:
+    """This checkout, or any other one (build_control_heights.py's --preview guard: the main checkout and
+    each worktree have a `.git`)."""
+    out = path.resolve()
+    return out.is_relative_to(WEBAPP_ROOT.parent.resolve()) or any((f / ".git").exists() for f in (out, *out.parents))
 
 
 def render(maps: dict) -> str:
@@ -754,16 +990,21 @@ def main(argv: list[str] | None = None, asset_dir: Path = cg.ASSET_DIR) -> int:
     parser.add_argument("--map", action="append", help="only this map (repeatable)")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="the page to write (default under %%TEMP%%)")
     args = parser.parse_args(argv)
+    if inside_a_repository(args.out):
+        print(f"REFUSED: --out {args.out} is inside a repository; the page is never written into one", flush=True)
+        return 2
     index = {}
     if args.committed and (asset_dir / "index.json").is_file():
         index = json.loads((asset_dir / "index.json").read_text(encoding="utf-8")).get("maps", {})
     maps = {}
-    for name, path, report, kind in sources(args.dir, args.committed, args.map, asset_dir):
+    for name, path, wrapper, kind in sources(args.dir, args.committed, args.map, asset_dir):
         try:
-            payload = map_payload(name, path, report, kind, asset_dir)
+            payload = map_payload(name, path, wrapper, kind, asset_dir)
         except (OSError, KeyError, ValueError) as exc:
             print(f"WARNING {name}: skipped ({type(exc).__name__}: {exc})", flush=True)
             continue
+        if wrapper is not None and payload["report_note"]:
+            print(f"WARNING {name}: {payload['report_note']}; showing the asset alone", flush=True)
         if kind == "committed" and payload["height_sha"] != index[name]["height_sha"]:
             print(f"WARNING {name}: skipped ({path.name} is {payload['height_sha']}, index.json says "
                   f"{index[name]['height_sha']}; the engine would refuse it)", flush=True)
@@ -785,8 +1026,9 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-`map_payload` (Task 1) already turns an unreadable `.npz` into a `ValueError`, so the `except` above covers
-it.
+`map_payload` (Task 1) already turns an unreadable or wrongly shaped `.npz` into a `ValueError`, so the
+`except` above covers it. The `--out` guard runs before anything is read, so a refused run writes nothing,
+not even a folder.
 
 - [ ] **Step 4: Write the template**
 
@@ -871,16 +1113,15 @@ it.
     img.src = "data:image/png;base64," + map.raw.image;
     var s = map.raw.summary, parts = [name + " (" + map.raw.kind + ")"];
     if (s.matches != null) parts.push(s.matches + " matches, " + s.rounds + " rounds");
-    if (s.supported != null) parts.push("supported " + (100 * s.supported).toFixed(1) + "% (bar " +
-                                        (100 * map.raw.supported_min).toFixed(0) + "%)");
+    parts.push("supported " + (100 * s.supported).toFixed(1) + "% (bar " + (100 * map.raw.supported_min).toFixed(0) + "%)");
     $("summary").textContent = parts.join(" · ");
-    if (s.ready != null) {
-      var r = document.createElement("span");
-      r.className = s.ready ? "ok" : "bad";
-      r.textContent = s.ready ? " · ready" : " · not ready: " + s.not_ready.join("; ");
-      $("summary").appendChild(r);
-    }
+    var r = document.createElement("span");
+    r.className = s.ready ? "ok" : "bad";
+    r.textContent = (s.ready ? " · ready" : " · not ready: " + s.not_ready.join("; ")) +
+                    (s.source === "recomputed" ? " (recomputed against the current walk mask)" : "");
+    $("summary").appendChild(r);
     var w = [];
+    if (map.raw.report_note) w.push("build report not used: " + map.raw.report_note);
     if (map.raw.walk_stale) w.push("built on an older walk mask: cells added since have no height");
     if (map.raw.preview_min_matches) w.push("preview rule: floors from " + map.raw.preview_min_matches + " match(es), not 2");
     $("warnings").textContent = w.join(" · ");
@@ -963,7 +1204,7 @@ it.
     if (map.unresolved[cell]) lines.push("unresolved: flat 2D sight and walking here");
     else if (!fl.length) lines.push(map.walk[cell] ? "walkable, no height" : "not walkable");
     fl.forEach(function (f) {
-      var s = "floor " + (f.floor + 1) + ": " + m1(f.z) + (map.supported[cell] ? "" : " (filled from neighbours)") +
+      var s = "floor " + (f.floor + 1) + ": " + m1(f.z) + (map.supported[cell] ? " (supported)" : " (filled from neighbours)") +
               ", spread " + m1(f.spread);
       if (ref) { var d = H.compare(ref.z, f.z); s += "   " + signed(d.delta) + ", " + d.word; }
       lines.push(s);
@@ -1002,7 +1243,7 @@ it.
     map.raw.areas.forEach(function (a) {
       var d = document.createElement("div"), why = Object.keys(a.why).map(function (k) { return k + " " + a.why[k]; });
       d.className = "item" + (a.blocking ? " blocking" : "");
-      d.textContent = (a.blocking ? "BLOCKS READINESS · " : "") + a.size + " cells at px " + a.bbox[0] + ", " + a.bbox[1] +
+      d.textContent = (a.blocking ? "BLOCKS READINESS · " : "") + a.size + " cells at px [" + a.bbox.join(", ") + "]" +
                       (why.length ? " · " + why.join(", ") : "");
       d.onclick = function () { focusArea = focusArea === a ? null : a; focusKill = null; drawMarks(); scrollToBox(a.bbox); };
       box.appendChild(d);
@@ -1011,6 +1252,7 @@ it.
 
   function listKills() {
     var box = $("kills"); box.textContent = "";
+    if (map.raw.kill_lines === null) { box.textContent = "kill-line check unavailable (no report for this build)"; return; }
     if (!map.raw.kill_lines.length) { box.textContent = "none"; return; }
     map.raw.kill_lines.forEach(function (k) {
       var d = document.createElement("div");
@@ -1057,13 +1299,13 @@ it.
 </body></html>
 ```
 
-The words `BLOCKS READINESS` sit in the template, so `test_main_writes_the_page` finds them in every page.
-The test is really checking that the template, not only the data, made it into the file.
+`page_data()` reads `var DATA = ...;` back out of the written page. The template's line `var DATA =
+/*DATA*/null;` must stay on one line, ending in `;` and a newline, for the tests to find it.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd webapp && .venv\Scripts\python.exe -m pytest tests/replays/test_height_viewer.py -q`
-Expected: 16 passed, 0 skipped.
+Expected: 24 passed, 0 skipped.
 
 - [ ] **Step 6: Commit**
 
@@ -1121,9 +1363,14 @@ supported/filled status.
 Open `file:///C:/Users/User/AppData/Local/Temp/valo-height-viewer/height-viewer.html#Sunset` in Chrome. If
 the browser-automation extension is driving, serve the folder over `python -m http.server`, because it
 refuses `file://`. Check each:
-- the header says `not ready: 1 unresolved area(s) larger than 12 cells ...` and `supported 70.7% (bar 60%)`;
-- the first area in the list is `BLOCKS READINESS · 13 cells at px 352, 672 · neighbours disagree 13`.
-  Clicking it highlights a strip just under the small two-floor patch near px (420, 660);
+- the header says `not ready: 1 unresolved area(s) larger than 12 cells ...` and `supported 70.7% (bar 60%)`,
+  with no "recomputed" label and no "build report not used" warning (Sunset's report matches its asset);
+- the first area in the list is `BLOCKS READINESS · 13 cells at px [352, 672, 415, 687] · neighbours
+  disagree 13`. Clicking it highlights a strip just under the small two-floor patch near px (420, 660);
+- hovering a supported cell says `(supported)`, and a filled one says `(filled from neighbours)`;
+- rebuild with `--dir` pointing at a temp copy of the preview folder whose `Sunset.height.json` is deleted.
+  The header must say `(recomputed against the current walk mask)` with the same 70.7%, and the kill-line
+  list must say `kill-line check unavailable`, not `none`;
 - clicking a ground cell sets the reference; hovering a nearby cell reads `±0.0 m, same height` or a small
   difference; hovering an upper floor of a white-outlined cell reads `much higher`;
 - the same-height layer shades the connected flat area around the reference, and dragging the tolerance
