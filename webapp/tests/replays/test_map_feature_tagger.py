@@ -305,3 +305,86 @@ def test_with_no_feature_edits_the_export_is_exactly_export_tags():
     tags = json.loads((cg.ASSET_DIR / "tags.json").read_text(encoding="utf-8"))
     got = run_node(EXPORT_REAL, {"tags": tags, "map": control_tagger.map_data("Ascent", tags["maps"]["Ascent"], [])})
     assert got["a"] == got["b"] == tags
+
+
+# ---- W13: drafts
+
+DRAFTS = """
+  function Fake(opts) { this.m = new Map(); this.opts = opts || {}; this.writes = 0; }
+  Fake.prototype.getItem = function (k) {
+    if (this.opts.readDenied) { const e = new Error("denied"); e.name = "SecurityError"; throw e; }
+    return this.m.has(k) ? this.m.get(k) : null;
+  };
+  Fake.prototype.setItem = function (k, v) {
+    this.writes++;
+    if (this.opts.failOn && k.indexOf(this.opts.failOn) >= 0 && this.writes > (this.opts.after || 0)) {
+      const e = new Error("quota"); e.name = "QuotaExceededError"; throw e;
+    }
+    let size = 0; this.m.forEach((x, key) => { if (key !== k) size += x.length; });
+    if (this.opts.quota && size + v.length > this.opts.quota) { const e = new Error("quota"); e.name = "QuotaExceededError"; throw e; }
+    this.m.set(k, String(v));
+  };
+  Fake.prototype.removeItem = function (k) { this.m.delete(k); };
+  function snapKeys(store) { return [...store.m.keys()].filter(k => k.indexOf(":snap:") >= 0).map(k => k.split(":").pop()).sort(); }
+
+  function run(p) {
+    const out = {};
+    const body = n => ({canonical: p.catalogue, features: {Ascent: {dirty: true, mf: {...p.mf, next_id: 100 + n}}}});
+    // round trip, three saves, the oldest pruned
+    let s = new Fake(), d = new F.Drafts(s, p.source);
+    out.empty = d.load();
+    out.saves = [1, 2, 3].map(n => d.save(body(n)));
+    out.loaded = d.load();
+    out.kept = snapKeys(s);
+    out.sameBody = JSON.stringify(out.loaded.body) === JSON.stringify(body(3));
+    // corrupt active snapshot: the previous one is used
+    const key = [...s.m.keys()].find(k => k.endsWith(":snap:3"));
+    s.m.set(key, s.m.get(key).replace("103", "999"));
+    out.recovered = d.load();
+    // an interrupted save (the pointer write fails) leaves the last good snapshot active and no orphan
+    s = new Fake({failOn: ":active", after: 7}); d = new F.Drafts(s, p.source);   // saves 1 and 2 take 3 writes each
+    d.save(body(1)); d.save(body(2));
+    out.interrupted = d.save(body(3));
+    out.afterInterrupt = d.load().revision;
+    out.interruptKeys = snapKeys(s);
+    // quota: nothing saved, and it says so
+    s = new Fake({quota: 50}); d = new F.Drafts(s, p.source);
+    out.quota = d.save(body(1));
+    out.quotaLoad = d.load().status;
+    // reads denied (private mode): no throw
+    out.denied = new F.Drafts(new Fake({readDenied: true}), p.source).load().status;
+    // another source (an image changed): its draft is listed with what differs, never loaded
+    s = new Fake(); d = new F.Drafts(s, p.source); d.save(body(1));
+    const moved = JSON.parse(JSON.stringify(p.source)); moved.image_digests.Ascent = "changed00000";
+    const d2 = new F.Drafts(s, moved);
+    out.otherLoad = d2.load().status;
+    out.others = d2.others();
+    out.readOther = JSON.stringify(d2.readOther(out.others[0].key).body) === JSON.stringify(body(1));
+    // a stored snapshot of a schema this page can't read: reported, store untouched
+    s = new Fake(); d = new F.Drafts(s, p.source);
+    const newer = body(1); newer.canonical = JSON.parse(JSON.stringify(p.catalogue)); newer.canonical.maps.Ascent.map_features.version = 2;
+    d.save(newer);
+    const before = JSON.stringify([...s.m.entries()]);
+    out.incompatible = d.load();
+    out.untouched = JSON.stringify([...s.m.entries()]) === before;
+    return out;
+  }
+"""
+
+
+def test_drafts_survive_corruption_interruption_quota_and_source_changes():
+    source = {"catalogue_digest": "c1", "image_digests": {"Ascent": "img1", "Bind": "img2"},
+              "floor_digests": {"Ascent": None}, "schema_version": 1}
+    got = run_node(DRAFTS, {"catalogue": CATALOGUE, "mf": MF, "source": source})
+    assert got["empty"]["status"] == "none"
+    assert [s["revision"] for s in got["saves"]] == [1, 2, 3] and all(s["ok"] for s in got["saves"])
+    assert got["loaded"]["status"] == "ok" and got["loaded"]["revision"] == 3 and got["sameBody"]
+    assert got["kept"] == ["2", "3"], "the active snapshot and the previous one"
+    assert got["recovered"]["status"] == "recovered" and got["recovered"]["revision"] == 2
+    assert got["interrupted"]["ok"] is False and got["interrupted"]["stage"] == "pointer"
+    assert got["afterInterrupt"] == 2 and got["interruptKeys"] == ["1", "2"]
+    assert got["quota"]["ok"] is False and got["quota"]["error"].startswith("QuotaExceededError") and got["quotaLoad"] == "none"
+    assert got["denied"] == "corrupt"
+    assert got["otherLoad"] == "none" and len(got["others"]) == 1 and got["others"][0]["differs"] == ["image of Ascent"]
+    assert got["readOther"]
+    assert got["incompatible"]["status"] == "incompatible" and got["incompatible"]["body"] is None and got["untouched"]

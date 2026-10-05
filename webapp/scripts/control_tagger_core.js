@@ -1139,7 +1139,112 @@
     return out;
   }
 
+  // -- Drafts: autosaved snapshots in a key/value store (the page passes a localStorage wrapper; tests a fake).
+  // A draft belongs to its source: the catalogue, map images and floor assets it was started from (their
+  // digests) and the schema version. A save writes the whole new snapshot, reads it back, and only then
+  // moves the active pointer, keeping the previous snapshot; a failed or interrupted save leaves the last good
+  // one active, and a corrupt active snapshot falls back to the previous. A draft from another source is listed
+  // for restore or download, never applied silently. Store errors (quota, permission) come back as
+  // {ok: false}: the page shows "not saved" and offers the download.
+  var DRAFT_PREFIX = "control-tagger-features-v1";
+
+  function draftSourceKey(source) { return digest(source).slice(0, 12); }
+
+  function Drafts(store, source) {
+    this.store = store;
+    this.source = source;
+    this.key = draftSourceKey(source);
+  }
+
+  Drafts.prototype._k = function (sourceKey, part) { return DRAFT_PREFIX + ":" + sourceKey + ":" + part; };
+
+  Drafts.prototype._get = function (k) {
+    try { var v = this.store.getItem(k); return v === null || v === undefined ? null : JSON.parse(v); }
+    catch (e) { return undefined; }           // unreadable: treated as corrupt by the caller
+  };
+
+  Drafts.prototype._readSnap = function (sourceKey, rev) {
+    var s = this._get(this._k(sourceKey, "snap:" + rev));
+    if (!s || typeof s !== "object" || s.revision !== rev || !s.body) return null;
+    try { if (digest(s.body) !== s.checksum) return null; } catch (e) { return null; }
+    return s;
+  };
+
+  Drafts.prototype.save = function (body) {
+    var pointer = this._get(this._k(this.key, "active"));
+    var rev = (pointer && typeof pointer.revision === "number" ? pointer.revision : 0) + 1;
+    var snap = { provenance: this.source, revision: rev, checksum: digest(body), body: body };
+    var stage = "snapshot";
+    try {
+      this.store.setItem(this._k(this.key, "snap:" + rev), JSON.stringify(snap));
+      if (!this._readSnap(this.key, rev)) throw new Error("the snapshot did not read back intact");
+      stage = "pointer";
+      this.store.setItem(this._k(this.key, "active"), JSON.stringify({ revision: rev, previous: pointer ? pointer.revision : null }));
+      stage = "cleanup";
+      if (pointer && typeof pointer.previous === "number") this.store.removeItem(this._k(this.key, "snap:" + pointer.previous));
+      stage = "index";
+      var index = this._get(DRAFT_PREFIX + ":index") || {};
+      index[this.key] = { source: this.source, revision: rev };
+      this.store.setItem(DRAFT_PREFIX + ":index", JSON.stringify(index));
+    } catch (e) {
+      var advanced = stage === "cleanup" || stage === "index";
+      if (!advanced) { try { this.store.removeItem(this._k(this.key, "snap:" + rev)); } catch (e2) { /* nothing to undo */ } }
+      return { ok: advanced, revision: advanced ? rev : (pointer ? pointer.revision : null),
+               error: (e && e.name ? e.name + ": " : "") + (e && e.message ? e.message : String(e)), stage: stage };
+    }
+    return { ok: true, revision: rev };
+  };
+
+  // {status: "ok" | "recovered" | "none" | "corrupt" | "incompatible", body, revision, problems}
+  Drafts.prototype.load = function () {
+    var pointer = this._get(this._k(this.key, "active"));
+    if (pointer === null) return { status: "none", body: null, revision: null, problems: [] };
+    if (!pointer || typeof pointer.revision !== "number") return { status: "corrupt", body: null, revision: null, problems: ["the active pointer is unreadable"] };
+    var problems = [], tries = [[pointer.revision, "ok"], [pointer.previous, "recovered"]];
+    for (var i = 0; i < tries.length; i++) {
+      var rev = tries[i][0];
+      if (typeof rev !== "number") continue;
+      var s = this._readSnap(this.key, rev);
+      if (!s) { problems.push("snapshot " + rev + " is missing or corrupt"); continue; }
+      var bad = Object.keys((s.body.canonical || {}).maps || {}).filter(function (m) {
+        var mf = s.body.canonical.maps[m] && s.body.canonical.maps[m].map_features;
+        return mf !== undefined && checkVersion(mf) !== null;
+      });
+      if (bad.length) return { status: "incompatible", body: null, revision: rev, problems: ["map_features of " + bad.join(", ") + " can't be read by this page"] };
+      return { status: tries[i][1], body: s.body, revision: rev, problems: problems };
+    }
+    return { status: "corrupt", body: null, revision: null, problems: problems };
+  };
+
+  // Drafts saved for other sources: {key, source, revision, differs: [what changed]}.
+  Drafts.prototype.others = function () {
+    var index = this._get(DRAFT_PREFIX + ":index") || {}, mine = this.source, out = [];
+    Object.keys(index).sort().forEach(function (k) {
+      if (k === this.key) return;
+      var src = index[k].source || {}, differs = [];
+      if (src.catalogue_digest !== mine.catalogue_digest) differs.push("catalogue");
+      if (src.schema_version !== mine.schema_version) differs.push("schema");
+      ["image_digests", "floor_digests"].forEach(function (part) {
+        var a = src[part] || {}, b = mine[part] || {};
+        Object.keys(Object.assign({}, a, b)).sort().forEach(function (m) {
+          if (a[m] !== b[m]) differs.push((part === "image_digests" ? "image of " : "floors of ") + m);
+        });
+      });
+      out.push({ key: k, source: src, revision: index[k].revision, differs: differs });
+    }, this);
+    return out;
+  };
+
+  // Another source's draft, for an explicit restore (the page revalidates it against the current maps) or a
+  // download. Never applied by itself.
+  Drafts.prototype.readOther = function (key) {
+    var pointer = this._get(this._k(key, "active"));
+    if (!pointer || typeof pointer.revision !== "number") return null;
+    return this._readSnap(key, pointer.revision) || (typeof pointer.previous === "number" ? this._readSnap(key, pointer.previous) : null);
+  };
+
   Object.assign(Features, {
+    Drafts: Drafts, draftSourceKey: draftSourceKey, DRAFT_PREFIX: DRAFT_PREFIX,
     importCatalogue: importCatalogue, diffCatalogues: diffCatalogues, mergeCatalogue: mergeCatalogue,
     exportCatalogue: exportCatalogue,
     SCHEMA_VERSION: SCHEMA_VERSION, UV_MAX: UV_MAX, emptyMf: emptyMf, checkVersion: checkVersion, validate: validate, nextNumber: nextNumber, allocate: allocate,
