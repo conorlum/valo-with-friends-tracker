@@ -469,11 +469,13 @@ class BundleStatus:
 
 
 def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
-                  consumers: frozenset = RUNTIME_CONSUMERS) -> dict:
+                  consumers: frozenset | None = None) -> dict:
     """Each bundle's publishability. A bundle publishes its members' base edits only together and only when
     it is enabled, names a registered runtime consumer, every member's behaviour is resolved, every floor
     binding it relies on is verified against the map's current heights, every overlap with legacy hand paint
-    is reclassified exactly, and no member's edits overlap a feature outside the bundle."""
+    is reclassified exactly, and no member's edits overlap a feature outside the bundle. `consumers` defaults to
+    the registered RUNTIME_CONSUMERS (read at call time)."""
+    consumers = RUNTIME_CONSUMERS if consumers is None else consumers
     features = {f.get("id"): f for f in mf.get("features") or []}
     floors = _floors_by_id(mf)
     legacy = legacy or {}
@@ -829,7 +831,7 @@ def asset_hashes(assets: dict) -> dict:
 
 
 def manifest(geo: Geometry, mf: dict | None, legacy: dict | None = None,
-             consumers: frozenset = RUNTIME_CONSUMERS) -> dict | None:
+             consumers: frozenset | None = None) -> dict | None:
     """The consumed-input manifest of a map's features, or None when no bundle is publishable: then the map
     has no `features` input at all, and its control inputs and fingerprints are exactly what they were.
     Editorial fields never reach it; enabling a bundle, a runtime edit, the height asset, the schema, the
@@ -864,7 +866,7 @@ def manifest_digest(m: dict | None) -> str | None:
 
 
 def verify(expected: dict | None, assets: dict | None, geo: Geometry | None = None, mf: dict | None = None,
-           legacy: dict | None = None, consumers: frozenset = RUNTIME_CONSUMERS) -> list[str]:
+           legacy: dict | None = None, consumers: frozenset | None = None) -> list[str]:
     """Mismatches between an expected manifest and what was actually loaded (empty: they agree). The loaded
     assets' bytes are hashed again, never trusted from a claim; with the geometry and definitions, the
     definitions are compiled again and must give the same manifest (definition-to-compiled correspondence)."""
@@ -897,6 +899,53 @@ def active_sha(name: str, asset_dir=None) -> str | None:
     except (OSError, ValueError):
         return None
     return entry.get("features_sha") or None
+
+
+GENERATIONS = "features"           # <asset dir>/features/<manifest digest>.json
+
+
+def load_generation(asset_dir, sha: str) -> dict:
+    """A published generation {map, manifest, assets}. Content-addressed: a file whose manifest doesn't hash to
+    its name is refused (GeometryError: the machine's problem, retried, never a bad round)."""
+    from app.control.geometry import GeometryError
+
+    path = asset_dir / GENERATIONS / f"{sha}.json"
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise GeometryError(f"feature generation {sha} unreadable: {error}") from error
+    if manifest_digest(body.get("manifest")) != sha:
+        raise GeometryError(f"feature generation {sha}: its manifest hashes to {manifest_digest(body.get('manifest'))}")
+    return body
+
+
+def publish_generation(asset_dir, name: str, manifest_: dict, assets: dict) -> str:
+    """Writes a complete, verified generation, then moves the map's pointer (index.json `features_sha`) to it in
+    one atomic replace. A failure at any step leaves the previous pointer, and so the previous generation, in
+    use; in-flight tasks keep the immutable file they loaded. Returns the generation's digest. Never run on the
+    committed asset folder in this build (R3): no map has an enabled feature."""
+    import os
+
+    from app.control.geometry import GeometryError
+
+    sha = manifest_digest(manifest_)
+    folder = asset_dir / GENERATIONS
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{sha}.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"map": name, "manifest": manifest_, "assets": assets}, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+    body = load_generation(asset_dir, sha)
+    problems = verify(manifest_, body["assets"])
+    if problems:
+        raise GeometryError(f"feature generation {sha} did not read back intact: {problems}")
+    index_path = asset_dir / "index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index.setdefault("maps", {}).setdefault(name, {})["features_sha"] = sha
+    tmp_index = index_path.with_suffix(".tmp")
+    tmp_index.write_text(json.dumps(index, indent=1) + "\n", encoding="utf-8")
+    os.replace(tmp_index, index_path)
+    return sha
 
 
 # ---------------------------------------------------------------- rotation

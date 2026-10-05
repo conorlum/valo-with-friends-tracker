@@ -98,8 +98,27 @@ def _load(name: str, heights: str | None = None):
                 except OSError:
                     pass
             raise
+        verify_features(geo)
         _GEOMETRY[key] = geo
     return _GEOMETRY[key]
+
+
+def verify_features(geo, expected: str | None = None, full: bool = True) -> None:
+    """Map features (M5): the loaded generation must be the expected one (a task may name it), its compiled
+    assets must hash to its manifest, and the map's current definitions (tags.json) must still compile to that
+    manifest. Any mismatch raises GeometryError: the machine's (infra) failure, retried, never stored as the
+    round's. Nothing to check on a map without a generation, which is every map today."""
+    from app.control import features, geometry
+
+    if expected is not None and expected != geo.features_sha:
+        raise geometry.GeometryError(f"{geo.name}: expected feature generation {expected}, loaded {geo.features_sha}")
+    if not geo.features_sha or not full:
+        return
+    entry = geometry.load_tags().get("maps", {}).get(geo.name, {})
+    problems = features.verify(geo.features["manifest"], geo.features["assets"], geo, entry.get("map_features"),
+                               features.legacy_masks(entry))
+    if problems:
+        raise geometry.GeometryError(f"{geo.name}: feature generation {geo.features_sha} is stale: {'; '.join(problems)}")
 
 
 def _cache_path(job: dict, map_name: str) -> Path:
@@ -276,6 +295,8 @@ def compute_task(task: dict) -> dict:
                 "key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()}
     try:
         geo = _load(task["map"], task.get("heights"))
+        if task.get("features"):           # the generation the dispatcher planned with (map features)
+            verify_features(geo, task["features"], full=False)
         blob = fmt.decode_blob(task["blob"])
         link = engine.ControlLink(sides={int(s): side for s, side in task["link"]["sides"].items()},
                                   db_deaths=tuple((int(s), float(t)) for s, t in task["link"]["db_deaths"]))
