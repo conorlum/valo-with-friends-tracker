@@ -33,7 +33,7 @@ A FastAPI + SQLAlchemy 2.0 + Alembic + Postgres project, independent of the root
 - `app/db.py` / `app/config.py` — SQLAlchemy engine/session setup; DB connection comes from `DATABASE_URL` (see `.env.example`), defaulting to the local docker-compose Postgres.
 - `app/main.py` — FastAPI app, currently just a `/health` endpoint that round-trips the DB.
 - `alembic/versions/` — schema migrations; `0001_initial_schema.py` creates all 7 tables, `0002_friendships.py` adds `friendships`, `0003_player_view_cache.py` adds `player_view_cache`.
-- `docker-compose.yml` — local Postgres 16 for development.
+- `docker-compose.yml` — local Postgres 18 for development. The data volume holds a Postgres 18 cluster and is mounted at `/var/lib/postgresql` (the 18 image keeps its data under `18/docker`).
 - `render.yaml` (repo root) — the Render Blueprint for the `valowithfriendstracker` web service only: it runs `alembic upgrade head` on build, and it declares no databases. A Blueprint sync applies its `plan:` over the dashboard's setting. The `valomaths` service isn't in it (see above).
 - `scripts/seed_demo_matches.py` / `scripts/ingest_demo_match.py` — one-off scripts to bulk- or single-ingest match JSONs from `MatchHTMLJsons/` into the DB via the adapter above. Not part of the deploy path.
 - `seed_data/demo_matches.sql` — the public ValoMaths demo's sample data (six matches plus a fixed sample friend group), a data-only dump at the schema head. `scripts/load_seed_data.py` loads it and `scripts/dump_seed_data.py` regenerates it. Every command against the demo DB goes through `scripts/with_demo_db.py`, which reads `webapp/.env.demo-remote` and refuses to run unless it is connected to `valomaths_demo`. See `load_seed_data.py`'s docstring for the rebuild order.
