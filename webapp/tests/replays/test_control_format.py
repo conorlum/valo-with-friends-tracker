@@ -36,7 +36,7 @@ from tests.replays.control_toys import blob, door_hall
 # dropped (NARROW_ROOM_CELLS, 2026-10-04).
 # 6: contested needs a live claim; an enemy's live view ends remembered ground (D5, 2026-10-04). Rules only: the
 # constants are unchanged, so the digest is 5's. Unreleased, so re-pinned in place.
-# PROVISIONAL(D5): bumped because revision 5 was released with the merge of both stacks into main.
+# Bumped because revision 5 was released with the merge of both stacks into main.
 PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4: "237677656d71ca9f",
           5: "d6a626879e47e6a0", 6: "d6a626879e47e6a0"}
 

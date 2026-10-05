@@ -678,8 +678,8 @@ $PY scripts/preview_control_live.py 0f452716-1e90-4782-afba-29229fdab922 7 --tag
 
 - **Knowledge pictures inherit the memory ending (P4 review finding 3).** `Memory.apply` runs on the true tick,
   and a team's picture reuses its own holders, so an enemy the team *couldn't see* looking at remembered ground
-  ends it in that team's picture too. Built as planned (a separate per-team memory would be a bigger change);
-  judge it in the viewer.
+  ends it in that team's picture too. Built as planned and approved by the user (D3, 2026-10-04); a separate
+  per-team memory would be a bigger change, left as a possible follow-up.
 - **Counterfactual limit (finding 4):** removing an enemy doesn't bring back memory that enemy ended this tick,
   so their control credit there is +1 where +2 would be right. Earlier ticks aren't counterfactual either.
 - **Presence bubbles in pictures (finding 6):** a seen enemy's presence bubble counts as live in a team's
