@@ -93,6 +93,9 @@ class ReplayRoundControl(Base):
     status: Mapped[str] = mapped_column(String(8), nullable=False)
     fingerprint: Mapped[str] = mapped_column(String(16), nullable=False)
     data_version: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)  # control_format.DATA_VERSION
+    # control_format.CONTROL_REVISION the row was computed under (migration 0017). For SQL only: freshness is
+    # `fingerprint`. NULL on failed rows from before 0017.
+    control_revision: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     summary: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -3,6 +3,7 @@
 compute_control.py would store them. The engine-to-bytes side is tests/replays/test_control_format.py."""
 
 import gzip
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -202,6 +203,7 @@ def test_pg_migration_0014_cascades_and_holds_its_checks(pg, condensed):
     put_row(session, replay, 1)
     put_row(session, replay, 2, status="failed")
     assert session.query(ReplayRoundControl).count() == 2
+    assert session.execute(text("SELECT control_revision FROM replay_round_control")).fetchall()   # migration 0017
     session.add(ReplayRoundControl(replay_id=replay.id, round_number=3, status="ok", fingerprint="0" * 16))
     with pytest.raises(IntegrityError):
         session.commit()
@@ -217,6 +219,56 @@ def test_pg_migration_0014_cascades_and_holds_its_checks(pg, condensed):
     session.commit()
     assert session.query(ReplayRoundControl).count() == 0
     session.close()
+
+
+def migration_0017():
+    path = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0017_replay_round_control_revision.py"
+    spec = importlib.util.spec_from_file_location("migration_0017", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def packed(header):
+    return cf.pack_data(header, {"states": b"", "coverage": b"", "control": b""})
+
+
+def test_a_stored_row_records_the_control_revision_ok_or_failed(factory, db, linked):
+    # docs/superpowers/plans/2026-10-05-control-idle-queue.md, D9: the column and the data header agree on write
+    [planned] = rc.plan(db, rounds={1})
+    ok = {"status": "ok", "data": packed({"revision": cf.CONTROL_REVISION}), "summary": cf.pack_summary({})}
+    assert compute_control.store_result(factory, planned, ok) == "stored"
+    row = db.get(ReplayRoundControl, (linked.id, 1))
+    assert row.control_revision == cf.CONTROL_REVISION == cf.unpack_data(row.data)[0]["revision"]
+    assert compute_control.store_result(factory, planned, {"status": "failed", "error": "ControlError: boom"}) == "stored"
+    db.expire_all()
+    assert db.get(ReplayRoundControl, (linked.id, 1)).control_revision == cf.CONTROL_REVISION
+
+
+def test_the_backfill_reads_a_headers_revision_and_nothing_else():
+    m = migration_0017()
+    assert m.header_revision(packed({"revision": 4})) == 4
+    assert m.header_revision(packed({})) is None
+    assert m.header_revision(packed({"revision": "4"})) is None
+    assert m.header_revision(gzip.compress(b"x")) is None
+    assert m.header_revision(b"not gzip") is None and m.header_revision(None) is None
+
+
+def test_the_backfill_fills_ok_rows_and_leaves_the_rest(db, linked):
+    m = migration_0017()
+    put_row(db, linked, 1)                                   # ok, but not a control blob at all (data is b"x")
+    put_row(db, linked, 2)
+    put_row(db, linked, 3, status="failed")
+    put_row(db, linked, 4)
+    db.get(ReplayRoundControl, (linked.id, 2)).data = packed({"revision": 4})
+    row = db.get(ReplayRoundControl, (linked.id, 4))
+    row.data, row.control_revision = packed({"revision": 3}), 5   # already set: never overwritten
+    db.commit()
+    assert m.backfill(db.connection()) == 1
+    db.commit()
+    db.expire_all()
+    got = {n: db.get(ReplayRoundControl, (linked.id, n)).control_revision for n in (1, 2, 3, 4)}
+    assert got == {1: None, 2: 4, 3: None, 4: 5}
 
 
 def test_an_ok_row_needs_its_bytes(db, linked):
