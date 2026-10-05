@@ -711,3 +711,116 @@ def test_a_dead_cyphers_wire_seals_nothing():
     rc = ce.compute_round(blob(players, t_end=20.0, util=[_wire(152, 96, 352, 296)], deaths={0: 1.0}), geo,
                           ticks=[0.0, 5.0, 10.0, 19.0])
     assert rc.unknown["A"][-1, int(np.searchsorted(rc.walk_cells, _col(geo, 250, 280)))]
+
+
+# ---------------------------------------------------------------- contested needs a live claim (D5, 2026-10-04)
+
+
+def _relive(tk):
+    """`_lines` swaps the holders after the tick was built: rebuild `live` from the new ones."""
+    tk.live = {}
+    for s, h in tk.holders.items():
+        lv = h.active | h.passive | h.watch
+        lv[h.cell] = True
+        tk.live[s] = lv
+    return tk
+
+
+def _hall(a0=None, b5=None):
+    """Open hall: A0 at (200, 250), A1 at (300, 280), B5 at (400, 200), each seeing exactly what's given.
+    Nobody stands in the west band (x 96-160): a player's own cell is live, which would keep it contested."""
+    geo = open_hall()
+    z = np.zeros(GRID * GRID, bool)
+    tk = _lines(geo, {0: ("A", 200, 250, z if a0 is None else a0), 1: ("A", 300, 280, z),
+                      5: ("B", 400, 200, z if b5 is None else b5)})
+    for h in tk.holders.values():
+        assert not _band(geo, *WEST_X)[h.cell], "keep players out of the west band"
+    return geo, _relive(tk)
+
+
+def _remember(tk, geo, slots, cells):
+    mem = ce.Memory(geo)
+    for s in slots:
+        mem.cells[s] = cells.copy()
+    mem.apply(tk, tk.unknown)
+    return mem
+
+
+WEST_X = (96, 160)
+CONTESTED = (ce.CONTESTED, ce.CONTESTED_ACTIVE)
+
+
+def test_memory_against_safe_is_nobodys():
+    """Ascent round 2 at 15.6 s (the user, 2026-10-04): one team remembers it, the other holds it as Safe."""
+    geo, tk = _hall()
+    west = _band(geo, *WEST_X)
+    z = np.zeros(GRID * GRID, bool)
+    tk.unknown = {"A": _band(geo, 380, 416), "B": z}     # B could be in the east strip; A nowhere
+    assert tk.unknown_safe("B")[west].all() and not tk.unknown_safe("A")[west].any()
+    _remember(tk, geo, [0], west)
+    assert tk.holders[0].memory[west].all()
+    assert (tk.compose()["state"][west] == ce.NONE).all(), "memory against Safe: nobody's"
+
+
+def test_memory_against_memory_is_nobodys():
+    geo, tk = _hall()
+    west = _band(geo, *WEST_X)
+    tk.unknown = {"A": _band(geo, 380, 416), "B": _band(geo, 200, 232)}    # both see the whole hall: no Safe
+    assert not tk.unknown_safe("A")[west].any() and not tk.unknown_safe("B")[west].any()
+    _remember(tk, geo, [0, 5], west)
+    assert tk.holders[0].memory[west].all() and tk.holders[5].memory[west].all()
+    assert (tk.compose()["state"][west] == ce.NONE).all(), "memory against memory: nobody's"
+
+
+@pytest.mark.parametrize("how", ["view", "watcher"])
+def test_a_live_claim_against_an_inferred_one_stays_contested(how):
+    west = _band(open_hall(), *WEST_X)
+    z = np.zeros(GRID * GRID, bool)
+    geo, tk = _hall(a0=west if how == "view" else None)
+    if how == "watcher":
+        tk.holders[0].watch = west.copy()
+        _relive(tk)
+    tk.unknown = {"A": _band(geo, 380, 416), "B": z}     # B holds the whole hall as Safe
+    assert np.isin(tk.compose()["state"][west], CONTESTED).all(), "A holds it live against B's Safe"
+
+
+def test_a_pictures_remembered_enemy_view_is_not_live():
+    geo, tk = _hall()
+    west = _band(geo, *WEST_X)
+    tk.unknown = {"A": _band(geo, 380, 416), "B": _band(geo, 200, 232)}
+    _remember(tk, geo, [0], west)
+    tk.extra_passive = {"B": west.copy()}                # B's picture: an A player's last view, remembered
+    assert (tk.compose()["state"][west] == ce.NONE).all(), "a remembered view is inferred, not live"
+
+
+def test_live_claims_leave_out_the_removed_player():
+    west = _band(open_hall(), *WEST_X)
+    geo, tk = _hall(a0=west)
+    assert tk.live_claims("A")[west].all()
+    assert not tk.live_claims("A", removed=0)[west].any(), "without A0 nothing of A's is live there"
+    assert tk.live_claims("A", removed=5)[west].all(), "removing an enemy changes nothing of A's"
+
+
+def test_the_counterfactual_applies_the_rule_full_and_incremental():
+    """Control credit recomputes the tick without one player: the rule must hold there too, on both paths."""
+    geo, tk = _hall()
+    west = _band(geo, *WEST_X)
+    tk.unknown = {"A": _band(geo, 380, 416), "B": np.zeros(GRID * GRID, bool)}
+    _remember(tk, geo, [0], west)
+    base = tk.compose()
+    full = tk.compose(removed=1)["state"]
+    inc = tk.compose(removed=1, base=base, full=False)["state"]
+    assert (full[west] == ce.NONE).all(), "without A1, A0's memory against B's Safe is still nobody's"
+    assert np.array_equal(full[west], inc[west]), "the incremental counterfactual agrees"
+
+
+def test_a_knowledge_picture_counts_only_the_enemies_the_team_sees_as_live():
+    geo = open_hall()
+    rnd = ce.RoundInputs(blob({0: still("A", 120, 200, 180), 5: still("B", 400, 200, 0)}), geo)
+    tk = ce.Tick(rnd, 1.0)
+    tk.unknown = {"A": _band(geo, 300, 316), "B": _band(geo, 100, 116)}
+    assert 5 not in tk.sees[0] and 0 not in tk.sees[5], "they face apart: neither sees the other"
+    assert tk.live_claims("B")[tk.live[5] & geo.walk_n].all()
+    kt = ce.Knowledge(rnd, "A").tick_for(tk, 1.0)
+    assert 5 not in kt.holders, "A's picture has no unseen B player"
+    assert not kt.live_claims("B").any(), "so nothing of B's is live in it"

@@ -2,7 +2,8 @@
 (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 4, "No height asset"): the toy rounds
 of control_toys.reference_rounds() against the digests recorded before the per-floor work, with only the
 revision in the header normalised. Real rounds are compared locally by scripts/control_reference.py.
-Re-recorded 2026-10-02 for CONTROL_REVISION 5 (the timing-gaps locating events)."""
+Re-recorded 2026-10-02 for CONTROL_REVISION 5 (the timing-gaps locating events). Re-recorded 2026-10-04 for
+CONTROL_REVISION 6 (D5: contested needs a live claim; an enemy's live view ends remembered ground)."""
 
 import json
 import sys

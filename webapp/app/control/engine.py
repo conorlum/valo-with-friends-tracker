@@ -44,7 +44,9 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   each team's free space from its alive players through walkable cells the other team doesn't watch
   (map specials link cells); the other team's Safe is what no free cell sees. Seen from the fill's boundary, smoke-aware: the frontier (next to the team's
   vision) first, then the rest of the boundary for the targets it missed.
-- **Contests.** Both teams claiming a cell (Q40, Q55); a holder an enemy sees, stands in enemy
+- **Contests.** Both teams claiming a cell (Q40, Q55), when at least one of them holds it live (a view, a
+  watcher, their own cell; 2026-10-04, D5): inferred claims against each other (memory, Safe, backfill) are
+  nobody's; a holder an enemy sees, stands in enemy
   damage utility, took a wallbang, or has a contesting status (their cells, unless steady cover
   also holds them); the entry's way back (Q56); cells a team lost to a status (Q55).
 - **Control (Q49, Q54, Q61-Q63).** The signed drop in the team's score (ours +1, contested and
@@ -1310,6 +1312,15 @@ class Tick:
         lv[h.cell] = True
         return lv
 
+    def live_claims(self, side: str, removed: int | None = None) -> np.ndarray:
+        """Flat cells `side` holds with something live, without `removed`: a view, a watcher or a player's own
+        cell (`live`, before Memory). Memory, Safe, backfill and a knowledge picture's remembered enemy view
+        are inferred and aren't in it (the user's call, 2026-10-04: D5)."""
+        out = np.zeros(self.geo.n, bool)
+        for h in self.team(side, removed):
+            out |= self._live_of(h)
+        return out & self.geo.walk_n
+
     def _flood(self, src: np.ndarray, room: np.ndarray) -> np.ndarray:
         """Flat cells of `room` connected (8-connected, and across the map's specials) to `src`."""
         lab = self.topo.label(room, eight=True)
@@ -1455,6 +1466,12 @@ class Tick:
             both = (level["A"] == 2) & (level["B"] == 2)
             level["A"][both] = 0
             level["B"][both] = 0
+            # a cell both teams claim with nothing live from either (memory, Safe, backfill or a picture's
+            # remembered view against each other) is nobody's: contested needs someone holding it (D5, 2026-10-04)
+            held_live = self.live_claims("A", removed) | self.live_claims("B", removed)
+            idle = (level["A"] > 0) & (level["B"] > 0) & ~held_live
+            level["A"][idle] = 0
+            level["B"][idle] = 0
         contested = (level["A"] > 0) & (level["B"] > 0)
         for side in ("A", "B"):
             other = "B" if side == "A" else "A"
