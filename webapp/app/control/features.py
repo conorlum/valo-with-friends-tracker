@@ -415,6 +415,151 @@ def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list
     return out
 
 
+# ---------------------------------------------------------------- base reconciliation and bundles
+
+# The runtime consumers this build can run features through. None: nothing is enabled until an engine
+# integration registers one (R3), so every bundle is pending and every map's base geometry is unchanged.
+RUNTIME_CONSUMERS: frozenset = frozenset()
+LEGACY_SOURCES = ("cover_paint", "cant_walk_paint", "tag", "base")
+
+
+def behaviour_problems(feature: dict) -> list[str]:
+    """Why a feature's behaviour isn't runtime-ready: unresolved durations, policies, guards or delays."""
+    out = []
+    fid = feature.get("id")
+    for row in feature.get("transitions") or []:
+        rid = row.get("id")
+        motion = row.get("motion")
+        if motion is not None:
+            if ms_known(motion.get("duration")) is None:
+                out.append(f"{fid}.{rid}: motion duration unresolved")
+            if row.get("mid_motion", "unresolved") == "unresolved":
+                out.append(f"{fid}.{rid}: mid-motion policy unresolved")
+        follow = row.get("follow_up")
+        if follow is not None and ms_known(follow.get("after")) is None:
+            out.append(f"{fid}.{rid}: follow-up delay unresolved")
+        if "unresolved" in json.dumps(row.get("guard")):
+            out.append(f"{fid}.{rid}: guard unresolved")
+    if feature.get("initial_state") is None:
+        out.append(f"{fid}: round-start state unresolved")
+    return out
+
+
+def _owned(feature: dict) -> dict:
+    edits = feature.get("base_edits") or {}
+    return {k: to_px(raster(edits.get(k))) for k in ("potential_ground", "remove_sight")}
+
+
+def legacy_masks(entry: dict) -> dict:
+    """The legacy hand paints that change the masks (tags.json entry), as pixel masks by source. Tag shapes
+    need the minimap and its detector (geometry.tag_shapes); a caller that has them passes them as "tag"."""
+    from app.control.geometry import unpack_paint
+
+    return {k: unpack_paint(entry[k]) for k in ("cover_paint", "cant_walk_paint") if entry.get(k)}
+
+
+@dataclass
+class BundleStatus:
+    id: str
+    members: list
+    publishable: bool
+    reasons: list = field(default_factory=list)
+    opens: dict = field(default_factory=dict)     # {"ground": px count, "sight": px count} it would open
+
+
+def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
+                  consumers: frozenset = RUNTIME_CONSUMERS) -> dict:
+    """Each bundle's publishability. A bundle publishes its members' base edits only together and only when
+    it is enabled, names a registered runtime consumer, every member's behaviour is resolved, every floor
+    binding it relies on is verified against the map's current heights, every overlap with legacy hand paint
+    is reclassified exactly, and no member's edits overlap a feature outside the bundle."""
+    features = {f.get("id"): f for f in mf.get("features") or []}
+    floors = _floors_by_id(mf)
+    legacy = legacy or {}
+    owned = {fid: _owned(f) for fid, f in features.items()}
+    union = {fid: o["potential_ground"] | o["remove_sight"] for fid, o in owned.items()}
+    bundle_of = {}
+    for b in mf.get("bundles") or []:
+        for m in b.get("members") or []:
+            bundle_of[m] = b.get("id")
+    out = {}
+    for b in mf.get("bundles") or []:
+        bid, members = b.get("id"), list(b.get("members") or [])
+        reasons = []
+        if not b.get("enabled"):
+            reasons.append("not enabled")
+        if b.get("runtime_consumer") not in consumers:
+            reasons.append(f"no registered runtime consumer ({b.get('runtime_consumer')!r})")
+        ground = np.zeros((PX, PX), bool)
+        sight = np.zeros((PX, PX), bool)
+        for m in members:
+            f = features.get(m)
+            if f is None:
+                reasons.append(f"member {m!r} doesn't exist")
+                continue
+            reasons += behaviour_problems(f)
+            ids = f.get("floors") if isinstance(f.get("floors"), list) else []
+            edits = f.get("base_edits") or {}
+            binding = edits.get("ground_binding")
+            if owned[m]["potential_ground"].any():
+                ids = ids + [binding] if isinstance(binding, str) else ids
+                if not isinstance(binding, str):
+                    reasons.append(f"{m}: restored ground has no floor binding")
+            if geo is not None and geo.heights is not None:
+                for fid in ids:
+                    fl = floors.get(fid) or {}
+                    if not isinstance(fl.get("z_band"), list) or fl.get("height_sha") != geo.height_sha:
+                        reasons.append(f"{m}: floor {fid!r} is not verified against the map's heights")
+                if isinstance(binding, str) and owned[m]["potential_ground"].any():
+                    cells = owned[m]["potential_ground"].reshape(GRID, CELL, GRID, CELL).any((1, 3)).ravel()
+                    cells &= ~geo.walk.ravel()
+                    if cells.any():
+                        reasons.append(f"{m}: restored ground has no floor in the height asset; rebuild the heights "
+                                       "(it never takes the unresolved all-floor fallback)")
+            for source, mask in legacy.items():
+                overlap = union[m] & mask
+                if not overlap.any():
+                    continue
+                covered = np.zeros((PX, PX), bool)
+                for rc in edits.get("reclassify") or []:
+                    if rc.get("source") == source:
+                        covered |= to_px(raster(rc.get("geometry")))
+                if (overlap & ~covered).any():
+                    reasons.append(f"{m}: overlaps legacy {source} ({int((overlap & ~covered).sum())} px) without an "
+                                   "exact reclassification")
+            for other, mask in union.items():
+                if other != m and bundle_of.get(other) != bid and (union[m] & mask).any():
+                    reasons.append(f"{m}: its base edits overlap {other}, which is not in this bundle")
+            ground |= owned[m]["potential_ground"]
+            sight |= owned[m]["remove_sight"]
+        out[bid] = BundleStatus(bid, members, not reasons, reasons,
+                                {"ground": int(ground.sum()), "sight": int(sight.sum())})
+    return out
+
+
+def reconcile(sight_px: np.ndarray, walk_px: np.ndarray, mf: dict, statuses: dict) -> tuple:
+    """The round's base domain: the permanent masks with every publishable bundle's base edits applied
+    (potential ground made walkable, owned baked-in sight removed). Pending bundles change nothing. A feature's
+    closed or intact state then blocks through `movement_blocks` and its occluders, so opening one feature
+    removes only its own contribution. Returns (sight, walk, {bundle id: opened px})."""
+    sight, walk = sight_px.copy(), walk_px.copy()
+    features = {f.get("id"): f for f in mf.get("features") or []}
+    opened = {}
+    for bid, st in statuses.items():
+        if not st.publishable:
+            continue
+        g = np.zeros((PX, PX), bool)
+        s = np.zeros((PX, PX), bool)
+        for m in st.members:
+            o = _owned(features[m])
+            g |= o["potential_ground"]
+            s |= o["remove_sight"]
+        opened[bid] = {"ground": int((g & ~walk).sum()), "sight": int((s & sight).sum())}
+        walk |= g
+        sight &= ~s
+    return sight, walk, opened
+
+
 # ---------------------------------------------------------------- diagnostics needing geometry
 
 def diagnose(geo: Geometry, mf: dict) -> list[dict]:

@@ -272,3 +272,122 @@ def test_seen_from_with_needs_one_clear_source_and_keeps_skipped_targets():
     # never more than the static rows
     static = __import__("app.control.engine", fromlist=["seen_from"]).seen_from(geo, np.array([behind, beside]), [])
     assert not (both & ~static).any()
+
+
+# ---- W8: base reconciliation and activation bundles
+
+KNOWN = {"status": "known", "value": 1.0, "unit": "s"}
+
+
+def breakable(fid, block, *, ground=None, remove=None, binding=None, reclassify=None, floors=None):
+    f = {"id": fid, "states": [{"name": "intact", "blocks_movement": True, "blocks_sight": True, "footprint": block,
+                                "sight_bounds": {"ref": "all_height"}},
+                               {"name": "broken", "blocks_movement": False, "blocks_sight": False, "terminal": True}],
+         "initial_state": "intact", "transitions": [{"id": "break", "from": "*", "event": "destroy", "to": "broken"}],
+         "base_edits": {"potential_ground": ground, "remove_sight": remove, "ground_binding": binding,
+                        "reclassify": reclassify or []}}
+    if floors is not None:
+        f["floors"] = floors
+    return f
+
+
+def baked_in():
+    """A floor with a block the minimap left transparent (x 200-232, y 100-140 px: unwalkable, blocks sight), a
+    permanent wall right beside it (x 232-240), and legacy cover paint over the block's top rows (y 100-108)."""
+    sight = np.zeros((1024, 1024), bool)
+    walk = np.zeros((1024, 1024), bool)
+    walk[96:296, 96:416] = True
+    sight[100:140, 200:240] = True
+    walk[100:140, 200:240] = False
+    cover = np.zeros((1024, 1024), bool)
+    cover[100:108, 200:232] = True
+    return sight, walk, {"cover_paint": cover}
+
+
+def block_mf(**over):
+    block = rect(200, 100, 232, 140)
+    f = breakable("feature-1", block, ground=block, remove=block, binding="floor-1",
+                  reclassify=[{"source": "cover_paint", "geometry": rect(200, 100, 232, 108)}])
+    f.update(over)
+    return {**ms.empty(), "floors": [{"id": "floor-1", "label": "ground", "z_band": None}], "features": [f],
+            "bundles": [{"id": "bundle-2", "members": ["feature-1"], "enabled": True, "runtime_consumer": "test"}]}
+
+
+def test_a_publishable_bundle_restores_its_own_ground_and_sight_and_nothing_else():
+    sight, walk, legacy = baked_in()
+    mf = block_mf()
+    [st] = cf.bundle_status(None, mf, legacy, consumers=frozenset({"test"})).values()
+    assert st.publishable and st.reasons == [] and st.opens == {"ground": 32 * 40, "sight": 32 * 40}
+    s, w, opened = cf.reconcile(sight, walk, mf, {"bundle-2": st})
+    assert opened == {"bundle-2": {"ground": 32 * 40, "sight": 32 * 40}}
+    assert w[100:140, 200:232].all() and not s[100:140, 200:232].any()
+    assert s[100:140, 232:240].all() and not w[100:140, 232:240].any(), "the permanent wall stays"
+    assert sight[100:140, 200:232].all() and not walk[100:140, 200:232].any(), "inputs untouched"
+
+
+def test_pending_bundles_publish_none_of_their_base_edits():
+    sight, walk, legacy = baked_in()
+    test = frozenset({"test"})
+    cases = {
+        "no consumer registered": (block_mf(), cf.RUNTIME_CONSUMERS),
+        "not enabled": ({**block_mf(), "bundles": [{"id": "bundle-2", "members": ["feature-1"], "enabled": False,
+                                                    "runtime_consumer": "test"}]}, test),
+        "legacy overlap not reclassified": (block_mf(base_edits={**block_mf()["features"][0]["base_edits"], "reclassify": []}), test),
+        "reclassified only in part": (block_mf(base_edits={**block_mf()["features"][0]["base_edits"],
+                                                            "reclassify": [{"source": "cover_paint", "geometry": rect(200, 100, 216, 108)}]}), test),
+        "ground without a floor binding": (block_mf(base_edits={**block_mf()["features"][0]["base_edits"], "ground_binding": None}), test),
+        "behaviour unresolved": (block_mf(initial_state=None), test),
+    }
+    for name, (mf, consumers) in cases.items():
+        statuses = cf.bundle_status(None, mf, legacy, consumers=consumers)
+        assert not statuses["bundle-2"].publishable and statuses["bundle-2"].reasons, name
+        s, w, opened = cf.reconcile(sight, walk, mf, statuses)
+        assert (s == sight).all() and (w == walk).all() and opened == {}, name
+    # a test bundle with every reason fixed is publishable (the cases above differ from it in one thing each)
+    assert cf.bundle_status(None, block_mf(), legacy, consumers=test)["bundle-2"].publishable
+
+
+def test_overlapping_features_compose_and_must_share_a_bundle():
+    sight, walk, legacy = baked_in()
+    mf = block_mf()
+    door = feature("feature-3", rect(200, 120, 232, 128))          # a door inside the block's area, no base edits
+    mf["features"].append(door)
+    st = cf.bundle_status(None, mf, legacy, consumers=frozenset({"test"}))
+    assert st["bundle-2"].publishable, "a feature with no base edits doesn't overlap any"
+    s, w, _ = cf.reconcile(sight, walk, mf, st)
+    # breaking the block opens its ground; the door, closed, still blocks its own cells
+    geo = cg.geometry_from_masks("Baked", s, w, 7e-5)
+    blocks = cf.movement_blocks(geo, mf, {"feature-1": "broken", "feature-3": "closed"}).blocked.reshape(GRID, GRID)
+    assert blocks[15, 25:29].all() and not blocks[13, 25:29].any()
+    both = cf.movement_blocks(geo, mf, {"feature-1": "intact", "feature-3": "closed"}).blocked.reshape(GRID, GRID)
+    assert both[12:17, 25:29].all()
+    # a second feature whose own base edits overlap the block's must join its bundle
+    other = breakable("feature-4", rect(216, 100, 240, 140), remove=rect(216, 100, 240, 140))
+    mf["features"].append(other)
+    st = cf.bundle_status(None, mf, legacy, consumers=frozenset({"test"}))
+    assert not st["bundle-2"].publishable and any("feature-4" in r for r in st["bundle-2"].reasons)
+    mf["bundles"][0]["members"].append("feature-4")
+    other["base_edits"]["reclassify"] = [{"source": "cover_paint", "geometry": rect(216, 100, 240, 108)}]
+    assert cf.bundle_status(None, mf, legacy, consumers=frozenset({"test"}))["bundle-2"].publishable
+
+
+def test_on_a_height_map_bindings_must_be_verified_and_restored_ground_must_be_in_the_asset():
+    geo = bridge()
+    test = frozenset({"test"})
+    on_floor = rect(304, 160, 320, 176)                       # walkable ground at 0 m: in the asset
+    off_map = rect(600, 600, 616, 616)                         # not walkable: the asset has no floor there
+
+    def mf(ground, binding, floors):
+        f = breakable("feature-1", ground, ground=ground, binding=binding, floors=floors)
+        return {**ms.empty(), "floors": floors_for(geo), "features": [f],
+                "bundles": [{"id": "bundle-2", "members": ["feature-1"], "enabled": True, "runtime_consumer": "test"}]}
+
+    assert cf.bundle_status(geo, mf(on_floor, "floor-1", ["floor-1"]), consumers=test)["bundle-2"].publishable
+    for args, why in (((on_floor, "floor-5", ["floor-1"]), "not verified"), ((on_floor, "floor-1", ["floor-3"]), "not verified"),
+                      ((off_map, "floor-1", ["floor-1"]), "rebuild the heights")):
+        st = cf.bundle_status(geo, mf(*args), consumers=test)["bundle-2"]
+        assert not st.publishable and any(why in r for r in st.reasons), (args, st.reasons)
+    # the node domain never depends on a feature's state
+    m = mf(on_floor, "floor-1", ["floor-1"])
+    shapes = {cf.movement_blocks(geo, m, {"feature-1": s}).blocked.shape for s in ("intact", "broken")}
+    assert shapes == {(geo.n,)}
