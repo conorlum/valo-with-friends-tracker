@@ -439,3 +439,155 @@ def test_drafts_survive_corruption_interruption_quota_and_source_changes():
     assert got["otherLoad"] == "none" and len(got["others"]) == 1 and got["others"][0]["differs"] == ["image of Ascent"]
     assert got["readOther"]
     assert got["incompatible"]["status"] == "incompatible" and got["incompatible"]["body"] is None and got["untouched"]
+
+
+# ---- W15: rasterising and composition parity, floors and routes through Python's compiler
+
+RASTER = """
+  function packBits(a) {
+    const out = new Uint8Array(Math.ceil(a.length / 8));
+    for (let i = 0; i < a.length; i++) if (a[i]) out[i >> 3] |= 128 >> (i & 7);
+    return Buffer.from(out).toString("base64");
+  }
+  function run(p) {
+    const out = {rasters: p.geoms.map(g => packBits(F.raster(g)))};
+    if (p.map) {
+      const sight = T.rleDecode(p.map.sight), walk = T.rleDecode(p.map.walk);
+      out.composed = p.states.map(st => { const m = F.composeFeatures(sight, walk, p.mf, st); return [packBits(m.sight), packBits(m.walk)]; });
+    }
+    return out;
+  }
+"""
+
+
+def random_geoms(n=40, seed=7):
+    import random
+
+    rnd = random.Random(seed)
+
+    def pt():
+        return [round(rnd.uniform(0, 10000), rnd.choice([0, 2, 5])), round(rnd.uniform(0, 10000), rnd.choice([0, 2, 5]))]
+
+    out = [{"type": "point", "uv": [0, 0]}, {"type": "point", "uv": [10000, 10000]}, {"type": "point", "uv": [39.0625, 78.125]},
+           {"type": "polyline", "uv": [[100, 100], [100, 100]]}, {"type": "polygon", "uv": [[0, 0], [10000, 0], [10000, 10000], [0, 10000]]}]
+    for i in range(n):
+        kind = ("point", "polyline", "polygon")[i % 3]
+        if kind == "point":
+            out.append({"type": "point", "uv": pt()})
+        elif kind == "polyline":
+            g = {"type": "polyline", "uv": [pt() for _ in range(rnd.randint(2, 5))]}
+            if i % 2:
+                g["width"] = round(rnd.uniform(1, 400), 3)
+            out.append(g)
+        else:
+            c = pt()
+            out.append({"type": "polygon", "uv": [[min(max(c[0] + rnd.uniform(-900, 900), 0), 10000), min(max(c[1] + rnd.uniform(-900, 900), 0), 10000)]
+                                                  for _ in range(rnd.randint(3, 8))]})
+    return out
+
+
+def test_js_rasters_match_python_bit_for_bit():
+    import base64
+
+    import numpy as np
+
+    from app.control import features as cf
+
+    geoms = random_geoms()
+    paint = np.zeros((256, 256), bool)
+    paint[5:9, 100:140] = True
+    from app.control import geometry as cg
+    geoms.append({"type": "paint", "cells": cg.pack_paint(paint)})
+    got = run_node(RASTER, {"geoms": geoms})["rasters"]
+    for g, js in zip(geoms, got):
+        assert js == base64.b64encode(np.packbits(cf.raster(g))).decode(), g
+
+
+def test_js_composition_matches_python_for_every_state_and_after_reset():
+    import base64
+
+    import numpy as np
+    from PIL import Image
+
+    sys.path.insert(0, str(WEBAPP / "scripts"))
+    import control_tagger
+
+    from app.control import features as cf
+    from app.control import geometry as cg
+
+    tags = json.loads((cg.ASSET_DIR / "tags.json").read_text(encoding="utf-8"))
+    m = cg.masks(np.array(Image.open(cg.MINIMAP_DIR / "Ascent.png").convert("RGBA")), tags["maps"]["Ascent"])
+    mf = copy.deepcopy(MF)
+    mf["features"][0]["states"][0]["footprint"] = {"type": "polygon", "uv": [[4000, 4000], [4400, 4000], [4400, 4120], [4000, 4120]]}
+    mf["features"][1]["states"][0]["footprint"] = {"type": "polygon", "uv": [[4200, 3900], [4300, 3900], [4300, 4300], [4200, 4300]]}
+    mf["features"][1]["states"][0]["sight"] = [{"geometry": {"type": "polyline", "uv": [[4200, 3800], [4600, 3800]]}, "bounds": {"ref": "all_height"}}]
+    states = [{}, {"feature-1": "closed"}, {"feature-1": "broken"}, {"feature-1": "closed", "feature-2": "rest_b"},
+              {"feature-1": "open", "feature-2": "rotating"}]
+    payload = {"geoms": [], "mf": mf, "states": states,
+               "map": {"sight": control_tagger.rle(m.sight.astype(np.uint8)), "walk": control_tagger.rle(m.walk.astype(np.uint8))}}
+    got = run_node(RASTER, payload)["composed"]
+    pack = lambda a: base64.b64encode(np.packbits(a)).decode()    # noqa: E731
+    for st, (js_s, js_w) in zip(states, got):
+        s, w = cf.compose_masks(m.sight, m.walk, mf, st)
+        assert (js_s, js_w) == (pack(s), pack(w)), st
+    closed, broken = got[1], got[2]
+    assert closed != broken, "breaking the door changes the preview"
+    assert got[0] == run_node(RASTER, {**payload, "states": [{}]})["composed"][0], "reset = the round-start states"
+
+
+ROPE = """
+  function run(p) {
+    let mf = F.emptyMf();
+    let a = F.addObject(mf, "floor", {label: "ground", z_band: [-0.5, 1.0], height_sha: p.sha}); mf = a.mf; const lower = a.id;
+    a = F.addObject(mf, "floor", {label: "bridge", z_band: [3.0, 5.0], height_sha: p.sha}); mf = a.mf; const upper = a.id;
+    a = F.addObject(mf, "floor", {label: "roof?", z_band: null, height_sha: null}); mf = a.mf; const manual = a.id;
+    const r = F.create(mf, p.preset, "Rope", {}, p.route); mf = r.mf;
+    const ri = mf.routes.findIndex(x => x.id === r.route);
+    mf = F.setField(mf, r.route, ["endpoints", 0, "uv"], p.uv);
+    mf = F.setField(mf, r.route, ["endpoints", 1, "uv"], p.uv);
+    mf = F.setField(mf, r.route, ["endpoints", 0, "floor"], lower);
+    mf = F.setField(mf, r.route, ["endpoints", 1, "floor"], upper);
+    mf = F.setField(mf, r.route, ["directions", 0, "entry"], {status: "known", value: 0.5, unit: "s"});
+    mf = F.setField(mf, r.route, ["directions", 0, "transit"], {status: "known", value: 2, unit: "s"});
+    // a zipline the minimap doesn't show, one landing on a manual (unresolved) floor
+    const z = F.create(mf, p.zpreset, "Zipline", {}, p.zroute); mf = z.mf;
+    mf = F.setField(mf, z.route, ["endpoints", 0, "uv"], p.za);
+    mf = F.setField(mf, z.route, ["endpoints", 1, "uv"], p.zb);
+    mf = F.setField(mf, z.route, ["endpoints", 0, "floor"], lower);
+    mf = F.setField(mf, z.route, ["endpoints", 1, "floor"], manual);
+    const cat = {version: 1, maps: {Bridge: {map_features: mf}}};
+    const exported = F.exportCatalogue(cat, {}, {}, {Bridge: {dirty: true, mf: mf}});
+    const back = F.importCatalogue({version: 1, maps: {}}, JSON.stringify(exported), {});
+    return {mf: mf, exported: exported, reimported: back.ok ? back.catalogue : back, ids: {lower, upper, manual, rope: r.route, zip: z.route}};
+  }
+"""
+
+
+def test_a_same_position_rope_and_an_unresolved_landing_round_trip_and_compile_without_shortcuts():
+    from app.control import features as cf
+    from tests.replays.control_toys import HALL, toy_heights
+
+    geo = toy_heights("Bridge", [HALL], ground=[((96, 96, 240, 296), 4.0)], upper=[((240, 96, 288, 296), 4.0)])
+    uv = [264 * 10000 / 1024, 196 * 10000 / 1024]
+    got = run_node(ROPE, {"sha": geo.height_sha, "uv": uv, "preset": ms.preset("vertical_rope"), "route": ms.route_template("rope"),
+                          "zpreset": ms.preset("zipline"), "zroute": ms.route_template("zipline"),
+                          "za": [400 * 10000 / 1024, 196 * 10000 / 1024], "zb": [600 * 10000 / 1024, 600 * 10000 / 1024]})
+    ids = got["ids"]
+    exported = got["exported"]["maps"]["Bridge"]["map_features"]
+    assert got["reimported"]["maps"]["Bridge"]["map_features"] == exported
+    rope = next(r for r in exported["routes"] if r["id"] == ids["rope"])
+    assert rope["endpoints"][0]["uv"] == rope["endpoints"][1]["uv"], "two landings at one spot"
+    assert [e["floor"] for e in rope["endpoints"]] == [ids["lower"], ids["upper"]]
+    zip_ = next(r for r in exported["routes"] if r["id"] == ids["zip"])
+    assert zip_["endpoints"][1]["floor"] == ids["manual"], "an unresolved floor stays unresolved after export and import"
+    rep = ms.validate(exported)
+    assert rep.errors == [] and not any(w["code"] == "zero_length" for w in rep.warnings)
+    arcs, pending = cf.compile_routes(geo, exported)
+    rope_arcs = [a for a in arcs if a.route == ids["rope"]]
+    assert len(rope_arcs) == 2 and all(geo.node_cell[a.src] == geo.node_cell[a.dst] and a.src != a.dst for a in rope_arcs), \
+        "the rope joins two floors of one cell: no horizontal shortcut"
+    assert {(geo.node_z[a.src], geo.node_z[a.dst]) for a in rope_arcs} == {(0.0, 4.0), (4.0, 0.0)}
+    assert not [a for a in arcs if a.route == ids["zip"]], "a landing on an unresolved floor never snaps to another floor"
+    assert any(p.startswith(ids["zip"] + ".b") for p in pending)
+    assert [d["code"] for d in cf.diagnose(geo, exported) if d["where"].startswith(ids["zip"])] == ["off_ground"], \
+        "the off-minimap landing is flagged, not moved"
