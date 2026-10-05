@@ -5,7 +5,7 @@
  * (tests/replays/test_map_feature_tagger.py), so UI wiring is exercised, not only the pure model.
  *
  *   const page = openPage(DATA, {storage, map});   // DATA: the page's embedded data (control_tagger.build)
- *   page.click("featImportMine"); page.downloads; page.api (window.taggerFeatures); page.reopen()
+ *   page.click("featImportReplace"); page.downloads; page.api (window.taggerFeatures); page.reopen()
  *
  * Not a browser: canvas drawing is absorbed, layout is fixed, and nothing is rendered.
  */

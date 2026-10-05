@@ -1125,21 +1125,6 @@
     return out;
   }
 
-  // An explicit merge: maps only one side has are kept; where both have map_features and they differ, the
-  // policy picks ("incoming" or "current") and the conflict is listed. Other keys follow the same policy.
-  function mergeCatalogue(current, incoming, policy) {
-    var out = clone(current), conflicts = [];
-    out.maps = out.maps || {};
-    Object.keys(incoming.maps || {}).forEach(function (name) {
-      var mine = out.maps[name], theirs = incoming.maps[name];
-      if (mine === undefined) { out.maps[name] = clone(theirs); return; }
-      if (canonicalJson(mine) === canonicalJson(theirs)) return;
-      conflicts.push(name);
-      if (policy === "incoming") out.maps[name] = clone(theirs);
-    });
-    return { catalogue: out, conflicts: conflicts };
-  }
-
   // The whole tags.json for download: exactly exportTags (the legacy tags and paints) plus, for each map
   // whose features were edited (`featureEdits[name].dirty`), its map_features with the map image's checksum
   // and the runtime digest (a claim readers recompute, never trust). A map with no feature edits, or not on
@@ -1497,7 +1482,7 @@
     draftModelProblems: draftModelProblems, sourceDiffers: sourceDiffers, maxHigh: maxHigh, raiseNextId: raiseNextId,
     raster: raster, composeFeatures: composeFeatures, stateOf: stateOf, makeBreakable: makeBreakable, CELL_UV: CELL_UV,
     rotationPose: rotationPose, mapSummary: mapSummary,
-    importCatalogue: importCatalogue, diffCatalogues: diffCatalogues, mergeCatalogue: mergeCatalogue,
+    importCatalogue: importCatalogue, diffCatalogues: diffCatalogues,
     exportCatalogue: exportCatalogue,
     SCHEMA_VERSION: SCHEMA_VERSION, UV_MAX: UV_MAX, emptyMf: emptyMf, checkVersion: checkVersion, validate: validate, nextNumber: nextNumber, allocate: allocate,
     find: find, create: create, addObject: addObject, setField: setField, rename: renameObject, link: link, unlink: unlink,

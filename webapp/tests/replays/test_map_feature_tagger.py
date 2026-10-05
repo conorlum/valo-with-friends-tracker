@@ -249,10 +249,6 @@ CATALOGUE_JS = """
     out.exported = F.exportCatalogue(reloaded.canonical, p.maps, {}, reloaded.features);
     out.untouched = F.exportCatalogue(ok.catalogue, p.maps, {}, {});
     out.plainTags = T2.exportTags(ok.catalogue, p.maps, {});
-    const merged = F.mergeCatalogue(p.current, ok.catalogue, "current");
-    out.mergeConflicts = merged.conflicts; out.mergedKeepsCurrent = JSON.stringify(merged.catalogue.maps.Ascent) === JSON.stringify(p.current.maps.Ascent);
-    out.mergedAddsAtlantis = !!merged.catalogue.maps.Atlantis;
-    out.mergedIncoming = F.mergeCatalogue(p.current, ok.catalogue, "incoming").catalogue;
     return out;
   }
 """
@@ -282,8 +278,6 @@ def test_catalogue_import_edit_reload_export_keeps_everything():
     assert mf["image_sha"] == "abc123def456" and mf["runtime_digest"] == ms.runtime_digest(mf)
     assert ms.validate(mf, "Ascent").errors == []
     assert got["untouched"] == CATALOGUE == got["plainTags"]
-    assert got["mergeConflicts"] == ["Ascent"] and got["mergedKeepsCurrent"] and got["mergedAddsAtlantis"]
-    assert got["mergedIncoming"]["maps"]["Ascent"] == CATALOGUE["maps"]["Ascent"]
 
 
 EXPORT_REAL = """
@@ -672,7 +666,7 @@ def page_data(future=True, **extra_tags):
     return {"tags": tags, "maps": maps, "features": control_tagger.features_data(sorted(maps))}
 
 
-MERGE_PAGE = """
+IMPORT_PAGE = """
   function run(p) {
     const out = {}, id = "feature-1";
     const page = openPage(p.data, {map: "Ascent"}), A = page.api, F = page.F, TG = page.TG;
@@ -683,8 +677,8 @@ MERGE_PAGE = """
     out.cover = TG.edits.Ascent.cover_reviewed;
     A.importText(JSON.stringify(p.data.tags), "unchanged.json");             // the page's own catalogue, unchanged
     out.preview = page.el("featImportBody").innerHTML;
-    out.disabled = ["featImportReplace", "featImportMine", "featImportTheirs"].map(b => page.el(b).disabled);
-    page.click("featImportMine");
+    out.disabled = page.el("featImportReplace").disabled;
+    page.click("featImportCancel");
     out.mine = {name: F.find(A.fe.Ascent.mf, id).name, dirty: A.fe.Ascent.dirty, cover: TG.edits.Ascent.cover_reviewed};
     page.click("featExport");
     const exported = JSON.parse(page.downloads[page.downloads.length - 1].text);
@@ -692,12 +686,12 @@ MERGE_PAGE = """
                     bind: exported.maps.Bind.map_features === undefined};
     A.undo();
     out.undone = F.find(A.fe.Ascent.mf, id).name;
-    // take theirs, on another page: the edit is replaced, as the preview said
+    // replace, on another page: the edit is replaced, as the preview said
     const q = openPage(p.data, {map: "Ascent"});
     q.api.commit(q.F.setField(q.api.fe.Ascent.mf, id, ["name"], "my draft"), true);
     q.api.importText(JSON.stringify(p.data.tags), "unchanged.json");
-    q.click("featImportTheirs");
-    out.theirs = {name: q.F.find(q.api.fe.Ascent.mf, id).name, dirty: q.api.fe.Ascent.dirty};
+    q.click("featImportReplace");
+    out.replaced = {name: q.F.find(q.api.fe.Ascent.mf, id).name, dirty: q.api.fe.Ascent.dirty};
     // and with nothing edited, the same file changes nothing
     const r = openPage(p.data, {map: "Ascent"});
     r.api.importText(JSON.stringify(p.data.tags), "same.json");
@@ -707,16 +701,16 @@ MERGE_PAGE = """
 """
 
 
-def test_merge_keep_mine_previews_and_keeps_the_working_edits():
-    got = run_page(MERGE_PAGE, {"data": page_data(future=False)})
+def test_an_import_is_previewed_against_the_working_edits_and_only_replace_loses_them():
+    got = run_page(IMPORT_PAGE, {"data": page_data(future=False)})
     assert "Ascent: features (replaces your unsaved edits to it)" in got["preview"]
     assert "Ascent: tags" in got["preview"], "the legacy edit is part of the working catalogue"
-    assert got["disabled"] == [False, False, False]
-    assert got["mine"] == {"name": "my draft", "dirty": True, "cover": got["cover"]}
+    assert got["disabled"] is False
+    assert got["mine"] == {"name": "my draft", "dirty": True, "cover": got["cover"]}, "cancelling keeps the edits"
     assert got["exported"]["name"] == "my draft" and got["exported"]["cover"] == got["cover"]
     assert got["exported"]["bind"], "an untouched map stays without annotations"
     assert got["undone"] == got["original"], "the kept edit keeps its undo history"
-    assert got["theirs"] == {"name": got["original"], "dirty": False}
+    assert got["replaced"] == {"name": got["original"], "dirty": False}
     assert "It matches your current work." in got["cleanPreview"]
 
 
@@ -839,7 +833,7 @@ DRAFT_PAGE = """
     fresh.api.importText(file.text, file.name);
     out.dialog = fresh.el("featImportBody").innerHTML;
     out.label = fresh.el("featImportReplace").textContent;
-    out.disabled = ["featImportReplace", "featImportMine", "featImportTheirs"].map(b => fresh.el(b).disabled);
+    out.disabled = fresh.el("featImportReplace").disabled;
     fresh.click("featImportReplace");
     out.restoredSame = JSON.stringify(fresh.plain(fresh.api.fe.Ascent.mf)) === JSON.stringify(want);
     out.restoredDirty = fresh.api.fe.Ascent.dirty;
@@ -889,7 +883,7 @@ def test_a_downloaded_draft_restores_after_a_storage_failure():
     got = run_page(DRAFT_PAGE, {"data": page_data(), "moved": page_data(x_moved=True)})
     assert got["saved"].startswith("NOT saved") and got["exportRefused"], "storage failed and the draft is incomplete"
     assert got["fileName"] == "tagger-draft.json" and got["freshDirty"] is False
-    assert got["label"] == "Restore draft" and got["disabled"] == [False, True, True]
+    assert got["label"] == "Restore draft" and got["disabled"] is False
     assert "Ascent: features" in got["dialog"] and "structural errors" in got["dialog"]
     assert got["restoredSame"] and got["restoredDirty"] and got["savedAfter"] == "saved"
     assert got["reloadedSame"], "the restored draft is the page's draft now"

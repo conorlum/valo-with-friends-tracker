@@ -1064,8 +1064,8 @@
   }
 
   // The page's actual working catalogue: the canonical one with the legacy edits (exportTags) and each edited
-  // map's current model in place. Imports are compared and merged against this, so nothing unsaved is lost or
-  // hidden; it adds no image checksum or runtime digest (those are export claims).
+  // map's current model in place. Imports are compared against this, so the review names every unsaved edit
+  // a replace would lose; it adds no image checksum or runtime digest (those are export claims).
   function workingCatalogue() {
     Object.keys(TG.edits).forEach(TG.ensureMap);
     var out = T.exportTags(canonical, TG.maps, TG.edits);
@@ -1085,7 +1085,7 @@
     var r = F.importDraft(sourceOf(), text, working, provenance);
     var draft = !!r;
     if (!draft) r = F.importCatalogue(working, text, FD.seeds || {});
-    pendingImport = { result: r, text: text, filename: filename || "imported.json", working: working, draft: draft };
+    pendingImport = { result: r, text: text, filename: filename || "imported.json", draft: draft };
     var html = [];
     html.push("<h2>" + (draft ? "Restore draft " : "Import ") + esc(filename || "") + "</h2>");
     if (!r.ok) html.push("<p class=\"issue-error\">Not " + (draft ? "restored" : "imported") + ": your current draft is unchanged.</p>");
@@ -1102,20 +1102,14 @@
     $("featImportBody").innerHTML = html.join("");
     $("featImportReplace").textContent = draft ? "Restore draft" : "Replace";
     $("featImportReplace").disabled = !r.ok;
-    $("featImportMine").disabled = $("featImportTheirs").disabled = !r.ok || draft;
     var dlg = $("featImport");
     if (dlg.showModal) dlg.showModal(); else dlg.setAttribute("open", "");
   }
   function closeImport() { var dlg = $("featImport"); if (dlg.close) dlg.close(); else dlg.removeAttribute("open"); pendingImport = null; }
-  // `keep`: {map: {mf, hist}} edited models the new catalogue kept as they are, which stay edited (dirty, with
-  // their undo history); every other map starts from the new catalogue.
-  function applyCatalogue(cat, keep) {
+  // Every map starts from the new catalogue.
+  function applyCatalogue(cat) {
     canonical = cat;
     initMaps();
-    Object.keys(keep || {}).forEach(function (n) {
-      if (!fe[n] || fe[n].incompatible) return;
-      fe[n] = { dirty: true, mf: keep[n].mf, hist: keep[n].hist, incompatible: false };
-    });
     rebuildLegacy(true);
     Object.keys(TG.edits).forEach(function (n) { TG.edits[n].touched = false; });
     TG.save();
@@ -1123,22 +1117,6 @@
     ui.sel = null;
     TG.selectMap(mapName());
     render();
-  }
-  // The edited models a merged catalogue still holds unchanged: they stay this page's edits.
-  function keptEdits(cat) {
-    var keep = {};
-    Object.keys(fe).forEach(function (n) {
-      if (!fe[n].dirty || fe[n].incompatible) return;
-      var entry = (cat.maps || {})[n];
-      if (entry && F.digest(entry.map_features === undefined ? null : entry.map_features) === F.digest(fe[n].mf))
-        keep[n] = { mf: fe[n].mf, hist: fe[n].hist };
-    });
-    return keep;
-  }
-  function merge(policy) {
-    var p = pendingImport, c = F.mergeCatalogue(p.working, p.result.catalogue, policy).catalogue;
-    closeImport();
-    applyCatalogue(c, keptEdits(c));
   }
   function restoreDraft(body) {
     canonical = body.canonical;
@@ -1152,15 +1130,12 @@
     TG.selectMap(mapName());
     render();
   }
-  function acceptable(draftOk) { return pendingImport && pendingImport.result.ok && (draftOk || !pendingImport.draft); }
   $("featImportReplace").addEventListener("click", function () {
-    if (!acceptable(true)) return;            // a refused file applies nothing
+    if (!pendingImport || !pendingImport.result.ok) return;            // a refused file applies nothing
     var p = pendingImport;
     closeImport();
     if (p.draft) restoreDraft(p.result.body); else applyCatalogue(p.result.catalogue);
   });
-  $("featImportMine").addEventListener("click", function () { if (acceptable(false)) merge("current"); });
-  $("featImportTheirs").addEventListener("click", function () { if (acceptable(false)) merge("incoming"); });
   $("featImportCopy").addEventListener("click", function () { download("copy-of-" + pendingImport.filename, pendingImport.text); });
   $("featImportCancel").addEventListener("click", closeImport);
 
