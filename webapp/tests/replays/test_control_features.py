@@ -30,6 +30,74 @@ def test_every_committed_maps_control_inputs_and_fingerprint_are_as_recorded():
     assert map_feature_legacy.snapshot()["maps"] == recorded["maps"]
 
 
+# ---- W17: freshness inputs and cache keys
+
+def test_a_feature_generation_joins_the_inputs_only_when_a_map_has_one(monkeypatch):
+    from app.control import task as ct
+    from app.replays import control_format as cfmt
+    from app.services import replay_control as rc
+
+    recorded = json.loads(map_feature_legacy.PATH.read_text(encoding="utf-8"))
+    name = "Ascent"
+    index, tags, maps = rc._assets()
+    monkeypatch.setattr(rc, "_assets", lambda: ({**index, name: {**index[name], "features_sha": "feat0000feat0000"}}, tags, maps))
+    with_features = rc.geometry_inputs(name)
+    assert with_features == {**recorded["maps"][name]["geometry_inputs"], "features": "feat0000feat0000"}
+    assert cfmt.fingerprint(recorded["recipe"], "0" * 64, recorded["link"], with_features) != recorded["maps"][name]["fingerprint"]
+    assert rc.geometry_inputs("Bind") == recorded["maps"]["Bind"]["geometry_inputs"], "other maps are untouched"
+    geo = open_hall()
+    assert "features" not in ct.geometry_used(geo)
+    geo2 = copy.copy(geo)
+    geo2.features_sha = "feat0000feat0000"
+    assert ct.geometry_used(geo2)["features"] == "feat0000feat0000"
+
+
+def test_the_asset_cache_rereads_a_new_generation(tmp_path, monkeypatch):
+    import shutil
+
+    from app.services import replay_control as rc
+
+    for name in ("index.json", "tags.json"):
+        shutil.copy(cg.ASSET_DIR / name, tmp_path / name)
+    monkeypatch.setattr(rc, "CONTROL_DIR", tmp_path)
+    rc._assets.cache_clear()
+    try:
+        assert "features" not in rc.geometry_inputs("Ascent")
+        index = json.loads((tmp_path / "index.json").read_text(encoding="utf-8"))
+        index["maps"]["Ascent"]["features_sha"] = "feat0000feat0000"
+        (tmp_path / "index.json").write_text(json.dumps(index, indent=1) + "\n", encoding="utf-8")
+        assert rc.geometry_inputs("Ascent")["features"] == "feat0000feat0000", "no restart needed"
+    finally:
+        rc._assets.cache_clear()
+
+
+def test_the_worker_geometry_cache_is_keyed_by_generation(tmp_path, monkeypatch):
+    from app.control import task as ct
+
+    loads = []
+
+    def fake_load(name, heights=None):
+        loads.append(name)
+        g = copy.copy(open_hall())
+        g.name = name
+        return g
+
+    monkeypatch.setattr(cg, "load_geometry", fake_load)
+    monkeypatch.setattr(cg, "visibility", lambda g, d=None: g)
+    monkeypatch.setattr(ct, "_GEOMETRY", {})
+    sha = {"value": None}
+    monkeypatch.setattr(cf, "active_sha", lambda name, asset_dir=None: sha["value"])
+    ct._load("Toy")
+    ct._load("Toy")
+    assert loads == ["Toy"] and list(ct._GEOMETRY) == ["Toy"], "no generation: keyed by name, as before"
+    sha["value"] = "gen1"
+    ct._load("Toy")
+    sha["value"] = "gen2"
+    ct._load("Toy")
+    ct._load("Toy")
+    assert loads == ["Toy", "Toy", "Toy"] and ("Toy", None, "gen2") in ct._GEOMETRY
+
+
 # ---- W6: rasterising, floors, movement blocks
 
 def U(px):

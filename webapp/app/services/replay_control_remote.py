@@ -129,7 +129,7 @@ def _matches_geometry(result: dict, map_name: str) -> bool:
     mine = replay_control.geometry_inputs(map_name)
     used = result.get("geometry") or {}
     return mine is not None and all(used.get(k) == mine.get(k)
-                                    for k in ("sight", "walk", "barrier", "specials", "scale", "height"))
+                                    for k in ("sight", "walk", "barrier", "specials", "scale", "height", "features"))
 
 
 def _collect(session_factory, client, state: State, now: float, counts: dict) -> None:
@@ -203,6 +203,9 @@ def _submit(session, client, state: State, now: float, counts: dict) -> None:
             continue
         task = {"key": key, "map": p.map_name, "blob": base64.b64encode(row.data).decode("ascii"),
                 "link": {"sides": p.link["sides"], "db_deaths": p.link["db_deaths"]}}
+        features = (replay_control.geometry_inputs(p.map_name) or {}).get("features")
+        if features:       # only a map with enabled features: an absent key means no verification
+            task["features"] = features
         try:
             answer = client.submit(task)
         except WorkerBusy:

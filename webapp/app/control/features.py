@@ -885,6 +885,20 @@ def verify(expected: dict | None, assets: dict | None, geo: Geometry | None = No
     return problems
 
 
+# ---------------------------------------------------------------- generations (M5)
+
+def active_sha(name: str, asset_dir=None) -> str | None:
+    """The map's active feature generation (index.json `features_sha`), or None: no enabled features."""
+    from app.control.geometry import ASSET_DIR
+
+    path = (asset_dir or ASSET_DIR) / "index.json"
+    try:
+        entry = json.loads(path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}
+    except (OSError, ValueError):
+        return None
+    return entry.get("features_sha") or None
+
+
 # ---------------------------------------------------------------- rotation
 
 def rotation_pose(feature: dict, fraction: float) -> dict | None:

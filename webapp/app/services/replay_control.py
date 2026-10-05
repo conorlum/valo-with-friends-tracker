@@ -37,12 +37,33 @@ MAPS_JSON = fmt.STATIC_DIR / "data" / "maps.json"
 MIN_CONDENSE_REVISION = 10
 
 
+def _stamp() -> tuple:
+    """The three asset files' (mtime, size): a new asset generation (a rebuilt index.json, an edited
+    tags.json) changes it, so a long-running process rereads them instead of planning against stale inputs."""
+    out = []
+    for path in (CONTROL_DIR / "index.json", CONTROL_DIR / "tags.json", MAPS_JSON):
+        try:
+            st = path.stat()
+            out.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
 @lru_cache(maxsize=1)
-def _assets() -> tuple[dict, dict, dict]:
-    """(index.json maps, tags.json maps, maps.json): what the engine's geometry is built from."""
+def _load_assets(stamp: tuple) -> tuple[dict, dict, dict]:
     index = json.loads((CONTROL_DIR / "index.json").read_text(encoding="utf-8")).get("maps", {})
     tags = json.loads((CONTROL_DIR / "tags.json").read_text(encoding="utf-8")).get("maps", {})
     return index, tags, json.loads(MAPS_JSON.read_text(encoding="utf-8"))
+
+
+def _assets() -> tuple[dict, dict, dict]:
+    """(index.json maps, tags.json maps, maps.json): what the engine's geometry is built from. Cached while
+    the files are unchanged."""
+    return _load_assets(_stamp())
+
+
+_assets.cache_clear = _load_assets.cache_clear
 
 
 def map_layer(map_name: str) -> dict | None:
@@ -57,7 +78,12 @@ def geometry_inputs(map_name: str) -> dict | None:
     """Everything app/control/geometry.py's `load_geometry` reads for a map: the built masks (by
     index.json's hashes; `barrier` is None for a map with no barrier paint), the specials from
     tags.json, the scale from maps.json, and the map's heights by their digest (`height`, only on a
-    map that has them, so a flat map's inputs and its rounds' fingerprints are what they were)."""
+    map that has them, so a flat map's inputs and its rounds' fingerprints are what they were).
+
+    Map features (docs/superpowers/specs/2026-10-04-map-features-contract.md, section 8): `features`, the
+    consumed-input manifest digest of the map's active feature generation (index.json `features_sha`), only on
+    a map that has enabled features. No map has any in this build, so every input is what it was
+    (tests/fixtures/control/map_features/legacy_inputs.json)."""
     index, tags, maps = _assets()
     entry = index.get(map_name)
     if entry is None:
@@ -67,6 +93,8 @@ def geometry_inputs(map_name: str) -> dict | None:
               "scale": (maps.get(map_name) or {}).get("xMultiplier")}
     if entry.get("height_sha"):
         inputs["height"] = entry["height_sha"]
+    if entry.get("features_sha"):
+        inputs["features"] = entry["features_sha"]
     return inputs
 
 

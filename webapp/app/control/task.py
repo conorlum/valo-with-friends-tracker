@@ -74,13 +74,18 @@ def geometry_used(geo) -> dict:
             "barrier": geo.barrier_sha, "specials": list(geo.specials), "scale": scale}
     if geo.height_sha:
         used["height"] = geo.height_sha
+    if getattr(geo, "features_sha", None):     # the feature generation actually loaded (absent: none)
+        used["features"] = geo.features_sha
     return used
 
 
 def _load(name: str, heights: str | None = None):
-    from app.control import geometry
+    from app.control import features, geometry
 
-    key = name if heights is None else (name, heights)     # a map's own geometry is keyed by its name
+    # A map's own geometry is keyed by its name; with an active feature generation, by that generation too, so
+    # a worker never keeps computing with a superseded one (absent for every map today: the key is unchanged).
+    generation = features.active_sha(name)
+    key = name if heights is None and generation is None else (name, heights, generation)
     if key not in _GEOMETRY:
         geo = geometry.load_geometry(name, heights=Path(heights) if heights else None)
         try:
