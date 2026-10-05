@@ -1139,6 +1139,105 @@
     return out;
   }
 
+  // -- Rasterising: the twin of app/control/features.py `raster` (same float operations in the same order, so
+  // the cells agree bit for bit): P x P cells, row-major, tested at cell centres in u/v.
+  var CELL_UV = UV_MAX / P;
+
+  function segmentCells(out, a, b, r2) {
+    var ax = Number(a[0]), ay = Number(a[1]), dx = Number(b[0]) - ax, dy = Number(b[1]) - ay, dd = dx * dx + dy * dy;
+    for (var row = 0; row < P; row++) {
+      var v = (row + 0.5) * CELL_UV;
+      for (var col = 0; col < P; col++) {
+        var u = (col + 0.5) * CELL_UV, ex, ey;
+        if (dd === 0) { ex = u - ax; ey = v - ay; }
+        else {
+          var t = ((u - ax) * dx + (v - ay) * dy) / dd;
+          t = Math.min(Math.max(t, 0.0), 1.0);
+          ex = ax + t * dx - u; ey = ay + t * dy - v;
+        }
+        if (ex * ex + ey * ey <= r2) out[row * P + col] = 1;
+      }
+    }
+  }
+
+  function raster(geometry) {
+    var out = new Uint8Array(P * P);
+    if (!geometry) return out;
+    var kind = geometry.type, i, j, row, col;
+    if (kind === "paint") return unpackPaint(geometry.cells);
+    if (kind === "point") {
+      col = Math.min(Math.floor(geometry.uv[0] / CELL_UV), P - 1); row = Math.min(Math.floor(geometry.uv[1] / CELL_UV), P - 1);
+      out[row * P + col] = 1;
+      return out;
+    }
+    var pts = geometry.uv;
+    if (kind === "polyline") {
+      var width = Number(geometry.width || 0.0), r = Math.max(width / 2.0, CELL_UV / 2.0);
+      for (i = 0; i + 1 < pts.length; i++) segmentCells(out, pts[i], pts[i + 1], r * r);
+      return out;
+    }
+    if (kind === "polygon") {
+      var n = pts.length;
+      j = n - 1;
+      for (i = 0; i < n; i++) {
+        var xi = Number(pts[i][0]), yi = Number(pts[i][1]), xj = Number(pts[j][0]), yj = Number(pts[j][1]);
+        if (yi !== yj) {
+          for (row = 0; row < P; row++) {
+            var v = (row + 0.5) * CELL_UV;
+            if ((yi > v) === (yj > v)) continue;
+            var xAt = (xj - xi) * (v - yi) / (yj - yi) + xi;
+            for (col = 0; col < P; col++) if ((col + 0.5) * CELL_UV < xAt) out[row * P + col] ^= 1;
+          }
+        }
+        j = i;
+      }
+      return out;
+    }
+    throw new Error("unknown geometry type " + kind);
+  }
+
+  // The preview masks with each feature's state drawn in: app/control/features.py `compose_masks`, bit for bit.
+  // `sight`/`walk` are PX * PX Uint8Arrays (1 blocks / 1 walkable); returns new arrays.
+  function composeFeatures(sight, walk, mf, states) {
+    var s = new Uint8Array(sight), w = new Uint8Array(walk);
+    function apply(cells, fn) {
+      for (var i = 0; i < PX * PX; i++) if (cells[((i >> 10) >> 2) * P + ((i & 1023) >> 2)]) fn(i);
+    }
+    (mf.features || []).forEach(function (f) {
+      var st = stateOf(f, states);
+      if (!st) return;
+      if (st.footprint) {
+        var cells = raster(st.footprint);
+        if (st.blocks_movement) apply(cells, function (i) { w[i] = 0; });
+        if (st.blocks_sight) apply(cells, function (i) { s[i] = 1; });
+      }
+      if (st.blocks_sight) (st.sight || []).forEach(function (occ) {
+        if ((occ.bounds || {}).ref !== "unresolved") apply(raster(occ.geometry), function (i) { s[i] = 1; });
+      });
+    });
+    return { sight: s, walk: w };
+  }
+
+  function stateOf(feature, states) {
+    var name = states && Object.prototype.hasOwnProperty.call(states, feature.id) ? states[feature.id] : feature.initial_state;
+    var list = feature.states || [];
+    for (var i = 0; i < list.length; i++) if (list[i].name === name) return list[i];
+    return null;
+  }
+
+  function makeBreakable(feature) {
+    var out = clone(feature);
+    out.capabilities = out.capabilities || [];
+    if (out.capabilities.indexOf("breakable") < 0) out.capabilities.push("breakable");
+    out.states = out.states || [];
+    if (!out.states.some(function (s) { return s.name === "broken"; }))
+      out.states.push({ name: "broken", blocks_movement: false, blocks_sight: false, terminal: true });
+    out.transitions = out.transitions || [];
+    if (!out.transitions.some(function (r) { return r.event === "destroy"; }))
+      out.transitions.push({ id: "break", from: "*", event: "destroy", to: "broken" });
+    return out;
+  }
+
   // -- Drafts: autosaved snapshots in a key/value store (the page passes a localStorage wrapper; tests a fake).
   // A draft belongs to its source: the catalogue, map images and floor assets it was started from (their
   // digests) and the schema version. A save writes the whole new snapshot, reads it back, and only then
@@ -1245,6 +1344,7 @@
 
   Object.assign(Features, {
     Drafts: Drafts, draftSourceKey: draftSourceKey, DRAFT_PREFIX: DRAFT_PREFIX,
+    raster: raster, composeFeatures: composeFeatures, stateOf: stateOf, makeBreakable: makeBreakable, CELL_UV: CELL_UV,
     importCatalogue: importCatalogue, diffCatalogues: diffCatalogues, mergeCatalogue: mergeCatalogue,
     exportCatalogue: exportCatalogue,
     SCHEMA_VERSION: SCHEMA_VERSION, UV_MAX: UV_MAX, emptyMf: emptyMf, checkVersion: checkVersion, validate: validate, nextNumber: nextNumber, allocate: allocate,

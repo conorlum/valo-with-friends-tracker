@@ -307,6 +307,57 @@ def test_with_no_feature_edits_the_export_is_exactly_export_tags():
     assert got["a"] == got["b"] == tags
 
 
+# ---- W14: the page
+
+def test_the_page_carries_the_features_panel_and_the_python_contract(tmp_path):
+    sys.path.insert(0, str(WEBAPP / "scripts"))
+    import control_tagger
+
+    out = tmp_path / "tagger.html"
+    assert control_tagger.main(["--out", str(out), "--map", "Summit", "--map", "Ascent"]) == 0
+    page = out.read_text(encoding="utf-8")
+    assert "/*FEATURES_UI*/" not in page and "/*CORE*/" not in page and "window.taggerFeatures = {" in page
+    data = json.loads(page.split("var DATA = ", 1)[1].split(";\n", 1)[0])
+    feats = data["features"]
+    assert feats["schema_version"] == ms.SCHEMA_VERSION
+    assert feats["presets"] == {p: ms.preset(p) for p in ms.PRESETS}, "presets come from the schema module, not a copy"
+    assert feats["seeds"]["Summit"] == ms.checklist_seed("Summit") and feats["floors"] == {"Ascent": None, "Summit": None}
+    for needle in ('data-mode="features"', 'data-preset="trigger"', ">Switch/trigger<", ">Breakable<", ">Zipline<",
+                   ">Vertical rope<", 'data-ftool="polygon"', 'data-ftool="link"', 'data-ftool="brush"', 'id="featUndo"',
+                   'id="featRedo"', 'id="zoomIn"', 'id="featSaved"', 'id="featImport"', 'id="featExport"',
+                   'id="featDownload"', 'id="featChecklist"', 'id="featIssues"', "Export reviewed annotations"):
+        assert needle in page, needle
+    scripts = page.split("<script>")
+    assert len(scripts) == 4, "core, the page, the features panel"
+    for body in scripts[1:]:
+        code = body.split("</script>")[0]
+        done = subprocess.run([NODE, "-e", "new Function(require('fs').readFileSync(0, 'utf8'))"], input=code,
+                              capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+        assert done.returncode == 0, done.stderr
+
+
+def test_floor_data_is_embedded_only_for_maps_with_a_height_asset(tmp_path):
+    import numpy as np
+
+    sys.path.insert(0, str(WEBAPP / "scripts"))
+    import control_tagger
+
+    from app.control import heights as hc
+
+    assert control_tagger.floor_data("Ascent") is None
+    floors = -np.ones((128, 128, hc.MAX_FLOORS), np.int16)
+    floors[10, 20, :2] = [0, 40]
+    asset = hc.HeightAsset(floors, np.zeros_like(floors), np.zeros((128, 128), bool), np.zeros((128, 128), bool),
+                           np.zeros((0, 4), np.int32), {"origin_z": 120})
+    hc.save_asset(tmp_path / "Toy.height.npz", asset)
+    (tmp_path / "index.json").write_text(json.dumps({"maps": {"Toy": {"height_sha": asset.digest}}}), encoding="utf-8")
+    got = control_tagger.floor_data("Toy", tmp_path)
+    assert got["height_sha"] == asset.digest and got["origin_z"] == 120
+    import base64
+    arr = np.frombuffer(base64.b64decode(got["floors"]), "<i2").reshape(128, 128, hc.MAX_FLOORS)
+    assert arr[10, 20].tolist()[:2] == [0, 40] and (arr[0, 0] == -1).all()
+
+
 # ---- W13: drafts
 
 DRAFTS = """

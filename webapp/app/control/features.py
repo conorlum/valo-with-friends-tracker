@@ -72,7 +72,8 @@ def raster(geometry: dict | None) -> np.ndarray:
         return np.unpackbits(raw, bitorder="little")[: P * P].reshape(P, P).astype(bool)
     if kind == "point":
         u, v = geometry["uv"]
-        col, row = min(int(u // CELL_UV), P - 1), min(int(v // CELL_UV), P - 1)
+        # floor of the rounded quotient, as JavaScript's Math.floor(u / CELL_UV) (not Python's exact //)
+        col, row = min(int(np.floor(u / CELL_UV)), P - 1), min(int(np.floor(v / CELL_UV)), P - 1)
         out[row, col] = True
         return out
     u, v = _centres()

@@ -50,11 +50,14 @@ WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBAPP_ROOT))
 
 from app.control import geometry as cg  # noqa: E402
+from app.control import heights as hc  # noqa: E402
 from app.replays import choke_assets  # noqa: E402
+from app.replays import map_feature_schema as ms  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "control_tagger.template.html"
 CORE_JS = HERE / "control_tagger_core.js"
+FEATURES_JS = HERE / "control_tagger_features.js"
 KILL_LINES = WEBAPP_ROOT / "tests" / "fixtures" / "control" / "kill_lines.json"
 
 
@@ -89,6 +92,29 @@ def choke_data(name: str, asset_dir: Path = choke_assets.ASSET_DIR) -> dict:
     return {"chokes": [asdict(c) for c in chokes], "next_id": choke_assets.load_next_id(name, asset_dir)}
 
 
+def floor_data(name: str, asset_dir: Path = cg.ASSET_DIR) -> dict | None:
+    """The map's committed height asset for the floor picker: each cell's floors (position-z dm above the
+    lowest floor, -1 none) as base64 int16, with the digest a floor binding records. None for a map without
+    heights: its floors can only be manual labels, unresolved until an asset exists."""
+    index_path = asset_dir / "index.json"
+    entry = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
+    if not entry.get("height_sha"):
+        return None
+    asset = hc.load_asset(asset_dir / f"{name}.height.npz")
+    return {"height_sha": asset.digest, "origin_z": asset.origin_z, "max_floors": hc.MAX_FLOORS,
+            "floors": base64.b64encode(np.ascontiguousarray(asset.floors, dtype="<i2").tobytes()).decode("ascii")}
+
+
+def features_data(names: list[str]) -> dict:
+    """What the features panel needs from the Python contract (app/replays/map_feature_schema.py), so the page
+    never keeps its own copy: the schema version, the presets and route templates, each map's checklist seed and
+    its floor data."""
+    return {"schema_version": ms.SCHEMA_VERSION, "presets": {p: ms.preset(p) for p in ms.PRESETS},
+            "routes": {p: ms.route_template(kind) for p, kind in ms.ROUTE_PRESET.items()},
+            "seeds": {n: ms.checklist_seed(n) for n in names}, "no_features_note": ms.NO_FEATURES_NOTE,
+            "floors": {n: floor_data(n) for n in names}}
+
+
 def build(tags: dict, lines_by_map: dict, names: list[str] | None = None, starts: dict | None = None) -> dict:
     names = names or sorted(p.stem for p in cg.MINIMAP_DIR.glob("*.png")
                             if p.stem in json.loads(cg.MAPS_JSON.read_text(encoding="utf-8")))
@@ -103,9 +129,12 @@ def build(tags: dict, lines_by_map: dict, names: list[str] | None = None, starts
 
 
 def render(tags: dict, maps: dict) -> str:
-    data = json.dumps({"tags": tags, "maps": maps}, separators=(",", ":")).replace("</", "<\\/")
+    data = json.dumps({"tags": tags, "maps": maps, "features": features_data(sorted(maps))},
+                      separators=(",", ":")).replace("</", "<\\/")
     core = CORE_JS.read_text(encoding="utf-8")
-    return TEMPLATE.read_text(encoding="utf-8").replace("/*CORE*/", core).replace("/*DATA*/null", data)
+    ui = FEATURES_JS.read_text(encoding="utf-8")
+    return (TEMPLATE.read_text(encoding="utf-8").replace("/*CORE*/", core).replace("/*FEATURES_UI*/", ui)
+            .replace("/*DATA*/null", data))
 
 
 def main(argv: list[str] | None = None) -> int:
