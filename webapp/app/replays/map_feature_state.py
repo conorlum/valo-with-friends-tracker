@@ -15,12 +15,12 @@ A feature's behaviour is a transition table. Each row:
 A state is {"name", "terminal": bool, ...}; a terminal state (broken) rejects every later event except a
 round reset.
 
-Events: switch, shoot, destroy, proximity_enter, proximity_leave (optional "occupant" id), reset, observed
+Events: switch, shoot, activate (a cause not yet classified, e.g. a Summit drop), destroy, proximity_enter, proximity_leave (optional "occupant" id), reset, observed
 ({"state"}: a decoder's verified state), and the two the reducer schedules itself, motion_complete and
 scheduled ({"name"}), which carry the (generation, epoch) they were scheduled under. A scheduled event whose
 tokens no longer match is `stale`: an accepted transition, a destruction or a reset supersedes it.
 
-Equal-time order (`PRIORITY`): reset, destroy, motion_complete, switch/shoot/observed, proximity_enter,
+Equal-time order (`PRIORITY`): reset, destroy, motion_complete, switch/shoot/activate/observed, proximity_enter,
 proximity_leave, scheduled, then input order. So a destruction beats the obsolete completion of the motion it
 cancels, and an occupant entering at the instant another leaves keeps a door open.
 
@@ -40,9 +40,9 @@ from __future__ import annotations
 import copy
 
 GUARD_VOCABULARY = 1
-EVENTS = ("switch", "shoot", "destroy", "proximity_enter", "proximity_leave", "reset", "observed",
+EVENTS = ("switch", "shoot", "activate", "destroy", "proximity_enter", "proximity_leave", "reset", "observed",
           "motion_complete", "scheduled")
-PRIORITY = {"reset": 0, "destroy": 1, "motion_complete": 2, "switch": 3, "shoot": 3, "observed": 3,
+PRIORITY = {"reset": 0, "destroy": 1, "motion_complete": 2, "switch": 3, "shoot": 3, "activate": 3, "observed": 3,
             "proximity_enter": 4, "proximity_leave": 5, "scheduled": 6}
 MID_MOTION = ("ignore", "restart", "queue", "reverse", "unresolved")
 MAX_STEPS = 10000

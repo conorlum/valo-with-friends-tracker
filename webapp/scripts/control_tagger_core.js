@@ -270,10 +270,10 @@
 
   // -- The state reducer: a line-for-line twin of app/replays/map_feature_state.py (its docstring is the
   // contract). tests/replays/test_map_feature_tagger.py runs both on the same event fixtures.
-  var FS_EVENTS = ["switch", "shoot", "destroy", "proximity_enter", "proximity_leave", "reset", "observed",
+  var FS_EVENTS = ["switch", "shoot", "activate", "destroy", "proximity_enter", "proximity_leave", "reset", "observed",
                    "motion_complete", "scheduled"];
   var FS_PRIORITY = { reset: 0, destroy: 1, motion_complete: 2, "switch": 3, shoot: 3, observed: 3,
-                      proximity_enter: 4, proximity_leave: 5, scheduled: 6 };
+                      activate: 3, proximity_enter: 4, proximity_leave: 5, scheduled: 6 };
   var FS_MAX_STEPS = 10000;
 
   function fsError(message) { var e = new Error(message); e.name = "FeatureStateError"; return e; }

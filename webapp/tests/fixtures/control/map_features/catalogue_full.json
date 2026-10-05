@@ -1,0 +1,121 @@
+{
+ "version": 1,
+ "note": "A synthetic catalogue for the map-features tests: every mechanic the plan lists, unknown fields at every level, and a map (Atlantis) the tagger page doesn't embed. Positions are toy positions, not real map geometry.",
+ "x_catalogue_unknown": {"kept": true},
+ "maps": {
+  "Ascent": {
+   "specials": [],
+   "cover_reviewed": false,
+   "x_map_unknown": [1, 2, 3],
+   "map_features": {
+    "version": 1,
+    "next_id": 20,
+    "x_features_unknown": "kept",
+    "floors": [
+     {"id": "floor-1", "label": "ground", "z_band": [0.0, 2.5], "height_sha": "toyheight01", "x_floor_unknown": 1},
+     {"id": "floor-2", "label": "upper", "z_band": [3.0, 6.0], "height_sha": "toyheight01"},
+     {"id": "floor-3", "label": "roof (manual)", "z_band": null, "height_sha": null}
+    ],
+    "features": [
+     {"id": "feature-1", "name": "A door", "preset": "switch_door", "kind": "door", "category": "switch_breakable_doors",
+      "capabilities": ["closeable", "breakable"], "review": "needs_verification", "notes": "toy",
+      "x_feature_unknown": {"deep": {"deeper": true}},
+      "floors": ["floor-1"],
+      "states": [
+       {"name": "closed", "blocks_movement": true, "blocks_sight": true,
+        "footprint": {"type": "polygon", "uv": [[4000, 4000], [4200, 4000], [4200, 4060], [4000, 4060]]},
+        "sight": [{"geometry": {"type": "polyline", "uv": [[4000, 4030], [4200, 4030]]},
+                   "bounds": {"ref": "ground", "floor": "floor-1", "bottom": {"status": "known", "value": 0, "unit": "m"},
+                              "top": {"status": "known", "value": 3.2, "unit": "m"}}, "x_occluder_unknown": "kept"}],
+        "x_state_unknown": 7},
+       {"name": "opening", "blocks_movement": true, "blocks_sight": true},
+       {"name": "open", "blocks_movement": false, "blocks_sight": false},
+       {"name": "closing", "blocks_movement": true, "blocks_sight": true},
+       {"name": "broken", "blocks_movement": false, "blocks_sight": false, "terminal": true}
+      ],
+      "initial_state": "open",
+      "transitions": [
+       {"id": "close", "from": ["open"], "event": "switch", "to": "closed",
+        "motion": {"state": "closing", "duration": {"status": "known", "value": 2.1, "unit": "s"}}, "mid_motion": "ignore",
+        "x_row_unknown": true},
+       {"id": "open", "from": ["closed"], "event": "switch", "to": "open",
+        "motion": {"state": "opening", "duration": {"status": "unresolved"}}, "mid_motion": "unresolved"},
+       {"id": "break", "from": "*", "event": "destroy", "to": "broken"}
+      ],
+      "noise": {"makes_noise": true, "origin": {"type": "point", "uv": [4100, 4030]}, "notes": "loud"},
+      "reset": "round"},
+     {"id": "feature-2", "name": "Lotus-like rotating door", "preset": "rotating_door", "kind": "rotating_door",
+      "capabilities": ["rotating"], "floors": ["floor-1"],
+      "states": [{"name": "rest_a", "blocks_movement": true, "blocks_sight": true},
+                 {"name": "rotating", "blocks_movement": true, "blocks_sight": true},
+                 {"name": "rest_b", "blocks_movement": true, "blocks_sight": true}],
+      "initial_state": "rest_a",
+      "transitions": [
+       {"id": "turn-a", "from": ["rest_a"], "event": "switch", "to": "rest_b",
+        "motion": {"state": "rotating", "duration": {"status": "known", "value": 3, "unit": "s"}}, "mid_motion": "ignore"},
+       {"id": "turn-b", "from": ["rest_b"], "event": "switch", "to": "rest_a",
+        "motion": {"state": "rotating", "duration": {"status": "known", "value": 3, "unit": "s"}}, "mid_motion": "ignore"}],
+      "rotation": {"pivot": {"type": "point", "uv": [6000, 6000]}, "panel": {"type": "polyline", "uv": [[6000, 6000], [6300, 6000]]},
+                   "direction": {"status": "known", "value": 1, "unit": "ccw"}, "start_deg": {"status": "known", "value": 0, "unit": "deg"},
+                   "end_deg": {"status": "known", "value": 90, "unit": "deg"}, "phases": []},
+      "reset": "round"},
+     {"id": "feature-3", "name": "Proximity door", "preset": "proximity_door", "kind": "door", "capabilities": ["closeable", "proximity"],
+      "floors": ["floor-2"],
+      "states": [{"name": "closed", "blocks_movement": true, "blocks_sight": true}, {"name": "open", "blocks_movement": false, "blocks_sight": false}],
+      "initial_state": "closed",
+      "transitions": [
+       {"id": "first-in", "from": ["closed"], "event": "proximity_enter", "guard": {"occupants_eq": 1}, "to": "open"},
+       {"id": "hold", "from": ["open"], "event": "proximity_enter", "guard": {"occupants_gt": 0}, "to": "open"},
+       {"id": "last-out", "from": ["open"], "event": "proximity_leave", "guard": {"occupants_eq": 0}, "to": "open",
+        "follow_up": {"after": {"status": "known", "value": 1.5, "unit": "s"}, "name": "close"}},
+       {"id": "close", "from": ["open"], "event": "scheduled", "name": "close", "guard": {"occupants_eq": 0}, "to": "closed"}],
+      "reset": "round"},
+     {"id": "feature-4", "name": "Rope", "preset": "vertical_rope", "kind": "connection", "capabilities": ["traversal"],
+      "states": [{"name": "available", "blocks_movement": false, "blocks_sight": false}], "initial_state": "available",
+      "transitions": [], "reset": "round"},
+     {"id": "feature-5", "name": "Zipline", "preset": "zipline", "kind": "connection", "capabilities": ["traversal"],
+      "states": [{"name": "available", "blocks_movement": false, "blocks_sight": false}], "initial_state": "available",
+      "transitions": [], "reset": "round"},
+     {"id": "feature-6", "name": "Teleporter", "preset": "teleporter", "kind": "connection", "capabilities": ["traversal"],
+      "states": [{"name": "available", "blocks_movement": false, "blocks_sight": false}], "initial_state": "available",
+      "transitions": [], "reset": "round", "noise": {"makes_noise": true, "origin": null, "notes": "loud on arrival"}}
+    ],
+    "triggers": [
+     {"id": "trigger-7", "name": "Door switch", "type": "switch", "geometry": {"type": "point", "uv": [4050, 4150]},
+      "floor": "floor-1", "targets": [{"feature": "feature-1", "event": "switch", "x_target_unknown": 0}]},
+     {"id": "trigger-8", "name": "Shoot target", "type": "shoot", "geometry": {"type": "point", "uv": [4300, 3900]},
+      "floor": "floor-1", "targets": [{"feature": "feature-1", "event": "switch"}, {"feature": "feature-2", "event": "switch"}]},
+     {"id": "trigger-9", "name": "Door field", "type": "proximity",
+      "geometry": {"type": "polygon", "uv": [[7000, 7000], [7200, 7000], [7200, 7200], [7000, 7200]]}, "floor": "floor-2",
+      "targets": [{"feature": "feature-3", "event": "proximity_enter"}, {"feature": "feature-3", "event": "proximity_leave"}]}
+    ],
+    "routes": [
+     {"id": "route-10", "name": "Rope up", "owner": "feature-4", "kind": "rope",
+      "endpoints": [{"id": "a", "uv": [5000, 5000], "floor": "floor-1"}, {"id": "b", "uv": [5000, 5000], "floor": "floor-2"}],
+      "path": null, "access": "endpoint_only",
+      "directions": [{"from": "a", "to": "b", "entry": {"status": "known", "value": 0.5, "unit": "s"}, "transit": {"status": "known", "value": 2.0, "unit": "s"}},
+                     {"from": "b", "to": "a", "entry": {"status": "known", "value": 0.3, "unit": "s"}, "transit": {"status": "unresolved"}}],
+      "states": null, "in_transit": "complete"},
+     {"id": "route-11", "name": "Zipline", "owner": "feature-5", "kind": "zipline",
+      "endpoints": [{"id": "a", "uv": [1000, 8000], "floor": "floor-1"}, {"id": "b", "uv": [3000, 8000], "floor": "floor-1"}],
+      "path": {"type": "polyline", "uv": [[1000, 8000], [2000, 7900], [3000, 8000]]}, "access": "endpoint_only",
+      "directions": [{"from": "a", "to": "b", "entry": {"status": "known", "value": 0.4, "unit": "s"}, "transit": {"status": "known", "value": 3.5, "unit": "s"},
+                      "length": {"status": "known", "value": 30, "unit": "m"}}],
+      "states": null, "in_transit": "complete", "x_route_unknown": {"a": 1}},
+     {"id": "route-12", "name": "Teleporter", "owner": "feature-6", "kind": "teleporter",
+      "endpoints": [{"id": "a", "uv": [8000, 1000], "floor": "floor-1"}, {"id": "b", "uv": [9000, 3000], "floor": "floor-3"}],
+      "path": null, "access": "endpoint_only",
+      "directions": [{"from": "a", "to": "b", "entry": {"status": "unresolved"}, "transit": {"status": "known", "value": 1.0, "unit": "s"}}],
+      "states": null, "in_transit": "unresolved"}
+    ],
+    "bundles": [{"id": "bundle-13", "members": ["feature-1"], "enabled": false, "runtime_consumer": null}],
+    "checklist": {"switch_breakable_doors": {"status": "in_progress", "none": false, "notes": "one of two", "x_check_unknown": 1}}
+   }
+  },
+  "Atlantis": {
+   "x_not_on_page": true,
+   "map_features": {"version": 1, "next_id": 1, "features": [], "triggers": [], "routes": [], "floors": [], "bundles": [],
+                    "checklist": {"anything": {"status": "user_reviewed", "none": true, "notes": "kept as loaded"}}}
+  }
+ }
+}
