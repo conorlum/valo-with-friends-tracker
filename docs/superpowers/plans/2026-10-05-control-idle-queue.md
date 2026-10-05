@@ -4,7 +4,7 @@
 
 **Goal:** The replay worker recomputes every round whose map control is missing or out of date, on both CPUs whenever it isn't parsing, newest match first; the replay page says which control revision a round was computed under, or why it's out of date.
 
-**Architecture:** Three changes to code that exists. (1) The web app's dispatcher (`app/services/replay_control_remote.py`) sends `stale` rounds as well as `missing` ones, from unlinked replays too, ordered by the match's `played_at`; a job waiting in the worker's queue never uses up its retries. (2) The worker's `ControlRunner` (`replay_worker/server.py`) starts a child only while the parse side is idle; a parse arriving kills every running child, and its round goes back to the front of the queue, decided once, at settlement, under the runner's lock. (3) The viewer reads the revision already stored in each row's data header (`app/control/encode.py:98`, `"revision": cf.CONTROL_REVISION`, there since Stage 3, `db1a983`) and the server says the current one; no migration.
+**Architecture:** Three changes to code that exists. (1) The web app's dispatcher (`app/services/replay_control_remote.py`) sends `stale` rounds as well as `missing` ones, from unlinked replays too, ordered by the match's `played_at`; a job waiting in the worker's queue never uses up its retries. (2) The worker's `ControlRunner` (`replay_worker/server.py`) starts a child only while the parse side is idle; a parse arriving kills every running child, and its round goes back to the front of the queue, decided once, at settlement, under the runner's lock. (3) The viewer reads the revision already stored in each row's data header (`app/control/encode.py:98`, `"revision": cf.CONTROL_REVISION`, there since Stage 3, `db1a983`) and the server says the current one. (4) Migration 0017 adds `replay_round_control.control_revision`, written with every row and backfilled from those headers, so SQL can count rows per revision (D9).
 
 **Tech Stack:** Python 3.13, FastAPI, SQLAlchemy 2.0, stdlib `subprocess`/`threading` on the worker, vanilla JS in the viewer (Node for its tests).
 
@@ -19,14 +19,15 @@
 | D5 | Two children at once (`REPLAY_CONTROL_WORKERS`, default 2, unchanged): the worker is now `2c-4g` (2 CPU, 4 GB, $85/month). `render.yaml`'s `plan:` changes to match, since a Blueprint sync resets the plan to whatever the file says. | user |
 | D6 | The page shows the revision a round was computed under, or says why it's out of date. | user |
 | D7 | Deploying (image rebuild, `REPLAY_CONTROL_REMOTE=true`, the plan change) is the user's. This branch writes the steps down and changes nothing on Render. | standing rule |
-| D8 | Time a job spends **queued** on the worker never counts against the dispatcher's retry budget; only a job seen `running` for longer than `STALE_JOB_S` counts. A long parse batch delays control but can't make the dispatcher give up on a round. | review finding 2 |
+| D8 | Time a job spends **queued** on the worker never counts against the dispatcher's retry budget; only a job seen `running` for longer than `STALE_JOB_S` counts. A long parse batch delays control but can't make the dispatcher give up on a round. | review finding 2; approved by the user, 2026-10-05 |
+| D9 | `replay_round_control` gains a nullable `control_revision` column (migration 0017): written with every row, `ok` or `failed`, and backfilled for existing `ok` rows from their data headers. It is for SQL (counting rows per revision); the page keeps reading the header in the bytes it draws, and a test pins that the two agree on write. Existing `failed` rows and unreadable headers stay NULL. | user, 2026-10-05 ("add the column too") |
 
 ## Global Constraints
 
 - Run tests from `webapp/` in the worktree with the main checkout's interpreter: `C:\Users\User\Documents\GitHub\valo-with-friends-tracker\webapp\.venv313\Scripts\python.exe -m pytest ... -p no:cacheprovider` (written `PY -m pytest` below).
 - Baseline on clean `main` (2026-10-05): the replay suite with `-k "not pg"` gives 329 passed, 1 failed, 3 deselected. The failure, `test_replay_worker_control.py::test_control_off_answers_404_and_parsing_is_untouched` (`ConnectionResetError` WinError 10054), is pre-existing; leave it alone and don't count it against a task.
 - The worker server process never imports numpy or `app.control` (`tests/replays/test_control_isolation.py`). The dispatcher never imports the engine.
-- The ValoMaths demo never runs the dispatcher (`enabled()` is False in demo mode). No migration in this plan.
+- The ValoMaths demo never runs the dispatcher (`enabled()` is False in demo mode). One migration, 0017 (Task 5): additive, one nullable column; both services run `alembic upgrade head` on build, and the demo's table is empty, so its backfill touches nothing.
 - The control child (`replay_worker/control_job.py`) starts no processes of its own; numpy threads are capped by `CHILD_THREADS`. Killing it means killing one process (or its group on Linux).
 - Never commit a credential. Never edit anything on Render.
 - Comments and docstrings match the surrounding code: plain sentences, reasons not narration, docs referenced by path.
@@ -52,7 +53,8 @@
 | `webapp/tests/replays/test_replay_worker_control.py` | Task 3 |
 | `webapp/app/routers/replays.py`, `webapp/app/templates/replays/replay.html`, `webapp/app/static/js/replay_control.js`, `webapp/app/static/js/replay.js` | Task 4 |
 | `webapp/tests/replays/test_control_store.py`, `webapp/tests/replays/test_control_viewer.py` | Task 4 |
-| `render.yaml`, `docs/map-control-worker-plan.md`, `.gitignore` | Task 5 |
+| `webapp/alembic/versions/0017_replay_round_control_revision.py` (new), `webapp/app/models/replay.py`, `webapp/app/services/replay_control_store.py`, `webapp/tests/replays/test_control_store.py` | Task 5 |
+| `render.yaml`, `docs/map-control-worker-plan.md`, `.gitignore` | Task 6 |
 
 ---
 
@@ -661,7 +663,7 @@ Module docstring: replace the control paragraph's priority sentence with "It run
 **Interfaces:**
 - Produces: response header `X-Control-Current-Revision` on every `control.bin` 200 and 304; the JS control value gains `revision` (from `parsed.header.revision`, or null) and `currentRevision`; `ReplayControl.revisionNote(value) -> string`.
 
-Why no column: every `ok` row's data already starts with a JSON header holding `"revision"` (`encode.py:98`, since `db1a983`), and the viewer already parses it (`replay_control.js`, `parse` → `out.header`). Whether a stale row is stale because of the revision or its inputs follows from comparing that number with the current one.
+Why the page doesn't read Task 5's column: every `ok` row's data already starts with a JSON header holding `"revision"` (`encode.py:98`, since `db1a983`), and the viewer already parses it (`replay_control.js`, `parse` → `out.header`). Whether a stale row is stale because of the revision or its inputs follows from comparing that number with the current one.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -757,7 +759,166 @@ Browser check (the `run` skill, or by hand): start the app locally (`CLAUDE.md`,
 
 ---
 
-### Task 5: render.yaml, the old plan doc, .gitignore
+### Task 5: The row records its control revision (migration 0017)
+
+**Files:**
+- Create: `webapp/alembic/versions/0017_replay_round_control_revision.py`
+- Modify: `webapp/app/models/replay.py` (`ReplayRoundControl`), `webapp/app/services/replay_control_store.py` (`store_round`)
+- Test: `webapp/tests/replays/test_control_store.py`
+
+**Interfaces:**
+- Produces: `ReplayRoundControl.control_revision: int | None`; in the migration module, `header_revision(data) -> int | None` and `backfill(connection) -> int` (rows filled).
+
+D9. The column is for SQL only. Nothing on the site reads it, and it is not in the fingerprint: staleness is still decided by `fingerprint`, which already hashes `CONTROL_REVISION`. `store_round` can write `cf.CONTROL_REVISION` for every row because both writers guarantee it: `scripts/compute_control.py` computes in this process, and the dispatcher drops a result whose `revision` isn't this deploy's before it stores (`replay_control_remote.py`, `dropped_revision`).
+
+- [ ] **Step 1: Write the failing tests** (in `test_control_store.py`; `importlib.util` and `Path` imported at the top if they aren't):
+
+```python
+def migration_0017():
+    path = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0017_replay_round_control_revision.py"
+    spec = importlib.util.spec_from_file_location("migration_0017", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def packed(header):
+    return cf.pack_data(header, {"states": b"", "coverage": b"", "control": b""})
+
+
+def test_a_stored_row_records_the_control_revision_ok_or_failed(factory, db, linked):
+    [planned] = rc.plan(db, rounds={1})
+    ok = {"status": "ok", "data": packed({"revision": cf.CONTROL_REVISION}), "summary": cf.pack_summary({})}
+    assert compute_control.store_result(factory, planned, ok) == "stored"
+    row = db.get(ReplayRoundControl, (linked.id, 1))
+    assert row.control_revision == cf.CONTROL_REVISION == cf.unpack_data(row.data)[0]["revision"]
+    assert compute_control.store_result(factory, planned, {"status": "failed", "error": "ControlError: boom"}) == "stored"
+    db.expire_all()
+    assert db.get(ReplayRoundControl, (linked.id, 1)).control_revision == cf.CONTROL_REVISION
+
+
+def test_the_backfill_reads_a_headers_revision_and_nothing_else():
+    m = migration_0017()
+    assert m.header_revision(packed({"revision": 4})) == 4
+    assert m.header_revision(packed({})) is None
+    assert m.header_revision(packed({"revision": "4"})) is None
+    assert m.header_revision(gzip.compress(b"x")) is None
+    assert m.header_revision(b"not gzip") is None and m.header_revision(None) is None
+
+
+def test_the_backfill_fills_ok_rows_and_leaves_the_rest(db, linked):
+    m = migration_0017()
+    put_row(db, linked, 1)                                   # ok, a header with no revision (data is b"x")
+    put_row(db, linked, 2)
+    put_row(db, linked, 3, status="failed")
+    put_row(db, linked, 4)
+    db.get(ReplayRoundControl, (linked.id, 2)).data = packed({"revision": 4})
+    row = db.get(ReplayRoundControl, (linked.id, 4))
+    row.data, row.control_revision = packed({"revision": 3}), 5   # already set: never overwritten
+    db.commit()
+    assert m.backfill(db.connection()) == 1
+    db.commit()
+    db.expire_all()
+    got = {n: db.get(ReplayRoundControl, (linked.id, n)).control_revision for n in (1, 2, 3, 4)}
+    assert got == {1: None, 2: 4, 3: None, 4: 5}
+```
+
+Extend `test_pg_migration_0014_cascades_and_holds_its_checks` with one line after its first `put_row` calls, so the real schema is checked for the column: `assert session.execute(text("SELECT control_revision FROM replay_round_control")).fetchall()`.
+
+- [ ] **Step 2: Run** `PY -m pytest tests/replays/test_control_store.py -k "revision or backfill" -q -p no:cacheprovider` → FAIL (no migration file; no `control_revision` attribute).
+
+- [ ] **Step 3: Implement**
+
+Model, after `data_version`:
+
+```python
+    # control_format.CONTROL_REVISION the row was computed under (migration 0017). For SQL only: freshness is
+    # `fingerprint`. NULL on failed rows from before 0017.
+    control_revision: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+```
+
+`store_round`'s merge gains `control_revision=cf.CONTROL_REVISION,`. Add a sentence to the module docstring: "Every row records `control_format.CONTROL_REVISION`; both writers only store results computed under this deploy's revision."
+
+The migration (self-contained: it reads the byte format itself rather than importing `app`, so a later format change can't break an old migration):
+
+```python
+"""replay round control revision
+
+Revision ID: 0017
+Revises: 0016
+Create Date: 2026-10-05
+
+`replay_round_control.control_revision`: the CONTROL_REVISION a row was computed under
+(docs/superpowers/plans/2026-10-05-control-idle-queue.md, D9), so SQL can count rows per revision. Written with
+every row from here on (app/services/replay_control_store.py). Existing `ok` rows are backfilled from the JSON
+header their data already starts with (app/replays/control_format.py, `pack_data`); a failed row, or a header that
+can't be read, stays NULL.
+
+Additive, and the ValoMaths demo's table is empty.
+"""
+import gzip
+import json
+import struct
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = "0017"
+down_revision: Union[str, None] = "0016"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def header_revision(data) -> int | None:
+    """The `revision` in a stored row's data header: gzip(b"VCTL", version byte, <I header length, JSON header, ...)."""
+    try:
+        raw = gzip.decompress(bytes(data))
+        if raw[:4] != b"VCTL":
+            return None
+        (length,) = struct.unpack("<I", raw[5:9])
+        found = json.loads(raw[9:9 + length].decode("utf-8")).get("revision")
+    except Exception:  # noqa: BLE001 - a row that can't be read stays NULL; the migration never fails on data
+        return None
+    return found if type(found) is int else None
+
+
+def backfill(connection) -> int:
+    """One row's bytes at a time: a round's data is large, and the build machine is small."""
+    keys = connection.execute(sa.text(
+        "SELECT replay_id, round_number FROM replay_round_control "
+        "WHERE status = 'ok' AND control_revision IS NULL ORDER BY replay_id, round_number")).fetchall()
+    filled = 0
+    for replay_id, round_number in keys:
+        where = {"r": replay_id, "n": round_number}
+        data = connection.execute(sa.text(
+            "SELECT data FROM replay_round_control WHERE replay_id = :r AND round_number = :n"), where).scalar()
+        found = header_revision(data)
+        if found is None:
+            continue
+        connection.execute(sa.text(
+            "UPDATE replay_round_control SET control_revision = :v WHERE replay_id = :r AND round_number = :n"),
+            {**where, "v": found})
+        filled += 1
+    return filled
+
+
+def upgrade() -> None:
+    op.add_column("replay_round_control", sa.Column("control_revision", sa.SmallInteger(), nullable=True))
+    backfill(op.get_bind())
+
+
+def downgrade() -> None:
+    op.drop_column("replay_round_control", "control_revision")
+```
+
+- [ ] **Step 4: Run** `PY -m pytest tests/replays -q -k "control" -p no:cacheprovider` → PASS except the pre-existing failure. Then against the local Postgres (port 5433, `docker compose -p valomaths-private up -d`): `.\.venv313\Scripts\python.exe -m alembic upgrade head`, and paste the output of `SELECT control_revision, status, count(*) FROM replay_round_control GROUP BY 1, 2 ORDER BY 1, 2;` into the task's report. Every `ok` row should have a revision. Then `alembic downgrade 0016` and `upgrade head` once more to check both directions. If the local DB isn't running, say so; don't claim the migration was run.
+
+- [ ] **Step 5: Commit** (`"replay_round_control: record the control revision (migration 0017), backfilled from the data headers"`)
+
+---
+
+### Task 6: render.yaml, the old plan doc, .gitignore
 
 **Files:** `render.yaml`, `docs/map-control-worker-plan.md`, `.gitignore`
 
@@ -789,7 +950,7 @@ Browser check (the `run` skill, or by hand): start the app locally (`CLAUDE.md`,
 
 ## Deploy steps (the user's)
 
-1. Merge. Both web services redeploy (no migration). The worker image rebuilds from `replay_worker/Dockerfile`.
+1. Merge. Both web services redeploy and run migration 0017 on build (one nullable column; on the friends DB it also reads each `ok` control row's header once, about 350 rows). The worker image rebuilds from `replay_worker/Dockerfile`. Afterwards `SELECT control_revision, status, count(*) FROM replay_round_control GROUP BY 1, 2;` shows what is at which revision.
 2. Confirm `replay-worker` shows **2c-4g** in the dashboard.
 3. Set `REPLAY_CONTROL_REMOTE=true` on `valowithfriendstracker` only (dashboard, or uncomment it in `render.yaml` in a follow-up commit). Never on `valomaths`.
 4. Watch the web log for `map control dispatch: sent N ...` and the worker's `GET /health` → `control.queued / running / preempted`.
@@ -806,3 +967,6 @@ now force the settlement race with a seam, resume after preemption, check the wa
 a NULL `match_id`, and the idle test runs where it lives). Plausible risks: `Popen` moved outside the lock; the
 admission gap is accepted and pinned by a test instead of synchronised. Not confirmed by the reviewer: a
 fingerprint that never settles.
+
+After the review, the user approved D8 and asked for the column as well as the header (D9, Task 5). Finding 9's
+point still holds for the page, which reads the header; the column is beside it for SQL, not instead of it.
