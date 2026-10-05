@@ -201,6 +201,8 @@ def test_a_preempted_job_starts_its_running_clock_again(factory, db, linked):
 @pytest.mark.parametrize("change, counted", [
     (lambda r: r.update(revision=cf.CONTROL_REVISION + 1), "dropped_revision"),
     (lambda r: r.update(geometry={**r["geometry"], "sight": "other"}), "dropped_geometry"),
+    # a result computed with a feature generation this deploy doesn't have (map features, M5)
+    (lambda r: r.update(geometry={**r["geometry"], "features": "0123456789abcdef"}), "dropped_geometry"),
 ])
 def test_a_result_from_another_deploy_is_dropped_and_asked_again(factory, db, linked, change, counted):
     def answer(task):
@@ -301,3 +303,24 @@ def test_the_client_maps_the_workers_answers():
             mp.setattr(remote.urllib.request, "urlopen", fail(code))
             with pytest.raises(error):
                 client.job("j1")
+
+
+def test_a_map_with_a_feature_generation_sends_it_and_keeps_only_results_computed_with_it(factory, db, linked, monkeypatch):
+    # map features (M5): no committed map has one, so this patches the index as a later build would write it
+    index, tags, maps = rc._assets()
+    patched = {name: {**row, "features_sha": "feat0000feat0000"} for name, row in index.items()}
+    monkeypatch.setattr(rc, "_assets", lambda: (patched, tags, maps))
+    worker, state = FakeWorker(), remote.State()
+    remote.cycle(factory, worker, state, now=0)
+    task = next(iter(worker.tasks.values()))
+    assert task["features"] == "feat0000feat0000" and rc.geometry_inputs(task["map"])["features"] == "feat0000feat0000"
+    assert remote.cycle(factory, worker, state, now=1)["stored"] == remote.IN_FLIGHT
+
+    def stale(task):                     # a worker still on the previous generation (no features)
+        job = FakeWorker.ok(worker2, task)
+        job["result"]["geometry"] = {k: v for k, v in job["result"]["geometry"].items() if k != "features"}
+        return job
+
+    worker2, state2 = FakeWorker(stale), remote.State()
+    remote.cycle(factory, worker2, state2, now=100)
+    assert remote.cycle(factory, worker2, state2, now=101)["dropped_geometry"] > 0

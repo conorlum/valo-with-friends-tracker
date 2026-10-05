@@ -1,0 +1,111 @@
+{
+ "note": "Event-sequence fixtures for the map-feature reducer (app/replays/map_feature_state.py) and its JS twin (scripts/control_tagger_core.js TaggerCore.Features.run). Each case's `expect` is the trace as [t, kind, result, state] rows; both implementations must also give identical full traces.",
+ "features": {
+  "compound_door": {
+   "id": "feature-1", "initial_state": "closed",
+   "states": [{"name": "closed"}, {"name": "opening"}, {"name": "open"}, {"name": "closing"}, {"name": "broken", "terminal": true}],
+   "transitions": [
+    {"id": "t-open", "from": ["closed"], "event": "switch", "to": "open", "motion": {"state": "opening", "duration": {"status": "known", "value": 2}}, "mid_motion": "ignore"},
+    {"id": "t-close", "from": ["open"], "event": "switch", "to": "closed", "motion": {"state": "closing", "duration": {"status": "known", "value": 2}}, "mid_motion": "reverse"},
+    {"id": "t-break", "from": "*", "event": "destroy", "to": "broken"}
+   ]
+  },
+  "queue_door": {
+   "id": "feature-2", "initial_state": "closed",
+   "states": [{"name": "closed"}, {"name": "opening"}, {"name": "open"}, {"name": "closing"}],
+   "transitions": [
+    {"id": "q-open", "from": ["closed"], "event": "switch", "to": "open", "motion": {"state": "opening", "duration": {"status": "known", "value": 2}}, "mid_motion": "queue"},
+    {"id": "q-close", "from": ["open"], "event": "switch", "to": "closed", "motion": {"state": "closing", "duration": {"status": "known", "value": 2}}, "mid_motion": "restart"}
+   ]
+  },
+  "unresolved_door": {
+   "id": "feature-3", "initial_state": "closed",
+   "states": [{"name": "closed"}, {"name": "opening"}, {"name": "open"}],
+   "transitions": [
+    {"id": "u-open", "from": ["closed"], "event": "switch", "to": "open", "motion": {"state": "opening", "duration": {"status": "unresolved"}}, "mid_motion": "unresolved"},
+    {"id": "u-guard", "from": ["open"], "event": "shoot", "guard": {"unresolved": "what shooting it does is not known"}, "to": "closed"}
+   ]
+  },
+  "proximity_door": {
+   "id": "feature-4", "initial_state": "closed",
+   "states": [{"name": "closed"}, {"name": "open"}],
+   "transitions": [
+    {"id": "p-open", "from": ["closed"], "event": "proximity_enter", "guard": {"occupants_eq": 1}, "to": "open"},
+    {"id": "p-hold", "from": ["open"], "event": "proximity_enter", "guard": {"occupants_gt": 0}, "to": "open"},
+    {"id": "p-leave", "from": ["open"], "event": "proximity_leave", "guard": {"occupants_eq": 0}, "to": "open", "follow_up": {"after": {"status": "known", "value": 1.5}, "name": "close"}},
+    {"id": "p-close", "from": ["open"], "event": "scheduled", "name": "close", "guard": {"occupants_eq": 0}, "to": "closed"}
+   ]
+  }
+ },
+ "cases": [
+  {"name": "destroyed mid-motion: stale completion and a later switch cannot restore it; reset brings it back",
+   "feature": "compound_door",
+   "events": [{"t": 1, "kind": "switch"}, {"t": 2, "kind": "destroy"},
+              {"t": 3, "kind": "motion_complete", "generation": 1, "epoch": 0}, {"t": 4, "kind": "switch"},
+              {"t": 10, "kind": "reset"}, {"t": 11, "kind": "switch"}],
+   "expect": [[1, "switch", "applied", "opening"], [2, "destroy", "applied", "broken"],
+              [3, "motion_complete", "stale", "broken"], [4, "switch", "rejected", "broken"],
+              [10, "reset", "applied", "closed"], [11, "switch", "applied", "opening"],
+              [13, "motion_complete", "applied", "open"]]},
+  {"name": "equal time: destruction beats the completion of the motion it cancels",
+   "feature": "compound_door",
+   "events": [{"t": 1, "kind": "switch"}, {"t": 3, "kind": "motion_complete", "generation": 1, "epoch": 0},
+              {"t": 3, "kind": "destroy"}],
+   "expect": [[1, "switch", "applied", "opening"], [3, "destroy", "applied", "broken"],
+              [3, "motion_complete", "stale", "broken"]]},
+  {"name": "reset with a pending completion starts a new epoch; the old completion is stale",
+   "feature": "compound_door",
+   "events": [{"t": 1, "kind": "switch"}, {"t": 2, "kind": "reset"},
+              {"t": 3, "kind": "motion_complete", "generation": 1, "epoch": 0}],
+   "expect": [[1, "switch", "applied", "opening"], [2, "reset", "applied", "closed"],
+              [3, "motion_complete", "stale", "closed"]]},
+  {"name": "mid-motion presses follow the moving transition's policy: ignore while opening, reverse while closing",
+   "feature": "compound_door",
+   "events": [{"t": 1, "kind": "switch"}, {"t": 2, "kind": "switch"}, {"t": 4, "kind": "switch"},
+              {"t": 5, "kind": "switch"}, {"t": 7, "kind": "switch"}],
+   "expect": [[1, "switch", "applied", "opening"], [2, "switch", "ignored", "opening"],
+              [3, "motion_complete", "applied", "open"], [4, "switch", "applied", "closing"],
+              [5, "switch", "applied", "closing"], [6, "motion_complete", "applied", "open"],
+              [7, "switch", "applied", "closing"], [9, "motion_complete", "applied", "closed"]]},
+  {"name": "a completion without tokens is rejected",
+   "feature": "compound_door",
+   "events": [{"t": 1, "kind": "switch"}, {"t": 2, "kind": "motion_complete"}],
+   "expect": [[1, "switch", "applied", "opening"], [2, "motion_complete", "rejected", "opening"],
+              [3, "motion_complete", "applied", "open"]]},
+  {"name": "queue: a press while opening runs when the motion completes; restart while closing",
+   "feature": "queue_door",
+   "events": [{"t": 1, "kind": "switch"}, {"t": 2, "kind": "switch"}, {"t": 4, "kind": "switch"}],
+   "expect": [[1, "switch", "applied", "opening"], [2, "switch", "queued", "opening"],
+              [3, "motion_complete", "applied", "closing"], [4, "switch", "applied", "closing"],
+              [6, "motion_complete", "applied", "closed"]]},
+  {"name": "unresolved duration, policy and guard stay unresolved; an observed state is taken as evidence",
+   "feature": "unresolved_door",
+   "events": [{"t": 1, "kind": "switch"}, {"t": 2, "kind": "switch"}, {"t": 5, "kind": "observed", "state": "open"},
+              {"t": 6, "kind": "shoot"}],
+   "expect": [[1, "switch", "applied", "opening"], [2, "switch", "rejected", "opening"],
+              [5, "observed", "applied", "open"], [6, "shoot", "rejected", "open"]]},
+  {"name": "two occupants: first entry opens, one departure does not close, last exit schedules a close, re-entry cancels it",
+   "feature": "proximity_door",
+   "events": [{"t": 1, "kind": "proximity_enter", "occupant": "a"}, {"t": 2, "kind": "proximity_enter", "occupant": "b"},
+              {"t": 2.5, "kind": "proximity_enter", "occupant": "b"},
+              {"t": 3, "kind": "proximity_leave", "occupant": "a"}, {"t": 4, "kind": "proximity_leave", "occupant": "b"},
+              {"t": 5, "kind": "proximity_enter", "occupant": "a"}, {"t": 6, "kind": "proximity_leave", "occupant": "a"}],
+   "expect": [[1, "proximity_enter", "applied", "open"], [2, "proximity_enter", "applied", "open"],
+              [2.5, "proximity_enter", "ignored", "open"],
+              [3, "proximity_leave", "applied", "open"], [4, "proximity_leave", "applied", "open"],
+              [5, "proximity_enter", "applied", "open"], [6, "proximity_leave", "applied", "open"],
+              [7.5, "scheduled", "applied", "closed"]]},
+  {"name": "equal time: an occupant entering as the last one leaves keeps the door open",
+   "feature": "proximity_door",
+   "events": [{"t": 1, "kind": "proximity_enter", "occupant": "a"}, {"t": 4, "kind": "proximity_leave", "occupant": "a"},
+              {"t": 4, "kind": "proximity_enter", "occupant": "c"}],
+   "expect": [[1, "proximity_enter", "applied", "open"], [4, "proximity_enter", "applied", "open"],
+              [4, "proximity_leave", "applied", "open"]]},
+  {"name": "an unknown leaver is rejected; anonymous occupants count",
+   "feature": "proximity_door",
+   "events": [{"t": 1, "kind": "proximity_leave", "occupant": "z"}, {"t": 2, "kind": "proximity_enter"},
+              {"t": 3, "kind": "proximity_leave"}],
+   "expect": [[1, "proximity_leave", "rejected", "closed"], [2, "proximity_enter", "applied", "open"],
+              [3, "proximity_leave", "applied", "open"], [4.5, "scheduled", "applied", "closed"]]}
+ ]
+}
