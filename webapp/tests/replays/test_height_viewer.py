@@ -161,3 +161,136 @@ def test_wrong_shapes_are_refused(tmp_path):
     hc.save_asset(path, asset)
     with pytest.raises(ValueError, match="shape"):
         height_viewer.map_payload(MAP, path, None, "preview")
+
+
+CORE = WEBAPP / "scripts" / "height_viewer_core.js"
+NODE = shutil.which("node")
+needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
+
+RUN = """
+  const H = require(process.argv[1]);
+  let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+    const p = JSON.parse(input), map = p.payload ? H.prepare(p.payload) : null;
+    process.stdout.write(JSON.stringify(run(p, map)));
+  });
+"""
+
+
+def run_node(body: str, payload: dict):
+    done = subprocess.run([NODE, "-e", RUN + body, str(CORE)], input=json.dumps(payload), capture_output=True,
+                          text=True, encoding="utf-8", timeout=120, check=False)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+@pytest.fixture
+def payload(saved):
+    asset, path = saved
+    return height_viewer.map_payload(MAP, path, wrap(path, report_for(asset)), "preview")
+
+
+def edge_cases():
+    """synthetic() plus one cell of each awkward kind (Review Focus 5):
+    - (40, 40): an upper floor at 3.0 m and no ground;
+    - (20, 15): unresolved, but it kept a stale 5.0 m ground, right below the block's (19, 15) at 1.0 m;
+    - (11, 11): a 2.0 m step inside the ground block (a drop on all four sides);
+    - (13, 11): a 0.6 m step (under STEP_UP_M: no drop)."""
+    asset = synthetic()
+    asset.floors[40, 40, 1], asset.spread[40, 40, 1] = 30, 1
+    asset.unresolved[20, 15] = True
+    asset.floors[20, 15, 0], asset.spread[20, 15, 0] = 50, 1
+    asset.floors[11, 11, 0] = 30
+    asset.floors[13, 11, 0] = 16
+    return asset
+
+
+@pytest.fixture
+def edge(tmp_path):
+    asset = edge_cases()
+    path = tmp_path / f"{MAP}.height.npz"
+    hc.save_asset(path, asset)
+    return asset, height_viewer.map_payload(MAP, path, None, "preview")
+
+
+@needs_node
+def test_compare_boundaries():
+    out = run_node("function run(p) { return p.pairs.map(([a, b]) => H.compare(a, b)); }",
+                   {"pairs": [[1.0, 1.3], [1.0, 0.7], [1.0, 1.4], [1.0, 2.4], [1.0, 2.5], [2.5, 1.0], [1.0, 1.0]]})
+    assert [o["word"] for o in out] == ["same height", "same height", "a little higher", "a little higher",
+                                        "much higher", "much lower", "same height"]
+    assert [o["delta"] for o in out] == [0.3, -0.3, 0.4, 1.4, 1.5, -1.5, 0]
+
+
+@needs_node
+def test_floors_of_lists_present_floors_only(edge):
+    _, p = edge
+    out = run_node("function run(p, m) { return p.cells.map(c => H.floorsOf(m, c)); }",
+                   {"payload": p, "cells": [cell(15, 20), cell(12, 12), cell(0, 0), cell(40, 40), cell(20, 15)]})
+    assert out[0] == [{"floor": 0, "z": 1.0, "spread": 0.1}, {"floor": 1, "z": 4.0, "spread": 0.1}]
+    assert [f["z"] for f in out[1]] == [1.0]
+    assert out[2] == []
+    assert out[3] == [{"floor": 1, "z": 3.0, "spread": 0.1}]          # upper floor only, no ground
+    assert out[4] == [{"floor": 0, "z": 5.0, "spread": 0.1}]          # unresolved, stale floor still listed
+
+
+@needs_node
+def test_decoded_masks_match_the_asset(payload, saved):
+    asset, _ = saved
+    out = run_node("function run(p, m) { return {s: Array.from(m.supported), u: Array.from(m.unresolved)}; }",
+                   {"payload": payload})
+    assert out["s"] == asset.supported.ravel().astype(int).tolist()
+    assert out["u"] == asset.unresolved.ravel().astype(int).tolist()
+
+
+@needs_node
+def test_same_mask(payload):
+    out = run_node("function run(p, m) { return Array.from(H.sameMask(m, p.z, p.tol)); }",
+                   {"payload": payload, "z": 4.0, "tol": 0.3})
+    assert np.flatnonzero(out).tolist() == [cell(15, 20)]      # only the upper floor is near 4.0 m
+    out = run_node("function run(p, m) { return Array.from(H.sameMask(m, p.z, p.tol)); }",
+                   {"payload": payload, "z": 1.0, "tol": 0.3})
+    assert sum(out) == int((synthetic().floors[..., 0] == 10).sum())
+
+
+@needs_node
+def test_drops_and_colours_match_the_real_picture(edge, tmp_path):
+    """Draw hb.picture for the edge-case asset and read its pixels: its black pixels are exactly its drop
+    marks, so the core's drops must cover exactly those pixels; a plain ground cell's centre pixel is its
+    ramp colour, which the core's colour() must equal."""
+    from PIL import Image
+
+    asset, p = edge
+    sight = cg.read_mask_png(cg.ASSET_DIR / f"{MAP}.sight.png")
+    walk_px = cg.read_mask_png(cg.ASSET_DIR / f"{MAP}.walk.png")
+    scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))[MAP]["xMultiplier"]
+    geo = cg.geometry_from_masks(MAP, sight, walk_px, scale)
+    png = tmp_path / "picture.png"
+    hb.picture(hb.HeightBuild(asset, {}), geo, png)
+    img = np.array(Image.open(png).convert("RGB"))
+    black = {(int(y), int(x)) for y, x in zip(*np.nonzero((img == 0).all(-1)))}
+
+    got = run_node("""function run(p, m) {
+      const top = H.groundTop(m);
+      return {drops: H.drops(m, m.raw.step_up_m),
+              colours: p.cells.map(c => H.colour(H.ground(m, c), top))}; }""",
+                   {"payload": p, "cells": [cell(10, 20), cell(11, 11), cell(18, 25)]})
+    C = cg.CELL
+    drawn = set()
+    for c, side in got["drops"]:
+        cy, cx = divmod(c, GRID)
+        if side == "e":
+            drawn |= {(y, x) for y in range(cy * C, (cy + 1) * C) for x in ((cx + 1) * C - 1, (cx + 1) * C)}
+        else:
+            drawn |= {(y, x) for y in ((cy + 1) * C - 1, (cy + 1) * C) for x in range(cx * C, (cx + 1) * C)}
+    assert drawn == black
+    assert len(got["drops"]) == 5                # four round (11, 11), one from (19, 15) to the stale (20, 15)
+    for (y, x), rgb in zip([(10, 20), (11, 11), (18, 25)], got["colours"]):
+        assert rgb == img[y * C + C // 2, x * C + C // 2].tolist()
+
+
+@needs_node
+def test_colour_matches_picture_ramp():
+    out = run_node("function run(p) { return p.dm.map(d => H.colour(d, p.top)); }", {"dm": [0, 15, 30, 45], "top": 30})
+    for dm, rgb in zip([0, 15, 30, 45], out):
+        f = min(max(dm / 30, 0), 1)
+        assert rgb == [int(np.uint8(40 + 215 * f)), int(np.uint8(90 + 150 * f)), int(np.uint8(200 - 170 * f))]
