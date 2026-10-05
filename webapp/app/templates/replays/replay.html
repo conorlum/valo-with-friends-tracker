@@ -33,7 +33,10 @@
           return fetch("/replays/" + match.uuid + "/" + n + "/control.bin", { signal: signal }).then(function (r) {
             if (r.status !== 200) return { status: r.status === 202 ? "not_ready" : r.status === 422 ? "failed" : "unavailable" };
             var stale = r.headers.get("X-Control-Stale") === "1";
-            return r.arrayBuffer().then(function (buffer) { return { status: "ok", buffer: buffer, stale: stale }; });
+            var current = r.headers.get("X-Control-Current-Revision");
+            return r.arrayBuffer().then(function (buffer) {
+              return { status: "ok", buffer: buffer, stale: stale, currentRevision: current };
+            });
           });
         },
         loadControlPlayers: function () { return json("/replays/" + match.uuid + "/control/players.json"); },

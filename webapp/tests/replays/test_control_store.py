@@ -250,6 +250,14 @@ def test_not_ready_then_the_bytes_with_an_etag_and_a_304(db, linked):
     assert again.status_code == 304 and again.body == b""
 
 
+def test_the_endpoint_says_the_current_revision_on_200_and_304(db, linked):
+    put_row(db, linked, 1)
+    first = call(db, 1)
+    assert first.headers["x-control-current-revision"] == str(cf.CONTROL_REVISION)
+    again = call(db, 1, headers={"if-none-match": first.headers["etag"]})
+    assert again.status_code == 304 and again.headers["x-control-current-revision"] == str(cf.CONTROL_REVISION)
+
+
 def test_a_stale_row_is_still_served_but_flagged(db, linked):
     put_row(db, linked, 1, fingerprint="0" * 16)
     response = call(db, 1)

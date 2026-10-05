@@ -10,7 +10,8 @@
 - `GET /replays/{match_uuid}/{n}/control.bin`: the round's stored map control
   (docs/replay-map-control-plan.md, "Delivery"; app/replays/control_format.py), with the same
   gzip, ETag and caching, plus `X-Control-Stale: 1` when its inputs have changed since it was
-  computed. Otherwise JSON `{"status": ...}`: 202 `not_ready` (with `Retry-After`; it is computed
+  computed, and always `X-Control-Current-Revision` (the page compares it with the revision in the
+  data's own header). Otherwise JSON `{"status": ...}`: 202 `not_ready` (with `Retry-After`; it is computed
   by a local command, scripts/compute_control.py; also a row in an older byte format), 422
   `failed`, and 404 `no_map` when the map has no control layer yet or `old_blob` when the replay
   predates condenser revision 10 (re-ingest or re-upload it). The page's `match.control` says the last up front.
@@ -49,6 +50,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.replay import ReplayUpload
+from app.replays import control_format as cf
 from app.replays import db as replay_db
 from app.services import replay_control as control_service
 from app.services import replay_control_views as control_views
@@ -262,8 +264,10 @@ def replay_round_control(request: Request, match_uuid: str, round_number: int, d
                             headers={"Retry-After": str(CONTROL_RETRY_AFTER_S), "Cache-Control": "no-store"})
     if answer.status == "failed":
         return JSONResponse({"status": "failed"}, status_code=422, headers={"Cache-Control": "no-store"})
-    return _stored_gzip(request, answer.row.data, "application/octet-stream",
-                        {"X-Control-Stale": "1"} if answer.stale else None)
+    headers = {"X-Control-Current-Revision": str(cf.CONTROL_REVISION)}
+    if answer.stale:
+        headers["X-Control-Stale"] = "1"
+    return _stored_gzip(request, answer.row.data, "application/octet-stream", headers)
 
 
 def _control_replay_or_404(db: Session, match_uuid: str):
