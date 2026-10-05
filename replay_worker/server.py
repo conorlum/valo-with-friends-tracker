@@ -220,8 +220,10 @@ class Worker:
 
     SWEEP_EVERY_S = 3600
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, on_parse=None):
         self.settings = settings
+        self.on_parse = on_parse or (lambda: None)   # map control's preempt (D4); always called outside self.lock
+        self.parsing = False
         self.queue: queue.Queue[Job] = queue.Queue(maxsize=settings.queue_size)
         self.reparse_queue: queue.Queue[Job] = queue.Queue(maxsize=settings.queue_size)
         self.jobs: dict[str, Job] = {}
@@ -252,6 +254,20 @@ class Worker:
             return {"enabled": False, "reason": self.archive_reason}
         return self.archive.status()
 
+    def idle(self) -> bool:
+        """No parse running and none waiting: map control may run. Between a queue's `get` and
+        `parsing = True` this reads True for a few bytecodes; a control child started in that gap is
+        killed by the `on_parse()` call at the top of `_run`
+        (docs/superpowers/plans/2026-10-05-control-idle-queue.md, Task 2)."""
+        return not self.parsing and self.queue.empty() and self.reparse_queue.empty()
+
+    def _parse_coming(self) -> None:
+        """Tells map control a parse is waiting or starting. A failing hook must never stop a parse."""
+        try:
+            self.on_parse()
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+
     # -------------------------------------------------------------- intake
 
     def submit(self, body: bytes) -> Job:
@@ -271,6 +287,7 @@ class Worker:
         except queue.Full:
             shutil.rmtree(folder, ignore_errors=True)
             raise
+        self._parse_coming()
         with self.lock:
             self.jobs[job_id] = job
         self.wake.set()
@@ -300,6 +317,7 @@ class Worker:
         except queue.Full:
             shutil.rmtree(folder, ignore_errors=True)
             raise
+        self._parse_coming()
         with self.lock:
             self.jobs[job_id] = job
         self.wake.set()
@@ -331,11 +349,15 @@ class Worker:
     def _next(self) -> Job:
         """Uploads first, then reparses. With the archive off, exactly the old blocking get."""
         if self.archive is None:
-            return self.queue.get()
+            job = self.queue.get()
+            self.parsing = True
+            return job
         while True:
             for source in (self.queue, self.reparse_queue):
                 try:
-                    return source.get_nowait()
+                    job = source.get_nowait()
+                    self.parsing = True
+                    return job
                 except queue.Empty:
                     pass
             if time.time() - self.last_sweep > self.SWEEP_EVERY_S:
@@ -346,6 +368,7 @@ class Worker:
     def _run(self) -> None:
         while True:
             job = self._next()
+            self._parse_coming()
             status, error, result = "failed", REASON_PARSE, None
             try:
                 job.status = "parsing"
@@ -372,6 +395,7 @@ class Worker:
                 self._save(job)
                 self._forget_old()
                 (self.queue if job.kind == "upload" else self.reparse_queue).task_done()
+                self.parsing = False
 
     def _settle(self, job: Job, status: str, result: dict | None) -> None:
         """Archive on: the export goes, the result is written, a parsed upload waits in pending/ for its
