@@ -391,3 +391,114 @@ def test_on_a_height_map_bindings_must_be_verified_and_restored_ground_must_be_i
     m = mf(on_floor, "floor-1", ["floor-1"])
     shapes = {cf.movement_blocks(geo, m, {"feature-1": s}).blocked.shape for s in ("intact", "broken")}
     assert shapes == {(geo.n,)}
+
+
+# ---- W9: directed traversal
+
+def secs(v):
+    return {"status": "known", "value": v, "unit": "s"}
+
+
+UNRES = {"status": "unresolved"}
+
+
+def rope(geo, up=("floor-1", "floor-2"), back=UNRES):
+    return {**ms.empty(), "floors": floors_for(geo), "routes": [{
+        "id": "route-1", "kind": "rope", "access": "endpoint_only", "in_transit": "complete",
+        "endpoints": [{"id": "a", "uv": [U(264), U(196)], "floor": up[0]}, {"id": "b", "uv": [U(264), U(196)], "floor": up[1]}],
+        "directions": [{"from": "a", "to": "b", "entry": secs(0.5), "transit": secs(2.0)},
+                       {"from": "b", "to": "a", "entry": secs(0.3), "transit": back}]}]}
+
+
+def test_a_same_position_rope_joins_exactly_its_two_floors():
+    geo = bridge()
+    node = lambda x, f=0: int(geo.node_of[geo.cell_of_px(x, 196), f])     # noqa: E731
+    arcs, pending = cf.compile_routes(geo, rope(geo))
+    lower, upper = node(264, 0), node(264, 1)
+    assert [(a.src, a.dst) for a in arcs] == [(lower, upper), (upper, lower)]
+    assert pending == ["route-1: b -> a travel time unresolved"]
+    east, plateau = node(400), node(150)
+    plain = cf.TraversalGraph(geo, [])
+    assert not plain.reachable(east)[plateau], "the ground and the plateau don't join by walking"
+    g = cf.TraversalGraph(geo, arcs)
+    assert g.reachable(east)[plateau] and g.reachable(plateau)[east], "reachability counts a known arc"
+    t = g.time_seconds(east, 5.0)
+    walk_to_rope = plain.walk_metres(east)[lower] / 5.0
+    assert t[upper] == pytest.approx(walk_to_rope + 2.5) and np.isfinite(t[plateau])
+    assert np.isinf(g.time_seconds(plateau, 5.0)[east]), "an unknown transit is never a free step"
+    assert [a.dst for a in g.unresolved] == [lower]
+    assert np.isinf(g.walk_metres(east)[plateau]), "walking metres never ride a route"
+    # same place on the same floor is no route; an unbound floor is pending, never every floor
+    arcs, pending = cf.compile_routes(geo, rope(geo, up=("floor-1", "floor-1")))
+    assert arcs == [] and all("joins a node to itself" in p for p in pending)
+    for floors in (("floor-3", "floor-2"), ({"status": "unresolved"}, "floor-2"), ("floor-4", "floor-2")):
+        arcs, pending = cf.compile_routes(geo, rope(geo, up=floors))
+        assert arcs == [] and any(p.startswith("route-1.a") for p in pending), floors
+
+
+def rooms():
+    """Two rooms with no walk between them (x 96-200 and 300-416 px)."""
+    return toy_geometry("TwoRooms", [(96, 96, 200, 296), (300, 96, 416, 296)])
+
+
+def zipline(access="endpoint_only", in_transit="complete", states=None, extra=()):
+    route = {"id": "route-1", "kind": "zipline", "owner": "feature-9", "access": access, "in_transit": in_transit,
+             "states": states,
+             "endpoints": [{"id": "a", "uv": [U(150), U(196)]}, {"id": "b", "uv": [U(350), U(196)]}],
+             "directions": [{"from": "a", "to": "b", "entry": secs(0.5), "transit": secs(2.0)}, *extra]}
+    return {**ms.empty(), "routes": [route]}
+
+
+def test_a_one_way_zipline_endpoint_only_versus_intermediate_access():
+    geo = rooms()
+    a, b, far = geo.cell_of_px(150, 196), geo.cell_of_px(350, 196), geo.cell_of_px(380, 150)
+    arcs, pending = cf.compile_routes(geo, zipline())
+    assert pending == [] and [(x.src, x.dst) for x in arcs] == [(a, b)]
+    g = cf.TraversalGraph(geo, arcs)
+    assert g.reachable(a)[far] and not g.reachable(b)[a], "one way"
+    back = g.reverse()
+    assert back.reachable(b)[a] and not back.reachable(a)[b], "a return path searches the reversed graph"
+    t = g.time_seconds(a, 5.0)
+    assert t[b] == pytest.approx(2.5)
+    walk_b_far = cf.TraversalGraph(geo, []).walk_metres(b)[far] / 5.0
+    assert t[far] == pytest.approx(2.5 + walk_b_far), "endpoint-only: no getting off part way"
+    site = {"sites": [{"id": "m", "uv": [U(380), U(150)]}]}
+    arcs2, _ = cf.compile_routes(geo, zipline(access=site, extra=[{"from": "a", "to": "m", "entry": secs(0.5), "transit": secs(1.0)}]))
+    t2 = cf.TraversalGraph(geo, arcs2).time_seconds(a, 5.0)
+    assert t2[far] == pytest.approx(1.5) and t2[b] == pytest.approx(2.5)
+    # the zipline's own line is drawing: it opens no ground between the rooms
+    assert not cf.TraversalGraph(geo, arcs).reachable(geo.cell_of_px(250, 196)).sum() > 1
+
+
+def test_availability_states_and_in_transit_policies():
+    geo = rooms()
+    a, b = geo.cell_of_px(150, 196), geo.cell_of_px(350, 196)
+    when = {"route-1": [(10.0, 20.0)]}
+    g = cf.TraversalGraph(geo, cf.compile_routes(geo, zipline())[0])
+    assert g.arrival_times(a, 5.0, 5.0, when)[b] == pytest.approx(12.5), "waits for it to open"
+    assert g.arrival_times(a, 19.0, 5.0, when)[b] == pytest.approx(21.5), "complete: closing mid-ride still arrives"
+    assert g.arrival_times(a, 25.0, 5.0, when)[b] == np.inf
+    abort = cf.TraversalGraph(geo, cf.compile_routes(geo, zipline(in_transit="abort"))[0])
+    assert abort.arrival_times(a, 19.0, 5.0, when)[b] == np.inf
+    assert abort.arrival_times(a, 12.0, 5.0, when)[b] == pytest.approx(14.5)
+    unres = cf.TraversalGraph(geo, cf.compile_routes(geo, zipline(in_transit="unresolved"))[0])
+    assert unres.arrival_times(a, 12.0, 5.0, {})[b] == np.inf, "an unresolved in-transit policy stays out of time"
+    with pytest.raises(ValueError):
+        g.reverse().arrival_times(a, 0.0, 5.0, {})
+    gated = cf.compile_routes(geo, zipline(states=["open"]))[0]
+    assert not cf.TraversalGraph(geo, gated, states={"feature-9": "closed"}).reachable(a)[b]
+    assert cf.TraversalGraph(geo, gated, states={"feature-9": "open"}).reachable(a)[b]
+    blocked = np.zeros(geo.n, bool)
+    blocked[b] = True
+    assert not cf.TraversalGraph(geo, cf.compile_routes(geo, zipline())[0], blocked=blocked).reachable(a)[b]
+
+
+def test_routes_never_touch_the_maps_legacy_specials():
+    from app.control import engine
+
+    specials = [{"a": [int(U(150)), int(U(196))], "b": [int(U(350)), int(U(196))], "one_way": True}]
+    geo = toy_geometry("TwoRoomsSpecial", [(96, 96, 200, 296), (300, 96, 416, 296)], specials=specials)
+    before = engine.special_links(geo)
+    assert cf.compile_routes(geo, ms.empty()) == ([], [])
+    cf.TraversalGraph(geo, cf.compile_routes(geo, zipline())[0]).reachable(geo.cell_of_px(150, 196))
+    assert engine.special_links(geo) == before == [(geo.cell_of_px(150, 196), geo.cell_of_px(350, 196), True)]

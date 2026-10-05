@@ -560,6 +560,225 @@ def reconcile(sight_px: np.ndarray, walk_px: np.ndarray, mf: dict, statuses: dic
     return sight, walk, opened
 
 
+# ---------------------------------------------------------------- directed traversal
+
+@dataclass(frozen=True)
+class Arc:
+    """One direction of a route between two bound nodes. Costs are seconds (entry, transit) and metres
+    (length); None when unresolved. `states`: the owner's states in which it runs (None: always)."""
+    route: str
+    src: int
+    dst: int
+    entry_s: float | None
+    transit_s: float | None
+    length_m: float | None
+    owner: str | None = None
+    states: tuple | None = None
+    in_transit: str = "unresolved"
+
+    @property
+    def cost_s(self) -> float | None:
+        return None if self.entry_s is None or self.transit_s is None else self.entry_s + self.transit_s
+
+
+def _point_node(geo: Geometry, mf: dict, uv, floor_id) -> tuple[int | None, str | None]:
+    if uv is None:
+        return None, "not placed"
+    cell = geo.cell_of_px(uv[0] * PX / ms.UV_MAX, uv[1] * PX / ms.UV_MAX)
+    if geo.heights is None:
+        return cell, None
+    if not isinstance(floor_id, str):
+        return None, "floor unresolved"
+    mask = np.zeros(GRID * GRID, bool)
+    mask[cell] = True
+    b = floor_nodes(geo, _floors_by_id(mf).get(floor_id), mask)
+    if b.pending or len(b.nodes) != 1:
+        return None, "; ".join(b.pending) or "no floor there"
+    return int(b.nodes[0]), None
+
+
+def compile_routes(geo: Geometry, mf: dict) -> tuple[list, list]:
+    """Every authored direction of every route as an Arc between explicitly bound nodes (endpoints and access
+    sites). A route's polyline is drawing only: it opens no ground and no sight, and gives no access along the
+    way unless a site is authored. Never an all-floor cross product: an endpoint whose floor can't be bound
+    makes its arcs pending. Two ends on one node (same place, same floor) are pending too."""
+    arcs, pending = [], []
+    for r in mf.get("routes") or []:
+        rid = r.get("id")
+        points = {e.get("id"): e for e in r.get("endpoints") or []}
+        access = r.get("access")
+        if isinstance(access, dict):
+            points.update({s.get("id"): s for s in access.get("sites") or []})
+        nodes = {}
+        for pid, p in points.items():
+            node, why = _point_node(geo, mf, p.get("uv"), p.get("floor"))
+            if why:
+                pending.append(f"{rid}.{pid}: {why}")
+            nodes[pid] = node
+        for d in r.get("directions") or []:
+            a, b = nodes.get(d.get("from")), nodes.get(d.get("to"))
+            if a is None or b is None:
+                continue
+            if a == b:
+                pending.append(f"{rid}: {d.get('from')} -> {d.get('to')} joins a node to itself (same place, same floor)")
+                continue
+            length = d.get("length")
+            arc = Arc(rid, a, b, ms_known(d.get("entry")), ms_known(d.get("transit")),
+                      ms_known(length) if length is not None else None, r.get("owner"),
+                      tuple(r["states"]) if isinstance(r.get("states"), list) else None, r.get("in_transit", "unresolved"))
+            if arc.cost_s is None:
+                pending.append(f"{rid}: {d.get('from')} -> {d.get('to')} travel time unresolved")
+            arcs.append(arc)
+    return arcs, pending
+
+
+# Metric policies (the contract doc's consumer table names one per consumer).
+WALK_ONLY = "walk_only"                          # 8-connected walking; transport never counts (ownership, metres)
+TRANSPORT_REACHABILITY = "transport_reachability"  # can it be reached at all: any permitted arc counts
+TRANSPORT_TIME = "transport_time"                # seconds: walking at a speed + resolved arc costs only
+
+
+def walk_edges(geo: Geometry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(src, dst, metres) of every walk between neighbouring nodes, 8-connected, both ways where two-way."""
+    from app.control import topology
+
+    topo = topology.of(geo)
+    if isinstance(topo, topology.NodeTopology):
+        return topo.src, topo.dst, np.where(topo.diag, np.sqrt(2.0), 1.0) * geo.cell_m
+    walk = geo.walk.ravel()
+    src, dst, cost = [], [], []
+    ys, xs = np.divmod(np.arange(GRID * GRID), GRID)
+    for dy, dx in topology.SPREAD_ORDER:
+        ny, nx = ys + dy, xs + dx
+        ok = walk & (ny >= 0) & (ny < GRID) & (nx >= 0) & (nx < GRID)
+        nb = np.where(ok, ny * GRID + nx, 0)
+        ok &= walk[nb]
+        src.append(np.flatnonzero(ok))
+        dst.append(nb[ok])
+        cost.append(np.full(int(ok.sum()), geo.cell_m * (np.sqrt(2.0) if dy and dx else 1.0)))
+    return np.concatenate(src), np.concatenate(dst), np.concatenate(cost)
+
+
+class TraversalGraph:
+    """One compiled graph for every traversal consumer: walking edges plus route arcs, read through a named
+    metric policy. `blocked` (geo.n bool) removes nodes a feature's state closes; `states` picks which
+    state-conditional arcs run; `reversed` answers "from where can one reach X" (a way back, a return path)."""
+
+    def __init__(self, geo: Geometry, arcs: list, *, blocked: np.ndarray | None = None, states: dict | None = None,
+                 reversed: bool = False):
+        self.geo, self.n = geo, geo.n
+        self.arcs = [a for a in arcs if a.states is None or (states or {}).get(a.owner) in a.states]
+        self.blocked = np.zeros(geo.n, bool) if blocked is None else blocked
+        self.is_reversed = reversed
+        src, dst, m = walk_edges(geo)
+        keep = ~self.blocked[src] & ~self.blocked[dst]
+        self._walk = (src[keep], dst[keep], m[keep])
+        self.unresolved = [a for a in self.arcs if a.cost_s is None]
+
+    def reverse(self) -> "TraversalGraph":
+        g = object.__new__(TraversalGraph)
+        g.__dict__.update(self.__dict__)
+        g.is_reversed = not self.is_reversed
+        return g
+
+    def _edges(self, policy: str, speed: float = 1.0):
+        src, dst, m = self._walk
+        w = m if policy != TRANSPORT_TIME else m / speed
+        if policy != WALK_ONLY:
+            arcs = [a for a in self.arcs if not self.blocked[a.src] and not self.blocked[a.dst]]
+            if policy == TRANSPORT_TIME:
+                arcs = [a for a in arcs if a.cost_s is not None]
+            src = np.concatenate([src, [a.src for a in arcs]]).astype(np.int64)
+            dst = np.concatenate([dst, [a.dst for a in arcs]]).astype(np.int64)
+            w = np.concatenate([w, [a.cost_s if a.cost_s is not None else 0.0 for a in arcs]])
+        if self.is_reversed:
+            src, dst = dst, src
+        return src, dst, w
+
+    def _matrix(self, policy: str, speed: float = 1.0):
+        from scipy.sparse import csr_matrix
+
+        src, dst, w = self._edges(policy, speed)
+        # parallel edges (an arc beside a walk) keep the cheapest, as scipy would sum duplicates
+        order = np.lexsort((w, dst, src))
+        src, dst, w = src[order], dst[order], w[order]
+        first = np.ones(len(src), bool)
+        first[1:] = (src[1:] != src[:-1]) | (dst[1:] != dst[:-1])
+        # csgraph treats an explicit 0 as "no edge": a free hop gets the smallest positive weight
+        return csr_matrix((np.maximum(w[first], 1e-12), (src[first], dst[first])), shape=(self.n, self.n))
+
+    def reachable(self, start: int, policy: str = TRANSPORT_REACHABILITY) -> np.ndarray:
+        from scipy.sparse.csgraph import breadth_first_order
+
+        order = breadth_first_order(self._matrix(policy), start, directed=True, return_predecessors=False)
+        out = np.zeros(self.n, bool)
+        out[order] = True
+        return out
+
+    def walk_metres(self, start: int) -> np.ndarray:
+        """Walking distance in metres (no transport); inf where unreachable."""
+        from scipy.sparse.csgraph import dijkstra
+
+        return dijkstra(self._matrix(WALK_ONLY), directed=True, indices=start)
+
+    def time_seconds(self, start: int, speed_mps: float) -> np.ndarray:
+        """Seconds to each node: walking at `speed_mps`, plus resolved arcs' entry + transit. An arc with an
+        unknown cost is left out (never a free step), and is listed in `self.unresolved`."""
+        from scipy.sparse.csgraph import dijkstra
+
+        return dijkstra(self._matrix(TRANSPORT_TIME, speed_mps), directed=True, indices=start)
+
+    def arrival_times(self, start: int, depart: float, speed_mps: float, availability: dict) -> np.ndarray:
+        """Earliest arrival times from `start` leaving at `depart`, respecting each route's availability
+        ({route id: [(t0, t1), ...]}; a route not listed is always available). A traveller may wait at an arc's
+        start for it to open. A route closing while someone is on it follows its in-transit policy: complete
+        (they arrive), abort (the whole ride must fit in one open interval); unresolved routes are left out of
+        temporal queries. Forward graphs only."""
+        import heapq
+
+        if self.is_reversed:
+            raise ValueError("arrival times run forward")
+        src, dst, m = self._walk
+        walk_out = [[] for _ in range(self.n)]
+        for a, b, w in zip(src.tolist(), dst.tolist(), (m / speed_mps).tolist()):
+            walk_out[a].append((b, w))
+        arc_out = [[] for _ in range(self.n)]
+        for a in self.arcs:
+            if a.cost_s is not None and a.in_transit in ("complete", "abort") \
+                    and not self.blocked[a.src] and not self.blocked[a.dst]:
+                arc_out[a.src].append(a)
+        best = np.full(self.n, np.inf)
+        best[start] = depart
+        heap = [(depart, start)]
+        while heap:
+            t, u = heapq.heappop(heap)
+            if t > best[u]:
+                continue
+            nxt = [(v, t + w) for v, w in walk_out[u]]
+            for a in arc_out[u]:
+                leave = _next_departure(t, a, availability.get(a.route))
+                if leave is not None:
+                    nxt.append((a.dst, leave + a.cost_s))
+            for v, at in nxt:
+                if at < best[v]:
+                    best[v] = at
+                    heapq.heappush(heap, (at, v))
+        return best
+
+
+def _next_departure(t: float, arc: Arc, intervals) -> float | None:
+    if intervals is None:
+        return t
+    for t0, t1 in sorted(intervals):
+        leave = max(t, t0)
+        if leave > t1:
+            continue
+        if arc.in_transit == "abort" and leave + arc.cost_s > t1:
+            continue
+        return leave
+    return None
+
+
 # ---------------------------------------------------------------- diagnostics needing geometry
 
 def diagnose(geo: Geometry, mf: dict) -> list[dict]:
