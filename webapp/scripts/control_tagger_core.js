@@ -511,6 +511,645 @@
   Features.guardOk = guardOk;
   Features.PRIORITY = FS_PRIORITY;
 
+  // -- The schema's model operations (app/replays/map_feature_schema.py is the reference; its presets and
+  // checklist seed are embedded in the page by scripts/control_tagger.py, not copied here).
+  var SCHEMA_VERSION = 1, UV_MAX = 10000, PAINT_BYTES = 256 * 256 / 8;
+  var ID_KINDS = ["feature", "trigger", "route", "floor", "bundle"];
+  var LISTS = ["features", "triggers", "routes", "floors", "bundles"];
+  var ID_RE = /^(feature|trigger|route|floor|bundle)-([1-9][0-9]*)$/;
+  var EDITORIAL = ["name", "notes", "review", "ui", "parser_bindings", "category"];
+  var TOP_EDITORIAL = ["checklist", "next_id", "image_sha", "runtime_digest", "ui", "notes"];
+
+  function emptyMf() {
+    return { version: SCHEMA_VERSION, next_id: 1, features: [], triggers: [], routes: [], floors: [], bundles: [],
+             checklist: {} };
+  }
+
+  function eachObject(mf, fn) {
+    LISTS.forEach(function (kind) {
+      (Array.isArray(mf[kind]) ? mf[kind] : []).forEach(function (o) { if (o && typeof o === "object") fn(kind, o); });
+    });
+  }
+
+  function nextNumber(mf) {
+    var top = 0;
+    eachObject(mf, function (_, o) { var m = ID_RE.exec(String(o.id)); if (m) top = Math.max(top, Number(m[2])); });
+    var n = mf.next_id;
+    return Math.max(typeof n === "number" && Math.floor(n) === n ? n : 1, top + 1);
+  }
+
+  function allocate(mf, kind) {
+    if (ID_KINDS.indexOf(kind) < 0) throw new Error("unknown id kind " + kind);
+    var out = clone(mf), n = nextNumber(out);
+    out.next_id = n + 1;
+    return { id: kind + "-" + n, mf: out };
+  }
+
+  function listOf(kind) { return kind === "feature" ? "features" : kind + "s"; }
+  function kindOf(id) { var m = ID_RE.exec(String(id)); return m ? m[1] : null; }
+
+  function find(mf, id) {
+    var kind = kindOf(id);
+    if (!kind) return null;
+    var list = mf[listOf(kind)] || [];
+    for (var i = 0; i < list.length; i++) if (list[i] && list[i].id === id) return list[i];
+    return null;
+  }
+
+  // A new feature from a preset template (an object from the page's embedded presets). A traversal preset
+  // (`route` given: the page's route template) also gets its route, owned by the feature.
+  function create(mf, template, name, extra, route) {
+    var a = allocate(mf, "feature"), out = a.mf;
+    var f = Object.assign({ id: a.id, name: name || a.id }, clone(template), extra || {});
+    f.id = a.id;
+    out.features = (out.features || []).concat([f]);
+    var routeId = null;
+    if (route) {
+      var r = allocate(out, "route");
+      out = r.mf;
+      routeId = r.id;
+      out.routes = (out.routes || []).concat([Object.assign({ id: r.id, name: (name || a.id) + " route", owner: a.id }, clone(route))]);
+    }
+    return { mf: out, id: a.id, route: routeId };
+  }
+
+  function addObject(mf, kind, body) {
+    var a = allocate(mf, kind), out = a.mf, list = listOf(kind);
+    out[list] = (out[list] || []).concat([Object.assign({}, clone(body || {}), { id: a.id })]);
+    return { mf: out, id: a.id };
+  }
+
+  // Edit one object's field (a path of keys/indexes). Returns a new catalogue.
+  function setField(mf, id, path, value) {
+    var out = clone(mf), obj = find(out, id);
+    if (!obj) throw new Error("no object " + id);
+    var cur = obj;
+    for (var i = 0; i < path.length - 1; i++) {
+      if (cur[path[i]] === undefined || cur[path[i]] === null) cur[path[i]] = typeof path[i + 1] === "number" ? [] : {};
+      cur = cur[path[i]];
+    }
+    if (value === undefined) delete cur[path[path.length - 1]];
+    else cur[path[path.length - 1]] = clone(value);
+    return out;
+  }
+
+  function renameObject(mf, id, name) { return setField(mf, id, ["name"], String(name)); }
+
+  function link(mf, triggerId, featureId, event) {
+    var out = clone(mf), t = find(out, triggerId);
+    if (!t || !find(out, featureId)) throw new Error("link needs an existing trigger and feature");
+    t.targets = t.targets || [];
+    if (!t.targets.some(function (x) { return x.feature === featureId && x.event === event; }))
+      t.targets.push({ feature: featureId, event: event });
+    return out;
+  }
+
+  function unlink(mf, triggerId, featureId, event) {
+    var out = clone(mf), t = find(out, triggerId);
+    if (t) t.targets = (t.targets || []).filter(function (x) { return !(x.feature === featureId && (!event || x.event === event)); });
+    return out;
+  }
+
+  // Every typed reference as [from id, field, to id] (map_feature_schema.references).
+  function references(mf) {
+    var out = [];
+    function floorRef(src, field, v) { if (typeof v === "string") out.push([src, field, v]); }
+    (mf.features || []).forEach(function (f) {
+      if (typeof f.parent === "string") out.push([f.id, "parent", f.parent]);
+      if (typeof f.bundle === "string") out.push([f.id, "bundle", f.bundle]);
+      if (Array.isArray(f.floors)) f.floors.forEach(function (fl) { floorRef(f.id, "floors", fl); });
+      (f.states || []).forEach(function (s) {
+        (s.sight || []).forEach(function (occ) { floorRef(f.id, "states." + s.name + ".sight.floor", (occ.bounds || {}).floor); });
+      });
+      floorRef(f.id, "base_edits.ground_binding", (f.base_edits || {}).ground_binding);
+    });
+    (mf.triggers || []).forEach(function (t) {
+      (t.targets || []).forEach(function (x) { if (x && typeof x.feature === "string") out.push([t.id, "targets", x.feature]); });
+      floorRef(t.id, "floor", t.floor);
+    });
+    (mf.routes || []).forEach(function (r) {
+      if (typeof r.owner === "string") out.push([r.id, "owner", r.owner]);
+      (r.endpoints || []).forEach(function (e) { floorRef(r.id, "endpoints." + e.id + ".floor", e.floor); });
+      if (r.access && typeof r.access === "object")
+        (r.access.sites || []).forEach(function (s) { floorRef(r.id, "access." + s.id + ".floor", s.floor); });
+    });
+    (mf.bundles || []).forEach(function (b) { (b.members || []).forEach(function (m) { out.push([b.id, "members", m]); }); });
+    return out;
+  }
+
+  function referrers(mf, target) {
+    return references(mf).filter(function (r) { return r[2] === target; }).map(function (r) { return [r[0], r[1]]; });
+  }
+
+  // Rewrites every reference to `from` as `to` (null: drop it, or mark a floor unresolved).
+  function rewriteRefs(mf, from, to) {
+    var unres = { status: "unresolved" };
+    function fl(v) { return v === from ? (to === null ? clone(unres) : to) : v; }
+    (mf.features || []).forEach(function (f) {
+      if (f.parent === from) { if (to === null) delete f.parent; else f.parent = to; }
+      if (f.bundle === from) { if (to === null) delete f.bundle; else f.bundle = to; }
+      if (Array.isArray(f.floors)) {
+        f.floors = f.floors.map(fl).filter(function (x) { return typeof x === "string"; });
+      }
+      (f.states || []).forEach(function (s) {
+        (s.sight || []).forEach(function (occ) { if (occ.bounds && occ.bounds.floor === from) occ.bounds.floor = fl(from); });
+      });
+      if (f.base_edits && f.base_edits.ground_binding === from) f.base_edits.ground_binding = to;
+    });
+    (mf.triggers || []).forEach(function (t) {
+      t.targets = (t.targets || []).map(function (x) { return x.feature === from ? (to === null ? null : Object.assign({}, x, { feature: to })) : x; })
+        .filter(function (x) { return x !== null; });
+      if (t.floor === from) t.floor = fl(from);
+    });
+    (mf.routes || []).forEach(function (r) {
+      if (r.owner === from) r.owner = to;
+      (r.endpoints || []).forEach(function (e) { if (e.floor === from) e.floor = fl(from); });
+      if (r.access && typeof r.access === "object") (r.access.sites || []).forEach(function (s) { if (s.floor === from) s.floor = fl(from); });
+    });
+    (mf.bundles || []).forEach(function (b) {
+      b.members = (b.members || []).map(function (m) { return m === from ? to : m; }).filter(function (m) { return m !== null; });
+    });
+  }
+
+  // Deletes an object. With references to it and neither option, nothing changes and the references are
+  // returned (`refused`): no hidden dangling link. {cascade: true} removes the links (and the routes a
+  // deleted feature owns, and its child features' parent links); {relink: id} points them at another object.
+  function removeObject(mf, id, opts) {
+    opts = opts || {};
+    var refs = referrers(mf, id);
+    if (refs.length && !opts.cascade && !opts.relink) return { mf: clone(mf), dangling: refs, refused: true };
+    var out = clone(mf), kind = kindOf(id);
+    if (!kind || !find(out, id)) return { mf: out, dangling: [], refused: true };
+    out[listOf(kind)] = out[listOf(kind)].filter(function (o) { return o.id !== id; });
+    var removed = [id];
+    if (opts.relink) {
+      if (!find(out, opts.relink) || kindOf(opts.relink) !== kind) throw new Error("relink needs an existing " + kind);
+      rewriteRefs(out, id, opts.relink);
+    } else {
+      if (kind === "feature") {
+        (out.routes || []).filter(function (r) { return r.owner === id; }).forEach(function (r) { removed.push(r.id); });
+        out.routes = (out.routes || []).filter(function (r) { return r.owner !== id; });
+      }
+      removed.forEach(function (gone) { rewriteRefs(out, gone, null); });
+    }
+    return { mf: out, dangling: [], refused: false, removed: removed };
+  }
+
+  // A copy of a feature with fresh ids for it and what it owns (its routes, its child features), internal
+  // links remapped. Triggers aimed at the original aim at the copy too only with {keepExternal: true}.
+  function duplicate(mf, id, opts) {
+    opts = opts || {};
+    var out = clone(mf), orig = find(out, id);
+    if (!orig || kindOf(id) !== "feature") throw new Error("duplicate needs a feature");
+    var map = {}, a;
+    var family = [orig].concat((out.features || []).filter(function (f) { return f.parent === id; }));
+    family.forEach(function (f) { a = allocate(out, "feature"); out = a.mf; map[f.id] = a.id; });
+    var routes = (out.routes || []).filter(function (r) { return map[r.owner]; });
+    routes.forEach(function (r) { a = allocate(out, "route"); out = a.mf; map[r.id] = a.id; });
+    family.forEach(function (f) {
+      var c = clone(f);
+      c.id = map[f.id];
+      if (map[c.parent]) c.parent = map[c.parent];
+      delete c.bundle;
+      if (f.id === id) c.name = (f.name || f.id) + " (copy)";
+      out.features.push(c);
+    });
+    routes.forEach(function (r) {
+      var c = clone(r);
+      c.id = map[r.id]; c.owner = map[r.owner];
+      out.routes.push(c);
+    });
+    if (opts.keepExternal) {
+      (out.triggers || []).forEach(function (t) {
+        var extra = [];
+        (t.targets || []).forEach(function (x) { if (map[x.feature]) extra.push(Object.assign({}, x, { feature: map[x.feature] })); });
+        t.targets = (t.targets || []).concat(extra);
+      });
+    }
+    return { mf: out, id: map[id], ids: map };
+  }
+
+  // Undo/redo over whole immutable snapshots: links and properties undo with the strokes.
+  function history(present) { return { past: [], present: present, future: [] }; }
+  function historyPush(h, next) { return { past: h.past.concat([h.present]), present: next, future: [] }; }
+  function undo(h) {
+    if (!h.past.length) return h;
+    return { past: h.past.slice(0, -1), present: h.past[h.past.length - 1], future: [h.present].concat(h.future) };
+  }
+  function redo(h) {
+    if (!h.future.length) return h;
+    return { past: h.past.concat([h.present]), present: h.future[0], future: h.future.slice(1) };
+  }
+
+  // -- Canonical JSON and SHA-256 (map_feature_schema.digest: sorted keys, no spaces, ASCII escapes).
+  function canonicalJson(v) {
+    if (v === null || typeof v !== "object") {
+      if (typeof v === "number" && !isFinite(v)) throw new Error("non-finite number");
+      return JSON.stringify(v).replace(/[\u007f-￿]/g, function (ch) {
+        return "\\u" + ("000" + ch.charCodeAt(0).toString(16)).slice(-4);
+      });
+    }
+    if (Array.isArray(v)) return "[" + v.map(canonicalJson).join(",") + "]";
+    return "{" + Object.keys(v).filter(function (k) { return v[k] !== undefined; }).sort().map(function (k) {
+      return canonicalJson(k) + ":" + canonicalJson(v[k]);
+    }).join(",") + "}";
+  }
+
+  var SHA_K = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+    0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb,
+    0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f,
+    0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+
+  // SHA-256 of an ASCII string (canonicalJson's output is ASCII), as hex.
+  function sha256Hex(text) {
+    var n = text.length, words = new Array(((n + 9 + 63) >> 6) << 4).fill(0), i;
+    for (i = 0; i < n; i++) words[i >> 2] |= (text.charCodeAt(i) & 0xff) << (24 - (i & 3) * 8);
+    words[n >> 2] |= 0x80 << (24 - (n & 3) * 8);
+    words[words.length - 1] = n * 8;
+    var h = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    var w = new Array(64);
+    function rotr(x, r) { return (x >>> r) | (x << (32 - r)); }
+    for (var blk = 0; blk < words.length; blk += 16) {
+      for (i = 0; i < 16; i++) w[i] = words[blk + i] | 0;
+      for (i = 16; i < 64; i++) {
+        var s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+        var s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
+      }
+      var a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+      for (i = 0; i < 64; i++) {
+        var t1 = (hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + SHA_K[i] + w[i]) | 0;
+        var t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+        hh = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+      }
+      h = [h[0] + a, h[1] + b, h[2] + c, h[3] + d, h[4] + e, h[5] + f, h[6] + g, h[7] + hh].map(function (x) { return x | 0; });
+    }
+    return h.map(function (x) { return ("00000000" + (x >>> 0).toString(16)).slice(-8); }).join("");
+  }
+
+  function digest(value) { return sha256Hex(canonicalJson(value)).slice(0, 16); }
+
+  function runtimeProjection(mf) {
+    var out = {};
+    Object.keys(mf).forEach(function (k) { if (TOP_EDITORIAL.indexOf(k) < 0) out[k] = clone(mf[k]); });
+    LISTS.forEach(function (kind) {
+      if (!Array.isArray(mf[kind])) return;
+      out[kind] = mf[kind].map(function (o) {
+        if (!o || typeof o !== "object") return o;
+        var c = {};
+        Object.keys(o).forEach(function (k) { if (EDITORIAL.indexOf(k) < 0) c[k] = clone(o[k]); });
+        return c;
+      }).sort(function (x, y) {
+        var a = x && typeof x === "object" ? String(x.id) : "", b = y && typeof y === "object" ? String(y.id) : "";
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
+    });
+    return out;
+  }
+
+  function runtimeDigest(mf) { return digest(runtimeProjection(mf)); }
+
+  // -- Validation: a twin of map_feature_schema.validate (same codes and places; test_map_feature_tagger.py
+  // compares them). `seed` is the map's checklist seed from the page ([{key, label, preset, expected}]).
+  var GEOMETRY_TYPES = ["point", "polyline", "polygon", "paint"], TRIGGER_TYPES = ["switch", "shoot", "proximity", "other"];
+  var ROUTE_KINDS = ["zipline", "rope", "teleporter", "drop", "custom"], IN_TRANSIT = ["complete", "abort", "unresolved"];
+  var BOUND_REFS = ["ground", "world", "all_height", "unresolved"];
+  var GUARD_KEYS = ["all", "any", "not", "state_in", "occupants_eq", "occupants_gt", "motion_idle", "unresolved"];
+  var MID_MOTION = ["ignore", "restart", "queue", "reverse", "unresolved"];
+
+  function isObj(v) { return v !== null && typeof v === "object" && !Array.isArray(v); }
+  function finite(x) { return typeof x === "number" && isFinite(x); }
+  function uvOk(p) { return Array.isArray(p) && p.length === 2 && p.every(function (c) { return finite(c) && c >= 0 && c <= UV_MAX; }); }
+  function pyRepr(v) { return v === null || v === undefined ? "None" : typeof v === "string" ? "'" + v + "'" : JSON.stringify(v); }
+
+  function checkVersion(mf) {
+    if (!isObj(mf)) return "map_features is not an object";
+    if (mf.version !== SCHEMA_VERSION) return "map_features version " + pyRepr(mf.version) + " is not " + SCHEMA_VERSION +
+      "; refusing to read or rewrite it";
+    return null;
+  }
+
+  function validate(mf, seed, specials) {
+    var errors = [], warnings = [];
+    function err(where, code, message) { errors.push({ where: where, code: code, message: message }); }
+    function warn(where, code, message) { warnings.push({ where: where, code: code, message: message }); }
+    var problem = checkVersion(mf);
+    if (problem) { err("map_features", "incompatible_version", problem); return { errors: errors, warnings: warnings }; }
+
+    function value(where, v, unit, required) {
+      if (required === undefined) required = true;
+      if (v === undefined || v === null) {
+        if (required) err(where, "missing_value", "missing; use {\"status\": \"unresolved\"} for an unknown value");
+        return false;
+      }
+      if (!isObj(v) || (v.status !== "known" && v.status !== "unresolved")) { err(where, "bad_value", "not a value object"); return false; }
+      if (v.status === "unresolved") return true;
+      if (!finite(v.value) || v.value < 0) err(where, "bad_value", "known value must be a finite number >= 0");
+      if (unit && v.unit !== unit) err(where, "bad_unit", "unit must be '" + unit + "'");
+      return false;
+    }
+    function geometry(where, g, allowed) {
+      allowed = allowed || GEOMETRY_TYPES;
+      if (!isObj(g) || allowed.indexOf(g.type) < 0) { err(where, "bad_geometry", "geometry must be one of " + allowed.join(", ")); return; }
+      if (g.type === "point" && !uvOk(g.uv)) err(where, "bad_coordinates", "a point needs uv [u, v] within 0..10000");
+      else if (g.type === "polyline" || g.type === "polygon") {
+        var need = g.type === "polyline" ? 2 : 3;
+        if (!Array.isArray(g.uv) || g.uv.length < need || !g.uv.every(uvOk))
+          err(where, "bad_coordinates", "a " + g.type + " needs at least " + need + " uv points within 0..10000");
+        if (g.type === "polyline" && "width" in g && !(finite(g.width) && g.width > 0))
+          err(where, "bad_dimensions", "a polyline's width must be a positive number");
+      } else if (g.type === "paint") {
+        var ok = typeof g.cells === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(g.cells) && g.cells.length % 4 === 0;
+        var len = ok ? g.cells.length / 4 * 3 - (g.cells.match(/=*$/)[0].length) : -1;
+        if (len !== PAINT_BYTES) err(where, "bad_paint", "paint must be " + PAINT_BYTES + " bytes of base64");
+      }
+    }
+    function guard(where, g) {
+      if (g === undefined || g === null) return;
+      var keys = isObj(g) ? Object.keys(g) : [];
+      if (keys.length !== 1 || GUARD_KEYS.indexOf(keys[0]) < 0) { err(where, "bad_guard", "unknown guard"); return; }
+      var key = keys[0], arg = g[key];
+      if (key === "all" || key === "any") (Array.isArray(arg) ? arg : []).forEach(function (sub, i) { guard(where + "." + key + "[" + i + "]", sub); });
+      else if (key === "not") guard(where + ".not", arg);
+      else if (key === "unresolved") warn(where, "unresolved_guard", "guard unresolved: the transition can't run until it is described");
+    }
+
+    var ids = {};
+    eachObject(mf, function (kind, o) {
+      var oid = o.id, singular = kind.slice(0, -1);
+      if (typeof oid !== "string" || !ID_RE.test(oid) || oid.indexOf(singular + "-") !== 0)
+        err(kind + ":" + (oid === undefined ? "None" : oid), "bad_id", "id must be '" + singular + "-<n>'");
+      else if (ids[oid]) err(oid, "duplicate_id", "id used twice (" + ids[oid] + " and " + kind + ")");
+      else ids[oid] = kind;
+    });
+    LISTS.forEach(function (kind) { if (kind in mf && !Array.isArray(mf[kind])) err(kind, "bad_shape", kind + " must be a list"); });
+    function byId(list) { var out = {}; (Array.isArray(list) ? list : []).forEach(function (o) { if (isObj(o)) out[o.id] = o; }); return out; }
+    var features = byId(mf.features), floors = byId(mf.floors), bundles = byId(mf.bundles);
+    function has(map, k) { return Object.prototype.hasOwnProperty.call(map, k); }
+    references(mf).forEach(function (r) {
+      var field = r[1], expected = { parent: features, owner: features, targets: features, members: features, bundle: bundles }[field] || floors;
+      if (!has(expected, r[2])) err(r[0], "dangling_reference", field + " -> " + pyRepr(r[2]) + ", which doesn't exist");
+    });
+    Object.keys(floors).forEach(function (k) {
+      var fl = floors[k], band = fl.z_band;
+      if (band === undefined || band === null) warn(fl.id, "unresolved_floor", "floor has no height band: a manual label only");
+      else if (!(Array.isArray(band) && band.length === 2 && band.every(finite) && band[0] < band[1]))
+        err(fl.id, "bad_dimensions", "z_band must be [low, high] metres with low < high");
+      else if (!fl.height_sha) warn(fl.id, "unbound_floor", "a height band without the height asset it was read from");
+    });
+    Object.keys(features).forEach(function (k) { validateFeature(features[k]); });
+    function validateFeature(f) {
+      var fid = f.id, states = Array.isArray(f.states) ? f.states : [];
+      var names = states.filter(isObj).map(function (s) { return s.name; });
+      var uniq = names.filter(function (n, i) { return names.indexOf(n) === i; });
+      if (uniq.length !== names.length || !names.every(function (n) { return typeof n === "string" && n; }))
+        err(fid, "bad_states", "state names must be unique non-empty strings");
+      var init = f.initial_state;
+      if (init === undefined || init === null) warn(fid, "uncertain_initial_state", "round-start state not given");
+      else if (names.indexOf(init) < 0) err(fid, "bad_state_reference", "initial_state is not one of its states");
+      var rowIds = {}, rows = f.transitions || [];
+      rows.forEach(function (row, i) {
+        var where = fid + ".transitions[" + i + "]";
+        if (!isObj(row)) { err(where, "bad_shape", "a transition is an object"); return; }
+        if (typeof row.id !== "string" || rowIds[row.id]) err(where, "duplicate_id", "transition ids must be unique strings within the feature");
+        rowIds[row.id] = true;
+        if (FS_EVENTS.indexOf(row.event) < 0 || row.event === "motion_complete" || row.event === "reset")
+          err(where, "bad_event", "unknown or reducer-owned event");
+        if (row.event === "activate") warn(where, "unresolved_trigger", "what starts this transition is not classified yet");
+        var src = row.from;
+        if (src !== "*" && !(Array.isArray(src) && src.every(function (s) { return names.indexOf(s) >= 0; })))
+          err(where, "bad_state_reference", "from names a state the feature doesn't have");
+        if (names.indexOf(row.to) < 0) err(where, "bad_state_reference", "to is not one of its states");
+        var motion = row.motion;
+        if (motion !== undefined && motion !== null) {
+          if (!isObj(motion) || names.indexOf(motion.state) < 0) err(where, "bad_state_reference", "motion.state must be one of its states");
+          else if (value(where + ".motion.duration", motion.duration, "s")) warn(where, "unresolved_timing", "motion duration unresolved");
+          var mm = row.mid_motion === undefined ? "unresolved" : row.mid_motion;
+          if (MID_MOTION.indexOf(mm) < 0) err(where, "bad_policy", "mid_motion must be one of " + MID_MOTION.join(", "));
+          else if (mm === "unresolved") warn(where, "unresolved_policy", "what a press during the motion does is unresolved");
+        }
+        var follow = row.follow_up;
+        if (follow !== undefined && follow !== null) {
+          if (!isObj(follow) || typeof follow.name !== "string") err(where, "bad_follow_up", "follow_up needs a name");
+          else if (value(where + ".follow_up.after", follow.after, "s")) warn(where, "unresolved_timing", "follow-up delay unresolved");
+          else if (!rows.some(function (r) { return isObj(r) && r.event === "scheduled" && r.name === follow.name; }))
+            err(where, "dangling_reference", "no row handles the scheduled event");
+        }
+        guard(where + ".guard", row.guard);
+      });
+      states.forEach(function (s) {
+        if (!isObj(s)) return;
+        var where = fid + ".states." + (s.name === undefined ? "None" : s.name);
+        ["blocks_movement", "blocks_sight"].forEach(function (key) {
+          if (key in s && typeof s[key] !== "boolean") err(where, "bad_shape", key + " is true or false");
+        });
+        if (s.footprint !== undefined && s.footprint !== null) geometry(where + ".footprint", s.footprint);
+        (s.sight || []).forEach(function (occ, j) { occluder(where + ".sight[" + j + "]", occ); });
+      });
+      var fv = f.floors;
+      if (fv === undefined || fv === null || (isObj(fv) && fv.status === "unresolved")) {
+        if (states.some(function (s) { return isObj(s) && (s.blocks_movement || s.blocks_sight); }))
+          warn(fid, "unresolved_floor", "which floors this feature affects is unresolved");
+      } else if (!Array.isArray(fv)) err(fid, "bad_shape", "floors is a list of floor ids or an unresolved value");
+      var rot = f.rotation;
+      if ((f.capabilities || []).indexOf("rotating") >= 0) {
+        if (!isObj(rot) || rot.pivot === undefined || rot.pivot === null || rot.panel === undefined || rot.panel === null)
+          warn(fid, "motion_incomplete", "rotating door without a pivot and panel: motion not fully described");
+        else geometry(fid + ".rotation.pivot", rot.pivot, ["point"]);
+      }
+      if (isObj(f.noise) && f.noise.origin !== undefined && f.noise.origin !== null) geometry(fid + ".noise.origin", f.noise.origin, ["point"]);
+      var edits = f.base_edits || {};
+      ["potential_ground", "remove_sight"].forEach(function (key) {
+        if (edits[key] !== undefined && edits[key] !== null) geometry(fid + ".base_edits." + key, edits[key]);
+      });
+      if (edits.potential_ground !== undefined && edits.potential_ground !== null && typeof edits.ground_binding !== "string")
+        warn(fid, "unresolved_floor", "restored ground has no floor binding: it stays pending");
+      (edits.reclassify || []).forEach(function (rc, k) {
+        var where = fid + ".base_edits.reclassify[" + k + "]";
+        if (!isObj(rc) || ["cover_paint", "cant_walk_paint", "tag", "base"].indexOf(rc.source) < 0 || rc.geometry === undefined || rc.geometry === null)
+          err(where, "bad_reclassify", "reclassify names its source and the exact geometry");
+        else geometry(where, rc.geometry);
+      });
+    }
+    function occluder(where, occ) {
+      if (!isObj(occ)) { err(where, "bad_shape", "an occluder is an object"); return; }
+      geometry(where + ".geometry", occ.geometry, ["polyline", "polygon"]);
+      var b = occ.bounds;
+      if (!isObj(b) || BOUND_REFS.indexOf(b.ref) < 0) { err(where, "bad_bounds", "bounds.ref must be one of " + BOUND_REFS.join(", ")); return; }
+      if (b.ref === "unresolved") { warn(where, "unresolved_height", "sight bounds unresolved: saved, pending, blocks nothing"); return; }
+      if (b.ref === "all_height") return;
+      var unres = [value(where + ".bounds.bottom", b.bottom, "m"), value(where + ".bounds.top", b.top, "m")];
+      if (unres[0] || unres[1]) warn(where, "unresolved_height", "a sight bound is unresolved");
+      else if (b.bottom.value >= b.top.value) err(where, "bad_dimensions", "bottom must be below top");
+      if (b.ref === "ground" && typeof b.floor !== "string") err(where, "bad_bounds", "ground-relative bounds name the floor they stand on");
+    }
+    (Array.isArray(mf.triggers) ? mf.triggers : []).forEach(function (t) {
+      if (!isObj(t)) return;
+      var tid = t.id;
+      if (TRIGGER_TYPES.indexOf(t.type) < 0) err(tid, "bad_trigger", "type must be one of " + TRIGGER_TYPES.join(", "));
+      if (t.geometry !== undefined && t.geometry !== null) geometry(tid + ".geometry", t.geometry, ["point", "polygon", "paint"]);
+      if (t.type === "proximity") {
+        var area = t.geometry !== undefined && t.geometry !== null && (t.geometry.type === "polygon" || t.geometry.type === "paint");
+        if (!area) {
+          if (t.range === undefined || t.range === null) err(tid, "missing_range", "a proximity trigger needs an area or an explicitly unresolved range");
+          else if (value(tid + ".range", t.range, "m")) warn(tid, "unresolved_range", "proximity range unresolved");
+        }
+      }
+      var targets = t.targets || [];
+      if (!targets.length) warn(tid, "no_target", "trigger linked to nothing");
+      targets.forEach(function (x) { if (!isObj(x) || FS_EVENTS.indexOf(x.event) < 0) err(tid, "bad_target", "a target is {feature, event} with a known event"); });
+      if (t.floor === undefined || t.floor === null || isObj(t.floor)) warn(tid, "unresolved_floor", "trigger floor unresolved");
+    });
+    (Array.isArray(mf.routes) ? mf.routes : []).forEach(function (r) { if (isObj(r)) validateRoute(r); });
+    function validateRoute(r) {
+      var rid = r.id;
+      if (ROUTE_KINDS.indexOf(r.kind) < 0) err(rid, "bad_route", "kind must be one of " + ROUTE_KINDS.join(", "));
+      var ends = r.endpoints;
+      if (!Array.isArray(ends) || ends.length !== 2) { err(rid, "missing_endpoint", "a route has exactly two endpoints"); return; }
+      var names = {};
+      ends.forEach(function (e) {
+        if (!isObj(e) || typeof e.id !== "string") { err(rid, "missing_endpoint", "an endpoint needs an id"); return; }
+        names[e.id] = true;
+        if (e.uv === undefined || e.uv === null) err(rid + "." + e.id, "missing_endpoint", "endpoint not placed");
+        else if (!uvOk(e.uv)) err(rid + "." + e.id, "bad_coordinates", "endpoint uv must be within 0..10000");
+        if (typeof e.floor !== "string") warn(rid + "." + e.id, "unresolved_floor", "landing floor unresolved");
+      });
+      var access = r.access === undefined ? "endpoint_only" : r.access;
+      if (isObj(access)) {
+        (access.sites || []).forEach(function (s) {
+          if (!isObj(s) || !uvOk(s.uv) || typeof s.id !== "string") err(rid, "bad_coordinates", "an access site needs an id and uv");
+          else names[s.id] = true;
+        });
+        warn(rid, "unsupported_access", "intermediate access is recorded but not yet consumable");
+      } else if (access !== "endpoint_only") err(rid, "bad_route", "access is 'endpoint_only' or {sites: [...]}");
+      if (r.path !== undefined && r.path !== null) geometry(rid + ".path", r.path, ["polyline"]);
+      (r.directions || []).forEach(function (d, i) {
+        var where = rid + ".directions[" + i + "]";
+        if (!isObj(d) || !names[d.from] || !names[d.to] || d.from === d.to) { err(where, "bad_route", "a direction joins two of the route's endpoints or access sites"); return; }
+        var u1 = value(where + ".entry", d.entry, "s"), u2 = value(where + ".transit", d.transit, "s");
+        if (u1 || u2) warn(where, "unresolved_cost", "travel cost unresolved: the arc is saved but not consumable");
+        if (d.length !== undefined && d.length !== null) value(where + ".length", d.length, "m", false);
+      });
+      if (!r.directions || !r.directions.length) err(rid, "bad_route", "a route needs at least one direction");
+      var it = r.in_transit === undefined ? "unresolved" : r.in_transit;
+      if (IN_TRANSIT.indexOf(it) < 0) err(rid, "bad_route", "in_transit must be one of " + IN_TRANSIT.join(", "));
+      else if (r.states !== undefined && r.states !== null && it === "unresolved")
+        warn(rid, "unresolved_policy", "conditional route with no policy for travel underway at closure");
+      var owner = features[r.owner];
+      if (r.states !== undefined && r.states !== null) {
+        var owned = ((owner || {}).states || []).map(function (s) { return s.name; });
+        if (!Array.isArray(r.states) || !r.states.every(function (s) { return owned.indexOf(s) >= 0; }))
+          err(rid, "bad_state_reference", "a route's states are states of its owner");
+      }
+      var good = ends.filter(function (e) { return isObj(e) && uvOk(e.uv); });
+      if (good.length === 2 && good[0].uv[0] === good[1].uv[0] && good[0].uv[1] === good[1].uv[1]) {
+        var f0 = good[0].floor, f1 = good[1].floor;
+        var verified = [f0, f1].every(function (x) { return typeof x === "string" && Array.isArray((floors[x] || {}).z_band); });
+        if (!(verified && f0 !== f1)) warn(rid, "zero_length", "endpoints share a position without two distinct verified floors");
+      }
+      (specials || []).forEach(function (sp) {
+        if (!sp || !Array.isArray(sp.a) || !Array.isArray(sp.b) || good.length !== 2) return;
+        var k = function (p) { return p[0] + "," + p[1]; };
+        var pair = [k(sp.a), k(sp.b)].sort().join("|"), mine = [k(good[0].uv), k(good[1].uv)].sort().join("|");
+        if (pair === mine) warn(rid, "duplicates_special", "this route repeats a legacy special: it would run twice");
+      });
+    }
+    Object.keys(bundles).forEach(function (k) { if (!(bundles[k].members || []).length) warn(bundles[k].id, "empty_bundle", "a bundle with no members"); });
+    (seed || []).forEach(function (cat) {
+      if (cat.expected === null || cat.expected === undefined) return;
+      var n = (mf.features || []).filter(function (f) { return isObj(f) && f.category === cat.key; }).length;
+      var entry = (mf.checklist || {})[cat.key] || {};
+      if (n && n !== cat.expected) warn(cat.key, "count_mismatch", n + " annotated; the user's catalogue says " + cat.expected);
+      else if (!n && entry.status === "user_reviewed" && !entry.none) warn(cat.key, "count_mismatch", "reviewed with none annotated");
+    });
+    return { errors: errors, warnings: warnings };
+  }
+
+  // -- The canonical catalogue: the whole tags.json the page edits, every map and unknown field kept.
+  // `importCatalogue` is transactional: any problem leaves the current catalogue and returns the report by
+  // map and feature. `seeds` = {map: checklist seed}. Returns {ok, catalogue, errors: [{map, where, code,
+  // message}], warnings, affected: [{map, change}]}.
+  function importCatalogue(current, text, seeds, specialsByMap) {
+    var parsed, errors = [], warnings = [];
+    try { parsed = typeof text === "string" ? JSON.parse(text) : clone(text); }
+    catch (e) { return { ok: false, catalogue: current, errors: [{ map: null, where: "file", code: "bad_json", message: String(e.message) }], warnings: [], affected: [] }; }
+    if (!isObj(parsed) || !isObj(parsed.maps))
+      return { ok: false, catalogue: current, errors: [{ map: null, where: "file", code: "bad_shape", message: "not a tags.json: no maps object" }], warnings: [], affected: [] };
+    Object.keys(parsed.maps).forEach(function (name) {
+      var entry = parsed.maps[name];
+      if (!isObj(entry) || !("map_features" in entry)) return;
+      var rep = validate(entry.map_features, (seeds || {})[name], (specialsByMap || {})[name] || entry.specials);
+      rep.errors.forEach(function (e) { errors.push(Object.assign({ map: name }, e)); });
+      rep.warnings.forEach(function (w) { warnings.push(Object.assign({ map: name }, w)); });
+    });
+    var affected = diffCatalogues(current, parsed);
+    if (errors.length) return { ok: false, catalogue: current, errors: errors, warnings: warnings, affected: affected };
+    return { ok: true, catalogue: parsed, errors: [], warnings: warnings, affected: affected };
+  }
+
+  // What replacing `a` with `b` changes, per map: added / removed / features changed / other keys changed.
+  function diffCatalogues(a, b) {
+    var out = [], am = (a && a.maps) || {}, bm = (b && b.maps) || {};
+    Object.keys(Object.assign({}, am, bm)).sort().forEach(function (name) {
+      if (!(name in bm)) { out.push({ map: name, change: "removed" }); return; }
+      if (!(name in am)) { out.push({ map: name, change: "added" }); return; }
+      var fa = canonicalJson(am[name].map_features === undefined ? null : am[name].map_features);
+      var fb = canonicalJson(bm[name].map_features === undefined ? null : bm[name].map_features);
+      var ra = clone(am[name]), rb = clone(bm[name]);
+      delete ra.map_features; delete rb.map_features;
+      if (fa !== fb) out.push({ map: name, change: "features" });
+      if (canonicalJson(ra) !== canonicalJson(rb)) out.push({ map: name, change: "tags" });
+    });
+    return out;
+  }
+
+  // An explicit merge: maps only one side has are kept; where both have map_features and they differ, the
+  // policy picks ("incoming" or "current") and the conflict is listed. Other keys follow the same policy.
+  function mergeCatalogue(current, incoming, policy) {
+    var out = clone(current), conflicts = [];
+    out.maps = out.maps || {};
+    Object.keys(incoming.maps || {}).forEach(function (name) {
+      var mine = out.maps[name], theirs = incoming.maps[name];
+      if (mine === undefined) { out.maps[name] = clone(theirs); return; }
+      if (canonicalJson(mine) === canonicalJson(theirs)) return;
+      conflicts.push(name);
+      if (policy === "incoming") out.maps[name] = clone(theirs);
+    });
+    return { catalogue: out, conflicts: conflicts };
+  }
+
+  // The whole tags.json for download: exactly exportTags (the legacy tags and paints) plus, for each map
+  // whose features were edited (`featureEdits[name].dirty`), its map_features with the map image's checksum
+  // and the runtime digest (a claim readers recompute, never trust). A map with no feature edits, or not on
+  // the page, keeps its loaded map_features byte for byte.
+  function exportCatalogue(canonical, maps, edits, featureEdits) {
+    var out = exportTags(canonical, maps, edits);
+    Object.keys(featureEdits || {}).forEach(function (name) {
+      var fe = featureEdits[name];
+      if (!fe || !fe.dirty) return;
+      var mf = clone(fe.mf);
+      if (maps[name] && maps[name].image_sha) mf.image_sha = maps[name].image_sha;
+      mf.runtime_digest = runtimeDigest(mf);
+      out.maps = out.maps || {};
+      out.maps[name] = Object.assign({}, out.maps[name] || {}, { map_features: mf });
+    });
+    return out;
+  }
+
+  Object.assign(Features, {
+    importCatalogue: importCatalogue, diffCatalogues: diffCatalogues, mergeCatalogue: mergeCatalogue,
+    exportCatalogue: exportCatalogue,
+    SCHEMA_VERSION: SCHEMA_VERSION, UV_MAX: UV_MAX, emptyMf: emptyMf, checkVersion: checkVersion, validate: validate, nextNumber: nextNumber, allocate: allocate,
+    find: find, create: create, addObject: addObject, setField: setField, rename: renameObject, link: link, unlink: unlink,
+    references: references, referrers: referrers, remove: removeObject, duplicate: duplicate,
+    history: history, historyPush: historyPush, undo: undo, redo: redo,
+    canonicalJson: canonicalJson, sha256Hex: sha256Hex, digest: digest, runtimeProjection: runtimeProjection,
+    runtimeDigest: runtimeDigest
+  });
+
   var api = {
     Features: Features,
     PX: PX, P: P, BAR: BAR, PAINTS: PAINTS, TAG_KINDS: TAG_KINDS, rleDecode: rleDecode, unpackPaint: unpackPaint,

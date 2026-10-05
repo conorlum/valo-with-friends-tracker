@@ -290,8 +290,21 @@ def runtime_projection(mf: dict) -> dict:
     return out
 
 
+def _js_numbers(value):
+    """Whole floats as ints (2.0 -> 2), as JavaScript writes them, so the page's digest and this one agree."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {k: _js_numbers(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_js_numbers(v) for v in value]
+    return value
+
+
 def digest(value) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    """16 hex of SHA-256 over the canonical JSON (sorted keys, no spaces, ASCII escapes, whole floats as ints).
+    scripts/control_tagger_core.js `Features.digest` gives the same string."""
+    return hashlib.sha256(json.dumps(_js_numbers(value), sort_keys=True, separators=(",", ":"), allow_nan=False)
                           .encode("utf-8")).hexdigest()[:16]
 
 
