@@ -18,7 +18,8 @@
   var PX = T.PX, P = T.P, UVPX = PX / F.UV_MAX;
   var $ = function (id) { return document.getElementById(id); };
   var canonical = D.tags;
-  var fe = {};            // map -> {dirty, mf, hist}
+  var fe = {};            // map -> {dirty, mf, hist, incompatible}
+  var highs = {};         // map -> id high-water mark this page has reached: only grows (undo, imports, drafts)
   var ui = { sel: null, tool: "select", draft: null, zoom: 1, pan: [0, 0], placing: null, editState: {}, preview: {},
              saved: "saved", saveError: null, space: false, panning: null, painting: null, sim: {} };
   var PRESET_LABELS = { drop_door: "Drop-door", switch_door: "Switch door", proximity_door: "Proximity door",
@@ -54,9 +55,23 @@
     el.textContent = state === "saved" ? "saved" : state === "dirty" ? "unsaved" : "NOT saved: " + (error || "storage failed") + " (download the draft)";
   }
 
+  // What a draft holds: the catalogue it was edited from, each edited map's model and the id high-water marks.
+  function draftBody() {
+    var body = { canonical: canonical, features: {}, high: {} };
+    Object.keys(fe).forEach(function (n) { if (fe[n].dirty && !fe[n].incompatible) body.features[n] = { dirty: true, mf: fe[n].mf }; });
+    Object.keys(highs).forEach(function (n) { if (highs[n] > 1) body.high[n] = highs[n]; });
+    return body;
+  }
+
+  // A map's undo history from `m`, carrying the page's high-water mark for it (and raising that mark).
+  function newHistory(n, m, high) {
+    var h = F.history(m, Math.max(highs[n] || 1, high || 1));
+    highs[n] = h.high;
+    return h;
+  }
+
   function autosave() {
-    var body = { canonical: canonical, features: {} };
-    Object.keys(fe).forEach(function (n) { if (fe[n].dirty) body.features[n] = { dirty: true, mf: fe[n].mf }; });
+    var body = draftBody();
     setSaved("dirty");
     var r;
     try { r = drafts.save(body); } catch (e) { r = { ok: false, error: String(e) }; }
@@ -64,12 +79,34 @@
     return r;
   }
 
+  // A map whose loaded map_features this page can't read (another schema version) is read-only: shown empty,
+  // never edited, so its entry is exported, drafted and merged exactly as loaded.
   function initMaps() {
     Object.keys(D.maps).forEach(function (n) {
       var entry = (canonical.maps || {})[n] || {};
-      var m = entry.map_features && !F.checkVersion(entry.map_features) ? clone(entry.map_features) : F.emptyMf();
-      fe[n] = { dirty: false, mf: m, hist: F.history(m), incompatible: !!(entry.map_features && F.checkVersion(entry.map_features)) };
+      var incompatible = entry.map_features !== undefined && !!F.checkVersion(entry.map_features);
+      var m = entry.map_features !== undefined && !incompatible ? clone(entry.map_features) : F.emptyMf();
+      var h = newHistory(n, m);
+      fe[n] = { dirty: false, mf: h.present, hist: h, incompatible: incompatible };
     });
+  }
+
+  // Puts a draft body's edited models in place over a freshly initialised catalogue. Returns the maps skipped.
+  function restoreModels(body) {
+    var skipped = [];
+    Object.keys(body.features || {}).forEach(function (n) {
+      if (!fe[n] || fe[n].incompatible) { skipped.push(n); return; }
+      var m = body.features[n].mf;
+      fe[n] = { dirty: true, mf: m, hist: newHistory(n, m, (body.high || {})[n]), incompatible: false };
+      fe[n].mf = fe[n].hist.present;
+    });
+    Object.keys(body.high || {}).forEach(function (n) {
+      if (fe[n] && !fe[n].incompatible && !(body.features || {})[n]) {
+        fe[n].hist = newHistory(n, fe[n].mf, body.high[n]);
+        fe[n].mf = fe[n].hist.present;
+      }
+    });
+    return skipped;
   }
 
   function loadDraft() {
@@ -77,12 +114,10 @@
     if ((r.status === "ok" || r.status === "recovered") && r.body) {
       canonical = r.body.canonical || canonical;
       initMaps();
-      Object.keys(r.body.features || {}).forEach(function (n) {
-        if (!fe[n]) return;
-        fe[n] = { dirty: true, mf: r.body.features[n].mf, hist: F.history(r.body.features[n].mf) };
-      });
+      var skipped = restoreModels(r.body);
       rebuildLegacy(false);
       note.push(r.status === "recovered" ? "Restored the previous good draft (the newest was damaged)." : "Restored your draft (revision " + r.revision + ").");
+      if (skipped.length) note.push("Not restored (not on this page, or its annotations use another schema): " + esc(skipped.join(", ")) + ".");
     } else if (r.status === "corrupt") note.push("The saved draft couldn't be read: " + esc(r.problems.join("; ")) + ". Started from the page's catalogue.");
     else if (r.status === "incompatible") note.push("The saved draft uses a schema this page can't read; it was left untouched. " + esc(r.problems.join("; ")));
     var others = drafts.others();
@@ -106,17 +141,32 @@
   }
 
   // ---------------------------------------------------------------- editing
+  // A read-only map (annotations of another schema version) takes no edit: nothing replaces its entry.
+  function readOnly() {
+    if (!cur().incompatible) return false;
+    ui.message = "This map's annotations use another schema version: they are read-only here and kept as loaded.";
+    render();
+    return true;
+  }
   function commit(next, keepSel) {
+    if (readOnly()) return;
     var c = cur();
     c.hist = F.historyPush(c.hist, next);
-    c.mf = next; c.dirty = true;
-    if (!keepSel && ui.sel && !F.find(next, ui.sel)) ui.sel = null;
+    c.mf = c.hist.present; c.dirty = true;
+    highs[mapName()] = Math.max(highs[mapName()] || 1, c.hist.high);
+    if (!keepSel && ui.sel && !F.find(c.mf, ui.sel)) ui.sel = null;
     autosave();
     render();
   }
   function edit(id, path, value) { commit(F.setField(mf(), id, path, value), true); }
-  function doUndo() { var c = cur(); c.hist = F.undo(c.hist); c.mf = c.hist.present; c.dirty = true; autosave(); render(); }
-  function doRedo() { var c = cur(); c.hist = F.redo(c.hist); c.mf = c.hist.present; c.dirty = true; autosave(); render(); }
+  function step(move) {
+    if (readOnly()) return;
+    var c = cur();
+    c.hist = move(Object.assign({}, c.hist, { high: Math.max(c.hist.high || 1, highs[mapName()] || 1) }));
+    c.mf = c.hist.present; c.dirty = true; autosave(); render();
+  }
+  function doUndo() { step(F.undo); }
+  function doRedo() { step(F.redo); }
 
   function createPreset(name) {
     var label = $("featNewName").value.trim();
@@ -1013,26 +1063,59 @@
     a.download = name; a.click();
   }
 
+  // The page's actual working catalogue: the canonical one with the legacy edits (exportTags) and each edited
+  // map's current model in place. Imports are compared and merged against this, so nothing unsaved is lost or
+  // hidden; it adds no image checksum or runtime digest (those are export claims).
+  function workingCatalogue() {
+    Object.keys(TG.edits).forEach(TG.ensureMap);
+    var out = T.exportTags(canonical, TG.maps, TG.edits);
+    out.maps = out.maps || {};
+    Object.keys(fe).forEach(function (n) {
+      if (!fe[n].dirty || fe[n].incompatible) return;
+      out.maps[n] = Object.assign({}, out.maps[n] || {}, { map_features: clone(fe[n].mf) });
+    });
+    return out;
+  }
+
   var pendingImport = null;
-  function importText(text, filename) {
-    var seeds = FD.seeds || {}, r = F.importCatalogue(canonical, text, seeds);
-    pendingImport = { result: r, text: text, filename: filename || "imported.json" };
+  // A tags.json goes through importCatalogue; a downloaded draft (or an older draft's snapshot) through
+  // importDraft. Both are transactional and reviewed here first; `provenance` is an older draft's source.
+  function importText(text, filename, provenance) {
+    var working = workingCatalogue();
+    var r = F.importDraft(sourceOf(), text, working, provenance);
+    var draft = !!r;
+    if (!draft) r = F.importCatalogue(working, text, FD.seeds || {});
+    pendingImport = { result: r, text: text, filename: filename || "imported.json", working: working, draft: draft };
     var html = [];
-    html.push("<h2>Import " + esc(filename || "") + "</h2>");
-    if (!r.ok) html.push("<p class=\"issue-error\">Not imported: your current draft is unchanged.</p>");
+    html.push("<h2>" + (draft ? "Restore draft " : "Import ") + esc(filename || "") + "</h2>");
+    if (!r.ok) html.push("<p class=\"issue-error\">Not " + (draft ? "restored" : "imported") + ": your current draft is unchanged.</p>");
     r.errors.forEach(function (e) { html.push("<div class=\"issue-error\">✖ " + esc((e.map || "file") + " · " + e.where + ": " + e.message) + "</div>"); });
-    if (r.affected.length) html.push("<p>What it changes:</p><ul>" + r.affected.map(function (a) { return "<li>" + esc(a.map + ": " + a.change) + "</li>"; }).join("") + "</ul>");
-    else if (r.ok) html.push("<p>It matches the current catalogue.</p>");
-    if (r.warnings.length) html.push("<p class=\"note\">" + r.warnings.length + " unresolved facts or warnings (fine to import).</p>");
+    if (draft && r.differs.length) html.push("<p class=\"note\">Saved for a different page: " + esc(r.differs.join(", ")) + ". Check it before restoring.</p>");
+    var unsaved = Object.keys(fe).filter(function (n) { return fe[n].dirty; });
+    if (r.affected.length) {
+      html.push("<p>What it changes" + (draft ? " (restoring replaces the whole draft)" : "") + ":</p><ul>" + r.affected.map(function (a) {
+        var lost = a.change !== "added" && unsaved.indexOf(a.map) >= 0 ? " (replaces your unsaved edits to it)" : "";
+        return "<li>" + esc(a.map + ": " + a.change + lost) + "</li>";
+      }).join("") + "</ul>");
+    } else if (r.ok) html.push("<p>It matches your current work.</p>");
+    if (r.warnings.length) html.push("<p class=\"note\">" + r.warnings.length + (draft ? " structural errors, unresolved facts or warnings (an incomplete draft restores; fix them before export)." : " unresolved facts or warnings (fine to import).") + "</p>");
     $("featImportBody").innerHTML = html.join("");
-    $("featImportReplace").disabled = $("featImportMine").disabled = $("featImportTheirs").disabled = !r.ok;
+    $("featImportReplace").textContent = draft ? "Restore draft" : "Replace";
+    $("featImportReplace").disabled = !r.ok;
+    $("featImportMine").disabled = $("featImportTheirs").disabled = !r.ok || draft;
     var dlg = $("featImport");
     if (dlg.showModal) dlg.showModal(); else dlg.setAttribute("open", "");
   }
   function closeImport() { var dlg = $("featImport"); if (dlg.close) dlg.close(); else dlg.removeAttribute("open"); pendingImport = null; }
-  function applyCatalogue(cat) {
+  // `keep`: {map: {mf, hist}} edited models the new catalogue kept as they are, which stay edited (dirty, with
+  // their undo history); every other map starts from the new catalogue.
+  function applyCatalogue(cat, keep) {
     canonical = cat;
     initMaps();
+    Object.keys(keep || {}).forEach(function (n) {
+      if (!fe[n] || fe[n].incompatible) return;
+      fe[n] = { dirty: true, mf: keep[n].mf, hist: keep[n].hist, incompatible: false };
+    });
     rebuildLegacy(true);
     Object.keys(TG.edits).forEach(function (n) { TG.edits[n].touched = false; });
     TG.save();
@@ -1041,9 +1124,43 @@
     TG.selectMap(mapName());
     render();
   }
-  $("featImportReplace").addEventListener("click", function () { var c = pendingImport.result.catalogue; closeImport(); applyCatalogue(c); });
-  $("featImportMine").addEventListener("click", function () { var c = F.mergeCatalogue(canonical, pendingImport.result.catalogue, "current").catalogue; closeImport(); applyCatalogue(c); });
-  $("featImportTheirs").addEventListener("click", function () { var c = F.mergeCatalogue(canonical, pendingImport.result.catalogue, "incoming").catalogue; closeImport(); applyCatalogue(c); });
+  // The edited models a merged catalogue still holds unchanged: they stay this page's edits.
+  function keptEdits(cat) {
+    var keep = {};
+    Object.keys(fe).forEach(function (n) {
+      if (!fe[n].dirty || fe[n].incompatible) return;
+      var entry = (cat.maps || {})[n];
+      if (entry && F.digest(entry.map_features === undefined ? null : entry.map_features) === F.digest(fe[n].mf))
+        keep[n] = { mf: fe[n].mf, hist: fe[n].hist };
+    });
+    return keep;
+  }
+  function merge(policy) {
+    var p = pendingImport, c = F.mergeCatalogue(p.working, p.result.catalogue, policy).catalogue;
+    closeImport();
+    applyCatalogue(c, keptEdits(c));
+  }
+  function restoreDraft(body) {
+    canonical = body.canonical;
+    initMaps();
+    var skipped = restoreModels(body);
+    rebuildLegacy(false);
+    TG.save();
+    autosave();
+    ui.sel = null;
+    ui.message = skipped.length ? "Not restored (not on this page, or its annotations use another schema): " + skipped.join(", ") + "." : null;
+    TG.selectMap(mapName());
+    render();
+  }
+  function acceptable(draftOk) { return pendingImport && pendingImport.result.ok && (draftOk || !pendingImport.draft); }
+  $("featImportReplace").addEventListener("click", function () {
+    if (!acceptable(true)) return;            // a refused file applies nothing
+    var p = pendingImport;
+    closeImport();
+    if (p.draft) restoreDraft(p.result.body); else applyCatalogue(p.result.catalogue);
+  });
+  $("featImportMine").addEventListener("click", function () { if (acceptable(false)) merge("current"); });
+  $("featImportTheirs").addEventListener("click", function () { if (acceptable(false)) merge("incoming"); });
   $("featImportCopy").addEventListener("click", function () { download("copy-of-" + pendingImport.filename, pendingImport.text); });
   $("featImportCancel").addEventListener("click", closeImport);
 
@@ -1052,21 +1169,23 @@
     var out = exportAll(TG.maps, TG.edits);
     if (out) download("tags.json", JSON.stringify(out, null, 1) + "\n");
   });
+  // A restorable copy of the draft (Import reads it back): what it was saved for, its checksum, the catalogue,
+  // the edited models (valid or not) and the id high-water marks.
   $("featDownload").addEventListener("click", function () {
-    var body = { canonical: canonical, features: {} };
-    Object.keys(fe).forEach(function (n) { if (fe[n].dirty) body.features[n] = { dirty: true, mf: fe[n].mf }; });
-    download("tagger-draft.json", JSON.stringify(body, null, 1) + "\n");
+    download("tagger-draft.json", JSON.stringify(F.draftFile(sourceOf(), draftBody()), null, 1) + "\n");
   });
   $("featDrafts").addEventListener("click", function (e) {
     var b = e.target.closest ? e.target.closest("[data-other]") : null;
     if (!b) return;
     var snap = drafts.readOther(b.getAttribute("data-other"));
     if (!snap) return;
-    if (b.getAttribute("data-act") === "download") { download("older-draft.json", JSON.stringify(snap.body, null, 1) + "\n"); return; }
-    // an older draft goes through the same review as an import: nothing is applied without seeing it
-    var cat = clone(snap.body.canonical || canonical);
-    Object.keys(snap.body.features || {}).forEach(function (n) { cat.maps[n] = Object.assign({}, cat.maps[n] || {}, { map_features: snap.body.features[n].mf }); });
-    importText(JSON.stringify(cat), "older draft");
+    if (b.getAttribute("data-act") === "download") {
+      download("older-draft.json", JSON.stringify(F.draftFile(snap.provenance, snap.body), null, 1) + "\n");
+      return;
+    }
+    // an older draft goes through the same review as a downloaded one: nothing is applied without seeing it
+    importText(JSON.stringify({ canonical: snap.body.canonical || canonical, features: snap.body.features || {},
+                                high: snap.body.high || null }), "older draft", snap.provenance);
   });
 
   // ---------------------------------------------------------------- wiring

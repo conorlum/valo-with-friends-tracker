@@ -729,16 +729,35 @@
     return { mf: out, id: map[id], ids: map };
   }
 
-  // Undo/redo over whole immutable snapshots: links and properties undo with the strokes.
-  function history(present) { return { past: [], present: present, future: [] }; }
-  function historyPush(h, next) { return { past: h.past.concat([h.present]), present: next, future: [] }; }
+  // Undo/redo over whole immutable snapshots: links and properties undo with the strokes. `high` is the
+  // allocation high-water mark: the largest next number any snapshot of this history has reached (or the caller
+  // carried in from a save, a recovery or an import). It only grows, and every present is raised to it, so an
+  // id allocated, undone and allocated again is never handed out twice; the content itself undoes as before
+  // (next_id is editorial).
+  function mfHighWater(mf) { return isObj(mf) ? nextNumber(mf) : 1; }
+  function raiseNextId(mf, high) {
+    if (!isObj(mf) || !high || nextNumber(mf) >= high) return mf;
+    var out = clone(mf);
+    out.next_id = high;
+    return out;
+  }
+  function history(present, high) {
+    var hw = Math.max(high || 1, mfHighWater(present));
+    return { past: [], present: raiseNextId(present, hw), future: [], high: hw };
+  }
+  function historyPush(h, next) {
+    var hw = Math.max(h.high || 1, mfHighWater(next));
+    return { past: h.past.concat([h.present]), present: raiseNextId(next, hw), future: [], high: hw };
+  }
   function undo(h) {
     if (!h.past.length) return h;
-    return { past: h.past.slice(0, -1), present: h.past[h.past.length - 1], future: [h.present].concat(h.future) };
+    return { past: h.past.slice(0, -1), present: raiseNextId(h.past[h.past.length - 1], h.high),
+             future: [h.present].concat(h.future), high: h.high };
   }
   function redo(h) {
     if (!h.future.length) return h;
-    return { past: h.past.concat([h.present]), present: h.future[0], future: h.future.slice(1) };
+    return { past: h.past.concat([h.present]), present: raiseNextId(h.future[0], h.high), future: h.future.slice(1),
+             high: h.high };
   }
 
   // -- Canonical JSON and SHA-256 (map_feature_schema.digest: sorted keys, no spaces, ASCII escapes).
@@ -1124,12 +1143,15 @@
   // The whole tags.json for download: exactly exportTags (the legacy tags and paints) plus, for each map
   // whose features were edited (`featureEdits[name].dirty`), its map_features with the map image's checksum
   // and the runtime digest (a claim readers recompute, never trust). A map with no feature edits, or not on
-  // the page, keeps its loaded map_features byte for byte.
+  // the page, keeps its loaded map_features byte for byte. So does a map whose loaded map_features this page
+  // can't read (another schema version): an edit never replaces it.
   function exportCatalogue(canonical, maps, edits, featureEdits) {
     var out = exportTags(canonical, maps, edits);
     Object.keys(featureEdits || {}).forEach(function (name) {
       var fe = featureEdits[name];
-      if (!fe || !fe.dirty) return;
+      if (!fe || !fe.dirty || fe.incompatible || !isObj(fe.mf)) return;
+      var loaded = ((canonical && canonical.maps) || {})[name];
+      if (isObj(loaded) && loaded.map_features !== undefined && checkVersion(loaded.map_features) !== null) return;
       var mf = clone(fe.mf);
       if (maps[name] && maps[name].image_sha) mf.image_sha = maps[name].image_sha;
       mf.runtime_digest = runtimeDigest(mf);
@@ -1280,6 +1302,106 @@
 
   function draftSourceKey(source) { return digest(source).slice(0, 12); }
 
+  // {map: high-water} taking the larger number per map (either side may be absent): null when neither has any.
+  function maxHigh(a, b) {
+    if (!isObj(a) && !isObj(b)) return null;
+    var out = {};
+    [a, b].forEach(function (h) {
+      if (!isObj(h)) return;
+      Object.keys(h).forEach(function (m) {
+        var n = h[m];
+        if (typeof n === "number" && Math.floor(n) === n && n > 0) out[m] = Math.max(out[m] || 1, n);
+      });
+    });
+    return out;
+  }
+
+  // Why a draft body's own feature models can't be restored by this page: a model that isn't an object or is of
+  // another schema version, or an edit of a map whose catalogue entry is of another version (it would replace
+  // annotations this page can't read).
+  function draftModelProblems(body) {
+    var out = [], maps = (isObj(body) && isObj(body.canonical) && isObj(body.canonical.maps)) ? body.canonical.maps : {};
+    Object.keys((isObj(body) && isObj(body.features)) ? body.features : {}).sort().forEach(function (m) {
+      var entry = body.features[m], why = isObj(entry) ? checkVersion(entry.mf) : "not a feature draft";
+      if (why) out.push("the draft of " + m + ": " + why);
+      var loaded = isObj(maps[m]) ? maps[m].map_features : undefined;
+      if (loaded !== undefined && checkVersion(loaded) !== null)
+        out.push("the draft edits " + m + ", whose map_features can't be read by this page: " + checkVersion(loaded));
+    });
+    return out;
+  }
+
+  // What differs between the source a draft was saved for and this page's source.
+  function sourceDiffers(src, mine) {
+    var differs = [];
+    src = src || {}; mine = mine || {};
+    if (src.catalogue_digest !== mine.catalogue_digest) differs.push("catalogue");
+    if (src.schema_version !== mine.schema_version) differs.push("schema");
+    ["image_digests", "floor_digests"].forEach(function (part) {
+      var a = src[part] || {}, b = mine[part] || {};
+      Object.keys(Object.assign({}, a, b)).sort().forEach(function (m) {
+        if (a[m] !== b[m]) differs.push((part === "image_digests" ? "image of " : "floors of ") + m);
+      });
+    });
+    return differs;
+  }
+
+  // A draft's whole catalogue: its canonical tags.json with each edited map's model in place.
+  function draftCatalogue(body) {
+    var out = clone(body.canonical);
+    out.maps = out.maps || {};
+    Object.keys(body.features || {}).forEach(function (m) {
+      out.maps[m] = Object.assign({}, out.maps[m] || {}, { map_features: clone(body.features[m].mf) });
+    });
+    return out;
+  }
+
+  // The Download draft file: the draft body ({canonical, features, high}) with what it was saved for and a
+  // checksum, so a restore can show what changed since and refuse a damaged file.
+  var DRAFT_FORMAT = "control-tagger-draft";
+  function draftFile(source, body) {
+    var core = { canonical: body.canonical, features: body.features || {}, high: body.high || null };
+    return Object.assign({ format: DRAFT_FORMAT, version: 1, provenance: source, checksum: digest(core) }, core);
+  }
+
+  // Reads a downloaded draft (or an older draft's snapshot body) for restore. Returns null when `text` isn't a
+  // draft (a tags.json goes to importCatalogue). Transactional like importCatalogue: any problem restores
+  // nothing. A draft may be incomplete: its models' structural errors are warnings, not refusals. A file from
+  // before drafts carried a provenance ({canonical, features}) is read with that noted. Returns {draft: true,
+  // ok, body, errors, warnings, affected (against `working`, the page's current catalogue), differs}.
+  function importDraft(source, text, working, provenance) {
+    var parsed;
+    try { parsed = typeof text === "string" ? JSON.parse(text) : clone(text); }
+    catch (e) { return null; }
+    var envelope = isObj(parsed) && parsed.format === DRAFT_FORMAT;
+    var bare = isObj(parsed) && !("maps" in parsed) && isObj(parsed.canonical) && isObj(parsed.features);
+    if (!envelope && !bare) return null;
+    var errors = [], warnings = [], differs = [];
+    function fail(code, message) { errors.push({ map: null, where: "draft", code: code, message: message }); }
+    var body = { canonical: parsed.canonical, features: parsed.features, high: parsed.high || null };
+    if (envelope && parsed.version !== 1) fail("incompatible_draft", "draft file version " + pyRepr(parsed.version) + " is not 1");
+    if (!isObj(body.canonical) || !isObj(body.canonical.maps)) fail("bad_shape", "the draft has no catalogue (canonical.maps)");
+    if (!isObj(body.features) || !Object.keys(body.features).every(function (m) { return isObj(body.features[m]) && isObj(body.features[m].mf); }))
+      fail("bad_shape", "the draft's feature models aren't {map: {mf}}");
+    if (body.high !== null && !isObj(body.high)) fail("bad_shape", "the draft's id high-water marks aren't {map: number}");
+    if (envelope && !errors.length) {
+      var sum;
+      try { sum = digest({ canonical: body.canonical, features: body.features, high: body.high }); } catch (e) { sum = null; }
+      if (sum !== parsed.checksum) fail("corrupt", "the draft's checksum doesn't match its contents (damaged or edited)");
+    }
+    if (!errors.length) draftModelProblems(body).forEach(function (p) { fail("incompatible_version", p); });
+    var prov = envelope ? parsed.provenance : provenance;
+    if (isObj(prov)) differs = sourceDiffers(prov, source);
+    else differs = ["no provenance recorded"];
+    if (errors.length) return { draft: true, ok: false, body: null, errors: errors, warnings: [], affected: [], differs: differs };
+    Object.keys(body.features).sort().forEach(function (m) {
+      var rep = validate(body.features[m].mf, null, (body.canonical.maps[m] || {}).specials);
+      rep.errors.concat(rep.warnings).forEach(function (w) { warnings.push(Object.assign({ map: m }, w)); });
+    });
+    return { draft: true, ok: true, body: clone(body), errors: [], warnings: warnings,
+             affected: diffCatalogues(working, draftCatalogue(body)), differs: differs };
+  }
+
   function Drafts(store, source) {
     this.store = store;
     this.source = source;
@@ -1309,7 +1431,10 @@
       this.store.setItem(this._k(this.key, "snap:" + rev), JSON.stringify(snap));
       if (!this._readSnap(this.key, rev)) throw new Error("the snapshot did not read back intact");
       stage = "pointer";
-      this.store.setItem(this._k(this.key, "active"), JSON.stringify({ revision: rev, previous: pointer ? pointer.revision : null }));
+      // the pointer also carries the id high-water marks (the larger of this body's and the last pointer's), so a
+      // recovery to the previous snapshot never hands out an id the damaged newest one had already used
+      this.store.setItem(this._k(this.key, "active"), JSON.stringify({ revision: rev, previous: pointer ? pointer.revision : null,
+                                                                       high: maxHigh(pointer && pointer.high, body && body.high) }));
       stage = "cleanup";
       if (pointer && typeof pointer.previous === "number") this.store.removeItem(this._k(this.key, "snap:" + pointer.previous));
       stage = "index";
@@ -1336,12 +1461,13 @@
       if (typeof rev !== "number") continue;
       var s = this._readSnap(this.key, rev);
       if (!s) { problems.push("snapshot " + rev + " is missing or corrupt"); continue; }
-      var bad = Object.keys((s.body.canonical || {}).maps || {}).filter(function (m) {
-        var mf = s.body.canonical.maps[m] && s.body.canonical.maps[m].map_features;
-        return mf !== undefined && checkVersion(mf) !== null;
-      });
-      if (bad.length) return { status: "incompatible", body: null, revision: rev, problems: ["map_features of " + bad.join(", ") + " can't be read by this page"] };
-      return { status: tries[i][1], body: s.body, revision: rev, problems: problems };
+      // the draft's own feature models must be readable; a catalogue entry of another schema is only carried
+      // (read-only, kept byte for byte), unless the draft holds an edit of it
+      var bad = draftModelProblems(s.body);
+      if (bad.length) return { status: "incompatible", body: null, revision: rev, problems: bad };
+      var body = s.body;
+      if (isObj(pointer.high)) { body = clone(body); body.high = maxHigh(body.high, pointer.high); }
+      return { status: tries[i][1], body: body, revision: rev, problems: problems };
     }
     return { status: "corrupt", body: null, revision: null, problems: problems };
   };
@@ -1351,16 +1477,8 @@
     var index = this._get(DRAFT_PREFIX + ":index") || {}, mine = this.source, out = [];
     Object.keys(index).sort().forEach(function (k) {
       if (k === this.key) return;
-      var src = index[k].source || {}, differs = [];
-      if (src.catalogue_digest !== mine.catalogue_digest) differs.push("catalogue");
-      if (src.schema_version !== mine.schema_version) differs.push("schema");
-      ["image_digests", "floor_digests"].forEach(function (part) {
-        var a = src[part] || {}, b = mine[part] || {};
-        Object.keys(Object.assign({}, a, b)).sort().forEach(function (m) {
-          if (a[m] !== b[m]) differs.push((part === "image_digests" ? "image of " : "floors of ") + m);
-        });
-      });
-      out.push({ key: k, source: src, revision: index[k].revision, differs: differs });
+      var src = index[k].source || {};
+      out.push({ key: k, source: src, revision: index[k].revision, differs: sourceDiffers(src, mine) });
     }, this);
     return out;
   };
@@ -1375,6 +1493,8 @@
 
   Object.assign(Features, {
     Drafts: Drafts, draftSourceKey: draftSourceKey, DRAFT_PREFIX: DRAFT_PREFIX,
+    DRAFT_FORMAT: DRAFT_FORMAT, draftFile: draftFile, importDraft: importDraft, draftCatalogue: draftCatalogue,
+    draftModelProblems: draftModelProblems, sourceDiffers: sourceDiffers, maxHigh: maxHigh, raiseNextId: raiseNextId,
     raster: raster, composeFeatures: composeFeatures, stateOf: stateOf, makeBreakable: makeBreakable, CELL_UV: CELL_UV,
     rotationPose: rotationPose, mapSummary: mapSummary,
     importCatalogue: importCatalogue, diffCatalogues: diffCatalogues, mergeCatalogue: mergeCatalogue,

@@ -71,6 +71,86 @@ def test_the_asset_cache_rereads_a_new_generation(tmp_path, monkeypatch):
         rc._assets.cache_clear()
 
 
+def _toy_assets(folder: Path, revision: str, features: str | None = None) -> None:
+    entry = {"sight_sha": revision, "walk_sha": revision}
+    if features:
+        entry["features_sha"] = features
+    (folder / "index.json").write_text(json.dumps({"maps": {"Toy": entry}}), encoding="utf-8")
+    (folder / "tags.json").write_text(json.dumps({"maps": {"Toy": {"specials": [{"revision": revision}]}}}),
+                                      encoding="utf-8")
+
+
+@pytest.fixture
+def toy_asset_dir(tmp_path, monkeypatch):
+    from app.services import replay_control as rc
+
+    _toy_assets(tmp_path, "old")
+    (tmp_path / "maps.json").write_text(json.dumps({"Toy": {"xMultiplier": 1}}), encoding="utf-8")
+    monkeypatch.setattr(rc, "CONTROL_DIR", tmp_path)
+    monkeypatch.setattr(rc, "MAPS_JSON", tmp_path / "maps.json")
+    rc._assets.cache_clear()
+    yield tmp_path
+    rc._assets.cache_clear()
+
+
+def test_a_half_written_tags_file_keeps_the_last_consistent_snapshot(toy_asset_dir):
+    from app.services import replay_control as rc
+
+    before = rc.geometry_inputs("Toy")
+    assert before["specials"] == [{"revision": "old"}]
+    (toy_asset_dir / "tags.json").write_text('{"maps": {"Toy": {"spec', encoding="utf-8")   # a writer mid-write
+    assert rc.geometry_inputs("Toy") == before, "a transient partial file keeps the last valid inputs"
+    _toy_assets(toy_asset_dir, "new")
+    assert rc.geometry_inputs("Toy")["specials"] == [{"revision": "new"}], "once whole, it is read"
+
+
+def test_a_half_written_file_with_no_snapshot_yet_is_an_error(toy_asset_dir):
+    from app.services import replay_control as rc
+
+    (toy_asset_dir / "tags.json").write_text("{", encoding="utf-8")
+    with pytest.raises(ValueError):
+        rc.geometry_inputs("Toy")
+
+
+@pytest.mark.parametrize("features", [None, "feat0000feat0000"], ids=["no-generation", "generation"])
+def test_atomic_replacements_during_a_read_never_mix_generations(toy_asset_dir, monkeypatch, features):
+    """The index and tags are replaced (atomically, one after the other) while the reader is between them: the
+    reader must answer with one generation's inputs, never old masks with new specials."""
+    import os
+
+    from app.services import replay_control as rc
+
+    assert rc.geometry_inputs("Toy")["sight"] == "old"
+    (toy_asset_dir / "maps.json").write_text(json.dumps({"Toy": {"xMultiplier": 1, "edited": True}}), encoding="utf-8")
+    raced = []
+
+    def replace_both():
+        if raced:
+            return
+        raced.append(True)
+        staging = toy_asset_dir / "staging"
+        staging.mkdir()
+        _toy_assets(staging, "new", features)
+        for name in ("index.json", "tags.json"):
+            os.replace(staging / name, toy_asset_dir / name)
+
+    for method in ("read_bytes", "read_text"):
+        original = getattr(Path, method)
+
+        def hooked(self, *a, _original=original, **k):
+            if self == toy_asset_dir / "tags.json":
+                replace_both()
+            return _original(self, *a, **k)
+
+        monkeypatch.setattr(Path, method, hooked)
+    got = rc.geometry_inputs("Toy")
+    assert raced, "the race happened"
+    want = {"sight": "new", "walk": "new", "barrier": None, "specials": [{"revision": "new"}], "scale": 1}
+    if features:
+        want["features"] = features
+    assert got == want
+
+
 def test_the_worker_geometry_cache_is_keyed_by_generation(tmp_path, monkeypatch):
     from app.control import task as ct
 
@@ -176,6 +256,71 @@ def test_the_wrong_generation_is_the_machines_failure_not_the_rounds(published, 
     assert out["status"] == "failed" and out["error_kind"] == "infra" and "expected feature generation" in out["error"]
 
 
+def test_a_cached_generation_is_verified_again_when_its_definitions_change(published, monkeypatch):
+    """The pointer stays put while tags.json's runtime definitions change: the worker's cached geometry must be
+    refused (the machine's failure) as an explicit verify_features would, not reused; an editorial edit is
+    still accepted from the cache; restoring the definitions loads again."""
+    from app.control import task as ct
+
+    folder, sha, _ = published
+    real_load, real_active = cg.load_geometry, cf.active_sha
+    loads = []
+
+    def load(name, heights=None):
+        loads.append(name)
+        return real_load(name, folder, heights=heights)
+
+    monkeypatch.setattr(cg, "load_geometry", load)
+    monkeypatch.setattr(cf, "active_sha", lambda name, asset_dir=None: real_active(name, folder))
+    monkeypatch.setattr(cg, "visibility", lambda g, asset_dir=None: g)
+    monkeypatch.setattr(ct, "_GEOMETRY", {})
+    monkeypatch.setattr(ct, "_VERIFIED", {})
+    first = ct._load("Ascent")
+    assert first.features_sha == sha
+    original = (folder / "tags.json").read_text(encoding="utf-8")
+    tags = json.loads(original)
+
+    tags["maps"]["Ascent"]["map_features"]["features"][0]["name"] = "renamed"          # editorial
+    (folder / "tags.json").write_text(json.dumps(tags), encoding="utf-8")
+    assert ct._load("Ascent") is first and loads == ["Ascent"]
+
+    tags["maps"]["Ascent"]["map_features"]["features"][0]["initial_state"] = "broken"  # runtime
+    (folder / "tags.json").write_text(json.dumps(tags), encoding="utf-8")
+    with pytest.raises(cg.GeometryError, match="stale"):
+        ct._load("Ascent")
+    with pytest.raises(cg.GeometryError, match="stale"):
+        ct.verify_features(first)
+    out = ct.compute_task({"key": "k", "map": "Ascent", "blob": b"", "link": {"sides": {}, "db_deaths": []}})
+    assert out["status"] == "failed" and out["error_kind"] == "infra" and "stale" in out["error"]
+
+    (folder / "tags.json").write_text(original, encoding="utf-8")
+    assert ct._load("Ascent").features_sha == sha
+
+    (folder / "tags.json").write_text(original[: len(original) // 2], encoding="utf-8")       # caught mid-write
+    out = ct.compute_task({"key": "k", "map": "Ascent", "blob": b"", "link": {"sides": {}, "db_deaths": []}})
+    assert out["status"] == "failed" and out["error_kind"] == "infra", "an unreadable tags.json is the machine's"
+    (folder / "tags.json").write_text(original, encoding="utf-8")
+    assert ct._load("Ascent").features_sha == sha
+
+
+def test_a_map_without_a_generation_never_reads_its_definitions_on_a_cache_hit(monkeypatch):
+    from app.control import task as ct
+
+    geo = copy.copy(open_hall())
+    geo.name = "Toy"
+    monkeypatch.setattr(cg, "load_geometry", lambda name, heights=None: geo)
+    monkeypatch.setattr(cg, "visibility", lambda g, d=None: g)
+    monkeypatch.setattr(cf, "active_sha", lambda name, asset_dir=None: None)
+    monkeypatch.setattr(ct, "_GEOMETRY", {})
+    ct._load("Toy")
+
+    def no_tags(*a, **k):
+        raise AssertionError("no generation: nothing to verify")
+
+    monkeypatch.setattr(cg, "load_tags", no_tags)
+    assert ct._load("Toy") is geo and list(ct._GEOMETRY) == ["Toy"]
+
+
 def test_an_interrupted_publication_leaves_the_last_complete_generation(published, monkeypatch):
     import os
 
@@ -196,6 +341,29 @@ def test_an_interrupted_publication_leaves_the_last_complete_generation(publishe
     with pytest.raises(OSError):
         cf.publish_generation(folder, "Ascent", m2, a2)
     assert cf.active_sha("Ascent", folder) == sha and cg.load_geometry("Ascent", folder).features_sha == sha
+
+
+def test_a_failed_publication_never_touches_a_published_generation(published):
+    """Republishing the pointer's manifest with assets that don't match it is refused before anything is
+    written: the previous pointer and the previous generation's bytes stay exactly as they were, and verify."""
+    from app.control.geometry import GeometryError
+
+    folder, sha, _ = published
+    path = folder / "features" / f"{sha}.json"
+    index_before = (folder / "index.json").read_bytes()
+    bytes_before = path.read_bytes()
+    body = cf.load_generation(folder, sha)
+    wrong = copy.deepcopy(body["assets"])
+    wrong["states"]["feature-1:intact"]["blocked"] = [999]
+    with pytest.raises(GeometryError):
+        cf.publish_generation(folder, "Ascent", body["manifest"], wrong)
+    assert (folder / "index.json").read_bytes() == index_before
+    assert path.read_bytes() == bytes_before, "the content-addressed file is immutable"
+    assert cf.verify(body["manifest"], cf.load_generation(folder, sha)["assets"]) == []
+    assert sorted(p.name for p in (folder / "features").iterdir()) == [path.name], "no staging file left behind"
+    # republishing the same, valid generation leaves its bytes alone and keeps the pointer on it
+    assert cf.publish_generation(folder, "Ascent", body["manifest"], body["assets"]) == sha
+    assert path.read_bytes() == bytes_before and cf.active_sha("Ascent", folder) == sha
 
 
 def test_the_local_store_refuses_a_result_from_another_generation(monkeypatch):
@@ -387,6 +555,31 @@ def test_the_vertical_intersection_rule():
     assert cf.blocked_lines([door], (101.0, 50.0, 1.5), up, None).tolist() == [True, True]
     assert cf.blocked_lines([door], (101.0, 50.0, 2.2), up, None).tolist() == [False, False]
     assert cf.blocked_lines([door], (101.0, 50.0, -4.0), np.array([[101, 50, -1.0]]), None).tolist() == [False]
+
+
+def test_the_vertical_rule_covers_every_height_occluders_and_2d_fallbacks():
+    """One rule for every occluder: a straight-up line under an all-height occluder's pixel is blocked (its
+    span meets every band), alone or batched with other targets; with no height at either end it is the 2D
+    answer, for bounded occluders too; off the mask it is clear."""
+    pixel = np.zeros((1024, 1024), bool)
+    pixel[10, 10] = True
+    every = cf.BoundedOccluder("feature-1", pixel, all_height=True)
+    bounded = cf.BoundedOccluder("feature-1", pixel, bottom=0.0, top=5.0)
+    up = np.array([[10, 10, 4.0]])
+    assert cf.blocked_lines([every], (10.0, 10.0, 1.0), up).tolist() == [True]
+    assert cf.blocked_lines([bounded], (10.0, 10.0, 1.0), up).tolist() == [True]
+    batch = np.array([[10, 10, 4.0], [300, 10, 1.0]])
+    assert cf.blocked_lines([every], (10.0, 10.0, 1.0), batch).tolist() == [True, False]
+    assert cf.blocked_lines([every], (11.0, 10.0, 1.0), np.array([[11, 10, 4.0]])).tolist() == [False], "off the mask"
+    # the 2D fallback: no height at the eye, the target or either; counted
+    for eye_z, target_z in ((None, 4.0), (1.0, np.nan), (None, np.nan)):
+        for occ in (every, bounded):
+            rec = {}
+            got = cf.blocked_lines([occ], (10.0, 10.0, eye_z), np.array([[10, 10, target_z]]), rec).tolist()
+            assert got == [True] and rec == {"flat_occluder_tests": 1}, (eye_z, target_z, occ.all_height)
+    # [bottom, top) still holds straight up: a span touching only the top is clear, only the bottom blocked
+    assert cf.blocked_lines([bounded], (10.0, 10.0, 5.0), np.array([[10, 10, 9.0]])).tolist() == [False]
+    assert cf.blocked_lines([bounded], (10.0, 10.0, -3.0), np.array([[10, 10, 0.0]])).tolist() == [True]
 
 
 def door_mf(geo, floor, bottom, top, ref="ground"):
@@ -588,6 +781,40 @@ def test_on_a_height_map_bindings_must_be_verified_and_restored_ground_must_be_i
     m = mf(on_floor, "floor-1", ["floor-1"])
     shapes = {cf.movement_blocks(geo, m, {"feature-1": s}).blocked.shape for s in ("intact", "broken")}
     assert shapes == {(geo.n,)}
+
+
+def test_a_bundle_whose_states_bind_no_floor_publishes_nothing():
+    """An enabled bundle removing baked-in sight on a height map, whose blocking state's floors are unresolved,
+    empty, unbanded, stale, missing or ambiguous: movement_blocks blocks nothing there, so the bundle is pending
+    and none of its base edits reaches the base domain, the compiled assets or the manifest."""
+    geo = bridge()
+    test = frozenset({"test"})
+    block = rect(256, 160, 264, 232)
+
+    def mf(floors, sight_bounds=None):
+        f = breakable("feature-1", block, remove=block, floors=floors)
+        if sight_bounds is not None:
+            f["states"][0]["sight_bounds"] = sight_bounds
+        return {**ms.empty(), "floors": floors_for(geo), "features": [f],
+                "bundles": [{"id": "bundle-2", "members": ["feature-1"], "enabled": True, "runtime_consumer": "test"}]}
+
+    good = mf(["floor-1"])
+    assert cf.bundle_status(geo, good, consumers=test)["bundle-2"].publishable, "the control: a verified floor"
+    sight = np.zeros((1024, 1024), bool)
+    sight[160:232, 256:264] = True
+    walk = np.ones((1024, 1024), bool)
+    cases = {"unresolved": {"status": "unresolved"}, "absent": None, "empty": [], "unbanded": ["floor-3"],
+             "stale": ["floor-5"], "ambiguous": ["floor-4"], "missing": ["floor-9"],
+             "unresolved sight bounds": (["floor-1"], {"ref": "unresolved"})}
+    for name, floors in cases.items():
+        m = mf(*floors) if isinstance(floors, tuple) else mf(floors)
+        assert floors is not None or "floors" not in m["features"][0]
+        statuses = cf.bundle_status(geo, m, consumers=test)
+        st = statuses["bundle-2"]
+        assert not st.publishable and st.reasons, (name, st.reasons)
+        s, w, opened = cf.reconcile(sight, walk, m, statuses)
+        assert opened == {} and (s == sight).all() and (w == walk).all(), name
+        assert cf.compile_assets(geo, m, statuses) is None and cf.manifest(geo, m, consumers=test) is None, name
 
 
 # ---- W9: directed traversal

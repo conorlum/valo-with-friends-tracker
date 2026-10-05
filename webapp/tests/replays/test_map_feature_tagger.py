@@ -630,3 +630,271 @@ def test_rotation_poses_match_python_and_the_sandbox_and_summary_behave():
     assert summary["geometry"]["errors"] == 0 and summary["geometry"]["unresolved"] > 0 and not summary["geometry"]["ready"]
     assert summary["replay"]["decoder"] is False
     assert got["emptySummary"]["geometry"]["ready"] is True
+
+
+# ---- the panel's wiring: scripts/control_tagger_features.js run in node through tests/replays/tagger_page.js,
+# driven by its own buttons and entry points (the pure-model tests above can't see these)
+
+HARNESS = HERE / "tagger_page.js"
+PAGE_PRELUDE = """
+  const {openPage, memoryStorage} = require(process.argv[1]);
+  let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+    const p = JSON.parse(input);
+    process.stdout.write(JSON.stringify(run(p)));
+  });
+"""
+# Bind's loaded annotations are of a schema version this page can't read
+FUTURE = {"version": 2, "next_id": 99, "features": [{"id": "feature-98", "future_data": "precious"}]}
+
+
+def run_page(body: str, payload):
+    assert NODE, "node is required for the tagger page tests"
+    completed = subprocess.run([NODE, "-e", PAGE_PRELUDE + body, str(HARNESS)], input=json.dumps(payload),
+                               capture_output=True, text=True, encoding="utf-8", timeout=300, check=False)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def page_data(future=True, **extra_tags):
+    """The page's embedded data (control_tagger.render's DATA) for Ascent and Bind, from the committed tags with
+    the fixture's annotations on Ascent and (`future`) annotations of a newer schema on Bind."""
+    sys.path.insert(0, str(WEBAPP / "scripts"))
+    import control_tagger
+
+    from app.control import geometry as cg
+
+    tags = json.loads((cg.ASSET_DIR / "tags.json").read_text(encoding="utf-8"))
+    tags["maps"]["Ascent"]["map_features"] = copy.deepcopy(MF)
+    if future:
+        tags["maps"]["Bind"]["map_features"] = copy.deepcopy(FUTURE)
+    tags.update(extra_tags)
+    maps = control_tagger.build(tags, {}, ["Ascent", "Bind"])
+    return {"tags": tags, "maps": maps, "features": control_tagger.features_data(sorted(maps))}
+
+
+MERGE_PAGE = """
+  function run(p) {
+    const out = {}, id = "feature-1";
+    const page = openPage(p.data, {map: "Ascent"}), A = page.api, F = page.F, TG = page.TG;
+    out.original = F.find(A.fe.Ascent.mf, id).name;
+    A.commit(F.setField(A.fe.Ascent.mf, id, ["name"], "my draft"), true);
+    TG.edits.Ascent.cover_reviewed = !TG.edits.Ascent.cover_reviewed;        // a legacy edit too
+    TG.edits.Ascent.touched = true;
+    out.cover = TG.edits.Ascent.cover_reviewed;
+    A.importText(JSON.stringify(p.data.tags), "unchanged.json");             // the page's own catalogue, unchanged
+    out.preview = page.el("featImportBody").innerHTML;
+    out.disabled = ["featImportReplace", "featImportMine", "featImportTheirs"].map(b => page.el(b).disabled);
+    page.click("featImportMine");
+    out.mine = {name: F.find(A.fe.Ascent.mf, id).name, dirty: A.fe.Ascent.dirty, cover: TG.edits.Ascent.cover_reviewed};
+    page.click("featExport");
+    const exported = JSON.parse(page.downloads[page.downloads.length - 1].text);
+    out.exported = {name: F.find(exported.maps.Ascent.map_features, id).name, cover: exported.maps.Ascent.cover_reviewed,
+                    bind: exported.maps.Bind.map_features === undefined};
+    A.undo();
+    out.undone = F.find(A.fe.Ascent.mf, id).name;
+    // take theirs, on another page: the edit is replaced, as the preview said
+    const q = openPage(p.data, {map: "Ascent"});
+    q.api.commit(q.F.setField(q.api.fe.Ascent.mf, id, ["name"], "my draft"), true);
+    q.api.importText(JSON.stringify(p.data.tags), "unchanged.json");
+    q.click("featImportTheirs");
+    out.theirs = {name: q.F.find(q.api.fe.Ascent.mf, id).name, dirty: q.api.fe.Ascent.dirty};
+    // and with nothing edited, the same file changes nothing
+    const r = openPage(p.data, {map: "Ascent"});
+    r.api.importText(JSON.stringify(p.data.tags), "same.json");
+    out.cleanPreview = r.el("featImportBody").innerHTML;
+    return out;
+  }
+"""
+
+
+def test_merge_keep_mine_previews_and_keeps_the_working_edits():
+    got = run_page(MERGE_PAGE, {"data": page_data(future=False)})
+    assert "Ascent: features (replaces your unsaved edits to it)" in got["preview"]
+    assert "Ascent: tags" in got["preview"], "the legacy edit is part of the working catalogue"
+    assert got["disabled"] == [False, False, False]
+    assert got["mine"] == {"name": "my draft", "dirty": True, "cover": got["cover"]}
+    assert got["exported"]["name"] == "my draft" and got["exported"]["cover"] == got["cover"]
+    assert got["exported"]["bind"], "an untouched map stays without annotations"
+    assert got["undone"] == got["original"], "the kept edit keeps its undo history"
+    assert got["theirs"] == {"name": got["original"], "dirty": False}
+    assert "It matches your current work." in got["cleanPreview"]
+
+
+IDS_PAGE = """
+  function run(p) {
+    const out = {allocated: []};
+    let page = openPage(p.data, {map: "Ascent"});
+    const ids = pg => pg.api.fe.Ascent.mf.features.map(f => f.id);
+    function create(pg) {
+      const before = ids(pg);
+      pg.api.createPreset("breakable");
+      const made = ids(pg).filter(x => before.indexOf(x) < 0);
+      out.allocated.push(made[0]);
+      return made[0];
+    }
+    const start = ids(page);
+    create(page);
+    page.api.undo();
+    out.undoneContent = JSON.stringify(ids(page)) === JSON.stringify(start);
+    create(page);                                   // after undo
+    page.api.undo(); page.api.redo(); page.api.undo();
+    create(page);                                   // a new branch after redo and undo
+    page = page.reopen();                           // the saved draft, reloaded
+    create(page);
+    page.api.importText(JSON.stringify(p.data.tags), "lower.json");    // next_id 20: below what was handed out
+    out.importAllowed = !page.el("featImportReplace").disabled;
+    page.click("featImportReplace");
+    out.importedClean = !page.api.fe.Ascent.dirty;
+    create(page);
+    // recovery: the newest snapshot is damaged after one more feature; the previous one is restored
+    create(page);
+    const st = page.storage, key = page.api.drafts.key;
+    const pointer = JSON.parse(st.getItem("control-tagger-features-v1:" + key + ":active"));
+    const snapKey = "control-tagger-features-v1:" + key + ":snap:" + pointer.revision;
+    st.m.set(snapKey, st.m.get(snapKey).replace("Breakable", "Broken!!!"));
+    page = page.reopen();
+    out.recoveredNote = page.el("featDrafts").innerHTML;
+    create(page);
+    return out;
+  }
+"""
+
+
+def test_ids_are_never_reused_through_undo_branches_saves_imports_and_recovery():
+    got = run_page(IDS_PAGE, {"data": page_data(future=False)})
+    allocated = got["allocated"]
+    assert all(allocated) and len(allocated) == 7
+    assert len(set(allocated)) == len(allocated), allocated
+    assert got["undoneContent"], "undo still removes the created feature"
+    assert got["importAllowed"] and got["importedClean"], "the replace really ran"
+    numbers = [int(i.split("-")[1]) for i in allocated]
+    assert numbers == sorted(numbers) and numbers[0] >= MF["next_id"]
+    assert "previous good draft" in got["recoveredNote"]
+
+
+INCOMPATIBLE_PAGE = """
+  function run(p) {
+    const out = {};
+    const page = openPage(p.data, {map: "Bind"}), A = page.api, TG = page.TG;
+    out.flag = A.fe.Bind.incompatible;
+    A.createPreset("breakable");
+    A.commit(page.F.addObject(A.fe.Bind.mf, "feature", {name: "forced"}).mf, true);
+    A.undo();
+    out.bind = {dirty: A.fe.Bind.dirty, features: A.fe.Bind.mf.features.length, message: A.ui.message};
+    TG.edits.Bind.cover_reviewed = !TG.edits.Bind.cover_reviewed;          // a legacy edit of the same map
+    TG.edits.Bind.touched = true;
+    out.cover = TG.edits.Bind.cover_reviewed;
+    TG.selectMap("Ascent");
+    A.createPreset("breakable");                                              // an edit elsewhere: a draft is saved
+    page.click("featExport");
+    const exported = JSON.parse(page.downloads[page.downloads.length - 1].text);
+    out.exported = {bind: exported.maps.Bind.map_features, cover: exported.maps.Bind.cover_reviewed};
+    const again = page.reopen();
+    out.reopen = {note: again.el("featDrafts").innerHTML, ascentDirty: again.api.fe.Ascent.dirty,
+                  bindDirty: again.api.fe.Bind.dirty, bindReadOnly: again.api.fe.Bind.incompatible};
+    again.click("featDownload");
+    const file = again.downloads[again.downloads.length - 1];
+    const other = openPage(p.data, {map: "Ascent"});
+    other.api.importText(file.text, file.name);
+    out.restorable = !other.el("featImportReplace").disabled;
+    other.click("featImportReplace");
+    other.click("featExport");
+    out.restoredBind = JSON.parse(other.downloads[other.downloads.length - 1].text).maps.Bind.map_features;
+    // the model's own guard: a forced dirty model never replaces an unreadable entry
+    out.forced = page.F.exportCatalogue(p.data.tags, {}, {}, {Bind: {dirty: true, mf: page.F.emptyMf()}}).maps.Bind.map_features;
+    return out;
+  }
+"""
+
+
+def test_annotations_of_another_schema_are_never_replaced():
+    got = run_page(INCOMPATIBLE_PAGE, {"data": page_data()})
+    assert got["flag"] is True
+    assert got["bind"]["dirty"] is False and got["bind"]["features"] == 0 and "read-only" in got["bind"]["message"]
+    assert got["exported"] == {"bind": FUTURE, "cover": got["cover"]}, "legacy edits export; the annotations as loaded"
+    assert got["reopen"]["ascentDirty"] and not got["reopen"]["bindDirty"] and got["reopen"]["bindReadOnly"]
+    assert "Restored your draft" in got["reopen"]["note"], "a catalogue holding an unreadable entry still restores drafts"
+    assert got["restorable"] and got["restoredBind"] == FUTURE
+    assert got["forced"] == FUTURE
+
+
+DRAFT_PAGE = """
+  function run(p) {
+    const out = {};
+    const page = openPage(p.data, {map: "Ascent", storage: memoryStorage({failWrites: true})}), A = page.api, F = page.F;
+    A.commit(F.setField(A.fe.Ascent.mf, "feature-1", ["name"], "unsaved rename"), true);
+    // incomplete: a trigger aimed at a feature that doesn't exist yet (a structural error)
+    A.commit(F.addObject(A.fe.Ascent.mf, "trigger", {name: "dangling", type: "switch", geometry: null,
+                                                     targets: [{feature: "feature-999", event: "switch"}]}).mf, true);
+    out.saved = page.el("featSaved").textContent;
+    page.click("featExport");
+    out.exportRefused = page.downloads.length === 0;
+    page.click("featDownload");
+    const file = page.downloads[page.downloads.length - 1];
+    out.fileName = file.name;
+    const want = page.plain(A.fe.Ascent.mf);
+    // reopened with working storage: nothing was stored, so it starts clean; the file restores it
+    const fresh = openPage(p.data, {map: "Ascent"});
+    out.freshDirty = fresh.api.fe.Ascent.dirty;
+    fresh.api.importText(file.text, file.name);
+    out.dialog = fresh.el("featImportBody").innerHTML;
+    out.label = fresh.el("featImportReplace").textContent;
+    out.disabled = ["featImportReplace", "featImportMine", "featImportTheirs"].map(b => fresh.el(b).disabled);
+    fresh.click("featImportReplace");
+    out.restoredSame = JSON.stringify(fresh.plain(fresh.api.fe.Ascent.mf)) === JSON.stringify(want);
+    out.restoredDirty = fresh.api.fe.Ascent.dirty;
+    out.savedAfter = fresh.el("featSaved").textContent;
+    const reloaded = fresh.reopen();
+    out.reloadedSame = JSON.stringify(reloaded.plain(reloaded.api.fe.Ascent.mf)) === JSON.stringify(want);
+    // transactional: a damaged file, a draft of another schema and a garbled one restore nothing
+    const parsed = JSON.parse(file.text);
+    const tampered = JSON.parse(file.text); tampered.features.Ascent.mf.features[0].name = "tampered";
+    const newer = JSON.parse(file.text); newer.features.Ascent.mf.version = 2;
+    newer.checksum = F.digest({canonical: newer.canonical, features: newer.features, high: newer.high});
+    const shapeless = JSON.parse(file.text); shapeless.features.Ascent = {mf: "nope"};
+    out.refused = [tampered, newer, shapeless].map(bad => {
+      const t = openPage(p.data, {map: "Ascent"});
+      t.api.importText(JSON.stringify(bad), "bad.json");
+      return {disabled: t.el("featImportReplace").disabled, body: t.el("featImportBody").innerHTML, dirty: t.api.fe.Ascent.dirty};
+    });
+    // a file downloaded before drafts carried their provenance: {canonical, features}
+    const bare = openPage(p.data, {map: "Ascent"});
+    bare.api.importText(JSON.stringify({canonical: parsed.canonical, features: parsed.features}), "old.json");
+    out.bareDialog = bare.el("featImportBody").innerHTML;
+    bare.click("featImportReplace");
+    out.bareSame = JSON.stringify(bare.plain(bare.api.fe.Ascent.mf.features)) === JSON.stringify(want.features);
+    // a draft saved for another catalogue says so before it is restored
+    const moved = openPage(p.moved, {map: "Ascent"});
+    moved.api.importText(file.text, file.name);
+    out.movedDialog = moved.el("featImportBody").innerHTML;
+    // an older draft listed for another source goes through the same restore, incomplete or not
+    const shared = memoryStorage();
+    const first = openPage(p.data, {map: "Ascent", storage: shared});
+    first.api.commit(first.F.addObject(first.api.fe.Ascent.mf, "trigger", {name: "dangling", type: "switch", geometry: null,
+                                                                          targets: [{feature: "feature-999", event: "switch"}]}).mf, true);
+    const later = openPage(p.moved, {map: "Ascent", storage: shared});
+    const key = later.api.drafts.others()[0].key;
+    const button = {getAttribute: k => k === "data-other" ? key : "review"};
+    later.el("featDrafts").dispatch("click", {target: {closest: () => button}});
+    out.olderLabel = later.el("featImportReplace").textContent;
+    out.olderDisabled = later.el("featImportReplace").disabled;
+    later.click("featImportReplace");
+    out.olderRestored = later.api.fe.Ascent.dirty && later.api.fe.Ascent.mf.triggers.some(t => t.name === "dangling");
+    return out;
+  }
+"""
+
+
+def test_a_downloaded_draft_restores_after_a_storage_failure():
+    got = run_page(DRAFT_PAGE, {"data": page_data(), "moved": page_data(x_moved=True)})
+    assert got["saved"].startswith("NOT saved") and got["exportRefused"], "storage failed and the draft is incomplete"
+    assert got["fileName"] == "tagger-draft.json" and got["freshDirty"] is False
+    assert got["label"] == "Restore draft" and got["disabled"] == [False, True, True]
+    assert "Ascent: features" in got["dialog"] and "structural errors" in got["dialog"]
+    assert got["restoredSame"] and got["restoredDirty"] and got["savedAfter"] == "saved"
+    assert got["reloadedSame"], "the restored draft is the page's draft now"
+    for bad, code in zip(got["refused"], ("checksum", "version", "{map: {mf}}")):
+        assert bad["disabled"] and not bad["dirty"] and "Not restored" in bad["body"] and code in bad["body"], bad
+    assert "no provenance recorded" in got["bareDialog"] and got["bareSame"]
+    assert "Saved for a different page: catalogue" in got["movedDialog"]
+    assert got["olderLabel"] == "Restore draft" and not got["olderDisabled"] and got["olderRestored"]

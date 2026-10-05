@@ -328,19 +328,24 @@ def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None 
         xi = np.clip(xs, 0, PX - 1).astype(np.int32)
         yi = np.clip(ys, 0, PX - 1).astype(np.int32)
         hit = np.zeros(len(bb), bool)
+        vertical = ln < 1e-9
+        if vertical.any():
+            # a straight-up line's z span; with no height at either end, the 2D answer (every height)
+            vfl = fl[vertical]
+            with np.errstate(invalid="ignore"):
+                z0 = np.where(vfl, -np.inf, np.minimum(az, bb[vertical, 2]))
+                z1 = np.where(vfl, np.inf, np.maximum(az, bb[vertical, 2]))
+            apx = (int(min(max(ay, 0), PX - 1)), int(min(max(ax, 0), PX - 1)))
         for occ in occluders:
             inside = occ.mask[yi, xi]
             if occ.all_height:
                 hit |= inside.any(1)
-                continue
-            band = (zs >= occ.bottom) & (zs < occ.top)
-            hit |= (inside & (band | fl[:, None])).any(1)
-            vertical = ln < 1e-9
-            if vertical.any():
-                px = occ.mask[int(min(max(ay, 0), PX - 1)), int(min(max(ax, 0), PX - 1))]
-                z0 = np.where(np.isnan(bb[vertical, 2]), -np.inf, np.minimum(az, bb[vertical, 2]))
-                z1 = np.where(np.isnan(bb[vertical, 2]), np.inf, np.maximum(az, bb[vertical, 2]))
-                hit[vertical] |= px & (z1 >= occ.bottom) & (z0 < occ.top)
+            else:
+                band = (zs >= occ.bottom) & (zs < occ.top)
+                hit |= (inside & (band | fl[:, None])).any(1)
+            if vertical.any() and occ.mask[apx]:
+                # the span [z0, z1] meets the band [bottom, top); an all-height band is every height
+                hit[vertical] |= True if occ.all_height else (z1 >= occ.bottom) & (z0 < occ.top)
         out[lo:lo + 512] = hit
     return out
 
@@ -446,6 +451,24 @@ def behaviour_problems(feature: dict) -> list[str]:
     return out
 
 
+def state_problems(geo: Geometry, mf: dict, feature: dict) -> list[str]:
+    """Why some state of a feature doesn't compile to what it says: a blocking footprint whose floor bindings
+    are unresolved, empty, stale, missing or ambiguous (it would block nothing, or not all of itself), or a
+    sight occluder that is pending. Every state, not only the initial one: a bundle publishes for the round."""
+    out = []
+    for s in feature.get("states") or []:
+        one = {**feature, "initial_state": s.get("name")}
+        if s.get("blocks_movement") and s.get("footprint"):
+            cells = to_grid(raster(s["footprint"])).ravel()
+            b = feature_floor_nodes(geo, mf, one, cells)
+            out += [f"state {s.get('name')!r}: {p}" for p in b.pending]
+            if cells.any() and not len(b.nodes) and not b.pending:
+                out.append(f"state {s.get('name')!r}: {feature.get('id')}: its footprint binds no node")
+        _, pending = sight_occluders(geo, {**mf, "features": [one]})
+        out += [f"state {s.get('name')!r}: {p}" for p in pending]
+    return out
+
+
 def _owned(feature: dict) -> dict:
     edits = feature.get("base_edits") or {}
     return {k: to_px(raster(edits.get(k))) for k in ("potential_ground", "remove_sight")}
@@ -472,9 +495,10 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
                   consumers: frozenset | None = None) -> dict:
     """Each bundle's publishability. A bundle publishes its members' base edits only together and only when
     it is enabled, names a registered runtime consumer, every member's behaviour is resolved, every floor
-    binding it relies on is verified against the map's current heights, every overlap with legacy hand paint
-    is reclassified exactly, and no member's edits overlap a feature outside the bundle. `consumers` defaults to
-    the registered RUNTIME_CONSUMERS (read at call time)."""
+    binding it relies on is verified against the map's current heights, every member's states compile with
+    nothing pending (`state_problems`; needs `geo`), every overlap with legacy hand paint is reclassified
+    exactly, and no member's edits overlap a feature outside the bundle. `consumers` defaults to the registered
+    RUNTIME_CONSUMERS (read at call time)."""
     consumers = RUNTIME_CONSUMERS if consumers is None else consumers
     features = {f.get("id"): f for f in mf.get("features") or []}
     floors = _floors_by_id(mf)
@@ -501,6 +525,8 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
                 reasons.append(f"member {m!r} doesn't exist")
                 continue
             reasons += behaviour_problems(f)
+            if geo is not None:            # what its states compile to: pending bindings and occluders block nothing
+                reasons += [f"{m}: {p}" for p in state_problems(geo, mf, f)]
             ids = f.get("floors") if isinstance(f.get("floors"), list) else []
             edits = f.get("base_edits") or {}
             binding = edits.get("ground_binding")
@@ -921,24 +947,43 @@ def load_generation(asset_dir, sha: str) -> dict:
 
 def publish_generation(asset_dir, name: str, manifest_: dict, assets: dict) -> str:
     """Writes a complete, verified generation, then moves the map's pointer (index.json `features_sha`) to it in
-    one atomic replace. A failure at any step leaves the previous pointer, and so the previous generation, in
-    use; in-flight tasks keep the immutable file they loaded. Returns the generation's digest. Never run on the
-    committed asset folder in this build (R3): no map has an enabled feature."""
+    one atomic replace. The assets are verified against the manifest before anything is written, and the staged
+    file is read back and verified before it is published; a generation already published under the digest is
+    never rewritten (content-addressed and immutable: a valid file there already holds these assets). A failure
+    at any step leaves the previous pointer, and so the previous generation, in use; in-flight tasks keep the
+    immutable file they loaded. Returns the generation's digest. Never run on the committed asset folder in this
+    build (R3): no map has an enabled feature."""
     import os
+    import tempfile
 
     from app.control.geometry import GeometryError
 
     sha = manifest_digest(manifest_)
+    problems = verify(manifest_, assets)
+    if problems:
+        raise GeometryError(f"feature generation {sha} refused: its assets don't match its manifest: {problems}")
     folder = asset_dir / GENERATIONS
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{sha}.json"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"map": name, "manifest": manifest_, "assets": assets}, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
-    body = load_generation(asset_dir, sha)
-    problems = verify(manifest_, body["assets"])
-    if problems:
-        raise GeometryError(f"feature generation {sha} did not read back intact: {problems}")
+    try:
+        existing = load_generation(asset_dir, sha)
+    except GeometryError:
+        existing = None
+    if existing is None or verify(manifest_, existing.get("assets")):
+        fd, staged = tempfile.mkstemp(prefix=f"{sha}.", suffix=".tmp", dir=folder)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"map": name, "manifest": manifest_, "assets": assets}, sort_keys=True))
+            with open(staged, encoding="utf-8") as fh:
+                body = json.loads(fh.read())
+            problems = [] if manifest_digest(body.get("manifest")) == sha else ["manifest"]
+            problems += verify(manifest_, body.get("assets"))
+            if problems:
+                raise GeometryError(f"feature generation {sha} did not read back intact: {problems}")
+            os.replace(staged, path)      # absent or unreadable before: nothing valid is overwritten
+        finally:
+            if os.path.exists(staged):
+                os.unlink(staged)
     index_path = asset_dir / "index.json"
     index = json.loads(index_path.read_text(encoding="utf-8"))
     index.setdefault("maps", {}).setdefault(name, {})["features_sha"] = sha
