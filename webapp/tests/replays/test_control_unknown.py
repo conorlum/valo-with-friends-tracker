@@ -824,3 +824,41 @@ def test_a_knowledge_picture_counts_only_the_enemies_the_team_sees_as_live():
     kt = ce.Knowledge(rnd, "A").tick_for(tk, 1.0)
     assert 5 not in kt.holders, "A's picture has no unseen B player"
     assert not kt.live_claims("B").any(), "so nothing of B's is live in it"
+
+
+@pytest.mark.parametrize("how", ["active", "passive", "watch"])
+def test_an_enemy_holding_it_live_ends_remembered_ground(how):
+    """Image 14 (the user, 2026-10-04): A remembers ground that B is looking at now: it's B's, not contested."""
+    geo, tk = _hall()
+    west = _band(geo, *WEST_X)
+    setattr(tk.holders[5], how, west.copy())
+    _relive(tk)
+    tk.unknown = {"A": _band(geo, 380, 416), "B": _band(geo, 200, 232)}
+    mem = _remember(tk, geo, [0], west)
+    assert not tk.holders[0].memory[west].any() and not mem.cells[0][west].any(), "B holds it live: A's memory ends"
+    assert not np.isin(tk.compose()["state"][west], CONTESTED).any()
+
+
+def test_an_enemy_standing_in_remembered_ground_ends_it_there():
+    geo, tk = _hall()
+    spot = tk.holders[5].cell
+    remembered = np.zeros(GRID * GRID, bool)
+    remembered[spot] = True
+    tk.unknown = {"A": np.zeros(GRID * GRID, bool), "B": np.zeros(GRID * GRID, bool)}
+    mem = _remember(tk, geo, [0], remembered)
+    assert not mem.cells[0][spot], "B5 stands there"
+
+
+def test_ground_an_enemy_saw_does_not_come_back_as_memory():
+    geo = open_hall()
+    west, _ = _halves(geo)
+    z = np.zeros(GRID * GRID, bool)
+    none = {"A": z, "B": z}
+    mem = ce.Memory(geo)
+    mem.apply(_Tk(0.0, _at(0, "A", geo, 120, 200, west), _at(5, "B", geo, 400, 200)), none)
+    a1 = _at(0, "A", geo, 120, 200)
+    mem.apply(_Tk(1.0, a1, _at(5, "B", geo, 400, 200, west)), none)
+    assert not a1.passive[west].any(), "B looked at it: A's memory of it ends"
+    a2 = _at(0, "A", geo, 120, 200)
+    mem.apply(_Tk(2.0, a2, _at(5, "B", geo, 400, 200)), none)
+    assert not a2.passive[west].any(), "and doesn't come back when B looks away"

@@ -17,7 +17,8 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   movement over SPEED_WINDOW_S. Flashed: nothing. Nearsighted: a bubble. Concussed, stunned or
   revealed: all of it passive (Q42, Q57).
 - **Memory (D6).** Ground a player saw and looked away from stays theirs as passive control until
-  the team's unknown reaches it (2026-10-01; it replaced decay from open ground). Memory dies with
+  the team's unknown reaches it (2026-10-01; it replaced decay from open ground) or an enemy holds
+  it live: a view, a watcher, standing in it (2026-10-04, D5). Memory dies with
   its player. When the buy-phase barriers drop, each team remembers its side of them (the barrier
   paint).
 - **Backfill.** Ground behind a player's watched line, back to the team's control, that no enemy can
@@ -2112,7 +2113,8 @@ class Memory:
     """Remembered ground across a round's ticks (D6). `begin` takes the barrier drop (each team
     remembers its side, shared out to its players by walking distance). `apply` runs on each tick in
     time order, after Unknown.apply and before `compose`: it drops what the team's unknown has
-    reached, adds what is left to each holder's passive cells, then remembers what they see now."""
+    reached or an enemy holds live, adds what is left to each holder's passive cells, then remembers
+    what they see now."""
 
     def __init__(self, geo: Geometry):
         self.geo = geo
@@ -2127,11 +2129,21 @@ class Memory:
         walk = self.geo.walk_n
         for s in [s for s in self.cells if s not in tick.holders]:
             del self.cells[s]                     # memory dies with its player
+        # what each team holds live now (views, watchers, own cell; this tick's memory isn't added yet): an
+        # enemy holding remembered ground live ends it (the user's call, 2026-10-04: D5)
+        live: dict[str, np.ndarray] = {}
+        for h in tick.holders.values():
+            lv = h.active | h.passive | h.watch
+            lv[h.cell] = True
+            live[h.team] = live[h.team] | lv if h.team in live else lv
         for h in tick.holders.values():
             if h.slot in self.cells:
                 self.cells[h.slot] &= ~(h.active | h.passive)    # seen again: live, not memory
                 if unknown is not None:
                     self.cells[h.slot] &= ~unknown[h.team]       # an enemy could be there now
+                for team, lv in live.items():
+                    if team != h.team:
+                        self.cells[h.slot] &= ~lv                # an enemy holds it live now
         for h in tick.holders.values():
             seen = (h.active | h.passive) & walk
             if h.slot in self.cells:
