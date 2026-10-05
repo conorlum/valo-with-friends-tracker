@@ -779,6 +779,111 @@ def _next_departure(t: float, arc: Arc, intervals) -> float | None:
     return None
 
 
+# ---------------------------------------------------------------- the consumed-input manifest
+
+MANIFEST_VERSION = 1
+
+
+def _enabled_projection(mf: dict, members: set) -> dict:
+    """The runtime projection of what enabled bundles use: their member features, the triggers aimed at them,
+    the routes they own, the floors any of those bind and the enabled bundles themselves."""
+    proj = ms.runtime_projection(mf)
+    feats = [f for f in proj.get("features") or [] if f.get("id") in members]
+    trigs = [t for t in proj.get("triggers") or [] if any(x.get("feature") in members for x in t.get("targets") or [])]
+    routes = [r for r in proj.get("routes") or [] if r.get("owner") in members]
+    bundles = [b for b in proj.get("bundles") or [] if set(b.get("members") or []) & members]
+    used = {dst for src, _, dst in ms.references({"features": feats, "triggers": trigs, "routes": routes})}
+    floors = [f for f in proj.get("floors") or [] if f.get("id") in used]
+    return {"features": feats, "triggers": trigs, "routes": routes, "bundles": bundles, "floors": floors}
+
+
+def compile_assets(geo: Geometry, mf: dict, statuses: dict) -> dict | None:
+    """What an engine would load for a map's enabled features (None when it has none): per enabled feature and
+    state, its blocked nodes and occluders, plus the enabled routes' arcs and the reconciled base edits."""
+    members = {m for st in statuses.values() if st.publishable for m in st.members}
+    if not members:
+        return None
+    sub = {**mf, "features": [f for f in mf.get("features") or [] if f.get("id") in members],
+           "routes": [r for r in mf.get("routes") or [] if r.get("owner") in members]}
+    states = {}
+    for f in sub["features"]:
+        for s in f.get("states") or []:
+            pick = {f.get("id"): s.get("name")}
+            one = {**sub, "features": [f]}
+            blocked = movement_blocks(geo, one, pick).blocked
+            occ, _ = sight_occluders(geo, one, pick)
+            states[f"{f.get('id')}:{s.get('name')}"] = {
+                "blocked": np.flatnonzero(blocked).tolist(),
+                "occluders": [{"mask": _hash_array(o.mask), "bottom": None if o.all_height else o.bottom,
+                               "top": None if o.all_height else o.top, "all_height": o.all_height} for o in occ]}
+    arcs, _ = compile_routes(geo, sub)
+    return {"states": states, "nodes": int(geo.n),
+            "arcs": [[a.route, a.src, a.dst, a.entry_s, a.transit_s, a.length_m, a.owner,
+                      list(a.states) if a.states is not None else None, a.in_transit] for a in arcs]}
+
+
+def asset_hashes(assets: dict) -> dict:
+    """The hash of each loaded asset part, from its canonical bytes (what verification recomputes)."""
+    return {key: _canon(assets[key]) for key in sorted(assets)}
+
+
+def manifest(geo: Geometry, mf: dict | None, legacy: dict | None = None,
+             consumers: frozenset = RUNTIME_CONSUMERS) -> dict | None:
+    """The consumed-input manifest of a map's features, or None when no bundle is publishable: then the map
+    has no `features` input at all, and its control inputs and fingerprints are exactly what they were.
+    Editorial fields never reach it; enabling a bundle, a runtime edit, the height asset, the schema, the
+    compiler, the reducer's semantics or the consumer set do."""
+    from app.replays import map_feature_state as fs
+
+    if not mf:
+        return None
+    statuses = bundle_status(geo, mf, legacy, consumers)
+    assets = compile_assets(geo, mf, statuses)
+    if assets is None:
+        return None
+    members = {m for st in statuses.values() if st.publishable for m in st.members}
+    enabled = sorted(b for b, st in statuses.items() if st.publishable)
+    return {"v": MANIFEST_VERSION, "schema": ms.SCHEMA_VERSION, "compiler": COMPILER_VERSION,
+            "semantics": {"guards": fs.GUARD_VOCABULARY, "priority": fs.PRIORITY, "mid_motion": list(fs.MID_MOTION)},
+            "consumers": sorted({(mf_bundle(mf, b) or {}).get("runtime_consumer") for b in enabled}),
+            "bundles": enabled,
+            "runtime": _canon(_enabled_projection(mf, members)), "height": geo.height_sha,
+            "compiled": asset_hashes(assets)}
+
+
+def mf_bundle(mf: dict, bid: str) -> dict | None:
+    for b in mf.get("bundles") or []:
+        if b.get("id") == bid:
+            return b
+    return None
+
+
+def manifest_digest(m: dict | None) -> str | None:
+    return None if m is None else _canon(m)
+
+
+def verify(expected: dict | None, assets: dict | None, geo: Geometry | None = None, mf: dict | None = None,
+           legacy: dict | None = None, consumers: frozenset = RUNTIME_CONSUMERS) -> list[str]:
+    """Mismatches between an expected manifest and what was actually loaded (empty: they agree). The loaded
+    assets' bytes are hashed again, never trusted from a claim; with the geometry and definitions, the
+    definitions are compiled again and must give the same manifest (definition-to-compiled correspondence)."""
+    problems = []
+    if (expected is None) != (assets is None):
+        return [f"expected {'no' if expected is None else 'a'} features input, loaded {'none' if assets is None else 'some'}"]
+    if expected is None:
+        return []
+    got = asset_hashes(assets)
+    for key in sorted(set(got) | set(expected.get("compiled") or {})):
+        if got.get(key) != (expected.get("compiled") or {}).get(key):
+            problems.append(f"compiled {key}: loaded {got.get(key)}, expected {(expected.get('compiled') or {}).get(key)}")
+    if geo is not None and mf is not None:
+        fresh = manifest(geo, mf, legacy, consumers)
+        if fresh != expected:
+            diff = sorted(k for k in set(fresh or {}) | set(expected) if (fresh or {}).get(k) != expected.get(k))
+            problems.append(f"definitions no longer compile to the expected manifest ({', '.join(diff)})")
+    return problems
+
+
 # ---------------------------------------------------------------- diagnostics needing geometry
 
 def diagnose(geo: Geometry, mf: dict) -> list[dict]:

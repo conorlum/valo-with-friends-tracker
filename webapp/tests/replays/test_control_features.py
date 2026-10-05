@@ -493,6 +493,65 @@ def test_availability_states_and_in_transit_policies():
     assert not cf.TraversalGraph(geo, cf.compile_routes(geo, zipline())[0], blocked=blocked).reachable(a)[b]
 
 
+def manifest_mf():
+    block = rect(200, 100, 232, 140)
+    f = breakable("feature-1", block)
+    f["base_edits"] = {}
+    f["name"], f["notes"] = "Block", "toy"
+    door = feature("feature-3", rect(300, 100, 308, 140))
+    return {**ms.empty(), "features": [f, door], "checklist": {"x": {"status": "in_progress"}},
+            "bundles": [{"id": "bundle-2", "members": ["feature-1"], "enabled": True, "runtime_consumer": "test"}]}
+
+
+TEST = frozenset({"test"})
+
+
+def test_the_manifest_is_absent_without_enabled_features_and_for_every_committed_map():
+    geo = open_hall()
+    assert cf.manifest(geo, None) is None and cf.manifest(geo, ms.empty()) is None
+    assert cf.manifest(geo, manifest_mf()) is None, "no registered consumer in this build: nothing is enabled"
+    tags = cg.load_tags()
+    assert all(cf.manifest(geo, (e or {}).get("map_features")) is None for e in tags["maps"].values())
+
+
+def test_the_manifest_tracks_runtime_inputs_and_ignores_editorial_ones(monkeypatch):
+    geo = open_hall()
+    mf = manifest_mf()
+    base = cf.manifest(geo, mf, consumers=TEST)
+    assert base["bundles"] == ["bundle-2"] and base["consumers"] == ["test"] and base["height"] is None
+    assert set(base["compiled"]) == {"arcs", "nodes", "states"}
+    for edit in (lambda m: m["features"][0].update(name="Renamed", notes="other", review="user_reviewed"),
+                 lambda m: m.update(checklist={}, next_id=50),
+                 lambda m: m["features"][1].update(initial_state="open")):          # not in an enabled bundle
+        m = copy.deepcopy(mf)
+        edit(m)
+        assert cf.manifest(geo, m, consumers=TEST) == base
+    for edit in (lambda m: m["features"][0]["states"][0].update(footprint=rect(200, 100, 240, 140)),
+                 lambda m: m["features"][0]["transitions"][0].update(to="intact"),
+                 lambda m: m["bundles"][0]["members"].append("feature-3")):
+        m = copy.deepcopy(mf)
+        edit(m)
+        assert cf.manifest_digest(cf.manifest(geo, m, consumers=TEST)) != cf.manifest_digest(base)
+    monkeypatch.setattr(cf, "COMPILER_VERSION", cf.COMPILER_VERSION + 1)
+    assert cf.manifest(geo, mf, consumers=TEST)["compiler"] != base["compiler"]
+
+
+def test_verification_rehashes_loaded_assets_and_recompiles_definitions():
+    geo = open_hall()
+    mf = manifest_mf()
+    statuses = cf.bundle_status(geo, mf, consumers=TEST)
+    assets = cf.compile_assets(geo, mf, statuses)
+    expected = cf.manifest(geo, mf, consumers=TEST)
+    assert cf.verify(expected, assets) == [] and cf.verify(expected, assets, geo, mf, consumers=TEST) == []
+    tampered = copy.deepcopy(assets)
+    tampered["states"]["feature-1:intact"]["blocked"].pop()
+    assert any(p.startswith("compiled states") for p in cf.verify(expected, tampered))
+    edited = copy.deepcopy(mf)
+    edited["features"][0]["states"][0]["footprint"] = rect(200, 100, 240, 140)
+    assert any("definitions" in p for p in cf.verify(expected, assets, geo, edited, consumers=TEST))
+    assert cf.verify(None, None) == [] and cf.verify(None, assets) and cf.verify(expected, None)
+
+
 def test_routes_never_touch_the_maps_legacy_specials():
     from app.control import engine
 
