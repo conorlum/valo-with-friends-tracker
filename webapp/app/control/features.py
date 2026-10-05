@@ -232,6 +232,189 @@ def compose_masks(sight_px: np.ndarray, walk_px: np.ndarray, mf: dict, states: d
     return sight, walk
 
 
+# ---------------------------------------------------------------- bounded sight
+
+@dataclass(eq=False)
+class BoundedOccluder:
+    """A feature's sight blocker in one state: a pixel mask (its rasterised geometry) and the height band it
+    fills, [bottom, top) in the engine's z frame (metres of position-z above the map's lowest floor), or every
+    height (`all_height`). A sight line is blocked where it is inside the mask at a height inside the band."""
+    owner: str
+    mask: np.ndarray               # PX x PX bool
+    bottom: float = -np.inf
+    top: float = np.inf
+    all_height: bool = False
+
+
+def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owner: str):
+    """(BoundedOccluder, None) or (None, why it is pending). Ground-relative bounds stand on the bound floor's
+    physical ground (its node z - STAND_M) under the occluder; world bounds convert through the height asset's
+    origin. A flat map has no heights: resolved bounds there block in 2D, like every wall."""
+    from app.control import heights as hc
+
+    bounds = occ.get("bounds") or {}
+    ref = bounds.get("ref")
+    if ref == "all_height":
+        return BoundedOccluder(owner, mask_px, all_height=True), None
+    if ref not in ("ground", "world"):
+        return None, f"{owner}: sight bounds unresolved"
+    lo, hi = ms_known(bounds.get("bottom")), ms_known(bounds.get("top"))
+    if lo is None or hi is None:
+        return None, f"{owner}: a sight bound is unresolved"
+    if geo.heights is None:
+        return BoundedOccluder(owner, mask_px, all_height=True), None
+    if ref == "world":
+        origin = geo.heights.origin_z / 10.0
+        return BoundedOccluder(owner, mask_px, lo - origin, hi - origin), None
+    floor = _floors_by_id(mf).get(bounds.get("floor"))
+    cells = mask_px.reshape(GRID, CELL, GRID, CELL).any((1, 3)).ravel()
+    b = floor_nodes(geo, floor, cells)
+    if b.pending or not len(b.nodes):
+        return None, f"{owner}: " + ("; ".join(b.pending) or "no floor under the occluder")
+    ground = float(np.median(geo.node_z[b.nodes])) - hc.STAND_M
+    return BoundedOccluder(owner, mask_px, ground + lo, ground + hi), None
+
+
+def ms_known(value) -> float | None:
+    from app.replays.map_feature_state import known
+    return known(value)
+
+
+def sight_occluders(geo: Geometry, mf: dict, states: dict | None = None) -> tuple[list, list]:
+    """Every occluder of every feature's current state that blocks sight: its `sight` entries, plus its
+    footprint under the state's `sight_bounds` (a breakable block's whole body). Unresolved ones are pending
+    and block nothing."""
+    out, pending = [], []
+    for f in mf.get("features") or []:
+        s = state_of(f, states)
+        if s is None or not s.get("blocks_sight"):
+            continue
+        entries = list(s.get("sight") or [])
+        if s.get("footprint") is not None:
+            entries.append({"geometry": s["footprint"], "bounds": s.get("sight_bounds") or {"ref": "unresolved"}})
+        for occ in entries:
+            mask = to_px(raster(occ.get("geometry")))
+            o, why = resolve_bounds(geo, mf, occ, mask, f.get("id"))
+            if o is None:
+                pending.append(why)
+            else:
+                out.append(o)
+    return out, pending
+
+
+def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None = None) -> np.ndarray:
+    """Per target, is the line from `a` = (x px, y px, z) to that target (b: N x 3, z NaN or None for a 2D
+    check) inside an occluder's mask at a height inside its band? One vertical-intersection rule for `cast_with`,
+    `los_with` and `seen_from_with`: the line is sampled every pixel (its two ends excluded); a straight-up line
+    (same x, y) is blocked when the mask covers its pixel and its z span meets the band."""
+    b = np.asarray(b, float).reshape(-1, 3)
+    n = len(b)
+    out = np.zeros(n, bool)
+    if not occluders or not n:
+        return out
+    ax, ay, az = float(a[0]), float(a[1]), (np.nan if a[2] is None else float(a[2]))
+    flat = np.isnan(az) | np.isnan(b[:, 2])
+    if record is not None and flat.any():
+        record["flat_occluder_tests"] = record.get("flat_occluder_tests", 0) + int(flat.sum())
+    length = np.hypot(b[:, 0] - ax, b[:, 1] - ay)
+    steps = int(np.ceil(length.max())) + 1 if n else 1
+    s = np.linspace(0.0, 1.0, max(steps, 2))[1:-1]
+    for lo in range(0, n, 512):
+        bb, fl, ln = b[lo:lo + 512], flat[lo:lo + 512], length[lo:lo + 512]
+        xs = ax + s[None, :] * (bb[:, 0:1] - ax)
+        ys = ay + s[None, :] * (bb[:, 1:2] - ay)
+        zs = az + s[None, :] * (bb[:, 2:3] - az)
+        xi = np.clip(xs, 0, PX - 1).astype(np.int32)
+        yi = np.clip(ys, 0, PX - 1).astype(np.int32)
+        hit = np.zeros(len(bb), bool)
+        for occ in occluders:
+            inside = occ.mask[yi, xi]
+            if occ.all_height:
+                hit |= inside.any(1)
+                continue
+            band = (zs >= occ.bottom) & (zs < occ.top)
+            hit |= (inside & (band | fl[:, None])).any(1)
+            vertical = ln < 1e-9
+            if vertical.any():
+                px = occ.mask[int(min(max(ay, 0), PX - 1)), int(min(max(ax, 0), PX - 1))]
+                z0 = np.where(np.isnan(bb[vertical, 2]), -np.inf, np.minimum(az, bb[vertical, 2]))
+                z1 = np.where(np.isnan(bb[vertical, 2]), np.inf, np.maximum(az, bb[vertical, 2]))
+                hit[vertical] |= px & (z1 >= occ.bottom) & (z0 < occ.top)
+        out[lo:lo + 512] = hit
+    return out
+
+
+def _eye_body(geo: Geometry, node: int, offset: float):
+    if geo.heights is None or np.isnan(geo.node_z[node]):
+        return np.nan
+    return float(geo.node_z[node]) + offset
+
+
+def cast_with(geo: Geometry, x: float, y: float, angles_deg, smokes: list, occluders: list, eye_z: float | None = None,
+              own: int | None = None, record: dict | None = None) -> np.ndarray:
+    """`geometry.cast`, minus the nodes a bounded occluder hides: each seen node is tested on the line from the
+    eye to its body (centre, node z + BODY_M), so two floors behind one XY crossing can differ."""
+    from app.control import geometry as cg
+    from app.control import heights as hc
+
+    seen = cg.cast(geo, x, y, angles_deg, smokes, eye_z=eye_z, own=own, record=record)
+    if not occluders:
+        return seen
+    nodes = np.flatnonzero(seen)
+    z = np.array([_eye_body(geo, int(n), hc.BODY_M) for n in nodes]) if eye_z is not None else np.full(len(nodes), np.nan)
+    targets = np.column_stack([geo.centres[nodes].astype(float), z])
+    hit = blocked_lines(occluders, (x, y, eye_z), targets, record)
+    if own is not None:
+        hit &= nodes != own
+    seen[nodes[hit]] = False
+    return seen
+
+
+def los_with(geo: Geometry, a: tuple, b: tuple, smokes: list = (), occluders: list = (), record: dict | None = None) -> bool:
+    """`geometry.los` (eye at a, target point b; z None for 2D), and no bounded occluder on the line."""
+    from app.control import geometry as cg
+
+    if not cg.los(geo, a, b, smokes, record):
+        return False
+    target = np.array([[b[0], b[1], np.nan if b[2] is None else b[2]]], float)
+    return not bool(blocked_lines(list(occluders), a, target, record)[0])
+
+
+def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list, skip: np.ndarray | None = None,
+                   record: dict | None = None) -> np.ndarray:
+    """engine.seen_from (the cached rows) with each source-target pair filtered by the bounded occluders: a
+    pair counts when the line from the source's eye (node z + EYE_M) to the target's body (node z + BODY_M) is
+    clear; a node with no height is tested in 2D. One clear source is enough."""
+    from app.control import engine
+    from app.control import heights as hc
+
+    static = engine.seen_from(geo, src, smokes, skip)
+    if not occluders:
+        return static
+    src = src[geo.row_of[src] >= 0]
+    targets = np.flatnonzero(static & ~skip) if skip is not None else np.flatnonzero(static)
+    if not len(targets):
+        return static
+    out = static.copy()
+    out[targets] = False
+    tz = np.array([_eye_body(geo, int(t), hc.BODY_M) for t in targets])
+    tgt = np.column_stack([geo.centres[targets].astype(float), tz])
+    rows = np.unpackbits(geo.rows[geo.row_of[src]], axis=1)[:, : geo.n][:, targets].astype(bool)
+    for i, s in enumerate(src.tolist()):
+        cand = rows[i] & ~out[targets]
+        if not cand.any():
+            continue
+        x, y = geo.centres[s]
+        for smoke in smokes:                  # the pair must be clear of smoke too, as in seen_from
+            cand[cand] &= ~engine.smoke_blocks(geo.centres[[s]], geo.centres[targets[cand]], smoke)[0]
+        if not cand.any():
+            continue
+        clear = ~blocked_lines(occluders, (float(x), float(y), _eye_body(geo, s, hc.EYE_M)), tgt[cand], record)
+        idx = targets[cand]
+        out[idx[clear]] = True
+    return out
+
+
 # ---------------------------------------------------------------- diagnostics needing geometry
 
 def diagnose(geo: Geometry, mf: dict) -> list[dict]:
