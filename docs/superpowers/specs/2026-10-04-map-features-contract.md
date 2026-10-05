@@ -1,8 +1,8 @@
 # Map features: the frozen contract (M0 exit)
 
 Date: 2026-10-04 (AFK run `2026-10-04-map-tagger`). Plan: `docs/superpowers/plans/2026-10-04-map-interaction-tagger.md`
-(M0); design: `docs/superpowers/specs/2026-10-03-map-gimmicks-design.md`. Status: PROVISIONAL(D5) **frozen provisionally** on
-the agent's reading, pending the user's approval (run decision D5). Every contract below is exercised by a
+(M0); design: `docs/superpowers/specs/2026-10-03-map-gimmicks-design.md`. Status: **frozen** on
+the agent's reading, approved by the user on 2026-10-04 (run decision D5). Every contract below is exercised by a
 synthetic fixture; nothing here is consumed by the engine in this build, no map has an enabled feature, and
 every committed map's control inputs and fingerprints are unchanged (`tests/fixtures/control/map_features/legacy_inputs.json`).
 
