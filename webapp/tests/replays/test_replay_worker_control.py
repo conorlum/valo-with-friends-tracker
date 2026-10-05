@@ -37,6 +37,8 @@ if mode == "engine":
     print(json.dumps({{"status": "failed", "error_kind": "engine", "error": "ControlError: no side"}}))
 elif mode == "infra":
     print(json.dumps({{"status": "failed", "error_kind": "infra", "error": "MemoryError"}}))
+elif mode == "garbage":
+    print("not json")
 else:
     print(json.dumps({{"status": "ok", "data": "ZA==", "summary": "cw==", "revision": 1, "data_version": 1,
                       "key": task["key"]}}))
@@ -146,6 +148,125 @@ def test_the_queue_has_a_size(runner):
     r.submit(task("q2", "Sunset"))
     with pytest.raises(server.queue.Full):
         r.submit(task("q3", "Sunset"))
+
+
+# ---------------------------------------------------------------- only while idle; a parse kills it
+# (docs/superpowers/plans/2026-10-05-control-idle-queue.md, Task 3, D4)
+
+
+def wait_until(predicate, timeout=20):
+    end = time.time() + timeout
+    while time.time() < end:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition not reached")
+
+
+def test_nothing_starts_while_the_worker_is_busy(runner):
+    busy = {"on": True}
+    r, log = runner()
+    r.idle = lambda: not busy["on"]
+    job = r.submit(task("a:1:f"))
+    time.sleep(1.5)
+    assert r.get(job.id).status == "queued" and not list(log.iterdir())
+    busy["on"] = False
+    wait_all(r, [job])
+    assert r.get(job.id).status == "done"
+
+
+def test_a_parse_kills_every_child_and_their_rounds_go_back_first_uncounted(runner):
+    busy = {"on": False}
+    r, log = runner()
+    r.idle = lambda: not busy["on"]
+    wait_all(r, [r.submit(task("w:1:f"))])                       # the map is warm: two may run at once
+    a, b = r.submit(task("a:1:f", mode="sleep:30")), r.submit(task("b:1:f", mode="sleep:30"))
+    c = r.submit(task("c:1:f"))
+    wait_until(lambda: r.counts()["running"] == 2)
+    busy["on"] = True
+    assert r.preempt() == 2
+    wait_until(lambda: r.counts()["running"] == 0)
+    assert {r.get(a.id).status, r.get(b.id).status} == {"queued"} and r.get(c.id).status == "queued"
+    assert set(r.pending[:2]) == {a.id, b.id} and r.pending[2] == c.id
+    assert r.get(a.id).error is None and r.get(a.id).task, "uncounted, task kept"
+    assert r.counts()["preempted"] == 2 and "Ascent" in r.counts()["warm"]
+    r.jobs[a.id].task = json.dumps(task("a:1:f")).encode()     # let them finish quickly this time
+    r.jobs[b.id].task = json.dumps(task("b:1:f")).encode()
+    busy["on"] = False
+    wait_all(r, [a, b, c])
+
+
+def test_a_preempted_warming_round_stays_cold_and_warms_alone_again(runner):
+    busy = {"on": False}
+    r, log = runner()
+    r.idle = lambda: not busy["on"]
+    first = r.submit(task("w:1:f", mode="sleep:30"))
+    second = r.submit(task("x:1:f"))
+    wait_until(lambda: r.counts()["running"] == 1)
+    busy["on"] = True
+    assert r.preempt() == 1
+    wait_until(lambda: r.counts()["running"] == 0)
+    assert r.get(first.id).status == "queued" and "Ascent" not in r.counts()["warm"]
+    r.jobs[first.id].task = json.dumps(task("w:1:f", mode="sleep:1")).encode()
+    busy["on"] = False
+    wait_all(r, [first, second])
+    starts = sorted((float(p.name.split("_")[0]), p.name) for p in log.iterdir() if "_start_" in p.name)
+    ends = sorted(float(p.name.split("_")[0]) for p in log.iterdir() if "_end_" in p.name)
+    # after the resume, the warming round ran alone: the second round started after it ended
+    assert starts[-1][0] >= ends[-2]
+
+
+@pytest.mark.parametrize("ending", ["done", "timeout", "garbage"])
+def test_preemption_at_settlement_wins_over_every_other_ending(runner, ending):
+    mode = {"done": "ok", "timeout": "hang", "garbage": "garbage"}[ending]
+    overrides = {"control_timeout_s": 1.0, "control_warm_timeout_s": 1.0} if ending == "timeout" else {}
+    r, log = runner(**overrides)
+    gate = threading.Event()
+    # the preempt lands after the child has ended, before settlement; idle goes false first so it can't rerun
+    r._before_settle = lambda job: (setattr(r, "idle", lambda: False), r.preempt(), gate.set())
+    job = r.submit(task("p:1:f", mode=mode))
+    assert gate.wait(30)
+    wait_until(lambda: r.counts()["running"] == 0)
+    assert r.get(job.id).status == "queued" and r.get(job.id).error is None and r.get(job.id).task
+    assert r.pending == [job.id] and r.counts()["preempted"] == 1
+    assert "Ascent" not in r.counts()["warm"], "warmth unchanged: it was cold"
+
+
+def test_a_child_started_in_the_admission_gap_is_killed_by_the_parse_starting(runner):
+    r, log = runner()
+    job = r.submit(task("g:1:f", mode="sleep:30"))
+    wait_until(lambda: r.counts()["running"] == 1)               # admitted while idle() read True
+    r.idle = lambda: False
+    assert r.preempt() == 1                                      # what Worker._run's on_parse() does
+    wait_until(lambda: r.counts()["running"] == 0)
+    assert r.get(job.id).status == "queued"
+
+
+def test_a_failing_kill_or_seam_never_loses_the_slot(runner, monkeypatch):
+    r, log = runner()
+
+    def boom(job):
+        raise RuntimeError("seam")
+    r._before_settle = boom
+    job = r.submit(task("s:1:f"))
+    wait_all(r, [job])
+    assert r.get(job.id).status == "done" and r.counts()["running"] == 0
+
+
+def test_the_worker_wires_its_parse_hook_to_control(monkeypatch):
+    made = {}
+
+    class Fake:
+        server_address = ("x", 1)
+
+        def serve_forever(self):
+            pass
+    monkeypatch.setattr(server, "make_server", lambda worker, host, port, control: made.update(
+        worker=worker, control=control) or Fake())
+    monkeypatch.setattr(server.Settings, "from_env", classmethod(lambda cls, env=None: cls(control_cmd=["true"])))
+    server.main()
+    assert made["worker"].on_parse == made["control"].preempt
+    assert made["control"].idle == made["worker"].idle
 
 
 def http(base, path, body=None):
