@@ -70,7 +70,7 @@
 
 - [ ] **Step 1: Replace the two tests whose meaning changes, and add the new ones**
 
-Delete `test_unlinked_replays_wait_for_their_link` and `test_stale_rounds_stay_for_the_local_command`. Add (imports at the top beside the others):
+Delete `test_unlinked_replays_wait_for_their_link`, `test_stale_rounds_stay_for_the_local_command` and `test_a_job_out_too_long_is_given_up_on` (under D8 its second cycle is the first time the jobs are seen running, so nothing times out; `test_a_job_running_past_the_limit_counts_as_a_failure` below replaces it). Add (imports at the top beside the others):
 
 ```python
 from datetime import datetime, timezone
@@ -185,6 +185,19 @@ def test_a_job_running_past_the_limit_counts_as_a_failure(factory, db, linked):
     remote.cycle(factory, worker, state, now=1)                      # first seen running
     counts = remote.cycle(factory, worker, state, now=2 + remote.STALE_JOB_S)
     assert counts["timed_out"] == remote.IN_FLIGHT and all(c == 1 for c, _ in state.tries.values())
+
+
+def test_a_preempted_job_starts_its_running_clock_again(factory, db, linked):
+    phase = {"status": "running"}
+    worker = FakeWorker(answer=lambda task: {"status": phase["status"]})
+    state = remote.State()
+    remote.cycle(factory, worker, state, now=0)
+    remote.cycle(factory, worker, state, now=1)                       # seen running
+    phase["status"] = "queued"
+    remote.cycle(factory, worker, state, now=2)                       # preempted: back in the worker's queue
+    phase["status"] = "running"
+    counts = remote.cycle(factory, worker, state, now=3 + remote.STALE_JOB_S)
+    assert counts["timed_out"] == 0 and not state.tries
 ```
 
 `FakeWorker.job` returns `self.answer(...) or {"status": "running"}`; the `{"status": "queued"}` answer above is truthy, so it passes through.
@@ -216,7 +229,8 @@ PLAN_IDLE_S = 120               # after a plan that found nothing to send, wait 
 ```python
         status = job.get("status")
         if status == "queued":
-            continue                     # D8: waiting behind parses on the worker is not a failure
+            f.running_since = None       # D8: waiting behind parses is not a failure; only unbroken running counts
+            continue
         if status == "running":
             if f.running_since is None:
                 f.running_since = now
@@ -227,9 +241,9 @@ PLAN_IDLE_S = 120               # after a plan that found nothing to send, wait 
             continue
 ```
 
-A preempted job goes back to `queued` on the worker; its next `running` keeps the earlier `running_since`, which is conservative (the worker's own per-child timeout is 900 s / 1800 s warm, well inside `STALE_JOB_S`).
+A preempted job goes back to `queued` on the worker, and seeing it there clears `running_since`: kept, a job seen running, preempted, then queued behind a batch longer than `STALE_JOB_S` would be counted as a failure the moment it ran again, which is D8's own case (P4 review, finding 17). The worker's own per-child timeout is 900 s (1800 s for a map's first round, the same as `STALE_JOB_S`).
 
-Delete `_unstarted`. Add `_rank` and `_order`:
+Delete `_unstarted` and the `ReplayRoundControl` import only it used. Add `_rank` and `_order`:
 
 ```python
 def _rank(todo: list, played: dict, created: dict) -> list:
@@ -344,6 +358,9 @@ def test_the_worker_says_when_it_is_idle_and_calls_the_parse_hook(tmp_path, stub
     while worker.get(job.id).status not in ("done", "failed") and time.time() < end:
         time.sleep(0.05)
     assert worker.get(job.id).status == "done"
+    end = time.time() + 5                    # `parsing` clears a few statements after the status reads done
+    while not worker.idle() and time.time() < end:
+        time.sleep(0.02)
     assert worker.idle() and len(calls) >= 2, "a parse starting calls it again"
 ```
 
@@ -424,9 +441,9 @@ def test_a_parse_kills_every_child_and_their_rounds_go_back_first_uncounted(runn
     assert set(r.pending[:2]) == {a.id, b.id} and r.pending[2] == c.id
     assert r.get(a.id).error is None and r.get(a.id).task, "uncounted, task kept"
     assert r.counts()["preempted"] == 2 and "Ascent" in r.counts()["warm"]
-    busy["on"] = False
     r.jobs[a.id].task = json.dumps(task("a:1:f")).encode()     # let them finish quickly this time
     r.jobs[b.id].task = json.dumps(task("b:1:f")).encode()
+    busy["on"] = False
     wait_all(r, [a, b, c])
 
 
@@ -524,7 +541,7 @@ def kill_tree(process: subprocess.Popen) -> None:
 
 (The parser path also calls `kill_tree`; this only makes it stricter. Check `test_the_timeout_kills_a_hung_parse_and_cleans_up` still passes.)
 
-`ControlRunner.__init__` gains:
+`ControlRunner.__init__(self, settings, idle=None)` gains, **before** `self.thread = ...` (the scheduler thread reads `self.idle` as soon as it starts, and has no try/except to survive a missing attribute):
 
 ```python
         self.idle = idle or (lambda: True)    # the parse side has nothing running or waiting (D4)
@@ -547,7 +564,10 @@ def kill_tree(process: subprocess.Popen) -> None:
             self.preempted.update(job_id for job_id, _ in victims)
         for _, process in victims:
             if process is not None:
-                kill_tree(process)
+                try:
+                    kill_tree(process)
+                except Exception:  # noqa: BLE001 - a parse must never fail because a kill did
+                    traceback.print_exc()
         return len(victims)
 ```
 
@@ -588,14 +608,20 @@ def kill_tree(process: subprocess.Popen) -> None:
             error = "control child failed"
         finally:
             if process is not None:
-                kill_tree(process)                     # bounded; a no-op for a child that exited cleanly
+                try:
+                    kill_tree(process)                 # bounded; a no-op for a child that exited cleanly
+                except Exception:  # noqa: BLE001 - settlement below must always run, or the slot is lost
+                    traceback.print_exc()
                 for stream in (process.stdin, process.stdout, process.stderr):
                     try:
                         if stream is not None:
                             stream.close()
                     except OSError:
                         pass
-        self._before_settle(job)
+        try:
+            self._before_settle(job)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
         with self.lock:
             self.procs.pop(job.id, None)
             self.running.pop(job.id, None)
@@ -624,7 +650,7 @@ def kill_tree(process: subprocess.Popen) -> None:
         self.wake.set()
 ```
 
-`communicate(timeout=...)` raising `TimeoutExpired` leaves the child running; the `finally` kills it and closes the pipes rather than draining them, so a descendant holding a pipe can't hang the thread (finding 3). On Windows, closing a pipe a descendant still writes to is harmless to us.
+`communicate(timeout=...)` raising `TimeoutExpired` leaves the child running; the `finally` kills it and closes the pipes rather than draining them, so a descendant holding a pipe can't hang the thread (finding 3). That holds on Linux, where `communicate` has no reader threads. On Windows its reader threads may still be blocked on the pipes and `close()` waits for them; `taskkill /T` has killed the tree by then, so it returns.
 
 `counts()` adds `"preempted": self.preempted_total`.
 
@@ -644,7 +670,7 @@ def main() -> None:
     ...
 ```
 
-Module docstring: replace the control paragraph's priority sentence with "It runs only while nothing is parsing or waiting to parse (`Worker.idle`), on up to `control_workers` children; a parse arriving kills every running child, and their rounds go back to the front of the queue uncounted (docs/superpowers/plans/2026-10-05-control-idle-queue.md, D4)." and `REPLAY_CONTROL_WORKERS`'s note to "(default 2: the 2-CPU plan's two cores, used only while no parse is running)".
+Module docstring: `GET /health`'s line gains `preempted` among the control keys; append to the control paragraph "It runs only while nothing is parsing or waiting to parse (`Worker.idle`), on up to `control_workers` children; a parse arriving kills every running child, and their rounds go back to the front of the queue uncounted (docs/superpowers/plans/2026-10-05-control-idle-queue.md, D4)." and `REPLAY_CONTROL_WORKERS`'s note to "(default 2: the 2-CPU plan's two cores, used only while no parse is running)".
 
 - [ ] **Step 4: Run** `PY -m pytest tests/replays/test_replay_worker_control.py tests/replays/test_replay_worker.py tests/replays/test_replay_worker_archive.py tests/replays/test_control_isolation.py -q -p no:cacheprovider` → PASS except the pre-existing failure. Run the new tests three times (`--count` isn't installed; loop in the shell) to catch flakiness.
 
@@ -713,7 +739,7 @@ Router, the last `return` of `replay_round_control`:
     return _stored_gzip(request, answer.row.data, "application/octet-stream", headers)
 ```
 
-(Import `control_format as cf` if the router doesn't already.)
+(The router doesn't import it yet: add `from app.replays import control_format as cf`, which is stdlib-only.)
 
 `replay.html`'s `loadControl`:
 
@@ -743,13 +769,14 @@ and a new function, exported beside the others the module exports:
     var current = value.currentRevision ? "r" + value.currentRevision : null;
     if (!value.stale) return mine ? "Map control " + mine + "." : "Map control (revision not recorded).";
     if (!mine) return "Out of date: revision not recorded. Queued for recompute.";
-    if (current && mine !== current) return "Out of date: computed under " + mine + ", current " + current + ". Queued for recompute.";
+    if (!current) return "Out of date: computed under " + mine + ". Queued for recompute.";
+    if (mine !== current) return "Out of date: computed under " + mine + ", current " + current + ". Queued for recompute.";
     return "Out of date: computed under " + mine + ", but its inputs changed (a new link, the replay, or the " +
       "map's geometry). Queued for recompute.";
   }
 ```
 
-`replay.js` ~1613: `? ReplayControl.revisionNote(value)` replaces `? (value.stale ? "Computed from older inputs; it will be refreshed." : "")` (use the name `replay.js` already uses for the control module). ~2069: the match table reads `rows.stale` from `players.json`, which has no revisions; change only its text to `"Out of date for some rounds: queued for recompute."`.
+`replay.js` ~1613: `? controlApi().revisionNote(value)` replaces `? (value.stale ? "Computed from older inputs; it will be refreshed." : "")` (`controlApi()` is how `replay.js` reaches the control module; a bare `ReplayControl` is a ReferenceError under Node). The "Showing what ... knew" text now follows the note instead of an empty string. ~2069: the match table reads `rows.stale` from `players.json`, which has no revisions; change only its text to `"Out of date for some rounds: queued for recompute."`.
 
 - [ ] **Step 4: Run** `PY -m pytest tests/replays/test_control_store.py tests/replays/test_control_views.py tests/replays/test_control_viewer.py tests/replays/test_control_remote.py -q -p no:cacheprovider` → PASS.
 
@@ -808,7 +835,7 @@ def test_the_backfill_reads_a_headers_revision_and_nothing_else():
 
 def test_the_backfill_fills_ok_rows_and_leaves_the_rest(db, linked):
     m = migration_0017()
-    put_row(db, linked, 1)                                   # ok, a header with no revision (data is b"x")
+    put_row(db, linked, 1)                                   # ok, but not a control blob at all (data is b"x")
     put_row(db, linked, 2)
     put_row(db, linked, 3, status="failed")
     put_row(db, linked, 4)
@@ -823,7 +850,7 @@ def test_the_backfill_fills_ok_rows_and_leaves_the_rest(db, linked):
     assert got == {1: None, 2: 4, 3: None, 4: 5}
 ```
 
-Extend `test_pg_migration_0014_cascades_and_holds_its_checks` with one line after its first `put_row` calls, so the real schema is checked for the column: `assert session.execute(text("SELECT control_revision FROM replay_round_control")).fetchall()`.
+Extend `test_pg_migration_0014_cascades_and_holds_its_checks` with one line after its first `put_row` calls, so the real schema is checked for the column: `assert session.execute(text("SELECT control_revision FROM replay_round_control")).fetchall()`. The `pg` fixture uses whatever schema its database already has, so the pg test database needs `alembic upgrade head` before any pg test runs once the model has the column.
 
 - [ ] **Step 2: Run** `PY -m pytest tests/replays/test_control_store.py -k "revision or backfill" -q -p no:cacheprovider` → FAIL (no migration file; no `control_revision` attribute).
 
@@ -857,6 +884,7 @@ can't be read, stays NULL.
 Additive, and the ValoMaths demo's table is empty.
 """
 import gzip
+import io
 import json
 import struct
 from typing import Sequence, Union
@@ -873,11 +901,13 @@ depends_on: Union[str, Sequence[str], None] = None
 def header_revision(data) -> int | None:
     """The `revision` in a stored row's data header: gzip(b"VCTL", version byte, <I header length, JSON header, ...)."""
     try:
-        raw = gzip.decompress(bytes(data))
-        if raw[:4] != b"VCTL":
-            return None
-        (length,) = struct.unpack("<I", raw[5:9])
-        found = json.loads(raw[9:9 + length].decode("utf-8")).get("revision")
+        # Only the header is read: the migration holds the ALTER's lock while it backfills.
+        with gzip.GzipFile(fileobj=io.BytesIO(bytes(data))) as stream:
+            head = stream.read(9)
+            if head[:4] != b"VCTL":
+                return None
+            (length,) = struct.unpack("<I", head[5:9])
+            found = json.loads(stream.read(length).decode("utf-8")).get("revision")
     except Exception:  # noqa: BLE001 - a row that can't be read stays NULL; the migration never fails on data
         return None
     return found if type(found) is int else None
@@ -937,7 +967,8 @@ def downgrade() -> None:
 ```
 > **Superseded in part (2026-10-05):** the dispatcher now also sends stale and unlinked rounds, newest match first,
 > and the worker runs control only while it isn't parsing (a parse kills it). See
-> docs/superpowers/plans/2026-10-05-control-idle-queue.md. Decision 5 and S1 below are no longer in force.
+> docs/superpowers/plans/2026-10-05-control-idle-queue.md. Decisions 1 and 5, S1 and the "keep the 8 GB plan's
+> headroom" memory note below are no longer in force.
 ```
 
 - [ ] **Step 3:** `.gitignore`: add `.claude/worktrees/` under `.worktrees/`.
@@ -970,3 +1001,21 @@ fingerprint that never settles.
 
 After the review, the user approved D8 and asked for the column as well as the header (D9, Task 5). Finding 9's
 point still holds for the page, which reads the header; the column is beside it for SQL, not instead of it.
+
+## P4 review (2026-10-05, before the build)
+
+A second, independent review checked the revised plan and the new Task 5 against the code: 1 blocker, 6 should-fix,
+the rest nits; none changes D1-D9. Applied above: an existing dispatcher test that D8 makes fail is deleted with the
+other two (16); seeing a job `queued` clears `running_since`, so a preempted job's wait never counts (17, with a
+test); the runner's new fields go before its thread starts (6); a failing kill or test seam can't skip settlement
+(7); `preempt` can't raise into the parse thread (8); the idle test polls for `idle()` (14); `controlApi()` in
+`replay.js` (22) and the router's `cf` import (23); the backfill reads only each row's header (1); the pg test
+database is upgraded first (2); a stale row with no current revision gets its own text (24); wording (3, 9, 11, 12,
+18, 19, 25, 27).
+
+Not taken: skipping the Linux group kill after a clean exit (10: the first review asked for the unconditional kill,
+and a recycled pid would have to be a session leader); planning at once after the worker forgets its jobs (20: at
+most `PLAN_IDLE_S`, 120 s); naive datetimes on SQLite (21: tests only). Noted, nothing to change: rows the old
+process stores between the build's migration and the new code going live keep a NULL revision (4); the literal `r5`
+in the checks reads `r6` if `afk/2026-10-04-live-claim` merges first (5); a poll between a preempt and its
+settlement still reads `running` (13, covered by 17); `2c-4g` is confirmed in the dashboard at deploy step 2 (26).
