@@ -55,7 +55,8 @@ class FeatureStateError(ValueError):
 
 def known(value) -> float | None:
     """A value object's seconds, or None when it is unresolved (or missing)."""
-    if isinstance(value, dict) and value.get("status") == "known" and isinstance(value.get("value"), (int, float)):
+    if isinstance(value, dict) and value.get("status") == "known" and isinstance(value.get("value"), (int, float)) \
+            and not isinstance(value.get("value"), bool):
         return float(value["value"])
     return None
 
