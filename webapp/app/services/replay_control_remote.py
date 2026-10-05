@@ -6,15 +6,17 @@ The worker has no database, so the web app drives it: a daemon thread runs `cycl
    `require_current`: nothing is stored if the round's inputs moved meanwhile), but only when the
    result's CONTROL_REVISION, DATA_VERSION and geometry match this deploy's (the two services deploy
    separately). A failure that is the round's own (`engine`) is stored `failed`, as the local command
-   does; the machine's (`infra`), a job the worker forgot (404) or one out for STALE_JOB_S is asked
+   does; the machine's (`infra`), a job the worker forgot (404) or one seen running for STALE_JOB_S is asked
    again, at most MAX_TRIES times per round and inputs, with BACKOFF_S between.
-2. **Submit** rounds that have never been computed (`plan()`'s `missing`), of linked replays only
-   (D5: control reads each player's side from the link, and an upload is often linked by the next
-   crawl), newest replay first, up to IN_FLIGHT at a time. Stale rounds (a revision bump, new
-   geometry, a new link) stay for scripts/compute_control.py, as settled.
+2. **Submit** every round `plan()` lists as `missing` or `stale`
+   (docs/superpowers/plans/2026-10-05-control-idle-queue.md, D1-D3), from linked and unlinked replays
+   alike: linked ones by their match's played_at, newest first, then the rest by upload time. A failure
+   under the current inputs is left alone. Up to IN_FLIGHT at a time; the worker runs them only while it
+   isn't parsing, so a job may sit `queued` there for a long time, and that never counts as a failure
+   (D8). Only a job seen `running` for STALE_JOB_S does.
 
-A cycle first counts linked replays' rounds with no control row (one query) and does nothing more
-when there are none. On PostgreSQL it holds `pg_try_advisory_xact_lock` for the cycle, so one
+`plan()` runs when there is room in flight; after a plan that left nothing sendable it waits
+PLAN_IDLE_S. On PostgreSQL it holds `pg_try_advisory_xact_lock` for the cycle, so one
 instance dispatches when Render overlaps two during a deploy; the worker's key dedupe makes a
 duplicate harmless anyway. In-flight jobs live in memory: a restart just asks again.
 
@@ -36,7 +38,8 @@ from dataclasses import dataclass, field
 from sqlalchemy import text
 
 from app.config import settings
-from app.models.replay import Replay, ReplayRound, ReplayRoundControl
+from app.models.match import Match
+from app.models.replay import Replay, ReplayRound
 from app.replays import control_format as cf
 from app.services import replay_control
 from app.services.replay_control_store import STORED, store_round
@@ -48,6 +51,7 @@ IN_FLIGHT = 8
 STALE_JOB_S = 1800
 MAX_TRIES = 3
 BACKOFF_S = 300
+PLAN_IDLE_S = 120               # after a plan that found nothing to send, wait this long before planning again
 LOCK_ID = 7_346_120_117          # pg_try_advisory_xact_lock's key for the dispatcher
 TIMEOUT_S = 30
 
@@ -105,12 +109,15 @@ class InFlight:
     fingerprint: str
     map_name: str
     sent_at: float
+    running_since: float | None = None   # first seen running, without a `queued` since (D8)
 
 
 @dataclass
 class State:
     in_flight: dict[str, InFlight] = field(default_factory=dict)
     tries: dict[str, tuple[int, float]] = field(default_factory=dict)   # key -> (failures, last)
+    last_planned: float | None = None   # when plan() last ran
+    last_found: bool = True             # whether it left anything sendable unsent
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -144,8 +151,13 @@ def _collect(session_factory, client, state: State, now: float, counts: dict) ->
             counts["unreachable"] += 1
             continue
         status = job.get("status")
-        if status in ("queued", "running"):
-            if now - f.sent_at > STALE_JOB_S:
+        if status == "queued":
+            f.running_since = None       # D8: waiting behind parses is not a failure; only unbroken running counts
+            continue
+        if status == "running":
+            if f.running_since is None:
+                f.running_since = now
+            elif now - f.running_since > STALE_JOB_S:
                 del state.in_flight[key]
                 state.failed(key, now)
                 counts["timed_out"] += 1
@@ -175,29 +187,47 @@ def _collect(session_factory, client, state: State, now: float, counts: dict) ->
             counts["stored_failed"] += 1
 
 
-def _unstarted(session) -> int:
-    """Rounds of linked replays with no control row at all: the cheap check before `plan()`."""
-    return (session.query(ReplayRound.replay_id)
-            .join(Replay, Replay.id == ReplayRound.replay_id)
-            .outerjoin(ReplayRoundControl, (ReplayRoundControl.replay_id == ReplayRound.replay_id)
-                       & (ReplayRoundControl.round_number == ReplayRound.round_number))
-            .filter(Replay.link_status == "linked", ReplayRoundControl.replay_id.is_(None))
-            .count())
+def _rank(todo: list, played: dict, created: dict) -> list:
+    """D2: linked replays by their match's played_at, newest first; then the rest by upload time, newest
+    first; rounds in order. Ties fall back to the replay id, newest first: rough order is enough."""
+    def key(p):
+        if p.replay_id in played:
+            return (0, -played[p.replay_id].timestamp(), -p.replay_id, p.round_number)
+        when = created.get(p.replay_id)
+        return (1, -(when.timestamp() if when else 0.0), -p.replay_id, p.round_number)
+    return sorted(todo, key=key)
+
+
+def _order(session, todo: list) -> list:
+    ids = {p.replay_id for p in todo}
+    if not ids:
+        return []
+    played, created = {}, {}
+    for rid, status, made, at in (session.query(Replay.id, Replay.link_status, Replay.created_at, Match.played_at)
+                                  .outerjoin(Match, Match.id == Replay.match_id)
+                                  .filter(Replay.id.in_(ids))):
+        if status == "linked" and at is not None:
+            played[rid] = at
+        else:
+            created[rid] = made
+    return _rank(todo, played, created)
 
 
 def _submit(session, client, state: State, now: float, counts: dict) -> None:
-    if len(state.in_flight) >= IN_FLIGHT or not _unstarted(session):
+    if len(state.in_flight) >= IN_FLIGHT:
         return
-    # Linked replays only; an upload waits for the crawl that links it.
-    todo = [p for p in replay_control.plan(session) if p.computable and p.reason == "missing"
-            and (p.link or {}).get("linked")]
-    todo.sort(key=lambda p: (-p.replay_id, p.round_number))
-    for p in todo:
+    if state.last_planned is not None and not state.last_found and now - state.last_planned < PLAN_IDLE_S:
+        return
+    # D1/D3: never computed, or out of date, linked or not. A failure under the current inputs stays put.
+    todo = [p for p in replay_control.plan(session) if p.computable and p.reason in ("missing", "stale")]
+    todo = [p for p in todo if task_key(p.replay_id, p.round_number, p.fingerprint) not in state.in_flight
+            and state.may_try(task_key(p.replay_id, p.round_number, p.fingerprint), now)]
+    state.last_planned, state.last_found = now, False
+    for p in _order(session, todo):
         if len(state.in_flight) >= IN_FLIGHT:
+            state.last_found = True          # sendable work is left: plan again next cycle
             break
         key = task_key(p.replay_id, p.round_number, p.fingerprint)
-        if key in state.in_flight or not state.may_try(key, now):
-            continue
         row = session.get(ReplayRound, (p.replay_id, p.round_number))
         if row is None:
             continue
@@ -207,9 +237,11 @@ def _submit(session, client, state: State, now: float, counts: dict) -> None:
             answer = client.submit(task)
         except WorkerBusy:
             counts["busy"] += 1
+            state.last_found = True
             break
         except (WorkerGone, Unreachable):
             counts["unreachable"] += 1
+            state.last_found = True
             break
         state.in_flight[key] = InFlight(answer["id"], p.replay_id, p.round_number, p.fingerprint, p.map_name, now)
         counts["sent"] += 1
