@@ -205,6 +205,21 @@ def test_editorial_edits_leave_the_runtime_digest_and_runtime_edits_change_it():
     assert ms.editorial_digest(MF) != ms.editorial_digest({**MF, "checklist": {}})
 
 
+def test_contract_doc_names_a_policy_for_every_consumer():
+    sys.path.insert(0, str(HERE))
+    import map_feature_consumers
+
+    found = map_feature_consumers.consumers()
+    assert len(found) >= 25, "the scan should see the engine's consumers"
+    doc = (WEBAPP.parent / "docs" / "superpowers" / "specs" / "2026-10-04-map-features-contract.md").read_text(encoding="utf-8")
+    rows = {line.split("|")[1].strip().strip("`"): line for line in doc.splitlines() if line.startswith("| `")}
+    missing = sorted(set(found) - set(rows))
+    assert not missing, f"consumers without a policy in the contract doc: {missing}"
+    policies = ("walk_only", "transport_reachability", "transport_time", "bounded_sight", "base", "freshness")
+    for key in found:
+        assert any(p in rows[key].split("|")[3] for p in policies), key
+
+
 def test_the_new_modules_import_only_the_standard_library_and_app_replays():
     # the worker image copies only app/__init__.py, app/replays and app/control (replay_worker/Dockerfile)
     for name in ("map_feature_schema.py", "map_feature_state.py"):
