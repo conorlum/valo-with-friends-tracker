@@ -215,7 +215,7 @@ bullet, M1.a = M1's first acceptance sentence, and so on; see the coverage table
 - Check: `tests/replays/test_map_feature_tagger.py -k "raster or route or floor"` passes: JS vs Python cells on
   the fixtures; a same-position rope exports two landings on two floors; unresolved floors survive
   export -> import; Python `compile_routes` on the JS export creates no same-floor or horizontal arc.
-- Covers: M3.a-M3.c. Depends: W6, W9, W14.
+- Covers: M3.a-M3.c. Depends: W6, W9, W14b.
 
 ### W16 — State previews, rotation, checklist (M4)
 - Files: `app/control/features.py` (rotation poses), core JS, template, tests.
@@ -263,6 +263,44 @@ bullet, M1.a = M1's first acceptance sentence, and so on; see the coverage table
   catalogue validates in Python with zero errors and equals the edits.
 - Covers: M6. Depends: W14-W16.
 
+## Amendments from review (P4; `2026-10-04-map-interaction-tagger-impl-review.md`)
+
+These override the step text above where they conflict.
+
+- **W4b — Legacy inputs snapshot** (new, after W4, before any service edit). Files:
+  `tests/fixtures/control/map_features/legacy_inputs.json`, a writer under `tests/replays/` helpers, and a
+  test in `test_control_features.py`. Records, from the unmodified services, every index.json map's
+  `geometry_inputs` and `cf.fingerprint("recipe.fixed", "0"*64, <fixed link>, inputs)`. Check: the test that
+  re-derives both and compares to the file passes. W10 and W17 assert against this file.
+- **One base domain** (W6, W8): base walk = permanent ground ∪ every enabled bundle's `potential_ground`;
+  per-state movement is a node mask over `walk_n`, never a rebuilt geometry. W8 asserts `geo.n` and
+  `node_cell` are identical across all fixture states.
+- **Floor binding** (W5, W6): `{"id", "z_band": [lo, hi] (map-relative metres, position-z), "height_sha",
+  "cells": optional}`; resolves per cell to the node whose `node_z` lies in the band; no or several matches,
+  or a different `height_sha`, = pending. A manual label without a band is `status: "unresolved"`.
+- **Node tests fail without node** (W4 onward).
+- **Strict isolation** (W5): a test that every import in `map_feature_schema.py`/`map_feature_state.py` is
+  stdlib or `app.replays`. W5 imports the guard/event vocabulary from `map_feature_state` (W5 depends on W3).
+- **`validate` is structural only** (W5); `features.diagnose(geo, mf)` gives geometry warnings (W6, W8).
+  Legacy `specials` stay read-only; `validate` warns when a route duplicates a special's endpoints.
+- **W11** uses an AST walk over `app/control` and `app/gaps` (topology methods/attributes reached through
+  `topo`, `self.topo`, `topology.of(...)`; `cast`, `los`, `seen_from`, `special_links`; `.specials` reads),
+  keyed `module:Class.func`, each of which must appear in the contract doc's table.
+- **W12** export: feature edits have their own dirty flag; `exportCatalogue` = `exportTags` plus a
+  `map_features` merge for feature-dirty maps only, carrying `image_sha` and `runtime_digest`; a test that
+  with no feature edits it deep-equals `exportTags`.
+- **W14** splits into **W14a** (generator data, panel, feature list, properties, persistence/indicator,
+  import review) and **W14b** (zoom/pan, point/line/polygon/brush tools, link picking, arrows, undo/redo).
+- **W17**: `replay_control.py` reads a features digest only from the index.json row (`_assets()`), never
+  imports `app.control`; `"features"` joins `_matches_geometry`'s keys (None == None when absent);
+  `replay_gaps.py` is untouched.
+- **W18**: publication is a function taking `asset_dir` (tests: tmp); `build_map` carries `features*` index
+  keys forward like `keep_heights`; the consumed-manifest comparison runs only when a result carries
+  `features`, so absent keys change nothing for the deployed worker. The run never executes the script on
+  the committed asset folder.
+- **Full suite**: three foreground parts, each under the 600 s cap: `test_control_*`; `test_gaps_*`; the rest
+  of `tests/replays`.
+
 ## Coverage table
 
 | Plan acceptance | Steps |
@@ -272,21 +310,21 @@ bullet, M1.a = M1's first acceptance sentence, and so on; see the coverage table
 | M0.3 stacked-floor door: walking per floor; sight in cast/los/seen_from | W6, W7 |
 | M0.4 baked-in breakable, legacy paint, pending bundles unpublished | W8 |
 | M0.5 same-position rope, transport costs, endpoint-only vs intermediate, return path, temporal | W9 |
-| M0.6 manifest mismatch, enabled-set/semantics change, editorial no-op, legacy fingerprints | W5, W10, W17 |
+| M0.6 manifest mismatch, enabled-set/semantics change, editorial no-op, legacy fingerprints | W4b, W5, W10, W17 |
 | M0 exit gate | W11 |
 | M1 round trip, identity, delete/undo, malformed import | W5, W12 |
 | M1 fixture (door closeable+breakable, rotating, teleporter, zipline, same-u/v rope) | W5 |
 | M1 canonical import -> edit -> autosave -> reload -> export, unknown fields | W12, W13 |
 | M1 duplicate remap, delete/relink every reference type, incompatible imports | W12 |
-| M2 multiple nearby objects, switch + shoot trigger, zipline/rope without JSON | W14, W19 |
-| M2 save/reload, map change, undo deletion, import replacement | W13, W14, W19 |
+| M2 multiple nearby objects, switch + shoot trigger, zipline/rope without JSON | W14a, W14b, W19 |
+| M2 save/reload, map change, undo deletion, import replacement | W13, W14a, W19 |
 | M2 recovery, corrupt snapshot, interrupted save, provenance, quota | W13, W19 |
 | M3 same-position rope, zipline off-minimap, unresolved floors survive, no snapping | W15 |
 | M3 directional costs, endpoint/intermediate, pending explained | W9, W15 |
 | M4 state previews, rotation, multiple features, reset; JS = Python masks | W16 |
 | M4 existing mask parity, kill-lines not mislabelled | W16 (+ test_control_tagger.py every step) |
 | M4 reducer, nodes, arcs, occluders agree with shared contract; probes unavailable otherwise | W4, W15, W16 |
-| M5 runtime vs editorial inputs, stale refused, edit-during-task, interrupted publication, no-feature fingerprints | W17, W18 |
+| M5 runtime vs editorial inputs, stale refused, edit-during-task, interrupted publication, no-feature fingerprints | W4b, W17, W18 |
 | M6 browser QA, preview catalogue, instructions | W19 |
 
 ## Not in this build
