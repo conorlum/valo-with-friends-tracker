@@ -144,9 +144,16 @@ def describe(planned) -> list[str]:
 
 
 def store_result(session_factory, planned, result: dict) -> str:
-    """app/services/replay_control_store.py, with the fingerprint the round was planned with."""
+    """app/services/replay_control_store.py, with the fingerprint the round was planned with. A result computed
+    with another feature generation than the map's current one (one was published while it ran) is not stored:
+    its row would carry outputs that don't match its inputs. Maps without features compare None with None."""
+    from app.services import replay_control
     from app.services.replay_control_store import store_round
 
+    used = (result.get("geometry") or {}).get("features")
+    current = (replay_control.geometry_inputs(planned.map_name) or {}).get("features")
+    if result.get("status") == "ok" and used != current:
+        return "skipped: its feature inputs changed while computing"
     return store_round(session_factory, planned.replay_id, planned.round_number, planned.fingerprint, result)
 
 

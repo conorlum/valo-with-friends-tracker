@@ -1,0 +1,148 @@
+{
+ "link": {
+  "db_deaths": [
+   [
+    0,
+    12.5
+   ]
+  ],
+  "sides": {
+   "0": "attack",
+   "1": "defense"
+  }
+ },
+ "maps": {
+  "Abyss": {
+   "fingerprint": "a204543647e8a74b",
+   "geometry_inputs": {
+    "barrier": "279e647ec456",
+    "scale": 8.1e-05,
+    "sight": "8342f6714685",
+    "specials": [],
+    "walk": "42d1d3f29a3c"
+   }
+  },
+  "Ascent": {
+   "fingerprint": "222dcf06f824903d",
+   "geometry_inputs": {
+    "barrier": "77b049460968",
+    "scale": 7e-05,
+    "sight": "6652c32db7b2",
+    "specials": [],
+    "walk": "548a6495a0fb"
+   }
+  },
+  "Bind": {
+   "fingerprint": "49ee8aff66d5d45d",
+   "geometry_inputs": {
+    "barrier": "17f178122d9f",
+    "scale": 5.9e-05,
+    "sight": "8e9f1fc13fec",
+    "specials": [],
+    "walk": "59c0154fc89d"
+   }
+  },
+  "Breeze": {
+   "fingerprint": "e07f5dd22ddfff59",
+   "geometry_inputs": {
+    "barrier": "72fcdd722d37",
+    "scale": 7e-05,
+    "sight": "a112074736d2",
+    "specials": [],
+    "walk": "439038d9b82b"
+   }
+  },
+  "Corrode": {
+   "fingerprint": "32e61e519cc892c3",
+   "geometry_inputs": {
+    "barrier": "2b9ac9333692",
+    "scale": 7e-05,
+    "sight": "546e46286858",
+    "specials": [],
+    "walk": "04aad81276ad"
+   }
+  },
+  "Fracture": {
+   "fingerprint": "84765c122daf6a1e",
+   "geometry_inputs": {
+    "barrier": "a2716b8b2641",
+    "scale": 7.8e-05,
+    "sight": "c4d5aa47ca61",
+    "specials": [],
+    "walk": "61afa6aa6628"
+   }
+  },
+  "Haven": {
+   "fingerprint": "98535be6f23aa627",
+   "geometry_inputs": {
+    "barrier": "531ebcdcc30b",
+    "scale": 7.5e-05,
+    "sight": "4b33f5f8746f",
+    "specials": [],
+    "walk": "456ddf172cf3"
+   }
+  },
+  "Icebox": {
+   "fingerprint": "3f4fded828781c51",
+   "geometry_inputs": {
+    "barrier": "1458d8224f08",
+    "scale": 7.2e-05,
+    "sight": "748966afbe52",
+    "specials": [],
+    "walk": "87ebfd069462"
+   }
+  },
+  "Lotus": {
+   "fingerprint": "c75e086b09c7ce90",
+   "geometry_inputs": {
+    "barrier": "0799f99c0abb",
+    "scale": 7.2e-05,
+    "sight": "39a88a11dd2f",
+    "specials": [],
+    "walk": "1bbf00db2ac5"
+   }
+  },
+  "Pearl": {
+   "fingerprint": "ba08114c1fd74bd6",
+   "geometry_inputs": {
+    "barrier": "5f42c32c5c72",
+    "scale": 7.8e-05,
+    "sight": "68e221537cb1",
+    "specials": [],
+    "walk": "21d5594157a5"
+   }
+  },
+  "Split": {
+   "fingerprint": "745f6838f07f6f1b",
+   "geometry_inputs": {
+    "barrier": "22e3b2d9539a",
+    "scale": 7.8e-05,
+    "sight": "f6b62d344ccd",
+    "specials": [],
+    "walk": "87c9ddfd6702"
+   }
+  },
+  "Summit": {
+   "fingerprint": "0822dcb1544ea661",
+   "geometry_inputs": {
+    "barrier": "6e8a726dd39b",
+    "scale": 7.5e-05,
+    "sight": "2b8c041fa4c9",
+    "specials": [],
+    "walk": "d08f3913fac4"
+   }
+  },
+  "Sunset": {
+   "fingerprint": "0b6c0607722c6486",
+   "geometry_inputs": {
+    "barrier": "02adc35320f7",
+    "scale": 7.8e-05,
+    "sight": "bdc24f5921b1",
+    "specials": [],
+    "walk": "bcdbfd256bb6"
+   }
+  }
+ },
+ "note": "Records what control's freshness reads for every committed map, so the map-features build can prove it\nchanges nothing for maps without enabled features (tests/fixtures/control/map_features/legacy_inputs.json).",
+ "recipe": "fixed.c10.f1.a0"
+}

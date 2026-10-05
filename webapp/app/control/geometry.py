@@ -266,6 +266,9 @@ class Geometry:
     heights: object = None                # the map's HeightAsset, or None on a flat map
     height_sha: str | None = None
     height_unknown: int = 0               # walkable cells the asset doesn't know (the walk mask changed since)
+    # map features (app/control/features.py): the active generation, only when index.json names one
+    features_sha: str | None = None
+    features: dict | None = None          # {map, manifest, assets} as published
 
     @property
     def cell_m(self) -> float:
@@ -376,8 +379,13 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
     if heights is not None:
         return attach_heights(geo, hc.load_asset(heights))
     index_path = asset_dir / "index.json"
-    wanted = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}).get("height_sha") \
-        if index_path.is_file() else None
+    row = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
+    if row.get("features_sha"):          # never on a committed map in this build: no feature is enabled
+        from app.control import features
+
+        geo.features = features.load_generation(asset_dir, row["features_sha"])
+        geo.features_sha = row["features_sha"]
+    wanted = row.get("height_sha")
     if wanted:
         asset = hc.load_asset(asset_dir / f"{name}.height.npz")
         if asset.digest != wanted:
