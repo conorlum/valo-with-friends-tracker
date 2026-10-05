@@ -41,7 +41,7 @@
   .note code { color: var(--text); }
   /* map features (scripts/control_tagger_features.js) */
   :root { --feat: #4cc9f0; --featsel: #ffffff; --trig: #f72585; --route: #b5e48c; }
-  .stage { overflow: hidden; }
+  .stage { overflow: hidden; position: sticky; top: 8px; }   /* the map stays in view while the panel scrolls */
   #zoom { position: absolute; inset: 0; transform-origin: 0 0; }
   #feat { pointer-events: none; }
   .stage.features #feat { pointer-events: auto; cursor: crosshair; }
@@ -85,6 +85,7 @@
       <canvas id="overlay" width="1024" height="1024" aria-label="Map: click a shape to select it, or drag to paint"></canvas>
       <canvas id="feat" width="1024" height="1024" aria-label="Map features: draw, select and link features"></canvas>
     </div>
+    <canvas id="featLabels" width="1024" height="1024" style="pointer-events:none" aria-hidden="true"></canvas>
   </div>
   <aside>
     <div class="card">
@@ -142,6 +143,29 @@
         <label title="tint what the features' shown states change: yellow = no longer walkable, red = sight blocked"><input type="checkbox" id="featComposed"> show what blocks</label>
       </div>
       <div class="feat-list" id="featList" aria-label="Features on this map"></div>
+      <details class="note" id="featHelp" style="margin-top:8px"><summary>How to annotate a map</summary>
+        <ol style="padding-left:18px;margin:6px 0">
+          <li>Pick a preset (type a name first if you like). A door or breakable starts the <b>Polygon</b> tool:
+            click its corners on the map, then press <kbd>Enter</kbd> (or double-click) to close it.</li>
+          <li>Each state has its own footprint: choose <b>Drawing on state</b> in the panel, then draw. Tick
+            <b>Blocks movement</b> / <b>Blocks vision</b> per state. <b>Draw sight edge</b> adds a sight blocker
+            with height bounds (leave them unknown if you don't know them).</li>
+          <li><b>Switch/trigger</b>: click where the switch is, then <b>Link</b> (<kbd>K</kbd>) and click each door it
+            operates. One trigger can operate several doors; nothing is linked by distance.</li>
+          <li><b>Zipline / Vertical rope / Teleporter</b>: click landing A, then landing B (a rope's two landings can
+            be the same spot). Give each landing its floor; add floor labels in the list (<b>Add floor label</b>).</li>
+          <li>Anything you don't know stays <b>unknown</b>: times, heights, floors, what a press mid-motion does.
+            The checks list what is still open; that is fine to save and export.</li>
+          <li>The <b>Sandbox</b> in the panel plays switches, breaks and players walking in and out, through the same
+            rules the engine will use. <b>Reset round</b> puts everything back. It is a preview, not replay evidence.</li>
+          <li><b>Export reviewed annotations</b> downloads the whole <code>tags.json</code> (every map kept). Edits
+            autosave in this browser; <b>Download draft</b> is a backup. Copying the export into the repo changes
+            no control fingerprint: features stay off until an engine release enables them.</li>
+        </ol>
+        Keys in this mode: <kbd>V</kbd> select, <kbd>.</kbd> point, <kbd>L</kbd> line, <kbd>G</kbd> polygon,
+        <kbd>R</kbd> brush, <kbd>X</kbd> erase, <kbd>K</kbd> link, <kbd>Del</kbd> delete, <kbd>Ctrl Z</kbd>/<kbd>Ctrl Y</kbd>,
+        wheel or <kbd>+</kbd>/<kbd>-</kbd> to zoom, middle-drag or <kbd>Space</kbd>-drag to pan, <kbd>Esc</kbd> leaves.
+      </details>
     </div>
     <div class="card props" id="featProps" hidden></div>
     <div class="card" id="featCheck" hidden>

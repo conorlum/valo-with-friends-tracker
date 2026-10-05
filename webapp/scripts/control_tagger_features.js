@@ -279,12 +279,26 @@
     for (var i = 0; i < cells.length; i++) if (cells[i]) { n++; x += (i % P) + 0.5; y += Math.floor(i / P) + 0.5; }
     return n ? [x / n * PX / P, y / n * PX / P] : null;
   }
-  function label(text, p, colour) {
-    if (!p) return;
-    var z = ui.zoom;
-    ctx.font = "bold " + (12 / z) + "px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
-    ctx.lineWidth = 3 / z; ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.strokeText(text, p[0], p[1] - 6 / z);
-    ctx.fillStyle = colour; ctx.fillText(text, p[0], p[1] - 6 / z);
+  // Labels are drawn in screen space on their own canvas (outside the zoomed layer), so they stay sharp and the
+  // same size at any zoom. `p` is in map px; `dy` a screen-pixel offset (stacked labels).
+  var labels = [];
+  function label(text, p, colour, dy) { if (p) labels.push([text, p, colour, dy || 0]); }
+  function drawLabels() {
+    var c = $("featLabels"), w = stage.clientWidth, h = stage.clientHeight, dpr = window.devicePixelRatio || 1;
+    if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+      c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); c.style.width = w + "px"; c.style.height = h + "px";
+      c.style.position = "absolute"; c.style.inset = "0";
+    }
+    var g = c.getContext("2d"), k = w / PX;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    g.font = "bold 12px system-ui, sans-serif"; g.textAlign = "center"; g.textBaseline = "bottom"; g.lineWidth = 3;
+    labels.forEach(function (l) {
+      var x = ui.pan[0] + l[1][0] * k * ui.zoom, y = ui.pan[1] + l[1][1] * k * ui.zoom - 6 - l[3];
+      g.strokeStyle = "rgba(0,0,0,0.85)"; g.strokeText(l[0], x, y);
+      g.fillStyle = l[2]; g.fillText(l[0], x, y);
+    });
+    labels = [];
   }
   function arrow(a, b, colour) {
     var z = ui.zoom, dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy);
@@ -354,7 +368,8 @@
   function draw() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, PX, PX);
-    if (!cur()) return;
+    labels = [];
+    if (!cur()) { drawLabels(); return; }
     var m = mf(), overlay = composedOverlay();
     if (overlay) ctx.putImageData(overlay, 0, 0);
     (m.features || []).forEach(function (f) {
@@ -404,8 +419,8 @@
         drawGeom({ type: "point", uv: e.uv }, colour);
         var fl = typeof e.floor === "string" ? (F.find(m, e.floor) || {}).label || e.floor : "floor ?";
         // landings at one spot (a rope between floors) stack their labels instead of overprinting
-        var key = e.uv.join(","), n = stacked[key] = (stacked[key] || 0) + 1, p = pxOf(e.uv);
-        label(e.id.toUpperCase() + " · " + fl, [p[0], p[1] - (n - 1) * 15 / ui.zoom], colour);
+        var key = e.uv.join(","), n = stacked[key] = (stacked[key] || 0) + 1;
+        label(e.id.toUpperCase() + " · " + fl, pxOf(e.uv), colour, (n - 1) * 15);
       });
       (r.directions || []).forEach(function (d) { if (pts[d.from] && pts[d.to]) arrow(pts[d.from], pts[d.to], colour); });
     });
@@ -415,6 +430,7 @@
       if (ui.draft.hover) ctx.lineTo(ui.draft.hover[0], ui.draft.hover[1]);
       ctx.stroke();
     }
+    drawLabels();
   }
 
   // ---------------------------------------------------------------- hit testing
@@ -1032,6 +1048,7 @@
     b.addEventListener("click", function () { setTool(b.getAttribute("data-ftool")); });
   });
   $("featComposed").addEventListener("change", function () { ui.showComposed = this.checked; draw(); });
+  window.addEventListener("resize", function () { draw(); });
   $("featUndo").addEventListener("click", doUndo);
   $("featRedo").addEventListener("click", doRedo);
   $("zoomIn").addEventListener("click", function () { zoomAt(1.25, stage.clientWidth / 2, stage.clientHeight / 2); });

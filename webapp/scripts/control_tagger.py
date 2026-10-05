@@ -22,6 +22,14 @@ params), the current `app/static/data/control/tags.json` and the Risk 1 kill lin
   moving or deleting a choke makes that map's timing gaps stale until `scripts/compute_control.py`
   recomputes them. Edited chokes become `source: "hand"`, which re-detection keeps (choke_assets.merge).
 
+- in Map features mode (F; docs/superpowers/plans/2026-10-04-map-interaction-tagger.md), annotate each map's
+  gimmicks: doors (drop, switch, proximity, rotating), breakables, switches and triggers linked to what they
+  operate, ziplines, ropes and teleporters with their landings and floors, with unknown facts left unresolved.
+  The panel's script is `control_tagger_features.js`; its model is `TaggerCore.Features` in the core, checked
+  against app/replays/map_feature_schema.py, map_feature_state.py and app/control/features.py
+  (tests/replays/test_map_feature_tagger.py). The annotations go into each map's `map_features` in the exported
+  tags.json and change no control input until a later engine release enables a feature bundle.
+
 Then copy the export over `app/static/data/control/tags.json` and run `scripts/build_control_geometry.py`: the
 masks, index.json and the kill-line results are rebuilt, and every stored round of a changed map goes stale
 until `scripts/compute_control.py` recomputes it.
