@@ -54,13 +54,11 @@ services:
     runtime: docker
     dockerfilePath: replay_worker/Dockerfile
     dockerContext: .
-    # Not yet measured in a container (no Docker here). On Windows the condense peaks near 1 GB
-    # (969 MB on the smallest, 60 MB export); scaled to the 200 MB upload cap that is ~3.3 GB before
-    # the parser's own (unmeasured) memory. 8 GB / 4 CPU keeps about 2x headroom over the whole
-    # upload range (AFK run decision D10, 2026-09-27); one job runs at a time. Re-size from
-    # Render's measured peak after real uploads (decision 9). 4c-8g is the Blueprint ID of the
-    # dashboard's "Pro Plus" (4 CPU, 8 GB).
-    plan: 4c-8g
+    # 2 CPU / 4 GB ("Pro", Blueprint ID 2c-4g; the user's choice on 2026-10-05). Map control uses both cores,
+    # but only while nothing is parsing; a parse kills its children (docs/superpowers/plans/2026-10-05-control-idle-queue.md).
+    # Memory: the condense peaked near 1 GB on a 60 MB export, ~3.3 GB scaled to the 200 MB upload cap, before the
+    # parser's own (unmeasured) memory. 4 GB is tight for the largest uploads; re-size from Render's measured peak.
+    plan: 2c-4g
     autoDeploy: true
     # The .vrf archive (docs/superpowers/specs/2026-10-01-control-heights-design.md, part 1). Only files
     # under the mount persist across deploys; a disk means no zero-downtime deploys and one instance, and

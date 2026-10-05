@@ -7,7 +7,8 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
     POST /jobs        body: the .vrf bytes. 202 {"id", "status": "queued"}; 400 not a replay,
                       411 no length, 413 over the size cap, 503 the queue is full.
     GET  /jobs/{id}   {"id", "status": "queued" | "parsing" | "done" | "failed", "error"?, "result"?}
-    GET  /health      {"ok": true, "queued", "limits", "control": {"enabled", "queued", "running", "warm"}}
+    GET  /health      {"ok": true, "queued", "limits",
+                       "control": {"enabled", "queued", "running", "warm", "preempted"}}
     POST /control     body: JSON {key, map, blob (base64), link}: one round's map control
                       (docs/map-control-worker-plan.md). 202 {"id", "status"} (the same job for a key
                       it already has), 400 not a task, 404 control is off, 413 too large, 503 full.
@@ -16,7 +17,10 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
 
 Map control has its own queue and never shares the parse thread: a fixed pool of child processes
 (`python -m replay_worker.control_job`, run by the control venv's interpreter; this process never
-imports numpy or the engine), niced, time- and memory-capped, one map's first round alone.
+imports numpy or the engine), niced, time- and memory-capped, one map's first round alone. It runs
+only while nothing is parsing or waiting to parse (`Worker.idle`), on up to `control_workers` children;
+a parse arriving kills every running child, and their rounds go back to the front of the queue
+uncounted (docs/superpowers/plans/2026-10-05-control-idle-queue.md, D4).
 
 One job runs at a time; up to `queue_size` more wait. Each job gets its own folder (the upload and
 the parser's export, which is about 65x the file). It runs the parser command with a timeout that
@@ -51,8 +55,9 @@ Configuration (environment, all optional):
     REPLAY_WORKER_HOST/PORT  bind address (default 0.0.0.0:8080 in the container)
     REPLAY_CONTROL           "0" turns map control off (default on)
     REPLAY_CONTROL_CMD       JSON list: the control child (default this Python, -m replay_worker.control_job)
-    REPLAY_CONTROL_WORKERS   children at once (default 2; never from the core count, which a
-                             container reports for the host)
+    REPLAY_CONTROL_WORKERS   children at once (default 2: the 2-CPU plan's two cores, used only while
+                             no parse is running; never from the core count, which a container
+                             reports for the host)
     REPLAY_CONTROL_QUEUE     waiting rounds (default 32)
     REPLAY_CONTROL_TIMEOUT_S / REPLAY_CONTROL_WARM_TIMEOUT_S   per round (900) / a map's first (1800)
     REPLAY_CONTROL_MEMORY_MB child address-space cap, Linux only (default 2048)
@@ -183,15 +188,19 @@ class Job:
 
 
 def kill_tree(process: subprocess.Popen) -> None:
-    """Kill the parser and everything it started."""
-    if process.poll() is not None:
-        return
+    """Kill a child and everything it started; every wait is bounded. On Linux the child leads its own
+    process group (setsid), so the group is killed even when the leader has already exited."""
     if os.name == "nt":
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True, check=False)
+        if process.poll() is None:
+            try:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True,
+                               check=False, timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
     else:
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
     try:
         process.wait(timeout=10)
@@ -220,8 +229,10 @@ class Worker:
 
     SWEEP_EVERY_S = 3600
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, on_parse=None):
         self.settings = settings
+        self.on_parse = on_parse or (lambda: None)   # map control's preempt (D4); always called outside self.lock
+        self.parsing = False
         self.queue: queue.Queue[Job] = queue.Queue(maxsize=settings.queue_size)
         self.reparse_queue: queue.Queue[Job] = queue.Queue(maxsize=settings.queue_size)
         self.jobs: dict[str, Job] = {}
@@ -252,6 +263,20 @@ class Worker:
             return {"enabled": False, "reason": self.archive_reason}
         return self.archive.status()
 
+    def idle(self) -> bool:
+        """No parse running and none waiting: map control may run. Between a queue's `get` and
+        `parsing = True` this reads True for a few bytecodes; a control child started in that gap is
+        killed by the `on_parse()` call at the top of `_run`
+        (docs/superpowers/plans/2026-10-05-control-idle-queue.md, Task 2)."""
+        return not self.parsing and self.queue.empty() and self.reparse_queue.empty()
+
+    def _parse_coming(self) -> None:
+        """Tells map control a parse is waiting or starting. A failing hook must never stop a parse."""
+        try:
+            self.on_parse()
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+
     # -------------------------------------------------------------- intake
 
     def submit(self, body: bytes) -> Job:
@@ -271,6 +296,7 @@ class Worker:
         except queue.Full:
             shutil.rmtree(folder, ignore_errors=True)
             raise
+        self._parse_coming()
         with self.lock:
             self.jobs[job_id] = job
         self.wake.set()
@@ -300,6 +326,7 @@ class Worker:
         except queue.Full:
             shutil.rmtree(folder, ignore_errors=True)
             raise
+        self._parse_coming()
         with self.lock:
             self.jobs[job_id] = job
         self.wake.set()
@@ -331,11 +358,15 @@ class Worker:
     def _next(self) -> Job:
         """Uploads first, then reparses. With the archive off, exactly the old blocking get."""
         if self.archive is None:
-            return self.queue.get()
+            job = self.queue.get()
+            self.parsing = True
+            return job
         while True:
             for source in (self.queue, self.reparse_queue):
                 try:
-                    return source.get_nowait()
+                    job = source.get_nowait()
+                    self.parsing = True
+                    return job
                 except queue.Empty:
                     pass
             if time.time() - self.last_sweep > self.SWEEP_EVERY_S:
@@ -346,6 +377,7 @@ class Worker:
     def _run(self) -> None:
         while True:
             job = self._next()
+            self._parse_coming()
             status, error, result = "failed", REASON_PARSE, None
             try:
                 job.status = "parsing"
@@ -372,6 +404,7 @@ class Worker:
                 self._save(job)
                 self._forget_old()
                 (self.queue if job.kind == "upload" else self.reparse_queue).task_done()
+                self.parsing = False
 
     def _settle(self, job: Job, status: str, result: dict | None) -> None:
         """Archive on: the export goes, the result is written, a parsed upload waits in pending/ for its
@@ -555,7 +588,7 @@ class ControlRunner:
     map's visibility cache) and the map is warm once one of its rounds gets past loading. A task's
     key (replay, round, fingerprint) is deduped while its job is queued, running or done."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, idle=None):
         self.settings = settings
         self.lock = threading.Lock()
         self.jobs: dict[str, ControlJob] = {}
@@ -563,6 +596,11 @@ class ControlRunner:
         self.pending: list[str] = []
         self.running: dict[str, bool] = {}     # job id -> warming
         self.warm: set[str] = set()
+        self.idle = idle or (lambda: True)     # the parse side has nothing running or waiting (D4)
+        self.procs: dict[str, subprocess.Popen] = {}
+        self.preempted: set[str] = set()       # running jobs a parse has killed; settled as requeued (D4)
+        self.preempted_total = 0
+        self._before_settle = lambda job: None  # tests only: runs after the child ends, before settlement
         self.wake = threading.Event()
         self.thread = threading.Thread(target=self._schedule, name="control-scheduler", daemon=True)
         self.thread.start()
@@ -593,11 +631,26 @@ class ControlRunner:
 
     def counts(self) -> dict:
         with self.lock:
-            return {"queued": len(self.pending), "running": len(self.running), "warm": sorted(self.warm)}
+            return {"queued": len(self.pending), "running": len(self.running), "warm": sorted(self.warm),
+                    "preempted": self.preempted_total}
+
+    def preempt(self) -> int:
+        """A parse is coming: kill every running child (D4). How each run ends is decided at settlement,
+        under the lock, where a preempted mark wins over everything else."""
+        with self.lock:
+            victims = [(job_id, self.procs.get(job_id)) for job_id in self.running if job_id not in self.preempted]
+            self.preempted.update(job_id for job_id, _ in victims)
+        for _, process in victims:
+            if process is not None:
+                try:
+                    kill_tree(process)
+                except Exception:  # noqa: BLE001 - a parse must never fail because a kill did
+                    traceback.print_exc()
+        return len(victims)
 
     def _next(self) -> tuple[ControlJob, bool] | None:
         """The next job that may start now, and whether it warms its map (called under the lock)."""
-        if len(self.running) >= self.settings.control_workers:
+        if len(self.running) >= self.settings.control_workers or not self.idle():
             return None
         busy_maps = {self.jobs[j].map for j in self.running}
         warming_maps = {self.jobs[j].map for j, warming in self.running.items() if warming}
@@ -632,18 +685,27 @@ class ControlRunner:
         timeout = settings.control_warm_timeout_s if warming else settings.control_timeout_s
         env = {**os.environ, **CHILD_THREADS}
         env["PYTHONPATH"] = os.pathsep.join(p for p in (str(WEBAPP), str(WEBAPP.parent), env.get("PYTHONPATH")) if p)
-        kwargs = {"input": job.task, "capture_output": True, "timeout": timeout, "env": env,
+        kwargs = {"stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "env": env,
                   "cwd": str(WEBAPP.parent)}
         if os.name != "nt":
             kwargs["preexec_fn"] = _child_setup(settings.control_memory_mb)
         status, error, kind, result = "failed", None, "infra", None
+        process = None
         try:
-            completed = subprocess.run(settings.control_cmd, check=False, **kwargs)
-            answer = json.loads(completed.stdout or b"{}")
+            # Started outside the lock (preexec_fn must not run while this thread holds a lock another
+            # needs), registered under it, and killed at once if a preempt landed in between.
+            process = subprocess.Popen(settings.control_cmd, **kwargs)
+            with self.lock:
+                self.procs[job.id] = process
+                killed_before_start = job.id in self.preempted
+            if killed_before_start:
+                kill_tree(process)
+            stdout, _ = process.communicate(job.task, timeout=timeout)
+            answer = json.loads(stdout or b"{}")
             if answer.get("status") == "ok":
                 status, kind, result = "done", None, answer
             else:
-                error = answer.get("error") or f"control child exited {completed.returncode}"
+                error = answer.get("error") or f"control child exited {process.returncode}"
                 kind = answer.get("error_kind") or "infra"
         except subprocess.TimeoutExpired:
             error = f"control timed out after {timeout:g} s"
@@ -652,22 +714,49 @@ class ControlRunner:
         except Exception:  # noqa: BLE001 - one bad round must not stop the runner
             traceback.print_exc()
             error = "control child failed"
+        finally:
+            # A timeout leaves the child running: kill it, and close the pipes rather than drain them, so
+            # a descendant holding one can't hang this thread.
+            if process is not None:
+                try:
+                    kill_tree(process)                 # bounded; a no-op for a child that exited cleanly
+                except Exception:  # noqa: BLE001 - settlement below must always run, or the slot is lost
+                    traceback.print_exc()
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    try:
+                        if stream is not None:
+                            stream.close()
+                    except OSError:
+                        pass
+        try:
+            self._before_settle(job)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
         with self.lock:
-            job.status, job.error, job.error_kind, job.result = status, error, kind, result
-            job.finished = time.time()
-            job.task = b""
+            self.procs.pop(job.id, None)
             self.running.pop(job.id, None)
-            # Past loading (ok, or the round's own failure): the map's cache is there. Any machine
-            # failure makes the map cold again, so its next round warms alone.
-            if status == "done" or kind == "engine":
-                self.warm.add(job.map)
+            if job.id in self.preempted:
+                # D4: whatever the child did, a parse killed this run. Back to the front, uncounted, task
+                # kept, warmth untouched.
+                self.preempted.discard(job.id)
+                self.preempted_total += 1
+                job.status = "queued"
+                self.pending.insert(0, job.id)
             else:
-                self.warm.discard(job.map)
-            finished = sorted((j for j in self.jobs.values() if j.finished), key=lambda j: j.finished)
-            for old in finished[:-CONTROL_FINISHED_KEPT]:
-                del self.jobs[old.id]
-                if self.by_key.get(old.key) == old.id:
-                    del self.by_key[old.key]
+                job.status, job.error, job.error_kind, job.result = status, error, kind, result
+                job.finished = time.time()
+                job.task = b""
+                # Past loading (ok, or the round's own failure): the map's cache is there. Any machine
+                # failure makes the map cold again, so its next round warms alone.
+                if status == "done" or kind == "engine":
+                    self.warm.add(job.map)
+                else:
+                    self.warm.discard(job.map)
+                finished = sorted((j for j in self.jobs.values() if j.finished), key=lambda j: j.finished)
+                for old in finished[:-CONTROL_FINISHED_KEPT]:
+                    del self.jobs[old.id]
+                    if self.by_key.get(old.key) == old.id:
+                        del self.by_key[old.key]
         self.wake.set()
 
 
@@ -825,7 +914,12 @@ def make_server(worker: Worker, host: str = "127.0.0.1", port: int = 0,
 def main() -> None:
     settings = Settings.from_env()
     control = ControlRunner(settings) if settings.control_enabled else None
-    server = make_server(Worker(settings), os.environ.get("REPLAY_WORKER_HOST", "0.0.0.0"),
+    worker = Worker(settings, on_parse=control.preempt if control else None)
+    if control is not None:
+        # Wired after the Worker exists. Until then idle() reads True, but the control queue is empty: the
+        # web app hasn't sent anything to a server that isn't listening yet.
+        control.idle = worker.idle
+    server = make_server(worker, os.environ.get("REPLAY_WORKER_HOST", "0.0.0.0"),
                          int(os.environ.get("REPLAY_WORKER_PORT", "8080")), control)
     print(f"replay worker on {server.server_address}, timeout {settings.timeout_s:g} s, "
           f"queue {settings.queue_size}, cap {settings.max_bytes} bytes", flush=True)

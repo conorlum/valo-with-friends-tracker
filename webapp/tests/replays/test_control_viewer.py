@@ -322,7 +322,43 @@ def test_the_control_cache_is_bounded_and_keeps_only_ok_answers(stored):
     assert got["tick0"] == stored["header"]["cells"]
 
 
-REPLAY_JS = WEBAPP / "app" / "static" / "js" / "replay.js"
+@pytest.mark.parametrize("value, expected", [
+    ({"stale": False, "revision": 5, "currentRevision": "5"}, "Map control r5."),
+    ({"stale": False, "revision": None, "currentRevision": "5"}, "Map control (revision not recorded)."),
+    ({"stale": True, "revision": 4, "currentRevision": "5"},
+     "Out of date: computed under r4, current r5. Queued for recompute."),
+    ({"stale": True, "revision": 5, "currentRevision": "5"},
+     "Out of date: computed under r5, but its inputs changed (a new link, the replay, or the map's geometry). "
+     "Queued for recompute."),
+    ({"stale": True, "revision": None, "currentRevision": "5"},
+     "Out of date: revision not recorded. Queued for recompute."),
+    ({"stale": True, "revision": 5, "currentRevision": None},
+     "Out of date: computed under r5. Queued for recompute."),
+])
+def test_the_revision_note(value, expected):
+    # docs/superpowers/plans/2026-10-05-control-idle-queue.md, D6
+    script = f"const C = require({json.dumps(str(CONTROL_JS))}); process.stdout.write(C.revisionNote({json.dumps(value)}));"
+    out = subprocess.run([NODE, "-e", script], capture_output=True, text=True, encoding="utf-8", check=True).stdout
+    assert out == expected
+
+
+def test_the_cache_reads_the_revision_from_the_data_header(stored):
+    script = """
+      const C = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", async () => {
+        const raw = C.base64Bytes(JSON.parse(input).raw);
+        const cache = new C.ControlCache(() => ({ status: "ok", buffer: raw, stale: false, currentRevision: "9" }));
+        const value = await cache.get(1);
+        process.stdout.write(JSON.stringify({ revision: value.revision, current: value.currentRevision }));
+      });
+    """
+    completed = subprocess.run([NODE, "-e", script, str(CONTROL_JS)], input=json.dumps({"raw": stored["raw"]}),
+                               capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"revision": stored["header"]["revision"], "current": "9"}
+
+
+REPLAY_JS =WEBAPP / "app" / "static" / "js" / "replay.js"
 
 
 def test_the_control_table_groups_players_by_team_and_sums_lost_control():

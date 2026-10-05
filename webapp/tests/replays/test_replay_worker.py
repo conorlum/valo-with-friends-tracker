@@ -200,6 +200,41 @@ def test_limits_and_errors(tmp_path, stub):
         httpd.shutdown()
 
 
+def test_the_worker_says_when_it_is_idle_and_calls_the_parse_hook(tmp_path, stub):
+    calls = []
+    settings = server.Settings(parser_cmd=[sys.executable, str(stub), "{vrf}", "{out}", "slow"],
+                               temp_root=tmp_path / "jobs")
+    settings.temp_root.mkdir(exist_ok=True)
+    worker = server.Worker(settings, on_parse=lambda: calls.append(time.time()))
+    assert worker.idle()
+    job = worker.submit(vrf_bytes())
+    assert calls, "accepting an upload calls the hook at once"
+    assert not worker.idle()
+    end = time.time() + 60
+    while worker.get(job.id).status not in ("done", "failed") and time.time() < end:
+        time.sleep(0.05)
+    assert worker.get(job.id).status == "done"
+    end = time.time() + 5                    # `parsing` clears a few statements after the status reads done
+    while not worker.idle() and time.time() < end:
+        time.sleep(0.02)
+    assert worker.idle() and len(calls) >= 2, "a parse starting calls it again"
+
+
+def test_a_failing_parse_hook_never_stops_a_parse(tmp_path, stub):
+    def boom():
+        raise RuntimeError("the kill failed")
+
+    settings = server.Settings(parser_cmd=[sys.executable, str(stub), "{vrf}", "{out}", "ok"],
+                               temp_root=tmp_path / "jobs")
+    settings.temp_root.mkdir(exist_ok=True)
+    worker = server.Worker(settings, on_parse=boom)
+    job = worker.submit(vrf_bytes())
+    end = time.time() + 60
+    while worker.get(job.id).status not in ("done", "failed") and time.time() < end:
+        time.sleep(0.05)
+    assert worker.get(job.id).status == "done"
+
+
 def test_settings_from_the_environment():
     settings = server.Settings.from_env({"REPLAY_PARSER_CMD": '["x", "{vrf}"]', "REPLAY_TIMEOUT_S": "9",
                                          "REPLAY_QUEUE_SIZE": "2", "REPLAY_MAX_BYTES": "5"})

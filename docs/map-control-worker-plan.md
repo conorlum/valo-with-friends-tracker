@@ -1,5 +1,10 @@
 # Map control for uploads on the replay worker: plan
 
+> **Superseded in part (2026-10-05):** the dispatcher now also sends stale and unlinked rounds, newest match first,
+> and the worker runs control only while it isn't parsing (a parse kills it). See
+> docs/superpowers/plans/2026-10-05-control-idle-queue.md. Decisions 1 and 5, S1 and the "keep the 8 GB plan's
+> headroom" memory note below are no longer in force.
+
 The follow-up agreed in `docs/replay-map-control-plan.md` (Stage 3 settled list, last bullet): "uploads get
 control on Render by reusing the replay worker (4 CPU / 8 GB, idle between parses, credential-free): the web
 app queues rounds, the worker returns bytes, uploads keep priority. Full recomputes after a revision bump stay

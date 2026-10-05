@@ -1610,7 +1610,7 @@
     this.controlCache.get(n).then(function (value) {
       if (self.number !== n || value.status === "aborted") return;
       var text = value.status === "ok"
-        ? (value.stale ? "Computed from older inputs; it will be refreshed." : "")
+        ? controlApi().revisionNote(value)
         : CONTROL_STATUS[value.status] || CONTROL_STATUS.unavailable;
       self.showControlViews(value);
       var knowing = value.status === "ok" ? self.knowingGroup(value) : null;
@@ -2066,7 +2066,7 @@
       '<th class="num" title="Active coverage ÷ (active + passive)">Act %</th>' +
       '<th class="num" title="Space taken: ground that was the enemy&#39;s or nobody&#39;s and became the team&#39;s while this player saw it (m²' +
       (scope === "match" ? ", per round" : "") + ')">Taken</th></tr></thead>';
-    box.innerHTML = (rows.stale ? '<p class="replay-side-note">Computed from older inputs; it will be refreshed.</p>' : "") +
+    box.innerHTML = (rows.stale ? '<p class="replay-side-note">Out of date for some rounds: queued for recompute.</p>' : "") +
       ["team-1", "team-2"].map(function (team) {
         var body = rows[team].map(function (r) {
           // The stored share, shown even past 100% (the tooltip says why).

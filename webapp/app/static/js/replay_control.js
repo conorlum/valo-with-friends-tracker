@@ -247,10 +247,11 @@
 
   // ------------------------------------------------------------ the cache
 
-  // Decoded control per round, bounded: `load(n, signal)` answers {status: "ok", buffer, stale} or
-  // {status: "not_ready" | "failed" | ...}. Only an ok answer is kept, so returning to a round that
-  // wasn't ready asks again. `keep(rounds)` drops (and aborts) every other round; past `limit` the
-  // least recently asked goes. `get(n)` is a promise of {status, parsed, cursor, stale}.
+  // Decoded control per round, bounded: `load(n, signal)` answers {status: "ok", buffer, stale,
+  // currentRevision} or {status: "not_ready" | "failed" | ...}. Only an ok answer is kept, so returning
+  // to a round that wasn't ready asks again. `keep(rounds)` drops (and aborts) every other round; past
+  // `limit` the least recently asked goes. `get(n)` is a promise of {status, parsed, cursor, stale,
+  // revision (the data header's, or null), currentRevision}.
   function ControlCache(load, limit) {
     this.load = load;
     this.limit = limit || 3;
@@ -290,7 +291,9 @@
         entry.done = true;
         if (!(answer && answer.status === "ok")) return { status: (answer && answer.status) || "unavailable" };
         var parsed = parse(answer.buffer);
-        return { status: "ok", stale: !!answer.stale, parsed: parsed, cursor: new Cursor(parsed) };
+        var revision = parsed.header && typeof parsed.header.revision === "number" ? parsed.header.revision : null;
+        return { status: "ok", stale: !!answer.stale, revision: revision,
+                 currentRevision: answer.currentRevision || null, parsed: parsed, cursor: new Cursor(parsed) };
       })
       .then(null, function (err) {
         entry.done = true;
@@ -462,7 +465,21 @@
     return out;
   }
 
+  // The revision a round's control was computed under (its data header), and why it's out of date
+  // (docs/superpowers/plans/2026-10-05-control-idle-queue.md, D6).
+  function revisionNote(value) {
+    var mine = typeof value.revision === "number" ? "r" + value.revision : null;
+    var current = value.currentRevision ? "r" + value.currentRevision : null;
+    if (!value.stale) return mine ? "Map control " + mine + "." : "Map control (revision not recorded).";
+    if (!mine) return "Out of date: revision not recorded. Queued for recompute.";
+    if (!current) return "Out of date: computed under " + mine + ". Queued for recompute.";
+    if (mine !== current) return "Out of date: computed under " + mine + ", current " + current + ". Queued for recompute.";
+    return "Out of date: computed under " + mine + ", but its inputs changed (a new link, the replay, or the " +
+      "map's geometry). Queued for recompute.";
+  }
+
   var api = {
+    revisionNote: revisionNote,
     STATE_NAMES: STATE_NAMES, GRID: GRID, SLOTS: SLOTS, readVarint: readVarint, parse: parse, walkCells: walkCells,
     tickAt: tickAt, Cursor: Cursor, ControlCache: ControlCache, lostAt: lostAt, hexRgb: hexRgb, paintStates: paintStates, paintHighlight: paintHighlight,
     groupTeams: groupTeams, base64Bytes: base64Bytes, paintHeatmap: paintHeatmap, cellIndex: cellIndex,
