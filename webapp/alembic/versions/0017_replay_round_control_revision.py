@@ -63,6 +63,7 @@ def backfill(connection) -> int:
     return filled
 
 
+# PROVISIONAL(D4): not yet run on PostgreSQL; run the local upgrade/downgrade check before merging.
 def upgrade() -> None:
     op.add_column("replay_round_control", sa.Column("control_revision", sa.SmallInteger(), nullable=True))
     backfill(op.get_bind())
