@@ -591,3 +591,41 @@ def test_a_same_position_rope_and_an_unresolved_landing_round_trip_and_compile_w
     assert any(p.startswith(ids["zip"] + ".b") for p in pending)
     assert [d["code"] for d in cf.diagnose(geo, exported) if d["where"].startswith(ids["zip"])] == ["off_ground"], \
         "the off-minimap landing is flagged, not moved"
+
+
+# ---- W16: rotation poses, previews and the map summary
+
+PREVIEW = """
+  function run(p) {
+    const poses = p.cases.map(c => F.rotationPose(c.f, c.frac));
+    const door = p.mf.features[0];
+    // a sandbox sequence through the shared reducer: close, break mid-motion, a later press, then a new round
+    const seq = [{t: 0, kind: "switch"}, {t: 1, kind: "destroy"}, {t: 3, kind: "switch"}];
+    const before = F.run(door, seq, 5), after = F.run(door, [], 0);
+    return {poses, broken: before[before.length - 1].state, reset: after.length ? after[after.length - 1].state : door.initial_state,
+            summary: F.mapSummary(p.mf, p.seed), emptySummary: F.mapSummary(F.emptyMf(), [])};
+  }
+"""
+
+
+def test_rotation_poses_match_python_and_the_sandbox_and_summary_behave():
+    from app.control import features as cf
+
+    rot = MF["features"][1]
+    cases = [{"f": rot, "frac": f} for f in (0, 0.25, 0.5, 1)]
+    cases.append({"f": {**rot, "rotation": {**rot["rotation"], "direction": {"status": "unresolved"}}}, "frac": 0.5})
+    cases.append({"f": {**rot, "rotation": {**rot["rotation"], "phases": [{"at": 0.4, "panel": {"type": "polyline", "uv": [[1, 2], [3, 4]]}}]}}, "frac": 0.9})
+    got = run_node(PREVIEW, {"cases": cases, "mf": MF, "seed": ms.checklist_seed("Ascent")})
+    for case, js in zip(cases, got["poses"]):
+        py = cf.rotation_pose(case["f"], case["frac"])
+        if py is None:
+            assert js is None
+        else:
+            flat = lambda pts: [c for p in pts for c in p]       # noqa: E731
+            assert js["type"] == py["type"] and flat(js["uv"]) == pytest.approx(flat(py["uv"]), abs=1e-9)
+    assert got["broken"] == "broken" and got["reset"] == "open", "broken until the round resets"
+    summary = got["summary"]
+    assert summary["annotation"]["features"] == 6 and summary["annotation"]["checklist"]["in_progress"] == 1
+    assert summary["geometry"]["errors"] == 0 and summary["geometry"]["unresolved"] > 0 and not summary["geometry"]["ready"]
+    assert summary["replay"]["decoder"] is False
+    assert got["emptySummary"]["geometry"]["ready"] is True

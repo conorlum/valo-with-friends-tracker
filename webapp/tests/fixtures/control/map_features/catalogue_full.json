@@ -56,7 +56,7 @@
        {"id": "turn-b", "from": ["rest_b"], "event": "switch", "to": "rest_a",
         "motion": {"state": "rotating", "duration": {"status": "known", "value": 3, "unit": "s"}}, "mid_motion": "ignore"}],
       "rotation": {"pivot": {"type": "point", "uv": [6000, 6000]}, "panel": {"type": "polyline", "uv": [[6000, 6000], [6300, 6000]]},
-                   "direction": {"status": "known", "value": 1, "unit": "ccw"}, "start_deg": {"status": "known", "value": 0, "unit": "deg"},
+                   "direction": {"status": "known", "value": "ccw", "unit": "dir"}, "start_deg": {"status": "known", "value": 0, "unit": "deg"},
                    "end_deg": {"status": "known", "value": 90, "unit": "deg"}, "phases": []},
       "reset": "round"},
      {"id": "feature-3", "name": "Proximity door", "preset": "proximity_door", "kind": "door", "capabilities": ["closeable", "proximity"],

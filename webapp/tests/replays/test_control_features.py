@@ -561,3 +561,49 @@ def test_routes_never_touch_the_maps_legacy_specials():
     assert cf.compile_routes(geo, ms.empty()) == ([], [])
     cf.TraversalGraph(geo, cf.compile_routes(geo, zipline())[0]).reachable(geo.cell_of_px(150, 196))
     assert engine.special_links(geo) == before == [(geo.cell_of_px(150, 196), geo.cell_of_px(350, 196), True)]
+
+
+# ---- W16: rotation poses; permanent kill-line checks ignore features
+
+def rotating(direction="ccw", start=0, end=90, phases=()):
+    return {"id": "feature-1", "rotation": {
+        "pivot": {"type": "point", "uv": [5000, 5000]}, "panel": {"type": "polyline", "uv": [[5000, 5000], [5300, 5000]]},
+        "direction": {"status": "known", "value": direction, "unit": "dir"} if direction else {"status": "unresolved"},
+        "start_deg": {"status": "known", "value": start, "unit": "deg"}, "end_deg": {"status": "known", "value": end, "unit": "deg"},
+        "phases": list(phases)}}
+
+
+def test_rotation_poses_turn_about_the_pivot_and_phases_override():
+    assert cf.rotation_pose(rotating(), 0.0)["uv"] == [[5000, 5000], [5300, 5000]]
+    up = cf.rotation_pose(rotating("ccw"), 1.0)["uv"][1]          # anticlockwise on the minimap (y down): up
+    assert up == pytest.approx([5000, 4700])
+    down = cf.rotation_pose(rotating("cw"), 1.0)["uv"][1]
+    assert down == pytest.approx([5000, 5300])
+    half = cf.rotation_pose(rotating("cw", 0, 180), 0.5)["uv"][1]
+    assert half == pytest.approx([5000, 5300])
+    assert cf.rotation_pose(rotating(direction=None), 0.5) is None, "an unknown direction is never guessed"
+    no_end = rotating()
+    no_end["rotation"]["end_deg"] = {"status": "unresolved"}
+    assert cf.rotation_pose(no_end, 0.5) is None
+    custom = {"type": "polyline", "uv": [[5000, 5000], [5100, 5200]]}
+    phased = rotating(phases=[{"at": 0.5, "panel": custom}, {"at": 0.0, "panel": {"type": "polyline", "uv": [[1, 1], [2, 2]]}}])
+    assert cf.rotation_pose(phased, 0.7) == custom and cf.rotation_pose(phased, 0.2)["uv"] == [[1, 1], [2, 2]]
+
+
+def test_permanent_kill_line_masks_ignore_feature_annotations():
+    from PIL import Image
+
+    tags = cg.load_tags()
+    entry = tags["maps"]["Ascent"]
+    rgba = np.array(Image.open(cg.MINIMAP_DIR / "Ascent.png").convert("RGBA"))
+    catalogue = json.loads((HERE.parent / "fixtures" / "control" / "map_features" / "catalogue_full.json").read_text(encoding="utf-8"))
+    mf = catalogue["maps"]["Ascent"]["map_features"]
+    mf["features"][0]["initial_state"] = "closed"      # a door forced closed in the page
+    plain, annotated = cg.masks(rgba, entry), cg.masks(rgba, {**entry, "map_features": mf})
+    ys, xs = np.nonzero(plain.walk & ~plain.sight)       # put the door on open floor
+    y, x = int(ys[len(ys) // 2]) // 4 * 4, int(xs[len(xs) // 2]) // 4 * 4
+    mf["features"][0]["states"][0]["footprint"] = rect(x, y, x + 8, y + 8)
+    assert (plain.sight == annotated.sight).all() and (plain.walk == annotated.walk).all()
+    # while the preview's composition does block with it closed
+    s, _ = cf.compose_masks(plain.sight, plain.walk, mf)
+    assert (s & ~plain.sight).any()

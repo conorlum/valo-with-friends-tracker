@@ -885,6 +885,34 @@ def verify(expected: dict | None, assets: dict | None, geo: Geometry | None = No
     return problems
 
 
+# ---------------------------------------------------------------- rotation
+
+def rotation_pose(feature: dict, fraction: float) -> dict | None:
+    """The panel's geometry `fraction` (0..1) of the way through a rotation: an authored phase at or before it
+    when there are any ({"at": fraction, "panel": geometry}); else the rest panel (drawn at the start
+    orientation) turned about the pivot by (end - start) * fraction degrees, clockwise on the minimap for "cw".
+    None while the pivot, panel, angles or direction are unresolved: the motion isn't described, so nothing is
+    guessed (not 90 degrees, not any duration). scripts/control_tagger_core.js `rotationPose` is its twin."""
+    import math
+
+    rot = feature.get("rotation") or {}
+    phases = sorted((p for p in rot.get("phases") or [] if isinstance(p, dict) and p.get("panel")), key=lambda p: p["at"])
+    if phases:
+        chosen = [p for p in phases if p["at"] <= fraction]
+        return (chosen[-1] if chosen else phases[0])["panel"]
+    pivot, panel, direction = rot.get("pivot"), rot.get("panel"), rot.get("direction") or {}
+    start, end = ms_known(rot.get("start_deg")), ms_known(rot.get("end_deg"))
+    if not pivot or not panel or start is None or end is None or direction.get("status") != "known" \
+            or direction.get("value") not in ("cw", "ccw"):
+        return None
+    sign = 1.0 if direction["value"] == "cw" else -1.0
+    theta = math.radians(sign * (end - start) * float(fraction))
+    c, s = math.cos(theta), math.sin(theta)
+    cx, cy = pivot["uv"]
+    pts = [[cx + (x - cx) * c - (y - cy) * s, cy + (x - cx) * s + (y - cy) * c] for x, y in panel["uv"]]
+    return {**panel, "uv": pts}
+
+
 # ---------------------------------------------------------------- diagnostics needing geometry
 
 def diagnose(geo: Geometry, mf: dict) -> list[dict]:

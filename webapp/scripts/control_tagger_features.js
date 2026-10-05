@@ -302,12 +302,61 @@
     return name || ui.editState[f.id] || f.initial_state;
   }
 
+  // ---------------------------------------------------------------- the sandbox (not replay evidence)
+  // Simulated events on a clock; each feature's state is the shared reducer's answer (TaggerCore.Features.run,
+  // the twin of map_feature_state.py). Reset round clears the events: every feature is back at its round start.
+  function simOf() {
+    var n = mapName();
+    ui.simAll = ui.simAll || {};
+    return ui.simAll[n] = ui.simAll[n] || { t: 0, events: [], traces: {} };
+  }
+  function resimulate() {
+    var s = simOf(), states = {};
+    (mf().features || []).forEach(function (f) {
+      var mine = s.events.filter(function (e) { return e.feature === f.id; }).map(function (e) {
+        var o = { t: e.t, kind: e.kind }; if (e.occupant) o.occupant = e.occupant; return o;
+      });
+      var trace = [];
+      try { trace = F.run(f, mine, s.t); } catch (err) { trace = [{ t: s.t, kind: "error", result: "rejected", reason: String(err.message), state: f.initial_state }]; }
+      s.traces[f.id] = trace;
+      if (trace.length) states[f.id] = trace[trace.length - 1].state;
+    });
+    ui.sim[mapName()] = states;
+  }
+  function simulate(fid, kind, occupant) {
+    var s = simOf();
+    s.events.push({ t: s.t, kind: kind, feature: fid, occupant: occupant });
+    resimulate(); render();
+  }
+  function simTrigger(tid) {
+    var t = F.find(mf(), tid), s = simOf();
+    (t && t.targets || []).forEach(function (x) { s.events.push({ t: s.t, kind: x.event, feature: x.feature, occupant: x.event.indexOf("proximity") === 0 ? "sim" : undefined }); });
+    resimulate(); render();
+  }
+  function simAdvance(dt) { simOf().t = Math.round((simOf().t + dt) * 1000) / 1000; resimulate(); render(); }
+  function simReset() { var s = simOf(); s.events = []; s.t = 0; s.traces = {}; ui.sim[mapName()] = {}; render(); }
+
+  // The preview's masks with every feature in its shown state (TaggerCore composeFeatures = features.py
+  // compose_masks): drawn as the difference from the permanent masks.
+  function composedOverlay() {
+    var base = TG.state.masks;
+    if (!base || !ui.showComposed) return null;
+    var states = {};
+    (mf().features || []).forEach(function (f) { states[f.id] = shownState(f); });
+    var m = F.composeFeatures(base.sight, base.walk, mf(), states), img = ctx.createImageData(PX, PX), d = img.data;
+    for (var i = 0; i < PX * PX; i++) {
+      if (m.walk[i] !== base.walk[i]) { d[i * 4] = 255; d[i * 4 + 1] = 209; d[i * 4 + 2] = 102; d[i * 4 + 3] = 120; }
+      if (m.sight[i] !== base.sight[i]) { d[i * 4] = 229; d[i * 4 + 1] = 72; d[i * 4 + 2] = 77; d[i * 4 + 3] = 170; }
+    }
+    return img;
+  }
+
   function draw() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, PX, PX);
     if (!cur()) return;
-    var m = mf(), on = TG.state.mode === "features" || true;
-    if (!on) return;
+    var m = mf(), overlay = composedOverlay();
+    if (overlay) ctx.putImageData(overlay, 0, 0);
     (m.features || []).forEach(function (f) {
       var sel = f.id === ui.sel, name = shownState(f), st = (f.states || []).filter(function (s) { return s.name === name; })[0];
       var colour = sel ? "rgba(255,255,255,0.95)" : "rgba(76,201,240,0.9)";
@@ -321,7 +370,13 @@
       var edits = f.base_edits || {};
       if (edits.potential_ground) drawGeom(edits.potential_ground, "rgba(48,164,108,0.9)", "rgba(48,164,108,0.3)", 1);
       if (edits.remove_sight) drawGeom(edits.remove_sight, "rgba(190,110,255,0.9)", "rgba(190,110,255,0.25)", 1);
-      if (f.rotation) { drawGeom(f.rotation.pivot, colour); drawGeom(f.rotation.panel, colour, null, 4); }
+      if (f.rotation) {
+        drawGeom(f.rotation.pivot, colour);
+        var frac = (ui.rotFrac || {})[f.id], pose = frac ? F.rotationPose(f, frac) : null;
+        drawGeom(f.rotation.panel, pose ? "rgba(76,201,240,0.35)" : colour, null, 4);
+        if (pose) drawGeom(pose, colour, null, 4);
+        (f.rotation.phases || []).forEach(function (ph) { if (ph && ph.panel) drawGeom(ph.panel, "rgba(76,201,240,0.25)", null, 2); });
+      }
       if (f.noise && f.noise.origin) drawGeom(f.noise.origin, "rgba(255,214,0,0.9)");
       var at = centroid(st && st.footprint) || centroid(f.rotation && f.rotation.pivot);
       label((f.name || f.id) + (name ? " · " + name : ""), at, sel ? "#fff" : "#a5e9fb");
@@ -694,8 +749,52 @@
         function (v) { edit(f.id, ["rotation", "direction"], v ? { status: "known", value: v, unit: "dir" } : { status: "unresolved" }); })));
       rot.appendChild(row("Start angle", valueEditor(f.rotation.start_deg, "deg", function (v) { edit(f.id, ["rotation", "start_deg"], v); })));
       rot.appendChild(row("End angle", valueEditor(f.rotation.end_deg, "deg", function (v) { edit(f.id, ["rotation", "end_deg"], v); })));
+      var slider = document.createElement("input");
+      slider.type = "range"; slider.min = "0"; slider.max = "100"; slider.id = "rotSlider";
+      slider.value = String(Math.round(((ui.rotFrac || {})[f.id] || 0) * 100));
+      slider.addEventListener("input", function () { ui.rotFrac = ui.rotFrac || {}; ui.rotFrac[f.id] = +slider.value / 100; draw(); });
+      rot.appendChild(row(F.rotationPose(f, 0.5) ? "Motion preview" : "Motion preview (describe pivot, panel, angles and direction first)", slider));
+      rot.appendChild(button("Save this pose as a phase", function () {
+        var frac = (ui.rotFrac || {})[f.id] || 0, pose = F.rotationPose(f, frac);
+        if (!pose) return;
+        var phases = (f.rotation.phases || []).filter(function (p) { return p.at !== frac; }).concat([{ at: frac, panel: pose }]);
+        edit(f.id, ["rotation", "phases"], phases);
+      }, "custom phase geometry overrides the rigid-panel approximation"));
       box.appendChild(rot);
     }
+    var sim = fieldset("Sandbox (simulated, not replay evidence) · t = " + simOf().t + " s");
+    sim.appendChild(row("Show state", selectEl([["", "as simulated"]].concat(names.map(function (n) { return [n, n]; })),
+      (ui.sim[mapName()] || {})[f.id] || "", function (v) { ui.sim[mapName()] = ui.sim[mapName()] || {}; if (v) ui.sim[mapName()][f.id] = v; else resimulate(); render(); })));
+    var evs = {};
+    (f.transitions || []).forEach(function (r) { if (r.event !== "scheduled") evs[r.event] = true; });
+    var evRow = document.createElement("div");
+    evRow.className = "row";
+    Object.keys(evs).forEach(function (ev) {
+      if (ev === "proximity_enter" || ev === "proximity_leave") return;
+      evRow.appendChild(button(ev, function () { simulate(f.id, ev); }));
+    });
+    if (evs.proximity_enter || evs.proximity_leave) {
+      ["a", "b"].forEach(function (who) {
+        evRow.appendChild(button("occupant " + who + " enters", function () { simulate(f.id, "proximity_enter", who); }));
+        evRow.appendChild(button("occupant " + who + " leaves", function () { simulate(f.id, "proximity_leave", who); }));
+      });
+    }
+    sim.appendChild(evRow);
+    var tRow = document.createElement("div");
+    tRow.className = "row";
+    [0.5, 1, 5].forEach(function (dt) { tRow.appendChild(button("+" + dt + " s", function () { simAdvance(dt); })); });
+    tRow.appendChild(button("Reset round", simReset));
+    sim.appendChild(tRow);
+    var trace = simOf().traces[f.id] || [];
+    if (trace.length) {
+      var log = document.createElement("div");
+      log.className = "note";
+      log.innerHTML = trace.slice(-6).map(function (e) {
+        return esc(e.t + " s " + e.kind + ": " + e.result + (e.reason ? " (" + e.reason + ")" : "") + " → " + e.state);
+      }).join("<br>");
+      sim.appendChild(log);
+    }
+    box.appendChild(sim);
     var base = fieldset("Base map corrections (feature-owned, published only as a bundle)");
     base.appendChild(button("Paint potential ground", function () { ui.placing = "potential_ground"; setTool("brush"); }));
     base.appendChild(button("Paint sight to remove", function () { ui.placing = "remove_sight"; setTool("brush"); }));
@@ -715,6 +814,7 @@
     place.appendChild(button("Place point", function () { ui.placing = "trigger"; setTool("point"); }));
     place.appendChild(button("Draw area", function () { ui.placing = "trigger"; setTool("polygon"); }));
     place.appendChild(button("Link to a feature…", function () { setTool("link"); }, "then click the feature it operates"));
+    place.appendChild(button("Simulate it", function () { simTrigger(t.id); }, "the sandbox: sends its declared action to every linked feature"));
     box.appendChild(place);
     var targets = fieldset("Operates");
     (t.targets || []).forEach(function (x, i) {
@@ -807,6 +907,13 @@
   function renderChecklist() {
     var seeds = FD.seeds[mapName()] || [], m = mf(), box = $("featChecklist");
     box.innerHTML = "";
+    var sum = F.mapSummary(m, seeds), s = document.createElement("div");
+    s.className = "note";
+    s.innerHTML = "<b>Your annotation:</b> " + sum.annotation.features + " features (" + sum.annotation.review.user_reviewed + " reviewed); checklist " +
+      sum.annotation.checklist.user_reviewed + "/" + seeds.length + " reviewed.<br><b>Geometry:</b> " +
+      (sum.geometry.ready ? "fully described" : sum.geometry.errors + " errors, " + sum.geometry.unresolved + " open facts") +
+      ".<br><b>Replay signal:</b> " + esc(sum.replay.note) + ".";
+    box.appendChild(s);
     if (!seeds.length) {
       box.appendChild(document.createTextNode(FD.no_features_note || "No features reported."));
       return;
@@ -924,6 +1031,7 @@
   Array.prototype.forEach.call(document.querySelectorAll("[data-ftool]"), function (b) {
     b.addEventListener("click", function () { setTool(b.getAttribute("data-ftool")); });
   });
+  $("featComposed").addEventListener("change", function () { ui.showComposed = this.checked; draw(); });
   $("featUndo").addEventListener("click", doUndo);
   $("featRedo").addEventListener("click", doRedo);
   $("zoomIn").addEventListener("click", function () { zoomAt(1.25, stage.clientWidth / 2, stage.clientHeight / 2); });
@@ -943,6 +1051,7 @@
   window.taggerFeatures = {
     onMode: function () { ui.draft = null; render(); },
     onMap: function () { ui.sel = null; ui.draft = null; ui.message = null; render(); },
+    simulate: simulate, simTrigger: simTrigger, simAdvance: simAdvance, simReset: simReset,
     exportAll: exportAll, importText: importText, ui: ui, fe: fe, canonical: function () { return canonical; },
     commit: commit, setTool: setTool, createPreset: createPreset, placePoint: placePoint, finishDraft: finishDraft,
     linkTo: linkTo, undo: doUndo, redo: doRedo, zoomAt: zoomAt, render: render, autosave: autosave, drafts: drafts

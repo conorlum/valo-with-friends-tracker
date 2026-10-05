@@ -1225,6 +1225,37 @@
     return null;
   }
 
+  // The twin of features.py `rotation_pose` (coordinates agree to rounding: cos/sin may differ in the last bit).
+  function rotationPose(feature, fraction) {
+    var rot = feature.rotation || {};
+    var phases = (rot.phases || []).filter(function (p) { return p && p.panel; }).sort(function (a, b) { return a.at - b.at; });
+    if (phases.length) {
+      var chosen = phases.filter(function (p) { return p.at <= fraction; });
+      return (chosen.length ? chosen[chosen.length - 1] : phases[0]).panel;
+    }
+    var pivot = rot.pivot, panel = rot.panel, dir = rot.direction || {}, start = known(rot.start_deg), end = known(rot.end_deg);
+    if (!pivot || !panel || start === null || end === null || dir.status !== "known" || (dir.value !== "cw" && dir.value !== "ccw")) return null;
+    var theta = (dir.value === "cw" ? 1 : -1) * (end - start) * fraction * Math.PI / 180, c = Math.cos(theta), s = Math.sin(theta);
+    var cx = pivot.uv[0], cy = pivot.uv[1];
+    return Object.assign({}, panel, { uv: panel.uv.map(function (p) {
+      return [cx + (p[0] - cx) * c - (p[1] - cy) * s, cy + (p[0] - cx) * s + (p[1] - cy) * c];
+    }) });
+  }
+
+  // What a map's annotations amount to, three ways the plan keeps apart: the user's own completeness, whether
+  // the geometry is fully described, and whether any replay signal exists for it (none yet: no decoder).
+  function mapSummary(mf, seed) {
+    var review = { draft: 0, needs_verification: 0, user_reviewed: 0 }, checklist = { not_started: 0, in_progress: 0, user_reviewed: 0 };
+    (mf.features || []).forEach(function (f) { review[f.review || "draft"] = (review[f.review || "draft"] || 0) + 1; });
+    (seed || []).forEach(function (c) { var e = (mf.checklist || {})[c.key] || {}; checklist[e.status || "not_started"]++; });
+    var rep = validate(mf, seed || []), open = rep.warnings.filter(function (w) {
+      return /unresolved|uncertain|motion_incomplete|zero_length|no_target/.test(w.code);
+    }).length;
+    return { annotation: { features: (mf.features || []).length, review: review, checklist: checklist },
+             geometry: { errors: rep.errors.length, unresolved: open, ready: !rep.errors.length && !open },
+             replay: { decoder: false, note: "no replay decoder yet: signals are unverified for every feature" } };
+  }
+
   function makeBreakable(feature) {
     var out = clone(feature);
     out.capabilities = out.capabilities || [];
@@ -1345,6 +1376,7 @@
   Object.assign(Features, {
     Drafts: Drafts, draftSourceKey: draftSourceKey, DRAFT_PREFIX: DRAFT_PREFIX,
     raster: raster, composeFeatures: composeFeatures, stateOf: stateOf, makeBreakable: makeBreakable, CELL_UV: CELL_UV,
+    rotationPose: rotationPose, mapSummary: mapSummary,
     importCatalogue: importCatalogue, diffCatalogues: diffCatalogues, mergeCatalogue: mergeCatalogue,
     exportCatalogue: exportCatalogue,
     SCHEMA_VERSION: SCHEMA_VERSION, UV_MAX: UV_MAX, emptyMf: emptyMf, checkVersion: checkVersion, validate: validate, nextNumber: nextNumber, allocate: allocate,
