@@ -183,7 +183,93 @@ def read_pulses(rnd) -> list[Info]:
     return out
 
 
-READERS: list = [read_reveals, read_pulses]
+# ---------------------------------------------------------------- knife and Skye (W12)
+
+KNIFE = "Grenadier_E_SuppressionPulse"
+SKYE_FLASH = "skye_guiding_light"
+
+
+def _living_enemies(rnd, side: str, t: float) -> list[int]:
+    return sorted(s for s, team in rnd.team.items() if team != side and rnd.alive(s, t))
+
+
+def read_knives(rnd) -> list[Info]:
+    """KAY/O's ZERO/point (item 10), once it is proven to have pulsed with a complete hit list (condenser
+    `activation`): no enemy hit -> every living enemy is outside its radius (through walls); every living enemy hit
+    -> each is inside it; anything else -> nothing, not even for the ones it hit. An ulting Veto can't be hit, so
+    while he's alive the knife can't have hit everyone, and his region is kept on an empty one (needs: suppress)."""
+    from app.control import engine as ce
+
+    out = []
+    for e in rnd.blob.get("util") or []:
+        if e.get("k") != "ability" or f"{e.get('code')}_{e.get('name')}" != KNIFE or e.get("by") is None:
+            continue
+        act, pulse = e.get("activation") or {}, e.get("pulse")
+        if act.get("state") != "completed" or not act.get("targets_complete") or not pulse or pulse.get("r") is None:
+            continue
+        side, t = rnd.team.get(int(e["by"])), float(pulse["t"])
+        if side is None:
+            continue
+        living = _living_enemies(rnd, side, t)
+        if not living:
+            continue
+        hit = set(pulse.get("hits") or []) & set(living)
+        immune = [s for s in living if not affects("suppress", rnd.evolution, s, t)]
+        if not hit:
+            kind, reason = "exclude", "knife_zero"
+        elif hit == set(living) and not immune:
+            kind, reason = "restrict", "knife_all"
+        else:
+            continue
+        x, y = e["u"] * ce.PX / 10000, e["v"] * ce.PX / 10000
+        radius_m = float(pulse["r"]) * ce.PX / 10000 * rnd.geo.m_per_px
+        for slot in living:
+            out.append(Info(t, side, slot, kind, reason, x=x, y=y, radius_m=radius_m, source=f"{KNIFE}@{e['t']}",
+                            detail={"needs": "suppress", "hits": sorted(hit), "living": living}))
+    return out
+
+
+def read_skye_flashes(rnd) -> list[Info]:
+    """Skye's Guiding Light (item 14): a recorded enemy hit means her cue played (whatever the blind's length, zero
+    included): nothing changes. A flash proven to have popped with a complete hit list and no enemy hit means no
+    enemy was in its reach: the ground within its range and in its sight from where it popped is excluded for each
+    living enemy (needs: blind, so an ulting Veto keeps his region). Missing, unresolved or unplaced: nothing."""
+    from app.control import engine as ce
+
+    geo, out = rnd.geo, []
+    for e in rnd.blob.get("util") or []:
+        if e.get("k") != "flash" or e.get("ability") != SKYE_FLASH or e.get("by") is None:
+            continue
+        act, pop = e.get("activation") or {}, e.get("pop") or {}
+        if act.get("state") != "completed" or not act.get("targets_complete") or pop.get("u") is None:
+            continue
+        side = rnd.team.get(int(e["by"]))
+        if side is None:
+            continue
+        t = float(pop["t"])
+        if any(rnd.team.get(slot) not in (None, side) for slot, *_ in e.get("hits") or []):
+            continue                                       # an enemy was hit: the cue played, nothing is cleared
+        living = _living_enemies(rnd, side, t)
+        if not living:
+            continue
+        x, y = pop["u"] * ce.PX / 10000, pop["v"] * ce.PX / 10000
+        z = rnd._device_z(pop.get("z"))
+        own = eye = None
+        if geo.heights is not None:
+            own = geo.node_at(geo.cell_of_px(x, y), None if z is None else z + ce.hc.STAND_M)
+            eye = None if z is None or np.isnan(geo.node_z[own]) else z
+        seen = ce.cast(geo, x, y, np.arange(0, 360, ce.RAY_STEP_DEG), rnd.smokes_at(ce.snap(t)), eye_z=eye, own=own)
+        r = FIGURES["skye_flash_range_m"] / geo.m_per_px
+        seen &= ((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) <= r * r
+        if not seen.any():
+            continue
+        for slot in living:
+            out.append(Info(t, side, slot, "exclude", "skye_no_cue", mask=seen, source=f"flash@{e.get('id', e['t'])}",
+                            detail={"needs": "blind"}))
+    return out
+
+
+READERS: list = [read_reveals, read_pulses, read_knives, read_skye_flashes]
 
 
 def read_all(rnd) -> list[Info]:
