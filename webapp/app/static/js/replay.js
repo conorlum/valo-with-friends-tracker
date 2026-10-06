@@ -686,13 +686,19 @@
     return this.cache[n];
   };
 
+  // Every load takes a new token; a load that is no longer the latest (the user picked another round, or
+  // paused, while it was fetching) shows nothing when it lands.
   ReplayViewer.prototype.showRound = function (n, t) {
     var self = this;
+    var token = this.loadSeq = (this.loadSeq || 0) + 1;
+    this.autoPlay = null;
     return this.fetchRound(n).then(function (round) {
+      if (token !== self.loadSeq) return round;
       self.current = round;
       self.number = n;
       self.t = t || 0;
       self.playing = false;
+      self.lastFrame = null;               // the first frame after a load never jumps by the load's time
       self.renderStrip();
       self.renderTicks();
       self.renderBanner();
@@ -716,11 +722,38 @@
   // next keep showing a round paused.
   ReplayViewer.prototype.playRound = function (n) {
     var self = this;
-    return this.showRound(n).then(function (round) {
-      self.playing = true;
-      self.updateControls();
+    var shown = this.showRound(n);
+    var token = this.autoPlay = this.loadSeq;      // cleared by a pause, replaced by any later load
+    return shown.then(function (round) {
+      if (token === self.loadSeq && self.autoPlay === token) {
+        self.autoPlay = null;
+        self.playing = true;
+        self.updateControls();
+      }
       return round;
+    }, function (error) {
+      // a round that didn't load: stay on the one shown, stopped
+      if (token === self.loadSeq) {
+        self.autoPlay = null;
+        self.playing = false;
+        self.updateControls();
+      }
+      throw error;
     });
+  };
+
+  // The round after the one shown, or undefined on the last.
+  ReplayViewer.prototype.nextRound = function () {
+    var i = this.rounds.indexOf(this.number);
+    return i < 0 ? undefined : this.rounds[i + 1];
+  };
+
+  // Playback reached the round's end: the next listed round starts playing; the last one stops.
+  ReplayViewer.prototype.finishRound = function () {
+    this.playing = false;
+    var next = this.nextRound();
+    if (next === undefined) return null;
+    return this.playRound(next).catch(function () { return null; });
   };
 
   ReplayViewer.prototype.seek = function (t) {
@@ -746,6 +779,11 @@
 
   ReplayViewer.prototype.toggle = function () {
     if (!this.current) return;
+    if (this.autoPlay !== null && this.autoPlay !== undefined) {
+      this.autoPlay = null;                // paused while the next round loads: it arrives paused
+      this.updateControls();
+      return;
+    }
     if (!this.playing && this.t >= this.current.blob.t_end) this.t = 0;
     this.playing = !this.playing;
     this.updateControls();
@@ -754,15 +792,56 @@
   ReplayViewer.prototype.tick = function (now) {
     if (this.playing && this.current && this.lastFrame !== null) {
       this.t += (now - this.lastFrame) / 1000 * this.speed;
-      if (this.t >= this.current.blob.t_end) {
-        this.t = this.current.blob.t_end;
-        this.playing = false;
-      }
+      var ended = this.t >= this.current.blob.t_end;
+      if (ended) this.t = this.current.blob.t_end;
       this.updateControls();
       this.draw();
+      if (ended) this.finishRound();
     }
     this.lastFrame = now;
     requestAnimationFrame(this.tick);
+  };
+
+  // Space plays or pauses from anywhere on the page, except while typing or choosing in a field. A held
+  // key (repeat) and a key with a modifier are left alone.
+  function isEditable(target) {
+    if (!target || !target.tagName) return false;
+    if (target.isContentEditable) return true;
+    var tag = String(target.tagName).toUpperCase();
+    if (tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (tag !== "INPUT") return false;
+    var type = String(target.type || "text").toLowerCase();
+    return !/^(checkbox|radio|range|button|submit|reset|image|color|file)$/.test(type);
+  }
+
+  function spaceToggles(e) {
+    if (!e || (e.key !== " " && e.code !== "Space")) return false;
+    if (e.repeat || e.ctrlKey || e.altKey || e.metaKey) return false;
+    return !isEditable(e.target);
+  }
+
+  // A focused button, link or checkbox would also act on Space when the key comes up: that keyup is
+  // swallowed once, so one press is one toggle.
+  function actsOnSpace(target) {
+    if (!target || !target.tagName) return false;
+    var tag = String(target.tagName).toUpperCase();
+    return tag === "BUTTON" || tag === "SUMMARY" || tag === "INPUT" || tag === "A"
+      || (target.getAttribute && /^(button|tab|checkbox|switch)$/.test(target.getAttribute("role") || ""));
+  }
+
+  ReplayViewer.prototype.onSpaceDown = function (e) {
+    if (!spaceToggles(e)) return false;
+    e.preventDefault();                    // no page scroll
+    this.swallowSpaceUp = actsOnSpace(e.target);
+    this.toggle();
+    return true;
+  };
+
+  ReplayViewer.prototype.onSpaceUp = function (e) {
+    if (!this.swallowSpaceUp || !e || (e.key !== " " && e.code !== "Space")) return false;
+    this.swallowSpaceUp = false;
+    e.preventDefault();
+    return true;
   };
 
   ReplayViewer.prototype.bindControls = function () {
@@ -795,10 +874,15 @@
     if (this.ui.nextKill) this.ui.nextKill.addEventListener("click", function () { self.nextKill(); });
     if (this.ui.prevKill) this.ui.prevKill.addEventListener("click", function () { self.prevKill(); });
     this.ui.next.addEventListener("click", function () { self.step(1); });
+    var page = this.root.ownerDocument || global.document;
+    if (page && page.addEventListener) {
+      page.addEventListener("keydown", function (e) { self.onSpaceDown(e); });
+      page.addEventListener("keyup", function (e) { self.onSpaceUp(e); });
+    }
     this.root.addEventListener("keydown", function (e) {
-      if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.key !== " ") return;
-      if (e.key === " ") { e.preventDefault(); self.toggle(); }
-      else if (e.key === "ArrowLeft") { e.preventDefault(); self.seek(self.t - STEP_S); }
+      if (e.key === " ") return;           // the page's listener above
+      if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+      if (e.key === "ArrowLeft") { e.preventDefault(); self.seek(self.t - STEP_S); }
       else if (e.key === "ArrowRight") { e.preventDefault(); self.seek(self.t + STEP_S); }
       else if (e.key === "n" || e.key === "N") { e.preventDefault(); self.nextKill(); }
       else if (e.key === "b" || e.key === "B") { e.preventDefault(); self.prevKill(); }
@@ -2416,7 +2500,8 @@
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
     impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,
     popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle, utilDownAt: utilDownAt,
-    controlRows: controlRows, withSiteData: withSiteData
+    controlRows: controlRows, withSiteData: withSiteData,
+    isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace
   };
   global.Replay = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

@@ -464,3 +464,154 @@ def test_clicking_a_round_number_plays_that_round_from_its_start():
     got = run_node(script, None)
     assert got["third"] == {"shown": [[3, 0]], "playing": True}
     assert got["current"] == {"shown": [[2, 0]], "playing": True, "t": 0}
+
+
+# A viewer without a page: the real prototype, the render methods stubbed, rounds loaded through
+# options.loadRound (each a promise the test resolves or rejects by hand).
+PLAYBACK_VIEWER = """
+      const R = require(process.argv[1]);
+      const pending = {};
+      const v = Object.create(R.ReplayViewer.prototype);
+      for (const name of ["renderStrip", "renderTicks", "renderBanner", "renderFeed", "renderAnalysis",
+                          "renderUtilList", "refreshControl", "renderControlTable", "refreshGaps",
+                          "updateControls", "draw"]) v[name] = function () {};
+      Object.assign(v, {rounds: [1, 2, 3], cache: {}, speed: 1, t: 0, playing: false, current: null, lastFrame: null,
+                        options: {loadRound: n => new Promise((ok, fail) => { pending[n] = {ok, fail}; })}});
+      const blob = n => ({v: 1, round: n, hz: 16, t_end: 10, tracks: {}, players: [], kills: [], util: []});
+      const land = n => { pending[n].ok(blob(n)); return new Promise(r => setTimeout(r, 0)); };
+      const frame = (now) => { const raf = global.requestAnimationFrame; global.requestAnimationFrame = () => {};
+                               v.tick(now); global.requestAnimationFrame = raf; };
+      const state = () => ({number: v.number, playing: v.playing, t: v.t});
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_a_finished_round_plays_the_next_one_and_the_last_one_stops():
+    script = PLAYBACK_VIEWER + """
+      (async () => {
+        const out = {};
+        const first = v.playRound(1); await land(1); await first;
+        frame(1000); frame(3000);                     // 2 s played
+        out.midway = state();
+        frame(20000);                                 // past the end: round 2 is asked for
+        out.at_end = state();
+        await land(2);
+        out.next = state();
+        frame(30000); out.first_frame_after_load = v.t;      // the load's wait is never played
+        frame(31000); out.second_frame = v.t;
+        const last = v.playRound(3); await land(3); await last;
+        frame(40000); frame(60000);
+        await new Promise(r => setTimeout(r, 0));
+        out.final = state();
+        process.stdout.write(JSON.stringify(out));
+      })();"""
+    got = run_node(script, None)
+    assert got["midway"] == {"number": 1, "playing": True, "t": 2}
+    assert got["at_end"] == {"number": 1, "playing": False, "t": 10}
+    assert got["next"] == {"number": 2, "playing": True, "t": 0}
+    assert got["first_frame_after_load"] == 0 and got["second_frame"] == 1
+    assert got["final"] == {"number": 3, "playing": False, "t": 10}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_a_manual_choice_or_a_pause_beats_an_automatic_load_in_flight():
+    script = PLAYBACK_VIEWER + """
+      (async () => {
+        const out = {};
+        let p = v.playRound(1); await land(1); await p;
+        frame(1000); frame(20000);                    // round 1 ends: round 2 is loading
+        v.step(1 + 1);                                // the user steps to round 3 meanwhile (paused, as step does)
+        await land(3);
+        out.stepped = state();
+        await land(2);                                // the stale automatic load lands late
+        out.after_stale = state();
+
+        p = v.playRound(1); await p;                  // cached now
+        frame(50000); frame(70000);                   // round 1 ends again: round 2 (cached) is on its way
+        v.toggle();                                   // paused before it shows
+        await new Promise(r => setTimeout(r, 0));
+        out.paused_during_load = state();
+        v.toggle();
+        out.then_play = state();
+        process.stdout.write(JSON.stringify(out));
+      })();"""
+    got = run_node(script, None)
+    assert got["stepped"] == {"number": 3, "playing": False, "t": 0}
+    assert got["after_stale"] == {"number": 3, "playing": False, "t": 0}
+    assert got["paused_during_load"] == {"number": 2, "playing": False, "t": 0}
+    assert got["then_play"] == {"number": 2, "playing": True, "t": 0}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_a_round_that_fails_to_load_leaves_the_viewer_stopped_on_the_one_shown():
+    script = PLAYBACK_VIEWER + """
+      (async () => {
+        const p = v.playRound(1); await land(1); await p;
+        frame(1000); frame(20000);
+        pending[2].fail(new Error("gone"));
+        await new Promise(r => setTimeout(r, 0));
+        const failed = state();
+        v.toggle();                                   // Play again: the same round from its start
+        process.stdout.write(JSON.stringify({failed: failed, replay: state()}));
+      })();"""
+    got = run_node(script, None)
+    assert got["failed"] == {"number": 1, "playing": False, "t": 10}
+    assert got["replay"] == {"number": 1, "playing": True, "t": 0}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_space_toggles_once_from_anywhere_but_a_field():
+    script = PLAYBACK_VIEWER + """
+      (async () => {
+        const p = v.showRound(1); await land(1); await p;
+        const el = (tagName, extra) => Object.assign({tagName, getAttribute: () => null}, extra || {});
+        const press = (target, more) => {
+          const e = Object.assign({key: " ", code: "Space", target, prevented: 0,
+                                   preventDefault() { this.prevented++; }}, more || {});
+          const before = v.playing;
+          const handled = v.onSpaceDown(e);
+          const up = {key: " ", code: "Space", target, prevented: 0, preventDefault() { this.prevented++; }};
+          v.onSpaceUp(up);
+          const out = {handled, toggled: v.playing !== before, prevented: e.prevented, up_prevented: up.prevented};
+          v.playing = false;
+          return out;
+        };
+        const out = {
+          body: press(el("BODY")),
+          canvas: press(el("CANVAS")),
+          play_button: press(el("BUTTON")),
+          tab: press(el("DIV", {getAttribute: n => n === "role" ? "tab" : null})),
+          layer_checkbox: press(el("INPUT", {type: "checkbox"})),
+          scrub: press(el("INPUT", {type: "range"})),
+          text: press(el("INPUT", {type: "text"})),
+          search: press(el("INPUT", {type: "search"})),
+          no_type: press(el("INPUT")),
+          textarea: press(el("TEXTAREA")),
+          select: press(el("SELECT")),
+          editable: press(el("DIV", {isContentEditable: true})),
+          held: press(el("BODY"), {repeat: true}),
+          ctrl: press(el("BODY"), {ctrlKey: true}),
+          other_key: (() => { const e = {key: "a", code: "KeyA", target: el("BODY"), preventDefault() {}};
+                              return v.onSpaceDown(e); })(),
+        };
+        v.current = null;
+        out.no_round = press(el("BODY")).toggled;
+        process.stdout.write(JSON.stringify(out));
+      })();"""
+    got = run_node(script, None)
+    once = {"handled": True, "toggled": True, "prevented": 1}
+    for where in ("body", "canvas"):
+        assert got[where] == {**once, "up_prevented": 0}, where
+    for where in ("play_button", "tab", "layer_checkbox", "scrub"):
+        # the control's own Space action (on keyup) is swallowed, so one press is one toggle
+        assert got[where] == {**once, "up_prevented": 1}, where
+    for where in ("text", "search", "no_type", "textarea", "select", "editable", "held", "ctrl"):
+        assert got[where] == {"handled": False, "toggled": False, "prevented": 0, "up_prevented": 0}, where
+    assert got["other_key"] is False and got["no_round"] is False
+
+
+def test_the_page_listens_for_space_on_the_document_not_only_inside_the_viewer():
+    source = REPLAY_JS.read_text(encoding="utf-8")
+    assert 'page.addEventListener("keydown", function (e) { self.onSpaceDown(e); });' in source
+    assert 'page.addEventListener("keyup", function (e) { self.onSpaceUp(e); });' in source
+    assert 'if (e.key === " ") { e.preventDefault(); self.toggle(); }' not in source      # one listener, not two
