@@ -202,8 +202,8 @@
   "Summit": {
    "image_sha": "e3ceb9a90958",
    "sight_sha": "2b8c041fa4c9",
-   "walk_sha": "d08f3913fac4",
-   "walkable_cells": 6040,
+   "walk_sha": "b8ab14e4a82e",
+   "walkable_cells": 6031,
    "cell_m": 1.042,
    "tags": 0,
    "see_across_paint": false,
@@ -217,6 +217,7 @@
    },
    "barrier_sha": "6e8a726dd39b",
    "paints": [
+    "cant_walk_paint",
     "barrier_paint"
    ]
   },
