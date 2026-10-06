@@ -177,6 +177,18 @@ DAMAGE_ZONES = [(re.compile(p), r) for p, r in [
 # Flown drones: (cone half-angle, range in m or None).
 DRONES = {"Hunter_E_Drone": (FOV_HALF, None), "Guide_Q_PossessableScout": (45.0, 22.5)}
 VIPER_WALL = "Pandemic_E_SmokeScreenManager"   # the condenser's `points` and `on` (extras.py)
+# Ability walls (W14; the 2026-10-05 review items 20, 26-28), each with its condenser keys (extras.py): what blocks
+# sight and what blocks walking are separate properties. Blaze: sight only (it can be walked through). Sage's Barrier
+# Orb: both, per intact segment. Deadlock's Barrier Mesh: walking only, per intact arm (a mesh can be seen through).
+# Vyse's Shear: both while raised (the crossing that raised it got through). Deadlock's Sonic Sensors hold nothing.
+BLAZE_WALL = "Phoenix_Q_FlameWallManager_Production"
+SAGE_WALL = "Thorne_E_Wall_Fortifying"
+MESH_WALL = "Cable_E_CableJam_Root"
+VYSE_WALL = "Nox_WallTrap"
+SAGE_SEGMENT_UNITS = 173.0     # a segment's length along the wall (the measured spacing of the four on Abyss)
+# How far a wire's end is carried to the wall on a flat map (W14). The reported one was a cell short (1.1 m); a
+# wire with no wall this close keeps its stored end.
+TRIP_FLAT_REACH_M = 2.0
 CAMERA = "Gumshoe_E_PossessableCamera"
 TURRET = "Killjoy_E_Turret"
 TRIPWIRE = "Gumshoe_4_TripWire"
@@ -315,6 +327,10 @@ class RoundInputs:
         self.lives = self._lives()
         self.smokes, self.damage_zones, self.watchers = [], [], []
         self.walls: list[tuple[float, float, Wall]] = []
+        # W14: ability walls that stop walking, as (from, to, nodes), at their exact times; and every exact instant
+        # a wall (of either kind) went up or down, which control is evaluated at (`analytic_times`)
+        self.blockers: list[tuple[float, float, np.ndarray]] = []
+        self.transitions: list[float] = []
         self.flashed, self.nearsight = defaultdict(list), defaultdict(list)
         self.downgraded, self.contest_status = defaultdict(list), defaultdict(list)
         self.hit_contest = defaultdict(list)
@@ -471,6 +487,8 @@ class RoundInputs:
                 t0, t1 = _span(e["t"], end)
                 if key == VIPER_WALL and e.get("points"):
                     self._wall(e, end)
+                if key in (BLAZE_WALL, SAGE_WALL, MESH_WALL, VYSE_WALL):
+                    self._ability_wall(e, key, end)
                 for pat, r, solid in SMOKES:
                     if pat.match(key):
                         self.smokes.append((t0, t1, e["u"] * px_per_uv, e["v"] * px_per_uv,
@@ -716,13 +734,23 @@ class RoundInputs:
         if self.geo.heights is not None and any(z is None for z in heights):
             self.missing["approximate heights (a watcher has no z: 2D sight used)"] += 1
 
-    def _trip_nodes(self, a: np.ndarray, b: np.ndarray, za: float | None, zb: float | None) -> np.ndarray:
+    def _trip_nodes(self, a: np.ndarray, b: np.ndarray, za: float | None, zb: float | None,
+                    joined: bool = False) -> np.ndarray:
         """The nodes a tripwire from a to b (px) watches. On a flat map, or with no anchor heights: the
         cells under the 2D line (every floor of them). With heights the wire runs between its anchors'
         heights and each end is first extended (`_trip_end`); it watches, in each cell it crosses, the
         floor nearest at or below it."""
         geo = self.geo
         heights = geo.heights is not None and za is not None and zb is not None
+        if not heights and not joined:
+            # W14 (the 2026-10-05 review, item 6): on a flat map too, a wire's end reaches the wall it is anchored
+            # to: the cells from each end to the nearest wall join it. An anchor stored beside a wall's corner left
+            # a one-cell gap the unknown walked through.
+            joins = [self._join_wall(end) for end in (a, b)]
+            cells = [self._trip_nodes(a, b, za, zb, joined=True)]
+            cells += [self._trip_nodes(end, wall, None, None, joined=True) for end, wall in zip((a, b), joins)
+                      if wall is not None]
+            return np.unique(np.concatenate(cells))
         if heights:
             length = float(np.hypot(*(b - a))) * geo.m_per_px
             slope = (zb - za) / length if length > 0 else 0.0
@@ -738,6 +766,22 @@ class RoundInputs:
             return _every_floor(geo, np.unique(cells))
         zs = np.linspace(za, zb, n)
         return np.unique([geo.node_at(int(c), float(z) + hc.STAND_M) for c, z in zip(cells, zs)])
+
+    def _join_wall(self, end: np.ndarray) -> np.ndarray | None:
+        """The nearest 2D wall point (the centre of a sight-blocking pixel) within TRIP_FLAT_REACH_M of a wire's end
+        on a flat map, or None: the wire is anchored to that wall, so nothing walks between them."""
+        geo = self.geo
+        r = int(math.ceil(TRIP_FLAT_REACH_M / geo.m_per_px))
+        x0, y0 = int(end[0]), int(end[1])
+        ys, xs = np.mgrid[max(0, y0 - r):min(PX, y0 + r + 1), max(0, x0 - r):min(PX, x0 + r + 1)]
+        wall = geo.sight[ys, xs]
+        if not wall.any():
+            return None
+        d = np.hypot(xs[wall] + 0.5 - end[0], ys[wall] + 0.5 - end[1])
+        i = int(np.argmin(d))
+        if d[i] > r:
+            return None
+        return np.array([xs[wall][i] + 0.5, ys[wall][i] + 0.5])
 
     def _trip_end(self, end: np.ndarray, z_end: float, other: np.ndarray, z_other: float) -> np.ndarray:
         """Where a wire's end really is (the spec's "Trips"): from `end` on along the wire's own line, over
@@ -786,6 +830,66 @@ class RoundInputs:
                 self.walls.append((*_span(a, b), wall))
                 self.events += [a, b]
 
+    def _ability_wall(self, e: dict, key: str, end: float) -> None:
+        """Blaze, Sage's Barrier Orb, Deadlock's Barrier Mesh and Vyse's Shear (W14), from the condenser's keys, at
+        their exact times (a wall raised at 6.200 s is up at 6.200 s and never on the frame before)."""
+        uv = PX / 10000
+
+        def up(a, b, points, sight: bool, walk: bool) -> None:
+            b = end if b is None else min(b, end)
+            if b <= a or len(points) < 2:
+                return
+            if sight:
+                wall = Wall.from_points(points)
+                if wall is not None:
+                    self.walls.append((a, b, wall))
+            if walk:
+                self.blockers.append((a, b, self._line_nodes(points)))
+            self.transitions += [a, b]
+
+        if key == BLAZE_WALL and e.get("points"):
+            for a, b in e.get("on") or []:
+                up(a, b, [(u * uv, v * uv) for u, v in e["points"]], sight=True, walk=False)
+        elif key == SAGE_WALL and e.get("segments"):
+            centres = [np.array([u * uv, v * uv]) for u, v, *_ in e["segments"]]
+            half = SAGE_SEGMENT_UNITS / 2 * self.geo.uv_per_unit * uv
+            for i, (u, v, a, b) in enumerate(e["segments"]):
+                c = centres[i]
+                other = centres[i + 1] if i + 1 < len(centres) else centres[i - 1] if i else None
+                if other is None or np.allclose(other, c):
+                    yaw = math.radians(float(e.get("yaw") or 0) + 90)
+                    d = np.array([math.cos(yaw), math.sin(yaw)])
+                else:
+                    d = (other - c) / np.linalg.norm(other - c)
+                up(a, b, [tuple(c - d * half), tuple(c + d * half)], sight=True, walk=True)
+        elif key == MESH_WALL and e.get("arms") and e.get("on"):
+            root = (e["u"] * uv, e["v"] * uv)
+            for a, b in e["on"]:
+                for u, v, _, gone in e["arms"]:
+                    up(a, b if gone is None else min(gone, b if b is not None else gone), [root, (u * uv, v * uv)],
+                       sight=False, walk=True)
+        elif key == VYSE_WALL and e.get("line") and e.get("raised"):
+            a, b = e["raised"]
+            up(a, b, [(u * uv, v * uv) for u, v in e["line"]], sight=True, walk=True)
+
+    def _line_nodes(self, points) -> np.ndarray:
+        """Every floor of the cells under a polyline in px: what a wall there stops walking through."""
+        cells = []
+        for (x0, y0), (x1, y1) in zip(points, points[1:]):
+            n = int(max(abs(x1 - x0), abs(y1 - y0))) + 1
+            xs, ys = np.linspace(x0, x1, n), np.linspace(y0, y1, n)
+            cells.append((ys // CELL).astype(int).clip(0, GRID - 1) * GRID + (xs // CELL).astype(int).clip(0, GRID - 1))
+        nodes = _every_floor(self.geo, np.unique(np.concatenate(cells)))
+        return nodes[self.geo.walk_n[nodes]]
+
+    def blocked_at(self, t: float) -> np.ndarray:
+        """The nodes an ability wall stops walking through at t."""
+        out = np.zeros(self.geo.n, bool)
+        for a, b, nodes in self.blockers:
+            if a <= t < b:
+                out[nodes] = True
+        return out
+
     def smokes_at(self, t: float) -> list:
         """What blocks sight at t: the smokes as (x, y, r, solid), then the walls that are up."""
         return ([(x, y, r, solid) for t0, t1, x, y, r, solid in self.smokes if t0 <= t < t1]
@@ -804,14 +908,18 @@ class RoundInputs:
         for t in sorted(self.shot_times):
             windows.setdefault(math.floor(t / SHOT_WINDOW_S), snap(t))
         times.update(windows.values())
-        # an Info shows at the first grid frame at or after it, never before (W09: the viewer's clock)
+        # an Info or an ability wall going up or down shows at the first grid frame at or after it, never before
+        # (W09: the viewer's clock)
         times.update(snap_after(i.t) for i in self.infos)
+        times.update(snap_after(t) for t in self.transitions)
         return np.array(sorted(t for t in times if 0.0 <= t < self.t_end))
 
     def analytic_times(self, frames: np.ndarray) -> np.ndarray:
         """The instants control is evaluated and integrated at (W09): the viewer's frames plus each Info's own
         exact time. A round with no Info has exactly its frames, so its result is unchanged."""
-        extra = {round(float(i.t), 6) for i in self.infos} - {round(float(t), 6) for t in frames}
+        last = float(frames[-1]) if len(frames) else -1.0     # never past the last frame asked for
+        extra = ({round(float(i.t), 6) for i in self.infos if i.t <= last}
+                 | {round(float(t), 6) for t in self.transitions if 0.0 <= t <= last}) - {round(float(t), 6) for t in frames}
         return np.array(sorted({*(float(t) for t in frames), *extra}))
 
 
@@ -1679,6 +1787,9 @@ class Knowledge:
                 watched |= h.active | h.passive | h.watch
         seed = np.zeros(geo.n, bool)
         remembered = np.zeros(geo.n, bool)
+        # an ability wall up now is not somewhere an unseen enemy walked (W14; its route at earlier times isn't
+        # replayed here: the knowledge picture is the reach at this instant, as before)
+        walls = self.rnd.blocked_at(t) if getattr(self.rnd, "blockers", None) else np.zeros(geo.n, bool)
         for s, team in self.rnd.team.items():
             if team != self.enemy or s in seen or not self.rnd.alive(s, t):
                 continue
@@ -1690,7 +1801,7 @@ class Knowledge:
                 t0, cell = self.rnd.t_start, self.start[s]
             else:
                 continue
-            seed |= possible_region(geo, cell, watched, KNEW_RUN_MPS * max(0.0, t - t0) / geo.cell_m)
+            seed |= possible_region(geo, cell, watched | walls, KNEW_RUN_MPS * max(0.0, t - t0) / geo.cell_m)
         seed &= ~watched       # a possible position never opens a hole in what the team watches
         self.prev_t = t
         kt = copy.copy(tick)
@@ -1868,6 +1979,14 @@ class Unknown:
         rnd = getattr(tick, "rnd", None)
         locates = rnd is not None and hasattr(rnd, "locating_rows")    # a real round (not a test's bare tick)
         since = -math.inf if self._prev_t is None else self._prev_t   # events in (since, t]: R8
+        # W14: ability walls stop walking. The step from the last tick to this one is spread with the walls of that
+        # step (every wall goes up or down at a tick of its own, so they're constant in between), then the ground
+        # under a wall up now is cleared: a route open earlier in the step stays crossed, and nothing tunnels a wall
+        # that was up all along (its cells are also `solid`: no diagonal step past them).
+        blocking = rnd is not None and getattr(rnd, "blockers", None)
+        if blocking:
+            mid = t if since == -math.inf else (since + t) / 2
+            blocked_step, blocked_now = rnd.blocked_at(mid), rnd.blocked_at(t)
         infos = getattr(rnd, "infos", None) or []
         if infos:
             times = [i.t for i in infos]
@@ -1980,8 +2099,20 @@ class Unknown:
                         self.cleared[side].add(source)
                         self.reasons[side].append((t, slot, "cleanup", "hypothesis_cleared", source))
                 floor = self.floor[side].get(slot)
-                reached, parent = self._spread(reached, room, free if floor is None else np.maximum(free, floor), t,
-                                               self.seen[side].get(slot), solid)
+                step_room, step_solid = room, solid
+                if blocking:
+                    step_room = room & ~blocked_step
+                    if h is not None:
+                        step_room[h.cell] = room[h.cell]         # one standing on a wall's line is there
+                    step_solid = blocked_step if solid is None else solid | blocked_step
+                    reached[~step_room] = np.inf
+                reached, parent = self._spread(reached, step_room, free if floor is None else np.maximum(free, floor),
+                                               t, self.seen[side].get(slot), step_solid)
+                if blocking:
+                    gone = blocked_now.copy()
+                    if h is not None:
+                        gone[h.cell] = False
+                    reached[gone] = np.inf
                 self._record(side, slot, before, reached, parent, sources, centre, area)
                 self.reached[side][slot] = reached
                 cells |= np.isfinite(reached)
@@ -2478,6 +2609,10 @@ class TickRunner:
         timings["memory"] += time.perf_counter() - a
         tick.unknown = {side: cells.copy() for side, cells in self.unknown.cells.items()}
         tick.sealed = self.unknown.sealed(tick.smokes)   # cached per smokes: the one apply just used
+        rnd = getattr(tick, "rnd", None)
+        if rnd is not None and getattr(rnd, "blockers", None):
+            # a wall up now stays shut in the counterfactual's unknown too (W14)
+            tick.sealed = tick.sealed | rnd.blocked_at(tick.t)
         return tick
 
 
