@@ -109,7 +109,7 @@ When a build comes back:
 | The build itself fails | logged, retried with the dispatcher's existing limits |
 | The map has tagged map features enabled | stored `held`: see 5 |
 
-The bar and the two checks are the ones a local build uses today (the companion spec, section 5): 60%
+The bar and the two checks are the ones a local build uses today (the companion spec, section 6): 60%
 of walkable cells supported, no large unresolved area beside a two-floor cell, at most 2% of real kill
 lines blocked, and every must-block sightline blocked. The report also carries a comparison with the previous asset: cells gained, cells lost, and cells
 whose ground moved by more than 0.5 m. It is for looking at afterwards, not a gate.
@@ -126,23 +126,21 @@ A hand-tagged floor is bound to one height asset by its digest; a binding read f
 pending and binds nothing (`2026-10-04-map-features-contract.md`, frozen). A rebuild would therefore
 silently unbind every tagged floor on the map.
 
-**Open: the owner wants to talk this through (2026-10-05).** What is settled is the aim:
+**Agreed by the owner, 2026-10-05** ("yes that's what I meant"). The aim:
 
 - a tagged feature (a gimmick: a door, a breakable, a rope) must **persist** across rebuilds. New replay
   data never changes what the feature is or where it is;
 - the **heights** under it must follow the data. When a rebuild says the floor there is at a different
   height, the feature moves with the floor, without the owner re-tagging it.
 
-Proposed way to get both, not yet agreed: a binding keeps its height band (it already stores one) and
+How: a binding keeps its height band (it already stores one) and
 stops requiring the same digest. After each rebuild every binding is re-read against the new asset. If
 its band still picks exactly one floor in each of its cells, it follows the new heights by itself. If
 not (the floor moved out of the band, or the cell gained a second floor inside it), that one feature is
-pending and listed for the owner, and the rest of the map still goes live. This changes the frozen
-contract's "read from another height asset is pending" rule, so it needs the owner's explicit yes.
-
-Until that is agreed, the build takes the safe side: a map whose `index.json` entry has a `features_sha`
-never activates a rebuilt asset automatically. The asset is stored `held`. No map has an enabled
-feature today, so this holds nothing back yet.
+pending and listed for the owner, and the rest of the map still goes live. This replaces the frozen
+contract's "read from another height asset is pending" rule; the contract document is amended in the
+same change, with this spec named as the reason. No map has an enabled feature today, so no stored
+round changes because of it.
 
 ### 6. Seeing what it did
 
@@ -179,6 +177,7 @@ The replay worker's `/health` says whether a rebuild is queued or running and fo
 | P2 | A build at the bar that passes both checks goes live with nobody looking | Approved |
 | P3 | A failed build keeps the old heights | Approved: "keeping old heights is a fine fallback" |
 | P4 | A map's rounds are held back while its rebuild is due or running; the page keeps showing the previous version until the new one is stored | Approved, with the display rule in section 3 |
-| P5 | How tagged features survive a rebuild | **Open** (section 5) |
+| P5 | Tagged features persist and follow the new heights by their band; one that no longer fits is flagged, and the map still goes live (section 5) | Approved |
+| P8 | The two checks are enough for now | Approved for now; the owner expects to add more checks to the gate later |
 | P6 | First build at 2 matches, then every 5 new matches | Approved |
 | P7 | The 60% bar stays as the gate | Approved (the companion spec, O5) |

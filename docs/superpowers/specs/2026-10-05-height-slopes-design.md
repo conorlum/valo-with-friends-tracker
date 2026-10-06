@@ -123,9 +123,10 @@ case, tried only when that one fails:
   or a diagonal pair), each with a single floor;
 - the slope between the two is at most `SLOPE_MAX` (rise over run 1.0: with 1 m cells, up to 2 m between
   neighbours two cells apart);
-- **players were seen walking up between the two sides** (the build already records walks between floors
-  for its connections). This is what tells a staircase from a ledge: a ledge of the same height is only
-  ever dropped from;
+- **a player was seen crossing between the two sides on the ground**, in either direction: a walk (1)
+  that runs from one side to the other. This is what tells a slope from a ledge. Coming off a ledge a
+  player is in the air; going down a ramp, even one that can only be slid down, they stay on it. The
+  direction they were seen going decides how the filled cell connects (see 5);
 - then the cell takes the mean of the pair. If several pairs qualify they must agree within `FILL_TOL_M`,
   or the cell stays `neighbours disagree`.
 
@@ -149,7 +150,40 @@ height asset is committed today, so nothing has to be migrated.
 The viewer shows the kind in the hover and gets a layer that marks kinds 2 and 4, so the owner can see
 exactly which cells the new rules produced and judge them by eye.
 
-### 5. The bar
+### 5. Drops, slides and the unknown (an engine change)
+
+The owner, 2026-10-05:
+
+- Lotus and Summit each have a ramp that can be slid down silently but not walked up. The unknown (where
+  an unseen enemy could be) must spread **down** it and never up.
+- A ledge must stop the unknown from going over it when the drop is high enough that landing always
+  makes a sound. Start value 1 m; the owner thinks the real figure is lower.
+
+Today the build records a connection seen only going down as one-way, and the engine lets the unknown
+spread down every one-way connection whatever its height (`app/control/topology.py`). There is no noise
+value stored for a player: the engine infers footsteps from speed (over 4.5 m/s within hearing range of
+an opponent), and has no notion of a landing.
+
+The change:
+
+- **The asset says what kind each connection is.** `edges` gains a fifth column: 0 a step (both ways,
+  as now), 1 a **slide** (one-way down, the player stayed on the ground: a walk went down it), 2 a
+  **fall** (one-way down, through the air).
+- **The engine's unknown** spreads across steps both ways and down slides, as now. It spreads down a
+  fall only when the drop is at most `SILENT_DROP_M` (1.0 m). A higher fall is closed to the unknown.
+- Everything else that uses connections (walking distances, connected pieces, memory, backfill) is
+  unchanged: a real player still drops off any ledge.
+
+This is a change to what a round computes, so `CONTROL_REVISION` goes up and every stored round on a map
+with heights is recomputed by the idle queue. A flat map's bytes don't change (the reference test pins
+them). No map has heights live today, so in practice nothing is recomputed that wouldn't be anyway.
+
+Open, for the owner: a landing is only informative if someone hears it. The footstep rule already asks
+for an opponent within hearing range; this rule, as stated, closes a high ledge to the unknown even when
+nobody is near enough to hear. That is the simple version asked for. The stricter-to-build version
+closes it only while an opponent is within hearing range of the landing spot.
+
+### 6. The bar
 
 Unchanged (O5). A map's heights turn on when all of these hold, exactly as today:
 
@@ -188,12 +222,15 @@ No rule here is adopted on argument. For each of the five maps, on the live roun
 | `SLOPE_MAX` | 1.0 | steepest walkable slope, rise over run |
 | `WALK_ACC_MAX` | to be measured | vertical acceleration above which a run is airborne |
 | `LOW_PCT` | 10 | the percentile of a band taken as its height |
+| `SILENT_DROP_M` | 1.0 m | the highest fall the unknown still spreads down (the owner expects this to come down) |
 | `ABILITY_BLACKOUT_S` | 3 s | how long a player's samples are dropped after a movement ability |
 | `AIRBORNE_ABILITIES` | Jett updraft and dash, Waylay dashes, Raze blast pack | the casts that start a blackout |
 
 ## Out of scope
 
 - A tool to set heights by hand. The owner's 2026-10-01 decision ("heights only, no paint tool") stands.
+- A landing as something that locates an enemy (like footsteps do). Section 5 only stops the unknown
+  spreading over a high ledge; it doesn't add a new way to hear someone.
 - Sloped cells inside the engine. A cell still has one flat height per floor; a staircase is a run of
   small steps, each within `STEP_UP_M` of the next, which the engine already walks and sees across.
 - Storing heights anywhere but the committed file, and rebuilding automatically: the companion spec.
