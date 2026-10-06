@@ -9,7 +9,9 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   `yaws`, on pawns, are map control's inputs: `_control_inputs`; `z`, `end_z`, `thrown.z` and a path
   point's fourth value are heights in decimetres of world z, each left out when the export gave none:
   format.py, revision 11; `off`, on a Killjoy turret or alarmbot, is `[[from, to | null], ...]`: when it
-  was switched off, KJ out of range: `device_off_spans`, revision 12);
+  was switched off, KJ out of range: `device_off_spans`, revision 12; `arms`, on Deadlock's Barrier Mesh
+  root, is `[[u, v, z dm, gone t | null], ...]`: each node's place and when its arm went before the wall
+  did, with `on` = when the mesh was solid and `arms_missing` = nodes with no known place: `mesh_arms`);
 - `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`;
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
 - `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`.
@@ -67,6 +69,55 @@ BOMB_ARCHETYPE = "Default__TimedBomb_C"
 TRACER_UNITS = 2500.0
 
 _NEEDLES = ('"actor_spawned"', '"actor_closed"', '"valorant_shot_received"', '"Instigator"')
+
+# Ability actors whose archetype doesn't follow `<Kind>_<AgentCode>_<Name>`, by their exact name: read as the
+# archetype on the right. Deadlock's (measured on the Summit export, 2026-10-05): the Barrier Mesh's root has
+# no name part at all, its four nodes and its throw are coded `CableJam`, the Sonic Sensor `StealthingTrap`,
+# its concuss `SoundSensor`, and Annihilation's hook is an `Actor_`. Exact names only, so a lookalike that
+# isn't an agent's is never taken in; the hook's path warnings, its spline and `MotherNode` stay out (they
+# aren't casts) and are counted with the other skipped archetypes.
+ARCHETYPE_ALIASES = {
+    "Default__GameObject_CableJamRoot_C": "Default__GameObject_Cable_E_CableJam_Root_C",
+    "Default__GameObject_CableJam_CableDeployer_Precomputed_C": "Default__GameObject_Cable_E_CableJam_Node_C",
+    "Default__Projectile_CableJam_InAir_C": "Default__Projectile_Cable_E_CableJam_C",
+    "Default__GameObject_StealthingTrap_SoundSensor_C": "Default__GameObject_Cable_Q_SoundSensor_C",
+    "Default__GameObject_SoundSensor_SweetSpotFissure_C": "Default__GameObject_Cable_Q_SoundSensor_Fissure_C",
+    "Default__Actor_FishingHook_C": "Default__GameObject_Cable_X_FishingHook_C",
+    "Default__GameObject_FishingHook_CageSphere_C": "Default__GameObject_Cable_X_FishingHook_Cage_C",
+}
+# Deadlock's Barrier Mesh: the root row carries its nodes as `arms`; a node is never a row of its own.
+MESH_ROOT, MESH_NODE = "E_CableJam_Root", "E_CableJam_Node"
+MESH_NODE_UNITS = 50.0       # a node spawns on its root (measured: the same point, 56 units lower)
+# The mesh is solid once its root swaps effects, 3.0 s after it lands (3003-3006 ms on all eight walls).
+MESH_FORM_MS = (500, 6000)
+
+
+def packed_vector(bit_count: int, data: bytes) -> tuple[float, float, float] | None:
+    """A raw property the parser left as `{"BitCount", "Data"}` read as UE5's packed vector: a 7-bit header
+    (the low 6 bits are each component's width, bit 6 says the values are scaled ints), then x, y and z as
+    two's-complement ints of that width, least significant bit first, in hundredths of a world unit. None
+    when the bits don't have that shape. Checked on the Summit export: a mesh root's `DamageOrigin` decodes
+    to its own spawn point, to the unit."""
+    def take(start: int, width: int) -> int:
+        value = 0
+        for i in range(width):
+            bit = start + i
+            value |= ((data[bit >> 3] >> (bit & 7)) & 1) << i
+        return value
+
+    if bit_count < 7 or len(data) * 8 < bit_count:
+        return None
+    header = take(0, 7)
+    width, scaled = header & 63, bool(header & 64)
+    if not scaled or width < 1 or 7 + 3 * width != bit_count:
+        return None
+    out = []
+    for k in range(3):
+        raw = take(7 + k * width, width)
+        if raw & (1 << (width - 1)):
+            raw -= 1 << width
+        out.append(raw / 100.0)
+    return out[0], out[1], out[2]
 
 
 @dataclass
@@ -171,6 +222,9 @@ class Raw:
     # Every effect on a Killjoy turret or alarmbot (KJ_DEVICE), for `device_off_spans`: guid ->
     # [(time, "play" | "stop" | "oneshot", effect id | None, container | None)], from its latest spawn.
     device_fx: dict[int, list[tuple[int, str, int | None, int | None]]] = field(default_factory=dict)
+    # Where damage was dealt to a Barrier Mesh node (its `DamageOrigin`, decoded): the node's real place,
+    # which its spawn row doesn't have. guid -> (x, y, z), the first one seen.
+    origins: dict[int, tuple[float, float, float]] = field(default_factory=dict)
 
 
 EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
@@ -182,7 +236,8 @@ RPC_WALL_POINT = "MulticastAddSmokeScreenPoint"   # Viper's Toxic Screen, one pe
 BOMB_EQUIPPABLE_ARCHETYPE = "Default__BombEquippable_C"
 _DEVICE_FX = {RPC_PLAY: "play", RPC_STOP: "stop", RPC_ONESHOT: "oneshot"}
 _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
-                           '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true')
+                           '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true',
+                           '"DamageOrigin"')
 
 
 def packed_ints(data: bytes) -> list[int]:
@@ -232,6 +287,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
             guid = int(data.get("actor_net_guid") or 0)
             if kind == "actor_spawned":
                 archetype = str(data.get("archetype_path") or "")
+                archetype = ARCHETYPE_ALIASES.get(archetype, archetype)
+                raw.origins.pop(guid, None)
                 equip_now.pop(guid, None)
                 bombs.discard(guid)
                 carried.discard(guid)
@@ -310,6 +367,16 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     raw.kills.append((t_ms, int(payload["EventInstigatorPawn"])))
                 if function and function.startswith("MulticastNotifyDamage") and guid in actors                         and payload.get("DamageKilledTarget") is True:
                     raw.destroyed.setdefault(guid, t_ms)
+                if function and function.startswith("MulticastNotifyDamage") and guid in actors \
+                        and actors[guid].name == MESH_NODE and guid not in raw.origins:
+                    origin = payload.get("DamageOrigin")
+                    if isinstance(origin, dict) and origin.get("Data"):
+                        try:
+                            point = packed_vector(int(origin.get("BitCount") or 0), base64.b64decode(origin["Data"]))
+                        except (ValueError, TypeError):
+                            point = None
+                        if point is not None:
+                            raw.origins[guid] = point
             elif kind == "export_group_received":
                 payload = data.get("payload")
                 if not isinstance(payload, dict):
@@ -987,6 +1054,36 @@ def wall_on(states: list[tuple[int, bool]], actor: _Actor, start: int, end: int)
     return out
 
 
+def mesh_arms(root: _Actor, actors: dict[int, _Actor], raw: "Raw") -> tuple[list[tuple[float, float, float, int | None]], int]:
+    """A Barrier Mesh's arms: ([(x, y, z, the ms the arm went | None)], nodes with no known place). An arm
+    runs from the root to one of the nodes spawned with it; the node's place is where damage was dealt to it
+    (`Raw.origins`). It went when its node closed or was destroyed before the root did; None: it lasted as
+    long as the root. A node nothing ever damaged has no place and is counted, never guessed."""
+    arms, missing = [], 0
+    until = root.closed_ms
+    for node in sorted(actors.values(), key=lambda a: a.guid):
+        if node.name != MESH_NODE or node.code != root.code or abs(node.t_ms - root.t_ms) > SAME_TICK_MS \
+                or math.hypot(node.x - root.x, node.y - root.y) > MESH_NODE_UNITS:
+            continue
+        place = raw.origins.get(node.guid)
+        if place is None:
+            missing += 1
+            continue
+        ends = [t for t in (node.closed_ms, raw.destroyed.get(node.guid)) if t is not None and t >= node.t_ms]
+        gone = min(ends) if ends else None
+        if gone is not None and until is not None and gone >= until:
+            gone = None
+        arms.append((*place, gone))
+    return arms, missing
+
+
+def mesh_up_ms(root: _Actor, raw: "Raw") -> int | None:
+    """When a Barrier Mesh became solid: its root's first continuous effect MESH_FORM_MS after it landed."""
+    lo, hi = MESH_FORM_MS
+    plays = [t for t in raw.object_effects.get(root.guid, []) if lo <= t - root.t_ms <= hi]
+    return min(plays) if plays else None
+
+
 def _thrown(actor: _Actor, actors: dict[int, _Actor]) -> _Actor | None:
     """The same agent's projectile that closed within LANDING_MS of this object's spawn: the throw
     it came from (drawn as an arc from the thrower), whatever the owner evidence said."""
@@ -1082,6 +1179,9 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         if slot is not None and (owner_by != "nearest" or actor.kind == "Projectile"):
             known.append((actor, slot))
         owner_of[actor.guid] = slot
+        if actor.name == MESH_NODE and actor.code == "Cable":
+            counts["mesh_nodes"] += 1      # on its root's row (`arms`), never a row of its own
+            continue
         n = _round_of(actor.t_ms, windows, buy_phase=True)
         if n is None:
             counts["abilities_outside_rounds"] += 1
@@ -1133,6 +1233,22 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                 entry["points"] = [list(game_map.to_uv(x, y)) for x, y in line]
                 entry["on"] = wall_on(raw.wall_states.get(actor.guid, []), actor, start, end)
                 counts["walls_drawn"] += 1
+        if actor.name == MESH_ROOT and actor.code == "Cable":
+            arms, lost = mesh_arms(actor, actors, raw)
+            entry["arms"] = []
+            for x, y, z, gone_ms in arms:
+                arm = [*game_map.to_uv(x, y), _dm(z),
+                       None if gone_ms is None else max(0.0, _seconds(min(gone_ms, end), start))]
+                entry["arms"].append(arm)
+            if lost:
+                entry["arms_missing"] = lost
+                counts["mesh_arms_without_a_place"] += lost
+            up = mesh_up_ms(actor, raw)
+            if up is not None and up <= end:
+                entry["on"] = [[max(0.0, _seconds(up, start)), entry["t1"]]]
+            else:
+                counts["mesh_without_a_form_time"] += 1
+            counts["mesh_walls"] += 1
         if actor.guid in raw.device_fx:
             spans = device_off_spans(raw.device_fx[actor.guid], actor.t_ms, actor.closed_ms,
                                      turret=actor.name.endswith("E_Turret"))
