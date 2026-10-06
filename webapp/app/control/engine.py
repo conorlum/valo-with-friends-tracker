@@ -506,6 +506,25 @@ class RoundInputs:
                 self._damage(e)
         if not any(e.get("k") == "damage" for e in util):
             self.missing["damage hits (enemy damage zones only)"] += 1
+        self._suppress_devices(util)
+
+    def _suppress_devices(self, util: list) -> None:
+        """A suppressed Cypher's trips and camera are off while he is suppressed and back on when it ends, unless
+        they ended first (the 2026-10-05 review, item 5): his `suppressed` statuses join each device's off spans.
+        His own sight is untouched (only statuses that blind or downgrade do that)."""
+        spans: dict[int, list[tuple[float, float]]] = defaultdict(list)
+        for e in util:
+            if e.get("k") == "status" and e.get("status") == "suppressed" and e.get("target") is not None \
+                    and not self._immune_row(e):
+                spans[int(e["target"])].append(_span(e["t"], e["t1"]))
+        for w in self.watchers:
+            if w.kind not in ("trip", "camera") or w.by not in spans:
+                continue
+            for a, b in spans[w.by]:
+                a, b = max(a, w.t0), min(b, w.t1)
+                if b > a:
+                    w.off = sorted([*w.off, (a, b)])
+                    self.events += [a, b]
 
     def _immune_row(self, e: dict) -> bool:
         """A reveal or status on an ulting Veto, which doesn't touch him (W10). Flash and nearsight rows are

@@ -296,6 +296,15 @@
     return !aliveAt((alive || {})[String(a.slot)], t, tEnd);
   }
 
+  // A Cypher trip or camera is off while its owner is suppressed, and back on when that ends (the engine's rule,
+  // app/control/engine.py RoundInputs._suppress_devices): the owner's `suppressed` statuses at t.
+  var PAUSED_BY_SUPPRESSION = /^(Gumshoe_4_TripWire|Gumshoe_4_TripWire_SecondWire|Gumshoe_E_PossessableCamera)$/;
+
+  function utilSuppressedAt(a, statuses, t) {
+    if (a.slot === null || a.slot === undefined || !PAUSED_BY_SUPPRESSION.test(a.code + "_" + a.name)) return false;
+    return statusesAt(statuses, t).some(function (st) { return st.target === a.slot && st.status === "suppressed"; });
+  }
+
   // When a pop ability went off: the effects it played on itself (`fx`), or its spawn.
   function popTimes(a) {
     return a.fx && a.fx.length ? a.fx : [a.t0];
@@ -1336,6 +1345,9 @@
         if (utilDownAt(a, blob.alive, t, blob.t_end)) {
           color = self.css("--replay-util-down", "#7d828c");   // its owner is dead: it went down with them
           text += " · down (owner dead)";
+        } else if (utilSuppressedAt(a, self.current.extras.statuses, t)) {
+          color = self.css("--replay-util-down", "#7d828c");   // off while its owner is suppressed
+          text += " · off (owner suppressed)";
         }
         var age = t - a.t0, fadeIn = abilityAlpha(a, t);
         ctx.save();
@@ -2500,6 +2512,7 @@
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
     impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,
     popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle, utilDownAt: utilDownAt,
+    utilSuppressedAt: utilSuppressedAt,
     controlRows: controlRows, withSiteData: withSiteData,
     isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace
   };

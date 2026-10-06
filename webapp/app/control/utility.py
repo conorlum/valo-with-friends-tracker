@@ -28,6 +28,7 @@ within a phase, the order the readers gave."""
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -269,7 +270,71 @@ def read_skye_flashes(rnd) -> list[Info]:
     return out
 
 
-READERS: list = [read_reveals, read_pulses, read_knives, read_skye_flashes]
+# ---------------------------------------------------------------- Reyna's Leer (W13)
+
+LEER_EYE = "Vampire_4_NearsightAOE_Source"
+LEER_LOOK_STEP_S = 0.25      # how often, while the eye is up, each enemy's view of it is tested
+
+
+def _sees_point(rnd, viewer: int, t: float, x: float, y: float) -> bool:
+    """Whether `viewer`, alive at t, has (x, y) px in their field of view with a clear 2D line to it (walls and the
+    smokes up then; a flash or nearsight on them blinds it)."""
+    from app.control import engine as ce
+
+    if not rnd.alive(viewer, t) or any(a <= t < b for a, b in rnd.flashed.get(viewer, [])):
+        return False
+    p = rnd.pos(viewer, t)
+    if p is None:
+        return False
+    off = abs((math.degrees(math.atan2(y - p[1], x - p[0])) - p[2] + 180) % 360 - 180)
+    if off > ce.FOV_HALF:
+        return False
+    if any(a <= t < b for a, b in rnd.nearsight.get(viewer, [])) and \
+            math.hypot(x - p[0], y - p[1]) * rnd.geo.m_per_px >= ce.NEARSIGHT_RADIUS_M:
+        return False
+    return ce.los(rnd.geo, (p[0], p[1], None), (x, y, None), rnd.smokes_at(ce.snap(t)))
+
+
+def read_leers(rnd) -> list[Info]:
+    """Reyna's Leer (item 29): once one of her enemies sees the eye (it is in a living enemy's view, or it
+    nearsighted one of them), the team knows she cast it from within the eye's placement distance, through walls:
+    her region is restricted to that disk at that moment, and moves on from there as usual. An eye no enemy saw tells
+    them nothing. Only Reyna's own region, never another enemy's."""
+    from app.control import engine as ce
+
+    out = []
+    util = rnd.blob.get("util") or []
+    for e in util:
+        if e.get("k") != "ability" or f"{e.get('code')}_{e.get('name')}" != LEER_EYE or e.get("by") is None:
+            continue
+        reyna, t0 = int(e["by"]), float(e["t"])
+        side_of_reyna = rnd.team.get(reyna)
+        if side_of_reyna is None:
+            continue
+        t1 = float(e["t1"]) if e.get("t1") is not None else rnd.t_end
+        x, y = e["u"] * ce.PX / 10000, e["v"] * ce.PX / 10000
+        enemies = sorted(s for s, team in rnd.team.items() if team != side_of_reyna)
+        seen_at = None
+        for cast_row in util:                         # a hit on an enemy is seeing it
+            if cast_row.get("k") == "nearsight" and cast_row.get("by") == reyna and cast_row.get("ability") == "reyna_leer":
+                for slot, t_hit, *_ in cast_row.get("hits") or []:
+                    if slot in enemies and t0 - 0.05 <= float(t_hit) <= t1:
+                        seen_at = float(t_hit) if seen_at is None else min(seen_at, float(t_hit))
+        t = t0
+        while t <= t1 and (seen_at is None or t < seen_at):
+            if any(_sees_point(rnd, s, t, x, y) for s in enemies):
+                seen_at = t
+                break
+            t += LEER_LOOK_STEP_S
+        if seen_at is None or not rnd.alive(reyna, seen_at):
+            continue
+        side = next(rnd.team[s] for s in enemies)
+        out.append(Info(seen_at, side, reyna, "restrict", "leer_seen", x=x, y=y,
+                        radius_m=FIGURES["leer_cast_range_m"], source=f"{LEER_EYE}@{t0}", detail={"needs": "sight"}))
+    return out
+
+
+READERS: list = [read_reveals, read_pulses, read_knives, read_skye_flashes, read_leers]
 
 
 def read_all(rnd) -> list[Info]:
