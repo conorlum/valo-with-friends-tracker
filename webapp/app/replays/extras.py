@@ -11,7 +11,12 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   format.py, revision 11; `off`, on a Killjoy turret or alarmbot, is `[[from, to | null], ...]`: when it
   was switched off, KJ out of range: `device_off_spans`, revision 12; `arms`, on Deadlock's Barrier Mesh
   root, is `[[u, v, z dm, gone t | null], ...]`: each node's place and when its arm went before the wall
-  did, with `on` = when the mesh was solid and `arms_missing` = nodes with no known place: `mesh_arms`);
+  did, with `on` = when the mesh was solid and `arms_missing` = nodes with no known place: `mesh_arms`;
+  a Projectile row's `flight` is `[[t, u, v, z], ...]`, its replicated movement; Blaze's manager has `points`
+  and `on` like Viper's wall, laid along its projectile's flight; a Barrier Orb's root has `segments` =
+  `[[u, v, from, to | null], ...]`; a Shear has `line` = its two ends and, once raised, `raised` = `[from,
+  to | null]` and `trigger` = the slot whose crossing raised it; Omen's ult marker has `outcome`, `evidence`
+  and `from`; Waylay's return point has `recall` = `{t, t1, u, v}` when she recalled to it);
 - `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`;
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
 - `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`.
@@ -231,6 +236,12 @@ class Raw:
     # The `FXC.Distance` of a one-shot an ability object played on itself: a ZERO/point pulse's suppress
     # radius in world units (1500 on every knife of the first KAY/O export). guid -> the first one seen.
     object_ranges: dict[int, float] = field(default_factory=dict)
+    # A projectile's flight: its replicated movement, which the export gives in metres (stored here in world
+    # units, x100; W2's unit audit). guid -> [(ms, x, y, z | None)], from its latest spawn.
+    flights: dict[int, list[tuple[int, float, float, float | None]]] = field(default_factory=lambda: defaultdict(list))
+    # The parser's typed wall rows (Sage's Barrier Orb, Vyse's Shear), by the wall actor, from its latest
+    # spawn: {"placed", "activated", "destroyed": the rows; "segments": {index: [spawn ms, (x, y, z), gone ms | None]}}.
+    typed_walls: dict[int, dict] = field(default_factory=dict)
 
 
 EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
@@ -243,7 +254,7 @@ BOMB_EQUIPPABLE_ARCHETYPE = "Default__BombEquippable_C"
 _DEVICE_FX = {RPC_PLAY: "play", RPC_STOP: "stop", RPC_ONESHOT: "oneshot"}
 _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
                            '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true',
-                           '"DamageOrigin"')
+                           '"DamageOrigin"', '"ReplicatedMovement"', '"valorant_wall_')
 
 
 def packed_ints(data: bytes) -> list[int]:
@@ -295,6 +306,8 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 archetype = str(data.get("archetype_path") or "")
                 archetype = ARCHETYPE_ALIASES.get(archetype, archetype)
                 raw.origins.pop(guid, None)
+                raw.flights.pop(guid, None)
+                raw.typed_walls.pop(guid, None)
                 equip_now.pop(guid, None)
                 bombs.discard(guid)
                 carried.discard(guid)
@@ -333,6 +346,19 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 closes.setdefault(guid, t_ms)
             elif kind == "valorant_shot_received":
                 raw.shots.append(data)
+            elif kind is not None and kind.startswith("valorant_wall_"):
+                wall = raw.typed_walls.setdefault(int(data.get("wall_actor_net_guid") or 0), {"segments": {}})
+                if kind == "valorant_wall_segment_spawned":
+                    where = data.get("location") or {}
+                    if where.get("x") is not None and where.get("y") is not None and data.get("segment_index") is not None:
+                        wall["segments"][int(data["segment_index"])] = [
+                            t_ms, (float(where["x"]), float(where["y"]), where.get("z")), None]
+                elif kind == "valorant_wall_segment_destroyed":
+                    segment = wall["segments"].get(data.get("segment_index"))
+                    if segment is not None and segment[2] is None:
+                        segment[2] = t_ms
+                else:
+                    wall.setdefault(kind[len("valorant_wall_"):], data)     # placed, activated, destroyed: the first
             elif kind == "rpc_received":
                 function = data.get("function_name")
                 payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
@@ -393,6 +419,14 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     continue
                 if data.get("is_actor") and payload.get("Instigator"):
                     instigators.setdefault(guid, int(payload["Instigator"]))
+                moved = payload.get("ReplicatedMovement")
+                if isinstance(moved, dict) and guid in actors and actors[guid].kind == "Projectile":
+                    where = moved.get("location") or {}
+                    if where.get("x") is not None and where.get("y") is not None:
+                        z = where.get("z")
+                        raw.flights[guid].append((t_ms, float(where["x"]) * REPLICATED_SCALE,
+                                                  float(where["y"]) * REPLICATED_SCALE,
+                                                  None if z is None else float(z) * REPLICATED_SCALE))
                 if guid in walls and isinstance(payload.get("WallActivated"), bool):
                     raw.wall_states[guid].append((t_ms, payload["WallActivated"]))
                 actor_list = payload.get("Actors")
@@ -1064,6 +1098,76 @@ def wall_on(states: list[tuple[int, bool]], actor: _Actor, start: int, end: int)
     return out
 
 
+# Moving utility and walls (2026-10-05).
+# A projectile's replicated movement is in metres (a Blaze projectile spawned at (7672.3, 9364.2, 272.4) reports
+# (76.72, 93.64, 2.72) in the same millisecond); its spawn row is in world units. The unit follows the source.
+REPLICATED_SCALE = 100.0
+FLIGHT_STEP_MS = 100
+FLIGHT_MAX_POINTS = 40
+# Phoenix's Blaze: the wall is laid along its projectile's flight (0.67 s, curve included); the manager is
+# the wall itself, there until it burns out.
+BLAZE_WALL = "Phoenix_Q_FlameWallManager_Production"
+BLAZE_FLIGHT = "Phoenix_Q_FlameWall_ThroughWall"
+BLAZE_STEP_MS = 30           # denser than a throw: the curve is the wall's shape
+SAGE_WALL = "Thorne_E_Wall_Fortifying"
+VYSE_WALL = "Nox_WallTrap"
+
+
+def flight_points(points: list[tuple[int, float, float, float | None]], lo: int, hi: int | None,
+                  step_ms: int = FLIGHT_STEP_MS) -> list[tuple[int, float, float, float | None]]:
+    """A flight's samples between lo and hi, at most one per step and FLIGHT_MAX_POINTS in all, ends kept."""
+    mine = [p for p in sorted(points, key=lambda p: p[0]) if lo <= p[0] and (hi is None or p[0] <= hi)]
+    kept: list = []
+    for point in mine:
+        if not kept or point[0] - kept[-1][0] >= step_ms:
+            kept.append(point)
+    if mine and kept[-1] is not mine[-1]:
+        kept.append(mine[-1])
+    if len(kept) > FLIGHT_MAX_POINTS:
+        step = (len(kept) - 1) / (FLIGHT_MAX_POINTS - 1)
+        kept = [kept[round(i * step)] for i in range(FLIGHT_MAX_POINTS)]
+    return kept
+
+
+def blaze_line(wall: _Actor, actors: dict[int, _Actor], raw: "Raw") -> list[tuple[float, float]]:
+    """Blaze's laid line: the cast point, then its projectile's flight (the one spawned with the wall). Empty
+    when the export has no flight for it: the wall is then only a point, and is counted."""
+    shots = [p for p in actors.values() if f"{p.code}_{p.name}" == BLAZE_FLIGHT and abs(p.t_ms - wall.t_ms) <= SAME_TICK_MS]
+    if not shots:
+        return []
+    shot = min(shots, key=lambda p: (math.hypot(p.x - wall.x, p.y - wall.y), p.guid))
+    flight = flight_points(raw.flights.get(shot.guid, []), shot.t_ms, shot.closed_ms, BLAZE_STEP_MS)
+    if len(flight) < 2:
+        return []
+    return [(shot.x, shot.y)] + [(x, y) for _, x, y, _ in flight]
+
+
+def sage_segments(typed: dict | None) -> list[tuple[float, float, int, int | None]]:
+    """A Barrier Orb's segments in index order: (x, y, spawn ms, gone ms | None)."""
+    if not typed:
+        return []
+    return [(place[0], place[1], t0, gone) for _, (t0, place, gone) in sorted(typed["segments"].items())]
+
+
+def vyse_wall(typed: dict | None) -> dict | None:
+    """{"line": ((x, y), (x, y)), "raised": (ms, ms | None) | None, "trigger": pawn guid | None} for a Shear:
+    where the wall will stand (its anchors), when it stood (from the parser's activation to its destruction)
+    and whose crossing raised it. None without a placement row with both ends."""
+    placed = (typed or {}).get("placed")
+    if not placed or not placed.get("wall_start") or not placed.get("wall_end"):
+        return None
+    a, b = placed["wall_start"], placed["wall_end"]
+    out = {"line": ((float(a["x"]), float(a["y"])), (float(b["x"]), float(b["y"]))), "raised": None, "trigger": None}
+    up = typed.get("activated")
+    if up is not None:
+        down = typed.get("destroyed")
+        ended = int(down["time_ms"]) if down is not None and down.get("evidence") == "vyse_active_wall_actor_destroyed" \
+            else None
+        out["raised"] = (int(up["time_ms"]), ended)
+        out["trigger"] = up.get("trigger_character_net_guid")
+    return out
+
+
 # Teleports and temporary bodies (2026-10-05). What each row means, and what is and isn't in the export:
 # - Omen's ult: OMEN_ULT is the destination marker; `teleport_outcome` reads where his body is once it closes.
 # - Phoenix's Run It Back: PHOENIX_RETURN is the return point, there from the ult's start to his return.
@@ -1351,6 +1455,43 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             if fx:
                 entry["fx"] = fx
                 counts["abilities_with_fx"] += 1
+        key = f"{actor.code}_{actor.name}"
+        if actor.kind == "Projectile":
+            flight = flight_points(raw.flights.get(actor.guid, []), actor.t_ms, actor.closed_ms)
+            if len(flight) >= 2:
+                entry["flight"] = [[_seconds(t_ms, start), *game_map.to_uv(x, y), *([] if z is None else [_dm(z)])]
+                                   for t_ms, x, y, z in flight]
+                counts["projectile_flights"] += 1
+        if key == BLAZE_WALL:
+            line = blaze_line(actor, actors, raw)
+            if line:
+                entry["points"] = [list(game_map.to_uv(x, y)) for x, y in line]
+                entry["on"] = [[entry["t0"], entry["t1"]]]
+                counts["blaze_lines"] += 1
+            else:
+                counts["blaze_without_a_line"] += 1
+        if key == SAGE_WALL:
+            segments = sage_segments(raw.typed_walls.get(actor.guid))
+            if segments:
+                entry["segments"] = [[*game_map.to_uv(x, y), max(0.0, _seconds(t0, start)),
+                                      None if gone is None else max(0.0, _seconds(min(gone, end), start))]
+                                     for x, y, t0, gone in segments]
+                counts["sage_walls"] += 1
+            else:
+                counts["sage_walls_without_segments"] += 1
+        if key == VYSE_WALL:
+            shear = vyse_wall(raw.typed_walls.get(actor.guid))
+            if shear is not None:
+                entry["line"] = [list(game_map.to_uv(x, y)) for x, y in shear["line"]]
+                if shear["raised"] is not None:
+                    up, down = shear["raised"]
+                    entry["raised"] = [max(0.0, _seconds(up, start)), None if down is None else _seconds(min(down, end), start)]
+                    trigger = None if shear["trigger"] is None else players.resolve(int(shear["trigger"]), up)
+                    entry["trigger"] = trigger
+                    counts["vyse_walls_raised"] += 1
+                counts["vyse_walls"] += 1
+            else:
+                counts["vyse_walls_without_a_line"] += 1
         if f"{actor.code}_{actor.name}" == OMEN_ULT:
             result = teleport_outcome(actor, slot, positions_at)
             entry["outcome"], entry["evidence"] = result["outcome"], result["evidence"]
