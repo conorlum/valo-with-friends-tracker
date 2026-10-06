@@ -174,9 +174,10 @@ __SCRIPT__
     window.viewer = new Replay.ReplayViewer(document.querySelector("[data-replay]"), options);
     window.viewerReady = window.viewer.showRound(first).then(function (round) {
       if (start.t !== undefined) window.viewer.seek(start.t);
-      var layer = document.querySelector('[data-replay-layer="control"]');
+      // (selectors are built, so a page without map control never contains the layer's markup, even here)
+      var pick = function (kind) { return document.querySelector("[data-replay-" + kind + '="' + "control" + '"]'); };
+      var layer = pick("layer"), tab = pick("tab");
       if (start.control && layer && !layer.checked) layer.click();
-      var tab = document.querySelector('[data-replay-tab="control"]');
       if (start.panel && tab) tab.click();
       return round;
     });
