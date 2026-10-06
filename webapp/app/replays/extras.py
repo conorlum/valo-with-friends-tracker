@@ -225,6 +225,9 @@ class Raw:
     # Where damage was dealt to a Barrier Mesh node (its `DamageOrigin`, decoded): the node's real place,
     # which its spawn row doesn't have. guid -> (x, y, z), the first one seen.
     origins: dict[int, tuple[float, float, float]] = field(default_factory=dict)
+    # The `FXC.Distance` of a one-shot an ability object played on itself: a ZERO/point pulse's suppress
+    # radius in world units (1500 on every knife of the first KAY/O export). guid -> the first one seen.
+    object_ranges: dict[int, float] = field(default_factory=dict)
 
 
 EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
@@ -353,6 +356,10 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                                                    oneshot=True))
                 elif function == RPC_ONESHOT and guid in actors and guid not in bombs:
                     raw.object_oneshots[guid].append(t_ms)
+                    for value in payload.get("FunctionFloatValues") or []:
+                        if isinstance(value, dict) and (value.get("Name") or {}).get("TagName") == "FXC.Distance" \
+                                and isinstance(value.get("Value"), (int, float)):
+                            raw.object_ranges.setdefault(guid, float(value["Value"]))
                 elif function == RPC_STOP:
                     effect = open_effects.pop((guid, payload.get("EffectId")), None)
                     if effect is not None:
@@ -1054,6 +1061,31 @@ def wall_on(states: list[tuple[int, bool]], actor: _Actor, start: int, end: int)
     return out
 
 
+# KAY/O's ZERO/point once it has landed: it pulses once (a one-shot on itself, 1.000 s after landing on all nine
+# knives of the first KAY/O export, carrying its radius), and each player it suppresses gets a one-shot naming it
+# within the next KNIFE_HIT_MS (measured 0.10-0.30 s).
+KNIFE_PULSE = re.compile(r"^Grenadier_E_SuppressionPulse$")
+KNIFE_HIT_MS = 1000
+
+
+def knife_pulse(actor: _Actor, raw: "Raw", players: PlayerTable, owner: int | None) -> dict:
+    """{"state", "evidence", "diagnostics", "t_ms", "range", "hits"} for a landed knife. `completed` only when
+    its own pulse one-shot is in the export: a knife destroyed before it pulsed, or one with no such row, is
+    `unknown` and proves nothing about who it hit. `hits`: the slots (never its owner) that a one-shot naming
+    it was played on within KNIFE_HIT_MS of the pulse."""
+    until = actor.closed_ms if actor.closed_ms is not None else float("inf")
+    fired = sorted(t for t in raw.object_oneshots.get(actor.guid, []) if actor.t_ms <= t <= until)
+    if not fired:
+        return {"state": "unknown", "evidence": None, "diagnostics": ["no_pulse_row"], "t_ms": None, "range": None,
+                "hits": []}
+    t_ms = fired[0]
+    hits = sorted({players.pawn_slot[e.actor] for e in raw.effects
+                   if e.oneshot and actor.guid in e.context and e.actor in players.pawn_slot
+                   and t_ms <= e.t_ms <= t_ms + KNIFE_HIT_MS and players.pawn_slot[e.actor] != owner})
+    return {"state": "completed", "evidence": "pulse_oneshot", "diagnostics": [], "t_ms": t_ms,
+            "range": raw.object_ranges.get(actor.guid), "hits": hits}
+
+
 def mesh_arms(root: _Actor, actors: dict[int, _Actor], raw: "Raw") -> tuple[list[tuple[float, float, float, int | None]], int]:
     """A Barrier Mesh's arms: ([(x, y, z, the ms the arm went | None)], nodes with no known place). An arm
     runs from the root to one of the nodes spawned with it; the node's place is where damage was dealt to it
@@ -1262,6 +1294,15 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             if fx:
                 entry["fx"] = fx
                 counts["abilities_with_fx"] += 1
+        if KNIFE_PULSE.match(f"{actor.code}_{actor.name}"):
+            pulse = knife_pulse(actor, raw, players, slot)
+            if pulse["state"] == "completed":
+                entry["pulse"] = {"t": max(0.0, _seconds(min(pulse["t_ms"], end), start)), "hits": pulse["hits"]}
+                if pulse["range"] is not None:
+                    entry["pulse"]["r"] = int(round(pulse["range"] * abs(game_map.x_mult) * fmt.UV_SCALE))
+            entry["activation"] = {"state": pulse["state"], "evidence": pulse["evidence"],
+                                   "targets_complete": pulse["state"] == "completed", "diagnostics": pulse["diagnostics"]}
+            counts[f"knife_pulses_{pulse['state']}"] += 1
         throw = _thrown(actor, actors)
         if throw is not None:
             entry["thrown"] = {"t0": _seconds(throw.t_ms, start), "t1": _seconds(throw.closed_ms, start),

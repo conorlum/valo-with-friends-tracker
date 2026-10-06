@@ -32,6 +32,22 @@ had one. An `ability` row has `"z"` (its spawn, i.e. where a thrown one landed),
 A Killjoy turret or alarmbot `ability` row has `"off"` (revision 12) when it was switched off (KJ walked out
 of its range): `[[from, to | null], ...]` in round seconds, null meaning until the row's `t1`.
 
+Flash rows (2026-10-05) also carry, all optional to a reader: `"id"` (the ability actor: one cast's
+identity within the round), `"z"` (the cast's height), `"pop"` (the explosion: `{"t"}` plus either its place
+`{"u", "v", ["z"], "src": "flash_source" | "replicated_movement", ["age"]}` or `{"place": "stale" |
+"unverified", ["age"]}` when the export's position is the cast's or can't be tied to a unit: never a guessed
+place), `"path"` (the flight, `[[t, u, v, z], ...]`, each sample read in its own source's unit) and
+`"activation"`:
+
+    {"state": "completed" | "unknown", "evidence": <the export's explosion evidence | null>,
+     "targets_complete": true | false, "diagnostics": [...]}
+
+`completed` needs an explosion row with proving evidence. `targets_complete` is true only for a completed
+flash with no unresolved target and no unattributed hit near its explosion: only then does an empty `hits`
+mean it hit nobody. A row without `activation` (stored before this) proves nothing either way. A hit is kept
+whatever its duration, zero included. KAY/O's landed knife (`Grenadier_E_SuppressionPulse`, an `ability` row)
+has the same `activation` and, when it pulsed, `"pulse": {"t", "hits": [slots], ["r": radius in uv units]}`.
+
 `FORMAT_VERSION` changes only when the shape changes. `CONDENSE_REVISION` changes with
 any condenser change. Staleness is inequality with the current recipe, never ordering.
 """
