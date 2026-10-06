@@ -19,7 +19,7 @@ An `Info` says, at its own exact time `t`, something `side` learns about enemy `
 A footprint is a disk of `radius_m` round (x, y), or `mask` (flat nodes) when the reader built one (a line of
 sight, a placement disk on several floors). A disk is geometric: through walls, on walkable nodes only.
 
-Readers turn a round's util rows into Infos: `READERS` (filled by the later tasks), each `reader(rnd) -> [Info]`.
+Readers turn a round's util rows into Infos: `READERS` names them, each `reader(rnd) -> [Info]`.
 Every reader runs on the same `RoundInputs`, so an Info's `t` is in the blob's round seconds, unsnapped.
 
 Equal-time order (`ORDER`): what ends first (resume), then what starts (pause), then information, then cleanup;
@@ -457,15 +457,17 @@ def read_waylay_recalls(rnd) -> list[Info]:
     return out
 
 
-READERS: list = [read_reveals, read_pulses, read_knives, read_skye_flashes, read_leers, read_omen_ults,
-                 read_waylay_recalls]
+# The readers that run, by name and in order (names, so the list is one of the constants CONTROL_REVISION pins:
+# tests/replays/test_control_format.py).
+READERS = ("read_reveals", "read_pulses", "read_knives", "read_skye_flashes", "read_leers", "read_omen_ults",
+           "read_waylay_recalls")
 
 
 def read_all(rnd) -> list[Info]:
     """Every reader's Infos for the round, in engine order (`ORDER`)."""
     out: list[Info] = []
-    for reader in READERS:
-        out.extend(reader(rnd))
+    for name in READERS:
+        out.extend(globals()[name](rnd))
     return ordered(out)
 
 

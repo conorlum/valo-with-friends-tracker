@@ -102,7 +102,8 @@ def test_yoru_an_unheard_drift_exit_broadens_and_a_heard_one_does_nothing():
 
 
 def test_yoru_has_no_reader_until_the_export_has_a_beacon_signal():
-    assert ut.yoru_beacon not in ut.READERS and ut.yoru_drift_exit not in ut.READERS
+    assert "yoru_beacon" not in ut.READERS and "yoru_drift_exit" not in ut.READERS
+    assert all(callable(getattr(ut, name)) for name in ut.READERS)
 
 
 def anchor(recall=True, t=2.0, t1=6.0, at=(380, 120), frm=(300, 270)):

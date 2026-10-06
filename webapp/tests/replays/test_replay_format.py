@@ -58,8 +58,8 @@ def test_a_segments_heights_must_cover_every_sample():
 
 
 def test_the_recipe_is_revision_12():
-    assert fmt.CONDENSE_REVISION == 12 and fmt.FORMAT_VERSION == 1
-    assert ".c12.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
+    assert fmt.CONDENSE_REVISION == 13 and fmt.FORMAT_VERSION == 1
+    assert ".c13.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
 
 
 def _blob(**extra):

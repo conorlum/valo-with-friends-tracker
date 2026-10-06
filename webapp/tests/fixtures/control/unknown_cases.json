@@ -46,6 +46,16 @@
    "match": "650e6c6c-a0b4-425d-ba36-f0c0559e8f37", "map": "Summit", "round": 6, "t": 16.4,
    "side": "B", "expect": "clear",
    "cells": [[660, 700], [668, 716], [660, 732], [676, 724]],
-   "source": "the 2026-10-05 control review, item 6 (image 3): blue's trip should seal the corner east of it. Diagnosed 2026-10-05: the wire's upper anchor is stored beside the corner of the wall it hangs on, leaving one walkable cell between them that the unknown walked through. Fixed on flat maps by joining each end to the nearest wall within 2 m (W14)."}
+   "source": "the 2026-10-05 control review, item 6 (image 3): blue's trip should seal the corner east of it. Diagnosed 2026-10-05: the wire's upper anchor is stored beside the corner of the wall it hangs on, leaving one walkable cell between them that the unknown walked through. Fixed on flat maps by joining each end to the nearest wall within 2 m (W14)."},
+  {"id": "summit-2db-r7-unknown-before-the-ping",
+   "match": "2db387cd-f254-4f42-bb56-319c08ababe0", "map": "Summit", "round": 7, "t": 25.0,
+   "side": "A", "expect": "unknown", "local": true,
+   "cells": [[580, 108], [732, 260], [836, 340], [764, 388], [748, 444], [812, 532]],
+   "source": "the 2026-10-05 control review, item 9 (Neural Theft locates every living enemy at each ping). Summit round 7: the first ping is at 25.007 s. Needs the round as re-condensed locally (revision 13) and its link data: run with --inputs."},
+  {"id": "summit-2db-r7-neural-theft-collapses-it",
+   "match": "2db387cd-f254-4f42-bb56-319c08ababe0", "map": "Summit", "round": 7, "t": 25.073,
+   "side": "A", "expect": "clear", "local": true,
+   "cells": [[580, 108], [732, 260], [836, 340], [764, 388], [748, 444], [812, 532]],
+   "source": "the 2026-10-05 control review, item 9 (Neural Theft locates every living enemy at each ping). Summit round 7: the first ping is at 25.007 s. Needs the round as re-condensed locally (revision 13) and its link data: run with --inputs."}
  ]
 }

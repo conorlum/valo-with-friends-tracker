@@ -18,6 +18,7 @@ from sqlalchemy.orm import load_only
 
 from app.models.replay import ReplayGap, ReplayRoundControl, ReplayRoundGapRun
 from app.replays import choke_assets
+from app.replays import control_format as cf
 from app.services import replay_control
 
 GAPS_REVISION = 2     # keep equal to app.gaps.detect.GAPS_REVISION (tests/replays/test_gaps_task.py pins it)
@@ -39,6 +40,10 @@ def hearing_hash(path: Path | None = None) -> str:
         return "none"
     view = {"footstep_range_m": float(body["footstep_range_m"]), "default_gun_m": float(body["default_gun_m"]),
             "guns": {str(k): float(v) for k, v in body["guns"].items()}}
+    if path is None:
+        # 2026-10-05 (W22): the ability figures the engine now consumes too (app/control/utility.json), through
+        # the same numeric view control's fingerprint uses, so one changed range makes control and gaps stale.
+        view["figures"] = cf.figures_hash()
     return _hex16(json.dumps(view, sort_keys=True))
 
 

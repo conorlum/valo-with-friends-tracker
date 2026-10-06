@@ -16,6 +16,7 @@ from app.control import engine as ce
 from app.control import geometry as cg
 from app.control import heights as hc
 from app.control import topology as ct
+from app.control import utility as ut
 from app.control.encode import checkpoint_ticks, encode_data, encode_summary
 from app.replays import control_format as cf
 from tests.replays.control_toys import blob, door_hall
@@ -38,7 +39,10 @@ from tests.replays.control_toys import blob, door_hall
 # constants are unchanged, so the digest is 5's. Unreleased, so re-pinned in place.
 # Bumped because revision 5 was released with the merge of both stacks into main.
 PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4: "237677656d71ca9f",
-          5: "d6a626879e47e6a0", 6: "d6a626879e47e6a0"}
+          5: "d6a626879e47e6a0", 6: "d6a626879e47e6a0",
+          # 7 (2026-10-05): utility knowledge, ability walls, the flat trip join; the digest now also covers
+          # app/control/utility.py's constants and figures (utility.json's numbers)
+          7: "f1e76324201276d8"}
 
 
 def _constants_digest() -> str:
@@ -56,7 +60,7 @@ def _constants_digest() -> str:
         return value
 
     constants = {}
-    for module in (ce, cg, hc, ct):
+    for module in (ce, cg, hc, ct, ut):     # ut since revision 7: the ability figures (utility.json) and rules
         for name, value in sorted(vars(module).items()):
             if name.isupper() and not name.startswith("_") and name != "CONTROL_REVISION":
                 if isinstance(value, (int, float, str, bool, tuple, list, dict, set, frozenset, np.ndarray)):

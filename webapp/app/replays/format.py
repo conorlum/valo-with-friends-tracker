@@ -61,8 +61,11 @@ from pathlib import Path
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 12   # 10: map control's inputs (hits, possessed, yaws, damage runs); 11: heights (z);
-                         # 12: Killjoy turret/alarmbot `off` spans (extras.device_off_spans)
+CONDENSE_REVISION = 13   # 10: map control's inputs (hits, possessed, yaws, damage runs); 11: heights (z);
+                         # 12: Killjoy turret/alarmbot `off` spans (extras.device_off_spans);
+                         # 13: utility kept in full (2026-10-05): Deadlock's actors, flash explosions, paths and
+                         #     activation, knife pulses, projectile flights, Blaze/Sage/Vyse walls, Omen's ult
+                         #     marker and its outcome, Waylay's recall
 
 UV_SCALE = 10000
 
