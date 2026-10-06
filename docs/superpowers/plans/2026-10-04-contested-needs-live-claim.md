@@ -53,9 +53,14 @@ that ground after B's memory of it was made, so B's memory ended. The case expec
 
 - No production writes, no reparse, no full recompute. Check on the judged rounds only (`scripts/control_cases.py`);
   the user runs any recompute.
-- `CONTROL_REVISION` stays **5**: it is unreleased (`origin/main` has 4), so its rules change in place. Add no
-  new engine constant, so the constants digest pinned in `tests/replays/test_control_format.py` is untouched
-  by Tasks 2-4.
+- `CONTROL_REVISION` goes **5 → 6** in Task 3 (AFK run 2026-10-04-live-claim, P4 review finding 2): both
+  stacks are now merged into main, so revision 5 is released and rows stored at it would silently keep the old
+  rules. Task 4 lands under the same revision 6. Add no new engine constant, so `PINNED[6]` is 5's digest
+  (`d6a626879e47e6a0`). No test hard-codes the number. `app/control/hearing.json`'s `PROVISIONAL` text names
+  revision 6 (it isn't hashed). After the merge every stored control row and every gap run is stale (the gap
+  fingerprint includes the control fingerprint), so no `GAPS_REVISION` bump is needed.
+- The flat reference fixture (`tests/fixtures/control/reference_flat.json`) is meant to move with this rule:
+  re-record it in Tasks 3 and 4 (P4 review finding 1).
 - Keep the existing "ground both teams hold only as Safe is nobody's" block exactly as it is. The new rule is
   added after it, so the one edge it decides (a live passive view on ground Safe for both) is unchanged.
 - This repo is public: commit no credentials. Match uuids are already public on the site and in the cases file.
@@ -88,6 +93,9 @@ that ground after B's memory of it was made, so B's memory ended. The case expec
 ---
 
 ### Task 1: The combined base
+
+**Done by the user (2026-10-04):** both stacks were merged into main (PRs #113, #114). Skip to Task 2; read "the
+combined base" below as main. Step 4's suite commands are still the ones Task 5 Step 1 reuses.
 
 The rule has to land where the hearing code is, and both unmerged stacks edit `engine.py`. So start from a
 branch that has both.
@@ -178,12 +186,14 @@ def test_a_state_case_off_the_walkable_ground_fails():
 
 
 def test_a_state_case_checks_every_listed_cell_not_just_the_first():
-    """x 160 is A's at 2 s; x 248, by the barrier, is in A's unknown by then (A's unknown has walked to x 240),
-    so it isn't."""
-    case = dict(_case("state", [[160, 200], [248, 200]]), states=["a_passive", "a_safe", "a_active"])
+    """x 248 is nobody's at 2 s (A's unknown has walked to x 240); x 160 is still A's, so it isn't."""
+    case = dict(_case("state", [[248, 200], [160, 200]]), states=["none"])
     result = cc.check_case(case, _round())
-    assert not result["passes"] and result["wrong"] == [[248, 200]]
+    assert not result["passes"] and result["wrong"] == [[160, 200]]
 ```
+
+  (P4 review finding 5: the old `check_case` reads x 248 as wrong and x 160 as right here, so this test is red
+  before Step 3.)
 
   In `test_the_committed_cases_are_well_formed`, replace the `expect` assertion line with:
 
@@ -196,8 +206,9 @@ def test_a_state_case_checks_every_listed_cell_not_just_the_first():
   and add `from app.replays import control_format as cf  # noqa: E402` to the imports.
 
 - [ ] **Step 2: Run, expect a failure:**
-  `$PY -m pytest tests/replays/test_control_cases.py -q`. The two new tests fail: `check_case` reads the
-  unknown stream for every case.
+  `$PY -m pytest tests/replays/test_control_cases.py -q`. `…_checks_each_cells_state` and
+  `…_not_just_the_first` fail (`…_off_the_walkable_ground_fails` passes either way: an off-ground cell is wrong
+  in both readings): `check_case` reads the unknown stream for every case.
 
 - [ ] **Step 3: Implement.** Replace `check_case` in `scripts/control_cases.py`:
 
@@ -470,7 +481,8 @@ def test_a_knowledge_picture_counts_only_the_enemies_the_team_sees_as_live():
 ```python
             # a cell both teams claim with nothing live from either (memory, Safe, backfill or a picture's
             # remembered view against each other) is nobody's: contested needs someone holding it (D5, 2026-10-04)
-            idle = (level["A"] > 0) & (level["B"] > 0) & ~self.live_claims("A", removed) & ~self.live_claims("B", removed)
+            live = self.live_claims("A", removed) | self.live_claims("B", removed)
+            idle = (level["A"] > 0) & (level["B"] > 0) & ~live
             level["A"][idle] = 0
             level["B"][idle] = 0
 ```
@@ -483,6 +495,22 @@ def test_a_knowledge_picture_counts_only_the_enemies_the_team_sees_as_live():
   `$PY -m pytest tests/replays/test_control_unknown.py tests/replays/test_control_engine.py -q`.
   `test_ground_safe_for_both_teams_is_nobodys` and `test_a_seen_player_does_not_contest_ground_they_only_remember`
   must still pass.
+
+- [ ] **Step 4b: Bump the revision and re-record the flat reference** (P4 review findings 1, 2).
+  - `app/replays/control_format.py`: `CONTROL_REVISION = 6`.
+  - `tests/replays/test_control_format.py`: add `6: "d6a626879e47e6a0"` to `PINNED`, a comment line "6: contested
+    needs a live claim; an enemy's live view ends remembered ground (D5, 2026-10-04). Rules only: the constants
+    are unchanged, so the digest is 5's.", and drop "Unreleased" from 5's comment.
+  - `app/control/hearing.json`'s `PROVISIONAL`: revision 6, `PINNED[6]`.
+  - Then:
+
+```bash
+$PY scripts/control_reference.py --toys --write
+$PY -m pytest tests/replays/test_control_reference.py tests/replays/test_control_format.py -q
+```
+
+  and add a last line to `test_control_reference.py`'s module docstring: "Re-recorded 2026-10-04 for
+  CONTROL_REVISION 6 (D5: contested needs a live claim; an enemy's live view ends remembered ground)."
 
 - [ ] **Step 5: Two of the four cases turn green:**
   `$PY scripts/control_cases.py`. Expected:
@@ -584,7 +612,10 @@ def test_ground_an_enemy_saw_does_not_come_back_as_memory():
     a view, a watcher, standing in it (2026-10-04, D5)".
 
 - [ ] **Step 4: Run, expect a pass:** the Step 2 command, then
-  `$PY -m pytest tests/replays/test_control_unknown.py tests/replays/test_control_engine.py -q`.
+  `$PY -m pytest tests/replays/test_control_unknown.py tests/replays/test_control_engine.py -q`. Then re-record
+  the flat reference again (`$PY scripts/control_reference.py --toys --write`) and run
+  `$PY -m pytest tests/replays/test_control_reference.py tests/replays/test_control_format.py -q`.
+  - The docstring edits below span a line wrap in `engine.py`: match the newline and indent (finding 7).
 
 - [ ] **Step 5: All six cases pass:** `$PY scripts/control_cases.py`. Expected: `6/6 cases pass`.
 
@@ -639,12 +670,20 @@ $PY scripts/preview_control_live.py 0f452716-1e90-4782-afba-29229fdab922 7 --tag
   - the gaps count before/after;
   - the screenshots.
 
-  Remind the user that the local `valomaths_gaps_view` copy and the `%TEMP%` previews were computed before this
-  change and aren't flagged stale (the stored fingerprint doesn't cover engine code), so recompute those three
-  rounds before judging them on the local site. Production recomputes everything anyway after the merge
-  (revision 4 to 5).
+  Revision 6 flags every stored control row and gap run stale (local `valomaths_gaps_view` included); the
+  `%TEMP%` previews from before the change aren't. Production recomputes everything after the merge (revision 5
+  to 6).
 
 ## Notes (out of scope, for the user)
+
+- **Knowledge pictures inherit the memory ending (P4 review finding 3).** `Memory.apply` runs on the true tick,
+  and a team's picture reuses its own holders, so an enemy the team *couldn't see* looking at remembered ground
+  ends it in that team's picture too. Built as planned and approved by the user (D3, 2026-10-04); a separate
+  per-team memory would be a bigger change, left as a possible follow-up.
+- **Counterfactual limit (finding 4):** removing an enemy doesn't bring back memory that enemy ended this tick,
+  so their control credit there is +1 where +2 would be right. Earlier ticks aren't counterfactual either.
+- **Presence bubbles in pictures (finding 6):** a seen enemy's presence bubble counts as live in a team's
+  picture. Rare, and arguably right (the team does see them); left as is.
 
 - **Viewer legibility:** a side group's unknown is drawn as hatch lines along "/" in the enemy's colour, the same
   direction as contested stripes. Ground in an unknown can still read as "contested" at a glance. That needs a

@@ -18,6 +18,7 @@ import control_cases as cc  # noqa: E402
 from app.control import engine as ce  # noqa: E402
 from app.control.encode import encode_data  # noqa: E402
 from app.control.geometry import GRID, PX  # noqa: E402
+from app.replays import control_format as cf  # noqa: E402
 from tests.replays.control_toys import blob, open_hall  # noqa: E402
 
 
@@ -65,6 +66,29 @@ def test_the_committed_cases_are_well_formed():
     ids = [c["id"] for c in data["cases"]]
     assert ids and len(ids) == len(set(ids))
     for c in data["cases"]:
-        assert c["expect"] in ("unknown", "clear") and c["side"] in ("A", "B"), c["id"]
+        assert c["expect"] in ("unknown", "clear", "state") and c["side"] in ("A", "B"), c["id"]
+        if c["expect"] == "state":
+            assert c["states"] and set(c["states"]) <= set(cf.STATE_NAMES), c["id"]
         assert c["round"] >= 1 and c["t"] >= 0 and c["source"] and c["map"] and len(c["match"]) == 36, c["id"]
         assert c["cells"] and all(len(p) == 2 and 0 <= p[0] < PX and 0 <= p[1] < PX for p in c["cells"]), c["id"]
+
+
+def test_a_state_case_checks_each_cells_state():
+    data = _round()
+    own = dict(_case("state", [[160, 200]]), states=["a_passive", "a_safe", "a_active"])
+    assert cc.check_case(own, data)["passes"], "at 2 s x 160 is deep in A's start ground"
+    nobody = dict(_case("state", [[160, 200]]), states=["none"])
+    result = cc.check_case(nobody, data)
+    assert not result["passes"] and result["wrong"] == [[160, 200]]
+
+
+def test_a_state_case_off_the_walkable_ground_fails():
+    result = cc.check_case(dict(_case("state", [[2, 2]]), states=["none"]), _round())
+    assert not result["passes"] and result["wrong"] == [[2, 2]]
+
+
+def test_a_state_case_checks_every_listed_cell_not_just_the_first():
+    """x 248 is nobody's at 2 s (A's unknown has walked to x 240); x 160 is still A's, so it isn't."""
+    case = dict(_case("state", [[248, 200], [160, 200]]), states=["none"])
+    result = cc.check_case(case, _round())
+    assert not result["passes"] and result["wrong"] == [[160, 200]]
