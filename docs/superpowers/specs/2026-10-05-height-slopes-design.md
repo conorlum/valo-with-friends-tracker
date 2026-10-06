@@ -1,4 +1,4 @@
-# Map heights: slopes, stairs and a lower bar (design)
+# Map heights: slopes, stairs and movement abilities (design)
 
 Status: draft for the owner's review, 2026-10-05. Nothing here is built.
 
@@ -11,7 +11,7 @@ Background: `2026-10-01-control-heights-design.md` (parts 3 and 4), `webapp/app/
 ## The problem
 
 No map reaches the readiness bar today, and the owner's reading of the Sunset viewer (2026-10-05) is that
-the bar is measuring the wrong thing:
+most of what keeps maps under the bar is slopes, not missing data:
 
 - Most small unresolved areas (1 to 10 connected cells) are stairs and slopes. The build can't give them
   a height, for three reasons that are all in the rules, not in the data:
@@ -40,7 +40,9 @@ Previews on the live rounds, 2026-10-05:
 | O2 | Fill along a gradient: where neighbours on opposite sides differ but line up as a slope, interpolate instead of refusing. |
 | O3 | Where samples of one floor disagree, the **lowest** wins: a player can't be below the floor, and anything that lifts them (an ability, a jump) is undone by the next player who walks there. |
 | O4 | A cell with two floors on Sunset is not a tunnel: it is a cell that straddles a big drop (a ledge edge). Sunset has no caves or tunnels. Real overlaps exist on other maps (Haven, Fracture). |
-| O5 | Compute heights for what there is now, rather than waiting for every map to reach 60%. |
+| O5 | The 60% bar stays. It is a fine bar and maps will reach it with time. (This replaces an earlier idea of turning heights on below it.) |
+| O6 | After a movement ability (Jett's updraft, a dash by Jett or Waylay), ignore that player's height for about 3 seconds. By then they have landed, on the ground or on a box, and what they do next counts as normal. Sage's wall is the outlier among abilities for making false floors; these others mostly add noise. |
+| O7 | The Sunset staircase the owner marked (cells x 26-28, y 76-81) is the test case for gradient fill: 2 m of rise over 3 cells. |
 
 ## Design
 
@@ -65,6 +67,23 @@ the build is to measure that on real rounds (a known staircase and a known jump 
 If the rate is too low for an acceleration test, the fallback is the slope limit alone, with rule 2's
 "lowest wins" removing what jumps leave behind. That fallback is a change to this spec and is reported
 before it is adopted.
+
+### 1b. A blackout after movement abilities (O6)
+
+A stored round's `util` lists each ability cast with its time, its name and the slot that cast it. For
+the abilities in `AIRBORNE_ABILITIES`, that player's samples are dropped from the cast until
+`ABILITY_BLACKOUT_S` (3 s) later. This applies to stands and walks alike.
+
+- Start list: Jett's updraft and dash, Waylay's dashes, Raze's blast pack. The list is a named constant
+  like `PLATFORMS`, extended when a new agent needs it.
+- It works beside the walk rule, not instead of it: an ordinary jump has no cast, and Raze's pack also
+  lifts teammates who cast nothing. Those are still handled by the walk rule and by "lowest wins".
+- A player who lands on a box and stays there is counted from 3 s on, which is right: the box top is a
+  real place to stand, and the two-match rule decides whether it becomes a floor.
+
+Not yet verified: that each of these casts is actually recorded in `util` (an updraft places nothing in
+the world). The first task checks that on real rounds with a Jett and a Waylay, and reports any that
+are missing.
 
 ### 2. Floors: the lowest of each band
 
@@ -102,12 +121,24 @@ case, tried only when that one fails:
 
 - the cell has known neighbours **directly beside it on opposite sides** (north and south, east and west,
   or a diagonal pair), each with a single floor;
-- the two differ by at most `2 x STEP_UP_M` (1.4 m), i.e. the cell would be within a step of both;
+- the slope between the two is at most `SLOPE_MAX` (rise over run 1.0: with 1 m cells, up to 2 m between
+  neighbours two cells apart);
+- **players were seen walking up between the two sides** (the build already records walks between floors
+  for its connections). This is what tells a staircase from a ledge: a ledge of the same height is only
+  ever dropped from;
 - then the cell takes the mean of the pair. If several pairs qualify they must agree within `FILL_TOL_M`,
   or the cell stays `neighbours disagree`.
 
-It never interpolates across a bigger difference, so a real drop stays a drop. A filled cell still never
-fills another.
+A filled cell still never fills another.
+
+The limit is a slope, not a height, because of the owner's test case (O7). On Sunset a cell is 1.0 m.
+That staircase reads, west to east, 2.0 m, then 2.3-2.6, 2.8-3.1, 3.2-3.5, then 4.0 m: about 0.67 of rise
+per metre. Its one unresolved cell (27, 81) sits between 2.4 m and 3.5 m. A first draft of this rule used
+a fixed 1.4 m, which that cell passes, but only just; a slightly steeper stair would have been refused.
+
+The same numbers show the stairs already resolve from stands alone when enough players have stopped on
+them: every other cell of that staircase is supported today. Walk samples (1) matter for stairs nobody
+stops on.
 
 ### 4. The asset says how each cell got its height
 
@@ -120,18 +151,20 @@ exactly which cells the new rules produced and judge them by eye.
 
 ### 5. The bar
 
-Proposed, **needs the owner's yes** (O5 says to go below 60%, but not what replaces it):
+Unchanged (O5). A map's heights turn on when all of these hold, exactly as today:
 
-- A map's heights may be turned on when it has at least **2 matches**, the **kill-line check** passes
-  (at most 2% of real kill lines blocked) and the **must-block check** passes.
-- The supported share and the unresolved areas are still computed and shown, but no longer refuse a
-  build. An unresolved cell keeps today's flat sight and walking, so a map with gaps is never worse than
-  it is now in those cells.
-- `HEIGHT_SUPPORTED_MIN` and `UNRESOLVED_MAX` stay in the report as "quality" numbers.
+- at least `HEIGHT_SUPPORTED_MIN` (60%) of walkable cells are supported;
+- no unresolved area larger than `UNRESOLVED_MAX` (12) cells touches a cell with two floors;
+- the **kill-line check** passes: of the real kills in the rounds where both players stand on resolved
+  cells and the line between them is clear in 2D, at most 2% may be blocked by the heights. A kill
+  happened, so the two could see each other; a height that says otherwise is wrong;
+- the **must-block check** passes: a hand-kept list of sightlines that are impossible in the game
+  (`control_must_block.json`), each of which the heights must block.
 
-On match count and kill lines, with today's data and today's rules, this would turn on Sunset, Haven
-and Ascent, and leave Lotus (one match, fails kill lines) and Summit (one match) off. Their must-block
-results were not read for this draft and could still refuse one of the three.
+What changes is how many cells count: walk-only cells are supported (4), and slope cells stop being
+unresolved, so both numbers should move toward the bar on every map. Sunset's one blocker is a 13-cell
+`neighbours disagree` area, the slope signature; whether the new rules clear it is one of the results
+reported in "How it is judged".
 
 ## How it is judged
 
@@ -155,6 +188,8 @@ No rule here is adopted on argument. For each of the five maps, on the live roun
 | `SLOPE_MAX` | 1.0 | steepest walkable slope, rise over run |
 | `WALK_ACC_MAX` | to be measured | vertical acceleration above which a run is airborne |
 | `LOW_PCT` | 10 | the percentile of a band taken as its height |
+| `ABILITY_BLACKOUT_S` | 3 s | how long a player's samples are dropped after a movement ability |
+| `AIRBORNE_ABILITIES` | Jett updraft and dash, Waylay dashes, Raze blast pack | the casts that start a blackout |
 
 ## Out of scope
 
@@ -165,7 +200,7 @@ No rule here is adopted on argument. For each of the five maps, on the live roun
 
 ## Open questions
 
-1. Decision 5 (the bar): confirm or change.
+1. Whether the movement-ability casts are recorded in `util` (first task; see 1b).
 2. The stored sample rate, and whether an acceleration test is possible at it (first task; see 1).
 3. Whether a stand on a slope should count as a walk sample or keep its own median. Proposed: its
    samples join the band like any others, so the low end decides.

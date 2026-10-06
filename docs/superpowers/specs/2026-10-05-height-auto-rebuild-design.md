@@ -2,7 +2,7 @@
 
 Status: draft for the owner's review, 2026-10-05. Nothing here is built.
 
-Depends on: `2026-10-05-height-slopes-design.md` (the build rules and the lower bar). This spec assumes
+Depends on: `2026-10-05-height-slopes-design.md` (the build rules). This spec assumes
 that one is built and its rules are trusted without a look at every build.
 
 Background: `docs/map-control-worker-plan.md`, `docs/superpowers/plans/2026-10-05-control-idle-queue.md`
@@ -84,13 +84,19 @@ process run by the control venv, niced, time- and memory-capped.
 
 The web app's dispatcher decides, once per cycle, per map:
 
-- a rebuild is **due** when the map has at least `HEIGHT_REBUILD_EVERY` (5) matches that are not in its
-  active asset's `match_uuids`, or when it has no asset at all and at least 2 matches (O1);
+- a rebuild is **due** when the map has at least `HEIGHT_REBUILD_EVERY` (5) matches that were not in its
+  last build (active or rejected), or when it has never been built and has at least 2 matches (O1);
 - a due rebuild is sent only when the worker reports idle (no parse running or queued);
 - while a map's rebuild is due or running, the dispatcher **holds that map's rounds** and keeps sending
   other maps' (O4). On the worker a rebuild job starts before any queued control round.
 
 Resulting order of work: parse uploads, then height rebuilds, then missing rounds, then stale rounds.
+
+**What the page shows meanwhile** (the owner, 2026-10-05): always the newest control there is. A round
+computed under the previous heights stays on the page, marked out of date, until its recompute is
+stored; then the page shows the new one. Nothing is hidden or blanked while the worker catches up. This
+is how a stale row is already answered today (`replay_control.round_control`: status `ok`, `stale`
+true), so holding a map's rounds back only delays the new version, never removes the old.
 
 ### 4. The gate, with nobody watching
 
@@ -98,13 +104,14 @@ When a build comes back:
 
 | Result | What happens |
 | --- | --- |
-| Both checks pass, at least 2 matches | stored `active`; the previous asset becomes `superseded`; that map's rounds go stale and the idle queue recomputes them |
-| A check fails | stored `rejected` with its report; the previous asset stays active; the same match set is never built again, so a failing map can't loop. The next new match makes it due again |
+| The map is at the bar and both checks pass | stored `active`; the previous asset becomes `superseded`; that map's rounds go stale and the idle queue recomputes them |
+| Below the bar, or a check fails | stored `rejected` with its report; the previous asset, if any, stays active; it is built again only after 5 more matches, so a failing map can't loop |
 | The build itself fails | logged, retried with the dispatcher's existing limits |
 | The map has tagged map features enabled | stored `held`: see 5 |
 
-The supported share and unresolved areas are recorded but don't refuse a build (the companion spec's
-bar). The report also carries a comparison with the previous asset: cells gained, cells lost, and cells
+The bar and the two checks are the ones a local build uses today (the companion spec, section 5): 60%
+of walkable cells supported, no large unresolved area beside a two-floor cell, at most 2% of real kill
+lines blocked, and every must-block sightline blocked. The report also carries a comparison with the previous asset: cells gained, cells lost, and cells
 whose ground moved by more than 0.5 m. It is for looking at afterwards, not a gate.
 
 An off switch and a way back, both one command and both through `with_friends_db.py`:
@@ -119,11 +126,23 @@ A hand-tagged floor is bound to one height asset by its digest; a binding read f
 pending and binds nothing (`2026-10-04-map-features-contract.md`, frozen). A rebuild would therefore
 silently unbind every tagged floor on the map.
 
-No map has an enabled feature today, so the first version takes the safe side: a map whose `index.json`
-entry has a `features_sha` never activates a rebuilt asset automatically. The asset is stored `held`,
-and the owner re-exports the map's features against it and activates it by hand. Rebinding
-automatically (when each band still picks exactly one floor) is a change to the frozen contract and is
-left for when a feature is actually enabled.
+**Open: the owner wants to talk this through (2026-10-05).** What is settled is the aim:
+
+- a tagged feature (a gimmick: a door, a breakable, a rope) must **persist** across rebuilds. New replay
+  data never changes what the feature is or where it is;
+- the **heights** under it must follow the data. When a rebuild says the floor there is at a different
+  height, the feature moves with the floor, without the owner re-tagging it.
+
+Proposed way to get both, not yet agreed: a binding keeps its height band (it already stores one) and
+stops requiring the same digest. After each rebuild every binding is re-read against the new asset. If
+its band still picks exactly one floor in each of its cells, it follows the new heights by itself. If
+not (the floor moved out of the band, or the cell gained a second floor inside it), that one feature is
+pending and listed for the owner, and the rest of the map still goes live. This changes the frozen
+contract's "read from another height asset is pending" rule, so it needs the owner's explicit yes.
+
+Until that is agreed, the build takes the safe side: a map whose `index.json` entry has a `features_sha`
+never activates a rebuilt asset automatically. The asset is stored `held`. No map has an enabled
+feature today, so this holds nothing back yet.
 
 ### 6. Seeing what it did
 
@@ -152,13 +171,14 @@ The replay worker's `/health` says whether a rebuild is queued or running and fo
 - Rebuilding sight and walk masks, tags or barriers: those stay committed files.
 - The demo site.
 
-## Decisions that need the owner's yes
+## Decisions
 
-| # | Proposed | Why it needs saying |
+| # | Decision | Status (owner, 2026-10-05) |
 | --- | --- | --- |
-| P1 | Heights move from committed files to a database table | changes where the source of truth is; a checkout alone no longer says what heights the site uses |
-| P2 | A build that passes both checks goes live with nobody looking | replaces the picture review before commit |
-| P3 | A failed build keeps the old heights and is not retried until a new match arrives | a map can sit on old heights while new matches fail |
-| P4 | A map's rounds are held back while its rebuild is due or running | those rounds show "out of date" a little longer, in exchange for not computing them twice |
-| P5 | Maps with tagged features never auto-activate (5) | manual step, in exchange for leaving the frozen contract alone |
-| P6 | First asset at 2 matches, then every 5 new matches | the "5 or so" from O2, plus a start rule |
+| P1 | Heights move from committed files to a database table | Approved: "if that's what it takes to get the worker to recompute the heights it's worth it" |
+| P2 | A build at the bar that passes both checks goes live with nobody looking | Approved |
+| P3 | A failed build keeps the old heights | Approved: "keeping old heights is a fine fallback" |
+| P4 | A map's rounds are held back while its rebuild is due or running; the page keeps showing the previous version until the new one is stored | Approved, with the display rule in section 3 |
+| P5 | How tagged features survive a rebuild | **Open** (section 5) |
+| P6 | First build at 2 matches, then every 5 new matches | Approved |
+| P7 | The 60% bar stays as the gate | Approved (the companion spec, O5) |
