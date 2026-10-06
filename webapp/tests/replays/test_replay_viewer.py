@@ -151,7 +151,8 @@ def test_the_linked_mode_helpers():
         }));
       });"""
     got = run_node(script, {})
-    assert got["styles"] == ["smoke", "wire", "hidden", "hidden", "hidden", "spike", "badge"]
+    # a projectile is drawn on its own layer since the 2026-10-05 review (item 23), never hidden outright
+    assert got["styles"] == ["smoke", "wire", "hidden", "hidden", "projectile", "spike", "badge"]
     assert got["label"] == "Q Thing"
     assert got["at10"] == 4 and got["at95"] == 0 and got["open"] == 4
     assert got["pairs"] == [[1, 3]], "a wire pairs with its own owner's second anchor"
@@ -608,6 +609,50 @@ def test_space_toggles_once_from_anywhere_but_a_field():
     for where in ("text", "search", "no_type", "textarea", "select", "editable", "held", "ctrl"):
         assert got[where] == {"handled": False, "toggled": False, "prevented": 0, "up_prevented": 0}, where
     assert got["other_key"] is False and got["no_round"] is False
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_projectiles_their_flights_and_the_new_wall_shapes():
+    script = """
+      const R = require(process.argv[1]);
+      const flying = {kind: "Projectile", code: "Wraith", name: "Q_NearsightMissile", slot: 2, t0: 10, t1: 11.5, u: 100, v: 100,
+                      flight: [[10, 100, 100, 30], [11, 300, 100, 30], [11.5, 400, 100, 30]]};
+      const still = {kind: "Projectile", code: "Phoenix", name: "E_FlareCurve_Synced_Right", slot: 1, t0: 5, t1: 7, u: 50, v: 60};
+      const net = {kind: "Patch", code: "Cable", name: "4_NetToss", slot: 3, t0: 12, t1: 15, u: 0, v: 0,
+                   thrown: {t0: 11.2, t1: 12, u: 1, v: 1}};
+      const netThrow = {kind: "Projectile", code: "Cable", name: "4_NetToss", slot: 3, t0: 11.2, t1: 12, u: 1, v: 1,
+                        flight: [[11.2, 1, 1], [12, 5, 5]]};
+      const mesh = {code: "Cable", name: "E_CableJam_Root", u: 0, v: 0, on: [[3, 30]],
+                    arms: [[10, 0, 10, null], [0, 10, 10, 8], [-10, 0, 10, null], [0, -10, 10, null]]};
+      const sage = {code: "Thorne", name: "E_Wall_Fortifying", segments: [[1, 1, 2, 40], [2, 1, 2, 9], [3, 1, 2, 40]]};
+      const shear = {code: "Nox", name: "WallTrap", line: [[0, 0], [10, 0]], raised: [20, 26]};
+      process.stdout.write(JSON.stringify({
+        style: [R.abilityStyle(flying), R.abilityStyle(still).label, R.abilityStyle(mesh).shape, R.abilityStyle(shear).shape,
+                R.abilityStyle({code: "Phoenix", name: "Q_FlameWallManager_Production"}).shape],
+        at: [R.projectileAt(flying, 9.9), R.projectileAt(flying, 10.5), R.projectileAt(still, 6), R.projectileAt(still, 7.1)],
+        dedupe: [R.throwShownAsProjectile(net, [netThrow]), R.throwShownAsProjectile(net, [])],
+        mesh: [R.meshArmsAt(mesh, 2).length, R.meshArmsAt(mesh, 5).length, R.meshArmsAt(mesh, 9).length],
+        sage: [R.sageSegmentsAt(sage, 1).length, R.sageSegmentsAt(sage, 5).length, R.sageSegmentsAt(sage, 10).length],
+        shear: [R.shearAt(shear, 10), R.shearAt(shear, 21), R.shearAt(shear, 27), R.shearAt({}, 5)],
+        layers: R.LAYERS
+      }));"""
+    got = run_node(script, None)
+    assert got["style"][0] == {"label": "Paranoia", "ability": "Paranoia", "shape": "projectile", "width": 650}
+    assert got["style"][1:] == ["Curveball", "mesh", "shear", "wall"]
+    assert got["at"][0] is None and got["at"][1] == {"u": 200, "v": 100, "moving": True}
+    assert got["at"][2] == {"u": 50, "v": 60, "moving": False} and got["at"][3] is None, "no flight: no invented travel"
+    assert got["dedupe"] == [True, False]
+    assert got["mesh"] == [0, 4, 3]
+    assert got["sage"] == [0, 3, 2]
+    assert got["shear"] == ["set", "raised", "set", None]
+    assert "projectiles" in got["layers"]
+
+
+def test_the_projectile_layer_is_on_by_default_and_has_a_toggle():
+    source = REPLAY_JS.read_text(encoding="utf-8")
+    assert "projectiles: true" in source
+    template = (WEBAPP / "app" / "templates" / "replays" / "_player.html").read_text(encoding="utf-8")
+    assert 'data-replay-layer="projectiles" checked' in template
 
 
 def test_the_page_listens_for_space_on_the_document_not_only_inside_the_viewer():

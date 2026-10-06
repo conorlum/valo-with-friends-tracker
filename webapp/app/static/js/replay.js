@@ -129,7 +129,8 @@
     [/^Sequoia_X_LineCapture$/, { ability: "Kill Contract", shape: "badge" }],
     // Phoenix
     [/^Phoenix_MolotovFire$/, { ability: "Hot Hands", shape: "area", r: 450 }],
-    [/^Phoenix_Q_FlameWallManager/, { ability: "Blaze", shape: "badge" }],
+    // Blaze: its laid line (the condenser's `points`, along its projectile's flight); a badge when it has none.
+    [/^Phoenix_Q_FlameWallManager/, { ability: "Blaze", shape: "wall", fire: true }],
     [/^Phoenix_X_ResTarget/, { ability: "Run it Back", shape: "badge", label: "Run it Back (return point)" }],
     // Skye
     [/^Guide_4_Heal_AOE$/, { ability: "Regrowth", shape: "area", r: 900 }],
@@ -172,6 +173,19 @@
     [/^Pine_E_RadEater$/, { ability: "Interceptor", shape: "badge" }],
     // Viper: the screen is the line it was laid along (`points`), solid while up (`on`).
     [/^Pandemic_E_SmokeScreenManager$/, { ability: "Toxic Screen", shape: "wall" }],
+    // Deadlock (2026-10-05: her actors were dropped before; extras.py ARCHETYPE_ALIASES). The mesh is its arms
+    // from the root to each node (`arms`), solid while `on`; a sensor's trigger is a short pop.
+    [/^Cable_E_CableJam_Root$/, { ability: "Barrier Mesh", shape: "mesh" }],
+    [/^Cable_Q_SoundSensor$/, { ability: "Sonic Sensor", shape: "badge" }],
+    [/^Cable_Q_SoundSensor_Fissure$/, { ability: "Sonic Sensor", shape: "area", r: 350, pop: 0.6, label: "Sonic Sensor (went off)" }],
+    [/^Cable_4_NetToss$/, { ability: "GravNet", shape: "area", r: 450 }],
+    [/^Cable_4_RemovableNet$/, { ability: "GravNet", shape: "hidden" }],
+    [/^Cable_X_FishingHook$/, { ability: "Annihilation", shape: "badge" }],
+    [/^Cable_X_FishingHook_Cage$/, { ability: "Annihilation", shape: "area", r: 250, label: "Annihilation (caught)" }],
+    // Vyse's Shear: its line (`line`), dashed until raised, solid while `raised`.
+    [/^Nox_WallTrap$/, { ability: "Shear", shape: "shear" }],
+    // Omen's ult destination while he channels; Waylay's return point.
+    [/^Wraith_X_GlobalTeleport_Intention$/, { ability: "From the Shadows", shape: "badge", label: "From the Shadows (destination)" }],
     [/^Pandemic_4_SmokeZone$/, { ability: "Poison Cloud", shape: "smoke", r: 450 }],
     [/^Pandemic_X_Circular$/, { ability: "Viper's Pit", shape: "smoke", r: 900 }],
     [/^Pandemic_AcidMolotov_NewMolotov$/, { ability: "Snake Bite", shape: "area", r: 450 }],
@@ -226,9 +240,77 @@
     return [[a.u + du * lo, a.v + dv * lo], [a.u + du * hi, a.v + dv * hi]];
   }
 
+  // A projectile in flight (2026-10-05): drawn on its own layer ("projectiles", on by default), at its recorded
+  // flight's place at t (`flight`, [[t, u, v, z], ...]) or, with no flight, at its spawn point; never with an
+  // invented path. `width` (world units): a wide shape, drawn as a band across its travel (Paranoia).
+  var PROJECTILE_STYLES = [
+    [/^Wraith_Q_NearsightMissile$/, { ability: "Paranoia", width: 650 }],
+    [/^Grenadier_C_Flash(_Underhand)?$/, { ability: "FLASH/drive" }],
+    [/^Grenadier_E_SuppressionBlade$/, { ability: "ZERO/point" }],
+    [/^Phoenix_E_FlareCurve/, { ability: "Curveball" }],
+    [/^Phoenix_Q_FlameWall/, { ability: "Blaze" }],
+    [/^Cable_4_NetToss$/, { ability: "GravNet" }],
+    [/^Cable_E_CableJam$/, { ability: "Barrier Mesh" }]
+  ];
+
+  function projectileStyle(ability) {
+    var key = ability.code + "_" + ability.name;
+    for (var i = 0; i < PROJECTILE_STYLES.length; i++) {
+      if (PROJECTILE_STYLES[i][0].test(key)) {
+        var st = PROJECTILE_STYLES[i][1];
+        return { label: st.ability, ability: st.ability, agent: ability.agent, shape: "projectile", width: st.width };
+      }
+    }
+    return { label: ability.name.replace(/_/g, " "), agent: ability.agent, shape: "projectile" };
+  }
+
+  // Where a projectile is at t: its flight's place (interpolated), or its spawn point when it has no flight;
+  // null outside its life. `moving` says whether the place came from a recorded flight.
+  function projectileAt(a, t) {
+    var end = typeof a.t1 === "number" ? a.t1 : a.t0;
+    if (t < a.t0 || t > end) return null;
+    var at = a.flight && a.flight.length > 1 ? pathAt(a.flight, t) : null;
+    if (at) return { u: at.u, v: at.v, moving: true };
+    if (a.flight && a.flight.length > 1) {
+      var last = t < a.flight[0][0] ? a.flight[0] : a.flight[a.flight.length - 1];
+      return { u: last[1], v: last[2], moving: true };
+    }
+    return { u: a.u, v: a.v, moving: false };
+  }
+
+  // A thrown object whose throw is also a projectile row with a recorded flight: that flight is drawn, not the
+  // throw's arc too.
+  function throwShownAsProjectile(a, abilities) {
+    if (!a.thrown) return false;
+    return (abilities || []).some(function (p) {
+      return p.kind === "Projectile" && p.code === a.code && p.flight && p.flight.length > 1 &&
+        Math.abs(p.t0 - a.thrown.t0) <= 0.05;
+    });
+  }
+
+  // A Barrier Mesh's arms standing at t (each [u, v] of its node): the mesh is solid (`on`), the arm not gone.
+  function meshArmsAt(a, t) {
+    if (!wallUp(a, t)) return [];
+    return (a.arms || []).filter(function (arm) { return arm[3] === null || arm[3] === undefined || t < arm[3]; })
+      .map(function (arm) { return [arm[0], arm[1]]; });
+  }
+
+  // A Barrier Orb's segments standing at t: [[u, v], ...] of the intact ones.
+  function sageSegmentsAt(a, t) {
+    return (a.segments || []).filter(function (sg) { return sg[2] <= t && (sg[3] === null || sg[3] === undefined || t < sg[3]); })
+      .map(function (sg) { return [sg[0], sg[1]]; });
+  }
+
+  // A Shear at t: "set" (its line waits), "raised" or null (no line).
+  function shearAt(a, t) {
+    if (!a.line) return null;
+    var up = a.raised && a.raised[0] <= t && (a.raised[1] === null || a.raised[1] === undefined || t <= a.raised[1]);
+    return up ? "raised" : "set";
+  }
+
   function abilityStyle(ability) {
     if (ability.kind === "Bomb") return { label: "Spike", shape: "spike" };
-    if (ability.kind === "Projectile") return { label: ability.name, shape: "hidden" };
+    if (ability.kind === "Projectile") return projectileStyle(ability);
     var key = ability.code + "_" + ability.name;
     for (var i = 0; i < ABILITY_STYLES.length; i++) {
       if (ABILITY_STYLES[i][0].test(key)) {
@@ -522,7 +604,7 @@
 
   // ------------------------------------------------------------ the viewer
 
-  var LAYERS = ["names", "abilities", "tracers", "cones", "control", "gaps"];
+  var LAYERS = ["names", "abilities", "projectiles", "tracers", "cones", "control", "gaps"];
   var CONTROL_KEEP = 3;    // rounds of decoded control kept: the current one and its neighbours
   var CONTROL_PX = 512;    // the layer's offscreen image (4 px a cell)
   var CONTROL_STATUS = {
@@ -564,7 +646,8 @@
     this.playing = false;
     this.current = null;
     this.icons = {};
-    this.layers = { names: true, abilities: true, tracers: true, cones: true, control: false, gaps: false };
+    this.layers = { names: true, abilities: true, projectiles: true, tracers: true, cones: true, control: false,
+                    gaps: false };
     // Timing gaps: off by default; the page sets options.gaps when it offers the layer.
     this.gaps = !!(options.gaps && options.loadGaps && gapsApi());
     this.gapsCache = {};                           // round -> Promise of {status, stale, rows, chokes}
@@ -1160,7 +1243,8 @@
     var self = this, blob = this.current.blob, items = [];
     (this.current.extras.abilities || []).forEach(function (a) {
       var style = abilityStyle(a);
-      if (style.shape === "hidden" || style.shape === "spike" || style.small || style.unlisted) return;
+      if (style.shape === "hidden" || style.shape === "spike" || style.shape === "projectile" || style.small ||
+          style.unlisted) return;
       items.push({ t: a.thrown ? a.thrown.t0 : a.t0, slot: a.slot, agent: style.agent, ability: style.ability,
         label: style.label, guess: a.owner_by === "nearest", reveals: style.shape === "reveal" ? [] : null });
     });
@@ -1334,7 +1418,7 @@
     var smoke = this.css("--replay-smoke", "rgba(16, 18, 24, 0.6)");
     var smokeCore = this.css("--replay-smoke-core", "rgba(16, 18, 24, 0.84)");
     // Areas first, so badges sit on top of them; the spike last.
-    ["wall", "smoke", "area", "reveal", "line", "wire", "badge", "spike"].forEach(function (pass) {
+    ["wall", "smoke", "area", "reveal", "mesh", "shear", "line", "wire", "badge", "spike"].forEach(function (pass) {
       showing.forEach(function (a) {
         var style = abilityStyle(a);
         if (style.shape !== pass) return;
@@ -1416,6 +1500,45 @@
           ctx.restore(); ctx.save();
           self.drawBadge(ctx, x, y, r * 0.6, color, glyph);
           hits.push({ x: x, y: y, r: r * 0.8, text: text });
+        } else if (pass === "mesh" || pass === "shear") {
+          // Deadlock's mesh: an arm from the root to each standing node while solid, dashed before it forms.
+          // Vyse's Shear: dashed while set, solid while raised.
+          var segs = [], solid = true;
+          if (pass === "mesh") {
+            segs = meshArmsAt(a, t).map(function (n) { return [[a.u, a.v], n]; });
+            if (!segs.length && !(a.on || []).some(function (sp) { return sp[0] <= t; })) {
+              segs = (a.arms || []).map(function (arm) { return [[a.u, a.v], [arm[0], arm[1]]]; });
+              solid = false;
+            }
+          } else {
+            var state = shearAt(a, t);
+            if (state) { segs = [a.line]; solid = state === "raised"; }
+          }
+          ctx.globalAlpha = fadeIn; ctx.strokeStyle = color; ctx.lineCap = "round";
+          ctx.lineWidth = solid ? Math.max(3, r / 3) : Math.max(1.5, r / 7);
+          if (!solid) ctx.setLineDash([r / 3, r / 4]);
+          segs.forEach(function (sg) {
+            ctx.beginPath(); ctx.moveTo(sg[0][0] * s, sg[0][1] * s); ctx.lineTo(sg[1][0] * s, sg[1][1] * s); ctx.stroke();
+          });
+          ctx.setLineDash([]);
+          ctx.restore(); ctx.save();
+          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          hits.push({ x: x, y: y, r: r * 0.7, text: text + (pass === "shear" ? (solid ? " · raised" : " · set") :
+            (solid ? " · " + segs.length + " arm" + (segs.length === 1 ? "" : "s") + " up" : " · forming")) });
+        } else if (pass === "line" && a.segments) {
+          // Sage's wall, segment by segment: the ones still standing (a broken one leaves a gap).
+          var standing = sageSegmentsAt(a, t), sizeUv = 173 * ((self.linked && self.linked.uvPerUnit) || 0.75) / 2;
+          var dir = standing.length > 1 ? [standing[1][0] - standing[0][0], standing[1][1] - standing[0][1]] : null;
+          if (!dir && a.segments.length > 1) dir = [a.segments[1][0] - a.segments[0][0], a.segments[1][1] - a.segments[0][1]];
+          var len = dir ? Math.hypot(dir[0], dir[1]) : 0;
+          ctx.globalAlpha = 0.85 * fadeIn; ctx.strokeStyle = color; ctx.lineCap = "butt"; ctx.lineWidth = Math.max(4, r / 2.2);
+          standing.forEach(function (c) {
+            var du = len ? dir[0] / len * sizeUv : sizeUv, dv = len ? dir[1] / len * sizeUv : 0;
+            ctx.beginPath(); ctx.moveTo((c[0] - du) * s, (c[1] - dv) * s); ctx.lineTo((c[0] + du) * s, (c[1] + dv) * s); ctx.stroke();
+          });
+          ctx.restore(); ctx.save();
+          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          hits.push({ x: x, y: y, r: r * 0.7, text: text + " · " + standing.length + " of " + a.segments.length + " standing" });
         } else if (pass === "line") {
           var ends = lineEnds(a, style, (self.linked && self.linked.uvPerUnit) || 0.75);
           if (ends) {
@@ -1529,6 +1652,7 @@
       if (!th || t < th.t0 || t > th.t1 + 0.6) return;
       var style = abilityStyle(a);
       if (style.shape === "hidden") return;
+      if (self.layers.projectiles && throwShownAsProjectile(a, self.current.extras.abilities)) return;
       var x0 = th.u * s, y0 = th.v * s, x1 = a.u * s, y1 = a.v * s;
       var f = th.t1 > th.t0 ? Math.min(1, (t - th.t0) / (th.t1 - th.t0)) : 1;
       var color = self.ownerColor(a.slot);
@@ -1654,6 +1778,51 @@
       ctx.lineWidth = Math.max(1.5, r / 8);
       ctx.beginPath(); ctx.moveTo(shot.u * s, shot.v * s); ctx.lineTo(shot.u1 * s, shot.v1 * s); ctx.stroke();
       ctx.restore();
+    });
+  };
+
+  // Projectiles in flight (their own layer): a small team-coloured mark where the recorded flight has it, with
+  // the last 0.3 s of its flight behind it; a wide one (Paranoia) as a band across its travel. A flash's flight
+  // from its cast row (`path`) and its pop (`pop`, where the export places it) are drawn here too.
+  ReplayViewer.prototype.drawProjectiles = function (ctx, s, r, hits) {
+    var t = this.t, self = this, uvPerUnit = (this.linked && this.linked.uvPerUnit) || 0.75;
+    (this.current.extras.abilities || []).forEach(function (a) {
+      if (a.kind !== "Projectile") return;
+      var at = projectileAt(a, t);
+      if (!at) return;
+      var style = projectileStyle(a), color = self.ownerColor(a.slot);
+      ctx.save();
+      ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineCap = "round";
+      if (at.moving) {
+        var back = pathAt(a.flight, Math.max(a.flight[0][0], t - 0.3)) || at;
+        ctx.globalAlpha = 0.55;
+        ctx.lineWidth = style.width ? Math.max(4, style.width * uvPerUnit * s) : Math.max(1.5, r / 6);
+        ctx.beginPath(); ctx.moveTo(back.u * s, back.v * s); ctx.lineTo(at.u * s, at.v * s); ctx.stroke();
+      }
+      ctx.globalAlpha = 0.95;
+      ctx.beginPath(); ctx.arc(at.u * s, at.v * s, r * 0.22, 0, 2 * Math.PI); ctx.fill();
+      ctx.restore();
+      hits.push({ x: at.u * s, y: at.v * s, r: r * 0.5, text: (style.agent ? style.agent + " · " : "") + style.label +
+        " · " + self.nameOf(a.slot) + (at.moving ? "" : " · thrown here (no flight recorded)") });
+    });
+    castUtil(this.current.blob.util).forEach(function (u) {
+      if (u.k !== "flash") return;
+      var color = self.ownerColor(u.by);
+      if (u.path && u.path.length > 1) {
+        var stop = u.pop ? u.pop.t : u.path[u.path.length - 1][0];
+        var here = t <= stop ? pathAt(u.path, t) : null;
+        if (here) {
+          ctx.save(); ctx.fillStyle = "#ffffff"; ctx.strokeStyle = color; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(here.u * s, here.v * s, r * 0.26, 0, 2 * Math.PI); ctx.fill(); ctx.stroke(); ctx.restore();
+        }
+      }
+      if (u.pop && typeof u.pop.u === "number" && t >= u.pop.t && t <= u.pop.t + 0.45) {
+        var f = (t - u.pop.t) / 0.45;
+        ctx.save(); ctx.globalAlpha = 1 - f; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(u.pop.u * s, u.pop.v * s, r * (0.5 + 2 * f), 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
+        var which = utilAbility(u.ability);
+        hits.push({ x: u.pop.u * s, y: u.pop.v * s, r: r, text: which.ability + " went off at " + u.pop.t.toFixed(2) + " s" });
+      }
     });
   };
 
@@ -2339,6 +2508,7 @@
       this.drawThrows(ctx, s, r);
       this.drawUtil(ctx, s, r, hits);
     }
+    if (this.layers.projectiles) this.drawProjectiles(ctx, s, r, hits);
     if (this.layers.tracers) this.drawTracers(ctx, s, r);
 
     blob.kills.forEach(function (k) {
@@ -2514,7 +2684,9 @@
     popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle, utilDownAt: utilDownAt,
     utilSuppressedAt: utilSuppressedAt,
     controlRows: controlRows, withSiteData: withSiteData,
-    isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace
+    isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,
+    projectileStyle: projectileStyle, projectileAt: projectileAt, throwShownAsProjectile: throwShownAsProjectile,
+    meshArmsAt: meshArmsAt, sageSegmentsAt: sageSegmentsAt, shearAt: shearAt, LAYERS: LAYERS
   };
   global.Replay = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
