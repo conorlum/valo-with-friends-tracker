@@ -163,7 +163,8 @@ __SCRIPT__
         return Promise.resolve(data.gaps[String(n)] || { status: "not_computed", stale: false, rows: [], chokes: {} });
       };
     }
-    // An optional "#round=N&t=T" in the URL opens round N at T seconds.
+    // An optional "#round=N&t=T" in the URL opens round N at T seconds; "&control=1" also turns the Map control
+    // layer on and "&panel=1" opens the Control tab (a link or a headless screenshot of one moment).
     var start = {};
     String(window.location.hash || "").replace(/^#/, "").split("&").forEach(function (part) {
       var kv = part.split("=");
@@ -173,6 +174,10 @@ __SCRIPT__
     window.viewer = new Replay.ReplayViewer(document.querySelector("[data-replay]"), options);
     window.viewerReady = window.viewer.showRound(first).then(function (round) {
       if (start.t !== undefined) window.viewer.seek(start.t);
+      var layer = document.querySelector('[data-replay-layer="control"]');
+      if (start.control && layer && !layer.checked) layer.click();
+      var tab = document.querySelector('[data-replay-tab="control"]');
+      if (start.panel && tab) tab.click();
       return round;
     });
   })();
