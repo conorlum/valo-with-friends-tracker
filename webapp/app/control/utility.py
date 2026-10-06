@@ -334,7 +334,131 @@ def read_leers(rnd) -> list[Info]:
     return out
 
 
-READERS: list = [read_reveals, read_pulses, read_knives, read_skye_flashes, read_leers]
+# ---------------------------------------------------------------- teleports and temporary bodies (W16-W18)
+
+OMEN_ULT = "Wraith_X_GlobalTeleport_Intention"
+WAYLAY_ANCHOR = "Terra_E_RewindTime_RewindTarget"
+
+
+def heard(rnd, side: str, t: float, x: float, y: float, range_m: float) -> bool:
+    """Whether a living player of `side` is within range_m of (x, y) px at t (walls ignored, as for footsteps)."""
+    r = range_m / rnd.geo.m_per_px
+    for s, team in rnd.team.items():
+        if team != side or not rnd.alive(s, t):
+            continue
+        p = rnd.pos(s, t)
+        if p is not None and (p[0] - x) ** 2 + (p[1] - y) ** 2 <= r * r:
+            return True
+    return False
+
+
+def outside_hearing(rnd, side: str, t: float, range_m: float) -> np.ndarray:
+    """The walkable nodes no living player of `side` hears from at t: everywhere they could have gone unheard."""
+    geo = rnd.geo
+    out = geo.walk_n.copy()
+    r = range_m / geo.m_per_px
+    for s, team in rnd.team.items():
+        if team != side or not rnd.alive(s, t):
+            continue
+        p = rnd.pos(s, t)
+        if p is not None:
+            out &= (geo.centres[:, 0] - p[0]) ** 2 + (geo.centres[:, 1] - p[1]) ** 2 > r * r
+    return out
+
+
+def read_omen_ults(rnd) -> list[Info]:
+    """Omen's From the Shadows (item 12), for each enemy team: his region doesn't move while he channels (pause at the
+    marker's start, resume at its end). If none of them hears the destination and none sees it during the channel,
+    he may be anywhere they don't hear: that ground joins his region when the destination appears, whatever the
+    outcome, and stays after a cancel. Seen or heard: nothing more (a completion is then an ordinary sighting or
+    spread from where he lands)."""
+    from app.control import engine as ce
+
+    out = []
+    for e in rnd.blob.get("util") or []:
+        if e.get("k") != "ability" or f"{e.get('code')}_{e.get('name')}" != OMEN_ULT or e.get("by") is None:
+            continue
+        omen = int(e["by"])
+        own = rnd.team.get(omen)
+        if own is None:
+            continue
+        t0 = float(e["t"])
+        t1 = float(e["t1"]) if e.get("t1") is not None else rnd.t_end
+        x, y = e["u"] * ce.PX / 10000, e["v"] * ce.PX / 10000
+        side = next((team for team in rnd.team.values() if team != own), None)
+        if side is None:
+            continue
+        source = f"{OMEN_ULT}@{t0}"
+        out.append(Info(t0, side, omen, "pause", "omen_channel", source=source))
+        out.append(Info(t1, side, omen, "resume", "omen_channel", source=source))
+        enemies = [s for s, team in rnd.team.items() if team == side]
+        range_m = FIGURES["hearing_m"]["omen_ult"]
+        seen = False
+        t = t0
+        while t <= t1 and not seen:
+            seen = any(_sees_point(rnd, s, t, x, y) for s in enemies)
+            t += LEER_LOOK_STEP_S
+        if seen or heard(rnd, side, t0, x, y, range_m):
+            continue
+        out.append(Info(t0, side, omen, "broaden", "omen_unheard", mask=outside_hearing(rnd, side, t0, range_m),
+                        source=source, detail={"outcome": e.get("outcome")}))
+    return out
+
+
+def yoru_beacon(rnd, yoru: int, t: float, x: float, y: float, source: str) -> list[Info]:
+    """Yoru's Gatecrash (item 16) from evidence the export doesn't carry yet (no beacon actor is exported, W2): an
+    activated or faked beacon an enemy hears adds a second origin there, beside his real body, until vision clears
+    it. Not in READERS: called by a reader once a beacon signal exists."""
+    own = rnd.team.get(yoru)
+    side = next((team for team in rnd.team.values() if team != own), None)
+    if side is None or not heard(rnd, side, t, x, y, FIGURES["hearing_m"]["yoru_beacon"]):
+        return []
+    return [Info(t, side, yoru, "hypothesis", "yoru_beacon", x=x, y=y, source=source)]
+
+
+def yoru_drift_exit(rnd, yoru: int, t: float, x: float, y: float, source: str) -> list[Info]:
+    """Yoru's Dimensional Drift exit (item 17), from evidence the export doesn't carry yet: heard, nothing; unheard,
+    he may be anywhere no enemy hears. Not in READERS (see `yoru_beacon`)."""
+    own = rnd.team.get(yoru)
+    side = next((team for team in rnd.team.values() if team != own), None)
+    range_m = FIGURES["hearing_m"]["yoru_drift_exit"]
+    if side is None or heard(rnd, side, t, x, y, range_m):
+        return []
+    return [Info(t, side, yoru, "broaden", "yoru_drift_unheard", mask=outside_hearing(rnd, side, t, range_m),
+                 source=source)]
+
+
+def read_waylay_recalls(rnd) -> list[Info]:
+    """Waylay's Refract (item 21): a completed recall (the condenser's `recall` on her return point) that an enemy
+    hears, at its start or its end, puts her at the return point when she arrives: her old region is gone and she
+    spreads from there. Unheard: nothing. A recall can't be faked, so a heard one is located."""
+    from app.control import engine as ce
+
+    out = []
+    for e in rnd.blob.get("util") or []:
+        if e.get("k") != "ability" or f"{e.get('code')}_{e.get('name')}" != WAYLAY_ANCHOR or not e.get("recall"):
+            continue
+        waylay = e.get("by")
+        own = rnd.team.get(waylay)
+        if own is None:
+            continue
+        side = next((team for team in rnd.team.values() if team != own), None)
+        rc_ = e["recall"]
+        x, y = e["u"] * ce.PX / 10000, e["v"] * ce.PX / 10000
+        fx, fy = rc_["u"] * ce.PX / 10000, rc_["v"] * ce.PX / 10000
+        t_arrive = float(rc_["t1"])
+        range_m = FIGURES["hearing_m"]["waylay_recall"]
+        if side is None or not rnd.alive(int(waylay), t_arrive):
+            continue
+        if not (heard(rnd, side, float(rc_["t"]), fx, fy, range_m) or heard(rnd, side, t_arrive, x, y, range_m)):
+            continue
+        out.append(Info(t_arrive, side, int(waylay), "locate", "waylay_recall", x=x, y=y, z=rnd._device_z(e.get("z")),
+                        source=f"{WAYLAY_ANCHOR}@{e['t']}"))
+    return out
+
+
+READERS: list = [read_reveals, read_pulses, read_knives, read_skye_flashes, read_leers, read_omen_ults,
+                 read_waylay_recalls]
 
 
 def read_all(rnd) -> list[Info]:
