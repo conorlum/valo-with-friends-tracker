@@ -84,6 +84,9 @@ ARCHETYPE_ALIASES = {
     "Default__GameObject_SoundSensor_SweetSpotFissure_C": "Default__GameObject_Cable_Q_SoundSensor_Fissure_C",
     "Default__Actor_FishingHook_C": "Default__GameObject_Cable_X_FishingHook_C",
     "Default__GameObject_FishingHook_CageSphere_C": "Default__GameObject_Cable_X_FishingHook_Cage_C",
+    # Omen's From the Shadows: the marker at the destination, there from the channel's start to its end
+    # (3.50 s on all four local casts). An `Intention_`, which is no ability kind.
+    "Default__Intention_Wraith_X_GlobalTeleport_C": "Default__GameObject_Wraith_X_GlobalTeleport_Intention_C",
 }
 # Deadlock's Barrier Mesh: the root row carries its nodes as `arms`; a node is never a row of its own.
 MESH_ROOT, MESH_NODE = "E_CableJam_Root", "E_CableJam_Node"
@@ -1061,6 +1064,59 @@ def wall_on(states: list[tuple[int, bool]], actor: _Actor, start: int, end: int)
     return out
 
 
+# Teleports and temporary bodies (2026-10-05). What each row means, and what is and isn't in the export:
+# - Omen's ult: OMEN_ULT is the destination marker; `teleport_outcome` reads where his body is once it closes.
+# - Phoenix's Run It Back: PHOENIX_RETURN is the return point, there from the ult's start to his return.
+# - Waylay's Refract: WAYLAY_ANCHOR is the return point; a recall is the WAYLAY_RECALL projectile flying back
+#   to it (`recall_of`), and both close as she arrives.
+# - Yoru's Gatecrash and Dimensional Drift, and Veto's Evolution, have no row: the export spawns no beacon
+#   actor (only the held equippable changes), and no local replay has a Veto. Nothing is inferred for them.
+OMEN_ULT = "Wraith_X_GlobalTeleport_Intention"
+PHOENIX_RETURN = "Phoenix_X_ResTarget_Production"
+WAYLAY_ANCHOR = "Terra_E_RewindTime_RewindTarget"
+WAYLAY_RECALL = "Terra_E_RewindTime_ForObservers"
+# The body is looked for this long after the marker closes, and counts as "there" within this far (4 m).
+ARRIVE_MS = 300
+ARRIVE_UNITS = 400.0
+
+
+def teleport_outcome(actor: _Actor, slot: int | None, positions_at) -> dict:
+    """{"outcome": "completed" | "cancelled" | "unknown", "evidence", ["from": (x, y)]} for Omen's ult marker.
+    Two signals, never one: the marker has closed, and ARRIVE_MS later its owner's body is at the destination
+    (completed) or still where the channel began (cancelled). Anything else (no owner, no body sample, a body
+    somewhere else, a destination beside the origin) is unknown."""
+    if slot is None:
+        return {"outcome": "unknown", "evidence": "no_owner"}
+    began = positions_at(actor.t_ms).get(slot)
+    out: dict = {} if began is None else {"from": began}
+    if actor.closed_ms is None:
+        return {**out, "outcome": "unknown", "evidence": "marker_never_closed"}
+    after = positions_at(actor.closed_ms + ARRIVE_MS).get(slot)
+    if after is None:
+        return {**out, "outcome": "unknown", "evidence": "no_body_sample"}
+    at_destination = math.hypot(after[0] - actor.x, after[1] - actor.y) <= ARRIVE_UNITS
+    at_origin = began is not None and math.hypot(after[0] - began[0], after[1] - began[1]) <= ARRIVE_UNITS
+    if at_destination and at_origin:
+        return {**out, "outcome": "unknown", "evidence": "destination_beside_origin"}
+    if at_destination:
+        return {**out, "outcome": "completed", "evidence": "marker_closed_body_at_destination"}
+    if at_origin:
+        return {**out, "outcome": "cancelled", "evidence": "marker_closed_body_at_origin"}
+    return {**out, "outcome": "unknown", "evidence": "body_elsewhere"}
+
+
+def recall_of(anchor: _Actor, slot: int | None, actors: dict[int, _Actor], owner_of: dict[int, int | None]) -> _Actor | None:
+    """The recall that ended this return point: the same owner's WAYLAY_RECALL projectile spawned while the
+    anchor was up and closed with it (within LANDING_MS). None: the anchor ran out, or was never used."""
+    if anchor.closed_ms is None:
+        return None
+    found = [p for p in actors.values()
+             if f"{p.code}_{p.name}" == WAYLAY_RECALL and anchor.t_ms <= p.t_ms <= anchor.closed_ms
+             and p.closed_ms is not None and abs(p.closed_ms - anchor.closed_ms) <= LANDING_MS
+             and (slot is None or owner_of.get(p.guid) in (None, slot))]
+    return min(found, key=lambda p: (p.t_ms, p.guid)) if found else None
+
+
 # KAY/O's ZERO/point once it has landed: it pulses once (a one-shot on itself, 1.000 s after landing on all nine
 # knives of the first KAY/O export, carrying its radius), and each player it suppresses gets a one-shot naming it
 # within the next KNIFE_HIT_MS (measured 0.10-0.30 s).
@@ -1201,6 +1257,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
     # Actors whose owner came from evidence (or, for a projectile, a clear nearest thrower).
     known: list[tuple[_Actor, int]] = []
     owner_of: dict[int, int | None] = {}
+    anchors: list[tuple[dict, _Actor, int | None, int, int]] = []     # Waylay's return points, for their recalls
     for actor in sorted(actors.values(), key=lambda a: (a.t_ms, a.guid)):
         agent = agent_code.get(actor.code.lower()) if actor.code else None
         claim = claims.get(actor.guid)
@@ -1294,6 +1351,15 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             if fx:
                 entry["fx"] = fx
                 counts["abilities_with_fx"] += 1
+        if f"{actor.code}_{actor.name}" == OMEN_ULT:
+            result = teleport_outcome(actor, slot, positions_at)
+            entry["outcome"], entry["evidence"] = result["outcome"], result["evidence"]
+            if "from" in result:
+                entry["from"] = list(game_map.to_uv(*result["from"]))
+            counts[f"omen_ult_{result['outcome']}"] += 1
+        if f"{actor.code}_{actor.name}" == WAYLAY_ANCHOR:
+            # the recall is looked up when every owner is known (below): a projectile can sort after its anchor
+            anchors.append((entry, actor, slot, start, end))
         if KNIFE_PULSE.match(f"{actor.code}_{actor.name}"):
             pulse = knife_pulse(actor, raw, players, slot)
             if pulse["state"] == "completed":
@@ -1327,6 +1393,17 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             _control_inputs(entry, actor, players, pawn_yaws, game_map, start, end, counts)
         out.rounds.setdefault(n, {"abilities": [], "shots": []})["abilities"].append(entry)
         counts["abilities"] += 1
+
+    for entry, anchor, slot, start, end in anchors:
+        recall = recall_of(anchor, slot, actors, owner_of)
+        if recall is not None:
+            entry["recall"] = {"t": max(0.0, _seconds(recall.t_ms, start)),
+                               "t1": _seconds(min(recall.closed_ms, end), start),
+                               **dict(zip(("u", "v"), game_map.to_uv(recall.x, recall.y)))}
+            if recall.z is not None:
+                entry["recall"]["z"] = _dm(recall.z)
+            counts["waylay_recalls"] += 1
+        counts["waylay_anchors"] += 1
 
     reveals = find_reveals(raw.effects, actors, players, code_of_agent, counts, raw.equips, teams)
     for tag in dart_tags(actors, claims, players, counts):

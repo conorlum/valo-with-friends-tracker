@@ -126,5 +126,6 @@ def test_only_the_exact_archetypes_are_taken_in(tmp_path):
              "location": {"x": 0, "y": 0, "z": 0}, "rotation": None} for i, name in enumerate(lookalikes)]
     extras = extras_of("x", 240_000, 290_000, rows, tmp_path)
     assert extras.rounds == {}
-    assert all(alias.startswith("Default__GameObject_Cable_") or alias.startswith("Default__Projectile_Cable_")
-               for alias in ARCHETYPE_ALIASES.values())
+    deadlocks = [alias for name, alias in ARCHETYPE_ALIASES.items() if "Wraith" not in name]
+    assert len(deadlocks) == 7
+    assert all(alias.startswith(("Default__GameObject_Cable_", "Default__Projectile_Cable_")) for alias in deadlocks)
