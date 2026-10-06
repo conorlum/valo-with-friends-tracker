@@ -178,10 +178,13 @@ This is a change to what a round computes, so `CONTROL_REVISION` goes up and eve
 with heights is recomputed by the idle queue. A flat map's bytes don't change (the reference test pins
 them). No map has heights live today, so in practice nothing is recomputed that wouldn't be anyway.
 
-Open, for the owner: a landing is only informative if someone hears it. The footstep rule already asks
-for an opponent within hearing range; this rule, as stated, closes a high ledge to the unknown even when
-nobody is near enough to hear. That is the simple version asked for. The stricter-to-build version
-closes it only while an opponent is within hearing range of the landing spot.
+**A high fall is always closed, whoever is or isn't in earshot** (the owner, 2026-10-05). The
+alternative considered was closing it only while an opponent is within hearing range of the landing
+spot, as the footstep rule does. The owner's reason for not doing that: the unknown is not a model of
+what was heard. It is where an enemy could have got to while playing quietly, gun out, clearing as they
+go, which is why it spreads at walking speed and not at running speed. A player moving like that doesn't
+take a loud drop. Tying the rule to who can hear would be modelling perfect knowledge, which nobody has
+and which helps nobody.
 
 ### 6. The bar
 
