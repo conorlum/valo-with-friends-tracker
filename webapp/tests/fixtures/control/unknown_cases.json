@@ -30,6 +30,16 @@
    "match": "0f452716-1e90-4782-afba-29229fdab922", "map": "Sunset", "round": 7, "t": 26.4,
    "side": "A", "expect": "state", "states": ["b_passive", "b_safe", "b_active"],
    "cells": [[476, 612], [548, 628], [548, 636], [548, 644]],
-   "source": "the user, 2026-10-04 (image 14): NPrightdolphin's memory against SpidaChickens' live passive view. B is looking at it, so A's memory of it ends: B's (D5 B)."}
+   "source": "the user, 2026-10-04 (image 14): NPrightdolphin's memory against SpidaChickens' live passive view. B is looking at it, so A's memory of it ends: B's (D5 B)."},
+  {"id": "summit-r6-unknown-before-the-camera",
+   "match": "650e6c6c-a0b4-425d-ba36-f0c0559e8f37", "map": "Summit", "round": 6, "t": 21.2,
+   "side": "A", "expect": "unknown",
+   "cells": [[740, 356], [796, 396], [756, 444], [892, 468], [804, 524], [876, 588]],
+   "source": "the 2026-10-05 control review, item 7 (the replay the review calls Abyss is on Summit): just before 21.4 s side A still doesn't know where four live enemies are. Recorded so the collapse below stays a collapse and not an empty picture all along."},
+  {"id": "summit-r6-camera-sees-all-four",
+   "match": "650e6c6c-a0b4-425d-ba36-f0c0559e8f37", "map": "Summit", "round": 6, "t": 22.0,
+   "side": "A", "expect": "clear",
+   "cells": [[740, 356], [796, 396], [756, 444], [892, 468], [804, 524], [876, 588]],
+   "source": "the 2026-10-05 control review, item 7: 'the unknown all disappears at once' at 20-22 s. Diagnosed 2026-10-05: a real collapse. Side A's Cypher takes his camera at 21.371 s and it sees three of the four live enemies at 21.5 s and the fourth at 22.0 s (the fifth died at 20.5 s), so each one's unknown restarts from where they stand."}
  ]
 }
