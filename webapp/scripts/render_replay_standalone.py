@@ -94,7 +94,9 @@ def render(blobs: dict[int, dict], site: dict | None = None) -> str:
     agents = sorted({p["agent"] for blob in blobs.values() for p in blob["players"]})
     icons = {a: data_uri(APP / "static" / "img" / "agents" / f"{agent_icon_name(a)}.png") for a in agents}
     payload = {"rounds": {str(n): blob for n, blob in blobs.items()},
-               "map": data_uri(APP / "static" / "img" / "maps" / f"{map_name}.png"), "icons": icons}
+               "map": data_uri(APP / "static" / "img" / "maps" / f"{map_name}.png"), "icons": icons,
+               # the tracer's obstacles, inlined like the map (None for a map without the asset)
+               "bullet": data_uri(APP / "static" / "data" / "control" / f"{map_name}.bullet.png")}
     if linked:
         payload["site"] = site["context"]
         payload["control"] = site["control"] if control else {}
@@ -135,6 +137,7 @@ __SCRIPT__
     var options = {
       rounds: rounds,
       mapImage: data.map,
+      bulletMask: data.bullet || null,
       agentIcon: function (agent) { return data.icons[agent] || null; },
       loadRound: function (n) {
         var blob = JSON.parse(JSON.stringify(data.rounds[String(n)]));

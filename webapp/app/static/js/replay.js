@@ -668,6 +668,7 @@
     this.map.onload = (function () { this.fitView(); this.draw(); if (this.heat) this.paintHeatmap(); }).bind(this);
     this.map.src = options.mapImage;
     this.hover = null;
+    this.loadBulletMask();
     this.bindControls();
     this.bindHeatmap();
     this.lastFrame = null;
@@ -1767,16 +1768,64 @@
     hud.innerHTML = parts.join("");
   };
 
+  // Where a shot's tracer ends (the 2026-10-05 review, item 11): from (u, v) along its recorded direction (towards
+  // u1, v1) to the first pixel of the bullet mask that stops it (walls and low boxes), or the map's edge. `mask` is
+  // `size` x `size` bytes, non-zero stops a shot. A shooter standing against (or just inside) an obstacle starts
+  // past it: blocking pixels are skipped until the ray is first in the open, for at most START_SKIP_PX.
+  var START_SKIP_PX = 12;
+
+  function tracerEnd(mask, size, u, v, u1, v1) {
+    var k = size / 10000, x = u * k, y = v * k, dx = (u1 - u) * k, dy = (v1 - v) * k;
+    var len = Math.hypot(dx, dy);
+    if (!(len > 1e-6)) return null;
+    dx /= len; dy /= len;
+    var open = false, steps = 0;
+    while (true) {
+      var px = Math.floor(x), py = Math.floor(y);
+      if (px < 0 || py < 0 || px >= size || py >= size) break;
+      var blocked = mask[py * size + px] !== 0;
+      if (!blocked) open = true;
+      else if (open || steps >= START_SKIP_PX) break;
+      x += dx; y += dy; steps++;
+    }
+    return { u: (x - dx) / k, v: (y - dy) / k, steps: steps };
+  }
+
+  // The map's bullet mask as bytes (1 stops a shot), from its image; null while loading, without one, or on failure.
+  ReplayViewer.prototype.loadBulletMask = function () {
+    var self = this, url = this.options.bulletMask;
+    this.bullet = null;
+    if (!url || typeof Image === "undefined" || typeof document === "undefined") return;
+    var img = new Image();
+    img.onload = function () {
+      try {
+        var n = 1024, off = document.createElement("canvas");
+        off.width = off.height = n;
+        var octx = off.getContext("2d");
+        octx.drawImage(img, 0, 0, n, n);
+        var data = octx.getImageData(0, 0, n, n).data, mask = new Uint8Array(n * n);
+        for (var i = 0; i < n * n; i++) mask[i] = data[i * 4] > 127 ? 1 : 0;
+        self.bullet = { mask: mask, size: n };
+        self.draw();
+      } catch (err) { self.bullet = null; }     // unreadable: the fixed-length tracer stays
+    };
+    img.onerror = function () { self.bullet = null; };
+    img.src = url;
+  };
+
   ReplayViewer.prototype.drawTracers = function (ctx, s, r) {
-    var t = this.t, self = this;
+    var t = this.t, self = this, bullet = this.bullet;
     (this.current.extras.shots || []).forEach(function (shot) {
       var age = t - shot.t;
       if (age < 0 || age > TRACER_S || shot.u1 === undefined) return;
+      // to the first wall or low box when the map's bullet mask is loaded; else the stored fixed length
+      var end = bullet ? tracerEnd(bullet.mask, bullet.size, shot.u, shot.v, shot.u1, shot.v1) : null;
+      var eu = end ? end.u : shot.u1, ev = end ? end.v : shot.v1;
       ctx.save();
       ctx.globalAlpha = 0.9 * (1 - age / TRACER_S);
       ctx.strokeStyle = self.slotColor(shot.slot);
       ctx.lineWidth = Math.max(1.5, r / 8);
-      ctx.beginPath(); ctx.moveTo(shot.u * s, shot.v * s); ctx.lineTo(shot.u1 * s, shot.v1 * s); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(shot.u * s, shot.v * s); ctx.lineTo(eu * s, ev * s); ctx.stroke();
       ctx.restore();
     });
   };
@@ -2686,7 +2735,8 @@
     controlRows: controlRows, withSiteData: withSiteData,
     isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,
     projectileStyle: projectileStyle, projectileAt: projectileAt, throwShownAsProjectile: throwShownAsProjectile,
-    meshArmsAt: meshArmsAt, sageSegmentsAt: sageSegmentsAt, shearAt: shearAt, LAYERS: LAYERS
+    meshArmsAt: meshArmsAt, sageSegmentsAt: sageSegmentsAt, shearAt: shearAt, LAYERS: LAYERS,
+    tracerEnd: tracerEnd, START_SKIP_PX: START_SKIP_PX
   };
   global.Replay = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

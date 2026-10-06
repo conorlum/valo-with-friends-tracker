@@ -224,6 +224,18 @@ def masks(rgba: np.ndarray, entry: dict | None = None) -> MapMasks:
     return MapMasks(sight, walk)
 
 
+def bullet_mask(rgba: np.ndarray, entry: dict | None = None) -> np.ndarray:
+    """What stops a shot's tracer on the minimap (PX x PX, True stops it; the 2026-10-05 review, item 11): every
+    sight wall, plus the low boxes sight goes over (`seeover` tags) and `bullet_paint` (a box the map only draws
+    in outline). Its own mask: the sight mask leaves low boxes out, and the walk mask's holes include open drops
+    a shot flies across (`cant_walk_paint` alone never stops one). The viewer's only; control never reads it."""
+    entry = entry or {}
+    out = masks(rgba, entry).sight | tag_shapes(rgba, entry)["seeover"]
+    if entry.get("bullet_paint"):
+        out = out | unpack_paint(entry["bullet_paint"])
+    return out
+
+
 def line_blocked(sight: np.ndarray, a: tuple[int, int], b: tuple[int, int],
                  end_skip: int = LINE_END_SKIP_PX) -> bool:
     """The Risk 1 kill-line rule (0a's harness): the pixel line from a to b (x, y), rasterised with

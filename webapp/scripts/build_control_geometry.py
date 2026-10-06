@@ -54,11 +54,15 @@ def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path) -> di
     m = cg.masks(rgba, entry)
     cg.write_mask_png(asset_dir / f"{name}.sight.png", m.sight)
     cg.write_mask_png(asset_dir / f"{name}.walk.png", m.walk)
+    # The tracer's obstacles (the viewer's; not a control input, so no round's fingerprint moves).
+    bullet = cg.bullet_mask(rgba, entry)
+    cg.write_mask_png(asset_dir / f"{name}.bullet.png", bullet)
     scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))[name]["xMultiplier"]
     geo = cg.geometry_from_masks(name, m.sight, m.walk, scale)
     row = {"image_sha": image_sha,
            "sight_sha": hashlib.sha256(np.packbits(m.sight).tobytes()).hexdigest()[:12],
            "walk_sha": hashlib.sha256(np.packbits(m.walk).tobytes()).hexdigest()[:12],
+           "bullet_sha": hashlib.sha256(np.packbits(bullet).tobytes()).hexdigest()[:12],
            "walkable_cells": int(geo.walk.sum()), "cell_m": round(geo.cell_m, 3),
            "tags": len(entry.get("tags") or []), "see_across_paint": bool(entry.get("see_across_paint")),
            "cover_reviewed": bool(entry.get("cover_reviewed")), "specials": entry.get("specials") or [],
@@ -72,7 +76,8 @@ def build_map(name: str, entry: dict, lines: list | None, asset_dir: Path) -> di
     elif barrier_path.is_file():
         barrier_path.unlink()
     # The Stage 6 paints, only when a map has any (so earlier entries stay as they were).
-    paints = [key for key in ("cover_paint", "cant_walk_paint", "uncertain_paint", "barrier_paint") if entry.get(key)]
+    paints = [key for key in ("cover_paint", "cant_walk_paint", "uncertain_paint", "barrier_paint", "bullet_paint")
+              if entry.get(key)]
     if paints:
         row["paints"] = paints
     if entry.get("uncertain_paint"):
