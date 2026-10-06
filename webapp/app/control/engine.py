@@ -331,12 +331,16 @@ class RoundInputs:
                       if k.get("killer") is not None and k.get("victim") is not None]
         self._by_slot: dict[int, tuple[list[float], list[tuple]]] | None = None
         self.reveals: list[tuple[float, float, int | None, int]] = []   # (t0, t1, by, target)
+        # Veto's Evolution (W10): while it's on, enemy blinds, suppression, reveals and statuses don't touch him
+        self.evolution = utility.evolution_spans(blob)
         self._read_util()
         # What utility tells each team about one enemy (app/control/utility.py), at its own exact time: the
         # readers' and any given ones (tests), in engine order. Only enemies of the learning side count.
+        # An Info that needs a capability the enemy is immune to at its time (Veto's Evolution) is dropped.
         self.infos = utility.ordered([i for i in [*utility.read_all(self), *(infos or ())]
                                       if self.team.get(i.slot) is not None and self.team.get(i.slot) != i.side
-                                      and 0.0 <= i.t < self.t_end])
+                                      and 0.0 <= i.t < self.t_end
+                                      and utility.affects(i.detail.get("needs", "sight"), self.evolution, i.slot, i.t)])
         if geo.heights is not None:
             if any(np.isnan(z).any() for z in self.heights.values()):
                 self.missing["approximate heights (a player's track has no z: lowest floor used)"] += 1
@@ -480,6 +484,8 @@ class RoundInputs:
                 self._flash(e, util)
             elif k == "nearsight":
                 self._nearsight(e)
+            elif k in ("reveal", "status", "flash", "nearsight") and self.evolution and self._immune_row(e):
+                continue
             elif k == "reveal":
                 self.downgraded[e["target"]].append(_span(e["t"], e["t1"]))
                 self.reveals.append((*_span(e["t"], e["t1"]), e.get("by"), e["target"]))
@@ -501,7 +507,19 @@ class RoundInputs:
         if not any(e.get("k") == "damage" for e in util):
             self.missing["damage hits (enemy damage zones only)"] += 1
 
+    def _immune_row(self, e: dict) -> bool:
+        """A reveal or status on an ulting Veto, which doesn't touch him (W10). Flash and nearsight rows are
+        filtered hit by hit (`_flash`, `_nearsight`), so the row itself is kept."""
+        if e.get("k") == "reveal":
+            return not utility.affects("reveal", self.evolution, e["target"], float(e["t"]))
+        if e.get("k") == "status":
+            capability = "suppress" if e.get("status") == "suppressed" else "status"
+            return not utility.affects(capability, self.evolution, e["target"], float(e["t"]))
+        return False
+
     def _flash(self, e: dict, util: list) -> None:
+        if self.evolution:
+            e = self._unhit(e)
         if "hits" in e:
             for slot, t, dur in e["hits"]:
                 if dur is None:
@@ -518,7 +536,15 @@ class RoundInputs:
             self.events += [pop, pop + dur]
             self.missing["flash hit time and blind duration (placeholder used)"] += 1
 
+    def _unhit(self, e: dict) -> dict:
+        """A flash or nearsight row without its hits on an ulting Veto: they never blind him (W10)."""
+        hits = [h for h in e.get("hits") or [] if utility.affects("blind", self.evolution, h[0], float(h[1]))]
+        targets = [s for s in e.get("targets") or [] if utility.affects("blind", self.evolution, s, float(e["t"]))]
+        return {**e, "targets": targets, **({"hits": hits} if "hits" in e else {})}
+
     def _nearsight(self, e: dict) -> None:
+        if self.evolution:
+            e = self._unhit(e)
         if "hits" in e:
             for slot, t, dur in e["hits"]:
                 if dur is None:

@@ -27,6 +27,7 @@ within a phase, the order the readers gave."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -55,6 +56,48 @@ class Info:
     def __post_init__(self):
         if self.kind not in KINDS:
             raise ValueError(f"unknown knowledge operation {self.kind!r}")
+
+
+# ---------------------------------------------------------------- Veto's Evolution (W10)
+
+# What enemy utility can still do to an ulting Veto (the 2026-10-05 review, item 19). True: it works on him.
+CAPABILITIES = {
+    "sight": True,        # a player's own view sees him
+    "drone_sight": True,  # a drone's or dog's cone sees him (its tag doesn't)
+    "trigger": True,      # a Cypher trip still goes off on him (no concuss)
+    "blind": False,       # flashes, nearsight
+    "suppress": False,    # KAY/O's knife and NULL/cmd, any suppression
+    "reveal": False,      # recon, Haunt, darts' and drones' tags, Neural Theft, Fade's and Gekko's utility
+    "status": False,      # concuss, slow, tether, decay: what utility puts on a player
+}
+# PROVISIONAL(D6): no local replay has a Veto, so Evolution's own archetype has never been seen. Any of Veto's
+# (`Pine`) ult-slot objects is read as Evolution being active for its life. The plan's evidence task: confirm the
+# name and its life on a replay with an ulting Veto.
+EVOLUTION = re.compile(r"^Pine_X_")
+VETO = "Veto"
+
+
+def evolution_spans(blob: dict) -> dict[int, list[tuple[float, float]]]:
+    """slot -> [(from, to)] round seconds while that player was in Evolution: an ult-slot ability row of a Veto
+    (EVOLUTION), owned by them, from its start to its end. Nothing for anyone else."""
+    vetos = {p["slot"] for p in blob.get("players") or [] if p.get("agent") == VETO}
+    out: dict[int, list[tuple[float, float]]] = {}
+    for e in blob.get("util") or []:
+        if e.get("k") != "ability" or e.get("by") not in vetos:
+            continue
+        if not EVOLUTION.match(f"{e.get('code')}_{e.get('name')}"):
+            continue
+        end = e.get("t1") if e.get("t1") is not None else blob.get("t_end")
+        if end is not None and end > e["t"]:
+            out.setdefault(int(e["by"]), []).append((float(e["t"]), float(end)))
+    return out
+
+
+def affects(capability: str, spans: dict, slot: int, t: float) -> bool:
+    """Whether utility with this capability works on `slot` at `t` (False only while they're immune to it)."""
+    if CAPABILITIES[capability]:
+        return True
+    return not any(a <= t < b for a, b in spans.get(slot, ()))
 
 
 READERS: list = []
