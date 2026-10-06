@@ -7,6 +7,9 @@ worker (app/services/replay_control_remote.py; docs/map-control-worker-plan.md, 
 recomputes the round's fingerprint and stores nothing if it moved (a new link, a re-ingest) or if a row
 with the current fingerprint is already there (the local command got there first).
 
+Every row records `control_format.CONTROL_REVISION` (migration 0017); both writers only store results
+computed under this deploy's revision.
+
 Standard library and the DB only: the engine is never imported here.
 """
 
@@ -45,7 +48,8 @@ def store_round(session_factory, replay_id: int, round_number: int, fingerprint:
         ok = result["status"] == "ok"
         session.merge(ReplayRoundControl(
             replay_id=replay_id, round_number=round_number, status=result["status"], fingerprint=fingerprint,
-            data_version=cf.DATA_VERSION if ok else None, data=result.get("data"), summary=result.get("summary"),
+            data_version=cf.DATA_VERSION if ok else None, control_revision=cf.CONTROL_REVISION,
+            data=result.get("data"), summary=result.get("summary"),
             error=result.get("error"), computed_at=datetime.now(timezone.utc)))
         session.commit()
         return STORED

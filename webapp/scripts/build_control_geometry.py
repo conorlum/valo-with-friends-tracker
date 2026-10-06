@@ -92,6 +92,13 @@ def keep_heights(name: str, row: dict, previous: dict) -> list[str]:
     return []
 
 
+def keep_features(row: dict, previous: dict) -> None:
+    """Carries a map's feature-generation pointer (`features_sha`, app/control/features.py publish_generation)
+    into its rebuilt entry: rebuilding the masks doesn't unpublish a generation. If the masks changed under it,
+    the control task's verification refuses the stale generation until it is republished."""
+    row.update({key: value for key, value in previous.items() if key.startswith("features")})
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--map", action="append", help="only this map (repeatable); the index keeps the others")
@@ -113,6 +120,7 @@ def main() -> None:
         row = build_map(name, tags.get("maps", {}).get(name, {}), lines.get(name), asset_dir)
         for warning in keep_heights(name, row, index["maps"].get(name) or {}):
             print(warning, flush=True)
+        keep_features(row, index["maps"].get(name) or {})
         index["maps"][name] = row
         kl = row["kill_lines"]
         verdict = f"kill lines {kl['blocked']}/{kl['qualifying']} blocked ({kl['share']:.1%})" if kl else "no kill lines"

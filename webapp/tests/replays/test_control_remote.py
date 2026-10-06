@@ -4,6 +4,7 @@ docs/map-control-worker-plan.md, step 4), on SQLite with a fake worker client.""
 import base64
 import gzip
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -12,10 +13,11 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[0]))
 
-from test_control_store import db, factory, linked  # noqa: E402,F401  (fixtures)
+from test_control_store import db, factory, linked, put_row  # noqa: E402,F401  (fixtures)
 from test_replay_store import condensed, pg  # noqa: E402,F401  (fixtures)
 
 from app.config import settings  # noqa: E402
+from app.models.match import Match  # noqa: E402
 from app.models.replay import ReplayRoundControl  # noqa: E402
 from app.replays import control_format as cf  # noqa: E402
 from app.services import replay_control as rc  # noqa: E402
@@ -75,26 +77,132 @@ def test_missing_rounds_are_sent_then_stored(factory, db, linked):
     assert remote.cycle(factory, worker, state, now=20)["sent"] == 0
 
 
-def test_unlinked_replays_wait_for_their_link(factory, db, linked):
+def sent_rounds(worker):
+    return sorted(int(t["key"].split(":")[1]) for t in worker.tasks.values())
+
+
+def test_unlinked_replays_are_sent_too(factory, db, linked):
     linked.link_status = "unlinked"
+    linked.match_id = None
     db.commit()
     worker = FakeWorker()
-    assert remote.cycle(factory, worker, remote.State(), now=0)["sent"] == 0 and not worker.tasks
+    assert remote.cycle(factory, worker, remote.State(), now=0)["sent"] == remote.IN_FLIGHT
 
 
-def test_stale_rounds_stay_for_the_local_command(factory, db, linked):
-    [planned] = rc.plan(db, rounds={1})
-    db.add(ReplayRoundControl(replay_id=linked.id, round_number=1, status="ok", fingerprint="0" * 16,
-                              data_version=cf.DATA_VERSION, data=gzip.compress(b"x"), summary=cf.pack_summary({})))
-    db.commit()
+def test_stale_rounds_are_sent_and_a_current_failure_is_not(factory, db, linked):
+    put_row(db, linked, 1, fingerprint="0" * 16)                    # stale: an old fingerprint
+    put_row(db, linked, 2, status="failed")                         # failed under the current inputs
+    put_row(db, linked, 3, status="failed", fingerprint="1" * 16)   # failed under old inputs: stale
+    for n in range(4, linked.round_count + 1):
+        put_row(db, linked, n)
     worker = FakeWorker()
     remote.cycle(factory, worker, remote.State(), now=0)
-    assert all(int(t["key"].split(":")[1]) != 1 for t in worker.tasks.values())
+    assert sent_rounds(worker) == [1, 3]
+
+
+def test_rank_puts_linked_by_played_at_before_the_rest_by_upload_time():
+    class P:
+        def __init__(self, rid, n):
+            self.replay_id, self.round_number = rid, n
+    played = {1: datetime(2026, 9, 1, tzinfo=timezone.utc), 2: datetime(2026, 10, 1, tzinfo=timezone.utc)}
+    created = {3: datetime(2026, 10, 4, tzinfo=timezone.utc), 4: datetime(2026, 10, 3, tzinfo=timezone.utc)}
+    ranked = remote._rank([P(1, 1), P(3, 2), P(2, 2), P(2, 1), P(4, 1), P(3, 1)], played, created)
+    assert [(p.replay_id, p.round_number) for p in ranked] == [(2, 1), (2, 2), (1, 1), (3, 1), (3, 2), (4, 1)]
+
+
+@pytest.mark.parametrize("unlink", [False, True])
+def test_order_reads_played_at_through_the_link_or_falls_back_to_upload_time(db, linked, monkeypatch, unlink):
+    db.get(Match, linked.match_id).played_at = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    if unlink:
+        linked.link_status, linked.match_id = "unlinked", None
+    db.commit()
+    seen = {}
+    monkeypatch.setattr(remote, "_rank", lambda todo, played, created: seen.update(played=played, created=created) or todo)
+    remote._order(db, rc.plan(db))
+    if unlink:
+        assert seen["played"] == {} and set(seen["created"]) == {linked.id}
+    else:
+        assert set(seen["played"]) == {linked.id} and seen["created"] == {}
+
+
+def test_planning_is_throttled_while_nothing_can_be_sent(factory, db, linked, monkeypatch):
+    for n in range(1, linked.round_count + 1):
+        put_row(db, linked, n)
+    calls = []
+    real = rc.plan
+    monkeypatch.setattr(rc, "plan", lambda session, **kw: calls.append(1) or real(session, **kw))
+    state = remote.State()
+    remote.cycle(factory, FakeWorker(), state, now=0)
+    remote.cycle(factory, FakeWorker(), state, now=remote.CYCLE_S)
+    assert len(calls) == 1
+    remote.cycle(factory, FakeWorker(), state, now=remote.PLAN_IDLE_S + 1)
+    assert len(calls) == 2
+
+
+def test_rounds_that_can_never_be_sent_dont_defeat_the_throttle(factory, db, linked, monkeypatch):
+    monkeypatch.setattr(rc, "map_layer", lambda name: None)      # every round is no_map, and has no row
+    calls = []
+    real = rc.plan
+    monkeypatch.setattr(rc, "plan", lambda session, **kw: calls.append(1) or real(session, **kw))
+    state = remote.State()
+    for t in range(0, 100, remote.CYCLE_S):
+        remote.cycle(factory, FakeWorker(), state, now=t)
+    assert len(calls) == 1
+
+
+def test_exhausted_retries_dont_defeat_the_throttle(factory, db, linked):
+    state = remote.State()
+    for p in rc.plan(db):
+        for _ in range(remote.MAX_TRIES):
+            state.failed(remote.task_key(p.replay_id, p.round_number, p.fingerprint), 0)
+    worker = FakeWorker()
+    remote.cycle(factory, worker, state, now=1)
+    assert not worker.tasks and state.last_found is False
+
+
+def test_a_job_queued_through_a_long_parse_batch_is_still_collected(factory, db, linked):
+    phase = {"queued": True}
+    worker = FakeWorker(answer=lambda task: {"status": "queued"} if phase["queued"] else FakeWorker.ok(worker, task))
+    state = remote.State()
+    remote.cycle(factory, worker, state, now=0)
+    sent = len(worker.tasks)
+    t = 0
+    for _ in range(4):                               # four STALE_JOB_S windows queued on the worker
+        t += remote.STALE_JOB_S + 1
+        remote.cycle(factory, worker, state, now=t)
+    assert len(state.in_flight) == sent and not state.tries, "queued time never counts (D8)"
+    phase["queued"] = False
+    counts = remote.cycle(factory, worker, state, now=t + 1)
+    assert counts["stored"] == sent
+
+
+def test_a_job_running_past_the_limit_counts_as_a_failure(factory, db, linked):
+    worker = FakeWorker(answer=lambda task: {"status": "running"})
+    state = remote.State()
+    remote.cycle(factory, worker, state, now=0)
+    remote.cycle(factory, worker, state, now=1)                      # first seen running
+    counts = remote.cycle(factory, worker, state, now=2 + remote.STALE_JOB_S)
+    assert counts["timed_out"] == remote.IN_FLIGHT and all(c == 1 for c, _ in state.tries.values())
+
+
+def test_a_preempted_job_starts_its_running_clock_again(factory, db, linked):
+    phase = {"status": "running"}
+    worker = FakeWorker(answer=lambda task: {"status": phase["status"]})
+    state = remote.State()
+    remote.cycle(factory, worker, state, now=0)
+    remote.cycle(factory, worker, state, now=1)                       # seen running
+    phase["status"] = "queued"
+    remote.cycle(factory, worker, state, now=2)                       # preempted: back in the worker's queue
+    phase["status"] = "running"
+    counts = remote.cycle(factory, worker, state, now=3 + remote.STALE_JOB_S)
+    assert counts["timed_out"] == 0 and not state.tries
 
 
 @pytest.mark.parametrize("change, counted", [
     (lambda r: r.update(revision=cf.CONTROL_REVISION + 1), "dropped_revision"),
     (lambda r: r.update(geometry={**r["geometry"], "sight": "other"}), "dropped_geometry"),
+    # a result computed with a feature generation this deploy doesn't have (map features, M5)
+    (lambda r: r.update(geometry={**r["geometry"], "features": "0123456789abcdef"}), "dropped_geometry"),
 ])
 def test_a_result_from_another_deploy_is_dropped_and_asked_again(factory, db, linked, change, counted):
     def answer(task):
@@ -141,13 +249,6 @@ def test_a_forgotten_job_is_asked_again_and_a_busy_worker_stops_the_cycle(factor
     worker.busy_after = None
     counts = remote.cycle(factory, worker, state, now=1)
     assert counts["forgotten"] == 3 and counts["sent"] == remote.IN_FLIGHT
-
-
-def test_a_job_out_too_long_is_given_up_on(factory, db, linked):
-    worker, state = FakeWorker(answer=lambda task: None), remote.State()
-    remote.cycle(factory, worker, state, now=0)
-    counts = remote.cycle(factory, worker, state, now=remote.STALE_JOB_S + 1)
-    assert counts["timed_out"] == remote.IN_FLIGHT
 
 
 def test_pg_one_instance_dispatches_at_a_time(pg, condensed):
@@ -202,3 +303,24 @@ def test_the_client_maps_the_workers_answers():
             mp.setattr(remote.urllib.request, "urlopen", fail(code))
             with pytest.raises(error):
                 client.job("j1")
+
+
+def test_a_map_with_a_feature_generation_sends_it_and_keeps_only_results_computed_with_it(factory, db, linked, monkeypatch):
+    # map features (M5): no committed map has one, so this patches the index as a later build would write it
+    index, tags, maps = rc._assets()
+    patched = {name: {**row, "features_sha": "feat0000feat0000"} for name, row in index.items()}
+    monkeypatch.setattr(rc, "_assets", lambda: (patched, tags, maps))
+    worker, state = FakeWorker(), remote.State()
+    remote.cycle(factory, worker, state, now=0)
+    task = next(iter(worker.tasks.values()))
+    assert task["features"] == "feat0000feat0000" and rc.geometry_inputs(task["map"])["features"] == "feat0000feat0000"
+    assert remote.cycle(factory, worker, state, now=1)["stored"] == remote.IN_FLIGHT
+
+    def stale(task):                     # a worker still on the previous generation (no features)
+        job = FakeWorker.ok(worker2, task)
+        job["result"]["geometry"] = {k: v for k, v in job["result"]["geometry"].items() if k != "features"}
+        return job
+
+    worker2, state2 = FakeWorker(stale), remote.State()
+    remote.cycle(factory, worker2, state2, now=100)
+    assert remote.cycle(factory, worker2, state2, now=101)["dropped_geometry"] > 0

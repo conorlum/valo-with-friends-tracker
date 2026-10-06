@@ -39,6 +39,23 @@
   label { display: inline-flex; gap: 6px; align-items: center; }
   .note { font-size: 13px; color: var(--muted); }
   .note code { color: var(--text); }
+  /* map features (scripts/control_tagger_features.js) */
+  :root { --feat: #4cc9f0; --featsel: #ffffff; --trig: #f72585; --route: #b5e48c; }
+  .stage { overflow: hidden; position: sticky; top: 8px; }   /* the map stays in view while the panel scrolls */
+  #zoom { position: absolute; inset: 0; transform-origin: 0 0; }
+  #feat { pointer-events: none; }
+  .stage.features #feat { pointer-events: auto; cursor: crosshair; }
+  .stage.features #overlay { pointer-events: none; }
+  .feat-list { max-height: 220px; overflow: auto; display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+  .feat-list button { text-align: left; }
+  .feat-list button.sel { border-color: var(--featsel); box-shadow: 0 0 0 1px var(--featsel) inset; }
+  .props label { display: flex; justify-content: space-between; gap: 8px; margin: 4px 0; }
+  .props select, .props input[type=number] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font: inherit; max-width: 60%; }
+  .props fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 8px 0; padding: 6px 8px; }
+  .props legend { color: var(--muted); font-size: 12px; }
+  .issue-error { color: var(--critical); } .issue-warn { color: var(--seeover); }
+  .saved-ok { color: var(--good); } .saved-dirty { color: var(--seeover); } .saved-error { color: var(--critical); }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; max-width: 560px; }
 </style>
 </head>
 <body>
@@ -61,10 +78,14 @@
   <input type="file" id="importFile" accept="application/json" hidden>
 </header>
 <main>
-  <div class="stage">
-    <canvas id="base" width="1024" height="1024"></canvas>
-    <canvas id="tint" width="1024" height="1024"></canvas>
-    <canvas id="overlay" width="1024" height="1024" aria-label="Map: click a shape to select it, or drag to paint"></canvas>
+  <div class="stage" id="stage">
+    <div id="zoom">
+      <canvas id="base" width="1024" height="1024"></canvas>
+      <canvas id="tint" width="1024" height="1024"></canvas>
+      <canvas id="overlay" width="1024" height="1024" aria-label="Map: click a shape to select it, or drag to paint"></canvas>
+      <canvas id="feat" width="1024" height="1024" aria-label="Map features: draw, select and link features"></canvas>
+    </div>
+    <canvas id="featLabels" width="1024" height="1024" style="pointer-events:none" aria-hidden="true"></canvas>
   </div>
   <aside>
     <div class="card">
@@ -79,6 +100,7 @@
         <button data-mode="barrier_paint"><span class="sw" style="background:var(--barrier)"></span>Barrier <kbd>B</kbd></button>
         <button data-mode="chokes"><span class="sw" style="background:var(--choke)"></span>Chokes <kbd>K</kbd></button>
         <button data-mode="choke_paint"><span class="sw" style="background:var(--chokenew)"></span>Paint new choke <kbd>A</kbd></button>
+        <button data-mode="features"><span class="sw" style="background:var(--feat)"></span>Map features <kbd>F</kbd></button>
       </div>
       <p style="margin:8px 0 0"><label>Brush <input type="range" id="brush" min="3" max="60" value="14"> <span id="brushPx">14</span> px</label></p>
       <p class="note">Erase clears the paint kind you painted last (<span id="eraseKind">see-across</span>).
@@ -88,6 +110,92 @@
         release to draw one straight, thin line right across each gap, touching the walls at both ends; when
         they drop, each team holds its side of them. Sight and walking are unchanged.</p>
     </div>
+    <div class="card" id="featCard" hidden>
+      <h2>Map features <span id="featSaved" class="saved-ok" style="float:right;text-transform:none">saved</span></h2>
+      <div class="grid" id="featPalette">
+        <button data-preset="trigger" title="a switch, shoot target or proximity area, linked to the features it operates"><span class="sw" style="background:var(--trig)"></span>Switch/trigger</button>
+        <button data-preset="breakable"><span class="sw" style="background:var(--feat)"></span>Breakable</button>
+        <button data-preset="zipline"><span class="sw" style="background:var(--route)"></span>Zipline</button>
+        <button data-preset="vertical_rope"><span class="sw" style="background:var(--route)"></span>Vertical rope</button>
+        <button data-preset="drop_door">Drop-door</button>
+        <button data-preset="switch_door">Switch door</button>
+        <button data-preset="proximity_door">Proximity door</button>
+        <button data-preset="rotating_door">Rotating door</button>
+        <button data-preset="teleporter">Teleporter</button>
+        <button data-preset="custom">Custom</button>
+      </div>
+      <div class="row"><input type="text" id="featNewName" aria-label="New feature name" placeholder="name, e.g. Mid drop-door"></div>
+      <div class="row" id="featTools" role="toolbar" aria-label="Feature drawing tools">
+        <button data-ftool="select">Select <kbd>V</kbd></button>
+        <button data-ftool="point">Point <kbd>.</kbd></button>
+        <button data-ftool="line">Line <kbd>L</kbd></button>
+        <button data-ftool="polygon">Polygon <kbd>G</kbd></button>
+        <button data-ftool="brush">Brush <kbd>R</kbd></button>
+        <button data-ftool="erase">Erase <kbd>X</kbd></button>
+        <button data-ftool="link" title="click a feature to link the selected trigger to it">Link <kbd>K</kbd></button>
+      </div>
+      <div class="row">
+        <button id="featUndo">Undo <kbd>Ctrl Z</kbd></button>
+        <button id="featRedo">Redo <kbd>Ctrl Y</kbd></button>
+        <button id="zoomIn" title="zoom in (mouse wheel)">+</button>
+        <button id="zoomOut">−</button>
+        <button id="zoomReset">Fit</button>
+        <label title="tint what the features' shown states change: yellow = no longer walkable, red = sight blocked"><input type="checkbox" id="featComposed"> show what blocks</label>
+      </div>
+      <div class="row" id="featLayers" aria-label="Feature layers">
+        <label><input type="checkbox" data-layer="features" checked> features</label>
+        <label><input type="checkbox" data-layer="sight" checked> sight blockers</label>
+        <label><input type="checkbox" data-layer="triggers" checked> triggers</label>
+        <label><input type="checkbox" data-layer="routes" checked> routes</label>
+        <label><input type="checkbox" data-layer="base" checked> base corrections</label>
+        <label title="the engine's 128 x 128 cells (8 px): a door must close whole cells, diagonals included"><input type="checkbox" data-layer="grid"> engine grid</label>
+      </div>
+      <p class="note" style="margin:6px 0 0">Route and sight probes are not available in the page: numbers come only from
+        the engine's own (Python) consumer, so the page shows geometry and states, never its own pathing.</p>
+      <div class="feat-list" id="featList" aria-label="Features on this map"></div>
+      <details class="note" id="featHelp" style="margin-top:8px"><summary>How to annotate a map</summary>
+        <ol style="padding-left:18px;margin:6px 0">
+          <li>Pick a preset (type a name first if you like). A door or breakable starts the <b>Polygon</b> tool:
+            click its corners on the map, then press <kbd>Enter</kbd> (or double-click) to close it.</li>
+          <li>Each state has its own footprint: choose <b>Drawing on state</b> in the panel, then draw. Tick
+            <b>Blocks movement</b> / <b>Blocks vision</b> per state. <b>Draw sight edge</b> adds a sight blocker
+            with height bounds (leave them unknown if you don't know them).</li>
+          <li><b>Switch/trigger</b>: click where the switch is, then <b>Link</b> (<kbd>K</kbd>) and click each door it
+            operates. One trigger can operate several doors; nothing is linked by distance.</li>
+          <li><b>Zipline / Vertical rope / Teleporter</b>: click landing A, then landing B (a rope's two landings can
+            be the same spot). Give each landing its floor; add floor labels in the list (<b>Add floor label</b>).</li>
+          <li>Anything you don't know stays <b>unknown</b>: times, heights, floors, what a press mid-motion does.
+            The checks list what is still open; that is fine to save and export.</li>
+          <li>The <b>Sandbox</b> in the panel plays switches, breaks and players walking in and out, through the same
+            rules the engine will use. <b>Reset round</b> puts everything back. It is a preview, not replay evidence.</li>
+          <li><b>Export reviewed annotations</b> downloads the whole <code>tags.json</code> (every map kept). Edits
+            autosave in this browser; <b>Download draft</b> is a backup. Copying the export into the repo changes
+            no control fingerprint: features stay off until an engine release enables them.</li>
+        </ol>
+        Keys in this mode: <kbd>V</kbd> select, <kbd>.</kbd> point, <kbd>L</kbd> line, <kbd>G</kbd> polygon,
+        <kbd>R</kbd> brush, <kbd>X</kbd> erase, <kbd>K</kbd> link, <kbd>Del</kbd> delete, <kbd>Ctrl Z</kbd>/<kbd>Ctrl Y</kbd>,
+        wheel or <kbd>+</kbd>/<kbd>-</kbd> to zoom, middle-drag or <kbd>Space</kbd>-drag to pan, <kbd>Esc</kbd> leaves.
+      </details>
+    </div>
+    <div class="card props" id="featProps" hidden></div>
+    <div class="card" id="featCheck" hidden>
+      <h2>Checklist and checks</h2>
+      <div id="featChecklist"></div>
+      <div id="featIssues" class="note"></div>
+      <div class="row">
+        <button id="featExport" title="the whole tags.json, every map, with this page's feature annotations">Export reviewed annotations</button>
+        <button id="featDownload" title="a copy of the current draft, valid or not">Download draft</button>
+      </div>
+      <div id="featDrafts" class="note"></div>
+      <p class="note">Annotations are definitions only: they never change the engine, a fingerprint or a stored round.
+        Unknown facts stay <b>unresolved</b>; the engine compiles only resolved, supported, enabled bundles.</p>
+    </div>
+    <dialog id="featImport"><div id="featImportBody"></div>
+      <div class="row">
+        <button id="featImportReplace">Replace</button>
+        <button id="featImportCopy">Download a copy of the file</button>
+        <button id="featImportCancel">Cancel</button>
+      </div></dialog>
     <div class="card">
       <h2>Kill-line test (bar 2%)</h2>
       <div id="stat" class="big">–</div>
@@ -264,6 +372,7 @@
       base.clearRect(0, 0, PX, PX); base.drawImage(img, 0, 0, PX, PX);
     });
     recompute();
+    if (window.taggerFeatures) window.taggerFeatures.onMap(name);
   }
 
   function recompute() {
@@ -481,7 +590,8 @@
 
   function setMode(mode) {
     state.mode = mode;
-    if (mode !== "select" && mode !== "erase" && !CHOKE_MODES[mode]) { state.lastPaint = mode; $("eraseKind").textContent = PAINT_NAMES[mode]; }
+    if (mode !== "select" && mode !== "erase" && !CHOKE_MODES[mode] && mode !== "features") { state.lastPaint = mode; $("eraseKind").textContent = PAINT_NAMES[mode]; }
+    if (window.taggerFeatures) window.taggerFeatures.onMode(mode);
     Array.prototype.forEach.call(document.querySelectorAll("[data-mode]"), function (b) {
       b.classList.toggle("active", b.getAttribute("data-mode") === mode);
     });
@@ -519,7 +629,7 @@
 
   var stroke = null, chokeStroke = null;
   $("overlay").addEventListener("pointerdown", function (e) {
-    if (state.mode === "select" || state.mode === "chokes") return;
+    if (state.mode === "select" || state.mode === "chokes" || state.mode === "features") return;
     if (state.mode === "choke_paint") {
       chokeStroke = toMap(e); chokeDab(chokeStroke[0], chokeStroke[1]); paintOverlay();
       $("overlay").setPointerCapture(e.pointerId);
@@ -599,11 +709,12 @@
   }
   $("reviewed").addEventListener("change", function () { beforeChange(); mapEdits().cover_reviewed = this.checked; changed(); });
   document.addEventListener("keydown", function (e) {
-    if (e.target && /^(INPUT|SELECT)$/.test(e.target.tagName) && e.target.type !== "checkbox") return;
+    if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== "checkbox") return;
+    if (state.mode === "features") { if (e.key === "Escape") setMode("select"); return; }   // the features script has the keys
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); doUndo(); return; }
     var keys = { "1": "cover", "2": "seeover", "3": "walkable", "4": "glyph", "5": "seeacross", "0": "" };
     var modes = { s: "select", e: "erase", p: "see_across_paint", c: "cover_paint", w: "cant_walk_paint", u: "uncertain_paint", b: "barrier_paint",
-                  k: "chokes", a: "choke_paint" };
+                  k: "chokes", a: "choke_paint", f: "features" };
     var arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
     if (CHOKE_MODES[state.mode] && state.choke && arrows[e.key]) { e.preventDefault(); chokeMove(arrows[e.key][0], arrows[e.key][1]); return; }
     if (CHOKE_MODES[state.mode] && state.choke && e.key === "Delete") { e.preventDefault(); chokeDelete(); return; }
@@ -632,7 +743,9 @@
 
   $("export").addEventListener("click", function () {
     Object.keys(edits).forEach(ensureMap);
-    var out = T.exportTags(DATA.tags, maps, edits);
+    // with map features: the canonical catalogue (the imported one, if any) and the features, if they validate
+    var out = window.taggerFeatures ? window.taggerFeatures.exportAll(maps, edits) : T.exportTags(DATA.tags, maps, edits);
+    if (!out) return;
     var a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1) + "\n"], { type: "application/json" }));
     a.download = "tags.json"; a.click();
@@ -641,7 +754,10 @@
   $("importFile").addEventListener("change", function () {
     var f = this.files[0];
     if (!f) return;
+    this.value = "";
     f.text().then(function (text) {
+      // with map features: a transactional import with a review of what it changes (features script)
+      if (window.taggerFeatures) { window.taggerFeatures.importText(text, f.name); return; }
       var data = JSON.parse(text);
       Object.keys(data.maps || {}).forEach(function (name) {
         if (!DATA.maps[name]) return;
@@ -678,8 +794,12 @@
   setMode("select");
   selectMap(first);
   window.tagger = { state: state, edits: edits, maps: maps, setMode: setMode, selectMap: selectMap, dab: dab, changed: changed,
-                    chokeState: chokeState, chokeMove: chokeMove, chokeDab: chokeDab, chokeMake: chokeMake };
+                    chokeState: chokeState, chokeMove: chokeMove, chokeDab: chokeDab, chokeMake: chokeMake,
+                    DATA: DATA, ensureMap: ensureMap, save: save, recompute: recompute, loaded: loaded };
 })();
+</script>
+<script>
+/*FEATURES_UI*/
 </script>
 </body>
 </html>

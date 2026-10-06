@@ -7,6 +7,7 @@ MatchHTMLJsons/
 TrackerHTMLJsons/
 
 .worktrees/
+.claude/worktrees/
 
 # Valorant replays and parser exports (this repo is public). Test fixtures are
 # synthesised and allowlisted by scripts/make_replay_fixture.py.

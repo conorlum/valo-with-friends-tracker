@@ -17,9 +17,10 @@ Standard library and the DB only: the engine (app/control) is never imported her
 from __future__ import annotations
 
 import json
+import threading
+import time
 from collections import defaultdict
 from dataclasses import dataclass
-from functools import lru_cache
 
 from sqlalchemy import func
 from sqlalchemy.orm import load_only
@@ -37,12 +38,82 @@ MAPS_JSON = fmt.STATIC_DIR / "data" / "maps.json"
 MIN_CONDENSE_REVISION = 10
 
 
-@lru_cache(maxsize=1)
+def _asset_paths() -> tuple:
+    return CONTROL_DIR / "index.json", CONTROL_DIR / "tags.json", MAPS_JSON
+
+
+def _stamp() -> tuple:
+    """The three asset files' (file id, mtime, size): a new asset generation (a rebuilt index.json, an edited
+    tags.json, either replaced atomically) changes it, so a long-running process rereads them instead of
+    planning against stale inputs."""
+    out = []
+    for path in _asset_paths():
+        try:
+            st = path.stat()
+            out.append((st.st_ino, st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
+_ASSET_READS = 4            # attempts at a consistent snapshot before falling back to the last one
+_ASSET_RETRY_S = 0.05
+_asset_lock = threading.Lock()
+_asset_cache: dict = {"stamp": None, "value": None, "path": None}
+
+
+def _read_snapshot(stamp: tuple) -> tuple[dict, dict, dict] | None:
+    """The three files parsed together, or None when one changed while they were read (the stamp after
+    isn't `stamp`) or one isn't whole JSON yet (a writer mid-write). Raises OSError for a missing file."""
+    raw = [path.read_bytes() for path in _asset_paths()]
+    if _stamp() != stamp:
+        return None
+    try:
+        index, tags, maps = (json.loads(b.decode("utf-8")) for b in raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not all(isinstance(v, dict) for v in (index, tags, maps)):
+        return None
+    return index.get("maps", {}), tags.get("maps", {}), maps
+
+
 def _assets() -> tuple[dict, dict, dict]:
-    """(index.json maps, tags.json maps, maps.json): what the engine's geometry is built from."""
-    index = json.loads((CONTROL_DIR / "index.json").read_text(encoding="utf-8")).get("maps", {})
-    tags = json.loads((CONTROL_DIR / "tags.json").read_text(encoding="utf-8")).get("maps", {})
-    return index, tags, json.loads(MAPS_JSON.read_text(encoding="utf-8"))
+    """(index.json maps, tags.json maps, maps.json): what the engine's geometry is built from, as one
+    consistent snapshot. Cached while the files are unchanged. The files are read together and kept only when
+    none changed meanwhile, so an index.json and a tags.json from different generations never mix; a file
+    caught mid-write, or one that keeps changing, leaves the last valid snapshot in use (and is retried on the
+    next call). With no valid snapshot yet, the failure is raised."""
+    with _asset_lock:
+        paths = _asset_paths()
+        if _asset_cache["path"] != paths:          # the asset folder moved (tests): nothing cached applies
+            _asset_cache.update(stamp=None, value=None, path=paths)
+        last_error: Exception | None = None
+        for attempt in range(_ASSET_READS):
+            stamp = _stamp()
+            if stamp == _asset_cache["stamp"]:
+                return _asset_cache["value"]
+            try:
+                snapshot = _read_snapshot(stamp)
+            except OSError as exc:
+                snapshot, last_error = None, exc
+            if snapshot is not None:
+                _asset_cache.update(stamp=stamp, value=snapshot)
+                return snapshot
+            if attempt + 1 < _ASSET_READS:
+                time.sleep(_ASSET_RETRY_S)
+        if _asset_cache["value"] is not None:
+            return _asset_cache["value"]       # transient: keep planning against the last consistent inputs
+        if last_error is not None:
+            raise last_error
+        raise ValueError(f"control assets in {CONTROL_DIR} are changing or not valid JSON; no snapshot to use")
+
+
+def _clear_assets() -> None:
+    with _asset_lock:
+        _asset_cache.update(stamp=None, value=None, path=None)
+
+
+_assets.cache_clear = _clear_assets
 
 
 def map_layer(map_name: str) -> dict | None:
@@ -57,7 +128,12 @@ def geometry_inputs(map_name: str) -> dict | None:
     """Everything app/control/geometry.py's `load_geometry` reads for a map: the built masks (by
     index.json's hashes; `barrier` is None for a map with no barrier paint), the specials from
     tags.json, the scale from maps.json, and the map's heights by their digest (`height`, only on a
-    map that has them, so a flat map's inputs and its rounds' fingerprints are what they were)."""
+    map that has them, so a flat map's inputs and its rounds' fingerprints are what they were).
+
+    Map features (docs/superpowers/specs/2026-10-04-map-features-contract.md, section 8): `features`, the
+    consumed-input manifest digest of the map's active feature generation (index.json `features_sha`), only on
+    a map that has enabled features. No map has any in this build, so every input is what it was
+    (tests/fixtures/control/map_features/legacy_inputs.json)."""
     index, tags, maps = _assets()
     entry = index.get(map_name)
     if entry is None:
@@ -67,6 +143,8 @@ def geometry_inputs(map_name: str) -> dict | None:
               "scale": (maps.get(map_name) or {}).get("xMultiplier")}
     if entry.get("height_sha"):
         inputs["height"] = entry["height_sha"]
+    if entry.get("features_sha"):
+        inputs["features"] = entry["features_sha"]
     return inputs
 
 
