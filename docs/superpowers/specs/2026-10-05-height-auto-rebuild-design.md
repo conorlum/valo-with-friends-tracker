@@ -53,7 +53,7 @@ New table `control_heights` (migration 0018):
 | `report` | the build's report (JSON), including both checks |
 | `match_uuids` | the matches it was built from (JSON list) |
 | `rules` | `HEIGHT_VERSION` and the constants' hash, so a rule change is visible |
-| `status` | `active`, `rejected`, `superseded` or `held` |
+| `status` | `active`, `rejected` or `superseded` |
 | `built_at` | when |
 
 One `active` row per map at most.
@@ -107,7 +107,7 @@ When a build comes back:
 | The map is at the bar and both checks pass | stored `active`; the previous asset becomes `superseded`; that map's rounds go stale and the idle queue recomputes them |
 | Below the bar, or a check fails | stored `rejected` with its report; the previous asset, if any, stays active; it is built again only after 5 more matches, so a failing map can't loop |
 | The build itself fails | logged, retried with the dispatcher's existing limits |
-| The map has tagged map features enabled | stored `held`: see 5 |
+| The map has tagged map features enabled | each feature is re-read against the new heights; one that no longer fits is flagged and the map still goes live: see 5 |
 
 The bar and the two checks are the ones a local build uses today (the companion spec, section 6): 60%
 of walkable cells supported, no large unresolved area beside a two-floor cell, at most 2% of real kill
@@ -145,7 +145,7 @@ round changes because of it.
 ### 6. Seeing what it did
 
 The height viewer gets a third source, `--db`, beside previews and committed assets: the active asset
-of each map, and with `--all` the rejected and held ones too. It is read-only and run through
+of each map, and with `--all` the rejected and superseded ones too. It is read-only and run through
 `with_friends_db.py --read-only`, like every other look at the live database.
 
 The replay worker's `/health` says whether a rebuild is queued or running and for which map.
