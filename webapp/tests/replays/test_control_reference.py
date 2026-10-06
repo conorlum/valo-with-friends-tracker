@@ -3,7 +3,10 @@
 of control_toys.reference_rounds() against the digests recorded before the per-floor work, with only the
 revision in the header normalised. Real rounds are compared locally by scripts/control_reference.py.
 Re-recorded 2026-10-02 for CONTROL_REVISION 5 (the timing-gaps locating events). Re-recorded 2026-10-04 for
-CONTROL_REVISION 6 (D5: contested needs a live claim; an enemy's live view ends remembered ground)."""
+CONTROL_REVISION 6 (D5: contested needs a live claim; an enemy's live view ends remembered ground).
+Re-recorded 2026-10-05 for CONTROL_REVISION 7 (the utility-review run, D8): every round's data digest moved with
+the header's new `knowledge_events` list and nothing else, except `midwall`, whose reveal now locates the
+revealed enemy (its summary moved too). Old and new values: the run's W22-digests.json and its revision card."""
 
 import json
 import sys
