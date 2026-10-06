@@ -2087,6 +2087,7 @@ class Unknown:
                     area = centre = None
                     self.located[side][slot] = t
                     self.events[side].append((slot, t, "seen"))      # after the tick's other events (R8)
+                    self.reasons[side].append((t, slot, "locate", "seen", ""))
                 if h is not None:
                     if t < reached[h.cell]:
                         sources[h.cell] = t
@@ -2561,6 +2562,9 @@ class RoundControl:
     knew_sightings: dict | None = None  # side group -> {enemy slot: [[t0, t1, u, v], ...]}
     unknown: dict | None = None         # side group -> ticks x walkable cells, bool: its unknown
     analytic: np.ndarray | None = None  # the analytical instants (W09): `ticks` plus each utility Info's own time
+    # side group -> [(t, enemy slot, operation, reason, source)]: why each enemy's unknown changed, at the change's own
+    # time, every analytical instant's display reasons in order (W21). Never the gap detector's input.
+    reasons: dict | None = None
 
 
 def _section_bounds(rnd: RoundInputs) -> list[tuple[str, float, float]]:
@@ -2664,6 +2668,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     prev_state = None
     runner = TickRunner(geo, chokes.node_chokes(geo, choke_assets.load(geo.name)))
     unknown_masks = {side: np.zeros((n_ticks, n_walk), bool) for side in ("A", "B")}
+    reasons: dict[str, list] = {"A": [], "B": []}
     know ={side: Knowledge(rnd, side) for side in ("A", "B")} if knowledge else {}
     knew_states = {side: np.zeros((n_ticks, n_walk), np.uint8) for side in know}
 
@@ -2678,6 +2683,8 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                 on_tick(tick, runner.unknown)
             else:
                 observer(observe.record(tick, runner.unknown), runner.unknown)
+        for side in ("A", "B"):
+            reasons[side] += runner.unknown.reasons[side]
         if n is None:
             timings["analytic_only_ticks"] += 1
         if tick.fallbacks.get("unresolved_rays"):
@@ -2766,7 +2773,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     return RoundControl(blob.get("round"), blob.get("map", geo.name), times, weights, walk_cells, states, control,
                         control_masks, coverage_masks, sections, players, redundant, dict(rnd.group_side), cell_m2,
                         missing, {**timings, "branches": dict(branches)}, cf_check,
-                        knew_states=knew_states or None, unknown=unknown_masks, analytic=analytic,
+                        knew_states=knew_states or None, unknown=unknown_masks, analytic=analytic, reasons=reasons,
                         knew_sightings={side: {s: runs for s, runs in kn.sightings.items()}
                                         for side, kn in know.items()} or None)
 

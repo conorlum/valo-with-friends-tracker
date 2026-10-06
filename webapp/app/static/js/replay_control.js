@@ -478,8 +478,41 @@
       "map's geometry). Queued for recompute.";
   }
 
+  // Why an enemy's unknown changed (the header's optional `knowledge_events`: {A: [[t, slot, reason], ...], B: ...},
+  // t in round seconds at the event's own time). The words the Control panel shows for each reason.
+  var REASON_TEXT = {
+    seen: "seen", kill: "got a kill", plant: "planted", damage: "dealt gun damage", gunfire: "gunfire heard",
+    footsteps: "footsteps heard", revived: "revived", neural_theft: "revealed by Neural Theft",
+    haunt: "Haunt saw the area", recon: "Recon Bolt saw the area", drone_dart: "tagged by a drone dart",
+    camera_dart: "tagged by a camera dart", tejo_drone: "revealed by a drone", trip: "set off a trip",
+    reveal: "revealed", knife_zero: "knife hit nobody: not in its radius", knife_all: "knife hit everyone: inside its radius",
+    skye_no_cue: "Skye's flash hit nobody: not in its sight", leer_seen: "Leer seen: cast from near the eye",
+    omen_channel: "Omen began his ult (can't move)", omen_unheard: "Omen's ult unheard: could be anywhere unheard",
+    waylay_recall: "Waylay's recall heard: at her return point", yoru_beacon: "Yoru's beacon heard: may be there too",
+    yoru_drift_unheard: "Yoru left his ult unheard: could be anywhere unheard", died: "died",
+    hypothesis_cleared: "second position checked: not there"
+  };
+
+  // The reasons at or before t, newest first: those in the last `windowS` seconds, at most `limit`. Computed from t
+  // alone, so seeking backwards shows what was known then, never a later event. `status` is "unavailable" for a row
+  // stored before reasons were recorded (nothing is guessed), else "ok".
+  function reasonsAt(header, t, windowS, limit) {
+    var events = header && header.knowledge_events;
+    if (!events) return { status: "unavailable", rows: [] };
+    var rows = [];
+    ["A", "B"].forEach(function (side) {
+      (events[side] || []).forEach(function (e) {
+        if (e[0] <= t + 1e-9 && e[0] > t - windowS) {
+          rows.push({ side: side, t: e[0], slot: e[1], reason: e[2], text: REASON_TEXT[e[2]] || String(e[2]).replace(/_/g, " ") });
+        }
+      });
+    });
+    rows.sort(function (a, b) { return b.t - a.t || a.side.localeCompare(b.side) || a.slot - b.slot; });
+    return { status: "ok", rows: rows.slice(0, limit) };
+  }
+
   var api = {
-    revisionNote: revisionNote,
+    revisionNote: revisionNote, reasonsAt: reasonsAt, REASON_TEXT: REASON_TEXT,
     STATE_NAMES: STATE_NAMES, GRID: GRID, SLOTS: SLOTS, readVarint: readVarint, parse: parse, walkCells: walkCells,
     tickAt: tickAt, Cursor: Cursor, ControlCache: ControlCache, lostAt: lostAt, hexRgb: hexRgb, paintStates: paintStates, paintHighlight: paintHighlight,
     groupTeams: groupTeams, base64Bytes: base64Bytes, paintHeatmap: paintHeatmap, cellIndex: cellIndex,

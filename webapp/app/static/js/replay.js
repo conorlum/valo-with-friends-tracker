@@ -949,8 +949,18 @@
       tip: q("[data-replay-tip]"), util: q("[data-replay-util]"), hud: q("[data-replay-hud]"),
       nextKill: q("[data-replay-nextkill]"), prevKill: q("[data-replay-prevkill]"),
       controlStatus: q("[data-replay-control-status]"), controlLegend: q("[data-replay-control-legend]"),
-      controlTable: q("[data-replay-control-table]")
+      controlTable: q("[data-replay-control-table]"), controlReasons: q("[data-replay-control-reasons]")
     };
+    if (this.ui.controlReasons) {
+      var toReason = function (e) {
+        var row = e.target.closest && e.target.closest("[data-reason-t]");
+        if (!row || (e.type === "keydown" && e.key !== "Enter")) return;
+        if (e.type === "keydown") e.preventDefault();
+        self.seek(Number(row.getAttribute("data-reason-t")));     // to the event's own time: never past it
+      };
+      this.ui.controlReasons.addEventListener("click", toReason);
+      this.ui.controlReasons.addEventListener("keydown", toReason);
+    }
     SPEEDS.forEach(function (s) {
       var option = document.createElement("option");
       option.value = String(s);
@@ -1325,6 +1335,7 @@
     this.ui.play.setAttribute("aria-pressed", this.playing ? "true" : "false");
     var phase = t > blob.t_decided ? " · round decided" : "";
     this.ui.clock.textContent = "Round " + blob.round + " · " + t.toFixed(1) + " s" + phase;
+    this.renderReasons();
     if (this.ui.feed) {
       Array.prototype.forEach.call(this.root.querySelectorAll("[data-kill-t]"), function (row) {
         var kt = Number(row.getAttribute("data-kill-t"));
@@ -1937,6 +1948,7 @@
           "'s control (filled) and coverage (outlined): click them again or press Esc to clear.";
       }
       self.setControlStatus(text);
+      self.renderReasons();
       self.draw();
     });
     if (next !== undefined && this.layers.control) this.controlCache.get(next);
@@ -2403,6 +2415,33 @@
         return '<table class="replay-board-team replay-control-team team-' + team.slice(-1) + '">' + head +
           "<tbody>" + body + foot + "</tbody></table>";
       }).join("");
+  };
+
+  // The Control panel's "why the unknown changed" list (W21): the stored reasons at or before now, newest first.
+  // Rebuilt only when what it shows changes (the same rows), so playing doesn't touch the DOM every frame.
+  var REASON_WINDOW_S = 10, REASON_LIMIT = 12;
+
+  ReplayViewer.prototype.renderReasons = function () {
+    var list = this.ui.controlReasons, self = this;
+    if (!list || !this.controlCache || !this.current) return;
+    var value = this.controlCache.ready(this.number);
+    var got = value && value.status === "ok"
+      ? controlApi().reasonsAt(value.parsed.header, this.t, REASON_WINDOW_S, REASON_LIMIT) : null;
+    var key = this.number + "|" + (got ? got.status + "|" + got.rows.map(function (r) { return r.side + r.t + ":" + r.slot + r.reason; }).join(",") : "none");
+    if (key === this.reasonsKey) return;
+    this.reasonsKey = key;
+    if (!got) { list.innerHTML = '<li class="replay-feed-empty">Turn Map control on to load this round\'s reasons.</li>'; return; }
+    if (got.status === "unavailable") {
+      list.innerHTML = '<li class="replay-feed-empty">Not recorded for this round (it was computed before reasons were stored).</li>';
+      return;
+    }
+    if (!got.rows.length) { list.innerHTML = '<li class="replay-feed-empty">Nothing learnt in the last 10 seconds.</li>'; return; }
+    list.innerHTML = got.rows.map(function (r) {
+      return '<li class="replay-feed-row" data-reason-t="' + r.t + '" tabindex="0">' +
+        '<span class="replay-feed-time">' + r.t.toFixed(1) + "s</span> " +
+        escapeHtml(self.groupName(r.side)) + " on " + escapeHtml(self.nameOf(r.slot).split("#")[0]) + ": " +
+        escapeHtml(r.text) + "</li>";
+    }).join("");
   };
 
   // Each alive slot's control (m²) at the current tick, from the round's stored header, or null.
