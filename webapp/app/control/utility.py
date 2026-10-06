@@ -27,10 +27,17 @@ within a phase, the order the readers gave."""
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
+
+_FIGURES_FILE = json.loads((Path(__file__).with_name("utility.json")).read_text(encoding="utf-8"))
+# Only the numbers (utility.json's `sources` and notes are not consumed): the semantic view W22 fingerprints.
+FIGURES = {key: ({k: float(v) for k, v in value.items()} if isinstance(value, dict) else float(value))
+           for key, value in _FIGURES_FILE.items() if key not in ("sources", "PROVISIONAL")}
 
 KINDS = ("resume", "pause", "locate", "restrict", "exclude", "hypothesis", "broaden")
 ORDER = {"resume": 0, "pause": 1, "locate": 2, "restrict": 2, "exclude": 2, "hypothesis": 2, "broaden": 2}
@@ -100,7 +107,83 @@ def affects(capability: str, spans: dict, slot: int, t: float) -> bool:
     return not any(a <= t < b for a, b in spans.get(slot, ()))
 
 
-READERS: list = []
+# ---------------------------------------------------------------- reveals and their sources' sight (W11)
+
+# A reveal row's source -> what the reasons list calls it, and what it needs of the revealed enemy. A trip going
+# off on someone is its trigger (it still works on Veto); everything else is a reveal.
+REVEAL_REASONS = {"X_InterrogateHat": "neural_theft", "4_TripWire": "trip", "Q_SonarPing": "recon",
+                  "E_LoSReveal_Source_Reactivate": "haunt", "E_Drone_RevealDart": "drone_dart",
+                  "RemovableObject_GumshoeTrackingDart": "camera_dart", "4_SonarPing": "tejo_drone"}
+# An object that looks round itself for a moment: (code_name) -> its range figure. It clears what it sees.
+PULSE_SOURCES = {"BountyHunter_E_LoSReveal_Source_Reactivate": "haunt", "Hunter_Q_SonarPing": "recon"}
+CONTINUOUS_S = 0.25        # a reveal longer than this also locates at its end (where they were last shown)
+
+
+def read_reveals(rnd) -> list[Info]:
+    """A revealed enemy is located where they stand, at the reveal's start and, for one that lasted, its end: each
+    Neural Theft ping, a recon pulse, a Haunt, a dart's tag, a trip going off. A reveal on a teammate, or one with no
+    position for the enemy then, locates nothing (counted)."""
+    out = []
+    for e in rnd.blob.get("util") or []:
+        if e.get("k") != "reveal" or e.get("by") is None or e.get("target") is None:
+            continue
+        by, target = int(e["by"]), int(e["target"])
+        side = rnd.team.get(by)
+        if side is None or rnd.team.get(target) in (None, side):
+            continue
+        reason = REVEAL_REASONS.get(str(e.get("name")), "reveal")
+        needs = "trigger" if reason == "trip" else "reveal"
+        times = [float(e["t"])]
+        if e.get("t1") is not None and float(e["t1"]) - float(e["t"]) > CONTINUOUS_S:
+            times.append(float(e["t1"]))
+        for t in times:
+            if not rnd.alive(target, t):
+                continue
+            p = rnd.pos(target, t)
+            if p is None:
+                rnd.miss("reveal without a position (locates nothing)", target)
+                continue
+            out.append(Info(t, side, target, "locate", reason, x=p[0], y=p[1], z=rnd.height(target, t),
+                            source=f"{e.get('code')}_{e.get('name')}@{e['t']}", detail={"needs": needs}))
+    return out
+
+
+def read_pulses(rnd) -> list[Info]:
+    """A Haunt or recon pulse clears what it sees: for each living enemy of its owner, the ground in its sight and
+    range is excluded at the pulse (the ones it revealed are located by `read_reveals`). Its sight is cast from the
+    object's own place and height, against the map and the smokes up then. Needs: reveal (Veto keeps his region)."""
+    from app.control import engine as ce          # the engine imports this module first
+
+    geo, out = rnd.geo, []
+    for e in rnd.blob.get("util") or []:
+        figure = PULSE_SOURCES.get(f"{e.get('code')}_{e.get('name')}")
+        if e.get("k") != "ability" or figure is None or e.get("by") is None:
+            continue
+        side, t = rnd.team.get(int(e["by"])), float(e["t"])
+        if side is None:
+            continue
+        x, y = e["u"] * ce.PX / 10000, e["v"] * ce.PX / 10000
+        z = rnd._device_z(e.get("z"))
+        own = eye = None
+        if geo.heights is not None:
+            own = geo.node_at(geo.cell_of_px(x, y), None if z is None else z + ce.hc.STAND_M)
+            eye = None if z is None or np.isnan(geo.node_z[own]) else z + ce.hc.DEVICE_EYE_M
+        seen = ce.cast(geo, x, y, np.arange(0, 360, ce.RAY_STEP_DEG), rnd.smokes_at(ce.snap(t)), eye_z=eye, own=own)
+        r = FIGURES["reveal_range_m"][figure] / geo.m_per_px
+        seen &= ((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) <= r * r
+        if not seen.any():
+            continue
+        revealed = {int(r_["target"]) for r_ in rnd.blob.get("util") or [] if r_.get("k") == "reveal"
+                    and r_.get("by") == e["by"] and abs(float(r_["t"]) - t) <= 1.0}
+        for slot, team in sorted(rnd.team.items()):
+            if team == side or slot in revealed or not rnd.alive(slot, t):
+                continue
+            out.append(Info(t, side, slot, "exclude", figure, mask=seen, source=f"{e.get('code')}_{e.get('name')}@{t}",
+                            detail={"needs": "reveal"}))
+    return out
+
+
+READERS: list = [read_reveals, read_pulses]
 
 
 def read_all(rnd) -> list[Info]:

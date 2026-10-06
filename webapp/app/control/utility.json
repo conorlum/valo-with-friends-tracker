@@ -1,0 +1,21 @@
+{
+  "PROVISIONAL": "D7: every figure marked provisional in `sources` is a stand-in until the owner tests it in game; tunable here. Only the numbers are consumed (utility.FIGURES); editing a source or a note changes nothing.",
+  "reveal_range_m": {
+    "haunt": 30.0,
+    "recon": 30.0
+  },
+  "skye_flash_range_m": 20.0,
+  "leer_cast_range_m": 10.0,
+  "hearing_m": {
+    "omen_ult": 50.0,
+    "yoru_beacon": 50.0,
+    "yoru_drift_exit": 50.0,
+    "waylay_recall": 50.0
+  },
+  "sources": {
+    "reveal_range_m": "Provisional. How far Fade's Haunt and Sova's Recon Bolt see from where they are; no figure found. In-game test: throw each at a known spot and walk a teammate out along a straight line until they stop being revealed.",
+    "skye_flash_range_m": "Provisional. How far from its detonation Skye's Guiding Light flashes someone looking at it; no figure found. In-game test: pop it in a long corridor with a teammate at increasing distances, facing it.",
+    "leer_cast_range_m": "Sourced: Leer's deployment distance is 10 m (can shorten against terrain), https://valorant.fandom.com/wiki/Leer (game-file sourced) and https://www.thespike.gg/valorant/agents/reyna. Its terrain/height behaviour is untested.",
+    "hearing_m": "Provisional: each is the footstep range (hearing.json footstep_range_m, itself the owner's to check), set on purpose until measured, never a silent fallback. In-game tests: from From the Shadows' destination, Gatecrash's beacon, Dimensional Drift's exit and Refract's recall, walk a teammate away until the sound stops; note the distance."
+  }
+}
