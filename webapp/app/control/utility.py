@@ -78,7 +78,7 @@ CAPABILITIES = {
     "reveal": False,      # recon, Haunt, darts' and drones' tags, Neural Theft, Fade's and Gekko's utility
     "status": False,      # concuss, slow, tether, decay: what utility puts on a player
 }
-# PROVISIONAL(D6): no local replay has a Veto, so Evolution's own archetype has never been seen. Any of Veto's
+# No local replay has a Veto, so Evolution's own archetype has never been seen. Any of Veto's
 # (`Pine`) ult-slot objects is read as Evolution being active for its life. The plan's evidence task: confirm the
 # name and its life on a replay with an ulting Veto.
 EVOLUTION = re.compile(r"^Pine_X_")
