@@ -150,8 +150,8 @@ def test_the_queue_has_a_size(runner):
         r.submit(task("q3", "Sunset"))
 
 
-# ---------------------------------------------------------------- only while idle; a parse kills it
-# (docs/superpowers/plans/2026-10-05-control-idle-queue.md, Task 3, D4)
+# ---------------------------------------------------------------- one child beside a parse; a parse kills one
+# (docs/superpowers/plans/2026-10-05-control-idle-queue.md, D4 as amended 2026-10-07)
 
 
 def wait_until(predicate, timeout=20):
@@ -163,83 +163,88 @@ def wait_until(predicate, timeout=20):
     raise AssertionError("condition not reached")
 
 
-def test_nothing_starts_while_the_worker_is_busy(runner):
+def test_one_child_runs_while_the_worker_is_busy_and_two_once_it_is_idle(runner):
     busy = {"on": True}
     r, log = runner()
     r.idle = lambda: not busy["on"]
-    job = r.submit(task("a:1:f"))
-    time.sleep(1.5)
-    assert r.get(job.id).status == "queued" and not list(log.iterdir())
+    wait_all(r, [r.submit(task("w:1:f"))])                       # it runs though a parse is on: one is allowed
+    jobs = [r.submit(task(f"a{i}:1:f", mode="sleep:0.6")) for i in range(3)]
+    wait_all(r, jobs)
+    assert overlaps(log)[0] == 1, "never two beside a parse"
+    for p in log.iterdir():
+        p.unlink()
     busy["on"] = False
-    wait_all(r, [job])
-    assert r.get(job.id).status == "done"
+    jobs = [r.submit(task(f"b{i}:1:f", mode="sleep:0.6")) for i in range(3)]
+    wait_all(r, jobs)
+    assert overlaps(log)[0] == 2
 
 
-def test_a_parse_kills_every_child_and_their_rounds_go_back_first_uncounted(runner):
+def test_a_parse_kills_the_child_started_last_and_its_round_goes_back_first_uncounted(runner):
     busy = {"on": False}
     r, log = runner()
     r.idle = lambda: not busy["on"]
     wait_all(r, [r.submit(task("w:1:f"))])                       # the map is warm: two may run at once
-    a, b = r.submit(task("a:1:f", mode="sleep:30")), r.submit(task("b:1:f", mode="sleep:30"))
+    a = r.submit(task("a:1:f", mode="sleep:6"))
+    wait_until(lambda: r.counts()["running"] == 1)
+    b = r.submit(task("b:1:f", mode="sleep:30"))
     c = r.submit(task("c:1:f"))
     wait_until(lambda: r.counts()["running"] == 2)
     busy["on"] = True
-    assert r.preempt() == 2
-    wait_until(lambda: r.counts()["running"] == 0)
-    assert {r.get(a.id).status, r.get(b.id).status} == {"queued"} and r.get(c.id).status == "queued"
-    assert set(r.pending[:2]) == {a.id, b.id} and r.pending[2] == c.id
-    assert r.get(a.id).error is None and r.get(a.id).task, "uncounted, task kept"
-    assert r.counts()["preempted"] == 2 and "Ascent" in r.counts()["warm"]
-    r.jobs[a.id].task = json.dumps(task("a:1:f")).encode()     # let them finish quickly this time
-    r.jobs[b.id].task = json.dumps(task("b:1:f")).encode()
-    busy["on"] = False
-    wait_all(r, [a, b, c])
+    assert r.preempt() == 1
+    wait_until(lambda: r.counts()["running"] == 1)
+    assert r.get(a.id).status == "running", "the child started first is left alone"
+    assert r.get(b.id).status == "queued" and r.pending[:2] == [b.id, c.id]
+    assert r.get(b.id).error is None and r.get(b.id).task, "uncounted, task kept"
+    assert r.counts()["preempted"] == 1 and "Ascent" in r.counts()["warm"]
+    assert r.preempt() == 0, "a second parse finds one child: nothing to kill"
+    r.jobs[b.id].task = json.dumps(task("b:1:f")).encode()      # let it finish quickly this time
+    wait_all(r, [a, b, c])                                       # still busy: they finish one at a time
+    assert r.counts()["preempted"] == 1
 
 
-def test_a_preempted_warming_round_stays_cold_and_warms_alone_again(runner):
+def test_a_preempted_warming_round_leaves_its_map_cold(runner):
     busy = {"on": False}
     r, log = runner()
     r.idle = lambda: not busy["on"]
-    first = r.submit(task("w:1:f", mode="sleep:30"))
-    second = r.submit(task("x:1:f"))
+    wait_all(r, [r.submit(task("w:1:f"))])                       # Ascent is warm
+    first = r.submit(task("a:1:f", mode="sleep:6"))
     wait_until(lambda: r.counts()["running"] == 1)
+    warming = r.submit(task("s:1:f", "Split", mode="sleep:30"))  # another map warms beside a warm one
+    wait_until(lambda: r.counts()["running"] == 2)
     busy["on"] = True
     assert r.preempt() == 1
-    wait_until(lambda: r.counts()["running"] == 0)
-    assert r.get(first.id).status == "queued" and "Ascent" not in r.counts()["warm"]
-    r.jobs[first.id].task = json.dumps(task("w:1:f", mode="sleep:1")).encode()
+    wait_until(lambda: r.counts()["running"] == 1)
+    assert r.get(warming.id).status == "queued" and "Split" not in r.counts()["warm"]
+    r.jobs[warming.id].task = json.dumps(task("s:1:f", "Split")).encode()
     busy["on"] = False
-    wait_all(r, [first, second])
-    starts = sorted((float(p.name.split("_")[0]), p.name) for p in log.iterdir() if "_start_" in p.name)
-    ends = sorted(float(p.name.split("_")[0]) for p in log.iterdir() if "_end_" in p.name)
-    # after the resume, the warming round ran alone: the second round started after it ended
-    assert starts[-1][0] >= ends[-2]
+    wait_all(r, [first, warming])
+    assert "Split" in r.counts()["warm"]
 
 
 @pytest.mark.parametrize("ending", ["done", "timeout", "garbage"])
 def test_preemption_at_settlement_wins_over_every_other_ending(runner, ending):
     mode = {"done": "ok", "timeout": "hang", "garbage": "garbage"}[ending]
-    overrides = {"control_timeout_s": 1.0, "control_warm_timeout_s": 1.0} if ending == "timeout" else {}
+    overrides = {"control_timeout_s": 1.0} if ending == "timeout" else {}
     r, log = runner(**overrides)
+    wait_all(r, [r.submit(task("w:1:f"))])                       # Ascent is warm
     gate = threading.Event()
-    # the preempt lands after the child has ended, before settlement; idle goes false first so it can't rerun
-    r._before_settle = lambda job: (setattr(r, "idle", lambda: False), r.preempt(), gate.set())
+
+    def at_settlement(job):
+        # the preempt lands after the child has ended, before settlement; idle goes false first so it can't rerun
+        if job.key == "p:1:f" and not gate.is_set():
+            r.idle = lambda: False
+            r.preempt()
+            gate.set()
+
+    r._before_settle = at_settlement
+    keep = r.submit(task("k:1:f", "Split", mode="sleep:8"))      # started first, on the warm timeout: it stays
+    wait_until(lambda: r.counts()["running"] == 1)
     job = r.submit(task("p:1:f", mode=mode))
     assert gate.wait(30)
-    wait_until(lambda: r.counts()["running"] == 0)
-    assert r.get(job.id).status == "queued" and r.get(job.id).error is None and r.get(job.id).task
+    wait_until(lambda: r.get(job.id).status == "queued")
+    assert r.get(job.id).error is None and r.get(job.id).task
     assert r.pending == [job.id] and r.counts()["preempted"] == 1
-    assert "Ascent" not in r.counts()["warm"], "warmth unchanged: it was cold"
-
-
-def test_a_child_started_in_the_admission_gap_is_killed_by_the_parse_starting(runner):
-    r, log = runner()
-    job = r.submit(task("g:1:f", mode="sleep:30"))
-    wait_until(lambda: r.counts()["running"] == 1)               # admitted while idle() read True
-    r.idle = lambda: False
-    assert r.preempt() == 1                                      # what Worker._run's on_parse() does
-    wait_until(lambda: r.counts()["running"] == 0)
-    assert r.get(job.id).status == "queued"
+    assert r.get(keep.id).status == "running" and "Ascent" in r.counts()["warm"], "warmth unchanged"
 
 
 def test_a_failing_kill_or_seam_never_loses_the_slot(runner, monkeypatch):

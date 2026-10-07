@@ -17,10 +17,11 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
 
 Map control has its own queue and never shares the parse thread: a fixed pool of child processes
 (`python -m replay_worker.control_job`, run by the control venv's interpreter; this process never
-imports numpy or the engine), niced, time- and memory-capped, one map's first round alone. It runs
-only while nothing is parsing or waiting to parse (`Worker.idle`), on up to `control_workers` children;
-a parse arriving kills every running child, and their rounds go back to the front of the queue
-uncounted (docs/superpowers/plans/2026-10-05-control-idle-queue.md, D4).
+imports numpy or the engine), niced, time- and memory-capped, one map's first round alone.
+It runs on up to `control_workers` children while nothing is parsing or waiting to parse (`Worker.idle`),
+and on one beside a parse; a parse arriving kills every running child but the one started first, and their
+rounds go back to the front of the queue uncounted (docs/superpowers/plans/2026-10-05-control-idle-queue.md,
+D4 as amended 2026-10-07).
 
 One job runs at a time; up to `queue_size` more wait. Each job gets its own folder (the upload and
 the parser's export, which is about 65x the file). It runs the parser command with a timeout that
@@ -55,9 +56,9 @@ Configuration (environment, all optional):
     REPLAY_WORKER_HOST/PORT  bind address (default 0.0.0.0:8080 in the container)
     REPLAY_CONTROL           "0" turns map control off (default on)
     REPLAY_CONTROL_CMD       JSON list: the control child (default this Python, -m replay_worker.control_job)
-    REPLAY_CONTROL_WORKERS   children at once (default 2: the 2-CPU plan's two cores, used only while
-                             no parse is running; never from the core count, which a container
-                             reports for the host)
+    REPLAY_CONTROL_WORKERS   children at once while no parse is on (default 2: the 2-CPU plan's two cores;
+                             one beside a parse; never from the core count, which a container reports
+                             for the host)
     REPLAY_CONTROL_QUEUE     waiting rounds (default 32)
     REPLAY_CONTROL_TIMEOUT_S / REPLAY_CONTROL_WARM_TIMEOUT_S   per round (900) / a map's first (1800)
     REPLAY_CONTROL_MEMORY_MB child address-space cap, Linux only (default 2048)
@@ -264,9 +265,9 @@ class Worker:
         return self.archive.status()
 
     def idle(self) -> bool:
-        """No parse running and none waiting: map control may run. Between a queue's `get` and
-        `parsing = True` this reads True for a few bytecodes; a control child started in that gap is
-        killed by the `on_parse()` call at the top of `_run`
+        """No parse running and none waiting: map control may use its whole pool; otherwise one child.
+        Between a queue's `get` and `parsing = True` this reads True for a few bytecodes; a second child
+        started in that gap is killed by the `on_parse()` call at the top of `_run`
         (docs/superpowers/plans/2026-10-05-control-idle-queue.md, Task 2)."""
         return not self.parsing and self.queue.empty() and self.reparse_queue.empty()
 
@@ -584,7 +585,7 @@ def _child_setup(memory_mb: int):
 
 class ControlRunner:
     """Map control's queue, beside the parse queue and never sharing its thread. At most
-    `control_workers` children at once; a map's first round runs alone ("warming": it builds the
+    `control_workers` children at once, and one beside a parse; a map's first round runs alone ("warming": it builds the
     map's visibility cache) and the map is warm once one of its rounds gets past loading. A task's
     key (replay, round, fingerprint) is deduped while its job is queued, running or done."""
 
@@ -635,10 +636,13 @@ class ControlRunner:
                     "preempted": self.preempted_total}
 
     def preempt(self) -> int:
-        """A parse is coming: kill every running child (D4). How each run ends is decided at settlement,
-        under the lock, where a preempted mark wins over everything else."""
+        """A parse is coming: kill every running child but the one started first, so the parse has a CPU and
+        control keeps one (D4 as amended 2026-10-07; the child started last has done the least work).
+        `self.running` keeps start order. How each run ends is decided at settlement, under the lock, where a
+        preempted mark wins over everything else."""
         with self.lock:
-            victims = [(job_id, self.procs.get(job_id)) for job_id in self.running if job_id not in self.preempted]
+            alive = [job_id for job_id in self.running if job_id not in self.preempted]
+            victims = [(job_id, self.procs.get(job_id)) for job_id in alive[1:]]
             self.preempted.update(job_id for job_id, _ in victims)
         for _, process in victims:
             if process is not None:
@@ -650,7 +654,9 @@ class ControlRunner:
 
     def _next(self) -> tuple[ControlJob, bool] | None:
         """The next job that may start now, and whether it warms its map (called under the lock)."""
-        if len(self.running) >= self.settings.control_workers or not self.idle():
+        # Beside a parse (running or waiting) control keeps one child; idle, the whole pool.
+        limit = self.settings.control_workers if self.idle() else 1
+        if len(self.running) >= limit:
             return None
         busy_maps = {self.jobs[j].map for j in self.running}
         warming_maps = {self.jobs[j].map for j, warming in self.running.items() if warming}
