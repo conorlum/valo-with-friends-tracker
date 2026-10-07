@@ -129,7 +129,8 @@
     [/^Sequoia_X_LineCapture$/, { ability: "Kill Contract", shape: "badge" }],
     // Phoenix
     [/^Phoenix_MolotovFire$/, { ability: "Hot Hands", shape: "area", r: 450 }],
-    [/^Phoenix_Q_FlameWallManager/, { ability: "Blaze", shape: "badge" }],
+    // Blaze: its laid line (the condenser's `points`, along its projectile's flight); a badge when it has none.
+    [/^Phoenix_Q_FlameWallManager/, { ability: "Blaze", shape: "wall", fire: true }],
     [/^Phoenix_X_ResTarget/, { ability: "Run it Back", shape: "badge", label: "Run it Back (return point)" }],
     // Skye
     [/^Guide_4_Heal_AOE$/, { ability: "Regrowth", shape: "area", r: 900 }],
@@ -172,6 +173,19 @@
     [/^Pine_E_RadEater$/, { ability: "Interceptor", shape: "badge" }],
     // Viper: the screen is the line it was laid along (`points`), solid while up (`on`).
     [/^Pandemic_E_SmokeScreenManager$/, { ability: "Toxic Screen", shape: "wall" }],
+    // Deadlock (2026-10-05: her actors were dropped before; extras.py ARCHETYPE_ALIASES). The mesh is its arms
+    // from the root to each node (`arms`), solid while `on`; a sensor's trigger is a short pop.
+    [/^Cable_E_CableJam_Root$/, { ability: "Barrier Mesh", shape: "mesh" }],
+    [/^Cable_Q_SoundSensor$/, { ability: "Sonic Sensor", shape: "badge" }],
+    [/^Cable_Q_SoundSensor_Fissure$/, { ability: "Sonic Sensor", shape: "area", r: 350, pop: 0.6, label: "Sonic Sensor (went off)" }],
+    [/^Cable_4_NetToss$/, { ability: "GravNet", shape: "area", r: 450 }],
+    [/^Cable_4_RemovableNet$/, { ability: "GravNet", shape: "hidden" }],
+    [/^Cable_X_FishingHook$/, { ability: "Annihilation", shape: "badge" }],
+    [/^Cable_X_FishingHook_Cage$/, { ability: "Annihilation", shape: "area", r: 250, label: "Annihilation (caught)" }],
+    // Vyse's Shear: its line (`line`), dashed until raised, solid while `raised`.
+    [/^Nox_WallTrap$/, { ability: "Shear", shape: "shear" }],
+    // Omen's ult destination while he channels; Waylay's return point.
+    [/^Wraith_X_GlobalTeleport_Intention$/, { ability: "From the Shadows", shape: "badge", label: "From the Shadows (destination)" }],
     [/^Pandemic_4_SmokeZone$/, { ability: "Poison Cloud", shape: "smoke", r: 450 }],
     [/^Pandemic_X_Circular$/, { ability: "Viper's Pit", shape: "smoke", r: 900 }],
     [/^Pandemic_AcidMolotov_NewMolotov$/, { ability: "Snake Bite", shape: "area", r: 450 }],
@@ -226,9 +240,77 @@
     return [[a.u + du * lo, a.v + dv * lo], [a.u + du * hi, a.v + dv * hi]];
   }
 
+  // A projectile in flight (2026-10-05): drawn on its own layer ("projectiles", on by default), at its recorded
+  // flight's place at t (`flight`, [[t, u, v, z], ...]) or, with no flight, at its spawn point; never with an
+  // invented path. `width` (world units): a wide shape, drawn as a band across its travel (Paranoia).
+  var PROJECTILE_STYLES = [
+    [/^Wraith_Q_NearsightMissile$/, { ability: "Paranoia", width: 650 }],
+    [/^Grenadier_C_Flash(_Underhand)?$/, { ability: "FLASH/drive" }],
+    [/^Grenadier_E_SuppressionBlade$/, { ability: "ZERO/point" }],
+    [/^Phoenix_E_FlareCurve/, { ability: "Curveball" }],
+    [/^Phoenix_Q_FlameWall/, { ability: "Blaze" }],
+    [/^Cable_4_NetToss$/, { ability: "GravNet" }],
+    [/^Cable_E_CableJam$/, { ability: "Barrier Mesh" }]
+  ];
+
+  function projectileStyle(ability) {
+    var key = ability.code + "_" + ability.name;
+    for (var i = 0; i < PROJECTILE_STYLES.length; i++) {
+      if (PROJECTILE_STYLES[i][0].test(key)) {
+        var st = PROJECTILE_STYLES[i][1];
+        return { label: st.ability, ability: st.ability, agent: ability.agent, shape: "projectile", width: st.width };
+      }
+    }
+    return { label: ability.name.replace(/_/g, " "), agent: ability.agent, shape: "projectile" };
+  }
+
+  // Where a projectile is at t: its flight's place (interpolated), or its spawn point when it has no flight;
+  // null outside its life. `moving` says whether the place came from a recorded flight.
+  function projectileAt(a, t) {
+    var end = typeof a.t1 === "number" ? a.t1 : a.t0;
+    if (t < a.t0 || t > end) return null;
+    var at = a.flight && a.flight.length > 1 ? pathAt(a.flight, t) : null;
+    if (at) return { u: at.u, v: at.v, moving: true };
+    if (a.flight && a.flight.length > 1) {
+      var last = t < a.flight[0][0] ? a.flight[0] : a.flight[a.flight.length - 1];
+      return { u: last[1], v: last[2], moving: true };
+    }
+    return { u: a.u, v: a.v, moving: false };
+  }
+
+  // A thrown object whose throw is also a projectile row with a recorded flight: that flight is drawn, not the
+  // throw's arc too.
+  function throwShownAsProjectile(a, abilities) {
+    if (!a.thrown) return false;
+    return (abilities || []).some(function (p) {
+      return p.kind === "Projectile" && p.code === a.code && p.flight && p.flight.length > 1 &&
+        Math.abs(p.t0 - a.thrown.t0) <= 0.05;
+    });
+  }
+
+  // A Barrier Mesh's arms standing at t (each [u, v] of its node): the mesh is solid (`on`), the arm not gone.
+  function meshArmsAt(a, t) {
+    if (!wallUp(a, t)) return [];
+    return (a.arms || []).filter(function (arm) { return arm[3] === null || arm[3] === undefined || t < arm[3]; })
+      .map(function (arm) { return [arm[0], arm[1]]; });
+  }
+
+  // A Barrier Orb's segments standing at t: [[u, v], ...] of the intact ones.
+  function sageSegmentsAt(a, t) {
+    return (a.segments || []).filter(function (sg) { return sg[2] <= t && (sg[3] === null || sg[3] === undefined || t < sg[3]); })
+      .map(function (sg) { return [sg[0], sg[1]]; });
+  }
+
+  // A Shear at t: "set" (its line waits), "raised" or null (no line).
+  function shearAt(a, t) {
+    if (!a.line) return null;
+    var up = a.raised && a.raised[0] <= t && (a.raised[1] === null || a.raised[1] === undefined || t <= a.raised[1]);
+    return up ? "raised" : "set";
+  }
+
   function abilityStyle(ability) {
     if (ability.kind === "Bomb") return { label: "Spike", shape: "spike" };
-    if (ability.kind === "Projectile") return { label: ability.name, shape: "hidden" };
+    if (ability.kind === "Projectile") return projectileStyle(ability);
     var key = ability.code + "_" + ability.name;
     for (var i = 0; i < ABILITY_STYLES.length; i++) {
       if (ABILITY_STYLES[i][0].test(key)) {
@@ -294,6 +376,15 @@
   function utilDownAt(a, alive, t, tEnd) {
     if (a.slot === null || a.slot === undefined || !DIES_WITH_OWNER.test(a.code + "_" + a.name)) return false;
     return !aliveAt((alive || {})[String(a.slot)], t, tEnd);
+  }
+
+  // A Cypher trip or camera is off while its owner is suppressed, and back on when that ends (the engine's rule,
+  // app/control/engine.py RoundInputs._suppress_devices): the owner's `suppressed` statuses at t.
+  var PAUSED_BY_SUPPRESSION = /^(Gumshoe_4_TripWire|Gumshoe_4_TripWire_SecondWire|Gumshoe_E_PossessableCamera)$/;
+
+  function utilSuppressedAt(a, statuses, t) {
+    if (a.slot === null || a.slot === undefined || !PAUSED_BY_SUPPRESSION.test(a.code + "_" + a.name)) return false;
+    return statusesAt(statuses, t).some(function (st) { return st.target === a.slot && st.status === "suppressed"; });
   }
 
   // When a pop ability went off: the effects it played on itself (`fx`), or its spawn.
@@ -513,7 +604,7 @@
 
   // ------------------------------------------------------------ the viewer
 
-  var LAYERS = ["names", "abilities", "tracers", "cones", "control", "gaps"];
+  var LAYERS = ["names", "abilities", "projectiles", "tracers", "cones", "control", "gaps"];
   var CONTROL_KEEP = 3;    // rounds of decoded control kept: the current one and its neighbours
   var CONTROL_PX = 512;    // the layer's offscreen image (4 px a cell)
   var CONTROL_STATUS = {
@@ -555,7 +646,8 @@
     this.playing = false;
     this.current = null;
     this.icons = {};
-    this.layers = { names: true, abilities: true, tracers: true, cones: true, control: false, gaps: false };
+    this.layers = { names: true, abilities: true, projectiles: true, tracers: true, cones: true, control: false,
+                    gaps: false };
     // Timing gaps: off by default; the page sets options.gaps when it offers the layer.
     this.gaps = !!(options.gaps && options.loadGaps && gapsApi());
     this.gapsCache = {};                           // round -> Promise of {status, stale, rows, chokes}
@@ -576,6 +668,7 @@
     this.map.onload = (function () { this.fitView(); this.draw(); if (this.heat) this.paintHeatmap(); }).bind(this);
     this.map.src = options.mapImage;
     this.hover = null;
+    this.loadBulletMask();
     this.bindControls();
     this.bindHeatmap();
     this.lastFrame = null;
@@ -686,13 +779,19 @@
     return this.cache[n];
   };
 
+  // Every load takes a new token; a load that is no longer the latest (the user picked another round, or
+  // paused, while it was fetching) shows nothing when it lands.
   ReplayViewer.prototype.showRound = function (n, t) {
     var self = this;
+    var token = this.loadSeq = (this.loadSeq || 0) + 1;
+    this.autoPlay = null;
     return this.fetchRound(n).then(function (round) {
+      if (token !== self.loadSeq) return round;
       self.current = round;
       self.number = n;
       self.t = t || 0;
       self.playing = false;
+      self.lastFrame = null;               // the first frame after a load never jumps by the load's time
       self.renderStrip();
       self.renderTicks();
       self.renderBanner();
@@ -716,11 +815,38 @@
   // next keep showing a round paused.
   ReplayViewer.prototype.playRound = function (n) {
     var self = this;
-    return this.showRound(n).then(function (round) {
-      self.playing = true;
-      self.updateControls();
+    var shown = this.showRound(n);
+    var token = this.autoPlay = this.loadSeq;      // cleared by a pause, replaced by any later load
+    return shown.then(function (round) {
+      if (token === self.loadSeq && self.autoPlay === token) {
+        self.autoPlay = null;
+        self.playing = true;
+        self.updateControls();
+      }
       return round;
+    }, function (error) {
+      // a round that didn't load: stay on the one shown, stopped
+      if (token === self.loadSeq) {
+        self.autoPlay = null;
+        self.playing = false;
+        self.updateControls();
+      }
+      throw error;
     });
+  };
+
+  // The round after the one shown, or undefined on the last.
+  ReplayViewer.prototype.nextRound = function () {
+    var i = this.rounds.indexOf(this.number);
+    return i < 0 ? undefined : this.rounds[i + 1];
+  };
+
+  // Playback reached the round's end: the next listed round starts playing; the last one stops.
+  ReplayViewer.prototype.finishRound = function () {
+    this.playing = false;
+    var next = this.nextRound();
+    if (next === undefined) return null;
+    return this.playRound(next).catch(function () { return null; });
   };
 
   ReplayViewer.prototype.seek = function (t) {
@@ -746,6 +872,11 @@
 
   ReplayViewer.prototype.toggle = function () {
     if (!this.current) return;
+    if (this.autoPlay !== null && this.autoPlay !== undefined) {
+      this.autoPlay = null;                // paused while the next round loads: it arrives paused
+      this.updateControls();
+      return;
+    }
     if (!this.playing && this.t >= this.current.blob.t_end) this.t = 0;
     this.playing = !this.playing;
     this.updateControls();
@@ -754,15 +885,56 @@
   ReplayViewer.prototype.tick = function (now) {
     if (this.playing && this.current && this.lastFrame !== null) {
       this.t += (now - this.lastFrame) / 1000 * this.speed;
-      if (this.t >= this.current.blob.t_end) {
-        this.t = this.current.blob.t_end;
-        this.playing = false;
-      }
+      var ended = this.t >= this.current.blob.t_end;
+      if (ended) this.t = this.current.blob.t_end;
       this.updateControls();
       this.draw();
+      if (ended) this.finishRound();
     }
     this.lastFrame = now;
     requestAnimationFrame(this.tick);
+  };
+
+  // Space plays or pauses from anywhere on the page, except while typing or choosing in a field. A held
+  // key (repeat) and a key with a modifier are left alone.
+  function isEditable(target) {
+    if (!target || !target.tagName) return false;
+    if (target.isContentEditable) return true;
+    var tag = String(target.tagName).toUpperCase();
+    if (tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (tag !== "INPUT") return false;
+    var type = String(target.type || "text").toLowerCase();
+    return !/^(checkbox|radio|range|button|submit|reset|image|color|file)$/.test(type);
+  }
+
+  function spaceToggles(e) {
+    if (!e || (e.key !== " " && e.code !== "Space")) return false;
+    if (e.repeat || e.ctrlKey || e.altKey || e.metaKey) return false;
+    return !isEditable(e.target);
+  }
+
+  // A focused button, link or checkbox would also act on Space when the key comes up: that keyup is
+  // swallowed once, so one press is one toggle.
+  function actsOnSpace(target) {
+    if (!target || !target.tagName) return false;
+    var tag = String(target.tagName).toUpperCase();
+    return tag === "BUTTON" || tag === "SUMMARY" || tag === "INPUT" || tag === "A"
+      || (target.getAttribute && /^(button|tab|checkbox|switch)$/.test(target.getAttribute("role") || ""));
+  }
+
+  ReplayViewer.prototype.onSpaceDown = function (e) {
+    if (!spaceToggles(e)) return false;
+    e.preventDefault();                    // no page scroll
+    this.swallowSpaceUp = actsOnSpace(e.target);
+    this.toggle();
+    return true;
+  };
+
+  ReplayViewer.prototype.onSpaceUp = function (e) {
+    if (!this.swallowSpaceUp || !e || (e.key !== " " && e.code !== "Space")) return false;
+    this.swallowSpaceUp = false;
+    e.preventDefault();
+    return true;
   };
 
   ReplayViewer.prototype.bindControls = function () {
@@ -777,8 +949,18 @@
       tip: q("[data-replay-tip]"), util: q("[data-replay-util]"), hud: q("[data-replay-hud]"),
       nextKill: q("[data-replay-nextkill]"), prevKill: q("[data-replay-prevkill]"),
       controlStatus: q("[data-replay-control-status]"), controlLegend: q("[data-replay-control-legend]"),
-      controlTable: q("[data-replay-control-table]")
+      controlTable: q("[data-replay-control-table]"), controlReasons: q("[data-replay-control-reasons]")
     };
+    if (this.ui.controlReasons) {
+      var toReason = function (e) {
+        var row = e.target.closest && e.target.closest("[data-reason-t]");
+        if (!row || (e.type === "keydown" && e.key !== "Enter")) return;
+        if (e.type === "keydown") e.preventDefault();
+        self.seek(Number(row.getAttribute("data-reason-t")));     // to the event's own time: never past it
+      };
+      this.ui.controlReasons.addEventListener("click", toReason);
+      this.ui.controlReasons.addEventListener("keydown", toReason);
+    }
     SPEEDS.forEach(function (s) {
       var option = document.createElement("option");
       option.value = String(s);
@@ -795,10 +977,15 @@
     if (this.ui.nextKill) this.ui.nextKill.addEventListener("click", function () { self.nextKill(); });
     if (this.ui.prevKill) this.ui.prevKill.addEventListener("click", function () { self.prevKill(); });
     this.ui.next.addEventListener("click", function () { self.step(1); });
+    var page = this.root.ownerDocument || global.document;
+    if (page && page.addEventListener) {
+      page.addEventListener("keydown", function (e) { self.onSpaceDown(e); });
+      page.addEventListener("keyup", function (e) { self.onSpaceUp(e); });
+    }
     this.root.addEventListener("keydown", function (e) {
-      if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.key !== " ") return;
-      if (e.key === " ") { e.preventDefault(); self.toggle(); }
-      else if (e.key === "ArrowLeft") { e.preventDefault(); self.seek(self.t - STEP_S); }
+      if (e.key === " ") return;           // the page's listener above
+      if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+      if (e.key === "ArrowLeft") { e.preventDefault(); self.seek(self.t - STEP_S); }
       else if (e.key === "ArrowRight") { e.preventDefault(); self.seek(self.t + STEP_S); }
       else if (e.key === "n" || e.key === "N") { e.preventDefault(); self.nextKill(); }
       else if (e.key === "b" || e.key === "B") { e.preventDefault(); self.prevKill(); }
@@ -1067,7 +1254,8 @@
     var self = this, blob = this.current.blob, items = [];
     (this.current.extras.abilities || []).forEach(function (a) {
       var style = abilityStyle(a);
-      if (style.shape === "hidden" || style.shape === "spike" || style.small || style.unlisted) return;
+      if (style.shape === "hidden" || style.shape === "spike" || style.shape === "projectile" || style.small ||
+          style.unlisted) return;
       items.push({ t: a.thrown ? a.thrown.t0 : a.t0, slot: a.slot, agent: style.agent, ability: style.ability,
         label: style.label, guess: a.owner_by === "nearest", reveals: style.shape === "reveal" ? [] : null });
     });
@@ -1147,6 +1335,7 @@
     this.ui.play.setAttribute("aria-pressed", this.playing ? "true" : "false");
     var phase = t > blob.t_decided ? " · round decided" : "";
     this.ui.clock.textContent = "Round " + blob.round + " · " + t.toFixed(1) + " s" + phase;
+    this.renderReasons();
     if (this.ui.feed) {
       Array.prototype.forEach.call(this.root.querySelectorAll("[data-kill-t]"), function (row) {
         var kt = Number(row.getAttribute("data-kill-t"));
@@ -1241,7 +1430,7 @@
     var smoke = this.css("--replay-smoke", "rgba(16, 18, 24, 0.6)");
     var smokeCore = this.css("--replay-smoke-core", "rgba(16, 18, 24, 0.84)");
     // Areas first, so badges sit on top of them; the spike last.
-    ["wall", "smoke", "area", "reveal", "line", "wire", "badge", "spike"].forEach(function (pass) {
+    ["wall", "smoke", "area", "reveal", "mesh", "shear", "line", "wire", "badge", "spike"].forEach(function (pass) {
       showing.forEach(function (a) {
         var style = abilityStyle(a);
         if (style.shape !== pass) return;
@@ -1252,6 +1441,9 @@
         if (utilDownAt(a, blob.alive, t, blob.t_end)) {
           color = self.css("--replay-util-down", "#7d828c");   // its owner is dead: it went down with them
           text += " · down (owner dead)";
+        } else if (utilSuppressedAt(a, self.current.extras.statuses, t)) {
+          color = self.css("--replay-util-down", "#7d828c");   // off while its owner is suppressed
+          text += " · off (owner suppressed)";
         }
         var age = t - a.t0, fadeIn = abilityAlpha(a, t);
         ctx.save();
@@ -1320,6 +1512,45 @@
           ctx.restore(); ctx.save();
           self.drawBadge(ctx, x, y, r * 0.6, color, glyph);
           hits.push({ x: x, y: y, r: r * 0.8, text: text });
+        } else if (pass === "mesh" || pass === "shear") {
+          // Deadlock's mesh: an arm from the root to each standing node while solid, dashed before it forms.
+          // Vyse's Shear: dashed while set, solid while raised.
+          var segs = [], solid = true;
+          if (pass === "mesh") {
+            segs = meshArmsAt(a, t).map(function (n) { return [[a.u, a.v], n]; });
+            if (!segs.length && !(a.on || []).some(function (sp) { return sp[0] <= t; })) {
+              segs = (a.arms || []).map(function (arm) { return [[a.u, a.v], [arm[0], arm[1]]]; });
+              solid = false;
+            }
+          } else {
+            var state = shearAt(a, t);
+            if (state) { segs = [a.line]; solid = state === "raised"; }
+          }
+          ctx.globalAlpha = fadeIn; ctx.strokeStyle = color; ctx.lineCap = "round";
+          ctx.lineWidth = solid ? Math.max(3, r / 3) : Math.max(1.5, r / 7);
+          if (!solid) ctx.setLineDash([r / 3, r / 4]);
+          segs.forEach(function (sg) {
+            ctx.beginPath(); ctx.moveTo(sg[0][0] * s, sg[0][1] * s); ctx.lineTo(sg[1][0] * s, sg[1][1] * s); ctx.stroke();
+          });
+          ctx.setLineDash([]);
+          ctx.restore(); ctx.save();
+          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          hits.push({ x: x, y: y, r: r * 0.7, text: text + (pass === "shear" ? (solid ? " · raised" : " · set") :
+            (solid ? " · " + segs.length + " arm" + (segs.length === 1 ? "" : "s") + " up" : " · forming")) });
+        } else if (pass === "line" && a.segments) {
+          // Sage's wall, segment by segment: the ones still standing (a broken one leaves a gap).
+          var standing = sageSegmentsAt(a, t), sizeUv = 173 * ((self.linked && self.linked.uvPerUnit) || 0.75) / 2;
+          var dir = standing.length > 1 ? [standing[1][0] - standing[0][0], standing[1][1] - standing[0][1]] : null;
+          if (!dir && a.segments.length > 1) dir = [a.segments[1][0] - a.segments[0][0], a.segments[1][1] - a.segments[0][1]];
+          var len = dir ? Math.hypot(dir[0], dir[1]) : 0;
+          ctx.globalAlpha = 0.85 * fadeIn; ctx.strokeStyle = color; ctx.lineCap = "butt"; ctx.lineWidth = Math.max(4, r / 2.2);
+          standing.forEach(function (c) {
+            var du = len ? dir[0] / len * sizeUv : sizeUv, dv = len ? dir[1] / len * sizeUv : 0;
+            ctx.beginPath(); ctx.moveTo((c[0] - du) * s, (c[1] - dv) * s); ctx.lineTo((c[0] + du) * s, (c[1] + dv) * s); ctx.stroke();
+          });
+          ctx.restore(); ctx.save();
+          self.drawBadge(ctx, x, y, r * 0.5, color, glyph, fadeIn);
+          hits.push({ x: x, y: y, r: r * 0.7, text: text + " · " + standing.length + " of " + a.segments.length + " standing" });
         } else if (pass === "line") {
           var ends = lineEnds(a, style, (self.linked && self.linked.uvPerUnit) || 0.75);
           if (ends) {
@@ -1433,6 +1664,7 @@
       if (!th || t < th.t0 || t > th.t1 + 0.6) return;
       var style = abilityStyle(a);
       if (style.shape === "hidden") return;
+      if (self.layers.projectiles && throwShownAsProjectile(a, self.current.extras.abilities)) return;
       var x0 = th.u * s, y0 = th.v * s, x1 = a.u * s, y1 = a.v * s;
       var f = th.t1 > th.t0 ? Math.min(1, (t - th.t0) / (th.t1 - th.t0)) : 1;
       var color = self.ownerColor(a.slot);
@@ -1547,17 +1779,110 @@
     hud.innerHTML = parts.join("");
   };
 
+  // Where a shot's tracer ends (the 2026-10-05 review, item 11): from (u, v) along its recorded direction (towards
+  // u1, v1) to the first pixel of the bullet mask that stops it (walls and low boxes), or the map's edge. `mask` is
+  // `size` x `size` bytes, non-zero stops a shot. A shooter standing against (or just inside) an obstacle starts
+  // past it: blocking pixels are skipped until the ray is first in the open, for at most START_SKIP_PX.
+  var START_SKIP_PX = 12;
+
+  function tracerEnd(mask, size, u, v, u1, v1) {
+    var k = size / 10000, x = u * k, y = v * k, dx = (u1 - u) * k, dy = (v1 - v) * k;
+    var len = Math.hypot(dx, dy);
+    if (!(len > 1e-6)) return null;
+    dx /= len; dy /= len;
+    var open = false, steps = 0;
+    while (true) {
+      var px = Math.floor(x), py = Math.floor(y);
+      if (px < 0 || py < 0 || px >= size || py >= size) break;
+      var blocked = mask[py * size + px] !== 0;
+      if (!blocked) open = true;
+      else if (open || steps >= START_SKIP_PX) break;
+      x += dx; y += dy; steps++;
+    }
+    return { u: (x - dx) / k, v: (y - dy) / k, steps: steps };
+  }
+
+  // The map's bullet mask as bytes (1 stops a shot), from its image; null while loading, without one, or on failure.
+  ReplayViewer.prototype.loadBulletMask = function () {
+    var self = this, url = this.options.bulletMask;
+    this.bullet = null;
+    if (!url || typeof Image === "undefined" || typeof document === "undefined") return;
+    var img = new Image();
+    img.onload = function () {
+      try {
+        var n = 1024, off = document.createElement("canvas");
+        off.width = off.height = n;
+        var octx = off.getContext("2d");
+        octx.drawImage(img, 0, 0, n, n);
+        var data = octx.getImageData(0, 0, n, n).data, mask = new Uint8Array(n * n);
+        for (var i = 0; i < n * n; i++) mask[i] = data[i * 4] > 127 ? 1 : 0;
+        self.bullet = { mask: mask, size: n };
+        self.draw();
+      } catch (err) { self.bullet = null; }     // unreadable: the fixed-length tracer stays
+    };
+    img.onerror = function () { self.bullet = null; };
+    img.src = url;
+  };
+
   ReplayViewer.prototype.drawTracers = function (ctx, s, r) {
-    var t = this.t, self = this;
+    var t = this.t, self = this, bullet = this.bullet;
     (this.current.extras.shots || []).forEach(function (shot) {
       var age = t - shot.t;
       if (age < 0 || age > TRACER_S || shot.u1 === undefined) return;
+      // to the first wall or low box when the map's bullet mask is loaded; else the stored fixed length
+      var end = bullet ? tracerEnd(bullet.mask, bullet.size, shot.u, shot.v, shot.u1, shot.v1) : null;
+      var eu = end ? end.u : shot.u1, ev = end ? end.v : shot.v1;
       ctx.save();
       ctx.globalAlpha = 0.9 * (1 - age / TRACER_S);
       ctx.strokeStyle = self.slotColor(shot.slot);
       ctx.lineWidth = Math.max(1.5, r / 8);
-      ctx.beginPath(); ctx.moveTo(shot.u * s, shot.v * s); ctx.lineTo(shot.u1 * s, shot.v1 * s); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(shot.u * s, shot.v * s); ctx.lineTo(eu * s, ev * s); ctx.stroke();
       ctx.restore();
+    });
+  };
+
+  // Projectiles in flight (their own layer): a small team-coloured mark where the recorded flight has it, with
+  // the last 0.3 s of its flight behind it; a wide one (Paranoia) as a band across its travel. A flash's flight
+  // from its cast row (`path`) and its pop (`pop`, where the export places it) are drawn here too.
+  ReplayViewer.prototype.drawProjectiles = function (ctx, s, r, hits) {
+    var t = this.t, self = this, uvPerUnit = (this.linked && this.linked.uvPerUnit) || 0.75;
+    (this.current.extras.abilities || []).forEach(function (a) {
+      if (a.kind !== "Projectile") return;
+      var at = projectileAt(a, t);
+      if (!at) return;
+      var style = projectileStyle(a), color = self.ownerColor(a.slot);
+      ctx.save();
+      ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineCap = "round";
+      if (at.moving) {
+        var back = pathAt(a.flight, Math.max(a.flight[0][0], t - 0.3)) || at;
+        ctx.globalAlpha = 0.55;
+        ctx.lineWidth = style.width ? Math.max(4, style.width * uvPerUnit * s) : Math.max(1.5, r / 6);
+        ctx.beginPath(); ctx.moveTo(back.u * s, back.v * s); ctx.lineTo(at.u * s, at.v * s); ctx.stroke();
+      }
+      ctx.globalAlpha = 0.95;
+      ctx.beginPath(); ctx.arc(at.u * s, at.v * s, r * 0.22, 0, 2 * Math.PI); ctx.fill();
+      ctx.restore();
+      hits.push({ x: at.u * s, y: at.v * s, r: r * 0.5, text: (style.agent ? style.agent + " · " : "") + style.label +
+        " · " + self.nameOf(a.slot) + (at.moving ? "" : " · thrown here (no flight recorded)") });
+    });
+    castUtil(this.current.blob.util).forEach(function (u) {
+      if (u.k !== "flash") return;
+      var color = self.ownerColor(u.by);
+      if (u.path && u.path.length > 1) {
+        var stop = u.pop ? u.pop.t : u.path[u.path.length - 1][0];
+        var here = t <= stop ? pathAt(u.path, t) : null;
+        if (here) {
+          ctx.save(); ctx.fillStyle = "#ffffff"; ctx.strokeStyle = color; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(here.u * s, here.v * s, r * 0.26, 0, 2 * Math.PI); ctx.fill(); ctx.stroke(); ctx.restore();
+        }
+      }
+      if (u.pop && typeof u.pop.u === "number" && t >= u.pop.t && t <= u.pop.t + 0.45) {
+        var f = (t - u.pop.t) / 0.45;
+        ctx.save(); ctx.globalAlpha = 1 - f; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(u.pop.u * s, u.pop.v * s, r * (0.5 + 2 * f), 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
+        var which = utilAbility(u.ability);
+        hits.push({ x: u.pop.u * s, y: u.pop.v * s, r: r, text: which.ability + " went off at " + u.pop.t.toFixed(2) + " s" });
+      }
     });
   };
 
@@ -1623,6 +1948,7 @@
           "'s control (filled) and coverage (outlined): click them again or press Esc to clear.";
       }
       self.setControlStatus(text);
+      self.renderReasons();
       self.draw();
     });
     if (next !== undefined && this.layers.control) this.controlCache.get(next);
@@ -2091,6 +2417,33 @@
       }).join("");
   };
 
+  // The Control panel's "why the unknown changed" list (W21): the stored reasons at or before now, newest first.
+  // Rebuilt only when what it shows changes (the same rows), so playing doesn't touch the DOM every frame.
+  var REASON_WINDOW_S = 10, REASON_LIMIT = 12;
+
+  ReplayViewer.prototype.renderReasons = function () {
+    var list = this.ui.controlReasons, self = this;
+    if (!list || !this.controlCache || !this.current) return;
+    var value = this.controlCache.ready(this.number);
+    var got = value && value.status === "ok"
+      ? controlApi().reasonsAt(value.parsed.header, this.t, REASON_WINDOW_S, REASON_LIMIT) : null;
+    var key = this.number + "|" + (got ? got.status + "|" + got.rows.map(function (r) { return r.side + r.t + ":" + r.slot + r.reason; }).join(",") : "none");
+    if (key === this.reasonsKey) return;
+    this.reasonsKey = key;
+    if (!got) { list.innerHTML = '<li class="replay-feed-empty">Turn Map control on to load this round\'s reasons.</li>'; return; }
+    if (got.status === "unavailable") {
+      list.innerHTML = '<li class="replay-feed-empty">Not recorded for this round (it was computed before reasons were stored).</li>';
+      return;
+    }
+    if (!got.rows.length) { list.innerHTML = '<li class="replay-feed-empty">Nothing learnt in the last 10 seconds.</li>'; return; }
+    list.innerHTML = got.rows.map(function (r) {
+      return '<li class="replay-feed-row" data-reason-t="' + r.t + '" tabindex="0">' +
+        '<span class="replay-feed-time">' + r.t.toFixed(1) + "s</span> " +
+        escapeHtml(self.groupName(r.side)) + " on " + escapeHtml(self.nameOf(r.slot).split("#")[0]) + ": " +
+        escapeHtml(r.text) + "</li>";
+    }).join("");
+  };
+
   // Each alive slot's control (m²) at the current tick, from the round's stored header, or null.
   ReplayViewer.prototype.controlNow = function () {
     var value = this.controlCache && this.controlCache.ready(this.number);
@@ -2243,6 +2596,7 @@
       this.drawThrows(ctx, s, r);
       this.drawUtil(ctx, s, r, hits);
     }
+    if (this.layers.projectiles) this.drawProjectiles(ctx, s, r, hits);
     if (this.layers.tracers) this.drawTracers(ctx, s, r);
 
     blob.kills.forEach(function (k) {
@@ -2416,7 +2770,12 @@
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
     impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,
     popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle, utilDownAt: utilDownAt,
-    controlRows: controlRows, withSiteData: withSiteData
+    utilSuppressedAt: utilSuppressedAt,
+    controlRows: controlRows, withSiteData: withSiteData,
+    isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,
+    projectileStyle: projectileStyle, projectileAt: projectileAt, throwShownAsProjectile: throwShownAsProjectile,
+    meshArmsAt: meshArmsAt, sageSegmentsAt: sageSegmentsAt, shearAt: shearAt, LAYERS: LAYERS,
+    tracerEnd: tracerEnd, START_SKIP_PX: START_SKIP_PX
   };
   global.Replay = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

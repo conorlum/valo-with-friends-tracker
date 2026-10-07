@@ -94,7 +94,9 @@ def render(blobs: dict[int, dict], site: dict | None = None) -> str:
     agents = sorted({p["agent"] for blob in blobs.values() for p in blob["players"]})
     icons = {a: data_uri(APP / "static" / "img" / "agents" / f"{agent_icon_name(a)}.png") for a in agents}
     payload = {"rounds": {str(n): blob for n, blob in blobs.items()},
-               "map": data_uri(APP / "static" / "img" / "maps" / f"{map_name}.png"), "icons": icons}
+               "map": data_uri(APP / "static" / "img" / "maps" / f"{map_name}.png"), "icons": icons,
+               # the tracer's obstacles, inlined like the map (None for a map without the asset)
+               "bullet": data_uri(APP / "static" / "data" / "control" / f"{map_name}.bullet.png")}
     if linked:
         payload["site"] = site["context"]
         payload["control"] = site["control"] if control else {}
@@ -135,6 +137,7 @@ __SCRIPT__
     var options = {
       rounds: rounds,
       mapImage: data.map,
+      bulletMask: data.bullet || null,
       agentIcon: function (agent) { return data.icons[agent] || null; },
       loadRound: function (n) {
         var blob = JSON.parse(JSON.stringify(data.rounds[String(n)]));
@@ -160,7 +163,8 @@ __SCRIPT__
         return Promise.resolve(data.gaps[String(n)] || { status: "not_computed", stale: false, rows: [], chokes: {} });
       };
     }
-    // An optional "#round=N&t=T" in the URL opens round N at T seconds.
+    // An optional "#round=N&t=T" in the URL opens round N at T seconds; "&control=1" also turns the Map control
+    // layer on and "&panel=1" opens the Control tab (a link or a headless screenshot of one moment).
     var start = {};
     String(window.location.hash || "").replace(/^#/, "").split("&").forEach(function (part) {
       var kv = part.split("=");
@@ -170,6 +174,11 @@ __SCRIPT__
     window.viewer = new Replay.ReplayViewer(document.querySelector("[data-replay]"), options);
     window.viewerReady = window.viewer.showRound(first).then(function (round) {
       if (start.t !== undefined) window.viewer.seek(start.t);
+      // (selectors are built, so a page without map control never contains the layer's markup, even here)
+      var pick = function (kind) { return document.querySelector("[data-replay-" + kind + '="' + "control" + '"]'); };
+      var layer = pick("layer"), tab = pick("tab");
+      if (start.control && layer && !layer.checked) layer.click();
+      if (start.panel && tab) tab.click();
       return round;
     });
   })();

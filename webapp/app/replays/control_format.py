@@ -42,8 +42,9 @@ import gzip
 import hashlib
 import json
 import struct
+from pathlib import Path
 
-CONTROL_REVISION = 6
+CONTROL_REVISION = 7     # 7: utility knowledge per enemy at event time, ability walls, the flat trip join, reasons
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 
@@ -64,10 +65,44 @@ class ControlFormatError(ValueError):
 # ---------------------------------------------------------------- freshness
 
 
+_CONTROL_DIR = Path(__file__).resolve().parents[1] / "control"
+HEARING_FILE = _CONTROL_DIR / "hearing.json"
+UTILITY_FILE = _CONTROL_DIR / "utility.json"
+
+
+def _numbers(value):
+    """The numeric view of a figures file: numbers as floats, tables of numbers, nothing else (no `sources`, notes
+    or `PROVISIONAL` text)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, dict):
+        out = {str(k): _numbers(v) for k, v in value.items() if k not in ("sources", "PROVISIONAL")}
+        return {k: v for k, v in out.items() if v is not None} or None
+    return None
+
+
+def figures_hash(hearing=None, utility=None) -> str:
+    """16 hex of the game figures the engine consumes (the 2026-10-05 plan, W22): app/control/hearing.json's and
+    app/control/utility.json's numbers, as sorted JSON. One view for control's fingerprint and the gap keys, so a
+    changed range makes both stale and an edited citation makes neither. Read as files, never imported (the web
+    app has no engine); a missing file reads as empty."""
+    view = {}
+    for name, path in (("hearing", hearing or HEARING_FILE), ("utility", utility or UTILITY_FILE)):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                view[name] = _numbers(json.load(handle)) or {}
+        except FileNotFoundError:
+            view[name] = {}
+    return hashlib.sha256(json.dumps(view, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
+
+
 def fingerprint(recipe: str, source_sha256: str, link: dict, geometry: dict) -> str:
-    """16 hex characters over every input of one round's control."""
+    """16 hex characters over every input of one round's control (since revision 7, the consumed game figures
+    too: `figures_hash`)."""
     body = {"control": CONTROL_REVISION, "data": DATA_VERSION, "summary": SUMMARY_VERSION, "recipe": recipe,
-            "source": source_sha256, "link": link, "geometry": geometry}
+            "source": source_sha256, "link": link, "geometry": geometry, "figures": figures_hash()}
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
 
 

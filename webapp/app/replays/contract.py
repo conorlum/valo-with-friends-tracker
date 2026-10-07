@@ -256,8 +256,11 @@ def load_export(export_dir: Path) -> Export:
 # The event rows the condenser reads. Everything else (shots, utility paths, the other RPCs:
 # 115k of the first real export's 142k rows, most of its 814 MB) is skipped unparsed.
 # W-e: the typed utility rows (casts and hits); their Subjects are null, casters resolve through pawns.
+# 2026-10-05: a flash's explosion and its path samples too (condense.read_util: where and when it really
+# popped, and whether it is proven to have gone off at all).
 UTIL_EVENT_TYPES = frozenset({"valorant_flash_cast", "valorant_flash_player_hit", "valorant_nearsight_cast",
-                              "valorant_nearsight_player_hit"})
+                              "valorant_nearsight_player_hit", "valorant_flash_exploded",
+                              "valorant_flash_path_updated"})
 STREAM_EVENT_TYPES = frozenset({"actor_spawned", "actor_closed", *UTIL_EVENT_TYPES})
 STREAM_PAYLOAD_KEYS = frozenset({CHARACTER_PLAYER_STATE, "Subject", "SpawnedCharacter", "PossessedCharacter"})
 STREAM_RPCS = frozenset({RPC_KILLED_ENEMY, RPC_PHASE_BEGIN, RPC_PHASE_ENDED, RPC_SET_PHASE, RPC_RESURRECT})

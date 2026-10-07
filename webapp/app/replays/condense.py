@@ -355,6 +355,28 @@ def _hit_duration(data: dict) -> float | None:
     return round(float(value), 3) if isinstance(value, (int, float)) else None
 
 
+# A flash's explosion and path (2026-10-05). The export mixes units: a path sample from the actor's spawn
+# transform is in world units (cm), one from its replicated movement is in metres (the same instant of one
+# Curveball: spawn (4787.3, 8758.9, 265.2), replicated (47.87, 87.59, 2.65)). So a position's unit follows the
+# source that produced it, never its size: nothing is multiplied by 100 because it looks small.
+SAMPLE_SCALE = {"spawn_transform": 1.0, "replicated_movement": 100.0}
+# An explosion's evidence -> the scale of its own location: a flash source actor's spawn point is in world
+# units; `stop_projectile_rpc` copies the projectile's last replicated sample, so its unit and its age are
+# that sample's (`_pop`).
+POP_SOURCE_SCALE = {"skye_flash_source": 1.0, "vyse_flash_source": 1.0}
+# Evidence that the flash really went off. Anything else (an actor that only closed) proves nothing.
+COMPLETED_EVIDENCE = frozenset({"stop_projectile_rpc", *POP_SOURCE_SCALE})
+# A copied sample this old at the explosion is where the flash was, not where it popped: the position is
+# left out (a Curveball's only replicated sample is its cast).
+POP_FRESH_MS = 250
+POP_MATCH_UNITS = 0.011          # the export rounds a replicated sample to 0.01
+UTIL_PATH_STEP_MS = 100
+UTIL_PATH_MAX_POINTS = 40
+# A hit that names no cast (`unresolved`, or an actor with no cast row) this long after a flash popped may be
+# that flash's: its target list is then not proven complete.
+HIT_WINDOW_MS = 1000
+
+
 @dataclass(frozen=True)
 class UtilCast:
     t_ms: int
@@ -366,6 +388,13 @@ class UtilCast:
     targets: tuple[int, ...]
     # Map control's input (revision 10): each hit as (target slot, hit ms, duration s | None).
     hits: tuple[tuple[int, int, float | None], ...] = ()
+    # 2026-10-05, flashes only (a nearsight row is as before): the ability actor (the cast's identity), the
+    # cast's height, the explosion (`_pop`), the flight, and what proves it went off and hit only these.
+    actor: int = 0
+    z: float | None = None
+    pop: dict | None = None
+    path: tuple[tuple[int, float, float, float | None], ...] = ()
+    activation: dict | None = None
 
 
 def _resolve_actor(players: PlayerTable, character, player_state, t_ms: int) -> int | None:
@@ -384,16 +413,56 @@ def read_util(export: Export, players: PlayerTable) -> tuple[list[UtilCast], dic
     cast is counted. A caster or target who had left the match refuses, like a kill would (P-c).
     """
     counts: Counter[str] = Counter()
-    hits: dict[int, list[int]] = defaultdict(list)
-    timed: dict[int, set[tuple[int, int, float | None]]] = defaultdict(set)
+    # An ability actor's GUID can be used again later in the match: every row belongs to that actor's latest
+    # cast at or before it (a row before its actor's first cast, to that first cast).
+    cast_times: dict[int, list[int]] = defaultdict(list)
+    for row in export.events:
+        spec = UTIL_KINDS.get(row.data.get("type"))
+        if spec is not None:
+            cast_times[int(row.data.get(spec[1]) or 0)].append(row.time_ms)
+
+    def cast_key(actor: int, t_ms: int) -> tuple[int, int]:
+        times = cast_times.get(actor)
+        if not times:
+            return actor, -1
+        i = bisect.bisect_right(times, t_ms) - 1
+        return actor, times[max(0, i)]
+
+    hits: dict[tuple[int, int], list[int]] = defaultdict(list)
+    timed: dict[tuple[int, int], set[tuple[int, int, float | None]]] = defaultdict(set)
+    loose: list[int] = []                                  # times of hits that name no cast
+    unresolved: dict[tuple[int, int], int] = defaultdict(int)   # a cast's hits whose target resolved to nobody
+    samples: dict[tuple[int, int], list[tuple[int, float, float, float | None, str, tuple]]] = defaultdict(list)
+    pops: dict[tuple[int, int], tuple[int, dict, str]] = {}
     for row in export.events:
         kind = row.data.get("type")
+        if kind == "valorant_flash_path_updated":
+            data = row.data
+            where, source = data.get("location") or {}, str(data.get("source") or "")
+            scale = SAMPLE_SCALE.get(source)
+            if scale is None or where.get("x") is None or where.get("y") is None:
+                counts["path_samples_without_a_known_source"] += 1
+                continue
+            z = where.get("z")
+            samples[cast_key(int(data.get("flash_actor_net_guid") or 0), row.time_ms)].append(
+                (row.time_ms, float(where["x"]) * scale, float(where["y"]) * scale,
+                 None if z is None else float(z) * scale, source,
+                 (float(where["x"]), float(where["y"]), None if z is None else float(z))))
+        elif kind == "valorant_flash_exploded":
+            data = row.data
+            key = cast_key(int(data.get("flash_actor_net_guid") or 0), row.time_ms)
+            pops.setdefault(key, (row.time_ms, data.get("location") or {}, str(data.get("evidence") or "")))
         if kind in UTIL_HITS:
             data = row.data
+            actor = int(data.get(UTIL_HITS[kind]) or 0)
+            named = actor in cast_times and data.get("correlation") != "unresolved"
+            if not named and kind == "valorant_flash_player_hit":
+                loose.append(row.time_ms)
             slot = _resolve_actor(players, data.get("target_character_net_guid"),
                                   data.get("target_player_state_net_guid"), row.time_ms)
             if slot is None:
                 counts["unresolved_targets"] += 1
+                unresolved[cast_key(actor, row.time_ms)] += 1
                 continue
             gone = players.gone_ms.get(slot)
             if gone is not None and row.time_ms >= gone:
@@ -403,10 +472,11 @@ def read_util(export: Export, players: PlayerTable) -> tuple[list[UtilCast], dic
             if away is not None:
                 raise ContractError("lifecycle", f"a utility hit on slot {slot} at {row.time_ms} ms, while that "
                                                  f"player was disconnected ({away[0]}-{away[1]} ms)")
-            actor = int(data.get(UTIL_HITS[kind]) or 0)
-            hits[actor].append(slot)
-            timed[actor].add((slot, row.time_ms, _hit_duration(data)))
+            key = cast_key(actor, row.time_ms)
+            hits[key].append(slot)
+            timed[key].add((slot, row.time_ms, _hit_duration(data)))
             counts["hits"] += 1
+    loose.sort()
     casts: list[UtilCast] = []
     cast_actors: set[int] = set()
     for row in export.events:
@@ -432,12 +502,90 @@ def read_util(export: Export, players: PlayerTable) -> tuple[list[UtilCast], dic
                                              f"disconnected ({away[0]}-{away[1]} ms)")
         location = data.get("location") or {}
         ability = str(data.get(kind_key) or "")
+        key = (actor, row.time_ms)
+        more: dict = {}
+        if short == "flash":
+            flight = sorted(samples.get(key, []), key=lambda s: s[0])
+            pop = _pop(pops.get(key), flight, counts)
+            until = pop["t_ms"] if pop is not None else None
+            state = "completed" if pop is not None and pop["evidence"] in COMPLETED_EVIDENCE else "unknown"
+            diagnostics = []
+            if pop is None:
+                diagnostics.append("no_explosion_row")
+            elif state != "completed":
+                diagnostics.append(f"explosion_evidence_{pop['evidence'] or 'missing'}")
+            if unresolved.get(key):
+                diagnostics.append("unresolved_target")
+            if until is not None:
+                lo = bisect.bisect_left(loose, row.time_ms)
+                if lo < len(loose) and loose[lo] <= until + HIT_WINDOW_MS:
+                    diagnostics.append("unattributed_hit_in_window")
+            z = location.get("z")
+            more = {"actor": actor, "z": None if z is None else float(z), "pop": pop,
+                    "path": _thin_path([s[:4] for s in flight if until is None or s[0] <= until]),
+                    "activation": {"state": state, "evidence": pop["evidence"] if pop is not None else None,
+                                   "targets_complete": state == "completed" and not diagnostics,
+                                   "diagnostics": diagnostics}}
+            counts[f"flash_activation_{state}"] += 1
+            counts["flash_targets_complete"] += bool(more["activation"]["targets_complete"])
         casts.append(UtilCast(row.time_ms, short, ability if ability.replace("_", "").isalnum() else "", slot,
-                              location.get("x"), location.get("y"), tuple(sorted(set(hits.get(actor, [])))),
-                              tuple(sorted(timed.get(actor, ()), key=lambda h: (h[1], h[0], -1.0 if h[2] is None else h[2])))))
+                              location.get("x"), location.get("y"), tuple(sorted(set(hits.get(key, [])))),
+                              tuple(sorted(timed.get(key, ()), key=lambda h: (h[1], h[0], -1.0 if h[2] is None else h[2]))),
+                              **more))
         counts[short] += 1
-    counts["orphan_hits"] = sum(len(slots) for actor, slots in hits.items() if actor not in cast_actors)
+    counts["orphan_hits"] = sum(len(slots) for (actor, _), slots in hits.items() if actor not in cast_actors)
     return casts, dict(sorted(counts.items()))
+
+
+def _pop(found: tuple[int, dict, str] | None, flight: list, counts: Counter) -> dict | None:
+    """A flash's explosion as {"t_ms", "evidence"} plus, when its place is known in a known unit and is fresh,
+    {"x", "y", "z", "src", "age_ms"}. A flash-source explosion is at the source's own spawn point. One by
+    `stop_projectile_rpc` repeats a replicated path sample: it is placed only when that sample is found (so
+    its unit is known) and is at most POP_FRESH_MS old; otherwise it has a time and no place, and says why
+    (`place`: "stale" or "unverified")."""
+    if found is None:
+        return None
+    t_ms, where, evidence = found
+    out: dict = {"t_ms": t_ms, "evidence": evidence}
+    if where.get("x") is None or where.get("y") is None:
+        out["place"] = "unverified"
+        return out
+    x, y, z = float(where["x"]), float(where["y"]), where.get("z")
+    scale = POP_SOURCE_SCALE.get(evidence)
+    if scale is not None:
+        out.update({"x": x * scale, "y": y * scale, "z": None if z is None else float(z) * scale,
+                    "src": "flash_source", "age_ms": 0})
+        counts["flash_pops_placed"] += 1
+        return out
+    same = [s for s in flight if s[4] == "replicated_movement" and s[0] <= t_ms
+            and abs(s[5][0] - x) <= POP_MATCH_UNITS and abs(s[5][1] - y) <= POP_MATCH_UNITS]
+    if not same:
+        out["place"] = "unverified"
+        counts["flash_pops_unverified"] += 1
+        return out
+    sample = same[-1]
+    age = t_ms - sample[0]
+    if age > POP_FRESH_MS:
+        out.update({"place": "stale", "age_ms": age})
+        counts["flash_pops_stale"] += 1
+        return out
+    out.update({"x": sample[1], "y": sample[2], "z": sample[3], "src": "replicated_movement", "age_ms": age})
+    counts["flash_pops_placed"] += 1
+    return out
+
+
+def _thin_path(points: list[tuple[int, float, float, float | None]]) -> tuple:
+    """A flight's samples at most one per UTIL_PATH_STEP_MS and UTIL_PATH_MAX_POINTS in all, ends kept."""
+    kept: list = []
+    for point in points:
+        if not kept or point[0] - kept[-1][0] >= UTIL_PATH_STEP_MS:
+            kept.append(point)
+    if points and kept[-1] is not points[-1]:
+        kept.append(points[-1])
+    if len(kept) > UTIL_PATH_MAX_POINTS:
+        step = (len(kept) - 1) / (UTIL_PATH_MAX_POINTS - 1)
+        kept = [kept[round(i * step)] for i in range(UTIL_PATH_MAX_POINTS)]
+    return tuple(kept)
 
 
 # ---------------------------------------------------------------- lifecycle (P-c)
@@ -992,6 +1140,28 @@ def _util_entry(cast: UtilCast, start: int, game_map: MapInfo) -> dict:
              "hits": [[slot, _seconds(t_ms, start), duration] for slot, t_ms, duration in cast.hits]}
     if cast.x is not None and cast.y is not None:
         entry["u"], entry["v"] = game_map.to_uv(float(cast.x), float(cast.y))
+    if cast.activation is None:
+        return entry                       # a nearsight: as before
+    # A flash (format.py, "Flash rows"): its identity, height, explosion, flight and activation evidence.
+    entry["id"] = cast.actor
+    if cast.z is not None:
+        entry["z"] = int(round(cast.z / 10.0))
+    entry["activation"] = cast.activation
+    if cast.pop is not None:
+        pop = {"t": _seconds(cast.pop["t_ms"], start)}
+        if "x" in cast.pop:
+            pop["u"], pop["v"] = game_map.to_uv(cast.pop["x"], cast.pop["y"])
+            if cast.pop["z"] is not None:
+                pop["z"] = int(round(cast.pop["z"] / 10.0))
+            pop["src"] = cast.pop["src"]
+        else:
+            pop["place"] = cast.pop["place"]
+        if cast.pop.get("age_ms"):
+            pop["age"] = round(cast.pop["age_ms"] / 1000.0, 3)
+        entry["pop"] = pop
+    if len(cast.path) > 1:
+        entry["path"] = [[_seconds(t_ms, start), *game_map.to_uv(x, y), *([] if z is None else [int(round(z / 10.0))])]
+                         for t_ms, x, y, z in cast.path]
     return entry
 
 

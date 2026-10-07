@@ -44,6 +44,8 @@ ROUTE_THIN_S = 0.5
 GAPS_REVISION = 2    # 2: stack merge (R1)
 TURN_DEG = 1.0      # a facing change of at most this between two ticks is not a turn (aim noise)
 CAUSE_ORDER = ("route_released", "victim_turned", "victim_moved", "open_timing")
+# The engine's own locating events (Unknown.apply, _locating), gathered onto the next tick as before W09.
+LEGACY_EVENTS = frozenset({"kill", "plant", "damage", "gunfire", "footsteps", "seen", "revived"})
 REASONS = ("died", "turned", "moved", "blinded", "smoked", "utility_expired", "utility_left", "other")
 _CODE = {r: i for i, r in enumerate(REASONS)}
 FULL_CIRCLE = np.arange(0.0, 360.0, RAY_STEP_DEG)
@@ -62,6 +64,14 @@ def round_context(rnd, t: float, victim_sees_enemy: bool | None) -> dict:
     return {"t_round": round(t - rnd.t_start, 3), "alive": {"A": int(alive["A"]), "B": int(alive["B"])},
             "spike": "planted" if rnd.plant is not None and rnd.plant <= t else "not planted",
             "victim_sees_enemy": victim_sees_enemy}
+
+
+def judged_against_before(rec) -> dict[str, set[int]]:
+    """side -> the enemies a record judges against their state before its locating events (R7): every enemy
+    with one of the engine's own events in it, and an enemy with a utility locate at the record's own instant."""
+    t = float(rec.t)
+    return {side: {int(e) for e, te, kind in evs if kind in LEGACY_EVENTS or abs(float(te) - t) <= 1e-9}
+            for side, evs in rec.events.items()}
 
 
 def _turned(yaw0: float, yaw1: float) -> bool:
@@ -234,7 +244,11 @@ class GapDetector:
             if g._qual and self.prev_t is not None:
                 g._qualified(self.prev_t, t)
             g._qual = False
-        evented = {side: {int(e) for e, _, _ in evs} for side, evs in rec.events.items()}
+        # R7, with W09's exact clock: an enemy is judged against their state before a locating event only for an
+        # event at this record's own instant. A utility locate (app/control/utility.py) has its own record at its
+        # exact time, so a later record never re-judges against the uncertainty from before it. The engine's own
+        # events, still gathered onto the next tick, keep the rule as it was.
+        evented = judged_against_before(rec)
         for side in ("A", "B"):
             self._observe(side, rec)
         judged = {side: self._judged(side, rec, evented.get(side, set())) for side in ("A", "B")}

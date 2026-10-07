@@ -85,6 +85,32 @@ def _grid_units(t: float) -> int:
     return int(round(float(t) * GRID_HZ))
 
 
+# Why an enemy's unknown changed, for the Control panel (W21). A reason that repeats for the same enemy within
+# REASON_REPEAT_S of its last occurrence is one run, listed once at its start (a sighting refreshes every tick).
+# This is presentation only: the engine's locating history, which the gap detector reads, keeps every tick.
+REASON_REPEAT_S = 1.0
+REASON_SKIP = frozenset({"resume"})        # a channel's end is not news; its start (`pause`) is listed
+
+
+def knowledge_events(reasons: dict | None) -> dict:
+    """{side group: [[t, enemy slot, reason], ...]} in time order, t in round seconds at the event's own time (three
+    decimals: not the frame grid), runs of one reason collapsed to their first."""
+    out = {}
+    for side in ("A", "B"):
+        rows, last = [], {}
+        for t, slot, kind, reason, _ in sorted((reasons or {}).get(side) or [], key=lambda r: (r[0], r[1], r[3])):
+            if kind in REASON_SKIP:
+                continue
+            key = (int(slot), str(reason))
+            seen_before = last.get(key)
+            last[key] = float(t)
+            if seen_before is not None and float(t) - seen_before <= REASON_REPEAT_S:
+                continue
+            rows.append([round(float(t), 3), int(slot), str(reason)])
+        out[side] = rows
+    return out
+
+
 def encode_data(rc: RoundControl, blob: dict) -> bytes:
     if rc.states.shape[1] != len(rc.walk_cells) or rc.control_masks.shape[1] != cf.SLOTS:
         raise cf.ControlFormatError("RoundControl arrays don't match its walkable cells and slots")
@@ -123,6 +149,9 @@ def encode_data(rc: RoundControl, blob: dict) -> bytes:
             streams[name], offsets[name] = encode_masks(rc.unknown[group][:, None, :], checkpoints)
         header["unknown_checkpoints"] = [[t, a, b] for t, a, b in
                                          zip(checkpoints, offsets["unknown_a"], offsets["unknown_b"])]
+    if getattr(rc, "reasons", None) is not None:
+        # Optional (W21): a row stored before this has no list, and the panel says so instead of guessing.
+        header["knowledge_events"] = knowledge_events(rc.reasons)
     return cf.pack_data(header, streams)
 
 

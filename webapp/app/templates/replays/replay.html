@@ -22,6 +22,8 @@
       window.viewer = new Replay.ReplayViewer(root, {
         rounds: match.rounds,
         mapImage: "/static/img/maps/" + match.map + ".png",
+        // What stops a tracer (walls and low boxes); a map without one keeps the fixed-length tracer.
+        bulletMask: "/static/data/control/" + match.map + ".bullet.png?v={{ static_version() }}",
         agentIcon: function (agent) { return "/static/img/agents/" + agent.toLowerCase().replace(/[^a-z]/g, "") + ".png"; },
         loadRound: function (n) { return json("/replays/" + match.uuid + "/" + n + ".json").then(function (blob) { return withSiteData(n, blob); }); },
         roundWinner: function (n) { var site = data.rounds[String(n)]; return site && site.db && site.db.winner; },
