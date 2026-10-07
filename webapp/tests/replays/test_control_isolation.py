@@ -63,8 +63,11 @@ def test_the_worker_server_never_loads_the_engine():
 
 
 def test_the_web_apps_control_views_import_nothing_heavy():
+    # replay_control_remote.py is listed because app/main.py imports it inside `lifespan`, so the import
+    # test above never loads it.
     # numpy is already loaded by the web app (fight-EV), so the runtime check above can't see it.
     for path in (WEBAPP / "app" / "services" / "replay_control.py",
+                 WEBAPP / "app" / "services" / "replay_control_remote.py",
                  WEBAPP / "app" / "services" / "replay_control_views.py",
                  WEBAPP / "app" / "routers" / "replays.py",
                  WEBAPP / "app" / "services" / "replay_gaps.py",

@@ -25,6 +25,7 @@ from app.replays import db as replay_db
 from app.services import replay_control
 
 STORED = "stored"
+ALREADY = "skipped: already stored"
 
 
 def store_round(session_factory, replay_id: int, round_number: int, fingerprint: str | None, result: dict, *,
@@ -44,7 +45,7 @@ def store_round(session_factory, replay_id: int, round_number: int, fingerprint:
             row = session.get(ReplayRoundControl, (replay_id, round_number))
             if row is not None and row.fingerprint == current and row.status == "ok" \
                     and row.data_version == cf.DATA_VERSION:
-                return "skipped: already stored"
+                return ALREADY
         ok = result["status"] == "ok"
         session.merge(ReplayRoundControl(
             replay_id=replay_id, round_number=round_number, status=result["status"], fingerprint=fingerprint,
