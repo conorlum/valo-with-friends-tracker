@@ -468,3 +468,91 @@ Check docs/code isolation, the worker image build and its smoke test, and that n
 - [ ] **Step 5: Put live checks in the PR description**
 
 Record matching recipes/capabilities across images, memory/disk and measured durations, upload priority during a re-parse, restart/lost-response recovery with one accepted id, deployment skew without stale writes or invalidated newer attempts, and current control/gaps after replacement. Activation is the owner's final step, after a concrete reviewed implementation and these checks.
+
+---
+
+## Second review incorporated (2026-10-07)
+
+`2026-10-07-auto-reparse-queue-impl-review-2.md` reviewed this rewrite against the code. Every finding is
+accepted, the one blocker (B-1) included. Where this section and a task above differ, this section wins.
+
+**Gates (B-6).** Every command is run from `webapp/` and ends `-p no:cacheprovider -q -rs`; where a task has
+PostgreSQL tests the expected result includes "0 skipped among `test_pg_*`". No test name outside the pg
+tests contains `pg` (so not "upgrade").
+
+| Task | Check |
+|---|---|
+| 1 | `PY -m pytest tests/replays/test_replay_worker.py tests/replays/test_replay_worker_archive.py tests/replays/test_replay_worker_control.py tests/replays/test_replay_contract.py tests/replays/test_control_isolation.py tests/replays/test_replay_isolation.py` |
+| 2 | as written in the task |
+| 3 | after the test database is at `0018`: `PY -m pytest tests/replays/test_replay_archive_web.py tests/replays/test_replay_upload.py tests/replays/test_replay_store.py tests/replays/test_control_store.py tests/replays/test_replay_isolation.py tests/replays/test_control_isolation.py` |
+| 4 | `PY -m pytest tests/replays/test_replay_reparse_auto.py tests/replays/test_replay_isolation.py tests/replays/test_control_isolation.py` plus the config tests |
+| 5 | `PY -m pytest tests/replays/test_replay_reparse_auto.py tests/replays/test_replay_archive_web.py tests/replays/test_replay_worker_archive.py tests/replays/test_replay_upload.py` |
+| 6 | `PY -m pytest tests/replays/test_replay_reparse_auto.py tests/replays/test_control_remote.py tests/replays/test_gaps_store.py tests/replays/test_control_isolation.py tests/replays/test_replay_isolation.py` |
+| 7 | `PY -m pytest tests/replays/test_replay_reparse_auto.py tests/replays/test_replay_archive_web.py` plus the script's tests |
+| 8 | `PY -m pytest tests/replays -k "not pg"` then `-k "pg"`; `REPLAY_REPARSE_AUTO` only in commented lines of `render.yaml` |
+
+One named acceptance test per finding of the first review, listed in the PR draft: finding 2
+`test_a_site_on_a_new_recipe_never_stores_an_old_target_result`, finding 3
+`test_a_lost_response_recovers_the_same_attempt_and_one_job`, finding 5
+`test_worker_control_off_holds_and_reserves_nothing`, finding 6
+`test_a_stale_local_replay_with_an_archived_file_stays_local`. Task 1 also requires these to pass unmodified:
+`test_replay_worker_archive.py::test_a_reparse_runs_from_the_archive_and_leaves_the_file_in_place` and
+`test_replay_archive_web.py::test_a_reparse_through_the_admin_routes_stores_and_keeps_the_file`.
+
+**Task 1, the wire contract (B-2).** Every answer of the attempt routes is JSON with a `"code"`; the client,
+the worker and the tests' fake branch on `code`, never on the HTTP status alone. The manual
+`POST /reparse {match_uuid}` (no `attempt_id`) keeps its answers exactly.
+
+| `code` | HTTP | When | Fields |
+|---|---|---|---|
+| `accepted` | 202 the first time, 200 on a repeat, a lookup or a close | the attempt has its one job | `attempt_id`, `job_id`, `match_uuid`, `sha256`, `size`, `state: "accepted"`, `job_status` (`queued`, `parsing`, `done`, `failed`, or `expired` when the result was swept) |
+| `preparing` | 200 (lookup only) | a receipt exists, no job yet | `attempt_id`, `match_uuid`, `sha256`, `state: "preparing"` |
+| `closed` | 200 on close and lookup, 409 on a later POST | closed before acceptance | `attempt_id`, `state: "closed"` |
+| `unknown_attempt` | 404 (lookup only) | no receipt | |
+| `archive_off` | 404 | the archive is off | |
+| `no_archived_file` | 404 | nothing archived for the match | |
+| `sha_mismatch` | 409 | the archived recording is another file | `sha256` (the archive's) |
+| `deleted` | 409 | the match is tombstoned | |
+| `identity_conflict` | 409 | the id was used with another match or sha | |
+| `bad_request` | 400 | not a UUID, not a 64-hex sha | |
+| `queue_full` | 503 | no room; nothing was accepted | |
+
+`no_archived_file`, `sha_mismatch` and `deleted` are definite refusals before acceptance: the receipt is
+removed (or never written), so they consume no parse attempt. The `WorkerClient` methods are built in task 3.
+
+**Task 1, tests (B-5, B-8).** Each crash point's on-disk state is built by hand (the receipt file, the job
+folder and its `job.json`, as `test_replay_worker_archive.py` already does for a killed worker), then one
+worker is started and the id retried; Windows file locks rule out a second live worker on one folder. An
+in-process hook is used only for "before replying". `reparse_protocol` is advertised only in the archive's
+enabled shape (`Archive.status`); the archive-off shape is unchanged.
+
+**Task 3 (B-1, B-3, B-4, B-9, B-11).**
+
+- Before any pg test: upgrade the test database to head (`PY -m alembic upgrade head` with `DATABASE_URL`
+  naming the `*_test` database for that command only) and confirm `alembic current` reads `0018`. The
+  migration test is `test_pg_migration_0018_adds_a_nullable_context_and_drops_only_it`; it leaves the
+  database at head.
+- `worker_off_reason(health, recipe)` and the protocol constants are created here, in
+  `app/services/replay_upload.py`, because the shared collector is their first user. Task 4 keeps
+  `off_reason()` for the site's settings and imports the worker check. Collector, step and status call this
+  one helper.
+- `collect_unfinished(session_factory, worker, now=None, session_prefix=None)`: `None` collects every
+  unfinished row (archive sync, unchanged call); `AUTO_PREFIX` collects only rows whose `session_key` starts
+  with it (the control cycle's step). Both send an automatic row through the same guarded collector.
+- `_finish` takes an optional `now` (default unchanged), so an injected clock also stamps settlement.
+- Outcomes stay within the worker's ack vocabulary (`stored`, `replaced`, `unchanged`, `kept_existing`,
+  `failed`): a superseded attempt is `kept_existing`, a refused one `failed`; the distinction goes in `error`
+  and in `auto_context`.
+- `test_replay_upload.py` and `test_replay_archive_web.py` pass with no existing assertion changed (B-7).
+
+**Task 4 (B-4).** `now` is float epoch seconds everywhere in `replay_reparse_auto`; it is converted once
+with `datetime.fromtimestamp(now, timezone.utc)`, and a naive `finished_at` (SQLite) is read as UTC.
+
+**Task 6 (B-7, B-12).** Add: with the switch off and no `auto-reparse:` row, `step` makes no worker call at
+all (no health, no archive index, no attempt lookup), and the cycle's tasks and counts equal a cycle without
+the upload client. The cycle resets its planning throttle when `counts["reparse_finished"]` is non-zero or
+the held set differs from the previous cycle's, which `State.reparse` remembers.
+
+**Task 8 (B-10).** The migration's round trip (up, down to `0017`, up) also runs on the local development
+database with the `replay_uploads` counts before, between and after, and the database is left at the
+revision it was found at; the numbers go on the migration's decision card.

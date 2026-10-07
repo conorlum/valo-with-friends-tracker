@@ -710,3 +710,55 @@ These cannot be checked from the tests; list them in the PR for the owner:
 3. During one upload: the worker's log shows one control child still running, and its memory graph stays under 4 GB.
 4. Deploy-skew check: plain control works before the worker advertises protocol 1, then gap work resumes without resetting retries.
 5. A round with gaps finishes inside the child's time and memory caps (`REPLAY_CONTROL_TIMEOUT_S` 900, `REPLAY_CONTROL_MEMORY_MB` 2048): no rise in `infra_failed`.
+
+---
+
+## Second review incorporated (2026-10-07)
+
+`2026-10-07-auto-reparse-queue-impl-review-2.md` reviewed this rewrite against the code. Every finding is
+accepted. Where this section and a task above differ, this section wins.
+
+**Gates (A-5).** Every check command ends `-p no:cacheprovider -q -rs`, and the expected result includes
+"0 skipped among `test_pg_*`". The PostgreSQL interleaving tests are named `test_pg_...` and use the `pg`
+fixture of `tests/replays/test_replay_store.py`. No other test name contains `pg` (so not "upgrade"), because
+the suite is split with `-k "pg"`.
+
+**Task 2 (A-7, A-10).** The old-image reproduction sets `sys.modules["app.gaps"]` to `None` on a task with a
+`gaps` block and asserts `status == "failed"` and `error_kind == "infra"`. The `/health` line of the server's
+module docstring names `gaps_protocol`.
+
+**Task 3, keys and state (A-1).**
+
+- Plain task key: `"{replay}:{round}:{fingerprint}"` (unchanged). Full task with gaps:
+  `"{replay}:{round}:{fingerprint}:g1:{gap_fingerprint}"`. Gaps-only task (task 4):
+  `"{replay}:{round}:{fingerprint}:go1:{gap_fingerprint}"`. Suffixes, so the first three fields keep their
+  positions.
+- `state.in_flight` and `state.tries` are keyed by the worker key. A round is left out of planning while any
+  job for its `(replay_id, round_number)` is in flight, whatever its kind, so a capability change never
+  makes a second job for a round.
+- The tests' fake worker is a legacy worker by default (its health names no `gaps_protocol`). The existing
+  tests stay as they are and are the old-worker regression; a capable worker is asked for per test.
+- Without the capability the forced plan and `plan_gaps` do not run at all.
+
+**Task 3, functions (A-3).**
+
+- `_sendable(state, now, rounds, *, kind, capable=False, held=frozenset()) -> list[tuple[key, round]]`: the
+  planned rounds of `kind` (`"control"` or `"gaps"`) that are not held, not in flight for their round, and
+  pass `may_try` for their worker key.
+- `_send(session, client, state, now, counts, todo, *, kind) -> bool`: submits in `_order` until `IN_FLIGHT`,
+  a busy worker or an unreachable one; returns whether sendable work was left.
+- Task 3 creates both with `kind="control"`; task 4 adds `kind="gaps"`; the second plan passes `held`.
+
+**Task 3, tests (A-2, A-4, A-8).** The sentence "Later health reporting protocol 1 causes the missing gap
+runs to be scheduled" belongs to task 4. Task 3 tests that, once health reports protocol 1, rounds still
+needing control go out as full tasks. `app/services/replay_control_remote.py` joins the file list of
+`test_the_web_apps_control_views_import_nothing_heavy` (`main.py` imports it lazily, so the import test never
+loads it), and the dispatcher compares a run's revision with `app.services.replay_gaps.GAPS_REVISION`. The
+guarded writer never replaces a run stored under the same gap fingerprint, ok or failed; the unguarded path
+keeps today's replace.
+
+**Task 5 (A-6, A-9).** The deploy note and the PR draft say that, once both services are live, the site sends
+a gaps-only task for every stored round whose control is current and whose gap run is missing or stale, one
+worker child at a time beside parses, with the read-only query that counts them and `gaps_sent` in the
+dispatch log until it drains. The live checks add the worker server process's memory after 200 finished
+rounds that carry gap rows (`CONTROL_FINISHED_KEPT`).
