@@ -6,8 +6,8 @@ Base read: `origin/afk/2026-10-05-utility-review` at `a9d1a87` (PR #118), which 
 This branch (`plans-auto-reparse-queue`) is cut from it. PR #118 was merged into `origin/main` as `b0388ed`
 on 2026-10-07, after the first draft; the two trees are the same.
 
-Revised 2026-10-07 with the owner's answers (see "The owner's answers"): timing gaps are now in scope, and
-control runs one child at a time.
+Revised 2026-10-07 with the owner's answers (see "The owner's answers"): timing gaps are now in scope, and a
+parse kills one control child, not both.
 
 ## Goal
 
@@ -36,7 +36,7 @@ In scope:
 - Keeping the per-kill Impact split across a same-file replace.
 - Timing gaps computed on the worker with each round's control, and stored by the site (see "Timing gaps on
   the worker"). This part stands alone and is built first.
-- One control child at a time on the worker.
+- On the worker, a parse kills one control child instead of both, and control keeps one running beside it.
 
 Out of scope:
 
@@ -67,7 +67,7 @@ Out of scope:
    `store_replay` in one locked transaction: rounds and players replaced, the link remade, old control rows
    gone. A result whose recipe is not the one asked for is not stored.
 8. The replay is now current, so step 5 stops holding its rounds back. The control dispatcher sends them, each
-   task asking for the round's timing gaps too, and the worker runs them one at a time. The site stores each
+   task asking for the round's timing gaps too, and the worker runs them. The site stores each
    round's control and then its gaps. When the worker's control queue is empty again, step 6 picks the next
    match.
 
@@ -140,25 +140,32 @@ Choice:
 - Order: newest match first, by `matches.played_at` for linked replays, then by `replays.created_at`. This is
   the control queue's D2 order.
 - The control dispatcher does not send rounds of replays that are waiting for a re-parse.
-- The worker runs one control child at a time: `REPLAY_CONTROL_WORKERS=1` in the image and as the server's
-  default (the owner's call, 2026-10-07). This replaces D5 of the control idle queue plan (two children).
-  Control takes about twice as long.
+- Control uses two children while the worker has no parse, and one while a parse is running or waiting (the
+  owner's call, 2026-10-07). A parse arriving kills one running child, not both: the one started last, so
+  the least work is lost. Its round goes back to the front of the control queue uncounted, as now. The other
+  child keeps running beside the parse, and control keeps starting rounds, one at a time, until the parse
+  queues are empty. `REPLAY_CONTROL_WORKERS` stays 2.
 
-Open point on the one-child rule, for the owner (see "Still open"): today a parse arriving kills every
-running control child (D4 of the idle queue plan, also the owner's call), so an upload already gets both
-CPUs. With that rule kept, one child only makes control slower. The limit frees a CPU for uploads only if
-the child is left running while a parse runs. This plan sets the limit as asked and leaves D4 as it is until
-the owner says which they want.
+This amends D4 of the control idle queue plan ("a parse kills all running children; control runs only while
+the worker is idle"). D5 (two children) stands. In `replay_worker/server.py` it is two small changes:
+`ControlRunner.preempt` kills down to one child, and `_next` allows one child while `Worker.idle()` is false
+where today it allows none. A map's first round still runs alone.
+
+What it costs: a parse and one control child now share the worker's 4 GB. The condense peaked near 1 GB on a
+60 MB file on the development PC and the child's cap is 2 GB; neither is measured on the worker. Check the
+worker's memory graph with both running before relying on it. If it does not fit, lower
+`REPLAY_CONTROL_MEMORY_MB` or go back to killing both.
 
 Reason: the worker already drains every upload before any re-parse (`Worker._next`), and one in flight
-bounds a friend's worst wait to the remainder of a single parse. The drain gate matters because the worker
-runs control only while both parse queues are empty (`Worker.idle`): a re-parse always queued would stop
-control entirely, and every re-parsed replay would sit without control until the whole archive was done. With
-the gate, one replay at a time is without control. `SETTLE_S` covers the dispatcher's own `PLAN_IDLE_S` (120
+bounds a friend's worst wait to the remainder of a single parse. The drain gate matters because a parse
+finishes much faster than the control for its rounds, and control is down to one child while a parse runs:
+back-to-back re-parses would strip control from replays far faster than it came back, and most of the
+archive would sit without control until the end. With the gate, one replay at a time is without control, and
+its rounds get both children. `SETTLE_S` covers the dispatcher's own `PLAN_IDLE_S` (120
 s) plus a cycle, so "empty" is not read before the new rounds are submitted.
 
-Rejected: filling the worker's five-slot re-parse queue. It is faster for the parse alone but starves control
-for hours and leaves up to five replays stripped of control at once. Also rejected: killing a running
+Rejected: filling the worker's five-slot re-parse queue. It is faster for the parse alone but halves control
+for hours and strips control from replays faster than it returns. Also rejected: killing a running
 re-parse when an upload arrives; it is a worker change that buys back at most a few minutes.
 
 ### 5. Failures
@@ -345,7 +352,8 @@ two services.
 | --- | --- |
 | A deleted match comes back. | The list starts from existing `replays` rows; the tombstone is checked by the step, by the worker, and by `store_replay` under the match lock. |
 | A friend's upload waits. | One in flight; nothing submitted while an upload is queued or unfinished; the worker drains uploads first. Worst case is the rest of one parse. |
-| Control starves, or every replay loses control at once. | The next re-parse waits for the control queue to drain, so one replay at a time is without control. |
+| Control falls behind, or every replay loses control at once. | The next re-parse waits for the control queue to drain, so one replay at a time is without control. |
+| A parse and a control child together run the worker out of memory. | Not measured. One child at most beside a parse, with its own memory cap; check the worker's memory graph before the switch, and killing both again is a one-line fallback. |
 | Control is computed twice. | Rounds of replays waiting for a re-parse are held back. |
 | A loop: re-parsed, still stale, re-parsed again. | The recipe handshake, the recipe check at store time, and two attempts per file and recipe recorded in the database. |
 | A file that always fails is retried for ever. | Same record; a contract refusal is final after one. |
@@ -396,25 +404,15 @@ Assumed, not checked (no database was touched):
 ## The owner's answers (2026-10-07)
 
 1. Follow every later recipe change by itself: yes, for all changes.
-2. An upload may wait for a re-parse that has already started. Control rounds use one thread at most, so
-   that a CPU is free for uploads; slower control is accepted. (Decision 4.)
+2. An upload may wait for a re-parse that has already started. While a parse runs, control uses one child at
+   most, so the parse always has a CPU: a parse arriving kills one of the two children, not both.
+   (Decision 4.)
 3. Timing gaps are computed automatically too. ("Timing gaps on the worker".)
 4. The archive and the control idle queue should both be on: checked, both are. ("Verified and assumed".)
 5. Locally ingested replays stay with `reingest_replays.py`.
 
-## Still open
-
-One question. With one control child, should a parse still kill it?
-
-- Keep the kill (D4 as it is): an upload gets both CPUs, as it does today. The one-child limit then gains
-  nothing for uploads and halves control's speed.
-- Drop the kill: the child keeps running on one CPU while a parse uses the other. This is what "a CPU
-  always free for uploads" describes, and control no longer stops during parses. The cost is memory: a parse
-  and a control child would share the worker's 4 GB. The condense peaked near 1 GB on a 60 MB file on the
-  development PC, the child's cap is 2 GB, and neither is measured on the worker.
-
-Recommended: drop the kill, after one check of the worker's memory graph with a parse and a control child
-running together. If it does not fit, keep the kill and go back to two children.
+Nothing is left open for the owner. One thing to measure on the live worker before the switch goes on: memory
+with a parse and a control child running together (decision 4).
 
 ## Rough size
 
@@ -427,7 +425,8 @@ Gaps on the worker:
 | --- | --- |
 | `webapp/app/services/replay_control_remote.py` | About 60 lines: the `gaps` key, `gaps_only` tasks from `plan_gaps`, storing gaps on collect, counts. |
 | `webapp/app/replays/gap_format.py` (new), `webapp/app/services/replay_gaps.py`, `webapp/app/control/task.py` | About 50 lines moved: the four pure names, re-exported; the import in `task.py`; deleting the cache file on the worker. |
-| `replay_worker/Dockerfile`, `replay_worker/server.py` | Copy `app/gaps`, extend the smoke test, `REPLAY_CONTROL_WORKERS=1` and the default. |
+| `replay_worker/Dockerfile` | Copy `app/gaps`, extend the smoke test. |
+| `replay_worker/server.py` | About 20 lines: a parse kills one child and control keeps one running (decision 4). |
 | `webapp/app/replays/store.py` | About 5 lines: `_delete` removes gap rows. |
 | `test_control_remote.py`, `test_replay_worker_control.py`, the gap tests | About 150 lines. |
 
