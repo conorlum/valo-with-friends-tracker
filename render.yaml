@@ -5,7 +5,9 @@ services:
   - type: web
     name: valowithfriendstracker
     runtime: python
-    plan: standard  # a Blueprint sync resets the plan to whatever this says
+    # 2 CPU / 4 GB ($85/month; the user's choice, 2026-10-07). A Blueprint sync resets the plan to whatever
+    # this says: while it said `standard`, every merge put the service back on 1 CPU / 2 GB.
+    plan: 2c-4g
     rootDir: webapp
     buildCommand: |
       pip install --upgrade pip
