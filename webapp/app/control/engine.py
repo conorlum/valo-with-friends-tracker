@@ -890,6 +890,15 @@ class RoundInputs:
                 out[nodes] = True
         return out
 
+    def reopened_by(self, t: float) -> np.ndarray:
+        """Per node, when the last ability wall there ended, at or before t (-inf where none has): nothing steps
+        onto a wall's line before the wall is gone, so ground behind it is reached from then, not from before."""
+        out = np.full(self.geo.n, -np.inf)
+        for _, b, nodes in self.blockers:
+            if b <= t:
+                out[nodes] = np.maximum(out[nodes], b)
+        return out
+
     def smokes_at(self, t: float) -> list:
         """What blocks sight at t: the smokes as (x, y, r, solid), then the walls that are up."""
         return ([(x, y, r, solid) for t0, t1, x, y, r, solid in self.smokes if t0 <= t < t1]
@@ -914,10 +923,14 @@ class RoundInputs:
         times.update(snap_after(t) for t in self.transitions)
         return np.array(sorted(t for t in times if 0.0 <= t < self.t_end))
 
-    def analytic_times(self, frames: np.ndarray) -> np.ndarray:
+    def analytic_times(self, frames: np.ndarray, own: bool = False) -> np.ndarray:
         """The instants control is evaluated and integrated at (W09): the viewer's frames plus each Info's own
-        exact time. A round with no Info has exactly its frames, so its result is unchanged."""
-        last = float(frames[-1]) if len(frames) else -1.0     # never past the last frame asked for
+        exact time. A round with no Info has exactly its frames, so its result is unchanged. `own`: the frames
+        are the round's own (`tick_times`), so an instant after the last of them and before the round's end is
+        evaluated too; a caller's own frames are never run past."""
+        last = float(frames[-1]) if len(frames) else -1.0
+        if own:
+            last = max(last, math.nextafter(self.t_end, -math.inf))
         extra = ({round(float(i.t), 6) for i in self.infos if i.t <= last}
                  | {round(float(t), 6) for t in self.transitions if 0.0 <= t <= last}) - {round(float(t), 6) for t in frames}
         return np.array(sorted({*(float(t) for t in frames), *extra}))
@@ -1909,6 +1922,8 @@ class Unknown:
         self.protect: dict[str, dict[int, dict[str, int]]] = {"A": {}, "B": {}}
         self.cleared: dict[str, set[str]] = {"A": set(), "B": set()}      # sources vision has cleared: never again
         self.paused: dict[str, dict[int, float]] = {"A": {}, "B": {}}     # side -> enemy -> since when they can't move
+        # side -> enemy -> {source id: the nodes only that broaden added}, for a `retract` of the same source
+        self.broadened: dict[str, dict[int, dict[str, np.ndarray]]] = {"A": {}, "B": {}}
         # side -> enemy -> flat: the earliest time that enemy can enter each node again: an exclusion at te says they
         # weren't there at te, so the region re-enters it from te on, like ground the team stopped watching
         self.floor: dict[str, dict[int, np.ndarray]] = {"A": {}, "B": {}}
@@ -1987,6 +2002,7 @@ class Unknown:
         if blocking:
             mid = t if since == -math.inf else (since + t) / 2
             blocked_step, blocked_now = rnd.blocked_at(mid), rnd.blocked_at(t)
+            reopened = rnd.reopened_by(t)        # a wall that has ended: its line is entered from then on
         infos = getattr(rnd, "infos", None) or []
         if infos:
             times = [i.t for i in infos]
@@ -2005,6 +2021,7 @@ class Unknown:
                 if self.protect[side].pop(gone, None):
                     self.reasons[side].append((t, gone, "cleanup", "died", ""))
                 self.paused[side].pop(gone, None)
+                self.broadened[side].pop(gone, None)
                 self.floor[side].pop(gone, None)
                 if locates:
                     self._dead[side].add(gone)
@@ -2107,8 +2124,14 @@ class Unknown:
                         step_room[h.cell] = room[h.cell]         # one standing on a wall's line is there
                     step_solid = blocked_step if solid is None else solid | blocked_step
                     reached[~step_room] = np.inf
-                reached, parent = self._spread(reached, step_room, free if floor is None else np.maximum(free, floor),
-                                               t, self.seen[side].get(slot), step_solid)
+                step_free = free if floor is None else np.maximum(free, floor)
+                if blocking:
+                    step_free = np.maximum(step_free, reopened)
+                if self.paused[side].get(slot, t) < t:
+                    # paused through this step (a pause starts at an instant of its own): they enter nothing in
+                    # it, not even ground the team has just stopped watching
+                    step_free = np.maximum(step_free, t)
+                reached, parent = self._spread(reached, step_room, step_free, t, self.seen[side].get(slot), step_solid)
                 if blocking:
                     gone = blocked_now.copy()
                     if h is not None:
@@ -2174,9 +2197,21 @@ class Unknown:
                     self.protect[side].setdefault(slot, {})[info.source] = node
             elif info.kind == "broaden":
                 fp = utility.footprint(info, self.geo)
+                if info.source:
+                    self.broadened[side].setdefault(slot, {})[info.source] = fp & ~np.isfinite(reached)
                 reached = np.where(fp, np.minimum(reached, te), reached)
                 for node in np.flatnonzero(fp & (reached == te)).tolist():
                     sources.setdefault(node, te)
+            elif info.kind == "retract":
+                added = self.broadened[side].get(slot, {}).pop(info.source, None)
+                if added is None:
+                    self.ignored["retract without its broaden"] += 1
+                    continue
+                keep = np.isfinite(reached) & ~added
+                if not keep.any():
+                    self.ignored["retract that would leave the enemy nowhere"] += 1
+                    continue
+                reached = np.where(keep, reached, np.inf)
             self.reasons[side].append((te, slot, info.kind, info.reason, info.source))
         if paused is not None:
             held += max(0.0, t - max(paused, start))
@@ -2184,6 +2219,11 @@ class Unknown:
             # the enemy couldn't move for `held` of this step: every arrival is that much later, so nothing they
             # could reach is reached early, and nothing is caught up after
             reached = np.where(np.isfinite(reached), reached + held, reached)
+            seen = self.seen[side].get(slot)
+            if seen is not None:
+                # the spread starts again from the last sighting at the sighting's own time (`_spread`): held too,
+                # or a region that began at a sighting would grow through the pause
+                self.seen[side][slot] = (seen[0], seen[1] + held)
         if paused is None:
             self.paused[side].pop(slot, None)
         else:
@@ -2641,7 +2681,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     times = rnd.tick_times() if ticks is None else np.asarray(ticks, float)
     nxt = np.append(times[1:], rnd.t_end)
     weights = np.maximum(nxt - times, 0.0)
-    analytic = rnd.analytic_times(times)
+    analytic = rnd.analytic_times(times, own=ticks is None)
     frame_of = {round(float(t), 6): i for i, t in enumerate(times)}
     a_weights = np.maximum(np.append(analytic[1:], rnd.t_end) - analytic, 0.0)
     walk_flat = geo.walk.ravel()             # the stored result is per walkable cell

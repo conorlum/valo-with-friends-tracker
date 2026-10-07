@@ -41,8 +41,9 @@ from tests.replays.control_toys import blob, door_hall
 PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4: "237677656d71ca9f",
           5: "d6a626879e47e6a0", 6: "d6a626879e47e6a0",
           # 7 (2026-10-05): utility knowledge, ability walls, the flat trip join; the digest now also covers
-          # app/control/utility.py's constants and figures (utility.json's numbers)
-          7: "f1e76324201276d8"}
+          # app/control/utility.py's constants and figures (utility.json's numbers). Unreleased, so re-pinned in
+          # place for the 2026-10-06 code review's `retract` operation (utility.KINDS, ORDER)
+          7: "183a274bd38804d0"}
 
 
 def _constants_digest() -> str:

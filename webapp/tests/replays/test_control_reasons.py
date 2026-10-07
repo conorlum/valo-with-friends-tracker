@@ -103,7 +103,7 @@ def test_every_reason_the_engine_can_emit_has_words_in_the_panel():
     source = CONTROL_JS.read_text(encoding="utf-8")
     reasons = {"seen", "kill", "plant", "damage", "gunfire", "footsteps", "revived", "died", "hypothesis_cleared",
                *ut.REVEAL_REASONS.values(), "reveal", *ut.PULSE_SOURCES.values(), "knife_zero", "knife_all",
-               "skye_no_cue", "leer_seen", "omen_channel", "omen_unheard", "waylay_recall", "yoru_beacon",
+               "skye_no_cue", "leer_seen", "omen_channel", "omen_unheard", "omen_seen", "waylay_recall", "yoru_beacon",
                "yoru_drift_unheard"}
     for reason in sorted(reasons):
         assert f"{reason}:" in source, reason

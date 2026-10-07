@@ -13,6 +13,8 @@ An `Info` says, at its own exact time `t`, something `side` learns about enemy `
   cleanup until the team's vision clears it, and never protected again after. Not locating evidence.
 - `broaden`: the enemy may be anywhere in the footprint (an unheard teleport): it joins the region at `t`, with
   no protection. Not locating evidence.
+- `retract`: the broaden with the same `source` is taken back (its destination was seen after all): the ground
+  only that broaden added leaves the region. Nothing else changes, and nothing is held shut after.
 - `pause` / `resume`: the enemy can't move in between (Omen's channel): their region doesn't spread, and doesn't
   catch up after. Vision still clears it.
 
@@ -40,8 +42,9 @@ _FIGURES_FILE = json.loads((Path(__file__).with_name("utility.json")).read_text(
 FIGURES = {key: ({k: float(v) for k, v in value.items()} if isinstance(value, dict) else float(value))
            for key, value in _FIGURES_FILE.items() if key not in ("sources", "PROVISIONAL")}
 
-KINDS = ("resume", "pause", "locate", "restrict", "exclude", "hypothesis", "broaden")
-ORDER = {"resume": 0, "pause": 1, "locate": 2, "restrict": 2, "exclude": 2, "hypothesis": 2, "broaden": 2}
+KINDS = ("resume", "pause", "locate", "restrict", "exclude", "hypothesis", "broaden", "retract")
+ORDER = {"resume": 0, "pause": 1, "locate": 2, "restrict": 2, "exclude": 2, "hypothesis": 2, "broaden": 2,
+         "retract": 2}
 LOCATING = frozenset({"locate"})
 
 
@@ -152,7 +155,8 @@ def read_reveals(rnd) -> list[Info]:
 def read_pulses(rnd) -> list[Info]:
     """A Haunt or recon pulse clears what it sees: for each living enemy of its owner, the ground in its sight and
     range is excluded at the pulse (the ones it revealed are located by `read_reveals`). Its sight is cast from the
-    object's own place and height, against the map and the smokes up then. Needs: reveal (Veto keeps his region)."""
+    object's own place and height, against the map and the smokes and walls up at its own exact time (as the engine
+    evaluates that instant; never an earlier frame's). Needs: reveal (Veto keeps his region)."""
     from app.control import engine as ce          # the engine imports this module first
 
     geo, out = rnd.geo, []
@@ -169,7 +173,7 @@ def read_pulses(rnd) -> list[Info]:
         if geo.heights is not None:
             own = geo.node_at(geo.cell_of_px(x, y), None if z is None else z + ce.hc.STAND_M)
             eye = None if z is None or np.isnan(geo.node_z[own]) else z + ce.hc.DEVICE_EYE_M
-        seen = ce.cast(geo, x, y, np.arange(0, 360, ce.RAY_STEP_DEG), rnd.smokes_at(ce.snap(t)), eye_z=eye, own=own)
+        seen = ce.cast(geo, x, y, np.arange(0, 360, ce.RAY_STEP_DEG), rnd.smokes_at(t), eye_z=eye, own=own)
         r = FIGURES["reveal_range_m"][figure] / geo.m_per_px
         seen &= ((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) <= r * r
         if not seen.any():
@@ -259,7 +263,7 @@ def read_skye_flashes(rnd) -> list[Info]:
         if geo.heights is not None:
             own = geo.node_at(geo.cell_of_px(x, y), None if z is None else z + ce.hc.STAND_M)
             eye = None if z is None or np.isnan(geo.node_z[own]) else z
-        seen = ce.cast(geo, x, y, np.arange(0, 360, ce.RAY_STEP_DEG), rnd.smokes_at(ce.snap(t)), eye_z=eye, own=own)
+        seen = ce.cast(geo, x, y, np.arange(0, 360, ce.RAY_STEP_DEG), rnd.smokes_at(t), eye_z=eye, own=own)
         r = FIGURES["skye_flash_range_m"] / geo.m_per_px
         seen &= ((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2) <= r * r
         if not seen.any():
@@ -292,14 +296,15 @@ def _sees_point(rnd, viewer: int, t: float, x: float, y: float) -> bool:
     if any(a <= t < b for a, b in rnd.nearsight.get(viewer, [])) and \
             math.hypot(x - p[0], y - p[1]) * rnd.geo.m_per_px >= ce.NEARSIGHT_RADIUS_M:
         return False
-    return ce.los(rnd.geo, (p[0], p[1], None), (x, y, None), rnd.smokes_at(ce.snap(t)))
+    return ce.los(rnd.geo, (p[0], p[1], None), (x, y, None), rnd.smokes_at(t))
 
 
 def read_leers(rnd) -> list[Info]:
     """Reyna's Leer (item 29): once one of her enemies sees the eye (it is in a living enemy's view, or it
     nearsighted one of them), the team knows she cast it from within the eye's placement distance, through walls:
-    her region is restricted to that disk at that moment, and moves on from there as usual. An eye no enemy saw tells
-    them nothing. Only Reyna's own region, never another enemy's."""
+    her region is restricted to that disk, widened by how far she could have walked between the cast and the moment
+    it is seen (UNKNOWN_MPS, straight-line: no smaller than the truth), and moves on from there as usual. An eye no
+    enemy saw tells them nothing. Only Reyna's own region, never another enemy's."""
     from app.control import engine as ce
 
     out = []
@@ -330,7 +335,8 @@ def read_leers(rnd) -> list[Info]:
             continue
         side = next(rnd.team[s] for s in enemies)
         out.append(Info(seen_at, side, reyna, "restrict", "leer_seen", x=x, y=y,
-                        radius_m=FIGURES["leer_cast_range_m"], source=f"{LEER_EYE}@{t0}", detail={"needs": "sight"}))
+                        radius_m=FIGURES["leer_cast_range_m"] + ce.UNKNOWN_MPS * max(0.0, seen_at - t0),
+                        source=f"{LEER_EYE}@{t0}", detail={"needs": "sight"}))
     return out
 
 
@@ -368,10 +374,11 @@ def outside_hearing(rnd, side: str, t: float, range_m: float) -> np.ndarray:
 
 def read_omen_ults(rnd) -> list[Info]:
     """Omen's From the Shadows (item 12), for each enemy team: his region doesn't move while he channels (pause at the
-    marker's start, resume at its end). If none of them hears the destination and none sees it during the channel,
-    he may be anywhere they don't hear: that ground joins his region when the destination appears, whatever the
-    outcome, and stays after a cancel. Seen or heard: nothing more (a completion is then an ordinary sighting or
-    spread from where he lands)."""
+    marker's start, resume at its end). If none of them hears or sees the destination when it appears, he may be
+    anywhere they don't hear: that ground joins his region then, whatever the outcome, and stays after a cancel. If
+    one of them first sees the destination later in the channel, the guess is taken back at that moment (`retract`),
+    never earlier: what was known before the look is not rewritten. Seen or heard at the start: nothing more (a
+    completion is then an ordinary sighting or spread from where he lands)."""
     from app.control import engine as ce
 
     out = []
@@ -393,15 +400,17 @@ def read_omen_ults(rnd) -> list[Info]:
         out.append(Info(t1, side, omen, "resume", "omen_channel", source=source))
         enemies = [s for s, team in rnd.team.items() if team == side]
         range_m = FIGURES["hearing_m"]["omen_ult"]
-        seen = False
-        t = t0
-        while t <= t1 and not seen:
-            seen = any(_sees_point(rnd, s, t, x, y) for s in enemies)
-            t += LEER_LOOK_STEP_S
-        if seen or heard(rnd, side, t0, x, y, range_m):
+        # decided on what they know when it appears; a look later in the channel is its own, later, Info
+        if heard(rnd, side, t0, x, y, range_m) or any(_sees_point(rnd, s, t0, x, y) for s in enemies):
             continue
         out.append(Info(t0, side, omen, "broaden", "omen_unheard", mask=outside_hearing(rnd, side, t0, range_m),
                         source=source, detail={"outcome": e.get("outcome")}))
+        t = t0 + LEER_LOOK_STEP_S
+        while t <= t1:
+            if any(_sees_point(rnd, s, t, x, y) for s in enemies):
+                out.append(Info(t, side, omen, "retract", "omen_seen", source=source))
+                break
+            t += LEER_LOOK_STEP_S
     return out
 
 
