@@ -212,7 +212,7 @@
   },
   "Summit": {
    "image_sha": "e3ceb9a90958",
-   "sight_sha": "2b8c041fa4c9",
+   "sight_sha": "c2c9ddd9a224",
    "walk_sha": "b8ab14e4a82e",
    "bullet_sha": "c2c9ddd9a224",
    "walkable_cells": 6031,
@@ -223,15 +223,14 @@
    "specials": [],
    "kill_lines": {
     "qualifying": 297,
-    "blocked": 1,
-    "share": 0.0034,
+    "blocked": 4,
+    "share": 0.0135,
     "passes": true
    },
    "barrier_sha": "6e8a726dd39b",
    "paints": [
-    "cant_walk_paint",
-    "barrier_paint",
-    "bullet_paint"
+    "cover_paint",
+    "barrier_paint"
    ]
   },
   "Sunset": {

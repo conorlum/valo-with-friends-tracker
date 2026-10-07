@@ -70,11 +70,12 @@ def test_every_committed_map_has_a_bullet_mask_matching_the_index_and_its_sight_
         assert extra == has_boxes, name
 
 
-def test_the_summit_box_stops_shots_and_walking_but_not_sight():
+def test_the_summit_box_stops_shots_walking_and_sight():
+    # The owner, 2026-10-06 (review of D11): it is two boxes high, so it is cover, not a low box.
     bullet = cg.read_mask_png(cg.ASSET_DIR / "Summit.bullet.png")
     sight = cg.read_mask_png(cg.ASSET_DIR / "Summit.sight.png")
     walk = cg.read_mask_png(cg.ASSET_DIR / "Summit.walk.png")
-    assert bullet[422, 783] and not sight[422, 783] and not walk[422, 783]
+    assert bullet[422, 783] and sight[422, 783] and not walk[422, 783]
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")

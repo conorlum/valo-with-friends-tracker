@@ -21,7 +21,7 @@ blocked by specific missing evidence. "Real data" means a locally exported repla
 | 5 | Suppressed Cypher devices switch off | done | Devices hold nothing while their owner is suppressed and come back after; drawn as off in the viewer |
 | 6 | Trip seals the reported corner | done | A real defect: a one-cell gap beside the wire on flat maps. The wire now joins the nearest wall within 2 m. Judged case `summit-r6-trip-seals-the-corner` |
 | 7 | The unknown collapse at 21.5 s | stale | A real camera sighting of four enemies; the engine was right. The Control tab now lists why the unknown changed |
-| 8 | Unknown walks through a box | done | The box is on Summit (round 7, 13.5 s). Marked walk-blocking only; sight unchanged. Whether it is tall is the owner's call |
+| 8 | Unknown walks through a box | done | The box is on Summit (round 7, 13.5 s). Marked as cover: it blocks walking and sight (the owner, 2026-10-06: it is two boxes high) |
 | 9 | Neural Theft locates every living enemy at each ping | done | Real data: local judged cases on Summit round 7 (1,725 -> 177 unknown cells at the first ping). Veto's immunity: see item 19 |
 | 10 | Knife pulses: none, all or some enemies hit | done | Fixtures for zero, all and partial hits, deaths at the pulse, unproven rows. An old row without a proven pulse changes nothing |
 | 11 | Tracers stop at the first wall | done | A bullet mask per map (13 maps); low see-over boxes stop a shot, open drops do not; no 25 m cap |

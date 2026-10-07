@@ -123,11 +123,11 @@
    }
   },
   "Summit": {
-   "fingerprint": "1b38c2bce6a05378",
+   "fingerprint": "effe2731c9e99702",
    "geometry_inputs": {
     "barrier": "6e8a726dd39b",
     "scale": 7.5e-05,
-    "sight": "2b8c041fa4c9",
+    "sight": "c2c9ddd9a224",
     "specials": [],
     "walk": "b8ab14e4a82e"
    }
