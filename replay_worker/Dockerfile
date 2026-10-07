@@ -29,15 +29,16 @@ RUN python3 -m venv /opt/control-venv \
  && /opt/control-venv/bin/pip install --no-cache-dir --only-binary=:all: numpy==2.4.6 scipy==1.18.1 Pillow==10.4.0
 COPY --from=parser /out /opt/parser
 # Only what the condenser reads: app/replays (stdlib only), the vendored map/agent tables and the pin;
-# and the control engine, run only by the control venv's children.
+# and the control engine and the gap detector, run only by the control venv's children.
 COPY webapp/app/__init__.py /srv/webapp/app/__init__.py
 COPY webapp/app/replays /srv/webapp/app/replays
 COPY webapp/app/control /srv/webapp/app/control
+COPY webapp/app/gaps /srv/webapp/app/gaps
 COPY webapp/app/static/data /srv/webapp/app/static/data
 COPY webapp/replay_parser.json /srv/webapp/replay_parser.json
 COPY replay_worker /srv/replay_worker
 # The smoke test: the control venv imports the engine, or the build fails here (not silently later).
-RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine, app.control.task, replay_worker.control_job"
+RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine, app.control.task, app.gaps.detect, app.gaps.cache, app.gaps.rows, app.gaps.backshots, replay_worker.control_job"
 RUN mkdir -p /jobs/control_cache && chown -R worker /jobs
 # No `USER worker` here: the entrypoint starts as root only to chown the .vrf archive's disk (Render
 # mounts it root-owned), then drops to `worker` with setpriv before the server starts. This guard fails

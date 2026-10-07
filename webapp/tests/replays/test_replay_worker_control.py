@@ -336,6 +336,9 @@ def test_the_image_builds_a_control_venv_with_the_web_apps_pins():
     assert "--only-binary=:all:" in install
     assert sorted(re.findall(r"(numpy|scipy|Pillow)==(\S+)", install)) == sorted(pins.items())
     assert "python3-venv" in dockerfile and "COPY webapp/app/control /srv/webapp/app/control" in dockerfile
+    assert "COPY webapp/app/gaps /srv/webapp/app/gaps" in dockerfile
+    smoke = re.search(r'/opt/control-venv/bin/python -c "import ([^"]+)"', dockerfile).group(1)
+    assert {"app.gaps.detect", "app.gaps.cache", "app.gaps.rows", "app.gaps.backshots"} <= set(smoke.split(", "))
     assert re.search(r'RUN PYTHONPATH=\S+ /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine',
                      dockerfile)
     assert "REPLAY_CONTROL_CMD='[\"/opt/control-venv/bin/python\", \"-m\", \"replay_worker.control_job\"]'" in dockerfile
@@ -362,3 +365,93 @@ def test_the_child_returns_the_tasks_bytes_in_base64(monkeypatch):
     assert result["status"] == "ok" and base64.b64decode(result["data"]) == direct["data"]
     assert base64.b64decode(result["summary"]) == direct["summary"]
     assert (result["revision"], result["data_version"]) == (cf.CONTROL_REVISION, cf.DATA_VERSION)
+
+
+def _gaps_task(monkeypatch, tmp_path, key="e" * 16):
+    """A round on the toy map with a gaps block carrying the site's keys; the tick cache goes under tmp_path."""
+    from control_toys import blob, open_hall
+
+    from app.control import geometry
+    from app.control import task as control_task
+    from app.replays import format as fmt
+
+    monkeypatch.setattr(geometry, "cache_dir", lambda: tmp_path)
+    geo = open_hall()
+    monkeypatch.setitem(control_task._GEOMETRY, geo.name, geo)
+    (tmp_path / "gaps").mkdir(exist_ok=True)
+    data = blob({0: ("A", [(0.0, 150, 200, 0)]), 5: ("B", [(0.0, 380, 250, 180)])}, t_end=3.0)
+    return {"key": "k", "map": geo.name, "blob": base64.b64encode(fmt.encode_blob(data)).decode(),
+            "link": {"sides": {"0": "attack", "5": "defense"}, "db_deaths": []},
+            "gaps": {"replay_id": 1, "round": 1, "fingerprint": "c" * 16, "gap_fingerprint": "9" * 16,
+                     "engine_key": key}}
+
+
+def test_the_child_returns_its_figures_and_keeps_no_tick_cache(tmp_path, monkeypatch):
+    import os
+
+    from app.replays import control_format as cf
+
+    t = _gaps_task(monkeypatch, tmp_path)
+    gaps_dir = tmp_path / "gaps"
+    old = gaps_dir / "9-r9-dead.ticks.pkl.gz"                    # a killed child's leftover
+    old.write_bytes(b"x")
+    stale = time.time() - control_job.STALE_CACHE_S - 60
+    os.utime(old, (stale, stale))
+    recent = gaps_dir / "8-r8-live.ticks.pkl.gz"                 # another child's file, being written now
+    recent.write_bytes(b"x")
+    result = control_job.run(t)
+    assert result["status"] == "ok" and result["figures"] == cf.figures_hash()
+    assert result["gaps"]["run"]["status"] == "ok", result["gaps"]["run"].get("error")
+    assert result["gaps"]["run"]["fingerprint"] == "9" * 16
+    assert sorted(p.name for p in gaps_dir.iterdir()) == [recent.name], "its own file and the old one are gone"
+    json.dumps(result)                                           # the whole answer is JSON
+
+
+def test_two_children_on_one_round_never_delete_each_others_tick_cache(tmp_path, monkeypatch):
+    # Two task keys for one replay and round can be live at once (a deploy or a relink between them), and
+    # both carry the same engine key: each child works under its own suffix and removes only its own names.
+    from app.control import task as control_task
+
+    t = _gaps_task(monkeypatch, tmp_path)
+    gaps_dir = tmp_path / "gaps"
+    prefix = f"1-r1-{'e' * 16}"
+    other = gaps_dir / f"{prefix}-{'0' * 32}.ticks.pkl.gz"       # the other child's file and its half-written one
+    other_tmp = gaps_dir / (other.name + ".tmp")
+    other.write_bytes(b"x")
+    other_tmp.write_bytes(b"x")
+    seen = []
+    real = control_task.compute_task
+
+    def spy(task):
+        result = real(task)
+        seen.append((task["gaps"]["engine_key"], sorted(p.name for p in gaps_dir.iterdir())))
+        return result
+
+    monkeypatch.setattr(control_task, "compute_task", spy)
+    result = control_job.run(t)
+    assert result["gaps"]["run"]["status"] == "ok", result["gaps"]["run"].get("error")
+    [(used, during)] = seen
+    assert used.startswith("e" * 16 + "-") and used != "e" * 16 + "-" + "0" * 32, "its own suffix"
+    assert f"1-r1-{used}.ticks.pkl.gz" in during and other.name in during
+    assert sorted(p.name for p in gaps_dir.iterdir()) == sorted([other.name, other_tmp.name])
+    assert t["gaps"]["engine_key"] == "e" * 16, "the caller's task is not rewritten"
+
+
+def test_a_task_without_gaps_touches_no_tick_cache(tmp_path, monkeypatch):
+    t = _gaps_task(monkeypatch, tmp_path)
+    del t["gaps"]
+    kept = tmp_path / "gaps" / "8-r8-live.ticks.pkl.gz"
+    kept.write_bytes(b"x")
+    assert control_job.run(t)["status"] == "ok"
+    assert [p.name for p in (tmp_path / "gaps").iterdir()] == [kept.name]
+
+
+def test_health_advertises_the_gaps_protocol_beside_the_switch(tmp_path, runner):
+    # What the web app reads before it sends a gaps block (app/services/replay_control_remote.py).
+    assert server.GAPS_PROTOCOL == 1
+    on, _ = runner()
+    control = http(serve(tmp_path, on), "/health")[1]["control"]
+    assert control["enabled"] is True and control["gaps_protocol"] == 1
+    off, _ = runner(control_enabled=False)
+    control = http(serve(tmp_path, off), "/health")[1]["control"]
+    assert control["enabled"] is False and control["gaps_protocol"] == 1, "the switch and the protocol are separate"

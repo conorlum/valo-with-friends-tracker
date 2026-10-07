@@ -8,7 +8,7 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
                       411 no length, 413 over the size cap, 503 the queue is full.
     GET  /jobs/{id}   {"id", "status": "queued" | "parsing" | "done" | "failed", "error"?, "result"?}
     GET  /health      {"ok": true, "queued", "limits",
-                       "control": {"enabled", "queued", "running", "warm", "preempted"}}
+                       "control": {"enabled", "gaps_protocol", "queued", "running", "warm", "preempted"}}
     POST /control     body: JSON {key, map, blob (base64), link}: one round's map control
                       (docs/map-control-worker-plan.md). 202 {"id", "status"} (the same job for a key
                       it already has), 400 not a task, 404 control is off, 413 too large, 503 full.
@@ -545,6 +545,10 @@ def _log(message: str) -> None:
 # ---------------------------------------------------------------- map control (docs/map-control-worker-plan.md)
 
 CONTROL_FINISHED_KEPT = 200
+# The control child's task and result protocol, told to the web app in /health: 1 means a task's `gaps` block
+# is understood (replay_worker/control_job.py; the image ships app/gaps). A plain number here, never read
+# from the detector: this process imports none of it.
+GAPS_PROTOCOL = 1
 CHILD_THREADS = {"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
 
 
@@ -795,7 +799,7 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
                 body = {"ok": True, "queued": worker.queue.qsize(),
                         "limits": {"timeout_s": worker.settings.timeout_s, "max_bytes": worker.settings.max_bytes,
                                    "queue_size": worker.settings.queue_size, "memory_cap": worker.memory_cap}}
-                body["control"] = {"enabled": bool(control and control.enabled),
+                body["control"] = {"enabled": bool(control and control.enabled), "gaps_protocol": GAPS_PROTOCOL,
                                    **(control.counts() if control else {})}
                 body["archive"] = worker.archive_status()
                 return self._send(HTTPStatus.OK, body)
