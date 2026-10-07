@@ -2,9 +2,12 @@
 
 Status: plan only, 2026-10-07. No code, migration or setting has been changed.
 
-Base read: `origin/afk/2026-10-05-utility-review` at `a9d1a87` (PR #118, not merged into `origin/main` when
-this was written). That branch holds `CONDENSE_REVISION = 13`; `origin/main` is still at 12. This branch
-(`plans-auto-reparse-queue`) is cut from it.
+Base read: `origin/afk/2026-10-05-utility-review` at `a9d1a87` (PR #118), which holds `CONDENSE_REVISION = 13`.
+This branch (`plans-auto-reparse-queue`) is cut from it. PR #118 was merged into `origin/main` as `b0388ed`
+on 2026-10-07, after the first draft; the two trees are the same.
+
+Revised 2026-10-07 with the owner's answers (see "The owner's answers"): timing gaps are now in scope, and
+control runs one child at a time.
 
 ## Goal
 
@@ -31,11 +34,12 @@ In scope:
 - A bounded retry record per file and recipe, with no schema change.
 - A status route and a `--status` flag on the existing script.
 - Keeping the per-kill Impact split across a same-file replace.
+- Timing gaps computed on the worker with each round's control, and stored by the site (see "Timing gaps on
+  the worker"). This part stands alone and is built first.
+- One control child at a time on the worker.
 
 Out of scope:
 
-- Timing gaps on the worker. The site's dispatcher does not compute gaps today (see "Where the code
-  contradicts the prompt"); that needs its own plan.
 - Replays ingested locally (`source = 'local'`) whose `.vrf` is on the owner's PC, not in the worker's
   archive. `scripts/reingest_replays.py` stays their route.
 - Preempting a running parse when an upload arrives.
@@ -62,9 +66,10 @@ Out of scope:
 7. The worker parses it behind any upload that arrives meanwhile. The result is stored by the existing
    `store_replay` in one locked transaction: rounds and players replaced, the link remade, old control rows
    gone. A result whose recipe is not the one asked for is not stored.
-8. The replay is now current, so step 5 stops holding its rounds back. The control dispatcher sends them, and
-   the worker runs them now that it is not parsing. When its control queue is empty again, step 6 picks the
-   next match.
+8. The replay is now current, so step 5 stops holding its rounds back. The control dispatcher sends them, each
+   task asking for the round's timing gaps too, and the worker runs them one at a time. The site stores each
+   round's control and then its gaps. When the worker's control queue is empty again, step 6 picks the next
+   match.
 
 ## Decisions
 
@@ -135,6 +140,15 @@ Choice:
 - Order: newest match first, by `matches.played_at` for linked replays, then by `replays.created_at`. This is
   the control queue's D2 order.
 - The control dispatcher does not send rounds of replays that are waiting for a re-parse.
+- The worker runs one control child at a time: `REPLAY_CONTROL_WORKERS=1` in the image and as the server's
+  default (the owner's call, 2026-10-07). This replaces D5 of the control idle queue plan (two children).
+  Control takes about twice as long.
+
+Open point on the one-child rule, for the owner (see "Still open"): today a parse arriving kills every
+running control child (D4 of the idle queue plan, also the owner's call), so an upload already gets both
+CPUs. With that rule kept, one child only makes control slower. The limit frees a CPU for uploads only if
+the child is left running while a parse runs. This plan sets the limit as asked and leaves D4 as it is until
+the owner says which they want.
 
 Reason: the worker already drains every upload before any re-parse (`Worker._next`), and one in flight
 bounds a friend's worst wait to the remainder of a single parse. The drain gate matters because the worker
@@ -197,8 +211,9 @@ carry-over, every automatic re-parse would hide the split until the next crawl.
 Rejected: keeping the old control rows and serving them as "stale" against the new rounds. It needs the
 store to move rows across the replace, and it would draw control computed from one blob over another.
 
-Not solved here: timing gaps. Their rows cascade away with the old rounds and nothing on the site recomputes
-them (see the contradiction below and owner question 3).
+Timing gaps: their rows cascade away with the old rounds. They come back with each round's control, from the
+worker (next section). `store._delete` also deletes them explicitly, because the SQLite tests have no
+cascade.
 
 ### 7. The off switch
 
@@ -278,6 +293,52 @@ Only checkable on the live services:
 - Behaviour across a real deploy of each service while a re-parse is queued.
 - Memory and disk on the worker during a re-parse of the largest archived file.
 
+## Timing gaps on the worker
+
+The owner's call (2026-10-07): gaps are computed automatically too. This part does not depend on the
+re-parse queue and is worth having without it. The idle queue already recomputes stale control on the
+worker, and a round's gap fingerprint is built from its control fingerprint, so every round the worker
+recomputes today is left with a stale gap run until `compute_control.py` is run locally. Build it first, as
+its own PR.
+
+What exists (verified): `app/control/task.py` computes a round's gaps with its control when the task has a
+`gaps` key, and gaps alone with `gaps_only`. `scripts/compute_control.py` is the only code that sets that
+key and the only caller of `store_gaps`. `replay_gaps.plan_gaps` already lists rounds whose control is
+current but whose gap run is missing or stale.
+
+Choices:
+
+1. The dispatcher adds `gaps: {replay_id, round, fingerprint}` to every control task. When no control round
+   is left to send, it sends `gaps_only` tasks for the rounds `plan_gaps` lists, in the same order, through
+   the same queue and the same in-flight limit. A gap run that failed under the current fingerprint is left
+   alone, as the script does.
+2. On collect, control is stored first with `store_round`, as now. The gaps are stored with `store_gaps` only
+   if the control row was stored and the result's gap fingerprint equals the site's own
+   `gap_fingerprint(control fingerprint, map)`. A mismatch (the two services on different gap rules or choke
+   assets) drops the gaps and leaves the round for a `gaps_only` task later. A gap failure never changes the
+   control row; it is stored as the gap run's failure.
+3. The worker image must be able to run the gap code. Today it cannot: the Dockerfile copies only
+   `app/replays`, `app/control` and the static data, and `task.py` imports `app.gaps` and
+   `app.services.replay_gaps`, which imports SQLAlchemy and the models. The control venv has neither. So
+   the image also copies `app/gaps`, and the four pure names (`GAPS_REVISION`, `hearing_hash`, `engine_key`,
+   `gap_fingerprint`) move to a module under `app/replays/` with no database import, re-exported from
+   `replay_gaps.py` so nothing else changes. The image's smoke test imports the gap modules too.
+4. The tick cache. A full run reads back the cache file it has just written, so the worker needs somewhere
+   to write it: `CONTROL_CACHE_DIR/gaps`, which the image already sets. The child deletes the file when the
+   task ends. The worker's disk then never fills, at the price that a later `gaps_only` task runs the engine
+   again in place of reading a cache.
+
+Rejected: a separate gaps queue on the worker (a second scheduler for work the control child already does).
+Also rejected: keeping tick caches on the worker's disk; their size is not measured and the archive's space
+accounting does not know about them.
+
+Unit tests: a task carries the `gaps` key; gaps are stored after control and not when control was skipped; a
+result with another gap fingerprint is dropped and asked again as `gaps_only`; a gap failure leaves control
+`ok`; `gaps_only` rounds are sent only when no control round is waiting; the child leaves no cache file
+behind; the pure module imports without SQLAlchemy. Live only: the image builds and its smoke test passes;
+the time and memory of a round with gaps on the worker; that the choke and hearing hashes agree between the
+two services.
+
 ## Risks
 
 | Risk | How the design limits it |
@@ -288,8 +349,9 @@ Only checkable on the live services:
 | Control is computed twice. | Rounds of replays waiting for a re-parse are held back. |
 | A loop: re-parsed, still stale, re-parsed again. | The recipe handshake, the recipe check at store time, and two attempts per file and recipe recorded in the database. |
 | A file that always fails is retried for ever. | Same record; a contract refusal is final after one. |
-| Timing gaps vanish for re-parsed replays. | Not limited by this design. Reported in the status; see owner question 3. |
-| The whole archive is re-parsed after a small asset edit. | Intended (the recipe says the data is stale), paced, and stoppable by unsetting one variable. See owner question 1. |
+| Timing gaps vanish for re-parsed replays. | Gaps are computed with each round's control on the worker. That part ships first, and the switch goes on after it. |
+| A round with gaps needs more memory or time than the control child's caps allow. | Not measured. A gap failure is its own and never fails control; the caps are settings. Check on the live worker before the switch. |
+| The whole archive is re-parsed after a small asset edit. | Intended (the recipe says the data is stale), paced, and stoppable by unsetting one variable. The owner chose this (answer 1). |
 | The feature runs on the demo. | Three independent stops (decision 7). |
 | The site's cycle slows down. | The step makes one `/health` call per cycle and one database query; the archive index is read only when choosing. Stores use their own sessions so the cycle's lock is not released early. |
 
@@ -298,7 +360,7 @@ Only checkable on the live services:
 - "Its map control and timing gaps are stale again, and the control idle queue picks them up." Only control
   is picked up. `replay_control_remote._submit` sends no `gaps` key, and the only caller of `store_gaps` is
   `scripts/compute_control.py`. Gap rows are deleted with the old rounds (foreign-key cascade) and return
-  only when that script is run locally.
+  only when that script is run locally. This plan now closes that ("Timing gaps on the worker").
 - "Re-parses share the worker's queue with uploads." They have their own queue of the same size, read only
   when the upload queue is empty. A re-parse that has started is not interrupted by an upload.
 - `docs/replay-viewer-plan.md` says a stale upload's page offers "re-upload to refresh". I found that text
@@ -313,34 +375,63 @@ the admin re-parse route and its `replay_uploads` row; the control dispatcher en
 built and that the site can compute it without the parser; that `write_link` clears `kill_impact` and what
 restores it; that replay pages are addressed by match UUID; the cascade from rounds to control and gap rows.
 
-Assumed, not checked (no database or live service was touched):
+Verified on the live services, read-only in the Render dashboard, 2026-10-07 (at the owner's request):
 
-- That `REPLAY_ARCHIVE_DIR` and `REPLAY_CONTROL_REMOTE` are on in the Render dashboard. Both are commented
-  out in `render.yaml`.
+- The worker's archive is on. `REPLAY_ARCHIVE_DIR` is set on `replay-worker`, and its log at start-up reads
+  "archive on: recovered 30 job(s)".
+- The control idle queue is on. The worker's log shows the site posting to `/control` and polling
+  `/control/<id>` every 20 seconds.
+- Both are commented out in `render.yaml` on purpose: they were switched on by hand in the dashboard, as the
+  comments beside them say. A Blueprint sync does not remove a variable set in the dashboard.
+- Both services are on `b0388ed` (PR #118), so the live recipe is at condenser revision 13.
+
+Assumed, not checked (no database was touched):
+
 - How many replays are stored and how many are archived. `render.yaml` estimates room for about 350.
 - Timings. The worker's README records 179 s for one 60 MB match on the development PC. Control time per
   round on the worker is not recorded anywhere I read. At a guess of 10 to 15 minutes per match for parse
   plus control, a full archive is two to four days of the worker's idle time.
 - That most stored replays are uploads with an archived file, not local ingests.
 
-## Questions for the owner
+## The owner's answers (2026-10-07)
 
-1. Once switched on, should it follow every later recipe change by itself? Recommended: yes. That is the
-   point of the feature, it is paced, and one variable stops it. The alternative is a setting that names the
-   recipe it approves, which you would edit after each condenser change.
-2. Is it acceptable that an upload arriving mid-re-parse waits for that one parse to finish (a few minutes at
-   worst)? Recommended: yes. Preempting a running parse is a worker change to add only if the wait is felt.
-3. Timing gaps are not recomputed by the site, so a re-parsed replay has none until `compute_control.py` is
-   run locally. Ship this first, or put gaps on the worker first? Recommended: ship this with the switch off,
-   plan gaps on the worker next, and switch on after it, unless losing gaps for a while does not bother you.
-4. Are the worker's archive and the control idle queue both on in production today? Recommended: confirm
-   before the build; with either off the feature idles and says so.
-5. Locally ingested replays are not in the worker's archive, so this never touches them. Leave them to
-   `reingest_replays.py`? Recommended: yes.
+1. Follow every later recipe change by itself: yes, for all changes.
+2. An upload may wait for a re-parse that has already started. Control rounds use one thread at most, so
+   that a CPU is free for uploads; slower control is accepted. (Decision 4.)
+3. Timing gaps are computed automatically too. ("Timing gaps on the worker".)
+4. The archive and the control idle queue should both be on: checked, both are. ("Verified and assumed".)
+5. Locally ingested replays stay with `reingest_replays.py`.
+
+## Still open
+
+One question. With one control child, should a parse still kill it?
+
+- Keep the kill (D4 as it is): an upload gets both CPUs, as it does today. The one-child limit then gains
+  nothing for uploads and halves control's speed.
+- Drop the kill: the child keeps running on one CPU while a parse uses the other. This is what "a CPU
+  always free for uploads" describes, and control no longer stops during parses. The cost is memory: a parse
+  and a control child would share the worker's 4 GB. The condense peaked near 1 GB on a 60 MB file on the
+  development PC, the child's cap is 2 GB, and neither is measured on the worker.
+
+Recommended: drop the kill, after one check of the worker's memory graph with a parse and a control child
+running together. If it does not fit, keep the kill and go back to two children.
 
 ## Rough size
 
-No migration. About 250 lines of code and 400 of tests.
+No migration. Two PRs. Gaps on the worker first: about 130 lines of code and 150 of tests. Then the re-parse
+queue: about 250 lines of code and 400 of tests.
+
+Gaps on the worker:
+
+| File | Change |
+| --- | --- |
+| `webapp/app/services/replay_control_remote.py` | About 60 lines: the `gaps` key, `gaps_only` tasks from `plan_gaps`, storing gaps on collect, counts. |
+| `webapp/app/replays/gap_format.py` (new), `webapp/app/services/replay_gaps.py`, `webapp/app/control/task.py` | About 50 lines moved: the four pure names, re-exported; the import in `task.py`; deleting the cache file on the worker. |
+| `replay_worker/Dockerfile`, `replay_worker/server.py` | Copy `app/gaps`, extend the smoke test, `REPLAY_CONTROL_WORKERS=1` and the default. |
+| `webapp/app/replays/store.py` | About 5 lines: `_delete` removes gap rows. |
+| `test_control_remote.py`, `test_replay_worker_control.py`, the gap tests | About 150 lines. |
+
+The re-parse queue:
 
 | File | Change |
 | --- | --- |
