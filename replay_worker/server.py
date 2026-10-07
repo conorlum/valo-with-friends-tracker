@@ -7,8 +7,9 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
     POST /jobs        body: the .vrf bytes. 202 {"id", "status": "queued"}; 400 not a replay,
                       411 no length, 413 over the size cap, 503 the queue is full.
     GET  /jobs/{id}   {"id", "status": "queued" | "parsing" | "done" | "failed", "error"?, "result"?}
-    GET  /health      {"ok": true, "queued", "limits",
-                       "control": {"enabled", "gaps_protocol", "queued", "running", "warm", "preempted"}}
+    GET  /health      {"ok": true, "queued", "limits", "recipe" (what a parse here stamps; null if unknown),
+                       "control": {"enabled", "gaps_protocol", "queued", "running", "warm", "preempted"},
+                       "archive": {"enabled", ..., "reparse_protocol" (archive on only)}}
     POST /control     body: JSON {key, map, blob (base64), link}: one round's map control
                       (docs/map-control-worker-plan.md). 202 {"id", "status"} (the same job for a key
                       it already has), 400 not a task, 404 control is off, 413 too large, 503 full.
@@ -41,6 +42,26 @@ what it stored:
     GET  /archive              {"files": [...]}: the archive's index.
     POST /archive/delete       {"match_uuid"}: tombstone a match, delete its pending and archived files.
     POST /archive/tombstones   {"match_uuids": [...]}: the web app's full list replaces the local copy.
+
+Re-parse attempts (the automatic queue; docs/superpowers/plans/2026-10-07-auto-reparse-queue-impl.md, task 1).
+The web app reserves an attempt UUID in its database before it asks, and that id is the idempotency key here:
+one id is one job, whatever is lost or restarted in between. Every answer is JSON with a "code".
+
+    POST /reparse              {"match_uuid", "attempt_id", "expected_sha256"}: 202 accepted the first time,
+                               200 with the same job on a repeat. Refused before acceptance (nothing kept, the
+                               id may be sent again): 404 no_archived_file, 409 sha_mismatch, 409 deleted,
+                               503 queue_full. 409 identity_conflict: the id was used for another match or
+                               file. 409 closed. 400 bad_request. 404 archive_off.
+    GET  /reparse/attempts/{id}        the receipt: accepted (with "job_status": queued | parsing | done |
+                               failed | expired), preparing, closed, or 404 unknown_attempt. Never enqueues.
+    POST /reparse/attempts/{id}/close  {"match_uuid", "expected_sha256"}: the accepted job if there is one;
+                               otherwise a durable "closed" receipt, so a delayed POST of the id is refused.
+                               Closing never interrupts an accepted parse.
+
+The write order of an acceptance is: the receipt as `preparing`, the copied file, the job's `job.json`, the
+receipt as `accepted`, the queue, the reply. A restart between any two of them leaves one job at most
+(`Worker._recover_attempts`). An accepted id whose job folder has gone answers `expired`; it is never parsed
+a second time.
 
 These routes are as unauthenticated as /jobs: the service is private, reachable only from the web service.
 
@@ -92,7 +113,7 @@ if str(WEBAPP) not in sys.path:
     sys.path.insert(0, str(WEBAPP))
 
 from app.replays.condense import condense_export_dir  # noqa: E402
-from app.replays.contract import ContractError  # noqa: E402
+from app.replays.contract import ContractError, current_recipe  # noqa: E402
 
 try:  # run as `python -m replay_worker.server` (the container) or imported by the tests
     from replay_worker import archive as archive_store  # noqa: E402
@@ -174,6 +195,7 @@ class Job:
     kind: str = "upload"            # or "reparse" (archive on only)
     match_uuid: str | None = None   # known once parsed (a reparse knows it from the start)
     map: str | None = None
+    attempt_id: str | None = None   # a reparse the automatic queue asked for (its receipt names this job)
 
     def public(self) -> dict:
         body = {"id": self.id, "status": self.status}
@@ -238,7 +260,16 @@ class Worker:
         self.reparse_queue: queue.Queue[Job] = queue.Queue(maxsize=settings.queue_size)
         self.jobs: dict[str, Job] = {}
         self.lock = threading.Lock()
+        # Every admission to either queue, and every read or write of an attempt receipt, happens under this
+        # one lock: a queue seen with room stays that way until the put, so nothing is accepted and then lost.
+        self.admission = threading.Lock()
+        self._before_reply = lambda answer: None  # tests only: runs after an attempt is settled, before its reply
         self.wake = threading.Event()
+        try:
+            self.recipe = current_recipe()
+        except Exception:  # noqa: BLE001 - a worker that can't name its recipe still parses uploads
+            traceback.print_exc()
+            self.recipe = None
         self.archive, self.archive_reason = None, "REPLAY_ARCHIVE_DIR is not set"
         if settings.archive_dir is not None:
             self.archive, self.archive_reason = archive_store.open_archive(
@@ -250,6 +281,7 @@ class Worker:
         self.last_sweep = 0.0
         if self.archive is not None:
             self._recover()
+            self._recover_attempts()
         self.thread = threading.Thread(target=self._run, name="replay-worker", daemon=True)
         self.thread.start()
 
@@ -282,26 +314,43 @@ class Worker:
 
     def submit(self, body: bytes) -> Job:
         job_id = uuid.uuid4().hex
-        if self.archive is None:
-            folder = self.settings.temp_root / f"replay-job-{job_id}"
-        else:
-            if not self.archive.intake_ok(len(body)):
-                raise NoSpace()
-            folder = self.archive.jobs / job_id
-        folder.mkdir(parents=True)
-        (folder / "upload.vrf").write_bytes(body)
-        job = Job(job_id, folder, hashlib.sha256(body).hexdigest(), len(body))
-        self._save(job)
-        try:
-            self.queue.put_nowait(job)
-        except queue.Full:
-            shutil.rmtree(folder, ignore_errors=True)
-            raise
+        with self.admission:
+            if self.archive is None:
+                folder = self.settings.temp_root / f"replay-job-{job_id}"
+            else:
+                if not self.archive.intake_ok(len(body)):
+                    raise NoSpace()
+                folder = self.archive.jobs / job_id
+            folder.mkdir(parents=True)
+            (folder / "upload.vrf").write_bytes(body)
+            job = Job(job_id, folder, hashlib.sha256(body).hexdigest(), len(body))
+            self._save(job)
+            try:
+                self.queue.put_nowait(job)
+            except queue.Full:
+                shutil.rmtree(folder, ignore_errors=True)
+                raise
+        self._admitted(job)
+        return job
+
+    def _admitted(self, job: Job) -> None:
+        """A job that is in its queue: tell map control, make it readable, wake the parse thread."""
         self._parse_coming()
         with self.lock:
-            self.jobs[job_id] = job
+            self.jobs[job.id] = job
         self.wake.set()
-        return job
+
+    def _copy_archived(self, match_uuid: str, folder: Path) -> tuple[str, int]:
+        """The archived recording copied into a job folder: (its sha256, its size). FileNotFoundError when
+        it was evicted or deleted since the caller looked."""
+        folder.mkdir(parents=True)
+        try:
+            with self.archive.lock:
+                shutil.copyfile(self.archive.path_of(match_uuid), folder / "upload.vrf")
+        except FileNotFoundError:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+        return archive_store.sha256_file(folder / "upload.vrf"), (folder / "upload.vrf").stat().st_size
 
     def submit_reparse(self, match_uuid: str) -> Job:
         """Raises LookupError (not archived), PermissionError (deleted on request), queue.Full."""
@@ -312,26 +361,174 @@ class Worker:
             raise PermissionError("this match was deleted on request")
         job_id = uuid.uuid4().hex
         folder = self.archive.jobs / job_id
-        folder.mkdir(parents=True)
-        try:
-            with self.archive.lock:
-                shutil.copyfile(self.archive.path_of(match_uuid), folder / "upload.vrf")
-        except FileNotFoundError:  # evicted or deleted since the check
-            shutil.rmtree(folder, ignore_errors=True)
-            raise LookupError("this match has no archived file") from None
-        sha = archive_store.sha256_file(folder / "upload.vrf")
-        job = Job(job_id, folder, sha, (folder / "upload.vrf").stat().st_size, kind="reparse", match_uuid=match_uuid)
-        self._save(job)
-        try:
-            self.reparse_queue.put_nowait(job)
-        except queue.Full:
-            shutil.rmtree(folder, ignore_errors=True)
-            raise
-        self._parse_coming()
-        with self.lock:
-            self.jobs[job_id] = job
-        self.wake.set()
+        with self.admission:
+            try:
+                sha, size = self._copy_archived(match_uuid, folder)
+            except FileNotFoundError:  # evicted or deleted since the check
+                raise LookupError("this match has no archived file") from None
+            job = Job(job_id, folder, sha, size, kind="reparse", match_uuid=match_uuid)
+            self._save(job)
+            try:
+                self.reparse_queue.put_nowait(job)
+            except queue.Full:
+                shutil.rmtree(folder, ignore_errors=True)
+                raise
+        self._admitted(job)
         return job
+
+    # -------------------------------------------------------------- re-parse attempts (see the module docstring)
+
+    @staticmethod
+    def _attempt_identity(attempt_id, match_uuid, expected_sha256) -> tuple[str, str, str] | None:
+        """(the canonical attempt UUID, the match UUID, the sha), all lower case; None when it isn't one."""
+        try:
+            attempt = str(uuid.UUID(str(attempt_id)))
+        except ValueError:
+            return None
+        match_uuid, sha = str(match_uuid or "").strip().lower(), str(expected_sha256 or "").strip().lower()
+        if not match_uuid or len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+            return None
+        return attempt, match_uuid, sha
+
+    def _attempt_job_status(self, receipt: dict) -> str:
+        """The accepted job's status. `expired` once its folder was swept. `failed` when the disk holds
+        another job under the id (a restored snapshot): that is never read as "not accepted yet"."""
+        job = self.get(receipt["job_id"])
+        if job is not None:
+            record = {"status": job.status, "sha256": job.sha256, "match_uuid": job.match_uuid,
+                      "attempt_id": job.attempt_id}
+        else:
+            record = archive_store.read_json(self.archive.jobs / receipt["job_id"] / "job.json", None)
+        if record is None:
+            return "expired"
+        same = all(str(record.get(k) or "").lower() == receipt[k] for k in ("attempt_id", "match_uuid", "sha256"))
+        return record.get("status") or "failed" if same else "failed"
+
+    def _attempt_answer(self, receipt: dict) -> dict:
+        body = {"code": receipt["state"], "attempt_id": receipt["attempt_id"], "state": receipt["state"]}
+        if receipt["state"] == "closed":
+            return body
+        body.update(match_uuid=receipt["match_uuid"], sha256=receipt["sha256"])
+        if receipt["state"] == "accepted":
+            body.update(job_id=receipt["job_id"], size=receipt.get("size"),
+                        job_status=self._attempt_job_status(receipt))
+        return body
+
+    def _settled_receipt(self, attempt_hex: str) -> dict | None:
+        """The receipt, with a preparation whose job record reached the disk read as the acceptance it is
+        (the worker stopped between the two writes). Called under `admission`."""
+        receipt = self.archive.receipt(attempt_hex)
+        if receipt is not None and receipt.get("state") == "preparing":
+            job_id = f"auto{attempt_hex}"
+            record = archive_store.read_json(self.archive.jobs / job_id / "job.json", None)
+            if record is not None:
+                receipt = {**receipt, "state": "accepted", "job_id": job_id, "size": record.get("size")}
+                self.archive.write_receipt(attempt_hex, receipt)
+        return receipt
+
+    def reparse_attempt(self, attempt_id, match_uuid, expected_sha256) -> tuple[int, dict]:
+        """POST /reparse with an attempt id: (HTTP status, answer)."""
+        if self.archive is None:
+            return HTTPStatus.NOT_FOUND, {"code": "archive_off", "error": "the archive is off"}
+        identity = self._attempt_identity(attempt_id, match_uuid, expected_sha256)
+        if identity is None:
+            return HTTPStatus.BAD_REQUEST, {"code": "bad_request",
+                                            "error": "attempt_id must be a UUID and expected_sha256 64 hex digits"}
+        attempt, match_uuid, sha = identity
+        attempt_hex = attempt.replace("-", "")
+        job_id = f"auto{attempt_hex}"
+        folder = self.archive.jobs / job_id
+        with self.admission:
+            receipt = self._settled_receipt(attempt_hex)
+            if receipt is not None:
+                if (receipt["match_uuid"], receipt["sha256"]) != (match_uuid, sha):
+                    return HTTPStatus.CONFLICT, {"code": "identity_conflict",
+                                                 "error": "this attempt id was used for another match or file"}
+                if receipt["state"] == "closed":
+                    return HTTPStatus.CONFLICT, self._attempt_answer(receipt)
+                if receipt["state"] == "accepted":
+                    return HTTPStatus.OK, self._attempt_answer(receipt)
+            # New, or a preparation that never reached its job record: the same preparation, from the top.
+            shutil.rmtree(folder, ignore_errors=True)
+            if self.archive.is_tombstoned(match_uuid):
+                self.archive.drop_receipt(attempt_hex)
+                return HTTPStatus.CONFLICT, {"code": "deleted", "error": "this match was deleted on request"}
+            if not self.archive.has(match_uuid):
+                self.archive.drop_receipt(attempt_hex)
+                return HTTPStatus.NOT_FOUND, {"code": "no_archived_file", "error": "this match has no archived file"}
+            if self.reparse_queue.full():
+                return HTTPStatus.SERVICE_UNAVAILABLE, {"code": "queue_full", "error": "the reparse queue is full"}
+            receipt = {"attempt_id": attempt, "match_uuid": match_uuid, "sha256": sha, "state": "preparing",
+                       "created": time.time()}
+            self.archive.write_receipt(attempt_hex, receipt)
+            try:
+                actual, size = self._copy_archived(match_uuid, folder)
+            except FileNotFoundError:
+                self.archive.drop_receipt(attempt_hex)
+                return HTTPStatus.NOT_FOUND, {"code": "no_archived_file", "error": "this match has no archived file"}
+            if actual != sha:
+                shutil.rmtree(folder, ignore_errors=True)
+                self.archive.drop_receipt(attempt_hex)
+                return HTTPStatus.CONFLICT, {"code": "sha_mismatch", "sha256": actual,
+                                             "error": "the archived recording is another file"}
+            job = Job(job_id, folder, actual, size, kind="reparse", match_uuid=match_uuid, attempt_id=attempt)
+            self._save(job, strict=True)
+            receipt = {**receipt, "state": "accepted", "job_id": job_id, "size": size, "accepted": time.time()}
+            self.archive.write_receipt(attempt_hex, receipt)
+            self.reparse_queue.put_nowait(job)   # room was seen under this lock, and only the parse thread takes
+        self._admitted(job)
+        return HTTPStatus.ACCEPTED, self._attempt_answer(receipt)
+
+    def attempt_status(self, attempt_id) -> tuple[int, dict]:
+        """GET /reparse/attempts/{id}. Reads only: nothing is enqueued or prepared here."""
+        if self.archive is None:
+            return HTTPStatus.NOT_FOUND, {"code": "archive_off", "error": "the archive is off"}
+        try:
+            attempt_hex = uuid.UUID(str(attempt_id)).hex
+        except ValueError:
+            return HTTPStatus.BAD_REQUEST, {"code": "bad_request", "error": "attempt_id must be a UUID"}
+        with self.admission:
+            receipt = self._settled_receipt(attempt_hex)
+            if receipt is None:
+                return HTTPStatus.NOT_FOUND, {"code": "unknown_attempt", "error": "no such attempt"}
+            return HTTPStatus.OK, self._attempt_answer(receipt)
+
+    def close_attempt(self, attempt_id, match_uuid, expected_sha256) -> tuple[int, dict]:
+        """POST /reparse/attempts/{id}/close: the accepted job, or a durable fence against a late POST."""
+        if self.archive is None:
+            return HTTPStatus.NOT_FOUND, {"code": "archive_off", "error": "the archive is off"}
+        identity = self._attempt_identity(attempt_id, match_uuid, expected_sha256)
+        if identity is None:
+            return HTTPStatus.BAD_REQUEST, {"code": "bad_request",
+                                            "error": "attempt_id must be a UUID and expected_sha256 64 hex digits"}
+        attempt, match_uuid, sha = identity
+        attempt_hex = attempt.replace("-", "")
+        with self.admission:
+            receipt = self._settled_receipt(attempt_hex)
+            if receipt is not None and (receipt["match_uuid"], receipt["sha256"]) != (match_uuid, sha):
+                return HTTPStatus.CONFLICT, {"code": "identity_conflict",
+                                             "error": "this attempt id was used for another match or file"}
+            if receipt is None or receipt["state"] == "preparing":
+                shutil.rmtree(self.archive.jobs / f"auto{attempt_hex}", ignore_errors=True)
+                receipt = {"attempt_id": attempt, "match_uuid": match_uuid, "sha256": sha, "state": "closed",
+                           "closed": time.time()}
+                self.archive.write_receipt(attempt_hex, receipt)
+            return HTTPStatus.OK, self._attempt_answer(receipt)
+
+    def _recover_attempts(self) -> None:
+        """After a restart, before anything is served: a preparation whose job record is on the disk becomes
+        the acceptance it was about to be. `_recover` has already queued that job (once) or removed the folder
+        of a preparation that got no further, which a retry of the id then starts again."""
+        rebuilt = 0
+        for path in self.archive.attempts.glob("*.json"):
+            try:
+                before = self.archive.receipt(path.stem)
+                after = self._settled_receipt(path.stem)
+                rebuilt += bool(before and after and before.get("state") != after.get("state"))
+            except Exception:  # noqa: BLE001 - one unreadable receipt never stops the worker starting
+                traceback.print_exc()
+        if rebuilt:
+            _log(f"archive on: {rebuilt} re-parse attempt(s) were accepted just before the restart")
 
     def get(self, job_id: str) -> Job | None:
         with self.lock:
@@ -473,15 +670,20 @@ class Worker:
 
     # -------------------------------------------------------------- the archive's job records
 
-    def _save(self, job: Job) -> None:
+    def _save(self, job: Job, strict: bool = False) -> None:
+        """`strict` lets the error out: an attempt is accepted only once its job record is on the disk."""
         if self.archive is None:
             return
+        record = {"id": job.id, "kind": job.kind, "status": job.status, "error": job.error, "sha256": job.sha256,
+                  "size": job.size, "created": job.created, "finished": job.finished,
+                  "parse_seconds": job.parse_seconds, "match_uuid": job.match_uuid, "map": job.map}
+        if job.attempt_id:
+            record["attempt_id"] = job.attempt_id
         try:
-            archive_store.write_json(job.folder / "job.json", {
-                "id": job.id, "kind": job.kind, "status": job.status, "error": job.error, "sha256": job.sha256,
-                "size": job.size, "created": job.created, "finished": job.finished,
-                "parse_seconds": job.parse_seconds, "match_uuid": job.match_uuid, "map": job.map})
+            archive_store.write_json(job.folder / "job.json", record)
         except OSError:
+            if strict:
+                raise
             traceback.print_exc()
 
     def _recover(self) -> None:
@@ -498,7 +700,8 @@ class Worker:
             job = Job(record["id"], folder, record["sha256"], record["size"], status=record["status"],
                       error=record.get("error"), created=record.get("created") or time.time(),
                       finished=record.get("finished"), parse_seconds=record.get("parse_seconds"),
-                      kind=record.get("kind") or "upload", match_uuid=record.get("match_uuid"), map=record.get("map"))
+                      kind=record.get("kind") or "upload", match_uuid=record.get("match_uuid"), map=record.get("map"),
+                      attempt_id=record.get("attempt_id"))
             shutil.rmtree(folder / "export", ignore_errors=True)
             if job.status in ("queued", "parsing"):
                 job.status = "queued"
@@ -802,7 +1005,10 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
                 body["control"] = {"enabled": bool(control and control.enabled), "gaps_protocol": GAPS_PROTOCOL,
                                    **(control.counts() if control else {})}
                 body["archive"] = worker.archive_status()
+                body["recipe"] = worker.recipe
                 return self._send(HTTPStatus.OK, body)
+            if self.path.startswith("/reparse/attempts/"):
+                return self._send(*worker.attempt_status(self.path[len("/reparse/attempts/"):]))
             if self.path == "/archive":
                 if worker.archive is None:
                     return self._send(HTTPStatus.NOT_FOUND, {"error": "the archive is off"})
@@ -825,6 +1031,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
                 return self._control()
             if self.path.startswith("/jobs/") and self.path.endswith("/ack"):
                 return self._ack(self.path[len("/jobs/"):-len("/ack")])
+            if self.path.startswith("/reparse/attempts/") and self.path.endswith("/close"):
+                return self._attempt_post(self.path[len("/reparse/attempts/"):-len("/close")])
             if self.path in ("/reparse", "/archive/delete", "/archive/tombstones"):
                 return self._archive_post()
             if self.path != "/jobs":
@@ -863,10 +1071,25 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
             status, answer = worker.ack(job_id, body)
             return self._send(status, answer)
 
+        def _attempt_post(self, close_id: str | None = None, body: dict | None = None):
+            """A re-parse attempt (the body names an attempt id) or the close of one. Every answer has a code."""
+            body = self._json() if body is None else body
+            if body is None:
+                return self._send(HTTPStatus.BAD_REQUEST, {"code": "bad_request", "error": "not JSON"})
+            if close_id is not None:
+                status, answer = worker.close_attempt(close_id, body.get("match_uuid"), body.get("expected_sha256"))
+            else:
+                status, answer = worker.reparse_attempt(body.get("attempt_id"), body.get("match_uuid"),
+                                                        body.get("expected_sha256"))
+                worker._before_reply(answer)
+            return self._send(status, answer)
+
         def _archive_post(self):
             body = self._json()
             if body is None:
                 return self._send(HTTPStatus.BAD_REQUEST, {"error": "not JSON"})
+            if self.path == "/reparse" and "attempt_id" in body:
+                return self._attempt_post(body=body)   # the manual route below is untouched by the protocol
             if worker.archive is None:
                 return self._send(HTTPStatus.NOT_FOUND, {"error": "the archive is off"})
             if self.path == "/archive/tombstones":
