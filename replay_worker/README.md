@@ -56,6 +56,24 @@ and `server.py` (the jobs). Web side: `webapp/app/services/replay_upload.py` (`s
 - Tests: `webapp/tests/replays/test_replay_archive.py` (the store), `test_replay_worker_archive.py` (the server),
   `test_replay_archive_web.py` (the web side).
 
+## Map control and timing gaps
+
+`POST /control` and `GET /control/{id}` (`server.py`, `control_job.py`; `docs/map-control-worker-plan.md`). The
+web app sends one round at a time and stores the result; the worker has no database.
+
+- Up to `REPLAY_CONTROL_WORKERS` children (2) while nothing is parsing or waiting to parse, and one beside
+  a parse. A parse arriving kills every running child but the one started first; a killed round goes back to
+  the front of the queue and is not counted as a failure.
+- A task with a `gaps` block also returns the round's timing gaps (`webapp/app/gaps`, shipped in the image).
+  The web app sends the gap fingerprint and the cache key, because the control interpreter has no SQLAlchemy
+  to import the web app's own helpers with. With `gaps_only` the task returns the gaps alone, for a round
+  whose control the web app already has.
+- The child writes a tick cache file under `CONTROL_CACHE_DIR/gaps` while it runs and deletes it when the
+  task ends, along with any file older than six hours.
+- Health advertises `control.gaps_protocol=1`; an older worker receives plain control until it updates.
+- Every result names the engine's revisions and the hash of the game figures it read, so the web app can
+  drop a result from another deploy.
+
 ## Configuration
 
 `REPLAY_PARSER_CMD` (JSON list with `{vrf}` and `{out}`), `REPLAY_PARSER_BUILD` (a `BUILD.json` to check

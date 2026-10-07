@@ -155,3 +155,27 @@ service, overriding the dashboard. PR #74's sync moved
 every merge moved it from 2c-4g back to Standard until `render.yaml` said
 `plan: 2c-4g` (2 CPU, 4 GB, $85/month). Change a plan in `render.yaml`, not
 only in the dashboard.
+
+**Timing gaps on the worker (2026-10-07).** The site and the `replay-worker` deploy separately from the same
+merge. Either deployment order is supported by the health capability gate: a new site with an old worker
+sends plain control and leaves gaps pending; an old site with a new worker asks for no gaps. Once the worker
+advertises control.gaps_protocol=1, the next planning pass picks up missing gaps without a site restart.
+After both are live, the site's log line `map control dispatch: ...` shows `gaps_stored`. A parse and one
+control child now run together, so look at the worker's memory graph on the first upload after the deploy;
+if it nears 4 GB, lower `REPLAY_CONTROL_MEMORY_MB` in the dashboard.
+
+There is no switch on this: once both services are live, the site also sends a gaps-only task for every
+stored round whose control is current and whose timing gaps are missing or out of date. That is the whole
+backlog of rounds computed before this change, one worker child at a time beside parses and two when the
+worker is idle; each such task runs the control engine again without rewriting control. The dispatch log
+shows `gaps_sent` until it drains. To see its size beforehand, this read-only query counts the rounds with
+stored control and no gap run at all (rounds whose gaps are merely out of date come on top):
+
+```sql
+SELECT count(*) FROM replay_round_control c
+LEFT JOIN replay_round_gap_runs g ON g.replay_id = c.replay_id AND g.round_number = c.round_number
+WHERE c.status = 'ok' AND g.replay_id IS NULL;
+```
+
+The worker's server process keeps the last 200 finished control results in memory, now with their gap rows;
+watch that process's memory as well as the children's while the backlog runs.
