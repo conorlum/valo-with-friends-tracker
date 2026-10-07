@@ -221,6 +221,9 @@ class Raw:
     object_effects: dict[int, list[int]] = field(default_factory=lambda: defaultdict(list))
     # One-shot effects played on ability objects (a Fault Line firing, a ZERO/point pulse): guid -> times.
     object_oneshots: dict[int, list[int]] = field(default_factory=lambda: defaultdict(list))
+    # One-shot effects played on an actor that is neither a known pawn nor a known object: (time, the actors its
+    # context names). A hit the export couldn't tie to a player, kept so a hit list can say it is incomplete.
+    stray_oneshots: list[tuple[int, tuple[int, ...]]] = field(default_factory=list)
     # Lethal hits: (time, the killer's pawn).
     kills: list[tuple[int, int]] = field(default_factory=list)
     # Ability objects shot and destroyed (a lethal hit on the object itself): guid -> time.
@@ -389,6 +392,10 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                         if isinstance(value, dict) and (value.get("Name") or {}).get("TagName") == "FXC.Distance" \
                                 and isinstance(value.get("Value"), (int, float)):
                             raw.object_ranges.setdefault(guid, float(value["Value"]))
+                elif function == RPC_ONESHOT and guid not in actors:
+                    context = _context_values(payload)
+                    if context:
+                        raw.stray_oneshots.append((t_ms, context))
                 elif function == RPC_STOP:
                     effect = open_effects.pop((guid, payload.get("EffectId")), None)
                     if effect is not None:
@@ -1232,18 +1239,22 @@ def knife_pulse(actor: _Actor, raw: "Raw", players: PlayerTable, owner: int | No
     """{"state", "evidence", "diagnostics", "t_ms", "range", "hits"} for a landed knife. `completed` only when
     its own pulse one-shot is in the export: a knife destroyed before it pulsed, or one with no such row, is
     `unknown` and proves nothing about who it hit. `hits`: the slots (never its owner) that a one-shot naming
-    it was played on within KNIFE_HIT_MS of the pulse."""
+    it was played on within KNIFE_HIT_MS of the pulse. Such a one-shot on an actor that is neither a known pawn
+    nor a known object (`Raw.stray_oneshots`) may be a player the export couldn't resolve: it is reported
+    (`unresolved_hits`) and the hit list is then not complete, so an empty list never reads as "hit nobody"."""
     until = actor.closed_ms if actor.closed_ms is not None else float("inf")
     fired = sorted(t for t in raw.object_oneshots.get(actor.guid, []) if actor.t_ms <= t <= until)
     if not fired:
         return {"state": "unknown", "evidence": None, "diagnostics": ["no_pulse_row"], "t_ms": None, "range": None,
                 "hits": []}
     t_ms = fired[0]
-    hits = sorted({players.pawn_slot[e.actor] for e in raw.effects
-                   if e.oneshot and actor.guid in e.context and e.actor in players.pawn_slot
-                   and t_ms <= e.t_ms <= t_ms + KNIFE_HIT_MS and players.pawn_slot[e.actor] != owner})
-    return {"state": "completed", "evidence": "pulse_oneshot", "diagnostics": [], "t_ms": t_ms,
-            "range": raw.object_ranges.get(actor.guid), "hits": hits}
+    named = [e for e in raw.effects
+             if e.oneshot and actor.guid in e.context and t_ms <= e.t_ms <= t_ms + KNIFE_HIT_MS]
+    hits = sorted({players.pawn_slot[e.actor] for e in named
+                   if e.actor in players.pawn_slot and players.pawn_slot[e.actor] != owner})
+    unresolved = any(actor.guid in context and t_ms <= t <= t_ms + KNIFE_HIT_MS for t, context in raw.stray_oneshots)
+    return {"state": "completed", "evidence": "pulse_oneshot", "diagnostics": ["unresolved_hits"] if unresolved else [],
+            "t_ms": t_ms, "range": raw.object_ranges.get(actor.guid), "hits": hits, "complete": not unresolved}
 
 
 def mesh_arms(root: _Actor, actors: dict[int, _Actor], raw: "Raw") -> tuple[list[tuple[float, float, float, int | None]], int]:
@@ -1508,7 +1519,8 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                 if pulse["range"] is not None:
                     entry["pulse"]["r"] = int(round(pulse["range"] * abs(game_map.x_mult) * fmt.UV_SCALE))
             entry["activation"] = {"state": pulse["state"], "evidence": pulse["evidence"],
-                                   "targets_complete": pulse["state"] == "completed", "diagnostics": pulse["diagnostics"]}
+                                   "targets_complete": pulse["state"] == "completed" and pulse.get("complete", False),
+                                   "diagnostics": pulse["diagnostics"]}
             counts[f"knife_pulses_{pulse['state']}"] += 1
         throw = _thrown(actor, actors)
         if throw is not None:

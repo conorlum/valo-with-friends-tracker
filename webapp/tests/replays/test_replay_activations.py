@@ -69,6 +69,17 @@ def test_a_hit_long_after_the_pulse_or_on_its_owner_is_not_its_hit(tmp_path):
     rows.sort(key=lambda r: r["time_ms"])
     row = knife("x", 40_000, rows, tmp_path)
     assert len(row["pulse"]["hits"]) == 3
+    assert row["activation"]["targets_complete"] is False, "a hit on nobody's pawn may be a player it couldn't resolve"
+    assert row["activation"]["diagnostics"] == ["unresolved_hits"]
+
+
+def test_a_knife_whose_every_hit_is_unresolved_is_not_a_proven_empty(tmp_path):
+    rows = [json.loads(line) for line in (FIXTURES / "kayo_knife_hits.ndjson").read_text(encoding="utf-8").splitlines()]
+    for i, r in enumerate(r for r in rows if r["type"] == "rpc_received" and r["actor_net_guid"] in PAWNS):
+        r["actor_net_guid"] = 4242 + i               # five pawns the player table doesn't know
+    row = knife("x", 40_000, rows, tmp_path)
+    assert row["pulse"]["hits"] == [] and row["activation"]["state"] == "completed"
+    assert row["activation"]["targets_complete"] is False
 
 
 def test_the_ult_pulses_are_rows_of_their_own_name_and_never_a_knife():
