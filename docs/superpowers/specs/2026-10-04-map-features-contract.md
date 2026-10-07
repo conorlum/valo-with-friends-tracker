@@ -144,9 +144,9 @@ names each). **None is switched to features in this build.**
 | `control/geometry:build_visibility` | cast | `base` (the open map's cached rows) |
 | `control/height_build:geo_los` | los | `base` |
 | `control/task:geometry_used` | specials | freshness: the manifest's `features` key (W17) |
-| `control/utility:_sees_point` | los | `bounded_sight` (added 2026-10-05, utility-review run, PROVISIONAL(D9): whether an enemy sees a Leer's eye) |
-| `control/utility:read_pulses` | cast | `bounded_sight` (added 2026-10-05, PROVISIONAL(D9): what a Haunt or recon pulse sees) |
-| `control/utility:read_skye_flashes` | cast | `bounded_sight` (added 2026-10-05, PROVISIONAL(D9): what an empty Skye flash rules out) |
+| `control/utility:_sees_point` | los | `bounded_sight` (added 2026-10-05, utility-review run: whether an enemy sees a Leer's eye) |
+| `control/utility:read_pulses` | cast | `bounded_sight` (added 2026-10-05: what a Haunt or recon pulse sees) |
+| `control/utility:read_skye_flashes` | cast | `bounded_sight` (added 2026-10-05: what an empty Skye flash rules out) |
 | `gaps/detect:GapDetector._sight` | cast | `bounded_sight` |
 
 ## 8. Freshness
