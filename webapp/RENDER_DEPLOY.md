@@ -151,6 +151,7 @@ a scoring release, it also needs the steps in
 
 **Blueprint syncs set the plan.** A sync applies `render.yaml`'s `plan:` to its
 service, overriding the dashboard. PR #74's sync moved
-`valowithfriendstracker` from Standard to Free this way, so `render.yaml` now
-says `plan: standard`. Change a plan in `render.yaml`, not only in the
-dashboard.
+`valowithfriendstracker` from Standard to Free this way, and in October 2026
+every merge moved it from 2c-4g back to Standard until `render.yaml` said
+`plan: 2c-4g` (2 CPU, 4 GB, $85/month). Change a plan in `render.yaml`, not
+only in the dashboard.
