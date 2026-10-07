@@ -6,7 +6,7 @@ This document records the design for the implementation plan at
 
 There are 28 active checklist items, numbered 2–29. Item 1 was removed because clicking a round already starts playback.
 The original checklist and nine screenshots are local at
-`C:/Users/User/AppData/Local/Temp/control-review-2026-10-05/`.
+`%TEMP%/control-review-2026-10-05/`.
 
 ## Playback and visuals
 
