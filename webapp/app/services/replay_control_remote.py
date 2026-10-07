@@ -24,6 +24,14 @@ dedupe never hands back a plain task's result for it. Its result must also name 
 Control is stored first; the gaps then go through the guarded writer (app/services/replay_gaps_store.py),
 which checks the round's control again under the replay's lock and stores nothing stale.
 
+A round whose control is current but whose gap run is missing or stale (new gap rules, an edited choke asset,
+control stored by a plain task) is sent as a **gaps-only** task, again under its own key: after every
+sendable control task of the pass, and only to a capable worker. Without the capability that work just
+waits; nothing is planned for it and no try is used. Its result changes no control row. A stale one is
+skipped by the writer and is not a failure; one from another deploy (revisions, geometry, figures, gap
+keys) or a machine failure is asked again like control's, MAX_TRIES times; the detector's own failure under
+the current keys is stored as the round's and left.
+
 `plan()` runs when there is room in flight; after a plan that left nothing sendable it waits
 PLAN_IDLE_S. On PostgreSQL it holds `pg_try_advisory_xact_lock` for the cycle, so one
 instance dispatches when Render overlaps two during a deploy; the worker's key dedupe makes a
@@ -126,6 +134,7 @@ class InFlight:
     sent_at: float
     running_since: float | None = None   # first seen running, without a `queued` since (D8)
     expect_gaps: bool = False            # sent with a gaps block: the capability read when it was submitted
+    gaps_only: bool = False              # the round's control is current; only its gaps were asked for
 
 
 @dataclass
@@ -152,6 +161,11 @@ def full_key(replay_id: int, round_number: int, fingerprint: str, gap_print: str
     """A control task that carries a gaps block. The plain key comes first, so its fields keep their places;
     the suffix keeps the worker's dedupe from answering it with a plain task's result."""
     return f"{task_key(replay_id, round_number, fingerprint)}:g{GAPS_PROTOCOL}:{gap_print}"
+
+
+def gaps_key(replay_id: int, round_number: int, fingerprint: str, gap_print: str) -> str:
+    """A gaps-only task: another suffix again, so it is never answered with a control task's result."""
+    return f"{task_key(replay_id, round_number, fingerprint)}:go{GAPS_PROTOCOL}:{gap_print}"
 
 
 def supports_gaps(health) -> bool:
@@ -193,19 +207,22 @@ def _trusted_gaps(result: dict, f: InFlight) -> dict | None:
     return gaps
 
 
-def _keep_gaps(session_factory, f: InFlight, result: dict, counts: dict) -> None:
+def _keep_gaps(session_factory, f: InFlight, result: dict, counts: dict) -> bool:
+    """Stores a result's gaps through the guarded writer. False when they can't be trusted (another deploy's
+    rules or assets, or malformed): dropped, and for a gaps-only job worth asking again."""
     gaps = _trusted_gaps(result, f)
     if gaps is None:
         counts["gaps_dropped"] += 1
-        return
+        return False
     try:
         outcome = gaps_store.store_gaps(session_factory, f.replay_id, f.round_number, gaps["run"], gaps["rows"],
                                         expected_control_fingerprint=f.fingerprint)
     except Exception:  # noqa: BLE001 - rows the model refuses: the gaps are dropped, control stays stored
         log.exception("timing gaps of replay %s round %s could not be stored", f.replay_id, f.round_number)
         counts["gaps_dropped"] += 1
-        return
-    counts["gaps_stored" if outcome == gaps_store.STORED else "gaps_skipped"] += 1
+        return False
+    counts["gaps_stored" if outcome == gaps_store.STORED else "gaps_skipped"] += 1     # skipped: stale, no failure
+    return True
 
 
 def _matches_geometry(result: dict, map_name: str) -> bool:
@@ -255,9 +272,18 @@ def _collect(session_factory, client, state: State, now: float, counts: dict) ->
                 state.failed(key, now)
                 counts["dropped_figures"] += 1
                 continue
+            if f.gaps_only:
+                # No control row is read or written here: the writer checks the round's control inside its
+                # own locked transaction, and a result it finds stale is skipped, not failed.
+                if not _keep_gaps(session_factory, f, result, counts):
+                    state.failed(key, now)
+                continue
             row = {"status": "ok", "data": base64.b64decode(result["data"]),
                    "summary": base64.b64decode(result["summary"])}
-        elif status == "failed" and job.get("error_kind") == "engine":
+        elif status == "failed" and job.get("error_kind") == "engine" and not f.gaps_only:
+            # (A gaps-only task that fails as a whole says nothing about control, which is stored and ok:
+            # it is asked again like a machine failure. The detector's own failure comes back inside an ok
+            # result and is stored above.)
             row = {"status": "failed", "error": job.get("error") or "failed on the replay worker"}
         else:
             state.failed(key, now)
@@ -304,14 +330,18 @@ def _sendable(state: State, now: float, rounds: list, *, kind: str, capable: boo
               held: frozenset = frozenset()) -> list:
     """Of the planned `rounds`, those that may be sent now, each with its worker key: not held back, no job
     for the round in flight (whatever its kind, so a change of capability never makes a second one), and
-    tries left for that key. `kind` is "control"; with `capable` the task will carry a gaps block."""
+    tries left for that key. `kind` is "control" (with `capable` the task will carry a gaps block) or
+    "gaps" (gaps alone, for a round whose control is current)."""
     flying = {(f.replay_id, f.round_number) for f in state.in_flight.values()}
     out = []
     for p in rounds:
         if p.replay_id in held or (p.replay_id, p.round_number) in flying:
             continue
         key = task_key(p.replay_id, p.round_number, p.fingerprint)
-        if capable:
+        if kind == "gaps":
+            key = gaps_key(p.replay_id, p.round_number, p.fingerprint,
+                           replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
+        elif capable:
             key = full_key(p.replay_id, p.round_number, p.fingerprint,
                            replay_gaps.gap_fingerprint(p.fingerprint, p.map_name))
         if state.may_try(key, now):
@@ -327,7 +357,8 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
         if len(state.in_flight) >= IN_FLIGHT:
             return True                      # sendable work is left: plan again next cycle
         key = keys[p.replay_id, p.round_number]
-        expect_gaps = key != task_key(p.replay_id, p.round_number, p.fingerprint)
+        gaps_only = kind == "gaps"
+        expect_gaps = gaps_only or key != task_key(p.replay_id, p.round_number, p.fingerprint)
         row = session.get(ReplayRound, (p.replay_id, p.round_number))
         if row is None:
             continue
@@ -338,6 +369,8 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             task["features"] = features
         if expect_gaps:
             task["gaps"] = gaps_job(p.replay_id, p.round_number, p.fingerprint, p.map_name)
+        if gaps_only:
+            task["gaps_only"] = True
         try:
             answer = client.submit(task)
         except WorkerBusy:
@@ -347,8 +380,8 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             counts["unreachable"] += 1
             return True
         state.in_flight[key] = InFlight(answer["id"], p.replay_id, p.round_number, p.fingerprint, p.map_name, now,
-                                        expect_gaps=expect_gaps)
-        counts["sent"] += 1
+                                        expect_gaps=expect_gaps, gaps_only=gaps_only)
+        counts["gaps_sent" if gaps_only else "sent"] += 1
         if not expect_gaps:
             counts["gaps_unavailable"] += 1
     return False
@@ -366,6 +399,13 @@ def _submit(session, client, state: State, now: float, counts: dict) -> None:
     state.last_planned = now
     state.last_found = _send(session, client, state, now, counts,
                              _sendable(state, now, planned, kind="control", capable=capable), kind="control")
+    if state.last_found or not capable:
+        return          # control first; and without the capability gaps-only work waits, unplanned and uncounted
+    # As the local command does: every round with its current fingerprint, then those whose control is ok and
+    # current and whose gap run is missing or stale. A gap failure under the current keys stays put.
+    wanted = replay_gaps.plan_gaps(session, planned, replay_control.plan(session, force=True))
+    state.last_found = _send(session, client, state, now, counts,
+                             _sendable(state, now, wanted, kind="gaps"), kind="gaps")
 
 
 def cycle(session_factory, client, state: State, now: float | None = None) -> dict:
@@ -373,8 +413,8 @@ def cycle(session_factory, client, state: State, now: float | None = None) -> di
     now = time.time() if now is None else now
     counts: dict[str, int] = {k: 0 for k in ("sent", "stored", "stored_failed", "skipped", "forgotten", "timed_out",
                                              "dropped_revision", "dropped_geometry", "dropped_figures", "infra_failed",
-                                             "busy", "unreachable", "gaps_stored", "gaps_dropped",
-                                             "gaps_skipped", "gaps_unavailable")}
+                                             "busy", "unreachable", "gaps_sent", "gaps_stored",
+                                             "gaps_dropped", "gaps_skipped", "gaps_unavailable")}
     session = session_factory()
     try:
         if session.get_bind().dialect.name == "postgresql":
