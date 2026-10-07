@@ -240,6 +240,43 @@ def test_the_split_shows_only_while_its_fingerprint_is_current(db, condensed, mo
     assert replay_db.kill_impact_for_page(db, row) is None
 
 
+def test_a_new_recipe_of_the_same_file_keeps_the_per_kill_split(db, condensed):
+    add_match(db)
+    first = store.store_replay(db, condensed, source="upload")
+    split = {"fingerprint": "abc", "kills": {"1": [10.0, -5.0]}}
+    db.get(Replay, first.replay_id).kill_impact = split
+    db.commit()
+    result = store.store_replay(db, replace(condensed, recipe=condensed.recipe + "x"), source="upload")
+    row = db.get(Replay, result.replay_id)
+    assert result.action == "replaced" and row.recipe.endswith("x") and row.link_status == "linked"
+    assert row.kill_impact == split
+
+
+def test_another_recording_never_inherits_the_split(db, condensed):
+    add_match(db)
+    first = store.store_replay(db, condensed, source="local")
+    db.get(Replay, first.replay_id).kill_impact = {"fingerprint": "abc", "kills": {"1": [10.0, -5.0]}}
+    db.commit()
+    other = replace(condensed, source_sha256="f" * 64)
+    result = store.store_replay(db, other, source="local", replace=True)
+    assert result.action == "replaced" and db.get(Replay, result.replay_id).kill_impact is None
+
+
+def test_the_split_is_not_carried_to_a_replay_that_no_longer_links(db, condensed):
+    add_match(db)
+    first = store.store_replay(db, condensed, source="upload")
+    db.get(Replay, first.replay_id).kill_impact = {"fingerprint": "abc", "kills": {"1": [10.0, -5.0]}}
+    db.commit()
+    db.query(KillEvent).delete()
+    db.query(Round).delete()
+    db.query(MatchPlayer).delete()
+    db.query(Match).delete()
+    db.commit()
+    result = store.store_replay(db, replace(condensed, recipe=condensed.recipe + "x"), source="upload")
+    row = db.get(Replay, result.replay_id)
+    assert row.link_status != "linked" and row.kill_impact is None
+
+
 # ---------------------------------------------------------------- PostgreSQL only
 
 

@@ -4,7 +4,8 @@
 1. `pg_advisory_xact_lock(hashtext(match_uuid))`: stores and links of one replay serialise.
 2. The dedupe rule, for an existing row with this `match_uuid`:
    - the same `source_sha256` and recipe: a no-op;
-   - the same `source_sha256`, another recipe (a re-ingest after a condenser change): replaced;
+   - the same `source_sha256`, another recipe (a re-ingest or a re-parse after a condenser change):
+     replaced, keeping the per-kill Impact split when it links to the same match;
    - another `source_sha256` (another recording): a linked existing replay is kept, and the new
      one reported; an unlinked or refused one is replaced only if the new one links in this same
      transaction. `replace=True` (local `--replace`) overrides both.
@@ -89,9 +90,9 @@ def store_replay(session, condensed: CondensedReplay, *, source: str, replace: b
         # A match deleted on request never comes back, whoever stores it (upload, reparse or local).
         if session.get(ReplayDeletion, uuid) is not None:
             raise StoreRefused("this match was deleted on request")
-        existing =session.query(Replay).filter(Replay.match_uuid == uuid).one_or_none()
+        existing = session.query(Replay).filter(Replay.match_uuid == uuid).one_or_none()
+        same_source = existing is not None and existing.source_sha256 == condensed.source_sha256
         if existing is not None and not replace:
-            same_source = existing.source_sha256 == condensed.source_sha256
             if same_source and existing.recipe == condensed.recipe:
                 session.rollback()
                 return StoreResult("unchanged", existing.id, existing.link_status, {"reason": "same file and recipe"})
@@ -116,11 +117,19 @@ def store_replay(session, condensed: CondensedReplay, *, source: str, replace: b
                 session.commit()
                 return StoreResult("replaced", row.id, status, row.link_report or {})
         action = "stored"
+        carried = None
         if existing is not None:
+            # The same recording under a new recipe (a re-parse): the per-kill Impact split describes the
+            # match's impact_scores rows, not the blobs, so it is kept when the new row links to the same
+            # match. The page still shows it only while its fingerprint is current (db.kill_impact_for_page).
+            if same_source and replay_db.is_linked(existing) and existing.kill_impact:
+                carried = (existing.match_id, existing.kill_impact)
             _delete(session, existing)
             action = "replaced"
         row = _insert(session, condensed, source)
         status = replay_db.link_replay(session, row)
+        if carried is not None and status == "linked" and row.match_id == carried[0]:
+            row.kill_impact = carried[1]
         session.commit()
         return StoreResult(action, row.id, status, row.link_report or {})
     except Exception:
