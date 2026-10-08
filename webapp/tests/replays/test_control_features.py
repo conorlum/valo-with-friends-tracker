@@ -250,7 +250,7 @@ def test_the_wrong_generation_is_the_machines_failure_not_the_rounds(published, 
 
     folder, sha, _ = published
     geo = cg.load_geometry("Ascent", folder)
-    monkeypatch.setattr(ct, "_load", lambda name, heights=None: geo)
+    monkeypatch.setattr(ct, "_load", lambda name, heights=None, digest=None: geo)
     out = ct.compute_task({"key": "k", "map": "Ascent", "blob": b"", "link": {"sides": {}, "db_deaths": []},
                            "features": "0123456789abcdef"})
     assert out["status"] == "failed" and out["error_kind"] == "infra" and "expected feature generation" in out["error"]
@@ -378,7 +378,7 @@ def test_the_local_store_refuses_a_result_from_another_generation(monkeypatch):
     planned = type("P", (), {"replay_id": 1, "round_number": 2, "fingerprint": "f" * 16, "map_name": "Ascent"})()
     ok = {"status": "ok", "geometry": {"sight": "x"}}
     assert compute_control.store_result(None, planned, ok) == "stored", "no features anywhere: as before"
-    monkeypatch.setattr(rc, "geometry_inputs", lambda name: {"features": "gen2"})
+    monkeypatch.setattr(rc, "geometry_inputs", lambda name, heights=None: {"features": "gen2"})
     assert compute_control.store_result(None, planned, ok) == "skipped: its feature inputs changed while computing"
     assert compute_control.store_result(None, planned, {**ok, "geometry": {"features": "gen1"}}).startswith("skipped")
     assert compute_control.store_result(None, planned, {**ok, "geometry": {"features": "gen2"}}) == "stored"
@@ -470,11 +470,15 @@ def bridge():
 
 
 def floors_for(geo):
-    return [{"id": "floor-1", "label": "ground", "z_band": [-0.5, 1.0], "height_sha": geo.height_sha},
-            {"id": "floor-2", "label": "bridge", "z_band": [3.0, 5.0], "height_sha": geo.height_sha},
+    origin = geo.heights.origin_z
+    return [{"id": "floor-1", "label": "ground", "z_band": [-0.5, 1.0], "height_sha": geo.height_sha, "origin_z": origin},
+            {"id": "floor-2", "label": "bridge", "z_band": [3.0, 5.0], "height_sha": geo.height_sha, "origin_z": origin},
             {"id": "floor-3", "label": "manual", "z_band": None, "height_sha": None},
-            {"id": "floor-4", "label": "both", "z_band": [-1.0, 5.0], "height_sha": geo.height_sha},
-            {"id": "floor-5", "label": "stale", "z_band": [-0.5, 1.0], "height_sha": "000000000000"}]
+            {"id": "floor-4", "label": "both", "z_band": [-1.0, 5.0], "height_sha": geo.height_sha, "origin_z": origin},
+            # read from an earlier asset whose origin was recorded: rebased, and it binds
+            {"id": "floor-5", "label": "rebound", "z_band": [-0.5, 1.0], "height_sha": "000000000000", "origin_z": origin},
+            # read from an earlier asset, origin unknown: nobody can say what its numbers mean now
+            {"id": "floor-6", "label": "unframed", "z_band": [-0.5, 1.0], "height_sha": "000000000000"}]
 
 
 def test_a_stacked_floor_door_blocks_the_lower_floor_and_leaves_the_bridge_open():
@@ -490,8 +494,8 @@ def test_a_stacked_floor_door_blocks_the_lower_floor_and_leaves_the_bridge_open(
     assert fx.blocked[lower].all() and not fx.blocked[upper].any() and fx.blocked.sum() == len(cells)
     both = cf.movement_blocks(geo, {**mf, "features": [feature("feature-1", door, ["floor-1", "floor-2"])]})
     assert both.blocked[lower].all() and both.blocked[upper].all()
-    # never every floor by default: unresolved, unbanded, stale or ambiguous bindings block nothing and say why
-    for floors in (None, [], ["floor-3"], ["floor-5"], ["floor-4"]):
+    # never every floor by default: unresolved, unbanded, unframed or ambiguous bindings block nothing and say why
+    for floors in (None, [], ["floor-3"], ["floor-6"], ["floor-4"]):
         fx = cf.movement_blocks(geo, {**mf, "features": [feature("feature-1", door, floors)]})
         assert not fx.blocked.any() and fx.pending, floors
     # one base domain: the node count and indices are the geometry's, whatever the state
@@ -514,7 +518,7 @@ def test_compose_masks_draws_states_without_touching_the_inputs():
     assert not s2.any() and w2.all()
 
 
-def test_diagnose_flags_diagonal_leaks_off_ground_endpoints_and_stale_floors():
+def test_diagnose_flags_diagonal_leaks_off_ground_endpoints_and_floors_read_from_another_asset():
     geo = open_hall()
     diag = {"type": "polyline", "uv": [[U(200), U(96)], [U(400), U(296)]]}
     band = rect(200, 96, 216, 296)
@@ -524,7 +528,7 @@ def test_diagnose_flags_diagonal_leaks_off_ground_endpoints_and_stale_floors():
     assert got == {("feature-1.states.closed", "diagonal_leak"), ("route-3.b", "off_ground")}
     stacked = bridge()
     got = {(d["where"], d["code"]) for d in cf.diagnose(stacked, {**ms.empty(), "floors": floors_for(stacked)})}
-    assert got == {("floor-5", "stale_floor")}
+    assert got == {("floor-5", "rebound_floor"), ("floor-6", "unframed_floor")}
 
 
 # ---- W7: bounded sight
@@ -600,8 +604,8 @@ def test_bounds_resolve_on_their_floor_and_unknowns_stay_pending():
     world = door_mf(geo, "floor-1", 1.0, 2.0, ref="world")
     [w], _ = cf.sight_occluders(geo, world)
     assert (w.bottom, w.top) == pytest.approx((1.0 - geo.heights.origin_z / 10, 2.0 - geo.heights.origin_z / 10))
-    for mf in (door_mf(geo, "floor-3", 0, 3), door_mf(geo, "floor-5", 0, 3), door_mf(geo, "floor-4", 0, 3)):
-        occluders, pending = cf.sight_occluders(geo, mf)          # unbanded, stale, ambiguous
+    for mf in (door_mf(geo, "floor-3", 0, 3), door_mf(geo, "floor-6", 0, 3), door_mf(geo, "floor-4", 0, 3)):
+        occluders, pending = cf.sight_occluders(geo, mf)          # unbanded, unframed, ambiguous
         assert occluders == [] and len(pending) == 1 and "floor" in pending[0]
     unres = door_mf(geo, "floor-1", 0, 3)
     unres["features"][0]["states"][0]["sight"][0]["bounds"] = {"ref": "unresolved"}
@@ -773,7 +777,7 @@ def test_on_a_height_map_bindings_must_be_verified_and_restored_ground_must_be_i
                 "bundles": [{"id": "bundle-2", "members": ["feature-1"], "enabled": True, "runtime_consumer": "test"}]}
 
     assert cf.bundle_status(geo, mf(on_floor, "floor-1", ["floor-1"]), consumers=test)["bundle-2"].publishable
-    for args, why in (((on_floor, "floor-5", ["floor-1"]), "not verified"), ((on_floor, "floor-1", ["floor-3"]), "not verified"),
+    for args, why in (((on_floor, "floor-6", ["floor-1"]), "not verified"), ((on_floor, "floor-1", ["floor-3"]), "not verified"),
                       ((off_map, "floor-1", ["floor-1"]), "rebuild the heights")):
         st = cf.bundle_status(geo, mf(*args), consumers=test)["bundle-2"]
         assert not st.publishable and any(why in r for r in st.reasons), (args, st.reasons)
@@ -785,7 +789,7 @@ def test_on_a_height_map_bindings_must_be_verified_and_restored_ground_must_be_i
 
 def test_a_bundle_whose_states_bind_no_floor_publishes_nothing():
     """An enabled bundle removing baked-in sight on a height map, whose blocking state's floors are unresolved,
-    empty, unbanded, stale, missing or ambiguous: movement_blocks blocks nothing there, so the bundle is pending
+    empty, unbanded, unframed, missing or ambiguous: movement_blocks blocks nothing there, so the bundle is pending
     and none of its base edits reaches the base domain, the compiled assets or the manifest."""
     geo = bridge()
     test = frozenset({"test"})
@@ -804,7 +808,7 @@ def test_a_bundle_whose_states_bind_no_floor_publishes_nothing():
     sight[160:232, 256:264] = True
     walk = np.ones((1024, 1024), bool)
     cases = {"unresolved": {"status": "unresolved"}, "absent": None, "empty": [], "unbanded": ["floor-3"],
-             "stale": ["floor-5"], "ambiguous": ["floor-4"], "missing": ["floor-9"],
+             "unframed": ["floor-6"], "ambiguous": ["floor-4"], "missing": ["floor-9"],
              "unresolved sight bounds": (["floor-1"], {"ref": "unresolved"})}
     for name, floors in cases.items():
         m = mf(*floors) if isinstance(floors, tuple) else mf(floors)
@@ -1031,3 +1035,77 @@ def test_permanent_kill_line_masks_ignore_feature_annotations():
     # while the preview's composition does block with it closed
     s, _ = cf.compose_masks(plain.sight, plain.walk, mf)
     assert (s & ~plain.sight).any()
+
+
+# ---------------------------------------------------------------- a floor binding across a height rebuild
+# (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md, section 5)
+
+
+def deeper_bridge():
+    """bridge() after a rebuild found ground 2 m lower in the far corner: every floor is where it was in the
+    world, and the map's lowest floor, the frame `node_z` is measured from, is 2 m lower."""
+    return toy_heights("BridgeDeeper", [HALL], ground=[((96, 96, 240, 296), 4.0), ((400, 280, 416, 296), -2.0)],
+                       upper=[((240, 96, 288, 296), 4.0)])
+
+
+def test_a_band_is_rebased_when_a_rebuild_moves_the_maps_lowest_floor():
+    old, new = bridge(), deeper_bridge()
+    assert old.heights.origin_z - new.heights.origin_z == 20 and old.height_sha != new.height_sha
+    door = rect(256, 160, 264, 232)
+    cells = np.flatnonzero(grid_rect(256, 160, 264, 232).ravel())
+    read_on_old = floors_for(old)                        # what the tagger saved before the rebuild
+    for name, floor, level in (("ground", "floor-1", 0), ("bridge", "floor-2", 1)):
+        mf = {**ms.empty(), "floors": read_on_old, "features": [feature("feature-1", door, [floor])]}
+        before, after = cf.movement_blocks(old, mf), cf.movement_blocks(new, mf)
+        assert before.pending == [] and after.pending == [], name
+        assert sorted(old.node_cell[np.flatnonzero(before.blocked)]) == sorted(cells.tolist()), name
+        assert sorted(new.node_cell[np.flatnonzero(after.blocked)]) == sorted(cells.tolist()), name
+        assert (np.flatnonzero(after.blocked) == new.node_of[cells, level]).all(), "the same physical floor"
+    # the same numbers read in the new frame without rebasing would be wrong: the ground band [-0.5, 1.0] holds
+    # no floor of these cells there (the ground is at 2.0 m, the bridge at 6.0 m)
+    assert not ((new.node_z[new.node_of[cells, 0]] >= -0.5) & (new.node_z[new.node_of[cells, 0]] <= 1.0)).any()
+    assert cf._band_shift(new, read_on_old[0]) == pytest.approx(2.0) and cf._band_shift(old, read_on_old[0]) == 0.0
+
+
+def test_a_band_with_no_recorded_origin_binds_only_while_its_asset_is_the_maps():
+    old, new = bridge(), deeper_bridge()
+    door = rect(256, 160, 264, 232)
+    legacy = [{"id": "floor-1", "label": "ground", "z_band": [-0.5, 1.0], "height_sha": old.height_sha}]
+    mf = {**ms.empty(), "floors": legacy, "features": [feature("feature-1", door, ["floor-1"])]}
+    assert cf.movement_blocks(old, mf).pending == [] and cf.movement_blocks(old, mf).blocked.any()
+    after = cf.movement_blocks(new, mf)
+    assert not after.blocked.any() and any("origin" in p for p in after.pending), "pending, and it says why"
+    assert {(d["where"], d["code"]) for d in cf.diagnose(new, {**ms.empty(), "floors": legacy})} == \
+        {("floor-1", "unframed_floor")}
+    assert cf._band_shift(new, legacy[0]) is None
+
+
+def test_a_floor_that_moved_out_of_its_band_is_pending_and_the_rest_still_bind():
+    old = bridge()
+    lowered = toy_heights("BridgeLower", [HALL], ground=[((96, 96, 240, 296), 4.0)], upper=[((240, 96, 288, 296), 1.5)])
+    door = rect(256, 160, 264, 232)
+    mf = {**ms.empty(), "floors": floors_for(old),
+          "features": [feature("feature-1", door, ["floor-1"]), feature("feature-2", door, ["floor-2"])]}
+    for f in mf["features"]:
+        f["states"][0]["sight_bounds"] = {"ref": "all_height"}     # its sight resolved: only the binding is in question
+    assert cf.state_problems(lowered, mf, mf["features"][0]) == [], "the ground is where it was"
+    assert cf.state_problems(lowered, mf, mf["features"][1]), "the bridge is 2.5 m lower now: out of its band"
+
+
+def test_a_published_generation_does_not_survive_a_new_height_digest():
+    # The limitation this plan leaves, pinned: a generation's manifest names the heights it was compiled
+    # against, so the same definitions on rebuilt heights are another generation. Until generations can be
+    # recompiled, a map that has one is never rebuilt automatically (tests/replays/test_heights_remote.py) and
+    # `activate` refuses it (tests/replays/test_control_heights_db.py).
+    old, new = bridge(), deeper_bridge()
+    test = frozenset({"test"})
+    block = rect(256, 160, 264, 232)
+    f = breakable("feature-1", block, remove=block, floors=["floor-1"])
+    mf = {**ms.empty(), "floors": floors_for(old), "features": [f],
+          "bundles": [{"id": "bundle-2", "members": ["feature-1"], "enabled": True, "runtime_consumer": "test"}]}
+    before, after = cf.manifest(old, mf, consumers=test), cf.manifest(new, mf, consumers=test)
+    assert before is not None and after is not None, "the bundle is publishable on both: its floor rebased"
+    assert before["height"] == old.height_sha and after["height"] == new.height_sha
+    assert cf.manifest_digest(before) != cf.manifest_digest(after)
+    assets = cf.compile_assets(old, mf, cf.bundle_status(old, mf, consumers=test))
+    assert cf.verify(before, assets, new, mf, consumers=test), "verification of the old generation on the new heights fails"

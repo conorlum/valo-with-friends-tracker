@@ -70,3 +70,39 @@ def test_a_map_the_machine_has_no_geometry_for_is_an_infra_failure(toy):
     result = task.compute_task(t)
     assert result["status"] == "failed" and result["error_kind"] == "infra"
     assert "GeometryError" in result["error"]
+
+
+from app.control import geometry as cg  # noqa: E402
+from app.control import height_build as hb  # noqa: E402
+from app.control import heights as hc  # noqa: E402
+from app.control import task as control_task  # noqa: E402
+from tests.replays.control_toys import height_rounds, open_hall, standing  # noqa: E402,F811
+
+
+def _toy_asset():
+    geo = open_hall()
+    return hb.build(height_rounds(lambda m, n: {0: standing(204, 204, 0.0), 1: standing(212, 204, 0.0)}), geo).asset
+
+
+def test_a_task_naming_a_height_digest_reads_it_from_the_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTROL_CACHE_DIR", str(tmp_path))
+    asset = _toy_asset()
+    path = cg.height_cache_path("Toy", asset.digest)
+    assert path == tmp_path / "heights" / f"Toy.{asset.digest}.height.npz"
+    with pytest.raises(cg.GeometryError, match="not on this machine"):
+        control_task.height_file("Toy", asset.digest)
+    path.parent.mkdir(parents=True)
+    hc.save_asset(path, asset)
+    assert control_task.height_file("Toy", asset.digest) == path
+    other = cg.height_cache_path("Toy", "0" * 12)
+    hc.save_asset(other, asset)                           # a file whose bytes are another asset's
+    with pytest.raises(cg.GeometryError, match="is not the asset"):
+        control_task.height_file("Toy", "0" * 12)
+    assert not other.exists(), "a wrong file is removed, so the next push replaces it"
+
+
+def test_a_failure_to_find_the_heights_is_the_machines_not_the_rounds(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTROL_CACHE_DIR", str(tmp_path))
+    out = control_task.compute_task({"key": "k", "map": "Ascent", "height": "f" * 12, "blob": b"", "link":
+                                     {"sides": {}, "db_deaths": []}})
+    assert out["status"] == "failed" and out["error_kind"] == "infra" and "not on this machine" in out["error"]

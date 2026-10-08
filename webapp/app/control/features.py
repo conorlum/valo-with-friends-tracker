@@ -12,10 +12,13 @@ exactly what it did.
 - **One base domain**: the walkable ground is fixed for the round (permanent ground plus every enabled bundle's
   potential ground, W8), so node indices never change with a feature's state. A state only adds a movement
   block over nodes (`movement_blocks`) and sight occluders.
-- **Floors** (`floor_nodes`): a floor binding is {"z_band": [lo, hi] metres of position-z above the map's lowest
-  floor, "height_sha"}; per cell it picks the node whose `node_z` lies in the band. On a map with a height asset an
-  unbanded, stale or ambiguous binding is pending and blocks nothing; it never falls back to every floor. A flat
-  map has one node per cell, so a binding is moot there.
+- **Floors** (`floor_nodes`): per cell a floor binding picks the node whose `node_z` lies in its band. A binding is
+  {`z_band`: [lo, hi] metres above `origin_z`, the lowest floor (world dm) of the asset it was read from;
+  `height_sha`: that asset}. The band is rebased to the map's current lowest floor before it is used, so a feature
+  follows its floor when the heights are rebuilt (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md,
+  section 5). On a map with a height asset an unbanded or ambiguous binding, or one whose frame is unknown (no
+  `origin_z`, and another asset than the map's), is pending and blocks nothing; it never falls back to every
+  floor. A flat map has one node per cell, so a binding is moot there.
 """
 
 from __future__ import annotations
@@ -123,6 +126,17 @@ def _floors_by_id(mf: dict) -> dict:
     return {f.get("id"): f for f in mf.get("floors") or [] if isinstance(f, dict)}
 
 
+def _band_shift(geo: Geometry, binding: dict) -> float | None:
+    """Metres to add to a binding's `z_band` to read it in `geo`'s frame. A band is in metres above the lowest
+    floor of the asset it was read from (`origin_z`, world dm); `geo.node_z` is above the lowest floor of the
+    asset the map has now, and a rebuild that finds lower ground moves that. None when the binding doesn't say
+    where its frame was and the map's asset is no longer the one it was read from: its numbers can't be read."""
+    origin = binding.get("origin_z")
+    if isinstance(origin, (int, float)) and not isinstance(origin, bool):
+        return (origin - geo.heights.origin_z) / 10.0
+    return 0.0 if binding.get("height_sha") == geo.height_sha else None
+
+
 def floor_nodes(geo: Geometry, binding: dict | None, cells: np.ndarray) -> Binding:
     """The nodes of `cells` (flat GRID*GRID bool) on the bound floor. A flat map: the cells themselves."""
     flat = np.flatnonzero(cells)
@@ -130,10 +144,12 @@ def floor_nodes(geo: Geometry, binding: dict | None, cells: np.ndarray) -> Bindi
         return Binding(flat.astype(np.int64))
     if not binding or not isinstance(binding.get("z_band"), list):
         return Binding(np.zeros(0, np.int64), [f"floor {(binding or {}).get('id')!r} has no height band"])
-    if binding.get("height_sha") != geo.height_sha:
+    shift = _band_shift(geo, binding)
+    if shift is None:
         return Binding(np.zeros(0, np.int64), [f"floor {binding.get('id')!r} was read from height asset "
-                                               f"{binding.get('height_sha')!r}, the map has {geo.height_sha!r}"])
-    lo, hi = binding["z_band"]
+                                               f"{binding.get('height_sha')!r} and doesn't record its origin; the "
+                                               f"map has {geo.height_sha!r}: read the floor again in the tagger"])
+    lo, hi = binding["z_band"][0] + shift, binding["z_band"][1] + shift
     nodes, ambiguous, missing = [], 0, 0
     for c in flat.tolist():
         if geo.unresolved is not None and geo.unresolved[c]:
@@ -537,7 +553,7 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
             if geo is not None and geo.heights is not None:
                 for fid in ids:
                     fl = floors.get(fid) or {}
-                    if not isinstance(fl.get("z_band"), list) or fl.get("height_sha") != geo.height_sha:
+                    if not isinstance(fl.get("z_band"), list) or _band_shift(geo, fl) is None:
                         reasons.append(f"{m}: floor {fid!r} is not verified against the map's heights")
                 if isinstance(binding, str) and owned[m]["potential_ground"].any():
                     cells = owned[m]["potential_ground"].reshape(GRID, CELL, GRID, CELL).any((1, 3)).ravel()
@@ -1025,14 +1041,20 @@ def rotation_pose(feature: dict, fraction: float) -> dict | None:
 
 def diagnose(geo: Geometry, mf: dict) -> list[dict]:
     """The warnings validation can't give without masks and heights: route endpoints off walkable ground,
-    stale floor bindings, and a blocking footprint that leaks a passage diagonally (it splits the ground
+    floor bindings read from another height asset, and a blocking footprint that leaks a passage diagonally (it splits the ground
     4-connected but not 8-connected, and the engine walks 8-connected)."""
     out = []
     walk = geo.walk.ravel()
     for fl in mf.get("floors") or []:
         if fl.get("z_band") is not None and geo.heights is not None and fl.get("height_sha") != geo.height_sha:
-            out.append({"where": fl.get("id"), "code": "stale_floor",
-                        "message": f"read from height asset {fl.get('height_sha')!r}; the map has {geo.height_sha!r}"})
+            if _band_shift(geo, fl) is None:
+                out.append({"where": fl.get("id"), "code": "unframed_floor",
+                            "message": f"read from height asset {fl.get('height_sha')!r} with no origin recorded; "
+                                       f"the map has {geo.height_sha!r}: read the floor again"})
+            else:
+                out.append({"where": fl.get("id"), "code": "rebound_floor",
+                            "message": f"read from height asset {fl.get('height_sha')!r}; it follows the map's "
+                                       f"{geo.height_sha!r} by its band, rebased to the new lowest floor"})
     for r in mf.get("routes") or []:
         for e in r.get("endpoints") or []:
             if e.get("uv") is None:

@@ -6,6 +6,14 @@ the agent's reading, approved by the user on 2026-10-04 (run decision D5). Every
 synthetic fixture; nothing here is consumed by the engine in this build, no map has an enabled feature, and
 every committed map's control inputs and fingerprints are unchanged (`tests/fixtures/control/map_features/legacy_inputs.json`).
 
+Amended 2026-10-08 (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md, section 5, the owner's P5): a
+floor binding no longer has to be read from the map's current height asset. It records the lowest floor of the
+asset it was read from (origin_z) and its band is rebased to the current asset's, so a tagged feature persists
+across rebuilds and follows its floor; one whose rebased band stops picking exactly one floor per cell is pending
+and is listed in that rebuild's report. **Not amended:** section 8. A published generation still names the height
+digest; a map that has one is not rebuilt automatically and its heights can't be changed by hand until generations
+can be recompiled.
+
 ## Code
 
 | Piece | Module | Tests |
@@ -35,8 +43,9 @@ One object per map entry in `tags.json`, beside the existing keys. Unknown keys 
   {`id`, `uv`, `floor`}), `path` (drawing only), `access` (`endpoint_only` or {`sites`: [{`id`, `uv`, `floor`}]}),
   `directions` [{`from`, `to`, `entry` s, `transit` s, `length` m}], `states` (owner states it runs in, or
   null), `in_transit` (complete / abort / unresolved).
-- Floor binding: `id`, `label`, `z_band` [lo, hi] (metres of position-z above the map's lowest floor, the
-  engine's `node_z` frame) or null (a manual label), `height_sha` (the asset the band was read from).
+- Floor binding: `id`, `label`, `z_band` [lo, hi] (metres of position-z above `origin_z`) or null (a manual
+  label), `origin_z` (the lowest floor, in world decimetres, of the asset the band was read from), `height_sha`
+  (that asset: a record, not a condition).
 - Bundle: `id`, `members`, `enabled`, `runtime_consumer`.
 - Geometry: minimap u/v (0..10000): `point`, `polyline` (+ `width`), `polygon` (even-odd), `paint` (the
   tagger's 256 x 256 bit format).
@@ -50,8 +59,9 @@ One object per map entry in `tags.json`, beside the existing keys. Unknown keys 
 - A transition with an unresolved duration enters its moving state and schedules nothing; an unresolved
   mid-motion policy rejects presses during the motion; an unresolved guard never fires.
 - An occluder with unresolved bounds is saved and pending: it blocks nothing and is reported.
-- A floor binding without a band, read from another height asset, or matching zero or several floors of a
-  cell is pending: it binds nothing (never all floors).
+- A floor binding without a band, with a band whose frame is unknown (no `origin_z`, and another asset than the
+  map's), or matching zero or several floors of a cell after rebasing, is pending: it binds nothing (never all
+  floors).
 - A route arc with an unknown cost exists for reachability only; time queries leave it out and list it.
 - A bundle publishes its base edits only when enabled, named to a registered runtime consumer
   (`features.RUNTIME_CONSUMERS`, empty in this build), its behaviour is resolved, its floor bindings are
@@ -76,7 +86,8 @@ One object per map entry in `tags.json`, beside the existing keys. Unknown keys 
 
 ## 4. Height references and sight
 
-- Floors are bound by height bands in the `node_z` frame (position-z metres above the map's lowest floor).
+- Floors are bound by height bands in metres above the binding's own `origin_z`; before use a band is rebased
+  into the `node_z` frame (position-z metres above the map's current lowest floor).
 - Occluder bounds are ground-relative (`ref: ground`, on a bound floor: the floor's physical ground is its
   node z - `STAND_M`, the median over the occluder's cells), world (`ref: world`, converted through the
   height asset's `origin_z`), `all_height`, or unresolved. The band is [bottom, top).

@@ -463,7 +463,7 @@ def shape_groups(rows: list[dict], m_per_px: float, cut: dict[str, bool] | None 
 
 def m_per_px(map_name: str) -> float | None:
     """Metres per minimap pixel, as app.control.geometry derives it from maps.json's xMultiplier (not imported)."""
-    inputs = replay_control.geometry_inputs(map_name)
+    inputs = replay_control.geometry_inputs(map_name, heights=None)     # only the scale is read
     scale = (inputs or {}).get("scale")
     return 1.0 / (float(scale) * PX * 100) if scale else None
 

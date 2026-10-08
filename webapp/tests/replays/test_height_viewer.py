@@ -452,3 +452,47 @@ def test_the_hover_names_the_kind_and_falls_back_without_one(tmp_path):
 def test_the_page_has_the_slope_rules_layer():
     page = (WEBAPP / "scripts" / "height_viewer.template.html").read_text(encoding="utf-8")
     assert 'id="lyNew"' in page and '"lyTwo", "lyDrops", "lySame", "lyNew"' in page and "H.kindWord(map, cell)" in page
+
+
+def test_db_sources_write_the_stored_assets_for_the_page(tmp_path):
+    from types import SimpleNamespace
+
+    asset = synthetic()
+    path = tmp_path / "a.npz"
+    hc.save_asset(path, asset)
+    data = path.read_bytes()
+    report = report_for(asset)
+    rows = [SimpleNamespace(id=3, map_name=MAP, digest=asset.digest, status="active", report=report, asset=data),
+            SimpleNamespace(id=2, map_name=MAP, digest="0" * 12, status="rejected", report={}, asset=data),
+            SimpleNamespace(id=1, map_name="Bind", digest="1" * 12, status="superseded", report={}, asset=data)]
+    got = height_viewer.db_sources(rows, tmp_path / "out", None, every=False)
+    assert [(name, kind) for name, _, _, kind in got] == [(MAP, "active")]
+    name, written, wrapper, _ = got[0]
+    assert written.read_bytes() == data and wrapper == {"height_sha": asset.digest, "height": report}
+    every = height_viewer.db_sources(rows, tmp_path / "out", [MAP], every=True)
+    assert [(name, kind) for name, _, _, kind in every] == [(MAP, "active"), (f"{MAP} rejected {'0' * 12} row 2", "rejected")]
+    label = f"{MAP} rejected {'0' * 12} row 2"
+    payload = height_viewer.map_payload(label, every[1][1], every[1][2], "rejected", map_name=MAP)
+    assert payload["name"] == label and payload["kind"] == "rejected" and payload["height_sha"] == asset.digest
+
+
+def test_db_history_keeps_distinct_rows_with_the_same_engine_digest(tmp_path):
+    from types import SimpleNamespace
+
+    current = synthetic()
+    older = synthetic()
+    older.kind[current.supported] = hc.KIND_WALKS
+    assert current.digest == older.digest  # kind is deliberately outside the engine hash
+    rows = []
+    for row_id, status, asset in ((3, "active", current), (2, "rejected", older), (1, "rejected", current)):
+        path = tmp_path / f"{row_id}.npz"
+        hc.save_asset(path, asset)
+        rows.append(SimpleNamespace(id=row_id, map_name=MAP, digest=asset.digest, status=status,
+                                    report={"row": row_id}, asset=path.read_bytes()))
+    got = height_viewer.db_sources(rows, tmp_path / "out", None, every=True)
+    assert len({label for label, _, _, _ in got}) == len({path for _, path, _, _ in got}) == 3
+    assert got[0][0] == MAP
+    for row, (_, written, wrapper, _) in zip(rows, got):
+        assert written.read_bytes() == row.asset and wrapper["height"] == {"row": row.id}
+    assert np.array_equal(hc.load_asset(got[0][1]).kind, current.kind)
+    assert np.array_equal(hc.load_asset(got[1][1]).kind, older.kind)

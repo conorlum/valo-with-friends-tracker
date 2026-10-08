@@ -13,7 +13,8 @@ The worker has no database, so the web app drives it: a daemon thread runs `cycl
    alike: linked ones by their match's played_at, newest first, then the rest by upload time. A failure
    under the current inputs is left alone. Up to IN_FLIGHT at a time; the worker runs them only while it
    isn't parsing, so a job may sit `queued` there for a long time, and that never counts as a failure
-   (D8). Only a job seen `running` for STALE_JOB_S does.
+   (D8). Only a job seen `running` for STALE_JOB_S does. A round of a map whose heights are in the database
+   names their digest; a worker that doesn't have the asset says so, gets it pushed and is asked again.
 
 **Timing gaps** (docs/superpowers/plans/2026-10-07-worker-gaps-and-kill-one-impl.md). Each planning pass reads
 the worker's `/health` once. Only a worker whose control is on and that names `control.gaps_protocol` 1 is
@@ -39,6 +40,12 @@ behind) and, with the switch on, may reserve the next. The replays it returns ar
 re-parse; none of their rounds is sent, for control or for gaps alone, since the result would be thrown
 away. A failure in that pass is logged and holds nothing back: control goes on. When an attempt finishes
 or the held set changes, the planning throttle is reset so the new replay's rounds go out at once.
+
+**Rebuild heights** (app/services/replay_heights_remote.py, when REPLAY_HEIGHTS_AUTO is set). After the
+re-parse pass and before submitting, a map whose heights are due for a rebuild has its rounds held back while
+the worker builds them, so parse uploads come first, then height rebuilds, then missing rounds, then stale ones.
+The step reads in a session of its own and writes through others; whatever goes wrong in it is logged
+(`heights_error`), holds nothing back, and map control goes on.
 
 `plan()` runs when there is room in flight; after a plan that left nothing sendable it waits
 PLAN_IDLE_S. On PostgreSQL it holds `pg_try_advisory_xact_lock` for the cycle, so one
@@ -69,8 +76,9 @@ from app.models.match import Match
 from app.models.replay import Replay, ReplayRound
 from app.replays import choke_assets
 from app.replays import control_format as cf
-from app.services import replay_control, replay_gaps
+from app.services import control_heights, replay_control, replay_gaps
 from app.services import replay_gaps_store as gaps_store
+from app.services import replay_heights_remote
 from app.services import replay_reparse_auto as reparse_auto
 from app.services import replay_upload
 from app.services.replay_control_store import ALREADY, STORED, store_round
@@ -104,6 +112,31 @@ class Unreachable(Exception):
     pass
 
 
+class Conflict(Exception):
+    """The worker answered 409: the request is understood and can't be done as things stand. `body` is what it
+    said; what that means is the caller's to decide, endpoint by endpoint."""
+
+    def __init__(self, body: dict):
+        super().__init__(str(body.get("error") or "conflict"))
+        self.body = body
+
+
+class Rejected(Exception):
+    """The worker refused the request itself (400, 413): sending it again unchanged can't work."""
+
+    def __init__(self, code: int, body: dict):
+        super().__init__(f"{code}: {body.get('error') or 'refused'}")
+        self.code, self.body = code, body
+
+
+class NeedsHeight(Exception):
+    """The worker doesn't have the height asset a control round names: push it and ask again."""
+
+    def __init__(self, digest: str):
+        super().__init__(digest)
+        self.digest = digest
+
+
 class ControlClient:
     """The worker's control endpoints over urllib (the same private address as uploads)."""
 
@@ -113,7 +146,19 @@ class ControlClient:
 
     def submit(self, task: dict) -> dict:
         body = json.dumps(task).encode("utf-8")
-        return self._call(urllib.request.Request(f"{self.base}/control", data=body, method="POST",
+        try:
+            return self._call(urllib.request.Request(f"{self.base}/control", data=body, method="POST",
+                                                     headers={"Content-Type": "application/json"}))
+        except Conflict as conflict:
+            if conflict.body.get("height"):
+                raise NeedsHeight(str(conflict.body["height"])) from conflict
+            raise Unreachable(f"the worker refused the round: {conflict}") from conflict
+        except Rejected as refused:               # as before this change: a refused round is tried again later
+            raise Unreachable(f"the worker refused the round: {refused}") from refused
+
+    def push_height(self, map_name: str, digest: str, asset: bytes) -> dict:
+        body = json.dumps({"map": map_name, "digest": digest, "asset": base64.b64encode(asset).decode("ascii")})
+        return self._call(urllib.request.Request(f"{self.base}/heights", data=body.encode("utf-8"), method="POST",
                                                  headers={"Content-Type": "application/json"}))
 
     def job(self, job_id: str) -> dict:
@@ -122,11 +167,39 @@ class ControlClient:
     def health(self) -> dict:
         return self._call(urllib.request.Request(f"{self.base}/health"))
 
+    def _post(self, path: str, body: dict) -> dict:
+        return self._call(urllib.request.Request(f"{self.base}{path}", data=json.dumps(body).encode("utf-8"),
+                                                 method="POST", headers={"Content-Type": "application/json"}))
+
+    def open_build(self, key: str, map_name: str, rounds: int, manifest: dict) -> dict:
+        return self._post("/heights/build", {"key": key, "map": map_name, "rounds": rounds, "manifest": manifest})
+
+    def send_rounds(self, build_id: str, rounds: list) -> dict:
+        return self._post(f"/heights/build/{build_id}/rounds", {"rounds": rounds})
+
+    def start_build(self, build_id: str, previous: str | None) -> dict:
+        return self._post(f"/heights/build/{build_id}/start", {"previous": previous} if previous else {})
+
+    def cancel_build(self, build_id: str) -> dict:
+        return self._post(f"/heights/build/{build_id}/cancel", {})
+
+    def build(self, build_id: str) -> dict:
+        return self._call(urllib.request.Request(f"{self.base}/heights/build/{build_id}"))
+
     def _call(self, request) -> dict:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as error:
+            if error.code in (400, 409, 413):
+                try:
+                    said = json.loads(error.read() or b"{}")
+                except (ValueError, OSError):   # an unreadable body is an empty one
+                    said = {}
+                said = said if isinstance(said, dict) else {}
+                if error.code == 409:
+                    raise Conflict(said) from error
+                raise Rejected(error.code, said) from error
             if error.code == 404:
                 raise WorkerGone(str(error.code)) from error
             if error.code == 503:
@@ -149,6 +222,12 @@ class InFlight:
     gaps_only: bool = False              # the round's control is current; only its gaps were asked for
 
 
+def _height_state():
+    from app.services.replay_heights_remote import HeightState
+
+    return HeightState()
+
+
 @dataclass
 class State:
     in_flight: dict[str, InFlight] = field(default_factory=dict)
@@ -157,6 +236,7 @@ class State:
     last_found: bool = True             # whether it left anything sendable unsent
     reparse: reparse_auto.Memo = field(default_factory=reparse_auto.Memo)   # the automatic queue's archive read
     held: frozenset = frozenset()       # the replays the last cycle held back for a re-parse
+    heights: object = field(default_factory=_height_state)     # replay_heights_remote.HeightState
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -239,14 +319,15 @@ def _keep_gaps(session_factory, f: InFlight, result: dict, counts: dict) -> bool
     return True
 
 
-def _matches_geometry(result: dict, map_name: str) -> bool:
-    mine = replay_control.geometry_inputs(map_name)
+def _matches_geometry(result: dict, map_name: str, heights: dict) -> bool:
+    mine = replay_control.geometry_inputs(map_name, heights)
     used = result.get("geometry") or {}
     return mine is not None and all(used.get(k) == mine.get(k)
                                     for k in ("sight", "walk", "barrier", "specials", "scale", "height", "features"))
 
 
-def _collect(session_factory, client, state: State, now: float, counts: dict) -> None:
+def _collect(session_factory, session, client, state: State, now: float, counts: dict) -> None:
+    heights = control_heights.active_digests(session)
     for key, f in list(state.in_flight.items()):
         try:
             job = client.job(f.job_id)
@@ -276,7 +357,7 @@ def _collect(session_factory, client, state: State, now: float, counts: dict) ->
                 state.failed(key, now)
                 counts["dropped_revision"] += 1
                 continue
-            if not _matches_geometry(result, f.map_name):
+            if not _matches_geometry(result, f.map_name, heights):
                 state.failed(key, now)
                 counts["dropped_geometry"] += 1
                 continue
@@ -367,6 +448,7 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
     """Submits `todo` (from `_sendable`) in D2's order until the pool is full or the worker stops taking
     tasks. Returns whether sendable work was left."""
     keys = {(p.replay_id, p.round_number): key for key, p in todo}
+    heights = control_heights.active_digests(session)
     for p in _order(session, [p for _, p in todo]):
         if len(state.in_flight) >= IN_FLIGHT:
             return True                      # sendable work is left: plan again next cycle
@@ -378,19 +460,31 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             continue
         task = {"key": key, "map": p.map_name, "blob": base64.b64encode(row.data).decode("ascii"),
                 "link": {"sides": p.link["sides"], "db_deaths": p.link["db_deaths"]}}
-        features = (replay_control.geometry_inputs(p.map_name) or {}).get("features")
+        features = (replay_control.geometry_inputs(p.map_name, heights) or {}).get("features")
         if features:       # only a map with enabled features: an absent key means no verification
             task["features"] = features
         if expect_gaps:
             task["gaps"] = gaps_job(p.replay_id, p.round_number, p.fingerprint, p.map_name)
         if gaps_only:
             task["gaps_only"] = True
+        digest = heights.get(p.map_name)        # only the database's: a committed asset is in the worker's image
+        if digest:
+            task["height"] = digest
         try:
-            answer = client.submit(task)
+            try:
+                answer = client.submit(task)
+            except NeedsHeight:
+                asset = control_heights.asset_bytes(session, p.map_name, digest) if digest else None
+                if asset is None:
+                    counts["unreachable"] += 1
+                    return True
+                client.push_height(p.map_name, digest, asset)
+                counts["pushed"] += 1
+                answer = client.submit(task)
         except WorkerBusy:
             counts["busy"] += 1
             return True
-        except (WorkerGone, Unreachable):
+        except (WorkerGone, Unreachable, NeedsHeight, Conflict, Rejected):   # the last two: a refused push
             counts["unreachable"] += 1
             return True
         state.in_flight[key] = InFlight(answer["id"], p.replay_id, p.round_number, p.fingerprint, p.map_name, now,
@@ -401,26 +495,31 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
     return False
 
 
-def _submit(session, client, state: State, now: float, counts: dict, held: frozenset = frozenset()) -> None:
+def _submit(session, client, state: State, now: float, counts: dict, held: frozenset = frozenset(),
+            held_maps: frozenset = frozenset()) -> None:
     if len(state.in_flight) >= IN_FLIGHT:
         return
     if state.last_planned is not None and not state.last_found and now - state.last_planned < PLAN_IDLE_S:
         return
     # D1/D3: never computed, or out of date, linked or not. A failure under the current inputs stays put.
     planned = [p for p in replay_control.plan(session) if p.computable and p.reason in ("missing", "stale")]
+    todo = [p for p in planned if p.map_name not in held_maps]   # a map whose heights are being rebuilt waits for them
     # Read afresh every pass and never remembered: the worker deploys on its own, in either direction.
     capable = _gaps_capable(client)
     state.last_planned = now
     state.last_found = _send(session, client, state, now, counts,
-                             _sendable(state, now, planned, kind="control", capable=capable, held=held),
+                             _sendable(state, now, todo, kind="control", capable=capable, held=held),
                              kind="control")
-    if state.last_found or not capable:
-        return          # control first; and without the capability gaps-only work waits, unplanned and uncounted
-    # As the local command does: every round with its current fingerprint, then those whose control is ok and
-    # current and whose gap run is missing or stale. A gap failure under the current keys stays put.
-    wanted = replay_gaps.plan_gaps(session, planned, replay_control.plan(session, force=True))
-    state.last_found = _send(session, client, state, now, counts,
-                             _sendable(state, now, wanted, kind="gaps", held=held), kind="gaps")
+    # Control first; and without the capability gaps-only work waits, unplanned and uncounted.
+    if not state.last_found and capable:
+        # As the local command does: every round with its current fingerprint, then those whose control is ok and
+        # current and whose gap run is missing or stale. A gap failure under the current keys stays put.
+        wanted = replay_gaps.plan_gaps(session, planned, replay_control.plan(session, force=True))
+        wanted = [p for p in wanted if p.map_name not in held_maps]
+        state.last_found = _send(session, client, state, now, counts,
+                                 _sendable(state, now, wanted, kind="gaps", held=held), kind="gaps")
+    if held_maps:
+        state.last_found = True      # a plan that found only held rounds doesn't start the idle throttle
 
 
 def _reparse(session_factory, worker, state: State, now: float, counts: dict) -> frozenset:
@@ -447,7 +546,7 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
     now = time.time() if now is None else now
     counts: dict[str, int] = {k: 0 for k in ("sent", "stored", "stored_failed", "skipped", "forgotten", "timed_out",
                                              "dropped_revision", "dropped_geometry", "dropped_figures", "infra_failed",
-                                             "busy", "unreachable", "gaps_sent", "gaps_stored",
+                                             "busy", "unreachable", "pushed", "gaps_sent", "gaps_stored",
                                              "gaps_dropped", "gaps_skipped", "gaps_unavailable", "held_back",
                                              *reparse_auto.COUNTS)}
     lock = session_factory()   # owns the advisory lock and nothing else
@@ -456,11 +555,28 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
             if not lock.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": LOCK_ID}).scalar():
                 counts["locked_out"] = 1
                 return counts
-        _collect(session_factory, client, state, now, counts)
+        collect = session_factory()   # reads the active heights the results are checked against
+        try:
+            _collect(session_factory, collect, client, state, now, counts)
+        finally:
+            collect.rollback()
+            collect.close()
         held = _reparse(session_factory, worker, state, now, counts)
+        held_maps: frozenset = frozenset()
+        if replay_heights_remote.enabled():
+            rebuild = session_factory()   # its writes go through sessions of their own; this one only reads
+            try:
+                held_maps = frozenset(replay_heights_remote.step(session_factory, rebuild, client, state.heights, now,
+                                                                 counts))
+            except Exception:  # noqa: BLE001 - a height rebuild must never stop map control
+                log.exception("height rebuild step failed")
+                counts["heights_error"] = 1
+            finally:
+                rebuild.rollback()
+                rebuild.close()
         session = session_factory()   # opened after the pass: it reads the replay a settlement just committed
         try:
-            _submit(session, client, state, now, counts, held)
+            _submit(session, client, state, now, counts, held, held_maps)
         finally:
             session.rollback()
             session.close()

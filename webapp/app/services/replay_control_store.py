@@ -22,7 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from app.models.replay import Replay, ReplayRoundControl
 from app.replays import control_format as cf
 from app.replays import db as replay_db
-from app.services import replay_control
+from app.services import control_heights, replay_control
 
 STORED = "stored"
 ALREADY = "skipped: already stored"
@@ -39,7 +39,7 @@ def store_round(session_factory, replay_id: int, round_number: int, fingerprint:
                 return "skipped: the replay is gone"
             replay_db.advisory_lock(session, str(replay.match_uuid))
             current = replay_control.round_fingerprint(replay, replay_control.side_groups(session, replay),
-                                                       round_number)
+                                                       round_number, control_heights.active_digests(session))
             if current != fingerprint:
                 return "skipped: its inputs changed while computing"
             row = session.get(ReplayRoundControl, (replay_id, round_number))

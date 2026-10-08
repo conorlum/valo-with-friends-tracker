@@ -230,3 +230,14 @@ def test_the_new_modules_import_only_the_standard_library_and_app_replays():
             for mod in mods:
                 top = mod.split(".")[0]
                 assert top in sys.stdlib_module_names or mod.startswith("app.replays") or top == "__future__", (name, mod)
+
+
+def test_a_banded_floor_without_its_assets_origin_is_warned_about():
+    mf = {**ms.empty(), "floors": [
+        {"id": "floor-1", "label": "ground", "z_band": [-0.5, 1.0], "height_sha": "a" * 12, "origin_z": -120},
+        {"id": "floor-2", "label": "old", "z_band": [-0.5, 1.0], "height_sha": "a" * 12},
+        {"id": "floor-3", "label": "odd", "z_band": [-0.5, 1.0], "height_sha": "a" * 12, "origin_z": "low"}]}
+    report = ms.validate(mf)
+    codes = {(w["where"], w["code"]) for w in report.warnings}
+    assert ("floor-2", "unframed_floor") in codes and ("floor-3", "unframed_floor") in codes
+    assert not any(where == "floor-1" for where, _ in codes)

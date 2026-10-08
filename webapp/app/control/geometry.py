@@ -91,6 +91,12 @@ def cache_dir() -> Path:
     return Path(configured) if configured else DEFAULT_CACHE_DIR
 
 
+def height_cache_path(name: str, digest: str, directory: Path | None = None) -> Path:
+    """Where a height asset fetched by its digest is kept: beside the visibility cache, never in the repository
+    (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md, section 1)."""
+    return Path(directory or cache_dir()) / "heights" / f"{name}.{digest}.height.npz"
+
+
 # ---------------------------------------------------------------- masks
 
 
@@ -375,7 +381,8 @@ def load_tags(asset_dir: Path = ASSET_DIR) -> dict:
 def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None = None) -> Geometry:
     """A map's committed geometry (built by scripts/build_control_geometry.py), with its heights when
     index.json names a height asset (scripts/build_control_heights.py). `heights` loads that asset file
-    instead: a preview's, never a committed map's."""
+    instead: a preview's, or the map's active asset fetched by its digest (the database's, which wins over a
+    committed one)."""
     sight_path, walk_path = asset_dir / f"{name}.sight.png", asset_dir / f"{name}.walk.png"
     if not sight_path.is_file() or not walk_path.is_file():
         raise GeometryError(f"no control geometry for {name!r}; run scripts/build_control_geometry.py")
@@ -388,8 +395,6 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
         barrier_px = read_mask_png(barrier_path)
         geo.barrier = barrier_cells(barrier_px)
         geo.barrier_sha = hashlib.sha256(np.packbits(barrier_px).tobytes()).hexdigest()[:12]
-    if heights is not None:
-        return attach_heights(geo, hc.load_asset(heights))
     index_path = asset_dir / "index.json"
     row = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
     if row.get("features_sha"):          # never on a committed map in this build: no feature is enabled
@@ -397,6 +402,8 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
 
         geo.features = features.load_generation(asset_dir, row["features_sha"])
         geo.features_sha = row["features_sha"]
+    if heights is not None:              # a preview's, or one fetched by its digest (height_cache_path)
+        return attach_heights(geo, hc.load_asset(heights))
     wanted = row.get("height_sha")
     if wanted:
         asset = hc.load_asset(asset_dir / f"{name}.height.npz")

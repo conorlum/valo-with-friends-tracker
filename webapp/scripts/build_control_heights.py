@@ -24,9 +24,10 @@ compare two builds of different rounds.
 
 Before writing, it runs the two checks on the new heights: the kill lines of the rounds it read (both
 ends with z, on resolved cells, clear in 2D; at most 2% may be blocked) and the must-block set
-(`tests/replays/control_must_block.json`: sightlines impossible in game, each of which must be blocked).
+(`app/static/data/control/must_block.json`: sightlines impossible in game, each of which must be blocked).
 A map that fails either is refused unless `--accept-failures` (the user has looked at the listed
-failures and accepts them). A must-block line whose heights aren't known yet is listed as not checked.
+failures and accepts them). A must-block line whose heights aren't known yet is listed as not checked, and
+a check file that can't be read fails the must-block check.
 
 Either way the review picture goes to `%TEMP%\\valo-replay\\heights\\<Map>.height.png` (never committed),
 and every unresolved area is printed as a `WARNING` line: those cells keep today's flat sight and walking.
@@ -52,23 +53,18 @@ sys.path.insert(0, str(WEBAPP_ROOT))
 
 from app.control import geometry as cg  # noqa: E402
 from app.control import height_build as hb  # noqa: E402
+from app.control import height_job  # noqa: E402
 from app.control import heights as hc  # noqa: E402
 from app.replays import format as fmt  # noqa: E402
+from app.replays import height_inputs  # noqa: E402
 
 MIN_REVISION = 11
-MUST_BLOCK = WEBAPP_ROOT / "tests" / "replays" / "control_must_block.json"
 
 
-def blob_rounds(directory: Path, map_name: str) -> tuple[list, dict]:
-    """[(match, n, blob)] from `<directory>/<match>/<n>.json.gz`, and how many were skipped and why."""
-    rounds, skipped = [], {"other_map": 0}
-    for path in sorted(directory.glob("*/*.json.gz"), key=lambda p: (p.parent.name, int(p.name.split(".")[0]))):
-        blob = fmt.decode_blob(path.read_bytes())
-        if blob.get("map") != map_name:
-            skipped["other_map"] += 1
-            continue
-        rounds.append((path.parent.name, int(path.name.split(".")[0]), blob))
-    return rounds, skipped
+def blob_rounds(directory: Path, map_name: str) -> tuple[height_job.BlobDir, dict]:
+    """The map's rounds from `<directory>/<match>/<n>.json.gz`, read one at a time. What it skipped (other
+    maps' rounds) is on the source once it has been read (`.skipped`)."""
+    return height_job.BlobDir(directory, map_name), {}
 
 
 def db_rounds(map_name: str, session_factory=None) -> tuple[list, dict]:
@@ -120,8 +116,12 @@ def build_inputs(args, geo, rounds: list) -> dict:
     if not args.blobs_dir:
         return {"rounds": len(rounds), "matches": len({str(match) for match, _, _ in rounds}), "rounds_sha": None,
                 **masks}
-    rows = [[match, n, hashlib.sha256((args.blobs_dir / str(match) / f"{n}.json.gz").read_bytes()).hexdigest()]
-            for match, n, _ in rounds]
+    if not hasattr(rounds, "read"):
+        rows = [[match, n, hashlib.sha256((args.blobs_dir / str(match) / f"{n}.json.gz").read_bytes()).hexdigest()]
+                for match, n, _ in rounds]
+    else:
+        rows = [[path.parent.name, int(path.name.split(".")[0]), hashlib.sha256(path.read_bytes()).hexdigest()]
+                for path in rounds.read]
     identity = round_identity(rows)
     frozen = args.blobs_dir / f"{args.map}.frozen.json"
     if frozen.is_file():
@@ -141,14 +141,13 @@ def index_entry(build: hb.HeightBuild, inputs: dict | None = None) -> dict:
     return entry
 
 
+MUST_BLOCK = None      # another check file than app/static/data/control/must_block.json (tests)
+
+
 def run_checks(map_name: str, flat_geo, build: hb.HeightBuild, rounds: list) -> dict:
     """The kill-line and must-block checks on the new heights; printed, and stored in the report."""
-    import copy
-
-    geo = cg.attach_heights(copy.copy(flat_geo), build.asset)
-    kills = hb.kill_line_check(rounds, geo)
-    lines = json.loads(MUST_BLOCK.read_text(encoding="utf-8"))["lines"] if MUST_BLOCK.is_file() else []
-    must = hb.must_block_check(lines, geo, map_name)
+    checks = height_job.run_checks(map_name, flat_geo, build, rounds, MUST_BLOCK)
+    kills, must = checks["kill_lines"], checks["must_block"]
     excluded = ", ".join(f"{why} {n}" for why, n in kills["excluded"].items()) or "none"
     print(f"  kill lines: {kills['blocked']}/{kills['qualifying']} blocked by heights ({kills['share']:.1%}, "
           f"bar {hc.KILL_LINE_BAR:.0%}): {'PASS' if kills['passes'] else 'FAIL'}"
@@ -157,12 +156,13 @@ def run_checks(map_name: str, flat_geo, build: hb.HeightBuild, rounds: list) -> 
     for example in kills["examples"]:
         print(f"    blocked: {example}", flush=True)
     print(f"  must-block: {must['blocked']}/{must['checked']} blocked, {must['unchecked']} not checked (no heights "
-          f"yet: fill them in {MUST_BLOCK.name}): {'PASS' if must['passes'] else 'FAIL'}", flush=True)
+          f"yet: fill them in {height_inputs.MUST_BLOCK.name}): {'PASS' if must['passes'] else 'FAIL'}", flush=True)
+    if must.get("error"):
+        print(f"    {must['error']}", flush=True)
     for result in must["results"]:
         if result["checked"] and not result["blocked"]:
             print(f"    NOT blocked: {result['source']}", flush=True)
-    build.report["kill_lines"], build.report["must_block"] = kills, must
-    return {"kill_lines": kills, "must_block": must}
+    return checks
 
 
 def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_factory=None) -> int:
@@ -195,11 +195,6 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
     rounds, skipped = blob_rounds(args.blobs_dir, args.map) if args.blobs_dir else db_rounds(args.map, session_factory)
     print(f"{args.map}: {len(rounds)} rounds read in {time.perf_counter() - started:.1f}s"
           + "".join(f", {n} skipped ({why})" for why, n in skipped.items() if n), flush=True)
-    try:
-        inputs = build_inputs(args, geo, rounds)
-    except ValueError as error:
-        print(f"REFUSED: {error}", file=sys.stderr)
-        return 2
     started = time.perf_counter()
     rule = hc.FLOOR_MIN_MATCHES
     try:
@@ -209,12 +204,19 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
         build = hb.build(rounds, geo)
     finally:
         hc.FLOOR_MIN_MATCHES = rule
+    try:
+        inputs = build_inputs(args, geo, rounds)
+    except ValueError as error:
+        print(f"REFUSED: {error}", file=sys.stderr)
+        return 2
     if args.preview_min_matches is not None:
         build.asset.meta["preview_min_matches"] = args.preview_min_matches
         build.report["preview_min_matches"] = args.preview_min_matches
     for line in hb.report_lines(args.map, build.report):
         print(line, flush=True)
     print(f"  built in {time.perf_counter() - started:.1f}s", flush=True)
+    if getattr(rounds, "skipped", 0):
+        print(f"  {rounds.skipped} round(s) of other maps skipped", flush=True)
     checks = run_checks(args.map, geo, build, rounds)
     png = picture_path(args.map)
     hb.picture(build, geo, png)

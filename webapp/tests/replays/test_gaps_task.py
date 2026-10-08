@@ -397,7 +397,7 @@ def _command(monkeypatch, gaps_result):
     from app.control import geometry
 
     monkeypatch.setattr(multiprocessing, "get_context", lambda kind: SimpleNamespace(Pool=_Pool))
-    monkeypatch.setattr(geometry, "load_geometry", lambda name: name)
+    monkeypatch.setattr(geometry, "load_geometry", lambda name, heights=None: name)
     monkeypatch.setattr(geometry, "visibility", lambda geo: SimpleNamespace(visibility_source="fake"))
     monkeypatch.setattr(compute_control, "POLL_S", 0)
     tasks = []

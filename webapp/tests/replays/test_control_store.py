@@ -108,7 +108,7 @@ def test_the_fingerprint_moves_with_each_input(db, linked, monkeypatch):
     linked.db_deaths = None
     assert rc.round_fingerprint(linked, groups, 1) == base
     geometry = dict(rc.geometry_inputs(linked.map_name), sight="changed")
-    monkeypatch.setattr(rc, "geometry_inputs", lambda name: geometry)
+    monkeypatch.setattr(rc, "geometry_inputs", lambda name, heights=None: geometry)
     assert rc.round_fingerprint(linked, groups, 1) != base
     monkeypatch.undo()
     monkeypatch.setattr(cf, "CONTROL_REVISION", cf.CONTROL_REVISION + 1)

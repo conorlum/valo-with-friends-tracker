@@ -22,7 +22,7 @@ from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRound
 from app.replays import choke_assets
 from app.replays import control_format as cf
 from app.replays import db as replay_db
-from app.services import replay_control, replay_gaps
+from app.services import control_heights, replay_control, replay_gaps
 
 STORED = "stored"
 ALREADY = "skipped: already stored"
@@ -38,7 +38,8 @@ def _stale(session, replay_id: int, round_number: int, run: dict, expected: str)
     replay = session.get(Replay, replay_id)
     if replay is None:
         return "skipped: the replay is gone"
-    current = replay_control.round_fingerprint(replay, replay_control.side_groups(session, replay), round_number)
+    current = replay_control.round_fingerprint(replay, replay_control.side_groups(session, replay), round_number,
+                                               control_heights.active_digests(session))
     if current is None or current != expected:
         return "skipped: its control inputs changed while computing"
     control = session.get(ReplayRoundControl, (replay_id, round_number))

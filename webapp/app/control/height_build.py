@@ -790,7 +790,7 @@ def geo_los(geo: Geometry, a: tuple, b: tuple, smokes) -> bool:
 
 
 def must_block_check(lines: list, geo: Geometry, map_name: str) -> dict:
-    """The hand-listed sightlines that are impossible in game (tests/replays/control_must_block.json):
+    """The hand-listed sightlines that are impossible in game (app/static/data/control/must_block.json):
     each must be blocked. A line whose viewer or target height is still unknown (null) is listed as not
     checked, never as passing: a map with one fails the check until its heights are filled in."""
     results = []

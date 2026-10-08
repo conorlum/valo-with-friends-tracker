@@ -110,7 +110,7 @@ def test_another_map_warms_beside_a_warm_one(runner):
            [r.submit(task(f"a{i}", "Ascent", "sleep:0.4")) for i in range(1, 3)]
     wait_all(r, jobs)
     assert overlaps(log)[0] == 2
-    assert set(r.counts()["warm"]) == {"Ascent", "Split"}
+    assert set(r.counts()["warm"]) == {"Ascent:", "Split:"}
 
 
 def test_failure_kinds_and_a_machine_failure_makes_the_map_cold_again(runner):
@@ -118,10 +118,10 @@ def test_failure_kinds_and_a_machine_failure_makes_the_map_cold_again(runner):
     engine, infra = r.submit(task("e", "Haven", "engine")), None
     wait_all(r, [engine])
     assert r.get(engine.id).status == "failed" and r.get(engine.id).error_kind == "engine"
-    assert "Haven" in r.counts()["warm"], "an engine failure got past loading"
+    assert "Haven:" in r.counts()["warm"], "an engine failure got past loading"
     infra = r.submit(task("i", "Haven", "infra"))
     wait_all(r, [infra])
-    assert r.get(infra.id).error_kind == "infra" and "Haven" not in r.counts()["warm"]
+    assert r.get(infra.id).error_kind == "infra" and "Haven:" not in r.counts()["warm"]
     # an infra failure can be retried under the same key
     for p in log.iterdir():
         p.unlink()
@@ -195,7 +195,7 @@ def test_a_parse_kills_the_child_started_last_and_its_round_goes_back_first_unco
     assert r.get(a.id).status == "running", "the child started first is left alone"
     assert r.get(b.id).status == "queued" and r.pending[:2] == [b.id, c.id]
     assert r.get(b.id).error is None and r.get(b.id).task, "uncounted, task kept"
-    assert r.counts()["preempted"] == 1 and "Ascent" in r.counts()["warm"]
+    assert r.counts()["preempted"] == 1 and "Ascent:" in r.counts()["warm"]
     assert r.preempt() == 0, "a second parse finds one child: nothing to kill"
     r.jobs[b.id].task = json.dumps(task("b:1:f")).encode()      # let it finish quickly this time
     wait_all(r, [a, b, c])                                       # still busy: they finish one at a time
@@ -214,11 +214,11 @@ def test_a_preempted_warming_round_leaves_its_map_cold(runner):
     busy["on"] = True
     assert r.preempt() == 1
     wait_until(lambda: r.counts()["running"] == 1)
-    assert r.get(warming.id).status == "queued" and "Split" not in r.counts()["warm"]
+    assert r.get(warming.id).status == "queued" and "Split:" not in r.counts()["warm"]
     r.jobs[warming.id].task = json.dumps(task("s:1:f", "Split")).encode()
     busy["on"] = False
     wait_all(r, [first, warming])
-    assert "Split" in r.counts()["warm"]
+    assert "Split:" in r.counts()["warm"]
 
 
 @pytest.mark.parametrize("ending", ["done", "timeout", "garbage"])
@@ -244,7 +244,7 @@ def test_preemption_at_settlement_wins_over_every_other_ending(runner, ending):
     wait_until(lambda: r.get(job.id).status == "queued")
     assert r.get(job.id).error is None and r.get(job.id).task
     assert r.pending == [job.id] and r.counts()["preempted"] == 1
-    assert r.get(keep.id).status == "running" and "Ascent" in r.counts()["warm"], "warmth unchanged"
+    assert r.get(keep.id).status == "running" and "Ascent:" in r.counts()["warm"], "warmth unchanged"
 
 
 def test_a_failing_kill_or_seam_never_loses_the_slot(runner, monkeypatch):
@@ -266,7 +266,7 @@ def test_the_worker_wires_its_parse_hook_to_control(monkeypatch):
 
         def serve_forever(self):
             pass
-    monkeypatch.setattr(server, "make_server", lambda worker, host, port, control: made.update(
+    monkeypatch.setattr(server, "make_server", lambda worker, host, port, control, heights=None: made.update(
         worker=worker, control=control) or Fake())
     monkeypatch.setattr(server.Settings, "from_env", classmethod(lambda cls, env=None: cls(control_cmd=["true"])))
     server.main()
@@ -303,7 +303,7 @@ def test_the_http_answers(tmp_path, runner):
     assert code == 200 and job["status"] == "done" and job["result"]["summary"] == "cw=="
     assert http(base, "/control/nope")[0] == 404
     health = http(base, "/health")[1]["control"]
-    assert health["enabled"] is True and "Ascent" in health["warm"]
+    assert health["enabled"] is True and "Ascent:" in health["warm"]
 
 
 def test_control_off_answers_404_and_parsing_is_untouched(tmp_path, runner):
@@ -343,6 +343,7 @@ def test_the_image_builds_a_control_venv_with_the_web_apps_pins():
                      dockerfile)
     assert "REPLAY_CONTROL_CMD='[\"/opt/control-venv/bin/python\", \"-m\", \"replay_worker.control_job\"]'" in dockerfile
     assert "CONTROL_CACHE_DIR=/jobs/control_cache" in dockerfile and "chown -R worker /jobs" in dockerfile
+    assert "REPLAY_HEIGHT_CMD" in dockerfile and "replay_worker.height_job" in dockerfile
     # the server itself still runs on the system python3, without the venv
     assert dockerfile.rstrip().endswith('CMD ["python3", "-m", "replay_worker.server"]')
 
@@ -455,3 +456,53 @@ def test_health_advertises_the_gaps_protocol_beside_the_switch(tmp_path, runner)
     off, _ = runner(control_enabled=False)
     control = http(serve(tmp_path, off), "/health")[1]["control"]
     assert control["enabled"] is False and control["gaps_protocol"] == 1, "the switch and the protocol are separate"
+
+
+# ---------------------------------------------------------------- heights by digest
+# (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md, section 1)
+
+
+def height_task(key, digest, map_name="Ascent", mode="ok"):
+    return {**task(key, map_name, mode), "height": digest}
+
+
+def test_a_pushed_asset_is_kept_and_a_round_naming_a_missing_one_is_asked_for(tmp_path, runner):
+    r, _ = runner(control_cache_dir=tmp_path / "cache")
+    base = serve(tmp_path, r)
+    code, body = http(base, "/control", height_task("h:1:f", "a" * 12))
+    assert code == 409 and body["height"] == "a" * 12, "the web app pushes it and asks again"
+    assert http(base, "/heights", {"map": "Ascent", "digest": "a" * 12, "asset": "bnB6"})[0] == 200
+    assert (tmp_path / "cache" / "heights" / f"Ascent.{'a' * 12}.height.npz").read_bytes() == b"npz"
+    code, body = http(base, "/control", height_task("h:1:f", "a" * 12))
+    assert code == 202
+    for bad in ({"map": "../x", "digest": "a" * 12, "asset": "bnB6"}, {"map": "Ascent", "digest": "nope", "asset": "bnB6"},
+                {"map": "Ascent", "digest": "a" * 12, "asset": "***"}, {"map": "Ascent"}):
+        assert http(base, "/heights", bad)[0] == 400, bad
+
+
+def test_only_a_few_assets_per_map_are_kept(tmp_path, runner):
+    r, _ = runner(control_cache_dir=tmp_path / "cache")
+    base = serve(tmp_path, r)
+    for i in range(server.HEIGHTS_KEPT + 2):
+        assert http(base, "/heights", {"map": "Ascent", "digest": f"{i:012x}", "asset": "bnB6"})[0] == 200
+        time.sleep(0.02)
+    kept = sorted(p.name for p in (tmp_path / "cache" / "heights").iterdir())
+    assert len(kept) == server.HEIGHTS_KEPT and f"Ascent.{server.HEIGHTS_KEPT + 1:012x}.height.npz" in kept
+
+
+def test_a_new_height_digest_makes_the_map_cold_again(tmp_path, runner):
+    # The visibility cache is per heights: the first round under a new digest runs alone, as a map's first does.
+    cache = tmp_path / "cache" / "heights"
+    cache.mkdir(parents=True)
+    for digest in ("a" * 12, "b" * 12):
+        (cache / f"Ascent.{digest}.height.npz").write_bytes(b"npz")
+    r, log = runner(control_cache_dir=tmp_path / "cache")
+    first = r.submit(height_task("w:1:f", "a" * 12))
+    wait_all(r, [first])
+    assert r.counts()["warm"] == [f"Ascent:{'a' * 12}"]
+    jobs = [r.submit(height_task(f"w:{n}:g", "b" * 12, mode="sleep:0.4")) for n in (2, 3, 4)]
+    wait_all(r, jobs)
+    most, events = overlaps(log)
+    starts = [t for t, kind, _ in events if kind == "start"][1:]
+    ends = [t for t, kind, _ in events if kind == "end"][1:]
+    assert starts[1] >= ends[0], "the first round under the new heights finished before another started"

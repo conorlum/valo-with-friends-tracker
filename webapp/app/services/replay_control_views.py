@@ -28,7 +28,7 @@ from sqlalchemy.orm import load_only
 
 from app.models.replay import Replay, ReplayRoundControl
 from app.replays import control_format as cf
-from app.services import replay_control
+from app.services import control_heights, replay_control
 
 # Bumped when these views' output changes for the same rows, so ETags change with it.
 VIEWS_VERSION = 2
@@ -52,11 +52,12 @@ def load_round_summaries(db, replay: Replay) -> RoundSummaries:
             .filter(ReplayRoundControl.replay_id == replay.id, ReplayRoundControl.status == "ok")
             .order_by(ReplayRoundControl.round_number).all())
     groups = replay_control.side_groups(db, replay)
+    heights = control_heights.active_digests(db)
     out = RoundSummaries()
     tag = hashlib.sha256(f"views{VIEWS_VERSION};".encode("utf-8"))
     for row in rows:
         n = row.round_number
-        stale = row.fingerprint != replay_control.round_fingerprint(replay, groups, n)
+        stale = row.fingerprint != replay_control.round_fingerprint(replay, groups, n, heights)
         # The stale flag is in the tag too: a geometry or link change makes rows stale without touching them.
         tag.update(f"{n}:{row.fingerprint}:{row.computed_at}:{int(stale)};".encode("utf-8"))
         try:

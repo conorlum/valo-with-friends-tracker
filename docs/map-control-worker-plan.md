@@ -178,3 +178,40 @@ If that happens, pin scipy for the worker only to 1.17.1 (the newest with 3.11 w
 3. Set `REPLAY_CONTROL_REMOTE=1` on the `valowithfriendstracker` web service.
 4. Upload a replay on a map with the layer (not a `no_map` map); once it is linked, its rounds fill in
    (`control.bin` goes 202 -> 200). The web service log shows the dispatcher's lines.
+
+## Height rebuilds (2026-10-05)
+
+Spec: `docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md`. Plan:
+`docs/superpowers/plans/2026-10-05-height-auto-rebuild.md`. Built 2026-10-08; on from the merge (`render.yaml` sets
+`REPLAY_HEIGHTS_AUTO` on the web service; the spec's section 7 has the checks).
+
+The worker also rebuilds a map's heights from its stored rounds, which the web app sends it (the worker still
+has no database). The web app's dispatcher (`app/services/replay_heights_remote.py`, one step of each control
+cycle, after the re-parse pass) decides when a map's rebuild is due, holds that map's control and gap rounds
+while it is due or running, and applies the gate to the result; the asset goes into `control_heights`
+(migration 0019), and the active one is pushed to the worker for the rounds that name it.
+
+**Order of work on the worker:** parse uploads, then height rebuilds, then missing rounds, then stale rounds. A
+build starts only when nothing else is running on the control side and no parse is running or waiting, and
+nothing starts beside it. A parse arriving always kills a running build, which goes back to `queued` with its
+rounds and is not counted as a failure.
+
+**Endpoints** (`replay_worker/server.py`, `HeightBuilds`):
+
+| Request | Answer |
+| --- | --- |
+| `POST /heights` `{map, digest, asset}` | keeps a map's asset in the control cache for the rounds that name it |
+| `POST /heights/build` `{key, map, rounds, manifest}` | `202` the build (the same build for a key it already has, unless that one failed); `400`; `503` too many collecting |
+| `POST /heights/build/{id}/rounds` `{"rounds": [{"match", "n", "blob"}]}` | `200 {"received"}`; `409` not collecting, or other bytes for a round; `413` the spool is full; `400`; `404` |
+| `POST /heights/build/{id}/start` `{"previous"?}` | `202` the build; `409` rounds are missing; `404` |
+| `POST /heights/build/{id}/cancel` | `200 {"cancelled": true}`; `409` not collecting; `404` |
+| `GET /heights/build/{id}` | the build, with `result` when done and `error` when failed |
+
+**The five build states**, which every answer names: `collecting` (send rounds, start, cancel), `queued` and
+`running` (wait and ask), `done` (read the result; the newest 8 ended builds stay readable), `failed` (open it
+again: the same key starts a fresh build), and unknown (`404`: open it again). The dispatcher asks for the state
+every cycle and resumes from whichever it finds, so a restart on either side picks up where it was.
+
+**Lost on redeploy, rebuilt on demand:** the worker's control cache (the pushed height assets; a round that names
+a digest the worker doesn't have gets a `409`, and the web app pushes it and asks again) and its build spool
+(a build the worker forgot answers `404`, and the web app opens it again and sends its rounds from the first).

@@ -19,7 +19,7 @@ from sqlalchemy.orm import load_only
 from app.models.replay import ReplayGap, ReplayRoundControl, ReplayRoundGapRun
 from app.replays import choke_assets
 from app.replays import control_format as cf
-from app.services import replay_control
+from app.services import control_heights, replay_control
 
 GAPS_REVISION = 2     # keep equal to app.gaps.detect.GAPS_REVISION (tests/replays/test_gaps_task.py pins it)
 HEARING_FILE = Path(__file__).resolve().parents[1] / "control" / "hearing.json"
@@ -82,7 +82,8 @@ def round_gaps(db, replay, n: int) -> tuple[str, list]:
         return "failed", []
     rows = (db.query(ReplayGap).filter(ReplayGap.replay_id == replay.id, ReplayGap.round_number == n)
             .order_by(ReplayGap.seq).all())
-    control = replay_control.round_fingerprint(replay, replay_control.side_groups(db, replay), n)
+    control = replay_control.round_fingerprint(replay, replay_control.side_groups(db, replay), n,
+                                               control_heights.active_digests(db))
     current = None if control is None else gap_fingerprint(control, replay.map_name)
     return ("ok" if run.fingerprint == current else "stale"), rows
 

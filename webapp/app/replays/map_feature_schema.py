@@ -472,6 +472,9 @@ def _floor(rep, fl):
         rep.error(fid, "bad_dimensions", "z_band must be [low, high] metres with low < high")
     elif not fl.get("height_sha"):
         rep.warn(fid, "unbound_floor", "a height band without the height asset it was read from")
+    elif not (type(fl.get("origin_z")) is int):
+        rep.warn(fid, "unframed_floor", "a height band without the lowest floor (origin_z) of the asset it was read "
+                                        "from: it stops binding when the map's heights are rebuilt")
 
 
 def _feature(rep, f, floors):
