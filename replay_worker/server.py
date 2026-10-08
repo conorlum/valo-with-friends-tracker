@@ -9,7 +9,9 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
     GET  /jobs/{id}   {"id", "status": "queued" | "parsing" | "done" | "failed", "error"?, "result"?}
     GET  /health      {"ok": true, "queued", "limits", "recipe" (what a parse here stamps; null if unknown),
                        "control": {"enabled", "gaps_protocol", "queued", "running", "warm", "preempted"},
-                       "archive": {"enabled", ..., "reparse_protocol" (archive on only)}}
+                       "archive": {"enabled", ..., "reparse_protocol" (archive on only)},
+                       "idle" (no parse running or waiting),
+                       "heights": {"collecting", "queued", "running" (map names), "spool_bytes"}}
     POST /control     body: JSON {key, map, blob (base64), link}: one round's map control
                       (docs/map-control-worker-plan.md). 202 {"id", "status"} (the same job for a key
                       it already has), 400 not a task, 404 control is off, 409 {error, height} when the task
@@ -19,6 +21,31 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
     POST /heights     body: JSON {map, digest, asset (base64 .npz)}: a map's height asset, kept in the control
                       cache for the rounds that name it. 200 {"stored": true}, 400 not one, 404 control is off,
                       413 too large.
+
+Height builds (HeightBuilds; docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md): a map's heights
+built here from its stored rounds, by one more control child (`python -m replay_worker.height_job`) that runs
+alone and ahead of every control round, and that a parse preempts like one. Off with map control.
+
+    POST /heights/build              {key, map, rounds, manifest}: 202 the build {"id", "key", "map", "status",
+                                     "received", "expected"} (the same build for a key it already has, unless that
+                                     one failed); 400 not a build; 503 too many collecting.
+    POST /heights/build/{id}/rounds  {"rounds": [{"match", "n", "blob" (base64)}]}: 200 {"received"};
+                                     409 {"error": "not collecting", "status"} or {"error": "other bytes", "match",
+                                     "n"}; 413 the spool is full; 400; 404.
+    POST /heights/build/{id}/start   {"previous"?}: 202 the build; 409 {"error": "rounds are missing", "received",
+                                     "expected"}; 404.
+    POST /heights/build/{id}/cancel  200 {"cancelled": true}; 409 {"error": "not collecting", "status"}; 404.
+    GET  /heights/build/{id}         the build, with "result" when done and "error" when failed.
+
+A build is always in one of five states, and every answer says which, so the web app picks up wherever it was
+after a restart on either side:
+
+    collecting        send rounds, start, cancel. The same round with the same bytes is acknowledged again for
+                      free; the same round with other bytes is a conflict.
+    queued, running   wait and ask. Sending rounds is a conflict that says the state; starting again answers it.
+    done              read the result; it stays readable for the newest HEIGHT_BUILDS_KEPT builds.
+    failed            open it again: the same key starts a fresh, empty build.
+    unknown (404)     open it again: the worker restarted, or dropped a collector nobody fed.
 
 Map control has its own queue and never shares the parse thread: a fixed pool of child processes
 (`python -m replay_worker.control_job`, run by the control venv's interpreter; this process never
@@ -92,6 +119,8 @@ Configuration (environment, all optional):
     REPLAY_CONTROL_MEMORY_MB child address-space cap, Linux only (default 2048)
     CONTROL_CACHE_DIR        the control children's cache; pushed height assets go in its `heights` folder
                              (default webapp/.control_cache)
+    REPLAY_HEIGHT_CMD        JSON list: the height-build child (default this Python, -m replay_worker.height_job)
+    REPLAY_HEIGHT_TIMEOUT_S  per build (default 3600)
     REPLAY_ARCHIVE_DIR       the archive disk's mount point (default unset: no archive)
     REPLAY_ARCHIVE_REQUIRE_MOUNT  "0" skips the mount-point check (tests and local runs only)
 """
@@ -160,6 +189,12 @@ class Settings:
     # Where control children keep their caches (CONTROL_CACHE_DIR, as app/control/geometry.py reads it); pushed
     # height assets live in its `heights` folder.
     control_cache_dir: Path = field(default_factory=lambda: WEBAPP / ".control_cache")
+    # Height builds (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md): one more kind of control
+    # child, run alone and ahead of control rounds. Their rounds are spooled under `temp_root`.
+    height_cmd: list[str] = field(default_factory=lambda: [sys.executable, "-m", "replay_worker.height_job"])
+    height_timeout_s: float = 3600.0
+    height_spool_bytes: int = 512 * 1024 * 1024      # every build's rounds together
+    height_collect_ttl_s: float = 3600.0             # a build nobody has sent a round to for this long is dropped
     # The .vrf archive (replay_worker/archive.py): off unless the directory is a mounted, writable disk.
     archive_dir: Path | None = None
     archive_require_mount: bool = True
@@ -189,6 +224,9 @@ class Settings:
         settings.control_memory_mb = int(env.get("REPLAY_CONTROL_MEMORY_MB", settings.control_memory_mb))
         if env.get("CONTROL_CACHE_DIR"):
             settings.control_cache_dir = Path(env["CONTROL_CACHE_DIR"])
+        if env.get("REPLAY_HEIGHT_CMD"):
+            settings.height_cmd = json.loads(env["REPLAY_HEIGHT_CMD"])
+        settings.height_timeout_s = float(env.get("REPLAY_HEIGHT_TIMEOUT_S", settings.height_timeout_s))
         if env.get("REPLAY_ARCHIVE_DIR"):
             settings.archive_dir = Path(env["REPLAY_ARCHIVE_DIR"])
         settings.archive_require_mount = env.get("REPLAY_ARCHIVE_REQUIRE_MOUNT", "1") != "0"
@@ -839,6 +877,7 @@ class ControlJob:
     created: float = field(default_factory=time.time)
     finished: float | None = None
     warm_key: str = ""           # what "warm" is tracked by: the map and its heights (their visibility cache)
+    kind: str = "control"        # or "heights": a height build (HeightBuilds)
 
     def public(self) -> dict:
         body = {"id": self.id, "key": self.key, "status": self.status}
@@ -926,9 +965,31 @@ class ControlRunner:
         self.wake.set()
         return job
 
+    def submit_build(self, key: str, map_name: str, task: dict) -> ControlJob:
+        """A height build: queued ahead of every control round, deduped by its key like one."""
+        with self.lock:
+            existing = self.jobs.get(self.by_key.get(key, ""))
+            if existing is not None and existing.status in ("queued", "running", "done"):
+                return existing
+            job = ControlJob(uuid.uuid4().hex, key, map_name, json.dumps(task).encode("utf-8"), kind="heights")
+            self.jobs[job.id] = job
+            self.by_key[key] = job.id
+            self.pending.insert(0, job.id)
+        self.wake.set()
+        return job
+
     def get(self, job_id: str) -> ControlJob | None:
         with self.lock:
             return self.jobs.get(job_id)
+
+    def forget(self, job_id: str) -> None:
+        """Drops a finished job and its answer (a height build's, when its build is dropped)."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is not None and job.finished:
+                del self.jobs[job_id]
+                if self.by_key.get(job.key) == job_id:
+                    del self.by_key[job.key]
 
     def counts(self) -> dict:
         with self.lock:
@@ -942,7 +1003,10 @@ class ControlRunner:
         preempted mark wins over everything else."""
         with self.lock:
             alive = [job_id for job_id in self.running if job_id not in self.preempted]
-            victims = [(job_id, self.procs.get(job_id)) for job_id in alive[1:]]
+            # A height build runs alone and is never the child kept: a parse always preempts it (the height
+            # rebuild spec, section 2).
+            kept = alive[:1] if alive and self.jobs[alive[0]].kind == "control" else []
+            victims = [(job_id, self.procs.get(job_id)) for job_id in alive if job_id not in kept]
             self.preempted.update(job_id for job_id, _ in victims)
         for _, process in victims:
             if process is not None:
@@ -958,6 +1022,12 @@ class ControlRunner:
         limit = self.settings.control_workers if self.idle() else 1
         if len(self.running) >= limit:
             return None
+        if any(self.jobs[j].kind == "heights" for j in self.running):
+            return None                              # a build runs alone
+        for job_id in self.pending:
+            if self.jobs[job_id].kind == "heights":
+                # and before any round; only while no parse is on, or a preempted build would start again beside it
+                return (self.jobs[job_id], False) if not self.running and self.idle() else None
         busy_maps = {self.jobs[j].map for j in self.running}
         warming_maps = {self.jobs[j].map for j, warming in self.running.items() if warming}
         for job_id in self.pending:
@@ -988,8 +1058,10 @@ class ControlRunner:
 
     def _run(self, job: ControlJob, warming: bool) -> None:
         settings = self.settings
-        timeout = settings.control_warm_timeout_s if warming else settings.control_timeout_s
-        env = {**os.environ, **CHILD_THREADS}
+        build = job.kind == "heights"
+        timeout = settings.height_timeout_s if build else \
+            settings.control_warm_timeout_s if warming else settings.control_timeout_s
+        env ={**os.environ, **CHILD_THREADS}
         env["PYTHONPATH"] = os.pathsep.join(p for p in (str(WEBAPP), str(WEBAPP.parent), env.get("PYTHONPATH")) if p)
         kwargs = {"stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "env": env,
                   "cwd": str(WEBAPP.parent)}
@@ -1000,7 +1072,7 @@ class ControlRunner:
         try:
             # Started outside the lock (preexec_fn must not run while this thread holds a lock another
             # needs), registered under it, and killed at once if a preempt landed in between.
-            process = subprocess.Popen(settings.control_cmd, **kwargs)
+            process = subprocess.Popen(settings.height_cmd if build else settings.control_cmd, **kwargs)
             with self.lock:
                 self.procs[job.id] = process
                 killed_before_start = job.id in self.preempted
@@ -1054,16 +1126,213 @@ class ControlRunner:
                 job.task = b""
                 # Past loading (ok, or the round's own failure): the map's cache is there. Any machine
                 # failure makes the map cold again, so its next round warms alone.
-                if status == "done" or kind == "engine":
-                    self.warm.add(job.warm_key)
-                else:
-                    self.warm.discard(job.warm_key)
-                finished = sorted((j for j in self.jobs.values() if j.finished), key=lambda j: j.finished)
+                if job.kind == "control":
+                    if status == "done" or kind == "engine":
+                        self.warm.add(job.warm_key)
+                    else:
+                        self.warm.discard(job.warm_key)
+                finished = sorted((j for j in self.jobs.values() if j.finished and j.kind == "control"),
+                                  key=lambda j: j.finished)
                 for old in finished[:-CONTROL_FINISHED_KEPT]:
                     del self.jobs[old.id]
                     if self.by_key.get(old.key) == old.id:
                         del self.by_key[old.key]
         self.wake.set()
+
+
+MATCH_ID = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+HEIGHT_COLLECTING_MAX = 2        # builds collecting rounds at once (the web app sends one at a time)
+HEIGHT_BUILDS_KEPT = 8           # ended builds whose answer stays readable (the newest)
+ROUNDS_PER_MATCH_MAX = 99
+
+
+class HeightConflict(Exception):
+    """The build is not in a state that allows this, or a round arrived again with other bytes."""
+
+    def __init__(self, reason: str, **facts):
+        super().__init__(reason)
+        self.reason, self.facts = reason, facts
+
+
+class HeightBuilds:
+    """Height builds as the web app drives them (the module docstring's endpoints): open one, send it the
+    map's stored rounds in batches, start it, ask after it. The rounds are spooled to
+    `<temp>/height_builds/<id>/<match>/<n>.json.gz`, which is the layout the child reads.
+
+    - **One build per key**, and the key is the build's input manifest: opening a key again answers the build
+      there is, in whatever state; only a failed one is replaced by a fresh, empty one.
+    - **Uploads are immutable.** A round is kept by its sha256: the same bytes again are acknowledged and cost
+      nothing; other bytes for a round already received are a conflict and change nothing.
+    - **Bounded.** The spool of all builds together stays under `height_spool_bytes`; at most
+      HEIGHT_COLLECTING_MAX builds collect at once; opening a build for a map drops any other still collecting
+      for it (its inputs are out of date); a collector nobody feeds for `height_collect_ttl_s` is dropped; of
+      the builds that ended, the newest HEIGHT_BUILDS_KEPT keep their answer.
+    - **Nothing is left behind**: a build's folder goes when it ends, is cancelled, expires or is replaced, and
+      whatever a restart left when the server starts."""
+
+    def __init__(self, settings: Settings, control: ControlRunner):
+        self.settings, self.control = settings, control
+        self.root = settings.temp_root / "height_builds"
+        shutil.rmtree(self.root, ignore_errors=True)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.lock = threading.Lock()
+        # id -> {id, key, map, expected, manifest, received {(match, n): (sha256, size)}, job, touched, ended}
+        self.builds: dict[str, dict] = {}
+        threading.Thread(target=self._sweep_forever, name="height-builds", daemon=True).start()
+
+    # ---- what the web app asks for
+
+    def open(self, key: str, map_name: str, rounds: int, manifest) -> dict:
+        if not MAP_NAME.match(str(map_name)) or type(rounds) is not int or rounds < 1 or not isinstance(manifest, dict):
+            raise ValueError("not a height build")
+        with self.lock:
+            for build in list(self.builds.values()):
+                if build["key"] == key:
+                    if self._state(build) != "failed":
+                        return self._public(build)       # still going, or done: the same build and its answer
+                    self._drop(build)                    # it failed: the web app is trying again, from nothing
+            for other in [b for b in self.builds.values() if b["map"] == map_name and b["job"] is None]:
+                self._drop(other)                        # other inputs for this map, never started
+            if sum(1 for b in self.builds.values() if b["job"] is None) >= HEIGHT_COLLECTING_MAX:
+                raise OverflowError("too many builds are collecting")
+            build = {"id": uuid.uuid4().hex, "key": key, "map": map_name, "expected": rounds, "manifest": manifest,
+                     "received": {}, "job": None, "touched": time.time(), "ended": None}
+            (self.root / build["id"]).mkdir()
+            self.builds[build["id"]] = build
+            return self._public(build)
+
+    def add(self, build_id: str, rounds: list) -> dict:
+        """Keeps a batch of rounds, all or none of it."""
+        with self.lock:
+            build = self._collecting(build_id)
+            fresh: dict[tuple, bytes] = {}
+            for row in rounds:
+                try:
+                    match, n = str(row["match"]).lower(), int(row["n"])
+                    data = base64.b64decode(row["blob"], validate=True)
+                except (KeyError, TypeError, ValueError) as error:
+                    raise ValueError("not a round") from error
+                if not MATCH_ID.match(match) or not 1 <= n <= ROUNDS_PER_MATCH_MAX or str(row["n"]) != str(n) or not data:
+                    raise ValueError("not a round")
+                sha = hashlib.sha256(data).hexdigest()
+                had = build["received"].get((match, n))
+                if had is not None and had[0] != sha or fresh.get((match, n), data) != data:
+                    raise HeightConflict("other bytes", match=match, n=n)
+                if had is None:
+                    fresh[(match, n)] = data
+            if len(build["received"]) + len(fresh) > build["expected"]:
+                raise ValueError("more rounds than the build was opened with")
+            if self._spooled() + sum(len(d) for d in fresh.values()) > self.settings.height_spool_bytes:
+                raise OverflowError("the spool is full")
+            for (match, n), data in fresh.items():
+                folder = self.root / build["id"] / match
+                folder.mkdir(exist_ok=True)
+                partial = folder / f"{n}.json.gz.tmp"
+                partial.write_bytes(data)
+                os.replace(partial, folder / f"{n}.json.gz")
+                build["received"][(match, n)] = (hashlib.sha256(data).hexdigest(), len(data))
+            build["touched"] = time.time()
+            return {"received": len(build["received"])}
+
+    def start(self, build_id: str, previous: str | None) -> dict:
+        with self.lock:
+            build = self.builds.get(build_id)
+            if build is None:
+                raise LookupError(build_id)
+            if build["job"] is None:
+                if len(build["received"]) != build["expected"]:
+                    raise HeightConflict("rounds are missing", received=len(build["received"]),
+                                         expected=build["expected"])
+                task = {"key": build["key"], "map": build["map"], "dir": str(self.root / build["id"]),
+                        "manifest": build["manifest"]}
+                if previous and HEIGHT_DIGEST.match(str(previous)):
+                    task["previous"] = str(previous)
+                build["job"] = self.control.submit_build(build["key"], build["map"], task).id
+            return self._public(build)
+
+    def cancel(self, build_id: str) -> bool:
+        with self.lock:
+            self._drop(self._collecting(build_id))
+            return True
+
+    def get(self, build_id: str) -> dict | None:
+        with self.lock:
+            build = self.builds.get(build_id)
+            return None if build is None else self._public(build)
+
+    def status(self) -> dict:
+        with self.lock:
+            out = {"collecting": [], "queued": [], "running": []}
+            for build in self.builds.values():
+                state = self._state(build)
+                if state in out:
+                    out[state].append(build["map"])
+            return {**{k: sorted(v) for k, v in out.items()}, "spool_bytes": self._spooled()}
+
+    # ---- housekeeping
+
+    def sweep(self, now: float | None = None) -> None:
+        """Deletes the spool of every build that has ended (its answer stays), drops collectors nobody has fed
+        for `height_collect_ttl_s`, and forgets all but the newest HEIGHT_BUILDS_KEPT ended builds."""
+        now = time.time() if now is None else now
+        with self.lock:
+            for build in list(self.builds.values()):
+                state = self._state(build)
+                if state in ("done", "failed") and build["ended"] is None:
+                    build["ended"], build["received"] = now, {}
+                    shutil.rmtree(self.root / build["id"], ignore_errors=True)
+                elif state == "collecting" and now - build["touched"] > self.settings.height_collect_ttl_s:
+                    self._drop(build)
+            ended = sorted((b for b in self.builds.values() if b["ended"] is not None), key=lambda b: b["ended"])
+            for old in ended[:-HEIGHT_BUILDS_KEPT] if len(ended) > HEIGHT_BUILDS_KEPT else []:
+                self._drop(old)
+
+    def _sweep_forever(self) -> None:
+        while True:
+            time.sleep(1.0)
+            try:
+                self.sweep()
+            except Exception:  # noqa: BLE001 - housekeeping must never stop
+                traceback.print_exc()
+
+    # ---- under the lock
+
+    def _collecting(self, build_id: str) -> dict:
+        build = self.builds.get(build_id)
+        if build is None:
+            raise LookupError(build_id)
+        if build["job"] is not None:
+            raise HeightConflict("not collecting", status=self._state(build))
+        return build
+
+    def _spooled(self) -> int:
+        return sum(size for b in self.builds.values() for _, size in b["received"].values())
+
+    def _state(self, build: dict) -> str:
+        if build["job"] is None:
+            return "collecting"
+        job = self.control.get(build["job"])
+        return "failed" if job is None else job.status
+
+    def _public(self, build: dict) -> dict:
+        body = {"id": build["id"], "key": build["key"], "map": build["map"], "status": self._state(build),
+                "received": len(build["received"]) if build["ended"] is None else build["expected"],
+                "expected": build["expected"]}
+        job = self.control.get(build["job"]) if build["job"] else None
+        if build["job"] and job is None:
+            body["error"] = "the build was forgotten"
+        elif job is not None:
+            if job.error:
+                body["error"] = job.error
+            if job.result is not None:
+                body["result"] = job.result
+        return body
+
+    def _drop(self, build: dict) -> None:
+        self.builds.pop(build["id"], None)
+        shutil.rmtree(self.root / build["id"], ignore_errors=True)
+        if build["job"]:
+            self.control.forget(build["job"])
 
 
 class _JobFailed(Exception):
@@ -1075,7 +1344,7 @@ class _JobFailed(Exception):
 # ---------------------------------------------------------------- HTTP
 
 
-def make_handler(worker: Worker, control: ControlRunner | None = None):
+def make_handler(worker: Worker, control: ControlRunner | None = None, heights: HeightBuilds | None = None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "replay-worker"
 
@@ -1099,6 +1368,9 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
                                    **(control.counts() if control else {})}
                 body["archive"] = worker.archive_status()
                 body["recipe"] = worker.recipe
+                body["idle"] = worker.idle()
+                body["heights"] = heights.status() if heights else {"collecting": [], "queued": [], "running": [],
+                                                                    "spool_bytes": 0}
                 return self._send(HTTPStatus.OK, body)
             if self.path.startswith("/reparse/attempts/"):
                 try:
@@ -1111,6 +1383,11 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
                     return self._send(HTTPStatus.NOT_FOUND, {"error": "the archive is off"})
                 return self._send(HTTPStatus.OK, {"files": worker.archive.entries(),
                                                   "status": worker.archive.status()})
+            if self.path.startswith("/heights/build/"):
+                found = heights.get(self.path[len("/heights/build/"):]) if heights else None
+                if found is None:
+                    return self._send(HTTPStatus.NOT_FOUND, {"error": "no such height build"})
+                return self._send(HTTPStatus.OK, found)
             if self.path.startswith("/control/"):
                 job = control.get(self.path[len("/control/"):]) if control and control.enabled else None
                 if job is None:
@@ -1124,6 +1401,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
             return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self):  # noqa: N802
+            if self.path == "/heights/build" or self.path.startswith("/heights/build/"):
+                return self._height_build()
             if self.path == "/heights":
                 return self._heights()
             if self.path == "/control":
@@ -1266,12 +1545,45 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
             store_height(control.settings, name, digest, data)
             return self._send(HTTPStatus.OK, {"stored": True})
 
+        def _height_build(self):
+            if heights is None or control is None or not control.enabled:
+                return self._send(HTTPStatus.NOT_FOUND, {"error": "map control is off on this worker"})
+            body = self._json(limit=control.settings.control_max_bytes)
+            if body is None:
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not JSON, or too large"})
+            parts = self.path[len("/heights/build"):].strip("/").split("/")
+            try:
+                if parts == [""]:
+                    made = heights.open(str(body["key"]), str(body["map"]), body["rounds"], body.get("manifest"))
+                    return self._send(HTTPStatus.ACCEPTED, made)
+                if len(parts) == 2 and parts[1] == "rounds":
+                    if not isinstance(body.get("rounds"), list):
+                        raise ValueError("rounds must be a list")
+                    return self._send(HTTPStatus.OK, heights.add(parts[0], body["rounds"]))
+                if len(parts) == 2 and parts[1] == "start":
+                    return self._send(HTTPStatus.ACCEPTED, heights.start(parts[0], body.get("previous")))
+                if len(parts) == 2 and parts[1] == "cancel":
+                    return self._send(HTTPStatus.OK, {"cancelled": heights.cancel(parts[0])})
+            except KeyError:
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a height build"})
+            except LookupError:
+                return self._send(HTTPStatus.NOT_FOUND, {"error": "no such height build"})
+            except HeightConflict as conflict:
+                return self._send(HTTPStatus.CONFLICT, {"error": conflict.reason, **conflict.facts})
+            except OverflowError as full:
+                opening = parts == [""]
+                return self._send(HTTPStatus.SERVICE_UNAVAILABLE if opening else HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                                  {"error": str(full)})
+            except (TypeError, ValueError):
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a height build"})
+            return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
     return Handler
 
 
 def make_server(worker: Worker, host: str = "127.0.0.1", port: int = 0,
-                control: ControlRunner | None = None) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), make_handler(worker, control))
+                control: ControlRunner | None = None, heights: HeightBuilds | None = None) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer((host, port), make_handler(worker, control, heights))
 
 
 def main() -> None:
@@ -1282,8 +1594,9 @@ def main() -> None:
         # Wired after the Worker exists. Until then idle() reads True, but the control queue is empty: the
         # web app hasn't sent anything to a server that isn't listening yet.
         control.idle = worker.idle
+    heights = HeightBuilds(settings, control) if control is not None else None
     server = make_server(worker, os.environ.get("REPLAY_WORKER_HOST", "0.0.0.0"),
-                         int(os.environ.get("REPLAY_WORKER_PORT", "8080")), control)
+                         int(os.environ.get("REPLAY_WORKER_PORT", "8080")), control, heights)
     print(f"replay worker on {server.server_address}, timeout {settings.timeout_s:g} s, "
           f"queue {settings.queue_size}, cap {settings.max_bytes} bytes", flush=True)
     server.serve_forever()

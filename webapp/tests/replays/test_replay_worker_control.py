@@ -266,7 +266,7 @@ def test_the_worker_wires_its_parse_hook_to_control(monkeypatch):
 
         def serve_forever(self):
             pass
-    monkeypatch.setattr(server, "make_server", lambda worker, host, port, control: made.update(
+    monkeypatch.setattr(server, "make_server", lambda worker, host, port, control, heights=None: made.update(
         worker=worker, control=control) or Fake())
     monkeypatch.setattr(server.Settings, "from_env", classmethod(lambda cls, env=None: cls(control_cmd=["true"])))
     server.main()
@@ -343,6 +343,7 @@ def test_the_image_builds_a_control_venv_with_the_web_apps_pins():
                      dockerfile)
     assert "REPLAY_CONTROL_CMD='[\"/opt/control-venv/bin/python\", \"-m\", \"replay_worker.control_job\"]'" in dockerfile
     assert "CONTROL_CACHE_DIR=/jobs/control_cache" in dockerfile and "chown -R worker /jobs" in dockerfile
+    assert "REPLAY_HEIGHT_CMD" in dockerfile and "replay_worker.height_job" in dockerfile
     # the server itself still runs on the system python3, without the venv
     assert dockerfile.rstrip().endswith('CMD ["python3", "-m", "replay_worker.server"]')
 
