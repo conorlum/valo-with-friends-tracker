@@ -111,7 +111,9 @@ from app.replays import format as fmt  # noqa: E402
 
 def test_a_preview_records_what_it_read_and_two_builds_of_one_folder_agree(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(command, "picture_path", lambda name: tmp_path / f"{name}.height.png")
-    monkeypatch.setattr(command, "MUST_BLOCK", tmp_path / "no-must-block.json")
+    empty = tmp_path / "no-lines.json"
+    empty.write_text('{"lines": []}', encoding="utf-8")
+    monkeypatch.setattr(command, "MUST_BLOCK", empty)
     assets = toy_assets(tmp_path)
     blobs = write_blobs(tmp_path / "blobs", covered_rounds())
     base = ["--map", "Ascent", "--blobs-dir", str(blobs), "--preview"]

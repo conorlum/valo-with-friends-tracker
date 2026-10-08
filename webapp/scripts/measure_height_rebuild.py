@@ -32,25 +32,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 BATCH_BYTES = 2_000_000       # app/services/replay_heights_remote.py sends at most this much base64 a request
 
 
-class FrozenRounds:
-    """Re-iterable rounds for this measurement; keeps paths, never a list of decoded blobs.
-
-    Task 5 replaces this measurement-only adapter with the worker's BlobDir and repeats the memory gate.
-    """
-    def __init__(self, directory: Path, map_name: str):
-        from app.replays import format as fmt
-
-        self.paths = [p for p in sorted(Path(directory).glob("*/*.json.gz"),
-                                       key=lambda p: (p.parent.name, int(p.name.split(".")[0])))
-                      if fmt.decode_blob(p.read_bytes()).get("map") == map_name]
-
-    def __iter__(self):
-        from app.replays import format as fmt
-
-        for path in self.paths:
-            yield path.parent.name, int(path.name.split(".")[0]), fmt.decode_blob(path.read_bytes())
-
-
 def sizes(directory: Path, map_name: str | None = None) -> dict:
     """{"matches", "rounds", "bytes", "largest"} over `<directory>/<match>/<n>.json.gz`. With `map_name`, only
     that map's rounds (the blobs are decoded to tell)."""
@@ -84,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     from app.control import geometry as cg
     from app.control import height_build as hb
     from app.control import heights as hc
+    from app.control.height_job import BlobDir
     from app.control.task import compute_task, peak_memory
 
     found = sizes(args.blobs_dir, args.map)
@@ -94,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["CONTROL_CACHE_DIR"] = folder          # a cold visibility cache, and none left behind
         geo = cg.load_geometry(args.map)
         started = time.perf_counter()
-        rounds = FrozenRounds(args.blobs_dir, args.map)
+        rounds = BlobDir(args.blobs_dir, args.map)
         build = hb.build(rounds, geo)
         command.run_checks(args.map, geo, build, rounds)
         build_s, peak = time.perf_counter() - started, peak_memory()
@@ -104,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         cg.visibility(cg.load_geometry(args.map, heights=asset))
         warm_s = time.perf_counter() - started
         took = []
-        for path in rounds.paths[: max(1, args.rounds)]:
+        for path in rounds.read[: max(1, args.rounds)]:
             result = compute_task({"key": path.name, "map": args.map, "blob": path.read_bytes(), "heights": str(asset),
                                    "link": {"sides": {}, "db_deaths": []}})
             if result["status"] == "ok":

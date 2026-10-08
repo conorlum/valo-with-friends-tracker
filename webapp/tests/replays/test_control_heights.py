@@ -415,7 +415,9 @@ def write_blobs(directory, rounds, name="Ascent"):
 def no_picture(monkeypatch, tmp_path):
     monkeypatch.setattr(command, "picture_path", lambda name: tmp_path / f"{name}.height.png")
     # the toy map is called Ascent: the real Ascent's must-block lines aren't its own
-    monkeypatch.setattr(command, "MUST_BLOCK", tmp_path / "no-must-block.json")
+    empty = tmp_path / "no-lines.json"
+    empty.write_text('{"lines": []}', encoding="utf-8")
+    monkeypatch.setattr(command, "MUST_BLOCK", empty)
 
 
 def test_the_command_refuses_a_map_whose_must_block_lines_cant_be_checked_yet(tmp_path, capsys, no_picture, monkeypatch):
@@ -432,13 +434,24 @@ def test_the_command_refuses_a_map_whose_must_block_lines_cant_be_checked_yet(tm
     assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs), "--accept-failures"], asset_dir=assets) == 0
 
 
+def test_the_command_refuses_a_map_when_the_check_set_cant_be_read(tmp_path, capsys, no_picture, monkeypatch):
+    monkeypatch.setattr(command, "MUST_BLOCK", tmp_path / "gone.json")
+    assets = toy_assets(tmp_path)
+    blobs = write_blobs(tmp_path / "blobs", covered_rounds())
+    assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs)], asset_dir=assets) == 2
+    captured = capsys.readouterr()
+    assert "missing or unreadable" in captured.out and "must_block" in captured.err
+    assert not (assets / "Ascent.height.npz").exists()
+
+
 def test_the_command_writes_a_ready_maps_asset_and_index_entry(tmp_path, capsys, no_picture):
     assets = toy_assets(tmp_path)
     blobs = write_blobs(tmp_path / "blobs", covered_rounds())
     write_blobs(blobs, [("other", 1, height_blob({0: standing(X, Y, 9.0)}, t_end=5.0))], name="Bind")
     assert command.main(["--map", "Ascent", "--blobs-dir", str(blobs)], asset_dir=assets) == 0
     out = capsys.readouterr().out
-    assert "6 rounds read" in out and "1 skipped (other_map)" in out and "READY" in out and "WROTE" in out
+    assert "6 rounds of 2 matches" in out and "1 round(s) of other maps skipped" in out and "READY" in out \
+        and "WROTE" in out
     asset = hc.load_asset(assets / "Ascent.height.npz")
     entry = json.loads((assets / "index.json").read_text(encoding="utf-8"))["maps"]["Ascent"]
     assert entry["height_sha"] == asset.digest and entry["sight_sha"] == "s", "the entry's other fields stay"

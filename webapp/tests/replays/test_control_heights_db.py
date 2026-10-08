@@ -31,15 +31,16 @@ def test_sizes_and_the_cycle_estimate(tmp_path):
 
 def test_cost_probe_uses_only_the_requested_maps_rounds_and_can_read_them_twice(tmp_path):
     import measure_height_rebuild as measure
+    from app.control.height_job import BlobDir
     from app.replays import format as fmt
 
     for match, map_name in (("a-bind", "Bind"), ("z-ascent", "Ascent")):
         (tmp_path / match).mkdir()
         (tmp_path / match / "1.json.gz").write_bytes(fmt.encode_blob({"v": 1, "map": map_name}))
-    rounds = measure.FrozenRounds(tmp_path, "Ascent")
-    assert [p.parent.name for p in rounds.paths[:3]] == ["z-ascent"]  # the timing loop's exact selection
+    rounds = BlobDir(tmp_path, "Ascent")
     for _ in range(2):
         assert [(m, n, b["map"]) for m, n, b in rounds] == [("z-ascent", 1, "Ascent")]
+        assert [p.parent.name for p in rounds.read[:3]] == ["z-ascent"]  # the timing loop's exact selection
     assert measure.sizes(tmp_path, "Ascent")["rounds"] == 1
 
 
