@@ -103,7 +103,7 @@ def blackouts(blob: dict, geo: Geometry) -> dict[int, list[tuple[float, float]]]
             continue
         fast = np.zeros(len(t) - k, bool) if casts \
             else np.hypot(x[k:] - x[:-k], y[k:] - y[:-k]) * geo.m_per_px > hc.BURST_MPS * k / hz
-        # PROVISIONAL(D3): rising faster than BURST_UP_MPS still counts in a round with casts, because Jett's
+        # Rising faster than BURST_UP_MPS still counts in a round with casts, because Jett's
         # updraft has no recorded cast (the condenser found no play that tells it apart).
         if z is not None:
             fast |= (z[k:] - z[:-k]) / DM > hc.BURST_UP_MPS * k / hz
