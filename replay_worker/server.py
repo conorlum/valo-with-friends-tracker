@@ -12,9 +12,13 @@ result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
                        "archive": {"enabled", ..., "reparse_protocol" (archive on only)}}
     POST /control     body: JSON {key, map, blob (base64), link}: one round's map control
                       (docs/map-control-worker-plan.md). 202 {"id", "status"} (the same job for a key
-                      it already has), 400 not a task, 404 control is off, 413 too large, 503 full.
+                      it already has), 400 not a task, 404 control is off, 409 {error, height} when the task
+                      names a height digest this worker doesn't have, 413 too large, 503 full.
     GET  /control/{id} {"id", "key", "status": "queued" | "running" | "done" | "failed",
                       "error"?, "error_kind"? ("engine" | "infra"), "result"?}
+    POST /heights     body: JSON {map, digest, asset (base64 .npz)}: a map's height asset, kept in the control
+                      cache for the rounds that name it. 200 {"stored": true}, 400 not one, 404 control is off,
+                      413 too large.
 
 Map control has its own queue and never shares the parse thread: a fixed pool of child processes
 (`python -m replay_worker.control_job`, run by the control venv's interpreter; this process never
@@ -86,6 +90,8 @@ Configuration (environment, all optional):
     REPLAY_CONTROL_QUEUE     waiting rounds (default 32)
     REPLAY_CONTROL_TIMEOUT_S / REPLAY_CONTROL_WARM_TIMEOUT_S   per round (900) / a map's first (1800)
     REPLAY_CONTROL_MEMORY_MB child address-space cap, Linux only (default 2048)
+    CONTROL_CACHE_DIR        the control children's cache; pushed height assets go in its `heights` folder
+                             (default webapp/.control_cache)
     REPLAY_ARCHIVE_DIR       the archive disk's mount point (default unset: no archive)
     REPLAY_ARCHIVE_REQUIRE_MOUNT  "0" skips the mount-point check (tests and local runs only)
 """
@@ -97,6 +103,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import shutil
 import signal
 import subprocess
@@ -150,6 +157,9 @@ class Settings:
     control_warm_timeout_s: float = 1800.0
     control_memory_mb: int = 2048
     control_max_bytes: int = 4 * 1024 * 1024
+    # Where control children keep their caches (CONTROL_CACHE_DIR, as app/control/geometry.py reads it); pushed
+    # height assets live in its `heights` folder.
+    control_cache_dir: Path = field(default_factory=lambda: WEBAPP / ".control_cache")
     # The .vrf archive (replay_worker/archive.py): off unless the directory is a mounted, writable disk.
     archive_dir: Path | None = None
     archive_require_mount: bool = True
@@ -177,6 +187,8 @@ class Settings:
         settings.control_warm_timeout_s = float(env.get("REPLAY_CONTROL_WARM_TIMEOUT_S",
                                                         settings.control_warm_timeout_s))
         settings.control_memory_mb = int(env.get("REPLAY_CONTROL_MEMORY_MB", settings.control_memory_mb))
+        if env.get("CONTROL_CACHE_DIR"):
+            settings.control_cache_dir = Path(env["CONTROL_CACHE_DIR"])
         if env.get("REPLAY_ARCHIVE_DIR"):
             settings.archive_dir = Path(env["REPLAY_ARCHIVE_DIR"])
         settings.archive_require_mount = env.get("REPLAY_ARCHIVE_REQUIRE_MOUNT", "1") != "0"
@@ -804,6 +816,9 @@ def _log(message: str) -> None:
 # ---------------------------------------------------------------- map control (docs/map-control-worker-plan.md)
 
 CONTROL_FINISHED_KEPT = 200
+HEIGHTS_KEPT = 3                 # pushed height assets kept per map (the newest); a missing one is pushed again
+MAP_NAME = re.compile(r"^[A-Za-z0-9]{1,64}$")
+HEIGHT_DIGEST = re.compile(r"^[0-9a-f]{12}$")
 # The control child's task and result protocol, told to the web app in /health: 1 means a task's `gaps` block
 # is understood (replay_worker/control_job.py; the image ships app/gaps). A plain number here, never read
 # from the detector: this process imports none of it.
@@ -823,6 +838,7 @@ class ControlJob:
     result: dict | None = None
     created: float = field(default_factory=time.time)
     finished: float | None = None
+    warm_key: str = ""           # what "warm" is tracked by: the map and its heights (their visibility cache)
 
     def public(self) -> dict:
         body = {"id": self.id, "key": self.key, "status": self.status}
@@ -846,11 +862,31 @@ def _child_setup(memory_mb: int):
     return apply
 
 
+def height_path(settings: Settings, map_name: str, digest: str) -> Path:
+    """app/control/geometry.py `height_cache_path`, without importing it (this process has no numpy)."""
+    return settings.control_cache_dir / "heights" / f"{map_name}.{digest}.height.npz"
+
+
+def store_height(settings: Settings, map_name: str, digest: str, data: bytes) -> None:
+    """Writes a pushed asset whole (a temp file, then a rename), and keeps the map's newest HEIGHTS_KEPT."""
+    path = height_path(settings, map_name, digest)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
+    partial.write_bytes(data)
+    os.replace(partial, path)
+    mine = sorted(path.parent.glob(f"{map_name}.*.height.npz"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in mine[HEIGHTS_KEPT:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
 class ControlRunner:
     """Map control's queue, beside the parse queue and never sharing its thread. At most
     `control_workers` children at once, and one beside a parse; a map's first round runs alone ("warming": it builds the
-    map's visibility cache) and the map is warm once one of its rounds gets past loading. A task's
-    key (replay, round, fingerprint) is deduped while its job is queued, running or done."""
+    map's visibility cache) and a map is warm, under one height digest, once one of its rounds gets past loading.
+    A task's key (replay, round, fingerprint) is deduped while its job is queued, running or done."""
 
     def __init__(self, settings: Settings, idle=None):
         self.settings = settings
@@ -882,7 +918,8 @@ class ControlRunner:
                 return existing
             if len(self.pending) >= self.settings.control_queue:
                 raise queue.Full
-            job = ControlJob(uuid.uuid4().hex, key, str(task["map"]), json.dumps(task).encode("utf-8"))
+            job = ControlJob(uuid.uuid4().hex, key, str(task["map"]), json.dumps(task).encode("utf-8"),
+                             warm_key=f"{task['map']}:{task.get('height') or ''}")
             self.jobs[job.id] = job
             self.by_key[key] = job.id
             self.pending.append(job.id)
@@ -925,7 +962,7 @@ class ControlRunner:
         warming_maps = {self.jobs[j].map for j, warming in self.running.items() if warming}
         for job_id in self.pending:
             job = self.jobs[job_id]
-            if job.map in self.warm:
+            if job.warm_key in self.warm:
                 if job.map in warming_maps:
                     continue
                 return job, False
@@ -1018,9 +1055,9 @@ class ControlRunner:
                 # Past loading (ok, or the round's own failure): the map's cache is there. Any machine
                 # failure makes the map cold again, so its next round warms alone.
                 if status == "done" or kind == "engine":
-                    self.warm.add(job.map)
+                    self.warm.add(job.warm_key)
                 else:
-                    self.warm.discard(job.map)
+                    self.warm.discard(job.warm_key)
                 finished = sorted((j for j in self.jobs.values() if j.finished), key=lambda j: j.finished)
                 for old in finished[:-CONTROL_FINISHED_KEPT]:
                     del self.jobs[old.id]
@@ -1087,6 +1124,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
             return self._send(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self):  # noqa: N802
+            if self.path == "/heights":
+                return self._heights()
             if self.path == "/control":
                 return self._control()
             if self.path.startswith("/jobs/") and self.path.endswith("/ack"):
@@ -1197,11 +1236,35 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
                     raise ValueError("missing fields")
             except ValueError:
                 return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a control task"})
+            digest = task.get("height")
+            if digest and not (MAP_NAME.match(str(task["map"])) and HEIGHT_DIGEST.match(str(digest))
+                               and height_path(control.settings, str(task["map"]), str(digest)).is_file()):
+                return self._send(HTTPStatus.CONFLICT, {"error": "height asset missing", "height": digest})
             try:
                 job = control.submit(task)
             except queue.Full:
                 return self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "the control queue is full"})
             return self._send(HTTPStatus.ACCEPTED, {"id": job.id, "status": job.status})
+
+        def _heights(self):
+            if control is None or not control.enabled:
+                return self._send(HTTPStatus.NOT_FOUND, {"error": "map control is off on this worker"})
+            length = self.headers.get("Content-Length")
+            if length is not None and int(length) > control.settings.control_max_bytes:
+                self.close_connection = True
+                return self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "height asset too large"})
+            body = self._json(limit=control.settings.control_max_bytes)
+            if body is None:
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a height asset"})
+            name, digest = str(body.get("map") or ""), str(body.get("digest") or "")
+            try:
+                data = base64.b64decode(body.get("asset") or "", validate=True)
+            except (ValueError, TypeError):
+                data = b""
+            if not MAP_NAME.match(name) or not HEIGHT_DIGEST.match(digest) or not data:
+                return self._send(HTTPStatus.BAD_REQUEST, {"error": "not a height asset"})
+            store_height(control.settings, name, digest, data)
+            return self._send(HTTPStatus.OK, {"stored": True})
 
     return Handler
 

@@ -44,6 +44,7 @@ class FakeWorker:
         self.tasks, self.jobs, self.busy_after = {}, {}, busy_after
         self.answer = answer or self.ok
         self.forget = set()
+        self.heights, self.pushed = set(), []
         self.gaps, self.control_on, self.health_error, self.health_reads = gaps, True, None, 0
 
     def health(self):
@@ -56,10 +57,13 @@ class FakeWorker:
         return {"ok": True, "queued": 0, "control": control}
 
     def ok(self, task):
+        geometry = dict(rc.geometry_inputs(task["map"]))
+        if task.get("height"):
+            geometry["height"] = task["height"]
         result = {"status": "ok", "data": base64.b64encode(gzip.compress(b"d")).decode(),
                   "summary": base64.b64encode(cf.pack_summary({})).decode(),
                   "revision": cf.CONTROL_REVISION, "data_version": cf.DATA_VERSION,
-                  "geometry": rc.geometry_inputs(task["map"])}
+                  "geometry": geometry}
         if self.gaps is not None:
             result["figures"] = cf.figures_hash()
         if "gaps" in task:
@@ -75,11 +79,18 @@ class FakeWorker:
         return {"run": run, "rows": [GAP_ROW, {**GAP_ROW, "seq": 1}] if status == "ok" else []}
 
     def submit(self, task):
+        if task.get("height") and (task["map"], task["height"]) not in self.heights:
+            raise remote.NeedsHeight(task["height"])
         if self.busy_after is not None and len(self.tasks) >= self.busy_after:
             raise remote.WorkerBusy("503")
         job_id = f"j{len(self.tasks)}"
         self.tasks[job_id] = task
         return {"id": job_id, "status": "queued"}
+
+    def push_height(self, map_name, digest, asset):
+        self.heights.add((map_name, digest))
+        self.pushed.append((map_name, digest, asset))
+        return {"stored": True}
 
     def job(self, job_id):
         if job_id in self.forget:
@@ -329,9 +340,9 @@ def test_the_client_maps_the_workers_answers():
     client = remote.ControlClient("worker:8080")
     assert client.base == "http://worker:8080"
 
-    def fail(code):
+    def fail(code, body=b"{}"):
         def call(request, timeout):
-            raise urllib.error.HTTPError(request.full_url, code, "x", {}, io.BytesIO(b"{}"))
+            raise urllib.error.HTTPError(request.full_url, code, "x", {}, io.BytesIO(body))
         return call
 
     for code, error in ((404, remote.WorkerGone), (503, remote.WorkerBusy), (500, remote.Unreachable)):
@@ -339,6 +350,21 @@ def test_the_client_maps_the_workers_answers():
             mp.setattr(remote.urllib.request, "urlopen", fail(code))
             with pytest.raises(error):
                 client.job("j1")
+
+    missing = json.dumps({"error": "height asset missing", "height": "a" * 12}).encode()
+    request = remote.urllib.request.Request(f"{client.base}/control", data=b"{}", method="POST")
+    for code, body, from_submit, from_call in ((409, missing, remote.NeedsHeight, remote.Conflict),
+                                               (409, b'{"error": "no"}', remote.Unreachable, remote.Conflict),
+                                               (413, b'{"error": "task too large"}', remote.Unreachable, remote.Rejected)):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(remote.urllib.request, "urlopen", fail(code, body))
+            with pytest.raises(from_submit) as raised:
+                client.submit({"key": "k", "map": "Ascent"})
+            if from_submit is remote.NeedsHeight:
+                assert raised.value.digest == "a" * 12
+            with pytest.raises(from_call) as raised:
+                client._call(request)
+            assert raised.value.body == json.loads(body)
 
 
 def test_a_map_with_a_feature_generation_sends_it_and_keeps_only_results_computed_with_it(factory, db, linked, monkeypatch):
@@ -799,3 +825,44 @@ def test_a_gaps_only_job_waits_and_times_out_like_any_other(factory, db, linked)
     remote.cycle(factory, worker, state, now=5 * remote.STALE_JOB_S + 1)
     counts = remote.cycle(factory, worker, state, now=6 * remote.STALE_JOB_S + 2)
     assert counts["timed_out"] == remote.IN_FLIGHT
+
+
+from app.services import control_heights as ch  # noqa: E402
+
+from app.replays import height_inputs as hi  # noqa: E402
+
+RULES = {"version": cf.HEIGHT_VERSION, "revision": cf.HEIGHT_RULES_REVISION, "constants": "c"}
+
+
+def good_report() -> dict:
+    """A report that is whole and passes the gate (app/services/control_heights.py `gate`)."""
+    return {"walkable_cells": 10, "supported_cells": 7, "supported": 0.7, "ready": True, "not_ready": [],
+            "kill_lines": {"qualifying": 400, "blocked": 2, "share": 0.005, "passes": True},
+            "must_block": {"set": "k" * 12, "lines": 0, "checked": 0, "unchecked": 0, "blocked": 0, "passes": True}}
+
+
+def heights(db, name, digest, asset, *uuids):
+    manifest = hi.manifest(name, [[u, "p.c11", u * 8, 20] for u in uuids], {"sight": "s", "walk": "w", "scale": 1}, "k" * 12)
+    assert ch.store_build(db, map_name=name, digest=digest, asset=asset, report=good_report(), inputs=manifest,
+                          rules=dict(RULES)) == ("active", [])
+
+
+def test_a_map_with_heights_in_the_database_sends_their_digest_and_pushes_the_asset_once(factory, db, linked):
+    heights(db, linked.map_name, "a" * 12, b"npz", "m1", "m2")
+    worker, state = FakeWorker(), remote.State()
+    assert remote.cycle(factory, worker, state, now=0)["sent"] == remote.IN_FLIGHT
+    assert worker.pushed == [(linked.map_name, "a" * 12, b"npz")], "pushed when the worker said it was missing, once"
+    assert all(t["height"] == "a" * 12 for t in worker.tasks.values())
+    assert remote.cycle(factory, worker, state, now=1)["stored"] == remote.IN_FLIGHT
+    stored, planned = rows(db, linked), {p.round_number: p.fingerprint for p in rc.plan(db, force=True)}
+    assert len(stored) == remote.IN_FLIGHT and all(stored[n].fingerprint == planned[n] for n in stored)
+
+
+def test_a_result_computed_with_other_heights_is_dropped(factory, db, linked):
+    heights(db, linked.map_name, "a" * 12, b"npz", "m1", "m2")
+    worker, state = FakeWorker(), remote.State()
+    remote.cycle(factory, worker, state, now=0)
+    heights(db, linked.map_name, "b" * 12, b"npz2", "m1", "m2", "m3")           # new heights while they ran
+    counts = remote.cycle(factory, worker, state, now=1)
+    assert counts["dropped_geometry"] == remote.IN_FLIGHT and counts["stored"] == 0
+    assert rows(db, linked) == {}

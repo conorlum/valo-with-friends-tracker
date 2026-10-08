@@ -13,7 +13,8 @@ The worker has no database, so the web app drives it: a daemon thread runs `cycl
    alike: linked ones by their match's played_at, newest first, then the rest by upload time. A failure
    under the current inputs is left alone. Up to IN_FLIGHT at a time; the worker runs them only while it
    isn't parsing, so a job may sit `queued` there for a long time, and that never counts as a failure
-   (D8). Only a job seen `running` for STALE_JOB_S does.
+   (D8). Only a job seen `running` for STALE_JOB_S does. A round of a map whose heights are in the database
+   names their digest; a worker that doesn't have the asset says so, gets it pushed and is asked again.
 
 **Timing gaps** (docs/superpowers/plans/2026-10-07-worker-gaps-and-kill-one-impl.md). Each planning pass reads
 the worker's `/health` once. Only a worker whose control is on and that names `control.gaps_protocol` 1 is
@@ -104,6 +105,31 @@ class Unreachable(Exception):
     pass
 
 
+class Conflict(Exception):
+    """The worker answered 409: the request is understood and can't be done as things stand. `body` is what it
+    said; what that means is the caller's to decide, endpoint by endpoint."""
+
+    def __init__(self, body: dict):
+        super().__init__(str(body.get("error") or "conflict"))
+        self.body = body
+
+
+class Rejected(Exception):
+    """The worker refused the request itself (400, 413): sending it again unchanged can't work."""
+
+    def __init__(self, code: int, body: dict):
+        super().__init__(f"{code}: {body.get('error') or 'refused'}")
+        self.code, self.body = code, body
+
+
+class NeedsHeight(Exception):
+    """The worker doesn't have the height asset a control round names: push it and ask again."""
+
+    def __init__(self, digest: str):
+        super().__init__(digest)
+        self.digest = digest
+
+
 class ControlClient:
     """The worker's control endpoints over urllib (the same private address as uploads)."""
 
@@ -113,7 +139,19 @@ class ControlClient:
 
     def submit(self, task: dict) -> dict:
         body = json.dumps(task).encode("utf-8")
-        return self._call(urllib.request.Request(f"{self.base}/control", data=body, method="POST",
+        try:
+            return self._call(urllib.request.Request(f"{self.base}/control", data=body, method="POST",
+                                                     headers={"Content-Type": "application/json"}))
+        except Conflict as conflict:
+            if conflict.body.get("height"):
+                raise NeedsHeight(str(conflict.body["height"])) from conflict
+            raise Unreachable(f"the worker refused the round: {conflict}") from conflict
+        except Rejected as refused:               # as before this change: a refused round is tried again later
+            raise Unreachable(f"the worker refused the round: {refused}") from refused
+
+    def push_height(self, map_name: str, digest: str, asset: bytes) -> dict:
+        body = json.dumps({"map": map_name, "digest": digest, "asset": base64.b64encode(asset).decode("ascii")})
+        return self._call(urllib.request.Request(f"{self.base}/heights", data=body.encode("utf-8"), method="POST",
                                                  headers={"Content-Type": "application/json"}))
 
     def job(self, job_id: str) -> dict:
@@ -127,6 +165,15 @@ class ControlClient:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as error:
+            if error.code in (400, 409, 413):
+                try:
+                    said = json.loads(error.read() or b"{}")
+                except (ValueError, OSError):   # an unreadable body is an empty one
+                    said = {}
+                said = said if isinstance(said, dict) else {}
+                if error.code == 409:
+                    raise Conflict(said) from error
+                raise Rejected(error.code, said) from error
             if error.code == 404:
                 raise WorkerGone(str(error.code)) from error
             if error.code == 503:
@@ -387,12 +434,24 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             task["gaps"] = gaps_job(p.replay_id, p.round_number, p.fingerprint, p.map_name)
         if gaps_only:
             task["gaps_only"] = True
+        digest = heights.get(p.map_name)        # only the database's: a committed asset is in the worker's image
+        if digest:
+            task["height"] = digest
         try:
-            answer = client.submit(task)
+            try:
+                answer = client.submit(task)
+            except NeedsHeight:
+                asset = control_heights.asset_bytes(session, p.map_name, digest) if digest else None
+                if asset is None:
+                    counts["unreachable"] += 1
+                    return True
+                client.push_height(p.map_name, digest, asset)
+                counts["pushed"] += 1
+                answer = client.submit(task)
         except WorkerBusy:
             counts["busy"] += 1
             return True
-        except (WorkerGone, Unreachable):
+        except (WorkerGone, Unreachable, NeedsHeight, Conflict, Rejected):   # the last two: a refused push
             counts["unreachable"] += 1
             return True
         state.in_flight[key] = InFlight(answer["id"], p.replay_id, p.round_number, p.fingerprint, p.map_name, now,
@@ -449,7 +508,7 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
     now = time.time() if now is None else now
     counts: dict[str, int] = {k: 0 for k in ("sent", "stored", "stored_failed", "skipped", "forgotten", "timed_out",
                                              "dropped_revision", "dropped_geometry", "dropped_figures", "infra_failed",
-                                             "busy", "unreachable", "gaps_sent", "gaps_stored",
+                                             "busy", "unreachable", "pushed", "gaps_sent", "gaps_stored",
                                              "gaps_dropped", "gaps_skipped", "gaps_unavailable", "held_back",
                                              *reparse_auto.COUNTS)}
     lock = session_factory()   # owns the advisory lock and nothing else
