@@ -152,13 +152,25 @@ The replay worker's `/health` says whether a rebuild is queued or running and fo
 
 ## Cost, and what isn't known yet
 
-- **Each rebuild recomputes every round of that map.** The work per rebuild grows with the map's
-  history. Time per round on the 2-CPU worker has not been measured for this purpose; the first task is
-  to measure a build and a round for Sunset and report minutes per rebuild cycle.
-- **The first round after new heights rebuilds the map's visibility cache** (minutes, already true after
-  any deploy).
-- **Batch size.** A map with 20 matches is about 400 round blobs sent to the worker per rebuild. Their
-  total size has to be measured against the worker's request cap before the batch protocol is fixed.
+- **Measured on the development machine from the frozen rounds** (the slopes plan's live freeze, Sunset
+  `rounds` digest `bf72113396d33aba`; Sunset is also the map with the most matches in it), with
+  `scripts/measure_height_rebuild.py --map Sunset`, 2026-10-08:
+
+  ```
+  Sunset: 6 matches, 120 rounds
+    sent: 4.6 MB stored, 6.1 MB as base64, 4 batches of 2 MB; largest round 77 KB
+    build with both checks: 28 s, peak memory 0.19 GB
+    visibility warm-up under the new heights: 75 s
+    control: 73 s a round over 3 rounds; all 120 on 2 workers: 73 min
+    one cycle here: 75 min (the worker is slower)
+  ```
+
+  Recomputing the map's rounds is almost all of a cycle; it grows with the map's history. The batch size is
+  2 MB of base64 a request, against the worker's 4 MB request cap: the largest round is far under it. The
+  peak memory is that of a build reading one round at a time; Task 5 of the plan repeats it with the
+  worker's own round reader.
+- The worker's own figures (a build's `seconds` and `peak`, and the time from a build going active to its
+  map's last round being recomputed) are recorded here from the first live cycle; see the plan's Task 10.
 - If a rebuild turns out too slow at scale, the fallback is the "master" the owner described: keep each
   round's ground samples once (by match), so a rebuild reads summaries instead of whole rounds. It is
   not built first because it freezes the extraction rules into stored data.
