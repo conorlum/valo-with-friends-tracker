@@ -156,6 +156,11 @@ every merge moved it from 2c-4g back to Standard until `render.yaml` said
 `plan: 2c-4g` (2 CPU, 4 GB, $85/month). Change a plan in `render.yaml`, not
 only in the dashboard.
 
+`valowithfriendstracker` is on Standard (1 CPU, 2 GB) again since 2026-10-08:
+it runs one uvicorn process, which can't use a second core. The two cores are
+for the `replay-worker`, a separate service that stays on `2c-4g` for map
+control's two children.
+
 **Timing gaps on the worker (2026-10-07).** The site and the `replay-worker` deploy separately from the same
 merge. Either deployment order is supported by the health capability gate: a new site with an old worker
 sends plain control and leaves gaps pending; an old site with a new worker asks for no gaps. Once the worker
