@@ -5,6 +5,9 @@ import base64
 import binascii
 import hashlib
 import re
+import os
+import uuid
+from pathlib import Path
 import zlib
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
@@ -58,7 +61,58 @@ def feature_failure(error: FeatureArtifactError) -> dict:
         kind, code = 'infra', 'features_missing'
     else:
         kind, code = 'infra', 'features_corrupt'
-    return {'error_kind': kind, 'error_code': code, 'error': str(error)}
+    return {'status': 'failed', 'error_kind': kind, 'error_code': code, 'error': str(error)}
+
+
+def protocol_identity():
+    from app.replays import map_feature_inputs as fi
+    return {'wire': fi.FEATURE_WIRE_VERSION, 'compiler': fi.FEATURE_COMPILER_VERSION,
+            'manifest': fi.FEATURE_MANIFEST_VERSION, 'normalization': fi.FEATURE_NORMALIZATION_VERSION,
+            'consumers': dict(fi.CONSUMER_VERSIONS)}
+
+
+def cache_path(folder, digest):
+    if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
+        raise FeatureArtifactCorrupt('invalid feature digest')
+    return Path(folder) / (digest + '.json')
+
+
+def load_cached_artifact(folder, digest):
+    path = cache_path(folder, digest)
+    try:
+        with path.open('rb') as stream:
+            item = decode_artifact(stream.read(MAX_WIRE_BYTES + 1))
+        if item.digest != digest:
+            raise FeatureArtifactCorrupt('cache filename digest mismatch')
+        os.utime(path, None)
+        return item
+    except FileNotFoundError as exc:
+        raise FeatureArtifactMissing(f'feature artifact {digest} is absent') from exc
+    except (FeatureArtifactError, OSError) as exc:
+        path.unlink(missing_ok=True)
+        raise FeatureArtifactCorrupt(str(exc)) from exc
+
+
+def store_cached_artifact(folder, artifact, verify, *, max_entries=MAX_CACHE_ENTRIES, max_bytes=MAX_CACHE_BYTES):
+    wire = encode_artifact(artifact)
+    verify(artifact)
+    path = cache_path(folder, artifact.digest)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    try:
+        with partial.open('xb') as stream:
+            stream.write(wire)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(partial, path)
+    finally:
+        partial.unlink(missing_ok=True)
+    files = sorted(path.parent.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
+    total = 0
+    for index, old in enumerate(files):
+        total += old.stat().st_size
+        if index >= max_entries or total > max_bytes:
+            old.unlink(missing_ok=True)
 
 
 def _b64(value: str) -> bytes:

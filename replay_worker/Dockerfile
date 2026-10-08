@@ -38,7 +38,7 @@ COPY webapp/app/static/data /srv/webapp/app/static/data
 COPY webapp/replay_parser.json /srv/webapp/replay_parser.json
 COPY replay_worker /srv/replay_worker
 # The smoke test: the control venv imports the engine, or the build fails here (not silently later).
-RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine, app.control.task, app.gaps.detect, app.gaps.cache, app.gaps.rows, app.gaps.backshots, replay_worker.control_job, replay_worker.height_job, app.control.height_job, app.replays.height_inputs"
+RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine, app.control.task, app.gaps.detect, app.gaps.cache, app.gaps.rows, app.gaps.backshots, replay_worker.control_job, replay_worker.height_job, app.control.height_job, app.replays.height_inputs, app.control.feature_job, app.replays.map_feature_artifacts"
 RUN mkdir -p /jobs/control_cache && chown -R worker /jobs
 # No `USER worker` here: the entrypoint starts as root only to chown the .vrf archive's disk (Render
 # mounts it root-owned), then drops to `worker` with setpriv before the server starts. This guard fails

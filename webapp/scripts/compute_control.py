@@ -151,6 +151,9 @@ def store_result(session_factory, planned, result: dict) -> str:
     from app.services import replay_control
     from app.services.replay_control_store import store_round
 
+    if result.get('error_kind') in ('infra', 'compat'):
+        return 'skipped: retryable infrastructure or compatibility failure'
+
     used = (result.get("geometry") or {}).get("features")
     current = (replay_control.geometry_inputs(planned.map_name, heights=None) or {}).get("features")
     if result.get("status") == "ok" and used != current:

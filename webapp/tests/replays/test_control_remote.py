@@ -373,6 +373,9 @@ def test_a_map_with_a_feature_generation_sends_it_and_keeps_only_results_compute
     patched = {name: {**row, "features_sha": "feat0000feat0000"} for name, row in index.items()}
     monkeypatch.setattr(rc, "_assets", lambda: (patched, tags, maps))
     worker, state = FakeWorker(), remote.State()
+    original_health = worker.health
+    from app.replays.map_feature_artifacts import protocol_identity
+    monkeypatch.setattr(worker, 'health', lambda: {**original_health(), 'control': {'enabled': True, 'features': protocol_identity()}})
     remote.cycle(factory, worker, state, now=0)
     task = next(iter(worker.tasks.values()))
     assert task["features"] == "feat0000feat0000" and rc.geometry_inputs(task["map"])["features"] == "feat0000feat0000"
@@ -384,6 +387,7 @@ def test_a_map_with_a_feature_generation_sends_it_and_keeps_only_results_compute
         return job
 
     worker2, state2 = FakeWorker(stale), remote.State()
+    monkeypatch.setattr(worker2, 'health', lambda: {'control': {'enabled': True, 'features': protocol_identity()}})
     remote.cycle(factory, worker2, state2, now=100)
     assert remote.cycle(factory, worker2, state2, now=101)["dropped_geometry"] > 0
 

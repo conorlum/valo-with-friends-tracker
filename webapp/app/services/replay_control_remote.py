@@ -76,6 +76,8 @@ from app.models.match import Match
 from app.models.replay import Replay, ReplayRound
 from app.replays import choke_assets
 from app.replays import control_format as cf
+from app.replays import map_feature_artifacts as fa
+from app.services import control_feature_artifacts
 from app.services import control_heights, replay_control, replay_gaps
 from app.services import replay_gaps_store as gaps_store
 from app.services import replay_heights_remote
@@ -137,6 +139,12 @@ class NeedsHeight(Exception):
         self.digest = digest
 
 
+class NeedsFeatures(fa.FeatureArtifactMissing):
+    def __init__(self, digest):
+        super().__init__(digest)
+        self.digest = digest
+
+
 class ControlClient:
     """The worker's control endpoints over urllib (the same private address as uploads)."""
 
@@ -150,11 +158,16 @@ class ControlClient:
             return self._call(urllib.request.Request(f"{self.base}/control", data=body, method="POST",
                                                      headers={"Content-Type": "application/json"}))
         except Conflict as conflict:
+            if conflict.body.get('code') == 'needs_features':
+                raise NeedsFeatures(conflict.body.get('digest')) from conflict
             if conflict.body.get("height"):
                 raise NeedsHeight(str(conflict.body["height"])) from conflict
             raise Unreachable(f"the worker refused the round: {conflict}") from conflict
         except Rejected as refused:               # as before this change: a refused round is tried again later
             raise Unreachable(f"the worker refused the round: {refused}") from refused
+
+    def push_features(self, artifact):
+        return self._post('/features', json.loads(fa.encode_artifact(artifact)))
 
     def push_height(self, map_name: str, digest: str, asset: bytes) -> dict:
         body = json.dumps({"map": map_name, "digest": digest, "asset": base64.b64encode(asset).decode("ascii")})
@@ -381,7 +394,8 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
             # result and is stored above.)
             row = {"status": "failed", "error": job.get("error") or "failed on the replay worker"}
         else:
-            state.failed(key, now)
+            if job.get('error_kind') != 'compat':
+                state.failed(key, now)
             counts["infra_failed"] += 1
             continue
         outcome = store_round(session_factory, f.replay_id, f.round_number, f.fingerprint, row, require_current=True)
@@ -462,6 +476,11 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
                 "link": {"sides": p.link["sides"], "db_deaths": p.link["db_deaths"]}}
         features = (replay_control.geometry_inputs(p.map_name, heights) or {}).get("features")
         if features:       # only a map with enabled features: an absent key means no verification
+            try:
+                if (client.health().get('control') or {}).get('features') != fa.protocol_identity():
+                    continue
+            except (WorkerGone, WorkerBusy, Unreachable):
+                continue
             task["features"] = features
         if expect_gaps:
             task["gaps"] = gaps_job(p.replay_id, p.round_number, p.fingerprint, p.map_name)
@@ -481,6 +500,16 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
                 client.push_height(p.map_name, digest, asset)
                 counts["pushed"] += 1
                 answer = client.submit(task)
+        except NeedsFeatures as missing:
+            if missing.digest != task.get('features'):
+                counts['unreachable'] += 1
+                return True
+            try:
+                client.push_features(control_feature_artifacts.load_artifact(session, missing.digest))
+                answer = client.submit(task)
+            except (fa.FeatureArtifactError, WorkerGone, WorkerBusy, Unreachable, Conflict, Rejected):
+                counts['unreachable'] += 1
+                return True
         except WorkerBusy:
             counts["busy"] += 1
             return True

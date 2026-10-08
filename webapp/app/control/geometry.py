@@ -378,7 +378,7 @@ def load_tags(asset_dir: Path = ASSET_DIR) -> dict:
     return json.loads((asset_dir / "tags.json").read_text(encoding="utf-8"))
 
 
-def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None = None) -> Geometry:
+def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None = None, *, load_features=True) -> Geometry:
     """A map's committed geometry (built by scripts/build_control_geometry.py), with its heights when
     index.json names a height asset (scripts/build_control_heights.py). `heights` loads that asset file
     instead: a preview's, or the map's active asset fetched by its digest (the database's, which wins over a
@@ -397,7 +397,7 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
         geo.barrier_sha = hashlib.sha256(np.packbits(barrier_px).tobytes()).hexdigest()[:12]
     index_path = asset_dir / "index.json"
     row = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
-    if row.get("features_sha"):          # never on a committed map in this build: no feature is enabled
+    if load_features and row.get("features_sha"):
         from app.control import features
 
         geo.features = features.load_generation(asset_dir, row["features_sha"])
