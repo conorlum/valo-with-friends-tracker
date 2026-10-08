@@ -40,3 +40,24 @@ def snapshot_case(entry=None, *, whitespace=False):
     raw = json.dumps({'maps': {'Summit': source_case() if entry is None else entry}},
                      indent=2 if whitespace else None, ensure_ascii=False).encode('utf-8')
     return capture_source_snapshot('Summit', raw)
+
+
+def geometry_case(*, ground_dm=0, origin_dm=100, multi=False, unresolved=False, flat=False):
+    import numpy as np
+    from app.control.geometry import geometry_from_masks, attach_heights
+    from app.control.heights import HeightAsset, MAX_FLOORS
+    walk = np.zeros((1024, 1024), dtype=bool)
+    walk[320:328, 320:352] = True
+    geo = geometry_from_masks('Summit', ~walk, walk, 7e-5, [])
+    if flat:
+        return geo
+    floors = np.full((128, 128, MAX_FLOORS), -1, dtype=np.int16)
+    floors[40, 40:44, 0] = ground_dm
+    if multi:
+        floors[40, 40, 1] = ground_dm + 40
+    if unresolved:
+        floors[40, 40, :] = -1
+    missing = floors[..., 0] < 0
+    asset = HeightAsset(floors, np.zeros_like(floors), ~missing, missing,
+                        np.empty((0, 5), dtype=np.int32), {'origin_z': origin_dm})
+    return attach_heights(geo, asset)

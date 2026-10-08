@@ -26,7 +26,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from scipy import ndimage
@@ -116,6 +116,140 @@ def to_grid(cells: np.ndarray) -> np.ndarray:
 
 # ---------------------------------------------------------------- floors
 
+@dataclass(frozen=True)
+class Placement:
+    nodes: tuple[int, ...] = ()
+    ground_m: tuple[float, ...] = ()
+    reasons: tuple[dict, ...] = ()
+
+    @property
+    def ok(self):
+        return bool(self.nodes) and not self.reasons
+
+
+def _reason(code, path, cells=(), counts=()):
+    return {'code': code, 'path': path, 'cells': list(cells), 'cell_count': len(cells),
+            'floor_counts': list(counts)}
+
+
+def resolve_cells(geo: Geometry, cells: list[int], path: str) -> Placement:
+    """All cells must have permanent ground and exactly one real floor; never synthetic node zero."""
+    from app.control.heights import MAX_FLOORS, STAND_M
+    cells = sorted(set(cells))
+    if not cells:
+        return Placement(reasons=(_reason('empty_geometry', path),))
+    grouped, nodes, ground = {}, [], []
+    asset = geo.heights
+    if asset is not None and (asset.floors.shape != (GRID, GRID, MAX_FLOORS)
+                              or asset.unresolved.shape != (GRID, GRID)):
+        return Placement(reasons=(_reason('invalid_height_asset', path, cells),))
+    for cell in cells:
+        count, code = 0, None
+        if type(cell) is not int or not 0 <= cell < GRID * GRID:
+            code = 'off_map'
+        else:
+            if asset is not None:
+                floors = asset.floors.reshape(GRID * GRID, MAX_FLOORS)[cell]
+                real = np.isfinite(floors) & (floors >= 0)
+                count = int(real.sum())
+            else:
+                count = int(geo.walk.ravel()[cell])
+            if not geo.walk.ravel()[cell]:
+                code = 'off_ground'
+            elif asset is None:
+                nodes.append(cell)
+            elif asset.unresolved.ravel()[cell] or geo.unresolved[cell]:
+                code = 'unresolved_height'
+            elif count == 0:
+                code = 'missing_floor'
+            elif count != 1:
+                code = 'multi_floor'
+            else:
+                node = int(geo.node_of[cell, int(np.flatnonzero(real)[0])])
+                if node < 0 or not np.isfinite(geo.node_z[node]):
+                    code = 'missing_floor'
+                else:
+                    nodes.append(node)
+                    ground.append(float(geo.node_z[node]) - STAND_M)
+        if code:
+            bucket = grouped.setdefault(code, ([], []))
+            bucket[0].append(cell)
+            bucket[1].append(count)
+    reasons = tuple(_reason(code, path, *grouped[code]) for code in sorted(grouped))
+    return Placement((), (), reasons) if reasons else Placement(tuple(nodes), tuple(ground))
+
+
+def _place_shape(geo, shape, path):
+    rep = ms.Report()
+    ms._geometry(rep, path, shape)
+    if rep.errors:
+        code = 'off_map' if any(e['code'] == 'bad_coordinates' for e in rep.errors) else 'invalid_geometry'
+        return Placement(reasons=(_reason(code, path),))
+    return resolve_cells(geo, np.flatnonzero(to_grid(raster(shape))).tolist(), path)
+
+
+def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
+    """Resolve all states/phases and their required trigger, route and base-edit dependencies."""
+    from app.control.heights import STAND_M
+    mf = source.get('map_features', source)
+    results = {}
+    for f in mf.get('features') or []:
+        fid, pieces = f.get('id'), []
+        def shape(value, path):
+            pieces.append(_place_shape(geo, value, path))
+        def state_parts(s, path):
+            if s.get('footprint') is not None:
+                shape(s['footprint'], path + '.footprint')
+            elif s.get('blocks_movement'):
+                pieces.append(Placement(reasons=(_reason('empty_geometry', path + '.footprint'),)))
+            for i, occ in enumerate(s.get('sight') or []):
+                shape(occ.get('geometry'), f'{path}.sight[{i}].geometry')
+        for s in f.get('states') or []:
+            state_parts(s, f'features.{fid}.states.{s.get("name")}')
+        rotation = f.get('rotation') or {}
+        for i, phase in enumerate(rotation.get('phases') or []):
+            state_parts(phase, f'features.{fid}.rotation.phases[{i}]')
+            if phase.get('panel') is not None:
+                shape(phase['panel'], f'features.{fid}.rotation.phases[{i}].panel')
+            if phase.get('geometry') is not None:
+                shape(phase['geometry'], f'features.{fid}.rotation.phases[{i}].geometry')
+        for key in ('potential_ground', 'remove_sight'):
+            if (f.get('base_edits') or {}).get(key) is not None:
+                shape(f['base_edits'][key], f'features.{fid}.base_edits.{key}')
+        for t in mf.get('triggers') or []:
+            if any(target.get('feature') == fid for target in t.get('targets') or []):
+                shape(t.get('geometry'), f'triggers.{t.get("id")}.geometry')
+        for r in mf.get('routes') or []:
+            if r.get('owner') != fid:
+                continue
+            ends = r.get('endpoints') or []
+            if len(ends) != 2:
+                pieces.append(Placement(reasons=(_reason('missing_endpoint', f'routes.{r.get("id")}'),)))
+            sites = (r.get('access') or {}).get('sites', []) if isinstance(r.get('access'), dict) else []
+            for p in ends + sites:
+                shape({'type': 'point', 'uv': p.get('uv')}, f'routes.{r.get("id")}.{p.get("id")}')
+        reasons = tuple(r for p in pieces for r in p.reasons)
+        nodes = sorted({n for p in pieces for n in p.nodes})
+        # A behaviour-only feature is valid without a geometry claim.
+        results[fid] = Placement((), (), reasons) if reasons else Placement(
+            tuple(nodes), tuple(float(geo.node_z[n]) - STAND_M for n in nodes) if geo.heights is not None else ())
+    return results
+
+
+def _candidate_geometry(geo, mf, members):
+    if geo.heights is not None:
+        return geo
+    walk = geo.walk_px.copy()
+    sight = geo.sight.copy()
+    for f in mf.get('features') or []:
+        if f.get('id') in members:
+            own = _owned(f)
+            walk |= own['potential_ground']
+            sight &= ~own['remove_sight']
+    return replace(geo, walk_px=walk, sight=sight,
+                   walk=walk.reshape(GRID, CELL, GRID, CELL).mean((1, 3)) > 0.5,
+                   walk_n=(walk.reshape(GRID, CELL, GRID, CELL).mean((1, 3)) > 0.5).ravel())
+
 @dataclass
 class Binding:
     nodes: np.ndarray                       # node indices
@@ -139,51 +273,14 @@ def _band_shift(geo: Geometry, binding: dict) -> float | None:
 
 def floor_nodes(geo: Geometry, binding: dict | None, cells: np.ndarray) -> Binding:
     """The nodes of `cells` (flat GRID*GRID bool) on the bound floor. A flat map: the cells themselves."""
-    flat = np.flatnonzero(cells)
-    if geo.heights is None:
-        return Binding(flat.astype(np.int64))
-    if not binding or not isinstance(binding.get("z_band"), list):
-        return Binding(np.zeros(0, np.int64), [f"floor {(binding or {}).get('id')!r} has no height band"])
-    shift = _band_shift(geo, binding)
-    if shift is None:
-        return Binding(np.zeros(0, np.int64), [f"floor {binding.get('id')!r} was read from height asset "
-                                               f"{binding.get('height_sha')!r} and doesn't record its origin; the "
-                                               f"map has {geo.height_sha!r}: read the floor again in the tagger"])
-    lo, hi = binding["z_band"][0] + shift, binding["z_band"][1] + shift
-    nodes, ambiguous, missing = [], 0, 0
-    for c in flat.tolist():
-        if geo.unresolved is not None and geo.unresolved[c]:
-            missing += 1
-            continue
-        hits = [int(n) for n in geo.node_of[c] if n >= 0 and lo <= geo.node_z[n] <= hi]
-        if len(hits) == 1:
-            nodes.append(hits[0])
-        elif hits:
-            ambiguous += 1
-        else:
-            missing += 1
-    pending = []
-    if ambiguous:
-        pending.append(f"floor {binding.get('id')!r}: {ambiguous} cells have more than one floor in its band")
-    if missing:
-        pending.append(f"floor {binding.get('id')!r}: {missing} cells have no floor in its band")
-    return Binding(np.array(nodes, np.int64), pending)
+    placed = resolve_cells(geo, np.flatnonzero(cells).tolist(), 'floor')
+    return Binding(np.array(placed.nodes, np.int64), [r['code'] for r in placed.reasons])
 
 
 def feature_floor_nodes(geo: Geometry, mf: dict, feature: dict, cells: np.ndarray) -> Binding:
     """The nodes a feature's footprint covers on the floors it names (the union over them)."""
-    if geo.heights is None:
-        return Binding(np.flatnonzero(cells).astype(np.int64))
-    floors = _floors_by_id(mf)
-    ids = feature.get("floors")
-    if not isinstance(ids, list) or not ids:
-        return Binding(np.zeros(0, np.int64), [f"{feature.get('id')}: its floors are unresolved"])
-    out, pending = [], []
-    for fid in ids:
-        b = floor_nodes(geo, floors.get(fid), cells)
-        out.append(b.nodes)
-        pending += [f"{feature.get('id')}: {p}" for p in b.pending]
-    return Binding(np.unique(np.concatenate(out)) if out else np.zeros(0, np.int64), pending)
+    p = resolve_cells(geo, np.flatnonzero(cells).tolist(), f'features.{feature.get("id")}.footprint')
+    return Binding(np.array(p.nodes, np.int64), [f"{r['path']}: {r['code']}" for r in p.reasons])
 
 
 # ---------------------------------------------------------------- states
@@ -209,8 +306,12 @@ def movement_blocks(geo: Geometry, mf: dict, states: dict | None = None,
     enabled bundle's members); default: every feature."""
     blocked = np.zeros(geo.n, bool)
     pending = []
+    placements = placement(geo, mf)
     for f in mf.get("features") or []:
         if only is not None and f.get("id") not in only:
+            continue
+        if placements[f.get('id')].reasons:
+            pending += [f"{r['path']}: {r['code']}" for r in placements[f.get('id')].reasons]
             continue
         s = state_of(f, states)
         if s is None:
@@ -270,6 +371,10 @@ def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owne
     from app.control import heights as hc
 
     bounds = occ.get("bounds") or {}
+    cells = mask_px.reshape(GRID, CELL, GRID, CELL).any((1, 3)).ravel()
+    b = floor_nodes(geo, None, cells)
+    if b.pending or not len(b.nodes):
+        return None, f"{owner}: " + ('; '.join(b.pending) or 'no floor under the occluder')
     ref = bounds.get("ref")
     if ref == "all_height":
         return BoundedOccluder(owner, mask_px, all_height=True), None
@@ -283,11 +388,6 @@ def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owne
     if ref == "world":
         origin = geo.heights.origin_z / 10.0
         return BoundedOccluder(owner, mask_px, lo - origin, hi - origin), None
-    floor = _floors_by_id(mf).get(bounds.get("floor"))
-    cells = mask_px.reshape(GRID, CELL, GRID, CELL).any((1, 3)).ravel()
-    b = floor_nodes(geo, floor, cells)
-    if b.pending or not len(b.nodes):
-        return None, f"{owner}: " + ("; ".join(b.pending) or "no floor under the occluder")
     ground = float(np.median(geo.node_z[b.nodes])) - hc.STAND_M
     return BoundedOccluder(owner, mask_px, ground + lo, ground + hi), None
 
@@ -302,7 +402,11 @@ def sight_occluders(geo: Geometry, mf: dict, states: dict | None = None) -> tupl
     footprint under the state's `sight_bounds` (a breakable block's whole body). Unresolved ones are pending
     and block nothing."""
     out, pending = [], []
+    placements = placement(geo, mf)
     for f in mf.get("features") or []:
+        if placements[f.get('id')].reasons:
+            pending += [f"{r['path']}: {r['code']}" for r in placements[f.get('id')].reasons]
+            continue
         s = state_of(f, states)
         if s is None or not s.get("blocks_sight"):
             continue
@@ -541,26 +645,7 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
                 reasons.append(f"member {m!r} doesn't exist")
                 continue
             reasons += behaviour_problems(f)
-            if geo is not None:            # what its states compile to: pending bindings and occluders block nothing
-                reasons += [f"{m}: {p}" for p in state_problems(geo, mf, f)]
-            ids = f.get("floors") if isinstance(f.get("floors"), list) else []
             edits = f.get("base_edits") or {}
-            binding = edits.get("ground_binding")
-            if owned[m]["potential_ground"].any():
-                ids = ids + [binding] if isinstance(binding, str) else ids
-                if not isinstance(binding, str):
-                    reasons.append(f"{m}: restored ground has no floor binding")
-            if geo is not None and geo.heights is not None:
-                for fid in ids:
-                    fl = floors.get(fid) or {}
-                    if not isinstance(fl.get("z_band"), list) or _band_shift(geo, fl) is None:
-                        reasons.append(f"{m}: floor {fid!r} is not verified against the map's heights")
-                if isinstance(binding, str) and owned[m]["potential_ground"].any():
-                    cells = owned[m]["potential_ground"].reshape(GRID, CELL, GRID, CELL).any((1, 3)).ravel()
-                    cells &= ~geo.walk.ravel()
-                    if cells.any():
-                        reasons.append(f"{m}: restored ground has no floor in the height asset; rebuild the heights "
-                                       "(it never takes the unresolved all-floor fallback)")
             for source, mask in legacy.items():
                 overlap = union[m] & mask
                 if not overlap.any():
@@ -577,6 +662,21 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
                     reasons.append(f"{m}: its base edits overlap {other}, which is not in this bundle")
             ground |= owned[m]["potential_ground"]
             sight |= owned[m]["remove_sight"]
+        if geo is not None and not reasons:
+            # Ownership/legacy checks precede placement; candidate belongs to this bundle alone.
+            candidate = _candidate_geometry(geo, mf, set(members))
+            placed = placement(candidate, mf)
+            for m in members:
+                reasons += [f"{r['path']}: {r['code']}" for r in placed[m].reasons]
+                reasons += [f"{m}: {p}" for p in state_problems(candidate, mf, features[m])]
+                for phase in (features[m].get('rotation') or {}).get('phases') or []:
+                    for occ in phase.get('sight') or []:
+                        _, why = resolve_bounds(candidate, mf, occ, to_px(raster(occ.get('geometry'))), m)
+                        if why:
+                            reasons.append(why)
+            _, route_pending = compile_routes(candidate, {**mf, 'routes': [r for r in mf.get('routes') or []
+                                                      if r.get('owner') in members]})
+            reasons += route_pending
         out[bid] = BundleStatus(bid, members, not reasons, reasons,
                                 {"ground": int(ground.sum()), "sight": int(sight.sum())})
     return out
@@ -627,16 +727,12 @@ class Arc:
 
 
 def _point_node(geo: Geometry, mf: dict, uv, floor_id) -> tuple[int | None, str | None]:
-    if uv is None:
-        return None, "not placed"
+    if not ms._uv(uv):
+        return None, 'not placed or off map'
     cell = geo.cell_of_px(uv[0] * PX / ms.UV_MAX, uv[1] * PX / ms.UV_MAX)
-    if geo.heights is None:
-        return cell, None
-    if not isinstance(floor_id, str):
-        return None, "floor unresolved"
     mask = np.zeros(GRID * GRID, bool)
     mask[cell] = True
-    b = floor_nodes(geo, _floors_by_id(mf).get(floor_id), mask)
+    b = floor_nodes(geo, None, mask)
     if b.pending or len(b.nodes) != 1:
         return None, "; ".join(b.pending) or "no floor there"
     return int(b.nodes[0]), None
@@ -660,6 +756,8 @@ def compile_routes(geo: Geometry, mf: dict) -> tuple[list, list]:
             if why:
                 pending.append(f"{rid}.{pid}: {why}")
             nodes[pid] = node
+        if any(n is None for n in nodes.values()):
+            continue
         for d in r.get("directions") or []:
             a, b = nodes.get(d.get("from")), nodes.get(d.get("to"))
             if a is None or b is None:
@@ -852,16 +950,24 @@ def compile_assets(geo: Geometry, mf: dict, statuses: dict) -> dict | None:
            "routes": [r for r in mf.get("routes") or [] if r.get("owner") in members]}
     states = {}
     for f in sub["features"]:
+        status = next(st for st in statuses.values() if st.publishable and f.get('id') in st.members)
+        candidate = _candidate_geometry(geo, mf, set(status.members))
         for s in f.get("states") or []:
             pick = {f.get("id"): s.get("name")}
             one = {**sub, "features": [f]}
-            blocked = movement_blocks(geo, one, pick).blocked
-            occ, _ = sight_occluders(geo, one, pick)
+            blocked = movement_blocks(candidate, one, pick).blocked
+            occ, _ = sight_occluders(candidate, one, pick)
             states[f"{f.get('id')}:{s.get('name')}"] = {
                 "blocked": np.flatnonzero(blocked).tolist(),
                 "occluders": [{"mask": _hash_array(o.mask), "bottom": None if o.all_height else o.bottom,
                                "top": None if o.all_height else o.top, "all_height": o.all_height} for o in occ]}
-    arcs, _ = compile_routes(geo, sub)
+    arcs = []
+    for st in statuses.values():
+        if st.publishable:
+            candidate = _candidate_geometry(geo, mf, set(st.members))
+            routes = {**sub, 'routes': [r for r in sub['routes'] if r.get('owner') in st.members]}
+            one_arcs, _ = compile_routes(candidate, routes)
+            arcs += one_arcs
     return {"states": states, "nodes": int(geo.n),
             "arcs": [[a.route, a.src, a.dst, a.entry_s, a.transit_s, a.length_m, a.owner,
                       list(a.states) if a.states is not None else None, a.in_transit] for a in arcs]}
@@ -1045,16 +1151,6 @@ def diagnose(geo: Geometry, mf: dict) -> list[dict]:
     4-connected but not 8-connected, and the engine walks 8-connected)."""
     out = []
     walk = geo.walk.ravel()
-    for fl in mf.get("floors") or []:
-        if fl.get("z_band") is not None and geo.heights is not None and fl.get("height_sha") != geo.height_sha:
-            if _band_shift(geo, fl) is None:
-                out.append({"where": fl.get("id"), "code": "unframed_floor",
-                            "message": f"read from height asset {fl.get('height_sha')!r} with no origin recorded; "
-                                       f"the map has {geo.height_sha!r}: read the floor again"})
-            else:
-                out.append({"where": fl.get("id"), "code": "rebound_floor",
-                            "message": f"read from height asset {fl.get('height_sha')!r}; it follows the map's "
-                                       f"{geo.height_sha!r} by its band, rebased to the new lowest floor"})
     for r in mf.get("routes") or []:
         for e in r.get("endpoints") or []:
             if e.get("uv") is None:

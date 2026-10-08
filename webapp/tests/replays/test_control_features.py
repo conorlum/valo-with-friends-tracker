@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from map_feature_artifact_toys import geometry_case, source_case
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
@@ -490,11 +492,10 @@ def test_a_stacked_floor_door_blocks_the_lower_floor_and_leaves_the_bridge_open(
     assert (upper >= 0).all() and (geo.node_z[upper] == 4.0).all() and (geo.node_z[lower] == 0.0).all()
     mf = {**ms.empty(), "floors": floors_for(geo), "features": [feature("feature-1", door, ["floor-1"])]}
     fx = cf.movement_blocks(geo, mf)
-    assert fx.pending == []
-    assert fx.blocked[lower].all() and not fx.blocked[upper].any() and fx.blocked.sum() == len(cells)
+    assert fx.pending and not fx.blocked.any(), 'a multi-floor footprint is pending as a whole'
     both = cf.movement_blocks(geo, {**mf, "features": [feature("feature-1", door, ["floor-1", "floor-2"])]})
-    assert both.blocked[lower].all() and both.blocked[upper].all()
-    # never every floor by default: unresolved, unbanded, unframed or ambiguous bindings block nothing and say why
+    assert not both.blocked.any() and both.pending
+    # Authored selectors cannot bypass ambiguity.
     for floors in (None, [], ["floor-3"], ["floor-6"], ["floor-4"]):
         fx = cf.movement_blocks(geo, {**mf, "features": [feature("feature-1", door, floors)]})
         assert not fx.blocked.any() and fx.pending, floors
@@ -528,7 +529,7 @@ def test_diagnose_flags_diagonal_leaks_off_ground_endpoints_and_floors_read_from
     assert got == {("feature-1.states.closed", "diagonal_leak"), ("route-3.b", "off_ground")}
     stacked = bridge()
     got = {(d["where"], d["code"]) for d in cf.diagnose(stacked, {**ms.empty(), "floors": floors_for(stacked)})}
-    assert got == {("floor-5", "rebound_floor"), ("floor-6", "unframed_floor")}
+    assert got == set(), 'deprecated floor catalogue has no runtime diagnostics'
 
 
 # ---- W7: bounded sight
@@ -596,28 +597,35 @@ def door_mf(geo, floor, bottom, top, ref="ground"):
 
 
 def test_bounds_resolve_on_their_floor_and_unknowns_stay_pending():
-    geo = bridge()
-    [low], pending = cf.sight_occluders(geo, door_mf(geo, "floor-1", 0, 3.2))
+    geo = geometry_case()
+    def sole_mf(floor, bottom=0, top=3.2, ref='ground'):
+        mf = source_case()['map_features']
+        mf['features'] = mf['features'][:1]
+        mf['features'][0]['states'][0]['sight_bounds'] = {
+            'ref': ref, 'floor': floor, 'bottom': ms.known(bottom, 'm'), 'top': ms.known(top, 'm')}
+        return mf
+    [low], pending = cf.sight_occluders(geo, sole_mf('floor-99'))
     assert pending == [] and (low.bottom, low.top) == pytest.approx((-0.9, 2.3))
-    [high], _ = cf.sight_occluders(geo, door_mf(geo, "floor-2", 0, 2.5))
+    [high], _ = cf.sight_occluders(geometry_case(ground_dm=40), sole_mf('floor-2', top=2.5))
     assert (high.bottom, high.top) == pytest.approx((3.1, 5.6))
-    world = door_mf(geo, "floor-1", 1.0, 2.0, ref="world")
+    world = sole_mf('floor-1', 1.0, 2.0, ref='world')
     [w], _ = cf.sight_occluders(geo, world)
     assert (w.bottom, w.top) == pytest.approx((1.0 - geo.heights.origin_z / 10, 2.0 - geo.heights.origin_z / 10))
-    for mf in (door_mf(geo, "floor-3", 0, 3), door_mf(geo, "floor-6", 0, 3), door_mf(geo, "floor-4", 0, 3)):
-        occluders, pending = cf.sight_occluders(geo, mf)          # unbanded, unframed, ambiguous
-        assert occluders == [] and len(pending) == 1 and "floor" in pending[0]
-    unres = door_mf(geo, "floor-1", 0, 3)
-    unres["features"][0]["states"][0]["sight"][0]["bounds"] = {"ref": "unresolved"}
+    for pending_geo in (geometry_case(multi=True), geometry_case(unresolved=True)):
+        occluders, pending = cf.sight_occluders(pending_geo, sole_mf(None))
+        assert occluders == [] and pending
+    unres = sole_mf(None)
+    unres['features'][0]['states'][0]['sight_bounds'] = {'ref': 'unresolved'}
     assert cf.sight_occluders(geo, unres)[0] == [] and cf.sight_occluders(geo, unres)[1]
     # an open door blocks nothing; a footprint blocks sight only under the state's own bounds
-    assert cf.sight_occluders(geo, door_mf(geo, "floor-1", 0, 3.2), {"feature-1": "open"}) == ([], [])
-    body = {**ms.empty(), "floors": floors_for(geo), "features": [feature("feature-1", rect(256, 160, 264, 232), ["floor-1"])]}
+    assert cf.sight_occluders(geo, sole_mf(None), {"feature-1": "open"}) == ([], [])
+    body = sole_mf(None)
+    body['features'][0]['states'][0].pop('sight_bounds')
     assert cf.sight_occluders(geo, body)[0] == [] and cf.sight_occluders(geo, body)[1]
     body["features"][0]["states"][0]["sight_bounds"] = {"ref": "all_height"}
     assert cf.sight_occluders(geo, body)[0][0].all_height
     # a flat map has no heights: resolved bounds block in 2D
-    flat = cf.sight_occluders(open_hall(), {**door_mf(geo, "floor-1", 0, 3.2), "floors": []})
+    flat = cf.sight_occluders(geometry_case(flat=True), sole_mf(None))
     assert flat[1] == [] and flat[0][0].all_height
 
 
@@ -641,8 +649,9 @@ def test_a_stacked_floor_door_hides_only_its_own_floor_in_cast_los_and_seen_from
     deck = (node(284, 1), node(244, 1))        # along the bridge, over the same cells
     for pair in (ground, deck):
         assert views(geo, *pair, []) == (True, True, True), "the base map sees both lines"
-    [low], _ = cf.sight_occluders(geo, door_mf(geo, "floor-1", 0, 3.2))
-    [high], _ = cf.sight_occluders(geo, door_mf(geo, "floor-2", 0, 2.5))
+    # Sight/traversal policy stays unchanged; these are already placed bounded occluders.
+    low = cf.BoundedOccluder('low', mask_px(256, 160, 264, 232), -0.9, 2.3)
+    high = cf.BoundedOccluder('high', low.mask, 3.1, 5.6)
     assert views(geo, *ground, [low]) == (False, False, False)
     assert views(geo, *deck, [low]) == (True, True, True), "a lower-floor door doesn't hide the bridge above it"
     assert views(geo, *ground, [high]) == (True, True, True), "a door on the bridge doesn't hide the tunnel below"
@@ -655,7 +664,7 @@ def test_a_stacked_floor_door_hides_only_its_own_floor_in_cast_los_and_seen_from
 def test_seen_from_with_needs_one_clear_source_and_keeps_skipped_targets():
     geo = bridge()
     node = lambda x, y, f=0: int(geo.node_of[geo.cell_of_px(x, y), f])     # noqa: E731
-    [low], _ = cf.sight_occluders(geo, door_mf(geo, "floor-1", 0, 3.2))
+    low = cf.BoundedOccluder('low', mask_px(256, 160, 264, 232), -0.9, 2.3)
     target = node(244, 196)
     behind, beside = node(300, 196), node(244, 280)
     both = cf.seen_from_with(geo, np.array([behind, beside]), [], [low])
@@ -729,7 +738,6 @@ def test_pending_bundles_publish_none_of_their_base_edits():
         "legacy overlap not reclassified": (block_mf(base_edits={**block_mf()["features"][0]["base_edits"], "reclassify": []}), test),
         "reclassified only in part": (block_mf(base_edits={**block_mf()["features"][0]["base_edits"],
                                                             "reclassify": [{"source": "cover_paint", "geometry": rect(200, 100, 216, 108)}]}), test),
-        "ground without a floor binding": (block_mf(base_edits={**block_mf()["features"][0]["base_edits"], "ground_binding": None}), test),
         "behaviour unresolved": (block_mf(initial_state=None), test),
     }
     for name, (mf, consumers) in cases.items():
@@ -777,8 +785,9 @@ def test_on_a_height_map_bindings_must_be_verified_and_restored_ground_must_be_i
                 "bundles": [{"id": "bundle-2", "members": ["feature-1"], "enabled": True, "runtime_consumer": "test"}]}
 
     assert cf.bundle_status(geo, mf(on_floor, "floor-1", ["floor-1"]), consumers=test)["bundle-2"].publishable
-    for args, why in (((on_floor, "floor-6", ["floor-1"]), "not verified"), ((on_floor, "floor-1", ["floor-3"]), "not verified"),
-                      ((off_map, "floor-1", ["floor-1"]), "rebuild the heights")):
+    for binding in (None, 'floor-6', 'floor-99'):
+        assert cf.bundle_status(geo, mf(on_floor, binding, None), consumers=test)['bundle-2'].publishable
+    for args, why in (((off_map, "floor-1", ["floor-1"]), "off_ground"),):
         st = cf.bundle_status(geo, mf(*args), consumers=test)["bundle-2"]
         assert not st.publishable and any(why in r for r in st.reasons), (args, st.reasons)
     # the node domain never depends on a feature's state
@@ -803,7 +812,9 @@ def test_a_bundle_whose_states_bind_no_floor_publishes_nothing():
                 "bundles": [{"id": "bundle-2", "members": ["feature-1"], "enabled": True, "runtime_consumer": "test"}]}
 
     good = mf(["floor-1"])
-    assert cf.bundle_status(geo, good, consumers=test)["bundle-2"].publishable, "the control: a verified floor"
+    good['features'][0]['states'][0]['footprint'] = rect(304, 160, 312, 168)
+    good['features'][0]['base_edits']['remove_sight'] = rect(304, 160, 312, 168)
+    assert cf.bundle_status(geo, good, consumers=test)["bundle-2"].publishable, 'sole-floor control'
     sight = np.zeros((1024, 1024), bool)
     sight[160:232, 256:264] = True
     walk = np.ones((1024, 1024), bool)
@@ -838,13 +849,15 @@ def rope(geo, up=("floor-1", "floor-2"), back=UNRES):
                        {"from": "b", "to": "a", "entry": secs(0.3), "transit": back}]}]}
 
 
-def test_a_same_position_rope_joins_exactly_its_two_floors():
+def test_pending_rope_cannot_bypass_placement_and_transport_policy_is_preserved():
     geo = bridge()
     node = lambda x, f=0: int(geo.node_of[geo.cell_of_px(x, 196), f])     # noqa: E731
     arcs, pending = cf.compile_routes(geo, rope(geo))
     lower, upper = node(264, 0), node(264, 1)
-    assert [(a.src, a.dst) for a in arcs] == [(lower, upper), (upper, lower)]
-    assert pending == ["route-1: b -> a travel time unresolved"]
+    assert arcs == [] and pending, 'multi-floor endpoints cannot be manually selected'
+    # Keep the independent directed transport/time policy proof using already placed arcs.
+    arcs = [cf.Arc('route-1', lower, upper, 0.5, 2.0, None),
+            cf.Arc('route-1', upper, lower, 0.3, None, None)]
     east, plateau = node(400), node(150)
     plain = cf.TraversalGraph(geo, [])
     assert not plain.reachable(east)[plateau], "the ground and the plateau don't join by walking"
@@ -858,7 +871,7 @@ def test_a_same_position_rope_joins_exactly_its_two_floors():
     assert np.isinf(g.walk_metres(east)[plateau]), "walking metres never ride a route"
     # same place on the same floor is no route; an unbound floor is pending, never every floor
     arcs, pending = cf.compile_routes(geo, rope(geo, up=("floor-1", "floor-1")))
-    assert arcs == [] and all("joins a node to itself" in p for p in pending)
+    assert arcs == [] and pending
     for floors in (("floor-3", "floor-2"), ({"status": "unresolved"}, "floor-2"), ("floor-4", "floor-2")):
         arcs, pending = cf.compile_routes(geo, rope(geo, up=floors))
         assert arcs == [] and any(p.startswith("route-1.a") for p in pending), floors
@@ -1051,10 +1064,10 @@ def deeper_bridge():
 def test_a_band_is_rebased_when_a_rebuild_moves_the_maps_lowest_floor():
     old, new = bridge(), deeper_bridge()
     assert old.heights.origin_z - new.heights.origin_z == 20 and old.height_sha != new.height_sha
-    door = rect(256, 160, 264, 232)
-    cells = np.flatnonzero(grid_rect(256, 160, 264, 232).ravel())
+    door = rect(304, 160, 312, 232)
+    cells = np.flatnonzero(grid_rect(304, 160, 312, 232).ravel())
     read_on_old = floors_for(old)                        # what the tagger saved before the rebuild
-    for name, floor, level in (("ground", "floor-1", 0), ("bridge", "floor-2", 1)):
+    for name, floor, level in (("ground", "floor-1", 0), ("obsolete bridge selector", "floor-2", 0)):
         mf = {**ms.empty(), "floors": read_on_old, "features": [feature("feature-1", door, [floor])]}
         before, after = cf.movement_blocks(old, mf), cf.movement_blocks(new, mf)
         assert before.pending == [] and after.pending == [], name
@@ -1069,14 +1082,13 @@ def test_a_band_is_rebased_when_a_rebuild_moves_the_maps_lowest_floor():
 
 def test_a_band_with_no_recorded_origin_binds_only_while_its_asset_is_the_maps():
     old, new = bridge(), deeper_bridge()
-    door = rect(256, 160, 264, 232)
+    door = rect(304, 160, 312, 232)
     legacy = [{"id": "floor-1", "label": "ground", "z_band": [-0.5, 1.0], "height_sha": old.height_sha}]
     mf = {**ms.empty(), "floors": legacy, "features": [feature("feature-1", door, ["floor-1"])]}
     assert cf.movement_blocks(old, mf).pending == [] and cf.movement_blocks(old, mf).blocked.any()
     after = cf.movement_blocks(new, mf)
-    assert not after.blocked.any() and any("origin" in p for p in after.pending), "pending, and it says why"
-    assert {(d["where"], d["code"]) for d in cf.diagnose(new, {**ms.empty(), "floors": legacy})} == \
-        {("floor-1", "unframed_floor")}
+    assert after.blocked.any() and after.pending == [], 'retired selectors do not prevent sole-floor recovery'
+    assert cf.diagnose(new, {**ms.empty(), 'floors': legacy}) == []
     assert cf._band_shift(new, legacy[0]) is None
 
 
@@ -1088,8 +1100,8 @@ def test_a_floor_that_moved_out_of_its_band_is_pending_and_the_rest_still_bind()
           "features": [feature("feature-1", door, ["floor-1"]), feature("feature-2", door, ["floor-2"])]}
     for f in mf["features"]:
         f["states"][0]["sight_bounds"] = {"ref": "all_height"}     # its sight resolved: only the binding is in question
-    assert cf.state_problems(lowered, mf, mf["features"][0]) == [], "the ground is where it was"
-    assert cf.state_problems(lowered, mf, mf["features"][1]), "the bridge is 2.5 m lower now: out of its band"
+    assert cf.state_problems(lowered, mf, mf['features'][0]), 'two physical floors remain ambiguous'
+    assert cf.state_problems(lowered, mf, mf['features'][1]), 'authored bands cannot choose either floor'
 
 
 def test_a_published_generation_does_not_survive_a_new_height_digest():
@@ -1099,7 +1111,7 @@ def test_a_published_generation_does_not_survive_a_new_height_digest():
     # `activate` refuses it (tests/replays/test_control_heights_db.py).
     old, new = bridge(), deeper_bridge()
     test = frozenset({"test"})
-    block = rect(256, 160, 264, 232)
+    block = rect(304, 160, 312, 168)
     f = breakable("feature-1", block, remove=block, floors=["floor-1"])
     mf = {**ms.empty(), "floors": floors_for(old), "features": [f],
           "bundles": [{"id": "bundle-2", "members": ["feature-1"], "enabled": True, "runtime_consumer": "test"}]}
@@ -1109,3 +1121,91 @@ def test_a_published_generation_does_not_survive_a_new_height_digest():
     assert cf.manifest_digest(before) != cf.manifest_digest(after)
     assets = cf.compile_assets(old, mf, cf.bundle_status(old, mf, consumers=test))
     assert cf.verify(before, assets, new, mf, consumers=test), "verification of the old generation on the new heights fails"
+# Automatic placement: every required shape/dependency participates, never a synthetic floor.
+def test_synthetic_lowest_node_is_not_a_measured_floor():
+    geo = geometry_case(unresolved=True)
+    cell = 40 * 128 + 40
+    assert geo.node_of[cell, 0] >= 0
+    bound = cf.resolve_cells(geo, [cell], 'features.feature-1.states.closed.footprint')
+    assert not bound.ok and bound.nodes == ()
+    assert bound.reasons[0]['code'] in {'missing_floor', 'unresolved_height'}
+    assert bound.reasons[0]['cells'] == [cell]
+    assert bound.reasons[0]['floor_counts'] == [0]
+
+
+def test_sole_floor_binding_follows_changed_ground_and_ignores_authored_selectors():
+    mf = source_case()['map_features']
+    mf['features'][0]['floors'] = ['floor-99']
+    for ground in (0, 20):
+        geo = geometry_case(ground_dm=ground)
+        p = cf.placement(geo, mf)['feature-1']
+        assert p.ok and p.nodes == (5160,)
+        assert p.ground_m == pytest.approx((ground / 10 - 0.9,))
+        assert cf.movement_blocks(geo, mf).blocked[5160]
+
+
+@pytest.mark.parametrize('part', ['movement', 'sight', 'phase', 'trigger', 'endpoint', 'access', 'ground'])
+def test_one_bad_required_part_disables_its_whole_bundle_only(part):
+    mf = source_case()['map_features']
+    mf['bundles'][1]['enabled'] = True
+    f = mf['features'][0]
+    good = copy.deepcopy(f['states'][0]['footprint'])
+    # feature 1 otherwise lives on sole floor cell 41; bad part lives on multi-floor cell 40.
+    safe = rect(328, 320, 336, 328)
+    f['states'][0]['footprint'] = safe
+    if part == 'movement':
+        f['states'][0]['footprint'] = good
+    elif part == 'sight':
+        f['states'][0]['sight'] = [{'geometry': good, 'bounds': {'ref': 'all_height'}}]
+    elif part == 'phase':
+        f['rotation'] = {'phases': [{'footprint': good}]}
+    elif part == 'trigger':
+        mf['triggers'] = [{'id': 'trigger-1', 'type': 'switch', 'geometry': good,
+                           'targets': [{'feature': 'feature-1', 'event': 'switch'}]}]
+    elif part in ('endpoint', 'access'):
+        mf['routes'] = [{'id': 'route-1', 'kind': 'zipline', 'owner': 'feature-1',
+                         'endpoints': [{'id': 'a', 'uv': [U(332), U(324)]},
+                                       {'id': 'b', 'uv': [U(340), U(324)]}],
+                         'directions': [{'from': 'a', 'to': 'b', 'entry': secs(1), 'transit': secs(1)}]}]
+        if part == 'endpoint':
+            mf['routes'][0]['endpoints'][0]['uv'] = [U(324), U(324)]
+        else:
+            mf['routes'][0]['access'] = {'sites': [{'id': 'm', 'uv': [U(324), U(324)]}]}
+    else:
+        f['base_edits'] = {'potential_ground': good}
+    geo = geometry_case(multi=True)
+    p = cf.placement(geo, mf)['feature-1']
+    assert not p.ok and p.nodes == ()
+    assert any(r['code'] == 'multi_floor' and r['cells'] == [5160]
+               and r['floor_counts'] == [2] and r['cell_count'] == 1 for r in p.reasons)
+    statuses = cf.bundle_status(geo, mf, consumers=frozenset({'test'}))
+    assert not statuses['bundle-1'].publishable and statuses['bundle-2'].publishable
+    assets = cf.compile_assets(geo, mf, statuses)
+    assert set(assets['states']) == {'feature-2:closed', 'feature-2:open'}
+    assert cf.placement(geometry_case(), mf)['feature-1'].ok
+
+
+def test_flat_candidate_ground_is_private_and_pending_edits_do_not_escape():
+    sight, walk, legacy = baked_in()
+    geo = cg.geometry_from_masks('Flat', sight, walk, 7e-5, [])
+    mf = block_mf()
+    statuses = cf.bundle_status(geo, mf, legacy, consumers=frozenset({'test'}))
+    assert statuses['bundle-2'].publishable, statuses['bundle-2'].reasons
+    assert cf.compile_assets(geo, mf, statuses)['states']['feature-1:intact']['blocked']
+    mf['triggers'] = [{'id': 'trigger-1', 'geometry': {'type': 'point', 'uv': [U(600), U(600)]},
+                       'targets': [{'feature': 'feature-1', 'event': 'shoot'}]}]
+    statuses = cf.bundle_status(geo, mf, legacy, consumers=frozenset({'test'}))
+    assert not statuses['bundle-2'].publishable
+    s, w, opened = cf.reconcile(sight, walk, mf, statuses)
+    assert opened == {} and np.array_equal(s, sight) and np.array_equal(w, walk)
+
+
+def test_placement_reports_empty_invalid_and_off_ground_without_clamping():
+    geo = geometry_case(flat=True)
+    for cells, code in (([], 'empty_geometry'), ([-1, 16384], 'off_map'), ([0], 'off_ground')):
+        p = cf.resolve_cells(geo, cells, 'test')
+        assert not p.ok and p.nodes == () and any(r['code'] == code for r in p.reasons)
+    mf = source_case()['map_features']
+    mf['features'][0]['states'][0]['footprint'] = {'type': 'point', 'uv': [10001, 10001]}
+    p = cf.placement(geo, mf)['feature-1']
+    assert not p.ok and any(r['code'] == 'off_map' for r in p.reasons)

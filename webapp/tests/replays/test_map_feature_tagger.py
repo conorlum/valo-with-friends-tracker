@@ -605,9 +605,7 @@ def test_a_same_position_rope_and_an_unresolved_landing_round_trip_and_compile_w
     assert rep.errors == [] and any(w["code"] == "zero_length" for w in rep.warnings)
     arcs, pending = cf.compile_routes(geo, exported)
     rope_arcs = [a for a in arcs if a.route == ids["rope"]]
-    assert len(rope_arcs) == 2 and all(geo.node_cell[a.src] == geo.node_cell[a.dst] and a.src != a.dst for a in rope_arcs), \
-        "the rope joins two floors of one cell: no horizontal shortcut"
-    assert {(geo.node_z[a.src], geo.node_z[a.dst]) for a in rope_arcs} == {(0.0, 4.0), (4.0, 0.0)}
+    assert rope_arcs == [] and pending, 'multi-floor endpoints stay pending despite authored selectors'
     assert not [a for a in arcs if a.route == ids["zip"]], "a landing on an unresolved floor never snaps to another floor"
     assert any(p.startswith(ids["zip"] + ".b") for p in pending)
     assert [d["code"] for d in cf.diagnose(geo, exported) if d["where"].startswith(ids["zip"])] == ["off_ground"], \
