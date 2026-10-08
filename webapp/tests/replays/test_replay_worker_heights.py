@@ -192,7 +192,7 @@ def test_a_collector_nobody_feeds_expires_and_only_the_newest_answers_are_kept(w
 
 def test_a_build_runs_alone_and_ahead_of_queued_rounds(worker):
     control, builds, log = worker(sleep=0.6)
-    # PROVISIONAL(D13): the scheduler is held, not idle=False; beside a parse control keeps one child
+    # The scheduler is held, not idle=False; beside a parse control keeps one child
     # (control-idle-queue D4 as amended 2026-10-07), so idle=False no longer holds every round back.
     control._next = lambda: None                       # nothing starts yet
     waiting = [control.submit(task(f"r:{n}:f", "Ascent", "sleep:0.3")) for n in (1, 2)]
