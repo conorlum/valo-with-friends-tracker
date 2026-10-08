@@ -892,3 +892,10 @@ def test_a_downloaded_draft_restores_after_a_storage_failure():
     assert "no provenance recorded" in got["bareDialog"] and got["bareSame"]
     assert "Saved for a different page: catalogue" in got["movedDialog"]
     assert got["olderLabel"] == "Restore draft" and not got["olderDisabled"] and got["olderRestored"]
+
+
+def test_a_floor_picked_in_the_tagger_records_the_assets_origin():
+    source = (WEBAPP / "scripts" / "control_tagger_features.js").read_text(encoding="utf-8")
+    assert "height_sha: fd.height_sha, origin_z: fd.origin_z" in source
+    core = (WEBAPP / "scripts" / "control_tagger_core.js").read_text(encoding="utf-8")
+    assert '"unframed_floor"' in core

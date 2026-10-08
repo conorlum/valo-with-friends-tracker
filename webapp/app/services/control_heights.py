@@ -17,6 +17,9 @@ docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md, sections 1 and 
 - `activate` and `deactivate`: the operator's way back (scripts/control_heights.py), and how a map whose
   evidence was deleted is turned off.
 
+A map with a published feature generation can't have its heights changed, by the dispatcher or by hand: the
+generation would stop verifying (the plan's undecided default E6).
+
 Every change to which row is active (a build going live, `activate`, `deactivate`) takes the map's advisory
 lock first and writes with SQL statements by row id, never through loaded objects: two writers wait for each
 other, and activating the row that is already active changes nothing. The one-active-row index is the

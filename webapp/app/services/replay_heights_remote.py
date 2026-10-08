@@ -205,7 +205,8 @@ def _turn_off(session_factory, map_name: str) -> bool:
     dispatcher in for the rest of the cycle."""
     writer = session_factory()
     try:
-        return control_heights.deactivate(writer, map_name)
+        return control_heights.deactivate(
+            writer, map_name, generation=(replay_control.geometry_inputs(map_name, heights=None) or {}).get("features"))
     except control_heights.HasGeneration as guarded:
         log.info("heights: %s", guarded)
         return False
@@ -264,7 +265,8 @@ def _finish(session_factory, session, build: Build, job: dict, counts: dict) -> 
         if status == control_heights.REJECTED:
             active = control_heights.active_rows(writer).get(build.map_name)
             if active is not None and hi.changes(active.inputs, build.manifest)["gone"]:
-                control_heights.deactivate(writer, build.map_name)
+                control_heights.deactivate(writer, build.map_name, generation=(
+                    replay_control.geometry_inputs(build.map_name, heights=None) or {}).get("features"))
                 counts["heights_off"] += 1
     except control_heights.HasGeneration as guarded:
         raise _Stale(str(guarded)) from guarded

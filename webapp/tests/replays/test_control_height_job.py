@@ -260,3 +260,29 @@ def test_the_child_refuses_inputs_that_are_not_the_manifests(tmp_path, checks, m
     spoil(task, blobs)
     out = child.run(task)
     assert out["status"] == "failed" and out["error_kind"] == "inputs" and "asset" not in out, name
+
+
+def test_a_build_lists_the_tagged_features_that_no_longer_fit(tmp_path, monkeypatch):
+    from app.control import features
+    from tests.replays.control_toys import HALL, toy_heights
+
+    geo = toy_heights("FeatJob", [HALL], upper=[((240, 96, 288, 296), 4.0)])     # a bridge 4 m over the ground
+    assets = tmp_path / "assets"
+    assets.mkdir()
+
+    def tags(floors):
+        mf = {"version": 1, "floors": floors,
+              "features": [{"id": "feature-1", "floors": ["floor-1"]}, {"id": "feature-2", "floors": ["floor-2"]}]}
+        (assets / "tags.json").write_text(json.dumps({"maps": {"FeatJob": {"map_features": mf}}}), encoding="utf-8")
+
+    seen = []
+    monkeypatch.setattr(features, "state_problems",
+                        lambda g, mf, f: seen.append(f["id"]) or (["no floor in its band"] if f["id"] == "feature-2" else []))
+    tags([{"id": "floor-1", "z_band": [-0.5, 1.0], "height_sha": "old", "origin_z": 0}, {"id": "floor-2", "z_band": [9, 10]}])
+    assert height_job.features_pending("FeatJob", geo, assets) == [{"feature": "feature-2",
+                                                                    "problems": ["no floor in its band"]}]
+    assert seen == ["feature-1", "feature-2"]
+    (assets / "tags.json").write_text(json.dumps({"maps": {}}), encoding="utf-8")
+    assert height_job.features_pending("FeatJob", geo, assets) == []
+    (assets / "tags.json").unlink()
+    assert height_job.features_pending("FeatJob", geo, assets) == [], "no tags file: nothing to re-read"

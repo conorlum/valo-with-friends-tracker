@@ -918,6 +918,7 @@
       else if (!(Array.isArray(band) && band.length === 2 && band.every(finite) && band[0] < band[1]))
         err(fl.id, "bad_dimensions", "z_band must be [low, high] metres with low < high");
       else if (!fl.height_sha) warn(fl.id, "unbound_floor", "a height band without the height asset it was read from");
+      else if (!Number.isInteger(fl.origin_z)) warn(fl.id, "unframed_floor", "a height band without the lowest floor (origin_z) of the asset it was read from: it stops binding when the map's heights are rebuilt");
     });
     Object.keys(features).forEach(function (k) { validateFeature(features[k]); });
     function validateFeature(f) {

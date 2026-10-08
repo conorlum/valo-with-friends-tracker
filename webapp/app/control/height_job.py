@@ -95,8 +95,24 @@ def compare(new: hc.HeightAsset, old: hc.HeightAsset | None) -> dict | None:
 
 
 def features_pending(map_name: str, geo, asset_dir: Path | None = None) -> list[dict]:
-    """The map's tagged features that no longer fit the new heights (section 5). None are read yet."""
-    return []
+    """The map's tagged features that no longer fit the new heights (section 5): a floor binding whose band,
+    rebased to the new lowest floor, picks no floor or several in one of its cells, or whose frame is unknown.
+    Each is listed for the owner. `geo` has the new heights attached."""
+    from app.control import features
+
+    try:
+        entry = cg.load_tags(asset_dir or cg.ASSET_DIR).get("maps", {}).get(map_name) or {}
+    except (OSError, ValueError):
+        return []
+    mf = entry.get("map_features")
+    if not isinstance(mf, dict):
+        return []
+    out = []
+    for feature in mf.get("features") or []:
+        problems = features.state_problems(geo, mf, feature)
+        if problems:
+            out.append({"feature": feature.get("id"), "problems": problems})
+    return out
 
 
 def run(map_name: str, rounds, *, previous: Path | None = None, asset_dir: Path | None = None,

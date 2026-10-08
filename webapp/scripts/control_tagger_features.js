@@ -296,7 +296,7 @@
     if (!zs.length) { ui.message = "No floor in the height asset there: add a manual label instead."; render(); return; }
     var next = mf();
     zs.forEach(function (z) {
-      var a = F.addObject(next, "floor", { label: "floor at " + z.toFixed(1) + " m", z_band: [Math.round((z - 0.75) * 100) / 100, Math.round((z + 0.75) * 100) / 100], height_sha: fd.height_sha });
+      var a = F.addObject(next, "floor", { label: "floor at " + z.toFixed(1) + " m", z_band: [Math.round((z - 0.75) * 100) / 100, Math.round((z + 0.75) * 100) / 100], height_sha: fd.height_sha, origin_z: fd.origin_z });
       next = a.mf;
     });
     commit(next, true);
@@ -958,7 +958,7 @@
   }
 
   function floorProps(box, fl) {
-    box.appendChild(row("Height band", document.createTextNode(fl.z_band ? fl.z_band[0] + " to " + fl.z_band[1] + " m (asset " + fl.height_sha + ")" : "manual label (unresolved)")));
+    box.appendChild(row("Height band", document.createTextNode(fl.z_band ? fl.z_band[0] + " to " + fl.z_band[1] + " m (asset " + fl.height_sha + ", origin " + (Number.isInteger(fl.origin_z) ? fl.origin_z + " dm" : "not recorded") + ")" : "manual label (unresolved)")));
   }
 
   function renderList() {

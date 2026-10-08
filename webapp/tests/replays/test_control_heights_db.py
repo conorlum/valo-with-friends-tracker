@@ -270,3 +270,14 @@ def test_every_caller_passes_the_active_heights():
     files = [*(WEBAPP / "app").rglob("*.py"), *(WEBAPP / "scripts").glob("*.py")]
     missing = {str(p.relative_to(WEBAPP)): lines for p in files if (lines := _calls_without_heights(p))}
     assert missing == {}, missing
+
+
+def test_a_map_with_a_published_feature_generation_cant_have_its_heights_changed_by_hand(db, linked):
+    name = linked.map_name
+    build(db, name, "aaaaaaaaaaaa")
+    build(db, name, "bbbbbbbbbbbb")
+    refused = ch.activate(db, name, "aaaaaaaaaaaa", generation="feat0000feat0000")
+    assert "feature generation" in refused and ch.active_digests(db) == {name: "bbbbbbbbbbbb"}
+    with pytest.raises(ch.HasGeneration):
+        ch.deactivate(db, name, generation="feat0000feat0000")
+    assert ch.active_digests(db) == {name: "bbbbbbbbbbbb"}
