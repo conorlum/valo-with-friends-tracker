@@ -899,3 +899,23 @@ def test_a_floor_picked_in_the_tagger_records_the_assets_origin():
     assert "height_sha: fd.height_sha, origin_z: fd.origin_z" in source
     core = (WEBAPP / "scripts" / "control_tagger_core.js").read_text(encoding="utf-8")
     assert '"unframed_floor"' in core
+
+
+def test_the_tagger_reads_a_maps_heights_from_an_export_when_given_one(tmp_path):
+    import numpy as np
+
+    sys.path.insert(0, str(WEBAPP / "scripts"))
+    import control_tagger
+
+    from app.control import heights as hc
+
+    floors = np.full((128, 128, hc.MAX_FLOORS), -1, np.int16)
+    floors[40, 40, 0] = 7
+    asset = hc.HeightAsset(floors, np.zeros_like(floors), floors[..., 0] >= 0, np.zeros((128, 128), bool),
+                           np.zeros((0, 5), np.int32), {"origin_z": -130})
+    hc.save_asset(tmp_path / "Toy.height.npz", asset)
+    (tmp_path / "index.json").write_text(json.dumps({"maps": {"Toy": {}}}), encoding="utf-8")
+    assert control_tagger.floor_data("Toy", tmp_path) is None, "no committed heights"
+    got = control_tagger.floor_data("Toy", tmp_path, heights_dir=tmp_path)
+    assert got["height_sha"] == asset.digest and got["origin_z"] == -130
+    assert control_tagger.floor_data("Other", tmp_path, heights_dir=tmp_path) is None

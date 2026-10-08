@@ -1,13 +1,16 @@
 """The height viewer: a read-only page for checking a map's heights by eye
 (docs/superpowers/plans/2026-10-05-height-viewer.md; the asset: app/control/heights.py).
 
-    .venv\\Scripts\\python.exe scripts\\height_viewer.py [--map Sunset] [--dir <folder>] [--committed] [--out <file>]
+    .venv\\Scripts\\python.exe scripts\\height_viewer.py [--map Sunset] [--dir <folder>] [--committed | --db [--all]] [--out <file>]
 
 By default it reads every `<Map>.height.npz` (and its `<Map>.height.json` report) in the preview folder
 that `build_control_heights.py --preview --out <dir>` writes (default %TEMP%\\valo-replay\\heights-preview).
 With --committed it reads the committed assets instead: the maps whose index.json entry has a height_sha.
 It writes one self-contained page (default %TEMP%\\valo-height-viewer\\height-viewer.html, never the
 repository) and changes nothing else: no asset, no index.json, no tags, no database.
+With `--db` it reads the heights the replay worker built, from `control_heights`: each map's active asset, and
+with `--all` the rejected and superseded ones too. Run that through
+`scripts\\with_friends_db.py --expect-database valowithfriendsdb --read-only`; it reads only.
 
 On the page: heights over the minimap (the build picture's colours), hover for each cell's floors
 and how it got its height, click to set a reference and read every other floor as higher or lower than it, a
@@ -106,16 +109,19 @@ def usable_report(wrapper, digest: str) -> tuple[dict | None, str | None]:
     return wrapper["height"], None
 
 
-def map_payload(name: str, asset_path: Path, wrapper, kind: str, asset_dir: Path = cg.ASSET_DIR) -> dict:
+def map_payload(name: str, asset_path: Path, wrapper, kind: str, asset_dir: Path = cg.ASSET_DIR,
+                map_name: str | None = None) -> dict:
     """Everything the page shows for one map. `wrapper` is the preview .json or the index.json entry (both
-    {"height_sha", "height"}), or None. Raises ValueError for an unusable asset, and OSError/KeyError/ValueError
-    when the map's committed geometry can't be read."""
+    {"height_sha", "height"}), or None. `name` is the page's label; `map_name` the real map when the label
+    isn't one (a stored build that isn't active). Raises ValueError for an unusable asset, and
+    OSError/KeyError/ValueError when the map's committed geometry can't be read."""
+    real = map_name or name
     asset = load_checked(asset_path)
     report, report_note = usable_report(wrapper, asset.digest)
-    sight = cg.read_mask_png(asset_dir / f"{name}.sight.png")
-    walk_px = cg.read_mask_png(asset_dir / f"{name}.walk.png")
-    scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))[name]["xMultiplier"]
-    geo = cg.geometry_from_masks(name, sight, walk_px, scale)
+    sight = cg.read_mask_png(asset_dir / f"{real}.sight.png")
+    walk_px = cg.read_mask_png(asset_dir / f"{real}.walk.png")
+    scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))[real]["xMultiplier"]
+    geo = cg.geometry_from_masks(real, sight, walk_px, scale)
     walk_sha = hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12]
     if report is not None:
         summary = {"source": "report", "matches": report.get("matches", asset.meta.get("matches")),
@@ -130,7 +136,7 @@ def map_payload(name: str, asset_path: Path, wrapper, kind: str, asset_dir: Path
         kill_lines = None
     return {
         "name": name, "kind": kind,
-        "image": base64.b64encode((cg.MINIMAP_DIR / f"{name}.png").read_bytes()).decode("ascii"),
+        "image": base64.b64encode((cg.MINIMAP_DIR / f"{real}.png").read_bytes()).decode("ascii"),
         "cell_m": round(geo.cell_m, 4), "origin_z": asset.origin_z, "max_floors": hc.MAX_FLOORS,
         "step_up_m": hc.STEP_UP_M, "supported_min": hc.HEIGHT_SUPPORTED_MIN,
         "floors": asset.floors.astype(int).ravel().tolist(),     # dm above origin_z, -1 none, cell-major
@@ -177,6 +183,26 @@ def sources(directory: Path, committed: bool, names: list[str] | None,
     return [s for s in out if not names or s[0] in names]
 
 
+def db_sources(rows, folder: Path, names: list[str] | None, every: bool) -> list[tuple[str, Path, object, str]]:
+    """`sources` for the builds stored in `control_heights` (rows carry id, map_name, digest, status, report and
+    asset): each map's active build, and with `every` the rejected and superseded ones too, in the order given.
+    Each asset is written under `folder` (a temp folder, never the repository) for `map_payload` to read.
+    The page calls the active one by its map's name and the others `<Map> <status> <digest> row <id>`. The row id also names the temp file: two builds can
+    share an engine digest while their kind, support metadata and reports differ."""
+    folder.mkdir(parents=True, exist_ok=True)
+    out = []
+    for row in rows:
+        if names and row.map_name not in names:
+            continue
+        if row.status != "active" and not every:
+            continue
+        path = folder / f"{row.map_name}.{row.id}.{row.digest}.height.npz"
+        path.write_bytes(bytes(row.asset))
+        label = row.map_name if row.status == "active" else f"{row.map_name} {row.status} {row.digest} row {row.id}"
+        out.append((label, path, {"height_sha": row.digest, "height": row.report or {}}, row.status))
+    return out
+
+
 def inside_a_repository(path: Path) -> bool:
     """This checkout, or any other one (build_control_heights.py's --preview guard: the main checkout and
     each worktree have a `.git`)."""
@@ -196,7 +222,12 @@ def main(argv: list[str] | None = None, asset_dir: Path = cg.ASSET_DIR) -> int:
     parser.add_argument("--committed", action="store_true", help="show the committed assets instead of previews")
     parser.add_argument("--map", action="append", help="only this map (repeatable)")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="the page to write (default under %%TEMP%%)")
+    parser.add_argument("--db", action="store_true",
+                        help="show the heights stored in the database (run through with_friends_db.py --read-only)")
+    parser.add_argument("--all", action="store_true", help="with --db: the rejected and superseded builds too")
     args = parser.parse_args(argv)
+    if args.all and not args.db:
+        parser.error("--all is for --db only")
     if inside_a_repository(args.out):
         print(f"REFUSED: --out {args.out} is inside a repository; the page is never written into one", flush=True)
         return 2
@@ -204,9 +235,26 @@ def main(argv: list[str] | None = None, asset_dir: Path = cg.ASSET_DIR) -> int:
     if args.committed and (asset_dir / "index.json").is_file():
         index = json.loads((asset_dir / "index.json").read_text(encoding="utf-8")).get("maps", {})
     maps = {}
-    for name, path, wrapper, kind in sources(args.dir, args.committed, args.map, asset_dir):
+    real = {}
+    if args.db:
+        from app.db import SessionLocal
+        from app.models.replay import ControlHeight
+
+        session = SessionLocal()
         try:
-            payload = map_payload(name, path, wrapper, kind, asset_dir)
+            stored = session.query(ControlHeight) \
+                .order_by(ControlHeight.map_name, ControlHeight.built_at.desc(), ControlHeight.id.desc()).all()
+            found = db_sources(stored, TEMP / "valo-height-viewer" / "db", args.map, args.all)
+            real = {label: row.map_name for row in stored
+                    for label in (row.map_name, f"{row.map_name} {row.status} {row.digest} row {row.id}")}
+        finally:
+            session.rollback()
+            session.close()
+    else:
+        found = sources(args.dir, args.committed, args.map, asset_dir)
+    for name, path, wrapper, kind in found:
+        try:
+            payload = map_payload(name, path, wrapper, kind, asset_dir, real.get(name))
         except (OSError, KeyError, ValueError) as exc:
             print(f"WARNING {name}: skipped ({type(exc).__name__}: {exc})", flush=True)
             continue
@@ -218,7 +266,8 @@ def main(argv: list[str] | None = None, asset_dir: Path = cg.ASSET_DIR) -> int:
             continue
         maps[name] = payload
     if not maps:
-        where = "no map has a committed height asset" if args.committed else f"no height assets in {args.dir}"
+        where = ("no heights are stored in the database" if args.db
+                 else "no map has a committed height asset" if args.committed else f"no height assets in {args.dir}")
         print(f"{where}. Build a preview first, e.g.\n  scripts\\with_friends_db.py --expect-database "
               f"valowithfriendsdb --read-only scripts\\build_control_heights.py --map Sunset --preview "
               f"--out \"{DEFAULT_DIR}\"", flush=True)

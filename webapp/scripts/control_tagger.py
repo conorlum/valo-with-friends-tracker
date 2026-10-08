@@ -1,6 +1,6 @@
 """The map-control drawing page (docs/replay-map-control-plan.md, Stage 6; R2: a local tool, not a site page).
 
-    .venv313\\Scripts\\python.exe scripts\\control_tagger.py [--out <file>] [--tags <tags.json>]
+    .venv313\\Scripts\\python.exe scripts\\control_tagger.py [--out <file>] [--tags <tags.json>] [--heights-dir <dir>]
 
 Builds one self-contained page (default `%TEMP%\\valo-control-tagger\\control-tagger.html`, never the repo)
 with every minimap, its candidate shapes (app/control/geometry.py `candidates`, with the map's own detector
@@ -29,6 +29,8 @@ params), the current `app/static/data/control/tags.json` and the Risk 1 kill lin
   against app/replays/map_feature_schema.py, map_feature_state.py and app/control/features.py
   (tests/replays/test_map_feature_tagger.py). The annotations go into each map's `map_features` in the exported
   tags.json and change no control input until a later engine release enables a feature bundle.
+  `--heights-dir <dir>`: read each map's heights from an export of the database's active asset
+  (`control_heights.py export`) instead of a committed one.
 
 Then copy the export over `app/static/data/control/tags.json` and run `scripts/build_control_geometry.py`: the
 masks, index.json and the kill-line results are rebuilt, and every stored round of a changed map goes stale
@@ -100,27 +102,33 @@ def choke_data(name: str, asset_dir: Path = choke_assets.ASSET_DIR) -> dict:
     return {"chokes": [asdict(c) for c in chokes], "next_id": choke_assets.load_next_id(name, asset_dir)}
 
 
-def floor_data(name: str, asset_dir: Path = cg.ASSET_DIR) -> dict | None:
-    """The map's committed height asset for the floor picker: each cell's floors (position-z dm above the
-    lowest floor, -1 none) as base64 int16, with the digest a floor binding records. None for a map without
-    heights: its floors can only be manual labels, unresolved until an asset exists."""
-    index_path = asset_dir / "index.json"
-    entry = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
-    if not entry.get("height_sha"):
-        return None
-    asset = hc.load_asset(asset_dir / f"{name}.height.npz")
+def floor_data(name: str, asset_dir: Path = cg.ASSET_DIR, heights_dir: Path | None = None) -> dict | None:
+    """The map's height asset for the floor picker: each cell's floors (position-z dm above the lowest floor, -1
+    none) as base64 int16, with the digest and the origin a floor binding records. From `heights_dir` when it
+    holds `<Map>.height.npz` (the active asset, written by `control_heights.py export`: a map's heights live in
+    the database once the replay worker builds them), else the committed asset. None for a map without heights:
+    its floors can only be manual labels, unresolved until an asset exists."""
+    exported = None if heights_dir is None else Path(heights_dir) / f"{name}.height.npz"
+    if exported is not None and exported.is_file():
+        asset = hc.load_asset(exported)
+    else:
+        index_path = asset_dir / "index.json"
+        entry = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
+        if not entry.get("height_sha"):
+            return None
+        asset = hc.load_asset(asset_dir / f"{name}.height.npz")
     return {"height_sha": asset.digest, "origin_z": asset.origin_z, "max_floors": hc.MAX_FLOORS,
             "floors": base64.b64encode(np.ascontiguousarray(asset.floors, dtype="<i2").tobytes()).decode("ascii")}
 
 
-def features_data(names: list[str]) -> dict:
+def features_data(names: list[str], heights_dir: Path | None = None) -> dict:
     """What the features panel needs from the Python contract (app/replays/map_feature_schema.py), so the page
     never keeps its own copy: the schema version, the presets and route templates, each map's checklist seed and
-    its floor data."""
+    its floor data (from `heights_dir` when given, see floor_data)."""
     return {"schema_version": ms.SCHEMA_VERSION, "presets": {p: ms.preset(p) for p in ms.PRESETS},
             "routes": {p: ms.route_template(kind) for p, kind in ms.ROUTE_PRESET.items()},
             "seeds": {n: ms.checklist_seed(n) for n in names}, "no_features_note": ms.NO_FEATURES_NOTE,
-            "floors": {n: floor_data(n) for n in names}}
+            "floors": {n: floor_data(n, heights_dir=heights_dir) for n in names}}
 
 
 def build(tags: dict, lines_by_map: dict, names: list[str] | None = None, starts: dict | None = None) -> dict:
@@ -136,8 +144,8 @@ def build(tags: dict, lines_by_map: dict, names: list[str] | None = None, starts
     return maps
 
 
-def render(tags: dict, maps: dict) -> str:
-    data = json.dumps({"tags": tags, "maps": maps, "features": features_data(sorted(maps))},
+def render(tags: dict, maps: dict, heights_dir: Path | None = None) -> str:
+    data = json.dumps({"tags": tags, "maps": maps, "features": features_data(sorted(maps), heights_dir)},
                       separators=(",", ":")).replace("</", "<\\/")
     core = CORE_JS.read_text(encoding="utf-8")
     ui = FEATURES_JS.read_text(encoding="utf-8")
@@ -152,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--map", action="append", help="only this map (repeatable)")
     parser.add_argument("--starts", type=Path, help="round-start positions to draw, {map: [[side, x px, y px], ...]} "
                                                     "(players at t = 0 stand pressed against the barriers)")
+    parser.add_argument("--heights-dir", type=Path, help="read each map's heights from an export of the database's "
+                                                         "active asset (control_heights.py export)")
     args = parser.parse_args(argv)
     tags = json.loads(args.tags.read_text(encoding="utf-8"))
     lines = json.loads(KILL_LINES.read_text(encoding="utf-8"))["maps"] if KILL_LINES.is_file() else {}
@@ -159,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     maps = build(tags, lines, args.map, starts)
     out = args.out or Path(os.environ.get("TEMP") or tempfile.gettempdir()) / "valo-control-tagger" / "control-tagger.html"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(tags, maps), encoding="utf-8")
+    out.write_text(render(tags, maps, args.heights_dir), encoding="utf-8")
     print(f"{len(maps)} maps -> {out} ({out.stat().st_size / 1e6:.1f} MB)")
     return 0
 

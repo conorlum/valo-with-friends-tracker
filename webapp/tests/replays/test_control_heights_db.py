@@ -2,6 +2,7 @@
 costs, the table's reads and writes, the active digest in a round's inputs, the gate, and the operator's
 commands. SQLite, and no engine in this process."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -281,3 +282,36 @@ def test_a_map_with_a_published_feature_generation_cant_have_its_heights_changed
     with pytest.raises(ch.HasGeneration):
         ch.deactivate(db, name, generation="feat0000feat0000")
     assert ch.active_digests(db) == {name: "bbbbbbbbbbbb"}
+
+
+def test_the_operator_lists_activates_exports_and_turns_off(factory, db, linked, capsys, tmp_path, monkeypatch):
+    import control_heights as command
+
+    name = linked.map_name
+    build(db, name, "aaaaaaaaaaaa", rep=report(seconds=310.0))
+    build(db, name, "bbbbbbbbbbbb", rep=report(ready=False, not_ready=["thin"]))
+    assert command.main(["list"], session_factory=factory) == 0
+    out = capsys.readouterr().out
+    assert f"{name} aaaaaaaaaaaa active" in out and "supported 70.0%" in out and "310 s" in out
+    assert f"{name} bbbbbbbbbbbb rejected" in out and "rejected: thin" in out
+    assert command.main(["activate", "--map", name, "--digest", "aaaaaaaaaaaa"], session_factory=factory) == 0
+    assert "recomputed" in capsys.readouterr().out, "activating what is active is done, not an error"
+    db.expire_all()
+    assert ch.active_digests(db) == {name: "aaaaaaaaaaaa"}
+    assert command.main(["activate", "--map", name, "--digest", "000000000000"], session_factory=factory) == 2
+    out_dir = tmp_path / "export"
+    assert command.main(["export", "--map", name, "--out", str(out_dir)], session_factory=factory) == 0
+    assert (out_dir / f"{name}.height.npz").read_bytes() == b"npz-aaaaaaaaaaaa"
+    wrapper = json.loads((out_dir / f"{name}.height.json").read_text(encoding="utf-8"))
+    assert wrapper["height_sha"] == "aaaaaaaaaaaa" and wrapper["height"]["supported_cells"] == 4200
+    assert command.main(["export", "--map", name, "--out", str(WEBAPP / "here")], session_factory=factory) == 2
+    monkeypatch.setattr(command, "generation_of", lambda map_name: "feat0000feat0000")
+    assert command.main(["off", "--map", name], session_factory=factory) == 2
+    assert command.main(["activate", "--map", name, "--digest", "aaaaaaaaaaaa"], session_factory=factory) == 2
+    assert "feature generation" in capsys.readouterr().err
+    monkeypatch.setattr(command, "generation_of", lambda map_name: None)
+    assert command.main(["off", "--map", name], session_factory=factory) == 0
+    db.expire_all()
+    assert ch.active_digests(db) == {}
+    assert command.main(["off", "--map", name], session_factory=factory) == 0 and "no active heights" in capsys.readouterr().out
+    assert command.main(["export", "--map", name, "--out", str(out_dir)], session_factory=factory) == 2
