@@ -6,6 +6,7 @@ sqlite store and a protocol fake of the worker; the real worker is in test_repla
 import sys
 import threading
 import uuid
+from dataclasses import replace as dc_replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -16,9 +17,10 @@ from sqlalchemy.orm import sessionmaker
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from test_control_remote import put_gap_run  # noqa: E402
+from test_control_remote import FakeWorker, all_control, put_gap_run  # noqa: E402
 from test_control_store import CONTROL_TABLES, put_row  # noqa: E402
 from test_replay_store import add_match, condensed, pg  # noqa: E402,F401  (fixtures)
+from test_replay_upload import ATTEMPT, AutoWorker, make_stale, reserve, result_of  # noqa: E402
 
 from app.config import Settings, settings  # noqa: E402
 from app.db import Base  # noqa: E402
@@ -26,6 +28,7 @@ from app.models.match import Match, MatchSource  # noqa: E402
 from app.models.replay import Replay, ReplayDeletion, ReplayUpload  # noqa: E402
 from app.replays import store  # noqa: E402
 from app.services import replay_control as rc  # noqa: E402
+from app.services import replay_control_remote as remote  # noqa: E402
 from app.services import replay_reparse_auto as auto  # noqa: E402
 from app.services import replay_upload as uploads  # noqa: E402
 
@@ -919,4 +922,298 @@ def test_pg_two_site_processes_on_different_recipes_commit_one_reservation(pg, m
     session.rollback()
     rows = session.query(ReplayUpload).all()
     assert len(rows) == 1 and worker.accepted == 1 and rows[0].auto_context["phase"] == "accepted"
+    session.close()
+
+
+# ---------------------------------------------------------------- the control cycle and hold-back (task 6)
+# The dispatcher's real `cycle`, a fake control client (test_control_remote's) and the protocol fake above as
+# the upload client. Real stored replays here: map control is only planned for rounds that exist.
+
+LOCAL_UUID = match_uuid(0x77)
+
+
+def replay_ids(control) -> set[int]:
+    """The replays the control client was sent tasks for, of either kind."""
+    return {int(task["key"].split(":")[0]) for task in control.tasks.values()}
+
+
+def cycle(factory, control, worker, state=None, now=NOW) -> dict:
+    return remote.cycle(factory, control, state if state is not None else remote.State(), now=now, worker=worker)
+
+
+def finish_everything(db, replay) -> None:
+    all_control(db, replay)
+    for n in range(1, replay.round_count + 1):
+        put_gap_run(db, replay, n)
+
+
+@pytest.fixture
+def uploaded(db, on, condensed, monkeypatch):  # noqa: F811
+    """A real uploaded replay that this site's recipe makes stale, a local ingest beside it that is just as
+    stale, a worker that has both recordings archived, and that recipe: the stored one with another parser
+    commit, since map control reads the condense revision out of a recipe."""
+    target = "f" * 12 + condensed.recipe[12:]
+    assert target != condensed.recipe and rc.blob_too_old(dc_replace(condensed, recipe=target)) is False
+    monkeypatch.setattr(uploads, "_site_recipe", target)
+    monkeypatch.setattr(auto, "_builds", frozenset({condensed.game_branch}))
+    add_match(db)
+    stale = db.get(Replay, store.store_replay(db, condensed, source="upload").replay_id)
+    local = db.get(Replay, store.store_replay(db, dc_replace(condensed, match_uuid=LOCAL_UUID),
+                                              source="local").replay_id)
+    assert (stale.source, local.source) == ("upload", "local") and stale.id != local.id
+    worker = ProtocolWorker(recipe=target, files={stale.match_uuid.lower(): stale.source_sha256,
+                                                LOCAL_UUID: local.source_sha256})
+    return stale, local, worker, target
+
+
+@pytest.mark.parametrize("kind", ["control", "gaps"])
+@pytest.mark.parametrize("waiting", ["eligible", "resolving", "in_flight", "backoff"])
+def test_a_replay_waiting_for_its_re_parse_gets_no_control_or_gaps_work(db, on, uploaded, waiting, kind):
+    stale, local, worker, target = uploaded
+    if kind == "gaps":
+        all_control(db, stale)                     # its control is current: only its gaps are owed
+    if waiting == "eligible":
+        worker.health_body["queued"] = 1           # an upload is waiting on the worker: nothing is reserved
+    elif waiting == "resolving":
+        worker.full = True                         # reserved, and the worker has not accepted it
+    elif waiting == "backoff":
+        add_attempt(db, stale, target=target, finished=T0 - timedelta(minutes=10))
+    control = FakeWorker(gaps=1)
+    counts = cycle(on, control, worker)
+    db.expire_all()
+    states_now = {e.replay_id: e.state for e in auto.classify(db, target, auto.index_of(worker.archive()),
+                                                              auto.supported_builds(), NOW)}
+    assert states_now == {stale.id: waiting, local.id: "local"}
+    assert counts["held_back"] == 1 and replay_ids(control) == {local.id}, "the local replay's control goes on"
+    assert counts["sent"] == remote.IN_FLIGHT
+
+
+def test_a_released_replay_is_planned_at_once_despite_the_throttle(db, on, uploaded):
+    stale, local, worker, target = uploaded
+    finish_everything(db, local)
+    add_attempt(db, stale, target=target, finished=T0 - timedelta(minutes=10))   # one failure: backing off, held
+    control, state = FakeWorker(gaps=1), remote.State()
+    assert cycle(on, control, worker, state)["sent"] == 0 and state.last_found is False
+    assert cycle(on, control, worker, state, now=NOW + 20)["sent"] == 0
+    assert state.last_planned == NOW, "nothing changed: the throttle holds"
+    add_attempt(db, stale, target=target, finished=T0)                           # the second: it gave up
+    counts = cycle(on, control, worker, state, now=NOW + 40)
+    assert counts["held_back"] == 0 and counts["sent"] == remote.IN_FLIGHT and replay_ids(control) == {stale.id}
+
+
+def test_a_finished_replacement_sends_the_new_replays_rounds_in_the_same_cycle(db, on, uploaded, condensed):  # noqa: F811
+    stale, local, worker, target = uploaded
+    stale_uuid, old_id = stale.match_uuid, stale.id
+    finish_everything(db, local)
+    control, state = FakeWorker(gaps=1), remote.State()
+    first = cycle(on, control, worker, state)
+    assert (first["reparse_reserved"], first["reparse_sent"], first["sent"], first["held_back"]) == (1, 1, 0, 1)
+    [row] = auto.unfinished_attempts(db)
+    worker.jobs[row.worker_job_id] = {"status": "done", "result": result_of(dc_replace(condensed, recipe=target))}
+    second = cycle(on, control, worker, state, now=NOW + 20)   # 20 s after a plan that found nothing to send
+    db.expire_all()
+    new = db.query(Replay).filter(Replay.match_uuid == stale_uuid).one()
+    assert (new.recipe, new.source) == (target, "upload")
+    assert (second["reparse_finished"], second["held_back"]) == (1, 0)
+    assert second["sent"] == remote.IN_FLIGHT and replay_ids(control) == {new.id}
+    assert all("gaps" in task for task in control.tasks.values())
+    assert len(worker.acks) == 1 and db.get(ReplayUpload, row.id).store_outcome == "replaced"
+    # Until those rounds are back, the queue takes no other replay: the barrier reads the database.
+    pending = auto.restoration(db, target)
+    assert pending["replay_id"] == new.id and pending["control_rounds"] == new.round_count
+    assert old_id == new.id or db.get(Replay, old_id) is None
+
+
+@pytest.mark.parametrize("off", ["the switch", "recipe skew", "no re-parse protocol", "no gaps protocol",
+                                 "worker control off", "worker unreachable", "no upload client"])
+def test_with_the_queue_stopped_nothing_is_held_or_reserved_and_control_goes_on(db, on, uploaded, monkeypatch, off):
+    stale, local, worker, _ = uploaded
+    if off == "the switch":
+        monkeypatch.setattr(settings, "replay_reparse_auto", False)
+    elif off == "recipe skew":
+        worker.health_body["recipe"] = "recipe-z"
+    elif off == "no re-parse protocol":
+        del worker.health_body["archive"]["reparse_protocol"]
+    elif off == "no gaps protocol":
+        del worker.health_body["control"]["gaps_protocol"]
+    elif off == "worker control off":
+        worker.health_body["control"]["enabled"] = False
+    elif off == "worker unreachable":
+        worker.down = True
+    finish_everything(db, local)   # only the stale upload has rounds to send
+    control = FakeWorker(gaps=1)
+    counts = cycle(on, control, None if off == "no upload client" else worker)
+    assert counts["held_back"] == 0 and counts["sent"] == remote.IN_FLIGHT and replay_ids(control) == {stale.id}
+    assert not any(counts[name] for name in auto.COUNTS) and db.query(ReplayUpload).count() == 0
+    assert "reparse" not in worker.calls and "archive" not in worker.calls
+
+
+def test_switched_off_with_no_attempt_the_cycle_is_the_one_without_an_upload_client(db, on, uploaded, monkeypatch):
+    _, _, worker, _ = uploaded
+    monkeypatch.setattr(settings, "replay_reparse_auto", False)
+    with_client, without = FakeWorker(gaps=1), FakeWorker(gaps=1)
+    one = cycle(on, with_client, worker)
+    other = cycle(on, without, None)
+    assert worker.calls == [], "no health, no archive index, no attempt lookup"
+    assert one == other and with_client.tasks == without.tasks and one["sent"] == remote.IN_FLIGHT
+
+
+def test_a_failing_automatic_pass_holds_nothing_and_control_goes_on(db, on, uploaded, monkeypatch, caplog):
+    stale, _, worker, target = uploaded
+    reserved = add_attempt(db, stale, target=target, phase="reserved", status="queued")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(auto, "step", boom)
+    control, state = FakeWorker(gaps=1), remote.State()
+    state.held = frozenset({stale.id})
+    counts = cycle(on, control, worker, state)
+    assert counts["held_back"] == 0 and counts["sent"] == remote.IN_FLIGHT and state.held == frozenset()
+    assert "automatic re-parse pass failed" in caplog.text
+    db.expire_all()
+    assert phase(db.get(ReplayUpload, reserved.id)) == ("queued", "reserved"), "the reservation is untouched"
+
+
+def test_the_dispatcher_starts_with_an_upload_client_whatever_the_switch_says(monkeypatch):
+    monkeypatch.setattr(settings, "demo_mode", False)
+    monkeypatch.setattr(settings, "replay_control_remote", True)
+    monkeypatch.setattr(settings, "replay_worker_url", "worker:8000")
+    monkeypatch.setattr(settings, "replay_reparse_auto", False)
+    started = {}
+
+    class Thread:
+        def __init__(self, target, args, kwargs, name, daemon):
+            started.update(target=target, kwargs=kwargs)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(remote.threading, "Thread", Thread)
+    assert remote.start(lambda: None) is not None
+    assert started["target"] is remote.run_forever and isinstance(started["kwargs"]["worker"], uploads.WorkerClient)
+    assert started["kwargs"]["worker"].base == "http://worker:8000"
+
+
+# -- PostgreSQL only: the lock is kept, one reservation, one collection
+
+
+def pg_settings(monkeypatch, recipe=NEW, switch=True) -> None:
+    monkeypatch.setattr(settings, "demo_mode", False)
+    monkeypatch.setattr(settings, "replay_reparse_auto", switch)
+    monkeypatch.setattr(settings, "replay_control_remote", True)
+    monkeypatch.setattr(settings, "replay_worker_url", "http://127.0.0.1:9")
+    monkeypatch.setattr(uploads, "_site_recipe", recipe)
+    monkeypatch.setattr(auto, "_builds", BUILDS)
+
+
+def lock_is_free(pg) -> bool:  # noqa: F811
+    from sqlalchemy import text
+
+    probe = pg()
+    try:
+        return bool(probe.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": remote.LOCK_ID}).scalar())
+    finally:
+        probe.rollback()
+        probe.close()
+
+
+def test_pg_a_failed_transaction_in_the_automatic_pass_keeps_the_lock_and_control_goes_on(pg, condensed,  # noqa: F811
+                                                                                          monkeypatch):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    pg_settings(monkeypatch)
+    session = pg()
+    add_match(session)
+    store.store_replay(session, condensed, source="local")
+    session.commit()
+    session.close()
+    failures = []
+    real = auto.unfinished_attempts
+
+    def broken(step_session):
+        try:
+            step_session.execute(text("SELECT * FROM no_such_table_in_this_database"))
+        except DBAPIError as error:
+            failures.append(type(error).__name__)
+        return real(step_session)   # the step's transaction is aborted: this read fails for real
+
+    monkeypatch.setattr(auto, "unfinished_attempts", broken)
+    locked = []
+
+    class Control(FakeWorker):
+        def submit(self, task):
+            locked.append(not lock_is_free(pg))
+            return super().submit(task)
+
+    worker, control = ProtocolWorker(), Control()
+    counts = remote.cycle(pg, control, remote.State(), now=0, worker=worker)
+    assert failures == ["ProgrammingError"] and worker.calls == [], "the pass died in its own session"
+    assert counts["sent"] == remote.IN_FLIGHT and counts["held_back"] == 0, "planning used a usable session"
+    assert len(locked) == remote.IN_FLIGHT and all(locked), "the dispatcher's lock outlived the failure"
+    assert lock_is_free(pg), "and is released when the cycle ends"
+
+
+def test_pg_two_dispatchers_at_once_reserve_one_attempt(pg, monkeypatch):  # noqa: F811
+    pg_settings(monkeypatch)
+    session = pg()
+    add_replay(session, 1, played=T0 - timedelta(days=1))
+    add_replay(session, 2, played=T0 - timedelta(days=2))
+    worker = ProtocolWorker(files=index(1, 2))
+    posting, go = threading.Event(), threading.Event()
+    accept = worker.reparse
+
+    def slow(*args, **kwargs):
+        posting.set()
+        assert go.wait(30)
+        return accept(*args, **kwargs)
+
+    worker.reparse = slow
+    first: list = []
+    thread = threading.Thread(target=lambda: first.append(cycle(pg, FakeWorker(), worker)))
+    thread.start()
+    assert posting.wait(30)
+    assert cycle(pg, FakeWorker(), worker).get("locked_out") == 1, "the other instance's cycle does nothing"
+    assert not lock_is_free(pg), "held through the automatic pass's worker request"
+    go.set()
+    thread.join(30)
+    assert (first[0]["reparse_reserved"], first[0]["reparse_sent"], first[0]["held_back"]) == (1, 1, 2)
+    later = cycle(pg, FakeWorker(), worker, now=NOW + 20)
+    assert (later["reparse_reserved"], later["held_back"]) == (0, 2)
+    assert session.query(ReplayUpload).count() == 1 and worker.accepted == 1
+    session.close()
+
+
+def test_pg_the_cycle_and_the_archive_sync_collect_one_attempt_once(pg, condensed, monkeypatch):  # noqa: F811
+    pg_settings(monkeypatch, recipe=condensed.recipe, switch=False)   # collected even with the switch off
+    session = pg()
+    reserve(session, make_stale(session, condensed), condensed.recipe, phase="accepted")
+    session.close()
+    worker = AutoWorker(condensed.recipe, result_of(condensed))
+    holding, go = threading.Event(), threading.Event()
+
+    def pause(upload):   # the cycle's pass stops just before its commit, holding the match's lock and the row
+        holding.set()
+        assert go.wait(30)
+
+    monkeypatch.setattr(uploads, "_before_settle", pause)
+    counted: list = []
+    first = threading.Thread(target=lambda: counted.append(cycle(pg, FakeWorker(), worker)))
+    first.start()
+    assert holding.wait(30)
+    monkeypatch.setattr(uploads, "_before_settle", None)
+    second = threading.Thread(target=lambda: uploads.collect_unfinished(pg, worker))
+    second.start()
+    second.join(1.0)
+    assert second.is_alive(), "the archive sync's collector waits for the match's lock"
+    go.set()
+    first.join(30)
+    second.join(30)
+    assert counted[0]["reparse_finished"] == 1 and len(worker.acks) == 1, "one store, one settlement, one ack"
+    session = pg()
+    row = session.get(ReplayUpload, ATTEMPT)
+    stored = session.query(Replay).one()
+    assert (row.status, row.store_outcome, row.replay_id) == ("stored", "replaced", stored.id)
+    assert stored.recipe == condensed.recipe
     session.close()

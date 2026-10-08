@@ -32,10 +32,20 @@ skipped by the writer and is not a failure; one from another deploy (revisions, 
 keys) or a machine failure is asked again like control's, MAX_TRIES times; the detector's own failure under
 the current keys is stored as the round's and left.
 
+**Automatic re-parses** (docs/superpowers/plans/2026-10-07-auto-reparse-queue-impl.md, task 6). Between
+collecting and submitting, the cycle runs one pass of `replay_reparse_auto.step` with the upload client:
+it settles any unfinished attempt (also with REPLAY_REPARSE_AUTO off, so an accepted one is never left
+behind) and, with the switch on, may reserve the next. The replays it returns are waiting for their
+re-parse; none of their rounds is sent, for control or for gaps alone, since the result would be thrown
+away. A failure in that pass is logged and holds nothing back: control goes on. When an attempt finishes
+or the held set changes, the planning throttle is reset so the new replay's rounds go out at once.
+
 `plan()` runs when there is room in flight; after a plan that left nothing sendable it waits
 PLAN_IDLE_S. On PostgreSQL it holds `pg_try_advisory_xact_lock` for the cycle, so one
 instance dispatches when Render overlaps two during a deploy; the worker's key dedupe makes a
-duplicate harmless anyway. In-flight jobs live in memory: a restart just asks again.
+duplicate harmless anyway. The lock has a session of its own that does nothing else: collecting, the
+automatic pass and planning each use another, so nothing that commits or fails can end the lock's
+transaction early. In-flight jobs live in memory: a restart just asks again.
 
 Off unless REPLAY_CONTROL_REMOTE is set and REPLAY_WORKER_URL is, and never in demo mode. Standard
 library and the DB only: the engine is never imported here.
@@ -61,6 +71,8 @@ from app.replays import choke_assets
 from app.replays import control_format as cf
 from app.services import replay_control, replay_gaps
 from app.services import replay_gaps_store as gaps_store
+from app.services import replay_reparse_auto as reparse_auto
+from app.services import replay_upload
 from app.services.replay_control_store import ALREADY, STORED, store_round
 
 log = logging.getLogger(__name__)
@@ -143,6 +155,8 @@ class State:
     tries: dict[str, tuple[int, float]] = field(default_factory=dict)   # key -> (failures, last)
     last_planned: float | None = None   # when plan() last ran
     last_found: bool = True             # whether it left anything sendable unsent
+    reparse: reparse_auto.Memo = field(default_factory=reparse_auto.Memo)   # the automatic queue's archive read
+    held: frozenset = frozenset()       # the replays the last cycle held back for a re-parse
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -387,7 +401,7 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
     return False
 
 
-def _submit(session, client, state: State, now: float, counts: dict) -> None:
+def _submit(session, client, state: State, now: float, counts: dict, held: frozenset = frozenset()) -> None:
     if len(state.in_flight) >= IN_FLIGHT:
         return
     if state.last_planned is not None and not state.last_found and now - state.last_planned < PLAN_IDLE_S:
@@ -398,42 +412,69 @@ def _submit(session, client, state: State, now: float, counts: dict) -> None:
     capable = _gaps_capable(client)
     state.last_planned = now
     state.last_found = _send(session, client, state, now, counts,
-                             _sendable(state, now, planned, kind="control", capable=capable), kind="control")
+                             _sendable(state, now, planned, kind="control", capable=capable, held=held),
+                             kind="control")
     if state.last_found or not capable:
         return          # control first; and without the capability gaps-only work waits, unplanned and uncounted
     # As the local command does: every round with its current fingerprint, then those whose control is ok and
     # current and whose gap run is missing or stale. A gap failure under the current keys stays put.
     wanted = replay_gaps.plan_gaps(session, planned, replay_control.plan(session, force=True))
     state.last_found = _send(session, client, state, now, counts,
-                             _sendable(state, now, wanted, kind="gaps"), kind="gaps")
+                             _sendable(state, now, wanted, kind="gaps", held=held), kind="gaps")
 
 
-def cycle(session_factory, client, state: State, now: float | None = None) -> dict:
-    """One pass: collect, then submit. Returns what it did, by kind."""
+def _reparse(session_factory, worker, state: State, now: float, counts: dict) -> frozenset:
+    """One pass of the automatic re-parse queue; the replays to hold back. It runs in sessions of its own,
+    and whatever goes wrong in it, map control goes on with nothing held; the attempts it left are in the
+    database for the next cycle."""
+    held: frozenset = frozenset()
+    if worker is not None:
+        try:
+            held = reparse_auto.step(session_factory, worker, state.reparse, len(state.in_flight), now, counts)
+        except Exception:  # noqa: BLE001 - never the dispatcher's failure
+            log.exception("the automatic re-parse pass failed; map control goes on with nothing held back")
+    if counts["reparse_finished"] or held != state.held:
+        # A replacement just landed, or a replay was released: plan now, not after PLAN_IDLE_S.
+        state.last_planned, state.last_found = None, True
+    state.held = held
+    counts["held_back"] = len(held)
+    return held
+
+
+def cycle(session_factory, client, state: State, now: float | None = None, worker=None) -> dict:
+    """One pass: collect, the automatic re-parse queue's pass (with `worker`, the upload client), then
+    submit. Returns what it did, by kind."""
     now = time.time() if now is None else now
     counts: dict[str, int] = {k: 0 for k in ("sent", "stored", "stored_failed", "skipped", "forgotten", "timed_out",
                                              "dropped_revision", "dropped_geometry", "dropped_figures", "infra_failed",
                                              "busy", "unreachable", "gaps_sent", "gaps_stored",
-                                             "gaps_dropped", "gaps_skipped", "gaps_unavailable")}
-    session = session_factory()
+                                             "gaps_dropped", "gaps_skipped", "gaps_unavailable", "held_back",
+                                             *reparse_auto.COUNTS)}
+    lock = session_factory()   # owns the advisory lock and nothing else
     try:
-        if session.get_bind().dialect.name == "postgresql":
-            if not session.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": LOCK_ID}).scalar():
+        if lock.get_bind().dialect.name == "postgresql":
+            if not lock.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": LOCK_ID}).scalar():
                 counts["locked_out"] = 1
                 return counts
         _collect(session_factory, client, state, now, counts)
-        _submit(session, client, state, now, counts)
+        held = _reparse(session_factory, worker, state, now, counts)
+        session = session_factory()   # opened after the pass: it reads the replay a settlement just committed
+        try:
+            _submit(session, client, state, now, counts, held)
+        finally:
+            session.rollback()
+            session.close()
         return counts
     finally:
-        session.rollback()
-        session.close()
+        lock.rollback()
+        lock.close()
 
 
-def run_forever(session_factory, client, stop: threading.Event, every_s: float = CYCLE_S) -> None:
+def run_forever(session_factory, client, stop: threading.Event, every_s: float = CYCLE_S, worker=None) -> None:
     state = State()
     while not stop.wait(every_s):
         try:
-            counts = cycle(session_factory, client, state)
+            counts = cycle(session_factory, client, state, worker=worker)
         except Exception:  # noqa: BLE001 - the dispatcher must never take the site down
             log.exception("map control dispatch failed")
             continue
@@ -448,7 +489,8 @@ def start(session_factory) -> threading.Event | None:
     if not enabled():
         return None
     stop = threading.Event()
+    # The upload client too, whatever REPLAY_REPARSE_AUTO says: an attempt already accepted is still collected.
     threading.Thread(target=run_forever, args=(session_factory, ControlClient(settings.replay_worker_url), stop),
-                     name="control-dispatch", daemon=True).start()
+                     kwargs={"worker": replay_upload.client()}, name="control-dispatch", daemon=True).start()
     log.info("map control dispatch on: every %ss, up to %d rounds in flight", CYCLE_S, IN_FLIGHT)
     return stop
