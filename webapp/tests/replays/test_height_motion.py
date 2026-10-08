@@ -190,7 +190,7 @@ def test_a_round_with_recorded_casts_starts_blackouts_from_them_and_not_from_spe
 
 
 def test_an_updraft_still_starts_a_blackout_in_a_round_with_casts():
-    # PROVISIONAL(D3): the updraft has no recorded cast, so rising fast still counts where dashes are casts.
+    # The updraft has no recorded cast, so rising fast still counts where dashes are casts.
     up = ("A", [(0.0, 300, Y, 0, 0.0), (4.0, 300, Y, 0, 0.0), (4.4, 300, Y, 0, 5.0), (5.2, 300, Y, 0, 0.0),
                 (10.0, 300, Y, 0, 0.0)])
     b = fast_blob({0: up})
