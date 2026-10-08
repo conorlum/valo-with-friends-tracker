@@ -1,6 +1,10 @@
 # Map heights: slopes, stairs and movement abilities (design)
 
-Status: draft for the owner's review, 2026-10-05. Nothing here is built.
+Status: built 2026-10-08 (plan: docs/superpowers/plans/2026-10-05-height-slopes.md). The owner approved the
+plan's decisions D2 to D7 on 2026-10-07 and changed D1 (record the movement casts and use them). Still open:
+the build's one departure from D1 (in a round condensed with casts, a fast rise still starts a blackout,
+because Jett's updraft has no cast to record; see 1b), and the owner's look at the five maps (Results: not yet
+given).
 
 Companion: `2026-10-05-height-auto-rebuild-design.md` (the automatic rebuild). That spec depends on this
 one: an unattended rebuild is only safe with rules the owner trusts without looking.
@@ -96,8 +100,13 @@ kind.
 
 ### 2. Floors: the lowest of each band
 
-Per cell, the ground samples (stand samples and walk samples) are grouped into bands as stands are
-grouped today: floors of one cell are at least `FLOOR_SEP_M` (2 m) apart.
+Per cell, the ground samples (stand samples and walk samples) are grouped into bands: floors of one cell
+are at least `FLOOR_SEP_M` (2 m) apart. As built (plan decision D4), bands come from supported levels, not
+from gaps between samples. A level is a group of samples within `FLOOR_TOL_M` that passes the floor rule
+(`FLOOR_MIN_STANDS` from `FLOOR_MIN_ROUNDS` rounds in `FLOOR_MIN_MATCHES` matches, stands and walks
+alike); levels less than `FLOOR_SEP_M` apart are one band, and a sample no level holds joins a band only
+within `FLOOR_TOL_M` of it. So one stray sample half way between two floors bridges nothing, while a
+supported level between them still merges them (the table below).
 
 - **A band's height is the low end of its samples** (`LOW_PCT`, start value the 10th percentile), not the
   median (O3). A percentile rather than the single lowest sample, so one bad sample can't sink a cell.
@@ -135,7 +144,10 @@ case, tried only when that one fails:
 - **a player was seen crossing between the two sides on the ground**, in either direction: a walk (1)
   that runs from one side to the other. This is what tells a slope from a ledge. Coming off a ledge a
   player is in the air; going down a ramp, even one that can only be slid down, they stay on it. The
-  direction they were seen going decides how the filled cell connects (see 5);
+  direction they were seen going decides how the filled cell connects (see 5). As built (plan decision
+  D5), the run must be on the two anchor floors: within one cell's steepest rise plus `FLOOR_TOL_M` of
+  each, going the way the floors go, and between its two ends in the middle; a run that lost cells to a
+  platform is cut there. A walk along a bridge over two ground cells authorises nothing;
 - then the cell takes the mean of the pair. If several pairs qualify they must agree within `FILL_TOL_M`,
   or the cell stays `neighbours disagree`.
 
@@ -235,11 +247,22 @@ No rule here is adopted on argument. For each of the five maps, on the live roun
 | --- | --- | --- |
 | `WALK_S` | 0.3 s | shortest run that counts as a walk |
 | `SLOPE_MAX` | 1.0 | steepest walkable slope, rise over run |
-| `WALK_ACC_MAX` | to be measured | vertical acceleration above which a run is airborne |
+| `WALK_ACC_MAX` | 4.0 m/s2 | vertical acceleration above which a run is airborne (a prototype measurement; Measured) |
 | `LOW_PCT` | 10 | the percentile of a band taken as its height |
 | `SILENT_DROP_M` | 1.0 m | the highest fall the unknown still spreads down (the owner expects this to come down) |
 | `ABILITY_BLACKOUT_S` | 3 s | how long a player's samples are dropped after a movement ability |
 | `AIRBORNE_ABILITIES` | Jett updraft and dash, Waylay dashes, Raze blast pack | the casts that start a blackout |
+| `WALK_MIN_MPS` | 0.5 m/s | slower than this over `WALK_S` is standing, not walking (plan decision D6, as are the rows below) |
+| `GRAVITY_MPS2` | 20 m/s2 | how fast z's rate of change falls in the air (Measured: 19.8 to 20.0 at the 90th percentile) |
+| `AIR_RATE_S` | 0.1 s | the window a vertical or ground speed is measured over when looking for flights |
+| `AIR_RATE_SLACK_MPS` | 0.6 m/s | z changing this much faster than `SLOPE_MAX` allows for the ground covered is a flight |
+| `AIR_CORE` | 0.6 | z's rate dropping by this share of gravity, two windows in a row, is a flight |
+| `AIR_FIT_M` | 0.1 m | a flight lasts for as long as the track stays this close to its arc |
+| `AIR_LANDING_MPS` | 1.0 m/s | a flight found by its drop alone ends with z's rate jumping up by at least this |
+| `BURST_S` | 0.1 s | a movement ability with no recorded cast is told by its speed over this long |
+| `BURST_MPS` | 12 m/s | faster than this along the ground is a dash |
+| `BURST_UP_MPS` | 8 m/s | rising faster than this is an updraft or a blast pack |
+| `CROSS_REACH` | 2 cells | a ground run crosses a cell when it has the two sides within this many cells of it |
 
 ## Measured (2026-10-08)
 
@@ -439,6 +462,70 @@ Summit: 2702 stands from 37 rounds of 2 matches, 24 stands by a platform dropped
   must-block: 0/0 blocked, 0 not checked (no heights yet: fill them in control_must_block.json): PASS
 ```
 
+## Results (2026-10-08)
+
+The dataset is the frozen copy in "Measured", with the same five `rounds` digests: Sunset `bf72113396d33aba`,
+Haven `21b0e37f3cf39904`, Lotus `a7816868f11f77be`, Ascent `44abedc00b552628`, Summit `c7a7215a467a3b17`.
+Each map was built with the new rules from that folder (`build_control_heights.py --blobs-dir <frozen folder>
+--preview`, no preview override, as for the old rules) and compared with the old rules' build:
+
+```
+compare_height_builds.py --old <heights-preview-old> --new <heights-preview>   (exit 0)
+Ascent: 105 rounds of 5 matches (rounds 44abedc00b552628, walk mask 548a6495a0fb)
+  old: v1; supported 68.9%; unresolved 885 {'no samples': 622, 'neighbours disagree': 239, 'floors too close': 24}; filled 738; connections 30229 (13 one-way); kill lines 13/678 (1.92%); must-block 0/0 of 3; READY
+  new: v2; supported 70.6%; unresolved 805 {'no samples': 562, 'neighbours disagree': 222, 'floors too close': 21}; kinds {'stands': 3594, 'walks': 93, 'filled': 710, 'gradient': 18}; connections 30950 (8 one-way); kill lines 13/685 (1.90%); must-block 0/0 of 3; READY
+  supported before, no height now: 2 cells
+  flat ground: 3595 cells supported before that still have a height, 97.7% within 0.2 m; new - old, pct [1, 5, 25, 50, 75, 95, 99]: [-0.4, -0.2, 0.0, 0.0, 0.0, 0.0, 0.0]
+  heights gained 132 cells, lost 52 in all
+Haven: 102 rounds of 5 matches (rounds 21b0e37f3cf39904, walk mask 456ddf172cf3)
+  old: v1; supported 69.2%; unresolved 956 {'no samples': 681, 'neighbours disagree': 225, 'floors too close': 47, 'spread too wide': 3}; filled 843; connections 34539 (3 one-way); kill lines 3/697 (0.43%); must-block 0/0 of 0; not ready: 1 unresolved area(s) larger than 12 cells touch a cell with two floors (largest 13 cells)
+  new: v2; supported 70.5%; unresolved 903 {'no samples': 622, 'neighbours disagree': 233, 'floors too close': 46, 'spread too wide': 2}; kinds {'stands': 4029, 'walks': 87, 'filled': 807, 'gradient': 11}; connections 35033 (7 one-way); kill lines 1/701 (0.14%); must-block 0/0 of 0; not ready: 1 unresolved area(s) larger than 12 cells touch a cell with two floors (largest 13 cells)
+  supported before, no height now: 2 cells
+  flat ground: 4036 cells supported before that still have a height, 98.7% within 0.2 m; new - old, pct [1, 5, 25, 50, 75, 95, 99]: [-0.3, -0.2, 0.0, 0.0, 0.0, 0.0, 0.0]
+  heights gained 81 cells, lost 28 in all
+Lotus: 61 rounds of 3 matches (rounds a7816868f11f77be, walk mask 1bbf00db2ac5)
+  old: v1; supported 71.7%; unresolved 721 {'no samples': 469, 'neighbours disagree': 238, 'floors too close': 14}; filled 876; connections 34907 (19 one-way); kill lines 4/418 (0.96%); must-block 0/0 of 0; READY
+  new: v2; supported 72.5%; unresolved 670 {'no samples': 464, 'neighbours disagree': 192, 'floors too close': 14}; kinds {'stands': 4038, 'walks': 55, 'filled': 872, 'gradient': 8}; connections 35588 (8 one-way); kill lines 3/420 (0.71%); must-block 0/0 of 0; READY
+  supported before, no height now: 1 cells
+  flat ground: 4045 cells supported before that still have a height, 97.1% within 0.2 m; new - old, pct [1, 5, 25, 50, 75, 95, 99]: [-0.4, -0.2, 0.0, 0.0, 0.0, 0.0, 0.0]
+  heights gained 71 cells, lost 20 in all
+Summit: 37 rounds of 2 matches (rounds c7a7215a467a3b17, walk mask b8ab14e4a82e)
+  old: v1; supported 48.5%; unresolved 1467 {'no samples': 1351, 'neighbours disagree': 111, 'floors too close': 5}; filled 1641; connections 32285 (5 one-way); kill lines 1/225 (0.44%); must-block 0/0 of 0; not ready: supported 48.5% is under 60%
+  new: v2; supported 49.0%; unresolved 1450 {'no samples': 1335, 'neighbours disagree': 110, 'floors too close': 5}; kinds {'stands': 2923, 'walks': 30, 'filled': 1617, 'gradient': 11}; connections 32448 (4 one-way); kill lines 1/225 (0.44%); must-block 0/0 of 0; not ready: supported 49.0% is under 60%
+  supported before, no height now: 0 cells
+  flat ground: 2923 cells supported before that still have a height, 99.2% within 0.2 m; new - old, pct [1, 5, 25, 50, 75, 95, 99]: [-0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  heights gained 40 cells, lost 23 in all
+Sunset: 120 rounds of 6 matches (rounds bf72113396d33aba, walk mask bcdbfd256bb6)
+  old: v1; supported 73.6%; unresolved 932 {'no samples': 779, 'neighbours disagree': 112, 'floors too close': 39, 'spread too wide': 2}; filled 704; connections 37540 (4 one-way); kill lines 1/789 (0.13%); must-block 0/0 of 0; READY
+  new: v2; supported 75.0%; unresolved 877 {'no samples': 770, 'neighbours disagree': 68, 'floors too close': 39}; kinds {'stands': 4567, 'walks': 91, 'filled': 665, 'gradient': 7}; connections 38222 (2 one-way); kill lines 1/796 (0.13%); must-block 0/0 of 0; READY
+  supported before, no height now: 1 cells
+  flat ground: 4570 cells supported before that still have a height, 98.0% within 0.2 m; new - old, pct [1, 5, 25, 50, 75, 95, 99]: [-0.3, -0.2, 0.0, 0.0, 0.0, 0.0, 0.0]
+  heights gained 81 cells, lost 26 in all
+```
+
+Against "How it is judged" (the plan's Task 6, Step 2):
+
+- Kill lines (4): the comparison exits 0; no map's blocked share went up (Haven 0.43% to 0.14%, Lotus 0.96%
+  to 0.71%, the rest the same to two decimals).
+- Supported cells lost: 0 to 2 cells per map (`supported before, no height now`), of 2,923 to 4,570.
+- Flat ground (2): 97.1% (Lotus) to 99.2% (Summit) of surviving cells within 0.2 m. The 5th percentile is
+  -0.2 m on four maps and 0.0 on Summit, never at -0.3 m or under: no case for a higher `LOW_PCT`. The 1st
+  percentile is -0.4 m on Ascent and Lotus.
+- Supported up and `neighbours disagree` down: supported is up on every map (by 0.5 to 1.7 points).
+  `neighbours disagree` is down on four maps and up on Haven, 225 to 233: a 62-cell `no samples` area at
+  cells x 26-32, y 19-38 now has walk heights, and 19 cells of it (x 30-32, y 24-37, a run of cells from
+  walks alone with unresolved cells down both sides) disagree with their neighbours.
+- Sunset's blocker: the 13-cell `neighbours disagree` area at cells x 89-93, y 21-24 is gone; Sunset was
+  already ready on this copy under the old rules and stays ready. Haven's one blocker, a 13-cell
+  `neighbours disagree` area at cells x 50-54, y 112-115 beside a two-floor cell, is unchanged by the new
+  rules. Summit stays under the 60% bar (49.0%, 37 rounds of 2 matches).
+
+The owner's look at the five maps with the slope-rules layer on (stairs read as steadily changing heights,
+starting with Sunset cells x 26-28, y 76-81; ledge edges still two floors; nothing outlined where no player
+stands or under a ledge people only fall from): not yet given.
+
+Start values: none moved.
+
 ## Out of scope
 
 - A tool to set heights by hand. The owner's 2026-10-01 decision ("heights only, no paint tool") stands.
@@ -455,5 +542,7 @@ Summit: 2702 stands from 37 rounds of 2 matches, 24 stands by a platform dropped
    dashes; the updraft has no signal and stays told by speed, as are all rounds condensed before (see 1b).
 2. Answered: 125 Hz in every stored round of the five maps (Measured, below); the acceleration test works
    at it.
-3. Whether a stand on a slope should count as a walk sample or keep its own median. Proposed: its
-   samples join the band like any others, so the low end decides.
+3. Answered (plan decision D3, approved 2026-10-07): a stand gives each of its cells its median, as
+   before; a walk gives each cell the lowest z it had there, one value per pass. The floor's height is the
+   `LOW_PCT` percentile of those values (numpy's `method="higher"`), so a player who waits on a spot
+   doesn't outweigh the many who ran through, and one bad sample can't sink a small cell.
