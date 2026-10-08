@@ -378,3 +378,56 @@ def test_an_automatic_attempt_runs_end_to_end_and_the_sync_collects_it(engine, d
         assert sync.cycle(factory, client, sync.State())["collected"] == 0
     finally:
         httpd.shutdown()
+
+
+def test_the_automatic_step_recovers_a_lost_reply_through_the_real_worker(engine, db, tmp_path, stub, monkeypatch):  # noqa: F811
+    """Task 5 of the same plan against the real worker: the step reserves, the worker accepts and its reply
+    is lost, and later passes (with no memory of the first) find the same attempt, collect its one job and
+    replace the replay."""
+    from app.services import replay_reparse_auto as auto
+
+    monkeypatch.setattr(uploads, "_site_recipe", None)
+    monkeypatch.setattr(settings, "replay_reparse_auto", True)
+    monkeypatch.setattr(settings, "replay_control_remote", True)
+    worker, httpd, base, disk = start_archive_with_control(tmp_path, stub)
+    try:
+        client = uploads.WorkerClient(base)
+        replay = db.get(Replay, collect(db, client, vrf_bytes()).replay_id)
+        target, old_id = replay.recipe, replay.id
+        monkeypatch.setattr(auto, "_builds", frozenset({replay.game_branch}))
+        replay.recipe = "old"   # as if stored by an earlier deploy
+        db.commit()
+        factory = sessionmaker(bind=engine)
+
+        class LosesTheReply(uploads.WorkerClient):
+            def reparse(self, *args, **kwargs):
+                super().reparse(*args, **kwargs)
+                raise uploads.WorkerError("the replay worker is unreachable")
+
+        counts: dict = {}
+        assert auto.step(factory, LosesTheReply(base), auto.Memo(), 0, time.time(), counts) == {old_id}
+        assert (counts["reparse_reserved"], counts["reparse_sent"]) == (1, 0)
+        row = db.query(ReplayUpload).filter(ReplayUpload.session_key == uploads.auto_tag(target)).one()
+        attempt = row.id
+        assert row.auto_context["phase"] == "reserved" and row.worker_job_id is None
+        assert client.reparse_attempt(attempt)["job_id"] == uploads.auto_job_id(attempt), "the worker did accept it"
+        totals: dict = {}
+        for _ in range(300):
+            counts = {}
+            auto.step(factory, client, auto.Memo(), 0, time.time(), counts)
+            for name, n in counts.items():
+                totals[name] = totals.get(name, 0) + n
+            if totals["reparse_finished"]:
+                break
+            time.sleep(0.1)
+        db.expire_all()
+        row = db.get(ReplayUpload, attempt)
+        assert (row.status, row.store_outcome, row.archive_ack, row.error) == ("stored", "replaced", "kept", None)
+        assert (totals["reparse_recovered"], totals["reparse_reserved"], totals["reparse_sent"]) == (1, 0, 0)
+        assert db.query(ReplayUpload).filter(ReplayUpload.session_key == uploads.auto_tag(target)).count() == 1
+        stored = db.query(Replay).one()
+        assert (stored.recipe, stored.source, stored.id) == (target, "upload", row.replay_id)
+        again = client.reparse(MATCH_UUID, attempt_id=attempt, expected_sha256=stored.source_sha256)
+        assert (again["code"], again["job_id"]) == ("accepted", uploads.auto_job_id(attempt)), "never a second job"
+    finally:
+        httpd.shutdown()

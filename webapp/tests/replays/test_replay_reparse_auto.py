@@ -1,8 +1,10 @@
 """The automatic re-parse queue's site half (app/services/replay_reparse_auto.py;
 docs/superpowers/plans/2026-10-07-auto-reparse-queue-impl.md, tasks 4-7): the switch, and which stored replays
-are eligible. Synthetic rows on a throwaway sqlite store; no worker."""
+are eligible, and the pass that recovers, reserves and submits one attempt. Synthetic rows on a throwaway
+sqlite store and a protocol fake of the worker; the real worker is in test_replay_archive_web.py."""
 
 import sys
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,12 +16,16 @@ from sqlalchemy.orm import sessionmaker
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from test_control_store import CONTROL_TABLES  # noqa: E402
+from test_control_remote import put_gap_run  # noqa: E402
+from test_control_store import CONTROL_TABLES, put_row  # noqa: E402
+from test_replay_store import add_match, condensed, pg  # noqa: E402,F401  (fixtures)
 
 from app.config import Settings, settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models.match import Match, MatchSource  # noqa: E402
 from app.models.replay import Replay, ReplayDeletion, ReplayUpload  # noqa: E402
+from app.replays import store  # noqa: E402
+from app.services import replay_control as rc  # noqa: E402
 from app.services import replay_reparse_auto as auto  # noqa: E402
 from app.services import replay_upload as uploads  # noqa: E402
 
@@ -267,3 +273,650 @@ def test_classifying_reads_and_never_writes(db):
     auto.classify(db, NEW, index(1, 2), BUILDS, NOW)
     assert not db.new and not db.dirty and not db.deleted
     assert (db.query(Replay).count(), db.query(ReplayUpload).count()) == before
+
+
+# ---------------------------------------------------------------- one pass: recover, reserve, submit (task 5)
+# A protocol fake: the worker's receipts are kept apart from its jobs, as on its disk, and every job it ever
+# accepted is counted. The real worker is driven by the same step in test_replay_archive_web.py.
+
+
+class ProtocolWorker:
+    def __init__(self, recipe=NEW, files: dict | None = None):
+        self.health_body = {"ok": True, "queued": 0, "recipe": recipe,
+                            "archive": {"enabled": True, "reparse_protocol": 1},
+                            "control": {"enabled": True, "gaps_protocol": 1, "queued": 0, "running": 0}}
+        self.files = dict(files or {})     # match uuid -> sha256 of the archived recording
+        self.receipts: dict[str, dict] = {}
+        self.jobs: dict[str, dict] = {}
+        self.accepted = 0                  # jobs ever started
+        self.calls: list[str] = []
+        self.acks: list = []
+        self.down = False                  # nothing answers
+        self.lose_reply = False            # the next POST is accepted, and its answer never arrives
+        self.full = False
+        self.close_races = False           # the lookup says unknown, then the close finds the job
+
+    def _say(self, name):
+        self.calls.append(name)
+        if self.down:
+            raise uploads.WorkerError("the replay worker is unreachable")
+
+    def _receipt(self, attempt_id):
+        receipt = self.receipts[attempt_id]
+        if receipt["state"] == "closed":
+            return {"code": "closed", "attempt_id": attempt_id, "state": "closed"}
+        job = self.jobs.get(receipt["job_id"])
+        return {"code": "accepted", "state": "accepted", "attempt_id": attempt_id, "job_id": receipt["job_id"],
+                "match_uuid": receipt["match_uuid"], "sha256": receipt["sha256"], "size": 4321,
+                "job_status": job["status"] if job else "expired"}
+
+    def health(self):
+        self._say("health")
+        return self.health_body
+
+    def archive(self):
+        self._say("archive")
+        return {"files": [{"match_uuid": uuid_, "sha256": sha_} for uuid_, sha_ in self.files.items()]}
+
+    def reparse(self, match_uuid, *, attempt_id=None, expected_sha256=None):
+        self._say("reparse")
+        assert attempt_id is not None, "the automatic queue never uses the manual route"
+        if attempt_id in self.receipts:
+            return self._receipt(attempt_id)
+        if match_uuid not in self.files:
+            return {"code": "no_archived_file"}
+        if self.files[match_uuid] != expected_sha256:
+            return {"code": "sha_mismatch", "sha256": self.files[match_uuid]}
+        if self.full:
+            return {"code": "queue_full"}
+        job_id = uploads.auto_job_id(attempt_id)
+        self.receipts[attempt_id] = {"state": "accepted", "job_id": job_id, "match_uuid": match_uuid,
+                                     "sha256": expected_sha256}
+        self.jobs[job_id] = {"status": "parsing"}
+        self.accepted += 1
+        if self.lose_reply:
+            self.lose_reply = False
+            raise uploads.WorkerError("the replay worker is unreachable")
+        return self._receipt(attempt_id)
+
+    def reparse_attempt(self, attempt_id):
+        self._say("lookup")
+        if attempt_id not in self.receipts or self.close_races:
+            return {"code": "unknown_attempt"}
+        return self._receipt(attempt_id)
+
+    def close_reparse_attempt(self, attempt_id, match_uuid, expected_sha256):
+        self._say("close")
+        self.receipts.setdefault(attempt_id, {"state": "closed"})
+        return self._receipt(attempt_id)
+
+    def job(self, job_id):
+        self._say("job")
+        if job_id not in self.jobs:
+            raise uploads.WorkerRefused("no such job", 404, {})
+        return {"id": job_id, **self.jobs[job_id]}
+
+    def ack(self, job_id, body):
+        self.acks.append((job_id, body))
+        return {"archived": True, "result": "kept"}
+
+    def health_error(self, *args, **kwargs):
+        raise uploads.WorkerError("the replay worker is unreachable")
+
+
+@pytest.fixture
+def on(db, monkeypatch):
+    """The switch on, this site on NEW, and a factory on the test's database."""
+    monkeypatch.setattr(settings, "replay_reparse_auto", True)
+    monkeypatch.setattr(settings, "replay_control_remote", True)
+    monkeypatch.setattr(settings, "replay_worker_url", "http://127.0.0.1:9")
+    monkeypatch.setattr(uploads, "_site_recipe", NEW)
+    monkeypatch.setattr(auto, "_builds", BUILDS)
+    return sessionmaker(bind=db.get_bind())
+
+
+def run(factory, worker, memo=None, now=NOW, in_flight=0):
+    counts: dict = {}
+    holding = auto.step(factory, worker, memo if memo is not None else auto.Memo(), in_flight, now, counts)
+    return holding, {name[len("reparse_"):]: n for name, n in counts.items() if n}
+
+
+def attempts(db) -> list[ReplayUpload]:
+    db.expire_all()
+    return auto.unfinished_attempts(db) + [u for u in auto._settled(db)][::-1]
+
+
+def phase(upload) -> tuple:
+    return upload.status, upload.auto_context["phase"]
+
+
+def stale_one(db, n=1) -> tuple[Replay, ProtocolWorker]:
+    replay = add_replay(db, n, played=T0 - timedelta(days=n))
+    return replay, ProtocolWorker(files={match_uuid(n): sha(n)})
+
+
+def test_a_stale_uploaded_replay_is_reserved_committed_and_then_sent_once(db, on):
+    replay, worker = stale_one(db)
+    memo = auto.Memo()
+    holding, counts = run(on, worker, memo)
+    assert holding == {replay.id} and counts == {"reserved": 1, "sent": 1}
+    [row] = attempts(db)
+    assert phase(row) == ("parsing", "accepted") and row.worker_job_id == uploads.auto_job_id(row.id)
+    assert row.session_key == uploads.auto_tag(NEW) and row.size_bytes == 4321
+    assert row.auto_context == {**uploads.new_auto_context(replay, NEW), "phase": "accepted"}
+    assert worker.calls == ["health", "archive", "reparse"], "the receipt is the POST's own answer"
+    holding, counts = run(on, worker, memo, now=NOW + 20)
+    assert holding == {replay.id} and counts == {} and worker.accepted == 1 and len(attempts(db)) == 1
+
+
+def test_a_lost_response_recovers_the_same_attempt_and_one_job(db, on):
+    replay, worker = stale_one(db)
+    worker.lose_reply = True
+    assert run(on, worker)[1] == {"reserved": 1}
+    [row] = attempts(db)
+    assert phase(row) == ("queued", "reserved") and row.worker_job_id is None and worker.accepted == 1
+    worker.calls.clear()
+    holding, counts = run(on, worker, auto.Memo(), now=NOW + 20)   # another process: no memo
+    [again] = attempts(db)
+    assert again.id == row.id and phase(again) == ("parsing", "accepted") and counts == {"recovered": 1}
+    assert "reparse" not in worker.calls, "the receipt is found by its id: nothing is sent twice"
+    assert worker.accepted == 1 and list(worker.jobs) == [uploads.auto_job_id(row.id)] and holding == {replay.id}
+
+
+def test_a_restart_before_the_first_post_sends_the_same_identity(db, on):
+    replay = add_replay(db, 1, played=T0)
+    reserved = add_attempt(db, replay, phase="reserved", status="queued")
+    worker = ProtocolWorker(files=index(1))
+    assert worker.reparse_attempt(reserved.id)["code"] == "unknown_attempt"
+    holding, counts = run(on, worker)
+    [row] = attempts(db)
+    assert row.id == reserved.id and phase(row) == ("parsing", "accepted") and counts == {"recovered": 1}
+    assert worker.accepted == 1 and list(worker.receipts) == [reserved.id] and holding == {replay.id}
+
+
+def test_a_worker_that_is_down_after_the_reservation_keeps_it_and_blocks_another(db, on):
+    replay, worker = stale_one(db)
+
+    def lost(*args, **kwargs):
+        raise uploads.WorkerError("the replay worker is unreachable")
+
+    worker.reparse = lost   # the POST never reaches the worker
+    assert run(on, worker)[1] == {"reserved": 1}
+    worker.down = True
+    for later in (20, 40):
+        holding, counts = run(on, worker, auto.Memo(), now=NOW + later)
+        assert (holding, counts) == (frozenset(), {"deferred": 1}), "an unreachable worker: nothing is decided"
+    [row] = attempts(db)
+    assert phase(row) == ("queued", "reserved") and worker.accepted == 0
+
+
+def test_an_acceptance_that_could_not_be_recorded_is_found_again_by_its_id(db, on, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    replay, worker = stale_one(db)
+    real = uploads.bind_accepted
+
+    def failing(session, upload_id, receipt):
+        raise OperationalError("UPDATE replay_uploads", {}, Exception("the connection dropped"))
+
+    monkeypatch.setattr(uploads, "bind_accepted", failing)
+    assert run(on, worker)[1] == {"reserved": 1}
+    assert run(on, worker, now=NOW + 20)[1] == {}, "still unrecorded: it stays the one unfinished attempt"
+    [row] = attempts(db)
+    assert phase(row) == ("queued", "reserved") and worker.accepted == 1
+    monkeypatch.setattr(uploads, "bind_accepted", real)
+    assert run(on, worker, now=NOW + 40)[1] == {"recovered": 1}
+    [row] = attempts(db)
+    assert phase(row) == ("parsing", "accepted") and worker.accepted == 1
+
+
+def test_a_reservation_that_fails_to_commit_asks_the_worker_nothing(db, on):
+    from sqlalchemy.exc import OperationalError
+
+    _, worker = stale_one(db)
+
+    def factory():
+        session = on()
+        commit = session.commit
+
+        def failing():
+            if any(isinstance(row, ReplayUpload) for row in session.new):
+                raise OperationalError("INSERT INTO replay_uploads", {}, Exception("the connection dropped"))
+            commit()
+
+        session.commit = failing
+        return session
+
+    with pytest.raises(OperationalError):
+        run(factory, worker)
+    assert "reparse" not in worker.calls and worker.accepted == 0 and attempts(db) == []
+
+
+@pytest.mark.parametrize("change, said", [("gone", "no archived file"), ("other", "another file")])
+def test_a_definite_refusal_before_acceptance_uses_no_attempt(db, on, change, said):
+    replay, worker = stale_one(db)
+    memo = auto.Memo(index=index(1), index_at=NOW)   # what the index said a minute ago
+    worker.files = {} if change == "gone" else {match_uuid(1): sha(99)}
+    holding, counts = run(on, worker, memo)
+    [row] = attempts(db)
+    assert phase(row) == ("failed", "refused_before_acceptance") and said in row.error
+    assert counts == {"reserved": 1, "refused": 1} and worker.accepted == 0 and worker.receipts == {}
+    assert memo.index is None, "the index was wrong: it is read again"
+    [entry] = auto.classify(db, NEW, index(1), BUILDS, NOW)
+    assert (entry.state, entry.attempts) == ("eligible", 0), "a refusal is not a try"
+    # Even against an index that still (wrongly) lists the file, the same replay isn't picked again at once.
+    worker.archive = lambda: {"files": [{"match_uuid": match_uuid(1), "sha256": sha(1)}]}
+    assert run(on, worker, memo, now=NOW + 20)[1] == {} and len(attempts(db)) == 1
+    worker.files = index(1)
+    assert run(on, worker, memo, now=NOW + auto.BACKOFF_S + 1)[1] == {"reserved": 1, "sent": 1}
+
+
+def test_an_accepted_failure_backs_off_then_one_more_and_no_third(db, on):
+    replay, worker = stale_one(db)
+    memo = auto.Memo()
+    run(on, worker, memo)
+    [row] = attempts(db)
+    worker.jobs[row.worker_job_id] = {"status": "failed", "error": "parse failed"}
+    assert run(on, worker, memo, now=NOW + 20)[1] == {"finished": 1}
+    [row] = attempts(db)
+    assert row.status == "failed" and "parse failed" in row.error and phase(row)[1] == "accepted"
+    assert epoch_of(row.finished_at) == NOW + 20, "the injected clock stamps the settlement"
+    holding, counts = run(on, worker, memo, now=NOW + 600)
+    assert holding == {replay.id} and counts == {}, "backing off: held, and nothing new"
+    second_at = NOW + 20 + auto.BACKOFF_S + 1
+    assert run(on, worker, memo, now=second_at)[1] == {"reserved": 1, "sent": 1}
+    second = attempts(db)[0]
+    assert second.id != row.id and worker.accepted == 2
+    worker.jobs[second.worker_job_id] = {"status": "failed", "error": "parse failed"}
+    assert run(on, worker, memo, now=second_at + 20)[1] == {"finished": 1}
+    holding, counts = run(on, worker, memo, now=second_at + 3 * auto.BACKOFF_S)
+    assert holding == frozenset() and counts == {} and worker.accepted == 2, "gave up: its control is released"
+
+
+def test_a_contract_refusal_after_acceptance_ends_the_tries_at_one(db, on):
+    replay, worker = stale_one(db)
+    memo = auto.Memo()
+    run(on, worker, memo)
+    [row] = attempts(db)
+    worker.jobs[row.worker_job_id] = {"status": "failed", "error": f"{auto.FINAL_REFUSAL}: build mismatch"}
+    assert run(on, worker, memo, now=NOW + 20)[1] == {"finished": 1}
+    assert run(on, worker, memo, now=NOW + 5 * auto.BACKOFF_S) == (frozenset(), {}) and worker.accepted == 1
+
+
+def test_an_accepted_result_that_expired_counts_as_the_try_it_was(db, on):
+    replay, worker = stale_one(db)
+    memo = auto.Memo()
+    run(on, worker, memo)
+    [row] = attempts(db)
+    worker.jobs.clear()   # the worker swept the result; only the receipt is left
+    assert run(on, worker, memo, now=NOW + 20)[1] == {"finished": 1}
+    [row] = attempts(db)
+    assert row.status == "failed" and "expired" in row.error and phase(row)[1] == "accepted"
+    [entry] = auto.classify(db, NEW, index(1), BUILDS, NOW + 30)
+    assert (entry.state, entry.attempts) == ("backoff", 1)
+    # The same id can still fetch its receipt; it can never start another job.
+    assert worker.reparse(match_uuid(1), attempt_id=row.id, expected_sha256=sha(1))["job_status"] == "expired"
+    assert worker.accepted == 1
+
+
+def epoch_of(when) -> float:
+    return auto.epoch(when)
+
+
+@pytest.mark.parametrize("switch", [True, False])
+@pytest.mark.parametrize("state", ["reserved", "accepted"])
+def test_an_older_site_beside_a_newer_worker_leaves_the_newer_attempt_alone(db, on, monkeypatch, state, switch):
+    """During a deploy: site process A (on OLD) still runs while the worker and site B are on NEW."""
+    replay = add_replay(db, 1, recipe="recipe-0", played=T0)
+    row = add_attempt(db, replay, target=NEW, phase=state, status="queued" if state == "reserved" else "parsing")
+    before = (row.status, dict(row.auto_context), row.error, row.finished_at)
+    worker = ProtocolWorker(recipe=NEW, files=index(1))
+    monkeypatch.setattr(uploads, "_site_recipe", OLD)
+    monkeypatch.setattr(settings, "replay_reparse_auto", switch)
+    holding, counts = run(on, worker)
+    [row] = attempts(db)
+    assert (row.status, row.auto_context, row.error, row.finished_at) == before
+    assert holding == frozenset() and counts == {"deferred": 1}
+    assert worker.calls == ["health"] and worker.receipts == {}, "not sent, not closed, not failed"
+    monkeypatch.setattr(uploads, "_site_recipe", NEW)       # site B's own pass then resolves it
+    monkeypatch.setattr(settings, "replay_reparse_auto", True)
+    if state == "reserved":
+        assert run(on, worker)[1] == {"recovered": 1} and worker.accepted == 1
+
+
+def test_a_reservation_for_a_recipe_nobody_runs_any_more_is_fenced(db, on):
+    replay = add_replay(db, 1, recipe="recipe-0", played=T0)
+    old = add_attempt(db, replay, target=OLD, phase="reserved", status="queued")
+    worker = ProtocolWorker(recipe=NEW, files=index(1))   # site and worker have both moved on to NEW
+    holding, counts = run(on, worker)
+    rows = {u.id: u for u in attempts(db)}
+    assert phase(rows[old.id]) == ("failed", "refused_before_acceptance") and "another recipe" in rows[old.id].error
+    # The same pass then takes the replay for the recipe both sides are on now, from zero tries.
+    assert counts == {"refused": 1, "reserved": 1, "sent": 1} and len(rows) == 2 and holding == {replay.id}
+    late = worker.reparse(match_uuid(1), attempt_id=old.id, expected_sha256=sha(1))
+    assert late["code"] == "closed" and worker.accepted == 1, "a late request can't start the closed attempt"
+
+
+HANDSHAKES = {
+    "control off": lambda h: h["control"].update(enabled=False),
+    "no control block": lambda h: h.pop("control"),
+    "no gaps protocol": lambda h: h["control"].pop("gaps_protocol"),
+    "no re-parse protocol": lambda h: h["archive"].pop("reparse_protocol"),
+    "a later re-parse protocol": lambda h: h["archive"].update(reparse_protocol=2),
+    "archive off": lambda h: h["archive"].update(enabled=False),
+    "recipe skew": lambda h: h.update(recipe="recipe-z"),
+    "no recipe": lambda h: h.pop("recipe"),
+}
+
+
+@pytest.mark.parametrize("case", [*sorted(HANDSHAKES), "unreachable"])
+def test_worker_control_off_holds_and_reserves_nothing(db, on, case):
+    _, worker = stale_one(db)
+    if case == "unreachable":
+        worker.down = True
+    else:
+        HANDSHAKES[case](worker.health_body)
+    assert run(on, worker) == (frozenset(), {})
+    assert worker.calls == ["health"] and attempts(db) == []
+
+
+def test_with_the_switch_off_and_nothing_unfinished_the_worker_is_never_asked(db, on, monkeypatch):
+    _, worker = stale_one(db)
+    monkeypatch.setattr(settings, "replay_reparse_auto", False)
+    assert run(on, worker) == (frozenset(), {}) and worker.calls == [] and attempts(db) == []
+    monkeypatch.setattr(settings, "replay_reparse_auto", True)
+    monkeypatch.setattr(settings, "demo_mode", True)
+    add_attempt(db, db.query(Replay).one(), phase="reserved", status="queued")
+    assert run(on, worker) == (frozenset(), {}) and worker.calls == [], "the demo resumes nothing either"
+    assert run(on, None) == (frozenset(), {})
+
+
+@pytest.mark.parametrize("gate", ["an upload queued", "an upload parsing", "worker uploads queued",
+                                  "site control in flight", "worker control queued", "worker control running",
+                                  "worker says nothing about control", "the last attempt just settled"])
+def test_nothing_is_reserved_until_everything_is_quiet(db, on, gate):
+    replay, worker = stale_one(db)
+    in_flight = 0
+    if gate.startswith("an upload"):
+        db.add(ReplayUpload(id=str(uuid.uuid4()), status=gate.split()[-1], session_key="sess", created_at=T0))
+        db.commit()
+    elif gate == "worker uploads queued":
+        worker.health_body["queued"] = 1
+    elif gate == "site control in flight":
+        in_flight = 3
+    elif gate == "worker says nothing about control":
+        del worker.health_body["control"]["running"]
+    elif gate.startswith("worker control"):
+        worker.health_body["control"][gate.split()[-1]] = 1
+    else:
+        other = add_replay(db, 2, recipe=NEW)
+        add_attempt(db, other, target="recipe-0", finished=T0 - timedelta(seconds=auto.SETTLE_S - 5))
+    holding, counts = run(on, worker, in_flight=in_flight)
+    assert holding == {replay.id} and counts == {} and "reparse" not in worker.calls
+    assert not auto.unfinished_attempts(db)
+    if gate == "the last attempt just settled":
+        assert run(on, worker, now=NOW + 10)[1] == {"reserved": 1, "sent": 1}
+
+
+def test_a_reservation_waits_out_a_busy_worker_without_being_closed(db, on):
+    replay = add_replay(db, 1, played=T0)
+    reserved = add_attempt(db, replay, phase="reserved", status="queued")
+    worker = ProtocolWorker(files=index(1))
+    worker.health_body["control"]["running"] = 1
+    assert run(on, worker) == ({replay.id}, {}) and worker.calls == ["health", "health", "lookup", "archive"]
+    worker.health_body["control"]["running"] = 0
+    worker.full = True
+    assert run(on, worker)[1] == {} and worker.receipts == {}, "queue full: nothing accepted, nothing refused"
+    worker.full = False
+    assert run(on, worker)[1] == {"recovered": 1}
+    assert [u.id for u in attempts(db)] == [reserved.id]
+
+
+@pytest.mark.parametrize("moved, said", [("current", "changed since"), ("other file", "changed since"),
+                                         ("local", "local ingest"), ("deleted", "deleted"), ("gone", "gone"),
+                                         ("used up", "used up")])
+def test_a_reservation_whose_selection_no_longer_holds_is_fenced_not_sent(db, on, moved, said):
+    replay = add_replay(db, 1, played=T0)
+    if moved == "used up":
+        for hours in (5, 3):
+            add_attempt(db, replay, finished=T0 - timedelta(hours=hours))
+    reserved = add_attempt(db, replay, phase="reserved", status="queued")
+    if moved == "current":
+        replay.recipe = NEW
+    elif moved == "other file":
+        replay.source_sha256 = sha(7)
+    elif moved == "local":
+        replay.source = "local"
+    elif moved == "deleted":
+        db.add(ReplayDeletion(match_uuid=match_uuid(1), reason="asked"))
+    elif moved == "gone":
+        db.delete(replay)
+    db.commit()
+    worker = ProtocolWorker(files=index(1))
+    _, counts = run(on, worker)
+    row = db.get(ReplayUpload, reserved.id)
+    db.refresh(row)
+    assert phase(row) == ("failed", "refused_before_acceptance") and said in row.error
+    assert counts == {"refused": 1} and worker.accepted == 0 and worker.receipts[reserved.id]["state"] == "closed"
+
+
+def test_switching_off_closes_an_unaccepted_reservation_and_starts_nothing(db, on, monkeypatch):
+    replay = add_replay(db, 1, played=T0)
+    reserved = add_attempt(db, replay, phase="reserved", status="queued")
+    worker = ProtocolWorker(files=index(1))
+    monkeypatch.setattr(settings, "replay_reparse_auto", False)
+    worker.down = True
+    assert run(on, worker) == (frozenset(), {"deferred": 1})   # a timeout is not evidence
+    assert phase(attempts(db)[0]) == ("queued", "reserved")
+    worker.down = False
+    holding, counts = run(on, worker)
+    [row] = attempts(db)
+    assert phase(row) == ("failed", "refused_before_acceptance") and "REPLAY_REPARSE_AUTO is off" in row.error
+    assert counts == {"refused": 1} and holding == frozenset() and worker.accepted == 0
+    assert worker.reparse(match_uuid(1), attempt_id=reserved.id, expected_sha256=sha(1))["code"] == "closed"
+    assert "archive" not in worker.calls, "switched off: the archive is not even read"
+
+
+@pytest.mark.parametrize("known", ["bound", "lost reply", "found at the close"])
+def test_switching_off_still_finishes_an_attempt_the_worker_accepted(db, on, monkeypatch, known):
+    replay, worker = stale_one(db)
+    worker.lose_reply = known != "bound"
+    run(on, worker)
+    [row] = attempts(db)
+    assert worker.accepted == 1 and phase(row)[1] == ("accepted" if known == "bound" else "reserved")
+    monkeypatch.setattr(settings, "replay_reparse_auto", False)
+    worker.close_races = known == "found at the close"
+    holding, counts = run(on, worker, now=NOW + 20)
+    [row] = attempts(db)
+    assert phase(row) == ("parsing", "accepted") and holding == {replay.id}, "never closed, and still held"
+    assert counts == ({} if known == "bound" else {"recovered": 1})
+    worker.close_races = False
+    worker.jobs[row.worker_job_id] = {"status": "failed", "error": "parse timed out"}
+    holding, counts = run(on, worker, now=NOW + 40)
+    assert holding == frozenset() and counts == {"finished": 1} and worker.accepted == 1
+    assert run(on, worker, now=NOW + 60) == (frozenset(), {}) and len(attempts(db)) == 1
+
+
+def test_one_attempt_at_a_time_newest_match_first(db, on):
+    add_replay(db, 1, played=T0 - timedelta(days=3))
+    newest = add_replay(db, 2, played=T0 - timedelta(days=1))
+    worker = ProtocolWorker(files=index(1, 2))
+    memo = auto.Memo()
+    holding, counts = run(on, worker, memo)
+    [row] = attempts(db)
+    assert row.auto_context["selected_replay_id"] == newest.id and len(holding) == 2
+    assert run(on, worker, memo, now=NOW + 20)[1] == {} and worker.accepted == 1
+    worker.jobs[row.worker_job_id] = {"status": "failed", "error": "parse failed"}
+    assert run(on, worker, memo, now=NOW + 40)[1] == {"finished": 1}, "and not the next one in the same pass"
+    assert run(on, worker, memo, now=NOW + 40 + auto.SETTLE_S - 1)[1] == {}
+    assert run(on, worker, memo, now=NOW + 40 + auto.SETTLE_S)[1] == {"reserved": 1, "sent": 1}
+    assert auto.unfinished_attempts(db)[0].auto_context["match_uuid"] == match_uuid(1)
+
+
+def test_only_the_oldest_of_two_unfinished_reservations_is_sent(db, on):
+    """Two can't exist under the dispatcher's lock; if they ever do, they must not wait on each other."""
+    first = add_attempt(db, add_replay(db, 1, played=T0), phase="reserved", status="queued",
+                        finished=T0 - timedelta(minutes=10))
+    second = add_attempt(db, add_replay(db, 2, played=T0), phase="reserved", status="queued")
+    worker = ProtocolWorker(files=index(1, 2))
+    assert run(on, worker)[1] == {"recovered": 1} and list(worker.receipts) == [first.id]
+    assert phase(db.get(ReplayUpload, second.id)) == ("queued", "reserved")
+
+
+def test_the_archive_index_is_read_at_most_once_in_its_interval(db, on):
+    add_replay(db, 1, recipe=NEW)
+    worker = ProtocolWorker()
+    memo = auto.Memo()
+    for later in (0, 20, auto.INDEX_S - 1, auto.INDEX_S, auto.INDEX_S + 20):
+        run(on, worker, memo, now=NOW + later)
+    assert worker.calls.count("archive") == 2 and worker.calls.count("health") == 5
+    worker.archive = worker.health_error   # the archive route stops answering
+    run(on, worker, memo, now=NOW + 3 * auto.INDEX_S)
+    assert memo.index is None and memo.index_at is None, "an unread index is unknown and is read again next pass"
+
+
+# -- the restoration barrier: the last replacement's control and gaps are back before the next replay is taken
+
+
+@pytest.fixture
+def replaced(db, on, condensed, monkeypatch):  # noqa: F811
+    """A real stored replay that an automatic attempt replaced ten minutes ago, with no control yet, and a
+    second stale replay waiting its turn."""
+    monkeypatch.setattr(uploads, "_site_recipe", condensed.recipe)
+    add_match(db)
+    replay = db.get(Replay, store.store_replay(db, condensed, source="upload").replay_id)
+    assert rc.map_layer(replay.map_name) is not None
+    before = replace_recipe(replay, OLD)
+    done = ReplayUpload(id=str(uuid.uuid4()), status="stored", store_outcome="replaced", replay_id=replay.id,
+                        source_sha256=replay.source_sha256, session_key=uploads.auto_tag(condensed.recipe),
+                        created_at=T0 - timedelta(minutes=15), finished_at=T0 - timedelta(minutes=10),
+                        auto_context={**uploads.new_auto_context(before, condensed.recipe), "phase": "accepted"})
+    db.add(done)
+    db.commit()
+    waiting = add_replay(db, 2, played=T0 - timedelta(days=2))
+    return replay, waiting, ProtocolWorker(recipe=condensed.recipe, files=index(2))
+
+
+def replace_recipe(replay, recipe):
+    """`replay` as it was before the replacement: only what `new_auto_context` reads."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(match_uuid=replay.match_uuid, id=replay.id, recipe=recipe,
+                           source_sha256=replay.source_sha256)
+
+
+def test_the_next_replay_waits_until_the_last_replacement_has_its_control_and_gaps_back(db, replaced):
+    replay, waiting, worker = replaced
+    on = sessionmaker(bind=db.get_bind())
+    rounds = replay.round_count
+    pending = auto.restoration(db, replay.recipe)
+    assert pending == {"match_uuid": replay.match_uuid.lower(), "replay_id": replay.id, "control_rounds": rounds,
+                       "gap_rounds": 0}
+    # The worker's queue is empty the whole time (its retries ran out): that alone must not release it.
+    for later in (0, 3600):
+        holding, counts = run(on, worker, auto.Memo(), now=NOW + later)   # a new memo each time: a restart
+        assert counts == {} and "reparse" not in worker.calls and waiting.id in holding
+        assert replay.id not in holding, "the replaced replay's own control is not held back"
+    for n in range(1, rounds + 1):
+        put_row(db, replay, n)
+    assert auto.restoration(db, replay.recipe)["gap_rounds"] == rounds, "control is back, its gaps are not"
+    assert run(on, worker)[1] == {}
+    for n in range(2, rounds + 1):
+        put_gap_run(db, replay, n)
+    put_gap_run(db, replay, 1, status="failed")   # the detector's own failure under the current keys: settled
+    assert auto.restoration(db, replay.recipe) is None
+    assert run(on, worker)[1] == {"reserved": 1, "sent": 1}
+    assert auto.unfinished_attempts(db)[0].auto_context["selected_replay_id"] == waiting.id
+
+
+def test_a_rounds_own_control_failure_counts_as_restored(db, replaced):
+    replay, _, worker = replaced
+    put_row(db, replay, 1, status="failed")
+    for n in range(2, replay.round_count + 1):
+        put_row(db, replay, n)
+        put_gap_run(db, replay, n)
+    assert auto.restoration(db, replay.recipe) is None
+
+
+@pytest.mark.parametrize("release", ["deleted", "superseded", "stale again", "gone"])
+def test_a_replacement_that_is_deleted_or_superseded_no_longer_holds_the_queue(db, replaced, release):
+    replay, _, worker = replaced
+    recipe = replay.recipe
+    if release == "deleted":
+        db.add(ReplayDeletion(match_uuid=replay.match_uuid, reason="asked"))
+    elif release == "superseded":
+        replay.source_sha256 = sha(8)
+    elif release == "stale again":
+        recipe = "recipe-next"   # the site moved on: the replay is eligible again, and nothing waits for it
+    else:
+        db.query(ReplayUpload).update({"replay_id": None})
+    db.commit()
+    assert auto.restoration(db, recipe) is None
+
+
+# -- PostgreSQL only
+
+
+def test_pg_two_site_processes_on_different_recipes_commit_one_reservation(pg, monkeypatch):  # noqa: F811
+    from sqlalchemy import text
+
+    from app.services import replay_control_remote as remote
+
+    monkeypatch.setattr(settings, "demo_mode", False)
+    monkeypatch.setattr(settings, "replay_reparse_auto", True)
+    monkeypatch.setattr(settings, "replay_control_remote", True)
+    monkeypatch.setattr(settings, "replay_worker_url", "http://127.0.0.1:9")
+    monkeypatch.setattr(uploads, "_site_recipe", NEW)
+    monkeypatch.setattr(auto, "_builds", BUILDS)
+    session = pg()
+    add_replay(session, 1, played=T0 - timedelta(days=1))
+    add_replay(session, 2, played=T0 - timedelta(days=2))
+    worker = ProtocolWorker(recipe=NEW, files=index(1, 2))
+    posting, go = threading.Event(), threading.Event()
+    accept = worker.reparse
+
+    def slow(*args, **kwargs):   # the first process stops inside its POST: its reservation is committed
+        posting.set()
+        assert go.wait(30)
+        return accept(*args, **kwargs)
+
+    worker.reparse = slow
+
+    def process(out: list, client):
+        """One site process's pass, as the dispatcher runs it: its lock session, then the step."""
+        lock = pg()
+        try:
+            if not lock.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": remote.LOCK_ID}).scalar():
+                out.append("locked out")
+                return
+            out.append(run(pg, client)[1])
+        finally:
+            lock.rollback()
+            lock.close()
+
+    first: list = []
+    thread = threading.Thread(target=process, args=(first, worker))
+    thread.start()
+    assert posting.wait(30)
+    assert len(auto.unfinished_attempts(session)) == 1, "committed before the worker was asked"
+    second: list = []
+    process(second, worker)
+    assert second == ["locked out"]
+    # Without the dispatcher's lock a second process still finds the reservation under the match's lock.
+    other = pg()
+    entry = [e for e in auto.classify(other, NEW, index(1, 2), BUILDS, NOW) if e.match_uuid == match_uuid(2)][0]
+    assert auto._reserve(other, entry, NEW, index(1, 2), T0) is None
+    other.close()
+    go.set()
+    thread.join(30)
+    assert first == [{"reserved": 1, "sent": 1}]
+    # The other version's process, once it gets the lock: a site on recipe-c beside the NEW worker defers;
+    # beside its own worker it waits for the accepted attempt. Neither reserves.
+    monkeypatch.setattr(uploads, "_site_recipe", "recipe-c")
+    process(second, worker)
+    process(second, ProtocolWorker(recipe="recipe-c", files=index(1, 2)))
+    assert second[1:] == [{"deferred": 1}, {}]
+    session.rollback()
+    rows = session.query(ReplayUpload).all()
+    assert len(rows) == 1 and worker.accepted == 1 and rows[0].auto_context["phase"] == "accepted"
+    session.close()
