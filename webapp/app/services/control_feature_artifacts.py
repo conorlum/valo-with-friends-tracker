@@ -1,11 +1,19 @@
 """Parent-safe exact-key immutable archive operations; the caller owns its transaction."""
+import base64
+import json
+import subprocess
+import sys
+from dataclasses import asdict
+from pathlib import Path
+
 from sqlalchemy.exc import IntegrityError
 
 from app.models.replay import ControlFeatureArtifact, ControlHeight
-from app.replays.map_feature_inputs import FeatureKey
+from app.replays.map_feature_inputs import FeatureKey, canonical_json
 from app.replays.map_feature_artifacts import (
     FeatureArtifact, FeatureArtifactRef, FeatureArtifactError, FeatureArtifactMissing,
     check_artifact, check_header, expanded_assets,
+    decode_artifact, UnsupportedFeatureCompiler, FeatureArtifactCorrupt, MAX_WIRE_BYTES,
 )
 
 
@@ -79,3 +87,47 @@ def store_artifact(db, artifact: FeatureArtifact) -> FeatureArtifact:
             raise FeatureArtifactError('archive digest conflicts with another key')
         return _equivalent(existing, artifact)
     return artifact
+
+
+class FeaturePreparationPending(Exception):
+    def __init__(self, key, reason):
+        self.key, self.reason = key, reason
+        super().__init__(reason)
+
+
+def run_feature_child(mode: str, payload: bytes) -> bytes:
+    if len(payload) > MAX_WIRE_BYTES:
+        raise FeatureArtifactCorrupt('feature request size limit')
+    try:
+        request = json.loads(payload)
+        if request.get('mode') != mode:
+            raise FeatureArtifactCorrupt('feature child mode mismatch')
+        done = subprocess.run([sys.executable, '-m', 'app.control.feature_job'], input=payload,
+                              capture_output=True, timeout=120, cwd=Path(__file__).parents[2], check=False)
+        if done.returncode or len(done.stdout) > MAX_WIRE_BYTES:
+            raise FeatureArtifactCorrupt('feature child exit/output limit')
+        reply = json.loads(done.stdout)
+        if not reply.get('ok'):
+            error = UnsupportedFeatureCompiler if reply.get('code') == 'features_unsupported' else FeatureArtifactCorrupt
+            raise error(reply.get('reason', 'feature child failed'))
+        return canonical_json(reply['result'])
+    except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as exc:
+        if isinstance(exc, FeatureArtifactError):
+            raise
+        raise FeatureArtifactCorrupt(f'feature child failed: {type(exc).__name__}: {exc}') from exc
+
+
+def prepare_artifact(db, inputs, height_bytes):
+    try:
+        existing = find_artifact(db, inputs.key)
+        if existing is not None:
+            return existing
+        request = {'mode': 'compile', 'inputs': {'key': asdict(inputs.key),
+                   'canonical_inputs': base64.b64encode(inputs.canonical_inputs).decode('ascii')},
+                   'height': None if height_bytes is None else base64.b64encode(height_bytes).decode('ascii')}
+        artifact = decode_artifact(run_feature_child('compile', canonical_json(request)))
+        if artifact.key != inputs.key or artifact.inputs != inputs.canonical_inputs:
+            raise FeatureArtifactCorrupt('child compiled different inputs')
+        return store_artifact(db, artifact)
+    except Exception as exc:
+        raise FeaturePreparationPending(inputs.key, str(exc)) from exc

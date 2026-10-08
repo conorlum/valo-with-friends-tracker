@@ -548,7 +548,7 @@ def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list
 
 # The runtime consumers this build can run features through. None: nothing is enabled until an engine
 # integration registers one (R3), so every bundle is pending and every map's base geometry is unchanged.
-RUNTIME_CONSUMERS: frozenset = frozenset()
+RUNTIME_CONSUMERS: frozenset = fi.RUNTIME_CONSUMERS
 LEGACY_SOURCES = ("cover_paint", "cant_walk_paint", "tag", "base")
 
 

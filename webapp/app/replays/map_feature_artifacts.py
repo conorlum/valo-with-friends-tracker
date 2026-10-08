@@ -6,6 +6,7 @@ import binascii
 import hashlib
 import re
 import zlib
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from math import prod
 
@@ -222,3 +223,41 @@ def decode_artifact(blob: bytes) -> FeatureArtifact:
         if isinstance(exc, FeatureArtifactCorrupt):
             raise
         raise FeatureArtifactCorrupt(str(exc)) from exc
+
+
+class VerifiedArtifactCache:
+    """Process-local LRU. First use recompiles; every hit rehashes complete immutable bytes."""
+    def __init__(self, *, max_entries=MAX_CACHE_ENTRIES, max_bytes=MAX_CACHE_BYTES):
+        self.max_entries, self.max_bytes = max_entries, max_bytes
+        self._items = OrderedDict()
+        self.bytes_used = 0
+
+    @property
+    def entries(self):
+        return len(self._items)
+
+    def discard(self, digest):
+        found = self._items.pop(digest, None)
+        if found is not None:
+            self.bytes_used -= found[1]
+
+    def get_or_verify(self, artifact, verify):
+        try:
+            check_artifact(artifact)
+            found = self._items.get(artifact.digest)
+            if found is not None:
+                check_artifact(found[0])
+                self._items.move_to_end(artifact.digest)
+                return artifact
+            verify(artifact)
+            weight = len(artifact.inputs) + len(artifact.assets) + len(expanded_assets(artifact.assets)) \
+                     + len(canonical_json(artifact.manifest))
+            if self.max_entries > 0 and weight <= self.max_bytes:
+                while self._items and (len(self._items) >= self.max_entries or self.bytes_used + weight > self.max_bytes):
+                    self.discard(next(iter(self._items)))
+                self._items[artifact.digest] = (artifact, weight)
+                self.bytes_used += weight
+            return artifact
+        except FeatureArtifactError:
+            self.discard(artifact.digest)
+            raise
