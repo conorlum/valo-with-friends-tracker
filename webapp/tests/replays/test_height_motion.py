@@ -197,3 +197,41 @@ def test_an_updraft_still_starts_a_blackout_in_a_round_with_casts():
     b["movement_casts"] = 1
     [(u0, u1)] = hm.blackouts(b, GEO)[0]
     assert 3.9 <= u0 <= 4.01 and 7.3 <= u1 <= 7.55
+
+
+def test_the_measurement_counts_casts_bursts_flights_and_the_staircase():
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    import measure_height_motion as measure
+
+    dash = ("A", [(0.0, 160, Y, 0, 0.0), (2.0, 160, Y, 0, 0.0), (2.3, 216, Y, 0, 0.0), (10.0, 216, Y, 0, 0.0)])
+    cast = {"k": "ability", "t": 6.0, "t1": 6.5, "by": 0, "kind": "GameObject", "code": "Wushu", "name": "4_Smoke",
+            "u": 0, "v": 0}
+    hop = flown(lambda t: 4.6 * (t - 1) - 10 * (t - 1) ** 2 if 1 <= t < 1.46 else 0.0, seconds=10.0)
+    b = fast_blob({0: dash, 1: stair_run(), 2: hop}, util=[cast])     # control_toys.blob makes every player a Jett
+    m = measure.measure([("match-0", 1, b)], GEO, rect=(21, ROW, 26, ROW))
+    assert dict(m["hz"]) == {FAST_HZ: 1} and m["segments_with_z"] == 3
+    assert m["agent_rounds"]["Jett"] == 1 and m["casts"] == {("Jett", "Wushu_4_Smoke"): 1}
+    text = "\n".join(measure.lines("Toy", m, (21, ROW, 26, ROW)))
+    assert "Jett: 1 rounds; casts recorded: {'Wushu_4_Smoke': 1}" in text and "Raze: 0 rounds" in text
+    assert m["rect_windows"] > 0 and m["rect_walk"] / m["rect_windows"] > 0.9, "the stairs are a walk"
+    assert max(float(s.max()) for s in m["speed"]["movers"]) > 12, "the dash is in the speeds"
+    assert len(m["flights"]) == 1 and 0.4 <= m["flights"][0] <= 0.6, "the jump is the one flight"
+    assert 15 <= m["gravity"][0] <= 25 and "gravity read off the 1 flights" in text
+
+
+def test_steep_descent_measurement_does_not_filter_out_what_the_air_rule_rejects():
+    import measure_height_motion as measure
+
+    # 2.9 m/s horizontally, slope 1.5: a steady slide candidate, which the current air rule calls airborne.
+    seconds = 4.0
+    pixels = 2.9 * seconds / GEO.m_per_px
+    track = ("A", [(0.0, 160, Y, 0, 20.0), (seconds, 160 + pixels, Y, 0, 20.0 - 1.5 * 2.9 * seconds)])
+    b = fast_blob({0: track}, t_end=seconds)
+    _, _, x, y, z = next(hm.tracks(b))
+    assert hm.airborne(x, y, z.astype(float), FAST_HZ, GEO.m_per_px).mean() > 0.8
+    got = measure.measure([("match-a", 1, b), ("match-b", 1, b)], GEO)
+    assert got["steep"] and max(map(len, got["steep"].values())) == 2
+    assert "steady descent candidates" in "\n".join(measure.lines("Toy", got))
