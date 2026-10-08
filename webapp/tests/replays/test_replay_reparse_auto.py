@@ -1217,3 +1217,324 @@ def test_pg_the_cycle_and_the_archive_sync_collect_one_attempt_once(pg, condense
     assert (row.status, row.store_outcome, row.replay_id) == ("stored", "replaced", stored.id)
     assert stored.recipe == condensed.recipe
     session.close()
+
+
+# ---------------------------------------------------------------- status: the route and --status (task 7)
+
+SNAPSHOT_CALLS = {"health", "archive"}   # all a status read may ask the worker
+
+
+def frozen(db) -> list:
+    db.expire_all()
+    return [(u.id, u.status, u.error, u.finished_at, u.worker_job_id, dict(u.auto_context or {}))
+            for u in db.query(ReplayUpload).order_by(ReplayUpload.id)]
+
+
+STOPPED = {
+    "the switch": (lambda m, w: m.setattr(settings, "replay_reparse_auto", False), "REPLAY_REPARSE_AUTO is off"),
+    "site control": (lambda m, w: m.setattr(settings, "replay_control_remote", False), "REPLAY_CONTROL_REMOTE"),
+    "no url": (lambda m, w: m.setattr(settings, "replay_worker_url", None), "no replay worker URL"),
+    "demo": (lambda m, w: m.setattr(settings, "demo_mode", True), "demo mode"),
+    "unreachable": (lambda m, w: setattr(w, "down", True), "unreachable"),
+    "recipe skew": (lambda m, w: w.health_body.update(recipe="recipe-z"), "recipe skew"),
+    "archive off": (lambda m, w: w.health_body["archive"].update(enabled=False), "archive is off"),
+    "worker control off": (lambda m, w: w.health_body["control"].update(enabled=False), "map control is off"),
+    "no gaps protocol": (lambda m, w: w.health_body["control"].pop("gaps_protocol"), "timing-gaps protocol"),
+    "another gaps protocol": (lambda m, w: w.health_body["control"].update(gaps_protocol=2), "timing-gaps protocol"),
+    "no re-parse protocol": (lambda m, w: w.health_body["archive"].pop("reparse_protocol"), "re-parse protocol"),
+    "another re-parse protocol": (lambda m, w: w.health_body["archive"].update(reparse_protocol=2),
+                                  "re-parse protocol"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(STOPPED))
+def test_status_gives_the_stopped_reason_the_step_acts_on(db, on, monkeypatch, case):
+    replay, worker = stale_one(db)
+    change, said = STOPPED[case]
+    change(monkeypatch, worker)
+    body = auto.status(db, worker, NOW)
+    assert body["running"] is False and said in body["reason"] and body["waiting_on"] is None
+    assert body["site_recipe"] == NEW and body["counts"]["current"] == 0
+    assert set(worker.calls) <= SNAPSHOT_CALLS and frozen(db) == []
+    # Only a stop on this site's side leaves the worker's index readable, so the counts are real before the
+    # owner switches on; a worker that doesn't match is asked for nothing more than its health.
+    site_side = case in ("the switch", "site control", "no url")
+    assert body["counts"]["eligible" if site_side else "unknown"] == 1
+    assert ("archive" in worker.calls) == site_side and (case != "demo" or worker.calls == [])
+    worker.calls.clear()
+    held_by_step, counts = run(on, worker)
+    assert held_by_step == frozenset() and counts == {}, "the same gates: the step holds and reserves nothing"
+
+
+def test_status_counts_every_state_and_lists_what_gave_up_and_what_is_unfinished(db, on):
+    add_replay(db, 1, source="local")                                          # local, though stale and archived
+    add_replay(db, 2, recipe=NEW)                                              # current
+    add_replay(db, 3, played=T0 - timedelta(days=3))                           # eligible
+    resolving = add_attempt(db, add_replay(db, 4), phase="reserved", status="queued")
+    flying = add_attempt(db, add_replay(db, 5), phase="accepted", status="parsing")
+    add_attempt(db, add_replay(db, 6), finished=T0 - timedelta(minutes=5),     # backoff: its result expired
+                error="the result expired on the worker before it was collected")
+    gone = add_replay(db, 7)
+    for hours in (5, 3):
+        add_attempt(db, gone, finished=T0 - timedelta(hours=hours), error="parse failed (this patch)")
+    add_replay(db, 8)                                                          # no archive
+    add_replay(db, 9, build="++Ares-Core+release-01.00")                       # a build the parser can't read
+    db.add(ReplayDeletion(match_uuid=match_uuid(10), reason="asked"))
+    add_replay(db, 10)
+    worker = ProtocolWorker(files={**index(1, 2, 3, 4, 5, 6, 7, 9, 10), match_uuid(11): sha(11)})
+    add_replay(db, 11)
+    worker.files[match_uuid(11)] = sha(99)                                     # another recording is archived
+    before = frozen(db)
+    body = auto.status(db, worker, NOW)
+    assert body["running"] is True and body["reason"] is None
+    assert body["counts"] == {"deleted": 1, "local": 1, "current": 1, "resolving": 1, "in_flight": 1, "gave_up": 1,
+                              "unsupported_build": 1, "unknown": 0, "no_archive": 1, "other_recording": 1,
+                              "backoff": 1, "eligible": 1}
+    assert body["gave_up"] == [{"match_uuid": match_uuid(7), "map": "Ascent", "attempts": 2,
+                                "last_error": "parse failed (this patch)"}]
+    assert sorted((a["attempt_id"], a["state"], a["match_uuid"], a["target_recipe"], a["deferred"])
+                  for a in body["attempts"]) == sorted([(resolving.id, "resolving", match_uuid(4), NEW, None),
+                                                        (flying.id, "in_flight", match_uuid(5), NEW, None)])
+    assert body["waiting_on"] == "an attempt is unfinished"
+    assert (body["site_recipe"], body["worker_recipe"]) == (NEW, NEW)
+    assert body["worker"] == {"reachable": True, "archive_enabled": True, "reparse_protocol": 1,
+                              "control_enabled": True, "gaps_protocol": 1}
+    assert set(worker.calls) == SNAPSHOT_CALLS and frozen(db) == before, "read only: nothing sent, closed, collected"
+    assert worker.receipts == {} and not db.new and not db.dirty
+    import json
+
+    json.dumps(body)   # the route returns it as JSON
+
+
+@pytest.mark.parametrize("side", ["an older site beside a newer worker", "a newer site beside an older worker"])
+def test_status_shows_an_attempt_a_mismatched_deployment_leaves_alone(db, on, monkeypatch, side):
+    replay = add_replay(db, 1, recipe="recipe-0", played=T0)
+    attempt = add_attempt(db, replay, target=NEW, phase="reserved", status="queued")
+    worker = ProtocolWorker(recipe=NEW, files=index(1))
+    if side.startswith("an older site"):
+        monkeypatch.setattr(uploads, "_site_recipe", OLD)
+    else:
+        worker.health_body["recipe"] = OLD
+    body = auto.status(db, worker, NOW)
+    assert body["running"] is False and "recipe skew" in body["reason"]
+    [shown] = body["attempts"]
+    assert (shown["attempt_id"], shown["state"], shown["target_recipe"]) == (attempt.id, "resolving", NEW)
+    assert "recipe skew" in shown["deferred"] and worker.calls == ["health"]
+    assert body["counts"]["resolving"] == 1, "its replay still reads as waiting for it"
+
+
+@pytest.mark.parametrize("gate, said", [("queued", "uploads queued"), ("upload", "an upload is unfinished"),
+                                        ("settling", "settled less than"), ("index", "archive index"),
+                                        ("none", None)])
+def test_status_names_what_the_next_attempt_waits_on(db, on, gate, said):
+    replay, worker = stale_one(db)
+    if gate == "queued":
+        worker.health_body["queued"] = 2
+    elif gate == "upload":
+        db.add(ReplayUpload(id=str(uuid.uuid4()), status="parsing", session_key="sess", created_at=T0))
+        db.commit()
+    elif gate == "settling":
+        add_attempt(db, add_replay(db, 2, recipe=NEW), target=OLD, finished=T0 - timedelta(seconds=30))
+    elif gate == "index":
+        worker.archive = worker.health_error
+    body = auto.status(db, worker, NOW)
+    assert body["running"] is True, "running says switched on and matching, not that a parse may start now"
+    assert body["waiting_on"] == said if said is None else said in body["waiting_on"]
+    assert body["counts"]["unknown" if gate == "index" else "eligible"] == 1
+
+
+def test_status_reports_a_restoration_still_pending_and_the_rounds_that_wait(db, replaced):
+    replay, waiting, worker = replaced
+    put_row(db, replay, 1)
+    body = auto.status(db, worker, NOW)
+    rounds = replay.round_count
+    assert body["restoration_pending"] == {"match_uuid": replay.match_uuid.lower(), "replay_id": replay.id,
+                                           "control_rounds": rounds - 1, "gap_rounds": 1}
+    assert "not back yet" in body["waiting_on"] and body["counts"]["eligible"] == 1
+    assert body["rounds"] == {"control_waiting": rounds - 1, "gaps_waiting": 1, "held_back": 0}
+    for n in range(2, rounds + 1):
+        put_row(db, replay, n)
+    for n in range(1, rounds + 1):
+        put_gap_run(db, replay, n)
+    body = auto.status(db, worker, NOW)
+    assert body["restoration_pending"] is None and body["waiting_on"] is None
+    assert body["rounds"] == {"control_waiting": 0, "gaps_waiting": 0, "held_back": 0}
+
+
+def test_status_counts_the_rounds_held_back_for_a_re_parse(db, on, uploaded):
+    stale, local, worker, _ = uploaded
+    all_control(db, local)
+    body = auto.status(db, worker, NOW)
+    assert body["counts"]["eligible"] == 1 and body["counts"]["local"] == 1
+    assert body["rounds"] == {"control_waiting": 0, "gaps_waiting": local.round_count,
+                              "held_back": stale.round_count}
+
+
+# -- the route, over real HTTP semantics: the ASGI app is driven directly (httpx is not a dependency here)
+
+
+def http_get(app, path: str, token: str | None = None) -> tuple[int, dict | None]:
+    import asyncio
+    import json
+
+    sent: list[dict] = []
+    headers = [(b"host", b"testserver")]
+    if token is not None:
+        headers.append((b"authorization", f"Bearer {token}".encode()))
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET", "scheme": "http",
+             "path": path, "raw_path": path.encode(), "query_string": b"", "root_path": "", "headers": headers,
+             "client": ("127.0.0.1", 1), "server": ("testserver", 80)}
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(app(scope, receive, send))
+    status = next(m["status"] for m in sent if m["type"] == "http.response.start")
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return status, (json.loads(body) if body else None)
+
+
+@pytest.fixture
+def site(monkeypatch):
+    """An app with the admin routes, a database every thread sees (a sync route runs in a worker thread),
+    one stale uploaded replay, and the fake worker behind `uploads.client`."""
+    from fastapi import FastAPI
+    from sqlalchemy.pool import StaticPool
+
+    from app.db import get_db
+    from app.routers import replay_admin
+
+    pg_settings(monkeypatch)
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine, tables=[*CONTROL_TABLES, ReplayUpload.__table__])
+    session = sessionmaker(bind=engine)()
+    replay, worker = stale_one(session)
+    monkeypatch.setattr(settings, "replay_admin_token", "s3cret")
+    monkeypatch.setattr(uploads, "client", lambda: worker)
+    app = FastAPI()
+    app.include_router(replay_admin.router)
+    app.dependency_overrides[get_db] = lambda: session
+    yield app, worker, session
+    session.close()
+
+
+PATH = "/admin/replays/reparse/status"
+
+
+def test_the_status_route_answers_only_the_admin(site, monkeypatch):
+    app, worker, db = site
+    for token in (None, "wrong", ""):
+        assert http_get(app, PATH, token) == (404, {"detail": "Not Found"}), token
+    assert worker.calls == [], "to anyone else the route does not exist, and nothing is asked of the worker"
+    status_code, body = http_get(app, PATH, "s3cret")
+    assert status_code == 200 and body["running"] is True and body["counts"]["eligible"] == 1
+    assert set(body) == set(auto.status(db, worker)) and set(worker.calls) == SNAPSHOT_CALLS
+    monkeypatch.setattr(settings, "replay_admin_token", None)
+    assert http_get(app, PATH, "s3cret")[0] == 404, "no token configured: off"
+    monkeypatch.setattr(settings, "replay_admin_token", "s3cret")
+    monkeypatch.setattr(settings, "demo_mode", True)
+    assert http_get(app, PATH, "s3cret")[0] == 404, "never on the demo"
+    assert http_get(app, "/admin/replays/reparse/nothing", "s3cret")[0] == 404
+
+
+def test_the_status_route_answers_without_a_worker_url_and_changes_nothing(site, monkeypatch):
+    app, worker, db = site
+    add_attempt(db, db.query(Replay).one(), phase="reserved", status="queued")
+    before = frozen(db)
+    monkeypatch.setattr(settings, "replay_worker_url", None)
+    status_code, body = http_get(app, PATH, "s3cret")
+    assert status_code == 200 and body["running"] is False and "no replay worker URL" in body["reason"]
+    assert body["counts"]["resolving"] == 1 and body["attempts"][0]["state"] == "resolving"
+    assert worker.calls == [] and frozen(db) == before
+    monkeypatch.setattr(settings, "replay_worker_url", "http://127.0.0.1:9")
+    assert http_get(app, PATH, "s3cret")[0] == 200
+    assert set(worker.calls) <= SNAPSHOT_CALLS and frozen(db) == before and worker.receipts == {}
+    # The manual route beside it is still there, with its own method.
+    from app.routers import replay_admin
+
+    paths = {(route.path, tuple(sorted(route.methods))) for route in replay_admin.router.routes}
+    assert {("/admin/replays/reparse", ("POST",)), (PATH, ("GET",))} <= paths
+
+
+# -- the script
+
+
+@pytest.fixture
+def script():
+    sys.path.insert(0, str(HERE.parents[1] / "scripts"))
+    import reparse_archive
+
+    return reparse_archive
+
+
+def test_the_script_describes_a_running_queue_from_the_routes_answer(db, on, script):
+    gone = add_replay(db, 7)
+    for hours in (5, 3):
+        add_attempt(db, gone, finished=T0 - timedelta(hours=hours), error="parse failed")
+    attempt = add_attempt(db, add_replay(db, 4), phase="reserved", status="queued")
+    add_replay(db, 2, recipe=NEW)
+    import json
+
+    body = json.loads(json.dumps(auto.status(db, ProtocolWorker(files=index(4, 7)), NOW)))   # as it arrives
+    lines = script.describe(body)
+    assert lines[0] == "automatic re-parse: running"
+    assert lines[1] == f"recipes: site {NEW}, worker {NEW}"
+    assert lines[2] == "worker: archive on, re-parse protocol 1, map control on, gaps protocol 1"
+    assert lines[3] == "replays: 1 current, 1 resolving, 1 gave up"
+    assert lines[4] == "next attempt waits: an attempt is unfinished"
+    assert lines[5].startswith(f"attempt {attempt.id}: resolving, match {match_uuid(4)}, for {NEW}, since ")
+    assert lines[6] == f"gave up: {match_uuid(7)}  Ascent  after 2 attempt(s): parse failed"
+    assert lines[7] == "rounds waiting: 0 for map control, 0 for timing gaps, 0 held back for a re-parse"
+    assert len(lines) == 8
+
+
+def test_the_script_describes_a_stopped_queue_and_a_pending_restoration(script):
+    lines = script.describe({
+        "running": False, "reason": "recipe skew: the site is on a, the worker on b", "site_recipe": "a",
+        "worker_recipe": "b", "counts": {"current": 0, "unknown": 3},
+        "worker": {"reachable": True, "archive_enabled": True, "reparse_protocol": None, "control_enabled": False,
+                   "gaps_protocol": 1},
+        "attempts": [{"attempt_id": "x", "state": "in_flight", "match_uuid": "m", "target_recipe": "b",
+                      "reserved_at": "2026-10-07T12:00:00+00:00", "deferred": "recipe skew"}],
+        "gave_up": [], "waiting_on": None,
+        "restoration_pending": {"match_uuid": "m2", "replay_id": 5, "control_rounds": 4, "gap_rounds": 2},
+        "rounds": {"control_waiting": 4, "gaps_waiting": 2, "held_back": 0}})
+    assert lines == [
+        "automatic re-parse: stopped: recipe skew: the site is on a, the worker on b",
+        "recipes: site a, worker b",
+        "worker: archive on, re-parse protocol not reported, map control off, gaps protocol 1",
+        "replays: 3 unknown",
+        "attempt x: in_flight, match m, for b, since 2026-10-07T12:00:00+00:00 (left as it is: recipe skew)",
+        "restoration pending: m2 still needs 4 control round(s) and 2 gap round(s)",
+        "rounds waiting: 4 for map control, 2 for timing gaps, 0 held back for a re-parse"]
+    assert script.describe({"running": False, "reason": "the replay worker is unreachable",
+                            "worker": {"reachable": False}})[2:4] == ["worker: unreachable", "replays: none stored"]
+
+
+def test_status_on_the_script_reads_one_route_and_never_reparses(script, monkeypatch, capsys):
+    calls = []
+
+    def call(site, method, path, body=None):
+        calls.append((site, method, path, body))
+        return {"running": False, "reason": "REPLAY_REPARSE_AUTO is off", "site_recipe": "a", "worker_recipe": "a",
+                "worker": {"reachable": True}, "counts": {"eligible": 2}}
+
+    monkeypatch.setattr(script, "call", call)
+    assert script.main(["--status", "--site", "http://site.test"]) == 0
+    assert calls == [("http://site.test", "GET", "/admin/replays/reparse/status", None)]
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "automatic re-parse: stopped: REPLAY_REPARSE_AUTO is off" and "replays: 2 eligible" in out
+
+    def failing(site, method, path, body=None):
+        raise script.AdminError("404: the admin routes are off (no REPLAY_ADMIN_TOKEN on the site) or the token is wrong")
+
+    monkeypatch.setattr(script, "call", failing)
+    assert script.main(["--status"]) == 1
+    shown = capsys.readouterr()
+    assert shown.out == "" and "could not read the status: 404" in shown.err
+    # Without --status the script is what it was: it reads the archive first.
+    monkeypatch.setattr(script, "call", lambda site, method, path, body=None: calls.append(path) or {"files": []})
+    assert script.main(["--dry-run"]) == 0 and calls[-1] == "/admin/replays/archive"

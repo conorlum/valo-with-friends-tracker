@@ -5,9 +5,13 @@ Use it after a condenser change so stored replays pick up what the old revision 
     REPLAY_ADMIN_TOKEN=<from the Render dashboard>
     .venv\\Scripts\\python.exe scripts\\reparse_archive.py [--map Ascent] [--since 2026-10-01] [--match UUID]
                                                        [--dry-run] [--site URL]
+    .venv\\Scripts\\python.exe scripts\\reparse_archive.py --status [--site URL]
 
 `--since` compares the match's date (known once the replay linked to a crawled match) or, without one, the
 date the file was archived. Reparses share the worker's queue with uploads, behind them.
+
+`--status` prints where the site's automatic re-parse queue stands (REPLAY_REPARSE_AUTO;
+app/services/replay_reparse_auto.py) and exits: it re-parses nothing and changes nothing.
 """
 
 from __future__ import annotations
@@ -38,6 +42,46 @@ def select(files: list[dict], map_name: str | None, since: str | None, match: st
     return sorted(chosen, key=lambda e: e.get("played_at") or e.get("accepted_at") or "")
 
 
+def describe(body: dict) -> list[str]:
+    """The lines `--status` prints for the answer of GET /admin/replays/reparse/status."""
+    def shown(value) -> str:
+        if value is None:
+            return "not reported"
+        if isinstance(value, bool):   # before the numbers: a protocol 1 is not "on"
+            return "on" if value else "off"
+        return str(value)
+
+    worker = body.get("worker") or {}
+    lines = ["automatic re-parse: " + ("running" if body.get("running") else f"stopped: {body.get('reason')}"),
+             f"recipes: site {body.get('site_recipe')}, worker {body.get('worker_recipe') or 'unknown'}"]
+    if worker.get("reachable"):
+        lines.append(f"worker: archive {shown(worker.get('archive_enabled'))}, re-parse protocol "
+                     f"{shown(worker.get('reparse_protocol'))}, map control {shown(worker.get('control_enabled'))}, "
+                     f"gaps protocol {shown(worker.get('gaps_protocol'))}")
+    else:
+        lines.append("worker: unreachable")
+    counts = body.get("counts") or {}
+    lines.append("replays: " + (", ".join(f"{n} {state.replace('_', ' ')}" for state, n in counts.items() if n)
+                                or "none stored"))
+    if body.get("waiting_on"):
+        lines.append(f"next attempt waits: {body['waiting_on']}")
+    for attempt in body.get("attempts") or []:
+        lines.append(f"attempt {attempt.get('attempt_id')}: {attempt.get('state')}, match {attempt.get('match_uuid')}, "
+                     f"for {attempt.get('target_recipe')}, since {attempt.get('reserved_at')}"
+                     + (f" (left as it is: {attempt['deferred']})" if attempt.get("deferred") else ""))
+    for entry in body.get("gave_up") or []:
+        lines.append(f"gave up: {entry.get('match_uuid')}  {entry.get('map')}  after {entry.get('attempts')} "
+                     f"attempt(s): {entry.get('last_error')}")
+    pending = body.get("restoration_pending")
+    if pending:
+        lines.append(f"restoration pending: {pending.get('match_uuid')} still needs {pending.get('control_rounds')} "
+                     f"control round(s) and {pending.get('gap_rounds')} gap round(s)")
+    rounds = body.get("rounds") or {}
+    lines.append(f"rounds waiting: {rounds.get('control_waiting', 0)} for map control, "
+                 f"{rounds.get('gaps_waiting', 0)} for timing gaps, {rounds.get('held_back', 0)} held back for a re-parse")
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--map", help="only this map (as the replay names it, e.g. Ascent)")
@@ -45,7 +89,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--match", help="only this match UUID")
     parser.add_argument("--dry-run", action="store_true", help="list what would be reparsed and stop")
     parser.add_argument("--site", default=DEFAULT_SITE, help=f"the site (default {DEFAULT_SITE})")
+    parser.add_argument("--status", action="store_true",
+                        help="print where the automatic re-parse queue stands and stop; changes nothing")
     args = parser.parse_args(argv)
+    if args.status:
+        try:
+            body = call(args.site, "GET", "/admin/replays/reparse/status")
+        except AdminError as error:
+            print(f"could not read the status: {error}", file=sys.stderr)
+            return 1
+        print("\n".join(describe(body)), flush=True)
+        return 0
     try:
         files = call(args.site, "GET", "/admin/replays/archive").get("files", [])
     except AdminError as error:

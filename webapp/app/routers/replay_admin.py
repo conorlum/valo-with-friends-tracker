@@ -10,6 +10,8 @@ Every route answers 404 unless REPLAY_ADMIN_TOKEN is set (and not in demo mode) 
     GET  /admin/replays/archive      the worker's archive index.
     POST /admin/replays/reparse      {"match_uuid"}: parse the archived file again; {"upload_id"}.
     GET  /admin/replays/uploads/{id} one poll of that reparse (the same refresh_job as an upload).
+    GET  /admin/replays/reparse/status  where the automatic re-parse queue stands
+                                     (app/services/replay_reparse_auto.py, `status`). Read only.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from app.db import get_db
 from app.models.replay import Replay, ReplayDeletion, ReplayUpload
 from app.replays import db as replay_db
 from app.replays import store
+from app.services import replay_reparse_auto as reparse_auto
 from app.services import replay_upload as uploads
 
 router = APIRouter(prefix="/admin/replays", tags=["replay-admin"])
@@ -109,6 +112,12 @@ def reparse(body: dict = Body(...), db: Session = Depends(get_db)):
     db.add(upload)
     db.commit()
     return {"upload_id": upload.id, "job_id": job.get("id")}
+
+
+@router.get("/reparse/status", dependencies=[Depends(require_admin)])
+def reparse_auto_status(db: Session = Depends(get_db)):
+    # No worker URL is a stopped reason in the answer, not an error: the counts still come from the database.
+    return reparse_auto.status(db, uploads.client() if settings.replay_worker_url else None)
 
 
 @router.get("/uploads/{upload_id}", dependencies=[Depends(require_admin)])

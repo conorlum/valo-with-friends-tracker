@@ -22,6 +22,7 @@ tries start again from zero, but an unfinished attempt of an older recipe still 
   attempt, commits it, and only then asks the worker. The reservation's id is the worker's idempotency key:
   whatever is lost afterwards (the reply, this process, the commit that records the acceptance), the same id
   is looked up or sent again and can only ever have one job. A second row is never the answer to doubt.
+- `status`: the same checks and counts, read only, for `GET /admin/replays/reparse/status`.
 
 `now` is float epoch seconds everywhere here; a naive `finished_at` (sqlite) is read as UTC.
 """
@@ -29,6 +30,7 @@ tries start again from zero, but an unfinished attempt of an older recipe still 
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -518,3 +520,87 @@ def _owed(session) -> frozenset[int]:
                 and (replay.recipe, replay.source_sha256) == (context["source_recipe"], context["source_sha256"])):
             out.add(replay.id)
     return frozenset(out)
+
+
+# ---------------------------------------------------------------- status (read only)
+
+
+def status(session, worker, now: float | None = None) -> dict:
+    """Where the automatic queue stands, for the admin route and `reparse_archive.py --status`. It reads the
+    database, the worker's /health and, when the worker matches this site, its archive index; it never
+    submits, closes or collects an attempt, and changes nothing.
+
+    `running` says the queue is switched on and the worker matches (the same two checks `step` makes): it
+    does not say a parse is running now, nor that the pacing gates would let the next one start. `waiting_on`
+    names the gate that holds the next reservation, as far as the route can see it (it can't see this
+    process's map-control tasks in flight)."""
+    now = time.time() if now is None else now
+    recipe = uploads.site_recipe()
+    site_off = off_reason(recipe)
+    health = None
+    if worker is not None and not settings.demo_mode:
+        try:
+            health = worker.health()
+        except uploads.WorkerError:
+            health = None
+    worker_off = uploads.worker_off_reason(health, recipe) if worker is not None else "no replay worker URL is set"
+    reason = site_off or worker_off
+    index = None
+    if worker_off is None:
+        try:
+            index = index_of(worker.archive())
+        except uploads.WorkerError:
+            index = None
+    entries = classify(session, recipe, index, supported_builds(), now)
+    counts = {state: 0 for state in STATES}
+    for entry in entries:
+        counts[entry.state] += 1
+    unfinished = unfinished_attempts(session)
+    attempts = []
+    for upload in unfinished:
+        context = uploads.auto_context(upload)
+        attempts.append({
+            "attempt_id": upload.id,
+            "match_uuid": context["match_uuid"] if context else None,
+            "target_recipe": uploads.auto_recipe(upload.session_key),
+            # resolving: reserved, and not known to be accepted. in_flight: the worker has its one job.
+            "state": "unreadable" if context is None else "in_flight" if context["phase"] == "accepted" else "resolving",
+            "reserved_at": upload.created_at.isoformat() if upload.created_at else None,
+            # While this site and the worker don't match, the attempt is left exactly as it is.
+            "deferred": worker_off,
+        })
+    pending = restoration(session, recipe)
+    holding = held(entries) if reason is None else _owed(session)
+    todo = [p for p in replay_control.plan(session) if p.computable and p.reason in ("missing", "stale")]
+    gaps = replay_gaps.plan_gaps(session, todo, replay_control.plan(session, force=True))
+    waiting_on = None
+    if reason is None:
+        if unfinished:
+            waiting_on = "an attempt is unfinished"
+        elif index is None:
+            waiting_on = "the worker's archive index could not be read"
+        else:
+            waiting_on = busy_reason(session, health, 0)
+        if waiting_on is None and settling(session, now):
+            waiting_on = f"the last attempt settled less than {SETTLE_S} s ago"
+        if waiting_on is None and pending is not None:
+            waiting_on = "the last replacement's map control and timing gaps are not back yet"
+    archive, control = (health or {}).get("archive") or {}, (health or {}).get("control") or {}
+    return {
+        "running": reason is None,
+        "reason": reason,
+        "site_recipe": recipe,
+        "worker_recipe": health.get("recipe") if isinstance(health, dict) else None,
+        "worker": {"reachable": isinstance(health, dict), "archive_enabled": archive.get("enabled"),
+                   "reparse_protocol": archive.get("reparse_protocol"), "control_enabled": control.get("enabled"),
+                   "gaps_protocol": control.get("gaps_protocol")},
+        "counts": counts,
+        "gave_up": [{"match_uuid": e.match_uuid, "map": e.map_name, "attempts": e.attempts,
+                     "last_error": e.last_error} for e in entries if e.state == "gave_up"],
+        "attempts": attempts,
+        "waiting_on": waiting_on,
+        "restoration_pending": pending,
+        "rounds": {"control_waiting": sum(p.replay_id not in holding for p in todo),
+                   "gaps_waiting": sum(p.replay_id not in holding for p in gaps),
+                   "held_back": sum(p.replay_id in holding for p in [*todo, *gaps])},
+    }
