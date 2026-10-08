@@ -242,6 +242,10 @@ def group_cell(z: np.ndarray, rounds: np.ndarray, matches: np.ndarray,
         kinds.append(hc.KIND_STANDS if groups else hc.KIND_WALKS)
     if len(floors) > hc.MAX_FLOORS:
         return [], TOO_MANY, hc.KIND_NONE
+    # Loose samples can lower a band's percentile after its supported levels were separated.
+    # Check the heights we actually emit, not just the levels that anchored the bands.
+    if any(b[0] - a[0] < hc.FLOOR_SEP_M * DM for a, b in zip(floors, floors[1:])):
+        return [], TOO_CLOSE, hc.KIND_NONE
     return floors, None, kinds[0] if kinds else hc.KIND_NONE
 
 
