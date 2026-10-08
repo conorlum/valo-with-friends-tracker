@@ -2,6 +2,7 @@
 the ack sent after a store, `kept_existing` shown to its uploader as stored, the re-send and tombstone sync, and the admin
 routes. Against the real worker with the stub parser and its archive in a temp folder; sqlite store."""
 
+import hashlib
 import io
 import sys
 import threading
@@ -380,7 +381,9 @@ def test_an_automatic_attempt_runs_end_to_end_and_the_sync_collects_it(engine, d
         httpd.shutdown()
 
 
-def test_the_automatic_step_recovers_a_lost_reply_through_the_real_worker(engine, db, tmp_path, stub, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize("receipt_write_fails", [False, True])
+def test_the_automatic_step_recovers_a_lost_reply_through_the_real_worker(engine, db, tmp_path, stub, monkeypatch,
+                                                                      receipt_write_fails):  # noqa: F811
     """Task 5 of the same plan against the real worker: the step reserves, the worker accepts and its reply
     is lost, and later passes (with no memory of the first) find the same attempt, collect its one job and
     replace the replay."""
@@ -398,6 +401,21 @@ def test_the_automatic_step_recovers_a_lost_reply_through_the_real_worker(engine
         replay.recipe = "old"   # as if stored by an earlier deploy
         db.commit()
         factory = sessionmaker(bind=engine)
+        parsed, failures = [], []
+        process, write_receipt = worker._process, worker.archive.write_receipt
+
+        def count_parse(job):
+            parsed.append(job.id)
+            return process(job)
+
+        def fail_once(attempt_hex, receipt):
+            if receipt_write_fails and receipt["state"] == "accepted" and not failures:
+                failures.append(attempt_hex)
+                raise OSError("injected acceptance receipt failure")
+            write_receipt(attempt_hex, receipt)
+
+        monkeypatch.setattr(worker, "_process", count_parse)
+        monkeypatch.setattr(worker.archive, "write_receipt", fail_once)
 
         class LosesTheReply(uploads.WorkerClient):
             def reparse(self, *args, **kwargs):
@@ -429,5 +447,33 @@ def test_the_automatic_step_recovers_a_lost_reply_through_the_real_worker(engine
         assert (stored.recipe, stored.source, stored.id) == (target, "upload", row.replay_id)
         again = client.reparse(MATCH_UUID, attempt_id=attempt, expected_sha256=stored.source_sha256)
         assert (again["code"], again["job_id"]) == ("accepted", uploads.auto_job_id(attempt)), "never a second job"
+        assert parsed == [uploads.auto_job_id(attempt)]
+        assert bool(failures) is receipt_write_fails
+        assert auto.unfinished_attempts(db) == []
+        # Restoration remains a separate gate. Once the owner deletes the first replay, a different
+        # stale uploaded replay can be reserved: this I/O failure did not leave the site-wide gate stuck.
+        from test_replay_reparse_auto import add_replay
+
+        db.add(ReplayDeletion(match_uuid=MATCH_UUID, reason="synthetic queue test"))
+        waiting = add_replay(db, 2, build=stored.game_branch)
+        data = vrf_bytes().replace(MATCH_UUID.upper().encode("utf-16-le"),
+                                   waiting.match_uuid.upper().encode("utf-16-le"))
+        data = data.replace(MATCH_UUID.encode("ascii"), waiting.match_uuid.encode("ascii"))
+        waiting.source_sha256 = hashlib.sha256(data).hexdigest()
+        db.commit()
+        worker.archive.path_of(waiting.match_uuid).write_bytes(data)
+        worker.archive.index[waiting.match_uuid] = {"sha256": waiting.source_sha256, "size": len(data),
+                                                   "accepted_at": "2026-10-07T00:00:00+00:00"}
+        counts = {}
+        auto.step(factory, client, auto.Memo(), 0, time.time() + auto.SETTLE_S + 1, counts)
+        assert counts["reparse_reserved"] == counts["reparse_sent"] == 1
+        next_attempt = auto.unfinished_attempts(db)[0]
+        assert next_attempt.auto_context["selected_replay_id"] == waiting.id
+        from test_replay_worker import wait
+
+        assert wait(base, next_attempt.worker_job_id)["status"] == "done"
+        assert uploads.collect_auto(db, next_attempt.id, client) == "finished"
+        assert db.get(ReplayUpload, next_attempt.id).status == "stored"
+        assert parsed == [uploads.auto_job_id(attempt), next_attempt.worker_job_id]
     finally:
         httpd.shutdown()

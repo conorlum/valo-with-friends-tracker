@@ -10,6 +10,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import pytest
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
@@ -580,5 +582,148 @@ def test_a_restored_disk_with_another_job_under_an_accepted_id_fails_that_attemp
         status, answer = attempt(base, sha)
         assert (status, answer["code"], answer["job_status"]) == (200, "accepted", "failed")
         assert auto_jobs(disk) == [ATTEMPT_JOB] and worker.reparse_queue.empty()
+    finally:
+        httpd.shutdown()
+
+
+def test_an_acceptance_write_failure_still_runs_one_job_without_a_restart(tmp_path, stub, monkeypatch):  # noqa: F811
+    disk, sha = plant_archive(tmp_path, vrf_bytes())
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    write_receipt = worker.archive.write_receipt
+    failures, parsed = [], []
+    process = worker._process
+
+    def fail_once(attempt_hex, receipt):
+        if receipt['state'] == 'accepted' and not failures:
+            failures.append(attempt_hex)
+            raise OSError('injected acceptance write failure')
+        write_receipt(attempt_hex, receipt)
+
+    def count_parse(job):
+        parsed.append(job.id)
+        return process(job)
+
+    monkeypatch.setattr(worker.archive, 'write_receipt', fail_once)
+    monkeypatch.setattr(worker, '_process', count_parse)
+    try:
+        assert attempt(base, sha)[1]['code'] == 'accepted'
+        assert wait(base, ATTEMPT_JOB)['status'] == 'done'
+        for response in (lookup(base), attempt(base, sha), close(base, sha)):
+            assert response[1]['job_id'] == ATTEMPT_JOB and response[1]['job_status'] == 'done'
+        assert failures == [ATTEMPT.replace('-', '')] and parsed == [ATTEMPT_JOB]
+        assert worker.reparse_queue.empty()
+    finally:
+        httpd.shutdown()
+
+
+def damage_read(monkeypatch, path, failure):
+    """Damage exactly one durable record, leaving unrelated archive and job reads working."""
+    if failure == 'unreadable':
+        original = Path.read_text
+
+        def read_text(target, *args, **kwargs):
+            if target == path:
+                raise PermissionError('injected record read failure')
+            return original(target, *args, **kwargs)
+
+        monkeypatch.setattr(Path, 'read_text', read_text)
+    elif failure == 'timestamps':
+        record = json.loads(path.read_text(encoding='utf-8'))
+        record['finished'] = 'not a timestamp'
+        path.write_text(json.dumps(record), encoding='utf-8')
+    else:
+        path.write_text({'json': '{', 'structure': '[]', 'fields': '{"state": "accepted"}'}[failure],
+                        encoding='utf-8')
+
+
+@pytest.mark.parametrize('cleanup', ['forget', 'sweep'])
+def test_cleanup_keeps_the_job_until_its_acceptance_receipt_can_be_written(tmp_path, stub, monkeypatch,
+                                                                        cleanup):  # noqa: F811
+    disk, sha = plant_archive(tmp_path, vrf_bytes())
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    original = worker.archive.write_receipt
+
+    def unavailable(attempt_hex, receipt):
+        if receipt['state'] == 'accepted':
+            raise OSError('the acceptance receipt is still unwritable')
+        original(attempt_hex, receipt)
+
+    monkeypatch.setattr(worker.archive, 'write_receipt', unavailable)
+    try:
+        assert attempt(base, sha)[1]['code'] == 'accepted'
+        assert wait(base, ATTEMPT_JOB)['status'] == 'done'
+        worker.reparse_queue.join()   # wait until the parse's final job record is written
+        if cleanup == 'forget':
+            monkeypatch.setattr(server, 'FINISHED_KEPT', 0)
+            clean = worker._forget_old
+        else:
+            worker.get(ATTEMPT_JOB).finished = time.time() - arc.UNCOLLECTED_TTL_S - 10
+            clean = worker._sweep
+        clean()
+        assert worker.get(ATTEMPT_JOB) is not None and (disk / 'jobs' / ATTEMPT_JOB / 'job.json').exists()
+        assert lookup(base)[0] == 503, 'the lookup cannot yet promote the receipt, and enqueues nothing'
+        monkeypatch.setattr(worker.archive, 'write_receipt', original)
+        clean()
+        assert worker.get(ATTEMPT_JOB) is None and auto_jobs(disk) == []
+        assert attempt(base, sha)[1]['job_status'] == 'expired'
+        assert worker.reparse_queue.empty(), 'the old accepted id is never parsed again after cleanup'
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.parametrize('state', ['closed', 'accepted'])
+@pytest.mark.parametrize('failure', ['unreadable', 'json', 'structure', 'fields'])
+@pytest.mark.parametrize('route', [lookup, attempt, close])
+def test_a_damaged_receipt_never_reopens_or_removes_an_attempt(tmp_path, stub, monkeypatch, state, failure,
+                                                            route):  # noqa: F811
+    disk, sha = plant_archive(tmp_path, vrf_bytes())
+    plant_receipt(disk, state, sha, **({'job_id': ATTEMPT_JOB, 'size': 1} if state == 'accepted' else {}))
+    folder = plant_job(disk, vrf_bytes(), sha, status='done', with_file=False, finished=time.time())
+    arc.write_json(folder / 'result.json', {'match_uuid': MATCH_UUID})
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    receipt_path = disk / 'attempts' / (ATTEMPT.replace('-', '') + '.json')
+    try:
+        damage_read(monkeypatch, receipt_path, failure)
+        before = {p.relative_to(disk): p.read_bytes() for p in disk.rglob('*') if p.is_file()}
+        response = route(base) if route is lookup else route(base, sha)
+        assert response[0] == 503 and response[1]['code'] == 'state_unavailable'
+        after = {p.relative_to(disk): p.read_bytes() for p in disk.rglob('*') if p.is_file()}
+        assert after == before, 'a read failure preserves the fence, result and job record'
+        assert worker.reparse_queue.empty()
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.parametrize('failure', ['unreadable', 'json', 'structure', 'fields'])
+@pytest.mark.parametrize('route', [lookup, attempt, close])
+def test_a_preparing_attempt_with_a_damaged_job_record_is_left_alone(tmp_path, stub, monkeypatch, failure,
+                                                                   route):  # noqa: F811
+    disk, sha = plant_archive(tmp_path, vrf_bytes())
+    plant_receipt(disk, 'preparing', sha)
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    folder = plant_job(disk, vrf_bytes(), sha)
+    try:
+        damage_read(monkeypatch, folder / 'job.json', failure)
+        before = {p.relative_to(disk): p.read_bytes() for p in disk.rglob('*') if p.is_file()}
+        response = route(base) if route is lookup else route(base, sha)
+        assert response[0] == 503 and response[1]['code'] == 'state_unavailable'
+        assert {p.relative_to(disk): p.read_bytes() for p in disk.rglob('*') if p.is_file()} == before
+        assert worker.get(ATTEMPT_JOB) is None and worker.reparse_queue.empty()
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.parametrize('failure', ['unreadable', 'json', 'structure', 'fields', 'timestamps'])
+def test_startup_preserves_a_damaged_automatic_job_record(tmp_path, stub, monkeypatch, failure):  # noqa: F811
+    disk, sha = plant_archive(tmp_path, vrf_bytes())
+    plant_receipt(disk, 'preparing', sha)
+    folder = plant_job(disk, vrf_bytes(), sha)
+    damage_read(monkeypatch, folder / 'job.json', failure)
+    before = {p.relative_to(disk): p.read_bytes() for p in disk.rglob('*') if p.is_file()}
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    try:
+        assert lookup(base)[0] == 503
+        assert {p.relative_to(disk): p.read_bytes() for p in disk.rglob('*') if p.is_file()} == before
+        assert worker.get(ATTEMPT_JOB) is None and worker.reparse_queue.empty()
     finally:
         httpd.shutdown()

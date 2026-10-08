@@ -72,6 +72,11 @@ and the worker gives that id exactly one job.
 - Every answer of these routes is JSON with a `code`; callers branch on it, not on the HTTP status. The
   definite refusals (`no_archived_file`, `sha_mismatch`, `deleted`, `identity_conflict`, `bad_request`) leave
   no job; `queue_full` (`503`) leaves nothing at all.
+- Unreadable or malformed receipts and automatic job records return `503 state_unavailable`: the caller
+  retries the same id, and the worker preserves the files and fences. Only a missing record means absent.
+- Once the preparation and job record are durable, a failed final acceptance-receipt write still schedules
+  that job once. Lookup or restart can promote the preparation later. Cleanup retains the job and its
+  acceptance evidence until the permanent receipt can be written, so expiry cannot allow a second parse.
 - A receipt is a file of about 300 bytes in `attempts/` on the archive disk, written before the job and kept
   after the job and its result are swept: an old caller may still ask for its id. They count toward the
   archive's space and are not cleaned up.

@@ -57,11 +57,14 @@ one id is one job, whatever is lost or restarted in between. Every answer is JSO
     POST /reparse/attempts/{id}/close  {"match_uuid", "expected_sha256"}: the accepted job if there is one;
                                otherwise a durable "closed" receipt, so a delayed POST of the id is refused.
                                Closing never interrupts an accepted parse.
+    Any attempt route returns 503 state_unavailable if its durable records cannot safely be read or written;
+                               an unreadable receipt is never treated as an unknown id.
 
 The write order of an acceptance is: the receipt as `preparing`, the copied file, the job's `job.json`, the
 receipt as `accepted`, the queue, the reply. A restart between any two of them leaves one job at most
 (`Worker._recover_attempts`). An accepted id whose job folder has gone answers `expired`; it is never parsed
-a second time.
+a second time. If the final receipt write fails, the durable preparation and job record still prove
+acceptance and the job is queued once. Cleanup keeps that evidence until the acceptance receipt is durable.
 
 These routes are as unauthenticated as /jobs: the service is private, reachable only from the web service.
 
@@ -398,7 +401,7 @@ class Worker:
             record = {"status": job.status, "sha256": job.sha256, "match_uuid": job.match_uuid,
                       "attempt_id": job.attempt_id}
         else:
-            record = archive_store.read_json(self.archive.jobs / receipt["job_id"] / "job.json", None)
+            record = self._attempt_record(self.archive.jobs / receipt["job_id"])
         if record is None:
             return "expired"
         same = all(str(record.get(k) or "").lower() == receipt[k] for k in ("attempt_id", "match_uuid", "sha256"))
@@ -420,11 +423,33 @@ class Worker:
         receipt = self.archive.receipt(attempt_hex)
         if receipt is not None and receipt.get("state") == "preparing":
             job_id = f"auto{attempt_hex}"
-            record = archive_store.read_json(self.archive.jobs / job_id / "job.json", None)
+            record = self._attempt_record(self.archive.jobs / job_id)
             if record is not None:
                 receipt = {**receipt, "state": "accepted", "job_id": job_id, "size": record.get("size")}
                 self.archive.write_receipt(attempt_hex, receipt)
         return receipt
+
+    @staticmethod
+    def _attempt_record(folder: Path) -> dict | None:
+        """Read an automatic job without confusing damaged state with an unfinished preparation."""
+        record = archive_store.read_attempt_json(folder / "job.json")
+        if record is None:
+            return None
+        try:
+            valid = (record["id"] == folder.name and record["kind"] == "reparse"
+                     and record["status"] in ("queued", "parsing", "done", "failed")
+                     and isinstance(record["match_uuid"], str) and bool(record["match_uuid"])
+                     and isinstance(record["sha256"], str) and len(record["sha256"]) == 64
+                     and all(c in "0123456789abcdef" for c in record["sha256"])
+                     and type(record["size"]) is int and record["size"] >= 0
+                     and all(record.get(key) is None or type(record[key]) in (int, float)
+                             for key in ("created", "finished", "parse_seconds")))
+            uuid.UUID(record["attempt_id"])
+        except (KeyError, ValueError, TypeError, AttributeError):
+            valid = False
+        if not valid:
+            raise archive_store.AttemptStateError(f"invalid automatic job record {folder.name}")
+        return record
 
     def reparse_attempt(self, attempt_id, match_uuid, expected_sha256) -> tuple[int, dict]:
         """POST /reparse with an attempt id: (HTTP status, answer)."""
@@ -474,7 +499,12 @@ class Worker:
             job = Job(job_id, folder, actual, size, kind="reparse", match_uuid=match_uuid, attempt_id=attempt)
             self._save(job, strict=True)
             receipt = {**receipt, "state": "accepted", "job_id": job_id, "size": size, "accepted": time.time()}
-            self.archive.write_receipt(attempt_hex, receipt)
+            try:
+                self.archive.write_receipt(attempt_hex, receipt)
+            except OSError:
+                # The preparing receipt and job.json already durably identify this acceptance. A failed
+                # final receipt write must not strand that job until restart; lookup can promote it later.
+                traceback.print_exc()
             self.reparse_queue.put_nowait(job)   # room was seen under this lock, and only the parse thread takes
         self._admitted(job)
         return HTTPStatus.ACCEPTED, self._attempt_answer(receipt)
@@ -663,10 +693,27 @@ class Worker:
     def _forget_old(self) -> None:
         with self.lock:
             finished = sorted((j for j in self.jobs.values() if j.finished), key=lambda j: j.finished)
-            for job in finished[:-FINISHED_KEPT]:
-                del self.jobs[job.id]
-                if self.archive is not None:
-                    shutil.rmtree(job.folder, ignore_errors=True)
+        discard = finished[:-FINISHED_KEPT] if FINISHED_KEPT else finished
+        for job in discard:
+            if self.archive is None or self._drop_job_folder(job):
+                with self.lock:
+                    self.jobs.pop(job.id, None)
+
+    def _drop_job_folder(self, job: Job) -> bool:
+        """Keep the acceptance evidence until its unswept receipt is durable, even after repeated I/O errors."""
+        with self.admission:
+            if job.attempt_id:
+                try:
+                    receipt = self._settled_receipt(job.attempt_id.replace("-", ""))
+                except (archive_store.AttemptStateError, OSError):
+                    traceback.print_exc()
+                    return False
+                if (receipt is None or receipt["state"] != "accepted"
+                        or (receipt["job_id"], receipt["match_uuid"], receipt["sha256"])
+                        != (job.id, job.match_uuid, job.sha256)):
+                    return False
+            shutil.rmtree(job.folder, ignore_errors=True)
+        return True
 
     # -------------------------------------------------------------- the archive's job records
 
@@ -691,7 +738,16 @@ class Worker:
         over), done and failed ones are readable again. A folder without a job.json is debris."""
         records = []
         for folder in self.archive.jobs.iterdir():
-            record = archive_store.read_json(folder / "job.json", None)
+            if folder.name.startswith("auto"):
+                try:
+                    record = self._attempt_record(folder)
+                except archive_store.AttemptStateError:
+                    # Leave evidence for the attempt routes to report as unavailable. Deleting it would
+                    # turn an accepted attempt into a new preparation on the next retry.
+                    traceback.print_exc()
+                    continue
+            else:
+                record = archive_store.read_json(folder / "job.json", None)
             if not folder.is_dir() or record is None:
                 shutil.rmtree(folder, ignore_errors=True)
                 continue
@@ -732,11 +788,11 @@ class Worker:
             cutoff = time.time() - archive_store.UNCOLLECTED_TTL_S
             with self.lock:
                 stale = [j for j in self.jobs.values() if j.finished and j.finished < cutoff]
-                for job in stale:
-                    del self.jobs[job.id]
             for job in stale:
-                shutil.rmtree(job.folder, ignore_errors=True)
-                _log(f"job {job.id} was never collected; deleted")
+                if self._drop_job_folder(job):
+                    with self.lock:
+                        self.jobs.pop(job.id, None)
+                    _log(f"job {job.id} was never collected; deleted")
         except Exception:  # noqa: BLE001
             traceback.print_exc()
 
@@ -1008,7 +1064,11 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
                 body["recipe"] = worker.recipe
                 return self._send(HTTPStatus.OK, body)
             if self.path.startswith("/reparse/attempts/"):
-                return self._send(*worker.attempt_status(self.path[len("/reparse/attempts/"):]))
+                try:
+                    answer = worker.attempt_status(self.path[len("/reparse/attempts/"):])
+                except (archive_store.AttemptStateError, OSError):
+                    return self._attempt_unavailable()
+                return self._send(*answer)
             if self.path == "/archive":
                 if worker.archive is None:
                     return self._send(HTTPStatus.NOT_FOUND, {"error": "the archive is off"})
@@ -1076,13 +1136,20 @@ def make_handler(worker: Worker, control: ControlRunner | None = None):
             body = self._json() if body is None else body
             if body is None:
                 return self._send(HTTPStatus.BAD_REQUEST, {"code": "bad_request", "error": "not JSON"})
-            if close_id is not None:
-                status, answer = worker.close_attempt(close_id, body.get("match_uuid"), body.get("expected_sha256"))
-            else:
-                status, answer = worker.reparse_attempt(body.get("attempt_id"), body.get("match_uuid"),
-                                                        body.get("expected_sha256"))
-                worker._before_reply(answer)
+            try:
+                if close_id is not None:
+                    status, answer = worker.close_attempt(close_id, body.get("match_uuid"), body.get("expected_sha256"))
+                else:
+                    status, answer = worker.reparse_attempt(body.get("attempt_id"), body.get("match_uuid"),
+                                                            body.get("expected_sha256"))
+                    worker._before_reply(answer)
+            except (archive_store.AttemptStateError, OSError):
+                return self._attempt_unavailable()
             return self._send(status, answer)
+
+        def _attempt_unavailable(self):
+            return self._send(HTTPStatus.SERVICE_UNAVAILABLE,
+                              {"code": "state_unavailable", "error": "the attempt's durable state is unavailable; retry later"})
 
         def _archive_post(self):
             body = self._json()

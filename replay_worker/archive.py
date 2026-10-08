@@ -78,6 +78,23 @@ def read_json(path: Path, default):
         return default
 
 
+class AttemptStateError(Exception):
+    """A durable attempt record exists but cannot safely be interpreted. Never means absent."""
+
+
+def read_attempt_json(path: Path) -> dict | None:
+    """Only a missing file means absent; unreadable or corrupt attempt state must preserve its fence."""
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        raise AttemptStateError(f"cannot read attempt record {path.name}") from error
+    if not isinstance(record, dict):
+        raise AttemptStateError(f"invalid attempt record {path.name}")
+    return record
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -232,10 +249,27 @@ class Archive:
     # ------------------------------------------------------------------ re-parse attempt receipts
 
     def receipt(self, attempt_hex: str) -> dict | None:
-        return read_json(self.attempts / f"{attempt_hex}.json", None)
+        receipt = read_attempt_json(self.attempts / f"{attempt_hex}.json")
+        if receipt is None:
+            return None
+        try:
+            attempt = str(uuid.UUID(receipt["attempt_id"]))
+            valid = (attempt.replace("-", "") == attempt_hex and receipt["attempt_id"] == attempt
+                     and isinstance(receipt["match_uuid"], str) and bool(receipt["match_uuid"])
+                     and receipt["match_uuid"] == receipt["match_uuid"].strip().lower()
+                     and isinstance(receipt["sha256"], str) and len(receipt["sha256"]) == 64
+                     and all(c in "0123456789abcdef" for c in receipt["sha256"])
+                     and receipt["state"] in ("preparing", "accepted", "closed"))
+            if receipt["state"] == "accepted":
+                valid = valid and receipt["job_id"] == f"auto{attempt_hex}"
+        except (KeyError, ValueError, TypeError, AttributeError):
+            valid = False
+        if not valid:
+            raise AttemptStateError(f"invalid attempt receipt {attempt_hex}")
+        return receipt
 
     def write_receipt(self, attempt_hex: str, receipt: dict) -> None:
-        """Atomic, and an error is the caller's to see: an attempt is never accepted on an unwritten receipt."""
+        """Atomic; errors propagate. A durable preparation plus job.json also proves acceptance."""
         write_json(self.attempts / f"{attempt_hex}.json", receipt)
 
     def drop_receipt(self, attempt_hex: str) -> None:
