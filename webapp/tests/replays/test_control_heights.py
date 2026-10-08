@@ -175,6 +175,21 @@ def test_a_stray_stand_between_two_floors_is_nobodys_floor():
         "the single stand at 2.5 m is a band of its own, too thin to be a floor; a floor is its low end"
 
 
+@pytest.mark.parametrize("loose_z, reason", [(15, hb.TOO_CLOSE), (20, None)])
+def test_final_floor_heights_keep_the_minimum_separation(loose_z, reason):
+    # Supported bands at 0 and 20..30 dm start 2 m apart. Three unsupported low samples
+    # join the upper band and can pull its 10th percentile down to 15 dm.
+    z = np.array([0] * 6 + [25] * 6 + [20] * 6 + [30] * 6 + [loose_z] * 3, float)
+    rounds = np.tile(np.arange(6), 5)[:len(z)]
+    stand = np.array([True] * 12 + [False] * 15)
+    floors, why, kind = hb.group_cell(z, rounds, rounds // 3, stand)
+    assert why == reason
+    if reason:
+        assert floors == [] and kind == hc.KIND_NONE
+    else:
+        assert [h for h, _ in floors] == [0, 20], "exactly 2 m apart remains valid"
+
+
 # ---------------------------------------------------------------- fill, connections, areas, readiness
 
 GRID = 128
