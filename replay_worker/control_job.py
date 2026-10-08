@@ -2,7 +2,8 @@
 
     <control venv python> -m replay_worker.control_job  < task.json  > result.json
 
-The task (stdin): `{"key", "map", "blob" (base64 of the stored gzip blob), "link": {"sides", "db_deaths"}}`.
+The task (stdin): `{"key", "map", "blob" (base64 of the stored gzip blob), "link": {"sides", "db_deaths"}}`
+and optionally `"height"` (the digest of the map's heights, already pushed to this worker's cache).
 The result (stdout): app/control/task.py's result with the bytes in base64, plus the engine's
 CONTROL_REVISION and DATA_VERSION and the hash of the game figures it read, so the web app can drop a result
 from another deploy. A task with a `gaps` block also returns the round's timing gaps; its tick cache file is

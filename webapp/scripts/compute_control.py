@@ -16,7 +16,8 @@ minutes in the background). About 45 core-seconds per average round.
   again, unless `--retry-failed`; `--force` recomputes everything chosen. Rounds of a map without
   the control layer (`no_map`) and blobs from before condenser revision 10 (`old_blob`) are
   listed, never computed. `--match <uuid>`, `--map <Map>` and `--round <n>` (repeatable) narrow the
-  set; after committing one map's heights, `--map <Map>` recomputes just that map's stale rounds.
+  set; after a map's heights change (a new active row in `control_heights`), `--map <Map>` recomputes
+  just that map's stale rounds; the asset is read from the database into `webapp/.control_cache/heights/`.
 - **Timing gaps** (docs/superpowers/specs/2026-10-02-timing-gaps-design.md, section 7): every computed
   round also gets its timing gaps, in their own failure boundary (a gap failure never changes the
   control row). Also every round whose control is fresh and ok but whose timing gaps are missing or
@@ -157,6 +158,29 @@ def store_result(session_factory, planned, result: dict) -> str:
     return store_round(session_factory, planned.replay_id, planned.round_number, planned.fingerprint, result)
 
 
+def cache_heights(session, maps) -> dict[str, str]:
+    """{map: digest} for the maps whose heights are in the database, each asset written to the local control
+    cache (app/control/geometry.py `height_cache_path`) when it isn't there yet."""
+    from app.control import geometry
+    from app.services import control_heights
+
+    out = {}
+    active = control_heights.active_digests(session)
+    for name in maps:
+        digest = active.get(name)
+        if not digest:
+            continue
+        path = geometry.height_cache_path(name, digest)
+        if not path.is_file():
+            data = control_heights.asset_bytes(session, name, digest)
+            if data is None:
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        out[name] = digest
+    return out
+
+
 def run(planned, args, session_factory) -> int:
     import multiprocessing
 
@@ -164,10 +188,15 @@ def run(planned, args, session_factory) -> int:
     from app.models.replay import ReplayRound
 
     todo = [p for p in planned if p.computable]
+    reader = session_factory()   # blobs are read as their rounds start, not all up front
+    heights = cache_heights(reader, sorted({p.map_name for p in todo}))
+    reader.rollback()
     for name in sorted({p.map_name for p in todo}):
         started = time.time()
-        geo = geometry.visibility(geometry.load_geometry(name))
-        print(f"{name}: visibility {geo.visibility_source} in {time.time() - started:.0f}s", flush=True)
+        cached = geometry.height_cache_path(name, heights[name]) if name in heights else None
+        geo = geometry.visibility(geometry.load_geometry(name, heights=cached))
+        print(f"{name}: visibility {geo.visibility_source} in {time.time() - started:.0f}s"
+              + (f" (heights {heights[name]})" if name in heights else ""), flush=True)
 
     headroom = int(args.headroom_gb * GB)
     cores = os.cpu_count() or 2
@@ -175,7 +204,6 @@ def run(planned, args, session_factory) -> int:
     most = worker_count(args.workers, cores)
     print(f"{len(todo)} round(s), up to {most} at once ({cores} cores), fewer while under {args.headroom_gb:g} GB "
           f"would be free", flush=True)
-    reader = session_factory()   # blobs are read as their rounds start, not all up front
     pool = multiprocessing.get_context("spawn").Pool(processes=most)
     pending, running = list(reversed(range(len(todo)))), {}   # key -> (AsyncResult, start time)
     done, failed, sizes, started, measured, finished = 0, [], [], time.time(), False, []
@@ -204,6 +232,8 @@ def run(planned, args, session_factory) -> int:
                 task = {"key": key, "map": p.map_name, "blob": blob, "link": p.link,
                         "gaps": {"replay_id": p.replay_id, "round": p.round_number, "fingerprint": p.fingerprint},
                         "gaps_only": p.reason == "gaps"}
+                if p.map_name in heights:
+                    task["height"] = heights[p.map_name]
                 running[key] = (pool.apply_async(compute_task, (task,)), time.time())
             for key in [k for k, (r, _) in running.items() if r.ready()]:
                 result = running.pop(key)[0].get()

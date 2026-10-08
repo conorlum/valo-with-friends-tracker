@@ -250,7 +250,7 @@ def test_the_wrong_generation_is_the_machines_failure_not_the_rounds(published, 
 
     folder, sha, _ = published
     geo = cg.load_geometry("Ascent", folder)
-    monkeypatch.setattr(ct, "_load", lambda name, heights=None: geo)
+    monkeypatch.setattr(ct, "_load", lambda name, heights=None, digest=None: geo)
     out = ct.compute_task({"key": "k", "map": "Ascent", "blob": b"", "link": {"sides": {}, "db_deaths": []},
                            "features": "0123456789abcdef"})
     assert out["status"] == "failed" and out["error_kind"] == "infra" and "expected feature generation" in out["error"]

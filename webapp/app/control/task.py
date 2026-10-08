@@ -4,7 +4,10 @@ Run by scripts/compute_control.py's worker processes and by the replay worker's 
 (replay_worker/control_job.py; docs/map-control-worker-plan.md). A task is
 `{"key", "map", "blob" (the stored gzip bytes), "link": {"sides", "db_deaths"}}`; the result is
 `{"status": "ok", "data", "summary", "missing", "geometry"}` or `{"status": "failed", "error",
-"error_kind"}`, plus the key, the seconds it took and the process's peak memory.
+"error_kind"}`, plus the key, the seconds it took and the process's peak memory. A task may name the map's
+heights by digest (`"height"`): the asset is then read from the control cache (`geometry.height_cache_path`),
+where the replay worker's `/heights` endpoint or scripts/compute_control.py put it; a missing or wrong file is
+the machine's failure.
 
 `error_kind` says whether a failure is the round's own (`engine`: the engine or the formats refused
 it, and it would fail again with the same inputs) or the machine's (`infra`: memory, missing assets,
@@ -81,14 +84,36 @@ def geometry_used(geo) -> dict:
     return used
 
 
-def _load(name: str, heights: str | None = None):
+def height_file(name: str, digest: str) -> Path:
+    """The cached asset a task names, checked: it must be there and be that asset. A wrong file is removed."""
+    from app.control import geometry
+    from app.control import heights as hc
+
+    path = geometry.height_cache_path(name, digest)
+    if not path.is_file():
+        raise geometry.GeometryError(f"{name}: height asset {digest} is not on this machine")
+    try:
+        found = hc.load_asset(path).digest
+    except Exception as error:  # noqa: BLE001 - a truncated or foreign file
+        found = f"unreadable ({type(error).__name__})"
+    if found != digest:
+        path.unlink(missing_ok=True)
+        raise geometry.GeometryError(f"{name}: {path.name} is not the asset {digest} (it is {found})")
+    return path
+
+
+def _load(name: str, heights: str | None = None, digest: str | None = None):
     from app.control import features, geometry
 
+    if heights is None and digest:
+        heights = str(geometry.height_cache_path(name, digest))
     # A map's own geometry is keyed by its name; with an active feature generation, by that generation too, so
     # a worker never keeps computing with a superseded one (absent for every map today: the key is unchanged).
     generation = features.active_sha(name)
     key = name if heights is None and generation is None else (name, heights, generation)
     if key not in _GEOMETRY:
+        if digest:
+            height_file(name, digest)
         geo = geometry.load_geometry(name, heights=Path(heights) if heights else None)
         try:
             geometry.visibility(geo)
@@ -351,7 +376,7 @@ def compute_task(task: dict) -> dict:
         return {"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}",
                 "key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()}
     try:
-        geo = _load(task["map"], task.get("heights"))
+        geo = _load(task["map"], task.get("heights"), task.get("height"))
         if task.get("features"):           # the generation the dispatcher planned with (map features)
             verify_features(geo, task["features"], full=False)
         blob = fmt.decode_blob(task["blob"])
