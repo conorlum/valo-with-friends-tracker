@@ -5,28 +5,36 @@ command.
 Rounds in (`[(match id, round number, blob), ...]`, blobs of condenser revision 11, whose tracks carry z),
 a `HeightBuild` out:
 
-- **Stands, not samples.** Each player's track is cut into stands: runs of at least STAND_S in which z
-  stays within STAND_TOL_M of the run's median. Running up a slope, a jump, a rope, a boost's way up and a
-  fall make none. A short stand with lower ground just before and just after it is the top of a jump and
-  is dropped (STAND_APEX_S). Stands near a live temporary platform (heights.PLATFORMS) are dropped too. A
-  stand belongs to every cell its samples pass through, with its median z.
-- **Floors.** In each cell the stands are grouped by height (the densest FLOOR_TOL_M window first). A group
-  is a floor when it has FLOOR_MIN_STANDS stands from FLOOR_MIN_ROUNDS rounds in FLOOR_MIN_MATCHES
-  matches. Floors closer than FLOOR_SEP_M, a floor spread over more than FLOOR_SPREAD_MAX_M, or more than
-  MAX_FLOORS floors leave the cell unresolved, with the reason.
-- **Unsampled cells.** A walkable cell with no floor takes a ground floor when at least
-  FILL_MIN_NEIGHBOURS cells within FILL_R cells of it (by walking) have floors and all of those floors
-  agree within FILL_TOL_M: their median, and no upper floors. Otherwise it is unresolved. Filling never
-  averages across a drop, and a filled cell never fills another.
-- **Connections.** Floors of neighbouring cells (all 8) within STEP_UP_M connect both ways. A bigger step
-  connects only where it was walked: a stand on one followed within CONNECT_S by a stand on the other, in
-  CONNECT_MIN_ROUNDS rounds. Seen going up it connects both ways (what is climbed can be dropped from);
-  seen only going down it is one-way, a drop. Unresolved cells carry no connections here: the engine
-  gives them today's 2D walking.
+- **Stands and walks.** Each player's track is cut into stands: runs of at least STAND_S in which z stays within
+  STAND_TOL_M of the run's median. A short stand with lower ground just before and just after it is the top of
+  a jump and is dropped (STAND_APEX_S). What is left of the track gives walks (height_motion.py): runs in which
+  the player moves along the ground, uphill or down. For ABILITY_BLACKOUT_S after a movement ability a player
+  gives neither. Stands and walks near a live temporary platform (heights.PLATFORMS) lose those cells. A stand
+  belongs to every cell its samples pass through, with its median z; a walk gives each cell the lowest z it had
+  there.
+- **Floors.** In each cell those heights are grouped into levels: groups within FLOOR_TOL_M that have
+  FLOOR_MIN_STANDS of them from FLOOR_MIN_ROUNDS rounds in FLOOR_MIN_MATCHES matches. Levels less than
+  FLOOR_SEP_M apart are one band (a slope's levels chain); a height no level holds joins a band only within
+  FLOOR_TOL_M of it, so a stray sample between two floors is nobody's. A band's height is its low end
+  (LOW_PCT): a player can't be below the floor. The lowest band needs no stand; any band above it needs a group
+  of stands that passes the same rule. Two groups of stands in one band, a band
+  of stands alone spread over more than FLOOR_SPREAD_MAX_M, or more than MAX_FLOORS floors leave the cell
+  unresolved, with the reason.
+- **Unsampled cells.** A walkable cell with no floor takes a ground floor when at least FILL_MIN_NEIGHBOURS cells
+  within FILL_R cells of it (by walking) have floors and all of those floors agree within FILL_TOL_M: their
+  median, and no upper floors. Where they disagree, it is filled along the gradient when it has single-floor
+  neighbours directly beside it on opposite sides, no steeper than SLOPE_MAX between them, and a ground run
+  crossed from one to the other through it at those floors' heights: the mean of the pair. Otherwise it is unresolved. Filling never
+  averages across a drop nobody walked, and a filled cell never fills another.
+- **Connections.** Floors of neighbouring cells (all 8) within STEP_UP_M connect both ways. A bigger step connects
+  only where it was walked (CONNECT_MIN_ROUNDS rounds, or the run that crossed a gradient-filled cell). Seen
+  going up it connects both ways (what is climbed can be dropped from); seen only going down it is one-way: a
+  slide when the player stayed on the ground, a fall otherwise. Unresolved cells carry no connections here: the
+  engine gives them today's 2D walking.
 - **Unresolved areas, loudly.** Unresolved cells are grouped into areas (8-connected), each with its size,
   its bounding box in minimap px and why.
 - **Readiness.** `visited` is the share of walkable cells any sample fell in; `supported` the share with a
-  floor from stands (not filled). A map is ready at HEIGHT_SUPPORTED_MIN supported with no unresolved
+  floor from stands or walks (not filled). A map is ready at HEIGHT_SUPPORTED_MIN supported with no unresolved
   area larger than UNRESOLVED_MAX cells touching a cell with two floors.
 
 Local tooling only, like the engine: the web app never imports this module.
@@ -35,7 +43,7 @@ Local tooling only, like the engine: the web app never imports this module.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import hashlib
 from collections import Counter
@@ -48,6 +56,7 @@ from scipy.sparse.csgraph import connected_components
 from app.control import height_motion as hm
 from app.control import heights as hc
 from app.control.geometry import CELL, GRID, PX, Geometry
+from app.control.height_motion import Walk
 
 DM = 10.0     # decimetres per metre: every height in here is whole decimetres unless a name says _m
 
@@ -133,51 +142,107 @@ def platforms(blob: dict) -> list[tuple[float, float, float, float]]:
 
 
 def off_platforms(found: list[Stand], plats: list, geo: Geometry) -> list[Stand]:
-    """`found` without the cells within PLATFORM_R_M of a platform that was up during the stand: a stand
-    left with no cell is dropped. By cell, not by the stand's mean position: a long level walk that starts
-    on a wall has its mean far from it."""
+    """`found` (stands or walks) without the cells within PLATFORM_R_M of a platform that was up during the
+    run. A run left with no cell is dropped; one that loses cells in its middle becomes a run for each
+    stretch that is left (they keep the whole run's times, so nothing joins them again). By cell, not by the
+    run's mean position: a long level walk that starts on a wall has its mean far from it."""
     if not plats:
         return found
     r2 = (hc.PLATFORM_R_M / geo.m_per_px + CELL) ** 2      # a cell's centre is within a cell of its samples
     out = []
     for s in found:
         near = [(x, y) for t0, t1, x, y in plats if t0 <= s.t1 and s.t0 <= t1]
-        cells = tuple(c for c in s.cells
-                      if not any(((c % GRID + 0.5) * CELL - x) ** 2 + ((c // GRID + 0.5) * CELL - y) ** 2 <= r2
-                                 for x, y in near)) if near else s.cells
-        if cells:
-            out.append(s if cells == s.cells else Stand(s.round, s.slot, s.t0, s.t1, s.z, cells, s.x, s.y))
+        keep = [not any(((c % GRID + 0.5) * CELL - x) ** 2 + ((c // GRID + 0.5) * CELL - y) ** 2 <= r2
+                        for x, y in near) for c in s.cells] if near else [True] * len(s.cells)
+        if all(keep):
+            out.append(s)
+            continue
+        for i, j in hm._runs_of(np.array(keep)):      # each stretch that is left is a run of its own
+            cut = {"cells": s.cells[i:j]}
+            if isinstance(s, Walk):
+                cut["low"] = s.low[i:j]
+            out.append(replace(s, **cut))
     return out
 
 
-def group_cell(z: np.ndarray, rounds: np.ndarray, matches: np.ndarray) -> tuple[list[tuple[int, int]], str | None]:
-    """One cell's stands (median z in world dm, round index, match index each) as floors:
-    ([(height, spread), ...] lowest first, None), or ([], reason) when the cell can't be resolved, or
-    ([], None) when no group is a floor."""
+def _enough(count: int, rounds: np.ndarray, matches: np.ndarray) -> bool:
+    """The floor rule: FLOOR_MIN_STANDS of them, from FLOOR_MIN_ROUNDS rounds in FLOOR_MIN_MATCHES matches."""
+    return count >= hc.FLOOR_MIN_STANDS and len(set(rounds.tolist())) >= hc.FLOOR_MIN_ROUNDS \
+        and len(set(matches.tolist())) >= hc.FLOOR_MIN_MATCHES
+
+
+def _levels(z: np.ndarray, rounds: np.ndarray, matches: np.ndarray) -> list[np.ndarray]:
+    """The supported levels among some heights: groups (the densest FLOOR_TOL_M window first, then the next)
+    that pass the floor rule, each as a mask over `z`. A height no group holds is in none."""
     tol = hc.FLOOR_TOL_M * DM
     left = np.ones(len(z), bool)
-    floors = []
+    levels = []
     while left.any():
         zs = np.sort(z[left])
         counts = np.searchsorted(zs, zs + 2 * tol, side="right") - np.arange(len(zs))
         start = zs[int(np.argmax(counts))]       # the densest window (the lowest of equals)
         members = left & (z >= start) & (z <= start + 2 * tol)
-        for _ in range(2):                       # settle on the stands around the group's own median
+        for _ in range(2):                       # settle on the heights around the group's own median
             med = float(np.median(z[members]))
             members = left & (np.abs(z - med) <= tol)
         left &= ~members
-        if members.sum() >= hc.FLOOR_MIN_STANDS and len(set(rounds[members].tolist())) >= hc.FLOOR_MIN_ROUNDS \
-                and len(set(matches[members].tolist())) >= hc.FLOOR_MIN_MATCHES:
-            p10, p90 = np.percentile(z[members], [10, 90])
-            floors.append((int(round(float(np.median(z[members])))), int(round(float(p90 - p10)))))
-    floors.sort()
+        if _enough(int(members.sum()), rounds[members], matches[members]):
+            levels.append(members)
+    return levels
+
+
+def stand_groups(z: np.ndarray, rounds: np.ndarray, matches: np.ndarray) -> list[float]:
+    """The groups of stands that pass the floor rule: each one's 10th-to-90th percentile spread, in dm."""
+    out = []
+    for members in _levels(z, rounds, matches):
+        p10, p90 = np.percentile(z[members], [10, 90])
+        out.append(float(p90 - p10))
+    return out
+
+
+def group_cell(z: np.ndarray, rounds: np.ndarray, matches: np.ndarray,
+               stand: np.ndarray | None = None) -> tuple[list[tuple[int, int]], str | None, int]:
+    """One cell's ground samples (z in world dm, round index, match index, whether it is a stand: all of them
+    without `stand`) as floors: ([(height, spread), ...] lowest first, None, the ground floor's KIND_*), or
+    ([], reason, KIND_NONE) when the cell can't be resolved, or ([], None, KIND_NONE) when nothing is a floor.
+
+    Bands are built from supported levels only (`_levels`, over stands and walks alike): levels less than
+    FLOOR_SEP_M apart are one band, and a sample no level holds joins a band only when it lies within
+    FLOOR_TOL_M of it. So a stray sample between two floors bridges nothing and is nobody's; a slope's levels
+    chain into one band. The lowest band is a floor; any band above it also needs a group of stands that
+    passes the floor rule (a boost passes through the air above a cell). A floor's height is the low end of its
+    band (LOW_PCT, never the single lowest sample of several). Two groups of stands in one band are two
+    levels too close to tell apart; the stands of a band with no walk in it may not spread over
+    FLOOR_SPREAD_MAX_M."""
+    if stand is None:
+        stand = np.ones(len(z), bool)
+    tol = hc.FLOOR_TOL_M * DM
+    levels = sorted(_levels(z, rounds, matches), key=lambda m: float(z[m].min()))
+    bands: list[np.ndarray] = []
+    for members in levels:
+        if bands and z[members].min() - z[bands[-1]].max() < hc.FLOOR_SEP_M * DM:
+            bands[-1] = bands[-1] | members
+        else:
+            bands.append(members.copy())
+    loose = ~np.logical_or.reduce(levels) if levels else np.zeros(len(z), bool)
+    bands = [band | (loose & (z >= z[band].min() - tol) & (z <= z[band].max() + tol)) for band in bands]
+    floors, kinds = [], []
+    for members in bands:
+        zs, st = z[members], stand[members]
+        groups = stand_groups(zs[st], rounds[members][st], matches[members][st])
+        if not groups and (floors or st.all()):
+            continue      # above the ground, or with no walk in it, a band needs a group of stands
+        if len(groups) >= 2:
+            return [], TOO_CLOSE, hc.KIND_NONE
+        if st.all() and groups[0] > hc.FLOOR_SPREAD_MAX_M * DM:
+            return [], SPREAD, hc.KIND_NONE      # as before the slopes: the stands of one level, on a steep ramp
+        low, p10 = np.percentile(zs, [hc.LOW_PCT, 10], method="higher")
+        p90 = np.percentile(zs, 90, method="lower")
+        floors.append((int(round(float(low))), int(round(float(max(p90 - p10, 0))))))
+        kinds.append(hc.KIND_STANDS if groups else hc.KIND_WALKS)
     if len(floors) > hc.MAX_FLOORS:
-        return [], TOO_MANY
-    if any(b[0] - a[0] < hc.FLOOR_SEP_M * DM for a, b in zip(floors, floors[1:])):
-        return [], TOO_CLOSE
-    if any(spread > hc.FLOOR_SPREAD_MAX_M * DM for _, spread in floors):
-        return [], SPREAD
-    return floors, None
+        return [], TOO_MANY, hc.KIND_NONE
+    return floors, None, kinds[0] if kinds else hc.KIND_NONE
 
 
 @dataclass
@@ -187,45 +252,69 @@ class HeightBuild:
     stands: list = field(default_factory=list)
     reasons: dict = field(default_factory=dict)      # flat cell -> why it is unresolved
     ready: bool = False
+    walks: list = field(default_factory=list)
 
 
-def cell_floors(found: list[Stand], round_match: list[int], geo: Geometry) -> tuple[dict, dict]:
-    """({cell: [(height, spread), ...]}, {cell: reason}) over the walkable cells with stands."""
-    by_cell: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
+def cell_floors(found: list[Stand], round_match: list[int], geo: Geometry,
+                found_walks: list[Walk] = ()) -> tuple[dict, dict, dict]:
+    """({cell: [(height, spread), ...]}, {cell: reason}, {cell: the ground floor's KIND_*}) over the walkable
+    cells with ground samples. A stand gives each of its cells its median; a walk gives each of its cells the
+    lowest z it had there."""
+    by_cell: dict[int, list[tuple[int, int, int, bool]]] = defaultdict(list)
     for s in found:
         for cell in set(s.cells):
-            by_cell[cell].append((s.z, s.round, round_match[s.round]))
+            by_cell[cell].append((s.z, s.round, round_match[s.round], True))
+    for w in found_walks:
+        lows: dict[int, int] = {}
+        for cell, z in zip(w.cells, w.low):
+            lows[cell] = min(z, lows.get(cell, z))
+        for cell, z in lows.items():
+            by_cell[cell].append((z, w.round, round_match[w.round], False))
     walk = geo.walk.ravel()
-    floors, reasons = {}, {}
+    floors, reasons, kinds = {}, {}, {}
     for cell, rows in by_cell.items():
         if not walk[cell]:
             continue
-        z, rounds, matches = (np.array(col) for col in zip(*rows))
-        got, why = group_cell(z.astype(float), rounds, matches)
+        z, rounds, matches, stand = (np.array(col) for col in zip(*rows))
+        got, why, kind = group_cell(z.astype(float), rounds, matches, stand.astype(bool))
         if why is not None:
             reasons[cell] = why
         elif got:
-            floors[cell] = got
-    return floors, reasons
+            floors[cell], kinds[cell] = got, kind
+    return floors, reasons, kinds
 
 
-def all_stands(rounds: list, geo: Geometry) -> tuple[list[Stand], list[int], dict]:
-    """Every round's stands off platforms, each round's match index, and the counts."""
-    match_ids = sorted({str(match) for match, _, _ in rounds})
-    round_match = [match_ids.index(str(match)) for match, _, _ in rounds]
-    found, counts = [], {"stands": 0, "on_platforms": 0, "rounds": len(rounds), "matches": len(match_ids),
-                         "rounds_without_z": 0, "visited": np.zeros(GRID * GRID, bool)}
-    for i, (_, _, blob) in enumerate(rounds):
-        mine = stands(blob, geo, i)
+def all_ground(rounds, geo: Geometry) -> tuple[list[Stand], list[Walk], list[int], dict]:
+    """Every round's stands and walks, outside blackouts and off platforms; each round's match index; and the
+    counts. `rounds` is read once, a round at a time (it may be a generator)."""
+    found, found_walks, match_of, dt = [], [], [], []
+    counts = {"stands": 0, "walks": 0, "on_platforms": 0, "blackouts": 0, "rounds": 0, "matches": 0,
+              "rounds_without_z": 0, "visited": np.zeros(GRID * GRID, bool)}
+    for i, (match, _, blob) in enumerate(rounds):
+        match_of.append(str(match))
+        dt.append(1.0 / blob["hz"])
+        skip = hm.blackouts(blob, geo)
+        counts["blackouts"] += sum(len(spans) for spans in skip.values())
+        mine = stands(blob, geo, i, skip)
+        strides = hm.walks(blob, geo, i, mine, skip)
         for _, _, x, y, _ in _tracks(blob):
-            counts["visited"][(np.clip(y, 0, PX - 1).astype(int) // CELL) * GRID
-                              + np.clip(x, 0, PX - 1).astype(int) // CELL] = True
+            counts["visited"][hm.cells_of(x, y)] = True
         if not any("z" in seg for segs in (blob.get("tracks") or {}).values() for seg in segs):
             counts["rounds_without_z"] += 1
-        kept = off_platforms(mine, platforms(blob), geo)
+        plats = platforms(blob)
+        kept = off_platforms(mine, plats, geo)
         counts["on_platforms"] += len(mine) - len(kept)
         found += kept
-    counts["stands"] = len(found)
+        found_walks += off_platforms(strides, plats, geo)
+    match_ids = sorted(set(match_of))
+    counts.update({"stands": len(found), "walks": len(found_walks), "rounds": len(match_of),
+                   "matches": len(match_ids), "dt": dt})
+    return found, found_walks, [match_ids.index(m) for m in match_of], counts
+
+
+def all_stands(rounds, geo: Geometry) -> tuple[list[Stand], list[int], dict]:
+    """`all_ground` without the walks."""
+    found, _, round_match, counts = all_ground(rounds, geo)
     return found, round_match, counts
 
 
@@ -233,6 +322,8 @@ def all_stands(rounds: list, geo: Geometry) -> tuple[list[Stand], list[int], dic
 
 
 EIGHT = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+# a cell's neighbours directly beside it on opposite sides
+OPPOSITE = [((-1, 0), (1, 0)), ((0, -1), (0, 1)), ((-1, -1), (1, 1)), ((-1, 1), (1, -1))]
 
 
 def _neighbours(cell: int, walk: np.ndarray):
@@ -268,18 +359,97 @@ def fill(floors: dict, reasons: dict, geo: Geometry) -> tuple[dict, dict]:
     return filled, why
 
 
+def crossings(runs) -> dict:
+    """{(a, c, b): [(round, z in a, z in c, z in b), ...]}: each time a ground run (a walk, or a stand that
+    moves) went from cell a through c to b, a and b each within CROSS_REACH cells of c in the run's own order,
+    with the run's height in the three cells (world dm). `off_platforms` has already cut every run where it
+    lost cells, so a run never reaches across ground it wasn't seen on."""
+    seen: dict[tuple, list] = defaultdict(list)
+    for run in runs:
+        cells = run.cells
+        zs = [run.z] * len(cells) if isinstance(run, Stand) else run.low
+        for j, c in enumerate(cells):
+            for i in range(max(0, j - hc.CROSS_REACH), j):
+                for k in range(j + 1, min(len(cells), j + 1 + hc.CROSS_REACH)):
+                    a, b = cells[i], cells[k]
+                    if a != b and a != c and b != c:
+                        seen[(a, c, b)].append((run.round, zs[i], zs[j], zs[k]))
+    return seen
+
+
+def _on_floors(crossed: dict, a: int, c: int, b: int, ha: int, hb: int, reach: float) -> bool:
+    """Whether some run that went a -> c -> b did so on these two floors: in each anchor it was within `reach`
+    of that anchor's floor, it went the way the floors go, and in between it stayed between its two ends. A
+    run on a bridge over the anchors, or in a tunnel under them, crosses nothing of theirs."""
+    tol = hc.FLOOR_TOL_M * DM
+    for _, za, zc, zb in crossed.get((a, c, b), ()):
+        if abs(za - ha) <= reach and abs(zb - hb) <= reach and (zb - za) * (hb - ha) >= 0 \
+                and min(za, zb) - tol <= zc <= max(za, zb) + tol:
+            return True
+    return False
+
+
+def fill_gradient(floors: dict, why: dict, crossed: dict, geo: Geometry) -> tuple[dict, set]:
+    """The slopes `fill` refused (the slopes spec, part 3): ({cell: ground height}, {(from cell, to cell)}).
+    A NEIGHBOURS_DISAGREE cell is filled when it has sampled single-floor neighbours directly beside it on
+    opposite sides, no steeper than SLOPE_MAX between them, and a ground run crossed from one to the other
+    through it on those two floors (`crossings`, `_on_floors`: within one cell's steepest rise plus
+    FLOOR_TOL_M of each): it takes the mean of the pair. Several pairs must agree within FILL_TOL_M. The second
+    result is the steps those runs took (into the cell and out of it, in the direction seen), which `connect`
+    takes as walked on the ground. Only `floors` anchor a fill: a filled cell never fills another."""
+    filled, granted = {}, set()
+    tol = hc.FILL_TOL_M * DM
+    reach = (hc.SLOPE_MAX * geo.cell_m + hc.FLOOR_TOL_M) * DM
+    for cell, reason in why.items():
+        if reason != NEIGHBOURS_DISAGREE:
+            continue
+        y, x = divmod(cell, GRID)
+        means, steps = [], set()
+        for (ay, ax), (by, bx) in OPPOSITE:
+            if not (0 <= y + ay < GRID and 0 <= x + ax < GRID and 0 <= y + by < GRID and 0 <= x + bx < GRID):
+                continue
+            a, b = (y + ay) * GRID + x + ax, (y + by) * GRID + x + bx
+            if len(floors.get(a, ())) != 1 or len(floors.get(b, ())) != 1:
+                continue
+            ha, hb_ = floors[a][0][0], floors[b][0][0]
+            run_m = 2 * geo.cell_m * (2 ** 0.5 if ay and ax else 1.0)
+            if abs(ha - hb_) / DM > hc.SLOPE_MAX * run_m:
+                continue
+            ab = _on_floors(crossed, a, cell, b, ha, hb_, reach)
+            ba = _on_floors(crossed, b, cell, a, hb_, ha, reach)
+            if not (ab or ba):
+                continue
+            means.append((ha + hb_) / 2)
+            if ab:
+                steps |= {(a, cell), (cell, b)}
+            if ba:
+                steps |= {(b, cell), (cell, a)}
+        if means and max(means) - min(means) <= tol:
+            filled[cell] = int(round(float(np.mean(means))))
+            granted |= steps
+    return filled, granted
+
+
 def _floor_of(heights: list[int], z: int) -> int | None:
-    """The index of the floor a stand at z is on: the nearest within FLOOR_TOL_M."""
-    best = min(range(len(heights)), key=lambda i: abs(heights[i] - z), default=None)
-    return best if best is not None and abs(heights[best] - z) <= hc.FLOOR_TOL_M * DM else None
+    """The index of the floor a sample at z is on: the highest at or below it (FLOOR_TOL_M of slack), unless
+    that is FLOOR_SEP_M or more below (the sample is in the air, or on a level that isn't a floor)."""
+    best = None
+    for i, h in enumerate(heights):
+        if h <= z + hc.FLOOR_TOL_M * DM:
+            best = i
+    return best if best is not None and z - heights[best] < hc.FLOOR_SEP_M * DM else None
 
 
-def walked(found: list[Stand], heights: dict) -> dict:
-    """{(cell a, floor a, cell b, floor b): the rounds it was walked in}: a to b, neighbouring cells, from
-    the cells one stand passes through and from one stand to the same player's next within CONNECT_S."""
+def walked(found: list[Stand], heights: dict, found_walks: list[Walk] = (), dt: list[float] | None = None) -> tuple[dict, dict]:
+    """({(cell a, floor a, cell b, floor b): the rounds it was walked in}, the same for the walks made on the
+    ground): a to b, neighbouring cells. On the ground: the cells one stand or one walk passes through, and
+    from one of a player's runs to their next when no sample lies between them (`dt`: each round's sample
+    spacing). Not known to be on the ground: from one stand to the same player's next within CONNECT_S (a jump
+    down, a fall)."""
     seen: dict[tuple, set] = defaultdict(set)
+    ground: dict[tuple, set] = defaultdict(set)
 
-    def note(a: int, za: int, b: int, zb: int, rnd: int) -> None:
+    def note(a: int, za: int, b: int, zb: int, rnd: int, on_ground: bool) -> None:
         ay, ax = divmod(a, GRID)
         by, bx = divmod(b, GRID)
         if a == b or abs(ay - by) > 1 or abs(ax - bx) > 1 or a not in heights or b not in heights:
@@ -287,38 +457,65 @@ def walked(found: list[Stand], heights: dict) -> dict:
         fa, fb = _floor_of(heights[a], za), _floor_of(heights[b], zb)
         if fa is not None and fb is not None:
             seen[(a, fa, b, fb)].add(rnd)
+            if on_ground:
+                ground[(a, fa, b, fb)].add(rnd)
 
-    previous: Stand | None = None
-    for s in sorted(found, key=lambda s: (s.round, s.slot, s.t0)):
-        for a, b in zip(s.cells, s.cells[1:]):
-            note(a, s.z, b, s.z, s.round)
-        if previous is not None and (previous.round, previous.slot) == (s.round, s.slot) \
-                and 0 <= s.t0 - previous.t1 <= hc.CONNECT_S:
-            note(previous.cells[-1], previous.z, s.cells[0], s.z, s.round)
-        previous = s
-    return seen
+    def ends(run) -> tuple[int, int]:
+        return (run.z, run.z) if isinstance(run, Stand) else (run.low[0], run.low[-1])
+
+    def same_player(a, b) -> bool:
+        return a is not None and (a.round, a.slot) == (b.round, b.slot)
+
+    previous = last_stand = None
+    for run in sorted([*found, *found_walks], key=lambda r: (r.round, r.slot, r.t0)):
+        zs = [run.z] * len(run.cells) if isinstance(run, Stand) else run.low
+        for (a, za), (b, zb) in zip(zip(run.cells, zs), zip(run.cells[1:], zs[1:])):
+            note(a, za, b, zb, run.round, True)
+        # a walk that picks up where the last run stopped (or a stand where a walk did): one ground run. Two
+        # stands end to end are left to the rule below: a teleport reads as that.
+        if same_player(previous, run) and dt is not None and (isinstance(run, Walk) or isinstance(previous, Walk)) \
+                and 0 <= run.t0 - previous.t1 <= 1.5 * dt[run.round]:
+            note(previous.cells[-1], ends(previous)[1], run.cells[0], ends(run)[0], run.round, True)
+        if isinstance(run, Stand):
+            if same_player(last_stand, run) and 0 <= run.t0 - last_stand.t1 <= hc.CONNECT_S:
+                note(last_stand.cells[-1], last_stand.z, run.cells[0], run.z, run.round, False)
+            last_stand = run
+        previous = run
+    return seen, ground
 
 
-def connect(heights: dict, seen: dict, geo: Geometry) -> np.ndarray:
-    """The directed walks between resolved floors, K x 4 (cell a, floor a, cell b, floor b), sorted."""
+def connect(heights: dict, seen: dict, geo: Geometry, ground: dict | None = None,
+            granted: set = frozenset()) -> np.ndarray:
+    """The directed walks between resolved floors, K x 5 (cell a, floor a, cell b, floor b, EDGE_*), sorted.
+    Floors within STEP_UP_M are a step, both ways. A bigger one connects only where it was walked
+    (CONNECT_MIN_ROUNDS rounds of `seen`, or a step `fill_gradient` granted): seen going up it is a step both
+    ways (what is climbed can be dropped from); seen only going down it is one-way, a slide when it was walked
+    on the ground (`ground`, or granted) and a fall otherwise."""
     walk = geo.walk
     step = hc.STEP_UP_M * DM
-    edges = set()
+    ground = ground or {}
+    edges: dict[tuple, int] = {}
     for a, floors_a in heights.items():
         for b in _neighbours(a, walk):
             if b not in heights:
                 continue
             for i, ha in enumerate(floors_a):
                 for j, hb in enumerate(heights[b]):
+                    key = (a, i, b, j)
                     # The spec infers this between ground floors; here between any two
                     # floors, so a bridge is walkable along itself where few rounds walked it.
                     if abs(ha - hb) <= step:
-                        edges.add((a, i, b, j))
-                    elif len(seen.get((a, i, b, j), ())) >= hc.CONNECT_MIN_ROUNDS:
-                        edges.add((a, i, b, j))
-                        if hb > ha:
-                            edges.add((b, j, a, i))     # climbed: what is climbed can be dropped from
-    return np.array(sorted(edges), np.int32).reshape(-1, 4)
+                        edges[key] = hc.EDGE_STEP
+                        continue
+                    given = i == 0 and j == 0 and (a, b) in granted
+                    on_ground = given or len(ground.get(key, ())) >= hc.CONNECT_MIN_ROUNDS
+                    if not (on_ground or len(seen.get(key, ())) >= hc.CONNECT_MIN_ROUNDS):
+                        continue
+                    if hb > ha:
+                        edges[key] = edges[(b, j, a, i)] = hc.EDGE_STEP     # climbed: it can be dropped from
+                    else:
+                        edges.setdefault(key, hc.EDGE_SLIDE if on_ground else hc.EDGE_FALL)
+    return np.array(sorted((*key, kind) for key, kind in edges.items()), np.int32).reshape(-1, 5)
 
 
 def _bbox(cells: np.ndarray) -> list[int]:
@@ -354,7 +551,7 @@ def air_only(heights: dict, why: dict, edges: np.ndarray, geo: Geometry) -> list
         ids[(cell, -1)] = len(ids)
     if not ids:
         return []
-    pairs = [(ids[(a, i)], ids[(b, j)]) for a, i, b, j in edges.tolist()]
+    pairs = [(ids[(a, i)], ids[(b, j)]) for a, i, b, j, _ in edges.tolist()]
     for cell in why:
         for other in _neighbours(cell, geo.walk):
             if other in heights:
@@ -396,15 +593,20 @@ def readiness(supported: np.ndarray, unresolved: np.ndarray, count: np.ndarray, 
     return share, not_ready
 
 
-def build(rounds: list, geo: Geometry) -> HeightBuild:
+def build(rounds, geo: Geometry) -> HeightBuild:
     """A map's heights from `rounds` = [(match id, round number, blob), ...]. Never refuses: `ready` says
     whether the map reaches the bar, and `report["not_ready"]` why not."""
-    found, round_match, counts = all_stands(rounds, geo)
-    floors, reasons = cell_floors(found, round_match, geo)
+    found, found_walks, round_match, counts = all_ground(rounds, geo)
+    dt = counts.pop("dt")
+    floors, reasons, kinds = cell_floors(found, round_match, geo, found_walks)
     filled, why = fill(floors, reasons, geo)
+    sloped, granted = fill_gradient(floors, why, crossings([*found, *found_walks]), geo)
+    for cell in sloped:
+        del why[cell]
     heights = {cell: [h for h, _ in got] for cell, got in floors.items()}
-    heights.update({cell: [h] for cell, h in filled.items()})
-    edges = connect(heights, walked(found, heights), geo)
+    heights.update({cell: [h] for cell, h in {**filled, **sloped}.items()})
+    seen, ground = walked(found, heights, found_walks, dt)
+    edges = connect(heights, seen, geo, ground, granted)
     walk = geo.walk.ravel()
     n_walk = int(walk.sum())
     origin = min((h for hs in heights.values() for h in hs), default=0)
@@ -412,36 +614,45 @@ def build(rounds: list, geo: Geometry) -> HeightBuild:
     spread = np.zeros((GRID * GRID, hc.MAX_FLOORS), np.int16)
     supported = np.zeros(GRID * GRID, bool)
     unresolved = np.zeros(GRID * GRID, bool)
+    kind = np.zeros(GRID * GRID, np.int8)
     for cell, got in floors.items():
-        supported[cell] = True
+        supported[cell], kind[cell] = True, kinds[cell]
         for i, (h, s) in enumerate(got):
             asset_floors[cell, i], spread[cell, i] = h - origin, s
-    for cell, h in filled.items():
-        asset_floors[cell, 0] = h - origin
+    for cells, code in ((filled, hc.KIND_FILLED), (sloped, hc.KIND_GRADIENT)):
+        for cell, h in cells.items():
+            asset_floors[cell, 0], kind[cell] = h - origin, code
     unresolved[list(why)] = True
     count = (asset_floors >= 0).sum(1)
     areas = unresolved_areas(why)
     share, not_ready = readiness(supported, unresolved, count, n_walk)
     visited = counts.pop("visited") & walk
-    pairs = set(map(tuple, edges.tolist()))
+    pairs = {tuple(e[:4]) for e in edges.tolist()}
+    drops = [(code, heights[a][i] - heights[b][j]) for a, i, b, j, code in edges.tolist() if code != hc.EDGE_STEP]
     report = {
         "walkable_cells": n_walk, "visited_cells": int(visited.sum()), "supported_cells": int(supported.sum()),
-        "filled_cells": len(filled), "unresolved_cells": len(why),
+        "filled_cells": len(filled) + len(sloped), "unresolved_cells": len(why),
         "visited": round(float(visited.sum()) / n_walk, 4) if n_walk else 0.0, "supported": round(share, 4),
+        "cells_by_kind": {"stands": int((kind == hc.KIND_STANDS).sum()), "walks": int((kind == hc.KIND_WALKS).sum()),
+                          "filled": len(filled), "gradient": len(sloped)},
         "cells_2_floors": int((count == 2).sum()), "cells_3_floors": int((count == 3).sum()),
         "refused_cells": sum(1 for r in why.values() if r == TOO_MANY),
         "unresolved_why": dict(Counter(why.values()).most_common()), "unresolved_areas": areas,
         "air_only": air_only(heights, why, edges, geo), "edges": int(len(edges)),
         "one_way_edges": sum(1 for a, i, b, j in pairs if (b, j, a, i) not in pairs),
+        "slides": sum(1 for code, _ in drops if code == hc.EDGE_SLIDE),
+        "falls": sum(1 for code, _ in drops if code == hc.EDGE_FALL),
+        "falls_closed": sum(1 for code, drop in drops if code == hc.EDGE_FALL and drop > hc.SILENT_DROP_M * DM),
         "origin_z": int(origin), **counts, "ready": not not_ready, "not_ready": not_ready,
     }
-    meta = {"origin_z": int(origin), "stands": counts["stands"], "rounds": counts["rounds"],
+    meta = {"origin_z": int(origin), "stands": counts["stands"], "walks": counts["walks"], "rounds": counts["rounds"],
             "matches": counts["matches"],
             "walk_sha": hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12]}
     report["walk_sha"] = meta["walk_sha"]
     asset = hc.HeightAsset(asset_floors.reshape(GRID, GRID, hc.MAX_FLOORS), spread.reshape(GRID, GRID, hc.MAX_FLOORS),
-                           supported.reshape(GRID, GRID), unresolved.reshape(GRID, GRID), edges, meta)
-    return HeightBuild(asset, report, found, why, not not_ready)
+                           supported.reshape(GRID, GRID), unresolved.reshape(GRID, GRID), edges, meta,
+                           kind.reshape(GRID, GRID))
+    return HeightBuild(asset, report, found, why, not not_ready, found_walks)
 
 
 # ---------------------------------------------------------------- the report, for the user
@@ -450,13 +661,17 @@ def build(rounds: list, geo: Geometry) -> HeightBuild:
 def report_lines(name: str, report: dict) -> list[str]:
     """The build's result as printed lines; every unresolved area is a WARNING line (the spec: loudly)."""
     r = report
-    out = [f"{name}: {r['stands']} stands from {r['rounds']} rounds of {r['matches']} matches"
+    k = r["cells_by_kind"]
+    out = [f"{name}: {r['stands']} stands and {r['walks']} walks from {r['rounds']} rounds of {r['matches']} matches"
            + (f" ({r['rounds_without_z']} rounds without heights)" if r["rounds_without_z"] else "")
-           + (f", {r['on_platforms']} stands by a platform dropped" if r["on_platforms"] else ""),
+           + (f", {r['on_platforms']} stands by a platform dropped" if r["on_platforms"] else "")
+           + (f", {r['blackouts']} blackouts after a movement ability" if r["blackouts"] else ""),
            f"  visited {r['visited']:.1%} of {r['walkable_cells']} walkable cells, supported {r['supported']:.1%} "
-           f"(bar {hc.HEIGHT_SUPPORTED_MIN:.0%}), filled {r['filled_cells']}, unresolved {r['unresolved_cells']}",
+           f"(bar {hc.HEIGHT_SUPPORTED_MIN:.0%}; {k['walks']} cells from walks alone), filled {k['filled']} flat and "
+           f"{k['gradient']} along a gradient, unresolved {r['unresolved_cells']}",
            f"  cells with 2 floors: {r['cells_2_floors']}, with 3: {r['cells_3_floors']}, refused (more than "
-           f"{hc.MAX_FLOORS}): {r['refused_cells']}; walks {r['edges']} ({r['one_way_edges']} one-way)"]
+           f"{hc.MAX_FLOORS}): {r['refused_cells']}; walks {r['edges']} ({r['one_way_edges']} one-way: {r['slides']} "
+           f"slides, {r['falls']} falls, {r['falls_closed']} of them too high for the unknown)"]
     for area in r["air_only"]:
         out.append(f"  reached only through the air: {area['cells']} cells at px {area['bbox']}, "
                    f"z {area['z'][0]}..{area['z'][1]} dm")

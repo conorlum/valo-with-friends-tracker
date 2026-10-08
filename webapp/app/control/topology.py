@@ -190,7 +190,7 @@ class NodeTopology:
         cell_walk = geo.walk.ravel()
         walks: set[tuple[int, int]] = set()
         node_of = geo.node_of
-        for a, fa, b, fb in geo.heights.edges.tolist():
+        for a, fa, b, fb, _ in geo.heights.edges.tolist():
             na, nb = int(node_of[a, fa]), int(node_of[b, fb])
             if na >= 0 and nb >= 0 and cell_walk[a] and cell_walk[b] and not geo.unresolved[a] and not geo.unresolved[b]:
                 walks.add((na, nb))
