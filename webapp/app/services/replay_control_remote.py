@@ -69,7 +69,7 @@ from app.models.match import Match
 from app.models.replay import Replay, ReplayRound
 from app.replays import choke_assets
 from app.replays import control_format as cf
-from app.services import replay_control, replay_gaps
+from app.services import control_heights, replay_control, replay_gaps
 from app.services import replay_gaps_store as gaps_store
 from app.services import replay_reparse_auto as reparse_auto
 from app.services import replay_upload
@@ -239,14 +239,15 @@ def _keep_gaps(session_factory, f: InFlight, result: dict, counts: dict) -> bool
     return True
 
 
-def _matches_geometry(result: dict, map_name: str) -> bool:
-    mine = replay_control.geometry_inputs(map_name)
+def _matches_geometry(result: dict, map_name: str, heights: dict) -> bool:
+    mine = replay_control.geometry_inputs(map_name, heights)
     used = result.get("geometry") or {}
     return mine is not None and all(used.get(k) == mine.get(k)
                                     for k in ("sight", "walk", "barrier", "specials", "scale", "height", "features"))
 
 
-def _collect(session_factory, client, state: State, now: float, counts: dict) -> None:
+def _collect(session_factory, session, client, state: State, now: float, counts: dict) -> None:
+    heights = control_heights.active_digests(session)
     for key, f in list(state.in_flight.items()):
         try:
             job = client.job(f.job_id)
@@ -276,7 +277,7 @@ def _collect(session_factory, client, state: State, now: float, counts: dict) ->
                 state.failed(key, now)
                 counts["dropped_revision"] += 1
                 continue
-            if not _matches_geometry(result, f.map_name):
+            if not _matches_geometry(result, f.map_name, heights):
                 state.failed(key, now)
                 counts["dropped_geometry"] += 1
                 continue
@@ -367,6 +368,7 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
     """Submits `todo` (from `_sendable`) in D2's order until the pool is full or the worker stops taking
     tasks. Returns whether sendable work was left."""
     keys = {(p.replay_id, p.round_number): key for key, p in todo}
+    heights = control_heights.active_digests(session)
     for p in _order(session, [p for _, p in todo]):
         if len(state.in_flight) >= IN_FLIGHT:
             return True                      # sendable work is left: plan again next cycle
@@ -378,7 +380,7 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             continue
         task = {"key": key, "map": p.map_name, "blob": base64.b64encode(row.data).decode("ascii"),
                 "link": {"sides": p.link["sides"], "db_deaths": p.link["db_deaths"]}}
-        features = (replay_control.geometry_inputs(p.map_name) or {}).get("features")
+        features = (replay_control.geometry_inputs(p.map_name, heights) or {}).get("features")
         if features:       # only a map with enabled features: an absent key means no verification
             task["features"] = features
         if expect_gaps:
@@ -456,7 +458,12 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
             if not lock.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": LOCK_ID}).scalar():
                 counts["locked_out"] = 1
                 return counts
-        _collect(session_factory, client, state, now, counts)
+        collect = session_factory()   # reads the active heights the results are checked against
+        try:
+            _collect(session_factory, collect, client, state, now, counts)
+        finally:
+            collect.rollback()
+            collect.close()
         held = _reparse(session_factory, worker, state, now, counts)
         session = session_factory()   # opened after the pass: it reads the replay a settlement just committed
         try:

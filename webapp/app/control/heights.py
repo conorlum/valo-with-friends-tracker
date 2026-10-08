@@ -24,7 +24,8 @@ under a floor (what blocks a sight line) is position-z - STAND_M.
 - `meta`: `origin_z`, the units, STAND_M, the build's counts and the walk mask's hash it was built on.
 
 Every value here is a start value (the spec's "Open questions"): tuned on real data, each change reported
-with numbers. This module imports nothing from app.control, so geometry.py can read it.
+with numbers. This module imports nothing from app.control (only the stdlib-only app.replays.control_format, which
+holds the numbers the web app reads too), so geometry.py can read it.
 """
 
 from __future__ import annotations
@@ -36,7 +37,8 @@ from pathlib import Path
 
 import numpy as np
 
-HEIGHT_VERSION = 2
+from app.replays.control_format import HEIGHT_SUPPORTED_MIN, HEIGHT_VERSION, KILL_LINE_BAR  # noqa: F401
+
 MAX_FLOORS = 3
 
 # Every value from here to KILL_SAMPLE_S is a start value (approved 2026-10-02, to be tuned on real
@@ -100,7 +102,6 @@ KIND_NONE, KIND_STANDS, KIND_WALKS, KIND_FILLED, KIND_GRADIENT = 0, 1, 2, 3, 4
 EDGE_STEP, EDGE_SLIDE, EDGE_FALL = 0, 1, 2
 
 # --- readiness
-HEIGHT_SUPPORTED_MIN = 0.60   # share of walkable cells with a supported floor
 UNRESOLVED_MAX = 12           # the largest unresolved area (cells) allowed to touch a cell with two floors
 
 # --- trips (part 4)
@@ -108,12 +109,23 @@ TRIP_HIT_M = 0.1           # a wire stops where the ground comes this close to i
 TRIP_REACH_M = 10.0
 
 # --- the kill-line check
-KILL_LINE_BAR = 0.02
 KILL_SAMPLE_S = 0.25       # killer and victim each need a position with z this close to the kill
 
 
 class HeightError(ValueError):
     pass
+
+
+def rules() -> dict:
+    """What an asset was built under: the format, the rules' revision, and a hash of this module's constants
+    (tests/replays/test_height_inputs.py pins the revision to it)."""
+    from app.replays import control_format as cf
+
+    constants = {name: value for name, value in sorted(globals().items())
+                 if name.isupper() and isinstance(value, (int, float, str, tuple))}
+    text = json.dumps(constants, sort_keys=True, default=str)
+    return {"version": HEIGHT_VERSION, "revision": cf.HEIGHT_RULES_REVISION,
+            "constants": hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]}
 
 
 @dataclass

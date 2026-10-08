@@ -151,7 +151,7 @@ def store_result(session_factory, planned, result: dict) -> str:
     from app.services.replay_control_store import store_round
 
     used = (result.get("geometry") or {}).get("features")
-    current = (replay_control.geometry_inputs(planned.map_name) or {}).get("features")
+    current = (replay_control.geometry_inputs(planned.map_name, heights=None) or {}).get("features")
     if result.get("status") == "ok" and used != current:
         return "skipped: its feature inputs changed while computing"
     return store_round(session_factory, planned.replay_id, planned.round_number, planned.fingerprint, result)

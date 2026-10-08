@@ -107,7 +107,7 @@ def test_a_run_from_older_inputs_is_stale_but_still_served(db, linked, monkeypat
 
 def test_a_changed_control_input_stales_the_gaps(db, linked, monkeypatch):
     put_run(db, linked, 1, rows=[gap(linked, 1, 0)])
-    monkeypatch.setattr(rc, "geometry_inputs", lambda name: {"sight": "changed", "walk": "", "specials": [], "scale": 1})
+    monkeypatch.setattr(rc, "geometry_inputs", lambda name, heights=None: {"sight": "changed", "walk": "", "specials": [], "scale": 1})
     assert gaps.round_gaps(db, linked, 1)[0] == "stale"
 
 

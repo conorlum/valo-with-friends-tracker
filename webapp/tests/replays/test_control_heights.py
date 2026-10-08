@@ -13,6 +13,7 @@ from app.control import height_build as hb
 from app.control import height_motion as hm
 from app.control import heights as hc
 from app.replays import format as fmt
+from app.replays import height_inputs
 from tests.replays.control_toys import (HZ, TOY_Z0, fast_rounds, height_blob, height_rounds, open_hall, stair_run,
                                         standing, toy_ability, z_dm)
 
@@ -633,7 +634,7 @@ def test_a_must_block_line_that_is_not_blocked_fails_and_so_does_an_unknown_heig
 
 
 def test_the_committed_must_block_set_is_well_formed():
-    data = json.loads((WEBAPP / "tests" / "replays" / "control_must_block.json").read_text(encoding="utf-8"))
+    data = json.loads(height_inputs.MUST_BLOCK.read_text(encoding="utf-8"))
     assert data["lines"] and all(line["map"] and len(line["viewer"]) == 3 and len(line["target"]) == 3
                                  and line["source"] for line in data["lines"])
     assert any(line["map"] == "Ascent" and "case 1" in line["source"] for line in data["lines"])

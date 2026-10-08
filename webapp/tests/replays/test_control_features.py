@@ -378,7 +378,7 @@ def test_the_local_store_refuses_a_result_from_another_generation(monkeypatch):
     planned = type("P", (), {"replay_id": 1, "round_number": 2, "fingerprint": "f" * 16, "map_name": "Ascent"})()
     ok = {"status": "ok", "geometry": {"sight": "x"}}
     assert compute_control.store_result(None, planned, ok) == "stored", "no features anywhere: as before"
-    monkeypatch.setattr(rc, "geometry_inputs", lambda name: {"features": "gen2"})
+    monkeypatch.setattr(rc, "geometry_inputs", lambda name, heights=None: {"features": "gen2"})
     assert compute_control.store_result(None, planned, ok) == "skipped: its feature inputs changed while computing"
     assert compute_control.store_result(None, planned, {**ok, "geometry": {"features": "gen1"}}).startswith("skipped")
     assert compute_control.store_result(None, planned, {**ok, "geometry": {"features": "gen2"}}) == "stored"

@@ -30,6 +30,7 @@ from app.replays import control_format as cf
 from app.replays import db as replay_db
 from app.replays import format as fmt
 from app.scoring.plant_window import attacking_team
+from app.services import control_heights
 
 CONTROL_DIR = fmt.STATIC_DIR / "data" / "control"
 MAPS_JSON = fmt.STATIC_DIR / "data" / "maps.json"
@@ -124,7 +125,7 @@ def map_layer(map_name: str) -> dict | None:
     return {"cover_reviewed": bool(entry.get("cover_reviewed"))}
 
 
-def geometry_inputs(map_name: str) -> dict | None:
+def geometry_inputs(map_name: str, heights: dict | None = None) -> dict | None:
     """Everything app/control/geometry.py's `load_geometry` reads for a map: the built masks (by
     index.json's hashes; `barrier` is None for a map with no barrier paint), the specials from
     tags.json, the scale from maps.json, and the map's heights by their digest (`height`, only on a
@@ -133,7 +134,13 @@ def geometry_inputs(map_name: str) -> dict | None:
     Map features (docs/superpowers/specs/2026-10-04-map-features-contract.md, section 8): `features`, the
     consumed-input manifest digest of the map's active feature generation (index.json `features_sha`), only on
     a map that has enabled features. No map has any in this build, so every input is what it was
-    (tests/fixtures/control/map_features/legacy_inputs.json)."""
+    (tests/fixtures/control/map_features/legacy_inputs.json).
+
+    `heights` is `control_heights.active_digests(db)`: a map's active digest in the database is its heights
+    (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md, section 1). The committed index.json
+    `height_sha` is the fallback for a map with no active row, and all there is when `heights` is None (a
+    checkout without a database, most tests). Every caller under app/ and scripts/ passes it
+    (tests/replays/test_control_heights_db.py)."""
     index, tags, maps = _assets()
     entry = index.get(map_name)
     if entry is None:
@@ -141,8 +148,9 @@ def geometry_inputs(map_name: str) -> dict | None:
     inputs = {"sight": entry.get("sight_sha"), "walk": entry.get("walk_sha"), "barrier": entry.get("barrier_sha"),
               "specials": (tags.get(map_name) or {}).get("specials") or [],
               "scale": (maps.get(map_name) or {}).get("xMultiplier")}
-    if entry.get("height_sha"):
-        inputs["height"] = entry["height_sha"]
+    height = (heights or {}).get(map_name) or entry.get("height_sha")
+    if height:
+        inputs["height"] = height
     if entry.get("features_sha"):
         inputs["features"] = entry["features_sha"]
     return inputs
@@ -183,8 +191,8 @@ def round_link(replay: Replay, groups: dict[int, str], n: int) -> dict:
     return {"linked": True, "sides": sides, "db_deaths": sorted(deaths)}
 
 
-def round_fingerprint(replay: Replay, groups: dict[int, str], n: int) -> str | None:
-    geometry = geometry_inputs(replay.map_name)
+def round_fingerprint(replay: Replay, groups: dict[int, str], n: int, heights: dict | None = None) -> str | None:
+    geometry = geometry_inputs(replay.map_name, heights)
     if geometry is None:
         return None
     return cf.fingerprint(replay.recipe, replay.source_sha256, round_link(replay, groups, n), geometry)
@@ -213,7 +221,8 @@ def round_control(db, replay: Replay, n: int) -> RoundControlAnswer:
         return RoundControlAnswer("not_ready")
     if row.status != "ok":
         return RoundControlAnswer("failed", row)
-    stale = row.fingerprint != round_fingerprint(replay, side_groups(db, replay), n)
+    heights = control_heights.active_digests(db)
+    stale = row.fingerprint != round_fingerprint(replay, side_groups(db, replay), n, heights)
     return RoundControlAnswer("ok", row, stale)
 
 
@@ -257,6 +266,7 @@ def plan(db, *, match_uuid: str | None = None, rounds: set[int] | None = None, f
     if not replays:
         return []
     valid = _valid_ids(db, replays)
+    heights = control_heights.active_digests(db)
     groups: dict[int, dict[int, str]] = defaultdict(dict)
     for rid, slot, group in db.query(ReplayPlayer.replay_id, ReplayPlayer.slot, ReplayPlayer.side_group):
         if group:
@@ -276,7 +286,7 @@ def plan(db, *, match_uuid: str | None = None, rounds: set[int] | None = None, f
             reason = "no_map" if map_layer(replay.map_name) is None else "old_blob"
             out += [PlannedRound(replay.id, uuid, replay.map_name, n, None, reason) for n in wanted]
             continue
-        geometry = geometry_inputs(replay.map_name)
+        geometry = geometry_inputs(replay.map_name, heights)
         for n in wanted:
             link = round_link(replay, groups[replay.id], n)
             current = cf.fingerprint(replay.recipe, replay.source_sha256, link, geometry)

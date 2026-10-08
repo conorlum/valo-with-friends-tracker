@@ -74,7 +74,9 @@ def test_the_web_apps_control_views_import_nothing_heavy():
                  WEBAPP / "app" / "services" / "replay_gaps_store.py",
                  WEBAPP / "app" / "services" / "replay_gaps_view.py",
                  WEBAPP / "app" / "services" / "gap_patterns.py",
-                 WEBAPP / "app" / "routers" / "gap_patterns.py"):
+                 WEBAPP / "app" / "routers" / "gap_patterns.py",
+                 WEBAPP / "app" / "services" / "control_heights.py",
+                 WEBAPP / "app" / "replays" / "height_inputs.py"):
         bad = {name for name in _imports(path)
                if name.split(".")[0] in HEAVY or name.startswith(("app.control", "app.gaps"))}
         assert not bad, f"{path.name} imports {sorted(bad)}"

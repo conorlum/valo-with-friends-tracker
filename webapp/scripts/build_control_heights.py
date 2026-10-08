@@ -24,7 +24,7 @@ compare two builds of different rounds.
 
 Before writing, it runs the two checks on the new heights: the kill lines of the rounds it read (both
 ends with z, on resolved cells, clear in 2D; at most 2% may be blocked) and the must-block set
-(`tests/replays/control_must_block.json`: sightlines impossible in game, each of which must be blocked).
+(`app/static/data/control/must_block.json`: sightlines impossible in game, each of which must be blocked).
 A map that fails either is refused unless `--accept-failures` (the user has looked at the listed
 failures and accepts them). A must-block line whose heights aren't known yet is listed as not checked.
 
@@ -54,9 +54,10 @@ from app.control import geometry as cg  # noqa: E402
 from app.control import height_build as hb  # noqa: E402
 from app.control import heights as hc  # noqa: E402
 from app.replays import format as fmt  # noqa: E402
+from app.replays import height_inputs  # noqa: E402
 
 MIN_REVISION = 11
-MUST_BLOCK = WEBAPP_ROOT / "tests" / "replays" / "control_must_block.json"
+MUST_BLOCK = height_inputs.MUST_BLOCK
 
 
 def blob_rounds(directory: Path, map_name: str) -> tuple[list, dict]:
