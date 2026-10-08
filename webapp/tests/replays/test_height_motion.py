@@ -172,3 +172,28 @@ def test_where_a_slope_begins_or_ends_nobody_is_in_the_air(name, z_of):
     assert len(in_air) == 0, name
     assert len(ground) == 3 * FAST_HZ + 1, "every sample is ground, straight through both bends"
     assert len(walks) == 1, "and the slope between them is one walk"
+
+
+def test_a_round_with_recorded_casts_starts_blackouts_from_them_and_not_from_speed():
+    dash = ("A", [(0.0, 160, Y, 0, 0.0), (2.0, 160, Y, 0, 0.0), (2.3, 216, Y, 0, 0.0), (10.0, 216, Y, 0, 0.0)])
+    sprint = ("B", [(0.0, 160, 252, 0, 0.0), (4.0, 160, 252, 0, 0.0), (4.3, 216, 252, 0, 0.0), (10.0, 216, 252, 0, 0.0)])
+    cast = {"k": "cast", "t": 2.0, "by": 0, "code": "Wushu", "name": "E_Dash"}
+    other = {"k": "cast", "t": 6.0, "by": 0, "code": "Wushu", "name": "4_Smoke"}
+    b = fast_blob({0: dash, 1: sprint}, util=[cast, other])
+    old = hm.blackouts(b, GEO)
+    assert 1.9 <= old[0][0][0] <= 2.01 and 1 in old, "condensed before casts were recorded: both are told by speed"
+    b["movement_casts"] = 1
+    new = hm.blackouts(b, GEO)
+    assert new == {0: [(2.0, 5.0)]}, "the cast, from its time; a smoke is no movement ability; speed alone is nothing"
+    b["util"] = []
+    assert hm.blackouts(b, GEO) == {}, "a round known to have no cast has no blackout, however fast anyone moved"
+
+
+def test_an_updraft_still_starts_a_blackout_in_a_round_with_casts():
+    # PROVISIONAL(D3): the updraft has no recorded cast, so rising fast still counts where dashes are casts.
+    up = ("A", [(0.0, 300, Y, 0, 0.0), (4.0, 300, Y, 0, 0.0), (4.4, 300, Y, 0, 5.0), (5.2, 300, Y, 0, 0.0),
+                (10.0, 300, Y, 0, 0.0)])
+    b = fast_blob({0: up})
+    b["movement_casts"] = 1
+    [(u0, u1)] = hm.blackouts(b, GEO)[0]
+    assert 3.9 <= u0 <= 4.01 and 7.3 <= u1 <= 7.55

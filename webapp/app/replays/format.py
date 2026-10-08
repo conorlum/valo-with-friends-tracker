@@ -29,6 +29,11 @@ had one. An `ability` row has `"z"` (its spawn, i.e. where a thrown one landed),
 `thrown` (the throw's own spawn), `"end_z"` beside a tripwire's `end`, and a fourth value on each
 `path` point, `[t, u, v, z]`.
 
+Movement-ability casts (revision 14; docs/superpowers/plans/2026-10-05-height-slopes.md, Task 1b): `util` has
+`{"k": "cast", "t", "by", "code", "name"}` per use of a movement ability (app/replays/extras.py
+MOVEMENT_EQUIPPABLES: Jett's and Waylay's dashes), and the blob has `"movement_casts": 1` when the condenser
+looked for them, so a round with that key and no cast had none. A blob without the key was condensed before.
+
 A Killjoy turret or alarmbot `ability` row has `"off"` (revision 12) when it was switched off (KJ walked out
 of its range): `[[from, to | null], ...]` in round seconds, null meaning until the row's `t1`.
 
@@ -61,11 +66,13 @@ from pathlib import Path
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 13   # 10: map control's inputs (hits, possessed, yaws, damage runs); 11: heights (z);
+CONDENSE_REVISION = 14   # 10: map control's inputs (hits, possessed, yaws, damage runs); 11: heights (z);
                          # 12: Killjoy turret/alarmbot `off` spans (extras.device_off_spans);
                          # 13: utility kept in full (2026-10-05): Deadlock's actors, flash explosions, paths and
                          #     activation, knife pulses, projectile flights, Blaze/Sage/Vyse walls, Omen's ult
-                         #     marker and its outcome, Waylay's recall
+                         #     marker and its outcome, Waylay's recall;
+                         # 14: movement-ability casts (`cast` util rows, `movement_casts`) for the height
+                         #     build's blackout (2026-10-08)
 
 UV_SCALE = 10000
 

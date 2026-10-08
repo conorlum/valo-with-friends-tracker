@@ -58,7 +58,7 @@ def test_blobs_hold_no_identities(tmp_path):
 def test_round_blob_shape(tmp_path):
     blob = run(tmp_path).rounds[1]
     assert set(blob) == {"v", "round", "map", "hz", "t_start", "t_decided", "t_end", "players", "tracks", "alive",
-                         "kills", "plant", "defuse", "util"}
+                         "kills", "plant", "defuse", "util", "movement_casts"}
     # t_decided is the RoundEnding; playback runs on to the next phase (the next buy, 10 s later).
     assert blob["t_start"] == 0.0 and blob["t_decided"] == 40.0 and blob["t_end"] == 50.0
     assert blob["players"][0] == {"slot": 0, "agent": "Jett", "side": "A"}

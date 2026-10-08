@@ -6,8 +6,10 @@ and 1b): the tracks of a stored round, the time after a movement ability that is
   inside those times are left out and the segment is cut there, so nothing downstream joins the two sides.
 - **Blackouts.** `blackouts` is that `skip`: ABILITY_BLACKOUT_S from each cast listed in AIRBORNE_ABILITIES, and
   from each burst of speed no player makes on foot (BURST_MPS along the ground, BURST_UP_MPS upward, over
-  BURST_S). Stored rounds don't record a cast for Jett's updraft and dash or Waylay's dash (measured
-  2026-10-05), so those are told by the burst; a teleport reads as one too, which is harmless.
+  BURST_S). Rounds condensed before revision 14 record no cast for Jett's updraft and dash or Waylay's dash
+  (measured 2026-10-05), so there those are told by the burst; a teleport reads as one too, which is harmless.
+  From revision 14 (`"movement_casts"`) the dashes are recorded casts and only the upward burst is read, for
+  the updraft, which still has no cast.
 - **Walks.** A run of at least WALK_S in which the player moves on the ground: each sample lies in a WALK_S
   window over which the player moved (WALK_MIN_MPS), z changed no faster than SLOPE_MAX against the distance
   covered, and z's acceleration (a least-squares parabola over the window) stayed within WALK_ACC_MAX. In the
@@ -83,18 +85,26 @@ def _merge(spans: list) -> list:
 
 
 def blackouts(blob: dict, geo: Geometry) -> dict[int, list[tuple[float, float]]]:
-    """{slot: [(t0, t1), ...]}: the times each player's samples are left out, merged and in order."""
+    """{slot: [(t0, t1), ...]}: the times each player's samples are left out, merged and in order.
+
+    Casts (`"cast"` rows) and listed abilities start one always. A round condensed with movement casts
+    (`"movement_casts"`, condenser revision 14) is not read for dashes by speed: its dashes are its casts. A
+    round condensed before has none, so there every burst counts."""
     out: dict[int, list] = defaultdict(list)
     for e in blob.get("util") or []:
-        if e.get("k") == "ability" and e.get("by") is not None \
+        if e.get("k") in ("ability", "cast") and e.get("by") is not None \
                 and f"{e.get('code')}_{e.get('name')}" in hc.AIRBORNE_ABILITIES:
             out[int(e["by"])].append((float(e["t"]), float(e["t"]) + hc.ABILITY_BLACKOUT_S))
     hz = blob["hz"]
     k = max(1, int(round(hc.BURST_S * hz)))
+    casts = bool(blob.get("movement_casts"))
     for slot, t, x, y, z in tracks(blob):
         if len(t) <= k:
             continue
-        fast = np.hypot(x[k:] - x[:-k], y[k:] - y[:-k]) * geo.m_per_px > hc.BURST_MPS * k / hz
+        fast = np.zeros(len(t) - k, bool) if casts \
+            else np.hypot(x[k:] - x[:-k], y[k:] - y[:-k]) * geo.m_per_px > hc.BURST_MPS * k / hz
+        # PROVISIONAL(D3): rising faster than BURST_UP_MPS still counts in a round with casts, because Jett's
+        # updraft has no recorded cast (the condenser found no play that tells it apart).
         if z is not None:
             fast |= (z[k:] - z[:-k]) / DM > hc.BURST_UP_MPS * k / hz
         for i, j in _runs_of(fast):

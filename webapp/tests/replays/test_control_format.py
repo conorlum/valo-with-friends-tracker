@@ -48,7 +48,7 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # gradient start values, and SILENT_DROP_M (the unknown stops at a fall higher than it). 7 was released
           # with main's utility review, so the slopes plan's "7" is 8 here. Unreleased, so re-pinned in place as
           # its steps land.
-          8: "3ecc1f9666fa6b1e"}
+          8: "32180532db06dfd7"}
 
 
 def _constants_digest() -> str:

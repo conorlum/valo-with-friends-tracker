@@ -81,8 +81,10 @@ AIR_FIT_M = 0.1            # a flight lasts for as long as the track stays this 
 AIR_LANDING_MPS = 1.0      # a flight found by its drop alone ends with z's rate jumping up by at least this
 LOW_PCT = 10               # a floor's height is this percentile of its samples: the lowest wins
 ABILITY_BLACKOUT_S = 3.0   # a player's samples are dropped this long after a movement ability
-# `<code>_<name>` of the casts that start a blackout, where a round's `util` records one
-AIRBORNE_ABILITIES = ("Clay_Q_Explosion",)
+# `<code>_<name>` of the casts (`"cast"` rows, condenser revision 14) and abilities (`"ability"` rows: Raze's
+# blast pack lifts teammates who cast nothing) that start a blackout. The updraft is listed for when a cast is
+# recorded for it; none is yet.
+AIRBORNE_ABILITIES = ("Wushu_Q_CycloneBoost", "Wushu_E_Dash", "Terra_Q_DoubleDash", "Clay_Q_Explosion")
 BURST_S = 0.1              # a movement ability with no recorded cast is told by its speed over this long:
 BURST_MPS = 12.0           # faster than this along the ground (a dash), or
 BURST_UP_MPS = 8.0         # rising faster than this (an updraft, a blast pack)

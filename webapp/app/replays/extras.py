@@ -19,7 +19,9 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   and `from`; Waylay's return point has `recall` = `{t, t1, u, v}` when she recalled to it);
 - `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`;
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
-- `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`.
+- `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`;
+- `{"k": "cast", "t", "by", "code", "name"}`: a movement ability used (revision 14). It has no place and no
+  lifetime, so it is its own kind and not an `ability`.
 
 - **Abilities.** Every `actor_spawned` whose archetype is `Default__<Kind>_<AgentCode>_<Name>_C`
   with a kind in ABILITY_KINDS (placed objects, zones, patches, projectiles, possessable
@@ -46,6 +48,11 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   `status` row for as long as it lasted (`find_statuses`). A trapwire tethers, then when it goes off
   concusses and reveals (and stays armed). An ability object shot and destroyed before its object
   closes has `gone`.
+- **Casts** (revision 14; docs/superpowers/plans/2026-10-05-height-slopes.md, Task 1b). Each use of a
+  movement ability in MOVEMENT_EQUIPPABLES, for the height build's blackout (app/control/height_motion.py):
+  the effect played on the caster's character as the move starts, told by its float tags (`movement_cast`).
+  Its context names no equippable; the play that does is the arming, up to 5 s before the move. Plays of one
+  ability by one player within CAST_MERGE_MS are one cast.
 
 Times are seconds since the round's InRound start, like the blobs; `u`/`v` are minimap ints.
 """
@@ -245,6 +252,9 @@ class Raw:
     # The parser's typed wall rows (Sage's Barrier Orb, Vyse's Shear), by the wall actor, from its latest
     # spawn: {"placed", "activated", "destroyed": the rows; "segments": {index: [spawn ms, (x, y, z), gone ms | None]}}.
     typed_walls: dict[int, dict] = field(default_factory=dict)
+    # Continuous effects a player triggered on their own character, with float tags: (time, the pawn, {tag:
+    # value}). `movement_cast` picks the movement abilities out of them.
+    movement_plays: list[tuple[int, int, dict[str, float]]] = field(default_factory=list)
 
 
 EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
@@ -281,6 +291,36 @@ def packed_ints(data: bytes) -> list[int]:
 def _context_values(payload: dict) -> tuple[int, ...]:
     return tuple(int(fv["Value"]) for fv in payload.get("FunctionObjectValues") or []
                  if isinstance(fv, dict) and isinstance(fv.get("Value"), int) and fv["Value"])
+
+
+def _float_tags(payload: dict) -> dict[str, float]:
+    return {str(fv["Name"]["TagName"]): float(fv["Value"]) for fv in payload.get("FunctionFloatValues") or []
+            if isinstance(fv, dict) and isinstance(fv.get("Name"), dict) and fv["Name"].get("TagName")
+            and isinstance(fv.get("Value"), (int, float))}
+
+
+# The movement abilities a cast is recorded for, by `<code>_<name>` as EQUIPPABLE_ARCHETYPE splits an archetype:
+# the float tags (name -> value, None for any value) of the effect played on the caster's character as the move
+# starts, exactly those tags and no others. Measured 2026-10-08 on five local exports: Jett's dash 43 of 43
+# plays at one of her bursts in four matches, Waylay's 39 of 39 in three. Jett's updraft has no such play that
+# can be told apart (its one-shot names a context GUID the export never names), nor has Raze's blast pack
+# (its `Clay_Q_Explosion` is an `ability` row already).
+MOVEMENT_EQUIPPABLES = {
+    "Wushu_E_Dash": {"FXC.TimedStateDuration": 0.45},
+    "Terra_Q_DoubleDash": {"FXC.Angle": None, "FXC.TimedStateDuration": 0.4},
+}
+CAST_TAG_TOLERANCE = 0.005
+CAST_MERGE_MS = 200      # one cast plays its effect twice (Waylay's): plays this close together are one
+
+
+def movement_cast(code: str | None, floats: dict[str, float]) -> str | None:
+    """The movement ability (`<code>_<name>`) an effect on a `code` agent's character with these float tags
+    is the start of, or None."""
+    for key, tags in MOVEMENT_EQUIPPABLES.items():
+        if key.split("_", 1)[0] == code and set(floats) == set(tags) \
+                and all(want is None or abs(floats[tag] - want) <= CAST_TAG_TOLERANCE for tag, want in tags.items()):
+            return key
+    return None
 
 
 def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
@@ -369,6 +409,10 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     raw.device_fx[guid].append((t_ms, _DEVICE_FX[function], payload.get("EffectId"),
                                                 payload.get("EffectContainer")))
                 if function == RPC_PLAY and (guid in pawns or guid in bombs):
+                    if guid in pawns and "ClientControllerThatTriggered" in payload:
+                        floats = _float_tags(payload)
+                        if floats:
+                            raw.movement_plays.append((t_ms, guid, floats))
                     context = _context_values(payload)
                     for value in context:
                         if guid in pawns and value in equip_now:
@@ -1593,6 +1637,24 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             "slot": status["by"], "target": status["target"], "code": status["code"], "name": status["name"],
             "status": status["status"], "from": status["from"]})
 
+    last_cast: dict[tuple[int, str], int] = {}
+    for t_ms, pawn, floats in sorted(raw.movement_plays, key=lambda play: play[0]):
+        slot = players.pawn_slot.get(pawn)
+        key = movement_cast(code_of_agent.get(players.agents[slot]), floats) if slot is not None else None
+        if key is None:
+            continue
+        before = last_cast.get((slot, key))
+        last_cast[(slot, key)] = t_ms
+        if before is not None and t_ms - before <= CAST_MERGE_MS:
+            continue
+        n = _round_of(t_ms, windows)
+        if n is None:
+            continue
+        code, name = key.split("_", 1)
+        out.rounds.setdefault(n, {"abilities": [], "shots": []}).setdefault("casts", []).append(
+            {"t": _seconds(t_ms, windows[n - 1][0]), "slot": slot, "code": code, "name": name})
+        counts["movement_casts"] += 1
+
     for data in raw_shots:
         t_ms = int(data.get("time_ms", 0))
         shot = data.get("shot") or {}
@@ -1708,6 +1770,9 @@ def util_entries(round_extras: dict) -> list[dict]:
     for status in round_extras.get("statuses", []):
         rest = {k: v for k, v in status.items() if k not in ("t0", "slot")}
         out.append({"k": "status", "t": status["t0"], "by": status["slot"], **rest})
+    for cast in sorted(round_extras.get("casts", []), key=lambda c: c["t"]):
+        rest = {k: v for k, v in cast.items() if k not in ("t", "slot")}
+        out.append({"k": "cast", "t": cast["t"], "by": cast["slot"], **rest})
     for shot in round_extras.get("shots", []):
         rest = {k: v for k, v in shot.items() if k not in ("t", "slot")}
         out.append({"k": "shot", "t": shot["t"], "by": shot["slot"], **rest})
@@ -1717,7 +1782,7 @@ def util_entries(round_extras: dict) -> list[dict]:
 def rounds_extras(util: list[dict]) -> dict:
     """The inverse of `util_entries`: a stored round's `{"abilities", "shots"}` (the viewer's and
     the tests' shape)."""
-    abilities, shots, reveals, statuses = [], [], [], []
+    abilities, shots, reveals, statuses, casts = [], [], [], [], []
     for entry in util:
         rest = {k: v for k, v in entry.items() if k not in ("k", "t", "by")}
         if entry.get("k") == "ability":
@@ -1728,9 +1793,13 @@ def rounds_extras(util: list[dict]) -> dict:
             reveals.append({"t0": entry["t"], "slot": entry["by"], **rest})
         elif entry.get("k") == "status":
             statuses.append({"t0": entry["t"], "slot": entry["by"], **rest})
+        elif entry.get("k") == "cast":
+            casts.append({"t": entry["t"], "slot": entry["by"], **rest})
     out = {"abilities": abilities, "shots": shots}
     if reveals:
         out["reveals"] = reveals
     if statuses:
         out["statuses"] = statuses
+    if casts:
+        out["casts"] = casts
     return out

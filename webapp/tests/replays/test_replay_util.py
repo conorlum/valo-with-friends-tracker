@@ -100,7 +100,7 @@ def test_util_reaches_readers_through_known_kinds_and_holds_no_identity(tmp_path
     assert fmt.known_util(blob) == [], "a reader that knows no kinds ignores them"
     text = json.dumps(blob)
     assert "subject" not in text.lower() and "00000000-0000-4000-8000-0000000000" not in text
-    assert blob["v"] == 1 and out.recipe.split(".")[1] == f"c{fmt.CONDENSE_REVISION}" == "c13"
+    assert blob["v"] == 1 and out.recipe.split(".")[1] == f"c{fmt.CONDENSE_REVISION}" == "c14"
 
 
 def test_hits_carry_their_own_time_and_duration(tmp_path):

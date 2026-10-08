@@ -1608,5 +1608,6 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
                           teams=teams, pawn_yaws=positions.yaws)
     for n, blob in replay.rounds.items():
         blob["util"] = blob["util"] + util_entries(extras.rounds.get(n, {}))
+        blob["movement_casts"] = 1      # revision 14: casts were looked for, so a round with none had none
     replay.report["extras"] = extras.report
     replay.report["sizes"] = fmt.size_report(replay.encoded_rounds())
