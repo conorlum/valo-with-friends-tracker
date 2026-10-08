@@ -3,6 +3,8 @@ import base64
 import json
 import subprocess
 import sys
+import tempfile
+import hashlib
 from dataclasses import asdict
 from pathlib import Path
 
@@ -23,6 +25,8 @@ def _query(db, key):
 
 
 def _artifact(row):
+    if row.height_asset is not None and hashlib.sha256(row.height_asset).hexdigest() != row.height_asset_sha256:
+        raise FeatureArtifactCorrupt('retained height checksum mismatch')
     result = FeatureArtifact(row.digest, FeatureKey(row.map_name, row.height_digest, row.tags_digest, row.compiler_version),
                              row.manifest, bytes(row.inputs), bytes(row.assets), row.code_commit)
     check_artifact(result)
@@ -57,7 +61,24 @@ def _equivalent(existing, incoming):
     return existing
 
 
-def store_artifact(db, artifact: FeatureArtifact) -> FeatureArtifact:
+def archived_height_bytes(db, digest):
+    row = db.get(ControlFeatureArtifact, digest)
+    if row is None:
+        raise FeatureArtifactMissing('feature archive missing')
+    _artifact(row)
+    if row.height_digest == 'flat':
+        return None
+    if row.height_asset is not None:
+        return bytes(row.height_asset)
+    height = db.query(ControlHeight.asset).filter_by(map_name=row.map_name, digest=row.height_digest).first()
+    if height is None:
+        raise FeatureArtifactMissing('historical height missing')
+    return bytes(height.asset)
+
+
+def store_artifact(db, artifact: FeatureArtifact, *, height_bytes=None) -> FeatureArtifact:
+    if artifact.key.height_digest == 'flat' and height_bytes is not None:
+        raise FeatureArtifactCorrupt('flat artifact cannot retain a height asset')
     check_artifact(artifact)
     existing = find_artifact(db, artifact.key)
     if existing is not None:
@@ -65,12 +86,19 @@ def store_artifact(db, artifact: FeatureArtifact) -> FeatureArtifact:
     if artifact.key.height_digest != 'flat':
         height = db.query(ControlHeight.asset).filter_by(map_name=artifact.key.map_name,
                                                        digest=artifact.key.height_digest).first()
-        if height is None or not height.asset:
+        if (height is None or not height.asset) and height_bytes is None:
             raise FeatureArtifactMissing('referenced historical height is missing')
+        if height_bytes is not None:
+            from app.replays.map_feature_artifacts import encode_artifact
+            request = {'mode': 'verify', 'artifact': json.loads(encode_artifact(artifact)),
+                       'height': base64.b64encode(height_bytes).decode('ascii')}
+            run_feature_child('verify', canonical_json(request))
     key = artifact.key
     row = ControlFeatureArtifact(digest=artifact.digest, map_name=key.map_name, height_digest=key.height_digest,
                                  tags_digest=key.tags_digest, compiler_version=key.compiler_version,
                                  manifest=artifact.manifest, inputs=artifact.inputs, assets=artifact.assets,
+                                 height_asset=height_bytes,
+                                 height_asset_sha256=None if height_bytes is None else hashlib.sha256(height_bytes).hexdigest(),
                                  code_commit=artifact.code_commit)
     connection = db.connection()
     if connection.dialect.name == 'sqlite' and not connection.connection.driver_connection.in_transaction:
@@ -102,11 +130,14 @@ def run_feature_child(mode: str, payload: bytes) -> bytes:
         request = json.loads(payload)
         if request.get('mode') != mode:
             raise FeatureArtifactCorrupt('feature child mode mismatch')
-        done = subprocess.run([sys.executable, '-m', 'app.control.feature_job'], input=payload,
-                              capture_output=True, timeout=120, cwd=Path(__file__).parents[2], check=False)
-        if done.returncode or len(done.stdout) > MAX_WIRE_BYTES:
-            raise FeatureArtifactCorrupt('feature child exit/output limit')
-        reply = json.loads(done.stdout)
+        with tempfile.TemporaryFile() as output:
+            done = subprocess.run([sys.executable, '-m', 'app.control.feature_job'], input=payload,
+                                  stdout=output, stderr=subprocess.DEVNULL, timeout=120,
+                                  cwd=Path(__file__).parents[2], check=False)
+            if done.returncode or output.tell() > MAX_WIRE_BYTES:
+                raise FeatureArtifactCorrupt('feature child exit/output limit')
+            output.seek(0)
+            reply = json.load(output)
         if not reply.get('ok'):
             error = UnsupportedFeatureCompiler if reply.get('code') == 'features_unsupported' else FeatureArtifactCorrupt
             raise error(reply.get('reason', 'feature child failed'))
@@ -128,6 +159,6 @@ def prepare_artifact(db, inputs, height_bytes):
         artifact = decode_artifact(run_feature_child('compile', canonical_json(request)))
         if artifact.key != inputs.key or artifact.inputs != inputs.canonical_inputs:
             raise FeatureArtifactCorrupt('child compiled different inputs')
-        return store_artifact(db, artifact)
+        return store_artifact(db, artifact, height_bytes=height_bytes)
     except Exception as exc:
         raise FeaturePreparationPending(inputs.key, str(exc)) from exc

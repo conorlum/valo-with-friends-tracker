@@ -87,6 +87,17 @@ def active_digests(db) -> dict[str, str]:
     return {name: digest for name, digest, rules in rows_ if _usable(rules)}
 
 
+def select_height(db, map_name, committed_digest):
+    history = db.query(ControlHeight.digest, ControlHeight.status, ControlHeight.rules) \
+        .filter(ControlHeight.map_name == map_name).all()
+    for digest, status, rules in history:
+        if status == ACTIVE and _usable(rules):
+            return height_inputs.HeightSelection('asset', digest)
+    if history or not committed_digest:
+        return height_inputs.HeightSelection('flat')
+    return height_inputs.HeightSelection('asset', committed_digest)
+
+
 def rows(db, map_name: str | None = None) -> list[ControlHeight]:
     """Builds, newest first, without their asset bytes."""
     query = db.query(ControlHeight).options(defer(ControlHeight.asset))

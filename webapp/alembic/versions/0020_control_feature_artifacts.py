@@ -23,6 +23,8 @@ def upgrade():
         sa.Column('manifest', sa.JSON().with_variant(postgresql.JSONB(), 'postgresql'), nullable=False),
         sa.Column('inputs', sa.LargeBinary(), nullable=False),
         sa.Column('assets', sa.LargeBinary(), nullable=False),
+        sa.Column('height_asset', sa.LargeBinary(), nullable=True),
+        sa.Column('height_asset_sha256', sa.String(64), nullable=True),
         sa.Column('code_commit', sa.String(40), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint('map_name', 'height_digest', 'tags_digest', 'compiler_version', name='uq_control_feature_key'))

@@ -31,6 +31,8 @@ Verified facts:
 
 Definitions remain authoritative in committed `webapp/app/static/data/control/tags.json`, under each map's `map_features`. A database snapshot is past-compilation evidence, never a second editable catalogue. There is no database feature editor or active feature-generation pointer.
 
+Implementation clarification: retain exact height NPZ bytes and their SHA-256 as optional archive/audit columns on the feature artifact. This also covers a committed-height fallback that has no `control_heights` row, without creating activation history or changing explicit off/fallback selection. These representation bytes are outside the runtime manifest identity; the isolated verifier checks their decoded height digest against the artifact key. Database-built historical heights remain available through the existing table as a fallback.
+
 Propose `control_feature_artifacts`, owned by future `app/services/control_feature_artifacts.py`:
 
 | Field | Meaning |

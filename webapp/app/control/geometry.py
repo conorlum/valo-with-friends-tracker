@@ -378,7 +378,8 @@ def load_tags(asset_dir: Path = ASSET_DIR) -> dict:
     return json.loads((asset_dir / "tags.json").read_text(encoding="utf-8"))
 
 
-def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None = None, *, load_features=True) -> Geometry:
+def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None = None, *, load_features=True,
+                  height_mode='legacy_default') -> Geometry:
     """A map's committed geometry (built by scripts/build_control_geometry.py), with its heights when
     index.json names a height asset (scripts/build_control_heights.py). `heights` loads that asset file
     instead: a preview's, or the map's active asset fetched by its digest (the database's, which wins over a
@@ -402,6 +403,10 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
 
         geo.features = features.load_generation(asset_dir, row["features_sha"])
         geo.features_sha = row["features_sha"]
+    if height_mode == 'flat':
+        return geo
+    if height_mode not in ('legacy_default', 'asset') or (height_mode == 'asset' and heights is None):
+        raise GeometryError('asset height mode requires an exact named path')
     if heights is not None:              # a preview's, or one fetched by its digest (height_cache_path)
         return attach_heights(geo, hc.load_asset(heights))
     wanted = row.get("height_sha")

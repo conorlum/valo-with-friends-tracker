@@ -148,4 +148,28 @@ def test_concurrent_first_inserts_use_a_savepoint_and_converge(archive_factory, 
     assert a == b
     with archive_factory() as db:
         assert db.query(ControlFeatureArtifact).count() == 1
-
+def test_committed_height_is_retained_without_creating_activation_history(archive_factory, tmp_path):
+    from app.control import heights as hc
+    from app.control.features import compile_artifact
+    from map_feature_artifact_toys import geometry_case, snapshot_case, base_case
+    from app.replays.map_feature_inputs import identify_features
+    from app.services import control_feature_artifacts as service
+    from app.models.replay import ControlHeight
+    geo = geometry_case()
+    path = tmp_path / 'committed.npz'
+    hc.save_asset(path, geo.heights)
+    raw = path.read_bytes()
+    inp = identify_features('Summit', geo.height_sha, snapshot_case(), base_case(), consumers={'test': 1})
+    artifact = compile_artifact(geo, inp, '0' * 40)
+    with archive_factory() as db:
+        service.store_artifact(db, artifact, height_bytes=raw)
+        db.commit()
+        assert db.query(ControlHeight).count() == 0
+        assert service.archived_height_bytes(db, artifact.digest) == raw
+        from app.models.replay import ControlFeatureArtifact
+        row = db.get(ControlFeatureArtifact, artifact.digest)
+        row.height_asset = b'corrupt'
+        db.flush()
+        from app.replays.map_feature_artifacts import FeatureArtifactCorrupt
+        with pytest.raises(FeatureArtifactCorrupt):
+            service.archived_height_bytes(db, artifact.digest)

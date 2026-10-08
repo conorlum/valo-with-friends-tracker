@@ -23,6 +23,13 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class HeightSelection:
+    mode: str
+    digest: str | None = None
 
 from app.replays import control_format as cf
 from app.replays import format as fmt

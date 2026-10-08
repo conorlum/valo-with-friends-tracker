@@ -260,7 +260,7 @@ def _calls_without_heights(path: Path) -> list[int]:
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Call):
             name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
-            if name in need and len(node.args) < need[name] and not any(k.arg == "heights" for k in node.keywords):
+            if name in need and len(node.args) < need[name] and not any(k.arg in ("heights", 'context') for k in node.keywords):
                 out.append(node.lineno)
     return out
 

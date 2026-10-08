@@ -15,6 +15,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[0]))
 
 from test_control_store import db, factory, linked, put_row  # noqa: E402,F401  (fixtures)
+from test_control_pinned_inputs import tagged
 from test_replay_store import condensed, pg  # noqa: E402,F401  (fixtures)
 
 from app.config import settings  # noqa: E402
@@ -40,12 +41,13 @@ class FakeWorker:
     `gaps` is the `control.gaps_protocol` its health names: None is a worker image from before timing gaps
     (the default, so every older test here is also the old-worker regression), 1 a capable one."""
 
-    def __init__(self, answer=None, busy_after=None, gaps=None):
+    def __init__(self, answer=None, busy_after=None, gaps=None, features=None):
         self.tasks, self.jobs, self.busy_after = {}, {}, busy_after
         self.answer = answer or self.ok
         self.forget = set()
         self.heights, self.pushed = set(), []
         self.gaps, self.control_on, self.health_error, self.health_reads = gaps, True, None, 0
+        self.features = features
 
     def health(self):
         self.health_reads += 1
@@ -54,16 +56,21 @@ class FakeWorker:
         control = {"enabled": self.control_on, "queued": 0, "running": 0, "warm": [], "preempted": 0}
         if self.gaps is not None:
             control["gaps_protocol"] = self.gaps
+        if self.features is not None:
+            control['features'] = self.features
         return {"ok": True, "queued": 0, "control": control}
 
     def ok(self, task):
-        geometry = dict(rc.geometry_inputs(task["map"]))
+        geometry = dict(task.get('geometry') or rc.geometry_inputs(task["map"]))
         if task.get("height"):
             geometry["height"] = task["height"]
         result = {"status": "ok", "data": base64.b64encode(gzip.compress(b"d")).decode(),
                   "summary": base64.b64encode(cf.pack_summary({})).decode(),
                   "revision": cf.CONTROL_REVISION, "data_version": cf.DATA_VERSION,
                   "geometry": geometry}
+        if task.get('features'):
+            provenance = {'v': 1, 'inputs': task['inputs'], 'fingerprint': cf.fingerprint_from_inputs(task['inputs'])}
+            result['summary'] = base64.b64encode(cf.pack_summary({'provenance': provenance})).decode()
         if self.gaps is not None:
             result["figures"] = cf.figures_hash()
         if "gaps" in task:
@@ -110,7 +117,7 @@ def test_missing_rounds_are_sent_then_stored(factory, db, linked):
     sent = sorted(t["link"] and int(t["key"].split(":")[1]) for t in worker.tasks.values())
     assert sent == list(range(1, remote.IN_FLIGHT + 1))
     task = next(iter(worker.tasks.values()))
-    assert set(task) == {"key", "map", "blob", "link"} and set(task["link"]) == {"sides", "db_deaths"}
+    assert set(task) == {"key", "map", "blob", "link", 'height_mode'} and set(task["link"]) == {"sides", "db_deaths"}
     second = remote.cycle(factory, worker, state, now=1)
     assert second["stored"] == remote.IN_FLIGHT
     stored = rows(db, linked)
@@ -367,27 +374,23 @@ def test_the_client_maps_the_workers_answers():
             assert raised.value.body == json.loads(body)
 
 
-def test_a_map_with_a_feature_generation_sends_it_and_keeps_only_results_computed_with_it(factory, db, linked, monkeypatch):
-    # map features (M5): no committed map has one, so this patches the index as a later build would write it
-    index, tags, maps = rc._assets()
-    patched = {name: {**row, "features_sha": "feat0000feat0000"} for name, row in index.items()}
-    monkeypatch.setattr(rc, "_assets", lambda: (patched, tags, maps))
-    worker, state = FakeWorker(), remote.State()
-    original_health = worker.health
+def test_a_tagged_map_waits_for_capability_then_pins_exact_inputs(factory, db, linked, tagged):
     from app.replays.map_feature_artifacts import protocol_identity
-    monkeypatch.setattr(worker, 'health', lambda: {**original_health(), 'control': {'enabled': True, 'features': protocol_identity()}})
-    remote.cycle(factory, worker, state, now=0)
+    worker, state = FakeWorker(), remote.State()
+    assert remote.cycle(factory, worker, state, now=0)['sent'] == 0
+    assert state.tries == {}
+    worker.features = protocol_identity()
+    remote.cycle(factory, worker, state, now=1)
     task = next(iter(worker.tasks.values()))
-    assert task["features"] == "feat0000feat0000" and rc.geometry_inputs(task["map"])["features"] == "feat0000feat0000"
-    assert remote.cycle(factory, worker, state, now=1)["stored"] == remote.IN_FLIGHT
+    assert task['features'] == task['geometry']['features'] == task['inputs']['geometry']['features']
+    assert remote.cycle(factory, worker, state, now=2)["stored"] == remote.IN_FLIGHT
 
     def stale(task):                     # a worker still on the previous generation (no features)
         job = FakeWorker.ok(worker2, task)
         job["result"]["geometry"] = {k: v for k, v in job["result"]["geometry"].items() if k != "features"}
         return job
 
-    worker2, state2 = FakeWorker(stale), remote.State()
-    monkeypatch.setattr(worker2, 'health', lambda: {'control': {'enabled': True, 'features': protocol_identity()}})
+    worker2, state2 = FakeWorker(stale, features=protocol_identity()), remote.State()
     remote.cycle(factory, worker2, state2, now=100)
     assert remote.cycle(factory, worker2, state2, now=101)["dropped_geometry"] > 0
 
@@ -426,7 +429,7 @@ def test_a_worker_without_the_capability_gets_plain_control_and_no_gap_work(fact
         worker.gaps, worker.health_error = 1, remote.Unreachable("the replay worker is unreachable")
     first = remote.cycle(factory, worker, state, now=0)
     assert first["sent"] == remote.IN_FLIGHT == first["gaps_unavailable"] and worker.health_reads == 1
-    assert all(set(t) == {"key", "map", "blob", "link"} for t in worker.tasks.values()), "the legacy task"
+    assert all(set(t) == {"key", "map", "blob", "link", 'height_mode'} for t in worker.tasks.values())
     assert all(len(t["key"].split(":")) == 3 for t in worker.tasks.values()), "and the legacy key"
     if worker_is == "unreachable_health":
         worker.gaps = None                          # its results carry no figures either
@@ -443,7 +446,7 @@ def test_a_capable_worker_gets_the_sites_gap_keys_and_both_results_are_stored(fa
     assert sent_rounds(worker) == list(range(1, remote.IN_FLIGHT + 1))
     [planned] = rc.plan(db, rounds={1}, force=True)
     task = next(t for t in worker.tasks.values() if t["gaps"]["round"] == 1)
-    assert set(task) == {"key", "map", "blob", "link", "gaps"}
+    assert set(task) == {"key", "map", "blob", "link", "gaps", 'height_mode'}
     gap_print = replay_gaps.gap_fingerprint(planned.fingerprint, linked.map_name)
     assert task["gaps"] == {"replay_id": linked.id, "round": 1, "fingerprint": planned.fingerprint,
                             "gap_fingerprint": gap_print,
@@ -664,7 +667,7 @@ def test_rounds_with_current_control_and_no_gaps_are_sent_for_gaps_alone(factory
     [planned] = rc.plan(db, rounds={1}, force=True)
     task = next(t for t in worker.tasks.values() if t["gaps"]["round"] == 1)
     gap_print = replay_gaps.gap_fingerprint(planned.fingerprint, linked.map_name)
-    assert set(task) == {"key", "map", "blob", "link", "gaps", "gaps_only"} and task["gaps_only"] is True
+    assert set(task) == {"key", "map", "blob", "link", "gaps", "gaps_only", 'height_mode'} and task["gaps_only"] is True
     assert task["key"] == f"{linked.id}:1:{planned.fingerprint}:go1:{gap_print}"
     assert task["gaps"]["gap_fingerprint"] == gap_print and task["gaps"]["engine_key"]
     assert all(f.gaps_only and f.expect_gaps for f in state.in_flight.values())
@@ -868,5 +871,5 @@ def test_a_result_computed_with_other_heights_is_dropped(factory, db, linked):
     remote.cycle(factory, worker, state, now=0)
     heights(db, linked.map_name, "b" * 12, b"npz2", "m1", "m2", "m3")           # new heights while they ran
     counts = remote.cycle(factory, worker, state, now=1)
-    assert counts["dropped_geometry"] == remote.IN_FLIGHT and counts["stored"] == 0
+    assert counts["skipped"] == remote.IN_FLIGHT and counts["stored"] == 0
     assert rows(db, linked) == {}

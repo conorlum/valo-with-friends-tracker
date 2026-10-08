@@ -252,10 +252,10 @@ def test_the_wrong_generation_is_the_machines_failure_not_the_rounds(published, 
 
     folder, sha, _ = published
     geo = cg.load_geometry("Ascent", folder)
-    monkeypatch.setattr(ct, "_load", lambda name, heights=None, digest=None: geo)
+    monkeypatch.setattr(ct, "_load", lambda name, heights=None, digest=None, **kwargs: geo)
     out = ct.compute_task({"key": "k", "map": "Ascent", "blob": b"", "link": {"sides": {}, "db_deaths": []},
-                           "features": "0123456789abcdef"})
-    assert out["status"] == "failed" and out["error_kind"] == "infra" and "expected feature generation" in out["error"]
+                           "features": 'a' * 64})
+    assert out["status"] == "failed" and out["error_kind"] == "infra" and out['error_code'] == 'features_missing'
 
 
 def test_a_cached_generation_is_verified_again_when_its_definitions_change(published, monkeypatch):
@@ -368,7 +368,7 @@ def test_a_failed_publication_never_touches_a_published_generation(published):
     assert path.read_bytes() == bytes_before and cf.active_sha("Ascent", folder) == sha
 
 
-def test_the_local_store_refuses_a_result_from_another_generation(monkeypatch):
+def test_the_local_store_uses_the_shared_pinned_input_guard(monkeypatch):
     sys.path.insert(0, str(HERE.parents[1] / "scripts"))
     import compute_control
 
@@ -376,16 +376,12 @@ def test_the_local_store_refuses_a_result_from_another_generation(monkeypatch):
     from app.services import replay_control_store as store
 
     calls = []
-    monkeypatch.setattr(store, "store_round", lambda *a, **k: calls.append(a) or "stored")
+    monkeypatch.setattr(store, "store_round", lambda *a, **k: calls.append(k) or "stored")
     planned = type("P", (), {"replay_id": 1, "round_number": 2, "fingerprint": "f" * 16, "map_name": "Ascent"})()
     ok = {"status": "ok", "geometry": {"sight": "x"}}
     assert compute_control.store_result(None, planned, ok) == "stored", "no features anywhere: as before"
-    monkeypatch.setattr(rc, "geometry_inputs", lambda name, heights=None: {"features": "gen2"})
-    assert compute_control.store_result(None, planned, ok) == "skipped: its feature inputs changed while computing"
-    assert compute_control.store_result(None, planned, {**ok, "geometry": {"features": "gen1"}}).startswith("skipped")
-    assert compute_control.store_result(None, planned, {**ok, "geometry": {"features": "gen2"}}) == "stored"
     assert compute_control.store_result(None, planned, {"status": "failed", "error": "x"}) == "stored", "failures still stored"
-    assert len(calls) == 3
+    assert calls == [{'require_current': True, 'planned_inputs': None}] * 2
 
 
 def test_rebuilding_the_masks_keeps_the_generation_pointer():

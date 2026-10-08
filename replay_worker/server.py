@@ -1589,6 +1589,10 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
         def _features(self):
             if control is None or not control.enabled:
                 return self._send(HTTPStatus.NOT_FOUND, {'error': 'map control is off on this worker'})
+            length = self.headers.get('Content-Length')
+            if length is not None and int(length) > feature_artifacts.MAX_WIRE_BYTES:
+                self.close_connection = True
+                return self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {'error': 'feature artifact too large'})
             body = self._json(limit=feature_artifacts.MAX_WIRE_BYTES)
             if body is None:
                 return self._send(HTTPStatus.BAD_REQUEST, {'error': 'invalid or oversized feature artifact'})

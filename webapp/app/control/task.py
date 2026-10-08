@@ -59,7 +59,11 @@ def load_task_features(task, geo, cache_dir):
                 envelope['normalization'] != fi.FEATURE_NORMALIZATION_VERSION or \
                 any(fi.CONSUMER_VERSIONS.get(k) != v for k, v in envelope['consumers'].items()):
             raise fa.UnsupportedFeatureCompiler('recorded feature semantics unavailable')
-        _ARTIFACTS.get_or_verify(item, lambda artifact: verify_artifact(artifact, geo))
+        try:
+            _ARTIFACTS.get_or_verify(item, lambda artifact: verify_artifact(artifact, geo))
+        except fa.FeatureArtifactCorrupt:
+            fa.cache_path(cache_dir, expected).unlink(missing_ok=True)
+            raise
         geo.features, geo.features_sha = item, item.digest
         return item
     except fa.FeatureArtifactError:
@@ -105,7 +109,7 @@ def geometry_used(geo) -> dict:
 
     from app.control import geometry
 
-    scale = (json.loads(geometry.MAPS_JSON.read_text(encoding="utf-8")).get(geo.name) or {}).get("xMultiplier")
+    scale = geo.uv_per_unit
     used = {"sight": hashlib.sha256(np.packbits(geo.sight).tobytes()).hexdigest()[:12],
             "walk": hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12],
             "barrier": geo.barrier_sha, "specials": list(geo.specials), "scale": scale}
@@ -134,7 +138,7 @@ def height_file(name: str, digest: str) -> Path:
     return path
 
 
-def _load(name: str, heights: str | None = None, digest: str | None = None, *, exact=False):
+def _load(name: str, heights: str | None = None, digest: str | None = None, *, exact=False, height_mode='legacy_default'):
     from app.control import features, geometry
 
     if heights is None and digest:
@@ -142,11 +146,13 @@ def _load(name: str, heights: str | None = None, digest: str | None = None, *, e
     # A map's own geometry is keyed by its name; with an active feature generation, by that generation too, so
     # a worker never keeps computing with a superseded one (absent for every map today: the key is unchanged).
     generation = None if exact else features.active_sha(name)
-    key = (name, heights, exact) if exact else name if heights is None and generation is None else (name, heights, generation)
+    key = (name, heights, exact, height_mode) if exact or height_mode != 'legacy_default' else name if heights is None and generation is None else (name, heights, generation)
     if key not in _GEOMETRY:
         if digest:
             height_file(name, digest)
         options = {'load_features': False} if exact else {}
+        if height_mode != 'legacy_default':
+            options['height_mode'] = height_mode
         geo = geometry.load_geometry(name, heights=Path(heights) if heights else None, **options)
         try:
             geometry.visibility(geo)
@@ -410,11 +416,24 @@ def compute_task(task: dict) -> dict:
                 "key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()}
     try:
         options = {'exact': task['features']} if task.get('features') else {}
+        if task.get('height_mode'):
+            options['height_mode'] = task['height_mode']
         geo = _load(task["map"], task.get("heights"), task.get("height"), **options)
         if task.get("features"):           # the generation the dispatcher planned with (map features)
             from app.control import geometry
             load_task_features(task, geo, geometry.cache_dir() / 'features')
         blob = fmt.decode_blob(task["blob"])
+        provenance = None
+        if task.get('features'):
+            from app.replays.map_feature_artifacts import FeatureArtifactCorrupt
+            envelope = task.get('inputs')
+            actual = geometry_used(geo)
+            if not isinstance(envelope, dict) or set(envelope) != {'control', 'data', 'summary', 'recipe', 'source', 'link', 'geometry', 'figures'} \
+                    or envelope['geometry'] != actual or envelope['figures'] != cf.figures_hash() or \
+                    (envelope['control'], envelope['data'], envelope['summary']) != (cf.CONTROL_REVISION, cf.DATA_VERSION, cf.SUMMARY_VERSION) \
+                    or any(envelope['link'].get(k) != task['link'].get(k) for k in ('sides', 'db_deaths')):
+                raise FeatureArtifactCorrupt('actual child inputs differ from planned envelope')
+            provenance = {'v': 1, 'inputs': envelope, 'fingerprint': cf.fingerprint_from_inputs(envelope)}
         link = engine.ControlLink(sides={int(s): side for s, side in task["link"]["sides"].items()},
                                   db_deaths=tuple((int(s), float(t)) for s, t in task["link"]["db_deaths"]))
         job = task.get("gaps")
@@ -429,7 +448,8 @@ def compute_task(task: dict) -> dict:
                     guard = _CacheGuard(None)
                     guard._fail(error)
             rc = engine.compute_round(blob, geo, link, observer=guard)
-            result = {"status": "ok", "data": encode_data(rc, blob), "summary": encode_summary(rc, blob),
+            summary_options = {'provenance': provenance} if provenance is not None else {}
+            result = {"status": "ok", "data": encode_data(rc, blob), "summary": encode_summary(rc, blob, **summary_options),
                       "missing": dict(rc.missing_inputs), "geometry": geometry_used(geo)}
             if job:
                 guard.close(rc.missing_inputs)

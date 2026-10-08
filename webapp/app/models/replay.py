@@ -116,6 +116,8 @@ class ControlFeatureArtifact(Base):
     manifest: Mapped[dict] = mapped_column(JSONType, nullable=False)
     inputs: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     assets: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    height_asset: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    height_asset_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     code_commit: Mapped[str] = mapped_column(String(40), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
