@@ -786,6 +786,11 @@ the DB, because uploaded replays can't be re-parsed (their `.vrf` isn't kept).
   `reingest_replays.py`.
 - A stale **local** replay is re-ingested from the archive, after verifying the `.vrf`'s sha256. A stale **upload**
   still plays, and the page offers "re-upload to refresh".
+- Since 2026-10-07 a stale **upload** whose recording the worker has archived can also be parsed again by the
+  site itself, one at a time, behind every upload and after map control has drained
+  (`app/services/replay_reparse_auto.py`; `docs/superpowers/plans/2026-10-07-auto-reparse-queue-impl.md`). It
+  is off unless `REPLAY_REPARSE_AUTO` is set; `webapp/RENDER_DEPLOY.md` has the checks to do first. A stale
+  local replay stays with `reingest_replays.py`, even when the same file happens to be archived.
 
 ### Storage: migration `0012_replays`
 

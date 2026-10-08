@@ -101,6 +101,14 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def current_recipe(pin: ParserPin | None = None, static_dir: Path | None = None) -> str:
+    """The recipe a parse on this deploy would stamp (condense_export_dir builds the same string): what the
+    worker reports in /health and the site compares a stored replay against."""
+    from app.replays import format as fmt
+
+    return fmt.recipe((pin or load_pin()).commit, fmt.assets_revision(static_dir or fmt.STATIC_DIR))
+
+
 def check_manifest(manifest: dict, pin: ParserPin, source_sha256: str | None,
                    build: dict | None = None) -> None:
     """Refuses (ContractError) unless the export came from the pinned parser and this file.

@@ -135,3 +135,16 @@ def test_an_incomplete_export_refuses(tmp_path):
     with pytest.raises(ContractError) as refused:
         contract.load_export(tmp_path)
     assert refused.value.reason == "incomplete_export"
+
+
+def test_current_recipe_is_the_string_the_condenser_stamps(tmp_path):
+    from app.replays import format as fmt
+    from app.replays.condense import condense_export_dir
+
+    match = SyntheticMatch(shape="swiftplay")
+    replay = condense_export_dir(match.write(tmp_path / "export"), source_sha256=match.source_sha256,
+                                 vrf_path=match.write_vrf(tmp_path / "match.vrf"), check_file_name=False)
+    assert contract.current_recipe() == replay.recipe
+    assert contract.current_recipe(PIN, fmt.STATIC_DIR) == fmt.recipe(PIN.commit, fmt.assets_revision())
+    other = contract.ParserPin("f" * 40, PIN.schema_version, PIN.supported_builds, PIN.patches)
+    assert contract.current_recipe(other) != contract.current_recipe(), "another parser commit, another recipe"

@@ -2,8 +2,10 @@
 the ack sent after a store, `kept_existing` shown to its uploader as stored, the re-send and tombstone sync, and the admin
 routes. Against the real worker with the stub parser and its archive in a temp folder; sqlite store."""
 
+import hashlib
 import io
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -20,6 +22,9 @@ from replay_synthetic import MATCH_UUID  # noqa: E402
 from test_replay_store import TABLES  # noqa: E402
 from test_replay_worker import start, stub, vrf_bytes  # noqa: E402,F401  (fixture)
 from test_replay_worker_archive import start_archive  # noqa: E402
+
+from replay_worker import archive as arc  # noqa: E402
+from replay_worker import server  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
@@ -273,5 +278,202 @@ def test_the_sync_does_nothing_while_the_archive_is_off(engine, tmp_path, stub):
     try:
         counts = sync.cycle(sessionmaker(bind=engine), uploads.WorkerClient(base), sync.State())
         assert not any(counts.values())
+    finally:
+        httpd.shutdown()
+
+
+# ---------------------------------------------------------------- automatic re-parse attempts, the real worker
+# docs/superpowers/plans/2026-10-07-auto-reparse-queue-impl.md, task 3. The guards one by one are in
+# test_replay_upload.py, against a fake worker.
+
+ATTEMPT = "6f1c2b9e-0d34-4c1a-9b7e-3a5d8e2f4c10"
+OTHER_ATTEMPT = "7a2d3c0f-1e45-4d2b-8c8f-4b6e9f305d21"
+OTHER_MATCH = "11111111-0000-4000-8000-000000000000"
+
+
+def test_the_client_reads_every_coded_answer_of_the_attempt_routes(db, tmp_path, stub):  # noqa: F811
+    worker, httpd, base, disk = start_archive(tmp_path, stub)
+    try:
+        client = uploads.WorkerClient(base)
+        sha = db.get(Replay, collect(db, client, vrf_bytes()).replay_id).source_sha256
+        # 404, 409 and 400 answers come back as their code, not as an exception.
+        assert client.reparse_attempt(ATTEMPT)["code"] == "unknown_attempt"
+        assert client.reparse(MATCH_UUID, attempt_id=ATTEMPT, expected_sha256="0" * 64)["code"] == "sha_mismatch"
+        assert client.reparse(OTHER_MATCH, attempt_id=ATTEMPT, expected_sha256=sha)["code"] == "no_archived_file"
+        assert client.reparse(MATCH_UUID, attempt_id="not-a-uuid", expected_sha256=sha)["code"] == "bad_request"
+        assert client.reparse_attempt(ATTEMPT)["code"] == "unknown_attempt", "a definite refusal leaves no receipt"
+        accepted = client.reparse(MATCH_UUID, attempt_id=ATTEMPT, expected_sha256=sha)
+        assert accepted["code"] == "accepted" and accepted["job_id"] == uploads.auto_job_id(ATTEMPT)
+        assert uploads.receipt_matches(accepted, ATTEMPT, {"match_uuid": MATCH_UUID, "source_sha256": sha})
+        assert not uploads.receipt_matches(accepted, OTHER_ATTEMPT, {"match_uuid": MATCH_UUID, "source_sha256": sha})
+        for again in (client.reparse(MATCH_UUID, attempt_id=ATTEMPT, expected_sha256=sha),
+                      client.reparse_attempt(ATTEMPT), client.close_reparse_attempt(ATTEMPT, MATCH_UUID, sha)):
+            assert (again["code"], again["job_id"]) == ("accepted", accepted["job_id"])
+        assert client.close_reparse_attempt(OTHER_ATTEMPT, MATCH_UUID, sha)["code"] == "closed"
+        assert client.reparse(MATCH_UUID, attempt_id=OTHER_ATTEMPT, expected_sha256=sha)["code"] == "closed"
+        # Without an attempt id it is the manual re-parse, answered and refused as it always was.
+        manual = client.reparse(MATCH_UUID)
+        assert set(manual) == {"id", "status", "kind", "sha256", "size"} and not manual["id"].startswith("auto")
+        with pytest.raises(uploads.WorkerRefused) as refused:
+            client.reparse(OTHER_MATCH)
+        assert refused.value.status == 404
+    finally:
+        httpd.shutdown()
+    # No answer says nothing about acceptance: never a code, always an error the caller must not read as a refusal.
+    down = uploads.WorkerClient("http://127.0.0.1:9", timeout_s=1)
+    for call in (lambda: down.reparse(MATCH_UUID, attempt_id=ATTEMPT, expected_sha256="0" * 64),
+                 lambda: down.reparse_attempt(ATTEMPT), lambda: down.close_reparse_attempt(ATTEMPT, MATCH_UUID, "0" * 64)):
+        with pytest.raises(uploads.WorkerError) as error:
+            call()
+        assert not isinstance(error.value, uploads.WorkerRefused)
+
+
+def start_archive_with_control(tmp_path, stub):  # noqa: F811
+    """`start_archive` with map control on, wired as replay_worker/server.py's `main` wires it: what the
+    deployed worker's /health says. No control task is sent here, so no child ever starts."""
+    disk = tmp_path / "disk"
+    disk.mkdir(exist_ok=True)
+    config = server.Settings(parser_cmd=[sys.executable, str(stub), "{vrf}", "{out}", "ok"],
+                             temp_root=tmp_path / "jobs", archive_dir=disk, archive_require_mount=False,
+                             archive_total_bytes=500 * arc.GB)
+    config.temp_root.mkdir(exist_ok=True)
+    control = server.ControlRunner(config)
+    worker = server.Worker(config, on_parse=control.preempt)
+    control.idle = worker.idle
+    httpd = server.make_server(worker, control=control)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return worker, httpd, f"http://127.0.0.1:{httpd.server_address[1]}", disk
+
+
+def test_an_automatic_attempt_runs_end_to_end_and_the_sync_collects_it(engine, db, tmp_path, stub, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(uploads, "_site_recipe", None)  # the recipe this checkout's code really stamps
+    worker, httpd, base, disk = start_archive_with_control(tmp_path, stub)
+    try:
+        client = uploads.WorkerClient(base)
+        replay = db.get(Replay, collect(db, client, vrf_bytes()).replay_id)
+        target, sha = replay.recipe, replay.source_sha256
+        assert target == worker.recipe == uploads.site_recipe(), "the stub parses to the recipe both sides name"
+        assert uploads.worker_off_reason(client.health(), target) is None
+        replay.recipe = "old"   # as if stored by an earlier deploy
+        db.add(ReplayUpload(id=ATTEMPT, status="queued", source_sha256=sha, session_key=uploads.auto_tag(target),
+                            created_at=uploads.datetime.now(uploads.timezone.utc),
+                            auto_context=uploads.new_auto_context(replay, target)))
+        db.commit()
+        factory = sessionmaker(bind=engine)
+        # Reserved, not sent: the sync looks the receipt up and starts nothing.
+        assert sync.cycle(factory, client, sync.State())["collected"] == 0
+        assert client.reparse_attempt(ATTEMPT)["code"] == "unknown_attempt"
+        assert not (disk / "jobs" / uploads.auto_job_id(ATTEMPT)).exists()
+        assert client.reparse(MATCH_UUID, attempt_id=ATTEMPT, expected_sha256=sha)["code"] == "accepted"
+        for _ in range(300):
+            if sync.cycle(factory, client, sync.State())["collected"]:
+                break
+            time.sleep(0.1)
+        db.expire_all()
+        row = db.get(ReplayUpload, ATTEMPT)
+        assert (row.status, row.store_outcome, row.archive_ack, row.error) == ("stored", "replaced", "kept", None)
+        assert row.auto_context["phase"] == "accepted" and row.worker_job_id == uploads.auto_job_id(ATTEMPT)
+        stored = db.query(Replay).one()
+        assert (stored.recipe, stored.source, stored.id) == (target, "upload", row.replay_id)
+        assert (disk / "archive" / f"{MATCH_UUID}.vrf").read_bytes() == vrf_bytes(), "the archived file stays"
+        assert sync.cycle(factory, client, sync.State())["collected"] == 0
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.parametrize("receipt_write_fails", [False, True])
+def test_the_automatic_step_recovers_a_lost_reply_through_the_real_worker(engine, db, tmp_path, stub, monkeypatch,
+                                                                      receipt_write_fails):  # noqa: F811
+    """Task 5 of the same plan against the real worker: the step reserves, the worker accepts and its reply
+    is lost, and later passes (with no memory of the first) find the same attempt, collect its one job and
+    replace the replay."""
+    from app.services import replay_reparse_auto as auto
+
+    monkeypatch.setattr(uploads, "_site_recipe", None)
+    monkeypatch.setattr(settings, "replay_reparse_auto", True)
+    monkeypatch.setattr(settings, "replay_control_remote", True)
+    worker, httpd, base, disk = start_archive_with_control(tmp_path, stub)
+    try:
+        client = uploads.WorkerClient(base)
+        replay = db.get(Replay, collect(db, client, vrf_bytes()).replay_id)
+        target, old_id = replay.recipe, replay.id
+        monkeypatch.setattr(auto, "_builds", frozenset({replay.game_branch}))
+        replay.recipe = "old"   # as if stored by an earlier deploy
+        db.commit()
+        factory = sessionmaker(bind=engine)
+        parsed, failures = [], []
+        process, write_receipt = worker._process, worker.archive.write_receipt
+
+        def count_parse(job):
+            parsed.append(job.id)
+            return process(job)
+
+        def fail_once(attempt_hex, receipt):
+            if receipt_write_fails and receipt["state"] == "accepted" and not failures:
+                failures.append(attempt_hex)
+                raise OSError("injected acceptance receipt failure")
+            write_receipt(attempt_hex, receipt)
+
+        monkeypatch.setattr(worker, "_process", count_parse)
+        monkeypatch.setattr(worker.archive, "write_receipt", fail_once)
+
+        class LosesTheReply(uploads.WorkerClient):
+            def reparse(self, *args, **kwargs):
+                super().reparse(*args, **kwargs)
+                raise uploads.WorkerError("the replay worker is unreachable")
+
+        counts: dict = {}
+        assert auto.step(factory, LosesTheReply(base), auto.Memo(), 0, time.time(), counts) == {old_id}
+        assert (counts["reparse_reserved"], counts["reparse_sent"]) == (1, 0)
+        row = db.query(ReplayUpload).filter(ReplayUpload.session_key == uploads.auto_tag(target)).one()
+        attempt = row.id
+        assert row.auto_context["phase"] == "reserved" and row.worker_job_id is None
+        assert client.reparse_attempt(attempt)["job_id"] == uploads.auto_job_id(attempt), "the worker did accept it"
+        totals: dict = {}
+        for _ in range(300):
+            counts = {}
+            auto.step(factory, client, auto.Memo(), 0, time.time(), counts)
+            for name, n in counts.items():
+                totals[name] = totals.get(name, 0) + n
+            if totals["reparse_finished"]:
+                break
+            time.sleep(0.1)
+        db.expire_all()
+        row = db.get(ReplayUpload, attempt)
+        assert (row.status, row.store_outcome, row.archive_ack, row.error) == ("stored", "replaced", "kept", None)
+        assert (totals["reparse_recovered"], totals["reparse_reserved"], totals["reparse_sent"]) == (1, 0, 0)
+        assert db.query(ReplayUpload).filter(ReplayUpload.session_key == uploads.auto_tag(target)).count() == 1
+        stored = db.query(Replay).one()
+        assert (stored.recipe, stored.source, stored.id) == (target, "upload", row.replay_id)
+        again = client.reparse(MATCH_UUID, attempt_id=attempt, expected_sha256=stored.source_sha256)
+        assert (again["code"], again["job_id"]) == ("accepted", uploads.auto_job_id(attempt)), "never a second job"
+        assert parsed == [uploads.auto_job_id(attempt)]
+        assert bool(failures) is receipt_write_fails
+        assert auto.unfinished_attempts(db) == []
+        # Restoration remains a separate gate. Once the owner deletes the first replay, a different
+        # stale uploaded replay can be reserved: this I/O failure did not leave the site-wide gate stuck.
+        from test_replay_reparse_auto import add_replay
+
+        db.add(ReplayDeletion(match_uuid=MATCH_UUID, reason="synthetic queue test"))
+        waiting = add_replay(db, 2, build=stored.game_branch)
+        data = vrf_bytes().replace(MATCH_UUID.upper().encode("utf-16-le"),
+                                   waiting.match_uuid.upper().encode("utf-16-le"))
+        data = data.replace(MATCH_UUID.encode("ascii"), waiting.match_uuid.encode("ascii"))
+        waiting.source_sha256 = hashlib.sha256(data).hexdigest()
+        db.commit()
+        worker.archive.path_of(waiting.match_uuid).write_bytes(data)
+        worker.archive.index[waiting.match_uuid] = {"sha256": waiting.source_sha256, "size": len(data),
+                                                   "accepted_at": "2026-10-07T00:00:00+00:00"}
+        counts = {}
+        auto.step(factory, client, auto.Memo(), 0, time.time() + auto.SETTLE_S + 1, counts)
+        assert counts["reparse_reserved"] == counts["reparse_sent"] == 1
+        next_attempt = auto.unfinished_attempts(db)[0]
+        assert next_attempt.auto_context["selected_replay_id"] == waiting.id
+        from test_replay_worker import wait
+
+        assert wait(base, next_attempt.worker_job_id)["status"] == "done"
+        assert uploads.collect_auto(db, next_attempt.id, client) == "finished"
+        assert db.get(ReplayUpload, next_attempt.id).status == "stored"
+        assert parsed == [uploads.auto_job_id(attempt), next_attempt.worker_job_id]
     finally:
         httpd.shutdown()

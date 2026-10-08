@@ -10,6 +10,10 @@ under the mount:
     archive/<uuid>.vrf        the accepted recording of each match, and archive/index.json
     acks/<job id>.json        the answer given to each ack, so a repeat gets the same answer
     tombstones.json           the deleted matches, as last pushed by the web app (its table is the authority)
+    attempts/<attempt hex>.json   one receipt per automatic re-parse attempt (server.py, "re-parse attempts"):
+                              which match and file the id was used for, and the one job it was given. About
+                              300 bytes each, counted against the archive's budget, and never swept: an old
+                              caller may retry its id at any time, and the receipt is what stops a second parse.
 
 Space comes from the worker's own accounting, never from free space measured mid-parse: the archive may use
 the disk's total less the parse reserve, ARCHIVE_SLACK and what `pending/` holds, and is evicted earliest
@@ -36,6 +40,7 @@ UNCOLLECTED_TTL_S = 7 * 86400  # a job folder nobody collected
 ACK_TTL_S = 7 * 86400
 OUTCOMES = ("stored", "replaced", "unchanged", "kept_existing", "failed")
 KEEPING = ("stored", "replaced", "unchanged")
+REPARSE_PROTOCOL = 1           # the attempt routes of server.py; the web app requires this exact number
 
 
 def _now_iso() -> str:
@@ -71,6 +76,23 @@ def read_json(path: Path, default):
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return default
+
+
+class AttemptStateError(Exception):
+    """A durable attempt record exists but cannot safely be interpreted. Never means absent."""
+
+
+def read_attempt_json(path: Path) -> dict | None:
+    """Only a missing file means absent; unreadable or corrupt attempt state must preserve its fence."""
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        raise AttemptStateError(f"cannot read attempt record {path.name}") from error
+    if not isinstance(record, dict):
+        raise AttemptStateError(f"invalid attempt record {path.name}")
+    return record
 
 
 def sha256_file(path: Path) -> str:
@@ -139,8 +161,11 @@ class Archive:
         self.pending = self.root / "pending"
         self.files = self.root / "archive"
         self.acks = self.root / "acks"
-        for folder in (self.jobs, self.pending, self.files, self.acks):
+        self.attempts = self.root / "attempts"
+        for folder in (self.jobs, self.pending, self.files, self.acks, self.attempts):
             folder.mkdir(parents=True, exist_ok=True)
+        for stray in self.attempts.glob("*.tmp"):
+            stray.unlink(missing_ok=True)
         for stray in self.files.glob("*.tmp"):
             stray.unlink(missing_ok=True)
         self.index_path = self.files / "index.json"
@@ -167,13 +192,16 @@ class Archive:
     def pending_bytes(self) -> int:
         return sum(path.stat().st_size for path in self.pending.glob("*.vrf"))
 
+    def receipt_bytes(self) -> int:
+        return _tree_bytes(self.attempts)
+
     def budget(self) -> int:
-        return self.total - self.parse_reserve - ARCHIVE_SLACK - self.pending_bytes()
+        return self.total - self.parse_reserve - ARCHIVE_SLACK - self.pending_bytes() - self.receipt_bytes()
 
     def intake_ok(self, size: int) -> bool:
-        """Room for one more upload: what jobs/ and pending/ hold plus it must leave the running parse's
-        reserve and the slack free, with the archive evicted to nothing if need be."""
-        held = _tree_bytes(self.jobs) + self.pending_bytes()
+        """Room for one more upload: what jobs/, pending/ and attempts/ hold plus it must leave the running
+        parse's reserve and the slack free, with the archive evicted to nothing if need be."""
+        held = _tree_bytes(self.jobs) + self.pending_bytes() + self.receipt_bytes()
         return held + size <= self.total - ARCHIVE_SLACK - PARSE_RESERVE_FACTOR * self.max_bytes
 
     def evict(self) -> list[str]:
@@ -198,7 +226,8 @@ class Archive:
             return {"enabled": True, "kept": len(self.index), "bytes": self.archive_bytes(),
                     "pending": len(list(self.pending.glob("*.vrf"))), "budget_bytes": self.budget(),
                     "total_bytes": self.total, "oldest_played_at": min(dates) if dates else None,
-                    "tombstones": len(self.tombstones), "boot_id": self.boot_id}
+                    "tombstones": len(self.tombstones), "boot_id": self.boot_id,
+                    "reparse_protocol": REPARSE_PROTOCOL}
 
     def entries(self) -> list[dict]:
         with self.lock:
@@ -216,6 +245,35 @@ class Archive:
     def is_tombstoned(self, match_uuid: str | None) -> bool:
         with self.lock:
             return bool(match_uuid) and match_uuid.lower() in self.tombstones
+
+    # ------------------------------------------------------------------ re-parse attempt receipts
+
+    def receipt(self, attempt_hex: str) -> dict | None:
+        receipt = read_attempt_json(self.attempts / f"{attempt_hex}.json")
+        if receipt is None:
+            return None
+        try:
+            attempt = str(uuid.UUID(receipt["attempt_id"]))
+            valid = (attempt.replace("-", "") == attempt_hex and receipt["attempt_id"] == attempt
+                     and isinstance(receipt["match_uuid"], str) and bool(receipt["match_uuid"])
+                     and receipt["match_uuid"] == receipt["match_uuid"].strip().lower()
+                     and isinstance(receipt["sha256"], str) and len(receipt["sha256"]) == 64
+                     and all(c in "0123456789abcdef" for c in receipt["sha256"])
+                     and receipt["state"] in ("preparing", "accepted", "closed"))
+            if receipt["state"] == "accepted":
+                valid = valid and receipt["job_id"] == f"auto{attempt_hex}"
+        except (KeyError, ValueError, TypeError, AttributeError):
+            valid = False
+        if not valid:
+            raise AttemptStateError(f"invalid attempt receipt {attempt_hex}")
+        return receipt
+
+    def write_receipt(self, attempt_hex: str, receipt: dict) -> None:
+        """Atomic; errors propagate. A durable preparation plus job.json also proves acceptance."""
+        write_json(self.attempts / f"{attempt_hex}.json", receipt)
+
+    def drop_receipt(self, attempt_hex: str) -> None:
+        (self.attempts / f"{attempt_hex}.json").unlink(missing_ok=True)
 
     # ------------------------------------------------------------------ pending
 
