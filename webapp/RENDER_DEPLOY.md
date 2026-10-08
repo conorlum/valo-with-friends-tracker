@@ -235,3 +235,36 @@ matching worker, not that a parse is in progress. It changes nothing.
    during it once: the same attempt id must come back with one job (`reparse_recovered`).
 
 Then leave it on, or uncomment the block in `render.yaml` so a Blueprint sync keeps it.
+
+**Height rebuilds on the worker (2026-10-08; off).** The replay worker can rebuild a map's heights every 5 new
+matches (the first time at 2) and the site activates a build that passes the gate, with nobody looking
+(`docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md`; `docs/map-control-worker-plan.md`, "Height
+rebuilds"). Migration `0019` adds the `control_heights` table, empty on both sites.
+
+*Environment.*
+
+- `valowithfriendstracker`: `REPLAY_HEIGHTS_AUTO` (default off). It needs `REPLAY_CONTROL_REMOTE` on as well.
+  **Never set it on `valomaths`**: the demo never has heights (and demo mode turns the step off anyway).
+- `replay-worker`: `REPLAY_HEIGHT_CMD` (the build child's command) and `REPLAY_HEIGHT_TIMEOUT_S` (per build,
+  3600). Both have defaults in the image; neither needs setting. **The worker's image must be rebuilt for this
+  change**: it gains `replay_worker/height_job.py`, `app/replays/height_inputs.py` and the must-block list.
+
+*Turning it on* (the owner's steps; none was run by the build):
+
+```
+1. Merge. Both web services run `alembic upgrade head` on build: the new migration creates an empty table on each.
+2. Rebuild and deploy the replay worker (its image gains replay_worker/height_job.py, app/replays/height_inputs.py
+   and the must-block list). The two services must be on the same commit before step 4: a worker with other
+   rules, masks or check set refuses every build ("these aren't my inputs"), and three refusals spend a map's
+   tries until the web app restarts.
+3. Check the worker: GET /health shows "idle" and "heights".
+4. Set REPLAY_HEIGHTS_AUTO=true on valowithfriendstracker only. Within a few cycles the dispatcher logs
+   "heights: <Map> rebuild (first build), N rounds" and then "<Map> <digest> active" or "... rejected (...)"
+   for each map with two or more matches.
+5. Look: scripts\with_friends_db.py --expect-database valowithfriendsdb --read-only scripts\control_heights.py list
+   and scripts\height_viewer.py --db [--all] the same way.
+6. To stop: unset REPLAY_HEIGHTS_AUTO. To go back on one map: control_heights.py activate / off.
+```
+
+A rebuild that goes live makes every stored round of its map stale; the pages keep showing them, marked out of
+date, while the worker recomputes them when it is idle. Watch the worker's memory on the first build.

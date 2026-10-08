@@ -15,7 +15,7 @@ web-service side are Stage 3's PR.
 | --- | --- |
 | `POST /jobs` (body: the `.vrf` bytes) | `202 {"id", "status": "queued"}`; `400` not a replay (magic), `411` no length, `413` over the size cap, `503` queue full |
 | `GET /jobs/{id}` | `{"id", "status", "error"?, "result"?, "parse_seconds"?}`; `status` is `queued`, `parsing`, `done` or `failed` |
-| `GET /health` | `{"ok": true, "queued", "limits", "recipe", "control": {...}, "archive": {...}}`; `recipe` is what a parse here stamps (null if it can't be read) |
+| `GET /health` | `{"ok": true, "queued", "limits", "recipe", "control": {...}, "archive": {...}, "idle", "heights": {...}}`; `recipe` is what a parse here stamps (null if it can't be read); `idle` and `heights` are under "Height builds" |
 
 `result` holds `match_uuid` (from the file's header, never its name), `map_name`, `game_branch`,
 `source_sha256`, `recipe`, `hz`, `round_count`, `rounds` (`{"n": base64 of the gzipped JSON v1 blob}`),
@@ -101,6 +101,55 @@ web app sends one round at a time and stores the result; the worker has no datab
 - Health advertises `control.gaps_protocol=1`; an older worker receives plain control until it updates.
 - Every result names the engine's revisions and the hash of the game figures it read, so the web app can
   drop a result from another deploy.
+- `POST /heights {map, digest, asset}` keeps a map's height asset (base64 `.npz`) in the control cache, the
+  newest 3 per map. A task that names a digest the worker doesn't have gets `409 {error, height}`; the web app
+  pushes the asset and asks again. The cache is lost on redeploy, which is harmless.
+
+## Height builds
+
+`server.py` (`HeightBuilds`) and `height_job.py`; `docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md`
+and `docs/map-control-worker-plan.md`, "Height rebuilds". The web app sends a map's stored rounds in batches and
+the worker builds the map's heights from them, with the kill-line and must-block checks; the web app checks the
+result and decides whether it goes live (`webapp/app/services/replay_heights_remote.py`). Off with map control.
+
+- **The child** is one more control child, `python -m replay_worker.height_job` (`REPLAY_HEIGHT_CMD`, the control
+  venv's interpreter in the image), niced, memory-capped and timed out after `REPLAY_HEIGHT_TIMEOUT_S` (3600). It
+  reads its rounds from the spool one at a time, computes the input manifest itself from this image's masks,
+  rules and check set, and refuses a build whose manifest or rounds aren't the ones it would have computed
+  (`error_kind: "inputs"`, "these aren't my inputs").
+- **Runs alone.** A build is queued ahead of every control round, starts only when nothing else is running on
+  the control side and no parse is running or waiting, and nothing starts beside it. A parse arriving always
+  kills it (control keeps one child beside a parse; a build keeps none), and it goes back to `queued` with its
+  rounds, not counted as a failure.
+- **One build per key** (the input manifest's digest): opening a key again answers the build there is; only a
+  failed one is replaced by a fresh, empty one. Opening a build for a map drops any other still collecting for it.
+- **Uploads are immutable**: a round is kept by its sha256; the same bytes again cost nothing, other bytes for a
+  round already received are a conflict. The rounds are spooled to `<temp>/height_builds/<id>/<match>/<n>.json.gz`.
+- **Bounded**: the spool of all builds together stays under 512 MB, at most 2 builds collect at once, a collector
+  nobody feeds for an hour is dropped, and the newest 8 ended builds keep their answer. A build's folder goes when
+  it ends, and whatever a restart left goes when the server starts.
+
+| Request | Answer |
+| --- | --- |
+| `POST /heights/build` `{key, map, rounds, manifest}` | `202` the build `{"id", "key", "map", "status", "received", "expected"}`; `400` not a build; `503` too many collecting |
+| `POST /heights/build/{id}/rounds` `{"rounds": [{"match", "n", "blob" (base64)}]}` | `200 {"received"}`; `409 {"error": "not collecting", "status"}` or `{"error": "other bytes", "match", "n"}`; `413` the spool is full; `400`; `404` |
+| `POST /heights/build/{id}/start` `{"previous"?}` | `202` the build; `409 {"error": "rounds are missing", "received", "expected"}`; `404` |
+| `POST /heights/build/{id}/cancel` | `200 {"cancelled": true}`; `409 {"error": "not collecting", "status"}`; `404` |
+| `GET /heights/build/{id}` | the build, with `"result"` when done and `"error"` when failed |
+
+A build is always in one of five states, and every answer says which, so the web app picks up wherever it was
+after a restart on either side:
+
+| State | What the web app may do |
+| --- | --- |
+| `collecting` | send rounds, start, cancel |
+| `queued`, `running` | wait and ask; sending rounds is a conflict that says the state, starting again answers it |
+| `done` | read the result |
+| `failed` | open it again: the same key starts a fresh, empty build |
+| unknown (`404`) | open it again: the worker restarted, or dropped a collector nobody fed |
+
+`/health` gains `"idle"` (no parse running or waiting) and `"heights": {"collecting", "queued", "running" (map
+names), "spool_bytes"}`. Tests: `webapp/tests/replays/test_replay_worker_heights.py`.
 
 ## Configuration
 
@@ -108,7 +157,8 @@ web app sends one round at a time and stores the result; the worker has no datab
 against the pin; unset in the image, which is built from the pin itself), `REPLAY_WORKER_TMP`,
 `REPLAY_TIMEOUT_S` (180; the image sets 240), `REPLAY_MAX_BYTES` (80 MB; the image sets 200,000,000), `REPLAY_QUEUE_SIZE` (5), `REPLAY_MEMORY_CAP_MB`
 (0 = none), `REPLAY_WORKER_HOST`/`REPLAY_WORKER_PORT`, `REPLAY_ARCHIVE_DIR` (unset: no archive),
-`REPLAY_ARCHIVE_REQUIRE_MOUNT` (1).
+`REPLAY_ARCHIVE_REQUIRE_MOUNT` (1), `REPLAY_HEIGHT_CMD` (JSON list: the height-build child; default this Python,
+`-m replay_worker.height_job`; the image sets the control venv's), `REPLAY_HEIGHT_TIMEOUT_S` (3600).
 
 ## Running it locally
 

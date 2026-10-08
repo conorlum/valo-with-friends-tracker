@@ -1,6 +1,10 @@
 # Map heights: rebuilt automatically on the replay worker (design)
 
-Status: draft for the owner's review, 2026-10-05. Nothing here is built.
+Status: built 2026-10-08 (plan: docs/superpowers/plans/2026-10-05-height-auto-rebuild.md); not turned on: REPLAY_HEIGHTS_AUTO is off until the owner sets it.
+
+The design below is the one the owner approved on 2026-10-05. Where the build changed it, the section carries a
+dated amendment naming the plan's decision (E1 to E9, in the decisions table at the end); the owner's own
+decisions (P1 to P8) are unchanged.
 
 Depends on: `2026-10-05-height-slopes-design.md` (the build rules). This spec assumes
 that one is built and its rules are trusted without a look at every build.
@@ -42,7 +46,7 @@ gate that works with nobody watching.
 Today a height asset is a file committed to the repo and baked into both deploys. The worker can't
 commit, and the web app drops any result whose geometry differs from its own deploy's.
 
-New table `control_heights` (migration 0018):
+New table `control_heights` (migration 0019; this spec said 0018, which another change took first):
 
 | Column | Meaning |
 | --- | --- |
@@ -57,6 +61,19 @@ New table `control_heights` (migration 0018):
 | `built_at` | when |
 
 One `active` row per map at most.
+
+**Amended 2026-10-08 (plan decisions E1, E2, E3, E9).** The table gains two columns:
+
+| Column | Meaning |
+| --- | --- |
+| `inputs` | the build's **input manifest** (`app/replays/height_inputs.py`): each replay's uuid, blob recipe, source hash and round count; the sight and walk masks and the scale; `HEIGHT_VERSION` and `HEIGHT_RULES_REVISION`; the must-block file's hash |
+| `inputs_sha` | the manifest's digest: what names the build on the worker and what a result must prove it was built from |
+
+`match_uuids` are the manifest's matches. `rules` holds the format (`HEIGHT_VERSION`), the rules' revision
+(`HEIGHT_RULES_REVISION` in `app/replays/control_format.py`, bumped by hand when the build's rules change and
+pinned by a test to a hash of `app/control/heights.py`'s constants) and that hash. An active row built under
+another `HEIGHT_VERSION` is ignored: the map is flat until its next build, which is due at once (E1).
+Superseded and rejected rows keep their asset bytes and nothing prunes them, so `activate` can go back (E9).
 
 - `geometry_inputs` reads the map's active digest from this table. The committed `index.json`
   `height_sha` stays as a fallback for a map with no row, so tests and a checkout without a database
@@ -80,17 +97,60 @@ process run by the control venv, niced, time- and memory-capped.
 - **Output:** the asset bytes, the report and the check results.
 - **A parse preempts it** like any control job: killed and requeued, nothing counted as a failure.
 
+**Amended 2026-10-08 (plan decisions E2, E4, E8; run decision D13, pending the owner's approval).**
+
+- **Input:** every stored round of the map's valid replays at condenser revision 11 or later, as the input
+  manifest names them. The child (`replay_worker/height_job.py`) computes the manifest itself from its own
+  masks, rules and check set and the replays the web app named, and refuses one it would not have computed
+  ("these aren't my inputs"), as it refuses rounds that aren't the manifest's. Either refusal is a failed build.
+- **The must-block check fails when its file can't be read**: a missing or unreadable list is not "nothing to
+  check". The list lives at `webapp/app/static/data/control/must_block.json` (E8), so the worker image has it.
+- **Run alone.** A build starts only when nothing else is running on the control side and no parse is running
+  or waiting; nothing starts beside it; it is queued ahead of every control round. A parse arriving always
+  kills a running build (where control keeps one child beside a parse, a build keeps none), and the build goes
+  back to `queued` with its rounds, uncounted. (Run decision D13, pending the owner's approval.)
+
 ### 3. When it runs
 
 The web app's dispatcher decides, once per cycle, per map:
 
-- a rebuild is **due** when the map has at least `HEIGHT_REBUILD_EVERY` (5) matches that were not in its
-  last build (active or rejected), or when it has never been built and has at least 2 matches (O1);
+- a rebuild is **due** (amended 2026-10-08, plan decisions E2 and E5; this bullet said "at least
+  `HEIGHT_REBUILD_EVERY` (5) matches that were not in its last build, or never built and at least 2
+  matches"). The map's current input manifest is compared with its last build's, whatever that build's
+  status (`replay_heights_remote.plan_maps`):
+  - **no build yet:** due once the map has 2 matches (`FIRST_BUILD_MATCHES`; O1);
+  - **the same inputs:** not due; a rejected build is not built again until something changes;
+  - **evidence gone** (a match deleted, or its blobs replaced) **or inputs changed** (the masks, the rules or
+    the check set): due at once, not after 5 more matches;
+  - **only matches added:** due once `HEIGHT_REBUILD_EVERY` (5) of them are new.
+
+  A map with a published feature generation is not rebuilt automatically (section 5, E6);
 - a due rebuild is sent only when the worker reports idle (no parse running or queued);
 - while a map's rebuild is due or running, the dispatcher **holds that map's rounds** and keeps sending
   other maps' (O4). On the worker a rebuild job starts before any queued control round.
 
 Resulting order of work: parse uploads, then height rebuilds, then missing rounds, then stale rounds.
+
+**Amended 2026-10-08 (what was built).**
+
+- **Where the step sits in a cycle.** The dispatcher's cycle collects finished rounds, then runs the automatic
+  re-parse pass, then the height step (in a database session of its own; a failure in it is logged, holds
+  nothing that cycle, and round dispatch carries on), then sends rounds. A held map's timing-gaps work waits
+  with its control rounds.
+- **The worker's five build states**, which every answer names (`replay_worker/server.py` `HeightBuilds`):
+
+  | State | What the web app may do |
+  | --- | --- |
+  | `collecting` | send rounds (the same round with the same bytes again is free; other bytes are a conflict), start, cancel |
+  | `queued`, `running` | wait and ask |
+  | `done` | read the result; the newest 8 ended builds stay readable |
+  | `failed` | open it again: the same key starts a fresh, empty build |
+  | unknown (404) | open it again: the worker restarted, or dropped a collector nobody fed |
+
+  The build's key is its input manifest's digest. Every cycle the dispatcher asks the worker what state the
+  build is in and acts on whichever it finds: a restart of the web app adopts the build, a lost response is
+  found on the next cycle, and a worker that forgot the build is sent it again from the first round. One
+  build at a time (E7).
 
 **What the page shows meanwhile** (the owner, 2026-10-05): always the newest control there is. A round
 computed under the previous heights stays on the page, marked out of date, until its recompute is
@@ -106,8 +166,51 @@ When a build comes back:
 | --- | --- |
 | The map is at the bar and both checks pass | stored `active`; the previous asset becomes `superseded`; that map's rounds go stale and the idle queue recomputes them |
 | Below the bar, or a check fails | stored `rejected` with its report; the previous asset, if any, stays active; it is built again only after 5 more matches, so a failing map can't loop |
-| The build itself fails | logged, retried with the dispatcher's existing limits |
+| The build itself fails | logged, retried with the dispatcher's existing limits (amended 2026-10-08: split into the failure table below) |
+| The result isn't what it says (malformed, another build's, or failing the integrity half of the gate) | never stored; a failed try (added 2026-10-08, E4) |
+| The map's inputs changed while it built | dropped, at no cost; the next cycle plans again (added 2026-10-08) |
 | The map has tagged map features enabled | each feature is re-read against the new heights; one that no longer fits is flagged and the map still goes live: see 5 |
+
+**Amended 2026-10-08 (plan decisions E4, E7): what a failure costs.** A build has `MAX_TRIES` (3) tries per
+input manifest, counted in the dispatcher's memory, so they start again when the web app restarts (E7; the
+owner wants fresh tries after a deploy, which may be what fixes a broken build). When they are spent the map's
+rounds are released and sent with the heights it has, and no more tries are made until its inputs change.
+
+| What happened | Counts as | Then |
+| --- | --- | --- |
+| The worker can't be reached, or answers 503 | nothing | try again next cycle |
+| The worker answers 404 (including the open endpoint), or reports rounds missing at start | nothing, up to 2 times combined per try | reopen and send again; after that, a failed try |
+| The build is `queued` while the worker is parsing | nothing | wait: a parse always goes first |
+| `queued` on an idle worker for 15 minutes, `running` for 2 hours, or not all sent 30 minutes after it was opened | a failed try | cancelled if it is still collecting |
+| The worker refuses a request (400, 413), holds other bytes for a round, or a round is larger than a batch | a failed try | cancelled |
+| The build fails on the worker, including "these aren't my inputs" | a failed try | |
+| The result is malformed, is another build's, or fails integrity | a failed try | nothing stored |
+| The map's inputs changed while it built or was being sent, or a feature generation appeared before it was stored | nothing | the build is dropped; the next cycle plans again or skips the map |
+| The worker's answer isn't shaped as the protocol says | a failed try | the build is dropped |
+| The result's `rules` are not this deploy's format and rules revision | a failed try | nothing stored |
+| Another change to the map's heights won the map's lock | a failed try | |
+| A match is deleted between the last check of the inputs and the commit | not caught here | the row is stored; the next cycle sees the evidence gone (below) |
+| The trusted result fails the gate | not a failure | stored `rejected`; not rebuilt until its inputs change |
+| Anything unforeseen in the height step | logged | that cycle holds nothing; round dispatch carries on |
+
+A retry does not always rebuild: the worker answers a key with the build it has, so a try after a `done` build
+whose result couldn't be used reads the same answer again. The owner chose to leave it so (2026-10-07).
+
+**The gate has two halves** (amended 2026-10-08, E4), in this order:
+
+1. **Integrity**: the result is this build's (key, map, input digest, round count); its asset bytes are the
+   asset it names, of this format, with valid arrays and topology; the report's walkable count and readiness
+   match what is derived from the actual map; and the must-block lines, rerun on the asset, give the report's
+   counts. The asset is opened by a child process of the web app (`app/control/height_verify.py`), never by
+   the web app itself. A failure is the build's failure: retried, nothing stored.
+2. **Policy**: the bar and the two checks above. A failure is stored `rejected`.
+
+**Deletions** (amended 2026-10-08, plan decision E5, **approved by the owner 2026-10-07**: "fine"). When the
+evidence under a map's heights is removed or replaced (a deleted match, a re-condensed blob), its rebuild is
+due at once, not after 5 more matches. If that rebuild is rejected, or fewer than 2 matches are left, the map's
+heights are turned **off** rather than left built from evidence that is gone. This follows "its heights go at
+the next rebuild; that is the intended meaning of a deletion" above. P3 ("keeping old heights is a fine
+fallback") still holds for a build that fails with its evidence intact: the old heights stay.
 
 The bar and the two checks are the ones a local build uses today (the companion spec, section 6): 60%
 of walkable cells supported, no large unresolved area beside a two-floor cell, at most 2% of real kill
@@ -142,6 +245,17 @@ contract's "read from another height asset is pending" rule; the contract docume
 same change, with this spec named as the reason. No map has an enabled feature today, so no stored
 round changes because of it.
 
+**Amended 2026-10-08 (plan decision E6; what was built).** A floor binding records `origin_z`, the lowest floor
+of the asset it was read from, and its band is rebased to the current asset's lowest floor, so it follows its
+floor across rebuilds, a changed origin included. A binding without `origin_z` is pending once the asset
+changes. A binding that no longer fits is listed in that rebuild's report. The contract document carries the
+matching amendment.
+
+Not delivered: a published feature generation does not survive a rebuild. A map that has one is not rebuilt
+automatically, and `activate` and `off` refuse it. This narrows "the map still goes live" above; it is the
+owner's to accept or to ask for generation compatibility instead; as of 2026-10-07 the owner has not decided,
+and no map has a published generation.
+
 ### 6. Seeing what it did
 
 The height viewer gets a third source, `--db`, beside previews and committed assets: the active asset
@@ -150,9 +264,38 @@ of each map, and with `--all` the rejected and superseded ones too. It is read-o
 
 The replay worker's `/health` says whether a rebuild is queued or running and for which map.
 
+**Amended 2026-10-08 (what was built).** `scripts/control_heights.py export --map X --out <folder>` writes a
+map's active asset and its report to a folder outside the repository, in the layout of a preview, read with
+`height_viewer.py --dir` or the tagger's `control_tagger.py --heights-dir <folder>`, so features can be tagged
+against the heights the database holds. `list` shows each build's map, digest, status, date, match count,
+supported share, both checks, time taken and, for a rejected one, why. `/health` also says `idle` (no parse
+running or waiting) and `heights: {collecting, queued, running, spool_bytes}`.
+
+### 7. Turning it on (added 2026-10-08)
+
+The owner's steps; none was run by the build.
+
+```
+1. Merge. Both web services run `alembic upgrade head` on build: the new migration (0019) creates an empty
+   table on each.
+2. Rebuild and deploy the replay worker (its image gains replay_worker/height_job.py, app/replays/height_inputs.py
+   and the must-block list). The two services must be on the same commit before step 4: a worker with other
+   rules, masks or check set refuses every build ("these aren't my inputs"), and three refusals spend a map's
+   tries until the web app restarts.
+3. Check the worker: GET /health shows "idle" and "heights".
+4. Set REPLAY_HEIGHTS_AUTO=true on valowithfriendstracker only. Within a few cycles the dispatcher logs
+   "heights: <Map> rebuild (first build), N rounds" and then "<Map> <digest> active" or "... rejected (...)"
+   for each map with two or more matches.
+5. Look: scripts\with_friends_db.py --expect-database valowithfriendsdb --read-only scripts\control_heights.py list
+   and scripts\height_viewer.py --db [--all] the same way.
+6. To stop: unset REPLAY_HEIGHTS_AUTO. To go back on one map: control_heights.py activate / off.
+```
+
 ## Cost, and what isn't known yet
 
-- **Measured on the development machine from the frozen rounds** (the slopes plan's live freeze, Sunset
+- **The worker's cost on the live site is not measured yet.** Nothing has run there: the numbers below are
+  the desk estimate, and the first live cycle's own numbers replace them (the plan's Task 10, Step 5).
+- **The desk estimate, measured on the development machine from the live freeze's frozen rounds** (the slopes plan's live freeze, Sunset
   `rounds` digest `bf72113396d33aba`; Sunset is also the map with the most matches in it), with
   `scripts/measure_height_rebuild.py --map Sunset`, 2026-10-08:
 
@@ -169,8 +312,9 @@ The replay worker's `/health` says whether a rebuild is queued or running and fo
   2 MB of base64 a request, against the worker's 4 MB request cap: the largest round is far under it. The
   peak memory is that of a build reading one round at a time; Task 5 of the plan repeats it with the
   worker's own round reader.
-- The worker's own figures (a build's `seconds` and `peak`, and the time from a build going active to its
-  map's last round being recomputed) are recorded here from the first live cycle; see the plan's Task 10.
+- The worker's own figures (a build's `seconds` and `peak`, from `control_heights.py list`, and the time from
+  a build going active to its map's last round being recomputed) are recorded here from the first live cycle;
+  see the plan's Task 10. Until then they are not measured.
 - If a rebuild turns out too slow at scale, the fallback is the "master" the owner described: keep each
   round's ground samples once (by match), so a rebuild reads summaries instead of whole rounds. It is
   not built first because it freezes the extraction rules into stored data.
@@ -193,3 +337,18 @@ The replay worker's `/health` says whether a rebuild is queued or running and fo
 | P8 | The two checks are enough for now | Approved for now; the owner expects to add more checks to the gate later |
 | P6 | First build at 2 matches, then every 5 new matches | Approved |
 | P7 | The 60% bar stays as the gate | Approved (the companion spec, O5) |
+
+The plan's decisions (added 2026-10-08; `docs/superpowers/plans/2026-10-05-height-auto-rebuild.md`, where each
+has its reason):
+
+| # | Decision | Status (owner, 2026-10-07) |
+| --- | --- | --- |
+| E1 | An active row built under another `HEIGHT_VERSION` is ignored: the map is flat until its next build, which is due at once (section 1) | Approved as proposed |
+| E2 | A build's identity is its input manifest (replays' uuids, blob recipes, source hashes and round counts; masks and scale; `HEIGHT_VERSION` and `HEIGHT_RULES_REVISION`; the must-block file's hash), stored as `inputs` and `inputs_sha` (sections 1 to 3) | Approved as proposed |
+| E3 | `HEIGHT_RULES_REVISION` is bumped by hand when the build's rules change, and a test pins it to a hash of the height constants (section 1) | Approved as proposed |
+| E4 | The gate has two halves: integrity (a failure is the build's, retried, nothing stored), then policy (a failure is stored `rejected`); the asset is opened by a child process of the web app (section 4) | Approved as proposed |
+| E5 | Evidence removed or replaced makes the rebuild due at once; a rejected rebuild, or fewer than 2 matches left, turns the map's heights off (section 4) | Approved: "fine" |
+| E6 | A map with a published feature generation is not rebuilt automatically, and `activate` and `off` refuse it (section 5) | Not decided; guard built as the default. Asked again before any map gets a published generation |
+| E7 | One rebuild at a time, run alone on the worker; `MAX_TRIES` per input manifest, kept in the dispatcher's memory (sections 3 and 4) | Approved, with the note that a deploy may be what fixes a broken build, so fresh tries after one are wanted |
+| E8 | The must-block list moves to `webapp/app/static/data/control/must_block.json` (section 2) | Approved as proposed |
+| E9 | Superseded and rejected rows keep their asset bytes; nothing prunes them (section 1) | Approved as proposed |
