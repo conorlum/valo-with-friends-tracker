@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Height viewer</title>
+<style>
+  body { margin: 0; font: 13px/1.4 system-ui, sans-serif; background: #16161a; color: #e6e6ea; }
+  header { padding: 8px 12px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; border-bottom: 1px solid #333; }
+  .warn { color: #ffb347; } .bad { color: #ff6b6b; } .ok { color: #7bd88f; }
+  main { display: flex; gap: 12px; padding: 12px; }
+  .scroll { overflow: auto; max-height: calc(100vh - 80px); flex: 1; }
+  .stage { position: relative; width: var(--size); height: var(--size); }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+  aside { width: 320px; flex: none; overflow: auto; max-height: calc(100vh - 80px); }
+  aside h3 { margin: 12px 0 4px; font-size: 13px; }
+  .item { padding: 3px 6px; border-radius: 4px; cursor: pointer; } .item:hover { background: #2a2a32; }
+  .item.blocking { border-left: 3px solid #ff6b6b; }
+  #tip { position: fixed; pointer-events: none; background: #000d; padding: 6px 8px; border-radius: 4px; white-space: pre; display: none; z-index: 2; }
+  label { white-space: nowrap; }
+</style></head><body>
+<header>
+  <select id="map"></select>
+  <span id="summary"></span>
+  <span id="warnings" class="warn"></span>
+</header>
+<main>
+  <div class="scroll" id="scroll"><div class="stage" id="stage" style="--size:1024px">
+    <canvas id="base" width="1024" height="1024"></canvas>
+    <canvas id="heights" width="1024" height="1024"></canvas>
+    <canvas id="marks" width="1024" height="1024"></canvas>
+  </div></div>
+  <aside>
+    <div>Zoom <button data-zoom="768">0.75×</button> <button data-zoom="1024">1×</button>
+      <button data-zoom="2048">2×</button> <button data-zoom="3072">3×</button></div>
+    <h3>Layers</h3>
+    <label><input type="checkbox" id="lyHeights" checked> heights</label>
+    <input type="range" id="opacity" min="0" max="100" value="70"><br>
+    <label><input type="checkbox" id="lyUnresolved" checked> unresolved (red: flat 2D there)</label><br>
+    <label><input type="checkbox" id="lyFilled" checked> dim cells filled from neighbours</label><br>
+    <label><input type="checkbox" id="lyNew"> from the slope rules (cyan: walks alone, orange: along a gradient)</label><br>
+    <label><input type="checkbox" id="lyTwo" checked> cells with 2+ floors (white 2, magenta 3)</label><br>
+    <label><input type="checkbox" id="lyDrops"> drops bigger than a step</label><br>
+    <label><input type="checkbox" id="lySame" checked> same height as the reference, ±</label>
+    <input type="range" id="tol" min="1" max="10" value="3"> <span id="tolText"></span>
+    <div style="margin-top:8px"><canvas id="legend" width="200" height="10"></canvas><div id="legendText"></div></div>
+    <h3>Reference</h3>
+    <div id="ref"></div>
+    <h3>Unresolved areas</h3>
+    <div id="areas"></div>
+    <h3>Kill lines the heights would block</h3>
+    <div id="kills"></div>
+  </aside>
+</main>
+<div id="tip"></div>
+<script>
+/*CORE*/
+</script>
+<script>
+(function () {
+  "use strict";
+  var DATA = /*DATA*/null;
+  var H = HeightCore, GRID = H.GRID, CELL = H.CELL, PX = H.PX;
+  var $ = function (id) { return document.getElementById(id); };
+  var map = null, top = 1, ref = null, focusArea = null, focusKill = null, img = new Image();
+
+  function tol() { return $("tol").value / 10; }
+  function m1(z) { return z.toFixed(1) + " m"; }
+  function signed(d) { return (d > 0 ? "+" : d < 0 ? "−" : "±") + Math.abs(d).toFixed(1) + " m"; }
+
+  Object.keys(DATA.maps).sort().forEach(function (n) {
+    var o = document.createElement("option"); o.value = o.textContent = n; $("map").appendChild(o);
+  });
+
+  function load(name) {
+    map = H.prepare(DATA.maps[name]); top = H.groundTop(map); ref = null; focusArea = focusKill = null;
+    img.onload = function () {
+      var c = $("base").getContext("2d"); c.clearRect(0, 0, PX, PX); c.drawImage(img, 0, 0, PX, PX);
+    };
+    img.src = "data:image/png;base64," + map.raw.image;
+    var s = map.raw.summary, parts = [name + " (" + map.raw.kind + ")"];
+    if (s.matches != null) parts.push(s.matches + " matches, " + s.rounds + " rounds");
+    parts.push("supported " + (100 * s.supported).toFixed(1) + "% (bar " + (100 * map.raw.supported_min).toFixed(0) + "%)");
+    $("summary").textContent = parts.join(" · ");
+    var r = document.createElement("span");
+    r.className = s.ready ? "ok" : "bad";
+    r.textContent = (s.ready ? " · ready" : " · not ready: " + s.not_ready.join("; ")) +
+                    (s.source === "recomputed" ? " (recomputed against the current walk mask)" : "");
+    $("summary").appendChild(r);
+    var w = [];
+    if (map.raw.report_note) w.push("build report not used: " + map.raw.report_note);
+    if (map.raw.walk_stale) w.push("built on an older walk mask: cells added since have no height");
+    if (map.raw.preview_min_matches) w.push("preview rule: floors from " + map.raw.preview_min_matches + " match(es), not 2");
+    $("warnings").textContent = w.join(" · ");
+    location.hash = name;
+    listAreas(); listKills(); drawHeights(); drawMarks(); showRef();
+  }
+
+  function drawHeights() {
+    var im = new ImageData(GRID, GRID), a = Math.round(2.55 * $("opacity").value);
+    for (var cell = 0; cell < GRID * GRID; cell++) {
+      var g = H.ground(map, cell), o = cell * 4, rgb = null, alpha = a;
+      if (map.unresolved[cell]) {
+        if ($("lyUnresolved").checked) { rgb = [220, 40, 40]; alpha = Math.max(a, 160); }
+      } else if (g >= 0 && $("lyHeights").checked) {
+        rgb = H.colour(g, top);
+        if ($("lyFilled").checked && !map.supported[cell]) alpha = Math.round(a * 0.45);
+      }
+      if (rgb) { im.data[o] = rgb[0]; im.data[o + 1] = rgb[1]; im.data[o + 2] = rgb[2]; im.data[o + 3] = alpha; }
+    }
+    var off = document.createElement("canvas"); off.width = off.height = GRID;
+    off.getContext("2d").putImageData(im, 0, 0);
+    var c = $("heights").getContext("2d");
+    c.clearRect(0, 0, PX, PX); c.imageSmoothingEnabled = false; c.drawImage(off, 0, 0, PX, PX);
+    var lg = $("legend").getContext("2d");
+    for (var x = 0; x < 200; x++) { var rgb2 = H.colour(x / 199 * top, top); lg.fillStyle = "rgb(" + rgb2 + ")"; lg.fillRect(x, 0, 1, 10); }
+    $("legendText").textContent = "0 m … " + m1(top / 10) + " above the map's lowest floor";
+  }
+
+  function fillCell(c, cell) { c.fillRect((cell % GRID) * CELL, Math.floor(cell / GRID) * CELL, CELL, CELL); }
+
+  function drawMarks() {
+    var c = $("marks").getContext("2d"), cell;
+    c.clearRect(0, 0, PX, PX);
+    if ($("lySame").checked && ref) {
+      var same = H.sameMask(map, ref.z, tol());
+      c.fillStyle = "rgba(255,255,255,0.4)";
+      for (cell = 0; cell < same.length; cell++) if (same[cell]) fillCell(c, cell);
+    }
+    if ($("lyTwo").checked) {
+      c.lineWidth = 1;
+      for (cell = 0; cell < GRID * GRID; cell++) {
+        var n = H.floorsOf(map, cell).length;
+        if (n >= 2) {
+          c.strokeStyle = n === 2 ? "#fff" : "#f0f";
+          c.strokeRect((cell % GRID) * CELL + 0.5, Math.floor(cell / GRID) * CELL + 0.5, CELL - 1, CELL - 1);
+        }
+      }
+    }
+    if ($("lyNew").checked && map.kind) {
+      c.lineWidth = 2;
+      for (cell = 0; cell < GRID * GRID; cell++) {
+        var kd = map.kind[cell];
+        if (kd === H.KIND_WALKS || kd === H.KIND_GRADIENT) {
+          c.strokeStyle = kd === H.KIND_WALKS ? "#00e5ff" : "#ff9800";
+          c.strokeRect((cell % GRID) * CELL + 1, Math.floor(cell / GRID) * CELL + 1, CELL - 2, CELL - 2);
+        }
+      }
+    }
+    if ($("lyDrops").checked) {
+      c.fillStyle = "#000";
+      H.drops(map, map.raw.step_up_m).forEach(function (d) {
+        var x = (d[0] % GRID) * CELL, y = Math.floor(d[0] / GRID) * CELL;
+        if (d[1] === "e") c.fillRect(x + CELL - 1, y, 2, CELL); else c.fillRect(x, y + CELL - 1, CELL, 2);
+      });
+    }
+    if (focusArea) {
+      c.fillStyle = "rgba(255,235,59,0.55)";
+      focusArea.cells.forEach(function (cl) { fillCell(c, cl); });
+    }
+    if (focusKill) {
+      var k = focusKill.killer_px, v = focusKill.victim_px;
+      c.strokeStyle = "#ffeb3b"; c.lineWidth = 3;
+      c.beginPath(); c.moveTo(k[0], k[1]); c.lineTo(v[0], v[1]); c.stroke();
+      c.font = "bold 16px system-ui"; c.fillStyle = "#ffeb3b";
+      c.fillText("killer z " + m1(focusKill.z[0]), k[0] + 8, k[1] - 8);
+      c.fillText("victim z " + m1(focusKill.z[1]), v[0] + 8, v[1] - 8);
+    }
+    if (ref) {
+      var rx = (ref.cell % GRID) * CELL + CELL / 2, ry = Math.floor(ref.cell / GRID) * CELL + CELL / 2;
+      c.strokeStyle = "#00e5ff"; c.lineWidth = 2;
+      c.beginPath(); c.arc(rx, ry, 10, 0, 2 * Math.PI); c.moveTo(rx - 16, ry); c.lineTo(rx + 16, ry);
+      c.moveTo(rx, ry - 16); c.lineTo(rx, ry + 16); c.stroke();
+    }
+  }
+
+  function describe(cell) {
+    var x = cell % GRID, y = Math.floor(cell / GRID);
+    var lines = ["cell " + x + ", " + y + "  (px " + x * CELL + ", " + y * CELL + ")"];
+    var fl = H.floorsOf(map, cell);
+    if (map.unresolved[cell]) lines.push("unresolved: flat 2D sight and walking here");
+    else if (!fl.length) lines.push(map.walk[cell] ? "walkable, no height" : "not walkable");
+    fl.forEach(function (f) {
+      var s = "floor " + (f.floor + 1) + ": " + m1(f.z) + " (" + (f.floor === 0 ? H.kindWord(map, cell) : "from stands") + ")" +
+              ", spread " + m1(f.spread);
+      if (ref) { var d = H.compare(ref.z, f.z); s += "   " + signed(d.delta) + ", " + d.word; }
+      lines.push(s);
+    });
+    return lines.join("\n");
+  }
+
+  function cellOf(e) {
+    var r = $("marks").getBoundingClientRect();
+    return H.cellAt((e.clientX - r.left) / r.width * PX, (e.clientY - r.top) / r.height * PX);
+  }
+
+  function showRef() {
+    $("tolText").textContent = "±" + tol().toFixed(1) + " m";
+    if (!ref) { $("ref").textContent = "Click the map to set one (click again or press 1/2/3 for another floor; Esc clears)."; return; }
+    var fl = H.floorsOf(map, ref.cell);
+    $("ref").textContent = "cell " + (ref.cell % GRID) + ", " + Math.floor(ref.cell / GRID) + ", floor " +
+      (fl[ref.k].floor + 1) + " of " + fl.length + ": " + m1(ref.z);
+  }
+
+  function setRef(cell, k) {
+    var fl = H.floorsOf(map, cell);
+    if (!fl.length || k >= fl.length) return;
+    ref = {cell: cell, k: k, z: fl[k].z}; showRef(); drawMarks();
+  }
+
+  function scrollToBox(b) {
+    var s = $("stage").getBoundingClientRect().width / PX, box = $("scroll");
+    box.scrollLeft = (b[0] + b[2]) / 2 * s - box.clientWidth / 2;
+    box.scrollTop = (b[1] + b[3]) / 2 * s - box.clientHeight / 2;
+  }
+
+  function listAreas() {
+    var box = $("areas"); box.textContent = "";
+    if (!map.raw.areas.length) { box.textContent = "none"; return; }
+    map.raw.areas.forEach(function (a) {
+      var d = document.createElement("div"), why = Object.keys(a.why).map(function (k) { return k + " " + a.why[k]; });
+      d.className = "item" + (a.blocking ? " blocking" : "");
+      d.textContent = (a.blocking ? "BLOCKS READINESS · " : "") + a.size + " cells at px [" + a.bbox.join(", ") + "]" +
+                      (why.length ? " · " + why.join(", ") : "");
+      d.onclick = function () { focusArea = focusArea === a ? null : a; focusKill = null; drawMarks(); scrollToBox(a.bbox); };
+      box.appendChild(d);
+    });
+  }
+
+  function listKills() {
+    var box = $("kills"); box.textContent = "";
+    if (map.raw.kill_lines === null) { box.textContent = "kill-line check unavailable (no report for this build)"; return; }
+    if (!map.raw.kill_lines.length) { box.textContent = "none"; return; }
+    map.raw.kill_lines.forEach(function (k) {
+      var d = document.createElement("div");
+      d.className = "item";
+      d.textContent = "match " + k.match.slice(0, 8) + ", round " + k.round + " at " + k.t.toFixed(1) + " s · killer z " +
+                      m1(k.z[0]) + ", victim z " + m1(k.z[1]);
+      d.onclick = function () {
+        focusKill = focusKill === k ? null : k; focusArea = null; drawMarks();
+        scrollToBox([Math.min(k.killer_px[0], k.victim_px[0]), Math.min(k.killer_px[1], k.victim_px[1]),
+                     Math.max(k.killer_px[0], k.victim_px[0]), Math.max(k.killer_px[1], k.victim_px[1])]);
+      };
+      box.appendChild(d);
+    });
+  }
+
+  $("marks").addEventListener("mousemove", function (e) {
+    var t = $("tip"); t.textContent = describe(cellOf(e)); t.style.display = "block";
+    t.style.left = Math.min(e.clientX + 14, innerWidth - t.offsetWidth - 4) + "px";
+    t.style.top = Math.min(e.clientY + 14, innerHeight - t.offsetHeight - 4) + "px";
+  });
+  $("marks").addEventListener("mouseleave", function () { $("tip").style.display = "none"; });
+  $("marks").addEventListener("click", function (e) {
+    var cell = cellOf(e), n = H.floorsOf(map, cell).length;
+    if (!n) return;
+    setRef(cell, ref && ref.cell === cell ? (ref.k + 1) % n : 0);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") { ref = null; showRef(); drawMarks(); }
+    else if (ref && "123".indexOf(e.key) >= 0) setRef(ref.cell, +e.key - 1);
+  });
+  ["lyHeights", "lyUnresolved", "lyFilled", "opacity"].forEach(function (id) { $(id).addEventListener("input", drawHeights); });
+  ["lyTwo", "lyDrops", "lySame", "lyNew"].forEach(function (id) { $(id).addEventListener("input", drawMarks); });
+  $("tol").addEventListener("input", function () { showRef(); drawMarks(); });
+  document.querySelectorAll("[data-zoom]").forEach(function (b) {
+    b.onclick = function () { $("stage").style.setProperty("--size", b.dataset.zoom + "px"); };
+  });
+  $("map").onchange = function () { load($("map").value); };
+
+  var first = decodeURIComponent(location.hash.slice(1));
+  $("map").value = DATA.maps[first] ? first : $("map").options[0].value;
+  load($("map").value);
+})();
+</script>
+</body></html>

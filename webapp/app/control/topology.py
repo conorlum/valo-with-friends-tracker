@@ -11,7 +11,9 @@ map without heights computes exactly what it did (tests/replays/test_control_ref
 
 `NodeTopology` is a map with heights: a graph of walks between nodes. Between resolved floors the walks
 are the height asset's (heights.py `edges`: neighbouring floors within a step, and bigger steps where
-players walked them; a drop is one-way). An unresolved cell has one node with today's 2D walking: it
+players walked them; a drop is one-way). A drop is a slide or a fall (heights.py EDGE_*): the unknown's spread,
+asked with `quiet`, takes a slide of any height and a fall of at most SILENT_DROP_M, because a higher landing
+always makes a sound. Everything else walks every drop. An unresolved cell has one node with today's 2D walking: it
 joins every floor of each walkable cell around it, both ways. A cell's own floors are never neighbours.
 Walks run along the grid's 8 directions; 4-connected operations use the straight ones only. One-way
 walks count in the direction they go (growing a mask, distances, the unknown's spread); connected pieces
@@ -27,6 +29,7 @@ from scipy import ndimage
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components, shortest_path
 
+from app.control import heights as hc
 from app.control.geometry import GRID, Geometry
 
 EIGHT = np.ones((3, 3), bool)
@@ -125,8 +128,9 @@ class FlatTopology:
                 if 0 <= ny < GRID and 0 <= nx < GRID]
 
     def spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float, straight: float,
-               links: list, parents: bool = False, solid: np.ndarray | None = None):
-        """The unknown's arrival times relaxed through `room` up to time `t` (engine.Unknown._spread):
+               links: list, parents: bool = False, solid: np.ndarray | None = None, quiet: bool = False):
+        """The unknown's arrival times relaxed through `room` up to time `t` (engine.Unknown._spread; `quiet`
+        means nothing on a flat map, which has no falls):
         each node's earliest arrival from a neighbour, after the node was last freed (`free`); a straight
         step costs `straight` seconds, a diagonal sqrt(2) of it, a link (a, b, one way) one straight step.
         A diagonal step may not cut past a `solid` cell (a trip's) beside it. Arrivals later than `t`
@@ -190,10 +194,14 @@ class NodeTopology:
         cell_walk = geo.walk.ravel()
         walks: set[tuple[int, int]] = set()
         node_of = geo.node_of
-        for a, fa, b, fb in geo.heights.edges.tolist():
+        loud: set[tuple[int, int]] = set()    # falls too high to land quietly: closed to the unknown's spread
+        floors = geo.heights.floors.reshape(GRID * GRID, -1)
+        for a, fa, b, fb, kind in geo.heights.edges.tolist():
             na, nb = int(node_of[a, fa]), int(node_of[b, fb])
             if na >= 0 and nb >= 0 and cell_walk[a] and cell_walk[b] and not geo.unresolved[a] and not geo.unresolved[b]:
                 walks.add((na, nb))
+                if kind == hc.EDGE_FALL and int(floors[a, fa]) - int(floors[b, fb]) > hc.SILENT_DROP_M * 10:
+                    loud.add((na, nb))
         for cell in np.flatnonzero(geo.unresolved).tolist():
             y, x = divmod(cell, GRID)
             for dy, dx in SPREAD_ORDER:
@@ -229,6 +237,10 @@ class NodeTopology:
         column = np.arange(len(dst)) - starts[dst[order]]
         self.in_from[dst[order], column] = src[order]
         self.in_cost[dst[order], column] = np.where(diag[order], math.sqrt(2), 1.0)
+        # the same table for a quiet walker: a fall of more than SILENT_DROP_M is not a way in
+        is_loud = np.array([pair in loud for pair in map(tuple, pairs.tolist())], bool) if len(pairs) else np.zeros(0, bool)
+        self.in_cost_quiet = self.in_cost.copy()
+        self.in_cost_quiet[dst[order], column] = np.where(is_loud[order], np.inf, self.in_cost[dst[order], column])
         # a diagonal walk's two side cells (a solid one, a trip's, stops it); GRID * GRID: no side cell
         none = GRID * GRID
         self.in_side = np.full((2, n, max(width, 1)), none, np.int64)
@@ -309,11 +321,12 @@ class NodeTopology:
         return sorted(straight) + sorted(set(near) - set(straight))
 
     def spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float, straight: float,
-               links: list, parents: bool = False, solid: np.ndarray | None = None):
+               links: list, parents: bool = False, solid: np.ndarray | None = None, quiet: bool = False):
         """As `FlatTopology.spread`. With `parents`, a node's source is the first of its `in_from` columns
-        (ascending source node id) that gives exactly its final arrival, then a link; -1 as there."""
+        (ascending source node id) that gives exactly its final arrival, then a link; -1 as there. With
+        `quiet`, no arrival comes down a fall of more than SILENT_DROP_M (heights.py EDGE_FALL)."""
         g = reached.copy()
-        cost = self.in_cost * straight
+        cost = (self.in_cost_quiet if quiet else self.in_cost) * straight
         if solid is not None and solid.any():
             cost = np.where(self._cut(solid), np.inf, cost)
         freed = free[:, None]

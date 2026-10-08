@@ -7,6 +7,7 @@ import pytest
 
 from app.control import engine as ce
 from app.control import geometry as cg
+from app.control import heights as hc
 from app.control import topology
 from app.control.encode import encode_data, encode_summary
 from app.replays import control_format as cf
@@ -152,23 +153,59 @@ def test_the_unknown_stays_on_its_floor():
     assert not unk.cells["A"][node(geo, 200)], "nor up the plateau's face"
 
 
-def test_the_unknown_goes_down_a_drop_and_never_back_up_it():
-    geo = ledge(drop_at=Y)
-    top, bottom = node(geo, 200), node(geo, 300)
-    assert (node(geo, 252), node(geo, 260), True) in topology.of(geo).links
-    down = ce.Unknown(geo)
+def drop_ledge(height: float, how: int):
+    """West of x 256 is `height` m up; the ledge can be left at y 204 only, by a one-way drop of kind `how`."""
+    return toy_heights(f"Ledge{height}-{how}", [HALL], ground=[((96, 96, 256, 296), height)],
+                       links=[((252, Y, 0), (260, Y, 0), True, how)])
+
+
+def unknown_below(geo, from_top: bool = True) -> np.ndarray:
+    """A's unknown after an enemy spent a minute on top of the ledge (or below it), A far away on the same side."""
+    unk = ce.Unknown(geo)
+    enemy = node(geo, 200) if from_top else node(geo, 300)
+    mine = node(geo, 400, 110) if from_top else node(geo, 120, 110)
     for t in (0.0, 60.0):
-        down.apply(_Tk(t, _at(0, "A", geo, node(geo, 400, 110)), _at(5, "B", geo, top)))
-    assert down.cells["A"][bottom], "from the top it drops to the low ground"
-    up = ce.Unknown(geo)
-    for t in (0.0, 60.0):
-        up.apply(_Tk(t, _at(0, "A", geo, node(geo, 120, 110)), _at(5, "B", geo, bottom)))
-    assert up.cells["A"][node(geo, 260)] and not up.cells["A"][node(geo, 252)] and not up.cells["A"][top], \
-        "but never climbs it"
-    no_drop = ce.Unknown(ledge())
-    for t in (0.0, 60.0):
-        no_drop.apply(_Tk(t, _at(0, "A", geo, node(geo, 400, 110)), _at(5, "B", geo, top)))
-    assert not no_drop.cells["A"][bottom], "with no walked drop the ledge isn't crossed at all"
+        unk.apply(_Tk(t, _at(0, "A", geo, mine), _at(5, "B", geo, enemy)))
+    return unk.cells["A"]
+
+
+def test_the_unknown_goes_down_a_slide_or_a_low_fall_and_never_back_up():
+    # docs/superpowers/specs/2026-10-05-height-slopes-design.md, part 5
+    for geo in (drop_ledge(4.0, hc.EDGE_SLIDE), drop_ledge(1.0, hc.EDGE_FALL)):
+        assert (node(geo, 252), node(geo, 260), True) in topology.of(geo).links
+        assert unknown_below(geo)[node(geo, 300)], "from the top it reaches the low ground"
+        up = unknown_below(geo, from_top=False)
+        assert up[node(geo, 260)] and not up[node(geo, 252)] and not up[node(geo, 200)], "but never climbs it"
+    assert not unknown_below(ledge())[node(ledge(), 300)], "with no walked drop the ledge isn't crossed at all"
+
+
+def test_the_unknown_stops_at_a_fall_too_high_to_land_quietly():
+    assert not unknown_below(drop_ledge(4.0, hc.EDGE_FALL))[node(drop_ledge(4.0, hc.EDGE_FALL), 300)]
+    just_over = drop_ledge(1.1, hc.EDGE_FALL)
+    assert not unknown_below(just_over)[node(just_over, 300)], "anything over SILENT_DROP_M makes a sound"
+    assert hc.SILENT_DROP_M == 1.0
+
+
+def test_a_real_player_still_drops_off_any_ledge():
+    # Only the unknown's spread is closed: walking distances, connected pieces and the engine's links are not.
+    geo = drop_ledge(4.0, hc.EDGE_FALL)
+    topo = topology.of(geo)
+    assert (node(geo, 252), node(geo, 260), True) in topo.links
+    assert topo.dist(node(geo, 200))[node(geo, 300)] > 0 and topo.dist(node(geo, 300))[node(geo, 200)] == -1
+    grown = topo.dilate(np.eye(1, geo.n, node(geo, 252), dtype=bool)[0], eight=True)
+    assert grown[node(geo, 260)], "growing a mask (memory, backfill) still goes over the edge"
+
+
+def test_a_fall_edge_between_stacked_floors_is_judged_by_its_own_two_floors():
+    # A bridge 4 m over the ground: dropping from the bridge onto the ground beside it is a 4 m fall, whatever the
+    # ground floor of the bridge's own cell is.
+    geo = toy_heights("BridgeDrop", [HALL], upper=[((240, 96, 288, 296), 4.0)],
+                      links=[((284, Y, 1), (292, Y, 0), True, hc.EDGE_FALL)])
+    topo = topology.of(geo)
+    on, beside = node(geo, 284, floor=1), node(geo, 292)
+    assert (on, beside, True) in topo.links
+    row = topo.in_from[beside].tolist()
+    assert np.isinf(topo.in_cost_quiet[beside, row.index(on)]) and np.isfinite(topo.in_cost[beside, row.index(on)])
 
 
 def test_the_unknown_climbs_a_connected_step():

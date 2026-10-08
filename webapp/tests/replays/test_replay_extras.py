@@ -784,3 +784,83 @@ def test_the_condenser_stores_a_turrets_off_spans_in_round_seconds(tmp_path):
     assert rows_by_name["E_Turret"]["off"] == [[21.6, 25.0], [31.0, None]]
     assert "off" not in rows_by_name["Q_StealthAlarmbot"]
     assert extras.report["kj_off_spans"] == 2
+
+
+# ---- movement-ability casts (docs/superpowers/plans/2026-10-05-height-slopes.md, Task 1b)
+
+AGENTS_MOVE = {**AGENTS, "Wushu": "Jett", "Terra": "Waylay"}
+
+
+def move_play(t_ms, pawn, floats, triggered=True, context=(4000,)):
+    """The effect a dash plays on its caster's character as the dash starts: its float tags tell which one."""
+    payload = {"EffectId": t_ms, "EffectContainer": 900,
+               "FunctionObjectValues": [{"Name": {"TagName": "FXC.EffectContext"}, "Value": v} for v in context],
+               "FunctionFloatValues": [{"Name": {"TagName": k}, "Value": v} for k, v in floats.items()]}
+    if triggered:
+        payload["ClientControllerThatTriggered"] = 46
+    return {"type": "rpc_received", "time_ms": t_ms, "actor_net_guid": pawn, "function_name": "MulticastPlayContinuousEffect",
+            "payload": payload}
+
+
+def run_moves(tmp_path, rows):
+    table = players()
+    table.agents[8] = "Waylay"         # slot 3 is Jett (pawn 103), slot 8 Waylay (pawn 108)
+    path = tmp_path / "events.ndjson"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return build_extras(path, table, WINDOWS, GAME_MAP, AGENTS_MOVE, lambda t_ms: {})
+
+
+JETT_DASH = {"FXC.TimedStateDuration": 0.45}
+WAYLAY_DASH = {"FXC.Angle": 4.78, "FXC.TimedStateDuration": 0.4}
+
+
+def test_a_dash_is_one_cast_with_its_casters_slot_and_its_time(tmp_path):
+    extras = run_moves(tmp_path, [move_play(22_000, 103, JETT_DASH),
+                                  move_play(30_000, 108, WAYLAY_DASH), move_play(30_000, 108, WAYLAY_DASH),
+                                  move_play(30_150, 108, WAYLAY_DASH),     # within 0.2 s: the same cast
+                                  move_play(30_550, 108, WAYLAY_DASH)])    # her second dash
+    assert extras.rounds[1]["casts"] == [{"t": 12.0, "slot": 3, "code": "Wushu", "name": "E_Dash"},
+                                         {"t": 20.0, "slot": 8, "code": "Terra", "name": "Q_DoubleDash"},
+                                         {"t": 20.55, "slot": 8, "code": "Terra", "name": "Q_DoubleDash"}]
+    assert extras.report["movement_casts"] == 3
+
+
+def test_other_effects_and_other_agents_give_no_cast(tmp_path):
+    extras = run_moves(tmp_path, [
+        move_play(22_000, 103, WAYLAY_DASH),                                  # Waylay's tags on Jett
+        move_play(23_000, 103, JETT_DASH, triggered=False),                   # not triggered by a player
+        move_play(24_000, 103, {"FXC.TimedStateDuration": 0.2}),              # another duration
+        move_play(25_000, 103, {**JETT_DASH, "FXC.Intensity": 1.0}),          # another tag beside it
+        move_play(26_000, 100, JETT_DASH),                                    # Omen
+        move_play(27_000, 999, JETT_DASH)])                                   # nobody's character
+    assert "casts" not in extras.rounds.get(1, {})
+    assert extras.report.get("movement_casts", 0) == 0
+
+
+def test_casts_are_util_entries_in_time_order_and_read_back():
+    from app.replays.extras import rounds_extras, util_entries
+
+    rnd = {"abilities": [], "shots": [],
+           "casts": [{"t": 4.0, "slot": 3, "code": "Wushu", "name": "E_Dash"},
+                     {"t": 2.0, "slot": 8, "code": "Terra", "name": "Q_DoubleDash"}]}
+    util = util_entries(rnd)
+    assert [e for e in util if e["k"] == "cast"] == [
+        {"k": "cast", "t": 2.0, "by": 8, "code": "Terra", "name": "Q_DoubleDash"},
+        {"k": "cast", "t": 4.0, "by": 3, "code": "Wushu", "name": "E_Dash"}]
+    assert sorted(rounds_extras(util)["casts"], key=lambda c: c["t"]) == sorted(rnd["casts"], key=lambda c: c["t"])
+
+
+def test_every_condensed_round_says_its_casts_were_recorded(tmp_path):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from replay_synthetic import SyntheticMatch
+
+    from app.replays import condense as cd
+
+    match = SyntheticMatch()
+    replay = cd.condense_export_dir(match.write(tmp_path / "export"), source_sha256=match.source_sha256)
+    assert replay.rounds and all(blob["movement_casts"] == 1 for blob in replay.rounds.values()), \
+        "a round nobody cast in is known to have had no cast"
+    assert not any(e["k"] == "cast" for blob in replay.rounds.values() for e in blob["util"])

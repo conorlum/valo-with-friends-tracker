@@ -18,6 +18,9 @@ With `--preview --out <dir>` it builds below the bar too and writes the asset an
 only, which must be outside the repository: a preview is for looking, never for committing.
 `--preview-min-matches 1` also lets a preview make floors from a single match (the real rule is two, so one
 match's Sage wall or boost can't become a floor); the asset records that it was built that way.
+The report beside a preview says what the build read (`inputs`: the rounds' digest when they came from
+`--blobs-dir`, the sight and walk masks, the preview override), so `compare_height_builds.py` can refuse to
+compare two builds of different rounds.
 
 Before writing, it runs the two checks on the new heights: the kill lines of the rounds it read (both
 ends with z, on resolved cells, clear in 2D; at most 2% may be blocked) and the must-block set
@@ -33,12 +36,15 @@ Exits 0 when written, 2 when refused.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+import numpy as np
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = WEBAPP_ROOT.parent
@@ -94,9 +100,45 @@ def picture_path(map_name: str) -> Path:
     return folder / f"{map_name}.height.png"
 
 
-def index_entry(build: hb.HeightBuild) -> dict:
-    """What a built map adds to its index.json entry (build_control_geometry.py keeps these keys)."""
-    return {"height_sha": build.asset.digest, "height": build.report}
+def round_identity(rows: list) -> dict:
+    """{"rounds", "matches", "rounds_sha"} for [[match, round number, sha256 of the stored blob], ...]: the digest
+    two builds share exactly when they read the same rounds with the same bytes."""
+    rows = sorted([str(match), int(n), str(sha)] for match, n, sha in rows)
+    text = json.dumps(rows, separators=(",", ":"))
+    return {"rounds": len(rows), "matches": len({row[0] for row in rows}),
+            "rounds_sha": hashlib.sha256(text.encode("ascii")).hexdigest()[:16]}
+
+
+def build_inputs(args, geo, rounds: list) -> dict:
+    """What this build read, recorded beside a preview so two builds can be compared
+    (scripts/compare_height_builds.py): the rounds (their identity only from `--blobs-dir`: a database is not
+    frozen, so `rounds_sha` is None there), the masks, and the preview override. With a `<Map>.frozen.json`
+    in the folder (scripts/freeze_height_rounds.py), the folder must still be what was frozen."""
+    masks = {"sight_sha": hashlib.sha256(np.packbits(geo.sight).tobytes()).hexdigest()[:12],
+             "walk_sha": hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12],
+             "preview_min_matches": args.preview_min_matches}
+    if not args.blobs_dir:
+        return {"rounds": len(rounds), "matches": len({str(match) for match, _, _ in rounds}), "rounds_sha": None,
+                **masks}
+    rows = [[match, n, hashlib.sha256((args.blobs_dir / str(match) / f"{n}.json.gz").read_bytes()).hexdigest()]
+            for match, n, _ in rounds]
+    identity = round_identity(rows)
+    frozen = args.blobs_dir / f"{args.map}.frozen.json"
+    if frozen.is_file():
+        was = json.loads(frozen.read_text(encoding="utf-8")).get("rounds_sha")
+        if was != identity["rounds_sha"]:
+            raise ValueError(f"{args.blobs_dir} is not what was frozen: {frozen.name} says rounds {was}, the folder "
+                             f"holds {identity['rounds_sha']}")
+    return {**identity, **masks}
+
+
+def index_entry(build: hb.HeightBuild, inputs: dict | None = None) -> dict:
+    """What a built map adds to its index.json entry (build_control_geometry.py keeps these keys); a preview's
+    wrapper also says what it read (`inputs`)."""
+    entry = {"height_sha": build.asset.digest, "height": build.report}
+    if inputs is not None:
+        entry["inputs"] = inputs
+    return entry
 
 
 def run_checks(map_name: str, flat_geo, build: hb.HeightBuild, rounds: list) -> dict:
@@ -153,6 +195,11 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
     rounds, skipped = blob_rounds(args.blobs_dir, args.map) if args.blobs_dir else db_rounds(args.map, session_factory)
     print(f"{args.map}: {len(rounds)} rounds read in {time.perf_counter() - started:.1f}s"
           + "".join(f", {n} skipped ({why})" for why, n in skipped.items() if n), flush=True)
+    try:
+        inputs = build_inputs(args, geo, rounds)
+    except ValueError as error:
+        print(f"REFUSED: {error}", file=sys.stderr)
+        return 2
     started = time.perf_counter()
     rule = hc.FLOOR_MIN_MATCHES
     try:
@@ -175,7 +222,7 @@ def main(argv: list[str] | None = None, asset_dir: Path | None = None, session_f
     if args.preview:
         args.out.mkdir(parents=True, exist_ok=True)
         hc.save_asset(args.out / f"{args.map}.height.npz", build.asset)
-        (args.out / f"{args.map}.height.json").write_text(json.dumps(index_entry(build), indent=1) + "\n",
+        (args.out / f"{args.map}.height.json").write_text(json.dumps(index_entry(build, inputs), indent=1) + "\n",
                                                           encoding="utf-8")
         print(f"PREVIEW written to {args.out} (digest {build.asset.digest}); nothing in the repository changed")
         return 0

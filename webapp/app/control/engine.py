@@ -1877,7 +1877,10 @@ class Unknown:
     the earliest time an enemy could have been there (`reached`), and a neighbour joins at that time plus
     its step's true length (a cell straight, sqrt(2) diagonal; a special one cell) over UNKNOWN_MPS, but
     never before it was last free: ground the team watched on the tick before is entered from this tick
-    on. Exact at any tick spacing, so nothing is carried between ticks.
+    on. Exact at any tick spacing, so nothing is carried between ticks. It never comes down a fall higher than
+    SILENT_DROP_M (docs/superpowers/specs/2026-10-05-height-slopes-design.md, part 5): the unknown is where an
+    enemy could have got to while playing quietly, and nobody playing quietly takes a loud drop, whoever is or
+    isn't in earshot.
 
     Each enemy has their own (the user's call, 2026-10-01; the team's unknown is all of them together): one
     the team spots, in a player's active sight or a watcher, can only be where they stand, so theirs starts
@@ -2392,7 +2395,7 @@ class Unknown:
         if not np.isfinite(g).any():
             return g, np.full(len(g), -1, np.int64)
         arr, par = self.topo.spread(g, room, free, t, self.geo.cell_m / UNKNOWN_MPS, self.links, parents=True,
-                                   solid=solid)
+                                   solid=solid, quiet=True)
         if seen is not None and not room[seen[0]]:
             # topology.spread finds parents among the final arrivals, where a sighting the team still
             # watches is absent. Every other node outside `room` was cleared before the spread, so an

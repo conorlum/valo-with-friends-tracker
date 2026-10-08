@@ -13,11 +13,14 @@ under a floor (what blocks a sight line) is position-z - STAND_M.
 
 - `floors`, GRID x GRID x MAX_FLOORS int16: each cell's floors, lowest first, -1 for none;
 - `spread`, same shape: each floor's 10th-to-90th percentile spread;
-- `supported`, GRID x GRID bool: the cell's floors come from enough stands (not filled from neighbours);
+- `supported`, GRID x GRID bool: the cell's floors come from enough stands or walks (not filled from neighbours);
+- `kind`, GRID x GRID int8: where the cell's ground height came from (KIND_*: stands, walks alone, filled flat,
+  filled along a gradient; 0 for none). The engine never reads it;
 - `unresolved`, GRID x GRID bool: a walkable cell the build couldn't resolve, which uses today's flat
   sight and walking;
-- `edges`, K x 4 int32 (cell a, floor a, cell b, floor b): a walk from floor a of cell a to floor b of the
-  neighbouring cell b, one row per direction (a drop is one row);
+- `edges`, K x 5 int32 (cell a, floor a, cell b, floor b, EDGE_*): a walk from floor a of cell a to floor b of
+  the neighbouring cell b, one row per direction. EDGE_STEP rows come in pairs. A one-way row is a drop: an
+  EDGE_SLIDE when players went down it on the ground, an EDGE_FALL when through the air;
 - `meta`: `origin_z`, the units, STAND_M, the build's counts and the walk mask's hash it was built on.
 
 Every value here is a start value (the spec's "Open questions"): tuned on real data, each change reported
@@ -33,7 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
-HEIGHT_VERSION = 1
+HEIGHT_VERSION = 2
 MAX_FLOORS = 3
 
 # Every value from here to KILL_SAMPLE_S is a start value (approved 2026-10-02, to be tuned on real
@@ -67,6 +70,35 @@ PLATFORM_R_M = 6.0         # stands this close to a live temporary platform are 
 # `<code>_<name>` of what players can stand on for a while (the viewer's ability catalog, replay.js)
 PLATFORMS = ("Thorne_E_Wall_Fortifying", "Thorne_E_Wall_Segment_Fortifying")
 
+# --- slopes (docs/superpowers/specs/2026-10-05-height-slopes-design.md). WALK_MIN_MPS, GRAVITY_MPS2, AIR_*,
+# BURST_* and CROSS_REACH are not in that spec: they fill gaps it left.
+WALK_S = 0.3               # a walk is at least this long; also the window its two limits are measured over
+SLOPE_MAX = 1.0            # steepest walkable slope, rise over run
+WALK_ACC_MAX = 4.0         # m/s2 of vertical acceleration over WALK_S: above it the player is in the air
+WALK_MIN_MPS = 0.5         # slower than this over WALK_S is standing, not walking
+GRAVITY_MPS2 = 20.0        # how fast z's rate of change falls in the air (measured on real rounds)
+AIR_RATE_S = 0.1           # the window a vertical or ground speed is measured over when looking for flights
+AIR_RATE_SLACK_MPS = 0.6   # z changing this much faster than SLOPE_MAX allows for the ground covered is a flight
+AIR_CORE = 0.6             # ... and so is z's rate dropping by this share of gravity, two windows in a row
+AIR_FIT_M = 0.1            # a flight lasts for as long as the track stays this close to its arc
+AIR_LANDING_MPS = 1.0      # a flight found by its drop alone ends with z's rate jumping up by at least this
+LOW_PCT = 10               # a floor's height is this percentile of its samples: the lowest wins
+ABILITY_BLACKOUT_S = 3.0   # a player's samples are dropped this long after a movement ability
+# `<code>_<name>` of the casts (`"cast"` rows, condenser revision 14) and abilities (`"ability"` rows: Raze's
+# blast pack lifts teammates who cast nothing) that start a blackout. The updraft is listed for when a cast is
+# recorded for it; none is yet.
+AIRBORNE_ABILITIES = ("Wushu_Q_CycloneBoost", "Wushu_E_Dash", "Terra_Q_DoubleDash", "Clay_Q_Explosion")
+BURST_S = 0.1              # a movement ability with no recorded cast is told by its speed over this long:
+BURST_MPS = 12.0           # faster than this along the ground (a dash), or
+BURST_UP_MPS = 8.0         # rising faster than this (an updraft, a blast pack)
+CROSS_REACH = 2            # a ground run crosses a cell when it has the two sides within this many cells of it
+SILENT_DROP_M = 1.0        # the highest fall the unknown still spreads down
+
+# what a cell's height came from (the asset's `kind`)
+KIND_NONE, KIND_STANDS, KIND_WALKS, KIND_FILLED, KIND_GRADIENT = 0, 1, 2, 3, 4
+# what a connection is (the fifth column of the asset's `edges`)
+EDGE_STEP, EDGE_SLIDE, EDGE_FALL = 0, 1, 2
+
 # --- readiness
 HEIGHT_SUPPORTED_MIN = 0.60   # share of walkable cells with a supported floor
 UNRESOLVED_MAX = 12           # the largest unresolved area (cells) allowed to touch a cell with two floors
@@ -90,8 +122,15 @@ class HeightAsset:
     spread: np.ndarray          # same shape, dm
     supported: np.ndarray       # GRID x GRID bool
     unresolved: np.ndarray      # GRID x GRID bool
-    edges: np.ndarray           # K x 4 int32: cell a, floor a, cell b, floor b
+    edges: np.ndarray           # K x 5 int32: cell a, floor a, cell b, floor b, EDGE_*
     meta: dict = field(default_factory=dict)
+    kind: np.ndarray | None = None   # GRID x GRID int8, KIND_*; None: told from `supported`
+
+    def __post_init__(self) -> None:
+        self.edges = np.asarray(self.edges, np.int32).reshape(-1, 5)
+        if self.kind is None:
+            has = self.floors[..., 0] >= 0
+            self.kind = np.where(has, np.where(self.supported, KIND_STANDS, KIND_FILLED), KIND_NONE).astype(np.int8)
 
     @property
     def origin_z(self) -> int:
@@ -116,7 +155,7 @@ def save_asset(path: Path, asset: HeightAsset) -> None:
     meta = {"version": HEIGHT_VERSION, "units": "dm", "stand_m": STAND_M, **asset.meta}
     np.savez_compressed(path, floors=asset.floors.astype("<i2"), spread=asset.spread.astype("<i2"),
                         supported=asset.supported.astype(bool), unresolved=asset.unresolved.astype(bool),
-                        edges=asset.edges.astype("<i4").reshape(-1, 4),
+                        edges=asset.edges.astype("<i4").reshape(-1, 5), kind=asset.kind.astype("i1"),
                         meta=np.frombuffer(json.dumps(meta, sort_keys=True).encode("utf-8"), np.uint8))
 
 
@@ -126,4 +165,5 @@ def load_asset(path: Path) -> HeightAsset:
         if meta.get("version") != HEIGHT_VERSION:
             raise HeightError(f"{path.name}: height asset version {meta.get('version')} is not {HEIGHT_VERSION}")
         return HeightAsset(z["floors"].astype(np.int16), z["spread"].astype(np.int16), z["supported"].astype(bool),
-                           z["unresolved"].astype(bool), z["edges"].astype(np.int32).reshape(-1, 4), meta)
+                           z["unresolved"].astype(bool), z["edges"].astype(np.int32).reshape(-1, 5), meta,
+                           z["kind"].astype(np.int8))
