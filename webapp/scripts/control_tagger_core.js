@@ -812,6 +812,7 @@
   function digest(value) { return sha256Hex(canonicalJson(value)).slice(0, 16); }
 
   function runtimeProjection(mf) {
+    mf = withoutFloorSelectors(mf);
     var out = {};
     Object.keys(mf).forEach(function (k) { if (TOP_EDITORIAL.indexOf(k) < 0) out[k] = clone(mf[k]); });
     LISTS.forEach(function (kind) {
@@ -829,7 +830,47 @@
     return out;
   }
 
-  function runtimeDigest(mf) { return digest(runtimeProjection(mf)); }
+  function withoutFloorSelectors(source) {
+    var mf = clone(source);
+    delete mf.floors;
+    function bounds(b) { if (b && b.ref === "ground") delete b.floor; }
+    (mf.features || []).forEach(function(f) {
+      delete f.floors;
+      if (f.base_edits) delete f.base_edits.ground_binding;
+      (f.states || []).concat((f.rotation || {}).phases || []).forEach(function(s) {
+        bounds(s.sight_bounds); bounds(s.bounds);
+        (s.sight || []).forEach(function(o) { bounds(o.bounds); });
+      });
+    });
+    (mf.triggers || []).forEach(function(t) { delete t.floor; });
+    (mf.routes || []).forEach(function(r) {
+      (r.endpoints || []).concat(isObj(r.access) ? r.access.sites || [] : []).forEach(function(e) { delete e.floor; });
+    });
+    return mf;
+  }
+
+  function tagCanonicalJson(value) {
+    function typed(v, path) {
+      if (v === null) return ["null"];
+      if (typeof v === "boolean") return ["bool", v];
+      if (typeof v === "number") {
+        if (!Number.isFinite(v)) throw new Error(path + ": nonfinite number");
+        if (Number.isInteger(v) && !Number.isSafeInteger(v)) throw new Error(path + ": whole number outside JavaScript safe range");
+        var bytes = new ArrayBuffer(8), view = new DataView(bytes);
+        view.setFloat64(0, v === 0 ? 0 : v, false);
+        var hex = "";
+        for (var i = 0; i < 8; i++) hex += view.getUint8(i).toString(16).padStart(2, "0");
+        return ["number", hex];
+      }
+      if (typeof v === "string") return ["string", v];
+      if (Array.isArray(v)) return ["array", v.map(function(x, i) { return typed(x, path + "[" + i + "]"); })];
+      if (isObj(v)) return ["object", Object.keys(v).sort().map(function(k) { return [k, typed(v[k], path + "." + k)]; })];
+      throw new Error(path + ": unsupported JSON value");
+    }
+    return canonicalJson(["feature-tags-v2", typed(value, "$")]);
+  }
+
+  function runtimeDigest(mf) { return sha256Hex(tagCanonicalJson(runtimeProjection(mf))).slice(0, 16); }
 
   // -- Validation: a twin of map_feature_schema.validate (same codes and places; test_map_feature_tagger.py
   // compares them). `seed` is the map's checklist seed from the page ([{key, label, preset, expected}]).
@@ -857,6 +898,7 @@
     function warn(where, code, message) { warnings.push({ where: where, code: code, message: message }); }
     var problem = checkVersion(mf);
     if (problem) { err("map_features", "incompatible_version", problem); return { errors: errors, warnings: warnings }; }
+    mf = withoutFloorSelectors(mf);
 
     function value(where, v, unit, required) {
       if (required === undefined) required = true;
@@ -969,11 +1011,6 @@
         if (s.footprint !== undefined && s.footprint !== null) geometry(where + ".footprint", s.footprint);
         (s.sight || []).forEach(function (occ, j) { occluder(where + ".sight[" + j + "]", occ); });
       });
-      var fv = f.floors;
-      if (fv === undefined || fv === null || (isObj(fv) && fv.status === "unresolved")) {
-        if (states.some(function (s) { return isObj(s) && (s.blocks_movement || s.blocks_sight); }))
-          warn(fid, "unresolved_floor", "which floors this feature affects is unresolved");
-      } else if (!Array.isArray(fv)) err(fid, "bad_shape", "floors is a list of floor ids or an unresolved value");
       var rot = f.rotation;
       if ((f.capabilities || []).indexOf("rotating") >= 0) {
         if (!isObj(rot) || rot.pivot === undefined || rot.pivot === null || rot.panel === undefined || rot.panel === null)
@@ -985,8 +1022,6 @@
       ["potential_ground", "remove_sight"].forEach(function (key) {
         if (edits[key] !== undefined && edits[key] !== null) geometry(fid + ".base_edits." + key, edits[key]);
       });
-      if (edits.potential_ground !== undefined && edits.potential_ground !== null && typeof edits.ground_binding !== "string")
-        warn(fid, "unresolved_floor", "restored ground has no floor binding: it stays pending");
       (edits.reclassify || []).forEach(function (rc, k) {
         var where = fid + ".base_edits.reclassify[" + k + "]";
         if (!isObj(rc) || ["cover_paint", "cant_walk_paint", "tag", "base"].indexOf(rc.source) < 0 || rc.geometry === undefined || rc.geometry === null)
@@ -1004,7 +1039,6 @@
       var unres = [value(where + ".bounds.bottom", b.bottom, "m"), value(where + ".bounds.top", b.top, "m")];
       if (unres[0] || unres[1]) warn(where, "unresolved_height", "a sight bound is unresolved");
       else if (b.bottom.value >= b.top.value) err(where, "bad_dimensions", "bottom must be below top");
-      if (b.ref === "ground" && typeof b.floor !== "string") err(where, "bad_bounds", "ground-relative bounds name the floor they stand on");
     }
     (Array.isArray(mf.triggers) ? mf.triggers : []).forEach(function (t) {
       if (!isObj(t)) return;
@@ -1021,7 +1055,6 @@
       var targets = t.targets || [];
       if (!targets.length) warn(tid, "no_target", "trigger linked to nothing");
       targets.forEach(function (x) { if (!isObj(x) || FS_EVENTS.indexOf(x.event) < 0) err(tid, "bad_target", "a target is {feature, event} with a known event"); });
-      if (t.floor === undefined || t.floor === null || isObj(t.floor)) warn(tid, "unresolved_floor", "trigger floor unresolved");
     });
     (Array.isArray(mf.routes) ? mf.routes : []).forEach(function (r) { if (isObj(r)) validateRoute(r); });
     function validateRoute(r) {
@@ -1035,7 +1068,6 @@
         names[e.id] = true;
         if (e.uv === undefined || e.uv === null) err(rid + "." + e.id, "missing_endpoint", "endpoint not placed");
         else if (!uvOk(e.uv)) err(rid + "." + e.id, "bad_coordinates", "endpoint uv must be within 0..10000");
-        if (typeof e.floor !== "string") warn(rid + "." + e.id, "unresolved_floor", "landing floor unresolved");
       });
       var access = r.access === undefined ? "endpoint_only" : r.access;
       if (isObj(access)) {
@@ -1066,9 +1098,7 @@
       }
       var good = ends.filter(function (e) { return isObj(e) && uvOk(e.uv); });
       if (good.length === 2 && good[0].uv[0] === good[1].uv[0] && good[0].uv[1] === good[1].uv[1]) {
-        var f0 = good[0].floor, f1 = good[1].floor;
-        var verified = [f0, f1].every(function (x) { return typeof x === "string" && Array.isArray((floors[x] || {}).z_band); });
-        if (!(verified && f0 !== f1)) warn(rid, "zero_length", "endpoints share a position without two distinct verified floors");
+        warn(rid, "zero_length", "endpoints share a position");
       }
       (specials || []).forEach(function (sp) {
         if (!sp || !Array.isArray(sp.a) || !Array.isArray(sp.b) || good.length !== 2) return;
@@ -1490,7 +1520,7 @@
     references: references, referrers: referrers, remove: removeObject, duplicate: duplicate,
     history: history, historyPush: historyPush, undo: undo, redo: redo,
     canonicalJson: canonicalJson, sha256Hex: sha256Hex, digest: digest, runtimeProjection: runtimeProjection,
-    runtimeDigest: runtimeDigest
+    runtimeDigest: runtimeDigest, tagCanonicalJson: tagCanonicalJson
   });
 
   var api = {

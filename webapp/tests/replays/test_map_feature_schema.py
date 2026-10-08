@@ -29,10 +29,10 @@ def test_the_full_fixture_is_valid_and_its_warnings_are_the_unresolved_facts():
     rep = ms.validate(MF, "Ascent")
     assert rep.errors == []
     got = {(w["where"], w["code"]) for w in rep.warnings}
-    assert ("floor-3", "unresolved_floor") in got
+    assert not any(code == 'unresolved_floor' for _, code in got)
     assert ("feature-1.transitions[1]", "unresolved_timing") in got and ("feature-1.transitions[1]", "unresolved_policy") in got
     assert ("route-10.directions[1]", "unresolved_cost") in got and ("route-12.directions[0]", "unresolved_cost") in got
-    assert not any(code == "zero_length" for _, code in got), "a same-position rope on two verified floors is legitimate"
+    assert ('route-10', 'zero_length') in got, 'authored floors no longer excuse a same-position route'
     assert ms.validate(CATALOGUE["maps"]["Atlantis"]["map_features"]).ok
 
 
@@ -87,7 +87,6 @@ def test_structural_errors():
     bad(lambda m: m["triggers"].append(copy.deepcopy(m["triggers"][0])), "duplicate_id", "trigger-7")
     bad(lambda m: m["triggers"][0]["targets"].append({"feature": "feature-99", "event": "switch"}), "dangling_reference", "trigger-7")
     bad(lambda m: m["routes"][0].update(owner="feature-99"), "dangling_reference")
-    bad(lambda m: m["features"][0].update(floors=["floor-99"]), "dangling_reference")
     bad(lambda m: m["bundles"][0]["members"].append("feature-42"), "dangling_reference")
     bad(lambda m: m["features"][0].update(initial_state="ajar"), "bad_state_reference")
     bad(lambda m: m["features"][0]["transitions"][0].update(to="ajar"), "bad_state_reference")
@@ -100,13 +99,11 @@ def test_structural_errors():
     bad(lambda m: m["features"][0]["states"][0]["footprint"].update(type="paint", cells="AAAA"), "bad_paint")
     bad(lambda m: m["features"][0]["states"][0]["sight"][0]["bounds"]["top"].update(value=-1), "bad_value")
     bad(lambda m: m["features"][0]["states"][0]["sight"][0]["bounds"]["bottom"].update(value=5), "bad_dimensions")
-    bad(lambda m: m["features"][0]["states"][0]["sight"][0]["bounds"].pop("floor"), "bad_bounds")
     bad(lambda m: m["features"][0]["transitions"][0]["motion"]["duration"].update(unit="ms"), "bad_unit")
     bad(lambda m: m["routes"][0]["endpoints"].pop(), "missing_endpoint")
     bad(lambda m: m["routes"][0]["endpoints"][0].update(uv=None), "missing_endpoint")
     bad(lambda m: m["routes"][0]["directions"][0].update(to="c"), "bad_route")
     bad(lambda m: m["routes"][0]["directions"][0].pop("entry"), "missing_value")
-    bad(lambda m: m["floors"][0].update(z_band=[3, 1]), "bad_dimensions")
     bad(lambda m: m["triggers"][2].update(geometry={"type": "point", "uv": [7000, 7000]}), "missing_range")
     bad(lambda m: m.update(features=[{"id": "trigger-1"}]), "bad_id")
     bad(lambda m: m["features"][0]["base_edits"].update(reclassify=[{"source": "everything"}]) if "base_edits" in m["features"][0]
@@ -232,12 +229,12 @@ def test_the_new_modules_import_only_the_standard_library_and_app_replays():
                 assert top in sys.stdlib_module_names or mod.startswith("app.replays") or top == "__future__", (name, mod)
 
 
-def test_a_banded_floor_without_its_assets_origin_is_warned_about():
+def test_deprecated_floor_catalogue_is_retained_without_validation():
     mf = {**ms.empty(), "floors": [
         {"id": "floor-1", "label": "ground", "z_band": [-0.5, 1.0], "height_sha": "a" * 12, "origin_z": -120},
         {"id": "floor-2", "label": "old", "z_band": [-0.5, 1.0], "height_sha": "a" * 12},
         {"id": "floor-3", "label": "odd", "z_band": [-0.5, 1.0], "height_sha": "a" * 12, "origin_z": "low"}]}
     report = ms.validate(mf)
     codes = {(w["where"], w["code"]) for w in report.warnings}
-    assert ("floor-2", "unframed_floor") in codes and ("floor-3", "unframed_floor") in codes
-    assert not any(where == "floor-1" for where, _ in codes)
+    assert codes == set() and report.ok
+    assert ms.canonical(mf)['floors'] == mf['floors']

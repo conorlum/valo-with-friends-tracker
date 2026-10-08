@@ -1,0 +1,14 @@
+[
+ {"input":1e-7,"ascii":"[\"feature-tags-v2\",[\"number\",\"3e7ad7f29abcaf48\"]]"},
+ {"input":1e-6,"ascii":"[\"feature-tags-v2\",[\"number\",\"3eb0c6f7a0b5ed8d\"]]"},
+ {"input":-0.0,"ascii":"[\"feature-tags-v2\",[\"number\",\"0000000000000000\"]]"},
+ {"input":0,"ascii":"[\"feature-tags-v2\",[\"number\",\"0000000000000000\"]]"},
+ {"input":1,"ascii":"[\"feature-tags-v2\",[\"number\",\"3ff0000000000000\"]]"},
+ {"input":1.0,"ascii":"[\"feature-tags-v2\",[\"number\",\"3ff0000000000000\"]]"},
+ {"input":5e-324,"ascii":"[\"feature-tags-v2\",[\"number\",\"0000000000000001\"]]"},
+ {"input":"Café ☕","ascii":"[\"feature-tags-v2\",[\"string\",\"Caf\\u00e9 \\u2615\"]]"},
+ {"input":{"\ue000":false,"\ud800\udc00":true},"ascii":"[\"feature-tags-v2\",[\"object\",[[\"\\ud800\\udc00\",[\"bool\",true]],[\"\\ue000\",[\"bool\",false]]]]]"},
+ {"input":9007199254740991,"ascii":"[\"feature-tags-v2\",[\"number\",\"433fffffffffffff\"]]"},
+ {"input":9007199254740992,"error":"unsafe integer"},
+ {"input":-9007199254740992,"error":"unsafe integer"}
+]

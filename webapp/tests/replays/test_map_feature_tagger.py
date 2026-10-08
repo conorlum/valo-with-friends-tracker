@@ -92,6 +92,32 @@ def test_digests_match_python_byte_for_byte():
     assert got["runtime"] == ms.runtime_digest(MF)
 
 
+def test_tag_canonical_v2_matches_literal_python_and_browser_vectors():
+    cases = json.loads((FIXTURES / 'canonical_v2.json').read_text(encoding='utf-8'))
+    got = run_node('''function run(p) { return p.map(c => {
+      try { return {ascii: F.tagCanonicalJson(c.input)}; }
+      catch(e) { return {error: true}; }
+    }); }''', cases)
+    for case, actual in zip(cases, got):
+        if 'error' in case:
+            assert actual == {'error': True}
+        else:
+            assert actual == {'ascii': case['ascii']}
+
+
+def test_deprecated_floor_selectors_survive_export_but_not_runtime_validation():
+    from map_feature_artifact_toys import source_case
+    mf = source_case()['map_features']
+    mf['features'][0]['floors'] = ['floor-99']
+    mf['floors'] = [{'id': 'not-a-floor', 'z_band': ['broken']}]
+    got = run_node('''function run(p) { return {source: p, runtime: F.runtimeProjection(p),
+      report: F.validate(p, [], [])}; }''', mf)
+    assert got['source'] == mf
+    assert got['report']['errors'] == []
+    assert got['runtime'] == ms.runtime_projection(mf)
+    assert 'floors' not in got['runtime']
+
+
 def mutations():
     """(name, map_features) cases whose validation reports differ, for the JS/Python parity check."""
     out = [("full", MF), ("atlantis", CATALOGUE["maps"]["Atlantis"]["map_features"])]
@@ -576,7 +602,7 @@ def test_a_same_position_rope_and_an_unresolved_landing_round_trip_and_compile_w
     zip_ = next(r for r in exported["routes"] if r["id"] == ids["zip"])
     assert zip_["endpoints"][1]["floor"] == ids["manual"], "an unresolved floor stays unresolved after export and import"
     rep = ms.validate(exported)
-    assert rep.errors == [] and not any(w["code"] == "zero_length" for w in rep.warnings)
+    assert rep.errors == [] and any(w["code"] == "zero_length" for w in rep.warnings)
     arcs, pending = cf.compile_routes(geo, exported)
     rope_arcs = [a for a in arcs if a.route == ids["rope"]]
     assert len(rope_arcs) == 2 and all(geo.node_cell[a.src] == geo.node_cell[a.dst] and a.src != a.dst for a in rope_arcs), \

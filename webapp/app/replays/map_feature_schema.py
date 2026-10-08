@@ -279,15 +279,82 @@ def runtime_projection(mf: dict) -> dict:
     """What control could consume: everything but the editorial keys (top level and per object), with each
     list sorted by id (list order is the page's, not the engine's). Unknown keys are kept: a field this
     version doesn't know might matter, so it counts as runtime."""
+    mf = without_floor_selectors(mf)
     def strip(obj):
         return {k: copy.deepcopy(v) for k, v in obj.items() if k not in EDITORIAL}
 
     out = {k: copy.deepcopy(v) for k, v in mf.items() if k not in TOP_EDITORIAL}
-    for kind in ("features", "triggers", "routes", "floors", "bundles"):
+    for kind in ("features", "triggers", "routes", "bundles"):
         if isinstance(mf.get(kind), list):
             items = [strip(o) if isinstance(o, dict) else o for o in mf[kind]]
             out[kind] = sorted(items, key=lambda o: str(o.get("id")) if isinstance(o, dict) else "")
+    return _js_numbers(out)
+
+
+def without_floor_selectors(mf: dict) -> dict:
+    """Drop only retired authoring selectors; preserve unknown keys and the original source."""
+    out = copy.deepcopy(mf)
+    out.pop('floors', None)
+    def bounds(obj):
+        if isinstance(obj, dict) and obj.get('ref') == 'ground':
+            obj.pop('floor', None)
+    for f in out.get('features') or []:
+        if not isinstance(f, dict):
+            continue
+        f.pop('floors', None)
+        edits = f.get('base_edits')
+        if isinstance(edits, dict):
+            edits.pop('ground_binding', None)
+        for s in f.get('states') or []:
+            if isinstance(s, dict):
+                bounds(s.get('sight_bounds'))
+                for occ in s.get('sight') or []:
+                    if isinstance(occ, dict):
+                        bounds(occ.get('bounds'))
+        for phase in (f.get('rotation') or {}).get('phases') or []:
+            if isinstance(phase, dict):
+                bounds(phase.get('sight_bounds'))
+                bounds(phase.get('bounds'))
+                for occ in phase.get('sight') or []:
+                    if isinstance(occ, dict):
+                        bounds(occ.get('bounds'))
+    for t in out.get('triggers') or []:
+        if isinstance(t, dict):
+            t.pop('floor', None)
+    for r in out.get('routes') or []:
+        if not isinstance(r, dict):
+            continue
+        for e in (r.get('endpoints') or []) + ((r.get('access') or {}).get('sites', [])
+                 if isinstance(r.get('access'), dict) else []):
+            if isinstance(e, dict):
+                e.pop('floor', None)
     return out
+
+
+def tag_canonical_bytes(value: object) -> bytes:
+    """Feature-tag v2: ASCII typed JSON, exact binary64 numbers, UTF-16 key order."""
+    import struct
+    def typed(item, path):
+        if item is None:
+            return ['null']
+        if isinstance(item, bool):
+            return ['bool', item]
+        if isinstance(item, (int, float)):
+            if not math.isfinite(item):
+                raise ValueError(f'{path}: nonfinite number')
+            if (isinstance(item, int) or item.is_integer()) and abs(item) > 9007199254740991:
+                raise ValueError(f'{path}: whole number outside JavaScript safe range')
+            return ['number', struct.pack('>d', 0.0 if item == 0 else float(item)).hex()]
+        if isinstance(item, str):
+            return ['string', item]
+        if isinstance(item, list):
+            return ['array', [typed(v, f'{path}[{i}]') for i, v in enumerate(item)]]
+        if isinstance(item, dict) and all(isinstance(k, str) for k in item):
+            keys = sorted(item, key=lambda k: k.encode('utf-16-be', errors='surrogatepass'))
+            return ['object', [[k, typed(item[k], f'{path}.{k}')] for k in keys]]
+        raise ValueError(f'{path}: unsupported JSON value')
+    return json.dumps(['feature-tags-v2', typed(value, '$')], ensure_ascii=True,
+                      separators=(',', ':'), allow_nan=False).encode('ascii')
 
 
 def _js_numbers(value):
@@ -309,7 +376,7 @@ def digest(value) -> str:
 
 
 def runtime_digest(mf: dict) -> str:
-    return digest(runtime_projection(mf))
+    return hashlib.sha256(tag_canonical_bytes(runtime_projection(mf))).hexdigest()[:16]
 
 
 def editorial_digest(mf: dict) -> str:
@@ -425,6 +492,7 @@ def validate(mf, map_name: str | None = None, specials: list | None = None) -> R
     if problem:
         rep.error("map_features", "incompatible_version", problem)
         return rep
+    mf = without_floor_selectors(mf)
     ids: dict[str, str] = {}
     for kind, obj in _all_objects(mf):
         oid = obj.get("id")
@@ -537,12 +605,6 @@ def _feature(rep, f, floors):
             _geometry(rep, f"{where}.footprint", s["footprint"])
         for j, occ in enumerate(s.get("sight") or []):
             _occluder(rep, f"{where}.sight[{j}]", occ)
-    floors_v = f.get("floors")
-    if floors_v is None or (isinstance(floors_v, dict) and floors_v.get("status") == "unresolved"):
-        if any(isinstance(s, dict) and (s.get("blocks_movement") or s.get("blocks_sight")) for s in states):
-            rep.warn(fid, "unresolved_floor", "which floors this feature affects is unresolved")
-    elif not isinstance(floors_v, list):
-        rep.error(fid, "bad_shape", "floors is a list of floor ids or an unresolved value")
     rot = f.get("rotation")
     if "rotating" in (f.get("capabilities") or []):
         if not isinstance(rot, dict) or rot.get("pivot") is None or rot.get("panel") is None:
@@ -556,8 +618,6 @@ def _feature(rep, f, floors):
     for key in ("potential_ground", "remove_sight"):
         if edits.get(key) is not None:
             _geometry(rep, f"{fid}.base_edits.{key}", edits[key])
-    if edits.get("potential_ground") is not None and not isinstance(edits.get("ground_binding"), str):
-        rep.warn(fid, "unresolved_floor", "restored ground has no floor binding: it stays pending")
     for k, rc in enumerate(edits.get("reclassify") or []):
         if not isinstance(rc, dict) or rc.get("source") not in ("cover_paint", "cant_walk_paint", "tag", "base") \
                 or rc.get("geometry") is None:
@@ -586,8 +646,6 @@ def _occluder(rep, where, occ):
         rep.warn(where, "unresolved_height", "a sight bound is unresolved")
     elif b["bottom"]["value"] >= b["top"]["value"]:
         rep.error(where, "bad_dimensions", "bottom must be below top")
-    if b["ref"] == "ground" and not isinstance(b.get("floor"), str):
-        rep.error(where, "bad_bounds", "ground-relative bounds name the floor they stand on")
 
 
 def _trigger(rep, t, features) -> set:
@@ -613,8 +671,6 @@ def _trigger(rep, t, features) -> set:
             rep.error(tid, "bad_target", f"a target is {{feature, event}} with a known event: {target!r}"[:200])
         else:
             out.add(target.get("feature"))
-    if t.get("floor") is None or isinstance(t.get("floor"), dict):
-        rep.warn(tid, "unresolved_floor", "trigger floor unresolved")
     return out
 
 
@@ -636,8 +692,6 @@ def _route(rep, r, features, floors, specials):
             rep.error(f"{rid}.{e['id']}", "missing_endpoint", "endpoint not placed")
         elif not _uv(e["uv"]):
             rep.error(f"{rid}.{e['id']}", "bad_coordinates", "endpoint uv must be within 0..10000")
-        if not isinstance(e.get("floor"), str):
-            rep.warn(f"{rid}.{e['id']}", "unresolved_floor", "landing floor unresolved")
     access = r.get("access", "endpoint_only")
     if isinstance(access, dict):
         for s in access.get("sites") or []:
@@ -672,10 +726,7 @@ def _route(rep, r, features, floors, specials):
             rep.error(rid, "bad_state_reference", "a route's states are states of its owner")
     good = [e for e in ends if isinstance(e, dict) and _uv(e.get("uv"))]
     if len(good) == 2 and list(good[0]["uv"]) == list(good[1]["uv"]):
-        f0, f1 = good[0].get("floor"), good[1].get("floor")
-        verified = all(isinstance(x, str) and isinstance(floors.get(x, {}).get("z_band"), list) for x in (f0, f1))
-        if not (verified and f0 != f1):
-            rep.warn(rid, "zero_length", "endpoints share a position without two distinct verified floors")
+        rep.warn(rid, "zero_length", "endpoints share a position")
     for sp in specials:
         try:
             pair = {tuple(sp["a"]), tuple(sp["b"])}
