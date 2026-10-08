@@ -1,6 +1,21 @@
 # Auto re-parse queue: plan
 
-Status: plan only, 2026-10-07. No code, migration or setting has been changed.
+Status: built on 2026-10-07 from the two implementation plans beside this file
+(`2026-10-07-worker-gaps-and-kill-one-impl.md`, then `2026-10-07-auto-reparse-queue-impl.md`), switch off.
+Where they differ from this design, they are what the code does:
+
+- **There is a migration** (`0018`): one nullable JSON column, `replay_uploads.auto_context`, holding what an
+  attempt was selected for. "No migration" below and in "Schema" is superseded.
+- **Submission goes through a durable attempt protocol on the worker** (`POST /reparse` with an `attempt_id`,
+  a receipt per attempt, lookup and close routes). The site commits a reservation first and the worker gives
+  that id one job whatever is retried or lost. The submission sketches below are superseded.
+- **Timing gaps are gated by a health capability** (`control.gaps_protocol`) and stored through a guarded
+  writer (`app/services/replay_gaps_store.py`). `app/services/replay_gaps.py` was not edited, and no "four
+  pure helpers" were moved.
+- **The next replay waits for the last one's map control and gaps to be back**, read from the database
+  (`restoration_pending` in the status), not inferred from an empty worker queue.
+
+The text below is the design as it was written.
 
 Base read: `origin/afk/2026-10-05-utility-review` at `a9d1a87` (PR #118), which holds `CONDENSE_REVISION = 13`.
 This branch (`plans-auto-reparse-queue`) is cut from it. PR #118 was merged into `origin/main` as `b0388ed`

@@ -179,3 +179,54 @@ WHERE c.status = 'ok' AND g.replay_id IS NULL;
 
 The worker's server process keeps the last 200 finished control results in memory, now with their gap rows;
 watch that process's memory as well as the children's while the backlog runs.
+
+**The automatic re-parse queue (2026-10-07; off).** When a deploy changes the recipe (a parser, condenser or
+asset change), stored replays go stale. With `REPLAY_REPARSE_AUTO` on, the site parses each stale *uploaded*
+replay again from the worker's archived recording: one at a time, newest match first, behind every upload,
+and only once map control has drained. A stale *local* replay stays with `scripts/reingest_replays.py`,
+even when the same file is archived. Code: `app/services/replay_reparse_auto.py`, run by the control
+dispatcher's thread. The setting is commented out in `render.yaml` and defaults to off.
+
+*What merging does while it is off.* Migration `0018` runs in the build on both sites: one nullable column,
+`replay_uploads.auto_context`, no row rewritten, and no replay data on the demo. The worker gains its attempt
+protocol (`replay_worker/README.md`, "Re-parse attempts") and `/health` gains `recipe` and
+`archive.reparse_protocol`. Nothing calls any of it until the switch is on. Either service may deploy
+first: the site asks a worker for an attempt only when the worker reports the site's own recipe, archive
+and map control on, `control.gaps_protocol` 1 and `archive.reparse_protocol` 1. Anything else, an older
+worker included, shows as "stopped" with the reason; nothing is sent on a best guess.
+
+*How an attempt is kept safe.* The site first commits a reservation (a `replay_uploads` row whose id is the
+attempt's UUID) and only then asks the worker, which gives that id exactly one job. If the reply is lost,
+the site restarts, or the acceptance can't be recorded, the next pass looks the same id up or sends it
+again; it never makes a second row or a second parse. An attempt whose acceptance is unknown shows as
+`resolving` until the worker answers. Switching off stops new attempts; one the worker already accepted is
+still collected, and one it never accepted is closed on the worker so a late request can't start it. While
+the site and the worker are on different recipes (a deploy in progress), every attempt is left exactly as
+it is, and only a site that matches the worker settles it. A result is stored only if the replay is still
+the one that was selected; otherwise the attempt ends and the replay is left alone.
+
+*Pacing.* A file gets at most two accepted attempts per recipe, an hour apart; a refusal before the worker
+accepts (no archived file, another recording) uses none. After an attempt settles the queue waits 3 minutes,
+and it takes no new replay until the last replaced one has its map control and timing gaps back, read from
+the database. If machine failures used up a round's retries, that shows as `restoration pending` with the
+rounds still missing, and the queue waits: restart the site (retries are per process) or run
+`compute_control.py` for that match before turning on more.
+
+*Status.* `REPLAY_ADMIN_TOKEN=... .venv\Scripts\python.exe scripts\reparse_archive.py --status` prints
+running or the stopped reason, both recipes, the worker's capabilities, how many replays are in each state,
+any unfinished attempt, what gave up and why, and the rounds waiting. "Running" means switched on with a
+matching worker, not that a parse is in progress. It changes nothing.
+
+*Before switching on* (the owner's checks; none was run by the build):
+
+1. Both PRs are deployed, `alembic current` is `0018`, and `--status` shows equal recipes, archive and
+   control on, gaps protocol 1, re-parse protocol 1, and no unfinished attempt.
+2. Re-parse one match by hand (`reparse_archive.py --match <uuid>`) and check the new replay, its map
+   control and gaps once recomputed, and that its per-kill Impact values are still there.
+3. Watch the worker's memory while it parses the largest file beside one control child, and note how long
+   a parse, a round's control and a round's gaps take.
+4. Set `REPLAY_REPARSE_AUTO=true` in the dashboard and watch the first attempt in `--status` and the dispatch
+   log (`reparse_reserved`, `reparse_sent`, `reparse_finished`, `held_back`). Restart the site or the worker
+   during it once: the same attempt id must come back with one job (`reparse_recovered`).
+
+Then leave it on, or uncomment the block in `render.yaml` so a Blueprint sync keeps it.
