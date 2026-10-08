@@ -185,12 +185,12 @@ WHERE c.status = 'ok' AND g.replay_id IS NULL;
 The worker's server process keeps the last 200 finished control results in memory, now with their gap rows;
 watch that process's memory as well as the children's while the backlog runs.
 
-**The automatic re-parse queue (2026-10-07; off).** When a deploy changes the recipe (a parser, condenser or
+**The automatic re-parse queue (2026-10-07; on since 2026-10-08).** When a deploy changes the recipe (a parser, condenser or
 asset change), stored replays go stale. With `REPLAY_REPARSE_AUTO` on, the site parses each stale *uploaded*
 replay again from the worker's archived recording: one at a time, newest match first, behind every upload,
 and only once map control has drained. A stale *local* replay stays with `scripts/reingest_replays.py`,
 even when the same file is archived. Code: `app/services/replay_reparse_auto.py`, run by the control
-dispatcher's thread. The setting is commented out in `render.yaml` and defaults to off.
+dispatcher's thread. `render.yaml` sets it on (with `REPLAY_CONTROL_REMOTE` and the worker's `REPLAY_ARCHIVE_DIR`); the code default is off.
 
 *What merging does while it is off.* Migration `0018` runs in the build on both sites: one nullable column,
 `replay_uploads.auto_context`, no row rewritten, and no replay data on the demo. The worker gains its attempt
@@ -234,7 +234,7 @@ matching worker, not that a parse is in progress. It changes nothing.
    log (`reparse_reserved`, `reparse_sent`, `reparse_finished`, `held_back`). Restart the site or the worker
    during it once: the same attempt id must come back with one job (`reparse_recovered`).
 
-Then leave it on, or uncomment the block in `render.yaml` so a Blueprint sync keeps it.
+Then leave it on. `render.yaml` carries it (since 2026-10-08), so a Blueprint sync keeps it.
 
 **Height rebuilds on the worker (2026-10-08; on from the merge).** The replay worker can rebuild a map's heights every 5 new
 matches (the first time at 2) and the site activates a build that passes the gate, with nobody looking
