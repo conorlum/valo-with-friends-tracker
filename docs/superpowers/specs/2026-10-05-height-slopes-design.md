@@ -522,7 +522,9 @@ Against "How it is judged" (the plan's Task 6, Step 2):
 
 The owner's look at the five maps with the slope-rules layer on (stairs read as steadily changing heights,
 starting with Sunset cells x 26-28, y 76-81; ledge edges still two floors; nothing outlined where no player
-stands or under a ledge people only fall from): not yet given.
+stands or under a ledge people only fall from): given 2026-10-08, the rules kept. Some orange
+(slope-filled) cells sit on small drops that aren't slopes; the owner judged that harmless, since those drops are
+walkable both ways without making a sound, so nothing that reads the heights treats them differently.
 
 Start values: none moved.
 
