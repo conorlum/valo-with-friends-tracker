@@ -103,6 +103,23 @@ class ReplayRoundControl(Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ControlFeatureArtifact(Base):
+    """Immutable compilation shared per map/version; rounds reference its full content digest."""
+    __tablename__ = 'control_feature_artifacts'
+    __table_args__ = (UniqueConstraint('map_name', 'height_digest', 'tags_digest', 'compiler_version',
+                                      name='uq_control_feature_key'),)
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    map_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    height_digest: Mapped[str] = mapped_column(String(12), nullable=False)
+    tags_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    compiler_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSONType, nullable=False)
+    inputs: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    assets: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    code_commit: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class ControlHeight(Base):
     """One build of a map's heights (migration 0019; docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md,
     section 1). Written by the web app's dispatcher from the replay worker's builds and by
