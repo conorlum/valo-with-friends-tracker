@@ -236,35 +236,43 @@ matching worker, not that a parse is in progress. It changes nothing.
 
 Then leave it on, or uncomment the block in `render.yaml` so a Blueprint sync keeps it.
 
-**Height rebuilds on the worker (2026-10-08; off).** The replay worker can rebuild a map's heights every 5 new
+**Height rebuilds on the worker (2026-10-08; on from the merge).** The replay worker can rebuild a map's heights every 5 new
 matches (the first time at 2) and the site activates a build that passes the gate, with nobody looking
 (`docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md`; `docs/map-control-worker-plan.md`, "Height
 rebuilds"). Migration `0019` adds the `control_heights` table, empty on both sites.
 
 *Environment.*
 
-- `valowithfriendstracker`: `REPLAY_HEIGHTS_AUTO` (default off). It needs `REPLAY_CONTROL_REMOTE` on as well.
+- `valowithfriendstracker`: `REPLAY_HEIGHTS_AUTO`, set to `true` in `render.yaml` so a Blueprint sync keeps
+  it (the code's default is off). It needs `REPLAY_CONTROL_REMOTE` on as well, which `render.yaml` also sets.
   **Never set it on `valomaths`**: the demo never has heights (and demo mode turns the step off anyway).
 - `replay-worker`: `REPLAY_HEIGHT_CMD` (the build child's command) and `REPLAY_HEIGHT_TIMEOUT_S` (per build,
   3600). Both have defaults in the image; neither needs setting. **The worker's image must be rebuilt for this
   change**: it gains `replay_worker/height_job.py`, `app/replays/height_inputs.py` and the must-block list.
 
-*Turning it on* (the owner's steps; none was run by the build):
+*At the merge* nothing needs doing by hand. Both services have `autoDeploy: true`, so one merge deploys them
+both from the same commit: the web services run `alembic upgrade head` (the new migration creates an empty
+table on each), and the replay worker's image is rebuilt (it gains `replay_worker/height_job.py`,
+`app/replays/height_inputs.py` and the must-block list). The web service is usually up first. Until the worker's
+deploy lands, its health names the old recipe and has no `heights` field, and the site waits for it at no cost:
+no try is spent and no map's rounds are held (`replay_heights_remote._other_deploy`).
+
+*Checking it* (the owner's steps; none was run by the build):
 
 ```
-1. Merge. Both web services run `alembic upgrade head` on build: the new migration creates an empty table on each.
-2. Rebuild and deploy the replay worker (its image gains replay_worker/height_job.py, app/replays/height_inputs.py
-   and the must-block list). The two services must be on the same commit before step 4: a worker with other
-   rules, masks or check set refuses every build ("these aren't my inputs"), and three refusals spend a map's
-   tries until the web app restarts.
-3. Check the worker: GET /health shows "idle" and "heights".
-4. Set REPLAY_HEIGHTS_AUTO=true on valowithfriendstracker only. Within a few cycles the dispatcher logs
-   "heights: <Map> rebuild (first build), N rounds" and then "<Map> <digest> active" or "... rejected (...)"
-   for each map with two or more matches.
-5. Look: scripts\with_friends_db.py --expect-database valowithfriendsdb --read-only scripts\control_heights.py list
+1. Check the worker: GET /health shows "idle" and "heights".
+2. Within a few cycles the dispatcher logs "heights: <Map> rebuild (first build), N rounds" and then
+   "<Map> <digest> active" or "... rejected (...)" for each map with two or more matches.
+3. Look: scripts\with_friends_db.py --expect-database valowithfriendsdb --read-only scripts\control_heights.py list
    and scripts\height_viewer.py --db [--all] the same way.
-6. To stop: unset REPLAY_HEIGHTS_AUTO. To go back on one map: control_heights.py activate / off.
+4. To stop: set REPLAY_HEIGHTS_AUTO=false in the dashboard (and in render.yaml, or a Blueprint sync turns it back
+   on). To go back on one map: control_heights.py activate / off.
 ```
+
+A deploy of only one service (a manual deploy, or a worker build that failed) leaves them on different commits.
+The site then waits, as above, while the recipes differ. If they share a recipe but not masks or the check set,
+the worker refuses each build ("these aren't my inputs") and three refusals spend that map's tries until the web
+app restarts: deploy the other service from the same commit.
 
 A rebuild that goes live makes every stored round of its map stale; the pages keep showing them, marked out of
 date, while the worker recomputes them when it is idle. Watch the worker's memory on the first build.

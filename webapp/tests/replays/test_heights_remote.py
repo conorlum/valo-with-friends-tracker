@@ -646,6 +646,22 @@ def test_fewer_than_two_matches_left_turns_heights_off_without_a_build(rig, fact
     assert counts["sent"] > 0, "and its rounds are recomputed flat"
 
 
+@pytest.mark.parametrize("older", [
+    lambda real: {k: v for k, v in real.items() if k != "heights"},       # an image from before height builds
+    lambda real: {**real, "recipe": real["recipe"] + ".older"},           # an image on other rules
+])
+def test_a_worker_of_another_deploy_is_waited_for_at_no_cost(rig, factory, db, linked, monkeypatch, older):
+    # The flag is on from the merge (render.yaml), so the web app can be up before the worker's new image.
+    clone(db, linked, 1)
+    real = rig.client.health
+    monkeypatch.setattr(rig.client, "health", lambda: older(real()))
+    seen = [rig.cycle(factory) for _ in range(hr.MAX_TRIES * (hr.RESENDS_MAX + 2))]
+    assert total(seen, "heights_failed") == 0 and total(seen, "sent") > 0, "nothing spent, and no map's rounds held"
+    assert not rig.state.heights.tries and rig.state.heights.build is None and not rig.builds.builds
+    monkeypatch.setattr(rig.client, "health", real)                      # the worker's deploy lands
+    rig.until(factory, lambda s: total(s, "heights_live") + total(s, "heights_rejected") == 1)
+
+
 def test_it_is_off_by_default_and_in_demo_mode(rig, factory, db, linked, monkeypatch):
     clone(db, linked, 1)
     monkeypatch.setattr(settings, "replay_heights_auto", False)

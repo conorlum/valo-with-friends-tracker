@@ -27,6 +27,9 @@ the map-control dispatcher (app/services/replay_control_remote.py `cycle`), unde
   map's inputs must still be the ones it was built from; then `store_build` applies the gate: active, or
   rejected with the old heights kept. A rejected rebuild of a map whose active heights rest on evidence that is
   gone turns them off.
+- **Deploy gap.** A worker that says it is another deploy's (its health names another recipe, or has no
+  `heights` field: an image from before height builds) is waited for at no cost, holding nothing, so the flag
+  can be on from the merge while the worker's image is still building.
 - **Bounded.** Every failure either costs nothing (the worker is away, or parsing), or spends one of MAX_TRIES
   tries for that input manifest (the module's tests pin which). When they are spent the map's rounds are
   released and no more tries are made until its inputs change. The budget is in memory: a restart of the web
@@ -279,8 +282,16 @@ def _finish(session_factory, session, build: Build, job: dict, counts: dict) -> 
     log.info("heights: %s %s %s%s", build.map_name, digest, status, f" ({'; '.join(reasons)})" if reasons else "")
 
 
-def _idle(client) -> bool:
-    answer = client.health()
+def _other_deploy(answer) -> bool:
+    """The worker answered as a well-formed worker of another deploy: another recipe, or no height builds."""
+    from app.services import replay_upload
+
+    return isinstance(answer, dict) and "recipe" in answer and (
+        answer["recipe"] != replay_upload.site_recipe() or not isinstance(answer.get("heights"), dict))
+
+
+def _idle(client, answer=None) -> bool:
+    answer = client.health() if answer is None else answer
     if not isinstance(answer, dict) or type(answer.get("idle")) is not bool:
         raise BuildFailed("the worker's health has no boolean idle field")
     return answer["idle"]
@@ -398,7 +409,10 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
                 return held
             d = ready[0]
             attempt_key = hi.key(d.manifest)  # health validation can fail before a Build is created
-            if not _idle(client):
+            answer = client.health()
+            if _other_deploy(answer):
+                return set()                          # the deploy gap: wait for the worker, hold nothing, spend nothing
+            if not _idle(client, answer):
                 return held
             rounds = [(rid, uuid, n) for rid, uuid, count in d.replays for n in range(1, count + 1)]
             build = hstate.build = Build(d.map_name, hi.key(d.manifest), d.manifest, rounds, opened_at=now,

@@ -55,6 +55,11 @@ services:
       # routes 404.
       - key: REPLAY_ADMIN_TOKEN
         sync: false
+      # Height rebuilds on the worker (RENDER_DEPLOY.md, "Height rebuilds on the worker"): on from the merge. It
+      # needs REPLAY_CONTROL_REMOTE on. Until the worker's own deploy lands the site waits for it at no cost.
+      # Never set it on valomaths (demo mode turns it off anyway).
+      - key: REPLAY_HEIGHTS_AUTO
+        value: "true"
   # Stage 3: parses uploaded .vrf files (replay_worker/). Private: reachable only from the web
   # service over Render's private network. No DB credentials and no secrets: it only parses.
   - type: pserv

@@ -1,6 +1,6 @@
 # Map heights: rebuilt automatically on the replay worker (design)
 
-Status: built 2026-10-08 (plan: docs/superpowers/plans/2026-10-05-height-auto-rebuild.md); not turned on: REPLAY_HEIGHTS_AUTO is off until the owner sets it.
+Status: built 2026-10-08 (plan: docs/superpowers/plans/2026-10-05-height-auto-rebuild.md); on from the merge: `render.yaml` sets REPLAY_HEIGHTS_AUTO=true (the owner's decision, 2026-10-08).
 
 The design below is the one the owner approved on 2026-10-05. Where the build changed it, the section carries a
 dated amendment naming the plan's decision (E1 to E9, in the decisions table at the end); the owner's own
@@ -219,7 +219,8 @@ whose ground moved by more than 0.5 m. It is for looking at afterwards, not a ga
 
 An off switch and a way back, both one command and both through `with_friends_db.py`:
 
-- `REPLAY_HEIGHTS_AUTO` on the web app, default off: nothing changes on deploy until it is set;
+- `REPLAY_HEIGHTS_AUTO` on the web app, default off in the code and set on in `render.yaml` (amended
+  2026-10-08: the owner wants it on from the merge); setting it false stops every automatic rebuild;
 - `scripts/control_heights.py list | activate --map X --digest D | off --map X`: make an earlier asset
   (or none) the active one. The map's rounds go stale and are recomputed, like any other change.
 
@@ -273,23 +274,28 @@ running or waiting) and `heights: {collecting, queued, running, spool_bytes}`.
 
 ### 7. Turning it on (added 2026-10-08)
 
-The owner's steps; none was run by the build.
+Amended 2026-10-08: it is on from the merge. `render.yaml` sets `REPLAY_HEIGHTS_AUTO=true` on
+valowithfriendstracker, and both services auto-deploy from the merge commit (the web services run
+`alembic upgrade head`; migration 0019 creates an empty table on each; the worker's image is rebuilt). The web
+service is usually up first. While the worker still answers as the old deploy (another recipe, or no `heights`
+field in its health), the dispatcher waits at no cost: no try spent, no rounds held
+(`replay_heights_remote._other_deploy`, pinned by
+`test_heights_remote.py::test_a_worker_of_another_deploy_is_waited_for_at_no_cost`).
+
+The owner's checks afterwards; none was run by the build:
 
 ```
-1. Merge. Both web services run `alembic upgrade head` on build: the new migration (0019) creates an empty
-   table on each.
-2. Rebuild and deploy the replay worker (its image gains replay_worker/height_job.py, app/replays/height_inputs.py
-   and the must-block list). The two services must be on the same commit before step 4: a worker with other
-   rules, masks or check set refuses every build ("these aren't my inputs"), and three refusals spend a map's
-   tries until the web app restarts.
-3. Check the worker: GET /health shows "idle" and "heights".
-4. Set REPLAY_HEIGHTS_AUTO=true on valowithfriendstracker only. Within a few cycles the dispatcher logs
-   "heights: <Map> rebuild (first build), N rounds" and then "<Map> <digest> active" or "... rejected (...)"
-   for each map with two or more matches.
-5. Look: scripts\with_friends_db.py --expect-database valowithfriendsdb --read-only scripts\control_heights.py list
+1. Check the worker: GET /health shows "idle" and "heights".
+2. Within a few cycles the dispatcher logs "heights: <Map> rebuild (first build), N rounds" and then
+   "<Map> <digest> active" or "... rejected (...)" for each map with two or more matches.
+3. Look: scripts\with_friends_db.py --expect-database valowithfriendsdb --read-only scripts\control_heights.py list
    and scripts\height_viewer.py --db [--all] the same way.
-6. To stop: unset REPLAY_HEIGHTS_AUTO. To go back on one map: control_heights.py activate / off.
+4. To stop: REPLAY_HEIGHTS_AUTO=false (in render.yaml too, or a Blueprint sync turns it back on). To go back on
+   one map: control_heights.py activate / off.
 ```
+
+Two services on different commits that share a recipe but not masks or the check set (one service deployed by
+hand) still refuse each build, and three refusals spend that map's tries until the web app restarts.
 
 ## Cost, and what isn't known yet
 

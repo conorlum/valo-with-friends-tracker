@@ -182,8 +182,8 @@ If that happens, pin scipy for the worker only to 1.17.1 (the newest with 3.11 w
 ## Height rebuilds (2026-10-05)
 
 Spec: `docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md`. Plan:
-`docs/superpowers/plans/2026-10-05-height-auto-rebuild.md`. Built 2026-10-08; off until `REPLAY_HEIGHTS_AUTO` is
-set on the web service (the spec's section 7 has the order to turn it on).
+`docs/superpowers/plans/2026-10-05-height-auto-rebuild.md`. Built 2026-10-08; on from the merge (`render.yaml` sets
+`REPLAY_HEIGHTS_AUTO` on the web service; the spec's section 7 has the checks).
 
 The worker also rebuilds a map's heights from its stored rounds, which the web app sends it (the worker still
 has no database). The web app's dispatcher (`app/services/replay_heights_remote.py`, one step of each control
