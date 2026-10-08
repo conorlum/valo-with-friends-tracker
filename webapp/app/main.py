@@ -27,6 +27,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 async def lifespan(_app: FastAPI):
     # Map control for new replays on the replay worker: off unless REPLAY_CONTROL_REMOTE is set
     # (app/services/replay_control_remote.py; the engine is never imported by the web app).
+    # The same thread runs the automatic re-parse queue's pass (app/services/replay_reparse_auto.py):
+    # with REPLAY_REPARSE_AUTO off it starts nothing new, but still settles an attempt the worker
+    # already accepted, so switching off never strands one.
     # The .vrf archive's sync (acks re-sent, tombstones pushed): on whenever uploads are
     # (app/services/replay_archive_sync.py); it does nothing while the worker's archive is off.
     from app.db import SessionLocal

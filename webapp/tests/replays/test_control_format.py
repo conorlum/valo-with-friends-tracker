@@ -16,6 +16,7 @@ from app.control import engine as ce
 from app.control import geometry as cg
 from app.control import heights as hc
 from app.control import topology as ct
+from app.control import utility as ut
 from app.control.encode import checkpoint_ticks, encode_data, encode_summary
 from app.replays import control_format as cf
 from tests.replays.control_toys import blob, door_hall
@@ -33,9 +34,16 @@ from tests.replays.control_toys import blob, door_hall
 # events (KILL_AREA_M ... GUN_HEARING_M, from app/control/hearing.json: its numeric fields only); and trips seal
 # (2026-10-04): the unknown can't step diagonally past a live trip's cell; a Killjoy device doesn't watch while
 # switched off (its row's `off`, condenser revision 12); a one-cell-wide sliver of unknown with no enemy in it is
-# dropped (NARROW_ROOM_CELLS, 2026-10-04). Unreleased, so re-pinned in place.
+# dropped (NARROW_ROOM_CELLS, 2026-10-04).
+# 6: contested needs a live claim; an enemy's live view ends remembered ground (D5, 2026-10-04). Rules only: the
+# constants are unchanged, so the digest is 5's. Unreleased, so re-pinned in place.
+# Bumped because revision 5 was released with the merge of both stacks into main.
 PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4: "237677656d71ca9f",
-          5: "d6a626879e47e6a0"}
+          5: "d6a626879e47e6a0", 6: "d6a626879e47e6a0",
+          # 7 (2026-10-05): utility knowledge, ability walls, the flat trip join; the digest now also covers
+          # app/control/utility.py's constants and figures (utility.json's numbers). Unreleased, so re-pinned in
+          # place for the 2026-10-06 code review's `retract` operation (utility.KINDS, ORDER)
+          7: "183a274bd38804d0"}
 
 
 def _constants_digest() -> str:
@@ -53,7 +61,7 @@ def _constants_digest() -> str:
         return value
 
     constants = {}
-    for module in (ce, cg, hc, ct):
+    for module in (ce, cg, hc, ct, ut):     # ut since revision 7: the ability figures (utility.json) and rules
         for name, value in sorted(vars(module).items()):
             if name.isupper() and not name.startswith("_") and name != "CONTROL_REVISION":
                 if isinstance(value, (int, float, str, bool, tuple, list, dict, set, frozenset, np.ndarray)):

@@ -15,7 +15,7 @@ web-service side are Stage 3's PR.
 | --- | --- |
 | `POST /jobs` (body: the `.vrf` bytes) | `202 {"id", "status": "queued"}`; `400` not a replay (magic), `411` no length, `413` over the size cap, `503` queue full |
 | `GET /jobs/{id}` | `{"id", "status", "error"?, "result"?, "parse_seconds"?}`; `status` is `queued`, `parsing`, `done` or `failed` |
-| `GET /health` | `{"ok": true, "queued", "limits"}` |
+| `GET /health` | `{"ok": true, "queued", "limits", "recipe", "control": {...}, "archive": {...}}`; `recipe` is what a parse here stamps (null if it can't be read) |
 
 `result` holds `match_uuid` (from the file's header, never its name), `map_name`, `game_branch`,
 `source_sha256`, `recipe`, `hz`, `round_count`, `rounds` (`{"n": base64 of the gzipped JSON v1 blob}`),
@@ -55,6 +55,52 @@ and `server.py` (the jobs). Web side: `webapp/app/services/replay_upload.py` (`s
   (`enabled`, `kept`, `bytes`, `budget_bytes`, `oldest_played_at`, `boot_id`).
 - Tests: `webapp/tests/replays/test_replay_archive.py` (the store), `test_replay_worker_archive.py` (the server),
   `test_replay_archive_web.py` (the web side).
+
+### Re-parse attempts (the automatic queue's protocol)
+
+`docs/superpowers/plans/2026-10-07-auto-reparse-queue-impl.md`, task 1. The web app's automatic re-parse queue
+(`webapp/app/services/replay_reparse_auto.py`) must be able to lose a reply, restart, or fail to record an
+answer without ever causing a second parse. So it names each attempt with a UUID it has already committed,
+and the worker gives that id exactly one job.
+
+- `POST /reparse {"match_uuid", "attempt_id", "expected_sha256"}`: the first time, `202` and the attempt's
+  job (its id is `auto` + the attempt's hex). Any repeat answers `200` with the same job, whether it is
+  queued, parsing, done, failed or already swept (`job_status: "expired"`). It never starts another.
+- `GET /reparse/attempts/{id}`: the receipt (`accepted`, `preparing`, `closed`), or `404 unknown_attempt`.
+- `POST /reparse/attempts/{id}/close`: fences an id that was never accepted, so a late request for it is
+  refused (`409 closed`). If the id already has its job, the answer is that job and nothing is closed.
+- Every answer of these routes is JSON with a `code`; callers branch on it, not on the HTTP status. The
+  definite refusals (`no_archived_file`, `sha_mismatch`, `deleted`, `identity_conflict`, `bad_request`) leave
+  no job; `queue_full` (`503`) leaves nothing at all.
+- Unreadable or malformed receipts and automatic job records return `503 state_unavailable`: the caller
+  retries the same id, and the worker preserves the files and fences. Only a missing record means absent.
+- Once the preparation and job record are durable, a failed final acceptance-receipt write still schedules
+  that job once. Lookup or restart can promote the preparation later. Cleanup retains the job and its
+  acceptance evidence until the permanent receipt can be written, so expiry cannot allow a second parse.
+- A receipt is a file of about 300 bytes in `attempts/` on the archive disk, written before the job and kept
+  after the job and its result are swept: an old caller may still ask for its id. They count toward the
+  archive's space and are not cleaned up.
+- `POST /reparse {"match_uuid"}` with no `attempt_id` is the manual re-parse, unchanged.
+- `/health` says `archive.reparse_protocol: 1` (only while the archive is on). The web app sends an
+  `attempt_id` only to a worker that says so: an older image would read it as a manual re-parse.
+
+## Map control and timing gaps
+
+`POST /control` and `GET /control/{id}` (`server.py`, `control_job.py`; `docs/map-control-worker-plan.md`). The
+web app sends one round at a time and stores the result; the worker has no database.
+
+- Up to `REPLAY_CONTROL_WORKERS` children (2) while nothing is parsing or waiting to parse, and one beside
+  a parse. A parse arriving kills every running child but the one started first; a killed round goes back to
+  the front of the queue and is not counted as a failure.
+- A task with a `gaps` block also returns the round's timing gaps (`webapp/app/gaps`, shipped in the image).
+  The web app sends the gap fingerprint and the cache key, because the control interpreter has no SQLAlchemy
+  to import the web app's own helpers with. With `gaps_only` the task returns the gaps alone, for a round
+  whose control the web app already has.
+- The child writes a tick cache file under `CONTROL_CACHE_DIR/gaps` while it runs and deletes it when the
+  task ends, along with any file older than six hours.
+- Health advertises `control.gaps_protocol=1`; an older worker receives plain control until it updates.
+- Every result names the engine's revisions and the hash of the game figures it read, so the web app can
+  drop a result from another deploy.
 
 ## Configuration
 

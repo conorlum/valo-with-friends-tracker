@@ -17,6 +17,8 @@ Timing gaps (docs/superpowers/specs/2026-10-02-timing-gaps-design.md, section 7,
 and returns `result["gaps"] = {"run", "rows"}`; with `"gaps_only": True` it returns only `status`, `geometry`
 and `gaps` (from the tick cache when it is there, else through the engine) and no control `data`. A gap
 failure is the gap run's (`gaps.run.status == "failed"`) and never changes control's result.
+The replay worker's tasks also carry `gap_fingerprint` and `engine_key` in that block (the web app computes
+them; the worker's interpreter cannot import app.services).
 """
 
 from __future__ import annotations
@@ -164,9 +166,13 @@ def verify_features(geo, expected: str | None = None, full: bool = True, entry: 
 
 def _cache_path(job: dict, map_name: str) -> Path:
     from app.gaps import cache
-    from app.services.replay_gaps import engine_key
 
-    return cache.cache_path(job["replay_id"], job["round"], engine_key(job["fingerprint"], map_name))
+    key = job.get("engine_key")
+    if key is None:             # the local command; the replay worker's tasks carry the key (no SQLAlchemy there)
+        from app.services.replay_gaps import engine_key
+
+        key = engine_key(job["fingerprint"], map_name)
+    return cache.cache_path(job["replay_id"], job["round"], key)
 
 
 def _plain(value):
@@ -268,9 +274,19 @@ def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
     run = {"fingerprint": "", "gaps_revision": 0, "chokes_hash": None, "notes": {}, "error": None}
     try:
         from app.replays import choke_assets
-        from app.services.replay_gaps import GAPS_REVISION, gap_fingerprint
 
-        run.update({"fingerprint": gap_fingerprint(job["fingerprint"], geo.name), "gaps_revision": GAPS_REVISION,
+        if job.get("gap_fingerprint"):
+            # The replay worker: the web app sent the fingerprint it will check the result against, and the
+            # control venv has no SQLAlchemy to import app.services with. The revision is the detector's own,
+            # so a worker on other gap rules says so.
+            from app.gaps.detect import GAPS_REVISION
+
+            fingerprint = job["gap_fingerprint"]
+        else:
+            from app.services.replay_gaps import GAPS_REVISION, gap_fingerprint
+
+            fingerprint = gap_fingerprint(job["fingerprint"], geo.name)
+        run.update({"fingerprint": fingerprint, "gaps_revision": GAPS_REVISION,
                     "chokes_hash": choke_assets.asset_hash(geo.name)})
         if guard is not None and guard.error:
             raise _CacheFailed(guard.error)

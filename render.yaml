@@ -5,7 +5,10 @@ services:
   - type: web
     name: valowithfriendstracker
     runtime: python
-    plan: standard  # a Blueprint sync resets the plan to whatever this says
+    # 1 CPU / 2 GB. One uvicorn process can't use a second core; the replay-worker below is the service that
+    # needs two (it was 2c-4g here from 2026-10-07 to 2026-10-08 by mistake). A Blueprint sync resets the plan
+    # to whatever this says.
+    plan: standard
     rootDir: webapp
     buildCommand: |
       pip install --upgrade pip
@@ -41,6 +44,11 @@ services:
       # Map control for new replays on the worker (docs/map-control-worker-plan.md). Off until the
       # user turns it on: uncomment (or set it in the dashboard) once the new worker image is built.
       # - key: REPLAY_CONTROL_REMOTE
+      #   value: "true"
+      # Automatically re-parse stale uploaded replays, one accepted attempt at a time.
+      # Off until the owner completes RENDER_DEPLOY.md checks. Requires site control,
+      # matching worker recipe, archive/control enabled and both worker protocols.
+      # - key: REPLAY_REPARSE_AUTO
       #   value: "true"
       # The operator's secret for /admin/replays/* (deleting a match on request, reparsing the .vrf
       # archive; app/routers/replay_admin.py). Set by hand in the dashboard, never here; unset, those

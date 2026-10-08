@@ -477,3 +477,43 @@ def test_a_full_round_carries_its_gap_job_and_stores_both(factory, db, linked, m
     assert db.get(ReplayRoundControl, (linked.id, 1)).status == "ok"
     assert db.get(ReplayRoundGapRun, (linked.id, 1)).status == "ok"
     assert _plan_gaps(db) == [] or 1 not in {q.round_number for q in _plan_gaps(db)}
+
+
+# ---------------------------------------------------------------- the replay worker's child (no web app code)
+
+
+def test_a_task_with_the_sites_gap_keys_never_imports_the_web_apps_services(tmp_path, monkeypatch):
+    from app.gaps import detect
+
+    task = _task(tmp_path, monkeypatch)
+    task["gaps"].update(gap_fingerprint="9" * 16, engine_key="e" * 16)
+    monkeypatch.setitem(sys.modules, "app.services.replay_gaps", None)    # importing it now raises ImportError
+    result = compute_task(task)
+    run = result["gaps"]["run"]
+    assert result["status"] == "ok" and run["status"] == "ok", run.get("error")
+    assert run["fingerprint"] == "9" * 16 and run["gaps_revision"] == detect.GAPS_REVISION
+    assert [p.name for p in tmp_path.iterdir()] == [f"1-r1-{'e' * 16}.ticks.pkl.gz"]
+
+
+def test_a_gaps_only_task_with_the_sites_keys_needs_no_services_either(tmp_path, monkeypatch):
+    task = _task(tmp_path, monkeypatch, gaps_only=True)
+    task["gaps"].update(gap_fingerprint="9" * 16, engine_key="e" * 16)
+    monkeypatch.setitem(sys.modules, "app.services.replay_gaps", None)
+    result = compute_task(task)
+    assert result["status"] == "ok" and "data" not in result
+    assert result["gaps"]["run"]["status"] == "ok" and result["gaps"]["run"]["fingerprint"] == "9" * 16
+
+
+def test_a_gaps_block_on_an_image_without_the_detector_fails_the_whole_task(tmp_path, monkeypatch):
+    # Why the dispatcher asks the worker's health first (control.gaps_protocol): a worker image from before
+    # app/gaps shipped can't build the cache path, the fallback guard needs the same package, and so control
+    # is lost with the gaps. A gaps block is only ever sent to a worker that advertises the protocol.
+    task = _task(tmp_path, monkeypatch)
+    for name in [m for m in sys.modules if m == "app.gaps" or m.startswith("app.gaps.")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setitem(sys.modules, "app.gaps", None)
+    result = compute_task(task)
+    assert result["status"] == "failed" and result["error_kind"] == "infra" and "data" not in result
+    assert "ImportError" in result["error"] or "ModuleNotFoundError" in result["error"]
+    plain = compute_task({k: v for k, v in task.items() if k != "gaps"})
+    assert plain["status"] == "ok" and plain["data"], "the same image computes plain control"

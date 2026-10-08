@@ -151,7 +151,8 @@ def test_the_linked_mode_helpers():
         }));
       });"""
     got = run_node(script, {})
-    assert got["styles"] == ["smoke", "wire", "hidden", "hidden", "hidden", "spike", "badge"]
+    # a projectile is drawn on its own layer since the 2026-10-05 review (item 23), never hidden outright
+    assert got["styles"] == ["smoke", "wire", "hidden", "hidden", "projectile", "spike", "badge"]
     assert got["label"] == "Q Thing"
     assert got["at10"] == 4 and got["at95"] == 0 and got["open"] == 4
     assert got["pairs"] == [[1, 3]], "a wire pairs with its own owner's second anchor"
@@ -464,3 +465,198 @@ def test_clicking_a_round_number_plays_that_round_from_its_start():
     got = run_node(script, None)
     assert got["third"] == {"shown": [[3, 0]], "playing": True}
     assert got["current"] == {"shown": [[2, 0]], "playing": True, "t": 0}
+
+
+# A viewer without a page: the real prototype, the render methods stubbed, rounds loaded through
+# options.loadRound (each a promise the test resolves or rejects by hand).
+PLAYBACK_VIEWER = """
+      const R = require(process.argv[1]);
+      const pending = {};
+      const v = Object.create(R.ReplayViewer.prototype);
+      for (const name of ["renderStrip", "renderTicks", "renderBanner", "renderFeed", "renderAnalysis",
+                          "renderUtilList", "refreshControl", "renderControlTable", "refreshGaps",
+                          "updateControls", "draw"]) v[name] = function () {};
+      Object.assign(v, {rounds: [1, 2, 3], cache: {}, speed: 1, t: 0, playing: false, current: null, lastFrame: null,
+                        options: {loadRound: n => new Promise((ok, fail) => { pending[n] = {ok, fail}; })}});
+      const blob = n => ({v: 1, round: n, hz: 16, t_end: 10, tracks: {}, players: [], kills: [], util: []});
+      const land = n => { pending[n].ok(blob(n)); return new Promise(r => setTimeout(r, 0)); };
+      const frame = (now) => { const raf = global.requestAnimationFrame; global.requestAnimationFrame = () => {};
+                               v.tick(now); global.requestAnimationFrame = raf; };
+      const state = () => ({number: v.number, playing: v.playing, t: v.t});
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_a_finished_round_plays_the_next_one_and_the_last_one_stops():
+    script = PLAYBACK_VIEWER + """
+      (async () => {
+        const out = {};
+        const first = v.playRound(1); await land(1); await first;
+        frame(1000); frame(3000);                     // 2 s played
+        out.midway = state();
+        frame(20000);                                 // past the end: round 2 is asked for
+        out.at_end = state();
+        await land(2);
+        out.next = state();
+        frame(30000); out.first_frame_after_load = v.t;      // the load's wait is never played
+        frame(31000); out.second_frame = v.t;
+        const last = v.playRound(3); await land(3); await last;
+        frame(40000); frame(60000);
+        await new Promise(r => setTimeout(r, 0));
+        out.final = state();
+        process.stdout.write(JSON.stringify(out));
+      })();"""
+    got = run_node(script, None)
+    assert got["midway"] == {"number": 1, "playing": True, "t": 2}
+    assert got["at_end"] == {"number": 1, "playing": False, "t": 10}
+    assert got["next"] == {"number": 2, "playing": True, "t": 0}
+    assert got["first_frame_after_load"] == 0 and got["second_frame"] == 1
+    assert got["final"] == {"number": 3, "playing": False, "t": 10}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_a_manual_choice_or_a_pause_beats_an_automatic_load_in_flight():
+    script = PLAYBACK_VIEWER + """
+      (async () => {
+        const out = {};
+        let p = v.playRound(1); await land(1); await p;
+        frame(1000); frame(20000);                    // round 1 ends: round 2 is loading
+        v.step(1 + 1);                                // the user steps to round 3 meanwhile (paused, as step does)
+        await land(3);
+        out.stepped = state();
+        await land(2);                                // the stale automatic load lands late
+        out.after_stale = state();
+
+        p = v.playRound(1); await p;                  // cached now
+        frame(50000); frame(70000);                   // round 1 ends again: round 2 (cached) is on its way
+        v.toggle();                                   // paused before it shows
+        await new Promise(r => setTimeout(r, 0));
+        out.paused_during_load = state();
+        v.toggle();
+        out.then_play = state();
+        process.stdout.write(JSON.stringify(out));
+      })();"""
+    got = run_node(script, None)
+    assert got["stepped"] == {"number": 3, "playing": False, "t": 0}
+    assert got["after_stale"] == {"number": 3, "playing": False, "t": 0}
+    assert got["paused_during_load"] == {"number": 2, "playing": False, "t": 0}
+    assert got["then_play"] == {"number": 2, "playing": True, "t": 0}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_a_round_that_fails_to_load_leaves_the_viewer_stopped_on_the_one_shown():
+    script = PLAYBACK_VIEWER + """
+      (async () => {
+        const p = v.playRound(1); await land(1); await p;
+        frame(1000); frame(20000);
+        pending[2].fail(new Error("gone"));
+        await new Promise(r => setTimeout(r, 0));
+        const failed = state();
+        v.toggle();                                   // Play again: the same round from its start
+        process.stdout.write(JSON.stringify({failed: failed, replay: state()}));
+      })();"""
+    got = run_node(script, None)
+    assert got["failed"] == {"number": 1, "playing": False, "t": 10}
+    assert got["replay"] == {"number": 1, "playing": True, "t": 0}
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_space_toggles_once_from_anywhere_but_a_field():
+    script = PLAYBACK_VIEWER + """
+      (async () => {
+        const p = v.showRound(1); await land(1); await p;
+        const el = (tagName, extra) => Object.assign({tagName, getAttribute: () => null}, extra || {});
+        const press = (target, more) => {
+          const e = Object.assign({key: " ", code: "Space", target, prevented: 0,
+                                   preventDefault() { this.prevented++; }}, more || {});
+          const before = v.playing;
+          const handled = v.onSpaceDown(e);
+          const up = {key: " ", code: "Space", target, prevented: 0, preventDefault() { this.prevented++; }};
+          v.onSpaceUp(up);
+          const out = {handled, toggled: v.playing !== before, prevented: e.prevented, up_prevented: up.prevented};
+          v.playing = false;
+          return out;
+        };
+        const out = {
+          body: press(el("BODY")),
+          canvas: press(el("CANVAS")),
+          play_button: press(el("BUTTON")),
+          tab: press(el("DIV", {getAttribute: n => n === "role" ? "tab" : null})),
+          layer_checkbox: press(el("INPUT", {type: "checkbox"})),
+          scrub: press(el("INPUT", {type: "range"})),
+          text: press(el("INPUT", {type: "text"})),
+          search: press(el("INPUT", {type: "search"})),
+          no_type: press(el("INPUT")),
+          textarea: press(el("TEXTAREA")),
+          select: press(el("SELECT")),
+          editable: press(el("DIV", {isContentEditable: true})),
+          held: press(el("BODY"), {repeat: true}),
+          ctrl: press(el("BODY"), {ctrlKey: true}),
+          other_key: (() => { const e = {key: "a", code: "KeyA", target: el("BODY"), preventDefault() {}};
+                              return v.onSpaceDown(e); })(),
+        };
+        v.current = null;
+        out.no_round = press(el("BODY")).toggled;
+        process.stdout.write(JSON.stringify(out));
+      })();"""
+    got = run_node(script, None)
+    once = {"handled": True, "toggled": True, "prevented": 1}
+    for where in ("body", "canvas"):
+        assert got[where] == {**once, "up_prevented": 0}, where
+    for where in ("play_button", "tab", "layer_checkbox", "scrub"):
+        # the control's own Space action (on keyup) is swallowed, so one press is one toggle
+        assert got[where] == {**once, "up_prevented": 1}, where
+    for where in ("text", "search", "no_type", "textarea", "select", "editable", "held", "ctrl"):
+        assert got[where] == {"handled": False, "toggled": False, "prevented": 0, "up_prevented": 0}, where
+    assert got["other_key"] is False and got["no_round"] is False
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_projectiles_their_flights_and_the_new_wall_shapes():
+    script = """
+      const R = require(process.argv[1]);
+      const flying = {kind: "Projectile", code: "Wraith", name: "Q_NearsightMissile", slot: 2, t0: 10, t1: 11.5, u: 100, v: 100,
+                      flight: [[10, 100, 100, 30], [11, 300, 100, 30], [11.5, 400, 100, 30]]};
+      const still = {kind: "Projectile", code: "Phoenix", name: "E_FlareCurve_Synced_Right", slot: 1, t0: 5, t1: 7, u: 50, v: 60};
+      const net = {kind: "Patch", code: "Cable", name: "4_NetToss", slot: 3, t0: 12, t1: 15, u: 0, v: 0,
+                   thrown: {t0: 11.2, t1: 12, u: 1, v: 1}};
+      const netThrow = {kind: "Projectile", code: "Cable", name: "4_NetToss", slot: 3, t0: 11.2, t1: 12, u: 1, v: 1,
+                        flight: [[11.2, 1, 1], [12, 5, 5]]};
+      const mesh = {code: "Cable", name: "E_CableJam_Root", u: 0, v: 0, on: [[3, 30]],
+                    arms: [[10, 0, 10, null], [0, 10, 10, 8], [-10, 0, 10, null], [0, -10, 10, null]]};
+      const sage = {code: "Thorne", name: "E_Wall_Fortifying", segments: [[1, 1, 2, 40], [2, 1, 2, 9], [3, 1, 2, 40]]};
+      const shear = {code: "Nox", name: "WallTrap", line: [[0, 0], [10, 0]], raised: [20, 26]};
+      process.stdout.write(JSON.stringify({
+        style: [R.abilityStyle(flying), R.abilityStyle(still).label, R.abilityStyle(mesh).shape, R.abilityStyle(shear).shape,
+                R.abilityStyle({code: "Phoenix", name: "Q_FlameWallManager_Production"}).shape],
+        at: [R.projectileAt(flying, 9.9), R.projectileAt(flying, 10.5), R.projectileAt(still, 6), R.projectileAt(still, 7.1)],
+        dedupe: [R.throwShownAsProjectile(net, [netThrow]), R.throwShownAsProjectile(net, [])],
+        mesh: [R.meshArmsAt(mesh, 2).length, R.meshArmsAt(mesh, 5).length, R.meshArmsAt(mesh, 9).length],
+        sage: [R.sageSegmentsAt(sage, 1).length, R.sageSegmentsAt(sage, 5).length, R.sageSegmentsAt(sage, 10).length],
+        shear: [R.shearAt(shear, 10), R.shearAt(shear, 21), R.shearAt(shear, 27), R.shearAt({}, 5)],
+        layers: R.LAYERS
+      }));"""
+    got = run_node(script, None)
+    assert got["style"][0] == {"label": "Paranoia", "ability": "Paranoia", "shape": "projectile", "width": 650}
+    assert got["style"][1:] == ["Curveball", "mesh", "shear", "wall"]
+    assert got["at"][0] is None and got["at"][1] == {"u": 200, "v": 100, "moving": True}
+    assert got["at"][2] == {"u": 50, "v": 60, "moving": False} and got["at"][3] is None, "no flight: no invented travel"
+    assert got["dedupe"] == [True, False]
+    assert got["mesh"] == [0, 4, 3]
+    assert got["sage"] == [0, 3, 2]
+    assert got["shear"] == ["set", "raised", "set", None]
+    assert "projectiles" in got["layers"]
+
+
+def test_the_projectile_layer_is_on_by_default_and_has_a_toggle():
+    source = REPLAY_JS.read_text(encoding="utf-8")
+    assert "projectiles: true" in source
+    template = (WEBAPP / "app" / "templates" / "replays" / "_player.html").read_text(encoding="utf-8")
+    assert 'data-replay-layer="projectiles" checked' in template
+
+
+def test_the_page_listens_for_space_on_the_document_not_only_inside_the_viewer():
+    source = REPLAY_JS.read_text(encoding="utf-8")
+    assert 'page.addEventListener("keydown", function (e) { self.onSpaceDown(e); });' in source
+    assert 'page.addEventListener("keyup", function (e) { self.onSpaceUp(e); });' in source
+    assert 'if (e.key === " ") { e.preventDefault(); self.toggle(); }' not in source      # one listener, not two

@@ -46,17 +46,28 @@ def test_the_worker_copied_code_stays_stdlib_only():
 def test_the_worker_server_never_loads_the_engine():
     # Map control runs in child processes (replay_worker/control_job.py) with their own interpreter;
     # the server itself stays importable where there is no numpy (docs/map-control-worker-plan.md).
-    code = ("import sys, replay_worker.server; "
+    # Answering /health (which names the control child's gaps protocol) loads none of it either.
+    code = ("import json, sys, tempfile, threading, urllib.request; from pathlib import Path; "
+            "import replay_worker.server as s; "
+            "settings = s.Settings(temp_root=Path(tempfile.mkdtemp())); "
+            "httpd = s.make_server(s.Worker(settings), control=s.ControlRunner(settings)); "
+            "threading.Thread(target=httpd.serve_forever, daemon=True).start(); "
+            "body = json.loads(urllib.request.urlopen("
+            "f'http://127.0.0.1:{httpd.server_address[1]}/health', timeout=30).read()); "
+            "assert body['control']['gaps_protocol'] == 1, body; "
             "print(sorted(m for m in sys.modules if m.split('.')[0] in ('numpy', 'scipy', 'PIL') "
-            "or m.startswith(('app.control', 'replay_worker.control_job'))))")
+            "or m.startswith(('app.control', 'app.gaps', 'replay_worker.control_job'))))")
     out = subprocess.run([sys.executable, "-c", code], cwd=WEBAPP.parent, capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip().splitlines()[-1] == "[]"
 
 
 def test_the_web_apps_control_views_import_nothing_heavy():
+    # replay_control_remote.py is listed because app/main.py imports it inside `lifespan`, so the import
+    # test above never loads it.
     # numpy is already loaded by the web app (fight-EV), so the runtime check above can't see it.
     for path in (WEBAPP / "app" / "services" / "replay_control.py",
+                 WEBAPP / "app" / "services" / "replay_control_remote.py",
                  WEBAPP / "app" / "services" / "replay_control_views.py",
                  WEBAPP / "app" / "routers" / "replays.py",
                  WEBAPP / "app" / "services" / "replay_gaps.py",

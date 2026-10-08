@@ -209,6 +209,10 @@ class ReplayUpload(Base):
     # 'unchanged', 'kept_existing', 'failed'), and the worker's answer to the ack (null until it answers).
     store_outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
     archive_ack: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # Migration 0018 (the automatic re-parse queue): null on every upload and manual re-parse. On an automatic
+    # attempt, the replay it was selected for as it was then (app/services/replay_upload.py, `new_auto_context`).
+    # Always replaced by a new dict, never changed in place: a JSON column doesn't see in-place edits.
+    auto_context: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
 
 
 class ReplayDeletion(Base):

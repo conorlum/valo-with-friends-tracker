@@ -1,6 +1,16 @@
 """Stores one round's timing gaps (migration 0016; docs/superpowers/specs/2026-10-02-timing-gaps-design.md,
 section 7): the run row and all gap rows of a round are replaced in one transaction. Used by
-scripts/compute_control.py. The engine is never imported here."""
+scripts/compute_control.py (local) and by the web app's dispatcher for the replay worker
+(app/services/replay_control_remote.py).
+
+Every write takes the replay's advisory lock, so a local and a remote write of one round take turns. With
+`expected_control_fingerprint` (the dispatcher, whose results arrive minutes later) the same transaction
+first reads the replay again and stores nothing unless the round's control is still the one the gaps were
+computed with, the run carries this deploy's gap keys, and no run with those keys is there already
+(docs/superpowers/plans/2026-10-07-worker-gaps-and-kill-one-impl.md, Task 3). A relink keeps the replay's
+and the round's keys, so the foreign key alone would not catch it.
+
+Standard library and the DB only: the engine is never imported here."""
 
 from __future__ import annotations
 
@@ -8,14 +18,60 @@ from datetime import datetime, timezone
 
 from sqlalchemy.exc import IntegrityError
 
-from app.models.replay import ReplayGap, ReplayRoundGapRun
+from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun
+from app.replays import choke_assets
+from app.replays import control_format as cf
+from app.replays import db as replay_db
+from app.services import replay_control, replay_gaps
 
 STORED = "stored"
+ALREADY = "skipped: already stored"
 
 
-def store_gaps(session_factory, replay_id: int, round_number: int, run: dict, rows: list[dict]) -> str:
+def _after_lock(session) -> None:
+    """Tests only: runs once the replay's lock is held, before anything is read under it."""
+
+
+def _stale(session, replay_id: int, round_number: int, run: dict, expected: str) -> str | None:
+    """Why a worker's gap run must not be stored now, or None. Called under the replay's lock, and reads the
+    replay and its rows afresh: whatever was loaded before waiting for the lock may have moved."""
+    replay = session.get(Replay, replay_id)
+    if replay is None:
+        return "skipped: the replay is gone"
+    current = replay_control.round_fingerprint(replay, replay_control.side_groups(session, replay), round_number)
+    if current is None or current != expected:
+        return "skipped: its control inputs changed while computing"
+    control = session.get(ReplayRoundControl, (replay_id, round_number))
+    if control is None or control.status != "ok" or control.fingerprint != current \
+            or control.data_version != cf.DATA_VERSION:
+        return "skipped: the round has no current control"
+    wanted = replay_gaps.gap_fingerprint(current, replay.map_name)
+    if run.get("fingerprint") != wanted or run.get("gaps_revision") != replay_gaps.GAPS_REVISION \
+            or run.get("chokes_hash") != choke_assets.asset_hash(replay.map_name):
+        return "skipped: computed under other gap rules or assets"
+    existing = session.get(ReplayRoundGapRun, (replay_id, round_number))
+    if existing is not None and existing.fingerprint == wanted:
+        return ALREADY                # another writer got there first; a current failure stays put too
+    return None
+
+
+def store_gaps(session_factory, replay_id: int, round_number: int, run: dict, rows: list[dict], *,
+               expected_control_fingerprint: str | None = None) -> str:
+    """"stored", or "skipped: <why>". Without `expected_control_fingerprint` (the local command, which has
+    just planned the round) the round's gaps are replaced as they are given."""
     session = session_factory()
     try:
+        # The UUID alone first, so no row is held in the session from before the lock.
+        match_uuid = session.query(Replay.match_uuid).filter(Replay.id == replay_id).scalar()
+        if match_uuid is not None:
+            replay_db.advisory_lock(session, str(match_uuid))
+            _after_lock(session)
+        if expected_control_fingerprint is not None:
+            if match_uuid is None:
+                return "skipped: the replay is gone"
+            why = _stale(session, replay_id, round_number, run, expected_control_fingerprint)
+            if why is not None:
+                return why
         session.query(ReplayGap).filter(ReplayGap.replay_id == replay_id,
                                         ReplayGap.round_number == round_number).delete()
         ok = run["status"] == "ok"

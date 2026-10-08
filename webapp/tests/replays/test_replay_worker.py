@@ -235,6 +235,31 @@ def test_a_failing_parse_hook_never_stops_a_parse(tmp_path, stub):
     assert worker.get(job.id).status == "done"
 
 
+def test_health_names_the_recipe_the_condenser_stamps(tmp_path, stub):
+    worker, httpd, base = start(tmp_path, stub)
+    try:
+        health = get(base, "/health")[1]
+        done = wait(base, post(base, vrf_bytes())[1]["id"])
+        assert done["status"] == "done", done
+        assert health["recipe"] and health["recipe"] == done["result"]["recipe"]
+        assert health["control"]["gaps_protocol"] == 1
+    finally:
+        httpd.shutdown()
+
+
+def test_a_recipe_that_cannot_be_computed_is_null_and_parsing_still_works(tmp_path, stub, monkeypatch):
+    def boom():
+        raise OSError("the pin file is missing")
+
+    monkeypatch.setattr(server, "current_recipe", boom)
+    worker, httpd, base = start(tmp_path, stub)
+    try:
+        assert worker.recipe is None and get(base, "/health")[1]["recipe"] is None
+        assert wait(base, post(base, vrf_bytes())[1]["id"])["status"] == "done"
+    finally:
+        httpd.shutdown()
+
+
 def test_settings_from_the_environment():
     settings = server.Settings.from_env({"REPLAY_PARSER_CMD": '["x", "{vrf}"]', "REPLAY_TIMEOUT_S": "9",
                                          "REPLAY_QUEUE_SIZE": "2", "REPLAY_MAX_BYTES": "5"})

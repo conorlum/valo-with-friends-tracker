@@ -9,7 +9,14 @@ the same thing. Each round's rows become three `util` kinds (a new `k` needs no 
   `yaws`, on pawns, are map control's inputs: `_control_inputs`; `z`, `end_z`, `thrown.z` and a path
   point's fourth value are heights in decimetres of world z, each left out when the export gave none:
   format.py, revision 11; `off`, on a Killjoy turret or alarmbot, is `[[from, to | null], ...]`: when it
-  was switched off, KJ out of range: `device_off_spans`, revision 12);
+  was switched off, KJ out of range: `device_off_spans`, revision 12; `arms`, on Deadlock's Barrier Mesh
+  root, is `[[u, v, z dm, gone t | null], ...]`: each node's place and when its arm went before the wall
+  did, with `on` = when the mesh was solid and `arms_missing` = nodes with no known place: `mesh_arms`;
+  a Projectile row's `flight` is `[[t, u, v, z], ...]`, its replicated movement; Blaze's manager has `points`
+  and `on` like Viper's wall, laid along its projectile's flight; a Barrier Orb's root has `segments` =
+  `[[u, v, from, to | null], ...]`; a Shear has `line` = its two ends and, once raised, `raised` = `[from,
+  to | null]` and `trigger` = the slot whose crossing raised it; Omen's ult marker has `outcome`, `evidence`
+  and `from`; Waylay's return point has `recall` = `{t, t1, u, v}` when she recalled to it);
 - `{"k": "shot", "t", "by", "u", "v", ["u1", "v1"], "gun", "n"}`;
 - `{"k": "reveal", "t", "by": <revealer>, "t1", "target": <revealed slot>, "code", "name"}`;
 - `{"k": "status", "t", "by": <applier | null>, "t1", "target", "code", "name", "status", "from"}`.
@@ -67,6 +74,58 @@ BOMB_ARCHETYPE = "Default__TimedBomb_C"
 TRACER_UNITS = 2500.0
 
 _NEEDLES = ('"actor_spawned"', '"actor_closed"', '"valorant_shot_received"', '"Instigator"')
+
+# Ability actors whose archetype doesn't follow `<Kind>_<AgentCode>_<Name>`, by their exact name: read as the
+# archetype on the right. Deadlock's (measured on the Summit export, 2026-10-05): the Barrier Mesh's root has
+# no name part at all, its four nodes and its throw are coded `CableJam`, the Sonic Sensor `StealthingTrap`,
+# its concuss `SoundSensor`, and Annihilation's hook is an `Actor_`. Exact names only, so a lookalike that
+# isn't an agent's is never taken in; the hook's path warnings, its spline and `MotherNode` stay out (they
+# aren't casts) and are counted with the other skipped archetypes.
+ARCHETYPE_ALIASES = {
+    "Default__GameObject_CableJamRoot_C": "Default__GameObject_Cable_E_CableJam_Root_C",
+    "Default__GameObject_CableJam_CableDeployer_Precomputed_C": "Default__GameObject_Cable_E_CableJam_Node_C",
+    "Default__Projectile_CableJam_InAir_C": "Default__Projectile_Cable_E_CableJam_C",
+    "Default__GameObject_StealthingTrap_SoundSensor_C": "Default__GameObject_Cable_Q_SoundSensor_C",
+    "Default__GameObject_SoundSensor_SweetSpotFissure_C": "Default__GameObject_Cable_Q_SoundSensor_Fissure_C",
+    "Default__Actor_FishingHook_C": "Default__GameObject_Cable_X_FishingHook_C",
+    "Default__GameObject_FishingHook_CageSphere_C": "Default__GameObject_Cable_X_FishingHook_Cage_C",
+    # Omen's From the Shadows: the marker at the destination, there from the channel's start to its end
+    # (3.50 s on all four local casts). An `Intention_`, which is no ability kind.
+    "Default__Intention_Wraith_X_GlobalTeleport_C": "Default__GameObject_Wraith_X_GlobalTeleport_Intention_C",
+}
+# Deadlock's Barrier Mesh: the root row carries its nodes as `arms`; a node is never a row of its own.
+MESH_ROOT, MESH_NODE = "E_CableJam_Root", "E_CableJam_Node"
+MESH_NODE_UNITS = 50.0       # a node spawns on its root (measured: the same point, 56 units lower)
+# The mesh is solid once its root swaps effects, 3.0 s after it lands (3003-3006 ms on all eight walls).
+MESH_FORM_MS = (500, 6000)
+
+
+def packed_vector(bit_count: int, data: bytes) -> tuple[float, float, float] | None:
+    """A raw property the parser left as `{"BitCount", "Data"}` read as UE5's packed vector: a 7-bit header
+    (the low 6 bits are each component's width, bit 6 says the values are scaled ints), then x, y and z as
+    two's-complement ints of that width, least significant bit first, in hundredths of a world unit. None
+    when the bits don't have that shape. Checked on the Summit export: a mesh root's `DamageOrigin` decodes
+    to its own spawn point, to the unit."""
+    def take(start: int, width: int) -> int:
+        value = 0
+        for i in range(width):
+            bit = start + i
+            value |= ((data[bit >> 3] >> (bit & 7)) & 1) << i
+        return value
+
+    if bit_count < 7 or len(data) * 8 < bit_count:
+        return None
+    header = take(0, 7)
+    width, scaled = header & 63, bool(header & 64)
+    if not scaled or width < 1 or 7 + 3 * width != bit_count:
+        return None
+    out = []
+    for k in range(3):
+        raw = take(7 + k * width, width)
+        if raw & (1 << (width - 1)):
+            raw -= 1 << width
+        out.append(raw / 100.0)
+    return out[0], out[1], out[2]
 
 
 @dataclass
@@ -162,6 +221,9 @@ class Raw:
     object_effects: dict[int, list[int]] = field(default_factory=lambda: defaultdict(list))
     # One-shot effects played on ability objects (a Fault Line firing, a ZERO/point pulse): guid -> times.
     object_oneshots: dict[int, list[int]] = field(default_factory=lambda: defaultdict(list))
+    # One-shot effects played on an actor that is neither a known pawn nor a known object: (time, the actors its
+    # context names). A hit the export couldn't tie to a player, kept so a hit list can say it is incomplete.
+    stray_oneshots: list[tuple[int, tuple[int, ...]]] = field(default_factory=list)
     # Lethal hits: (time, the killer's pawn).
     kills: list[tuple[int, int]] = field(default_factory=list)
     # Ability objects shot and destroyed (a lethal hit on the object itself): guid -> time.
@@ -171,6 +233,18 @@ class Raw:
     # Every effect on a Killjoy turret or alarmbot (KJ_DEVICE), for `device_off_spans`: guid ->
     # [(time, "play" | "stop" | "oneshot", effect id | None, container | None)], from its latest spawn.
     device_fx: dict[int, list[tuple[int, str, int | None, int | None]]] = field(default_factory=dict)
+    # Where damage was dealt to a Barrier Mesh node (its `DamageOrigin`, decoded): the node's real place,
+    # which its spawn row doesn't have. guid -> (x, y, z), the first one seen.
+    origins: dict[int, tuple[float, float, float]] = field(default_factory=dict)
+    # The `FXC.Distance` of a one-shot an ability object played on itself: a ZERO/point pulse's suppress
+    # radius in world units (1500 on every knife of the first KAY/O export). guid -> the first one seen.
+    object_ranges: dict[int, float] = field(default_factory=dict)
+    # A projectile's flight: its replicated movement, which the export gives in metres (stored here in world
+    # units, x100; W2's unit audit). guid -> [(ms, x, y, z | None)], from its latest spawn.
+    flights: dict[int, list[tuple[int, float, float, float | None]]] = field(default_factory=lambda: defaultdict(list))
+    # The parser's typed wall rows (Sage's Barrier Orb, Vyse's Shear), by the wall actor, from its latest
+    # spawn: {"placed", "activated", "destroyed": the rows; "segments": {index: [spawn ms, (x, y, z), gone ms | None]}}.
+    typed_walls: dict[int, dict] = field(default_factory=dict)
 
 
 EQUIPPABLE_ARCHETYPE = re.compile(r"^Default__Ability_([A-Za-z0-9]+)_(.+)_C$")
@@ -182,7 +256,8 @@ RPC_WALL_POINT = "MulticastAddSmokeScreenPoint"   # Viper's Toxic Screen, one pe
 BOMB_EQUIPPABLE_ARCHETYPE = "Default__BombEquippable_C"
 _DEVICE_FX = {RPC_PLAY: "play", RPC_STOP: "stop", RPC_ONESHOT: "oneshot"}
 _RAW_NEEDLES = _NEEDLES + (f'"{RPC_PLAY}"', f'"{RPC_STOP}"', f'"{RPC_ONESHOT}"', f'"{RPC_WALL_POINT}"',
-                           '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true')
+                           '"Actors"', '"WallActivated"', '"DamageKilledTarget":true', '"DamageKilledTarget": true',
+                           '"DamageOrigin"', '"ReplicatedMovement"', '"valorant_wall_')
 
 
 def packed_ints(data: bytes) -> list[int]:
@@ -232,6 +307,10 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
             guid = int(data.get("actor_net_guid") or 0)
             if kind == "actor_spawned":
                 archetype = str(data.get("archetype_path") or "")
+                archetype = ARCHETYPE_ALIASES.get(archetype, archetype)
+                raw.origins.pop(guid, None)
+                raw.flights.pop(guid, None)
+                raw.typed_walls.pop(guid, None)
                 equip_now.pop(guid, None)
                 bombs.discard(guid)
                 carried.discard(guid)
@@ -270,6 +349,19 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                 closes.setdefault(guid, t_ms)
             elif kind == "valorant_shot_received":
                 raw.shots.append(data)
+            elif kind is not None and kind.startswith("valorant_wall_"):
+                wall = raw.typed_walls.setdefault(int(data.get("wall_actor_net_guid") or 0), {"segments": {}})
+                if kind == "valorant_wall_segment_spawned":
+                    where = data.get("location") or {}
+                    if where.get("x") is not None and where.get("y") is not None and data.get("segment_index") is not None:
+                        wall["segments"][int(data["segment_index"])] = [
+                            t_ms, (float(where["x"]), float(where["y"]), where.get("z")), None]
+                elif kind == "valorant_wall_segment_destroyed":
+                    segment = wall["segments"].get(data.get("segment_index"))
+                    if segment is not None and segment[2] is None:
+                        segment[2] = t_ms
+                else:
+                    wall.setdefault(kind[len("valorant_wall_"):], data)     # placed, activated, destroyed: the first
             elif kind == "rpc_received":
                 function = data.get("function_name")
                 payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
@@ -296,6 +388,14 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                                                    oneshot=True))
                 elif function == RPC_ONESHOT and guid in actors and guid not in bombs:
                     raw.object_oneshots[guid].append(t_ms)
+                    for value in payload.get("FunctionFloatValues") or []:
+                        if isinstance(value, dict) and (value.get("Name") or {}).get("TagName") == "FXC.Distance" \
+                                and isinstance(value.get("Value"), (int, float)):
+                            raw.object_ranges.setdefault(guid, float(value["Value"]))
+                elif function == RPC_ONESHOT and guid not in actors:
+                    context = _context_values(payload)
+                    if context:
+                        raw.stray_oneshots.append((t_ms, context))
                 elif function == RPC_STOP:
                     effect = open_effects.pop((guid, payload.get("EffectId")), None)
                     if effect is not None:
@@ -310,12 +410,30 @@ def read_raw(events_path: Path, pawns=frozenset()) -> Raw:
                     raw.kills.append((t_ms, int(payload["EventInstigatorPawn"])))
                 if function and function.startswith("MulticastNotifyDamage") and guid in actors                         and payload.get("DamageKilledTarget") is True:
                     raw.destroyed.setdefault(guid, t_ms)
+                if function and function.startswith("MulticastNotifyDamage") and guid in actors \
+                        and actors[guid].name == MESH_NODE and guid not in raw.origins:
+                    origin = payload.get("DamageOrigin")
+                    if isinstance(origin, dict) and origin.get("Data"):
+                        try:
+                            point = packed_vector(int(origin.get("BitCount") or 0), base64.b64decode(origin["Data"]))
+                        except (ValueError, TypeError):
+                            point = None
+                        if point is not None:
+                            raw.origins[guid] = point
             elif kind == "export_group_received":
                 payload = data.get("payload")
                 if not isinstance(payload, dict):
                     continue
                 if data.get("is_actor") and payload.get("Instigator"):
                     instigators.setdefault(guid, int(payload["Instigator"]))
+                moved = payload.get("ReplicatedMovement")
+                if isinstance(moved, dict) and guid in actors and actors[guid].kind == "Projectile":
+                    where = moved.get("location") or {}
+                    if where.get("x") is not None and where.get("y") is not None:
+                        z = where.get("z")
+                        raw.flights[guid].append((t_ms, float(where["x"]) * REPLICATED_SCALE,
+                                                  float(where["y"]) * REPLICATED_SCALE,
+                                                  None if z is None else float(z) * REPLICATED_SCALE))
                 if guid in walls and isinstance(payload.get("WallActivated"), bool):
                     raw.wall_states[guid].append((t_ms, payload["WallActivated"]))
                 actor_list = payload.get("Actors")
@@ -987,6 +1105,188 @@ def wall_on(states: list[tuple[int, bool]], actor: _Actor, start: int, end: int)
     return out
 
 
+# Moving utility and walls (2026-10-05).
+# A projectile's replicated movement is in metres (a Blaze projectile spawned at (7672.3, 9364.2, 272.4) reports
+# (76.72, 93.64, 2.72) in the same millisecond); its spawn row is in world units. The unit follows the source.
+REPLICATED_SCALE = 100.0
+FLIGHT_STEP_MS = 100
+FLIGHT_MAX_POINTS = 40
+# Phoenix's Blaze: the wall is laid along its projectile's flight (0.67 s, curve included); the manager is
+# the wall itself, there until it burns out.
+BLAZE_WALL = "Phoenix_Q_FlameWallManager_Production"
+BLAZE_FLIGHT = "Phoenix_Q_FlameWall_ThroughWall"
+BLAZE_STEP_MS = 30           # denser than a throw: the curve is the wall's shape
+SAGE_WALL = "Thorne_E_Wall_Fortifying"
+VYSE_WALL = "Nox_WallTrap"
+
+
+def flight_points(points: list[tuple[int, float, float, float | None]], lo: int, hi: int | None,
+                  step_ms: int = FLIGHT_STEP_MS) -> list[tuple[int, float, float, float | None]]:
+    """A flight's samples between lo and hi, at most one per step and FLIGHT_MAX_POINTS in all, ends kept."""
+    mine = [p for p in sorted(points, key=lambda p: p[0]) if lo <= p[0] and (hi is None or p[0] <= hi)]
+    kept: list = []
+    for point in mine:
+        if not kept or point[0] - kept[-1][0] >= step_ms:
+            kept.append(point)
+    if mine and kept[-1] is not mine[-1]:
+        kept.append(mine[-1])
+    if len(kept) > FLIGHT_MAX_POINTS:
+        step = (len(kept) - 1) / (FLIGHT_MAX_POINTS - 1)
+        kept = [kept[round(i * step)] for i in range(FLIGHT_MAX_POINTS)]
+    return kept
+
+
+def blaze_line(wall: _Actor, actors: dict[int, _Actor], raw: "Raw") -> list[tuple[float, float]]:
+    """Blaze's laid line: the cast point, then its projectile's flight (the one spawned with the wall). Empty
+    when the export has no flight for it: the wall is then only a point, and is counted."""
+    shots = [p for p in actors.values() if f"{p.code}_{p.name}" == BLAZE_FLIGHT and abs(p.t_ms - wall.t_ms) <= SAME_TICK_MS]
+    if not shots:
+        return []
+    shot = min(shots, key=lambda p: (math.hypot(p.x - wall.x, p.y - wall.y), p.guid))
+    flight = flight_points(raw.flights.get(shot.guid, []), shot.t_ms, shot.closed_ms, BLAZE_STEP_MS)
+    if len(flight) < 2:
+        return []
+    return [(shot.x, shot.y)] + [(x, y) for _, x, y, _ in flight]
+
+
+def sage_segments(typed: dict | None) -> list[tuple[float, float, int, int | None]]:
+    """A Barrier Orb's segments in index order: (x, y, spawn ms, gone ms | None)."""
+    if not typed:
+        return []
+    return [(place[0], place[1], t0, gone) for _, (t0, place, gone) in sorted(typed["segments"].items())]
+
+
+def vyse_wall(typed: dict | None) -> dict | None:
+    """{"line": ((x, y), (x, y)), "raised": (ms, ms | None) | None, "trigger": pawn guid | None} for a Shear:
+    where the wall will stand (its anchors), when it stood (from the parser's activation to its destruction)
+    and whose crossing raised it. None without a placement row with both ends."""
+    placed = (typed or {}).get("placed")
+    if not placed or not placed.get("wall_start") or not placed.get("wall_end"):
+        return None
+    a, b = placed["wall_start"], placed["wall_end"]
+    out = {"line": ((float(a["x"]), float(a["y"])), (float(b["x"]), float(b["y"]))), "raised": None, "trigger": None}
+    up = typed.get("activated")
+    if up is not None:
+        down = typed.get("destroyed")
+        ended = int(down["time_ms"]) if down is not None and down.get("evidence") == "vyse_active_wall_actor_destroyed" \
+            else None
+        out["raised"] = (int(up["time_ms"]), ended)
+        out["trigger"] = up.get("trigger_character_net_guid")
+    return out
+
+
+# Teleports and temporary bodies (2026-10-05). What each row means, and what is and isn't in the export:
+# - Omen's ult: OMEN_ULT is the destination marker; `teleport_outcome` reads where his body is once it closes.
+# - Phoenix's Run It Back: PHOENIX_RETURN is the return point, there from the ult's start to his return.
+# - Waylay's Refract: WAYLAY_ANCHOR is the return point; a recall is the WAYLAY_RECALL projectile flying back
+#   to it (`recall_of`), and both close as she arrives.
+# - Yoru's Gatecrash and Dimensional Drift, and Veto's Evolution, have no row: the export spawns no beacon
+#   actor (only the held equippable changes), and no local replay has a Veto. Nothing is inferred for them.
+OMEN_ULT = "Wraith_X_GlobalTeleport_Intention"
+PHOENIX_RETURN = "Phoenix_X_ResTarget_Production"
+WAYLAY_ANCHOR = "Terra_E_RewindTime_RewindTarget"
+WAYLAY_RECALL = "Terra_E_RewindTime_ForObservers"
+# The body is looked for this long after the marker closes, and counts as "there" within this far (4 m).
+ARRIVE_MS = 300
+ARRIVE_UNITS = 400.0
+
+
+def teleport_outcome(actor: _Actor, slot: int | None, positions_at) -> dict:
+    """{"outcome": "completed" | "cancelled" | "unknown", "evidence", ["from": (x, y)]} for Omen's ult marker.
+    Two signals, never one: the marker has closed, and ARRIVE_MS later its owner's body is at the destination
+    (completed) or still where the channel began (cancelled). Anything else (no owner, no body sample, a body
+    somewhere else, a destination beside the origin) is unknown."""
+    if slot is None:
+        return {"outcome": "unknown", "evidence": "no_owner"}
+    began = positions_at(actor.t_ms).get(slot)
+    out: dict = {} if began is None else {"from": began}
+    if actor.closed_ms is None:
+        return {**out, "outcome": "unknown", "evidence": "marker_never_closed"}
+    after = positions_at(actor.closed_ms + ARRIVE_MS).get(slot)
+    if after is None:
+        return {**out, "outcome": "unknown", "evidence": "no_body_sample"}
+    at_destination = math.hypot(after[0] - actor.x, after[1] - actor.y) <= ARRIVE_UNITS
+    at_origin = began is not None and math.hypot(after[0] - began[0], after[1] - began[1]) <= ARRIVE_UNITS
+    if at_destination and at_origin:
+        return {**out, "outcome": "unknown", "evidence": "destination_beside_origin"}
+    if at_destination:
+        return {**out, "outcome": "completed", "evidence": "marker_closed_body_at_destination"}
+    if at_origin:
+        return {**out, "outcome": "cancelled", "evidence": "marker_closed_body_at_origin"}
+    return {**out, "outcome": "unknown", "evidence": "body_elsewhere"}
+
+
+def recall_of(anchor: _Actor, slot: int | None, actors: dict[int, _Actor], owner_of: dict[int, int | None]) -> _Actor | None:
+    """The recall that ended this return point: the same owner's WAYLAY_RECALL projectile spawned while the
+    anchor was up and closed with it (within LANDING_MS). None: the anchor ran out, or was never used."""
+    if anchor.closed_ms is None:
+        return None
+    found = [p for p in actors.values()
+             if f"{p.code}_{p.name}" == WAYLAY_RECALL and anchor.t_ms <= p.t_ms <= anchor.closed_ms
+             and p.closed_ms is not None and abs(p.closed_ms - anchor.closed_ms) <= LANDING_MS
+             and (slot is None or owner_of.get(p.guid) in (None, slot))]
+    return min(found, key=lambda p: (p.t_ms, p.guid)) if found else None
+
+
+# KAY/O's ZERO/point once it has landed: it pulses once (a one-shot on itself, 1.000 s after landing on all nine
+# knives of the first KAY/O export, carrying its radius), and each player it suppresses gets a one-shot naming it
+# within the next KNIFE_HIT_MS (measured 0.10-0.30 s).
+KNIFE_PULSE = re.compile(r"^Grenadier_E_SuppressionPulse$")
+KNIFE_HIT_MS = 1000
+
+
+def knife_pulse(actor: _Actor, raw: "Raw", players: PlayerTable, owner: int | None) -> dict:
+    """{"state", "evidence", "diagnostics", "t_ms", "range", "hits"} for a landed knife. `completed` only when
+    its own pulse one-shot is in the export: a knife destroyed before it pulsed, or one with no such row, is
+    `unknown` and proves nothing about who it hit. `hits`: the slots (never its owner) that a one-shot naming
+    it was played on within KNIFE_HIT_MS of the pulse. Such a one-shot on an actor that is neither a known pawn
+    nor a known object (`Raw.stray_oneshots`) may be a player the export couldn't resolve: it is reported
+    (`unresolved_hits`) and the hit list is then not complete, so an empty list never reads as "hit nobody"."""
+    until = actor.closed_ms if actor.closed_ms is not None else float("inf")
+    fired = sorted(t for t in raw.object_oneshots.get(actor.guid, []) if actor.t_ms <= t <= until)
+    if not fired:
+        return {"state": "unknown", "evidence": None, "diagnostics": ["no_pulse_row"], "t_ms": None, "range": None,
+                "hits": []}
+    t_ms = fired[0]
+    named = [e for e in raw.effects
+             if e.oneshot and actor.guid in e.context and t_ms <= e.t_ms <= t_ms + KNIFE_HIT_MS]
+    hits = sorted({players.pawn_slot[e.actor] for e in named
+                   if e.actor in players.pawn_slot and players.pawn_slot[e.actor] != owner})
+    unresolved = any(actor.guid in context and t_ms <= t <= t_ms + KNIFE_HIT_MS for t, context in raw.stray_oneshots)
+    return {"state": "completed", "evidence": "pulse_oneshot", "diagnostics": ["unresolved_hits"] if unresolved else [],
+            "t_ms": t_ms, "range": raw.object_ranges.get(actor.guid), "hits": hits, "complete": not unresolved}
+
+
+def mesh_arms(root: _Actor, actors: dict[int, _Actor], raw: "Raw") -> tuple[list[tuple[float, float, float, int | None]], int]:
+    """A Barrier Mesh's arms: ([(x, y, z, the ms the arm went | None)], nodes with no known place). An arm
+    runs from the root to one of the nodes spawned with it; the node's place is where damage was dealt to it
+    (`Raw.origins`). It went when its node closed or was destroyed before the root did; None: it lasted as
+    long as the root. A node nothing ever damaged has no place and is counted, never guessed."""
+    arms, missing = [], 0
+    until = root.closed_ms
+    for node in sorted(actors.values(), key=lambda a: a.guid):
+        if node.name != MESH_NODE or node.code != root.code or abs(node.t_ms - root.t_ms) > SAME_TICK_MS \
+                or math.hypot(node.x - root.x, node.y - root.y) > MESH_NODE_UNITS:
+            continue
+        place = raw.origins.get(node.guid)
+        if place is None:
+            missing += 1
+            continue
+        ends = [t for t in (node.closed_ms, raw.destroyed.get(node.guid)) if t is not None and t >= node.t_ms]
+        gone = min(ends) if ends else None
+        if gone is not None and until is not None and gone >= until:
+            gone = None
+        arms.append((*place, gone))
+    return arms, missing
+
+
+def mesh_up_ms(root: _Actor, raw: "Raw") -> int | None:
+    """When a Barrier Mesh became solid: its root's first continuous effect MESH_FORM_MS after it landed."""
+    lo, hi = MESH_FORM_MS
+    plays = [t for t in raw.object_effects.get(root.guid, []) if lo <= t - root.t_ms <= hi]
+    return min(plays) if plays else None
+
+
 def _thrown(actor: _Actor, actors: dict[int, _Actor]) -> _Actor | None:
     """The same agent's projectile that closed within LANDING_MS of this object's spawn: the throw
     it came from (drawn as an arc from the thrower), whatever the owner evidence said."""
@@ -1072,6 +1372,7 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
     # Actors whose owner came from evidence (or, for a projectile, a clear nearest thrower).
     known: list[tuple[_Actor, int]] = []
     owner_of: dict[int, int | None] = {}
+    anchors: list[tuple[dict, _Actor, int | None, int, int]] = []     # Waylay's return points, for their recalls
     for actor in sorted(actors.values(), key=lambda a: (a.t_ms, a.guid)):
         agent = agent_code.get(actor.code.lower()) if actor.code else None
         claim = claims.get(actor.guid)
@@ -1082,6 +1383,9 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
         if slot is not None and (owner_by != "nearest" or actor.kind == "Projectile"):
             known.append((actor, slot))
         owner_of[actor.guid] = slot
+        if actor.name == MESH_NODE and actor.code == "Cable":
+            counts["mesh_nodes"] += 1      # on its root's row (`arms`), never a row of its own
+            continue
         n = _round_of(actor.t_ms, windows, buy_phase=True)
         if n is None:
             counts["abilities_outside_rounds"] += 1
@@ -1133,6 +1437,22 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
                 entry["points"] = [list(game_map.to_uv(x, y)) for x, y in line]
                 entry["on"] = wall_on(raw.wall_states.get(actor.guid, []), actor, start, end)
                 counts["walls_drawn"] += 1
+        if actor.name == MESH_ROOT and actor.code == "Cable":
+            arms, lost = mesh_arms(actor, actors, raw)
+            entry["arms"] = []
+            for x, y, z, gone_ms in arms:
+                arm = [*game_map.to_uv(x, y), _dm(z),
+                       None if gone_ms is None else max(0.0, _seconds(min(gone_ms, end), start))]
+                entry["arms"].append(arm)
+            if lost:
+                entry["arms_missing"] = lost
+                counts["mesh_arms_without_a_place"] += lost
+            up = mesh_up_ms(actor, raw)
+            if up is not None and up <= end:
+                entry["on"] = [[max(0.0, _seconds(up, start)), entry["t1"]]]
+            else:
+                counts["mesh_without_a_form_time"] += 1
+            counts["mesh_walls"] += 1
         if actor.guid in raw.device_fx:
             spans = device_off_spans(raw.device_fx[actor.guid], actor.t_ms, actor.closed_ms,
                                      turret=actor.name.endswith("E_Turret"))
@@ -1146,6 +1466,62 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             if fx:
                 entry["fx"] = fx
                 counts["abilities_with_fx"] += 1
+        key = f"{actor.code}_{actor.name}"
+        if actor.kind == "Projectile":
+            flight = flight_points(raw.flights.get(actor.guid, []), actor.t_ms, actor.closed_ms)
+            if len(flight) >= 2:
+                entry["flight"] = [[_seconds(t_ms, start), *game_map.to_uv(x, y), *([] if z is None else [_dm(z)])]
+                                   for t_ms, x, y, z in flight]
+                counts["projectile_flights"] += 1
+        if key == BLAZE_WALL:
+            line = blaze_line(actor, actors, raw)
+            if line:
+                entry["points"] = [list(game_map.to_uv(x, y)) for x, y in line]
+                entry["on"] = [[entry["t0"], entry["t1"]]]
+                counts["blaze_lines"] += 1
+            else:
+                counts["blaze_without_a_line"] += 1
+        if key == SAGE_WALL:
+            segments = sage_segments(raw.typed_walls.get(actor.guid))
+            if segments:
+                entry["segments"] = [[*game_map.to_uv(x, y), max(0.0, _seconds(t0, start)),
+                                      None if gone is None else max(0.0, _seconds(min(gone, end), start))]
+                                     for x, y, t0, gone in segments]
+                counts["sage_walls"] += 1
+            else:
+                counts["sage_walls_without_segments"] += 1
+        if key == VYSE_WALL:
+            shear = vyse_wall(raw.typed_walls.get(actor.guid))
+            if shear is not None:
+                entry["line"] = [list(game_map.to_uv(x, y)) for x, y in shear["line"]]
+                if shear["raised"] is not None:
+                    up, down = shear["raised"]
+                    entry["raised"] = [max(0.0, _seconds(up, start)), None if down is None else _seconds(min(down, end), start)]
+                    trigger = None if shear["trigger"] is None else players.resolve(int(shear["trigger"]), up)
+                    entry["trigger"] = trigger
+                    counts["vyse_walls_raised"] += 1
+                counts["vyse_walls"] += 1
+            else:
+                counts["vyse_walls_without_a_line"] += 1
+        if f"{actor.code}_{actor.name}" == OMEN_ULT:
+            result = teleport_outcome(actor, slot, positions_at)
+            entry["outcome"], entry["evidence"] = result["outcome"], result["evidence"]
+            if "from" in result:
+                entry["from"] = list(game_map.to_uv(*result["from"]))
+            counts[f"omen_ult_{result['outcome']}"] += 1
+        if f"{actor.code}_{actor.name}" == WAYLAY_ANCHOR:
+            # the recall is looked up when every owner is known (below): a projectile can sort after its anchor
+            anchors.append((entry, actor, slot, start, end))
+        if KNIFE_PULSE.match(f"{actor.code}_{actor.name}"):
+            pulse = knife_pulse(actor, raw, players, slot)
+            if pulse["state"] == "completed":
+                entry["pulse"] = {"t": max(0.0, _seconds(min(pulse["t_ms"], end), start)), "hits": pulse["hits"]}
+                if pulse["range"] is not None:
+                    entry["pulse"]["r"] = int(round(pulse["range"] * abs(game_map.x_mult) * fmt.UV_SCALE))
+            entry["activation"] = {"state": pulse["state"], "evidence": pulse["evidence"],
+                                   "targets_complete": pulse["state"] == "completed" and pulse.get("complete", False),
+                                   "diagnostics": pulse["diagnostics"]}
+            counts[f"knife_pulses_{pulse['state']}"] += 1
         throw = _thrown(actor, actors)
         if throw is not None:
             entry["thrown"] = {"t0": _seconds(throw.t_ms, start), "t1": _seconds(throw.closed_ms, start),
@@ -1170,6 +1546,17 @@ def build_extras(events_path: Path, players: PlayerTable, windows: list[tuple[in
             _control_inputs(entry, actor, players, pawn_yaws, game_map, start, end, counts)
         out.rounds.setdefault(n, {"abilities": [], "shots": []})["abilities"].append(entry)
         counts["abilities"] += 1
+
+    for entry, anchor, slot, start, end in anchors:
+        recall = recall_of(anchor, slot, actors, owner_of)
+        if recall is not None:
+            entry["recall"] = {"t": max(0.0, _seconds(recall.t_ms, start)),
+                               "t1": _seconds(min(recall.closed_ms, end), start),
+                               **dict(zip(("u", "v"), game_map.to_uv(recall.x, recall.y)))}
+            if recall.z is not None:
+                entry["recall"]["z"] = _dm(recall.z)
+            counts["waylay_recalls"] += 1
+        counts["waylay_anchors"] += 1
 
     reveals = find_reveals(raw.effects, actors, players, code_of_agent, counts, raw.equips, teams)
     for tag in dart_tags(actors, claims, players, counts):
