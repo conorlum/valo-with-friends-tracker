@@ -24,7 +24,7 @@
     var n = GRID * GRID;
     return {maxFloors: p.max_floors, floors: Int16Array.from(p.floors), spread: Int16Array.from(p.spread),
             supported: rleDecode(p.supported, n), unresolved: rleDecode(p.unresolved, n),
-            walk: rleDecode(p.walk, n), raw: p};
+            walk: rleDecode(p.walk, n), kind: p.kinds ? rleDecode(p.kinds, n) : null, raw: p};
   }
 
   function floorsOf(map, cell) {
@@ -37,6 +37,15 @@
   }
 
   function ground(map, cell) { return map.floors[cell * map.maxFloors]; }
+
+  // How a cell got its ground height (app/control/heights.py KIND_*). Without kinds (an older payload), what
+  // `supported` says.
+  var KIND_WORDS = ["no height", "from stands", "from walks alone", "filled from neighbours", "filled along a gradient"];
+
+  function kindWord(map, cell) {
+    if (!map.kind) return map.supported[cell] ? "supported" : "filled from neighbours";
+    return KIND_WORDS[map.kind[cell]] || "kind " + map.kind[cell];
+  }
 
   function compare(refZ, z) {
     var d = Math.round((z - refZ) * 10) / 10, a = Math.abs(d);
@@ -87,7 +96,8 @@
 
   var api = {GRID: GRID, CELL: CELL, PX: PX, SAME_M: SAME_M, BIG_M: BIG_M, rleDecode: rleDecode, prepare: prepare,
              floorsOf: floorsOf, ground: ground, compare: compare, sameMask: sameMask, drops: drops,
-             groundTop: groundTop, colour: colour, cellAt: cellAt};
+             groundTop: groundTop, colour: colour, cellAt: cellAt, kindWord: kindWord, KIND_WALKS: 2,
+             KIND_GRADIENT: 4};
   global.HeightCore = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

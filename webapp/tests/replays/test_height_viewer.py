@@ -412,3 +412,43 @@ def test_committed_digest_mismatch_is_skipped(tmp_path, capsys):
     assert height_viewer.main(["--committed", "--map", MAP, "--out", str(tmp_path / "p.html")],
                               asset_dir=assets) == 2
     assert f"WARNING {MAP}" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- how each cell got its height (slopes spec, 4)
+
+
+def kinded(tmp_path):
+    """synthetic() with one cell of each new kind: (10, 10) from walks alone, (10, 11) filled along a gradient."""
+    asset = synthetic()
+    asset.kind[10, 10], asset.kind[10, 11] = hc.KIND_WALKS, hc.KIND_GRADIENT
+    asset.supported[10, 11] = False
+    path = tmp_path / f"{MAP}.height.npz"
+    hc.save_asset(path, asset)
+    return asset, path
+
+
+def test_the_payload_carries_each_cells_kind(tmp_path):
+    asset, path = kinded(tmp_path)
+    p = height_viewer.map_payload(MAP, path, None, "preview")
+    flat = []
+    for value, run in zip(p["kinds"][0::2], p["kinds"][1::2]):
+        flat += [value] * run
+    assert flat == asset.kind.ravel().tolist() and p["kind"] == "preview", "beside the source kind, not over it"
+
+
+@needs_node
+def test_the_hover_names_the_kind_and_falls_back_without_one(tmp_path):
+    _, path = kinded(tmp_path)
+    p = height_viewer.map_payload(MAP, path, None, "preview")
+    cells = [cell(10, 10), cell(10, 11), cell(11, 10), cell(12, 10)]
+    body = "function run(p, map) { return %s.map(function (c) { return H.kindWord(map, c); }); }" % json.dumps(cells)
+    assert run_node(body, {"payload": p}) == ["from walks alone", "filled along a gradient", "from stands",
+                                              "filled from neighbours"]
+    del p["kinds"]                     # a payload from before the kinds: what `supported` says
+    assert run_node(body, {"payload": p}) == ["supported", "filled from neighbours", "supported",
+                                              "filled from neighbours"]
+
+
+def test_the_page_has_the_slope_rules_layer():
+    page = (WEBAPP / "scripts" / "height_viewer.template.html").read_text(encoding="utf-8")
+    assert 'id="lyNew"' in page and '"lyTwo", "lyDrops", "lySame", "lyNew"' in page and "H.kindWord(map, cell)" in page

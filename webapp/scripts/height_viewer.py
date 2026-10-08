@@ -9,9 +9,10 @@ With --committed it reads the committed assets instead: the maps whose index.jso
 It writes one self-contained page (default %TEMP%\\valo-height-viewer\\height-viewer.html, never the
 repository) and changes nothing else: no asset, no index.json, no tags, no database.
 
-On the page: heights over the minimap (the build picture's colours), hover for each cell's floors, click to
-set a reference and read every other floor as higher or lower than it, a same-height layer, the unresolved
-areas with the ones that block readiness first, and the kill lines the heights would block.
+On the page: heights over the minimap (the build picture's colours), hover for each cell's floors
+and how it got its height, click to set a reference and read every other floor as higher or lower than it, a
+same-height layer, a layer marking the cells that only the slope rules produce (from walks alone, filled along a
+gradient), the unresolved areas with the ones that block readiness first, and the kill lines the heights would block.
 """
 
 from __future__ import annotations
@@ -77,7 +78,7 @@ def areas(asset: hc.HeightAsset, report: dict | None) -> list[dict]:
 
 
 SHAPES = {"floors": (cg.GRID, cg.GRID, hc.MAX_FLOORS), "spread": (cg.GRID, cg.GRID, hc.MAX_FLOORS),
-          "supported": (cg.GRID, cg.GRID), "unresolved": (cg.GRID, cg.GRID)}
+          "supported": (cg.GRID, cg.GRID), "unresolved": (cg.GRID, cg.GRID), "kind": (cg.GRID, cg.GRID)}
 
 
 def load_checked(asset_path: Path) -> hc.HeightAsset:
@@ -136,6 +137,7 @@ def map_payload(name: str, asset_path: Path, wrapper, kind: str, asset_dir: Path
         "spread": asset.spread.astype(int).ravel().tolist(),
         "supported": rle(asset.supported.astype(np.uint8)),
         "unresolved": rle(asset.unresolved.astype(np.uint8)),
+        "kinds": rle(asset.kind.astype(np.uint8)),               # heights.KIND_*: how each cell got its height
         "walk": rle(geo.walk.astype(np.uint8)),
         "areas": areas(asset, report),
         "kill_lines": kill_lines,

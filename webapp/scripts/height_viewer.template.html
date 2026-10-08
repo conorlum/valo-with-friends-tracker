@@ -35,6 +35,7 @@
     <input type="range" id="opacity" min="0" max="100" value="70"><br>
     <label><input type="checkbox" id="lyUnresolved" checked> unresolved (red: flat 2D there)</label><br>
     <label><input type="checkbox" id="lyFilled" checked> dim cells filled from neighbours</label><br>
+    <label><input type="checkbox" id="lyNew"> from the slope rules (cyan: walks alone, orange: along a gradient)</label><br>
     <label><input type="checkbox" id="lyTwo" checked> cells with 2+ floors (white 2, magenta 3)</label><br>
     <label><input type="checkbox" id="lyDrops"> drops bigger than a step</label><br>
     <label><input type="checkbox" id="lySame" checked> same height as the reference, ±</label>
@@ -133,6 +134,16 @@
         }
       }
     }
+    if ($("lyNew").checked && map.kind) {
+      c.lineWidth = 2;
+      for (cell = 0; cell < GRID * GRID; cell++) {
+        var kd = map.kind[cell];
+        if (kd === H.KIND_WALKS || kd === H.KIND_GRADIENT) {
+          c.strokeStyle = kd === H.KIND_WALKS ? "#00e5ff" : "#ff9800";
+          c.strokeRect((cell % GRID) * CELL + 1, Math.floor(cell / GRID) * CELL + 1, CELL - 2, CELL - 2);
+        }
+      }
+    }
     if ($("lyDrops").checked) {
       c.fillStyle = "#000";
       H.drops(map, map.raw.step_up_m).forEach(function (d) {
@@ -167,7 +178,7 @@
     if (map.unresolved[cell]) lines.push("unresolved: flat 2D sight and walking here");
     else if (!fl.length) lines.push(map.walk[cell] ? "walkable, no height" : "not walkable");
     fl.forEach(function (f) {
-      var s = "floor " + (f.floor + 1) + ": " + m1(f.z) + (map.supported[cell] ? " (supported)" : " (filled from neighbours)") +
+      var s = "floor " + (f.floor + 1) + ": " + m1(f.z) + " (" + (f.floor === 0 ? H.kindWord(map, cell) : "from stands") + ")" +
               ", spread " + m1(f.spread);
       if (ref) { var d = H.compare(ref.z, f.z); s += "   " + signed(d.delta) + ", " + d.word; }
       lines.push(s);
@@ -247,7 +258,7 @@
     else if (ref && "123".indexOf(e.key) >= 0) setRef(ref.cell, +e.key - 1);
   });
   ["lyHeights", "lyUnresolved", "lyFilled", "opacity"].forEach(function (id) { $(id).addEventListener("input", drawHeights); });
-  ["lyTwo", "lyDrops", "lySame"].forEach(function (id) { $(id).addEventListener("input", drawMarks); });
+  ["lyTwo", "lyDrops", "lySame", "lyNew"].forEach(function (id) { $(id).addEventListener("input", drawMarks); });
   $("tol").addEventListener("input", function () { showRef(); drawMarks(); });
   document.querySelectorAll("[data-zoom]").forEach(function (b) {
     b.onclick = function () { $("stage").style.setProperty("--size", b.dataset.zoom + "px"); };
