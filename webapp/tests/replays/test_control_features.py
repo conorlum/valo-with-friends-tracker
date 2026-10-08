@@ -829,7 +829,8 @@ def test_a_bundle_whose_states_bind_no_floor_publishes_nothing():
         assert not st.publishable and st.reasons, (name, st.reasons)
         s, w, opened = cf.reconcile(sight, walk, m, statuses)
         assert opened == {} and (s == sight).all() and (w == walk).all(), name
-        assert cf.compile_assets(geo, m, statuses) is None and cf.manifest(geo, m, consumers=test) is None, name
+        assert cf.compile_assets(geo, m, statuses)['states'] == {}
+        assert cf.manifest(geo, m, consumers=test)['pending'], name
 
 
 # ---- W9: directed traversal

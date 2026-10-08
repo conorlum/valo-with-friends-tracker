@@ -24,17 +24,20 @@ exactly what it did.
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import json
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 
 import numpy as np
 from scipy import ndimage
 
 from app.control.geometry import CELL, GRID, PAINT_GRID, PX, Geometry
 from app.replays import map_feature_schema as ms
+from app.replays import map_feature_inputs as fi
+from app.replays import map_feature_artifacts as fa
 
-COMPILER_VERSION = 1
+COMPILER_VERSION = fi.FEATURE_COMPILER_VERSION
 P = PAINT_GRID
 CELL_UV = ms.UV_MAX / P          # 39.0625 u/v per paint cell (exact in binary)
 PX_PER_PAINT = PX // P
@@ -609,6 +612,7 @@ class BundleStatus:
     publishable: bool
     reasons: list = field(default_factory=list)
     opens: dict = field(default_factory=dict)     # {"ground": px count, "sight": px count} it would open
+    intended: bool = False
 
 
 def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
@@ -678,7 +682,8 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
                                                       if r.get('owner') in members]})
             reasons += route_pending
         out[bid] = BundleStatus(bid, members, not reasons, reasons,
-                                {"ground": int(ground.sum()), "sight": int(sight.sum())})
+                                {"ground": int(ground.sum()), "sight": int(sight.sum())},
+                                bool(b.get('enabled') and b.get('runtime_consumer') in consumers))
     return out
 
 
@@ -924,7 +929,7 @@ def _next_departure(t: float, arc: Arc, intervals) -> float | None:
 
 # ---------------------------------------------------------------- the consumed-input manifest
 
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = fi.FEATURE_MANIFEST_VERSION
 
 
 def _enabled_projection(mf: dict, members: set) -> dict:
@@ -944,7 +949,7 @@ def compile_assets(geo: Geometry, mf: dict, statuses: dict) -> dict | None:
     """What an engine would load for a map's enabled features (None when it has none): per enabled feature and
     state, its blocked nodes and occluders, plus the enabled routes' arcs and the reconciled base edits."""
     members = {m for st in statuses.values() if st.publishable for m in st.members}
-    if not members:
+    if not any(st.intended for st in statuses.values()):
         return None
     sub = {**mf, "features": [f for f in mf.get("features") or [] if f.get("id") in members],
            "routes": [r for r in mf.get("routes") or [] if r.get("owner") in members]}
@@ -959,7 +964,7 @@ def compile_assets(geo: Geometry, mf: dict, statuses: dict) -> dict | None:
             occ, _ = sight_occluders(candidate, one, pick)
             states[f"{f.get('id')}:{s.get('name')}"] = {
                 "blocked": np.flatnonzero(blocked).tolist(),
-                "occluders": [{"mask": _hash_array(o.mask), "bottom": None if o.all_height else o.bottom,
+                "occluders": [{"mask": _packed_mask(o.mask), "bottom": None if o.all_height else o.bottom,
                                "top": None if o.all_height else o.top, "all_height": o.all_height} for o in occ]}
     arcs = []
     for st in statuses.values():
@@ -976,6 +981,123 @@ def compile_assets(geo: Geometry, mf: dict, statuses: dict) -> dict | None:
 def asset_hashes(assets: dict) -> dict:
     """The hash of each loaded asset part, from its canonical bytes (what verification recomputes)."""
     return {key: _canon(assets[key]) for key in sorted(assets)}
+
+
+def _packed_mask(mask):
+    """NumPy fast path of the parent-safe packed mask format."""
+    mask = np.asarray(mask, bool)
+    raw = np.packbits(mask.ravel(), bitorder='little').tobytes()
+    return {'shape': list(mask.shape), 'bitorder': 'little', 'count': int(mask.size), 'bytes': len(raw),
+            'data': base64.b64encode(raw).decode('ascii')}
+
+
+def _archived_mask(descriptor, shape):
+    if descriptor.get('shape') != list(shape):
+        raise fa.FeatureArtifactCorrupt('permanent mask dimensions mismatch')
+    return np.frombuffer(fa.unpack_mask(descriptor), np.uint8).reshape(shape).astype(bool)
+
+
+def geometry_from_feature_inputs(inputs: fi.FeatureInput, asset=None) -> Geometry:
+    """Reconstruct permanent geometry from the archive, with no current-source/pointer lookup."""
+    from app.control.geometry import geometry_from_masks, attach_heights
+    envelope = fi.read_json(inputs.canonical_inputs)
+    base = envelope['base']
+    geo = geometry_from_masks(inputs.key.map_name, _archived_mask(base['sight'], (PX, PX)),
+                              _archived_mask(base['walk'], (PX, PX)), base['scale'], base['specials'])
+    geo.barrier = None if base['barrier'] is None else _archived_mask(base['barrier'], (GRID, GRID))
+    if inputs.key.height_digest == 'flat':
+        if asset is not None:
+            raise fa.FeatureArtifactCorrupt('flat key cannot attach heights')
+    else:
+        if asset is None or asset.digest != inputs.key.height_digest:
+            raise fa.FeatureArtifactMissing('exact archived height required')
+        attach_heights(geo, asset)
+    return geo
+
+
+def compile_artifact(geo: Geometry, inputs: fi.FeatureInput, code_commit: str) -> fa.FeatureArtifact:
+    """The existing compiler, applied to permanent archived definitions/context, with complete assets."""
+    envelope = fi.read_json(inputs.canonical_inputs)
+    if inputs.key.compiler_version != COMPILER_VERSION or envelope['normalization'] != fi.FEATURE_NORMALIZATION_VERSION:
+        raise fa.UnsupportedFeatureCompiler('recorded feature compiler/normalization unavailable')
+    if (geo.height_sha or 'flat') != inputs.key.height_digest or geo.name != inputs.key.map_name:
+        raise fa.FeatureArtifactCorrupt('compiler geometry/key mismatch')
+    if hashlib.sha256(inputs.canonical_inputs).hexdigest() != inputs.key.tags_digest:
+        raise fa.FeatureArtifactCorrupt('compiler input identity mismatch')
+    reconstructed = geometry_from_feature_inputs(inputs, geo.heights)
+    for actual, expected in ((geo.sight, reconstructed.sight), (geo.walk_px, reconstructed.walk_px)):
+        if not np.array_equal(actual, expected):
+            raise fa.FeatureArtifactCorrupt('compiler permanent masks do not match archive')
+    if geo.uv_per_unit != reconstructed.uv_per_unit or geo.specials != reconstructed.specials \
+            or ((geo.barrier is None) != (reconstructed.barrier is None)) \
+            or (geo.barrier is not None and not np.array_equal(geo.barrier, reconstructed.barrier)):
+        raise fa.FeatureArtifactCorrupt('compiler permanent context does not match archive')
+    mf = envelope['runtime']
+    mf = {**mf, 'features': mf['features'] + envelope['outside_base_edits']}
+    legacy = {k: _archived_mask(v, (PX, PX)) for k, v in envelope['legacy'].items()}
+    statuses = bundle_status(geo, mf, legacy, consumers=frozenset(envelope['consumers']))
+    active = sorted(b for b, status in statuses.items() if status.publishable)
+    assets = compile_assets(geo, mf, statuses) or {'states': {}, 'nodes': int(geo.n), 'arcs': []}
+    bindings, triggers, deltas, phases = {}, {}, {}, {}
+    for bid in active:
+        status = statuses[bid]
+        candidate = _candidate_geometry(geo, mf, set(status.members))
+        placed = placement(candidate, mf)
+        for member in status.members:
+            p = placed[member]
+            bindings[member] = {'nodes': list(p.nodes), 'ground_m': list(p.ground_m)}
+            f = next(f for f in mf['features'] if f['id'] == member)
+            for i, phase in enumerate((f.get('rotation') or {}).get('phases') or []):
+                geometry = phase.get('panel') or phase.get('footprint') or phase.get('geometry')
+                mask = to_px(raster(geometry))
+                occ, why = resolve_bounds(candidate, mf, {'bounds': phase.get('sight_bounds') or {'ref': 'all_height'}}, mask, member)
+                if why:
+                    raise fa.FeatureArtifactCorrupt('eligible phase has unresolved bounds')
+                phases[f'{member}:{i}'] = {'mask': _packed_mask(mask), 'bottom': None if occ.all_height else occ.bottom,
+                                         'top': None if occ.all_height else occ.top, 'all_height': occ.all_height}
+        ground = np.zeros((PX, PX), bool)
+        sight = np.zeros((PX, PX), bool)
+        for f in mf['features']:
+            if f['id'] in status.members:
+                own = _owned(f)
+                ground |= own['potential_ground']
+                sight |= own['remove_sight']
+        deltas[bid] = {'potential_ground': _packed_mask(ground), 'remove_sight': _packed_mask(sight)}
+        for trigger in mf.get('triggers') or []:
+            if any(t.get('feature') in status.members for t in trigger.get('targets') or []):
+                p = _place_shape(candidate, trigger.get('geometry'), f'triggers.{trigger["id"]}')
+                triggers[trigger['id']] = {'nodes': list(p.nodes), 'mask': _packed_mask(to_px(raster(trigger['geometry']))),
+                                          'targets': trigger.get('targets', [])}
+    sight, walk, _ = reconcile(geo.sight, geo.walk_px, mf, statuses)
+    assets.update(bindings=bindings, triggers=triggers, base_deltas=deltas, phases=phases,
+                  base_domain={'sight': _packed_mask(sight), 'walk': _packed_mask(walk),
+                               'barrier': None if geo.barrier is None else _packed_mask(geo.barrier)})
+    pending = {bid: {'reasons': status.reasons, 'placement': {m: [dict(r, members=status.members) for r in p.reasons]
+               for m, p in placement(geo, mf).items() if m in status.members}}
+               for bid, status in sorted(statuses.items()) if not status.publishable}
+    manifest = {'v': MANIFEST_VERSION, 'key': asdict(inputs.key),
+                'inputs_sha256': hashlib.sha256(inputs.canonical_inputs).hexdigest(),
+                'schema': 1, 'normalization': fi.FEATURE_NORMALIZATION_VERSION,
+                'intended_bundles': sorted(statuses), 'active_bundles': active, 'pending': pending,
+                'compiled': {k: hashlib.sha256(fi.canonical_json(v)).hexdigest() for k, v in assets.items()}}
+    artifact = fa.FeatureArtifact(hashlib.sha256(fi.canonical_json(manifest)).hexdigest(), inputs.key, manifest,
+                                  inputs.canonical_inputs, gzip.compress(fi.canonical_json(assets), compresslevel=9, mtime=0), code_commit)
+    fa.check_artifact(artifact)
+    return artifact
+
+
+def verify_artifact(artifact: fa.FeatureArtifact, geo: Geometry) -> None:
+    fa.check_artifact(artifact)
+    envelope = fi.read_json(artifact.inputs)
+    from app.replays import map_feature_state as state
+    reducer = {'guards': state.GUARD_VOCABULARY, 'events': list(state.EVENTS), 'priority': state.PRIORITY,
+               'mid_motion': list(state.MID_MOTION), 'max_steps': state.MAX_STEPS}
+    if envelope['reducer'] != reducer:
+        raise fa.UnsupportedFeatureCompiler('recorded reducer unavailable')
+    inp = fi.FeatureInput(artifact.key, artifact.inputs, b'', '')
+    fresh = compile_artifact(geo, inp, artifact.code_commit)
+    if fresh.manifest != artifact.manifest or fa.expanded_assets(fresh.assets) != fa.expanded_assets(artifact.assets):
+        raise fa.FeatureArtifactCorrupt('definitions do not correspond to compiled archive')
 
 
 def manifest(geo: Geometry, mf: dict | None, legacy: dict | None = None,
@@ -998,6 +1120,8 @@ def manifest(geo: Geometry, mf: dict | None, legacy: dict | None = None,
             "semantics": {"guards": fs.GUARD_VOCABULARY, "priority": fs.PRIORITY, "mid_motion": list(fs.MID_MOTION)},
             "consumers": sorted({(mf_bundle(mf, b) or {}).get("runtime_consumer") for b in enabled}),
             "bundles": enabled,
+            'intended_bundles': sorted(b for b, st in statuses.items() if st.intended),
+            'pending': {b: st.reasons for b, st in sorted(statuses.items()) if st.intended and not st.publishable},
             "runtime": _canon(_enabled_projection(mf, members)), "height": geo.height_sha,
             "compiled": asset_hashes(assets)}
 
