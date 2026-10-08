@@ -18,7 +18,8 @@ docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md, sections 1 and 
   evidence was deleted is turned off.
 
 A map with a published feature generation can't have its heights changed, by the dispatcher or by hand: the
-generation would stop verifying (the plan's undecided default E6).
+generation would stop verifying (E6, approved 2026-10-08 as the interim until
+docs/superpowers/specs/2026-10-08-map-features-survive-height-rebuilds-design.md replaces it).
 
 Every change to which row is active (a build going live, `activate`, `deactivate`) takes the map's advisory
 lock first and writes with SQL statements by row id, never through loaded objects: two writers wait for each

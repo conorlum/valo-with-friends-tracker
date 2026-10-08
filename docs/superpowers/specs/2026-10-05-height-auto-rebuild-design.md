@@ -253,9 +253,11 @@ changes. A binding that no longer fits is listed in that rebuild's report. The c
 matching amendment.
 
 Not delivered: a published feature generation does not survive a rebuild. A map that has one is not rebuilt
-automatically, and `activate` and `off` refuse it. This narrows "the map still goes live" above; it is the
-owner's to accept or to ask for generation compatibility instead; as of 2026-10-07 the owner has not decided,
-and no map has a published generation.
+automatically, and `activate` and `off` refuse it. This narrows "the map still goes live" above. The owner
+approved it as built on 2026-10-08, as the interim: no map has a published generation, and none can get one
+until an engine consumer is registered. A follow-up design
+(`docs/superpowers/specs/2026-10-08-map-features-survive-height-rebuilds-design.md`) replaces the guard, so
+that tagged gimmicks never stop a map's heights from rebuilding.
 
 ### 6. Seeing what it did
 
@@ -354,7 +356,7 @@ has its reason):
 | E3 | `HEIGHT_RULES_REVISION` is bumped by hand when the build's rules change, and a test pins it to a hash of the height constants (section 1) | Approved as proposed |
 | E4 | The gate has two halves: integrity (a failure is the build's, retried, nothing stored), then policy (a failure is stored `rejected`); the asset is opened by a child process of the web app (section 4) | Approved as proposed |
 | E5 | Evidence removed or replaced makes the rebuild due at once; a rejected rebuild, or fewer than 2 matches left, turns the map's heights off (section 4) | Approved: "fine" |
-| E6 | A map with a published feature generation is not rebuilt automatically, and `activate` and `off` refuse it (section 5) | Not decided; guard built as the default. Asked again before any map gets a published generation |
+| E6 | A map with a published feature generation is not rebuilt automatically, and `activate` and `off` refuse it (section 5) | Approved as built 2026-10-08, as the interim; replaced by the follow-up design `2026-10-08-map-features-survive-height-rebuilds-design.md` |
 | E7 | One rebuild at a time, run alone on the worker; `MAX_TRIES` per input manifest, kept in the dispatcher's memory (sections 3 and 4) | Approved, with the note that a deploy may be what fixes a broken build, so fresh tries after one are wanted |
 | E8 | The must-block list moves to `webapp/app/static/data/control/must_block.json` (section 2) | Approved as proposed |
 | E9 | Superseded and rejected rows keep their asset bytes; nothing prunes them (section 1) | Approved as proposed |
