@@ -67,6 +67,33 @@ PLATFORM_R_M = 6.0         # stands this close to a live temporary platform are 
 # `<code>_<name>` of what players can stand on for a while (the viewer's ability catalog, replay.js)
 PLATFORMS = ("Thorne_E_Wall_Fortifying", "Thorne_E_Wall_Segment_Fortifying")
 
+# --- slopes (docs/superpowers/specs/2026-10-05-height-slopes-design.md). WALK_MIN_MPS, GRAVITY_MPS2, AIR_*,
+# BURST_* and CROSS_REACH are not in that spec: they fill gaps it left.
+WALK_S = 0.3               # a walk is at least this long; also the window its two limits are measured over
+SLOPE_MAX = 1.0            # steepest walkable slope, rise over run
+WALK_ACC_MAX = 4.0         # m/s2 of vertical acceleration over WALK_S: above it the player is in the air
+WALK_MIN_MPS = 0.5         # slower than this over WALK_S is standing, not walking
+GRAVITY_MPS2 = 20.0        # how fast z's rate of change falls in the air (measured on real rounds)
+AIR_RATE_S = 0.1           # the window a vertical or ground speed is measured over when looking for flights
+AIR_RATE_SLACK_MPS = 0.6   # z changing this much faster than SLOPE_MAX allows for the ground covered is a flight
+AIR_CORE = 0.6             # ... and so is z's rate dropping by this share of gravity, two windows in a row
+AIR_FIT_M = 0.1            # a flight lasts for as long as the track stays this close to its arc
+AIR_LANDING_MPS = 1.0      # a flight found by its drop alone ends with z's rate jumping up by at least this
+LOW_PCT = 10               # a floor's height is this percentile of its samples: the lowest wins
+ABILITY_BLACKOUT_S = 3.0   # a player's samples are dropped this long after a movement ability
+# `<code>_<name>` of the casts that start a blackout, where a round's `util` records one
+AIRBORNE_ABILITIES = ("Clay_Q_Explosion",)
+BURST_S = 0.1              # a movement ability with no recorded cast is told by its speed over this long:
+BURST_MPS = 12.0           # faster than this along the ground (a dash), or
+BURST_UP_MPS = 8.0         # rising faster than this (an updraft, a blast pack)
+CROSS_REACH = 2            # a ground run crosses a cell when it has the two sides within this many cells of it
+SILENT_DROP_M = 1.0        # the highest fall the unknown still spreads down
+
+# what a cell's height came from (the asset's `kind`)
+KIND_NONE, KIND_STANDS, KIND_WALKS, KIND_FILLED, KIND_GRADIENT = 0, 1, 2, 3, 4
+# what a connection is (the fifth column of the asset's `edges`)
+EDGE_STEP, EDGE_SLIDE, EDGE_FALL = 0, 1, 2
+
 # --- readiness
 HEIGHT_SUPPORTED_MIN = 0.60   # share of walkable cells with a supported floor
 UNRESOLVED_MAX = 12           # the largest unresolved area (cells) allowed to touch a cell with two floors

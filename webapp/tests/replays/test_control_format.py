@@ -43,7 +43,12 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # 7 (2026-10-05): utility knowledge, ability walls, the flat trip join; the digest now also covers
           # app/control/utility.py's constants and figures (utility.json's numbers). Unreleased, so re-pinned in
           # place for the 2026-10-06 code review's `retract` operation (utility.KINDS, ORDER)
-          7: "183a274bd38804d0"}
+          7: "183a274bd38804d0",
+          # 8: height slopes (docs/superpowers/specs/2026-10-05-height-slopes-design.md): the walk, blackout and
+          # gradient start values, and SILENT_DROP_M (the unknown stops at a fall higher than it). 7 was released
+          # with main's utility review, so the slopes plan's "7" is 8 here. Unreleased, so re-pinned in place as
+          # its steps land.
+          8: "3ecc1f9666fa6b1e"}
 
 
 def _constants_digest() -> str:

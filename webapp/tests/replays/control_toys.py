@@ -223,15 +223,40 @@ def standing(x: float, y: float, z_m: float, side: str = "A", yaw: int = 0):
     return side, [(0.0, x, y, yaw, z_m)]
 
 
-def height_rounds(make, matches: int = 2, rounds: int = 3) -> list:
+def height_rounds(make, matches: int = 2, rounds: int = 3, t_end: float = 10.0) -> list:
     """[(match id, round number, blob)] for the height build: `make(match index, round number)` gives
     each round's players ({slot: (side, points)}) or a whole blob."""
     out = []
     for m in range(matches):
         for n in range(1, rounds + 1):
             made = make(m, n)
-            out.append((f"match-{m}", n, made if "tracks" in made else height_blob(made, t_end=10.0, n=n)))
+            out.append((f"match-{m}", n, made if "tracks" in made else height_blob(made, t_end=t_end, n=n)))
     return out
+
+
+FAST_HZ = 125        # the rate real rounds are stored at: the walk rules are tuned on it
+
+
+def fast_blob(players: dict, *, t_end: float = 10.0, util=(), n: int = 1) -> dict:
+    """`height_blob` at FAST_HZ: {slot: (side, [(t, x, y, yaw, z m), ...])}."""
+    out = blob({s: (side, [p[:4] for p in pts]) for s, (side, pts) in players.items()}, t_end=t_end, util=util)
+    out["round"], out["hz"] = n, FAST_HZ
+    for s, (_, pts) in players.items():
+        out["tracks"][str(s)] = z_track(pts, 0.0, t_end, hz=FAST_HZ)
+    return out
+
+
+def stair_run(x0: int = 160, x1: int = 224, z0: float = 0.0, z1: float = 4.0, t0: float = 1.0, t1: float = 3.0,
+              side: str = "A", y: int = 204):
+    """Runs east from x0 to x1 px (9 m in 2 s by default) climbing z0 to z1, between two level runs."""
+    return side, [(0.0, x0 - 32, y, 0, z0), (t0, x0, y, 0, z0), (t1, x1, y, 0, z1), (t1 + 1.0, x1 + 32, y, 0, z1),
+                  (10.0, x1 + 32, y, 0, z1)]
+
+
+def fast_rounds(make, matches: int = 2, rounds: int = 3, t_end: float = 10.0) -> list:
+    """`height_rounds` at FAST_HZ: `make(match index, round number)` gives each round's players."""
+    return [(f"match-{m}", n, fast_blob(make(m, n), t_end=t_end, n=n))
+            for m in range(matches) for n in range(1, rounds + 1)]
 
 
 def _cells_in(rect) -> np.ndarray:

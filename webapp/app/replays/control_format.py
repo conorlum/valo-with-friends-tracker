@@ -44,7 +44,7 @@ import json
 import struct
 from pathlib import Path
 
-CONTROL_REVISION = 7     # 7: utility knowledge per enemy at event time, ability walls, the flat trip join, reasons
+CONTROL_REVISION = 8     # 8: height slopes (walks, blackouts, gradient fill, the unknown stops at a high fall)
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 

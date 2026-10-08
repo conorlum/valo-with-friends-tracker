@@ -45,6 +45,7 @@ from scipy import ndimage
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 
+from app.control import height_motion as hm
 from app.control import heights as hc
 from app.control.geometry import CELL, GRID, PX, Geometry
 
@@ -70,17 +71,7 @@ class Stand:
     y: float
 
 
-def _tracks(blob: dict):
-    """(slot, t, x px, y px, z dm | None) per stored segment."""
-    hz = blob["hz"]
-    for slot, segments in (blob.get("tracks") or {}).items():
-        for seg in segments:
-            n = len(seg["u"])
-            t = seg["t0"] + np.arange(n) / hz
-            x = np.cumsum(np.asarray(seg["u"], np.int64)) * PX / 10000
-            y = np.cumsum(np.asarray(seg["v"], np.int64)) * PX / 10000
-            z = np.cumsum(np.asarray(seg["z"], np.int64)) if "z" in seg else None
-            yield int(slot), t, x, y, z
+_tracks = hm.tracks
 
 
 def _runs(z: np.ndarray, tol: float) -> list[tuple[int, int]]:
@@ -103,14 +94,15 @@ def _runs(z: np.ndarray, tol: float) -> list[tuple[int, int]]:
     return out
 
 
-def stands(blob: dict, geo: Geometry, round_index: int = 0) -> list[Stand]:
-    """The round's stands, each player's in time order. Segments without z give none."""
+def stands(blob: dict, geo: Geometry, round_index: int = 0, skip: dict | None = None) -> list[Stand]:
+    """The round's stands, each player's in time order. Segments without z give none; `skip` leaves out the
+    time after a movement ability (height_motion.blackouts)."""
     hz = blob["hz"]
     tol = hc.STAND_TOL_M * DM
     need = int(np.ceil(hc.STAND_S * hz - 1e-9)) + 1     # samples spanning STAND_S
     apex_n = int(round(0.25 * hz))                      # how far either side an apex looks for lower ground
     out = []
-    for slot, t, x, y, z in _tracks(blob):
+    for slot, t, x, y, z in _tracks(blob, skip):
         if z is None:
             continue
         for i, j in _runs(z, tol):
