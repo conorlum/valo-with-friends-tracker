@@ -41,6 +41,12 @@ re-parse; none of their rounds is sent, for control or for gaps alone, since the
 away. A failure in that pass is logged and holds nothing back: control goes on. When an attempt finishes
 or the held set changes, the planning throttle is reset so the new replay's rounds go out at once.
 
+**Rebuild heights** (app/services/replay_heights_remote.py, when REPLAY_HEIGHTS_AUTO is set). After the
+re-parse pass and before submitting, a map whose heights are due for a rebuild has its rounds held back while
+the worker builds them, so parse uploads come first, then height rebuilds, then missing rounds, then stale ones.
+The step reads in a session of its own and writes through others; whatever goes wrong in it is logged
+(`heights_error`), holds nothing back, and map control goes on.
+
 `plan()` runs when there is room in flight; after a plan that left nothing sendable it waits
 PLAN_IDLE_S. On PostgreSQL it holds `pg_try_advisory_xact_lock` for the cycle, so one
 instance dispatches when Render overlaps two during a deploy; the worker's key dedupe makes a
@@ -72,6 +78,7 @@ from app.replays import choke_assets
 from app.replays import control_format as cf
 from app.services import control_heights, replay_control, replay_gaps
 from app.services import replay_gaps_store as gaps_store
+from app.services import replay_heights_remote
 from app.services import replay_reparse_auto as reparse_auto
 from app.services import replay_upload
 from app.services.replay_control_store import ALREADY, STORED, store_round
@@ -160,6 +167,25 @@ class ControlClient:
     def health(self) -> dict:
         return self._call(urllib.request.Request(f"{self.base}/health"))
 
+    def _post(self, path: str, body: dict) -> dict:
+        return self._call(urllib.request.Request(f"{self.base}{path}", data=json.dumps(body).encode("utf-8"),
+                                                 method="POST", headers={"Content-Type": "application/json"}))
+
+    def open_build(self, key: str, map_name: str, rounds: int, manifest: dict) -> dict:
+        return self._post("/heights/build", {"key": key, "map": map_name, "rounds": rounds, "manifest": manifest})
+
+    def send_rounds(self, build_id: str, rounds: list) -> dict:
+        return self._post(f"/heights/build/{build_id}/rounds", {"rounds": rounds})
+
+    def start_build(self, build_id: str, previous: str | None) -> dict:
+        return self._post(f"/heights/build/{build_id}/start", {"previous": previous} if previous else {})
+
+    def cancel_build(self, build_id: str) -> dict:
+        return self._post(f"/heights/build/{build_id}/cancel", {})
+
+    def build(self, build_id: str) -> dict:
+        return self._call(urllib.request.Request(f"{self.base}/heights/build/{build_id}"))
+
     def _call(self, request) -> dict:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -196,6 +222,12 @@ class InFlight:
     gaps_only: bool = False              # the round's control is current; only its gaps were asked for
 
 
+def _height_state():
+    from app.services.replay_heights_remote import HeightState
+
+    return HeightState()
+
+
 @dataclass
 class State:
     in_flight: dict[str, InFlight] = field(default_factory=dict)
@@ -204,6 +236,7 @@ class State:
     last_found: bool = True             # whether it left anything sendable unsent
     reparse: reparse_auto.Memo = field(default_factory=reparse_auto.Memo)   # the automatic queue's archive read
     held: frozenset = frozenset()       # the replays the last cycle held back for a re-parse
+    heights: object = field(default_factory=_height_state)     # replay_heights_remote.HeightState
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -462,26 +495,31 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
     return False
 
 
-def _submit(session, client, state: State, now: float, counts: dict, held: frozenset = frozenset()) -> None:
+def _submit(session, client, state: State, now: float, counts: dict, held: frozenset = frozenset(),
+            held_maps: frozenset = frozenset()) -> None:
     if len(state.in_flight) >= IN_FLIGHT:
         return
     if state.last_planned is not None and not state.last_found and now - state.last_planned < PLAN_IDLE_S:
         return
     # D1/D3: never computed, or out of date, linked or not. A failure under the current inputs stays put.
     planned = [p for p in replay_control.plan(session) if p.computable and p.reason in ("missing", "stale")]
+    todo = [p for p in planned if p.map_name not in held_maps]   # a map whose heights are being rebuilt waits for them
     # Read afresh every pass and never remembered: the worker deploys on its own, in either direction.
     capable = _gaps_capable(client)
     state.last_planned = now
     state.last_found = _send(session, client, state, now, counts,
-                             _sendable(state, now, planned, kind="control", capable=capable, held=held),
+                             _sendable(state, now, todo, kind="control", capable=capable, held=held),
                              kind="control")
-    if state.last_found or not capable:
-        return          # control first; and without the capability gaps-only work waits, unplanned and uncounted
-    # As the local command does: every round with its current fingerprint, then those whose control is ok and
-    # current and whose gap run is missing or stale. A gap failure under the current keys stays put.
-    wanted = replay_gaps.plan_gaps(session, planned, replay_control.plan(session, force=True))
-    state.last_found = _send(session, client, state, now, counts,
-                             _sendable(state, now, wanted, kind="gaps", held=held), kind="gaps")
+    # Control first; and without the capability gaps-only work waits, unplanned and uncounted.
+    if not state.last_found and capable:
+        # As the local command does: every round with its current fingerprint, then those whose control is ok and
+        # current and whose gap run is missing or stale. A gap failure under the current keys stays put.
+        wanted = replay_gaps.plan_gaps(session, planned, replay_control.plan(session, force=True))
+        wanted = [p for p in wanted if p.map_name not in held_maps]
+        state.last_found = _send(session, client, state, now, counts,
+                                 _sendable(state, now, wanted, kind="gaps", held=held), kind="gaps")
+    if held_maps:
+        state.last_found = True      # a plan that found only held rounds doesn't start the idle throttle
 
 
 def _reparse(session_factory, worker, state: State, now: float, counts: dict) -> frozenset:
@@ -524,9 +562,21 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
             collect.rollback()
             collect.close()
         held = _reparse(session_factory, worker, state, now, counts)
+        held_maps: frozenset = frozenset()
+        if replay_heights_remote.enabled():
+            rebuild = session_factory()   # its writes go through sessions of their own; this one only reads
+            try:
+                held_maps = frozenset(replay_heights_remote.step(session_factory, rebuild, client, state.heights, now,
+                                                                 counts))
+            except Exception:  # noqa: BLE001 - a height rebuild must never stop map control
+                log.exception("height rebuild step failed")
+                counts["heights_error"] = 1
+            finally:
+                rebuild.rollback()
+                rebuild.close()
         session = session_factory()   # opened after the pass: it reads the replay a settlement just committed
         try:
-            _submit(session, client, state, now, counts, held)
+            _submit(session, client, state, now, counts, held, held_maps)
         finally:
             session.rollback()
             session.close()

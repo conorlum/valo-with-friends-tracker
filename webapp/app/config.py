@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # Map control for new replays on the replay worker (docs/map-control-worker-plan.md). Off by
     # default; needs REPLAY_WORKER_URL too, and is always off in demo mode.
     replay_control_remote: bool = False
+    # Height rebuilds on the replay worker (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md):
+    # a map's heights are rebuilt every few new matches and go live when they pass the gate. Off by default, so
+    # a deploy changes nothing until it is set; needs REPLAY_CONTROL_REMOTE too, and is always off in demo mode.
+    replay_heights_auto: bool = False
     # Parse stale uploaded replays again from the worker's .vrf archive, one at a time
     # (app/services/replay_reparse_auto.py). Off by default; needs REPLAY_CONTROL_REMOTE and
     # REPLAY_WORKER_URL too, and is always off in demo mode.
