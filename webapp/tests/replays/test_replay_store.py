@@ -277,6 +277,108 @@ def test_the_split_is_not_carried_to_a_replay_that_no_longer_links(db, condensed
     assert row.link_status != "linked" and row.kill_impact is None
 
 
+# ---------------------------------------------------------------- the automatic re-parse's guarded store
+
+
+def stale_upload(db, condensed, source="upload"):
+    """A linked replay under an older recipe, and the snapshot an automatic attempt would keep of it."""
+    add_match(db)
+    row = db.get(Replay, store.store_replay(db, replace(condensed, recipe="old"), source=source).replay_id)
+    return row, store.ExpectedAuto(row.id, row.recipe, row.source_sha256, condensed.recipe)
+
+
+def test_an_automatic_store_replaces_the_selected_replay_and_leaves_the_commit_to_its_caller(db, condensed):
+    row, expected = stale_upload(db, condensed)
+    split = {"fingerprint": "abc", "kills": {"1": [10.0, -5.0]}}
+    row.kill_impact = split
+    db.commit()
+    result = store.store_replay(db, condensed, source="upload", commit=False, expected_auto=expected)
+    assert result.action == "replaced" and db.in_transaction()
+    db.rollback()
+    assert db.query(Replay).one().recipe == "old", "nothing was committed by the store"
+    result = store.store_replay(db, condensed, source="upload", commit=False, expected_auto=expected)
+    db.commit()
+    stored = db.query(Replay).one()
+    assert (stored.id, stored.recipe, stored.kill_impact) == (result.replay_id, condensed.recipe, split)
+
+
+@pytest.mark.parametrize("case", ["unchanged", "kept_linked", "kept_unlinked", "refused"])
+def test_with_commit_false_no_branch_ends_the_callers_transaction(db, condensed, case):
+    if case != "kept_unlinked":
+        add_match(db)
+    store.store_replay(db, condensed, source="upload")
+    incoming = condensed if case == "unchanged" else replace(condensed, source_sha256="f" * 64)
+    db.add(ReplayDeletion(match_uuid="11111111-0000-4000-8000-000000000000", reason="the caller's own write"))
+    db.flush()
+    if case == "refused":
+        db.add(ReplayDeletion(match_uuid=condensed.match_uuid.lower(), reason="asked"))
+        db.flush()
+        with pytest.raises(store.StoreRefused):
+            store.store_replay(db, incoming, source="upload", commit=False)
+    else:
+        action = store.store_replay(db, incoming, source="upload", commit=False).action
+        assert action == ("unchanged" if case == "unchanged" else "kept_existing")
+    assert db.query(ReplayDeletion).count() >= 1, "the caller's write was not rolled back"
+    db.rollback()
+    assert db.query(ReplayDeletion).count() == 0, "and it was not committed either"
+    assert db.query(Replay).one().source_sha256 == condensed.source_sha256
+
+
+@pytest.mark.parametrize("moved, action, reason", [
+    ("to the target", "unchanged", "same file and recipe"),
+    ("to another recipe under the same id", "kept_existing", "superseded"),
+    ("to another recording", "kept_existing", "superseded"),
+])
+def test_an_automatic_store_never_replaces_a_replay_that_moved_on(db, condensed, moved, action, reason):
+    row, expected = stale_upload(db, condensed)
+    if moved == "to the target":
+        store.store_replay(db, condensed, source="upload")
+    elif moved == "to another recipe under the same id":   # sqlite reuses ids: the id alone proves nothing
+        row.recipe = "newer"
+        db.commit()
+    else:
+        store.store_replay(db, replace(condensed, recipe="old", source_sha256="f" * 64), source="upload", replace=True)
+    before = [(r.id, r.recipe, r.source_sha256) for r in db.query(Replay)]
+    result = store.store_replay(db, condensed, source="upload", commit=False, expected_auto=expected)
+    db.commit()
+    assert result.action == action and reason in result.report["reason"]
+    assert [(r.id, r.recipe, r.source_sha256) for r in db.query(Replay)] == before
+    assert result.replay_id == before[0][0]
+
+
+@pytest.mark.parametrize("case, reason", [("gone", "gone"), ("local", "local ingest"), ("deleted", "deleted on request"),
+                                          ("another recipe", "not what this attempt asked for"),
+                                          ("another file", "not what this attempt asked for")])
+def test_an_automatic_store_refuses_what_it_may_never_write(db, condensed, case, reason):
+    row, expected = stale_upload(db, condensed)
+    incoming = condensed
+    if case == "gone":
+        store._delete(db, row)
+    elif case == "local":
+        row.source = "local"
+    elif case == "deleted":
+        store._delete(db, row)
+        db.add(ReplayDeletion(match_uuid=condensed.match_uuid.lower(), reason="asked"))
+    elif case == "another recipe":
+        incoming = replace(condensed, recipe="unasked")
+    else:
+        incoming = replace(condensed, source_sha256="f" * 64)
+    db.commit()
+    before = [(r.id, r.recipe, r.source) for r in db.query(Replay)]
+    with pytest.raises(store.StoreRefused, match=reason):
+        store.store_replay(db, incoming, source="upload", commit=False, expected_auto=expected)
+    db.rollback()
+    assert [(r.id, r.recipe, r.source) for r in db.query(Replay)] == before, "never recreated, never replaced"
+
+
+def test_the_default_store_still_commits_and_rolls_back_by_itself(db, condensed):
+    add_match(db)
+    assert store.store_replay(db, condensed, source="upload").action == "stored"
+    assert not db.in_transaction()
+    assert store.store_replay(db, condensed, source="upload").action == "unchanged"
+    assert not db.in_transaction()
+
+
 # ---------------------------------------------------------------- PostgreSQL only
 
 

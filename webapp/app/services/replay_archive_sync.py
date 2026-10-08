@@ -4,7 +4,9 @@ thread runs `cycle` every CYCLE_S while uploads are enabled.
 
 1. `GET /health`. The worker unreachable: nothing to do.
 1a. Collect every finished upload whose page was closed (`replay_upload.collect_unfinished`), whether or not
-   the archive is on. The archive off: nothing more to do.
+   the archive is on. The archive off: nothing more to do. An automatic re-parse attempt is collected there
+   through its own guards (`replay_upload.collect_auto`): this thread can bind and store an accepted one, and
+   never starts, resends or closes one.
 2. A `boot_id` this process hasn't synced (a first run, a restart or deploy, a restored disk snapshot): push the
    full `replay_deletions` list. The worker deletes any archived or pending file of a listed match, so a
    restored snapshot can't bring back a deleted recording for longer than one cycle.

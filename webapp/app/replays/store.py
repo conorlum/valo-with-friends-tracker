@@ -79,59 +79,108 @@ def _delete(session, row: Replay) -> None:
     session.flush()
 
 
-def store_replay(session, condensed: CondensedReplay, *, source: str, replace: bool = False) -> StoreResult:
-    """Store + link in one transaction, committed here; rolled back on any failure."""
+@dataclass(frozen=True)
+class ExpectedAuto:
+    """What an automatic re-parse attempt was reserved for (`replay_uploads.auto_context`): the stored replay
+    as it was when selected, and the recipe the attempt aims for. The store replaces only that replay."""
+    selected_replay_id: int
+    source_recipe: str
+    source_sha256: str
+    target_recipe: str
+
+
+def store_replay(session, condensed: CondensedReplay, *, source: str, replace: bool = False, commit: bool = True,
+                 expected_auto: ExpectedAuto | None = None) -> StoreResult:
+    """Store + link in one transaction, committed here; rolled back on any failure.
+
+    `commit=False` hands the transaction to the caller: nothing here commits or rolls it back, whatever the
+    branch (a failed link attempt is undone by its own savepoint), and an exception leaves the rollback to the
+    caller. Automatic collection uses it to settle its attempt row in the same commit as the replacement.
+    `expected_auto` makes the store conditional (see `_guard_auto`)."""
     if source not in SOURCES:
         raise ValueError(f"source must be one of {SOURCES}")
     refuse_demo(session)
-    uuid = condensed.match_uuid.lower()
+    if not commit:
+        return _store(session, condensed, source, replace, expected_auto)[0]
     try:
-        replay_db.advisory_lock(session, uuid)
-        # A match deleted on request never comes back, whoever stores it (upload, reparse or local).
-        if session.get(ReplayDeletion, uuid) is not None:
-            raise StoreRefused("this match was deleted on request")
-        existing = session.query(Replay).filter(Replay.match_uuid == uuid).one_or_none()
-        same_source = existing is not None and existing.source_sha256 == condensed.source_sha256
-        if existing is not None and not replace:
-            if same_source and existing.recipe == condensed.recipe:
-                session.rollback()
-                return StoreResult("unchanged", existing.id, existing.link_status, {"reason": "same file and recipe"})
-            if not same_source and replay_db.is_linked(existing):
-                session.rollback()
-                return StoreResult("kept_existing", existing.id, existing.link_status,
-                                   {"reason": "a linked replay of this match exists; the new recording was not stored"})
-            if not same_source:
-                # An unlinked or refused replay can't squat the UUID: the new one replaces it only
-                # if it links, and a savepoint undoes the attempt otherwise.
-                savepoint = session.begin_nested()
-                _delete(session, existing)
-                row = _insert(session, condensed, source)
-                status = replay_db.link_replay(session, row)
-                if status != "linked":
-                    savepoint.rollback()
-                    session.rollback()
-                    return StoreResult("kept_existing", existing.id, existing.link_status,
-                                       {"reason": "the new recording did not link, so it doesn't replace the "
-                                                  "existing unlinked one", "new_link_status": status})
-                savepoint.commit()
-                session.commit()
-                return StoreResult("replaced", row.id, status, row.link_report or {})
-        action = "stored"
-        carried = None
-        if existing is not None:
-            # The same recording under a new recipe (a re-parse): the per-kill Impact split describes the
-            # match's impact_scores rows, not the blobs, so it is kept when the new row links to the same
-            # match. The page still shows it only while its fingerprint is current (db.kill_impact_for_page).
-            if same_source and replay_db.is_linked(existing) and existing.kill_impact:
-                carried = (existing.match_id, existing.kill_impact)
-            _delete(session, existing)
-            action = "replaced"
-        row = _insert(session, condensed, source)
-        status = replay_db.link_replay(session, row)
-        if carried is not None and status == "linked" and row.match_id == carried[0]:
-            row.kill_impact = carried[1]
-        session.commit()
-        return StoreResult(action, row.id, status, row.link_report or {})
+        result, changed = _store(session, condensed, source, replace, expected_auto)
+        if changed:
+            session.commit()
+        else:
+            session.rollback()
+        return result
     except Exception:
         session.rollback()
         raise
+
+
+def _guard_auto(existing: Replay | None, condensed: CondensedReplay, expected: ExpectedAuto) -> StoreResult | None:
+    """An automatic re-parse replaces only the uploaded replay it was selected for, still as it was then.
+    None: go on and replace it. A result: the replay has moved on, and nothing is written. Raises StoreRefused
+    when there is nothing this attempt may ever write."""
+    if condensed.recipe != expected.target_recipe or condensed.source_sha256 != expected.source_sha256:
+        raise StoreRefused("the result is not what this attempt asked for")
+    if existing is None:
+        raise StoreRefused("the selected replay is gone; an automatic re-parse never recreates one")
+    if existing.source != "upload":
+        raise StoreRefused("the replay is now a local ingest; those stay with reingest_replays.py")
+    selected = (existing.id == expected.selected_replay_id and existing.recipe == expected.source_recipe
+                and existing.source_sha256 == expected.source_sha256)
+    if selected:
+        return None
+    if existing.source_sha256 == condensed.source_sha256 and existing.recipe == condensed.recipe:
+        return StoreResult("unchanged", existing.id, existing.link_status, {"reason": "same file and recipe"})
+    return StoreResult("kept_existing", existing.id, existing.link_status,
+                       {"reason": "superseded: the replay changed after it was selected for this re-parse"})
+
+
+def _store(session, condensed: CondensedReplay, source: str, replace: bool,
+           expected_auto: ExpectedAuto | None) -> tuple[StoreResult, bool]:
+    """(the result, whether anything was written). Never commits or rolls back the transaction."""
+    uuid = condensed.match_uuid.lower()
+    replay_db.advisory_lock(session, uuid)
+    # A match deleted on request never comes back, whoever stores it (upload, reparse or local).
+    if session.get(ReplayDeletion, uuid) is not None:
+        raise StoreRefused("this match was deleted on request")
+    existing = session.query(Replay).filter(Replay.match_uuid == uuid).populate_existing().one_or_none()
+    if expected_auto is not None:
+        moved_on = _guard_auto(existing, condensed, expected_auto)
+        if moved_on is not None:
+            return moved_on, False
+    same_source = existing is not None and existing.source_sha256 == condensed.source_sha256
+    if existing is not None and not replace:
+        if same_source and existing.recipe == condensed.recipe:
+            return StoreResult("unchanged", existing.id, existing.link_status, {"reason": "same file and recipe"}), False
+        if not same_source and replay_db.is_linked(existing):
+            return StoreResult("kept_existing", existing.id, existing.link_status,
+                               {"reason": "a linked replay of this match exists; the new recording was not stored"}), False
+        if not same_source:
+            # An unlinked or refused replay can't squat the UUID: the new one replaces it only
+            # if it links, and a savepoint undoes the attempt otherwise.
+            kept = (existing.id, existing.link_status)
+            savepoint = session.begin_nested()
+            _delete(session, existing)
+            row = _insert(session, condensed, source)
+            status = replay_db.link_replay(session, row)
+            if status != "linked":
+                savepoint.rollback()
+                return StoreResult("kept_existing", kept[0], kept[1],
+                                   {"reason": "the new recording did not link, so it doesn't replace the "
+                                              "existing unlinked one", "new_link_status": status}), False
+            savepoint.commit()
+            return StoreResult("replaced", row.id, status, row.link_report or {}), True
+    action = "stored"
+    carried = None
+    if existing is not None:
+        # The same recording under a new recipe (a re-parse): the per-kill Impact split describes the
+        # match's impact_scores rows, not the blobs, so it is kept when the new row links to the same
+        # match. The page still shows it only while its fingerprint is current (db.kill_impact_for_page).
+        if same_source and replay_db.is_linked(existing) and existing.kill_impact:
+            carried = (existing.match_id, existing.kill_impact)
+        _delete(session, existing)
+        action = "replaced"
+    row = _insert(session, condensed, source)
+    status = replay_db.link_replay(session, row)
+    if carried is not None and status == "linked" and row.match_id == carried[0]:
+        row.kill_impact = carried[1]
+    return StoreResult(action, row.id, status, row.link_report or {}), True
