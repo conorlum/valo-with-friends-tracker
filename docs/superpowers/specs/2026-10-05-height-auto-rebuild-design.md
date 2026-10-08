@@ -109,6 +109,8 @@ process run by the control venv, niced, time- and memory-capped.
   or waiting; nothing starts beside it; it is queued ahead of every control round. A parse arriving always
   kills a running build (where control keeps one child beside a parse, a build keeps none), and the build goes
   back to `queued` with its rounds, uncounted. (Run decision D13, pending the owner's approval.)
+  While parsing continues, that queued build waits and the single control-round slot keeps working;
+  the build takes priority over queued control rounds once the worker is idle.
 
 ### 3. When it runs
 
@@ -175,6 +177,8 @@ When a build comes back:
 input manifest, counted in the dispatcher's memory, so they start again when the web app restarts (E7; the
 owner wants fresh tries after a deploy, which may be what fixes a broken build). When they are spent the map's
 rounds are released and sent with the heights it has, and no more tries are made until its inputs change.
+If the active heights' evidence is gone, exhausting those tries turns them off before releasing the rounds.
+A failed deactivation is retried on later cycles; an operator replacement with current evidence is kept.
 
 | What happened | Counts as | Then |
 | --- | --- | --- |
@@ -207,8 +211,9 @@ whose result couldn't be used reads the same answer again. The owner chose to le
 
 **Deletions** (amended 2026-10-08, plan decision E5, **approved by the owner 2026-10-07**: "fine"). When the
 evidence under a map's heights is removed or replaced (a deleted match, a re-condensed blob), its rebuild is
-due at once, not after 5 more matches. If that rebuild is rejected, or fewer than 2 matches are left, the map's
-heights are turned **off** rather than left built from evidence that is gone. This follows "its heights go at
+due at once, not after 5 more matches. If that rebuild is rejected or exhausts its retries, or fewer than
+2 matches are left, the map's heights are turned **off** rather than left built from evidence that is gone.
+This follows "its heights go at
 the next rebuild; that is the intended meaning of a deletion" above. P3 ("keeping old heights is a fine
 fallback") still holds for a build that fails with its evidence intact: the old heights stay.
 

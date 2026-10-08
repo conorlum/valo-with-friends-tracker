@@ -16,7 +16,7 @@ REPLAYS = [["m2", "p.c11.f1.a1", "b" * 64, 20], ["m1", "p.c11.f1.a1", "a" * 64, 
 
 # HEIGHT_RULES_REVISION -> the hash of app/control/heights.py's constants it was released with. Changed a
 # constant, or the build's code? Bump HEIGHT_RULES_REVISION in app/replays/control_format.py and pin it here.
-PINNED_RULES = {1: "d8abb3511f70"}
+PINNED_RULES = {1: "d8abb3511f70", 2: "d8abb3511f70"}  # revision 2 changes build code, not constants
 
 
 def test_the_height_rules_are_pinned_to_their_revision():

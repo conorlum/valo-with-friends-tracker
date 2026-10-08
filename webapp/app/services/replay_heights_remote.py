@@ -31,8 +31,9 @@ the map-control dispatcher (app/services/replay_control_remote.py `cycle`), unde
   `heights` field: an image from before height builds) is waited for at no cost, holding nothing, so the flag
   can be on from the merge while the worker's image is still building.
 - **Bounded.** Every failure either costs nothing (the worker is away, or parsing), or spends one of MAX_TRIES
-  tries for that input manifest (the module's tests pin which). When they are spent the map's rounds are
-  released and no more tries are made until its inputs change. The budget is in memory: a restart of the web
+  tries for that input manifest (the module's tests pin which). When they are spent, active heights whose
+  evidence is gone are turned off; otherwise they stay. The map's rounds are released and no more tries are
+  made until its inputs change. The budget is in memory: a restart of the web
   app starts it again.
 
 Off unless REPLAY_HEIGHTS_AUTO is set (and the control dispatcher is on), and never in demo mode. Standard
@@ -50,6 +51,7 @@ from sqlalchemy.orm import load_only
 from app.config import settings
 from app.models.replay import Replay, ReplayRound
 from app.replays import control_format as cf
+from app.replays import db as replay_db
 from app.replays import height_inputs as hi
 from app.services import control_heights, replay_control
 
@@ -202,12 +204,19 @@ def _batch(session, build: Build) -> list:
     return out
 
 
-def _turn_off(session_factory, map_name: str) -> bool:
+def _turn_off(session_factory, map_name: str, *, removed_from: dict | None = None) -> bool:
     """Leaves the map without active heights, through a session of its own. The cycle's session holds the
     dispatcher's transaction-scoped lock, and `deactivate` commits: on that session it would let a second
     dispatcher in for the rest of the cycle."""
     writer = session_factory()
     try:
+        if removed_from is not None:
+            # Recheck the active row under the map lock: an operator may have replaced the
+            # obsolete asset while the failed build was running. Keep that replacement.
+            replay_db.advisory_lock(writer, control_heights.lock_name(map_name))
+            active = control_heights.active_rows(writer).get(map_name)
+            if active is None or not hi.changes(active.inputs, removed_from)["gone"]:
+                return False
         return control_heights.deactivate(
             writer, map_name, generation=(replay_control.geometry_inputs(map_name, heights=None) or {}).get("features"))
     except control_heights.HasGeneration as guarded:
@@ -216,6 +225,12 @@ def _turn_off(session_factory, map_name: str) -> bool:
     finally:
         writer.rollback()
         writer.close()
+
+
+def _retire_spent_evidence(session_factory, due: Due, counts: dict) -> None:
+    if _turn_off(session_factory, due.map_name, removed_from=due.manifest):
+        counts["heights_off"] += 1
+        log.info("heights: %s off: rebuild retries exhausted and its evidence is gone", due.map_name)
 
 
 def _cancel(client, build: Build) -> None:
@@ -395,6 +410,10 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
             counts["heights_off"] += 1
             log.info("heights: %s off: what its heights were built from is gone", name)
     due = {hi.key(d.manifest): d for d in plan.due}
+    for key, d in due.items():
+        if hstate.spent(key):
+            # Also retry a retirement that failed to commit on the last failed build's cycle.
+            _retire_spent_evidence(session_factory, d, counts)
     held = {d.map_name for key, d in due.items() if not hstate.spent(key)}
     build = hstate.build
     if build is not None and build.key not in due:
@@ -441,6 +460,7 @@ def step(session_factory, session, client, hstate: HeightState, now: float, coun
         if attempt_key is not None:
             hstate.failed(attempt_key, now)
             if hstate.spent(attempt_key):
+                _retire_spent_evidence(session_factory, due[attempt_key], counts)
                 held.discard(due[attempt_key].map_name)
         counts["heights_failed"] += 1
     return held

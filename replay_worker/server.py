@@ -1019,19 +1019,25 @@ class ControlRunner:
     def _next(self) -> tuple[ControlJob, bool] | None:
         """The next job that may start now, and whether it warms its map (called under the lock)."""
         # Beside a parse (running or waiting) control keeps one child; idle, the whole pool.
-        limit = self.settings.control_workers if self.idle() else 1
+        idle = self.idle()
+        limit = self.settings.control_workers if idle else 1
         if len(self.running) >= limit:
             return None
         if any(self.jobs[j].kind == "heights" for j in self.running):
             return None                              # a build runs alone
         for job_id in self.pending:
             if self.jobs[job_id].kind == "heights":
-                # and before any round; only while no parse is on, or a preempted build would start again beside it
-                return (self.jobs[job_id], False) if not self.running and self.idle() else None
+                # Idle, drain running control before starting the build ahead of queued rounds.
+                # Beside a parse, the build waits while the one control slot keeps working.
+                if idle:
+                    return (self.jobs[job_id], False) if not self.running else None
+                break
         busy_maps = {self.jobs[j].map for j in self.running}
         warming_maps = {self.jobs[j].map for j, warming in self.running.items() if warming}
         for job_id in self.pending:
             job = self.jobs[job_id]
+            if job.kind == "heights":
+                continue
             if job.warm_key in self.warm:
                 if job.map in warming_maps:
                     continue

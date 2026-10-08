@@ -209,6 +209,28 @@ def test_a_build_runs_alone_and_ahead_of_queued_rounds(worker):
     assert all(float(t) >= build_end - 0.05 for t, kind in events[1:] if kind == "start"), "and runs alone"
 
 
+def test_a_queued_build_does_not_block_the_control_slot_beside_a_parse(worker):
+    control, builds, _ = worker()
+    control._next = lambda: None
+    control.idle = lambda: False
+    job = builds.open("k", "Sunset", 1, MANIFEST)
+    builds.add(job["id"], rounds(1))
+    builds.start(job["id"], None)
+    waiting = [control.submit(task(f"r:{n}:f", "Ascent", "sleep:0.3")) for n in (1, 2)]
+    with control.lock:
+        del control._next
+        assert control._next()[0].id == waiting[0].id
+    control.wake.set()
+    wait_until(lambda: bool(control.running))
+    with control.lock:
+        assert len(control.running) == 1 and control._next() is None
+    wait_all(control, waiting)
+    assert builds.get(job["id"])["status"] == "queued", "no height build runs beside a parse"
+    control.idle = lambda: True
+    control.wake.set()
+    assert finished(builds, job["id"])["status"] == "done"
+
+
 def test_a_parse_preempts_a_build_and_it_starts_again_with_its_rounds(worker):
     control, builds, log = worker(sleep=1.0)
     job = builds.open("k", "Sunset", 1, MANIFEST)

@@ -54,7 +54,7 @@ HEIGHT_VERSION = 2            # the asset's format: an asset of another version 
 # The rules a build follows. Bump it for ANY change to how rounds become heights (a constant in
 # app/control/heights.py, the code of height_build.py or height_motion.py): every map's rebuild is then due.
 # tests/replays/test_height_inputs.py pins it to the constants' hash, as CONTROL_REVISION is pinned.
-HEIGHT_RULES_REVISION = 1
+HEIGHT_RULES_REVISION = 2      # 2: recheck emitted floor separation after taking each band's low percentile
 HEIGHT_SUPPORTED_MIN = 0.60   # the bar: share of walkable cells with a supported floor
 KILL_LINE_BAR = 0.02          # the kill-line check: at most this share of real kill lines blocked
 

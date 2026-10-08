@@ -646,6 +646,54 @@ def test_fewer_than_two_matches_left_turns_heights_off_without_a_build(rig, fact
     assert counts["sent"] > 0, "and its rounds are recomputed flat"
 
 
+@pytest.mark.parametrize("evidence", ["deleted", "recondensed", "intact"])
+def test_exhausted_rebuild_retries_retire_only_heights_with_removed_evidence(rig, factory, db, linked, evidence):
+    others = clone(db, linked, 2)
+    stored(db, linked.map_name)
+    if evidence == "deleted":
+        delete(db, others[0])
+    elif evidence == "recondensed":
+        others[0].recipe += ".recondensed"
+        db.commit()
+    else:
+        clone(db, linked, hr.HEIGHT_REBUILD_EVERY)
+    rig.mode(raw="not json")
+    seen = rig.until(factory, lambda s: total(s, "heights_failed") == hr.MAX_TRIES, cycles=60)
+    assert total(seen, "heights_off") == (evidence != "intact")
+    assert bool(ch.active_digests(db)) == (evidence == "intact")
+    more = rig.until(factory, lambda s: total(s, "sent") > 0)
+    assert total(more, "heights_failed") == 0, "the spent input manifest is not retried"
+    assert bool(ch.active_digests(db)) == (evidence == "intact")
+
+
+def test_spent_manifest_retries_retirement_after_a_write_failure(rig, factory, db, linked, monkeypatch):
+    others = clone(db, linked, 2)
+    stored(db, linked.map_name)
+    delete(db, others[0])
+    manifest = hr.current_manifests(db)[linked.map_name][0]
+    rig.state.heights.tries[hi.key(manifest)] = (hr.MAX_TRIES, 0)
+    turn_off = hr._turn_off
+
+    def failed_write(*args, **kwargs):
+        monkeypatch.setattr(hr, "_turn_off", turn_off)
+        raise RuntimeError("temporary write failure")
+
+    monkeypatch.setattr(hr, "_turn_off", failed_write)
+    assert rig.cycle(factory)["heights_error"] == 1 and ch.active_digests(db)
+    counts = rig.cycle(factory)
+    assert counts["heights_off"] == 1 and counts["heights_failed"] == 0 and not ch.active_digests(db)
+
+
+def test_retirement_keeps_an_operator_replacement_with_current_evidence(factory, db, linked):
+    others = clone(db, linked, 2)
+    stored(db, linked.map_name)
+    delete(db, others[0])
+    manifest = hr.current_manifests(db)[linked.map_name][0]
+    stored(db, linked.map_name, digest="b" * 12, manifest=manifest)
+    assert not hr._turn_off(factory, linked.map_name, removed_from=manifest)
+    assert ch.active_digests(db) == {linked.map_name: "b" * 12}
+
+
 @pytest.mark.parametrize("older", [
     lambda real: {k: v for k, v in real.items() if k != "heights"},       # an image from before height builds
     lambda real: {**real, "recipe": real["recipe"] + ".older"},           # an image on other rules
