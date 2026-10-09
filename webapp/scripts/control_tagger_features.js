@@ -181,6 +181,7 @@
   function commit(next, keepSel) {
     if (readOnly()) return;
     var c = cur();
+    ui.issueCells = null;
     c.hist = F.historyPush(c.hist, next);
     c.mf = c.hist.present; c.dirty = true;
     highs[mapName()] = Math.max(highs[mapName()] || 1, c.hist.high);
@@ -192,6 +193,7 @@
   function step(move) {
     if (readOnly()) return;
     var c = cur();
+    ui.issueCells = null;
     c.hist = move(Object.assign({}, c.hist, { high: Math.max(c.hist.high || 1, highs[mapName()] || 1) }));
     c.mf = c.hist.present; c.dirty = true; autosave(); render();
   }
@@ -458,6 +460,10 @@
       for (var g = 0; g <= PX; g += 8) { ctx.moveTo(g, 0); ctx.lineTo(g, PX); ctx.moveTo(0, g); ctx.lineTo(PX, g); }
       ctx.stroke();
     }
+    if (ui.issueCells) {
+      ctx.fillStyle = "rgba(255,165,0,0.55)";
+      ui.issueCells.forEach(function (cell) { ctx.fillRect((cell % 128) * 8, Math.floor(cell / 128) * 8, 8, 8); });
+    }
     (L.features ? m.features || [] : []).forEach(function (f) {
       var sel = f.id === ui.sel, name = shownState(f), st = (f.states || []).filter(function (s) { return s.name === name; })[0];
       var colour = sel ? "rgba(255,255,255,0.95)" : "rgba(76,201,240,0.9)";
@@ -601,7 +607,7 @@
   canvas.addEventListener("pointerdown", function (e) {
     if (e.button !== 0 || ui.panning) return;
     var p = toMap(e);
-    if (ui.tool === "select") { ui.sel = hit(p); render(); return; }
+    if (ui.tool === "select") { ui.sel = hit(p); ui.issueCells = null; render(); return; }
     if (ui.tool === "link") { var f = hit(p, true); if (f) linkTo(f); return; }
     if (ui.tool === "point") { placePoint(p); return; }
     if (ui.tool === "line" || ui.tool === "polygon") {
@@ -722,6 +728,7 @@
   }
   function boundsEditor(fid, path, bounds) {
     var b = bounds || { ref: "unresolved" }, box = document.createElement("div");
+    box.id = "feat-field-" + fid + "-" + path.join("-"); box.tabIndex = -1;
     box.appendChild(row("Sight bounds", selectEl([["unresolved", "unresolved"], ["ground", "above a floor's ground"], ["world", "world height"], ["all_height", "every height (verified)"]], b.ref, function (ref) {
       var nb = { ref: ref };
       if (ref === "ground" || ref === "world") { nb.bottom = b.bottom || { status: "unresolved" }; nb.top = b.top || { status: "unresolved" }; }
@@ -777,23 +784,37 @@
     box.appendChild(row("Round-start state", selectEl([["", "needs verification"]].concat(names.map(function (n) { return [n, n]; })), f.initial_state || "",
       function (v) { edit(f.id, ["initial_state"], v || null); })));
     box.appendChild(row("Drawing on state", selectEl(names.map(function (n) { return [n, n]; }), ui.editState[f.id] || f.initial_state || names[0],
-      function (v) { ui.editState[f.id] = v; render(); })));
+      function (v) { ui.editState[f.id] = v; ui.issueCells = null; render(); })));
     box.appendChild(row('Placement', document.createTextNode('Automatic: every required cell must have one measured floor.')));
     (f.states || []).forEach(function (s, si) {
       var fs = fieldset("State: " + s.name + (s.terminal ? " (terminal for the round)" : ""));
+      fs.id = "feat-state-" + f.id + "-" + si; fs.tabIndex = -1;
       fs.appendChild(row("Blocks movement", checkEl(s.blocks_movement, function (v) { edit(f.id, ["states", si, "blocks_movement"], v); })));
       fs.appendChild(row("Blocks vision", checkEl(s.blocks_sight, function (v) { edit(f.id, ["states", si, "blocks_sight"], v); })));
       fs.appendChild(row("Footprint", document.createTextNode(s.footprint ? s.footprint.type : "not drawn")));
       if (s.footprint && s.blocks_sight) fs.appendChild(boundsEditor(f.id, ["states", si, "sight_bounds"], s.sight_bounds));
       (s.sight || []).forEach(function (occ, j) {
         var sub = fieldset("Sight blocker " + (j + 1));
+        if (!s.blocks_sight) sub.appendChild(document.createTextNode("This state does not block vision. Its sight edge has no vision effect, but still needs valid geometry and placement bounds. Remove it explicitly if it is unintended."));
         sub.appendChild(boundsEditor(f.id, ["states", si, "sight", j, "bounds"], occ.bounds));
         sub.appendChild(button("Remove", function () {
           var next = s.sight.slice(); next.splice(j, 1); edit(f.id, ["states", si, "sight"], next);
         }));
         fs.appendChild(sub);
       });
-      fs.appendChild(button("Draw footprint", function () { ui.editState[f.id] = s.name; ui.placing = null; setTool("polygon"); render(); }));
+      var drawFootprint = button("Draw footprint", function () { ui.editState[f.id] = s.name; ui.placing = null; setTool("polygon"); render(); });
+      drawFootprint.id = "feat-field-" + f.id + "-states-" + si + "-footprint";
+      fs.appendChild(drawFootprint);
+      var sources = (f.states || []).filter(function (other) { return other.name !== s.name && other.footprint && !F.geometryProblems(other.footprint).length; });
+      if (sources.length) {
+        var copyBounds = button("Copy footprint and vision bounds", function () { copyFootprint(f.id, fromState.value, s.name, true); });
+        function updateCopyBounds() { var source = sources.find(function (other) { return other.name === fromState.value; }); copyBounds.disabled = !source || !source.sight_bounds; }
+        var fromState = selectEl(sources.map(function (other) { return [other.name, other.name]; }), sources[0].name, updateCopyBounds);
+        fs.appendChild(row("Copy footprint from", fromState));
+        fs.appendChild(button("Copy footprint only", function () { copyFootprint(f.id, fromState.value, s.name); }));
+        fs.appendChild(copyBounds); updateCopyBounds();
+        fs.appendChild(document.createTextNode(" Copies the shape and optional bounds. Choose motion coverage explicitly; movement/vision flags and motion behavior stay as set."));
+      }
       fs.appendChild(button("Draw sight edge", function () { ui.editState[f.id] = s.name; ui.placing = null; setTool("line"); render(); }));
       if (s.footprint) fs.appendChild(button("Clear footprint", function () { edit(f.id, ["states", si, "footprint"], undefined); }));
       box.appendChild(fs);
@@ -953,7 +974,7 @@
       var b = document.createElement("button");
       b.textContent = (o.name || o.label || o.id) + " · " + o.id;
       if (o.id === ui.sel) b.className = "sel";
-      b.addEventListener("click", function () { ui.sel = o.id; render(); });
+      b.addEventListener("click", function () { ui.sel = o.id; ui.issueCells = null; render(); });
       list.appendChild(b);
     });
   }
@@ -962,12 +983,20 @@
     var m = mf(), rep = F.validate(m, FD.seeds[mapName()] || [], ((canonical.maps || {})[mapName()] || {}).specials);
     var out = [];
     if (cur().incompatible) out.push("<b class=\"issue-error\">This map's loaded annotations use another schema version: shown empty, never overwritten.</b>");
-    rep.errors.forEach(function (e) { out.push("<span class=\"issue-error\" data-where=\"" + esc(e.where) + "\">✖ " + esc(e.where) + ": " + esc(e.message) + "</span>"); });
-    rep.warnings.forEach(function (w) { out.push("<span class=\"issue-warn\" data-where=\"" + esc(w.where) + "\">⚠ " + esc(w.where) + ": " + esc(w.message) + "</span>"); });
+    rep.errors.forEach(function (e) { out.push("<button type=\"button\" class=\"issue-error\" data-where=\"" + esc(e.where) + "\">✖ " + esc(e.where) + ": " + esc(e.message) + "</button>"); });
+    rep.warnings.forEach(function (w) { out.push("<button type=\"button\" class=\"issue-warn\" data-where=\"" + esc(w.where) + "\">⚠ " + esc(w.where) + ": " + esc(w.message) + "</button>"); });
     var placed = placements();
-    Object.keys(placed).sort().forEach(function(id) { placed[id].reasons.forEach(function(r) {
-      out.push('<span class="issue-warn">' + esc(id) + ': pending ' + esc(r.code) + ' (' + r.cell_count + ' cells)</span>');
-    }); });
+    placementIssues(placed).forEach(function(r) {
+      var id = r.affected_features[0];
+      var o = F.find(m, id), location = issueLocation(r.path), owner = location && F.find(m, location.id);
+      var message = {invalid_geometry:"Draw or correct the required shape", invalid_bounds:"Choose verified vision bounds", off_map:"Move the shape inside the map",
+        missing_floor:"Required cells have no measured floor", multi_floor:"Required cells have multiple floors", unresolved_height:"Required heights are unresolved",
+        empty_geometry:"The shape covers no placement cells", off_ground:"Required cells are outside walkable ground"}[r.code] || r.code.replace(/_/g, " ");
+      var label = (owner && owner.name || o && o.name || id) + " · " + (location && location.state ? location.state + " · " : "") +
+        (location ? location.field : r.path);
+      out.push('<button type="button" class="issue-warn" data-where="' + esc(r.path) + '">' + esc(label) + ': ' + esc(message) +
+        (r.cells && r.cells.length ? ' (' + r.cell_count + ' cells)' : '') + '</button> <span class="muted">' + esc(r.code) + '</span>');
+    });
     offGround(m).forEach(function (w) {
       out.push("<span class=\"issue-warn\" data-where=\"" + esc(w) + "\">⚠ " + esc(w) + ": landing not on walkable ground (the minimap may omit it: restore ground or move the landing; nothing is snapped)</span>");
     });
@@ -977,15 +1006,71 @@
     $("featExport").disabled = false;
   }
 
+  // Validator and placement paths have different prefixes; resolve both to the actual authored object.
+  function issueLocation(path) {
+    var match = /^(?:(?:features|triggers|routes)\.)?((?:feature|trigger|route)-\d+)(?:\.|:|$)(.*)$/.exec(path || "");
+    if (!match) return null;
+    var rest = match[2], obj = F.find(mf(), match[1]);
+    var state = (obj && obj.states || []).slice().sort(function (a,b) { return b.name.length - a.name.length; }).find(function (s) {
+      return rest === "states." + s.name || rest.indexOf("states." + s.name + ".") === 0;
+    });
+    return {id:match[1], state:state ? state.name : null, field:state ? rest.slice(8 + state.name.length) : rest};
+  }
+  function focusIssue(path) {
+    var location = issueLocation(path), obj = location && F.find(mf(), location.id);
+    if (!obj) return false;
+    ui.sel = obj.id; ui.draft = null; ui.placing = null; setTool("select");
+    ui.issueCells = [];
+    var placement = placements();
+    Object.keys(placement).forEach(function (id) { placement[id].reasons.forEach(function (r) {
+      if (r.path === path) ui.issueCells = ui.issueCells.concat(r.cells || []);
+    }); });
+    ui.issueCells = Array.from(new Set(ui.issueCells));
+    var si = (obj.states || []).findIndex(function (s) { return s.name === location.state; });
+    if (si >= 0) ui.editState[obj.id] = location.state;
+    render();
+    var field = location.field.replace(/\[(\d+)\]/g, ".$1").split(".");
+    var targetId = si >= 0 ? "feat-field-" + obj.id + "-states-" + si + "-" + field.join("-") : null;
+    var targetEl = targetId && document.getElementById(targetId);
+    if (!targetEl && si >= 0) targetEl = document.getElementById("feat-state-" + obj.id + "-" + si);
+    if (!targetEl) targetEl = $("featProps");
+    targetEl.scrollIntoView({block:"nearest"}); targetEl.focus();
+    return true;
+  }
+
+  function placementIssues(placed) {
+    var grouped = {};
+    Object.keys(placed).sort().forEach(function (id) { placed[id].reasons.forEach(function (reason) {
+      var key = reason.code + ":" + reason.path;
+      var group = grouped[key] || (grouped[key] = {code:reason.code,path:reason.path,cells:[],affected_features:[]});
+      group.cells = group.cells.concat(reason.cells || []);
+      if (group.affected_features.indexOf(id) < 0) group.affected_features.push(id);
+    }); });
+    return Object.keys(grouped).sort().map(function (key) {
+      var group = grouped[key]; group.cells = Array.from(new Set(group.cells)).sort(function(a,b) {return a-b;});
+      group.cell_count = group.cells.length; return group;
+    });
+  }
+
   function renderChecklist() {
     var seeds = FD.seeds[mapName()] || [], m = mf(), box = $("featChecklist");
     box.innerHTML = "";
-    var sum = F.mapSummary(m, seeds), s = document.createElement("div");
+    var sum = F.mapSummary(m, seeds), s = document.createElement("div"), placement = placements();
+    var diagnostic = (FD.diagnostics || {})[mapName()], compilerNote = "Not attached. Use diagnose_map_features.py and rebuild this page with --diagnostics";
+    if (diagnostic) {
+      var currentEntry = (workingCatalogue().maps || {})[mapName()];
+      compilerNote = F.digest(currentEntry) === F.digest(diagnostic.editor_entry) ?
+        diagnostic.counts.pending + " of " + diagnostic.counts.total_tagged + " features pending in the exact attached " + diagnostic.height + " context; site active height unverified" :
+        "STALE after annotation edits. Export and regenerate the diagnostic report";
+    }
     s.className = "note";
     s.innerHTML = "<b>Your annotation:</b> " + sum.annotation.features + " features (" + sum.annotation.review.user_reviewed + " reviewed); checklist " +
       sum.annotation.checklist.user_reviewed + "/" + seeds.length + " reviewed.<br><b>Geometry:</b> " +
-      (sum.geometry.ready ? "fully described" : sum.geometry.errors + " errors, " + sum.geometry.unresolved + " open facts") +
-      ".<br><b>Replay signal:</b> " + esc(sum.replay.note) + ".";
+      (sum.geometry.ready ? "structurally described" : sum.geometry.errors + " errors, " + sum.geometry.unresolved + " open facts") +
+      ".<br><b>Placement preview:</b> " + Object.keys(placement).filter(function (id) { return !placement[id].ok; }).length + " features pending; " +
+      (((FD.floors || {})[mapName()] || {}).flat !== false ? "flat fallback, no measured height asset" : "measured height asset " + esc(FD.floors[mapName()].height_sha)) +
+      ".<br><b>Compiler report:</b> " + esc(compilerNote) +
+      ".<br><b>Replay signal:</b> " + esc(sum.replay.note) + ". Runtime activation requires reviewed replay evidence and a registered consumer.";
     box.appendChild(s);
     if (!seeds.length) {
       box.appendChild(document.createTextNode(FD.no_features_note || "No features reported."));
@@ -1161,8 +1246,7 @@
   $("featIssues").addEventListener("click", function (e) {
     var w = e.target.getAttribute && e.target.getAttribute("data-where");
     if (!w) return;
-    var id = w.split(/[.:]/)[0];
-    if (F.find(mf(), id)) { ui.sel = id; render(); }
+    focusIssue(w);
   });
 
   initMaps();
@@ -1172,15 +1256,28 @@
     ui.message = "Repaired " + repairedEdges + " older sight edge(s); coordinates and height facts kept.";
     autosave();
   }
+
+  function copyFootprint(id, source, destination, includeBounds) {
+    var f = F.find(mf(), id);
+    if (!f || !Array.isArray(f.states)) return false;
+    var src = f.states.find(function (s) { return s.name === source; }), di = f.states.findIndex(function (s) { return s.name === destination; });
+    if (!src || di < 0 || source === destination || !src.footprint || F.geometryProblems(src.footprint).length) return false;
+    if (includeBounds && !src.sight_bounds) return false;
+    var next = F.setField(mf(), id, ["states", di, "footprint"], clone(src.footprint));
+    if (includeBounds) next = F.setField(next, id, ["states", di, "sight_bounds"], clone(src.sight_bounds));
+    commit(next, true);
+    return true;
+  }
   TG.recompute();
   setTool("select");
   window.taggerFeatures = {
-    onMode: function () { ui.draft = null; render(); },
-    onMap: function () { ui.sel = null; ui.draft = null; ui.message = null; render(); },
+    onMode: function () { ui.draft = null; ui.issueCells = null; render(); },
+    onMap: function () { ui.sel = null; ui.draft = null; ui.message = null; ui.issueCells = null; render(); },
     simulate: simulate, simTrigger: simTrigger, simAdvance: simAdvance, simReset: simReset,
     exportAll: exportAll, importText: importText, ui: ui, fe: fe, canonical: function () { return canonical; },
     commit: commit, setTool: setTool, createPreset: createPreset, placePoint: placePoint, finishDraft: finishDraft,
-    linkTo: linkTo, undo: doUndo, redo: doRedo, zoomAt: zoomAt, render: render, autosave: autosave, drafts: drafts
+    linkTo: linkTo, undo: doUndo, redo: doRedo, zoomAt: zoomAt, render: render, autosave: autosave, drafts: drafts,
+    focusIssue: focusIssue, copyFootprint: copyFootprint, placementIssues: placementIssues
   };
   render();
 })();
