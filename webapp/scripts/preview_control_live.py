@@ -8,6 +8,9 @@ players' side groups, each round's db_deaths), and `/replays/<uuid>/<n>.json` is
 as gzip. The rounds are computed with this checkout's engine, so a branch's engine can be looked at
 before anything is stored (docs/map-control-unknown-plan.md: check a small sample before recomputing).
 The page names real players: keep it local.
+
+`--blobs <dir>` takes the round blobs from `<dir>/<n>.json.gz` (a branch's own re-condense of the export)
+instead of the site's; the link data still comes from the public page. A missing local round stops the run.
 """
 
 from __future__ import annotations
@@ -48,6 +51,14 @@ def page_data(uuid: str) -> dict:
     return json.loads(found.group(1))
 
 
+def local_blobs(folder: Path, rounds: list[int]) -> dict[int, bytes]:
+    """`--blobs`: each round's gzip blob from `<folder>/<n>.json.gz`; a missing one stops the run."""
+    missing = [str(folder / f"{n}.json.gz") for n in rounds if not (folder / f"{n}.json.gz").is_file()]
+    if missing:
+        raise SystemExit(f"no local blob: {', '.join(missing)} (--blobs never falls back to the public blob)")
+    return {n: (folder / f"{n}.json.gz").read_bytes() for n in rounds}
+
+
 def link_for(ctx: dict, n: int) -> dict:
     """app/services/replay_control.round_link, from the page's data."""
     from app.scoring.plant_window import attacking_team
@@ -75,7 +86,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--heights", type=Path,
                         help="a height asset to preview the map with (scripts/build_control_heights.py --preview); "
                              "never a committed one's stand-in")
+    parser.add_argument("--blobs", type=Path,
+                        help="a folder of locally condensed round blobs, <n>.json.gz, used instead of the site's "
+                             "stored ones (the link data still comes from the public page); a missing round is an "
+                             "error, never a fallback to the public blob")
     args = parser.parse_args(argv)
+    local = local_blobs(args.blobs, args.rounds) if args.blobs else None   # read before the output folder is cleared
     out = Path(os.environ.get("TEMP") or tempfile.gettempdir()) / "valo-replay" / f"{args.uuid}-{args.tag}"
     out.mkdir(parents=True, exist_ok=True)
     for f in out.iterdir():
@@ -83,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     ctx = page_data(args.uuid)
     tasks = []
     for n in args.rounds:
-        blob = fetch(f"{SITE}/replays/{args.uuid}/{n}.json")
+        blob = local[n] if local is not None else fetch(f"{SITE}/replays/{args.uuid}/{n}.json")
         (out / f"{n}.json.gz").write_bytes(blob)
         tasks.append({"key": n, "map": ctx["match"]["map"], "blob": blob, "link": link_for(ctx, n),
                       **({"heights": str(args.heights)} if args.heights else {})})

@@ -15,6 +15,7 @@ import pytest
 from app.control import engine as ce
 from app.control import geometry as cg
 from app.control import heights as hc
+from app.control import mollies as mo
 from app.control import topology as ct
 from app.control import utility as ut
 from app.control.encode import checkpoint_ticks, encode_data, encode_summary
@@ -48,7 +49,14 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # gradient start values, and SILENT_DROP_M (the unknown stops at a fall higher than it). 7 was released
           # with main's utility review, so the slopes plan's "7" is 8 here. Unreleased, so re-pinned in place as
           # its steps land.
-          8: "648662a3109ca0a4"}
+          8: "648662a3109ca0a4",
+          # 9: player state (docs/superpowers/specs/2026-10-06-replay-player-state-design.md): utility.json's
+          # `molly` figures (radius and burn seconds per sustained damaging zone). 8 was released with main, so
+          # this bump lands with the figures, before the blind and molly rules. Unreleased, so re-pinned in place
+          # as those steps land. P08 added app/control/mollies.py (the molly allow-list) to the digest. The
+          # 2026-10-09 review re-pinned it for D6's wiki figures and D11's 7 m nearsight, then for the owner's
+          # full list of zones that stop the unknown (shapes and wall-piercing in mollies.py).
+          9: "782eba74fa70b2a1"}
 
 
 def _constants_digest() -> str:
@@ -66,7 +74,8 @@ def _constants_digest() -> str:
         return value
 
     constants = {}
-    for module in (ce, cg, hc, ct, ut):     # ut since revision 7: the ability figures (utility.json) and rules
+    # ut since revision 7: the ability figures (utility.json) and rules; mo since 9: the molly allow-list
+    for module in (ce, cg, hc, ct, ut, mo):
         for name, value in sorted(vars(module).items()):
             if name.isupper() and not name.startswith("_") and name != "CONTROL_REVISION":
                 if isinstance(value, (int, float, str, bool, tuple, list, dict, set, frozenset, np.ndarray)):

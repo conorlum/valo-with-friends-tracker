@@ -5,8 +5,9 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
 (`scripts/control_feasibility/engine_proto.py`) with the rules settled after it:
 
 - **Ticks (Q75).** Every TICK_STEP_S, plus a tick at each event, all on the 1/GRID_HZ s grid:
-  deaths, each ability's placement, throw and end, flash and nearsight hits (and their ends), status
-  and reveal starts and ends, and shots (at most one per SHOT_WINDOW_S). A death gets two ticks: the
+  deaths, each ability's placement, throw and end, status
+  and reveal starts and ends, and shots (at most one per SHOT_WINDOW_S). Flash and nearsight hits are exact
+  `[t, t + dur)` intervals, never snapped, and their ends are analytic instants (P07). A death gets two ticks: the
   last grid point before it (the dying player is alive there, so their lost control is exact) and
   the first at or after it (the state without them). Status and utility intervals are snapped to
   the grid too. Integrals weight each tick by the time to the next one, clipped at the live round's
@@ -14,8 +15,14 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
 - **Vision.** Each alive player's 103-degree view, raycast on the sight mask with smokes (hollow or
   solid), Viper's wall while it is up (its laid line; no corner tolerance) and the Q72 corner
   tolerance (geometry.py). The held cone's width follows the
-  movement over SPEED_WINDOW_S. Flashed: nothing. Nearsighted: a bubble. Concussed, stunned or
+  movement over SPEED_WINDOW_S. Nearsighted: a bubble. Concussed, stunned or
   revealed: all of it passive (Q42, Q57).
+- **Blinded (P07; docs/superpowers/specs/2026-10-06-replay-player-state-design.md, section 2).** Zero personal
+  control: no sight, presence or memory (kept in Memory and eaten as usual, never reinstalled), so no backfill;
+  no coverage, control, Q63 last-player credit, space taken or loss at a death. The body stays: alive, in place,
+  seen by the enemy, a source of the enemy's unknown, its own node evidence against its team's. Their trip,
+  alarmbot, Chamber trap and turret keep watching for the team, credited to nobody; a camera or drone they operate
+  shows nothing. Removing them in a counterfactual changes nothing. Their lost view is still contested (Q55).
 - **Memory (D6).** Ground a player saw and looked away from stays theirs as passive control until
   the team's unknown reaches it (2026-10-01; it replaced decay from open ground) or an enemy holds
   it live: a view, a watcher, standing in it (2026-10-04, D5). Memory dies with
@@ -35,6 +42,12 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   enemy: one the team spots starts again from where they were seen, and a dead one's goes with them. An enemy is
   also located, as an area round them, by a kill, the plant, audible movement, gunfire within hearing and gun
   damage (the timing-gaps spec, section 4); a revived enemy restarts where they stand.
+- **Mollies (P07a; docs/superpowers/specs/2026-10-06-replay-player-state-design.md, section 5).** A team's burning
+  damaging molly (app/control/mollies.py: which rows, `[t, min(t + seconds, row end))`) is ground its enemy can't
+  walk into, across or diagonally past while it burns, in the team's unknown, its counterfactual and its knowledge
+  picture; never the other team's. What the unknown already held inside stays, unchanged, and moves on only once the
+  fire is out, as the ground is entered: from the end, not from before it. Sight, positions and locating events are
+  untouched; the owner's death or blindness doesn't put it out.
 - **Watchers** (passive): trips, alarmbots, Chamber traps, Killjoy's turret, Cypher's camera while
   he is in it, and flown drones; a camera or drone in use replaces its owner's own view. Placed
   utility dies with its owner (Q71): a watcher counts only while its owner is alive. A Killjoy turret or
@@ -85,6 +98,7 @@ import numpy as np
 from scipy import ndimage
 from app.control import chokes
 from app.control import heights as hc
+from app.control import mollies
 from app.control import observe
 from app.control import topology
 from app.control import utility
@@ -142,7 +156,9 @@ GUN_HEARING_DEFAULT_M = HEARING["default_gun_m"]     # a gun named but not in th
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
 FAST_TURN_DPS = 90.0
 SPEED_WINDOW_S = 0.25
-NEARSIGHT_RADIUS_M = 4.0       # the plan's 8 m-wide bubble
+# Nearsight caps vision at a short radius and deafens (D11, changed 2026-10-09: the owner's 7 m; the wiki gives
+# 7.5 m for Paranoia, https://valorant.fandom.com/wiki/Paranoia). Only a flash is zero control (Holder.blind).
+NEARSIGHT_RADIUS_M = 7.0
 WAY_BACK_WIDTH_M = 2.0
 WALLBANG_CONTEST_S = 2.0       # per wallbang hit (the plan)
 TURRET_HALF = 50.0             # 100 degrees since patch 8.0
@@ -153,12 +169,12 @@ CHAMBER_TRAP_M = 7.0
 SAME_DEATH_S = 1.0
 
 # Placeholders for blobs from before revision 10 (plan: "Inputs the blob lacks"). A flash row's `t`
-# is the cast, not the hit, and the per-target blind time was dropped by the condenser.
-FLASH_FULL_S = {"phoenix": 1.5, "yoru": 1.5, "breach": 2.25, "kayo": 2.25, "skye": 2.25}
-FLASH_DEFAULT_S = 1.5
-FLASH_FUSE_S = 0.5
-NEARSIGHT_S = {"omen_paranoia": 2.0}
-NEARSIGHT_DEFAULT_S = 1.0      # also a hit with no configured duration (Reyna's Leer)
+# is the cast, not the hit, and the per-target blind time was dropped by the condenser. Defined once in
+# app/replays/status_intervals.py (POLICY), which the browser mirrors, so the engine and the viewer can't drift;
+# its normaliser turns the rows into the engine's blind intervals (`RoundInputs._blinds`). Named here so the
+# constants pin (test_control_format) keeps covering them.
+from app.replays.status_intervals import (  # noqa: E402,F401
+    FLASH_DEFAULT_S, FLASH_FULL_S, FLASH_FUSE_S, NEARSIGHT_DEFAULT_S, NEARSIGHT_S, normalize_conditions)
 # How long one enemy ability-damage hit keeps its victim contested past the hit.
 DAMAGE_CONTEST_PAD_S = 0.5
 
@@ -170,10 +186,10 @@ SMOKES = [(re.compile(p), r, solid) for p, r, solid in [
     (r"^Sarge_4_Smoke_Production", 415, True), (r"^Iris_E_Smoke$", 400, False)]]
 DAMAGE_ZONES = [(re.compile(p), r) for p, r in [
     (r"^Phoenix_MolotovFire$", 450), (r"^Sarge_Q_Molotov_Production$", 450),
-    (r"^Pandemic_AcidMolotov_NewMolotov$", 450), (r"^Aggrobot_C_ExplodeyPatch$", 450),
+    (r"^Pandemic_AcidMolotov_NewMolotov$", 450), (r"^Aggrobot_C_ExplodeyPatch$", 550),
     (r"^Killjoy_4_BeeSwarm_Damage$", 450), (r"^Hunter_4_ExplosiveBolt_Explosion$", 350),
     (r"^Clay_Q_Explosion$", 450), (r"^Cashew_X_Segment$", 350), (r"^Sarge_X_OrbitalStrike", 900),
-    (r"^Cashew_E_Explosion$", 400)]]
+    (r"^Cashew_E_Explosion$", 450)]]
 # Flown drones: (cone half-angle, range in m or None).
 DRONES = {"Hunter_E_Drone": (FOV_HALF, None), "Guide_Q_PossessableScout": (45.0, 22.5)}
 VIPER_WALL = "Pandemic_E_SmokeScreenManager"   # the condenser's `points` and `on` (extras.py)
@@ -331,6 +347,8 @@ class RoundInputs:
         # a wall (of either kind) went up or down, which control is evaluated at (`analytic_times`)
         self.blockers: list[tuple[float, float, np.ndarray]] = []
         self.transitions: list[float] = []
+        # P07a: burning damaging mollies as (owner's side, Molly, footprint nodes); `hazard_at` (app/control/mollies.py)
+        self.mollies: list[tuple[str, mollies.Molly, np.ndarray]] = []
         self.flashed, self.nearsight = defaultdict(list), defaultdict(list)
         self.downgraded, self.contest_status = defaultdict(list), defaultdict(list)
         self.hit_contest = defaultdict(list)
@@ -498,11 +516,9 @@ class RoundInputs:
                         self.damage_zones.append((t0, t1, e["u"] * px_per_uv, e["v"] * px_per_uv,
                                                   r * geo.uv_per_unit * px_per_uv, e.get("by")))
                 self._watcher(e, key, t0, t1)
-            elif k == "flash":
-                self._flash(e, util)
-            elif k == "nearsight":
-                self._nearsight(e)
-            elif k in ("reveal", "status", "flash", "nearsight") and self.evolution and self._immune_row(e):
+            elif k in ("flash", "nearsight"):
+                continue            # `_blinds`, below: all of them at once, through the shared normaliser
+            elif k in ("reveal", "status") and self.evolution and self._immune_row(e):
                 continue
             elif k == "reveal":
                 self.downgraded[e["target"]].append(_span(e["t"], e["t1"]))
@@ -522,6 +538,8 @@ class RoundInputs:
                         self.miss("shot without a gun (longest hearing range used)", int(e["by"]))
             elif k == "damage":
                 self._damage(e)
+        self._blinds(util)
+        self._mollies(util)
         if not any(e.get("k") == "damage" for e in util):
             self.missing["damage hits (enemy damage zones only)"] += 1
         self._suppress_devices(util)
@@ -554,47 +572,40 @@ class RoundInputs:
             return not utility.affects(capability, self.evolution, e["target"], float(e["t"]))
         return False
 
-    def _flash(self, e: dict, util: list) -> None:
-        if self.evolution:
-            e = self._unhit(e)
-        if "hits" in e:
-            for slot, t, dur in e["hits"]:
-                if dur is None:
-                    dur = FLASH_FULL_S.get((e.get("ability") or "").split("_")[0], FLASH_DEFAULT_S)
-                    self.missing["flash hit without a duration (placeholder used)"] += 1
-                self.flashed[slot].append(_span(t, t + dur))
-                self.events += [t, t + dur]
-            return
-        pop = next((a["t"] for a in util if a.get("k") == "ability" and a.get("by") == e.get("by")
-                    and (a.get("thrown") or {}).get("t0") == e["t"]), e["t"] + FLASH_FUSE_S)
-        dur = FLASH_FULL_S.get((e.get("ability") or "").split("_")[0], FLASH_DEFAULT_S)
-        for s in e.get("targets", []):
-            self.flashed[s].append(_span(pop, pop + dur))
-            self.events += [pop, pop + dur]
-            self.missing["flash hit time and blind duration (placeholder used)"] += 1
+    def _blinds(self, util: list) -> None:
+        """Flash and nearsight hits as exact `[t, t + dur)` intervals (P07; the plan's amendment "Exact flash and
+        nearsight intervals"): the shared normaliser's (app/replays/status_intervals.py, which the viewer mirrors),
+        unsnapped, cut at the end of the life they start in and at the round's end, overlaps merged; a zero or
+        negative duration is nothing. Their ends are analytic instants (`transitions`), like an ability wall's. An
+        ulting Veto's hits are taken out first (W10). Placeholders are counted in `missing`, as before."""
+        rows = []
+        for e in util:
+            k = e.get("k")
+            if k == "ability":
+                rows.append(e)      # the normaliser finds an older flash row's explosion in its thrower's ability row
+            elif k in ("flash", "nearsight"):
+                e = self._unhit(e) if self.evolution else e
+                rows.append(e)
+                if "hits" in e:
+                    gaps = sum(1 for h in e["hits"] if h[2] is None)
+                    case = "flash hit without a duration" if k == "flash" else "nearsight hit without a duration"
+                else:
+                    gaps = len(e.get("targets") or [])
+                    case = ("flash hit time and blind duration" if k == "flash"
+                            else "nearsight hit time and duration")
+                if gaps:
+                    self.missing[f"{case} (placeholder used)"] += gaps
+        lives = {str(s): [[a, None if b == math.inf else b] for a, b in ivs] for s, ivs in self.lives.items()}
+        for slot, spans in normalize_conditions(rows, lives, self.t_end).items():
+            for c in spans:
+                (self.flashed if c["c"] == "blinded" else self.nearsight)[slot].append((c["t0"], c["t1"]))
+                self.transitions += [c["t0"], c["t1"]]
 
     def _unhit(self, e: dict) -> dict:
         """A flash or nearsight row without its hits on an ulting Veto: they never blind him (W10)."""
         hits = [h for h in e.get("hits") or [] if utility.affects("blind", self.evolution, h[0], float(h[1]))]
         targets = [s for s in e.get("targets") or [] if utility.affects("blind", self.evolution, s, float(e["t"]))]
         return {**e, "targets": targets, **({"hits": hits} if "hits" in e else {})}
-
-    def _nearsight(self, e: dict) -> None:
-        if self.evolution:
-            e = self._unhit(e)
-        if "hits" in e:
-            for slot, t, dur in e["hits"]:
-                if dur is None:
-                    dur = NEARSIGHT_DEFAULT_S
-                    self.missing["nearsight hit without a duration (placeholder used)"] += 1
-                self.nearsight[slot].append(_span(t, t + dur))
-                self.events += [t, t + dur]
-            return
-        dur = NEARSIGHT_S.get(e.get("ability"), NEARSIGHT_DEFAULT_S)
-        for s in e.get("targets", []):
-            self.nearsight[s].append(_span(e["t"], e["t"] + dur))
-            self.events += [e["t"], e["t"] + dur]
-            self.missing["nearsight hit time and duration (placeholder used)"] += 1
 
     def _damage(self, e: dict) -> None:
         by, target = e.get("by"), e.get("target")
@@ -899,6 +910,81 @@ class RoundInputs:
                 out[nodes] = np.maximum(out[nodes], b)
         return out
 
+    def _mollies(self, util: list) -> None:
+        """The round's damaging mollies (P07a; app/control/mollies.py decides which rows count and when they burn:
+        `[t, min(t + seconds, t1))`), cut short where the row's object is gone first, each kept under its owner's
+        side with its footprint (`_molly_nodes`). Their starts and ends are analytic instants, like a wall's. A
+        molly whose owner, place, time or figures are unknown, or whose owner has no side, blocks nothing and is
+        counted in `missing`."""
+        figures = utility.FIGURES.get("molly") or {}
+        zones, diagnostics = mollies.molly_zones(util, figures)
+        for case, count in diagnostics.items():
+            self.missing[f"{case} (blocks nothing)"] += count
+        for z in zones:
+            side = self.team.get(z.by)
+            if side is None:
+                self.missing["molly owner without a side (blocks nothing)"] += 1
+                continue
+            self.mollies.append((side, z, self._molly_nodes(z, z.z)))
+            self.transitions += [z.t0, z.t1]
+
+    def _molly_nodes(self, z: "mollies.Molly", z_dm) -> np.ndarray:
+        """A molly's footprint: the walkable nodes whose cell centre is inside its shape (a circle of its radius; a
+        capsule, its radius round a segment `length_m` long from its place along `angle`; a strip `length_m` along
+        `angle` and `width_m` across, centred on its place), on the floor under its stored height (the lowest
+        without one, counted). One that passes walls (`through`) is all of them; any other only those a walk
+        inside the shape reaches from its place (a fire doesn't burn through a wall)."""
+        geo = self.geo
+        x, y = z.u * PX / 10000, z.v * PX / 10000
+        z_m = self._device_z(z_dm)
+        if geo.heights is not None and z_m is None:
+            self.missing["approximate heights (a molly has no z: lowest floor used)"] += 1
+        cells = GRID * GRID
+        dx, dy = geo.centres[:cells, 0] - x, geo.centres[:cells, 1] - y
+        a = math.radians(z.angle)
+        along, across = dx * math.cos(a) + dy * math.sin(a), -dx * math.sin(a) + dy * math.cos(a)
+        r = z.radius_m / geo.m_per_px
+        if z.shape == "capsule":
+            t = np.clip(along, 0.0, z.length_m / geo.m_per_px)
+            shape = (along - t) ** 2 + across ** 2 <= r * r
+            reach = z.radius_m + z.length_m
+        elif z.shape == "strip":
+            shape = (np.abs(along) <= z.length_m / 2 / geo.m_per_px) & (np.abs(across) <= z.width_m / 2 / geo.m_per_px)
+            reach = math.hypot(z.length_m, z.width_m) / 2
+        else:
+            shape = dx ** 2 + dy ** 2 <= r * r
+            reach = z.radius_m
+        near = np.flatnonzero(shape & geo.walk.ravel())
+        inside = np.zeros(geo.n, bool)
+        for c in near.tolist():
+            inside[geo.node_at(c, z_m)] = True
+        inside &= geo.walk_n
+        if z.through:
+            return np.flatnonzero(inside)
+        seed = np.zeros(geo.n, bool)
+        seed[geo.node_at(geo.cell_of_px(x, y), z_m)] = True
+        steps = max(1, int(math.ceil(reach / geo.cell_m)))
+        grown = topology.of(geo).dilate(seed, eight=True, iterations=steps, within=inside | seed)
+        return np.flatnonzero(grown & inside)
+
+    def hazard_at(self, side: str, t: float) -> np.ndarray:
+        """The nodes `side`'s burning mollies cover at t (`t0 <= t < t1`): `unknown[side]` (where `side` thinks the
+        enemy may be) can't be walked through them. Never the other side's: nobody is held by their own team's fire."""
+        out = np.zeros(self.geo.n, bool)
+        for s, z, nodes in self.mollies:
+            if s == side and z.t0 <= t < z.t1:
+                out[nodes] = True
+        return out
+
+    def hazard_reopened(self, side: str, t: float) -> np.ndarray:
+        """Per node, when the last of `side`'s mollies there went out, at or before t (-inf where none has): the
+        ground is walked from then on, and nothing that waited in it moves before then."""
+        out = np.full(self.geo.n, -np.inf)
+        for s, z, nodes in self.mollies:
+            if s == side and z.t1 <= t:
+                out[nodes] = np.maximum(out[nodes], z.t1)
+        return out
+
     def smokes_at(self, t: float) -> list:
         """What blocks sight at t: the smokes as (x, y, r, solid), then the walls that are up."""
         return ([(x, y, r, solid) for t0, t1, x, y, r, solid in self.smokes if t0 <= t < t1]
@@ -986,6 +1072,43 @@ class Holder:
     flagged: bool            # enemy damage, a wallbang or a contesting status on them
     mode: str
     memory: np.ndarray | None = None   # the remembered part of `passive` (Memory.apply), flat
+    blind: bool = False      # flashed now (P07): alive, in place and seen, with no personal control
+
+
+# Zero personal control while blinded (P07; the design's section 2, the plan's amendment "Blinded control"). A
+# blinded player keeps their body: alive, positioned, seen by the enemy, a source of the enemy's unknown and their
+# own node evidence against their team's (`live_mask`). Their sight, presence and memory are off, so they get no
+# backfill; their trip, alarmbot, Chamber trap and turret still watch for the team, credited to nobody; a camera or
+# drone they operate shows nothing. One function per rule, so each can be switched off alone.
+
+
+def credited(h: Holder) -> bool:
+    """Whether the player's own coverage, control (the Q63 last-player credit included) and space taken count now."""
+    return not h.blind
+
+
+def contributes(h: Holder) -> bool:
+    """Whether removing the player in a counterfactual takes anything away. A blinded player holds nothing
+    personal, and their body and devices stay, so the team's state without them is the state."""
+    return not h.blind
+
+
+def remembers(h: Holder) -> bool:
+    """Whether remembered ground is the player's passive control now. Not while blinded: it stays in Memory, where
+    the unknown and the enemy's live claims go on eating it, and comes back only as it is at the blind's end."""
+    return not h.blind
+
+
+def device_sees(kind: str, blind: bool) -> bool:
+    """A camera or drone shows ground only through its operator's eyes; the other watchers work on their own."""
+    return not (blind and kind in ("drone", "camera"))
+
+
+def live_mask(h: Holder) -> np.ndarray:
+    """The live control that holds the team's unknown back (before Memory): view, watchers and own node."""
+    lv = h.active | h.passive | h.watch
+    lv[h.cell] = True
+    return lv
 
 
 @dataclass
@@ -1134,7 +1257,8 @@ class Tick:
                 raw = cast(geo, x, y, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes,
                            eye_z=self._eye(s, t, cell), own=cell, record=self.fallbacks)
             body = raw.copy()
-            if _during(rnd.flashed[s], t):
+            blind = _during(rnd.flashed[s], t)
+            if blind:
                 body[:] = False
             elif _during(rnd.nearsight[s], t):
                 r = NEARSIGHT_RADIUS_M / geo.m_per_px
@@ -1144,16 +1268,17 @@ class Tick:
             else:
                 active = body & sector(geo, x, y, yaw, CONE_HALF[mode])
             passive = body & ~active
-            if not _during(rnd.flashed[s], t):
+            if not blind:
                 passive |= self._presence(x, y, cell) & ~active
-            watch = self._watch(s, t)
+            watch = self._watch(s, t, blind)
             enemy = "B" if rnd.team[s] == "A" else "A"
             flagged = _during(rnd.contest_status[s], t) or _during(rnd.hit_contest[s], t) or any(
                 t0 <= t < t1 and (x - zx) ** 2 + (y - zy) ** 2 < r * r and rnd.team.get(by) == enemy
                 for t0, t1, zx, zy, r, by in rnd.damage_zones)
-            self.holders[s] = Holder(s, rnd.team[s], cell, x, y, active, passive, watch, raw, body, flagged, mode)
+            self.holders[s] = Holder(s, rnd.team[s], cell, x, y, active, passive, watch, raw, body, flagged, mode,
+                                     blind=blind)
             if geo.heights is not None and s not in using:
-                looks[s] = (yaw, self._eye(s, t, cell), _during(rnd.flashed[s], t), _during(rnd.nearsight[s], t),
+                looks[s] = (yaw, self._eye(s, t, cell), blind, _during(rnd.nearsight[s], t),
                             None if _during(rnd.downgraded[s], t) else CONE_HALF[mode])
         # (viewer, enemy) -> in the viewer's active cone: enemies seen at their own height, above their floor
         self.direct: dict[tuple[int, int], bool] = self._direct(looks) if looks else {}
@@ -1166,9 +1291,7 @@ class Tick:
         self.view: dict[int, np.ndarray] = {}
         for s, h in self.holders.items():
             self.view[s] = h.active | h.passive
-            lv = h.active | h.passive | h.watch
-            lv[h.cell] = True
-            self.live[s] = lv
+            self.live[s] = live_mask(h)
         # enemy sight of each holder: sees[e] = the holders e's body view reaches
         self.sees = {e.slot: {h.slot for h in self.holders.values()
                               if h.team != e.team and (e.body[h.cell] or (e.slot, h.slot) in self.direct)}
@@ -1187,6 +1310,9 @@ class Tick:
         # flat cells in a pinch (Unknown.sealed) at this tick, so the counterfactual's unknown keeps them
         # shut too; set with `unknown` by compute_round
         self.sealed: np.ndarray | None = None
+        # side -> the nodes its burning mollies cover at this tick (P07a), shut in that side's counterfactual
+        # unknown only; set by TickRunner.step on a round with mollies
+        self.hazard: dict[str, np.ndarray] | None = None
         self._usafe: dict = {}   # side, or (side, removed slot) -> its Safe cells from unknown
         self._ucf: dict[tuple[str, int], np.ndarray] = {}   # (side, removed slot) -> unknown_without
 
@@ -1302,11 +1428,11 @@ class Tick:
             fronts = grown
         return {int(s): owner == s for s in np.unique(owner[owner >= 0]).tolist()}
 
-    def _watch(self, s: int, t: float) -> np.ndarray:
+    def _watch(self, s: int, t: float, blind: bool = False) -> np.ndarray:
         geo, rnd = self.geo, self.rnd
         watch = np.zeros(geo.n, bool)
         for w in rnd.watchers:
-            if w.by != s or not _watching(w, t):
+            if w.by != s or not _watching(w, t) or not device_sees(w.kind, blind):
                 continue
             if w.kind in ("trip", "area"):
                 watch[w.cells] = True
@@ -1477,6 +1603,8 @@ class Tick:
             held = others | self._live_of(self.holders[removed])
             src = self.unknown[side].copy()
             shut = np.zeros(self.geo.n, bool) if self.sealed is None else self.sealed.copy()
+            if self.hazard is not None:
+                shut |= self.hazard[side]      # the side's own fire: its enemy doesn't walk through it (P07a)
             for e in self.holders.values():
                 if e.team != side:
                     src[e.cell] = True
@@ -1489,9 +1617,7 @@ class Tick:
     def _live_of(self, h: Holder) -> np.ndarray:
         if h.slot in self.live:
             return self.live[h.slot]
-        lv = h.active | h.passive | h.watch
-        lv[h.cell] = True
-        return lv
+        return live_mask(h)
 
     def live_claims(self, side: str, removed: int | None = None) -> np.ndarray:
         """Flat cells `side` holds with something live, without `removed`: a view, a watcher or a player's own
@@ -1557,9 +1683,15 @@ class Tick:
     def compose(self, removed: int | None = None, base: dict | None = None, full: bool = True,
                 stats: dict | None = None) -> dict:
         """The tick's cell states. `removed` drops one player (the counterfactual). With `base` and
-        not `full`, fills are reused or extended from the base instead of recomputed."""
-        geo, walk = self.geo, self.geo.walk_n
+        not `full`, fills are reused or extended from the base instead of recomputed.
+
+        Removing a blinded player removes their personal contribution, which is nothing (P07): their body, own node
+        and devices stay, so either counterfactual is the state itself."""
         stats = stats if stats is not None else defaultdict(int)
+        if removed is not None and not contributes(self.holders[removed]):
+            stats["removed_holds_nothing"] += 1
+            return base if base is not None else self.compose(stats=stats)
+        geo, walk = self.geo, self.geo.walk_n
         cl = {s: self.claims(s, removed) for s in ("A", "B")}
         fills = {}
         rside = self.holders[removed].team if removed is not None else None
@@ -1706,14 +1838,19 @@ class Tick:
         """Per player (Q60): active and passive cells, shared cells split evenly, and the active and
         passive masks."""
         out = {}
+        none = np.zeros(self.geo.n, bool)
         for side in ("A", "B"):
-            hs = self.team(side, None)
+            hs = []
+            for h in self.team(side, None):
+                if credited(h):
+                    hs.append(h)
+                else:   # blinded (P07): nothing of theirs is credited, and they share nobody's cells
+                    out[h.slot] = (0.0, 0.0, none, none)
             if not hs:
                 continue
             # backfill on ground the team already holds as Safe stays the team's, credited to nobody
             safe = self._safe.get(side)
             back = {s: m & ~safe if safe is not None else m for s, m in self.backfill(side).items()}
-            none = np.zeros(self.geo.n, bool)
             n_act = sum(h.active.astype(np.int8) for h in hs)
             n_pas = sum((h.passive | h.watch | back.get(h.slot, none)).astype(np.int8) for h in hs)
             for h in hs:
@@ -1803,6 +1940,8 @@ class Knowledge:
         # an ability wall up now is not somewhere an unseen enemy walked (W14; its route at earlier times isn't
         # replayed here: the knowledge picture is the reach at this instant, as before)
         walls = self.rnd.blocked_at(t) if getattr(self.rnd, "blockers", None) else np.zeros(geo.n, bool)
+        if getattr(self.rnd, "mollies", None):
+            walls = walls | self.rnd.hazard_at(self.side, t)    # nor through the team's own burning molly (P07a)
         for s, team in self.rnd.team.items():
             if team != self.enemy or s in seen or not self.rnd.alive(s, t):
                 continue
@@ -2006,6 +2145,13 @@ class Unknown:
             mid = t if since == -math.inf else (since + t) / 2
             blocked_step, blocked_now = rnd.blocked_at(mid), rnd.blocked_at(t)
             reopened = rnd.reopened_by(t)        # a wall that has ended: its line is entered from then on
+        # P07a: a side's burning mollies hold its unknown the same way, per side and without clearing what is
+        # already inside (see `_hold`); constant through the step, as every start and end is an instant of its own
+        burning = rnd is not None and getattr(rnd, "mollies", None)
+        if burning:
+            mid_h = t if since == -math.inf else (since + t) / 2
+            hazard = {s: rnd.hazard_at(s, mid_h) for s in ("A", "B")}
+            out_at = {s: rnd.hazard_reopened(s, t) for s in ("A", "B")}
         infos = getattr(rnd, "infos", None) or []
         if infos:
             times = [i.t for i in infos]
@@ -2037,8 +2183,7 @@ class Unknown:
             solid = self._trips(tick, side)
             for h in tick.holders.values():
                 if h.team == side:
-                    live |= h.active | h.passive | h.watch
-                    live[h.cell] = True
+                    live |= live_mask(h)
                     spots |= h.active | h.watch
                 else:
                     shut[h.cell] = False                       # one standing in a pinch is in it
@@ -2134,7 +2279,14 @@ class Unknown:
                     # paused through this step (a pause starts at an instant of its own): they enter nothing in
                     # it, not even ground the team has just stopped watching
                     step_free = np.maximum(step_free, t)
-                reached, parent = self._spread(reached, step_room, step_free, t, self.seen[side].get(slot), step_solid)
+                seen = self.seen[side].get(slot)
+                held = None
+                if burning:
+                    reached, step_room, step_free, step_solid, seen, held = self._hold(
+                        reached, step_room, step_free, step_solid, seen, hazard[side], out_at[side], h)
+                reached, parent = self._spread(reached, step_room, step_free, t, seen, step_solid)
+                if held is not None:
+                    reached = self._unhold(reached, held)
                 if blocking:
                     gone = blocked_now.copy()
                     if h is not None:
@@ -2234,10 +2386,11 @@ class Unknown:
         return reached, before, sources, area, centre
 
     def _heard_by(self, rnd, side: str, te: float, x: float, y: float, range_m: float) -> bool:
-        """Whether a live player of `side` is within range_m of (x, y) px at te (walls ignored)."""
+        """Whether a live player of `side` is within range_m of (x, y) px at te (walls ignored). A nearsighted player
+        is deafened and hears nothing (D11, changed 2026-10-09)."""
         r = range_m / self.geo.m_per_px
         for s, team in rnd.team.items():
-            if team != side or not rnd.alive(s, te):
+            if team != side or not utility.listens(rnd, s, te):
                 continue
             p = rnd.pos(s, te)
             if p is not None and (p[0] - x) ** 2 + (p[1] - y) ** 2 <= r * r:
@@ -2381,6 +2534,47 @@ class Unknown:
                 out[w.cells] = True
         return out
 
+    @staticmethod
+    def _hold(reached: np.ndarray, room: np.ndarray, free: np.ndarray, solid: np.ndarray | None,
+              seen: tuple[int, float] | None, hazard: np.ndarray, out: np.ndarray, h):
+        """One enemy's step through the team's burning mollies (P07a; the plan's amendment "Molly traversal"):
+        `hazard` (the side's fire this step) is taken out of the room and is solid, so nothing walks in, across, or
+        diagonally past it, and what was already inside is put aside, to be put back unchanged after the spread
+        (`_unhold`: kept, never grown, never cleared by the fire itself). The enemy's own node stays theirs: one
+        standing in the fire walks out from where they stand. Ground a molly has gone out on is entered from then
+        (`out`), and an arrival from before it went out moves on only from then, as does a sighting in it.
+        Returns the step's (reached, room, free, solid, seen) and what `_unhold` needs."""
+        hazard = hazard.copy()
+        if h is not None:
+            hazard[h.cell] = False
+        inside = hazard & np.isfinite(reached)
+        kept = reached[inside]
+        reached = reached.copy()
+        reached[hazard] = np.inf
+        if hazard.any():
+            room = room & ~hazard
+            solid = hazard if solid is None else solid | hazard
+        free = np.maximum(free, out)
+        late = np.flatnonzero(np.isfinite(reached) & (out > reached))
+        early = reached[late]
+        reached[late] = out[late]
+        if seen is not None:
+            if hazard[seen[0]]:
+                seen = None
+            elif out[seen[0]] > seen[1]:
+                seen = (seen[0], float(out[seen[0]]))
+        return reached, room, free, solid, seen, (inside, kept, late, early, out)
+
+    @staticmethod
+    def _unhold(reached: np.ndarray, held) -> np.ndarray:
+        """After `_hold`'s spread: the fire's insides back as they were, and an arrival that waited for a molly to
+        go out keeps its own time where nothing beat it (its route entry stands; only its moving on waited)."""
+        inside, kept, late, early, out = held
+        back = reached[late] == out[late]
+        reached[late[back]] = early[back]
+        reached[inside] = kept
+        return reached
+
     def _spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float,
                 seen: tuple[int, float] | None = None, solid: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         """`reached` relaxed through `room` up to time `t`: each cell's earliest arrival from a
@@ -2477,8 +2671,7 @@ class Memory:
         # enemy holding remembered ground live ends it (the user's call, 2026-10-04: D5)
         live: dict[str, np.ndarray] = {}
         for h in tick.holders.values():
-            lv = h.active | h.passive | h.watch
-            lv[h.cell] = True
+            lv = live_mask(h)
             live[h.team] = live[h.team] | lv if h.team in live else lv
         for h in tick.holders.values():
             if h.slot in self.cells:
@@ -2491,8 +2684,9 @@ class Memory:
         for h in tick.holders.values():
             seen = (h.active | h.passive) & walk
             if h.slot in self.cells:
-                h.memory = self.cells[h.slot] & ~h.active
-                h.passive = h.passive | h.memory
+                if remembers(h):     # blinded: kept (and eaten) here, but not theirs until they see again (P07)
+                    h.memory = self.cells[h.slot] & ~h.active
+                    h.passive = h.passive | h.memory
                 self.cells[h.slot] |= seen
             else:
                 self.cells[h.slot] = seen
@@ -2660,6 +2854,9 @@ class TickRunner:
         if rnd is not None and getattr(rnd, "blockers", None):
             # a wall up now stays shut in the counterfactual's unknown too (W14)
             tick.sealed = tick.sealed | rnd.blocked_at(tick.t)
+        if rnd is not None and getattr(rnd, "mollies", None):
+            # each side's burning mollies stay shut in that side's counterfactual unknown too (P07a)
+            tick.hazard = {side: rnd.hazard_at(side, tick.t) for side in ("A", "B")}
         return tick
 
 
@@ -2778,7 +2975,10 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                 cf_check["max_cells_differing"] = max(cf_check["max_cells_differing"], diff)
             base_score = score(state, side)
             last = not tick.team(side, s)
-            if last:  # Q63: no terminal flip; the last player controls only what the team loses
+            if not credited(h):
+                # blinded (P07): no control, a last player's Q63 credit included, and so no loss if they die now
+                drop = np.zeros(geo.n, np.int8)
+            elif last:  # Q63: no terminal flip; the last player controls only what the team loses
                 drop = (base_score > 0).astype(np.int8)
             else:
                 drop = base_score - score(cf["state"], side)

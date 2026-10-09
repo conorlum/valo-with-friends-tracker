@@ -734,3 +734,50 @@ def test_the_real_competitive_fixture_condenses_with_decoded_game_state():
     assert out.report["match_spawn_check"]["ok"] and out.report["sides"]["resolved"]
     assert out.link_inputs["eligibility"]["eligible"] is True
     assert [len(out.rounds[n]["kills"]) for n in (1, 2)] == [9, 6]
+
+
+# ------------------------------------------------------------ player state (P03, CONDENSE 15)
+
+
+def test_health_and_the_proven_spike_land_in_the_rounds_player_state(tmp_path):
+    from replay_synthetic import player_state_events
+
+    match = SyntheticMatch(shape="swiftplay")
+    match.extra_events += player_state_events(match)
+    vrf = match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf")
+    out = run(tmp_path, match, vrf_path=vrf)
+    state = fmt.decode_blob(out.encoded_rounds()[1])["player_state"]
+    assert state["vitals"] == {"5": [{"t": 5.0, "life": 0, "hp": 55.0, "sh": 0.0, "mhp": 100.0, "msh": 25.0},
+                                     {"t": 10.0, "life": 0, "hp": 0.0, "sh": 0.0, "mhp": 100.0, "msh": 25.0}]}
+    assert state["damage_taken"] == {"1": [3.25], "2": [4.5], "5": [5.0, 10.0]}
+    [bomb] = [u for u in out.rounds[1]["util"] if u.get("kind") == "Bomb"]
+    # D5: the drop at 15.0 s follows slot 7's death (the match's kill at 15.0 s), so slot 7 carried it from the buy
+    # phase and it lies where they died.
+    [death] = [k for k in out.rounds[1]["kills"] if 14.5 <= k["t"] <= 15.0]
+    assert death["victim"] == 7
+    assert state["spike"] == [{"t": -25.0, "s": "unknown"}, {"t": -20.0, "s": "carried", "slot": 7},
+                              {"t": 15.0, "s": "dropped", "u": death["u"], "v": death["v"]},
+                              {"t": 18.0, "s": "carried", "slot": 6},
+                              {"t": 30.0, "s": "planted", "u": bomb["u"], "v": bomb["v"]}, {"t": 39.0, "s": "defused"}]
+    assert out.report["player_state"]["vitals: HP section unresolved (owner never died)"] == 2
+    assert out.report["player_state"]["spike: planter attributed"] == 1
+    assert fmt.decode_blob(out.encoded_rounds()[2])["player_state"] == {"version": 1, "vitals": {},
+                                                                         "damage_taken": {}, "spike": []}
+
+
+def test_without_extras_the_spike_has_no_planter(tmp_path):
+    from replay_synthetic import player_state_events
+
+    match = SyntheticMatch(shape="swiftplay")
+    match.extra_events += player_state_events(match)
+    vrf = match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf")
+    state = run(tmp_path, match, vrf_path=vrf, with_extras=False).rounds[1]["player_state"]
+    # The death-drop (D5) needs only the kills; the planter and the plant's place need the extras' Bomb row.
+    assert [e.get("slot") for e in state["spike"]] == [None, 7, None, None, None, None]
+    assert [("u" in e) for e in state["spike"]] == [False, False, True, False, False, False]
+
+
+def test_an_export_with_no_player_state_sources_keeps_the_old_blob_shape(tmp_path):
+    blob = run(tmp_path, SyntheticMatch(shape="swiftplay"), vrf_path=SyntheticMatch(shape="swiftplay").write_vrf(
+        tmp_path / f"{MATCH_UUID}.vrf")).rounds[1]
+    assert "player_state" not in blob

@@ -660,3 +660,78 @@ def test_the_page_listens_for_space_on_the_document_not_only_inside_the_viewer()
     assert 'page.addEventListener("keydown", function (e) { self.onSpaceDown(e); });' in source
     assert 'page.addEventListener("keyup", function (e) { self.onSpaceUp(e); });' in source
     assert 'if (e.key === " ") { e.preventDefault(); self.toggle(); }' not in source      # one listener, not two
+
+
+# The replay player-state plan P02 step 3: one condition normalizer, the same in Python and the browser.
+CONDITION_ROWS = [
+    {"k": "flash", "t": 17.398, "by": 8, "ability": "skye_guiding_light", "targets": [5, 7, 6, 4],
+     "hits": [[5, 18.626, 1.615], [7, 18.634, 0.05], [6, 18.634, 0.0], [4, 18.6875, None], [12, 18.7, 1.0]]},
+    {"k": "flash", "t": 19.0, "by": 6, "ability": "yoru_blindside", "targets": [5], "hits": [[5, 19.5625, 2.0]]},
+    {"k": "flash", "t": 3.0625, "by": 2, "ability": "breach_flashpoint", "targets": [9, 1]},
+    {"k": "flash", "t": 50.1, "by": 0, "ability": "phoenix_curveball", "targets": [3]},
+    {"k": "ability", "t": 50.9, "by": 0, "code": "Phoenix", "name": "Q", "thrown": {"t0": 50.1}},
+    {"k": "nearsight", "t": 9.9, "by": 1, "ability": "omen_paranoia", "targets": [7], "hits": [[7, 9.928, 2.0]]},
+    {"k": "nearsight", "t": 30.0, "by": 3, "ability": "omen_paranoia", "targets": [8]},
+    {"k": "nearsight", "t": 31.0, "by": 3, "ability": "reyna_leer", "targets": [8], "hits": [[8, 31.3125, None]]},
+    {"k": "status", "t": 12.0625, "t1": 14.5, "by": 3, "target": 1, "code": "Sarge", "name": "X", "status": "slowed",
+     "from": "object"},
+    {"k": "status", "t": 14.0, "t1": 15.0, "by": 4, "target": 1, "code": "Sarge", "name": "X", "status": "slowed"},
+    {"k": "status", "t": 15.0, "t1": 15.5625, "by": 4, "target": 1, "status": "slowed"},
+    {"k": "ability", "t": 3.6875, "by": 7, "code": "Breach", "name": "Q", "thrown": {"t0": 3.0625}},
+    {"k": "status", "t": 20.0, "t1": 20.0, "by": 3, "target": 1, "status": "slowed"},
+    {"k": "status", "t": 30.0, "by": 3, "target": 2, "status": "hindered"},
+    {"k": "flash", "t": 97.0, "by": 8, "ability": "skye_guiding_light", "targets": [9], "hits": [[9, 97.5, 5.0]]},
+    {"k": "flash", "t": 25.0, "by": 8, "ability": "skye_guiding_light", "targets": [2], "hits": [[2, 25.5, 3.0]]},
+]
+CONDITION_ALIVE = {**{str(s): [[0.0, None, None]] for s in range(10)}, "2": [[0.0, 26.0, "kill"], [40.0, None, None]]}
+
+
+def _js_conditions(rows, alive, t_end):
+    script = """
+      const R = require(process.argv[1]);
+      let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
+        const p = JSON.parse(input);
+        process.stdout.write(JSON.stringify({conds: R.normalizeConditions(p.rows, p.alive, p.t_end),
+                                             policy: R.CONDITION_POLICY}));
+      });"""
+    return run_node(script, {"rows": rows, "alive": alive, "t_end": t_end})
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_the_js_condition_normalizer_matches_the_python_one():
+    from app.replays import status_intervals as si
+    expected = json.loads(json.dumps(si.normalize_conditions(CONDITION_ROWS, CONDITION_ALIVE, 100.0)))
+    got = _js_conditions(CONDITION_ROWS, CONDITION_ALIVE, 100.0)
+    assert got["policy"] == si.POLICY, "one fallback policy: the browser can't drift from the engine"
+    assert got["conds"] == expected
+    assert {"1", "2", "3", "4", "5", "7", "8", "9"} <= set(expected), "the fixture exercises every branch"
+    assert "6" not in expected and "12" not in expected
+
+
+ODD_CONDITION_ROWS = [
+    "not a row", None, {"k": "flash", "t": 5.0625, "by": True, "ability": ["skye_x"], "targets": 3},
+    {"k": "flash", "t": 6.0625, "ability": "kayo_flash", "targets": [4]},
+    {"k": "ability", "t": 6.75, "by": None, "code": "Grenadier", "name": "Q", "thrown": {"t0": 6.0625}},
+    {"k": "flash", "t": 7.0625, "by": 1, "ability": "phoenix_q", "targets": [5], "hits": "garbage"},
+    {"k": "nearsight", "t": 8.0625, "by": 1, "ability": 7, "targets": [6, True, 10], "hits": [[6, 8.3125, "2"]]},
+    {"k": "nearsight", "t": 8.5625, "by": 1, "ability": {"x": 1}, "targets": [6]},
+    {"k": "status", "t": 9.0625, "t1": "10", "target": 7, "status": "slowed"},
+    {"k": "status", "t": 9.0625, "t1": None, "target": 7, "status": ""},
+    {"k": "status", "t": 9.5625, "target": 7, "status": "slowed", "code": 3, "name": "X"},
+]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_the_js_condition_normalizer_matches_on_odd_rows():
+    from app.replays import status_intervals as si
+    alive = {"4": [[0.0, None, None]], "6": "not lives", "7": [["x", 1.0], [0.0, None]]}
+    expected = json.loads(json.dumps(si.normalize_conditions(ODD_CONDITION_ROWS, alive, "end")))
+    assert _js_conditions(ODD_CONDITION_ROWS, alive, "end")["conds"] == expected
+    assert {"4", "5", "6", "7"} <= set(expected), "the odd rows still reach every branch"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_the_js_condition_normalizer_without_lives_or_an_end():
+    from app.replays import status_intervals as si
+    expected = json.loads(json.dumps(si.normalize_conditions(CONDITION_ROWS, None, None)))
+    assert _js_conditions(CONDITION_ROWS, None, None)["conds"] == expected

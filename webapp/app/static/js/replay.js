@@ -144,7 +144,7 @@
     [/^Rift_X_GlobalWall$/, { ability: "Astral Form / Cosmic Divide", shape: "line", dir: "along", full: true, label: "Cosmic Divide" }],
     [/^Rift_X_Markers$/, { ability: "Astral Form / Cosmic Divide", shape: "badge", small: true, unlisted: true, label: "Astra star" }],
     // Gekko: globules are what's left to reclaim.
-    [/^Aggrobot_C_ExplodeyPatch$/, { ability: "Mosh Pit", shape: "area", r: 450 }],
+    [/^Aggrobot_C_ExplodeyPatch$/, { ability: "Mosh Pit", shape: "area", r: 550 }],
     [/^Aggrobot_SeekerNade$/, { ability: "Wingman", shape: "badge" }],
     [/^Aggrobot_RollyPolly$/, { ability: "Thrash", shape: "badge" }],
     [/^Aggrobot_(X_)?Reclaim_Orb/, { ability: "Wingman", shape: "badge", small: true, unlisted: true, label: "Gekko globule" }],
@@ -202,7 +202,7 @@
     [/^Grenadier_E_SuppressionPulse$/, { ability: "ZERO/point", shape: "area", r: 700, pop: 1.0 }],
     // Tejo
     [/^Cashew_4_SonarPing$/, { ability: "Stealth Drone", shape: "reveal", r: 1000 }],
-    [/^Cashew_E_Explosion$/, { ability: "Guided Salvo", shape: "area", r: 400 }],
+    [/^Cashew_E_Explosion$/, { ability: "Guided Salvo", shape: "area", r: 450 }],
     [/^Cashew_E_MapMissileMarker/, { ability: "Guided Salvo", shape: "badge", small: true, unlisted: true, label: "Guided Salvo target" }],
     [/^Cashew_E_AirStrikeMortar$/, { ability: "Guided Salvo", shape: "hidden" }],
     [/^Cashew_Q_ShellShockGrenade/, { ability: "Special Delivery", shape: "area", r: 500, pop: 0.8 }],
@@ -404,12 +404,157 @@
     });
   }
 
+  // ------------------------------------------------------------ player conditions as [t0, t1) (pure; tested in node)
+  // A line-for-line mirror of app/replays/status_intervals.py (normalize_conditions; see its docstring). The
+  // fallback durations are the engine's (CONDITION_POLICY == status_intervals.POLICY, checked by
+  // tests/replays/test_replay_viewer.py), so the browser and map control can't drift apart.
+  var CONDITION_POLICY = {
+    flash_full_s: { phoenix: 1.5, yoru: 1.5, breach: 2.25, kayo: 2.25, skye: 2.25 },
+    flash_default_s: 1.5, flash_fuse_s: 0.5, nearsight_s: { omen_paranoia: 2.0 },
+    nearsight_default_s: 1.0, status_default_s: 1.0
+  };
+  var CONDITION_OF_KIND = { flash: "blinded", nearsight: "nearsighted" };
+
+  function condNum(x) { return typeof x === "number" && isFinite(x) ? x : null; }
+  function condSlot(x) { return typeof x === "number" && Number.isInteger(x) && x >= 0 && x <= 9 ? x : null; }
+  function condIsRow(e) { return e !== null && typeof e === "object" && !Array.isArray(e); }
+  function condOwn(table, key) { return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined; }
+
+  function flashFallbackS(ability) {
+    var head = (typeof ability === "string" ? ability : "").split("_")[0];
+    var s = condOwn(CONDITION_POLICY.flash_full_s, head);
+    return s === undefined ? CONDITION_POLICY.flash_default_s : s;
+  }
+
+  function nearsightFallbackS(ability) {
+    var s = typeof ability === "string" ? condOwn(CONDITION_POLICY.nearsight_s, ability) : undefined;
+    return s === undefined ? CONDITION_POLICY.nearsight_default_s : s;
+  }
+
+  function condSameBy(a, b) {
+    if (a == null || b == null) return a == null && b == null;
+    return typeof a !== "boolean" && typeof b !== "boolean" && a === b;
+  }
+
+  function condRaw(util) {
+    var out = [];
+    (Array.isArray(util) ? util : []).forEach(function (e) {
+      if (!condIsRow(e)) return;
+      var k = e.k;
+      if (k === "flash" || k === "nearsight") {
+        var c = CONDITION_OF_KIND[k];
+        if (Array.isArray(e.hits)) {
+          e.hits.forEach(function (hit) {
+            if (!Array.isArray(hit) || hit.length !== 3) return;
+            var slot = condSlot(hit[0]), t = condNum(hit[1]), dur = hit[2];
+            if (slot === null || t === null) return;
+            if (dur === null || dur === undefined) {
+              var fallback = k === "flash" ? flashFallbackS(e.ability) : CONDITION_POLICY.nearsight_default_s;
+              out.push([slot, c, t, t + fallback, true, e]);
+            } else if (condNum(dur) !== null && dur > 0) {
+              out.push([slot, c, t, t + dur, false, e]);
+            }
+          });
+          return;
+        }
+        var t0 = condNum(e.t);
+        if (t0 === null) return;
+        var start, len;
+        if (k === "flash") {
+          start = t0 + CONDITION_POLICY.flash_fuse_s;
+          for (var i = 0; i < util.length; i++) {
+            var a = util[i];
+            if (condIsRow(a) && a.k === "ability" && condSameBy(a.by, e.by) && condIsRow(a.thrown) &&
+                condNum(a.thrown.t0) === t0 && condNum(a.t) !== null) { start = a.t; break; }
+          }
+          len = flashFallbackS(e.ability);
+        } else {
+          start = t0;
+          len = nearsightFallbackS(e.ability);
+        }
+        (Array.isArray(e.targets) ? e.targets : []).forEach(function (target) {
+          if (condSlot(target) !== null) out.push([target, c, start, start + len, true, e]);
+        });
+      } else if (k === "status") {
+        var slot = condSlot(e.target), t = condNum(e.t), status = e.status;
+        if (slot === null || t === null || typeof status !== "string" || !status) return;
+        if (e.t1 === null || e.t1 === undefined) {
+          out.push([slot, status, t, t + CONDITION_POLICY.status_default_s, true, e]);
+        } else if (condNum(e.t1) !== null && e.t1 > t) {
+          out.push([slot, status, t, e.t1, false, e]);
+        }
+      }
+    });
+    return out;
+  }
+
+  function condAbility(e) {
+    if (typeof e.ability === "string" && e.ability) return e.ability;
+    var code = e.code, name = e.name;
+    return typeof code === "string" && code && typeof name === "string" && name ? code + "_" + name : null;
+  }
+
+  // [alive at t0, the end of that life or null when open]. Unknown lives cut nothing.
+  function condLifeEnd(alive, slot, t0) {
+    if (!condIsRow(alive) || !Array.isArray(condOwn(alive, String(slot)))) return [true, null];
+    var lives = alive[String(slot)];
+    for (var i = 0; i < lives.length; i++) {
+      var life = lives[i];
+      if (!Array.isArray(life) || life.length < 2 || condNum(life[0]) === null) continue;
+      var end = condNum(life[1]);
+      if (life[0] <= t0 && (end === null || t0 < end)) return [true, end];
+    }
+    return [false, null];
+  }
+
+  // {slot: [{c, t0, t1, est, src:[{k, by, ability, t0, t1, est}]}]}: each slot's conditions, cut at the end of the
+  // life they start in and at tEnd, same-condition overlaps merged for display.
+  function normalizeConditions(util, alive, tEnd) {
+    var groups = {}, order = [];
+    condRaw(util).forEach(function (r) {
+      var slot = r[0], c = r[1], t0 = r[2], t1 = r[3], est = r[4], e = r[5];
+      var life = condLifeEnd(alive, slot, t0);
+      if (!life[0]) return;
+      if (life[1] !== null) t1 = Math.min(t1, life[1]);
+      if (condNum(tEnd) !== null) t1 = Math.min(t1, tEnd);
+      if (t1 <= t0) return;
+      var key = slot + "|" + c;
+      if (!condOwn(groups, key)) { groups[key] = { slot: slot, c: c, sources: [] }; order.push(key); }
+      groups[key].sources.push({ k: e.k === undefined ? null : e.k, by: condSlot(e.by) !== null ? e.by : null,
+                                 ability: condAbility(e), t0: t0, t1: t1, est: est });
+    });
+    var out = {};
+    order.forEach(function (key) {
+      var g = groups[key];
+      g.sources.sort(function (x, y) { return x.t0 - y.t0 || x.t1 - y.t1; });
+      var merged = [];
+      g.sources.forEach(function (s) {
+        var cur = merged[merged.length - 1];
+        if (cur && s.t0 <= cur.t1) {
+          cur.t1 = Math.max(cur.t1, s.t1);
+          cur.est = cur.est || s.est;
+          cur.src.push(s);
+        } else {
+          merged.push({ c: g.c, t0: s.t0, t1: s.t1, est: s.est, src: [s] });
+        }
+      });
+      out[g.slot] = (out[g.slot] || []).concat(merged);
+    });
+    Object.keys(out).forEach(function (slot) {
+      out[slot].sort(function (x, y) {
+        return x.t0 - y.t0 || (x.c < y.c ? -1 : x.c > y.c ? 1 : 0) || x.t1 - y.t1;
+      });
+    });
+    return out;
+  }
+
   // Each status's colour and its label (drawn beside the colour, never colour alone).
   var STATUS_STYLES = {
     concussed: { color: "#f2c230", label: "CONCUSSED" }, hindered: { color: "#4da3ff", label: "HINDERED" },
     suppressed: { color: "#b06cff", label: "SUPPRESSED" }, fragile: { color: "#ff5ea8", label: "FRAGILE" },
     tethered: { color: "#2cd5c4", label: "TETHERED" }, decayed: { color: "#c0463f", label: "DECAYED" },
-    slowed: { color: "#7cc9ff", label: "SLOWED" }, hit: { color: "#e8e8e8", label: "HIT" }
+    slowed: { color: "#7cc9ff", label: "SLOWED" }, hit: { color: "#e8e8e8", label: "HIT" },
+    blinded: { color: "#ffffff", label: "BLINDED" }, nearsighted: { color: "#a78bfa", label: "NEARSIGHTED" }
   };
 
   function statusStyle(name) {
@@ -540,6 +685,302 @@
     out.exploded = !out.defused && t - spike.t0 >= SPIKE_S;
     if (out.defused || out.exploded) out.defusing = null;
     return out;
+  }
+
+  // ------------------------------------------------------------ player state at t (pure; tested in node)
+  // The round blob's optional `player_state` (app/replays/player_state.py, version 1). validatePlayerState mirrors
+  // player_state.validate line for line: an unsupported version or a part of the wrong shape is unavailable (null),
+  // a bad entry is dropped. indexRoundState indexes one loaded round once (fetchRound) into frozen, sorted arrays
+  // that the selectors binary-search, so a frame never rescans the round and no other round's data can reach it.
+  // Every selector is right-continuous and never looks past t: the latest entry at or before t (vitalsAt,
+  // damagedBy, playerSpikeAt and healthPct mirror vitals_at, damaged_by, spike_at and health_pct; the parity test
+  // in tests/replays/test_viewer_player_state.py runs both).
+  var PLAYER_STATE = {
+    version: 1, spike_states: ["unknown", "carried", "dropped", "planting", "planted", "defused", "detonated"],
+    t_min: -200, t_max: 1000, value_max: 1000, life_max: 63, max_events: 512, max_spike: 128, uv_max: 10000
+  };
+  var PS_VITAL_KEYS = ["hp", "sh", "mhp", "msh"];
+
+  function psNum(x, lo, hi) { return typeof x === "number" && isFinite(x) && x >= lo && x <= hi ? x : null; }
+  function psInt(x, lo, hi) { return typeof x === "number" && Number.isInteger(x) && x >= lo && x <= hi; }
+  function psHas(row, key) { return Object.prototype.hasOwnProperty.call(row, key); }
+  function psSlotKey(key) { return /^[0-9]$/.test(key); }
+
+  function psVital(e) {
+    if (!condIsRow(e)) return null;
+    var t = psNum(e.t, PLAYER_STATE.t_min, PLAYER_STATE.t_max);
+    if (t === null || !psInt(e.life, 0, PLAYER_STATE.life_max)) return null;
+    var out = { t: t, life: e.life };
+    for (var i = 0; i < PS_VITAL_KEYS.length; i++) {
+      var key = PS_VITAL_KEYS[i];
+      if (!psHas(e, key)) return null;
+      if (e[key] === null) {
+        if (key !== "sh" && key !== "msh") return null;
+        out[key] = null;
+        continue;
+      }
+      var value = psNum(e[key], 0, PLAYER_STATE.value_max);
+      if (value === null || (key === "mhp" && value <= 0)) return null;
+      out[key] = value;
+    }
+    if ((out.sh === null) !== (out.msh === null)) return null;
+    if (psHas(e, "q")) {
+      if (e.q !== "start") return null;
+      out.q = e.q;
+    }
+    return out;
+  }
+
+  function psSpike(e) {
+    if (!condIsRow(e) || PLAYER_STATE.spike_states.indexOf(e.s) < 0) return null;
+    var t = psNum(e.t, PLAYER_STATE.t_min, PLAYER_STATE.t_max);
+    if (t === null) return null;
+    var out = { t: t, s: e.s };
+    if (e.slot !== null && e.slot !== undefined) {
+      if (!psInt(e.slot, 0, 9)) return null;
+      out.slot = e.slot;
+    }
+    var hasU = e.u !== null && e.u !== undefined, hasV = e.v !== null && e.v !== undefined;
+    if (hasU || hasV) {
+      if (!psInt(e.u, 0, PLAYER_STATE.uv_max) || !psInt(e.v, 0, PLAYER_STATE.uv_max)) return null;
+      out.u = e.u;
+      out.v = e.v;
+    }
+    return out;
+  }
+
+  // Time order, source order within a time, except that a completed plant goes after any planting or carried entry
+  // of its own time; two records of the winning state naming different slots close the time `unknown`.
+  function psSpikeOrder(entries) {
+    entries = entries.slice().sort(function (a, b) { return a.t - b.t; });      // stable
+    var out = [], i = 0;
+    while (i < entries.length) {
+      var j = i;
+      while (j < entries.length && entries[j].t === entries[i].t) j++;
+      var group = entries.slice(i, j);
+      if (group.some(function (e) { return e.s === "planted"; })) {
+        var early = function (e) { return e.s === "planting" || e.s === "carried"; };
+        group = group.filter(early).concat(group.filter(function (e) { return !early(e); }));
+      }
+      var last = group[group.length - 1];
+      if (psHas(last, "slot") && group.some(function (e) {
+        return e.s === last.s && psHas(e, "slot") && e.slot !== last.slot;
+      })) group = group.concat([{ t: last.t, s: "unknown" }]);
+      out = out.concat(group);
+      i = j;
+    }
+    return out;
+  }
+
+  // A normalized copy of a `player_state` subsection, or null when it is unavailable.
+  function validatePlayerState(obj) {
+    if (!condIsRow(obj) || obj.version !== PLAYER_STATE.version) return null;
+    if ((psHas(obj, "vitals") && !condIsRow(obj.vitals)) || (psHas(obj, "damage_taken") && !condIsRow(obj.damage_taken)) ||
+        (psHas(obj, "spike") && !Array.isArray(obj.spike))) return null;
+    var out = { version: PLAYER_STATE.version };
+    if (psHas(obj, "vitals")) {
+      out.vitals = {};
+      Object.keys(obj.vitals).forEach(function (slot) {
+        var events = obj.vitals[slot];
+        if (!psSlotKey(slot) || !Array.isArray(events) || events.length > PLAYER_STATE.max_events) return;
+        var kept = events.map(psVital).filter(function (e) { return e !== null; });
+        out.vitals[slot] = kept.sort(function (a, b) { return a.t - b.t; });  // stable: source order within a time
+      });
+    }
+    if (psHas(obj, "damage_taken")) {
+      out.damage_taken = {};
+      Object.keys(obj.damage_taken).forEach(function (slot) {
+        var times = obj.damage_taken[slot];
+        if (!psSlotKey(slot) || !Array.isArray(times) || times.length > PLAYER_STATE.max_events) return;
+        var kept = [];
+        times.forEach(function (x) {
+          var t = psNum(x, PLAYER_STATE.t_min, PLAYER_STATE.t_max);
+          if (t !== null && kept.indexOf(t) < 0) kept.push(t);
+        });
+        out.damage_taken[slot] = kept.sort(function (a, b) { return a - b; });
+      });
+    }
+    if (psHas(obj, "spike") && obj.spike.length <= PLAYER_STATE.max_spike) {
+      out.spike = psSpikeOrder(obj.spike.map(psSpike).filter(function (e) { return e !== null; }));
+    }
+    return out;
+  }
+
+  // The number of entries at or before t (bisect_right).
+  function psBisect(times, t) {
+    var lo = 0, hi = times.length;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (times[mid] <= t) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+  }
+
+  function psTimeline(events, key) {
+    return { t: events.map(function (e) { return key ? e[key] : e; }), ev: events };
+  }
+
+  function psFreeze(x) {
+    if (x !== null && typeof x === "object" && !Object.isFrozen(x)) {
+      Object.keys(x).forEach(function (k) { psFreeze(x[k]); });
+      Object.freeze(x);
+    }
+    return x;
+  }
+
+  // One loaded round's state index: its validated player_state as sorted timelines, its lives (copied from
+  // `alive`), its conditions (normalizeConditions, once) and its planted spike's ability rows (`abilities`, the
+  // extras' rows, kept by reference for spikeAt and never frozen or changed). Never throws: anything malformed
+  // is unavailable.
+  function indexRoundState(blob, abilities) {
+    blob = condIsRow(blob) ? blob : {};
+    var ps = validatePlayerState(blob.player_state);
+    var vitals = null, damage = null, spike = null, alive = null, conditions = {}, starts = {};
+    if (ps && ps.vitals) {
+      vitals = {};
+      Object.keys(ps.vitals).forEach(function (slot) {
+        var lives = {};
+        ps.vitals[slot].forEach(function (e) { (lives[e.life] = lives[e.life] || []).push(e); });
+        Object.keys(lives).forEach(function (life) { lives[life] = psTimeline(lives[life], "t"); });
+        vitals[slot] = { all: psTimeline(ps.vitals[slot], "t"), lives: lives };
+      });
+    }
+    if (ps && ps.damage_taken) damage = ps.damage_taken;
+    if (ps && ps.spike) spike = psTimeline(ps.spike, "t");
+    if (condIsRow(blob.alive)) {
+      alive = {};
+      Object.keys(blob.alive).forEach(function (slot) {
+        if (!Array.isArray(blob.alive[slot])) return;
+        alive[slot] = blob.alive[slot].map(function (iv) {
+          return Array.isArray(iv) && iv.length >= 2 ? [condNum(iv[0]), condNum(iv[1])] : [null, null];
+        });
+      });
+    }
+    var tEnd = condNum(blob.t_end);
+    try { conditions = normalizeConditions(blob.util, blob.alive, tEnd); } catch (e) { conditions = {}; }
+    Object.keys(conditions).forEach(function (slot) { starts[slot] = psTimeline(conditions[slot], "t0"); });
+    var bombs = (Array.isArray(abilities) ? abilities : []).filter(function (a) {
+      return condIsRow(a) && a.kind === "Bomb" && typeof a.t0 === "number";
+    });
+    return Object.freeze({
+      available: ps !== null, vitals: psFreeze(vitals), damage: psFreeze(damage), spike: psFreeze(spike),
+      alive: psFreeze(alive), tEnd: tEnd, conditions: psFreeze(starts), bombs: Object.freeze(bombs)
+    });
+  }
+
+  // The life index holding t (the interval in `alive`, ends inclusive, an open end the round's), null while dead,
+  // or undefined when the slot's lives are unknown (no `alive` row).
+  function lifeIndexAt(index, slot, t) {
+    var lives = index && index.alive ? condOwn(index.alive, String(slot)) : undefined;
+    if (!Array.isArray(lives)) return undefined;
+    for (var i = 0; i < lives.length; i++) {
+      var lo = lives[i][0], hi = lives[i][1] === null ? (index.tEnd === null ? Infinity : index.tEnd) : lives[i][1];
+      if (lo !== null && lo <= t && t <= hi) return i;
+    }
+    return null;
+  }
+
+  // The slot's latest vitals event at or before t, or null; with `life`, only that life's events.
+  function vitalsAt(index, slot, t, life) {
+    var entry = index && index.vitals ? condOwn(index.vitals, String(slot)) : undefined;
+    if (!entry) return null;
+    var line = life === null || life === undefined ? entry.all : condOwn(entry.lives, String(life));
+    if (!line) return null;
+    var i = psBisect(line.t, t);
+    return i ? line.ev[i - 1] : null;
+  }
+
+  // Whether the slot took confirmed damage at or before t this round.
+  function damagedBy(index, slot, t) {
+    var times = index && index.damage ? condOwn(index.damage, String(slot)) : undefined;
+    return !!(times && times.length && times[0] <= t);
+  }
+
+  // player_state's own spike transition in effect at t, or null (unknown).
+  function playerSpikeAt(index, t) {
+    if (!index || !index.spike) return null;
+    var i = psBisect(index.spike.t, t);
+    return i ? index.spike.ev[i - 1] : null;
+  }
+
+  // 100 * (hp + sh) / (mhp + msh), clamped to 0..100, or null (unavailable) when a value is missing or null.
+  function healthPct(event) {
+    if (!event || PS_VITAL_KEYS.some(function (k) { return event[k] === null || event[k] === undefined; })) return null;
+    var total = event.mhp + event.msh;
+    if (total <= 0) return null;
+    return Math.max(0, Math.min(100, 100 * (event.hp + event.sh) / total));
+  }
+
+  // The health bar's input for a slot at t: {state, visible, pct, hp, sh, mhp, msh, life, at}. `state` is "none"
+  // (the round has no damage timeline: nothing to show), "dead", "undamaged" (no confirmed damage yet this round),
+  // "known" (pct from the current life's latest hit, as of that hit) or "unavailable" (damaged, but no proven
+  // percentage: no vitals in this life, or the shield isn't proven). The bar is visible for "known" and
+  // "unavailable" only: it appears with the round's first damage, whichever life, and stays at full.
+  function healthAt(index, slot, t) {
+    var out = { state: "none", visible: false, pct: null, hp: null, sh: null, mhp: null, msh: null, life: null,
+                at: null };
+    if (!index || !index.damage) return out;
+    var life = lifeIndexAt(index, slot, t);
+    if (life === null) { out.state = "dead"; return out; }
+    if (life !== undefined) out.life = life;
+    if (!damagedBy(index, slot, t)) { out.state = "undamaged"; return out; }
+    out.visible = true;
+    var event = vitalsAt(index, slot, t, life);
+    if (event) {
+      if (life === undefined) out.life = event.life;
+      out.hp = event.hp; out.sh = event.sh; out.mhp = event.mhp; out.msh = event.msh; out.at = event.t;
+      out.pct = healthPct(event);
+    }
+    out.state = out.pct === null ? "unavailable" : "known";
+    return out;
+  }
+
+  // The spike at t as one explicit state: {state, slot, u, v, since, source, hud}. From the plant on, the ability
+  // row decides, exactly as the planted HUD does (`hud` is spikeAt's result; source "ability"): planted, defused
+  // or detonated. Before it, player_state's proven transitions (source "player_state"): unknown, carried (slot
+  // null when the carrier isn't proven), dropped (at the carrier's death place when the drop follows one death, D5), planting, or a post-plant state the
+  // ability row hasn't reached. A carrier or planter who is dead at t with no later row: dropped, no slot, no
+  // position; the same once they are revived (a later life). No player_state spike: "unknown", source "none" (an
+  // old round: only the HUD's result).
+  function spikeStateAt(index, t) {
+    var bombs = index && index.bombs ? index.bombs : [];
+    var hud = spikeAt(bombs, t);
+    if (hud) {
+      var bomb = bombs.filter(function (a) { return a.t0 <= t; })[0];
+      return {
+        state: hud.defused ? "defused" : hud.exploded ? "detonated" : "planted",
+        slot: hud.defused ? hud.defused.slot : (hud.slot === undefined ? null : hud.slot),
+        u: psNum(bomb.u, 0, UV), v: psNum(bomb.v, 0, UV),
+        since: hud.defused ? hud.defused.t : hud.exploded ? hud.plantedAt + SPIKE_S : hud.plantedAt,
+        source: "ability", hud: hud
+      };
+    }
+    var out = { state: "unknown", slot: null, u: null, v: null, since: null, source: "none", hud: null };
+    if (!index || !index.spike) return out;
+    out.source = "player_state";
+    var e = playerSpikeAt(index, t);
+    if (!e) return out;
+    out.state = e.s;
+    out.since = e.t;
+    if (psHas(e, "slot")) out.slot = e.slot;
+    if (psHas(e, "u")) { out.u = e.u; out.v = e.v; }
+    // A carrier who died after the row dropped the spike, even if revived since (a new life never carries it on).
+    var lifeNow = out.slot === null ? undefined : lifeIndexAt(index, out.slot, t);
+    var lifeThen = out.slot === null ? undefined : lifeIndexAt(index, out.slot, e.t);
+    if ((e.s === "carried" || e.s === "planting") && out.slot !== null &&
+        (lifeNow === null || (typeof lifeThen === "number" && lifeNow !== lifeThen))) {
+      out.state = "dropped";
+      out.slot = null;
+      out.u = out.v = null;
+    }
+    return out;
+  }
+
+  // The slot's conditions active at t, [t0, t1) (normalizeConditions' intervals, estimated ones marked `est`).
+  function playerConditionsAt(index, slot, t) {
+    var line = index && index.conditions ? condOwn(index.conditions, String(slot)) : undefined;
+    if (!line) return [];
+    return line.ev.slice(0, psBisect(line.t, t)).filter(function (x) { return t < x.t1; });
   }
 
   // Whether Viper's wall is up at t, from its `on` spans [[from, to | null], ...].
@@ -773,7 +1214,9 @@
     if (!this.cache[n]) {
       this.cache[n] = Promise.resolve(this.options.loadRound(n)).then(function (blob) {
         var extras = blob.extras || extrasFromUtil(blob.util);
-        return { blob: blob, tracks: decodeRound(blob), extras: extras, wires: pairWires(extras.abilities) };
+        // `state`: this round's frozen state index (indexRoundState), built once here and read by the selectors.
+        return { blob: blob, tracks: decodeRound(blob), extras: extras, wires: pairWires(extras.abilities),
+                 state: indexRoundState(blob, extras.abilities) };
       });
     }
     return this.cache[n];
@@ -1429,8 +1872,9 @@
     var all = this.current.extras.abilities;
     var smoke = this.css("--replay-smoke", "rgba(16, 18, 24, 0.6)");
     var smokeCore = this.css("--replay-smoke-core", "rgba(16, 18, 24, 0.84)");
-    // Areas first, so badges sit on top of them; the spike last.
-    ["wall", "smoke", "area", "reveal", "mesh", "shear", "line", "wire", "badge", "spike"].forEach(function (pass) {
+    // Areas first, so badges sit on top of them. The spike (shape "spike") is not drawn here: drawSpikeGround and
+    // the carrier badge own it, outside the abilities toggle.
+    ["wall", "smoke", "area", "reveal", "mesh", "shear", "line", "wire", "badge"].forEach(function (pass) {
       showing.forEach(function (a) {
         var style = abilityStyle(a);
         if (style.shape !== pass) return;
@@ -1621,38 +2065,67 @@
           }
           self.drawBadge(ctx, x, y, radius, color, glyph, fadeIn);
           hits.push({ x: x, y: y, r: radius * 1.4, text: text });
-        } else if (pass === "spike") {
-          var k = r * 0.7, beat = 0.5 + 0.5 * Math.sin((t - a.t0) * Math.PI * 2);
-          ctx.fillStyle = self.css("--brand", "#ff4655"); ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
-          ctx.globalAlpha = 0.35 * beat; ctx.beginPath(); ctx.arc(x, y, k * 2.2, 0, 2 * Math.PI); ctx.fill();
-          ctx.globalAlpha = 1;
-          ctx.beginPath(); ctx.moveTo(x, y - k); ctx.lineTo(x + k * 0.7, y); ctx.lineTo(x, y + k); ctx.lineTo(x - k * 0.7, y);
-          ctx.closePath(); ctx.fill(); ctx.stroke();
-          var state = spikeAt([a], t);
-          if (state && !state.defused && !state.exploded) {
-            // The time left to detonation, as a draining ring.
-            ctx.lineWidth = Math.max(2, r / 5); ctx.strokeStyle = self.css("--brand", "#ff4655"); ctx.globalAlpha = 0.9;
-            ctx.beginPath(); ctx.arc(x, y, k * 1.9, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.left / SPIKE_S); ctx.stroke();
-          }
-          if (state && state.defusing) {
-            // A defuse: a thick ring filling in the defuser's colour, and a line from the defuser.
-            var dcolor = self.ownerColor(state.defusing.slot);
-            var from = trackAt(self.current.tracks[String(state.defusing.slot)], t);
-            if (from) {
-              ctx.globalAlpha = 0.9; ctx.strokeStyle = dcolor; ctx.lineWidth = Math.max(2, r / 5);
-              ctx.beginPath(); ctx.moveTo(from.u * s, from.v * s); ctx.lineTo(x, y); ctx.stroke();
-            }
-            ctx.globalAlpha = 0.35; ctx.lineWidth = Math.max(5, r / 2); ctx.strokeStyle = "#ffffff";
-            ctx.beginPath(); ctx.arc(x, y, k * 2.7, 0, 2 * Math.PI); ctx.stroke();
-            ctx.globalAlpha = 1; ctx.strokeStyle = dcolor;
-            ctx.beginPath(); ctx.arc(x, y, k * 2.7, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.defusing.frac); ctx.stroke();
-          }
-          hits.push({ x: x, y: y, r: k * 1.4, text: "Spike planted" + (a.slot !== null ? " by " + self.nameOf(a.slot) : "") +
-            " at " + a.t0.toFixed(1) + " s" + (state && state.halved ? " · half defused" : "") });
         }
         ctx.restore();
       });
     });
+  };
+
+  // The one spike glyph: a red diamond, k its half-height. `outline` is the stroke round it (white when planted,
+  // dark for a dropped spike so it reads as lying on the ground).
+  ReplayViewer.prototype.spikeGlyph = function (ctx, x, y, k, outline, width) {
+    ctx.fillStyle = this.css("--brand", "#ff4655"); ctx.strokeStyle = outline; ctx.lineWidth = width;
+    ctx.beginPath(); ctx.moveTo(x, y - k); ctx.lineTo(x + k * 0.7, y); ctx.lineTo(x, y + k); ctx.lineTo(x - k * 0.7, y);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  };
+
+  // The spike on the ground, from the one spike state (spikeStateAt): the planted marker (today's style, shown while
+  // its Bomb row shows, with the detonation and defuse rings) or a dropped spike where the data places it. Drawn
+  // over map control and utility, under the players, whatever the abilities toggle says. A carried spike is the
+  // carrier's badge (drawAnnotations), so there is never more than one glyph.
+  ReplayViewer.prototype.drawSpikeGround = function (ctx, s, r, hits, spike) {
+    var t = this.t, self = this;
+    if (spike.source === "ability") {
+      var a = this.current.extras.abilities.filter(function (b) { return b.kind === "Bomb" && b.t0 <= t; })[0];
+      if (!a || !abilitiesAt([a], t, this.current.blob.t_end).length) return;
+      var x = a.u * s, y = a.v * s;
+      var k = r * 0.7, beat = 0.5 + 0.5 * Math.sin((t - a.t0) * Math.PI * 2);
+      ctx.save();
+      ctx.fillStyle = this.css("--brand", "#ff4655");
+      ctx.globalAlpha = 0.35 * beat; ctx.beginPath(); ctx.arc(x, y, k * 2.2, 0, 2 * Math.PI); ctx.fill();
+      ctx.globalAlpha = 1;
+      this.spikeGlyph(ctx, x, y, k, "#ffffff", 2);
+      var state = spike.hud;
+      if (state && !state.defused && !state.exploded) {
+        // The time left to detonation, as a draining ring.
+        ctx.lineWidth = Math.max(2, r / 5); ctx.strokeStyle = this.css("--brand", "#ff4655"); ctx.globalAlpha = 0.9;
+        ctx.beginPath(); ctx.arc(x, y, k * 1.9, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.left / SPIKE_S); ctx.stroke();
+      }
+      if (state && state.defusing) {
+        // A defuse: a thick ring filling in the defuser's colour, and a line from the defuser.
+        var dcolor = this.ownerColor(state.defusing.slot);
+        var from = trackAt(this.current.tracks[String(state.defusing.slot)], t);
+        if (from) {
+          ctx.globalAlpha = 0.9; ctx.strokeStyle = dcolor; ctx.lineWidth = Math.max(2, r / 5);
+          ctx.beginPath(); ctx.moveTo(from.u * s, from.v * s); ctx.lineTo(x, y); ctx.stroke();
+        }
+        ctx.globalAlpha = 0.35; ctx.lineWidth = Math.max(5, r / 2); ctx.strokeStyle = "#ffffff";
+        ctx.beginPath(); ctx.arc(x, y, k * 2.7, 0, 2 * Math.PI); ctx.stroke();
+        ctx.globalAlpha = 1; ctx.strokeStyle = dcolor;
+        ctx.beginPath(); ctx.arc(x, y, k * 2.7, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.defusing.frac); ctx.stroke();
+      }
+      ctx.restore();
+      hits.push({ x: x, y: y, r: k * 1.4, text: "Spike planted" + (a.slot !== null ? " by " + self.nameOf(a.slot) : "") +
+        " at " + a.t0.toFixed(1) + " s" + (state && state.halved ? " · half defused" : "") });
+      return;
+    }
+    if (spike.state === "dropped" && spike.u !== null && spike.v !== null) {
+      var dx = spike.u * s, dy = spike.v * s, dk = r * 0.55;
+      ctx.save();
+      this.spikeGlyph(ctx, dx, dy, dk, "rgba(10, 10, 12, 0.9)", Math.max(2, r / 6));
+      ctx.restore();
+      hits.push({ x: dx, y: dy, r: dk * 1.4, text: "Spike dropped here at " + clock(spike.since) });
+    }
   };
 
   // A throw in flight: a dashed line from the thrower to where it lands, with the glyph riding
@@ -1714,39 +2187,218 @@
     });
   };
 
-  // A player under an enemy's status: a dashed ring in the status's colour turning around them, its
-  // name in a chip above them (several stack), a burst when it lands, and the ability's badge.
-  ReplayViewer.prototype.drawStatuses = function (ctx, s, r, hits) {
-    var t = this.t, tracks = this.current.tracks, self = this, stacked = {};
-    statusesAt(this.current.extras.statuses, t).forEach(function (st) {
-      var at = trackAt(tracks[String(st.target)], t);
-      if (!at) return;
-      var x = at.u * s, y = at.v * s, look = statusStyle(st.status);
-      var style = abilityStyle({ kind: "GameObject", code: st.code, name: st.name, agent: self.agentOf(st.slot) });
-      var row = stacked[st.target] = (stacked[st.target] || 0) + 1;
+  // ------------------------------------------------------------ player annotations (P05)
+  // One layout per player: the circle, its condition chips above it, the spike carrier's badge at its upper right
+  // and the health/name block below it. Every box is in map pixels (the zoom transform's input), recorded in
+  // this.layout as {kind: "chip" | "badge" | "block", slot, x, y, w, h, px, py} (a block also has `moved`), and
+  // its tooltip hit uses the same box. Chips and badges are reserved first; blocks then avoid them and each
+  // other, moving down with a leader back to their player. Boxes clamp inside the visible map.
+
+  // m:ss of a round time (never negative).
+  function clock(t) {
+    var whole = Math.floor(Math.max(0, t));
+    var sec = whole % 60;
+    return Math.floor(whole / 60) + ":" + (sec < 10 ? "0" : "") + sec;
+  }
+
+  function boxesOverlap(a, b) {
+    return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  }
+
+  // The order of a player's chips: blinded, then nearsighted, then the rest as they started.
+  function chipOrder(conditions) {
+    var rank = function (c) { return c.c === "blinded" ? 0 : c.c === "nearsighted" ? 1 : 2; };
+    return conditions.map(function (c, i) { return [rank(c), i, c]; })
+      .sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; })
+      .map(function (x) { return x[2]; });
+  }
+
+  // The visible part of the map, in map pixels.
+  ReplayViewer.prototype.viewBounds = function () {
+    var v = this.view, size = this.canvas.width;
+    return { x0: v.ox, y0: v.oy, x1: v.ox + size / v.k, y1: v.oy + size / v.k };
+  };
+
+  // The shift that keeps box b inside the view, when its player is in view ([dx, dy]).
+  function clampShift(b, view, px, py) {
+    if (px < view.x0 || px > view.x1 || py < view.y0 || py > view.y1) return [0, 0];
+    var x = Math.min(Math.max(b.x, view.x0), view.x1 - b.w), y = Math.min(Math.max(b.y, view.y0), view.y1 - b.h);
+    return [x - b.x, y - b.y];
+  }
+
+  ReplayViewer.prototype.conditionText = function (slot, c) {
+    var self = this, look = c.c.charAt(0).toUpperCase() + c.c.slice(1);
+    var by = [];
+    c.src.forEach(function (src) {
+      var who = src.by === null ? "an unknown owner" : self.nameOf(src.by);
+      var text = who + (src.ability ? " (" + src.ability + ")" : "");
+      if (by.indexOf(text) < 0) by.push(text);
+    });
+    return this.nameOf(slot) + " · " + look + " by " + by.join(", ") + " · " + clock(c.t0) + "–" + clock(c.t1) +
+      (c.est ? " (estimated)" : "");
+  };
+
+  // Conditions on the living players at t (playerConditionsAt: blinded, nearsighted and the recorded statuses), for
+  // everyone, whatever the abilities toggle says: a dashed ring per condition turning around the player, a burst
+  // when it lands, and one labelled chip each above the player (several stack). Dimmed like the player.
+  ReplayViewer.prototype.drawStatuses = function (ctx, s, r, hits, marks, layout) {
+    var t = this.t, self = this, view = this.viewBounds();
+    marks.forEach(function (m) {
+      var list = chipOrder(m.conditions);
+      if (!list.length) return;
+      var x = m.x, y = m.y;
       ctx.save();
-      ctx.strokeStyle = look.color; ctx.lineWidth = Math.max(2.5, r / 4.5);
-      ctx.setLineDash([r / 2.5, r / 4]); ctx.lineDashOffset = -(t * r * 2);
-      ctx.beginPath(); ctx.arc(x, y, r * (1.25 + 0.3 * row), 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
-      var age = t - st.t0;
-      if (age < 0.5) {
-        ctx.globalAlpha = 1 - age / 0.5; ctx.lineWidth = Math.max(3, r / 3);
-        ctx.beginPath(); ctx.arc(x, y, r * (1.2 + 2 * age / 0.5), 0, 2 * Math.PI); ctx.stroke();
-      }
-      ctx.globalAlpha = 1;
       ctx.font = "700 " + Math.round(r * 0.62) + "px system-ui, sans-serif";
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      var w = ctx.measureText(look.label).width + r * 0.5, h = r * 0.85, cy = y - r * (1.35 + 0.95 * row);
-      ctx.fillStyle = "rgba(10, 10, 12, 0.85)"; ctx.fillRect(x - w / 2, cy - h / 2, w, h);
-      ctx.fillStyle = look.color; ctx.fillRect(x - w / 2, cy - h / 2, r * 0.18, h);
-      ctx.fillText(look.label, x + r * 0.05, cy + r * 0.03);
+      var chips = list.map(function (c, i) {
+        var row = i + 1, look = statusStyle(c.c);
+        var w = ctx.measureText(look.label).width + r * 0.5, h = r * 0.85, cy = y - r * (1.35 + 0.95 * row);
+        return { c: c, look: look, row: row, box: { x: x - w / 2, y: cy - h / 2, w: w, h: h } };
+      });
+      // The stack clamps as one, so it stays in order.
+      var all = chips.reduce(function (acc, ch) {
+        var b = ch.box;
+        if (!acc) return { x: b.x, y: b.y, w: b.w, h: b.h };
+        var x0 = Math.min(acc.x, b.x), y0 = Math.min(acc.y, b.y);
+        return { x: x0, y: y0, w: Math.max(acc.x + acc.w, b.x + b.w) - x0, h: Math.max(acc.y + acc.h, b.y + b.h) - y0 };
+      }, null);
+      var shift = clampShift(all, view, x, y);
+      chips.forEach(function (ch) {
+        var look = ch.look, b = ch.box, c = ch.c;
+        b.x += shift[0]; b.y += shift[1];
+        ctx.globalAlpha = m.dim;
+        ctx.strokeStyle = look.color; ctx.lineWidth = Math.max(2.5, r / 4.5);
+        ctx.setLineDash([r / 2.5, r / 4]); ctx.lineDashOffset = -(t * r * 2);
+        ctx.beginPath(); ctx.arc(x, y, r * (1.25 + 0.3 * ch.row), 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+        var age = t - c.t0;
+        if (age < 0.5) {
+          ctx.globalAlpha = m.dim * (1 - age / 0.5); ctx.lineWidth = Math.max(3, r / 3);
+          ctx.beginPath(); ctx.arc(x, y, r * (1.2 + 2 * age / 0.5), 0, 2 * Math.PI); ctx.stroke();
+        }
+        ctx.globalAlpha = m.dim;
+        ctx.fillStyle = "rgba(10, 10, 12, 0.85)"; ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.fillStyle = look.color; ctx.fillRect(b.x, b.y, r * 0.18, b.h);
+        ctx.fillText(look.label, b.x + b.w / 2 + r * 0.05, b.y + b.h / 2 + r * 0.03);
+        layout.push({ kind: "chip", slot: m.slot, x: b.x, y: b.y, w: b.w, h: b.h, px: x, py: y });
+        hits.push({ x: b.x + b.w / 2, y: b.y + b.h / 2, r: Math.max(b.w, b.h) / 2, box: b, slot: null,
+                    text: self.conditionText(m.slot, c) });
+      });
       ctx.restore();
-      self.drawBadge(ctx, x - r * 1.15, y - r * 1.15, r * 0.4, self.ownerColor(st.slot),
-        self.abilityIcon(style.agent, style.ability));
-      hits.push({ x: x, y: y, r: r * 1.5, text: self.nameOf(st.target) + " " + st.status + " by " +
-        (st.slot === null || st.slot === undefined ? "an unknown owner" : self.nameOf(st.slot)) + "'s " + style.label +
-        " · " + st.t0.toFixed(1) + "–" + (typeof st.t1 === "number" ? st.t1.toFixed(1) : "?") + " s" });
     });
+  };
+
+  // The spike carrier's badge at the upper right of their circle: a dark disc holding the spike glyph. Shown for a
+  // proven carrier or planter only (spikeStateAt), over the circles.
+  ReplayViewer.prototype.drawCarrier = function (ctx, r, hits, marks, layout, spike) {
+    if ((spike.state !== "carried" && spike.state !== "planting") || spike.slot === null) return;
+    var m = marks.filter(function (q) { return q.slot === spike.slot; })[0];
+    if (!m) return;
+    var rb = r * 0.45, half = r * 0.5;
+    var box = { x: m.x + r * 1.15 - half, y: m.y - r * 1.15 - half, w: 2 * half, h: 2 * half };
+    var shift = clampShift(box, this.viewBounds(), m.x, m.y);
+    box.x += shift[0]; box.y += shift[1];
+    var cx = box.x + half, cy = box.y + half;
+    ctx.save();
+    ctx.globalAlpha = m.dim;
+    ctx.beginPath(); ctx.arc(cx, cy, rb, 0, 2 * Math.PI);
+    ctx.fillStyle = "rgba(12, 12, 16, 0.85)"; ctx.fill();
+    this.spikeGlyph(ctx, cx, cy, rb * 0.75, "#ffffff", 1.5);
+    ctx.restore();
+    layout.push({ kind: "badge", slot: m.slot, x: box.x, y: box.y, w: box.w, h: box.h, px: m.x, py: m.y });
+    hits.push({ x: cx, y: cy, r: half, box: box, slot: null, text: this.nameOf(m.slot) +
+      (spike.state === "planting" ? " is planting the spike" : " is carrying the spike") +
+      (spike.since !== null ? " (since " + clock(spike.since) + ")" : "") });
+  };
+
+  // The health colour: green, then yellow below half, red below a quarter.
+  function healthColor(pct) {
+    return pct > 50 ? "#4ade80" : pct > 25 ? "#facc15" : "#f87171";
+  }
+
+  // D10 (changed 2026-10-09): an idea of low or healthy, never a number. The same bands as the colour.
+  function healthWord(pct) {
+    return pct > 50 ? "healthy" : pct > 25 ? "hurt" : "low";
+  }
+
+  // Whether the bar is worth drawing: damaged and not back at full (D10: "everyone who isnt damaged is full
+  // health anyway so no point showing that"). An unknown value still shows its "?".
+  function healthShown(health) {
+    return health.visible && !(health.state === "known" && health.pct >= 99.5);
+  }
+
+  // Each player's health/name block below their circle: a thin health bar coloured by band, no number (or a
+  // neutral "?" when the health after a hit isn't known) above the name, on a dark plate. The bar shows while the
+  // player is below full after a confirmed hit this round (healthAt, healthShown); the name with the names toggle.
+  // Either part alone keeps the same place under the circle.
+  ReplayViewer.prototype.drawBlocks = function (ctx, r, hits, marks, layout) {
+    var self = this, view = this.viewBounds();
+    var reserved = layout.slice(), placed = [];
+    var barLen = r * 1.6, hb = r * 0.75, hn = r * 1.05;
+    ctx.save();
+    marks.forEach(function (m) {
+      var hv = healthShown(m.health) ? m.health : null;
+      var name = null;
+      if (self.linked && self.layers.names) {
+        name = self.nameOf(m.slot).split("#")[0];
+        name = name.length > 14 ? name.slice(0, 13) + "…" : name;
+      }
+      if (!hv && name === null) return;
+      ctx.font = "700 " + Math.round(r * 0.6) + "px system-ui, sans-serif";
+      var known = hv && hv.state === "known";
+      var hw = hv ? r * 0.25 + barLen + (known ? 0 : r * 0.2 + ctx.measureText("?").width) + r * 0.25 : 0;
+      ctx.font = "600 " + Math.round(r * 0.8) + "px system-ui, sans-serif";
+      var nw = name !== null ? ctx.measureText(name).width + r * 0.5 : 0;
+      var w = Math.max(hw, nw), h = (hv ? hb : 0) + (name !== null ? hn : 0);
+      var b = { x: m.x - w / 2, y: m.y + r * 1.25, w: w, h: h };
+      var shift = clampShift(b, view, m.x, m.y);
+      b.x += shift[0]; b.y += shift[1];
+      var start = b.y, moved = false;
+      // Stacked players: a block that would cover an earlier block, a chip or a badge moves below it.
+      for (var guard = 0; guard < 40; guard++) {
+        var clash = placed.concat(reserved).filter(function (o) { return boxesOverlap(b, o); })[0];
+        if (!clash) break;
+        b.y = clash.y + clash.h + r * 0.05;
+        moved = true;
+      }
+      if (moved) {
+        var again = clampShift(b, view, m.x, m.y);
+        b.x += again[0]; b.y += again[1];
+        ctx.globalAlpha = m.dim;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.35)"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(m.x, m.y + r * 1.05); ctx.lineTo(m.x, b.y); ctx.stroke();
+      }
+      ctx.globalAlpha = m.dim;
+      ctx.fillStyle = "rgba(10, 10, 12, 0.78)";
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      var cx = b.x + b.w / 2;
+      if (hv) {
+        var bx = cx - hw / 2 + r * 0.25, by = b.y + hb / 2 - r * 0.11;
+        ctx.fillStyle = "#3a3a42"; ctx.fillRect(bx, by, barLen, r * 0.22);
+        if (known) {
+          ctx.fillStyle = healthColor(hv.pct); ctx.fillRect(bx, by, barLen * hv.pct / 100, r * 0.22);
+        } else {
+          ctx.font = "700 " + Math.round(r * 0.6) + "px system-ui, sans-serif";
+          ctx.textAlign = "left"; ctx.textBaseline = "middle";
+          ctx.fillStyle = "#a0a0a8";
+          ctx.fillText("?", bx + barLen + r * 0.2, b.y + hb / 2);
+        }
+        var why = known ? healthWord(hv.pct) + ", as of the last hit at " + clock(hv.at) :
+          "health unknown: " + (hv.at === null ? "not hit in this life" : "the hit at " + clock(hv.at) +
+          " doesn't record the shield");
+        hits.push({ x: cx, y: b.y + b.h / 2, r: Math.max(b.w, b.h) / 2, box: b, slot: null,
+                    text: self.nameOf(m.slot) + " · " + why });
+      }
+      if (name !== null) {
+        ctx.font = "600 " + Math.round(r * 0.8) + "px system-ui, sans-serif";
+        ctx.textAlign = "center"; ctx.textBaseline = "top";
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(name, cx, b.y + (hv ? hb : 0) + r * 0.1);
+      }
+      placed.push(b);
+      layout.push({ kind: "block", slot: m.slot, x: b.x, y: b.y, w: b.w, h: b.h, px: m.x, py: m.y,
+                    moved: moved || b.y !== start });
+    });
+    ctx.restore();
   };
 
   // The spike panel over the map: time to detonation, "half defused", and a defuse in progress
@@ -2091,7 +2743,7 @@
     var x = (e.clientX - rect.left) * scale / v.k + v.ox, y = (e.clientY - rect.top) * scale / v.k + v.oy;
     var best = null;
     this.hits.forEach(function (h) {
-      if (h.slot === undefined) return;
+      if (h.slot === undefined || h.slot === null) return;   // annotations never select
       var d = Math.hypot(h.x - x, h.y - y);
       if (d <= h.r && (!best || d < best.d)) best = { slot: h.slot, d: d };
     });
@@ -2599,6 +3251,12 @@
     if (this.layers.projectiles) this.drawProjectiles(ctx, s, r, hits);
     if (this.layers.tracers) this.drawTracers(ctx, s, r);
 
+    // The spike's one state at t (planted from its Bomb row, else player_state's proven transitions).
+    if (!this.current.state) this.current.state = indexRoundState(blob, this.current.extras.abilities);
+    var index = this.current.state;
+    var spike = spikeStateAt(index, t);
+    this.drawSpikeGround(ctx, s, r, hits, spike);   // planted or placed on the ground: under the players
+
     blob.kills.forEach(function (k) {
       if (k.t > t || k.u === null) return;
       var x = k.u * s, y = k.v * s, age = t - k.t;
@@ -2624,7 +3282,7 @@
         (k.weapon ? " with " + k.weapon : "") + " at " + k.t.toFixed(1) + " s" + gain });
     });
 
-    var labels = [];
+    var marks = [];
     // In a team's picture (R3.3) the true enemy dots are dimmed: that team didn't see them all.
     var knowing = this.layers.control && this.controlCache ? this.knowingGroup(this.controlCache.ready(this.number)) : null;
     blob.players.forEach(function (p) {
@@ -2669,61 +3327,54 @@
         ctx.beginPath(); ctx.arc(x, y, r * 1.35, 0, 2 * Math.PI); ctx.stroke();
         ctx.restore();
       }
-      if (self.linked && self.layers.names) labels.push({ x: x, y: y + r * 1.25, text: self.nameOf(p.slot) });
       if (self.highlight === p.slot) {
         ctx.save();
         ctx.strokeStyle = "#ffffff"; ctx.lineWidth = Math.max(2.5, r / 4);
         ctx.beginPath(); ctx.arc(x, y, r * 1.6, 0, 2 * Math.PI); ctx.stroke();
         ctx.restore();
       }
+      var health = healthAt(index, p.slot, t), conditions = playerConditionsAt(index, p.slot, t);
+      marks.push({ slot: p.slot, x: x, y: y, dim: dim, health: health, conditions: conditions });
+      var about = [];
+      if (healthShown(health)) about.push(health.state === "known" ? healthWord(health.pct) : "health unknown");
+      if (conditions.length) about.push(chipOrder(conditions).map(function (c) { return c.c; }).join(", "));
+      if (spike.slot === p.slot && spike.state === "carried") about.push("carrying the spike");
+      if (spike.slot === p.slot && spike.state === "planting") about.push("planting the spike");
       hits.push({ x: x, y: y, r: r * 1.2, slot: p.slot, text: self.nameOf(p.slot) + " · " + p.agent +
-        (life.flags.length ? " · " + life.flags.join(", ") : "") + (self.control ? " · click to show their control" : "") });
+        (life.flags.length ? " · " + life.flags.join(", ") : "") + (about.length ? " · " + about.join(" · ") : "") +
+        (self.control ? " · click to show their control" : "") });
     });
     ctx.globalAlpha = 1;
 
-    if (this.layers.abilities) {
-      this.drawReveals(ctx, s, r, hits);
-      this.drawStatuses(ctx, s, r, hits);
-    }
+    if (this.layers.abilities) this.drawReveals(ctx, s, r, hits);
 
-    // Names last, on a dark plate so they read over any part of the map.
-    ctx.save();
-    ctx.font = "600 " + Math.round(r * 0.8) + "px system-ui, sans-serif";
-    ctx.textAlign = "center"; ctx.textBaseline = "top";
-    // Stacked players: a label that would cover an earlier one moves below it, with a thin
-    // leader back to its player.
-    var placed = [];
-    labels.forEach(function (l) {
-      var text = l.text.split("#")[0];
-      text = text.length > 14 ? text.slice(0, 13) + "…" : text;
-      var w = ctx.measureText(text).width + r * 0.5, h = r * 1.05, y = l.y, moved = false;
-      for (var guard = 0; guard < 10; guard++) {
-        var clash = placed.filter(function (b) {
-          return Math.abs(b.x - l.x) < (b.w + w) / 2 && y < b.y + b.h && y + h > b.y;
-        })[0];
-        if (!clash) break;
-        y = clash.y + clash.h + 1;
-        moved = true;
-      }
-      if (moved) {
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.35)"; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(l.x, l.y - r * 0.2); ctx.lineTo(l.x, y); ctx.stroke();
-      }
-      ctx.fillStyle = "rgba(10, 10, 12, 0.78)";
-      ctx.fillRect(l.x - w / 2, y, w, h);
-      ctx.fillStyle = "#ffffff";
-      ctx.fillText(text, l.x, y + r * 0.1);
-      placed.push({ x: l.x, y: y, w: w, h: h });
-    });
-    ctx.restore();
+    // The player annotations last, over the circles, whatever the abilities toggle says: condition chips, the
+    // carrier's badge, then the health/name blocks on dark plates so they read over any part of the map.
+    var layout = [];
+    this.drawStatuses(ctx, s, r, hits, marks, layout);
+    this.drawCarrier(ctx, r, hits, marks, layout, spike);
+    this.drawBlocks(ctx, r, hits, marks, layout);
+    this.layout = layout;
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.hits = hits;
     var snap = this.snapshot(t);
-    this.ui.state.textContent = snap.live + " players on the map";
+    this.ui.state.textContent = snap.live + " players on the map" + this.spikeText(spike);
     this.canvas.setAttribute("aria-label", "Minimap, round " + blob.round + " at " + t.toFixed(1) + " s: " +
       snap.live + " players shown");
     if (this.hover) this.showTip(this.hover);
+  };
+
+  // The spike's state for the replay's state text (" · spike carried by …"), or "" when it isn't known.
+  ReplayViewer.prototype.spikeText = function (spike) {
+    var who = spike.slot === null ? "" : " by " + this.nameOf(spike.slot);
+    if (spike.state === "carried") return " · spike carried" + who;
+    if (spike.state === "planting") return " · spike being planted" + who;
+    if (spike.state === "dropped") return " · spike dropped" + (spike.u === null ? ", position unknown" : "");
+    if (spike.state === "planted" || spike.state === "defused" || spike.state === "detonated") {
+      return " · spike " + spike.state;
+    }
+    return "";
   };
 
   ReplayViewer.prototype.onHover = function (e) {
@@ -2735,14 +3386,19 @@
     this.showTip(this.hover);
   };
 
+  // A hit holds the point: its `box` (an annotation's rectangle, in the same map pixels) or its circle.
+  function hitHolds(h, x, y) {
+    if (h.box) return x >= h.box.x && x <= h.box.x + h.box.w && y >= h.box.y && y <= h.box.y + h.box.h;
+    return Math.hypot(h.x - x, h.y - y) <= h.r;
+  }
+
   // The tooltip names the smallest mark under the pointer (a player over a smoke wins).
   ReplayViewer.prototype.showTip = function (hover) {
     var tip = this.ui.tip;
     if (!tip) return;
     var best = null;
     (this.hits || []).forEach(function (h) {
-      var d = Math.hypot(h.x - hover.x, h.y - hover.y);
-      if (d <= h.r && (!best || (best.area && !h.area) || (best.area === h.area && h.r < best.r))) best = h;
+      if (hitHolds(h, hover.x, hover.y) && (!best || (best.area && !h.area) || (best.area === h.area && h.r < best.r))) best = h;
     });
     if (!best) { this.hideTip(); return; }
     tip.textContent = best.text;
@@ -2770,7 +3426,10 @@
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
     impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,
     popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle, utilDownAt: utilDownAt,
-    utilSuppressedAt: utilSuppressedAt,
+    utilSuppressedAt: utilSuppressedAt, normalizeConditions: normalizeConditions, CONDITION_POLICY: CONDITION_POLICY,
+    PLAYER_STATE: PLAYER_STATE, validatePlayerState: validatePlayerState, indexRoundState: indexRoundState,
+    lifeIndexAt: lifeIndexAt, vitalsAt: vitalsAt, damagedBy: damagedBy, playerSpikeAt: playerSpikeAt,
+    healthPct: healthPct, healthAt: healthAt, spikeStateAt: spikeStateAt, playerConditionsAt: playerConditionsAt,
     controlRows: controlRows, withSiteData: withSiteData,
     isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,
     projectileStyle: projectileStyle, projectileAt: projectileAt, throwShownAsProjectile: throwShownAsProjectile,
