@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO))
 from replay_worker import server  # noqa: E402
 from test_control_store import db, factory, linked  # noqa: E402,F401  (fixtures)
 from test_replay_store import condensed  # noqa: E402,F401  (fixture)
+from test_control_pinned_inputs import tagged  # noqa: E402,F401
 from test_replay_worker_control import STUB  # noqa: E402
 
 from app.config import settings  # noqa: E402
@@ -299,12 +300,57 @@ def test_deleted_or_recondensed_evidence_is_due_at_once_and_too_little_left_turn
     assert hr.plan_maps(db).off == [linked.map_name]
 
 
-def test_a_map_with_a_published_feature_generation_is_not_rebuilt(db, linked, monkeypatch):
+def test_tagged_maps_are_still_due_for_height_rebuilds(db, linked, monkeypatch):
     clone(db, linked, 1)
     real = rc.geometry_inputs
     monkeypatch.setattr(rc, "geometry_inputs", lambda m, heights=None: {**real(m, heights), "features": "feat" * 4})
     plan = hr.plan_maps(db)
-    assert plan.due == [] and linked.map_name in plan.skipped and "feature generation" in plan.skipped[linked.map_name]
+    assert [d.map_name for d in plan.due] == [linked.map_name] and not plan.skipped
+
+
+def test_tagged_two_then_five_match_rebuild_pending_and_recovery(rig, factory, db, linked, tagged):
+    from app.services import control_feature_artifacts as archives
+    from app.models.replay import ControlFeatureArtifact
+    original = json.dumps(tagged, sort_keys=True)
+    clone(db, linked, 1)
+    rig.until(factory, lambda s: total(s, 'heights_live') == 1)
+    db.expire_all()
+    first = rc.resolve_current_geometry(db, linked.map_name)
+    assert first.state == 'ready' and first.pinned.geometry['height'] == rig.asset.digest
+    assert archives.load_artifact(db, first.pinned.artifact_digest).manifest['active_bundles'] == ['bundle-1']
+    clone(db, linked, 4)
+    assert not hr.plan_maps(db).due
+    clone(db, linked, 1)
+    assert hr.plan_maps(db).due[0].why == '5 new matches'
+    path = rig.tmp / 'multi.npz'
+    multi = real_asset(path, shift=1)
+    multi.floors[40, 40, 1] = 40
+    hc.save_asset(path, multi)
+    rig.mode(digest=multi.digest, asset=str(path))
+    rig.until(factory, lambda s: total(s, 'heights_live') == 1)
+    db.expire_all()
+    second = rc.resolve_current_geometry(db, linked.map_name)
+    assert second.state == 'ready' and second.pinned.geometry['height'] == multi.digest
+    assert archives.load_artifact(db, second.pinned.artifact_digest).manifest['active_bundles'] == []
+    assert second.pinned.artifact_digest != first.pinned.artifact_digest
+    clone(db, linked, 5)
+    path = rig.tmp / 'recovered.npz'
+    recovered = real_asset(path, shift=2)
+    rig.mode(digest=recovered.digest, asset=str(path))
+    rig.until(factory, lambda s: total(s, 'heights_live') == 1)
+    db.expire_all()
+    third = rc.resolve_current_geometry(db, linked.map_name)
+    assert archives.load_artifact(db, third.pinned.artifact_digest).manifest['active_bundles'] == ['bundle-1']
+    assert db.query(ControlFeatureArtifact).count() >= 3
+    assert json.dumps(tagged, sort_keys=True) == original
+
+
+def test_unexpected_legacy_pointer_requires_conversion_but_does_not_stop_heights(db, linked, tagged):
+    index = rc._current_snapshot()[0]
+    index[linked.map_name]['features_sha'] = 'unexpected-old-pointer'
+    assert rc.resolve_current_geometry(db, linked.map_name).state == 'conversion_required'
+    clone(db, linked, 1)
+    assert hr.plan_maps(db).due[0].map_name == linked.map_name
 
 
 # ---------------------------------------------------------------- the whole cycle, over the real handler
@@ -587,7 +633,7 @@ def test_the_height_step_never_commits_or_rolls_back_the_dispatchers_own_session
     assert counts["heights_live"] == 1
 
 
-def test_generation_published_during_collection_keeps_the_pending_result_from_being_stored(rig, factory, db,
+def test_tag_changes_during_collection_do_not_reject_valid_height_result(rig, factory, db,
                                                                                          linked, monkeypatch):
     clone(db, linked, 1)
     manifest = hr.current_manifests(db)[linked.map_name][0]
@@ -600,11 +646,10 @@ def test_generation_published_during_collection_keeps_the_pending_result_from_be
     real = rc.geometry_inputs
     monkeypatch.setattr(rc, "geometry_inputs", lambda m, heights=None: {**(real(m, heights) or {}), "features": "new-generation"})
     counts = dict.fromkeys(hr.COUNTS, 0)
-    with pytest.raises(hr._Stale):
-        hr._finish(factory, db, build, {"status": "done", "result": result}, counts)
-    assert ch.active_digests(db) == before and db.query(ControlHeight).count() == 1
-    assert counts["heights_live"] == counts["heights_rejected"] == counts["heights_failed"] == 0
-    assert linked.map_name in hr.plan_maps(db).skipped
+    hr._finish(factory, db, build, {'status': 'done', 'result': result}, counts)
+    assert ch.active_digests(db) == {linked.map_name: rig.asset.digest} and db.query(ControlHeight).count() == 2
+    assert counts['heights_live'] == 1 and counts['heights_failed'] == 0
+    assert not hr.plan_maps(db).skipped
 
 
 # ---------------------------------------------------------------- inputs that move under a build

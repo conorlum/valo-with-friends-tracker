@@ -408,10 +408,7 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
     index_path = asset_dir / "index.json"
     row = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
     if load_features and row.get("features_sha"):
-        from app.control import features
-
-        geo.features = features.load_generation(asset_dir, row["features_sha"])
-        geo.features_sha = row["features_sha"]
+        raise GeometryError(f'{name}: legacy feature pointer requires archive conversion')
     if height_mode == 'flat':
         return geo
     if height_mode not in ('legacy_default', 'asset') or (height_mode == 'asset' and heights is None):

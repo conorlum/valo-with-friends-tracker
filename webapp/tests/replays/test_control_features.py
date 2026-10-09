@@ -34,25 +34,6 @@ def test_every_committed_maps_control_inputs_and_fingerprint_are_as_recorded():
 
 # ---- W17: freshness inputs and cache keys
 
-def test_a_feature_generation_joins_the_inputs_only_when_a_map_has_one(monkeypatch):
-    from app.control import task as ct
-    from app.replays import control_format as cfmt
-    from app.services import replay_control as rc
-
-    recorded = json.loads(map_feature_legacy.PATH.read_text(encoding="utf-8"))
-    name = "Ascent"
-    index, tags, maps = rc._assets()
-    monkeypatch.setattr(rc, "_assets", lambda: ({**index, name: {**index[name], "features_sha": "feat0000feat0000"}}, tags, maps))
-    with_features = rc.geometry_inputs(name)
-    assert with_features == {**recorded["maps"][name]["geometry_inputs"], "features": "feat0000feat0000"}
-    assert cfmt.fingerprint(recorded["recipe"], "0" * 64, recorded["link"], with_features) != recorded["maps"][name]["fingerprint"]
-    assert rc.geometry_inputs("Bind") == recorded["maps"]["Bind"]["geometry_inputs"], "other maps are untouched"
-    geo = open_hall()
-    assert "features" not in ct.geometry_used(geo)
-    geo2 = copy.copy(geo)
-    geo2.features_sha = "feat0000feat0000"
-    assert ct.geometry_used(geo2)["features"] == "feat0000feat0000"
-
 
 def test_the_asset_cache_rereads_a_new_generation(tmp_path, monkeypatch):
     import shutil
@@ -68,7 +49,8 @@ def test_the_asset_cache_rereads_a_new_generation(tmp_path, monkeypatch):
         index = json.loads((tmp_path / "index.json").read_text(encoding="utf-8"))
         index["maps"]["Ascent"]["features_sha"] = "feat0000feat0000"
         (tmp_path / "index.json").write_text(json.dumps(index, indent=1) + "\n", encoding="utf-8")
-        assert rc.geometry_inputs("Ascent")["features"] == "feat0000feat0000", "no restart needed"
+        with pytest.raises(ValueError, match="conversion"):
+            rc.geometry_inputs("Ascent")
     finally:
         rc._assets.cache_clear()
 
@@ -145,6 +127,11 @@ def test_atomic_replacements_during_a_read_never_mix_generations(toy_asset_dir, 
             return _original(self, *a, **k)
 
         monkeypatch.setattr(Path, method, hooked)
+    if features:
+        with pytest.raises(ValueError, match="conversion"):
+            rc.geometry_inputs("Toy")
+        assert raced
+        return
     got = rc.geometry_inputs("Toy")
     assert raced, "the race happened"
     want = {"sight": "new", "walk": "new", "barrier": None, "specials": [{"revision": "new"}], "scale": 1}
@@ -153,156 +140,12 @@ def test_atomic_replacements_during_a_read_never_mix_generations(toy_asset_dir, 
     assert got == want
 
 
-def test_the_worker_geometry_cache_is_keyed_by_generation(tmp_path, monkeypatch):
-    from app.control import task as ct
-
-    loads = []
-
-    def fake_load(name, heights=None):
-        loads.append(name)
-        g = copy.copy(open_hall())
-        g.name = name
-        return g
-
-    monkeypatch.setattr(cg, "load_geometry", fake_load)
-    monkeypatch.setattr(cg, "visibility", lambda g, d=None: g)
-    monkeypatch.setattr(ct, "_GEOMETRY", {})
-    sha = {"value": None}
-    monkeypatch.setattr(cf, "active_sha", lambda name, asset_dir=None: sha["value"])
-    ct._load("Toy")
-    ct._load("Toy")
-    assert loads == ["Toy"] and list(ct._GEOMETRY) == ["Toy"], "no generation: keyed by name, as before"
-    sha["value"] = "gen1"
-    ct._load("Toy")
-    sha["value"] = "gen2"
-    ct._load("Toy")
-    ct._load("Toy")
-    assert loads == ["Toy", "Toy", "Toy"] and ("Toy", None, "gen2") in ct._GEOMETRY
-
 
 # ---- W18: generations, verification, storage rejection
 
-@pytest.fixture
-def published(tmp_path, monkeypatch):
-    """A copy of Ascent's committed assets in tmp, with one enabled feature (a registered test consumer) and
-    its generation published. Never the committed asset folder."""
-    import shutil
-
-    for name in ("Ascent.sight.png", "Ascent.walk.png", "Ascent.barrier.png", "index.json", "tags.json"):
-        if (cg.ASSET_DIR / name).is_file():
-            shutil.copy(cg.ASSET_DIR / name, tmp_path / name)
-    monkeypatch.setattr(cf, "RUNTIME_CONSUMERS", frozenset({"test"}))
-    monkeypatch.setattr(cg, "load_tags", lambda asset_dir=tmp_path: json.loads((tmp_path / "tags.json").read_text(encoding="utf-8")))
-    geo0 = cg.load_geometry("Ascent", tmp_path)
-    ys, xs = np.nonzero(geo0.walk_px & ~geo0.sight)
-    y, x = int(ys[len(ys) // 2]) // 8 * 8, int(xs[len(xs) // 2]) // 8 * 8
-    mf = {**ms.empty(), "features": [breakable("feature-1", rect(x, y, x + 16, y + 16))],
-          "bundles": [{"id": "bundle-2", "members": ["feature-1"], "enabled": True, "runtime_consumer": "test"}]}
-    mf["features"][0]["base_edits"] = {}
-    tags = json.loads((tmp_path / "tags.json").read_text(encoding="utf-8"))
-    tags["maps"]["Ascent"]["map_features"] = mf
-    (tmp_path / "tags.json").write_text(json.dumps(tags), encoding="utf-8")
-    entry = tags["maps"]["Ascent"]
-    m = cf.manifest(geo0, mf, cf.legacy_masks(entry))
-    assets = cf.compile_assets(geo0, mf, cf.bundle_status(geo0, mf, cf.legacy_masks(entry)))
-    sha = cf.publish_generation(tmp_path, "Ascent", m, assets)
-    return tmp_path, sha, mf
 
 
-def test_a_published_generation_loads_verifies_and_reports_itself(published):
-    from app.control import task as ct
 
-    folder, sha, _ = published
-    assert sha == cf.manifest_digest(json.loads((folder / "features" / f"{sha}.json").read_text(encoding="utf-8"))["manifest"])
-    assert cf.active_sha("Ascent", folder) == sha
-    geo = cg.load_geometry("Ascent", folder)
-    assert geo.features_sha == sha and ct.geometry_used(geo)["features"] == sha
-    ct.verify_features(geo)                                   # current definitions compile to it
-    blocked = geo.features["assets"]["states"]["feature-1:intact"]["blocked"]
-    assert blocked and not geo.features["assets"]["states"]["feature-1:broken"]["blocked"]
-
-
-def test_stale_definitions_tampered_assets_and_the_wrong_generation_are_refused(published):
-    from app.control import task as ct
-
-    folder, sha, mf = published
-    geo = cg.load_geometry("Ascent", folder)
-    with pytest.raises(cg.GeometryError, match="expected feature generation"):
-        ct.verify_features(geo, "0123456789abcdef", full=False)
-    # the definitions changed after publication (an edit while a generation is live)
-    tags = json.loads((folder / "tags.json").read_text(encoding="utf-8"))
-    tags["maps"]["Ascent"]["map_features"]["features"][0]["states"][0]["footprint"]["uv"][0][0] -= 200
-    (folder / "tags.json").write_text(json.dumps(tags), encoding="utf-8")
-    with pytest.raises(cg.GeometryError, match="stale"):
-        ct.verify_features(geo)
-    # compiled bytes that don't match the manifest, and a manifest that doesn't match the file's name
-    path = folder / "features" / f"{sha}.json"
-    body = json.loads(path.read_text(encoding="utf-8"))
-    body["assets"]["states"]["feature-1:intact"]["blocked"].pop()
-    path.write_text(json.dumps(body), encoding="utf-8")
-    assert cf.verify(body["manifest"], cf.load_generation(folder, sha)["assets"])
-    body["manifest"]["compiler"] += 1
-    path.write_text(json.dumps(body), encoding="utf-8")
-    with pytest.raises(cg.GeometryError, match="hashes to"):
-        cf.load_generation(folder, sha)
-
-
-def test_the_wrong_generation_is_the_machines_failure_not_the_rounds(published, monkeypatch):
-    from app.control import task as ct
-
-    folder, sha, _ = published
-    geo = cg.load_geometry("Ascent", folder)
-    monkeypatch.setattr(ct, "_load", lambda name, heights=None, digest=None, **kwargs: geo)
-    out = ct.compute_task({"key": "k", "map": "Ascent", "blob": b"", "link": {"sides": {}, "db_deaths": []},
-                           "features": 'a' * 64})
-    assert out["status"] == "failed" and out["error_kind"] == "infra" and out['error_code'] == 'features_missing'
-
-
-def test_a_cached_generation_is_verified_again_when_its_definitions_change(published, monkeypatch):
-    """The pointer stays put while tags.json's runtime definitions change: the worker's cached geometry must be
-    refused (the machine's failure) as an explicit verify_features would, not reused; an editorial edit is
-    still accepted from the cache; restoring the definitions loads again."""
-    from app.control import task as ct
-
-    folder, sha, _ = published
-    real_load, real_active = cg.load_geometry, cf.active_sha
-    loads = []
-
-    def load(name, heights=None):
-        loads.append(name)
-        return real_load(name, folder, heights=heights)
-
-    monkeypatch.setattr(cg, "load_geometry", load)
-    monkeypatch.setattr(cf, "active_sha", lambda name, asset_dir=None: real_active(name, folder))
-    monkeypatch.setattr(cg, "visibility", lambda g, asset_dir=None: g)
-    monkeypatch.setattr(ct, "_GEOMETRY", {})
-    monkeypatch.setattr(ct, "_VERIFIED", {})
-    first = ct._load("Ascent")
-    assert first.features_sha == sha
-    original = (folder / "tags.json").read_text(encoding="utf-8")
-    tags = json.loads(original)
-
-    tags["maps"]["Ascent"]["map_features"]["features"][0]["name"] = "renamed"          # editorial
-    (folder / "tags.json").write_text(json.dumps(tags), encoding="utf-8")
-    assert ct._load("Ascent") is first and loads == ["Ascent"]
-
-    tags["maps"]["Ascent"]["map_features"]["features"][0]["initial_state"] = "broken"  # runtime
-    (folder / "tags.json").write_text(json.dumps(tags), encoding="utf-8")
-    with pytest.raises(cg.GeometryError, match="stale"):
-        ct._load("Ascent")
-    with pytest.raises(cg.GeometryError, match="stale"):
-        ct.verify_features(first)
-    out = ct.compute_task({"key": "k", "map": "Ascent", "blob": b"", "link": {"sides": {}, "db_deaths": []}})
-    assert out["status"] == "failed" and out["error_kind"] == "infra" and "stale" in out["error"]
-
-    (folder / "tags.json").write_text(original, encoding="utf-8")
-    assert ct._load("Ascent").features_sha == sha
-
-    (folder / "tags.json").write_text(original[: len(original) // 2], encoding="utf-8")       # caught mid-write
-    out = ct.compute_task({"key": "k", "map": "Ascent", "blob": b"", "link": {"sides": {}, "db_deaths": []}})
-    assert out["status"] == "failed" and out["error_kind"] == "infra", "an unreadable tags.json is the machine's"
-    (folder / "tags.json").write_text(original, encoding="utf-8")
-    assert ct._load("Ascent").features_sha == sha
 
 
 def test_a_map_without_a_generation_never_reads_its_definitions_on_a_cache_hit(monkeypatch):
@@ -312,7 +155,6 @@ def test_a_map_without_a_generation_never_reads_its_definitions_on_a_cache_hit(m
     geo.name = "Toy"
     monkeypatch.setattr(cg, "load_geometry", lambda name, heights=None: geo)
     monkeypatch.setattr(cg, "visibility", lambda g, d=None: g)
-    monkeypatch.setattr(cf, "active_sha", lambda name, asset_dir=None: None)
     monkeypatch.setattr(ct, "_GEOMETRY", {})
     ct._load("Toy")
 
@@ -323,49 +165,6 @@ def test_a_map_without_a_generation_never_reads_its_definitions_on_a_cache_hit(m
     assert ct._load("Toy") is geo and list(ct._GEOMETRY) == ["Toy"]
 
 
-def test_an_interrupted_publication_leaves_the_last_complete_generation(published, monkeypatch):
-    import os
-
-    folder, sha, mf = published
-    geo = cg.load_geometry("Ascent", folder)
-    changed = copy.deepcopy(mf)
-    changed["features"][0]["states"][0]["footprint"]["uv"][0][0] -= 100
-    m2 = cf.manifest(geo, changed)
-    a2 = cf.compile_assets(geo, changed, cf.bundle_status(geo, changed))
-    real = os.replace
-
-    def flaky(src, dst):
-        if str(dst).endswith("index.json"):
-            raise OSError("disk full")
-        return real(src, dst)
-
-    monkeypatch.setattr(os, "replace", flaky)
-    with pytest.raises(OSError):
-        cf.publish_generation(folder, "Ascent", m2, a2)
-    assert cf.active_sha("Ascent", folder) == sha and cg.load_geometry("Ascent", folder).features_sha == sha
-
-
-def test_a_failed_publication_never_touches_a_published_generation(published):
-    """Republishing the pointer's manifest with assets that don't match it is refused before anything is
-    written: the previous pointer and the previous generation's bytes stay exactly as they were, and verify."""
-    from app.control.geometry import GeometryError
-
-    folder, sha, _ = published
-    path = folder / "features" / f"{sha}.json"
-    index_before = (folder / "index.json").read_bytes()
-    bytes_before = path.read_bytes()
-    body = cf.load_generation(folder, sha)
-    wrong = copy.deepcopy(body["assets"])
-    wrong["states"]["feature-1:intact"]["blocked"] = [999]
-    with pytest.raises(GeometryError):
-        cf.publish_generation(folder, "Ascent", body["manifest"], wrong)
-    assert (folder / "index.json").read_bytes() == index_before
-    assert path.read_bytes() == bytes_before, "the content-addressed file is immutable"
-    assert cf.verify(body["manifest"], cf.load_generation(folder, sha)["assets"]) == []
-    assert sorted(p.name for p in (folder / "features").iterdir()) == [path.name], "no staging file left behind"
-    # republishing the same, valid generation leaves its bytes alone and keeps the pointer on it
-    assert cf.publish_generation(folder, "Ascent", body["manifest"], body["assets"]) == sha
-    assert path.read_bytes() == bytes_before and cf.active_sha("Ascent", folder) == sha
 
 
 def test_the_local_store_uses_the_shared_pinned_input_guard(monkeypatch):
@@ -383,14 +182,6 @@ def test_the_local_store_uses_the_shared_pinned_input_guard(monkeypatch):
     assert compute_control.store_result(None, planned, {"status": "failed", "error": "x"}) == "stored", "failures still stored"
     assert calls == [{'require_current': True, 'planned_inputs': None}] * 2
 
-
-def test_rebuilding_the_masks_keeps_the_generation_pointer():
-    sys.path.insert(0, str(HERE.parents[1] / "scripts"))
-    import build_control_geometry as bcg
-
-    row = {"sight_sha": "a"}
-    bcg.keep_features(row, {"features_sha": "gen1", "height_sha": "h", "sight_sha": "old"})
-    assert row == {"sight_sha": "a", "features_sha": "gen1"}
 
 
 # ---- W6: rasterising, floors, movement blocks
@@ -1206,3 +997,13 @@ def test_placement_reports_empty_invalid_and_off_ground_without_clamping():
     mf['features'][0]['states'][0]['footprint'] = {'type': 'point', 'uv': [10001, 10001]}
     p = cf.placement(geo, mf)['feature-1']
     assert not p.ok and any(r['code'] == 'off_map' for r in p.reasons)
+
+
+
+def test_legacy_pointer_is_explicit_conversion_failure_for_current_feature_work(monkeypatch):
+    from app.services import replay_control as rc
+    index, tags, maps = rc._assets()
+    monkeypatch.setattr(rc, '_assets', lambda: ({**index, 'Ascent': {**index['Ascent'], 'features_sha': 'old'}}, tags, maps))
+    with pytest.raises(ValueError, match='conversion'):
+        rc.geometry_inputs('Ascent')
+    assert not hasattr(cf, 'active_sha') and not hasattr(cf, 'load_generation') and not hasattr(cf, 'publish_generation')

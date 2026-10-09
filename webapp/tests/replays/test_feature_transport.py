@@ -49,6 +49,21 @@ def test_exact_loader_checks_context_and_digestless_never_reads_cache(tmp_path, 
         task.load_task_features(request, geometry_case(flat=True), tmp_path)
 
 
+def test_verified_cache_hit_cannot_apply_to_different_permanent_geometry(tmp_path, monkeypatch):
+    from app.control import task
+    from app.replays import map_feature_inputs as fi
+    artifact = artifact_case()
+    codec.store_cached_artifact(tmp_path, artifact, lambda item: None)
+    monkeypatch.setattr(fi, 'CONSUMER_VERSIONS', {'test': 1})
+    monkeypatch.setattr(task, '_ARTIFACTS', codec.VerifiedArtifactCache())
+    request = {'map': 'Summit', 'features': artifact.digest}
+    task.load_task_features(request, geometry_case(flat=True), tmp_path)
+    different = geometry_case(flat=True)
+    different.sight[0, 0] = ~different.sight[0, 0]
+    with pytest.raises(codec.FeatureArtifactCorrupt):
+        task.load_task_features(request, different, tmp_path)
+
+
 @pytest.mark.parametrize('error,kind,code', [
     (codec.FeatureArtifactMissing('evicted'), 'infra', 'features_missing'),
     (codec.FeatureArtifactCorrupt('corrupt'), 'infra', 'features_corrupt'),
@@ -87,6 +102,9 @@ def test_post_admission_missing_artifact_is_infrastructure(monkeypatch, tmp_path
 
 
 def test_local_collector_does_not_store_retryable_feature_failure():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
     import compute_control
     class Planned:
         map_name = 'Summit'

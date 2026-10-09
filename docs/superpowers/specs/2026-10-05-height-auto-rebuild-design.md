@@ -1,5 +1,13 @@
 # Map heights: rebuilt automatically on the replay worker (design)
 
+Superseding amendment, 2026-10-08: the complete map-features-survive-height-rebuilds implementation
+retires section 3's feature-generation skip, section 4's generation-arrival refusal, section 5's band-selection
+and generation freeze, and E6. Permanent annotations compile into immutable per-map artifacts against exact
+height/tag/compiler inputs. Tagged maps rebuild and permit manual activation/off; pending placement and
+diagnostic/compiler failures hold only affected derived work and never veto a valid height activation.
+Auto enablement, first-two/next-five-match cadence, database heights, integrity/policy gates and evidence-deletion
+off remain unchanged. Deploy the complete replacement together; see `docs/superpowers/map-features-survive-heights/README.md`.
+
 Status: built 2026-10-08 (plan: docs/superpowers/plans/2026-10-05-height-auto-rebuild.md); on from the merge: `render.yaml` sets REPLAY_HEIGHTS_AUTO=true (the owner's decision, 2026-10-08).
 
 The design below is the one the owner approved on 2026-10-05. Where the build changed it, the section carries a

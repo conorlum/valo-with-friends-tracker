@@ -1031,6 +1031,7 @@ def geometry_from_feature_inputs(inputs: fi.FeatureInput, asset=None) -> Geometr
     geo = geometry_from_masks(inputs.key.map_name, _archived_mask(base['sight'], (PX, PX)),
                               _archived_mask(base['walk'], (PX, PX)), base['scale'], base['specials'])
     geo.barrier = None if base['barrier'] is None else _archived_mask(base['barrier'], (GRID, GRID))
+    geo.barrier_sha = base.get('barrier_sha')
     if inputs.key.height_digest == 'flat':
         if asset is not None:
             raise fa.FeatureArtifactCorrupt('flat key cannot attach heights')
@@ -1041,11 +1042,8 @@ def geometry_from_feature_inputs(inputs: fi.FeatureInput, asset=None) -> Geometr
     return geo
 
 
-def compile_artifact(geo: Geometry, inputs: fi.FeatureInput, code_commit: str) -> fa.FeatureArtifact:
-    """The existing compiler, applied to permanent archived definitions/context, with complete assets."""
-    envelope = fi.read_json(inputs.canonical_inputs)
-    if inputs.key.compiler_version != COMPILER_VERSION or envelope['normalization'] != fi.FEATURE_NORMALIZATION_VERSION:
-        raise fa.UnsupportedFeatureCompiler('recorded feature compiler/normalization unavailable')
+def verify_permanent_context(geo: Geometry, inputs: fi.FeatureInput) -> None:
+    """A cached artifact still belongs to the actual map context used for this invocation."""
     if (geo.height_sha or 'flat') != inputs.key.height_digest or geo.name != inputs.key.map_name:
         raise fa.FeatureArtifactCorrupt('compiler geometry/key mismatch')
     if hashlib.sha256(inputs.canonical_inputs).hexdigest() != inputs.key.tags_digest:
@@ -1058,6 +1056,14 @@ def compile_artifact(geo: Geometry, inputs: fi.FeatureInput, code_commit: str) -
             or ((geo.barrier is None) != (reconstructed.barrier is None)) \
             or (geo.barrier is not None and not np.array_equal(geo.barrier, reconstructed.barrier)):
         raise fa.FeatureArtifactCorrupt('compiler permanent context does not match archive')
+
+
+def compile_artifact(geo: Geometry, inputs: fi.FeatureInput, code_commit: str) -> fa.FeatureArtifact:
+    """The existing compiler, applied to permanent archived definitions/context, with complete assets."""
+    envelope = fi.read_json(inputs.canonical_inputs)
+    if inputs.key.compiler_version != COMPILER_VERSION or envelope['normalization'] != fi.FEATURE_NORMALIZATION_VERSION:
+        raise fa.UnsupportedFeatureCompiler('recorded feature compiler/normalization unavailable')
+    verify_permanent_context(geo, inputs)
     mf = envelope['runtime']
     mf = {**mf, 'features': mf['features'] + envelope['outside_base_edits']}
     legacy = {k: _archived_mask(v, (PX, PX)) for k, v in envelope['legacy'].items()}
@@ -1183,86 +1189,6 @@ def verify(expected: dict | None, assets: dict | None, geo: Geometry | None = No
             diff = sorted(k for k in set(fresh or {}) | set(expected) if (fresh or {}).get(k) != expected.get(k))
             problems.append(f"definitions no longer compile to the expected manifest ({', '.join(diff)})")
     return problems
-
-
-# ---------------------------------------------------------------- generations (M5)
-
-def active_sha(name: str, asset_dir=None) -> str | None:
-    """The map's active feature generation (index.json `features_sha`), or None: no enabled features."""
-    from app.control.geometry import ASSET_DIR
-
-    path = (asset_dir or ASSET_DIR) / "index.json"
-    try:
-        entry = json.loads(path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}
-    except (OSError, ValueError):
-        return None
-    return entry.get("features_sha") or None
-
-
-GENERATIONS = "features"           # <asset dir>/features/<manifest digest>.json
-
-
-def load_generation(asset_dir, sha: str) -> dict:
-    """A published generation {map, manifest, assets}. Content-addressed: a file whose manifest doesn't hash to
-    its name is refused (GeometryError: the machine's problem, retried, never a bad round)."""
-    from app.control.geometry import GeometryError
-
-    path = asset_dir / GENERATIONS / f"{sha}.json"
-    try:
-        body = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
-        raise GeometryError(f"feature generation {sha} unreadable: {error}") from error
-    if manifest_digest(body.get("manifest")) != sha:
-        raise GeometryError(f"feature generation {sha}: its manifest hashes to {manifest_digest(body.get('manifest'))}")
-    return body
-
-
-def publish_generation(asset_dir, name: str, manifest_: dict, assets: dict) -> str:
-    """Writes a complete, verified generation, then moves the map's pointer (index.json `features_sha`) to it in
-    one atomic replace. The assets are verified against the manifest before anything is written, and the staged
-    file is read back and verified before it is published; a generation already published under the digest is
-    never rewritten (content-addressed and immutable: a valid file there already holds these assets). A failure
-    at any step leaves the previous pointer, and so the previous generation, in use; in-flight tasks keep the
-    immutable file they loaded. Returns the generation's digest. Never run on the committed asset folder in this
-    build (R3): no map has an enabled feature."""
-    import os
-    import tempfile
-
-    from app.control.geometry import GeometryError
-
-    sha = manifest_digest(manifest_)
-    problems = verify(manifest_, assets)
-    if problems:
-        raise GeometryError(f"feature generation {sha} refused: its assets don't match its manifest: {problems}")
-    folder = asset_dir / GENERATIONS
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{sha}.json"
-    try:
-        existing = load_generation(asset_dir, sha)
-    except GeometryError:
-        existing = None
-    if existing is None or verify(manifest_, existing.get("assets")):
-        fd, staged = tempfile.mkstemp(prefix=f"{sha}.", suffix=".tmp", dir=folder)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps({"map": name, "manifest": manifest_, "assets": assets}, sort_keys=True))
-            with open(staged, encoding="utf-8") as fh:
-                body = json.loads(fh.read())
-            problems = [] if manifest_digest(body.get("manifest")) == sha else ["manifest"]
-            problems += verify(manifest_, body.get("assets"))
-            if problems:
-                raise GeometryError(f"feature generation {sha} did not read back intact: {problems}")
-            os.replace(staged, path)      # absent or unreadable before: nothing valid is overwritten
-        finally:
-            if os.path.exists(staged):
-                os.unlink(staged)
-    index_path = asset_dir / "index.json"
-    index = json.loads(index_path.read_text(encoding="utf-8"))
-    index.setdefault("maps", {}).setdefault(name, {})["features_sha"] = sha
-    tmp_index = index_path.with_suffix(".tmp")
-    tmp_index.write_text(json.dumps(index, indent=1) + "\n", encoding="utf-8")
-    os.replace(tmp_index, index_path)
-    return sha
 
 
 # ---------------------------------------------------------------- rotation

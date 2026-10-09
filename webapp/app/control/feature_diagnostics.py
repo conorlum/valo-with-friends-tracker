@@ -62,6 +62,7 @@ def diagnose_features(geo, source_snapshot, previous=None, *, consumers=None):
     base = {'sight': fa.pack_mask(geo.sight.astype('uint8').tobytes(), geo.sight.shape),
             'walk': fa.pack_mask(geo.walk_px.astype('uint8').tobytes(), geo.walk_px.shape),
             'barrier': None if geo.barrier is None else fa.pack_mask(geo.barrier.astype('uint8').tobytes(), geo.barrier.shape),
+            'barrier_sha': geo.barrier_sha,
             'scale': geo.uv_per_unit / 10000, 'specials': geo.specials,
             'legacy': {key: fa.pack_mask(mask.astype('uint8').tobytes(), mask.shape) for key, mask in legacy.items()}}
     inp = fi.identify_features(geo.name, geo.height_sha, source_snapshot, base, consumers=versions)

@@ -155,6 +155,8 @@ def resolve_current_geometry(db, map_name):
         entry = index.get(map_name)
         if entry is None or not (entry.get('kill_lines') or {}).get('passes'):
             return CurrentGeometryContext(map_name, 'no_map', selection, None)
+        if entry.get('features_sha'):
+            return CurrentGeometryContext(map_name, 'conversion_required', selection, None)
         selection = control_heights.select_height(db, map_name, entry.get('height_sha'))
         source = fi.capture_source_snapshot(map_name, raw)
         source_entry = tags.get(map_name) or {}
@@ -224,10 +226,8 @@ def geometry_inputs(map_name: str, heights: dict | None = None, *, context=None)
     tags.json, the scale from maps.json, and the map's heights by their digest (`height`, only on a
     map that has them, so a flat map's inputs and its rounds' fingerprints are what they were).
 
-    Map features (docs/superpowers/specs/2026-10-04-map-features-contract.md, section 8): `features`, the
-    consumed-input manifest digest of the map's active feature generation (index.json `features_sha`), only on
-    a map that has enabled features. No map has any in this build, so every input is what it was
-    (tests/fixtures/control/map_features/legacy_inputs.json).
+    Exact feature artifacts are selected separately by resolve_current_geometry. This offline-compatible
+    helper retains the legacy base/height inputs; an unexpected old pointer requires conversion.
 
     `heights` is `control_heights.active_digests(db)`: a map's active digest in the database is its heights
     (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md, section 1). The committed index.json
@@ -247,7 +247,7 @@ def geometry_inputs(map_name: str, heights: dict | None = None, *, context=None)
     if height:
         inputs["height"] = height
     if entry.get("features_sha"):
-        inputs["features"] = entry["features_sha"]
+        raise fi.FeatureInputsError('legacy feature pointer requires archive conversion')
     return inputs
 
 

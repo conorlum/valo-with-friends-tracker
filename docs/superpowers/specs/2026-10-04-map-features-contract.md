@@ -6,13 +6,7 @@ the agent's reading, approved by the user on 2026-10-04 (run decision D5). Every
 synthetic fixture; nothing here is consumed by the engine in this build, no map has an enabled feature, and
 every committed map's control inputs and fingerprints are unchanged (`tests/fixtures/control/map_features/legacy_inputs.json`).
 
-Amended 2026-10-08 (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md, section 5, the owner's P5): a
-floor binding no longer has to be read from the map's current height asset. It records the lowest floor of the
-asset it was read from (origin_z) and its band is rebased to the current asset's, so a tagged feature persists
-across rebuilds and follows its floor; one whose rebased band stops picking exactly one floor per cell is pending
-and is listed in that rebuild's report. **Not amended:** section 8. A published generation still names the height
-digest; a map that has one is not rebuilt automatically and its heights can't be changed by hand until generations
-can be recompiled.
+Amended by the 2026-10-08 map-features-survive-height-rebuilds design: authored minimap shapes and behaviour are permanent; each required cell with exactly one real floor selects that floor from the compiled height asset, without owner floor tagging. A gimmick touching a multi-floor cell or otherwise unplaceable is pending, contributes no runtime effects, is listed with reasons in that rebuild report, and is never deleted; ground-relative bounds are derived afresh from the selected floor. Section 8 selects immutable per-map compilation artifacts by exact height, normalized tags and compiler inputs, with each round recording its artifact digest. After the replacement ships, tagged maps rebuild and permit manual height activation/off under normal height rules; before then the existing E6 generation guards remain.
 
 ## Code
 
@@ -29,28 +23,17 @@ One object per map entry in `tags.json`, beside the existing keys. Unknown keys 
 - Top level: `version` (1; any other value is refused, never migrated by guess), `next_id` (high-water mark;
   ids are `<kind>-<n>` for feature, trigger, route, floor, bundle and are never reused), `features`,
   `triggers`, `routes`, `floors`, `bundles`, `checklist`; export metadata `image_sha`, `runtime_digest`.
-- Feature: `id`, `name`, `preset`, `kind`, `category` (checklist key), `capabilities`, `states`
-  (`name`, `blocks_movement`, `blocks_sight`, `terminal`, `footprint` geometry, `sight` occluders,
-  `sight_bounds` for the footprint), `initial_state` (null = uncertain, a warning), `transitions`, `reset`,
-  `floors` (floor ids, or unresolved), `parent`, `bundle`, `rotation` (`pivot`, `panel`, `direction`,
-  `start_deg`, `end_deg`, `phases`), `noise` (`makes_noise`, `origin`, `notes`; annotation only, no hearing),
-  `base_edits` (`potential_ground`, `remove_sight`, `ground_binding`, `reclassify` [{`source`, `geometry`}]),
-  `review` (draft / needs_verification / user_reviewed), `notes`, `parser_bindings`.
-- Trigger: `id`, `name`, `type` (switch / shoot / proximity / other), `geometry` (point, polygon or paint),
-  `range` (proximity without an area: a value object, unresolved allowed, never a default radius), `floor`,
-  `targets` [{`feature`, `event`}] (explicit; nothing pairs by proximity), `timing`, `noise`.
-- Route: `id`, `name`, `owner`, `kind` (zipline / rope / teleporter / drop / custom), `endpoints` (exactly two,
-  {`id`, `uv`, `floor`}), `path` (drawing only), `access` (`endpoint_only` or {`sites`: [{`id`, `uv`, `floor`}]}),
-  `directions` [{`from`, `to`, `entry` s, `transit` s, `length` m}], `states` (owner states it runs in, or
-  null), `in_transit` (complete / abort / unresolved).
-- Floor binding: `id`, `label`, `z_band` [lo, hi] (metres of position-z above `origin_z`) or null (a manual
-  label), `origin_z` (the lowest floor, in world decimetres, of the asset the band was read from), `height_sha`
-  (that asset: a record, not a condition).
+- Feature: `id`, `name`, `preset`, `kind`, `category` (checklist key), `capabilities`, `states` (`name`, `blocks_movement`, `blocks_sight`, `terminal`, `footprint` geometry, `sight` occluders, `sight_bounds` for the footprint), `initial_state` (null = uncertain, a warning), `transitions`, `reset`, `floors` (preserved legacy source; excluded from runtime), `parent`, `bundle`, `rotation` (`pivot`, `panel`, `direction`, `start_deg`, `end_deg`, `phases`), `noise` (`makes_noise`, `origin`, `notes`; annotation only, no hearing), `base_edits` (`potential_ground`, `remove_sight`, `ground_binding` (preserved legacy source; excluded from runtime), `reclassify` [{`source`, `geometry`}]), `review` (draft / needs_verification / user_reviewed), `notes`, `parser_bindings`; feature and restored-ground placement use the automatic one-floor rule.
+- Trigger: `id`, `name`, `type` (switch / shoot / proximity / other), `geometry` (point, polygon or paint), `range` (proximity without an area: a value object, unresolved allowed, never a default radius), `floor` (preserved legacy source; excluded from runtime), `targets` [{`feature`, `event`}] (explicit; nothing pairs by proximity), `timing`, `noise`; trigger placement uses the automatic one-floor rule.
+- Route: `id`, `name`, `owner`, `kind` (zipline / rope / teleporter / drop / custom), `endpoints` (exactly two, {`id`, `uv`, `floor`}), `path` (drawing only), `access` (`endpoint_only` or {`sites`: [{`id`, `uv`, `floor`}]}), `directions` [{`from`, `to`, `entry` s, `transit` s, `length` m}], `states` (owner states it runs in, or null), `in_transit` (complete / abort / unresolved); endpoint/access `floor` fields are preserved legacy source excluded from runtime, and placement uses the automatic one-floor rule.
+- The legacy `floors` catalogue and its fields are preserved for source round trips but no longer select runtime floors or prompt the owner; compilation derives placement only from shapes and the exact height asset. Schema version remains 1; this explicit semantics change has a new normalization/compiler version, and unsupported source versions remain refused.
 - Bundle: `id`, `members`, `enabled`, `runtime_consumer`.
 - Geometry: minimap u/v (0..10000): `point`, `polyline` (+ `width`), `polygon` (even-odd), `paint` (the
   tagger's 256 x 256 bit format).
 - Editorial (never in a runtime hash): `name`, `notes`, `review`, `ui`, `parser_bindings`, `category`; top-level
   `checklist`, `next_id`, `image_sha`, `runtime_digest`, `ui`, `notes`. List order is editorial too.
+
+Known legacy floor selectors, including ground-relative bounds.floor, are excluded from the new normalized runtime view; other unknown keys are retained and hashed. Ground-relative bounds themselves remain authored behaviour.
 
 ## 2. Unresolved and runtime-disabled representation
 
@@ -59,14 +42,9 @@ One object per map entry in `tags.json`, beside the existing keys. Unknown keys 
 - A transition with an unresolved duration enters its moving state and schedules nothing; an unresolved
   mid-motion policy rejects presses during the motion; an unresolved guard never fires.
 - An occluder with unresolved bounds is saved and pending: it blocks nothing and is reported.
-- A floor binding without a band, with a band whose frame is unknown (no `origin_z`, and another asset than the
-  map's), or matching zero or several floors of a cell after rebasing, is pending: it binds nothing (never all
-  floors).
+- On a height asset, every required cell of a gimmick must have exactly one real finite floor; zero floors, unresolved heights, multiple floors or unplaceable required geometry makes the whole gimmick pending with no runtime effects, with every reason listed in that rebuild report and all authored data retained. A flat map uses its one walkable 2D node per cell.
 - A route arc with an unknown cost exists for reachability only; time queries leave it out and list it.
-- A bundle publishes its base edits only when enabled, named to a registered runtime consumer
-  (`features.RUNTIME_CONSUMERS`, empty in this build), its behaviour is resolved, its floor bindings are
-  verified, legacy overlaps are reclassified exactly and nothing outside it overlaps. Otherwise nothing of
-  it is published and the map's geometry is unchanged.
+- A bundle contributes runtime assets and base edits only when enabled, named to a registered runtime consumer, its required behaviour is resolved, every member/dependent placement satisfies the one-floor rule, legacy overlaps are reclassified exactly and nothing outside it overlaps. Otherwise the whole bundle contributes nothing; its pending or disabled status is recorded, independent bundles remain eligible, and a height rebuild passing the height gate still goes live.
 
 ## 3. Reducer ordering and cancellation
 
@@ -86,11 +64,8 @@ One object per map entry in `tags.json`, beside the existing keys. Unknown keys 
 
 ## 4. Height references and sight
 
-- Floors are bound by height bands in metres above the binding's own `origin_z`; before use a band is rebased
-  into the `node_z` frame (position-z metres above the map's current lowest floor).
-- Occluder bounds are ground-relative (`ref: ground`, on a bound floor: the floor's physical ground is its
-  node z - `STAND_M`, the median over the occluder's cells), world (`ref: world`, converted through the
-  height asset's `origin_z`), `all_height`, or unresolved. The band is [bottom, top).
+- Each required cell binds to its sole real floor in the exact height asset named by the compilation; a multi-floor or unplaceable gimmick is pending, and authored bands/old floor IDs never choose among floors.
+- Occluder bounds are ground-relative (`ref: ground`, using median physical ground, node z - `STAND_M`, of automatically selected floors under its cells), world (`ref: world`, converted through the exact height asset's `origin_z`), `all_height`, or unresolved; all resolved forms still require gimmick placement to pass the one-floor rule. The band is [bottom, top).
 - One rule for every consumer (`features.blocked_lines`): the eye-to-target line is sampled every pixel
   (ends excluded) and is blocked inside an occluder's mask at a height inside its band; a straight-up line is
   blocked when its z span meets the band. Eye = node z + `EYE_M`; target body = node z + `BODY_M`. A node
@@ -154,6 +129,7 @@ names each). **None is switched to features in this build.**
 | `control/engine:special_links` | specials | `base` (legacy specials, unchanged) |
 | `control/geometry:build_visibility` | cast | `base` (the open map's cached rows) |
 | `control/height_build:geo_los` | los | `base` |
+| `control/features:verify_permanent_context` | specials | `freshness`: verify exact permanent archive context on every invocation |
 | `control/feature_diagnostics:diagnose_features` | specials | `base`: diagnostics only, exact admitted/archived permanent context, no runtime effects |
 | `control/height_job:features_pending` | specials | `base`: provisional diagnostics only, never a height gate |
 | `control/task:geometry_used` | specials | freshness: the manifest's `features` key (W17) |
@@ -164,8 +140,4 @@ names each). **None is switched to features in this build.**
 
 ## 8. Freshness
 
-`features.manifest` is None for a map with no publishable bundle: no `features` key appears in its control
-inputs, so its fingerprint is unchanged. Otherwise it covers the enabled runtime definitions, compiled
-blocked nodes / occluders / arcs (hashed from canonical bytes), the height digest and the schema, compiler,
-reducer-semantics and consumer versions; `features.verify` re-hashes what was loaded and recompiles the
-definitions. Editorial edits never move it.
+`features.manifest` is None when no bundle is intended for a registered runtime consumer: no `features` key appears in control inputs and legacy fingerprints remain unchanged; intended pending bundles produce a manifest recording their disabled outcome. Otherwise its digest identifies an immutable per-map database artifact covering intended runtime definitions, pending outcomes, complete compiled nodes / occluders / arcs / base edits and canonical hashes, exact height digest, relevant base/legacy inputs, and schema, normalization, compiler, reducer-semantics and consumer versions; a round records this digest, and verification rehashes loaded bytes and recompiles archived definitions against recorded geometry under the recorded compiler. Editorial edits never move it.

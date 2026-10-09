@@ -40,7 +40,7 @@ _ARTIFACTS = VerifiedArtifactCache()
 
 def load_task_features(task, geo, cache_dir):
     from app.replays import map_feature_artifacts as fa, map_feature_inputs as fi
-    from app.control.features import verify_artifact
+    from app.control.features import verify_artifact, verify_permanent_context
     expected = task.get('features')
     context = task.get('geometry') or {}
     if expected != context.get('features') and 'geometry' in task:
@@ -60,6 +60,7 @@ def load_task_features(task, geo, cache_dir):
                 any(fi.CONSUMER_VERSIONS.get(k) != v for k, v in envelope['consumers'].items()):
             raise fa.UnsupportedFeatureCompiler('recorded feature semantics unavailable')
         try:
+            verify_permanent_context(geo, fi.FeatureInput(item.key, item.inputs, b'', ''))
             _ARTIFACTS.get_or_verify(item, lambda artifact: verify_artifact(artifact, geo))
         except fa.FeatureArtifactCorrupt:
             fa.cache_path(cache_dir, expected).unlink(missing_ok=True)
@@ -116,7 +117,7 @@ def geometry_used(geo) -> dict:
             "barrier": geo.barrier_sha, "specials": list(geo.specials), "scale": scale}
     if geo.height_sha:
         used["height"] = geo.height_sha
-    if getattr(geo, "features_sha", None):     # the feature generation actually loaded (absent: none)
+    if getattr(geo, "features_sha", None):     # the exact artifact actually loaded (absent: none)
         used["features"] = geo.features_sha
     return used
 
@@ -140,14 +141,11 @@ def height_file(name: str, digest: str) -> Path:
 
 
 def _load(name: str, heights: str | None = None, digest: str | None = None, *, exact=False, height_mode='legacy_default'):
-    from app.control import features, geometry
+    from app.control import geometry
 
     if heights is None and digest:
         heights = str(geometry.height_cache_path(name, digest))
-    # A map's own geometry is keyed by its name; with an active feature generation, by that generation too, so
-    # a worker never keeps computing with a superseded one (absent for every map today: the key is unchanged).
-    generation = None if exact else features.active_sha(name)
-    key = (name, heights, exact, height_mode) if exact or height_mode != 'legacy_default' else name if heights is None and generation is None else (name, heights, generation)
+    key = (name, heights, exact, height_mode) if exact or height_mode != 'legacy_default' or heights is not None else name
     if key not in _GEOMETRY:
         if digest:
             height_file(name, digest)
@@ -165,68 +163,8 @@ def _load(name: str, heights: str | None = None, digest: str | None = None, *, e
                 except OSError:
                     pass
             raise
-        _VERIFIED[key] = None if exact else verify_features(geo)
         _GEOMETRY[key] = geo
-    elif generation is not None:
-        # The generation pointer can stay put while its definitions change (an edited tags.json): a cached
-        # generation is verified again whenever the definition inputs differ from the ones it was verified
-        # against, so a worker never keeps computing with geometry its definitions no longer compile to.
-        geo = _GEOMETRY[key]
-        entry = _definitions(geo.name)
-        if _VERIFIED.get(key) != _definitions_digest(entry):
-            try:
-                _VERIFIED[key] = verify_features(geo, entry=entry)
-            except Exception:
-                _GEOMETRY.pop(key, None)       # the next try loads the generation again
-                _VERIFIED.pop(key, None)
-                raise
     return _GEOMETRY[key]
-
-
-_VERIFIED: dict = {}        # cache key -> digest of the definition inputs its generation was verified against
-
-
-def _definitions(name: str) -> dict:
-    """A map's tags.json entry: what a generation's definitions are compiled from. An unreadable file (say, caught
-    mid-write) is the machine's failure (GeometryError), never the round's."""
-    from app.control import geometry
-
-    try:
-        return geometry.load_tags().get("maps", {}).get(name, {})
-    except (OSError, ValueError) as error:
-        raise geometry.GeometryError(f"{name}: tags.json unreadable: {error}") from error
-
-
-def _definitions_digest(entry: dict) -> str:
-    """Everything `features.verify` recompiles from besides the geometry: the definitions, the legacy paints
-    and the registered consumers."""
-    import json
-
-    from app.control import features
-
-    inputs = {"map_features": entry.get("map_features"), "cover_paint": entry.get("cover_paint"),
-              "cant_walk_paint": entry.get("cant_walk_paint"), "consumers": sorted(features.RUNTIME_CONSUMERS)}
-    return hashlib.sha256(json.dumps(inputs, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-
-
-def verify_features(geo, expected: str | None = None, full: bool = True, entry: dict | None = None) -> str | None:
-    """Map features (M5): the loaded generation must be the expected one (a task may name it), its compiled
-    assets must hash to its manifest, and the map's current definitions (tags.json, or `entry`) must still
-    compile to that manifest. Any mismatch raises GeometryError: the machine's (infra) failure, retried, never
-    stored as the round's. Nothing to check on a map without a generation, which is every map today. Returns the
-    digest of the definition inputs a full check verified (None when there was nothing to check)."""
-    from app.control import features, geometry
-
-    if expected is not None and expected != geo.features_sha:
-        raise geometry.GeometryError(f"{geo.name}: expected feature generation {expected}, loaded {geo.features_sha}")
-    if not geo.features_sha or not full:
-        return None
-    entry = _definitions(geo.name) if entry is None else entry
-    problems = features.verify(geo.features["manifest"], geo.features["assets"], geo, entry.get("map_features"),
-                               features.legacy_masks(entry))
-    if problems:
-        raise geometry.GeometryError(f"{geo.name}: feature generation {geo.features_sha} is stale: {'; '.join(problems)}")
-    return _definitions_digest(entry)
 
 
 def _cache_path(job: dict, map_name: str) -> Path:

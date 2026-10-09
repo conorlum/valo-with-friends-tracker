@@ -105,3 +105,8 @@ def test_canonical_tag_v2_literal_vectors():
 
 def test_generic_v1_digest_is_unchanged():
     assert ms.digest({'b': [1, 2.0], 'a': True}) == hashlib.sha256(b'{"a":true,"b":[1,2]}').hexdigest()[:16]
+def test_huge_integer_rejection_is_a_validation_error():
+    from app.replays.map_feature_schema import tag_canonical_bytes
+    import pytest
+    with pytest.raises(ValueError, match='integer'):
+        tag_canonical_bytes({'unknown': 10 ** 1000})

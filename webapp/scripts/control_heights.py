@@ -11,8 +11,8 @@ how many matches, its supported share, both checks, how long it took, and for a 
 `activate` makes an earlier build the map's active heights (activating the one that is active changes nothing);
 `off` leaves the map with none (flat). Either way the map's stored rounds turn stale and the replay worker
 recomputes them when it is idle; the pages keep showing the stored ones, marked out of date, until then.
-Neither stops the next automatic rebuild: for that, unset REPLAY_HEIGHTS_AUTO on the web service. Both refuse a
-map with a published feature generation, which names the heights it was compiled against.
+Neither stops the next automatic rebuild: for that, unset REPLAY_HEIGHTS_AUTO on the web service. Both emit
+fresh feature diagnostics and prepare the selected artifact independently of height activation.
 `export` writes the map's active asset and its report to a folder outside the repository, in the layout of a
 preview, for `height_viewer.py --dir` and `control_tagger.py --heights-dir`.
 
@@ -28,13 +28,6 @@ from pathlib import Path
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBAPP_ROOT))
-
-
-def generation_of(map_name: str) -> str | None:
-    """The map's published feature generation (index.json `features_sha`), if it has one."""
-    from app.services import replay_control
-
-    return (replay_control.geometry_inputs(map_name, heights=None) or {}).get("features")
 
 
 def describe(row) -> str:
@@ -115,20 +108,15 @@ def main(argv: list[str] | None = None, session_factory=None) -> int:
                 json.dumps({"height_sha": row.digest, "height": report}, indent=1) + "\n", encoding="utf-8")
             print(f"{args.map}: {row.digest} written to {args.out}", flush=True)
             return 0
-        generation = generation_of(args.map)
         if args.command == "activate":
-            why = control_heights.activate(session, args.map, args.digest, generation=generation)
+            why = control_heights.activate(session, args.map, args.digest)
             if why:
                 print(f"REFUSED: {why}", file=sys.stderr)
                 return 2
             print(f"{args.map}: {args.digest} is active. Rounds computed with other heights are stale and will be "
                   f"recomputed when the replay worker is idle.", flush=True)
             return 0
-        try:
-            had = control_heights.deactivate(session, args.map, generation=generation)
-        except control_heights.HasGeneration as refused:
-            print(f"REFUSED: {refused}", file=sys.stderr)
-            return 2
+        had = control_heights.deactivate(session, args.map)
         print(f"{args.map}: heights off; its rounds are stale and will be recomputed flat." if had
               else f"{args.map}: no active heights; nothing changed.", flush=True)
         return 0

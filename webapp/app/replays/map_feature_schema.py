@@ -340,6 +340,8 @@ def tag_canonical_bytes(value: object) -> bytes:
         if isinstance(item, bool):
             return ['bool', item]
         if isinstance(item, (int, float)):
+            if isinstance(item, int) and abs(item) > 9007199254740991:
+                raise ValueError(f'{path}: integer outside JavaScript safe range')
             if not math.isfinite(item):
                 raise ValueError(f'{path}: nonfinite number')
             if (isinstance(item, int) or item.is_integer()) and abs(item) > 9007199254740991:
