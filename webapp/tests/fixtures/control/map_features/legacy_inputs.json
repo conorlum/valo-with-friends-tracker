@@ -13,9 +13,9 @@
  },
  "maps": {
   "Abyss": {
-   "fingerprint": "15a6609940148283",
+   "fingerprint": "f8f6c2f89e2de30b",
    "geometry_inputs": {
-    "barrier": "279e647ec456",
+    "barrier": "d9326d0d3b9a",
     "scale": 8.1e-05,
     "sight": "8342f6714685",
     "specials": [],
