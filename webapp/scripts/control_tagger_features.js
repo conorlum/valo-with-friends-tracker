@@ -237,7 +237,7 @@
     if (d.points.length < need) { render(); return; }
     var uv = d.points.map(uvOf), t = target(d.kind);
     if (!t) { render(); return; }
-    var geom = { type: d.kind, uv: uv };
+    var geom = { type: d.kind === "line" ? "polyline" : d.kind, uv: uv };
     if (t.append) {
       var o = F.find(mf(), ui.sel), si = t.path[1], list = ((o.states[si] || {}).sight || []).slice();
       list.push({ geometry: geom, bounds: { ref: "unresolved" } });
