@@ -39,6 +39,11 @@ height bounds, and confirm glass blocks movement while allowing sight. These are
 
 ## Session B — Review replay evidence
 
+The local Ascent recording has now been located and reviewed. Follow
+[PARSER-DIAGNOSTICS.md](PARSER-DIAGNOSTICS.md) for the isolated opt-in capture of messages omitted by the
+pinned decoder, its limits, and the next parser/runtime boundary. Preserve the private scene receipts;
+the initial implementation record's source-availability finding is historical.
+
 1. Start with existing private local/archived Ascent exports; do not touch a live DB or request another
    recording before checking available evidence. Confirm parser/build, source identity and scan coverage.
 2. Read the audit report. Keyword hits are candidates. A closed network actor/channel is not a proved

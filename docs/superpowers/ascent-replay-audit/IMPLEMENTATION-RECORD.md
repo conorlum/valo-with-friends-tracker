@@ -2,6 +2,9 @@
 
 Date: 2026-10-09. Work branch: `codex/ascent-audit-and-tagger-guidance`.
 Base: `dcb6c44`, the open PR #127 saved-draft repair. That dependency remains separate.
+This record describes the initial preparation. Subsequent local Ascent source discovery and owner scene
+review are recorded in [PARSER-DIAGNOSTICS.md](PARSER-DIAGNOSTICS.md) and the private evidence packet;
+the source-availability and owner-input lists below are historical, not current blockers.
 The owner prohibits merges or changes to `main`. No merge, deployment, database operation, parser
 checkout/pin change, scoring change, canonical tag publication or consumer activation was performed.
 
