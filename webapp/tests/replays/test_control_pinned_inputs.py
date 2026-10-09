@@ -126,3 +126,9 @@ def test_parent_mask_snapshot_matches_existing_decoder_and_flat_bypasses_pointer
     assert cg.load_geometry('Ascent', tmp_path, height_mode='flat', load_features=False).height_sha is None
     with pytest.raises(cg.GeometryError):
         cg.load_geometry('Ascent', tmp_path, height_mode='asset', load_features=False)
+
+
+def test_actual_scale_uses_the_loaded_minimap_multiplier():
+    from map_feature_artifact_toys import geometry_case
+    from app.control.task import geometry_used
+    assert geometry_used(geometry_case(flat=True))['scale'] == 7e-5

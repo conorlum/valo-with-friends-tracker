@@ -109,7 +109,8 @@ def geometry_used(geo) -> dict:
 
     from app.control import geometry
 
-    scale = geo.uv_per_unit
+    from app.replays import format as fmt
+    scale = geo.uv_per_unit / fmt.UV_SCALE
     used = {"sight": hashlib.sha256(np.packbits(geo.sight).tobytes()).hexdigest()[:12],
             "walk": hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12],
             "barrier": geo.barrier_sha, "specials": list(geo.specials), "scale": scale}

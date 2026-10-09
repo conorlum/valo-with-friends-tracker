@@ -378,6 +378,15 @@ def load_tags(asset_dir: Path = ASSET_DIR) -> dict:
     return json.loads((asset_dir / "tags.json").read_text(encoding="utf-8"))
 
 
+def load_base_geometry(name: str, asset_dir: Path = ASSET_DIR) -> Geometry:
+    """Height evidence consumes permanent masks and scale only."""
+    sight_path, walk_path = asset_dir / f'{name}.sight.png', asset_dir / f'{name}.walk.png'
+    if not sight_path.is_file() or not walk_path.is_file():
+        raise GeometryError(f'no control geometry for {name!r}')
+    scale = json.loads(MAPS_JSON.read_text(encoding='utf-8'))[name]['xMultiplier']
+    return geometry_from_masks(name, read_mask_png(sight_path), read_mask_png(walk_path), scale, [])
+
+
 def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None = None, *, load_features=True,
                   height_mode='legacy_default') -> Geometry:
     """A map's committed geometry (built by scripts/build_control_geometry.py), with its heights when

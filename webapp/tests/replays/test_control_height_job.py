@@ -34,6 +34,21 @@ def checks(tmp_path):
     return path
 
 
+@pytest.mark.parametrize('source', ['missing', 'malformed'])
+def test_real_builder_and_verifier_do_not_read_tags(tmp_path, checks, source):
+    assets = toy_assets(tmp_path)
+    tags = assets / 'tags.json'
+    if source == 'missing':
+        tags.unlink()
+    else:
+        tags.write_text('not JSON')
+    blobs = write_blobs(tmp_path / 'blobs', covered_rounds())
+    out = height_job.run('Ascent', height_job.BlobDir(blobs, 'Ascent'), asset_dir=assets, must_block=checks)
+    seen = height_verify.describe(out['asset'], 'Ascent', asset_dir=assets, must_block=checks)
+    assert 'error' not in seen and seen['digest'] == out['digest']
+    assert ch.integrity(out['digest'], out['report'], seen, hi.must_block_sha(checks)) == []
+
+
 def test_rounds_are_read_one_at_a_time_and_twice(tmp_path):
     blobs = write_blobs(tmp_path / "blobs", covered_rounds())
     write_blobs(tmp_path / "blobs", [("match-9", 1, covered_rounds()[0][2])], name="Bind")
@@ -54,7 +69,8 @@ def test_a_build_runs_from_a_folder_and_its_result_is_what_the_web_app_verifies(
     assert report["ready"] and report["kill_lines"]["passes"] and report["kill_lines"]["qualifying"] == 6
     assert report["must_block"] == {"set": hi.must_block_sha(checks), "lines": 0, "checked": 0, "unchecked": 0,
                                     "blocked": 0, "passes": True, "results": []}
-    assert report["rounds"] == 6 and report["matches"] == 2 and report["compare"] is None and report["features"] == []
+    assert report["rounds"] == 6 and report["matches"] == 2 and report["compare"] is None
+    assert report['features']['status'] == 'error' and report['features']['code'] == 'source_failure'
     json.dumps(report)                                   # it is stored as JSON
     seen = height_verify.describe(out["asset"], "Ascent", asset_dir=assets, must_block=checks)
     assert "error" not in seen
@@ -279,10 +295,12 @@ def test_a_build_lists_the_tagged_features_that_no_longer_fit(tmp_path, monkeypa
     monkeypatch.setattr(features, "state_problems",
                         lambda g, mf, f: seen.append(f["id"]) or (["no floor in its band"] if f["id"] == "feature-2" else []))
     tags([{"id": "floor-1", "z_band": [-0.5, 1.0], "height_sha": "old", "origin_z": 0}, {"id": "floor-2", "z_band": [9, 10]}])
-    assert height_job.features_pending("FeatJob", geo, assets) == [{"feature": "feature-2",
-                                                                    "problems": ["no floor in its band"]}]
-    assert seen == ["feature-1", "feature-2"]
+    report = height_job.features_pending('FeatJob', geo, assets)
+    assert report['status'] == 'ok' and report['counts']['total_tagged'] == 2
+    assert [f['id'] for f in report['features']] == ['feature-1', 'feature-2']
+    assert all(f['runtime'] == 'disabled' for f in report['features'])
+    assert not seen, 'deprecated floor labels and disabled runtime states are not an eligibility gate'
     (assets / "tags.json").write_text(json.dumps({"maps": {}}), encoding="utf-8")
-    assert height_job.features_pending("FeatJob", geo, assets) == []
+    assert height_job.features_pending('FeatJob', geo, assets)['code'] == 'source_failure'
     (assets / "tags.json").unlink()
-    assert height_job.features_pending("FeatJob", geo, assets) == [], "no tags file: nothing to re-read"
+    assert height_job.features_pending('FeatJob', geo, assets)['code'] == 'source_failure'

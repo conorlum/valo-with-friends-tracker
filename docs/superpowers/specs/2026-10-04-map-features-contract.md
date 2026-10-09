@@ -154,6 +154,8 @@ names each). **None is switched to features in this build.**
 | `control/engine:special_links` | specials | `base` (legacy specials, unchanged) |
 | `control/geometry:build_visibility` | cast | `base` (the open map's cached rows) |
 | `control/height_build:geo_los` | los | `base` |
+| `control/feature_diagnostics:diagnose_features` | specials | diagnostics only: exact admitted/archived permanent context, no runtime effects |
+| `control/height_job:features_pending` | specials | provisional diagnostics only, never a height gate |
 | `control/task:geometry_used` | specials | freshness: the manifest's `features` key (W17) |
 | `control/utility:_sees_point` | los | `bounded_sight` (added 2026-10-05, utility-review run: whether an enemy sees a Leer's eye) |
 | `control/utility:read_pulses` | cast | `bounded_sight` (added 2026-10-05: what a Haunt or recon pulse sees) |

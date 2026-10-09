@@ -52,6 +52,8 @@ out = {{"status": "ok", "key": task["key"], "map": task["map"], "inputs_sha": hi
        "rounds": len(files), "digest": mode["digest"], "asset": base64.b64encode(open(mode["asset"], "rb").read()).decode(),
        "report": mode["report"], "rules": mode["rules"], "seconds": 3.0, "peak": 1}}
 out.update(mode.get("change", {{}}))
+if "diagnostic" in task:
+    out["report"]["features"] = {{"status": "ok", "source_sha256": task["diagnostic"].get("raw_source_sha256")}}
 for gone in mode.get("drop", []):
     out.pop(gone, None)
 print(mode["raw"] if "raw" in mode else json.dumps(out))
@@ -220,6 +222,31 @@ def stored(db, name, digest="a" * 12, report=None, manifest=None, rules=None):
 
 
 # ---------------------------------------------------------------- when a rebuild is due
+
+
+def test_tag_edit_and_web_restart_preserve_admitted_snapshot_without_rebuilding(rig, factory, db, linked, monkeypatch):
+    import hashlib
+    from app.replays.map_feature_diagnostics import diagnostic_envelope
+    from app.services import control_feature_artifacts as service
+    original = b'{"maps":{"Ascent":{"notes":"before"}}}'
+    current = [original]
+    monkeypatch.setattr(service, 'diagnostic_snapshot', lambda db, name: diagnostic_envelope(name, current[0]))
+    monkeypatch.setattr(ch, 'refresh_feature_report', lambda db, name, digest=None, **kw:
+        {'status': 'ok', 'source_sha256': hashlib.sha256(current[0]).hexdigest(), 'candidate': kw.get('candidate', False)})
+    clone(db, linked, 1)
+    one_round_batches(db, monkeypatch)
+    first = rig.cycle(factory)
+    admitted = rig.state.heights.build
+    assert admitted is not None
+    current[0] = b'{"maps":{"Ascent":{"notes":"after"}}}'
+    rig.restart_dispatcher()
+    seen = [first, *rig.until(factory, lambda s: total(s, 'heights_live') == 1, cycles=100, step_s=1)]
+    row = db.query(ControlHeight).one()
+    assert row.report['features']['provisional']['source_sha256'] == hashlib.sha256(original).hexdigest()
+    assert row.report['features']['authoritative']['source_sha256'] == hashlib.sha256(current[0]).hexdigest()
+    assert len(rig.builds.builds) == 1
+    assert total(seen, 'heights_sent') == 2 * linked.round_count + 1, 'resume may resend the admitted first batch'
+    assert row.inputs_sha == hi.digest(row.inputs), 'tags stay outside evidence identity'
 
 
 def test_nothing_is_due_with_one_match_and_the_first_build_is_due_at_two(db, linked):

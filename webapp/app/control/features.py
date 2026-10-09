@@ -574,6 +574,31 @@ def behaviour_problems(feature: dict) -> list[str]:
     return out
 
 
+def bounds_problems(geo: Geometry, mf: dict, feature: dict) -> list[dict]:
+    """Check every authored blocking volume, including all rotation phases."""
+    out = []
+    fid = feature['id']
+    def check(shape, bounds, path):
+        _, why = resolve_bounds(geo, mf, {'bounds': bounds}, to_px(raster(shape)), fid)
+        if why:
+            out.append({'code': 'invalid_bounds', 'path': path, 'cells': [], 'cell_count': 0,
+                        'floor_counts': [], 'reason': why})
+    for state in feature.get('states') or []:
+        path = f'features.{fid}.states.{state.get("name")}'
+        if state.get('blocks_sight') and state.get('footprint'):
+            check(state['footprint'], state.get('sight_bounds'), path + '.sight_bounds')
+        for i, occ in enumerate(state.get('sight') or []):
+            check(occ.get('geometry'), occ.get('bounds'), f'{path}.sight[{i}].bounds')
+    for i, phase in enumerate((feature.get('rotation') or {}).get('phases') or []):
+        path = f'features.{fid}.rotation.phases[{i}]'
+        shape = phase.get('panel') or phase.get('footprint') or phase.get('geometry')
+        if shape is not None:
+            check(shape, phase.get('sight_bounds'), path + '.sight_bounds')
+        for j, occ in enumerate(phase.get('sight') or []):
+            check(occ.get('geometry'), occ.get('bounds'), f'{path}.sight[{j}].bounds')
+    return out
+
+
 def state_problems(geo: Geometry, mf: dict, feature: dict) -> list[str]:
     """Why some state of a feature doesn't compile to what it says: a blocking footprint whose floor bindings
     are unresolved, empty, stale, missing or ambiguous (it would block nothing, or not all of itself), or a
@@ -673,6 +698,7 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
             for m in members:
                 reasons += [f"{r['path']}: {r['code']}" for r in placed[m].reasons]
                 reasons += [f"{m}: {p}" for p in state_problems(candidate, mf, features[m])]
+                reasons += [f"{r['path']}: {r['reason']}" for r in bounds_problems(candidate, mf, features[m])]
                 for phase in (features[m].get('rotation') or {}).get('phases') or []:
                     for occ in phase.get('sight') or []:
                         _, why = resolve_bounds(candidate, mf, occ, to_px(raster(occ.get('geometry'))), m)
@@ -1050,7 +1076,7 @@ def compile_artifact(geo: Geometry, inputs: fi.FeatureInput, code_commit: str) -
             for i, phase in enumerate((f.get('rotation') or {}).get('phases') or []):
                 geometry = phase.get('panel') or phase.get('footprint') or phase.get('geometry')
                 mask = to_px(raster(geometry))
-                occ, why = resolve_bounds(candidate, mf, {'bounds': phase.get('sight_bounds') or {'ref': 'all_height'}}, mask, member)
+                occ, why = resolve_bounds(candidate, mf, {'bounds': phase.get('sight_bounds')}, mask, member)
                 if why:
                     raise fa.FeatureArtifactCorrupt('eligible phase has unresolved bounds')
                 phases[f'{member}:{i}'] = {'mask': _packed_mask(mask), 'bottom': None if occ.all_height else occ.bottom,

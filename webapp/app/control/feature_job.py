@@ -53,6 +53,17 @@ def run(request):
         geo = geometry_from_feature_inputs(inp, _height(request['height']))
         verify_artifact(artifact, geo)
         return {'integrity': 'verified', 'recompilation': 'verified', 'digest': artifact.digest}
+    if mode == 'diagnose':
+        if set(request) != {'mode', 'map', 'source', 'base', 'height'}:
+            raise FeatureArtifactCorrupt('conflicting diagnostic request fields')
+        from app.control.feature_diagnostics import diagnose_features
+        from app.replays.map_feature_diagnostics import read_diagnostic
+        source = read_diagnostic(request['source'], request['map'])
+        asset = _height(request['height'])
+        key = FeatureKey(request['map'], asset.digest if asset is not None else 'flat', '0' * 64, 2)
+        inp = FeatureInput(key, canonical_json({'base': request['base']}), b'', '')
+        geo = geometry_from_feature_inputs(inp, asset)
+        return diagnose_features(geo, source, request['source'].get('previous'))
     raise FeatureArtifactCorrupt(f'unsupported feature child mode: {mode}')
 
 

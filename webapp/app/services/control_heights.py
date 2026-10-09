@@ -38,6 +38,7 @@ import json
 import math
 import subprocess
 import sys
+import logging
 from pathlib import Path
 
 from sqlalchemy.exc import IntegrityError
@@ -50,6 +51,28 @@ from app.replays import height_inputs
 
 ACTIVE, REJECTED, SUPERSEDED = "active", "rejected", "superseded"
 WEBAPP_ROOT = Path(__file__).resolve().parents[2]
+log = logging.getLogger(__name__)
+
+
+def refresh_feature_report(db, map_name, height_digest=None, **kwargs):
+    from app.services.control_feature_artifacts import refresh_feature_report as refresh
+    return refresh(db, map_name, height_digest, **kwargs)
+
+
+def _transition_features(db, map_name, height_digest):
+    from app.services import replay_control, control_feature_artifacts
+    report = refresh_feature_report(db, map_name, height_digest)
+    db.info['feature_report'] = report
+    log.info('height transition feature diagnostics: %s', json.dumps(report, sort_keys=True))
+    context = replay_control.resolve_current_geometry(db, map_name)
+    if context.state == 'features_pending' and context.feature_input is not None:
+        try:
+            control_feature_artifacts.prepare_artifact(db, context.feature_input,
+                replay_control.exact_height_bytes(db, map_name, context.height.digest))
+            db.commit()
+        except control_feature_artifacts.FeaturePreparationPending:
+            db.rollback()
+            log.info('feature preparation remains pending for %s; dispatcher will retry', map_name)
 
 
 class Busy(Exception):
@@ -241,6 +264,18 @@ def store_build(db, *, map_name: str, digest: str, asset: bytes, report: dict, i
     when another change to the map's heights won the race, or HasGeneration when a published feature
     generation is present at the final lookup under the map lock; nothing is written then."""
     why = gate(report)
+    previous = None
+    active = active_rows(db).get(map_name)
+    if active is not None:
+        features = (active.report or {}).get('features')
+        if isinstance(features, dict):
+            previous = (features.get('authoritative') or features).get('snapshot')
+    provisional = report.get('features')
+    if not isinstance(provisional, dict):
+        provisional = {'status': 'unavailable', 'code': 'diagnostic_unavailable', 'source_sha256': None}
+    authoritative = refresh_feature_report(db, map_name, digest, height_bytes=asset, previous=previous, candidate=bool(why))
+    report = {**report, 'features': {'provisional': provisional, 'authoritative': authoritative,
+                                   'candidate_status': REJECTED if why else ACTIVE}}
     try:
         replay_db.advisory_lock(db, lock_name(map_name))
         note = _generation_note(map_name)
@@ -288,6 +323,7 @@ def activate(db, map_name: str, digest: str, generation: str | None = None) -> s
         db.rollback()
         return f"another change to {map_name}'s heights got there first; look again and retry"
     db.expire_all()
+    _transition_features(db, map_name, digest)
     return None
 
 
@@ -303,4 +339,5 @@ def deactivate(db, map_name: str, generation: str | None = None) -> bool:
     _make_active(db, map_name, None)
     db.commit()
     db.expire_all()
+    _transition_features(db, map_name, None)
     return had

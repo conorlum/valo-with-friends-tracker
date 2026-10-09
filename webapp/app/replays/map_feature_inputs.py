@@ -89,7 +89,7 @@ def _entry(source: SourceSnapshot) -> dict:
 
 def diagnostic_identity(source: SourceSnapshot) -> tuple[str, str, bytes]:
     entry = _entry(source)
-    return hashlib.sha256(canonical_json(entry)).hexdigest(), source.raw_sha256, source.raw_bytes
+    return hashlib.sha256(ms.tag_canonical_bytes(entry)).hexdigest(), source.raw_sha256, source.raw_bytes
 
 
 def identify_features(map_name: str, height_digest: str | None, source: SourceSnapshot,

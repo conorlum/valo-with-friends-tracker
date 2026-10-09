@@ -327,7 +327,12 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
         if build.job_id is None:
             # Opening a key answers the build the worker has for it, in whatever state (a restart of the web app
             # adopts it); only when there is none, or it failed, is this a fresh one to send rounds to.
-            state = client.open_build(build.key, build.map_name, len(build.rounds), build.manifest)
+            from app.services import control_feature_artifacts
+            options = {}
+            health = client.health()
+            if (health.get('heights') or {}).get('diagnostics_protocol') == 1:
+                options['diagnostic'] = control_feature_artifacts.diagnostic_snapshot(session, build.map_name)
+            state = client.open_build(build.key, build.map_name, len(build.rounds), build.manifest, **options)
             build.job_id = state.get("id")
             build.queued_since = build.running_since = None
             if state.get("status") == "collecting":

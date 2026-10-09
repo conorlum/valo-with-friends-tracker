@@ -1235,7 +1235,7 @@ class HeightBuilds:
 
     # ---- what the web app asks for
 
-    def open(self, key: str, map_name: str, rounds: int, manifest) -> dict:
+    def open(self, key: str, map_name: str, rounds: int, manifest, *, diagnostic=None) -> dict:
         if not MAP_NAME.match(str(map_name)) or type(rounds) is not int or rounds < 1 or not isinstance(manifest, dict):
             raise ValueError("not a height build")
         with self.lock:
@@ -1250,6 +1250,11 @@ class HeightBuilds:
                 raise OverflowError("too many builds are collecting")
             build = {"id": uuid.uuid4().hex, "key": key, "map": map_name, "expected": rounds, "manifest": manifest,
                      "received": {}, "job": None, "touched": time.time(), "ended": None}
+            if diagnostic is not None:
+                from app.replays.map_feature_diagnostics import MAX_DIAGNOSTIC_BYTES, diagnostic_error
+                if len(json.dumps(diagnostic).encode()) > MAX_DIAGNOSTIC_BYTES:
+                    diagnostic = diagnostic_error(map_name, 'diagnostic snapshot too large', code='diagnostic_unavailable')
+                build['diagnostic'] = json.loads(json.dumps(diagnostic))
             (self.root / build["id"]).mkdir()
             self.builds[build["id"]] = build
             return self._public(build)
@@ -1298,6 +1303,8 @@ class HeightBuilds:
                                          expected=build["expected"])
                 task = {"key": build["key"], "map": build["map"], "dir": str(self.root / build["id"]),
                         "manifest": build["manifest"]}
+                if build.get('diagnostic') is not None:
+                    task['diagnostic'] = build['diagnostic']
                 if previous and HEIGHT_DIGEST.match(str(previous)):
                     task["previous"] = str(previous)
                 build["job"] = self.control.submit_build(build["key"], build["map"], task).id
@@ -1320,7 +1327,7 @@ class HeightBuilds:
                 state = self._state(build)
                 if state in out:
                     out[state].append(build["map"])
-            return {**{k: sorted(v) for k, v in out.items()}, "spool_bytes": self._spooled()}
+            return {**{k: sorted(v) for k, v in out.items()}, "spool_bytes": self._spooled(), 'diagnostics_protocol': 1}
 
     # ---- housekeeping
 
@@ -1371,6 +1378,8 @@ class HeightBuilds:
         body = {"id": build["id"], "key": build["key"], "map": build["map"], "status": self._state(build),
                 "received": len(build["received"]) if build["ended"] is None else build["expected"],
                 "expected": build["expected"]}
+        if build.get('diagnostic') is not None:
+            body['diagnostic'] = build['diagnostic']
         job = self.control.get(build["job"]) if build["job"] else None
         if build["job"] and job is None:
             body["error"] = "the build was forgotten"
@@ -1633,7 +1642,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             parts = self.path[len("/heights/build"):].strip("/").split("/")
             try:
                 if parts == [""]:
-                    made = heights.open(str(body["key"]), str(body["map"]), body["rounds"], body.get("manifest"))
+                    made = heights.open(str(body["key"]), str(body["map"]), body["rounds"], body.get("manifest"),
+                                        diagnostic=body.get('diagnostic'))
                     return self._send(HTTPStatus.ACCEPTED, made)
                 if len(parts) == 2 and parts[1] == "rounds":
                     if not isinstance(body.get("rounds"), list):

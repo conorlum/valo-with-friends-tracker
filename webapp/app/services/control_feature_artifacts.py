@@ -162,3 +162,49 @@ def prepare_artifact(db, inputs, height_bytes):
         return store_artifact(db, artifact, height_bytes=height_bytes)
     except Exception as exc:
         raise FeaturePreparationPending(inputs.key, str(exc)) from exc
+
+
+def diagnostic_snapshot(db, map_name):
+    from app.services import replay_control, control_heights
+    from app.replays.map_feature_diagnostics import diagnostic_envelope, diagnostic_error
+    try:
+        raw = replay_control._current_snapshot()[3]
+        previous = None
+        active = control_heights.active_rows(db).get(map_name)
+        if active is not None:
+            features = (active.report or {}).get('features')
+            if isinstance(features, dict):
+                previous = (features.get('authoritative') or features).get('snapshot')
+        return diagnostic_envelope(map_name, raw, previous)
+    except (OSError, ValueError, TypeError):
+        return diagnostic_error(map_name, 'current tag snapshot unavailable')
+
+
+def refresh_feature_report(db, map_name, height_digest=None, *, height_bytes=None, previous=None, candidate=False):
+    from app.services import replay_control
+    from app.replays.map_feature_sources import base_snapshot
+    from app.replays.map_feature_diagnostics import diagnostic_envelope
+    from app.replays.map_feature_inputs import capture_source_snapshot, read_json
+    source_sha = None
+    try:
+        index, tags, maps, raw = replay_control._current_snapshot()
+        source = capture_source_snapshot(map_name, raw)
+        source_sha = source.raw_sha256
+        entry = read_json(source.map_entry_bytes)
+        base = base_snapshot(map_name, replay_control.CONTROL_DIR, entry, maps[map_name]['xMultiplier'])
+        if height_digest and height_bytes is None:
+            height_bytes = replay_control.exact_height_bytes(db, map_name, height_digest)
+        envelope = diagnostic_envelope(map_name, raw, previous, bounded=False)
+        request = {'mode': 'diagnose', 'map': map_name, 'source': envelope, 'base': base,
+                   'height': None if height_bytes is None else base64.b64encode(height_bytes).decode('ascii')}
+        result = read_json(run_feature_child('diagnose', canonical_json(request)))
+        if result.get('height') != (height_digest or 'flat'):
+            raise FeatureArtifactCorrupt('diagnostic child loaded another height')
+        return {**result, 'candidate': candidate, 'requested_height': height_digest or 'flat'}
+    except (OSError, KeyError, TypeError) as exc:
+        return {'status': 'error', 'code': 'source_failure', 'reason': str(exc), 'source_sha256': source_sha,
+                'candidate': candidate, 'requested_height': height_digest or 'flat'}
+    except Exception as exc:
+        return {'status': 'error', 'code': 'compile_failure' if source_sha else 'source_failure',
+                'reason': str(exc), 'source_sha256': source_sha,
+                'candidate': candidate, 'requested_height': height_digest or 'flat'}

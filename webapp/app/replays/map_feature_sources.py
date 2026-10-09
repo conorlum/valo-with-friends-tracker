@@ -55,7 +55,7 @@ def _png_mask(raw):
         if depth == 1:
             expanded.extend((value >> bit) & 1 for value in line for bit in range(7, -1, -1))
         else:
-            expanded.extend(int(value > 0) for value in line)
+            expanded.extend(int(value > 127) for value in line)
         previous = line
     return bytes(expanded)
 

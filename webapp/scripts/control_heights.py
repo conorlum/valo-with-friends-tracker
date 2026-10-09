@@ -54,9 +54,17 @@ def describe(row) -> str:
             parts.append("rejected: " + "; ".join(control_heights.gate(report)))
         except (KeyError, TypeError, ZeroDivisionError):
             parts.append("rejected")
-    if report.get("features"):
-        parts.append(f"{len(report['features'])} tagged feature(s) no longer fit: "
-                     + ", ".join(str(f.get("feature")) for f in report["features"]))
+    diagnostic = report.get('features')
+    if isinstance(diagnostic, dict):
+        diagnostic = diagnostic.get('authoritative', diagnostic)
+        if diagnostic.get('status') == 'ok':
+            pending = [f['id'] for f in diagnostic.get('features', []) if f.get('placement') == 'pending']
+            parts.append(f"{len(pending)} tagged feature(s) pending: " + ', '.join(pending))
+        else:
+            parts.append('feature diagnostics unavailable: ' + str(diagnostic.get('reason', 'unknown')))
+    elif diagnostic:  # Historical reports from the previous compiler.
+        parts.append(f"{len(diagnostic)} tagged feature(s) no longer fit: "
+                     + ", ".join(str(f.get("feature")) for f in diagnostic))
     return "; ".join(p for p in parts if p)
 
 

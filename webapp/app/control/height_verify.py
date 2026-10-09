@@ -22,10 +22,7 @@ def describe(data: bytes, map_name: str, *, asset_dir: Path | None = None, must_
         from app.replays import height_inputs as hi
 
         directory = Path(asset_dir or hi.CONTROL_DIR)
-        scale = json.loads(cg.MAPS_JSON.read_text(encoding="utf-8"))[map_name]["xMultiplier"]
-        geo = cg.geometry_from_masks(map_name, cg.read_mask_png(directory / f"{map_name}.sight.png"),
-                                     cg.read_mask_png(directory / f"{map_name}.walk.png"), scale,
-                                     (cg.load_tags(directory).get("maps", {}).get(map_name) or {}).get("specials") or [])
+        geo = cg.load_base_geometry(map_name, directory)
         walk = geo.walk
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "asset.height.npz"

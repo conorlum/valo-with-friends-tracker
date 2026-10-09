@@ -184,8 +184,11 @@ class ControlClient:
         return self._call(urllib.request.Request(f"{self.base}{path}", data=json.dumps(body).encode("utf-8"),
                                                  method="POST", headers={"Content-Type": "application/json"}))
 
-    def open_build(self, key: str, map_name: str, rounds: int, manifest: dict) -> dict:
-        return self._post("/heights/build", {"key": key, "map": map_name, "rounds": rounds, "manifest": manifest})
+    def open_build(self, key: str, map_name: str, rounds: int, manifest: dict, *, diagnostic=None) -> dict:
+        body = {"key": key, "map": map_name, "rounds": rounds, "manifest": manifest}
+        if diagnostic is not None:
+            body['diagnostic'] = diagnostic
+        return self._post('/heights/build', body)
 
     def send_rounds(self, build_id: str, rounds: list) -> dict:
         return self._post(f"/heights/build/{build_id}/rounds", {"rounds": rounds})
@@ -546,7 +549,8 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
     except (WorkerGone, WorkerBusy, Unreachable):
         health = {}
     capable = supports_gaps(health)
-    features_capable = (health.get('control') or {}).get('features') == fa.protocol_identity()
+    control_health = health.get('control') if isinstance(health, dict) else None
+    features_capable = isinstance(control_health, dict) and control_health.get('features') == fa.protocol_identity()
     state.last_planned = now
     state.last_found = _send(session, client, state, now, counts,
                              _sendable(state, now, todo, kind="control", capable=capable, held=held),

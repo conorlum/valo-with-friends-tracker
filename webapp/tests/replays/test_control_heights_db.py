@@ -98,6 +98,23 @@ def test_a_build_at_the_bar_goes_live_and_the_one_before_it_is_superseded(db, li
     assert ch.active_rows(db)[name].digest == "bbbbbbbbbbbb"
 
 
+def test_diagnostic_failure_does_not_gate_valid_heights_and_manual_audit_preserves_reports(db, linked, monkeypatch):
+    import copy
+    monkeypatch.setattr(ch, 'refresh_feature_report', lambda db, name, digest=None, **kw:
+        {'status': 'error', 'code': 'compile_failure', 'reason': 'isolated compiler unavailable',
+         'source_sha256': 'a' * 64, 'requested_height': digest or 'flat', 'candidate': kw.get('candidate', False)})
+    assert build(db, linked.map_name, 'aaaaaaaaaaaa') == ('active', [])
+    old = copy.deepcopy(ch.rows(db, linked.map_name)[0].report)
+    assert build(db, linked.map_name, 'bbbbbbbbbbbb', report(ready=False, not_ready=['thin']))[0] == 'rejected'
+    rejected = ch.rows(db, linked.map_name)[0]
+    assert rejected.report['features']['authoritative']['candidate'] is True
+    assert ch.activate(db, linked.map_name, 'aaaaaaaaaaaa') is None
+    assert db.info['feature_report']['requested_height'] == 'aaaaaaaaaaaa'
+    assert ch.deactivate(db, linked.map_name)
+    assert db.info['feature_report']['requested_height'] == 'flat'
+    assert ch.rows(db, linked.map_name)[1].report == old
+
+
 @pytest.mark.parametrize("rep, why", [
     (report(ready=False, not_ready=["supported 41.0% is under 60%"], supported_cells=2460, supported=0.41), "under 60%"),
     (report(ready=False, not_ready=["1 unresolved area(s) larger than 12 cells touch a cell with two floors"]), "unresolved"),

@@ -94,33 +94,33 @@ def compare(new: hc.HeightAsset, old: hc.HeightAsset | None) -> dict | None:
             "cells_moved": int((both & (np.abs(shift) > MOVED_M * 10)).sum())}
 
 
-def features_pending(map_name: str, geo, asset_dir: Path | None = None) -> list[dict]:
-    """The map's tagged features that no longer fit the new heights (section 5): a floor binding whose band,
-    rebased to the new lowest floor, picks no floor or several in one of its cells, or whose frame is unknown.
-    Each is listed for the owner. `geo` has the new heights attached."""
-    from app.control import features
-
+def features_pending(map_name: str, geo, asset_dir: Path | None = None, diagnostic=None) -> dict:
+    """Provisional full-catalogue diagnostics, separate from all height checks."""
+    from app.control.feature_diagnostics import diagnose_features
+    from app.replays.map_feature_diagnostics import diagnostic_envelope, read_diagnostic
+    source_sha = None
     try:
-        entry = cg.load_tags(asset_dir or cg.ASSET_DIR).get("maps", {}).get(map_name) or {}
-    except (OSError, ValueError):
-        return []
-    mf = entry.get("map_features")
-    if not isinstance(mf, dict):
-        return []
-    out = []
-    for feature in mf.get("features") or []:
-        problems = features.state_problems(geo, mf, feature)
-        if problems:
-            out.append({"feature": feature.get("id"), "problems": problems})
-    return out
+        if diagnostic is None:
+            diagnostic = diagnostic_envelope(map_name, ((asset_dir or cg.ASSET_DIR) / 'tags.json').read_bytes(), bounded=False)
+        source_sha = diagnostic.get('raw_source_sha256')
+        source = read_diagnostic(diagnostic, map_name)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        return {'status': 'error', 'code': 'source_failure', 'reason': str(exc), 'source_sha256': source_sha}
+    try:
+        from app.replays.map_feature_inputs import read_json
+        diagnostic_geo = copy.copy(geo)
+        diagnostic_geo.specials = read_json(source.map_entry_bytes).get('specials', [])
+        return diagnose_features(diagnostic_geo, source, diagnostic.get('previous'))
+    except Exception as exc:
+        return {'status': 'error', 'code': 'compile_failure', 'reason': str(exc), 'source_sha256': source_sha}
 
 
 def run(map_name: str, rounds, *, previous: Path | None = None, asset_dir: Path | None = None,
-        must_block: Path | None = None) -> dict:
+        must_block: Path | None = None, diagnostic=None) -> dict:
     """Builds `map_name` from `rounds` (re-iterable [(match, n, blob)]) and checks it. `previous` is the asset
     file it replaces, for the comparison; `must_block` another check file than the committed one (tests)."""
     started = time.time()
-    flat_geo = cg.load_geometry(map_name, asset_dir or cg.ASSET_DIR)
+    flat_geo = cg.load_base_geometry(map_name, asset_dir or cg.ASSET_DIR)
     build = hb.build(rounds, flat_geo)
     run_checks(map_name, flat_geo, build, rounds, must_block)
     old = None
@@ -131,7 +131,7 @@ def run(map_name: str, rounds, *, previous: Path | None = None, asset_dir: Path 
             old = None
     build.report["compare"] = compare(build.asset, old)
     build.report["features"] = features_pending(map_name, cg.attach_heights(copy.copy(flat_geo), build.asset),
-                                                asset_dir)
+                                                asset_dir, diagnostic)
     with tempfile.TemporaryDirectory() as folder:
         path = Path(folder) / f"{map_name}.height.npz"
         hc.save_asset(path, build.asset)
