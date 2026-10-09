@@ -1421,6 +1421,30 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             self.end_headers()
             self.wfile.write(data)
 
+        def _control_off(self):
+            # Closing with an unread POST body can reset TCP before the client receives the 404.
+            # Drain only an admitted-size body, with bounded reads and an overall time limit.
+            limit = feature_artifacts.MAX_WIRE_BYTES if self.path == '/features' else worker.settings.control_max_bytes
+            timeout = self.connection.gettimeout()
+            try:
+                remaining = int(self.headers.get('Content-Length', '0'))
+                if 0 <= remaining <= limit:
+                    deadline = time.monotonic() + 2
+                    while remaining:
+                        wait = deadline - time.monotonic()
+                        if wait <= 0:
+                            break
+                        self.connection.settimeout(wait)
+                        chunk = self.rfile.read1(min(65536, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+            except (ValueError, OSError):
+                pass
+            finally:
+                self.connection.settimeout(timeout)
+            return self._send(HTTPStatus.NOT_FOUND, {'error': 'map control is off on this worker'})
+
         def do_GET(self):  # noqa: N802
             if self.path == "/health":
                 body = {"ok": True, "queued": worker.queue.qsize(),
@@ -1566,7 +1590,7 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
 
         def _control(self):
             if control is None or not control.enabled:
-                return self._send(HTTPStatus.NOT_FOUND, {"error": "map control is off on this worker"})
+                return self._control_off()
             length = self.headers.get("Content-Length")
             if length is None:
                 return self._send(HTTPStatus.LENGTH_REQUIRED, {"error": "a Content-Length is required"})
@@ -1597,7 +1621,7 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
 
         def _features(self):
             if control is None or not control.enabled:
-                return self._send(HTTPStatus.NOT_FOUND, {'error': 'map control is off on this worker'})
+                return self._control_off()
             length = self.headers.get('Content-Length')
             if length is not None and int(length) > feature_artifacts.MAX_WIRE_BYTES:
                 self.close_connection = True
@@ -1615,7 +1639,7 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
 
         def _heights(self):
             if control is None or not control.enabled:
-                return self._send(HTTPStatus.NOT_FOUND, {"error": "map control is off on this worker"})
+                return self._control_off()
             length = self.headers.get("Content-Length")
             if length is not None and int(length) > control.settings.control_max_bytes:
                 self.close_connection = True
@@ -1635,7 +1659,7 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
 
         def _height_build(self):
             if heights is None or control is None or not control.enabled:
-                return self._send(HTTPStatus.NOT_FOUND, {"error": "map control is off on this worker"})
+                return self._control_off()
             body = self._json(limit=control.settings.control_max_bytes)
             if body is None:
                 return self._send(HTTPStatus.BAD_REQUEST, {"error": "not JSON, or too large"})
