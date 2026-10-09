@@ -397,17 +397,18 @@ def _command(monkeypatch, gaps_result):
     from app.control import geometry
 
     monkeypatch.setattr(multiprocessing, "get_context", lambda kind: SimpleNamespace(Pool=_Pool))
-    monkeypatch.setattr(geometry, "load_geometry", lambda name, heights=None: name)
+    monkeypatch.setattr(geometry, "load_geometry", lambda name, heights=None, **kwargs: name)
     monkeypatch.setattr(geometry, "visibility", lambda geo: SimpleNamespace(visibility_source="fake"))
     monkeypatch.setattr(compute_control, "POLL_S", 0)
     tasks = []
 
     def fake(task):
+        from app.replays import choke_assets
         tasks.append(task)
         job = task["gaps"]
         run = {"fingerprint": replay_gaps.gap_fingerprint(job["fingerprint"], task["map"]),
-               "gaps_revision": replay_gaps.GAPS_REVISION, "chokes_hash": None, **gaps_result}
-        result = {"status": "ok", "geometry": {}, "gaps": {"run": run, "rows": []}, "key": task["key"],
+               "gaps_revision": replay_gaps.GAPS_REVISION, "chokes_hash": choke_assets.asset_hash(task["map"]), **gaps_result}
+        result = {"status": "ok", "geometry": rc.geometry_inputs(task["map"]), "gaps": {"run": run, "rows": []}, "key": task["key"],
                   "seconds": 0.0, "peak": None}
         if not task["gaps_only"]:
             result.update({"data": b"d", "summary": b"s", "missing": {}})
