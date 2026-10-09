@@ -9,7 +9,9 @@ the header's new `knowledge_events` list and nothing else, except `midwall`, who
 revealed enemy (its summary moved too). Old and new values: the run's W22-digests.json and its revision card.
 Re-recorded 2026-10-09 for CONTROL_REVISION 9 (P07, the blind rule and exact flash and nearsight intervals): only
 `midwall` moved, data 21e83b2894f012c6 -> 33a55d33f36e2564, summary 9874c72c92ee818d -> 2ad11a1afe23dae6; the two
-midwall tests below prove the move is that rule's and nothing else's."""
+midwall tests below prove the move is that rule's and nothing else's. Re-recorded 2026-10-09 again for P07a (the
+same revision, unreleased: an enemy's damaging molly holds the unknown): only `midwall`, whose Phoenix molly burns
+over 3.0-7.0, moved, data 33a55d33f36e2564 -> 12c79de24d1d2ba6, summary 2ad11a1afe23dae6 -> a5741819229a66d0."""
 
 import json
 import sys
@@ -102,6 +104,7 @@ def test_midwall_without_the_blind_rule_and_exact_intervals_is_its_old_reference
     for rule in ("credited", "contributes", "remembers"):
         monkeypatch.setattr(ce, rule, lambda h: True)
     monkeypatch.setattr(ce, "device_sees", lambda kind, blind: True)
+    monkeypatch.setattr(ce.RoundInputs, "_mollies", lambda self, util: None)
     geo, blob, link = reference_rounds()["midwall"]
     assert ref.digest_round(ce.compute_round(blob, geo, link), blob) == MIDWALL_BEFORE_P07
     assert REFERENCE["midwall"] != MIDWALL_BEFORE_P07
@@ -126,3 +129,35 @@ def test_midwall_now_has_the_blind_rule_and_exact_intervals():
     assert rc.coverage_masks[seeing, 0].any(axis=1).all(), "before and after the blind, A0 covers ground"
     assert rc.players[0].alive_s == pytest.approx(blob["t_decided"]), "alive from 0 to the decision, blind or not"
     assert REFERENCE["midwall"] == ref.digest_round(rc, blob)
+
+
+# ---------------------------------------------------------------- the midwall move for the molly rule (P07a)
+
+# `midwall`'s digests after P07 and before P07a (W9's re-record).
+MIDWALL_BEFORE_P07A = {"data": "33a55d33f36e2564", "summary": "2ad11a1afe23dae6"}
+
+
+def test_midwall_without_the_molly_rule_is_its_p07_reference(monkeypatch):
+    """The second move is P07a's and nothing else's: with the round's molly read as nothing, the engine gives W9's
+    bytes again."""
+    monkeypatch.setattr(ce.RoundInputs, "_mollies", lambda self, util: None)
+    geo, blob, link = reference_rounds()["midwall"]
+    assert ref.digest_round(ce.compute_round(blob, geo, link), blob) == MIDWALL_BEFORE_P07A
+    assert REFERENCE["midwall"] != MIDWALL_BEFORE_P07A
+
+
+def test_midwall_molly_changes_nothing_before_it_burns(monkeypatch):
+    """Phoenix's (slot 5, team B) Hot Hands burns over [3.0, 7.0) round (150, 200). It holds B's unknown only, from
+    its start: every frame before 3.0 is the same with and without it, and some frame after differs."""
+    geo, blob, link = reference_rounds()["midwall"]
+    rnd = ce.RoundInputs(blob, geo)
+    assert [(s, z.t0, z.t1) for s, z, _ in rnd.mollies] == [("B", 3.0, 7.0)]
+    assert rnd.hazard_at("B", 5.0).any() and not rnd.hazard_at("A", 5.0).any()
+    rc = ce.compute_round(blob, geo, link)
+    monkeypatch.setattr(ce.RoundInputs, "_mollies", lambda self, util: None)
+    off = ce.compute_round(blob, geo, link)
+    on_early, off_early = rc.ticks < 3.0, off.ticks < 3.0
+    assert on_early.sum() >= 2 and np.array_equal(rc.ticks[on_early], off.ticks[off_early])
+    assert np.array_equal(rc.control[on_early], off.control[off_early], equal_nan=True)
+    assert np.array_equal(rc.control_masks[on_early], off.control_masks[off_early])
+    assert ref.digest_round(rc, blob) != ref.digest_round(off, blob), "the molly moves something once it burns"
