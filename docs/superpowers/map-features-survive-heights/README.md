@@ -71,12 +71,37 @@ Tagged first-two/next-five rebuild, multi-floor pending and recovery acceptance:
 Historical/child/pinned/isolation run: **31 passed** in 123.25 s, including H1/T1 reproduction after H2/T2,
 corrupt bytes, unsupported recompilation, missing archives and current-source failure.
 Tagger/source/normalization/placement parity: **58 passed** in 33.44 s, including Node page-model tests.
+Acceptance exposed obsolete synthetic-scale and gap test doubles. The actual-scale owning tests pass
+**7/7**; complete gap command/web/writer suites pass **69 tests, 3 skipped** in 39.00 s after the test interfaces
+were aligned with exact loader/context arguments and actual geometry/choke identities. Production guards
+and engine output comparisons remain intact.
+An inherited disabled-route TCP reset was also reproduced on all four control/feature/height/build POST
+routes with nonempty bodies. Bounded body draining preserves the advertised JSON 404; complete worker
+control, feature transport and isolation suites pass **46/46** in 45.09 s. The initial full run found those
+six obsolete expectations and this transport defect: 2156 passed, 22 skipped, 7 failed in 1395.80 s.
+The final full-suite result follows below; the initial run is not a green release claim.
 Real builder and verifier were exercised with missing and malformed tags. Provisional/authoritative hashes
 were tested over HTTP upload/start/resume across a mid-build tag edit and web restart.
 
-Full release-suite results and final review are recorded below when completed. Existing no-feature reference
-fixtures are compared in place; no fixtures, source tags, base assets, height rules, control revision, parser
-revision or scoring behavior are regenerated or changed for this release.
+Final complete replay suite: **2167 passed, 22 skipped, 1 warning** in 1390.62 s (23 min 10 s), using
+`python -m pytest -p no:cacheprovider -q tests/replays`. The warning is an existing invalid escape in an AST
+inspection test; unavailable platform/PostgreSQL checks skip. Named reference/isolation/tagger acceptance
+is included in that run and is not needlessly repeated. Final branch review follows after this acceptance
+commit. Existing no-feature reference fixtures are compared in place; no fixtures, source tags, base assets,
+height rules, control revision, parser revision or scoring behavior are regenerated or changed for this release.
+
+| Release invariant | Passing targeted evidence |
+| --- | --- |
+| Measured sole-floor placement, all required parts and bundle atomicity | `test_control_features.py`, `test_map_feature_tagger.py` |
+| Complete bounded archive, canonical identity and corruption rejection | `test_map_feature_artifacts.py`, `test_map_feature_inputs.py` |
+| Shared immutable map archive, insertion races and caller rollback | `test_control_feature_artifacts_db.py` (isolated SQLite) |
+| Isolated compilation, exact worker repush/cache and actual permanent context | `test_feature_job.py`, `test_feature_transport.py`, `test_control_remote.py` |
+| Pinned provenance, changed-input rejection and stale-row preservation | `test_control_pinned_inputs.py`, `test_control_store.py`, `test_gaps_store.py` |
+| Diagnostics independent of height evidence; admitted versus fresh source | `test_feature_diagnostics.py`, `test_control_height_job.py`, `test_heights_remote.py` |
+| Normal tagged-map cadence, pending bundles and recovery | `test_heights_remote.py::test_tagged_two_then_five_match_rebuild_pending_and_recovery` |
+| Historical integrity, recompilation and freshness independently reported | `test_control_feature_verification.py` |
+| Unchanged untagged fingerprints/data/summary and lightweight parent imports | `test_control_features.py`, `test_control_reference.py`, `test_control_isolation.py` |
+| Cross-process identities and actual worker/local cache lifecycle | `test_feature_acceptance.py` |
 
 ## Measurements
 
@@ -86,16 +111,47 @@ These observations are not production sizing estimates or timing assertions.
 
 | Catalogue | Cold process s | Compile + height s | Verified hit s | Peak child MiB | Wire bytes | Expanded bytes | Compressed assets bytes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Small (one intended bundle) | 1.593 | 1.471 | 0.838 | 78.05 | 471223 | 874617 | 1562 |
-| Larger (six bundles, four states each) | 6.364 | 6.245 | 4.789 | 102.50 | 494797 | 6647407 | 11644 |
-| All pending | 1.218 | 1.101 | 0.489 | 72.52 | 470594 | 349834 | 670 |
+| Small (one intended bundle) | 1.645 | 1.519 | 0.836 | 75.81 | 471223 | 874617 | 1562 |
+| Larger (six bundles, four states each) | 6.373 | 6.253 | 4.794 | 99.83 | 494797 | 6647407 | 11644 |
+| All pending | 1.227 | 1.107 | 0.493 | 70.25 | 470594 | 349834 | 670 |
 
 Permanent inputs occupy 350859–358373 bytes; NPZ files 1805–1809 bytes. These cases fit the conservative
 defaults, which are retained. Archive payload growth is approximately inputs + compressed compiled assets
 + retained NPZ + manifest per exact map/version key, shared across rounds. Cache hits still pay integrity
 rehashing; the larger synthetic hit is seconds, not the design's estimated milliseconds.
 
-Actual worker fresh-child/warm-disk and persistent local-pool measurements are added after lifecycle
-acceptance. Docker is unavailable on this host, so the worker image build/smoke test and Linux Python/zlib
-runtime comparison remain unexecuted. Local web and worker children use the same available interpreter;
-expanded canonical identities, not compressed gzip equality, define correspondence.
+Actual `ControlRunner -> control_job -> compute_task` acceptance uses exact archived NPZ bytes and cached
+visibility. First worker round: 2.716 s; consecutive warm-disk round (still a fresh child): 2.671 s;
+persistent local-pool hit: 1.475 s; peak worker child: 100.71 MiB. Both worker results match exactly. Tagged
+control data equals the untagged result; removing additive provenance restores identical decoded summaries.
+The four measurement/lifecycle acceptance tests passed in 59.96 s. Registry injection exists only in the
+test wrapper, never production constants or requests.
+
+Docker is unavailable on this host, so the worker image build/smoke test and Linux Python/zlib runtime
+comparison remain unexecuted. Local web and worker children use Python 3.13.5 / zlib 1.3.1; expanded canonical
+identities, part bytes and provenance are compared across fresh processes. Compressed gzip equality is not
+the identity test.
+
+## Implementation rulings
+
+1. Use the explicitly requested checked-out feature branch rather than the earlier document worktree.
+   The newer user instruction controls the implementation location. Cost if wrong: move the implementation
+   checkout; unrelated files remain preserved.
+2. Perform the skill's Bash bookkeeping operations in native PowerShell, retaining the same task briefs,
+   bases and green-only completion records. Cost if wrong: correct the review-package bookkeeping.
+3. Retain outside-feature base edits conservatively in compiler inputs because overlap reconciliation
+   examines them. Cost if wrong: an unrelated outside base-edit change may trigger extra compilation;
+   unrelated behavior and editorial changes do not.
+4. Preserve sight/traversal policy proofs using already placed bounded occluders/arcs after manual floor
+   selection becomes obsolete. New sole-floor and complete-bundle tests cover placement integration.
+   Cost if wrong: add coverage at the placement-to-policy boundary.
+5. Explicitly begin SQLite's outer transaction before its first savepoint so released savepoints remain
+   subject to caller rollback. Concurrent insertion and rollback regressions pass; PostgreSQL uses its
+   ordinary savepoint path. Cost if wrong: SQLite lock behavior differs; PostgreSQL rehearsal remains needed.
+6. Retain optional exact NPZ bytes/checksum in the approved per-map artifact archive for committed fallback
+   heights without activation-history rows. This preserves off/fallback semantics without creating history.
+   Cost if wrong: NPZ storage repeats for each exact feature key.
+7. Include the inherited disabled-POST TCP reset in the transport repair because it affects the new feature
+   route and can prevent its advertised JSON response. Drain only bounded admitted bodies before the 404.
+   Cost if wrong: disabled requests may occupy a handler for up to two seconds; worker scheduling and the
+   process-per-round lifetime remain unchanged.
