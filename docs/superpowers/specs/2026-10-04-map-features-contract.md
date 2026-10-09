@@ -129,6 +129,7 @@ names each). **None is switched to features in this build.**
 | --- | --- | --- |
 | `control/chokes:detect` | specials | `base` (chokes come from the permanent map) |
 | `control/engine:RoundInputs._add_watcher` | cast, topo.dilate | `bounded_sight`; `walk_only` |
+| `control/engine:RoundInputs._molly_nodes` | topo.dilate | `walk_only` (added 2026-10-09, replay-player-state run: a molly's footprint, the walk inside its circle) |
 | `control/engine:RoundInputs._trip_end` | topo.around | `walk_only` |
 | `control/engine:Tick.__init__` | cast | `bounded_sight` |
 | `control/engine:Tick._backfill_shares` | topo.dilate | `walk_only` |
