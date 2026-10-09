@@ -83,7 +83,7 @@ def round_gaps(db, replay, n: int) -> tuple[str, list]:
     rows = (db.query(ReplayGap).filter(ReplayGap.replay_id == replay.id, ReplayGap.round_number == n)
             .order_by(ReplayGap.seq).all())
     control = replay_control.round_fingerprint(replay, replay_control.side_groups(db, replay), n,
-                                               control_heights.active_digests(db))
+                                               context=replay_control.resolve_current_geometry(db, replay.map_name))
     current = None if control is None else gap_fingerprint(control, replay.map_name)
     return ("ok" if run.fingerprint == current else "stale"), rows
 

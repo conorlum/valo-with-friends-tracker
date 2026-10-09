@@ -155,7 +155,7 @@ def encode_data(rc: RoundControl, blob: dict) -> bytes:
     return cf.pack_data(header, streams)
 
 
-def encode_summary(rc: RoundControl, blob: dict) -> bytes:
+def encode_summary(rc: RoundControl, blob: dict, *, provenance=None) -> bytes:
     sections = []
     for sec in rc.sections:
         units = np.rint(sec.totals * GRID_HZ).astype(np.int64)
@@ -165,10 +165,13 @@ def encode_summary(rc: RoundControl, blob: dict) -> bytes:
             by_state.append(list(zip(cells.tolist(), units[state, cells].tolist())))
         sections.append({"key": sec.key, "t0": round(sec.t0, 4), "t1": round(sec.t1, 4),
                          "seconds": round(sec.seconds, 4), "totals": cf.encode_totals(by_state)})
-    return cf.pack_summary({
+    summary = {
         "revision": cf.CONTROL_REVISION, "map": rc.map, "round": rc.round, "cells": int(len(rc.walk_cells)),
         "cell_m2": round(float(rc.cell_m2), 5), "t_start": float(blob.get("t_start") or 0.0),
         "t_decided": blob.get("t_decided"), "group_side": rc.group_side, "sections": sections,
         "players": {str(slot): p.as_dict() for slot, p in sorted(rc.players.items())},
         "redundant_m2s": {k: round(float(v), 1) for k, v in rc.redundant_m2s.items()},
-        "missing_inputs": dict(rc.missing_inputs)})
+        "missing_inputs": dict(rc.missing_inputs)}
+    if provenance is not None:
+        summary['provenance'] = provenance
+    return cf.pack_summary(summary)

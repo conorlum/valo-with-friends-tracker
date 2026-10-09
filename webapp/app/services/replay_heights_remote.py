@@ -160,9 +160,6 @@ def plan_maps(db) -> Plan:
     now = current_manifests(db)
     last, active = control_heights.last_builds(db), control_heights.active_rows(db)
     for name in sorted(set(now) | set(active)):
-        if (replay_control.geometry_inputs(name, heights=None) or {}).get("features"):
-            plan.skipped[name] = "it has a published feature generation, which a rebuild would stop verifying"
-            continue
         manifest, replays = now.get(name, (None, []))
         gone = bool(manifest is None or (name in active and hi.changes(active[name].inputs, manifest)["gone"]))
         if len(replays) < FIRST_BUILD_MATCHES:
@@ -217,11 +214,7 @@ def _turn_off(session_factory, map_name: str, *, removed_from: dict | None = Non
             active = control_heights.active_rows(writer).get(map_name)
             if active is None or not hi.changes(active.inputs, removed_from)["gone"]:
                 return False
-        return control_heights.deactivate(
-            writer, map_name, generation=(replay_control.geometry_inputs(map_name, heights=None) or {}).get("features"))
-    except control_heights.HasGeneration as guarded:
-        log.info("heights: %s", guarded)
-        return False
+        return control_heights.deactivate(writer, map_name)
     finally:
         writer.rollback()
         writer.close()
@@ -246,8 +239,6 @@ def _cancel(client, build: Build) -> None:
 
 def _finish(session_factory, session, build: Build, job: dict, counts: dict) -> None:
     """A finished build: trusted, still wanted, then stored behind the gate."""
-    if (replay_control.geometry_inputs(build.map_name, heights=None) or {}).get("features"):
-        raise _Stale("a feature generation was published while this build was pending")
     result = job.get("result")
     try:
         if not isinstance(result, dict):
@@ -283,11 +274,8 @@ def _finish(session_factory, session, build: Build, job: dict, counts: dict) -> 
         if status == control_heights.REJECTED:
             active = control_heights.active_rows(writer).get(build.map_name)
             if active is not None and hi.changes(active.inputs, build.manifest)["gone"]:
-                control_heights.deactivate(writer, build.map_name, generation=(
-                    replay_control.geometry_inputs(build.map_name, heights=None) or {}).get("features"))
+                control_heights.deactivate(writer, build.map_name)
                 counts["heights_off"] += 1
-    except control_heights.HasGeneration as guarded:
-        raise _Stale(str(guarded)) from guarded
     except control_heights.Busy as busy:
         raise BuildFailed("another change to the map's heights got there first") from busy
     finally:
@@ -327,7 +315,12 @@ def _advance(session_factory, session, client, build: Build, now: float, counts:
         if build.job_id is None:
             # Opening a key answers the build the worker has for it, in whatever state (a restart of the web app
             # adopts it); only when there is none, or it failed, is this a fresh one to send rounds to.
-            state = client.open_build(build.key, build.map_name, len(build.rounds), build.manifest)
+            from app.services import control_feature_artifacts
+            options = {}
+            health = client.health()
+            if (health.get('heights') or {}).get('diagnostics_protocol') == 1:
+                options['diagnostic'] = control_feature_artifacts.diagnostic_snapshot(session, build.map_name)
+            state = client.open_build(build.key, build.map_name, len(build.rounds), build.manifest, **options)
             build.job_id = state.get("id")
             build.queued_since = build.running_since = None
             if state.get("status") == "collecting":

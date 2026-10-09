@@ -41,6 +41,63 @@ def run_node(body: str, payload):
     return json.loads(completed.stdout)
 
 
+@pytest.mark.parametrize('preset', ['vertical_rope', 'zipline'])
+def test_review_route_creation_and_unplaced_access_remain_editable(preset):
+    got = run_page('''function run(p) {
+      const page = openPage(p.data, {map:"Ascent"}), A = page.api, F = page.F;
+      A.createPreset(p.preset);
+      const route = A.fe.Ascent.mf.routes[A.fe.Ascent.mf.routes.length - 1];
+      A.commit(F.setField(A.fe.Ascent.mf, route.id, ["access"], {sites:[{id:"boarding",uv:null}]}), true);
+      return {dirty:A.fe.Ascent.dirty, sites:A.fe.Ascent.mf.routes.slice(-1)[0].access.sites,
+              issues:page.el("featIssues").innerHTML};
+    }''', {'data': page_data(future=False), 'preset': preset})
+    assert got['dirty'] and got['sites'] == [{'id': 'boarding', 'uv': None}]
+    assert 'off_map' in got['issues'] or 'invalid_geometry' in got['issues']
+
+
+@pytest.mark.parametrize('shape', [
+    {'type': 'point', 'uv': None}, {'type': 'point', 'uv': [10001, 0]},
+    {'type': 'polygon', 'uv': [[0, 0], [1, 1], [-1, 2]]},
+    {'type': 'paint', 'cells': '!'}, {'type': 'polyline', 'uv': [[0, 0], [1, 1]], 'width': -1},
+])
+def test_review_preview_invalid_geometry_matches_compiler(shape):
+    from map_feature_artifact_toys import source_case, geometry_case
+    from app.control.features import _place_shape
+    mf = source_case()['map_features']
+    mf['features'][0]['states'][0]['footprint'] = shape
+    got = run_node('''function run(p) {return F.previewPlacement(p.mf,
+      {walk:Array(128*128).fill(1),flat:true})["feature-1"].reasons;}''', {'mf': mf})
+    assert _place_shape(geometry_case(flat=True), shape, 'test').reasons[0]['code'] in {r['code'] for r in got}
+
+
+@pytest.mark.parametrize('pixels', [0, 16, 32, 33, 64])
+@pytest.mark.parametrize('restore', [False, True])
+def test_review_preview_walkability_reduces_pixels_after_private_restoration(pixels, restore):
+    import numpy as np
+    from map_feature_artifact_toys import source_case
+    from app.control.geometry import geometry_from_masks, pack_paint
+    from app.control.features import bundle_status
+    mf = source_case()['map_features']
+    # One authored paint cell adds 16 pixels inside an otherwise partly occupied engine cell.
+    walk = np.zeros((1024, 1024), bool)
+    block = walk[320:328, 320:328]
+    for i in range(pixels):
+        block[i // 8, i % 8] = True
+    if restore:
+        paint = np.zeros((256, 256), bool)
+        paint[81, 81] = True
+        mf['features'][0]['base_edits'] = {'potential_ground': {'type': 'paint', 'cells': pack_paint(paint)}}
+    geo = geometry_from_masks('Summit', ~walk, walk, 7e-5, [])
+    expected = bundle_status(geo, mf, consumers={'test'})['bundle-1'].publishable
+    got = run_node('''function run(p) {const px = Uint8Array.from(p.walk);
+      const counts = new Uint8Array(128*128);
+      px.forEach((v,i) => {if(v) counts[Math.floor(Math.floor(i/1024)/8)*128+Math.floor((i%1024)/8)]++;});
+      const walk = F.walkableCells ? F.walkableCells(px) : Uint8Array.from(counts,c => c>32 ? 1 : 0);
+      return F.previewPlacement(p.mf,{walk:walk,walk_px:px,flat:true})["feature-1"].ok;}''',
+      {'mf': mf, 'walk': walk.astype(int).ravel().tolist()})
+    assert got == expected
+
+
 REDUCER = """
   function run(p) {
     return p.cases.map(c => {
@@ -90,6 +147,32 @@ def test_digests_match_python_byte_for_byte():
     assert got["sha"] == hashlib.sha256(b"abc").hexdigest()
     assert got["digests"] == [ms.digest(v) for v in values]
     assert got["runtime"] == ms.runtime_digest(MF)
+
+
+def test_tag_canonical_v2_matches_literal_python_and_browser_vectors():
+    cases = json.loads((FIXTURES / 'canonical_v2.json').read_text(encoding='utf-8'))
+    got = run_node('''function run(p) { return p.map(c => {
+      try { return {ascii: F.tagCanonicalJson(c.input)}; }
+      catch(e) { return {error: true}; }
+    }); }''', cases)
+    for case, actual in zip(cases, got):
+        if 'error' in case:
+            assert actual == {'error': True}
+        else:
+            assert actual == {'ascii': case['ascii']}
+
+
+def test_deprecated_floor_selectors_survive_export_but_not_runtime_validation():
+    from map_feature_artifact_toys import source_case
+    mf = source_case()['map_features']
+    mf['features'][0]['floors'] = ['floor-99']
+    mf['floors'] = [{'id': 'not-a-floor', 'z_band': ['broken']}]
+    got = run_node('''function run(p) { return {source: p, runtime: F.runtimeProjection(p),
+      report: F.validate(p, [], [])}; }''', mf)
+    assert got['source'] == mf
+    assert got['report']['errors'] == []
+    assert got['runtime'] == ms.runtime_projection(mf)
+    assert 'floors' not in got['runtime']
 
 
 def mutations():
@@ -303,6 +386,53 @@ def test_with_no_feature_edits_the_export_is_exactly_export_tags():
 
 # ---- W14: the page
 
+
+@pytest.mark.parametrize('cells,walk,counts,unresolved,flat,codes', [
+    ([2, 1, 2], [1, 1, 1], [0, 1, 1], [0, 0, 0], False, []),
+    ([1], [1, 1], [1, 2], [0, 0], False, ['multi_floor']),
+    ([1], [1, 1], [1, 0], [0, 0], False, ['missing_floor']),
+    ([1], [1, 1], [1, 0], [0, 1], False, ['unresolved_height']),
+    ([1], [1, 0], [1, 0], [0, 0], False, ['off_ground']),
+    ([], [], [], [], False, ['empty_geometry']),
+    ([1], [1, 1], [], [], True, []),
+])
+def test_browser_placement_uses_actual_floor_counts(cells, walk, counts, unresolved, flat, codes):
+    result = run_node('function run(p) {return F.resolvePlacement(p.cells, p.context);}',
+                      {'cells': cells, 'context': {'walk': walk, 'floor_counts': counts, 'unresolved': unresolved,
+                                                  'flat': flat, 'path': 'fixture'}})
+    assert result['ok'] == (not codes)
+    assert [r['code'] for r in result['reasons']] == codes
+    assert result['cells'] == sorted(set(cells))
+    for r in result['reasons']:
+        assert r['path'] == 'fixture' and r['cell_count'] == len(r['cells'])
+
+
+def test_current_authoring_has_no_floor_picker_and_preserves_source_selectors():
+    ui = (WEBAPP / 'scripts' / 'control_tagger_features.js').read_text(encoding='utf-8')
+    guidance = (WEBAPP / 'scripts' / 'control_tagger.template.html').read_text(encoding='utf-8')
+    for phrase in ('Add floor label', 'Give each landing its floor', 'floorOptions(', 'floorpick', 'ground_binding'):
+        assert phrase not in ui + guidance
+    source = copy.deepcopy(MF)
+    source['features'][0]['floors'] = ['floor-old']
+    source['x_unknown'] = {'kept': True}
+    result = run_node('function run(p) {return {runtime: F.runtimeDigest(p), source: p};}', source)
+    assert result['runtime'] == ms.runtime_digest(source) and result['source'] == source
+
+
+def test_preview_keeps_required_sibling_and_trigger_placement_atomic():
+    from map_feature_artifact_toys import source_case
+    source = source_case()['map_features']
+    source['bundles'][0]['members'] = ['feature-1', 'feature-2']
+    source['bundles'] = source['bundles'][:1]
+    walk = [1] * (128 * 128)
+    counts = [1] * len(walk)
+    counts[40 * 128 + 43] = 2
+    got = run_node('function run(p) {return F.previewPlacement(p.mf, p.context);}',
+                   {'mf': source, 'context': {'walk': walk, 'floor_counts': counts,
+                                             'unresolved': [0] * len(walk), 'flat': False}})
+    assert not got['feature-1']['ok'] and not got['feature-2']['ok']
+    assert got['feature-1']['reasons'] == got['feature-2']['reasons']
+
 def test_the_page_carries_the_features_panel_and_the_python_contract(tmp_path):
     sys.path.insert(0, str(WEBAPP / "scripts"))
     import control_tagger
@@ -315,7 +445,8 @@ def test_the_page_carries_the_features_panel_and_the_python_contract(tmp_path):
     feats = data["features"]
     assert feats["schema_version"] == ms.SCHEMA_VERSION
     assert feats["presets"] == {p: ms.preset(p) for p in ms.PRESETS}, "presets come from the schema module, not a copy"
-    assert feats["seeds"]["Summit"] == ms.checklist_seed("Summit") and feats["floors"] == {"Ascent": None, "Summit": None}
+    assert feats["seeds"]["Summit"] == ms.checklist_seed("Summit")
+    assert all(v == {'flat': True, 'height_sha': None} for v in feats['floors'].values())
     for needle in ('data-mode="features"', 'data-preset="trigger"', ">Switch/trigger<", ">Breakable<", ">Zipline<",
                    ">Vertical rope<", 'data-ftool="polygon"', 'data-ftool="link"', 'data-ftool="brush"', 'id="featUndo"',
                    'id="featRedo"', 'id="zoomIn"', 'id="featSaved"', 'id="featImport"', 'id="featExport"',
@@ -339,7 +470,7 @@ def test_floor_data_is_embedded_only_for_maps_with_a_height_asset(tmp_path):
 
     from app.control import heights as hc
 
-    assert control_tagger.floor_data("Ascent") is None
+    assert control_tagger.floor_data('Ascent')['flat'] is True
     floors = -np.ones((128, 128, hc.MAX_FLOORS), np.int16)
     floors[10, 20, :2] = [0, 40]
     asset = hc.HeightAsset(floors, np.zeros_like(floors), np.zeros((128, 128), bool), np.zeros((128, 128), bool),
@@ -576,12 +707,10 @@ def test_a_same_position_rope_and_an_unresolved_landing_round_trip_and_compile_w
     zip_ = next(r for r in exported["routes"] if r["id"] == ids["zip"])
     assert zip_["endpoints"][1]["floor"] == ids["manual"], "an unresolved floor stays unresolved after export and import"
     rep = ms.validate(exported)
-    assert rep.errors == [] and not any(w["code"] == "zero_length" for w in rep.warnings)
+    assert rep.errors == [] and any(w["code"] == "zero_length" for w in rep.warnings)
     arcs, pending = cf.compile_routes(geo, exported)
     rope_arcs = [a for a in arcs if a.route == ids["rope"]]
-    assert len(rope_arcs) == 2 and all(geo.node_cell[a.src] == geo.node_cell[a.dst] and a.src != a.dst for a in rope_arcs), \
-        "the rope joins two floors of one cell: no horizontal shortcut"
-    assert {(geo.node_z[a.src], geo.node_z[a.dst]) for a in rope_arcs} == {(0.0, 4.0), (4.0, 0.0)}
+    assert rope_arcs == [] and pending, 'multi-floor endpoints stay pending despite authored selectors'
     assert not [a for a in arcs if a.route == ids["zip"]], "a landing on an unresolved floor never snaps to another floor"
     assert any(p.startswith(ids["zip"] + ".b") for p in pending)
     assert [d["code"] for d in cf.diagnose(geo, exported) if d["where"].startswith(ids["zip"])] == ["off_ground"], \
@@ -894,9 +1023,9 @@ def test_a_downloaded_draft_restores_after_a_storage_failure():
     assert got["olderLabel"] == "Restore draft" and not got["olderDisabled"] and got["olderRestored"]
 
 
-def test_a_floor_picked_in_the_tagger_records_the_assets_origin():
+def test_preview_uses_actual_asset_counts_and_never_creates_floor_labels():
     source = (WEBAPP / "scripts" / "control_tagger_features.js").read_text(encoding="utf-8")
-    assert "height_sha: fd.height_sha, origin_z: fd.origin_z" in source
+    assert 'floor_counts:fd.floor_counts' in source and 'function pickFloor' not in source
     core = (WEBAPP / "scripts" / "control_tagger_core.js").read_text(encoding="utf-8")
     assert '"unframed_floor"' in core
 
@@ -915,7 +1044,7 @@ def test_the_tagger_reads_a_maps_heights_from_an_export_when_given_one(tmp_path)
                            np.zeros((0, 5), np.int32), {"origin_z": -130})
     hc.save_asset(tmp_path / "Toy.height.npz", asset)
     (tmp_path / "index.json").write_text(json.dumps({"maps": {"Toy": {}}}), encoding="utf-8")
-    assert control_tagger.floor_data("Toy", tmp_path) is None, "no committed heights"
+    assert control_tagger.floor_data('Toy', tmp_path)['flat'] is True, 'no committed heights'
     got = control_tagger.floor_data("Toy", tmp_path, heights_dir=tmp_path)
     assert got["height_sha"] == asset.digest and got["origin_z"] == -130
-    assert control_tagger.floor_data("Other", tmp_path, heights_dir=tmp_path) is None
+    assert control_tagger.floor_data('Other', tmp_path, heights_dir=tmp_path)['flat'] is True

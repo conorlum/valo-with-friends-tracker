@@ -315,6 +315,13 @@ def test_control_off_answers_404_and_parsing_is_untouched(tmp_path, runner):
     assert http(base, "/control", task("x"))[0] == 404
 
 
+@pytest.mark.parametrize("path", ["/control", "/features", "/heights", "/heights/build"])
+def test_disabled_control_routes_return_json_with_a_nonempty_request(tmp_path, path):
+    base = serve(tmp_path, None)
+    code, body = http(base, path, {"ignored": "payload" * 8192})
+    assert code == 404 and body == {"error": "map control is off on this worker"}
+
+
 def test_settings_from_the_environment():
     s = server.Settings.from_env({"REPLAY_CONTROL": "0", "REPLAY_CONTROL_WORKERS": "3",
                                   "REPLAY_CONTROL_CMD": '["/opt/control-venv/bin/python", "-m", "replay_worker.control_job"]',

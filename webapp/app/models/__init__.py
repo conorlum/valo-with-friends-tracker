@@ -10,6 +10,7 @@ from app.models.site_stats_cache import SiteStatsCache
 from app.models.viewer_site_stats_cache import ViewerSiteStatsCache
 from app.models.replay import (
     ControlHeight,
+    ControlFeatureArtifact,
     Replay,
     ReplayDeletion,
     ReplayPlayer,
@@ -35,6 +36,7 @@ __all__ = [
     "ReplayRound",
     "ReplayRoundControl",
     "ControlHeight",
+    "ControlFeatureArtifact",
     "ReplayPlayer",
     "ReplayUpload",
     "ReplayDeletion",

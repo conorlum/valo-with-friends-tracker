@@ -812,6 +812,7 @@
   function digest(value) { return sha256Hex(canonicalJson(value)).slice(0, 16); }
 
   function runtimeProjection(mf) {
+    mf = withoutFloorSelectors(mf);
     var out = {};
     Object.keys(mf).forEach(function (k) { if (TOP_EDITORIAL.indexOf(k) < 0) out[k] = clone(mf[k]); });
     LISTS.forEach(function (kind) {
@@ -829,7 +830,47 @@
     return out;
   }
 
-  function runtimeDigest(mf) { return digest(runtimeProjection(mf)); }
+  function withoutFloorSelectors(source) {
+    var mf = clone(source);
+    delete mf.floors;
+    function bounds(b) { if (b && b.ref === "ground") delete b.floor; }
+    (mf.features || []).forEach(function(f) {
+      delete f.floors;
+      if (f.base_edits) delete f.base_edits.ground_binding;
+      (f.states || []).concat((f.rotation || {}).phases || []).forEach(function(s) {
+        bounds(s.sight_bounds); bounds(s.bounds);
+        (s.sight || []).forEach(function(o) { bounds(o.bounds); });
+      });
+    });
+    (mf.triggers || []).forEach(function(t) { delete t.floor; });
+    (mf.routes || []).forEach(function(r) {
+      (r.endpoints || []).concat(isObj(r.access) ? r.access.sites || [] : []).forEach(function(e) { delete e.floor; });
+    });
+    return mf;
+  }
+
+  function tagCanonicalJson(value) {
+    function typed(v, path) {
+      if (v === null) return ["null"];
+      if (typeof v === "boolean") return ["bool", v];
+      if (typeof v === "number") {
+        if (!Number.isFinite(v)) throw new Error(path + ": nonfinite number");
+        if (Number.isInteger(v) && !Number.isSafeInteger(v)) throw new Error(path + ": whole number outside JavaScript safe range");
+        var bytes = new ArrayBuffer(8), view = new DataView(bytes);
+        view.setFloat64(0, v === 0 ? 0 : v, false);
+        var hex = "";
+        for (var i = 0; i < 8; i++) hex += view.getUint8(i).toString(16).padStart(2, "0");
+        return ["number", hex];
+      }
+      if (typeof v === "string") return ["string", v];
+      if (Array.isArray(v)) return ["array", v.map(function(x, i) { return typed(x, path + "[" + i + "]"); })];
+      if (isObj(v)) return ["object", Object.keys(v).sort().map(function(k) { return [k, typed(v[k], path + "." + k)]; })];
+      throw new Error(path + ": unsupported JSON value");
+    }
+    return canonicalJson(["feature-tags-v2", typed(value, "$")]);
+  }
+
+  function runtimeDigest(mf) { return sha256Hex(tagCanonicalJson(runtimeProjection(mf))).slice(0, 16); }
 
   // -- Validation: a twin of map_feature_schema.validate (same codes and places; test_map_feature_tagger.py
   // compares them). `seed` is the map's checklist seed from the page ([{key, label, preset, expected}]).
@@ -842,6 +883,25 @@
   function isObj(v) { return v !== null && typeof v === "object" && !Array.isArray(v); }
   function finite(x) { return typeof x === "number" && isFinite(x); }
   function uvOk(p) { return Array.isArray(p) && p.length === 2 && p.every(function (c) { return finite(c) && c >= 0 && c <= UV_MAX; }); }
+  function geometryProblems(g, allowed) {
+    allowed = allowed || GEOMETRY_TYPES;
+    var out = [];
+    function err(code, message) {out.push({code:code, message:message});}
+    if (!isObj(g) || allowed.indexOf(g.type) < 0) {err("bad_geometry", "geometry must be one of " + allowed.join(", ")); return out;}
+    if (g.type === "point" && !uvOk(g.uv)) err("bad_coordinates", "a point needs uv [u, v] within 0..10000");
+    else if (g.type === "polyline" || g.type === "polygon") {
+      var need = g.type === "polyline" ? 2 : 3;
+      if (!Array.isArray(g.uv) || g.uv.length < need || !g.uv.every(uvOk))
+        err("bad_coordinates", "a " + g.type + " needs at least " + need + " uv points within 0..10000");
+      if (g.type === "polyline" && "width" in g && !(finite(g.width) && g.width > 0))
+        err("bad_dimensions", "a polyline's width must be a positive number");
+    } else if (g.type === "paint") {
+      var ok = typeof g.cells === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(g.cells) && g.cells.length % 4 === 0;
+      var len = ok ? g.cells.length / 4 * 3 - g.cells.match(/=*$/)[0].length : -1;
+      if (len !== PAINT_BYTES) err("bad_paint", "paint must be " + PAINT_BYTES + " bytes of base64");
+    }
+    return out;
+  }
   function pyRepr(v) { return v === null || v === undefined ? "None" : typeof v === "string" ? "'" + v + "'" : JSON.stringify(v); }
 
   function checkVersion(mf) {
@@ -857,6 +917,7 @@
     function warn(where, code, message) { warnings.push({ where: where, code: code, message: message }); }
     var problem = checkVersion(mf);
     if (problem) { err("map_features", "incompatible_version", problem); return { errors: errors, warnings: warnings }; }
+    mf = withoutFloorSelectors(mf);
 
     function value(where, v, unit, required) {
       if (required === undefined) required = true;
@@ -871,20 +932,7 @@
       return false;
     }
     function geometry(where, g, allowed) {
-      allowed = allowed || GEOMETRY_TYPES;
-      if (!isObj(g) || allowed.indexOf(g.type) < 0) { err(where, "bad_geometry", "geometry must be one of " + allowed.join(", ")); return; }
-      if (g.type === "point" && !uvOk(g.uv)) err(where, "bad_coordinates", "a point needs uv [u, v] within 0..10000");
-      else if (g.type === "polyline" || g.type === "polygon") {
-        var need = g.type === "polyline" ? 2 : 3;
-        if (!Array.isArray(g.uv) || g.uv.length < need || !g.uv.every(uvOk))
-          err(where, "bad_coordinates", "a " + g.type + " needs at least " + need + " uv points within 0..10000");
-        if (g.type === "polyline" && "width" in g && !(finite(g.width) && g.width > 0))
-          err(where, "bad_dimensions", "a polyline's width must be a positive number");
-      } else if (g.type === "paint") {
-        var ok = typeof g.cells === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(g.cells) && g.cells.length % 4 === 0;
-        var len = ok ? g.cells.length / 4 * 3 - (g.cells.match(/=*$/)[0].length) : -1;
-        if (len !== PAINT_BYTES) err(where, "bad_paint", "paint must be " + PAINT_BYTES + " bytes of base64");
-      }
+      geometryProblems(g, allowed).forEach(function(p) {err(where, p.code, p.message);});
     }
     function guard(where, g) {
       if (g === undefined || g === null) return;
@@ -969,11 +1017,6 @@
         if (s.footprint !== undefined && s.footprint !== null) geometry(where + ".footprint", s.footprint);
         (s.sight || []).forEach(function (occ, j) { occluder(where + ".sight[" + j + "]", occ); });
       });
-      var fv = f.floors;
-      if (fv === undefined || fv === null || (isObj(fv) && fv.status === "unresolved")) {
-        if (states.some(function (s) { return isObj(s) && (s.blocks_movement || s.blocks_sight); }))
-          warn(fid, "unresolved_floor", "which floors this feature affects is unresolved");
-      } else if (!Array.isArray(fv)) err(fid, "bad_shape", "floors is a list of floor ids or an unresolved value");
       var rot = f.rotation;
       if ((f.capabilities || []).indexOf("rotating") >= 0) {
         if (!isObj(rot) || rot.pivot === undefined || rot.pivot === null || rot.panel === undefined || rot.panel === null)
@@ -985,8 +1028,6 @@
       ["potential_ground", "remove_sight"].forEach(function (key) {
         if (edits[key] !== undefined && edits[key] !== null) geometry(fid + ".base_edits." + key, edits[key]);
       });
-      if (edits.potential_ground !== undefined && edits.potential_ground !== null && typeof edits.ground_binding !== "string")
-        warn(fid, "unresolved_floor", "restored ground has no floor binding: it stays pending");
       (edits.reclassify || []).forEach(function (rc, k) {
         var where = fid + ".base_edits.reclassify[" + k + "]";
         if (!isObj(rc) || ["cover_paint", "cant_walk_paint", "tag", "base"].indexOf(rc.source) < 0 || rc.geometry === undefined || rc.geometry === null)
@@ -1004,7 +1045,6 @@
       var unres = [value(where + ".bounds.bottom", b.bottom, "m"), value(where + ".bounds.top", b.top, "m")];
       if (unres[0] || unres[1]) warn(where, "unresolved_height", "a sight bound is unresolved");
       else if (b.bottom.value >= b.top.value) err(where, "bad_dimensions", "bottom must be below top");
-      if (b.ref === "ground" && typeof b.floor !== "string") err(where, "bad_bounds", "ground-relative bounds name the floor they stand on");
     }
     (Array.isArray(mf.triggers) ? mf.triggers : []).forEach(function (t) {
       if (!isObj(t)) return;
@@ -1021,7 +1061,6 @@
       var targets = t.targets || [];
       if (!targets.length) warn(tid, "no_target", "trigger linked to nothing");
       targets.forEach(function (x) { if (!isObj(x) || FS_EVENTS.indexOf(x.event) < 0) err(tid, "bad_target", "a target is {feature, event} with a known event"); });
-      if (t.floor === undefined || t.floor === null || isObj(t.floor)) warn(tid, "unresolved_floor", "trigger floor unresolved");
     });
     (Array.isArray(mf.routes) ? mf.routes : []).forEach(function (r) { if (isObj(r)) validateRoute(r); });
     function validateRoute(r) {
@@ -1035,7 +1074,6 @@
         names[e.id] = true;
         if (e.uv === undefined || e.uv === null) err(rid + "." + e.id, "missing_endpoint", "endpoint not placed");
         else if (!uvOk(e.uv)) err(rid + "." + e.id, "bad_coordinates", "endpoint uv must be within 0..10000");
-        if (typeof e.floor !== "string") warn(rid + "." + e.id, "unresolved_floor", "landing floor unresolved");
       });
       var access = r.access === undefined ? "endpoint_only" : r.access;
       if (isObj(access)) {
@@ -1066,9 +1104,7 @@
       }
       var good = ends.filter(function (e) { return isObj(e) && uvOk(e.uv); });
       if (good.length === 2 && good[0].uv[0] === good[1].uv[0] && good[0].uv[1] === good[1].uv[1]) {
-        var f0 = good[0].floor, f1 = good[1].floor;
-        var verified = [f0, f1].every(function (x) { return typeof x === "string" && Array.isArray((floors[x] || {}).z_band); });
-        if (!(verified && f0 !== f1)) warn(rid, "zero_length", "endpoints share a position without two distinct verified floors");
+        warn(rid, "zero_length", "endpoints share a position");
       }
       (specials || []).forEach(function (sp) {
         if (!sp || !Array.isArray(sp.a) || !Array.isArray(sp.b) || good.length !== 2) return;
@@ -1206,12 +1242,13 @@
 
   // The preview masks with each feature's state drawn in: app/control/features.py `compose_masks`, bit for bit.
   // `sight`/`walk` are PX * PX Uint8Arrays (1 blocks / 1 walkable); returns new arrays.
-  function composeFeatures(sight, walk, mf, states) {
+  function composeFeatures(sight, walk, mf, states, placement) {
     var s = new Uint8Array(sight), w = new Uint8Array(walk);
     function apply(cells, fn) {
       for (var i = 0; i < PX * PX; i++) if (cells[((i >> 10) >> 2) * P + ((i & 1023) >> 2)]) fn(i);
     }
     (mf.features || []).forEach(function (f) {
+      if (placement && (!placement[f.id] || !placement[f.id].ok)) return;
       var st = stateOf(f, states);
       if (!st) return;
       if (st.footprint) {
@@ -1224,6 +1261,114 @@
       });
     });
     return { sight: s, walk: w };
+  }
+
+  function resolvePlacement(cells, context) {
+    var ordered = Array.from(new Set(cells)).sort(function(a,b) {return a-b;}), grouped = {}, counts = [];
+    var path = context.path || 'geometry';
+    function reason(code, bad, floors) {return {code: code, path: path, cells: bad, cell_count: bad.length, floor_counts: floors};}
+    ordered.forEach(function(cell) {
+      var count = context.flat ? Number(!!context.walk[cell]) : (context.floor_counts[cell] || 0), code = null;
+      counts.push(count);
+      if (!Number.isInteger(cell) || cell < 0 || cell >= 128 * 128) code = 'off_map';
+      else if (!context.walk[cell]) code = 'off_ground';
+      else if (!context.flat && context.unresolved[cell]) code = 'unresolved_height';
+      else if (!context.flat && count === 0) code = 'missing_floor';
+      else if (!context.flat && count !== 1) code = 'multi_floor';
+      if (code) {var bucket = grouped[code] || (grouped[code] = [[], []]); bucket[0].push(cell); bucket[1].push(count);}
+    });
+    var reasons = Object.keys(grouped).sort().map(function(code) {return reason(code, grouped[code][0], grouped[code][1]);});
+    if (!ordered.length) reasons.push(reason('empty_geometry', [], []));
+    return {ok: reasons.length === 0, cells: ordered, floor_counts: counts, reasons: reasons};
+  }
+
+  // The engine requires more than half of an 8x8 pixel cell to be walkable.
+  function walkableCells(pixels) {
+    var counts = new Uint8Array(128 * 128), cells = new Uint8Array(128 * 128);
+    if (pixels) for (var i = 0; i < pixels.length; i++) if (pixels[i])
+      counts[Math.floor(Math.floor(i / PX) / 8) * 128 + Math.floor((i % PX) / 8)]++;
+    for (var c = 0; c < cells.length; c++) cells[c] = counts[c] > 32 ? 1 : 0;
+    return cells;
+  }
+
+  // Preview only: required parents and linked placements are atomic per bundle.
+  function previewPlacement(mf, context) {
+    var out = {}, features = {};
+    (mf.features || []).forEach(function(f) {features[f.id] = f;});
+    function reason(code, path) {return {code:code, path:path, cells:[], cell_count:0, floor_counts:[]};}
+    function candidateFor(members) {
+      var candidate = Object.assign({}, context, {walk:context.walk_px ? walkableCells(context.walk_px) : Array.from(context.walk)});
+      var ground = (mf.features || []).filter(function(f) {return members.indexOf(f.id) >= 0 && (f.base_edits || {}).potential_ground;});
+      if (context.flat && ground.length) {
+        // Restoration is private to the bundle and precedes the same pixel reduction as Python.
+        var pixels = context.walk_px ? Uint8Array.from(context.walk_px) : new Uint8Array(PX * PX);
+        if (!context.walk_px) for (var i = 0; i < pixels.length; i++)
+          pixels[i] = context.walk[Math.floor(Math.floor(i / PX) / 8) * 128 + Math.floor((i % PX) / 8)] ? 1 : 0;
+        ground.forEach(function(f) {
+          var g = f.base_edits.potential_ground;
+          if (geometryProblems(g).length) return;
+          var mask = raster(g);
+          for (var i = 0; i < mask.length; i++) if (mask[i]) {
+            var x = (i % P) * 4, y = Math.floor(i / P) * 4;
+            for (var dy = 0; dy < 4; dy++) for (var dx = 0; dx < 4; dx++) pixels[(y + dy) * PX + x + dx] = 1;
+          }
+        });
+        candidate.walk = walkableCells(pixels);
+      }
+      return candidate;
+    }
+    function partsOf(f, candidate) {
+      var reasons = [];
+      function shape(g, path) {
+        var problems = geometryProblems(g);
+        if (problems.length) {
+          reasons.push(reason(problems.some(function(p) {return p.code === 'bad_coordinates';}) ? 'off_map' : 'invalid_geometry', path));
+          return;
+        }
+        var cells = [], mask = raster(g);
+        for (var i = 0; i < mask.length; i++) if (mask[i]) cells.push(Math.floor(Math.floor(i / P) / 2) * 128 + Math.floor((i % P) / 2));
+        reasons = reasons.concat(resolvePlacement(cells, Object.assign({}, candidate, {path: path})).reasons);
+      }
+      function bounds(b, path) {
+        var ref = b && b.ref, lo = b && known(b.bottom), hi = b && known(b.top);
+        if (ref !== 'all_height' && !((ref === 'ground' || ref === 'world') && lo !== null && hi !== null && hi > lo))
+          reasons.push({code: 'invalid_bounds', path: path, cells: [], cell_count: 0, floor_counts: []});
+      }
+      function parts(s, path, phase) {
+        if (s.footprint || s.blocks_movement) shape(s.footprint, path + '.footprint');
+        if (s.blocks_sight && s.footprint) bounds(s.sight_bounds, path + '.sight_bounds');
+        (s.sight || []).forEach(function(o,i) {shape(o.geometry, path + '.sight[' + i + '].geometry'); bounds(o.bounds, path + '.sight[' + i + '].bounds');});
+        if (phase && (s.panel || s.geometry || s.footprint)) {shape(s.panel || s.geometry || s.footprint, path + '.panel'); bounds(s.sight_bounds, path + '.sight_bounds');}
+      }
+      (f.states || []).forEach(function(s) {parts(s, 'features.' + f.id + '.states.' + s.name, false);});
+      ((f.rotation || {}).phases || []).forEach(function(s,i) {parts(s, 'features.' + f.id + '.rotation.phases[' + i + ']', true);});
+      ['potential_ground', 'remove_sight'].forEach(function(k) {if ((f.base_edits || {})[k]) shape(f.base_edits[k], 'features.' + f.id + '.base_edits.' + k);});
+      (mf.triggers || []).forEach(function(t) {if ((t.targets || []).some(function(x) {return x.feature === f.id;})) shape(t.geometry, 'triggers.' + t.id + '.geometry');});
+      (mf.routes || []).forEach(function(r) {if (r.owner === f.id) (r.endpoints || []).concat((r.access || {}).sites || []).forEach(function(e) {shape({type:'point', uv:e.uv}, 'routes.' + r.id + '.' + e.id);});});
+      return reasons;
+    }
+    (mf.features || []).forEach(function(f) {
+      var bundle = (mf.bundles || []).find(function(b) {return (b.members || []).indexOf(f.id) >= 0;});
+      var candidate = candidateFor(bundle ? bundle.members : [f.id]), reasons = [], seen = {}, visiting = {};
+      function visit(id) {
+        if (visiting[id]) {reasons.push(reason('dependency_cycle', 'features.' + id + '.parent')); return;}
+        if (seen[id]) return;
+        seen[id] = true;
+        var required = features[id];
+        if (!required) {reasons.push(reason('missing_dependency', 'features.' + id)); return;}
+        reasons = reasons.concat(partsOf(required, candidate));
+        visiting[id] = true;
+        if (required.parent) visit(required.parent);
+        delete visiting[id];
+      }
+      visit(f.id);
+      out[f.id] = {ok:!reasons.length, reasons:reasons};
+    });
+    (mf.bundles || []).forEach(function(b) {
+      var reasons = [].concat.apply([], (b.members || []).map(function(id) {return out[id] ? out[id].reasons : [{code:'missing_member', path:id, cells:[], cell_count:0, floor_counts:[]}];}));
+      if (reasons.length) (b.members || []).forEach(function(id) {if (out[id]) out[id] = {ok:false, reasons:reasons};});
+    });
+    return out;
   }
 
   function stateOf(feature, states) {
@@ -1481,7 +1626,9 @@
     Drafts: Drafts, draftSourceKey: draftSourceKey, DRAFT_PREFIX: DRAFT_PREFIX,
     DRAFT_FORMAT: DRAFT_FORMAT, draftFile: draftFile, importDraft: importDraft, draftCatalogue: draftCatalogue,
     draftModelProblems: draftModelProblems, sourceDiffers: sourceDiffers, maxHigh: maxHigh, raiseNextId: raiseNextId,
-    raster: raster, composeFeatures: composeFeatures, stateOf: stateOf, makeBreakable: makeBreakable, CELL_UV: CELL_UV,
+    raster: raster, composeFeatures: composeFeatures, geometryProblems: geometryProblems, walkableCells: walkableCells,
+    resolvePlacement: resolvePlacement, previewPlacement: previewPlacement,
+    stateOf: stateOf, makeBreakable: makeBreakable, CELL_UV: CELL_UV,
     rotationPose: rotationPose, mapSummary: mapSummary,
     importCatalogue: importCatalogue, diffCatalogues: diffCatalogues,
     exportCatalogue: exportCatalogue,
@@ -1490,7 +1637,7 @@
     references: references, referrers: referrers, remove: removeObject, duplicate: duplicate,
     history: history, historyPush: historyPush, undo: undo, redo: redo,
     canonicalJson: canonicalJson, sha256Hex: sha256Hex, digest: digest, runtimeProjection: runtimeProjection,
-    runtimeDigest: runtimeDigest
+    runtimeDigest: runtimeDigest, tagCanonicalJson: tagCanonicalJson
   });
 
   var api = {

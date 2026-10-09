@@ -98,6 +98,23 @@ def test_a_build_at_the_bar_goes_live_and_the_one_before_it_is_superseded(db, li
     assert ch.active_rows(db)[name].digest == "bbbbbbbbbbbb"
 
 
+def test_diagnostic_failure_does_not_gate_valid_heights_and_manual_audit_preserves_reports(db, linked, monkeypatch):
+    import copy
+    monkeypatch.setattr(ch, 'refresh_feature_report', lambda db, name, digest=None, **kw:
+        {'status': 'error', 'code': 'compile_failure', 'reason': 'isolated compiler unavailable',
+         'source_sha256': 'a' * 64, 'requested_height': digest or 'flat', 'candidate': kw.get('candidate', False)})
+    assert build(db, linked.map_name, 'aaaaaaaaaaaa') == ('active', [])
+    old = copy.deepcopy(ch.rows(db, linked.map_name)[0].report)
+    assert build(db, linked.map_name, 'bbbbbbbbbbbb', report(ready=False, not_ready=['thin']))[0] == 'rejected'
+    rejected = ch.rows(db, linked.map_name)[0]
+    assert rejected.report['features']['authoritative']['candidate'] is True
+    assert ch.activate(db, linked.map_name, 'aaaaaaaaaaaa') is None
+    assert db.info['feature_report']['requested_height'] == 'aaaaaaaaaaaa'
+    assert ch.deactivate(db, linked.map_name)
+    assert db.info['feature_report']['requested_height'] == 'flat'
+    assert ch.rows(db, linked.map_name)[1].report == old
+
+
 @pytest.mark.parametrize("rep, why", [
     (report(ready=False, not_ready=["supported 41.0% is under 60%"], supported_cells=2460, supported=0.41), "under 60%"),
     (report(ready=False, not_ready=["1 unresolved area(s) larger than 12 cells touch a cell with two floors"]), "unresolved"),
@@ -147,19 +164,17 @@ def test_a_missing_check_set_on_this_side_trusts_nothing():
     assert any("check set" in r for r in ch.integrity("cccccccccccc", report(), verified("cccccccccccc"), None))
 
 
-def test_store_build_rechecks_a_generation_without_relying_on_the_planners_lookup(db, linked, monkeypatch):
+def test_tags_or_legacy_pointer_cannot_freeze_valid_height_activation(db, linked, monkeypatch):
     name = linked.map_name
     build(db, name, "aaaaaaaaaaaa")
     before = ch.active_digests(db)
     real = rc.geometry_inputs
     monkeypatch.setattr(rc, "geometry_inputs", lambda m, heights=None: {**(real(m, heights) or {}), "features": "new-generation"})
-    with pytest.raises(ch.HasGeneration):
-        build(db, name, "bbbbbbbbbbbb")
-    assert ch.active_digests(db) == before and len(ch.rows(db, name)) == 1
-    assert "generation" in ch.activate(db, name, "aaaaaaaaaaaa")
-    with pytest.raises(ch.HasGeneration):
-        ch.deactivate(db, name)
-    assert ch.active_digests(db) == before
+    assert build(db, name, 'bbbbbbbbbbbb') == ('active', [])
+    assert ch.active_digests(db) == {name: 'bbbbbbbbbbbb'}
+    assert ch.activate(db, name, 'aaaaaaaaaaaa') is None
+    assert ch.deactivate(db, name)
+    assert ch.active_digests(db) == {}
 
 
 def test_a_row_from_another_format_is_not_active(db, linked):
@@ -260,7 +275,7 @@ def _calls_without_heights(path: Path) -> list[int]:
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Call):
             name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
-            if name in need and len(node.args) < need[name] and not any(k.arg == "heights" for k in node.keywords):
+            if name in need and len(node.args) < need[name] and not any(k.arg in ("heights", 'context') for k in node.keywords):
                 out.append(node.lineno)
     return out
 
@@ -273,15 +288,13 @@ def test_every_caller_passes_the_active_heights():
     assert missing == {}, missing
 
 
-def test_a_map_with_a_published_feature_generation_cant_have_its_heights_changed_by_hand(db, linked):
+def test_old_height_rollback_and_off_remain_available(db, linked):
     name = linked.map_name
     build(db, name, "aaaaaaaaaaaa")
     build(db, name, "bbbbbbbbbbbb")
-    refused = ch.activate(db, name, "aaaaaaaaaaaa", generation="feat0000feat0000")
-    assert "feature generation" in refused and ch.active_digests(db) == {name: "bbbbbbbbbbbb"}
-    with pytest.raises(ch.HasGeneration):
-        ch.deactivate(db, name, generation="feat0000feat0000")
-    assert ch.active_digests(db) == {name: "bbbbbbbbbbbb"}
+    assert ch.activate(db, name, 'aaaaaaaaaaaa') is None
+    assert ch.active_digests(db) == {name: 'aaaaaaaaaaaa'}
+    assert ch.deactivate(db, name) and ch.active_digests(db) == {}
 
 
 def test_the_operator_lists_activates_exports_and_turns_off(factory, db, linked, capsys, tmp_path, monkeypatch):
@@ -305,11 +318,6 @@ def test_the_operator_lists_activates_exports_and_turns_off(factory, db, linked,
     wrapper = json.loads((out_dir / f"{name}.height.json").read_text(encoding="utf-8"))
     assert wrapper["height_sha"] == "aaaaaaaaaaaa" and wrapper["height"]["supported_cells"] == 4200
     assert command.main(["export", "--map", name, "--out", str(WEBAPP / "here")], session_factory=factory) == 2
-    monkeypatch.setattr(command, "generation_of", lambda map_name: "feat0000feat0000")
-    assert command.main(["off", "--map", name], session_factory=factory) == 2
-    assert command.main(["activate", "--map", name, "--digest", "aaaaaaaaaaaa"], session_factory=factory) == 2
-    assert "feature generation" in capsys.readouterr().err
-    monkeypatch.setattr(command, "generation_of", lambda map_name: None)
     assert command.main(["off", "--map", name], session_factory=factory) == 0
     db.expire_all()
     assert ch.active_digests(db) == {}

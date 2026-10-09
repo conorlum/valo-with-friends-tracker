@@ -40,7 +40,8 @@ def test_a_round_gives_the_same_bytes_as_the_engine(toy):
     assert result["data"] == encode_data(rc, data) and result["summary"] == encode_summary(rc, data)
     geo = result["geometry"]
     assert set(geo) == {"sight", "walk", "barrier", "specials", "scale"} and len(geo["sight"]) == 12
-    assert geo["specials"] == [] and geo["scale"] is None       # a toy map isn't in maps.json
+    assert geo["specials"] == [] and geo["scale"] == 7e-5
+    # Provenance reports the scale actually loaded, including a synthetic map's fallback scale.
 
 
 def test_the_geometry_hashes_are_the_ones_the_build_records():

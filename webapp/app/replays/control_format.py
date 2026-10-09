@@ -111,8 +111,15 @@ def figures_hash(hearing=None, utility=None) -> str:
 def fingerprint(recipe: str, source_sha256: str, link: dict, geometry: dict) -> str:
     """16 hex characters over every input of one round's control (since revision 7, the consumed game figures
     too: `figures_hash`)."""
-    body = {"control": CONTROL_REVISION, "data": DATA_VERSION, "summary": SUMMARY_VERSION, "recipe": recipe,
+    return fingerprint_from_inputs(input_envelope(recipe, source_sha256, link, geometry))
+
+
+def input_envelope(recipe, source_sha256, link, geometry):
+    return {"control": CONTROL_REVISION, "data": DATA_VERSION, "summary": SUMMARY_VERSION, "recipe": recipe,
             "source": source_sha256, "link": link, "geometry": geometry, "figures": figures_hash()}
+
+
+def fingerprint_from_inputs(body):
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
 
 

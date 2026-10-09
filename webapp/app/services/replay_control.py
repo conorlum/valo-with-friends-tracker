@@ -31,6 +31,10 @@ from app.replays import db as replay_db
 from app.replays import format as fmt
 from app.scoring.plant_window import attacking_team
 from app.services import control_heights
+from app.replays import map_feature_inputs as fi
+from app.replays.height_inputs import HeightSelection
+from app.replays.control_inputs import PinnedInputs, verify_result_inputs, InvalidControlInputs, StaleControlInputs
+from app.services import control_feature_artifacts
 
 CONTROL_DIR = fmt.STATIC_DIR / "data" / "control"
 MAPS_JSON = fmt.STATIC_DIR / "data" / "maps.json"
@@ -74,6 +78,8 @@ def _read_snapshot(stamp: tuple) -> tuple[dict, dict, dict] | None:
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
     if not all(isinstance(v, dict) for v in (index, tags, maps)):
+        return None
+    if not all(isinstance(v.get('maps', {}), dict) for v in (index, tags)):
         return None
     return index.get("maps", {}), tags.get("maps", {}), maps
 
@@ -120,27 +126,145 @@ _assets.cache_clear = _clear_assets
 def map_layer(map_name: str) -> dict | None:
     """{"cover_reviewed": bool} when the map has the layer, else None."""
     entry = _assets()[0].get(map_name)
-    if not entry or not (entry.get("kill_lines") or {}).get("passes"):
+    if not isinstance(entry, dict) or not isinstance(entry.get('kill_lines') or {}, dict) \
+            or not (entry.get("kill_lines") or {}).get("passes"):
         return None
     return {"cover_reviewed": bool(entry.get("cover_reviewed"))}
 
 
-def geometry_inputs(map_name: str, heights: dict | None = None) -> dict | None:
+@dataclass(frozen=True)
+class CurrentGeometryContext:
+    map_name: str
+    state: str
+    height: HeightSelection
+    pinned: PinnedInputs | None
+    feature_input: fi.FeatureInput | None = None
+
+
+def _current_snapshot():
+    for _ in range(_ASSET_READS):
+        stamp = _stamp()
+        raw = [path.read_bytes() for path in _asset_paths()]
+        index, tags, maps = [fi.read_json(value) for value in raw]
+        if not all(isinstance(value, dict) for value in (index, tags, maps)) \
+                or not all(isinstance(value.get('maps', {}), dict) for value in (index, tags)):
+            raise fi.FeatureInputsError('current control source requires object containers')
+        if _stamp() == stamp:
+            return index.get('maps', {}), tags.get('maps', {}), maps, raw[1]
+    raise fi.FeatureInputsError('current control source is changing')
+
+
+def resolve_current_geometry(db, map_name):
+    selection = HeightSelection('flat')
+    try:
+        index, tags, maps, raw = _current_snapshot()
+        entry = index.get(map_name)
+        if entry is not None and (not isinstance(entry, dict) or
+                not isinstance(entry.get('kill_lines') or {}, dict)):
+            raise fi.FeatureInputsError('current map index requires object containers')
+        if entry is None or not (entry.get('kill_lines') or {}).get('passes'):
+            return CurrentGeometryContext(map_name, 'no_map', selection, None)
+        if entry.get('features_sha'):
+            return CurrentGeometryContext(map_name, 'conversion_required', selection, None)
+        selection = control_heights.select_height(db, map_name, entry.get('height_sha'))
+        source = fi.capture_source_snapshot(map_name, raw)
+        source_entry = tags.get(map_name, {})
+        if not isinstance(source_entry, dict) or not isinstance(maps.get(map_name, {}), dict):
+            raise fi.FeatureInputsError('current map source requires object containers')
+        mf = source_entry.get('map_features')
+        if mf is None:
+            mf = {}
+        if not isinstance(mf, dict) or not isinstance(mf.get('bundles', []), list) \
+                or any(not isinstance(bundle, dict) for bundle in mf.get('bundles', [])):
+            raise fi.FeatureInputsError('current feature source requires object bundles')
+        intended = any(b.get('enabled') and b.get('runtime_consumer') in fi.CONSUMER_VERSIONS
+                       for b in mf.get('bundles', []))
+        base = {}
+        if intended:
+            from app.replays.map_feature_sources import base_snapshot
+            base = base_snapshot(map_name, CONTROL_DIR, source_entry, maps[map_name]['xMultiplier'])
+            if _current_snapshot() != (index, tags, maps, raw):
+                raise fi.FeatureInputsError('source changed while reading masks')
+        inp = fi.identify_features(map_name, selection.digest, source, base)
+        geometry = {'sight': entry.get('sight_sha'), 'walk': entry.get('walk_sha'),
+                    'barrier': entry.get('barrier_sha'), 'specials': source_entry.get('specials') or [],
+                    'scale': (maps.get(map_name) or {}).get('xMultiplier')}
+        if selection.digest:
+            geometry['height'] = selection.digest
+        if inp is not None:
+            header = control_feature_artifacts.find_artifact_header(db, inp.key)
+            if header is None:
+                return CurrentGeometryContext(map_name, 'features_pending', selection, None, inp)
+            geometry['features'] = header.digest
+        pin = PinnedInputs(geometry, feature_key=inp.key if inp else None,
+                           artifact_digest=geometry.get('features'), source_sha256=source.raw_sha256,
+                           height_mode=selection.mode)
+        return CurrentGeometryContext(map_name, 'ready', selection, pin, inp)
+    except (OSError, ValueError, KeyError, TypeError):
+        return CurrentGeometryContext(map_name, 'source_error', selection, None)
+
+
+def current_source_matches(db, context):
+    """Last filesystem guard before replacing rows; editorial edits may keep the same identity."""
+    import hashlib
+    try:
+        raw = _current_snapshot()[3]
+        if hashlib.sha256(raw).hexdigest() == context.pinned.source_sha256:
+            return True
+        final = resolve_current_geometry(db, context.map_name)
+        return final.state == 'ready' and final.pinned.geometry == context.pinned.geometry
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def exact_height_bytes(db, map_name, digest):
+    if not digest:
+        return None
+    data = control_heights.asset_bytes(db, map_name, digest)
+    if data is not None:
+        return data
+    # A selected committed fallback is possible only when no database history exists.
+    selection = control_heights.select_height(db, map_name, digest)
+    if selection.mode != 'asset' or selection.digest != digest:
+        raise fi.FeatureInputsError('selected height is unavailable')
+    return (CONTROL_DIR / f'{map_name}.height.npz').read_bytes()
+
+
+def prepare_discovered(session_factory, map_names, retry_after, now):
+    for name in sorted(set(map_names)):
+        with session_factory() as db:
+            inp = None
+            try:
+                context = resolve_current_geometry(db, name)
+                inp = context.feature_input
+                if context.state != 'features_pending' or inp is None or now < retry_after.get(inp.key, 0):
+                    continue
+                height = exact_height_bytes(db, name, context.height.digest)
+                control_feature_artifacts.prepare_artifact(db, inp, height)
+                db.commit()
+                retry_after.pop(inp.key, None)
+            except (control_feature_artifacts.FeaturePreparationPending, OSError, ValueError):
+                db.rollback()
+                if inp is not None:
+                    retry_after[inp.key] = now + 300
+
+
+def geometry_inputs(map_name: str, heights: dict | None = None, *, context=None) -> dict | None:
     """Everything app/control/geometry.py's `load_geometry` reads for a map: the built masks (by
     index.json's hashes; `barrier` is None for a map with no barrier paint), the specials from
     tags.json, the scale from maps.json, and the map's heights by their digest (`height`, only on a
     map that has them, so a flat map's inputs and its rounds' fingerprints are what they were).
 
-    Map features (docs/superpowers/specs/2026-10-04-map-features-contract.md, section 8): `features`, the
-    consumed-input manifest digest of the map's active feature generation (index.json `features_sha`), only on
-    a map that has enabled features. No map has any in this build, so every input is what it was
-    (tests/fixtures/control/map_features/legacy_inputs.json).
+    Exact feature artifacts are selected separately by resolve_current_geometry. This offline-compatible
+    helper retains the legacy base/height inputs; an unexpected old pointer requires conversion.
 
     `heights` is `control_heights.active_digests(db)`: a map's active digest in the database is its heights
     (docs/superpowers/specs/2026-10-05-height-auto-rebuild-design.md, section 1). The committed index.json
     `height_sha` is the fallback for a map with no active row, and all there is when `heights` is None (a
     checkout without a database, most tests). Every caller under app/ and scripts/ passes it
     (tests/replays/test_control_heights_db.py)."""
+    if context is not None:
+        return context.pinned.geometry if context.state == 'ready' else None
     index, tags, maps = _assets()
     entry = index.get(map_name)
     if entry is None:
@@ -152,7 +276,7 @@ def geometry_inputs(map_name: str, heights: dict | None = None) -> dict | None:
     if height:
         inputs["height"] = height
     if entry.get("features_sha"):
-        inputs["features"] = entry["features_sha"]
+        raise fi.FeatureInputsError('legacy feature pointer requires archive conversion')
     return inputs
 
 
@@ -191,8 +315,8 @@ def round_link(replay: Replay, groups: dict[int, str], n: int) -> dict:
     return {"linked": True, "sides": sides, "db_deaths": sorted(deaths)}
 
 
-def round_fingerprint(replay: Replay, groups: dict[int, str], n: int, heights: dict | None = None) -> str | None:
-    geometry = geometry_inputs(replay.map_name, heights)
+def round_fingerprint(replay: Replay, groups: dict[int, str], n: int, heights: dict | None = None, *, context=None) -> str | None:
+    geometry = geometry_inputs(replay.map_name, heights, context=context) if context is not None else geometry_inputs(replay.map_name, heights)
     if geometry is None:
         return None
     return cf.fingerprint(replay.recipe, replay.source_sha256, round_link(replay, groups, n), geometry)
@@ -208,7 +332,8 @@ class RoundControlAnswer:
 def round_control(db, replay: Replay, n: int) -> RoundControlAnswer:
     """The endpoint's answer. A row in an older byte format reads as not ready: a viewer that
     decodes the current format can't read it, unlike a row that is only stale."""
-    if map_layer(replay.map_name) is None:
+    context = resolve_current_geometry(db, replay.map_name)
+    if context.state == 'no_map' or (context.state == 'ready' and map_layer(replay.map_name) is None):
         return RoundControlAnswer("no_map")
     if blob_too_old(replay):
         return RoundControlAnswer("old_blob")
@@ -222,7 +347,8 @@ def round_control(db, replay: Replay, n: int) -> RoundControlAnswer:
     if row.status != "ok":
         return RoundControlAnswer("failed", row)
     heights = control_heights.active_digests(db)
-    stale = row.fingerprint != round_fingerprint(replay, side_groups(db, replay), n, heights)
+    stale = row.fingerprint != round_fingerprint(replay, side_groups(db, replay), n, heights,
+                                               context=context)
     return RoundControlAnswer("ok", row, stale)
 
 
@@ -235,10 +361,11 @@ class PlannedRound:
     fingerprint: str | None
     reason: str       # missing | stale | failed | retry_failed | forced | no_map | old_blob
     link: dict | None = None
+    inputs: PinnedInputs | None = None
 
     @property
     def computable(self) -> bool:
-        return self.reason not in ("no_map", "old_blob")
+        return self.reason not in ("no_map", "old_blob", 'features_pending', 'source_error')
 
 
 def _valid_ids(db, replays: list[Replay]) -> set[int]:
@@ -277,16 +404,23 @@ def plan(db, *, match_uuid: str | None = None, rounds: set[int] | None = None, f
             ReplayRoundControl.fingerprint, ReplayRoundControl.data_version)):
         stored[row.replay_id][row.round_number] = row
     out: list[PlannedRound] = []
+    contexts = {}
     for replay in replays:
         if replay.id not in valid:
             continue
         uuid = str(replay.match_uuid).lower()
         wanted = [n for n in range(1, replay.round_count + 1) if rounds is None or n in rounds]
+        if replay.map_name not in contexts:
+            contexts[replay.map_name] = resolve_current_geometry(db, replay.map_name)
+        context = contexts[replay.map_name]
+        if context.state != 'ready':
+            out += [PlannedRound(replay.id, uuid, replay.map_name, n, None, context.state) for n in wanted]
+            continue
         if map_layer(replay.map_name) is None or blob_too_old(replay):
-            reason = "no_map" if map_layer(replay.map_name) is None else "old_blob"
+            reason = 'no_map' if map_layer(replay.map_name) is None else 'old_blob'
             out += [PlannedRound(replay.id, uuid, replay.map_name, n, None, reason) for n in wanted]
             continue
-        geometry = geometry_inputs(replay.map_name, heights)
+        geometry = geometry_inputs(replay.map_name, heights, context=context)
         for n in wanted:
             link = round_link(replay, groups[replay.id], n)
             current = cf.fingerprint(replay.recipe, replay.source_sha256, link, geometry)
@@ -303,7 +437,8 @@ def plan(db, *, match_uuid: str | None = None, rounds: set[int] | None = None, f
                 reason = "retry_failed"
             else:
                 continue
-            out.append(PlannedRound(replay.id, uuid, replay.map_name, n, current, reason, link))
+            pin = context.pinned.for_round(cf.input_envelope(replay.recipe, replay.source_sha256, link, geometry))
+            out.append(PlannedRound(replay.id, uuid, replay.map_name, n, current, reason, link, pin))
     return out
 
 

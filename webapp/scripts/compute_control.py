@@ -151,11 +151,12 @@ def store_result(session_factory, planned, result: dict) -> str:
     from app.services import replay_control
     from app.services.replay_control_store import store_round
 
-    used = (result.get("geometry") or {}).get("features")
-    current = (replay_control.geometry_inputs(planned.map_name, heights=None) or {}).get("features")
-    if result.get("status") == "ok" and used != current:
-        return "skipped: its feature inputs changed while computing"
-    return store_round(session_factory, planned.replay_id, planned.round_number, planned.fingerprint, result)
+    if result.get('error_kind') in ('infra', 'compat'):
+        return 'skipped: retryable infrastructure or compatibility failure'
+
+    # The shared writer checks the complete planned envelope under map then replay locks.
+    return store_round(session_factory, planned.replay_id, planned.round_number, planned.fingerprint, result,
+                       require_current=True, planned_inputs=getattr(planned, 'inputs', None))
 
 
 def cache_heights(session, maps) -> dict[str, str]:
@@ -190,11 +191,27 @@ def run(planned, args, session_factory) -> int:
     todo = [p for p in planned if p.computable]
     reader = session_factory()   # blobs are read as their rounds start, not all up front
     heights = cache_heights(reader, sorted({p.map_name for p in todo}))
+    from app.services import replay_control as rc, control_feature_artifacts
+    from app.replays import map_feature_artifacts as fa
+    for p in todo:
+        pin = p.inputs
+        digest = pin.geometry.get('height')
+        if digest:
+            path = geometry.height_cache_path(p.map_name, digest)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            height_bytes = control_feature_artifacts.archived_height_bytes(reader, pin.artifact_digest) if pin.artifact_digest \
+                else rc.exact_height_bytes(reader, p.map_name, digest)
+            path.write_bytes(height_bytes)
+        if pin.artifact_digest:
+            item = control_feature_artifacts.load_artifact(reader, pin.artifact_digest)
+            fa.store_cached_artifact(geometry.cache_dir() / 'features', item, lambda artifact: None)
     reader.rollback()
     for name in sorted({p.map_name for p in todo}):
         started = time.time()
-        cached = geometry.height_cache_path(name, heights[name]) if name in heights else None
-        geo = geometry.visibility(geometry.load_geometry(name, heights=cached))
+        pin = next(p.inputs for p in todo if p.map_name == name)
+        digest = pin.geometry.get('height')
+        cached = geometry.height_cache_path(name, digest) if digest else None
+        geo = geometry.visibility(geometry.load_geometry(name, heights=cached, height_mode=pin.height_mode, load_features=False))
         print(f"{name}: visibility {geo.visibility_source} in {time.time() - started:.0f}s"
               + (f" (heights {heights[name]})" if name in heights else ""), flush=True)
 
@@ -232,8 +249,11 @@ def run(planned, args, session_factory) -> int:
                 task = {"key": key, "map": p.map_name, "blob": blob, "link": p.link,
                         "gaps": {"replay_id": p.replay_id, "round": p.round_number, "fingerprint": p.fingerprint},
                         "gaps_only": p.reason == "gaps"}
-                if p.map_name in heights:
-                    task["height"] = heights[p.map_name]
+                task['height_mode'] = p.inputs.height_mode
+                if p.inputs.geometry.get('height'):
+                    task['height'] = p.inputs.geometry['height']
+                if p.inputs.artifact_digest:
+                    task.update(features=p.inputs.artifact_digest, geometry=p.inputs.geometry, inputs=p.inputs.envelope)
                 running[key] = (pool.apply_async(compute_task, (task,)), time.time())
             for key in [k for k, (r, _) in running.items() if r.ready()]:
                 result = running.pop(key)[0].get()
@@ -251,7 +271,8 @@ def run(planned, args, session_factory) -> int:
                     gap_runs += 1
                     run_row = result["gaps"]["run"]
                     rows = result.get("gaps", {}).get("rows", [])
-                    gap_outcome = store_gaps(session_factory, p.replay_id, p.round_number, run_row, rows)
+                    gap_outcome = store_gaps(session_factory, p.replay_id, p.round_number, run_row, rows,
+                                             expected_control_fingerprint=p.fingerprint)
                     if run_row["status"] != "ok":
                         gap_failed.append((p, (run_row.get("error") or "failed").splitlines()[0]))
                         gap_note = f"gaps FAILED: {gap_failed[-1][1]}"
@@ -335,6 +356,14 @@ def main(argv: list[str] | None = None, session_factory=None) -> int:
         if args.brief:
             print(replay_control.nudge(session) or "Map control: every round is up to date")
             return 0
+        if not args.dry_run:
+            from app.models.replay import Replay
+            maps_query = session.query(Replay.map_name).distinct()
+            if args.map_name:
+                maps_query = maps_query.filter(Replay.map_name == args.map_name)
+            if args.match:
+                maps_query = maps_query.filter(Replay.match_uuid == args.match.lower())
+            replay_control.prepare_discovered(session_factory, [name for name, in maps_query], {}, time.time())
         planned = replay_control.plan(session, match_uuid=args.match,
                                       rounds=set(args.rounds) if args.rounds else None,
                                       force=args.force, retry_failed=args.retry_failed)

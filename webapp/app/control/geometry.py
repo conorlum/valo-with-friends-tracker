@@ -378,7 +378,17 @@ def load_tags(asset_dir: Path = ASSET_DIR) -> dict:
     return json.loads((asset_dir / "tags.json").read_text(encoding="utf-8"))
 
 
-def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None = None) -> Geometry:
+def load_base_geometry(name: str, asset_dir: Path = ASSET_DIR) -> Geometry:
+    """Height evidence consumes permanent masks and scale only."""
+    sight_path, walk_path = asset_dir / f'{name}.sight.png', asset_dir / f'{name}.walk.png'
+    if not sight_path.is_file() or not walk_path.is_file():
+        raise GeometryError(f'no control geometry for {name!r}')
+    scale = json.loads(MAPS_JSON.read_text(encoding='utf-8'))[name]['xMultiplier']
+    return geometry_from_masks(name, read_mask_png(sight_path), read_mask_png(walk_path), scale, [])
+
+
+def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None = None, *, load_features=True,
+                  height_mode='legacy_default') -> Geometry:
     """A map's committed geometry (built by scripts/build_control_geometry.py), with its heights when
     index.json names a height asset (scripts/build_control_heights.py). `heights` loads that asset file
     instead: a preview's, or the map's active asset fetched by its digest (the database's, which wins over a
@@ -397,11 +407,12 @@ def load_geometry(name: str, asset_dir: Path = ASSET_DIR, heights: Path | None =
         geo.barrier_sha = hashlib.sha256(np.packbits(barrier_px).tobytes()).hexdigest()[:12]
     index_path = asset_dir / "index.json"
     row = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
-    if row.get("features_sha"):          # never on a committed map in this build: no feature is enabled
-        from app.control import features
-
-        geo.features = features.load_generation(asset_dir, row["features_sha"])
-        geo.features_sha = row["features_sha"]
+    if load_features and row.get("features_sha"):
+        raise GeometryError(f'{name}: legacy feature pointer requires archive conversion')
+    if height_mode == 'flat':
+        return geo
+    if height_mode not in ('legacy_default', 'asset') or (height_mode == 'asset' and heights is None):
+        raise GeometryError('asset height mode requires an exact named path')
     if heights is not None:              # a preview's, or one fetched by its digest (height_cache_path)
         return attach_heights(geo, hc.load_asset(heights))
     wanted = row.get("height_sha")

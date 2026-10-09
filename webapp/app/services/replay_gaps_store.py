@@ -38,8 +38,9 @@ def _stale(session, replay_id: int, round_number: int, run: dict, expected: str)
     replay = session.get(Replay, replay_id)
     if replay is None:
         return "skipped: the replay is gone"
+    context = replay_control.resolve_current_geometry(session, replay.map_name)
     current = replay_control.round_fingerprint(replay, replay_control.side_groups(session, replay), round_number,
-                                               control_heights.active_digests(session))
+                                               context=context)
     if current is None or current != expected:
         return "skipped: its control inputs changed while computing"
     control = session.get(ReplayRoundControl, (replay_id, round_number))
@@ -53,6 +54,8 @@ def _stale(session, replay_id: int, round_number: int, run: dict, expected: str)
     existing = session.get(ReplayRoundGapRun, (replay_id, round_number))
     if existing is not None and existing.fingerprint == wanted:
         return ALREADY                # another writer got there first; a current failure stays put too
+    if not replay_control.current_source_matches(session, context):
+        return 'skipped: its control source changed while computing'
     return None
 
 
@@ -63,10 +66,16 @@ def store_gaps(session_factory, replay_id: int, round_number: int, run: dict, ro
     session = session_factory()
     try:
         # The UUID alone first, so no row is held in the session from before the lock.
-        match_uuid = session.query(Replay.match_uuid).filter(Replay.id == replay_id).scalar()
+        identity = session.query(Replay.map_name, Replay.match_uuid).filter(Replay.id == replay_id).first()
+        match_uuid = identity.match_uuid if identity else None
         if match_uuid is not None:
+            replay_db.advisory_lock(session, control_heights.lock_name(identity.map_name))
             replay_db.advisory_lock(session, str(match_uuid))
             _after_lock(session)
+            session.expire_all()
+            fresh = session.query(Replay.map_name, Replay.match_uuid).filter(Replay.id == replay_id).first()
+            if fresh != identity:
+                return 'skipped: the replay changed while waiting for locks'
         if expected_control_fingerprint is not None:
             if match_uuid is None:
                 return "skipped: the replay is gone"

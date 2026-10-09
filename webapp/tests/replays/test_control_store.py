@@ -24,7 +24,7 @@ from test_replay_store import TABLES, add_match, condensed, pg  # noqa: E402,F40
 import compute_control  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
-from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun  # noqa: E402
+from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun, ControlFeatureArtifact  # noqa: E402
 from app.replays import control_format as cf  # noqa: E402
 from app.replays import format as fmt  # noqa: E402
 from app.replays import store  # noqa: E402
@@ -32,7 +32,7 @@ from app.routers import replays as routes  # noqa: E402
 from app.services import replay_control as rc  # noqa: E402
 from app.services import replays as service  # noqa: E402
 
-CONTROL_TABLES = TABLES + [ReplayRoundGapRun.__table__, ReplayGap.__table__]   # R1: the timing-gaps tables
+CONTROL_TABLES = TABLES + [ReplayRoundGapRun.__table__, ReplayGap.__table__, ControlFeatureArtifact.__table__]
 
 
 @pytest.fixture
@@ -236,11 +236,12 @@ def packed(header):
 def test_a_stored_row_records_the_control_revision_ok_or_failed(factory, db, linked):
     # docs/superpowers/plans/2026-10-05-control-idle-queue.md, D9: the column and the data header agree on write
     [planned] = rc.plan(db, rounds={1})
-    ok = {"status": "ok", "data": packed({"revision": cf.CONTROL_REVISION}), "summary": cf.pack_summary({})}
+    ok = {"status": "ok", "data": packed({"revision": cf.CONTROL_REVISION}), "summary": cf.pack_summary({}),
+          'geometry': planned.inputs.geometry}
     assert compute_control.store_result(factory, planned, ok) == "stored"
     row = db.get(ReplayRoundControl, (linked.id, 1))
     assert row.control_revision == cf.CONTROL_REVISION == cf.unpack_data(row.data)[0]["revision"]
-    assert compute_control.store_result(factory, planned, {"status": "failed", "error": "ControlError: boom"}) == "stored"
+    assert compute_control.store_result(factory, planned, {"status": "failed", "error": "ControlError: boom"}).startswith('skipped: already')
     db.expire_all()
     assert db.get(ReplayRoundControl, (linked.id, 1)).control_revision == cf.CONTROL_REVISION
 
@@ -405,16 +406,16 @@ def test_memory_probes_read_something_on_this_machine():
     assert peak is None or peak > 0
 
 
-def test_a_result_is_stored_and_a_rerun_replaces_it(factory, db, linked):
+def test_a_result_is_stored_and_a_delayed_failure_preserves_it(factory, db, linked):
     [planned] = rc.plan(db, rounds={1})
-    ok = {"status": "ok", "data": gzip.compress(b"d"), "summary": cf.pack_summary({})}
+    ok = {"status": "ok", "data": gzip.compress(b"d"), "summary": cf.pack_summary({}), 'geometry': planned.inputs.geometry}
     assert compute_control.store_result(factory, planned, ok) == "stored"
     assert db.get(ReplayRoundControl, (linked.id, 1)).data_version == cf.DATA_VERSION
     failed = {"status": "failed", "error": "ControlError: boom"}
-    assert compute_control.store_result(factory, planned, failed) == "stored"
+    assert compute_control.store_result(factory, planned, failed).startswith('skipped: already')
     db.expire_all()
     row = db.get(ReplayRoundControl, (linked.id, 1))
-    assert row.status == "failed" and row.data is None and row.error.startswith("ControlError")
+    assert row.status == "ok" and row.data == ok['data'] and row.error is None
     assert row.fingerprint == planned.fingerprint and row.computed_at is not None
 
 
@@ -493,6 +494,9 @@ def test_a_maps_heights_join_its_geometry_inputs_and_only_its_rounds_go_stale(fa
                                                                             "height_sha": "0123456789ab"}}, tags, maps))
     with_heights = rc.geometry_inputs(linked.map_name)
     assert with_heights == {**flat, "height": "0123456789ab"}
+    original = rc._current_snapshot
+    monkeypatch.setattr(rc, '_current_snapshot', lambda: ({**index, linked.map_name: {**index[linked.map_name],
+        'height_sha': '0123456789ab'}}, *original()[1:]))
     assert {p.round_number for p in rc.plan(db) if p.reason == "stale"} == {1, 2}
     assert rc.geometry_inputs("Bind") == {k: v for k, v in rc.geometry_inputs("Bind").items() if k != "height"}
 

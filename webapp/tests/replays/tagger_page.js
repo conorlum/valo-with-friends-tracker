@@ -69,7 +69,17 @@ function element(doc, id, tag) {
     getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
     removeAttribute(k) { delete this.attrs[k]; },
     hasAttribute(k) { return k in this.attrs; },
-    querySelector() { return null; },
+    querySelector(selector) {
+      // The panel's value editor creates these inputs through innerHTML.
+      const match = /^input\[type=(number|checkbox)\]$/.exec(selector);
+      if (!match) return null;
+      const html = this.innerHTML.match(new RegExp('<input type="' + match[1] + '"[^>]*>'));
+      if (!html) return null;
+      const input = element(doc, null, "input");
+      input.disabled = / disabled/.test(html[0]); input.checked = / checked/.test(html[0]);
+      const value = / value="([^"]*)"/.exec(html[0]); input.value = value ? value[1] : "";
+      return input;
+    },
     querySelectorAll() { return []; },
     closest() { return null; },
     getContext() { return this._ctx || (this._ctx = context2d()); },

@@ -38,6 +38,7 @@ import json
 import math
 import subprocess
 import sys
+import logging
 from pathlib import Path
 
 from sqlalchemy.exc import IntegrityError
@@ -50,26 +51,32 @@ from app.replays import height_inputs
 
 ACTIVE, REJECTED, SUPERSEDED = "active", "rejected", "superseded"
 WEBAPP_ROOT = Path(__file__).resolve().parents[2]
+log = logging.getLogger(__name__)
+
+
+def refresh_feature_report(db, map_name, height_digest=None, **kwargs):
+    from app.services.control_feature_artifacts import refresh_feature_report as refresh
+    return refresh(db, map_name, height_digest, **kwargs)
+
+
+def _transition_features(db, map_name, height_digest):
+    from app.services import replay_control, control_feature_artifacts
+    report = refresh_feature_report(db, map_name, height_digest)
+    db.info['feature_report'] = report
+    log.info('height transition feature diagnostics: %s', json.dumps(report, sort_keys=True))
+    context = replay_control.resolve_current_geometry(db, map_name)
+    if context.state == 'features_pending' and context.feature_input is not None:
+        try:
+            control_feature_artifacts.prepare_artifact(db, context.feature_input,
+                replay_control.exact_height_bytes(db, map_name, context.height.digest))
+            db.commit()
+        except control_feature_artifacts.FeaturePreparationPending:
+            db.rollback()
+            log.info('feature preparation remains pending for %s; dispatcher will retry', map_name)
 
 
 class Busy(Exception):
     """Another change to this map's heights got there first; nothing was written."""
-
-
-class HasGeneration(Exception):
-    """The map has a published feature generation, which names its current heights."""
-
-
-GENERATION_NOTE = ("{map} has a published feature generation ({generation}); it names the heights it was compiled "
-                   "against, so changing them would make every round of the map fail verification. Republish the "
-                   "generation against the heights you want first")
-
-
-def _generation_note(map_name: str, supplied: str | None = None) -> str | None:
-    from app.services import replay_control  # lazy: this service is imported by replay_control
-
-    generation = (replay_control.geometry_inputs(map_name, heights=None) or {}).get("features") or supplied
-    return GENERATION_NOTE.format(map=map_name, generation=generation) if generation else None
 
 
 def lock_name(map_name: str) -> str:
@@ -85,6 +92,17 @@ def active_digests(db) -> dict[str, str]:
     rows_ = db.query(ControlHeight.map_name, ControlHeight.digest, ControlHeight.rules) \
         .filter(ControlHeight.status == ACTIVE)
     return {name: digest for name, digest, rules in rows_ if _usable(rules)}
+
+
+def select_height(db, map_name, committed_digest):
+    history = db.query(ControlHeight.digest, ControlHeight.status, ControlHeight.rules) \
+        .filter(ControlHeight.map_name == map_name).all()
+    for digest, status, rules in history:
+        if status == ACTIVE and _usable(rules):
+            return height_inputs.HeightSelection('asset', digest)
+    if history or not committed_digest:
+        return height_inputs.HeightSelection('flat')
+    return height_inputs.HeightSelection('asset', committed_digest)
 
 
 def rows(db, map_name: str | None = None) -> list[ControlHeight]:
@@ -227,15 +245,22 @@ def _make_active(db, map_name: str, row_id: int | None) -> None:
 def store_build(db, *, map_name: str, digest: str, asset: bytes, report: dict, inputs: dict,
                 rules: dict) -> tuple[str, list[str]]:
     """Stores a trusted build behind the gate and commits: ("active", []) or ("rejected", why). Raises Busy
-    when another change to the map's heights won the race, or HasGeneration when a published feature
-    generation is present at the final lookup under the map lock; nothing is written then."""
+    when another change to the map's heights won the race; nothing is written then."""
     why = gate(report)
+    previous = None
+    active = active_rows(db).get(map_name)
+    if active is not None:
+        features = (active.report or {}).get('features')
+        if isinstance(features, dict):
+            previous = (features.get('authoritative') or features).get('snapshot')
+    provisional = report.get('features')
+    if not isinstance(provisional, dict):
+        provisional = {'status': 'unavailable', 'code': 'diagnostic_unavailable', 'source_sha256': None}
+    authoritative = refresh_feature_report(db, map_name, digest, height_bytes=asset, previous=previous, candidate=bool(why))
+    report = {**report, 'features': {'provisional': provisional, 'authoritative': authoritative,
+                                   'candidate_status': REJECTED if why else ACTIVE}}
     try:
         replay_db.advisory_lock(db, lock_name(map_name))
-        note = _generation_note(map_name)
-        if note:
-            db.rollback()
-            raise HasGeneration(note)  # even when it was published after planning: no row and no activation
         row = ControlHeight(map_name=map_name, digest=digest, asset=asset, report=report,
                             match_uuids=height_inputs.matches(inputs), rules=rules, inputs=inputs,
                             inputs_sha=height_inputs.digest(inputs), status=REJECTED if why else SUPERSEDED)
@@ -251,14 +276,10 @@ def store_build(db, *, map_name: str, digest: str, asset: bytes, report: dict, i
     return (REJECTED, why) if why else (ACTIVE, [])
 
 
-def activate(db, map_name: str, digest: str, generation: str | None = None) -> str | None:
+def activate(db, map_name: str, digest: str) -> str | None:
     """Makes the map's newest build with this digest the active one (it may be already). None when done, else
     why not."""
     replay_db.advisory_lock(db, lock_name(map_name))
-    note = _generation_note(map_name, generation)
-    if note:
-        db.rollback()
-        return note
     found = db.query(ControlHeight.id, ControlHeight.rules) \
         .filter(ControlHeight.map_name == map_name, ControlHeight.digest == digest) \
         .order_by(ControlHeight.id.desc()).first()
@@ -277,19 +298,17 @@ def activate(db, map_name: str, digest: str, generation: str | None = None) -> s
         db.rollback()
         return f"another change to {map_name}'s heights got there first; look again and retry"
     db.expire_all()
+    _transition_features(db, map_name, digest)
     return None
 
 
-def deactivate(db, map_name: str, generation: str | None = None) -> bool:
+def deactivate(db, map_name: str) -> bool:
     """Leaves the map with no active heights (flat). Whether there was one."""
     replay_db.advisory_lock(db, lock_name(map_name))
-    note = _generation_note(map_name, generation)
-    if note:
-        db.rollback()
-        raise HasGeneration(note)
     had = db.query(ControlHeight.id).filter(ControlHeight.map_name == map_name,
                                             ControlHeight.status == ACTIVE).first() is not None
     _make_active(db, map_name, None)
     db.commit()
     db.expire_all()
+    _transition_features(db, map_name, None)
     return had

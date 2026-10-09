@@ -149,7 +149,7 @@ def test_rows_going_stale_change_the_etag(db, linked, monkeypatch):
     fresh = call_players(db)
     assert json.loads(fresh.body)["stale_rounds"] == []
     # The map's geometry changes: the row is untouched but no longer current.
-    monkeypatch.setattr(rc, "geometry_inputs", lambda name, heights=None: {"sight": "changed", "walk": "", "specials": [], "scale": 1})
+    monkeypatch.setattr(rc, "geometry_inputs", lambda name, heights=None, **kwargs: {"sight": "changed", "walk": "", "specials": [], "scale": 1})
     again = call_players(db, {"If-None-Match": fresh.headers["etag"]})
     assert again.status_code == 200 and json.loads(again.body)["stale_rounds"] == [1]
 

@@ -34,6 +34,43 @@ import traceback
 from pathlib import Path
 
 _GEOMETRY: dict = {}
+from app.replays.map_feature_artifacts import FeatureArtifactError, feature_failure, VerifiedArtifactCache
+_ARTIFACTS = VerifiedArtifactCache()
+
+
+def load_task_features(task, geo, cache_dir):
+    from app.replays import map_feature_artifacts as fa, map_feature_inputs as fi
+    from app.control.features import verify_artifact, verify_permanent_context
+    expected = task.get('features')
+    context = task.get('geometry') or {}
+    if expected != context.get('features') and 'geometry' in task:
+        raise fa.FeatureArtifactCorrupt('task feature digest differs from geometry inputs')
+    if not expected:
+        geo.features, geo.features_sha = None, None
+        return None
+    try:
+        item = fa.load_cached_artifact(cache_dir, expected)
+        if task['map'] != geo.name or item.key.map_name != geo.name or \
+                item.key.height_digest != (getattr(geo, 'height_sha', None) or 'flat') or \
+                item.key.height_digest != (task.get('height') or 'flat'):
+            raise fa.FeatureArtifactCorrupt('task map/height differs from archived inputs')
+        envelope = fi.read_json(item.inputs)
+        if item.key.compiler_version != fi.FEATURE_COMPILER_VERSION or \
+                envelope['normalization'] != fi.FEATURE_NORMALIZATION_VERSION or \
+                any(fi.CONSUMER_VERSIONS.get(k) != v for k, v in envelope['consumers'].items()):
+            raise fa.UnsupportedFeatureCompiler('recorded feature semantics unavailable')
+        try:
+            verify_permanent_context(geo, fi.FeatureInput(item.key, item.inputs, b'', ''))
+            _ARTIFACTS.get_or_verify(item, lambda artifact: verify_artifact(artifact, geo))
+        except fa.FeatureArtifactCorrupt:
+            fa.cache_path(cache_dir, expected).unlink(missing_ok=True)
+            raise
+        geo.features, geo.features_sha = item, item.digest
+        return item
+    except fa.FeatureArtifactError:
+        raise
+    except (ValueError, TypeError, KeyError, OSError) as exc:
+        raise fa.FeatureArtifactCorrupt(str(exc)) from exc
 
 
 def peak_memory() -> int | None:
@@ -73,13 +110,14 @@ def geometry_used(geo) -> dict:
 
     from app.control import geometry
 
-    scale = (json.loads(geometry.MAPS_JSON.read_text(encoding="utf-8")).get(geo.name) or {}).get("xMultiplier")
+    from app.replays import format as fmt
+    scale = geo.uv_per_unit / fmt.UV_SCALE
     used = {"sight": hashlib.sha256(np.packbits(geo.sight).tobytes()).hexdigest()[:12],
             "walk": hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12],
             "barrier": geo.barrier_sha, "specials": list(geo.specials), "scale": scale}
     if geo.height_sha:
         used["height"] = geo.height_sha
-    if getattr(geo, "features_sha", None):     # the feature generation actually loaded (absent: none)
+    if getattr(geo, "features_sha", None):     # the exact artifact actually loaded (absent: none)
         used["features"] = geo.features_sha
     return used
 
@@ -102,19 +140,19 @@ def height_file(name: str, digest: str) -> Path:
     return path
 
 
-def _load(name: str, heights: str | None = None, digest: str | None = None):
-    from app.control import features, geometry
+def _load(name: str, heights: str | None = None, digest: str | None = None, *, exact=False, height_mode='legacy_default'):
+    from app.control import geometry
 
     if heights is None and digest:
         heights = str(geometry.height_cache_path(name, digest))
-    # A map's own geometry is keyed by its name; with an active feature generation, by that generation too, so
-    # a worker never keeps computing with a superseded one (absent for every map today: the key is unchanged).
-    generation = features.active_sha(name)
-    key = name if heights is None and generation is None else (name, heights, generation)
+    key = (name, heights, exact, height_mode) if exact or height_mode != 'legacy_default' or heights is not None else name
     if key not in _GEOMETRY:
         if digest:
             height_file(name, digest)
-        geo = geometry.load_geometry(name, heights=Path(heights) if heights else None)
+        options = {'load_features': False} if exact else {}
+        if height_mode != 'legacy_default':
+            options['height_mode'] = height_mode
+        geo = geometry.load_geometry(name, heights=Path(heights) if heights else None, **options)
         try:
             geometry.visibility(geo)
         except Exception:
@@ -125,68 +163,8 @@ def _load(name: str, heights: str | None = None, digest: str | None = None):
                 except OSError:
                     pass
             raise
-        _VERIFIED[key] = verify_features(geo)
         _GEOMETRY[key] = geo
-    elif generation is not None:
-        # The generation pointer can stay put while its definitions change (an edited tags.json): a cached
-        # generation is verified again whenever the definition inputs differ from the ones it was verified
-        # against, so a worker never keeps computing with geometry its definitions no longer compile to.
-        geo = _GEOMETRY[key]
-        entry = _definitions(geo.name)
-        if _VERIFIED.get(key) != _definitions_digest(entry):
-            try:
-                _VERIFIED[key] = verify_features(geo, entry=entry)
-            except Exception:
-                _GEOMETRY.pop(key, None)       # the next try loads the generation again
-                _VERIFIED.pop(key, None)
-                raise
     return _GEOMETRY[key]
-
-
-_VERIFIED: dict = {}        # cache key -> digest of the definition inputs its generation was verified against
-
-
-def _definitions(name: str) -> dict:
-    """A map's tags.json entry: what a generation's definitions are compiled from. An unreadable file (say, caught
-    mid-write) is the machine's failure (GeometryError), never the round's."""
-    from app.control import geometry
-
-    try:
-        return geometry.load_tags().get("maps", {}).get(name, {})
-    except (OSError, ValueError) as error:
-        raise geometry.GeometryError(f"{name}: tags.json unreadable: {error}") from error
-
-
-def _definitions_digest(entry: dict) -> str:
-    """Everything `features.verify` recompiles from besides the geometry: the definitions, the legacy paints
-    and the registered consumers."""
-    import json
-
-    from app.control import features
-
-    inputs = {"map_features": entry.get("map_features"), "cover_paint": entry.get("cover_paint"),
-              "cant_walk_paint": entry.get("cant_walk_paint"), "consumers": sorted(features.RUNTIME_CONSUMERS)}
-    return hashlib.sha256(json.dumps(inputs, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-
-
-def verify_features(geo, expected: str | None = None, full: bool = True, entry: dict | None = None) -> str | None:
-    """Map features (M5): the loaded generation must be the expected one (a task may name it), its compiled
-    assets must hash to its manifest, and the map's current definitions (tags.json, or `entry`) must still
-    compile to that manifest. Any mismatch raises GeometryError: the machine's (infra) failure, retried, never
-    stored as the round's. Nothing to check on a map without a generation, which is every map today. Returns the
-    digest of the definition inputs a full check verified (None when there was nothing to check)."""
-    from app.control import features, geometry
-
-    if expected is not None and expected != geo.features_sha:
-        raise geometry.GeometryError(f"{geo.name}: expected feature generation {expected}, loaded {geo.features_sha}")
-    if not geo.features_sha or not full:
-        return None
-    entry = _definitions(geo.name) if entry is None else entry
-    problems = features.verify(geo.features["manifest"], geo.features["assets"], geo, entry.get("map_features"),
-                               features.legacy_masks(entry))
-    if problems:
-        raise geometry.GeometryError(f"{geo.name}: feature generation {geo.features_sha} is stale: {'; '.join(problems)}")
-    return _definitions_digest(entry)
 
 
 def _cache_path(job: dict, map_name: str) -> Path:
@@ -376,10 +354,25 @@ def compute_task(task: dict) -> dict:
         return {"status": "failed", "error_kind": "infra", "error": f"{type(error).__name__}: {error}",
                 "key": task.get("key"), "seconds": time.time() - started, "peak": peak_memory()}
     try:
-        geo = _load(task["map"], task.get("heights"), task.get("height"))
+        options = {'exact': task['features']} if task.get('features') else {}
+        if task.get('height_mode'):
+            options['height_mode'] = task['height_mode']
+        geo = _load(task["map"], task.get("heights"), task.get("height"), **options)
         if task.get("features"):           # the generation the dispatcher planned with (map features)
-            verify_features(geo, task["features"], full=False)
+            from app.control import geometry
+            load_task_features(task, geo, geometry.cache_dir() / 'features')
         blob = fmt.decode_blob(task["blob"])
+        provenance = None
+        if task.get('features'):
+            from app.replays.map_feature_artifacts import FeatureArtifactCorrupt
+            envelope = task.get('inputs')
+            actual = geometry_used(geo)
+            if not isinstance(envelope, dict) or set(envelope) != {'control', 'data', 'summary', 'recipe', 'source', 'link', 'geometry', 'figures'} \
+                    or envelope['geometry'] != actual or envelope['figures'] != cf.figures_hash() or \
+                    (envelope['control'], envelope['data'], envelope['summary']) != (cf.CONTROL_REVISION, cf.DATA_VERSION, cf.SUMMARY_VERSION) \
+                    or any(envelope['link'].get(k) != task['link'].get(k) for k in ('sides', 'db_deaths')):
+                raise FeatureArtifactCorrupt('actual child inputs differ from planned envelope')
+            provenance = {'v': 1, 'inputs': envelope, 'fingerprint': cf.fingerprint_from_inputs(envelope)}
         link = engine.ControlLink(sides={int(s): side for s, side in task["link"]["sides"].items()},
                                   db_deaths=tuple((int(s), float(t)) for s, t in task["link"]["db_deaths"]))
         job = task.get("gaps")
@@ -394,11 +387,14 @@ def compute_task(task: dict) -> dict:
                     guard = _CacheGuard(None)
                     guard._fail(error)
             rc = engine.compute_round(blob, geo, link, observer=guard)
-            result = {"status": "ok", "data": encode_data(rc, blob), "summary": encode_summary(rc, blob),
+            summary_options = {'provenance': provenance} if provenance is not None else {}
+            result = {"status": "ok", "data": encode_data(rc, blob), "summary": encode_summary(rc, blob, **summary_options),
                       "missing": dict(rc.missing_inputs), "geometry": geometry_used(geo)}
             if job:
                 guard.close(rc.missing_inputs)
                 result["gaps"] = _gaps(geo, blob, link, job, guard=guard)
+    except FeatureArtifactError as error:
+        result = feature_failure(error)
     except engine_errors as error:
         result = {"status": "failed", "error_kind": "engine",
                   "error": f"{type(error).__name__}: {error}\n{traceback.format_exc()[-1500:]}"}

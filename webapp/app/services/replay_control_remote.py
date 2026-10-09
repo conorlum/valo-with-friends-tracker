@@ -76,6 +76,8 @@ from app.models.match import Match
 from app.models.replay import Replay, ReplayRound
 from app.replays import choke_assets
 from app.replays import control_format as cf
+from app.replays import map_feature_artifacts as fa
+from app.services import control_feature_artifacts
 from app.services import control_heights, replay_control, replay_gaps
 from app.services import replay_gaps_store as gaps_store
 from app.services import replay_heights_remote
@@ -137,6 +139,12 @@ class NeedsHeight(Exception):
         self.digest = digest
 
 
+class NeedsFeatures(fa.FeatureArtifactMissing):
+    def __init__(self, digest):
+        super().__init__(digest)
+        self.digest = digest
+
+
 class ControlClient:
     """The worker's control endpoints over urllib (the same private address as uploads)."""
 
@@ -150,11 +158,16 @@ class ControlClient:
             return self._call(urllib.request.Request(f"{self.base}/control", data=body, method="POST",
                                                      headers={"Content-Type": "application/json"}))
         except Conflict as conflict:
+            if conflict.body.get('code') == 'needs_features':
+                raise NeedsFeatures(conflict.body.get('digest')) from conflict
             if conflict.body.get("height"):
                 raise NeedsHeight(str(conflict.body["height"])) from conflict
             raise Unreachable(f"the worker refused the round: {conflict}") from conflict
         except Rejected as refused:               # as before this change: a refused round is tried again later
             raise Unreachable(f"the worker refused the round: {refused}") from refused
+
+    def push_features(self, artifact):
+        return self._post('/features', json.loads(fa.encode_artifact(artifact)))
 
     def push_height(self, map_name: str, digest: str, asset: bytes) -> dict:
         body = json.dumps({"map": map_name, "digest": digest, "asset": base64.b64encode(asset).decode("ascii")})
@@ -171,8 +184,11 @@ class ControlClient:
         return self._call(urllib.request.Request(f"{self.base}{path}", data=json.dumps(body).encode("utf-8"),
                                                  method="POST", headers={"Content-Type": "application/json"}))
 
-    def open_build(self, key: str, map_name: str, rounds: int, manifest: dict) -> dict:
-        return self._post("/heights/build", {"key": key, "map": map_name, "rounds": rounds, "manifest": manifest})
+    def open_build(self, key: str, map_name: str, rounds: int, manifest: dict, *, diagnostic=None) -> dict:
+        body = {"key": key, "map": map_name, "rounds": rounds, "manifest": manifest}
+        if diagnostic is not None:
+            body['diagnostic'] = diagnostic
+        return self._post('/heights/build', body)
 
     def send_rounds(self, build_id: str, rounds: list) -> dict:
         return self._post(f"/heights/build/{build_id}/rounds", {"rounds": rounds})
@@ -220,6 +236,7 @@ class InFlight:
     running_since: float | None = None   # first seen running, without a `queued` since (D8)
     expect_gaps: bool = False            # sent with a gaps block: the capability read when it was submitted
     gaps_only: bool = False              # the round's control is current; only its gaps were asked for
+    inputs: object = None
 
 
 def _height_state():
@@ -237,6 +254,7 @@ class State:
     reparse: reparse_auto.Memo = field(default_factory=reparse_auto.Memo)   # the automatic queue's archive read
     held: frozenset = frozenset()       # the replays the last cycle held back for a re-parse
     heights: object = field(default_factory=_height_state)     # replay_heights_remote.HeightState
+    feature_retry_after: dict = field(default_factory=dict)
 
     def failed(self, key: str, now: float) -> None:
         count, _ = self.tries.get(key, (0, 0.0))
@@ -357,7 +375,8 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 state.failed(key, now)
                 counts["dropped_revision"] += 1
                 continue
-            if not _matches_geometry(result, f.map_name, heights):
+            if (f.inputs is not None and result.get('geometry') != f.inputs.geometry) or \
+                    (f.inputs is None and not _matches_geometry(result, f.map_name, heights)):
                 state.failed(key, now)
                 counts["dropped_geometry"] += 1
                 continue
@@ -374,17 +393,19 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                     state.failed(key, now)
                 continue
             row = {"status": "ok", "data": base64.b64decode(result["data"]),
-                   "summary": base64.b64decode(result["summary"])}
+                   "summary": base64.b64decode(result["summary"]), 'geometry': result.get('geometry')}
         elif status == "failed" and job.get("error_kind") == "engine" and not f.gaps_only:
             # (A gaps-only task that fails as a whole says nothing about control, which is stored and ok:
             # it is asked again like a machine failure. The detector's own failure comes back inside an ok
             # result and is stored above.)
             row = {"status": "failed", "error": job.get("error") or "failed on the replay worker"}
         else:
-            state.failed(key, now)
+            if job.get('error_kind') != 'compat':
+                state.failed(key, now)
             counts["infra_failed"] += 1
             continue
-        outcome = store_round(session_factory, f.replay_id, f.round_number, f.fingerprint, row, require_current=True)
+        outcome = store_round(session_factory, f.replay_id, f.round_number, f.fingerprint, row, require_current=True,
+                              planned_inputs=f.inputs)
         counts["stored" if outcome == STORED else "skipped"] += 1
         if row["status"] == "failed" and outcome == STORED:
             counts["stored_failed"] += 1
@@ -444,11 +465,12 @@ def _sendable(state: State, now: float, rounds: list, *, kind: str, capable: boo
     return out
 
 
-def _send(session, client, state: State, now: float, counts: dict, todo: list, *, kind: str) -> bool:
+def _send(session, client, state: State, now: float, counts: dict, todo: list, *, kind: str, features_capable=False) -> bool:
     """Submits `todo` (from `_sendable`) in D2's order until the pool is full or the worker stops taking
     tasks. Returns whether sendable work was left."""
     keys = {(p.replay_id, p.round_number): key for key, p in todo}
     heights = control_heights.active_digests(session)
+    held_features = False
     for p in _order(session, [p for _, p in todo]):
         if len(state.in_flight) >= IN_FLIGHT:
             return True                      # sendable work is left: plan again next cycle
@@ -460,39 +482,56 @@ def _send(session, client, state: State, now: float, counts: dict, todo: list, *
             continue
         task = {"key": key, "map": p.map_name, "blob": base64.b64encode(row.data).decode("ascii"),
                 "link": {"sides": p.link["sides"], "db_deaths": p.link["db_deaths"]}}
-        features = (replay_control.geometry_inputs(p.map_name, heights) or {}).get("features")
+        pin = p.inputs
+        task['height_mode'] = pin.height_mode
+        features = pin.artifact_digest
         if features:       # only a map with enabled features: an absent key means no verification
+            if not features_capable:
+                held_features = True
+                continue
             task["features"] = features
+            task['inputs'] = pin.envelope
+            task['geometry'] = pin.geometry
         if expect_gaps:
             task["gaps"] = gaps_job(p.replay_id, p.round_number, p.fingerprint, p.map_name)
         if gaps_only:
             task["gaps_only"] = True
-        digest = heights.get(p.map_name)        # only the database's: a committed asset is in the worker's image
+        digest = pin.geometry.get('height')
         if digest:
             task["height"] = digest
         try:
-            try:
-                answer = client.submit(task)
-            except NeedsHeight:
-                asset = control_heights.asset_bytes(session, p.map_name, digest) if digest else None
-                if asset is None:
-                    counts["unreachable"] += 1
-                    return True
-                client.push_height(p.map_name, digest, asset)
-                counts["pushed"] += 1
-                answer = client.submit(task)
+            pushed = set()
+            for _ in range(3):
+                try:
+                    answer = client.submit(task)
+                    break
+                except NeedsHeight as missing:
+                    if missing.digest != digest or 'height' in pushed:
+                        raise Unreachable('worker requested an unplanned or repeated height')
+                    height_bytes = control_feature_artifacts.archived_height_bytes(session, features) if features \
+                        else replay_control.exact_height_bytes(session, p.map_name, digest)
+                    client.push_height(p.map_name, digest, height_bytes)
+                    pushed.add('height')
+                    counts['pushed'] += 1
+                except NeedsFeatures as missing:
+                    if missing.digest != features or 'features' in pushed:
+                        raise Unreachable('worker requested an unplanned or repeated artifact')
+                    client.push_features(control_feature_artifacts.load_artifact(session, features))
+                    pushed.add('features')
+            else:
+                raise Unreachable('worker inputs remain unavailable after bounded pushes')
         except WorkerBusy:
             counts["busy"] += 1
             return True
-        except (WorkerGone, Unreachable, NeedsHeight, Conflict, Rejected):   # the last two: a refused push
+        except (WorkerGone, Unreachable, fa.FeatureArtifactError, OSError, Conflict, Rejected):
             counts["unreachable"] += 1
             return True
         state.in_flight[key] = InFlight(answer["id"], p.replay_id, p.round_number, p.fingerprint, p.map_name, now,
-                                        expect_gaps=expect_gaps, gaps_only=gaps_only)
+                                        expect_gaps=expect_gaps, gaps_only=gaps_only, inputs=pin)
         counts["gaps_sent" if gaps_only else "sent"] += 1
         if not expect_gaps:
             counts["gaps_unavailable"] += 1
-    return False
+    return held_features
 
 
 def _submit(session, client, state: State, now: float, counts: dict, held: frozenset = frozenset(),
@@ -505,11 +544,17 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
     planned = [p for p in replay_control.plan(session) if p.computable and p.reason in ("missing", "stale")]
     todo = [p for p in planned if p.map_name not in held_maps]   # a map whose heights are being rebuilt waits for them
     # Read afresh every pass and never remembered: the worker deploys on its own, in either direction.
-    capable = _gaps_capable(client)
+    try:
+        health = client.health()
+    except (WorkerGone, WorkerBusy, Unreachable):
+        health = {}
+    capable = supports_gaps(health)
+    control_health = health.get('control') if isinstance(health, dict) else None
+    features_capable = isinstance(control_health, dict) and control_health.get('features') == fa.protocol_identity()
     state.last_planned = now
     state.last_found = _send(session, client, state, now, counts,
                              _sendable(state, now, todo, kind="control", capable=capable, held=held),
-                             kind="control")
+                             kind="control", features_capable=features_capable)
     # Control first; and without the capability gaps-only work waits, unplanned and uncounted.
     if not state.last_found and capable:
         # As the local command does: every round with its current fingerprint, then those whose control is ok and
@@ -517,7 +562,8 @@ def _submit(session, client, state: State, now: float, counts: dict, held: froze
         wanted = replay_gaps.plan_gaps(session, planned, replay_control.plan(session, force=True))
         wanted = [p for p in wanted if p.map_name not in held_maps]
         state.last_found = _send(session, client, state, now, counts,
-                                 _sendable(state, now, wanted, kind="gaps", held=held), kind="gaps")
+                                 _sendable(state, now, wanted, kind="gaps", held=held), kind="gaps",
+                                 features_capable=features_capable)
     if held_maps:
         state.last_found = True      # a plan that found only held rounds doesn't start the idle throttle
 
@@ -576,6 +622,8 @@ def cycle(session_factory, client, state: State, now: float | None = None, worke
                 rebuild.close()
         session = session_factory()   # opened after the pass: it reads the replay a settlement just committed
         try:
+            names = [name for name, in session.query(Replay.map_name).distinct()]
+            replay_control.prepare_discovered(session_factory, names, state.feature_retry_after, now)
             _submit(session, client, state, now, counts, held, held_maps)
         finally:
             session.rollback()

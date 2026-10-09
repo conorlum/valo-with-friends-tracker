@@ -51,7 +51,9 @@ def run(task: dict) -> dict:
                     "key": task.get("key")}
         source = height_job.BlobDir(folder, name)
         previous = geometry.height_cache_path(name, task["previous"]) if task.get("previous") else None
-        result = height_job.run(name, source, previous=previous)
+        from app.replays.map_feature_diagnostics import diagnostic_error
+        diagnostic = task.get('diagnostic') or diagnostic_error(name, 'worker diagnostic snapshot unavailable', code='diagnostic_unavailable')
+        result = height_job.run(name, source, previous=previous, diagnostic=diagnostic)
         expected = {row[0]: int(row[3]) for row in theirs["replays"]}
         if source.per_match() != expected:
             return {"status": "failed", "error_kind": "inputs", "key": task.get("key"),

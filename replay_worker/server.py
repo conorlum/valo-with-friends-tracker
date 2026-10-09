@@ -861,6 +861,8 @@ HEIGHT_DIGEST = re.compile(r"^[0-9a-f]{12}$")
 # is understood (replay_worker/control_job.py; the image ships app/gaps). A plain number here, never read
 # from the detector: this process imports none of it.
 GAPS_PROTOCOL = 1
+from app.replays import map_feature_artifacts as feature_artifacts
+_FEATURE_VERIFY_SLOTS = threading.BoundedSemaphore(2)
 CHILD_THREADS = {"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
 
 
@@ -873,6 +875,7 @@ class ControlJob:
     status: str = "queued"
     error: str | None = None
     error_kind: str | None = None
+    error_code: str | None = None
     result: dict | None = None
     created: float = field(default_factory=time.time)
     finished: float | None = None
@@ -883,6 +886,8 @@ class ControlJob:
         body = {"id": self.id, "key": self.key, "status": self.status}
         if self.error:
             body.update({"error": self.error, "error_kind": self.error_kind})
+            if self.error_code:
+                body['error_code'] = self.error_code
         if self.result is not None:
             body["result"] = self.result
         return body
@@ -899,6 +904,44 @@ def _child_setup(memory_mb: int):
             limit = memory_mb * 1024 * 1024
             resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
     return apply
+
+
+def verify_feature_upload(settings, artifact):
+    """Bounded heavy correspondence check; this server remains standard library only."""
+    height = None
+    if artifact.key.height_digest != 'flat':
+        path = height_path(settings, artifact.key.map_name, artifact.key.height_digest)
+        try:
+            height = base64.b64encode(path.read_bytes()).decode('ascii')
+        except OSError as exc:
+            raise feature_artifacts.FeatureArtifactMissing('upload the exact height first') from exc
+    request = json.dumps({'mode': 'verify', 'artifact': json.loads(feature_artifacts.encode_artifact(artifact)),
+                          'height': height}).encode('utf-8')
+    if len(request) > feature_artifacts.MAX_WIRE_BYTES:
+        raise feature_artifacts.FeatureArtifactCorrupt('verification request size limit')
+    env = dict(os.environ)
+    env.update(CHILD_THREADS)
+    env['PYTHONPATH'] = os.pathsep.join((str(WEBAPP), str(WEBAPP.parent)))
+    kwargs = {}
+    if os.name != 'nt':
+        kwargs['preexec_fn'] = _child_setup(settings.control_memory_mb)
+    with _FEATURE_VERIFY_SLOTS, tempfile.TemporaryFile() as output:
+        try:
+            process = subprocess.run([settings.control_cmd[0], '-m', 'app.control.feature_job'], input=request,
+                                     stdout=output, stderr=subprocess.DEVNULL, env=env, cwd=WEBAPP,
+                                     timeout=120, **kwargs)
+            if process.returncode or output.tell() > feature_artifacts.MAX_WIRE_BYTES:
+                raise feature_artifacts.FeatureArtifactCorrupt('feature verification child failed')
+            output.seek(0)
+            reply = json.load(output)
+            if not reply.get('ok'):
+                cls = feature_artifacts.UnsupportedFeatureCompiler if reply.get('code') == 'features_unsupported' \
+                    else feature_artifacts.FeatureArtifactCorrupt
+                raise cls(reply.get('reason') or 'feature correspondence failed')
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            if isinstance(exc, feature_artifacts.FeatureArtifactError):
+                raise
+            raise feature_artifacts.FeatureArtifactCorrupt(str(exc)) from exc
 
 
 def height_path(settings: Settings, map_name: str, digest: str) -> Path:
@@ -958,7 +1001,8 @@ class ControlRunner:
             if len(self.pending) >= self.settings.control_queue:
                 raise queue.Full
             job = ControlJob(uuid.uuid4().hex, key, str(task["map"]), json.dumps(task).encode("utf-8"),
-                             warm_key=f"{task['map']}:{task.get('height') or ''}")
+                             warm_key=f"{task['map']}:{task.get('height') or ''}" +
+                             (f":{task['features']}" if task.get('features') else ''))
             self.jobs[job.id] = job
             self.by_key[key] = job.id
             self.pending.append(job.id)
@@ -1074,6 +1118,7 @@ class ControlRunner:
         if os.name != "nt":
             kwargs["preexec_fn"] = _child_setup(settings.control_memory_mb)
         status, error, kind, result = "failed", None, "infra", None
+        error_code = None
         process = None
         try:
             # Started outside the lock (preexec_fn must not run while this thread holds a lock another
@@ -1091,6 +1136,7 @@ class ControlRunner:
             else:
                 error = answer.get("error") or f"control child exited {process.returncode}"
                 kind = answer.get("error_kind") or "infra"
+                error_code = answer.get('error_code')
         except subprocess.TimeoutExpired:
             error = f"control timed out after {timeout:g} s"
         except (OSError, ValueError) as failure:
@@ -1128,6 +1174,7 @@ class ControlRunner:
                 self.pending.insert(0, job.id)
             else:
                 job.status, job.error, job.error_kind, job.result = status, error, kind, result
+                job.error_code = error_code
                 job.finished = time.time()
                 job.task = b""
                 # Past loading (ok, or the round's own failure): the map's cache is there. Any machine
@@ -1188,7 +1235,7 @@ class HeightBuilds:
 
     # ---- what the web app asks for
 
-    def open(self, key: str, map_name: str, rounds: int, manifest) -> dict:
+    def open(self, key: str, map_name: str, rounds: int, manifest, *, diagnostic=None) -> dict:
         if not MAP_NAME.match(str(map_name)) or type(rounds) is not int or rounds < 1 or not isinstance(manifest, dict):
             raise ValueError("not a height build")
         with self.lock:
@@ -1203,6 +1250,11 @@ class HeightBuilds:
                 raise OverflowError("too many builds are collecting")
             build = {"id": uuid.uuid4().hex, "key": key, "map": map_name, "expected": rounds, "manifest": manifest,
                      "received": {}, "job": None, "touched": time.time(), "ended": None}
+            if diagnostic is not None:
+                from app.replays.map_feature_diagnostics import MAX_DIAGNOSTIC_BYTES, diagnostic_error
+                if len(json.dumps(diagnostic).encode()) > MAX_DIAGNOSTIC_BYTES:
+                    diagnostic = diagnostic_error(map_name, 'diagnostic snapshot too large', code='diagnostic_unavailable')
+                build['diagnostic'] = json.loads(json.dumps(diagnostic))
             (self.root / build["id"]).mkdir()
             self.builds[build["id"]] = build
             return self._public(build)
@@ -1251,6 +1303,8 @@ class HeightBuilds:
                                          expected=build["expected"])
                 task = {"key": build["key"], "map": build["map"], "dir": str(self.root / build["id"]),
                         "manifest": build["manifest"]}
+                if build.get('diagnostic') is not None:
+                    task['diagnostic'] = build['diagnostic']
                 if previous and HEIGHT_DIGEST.match(str(previous)):
                     task["previous"] = str(previous)
                 build["job"] = self.control.submit_build(build["key"], build["map"], task).id
@@ -1273,7 +1327,7 @@ class HeightBuilds:
                 state = self._state(build)
                 if state in out:
                     out[state].append(build["map"])
-            return {**{k: sorted(v) for k, v in out.items()}, "spool_bytes": self._spooled()}
+            return {**{k: sorted(v) for k, v in out.items()}, "spool_bytes": self._spooled(), 'diagnostics_protocol': 1}
 
     # ---- housekeeping
 
@@ -1324,6 +1378,8 @@ class HeightBuilds:
         body = {"id": build["id"], "key": build["key"], "map": build["map"], "status": self._state(build),
                 "received": len(build["received"]) if build["ended"] is None else build["expected"],
                 "expected": build["expected"]}
+        if build.get('diagnostic') is not None:
+            body['diagnostic'] = build['diagnostic']
         job = self.control.get(build["job"]) if build["job"] else None
         if build["job"] and job is None:
             body["error"] = "the build was forgotten"
@@ -1365,12 +1421,37 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             self.end_headers()
             self.wfile.write(data)
 
+        def _control_off(self):
+            # Closing with an unread POST body can reset TCP before the client receives the 404.
+            # Drain only an admitted-size body, with bounded reads and an overall time limit.
+            limit = feature_artifacts.MAX_WIRE_BYTES if self.path == '/features' else worker.settings.control_max_bytes
+            timeout = self.connection.gettimeout()
+            try:
+                remaining = int(self.headers.get('Content-Length', '0'))
+                if 0 <= remaining <= limit:
+                    deadline = time.monotonic() + 2
+                    while remaining:
+                        wait = deadline - time.monotonic()
+                        if wait <= 0:
+                            break
+                        self.connection.settimeout(wait)
+                        chunk = self.rfile.read1(min(65536, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+            except (ValueError, OSError):
+                pass
+            finally:
+                self.connection.settimeout(timeout)
+            return self._send(HTTPStatus.NOT_FOUND, {'error': 'map control is off on this worker'})
+
         def do_GET(self):  # noqa: N802
             if self.path == "/health":
                 body = {"ok": True, "queued": worker.queue.qsize(),
                         "limits": {"timeout_s": worker.settings.timeout_s, "max_bytes": worker.settings.max_bytes,
                                    "queue_size": worker.settings.queue_size, "memory_cap": worker.memory_cap}}
                 body["control"] = {"enabled": bool(control and control.enabled), "gaps_protocol": GAPS_PROTOCOL,
+                                   "features": feature_artifacts.protocol_identity(),
                                    **(control.counts() if control else {})}
                 body["archive"] = worker.archive_status()
                 body["recipe"] = worker.recipe
@@ -1411,6 +1492,8 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
                 return self._height_build()
             if self.path == "/heights":
                 return self._heights()
+            if self.path == '/features':
+                return self._features()
             if self.path == "/control":
                 return self._control()
             if self.path.startswith("/jobs/") and self.path.endswith("/ack"):
@@ -1507,7 +1590,7 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
 
         def _control(self):
             if control is None or not control.enabled:
-                return self._send(HTTPStatus.NOT_FOUND, {"error": "map control is off on this worker"})
+                return self._control_off()
             length = self.headers.get("Content-Length")
             if length is None:
                 return self._send(HTTPStatus.LENGTH_REQUIRED, {"error": "a Content-Length is required"})
@@ -1525,15 +1608,38 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
             if digest and not (MAP_NAME.match(str(task["map"])) and HEIGHT_DIGEST.match(str(digest))
                                and height_path(control.settings, str(task["map"]), str(digest)).is_file()):
                 return self._send(HTTPStatus.CONFLICT, {"error": "height asset missing", "height": digest})
+            if task.get('features'):
+                try:
+                    feature_artifacts.load_cached_artifact(control.settings.control_cache_dir / 'features', task['features'])
+                except feature_artifacts.FeatureArtifactError:
+                    return self._send(HTTPStatus.CONFLICT, {'code': 'needs_features', 'digest': task['features']})
             try:
                 job = control.submit(task)
             except queue.Full:
                 return self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "the control queue is full"})
             return self._send(HTTPStatus.ACCEPTED, {"id": job.id, "status": job.status})
 
+        def _features(self):
+            if control is None or not control.enabled:
+                return self._control_off()
+            length = self.headers.get('Content-Length')
+            if length is not None and int(length) > feature_artifacts.MAX_WIRE_BYTES:
+                self.close_connection = True
+                return self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {'error': 'feature artifact too large'})
+            body = self._json(limit=feature_artifacts.MAX_WIRE_BYTES)
+            if body is None:
+                return self._send(HTTPStatus.BAD_REQUEST, {'error': 'invalid or oversized feature artifact'})
+            try:
+                item = feature_artifacts.decode_artifact(json.dumps(body).encode('utf-8'))
+                feature_artifacts.store_cached_artifact(control.settings.control_cache_dir / 'features', item,
+                                                        lambda artifact: verify_feature_upload(control.settings, artifact))
+            except feature_artifacts.FeatureArtifactError as exc:
+                return self._send(HTTPStatus.BAD_REQUEST, feature_artifacts.feature_failure(exc))
+            return self._send(HTTPStatus.OK, {'stored': True, 'digest': item.digest})
+
         def _heights(self):
             if control is None or not control.enabled:
-                return self._send(HTTPStatus.NOT_FOUND, {"error": "map control is off on this worker"})
+                return self._control_off()
             length = self.headers.get("Content-Length")
             if length is not None and int(length) > control.settings.control_max_bytes:
                 self.close_connection = True
@@ -1553,14 +1659,15 @@ def make_handler(worker: Worker, control: ControlRunner | None = None, heights: 
 
         def _height_build(self):
             if heights is None or control is None or not control.enabled:
-                return self._send(HTTPStatus.NOT_FOUND, {"error": "map control is off on this worker"})
+                return self._control_off()
             body = self._json(limit=control.settings.control_max_bytes)
             if body is None:
                 return self._send(HTTPStatus.BAD_REQUEST, {"error": "not JSON, or too large"})
             parts = self.path[len("/heights/build"):].strip("/").split("/")
             try:
                 if parts == [""]:
-                    made = heights.open(str(body["key"]), str(body["map"]), body["rounds"], body.get("manifest"))
+                    made = heights.open(str(body["key"]), str(body["map"]), body["rounds"], body.get("manifest"),
+                                        diagnostic=body.get('diagnostic'))
                     return self._send(HTTPStatus.ACCEPTED, made)
                 if len(parts) == 2 and parts[1] == "rounds":
                     if not isinstance(body.get("rounds"), list):

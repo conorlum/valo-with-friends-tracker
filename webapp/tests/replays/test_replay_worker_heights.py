@@ -74,6 +74,23 @@ def spool(control) -> Path:
     return control.settings.temp_root / "height_builds"
 
 
+def test_diagnostic_snapshot_is_admitted_once_and_survives_same_key_resume(worker):
+    from app.replays.map_feature_diagnostics import diagnostic_envelope
+    first = diagnostic_envelope('Sunset', b'{"maps":{"Sunset":{}}}')
+    changed = diagnostic_envelope('Sunset', b'{"maps":{"Sunset":{"notes":"edited"}}}')
+    control, builds, _ = worker()
+    opened = builds.open('same-evidence', 'Sunset', 1, MANIFEST, diagnostic=first)
+    resumed = builds.open('same-evidence', 'Sunset', 1, MANIFEST, diagnostic=changed)
+    assert resumed['id'] == opened['id']
+    assert resumed['diagnostic']['raw_source_sha256'] == first['raw_source_sha256']
+    builds.add(opened['id'], rounds(1))
+    builds.start(opened['id'], None)
+    job = next(iter(control.jobs.values()))
+    if job.task:
+        assert json.loads(job.task)['diagnostic'] == first
+    assert finished(builds, opened['id'])['diagnostic'] == first
+
+
 def test_rounds_are_spooled_and_the_build_reads_them(worker):
     control, builds, _ = worker()
     job = builds.open("heights:Sunset:abc", "Sunset", 3, MANIFEST)
