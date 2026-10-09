@@ -15,6 +15,7 @@ import pytest
 from app.control import engine as ce
 from app.control import geometry as cg
 from app.control import heights as hc
+from app.control import mollies as mo
 from app.control import topology as ct
 from app.control import utility as ut
 from app.control.encode import checkpoint_ticks, encode_data, encode_summary
@@ -52,8 +53,8 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # 9: player state (docs/superpowers/specs/2026-10-06-replay-player-state-design.md): utility.json's
           # `molly` figures (radius and burn seconds per sustained damaging zone). 8 was released with main, so
           # this bump lands with the figures, before the blind and molly rules. Unreleased, so re-pinned in place
-          # as those steps land.
-          9: "f89119b9079952c4"}
+          # as those steps land. P08 added app/control/mollies.py (the molly allow-list) to the digest.
+          9: "5d4df69506e54bf8"}
 
 
 def _constants_digest() -> str:
@@ -71,7 +72,8 @@ def _constants_digest() -> str:
         return value
 
     constants = {}
-    for module in (ce, cg, hc, ct, ut):     # ut since revision 7: the ability figures (utility.json) and rules
+    # ut since revision 7: the ability figures (utility.json) and rules; mo since 9: the molly allow-list
+    for module in (ce, cg, hc, ct, ut, mo):
         for name, value in sorted(vars(module).items()):
             if name.isupper() and not name.startswith("_") and name != "CONTROL_REVISION":
                 if isinstance(value, (int, float, str, bool, tuple, list, dict, set, frozenset, np.ndarray)):
