@@ -443,7 +443,7 @@
   function enableSliding(id) {
     var f = F.find(mf(), id), names = f && (f.states || []).map(function(s) {return s.name;});
     if (!names || names.indexOf("open") < 0 || names.indexOf("closed") < 0 || f.sliding) return false;
-    commit(F.setField(mf(), id, ["sliding"], {open_state: "open", closed_state: "closed", open_center: null}), true);
+    commit(F.setField(mf(), id, ["sliding"], {axis:"unresolved",open_state: "open", closed_state: "closed", open_center: null}), true);
     return true;
   }
   function slidingPreview(f) {
@@ -454,7 +454,8 @@
     if (fraction === null) return null;
     var cells = F.slidingCoverage(f, fraction);
     if (!cells) return null;
-    return {fraction: fraction, cells: cells, pose: F.slidingPose(f, fraction)};
+    return {fraction: fraction, cells: cells, pose: F.slidingPose(f, fraction), vertical:f.sliding.axis === "vertical",
+            bounds:F.slidingVerticalBounds(f,fraction)};
   }
 
   // The preview's masks with every feature in its shown state (TaggerCore composeFeatures = features.py
@@ -502,12 +503,17 @@
       if (slide) {
         var closed = F.slidingClosed(f);
         drawGeom(closed.footprint, "rgba(76,201,240,0.35)", null, 1);
-        drawGeom(f.sliding.open_center, colour);
-        drawGeom(slide.pose, "rgba(76,201,240,0.65)", null, 2);
-        var packed = T.packPaint(slide.cells);
-        if (packed) drawGeom({type: "paint", cells: packed}, colour, "rgba(229,72,77,0.65)");
-        var centre = F.slidingCenter(f);
-        drawGeom({type:"point",uv:centre}, "rgba(255,214,0,0.9)");
+        if (slide.vertical) {
+          drawGeom(slide.pose,"rgba(190,110,255,0.95)",null,3);
+          if (L.sight) (closed.sight || []).forEach(function(o) {drawGeom(o.geometry,"rgba(190,110,255,0.65)",null,2);});
+        } else {
+          drawGeom(f.sliding.open_center, colour);
+          drawGeom(slide.pose, "rgba(76,201,240,0.65)", null, 2);
+          var packed = T.packPaint(slide.cells);
+          if (packed) drawGeom({type: "paint", cells: packed}, colour, "rgba(229,72,77,0.65)");
+          var centre = F.slidingCenter(f);
+          drawGeom({type:"point",uv:centre}, "rgba(255,214,0,0.9)");
+        }
       }
       var edits = f.base_edits || {};
       if (L.base && edits.potential_ground) drawGeom(edits.potential_ground, "rgba(48,164,108,0.9)", "rgba(48,164,108,0.3)", 1);
@@ -870,20 +876,50 @@
     box.appendChild(tr);
     if (f.sliding) {
       var sliding = fieldset("Sliding panel (preview)");
-      sliding.appendChild(document.createTextNode("The closed footprint is the panel and doorway. Place the open centre where the yellow closed-centre marker moves when fully open. Red cells show the panel inside the doorway. This previews geometry; it does not verify placement or replay behavior."));
+      var vertical = f.sliding.axis === "vertical";
+      var horizontal = f.sliding.axis === undefined || f.sliding.axis === "horizontal";
+      sliding.appendChild(row("Motion direction",selectEl([["unresolved","choose direction"],["horizontal","across the minimap"],["vertical","descends from above"]],f.sliding.axis || "horizontal",
+        function(v) {edit(f.id,["sliding","axis"],v);} )));
+      sliding.appendChild(document.createTextNode(vertical ? "The panel descends through a fixed doorway. The minimap outline stays fixed; the side view shows the shrinking gap. Approximate player heights do not resolve metre measurements. The flat composed overlay cannot test seeing beneath this panel." : horizontal ? "The closed footprint is the panel and doorway. Place the open centre where the yellow closed-centre marker moves when fully open. Red cells show the panel inside the doorway. This previews geometry; it does not verify placement or replay behavior." : "Choose the observed direction before describing panel travel."));
       ["open_state", "closed_state"].forEach(function(key) {
         sliding.appendChild(row(key === "open_state" ? "Open state" : "Closed state", selectEl(names.map(function(n) {return [n,n];}), f.sliding[key],
           function(v) {edit(f.id, ["sliding",key],v);}))); });
-      sliding.appendChild(button("Place open panel centre", function() {ui.placing = "slide-open"; setTool("point");}));
-      F.slidingProblems(f).forEach(function(message) {sliding.appendChild(row("Needs input",document.createTextNode(message)));});
-      var openCoverage = F.slidingCoverage(f,0);
+      if (horizontal) sliding.appendChild(button("Place open panel centre", function() {ui.placing = "slide-open"; setTool("point");}));
+      F.slidingProblems(f).concat(F.slidingVerticalProblems(f)).forEach(function(message) {sliding.appendChild(row("Needs input",document.createTextNode(message)));});
+      var openCoverage = horizontal && F.slidingCoverage(f,0);
       if (openCoverage && openCoverage.some(function(cell) {return !!cell;}))
         sliding.appendChild(row("Needs input",document.createTextNode("The panel still covers part of the doorway at fully open. Move the open centre farther along its travel direction.")));
+      var elevation, panel, gapLabel;
+      if (vertical) {
+        sliding.appendChild(row("Open clearance (verified metres above floor)",valueEditor(f.sliding.open_clearance,"m",function(v) {
+          edit(f.id,["sliding","open_clearance"],Object.assign({},f.sliding.open_clearance || {},v)); })));
+        var estimate = document.createElement("input"); estimate.type="number"; estimate.min="0"; estimate.step="0.1";
+        estimate.value=String((f.sliding.open_clearance || {}).estimate_player_heights || "");
+        estimate.addEventListener("change",function() {var v=+estimate.value; if (Number.isFinite(v) && v>0) edit(f.id,["sliding","open_clearance","estimate_player_heights"],v);});
+        sliding.appendChild(row("Approximate open clearance (player heights)",estimate));
+        sliding.appendChild(row("Verified movement clearance (metres)",valueEditor(f.sliding.movement_clearance,"m",function(v) {edit(f.id,["sliding","movement_clearance"],v);} )));
+        sliding.appendChild(document.createTextNode("Movement under a partly lowered door stays pending until its clearance threshold is verified. Closed sight bounds must be above the floor's ground."));
+        elevation=document.createElement("div"); elevation.id="slideElevation"; elevation.style.position="relative"; elevation.style.width="180px"; elevation.style.height="120px";
+        elevation.style.background="rgba(76,201,240,0.15)"; elevation.style.border="2px solid #aaa"; elevation.setAttribute("role","img");
+        panel=document.createElement("div"); panel.style.position="absolute"; panel.style.top="0"; panel.style.width="100%"; panel.style.background="rgba(229,72,77,0.7)";
+        elevation.appendChild(panel); gapLabel=document.createElement("span"); gapLabel.id="slideGapLabel";
+        sliding.appendChild(elevation); sliding.appendChild(gapLabel);
+      }
       var closeRow = (f.transitions || []).find(function(r) {return r.motion && r.to === f.sliding.closed_state;});
       var duration = closeRow && F.known(closeRow.motion.duration), validDuration = Number.isFinite(duration) && duration > 0;
       var current = slidingPreview(f), fraction = current ? current.fraction : 0;
       var slideLabel = document.createElement("span"); slideLabel.id = "slideLabel";
-      function labelClosure(frac) {slideLabel.textContent = (validDuration ? (frac*duration).toFixed(2) + " / " + duration + " s — " : "") + Math.round(frac*100) + "% closed";}
+      function labelClosure(frac) {
+        slideLabel.textContent = (validDuration ? (frac*duration).toFixed(2) + " / " + duration + " s — " : "") + Math.round(frac*100) + "% closed";
+        if (vertical) {
+          var band=F.slidingVerticalBounds(f,frac), estimated=(f.sliding.open_clearance || {}).estimate_player_heights;
+          var gap=band && F.known(band.bottom), top=band && F.known(band.top);
+          panel.style.height=String(band ? (1-gap/top)*100 : frac*100)+"%";
+          gapLabel.textContent=band ? "Gap above floor: "+gap.toFixed(2)+" m" :
+            (Number.isFinite(estimated) && estimated>0 ? "Approximate proportional gap: "+(estimated*(1-frac)).toFixed(2)+" player heights; metres unresolved" : "Proportional sketch only; clearance unresolved");
+          elevation.setAttribute("aria-label",gapLabel.textContent);
+        }
+      }
       labelClosure(fraction);
       if (!current) slideLabel.textContent = "Position unknown. Scrub to preview a pose.";
       var closeSlider = document.createElement("input"); closeSlider.type = "range"; closeSlider.min = "0"; closeSlider.max = "100"; closeSlider.step = "1";

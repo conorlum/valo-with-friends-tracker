@@ -334,9 +334,12 @@ def compose_masks(sight_px: np.ndarray, walk_px: np.ndarray, mf: dict, states: d
     current state drawn in: a blocking footprint removes walking (and blocks sight when the state blocks
     sight), and each sight occluder's line is drawn as sight-blocking cells. Flat and all-floor: a picture
     for the page, which scripts/control_tagger_core.js `Features.composeFeatures` matches bit for bit; the
-    engine never reads it (it uses `movement_blocks` and bounded occluders)."""
+    engine never reads it (it uses `movement_blocks` and bounded occluders). Sliding models use a separate
+    motion preview and are excluded: flat masks cannot demonstrate seeing below a descending panel."""
     sight, walk = sight_px.copy(), walk_px.copy()
     for f in mf.get("features") or []:
+        if f.get('sliding') is not None:
+            continue  # Separate motion preview: a flat mask cannot represent seeing under a descending panel.
         s = state_of(f, states)
         if s is None:
             continue
@@ -561,8 +564,8 @@ def behaviour_problems(feature: dict) -> list[str]:
     if "sliding" in feature:
         # The authoring preview is available; no engine consumer samples moving masks yet. Never silently
         # compile a sliding door as one static "closing" footprint, even for an explicitly enabled bundle.
-        from app.replays.map_feature_motion import geometry_problems
-        out += [f"{fid}: {p}" for p in geometry_problems(feature)]
+        from app.replays.map_feature_motion import geometry_problems, vertical_problems
+        out += [f"{fid}: {p}" for p in geometry_problems(feature) + vertical_problems(feature)]
         out.append(f"{fid}: sliding geometry requires a runtime motion consumer (preview only)")
     for row in feature.get("transitions") or []:
         rid = row.get("id")

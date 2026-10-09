@@ -191,7 +191,8 @@ def test_page_enable_place_scrub_undo_export_and_sandbox_clock():
       A.ui.sel='feature-1'; A.enableSliding('feature-1');
       const enabled=JSON.parse(JSON.stringify(F.find(A.fe.Ascent.mf,'feature-1')));
       A.undo(); const undone=!F.find(A.fe.Ascent.mf,'feature-1').sliding;
-      A.redo(); A.ui.placing='slide-open'; A.setTool('point');
+      A.redo(); A.commit(F.setField(A.fe.Ascent.mf,'feature-1',['sliding','axis'],'horizontal'),true);
+      A.ui.placing='slide-open'; A.setTool('point');
       A.placePoint([7000*1024/10000,5000*1024/10000]);
       function descendants(el) {return [el,...(el.children || []).flatMap(descendants)];}
       const controls=descendants(page.el('featProps'));
@@ -207,6 +208,7 @@ def test_page_enable_place_scrub_undo_export_and_sandbox_clock():
       return {enabled,undone,half,label,moving,broken,reset,mapCleared,exported};
     }''',{'data':data})
     assert got['enabled']['sliding']['open_center'] is None and got['undone']
+    assert got['enabled']['sliding']['axis'] == 'unresolved'
     assert got['half'] == .5 and got['label'] == '2.50 / 5 s — 50% closed'
     assert got['moving'] == .5 and got['broken'] is None and got['reset'] == 0
     assert got['mapCleared']

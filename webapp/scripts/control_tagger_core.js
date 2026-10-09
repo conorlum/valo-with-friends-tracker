@@ -1024,7 +1024,7 @@
       });
       var rot = f.rotation;
       if (f.sliding !== undefined) {
-        slidingProblems(f).forEach(function(message) { warn(fid + ".sliding", "motion_incomplete", message); });
+        slidingProblems(f).concat(slidingVerticalProblems(f)).forEach(function(message) { warn(fid + ".sliding", "motion_incomplete", message); });
       }
       if ((f.capabilities || []).indexOf("rotating") >= 0) {
         if (!isObj(rot) || rot.pivot === undefined || rot.pivot === null || rot.panel === undefined || rot.panel === null)
@@ -1257,6 +1257,7 @@
     }
     (mf.features || []).forEach(function (f) {
       if (placement && (!placement[f.id] || !placement[f.id].ok)) return;
+      if (f.sliding !== undefined && f.sliding !== null) return; // Separate motion/height preview.
       var st = stateOf(f, states);
       if (!st) return;
       if (st.footprint) {
@@ -1389,7 +1390,7 @@
   // The twin of features.py `rotation_pose` (coordinates agree to rounding: cos/sin may differ in the last bit).
   function slidingClosed(feature) {
     var name = (feature.sliding || {}).closed_state;
-    return (feature.states || []).find(function(s) {return s.name === name;}) || null;
+    return (Array.isArray(feature.states) ? feature.states : []).find(function(s) {return isObj(s) && s.name === name;}) || null;
   }
   function slidingCenter(feature) {
     var points = slidingClosed(feature).footprint.uv;
@@ -1406,6 +1407,14 @@
     var closed = slidingClosed(feature), panel = closed && closed.footprint;
     if (!panel || ["polygon", "polyline"].indexOf(panel.type) < 0 || geometryProblems(panel).length)
       return ["draw a valid closed polygon or polyline footprint first"];
+    var axis = slide.axis === undefined ? "horizontal" : slide.axis;
+    if (["horizontal", "vertical"].indexOf(axis) < 0)
+      return ["choose whether the panel slides across the map or descends from above"];
+    if (axis === "vertical") {
+      if ((closed.sight || []).some(function(o) {return !o.geometry || ["polygon","polyline"].indexOf(o.geometry.type)<0 || geometryProblems(o.geometry).length;}))
+        return ["draw valid closed sight edges for the descending panel"];
+      return [];
+    }
     if (!slide.open_center || slide.open_center.type !== "point" || geometryProblems(slide.open_center).length)
       return ["open panel centre unresolved"];
     if ((closed.sight || []).length) return ["separate closed sight edges are not supported by the sliding panel preview"];
@@ -1417,6 +1426,7 @@
   function slidingPose(feature, closure) {
     if (typeof closure !== "number" || !Number.isFinite(closure) || slidingProblems(feature).length) return null;
     closure = Math.min(Math.max(closure,0),1);
+    if (feature.sliding.axis === "vertical") return clone(slidingClosed(feature).footprint);
     var panel = slidingClosed(feature).footprint, centre = slidingCenter(feature), opened = feature.sliding.open_center.uv;
     var offset = [0,1].map(function(i) {return (opened[i] - centre[i]) * (1 - closure);});
     return Object.assign({}, panel, {uv: panel.uv.map(function(p) {return [p[0]+offset[0],p[1]+offset[1]];})});
@@ -1438,6 +1448,38 @@
       return motion.to === closed ? progress : 1-progress;
     }
     return state.state === opened ? 0 : state.state === closed ? 1 : null;
+  }
+
+  function knownMetres(value) {
+    var v = known(value);
+    return Number.isFinite(v) && value.unit === "m" ? v : null;
+  }
+  function slidingVerticalProblems(feature) {
+    if ((feature.sliding || {}).axis !== "vertical") return [];
+    var height = knownMetres(feature.sliding.open_clearance), problems = [], closed = slidingClosed(feature);
+    if (height === null || height <= 0)
+      problems.push("open clearance in metres unresolved (player-height estimate is not a metre measurement)");
+    if (!closed) return problems;
+    var primary = closed.sight_bounds || {}, primaryLo = knownMetres(primary.bottom);
+    var entries = [primary].concat((closed.sight || []).map(function(o) {return o.bounds || {};}));
+    for (var i=0;i<entries.length;i++) {
+      var b = entries[i], lo = knownMetres(b.bottom), hi = knownMetres(b.top);
+      if (b.ref !== "ground" || lo === null || hi === null || !(0 <= lo && lo < hi)) {
+        problems.push("descending panel needs finite ground-relative bottom/top bounds"); break;
+      }
+      if (height !== null && primaryLo !== null && lo + height - primaryLo < hi) {
+        problems.push("fully open clearance must reach the top of every doorway sight blocker"); break;
+      }
+    }
+    return problems;
+  }
+  function slidingVerticalBounds(feature, closure, bounds) {
+    if (slidingProblems(feature).length || slidingVerticalProblems(feature).length || !Number.isFinite(closure) || feature.sliding.axis !== "vertical") return null;
+    var primary = slidingClosed(feature).sight_bounds, target = bounds || primary;
+    var lo = knownMetres(target.bottom), hi = knownMetres(target.top);
+    if (target.ref !== "ground" || lo === null || hi === null || !(0 <= lo && lo < hi)) return null;
+    var offset = (knownMetres(feature.sliding.open_clearance) - knownMetres(primary.bottom)) * (1 - Math.min(Math.max(closure,0),1));
+    return Object.assign({},target,{bottom:{status:"known",value:Math.min(lo+offset,hi),unit:"m"},top:{status:"known",value:hi,unit:"m"}});
   }
 
   function rotationPose(feature, fraction) {
@@ -1693,6 +1735,7 @@
     rotationPose: rotationPose, mapSummary: mapSummary,
     slidingClosed: slidingClosed, slidingCenter: slidingCenter, slidingProblems: slidingProblems,
     slidingPose: slidingPose, slidingCoverage: slidingCoverage, slidingClosureAt: slidingClosureAt,
+    slidingVerticalProblems: slidingVerticalProblems, slidingVerticalBounds: slidingVerticalBounds,
     importCatalogue: importCatalogue, diffCatalogues: diffCatalogues,
     exportCatalogue: exportCatalogue,
     SCHEMA_VERSION: SCHEMA_VERSION, UV_MAX: UV_MAX, emptyMf: emptyMf, checkVersion: checkVersion, validate: validate, nextNumber: nextNumber, allocate: allocate,
