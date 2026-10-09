@@ -101,6 +101,7 @@ def test_midwall_without_the_blind_rule_and_exact_intervals_is_its_old_reference
     """The move is P07's and nothing else's: with the old interval reading and the blind rule switched off, the
     engine gives the pre-P07 bytes again."""
     monkeypatch.setattr(ce.RoundInputs, "_blinds", _pre_p07_blinds)
+    _pre_d11_nearsight(monkeypatch)
     for rule in ("credited", "contributes", "remembers"):
         monkeypatch.setattr(ce, rule, lambda h: True)
     monkeypatch.setattr(ce, "device_sees", lambda kind, blind: True)
@@ -141,9 +142,33 @@ def test_midwall_without_the_molly_rule_is_its_p07_reference(monkeypatch):
     """The second move is P07a's and nothing else's: with the round's molly read as nothing, the engine gives W9's
     bytes again."""
     monkeypatch.setattr(ce.RoundInputs, "_mollies", lambda self, util: None)
+    _pre_d11_nearsight(monkeypatch)
     geo, blob, link = reference_rounds()["midwall"]
     assert ref.digest_round(ce.compute_round(blob, geo, link), blob) == MIDWALL_BEFORE_P07A
     assert REFERENCE["midwall"] != MIDWALL_BEFORE_P07A
+
+
+# ---------------------------------------------------------------- the midwall move for nearsight (D11, 2026-10-09)
+
+# `midwall`'s digests after P07a and before D11's change (W10's re-record).
+MIDWALL_BEFORE_D11 = {"data": "12c79de24d1d2ba6", "summary": "a5741819229a66d0"}
+
+
+def _pre_d11_nearsight(monkeypatch):
+    """Nearsight as it was before the owner's D11 change: a 4 m bubble, and the nearsighted still hear."""
+    from app.control import utility
+
+    monkeypatch.setattr(ce, "NEARSIGHT_RADIUS_M", 4.0)
+    monkeypatch.setattr(utility, "listens", lambda rnd, s, t: rnd.alive(s, t))
+
+
+def test_midwall_without_the_nearsight_change_is_its_p07a_reference(monkeypatch):
+    """The third move is D11's and nothing else's: B5 is nearsighted over [4.2, 5.2); with the 4 m bubble and hearing
+    back, the engine gives W10's bytes again."""
+    _pre_d11_nearsight(monkeypatch)
+    geo, blob, link = reference_rounds()["midwall"]
+    assert ref.digest_round(ce.compute_round(blob, geo, link), blob) == MIDWALL_BEFORE_D11
+    assert REFERENCE["midwall"] != MIDWALL_BEFORE_D11
 
 
 def test_midwall_molly_changes_nothing_before_it_burns(monkeypatch):

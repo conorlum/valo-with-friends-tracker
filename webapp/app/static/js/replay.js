@@ -144,7 +144,7 @@
     [/^Rift_X_GlobalWall$/, { ability: "Astral Form / Cosmic Divide", shape: "line", dir: "along", full: true, label: "Cosmic Divide" }],
     [/^Rift_X_Markers$/, { ability: "Astral Form / Cosmic Divide", shape: "badge", small: true, unlisted: true, label: "Astra star" }],
     // Gekko: globules are what's left to reclaim.
-    [/^Aggrobot_C_ExplodeyPatch$/, { ability: "Mosh Pit", shape: "area", r: 450 }],
+    [/^Aggrobot_C_ExplodeyPatch$/, { ability: "Mosh Pit", shape: "area", r: 550 }],
     [/^Aggrobot_SeekerNade$/, { ability: "Wingman", shape: "badge" }],
     [/^Aggrobot_RollyPolly$/, { ability: "Thrash", shape: "badge" }],
     [/^Aggrobot_(X_)?Reclaim_Orb/, { ability: "Wingman", shape: "badge", small: true, unlisted: true, label: "Gekko globule" }],

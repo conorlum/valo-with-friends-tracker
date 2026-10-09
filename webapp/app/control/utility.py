@@ -359,11 +359,17 @@ OMEN_ULT = "Wraith_X_GlobalTeleport_Intention"
 WAYLAY_ANCHOR = "Terra_E_RewindTime_RewindTarget"
 
 
+def listens(rnd, s: int, t: float) -> bool:
+    """Whether player `s` can hear at t: alive and not nearsighted (a nearsight deafens; D11, changed 2026-10-09:
+    "deafened players cant hear for like omen ult or other things")."""
+    return rnd.alive(s, t) and not any(a <= t < b for a, b in rnd.nearsight.get(s, ()))
+
+
 def heard(rnd, side: str, t: float, x: float, y: float, range_m: float) -> bool:
-    """Whether a living player of `side` is within range_m of (x, y) px at t (walls ignored, as for footsteps)."""
+    """Whether a listening player of `side` is within range_m of (x, y) px at t (walls ignored, as for footsteps)."""
     r = range_m / rnd.geo.m_per_px
     for s, team in rnd.team.items():
-        if team != side or not rnd.alive(s, t):
+        if team != side or not listens(rnd, s, t):
             continue
         p = rnd.pos(s, t)
         if p is not None and (p[0] - x) ** 2 + (p[1] - y) ** 2 <= r * r:
@@ -372,12 +378,12 @@ def heard(rnd, side: str, t: float, x: float, y: float, range_m: float) -> bool:
 
 
 def outside_hearing(rnd, side: str, t: float, range_m: float) -> np.ndarray:
-    """The walkable nodes no living player of `side` hears from at t: everywhere they could have gone unheard."""
+    """The walkable nodes no listening player of `side` hears from at t: everywhere they could have gone unheard."""
     geo = rnd.geo
     out = geo.walk_n.copy()
     r = range_m / geo.m_per_px
     for s, team in rnd.team.items():
-        if team != side or not rnd.alive(s, t):
+        if team != side or not listens(rnd, s, t):
             continue
         p = rnd.pos(s, t)
         if p is not None:

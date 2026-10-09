@@ -156,7 +156,9 @@ GUN_HEARING_DEFAULT_M = HEARING["default_gun_m"]     # a gun named but not in th
 CONE_HALF = {"run": 2.0, "walk": 5.0, "hold": 10.0}
 FAST_TURN_DPS = 90.0
 SPEED_WINDOW_S = 0.25
-NEARSIGHT_RADIUS_M = 4.0       # the plan's 8 m-wide bubble
+# Nearsight caps vision at a short radius and deafens (D11, changed 2026-10-09: the owner's 7 m; the wiki gives
+# 7.5 m for Paranoia, https://valorant.fandom.com/wiki/Paranoia). Only a flash is zero control (Holder.blind).
+NEARSIGHT_RADIUS_M = 7.0
 WAY_BACK_WIDTH_M = 2.0
 WALLBANG_CONTEST_S = 2.0       # per wallbang hit (the plan)
 TURRET_HALF = 50.0             # 100 degrees since patch 8.0
@@ -184,7 +186,7 @@ SMOKES = [(re.compile(p), r, solid) for p, r, solid in [
     (r"^Sarge_4_Smoke_Production", 415, True), (r"^Iris_E_Smoke$", 400, False)]]
 DAMAGE_ZONES = [(re.compile(p), r) for p, r in [
     (r"^Phoenix_MolotovFire$", 450), (r"^Sarge_Q_Molotov_Production$", 450),
-    (r"^Pandemic_AcidMolotov_NewMolotov$", 450), (r"^Aggrobot_C_ExplodeyPatch$", 450),
+    (r"^Pandemic_AcidMolotov_NewMolotov$", 450), (r"^Aggrobot_C_ExplodeyPatch$", 550),
     (r"^Killjoy_4_BeeSwarm_Damage$", 450), (r"^Hunter_4_ExplosiveBolt_Explosion$", 350),
     (r"^Clay_Q_Explosion$", 450), (r"^Cashew_X_Segment$", 350), (r"^Sarge_X_OrbitalStrike", 900),
     (r"^Cashew_E_Explosion$", 400)]]
@@ -2374,10 +2376,11 @@ class Unknown:
         return reached, before, sources, area, centre
 
     def _heard_by(self, rnd, side: str, te: float, x: float, y: float, range_m: float) -> bool:
-        """Whether a live player of `side` is within range_m of (x, y) px at te (walls ignored)."""
+        """Whether a live player of `side` is within range_m of (x, y) px at te (walls ignored). A nearsighted player
+        is deafened and hears nothing (D11, changed 2026-10-09)."""
         r = range_m / self.geo.m_per_px
         for s, team in rnd.team.items():
-            if team != side or not rnd.alive(s, te):
+            if team != side or not utility.listens(rnd, s, te):
                 continue
             p = rnd.pos(s, te)
             if p is not None and (p[0] - x) ** 2 + (p[1] - y) ** 2 <= r * r:

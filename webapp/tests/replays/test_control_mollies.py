@@ -146,7 +146,7 @@ def test_hazards_are_kept_per_side_in_time_order():
     h = _hazards([_row(by=9, t=40.3125, t1=50.0), _row(by=2, code="Sarge", name="Q_Molotov_Production", t=30.0625,
                                                         t1=45.0), _row(by=5, t=20.0625, t1=21.0)])
     assert [(z.by, z.t0) for z in h.by_side["B"]] == [(5, 20.0625), (9, 40.3125)]
-    assert [(z.by, z.t1) for z in h.by_side["A"]] == [(2, 37.0625)], "Incendiary's 7 s"
+    assert [(z.by, z.t1) for z in h.by_side["A"]] == [(2, 38.0625)], "Incendiary's 8 s"
     assert h.reopen_times("B") == [21.0, 44.3125]
 
 

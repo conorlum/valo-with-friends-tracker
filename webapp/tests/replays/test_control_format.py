@@ -53,8 +53,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # 9: player state (docs/superpowers/specs/2026-10-06-replay-player-state-design.md): utility.json's
           # `molly` figures (radius and burn seconds per sustained damaging zone). 8 was released with main, so
           # this bump lands with the figures, before the blind and molly rules. Unreleased, so re-pinned in place
-          # as those steps land. P08 added app/control/mollies.py (the molly allow-list) to the digest.
-          9: "5d4df69506e54bf8"}
+          # as those steps land. P08 added app/control/mollies.py (the molly allow-list) to the digest. The
+          # 2026-10-09 review re-pinned it for D6's wiki figures and D11's 7 m nearsight.
+          9: "5a198fd599a1f12d"}
 
 
 def _constants_digest() -> str:
