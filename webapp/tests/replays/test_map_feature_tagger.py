@@ -41,6 +41,63 @@ def run_node(body: str, payload):
     return json.loads(completed.stdout)
 
 
+@pytest.mark.parametrize('preset', ['vertical_rope', 'zipline'])
+def test_review_route_creation_and_unplaced_access_remain_editable(preset):
+    got = run_page('''function run(p) {
+      const page = openPage(p.data, {map:"Ascent"}), A = page.api, F = page.F;
+      A.createPreset(p.preset);
+      const route = A.fe.Ascent.mf.routes[A.fe.Ascent.mf.routes.length - 1];
+      A.commit(F.setField(A.fe.Ascent.mf, route.id, ["access"], {sites:[{id:"boarding",uv:null}]}), true);
+      return {dirty:A.fe.Ascent.dirty, sites:A.fe.Ascent.mf.routes.slice(-1)[0].access.sites,
+              issues:page.el("featIssues").innerHTML};
+    }''', {'data': page_data(future=False), 'preset': preset})
+    assert got['dirty'] and got['sites'] == [{'id': 'boarding', 'uv': None}]
+    assert 'off_map' in got['issues'] or 'invalid_geometry' in got['issues']
+
+
+@pytest.mark.parametrize('shape', [
+    {'type': 'point', 'uv': None}, {'type': 'point', 'uv': [10001, 0]},
+    {'type': 'polygon', 'uv': [[0, 0], [1, 1], [-1, 2]]},
+    {'type': 'paint', 'cells': '!'}, {'type': 'polyline', 'uv': [[0, 0], [1, 1]], 'width': -1},
+])
+def test_review_preview_invalid_geometry_matches_compiler(shape):
+    from map_feature_artifact_toys import source_case, geometry_case
+    from app.control.features import _place_shape
+    mf = source_case()['map_features']
+    mf['features'][0]['states'][0]['footprint'] = shape
+    got = run_node('''function run(p) {return F.previewPlacement(p.mf,
+      {walk:Array(128*128).fill(1),flat:true})["feature-1"].reasons;}''', {'mf': mf})
+    assert _place_shape(geometry_case(flat=True), shape, 'test').reasons[0]['code'] in {r['code'] for r in got}
+
+
+@pytest.mark.parametrize('pixels', [0, 16, 32, 33, 64])
+@pytest.mark.parametrize('restore', [False, True])
+def test_review_preview_walkability_reduces_pixels_after_private_restoration(pixels, restore):
+    import numpy as np
+    from map_feature_artifact_toys import source_case
+    from app.control.geometry import geometry_from_masks, pack_paint
+    from app.control.features import bundle_status
+    mf = source_case()['map_features']
+    # One authored paint cell adds 16 pixels inside an otherwise partly occupied engine cell.
+    walk = np.zeros((1024, 1024), bool)
+    block = walk[320:328, 320:328]
+    for i in range(pixels):
+        block[i // 8, i % 8] = True
+    if restore:
+        paint = np.zeros((256, 256), bool)
+        paint[81, 81] = True
+        mf['features'][0]['base_edits'] = {'potential_ground': {'type': 'paint', 'cells': pack_paint(paint)}}
+    geo = geometry_from_masks('Summit', ~walk, walk, 7e-5, [])
+    expected = bundle_status(geo, mf, consumers={'test'})['bundle-1'].publishable
+    got = run_node('''function run(p) {const px = Uint8Array.from(p.walk);
+      const counts = new Uint8Array(128*128);
+      px.forEach((v,i) => {if(v) counts[Math.floor(Math.floor(i/1024)/8)*128+Math.floor((i%1024)/8)]++;});
+      const walk = F.walkableCells ? F.walkableCells(px) : Uint8Array.from(counts,c => c>32 ? 1 : 0);
+      return F.previewPlacement(p.mf,{walk:walk,walk_px:px,flat:true})["feature-1"].ok;}''',
+      {'mf': mf, 'walk': walk.astype(int).ravel().tolist()})
+    assert got == expected
+
+
 REDUCER = """
   function run(p) {
     return p.cases.map(c => {

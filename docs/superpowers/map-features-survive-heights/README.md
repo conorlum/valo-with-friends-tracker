@@ -155,3 +155,64 @@ the identity test.
    route and can prevent its advertised JSON response. Drain only bounded admitted bodies before the 404.
    Cost if wrong: disabled requests may occupy a handler for up to two seconds; worker scheduling and the
    process-per-round lifetime remain unchanged.
+
+8. Keep production consumer registration empty and Summit activation unwired, as required by the release
+   scope. Users receive preserved annotations and diagnostics; runtime activation remains a separate change.
+   Cost if wrong: further activation work is required before those effects can run.
+9. Leave PostgreSQL migration and concurrency rehearsal as a deployment gate outside the approved SQLite
+   scope. SQLite evidence cannot certify PostgreSQL behavior. Cost if wrong: PostgreSQL-specific faults or
+   deployment delays may be found in rehearsal.
+10. Leave Docker image execution and Linux runtime comparison unverified because Docker is unavailable on
+    this host. Local child-process evidence stands for the tested Windows runtime only. Cost if wrong: an
+    image or Linux-specific fault remains possible until the deployment gate is exercised.
+11. Retain conservative archive/cache limits and indefinite archive retention; synthetic measurements do
+    not justify production sizing claims. Cost if wrong: storage or runtime use requires later adjustment.
+12. Accept filesystem replacement after the final source check under the recorded-provenance and next-read
+    staleness model. This check cannot lock external file writers. Cost if wrong: a short stale-result window;
+    the exact historical inputs remain reproducible.
+13. Treat malformed-geometry export as already guarded by structural validation and repair its editable
+    preview path. Cost if wrong: an alternate export path would need additional validation coverage.
+14. Accept the review's deliberate focus on changed policies and interfaces, supplemented by the complete
+    replay suite, without expanding into unchanged engine internals. Cost if wrong: an existing uncovered
+    engine defect remains outside this release's evidence.
+
+## Final review
+
+One fresh-context whole-branch review of `cf75c29..d3c2ae1` raised seven Important findings and no Critical
+or Minor findings. Their grades stand based on user effect: normal route creation can crash, preview can
+claim invalid ground is placeable, child bundles can ignore required parents, historical verification can
+accept unavailable consumer semantics, match views can mislabel current rows, malformed JSON containers
+can abort planning, and a late source edit can overwrite existing gap rows. All enter one grouped TDD fix
+pass. Review topics deliberately set aside are recorded above as rulings 8–14; no minors are deferred.
+
+| Important finding | Fix and regression evidence |
+| --- | --- |
+| Route creation crashes while endpoints/access sites are unplaced | Shared geometry validation runs before preview rasterization; malformed shapes produce structured pending reasons. Actual Node page creation tests cover rope/zipline and null boarding sites; five malformed-shape cases match Python placement codes. |
+| Browser walkability accepts any occupied pixel | Permanent and privately restored masks are reduced after pixel composition using the engine's strictly greater than 50% rule. Ten partial-cell/restoration cases compare preview eligibility with Python bundle status. |
+| Required parent placement does not gate children | Each bundle checks its transitive parents for placement, behavior, bounds and routes while retaining only its own candidate edits. Seven cases cover off-ground parents, transitive dependencies, cycles, missing dependencies and invalid behavior/bounds/routes; an unrelated bundle stays usable. |
+| Historical verification trusts recorded consumer availability | The verifier checks recorded consumer names and versions against the available runtime after integrity validation. Missing/version-mismatched consumers preserve verified integrity and report unsupported recompilation, including fresh child-process tests. Test support is supplied by selected test runtimes, never inferred from requests or production constants. |
+| Match summary reader uses obsolete freshness inputs | One `CurrentGeometryContext` is resolved per replay and shared across its rows. Tagged current rows, editorial edits, pending/source failure and explicit height-off with committed fallback are covered. |
+| Malformed JSON containers abort planning | Current snapshot, map index and preliminary bundle containers are explicitly validated. Bad structures report `source_error`; archived reproduction still returns independent integrity/recompilation verdicts. |
+| Gap replacement lacks a final source check | Both writers share a final raw-source identity guard before replacing rows. An edit after the existing-gap lookup preserves old gap rows; an editorial-only edit still stores. |
+
+All seven findings were reproduced before their production fixes. The first regression run was 41 failed,
+4 passed; extending the Node DOM harness exposed the actual route raster crash and partial restoration
+failure (4 failed, 8 passed). The owning suites subsequently passed all 43 new regressions: 309 passed,
+5 skipped, with two older interface/test-runtime expectations repaired. Those complete view/transport
+suites then passed 33 tests, 1 skipped. The final complete replay gate follows below. No second review is
+dispatched; this is the plan's one grouped fix pass.
+
+The first post-review full gate was stopped after identifying one additional test-runtime omission:
+the committed fallback-height archive test launches a fresh verifier and also requires explicit synthetic
+consumer support. No production rule was relaxed. Its complete SQLite archive suite passed **9/9** in
+18.46 s after that fixture correction; the complete replay suite was restarted. Interrupted output is
+not a release claim. The durable [implementation record](implementation-record.md) retains task and
+review decisions alongside the runbook.
+
+Final post-review complete replay suite: **2210 passed, 22 skipped, 1 existing warning** in **1503.38 s
+(25 min 3 s)**, using `python -u -m pytest -p no:cacheprovider -q tests/replays`. The 45-case focused
+selection includes 43 new regressions and two existing tests whose names also match `review_`; earlier
+ledger entries saying "45 new" refer to that focused selection. All seven Important findings are fixed,
+with RED→GREEN evidence and a green complete suite. No minors are deferred. PostgreSQL rehearsal and
+Docker/Linux execution remain unrun, as recorded above. The requested branch remains local for the
+owner's integration decision; no push, PR, merge or deployment has been performed.

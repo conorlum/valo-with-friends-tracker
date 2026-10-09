@@ -883,6 +883,25 @@
   function isObj(v) { return v !== null && typeof v === "object" && !Array.isArray(v); }
   function finite(x) { return typeof x === "number" && isFinite(x); }
   function uvOk(p) { return Array.isArray(p) && p.length === 2 && p.every(function (c) { return finite(c) && c >= 0 && c <= UV_MAX; }); }
+  function geometryProblems(g, allowed) {
+    allowed = allowed || GEOMETRY_TYPES;
+    var out = [];
+    function err(code, message) {out.push({code:code, message:message});}
+    if (!isObj(g) || allowed.indexOf(g.type) < 0) {err("bad_geometry", "geometry must be one of " + allowed.join(", ")); return out;}
+    if (g.type === "point" && !uvOk(g.uv)) err("bad_coordinates", "a point needs uv [u, v] within 0..10000");
+    else if (g.type === "polyline" || g.type === "polygon") {
+      var need = g.type === "polyline" ? 2 : 3;
+      if (!Array.isArray(g.uv) || g.uv.length < need || !g.uv.every(uvOk))
+        err("bad_coordinates", "a " + g.type + " needs at least " + need + " uv points within 0..10000");
+      if (g.type === "polyline" && "width" in g && !(finite(g.width) && g.width > 0))
+        err("bad_dimensions", "a polyline's width must be a positive number");
+    } else if (g.type === "paint") {
+      var ok = typeof g.cells === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(g.cells) && g.cells.length % 4 === 0;
+      var len = ok ? g.cells.length / 4 * 3 - g.cells.match(/=*$/)[0].length : -1;
+      if (len !== PAINT_BYTES) err("bad_paint", "paint must be " + PAINT_BYTES + " bytes of base64");
+    }
+    return out;
+  }
   function pyRepr(v) { return v === null || v === undefined ? "None" : typeof v === "string" ? "'" + v + "'" : JSON.stringify(v); }
 
   function checkVersion(mf) {
@@ -913,20 +932,7 @@
       return false;
     }
     function geometry(where, g, allowed) {
-      allowed = allowed || GEOMETRY_TYPES;
-      if (!isObj(g) || allowed.indexOf(g.type) < 0) { err(where, "bad_geometry", "geometry must be one of " + allowed.join(", ")); return; }
-      if (g.type === "point" && !uvOk(g.uv)) err(where, "bad_coordinates", "a point needs uv [u, v] within 0..10000");
-      else if (g.type === "polyline" || g.type === "polygon") {
-        var need = g.type === "polyline" ? 2 : 3;
-        if (!Array.isArray(g.uv) || g.uv.length < need || !g.uv.every(uvOk))
-          err(where, "bad_coordinates", "a " + g.type + " needs at least " + need + " uv points within 0..10000");
-        if (g.type === "polyline" && "width" in g && !(finite(g.width) && g.width > 0))
-          err(where, "bad_dimensions", "a polyline's width must be a positive number");
-      } else if (g.type === "paint") {
-        var ok = typeof g.cells === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(g.cells) && g.cells.length % 4 === 0;
-        var len = ok ? g.cells.length / 4 * 3 - (g.cells.match(/=*$/)[0].length) : -1;
-        if (len !== PAINT_BYTES) err(where, "bad_paint", "paint must be " + PAINT_BYTES + " bytes of base64");
-      }
+      geometryProblems(g, allowed).forEach(function(p) {err(where, p.code, p.message);});
     }
     function guard(where, g) {
       if (g === undefined || g === null) return;
@@ -1276,21 +1282,49 @@
     return {ok: reasons.length === 0, cells: ordered, floor_counts: counts, reasons: reasons};
   }
 
-  // Preview only: all required geometry and linked placements are atomic per bundle.
+  // The engine requires more than half of an 8x8 pixel cell to be walkable.
+  function walkableCells(pixels) {
+    var counts = new Uint8Array(128 * 128), cells = new Uint8Array(128 * 128);
+    if (pixels) for (var i = 0; i < pixels.length; i++) if (pixels[i])
+      counts[Math.floor(Math.floor(i / PX) / 8) * 128 + Math.floor((i % PX) / 8)]++;
+    for (var c = 0; c < cells.length; c++) cells[c] = counts[c] > 32 ? 1 : 0;
+    return cells;
+  }
+
+  // Preview only: required parents and linked placements are atomic per bundle.
   function previewPlacement(mf, context) {
-    var out = {};
-    (mf.features || []).forEach(function(f) {
-      var reasons = [];
-      var candidate = Object.assign({}, context, {walk:Array.from(context.walk)});
-      if (context.flat) {
-        var bundle = (mf.bundles || []).find(function(b) {return (b.members || []).indexOf(f.id) >= 0;});
-        var members = bundle ? bundle.members : [f.id];
-        (mf.features || []).filter(function(other) {return members.indexOf(other.id) >= 0;}).forEach(function(other) {
-          var mask = raster((other.base_edits || {}).potential_ground);
-          for (var i = 0; i < mask.length; i++) if (mask[i]) candidate.walk[Math.floor(Math.floor(i / P) / 2) * 128 + Math.floor((i % P) / 2)] = 1;
+    var out = {}, features = {};
+    (mf.features || []).forEach(function(f) {features[f.id] = f;});
+    function reason(code, path) {return {code:code, path:path, cells:[], cell_count:0, floor_counts:[]};}
+    function candidateFor(members) {
+      var candidate = Object.assign({}, context, {walk:context.walk_px ? walkableCells(context.walk_px) : Array.from(context.walk)});
+      var ground = (mf.features || []).filter(function(f) {return members.indexOf(f.id) >= 0 && (f.base_edits || {}).potential_ground;});
+      if (context.flat && ground.length) {
+        // Restoration is private to the bundle and precedes the same pixel reduction as Python.
+        var pixels = context.walk_px ? Uint8Array.from(context.walk_px) : new Uint8Array(PX * PX);
+        if (!context.walk_px) for (var i = 0; i < pixels.length; i++)
+          pixels[i] = context.walk[Math.floor(Math.floor(i / PX) / 8) * 128 + Math.floor((i % PX) / 8)] ? 1 : 0;
+        ground.forEach(function(f) {
+          var g = f.base_edits.potential_ground;
+          if (geometryProblems(g).length) return;
+          var mask = raster(g);
+          for (var i = 0; i < mask.length; i++) if (mask[i]) {
+            var x = (i % P) * 4, y = Math.floor(i / P) * 4;
+            for (var dy = 0; dy < 4; dy++) for (var dx = 0; dx < 4; dx++) pixels[(y + dy) * PX + x + dx] = 1;
+          }
         });
+        candidate.walk = walkableCells(pixels);
       }
+      return candidate;
+    }
+    function partsOf(f, candidate) {
+      var reasons = [];
       function shape(g, path) {
+        var problems = geometryProblems(g);
+        if (problems.length) {
+          reasons.push(reason(problems.some(function(p) {return p.code === 'bad_coordinates';}) ? 'off_map' : 'invalid_geometry', path));
+          return;
+        }
         var cells = [], mask = raster(g);
         for (var i = 0; i < mask.length; i++) if (mask[i]) cells.push(Math.floor(Math.floor(i / P) / 2) * 128 + Math.floor((i % P) / 2));
         reasons = reasons.concat(resolvePlacement(cells, Object.assign({}, candidate, {path: path})).reasons);
@@ -1311,7 +1345,24 @@
       ['potential_ground', 'remove_sight'].forEach(function(k) {if ((f.base_edits || {})[k]) shape(f.base_edits[k], 'features.' + f.id + '.base_edits.' + k);});
       (mf.triggers || []).forEach(function(t) {if ((t.targets || []).some(function(x) {return x.feature === f.id;})) shape(t.geometry, 'triggers.' + t.id + '.geometry');});
       (mf.routes || []).forEach(function(r) {if (r.owner === f.id) (r.endpoints || []).concat((r.access || {}).sites || []).forEach(function(e) {shape({type:'point', uv:e.uv}, 'routes.' + r.id + '.' + e.id);});});
-      out[f.id] = {ok: !reasons.length, reasons: reasons};
+      return reasons;
+    }
+    (mf.features || []).forEach(function(f) {
+      var bundle = (mf.bundles || []).find(function(b) {return (b.members || []).indexOf(f.id) >= 0;});
+      var candidate = candidateFor(bundle ? bundle.members : [f.id]), reasons = [], seen = {}, visiting = {};
+      function visit(id) {
+        if (visiting[id]) {reasons.push(reason('dependency_cycle', 'features.' + id + '.parent')); return;}
+        if (seen[id]) return;
+        seen[id] = true;
+        var required = features[id];
+        if (!required) {reasons.push(reason('missing_dependency', 'features.' + id)); return;}
+        reasons = reasons.concat(partsOf(required, candidate));
+        visiting[id] = true;
+        if (required.parent) visit(required.parent);
+        delete visiting[id];
+      }
+      visit(f.id);
+      out[f.id] = {ok:!reasons.length, reasons:reasons};
     });
     (mf.bundles || []).forEach(function(b) {
       var reasons = [].concat.apply([], (b.members || []).map(function(id) {return out[id] ? out[id].reasons : [{code:'missing_member', path:id, cells:[], cell_count:0, floor_counts:[]}];}));
@@ -1575,7 +1626,8 @@
     Drafts: Drafts, draftSourceKey: draftSourceKey, DRAFT_PREFIX: DRAFT_PREFIX,
     DRAFT_FORMAT: DRAFT_FORMAT, draftFile: draftFile, importDraft: importDraft, draftCatalogue: draftCatalogue,
     draftModelProblems: draftModelProblems, sourceDiffers: sourceDiffers, maxHigh: maxHigh, raiseNextId: raiseNextId,
-    raster: raster, composeFeatures: composeFeatures, resolvePlacement: resolvePlacement, previewPlacement: previewPlacement,
+    raster: raster, composeFeatures: composeFeatures, geometryProblems: geometryProblems, walkableCells: walkableCells,
+    resolvePlacement: resolvePlacement, previewPlacement: previewPlacement,
     stateOf: stateOf, makeBreakable: makeBreakable, CELL_UV: CELL_UV,
     rotationPose: rotationPose, mapSummary: mapSummary,
     importCatalogue: importCatalogue, diffCatalogues: diffCatalogues,

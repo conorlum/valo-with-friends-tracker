@@ -386,6 +386,8 @@ def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owne
     lo, hi = ms_known(bounds.get("bottom")), ms_known(bounds.get("top"))
     if lo is None or hi is None:
         return None, f"{owner}: a sight bound is unresolved"
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return None, f"{owner}: sight bounds require a finite positive height interval"
     if geo.heights is None:
         return BoundedOccluder(owner, mask_px, all_height=True), None
     if ref == "world":
@@ -640,6 +642,29 @@ class BundleStatus:
     intended: bool = False
 
 
+def required_features(features, members):
+    """Required transitive parents, with missing dependencies and cycles kept pending."""
+    required, visiting, reasons = set(), set(), []
+    def visit(fid):
+        if fid in visiting:
+            reasons.append(f'{fid}: parent dependency cycle')
+            return
+        if fid in required:
+            return
+        required.add(fid)
+        feature = features.get(fid)
+        if feature is None:
+            reasons.append(f'{fid}: required feature does not exist')
+            return
+        visiting.add(fid)
+        if feature.get('parent'):
+            visit(feature['parent'])
+        visiting.remove(fid)
+    for fid in members:
+        visit(fid)
+    return required, reasons
+
+
 def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
                   consumers: frozenset | None = None) -> dict:
     """Each bundle's publishability. A bundle publishes its members' base edits only together and only when
@@ -661,11 +686,14 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
     out = {}
     for b in mf.get("bundles") or []:
         bid, members = b.get("id"), list(b.get("members") or [])
-        reasons = []
+        required, reasons = required_features(features, members)
         if not b.get("enabled"):
             reasons.append("not enabled")
         if b.get("runtime_consumer") not in consumers:
             reasons.append(f"no registered runtime consumer ({b.get('runtime_consumer')!r})")
+        for fid in sorted(required - set(members)):
+            if fid in features:
+                reasons += behaviour_problems(features[fid])
         ground = np.zeros((PX, PX), bool)
         sight = np.zeros((PX, PX), bool)
         for m in members:
@@ -695,7 +723,7 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
             # Ownership/legacy checks precede placement; candidate belongs to this bundle alone.
             candidate = _candidate_geometry(geo, mf, set(members))
             placed = placement(candidate, mf)
-            for m in members:
+            for m in sorted(required):
                 reasons += [f"{r['path']}: {r['code']}" for r in placed[m].reasons]
                 reasons += [f"{m}: {p}" for p in state_problems(candidate, mf, features[m])]
                 reasons += [f"{r['path']}: {r['reason']}" for r in bounds_problems(candidate, mf, features[m])]
@@ -705,7 +733,7 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
                         if why:
                             reasons.append(why)
             _, route_pending = compile_routes(candidate, {**mf, 'routes': [r for r in mf.get('routes') or []
-                                                      if r.get('owner') in members]})
+                                                      if r.get('owner') in required]})
             reasons += route_pending
         out[bid] = BundleStatus(bid, members, not reasons, reasons,
                                 {"ground": int(ground.sum()), "sight": int(sight.sum())},
@@ -1126,6 +1154,8 @@ def verify_artifact(artifact: fa.FeatureArtifact, geo: Geometry) -> None:
                'mid_motion': list(state.MID_MOTION), 'max_steps': state.MAX_STEPS}
     if envelope['reducer'] != reducer:
         raise fa.UnsupportedFeatureCompiler('recorded reducer unavailable')
+    if any(fi.CONSUMER_VERSIONS.get(name) != version for name, version in envelope['consumers'].items()):
+        raise fa.UnsupportedFeatureCompiler('recorded consumer version unavailable')
     inp = fi.FeatureInput(artifact.key, artifact.inputs, b'', '')
     fresh = compile_artifact(geo, inp, artifact.code_commit)
     if fresh.manifest != artifact.manifest or fa.expanded_assets(fresh.assets) != fa.expanded_assets(artifact.assets):

@@ -1,5 +1,6 @@
 import copy
 import pytest
+from map_feature_artifact_toys import synthetic_consumer_runtime
 from test_control_store import db, factory, linked
 from test_control_pinned_inputs import tagged
 from test_replay_store import condensed, pg
@@ -116,3 +117,20 @@ def test_recorded_base_mask_identity_must_match_archive_even_with_rehashed_prove
     value['provenance']['fingerprint'] = historical_row.fingerprint = fingerprint
     historical_row.summary = cf.pack_summary(value)
     assert verify_stored_round(db, historical_row).integrity == 'failed'
+
+
+@pytest.mark.parametrize('bad', ['bad', {'bundles': [None]}])
+def test_review_bad_current_structure_keeps_historical_verdict_independent(db, historical_row, tagged, bad):
+    from app.services.control_feature_verification import verify_stored_round
+    tagged['map_features'] = bad
+    result = verify_stored_round(db, historical_row)
+    assert (result.integrity, result.recompilation, result.freshness) == ('verified', 'verified', 'unavailable')
+
+
+@pytest.mark.parametrize('available', [{}, {'test': 2}])
+def test_review_historical_child_reports_unavailable_consumer_independently(db, historical_row, monkeypatch, available):
+    from app.services.control_feature_verification import verify_stored_round
+    from app.replays import map_feature_inputs as fi
+    monkeypatch.setattr(fi, 'CONSUMER_VERSIONS', available)
+    result = verify_stored_round(db, historical_row)
+    assert result.integrity == 'verified' and result.recompilation == 'unsupported'

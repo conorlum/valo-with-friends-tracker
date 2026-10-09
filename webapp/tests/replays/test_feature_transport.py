@@ -6,7 +6,7 @@ import pytest
 from app.replays import map_feature_artifacts as codec
 from app.replays.map_feature_inputs import identify_features
 from app.control.features import compile_artifact
-from map_feature_artifact_toys import base_case, snapshot_case, geometry_case
+from map_feature_artifact_toys import base_case, snapshot_case, geometry_case, synthetic_consumer_runtime
 
 
 def artifact_case():

@@ -65,16 +65,8 @@ def store_round(session_factory, replay_id: int, round_number: int, fingerprint:
             if row is not None and row.fingerprint == current and row.status == "ok" \
                     and row.data_version == cf.DATA_VERSION:
                 return ALREADY
-            # Tags are filesystem inputs. Reidentify only if their raw snapshot changed while locked.
-            import hashlib
-            try:
-                raw = replay_control._current_snapshot()[3]
-                if hashlib.sha256(raw).hexdigest() != context.pinned.source_sha256:
-                    final = replay_control.resolve_current_geometry(session, replay.map_name)
-                    if final.state != 'ready' or final.pinned.geometry != context.pinned.geometry:
-                        return 'skipped: its inputs changed while computing'
-            except (OSError, ValueError):
-                return 'skipped: current feature source is unavailable'
+            if not replay_control.current_source_matches(session, context):
+                return 'skipped: its inputs changed while computing'
         ok = result["status"] == "ok"
         session.merge(ReplayRoundControl(
             replay_id=replay_id, round_number=round_number, status=result["status"], fingerprint=fingerprint,

@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from map_feature_artifact_toys import base_case, geometry_case, snapshot_case
+from map_feature_artifact_toys import base_case, geometry_case, snapshot_case, synthetic_consumer_runtime
 
 
 @pytest.fixture

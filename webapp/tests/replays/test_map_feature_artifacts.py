@@ -7,7 +7,7 @@ import json
 from dataclasses import replace
 
 import pytest
-from map_feature_artifact_toys import base_case, geometry_case, snapshot_case, source_case
+from map_feature_artifact_toys import base_case, geometry_case, snapshot_case, source_case, synthetic_consumer_runtime
 
 
 def compiled(*, multi=False, ground=0, origin=100, source=None):
@@ -16,6 +16,52 @@ def compiled(*, multi=False, ground=0, origin=100, source=None):
     geo = geometry_case(multi=multi, ground_dm=ground, origin_dm=origin)
     inputs = identify_features('Summit', geo.height_sha, snapshot_case(source), base_case(), consumers={'test': 1})
     return geo, compile_artifact(geo, inputs, '0' * 40)
+
+
+@pytest.mark.parametrize('available', [{}, {'test': 2}])
+def test_review_historical_verifier_requires_available_consumer_versions(monkeypatch, available):
+    from app.control.features import verify_artifact
+    from app.replays import map_feature_inputs as fi
+    from app.replays.map_feature_artifacts import check_artifact, UnsupportedFeatureCompiler
+    geo, artifact = compiled()
+    check_artifact(artifact)
+    monkeypatch.setattr(fi, 'CONSUMER_VERSIONS', available)
+    with pytest.raises(UnsupportedFeatureCompiler, match='consumer'):
+        verify_artifact(artifact, geo)
+
+
+@pytest.mark.parametrize('problem', ['off_ground', 'transitive', 'cycle', 'missing', 'behavior', 'bounds', 'route'])
+def test_review_parent_dependencies_gate_only_the_dependent_bundle(problem):
+    from app.control.features import bundle_status
+    mf = source_case()['map_features']
+    child, parent = mf['features']
+    child['parent'] = parent['id']
+    independent = copy.deepcopy(child)
+    independent.update(id='feature-4', bundle='bundle-4')
+    independent.pop('parent')
+    mf['features'].append(independent)
+    mf['bundles'].append({'id': 'bundle-4', 'enabled': True, 'runtime_consumer': 'test', 'members': ['feature-4']})
+    if problem == 'off_ground':
+        parent['states'][0]['footprint'] = {'type': 'point', 'uv': [100, 100]}
+    elif problem == 'transitive':
+        grandparent = copy.deepcopy(parent)
+        grandparent.update(id='feature-3', bundle=None)
+        grandparent['states'][0]['footprint'] = {'type': 'point', 'uv': [100, 100]}
+        parent['parent'] = grandparent['id']
+        mf['features'].append(grandparent)
+    elif problem == 'cycle':
+        parent['parent'] = child['id']
+    elif problem == 'missing':
+        parent['parent'] = 'feature-99'
+    elif problem == 'behavior':
+        parent['initial_state'] = None
+    elif problem == 'bounds':
+        parent['states'][0]['sight_bounds']['top']['value'] = 0
+    else:
+        mf['routes'] = [{'id': 'route-1', 'owner': parent['id'], 'endpoints': [{'id': 'a', 'uv': None}]}]
+    statuses = bundle_status(geometry_case(flat=True), mf, consumers={'test'})
+    assert not statuses['bundle-1'].publishable and statuses['bundle-1'].reasons
+    assert statuses['bundle-4'].publishable
 
 
 def test_archive_contains_loadable_masks_and_pending_is_not_none():

@@ -79,6 +79,8 @@ def _read_snapshot(stamp: tuple) -> tuple[dict, dict, dict] | None:
         return None
     if not all(isinstance(v, dict) for v in (index, tags, maps)):
         return None
+    if not all(isinstance(v.get('maps', {}), dict) for v in (index, tags)):
+        return None
     return index.get("maps", {}), tags.get("maps", {}), maps
 
 
@@ -124,7 +126,8 @@ _assets.cache_clear = _clear_assets
 def map_layer(map_name: str) -> dict | None:
     """{"cover_reviewed": bool} when the map has the layer, else None."""
     entry = _assets()[0].get(map_name)
-    if not entry or not (entry.get("kill_lines") or {}).get("passes"):
+    if not isinstance(entry, dict) or not isinstance(entry.get('kill_lines') or {}, dict) \
+            or not (entry.get("kill_lines") or {}).get("passes"):
         return None
     return {"cover_reviewed": bool(entry.get("cover_reviewed"))}
 
@@ -143,6 +146,9 @@ def _current_snapshot():
         stamp = _stamp()
         raw = [path.read_bytes() for path in _asset_paths()]
         index, tags, maps = [fi.read_json(value) for value in raw]
+        if not all(isinstance(value, dict) for value in (index, tags, maps)) \
+                or not all(isinstance(value.get('maps', {}), dict) for value in (index, tags)):
+            raise fi.FeatureInputsError('current control source requires object containers')
         if _stamp() == stamp:
             return index.get('maps', {}), tags.get('maps', {}), maps, raw[1]
     raise fi.FeatureInputsError('current control source is changing')
@@ -153,14 +159,24 @@ def resolve_current_geometry(db, map_name):
     try:
         index, tags, maps, raw = _current_snapshot()
         entry = index.get(map_name)
+        if entry is not None and (not isinstance(entry, dict) or
+                not isinstance(entry.get('kill_lines') or {}, dict)):
+            raise fi.FeatureInputsError('current map index requires object containers')
         if entry is None or not (entry.get('kill_lines') or {}).get('passes'):
             return CurrentGeometryContext(map_name, 'no_map', selection, None)
         if entry.get('features_sha'):
             return CurrentGeometryContext(map_name, 'conversion_required', selection, None)
         selection = control_heights.select_height(db, map_name, entry.get('height_sha'))
         source = fi.capture_source_snapshot(map_name, raw)
-        source_entry = tags.get(map_name) or {}
-        mf = source_entry.get('map_features') or {}
+        source_entry = tags.get(map_name, {})
+        if not isinstance(source_entry, dict) or not isinstance(maps.get(map_name, {}), dict):
+            raise fi.FeatureInputsError('current map source requires object containers')
+        mf = source_entry.get('map_features')
+        if mf is None:
+            mf = {}
+        if not isinstance(mf, dict) or not isinstance(mf.get('bundles', []), list) \
+                or any(not isinstance(bundle, dict) for bundle in mf.get('bundles', [])):
+            raise fi.FeatureInputsError('current feature source requires object bundles')
         intended = any(b.get('enabled') and b.get('runtime_consumer') in fi.CONSUMER_VERSIONS
                        for b in mf.get('bundles', []))
         base = {}
@@ -186,6 +202,19 @@ def resolve_current_geometry(db, map_name):
         return CurrentGeometryContext(map_name, 'ready', selection, pin, inp)
     except (OSError, ValueError, KeyError, TypeError):
         return CurrentGeometryContext(map_name, 'source_error', selection, None)
+
+
+def current_source_matches(db, context):
+    """Last filesystem guard before replacing rows; editorial edits may keep the same identity."""
+    import hashlib
+    try:
+        raw = _current_snapshot()[3]
+        if hashlib.sha256(raw).hexdigest() == context.pinned.source_sha256:
+            return True
+        final = resolve_current_geometry(db, context.map_name)
+        return final.state == 'ready' and final.pinned.geometry == context.pinned.geometry
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def exact_height_bytes(db, map_name, digest):

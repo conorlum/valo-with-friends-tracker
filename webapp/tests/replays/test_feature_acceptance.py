@@ -9,7 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pytest
-from map_feature_artifact_toys import base_case, snapshot_case, geometry_case, source_case
+from map_feature_artifact_toys import base_case, snapshot_case, geometry_case, source_case, synthetic_consumer_runtime
 from app.replays import map_feature_artifacts as fa, map_feature_inputs as fi, control_format as cf, format as fmt
 from app.control.features import compile_artifact, verify_artifact
 

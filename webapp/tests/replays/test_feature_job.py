@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pytest
-from map_feature_artifact_toys import base_case, snapshot_case, geometry_case
+from map_feature_artifact_toys import base_case, snapshot_case, geometry_case, synthetic_consumer_runtime
 from test_control_feature_artifacts_db import archive_factory
 
 

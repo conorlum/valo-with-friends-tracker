@@ -1,4 +1,5 @@
 import pytest
+from map_feature_artifact_toys import synthetic_consumer_runtime
 from dataclasses import replace
 
 from test_control_store import db, factory, linked
@@ -132,3 +133,87 @@ def test_actual_scale_uses_the_loaded_minimap_multiplier():
     from map_feature_artifact_toys import geometry_case
     from app.control.task import geometry_used
     assert geometry_used(geometry_case(flat=True))['scale'] == 7e-5
+
+
+@pytest.mark.parametrize('bad', ['bad', [], {'bundles': [None]}, {'bundles': 'bad'}])
+def test_review_bad_feature_container_is_source_error(db, linked, tagged, bad):
+    tagged['map_features'] = bad
+    assert rc.resolve_current_geometry(db, linked.map_name).state == 'source_error'
+    assert all(not p.computable and p.reason == 'source_error' for p in rc.plan(db, rounds={1}))
+
+
+@pytest.mark.parametrize('slot,value', [(0, []), (0, {'maps': []}), (1, []), (1, {'maps': []}), (2, [])])
+def test_review_current_snapshot_rejects_bad_json_containers(tmp_path, monkeypatch, slot, value):
+    import json
+    from app.replays.map_feature_inputs import FeatureInputsError
+    paths = [tmp_path / str(i) for i in range(3)]
+    for i, path in enumerate(paths):
+        path.write_text(json.dumps(value if i == slot else {'maps': {}}))
+    monkeypatch.setattr(rc, '_asset_paths', lambda: paths)
+    with pytest.raises(FeatureInputsError):
+        rc._current_snapshot()
+
+
+def test_review_match_summary_freshness_uses_current_tagged_context(factory, db, linked, tagged, monkeypatch):
+    from test_control_store import put_row
+    from app.services.replay_control_views import load_round_summaries
+    rc.prepare_discovered(factory, [linked.map_name], {}, 1)
+    [p] = rc.plan(db, rounds={1})
+    put_row(db, linked, 1, fingerprint=p.fingerprint)
+    assert load_round_summaries(db, linked).stale == []
+    tagged['map_features']['features'][0]['name'] = 'editorial'
+    assert load_round_summaries(db, linked).stale == []
+    tagged['map_features']['features'][0]['initial_state'] = 'open'
+    assert load_round_summaries(db, linked).stale == [1]
+    monkeypatch.setattr(rc, '_current_snapshot', lambda: (_ for _ in ()).throw(OSError('gone')))
+    assert load_round_summaries(db, linked).stale == [1]
+
+
+def test_review_match_summary_explicit_off_beats_committed_fallback(db, linked, monkeypatch):
+    import copy
+    from test_control_heights_db import build
+    from test_control_store import put_row
+    from app.services.replay_control_views import load_round_summaries
+    index, tags, maps, raw = rc._current_snapshot()
+    index = copy.deepcopy(index)
+    index[linked.map_name]['height_sha'] = 'b' * 12
+    monkeypatch.setattr(rc, '_current_snapshot', lambda: (index, tags, maps, raw))
+    monkeypatch.setattr(rc, '_assets', lambda: (index, tags, maps))
+    build(db, linked.map_name, 'a' * 12)
+    ch.deactivate(db, linked.map_name)
+    context = rc.resolve_current_geometry(db, linked.map_name)
+    put_row(db, linked, 1, fingerprint=rc.round_fingerprint(linked, rc.side_groups(db, linked), 1, context=context))
+    assert load_round_summaries(db, linked).stale == []
+
+
+@pytest.mark.parametrize('editorial', [False, True])
+def test_review_gap_writer_rechecks_tags_after_existing_run_lookup(factory, db, linked, tagged, monkeypatch, editorial):
+    from sqlalchemy.orm import Session
+    from app.models.replay import ReplayRoundGapRun, ReplayGap
+    from app.services import replay_gaps as gaps
+    from app.services.replay_gaps_store import store_gaps
+    from app.replays import choke_assets
+    from test_control_store import put_row
+    from test_gaps_store import RUN, ROW
+    rc.prepare_discovered(factory, [linked.map_name], {}, 1)
+    [p] = rc.plan(db, rounds={1})
+    put_row(db, linked, 1, fingerprint=p.fingerprint)
+    old = dict(RUN, fingerprint='0' * 16)
+    assert store_gaps(factory, linked.id, 1, old, [ROW, dict(ROW, seq=1)]) == 'stored'
+    wanted = dict(RUN, fingerprint=gaps.gap_fingerprint(p.fingerprint, linked.map_name),
+                  gaps_revision=gaps.GAPS_REVISION, chokes_hash=choke_assets.asset_hash(linked.map_name))
+    get = Session.get
+    changed = []
+    def late_edit(session, entity, *args, **kwargs):
+        row = get(session, entity, *args, **kwargs)
+        if entity is ReplayRoundGapRun and not changed:
+            changed.append(True)
+            tagged['map_features']['features'][0]['name' if editorial else 'initial_state'] = 'renamed' if editorial else 'open'
+        return row
+    monkeypatch.setattr(Session, 'get', late_edit)
+    result = store_gaps(factory, linked.id, 1, wanted, [ROW], expected_control_fingerprint=p.fingerprint)
+    assert changed
+    assert result == 'stored' if editorial else result.startswith('skipped')
+    db.expire_all()
+    assert db.get(ReplayRoundGapRun, (linked.id, 1)).fingerprint == (wanted if editorial else old)['fingerprint']
+    assert db.query(ReplayGap).count() == (1 if editorial else 2)

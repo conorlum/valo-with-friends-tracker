@@ -22,7 +22,7 @@ sys.path.insert(0, str(REPO))
 from replay_worker import server  # noqa: E402
 from test_control_store import db, factory, linked  # noqa: E402,F401  (fixtures)
 from test_replay_store import condensed  # noqa: E402,F401  (fixture)
-from test_control_pinned_inputs import tagged  # noqa: E402,F401
+from test_control_pinned_inputs import tagged, synthetic_consumer_runtime  # noqa: E402,F401
 from test_replay_worker_control import STUB  # noqa: E402
 
 from app.config import settings  # noqa: E402

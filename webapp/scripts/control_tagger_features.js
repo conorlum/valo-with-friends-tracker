@@ -278,15 +278,14 @@
 
   function placements() {
     var walk = TG.state.masks && TG.state.masks.walk, fd = (FD.floors || {})[mapName()] || {flat:true};
-    var cells = new Uint8Array(128 * 128);
-    if (walk) for (var i = 0; i < walk.length; i++) if (walk[i]) cells[Math.floor(Math.floor(i / PX) / 8) * 128 + Math.floor((i % PX) / 8)] = 1;
-    return F.previewPlacement(mf(), {walk:cells, flat:fd.flat === true, floor_counts:fd.floor_counts || [], unresolved:fd.unresolved || []});
+    return F.previewPlacement(mf(), {walk:F.walkableCells(walk), walk_px:walk, flat:fd.flat === true,
+                                   floor_counts:fd.floor_counts || [], unresolved:fd.unresolved || []});
   }
 
   // ---------------------------------------------------------------- drawing
   var ctx = $("feat").getContext("2d");
   function drawGeom(g, stroke, fill, lw) {
-    if (!g) return;
+    if (!g || F.geometryProblems(g).length) return;
     var z = ui.zoom;
     ctx.lineWidth = (lw || 2) / z; ctx.strokeStyle = stroke; ctx.fillStyle = fill || stroke;
     if (g.type === "point") { var p = pxOf(g.uv); ctx.beginPath(); ctx.arc(p[0], p[1], 5 / z, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); return; }
@@ -303,7 +302,7 @@
     }
   }
   function centroid(g) {
-    if (!g) return null;
+    if (!g || F.geometryProblems(g).length) return null;
     if (g.type === "point") return pxOf(g.uv);
     if (g.uv) { var sx = 0, sy = 0; g.uv.forEach(function (q) { sx += q[0]; sy += q[1]; }); return pxOf([sx / g.uv.length, sy / g.uv.length]); }
     var cells = F.raster(g), n = 0, x = 0, y = 0;

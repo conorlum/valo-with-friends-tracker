@@ -2,6 +2,25 @@
 import base64
 import json
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def synthetic_consumer_runtime(monkeypatch):
+    """Explicit test runtime support, copied into fresh verifier children independently of requests."""
+    import subprocess
+    from app.replays import map_feature_inputs as fi
+    monkeypatch.setattr(fi, 'CONSUMER_VERSIONS', {'test': 1})
+    popen = subprocess.Popen
+    def launch(args, *positional, **kwargs):
+        if isinstance(args, (list, tuple)) and list(args[1:]) == ['-m', 'app.control.feature_job']:
+            code = ("from app.replays import map_feature_inputs as fi; "
+                    f"fi.CONSUMER_VERSIONS={dict(fi.CONSUMER_VERSIONS)!r}; "
+                    "from app.control.feature_job import main; raise SystemExit(main())")
+            args = [args[0], '-c', code]
+        return popen(args, *positional, **kwargs)
+    monkeypatch.setattr(subprocess, 'Popen', launch)
+
 
 def source_case():
     from app.replays.map_feature_schema import empty, known
