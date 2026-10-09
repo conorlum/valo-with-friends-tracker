@@ -404,6 +404,150 @@
     });
   }
 
+  // ------------------------------------------------------------ player conditions as [t0, t1) (pure; tested in node)
+  // A line-for-line mirror of app/replays/status_intervals.py (normalize_conditions; see its docstring). The
+  // fallback durations are the engine's (CONDITION_POLICY == status_intervals.POLICY, checked by
+  // tests/replays/test_replay_viewer.py), so the browser and map control can't drift apart.
+  var CONDITION_POLICY = {
+    flash_full_s: { phoenix: 1.5, yoru: 1.5, breach: 2.25, kayo: 2.25, skye: 2.25 },
+    flash_default_s: 1.5, flash_fuse_s: 0.5, nearsight_s: { omen_paranoia: 2.0 },
+    nearsight_default_s: 1.0, status_default_s: 1.0
+  };
+  var CONDITION_OF_KIND = { flash: "blinded", nearsight: "nearsighted" };
+
+  function condNum(x) { return typeof x === "number" && isFinite(x) ? x : null; }
+  function condSlot(x) { return typeof x === "number" && Number.isInteger(x) && x >= 0 && x <= 9 ? x : null; }
+  function condIsRow(e) { return e !== null && typeof e === "object" && !Array.isArray(e); }
+  function condOwn(table, key) { return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined; }
+
+  function flashFallbackS(ability) {
+    var head = (typeof ability === "string" ? ability : "").split("_")[0];
+    var s = condOwn(CONDITION_POLICY.flash_full_s, head);
+    return s === undefined ? CONDITION_POLICY.flash_default_s : s;
+  }
+
+  function nearsightFallbackS(ability) {
+    var s = typeof ability === "string" ? condOwn(CONDITION_POLICY.nearsight_s, ability) : undefined;
+    return s === undefined ? CONDITION_POLICY.nearsight_default_s : s;
+  }
+
+  function condSameBy(a, b) {
+    if (a == null || b == null) return a == null && b == null;
+    return typeof a !== "boolean" && typeof b !== "boolean" && a === b;
+  }
+
+  function condRaw(util) {
+    var out = [];
+    (Array.isArray(util) ? util : []).forEach(function (e) {
+      if (!condIsRow(e)) return;
+      var k = e.k;
+      if (k === "flash" || k === "nearsight") {
+        var c = CONDITION_OF_KIND[k];
+        if (Array.isArray(e.hits)) {
+          e.hits.forEach(function (hit) {
+            if (!Array.isArray(hit) || hit.length !== 3) return;
+            var slot = condSlot(hit[0]), t = condNum(hit[1]), dur = hit[2];
+            if (slot === null || t === null) return;
+            if (dur === null || dur === undefined) {
+              var fallback = k === "flash" ? flashFallbackS(e.ability) : CONDITION_POLICY.nearsight_default_s;
+              out.push([slot, c, t, t + fallback, true, e]);
+            } else if (condNum(dur) !== null && dur > 0) {
+              out.push([slot, c, t, t + dur, false, e]);
+            }
+          });
+          return;
+        }
+        var t0 = condNum(e.t);
+        if (t0 === null) return;
+        var start, len;
+        if (k === "flash") {
+          start = t0 + CONDITION_POLICY.flash_fuse_s;
+          for (var i = 0; i < util.length; i++) {
+            var a = util[i];
+            if (condIsRow(a) && a.k === "ability" && condSameBy(a.by, e.by) && condIsRow(a.thrown) &&
+                condNum(a.thrown.t0) === t0 && condNum(a.t) !== null) { start = a.t; break; }
+          }
+          len = flashFallbackS(e.ability);
+        } else {
+          start = t0;
+          len = nearsightFallbackS(e.ability);
+        }
+        (Array.isArray(e.targets) ? e.targets : []).forEach(function (target) {
+          if (condSlot(target) !== null) out.push([target, c, start, start + len, true, e]);
+        });
+      } else if (k === "status") {
+        var slot = condSlot(e.target), t = condNum(e.t), status = e.status;
+        if (slot === null || t === null || typeof status !== "string" || !status) return;
+        if (e.t1 === null || e.t1 === undefined) {
+          out.push([slot, status, t, t + CONDITION_POLICY.status_default_s, true, e]);
+        } else if (condNum(e.t1) !== null && e.t1 > t) {
+          out.push([slot, status, t, e.t1, false, e]);
+        }
+      }
+    });
+    return out;
+  }
+
+  function condAbility(e) {
+    if (typeof e.ability === "string" && e.ability) return e.ability;
+    var code = e.code, name = e.name;
+    return typeof code === "string" && code && typeof name === "string" && name ? code + "_" + name : null;
+  }
+
+  // [alive at t0, the end of that life or null when open]. Unknown lives cut nothing.
+  function condLifeEnd(alive, slot, t0) {
+    if (!condIsRow(alive) || !Array.isArray(condOwn(alive, String(slot)))) return [true, null];
+    var lives = alive[String(slot)];
+    for (var i = 0; i < lives.length; i++) {
+      var life = lives[i];
+      if (!Array.isArray(life) || life.length < 2 || condNum(life[0]) === null) continue;
+      var end = condNum(life[1]);
+      if (life[0] <= t0 && (end === null || t0 < end)) return [true, end];
+    }
+    return [false, null];
+  }
+
+  // {slot: [{c, t0, t1, est, src:[{k, by, ability, t0, t1, est}]}]}: each slot's conditions, cut at the end of the
+  // life they start in and at tEnd, same-condition overlaps merged for display.
+  function normalizeConditions(util, alive, tEnd) {
+    var groups = {}, order = [];
+    condRaw(util).forEach(function (r) {
+      var slot = r[0], c = r[1], t0 = r[2], t1 = r[3], est = r[4], e = r[5];
+      var life = condLifeEnd(alive, slot, t0);
+      if (!life[0]) return;
+      if (life[1] !== null) t1 = Math.min(t1, life[1]);
+      if (condNum(tEnd) !== null) t1 = Math.min(t1, tEnd);
+      if (t1 <= t0) return;
+      var key = slot + "|" + c;
+      if (!condOwn(groups, key)) { groups[key] = { slot: slot, c: c, sources: [] }; order.push(key); }
+      groups[key].sources.push({ k: e.k === undefined ? null : e.k, by: condSlot(e.by) !== null ? e.by : null,
+                                 ability: condAbility(e), t0: t0, t1: t1, est: est });
+    });
+    var out = {};
+    order.forEach(function (key) {
+      var g = groups[key];
+      g.sources.sort(function (x, y) { return x.t0 - y.t0 || x.t1 - y.t1; });
+      var merged = [];
+      g.sources.forEach(function (s) {
+        var cur = merged[merged.length - 1];
+        if (cur && s.t0 <= cur.t1) {
+          cur.t1 = Math.max(cur.t1, s.t1);
+          cur.est = cur.est || s.est;
+          cur.src.push(s);
+        } else {
+          merged.push({ c: g.c, t0: s.t0, t1: s.t1, est: s.est, src: [s] });
+        }
+      });
+      out[g.slot] = (out[g.slot] || []).concat(merged);
+    });
+    Object.keys(out).forEach(function (slot) {
+      out[slot].sort(function (x, y) {
+        return x.t0 - y.t0 || (x.c < y.c ? -1 : x.c > y.c ? 1 : 0) || x.t1 - y.t1;
+      });
+    });
+    return out;
+  }
+
   // Each status's colour and its label (drawn beside the colour, never colour alone).
   var STATUS_STYLES = {
     concussed: { color: "#f2c230", label: "CONCUSSED" }, hindered: { color: "#4da3ff", label: "HINDERED" },
@@ -2770,7 +2914,7 @@
     utilAbility: utilAbility, pathAt: pathAt, extrasFromUtil: extrasFromUtil, castUtil: castUtil,
     impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,
     popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle, utilDownAt: utilDownAt,
-    utilSuppressedAt: utilSuppressedAt,
+    utilSuppressedAt: utilSuppressedAt, normalizeConditions: normalizeConditions, CONDITION_POLICY: CONDITION_POLICY,
     controlRows: controlRows, withSiteData: withSiteData,
     isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,
     projectileStyle: projectileStyle, projectileAt: projectileAt, throwShownAsProjectile: throwShownAsProjectile,

@@ -121,3 +121,52 @@ def test_size_report_budget():
     many_big = {n: b"x" * (fmt.ROUND_BUDGET_P95_BYTES + 1) for n in range(1, 25)}
     assert fmt.size_report(many_big)["fits_budget"] is False
     assert fmt.size_report({})["fits_budget"] is True
+
+
+# ---------------------------------------------------------------- the optional player_state subsection (P02)
+
+PLAYER_STATE = {"version": 1,
+                "vitals": {"5": [{"t": 18.626, "life": 0, "hp": 74.0, "sh": 0.0, "mhp": 100.0, "msh": 0.0}]},
+                "damage_taken": {"5": [18.626]},
+                "spike": [{"t": 39.435, "s": "carried", "slot": 1},
+                          {"t": 80.918, "s": "planted", "slot": 1, "u": 5480, "v": 1136}]}
+
+
+def test_a_player_state_subsection_round_trips():
+    blob = _blob(player_state=json.loads(json.dumps(PLAYER_STATE)))
+    data = fmt.encode_blob(blob)
+    assert fmt.decode_blob(data) == blob
+    assert fmt.encode_blob(fmt.decode_blob(data)) == data
+
+
+def test_a_blob_without_player_state_is_unchanged():
+    blob = _blob()
+    assert "player_state" not in fmt.decode_blob(fmt.encode_blob(blob))
+
+
+@pytest.mark.parametrize("bad", [{"version": 2, "damage_taken": {"5": [1.0]}}, {"version": 1, "vitals": [1, 2]},
+                                 "garbage", None, {"damage_taken": {"5": [1.0]}}])
+def test_an_unsupported_or_malformed_player_state_leaves_playback_intact(bad):
+    base = _blob(tracks={"0": [fmt.encode_segment(0.0, [1], [2], [3])]}, util=[{"k": "flash", "t": 1.0, "by": 0}])
+    raw = gzip.compress(json.dumps({**base, "player_state": bad}).encode())
+    got = fmt.decode_blob(raw)
+    assert "player_state" not in got, "unavailable"
+    assert got == base, "everything else as stored"
+    assert fmt.decode_blob(fmt.encode_blob({**base, "player_state": bad})) == base
+
+
+def test_a_malformed_player_state_is_never_written():
+    base = _blob()
+    stored = json.loads(gzip.decompress(fmt.encode_blob({**base, "player_state": {"version": 2}})))
+    assert "player_state" not in stored
+    written = dict(PLAYER_STATE, damage_taken={"5": [18.626, float("nan")]})
+    stored = json.loads(gzip.decompress(fmt.encode_blob(_blob(player_state=written))))
+    assert stored["player_state"]["damage_taken"] == {"5": [18.626]}, "normalized before it is stored"
+
+
+def test_bad_player_state_entries_are_dropped_on_read():
+    stored = json.loads(json.dumps(PLAYER_STATE))
+    stored["damage_taken"]["5"].append(float("nan"))
+    stored["spike"].append({"t": 90.0, "s": "juggled"})
+    raw = gzip.compress(json.dumps(_blob(player_state=stored)).encode())
+    assert fmt.decode_blob(raw)["player_state"] == PLAYER_STATE

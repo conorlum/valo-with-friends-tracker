@@ -53,6 +53,11 @@ mean it hit nobody. A row without `activation` (stored before this) proves nothi
 whatever its duration, zero included. KAY/O's landed knife (`Grenadier_E_SuppressionPulse`, an `ability` row)
 has the same `activation` and, when it pulsed, `"pulse": {"t", "hits": [slots], ["r": radius in uv units]}`.
 
+Player state (docs/superpowers/specs/2026-10-06-replay-player-state-design.md; optional, its own version): a
+top-level `"player_state": {"version": 1, "vitals", "damage_taken", "spike"}`, defined and validated by
+app/replays/player_state.py. `encode_blob` and `decode_blob` keep a normalized copy, and drop the key when it is an
+unsupported version or malformed, so the subsection is unavailable and the rest of the round plays as stored.
+
 `FORMAT_VERSION` changes only when the shape changes. `CONDENSE_REVISION` changes with
 any condenser change. Staleness is inequality with the current recipe, never ordering.
 """
@@ -63,6 +68,8 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
+
+from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
@@ -155,10 +162,23 @@ def decode_segment_z(segment: dict, hz: int) -> list[tuple[float, int, int, int,
     return [(*sample, z[i]) for i, sample in enumerate(samples)]
 
 
+def _with_valid_player_state(blob: dict) -> dict:
+    """The blob with its optional `player_state` normalized (app/replays/player_state.py), or without the key when
+    it is unsupported or malformed: the subsection is then unavailable and the rest of the round plays as stored."""
+    if "player_state" not in blob:
+        return blob
+    checked = _player_state.validate(blob["player_state"])
+    out = {k: v for k, v in blob.items() if k != "player_state"}
+    if checked is not None:
+        out["player_state"] = checked
+    return out
+
+
 def encode_blob(blob: dict) -> bytes:
     """Deterministic bytes: the same blob always gzips to the same bytes (mtime 0, sorted keys)."""
     if blob.get("v") not in SUPPORTED_VERSIONS:
         raise FormatError(f"unsupported format version {blob.get('v')!r}")
+    blob = _with_valid_player_state(blob)
     text = json.dumps(blob, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return gzip.compress(text.encode("ascii"), compresslevel=9, mtime=0)
 
@@ -167,7 +187,7 @@ def decode_blob(data: bytes) -> dict:
     blob = json.loads(gzip.decompress(data))
     if blob.get("v") not in SUPPORTED_VERSIONS:
         raise FormatError(f"unsupported format version {blob.get('v')!r}")
-    return blob
+    return _with_valid_player_state(blob)
 
 
 def known_util(blob: dict, known_kinds: frozenset[str] = frozenset()) -> list[dict]:

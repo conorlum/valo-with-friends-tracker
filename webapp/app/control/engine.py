@@ -153,12 +153,10 @@ CHAMBER_TRAP_M = 7.0
 SAME_DEATH_S = 1.0
 
 # Placeholders for blobs from before revision 10 (plan: "Inputs the blob lacks"). A flash row's `t`
-# is the cast, not the hit, and the per-target blind time was dropped by the condenser.
-FLASH_FULL_S = {"phoenix": 1.5, "yoru": 1.5, "breach": 2.25, "kayo": 2.25, "skye": 2.25}
-FLASH_DEFAULT_S = 1.5
-FLASH_FUSE_S = 0.5
-NEARSIGHT_S = {"omen_paranoia": 2.0}
-NEARSIGHT_DEFAULT_S = 1.0      # also a hit with no configured duration (Reyna's Leer)
+# is the cast, not the hit, and the per-target blind time was dropped by the condenser. Defined once in
+# app/replays/status_intervals.py (POLICY), which the browser mirrors, so the engine and the viewer can't drift.
+from app.replays.status_intervals import (  # noqa: E402
+    FLASH_DEFAULT_S, FLASH_FULL_S, FLASH_FUSE_S, NEARSIGHT_DEFAULT_S, NEARSIGHT_S)
 # How long one enemy ability-damage hit keeps its victim contested past the hit.
 DAMAGE_CONTEST_PAD_S = 0.5
 

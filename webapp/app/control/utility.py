@@ -38,9 +38,22 @@ from pathlib import Path
 import numpy as np
 
 _FIGURES_FILE = json.loads((Path(__file__).with_name("utility.json")).read_text(encoding="utf-8"))
+
+
+def _numeric(value):
+    """Numbers as floats and (nested) tables of numbers; text dropped. The same view as control_format._numbers."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, dict):
+        out = {str(k): _numeric(v) for k, v in value.items() if k not in ("sources", "PROVISIONAL")}
+        return {k: v for k, v in out.items() if v is not None} or None
+    return None
+
+
 # Only the numbers (utility.json's `sources` and notes are not consumed): the semantic view W22 fingerprints.
-FIGURES = {key: ({k: float(v) for k, v in value.items()} if isinstance(value, dict) else float(value))
-           for key, value in _FIGURES_FILE.items() if key not in ("sources", "PROVISIONAL")}
+FIGURES = _numeric(_FIGURES_FILE)
 
 KINDS = ("resume", "pause", "locate", "restrict", "exclude", "hypothesis", "broaden", "retract")
 ORDER = {"resume": 0, "pause": 1, "locate": 2, "restrict": 2, "exclude": 2, "hypothesis": 2, "broaden": 2,
