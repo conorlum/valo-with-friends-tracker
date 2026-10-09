@@ -1061,6 +1061,63 @@ def test_drawn_sight_edge_exports_and_reimports_as_a_valid_polyline():
     assert got["accepted"] and got["restored"] == got["mf"]
 
 
+@pytest.mark.parametrize("source", ["autosave", "download", "embedded"])
+def test_existing_line_drafts_repair_without_losing_edits(source):
+    got = run_page("""
+      function run(p) {
+        const page = openPage(p.data, {map: "Ascent"}), A = page.api;
+        const old = page.plain(A.fe.Ascent.mf);
+        const f = old.features.find(f => f.id === "feature-1");
+        f.name = "My edited door";
+        f.states.find(s => s.name === "closed").sight = [{
+          geometry: {type: "line", uv: [[3125, 3125], [3437.5, 3125]], custom: "keep"},
+          bounds: {ref: "unresolved"}, notes: "keep bounds unresolved"
+        }];
+        A.commit(old, true);
+        page.click("featDownload");
+        const file = page.downloads[page.downloads.length - 1];
+        let fresh;
+        if (p.source === "autosave") fresh = page.reopen();
+        else if (p.source === "download") {
+          fresh = openPage(p.data, {map: "Ascent"});
+          fresh.api.importText(file.text, file.name);
+          fresh.click("featImportReplace");
+        } else {
+          const data = JSON.parse(JSON.stringify(p.data));
+          data.tags.maps.Ascent.map_features = old;
+          fresh = openPage(data, {map: "Ascent"});
+        }
+        const expected = JSON.parse(JSON.stringify(old));
+        expected.features.find(f => f.id === "feature-1").states.find(s => s.name === "closed").sight[0].geometry.type = "polyline";
+        fresh.click("featExport");
+        return {expected: expected, actual: fresh.plain(fresh.api.fe.Ascent.mf),
+                persisted: fresh.plain(fresh.reopen().api.fe.Ascent.mf),
+                exported: fresh.downloads.length > 0, saved: fresh.el("featSaved").textContent};
+      }
+    """, {"data": page_data(future=False), "source": source})
+    assert got["actual"] == got["expected"], "repair only the tool's old geometry type"
+    assert got["persisted"] == got["expected"] and got["saved"] == "saved"
+    assert got["exported"] and ms.validate(got["actual"], "Ascent").errors == []
+
+
+@pytest.mark.parametrize("uv", [[[3125, 3125]], [[3125, 3125], [10001, 3125]]])
+def test_legacy_line_repair_leaves_malformed_geometry_pending(uv):
+    got = run_page("""
+      function run(p) {
+        const page = openPage(p.data, {map: "Ascent"});
+        const old = page.plain(page.api.fe.Ascent.mf);
+        old.features.find(f => f.id === "feature-1").states.find(s => s.name === "closed").sight = [
+          {geometry: {type: "line", uv: p.uv}, bounds: {ref: "unresolved"}}
+        ];
+        page.api.commit(old, true);
+        const fresh = page.reopen();
+        fresh.click("featExport");
+        return {expected: old, actual: fresh.plain(fresh.api.fe.Ascent.mf), exported: fresh.downloads.length > 0};
+      }
+    """, {"data": page_data(future=False), "uv": uv})
+    assert got["actual"] == got["expected"] and not got["exported"]
+
+
 def test_the_tagger_reads_a_maps_heights_from_an_export_when_given_one(tmp_path):
     import numpy as np
 
