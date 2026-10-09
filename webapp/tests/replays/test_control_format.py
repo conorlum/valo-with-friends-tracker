@@ -48,7 +48,12 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # gradient start values, and SILENT_DROP_M (the unknown stops at a fall higher than it). 7 was released
           # with main's utility review, so the slopes plan's "7" is 8 here. Unreleased, so re-pinned in place as
           # its steps land.
-          8: "648662a3109ca0a4"}
+          8: "648662a3109ca0a4",
+          # 9: player state (docs/superpowers/specs/2026-10-06-replay-player-state-design.md): utility.json's
+          # `molly` figures (radius and burn seconds per sustained damaging zone). 8 was released with main, so
+          # this bump lands with the figures, before the blind and molly rules. Unreleased, so re-pinned in place
+          # as those steps land.
+          9: "f89119b9079952c4"}
 
 
 def _constants_digest() -> str:

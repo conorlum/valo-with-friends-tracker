@@ -44,7 +44,7 @@ import json
 import struct
 from pathlib import Path
 
-CONTROL_REVISION = 8     # 8: height slopes (walks, blackouts, gradient fill, the unknown stops at a high fall)
+CONTROL_REVISION = 9     # 9: player state (the molly figures; blinded players and active mollies, unreleased)
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 
