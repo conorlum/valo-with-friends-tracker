@@ -32,6 +32,16 @@ import control_reference as ref  # noqa: E402
 
 FIVE = {"Phoenix_MolotovFire", "Sarge_Q_Molotov_Production", "Pandemic_AcidMolotov_NewMolotov",
         "Killjoy_4_BeeSwarm_Damage", "Aggrobot_C_ExplodeyPatch"}
+# The owner's list (2026-10-09): the five, then Aftershock, Orbital Strike, Guided Salvo, Armageddon and FRAG/ment.
+# Vyse's Razorvine is on it too, with no key until a replay shows its object.
+TEN = FIVE | {"Breach_4_FusionBlast", "Sarge_X_OrbitalStrike_Production", "Cashew_E_AirStrikeMortar",
+              "Cashew_X_Segment", "Grenadier_Q_SemtexBasic"}
+# From each ability's wiki page (D6, 2026-10-09): (radius, length, width, seconds)
+WIKI = {"Phoenix_MolotovFire": (4.5, None, None, 4.0), "Sarge_Q_Molotov_Production": (4.5, None, None, 8.0),
+        "Pandemic_AcidMolotov_NewMolotov": (4.5, None, None, 6.5), "Killjoy_4_BeeSwarm_Damage": (4.5, None, None, 4.0),
+        "Aggrobot_C_ExplodeyPatch": (5.5, None, None, 3.3), "Breach_4_FusionBlast": (3.0, 10.0, None, 3.0),
+        "Sarge_X_OrbitalStrike_Production": (9.0, None, None, 5.75), "Cashew_E_AirStrikeMortar": (4.5, None, None, 2.9),
+        "Cashew_X_Segment": (6.0, 2.0, 12.0, 1.0), "Grenadier_Q_SemtexBasic": (4.0, None, None, 4.0)}
 
 
 def _row(code="Phoenix", name="MolotovFire", by=5, t=12.028, t1=19.228, **extra):
@@ -39,15 +49,25 @@ def _row(code="Phoenix", name="MolotovFire", by=5, t=12.028, t1=19.228, **extra)
             "t": t, "t1": t1, "u": 5480, "v": 1136, "z": 80, **extra}
 
 
-def test_the_classification_is_the_five_sustained_zones_in_code():
-    assert mo.MOLLY_KEYS == frozenset(FIVE)
-    assert set(ut.FIGURES["molly"]) == FIVE, "every classified zone has figures, and nothing else does"
+def test_the_classification_is_the_owners_list_in_code():
+    assert mo.MOLLY_KEYS == frozenset(TEN)
+    assert set(ut.FIGURES["molly"]) == TEN, "every classified zone has figures, and nothing else does"
     raw = json.loads(cf.UTILITY_FILE.read_text(encoding="utf-8"))["molly"]
     assert all("classif" not in json.dumps(v).lower() for v in raw.values()), "no classification in the JSON"
+    assert mo.SHAPES == {"Breach_4_FusionBlast": "capsule", "Cashew_X_Segment": "strip"}
+    assert mo.THROUGH_WALLS == {"Killjoy_4_BeeSwarm_Damage", "Sarge_X_OrbitalStrike_Production",
+                                "Breach_4_FusionBlast", "Cashew_X_Segment"}
+
+
+def test_the_figures_are_the_wikis():
+    for key, (radius, length, width, seconds) in WIKI.items():
+        fig = ut.FIGURES["molly"][key]
+        assert (fig["radius_m"], fig.get("length_m"), fig.get("width_m"), fig["seconds"]) == (radius, length, width,
+                                                                                            seconds), key
 
 
 def test_the_radii_are_the_engines_damage_zone_radii():
-    for key in FIVE:
+    for key in FIVE | {"Sarge_X_OrbitalStrike_Production"}:
         [r] = [r for pat, r in ce.DAMAGE_ZONES if pat.match(key)]
         assert ut.FIGURES["molly"][key]["radius_m"] == r / 100.0
     assert ut.FIGURES["molly"]["Phoenix_MolotovFire"]["seconds"] == 4.0
@@ -56,8 +76,144 @@ def test_the_radii_are_the_engines_damage_zone_radii():
 def test_a_zone_burns_for_its_seconds_capped_at_the_rows_end():
     figures = ut.FIGURES["molly"]
     zones, diagnostics = mo.molly_zones([_row(), _row(t=30.0625, t1=32.0)], figures)
-    assert zones == [(5, 5480, 1136, 4.5, 12.028, 12.028 + 4.0), (5, 5480, 1136, 4.5, 30.0625, 32.0)]
+    assert [z[:6] for z in zones] == [(5, 5480, 1136, 4.5, 12.028, 12.028 + 4.0), (5, 5480, 1136, 4.5, 30.0625, 32.0)]
+    assert all(z.shape == "circle" and not z.through and z.z == 80 for z in zones)
     assert diagnostics == {}
+
+
+def test_gone_cuts_a_zone_short_but_not_before_it_starts():
+    zones, _ = mo.molly_zones([_row(gone=14.0), _row(gone=12.0)], ut.FIGURES["molly"])
+    assert [z.t1 for z in zones] == [14.0, 12.028 + 4.0]
+
+
+# ---------------------------------------------------------------- the owner's added zones (2026-10-09)
+
+def _frag(flight, **extra):
+    return _row(code="Grenadier", name="Q_SemtexBasic", kind="Projectile", t=13.57, t1=19.0, u=3576, v=5896,
+                **({"flight": flight} if flight is not None else {}), **extra)
+
+
+def test_fragment_holds_from_where_and_when_it_lands():
+    # thrown from (3576, 5896) at 13.57; still flying at 14.2; on the ground from 14.6 (moving 5 uv, then still)
+    flight = [[13.57, 3576, 5896, 98], [14.2, 3900, 6100, 60], [14.6, 4100, 6200, 20], [15.0, 4105, 6200, 20],
+              [16.0, 4105, 6202, 20]]
+    zones, diagnostics = mo.molly_zones([_frag(flight)], ut.FIGURES["molly"])
+    [z] = zones
+    assert (z.u, z.v, z.radius_m, z.t0, z.t1) == (4105, 6202, 4.0, 14.6, 14.6 + 4.0) and diagnostics == {}
+
+
+def test_fragment_without_a_flight_has_no_place_and_other_projectiles_are_flights():
+    zones, diagnostics = mo.molly_zones([_frag(None), _frag([[13.57, 1, 1]]),
+                                         _row(code="Breach", name="4_FusionBlast", kind="Projectile"),
+                                         _row(code="Grenadier", name="Q_SemtexBasic", kind="GameObject")],
+                                        ut.FIGURES["molly"])
+    assert zones == [] and diagnostics == {"molly without a place": 2}
+
+
+def test_aftershock_is_a_capsule_along_breachs_yaw_through_the_wall():
+    [z], _ = mo.molly_zones([_row(code="Breach", name="4_FusionBlast", kind="GameObject", yaw=182, t=32.024,
+                                  t1=36.329)], ut.FIGURES["molly"])
+    assert (z.shape, z.radius_m, z.length_m, z.angle, z.through) == ("capsule", 3.0, 10.0, 182.0, True)
+    assert (z.t0, z.t1) == (32.024, 32.024 + 3.0)
+
+
+def _segment(t, u, v, **extra):
+    return _row(code="Cashew", name="X_Segment", kind="GameObject", by=4, t=t, t1=t + 4.0, u=u, v=v, **extra)
+
+
+def _cast(t, u, v, yaw=0):
+    return _row(code="Cashew", name="X_SegmentManager", kind="GameObject", by=4, t=t, t1=t + 8.0, u=u, v=v, yaw=yaw)
+
+
+def test_armageddon_segments_hold_from_the_cast_along_their_path():
+    # replay 39 round 12's shape: the cast at 1.946, segments 0.25 s apart walking +u (and a little +v)
+    rows = [_cast(1.946, 2371, 3265, yaw=6)] + [_segment(4.195 + 0.25 * i, 2449 + 155 * i, 3274 + 17 * i)
+                                               for i in range(6)]
+    zones, diagnostics = mo.molly_zones(rows, ut.FIGURES["molly"])
+    assert len(zones) == 6 and diagnostics == {}
+    want = math.degrees(math.atan2(17 * 5, 155 * 5))
+    for i, z in enumerate(zones):
+        assert (z.shape, z.length_m, z.width_m, z.through) == ("strip", 2.0, 12.0, True)
+        assert z.t0 == 1.946 and z.t1 == pytest.approx(4.195 + 0.25 * i + 1.0)
+        assert z.angle == pytest.approx(want)
+
+
+def test_a_lone_armageddon_segment_holds_from_its_own_time_and_is_counted():
+    rows = [_cast(1.0, 0, 0), _segment(20.0, 5000, 5000, yaw=90), _segment(4.0, 100, 100) | {"by": 3}]
+    zones, diagnostics = mo.molly_zones(rows, ut.FIGURES["molly"])
+    assert [(z.t0, z.angle) for z in zones] == [(20.0, 90.0), (4.0, 0.0)]
+    assert diagnostics == {"armageddon segment without its cast (held from its own time)": 2}
+
+
+def test_one_segment_takes_its_direction_from_the_cast():
+    zones, _ = mo.molly_zones([_cast(1.0, 1000, 1000, yaw=45), _segment(4.0, 1000, 2000)], ut.FIGURES["molly"])
+    assert zones[0].angle == pytest.approx(90.0)
+
+
+# Footprints by shape and walls. Two corridors 3 cells tall (rows 24-26 and 29-31), cols 12-51, with a two-cell
+# wall between them (rows 27-28); cell centres at 8 * col + 4, 8 * row + 4. Expected cells are worked out here from
+# each shape's definition on the cell centres, independently of the engine's code.
+TWIN = [(96, 192, 416, 216), (96, 232, 416, 256)]
+
+
+def _twin_nodes(row, geo):
+    rnd = ce.RoundInputs(corridor_blob({0: ("A", (118, 204, 0)), 5: ("B", (404, 244, 180))}, [row]), geo)
+    [(_, _, nodes)] = rnd.mollies
+    return {(int(n) // GRID, int(n) % GRID) for n in nodes}
+
+
+def _px(x, y):
+    """Where a row placed at (x, y) px is stored: its uv rounded to whole units, back in px."""
+    u, v = uv(x, y)
+    return u * 1024 / 10000, v * 1024 / 10000
+
+
+def _walkable(r, c):
+    return 12 <= c <= 51 and (24 <= r <= 26 or 29 <= r <= 31)
+
+
+@pytest.mark.parametrize("code,name,through", [("Phoenix", "MolotovFire", False), ("Killjoy", "4_BeeSwarm_Damage", True),
+                                               ("Sarge", "X_OrbitalStrike_Production", True)])
+def test_a_circle_passes_the_wall_only_when_it_pierces(code, name, through):
+    geo = toy_geometry("MollyTwin", TWIN)
+    radius = ut.FIGURES["molly"][f"{code}_{name}"]["radius_m"] / geo.m_per_px
+    got = _twin_nodes(toy_ability(code, name, 300, 212, 0, t=1.0, t1=20.0, kind="GameObject"), geo)
+    want = {(r, c) for r in range(GRID) for c in range(GRID) if _walkable(r, c)
+            and (8 * c + 4 - _px(300, 212)[0]) ** 2 + (8 * r + 4 - _px(300, 212)[1]) ** 2 <= radius ** 2}
+    lower = {(r, c) for r, c in want if r >= 29}
+    assert lower, "the circle reaches the lower corridor"
+    assert got == (want if through else want - lower)
+
+
+def test_aftershock_covers_a_capsule_forward_of_where_it_stuck():
+    geo = toy_geometry("MollyTwin", TWIN)
+    row = toy_ability("Breach", "4_FusionBlast", 200, 204, 0, t=1.0, t1=6.0, kind="GameObject", yaw=0)
+    got = _twin_nodes(row, geo)
+    r, length = 3.0 / geo.m_per_px, 10.0 / geo.m_per_px
+    x0, y0 = _px(200, 204)
+    want = set()
+    for rr in range(GRID):
+        for c in range(GRID):
+            x, y = 8 * c + 4, 8 * rr + 4
+            along = min(max(x - x0, 0.0), length)
+            if _walkable(rr, c) and (x - x0 - along) ** 2 + (y - y0) ** 2 <= r * r:
+                want.add((rr, c))
+    assert got == want and max(c for _, c in want) > min(c for _, c in want) + 6, "it reaches well forward"
+
+
+def test_an_armageddon_segment_covers_a_strip_across_both_corridors():
+    geo = toy_geometry("MollyTwin", TWIN)
+    rows = [toy_ability("Cashew", "X_SegmentManager", 300, 100, 0, t=0.0, t1=8.0, kind="GameObject", yaw=90),
+            toy_ability("Cashew", "X_Segment", 300, 224, 0, t=3.0, t1=7.0, kind="GameObject")]
+    rnd = ce.RoundInputs(corridor_blob({0: ("A", (118, 204, 0)), 5: ("B", (404, 244, 180))}, rows), geo)
+    [(_, z, nodes)] = rnd.mollies
+    assert z.angle == pytest.approx(90.0) and (z.t0, z.t1) == (0.0, 4.0)
+    got = {(int(n) // GRID, int(n) % GRID) for n in nodes}
+    half_len, half_wid = 1.0 / geo.m_per_px, 6.0 / geo.m_per_px
+    # the path runs +v (down the map): 2 m along y, 12 m across x
+    want = {(r, c) for r in range(GRID) for c in range(GRID) if _walkable(r, c)
+            and abs(8 * r + 4 - _px(300, 224)[1]) <= half_len and abs(8 * c + 4 - _px(300, 224)[0]) <= half_wid}
+    assert got == want
 
 
 def test_a_row_with_no_end_burns_for_its_seconds():

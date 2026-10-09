@@ -189,7 +189,7 @@ DAMAGE_ZONES = [(re.compile(p), r) for p, r in [
     (r"^Pandemic_AcidMolotov_NewMolotov$", 450), (r"^Aggrobot_C_ExplodeyPatch$", 550),
     (r"^Killjoy_4_BeeSwarm_Damage$", 450), (r"^Hunter_4_ExplosiveBolt_Explosion$", 350),
     (r"^Clay_Q_Explosion$", 450), (r"^Cashew_X_Segment$", 350), (r"^Sarge_X_OrbitalStrike", 900),
-    (r"^Cashew_E_Explosion$", 400)]]
+    (r"^Cashew_E_Explosion$", 450)]]
 # Flown drones: (cone half-angle, range in m or None).
 DRONES = {"Hunter_E_Drone": (FOV_HALF, None), "Guide_Q_PossessableScout": (45.0, 22.5)}
 VIPER_WALL = "Pandemic_E_SmokeScreenManager"   # the condenser's `points` and `on` (extras.py)
@@ -917,43 +917,53 @@ class RoundInputs:
         molly whose owner, place, time or figures are unknown, or whose owner has no side, blocks nothing and is
         counted in `missing`."""
         figures = utility.FIGURES.get("molly") or {}
-        for e in util:
-            if mollies.molly_key(e) is None:
+        zones, diagnostics = mollies.molly_zones(util, figures)
+        for case, count in diagnostics.items():
+            self.missing[f"{case} (blocks nothing)"] += count
+        for z in zones:
+            side = self.team.get(z.by)
+            if side is None:
+                self.missing["molly owner without a side (blocks nothing)"] += 1
                 continue
-            zones, diagnostics = mollies.molly_zones([e], figures)
-            for case, count in diagnostics.items():
-                self.missing[f"{case} (blocks nothing)"] += count
-            for z in zones:
-                gone = e.get("gone")
-                if isinstance(gone, (int, float)) and not isinstance(gone, bool) and z.t0 < gone < z.t1:
-                    z = z._replace(t1=float(gone))
-                side = self.team.get(z.by)
-                if side is None:
-                    self.missing["molly owner without a side (blocks nothing)"] += 1
-                    continue
-                self.mollies.append((side, z, self._molly_nodes(z, e.get("z"))))
-                self.transitions += [z.t0, z.t1]
+            self.mollies.append((side, z, self._molly_nodes(z, z.z)))
+            self.transitions += [z.t0, z.t1]
 
     def _molly_nodes(self, z: "mollies.Molly", z_dm) -> np.ndarray:
-        """A molly's footprint: the walkable nodes whose cell centre is within its radius, on the floor under its
-        stored height (the lowest without one, counted), that a walk inside the circle reaches from its centre (a
-        fire doesn't burn through a wall)."""
+        """A molly's footprint: the walkable nodes whose cell centre is inside its shape (a circle of its radius; a
+        capsule, its radius round a segment `length_m` long from its place along `angle`; a strip `length_m` along
+        `angle` and `width_m` across, centred on its place), on the floor under its stored height (the lowest
+        without one, counted). One that passes walls (`through`) is all of them; any other only those a walk
+        inside the shape reaches from its place (a fire doesn't burn through a wall)."""
         geo = self.geo
         x, y = z.u * PX / 10000, z.v * PX / 10000
-        r = z.radius_m / geo.m_per_px
         z_m = self._device_z(z_dm)
         if geo.heights is not None and z_m is None:
             self.missing["approximate heights (a molly has no z: lowest floor used)"] += 1
         cells = GRID * GRID
-        near = np.flatnonzero(((geo.centres[:cells, 0] - x) ** 2 + (geo.centres[:cells, 1] - y) ** 2 <= r * r)
-                              & geo.walk.ravel())
+        dx, dy = geo.centres[:cells, 0] - x, geo.centres[:cells, 1] - y
+        a = math.radians(z.angle)
+        along, across = dx * math.cos(a) + dy * math.sin(a), -dx * math.sin(a) + dy * math.cos(a)
+        r = z.radius_m / geo.m_per_px
+        if z.shape == "capsule":
+            t = np.clip(along, 0.0, z.length_m / geo.m_per_px)
+            shape = (along - t) ** 2 + across ** 2 <= r * r
+            reach = z.radius_m + z.length_m
+        elif z.shape == "strip":
+            shape = (np.abs(along) <= z.length_m / 2 / geo.m_per_px) & (np.abs(across) <= z.width_m / 2 / geo.m_per_px)
+            reach = math.hypot(z.length_m, z.width_m) / 2
+        else:
+            shape = dx ** 2 + dy ** 2 <= r * r
+            reach = z.radius_m
+        near = np.flatnonzero(shape & geo.walk.ravel())
         inside = np.zeros(geo.n, bool)
         for c in near.tolist():
             inside[geo.node_at(c, z_m)] = True
         inside &= geo.walk_n
+        if z.through:
+            return np.flatnonzero(inside)
         seed = np.zeros(geo.n, bool)
         seed[geo.node_at(geo.cell_of_px(x, y), z_m)] = True
-        steps = max(1, int(math.ceil(z.radius_m / geo.cell_m)))
+        steps = max(1, int(math.ceil(reach / geo.cell_m)))
         grown = topology.of(geo).dilate(seed, eight=True, iterations=steps, within=inside | seed)
         return np.flatnonzero(grown & inside)
 

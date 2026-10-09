@@ -202,7 +202,7 @@
     [/^Grenadier_E_SuppressionPulse$/, { ability: "ZERO/point", shape: "area", r: 700, pop: 1.0 }],
     // Tejo
     [/^Cashew_4_SonarPing$/, { ability: "Stealth Drone", shape: "reveal", r: 1000 }],
-    [/^Cashew_E_Explosion$/, { ability: "Guided Salvo", shape: "area", r: 400 }],
+    [/^Cashew_E_Explosion$/, { ability: "Guided Salvo", shape: "area", r: 450 }],
     [/^Cashew_E_MapMissileMarker/, { ability: "Guided Salvo", shape: "badge", small: true, unlisted: true, label: "Guided Salvo target" }],
     [/^Cashew_E_AirStrikeMortar$/, { ability: "Guided Salvo", shape: "hidden" }],
     [/^Cashew_Q_ShellShockGrenade/, { ability: "Special Delivery", shape: "area", r: 500, pop: 0.8 }],
