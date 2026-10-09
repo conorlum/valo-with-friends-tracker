@@ -1030,6 +1030,37 @@ def test_preview_uses_actual_asset_counts_and_never_creates_floor_labels():
     assert '"unframed_floor"' in core
 
 
+def test_drawn_sight_edge_exports_and_reimports_as_a_valid_polyline():
+    got = run_page("""
+      function run(p) {
+        const page = openPage(p.data, {map: "Ascent"}), A = page.api;
+        A.ui.sel = "feature-1";
+        A.ui.editState[A.ui.sel] = "closed";
+        A.setTool("line");
+        A.ui.draft = {kind: "line", points: [[320, 320], [352, 320]]};
+        A.finishDraft();
+        page.click("featExport");
+        const file = page.downloads[page.downloads.length - 1];
+        if (!file) return {exported: false};
+        const tags = JSON.parse(file.text);
+        const mf = tags.maps.Ascent.map_features;
+        const closed = mf.features.find(f => f.id === "feature-1").states.find(s => s.name === "closed");
+        const fresh = openPage(p.data, {map: "Ascent"});
+        fresh.api.importText(file.text, file.name);
+        const accepted = !fresh.el("featImportReplace").disabled;
+        fresh.click("featImportReplace");
+        return {exported: true, accepted: accepted, mf: mf,
+                edge: closed.sight[closed.sight.length - 1],
+                restored: fresh.plain(fresh.api.fe.Ascent.mf)};
+      }
+    """, {"data": page_data(future=False)})
+    assert got["exported"], "drawing a sight edge must not prevent reviewed export"
+    assert got["edge"] == {"geometry": {"type": "polyline", "uv": [[3125, 3125], [3437.5, 3125]]},
+                           "bounds": {"ref": "unresolved"}}
+    assert ms.validate(got["mf"], "Ascent").errors == []
+    assert got["accepted"] and got["restored"] == got["mf"]
+
+
 def test_the_tagger_reads_a_maps_heights_from_an_export_when_given_one(tmp_path):
     import numpy as np
 
