@@ -5,8 +5,9 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
 (`scripts/control_feasibility/engine_proto.py`) with the rules settled after it:
 
 - **Ticks (Q75).** Every TICK_STEP_S, plus a tick at each event, all on the 1/GRID_HZ s grid:
-  deaths, each ability's placement, throw and end, flash and nearsight hits (and their ends), status
-  and reveal starts and ends, and shots (at most one per SHOT_WINDOW_S). A death gets two ticks: the
+  deaths, each ability's placement, throw and end, status
+  and reveal starts and ends, and shots (at most one per SHOT_WINDOW_S). Flash and nearsight hits are exact
+  `[t, t + dur)` intervals, never snapped, and their ends are analytic instants (P07). A death gets two ticks: the
   last grid point before it (the dying player is alive there, so their lost control is exact) and
   the first at or after it (the state without them). Status and utility intervals are snapped to
   the grid too. Integrals weight each tick by the time to the next one, clipped at the live round's
@@ -14,8 +15,14 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
 - **Vision.** Each alive player's 103-degree view, raycast on the sight mask with smokes (hollow or
   solid), Viper's wall while it is up (its laid line; no corner tolerance) and the Q72 corner
   tolerance (geometry.py). The held cone's width follows the
-  movement over SPEED_WINDOW_S. Flashed: nothing. Nearsighted: a bubble. Concussed, stunned or
+  movement over SPEED_WINDOW_S. Nearsighted: a bubble. Concussed, stunned or
   revealed: all of it passive (Q42, Q57).
+- **Blinded (P07; docs/superpowers/specs/2026-10-06-replay-player-state-design.md, section 2).** Zero personal
+  control: no sight, presence or memory (kept in Memory and eaten as usual, never reinstalled), so no backfill;
+  no coverage, control, Q63 last-player credit, space taken or loss at a death. The body stays: alive, in place,
+  seen by the enemy, a source of the enemy's unknown, its own node evidence against its team's. Their trip,
+  alarmbot, Chamber trap and turret keep watching for the team, credited to nobody; a camera or drone they operate
+  shows nothing. Removing them in a counterfactual changes nothing. Their lost view is still contested (Q55).
 - **Memory (D6).** Ground a player saw and looked away from stays theirs as passive control until
   the team's unknown reaches it (2026-10-01; it replaced decay from open ground) or an enemy holds
   it live: a view, a watcher, standing in it (2026-10-04, D5). Memory dies with
@@ -154,9 +161,11 @@ SAME_DEATH_S = 1.0
 
 # Placeholders for blobs from before revision 10 (plan: "Inputs the blob lacks"). A flash row's `t`
 # is the cast, not the hit, and the per-target blind time was dropped by the condenser. Defined once in
-# app/replays/status_intervals.py (POLICY), which the browser mirrors, so the engine and the viewer can't drift.
-from app.replays.status_intervals import (  # noqa: E402
-    FLASH_DEFAULT_S, FLASH_FULL_S, FLASH_FUSE_S, NEARSIGHT_DEFAULT_S, NEARSIGHT_S)
+# app/replays/status_intervals.py (POLICY), which the browser mirrors, so the engine and the viewer can't drift;
+# its normaliser turns the rows into the engine's blind intervals (`RoundInputs._blinds`). Named here so the
+# constants pin (test_control_format) keeps covering them.
+from app.replays.status_intervals import (  # noqa: E402,F401
+    FLASH_DEFAULT_S, FLASH_FULL_S, FLASH_FUSE_S, NEARSIGHT_DEFAULT_S, NEARSIGHT_S, normalize_conditions)
 # How long one enemy ability-damage hit keeps its victim contested past the hit.
 DAMAGE_CONTEST_PAD_S = 0.5
 
@@ -496,11 +505,9 @@ class RoundInputs:
                         self.damage_zones.append((t0, t1, e["u"] * px_per_uv, e["v"] * px_per_uv,
                                                   r * geo.uv_per_unit * px_per_uv, e.get("by")))
                 self._watcher(e, key, t0, t1)
-            elif k == "flash":
-                self._flash(e, util)
-            elif k == "nearsight":
-                self._nearsight(e)
-            elif k in ("reveal", "status", "flash", "nearsight") and self.evolution and self._immune_row(e):
+            elif k in ("flash", "nearsight"):
+                continue            # `_blinds`, below: all of them at once, through the shared normaliser
+            elif k in ("reveal", "status") and self.evolution and self._immune_row(e):
                 continue
             elif k == "reveal":
                 self.downgraded[e["target"]].append(_span(e["t"], e["t1"]))
@@ -520,6 +527,7 @@ class RoundInputs:
                         self.miss("shot without a gun (longest hearing range used)", int(e["by"]))
             elif k == "damage":
                 self._damage(e)
+        self._blinds(util)
         if not any(e.get("k") == "damage" for e in util):
             self.missing["damage hits (enemy damage zones only)"] += 1
         self._suppress_devices(util)
@@ -552,47 +560,40 @@ class RoundInputs:
             return not utility.affects(capability, self.evolution, e["target"], float(e["t"]))
         return False
 
-    def _flash(self, e: dict, util: list) -> None:
-        if self.evolution:
-            e = self._unhit(e)
-        if "hits" in e:
-            for slot, t, dur in e["hits"]:
-                if dur is None:
-                    dur = FLASH_FULL_S.get((e.get("ability") or "").split("_")[0], FLASH_DEFAULT_S)
-                    self.missing["flash hit without a duration (placeholder used)"] += 1
-                self.flashed[slot].append(_span(t, t + dur))
-                self.events += [t, t + dur]
-            return
-        pop = next((a["t"] for a in util if a.get("k") == "ability" and a.get("by") == e.get("by")
-                    and (a.get("thrown") or {}).get("t0") == e["t"]), e["t"] + FLASH_FUSE_S)
-        dur = FLASH_FULL_S.get((e.get("ability") or "").split("_")[0], FLASH_DEFAULT_S)
-        for s in e.get("targets", []):
-            self.flashed[s].append(_span(pop, pop + dur))
-            self.events += [pop, pop + dur]
-            self.missing["flash hit time and blind duration (placeholder used)"] += 1
+    def _blinds(self, util: list) -> None:
+        """Flash and nearsight hits as exact `[t, t + dur)` intervals (P07; the plan's amendment "Exact flash and
+        nearsight intervals"): the shared normaliser's (app/replays/status_intervals.py, which the viewer mirrors),
+        unsnapped, cut at the end of the life they start in and at the round's end, overlaps merged; a zero or
+        negative duration is nothing. Their ends are analytic instants (`transitions`), like an ability wall's. An
+        ulting Veto's hits are taken out first (W10). Placeholders are counted in `missing`, as before."""
+        rows = []
+        for e in util:
+            k = e.get("k")
+            if k == "ability":
+                rows.append(e)      # the normaliser finds an older flash row's explosion in its thrower's ability row
+            elif k in ("flash", "nearsight"):
+                e = self._unhit(e) if self.evolution else e
+                rows.append(e)
+                if "hits" in e:
+                    gaps = sum(1 for h in e["hits"] if h[2] is None)
+                    case = "flash hit without a duration" if k == "flash" else "nearsight hit without a duration"
+                else:
+                    gaps = len(e.get("targets") or [])
+                    case = ("flash hit time and blind duration" if k == "flash"
+                            else "nearsight hit time and duration")
+                if gaps:
+                    self.missing[f"{case} (placeholder used)"] += gaps
+        lives = {str(s): [[a, None if b == math.inf else b] for a, b in ivs] for s, ivs in self.lives.items()}
+        for slot, spans in normalize_conditions(rows, lives, self.t_end).items():
+            for c in spans:
+                (self.flashed if c["c"] == "blinded" else self.nearsight)[slot].append((c["t0"], c["t1"]))
+                self.transitions += [c["t0"], c["t1"]]
 
     def _unhit(self, e: dict) -> dict:
         """A flash or nearsight row without its hits on an ulting Veto: they never blind him (W10)."""
         hits = [h for h in e.get("hits") or [] if utility.affects("blind", self.evolution, h[0], float(h[1]))]
         targets = [s for s in e.get("targets") or [] if utility.affects("blind", self.evolution, s, float(e["t"]))]
         return {**e, "targets": targets, **({"hits": hits} if "hits" in e else {})}
-
-    def _nearsight(self, e: dict) -> None:
-        if self.evolution:
-            e = self._unhit(e)
-        if "hits" in e:
-            for slot, t, dur in e["hits"]:
-                if dur is None:
-                    dur = NEARSIGHT_DEFAULT_S
-                    self.missing["nearsight hit without a duration (placeholder used)"] += 1
-                self.nearsight[slot].append(_span(t, t + dur))
-                self.events += [t, t + dur]
-            return
-        dur = NEARSIGHT_S.get(e.get("ability"), NEARSIGHT_DEFAULT_S)
-        for s in e.get("targets", []):
-            self.nearsight[s].append(_span(e["t"], e["t"] + dur))
-            self.events += [e["t"], e["t"] + dur]
-            self.missing["nearsight hit time and duration (placeholder used)"] += 1
 
     def _damage(self, e: dict) -> None:
         by, target = e.get("by"), e.get("target")
@@ -984,6 +985,43 @@ class Holder:
     flagged: bool            # enemy damage, a wallbang or a contesting status on them
     mode: str
     memory: np.ndarray | None = None   # the remembered part of `passive` (Memory.apply), flat
+    blind: bool = False      # flashed now (P07): alive, in place and seen, with no personal control
+
+
+# Zero personal control while blinded (P07; the design's section 2, the plan's amendment "Blinded control"). A
+# blinded player keeps their body: alive, positioned, seen by the enemy, a source of the enemy's unknown and their
+# own node evidence against their team's (`live_mask`). Their sight, presence and memory are off, so they get no
+# backfill; their trip, alarmbot, Chamber trap and turret still watch for the team, credited to nobody; a camera or
+# drone they operate shows nothing. One function per rule, so each can be switched off alone.
+
+
+def credited(h: Holder) -> bool:
+    """Whether the player's own coverage, control (the Q63 last-player credit included) and space taken count now."""
+    return not h.blind
+
+
+def contributes(h: Holder) -> bool:
+    """Whether removing the player in a counterfactual takes anything away. A blinded player holds nothing
+    personal, and their body and devices stay, so the team's state without them is the state."""
+    return not h.blind
+
+
+def remembers(h: Holder) -> bool:
+    """Whether remembered ground is the player's passive control now. Not while blinded: it stays in Memory, where
+    the unknown and the enemy's live claims go on eating it, and comes back only as it is at the blind's end."""
+    return not h.blind
+
+
+def device_sees(kind: str, blind: bool) -> bool:
+    """A camera or drone shows ground only through its operator's eyes; the other watchers work on their own."""
+    return not (blind and kind in ("drone", "camera"))
+
+
+def live_mask(h: Holder) -> np.ndarray:
+    """The live control that holds the team's unknown back (before Memory): view, watchers and own node."""
+    lv = h.active | h.passive | h.watch
+    lv[h.cell] = True
+    return lv
 
 
 @dataclass
@@ -1132,7 +1170,8 @@ class Tick:
                 raw = cast(geo, x, y, yaw + np.arange(-FOV_HALF, FOV_HALF + 1e-9, RAY_STEP_DEG), self.smokes,
                            eye_z=self._eye(s, t, cell), own=cell, record=self.fallbacks)
             body = raw.copy()
-            if _during(rnd.flashed[s], t):
+            blind = _during(rnd.flashed[s], t)
+            if blind:
                 body[:] = False
             elif _during(rnd.nearsight[s], t):
                 r = NEARSIGHT_RADIUS_M / geo.m_per_px
@@ -1142,16 +1181,17 @@ class Tick:
             else:
                 active = body & sector(geo, x, y, yaw, CONE_HALF[mode])
             passive = body & ~active
-            if not _during(rnd.flashed[s], t):
+            if not blind:
                 passive |= self._presence(x, y, cell) & ~active
-            watch = self._watch(s, t)
+            watch = self._watch(s, t, blind)
             enemy = "B" if rnd.team[s] == "A" else "A"
             flagged = _during(rnd.contest_status[s], t) or _during(rnd.hit_contest[s], t) or any(
                 t0 <= t < t1 and (x - zx) ** 2 + (y - zy) ** 2 < r * r and rnd.team.get(by) == enemy
                 for t0, t1, zx, zy, r, by in rnd.damage_zones)
-            self.holders[s] = Holder(s, rnd.team[s], cell, x, y, active, passive, watch, raw, body, flagged, mode)
+            self.holders[s] = Holder(s, rnd.team[s], cell, x, y, active, passive, watch, raw, body, flagged, mode,
+                                     blind=blind)
             if geo.heights is not None and s not in using:
-                looks[s] = (yaw, self._eye(s, t, cell), _during(rnd.flashed[s], t), _during(rnd.nearsight[s], t),
+                looks[s] = (yaw, self._eye(s, t, cell), blind, _during(rnd.nearsight[s], t),
                             None if _during(rnd.downgraded[s], t) else CONE_HALF[mode])
         # (viewer, enemy) -> in the viewer's active cone: enemies seen at their own height, above their floor
         self.direct: dict[tuple[int, int], bool] = self._direct(looks) if looks else {}
@@ -1164,9 +1204,7 @@ class Tick:
         self.view: dict[int, np.ndarray] = {}
         for s, h in self.holders.items():
             self.view[s] = h.active | h.passive
-            lv = h.active | h.passive | h.watch
-            lv[h.cell] = True
-            self.live[s] = lv
+            self.live[s] = live_mask(h)
         # enemy sight of each holder: sees[e] = the holders e's body view reaches
         self.sees = {e.slot: {h.slot for h in self.holders.values()
                               if h.team != e.team and (e.body[h.cell] or (e.slot, h.slot) in self.direct)}
@@ -1300,11 +1338,11 @@ class Tick:
             fronts = grown
         return {int(s): owner == s for s in np.unique(owner[owner >= 0]).tolist()}
 
-    def _watch(self, s: int, t: float) -> np.ndarray:
+    def _watch(self, s: int, t: float, blind: bool = False) -> np.ndarray:
         geo, rnd = self.geo, self.rnd
         watch = np.zeros(geo.n, bool)
         for w in rnd.watchers:
-            if w.by != s or not _watching(w, t):
+            if w.by != s or not _watching(w, t) or not device_sees(w.kind, blind):
                 continue
             if w.kind in ("trip", "area"):
                 watch[w.cells] = True
@@ -1487,9 +1525,7 @@ class Tick:
     def _live_of(self, h: Holder) -> np.ndarray:
         if h.slot in self.live:
             return self.live[h.slot]
-        lv = h.active | h.passive | h.watch
-        lv[h.cell] = True
-        return lv
+        return live_mask(h)
 
     def live_claims(self, side: str, removed: int | None = None) -> np.ndarray:
         """Flat cells `side` holds with something live, without `removed`: a view, a watcher or a player's own
@@ -1555,9 +1591,15 @@ class Tick:
     def compose(self, removed: int | None = None, base: dict | None = None, full: bool = True,
                 stats: dict | None = None) -> dict:
         """The tick's cell states. `removed` drops one player (the counterfactual). With `base` and
-        not `full`, fills are reused or extended from the base instead of recomputed."""
-        geo, walk = self.geo, self.geo.walk_n
+        not `full`, fills are reused or extended from the base instead of recomputed.
+
+        Removing a blinded player removes their personal contribution, which is nothing (P07): their body, own node
+        and devices stay, so either counterfactual is the state itself."""
         stats = stats if stats is not None else defaultdict(int)
+        if removed is not None and not contributes(self.holders[removed]):
+            stats["removed_holds_nothing"] += 1
+            return base if base is not None else self.compose(stats=stats)
+        geo, walk = self.geo, self.geo.walk_n
         cl = {s: self.claims(s, removed) for s in ("A", "B")}
         fills = {}
         rside = self.holders[removed].team if removed is not None else None
@@ -1704,14 +1746,19 @@ class Tick:
         """Per player (Q60): active and passive cells, shared cells split evenly, and the active and
         passive masks."""
         out = {}
+        none = np.zeros(self.geo.n, bool)
         for side in ("A", "B"):
-            hs = self.team(side, None)
+            hs = []
+            for h in self.team(side, None):
+                if credited(h):
+                    hs.append(h)
+                else:   # blinded (P07): nothing of theirs is credited, and they share nobody's cells
+                    out[h.slot] = (0.0, 0.0, none, none)
             if not hs:
                 continue
             # backfill on ground the team already holds as Safe stays the team's, credited to nobody
             safe = self._safe.get(side)
             back = {s: m & ~safe if safe is not None else m for s, m in self.backfill(side).items()}
-            none = np.zeros(self.geo.n, bool)
             n_act = sum(h.active.astype(np.int8) for h in hs)
             n_pas = sum((h.passive | h.watch | back.get(h.slot, none)).astype(np.int8) for h in hs)
             for h in hs:
@@ -2035,8 +2082,7 @@ class Unknown:
             solid = self._trips(tick, side)
             for h in tick.holders.values():
                 if h.team == side:
-                    live |= h.active | h.passive | h.watch
-                    live[h.cell] = True
+                    live |= live_mask(h)
                     spots |= h.active | h.watch
                 else:
                     shut[h.cell] = False                       # one standing in a pinch is in it
@@ -2475,8 +2521,7 @@ class Memory:
         # enemy holding remembered ground live ends it (the user's call, 2026-10-04: D5)
         live: dict[str, np.ndarray] = {}
         for h in tick.holders.values():
-            lv = h.active | h.passive | h.watch
-            lv[h.cell] = True
+            lv = live_mask(h)
             live[h.team] = live[h.team] | lv if h.team in live else lv
         for h in tick.holders.values():
             if h.slot in self.cells:
@@ -2489,8 +2534,9 @@ class Memory:
         for h in tick.holders.values():
             seen = (h.active | h.passive) & walk
             if h.slot in self.cells:
-                h.memory = self.cells[h.slot] & ~h.active
-                h.passive = h.passive | h.memory
+                if remembers(h):     # blinded: kept (and eaten) here, but not theirs until they see again (P07)
+                    h.memory = self.cells[h.slot] & ~h.active
+                    h.passive = h.passive | h.memory
                 self.cells[h.slot] |= seen
             else:
                 self.cells[h.slot] = seen
@@ -2776,7 +2822,10 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                 cf_check["max_cells_differing"] = max(cf_check["max_cells_differing"], diff)
             base_score = score(state, side)
             last = not tick.team(side, s)
-            if last:  # Q63: no terminal flip; the last player controls only what the team loses
+            if not credited(h):
+                # blinded (P07): no control, a last player's Q63 credit included, and so no loss if they die now
+                drop = np.zeros(geo.n, np.int8)
+            elif last:  # Q63: no terminal flip; the last player controls only what the team loses
                 drop = (base_score > 0).astype(np.int8)
             else:
                 drop = base_score - score(cf["state"], side)
