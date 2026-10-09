@@ -1236,12 +1236,13 @@
 
   // The preview masks with each feature's state drawn in: app/control/features.py `compose_masks`, bit for bit.
   // `sight`/`walk` are PX * PX Uint8Arrays (1 blocks / 1 walkable); returns new arrays.
-  function composeFeatures(sight, walk, mf, states) {
+  function composeFeatures(sight, walk, mf, states, placement) {
     var s = new Uint8Array(sight), w = new Uint8Array(walk);
     function apply(cells, fn) {
       for (var i = 0; i < PX * PX; i++) if (cells[((i >> 10) >> 2) * P + ((i & 1023) >> 2)]) fn(i);
     }
     (mf.features || []).forEach(function (f) {
+      if (placement && (!placement[f.id] || !placement[f.id].ok)) return;
       var st = stateOf(f, states);
       if (!st) return;
       if (st.footprint) {
@@ -1254,6 +1255,69 @@
       });
     });
     return { sight: s, walk: w };
+  }
+
+  function resolvePlacement(cells, context) {
+    var ordered = Array.from(new Set(cells)).sort(function(a,b) {return a-b;}), grouped = {}, counts = [];
+    var path = context.path || 'geometry';
+    function reason(code, bad, floors) {return {code: code, path: path, cells: bad, cell_count: bad.length, floor_counts: floors};}
+    ordered.forEach(function(cell) {
+      var count = context.flat ? Number(!!context.walk[cell]) : (context.floor_counts[cell] || 0), code = null;
+      counts.push(count);
+      if (!Number.isInteger(cell) || cell < 0 || cell >= 128 * 128) code = 'off_map';
+      else if (!context.walk[cell]) code = 'off_ground';
+      else if (!context.flat && context.unresolved[cell]) code = 'unresolved_height';
+      else if (!context.flat && count === 0) code = 'missing_floor';
+      else if (!context.flat && count !== 1) code = 'multi_floor';
+      if (code) {var bucket = grouped[code] || (grouped[code] = [[], []]); bucket[0].push(cell); bucket[1].push(count);}
+    });
+    var reasons = Object.keys(grouped).sort().map(function(code) {return reason(code, grouped[code][0], grouped[code][1]);});
+    if (!ordered.length) reasons.push(reason('empty_geometry', [], []));
+    return {ok: reasons.length === 0, cells: ordered, floor_counts: counts, reasons: reasons};
+  }
+
+  // Preview only: all required geometry and linked placements are atomic per bundle.
+  function previewPlacement(mf, context) {
+    var out = {};
+    (mf.features || []).forEach(function(f) {
+      var reasons = [];
+      var candidate = Object.assign({}, context, {walk:Array.from(context.walk)});
+      if (context.flat) {
+        var bundle = (mf.bundles || []).find(function(b) {return (b.members || []).indexOf(f.id) >= 0;});
+        var members = bundle ? bundle.members : [f.id];
+        (mf.features || []).filter(function(other) {return members.indexOf(other.id) >= 0;}).forEach(function(other) {
+          var mask = raster((other.base_edits || {}).potential_ground);
+          for (var i = 0; i < mask.length; i++) if (mask[i]) candidate.walk[Math.floor(Math.floor(i / P) / 2) * 128 + Math.floor((i % P) / 2)] = 1;
+        });
+      }
+      function shape(g, path) {
+        var cells = [], mask = raster(g);
+        for (var i = 0; i < mask.length; i++) if (mask[i]) cells.push(Math.floor(Math.floor(i / P) / 2) * 128 + Math.floor((i % P) / 2));
+        reasons = reasons.concat(resolvePlacement(cells, Object.assign({}, candidate, {path: path})).reasons);
+      }
+      function bounds(b, path) {
+        var ref = b && b.ref, lo = b && known(b.bottom), hi = b && known(b.top);
+        if (ref !== 'all_height' && !((ref === 'ground' || ref === 'world') && lo !== null && hi !== null && hi > lo))
+          reasons.push({code: 'invalid_bounds', path: path, cells: [], cell_count: 0, floor_counts: []});
+      }
+      function parts(s, path, phase) {
+        if (s.footprint || s.blocks_movement) shape(s.footprint, path + '.footprint');
+        if (s.blocks_sight && s.footprint) bounds(s.sight_bounds, path + '.sight_bounds');
+        (s.sight || []).forEach(function(o,i) {shape(o.geometry, path + '.sight[' + i + '].geometry'); bounds(o.bounds, path + '.sight[' + i + '].bounds');});
+        if (phase && (s.panel || s.geometry || s.footprint)) {shape(s.panel || s.geometry || s.footprint, path + '.panel'); bounds(s.sight_bounds, path + '.sight_bounds');}
+      }
+      (f.states || []).forEach(function(s) {parts(s, 'features.' + f.id + '.states.' + s.name, false);});
+      ((f.rotation || {}).phases || []).forEach(function(s,i) {parts(s, 'features.' + f.id + '.rotation.phases[' + i + ']', true);});
+      ['potential_ground', 'remove_sight'].forEach(function(k) {if ((f.base_edits || {})[k]) shape(f.base_edits[k], 'features.' + f.id + '.base_edits.' + k);});
+      (mf.triggers || []).forEach(function(t) {if ((t.targets || []).some(function(x) {return x.feature === f.id;})) shape(t.geometry, 'triggers.' + t.id + '.geometry');});
+      (mf.routes || []).forEach(function(r) {if (r.owner === f.id) (r.endpoints || []).concat((r.access || {}).sites || []).forEach(function(e) {shape({type:'point', uv:e.uv}, 'routes.' + r.id + '.' + e.id);});});
+      out[f.id] = {ok: !reasons.length, reasons: reasons};
+    });
+    (mf.bundles || []).forEach(function(b) {
+      var reasons = [].concat.apply([], (b.members || []).map(function(id) {return out[id] ? out[id].reasons : [{code:'missing_member', path:id, cells:[], cell_count:0, floor_counts:[]}];}));
+      if (reasons.length) (b.members || []).forEach(function(id) {if (out[id]) out[id] = {ok:false, reasons:reasons};});
+    });
+    return out;
   }
 
   function stateOf(feature, states) {
@@ -1511,7 +1575,8 @@
     Drafts: Drafts, draftSourceKey: draftSourceKey, DRAFT_PREFIX: DRAFT_PREFIX,
     DRAFT_FORMAT: DRAFT_FORMAT, draftFile: draftFile, importDraft: importDraft, draftCatalogue: draftCatalogue,
     draftModelProblems: draftModelProblems, sourceDiffers: sourceDiffers, maxHigh: maxHigh, raiseNextId: raiseNextId,
-    raster: raster, composeFeatures: composeFeatures, stateOf: stateOf, makeBreakable: makeBreakable, CELL_UV: CELL_UV,
+    raster: raster, composeFeatures: composeFeatures, resolvePlacement: resolvePlacement, previewPlacement: previewPlacement,
+    stateOf: stateOf, makeBreakable: makeBreakable, CELL_UV: CELL_UV,
     rotationPose: rotationPose, mapSummary: mapSummary,
     importCatalogue: importCatalogue, diffCatalogues: diffCatalogues,
     exportCatalogue: exportCatalogue,

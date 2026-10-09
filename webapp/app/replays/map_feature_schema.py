@@ -158,8 +158,8 @@ def route_template(kind: str) -> dict:
     """A route's unknown-everything skeleton: two endpoints, both directions, endpoint-only access."""
     def way(a, b):
         return {"from": a, "to": b, "entry": unresolved(), "transit": unresolved(), "length": unresolved()}
-    return {"kind": kind, "endpoints": [{"id": "a", "uv": None, "floor": unresolved()},
-                                        {"id": "b", "uv": None, "floor": unresolved()}],
+    return {"kind": kind, "endpoints": [{"id": "a", "uv": None},
+                                        {"id": "b", "uv": None}],
             "path": None, "access": "endpoint_only", "directions": [way("a", "b"), way("b", "a")],
             "states": None, "in_transit": "unresolved"}
 

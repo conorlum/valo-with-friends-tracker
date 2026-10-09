@@ -171,7 +171,7 @@
   function createPreset(name) {
     var label = $("featNewName").value.trim();
     if (name === "trigger") {
-      var t = F.addObject(mf(), "trigger", { name: label || "Switch", type: "switch", geometry: null, floor: { status: "unresolved" }, targets: [] });
+      var t = F.addObject(mf(), "trigger", { name: label || "Switch", type: "switch", geometry: null, targets: [] });
       ui.sel = t.id; ui.placing = "trigger"; setTool("point");
       commit(t.mf, true);
       return;
@@ -220,7 +220,6 @@
 
   function placePoint(p) {
     var uv = uvOf(p);
-    if (ui.placing === "floorpick") { pickFloor(uv); return; }
     var t = target("point");
     if (!t) return;
     commit(F.setField(mf(), ui.sel, t.path, t.raw ? uv : { type: "point", uv: uv }), true);
@@ -277,29 +276,11 @@
     commit(r.mf);
   }
 
-  // ---------------------------------------------------------------- floors
-  function floorsAt(uv) {
-    var fd = (FD.floors || {})[mapName()];
-    if (!fd) return [];
-    if (!fd._arr) {
-      var bin = atob(fd.floors), buf = new ArrayBuffer(bin.length), v = new Uint8Array(buf);
-      for (var i = 0; i < bin.length; i++) v[i] = bin.charCodeAt(i);
-      fd._arr = new Int16Array(buf);
-    }
-    var cell = Math.floor(uv[1] * UVPX / 8) * 128 + Math.floor(uv[0] * UVPX / 8), out = [];
-    for (var k = 0; k < fd.max_floors; k++) { var z = fd._arr[cell * fd.max_floors + k]; if (z >= 0) out.push(z / 10); }
-    return out;
-  }
-  function pickFloor(uv) {
-    var zs = floorsAt(uv), fd = FD.floors[mapName()];
-    ui.placing = null; setTool("select");
-    if (!zs.length) { ui.message = "No floor in the height asset there: add a manual label instead."; render(); return; }
-    var next = mf();
-    zs.forEach(function (z) {
-      var a = F.addObject(next, "floor", { label: "floor at " + z.toFixed(1) + " m", z_band: [Math.round((z - 0.75) * 100) / 100, Math.round((z + 0.75) * 100) / 100], height_sha: fd.height_sha, origin_z: fd.origin_z });
-      next = a.mf;
-    });
-    commit(next, true);
+  function placements() {
+    var walk = TG.state.masks && TG.state.masks.walk, fd = (FD.floors || {})[mapName()] || {flat:true};
+    var cells = new Uint8Array(128 * 128);
+    if (walk) for (var i = 0; i < walk.length; i++) if (walk[i]) cells[Math.floor(Math.floor(i / PX) / 8) * 128 + Math.floor((i % PX) / 8)] = 1;
+    return F.previewPlacement(mf(), {walk:cells, flat:fd.flat === true, floor_counts:fd.floor_counts || [], unresolved:fd.unresolved || []});
   }
 
   // ---------------------------------------------------------------- drawing
@@ -428,7 +409,7 @@
     if (!base || !ui.showComposed) return null;
     var states = {};
     (mf().features || []).forEach(function (f) { states[f.id] = shownState(f); });
-    var m = F.composeFeatures(base.sight, base.walk, mf(), states), img = ctx.createImageData(PX, PX), d = img.data;
+    var m = F.composeFeatures(base.sight, base.walk, mf(), states, placements()), img = ctx.createImageData(PX, PX), d = img.data;
     for (var i = 0; i < PX * PX; i++) {
       if (m.walk[i] !== base.walk[i]) { d[i * 4] = 255; d[i * 4 + 1] = 209; d[i * 4 + 2] = 102; d[i * 4 + 3] = 120; }
       if (m.sight[i] !== base.sight[i]) { d[i * 4] = 229; d[i * 4 + 1] = 72; d[i * 4 + 2] = 77; d[i * 4 + 3] = 170; }
@@ -493,7 +474,7 @@
         if (!e.uv) return;
         pts[e.id] = pxOf(e.uv);
         drawGeom({ type: "point", uv: e.uv }, colour);
-        var fl = typeof e.floor === "string" ? (F.find(m, e.floor) || {}).label || e.floor : "floor ?";
+        var fl = "automatic placement";
         // landings at one spot (a rope between floors) stack their labels instead of overprinting
         var key = e.uv.join(","), n = stacked[key] = (stacked[key] || 0) + 1;
         label(e.id.toUpperCase() + " · " + fl, pxOf(e.uv), colour, (n - 1) * 15);
@@ -710,21 +691,14 @@
     l.textContent = legend; f.appendChild(l);
     return f;
   }
-  function floorOptions(allowUnresolved) {
-    var out = allowUnresolved ? [["", "unresolved"]] : [];
-    (mf().floors || []).forEach(function (fl) { out.push([fl.id, (fl.label || fl.id) + (fl.z_band ? " (" + fl.z_band[0] + "–" + fl.z_band[1] + " m)" : " (manual)")]); });
-    return out;
-  }
   function boundsEditor(fid, path, bounds) {
     var b = bounds || { ref: "unresolved" }, box = document.createElement("div");
     box.appendChild(row("Sight bounds", selectEl([["unresolved", "unresolved"], ["ground", "above a floor's ground"], ["world", "world height"], ["all_height", "every height (verified)"]], b.ref, function (ref) {
       var nb = { ref: ref };
       if (ref === "ground" || ref === "world") { nb.bottom = b.bottom || { status: "unresolved" }; nb.top = b.top || { status: "unresolved" }; }
-      if (ref === "ground") nb.floor = b.floor || ((mf().floors || [])[0] || {}).id;
       edit(fid, path, nb);
     })));
     if (b.ref === "ground" || b.ref === "world") {
-      if (b.ref === "ground") box.appendChild(row("Floor", selectEl(floorOptions(false), b.floor, function (v) { edit(fid, path.concat(["floor"]), v); })));
       box.appendChild(row("Bottom", valueEditor(b.bottom, "m", function (v) { edit(fid, path.concat(["bottom"]), v); })));
       box.appendChild(row("Top", valueEditor(b.top, "m", function (v) { edit(fid, path.concat(["top"]), v); })));
     }
@@ -754,7 +728,6 @@
     if (kind === "feature") featureProps(box, o);
     else if (kind === "trigger") triggerProps(box, o);
     else if (kind === "route") routeProps(box, o);
-    else if (kind === "floor") floorProps(box, o);
     var actions = document.createElement("div");
     actions.className = "row";
     if (kind === "feature") {
@@ -776,17 +749,7 @@
       function (v) { edit(f.id, ["initial_state"], v || null); })));
     box.appendChild(row("Drawing on state", selectEl(names.map(function (n) { return [n, n]; }), ui.editState[f.id] || f.initial_state || names[0],
       function (v) { ui.editState[f.id] = v; render(); })));
-    var floors = fieldset("Floors it affects (never all by default)");
-    var list = Array.isArray(f.floors) ? f.floors : [];
-    (mf().floors || []).forEach(function (fl) {
-      floors.appendChild(row(fl.label || fl.id, checkEl(list.indexOf(fl.id) >= 0, function (on) {
-        var next = list.filter(function (x) { return x !== fl.id; });
-        if (on) next.push(fl.id);
-        edit(f.id, ["floors"], next.length ? next : { status: "unresolved" });
-      })));
-    });
-    if (!(mf().floors || []).length) floors.appendChild(document.createTextNode("No floors yet: add one below (Floors)."));
-    box.appendChild(floors);
+    box.appendChild(row('Placement', document.createTextNode('Automatic: every required cell must have one measured floor.')));
     (f.states || []).forEach(function (s, si) {
       var fs = fieldset("State: " + s.name + (s.terminal ? " (terminal for the round)" : ""));
       fs.appendChild(row("Blocks movement", checkEl(s.blocks_movement, function (v) { edit(f.id, ["states", si, "blocks_movement"], v); })));
@@ -890,15 +853,12 @@
     var base = fieldset("Base map corrections (feature-owned, published only as a bundle)");
     base.appendChild(button("Paint potential ground", function () { ui.placing = "potential_ground"; setTool("brush"); }));
     base.appendChild(button("Paint sight to remove", function () { ui.placing = "remove_sight"; setTool("brush"); }));
-    base.appendChild(row("Restored ground floor", selectEl(floorOptions(true), (f.base_edits || {}).ground_binding || "",
-      function (v) { edit(f.id, ["base_edits", "ground_binding"], v || null); })));
     box.appendChild(base);
   }
 
   function triggerProps(box, t) {
     box.appendChild(row("Type", selectEl([["switch", "use switch"], ["shoot", "shoot target"], ["proximity", "proximity area"], ["other", "other / unknown"]], t.type,
       function (v) { edit(t.id, ["type"], v); })));
-    box.appendChild(row("Floor", selectEl(floorOptions(true), typeof t.floor === "string" ? t.floor : "", function (v) { edit(t.id, ["floor"], v || { status: "unresolved" }); })));
     if (t.type === "proximity" && !(t.geometry && t.geometry.type !== "point"))
       box.appendChild(row("Range (no area drawn)", valueEditor(t.range, "m", function (v) { edit(t.id, ["range"], v); })));
     var place = document.createElement("div");
@@ -926,8 +886,6 @@
     (r.endpoints || []).forEach(function (e, i) {
       var fs = fieldset("Landing " + e.id.toUpperCase() + (e.uv ? "" : " (not placed)"));
       fs.appendChild(button("Place " + e.id.toUpperCase(), function () { ui.placing = "endpoint:" + e.id; setTool("point"); }));
-      fs.appendChild(row("Floor", selectEl(floorOptions(true), typeof e.floor === "string" ? e.floor : "",
-        function (v) { edit(r.id, ["endpoints", i, "floor"], v || { status: "unresolved" }); })));
       box.appendChild(fs);
     });
     box.appendChild(row("Boarding", selectEl([["endpoint_only", "at the ends only"], ["sites", "also at marked sites"]],
@@ -936,7 +894,7 @@
     if (r.access && typeof r.access === "object") {
       box.appendChild(button("Add a boarding site", function () {
         var sites = (r.access.sites || []).slice(), id = "s" + (sites.length + 1);
-        sites.push({ id: id, uv: null, floor: { status: "unresolved" } });
+        sites.push({ id: id, uv: null });
         edit(r.id, ["access", "sites"], sites);
         ui.placing = "site:" + id; setTool("point");
       }));
@@ -957,14 +915,10 @@
         (r.states || [])[0] || "", function (v) { edit(r.id, ["states"], v ? [v] : null); })));
   }
 
-  function floorProps(box, fl) {
-    box.appendChild(row("Height band", document.createTextNode(fl.z_band ? fl.z_band[0] + " to " + fl.z_band[1] + " m (asset " + fl.height_sha + ", origin " + (Number.isInteger(fl.origin_z) ? fl.origin_z + " dm" : "not recorded") + ")" : "manual label (unresolved)")));
-  }
-
   function renderList() {
     var list = $("featList"), m = mf();
     list.innerHTML = "";
-    var all = [].concat(m.features || [], m.triggers || [], m.routes || [], m.floors || []);
+    var all = [].concat(m.features || [], m.triggers || [], m.routes || []);
     if (!all.length) { list.innerHTML = "<span class=\"note\">No features on this map yet. Pick a preset above.</span>"; return; }
     all.forEach(function (o) {
       var b = document.createElement("button");
@@ -973,15 +927,6 @@
       b.addEventListener("click", function () { ui.sel = o.id; render(); });
       list.appendChild(b);
     });
-    var floorsRow = document.createElement("div");
-    floorsRow.className = "row";
-    floorsRow.appendChild(button("Add floor label", function () {
-      var a = F.addObject(mf(), "floor", { label: "floor " + ((mf().floors || []).length + 1), z_band: null, height_sha: null });
-      ui.sel = a.id; commit(a.mf, true);
-    }, "a manual floor name: unresolved until a height asset gives it a band"));
-    if ((FD.floors || {})[mapName()]) floorsRow.appendChild(button("Floors from heights…", function () { ui.placing = "floorpick"; setTool("point"); },
-      "click a spot: its floors in the height asset become bindings"));
-    list.appendChild(floorsRow);
   }
 
   function renderIssues() {
@@ -990,6 +935,10 @@
     if (cur().incompatible) out.push("<b class=\"issue-error\">This map's loaded annotations use another schema version: shown empty, never overwritten.</b>");
     rep.errors.forEach(function (e) { out.push("<span class=\"issue-error\" data-where=\"" + esc(e.where) + "\">✖ " + esc(e.where) + ": " + esc(e.message) + "</span>"); });
     rep.warnings.forEach(function (w) { out.push("<span class=\"issue-warn\" data-where=\"" + esc(w.where) + "\">⚠ " + esc(w.where) + ": " + esc(w.message) + "</span>"); });
+    var placed = placements();
+    Object.keys(placed).sort().forEach(function(id) { placed[id].reasons.forEach(function(r) {
+      out.push('<span class="issue-warn">' + esc(id) + ': pending ' + esc(r.code) + ' (' + r.cell_count + ' cells)</span>');
+    }); });
     offGround(m).forEach(function (w) {
       out.push("<span class=\"issue-warn\" data-where=\"" + esc(w) + "\">⚠ " + esc(w) + ": landing not on walkable ground (the minimap may omit it: restore ground or move the landing; nothing is snapped)</span>");
     });

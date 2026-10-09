@@ -103,11 +103,10 @@ def choke_data(name: str, asset_dir: Path = choke_assets.ASSET_DIR) -> dict:
 
 
 def floor_data(name: str, asset_dir: Path = cg.ASSET_DIR, heights_dir: Path | None = None) -> dict | None:
-    """The map's height asset for the floor picker: each cell's floors (position-z dm above the lowest floor, -1
-    none) as base64 int16, with the digest and the origin a floor binding records. From `heights_dir` when it
+    """Actual asset floor counts and unresolved cells for automatic preview. From `heights_dir` when it
     holds `<Map>.height.npz` (the active asset, written by `control_heights.py export`: a map's heights live in
     the database once the replay worker builds them), else the committed asset. None for a map without heights:
-    its floors can only be manual labels, unresolved until an asset exists."""
+    preview explicitly uses flat placement."""
     exported = None if heights_dir is None else Path(heights_dir) / f"{name}.height.npz"
     if exported is not None and exported.is_file():
         asset = hc.load_asset(exported)
@@ -115,9 +114,11 @@ def floor_data(name: str, asset_dir: Path = cg.ASSET_DIR, heights_dir: Path | No
         index_path = asset_dir / "index.json"
         entry = (json.loads(index_path.read_text(encoding="utf-8")).get("maps", {}).get(name) or {}) if index_path.is_file() else {}
         if not entry.get("height_sha"):
-            return None
+            return {'flat': True, 'height_sha': None}
         asset = hc.load_asset(asset_dir / f"{name}.height.npz")
-    return {"height_sha": asset.digest, "origin_z": asset.origin_z, "max_floors": hc.MAX_FLOORS,
+    return {"flat": False, "height_sha": asset.digest, "origin_z": asset.origin_z, "max_floors": hc.MAX_FLOORS,
+            'floor_counts': (np.isfinite(asset.floors) & (asset.floors >= 0)).sum(axis=2).ravel().tolist(),
+            'unresolved': asset.unresolved.astype('uint8').ravel().tolist(),
             "floors": base64.b64encode(np.ascontiguousarray(asset.floors, dtype="<i2").tobytes()).decode("ascii")}
 
 

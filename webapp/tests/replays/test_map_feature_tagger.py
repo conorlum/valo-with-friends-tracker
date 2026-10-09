@@ -329,6 +329,53 @@ def test_with_no_feature_edits_the_export_is_exactly_export_tags():
 
 # ---- W14: the page
 
+
+@pytest.mark.parametrize('cells,walk,counts,unresolved,flat,codes', [
+    ([2, 1, 2], [1, 1, 1], [0, 1, 1], [0, 0, 0], False, []),
+    ([1], [1, 1], [1, 2], [0, 0], False, ['multi_floor']),
+    ([1], [1, 1], [1, 0], [0, 0], False, ['missing_floor']),
+    ([1], [1, 1], [1, 0], [0, 1], False, ['unresolved_height']),
+    ([1], [1, 0], [1, 0], [0, 0], False, ['off_ground']),
+    ([], [], [], [], False, ['empty_geometry']),
+    ([1], [1, 1], [], [], True, []),
+])
+def test_browser_placement_uses_actual_floor_counts(cells, walk, counts, unresolved, flat, codes):
+    result = run_node('function run(p) {return F.resolvePlacement(p.cells, p.context);}',
+                      {'cells': cells, 'context': {'walk': walk, 'floor_counts': counts, 'unresolved': unresolved,
+                                                  'flat': flat, 'path': 'fixture'}})
+    assert result['ok'] == (not codes)
+    assert [r['code'] for r in result['reasons']] == codes
+    assert result['cells'] == sorted(set(cells))
+    for r in result['reasons']:
+        assert r['path'] == 'fixture' and r['cell_count'] == len(r['cells'])
+
+
+def test_current_authoring_has_no_floor_picker_and_preserves_source_selectors():
+    ui = (WEBAPP / 'scripts' / 'control_tagger_features.js').read_text(encoding='utf-8')
+    guidance = (WEBAPP / 'scripts' / 'control_tagger.template.html').read_text(encoding='utf-8')
+    for phrase in ('Add floor label', 'Give each landing its floor', 'floorOptions(', 'floorpick', 'ground_binding'):
+        assert phrase not in ui + guidance
+    source = copy.deepcopy(MF)
+    source['features'][0]['floors'] = ['floor-old']
+    source['x_unknown'] = {'kept': True}
+    result = run_node('function run(p) {return {runtime: F.runtimeDigest(p), source: p};}', source)
+    assert result['runtime'] == ms.runtime_digest(source) and result['source'] == source
+
+
+def test_preview_keeps_required_sibling_and_trigger_placement_atomic():
+    from map_feature_artifact_toys import source_case
+    source = source_case()['map_features']
+    source['bundles'][0]['members'] = ['feature-1', 'feature-2']
+    source['bundles'] = source['bundles'][:1]
+    walk = [1] * (128 * 128)
+    counts = [1] * len(walk)
+    counts[40 * 128 + 43] = 2
+    got = run_node('function run(p) {return F.previewPlacement(p.mf, p.context);}',
+                   {'mf': source, 'context': {'walk': walk, 'floor_counts': counts,
+                                             'unresolved': [0] * len(walk), 'flat': False}})
+    assert not got['feature-1']['ok'] and not got['feature-2']['ok']
+    assert got['feature-1']['reasons'] == got['feature-2']['reasons']
+
 def test_the_page_carries_the_features_panel_and_the_python_contract(tmp_path):
     sys.path.insert(0, str(WEBAPP / "scripts"))
     import control_tagger
@@ -341,7 +388,8 @@ def test_the_page_carries_the_features_panel_and_the_python_contract(tmp_path):
     feats = data["features"]
     assert feats["schema_version"] == ms.SCHEMA_VERSION
     assert feats["presets"] == {p: ms.preset(p) for p in ms.PRESETS}, "presets come from the schema module, not a copy"
-    assert feats["seeds"]["Summit"] == ms.checklist_seed("Summit") and feats["floors"] == {"Ascent": None, "Summit": None}
+    assert feats["seeds"]["Summit"] == ms.checklist_seed("Summit")
+    assert all(v == {'flat': True, 'height_sha': None} for v in feats['floors'].values())
     for needle in ('data-mode="features"', 'data-preset="trigger"', ">Switch/trigger<", ">Breakable<", ">Zipline<",
                    ">Vertical rope<", 'data-ftool="polygon"', 'data-ftool="link"', 'data-ftool="brush"', 'id="featUndo"',
                    'id="featRedo"', 'id="zoomIn"', 'id="featSaved"', 'id="featImport"', 'id="featExport"',
@@ -365,7 +413,7 @@ def test_floor_data_is_embedded_only_for_maps_with_a_height_asset(tmp_path):
 
     from app.control import heights as hc
 
-    assert control_tagger.floor_data("Ascent") is None
+    assert control_tagger.floor_data('Ascent')['flat'] is True
     floors = -np.ones((128, 128, hc.MAX_FLOORS), np.int16)
     floors[10, 20, :2] = [0, 40]
     asset = hc.HeightAsset(floors, np.zeros_like(floors), np.zeros((128, 128), bool), np.zeros((128, 128), bool),
@@ -918,9 +966,9 @@ def test_a_downloaded_draft_restores_after_a_storage_failure():
     assert got["olderLabel"] == "Restore draft" and not got["olderDisabled"] and got["olderRestored"]
 
 
-def test_a_floor_picked_in_the_tagger_records_the_assets_origin():
+def test_preview_uses_actual_asset_counts_and_never_creates_floor_labels():
     source = (WEBAPP / "scripts" / "control_tagger_features.js").read_text(encoding="utf-8")
-    assert "height_sha: fd.height_sha, origin_z: fd.origin_z" in source
+    assert 'floor_counts:fd.floor_counts' in source and 'function pickFloor' not in source
     core = (WEBAPP / "scripts" / "control_tagger_core.js").read_text(encoding="utf-8")
     assert '"unframed_floor"' in core
 
@@ -939,7 +987,7 @@ def test_the_tagger_reads_a_maps_heights_from_an_export_when_given_one(tmp_path)
                            np.zeros((0, 5), np.int32), {"origin_z": -130})
     hc.save_asset(tmp_path / "Toy.height.npz", asset)
     (tmp_path / "index.json").write_text(json.dumps({"maps": {"Toy": {}}}), encoding="utf-8")
-    assert control_tagger.floor_data("Toy", tmp_path) is None, "no committed heights"
+    assert control_tagger.floor_data('Toy', tmp_path)['flat'] is True, 'no committed heights'
     got = control_tagger.floor_data("Toy", tmp_path, heights_dir=tmp_path)
     assert got["height_sha"] == asset.digest and got["origin_z"] == -130
-    assert control_tagger.floor_data("Other", tmp_path, heights_dir=tmp_path) is None
+    assert control_tagger.floor_data('Other', tmp_path, heights_dir=tmp_path)['flat'] is True
