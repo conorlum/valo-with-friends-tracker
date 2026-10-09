@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from app.replays import map_feature_schema as ms, map_feature_state as state
 
-FEATURE_COMPILER_VERSION = 2
+FEATURE_COMPILER_VERSION = 3
 FEATURE_MANIFEST_VERSION = 2
 FEATURE_NORMALIZATION_VERSION = 2
 FEATURE_CANONICAL_TAG_VERSION = 2

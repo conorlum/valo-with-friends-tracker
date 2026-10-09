@@ -558,6 +558,12 @@ def behaviour_problems(feature: dict) -> list[str]:
     """Why a feature's behaviour isn't runtime-ready: unresolved durations, policies, guards or delays."""
     out = []
     fid = feature.get("id")
+    if "sliding" in feature:
+        # The authoring preview is available; no engine consumer samples moving masks yet. Never silently
+        # compile a sliding door as one static "closing" footprint, even for an explicitly enabled bundle.
+        from app.replays.map_feature_motion import geometry_problems
+        out += [f"{fid}: {p}" for p in geometry_problems(feature)]
+        out.append(f"{fid}: sliding geometry requires a runtime motion consumer (preview only)")
     for row in feature.get("transitions") or []:
         rid = row.get("id")
         motion = row.get("motion")

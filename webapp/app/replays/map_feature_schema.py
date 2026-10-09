@@ -548,6 +548,10 @@ def _floor(rep, fl):
 
 
 def _feature(rep, f, floors):
+    if "sliding" in f:
+        from app.replays.map_feature_motion import geometry_problems
+        for message in geometry_problems(f):
+            rep.warn(f'{f.get("id")}.sliding', "motion_incomplete", message)
     fid = f.get("id")
     states = f.get("states") if isinstance(f.get("states"), list) else []
     names = [s.get("name") for s in states if isinstance(s, dict)]

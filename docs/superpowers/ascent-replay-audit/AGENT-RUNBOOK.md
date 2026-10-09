@@ -18,6 +18,10 @@ consumer. Never hide these distinctions under a single green "ready" badge.
 
 ## Session A — Complete definitions
 
+For the owner's later five-second closing observation and the optional sliding preview, follow
+[SLIDING-DOOR-STARTER.md](SLIDING-DOOR-STARTER.md). Its sampled panel replaces a whole-motion static
+approximation in the authoring preview; runtime motion sampling remains a separate integration boundary.
+
 1. Confirm the owner is using the regenerated page/version, and preserve Download draft before changing
    pages. Do not clear browser storage. Known older sight-edge types are repaired after integrity checks.
 2. Work through named issues in order: malformed shape, missing blocking footprint, unresolved bounds,

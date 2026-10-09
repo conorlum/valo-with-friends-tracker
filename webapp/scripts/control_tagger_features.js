@@ -187,6 +187,8 @@
     highs[mapName()] = Math.max(highs[mapName()] || 1, c.hist.high);
     if (!keepSel && ui.sel && !F.find(c.mf, ui.sel)) ui.sel = null;
     autosave();
+    ui.slideClosure = {};
+    resimulate();
     render();
   }
   function edit(id, path, value) { commit(F.setField(mf(), id, path, value), true); }
@@ -195,7 +197,7 @@
     var c = cur();
     ui.issueCells = null;
     c.hist = move(Object.assign({}, c.hist, { high: Math.max(c.hist.high || 1, highs[mapName()] || 1) }));
-    c.mf = c.hist.present; c.dirty = true; autosave(); render();
+    c.mf = c.hist.present; c.dirty = true; autosave(); ui.slideClosure = {}; resimulate(); render();
   }
   function doUndo() { step(F.undo); }
   function doRedo() { step(F.redo); }
@@ -235,6 +237,7 @@
     }
     if (pl === "pivot") return { path: ["rotation", "pivot"] };
     if (pl === "panel") return { path: ["rotation", "panel"] };
+    if (pl === "slide-open") return { path: ["sliding", "open_center"] };
     if (pl === "noise") return { path: ["noise", "origin"] };
     if (pl === "potential_ground" || pl === "remove_sight") return { path: ["base_edits", pl] };
     var si = stateIndex(o);
@@ -414,24 +417,45 @@
         var o = { t: e.t, kind: e.kind }; if (e.occupant) o.occupant = e.occupant; return o;
       });
       var trace = [];
-      try { trace = F.run(f, mine, s.t); } catch (err) { trace = [{ t: s.t, kind: "error", result: "rejected", reason: String(err.message), state: f.initial_state }]; }
+      s.fullStates = s.fullStates || {};
+      try { var evaluated = F.evaluate(f, mine, s.t); trace = evaluated.trace; s.fullStates[f.id] = evaluated.state; }
+      catch (err) { delete s.fullStates[f.id]; trace = [{ t: s.t, kind: "error", result: "rejected", reason: String(err.message), state: f.initial_state }]; }
       s.traces[f.id] = trace;
       if (trace.length) states[f.id] = trace[trace.length - 1].state;
     });
     ui.sim[mapName()] = states;
   }
   function simulate(fid, kind, occupant) {
+    ui.slideClosure = {};
     var s = simOf();
     s.events.push({ t: s.t, kind: kind, feature: fid, occupant: occupant });
     resimulate(); render();
   }
   function simTrigger(tid) {
+    ui.slideClosure = {};
     var t = F.find(mf(), tid), s = simOf();
     (t && t.targets || []).forEach(function (x) { s.events.push({ t: s.t, kind: x.event, feature: x.feature, occupant: x.event.indexOf("proximity") === 0 ? "sim" : undefined }); });
     resimulate(); render();
   }
-  function simAdvance(dt) { simOf().t = Math.round((simOf().t + dt) * 1000) / 1000; resimulate(); render(); }
-  function simReset() { var s = simOf(); s.events = []; s.t = 0; s.traces = {}; ui.sim[mapName()] = {}; render(); }
+  function simAdvance(dt) { ui.slideClosure = {}; simOf().t = Math.round((simOf().t + dt) * 1000) / 1000; resimulate(); render(); }
+  function simReset() { ui.slideClosure = {}; var s = simOf(); s.events = []; s.t = 0; s.traces = {}; s.fullStates = {}; ui.sim[mapName()] = {}; render(); }
+
+  function enableSliding(id) {
+    var f = F.find(mf(), id), names = f && (f.states || []).map(function(s) {return s.name;});
+    if (!names || names.indexOf("open") < 0 || names.indexOf("closed") < 0 || f.sliding) return false;
+    commit(F.setField(mf(), id, ["sliding"], {open_state: "open", closed_state: "closed", open_center: null}), true);
+    return true;
+  }
+  function slidingPreview(f) {
+    if (!f.sliding) return null;
+    var sim = simOf(), manual = (ui.slideClosure || {})[f.id], full = (sim.fullStates || {})[f.id];
+    if (full && full.state !== shownState(f)) full = null;
+    var fraction = manual !== undefined ? manual : F.slidingClosureAt(f, full || {state: shownState(f)}, sim.t);
+    if (fraction === null) return null;
+    var cells = F.slidingCoverage(f, fraction);
+    if (!cells) return null;
+    return {fraction: fraction, cells: cells, pose: F.slidingPose(f, fraction)};
+  }
 
   // The preview's masks with every feature in its shown state (TaggerCore composeFeatures = features.py
   // compose_masks): drawn as the difference from the permanent masks.
@@ -470,9 +494,20 @@
       (f.states || []).forEach(function (s) {
         if (s !== st && s.footprint && sel) drawGeom(s.footprint, "rgba(76,201,240,0.35)", null, 1);
       });
-      if (st) {
+      var slide = slidingPreview(f);
+      if (st && !slide) {
         if (st.footprint) drawGeom(st.footprint, colour, st.blocks_movement ? "rgba(76,201,240,0.35)" : "rgba(76,201,240,0.08)");
         if (L.sight) (st.sight || []).forEach(function (o) { drawGeom(o.geometry, (o.bounds || {}).ref === "unresolved" ? "rgba(245,165,36,0.9)" : "rgba(229,72,77,0.95)", null, 3); });
+      }
+      if (slide) {
+        var closed = F.slidingClosed(f);
+        drawGeom(closed.footprint, "rgba(76,201,240,0.35)", null, 1);
+        drawGeom(f.sliding.open_center, colour);
+        drawGeom(slide.pose, "rgba(76,201,240,0.65)", null, 2);
+        var packed = T.packPaint(slide.cells);
+        if (packed) drawGeom({type: "paint", cells: packed}, colour, "rgba(229,72,77,0.65)");
+        var centre = F.slidingCenter(f);
+        drawGeom({type:"point",uv:centre}, "rgba(255,214,0,0.9)");
       }
       var edits = f.base_edits || {};
       if (L.base && edits.potential_ground) drawGeom(edits.potential_ground, "rgba(48,164,108,0.9)", "rgba(48,164,108,0.3)", 1);
@@ -833,6 +868,34 @@
       if (r.follow_up) tr.appendChild(row("Then after", valueEditor(r.follow_up.after, "s", function (v) { edit(f.id, ["transitions", ri, "follow_up", "after"], v); })));
     });
     box.appendChild(tr);
+    if (f.sliding) {
+      var sliding = fieldset("Sliding panel (preview)");
+      sliding.appendChild(document.createTextNode("The closed footprint is the panel and doorway. Place the open centre where the yellow closed-centre marker moves when fully open. Red cells show the panel inside the doorway. This previews geometry; it does not verify placement or replay behavior."));
+      ["open_state", "closed_state"].forEach(function(key) {
+        sliding.appendChild(row(key === "open_state" ? "Open state" : "Closed state", selectEl(names.map(function(n) {return [n,n];}), f.sliding[key],
+          function(v) {edit(f.id, ["sliding",key],v);}))); });
+      sliding.appendChild(button("Place open panel centre", function() {ui.placing = "slide-open"; setTool("point");}));
+      F.slidingProblems(f).forEach(function(message) {sliding.appendChild(row("Needs input",document.createTextNode(message)));});
+      var openCoverage = F.slidingCoverage(f,0);
+      if (openCoverage && openCoverage.some(function(cell) {return !!cell;}))
+        sliding.appendChild(row("Needs input",document.createTextNode("The panel still covers part of the doorway at fully open. Move the open centre farther along its travel direction.")));
+      var closeRow = (f.transitions || []).find(function(r) {return r.motion && r.to === f.sliding.closed_state;});
+      var duration = closeRow && F.known(closeRow.motion.duration), validDuration = Number.isFinite(duration) && duration > 0;
+      var current = slidingPreview(f), fraction = current ? current.fraction : 0;
+      var slideLabel = document.createElement("span"); slideLabel.id = "slideLabel";
+      function labelClosure(frac) {slideLabel.textContent = (validDuration ? (frac*duration).toFixed(2) + " / " + duration + " s — " : "") + Math.round(frac*100) + "% closed";}
+      labelClosure(fraction);
+      if (!current) slideLabel.textContent = "Position unknown. Scrub to preview a pose.";
+      var closeSlider = document.createElement("input"); closeSlider.type = "range"; closeSlider.min = "0"; closeSlider.max = "100"; closeSlider.step = "1";
+      closeSlider.id = "slideSlider"; closeSlider.value = String(Math.round(fraction*100)); closeSlider.disabled = F.slidingProblems(f).length > 0;
+      closeSlider.addEventListener("input",function() {ui.slideClosure = ui.slideClosure || {}; ui.slideClosure[f.id] = +closeSlider.value/100; labelClosure(+closeSlider.value/100); draw();});
+      sliding.appendChild(row("Closing preview",closeSlider)); sliding.appendChild(slideLabel);
+      sliding.appendChild(button("Follow sandbox clock",function() {ui.slideClosure = ui.slideClosure || {}; delete ui.slideClosure[f.id]; resimulate(); render();}));
+      sliding.appendChild(button("Remove sliding preview",function() {edit(f.id,["sliding"],undefined);}));
+      box.appendChild(sliding);
+    } else if (names.indexOf("open") >= 0 && names.indexOf("closed") >= 0 && !f.rotation) {
+      box.appendChild(button("Enable linear sliding preview",function() {enableSliding(f.id);}));
+    }
     var caps = fieldset("Capabilities");
     var breakable = (f.capabilities || []).indexOf("breakable") >= 0;
     if (breakable) caps.appendChild(row("Breakable", document.createTextNode("yes: destroyed until the next round")));
@@ -1272,12 +1335,13 @@
   setTool("select");
   window.taggerFeatures = {
     onMode: function () { ui.draft = null; ui.issueCells = null; render(); },
-    onMap: function () { ui.sel = null; ui.draft = null; ui.message = null; ui.issueCells = null; render(); },
+    onMap: function () { ui.sel = null; ui.draft = null; ui.message = null; ui.issueCells = null; ui.slideClosure = {}; render(); },
     simulate: simulate, simTrigger: simTrigger, simAdvance: simAdvance, simReset: simReset,
     exportAll: exportAll, importText: importText, ui: ui, fe: fe, canonical: function () { return canonical; },
     commit: commit, setTool: setTool, createPreset: createPreset, placePoint: placePoint, finishDraft: finishDraft,
     linkTo: linkTo, undo: doUndo, redo: doRedo, zoomAt: zoomAt, render: render, autosave: autosave, drafts: drafts,
-    focusIssue: focusIssue, copyFootprint: copyFootprint, placementIssues: placementIssues
+    focusIssue: focusIssue, copyFootprint: copyFootprint, placementIssues: placementIssues,
+    enableSliding: enableSliding, slidingPreview: slidingPreview
   };
   render();
 })();
