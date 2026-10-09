@@ -176,6 +176,20 @@ def texts(out):
     return [row["text"] for row in out["log"] if row["op"] == "fillText"]
 
 
+HEALTH_COLOURS = {"#4ade80": "healthy", "#facc15": "hurt", "#f87171": "low"}
+
+
+def bars(out):
+    """The health bars' fills as (log index, band, percent of the bar's length); D10: the bar has no number."""
+    r = out["r"]
+    return [(i, HEALTH_COLOURS[row["fill"]], round(100 * row["w"] / (r * 1.6)))
+            for i, row in enumerate(out["log"]) if row["op"] == "fillRect" and row["fill"] in HEALTH_COLOURS]
+
+
+def no_percent(out):
+    return not any(t.endswith("%") for t in texts(out))
+
+
 @needs_node
 @pytest.mark.parametrize("abilities", [True, False])
 def test_paint_order_control_then_ground_spike_then_players_then_annotations(abilities):
@@ -187,8 +201,8 @@ def test_paint_order_control_then_ground_spike_then_players_then_annotations(abi
     circles = [i for i, row in enumerate(out["log"]) if row["op"] == "fill" and len(row["path"]) == 1
                and row["path"][0][0] == "A" and abs(row["path"][0][3] - r) < 1e-6]
     assert len(circles) == 2, "both players' circles"
-    health = first(out, lambda row: row["op"] == "fillText" and row["text"].endswith("%"))
-    assert control < ground[0] < min(circles) < max(circles) < health
+    health = bars(out)[0][0]
+    assert control < ground[0] < min(circles) < max(circles) < health and no_percent(out)
     row = out["log"][ground[0]]
     assert (row["cx"], row["cy"]) == pytest.approx((6000 * s, 6000 * s))
 
@@ -272,18 +286,19 @@ def test_an_isolated_player_has_chips_above_health_and_name_below_and_the_badge_
     assert chip["y"] + chip["h"] <= y - r and chip["x"] < x < chip["x"] + chip["w"]
     [badge] = boxes(out, "badge", 1)
     assert badge["x"] > x and badge["y"] + badge["h"] / 2 < y
-    assert "BLINDED" in texts(out) and "60%" in texts(out) and "Name1" in texts(out)
-    bar = first(out, lambda row: row["op"] == "fillText" and row["text"] == "60%")
+    assert "BLINDED" in texts(out) and "Name1" in texts(out) and no_percent(out)
+    [(bar, band, pct)] = bars(out)
+    assert (band, pct) == ("healthy", 60)
     name = first(out, lambda row: row["op"] == "fillText" and row["text"] == "Name1")
     bar_y = out["log"][bar]["y"]
     assert bar_y < out["log"][name]["y"], "the health bar sits between the circle and the name"
 
 
 @needs_node
-def test_health_is_a_whole_number_with_no_raw_hp_or_shield():
+def test_health_is_a_coloured_bar_with_no_number_and_no_raw_hp_or_shield():
     ps = {"vitals": {"1": [vit(5.0, 0, 61, 12, 100, 50)]}, "damage_taken": {"1": [5.0]}}
     out = draw(round_blob([(1, "A", "Phoenix", 5000, 5000)], player_state=ps), 6.0)
-    assert "49%" in texts(out)                     # 100 * 73 / 150 = 48.7
+    assert [b[1:] for b in bars(out)] == [("hurt", 49)] and no_percent(out)   # 100 * 73 / 150 = 48.7
     assert not any(t in ("61", "12", "73", "150") or "HP" in t for t in texts(out))
 
 
@@ -293,7 +308,7 @@ def test_names_toggle_keeps_the_health_attached():
     on, off = draw(blob, 20.0), draw(blob, 20.0, layers={"names": False})
     [b_on], [b_off] = boxes(on, "block", 1), boxes(off, "block", 1)
     assert "Name1" in texts(on) and "Name1" not in texts(off)
-    assert "60%" in texts(off) and b_off["y"] == pytest.approx(b_on["y"]) and b_off["h"] < b_on["h"]
+    assert len(bars(off)) == 1 and b_off["y"] == pytest.approx(b_on["y"]) and b_off["h"] < b_on["h"]
     # an undamaged player with names off has no block at all; with names on just the name
     assert boxes(off, "block", 6) == [] and len(boxes(on, "block", 6)) == 1
 
@@ -302,7 +317,7 @@ def test_names_toggle_keeps_the_health_attached():
 def test_the_unlinked_standalone_preview_has_no_names_but_keeps_health():
     out = draw(spike_round([FLASH]), 10.5, linked=None)
     assert not any(t.startswith("Name") for t in texts(out))
-    assert "60%" in texts(out) and "BLINDED" in texts(out)
+    assert len(bars(out)) == 1 and "BLINDED" in texts(out)
     [block] = boxes(out, "block", 1)
     assert block["moved"] is False
 
@@ -313,7 +328,7 @@ def test_conditions_and_health_do_not_depend_on_the_abilities_toggle():
     on, off = draw(blob, 10.5), draw(blob, 10.5, layers={"abilities": False})
     for out in (on, off):
         assert {"BLINDED", "NEARSIGHTED", "CONCUSSED"} <= set(texts(out))
-        assert "60%" in texts(out)
+        assert len(bars(out)) == 1 and no_percent(out)
     assert [(b["kind"], b["slot"]) for b in on["layout"]] == [(b["kind"], b["slot"]) for b in off["layout"]]
 
 
@@ -357,7 +372,7 @@ def test_stacked_players_blocks_avoid_each_other_and_reserved_chips_with_leaders
                and row["path"][0][0] == "M" and row["path"][1][0] == "L"]
     assert len(leaders) >= len(moved)
     for b in blocks:
-        assert sum(1 for t in texts(out) if t == "50%") == 3
+        assert [b[1:] for b in bars(out)] == [("hurt", 50)] * 3
         assert b["x"] <= b["px"] <= b["x"] + b["w"], "the block stays under its player"
 
 
@@ -422,7 +437,7 @@ def test_tooltips_name_health_condition_and_carrier_and_the_click_still_selects(
     out = draw(blob, 10.5, tip=[player, mid(block), mid(chip), mid(badge), corner, below],
                click=[player, mid(block), mid(chip)])
     tip_player, tip_block, tip_chip, tip_badge, tip_corner, tip_below = out["tips"]
-    assert "60% health" in tip_player and "blinded" in tip_player and "carrying the spike" in tip_player
+    assert "healthy" in tip_player and "%" not in tip_player and "blinded" in tip_player and "carrying the spike" in tip_player
     assert "as of the last hit at 0:05" in tip_block
     assert "Blinded" in tip_chip and "Name6" in tip_chip and "0:10" in tip_chip
     assert "spike" in tip_badge.lower()
@@ -458,9 +473,10 @@ def test_death_hides_the_annotations_and_a_revive_resumes_them():
     assert not any(t.endswith("%") or t == "BLINDED" for t in texts(dead))
     assert spikes(dead) == [], "a dead carrier's spike is dropped with no position"
     back = draw(blob, 31.0)
-    assert "100%" in texts(back) and boxes(back, "block", 1)
+    # D10: back at full after the revive is not worth a bar; the name block alone stays
+    assert bars(back) == [] and boxes(back, "block", 1)
     hurt = draw(blob, 33.0)
-    assert "40%" in texts(hurt)
+    assert [b[1:] for b in bars(hurt)] == [("hurt", 40)] and no_percent(hurt)
 
 
 @needs_node
@@ -469,10 +485,12 @@ def test_team_knowledge_dimming_applies_to_the_enemy_annotations():
     flash = {"k": "flash", "t": 9.5, "by": 1, "ability": "phoenix_curveball_left", "hits": [[6, 10.0, 2.0]]}
     blob = round_blob([(1, "A", "Phoenix", 5000, 5000), (6, "B", "Sova", 2000, 2000)], util=[flash], player_state=ps)
     out = draw(blob, 10.5, knowing="A")
-    rows = [row for row in out["log"] if row["op"] == "fillText" and row["text"] in ("BLINDED", "60%")]
+    rows = [row for row in out["log"] if row["op"] == "fillText" and row["text"] == "BLINDED"]
+    rows += [out["log"][b[0]] for b in bars(out)]
     assert len(rows) == 2 and all(row["alpha"] == pytest.approx(0.35) for row in rows)
     own = draw(blob, 10.5, knowing="B")
-    rows = [row for row in own["log"] if row["op"] == "fillText" and row["text"] in ("BLINDED", "60%")]
+    rows = [row for row in own["log"] if row["op"] == "fillText" and row["text"] == "BLINDED"]
+    rows += [own["log"][b[0]] for b in bars(own)]
     assert len(rows) == 2 and all(row["alpha"] == pytest.approx(1.0) for row in rows), "their own team: not dimmed"
 
 
@@ -488,7 +506,7 @@ def test_a_placed_dropped_spike_paints_over_control_and_under_the_players(abilit
     [drop] = [i for i, row in enumerate(out["log"]) if row.get("spike")]
     circles = [i for i, row in enumerate(out["log"]) if row["op"] == "fill" and len(row["path"]) == 1
                and row["path"][0][0] == "A" and abs(row["path"][0][3] - r) < 1e-6]
-    health = first(out, lambda row: row["op"] == "fillText" and row["text"] == "60%")
+    health = bars(out)[0][0]
     assert len(circles) == 2 and control < drop < min(circles) and max(circles) < health
     assert boxes(out, "badge") == [], "a dropped spike has no carrier"
 

@@ -2315,17 +2315,28 @@
     return pct > 50 ? "#4ade80" : pct > 25 ? "#facc15" : "#f87171";
   }
 
-  // Each player's health/name block below their circle: a thin health bar with its whole-number percentage (or
-  // a neutral "?" when the health after a hit isn't known) above the name, on a dark plate. The bar shows from the
-  // player's first confirmed damage this round (healthAt); the name with the names toggle. Either part alone
-  // keeps the same place under the circle.
+  // D10 (changed 2026-10-09): an idea of low or healthy, never a number. The same bands as the colour.
+  function healthWord(pct) {
+    return pct > 50 ? "healthy" : pct > 25 ? "hurt" : "low";
+  }
+
+  // Whether the bar is worth drawing: damaged and not back at full (D10: "everyone who isnt damaged is full
+  // health anyway so no point showing that"). An unknown value still shows its "?".
+  function healthShown(health) {
+    return health.visible && !(health.state === "known" && health.pct >= 99.5);
+  }
+
+  // Each player's health/name block below their circle: a thin health bar coloured by band, no number (or a
+  // neutral "?" when the health after a hit isn't known) above the name, on a dark plate. The bar shows while the
+  // player is below full after a confirmed hit this round (healthAt, healthShown); the name with the names toggle.
+  // Either part alone keeps the same place under the circle.
   ReplayViewer.prototype.drawBlocks = function (ctx, r, hits, marks, layout) {
     var self = this, view = this.viewBounds();
     var reserved = layout.slice(), placed = [];
     var barLen = r * 1.6, hb = r * 0.75, hn = r * 1.05;
     ctx.save();
     marks.forEach(function (m) {
-      var hv = m.health.visible ? m.health : null;
+      var hv = healthShown(m.health) ? m.health : null;
       var name = null;
       if (self.linked && self.layers.names) {
         name = self.nameOf(m.slot).split("#")[0];
@@ -2333,7 +2344,8 @@
       }
       if (!hv && name === null) return;
       ctx.font = "700 " + Math.round(r * 0.6) + "px system-ui, sans-serif";
-      var hw = hv ? r * 0.25 + barLen + r * 0.2 + ctx.measureText("100%").width + r * 0.25 : 0;
+      var known = hv && hv.state === "known";
+      var hw = hv ? r * 0.25 + barLen + (known ? 0 : r * 0.2 + ctx.measureText("?").width) + r * 0.25 : 0;
       ctx.font = "600 " + Math.round(r * 0.8) + "px system-ui, sans-serif";
       var nw = name !== null ? ctx.measureText(name).width + r * 0.5 : 0;
       var w = Math.max(hw, nw), h = (hv ? hb : 0) + (name !== null ? hn : 0);
@@ -2362,17 +2374,15 @@
       if (hv) {
         var bx = cx - hw / 2 + r * 0.25, by = b.y + hb / 2 - r * 0.11;
         ctx.fillStyle = "#3a3a42"; ctx.fillRect(bx, by, barLen, r * 0.22);
-        var label = "?";
-        if (hv.state === "known") {
-          var pct = Math.round(hv.pct);
+        if (known) {
           ctx.fillStyle = healthColor(hv.pct); ctx.fillRect(bx, by, barLen * hv.pct / 100, r * 0.22);
-          label = pct + "%";
+        } else {
+          ctx.font = "700 " + Math.round(r * 0.6) + "px system-ui, sans-serif";
+          ctx.textAlign = "left"; ctx.textBaseline = "middle";
+          ctx.fillStyle = "#a0a0a8";
+          ctx.fillText("?", bx + barLen + r * 0.2, b.y + hb / 2);
         }
-        ctx.font = "700 " + Math.round(r * 0.6) + "px system-ui, sans-serif";
-        ctx.textAlign = "left"; ctx.textBaseline = "middle";
-        ctx.fillStyle = hv.state === "known" ? "#ffffff" : "#a0a0a8";
-        ctx.fillText(label, bx + barLen + r * 0.2, b.y + hb / 2);
-        var why = hv.state === "known" ? label + " health, as of the last hit at " + clock(hv.at) :
+        var why = known ? healthWord(hv.pct) + ", as of the last hit at " + clock(hv.at) :
           "health unknown: " + (hv.at === null ? "not hit in this life" : "the hit at " + clock(hv.at) +
           " doesn't record the shield");
         hits.push({ x: cx, y: b.y + b.h / 2, r: Math.max(b.w, b.h) / 2, box: b, slot: null,
@@ -3326,7 +3336,7 @@
       var health = healthAt(index, p.slot, t), conditions = playerConditionsAt(index, p.slot, t);
       marks.push({ slot: p.slot, x: x, y: y, dim: dim, health: health, conditions: conditions });
       var about = [];
-      if (health.visible) about.push(health.state === "known" ? Math.round(health.pct) + "% health" : "health unknown");
+      if (healthShown(health)) about.push(health.state === "known" ? healthWord(health.pct) : "health unknown");
       if (conditions.length) about.push(chipOrder(conditions).map(function (c) { return c.c; }).join(", "));
       if (spike.slot === p.slot && spike.state === "carried") about.push("carrying the spike");
       if (spike.slot === p.slot && spike.state === "planting") about.push("planting the spike");
