@@ -60,12 +60,21 @@ def _png_mask(raw):
     return bytes(expanded)
 
 
+def descriptor_digest(descriptor):
+    """Match the engine's big-endian packed-mask identity from a little-endian archive."""
+    import hashlib
+    reverse = bytes(int(f'{i:08b}'[::-1], 2) for i in range(256))
+    packed = base64.b64decode(descriptor['data'], validate=True)
+    return hashlib.sha256(packed.translate(reverse)).hexdigest()[:12]
+
+
 def base_snapshot(map_name, folder, entry, scale):
     masks = {kind: png_mask((folder / f'{map_name}.{kind}.png').read_bytes()) for kind in ('sight', 'walk')}
     barrier_path = folder / f'{map_name}.barrier.png'
-    barrier = None
+    barrier, barrier_sha = None, None
     if barrier_path.is_file():
         pixels = png_mask(barrier_path.read_bytes())
+        barrier_sha = descriptor_digest(pack_mask(pixels, [1024, 1024]))
         barrier = bytes(int(any(pixels[(r * 8 + y) * 1024 + c * 8 + x] for y in range(8) for x in range(8)))
                         for r in range(128) for c in range(128))
     legacy = {}
@@ -79,4 +88,5 @@ def base_snapshot(map_name, folder, entry, scale):
             legacy[kind] = pack_mask(large, [1024, 1024])
     return {'sight': pack_mask(masks['sight'], [1024, 1024]), 'walk': pack_mask(masks['walk'], [1024, 1024]),
             'barrier': None if barrier is None else pack_mask(barrier, [128, 128]),
+            'barrier_sha': barrier_sha,
             'scale': scale, 'specials': entry.get('specials') or [], 'legacy': legacy}
