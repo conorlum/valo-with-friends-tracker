@@ -686,6 +686,297 @@
     return out;
   }
 
+  // ------------------------------------------------------------ player state at t (pure; tested in node)
+  // The round blob's optional `player_state` (app/replays/player_state.py, version 1). validatePlayerState mirrors
+  // player_state.validate line for line: an unsupported version or a part of the wrong shape is unavailable (null),
+  // a bad entry is dropped. indexRoundState indexes one loaded round once (fetchRound) into frozen, sorted arrays
+  // that the selectors binary-search, so a frame never rescans the round and no other round's data can reach it.
+  // Every selector is right-continuous and never looks past t: the latest entry at or before t (vitalsAt,
+  // damagedBy, playerSpikeAt and healthPct mirror vitals_at, damaged_by, spike_at and health_pct; the parity test
+  // in tests/replays/test_viewer_player_state.py runs both).
+  var PLAYER_STATE = {
+    version: 1, spike_states: ["unknown", "carried", "dropped", "planting", "planted", "defused", "detonated"],
+    t_min: -200, t_max: 1000, value_max: 1000, life_max: 63, max_events: 512, max_spike: 128, uv_max: 10000
+  };
+  var PS_VITAL_KEYS = ["hp", "sh", "mhp", "msh"];
+
+  function psNum(x, lo, hi) { return typeof x === "number" && isFinite(x) && x >= lo && x <= hi ? x : null; }
+  function psInt(x, lo, hi) { return typeof x === "number" && Number.isInteger(x) && x >= lo && x <= hi; }
+  function psHas(row, key) { return Object.prototype.hasOwnProperty.call(row, key); }
+  function psSlotKey(key) { return /^[0-9]$/.test(key); }
+
+  function psVital(e) {
+    if (!condIsRow(e)) return null;
+    var t = psNum(e.t, PLAYER_STATE.t_min, PLAYER_STATE.t_max);
+    if (t === null || !psInt(e.life, 0, PLAYER_STATE.life_max)) return null;
+    var out = { t: t, life: e.life };
+    for (var i = 0; i < PS_VITAL_KEYS.length; i++) {
+      var key = PS_VITAL_KEYS[i];
+      if (!psHas(e, key)) return null;
+      if (e[key] === null) {
+        if (key !== "sh" && key !== "msh") return null;
+        out[key] = null;
+        continue;
+      }
+      var value = psNum(e[key], 0, PLAYER_STATE.value_max);
+      if (value === null || (key === "mhp" && value <= 0)) return null;
+      out[key] = value;
+    }
+    if ((out.sh === null) !== (out.msh === null)) return null;
+    if (psHas(e, "q")) {
+      if (e.q !== "start") return null;
+      out.q = e.q;
+    }
+    return out;
+  }
+
+  function psSpike(e) {
+    if (!condIsRow(e) || PLAYER_STATE.spike_states.indexOf(e.s) < 0) return null;
+    var t = psNum(e.t, PLAYER_STATE.t_min, PLAYER_STATE.t_max);
+    if (t === null) return null;
+    var out = { t: t, s: e.s };
+    if (e.slot !== null && e.slot !== undefined) {
+      if (!psInt(e.slot, 0, 9)) return null;
+      out.slot = e.slot;
+    }
+    var hasU = e.u !== null && e.u !== undefined, hasV = e.v !== null && e.v !== undefined;
+    if (hasU || hasV) {
+      if (!psInt(e.u, 0, PLAYER_STATE.uv_max) || !psInt(e.v, 0, PLAYER_STATE.uv_max)) return null;
+      out.u = e.u;
+      out.v = e.v;
+    }
+    return out;
+  }
+
+  // Time order, source order within a time, except that a completed plant goes after any planting or carried entry
+  // of its own time; two records of the winning state naming different slots close the time `unknown`.
+  function psSpikeOrder(entries) {
+    entries = entries.slice().sort(function (a, b) { return a.t - b.t; });      // stable
+    var out = [], i = 0;
+    while (i < entries.length) {
+      var j = i;
+      while (j < entries.length && entries[j].t === entries[i].t) j++;
+      var group = entries.slice(i, j);
+      if (group.some(function (e) { return e.s === "planted"; })) {
+        var early = function (e) { return e.s === "planting" || e.s === "carried"; };
+        group = group.filter(early).concat(group.filter(function (e) { return !early(e); }));
+      }
+      var last = group[group.length - 1];
+      if (psHas(last, "slot") && group.some(function (e) {
+        return e.s === last.s && psHas(e, "slot") && e.slot !== last.slot;
+      })) group = group.concat([{ t: last.t, s: "unknown" }]);
+      out = out.concat(group);
+      i = j;
+    }
+    return out;
+  }
+
+  // A normalized copy of a `player_state` subsection, or null when it is unavailable.
+  function validatePlayerState(obj) {
+    if (!condIsRow(obj) || obj.version !== PLAYER_STATE.version) return null;
+    if ((psHas(obj, "vitals") && !condIsRow(obj.vitals)) || (psHas(obj, "damage_taken") && !condIsRow(obj.damage_taken)) ||
+        (psHas(obj, "spike") && !Array.isArray(obj.spike))) return null;
+    var out = { version: PLAYER_STATE.version };
+    if (psHas(obj, "vitals")) {
+      out.vitals = {};
+      Object.keys(obj.vitals).forEach(function (slot) {
+        var events = obj.vitals[slot];
+        if (!psSlotKey(slot) || !Array.isArray(events) || events.length > PLAYER_STATE.max_events) return;
+        var kept = events.map(psVital).filter(function (e) { return e !== null; });
+        out.vitals[slot] = kept.sort(function (a, b) { return a.t - b.t; });  // stable: source order within a time
+      });
+    }
+    if (psHas(obj, "damage_taken")) {
+      out.damage_taken = {};
+      Object.keys(obj.damage_taken).forEach(function (slot) {
+        var times = obj.damage_taken[slot];
+        if (!psSlotKey(slot) || !Array.isArray(times) || times.length > PLAYER_STATE.max_events) return;
+        var kept = [];
+        times.forEach(function (x) {
+          var t = psNum(x, PLAYER_STATE.t_min, PLAYER_STATE.t_max);
+          if (t !== null && kept.indexOf(t) < 0) kept.push(t);
+        });
+        out.damage_taken[slot] = kept.sort(function (a, b) { return a - b; });
+      });
+    }
+    if (psHas(obj, "spike") && obj.spike.length <= PLAYER_STATE.max_spike) {
+      out.spike = psSpikeOrder(obj.spike.map(psSpike).filter(function (e) { return e !== null; }));
+    }
+    return out;
+  }
+
+  // The number of entries at or before t (bisect_right).
+  function psBisect(times, t) {
+    var lo = 0, hi = times.length;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (times[mid] <= t) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+  }
+
+  function psTimeline(events, key) {
+    return { t: events.map(function (e) { return key ? e[key] : e; }), ev: events };
+  }
+
+  function psFreeze(x) {
+    if (x !== null && typeof x === "object" && !Object.isFrozen(x)) {
+      Object.keys(x).forEach(function (k) { psFreeze(x[k]); });
+      Object.freeze(x);
+    }
+    return x;
+  }
+
+  // One loaded round's state index: its validated player_state as sorted timelines, its lives (copied from
+  // `alive`), its conditions (normalizeConditions, once) and its planted spike's ability rows (`abilities`, the
+  // extras' rows, kept by reference for spikeAt and never frozen or changed). Never throws: anything malformed
+  // is unavailable.
+  function indexRoundState(blob, abilities) {
+    blob = condIsRow(blob) ? blob : {};
+    var ps = validatePlayerState(blob.player_state);
+    var vitals = null, damage = null, spike = null, alive = null, conditions = {}, starts = {};
+    if (ps && ps.vitals) {
+      vitals = {};
+      Object.keys(ps.vitals).forEach(function (slot) {
+        var lives = {};
+        ps.vitals[slot].forEach(function (e) { (lives[e.life] = lives[e.life] || []).push(e); });
+        Object.keys(lives).forEach(function (life) { lives[life] = psTimeline(lives[life], "t"); });
+        vitals[slot] = { all: psTimeline(ps.vitals[slot], "t"), lives: lives };
+      });
+    }
+    if (ps && ps.damage_taken) damage = ps.damage_taken;
+    if (ps && ps.spike) spike = psTimeline(ps.spike, "t");
+    if (condIsRow(blob.alive)) {
+      alive = {};
+      Object.keys(blob.alive).forEach(function (slot) {
+        if (!Array.isArray(blob.alive[slot])) return;
+        alive[slot] = blob.alive[slot].map(function (iv) {
+          return Array.isArray(iv) && iv.length >= 2 ? [condNum(iv[0]), condNum(iv[1])] : [null, null];
+        });
+      });
+    }
+    var tEnd = condNum(blob.t_end);
+    try { conditions = normalizeConditions(blob.util, blob.alive, tEnd); } catch (e) { conditions = {}; }
+    Object.keys(conditions).forEach(function (slot) { starts[slot] = psTimeline(conditions[slot], "t0"); });
+    var bombs = (Array.isArray(abilities) ? abilities : []).filter(function (a) {
+      return condIsRow(a) && a.kind === "Bomb" && typeof a.t0 === "number";
+    });
+    return Object.freeze({
+      available: ps !== null, vitals: psFreeze(vitals), damage: psFreeze(damage), spike: psFreeze(spike),
+      alive: psFreeze(alive), tEnd: tEnd, conditions: psFreeze(starts), bombs: Object.freeze(bombs)
+    });
+  }
+
+  // The life index holding t (the interval in `alive`, ends inclusive, an open end the round's), null while dead,
+  // or undefined when the slot's lives are unknown (no `alive` row).
+  function lifeIndexAt(index, slot, t) {
+    var lives = index && index.alive ? condOwn(index.alive, String(slot)) : undefined;
+    if (!Array.isArray(lives)) return undefined;
+    for (var i = 0; i < lives.length; i++) {
+      var lo = lives[i][0], hi = lives[i][1] === null ? (index.tEnd === null ? Infinity : index.tEnd) : lives[i][1];
+      if (lo !== null && lo <= t && t <= hi) return i;
+    }
+    return null;
+  }
+
+  // The slot's latest vitals event at or before t, or null; with `life`, only that life's events.
+  function vitalsAt(index, slot, t, life) {
+    var entry = index && index.vitals ? condOwn(index.vitals, String(slot)) : undefined;
+    if (!entry) return null;
+    var line = life === null || life === undefined ? entry.all : condOwn(entry.lives, String(life));
+    if (!line) return null;
+    var i = psBisect(line.t, t);
+    return i ? line.ev[i - 1] : null;
+  }
+
+  // Whether the slot took confirmed damage at or before t this round.
+  function damagedBy(index, slot, t) {
+    var times = index && index.damage ? condOwn(index.damage, String(slot)) : undefined;
+    return !!(times && times.length && times[0] <= t);
+  }
+
+  // player_state's own spike transition in effect at t, or null (unknown).
+  function playerSpikeAt(index, t) {
+    if (!index || !index.spike) return null;
+    var i = psBisect(index.spike.t, t);
+    return i ? index.spike.ev[i - 1] : null;
+  }
+
+  // 100 * (hp + sh) / (mhp + msh), clamped to 0..100, or null (unavailable) when a value is missing or null.
+  function healthPct(event) {
+    if (!event || PS_VITAL_KEYS.some(function (k) { return event[k] === null || event[k] === undefined; })) return null;
+    var total = event.mhp + event.msh;
+    if (total <= 0) return null;
+    return Math.max(0, Math.min(100, 100 * (event.hp + event.sh) / total));
+  }
+
+  // The health bar's input for a slot at t: {state, visible, pct, hp, sh, mhp, msh, life, at}. `state` is "none"
+  // (the round has no damage timeline: nothing to show), "dead", "undamaged" (no confirmed damage yet this round),
+  // "known" (pct from the current life's latest hit, as of that hit) or "unavailable" (damaged, but no proven
+  // percentage: no vitals in this life, or the shield isn't proven). The bar is visible for "known" and
+  // "unavailable" only: it appears with the round's first damage, whichever life, and stays at full.
+  function healthAt(index, slot, t) {
+    var out = { state: "none", visible: false, pct: null, hp: null, sh: null, mhp: null, msh: null, life: null,
+                at: null };
+    if (!index || !index.damage) return out;
+    var life = lifeIndexAt(index, slot, t);
+    if (life === null) { out.state = "dead"; return out; }
+    if (life !== undefined) out.life = life;
+    if (!damagedBy(index, slot, t)) { out.state = "undamaged"; return out; }
+    out.visible = true;
+    var event = vitalsAt(index, slot, t, life);
+    if (event) {
+      if (life === undefined) out.life = event.life;
+      out.hp = event.hp; out.sh = event.sh; out.mhp = event.mhp; out.msh = event.msh; out.at = event.t;
+      out.pct = healthPct(event);
+    }
+    out.state = out.pct === null ? "unavailable" : "known";
+    return out;
+  }
+
+  // The spike at t as one explicit state: {state, slot, u, v, since, source, hud}. From the plant on, the ability
+  // row decides, exactly as the planted HUD does (`hud` is spikeAt's result; source "ability"): planted, defused
+  // or detonated. Before it, player_state's proven transitions (source "player_state"): unknown, carried (slot
+  // null when the carrier isn't proven), dropped (never a position today), planting, or a post-plant state the
+  // ability row hasn't reached. A carrier or planter who is dead at t with no later row: dropped, no slot, no
+  // position. No player_state spike: "unknown", source "none" (an old round: only the HUD's result).
+  function spikeStateAt(index, t) {
+    var bombs = index && index.bombs ? index.bombs : [];
+    var hud = spikeAt(bombs, t);
+    if (hud) {
+      var bomb = bombs.filter(function (a) { return a.t0 <= t; })[0];
+      return {
+        state: hud.defused ? "defused" : hud.exploded ? "detonated" : "planted",
+        slot: hud.defused ? hud.defused.slot : (hud.slot === undefined ? null : hud.slot),
+        u: psNum(bomb.u, 0, UV), v: psNum(bomb.v, 0, UV),
+        since: hud.defused ? hud.defused.t : hud.exploded ? hud.plantedAt + SPIKE_S : hud.plantedAt,
+        source: "ability", hud: hud
+      };
+    }
+    var out = { state: "unknown", slot: null, u: null, v: null, since: null, source: "none", hud: null };
+    if (!index || !index.spike) return out;
+    out.source = "player_state";
+    var e = playerSpikeAt(index, t);
+    if (!e) return out;
+    out.state = e.s;
+    out.since = e.t;
+    if (psHas(e, "slot")) out.slot = e.slot;
+    if (psHas(e, "u")) { out.u = e.u; out.v = e.v; }
+    if ((e.s === "carried" || e.s === "planting") && out.slot !== null && lifeIndexAt(index, out.slot, t) === null) {
+      out.state = "dropped";
+      out.slot = null;
+      out.u = out.v = null;
+    }
+    return out;
+  }
+
+  // The slot's conditions active at t, [t0, t1) (normalizeConditions' intervals, estimated ones marked `est`).
+  function playerConditionsAt(index, slot, t) {
+    var line = index && index.conditions ? condOwn(index.conditions, String(slot)) : undefined;
+    if (!line) return [];
+    return line.ev.slice(0, psBisect(line.t, t)).filter(function (x) { return t < x.t1; });
+  }
+
   // Whether Viper's wall is up at t, from its `on` spans [[from, to | null], ...].
   function wallUp(ability, t) {
     return (ability.on || []).some(function (span) { return span[0] <= t && (span[1] === null || t <= span[1]); });
@@ -917,7 +1208,9 @@
     if (!this.cache[n]) {
       this.cache[n] = Promise.resolve(this.options.loadRound(n)).then(function (blob) {
         var extras = blob.extras || extrasFromUtil(blob.util);
-        return { blob: blob, tracks: decodeRound(blob), extras: extras, wires: pairWires(extras.abilities) };
+        // `state`: this round's frozen state index (indexRoundState), built once here and read by the selectors.
+        return { blob: blob, tracks: decodeRound(blob), extras: extras, wires: pairWires(extras.abilities),
+                 state: indexRoundState(blob, extras.abilities) };
       });
     }
     return this.cache[n];
@@ -2915,6 +3208,9 @@
     impactAt: impactAt, nextKillTime: nextKillTime, prevKillTime: prevKillTime, spikeAt: spikeAt, wallUp: wallUp, revealsAt: revealsAt,
     popTimes: popTimes, popUntil: popUntil, statusesAt: statusesAt, statusStyle: statusStyle, utilDownAt: utilDownAt,
     utilSuppressedAt: utilSuppressedAt, normalizeConditions: normalizeConditions, CONDITION_POLICY: CONDITION_POLICY,
+    PLAYER_STATE: PLAYER_STATE, validatePlayerState: validatePlayerState, indexRoundState: indexRoundState,
+    lifeIndexAt: lifeIndexAt, vitalsAt: vitalsAt, damagedBy: damagedBy, playerSpikeAt: playerSpikeAt,
+    healthPct: healthPct, healthAt: healthAt, spikeStateAt: spikeStateAt, playerConditionsAt: playerConditionsAt,
     controlRows: controlRows, withSiteData: withSiteData,
     isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,
     projectileStyle: projectileStyle, projectileAt: projectileAt, throwShownAsProjectile: throwShownAsProjectile,
