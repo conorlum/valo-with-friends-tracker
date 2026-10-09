@@ -276,7 +276,9 @@ STREAM_GROUP_PATHS = frozenset({PLAYER_STATE_PATH, GAME_STATE_PATH})
 PATH_KEYS = ("actor_path", "archetype_path", "object_path", "outer_path")
 # Substrings that every kept row's line contains; a line with none of them can't be kept, so it
 # is never parsed. The exact test (`keep_event`) runs on the parsed rows.
-_NEEDLES = tuple(f'"{name}"' for name in (*STREAM_EVENT_TYPES, *STREAM_PAYLOAD_KEYS, *STREAM_RPCS)) + (
+# Revision 15: every damage notify by its function name too (player_state reads them all, not only those that
+# carry `DamageKilledTarget`); armor items and BombState already pass as `actor_spawned` and BombGameState.
+_NEEDLES = tuple(f'"{name}"' for name in (*STREAM_EVENT_TYPES, *STREAM_PAYLOAD_KEYS, *STREAM_RPCS, *sorted(RPC_DAMAGE))) + (
     "BombPlayerState", "BombGameState", "Maps", '"DamageKilledTarget"')
 
 

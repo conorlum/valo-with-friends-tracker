@@ -57,6 +57,8 @@ Player state (docs/superpowers/specs/2026-10-06-replay-player-state-design.md; o
 top-level `"player_state": {"version": 1, "vitals", "damage_taken", "spike"}`, defined and validated by
 app/replays/player_state.py. `encode_blob` and `decode_blob` keep a normalized copy, and drop the key when it is an
 unsupported version or malformed, so the subsection is unavailable and the rest of the round plays as stored.
+Revision 15 fills it (app/replays/player_state_extract.py) when the export has damage notifies or BombState: a
+part is present when its source is, so an empty part means none this round and a missing key never decoded.
 
 `FORMAT_VERSION` changes only when the shape changes. `CONDENSE_REVISION` changes with
 any condenser change. Staleness is inequality with the current recipe, never ordering.
@@ -73,13 +75,15 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 14   # 10: map control's inputs (hits, possessed, yaws, damage runs); 11: heights (z);
+CONDENSE_REVISION = 15   # 10: map control's inputs (hits, possessed, yaws, damage runs); 11: heights (z);
                          # 12: Killjoy turret/alarmbot `off` spans (extras.device_off_spans);
                          # 13: utility kept in full (2026-10-05): Deadlock's actors, flash explosions, paths and
                          #     activation, knife pulses, projectile flights, Blaze/Sage/Vyse walls, Omen's ult
                          #     marker and its outcome, Waylay's recall;
                          # 14: movement-ability casts (`cast` util rows, `movement_casts`) for the height
-                         #     build's blackout (2026-10-08)
+                         #     build's blackout (2026-10-08);
+                         # 15: `player_state` (health after each hit, damage taken, the spike's proven state:
+                         #     player_state_extract.py, the replay player-state plan's P03)
 
 UV_SCALE = 10000
 

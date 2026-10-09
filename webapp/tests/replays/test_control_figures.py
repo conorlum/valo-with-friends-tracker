@@ -88,7 +88,7 @@ def test_the_revisions_of_this_release():
     from app.gaps import detect
     from app.replays import format as fmt
 
-    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (14, 8)
+    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (15, 8)
     assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 2, "the detector's output rules are unchanged"
 
 

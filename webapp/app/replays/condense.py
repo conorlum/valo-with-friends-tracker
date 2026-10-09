@@ -51,6 +51,7 @@ from app.replays.contract import (
     load_pin,
     map_codes_in_file,
 )
+from app.replays.player_state_extract import attribute_planter, read_player_state, round_player_state
 
 # EAresGamePhase (parser source): RoundStarting=3, InRound=4, RoundEnding=5.
 PHASE_IN_ROUND = 4
@@ -1442,6 +1443,8 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     util_counts["outside_rounds"] = sum(1 for c in util_casts
                                         if not any(s <= c.t_ms <= e for s, _, e in game.windows))
     damage_runs, damage_counts = read_damage(export, players)
+    # Revision 15: health and the spike's state (player_state_extract.py), from rows already in the stream.
+    state_inputs = read_player_state(export, players)
     # P-a: every kill falls in one playback window, or in the dropped final round (excluded
     # with its reason); any other kill refuses.
     excluded = {"dropped_final_round": 0}
@@ -1466,6 +1469,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
     for n, (start, decided, end) in enumerate(game.windows, 1):
         tracks: dict[str, list] = {}
         alive: dict[str, list] = {}
+        lives: dict[int, list[list]] = {}
         for slot in range(10):
             deaths = [k.t_ms for k in round_kills[n] if k.victim == slot]
             self_kills = [k.t_ms for k in round_kills[n] if k.victim == slot and k.killer == slot]
@@ -1474,6 +1478,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
             spans = lifecycle.unobserved.get(slot, [])
             intervals = alive_intervals(start, end, deaths, revived, pawns, players.gone_ms.get(slot),
                                         self_kills, spans, players.away.get(slot, []))
+            lives[slot] = intervals
             uncertain_lives += sum(1 for iv in intervals if "uncertain" in (iv[3] if len(iv) > 3 else []))
             alive[str(slot)] = [[_seconds(iv[0], start), None if iv[1] is None else _seconds(iv[1], start), iv[2],
                                  *iv[3:]] for iv in intervals]
@@ -1499,6 +1504,11 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
             "util": [_util_entry(c, start, game_map) for c in util_casts if start <= c.t_ms <= end]
                     + [_damage_entry(r, start) for r in damage_runs if start <= r.t_ms <= end],
         }
+        state = round_player_state(state_inputs, start, end, game.windows[n - 2][2] if n > 1 else None,
+                                   lambda slot, t_ms, _lives=lives, _end=end: _interval_index(_lives.get(slot, []),
+                                                                                             t_ms, _end))
+        if state is not None:
+            rounds[n]["player_state"] = state
 
     encoded = {n: fmt.encode_blob(blob) for n, blob in rounds.items()}
     # RoundResults index i (0-based, the decoder's encodedIndex - 1) is played round i + 1.
@@ -1526,6 +1536,7 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
         "ownership": players.ownership,
         "util": util_counts,
         "damage": damage_counts,
+        "player_state": dict(sorted(state_inputs.diagnostics.items())),
         "sides": sides_report,
         "lifecycle": {**lifecycle.report, "uncertain_lives": uncertain_lives, "contradictions": 0},
         "phase_ended_checked": game.phase_ended_checked,
@@ -1596,7 +1607,8 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
                   agents_by_code: dict[str, str]) -> None:
     """Adds each round's ability objects and shots (app/replays/extras.py) to its blob's `util`
     as the `ability` and `shot` kinds, after the kinds `condense()` wrote, and re-measures the
-    sizes. Another pass over the events file and one over movement, both streamed (W-b)."""
+    sizes. Another pass over the events file and one over movement, both streamed (W-b). The
+    planted spike's row then names the carrier before the plant in `player_state` (revision 15)."""
     from app.replays.extras import WorldPositions, build_extras, util_entries  # extras imports this module
 
     players = build_players(export, agents_by_code)
@@ -1606,8 +1618,12 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
     teams = {row["slot"]: row.get("side") for row in first.get("players", [])}
     extras = build_extras(events_path, players, windows, game_map, agents_by_code, positions.at, positions.path,
                           teams=teams, pawn_yaws=positions.yaws)
+    spike_counts: dict[str, int] = {}
     for n, blob in replay.rounds.items():
         blob["util"] = blob["util"] + util_entries(extras.rounds.get(n, {}))
         blob["movement_casts"] = 1      # revision 14: casts were looked for, so a round with none had none
+        # Revision 15 (D5): the planter carried the spike from its last pickup; the plant's place.
+        attribute_planter(blob.get("player_state"), blob["util"], spike_counts)
     replay.report["extras"] = extras.report
+    replay.report.setdefault("player_state", {}).update(sorted(spike_counts.items()))
     replay.report["sizes"] = fmt.size_report(replay.encoded_rounds())

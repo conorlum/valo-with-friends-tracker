@@ -17,6 +17,7 @@ row lists before `write()` to build each case.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -44,6 +45,106 @@ def vrf_header(friendly_name: str) -> bytes:
     name = (friendly_name + " " * 32 + "\0").encode("utf-16-le")
     out += struct.pack("<i", -(len(name) // 2)) + name
     return out + struct.pack("<IqIIi", 0, 0, 1, 0, 0)
+
+
+def _intpacked(value: int) -> list[int]:
+    """Unreal's packed int as bytes: 7 value bits per byte above a continue bit (bit 0)."""
+    out = []
+    while True:
+        byte = (value & 0x7F) << 1
+        value >>= 7
+        out.append(byte | (1 if value else 0))
+        if not value:
+            return out
+
+
+def life_change_events(sections: list[tuple[int, float, float, int | None]]) -> dict:
+    """A damage notify's `LifeChangeEvents` ({BitCount, Data}) holding `sections`, each (component guid,
+    LifeResult, DeltaLife, bAliveAfterChange | None), the way the real export packs them (W3 EVIDENCE B):
+    bits LSB-first; an intpacked count, then per element an intpacked 1-based index and its fields as
+    (intpacked handle, intpacked size, size bits), handle 0 ending the element. Handles: 11 the component (an
+    intpacked guid), 12 the result (f32), 13 the delta (f32), 14 the alive bit."""
+    bits: list[int] = []
+
+    def put(value: int, size: int) -> None:
+        bits.extend((value >> i) & 1 for i in range(size))
+
+    def packed(value: int) -> None:
+        for byte in _intpacked(value):
+            put(byte, 8)
+
+    packed(len(sections))
+    for index, (guid, result, delta, alive) in enumerate(sections, 1):
+        packed(index)
+        guid_bytes = _intpacked(guid)
+        packed(11)
+        packed(8 * len(guid_bytes))
+        for byte in guid_bytes:
+            put(byte, 8)
+        for handle, value in ((12, result), (13, delta)):
+            packed(handle)
+            packed(32)
+            put(struct.unpack("<I", struct.pack("<f", value))[0], 32)
+        if alive is not None:
+            packed(14)
+            packed(1)
+            put(alive, 1)
+        packed(0)
+    put(0, 8)
+    data = bytearray((len(bits) + 7) // 8)
+    for i, bit in enumerate(bits):
+        data[i >> 3] |= bit << (i & 7)
+    return {"BitCount": len(bits), "Data": base64.b64encode(bytes(data)).decode("ascii"), "TypeName": "LifeChangeEvents"}
+
+
+def damage_notify(t_ms: int, victim_pawn: int, by_pawn: int, taken: float, sections, *, index: int, respawn: int = 0,
+                  lethal: bool = False, point: bool = True, killed_key: bool = True) -> dict:
+    """A real-shaped damage notify on a player's pawn (the fields the condenser reads; the rest of the real
+    payload is omitted). `killed_key=False` leaves `DamageKilledTarget` out of the row."""
+    payload = {"AliveAfterDamage": not lethal, "Character": victim_pawn, "DamageTaken": taken, "DamageDealt": taken,
+               "EventInstigatorPawn": by_pawn, "LifeChangeEventIndex": index, "VictimRespawnNumber": respawn,
+               "LifeChangeEvents": life_change_events(sections), "DamageType": 4263}
+    if killed_key:
+        payload["DamageKilledTarget"] = lethal
+    name = "MulticastNotifyDamage_Point" if point else "MulticastNotifyDamage_Base"
+    return {"type": "rpc_received", "time_ms": t_ms, "packet_id": 30, "actor_net_guid": victim_pawn,
+            "object_net_guid": victim_pawn + 52, "channel": 70, "class_path": "/Script/ShooterGame.DamageableComponent",
+            "function_name": name, "payload": payload}
+
+
+def bomb_state(t_ms: int, state: int) -> dict:
+    """The game state's replicated `BombState` (1 spawned, 2 dropped, 3 carried, 4 planted, 5 detonated, 6 defused)."""
+    return {"type": "export_group_received", "time_ms": t_ms, "packet_id": 31, "actor_net_guid": 50,
+            "object_net_guid": 50, "channel": 2, "export_group_path": "/Game/GameModes/Bomb/BombGameState.BombGameState_C",
+            "payload": {"BombState": state}}
+
+
+def player_state_events(match: "SyntheticMatch") -> list[dict]:
+    """Round 1's health and spike records for a swiftplay-shaped match (pawns 1000 + slot): slot 5 (killed by
+    slot 0 at 10.0 s) buys Light armor, is hit at 5.0 s (HP 55, shield 0) and dies at 10.0 s; its HP section is
+    guid 1075. Slot 1 falls at 3.25 s with no armor, its HP section unproven (never killed). The spike: carried in
+    the buy phase, dropped at 15.0 s, picked up at 18.0 s, planted at 30.0 s by slot 6 (the TimedBomb's
+    Instigator), defused at 39.0 s. A damage notify without `DamageKilledTarget` (on slot 2) must survive the
+    streaming loader's needles."""
+    start = match.round_start(1)
+    pawn = 1000
+    return [
+        {"type": "actor_spawned", "time_ms": start - 20_000, "actor_net_guid": 800, "channel": 90,
+         "archetype_path": "Default__LightArmorItem_C", "location": {"x": 0.0, "y": 0.0, "z": 0.0}},
+        damage_notify(start + 5_000, pawn + 5, pawn + 0, 70.0, [(1077, 0.0, 0.0, 1), (802, 0.0, -25.0, 1),
+                                                                 (1075, 55.0, -45.0, 1)], index=1),
+        damage_notify(start + 10_000, pawn + 5, pawn + 0, 55.0, [(1077, 0.0, 0.0, 1), (802, 0.0, 0.0, 1),
+                                                                  (1075, 0.0, -55.0, 0)], index=2, lethal=True),
+        damage_notify(start + 3_250, pawn + 1, pawn + 1, 15.1, [(1027, 84.9, -15.1, 1)], index=1, point=False),
+        damage_notify(start + 4_500, pawn + 2, pawn + 7, 12.0, [(1037, 88.0, -12.0, 1)], index=1, killed_key=False),
+        bomb_state(start - 25_000, 1), bomb_state(start - 20_000, 3), bomb_state(start + 15_000, 2),
+        bomb_state(start + 18_000, 3), bomb_state(start + 30_000, 4), bomb_state(start + 39_000, 6),
+        {"type": "actor_spawned", "time_ms": start + 29_990, "actor_net_guid": 900, "channel": 91,
+         "archetype_path": "Default__TimedBomb_C", "location": {"x": 1000.0, "y": 2000.0, "z": 0.0},
+         "rotation": {"pitch": 0, "yaw": 0, "roll": 0}},
+        {"type": "export_group_received", "time_ms": start + 29_990, "actor_net_guid": 900, "channel": 91,
+         "is_actor": True, "export_group_path": "/Game/Gear/TimedBomb.TimedBomb_C", "payload": {"Instigator": pawn + 6}},
+    ]
 
 
 def subject(i: int) -> str:
