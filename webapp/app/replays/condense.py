@@ -51,7 +51,8 @@ from app.replays.contract import (
     load_pin,
     map_codes_in_file,
 )
-from app.replays.player_state_extract import attribute_planter, read_player_state, round_player_state
+from app.replays.player_state_extract import (attribute_death_drops, attribute_planter, read_player_state,
+                                              round_player_state)
 
 # EAresGamePhase (parser source): RoundStarting=3, InRound=4, RoundEnding=5.
 PHASE_IN_ROUND = 4
@@ -1508,6 +1509,8 @@ def condense(export: Export, *, maps: dict[str, MapInfo], agents_by_code: dict[s
                                    lambda slot, t_ms, _lives=lives, _end=end: _interval_index(_lives.get(slot, []),
                                                                                              t_ms, _end))
         if state is not None:
+            # D5: a drop right after one death lies at that death's place, and that player carried it.
+            attribute_death_drops(state, kill_rows, state_inputs.diagnostics)
             rounds[n]["player_state"] = state
 
     encoded = {n: fmt.encode_blob(blob) for n, blob in rounds.items()}

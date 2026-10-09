@@ -357,4 +357,52 @@ def test_two_plants_in_one_round_contradict_and_nothing_is_attributed():
 def test_a_round_without_a_spike_part_is_left_alone():
     state = {"version": 1, "vitals": {}}
     pse.attribute_planter(state, [BOMB], {})
+    pse.attribute_death_drops(state, [{"t": 1.0, "victim": 5, "u": 1, "v": 2}], {})
     assert state == {"version": 1, "vitals": {}}
+
+
+# D5 (answered 2026-10-09): the spike drops where its carrier died. 7a278f4b R5: slot 5 dies 77 ms before the drop.
+DEATH = {"i": 3, "t": 22.802, "killer": 1, "victim": 5, "u": 4210, "v": 6120}
+
+
+def test_a_drop_right_after_one_death_lies_at_the_death_and_that_player_carried_it():
+    state = _spike({"t": -30.0, "s": "carried"}, {"t": 22.879, "s": "dropped"}, {"t": 49.8, "s": "carried"})
+    counts = {}
+    pse.attribute_death_drops(state, [{"i": 0, "t": 10.0, "killer": 5, "victim": 2, "u": 1, "v": 1}, DEATH], counts)
+    assert state["spike"] == [{"t": -30.0, "s": "carried", "slot": 5},
+                              {"t": 22.879, "s": "dropped", "u": 4210, "v": 6120}, {"t": 49.8, "s": "carried"}]
+    assert counts == {"spike: dropped at the carrier's death": 1}
+    assert ps.validate(state)["spike"] == state["spike"]
+
+
+def test_a_drop_with_no_death_close_before_it_is_voluntary_and_has_no_place():
+    state = _spike({"t": -30.0, "s": "carried"}, {"t": 22.879, "s": "dropped"})
+    counts = {}
+    # a death 0.6 s before the drop, and one just after it: neither caused it
+    pse.attribute_death_drops(state, [dict(DEATH, t=22.279), dict(DEATH, t=22.9, victim=6)], counts)
+    assert state["spike"] == [{"t": -30.0, "s": "carried"}, {"t": 22.879, "s": "dropped"}]
+    assert counts == {"spike: dropped with no death (place unknown)": 1}
+
+
+def test_two_deaths_before_one_drop_are_a_trade_and_nothing_is_attributed():
+    state = _spike({"t": -30.0, "s": "carried"}, {"t": 22.879, "s": "dropped"})
+    counts = {}
+    pse.attribute_death_drops(state, [DEATH, dict(DEATH, t=22.85, victim=1, killer=7)], counts)
+    assert state["spike"] == [{"t": -30.0, "s": "carried"}, {"t": 22.879, "s": "dropped"}]
+    assert counts == {"spike: dropped after two deaths (not attributed)": 1}
+
+
+def test_a_death_with_no_position_still_names_the_carrier_but_places_nothing():
+    state = _spike({"t": -30.0, "s": "carried"}, {"t": 22.879, "s": "dropped"})
+    counts = {}
+    pse.attribute_death_drops(state, [dict(DEATH, u=None, v=None)], counts)
+    assert state["spike"] == [{"t": -30.0, "s": "carried", "slot": 5}, {"t": 22.879, "s": "dropped"}]
+    assert counts == {"spike: dropped at a death with no position": 1}
+
+
+def test_a_death_of_someone_other_than_a_proven_carrier_places_nothing():
+    state = _spike({"t": 10.0, "s": "carried", "slot": 1}, {"t": 22.879, "s": "dropped"})
+    counts = {}
+    pse.attribute_death_drops(state, [DEATH], counts)
+    assert state["spike"] == [{"t": 10.0, "s": "carried", "slot": 1}, {"t": 22.879, "s": "dropped"}]
+    assert counts == {"spike: dropped at a death of someone other than the carrier (not attributed)": 1}

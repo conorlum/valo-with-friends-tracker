@@ -120,7 +120,7 @@ def test_parity_with_health_and_spike_records(tmp_path):
     streamed, in_memory = both(directory, source_sha256=match.source_sha256, vrf_path=vrf)
     assert_parity(streamed, in_memory)
     assert streamed.rounds[1]["player_state"]["damage_taken"]["2"] == [4.5]
-    assert [e.get("slot") for e in streamed.rounds[1]["player_state"]["spike"]] == [None, None, None, 6, None, None]
+    assert [e.get("slot") for e in streamed.rounds[1]["player_state"]["spike"]] == [None, 7, None, 6, None, None]
 
 
 @pytest.mark.skipif(not REAL_FIXTURE.exists(), reason="no Swiftplay fixture")

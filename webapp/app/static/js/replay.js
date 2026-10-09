@@ -938,7 +938,7 @@
   // The spike at t as one explicit state: {state, slot, u, v, since, source, hud}. From the plant on, the ability
   // row decides, exactly as the planted HUD does (`hud` is spikeAt's result; source "ability"): planted, defused
   // or detonated. Before it, player_state's proven transitions (source "player_state"): unknown, carried (slot
-  // null when the carrier isn't proven), dropped (never a position today), planting, or a post-plant state the
+  // null when the carrier isn't proven), dropped (at the carrier's death place when the drop follows one death, D5), planting, or a post-plant state the
   // ability row hasn't reached. A carrier or planter who is dead at t with no later row: dropped, no slot, no
   // position; the same once they are revived (a later life). No player_state spike: "unknown", source "none" (an
   // old round: only the HUD's result).

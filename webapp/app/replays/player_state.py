@@ -25,7 +25,7 @@ dropped), sorted. Deduplication (by character, respawn number and life-change in
 
 `spike`: state transitions in time order, `s` one of SPIKE_STATES. `carried` may lack `slot` (the state is known,
 the carrier isn't: decision D5 fills it only where proven, from the last pickup to a plant, the planter). `u`/`v`
-(0..10000) only where a recorded position exists (a dropped spike has none today). At equal `t`, a completed plant
+(0..10000) only where a recorded position exists (a dropped spike has one when the drop follows one death: that death's place). At equal `t`, a completed plant
 supersedes planting/carried; otherwise the later source order wins (a later pickup supersedes an earlier drop);
 two records of that winning state naming different slots contradict each other and the time ends `unknown`.
 

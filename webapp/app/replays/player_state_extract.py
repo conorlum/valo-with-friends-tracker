@@ -21,9 +21,10 @@ What the export proves (replay 7a278f4b, W3 EVIDENCE B, C and E):
   `LifeChangeEventIndex`); a repeat of that key is the same hit and counts once.
 - **Spike (D5, option A).** The game state's `BombState` gives exact transition times: 2 dropped, 3 carried,
   4 planted, 5 detonated, 6 defused; 1 (spawned) and 0 (round over) are `unknown`. Who carries is proven only
-  from the last pickup to a completed plant, by the planter (the spike can't change hands without a drop); the
-  first carrier, any other carrier and a dropped spike's place are not decoded, so they stay absent. Never a
-  pickup by distance.
+  from the last pickup to a completed plant, by the planter (the spike can't change hands without a drop), and
+  from the last pickup to a drop that follows one death, by the player who died; that drop lies at their death
+  place (D5, answered 2026-10-09). A voluntary drop's place and the carrier before it are not decoded, so they
+  stay absent. Never a pickup by distance.
 
 Diagnostics are anonymous counts (no names, Subjects or guids) for the condense report."""
 
@@ -48,6 +49,7 @@ ARMOR_CAPACITY = {"Default__LightArmorItem_C": 25.0, "Default__HeavyArmorItem_C"
 ARMOR_SECTION_OFFSET = 2          # an armor section's component = the armor item's actor guid + 2
 BOMB_STATES = {2: "dropped", 3: "carried", 4: "planted", 5: "detonated", 6: "defused"}
 PLANT_MATCH_S = 1.0               # the BombState plant and the planted spike's spawn (12 ms apart in R1)
+DEATH_DROP_S = 0.5                # a death and the drop it causes (77 ms apart in 7a278f4b R5)
 SUM_TOLERANCE = 0.01              # sections' changes vs DamageTaken (float32 values)
 VALUE_TOLERANCE = 0.01
 PROVEN_PLANTER = frozenset({"instigator", "planted"})   # extras' owner_by values that name the planter
@@ -374,3 +376,42 @@ def attribute_planter(state: dict | None, util: list[dict], diagnostics: Counter
         return
     spike[i - 1]["slot"] = planter
     count("spike: planter attributed")
+
+
+def attribute_death_drops(state: dict | None, kills: list[dict], diagnostics: Counter | dict) -> None:
+    """D5 (answered 2026-10-09: "have the spike drop on death position"): a drop that follows exactly one death
+    within DEATH_DROP_S is that player's. In place on a round's `player_state`: the `dropped` transition gets the
+    victim's death place (the kill row's `u`/`v`), and the `carried` transition right before it, when it names
+    nobody yet, gets the victim (the spike can't change hands without a drop). A drop with no death that close is
+    a voluntary drop: its place stays absent. Two deaths that close (a trade) are left absent too. Counted."""
+    spike = (state or {}).get("spike")
+    if not spike:
+        return
+
+    def count(case: str) -> None:
+        diagnostics[case] = diagnostics.get(case, 0) + 1
+
+    for i, e in enumerate(spike):
+        if e["s"] != "dropped" or "u" in e:
+            continue
+        victims = {k["victim"] for k in kills or []
+                   if isinstance(k.get("t"), (int, float)) and e["t"] - DEATH_DROP_S <= k["t"] <= e["t"]}
+        if not victims:
+            count("spike: dropped with no death (place unknown)")
+            continue
+        if len(victims) > 1:
+            count("spike: dropped after two deaths (not attributed)")
+            continue
+        victim = victims.pop()
+        before = spike[i - 1] if i > 0 and spike[i - 1]["s"] == "carried" else None
+        if before is not None and before.get("slot", victim) != victim:
+            count("spike: dropped at a death of someone other than the carrier (not attributed)")
+            continue
+        row = next(k for k in reversed(kills) if k["victim"] == victim and k["t"] <= e["t"])
+        if isinstance(row.get("u"), int) and isinstance(row.get("v"), int):
+            e["u"], e["v"] = row["u"], row["v"]
+            count("spike: dropped at the carrier's death")
+        else:
+            count("spike: dropped at a death with no position")
+        if before is not None:
+            before["slot"] = victim
