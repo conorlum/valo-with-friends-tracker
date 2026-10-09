@@ -553,7 +553,8 @@
     concussed: { color: "#f2c230", label: "CONCUSSED" }, hindered: { color: "#4da3ff", label: "HINDERED" },
     suppressed: { color: "#b06cff", label: "SUPPRESSED" }, fragile: { color: "#ff5ea8", label: "FRAGILE" },
     tethered: { color: "#2cd5c4", label: "TETHERED" }, decayed: { color: "#c0463f", label: "DECAYED" },
-    slowed: { color: "#7cc9ff", label: "SLOWED" }, hit: { color: "#e8e8e8", label: "HIT" }
+    slowed: { color: "#7cc9ff", label: "SLOWED" }, hit: { color: "#e8e8e8", label: "HIT" },
+    blinded: { color: "#ffffff", label: "BLINDED" }, nearsighted: { color: "#a78bfa", label: "NEARSIGHTED" }
   };
 
   function statusStyle(name) {
@@ -939,7 +940,8 @@
   // or detonated. Before it, player_state's proven transitions (source "player_state"): unknown, carried (slot
   // null when the carrier isn't proven), dropped (never a position today), planting, or a post-plant state the
   // ability row hasn't reached. A carrier or planter who is dead at t with no later row: dropped, no slot, no
-  // position. No player_state spike: "unknown", source "none" (an old round: only the HUD's result).
+  // position; the same once they are revived (a later life). No player_state spike: "unknown", source "none" (an
+  // old round: only the HUD's result).
   function spikeStateAt(index, t) {
     var bombs = index && index.bombs ? index.bombs : [];
     var hud = spikeAt(bombs, t);
@@ -962,7 +964,11 @@
     out.since = e.t;
     if (psHas(e, "slot")) out.slot = e.slot;
     if (psHas(e, "u")) { out.u = e.u; out.v = e.v; }
-    if ((e.s === "carried" || e.s === "planting") && out.slot !== null && lifeIndexAt(index, out.slot, t) === null) {
+    // A carrier who died after the row dropped the spike, even if revived since (a new life never carries it on).
+    var lifeNow = out.slot === null ? undefined : lifeIndexAt(index, out.slot, t);
+    var lifeThen = out.slot === null ? undefined : lifeIndexAt(index, out.slot, e.t);
+    if ((e.s === "carried" || e.s === "planting") && out.slot !== null &&
+        (lifeNow === null || (typeof lifeThen === "number" && lifeNow !== lifeThen))) {
       out.state = "dropped";
       out.slot = null;
       out.u = out.v = null;
@@ -1866,8 +1872,9 @@
     var all = this.current.extras.abilities;
     var smoke = this.css("--replay-smoke", "rgba(16, 18, 24, 0.6)");
     var smokeCore = this.css("--replay-smoke-core", "rgba(16, 18, 24, 0.84)");
-    // Areas first, so badges sit on top of them; the spike last.
-    ["wall", "smoke", "area", "reveal", "mesh", "shear", "line", "wire", "badge", "spike"].forEach(function (pass) {
+    // Areas first, so badges sit on top of them. The spike (shape "spike") is not drawn here: drawSpikeGround and
+    // the carrier badge own it, outside the abilities toggle.
+    ["wall", "smoke", "area", "reveal", "mesh", "shear", "line", "wire", "badge"].forEach(function (pass) {
       showing.forEach(function (a) {
         var style = abilityStyle(a);
         if (style.shape !== pass) return;
@@ -2058,38 +2065,67 @@
           }
           self.drawBadge(ctx, x, y, radius, color, glyph, fadeIn);
           hits.push({ x: x, y: y, r: radius * 1.4, text: text });
-        } else if (pass === "spike") {
-          var k = r * 0.7, beat = 0.5 + 0.5 * Math.sin((t - a.t0) * Math.PI * 2);
-          ctx.fillStyle = self.css("--brand", "#ff4655"); ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
-          ctx.globalAlpha = 0.35 * beat; ctx.beginPath(); ctx.arc(x, y, k * 2.2, 0, 2 * Math.PI); ctx.fill();
-          ctx.globalAlpha = 1;
-          ctx.beginPath(); ctx.moveTo(x, y - k); ctx.lineTo(x + k * 0.7, y); ctx.lineTo(x, y + k); ctx.lineTo(x - k * 0.7, y);
-          ctx.closePath(); ctx.fill(); ctx.stroke();
-          var state = spikeAt([a], t);
-          if (state && !state.defused && !state.exploded) {
-            // The time left to detonation, as a draining ring.
-            ctx.lineWidth = Math.max(2, r / 5); ctx.strokeStyle = self.css("--brand", "#ff4655"); ctx.globalAlpha = 0.9;
-            ctx.beginPath(); ctx.arc(x, y, k * 1.9, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.left / SPIKE_S); ctx.stroke();
-          }
-          if (state && state.defusing) {
-            // A defuse: a thick ring filling in the defuser's colour, and a line from the defuser.
-            var dcolor = self.ownerColor(state.defusing.slot);
-            var from = trackAt(self.current.tracks[String(state.defusing.slot)], t);
-            if (from) {
-              ctx.globalAlpha = 0.9; ctx.strokeStyle = dcolor; ctx.lineWidth = Math.max(2, r / 5);
-              ctx.beginPath(); ctx.moveTo(from.u * s, from.v * s); ctx.lineTo(x, y); ctx.stroke();
-            }
-            ctx.globalAlpha = 0.35; ctx.lineWidth = Math.max(5, r / 2); ctx.strokeStyle = "#ffffff";
-            ctx.beginPath(); ctx.arc(x, y, k * 2.7, 0, 2 * Math.PI); ctx.stroke();
-            ctx.globalAlpha = 1; ctx.strokeStyle = dcolor;
-            ctx.beginPath(); ctx.arc(x, y, k * 2.7, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.defusing.frac); ctx.stroke();
-          }
-          hits.push({ x: x, y: y, r: k * 1.4, text: "Spike planted" + (a.slot !== null ? " by " + self.nameOf(a.slot) : "") +
-            " at " + a.t0.toFixed(1) + " s" + (state && state.halved ? " · half defused" : "") });
         }
         ctx.restore();
       });
     });
+  };
+
+  // The one spike glyph: a red diamond, k its half-height. `outline` is the stroke round it (white when planted,
+  // dark for a dropped spike so it reads as lying on the ground).
+  ReplayViewer.prototype.spikeGlyph = function (ctx, x, y, k, outline, width) {
+    ctx.fillStyle = this.css("--brand", "#ff4655"); ctx.strokeStyle = outline; ctx.lineWidth = width;
+    ctx.beginPath(); ctx.moveTo(x, y - k); ctx.lineTo(x + k * 0.7, y); ctx.lineTo(x, y + k); ctx.lineTo(x - k * 0.7, y);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  };
+
+  // The spike on the ground, from the one spike state (spikeStateAt): the planted marker (today's style, shown while
+  // its Bomb row shows, with the detonation and defuse rings) or a dropped spike where the data places it. Drawn
+  // over map control and utility, under the players, whatever the abilities toggle says. A carried spike is the
+  // carrier's badge (drawAnnotations), so there is never more than one glyph.
+  ReplayViewer.prototype.drawSpikeGround = function (ctx, s, r, hits, spike) {
+    var t = this.t, self = this;
+    if (spike.source === "ability") {
+      var a = this.current.extras.abilities.filter(function (b) { return b.kind === "Bomb" && b.t0 <= t; })[0];
+      if (!a || !abilitiesAt([a], t, this.current.blob.t_end).length) return;
+      var x = a.u * s, y = a.v * s;
+      var k = r * 0.7, beat = 0.5 + 0.5 * Math.sin((t - a.t0) * Math.PI * 2);
+      ctx.save();
+      ctx.fillStyle = this.css("--brand", "#ff4655");
+      ctx.globalAlpha = 0.35 * beat; ctx.beginPath(); ctx.arc(x, y, k * 2.2, 0, 2 * Math.PI); ctx.fill();
+      ctx.globalAlpha = 1;
+      this.spikeGlyph(ctx, x, y, k, "#ffffff", 2);
+      var state = spike.hud;
+      if (state && !state.defused && !state.exploded) {
+        // The time left to detonation, as a draining ring.
+        ctx.lineWidth = Math.max(2, r / 5); ctx.strokeStyle = this.css("--brand", "#ff4655"); ctx.globalAlpha = 0.9;
+        ctx.beginPath(); ctx.arc(x, y, k * 1.9, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.left / SPIKE_S); ctx.stroke();
+      }
+      if (state && state.defusing) {
+        // A defuse: a thick ring filling in the defuser's colour, and a line from the defuser.
+        var dcolor = this.ownerColor(state.defusing.slot);
+        var from = trackAt(this.current.tracks[String(state.defusing.slot)], t);
+        if (from) {
+          ctx.globalAlpha = 0.9; ctx.strokeStyle = dcolor; ctx.lineWidth = Math.max(2, r / 5);
+          ctx.beginPath(); ctx.moveTo(from.u * s, from.v * s); ctx.lineTo(x, y); ctx.stroke();
+        }
+        ctx.globalAlpha = 0.35; ctx.lineWidth = Math.max(5, r / 2); ctx.strokeStyle = "#ffffff";
+        ctx.beginPath(); ctx.arc(x, y, k * 2.7, 0, 2 * Math.PI); ctx.stroke();
+        ctx.globalAlpha = 1; ctx.strokeStyle = dcolor;
+        ctx.beginPath(); ctx.arc(x, y, k * 2.7, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * state.defusing.frac); ctx.stroke();
+      }
+      ctx.restore();
+      hits.push({ x: x, y: y, r: k * 1.4, text: "Spike planted" + (a.slot !== null ? " by " + self.nameOf(a.slot) : "") +
+        " at " + a.t0.toFixed(1) + " s" + (state && state.halved ? " · half defused" : "") });
+      return;
+    }
+    if (spike.state === "dropped" && spike.u !== null && spike.v !== null) {
+      var dx = spike.u * s, dy = spike.v * s, dk = r * 0.55;
+      ctx.save();
+      this.spikeGlyph(ctx, dx, dy, dk, "rgba(10, 10, 12, 0.9)", Math.max(2, r / 6));
+      ctx.restore();
+      hits.push({ x: dx, y: dy, r: dk * 1.4, text: "Spike dropped here at " + clock(spike.since) });
+    }
   };
 
   // A throw in flight: a dashed line from the thrower to where it lands, with the glyph riding
@@ -2151,39 +2187,208 @@
     });
   };
 
-  // A player under an enemy's status: a dashed ring in the status's colour turning around them, its
-  // name in a chip above them (several stack), a burst when it lands, and the ability's badge.
-  ReplayViewer.prototype.drawStatuses = function (ctx, s, r, hits) {
-    var t = this.t, tracks = this.current.tracks, self = this, stacked = {};
-    statusesAt(this.current.extras.statuses, t).forEach(function (st) {
-      var at = trackAt(tracks[String(st.target)], t);
-      if (!at) return;
-      var x = at.u * s, y = at.v * s, look = statusStyle(st.status);
-      var style = abilityStyle({ kind: "GameObject", code: st.code, name: st.name, agent: self.agentOf(st.slot) });
-      var row = stacked[st.target] = (stacked[st.target] || 0) + 1;
+  // ------------------------------------------------------------ player annotations (P05)
+  // One layout per player: the circle, its condition chips above it, the spike carrier's badge at its upper right
+  // and the health/name block below it. Every box is in map pixels (the zoom transform's input), recorded in
+  // this.layout as {kind: "chip" | "badge" | "block", slot, x, y, w, h, px, py} (a block also has `moved`), and
+  // its tooltip hit uses the same box. Chips and badges are reserved first; blocks then avoid them and each
+  // other, moving down with a leader back to their player. Boxes clamp inside the visible map.
+
+  // m:ss of a round time (never negative).
+  function clock(t) {
+    var whole = Math.floor(Math.max(0, t));
+    var sec = whole % 60;
+    return Math.floor(whole / 60) + ":" + (sec < 10 ? "0" : "") + sec;
+  }
+
+  function boxesOverlap(a, b) {
+    return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  }
+
+  // The order of a player's chips: blinded, then nearsighted, then the rest as they started.
+  function chipOrder(conditions) {
+    var rank = function (c) { return c.c === "blinded" ? 0 : c.c === "nearsighted" ? 1 : 2; };
+    return conditions.map(function (c, i) { return [rank(c), i, c]; })
+      .sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; })
+      .map(function (x) { return x[2]; });
+  }
+
+  // The visible part of the map, in map pixels.
+  ReplayViewer.prototype.viewBounds = function () {
+    var v = this.view, size = this.canvas.width;
+    return { x0: v.ox, y0: v.oy, x1: v.ox + size / v.k, y1: v.oy + size / v.k };
+  };
+
+  // The shift that keeps box b inside the view, when its player is in view ([dx, dy]).
+  function clampShift(b, view, px, py) {
+    if (px < view.x0 || px > view.x1 || py < view.y0 || py > view.y1) return [0, 0];
+    var x = Math.min(Math.max(b.x, view.x0), view.x1 - b.w), y = Math.min(Math.max(b.y, view.y0), view.y1 - b.h);
+    return [x - b.x, y - b.y];
+  }
+
+  ReplayViewer.prototype.conditionText = function (slot, c) {
+    var self = this, look = c.c.charAt(0).toUpperCase() + c.c.slice(1);
+    var by = [];
+    c.src.forEach(function (src) {
+      var who = src.by === null ? "an unknown owner" : self.nameOf(src.by);
+      var text = who + (src.ability ? " (" + src.ability + ")" : "");
+      if (by.indexOf(text) < 0) by.push(text);
+    });
+    return this.nameOf(slot) + " · " + look + " by " + by.join(", ") + " · " + clock(c.t0) + "–" + clock(c.t1) +
+      (c.est ? " (estimated)" : "");
+  };
+
+  // Conditions on the living players at t (playerConditionsAt: blinded, nearsighted and the recorded statuses), for
+  // everyone, whatever the abilities toggle says: a dashed ring per condition turning around the player, a burst
+  // when it lands, and one labelled chip each above the player (several stack). Dimmed like the player.
+  ReplayViewer.prototype.drawStatuses = function (ctx, s, r, hits, marks, layout) {
+    var t = this.t, self = this, view = this.viewBounds();
+    marks.forEach(function (m) {
+      var list = chipOrder(m.conditions);
+      if (!list.length) return;
+      var x = m.x, y = m.y;
       ctx.save();
-      ctx.strokeStyle = look.color; ctx.lineWidth = Math.max(2.5, r / 4.5);
-      ctx.setLineDash([r / 2.5, r / 4]); ctx.lineDashOffset = -(t * r * 2);
-      ctx.beginPath(); ctx.arc(x, y, r * (1.25 + 0.3 * row), 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
-      var age = t - st.t0;
-      if (age < 0.5) {
-        ctx.globalAlpha = 1 - age / 0.5; ctx.lineWidth = Math.max(3, r / 3);
-        ctx.beginPath(); ctx.arc(x, y, r * (1.2 + 2 * age / 0.5), 0, 2 * Math.PI); ctx.stroke();
-      }
-      ctx.globalAlpha = 1;
       ctx.font = "700 " + Math.round(r * 0.62) + "px system-ui, sans-serif";
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      var w = ctx.measureText(look.label).width + r * 0.5, h = r * 0.85, cy = y - r * (1.35 + 0.95 * row);
-      ctx.fillStyle = "rgba(10, 10, 12, 0.85)"; ctx.fillRect(x - w / 2, cy - h / 2, w, h);
-      ctx.fillStyle = look.color; ctx.fillRect(x - w / 2, cy - h / 2, r * 0.18, h);
-      ctx.fillText(look.label, x + r * 0.05, cy + r * 0.03);
+      var chips = list.map(function (c, i) {
+        var row = i + 1, look = statusStyle(c.c);
+        var w = ctx.measureText(look.label).width + r * 0.5, h = r * 0.85, cy = y - r * (1.35 + 0.95 * row);
+        return { c: c, look: look, row: row, box: { x: x - w / 2, y: cy - h / 2, w: w, h: h } };
+      });
+      // The stack clamps as one, so it stays in order.
+      var all = chips.reduce(function (acc, ch) {
+        var b = ch.box;
+        if (!acc) return { x: b.x, y: b.y, w: b.w, h: b.h };
+        var x0 = Math.min(acc.x, b.x), y0 = Math.min(acc.y, b.y);
+        return { x: x0, y: y0, w: Math.max(acc.x + acc.w, b.x + b.w) - x0, h: Math.max(acc.y + acc.h, b.y + b.h) - y0 };
+      }, null);
+      var shift = clampShift(all, view, x, y);
+      chips.forEach(function (ch) {
+        var look = ch.look, b = ch.box, c = ch.c;
+        b.x += shift[0]; b.y += shift[1];
+        ctx.globalAlpha = m.dim;
+        ctx.strokeStyle = look.color; ctx.lineWidth = Math.max(2.5, r / 4.5);
+        ctx.setLineDash([r / 2.5, r / 4]); ctx.lineDashOffset = -(t * r * 2);
+        ctx.beginPath(); ctx.arc(x, y, r * (1.25 + 0.3 * ch.row), 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+        var age = t - c.t0;
+        if (age < 0.5) {
+          ctx.globalAlpha = m.dim * (1 - age / 0.5); ctx.lineWidth = Math.max(3, r / 3);
+          ctx.beginPath(); ctx.arc(x, y, r * (1.2 + 2 * age / 0.5), 0, 2 * Math.PI); ctx.stroke();
+        }
+        ctx.globalAlpha = m.dim;
+        ctx.fillStyle = "rgba(10, 10, 12, 0.85)"; ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.fillStyle = look.color; ctx.fillRect(b.x, b.y, r * 0.18, b.h);
+        ctx.fillText(look.label, b.x + b.w / 2 + r * 0.05, b.y + b.h / 2 + r * 0.03);
+        layout.push({ kind: "chip", slot: m.slot, x: b.x, y: b.y, w: b.w, h: b.h, px: x, py: y });
+        hits.push({ x: b.x + b.w / 2, y: b.y + b.h / 2, r: Math.max(b.w, b.h) / 2, box: b, slot: null,
+                    text: self.conditionText(m.slot, c) });
+      });
       ctx.restore();
-      self.drawBadge(ctx, x - r * 1.15, y - r * 1.15, r * 0.4, self.ownerColor(st.slot),
-        self.abilityIcon(style.agent, style.ability));
-      hits.push({ x: x, y: y, r: r * 1.5, text: self.nameOf(st.target) + " " + st.status + " by " +
-        (st.slot === null || st.slot === undefined ? "an unknown owner" : self.nameOf(st.slot)) + "'s " + style.label +
-        " · " + st.t0.toFixed(1) + "–" + (typeof st.t1 === "number" ? st.t1.toFixed(1) : "?") + " s" });
     });
+  };
+
+  // The spike carrier's badge at the upper right of their circle: a dark disc holding the spike glyph. Shown for a
+  // proven carrier or planter only (spikeStateAt), over the circles.
+  ReplayViewer.prototype.drawCarrier = function (ctx, r, hits, marks, layout, spike) {
+    if ((spike.state !== "carried" && spike.state !== "planting") || spike.slot === null) return;
+    var m = marks.filter(function (q) { return q.slot === spike.slot; })[0];
+    if (!m) return;
+    var rb = r * 0.45, half = r * 0.5;
+    var box = { x: m.x + r * 1.15 - half, y: m.y - r * 1.15 - half, w: 2 * half, h: 2 * half };
+    var shift = clampShift(box, this.viewBounds(), m.x, m.y);
+    box.x += shift[0]; box.y += shift[1];
+    var cx = box.x + half, cy = box.y + half;
+    ctx.save();
+    ctx.globalAlpha = m.dim;
+    ctx.beginPath(); ctx.arc(cx, cy, rb, 0, 2 * Math.PI);
+    ctx.fillStyle = "rgba(12, 12, 16, 0.85)"; ctx.fill();
+    this.spikeGlyph(ctx, cx, cy, rb * 0.75, "#ffffff", 1.5);
+    ctx.restore();
+    layout.push({ kind: "badge", slot: m.slot, x: box.x, y: box.y, w: box.w, h: box.h, px: m.x, py: m.y });
+    hits.push({ x: cx, y: cy, r: half, box: box, slot: null, text: this.nameOf(m.slot) +
+      (spike.state === "planting" ? " is planting the spike" : " is carrying the spike") +
+      (spike.since !== null ? " (since " + clock(spike.since) + ")" : "") });
+  };
+
+  // The health colour: green, then yellow below half, red below a quarter.
+  function healthColor(pct) {
+    return pct > 50 ? "#4ade80" : pct > 25 ? "#facc15" : "#f87171";
+  }
+
+  // Each player's health/name block below their circle: a thin health bar with its whole-number percentage (or
+  // a neutral "?" when the health after a hit isn't known) above the name, on a dark plate. The bar shows from the
+  // player's first confirmed damage this round (healthAt); the name with the names toggle. Either part alone
+  // keeps the same place under the circle.
+  ReplayViewer.prototype.drawBlocks = function (ctx, r, hits, marks, layout) {
+    var self = this, view = this.viewBounds();
+    var reserved = layout.slice(), placed = [];
+    var barLen = r * 1.6, hb = r * 0.75, hn = r * 1.05;
+    ctx.save();
+    marks.forEach(function (m) {
+      var hv = m.health.visible ? m.health : null;
+      var name = null;
+      if (self.linked && self.layers.names) {
+        name = self.nameOf(m.slot).split("#")[0];
+        name = name.length > 14 ? name.slice(0, 13) + "…" : name;
+      }
+      if (!hv && name === null) return;
+      ctx.font = "700 " + Math.round(r * 0.6) + "px system-ui, sans-serif";
+      var hw = hv ? r * 0.25 + barLen + r * 0.2 + ctx.measureText("100%").width + r * 0.25 : 0;
+      ctx.font = "600 " + Math.round(r * 0.8) + "px system-ui, sans-serif";
+      var nw = name !== null ? ctx.measureText(name).width + r * 0.5 : 0;
+      var w = Math.max(hw, nw), h = (hv ? hb : 0) + (name !== null ? hn : 0);
+      var b = { x: m.x - w / 2, y: m.y + r * 1.25, w: w, h: h };
+      var shift = clampShift(b, view, m.x, m.y);
+      b.x += shift[0]; b.y += shift[1];
+      var start = b.y, moved = false;
+      // Stacked players: a block that would cover an earlier block, a chip or a badge moves below it.
+      for (var guard = 0; guard < 40; guard++) {
+        var clash = placed.concat(reserved).filter(function (o) { return boxesOverlap(b, o); })[0];
+        if (!clash) break;
+        b.y = clash.y + clash.h + r * 0.05;
+        moved = true;
+      }
+      if (moved) {
+        var again = clampShift(b, view, m.x, m.y);
+        b.x += again[0]; b.y += again[1];
+        ctx.globalAlpha = m.dim;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.35)"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(m.x, m.y + r * 1.05); ctx.lineTo(m.x, b.y); ctx.stroke();
+      }
+      ctx.globalAlpha = m.dim;
+      ctx.fillStyle = "rgba(10, 10, 12, 0.78)";
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      var cx = b.x + b.w / 2;
+      if (hv) {
+        var bx = cx - hw / 2 + r * 0.25, by = b.y + hb / 2 - r * 0.11;
+        ctx.fillStyle = "#3a3a42"; ctx.fillRect(bx, by, barLen, r * 0.22);
+        var label = "?";
+        if (hv.state === "known") {
+          var pct = Math.round(hv.pct);
+          ctx.fillStyle = healthColor(hv.pct); ctx.fillRect(bx, by, barLen * hv.pct / 100, r * 0.22);
+          label = pct + "%";
+        }
+        ctx.font = "700 " + Math.round(r * 0.6) + "px system-ui, sans-serif";
+        ctx.textAlign = "left"; ctx.textBaseline = "middle";
+        ctx.fillStyle = hv.state === "known" ? "#ffffff" : "#a0a0a8";
+        ctx.fillText(label, bx + barLen + r * 0.2, b.y + hb / 2);
+        var why = hv.state === "known" ? label + " health, as of the last hit at " + clock(hv.at) :
+          "health unknown: " + (hv.at === null ? "not hit in this life" : "the hit at " + clock(hv.at) +
+          " doesn't record the shield");
+        hits.push({ x: cx, y: b.y + b.h / 2, r: Math.max(b.w, b.h) / 2, box: b, slot: null,
+                    text: self.nameOf(m.slot) + " · " + why });
+      }
+      if (name !== null) {
+        ctx.font = "600 " + Math.round(r * 0.8) + "px system-ui, sans-serif";
+        ctx.textAlign = "center"; ctx.textBaseline = "top";
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(name, cx, b.y + (hv ? hb : 0) + r * 0.1);
+      }
+      placed.push(b);
+      layout.push({ kind: "block", slot: m.slot, x: b.x, y: b.y, w: b.w, h: b.h, px: m.x, py: m.y,
+                    moved: moved || b.y !== start });
+    });
+    ctx.restore();
   };
 
   // The spike panel over the map: time to detonation, "half defused", and a defuse in progress
@@ -2528,7 +2733,7 @@
     var x = (e.clientX - rect.left) * scale / v.k + v.ox, y = (e.clientY - rect.top) * scale / v.k + v.oy;
     var best = null;
     this.hits.forEach(function (h) {
-      if (h.slot === undefined) return;
+      if (h.slot === undefined || h.slot === null) return;   // annotations never select
       var d = Math.hypot(h.x - x, h.y - y);
       if (d <= h.r && (!best || d < best.d)) best = { slot: h.slot, d: d };
     });
@@ -3036,6 +3241,12 @@
     if (this.layers.projectiles) this.drawProjectiles(ctx, s, r, hits);
     if (this.layers.tracers) this.drawTracers(ctx, s, r);
 
+    // The spike's one state at t (planted from its Bomb row, else player_state's proven transitions).
+    if (!this.current.state) this.current.state = indexRoundState(blob, this.current.extras.abilities);
+    var index = this.current.state;
+    var spike = spikeStateAt(index, t);
+    this.drawSpikeGround(ctx, s, r, hits, spike);   // planted or placed on the ground: under the players
+
     blob.kills.forEach(function (k) {
       if (k.t > t || k.u === null) return;
       var x = k.u * s, y = k.v * s, age = t - k.t;
@@ -3061,7 +3272,7 @@
         (k.weapon ? " with " + k.weapon : "") + " at " + k.t.toFixed(1) + " s" + gain });
     });
 
-    var labels = [];
+    var marks = [];
     // In a team's picture (R3.3) the true enemy dots are dimmed: that team didn't see them all.
     var knowing = this.layers.control && this.controlCache ? this.knowingGroup(this.controlCache.ready(this.number)) : null;
     blob.players.forEach(function (p) {
@@ -3106,61 +3317,54 @@
         ctx.beginPath(); ctx.arc(x, y, r * 1.35, 0, 2 * Math.PI); ctx.stroke();
         ctx.restore();
       }
-      if (self.linked && self.layers.names) labels.push({ x: x, y: y + r * 1.25, text: self.nameOf(p.slot) });
       if (self.highlight === p.slot) {
         ctx.save();
         ctx.strokeStyle = "#ffffff"; ctx.lineWidth = Math.max(2.5, r / 4);
         ctx.beginPath(); ctx.arc(x, y, r * 1.6, 0, 2 * Math.PI); ctx.stroke();
         ctx.restore();
       }
+      var health = healthAt(index, p.slot, t), conditions = playerConditionsAt(index, p.slot, t);
+      marks.push({ slot: p.slot, x: x, y: y, dim: dim, health: health, conditions: conditions });
+      var about = [];
+      if (health.visible) about.push(health.state === "known" ? Math.round(health.pct) + "% health" : "health unknown");
+      if (conditions.length) about.push(chipOrder(conditions).map(function (c) { return c.c; }).join(", "));
+      if (spike.slot === p.slot && spike.state === "carried") about.push("carrying the spike");
+      if (spike.slot === p.slot && spike.state === "planting") about.push("planting the spike");
       hits.push({ x: x, y: y, r: r * 1.2, slot: p.slot, text: self.nameOf(p.slot) + " · " + p.agent +
-        (life.flags.length ? " · " + life.flags.join(", ") : "") + (self.control ? " · click to show their control" : "") });
+        (life.flags.length ? " · " + life.flags.join(", ") : "") + (about.length ? " · " + about.join(" · ") : "") +
+        (self.control ? " · click to show their control" : "") });
     });
     ctx.globalAlpha = 1;
 
-    if (this.layers.abilities) {
-      this.drawReveals(ctx, s, r, hits);
-      this.drawStatuses(ctx, s, r, hits);
-    }
+    if (this.layers.abilities) this.drawReveals(ctx, s, r, hits);
 
-    // Names last, on a dark plate so they read over any part of the map.
-    ctx.save();
-    ctx.font = "600 " + Math.round(r * 0.8) + "px system-ui, sans-serif";
-    ctx.textAlign = "center"; ctx.textBaseline = "top";
-    // Stacked players: a label that would cover an earlier one moves below it, with a thin
-    // leader back to its player.
-    var placed = [];
-    labels.forEach(function (l) {
-      var text = l.text.split("#")[0];
-      text = text.length > 14 ? text.slice(0, 13) + "…" : text;
-      var w = ctx.measureText(text).width + r * 0.5, h = r * 1.05, y = l.y, moved = false;
-      for (var guard = 0; guard < 10; guard++) {
-        var clash = placed.filter(function (b) {
-          return Math.abs(b.x - l.x) < (b.w + w) / 2 && y < b.y + b.h && y + h > b.y;
-        })[0];
-        if (!clash) break;
-        y = clash.y + clash.h + 1;
-        moved = true;
-      }
-      if (moved) {
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.35)"; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(l.x, l.y - r * 0.2); ctx.lineTo(l.x, y); ctx.stroke();
-      }
-      ctx.fillStyle = "rgba(10, 10, 12, 0.78)";
-      ctx.fillRect(l.x - w / 2, y, w, h);
-      ctx.fillStyle = "#ffffff";
-      ctx.fillText(text, l.x, y + r * 0.1);
-      placed.push({ x: l.x, y: y, w: w, h: h });
-    });
-    ctx.restore();
+    // The player annotations last, over the circles, whatever the abilities toggle says: condition chips, the
+    // carrier's badge, then the health/name blocks on dark plates so they read over any part of the map.
+    var layout = [];
+    this.drawStatuses(ctx, s, r, hits, marks, layout);
+    this.drawCarrier(ctx, r, hits, marks, layout, spike);
+    this.drawBlocks(ctx, r, hits, marks, layout);
+    this.layout = layout;
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.hits = hits;
     var snap = this.snapshot(t);
-    this.ui.state.textContent = snap.live + " players on the map";
+    this.ui.state.textContent = snap.live + " players on the map" + this.spikeText(spike);
     this.canvas.setAttribute("aria-label", "Minimap, round " + blob.round + " at " + t.toFixed(1) + " s: " +
       snap.live + " players shown");
     if (this.hover) this.showTip(this.hover);
+  };
+
+  // The spike's state for the replay's state text (" · spike carried by …"), or "" when it isn't known.
+  ReplayViewer.prototype.spikeText = function (spike) {
+    var who = spike.slot === null ? "" : " by " + this.nameOf(spike.slot);
+    if (spike.state === "carried") return " · spike carried" + who;
+    if (spike.state === "planting") return " · spike being planted" + who;
+    if (spike.state === "dropped") return " · spike dropped" + (spike.u === null ? ", position unknown" : "");
+    if (spike.state === "planted" || spike.state === "defused" || spike.state === "detonated") {
+      return " · spike " + spike.state;
+    }
+    return "";
   };
 
   ReplayViewer.prototype.onHover = function (e) {
@@ -3172,14 +3376,19 @@
     this.showTip(this.hover);
   };
 
+  // A hit holds the point: its `box` (an annotation's rectangle, in the same map pixels) or its circle.
+  function hitHolds(h, x, y) {
+    if (h.box) return x >= h.box.x && x <= h.box.x + h.box.w && y >= h.box.y && y <= h.box.y + h.box.h;
+    return Math.hypot(h.x - x, h.y - y) <= h.r;
+  }
+
   // The tooltip names the smallest mark under the pointer (a player over a smoke wins).
   ReplayViewer.prototype.showTip = function (hover) {
     var tip = this.ui.tip;
     if (!tip) return;
     var best = null;
     (this.hits || []).forEach(function (h) {
-      var d = Math.hypot(h.x - hover.x, h.y - hover.y);
-      if (d <= h.r && (!best || (best.area && !h.area) || (best.area === h.area && h.r < best.r))) best = h;
+      if (hitHolds(h, hover.x, hover.y) && (!best || (best.area && !h.area) || (best.area === h.area && h.r < best.r))) best = h;
     });
     if (!best) { this.hideTip(); return; }
     tip.textContent = best.text;
