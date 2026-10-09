@@ -42,6 +42,12 @@ coverage, per-section totals and per-player stats out. Ported from the Stage 0b 
   enemy: one the team spots starts again from where they were seen, and a dead one's goes with them. An enemy is
   also located, as an area round them, by a kill, the plant, audible movement, gunfire within hearing and gun
   damage (the timing-gaps spec, section 4); a revived enemy restarts where they stand.
+- **Mollies (P07a; docs/superpowers/specs/2026-10-06-replay-player-state-design.md, section 5).** A team's burning
+  damaging molly (app/control/mollies.py: which rows, `[t, min(t + seconds, row end))`) is ground its enemy can't
+  walk into, across or diagonally past while it burns, in the team's unknown, its counterfactual and its knowledge
+  picture; never the other team's. What the unknown already held inside stays, unchanged, and moves on only once the
+  fire is out, as the ground is entered: from the end, not from before it. Sight, positions and locating events are
+  untouched; the owner's death or blindness doesn't put it out.
 - **Watchers** (passive): trips, alarmbots, Chamber traps, Killjoy's turret, Cypher's camera while
   he is in it, and flown drones; a camera or drone in use replaces its owner's own view. Placed
   utility dies with its owner (Q71): a watcher counts only while its owner is alive. A Killjoy turret or
@@ -92,6 +98,7 @@ import numpy as np
 from scipy import ndimage
 from app.control import chokes
 from app.control import heights as hc
+from app.control import mollies
 from app.control import observe
 from app.control import topology
 from app.control import utility
@@ -338,6 +345,8 @@ class RoundInputs:
         # a wall (of either kind) went up or down, which control is evaluated at (`analytic_times`)
         self.blockers: list[tuple[float, float, np.ndarray]] = []
         self.transitions: list[float] = []
+        # P07a: burning damaging mollies as (owner's side, Molly, footprint nodes); `hazard_at` (app/control/mollies.py)
+        self.mollies: list[tuple[str, mollies.Molly, np.ndarray]] = []
         self.flashed, self.nearsight = defaultdict(list), defaultdict(list)
         self.downgraded, self.contest_status = defaultdict(list), defaultdict(list)
         self.hit_contest = defaultdict(list)
@@ -528,6 +537,7 @@ class RoundInputs:
             elif k == "damage":
                 self._damage(e)
         self._blinds(util)
+        self._mollies(util)
         if not any(e.get("k") == "damage" for e in util):
             self.missing["damage hits (enemy damage zones only)"] += 1
         self._suppress_devices(util)
@@ -898,6 +908,71 @@ class RoundInputs:
                 out[nodes] = np.maximum(out[nodes], b)
         return out
 
+    def _mollies(self, util: list) -> None:
+        """The round's damaging mollies (P07a; app/control/mollies.py decides which rows count and when they burn:
+        `[t, min(t + seconds, t1))`), cut short where the row's object is gone first, each kept under its owner's
+        side with its footprint (`_molly_nodes`). Their starts and ends are analytic instants, like a wall's. A
+        molly whose owner, place, time or figures are unknown, or whose owner has no side, blocks nothing and is
+        counted in `missing`."""
+        figures = utility.FIGURES.get("molly") or {}
+        for e in util:
+            if mollies.molly_key(e) is None:
+                continue
+            zones, diagnostics = mollies.molly_zones([e], figures)
+            for case, count in diagnostics.items():
+                self.missing[f"{case} (blocks nothing)"] += count
+            for z in zones:
+                gone = e.get("gone")
+                if isinstance(gone, (int, float)) and not isinstance(gone, bool) and z.t0 < gone < z.t1:
+                    z = z._replace(t1=float(gone))
+                side = self.team.get(z.by)
+                if side is None:
+                    self.missing["molly owner without a side (blocks nothing)"] += 1
+                    continue
+                self.mollies.append((side, z, self._molly_nodes(z, e.get("z"))))
+                self.transitions += [z.t0, z.t1]
+
+    def _molly_nodes(self, z: "mollies.Molly", z_dm) -> np.ndarray:
+        """A molly's footprint: the walkable nodes whose cell centre is within its radius, on the floor under its
+        stored height (the lowest without one, counted), that a walk inside the circle reaches from its centre (a
+        fire doesn't burn through a wall)."""
+        geo = self.geo
+        x, y = z.u * PX / 10000, z.v * PX / 10000
+        r = z.radius_m / geo.m_per_px
+        z_m = self._device_z(z_dm)
+        if geo.heights is not None and z_m is None:
+            self.missing["approximate heights (a molly has no z: lowest floor used)"] += 1
+        cells = GRID * GRID
+        near = np.flatnonzero(((geo.centres[:cells, 0] - x) ** 2 + (geo.centres[:cells, 1] - y) ** 2 <= r * r)
+                              & geo.walk.ravel())
+        inside = np.zeros(geo.n, bool)
+        for c in near.tolist():
+            inside[geo.node_at(c, z_m)] = True
+        inside &= geo.walk_n
+        seed = np.zeros(geo.n, bool)
+        seed[geo.node_at(geo.cell_of_px(x, y), z_m)] = True
+        steps = max(1, int(math.ceil(z.radius_m / geo.cell_m)))
+        grown = topology.of(geo).dilate(seed, eight=True, iterations=steps, within=inside | seed)
+        return np.flatnonzero(grown & inside)
+
+    def hazard_at(self, side: str, t: float) -> np.ndarray:
+        """The nodes `side`'s burning mollies cover at t (`t0 <= t < t1`): `unknown[side]` (where `side` thinks the
+        enemy may be) can't be walked through them. Never the other side's: nobody is held by their own team's fire."""
+        out = np.zeros(self.geo.n, bool)
+        for s, z, nodes in self.mollies:
+            if s == side and z.t0 <= t < z.t1:
+                out[nodes] = True
+        return out
+
+    def hazard_reopened(self, side: str, t: float) -> np.ndarray:
+        """Per node, when the last of `side`'s mollies there went out, at or before t (-inf where none has): the
+        ground is walked from then on, and nothing that waited in it moves before then."""
+        out = np.full(self.geo.n, -np.inf)
+        for s, z, nodes in self.mollies:
+            if s == side and z.t1 <= t:
+                out[nodes] = np.maximum(out[nodes], z.t1)
+        return out
+
     def smokes_at(self, t: float) -> list:
         """What blocks sight at t: the smokes as (x, y, r, solid), then the walls that are up."""
         return ([(x, y, r, solid) for t0, t1, x, y, r, solid in self.smokes if t0 <= t < t1]
@@ -1223,6 +1298,9 @@ class Tick:
         # flat cells in a pinch (Unknown.sealed) at this tick, so the counterfactual's unknown keeps them
         # shut too; set with `unknown` by compute_round
         self.sealed: np.ndarray | None = None
+        # side -> the nodes its burning mollies cover at this tick (P07a), shut in that side's counterfactual
+        # unknown only; set by TickRunner.step on a round with mollies
+        self.hazard: dict[str, np.ndarray] | None = None
         self._usafe: dict = {}   # side, or (side, removed slot) -> its Safe cells from unknown
         self._ucf: dict[tuple[str, int], np.ndarray] = {}   # (side, removed slot) -> unknown_without
 
@@ -1513,6 +1591,8 @@ class Tick:
             held = others | self._live_of(self.holders[removed])
             src = self.unknown[side].copy()
             shut = np.zeros(self.geo.n, bool) if self.sealed is None else self.sealed.copy()
+            if self.hazard is not None:
+                shut |= self.hazard[side]      # the side's own fire: its enemy doesn't walk through it (P07a)
             for e in self.holders.values():
                 if e.team != side:
                     src[e.cell] = True
@@ -1848,6 +1928,8 @@ class Knowledge:
         # an ability wall up now is not somewhere an unseen enemy walked (W14; its route at earlier times isn't
         # replayed here: the knowledge picture is the reach at this instant, as before)
         walls = self.rnd.blocked_at(t) if getattr(self.rnd, "blockers", None) else np.zeros(geo.n, bool)
+        if getattr(self.rnd, "mollies", None):
+            walls = walls | self.rnd.hazard_at(self.side, t)    # nor through the team's own burning molly (P07a)
         for s, team in self.rnd.team.items():
             if team != self.enemy or s in seen or not self.rnd.alive(s, t):
                 continue
@@ -2051,6 +2133,13 @@ class Unknown:
             mid = t if since == -math.inf else (since + t) / 2
             blocked_step, blocked_now = rnd.blocked_at(mid), rnd.blocked_at(t)
             reopened = rnd.reopened_by(t)        # a wall that has ended: its line is entered from then on
+        # P07a: a side's burning mollies hold its unknown the same way, per side and without clearing what is
+        # already inside (see `_hold`); constant through the step, as every start and end is an instant of its own
+        burning = rnd is not None and getattr(rnd, "mollies", None)
+        if burning:
+            mid_h = t if since == -math.inf else (since + t) / 2
+            hazard = {s: rnd.hazard_at(s, mid_h) for s in ("A", "B")}
+            out_at = {s: rnd.hazard_reopened(s, t) for s in ("A", "B")}
         infos = getattr(rnd, "infos", None) or []
         if infos:
             times = [i.t for i in infos]
@@ -2178,7 +2267,14 @@ class Unknown:
                     # paused through this step (a pause starts at an instant of its own): they enter nothing in
                     # it, not even ground the team has just stopped watching
                     step_free = np.maximum(step_free, t)
-                reached, parent = self._spread(reached, step_room, step_free, t, self.seen[side].get(slot), step_solid)
+                seen = self.seen[side].get(slot)
+                held = None
+                if burning:
+                    reached, step_room, step_free, step_solid, seen, held = self._hold(
+                        reached, step_room, step_free, step_solid, seen, hazard[side], out_at[side], h)
+                reached, parent = self._spread(reached, step_room, step_free, t, seen, step_solid)
+                if held is not None:
+                    reached = self._unhold(reached, held)
                 if blocking:
                     gone = blocked_now.copy()
                     if h is not None:
@@ -2424,6 +2520,47 @@ class Unknown:
             if w.kind == "trip" and rnd.team.get(w.by) == side and _watching(w, tick.t) and rnd.alive(w.by, tick.t):
                 out[w.cells] = True
         return out
+
+    @staticmethod
+    def _hold(reached: np.ndarray, room: np.ndarray, free: np.ndarray, solid: np.ndarray | None,
+              seen: tuple[int, float] | None, hazard: np.ndarray, out: np.ndarray, h):
+        """One enemy's step through the team's burning mollies (P07a; the plan's amendment "Molly traversal"):
+        `hazard` (the side's fire this step) is taken out of the room and is solid, so nothing walks in, across, or
+        diagonally past it, and what was already inside is put aside, to be put back unchanged after the spread
+        (`_unhold`: kept, never grown, never cleared by the fire itself). The enemy's own node stays theirs: one
+        standing in the fire walks out from where they stand. Ground a molly has gone out on is entered from then
+        (`out`), and an arrival from before it went out moves on only from then, as does a sighting in it.
+        Returns the step's (reached, room, free, solid, seen) and what `_unhold` needs."""
+        hazard = hazard.copy()
+        if h is not None:
+            hazard[h.cell] = False
+        inside = hazard & np.isfinite(reached)
+        kept = reached[inside]
+        reached = reached.copy()
+        reached[hazard] = np.inf
+        if hazard.any():
+            room = room & ~hazard
+            solid = hazard if solid is None else solid | hazard
+        free = np.maximum(free, out)
+        late = np.flatnonzero(np.isfinite(reached) & (out > reached))
+        early = reached[late]
+        reached[late] = out[late]
+        if seen is not None:
+            if hazard[seen[0]]:
+                seen = None
+            elif out[seen[0]] > seen[1]:
+                seen = (seen[0], float(out[seen[0]]))
+        return reached, room, free, solid, seen, (inside, kept, late, early, out)
+
+    @staticmethod
+    def _unhold(reached: np.ndarray, held) -> np.ndarray:
+        """After `_hold`'s spread: the fire's insides back as they were, and an arrival that waited for a molly to
+        go out keeps its own time where nothing beat it (its route entry stands; only its moving on waited)."""
+        inside, kept, late, early, out = held
+        back = reached[late] == out[late]
+        reached[late[back]] = early[back]
+        reached[inside] = kept
+        return reached
 
     def _spread(self, reached: np.ndarray, room: np.ndarray, free: np.ndarray, t: float,
                 seen: tuple[int, float] | None = None, solid: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
@@ -2704,6 +2841,9 @@ class TickRunner:
         if rnd is not None and getattr(rnd, "blockers", None):
             # a wall up now stays shut in the counterfactual's unknown too (W14)
             tick.sealed = tick.sealed | rnd.blocked_at(tick.t)
+        if rnd is not None and getattr(rnd, "mollies", None):
+            # each side's burning mollies stay shut in that side's counterfactual unknown too (P07a)
+            tick.hazard = {side: rnd.hazard_at(side, tick.t) for side in ("A", "B")}
         return tick
 
 
