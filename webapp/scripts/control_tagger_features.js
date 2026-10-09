@@ -109,6 +109,36 @@
     return skipped;
   }
 
+  // Older versions of Draw sight edge wrote the tool name "line" into saved geometry.
+  // Repair only otherwise valid edges after draft integrity checks, retaining every authored field.
+  function repairLegacySightLines() {
+    var repaired = 0;
+    Object.keys(fe).forEach(function (n) {
+      var c = fe[n], next = c.mf;
+      if (c.incompatible) return;
+      (Array.isArray(c.mf.features) ? c.mf.features : []).forEach(function (f) {
+        if (!f || typeof f !== "object") return;
+        (Array.isArray(f.states) ? f.states : []).forEach(function (s, si) {
+          if (!s || typeof s !== "object") return;
+          (Array.isArray(s.sight) ? s.sight : []).forEach(function (occ, oi) {
+            var g = occ && occ.geometry;
+            if (!g || g.type !== "line") return;
+            var fixed = Object.assign({}, g, { type: "polyline" });
+            if (F.geometryProblems(fixed, ["polyline"]).length) return;
+            next = F.setField(next, f.id, ["states", si, "sight", oi, "geometry"], fixed);
+            repaired++;
+          });
+        });
+      });
+      if (next !== c.mf) {
+        c.hist = F.historyPush(c.hist, next);
+        c.mf = c.hist.present;
+        c.dirty = true;
+      }
+    });
+    return repaired;
+  }
+
   function loadDraft() {
     var r = drafts.load(), note = [];
     if ((r.status === "ok" || r.status === "recovered") && r.body) {
@@ -1070,11 +1100,13 @@
     canonical = body.canonical;
     initMaps();
     var skipped = restoreModels(body);
+    var repaired = repairLegacySightLines();
     rebuildLegacy(false);
     TG.save();
     autosave();
     ui.sel = null;
     ui.message = skipped.length ? "Not restored (not on this page, or its annotations use another schema): " + skipped.join(", ") + "." : null;
+    if (repaired) ui.message = (ui.message ? ui.message + " " : "") + "Repaired " + repaired + " older sight edge(s); coordinates and height facts kept.";
     TG.selectMap(mapName());
     render();
   }
@@ -1135,6 +1167,11 @@
 
   initMaps();
   loadDraft();
+  var repairedEdges = repairLegacySightLines();
+  if (repairedEdges) {
+    ui.message = "Repaired " + repairedEdges + " older sight edge(s); coordinates and height facts kept.";
+    autosave();
+  }
   TG.recompute();
   setTool("select");
   window.taggerFeatures = {
