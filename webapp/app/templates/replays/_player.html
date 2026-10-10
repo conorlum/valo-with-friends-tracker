@@ -45,6 +45,7 @@
         <label><input type="checkbox" data-replay-layer="projectiles" checked> Projectiles</label>
         <label><input type="checkbox" data-replay-layer="tracers" checked> Shot tracers</label>
         <label><input type="checkbox" data-replay-layer="cones" checked> View direction</label>
+        {% if replay.map_name == 'Ascent' %}<label><input type="checkbox" data-replay-layer="features" checked> Doors &amp; glass</label>{% endif %}
         {% if control %}
         <label><input type="checkbox" data-replay-layer="control"> Map control</label>
         <label class="replay-control-view" data-replay-control-view-wrap hidden>as
@@ -91,6 +92,11 @@
       </p>
       {% endif %}
       {% endif %}
+      {% if not linked and replay.map_name == 'Ascent' %}
+      <fieldset class="replay-layers"><legend>Show</legend>
+        <label><input type="checkbox" data-replay-layer="features" checked> Doors &amp; glass</label>
+      </fieldset>
+      {% endif %}
       <p class="replay-legend">
         {% if linked %}
         <span class="replay-key replay-key-t1">Team 1</span>
@@ -111,15 +117,19 @@
       </p>
       <p class="replay-help">Space plays and pauses; &larr; and &rarr; step 5 s; B and N jump to just before the previous and next kill.{% if linked %} Click a kill to jump to 3 s before it; hover the map for details.{% endif %}</p>
     </div>
-    {% if linked %}
+    {% if linked or replay.map_name == 'Ascent' %}
     <aside class="replay-side">
       <div class="replay-tabs" role="tablist" aria-label="Round events">
+        {% if linked %}
         <button type="button" role="tab" class="replay-tab is-active" data-replay-tab="feed" aria-selected="true">Kill feed</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="util" aria-selected="false">Utility</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="analysis" aria-selected="false">Analysis</button>
+        {% endif %}
+        {% if replay.map_name == 'Ascent' %}<button type="button" role="tab" class="replay-tab{% if not linked %} is-active{% endif %}" data-replay-tab="features" aria-selected="{{ 'false' if linked else 'true' }}">Doors &amp; glass</button>{% endif %}
         {% if control %}<button type="button" role="tab" class="replay-tab" data-replay-tab="control" aria-selected="false">Control</button>{% endif %}
         {% if gaps %}<button type="button" role="tab" class="replay-tab" data-replay-tab="gaps" aria-selected="false">Gaps</button>{% endif %}
       </div>
+      {% if linked %}
       <div data-replay-panel="feed" role="tabpanel">
         <p class="replay-side-note">Impact: the killer's gain and the victim's loss from each kill (the leverage term of the live score).</p>
         <ol class="replay-feed" data-replay-feed></ol>
@@ -128,6 +138,15 @@
         <p class="replay-side-note">The round's man-advantage states, as the site's player pages count them. Click one to jump there.</p>
         <ol class="replay-feed" data-replay-analysis></ol>
       </div>
+      {% endif %}
+      {% if replay.map_name == 'Ascent' %}
+      <div data-replay-panel="features" role="tabpanel"{% if linked %} hidden{% endif %}>
+        <p class="replay-side-note" data-replay-features-status></p>
+        <div data-replay-features-state aria-live="polite"></div>
+        <p class="replay-side-note">Closing progress uses the measured five-second duration. Reopening remains unverified. Click a transition to jump to it.</p>
+        <ol class="replay-feed" data-replay-features-events></ol>
+      </div>
+      {% endif %}
       {% if control %}
       <div data-replay-panel="control" role="tabpanel" hidden>
         <div class="replay-control-switch" role="group" aria-label="Control table scope">
@@ -149,12 +168,14 @@
         <div class="replay-gaps-list" data-replay-gaps-list></div>
       </div>
       {% endif %}
+      {% if linked %}
       <div data-replay-panel="util" role="tabpanel" hidden>
         <p class="replay-side-note">Placed utility and flashes, by who used it. Click one to jump there.</p>
         <ol class="replay-feed" data-replay-util></ol>
       </div>
       <h2>Scoreboard</h2>
       <div class="replay-board" data-replay-board></div>
+      {% endif %}
     </aside>
     {% endif %}
   </div>

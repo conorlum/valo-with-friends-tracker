@@ -350,6 +350,9 @@ class RoundInputs:
         # Veto's Evolution (W10): while it's on, enemy blinds, suppression, reveals and statuses don't touch him
         self.evolution = utility.evolution_spans(blob)
         self._read_util()
+        from app.control.feature_runtime import FeatureRuntime
+        self.map_features = FeatureRuntime(geo, blob)
+        self.transitions += self.map_features.transitions
         # What utility tells each team about one enemy (app/control/utility.py), at its own exact time: the
         # readers' and any given ones (tests), in engine order. Only enemies of the learning side count.
         # An Info that needs a capability the enemy is immune to at its time (Veto's Evolution) is dropped.
@@ -888,6 +891,7 @@ class RoundInputs:
         for a, b, nodes in self.blockers:
             if a <= t < b:
                 out[nodes] = True
+        out |= self.map_features.sample(t)[0]
         return out
 
     def reopened_by(self, t: float) -> np.ndarray:
@@ -897,12 +901,15 @@ class RoundInputs:
         for _, b, nodes in self.blockers:
             if b <= t:
                 out[nodes] = np.maximum(out[nodes], b)
+        if self.map_features.active:
+            out = np.maximum(out, self.map_features.reopened_by(t))
         return out
 
     def smokes_at(self, t: float) -> list:
         """What blocks sight at t: the smokes as (x, y, r, solid), then the walls that are up."""
         return ([(x, y, r, solid) for t0, t1, x, y, r, solid in self.smokes if t0 <= t < t1]
-                + [w for t0, t1, w in self.walls if t0 <= t < t1])
+                + [w for t0, t1, w in self.walls if t0 <= t < t1]
+                + self.map_features.sample(t)[1])
 
     # --- ticks
 
@@ -1029,6 +1036,10 @@ def smoke_blocks(p: np.ndarray, q: np.ndarray, smoke) -> np.ndarray:
 def seen_from(geo: Geometry, src: np.ndarray, smokes: list, skip: np.ndarray | None = None) -> np.ndarray:
     """Flat cells any of the source cells sees (their static rows), minus pairs a smoke blocks.
     `skip` (flat) marks targets that needn't be rechecked (the free space itself)."""
+    from app.control.features import BoundedOccluder, seen_from_with
+    occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
+    if occluders:
+        return seen_from_with(geo, src, [s for s in smokes if not isinstance(s, BoundedOccluder)], occluders, skip)
     src = src[geo.row_of[src] >= 0]
     if not len(src):
         return np.zeros(geo.n, bool)
@@ -1802,7 +1813,7 @@ class Knowledge:
         remembered = np.zeros(geo.n, bool)
         # an ability wall up now is not somewhere an unseen enemy walked (W14; its route at earlier times isn't
         # replayed here: the knowledge picture is the reach at this instant, as before)
-        walls = self.rnd.blocked_at(t) if getattr(self.rnd, "blockers", None) else np.zeros(geo.n, bool)
+        walls = self.rnd.blocked_at(t)
         for s, team in self.rnd.team.items():
             if team != self.enemy or s in seen or not self.rnd.alive(s, t):
                 continue
@@ -1941,7 +1952,9 @@ class Unknown:
         any wall: a segment hugging a wall's face, where a screen meets a door's jamb, spans nothing). The
         cells it crosses are sealed, two cells thick so no diagonal step slips between them. The gas itself
         stays walkable: a screen across a door or a smoke filling a corridor seals nothing."""
-        key = tuple(repr(s) for s in smokes or ())
+        from app.control.features import BoundedOccluder
+        smokes = [s for s in smokes or () if not isinstance(s, BoundedOccluder)]
+        key = tuple(repr(s) for s in smokes)
         if key == self._sealed_key:
             return self._sealed
         out = np.zeros(GRID * GRID, bool)
@@ -2001,7 +2014,8 @@ class Unknown:
         # step (every wall goes up or down at a tick of its own, so they're constant in between), then the ground
         # under a wall up now is cleared: a route open earlier in the step stays crossed, and nothing tunnels a wall
         # that was up all along (its cells are also `solid`: no diagonal step past them).
-        blocking = rnd is not None and getattr(rnd, "blockers", None)
+        blocking = rnd is not None and (getattr(rnd, 'blockers', None) or
+                                       getattr(getattr(rnd, 'map_features', None), 'active', False))
         if blocking:
             mid = t if since == -math.inf else (since + t) / 2
             blocked_step, blocked_now = rnd.blocked_at(mid), rnd.blocked_at(t)
@@ -2608,6 +2622,7 @@ class RoundControl:
     # side group -> [(t, enemy slot, operation, reason, source)]: why each enemy's unknown changed, at the change's own
     # time, every analytical instant's display reasons in order (W21). Never the gap detector's input.
     reasons: dict | None = None
+    map_features: dict | None = None   # active artifact/timeline identities, visible in the replay header
 
 
 def _section_bounds(rnd: RoundInputs) -> list[tuple[str, float, float]]:
@@ -2657,7 +2672,8 @@ class TickRunner:
         tick.unknown = {side: cells.copy() for side, cells in self.unknown.cells.items()}
         tick.sealed = self.unknown.sealed(tick.smokes)   # cached per smokes: the one apply just used
         rnd = getattr(tick, "rnd", None)
-        if rnd is not None and getattr(rnd, "blockers", None):
+        if rnd is not None and (getattr(rnd, 'blockers', None) or
+                                getattr(getattr(rnd, 'map_features', None), 'active', False)):
             # a wall up now stays shut in the counterfactual's unknown too (W14)
             tick.sealed = tick.sealed | rnd.blocked_at(tick.t)
         return tick
@@ -2679,6 +2695,8 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     exact time (`RoundInputs.analytic_times`), and every total is integrated over the analytical step that
     follows it; an instant between frames is evaluated, observed and integrated, never stored. A round with no
     Info has only its frames, so its result is unchanged. `infos` adds Infos to the readers' (tests)."""
+    from app.control.feature_runtime import prepare_geometry
+    geo = prepare_geometry(geo)
     visibility(geo)
     rnd = RoundInputs(blob, geo, link, infos)
     times = rnd.tick_times() if ticks is None else np.asarray(ticks, float)
@@ -2817,6 +2835,9 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                         control_masks, coverage_masks, sections, players, redundant, dict(rnd.group_side), cell_m2,
                         missing, {**timings, "branches": dict(branches)}, cf_check,
                         knew_states=knew_states or None, unknown=unknown_masks, analytic=analytic, reasons=reasons,
+                        map_features={'artifact': geo.features_sha, 'timeline': blob['map_features']['sha256'],
+                                      'keys': [f['replay_key'] for _, f, _ in rnd.map_features.items]}
+                                     if rnd.map_features.active else None,
                         knew_sightings={side: {s: runs for s, runs in kn.sightings.items()}
                                         for side, kn in know.items()} or None)
 

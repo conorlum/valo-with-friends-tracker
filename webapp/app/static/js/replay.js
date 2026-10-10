@@ -604,7 +604,7 @@
 
   // ------------------------------------------------------------ the viewer
 
-  var LAYERS = ["names", "abilities", "projectiles", "tracers", "cones", "control", "gaps"];
+  var LAYERS = ["names", "abilities", "projectiles", "tracers", "cones", "control", "gaps", "features"];
   var CONTROL_KEEP = 3;    // rounds of decoded control kept: the current one and its neighbours
   var CONTROL_PX = 512;    // the layer's offscreen image (4 px a cell)
   var CONTROL_STATUS = {
@@ -647,7 +647,7 @@
     this.current = null;
     this.icons = {};
     this.layers = { names: true, abilities: true, projectiles: true, tracers: true, cones: true, control: false,
-                    gaps: false };
+                    gaps: false, features: true };
     // Timing gaps: off by default; the page sets options.gaps when it offers the layer.
     this.gaps = !!(options.gaps && options.loadGaps && gapsApi());
     this.gapsCache = {};                           // round -> Promise of {status, stale, rows, chokes}
@@ -796,6 +796,7 @@
       self.renderTicks();
       self.renderBanner();
       self.renderFeed();
+      self.renderMapFeatureEvents();
       self.renderAnalysis();
       self.renderUtilList();
       self.controlPaint = null;
@@ -949,7 +950,9 @@
       tip: q("[data-replay-tip]"), util: q("[data-replay-util]"), hud: q("[data-replay-hud]"),
       nextKill: q("[data-replay-nextkill]"), prevKill: q("[data-replay-prevkill]"),
       controlStatus: q("[data-replay-control-status]"), controlLegend: q("[data-replay-control-legend]"),
-      controlTable: q("[data-replay-control-table]"), controlReasons: q("[data-replay-control-reasons]")
+      controlTable: q("[data-replay-control-table]"), controlReasons: q("[data-replay-control-reasons]"),
+      featuresStatus: q("[data-replay-features-status]"), featuresState: q("[data-replay-features-state]"),
+      featuresEvents: q("[data-replay-features-events]")
     };
     if (this.ui.controlReasons) {
       var toReason = function (e) {
@@ -1053,7 +1056,7 @@
       this.ui.controlTable.addEventListener("keydown", pick);
     }
     this.canvas.addEventListener("click", function (e) { self.onCanvasClick(e); });
-    [this.ui.feed, this.ui.util, this.ui.analysis].forEach(function (list) {
+    [this.ui.feed, this.ui.util, this.ui.analysis, this.ui.featuresEvents].forEach(function (list) {
       if (!list) return;
       var go = function (e) {
         var row = e.target.closest("[data-seek-t]");
@@ -2577,6 +2580,60 @@
     heat.tip.style.top = Math.max(4, e.clientY - rect.top - heat.tip.offsetHeight - 10) + "px";
   };
 
+  function mapFeatureState(feature, t) {
+    var state = feature.initial || "unknown", began = null, terminal = state === "broken";
+    (feature.events || []).forEach(function (event) {
+      if (event.t > t || terminal) return;
+      state = event.state; terminal = state === "broken";
+      began = state === "closing" ? event.t : null;
+    });
+    var closure = state === "open" ? 0 : state === "closed" ? 1 : null;
+    if (state === "closing" && began !== null && Number.isFinite(feature.closing_s) && feature.closing_s > 0 && t - began <= feature.closing_s + .25) {
+      closure = Math.min(1, Math.max(0, (t - began) / feature.closing_s));
+    }
+    return { state: state, closure: closure, modeled: state === "closing", pending: state === "unknown" || (state === "closing" && closure === null) };
+  }
+
+  ReplayViewer.prototype.renderMapFeatureEvents = function () {
+    var panel = this.ui && this.ui.featuresEvents, data = this.current.blob.map_features, rows = [];
+    if (!panel) return;
+    if (!data || data.v !== 1 || data.status === "unavailable") {
+      panel.innerHTML = '<li class="replay-feed-empty">This replay needs to be parsed again with map-message capture enabled.</li>'; return;
+    }
+    (data.features || []).forEach(function (feature) {
+      (feature.events || []).forEach(function (event) { rows.push({ name: feature.name, event: event }); });
+    });
+    rows.sort(function (a, b) { return a.event.t - b.event.t; });
+    panel.innerHTML = rows.length ? rows.map(function (row) {
+      return '<li class="replay-feed-row" data-seek-t="' + row.event.t + '" tabindex="0"><span class="replay-feed-t">' + row.event.t.toFixed(3) + 's</span> ' + escapeHtml(row.name) + ' · ' + escapeHtml(row.event.state) + '</li>';
+    }).join("") : '<li class="replay-feed-empty">No captured transitions in this round.</li>';
+  };
+
+  ReplayViewer.prototype.drawMapFeatures = function (ctx, scale, radius, hits) {
+    var data = this.current.blob.map_features, panel = this.ui.featuresState;
+    var computed = this.controlCache && this.controlCache.ready(this.number);
+    var applied = computed && computed.status === 'ok' && computed.parsed.header.map_features;
+    var appliedNames = applied && (data && data.features || []).filter(function (feature) { return applied.keys.indexOf(feature.key) >= 0; }).map(function (feature) { return feature.name; });
+    var calculation = applied ? 'includes ' + (appliedNames.join(', ') || 'tagged map features') : data && data.calculation || 'pending geometry';
+    if (this.ui.featuresStatus) this.ui.featuresStatus.textContent = !data || data.v !== 1 || data.status === "unavailable" ? "Map states unavailable in this stored replay." :
+      (data.status === "decoded" ? "Replay states recovered. " : "Replay evidence is incomplete. ") + "Control: " + calculation + ".";
+    var stateRows = [], t = this.t, self = this;
+    if (data && data.v === 1 && data.status !== "unavailable") (data.features || []).forEach(function (feature) {
+      var sampled = mapFeatureState(feature, t), state = sampled.state;
+      var detail = state + (sampled.modeled && sampled.closure !== null ? " · " + Math.round(100 * sampled.closure) + "% closed (model)" : "") + (sampled.pending ? " · unresolved" : "");
+      stateRows.push('<p><strong>' + escapeHtml(feature.name) + '</strong>: ' + escapeHtml(detail) + '</p>');
+      if (!self.layers.features || !feature.uv) return;
+      var x = feature.uv[0] * scale, y = feature.uv[1] * scale;
+      ctx.save(); ctx.strokeStyle = state === "broken" || state === "open" ? "#7dd3a8" : state === "unknown" ? "#aaa" : "#ffc56c";
+      ctx.lineWidth = Math.max(2, radius / 5); ctx.setLineDash(state === "open" || state === "unknown" ? [radius / 3, radius / 4] : []);
+      ctx.strokeRect(x - radius * .7, y - radius * .25, radius * 1.4, radius * .5);
+      if (state === "broken") { ctx.beginPath(); ctx.moveTo(x-radius*.5,y-radius*.4); ctx.lineTo(x+radius*.5,y+radius*.4); ctx.stroke(); }
+      ctx.restore(); hits.push({ x: x, y: y, r: radius, text: feature.name + " · " + detail + " · approximate map marker" });
+    });
+    var html = stateRows.join("");
+    if (panel && panel.innerHTML !== html) panel.innerHTML = html;
+  };
+
   ReplayViewer.prototype.draw = function () {
     var ctx = this.ctx, size = this.canvas.width, s = size / UV, view = this.view;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -2590,6 +2647,7 @@
 
     this.drawControl(ctx, size, hits);   // map control: under everything else
     this.drawGaps(ctx, size, hits);      // timing gaps: over control, under utility and players
+    this.drawMapFeatures(ctx, s, r, hits);
 
     if (this.layers.abilities) {
       this.drawAbilities(ctx, s, r, hits);
@@ -2775,7 +2833,8 @@
     isEditable: isEditable, spaceToggles: spaceToggles, actsOnSpace: actsOnSpace,
     projectileStyle: projectileStyle, projectileAt: projectileAt, throwShownAsProjectile: throwShownAsProjectile,
     meshArmsAt: meshArmsAt, sageSegmentsAt: sageSegmentsAt, shearAt: shearAt, LAYERS: LAYERS,
-    tracerEnd: tracerEnd, START_SKIP_PX: START_SKIP_PX
+    tracerEnd: tracerEnd, START_SKIP_PX: START_SKIP_PX,
+    mapFeatureState: mapFeatureState
   };
   global.Replay = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

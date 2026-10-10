@@ -25,7 +25,11 @@ The reducer's `evaluate` query returns its full state and unchanged event trace.
 
 Generic models can explicitly choose `axis = "horizontal"`, an `open_center` point and the closed footprint. Translate the panel from that centre to its closed centre (the arithmetic mean of drawn vertices), rasterize on the existing paint grid and clip to the closed doorway aperture. This produces raster-sized steps in planar coverage. The owner supplies travel direction/position; the tool does not infer it. Separate closed sight edges remain unsupported for this horizontal preview and are never silently removed.
 
-## Runtime boundary
+## Runtime boundary (initial preview phase)
+
+The boundary below records the initial dormant implementation. The branch now implements the qualified
+Ascent replay consumer, while the owner's metric annotations remain unresolved. See
+[site integration](SITE-INTEGRATION.md) for current behavior and release steps.
 
 Python/JavaScript helpers and the dormant sampler are built; the live replay engines do not call them yet. Every sliding definition remains gated from publication until a runtime motion consumer exists. Compiler version 3 records that gate; older version 2 archives use the existing unsupported-compiler path rather than being replayed under changed semantics. Runtime consumer registries remain empty. Static moving-state footprint diagnostics may still appear; copying a closed footprint into them does not replace this gate.
 

@@ -277,6 +277,9 @@ def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
     run = {"fingerprint": "", "gaps_revision": 0, "chokes_hash": None, "notes": {}, "error": None}
     try:
         from app.replays import choke_assets
+        from app.control.feature_runtime import prepare_geometry
+
+        geo = prepare_geometry(geo)
 
         if job.get("gap_fingerprint"):
             # The replay worker: the web app sent the fingerprint it will check the result against, and the

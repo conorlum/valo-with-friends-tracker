@@ -1,11 +1,11 @@
-"""Dormant sliding-door geometry primitives and the tagger preview's Python reference.
+"""Sliding-door geometry primitives and the tagger preview's Python reference.
 
 An optional feature.sliding record names open/closed states and an axis. Horizontal motion uses an open_center
 point. Vertical motion keeps the footprint fixed and lowers a ground-relative blocking band. The closed state's
 polygon/polyline footprint is both the panel at closure and the doorway aperture. Translate the panel
 linearly from its open centre to its closed centre, then clip coverage to that aperture. This models a
 single rigid panel retracting horizontally or rising above the opening; it is not a physics or
-bullet-penetration model. No production replay consumer calls these functions.
+bullet-penetration model. The qualified Ascent replay consumer samples descending panels.
 """
 from __future__ import annotations
 
@@ -155,16 +155,15 @@ def vertical_bounds(feature: dict, closure: float, bounds: dict | None = None) -
 
 
 def sample_effects(geo, mf: dict, feature: dict, closure: float):
-    """Dormant consumer primitive: (movement Effects, bounded sight occluders) at a sampled closure.
+    """Consumer primitive: (movement Effects, bounded sight occluders) at a sampled closure.
 
     Check the whole doorway's placement before sampling. Horizontal retraction needs no walkable floor
     behind the wall. Descent changes the height band, requires measured heights for vision and a verified
     movement threshold for partial traversal. Unknown values remain pending. No permanent geometry mutation.
     """
-    import numpy as np
     from app.control import features as cf
 
-    effects = cf.Effects(np.zeros(geo.n, bool))
+    effects = cf.empty_effects(geo)
     problems = geometry_problems(feature)
     if problems:
         effects.pending += problems

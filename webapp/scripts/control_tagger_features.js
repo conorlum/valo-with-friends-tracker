@@ -816,6 +816,12 @@
   }
 
   function featureProps(box, f) {
+    if (mapName() === 'Ascent') {
+      box.appendChild(row('Replay binding', selectEl([['', 'Unbound'], ['ascent_market', 'Market Door'],
+        ['ascent_garden', 'Garden Door'], ['ascent_heaven_glass', 'Heaven Glass']], f.replay_key || '',
+        function (v) { edit(f.id, ['replay_key'], v || undefined); })));
+      box.appendChild(document.createTextNode('Binding connects decoded replay states. It does not verify the drawing or height bounds.'));
+    }
     var seeds = FD.seeds[mapName()] || [];
     box.appendChild(row("Status", selectEl([["draft", "draft"], ["needs_verification", "needs verification"], ["user_reviewed", "user reviewed"]], f.review || "draft",
       function (v) { edit(f.id, ["review"], v); })));

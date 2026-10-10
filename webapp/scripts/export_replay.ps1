@@ -37,7 +37,11 @@ if ($build.commit -ne $pin.commit) {
 
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $start = Get-Date
-$job = Start-Job -ScriptBlock { param($exe, $vrf, $out) & $exe export $vrf --output $out *>&1; $LASTEXITCODE } -ArgumentList $exe, $vrf, $OutDir
+$job = Start-Job -ScriptBlock { param($exe, $vrf, $out)
+    $env:VALO_MAP_AUDIT_RAW = '1'  # scoped to this child job; an older binary produces an unavailable state panel
+    & $exe export $vrf --output $out *>&1
+    $LASTEXITCODE
+} -ArgumentList $exe, $vrf, $OutDir
 $peak = 0
 while ($job.State -eq 'Running') {
     $p = Get-Process CliReader -ErrorAction SilentlyContinue | Select-Object -First 1

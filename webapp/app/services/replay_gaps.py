@@ -21,7 +21,7 @@ from app.replays import choke_assets
 from app.replays import control_format as cf
 from app.services import control_heights, replay_control
 
-GAPS_REVISION = 2     # keep equal to app.gaps.detect.GAPS_REVISION (tests/replays/test_gaps_task.py pins it)
+GAPS_REVISION = 3     # keep equal to app.gaps.detect.GAPS_REVISION (tests/replays/test_gaps_task.py pins it)
 HEARING_FILE = Path(__file__).resolve().parents[1] / "control" / "hearing.json"
 
 

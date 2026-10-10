@@ -1589,6 +1589,9 @@ def condense_export_dir(export_dir: Path, *, source_sha256: str | None, build: d
                       vrf_map_codes=vrf_map_codes, header=header, file_names=file_names)
     if with_extras:
         attach_extras(replay, export, export_dir / "events.ndjson", maps[replay.map_name], agents)
+    from app.replays.ascent_features import attach as attach_map_features
+    attach_map_features(replay, export_dir, export.manifest, read_game_state(export).windows)
+    replay.report['sizes'] = fmt.size_report(replay.encoded_rounds())
     return replay
 
 

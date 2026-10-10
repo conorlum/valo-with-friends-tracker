@@ -131,6 +131,7 @@ names each). **None is switched to features in this build.**
 | `control/height_build:geo_los` | los | `base` |
 | `control/features:verify_permanent_context` | specials | `freshness`: verify exact permanent archive context on every invocation |
 | `control/feature_diagnostics:diagnose_features` | specials | `base`: diagnostics only, exact admitted/archived permanent context, no runtime effects |
+| `control/feature_runtime:prepare_geometry` | specials, archived base domain | `base`: reconcile verified per-map masks without mutating the cached permanent map or changing node identities |
 | `control/height_job:features_pending` | specials | `base`: provisional diagnostics only, never a height gate |
 | `control/task:geometry_used` | specials | freshness: the manifest's `features` key (W17) |
 | `control/utility:_sees_point` | los | `bounded_sight` (added 2026-10-05, utility-review run: whether an enemy sees a Leer's eye) |

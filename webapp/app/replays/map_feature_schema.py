@@ -553,6 +553,10 @@ def _feature(rep, f, floors):
         for message in geometry_problems(f) + vertical_problems(f):
             rep.warn(f'{f.get("id")}.sliding', "motion_incomplete", message)
     fid = f.get("id")
+    if 'replay_key' in f:
+        from app.replays.ascent_features import KEYS
+        if f['replay_key'] not in KEYS:
+            rep.error(fid, 'bad_replay_binding', 'unknown Ascent replay binding')
     states = f.get("states") if isinstance(f.get("states"), list) else []
     names = [s.get("name") for s in states if isinstance(s, dict)]
     if len(set(names)) != len(names) or not all(isinstance(n, str) and n for n in names):

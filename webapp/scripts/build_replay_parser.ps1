@@ -45,6 +45,22 @@ $sha = [System.Security.Cryptography.SHA256]::Create()
 $patchHash = -join ($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($patchText)) | ForEach-Object { $_.ToString('x2') })
 
 $bin = Join-Path $ParserDir 'bin'
+foreach ($sourcePatch in $pin.source_patches) {
+    $sourcePath = Join-Path (Split-Path $pinFile) $sourcePatch.file
+    $sourceText = [IO.File]::ReadAllText($sourcePath).Replace("`r`n", "`n")
+    $sourceHash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($sourceText)) | ForEach-Object { $_.ToString('x2') })
+    if ($sourceHash -ne $sourcePatch.sha256) { throw 'source patch digest mismatch' }
+    # An identical patch already applied on this pin needs no reset of the checkout.
+    git -C $ParserDir apply --reverse --check $sourcePath 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        git -C $ParserDir apply --check $sourcePath
+        if ($LASTEXITCODE -ne 0) { throw 'source patch does not apply cleanly; use a fresh parser checkout' }
+        git -C $ParserDir apply $sourcePath
+        if ($LASTEXITCODE -ne 0) { throw 'source patch apply failed' }
+    }
+    $patchText += "$($sourcePatch.file)`n$($sourcePatch.sha256)`n"
+}
+$patchHash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($patchText)) | ForEach-Object { $_.ToString('x2') })
 Push-Location $ParserDir
 try {
     dotnet publish $pin.cli_project -c Release -o $bin

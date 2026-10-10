@@ -29,6 +29,7 @@ import json, os, sys, time
 sys.path.insert(0, {tests!r})
 from replay_synthetic import SyntheticMatch
 vrf, out, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+assert os.environ.get('VALO_MAP_AUDIT_RAW') == '1', 'worker must enable map capture in its parser child'
 open(os.path.join(os.path.dirname(vrf), "stub.pid"), "w").write(str(os.getpid()))
 if mode == "hang":
     time.sleep(120)

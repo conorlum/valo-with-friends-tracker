@@ -3,7 +3,9 @@
 Date: 2026-10-09. Work branch: `codex/ascent-audit-and-tagger-guidance`.
 Base: `dcb6c44`, the open PR #127 saved-draft repair. That dependency remains separate.
 This record describes the initial preparation. Subsequent local Ascent source discovery and owner scene
-review are recorded in [PARSER-DIAGNOSTICS.md](PARSER-DIAGNOSTICS.md) and the private evidence packet;
+review are recorded in [PARSER-DIAGNOSTICS.md](PARSER-DIAGNOSTICS.md) and the private evidence packet.
+The current site decoder, qualified control/gap consumer and rollout are recorded in
+[SITE-INTEGRATION.md](SITE-INTEGRATION.md);
 the source-availability and owner-input lists below are historical, not current blockers.
 The owner prohibits merges or changes to `main`. No merge, deployment, database operation, parser
 checkout/pin change, scoring change, canonical tag publication or consumer activation was performed.
@@ -83,7 +85,7 @@ No PostgreSQL/Linux/production restart rehearsal was attempted: this change has 
 activation. Those earlier activation boundaries remain future gates. The unrelated untracked owner work
 was left untouched. Local `main` remains at its pre-task ref; its last reflog change predates this work.
 
-## Owner input needed next
+## Owner input needed next (initial audit phase)
 
 1. Locate a complete raw Ascent export or the recording/archive location. Check that source before choosing
    scene windows or proposing parser descriptors; do not ask for a whole-match manual annotation.

@@ -104,6 +104,42 @@ def test_the_standalone_page_embeds_every_round_and_no_identity(condensed, tmp_p
     assert "https://" not in page.split("<script>", 1)[1], "nothing is fetched from the network"
 
 
+def test_feature_panel_is_ascent_only(condensed):
+    import copy
+    assert 'data-replay-panel="features"' in standalone.render(condensed.rounds)
+    other = copy.deepcopy(condensed.rounds)
+    for data in other.values():
+        data['map'] = 'Haven'
+    assert 'data-replay-panel="features"' not in standalone.render(other)
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_feature_panel_seek_rows_escape_labels_and_old_replays_explain_reparse():
+    feature = {'key':'ascent_market','name':'<img src=x>', 'initial':'open', 'closing_s':5,
+               'events':[{'t':1,'state':'closing'}]}
+    script = """
+    const R = require(process.argv[1]);
+    let text=''; process.stdin.on('data',d=>text+=d).on('end',()=>{
+      const viewer=Object.create(R.ReplayViewer.prototype);
+      viewer.ui={featuresEvents:{},featuresState:{},featuresStatus:{}};
+      viewer.current={blob:{map_features:{v:1,status:'decoded',features:[JSON.parse(text)]}}};
+      viewer.layers={features:false}; viewer.t=3.5; viewer.number=1;
+      viewer.controlCache={ready:()=>({status:'ok',parsed:{header:{map_features:{keys:['ascent_market']}}}})};
+      viewer.renderMapFeatureEvents(); viewer.drawMapFeatures({},1,1,[]);
+      const out={events:viewer.ui.featuresEvents.innerHTML,state:viewer.ui.featuresState.innerHTML,
+                 status:viewer.ui.featuresStatus.textContent};
+      viewer.current={blob:{}}; viewer.renderMapFeatureEvents(); viewer.drawMapFeatures({},1,1,[]);
+      out.old=viewer.ui.featuresEvents.innerHTML; out.unavailable=viewer.ui.featuresStatus.textContent;
+      process.stdout.write(JSON.stringify(out));
+    });"""
+    got = run_node(script, feature)
+    assert 'data-seek-t="1"' in got['events'] and '1.000s' in got['events']
+    assert '&lt;img src=x&gt;' in got['events'] and '<img' not in got['events']
+    assert '50% closed (model)' in got['state'] and '<img' not in got['state']
+    assert 'Control: includes <img src=x>' in got['status']  # textContent, never HTML
+    assert 'parsed again' in got['old'] and 'unavailable' in got['unavailable']
+
+
 def test_the_standalone_script_writes_blobs_from_a_folder(condensed, tmp_path):
     folder = tmp_path / "blobs"
     folder.mkdir()

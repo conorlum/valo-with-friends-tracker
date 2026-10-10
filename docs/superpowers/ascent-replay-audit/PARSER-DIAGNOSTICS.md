@@ -1,5 +1,10 @@
 # Recover skipped map messages without activating a consumer
 
+This records the earlier isolated diagnostic phase. The branch now includes the reviewed source-only
+capture patch in its application build pin and a qualified site consumer. See
+[site integration and release steps](SITE-INTEGRATION.md) for the current implementation; the experiment
+below remains reproducible independently.
+
 The pinned parser skips static map actors whose content has no decoder binding. Selecting its viewer
 profile does not recover those payloads. The [diagnostic patch](../../../webapp/scripts/ascent_map_audit_parser.patch)
 adds a separate, opt-in `map-audit.ndjson` containing original and transformed payload bits before that

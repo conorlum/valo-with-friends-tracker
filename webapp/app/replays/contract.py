@@ -75,21 +75,28 @@ class ParserPin:
     schema_version: int
     supported_builds: frozenset[str]
     patches: tuple[dict, ...]
+    source_patches: tuple[dict, ...] = ()
 
     @property
     def patch_hash(self) -> str:
         """The same hash `scripts/build_replay_parser.ps1` writes into BUILD.json."""
         text = "".join(f"{p['file']}\n{p['find']}\n{p['replace']}\n" for p in self.patches)
+        text += "".join(f"{p['file']}\n{p['sha256']}\n" for p in self.source_patches)
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def load_pin(path: Path = PIN_FILE) -> ParserPin:
     data = json.loads(path.read_text(encoding="utf-8"))
+    for patch in data.get('source_patches', []):
+        source = path.parent / patch['file']
+        if hashlib.sha256(source.read_bytes().replace(b'\r\n', b'\n')).hexdigest() != patch['sha256']:
+            raise ContractError('parser_patch', 'source patch digest differs from the pin')
     return ParserPin(
         commit=data["commit"],
         schema_version=int(data["export_schema_version"]),
         supported_builds=frozenset(data["supported_replay_builds"]),
         patches=tuple(data["patches"]),
+        source_patches=tuple(data.get('source_patches', [])),
     )
 
 

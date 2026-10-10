@@ -32,7 +32,11 @@ def test_the_fixture_names_every_reference_round():
 
 
 @pytest.mark.parametrize("name", sorted(REFERENCE))
-def test_a_flat_round_is_byte_identical_to_the_reference(name):
+def test_a_flat_round_is_byte_identical_to_the_reference(name, monkeypatch):
+    from app.replays import control_format
+    # The revision-9 cache header intentionally changes. Preserve the captured revision while checking
+    # every computation/output byte against the unchanged reference; do not regenerate it from new code.
+    monkeypatch.setattr(control_format, 'CONTROL_REVISION', 8)
     geo, blob, link = reference_rounds()[name]
     rc = ce.compute_round(blob, geo, link)
     assert ref.digest_round(rc, blob) == REFERENCE[name], (
