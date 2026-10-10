@@ -2624,10 +2624,22 @@
       stateRows.push('<p><strong>' + escapeHtml(feature.name) + '</strong>: ' + escapeHtml(detail) + '</p>');
       if (!self.layers.features || !feature.uv) return;
       var x = feature.uv[0] * scale, y = feature.uv[1] * scale;
-      ctx.save(); ctx.strokeStyle = state === "broken" || state === "open" ? "#7dd3a8" : state === "unknown" ? "#aaa" : "#ffc56c";
-      ctx.lineWidth = Math.max(2, radius / 5); ctx.setLineDash(state === "open" || state === "unknown" ? [radius / 3, radius / 4] : []);
-      ctx.strokeRect(x - radius * .7, y - radius * .25, radius * 1.4, radius * .5);
-      if (state === "broken") { ctx.beginPath(); ctx.moveTo(x-radius*.5,y-radius*.4); ctx.lineTo(x+radius*.5,y+radius*.4); ctx.stroke(); }
+      var emphasized = state === "closing" || state === "closed" || state === "broken";
+      var color = state === "broken" ? "#ff4d5f" : state === "open" ? "#7dd3a8" : state === "unknown" ? "#aaa" : "#ffe54f";
+      var width = Math.max(emphasized ? 3 : 2, radius / (emphasized ? 4 : 5));
+      ctx.save(); ctx.globalAlpha = 1; ctx.lineJoin = "round";
+      ctx.setLineDash(state === "open" || state === "unknown" ? [radius / 3, radius / 4] : []);
+      if (emphasized) {
+        ctx.fillStyle = "rgba(8, 10, 18, 0.8)";
+        ctx.fillRect(x - radius * .7, y - radius * .25, radius * 1.4, radius * .5);
+      }
+      ctx.beginPath(); ctx.rect(x - radius * .7, y - radius * .25, radius * 1.4, radius * .5);
+      if (state === "broken") {
+        ctx.moveTo(x-radius*.5,y-radius*.4); ctx.lineTo(x+radius*.5,y+radius*.4);
+        ctx.moveTo(x+radius*.5,y-radius*.4); ctx.lineTo(x-radius*.5,y+radius*.4);
+      }
+      ctx.strokeStyle = "rgba(8, 10, 18, 0.95)"; ctx.lineWidth = width + 3; ctx.stroke();
+      ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke();
       ctx.restore(); hits.push({ x: x, y: y, r: radius, text: feature.name + " · " + detail + " · approximate map marker" });
     });
     var html = stateRows.join("");
@@ -2647,7 +2659,6 @@
 
     this.drawControl(ctx, size, hits);   // map control: under everything else
     this.drawGaps(ctx, size, hits);      // timing gaps: over control, under utility and players
-    this.drawMapFeatures(ctx, s, r, hits);
 
     if (this.layers.abilities) {
       this.drawAbilities(ctx, s, r, hits);
@@ -2656,6 +2667,7 @@
     }
     if (this.layers.projectiles) this.drawProjectiles(ctx, s, r, hits);
     if (this.layers.tracers) this.drawTracers(ctx, s, r);
+    this.drawMapFeatures(ctx, s, r, hits);  // feature markers stay readable above smoke and utility
 
     blob.kills.forEach(function (k) {
       if (k.t > t || k.u === null) return;
