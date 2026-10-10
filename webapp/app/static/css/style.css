@@ -1906,6 +1906,13 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 .upload-guide h2 { margin-top: 1.75rem; }
 .upload-guide h2:first-child { margin-top: 0; }
 .upload-guide li { margin: 0.35rem 0; }
+/* The upload page's "Show Replay Info" panel (replays/upload.html). */
+.replay-progress summary { cursor: pointer; font-weight: 600; }
+.replay-progress[open] summary { margin-bottom: 0.5rem; }
+.replay-progress-meter { display: flex; flex-wrap: wrap; gap: 0.4rem 0.75rem; align-items: center; margin: 0.5rem 0 0.75rem; }
+.replay-progress-meter progress { flex: 0 1 14rem; height: 0.75rem; accent-color: var(--good); }
+.replay-progress-meter span { flex: 1 1 16rem; font-variant-numeric: tabular-nums; }
+.replay-progress .num { text-align: right; }
 
 /* Map control (docs/replay-map-control-plan.md, "Cell states"; Stage 4) */
 .replay-control-badge { font-size: 0.78rem; padding: 0.05rem 0.45rem; border: 1px dashed var(--ink-muted); border-radius: 999px; color: var(--ink-secondary); align-self: center; }

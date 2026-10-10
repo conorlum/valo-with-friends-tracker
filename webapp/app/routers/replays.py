@@ -31,7 +31,8 @@
   `POST /replays/upload/code`,
   `POST /replays/upload` (one file: size, magic and rate limits, then to the worker; JSON when asked), `GET
   /replays/uploads/{id}` (the job page) and `GET /replays/uploads/{id}/status` (polled every 3 s;
-  stores the result when the worker is done).
+  stores the result when the worker is done), and `GET /replays/upload/progress.json` (the page's "Show
+  Replay Info" panel, polled every minute while it is open: how much of the corpus is fully computed).
 
 No scoring code. Only the upload routes write (an upload's row, and its replay through store.py).
 """
@@ -56,6 +57,7 @@ from app.services import replay_control as control_service
 from app.services import replay_control_views as control_views
 from app.services import replay_gaps as gaps_service
 from app.services import replay_gaps_view as gaps_view
+from app.services import replay_progress as progress
 from app.services import replay_upload as uploads
 from app.services import replays as replay_service
 from app.services.matches import get_match_or_404
@@ -225,6 +227,18 @@ def upload_status(request: Request, upload_id: str, db: Session = Depends(get_db
     body = _status_body(db, upload)
     db.rollback()
     return JSONResponse(body)
+
+
+@router.get("/replays/upload/progress.json")
+def upload_progress(request: Request, db: Session = Depends(get_db)):
+    """The upload page's "Show Replay Info" panel: how much of the stored corpus the worker has finished
+    (app/services/replay_progress.py). For sessions that entered the code, like the rest of the page."""
+    _upload_enabled_or_404()
+    if not request.session.get("replay_upload_ok"):
+        raise HTTPException(status_code=403)
+    body = progress.cached(db)
+    db.rollback()
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------- replay pages
