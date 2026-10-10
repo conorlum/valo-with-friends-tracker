@@ -99,6 +99,27 @@ def test_ascent_compiler_refuses_duplicate_binding_flat_map_and_unresolved_clear
     assert all('duplicate Ascent replay binding' in st.reasons for st in features.bundle_status(geo, mf).values())
 
 
+def test_archived_conservative_cutoff_is_eligible_and_samples_exact_boundary():
+    from app.control.feature_runtime import FeatureRuntime
+    from app.replays.map_feature_schema import known
+    geo, _, mf, data, base, _ = compiled_case()
+    f = mf['features'][0]
+    f['sliding']['movement_clearance'] = {'status':'unresolved'}
+    f['sliding']['movement_cutoff'] = {**known(.3, 'fraction'), 'basis':'conservative'}
+    assert features.bundle_status(geo, mf)['bundle-1'].publishable
+    raw = fi.canonical_json({'maps':{'Ascent':{'map_features':mf, 'specials':[]}}})
+    inputs = fi.identify_features('Ascent', geo.height_sha, fi.capture_source_snapshot('Ascent', raw), base)
+    artifact = features.compile_artifact(geo, inputs, '0'*40)
+    features.verify_artifact(artifact, geo)
+    geo.features = artifact
+    runtime = FeatureRuntime(geo, data)
+    assert 2.5 in runtime.transitions  # close began at 1 s, plus 30% of five seconds
+    assert not runtime.sample(2.5)[0].any()
+    assert runtime.sample(2.501)[0].any()
+    assert not runtime.sample(8)[0].any()  # destruction releases the door
+    assert not features.bundle_status(geometry_case(flat=True), mf)['bundle-1'].publishable
+
+
 def test_private_candidate_preserves_annotations_and_refuses_conflicting_ownership():
     from scripts.prepare_ascent_features import prepare
     from app.replays.map_feature_schema import empty

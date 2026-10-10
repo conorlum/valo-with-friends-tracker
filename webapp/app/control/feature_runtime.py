@@ -11,7 +11,7 @@ CONSUMER = 'ascent_replay_v1'
 
 
 def readiness(feature):
-    from app.replays.map_feature_motion import geometry_problems, vertical_problems, fs_known_metres
+    from app.replays.map_feature_motion import geometry_problems, vertical_problems, movement_problems
     key = feature.get('replay_key')
     reasons = []
     if key not in KEYS:
@@ -38,9 +38,7 @@ def readiness(feature):
                 (feature.get('sliding') or {}).get('closed_state') != 'closed':
             reasons.append('Ascent door endpoints must be named open and closed')
         reasons += geometry_problems(feature) + vertical_problems(feature)
-        clearance = fs_known_metres((feature.get('sliding') or {}).get('movement_clearance'))
-        if clearance is None or clearance <= 0:
-            reasons.append('verified movement clearance required')
+        reasons += movement_problems(feature)
     else:
         if feature.get('sliding'):
             reasons.append('Ascent glass has no sliding motion')
@@ -113,12 +111,14 @@ class FeatureRuntime:
             self.items.append((mf, f, timeline))
             self.times.update(float(e['t']) for e in timeline['events'])
             if f.get('sliding'):
-                from app.replays.map_feature_motion import fs_known_metres, closed_state
+                from app.replays.map_feature_motion import fs_known_metres, closed_state, movement_cutoff
                 top = fs_known_metres(f['sliding']['open_clearance'])
                 bottom = fs_known_metres(closed_state(f)['sight_bounds']['bottom'])
-                clearance = fs_known_metres(f['sliding']['movement_clearance'])
+                clearance = fs_known_metres(f['sliding'].get('movement_clearance'))
                 if top > bottom:
-                    fraction = min(max((top-clearance)/(top-bottom), 0), 1)
+                    fraction = movement_cutoff(f)
+                    if fraction is None:
+                        fraction = min(max((top-clearance)/(top-bottom), 0), 1)
                     for event in timeline['events']:
                         if event['state'] == 'closing':
                             self.times.add(float(event['t']) + 5 * fraction)

@@ -6,8 +6,9 @@ The tab has click-to-seek event times and a separately labelled five-second clos
 replay explains that it needs parsing again. This is site code; the private standalone page embeds the
 same template and JavaScript for review before deployment.
 
-The runtime consumer is built but the owner's current annotations remain pending. Actual metre bounds,
-movement clearance and the glass movement footprint are still unresolved. No canonical map tags are
+The runtime consumer is built but the owner's current annotations remain pending. Actual metre bounds
+and the glass movement footprint are still unresolved. The owner selected a conservative movement cutoff
+at 30% closure for Ascent and Sunset, instead of waiting for exact passage-clearance measurements. No canonical map tags are
 published by this change. Approximate viewer markers are labels, not calculation geometry.
 
 ## Supported evidence and calculation
@@ -31,7 +32,7 @@ unsupported by this evidence consumer even though the authoring model can previe
 
 The qualified `ascent_replay_v1` consumer requires explicit replay bindings and fully resolved geometry.
 It reuses the existing reducer for observed states and the descending height-band sampler for sight.
-Movement uses verified clearance; transparent intact glass blocks its movement footprint only. Parent
+Movement uses verified clearance or an explicitly selected conservative closure cutoff; transparent intact glass blocks its movement footprint only. Parent
 platforms, rotation, authored route arcs and duplicate bindings are refused. A door needs measured height
 geometry. Missing reset, incomplete capture or unsupported in-round state fails an active calculation;
 it never silently computes an open door.
@@ -43,7 +44,7 @@ become flat smoke-pinch barriers. Destruction releases movement at its exact tim
 can say "lost sight as a map feature closed." Control headers/summaries retain artifact and timeline
 identities and tell the viewer which features its computation included.
 
-Revisions: condenser **15**, control **9**, feature compiler **4**, gaps **3**. Optional fields preserve old
+Revisions: condenser **15**, control **9**, feature compiler **5**, gaps **3**, Ascent consumer version **2**. Optional fields preserve old
 reader compatibility, while versioned recipes invalidate stale derived products. The gaps service mirrors
 the detector revision. Unfeatured control reference checks compare the unchanged calculations after
 normalizing the intentionally bumped version header; they do not claim identical current-version bytes.
@@ -59,7 +60,7 @@ normalizing the intentionally bumped version header; they do not claim identical
    It retains all other maps and unresolved fields. It refuses conflicting ownership and never writes
    inside a Git checkout or overwrites an existing output. Existing compatible bundles are reused.
 3. In the tagger, verify each doorway's footprint, ground-relative bottom/top metre bounds and fully open
-   clearance. Verify the passage clearance at which the descending panel stops movement. A floor elevation
+   clearance. Choose verified passage clearance or the owner's conservative 30% movement cutoff. A floor elevation
    or "one and a half players" estimate does not establish these metre values. Review any extra sight edge.
 4. Draw/verify the intact glass movement footprint and explicitly remove unused sight geometry if the
    glass is transparent. Its break event is already supported. Diagnose the candidate using the exact
@@ -97,6 +98,32 @@ Reopening verification can follow when the owner records a clear intact open; un
 rounds remain unsupported. Production deployment and metric calibration are separate from passing the
 synthetic integration checks.
 
+## Conservative movement choice and Sunset evidence
+
+The owner observed passage at approximately 30% closure and no standing passage at halfway. Crouching
+at halfway may be possible but was uncertain and would slow movement. The chosen model permits movement
+through 30% closure and blocks beyond it, for every stance; it does not estimate crouching speed. On a
+five-second full close the cutoff is 1.5 seconds after closing starts. The same fraction applies when a
+panel reopens, independent of the direction of travel, once an opening timeline is supported.
+
+`sliding.movement_cutoff` stores `{status: "known", value: 0.3, unit: "fraction", basis: "conservative"}`.
+"Known" records a chosen computation policy, not an exact physical cutoff. Invalid cutoffs are refused,
+and a specified cutoff takes precedence over the optional metric movement clearance. Without this option,
+existing metric behavior is preserved. The tagger exposes both models, previews passage at the chosen
+fraction, and labels the conservative approximation. The cutoff changes the archived runtime identity;
+compiler and consumer versions advance so old artifacts cannot silently acquire the new semantics.
+
+Sight retains the continuous descending height-band model and still needs measured metre bounds. The
+movement choice cannot resolve uncertain height geometry or make a flat preview a sight verification.
+Sunset's open doorway is approximately the same height as Ascent's, but this estimate is not a metre value.
+
+Sunset replay rounds 3, 10 and 11 were checked in game by the owner: full close then reopening, full close
+then destruction, and destruction during closure respectively. Captured complete opening and closing
+intervals are approximately five seconds. The owner drew a closed door footprint and a linked switch;
+the private diagnostic retains an off-ground switch placement and unresolved sight bounds. Sunset's
+timeline decoder, runtime binding and site overlay integration still need implementation; the shared
+movement policy alone does not enable Sunset calculations. Private exports and identities stay outside Git.
+
 ## Verification record
 
 The exact base-plus-hashed-patch parser built successfully on Windows; 25 focused parser tests passed.
@@ -117,3 +144,7 @@ parser/condensation/worker/version subset passed 117 tests; the owning compiler/
 passed 164, and the engine/sight/viewer/contract/gap-task subset passed 147. These overlapping runs are
 not an aggregate test count. Node syntax, application whitespace and the isolated parser patch checks
 also pass. No immutable reference fixture was regenerated from the new implementation.
+
+The conservative-cutoff follow-up passed 61 door-motion/runtime/preview tests and 90 tagger/input/archive
+acceptance/isolation tests. These include exact cutoff boundaries, unchanged continuous sight bands,
+invalid-policy refusal, restored passage when closure decreases, archived eligibility and destruction release.

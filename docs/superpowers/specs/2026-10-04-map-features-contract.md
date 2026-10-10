@@ -141,4 +141,11 @@ names each). **None is switched to features in this build.**
 
 ## 8. Freshness
 
+Descending door annotations may choose `sliding.movement_cutoff` with a known finite value in `[0, 1)`,
+unit `fraction` and basis `conservative`. This is an explicit approximation: passage is allowed through
+the chosen closure and blocked beyond it, including crouching. The cutoff takes precedence over metric
+movement clearance; without it, the measured-clearance model remains unchanged. Invalid explicit policies
+are refused rather than falling back to another model. Approximate player heights do not resolve metre
+bounds or qualify sight geometry. This option is part of the runtime identity (compiler 5, Ascent consumer 2).
+
 `features.manifest` is None when no bundle is intended for a registered runtime consumer: no `features` key appears in control inputs and legacy fingerprints remain unchanged; intended pending bundles produce a manifest recording their disabled outcome. Otherwise its digest identifies an immutable per-map database artifact covering intended runtime definitions, pending outcomes, complete compiled nodes / occluders / arcs / base edits and canonical hashes, exact height digest, relevant base/legacy inputs, and schema, normalization, compiler, reducer-semantics and consumer versions; a round records this digest, and verification rehashes loaded bytes and recompiles archived definitions against recorded geometry under the recorded compiler. Editorial edits never move it.

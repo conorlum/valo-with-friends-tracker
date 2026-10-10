@@ -16,7 +16,7 @@ One object per map, beside the map's other keys in `tags.json`'s entry:
 Every object keeps keys it doesn't know. Ids are "<kind>-<n>" (feature, trigger, route, floor, bundle,
 state rows use their own names), allocated from `next_id` and never reused. A fact nobody has verified is
 {"status": "unresolved", "note"?}; never 0, never a default. A known number is {"status": "known", "value",
-"unit"} ("s" or "m").
+"unit"} ("s", "m", or "fraction" for an explicit computation policy).
 
 Geometry is in minimap u/v (0..UV_MAX), independent of the page's zoom: {"type": "point", "uv": [u, v]},
 {"type": "polyline", "uv": [[u, v], ...], "width": uv}, {"type": "polygon", "uv": [[u, v], ...]} or
@@ -549,9 +549,13 @@ def _floor(rep, fl):
 
 def _feature(rep, f, floors):
     if "sliding" in f:
-        from app.replays.map_feature_motion import geometry_problems, vertical_problems
+        from app.replays.map_feature_motion import geometry_problems, vertical_problems, movement_cutoff
         for message in geometry_problems(f) + vertical_problems(f):
             rep.warn(f'{f.get("id")}.sliding', "motion_incomplete", message)
+        if isinstance(f['sliding'], dict) and 'movement_cutoff' in f['sliding'] \
+                and movement_cutoff(f) is None:
+            rep.error(f'{f.get("id")}.sliding.movement_cutoff', 'bad_movement_cutoff',
+                      'conservative movement cutoff must be a known fraction >= 0 and < 1')
     fid = f.get("id")
     if 'replay_key' in f:
         from app.replays.ascent_features import KEYS

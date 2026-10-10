@@ -1025,6 +1025,8 @@
       var rot = f.rotation;
       if (f.sliding !== undefined) {
         slidingProblems(f).concat(slidingVerticalProblems(f)).forEach(function(message) { warn(fid + ".sliding", "motion_incomplete", message); });
+        if (isObj(f.sliding) && Object.prototype.hasOwnProperty.call(f.sliding,"movement_cutoff") && slidingMovementCutoff(f) === null)
+          err(fid + ".sliding.movement_cutoff", "bad_movement_cutoff", "conservative movement cutoff must be a known fraction >= 0 and < 1");
       }
       if ((f.capabilities || []).indexOf("rotating") >= 0) {
         if (!isObj(rot) || rot.pivot === undefined || rot.pivot === null || rot.panel === undefined || rot.panel === null)
@@ -1454,6 +1456,23 @@
     var v = known(value);
     return Number.isFinite(v) && value.unit === "m" ? v : null;
   }
+  function slidingMovementCutoff(feature) {
+    var p = (feature.sliding || {}).movement_cutoff, v = known(p);
+    return Number.isFinite(v) && 0 <= v && v < 1 && p.unit === "fraction" && p.basis === "conservative" ? v : null;
+  }
+  function slidingMovementBlocked(feature, closure) {
+    if (typeof closure !== "number" || !Number.isFinite(closure)) return null;
+    closure = Math.min(Math.max(closure,0),1);
+    var slide = feature.sliding || {};
+    if (Object.prototype.hasOwnProperty.call(slide,"movement_cutoff")) {
+      var cutoff = slidingMovementCutoff(feature);
+      return cutoff === null ? null : closure > cutoff;
+    }
+    if (closure === 0) return false;
+    if (closure === 1) return true;
+    var band = slidingVerticalBounds(feature,closure), clearance = knownMetres(slide.movement_clearance);
+    return !band || clearance === null || clearance <= 0 ? null : knownMetres(band.bottom) < clearance;
+  }
   function slidingVerticalProblems(feature) {
     if ((feature.sliding || {}).axis !== "vertical") return [];
     var height = knownMetres(feature.sliding.open_clearance), problems = [], closed = slidingClosed(feature);
@@ -1736,6 +1755,7 @@
     slidingClosed: slidingClosed, slidingCenter: slidingCenter, slidingProblems: slidingProblems,
     slidingPose: slidingPose, slidingCoverage: slidingCoverage, slidingClosureAt: slidingClosureAt,
     slidingVerticalProblems: slidingVerticalProblems, slidingVerticalBounds: slidingVerticalBounds,
+    slidingMovementCutoff: slidingMovementCutoff, slidingMovementBlocked: slidingMovementBlocked,
     importCatalogue: importCatalogue, diffCatalogues: diffCatalogues,
     exportCatalogue: exportCatalogue,
     SCHEMA_VERSION: SCHEMA_VERSION, UV_MAX: UV_MAX, emptyMf: emptyMf, checkVersion: checkVersion, validate: validate, nextNumber: nextNumber, allocate: allocate,

@@ -56,6 +56,45 @@ def test_partial_traversal_uses_verified_clearance_and_unknown_is_pending():
     assert motion.sample_effects(geo,mf,f,1)[0].blocked.any()
 
 
+def test_conservative_cutoff_blocks_after_thirty_percent_without_changing_vision():
+    mf, f = vertical(); geo = geometry_case()
+    original = copy.deepcopy(f)
+    f['sliding']['movement_clearance'] = ms.unresolved()
+    f['sliding']['movement_cutoff'] = {**ms.known(.3, 'fraction'), 'basis': 'conservative'}
+    fractions = [0, .299, .3, .301, .5, 1, .3, 0]
+    for fraction in fractions:
+        effects, sight = motion.sample_effects(geo, mf, f, fraction)
+        assert not effects.pending
+        assert effects.blocked.any() == (fraction > .3)
+        reference_band = motion.vertical_bounds(original, fraction)
+        assert motion.vertical_bounds(f, fraction) == reference_band
+    got = run_node('''function run(p) {return p.fractions.map(c=>F.slidingMovementBlocked(p.f,c));}''',
+                   {'f': f, 'fractions': fractions})
+    assert got == [motion.movement_blocked(f, c) for c in fractions]
+    assert not motion.movement_problems(f)
+    # This option changes the runtime identity, not only the editorial notes.
+    mf_original = copy.deepcopy(mf); mf_original['features'][0] = original
+    assert ms.runtime_digest(mf_original) != ms.runtime_digest(mf)
+
+
+@pytest.mark.parametrize('policy', [None, {}, ms.unresolved(),
+    {**ms.known(True, 'fraction'), 'basis': 'conservative'},
+    {**ms.known(-.1, 'fraction'), 'basis': 'conservative'},
+    {**ms.known(1, 'fraction'), 'basis': 'conservative'},
+    {**ms.known(.3, 'm'), 'basis': 'conservative'}, ms.known(.3, 'fraction')])
+def test_invalid_conservative_cutoff_cannot_fall_back_to_measured_clearance(policy):
+    mf, f = vertical()
+    f['sliding']['movement_cutoff'] = policy
+    assert motion.movement_problems(f) and motion.movement_blocked(f, .5) is None
+    expected = ms.validate(mf).errors
+    assert any(e['code'] == 'bad_movement_cutoff' for e in expected)
+    got = run_node('''function run(p) {return {blocked:F.slidingMovementBlocked(p.f,.5),errors:F.validate(p.mf).errors};}''',
+                   {'f': f, 'mf': mf})
+    assert got['blocked'] is None
+    assert [e for e in got['errors'] if e['code'] == 'bad_movement_cutoff'] == \
+        [e for e in expected if e['code'] == 'bad_movement_cutoff']
+
+
 def test_approximate_player_heights_do_not_become_metres_or_active_occluders():
     mf,f = vertical()
     f['sliding']['open_clearance']={'status':'unresolved','estimate_player_heights':1.5,'note':'owner observation'}
@@ -67,6 +106,11 @@ def test_approximate_player_heights_do_not_become_metres_or_active_occluders():
     report=ms.validate(mf)
     assert any('open clearance in metres unresolved' in w['message'] for w in report.warnings)
     assert not report.errors
+
+    f['sliding']['movement_cutoff'] = {**ms.known(.3, 'fraction'), 'basis': 'conservative'}
+    assert motion.movement_blocked(f, .5) is True
+    effects, occluders = motion.sample_effects(geometry_case(), mf, f, .5)
+    assert effects.pending and not occluders  # The policy does not resolve sight height.
 
 
 def test_flat_mode_cannot_claim_to_test_seeing_under_the_descending_panel():
@@ -149,3 +193,24 @@ def test_page_vertical_sketch_scrubs_estimate_and_preserves_bounds_and_extra_edg
     assert 'Place open panel centre' not in got['buttons']
     exported=got['out']['maps']['Ascent']['map_features']['features'][0]
     assert exported['states']==f['states'] and exported['sliding']==f['sliding']
+
+
+def test_page_conservative_passage_preview_and_export_with_unresolved_height():
+    data = page_data(future=False); f = door()
+    f['sliding'] = {'axis':'vertical', 'open_state':'open', 'closed_state':'closed',
+                    'open_clearance':{'status':'unresolved', 'estimate_player_heights':1.5},
+                    'movement_cutoff':{**ms.known(.3, 'fraction'), 'basis':'conservative'}}
+    mf = data['tags']['maps']['Ascent']['map_features']
+    mf.update(features=[f], triggers=[], routes=[], bundles=[])
+    got = run_page('''function run(p) {
+      const page=openPage(p.data,{map:'Ascent'}),A=page.api; A.ui.sel='feature-1';A.render();
+      function all(el) {return [el,...(el.children||[]).flatMap(all)];}
+      const els=all(page.el('featProps')),slider=els.find(e=>e.id==='slideSlider');
+      const label=els.find(e=>e.id==='slidePassageLabel'),cutoff=els.find(e=>e.id==='slideMovementCutoff');
+      const states=[30,31,50].map(c=>{slider.value=String(c);slider.dispatch('input');return label.textContent;});
+      return {states,cutoff:cutoff.value,out:page.F.exportCatalogue(A.canonical(),page.TG.DATA.maps,page.TG.edits,A.fe)};
+    }''', {'data':data})
+    assert got['states'] == ['Passable (conservative approximation)', 'Blocked (conservative approximation)',
+                             'Blocked (conservative approximation)']
+    assert got['cutoff'] == '30'
+    assert got['out']['maps']['Ascent']['map_features']['features'][0]['sliding'] == f['sliding']

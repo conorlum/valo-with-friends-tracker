@@ -895,7 +895,7 @@
       var openCoverage = horizontal && F.slidingCoverage(f,0);
       if (openCoverage && openCoverage.some(function(cell) {return !!cell;}))
         sliding.appendChild(row("Needs input",document.createTextNode("The panel still covers part of the doorway at fully open. Move the open centre farther along its travel direction.")));
-      var elevation, panel, gapLabel;
+      var elevation, panel, gapLabel, passageLabel;
       if (vertical) {
         sliding.appendChild(row("Open clearance (verified metres above floor)",valueEditor(f.sliding.open_clearance,"m",function(v) {
           edit(f.id,["sliding","open_clearance"],Object.assign({},f.sliding.open_clearance || {},v)); })));
@@ -903,13 +903,25 @@
         estimate.value=String((f.sliding.open_clearance || {}).estimate_player_heights || "");
         estimate.addEventListener("change",function() {var v=+estimate.value; if (Number.isFinite(v) && v>0) edit(f.id,["sliding","open_clearance","estimate_player_heights"],v);});
         sliding.appendChild(row("Approximate open clearance (player heights)",estimate));
-        sliding.appendChild(row("Verified movement clearance (metres)",valueEditor(f.sliding.movement_clearance,"m",function(v) {edit(f.id,["sliding","movement_clearance"],v);} )));
-        sliding.appendChild(document.createTextNode("Movement under a partly lowered door stays pending until its clearance threshold is verified. Closed sight bounds must be above the floor's ground."));
+        var conservative = Object.prototype.hasOwnProperty.call(f.sliding,"movement_cutoff");
+        sliding.appendChild(row("Movement model",selectEl([["metric","Measured passage clearance"],["conservative","Conservative closure cutoff"]],conservative ? "conservative" : "metric",function(v) {
+          edit(f.id,["sliding","movement_cutoff"],v === "conservative" ? {status:"known",value:0.3,unit:"fraction",basis:"conservative"} : undefined);
+        })));
+        if (conservative) {
+          var cutoff = document.createElement("input"); cutoff.type="number"; cutoff.min="0"; cutoff.max="99.99"; cutoff.step="1"; cutoff.id="slideMovementCutoff";
+          var cutoffValue = F.slidingMovementCutoff(f); cutoff.value=cutoffValue === null ? "" : String(cutoffValue*100);
+          cutoff.addEventListener("change",function() {var v=+cutoff.value; if (cutoff.value.trim() && Number.isFinite(v) && 0<=v && v<100)
+            edit(f.id,["sliding","movement_cutoff"],{status:"known",value:v/100,unit:"fraction",basis:"conservative"}); });
+          sliding.appendChild(row("Passable through (% closed)",cutoff));
+          sliding.appendChild(document.createTextNode("Owner-selected approximation: block movement beyond this closure, including crouching. This is not a measured clearance or a model of slowed movement."));
+        } else sliding.appendChild(row("Verified movement clearance (metres)",valueEditor(f.sliding.movement_clearance,"m",function(v) {edit(f.id,["sliding","movement_clearance"],v);} )));
+        sliding.appendChild(document.createTextNode("Sight still needs verified height bounds above the floor's ground."));
         elevation=document.createElement("div"); elevation.id="slideElevation"; elevation.style.position="relative"; elevation.style.width="180px"; elevation.style.height="120px";
         elevation.style.background="rgba(76,201,240,0.15)"; elevation.style.border="2px solid #aaa"; elevation.setAttribute("role","img");
         panel=document.createElement("div"); panel.style.position="absolute"; panel.style.top="0"; panel.style.width="100%"; panel.style.background="rgba(229,72,77,0.7)";
         elevation.appendChild(panel); gapLabel=document.createElement("span"); gapLabel.id="slideGapLabel";
         sliding.appendChild(elevation); sliding.appendChild(gapLabel);
+        passageLabel=document.createElement("span"); passageLabel.id="slidePassageLabel"; sliding.appendChild(row("Movement preview",passageLabel));
       }
       var closeRow = (f.transitions || []).find(function(r) {return r.motion && r.to === f.sliding.closed_state;});
       var duration = closeRow && F.known(closeRow.motion.duration), validDuration = Number.isFinite(duration) && duration > 0;
@@ -924,6 +936,9 @@
           gapLabel.textContent=band ? "Gap above floor: "+gap.toFixed(2)+" m" :
             (Number.isFinite(estimated) && estimated>0 ? "Approximate proportional gap: "+(estimated*(1-frac)).toFixed(2)+" player heights; metres unresolved" : "Proportional sketch only; clearance unresolved");
           elevation.setAttribute("aria-label",gapLabel.textContent);
+          var passage = F.slidingMovementBlocked(f,frac);
+          passageLabel.textContent = (passage === null ? "Pending clearance" : passage ? "Blocked" : "Passable") +
+            (Object.prototype.hasOwnProperty.call(f.sliding,"movement_cutoff") ? " (conservative approximation)" : "");
         }
       }
       labelClosure(fraction);

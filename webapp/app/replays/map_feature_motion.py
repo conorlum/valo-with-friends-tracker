@@ -130,6 +130,46 @@ def fs_known_metres(value) -> float | None:
     return v if v is not None and math.isfinite(v) and value.get("unit") == "m" else None
 
 
+def movement_cutoff(feature: dict) -> float | None:
+    """An owner-selected conservative closure limit, not a measured player height."""
+    from app.replays.map_feature_state import known
+    policy = (feature.get('sliding') or {}).get('movement_cutoff')
+    value = known(policy)
+    if value is not None and math.isfinite(value) and 0 <= value < 1 \
+            and policy.get('unit') == 'fraction' and policy.get('basis') == 'conservative':
+        return value
+    return None
+
+
+def movement_problems(feature: dict) -> list[str]:
+    slide = feature.get('sliding') or {}
+    if 'movement_cutoff' in slide:
+        return [] if movement_cutoff(feature) is not None else [
+            'conservative movement cutoff must be a known fraction >= 0 and < 1']
+    clearance = fs_known_metres(slide.get('movement_clearance'))
+    return [] if clearance is not None and clearance > 0 else ['verified movement clearance required']
+
+
+def movement_blocked(feature: dict, closure: float) -> bool | None:
+    """Passage up to the conservative limit; otherwise use measured vertical clearance."""
+    if not isinstance(closure, (int, float)) or isinstance(closure, bool) or not math.isfinite(closure):
+        return None
+    closure = min(max(closure, 0), 1)
+    slide = feature.get('sliding') or {}
+    if 'movement_cutoff' in slide:
+        cutoff = movement_cutoff(feature)
+        return closure > cutoff if cutoff is not None else None
+    if closure == 0:
+        return False
+    if closure == 1:
+        return True
+    band = vertical_bounds(feature, closure)
+    clearance = fs_known_metres(slide.get('movement_clearance'))
+    if band is None or clearance is None or clearance <= 0:
+        return None
+    return fs_known_metres(band['bottom']) < clearance
+
+
 def vertical_bounds(feature: dict, closure: float, bounds: dict | None = None) -> dict | None:
     """Clip a descending panel to its closed height band; return a zero-width band when fully raised.
 
@@ -158,8 +198,9 @@ def sample_effects(geo, mf: dict, feature: dict, closure: float):
     """Consumer primitive: (movement Effects, bounded sight occluders) at a sampled closure.
 
     Check the whole doorway's placement before sampling. Horizontal retraction needs no walkable floor
-    behind the wall. Descent changes the height band, requires measured heights for vision and a verified
-    movement threshold for partial traversal. Unknown values remain pending. No permanent geometry mutation.
+    behind the wall. Descent changes the height band and requires measured heights for vision. Partial
+    traversal uses measured clearance or an explicit conservative cutoff. Unknown values remain pending.
+    No permanent geometry mutation.
     """
     from app.control import features as cf
 
@@ -211,14 +252,11 @@ def _vertical_effects(geo, mf, feature, closure, effects):
         effects.pending += [f'{r["path"]}: {r["code"]}' for r in p.reasons]
     if effects.pending:
         return effects, []
-    gap = fs_known_metres(band['bottom'])
-    full_open = min(max(closure, 0.0), 1.0) == 0
-    full_closed = min(max(closure, 0.0), 1.0) == 1
-    if closed.get('blocks_movement') and not full_open:
-        clearance = fs_known_metres(feature['sliding'].get('movement_clearance'))
-        if not full_closed and (clearance is None or clearance <= 0):
+    if closed.get('blocks_movement'):
+        blocked = movement_blocked(feature, closure)
+        if blocked is None:
             effects.pending.append('partial vertical movement needs a verified movement clearance')
-        elif full_closed or gap < clearance:
+        elif blocked:
             bound = cf.feature_floor_nodes(geo, mf, feature, cf.to_grid(cf.raster(closed['footprint'])).ravel())
             effects.blocked[bound.nodes] = True
             effects.pending += bound.pending
