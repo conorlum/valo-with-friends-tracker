@@ -111,7 +111,12 @@ no vertical gaps, and confirmed both nearby switches activate their correspondin
 switch sources per door are now bound in the private reviewed recording and a second independent
 capture. The 2.75-second passage observation belongs to the old eight-second
 preview; it is retained as an angle reference, not imposed as a cutoff in the corrected ten-second model.
-Panel depth and angular speed remain model estimates pending real-scene comparison.
+The owner accepts the current panel geometry and majority-cell/one-cell passage approximation
+for this estimated unknown-position model. Further manual panel-depth or clearance measurement is
+not a release prerequisite. Existing finite compiler bounds and floor-placement requirements still
+apply; accepted estimates do not supply missing landing or ground data. Destruction removes the
+blocker at the destruction-status event and cancels subsequent motion; ordinary damage does not
+remove it. No additional owner decision on that behavior is required.
 
 The latest local Lotus trial compiles all three bundles against the exact locally passing refined
 asset. Explicit replay-bound switches may be mounted off walkable ground; their markers are not
@@ -129,9 +134,10 @@ landings. A single supported lower rope height is insufficient to invent its upp
    Lotus switch sources are matched in two recordings, and Summit's three doors also bind in two;
    preserve those receipts. Abyss still has one local recording, and Sunset's partial transitions
    remain unqualified even after the second capture.
-2. **Resolve geometry with the owner.** Lotus doorway spaces and center pivots are reviewed. Next,
-   measure the physical rotating panel and resolve vertical bounds. For descending doors, measure ground
-   relative clearance/bottom/top from replay/world evidence. For ropes, identify actual boarding
+2. **Resolve remaining ground and landing placement.** Door geometry estimates are accepted by the
+   owner; retain the built majority-area Lotus model and the reviewed descending-door movement
+   cutoff. Complete any still-missing finite bounds and floor references in compiler inputs without
+   adding another manual geometry-review gate. For ropes, identify actual boarding
    coordinates and distinct replay position-Z floors; bind the named Choke 2 side for Abyss Mid.
    Preserve physical directions while applying the owner's quiet times and one-way restriction.
 3. **Repair height evidence.** Diagnose failed global gates using source coverage and known kill lines.
@@ -147,7 +153,9 @@ landings. A single supported lower rope height is insufficient to invent its upp
    missing member may disappear under a map-level success label. Haven remains the reviewed baseline.
 5. **Compute real acceptance scenes.** On each qualified map run full control, then fresh gaps-only and
    cached gaps with identical recording, height, tags and compiler identity. Compare bytes/outputs and
-   replay-visible timestamps. Test interruption/destruction, fully closed persistence, reopening,
+   replay-visible timestamps. Destruction at its explicit status event is settled and covered by
+   runtime tests; verify source binding and computed release without another owner behavior review.
+   Test fully closed persistence, reopening,
    round reset, rope earliest arrival/parent, both directions and forbidden quiet travel. Inspect passive
    and active vision as well as unknown movement. Record synthetic and real evidence separately.
 6. **Prepare the owner review.** Freeze runtime inputs, intended bundle matrix, private evidence receipts,
