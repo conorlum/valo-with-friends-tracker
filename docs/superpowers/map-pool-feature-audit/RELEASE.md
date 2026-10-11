@@ -61,6 +61,11 @@ Known transition RPCs with missing/unmatched parameters now report the exact sou
 parameters and expected conditions. They still hold the feature pending. Sunset's omitted state has
 not been assigned an assumed zero/open value; source-default qualification remains a blocker.
 
+On 2026-10-11 the owner matched the two additional Lotus switch scenes: B-side activation for
+B–C and the outer, farther-from-site button for A. The private candidate now includes both sources
+per door; each door binds successfully across all 24 rounds of that recording. This confirms door
+identity and button side in that recording, not independent-recording stability or new timing evidence.
+
 Accepted-ground refinement extraction and analysis are implemented; mixed-footprint assets, worker
 history integration and runtime consumers remain unfinished. The refinement spec records historical
 local evidence and the remaining implementation sequence. No rejected height asset has been activated.
@@ -91,7 +96,8 @@ their legacy pivot fields do not establish the physical panel or its thickness. 
 remain estimates and do not resolve metric sight bounds.
 The owner reviewed the centered rectangular panel preview, specified floor-to-ceiling coverage with
 no vertical gaps, and confirmed both nearby switches activate their corresponding door. Both native
-source actors still need binding. The 2.75-second passage observation belongs to the old eight-second
+switch sources per door are now bound in the private reviewed recording; independent-recording
+stability remains to be checked. The 2.75-second passage observation belongs to the old eight-second
 preview; it is retained as an angle reference, not imposed as a cutoff in the corrected ten-second model.
 Panel depth and angular speed remain model estimates pending real-scene comparison.
 
@@ -100,8 +106,9 @@ Panel depth and angular speed remain model estimates pending real-scene comparis
 1. **Freeze private evidence.** Keep the latest combined owner snapshot, original recordings, parser
    build receipt and source hashes. Never substitute an older per-map export. Stage revisions in a new
    private candidate. Verify exact actor names in another independent recording when available; an
-   instance-specific name in one replay is not evidence of a universal map binding. Confirm both
-   physical Lotus switches or prove they share the same native door-level activation source.
+   instance-specific name in one replay is not evidence of a universal map binding. Both physical
+   Lotus switch sources are matched in the reviewed recording; preserve that evidence while checking
+   the bindings against an independent capture.
 2. **Resolve geometry with the owner.** Lotus doorway spaces and center pivots are reviewed. Next,
    measure the physical rotating panel and resolve vertical bounds. For descending doors, measure ground
    relative clearance/bottom/top from replay/world evidence. For ropes, identify actual boarding
