@@ -82,6 +82,14 @@ must-block checks, and Summit still fails supported-area coverage. Split and Aby
 these frozen rebuilds. See the refinement spec for exact local counts and limits. No rejected height
 asset has been activated.
 
+The owner's follow-up Ascent terrain review distinguishes a genuinely covered lower surface,
+stairs beside a flat wall, discrete box heights, and a ledge into a pit with side-by-side levels.
+Those descriptions remain private evidence tied to the diagnostic input; they are not painted
+height overrides. The read-only sample check found both a suspect height boundary beside a wall
+and remaining multiple-floor fine cells on the nonoverlapping ledge. Diagnose sample attribution
+and footprint mixing before treating those as stacked geometry. No height asset was changed and
+Ascent's kill-line/must-block failures remain release gates.
+
 ## Current real evidence and blockers
 
 Private native captures were rebuilt on the new parser pin and checked against recording hashes.
