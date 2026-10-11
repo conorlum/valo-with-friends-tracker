@@ -110,6 +110,10 @@ def attach(geo, asset):
     geo.space_nodes, geo.space_walk, geo.space_bbox, geo.space_grid = spatial_nodes, spatial_walk, bbox, grid
     floor0 = spatial_nodes[:, 0]
     geo.space_unresolved = spatial_walk & ((floor0 < 0) | np.isnan(geo.node_z[np.maximum(floor0, 0)]))
+    declared_unknown = np.zeros(count, bool)
+    declared_unknown[:BASE] = asset.unresolved.ravel()
+    declared_unknown[BASE + asset.fine_cells] = asset.fine_unresolved
+    geo.height_unknown = int(np.count_nonzero(spatial_walk & geo.space_unresolved & ~declared_unknown))
     geo.centres = ((bbox[geo.node_space, :2].astype(float) + bbox[geo.node_space, 2:]) / 2).astype(np.float32)
     geo.node_bbox = bbox[geo.node_space]
     geo.unresolved = geo.to_cells(geo.space_unresolved[geo.node_space] & geo.walk_n)

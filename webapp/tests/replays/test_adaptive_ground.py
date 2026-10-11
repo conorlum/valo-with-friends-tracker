@@ -55,6 +55,7 @@ def test_exact_xy_and_area_preserve_parent_size():
     left, right = geo.node_at_px(202, 202, 0), geo.node_at_px(206, 202, .6)
     assert left != right and geo.node_z[right] == .6
     assert not geo.unresolved_at_px(202, 202) and geo.unresolved_at_px(202, 206)
+    assert geo.height_unknown == 0  # Removed parent floors and declared sparse children are intentional.
     children = geo.to_nodes(np.arange(16384) == PARENT) & geo.walk_n
     assert geo.area(children) == 1 and not geo.walk_n[PARENT]
     p = cf._place_shape(geo, {'type': 'point', 'uv': [1972.65625, 1972.65625]}, 'point')
@@ -77,6 +78,14 @@ def test_refinement_does_not_double_walking_speed_or_area():
     src, dst, metres = cf.walk_edges(geo)
     k = np.flatnonzero((src == geo.node_at_px(202, 202, 0)) & (dst == target))[0]
     assert metres[k] == pytest.approx(geo.cell_m / 2)
+
+
+def test_height_domain_warning_counts_undeclared_leaf_holes_only():
+    geo = mixed((0, 0, None, 0))
+    assert geo.height_unknown == 0
+    changed = copy.deepcopy(geo.heights)
+    changed.fine_unresolved[2] = False
+    assert cg.attach_heights(geo, changed).height_unknown == 1
 
 
 def test_ledge_is_not_a_diagonal_shortcut_and_rope_landing_uses_exact_leaf():
