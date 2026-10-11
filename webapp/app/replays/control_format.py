@@ -44,7 +44,7 @@ import json
 import struct
 from pathlib import Path
 
-CONTROL_REVISION = 10    # 10: measured rope landings and explicit quiet travel seconds
+CONTROL_REVISION = 11    # 11: rotating panel occupancy and timed cell releases
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 

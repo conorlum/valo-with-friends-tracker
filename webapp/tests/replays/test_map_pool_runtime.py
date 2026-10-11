@@ -41,20 +41,16 @@ def lotus():
     shape = f['states'][-1]['footprint']
     bounds = f['states'][-1]['sight_bounds']
     f['rotation'] = {'pivot': {'type': 'point', 'uv': [320 * 10000 / 1024, 320 * 10000 / 1024]},
-        'panel': shape, 'duration': ms.known(8, 's'), 'start_deg': ms.known(0, 'deg'),
+        'panel': shape, 'duration': ms.known(10, 's'), 'start_deg': ms.known(0, 'deg'),
         'end_deg': ms.known(180, 'deg'), 'direction': {'status': 'known', 'value': 'cw'}, 'sight_bounds': bounds}
     f['states'], f['transitions'] = [], []
     for side, other in [('a', 'b'), ('b', 'a')]:
-        for name, blocked in [(f'rest_{side}', True), (f'opening_{side}', True),
-                              (f'passable_{side}', False), (f'closing_{side}', True)]:
+        for name, blocked in [(f'rest_{side}', True), (f'rotating_{side}', True)]:
             f['states'].append({'name': name, 'footprint': shape, 'sight_bounds': bounds,
                                 'blocks_movement': blocked, 'blocks_sight': True})
         f['transitions'] += [
-            {'id': 'turn-' + side, 'from': ['rest_' + side], 'event': 'switch', 'to': 'passable_' + side,
-             'motion': {'state': 'opening_' + side, 'duration': ms.known(1.5, 's')},
-             'follow_up': {'after': ms.known(5, 's'), 'name': 'close-' + side}, 'mid_motion': 'ignore'},
-            {'id': 'close-' + side, 'from': ['passable_' + side], 'event': 'scheduled', 'name': 'close-' + side,
-             'to': 'rest_' + other, 'motion': {'state': 'closing_' + side, 'duration': ms.known(1.5, 's')},
+            {'id': 'turn-' + side, 'from': ['rest_' + side], 'event': 'switch',
+             'to': 'rest_' + other, 'motion': {'state': 'rotating_' + side, 'duration': ms.known(10, 's')},
              'mid_motion': 'ignore'}]
     return f
 
@@ -63,7 +59,8 @@ def runtime_case(f, map_name):
     geo = geometry_case(); geo.name = map_name
     mf = {**ms.empty(), 'features': [f], 'bundles': [{'id': 'bundle-1', 'enabled': True,
           'runtime_consumer': 'map_pool_replay_v1', 'members': [f['id']]}]}
-    geo.features = FeatureArtifact('a' * 64, FeatureKey(map_name, geo.height_sha, 'b' * 64, 6),
+    from app.replays.map_feature_inputs import FEATURE_COMPILER_VERSION
+    geo.features = FeatureArtifact('a' * 64, FeatureKey(map_name, geo.height_sha, 'b' * 64, FEATURE_COMPILER_VERSION),
         {'active_bundles': ['bundle-1']}, canonical_json({'runtime': mf}), gzip.compress(b'{}'), 'c' * 40)
     source = f['replay_source']
     ledger = [{'actor': source['actors'][0], 'class_path': source['class_path'], 'time_ms': when,
@@ -84,11 +81,11 @@ def test_summit_halfway_clear_slam_blocks_and_closed_persists():
         assert runtime.sample(t)[0].any() and runtime.sample(t)[1]
 
 
-@pytest.mark.parametrize('time,phase,fraction', [(0, 'rest_a', 0), (1, 'opening_a', 0),
-    (2.5, 'passable_a', 1.5/8), (5, 'passable_a', .5), (7.5, 'closing_a', 6.5/8),
-    (9, 'rest_b', 1), (11, 'opening_b', 1), (15, 'passable_b', 1.5), (19, 'rest_a', 2)])
+@pytest.mark.parametrize('time,phase,fraction', [(0, 'rest_a', 0), (1, 'rotating_a', 0),
+    (2.5, 'rotating_a', .15), (6, 'rotating_a', .5), (9, 'rotating_a', .8),
+    (11, 'rest_b', 1), (13, 'rotating_b', 1), (18, 'rotating_b', 1.5), (23, 'rest_a', 2)])
 def test_lotus_rotation_clock_continues_through_passable_and_closing_phases(time, phase, fraction):
-    timeline = {'initial': 'rest_a', 'events': [{'t': 1, 'kind': 'switch'}, {'t': 11, 'kind': 'switch'}]}
+    timeline = {'initial': 'rest_a', 'events': [{'t': 1, 'kind': 'switch'}, {'t': 13, 'kind': 'switch'}]}
     state, angle = sampled_state(lotus(), timeline, time)
     assert state['state'] == phase and angle == pytest.approx(fraction)
 
@@ -139,10 +136,87 @@ def test_lotus_keeps_a_partial_sight_panel_while_movement_is_passable():
     actual = toy_heights('RotatingPanel', [HALL]); actual.name = 'Lotus'; actual.features = geo.features
     runtime = MapPoolRuntime(actual, blob)
     closed, closed_sight = runtime.sample(1)
-    passable, rotating_sight = runtime.sample(5)
-    assert closed.any() and not passable.any()
+    passable, rotating_sight = runtime.sample(6)
+    assert closed.any() and passable.any()  # A moving wall remains; it never vanishes for a timed phase.
+    vacated = actual.node_at(actual.cell_of_px(268, 196), None)
+    assert closed[vacated] and not passable[vacated]
     assert closed_sight and rotating_sight
     assert not np.array_equal(closed_sight[0].mask, rotating_sight[0].mask)
+
+
+def rotating_hall():
+    from app.control.geometry import geometry_from_masks
+    from tests.replays.control_toys import rect_mask
+    f = lotus()
+    shape = {'type': 'polygon', 'uv': [[x*10000/1024, y*10000/1024]
+             for x, y in [(208, 96), (216, 96), (216, 128), (208, 128)]]}
+    f['rotation'].update(panel=shape, pivot={'type': 'point', 'uv': [212*10000/1024, 112*10000/1024]})
+    for state in f['states']:
+        state['footprint'] = shape
+    old, blob = runtime_case(f, 'Lotus')
+    walk = rect_mask([(96, 96, 416, 128)])
+    geo = geometry_from_masks('Lotus', ~walk, walk, 7e-5, [])
+    geo.features = old.features
+    return geo, blob
+
+
+def test_rotating_wall_admits_one_cell_route_without_disappearing_or_corner_cutting():
+    from app.control.topology import FlatTopology
+    geo, blob = rotating_hall()
+    runtime = MapPoolRuntime(geo, blob)
+    topo = FlatTopology(geo)
+    reached = np.full(geo.n, np.inf)
+    reached[geo.cell_of_px(196, 100)] = 1
+    target = geo.cell_of_px(236, 100)
+    for t, should_cross in [(1, False), (6, True), (11, False)]:
+        blocked = runtime.sample(t)[0]
+        assert blocked.any()  # Slab remains an obstacle even when traversal is possible.
+        room = geo.walk_n & ~blocked
+        spread = topo.spread(reached, room, np.full(geo.n, -np.inf), 100, .1, [], solid=blocked)
+        assert np.isfinite(spread[target]) == should_cross
+    # At the midpoint the topmost route is exactly one complete cell wide.
+    mask = runtime.sample(6)[0].reshape(128, 128)
+    assert not mask[12, 26] and mask[13, 26]
+
+
+def test_newly_vacated_cell_cannot_be_reached_before_its_movement_release():
+    from app.control.feature_runtime import FeatureRuntime
+    from app.control.topology import FlatTopology
+    geo, blob = rotating_hall()
+    runtime = FeatureRuntime(geo, blob)
+    cell = geo.cell_of_px(212, 100)
+    release = runtime.reopened_by(6)[cell]
+    assert 1 < release <= 6
+    assert runtime.sample(release-1e-6)[0][cell]
+    assert not runtime.sample(release)[0][cell]
+    reached = np.full(geo.n, np.inf)
+    reached[geo.cell_of_px(204, 100)] = 1
+    blocked = runtime.sample(6)[0]
+    spread = FlatTopology(geo).spread(reached, geo.walk_n & ~blocked,
+        runtime.reopened_by(6), 6, .1, [], solid=blocked)
+    assert spread[cell] >= release + .1
+
+
+def test_thin_panel_edge_inside_a_cell_is_not_lost_between_paint_centres():
+    from app.control.map_pool_runtime import rotation_cells
+    panel = {'type': 'polygon', 'uv': [[x*10000/1024, y*10000/1024]
+             for x,y in [(208.1, 96), (208.2, 96), (208.2, 128), (208.1, 128)]]}
+    cells = rotation_cells(panel)
+    assert cells[12:16,26].all() and not cells[12:16,25].any()
+
+
+def test_site_rotating_panel_never_reports_a_timed_passage_clear_boolean():
+    import json
+    import subprocess
+    from pathlib import Path
+    from app.control.feature_runtime import FeatureRuntime
+    geo, blob = rotating_hall()
+    payload = FeatureRuntime(geo, blob).metadata(blob)['features'][0]
+    assert payload['movement_geometry'] == 'rotating_panel'
+    script = Path(__file__).resolve().parents[2] / 'app/static/js/replay.js'
+    code = f'const r=require({json.dumps(str(script))});process.stdout.write(JSON.stringify(r.mapFeatureState({json.dumps(payload)},6)));'
+    current = json.loads(subprocess.run(['node','-e',code],capture_output=True,text=True,check=True).stdout)
+    assert current['movement_geometry'] == 'rotating_panel' and current['blocks_movement'] is None
 
 
 def test_composed_runtime_registers_scheduled_boundaries_and_exact_destruction_release():

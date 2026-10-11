@@ -50,7 +50,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # its steps land.
           8: "648662a3109ca0a4",
           # 9: qualified replay map-feature effects. Existing engine constants are unchanged.
-          9: "648662a3109ca0a4"}
+          9: "648662a3109ca0a4",
+          # 11: rotating slab occupancy/release clocks; general engine constants stay unchanged.
+          11: "648662a3109ca0a4"}
 
 
 def _constants_digest() -> str:

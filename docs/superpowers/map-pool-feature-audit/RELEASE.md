@@ -11,8 +11,11 @@ activation and live recompute have not been changed by this work.
   source hashes and build recipe are pinned. The existing parser capture remains opt-in and bounded.
 - Per-round map RPC ledgers retain absolute source clocks and buy-phase resets. Explicit actor/class,
   reset and RPC rules bind Sunset, Summit, Abyss and Lotus; arbitrary proximity/damage guesses do not.
-- Summit phases, breakable destruction, continuous descending sight, and Lotus's single eight-second
-  rotation clock feed movement, vision and unknown propagation. Scheduled motion phases register as
+- Summit phases, breakable destruction, continuous descending sight, and Lotus's single ten-second
+  rotation clock feed movement, vision and unknown propagation. The owner corrected the older eight-second
+  recollection. Lotus movement follows the rotating slab's occupied cells at 16 Hz: a whole clear cell
+  may be entered at normal unknown speed, without a fixed doorway-wide passability window. Cell changes
+  register as release/block calculation boundaries. Scheduled motion phases register as
   calculation boundaries. Destruction cancels later motion effects.
 - Split/Summit/Abyss quiet rope directions use seconds and measured endpoint floors. Actual physical
   directions remain separate. Local quiet connector cuts can exclude unreviewed shortcuts.
@@ -22,8 +25,8 @@ activation and live recompute have not been changed by this work.
   a DB, activate heights, publish tags or recompute live data. Framing, binding, geometry and release
   qualification have separate outcomes.
 
-Versions: feature compiler 6, condenser 16, control 10; Ascent consumer 2, quiet rope consumer 1,
-map-pool replay consumer 1. Gaps version stays 3; changed control inputs invalidate its caches.
+Versions: feature compiler 7, condenser 16, control 11; Ascent consumer 2, quiet rope consumer 1,
+map-pool replay consumer 2. Gaps version stays 3; changed control inputs invalidate its caches.
 No new migration or database table is required.
 
 ## Current real evidence and blockers
@@ -45,9 +48,16 @@ Current geometry checks keep Summit's four, Lotus's three, Sunset's one and four
 features pending. Two Abyss features are placeable against the diagnostic asset, whose rejection still
 prevents a combined release. Many vertical rope endpoint cells expose only one measured floor; the
 author's coincident endpoint coordinates are retained. A separate lower landing cannot be invented.
-Lotus outlines currently occupy the pivot field and have no physical panel; preserve them until the
-owner identifies whether they depict the aperture or slab. Approximate player-height descriptions
+The owner clarified that the Lotus outlines are rough doorway-space guides: the door fills the
+opening flush with surrounding walls and rotates about its center. The owner accepted the private
+map-aligned doorway outlines and centered pivot placements. Preserve the original drawings separately;
+their legacy pivot fields do not establish the physical panel or its thickness. Approximate player-height descriptions
 remain estimates and do not resolve metric sight bounds.
+The owner reviewed the centered rectangular panel preview, specified floor-to-ceiling coverage with
+no vertical gaps, and confirmed both nearby switches activate their corresponding door. Both native
+source actors still need binding. The 2.75-second passage observation belongs to the old eight-second
+preview; it is retained as an angle reference, not imposed as a cutoff in the corrected ten-second model.
+Panel depth and angular speed remain model estimates pending real-scene comparison.
 
 ## Steps to finish, in order
 
@@ -56,8 +66,8 @@ remain estimates and do not resolve metric sight bounds.
    private candidate. Verify exact actor names in another independent recording when available; an
    instance-specific name in one replay is not evidence of a universal map binding. Confirm both
    physical Lotus switches or prove they share the same native door-level activation source.
-2. **Resolve geometry with the owner.** Start with Lotus: identify aperture versus slab, draw a single
-   point pivot, retain/draw the physical panel and resolve bounds. For descending doors, measure ground
+2. **Resolve geometry with the owner.** Lotus doorway spaces and center pivots are reviewed. Next,
+   measure the physical rotating panel and resolve vertical bounds. For descending doors, measure ground
    relative clearance/bottom/top from replay/world evidence. For ropes, identify actual boarding
    coordinates and distinct replay position-Z floors; bind the named Choke 2 side for Abyss Mid.
    Preserve physical directions while applying the owner's quiet times and one-way restriction.
@@ -110,7 +120,8 @@ describe capabilities and status. This change does not start or change those sch
 ## Verification and rollback
 
 Local tests cover exact/reset/ambiguous source handling, opaque destruction property framing, global
-Lotus motion time, Summit phase boundaries, continuous passage status, measured landing rebasing,
+Lotus motion time, occupied rotating cells, thin panel edges, one-cell traversal and release-time lower
+bounds, Summit phase boundaries, continuous passage status, measured landing rebasing,
 directional seconds and parent attribution, quiet-only cuts, artifact verification, and synthetic fresh
 full/fresh gaps/cached gaps parity. Existing Ascent integration and schema/reference suites also pass.
 These results do not certify real map placement or the Linux worker; those remain gates above.

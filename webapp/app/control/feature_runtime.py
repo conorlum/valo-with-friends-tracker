@@ -172,6 +172,8 @@ class FeatureRuntime:
             payload.append({'key': f['id'], 'name': f.get('name', f['id']), 'uv': uv,
                 'mode': 'reducer_trace', 'initial': timeline['initial'], 'events': events,
                 'initial_blocks_movement': bool(states[timeline['initial']].get('blocks_movement'))})
+            if f.get('rotation'):
+                payload[-1]['movement_geometry'] = 'rotating_panel'
             if f.get('sliding'):
                 from app.replays.map_feature_motion import movement_cutoff
                 payload[-1]['sliding'] = {'open_state': f['sliding']['open_state'],
@@ -233,7 +235,9 @@ class FeatureRuntime:
         if self._releases is None:
             self._releases = []
             for when in self.transitions:
-                before = self.sample(np.nextafter(when, -np.inf))[0]
+                # Moving panels use 1/16-second occupancy steps. Stay outside their
+                # floating-point boundary tolerance when checking the preceding pose.
+                before = self.sample(when - 1e-6)[0]
                 after = self.sample(when)[0]
                 nodes = np.flatnonzero(before & ~after)
                 if len(nodes):

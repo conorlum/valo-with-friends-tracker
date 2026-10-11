@@ -2605,6 +2605,10 @@
           current.blocks_movement = current.closure > slide.movement_cutoff;
         }
       }
+      if (feature.movement_geometry === 'rotating_panel') {
+        current.movement_geometry = feature.movement_geometry;
+        current.blocks_movement = null;
+      }
       return current;
     }
     var state = feature.initial || "unknown", began = null, terminal = state === "broken";
@@ -2655,13 +2659,14 @@
     if (data && data.v === 1 && data.status !== "unavailable") (data.features || []).forEach(function (feature) {
       var sampled = mapFeatureState(feature, t), state = sampled.state;
       var detail = state + (sampled.modeled && sampled.closure !== null ? " · " + Math.round(100 * sampled.closure) + "% closed (model)" : "") + (sampled.pending ? " · unresolved" : "");
-      if (feature.mode === 'reducer_trace') detail += sampled.blocks_movement ? ' · passage blocked' : ' · passage clear';
+      if (sampled.movement_geometry) detail += ' · movement follows rotating panel';
+      else if (feature.mode === 'reducer_trace') detail += sampled.blocks_movement ? ' · passage blocked' : ' · passage clear';
       stateRows.push('<p><strong>' + escapeHtml(feature.name) + '</strong>: ' + escapeHtml(detail) + '</p>');
       if (!self.layers.features || !feature.uv) return;
       var x = feature.uv[0] * scale, y = feature.uv[1] * scale;
       var emphasized = state === "closing" || state === "closed" || state === "broken" || sampled.blocks_movement;
       var color = state === "broken" ? "#ff4d5f" : state === "open" ? "#7dd3a8" : state === "unknown" ? "#aaa" : "#ffe54f";
-      if (feature.mode === 'reducer_trace' && !sampled.blocks_movement && !sampled.pending && state !== 'broken') color = '#7dd3a8';
+      if (feature.mode === 'reducer_trace' && !sampled.movement_geometry && !sampled.blocks_movement && !sampled.pending && state !== 'broken') color = '#7dd3a8';
       var width = Math.max(emphasized ? 3 : 2, radius / (emphasized ? 4 : 5));
       ctx.save(); ctx.globalAlpha = 1; ctx.lineJoin = "round";
       ctx.setLineDash(state === "open" || state === "unknown" ? [radius / 3, radius / 4] : []);

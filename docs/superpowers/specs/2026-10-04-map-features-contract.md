@@ -183,13 +183,17 @@ assigning names to inherited parameters, whose property framing is still checked
 
 The map-pool panel consumer supports Sunset descent, Summit's clear-halfway/blocking-slam phases,
 Abyss breakables and Lotus rotation. One activation clock runs throughout Lotus's full cycle; the
-rotating physical slab occludes sight independently of the state-defined movement aperture. Pivot must
-be a point, panel must be a valid polygon/polyline and height bounds must resolve. Crush damage is not
+rotating physical slab occludes sight and blocks only cells intersecting its current footprint. Lotus's
+owner-reviewed cycle is ten seconds. Movement is sampled at 16 Hz and cell changes register as calculation
+boundaries; newly clear cells cannot be entered retroactively. A full clear 1x1 cell permits normal unknown
+travel, with existing corner cuts and floor topology. State names or older timed passability flags never
+remove the moving slab. Pivot must be a point, panel must be a valid polygon and height bounds must resolve. Crush damage is not
 synthesized. Dynamic sampling errors fail the calculation rather than removing a blocker silently.
 Source actors, each second button, panel poses and landings still require real-map qualification.
 
 The site consumes a computation-produced reducer trace for generic feature status. Descending-door
 display includes continuous closure and the selected movement cutoff. The marker is a status aid;
+rotating-door status reports that movement follows the panel instead of declaring the entire aperture clear.
 full rotating-panel rendering is not claimed. Fresh full control, fresh gaps-only and cached gaps must
 agree on reviewed real scenes before publication.
 
