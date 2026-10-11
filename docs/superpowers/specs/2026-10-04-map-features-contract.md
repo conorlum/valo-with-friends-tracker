@@ -183,9 +183,10 @@ assigning names to inherited parameters, whose property framing is still checked
 
 The map-pool panel consumer supports Sunset descent, Summit's clear-halfway/blocking-slam phases,
 Abyss breakables and Lotus rotation. One activation clock runs throughout Lotus's full cycle; the
-rotating physical slab occludes sight and blocks only cells intersecting its current footprint. Lotus's
+rotating physical slab occludes sight and blocks movement only where it covers more than 50% of a cell's
+area; exactly half remains passable. Lotus's
 owner-reviewed cycle is ten seconds. Movement is sampled at 16 Hz and cell changes register as calculation
-boundaries; newly clear cells cannot be entered retroactively. A full clear 1x1 cell permits normal unknown
+boundaries; newly passable cells cannot be entered retroactively. A cell with at most 50% coverage permits normal unknown
 travel, with existing corner cuts and floor topology. State names or older timed passability flags never
 remove the moving slab. Pivot must be a point, panel must be a valid polygon and height bounds must resolve. Crush damage is not
 synthesized. Dynamic sampling errors fail the calculation rather than removing a blocker silently.

@@ -44,7 +44,7 @@ import json
 import struct
 from pathlib import Path
 
-CONTROL_REVISION = 11    # 11: rotating panel occupancy and timed cell releases
+CONTROL_REVISION = 12    # 12: majority-area movement occupancy for rotating panels
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 

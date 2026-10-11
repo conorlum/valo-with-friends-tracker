@@ -137,7 +137,7 @@ def test_lotus_keeps_a_partial_sight_panel_while_movement_is_passable():
     runtime = MapPoolRuntime(actual, blob)
     closed, closed_sight = runtime.sample(1)
     passable, rotating_sight = runtime.sample(6)
-    assert closed.any() and passable.any()  # A moving wall remains; it never vanishes for a timed phase.
+    assert closed.any() and not passable.any()  # At 90 degrees each touched cell is exactly half covered.
     vacated = actual.node_at(actual.cell_of_px(268, 196), None)
     assert closed[vacated] and not passable[vacated]
     assert closed_sight and rotating_sight
@@ -169,14 +169,15 @@ def test_rotating_wall_admits_one_cell_route_without_disappearing_or_corner_cutt
     reached[geo.cell_of_px(196, 100)] = 1
     target = geo.cell_of_px(236, 100)
     for t, should_cross in [(1, False), (6, True), (11, False)]:
-        blocked = runtime.sample(t)[0]
-        assert blocked.any()  # Slab remains an obstacle even when traversal is possible.
+        blocked, sight = runtime.sample(t)
+        assert sight  # The physical slab still occludes sight when no cell is majority covered.
+        assert bool(blocked.any()) == (t != 6)
         room = geo.walk_n & ~blocked
         spread = topo.spread(reached, room, np.full(geo.n, -np.inf), 100, .1, [], solid=blocked)
         assert np.isfinite(spread[target]) == should_cross
-    # At the midpoint the topmost route is exactly one complete cell wide.
+    # At the midpoint the top route is clear and the adjacent half-covered cell is also open.
     mask = runtime.sample(6)[0].reshape(128, 128)
-    assert not mask[12, 26] and mask[13, 26]
+    assert not mask[12, 26] and not mask[13, 26]
 
 
 def test_newly_vacated_cell_cannot_be_reached_before_its_movement_release():
@@ -197,12 +198,56 @@ def test_newly_vacated_cell_cannot_be_reached_before_its_movement_release():
     assert spread[cell] >= release + .1
 
 
-def test_thin_panel_edge_inside_a_cell_is_not_lost_between_paint_centres():
+def test_thin_panel_edge_does_not_block_a_majority_clear_cell():
     from app.control.map_pool_runtime import rotation_cells
     panel = {'type': 'polygon', 'uv': [[x*10000/1024, y*10000/1024]
              for x,y in [(208.1, 96), (208.2, 96), (208.2, 128), (208.1, 128)]]}
     cells = rotation_cells(panel)
-    assert cells[12:16,26].all() and not cells[12:16,25].any()
+    assert not cells.any()
+
+
+@pytest.mark.parametrize('width,blocked', [(3.9999, False), (4, False), (4.0001, True), (8, True)])
+def test_rotating_panel_blocks_only_more_than_half_of_cell_area(width, blocked):
+    from app.control.map_pool_runtime import rotation_cells, rotation_coverage
+    panel = {'type': 'polygon', 'uv': [[x*10000/1024, y*10000/1024]
+             for x,y in [(208, 96), (208+width, 96), (208+width, 104), (208, 104)]]}
+    assert rotation_coverage(panel)[12,26] == pytest.approx(width/8)
+    assert bool(rotation_cells(panel)[12,26]) == blocked
+
+
+def test_diagonal_half_cell_remains_open_in_both_polygon_windings():
+    from app.control.map_pool_runtime import rotation_cells, rotation_coverage
+    points = [[x*10000/1024, y*10000/1024] for x,y in [(208,96),(216,96),(208,104)]]
+    for vertices in (points, list(reversed(points))):
+        panel = {'type':'polygon','uv':vertices}
+        assert rotation_coverage(panel)[12,26] == pytest.approx(.5)
+        assert not rotation_cells(panel).any()
+
+
+@pytest.mark.parametrize('angle', [17, 45, 81])
+def test_rotated_cell_clipping_preserves_total_panel_area(angle):
+    from app.control.map_pool_runtime import rotation_coverage
+    points = np.array([[-16,-4],[16,-4],[16,4],[-16,4]])
+    theta = np.deg2rad(angle)
+    rotation = np.array([[np.cos(theta),-np.sin(theta)],[np.sin(theta),np.cos(theta)]])
+    uv = ((points @ rotation.T + [850.5,527.5]) * 10000/1024).tolist()
+    coverage = rotation_coverage({'type':'polygon','uv':uv})
+    assert coverage.sum() == pytest.approx(32*8/(8*8))
+    assert np.all((coverage >= 0) & (coverage <= 1))
+
+
+def test_majority_rule_changes_movement_without_erasing_the_sight_panel():
+    from app.control import features as cf
+    from app.control.map_pool_runtime import rotation_effects
+    from tests.replays.control_toys import rect_mask
+    from app.control.geometry import geometry_from_masks
+    panel = {'type':'polygon','uv':[[x*10000/1024,y*10000/1024]
+             for x,y in [(208,96),(211,96),(211,104),(208,104)]]}
+    walk = rect_mask([(200,88,224,112)])
+    geo = geometry_from_masks('Lotus',~walk,walk,7e-5,[])
+    f = lotus()
+    assert not rotation_effects(geo,{'features':[f]},f,panel).blocked.any()
+    assert cf.raster(panel).any()  # Sight still uses the slab's actual footprint.
 
 
 def test_site_rotating_panel_never_reports_a_timed_passage_clear_boolean():

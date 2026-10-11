@@ -11,33 +11,47 @@ from app.replays.control_format import GRID_HZ as ROTATION_HZ
 
 CONSUMER = 'map_pool_replay_v1'
 MAPS = frozenset(events.MAP_PREFIXES)
+ROTATION_BLOCK_FRACTION = .5
+
+
+def rotation_coverage(panel):
+    """Exact polygon area in each movement cell, independent of paint-centre samples."""
+    from app.control.geometry import GRID
+    coverage = np.zeros((GRID, GRID), float)
+    points = np.asarray(panel['uv'], dtype=float)
+    step = 10000 / GRID
+    lower = np.maximum(0, np.floor(points.min(axis=0)/step).astype(int))
+    upper = np.minimum(GRID, np.ceil(points.max(axis=0)/step).astype(int))
+    for row in range(lower[1], upper[1]):
+        for col in range(lower[0], upper[0]):
+            # Clip in local cell coordinates to avoid cancellation in area sums
+            # far from the map origin. A cell is a unit square in this frame.
+            polygon = ((points / step) - [col, row]).tolist()
+            for axis, bound, sign in ((0, 0, 1), (0, 1, -1), (1, 0, 1), (1, 1, -1)):
+                if not polygon:
+                    break
+                clipped = []
+                previous = polygon[-1]
+                before = sign * (previous[axis]-bound) >= 0
+                for current in polygon:
+                    inside = sign * (current[axis]-bound) >= 0
+                    if inside != before:
+                        fraction = (bound-previous[axis]) / (current[axis]-previous[axis])
+                        clipped.append([previous[i] + fraction*(current[i]-previous[i]) for i in (0, 1)])
+                    if inside:
+                        clipped.append(current)
+                    previous, before = current, inside
+                polygon = clipped
+            if len(polygon) >= 3:
+                coverage[row, col] = min(1., abs(sum(a[0]*b[1]-b[0]*a[1]
+                    for a, b in zip(polygon, polygon[1:]+polygon[:1]))) / 2)
+    return coverage
 
 
 def rotation_cells(panel):
-    """Cells whose interiors intersect a polygon; a whole 1x1 cell must clear the slab.
-
-    Include edges as well as paint centres, so a thin corner cannot disappear between
-    paint samples. Touching a cell boundary alone does not occupy the adjacent cell.
-    """
-    from app.control import features as cf
-    from app.control.geometry import GRID
-    cells = cf.to_grid(cf.raster(panel))
-    points = np.asarray(panel['uv'], dtype=float)
-    step = 10000 / GRID
-    x, y = np.meshgrid((np.arange(GRID) + .5) * step, (np.arange(GRID) + .5) * step)
-    half = step / 2 - 1e-7
-    for a, b in zip(points, np.roll(points, -1, axis=0)):
-        low, high = np.zeros_like(x), np.ones_like(x)
-        valid = np.ones_like(cells)
-        for coord, origin, delta in ((x, a[0], b[0]-a[0]), (y, a[1], b[1]-a[1])):
-            if abs(delta) < 1e-12:
-                valid &= np.abs(origin-coord) < half
-            else:
-                t0, t1 = (coord-half-origin)/delta, (coord+half-origin)/delta
-                low = np.maximum(low, np.minimum(t0, t1))
-                high = np.minimum(high, np.maximum(t0, t1))
-        cells |= valid & (low <= high)
-    return cells
+    """Owner's permissive movement rule: only a majority-covered cell is blocked."""
+    # A mathematical half remains open despite roundoff at rotated/shared edges.
+    return rotation_coverage(panel) > ROTATION_BLOCK_FRACTION + 1e-10
 
 
 def rotation_effects(geo, mf, feature, panel):

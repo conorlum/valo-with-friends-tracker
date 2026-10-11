@@ -13,8 +13,10 @@ activation and live recompute have not been changed by this work.
   reset and RPC rules bind Sunset, Summit, Abyss and Lotus; arbitrary proximity/damage guesses do not.
 - Summit phases, breakable destruction, continuous descending sight, and Lotus's single ten-second
   rotation clock feed movement, vision and unknown propagation. The owner corrected the older eight-second
-  recollection. Lotus movement follows the rotating slab's occupied cells at 16 Hz: a whole clear cell
-  may be entered at normal unknown speed, without a fixed doorway-wide passability window. Cell changes
+  recollection. Lotus movement follows the rotating slab at 16 Hz: a cell blocks movement only when
+  more than 50% of its area is covered; exactly half remains passable. Passable cells may be entered
+  at normal unknown speed, without a fixed doorway-wide passability window. Sight retains the panel's
+  actual footprint regardless of movement coverage. Cell changes
   register as release/block calculation boundaries. Scheduled motion phases register as
   calculation boundaries. Destruction cancels later motion effects.
 - Split/Summit/Abyss quiet rope directions use seconds and measured endpoint floors. Actual physical
@@ -25,8 +27,8 @@ activation and live recompute have not been changed by this work.
   a DB, activate heights, publish tags or recompute live data. Framing, binding, geometry and release
   qualification have separate outcomes.
 
-Versions: feature compiler 7, condenser 16, control 11; Ascent consumer 2, quiet rope consumer 1,
-map-pool replay consumer 2. Gaps version stays 3; changed control inputs invalidate its caches.
+Versions: feature compiler 8, condenser 16, control 12; Ascent consumer 2, quiet rope consumer 1,
+map-pool replay consumer 3. Gaps version stays 3; changed control inputs invalidate its caches.
 No new migration or database table is required.
 
 ## Current real evidence and blockers
@@ -120,7 +122,8 @@ describe capabilities and status. This change does not start or change those sch
 ## Verification and rollback
 
 Local tests cover exact/reset/ambiguous source handling, opaque destruction property framing, global
-Lotus motion time, occupied rotating cells, thin panel edges, one-cell traversal and release-time lower
+Lotus motion time, majority-area rotating cells, exact half-cell ties, thin panel edges, rotated area
+conservation, one-cell traversal and release-time lower
 bounds, Summit phase boundaries, continuous passage status, measured landing rebasing,
 directional seconds and parent attribution, quiet-only cuts, artifact verification, and synthetic fresh
 full/fresh gaps/cached gaps parity. Existing Ascent integration and schema/reference suites also pass.
