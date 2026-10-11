@@ -78,6 +78,7 @@ class Stand:
     cells: tuple          # flat cells its samples pass through, in order (no repeats in a row)
     x: float              # mean position, px
     y: float
+    fine_cells: tuple = ()  # accepted half-cell footprints, never reconstructed from whole-run mean XY
 
 
 _tracks = hm.tracks
@@ -125,8 +126,11 @@ def stands(blob: dict, geo: Geometry, round_index: int = 0, skip: dict | None = 
             cells = (np.clip(y[i:j], 0, PX - 1).astype(int) // (PX // GRID)) * GRID \
                 + np.clip(x[i:j], 0, PX - 1).astype(int) // (PX // GRID)
             keep = np.r_[True, cells[1:] != cells[:-1]]
+            fine = hm.fine_cells_of(x[i:j], y[i:j])
+            fine_keep = np.r_[True, fine[1:] != fine[:-1]]
             out.append(Stand(round_index, slot, float(t[i]), float(t[j - 1]), int(round(med)),
-                             tuple(int(c) for c in cells[keep]), float(x[i:j].mean()), float(y[i:j].mean())))
+                             tuple(int(c) for c in cells[keep]), float(x[i:j].mean()), float(y[i:j].mean()),
+                             tuple(int(c) for c in fine[fine_keep])))
     out.sort(key=lambda s: (s.slot, s.t0))
     return out
 
@@ -159,8 +163,12 @@ def off_platforms(found: list[Stand], plats: list, geo: Geometry) -> list[Stand]
             continue
         for i, j in hm._runs_of(np.array(keep)):      # each stretch that is left is a run of its own
             cut = {"cells": s.cells[i:j]}
+            allowed = set(cut['cells'])
+            fine_keep = [hm.coarse_of_fine(c) in allowed for c in s.fine_cells]
+            cut['fine_cells'] = tuple(c for c, ok in zip(s.fine_cells, fine_keep) if ok)
             if isinstance(s, Walk):
                 cut["low"] = s.low[i:j]
+                cut['fine_low'] = tuple(z for z, ok in zip(s.fine_low, fine_keep) if ok)
             out.append(replace(s, **cut))
     return out
 

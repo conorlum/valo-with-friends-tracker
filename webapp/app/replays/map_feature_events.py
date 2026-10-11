@@ -159,6 +159,14 @@ def bind_round(feature, ledger, report, start_ms, end_ms, previous_end_ms=0):
             # A known transition RPC with absent/unknown parameters is a coverage hole.
             if any(row['rpc'].strip() == r['rpc'] for r in source['rules']):
                 result['reasons'] = ['transition parameters unqualified']
+                result['coverage_holes'] = [{
+                    't': (row['time_ms'] - start_ms) / 1000,
+                    'actor': row['actor'], 'rpc': row['rpc'], 'line': row['line'],
+                    'parameters': row['params'],
+                    'expected_conditions': [r.get('equals', {}) for r in source['rules']
+                                            if r['rpc'] == row['rpc'].strip()],
+                    'qualification': 'missing or unmatched parameters; no inferred defaults or transition',
+                }]
                 return result
             continue
         rule = matched[0]

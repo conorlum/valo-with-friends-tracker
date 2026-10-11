@@ -41,6 +41,8 @@ class Walk:
     t1: float
     cells: tuple          # flat cells it passes through, in order (no repeats in a row)
     low: tuple            # the lowest z (world dm) of its samples in each of `cells`
+    fine_cells: tuple = ()  # accepted 4-pixel footprints, in sample order; diagnostic refinement input
+    fine_low: tuple = ()    # one low position-z per visit to a fine footprint
 
 
 def tracks(blob: dict, skip: dict | None = None):
@@ -72,6 +74,17 @@ def _runs_of(mask: np.ndarray) -> list[tuple[int, int]]:
 
 def cells_of(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     return (np.clip(y, 0, PX - 1).astype(int) // CELL) * GRID + np.clip(x, 0, PX - 1).astype(int) // CELL
+
+
+def fine_cells_of(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Accepted XY at the proposed half-cell resolution, without changing runtime cell identities."""
+    return (np.clip(y, 0, PX - 1).astype(int) // (CELL // 2)) * (GRID * 2) \
+        + np.clip(x, 0, PX - 1).astype(int) // (CELL // 2)
+
+
+def coarse_of_fine(cell: int) -> int:
+    y, x = divmod(int(cell), GRID * 2)
+    return (y // 2) * GRID + x // 2
 
 
 def _merge(spans: list) -> list:
@@ -222,7 +235,11 @@ def walks(blob: dict, geo: Geometry, round_index: int = 0, found=(), skip: dict 
             cells = cells_of(x[i:j], y[i:j])
             starts = np.r_[0, np.flatnonzero(cells[1:] != cells[:-1]) + 1]
             low = np.minimum.reduceat(z[i:j], starts)
+            fine = fine_cells_of(x[i:j], y[i:j])
+            fine_starts = np.r_[0, np.flatnonzero(fine[1:] != fine[:-1]) + 1]
+            fine_low = np.minimum.reduceat(z[i:j], fine_starts)
             out.append(Walk(round_index, slot, float(t[i]), float(t[j - 1]), tuple(int(c) for c in cells[starts]),
-                            tuple(int(v) for v in low)))
+                            tuple(int(v) for v in low), tuple(int(c) for c in fine[fine_starts]),
+                            tuple(int(v) for v in fine_low)))
     out.sort(key=lambda w: (w.slot, w.t0))
     return out

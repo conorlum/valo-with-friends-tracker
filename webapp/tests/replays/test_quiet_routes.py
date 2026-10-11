@@ -51,6 +51,25 @@ def test_coincident_rope_endpoints_bind_measured_world_heights_and_rebase():
     assert new.node_z[rebound[0].dst] + new.heights.origin_z / 10 == 14
 
 
+def test_a_real_rope_editor_marker_places_via_both_measured_landings():
+    geo, mf = rope_case()
+    mf['features'][0]['states'][0]['footprint'] = {
+        'type': 'point', 'uv': mf['routes'][0]['endpoints'][0]['uv']}
+    placed = cf.placement(geo, mf)['feature-1']
+    arcs, pending = cf.compile_routes(geo, mf)
+    assert not placed.reasons and not pending
+    assert set(placed.nodes) == {arcs[0].src, arcs[0].dst}
+    mf['routes'][0]['endpoints'][0].pop('landing')
+    assert cf.placement(geo, mf)['feature-1'].reasons
+
+
+def test_blocking_rope_geometry_does_not_skip_the_ordinary_floor_check():
+    geo, mf = rope_case()
+    mf['features'][0]['states'][0].update(blocks_movement=True, footprint={
+        'type': 'point', 'uv': mf['routes'][0]['endpoints'][0]['uv']})
+    assert cf.placement(geo, mf)['feature-1'].reasons
+
+
 @pytest.mark.parametrize('kind', ['flat', 'unresolved', 'wrong', 'ambiguous'])
 def test_landings_never_guess_a_floor(kind):
     geo, mf = rope_case()

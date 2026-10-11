@@ -77,9 +77,30 @@ def test_missing_transition_parameter_and_ambiguous_rules_hold_feature():
             for i, (t, rpc) in enumerate([(0, 'MulticastRoundBegin'), (1200, 'PlayDoorSounds')])]
     report = {'status': 'framed'}
     assert me.bind_round(f, rows, report, 1000, 2000)['reasons'] == ['transition parameters unqualified']
+    pending = me.bind_round(f, rows, report, 1000, 2000)
+    assert pending['events'] == [] and pending['coverage_holes'][0]['t'] == .2
+    assert pending['coverage_holes'][0]['parameters'] == {}
+    assert pending['coverage_holes'][0]['expected_conditions'] == [{'New State': 2}]
     rows[1]['params'] = {'New State': [2, 8]}
     f['replay_source']['rules'] *= 2
     assert me.bind_round(f, rows, report, 1000, 2000)['reasons'] == ['ambiguous source event rules']
+
+
+def test_explicit_zero_parameter_matches_but_omission_stays_a_reported_hole():
+    cls = me.CLASSES['WindowShield']
+    f = {'initial_state': 'open', 'replay_source': {'actors': ['WindowShieldA3'], 'class_path': cls,
+        'reset_rpcs': ['MulticastRoundBegin'], 'rules': [{'rpc': 'PlayDoorSounds', 'kind': 'observed',
+                                                      'state': 'open', 'equals': {'New State': 0}}]}}
+    rows = [{'actor': 'WindowShieldA3', 'class_path': cls, 'time_ms': 0,
+             'rpc': 'MulticastRoundBegin', 'params': {}, 'line': 1},
+            {'actor': 'WindowShieldA3', 'class_path': cls, 'time_ms': 1500,
+             'rpc': 'PlayDoorSounds', 'params': {'Old State': [1, 3]}, 'line': 2}]
+    pending = me.bind_round(f, rows, {'status': 'framed'}, 1000, 2000)
+    assert pending['status'] == 'pending' and pending['events'] == []
+    assert pending['coverage_holes'][0]['parameters'] == {'Old State': [1, 3]}
+    rows[1]['params']['New State'] = [0, 3]
+    bound = me.bind_round(f, rows, {'status': 'framed'}, 1000, 2000)
+    assert bound['status'] == 'bound' and bound['events'][0]['state'] == 'open'
 
 
 def test_round_ledgers_include_own_buy_phase_and_exclude_later_round(tmp_path):

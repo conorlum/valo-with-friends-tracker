@@ -27,9 +27,43 @@ activation and live recompute have not been changed by this work.
   a DB, activate heights, publish tags or recompute live data. Framing, binding, geometry and release
   qualification have separate outcomes.
 
-Versions: feature compiler 8, condenser 16, control 12; Ascent consumer 2, quiet rope consumer 1,
+Versions: feature compiler 9, condenser 16, control 12; Ascent consumer 2, quiet rope consumer 2,
 map-pool replay consumer 3. Gaps version stays 3; changed control inputs invalidate its caches.
 No new migration or database table is required.
+
+The compiler revision fixes vertical rope editor markers: a nonblocking point marker is not an
+object on a single floor. Its measured route landings own placement, while blocking geometry still
+requires the ordinary floor checks. Compiler/consumer identities invalidate affected feature
+artifacts; the control engine itself is unchanged by this fix.
+
+## Geometry and evidence checkpoint
+
+The map-independent `scripts/measure_rope_positions.py` measures stable XY during monotone Z
+movement regardless of weapon, noise or climb speed. It rejects typical jump acceleration and
+horizontal departures and requires repeated rounds and a dominant spatial cluster. It hashes the
+actual movement stream and verifies source/context identity. Output is a private coordinate proposal,
+not certification of rope attachment, travel cost or endpoint floors.
+It also produced private proposals for Summit's one and Abyss's four tagged vertical ropes. Those
+proposals are not applied automatically to their endpoint annotations or quiet-direction semantics.
+
+All six Split rope coordinates were measured from the local recording and staged privately without
+changing the owner snapshot or other maps. Two A-Heaven ropes have supported stationary endpoint
+heights and compile in an isolated enabled trial against the exact saved accepted Split asset.
+Four remain pending: one has unresolved landing ground, and three lack complete stationary landing
+evidence. Mid-ride height extrema are not substituted for boarding floors. All staged bundles remain
+disabled; successful placement is not full real control/gaps acceptance.
+
+The tagger now uses an exact attached placement report when the annotations and height identity
+match. Edits invalidate it and restore the approximate preview. This avoids false single-floor
+warnings on the two measured vertical ropes without treating stale diagnostics as current.
+
+Known transition RPCs with missing/unmatched parameters now report the exact source row, timestamp,
+parameters and expected conditions. They still hold the feature pending. Sunset's omitted state has
+not been assigned an assumed zero/open value; source-default qualification remains a blocker.
+
+Accepted-ground refinement extraction and analysis are implemented; mixed-footprint assets, worker
+history integration and runtime consumers remain unfinished. The refinement spec records historical
+local evidence and the remaining implementation sequence. No rejected height asset has been activated.
 
 ## Current real evidence and blockers
 
@@ -76,7 +110,8 @@ Panel depth and angular speed remain model estimates pending real-scene comparis
 3. **Repair height evidence.** Diagnose failed global gates using source coverage and known kill lines.
    The owner selected automatic local 4-pixel refinement for mixed-height cells on every map, without
    painted guides. See `../specs/2026-10-10-automatic-local-height-refinement.md`: this is settled design,
-   and the mixed-resolution builder/runtime still needs implementation. Keep sparse regions explicitly
+   with accepted-ground extraction and refinement analysis built; the mixed-resolution asset/runtime
+   still needs implementation. Keep sparse regions explicitly
    unknown, genuine stacked floors distinct, and acceptance metrics weighted by physical area.
    Build fresh local candidates and rerun the unchanged checks. Use only accepted exact assets in final
    qualification. Rebuild-dependent floor references are verified again; do not retain stale node IDs.
@@ -117,6 +152,18 @@ Scene context must contain the matching `source_sha256` and ordered absolute-mil
 An audit always reports release gates; a local height file does not certify live acceptance. Generate
 the tagger from the same candidate and exact height context using `control_tagger.py --tags ... --out ...`.
 Backend diagnostics, rather than the approximate canvas preview, qualify explicit rope bindings.
+
+Rope coordinate measurement accepts a matching recording, export and scene context:
+
+```powershell
+.\.venv313\Scripts\python.exe scripts\measure_rope_positions.py `
+  --tags <private-candidate.json> --map Split --export <private-export-directory> `
+  --source <local-recording.vrf> --context <private-scene-context.json> `
+  --out <new-private-coordinate-directory>
+```
+
+It requires nonoverlapping absolute round windows and unambiguous pawn/slot identities. Review the
+proposal and stationary boarding evidence separately before updating an immutable private candidate.
 
 Read-only rollout planning uses the existing guarded DB wrapper and `compute_control.py --dry-run`,
 optionally narrowed with `--map`, `--match` and `--round`. Write/reparse commands are the owner's

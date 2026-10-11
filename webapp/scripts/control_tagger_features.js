@@ -311,7 +311,25 @@
     commit(r.mf);
   }
 
+  function currentPlacementDiagnostic() {
+    var diagnostic = (FD.diagnostics || {})[mapName()], fd = (FD.floors || {})[mapName()] || {flat:true};
+    if (!diagnostic || diagnostic.height !== (fd.height_sha || 'flat') || !Array.isArray(diagnostic.features)) return null;
+    var entry = (workingCatalogue().maps || {})[mapName()];
+    if (F.digest(entry) !== F.digest(diagnostic.editor_entry)) return null;
+    var rows = {};
+    diagnostic.features.forEach(function(row) {rows[row.id] = row;});
+    return (mf().features || []).every(function(f) {return rows[f.id];}) ? diagnostic : null;
+  }
+
   function placements() {
+    var diagnostic = currentPlacementDiagnostic();
+    if (diagnostic) {
+      var result = {};
+      diagnostic.features.forEach(function(row) {
+        result[row.id] = {ok:row.placement === 'placeable', reasons:row.reasons || []};
+      });
+      return result;
+    }
     var walk = TG.state.masks && TG.state.masks.walk, fd = (FD.floors || {})[mapName()] || {flat:true};
     return F.previewPlacement(mf(), {walk:F.walkableCells(walk), walk_px:walk, flat:fd.flat === true,
                                    floor_counts:fd.floor_counts || [], unresolved:fd.unresolved || []});
@@ -1216,7 +1234,7 @@
     s.innerHTML = "<b>Your annotation:</b> " + sum.annotation.features + " features (" + sum.annotation.review.user_reviewed + " reviewed); checklist " +
       sum.annotation.checklist.user_reviewed + "/" + seeds.length + " reviewed.<br><b>Geometry:</b> " +
       (sum.geometry.ready ? "structurally described" : sum.geometry.errors + " errors, " + sum.geometry.unresolved + " open facts") +
-      ".<br><b>Placement preview:</b> " + Object.keys(placement).filter(function (id) { return !placement[id].ok; }).length + " features pending; " +
+      ".<br><b>" + (currentPlacementDiagnostic() ? "Placement (attached compiler)" : "Placement preview") + ":</b> " + Object.keys(placement).filter(function (id) { return !placement[id].ok; }).length + " features pending; " +
       (((FD.floors || {})[mapName()] || {}).flat !== false ? "flat fallback, no measured height asset" : "measured height asset " + esc(FD.floors[mapName()].height_sha)) +
       ".<br><b>Compiler report:</b> " + esc(compilerNote) +
       ".<br><b>Replay signal:</b> " + esc(sum.replay.note) + ". Runtime activation requires reviewed replay evidence and a registered consumer.";

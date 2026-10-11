@@ -1,6 +1,7 @@
 # Automatic local height refinement
 
-Status: owner-selected approach; runtime implementation remains to be built. Supersedes the
+Status: accepted-ground extraction and deterministic refinement analysis implemented on the branch;
+mixed-footprint assets and runtime remain to be built. Supersedes the
 optional owner-paint step in the Lotus resolution proposal. Applies to every map, with no
 map-name exceptions. Main, deployment and live height activation require the owner's approval.
 
@@ -117,3 +118,41 @@ holding support requirements constant. Within four conflicting coarse cells, 4-p
 resolved 56.25% of the area, left 31.25% insufficiently supported and 12.5% conflicting.
 At 2 pixels, 29.69% was supported and 70.31% lacked evidence. This is an earlier local input
 set, not qualification of the latest rejected height asset or a guarantee for other maps.
+
+## Branch implementation checkpoint
+
+`height_motion.py` and `height_build.py` now retain accepted 4-pixel visit footprints and walk
+height minima without reconstructing XY from a whole-run average. Platform exclusions trim the
+fine evidence with the accepted parent cells. The current coarse asset calculations retain their
+existing grouping and exclusion rules.
+
+`height_refinement.py` consumes those footprints and an explicit canonical, hashed per-map
+history. It applies the existing independent-round/match support requirements, selects spatially
+distinct supported children, keeps coincident stacked surfaces, and retains prior selections when
+later evidence disappears. Sparse children remain unknown. Its area totals describe physical
+footprints; they are diagnostic totals, not replacement runtime acceptance metrics.
+
+`scripts/analyze_height_refinement.py` verifies frozen round hashes on every input pass and writes
+private analysis/history files. It requires `--history` or an explicit `--new-history`, refuses
+public-checkout output, and neither writes a database nor activates heights. Run from `webapp`:
+
+```powershell
+.\.venv313\Scripts\python.exe scripts\analyze_height_refinement.py `
+  --frozen <private-map.frozen.json> --new-history --out <new-private-directory>
+```
+
+For subsequent runs replace `--new-history` with `--history <previous-private-history.json>`.
+The branch analysis processed 425 frozen rounds: Ascent 105, Haven 102, Lotus 61, Summit 37 and
+Sunset 120. It selected 44, 37, 14, 1 and 20 parent cells respectively. A repeat Lotus build with
+the saved history produced identical child evidence and selection hashes. These are historical
+local inputs, including an older Lotus input set; they do not qualify current live assets.
+
+Acceptance tests cover spatial ledges, stacked floors within children, missing history, retained
+selection, duplicate/order-independent observations, sparse evidence, accepted walk footprints,
+platform exclusion and changed frozen inputs. Existing coarse height tests also pass.
+
+Sequence item 1 is implemented. Items 2–6 remain: versioned mixed-footprint serialization,
+archived verification, worker history transport, physical-area acceptance, node lookup/topology,
+sight, all feature/utility consumers, and real control/gaps qualification. The analysis explicitly
+reports `runtime_enabled: false`. No height/control format revision has been bumped for this
+analysis-only checkpoint, and it must not be presented as the completed adaptive runtime.

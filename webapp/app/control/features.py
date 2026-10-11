@@ -202,7 +202,17 @@ def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
             pieces.append(_place_shape(geo, value, path))
         def state_parts(s, path):
             if s.get('footprint') is not None:
-                shape(s['footprint'], path + '.footprint')
+                if f.get('preset') == 'vertical_rope' and not s.get('blocks_movement') \
+                        and not s.get('blocks_sight') and (s['footprint'] or {}).get('type') == 'point':
+                    # A vertical rope's editor marker is not a single-floor object.
+                    # Its measured lower/upper endpoints below own placement; resolving
+                    # the marker as ordinary ground would reject every genuine stack.
+                    rep = ms.Report()
+                    ms._geometry(rep, path + '.footprint', s['footprint'])
+                    if rep.errors:
+                        pieces.append(Placement(reasons=(_reason('invalid_geometry', path + '.footprint'),)))
+                else:
+                    shape(s['footprint'], path + '.footprint')
             elif s.get('blocks_movement'):
                 pieces.append(Placement(reasons=(_reason('empty_geometry', path + '.footprint'),)))
             for i, occ in enumerate(s.get('sight') or []):
