@@ -69,6 +69,12 @@ B–C and the outer, farther-from-site button for A. The private candidate now i
 per door; each door binds successfully across all 24 rounds of that recording. This confirms door
 identity and button side in that recording, not independent-recording stability or new timing evidence.
 
+Follow-up pinned captures now establish independent-recording source bindings for Lotus (20/20
+rounds, with activations from all four switch sources) and Summit (18/18 for each of the three
+doors). A second Sunset recording frames cleanly but binds only 21/22 rounds; its remaining round
+has unqualified transition parameters. Keep the decoder blocker rather than assigning defaults.
+These are source checks, not new owner-reviewed behavior or geometry evidence.
+
 Automatic local height refinement is implemented through versioned mixed-footprint assets, durable
 worker history and runtime consumers. Unchanged acceptance gates use physical area. Independent
 private builds passed on historical Lotus, Haven and Sunset inputs; Ascent still fails kill-line and
@@ -102,8 +108,8 @@ their legacy pivot fields do not establish the physical panel or its thickness. 
 remain estimates and do not resolve metric sight bounds.
 The owner reviewed the centered rectangular panel preview, specified floor-to-ceiling coverage with
 no vertical gaps, and confirmed both nearby switches activate their corresponding door. Both native
-switch sources per door are now bound in the private reviewed recording; independent-recording
-stability remains to be checked. The 2.75-second passage observation belongs to the old eight-second
+switch sources per door are now bound in the private reviewed recording and a second independent
+capture. The 2.75-second passage observation belongs to the old eight-second
 preview; it is retained as an angle reference, not imposed as a cutoff in the corrected ten-second model.
 Panel depth and angular speed remain model estimates pending real-scene comparison.
 
@@ -120,8 +126,9 @@ landings. A single supported lower rope height is insufficient to invent its upp
    build receipt and source hashes. Never substitute an older per-map export. Stage revisions in a new
    private candidate. Verify exact actor names in another independent recording when available; an
    instance-specific name in one replay is not evidence of a universal map binding. Both physical
-   Lotus switch sources are matched in the reviewed recording; preserve that evidence while checking
-   the bindings against an independent capture.
+   Lotus switch sources are matched in two recordings, and Summit's three doors also bind in two;
+   preserve those receipts. Abyss still has one local recording, and Sunset's partial transitions
+   remain unqualified even after the second capture.
 2. **Resolve geometry with the owner.** Lotus doorway spaces and center pivots are reviewed. Next,
    measure the physical rotating panel and resolve vertical bounds. For descending doors, measure ground
    relative clearance/bottom/top from replay/world evidence. For ropes, identify actual boarding
@@ -213,6 +220,21 @@ preserving each observation's changing vertical band. An independent check of al
 instants in a real round compared 1,836 occluders exactly with uncached resolution. Retained masks
 fell from 1,925,185,536 to 314,572,800 bytes. This measures mask retention only, not total worker
 memory or Linux acceptance. The baseline full-round run predates this allocation optimization.
+
+The baseline real Lotus round completed with 443 viewer frames and 612 analytical instants. All
+41 fresh gap rows matched tick-cache replay and all 63 sampled full counterfactual checks matched
+incremental results exactly. Knowledge layers were excluded. The 1,846-second baseline includes
+fresh and cached gap detection; it is not a production worker timing. Barrier-start paint and
+unresolved terrain fallback remain input warnings. A false height-domain warning caused by cleared
+refined parents was corrected to count actual undeclared child holes, with a regression retaining
+real missing-child warnings. Parity alone does not certify those remaining input warnings.
+
+Conservative sight-line culling uses compiler-owned panel pixel bounds to exclude impossible
+crossings before detailed sampling. It retains the original longest-target sampling interval;
+unbounded directly constructed masks retain the reference path. Random thin/vertical/clipped
+fixtures and the motion/runtime suite pass (147 tests). A reduced real window compared every one
+of 17,802 calls, covering 704,777 target lines and diagnostic counters, with the uncullled reference
+and found no differences. Reduced-window profiling is not an archive recompute or Linux benchmark.
 
 Retain prior code/parser recipe, tags, accepted height asset digests and immutable feature artifacts.
 If a canary fails, stop expanding the recompute and hold/disable the affected bundle rather than

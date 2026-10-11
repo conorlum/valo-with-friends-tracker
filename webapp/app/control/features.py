@@ -450,6 +450,13 @@ class BoundedOccluder:
     bottom: float = -np.inf
     top: float = np.inf
     all_height: bool = False
+    bounds_px: tuple | None = None  # Exact enclosing pixel rectangle for compiler-owned immutable masks.
+
+
+def _bounded_occluder(owner, mask, bottom=-np.inf, top=np.inf, all_height=False):
+    ys, xs = np.nonzero(mask)
+    bounds = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1) if len(xs) else None
+    return BoundedOccluder(owner, mask, bottom, top, all_height, bounds)
 
 
 def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owner: str):
@@ -470,7 +477,7 @@ def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owne
         return None, f"{owner}: " + ('; '.join(b.pending) or 'no floor under the occluder')
     ref = bounds.get("ref")
     if ref == "all_height":
-        return BoundedOccluder(owner, mask_px, all_height=True), None
+        return _bounded_occluder(owner, mask_px, all_height=True), None
     if ref not in ("ground", "world"):
         return None, f"{owner}: sight bounds unresolved"
     lo, hi = ms_known(bounds.get("bottom")), ms_known(bounds.get("top"))
@@ -479,12 +486,12 @@ def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owne
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
         return None, f"{owner}: sight bounds require a finite positive height interval"
     if geo.heights is None:
-        return BoundedOccluder(owner, mask_px, all_height=True), None
+        return _bounded_occluder(owner, mask_px, all_height=True), None
     if ref == "world":
         origin = geo.heights.origin_z / 10.0
-        return BoundedOccluder(owner, mask_px, lo - origin, hi - origin), None
+        return _bounded_occluder(owner, mask_px, lo - origin, hi - origin), None
     ground = float(np.median(geo.node_z[b.nodes])) - hc.STAND_M
-    return BoundedOccluder(owner, mask_px, ground + lo, ground + hi), None
+    return _bounded_occluder(owner, mask_px, ground + lo, ground + hi), None
 
 
 def ms_known(value) -> float | None:
@@ -534,6 +541,24 @@ def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None 
         record["flat_occluder_tests"] = record.get("flat_occluder_tests", 0) + int(flat.sum())
     length = np.hypot(b[:, 0] - ax, b[:, 1] - ay)
     steps = int(np.ceil(length.max())) + 1 if n else 1
+    # Keep the original sampling interval even after culling: changing the longest target
+    # would shift sample locations and could change a thin panel's answer.
+    x0, y0 = np.clip(ax, 0, PX - 1), np.clip(ay, 0, PX - 1)
+    x1, y1 = np.clip(b[:, 0], 0, PX - 1), np.clip(b[:, 1], 0, PX - 1)
+    possible = np.zeros(n, bool)
+    for occ in occluders:
+        bounds = getattr(occ, 'bounds_px', None)
+        if bounds is None:  # Legacy/directly constructed masks have no trusted bound.
+            possible[:] = True
+            break
+        left, top, right, bottom = bounds
+        possible |= (np.maximum(x0, x1) >= left - 1e-9) & (np.minimum(x0, x1) <= right + 1e-9) \
+                    & (np.maximum(y0, y1) >= top - 1e-9) & (np.minimum(y0, y1) <= bottom + 1e-9)
+    indices = np.flatnonzero(possible)
+    if not len(indices):
+        return out
+    b, flat, length = b[indices], flat[indices], length[indices]
+    n = len(indices)
     s = np.linspace(0.0, 1.0, max(steps, 2))[1:-1]
     for lo in range(0, n, 512):
         bb, fl, ln = b[lo:lo + 512], flat[lo:lo + 512], length[lo:lo + 512]
@@ -561,7 +586,7 @@ def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None 
             if vertical.any() and occ.mask[apx]:
                 # the span [z0, z1] meets the band [bottom, top); an all-height band is every height
                 hit[vertical] |= True if occ.all_height else (z1 >= occ.bottom) & (z0 < occ.top)
-        out[lo:lo + 512] = hit
+        out[indices[lo:lo + 512]] = hit
     return out
 
 
