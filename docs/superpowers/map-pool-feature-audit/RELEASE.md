@@ -27,8 +27,8 @@ activation and live recompute have not been changed by this work.
   a DB, activate heights, publish tags or recompute live data. Framing, binding, geometry and release
   qualification have separate outcomes.
 
-Versions: feature compiler 10, condenser 16, control 13; Ascent consumer 3, quiet rope consumer 3,
-map-pool replay consumer 4; height format/rules 3 and height manifest 2.
+Versions: feature compiler 10, condenser 17, control 13; Ascent consumer 3, quiet rope consumer 3,
+map-pool replay consumer 5; height format/rules 3 and height manifest 2.
 Gaps version stays 3; changed control inputs invalidate its caches.
 No new migration or database table is required.
 
@@ -60,9 +60,13 @@ match. Edits invalidate it; coarse assets restore the approximate preview, while
 a regenerated compiler report. This avoids false single-floor
 warnings on the two measured vertical ropes without treating stale diagnostics as current.
 
-Known transition RPCs with missing/unmatched parameters now report the exact source row, timestamp,
-parameters and expected conditions. They still hold the feature pending. Sunset's omitted state has
-not been assigned an assumed zero/open value; source-default qualification remains a blocker.
+Known transition RPCs with missing/unmatched parameters report the exact source row, timestamp,
+parameters and expected conditions and hold the feature pending. Sunset's reviewed omitted open
+completion is now qualified by an explicitly serialized three-bit `DoorState=0` for the same actor
+at the exact RPC timestamp, with `Old State=1` and `isMoveTo=true`. Raw RPC parameters remain
+unchanged; timeline evidence records both source lines. No absent/default value is assumed.
+Properties alone, stale/nearby snapshots, wrong actors/widths, conflicting states and other omitted
+parameters cannot activate a feature. The capture adds state witnesses only for Sunset.
 
 On 2026-10-11 the owner matched the two additional Lotus switch scenes: B-side activation for
 B–C and the outer, farther-from-site button for A. The private candidate now includes both sources
@@ -71,8 +75,10 @@ identity and button side in that recording, not independent-recording stability 
 
 Follow-up pinned captures now establish independent-recording source bindings for Lotus (20/20
 rounds, with activations from all four switch sources) and Summit (18/18 for each of the three
-doors). A second Sunset recording frames cleanly but binds only 21/22 rounds; its remaining round
-has unqualified transition parameters. Keep the decoder blocker rather than assigning defaults.
+doors). Sunset originally bound 18/20 and 21/22 rounds. Re-reading both raw captures with exact
+state-property witnesses now binds all 20/20 and 22/22 rounds, including the three previously
+pending reopening completions. Reducer checks pass for every round; removing the witnesses restores
+the pending outcomes. This resolves that source-decoding blocker without assuming defaults.
 These are source checks, not new owner-reviewed behavior or geometry evidence.
 
 Automatic local height refinement is implemented through versioned mixed-footprint assets, durable
@@ -95,9 +101,9 @@ Ascent's kill-line/must-block failures remain release gates.
 Private native captures were rebuilt on the new parser pin and checked against recording hashes.
 All four captures frame without errors. Summit's three selected doors bind in 19 rounds, Abyss's two
 breakables in 23, and the selected Lotus switches/breakable in 24. These counts establish bindings for
-the selected source actors, not comprehensive instance or second-button coverage. Sunset binds 18 of
-20 rounds; missing transition parameters hold the remaining two. Missing/default open parameters
-must be qualified from source framing before assigning an open state.
+the selected source actors, not comprehensive instance or second-button coverage. Sunset binds
+all 42 rounds across two captures after the explicit-state witness correction. New unmatched
+transitions still remain pending; these source checks do not certify all geometry or worker performance.
 
 The earlier read-only live height inventory found active assets for Split, Sunset and Haven. Ascent, Summit,
 Abyss and Lotus currently have rejected assets and no active selection. Their rejection reasons include
@@ -140,8 +146,8 @@ landings. A single supported lower rope height is insufficient to invent its upp
    private candidate. Verify exact actor names in another independent recording when available; an
    instance-specific name in one replay is not evidence of a universal map binding. Both physical
    Lotus switch sources are matched in two recordings, and Summit's three doors also bind in two;
-   preserve those receipts. Abyss still has one local recording, and Sunset's partial transitions
-   remain unqualified even after the second capture.
+   preserve those receipts. Abyss still has one local recording. Preserve Sunset's two-capture
+   explicit-state witness receipt; do not generalize it into defaults for unrelated omitted fields.
 2. **Resolve remaining ground and landing placement.** Door geometry estimates are accepted by the
    owner; retain the built majority-area Lotus model and the reviewed descending-door movement
    cutoff. Complete any still-missing finite bounds and floor references in compiler inputs without
@@ -221,6 +227,13 @@ bounds, Summit phase boundaries, continuous passage status, measured landing reb
 directional seconds and parent attribution, quiet-only cuts, artifact verification, and synthetic fresh
 full/fresh gaps/cached gaps parity. Existing Ascent integration and schema/reference suites also pass.
 These results do not certify real map placement or the Linux worker; those remain gates above.
+
+The Sunset follow-up passed 249 decoder, Ascent compatibility, runtime, condenser, recipe, artifact, cache and control
+format tests. The moving-door integration verifies closed blocking, opening movement release at
+the reviewed cutoff, and complete sight/movement removal after the witnessed open completion.
+The raw parser pin is unchanged: its existing capture already included the required state property.
+Condenser 17 requires fresh condensation; consumer 5 invalidates affected feature identities.
+No archive reparse, live activation or recompute was performed during these local checks.
 
 Additional mixed-grid regressions cover exact footprint lookup, sight and topology, corner cuts,
 physical travel time and area, section-clock calculations, candidate geometry rebuilding, version-2

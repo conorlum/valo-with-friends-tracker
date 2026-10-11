@@ -158,3 +158,102 @@ def test_unreviewed_rpc_cause_or_reset_cannot_be_enabled():
     assert me.binding_problems(f) == ['source RPC/cause pair is not qualified for this family']
     f = feature()['replay_source']; f['reset_rpcs'] = ['RoundBeginBroadcast']
     assert me.binding_problems(f) == ['source needs reviewed explicit reset RPCs']
+
+
+def sunset_open_completion():
+    cls = me.CLASSES['WindowShield']
+    feature = {'initial_state': 'open', 'replay_source': {'actors': ['WindowShieldA3'], 'class_path': cls,
+        'reset_rpcs': ['MulticastRoundBegin'], 'rules': [{'rpc': 'PlayDoorSounds', 'kind': 'observed',
+                                                       'state': 'open', 'equals': {'New State': 0}}]}}
+    rows = [{'actor': 'WindowShieldA3', 'class_path': cls, 'time_ms': 0,
+             'rpc': 'MulticastRoundBegin', 'params': {}, 'line': 1},
+            {'actor': 'WindowShieldA3', 'class_path': cls, 'time_ms': 1500,
+             'rpc': 'PlayDoorSounds', 'params': {'Old State': [1, 3], 'isMoveTo': [1, 1]}, 'line': 2},
+            {'actor': 'WindowShieldA3', 'class_path': cls, 'time_ms': 1500,
+             'rpc': me.DOOR_STATE_PROPERTY, 'params': {'DoorState': [0, 3]}, 'line': 3}]
+    return feature, rows
+
+
+def test_open_completion_uses_explicit_same_clock_property_not_a_default():
+    feature, rows = sunset_open_completion()
+    before = json.loads(json.dumps(rows))
+    result = me.bind_round(feature, rows, {'status': 'framed'}, 1000, 2000)
+    assert result['status'] == 'bound' and len(result['events']) == 1
+    event = result['events'][0]
+    assert (event['t'], event['kind'], event['state']) == (.5, 'observed', 'open')
+    assert [e['line'] for e in event['evidence']] == [2, 3]
+    assert event['parameter_evidence'] == [{'parameter': 'New State', 'value': 0,
+        'qualification': 'same_actor_same_clock_explicit_DoorState', 'rpc_line': 2, 'property_lines': [3]}]
+    assert rows == before  # raw omission and archived input remain intact
+    assert me.bind_round(feature, rows[:2], {'status': 'framed'}, 1000, 2000)['status'] == 'pending'
+
+
+@pytest.mark.parametrize('change', ['old_state', 'old_width', 'move', 'move_width', 'extra_param',
+    'explicit_unknown', 'property_width', 'property_state', 'property_time', 'property_actor',
+    'property_class', 'conflict', 'partial'])
+def test_open_completion_rejects_unqualified_or_mismatched_witnesses(change):
+    feature, rows = sunset_open_completion()
+    report = {'status': 'framed'}
+    if change == 'old_state': rows[1]['params']['Old State'] = [3, 3]
+    elif change == 'old_width': rows[1]['params']['Old State'] = [1, 8]
+    elif change == 'move': rows[1]['params']['isMoveTo'] = [0, 1]
+    elif change == 'move_width': rows[1]['params']['isMoveTo'] = [1, 8]
+    elif change == 'extra_param': rows[1]['params']['Other'] = [1, 1]
+    elif change == 'explicit_unknown': rows[1]['params']['New State'] = [7, 3]
+    elif change == 'property_width': rows[2]['params']['DoorState'] = [0, 8]
+    elif change == 'property_state': rows[2]['params']['DoorState'] = [3, 3]
+    elif change == 'property_time': rows[2]['time_ms'] += 1
+    elif change == 'property_actor': rows[2]['actor'] = 'WindowShieldB3'
+    elif change == 'property_class': rows[2]['class_path'] = me.CLASSES['RespawningWallPlate']
+    elif change == 'conflict': rows.append({**rows[2], 'params': {'DoorState': [3, 3]}, 'line': 4})
+    elif change == 'partial': report['status'] = 'partial'
+    result = me.bind_round(feature, rows, report, 1000, 2000)
+    assert result['status'] == 'pending' and not result['events']
+
+
+def test_property_alone_cannot_activate_a_door_and_unknown_arguments_stay_missing():
+    feature, rows = sunset_open_completion()
+    assert me.bind_round(feature, [rows[0], rows[2]], {'status': 'framed'}, 1000, 2000)['events'] == []
+    rows[1]['params'] = {}  # an empty or unrelated RPC body is not qualified
+    assert me.bind_round(feature, rows, {'status': 'framed'}, 1000, 2000)['status'] == 'pending'
+
+
+def test_raw_capture_retains_explicit_state_witness_and_corruption_disables_binding(tmp_path):
+    feature, _ = sunset_open_completion()
+    cls = me.CLASSES['WindowShield']
+    groups = [{'path': cls, 'fields': [{'handle': 17, 'name': 'DoorState'}]},
+        {'path': cls + '_ClassNetCache', 'fields': [{'handle': 0, 'name': 'PlayDoorSounds'},
+                                                 {'handle': 1, 'name': 'MulticastRoundBegin'}]},
+        {'path': cls + ':PlayDoorSounds', 'fields': [{'handle': 0, 'name': 'New State'},
+            {'handle': 1, 'name': 'Old State'}, {'handle': 2, 'name': 'isMoveTo'}]}]
+    body = [0] + packed(2) + packed(3) + [1, 0, 0] + packed(3) + packed(1) + [1] + packed(0)
+    prop = [0] + packed(18) + packed(3) + [0, 0, 0] + packed(0)
+    raw_rows = []
+    for time, layout, bits in [(0, False, [1] + packed(0)),
+        (1500, False, [0] + packed(len(body)) + body), (1500, True, prop)]:
+        raw = sum(v << i for i, v in enumerate(bits)).to_bytes((len(bits) + 7) // 8, 'little')
+        raw_rows.append(dict(diagnostic_version=1, actor_path='WindowShieldA3', class_path=cls,
+            is_actor=True, actor_net_guid=17, channel=5, time_ms=time, has_rep_layout=layout,
+            truncated=False, payload_bits=len(bits), transformed_base64=base64.b64encode(raw).decode()))
+    path = tmp_path / 'map-audit.ndjson'
+    path.write_text(''.join(json.dumps(r) + '\n' for r in raw_rows))
+    manifest = {'net_field_export_groups': groups}
+    ledger, report = me.read_ledger(tmp_path, 'Sunset', manifest)
+    assert report['status'] == 'framed' and report['calls'] == 2 and report['door_state_properties'] == 1
+    assert ledger[1]['params'] == {'Old State': (1, 3), 'isMoveTo': (1, 1)}
+    assert me.bind_round(feature, ledger, report, 1000, 2000)['status'] == 'bound'
+    unknown_body = body[:-8] + packed(4) + packed(1) + [1] + packed(0)
+    unknown_bits = [0] + packed(len(unknown_body)) + unknown_body
+    unknown_raw = sum(v << i for i, v in enumerate(unknown_bits)).to_bytes((len(unknown_bits)+7)//8, 'little')
+    original_rpc = dict(raw_rows[1])
+    raw_rows[1].update(payload_bits=len(unknown_bits), transformed_base64=base64.b64encode(unknown_raw).decode())
+    path.write_text(''.join(json.dumps(r) + '\n' for r in raw_rows))
+    ledger, report = me.read_ledger(tmp_path, 'Sunset', manifest)
+    assert report['status'] == 'framed' and ledger[1]['params']['#3'] == (1, 1)
+    assert me.bind_round(feature, ledger, report, 1000, 2000)['status'] == 'pending'
+    raw_rows[1] = original_rpc
+    raw_rows[-1]['truncated'] = True
+    path.write_text(''.join(json.dumps(r) + '\n' for r in raw_rows))
+    ledger, report = me.read_ledger(tmp_path, 'Sunset', manifest)
+    assert report['status'] == 'partial'
+    assert me.bind_round(feature, ledger, report, 1000, 2000)['status'] == 'pending'

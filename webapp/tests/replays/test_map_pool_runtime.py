@@ -363,6 +363,37 @@ def test_site_descending_door_tracks_continuous_thirty_percent_cutoff_and_reopen
         assert sampled['blocks_movement'] == runtime.sample(time)[0].any()
 
 
+def test_witnessed_open_completion_drives_the_descending_runtime_without_defaulting():
+    from app.replays import map_feature_events as events, map_feature_motion as motion
+    from test_sliding_feature_motion import door
+    f = door()
+    f['initial_state'] = 'closed'
+    motion.closed_state(f).update(footprint=summit()['states'][-1]['footprint'],
+        sight_bounds={'ref': 'ground', 'bottom': ms.known(0, 'm'), 'top': ms.known(3, 'm')})
+    f['sliding'] = {'axis': 'vertical', 'open_state': 'open', 'closed_state': 'closed',
+        'open_clearance': ms.known(3, 'm'),
+        'movement_cutoff': {**ms.known(.3, 'fraction'), 'basis': 'conservative'}}
+    f['replay_source'] = source(CLASSES['WindowShield'], 'WindowShieldA3', 'PlayDoorSounds', 'switch')
+    f['replay_source']['rules'] = [
+        {'rpc': 'PlayDoorSounds', 'kind': 'switch', 'equals': {'New State': 1}},
+        {'rpc': 'PlayDoorSounds', 'kind': 'observed', 'state': 'open', 'equals': {'New State': 0}}]
+    geo, blob = runtime_case(f, 'Sunset')
+    rows = blob['map_messages']['ledger']
+    rows[1]['params'] = {'New State': [1, 3], 'Old State': [3, 3], 'isMoveTo': [1, 1]}
+    rows.append({**rows[1], 'time_ms': 7007, 'params': {'Old State': [1, 3], 'isMoveTo': [1, 1]}, 'line': 3})
+    with pytest.raises(FeatureArtifactCorrupt, match='transition parameters unqualified'):
+        MapPoolRuntime(geo, blob)
+    rows.append({**rows[1], 'time_ms': 7007, 'rpc': events.DOOR_STATE_PROPERTY,
+                 'params': {'DoorState': [0, 3]}, 'line': 4})
+    runtime = MapPoolRuntime(geo, blob)
+    assert runtime.sample(.5)[0].any()  # closed before opening activation
+    assert runtime.sample(4.49)[0].any()
+    assert not runtime.sample(4.51)[0].any()  # movement releases after the reviewed 30% threshold
+    assert not runtime.sample(6.007)[0].any() and not runtime.sample(6.007)[1]
+    timeline = runtime.items[0][2]
+    assert timeline['events'][-1]['parameter_evidence'][0]['property_lines'] == [4]
+
+
 def test_full_control_fresh_gaps_and_cached_gaps_share_source_bound_geometry(tmp_path, monkeypatch):
     from app.control import features, geometry, task, engine
     from app.gaps import cache

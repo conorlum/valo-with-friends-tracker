@@ -5,12 +5,13 @@ activation guessed from damage, proximity, player names or a network GUID.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
 from pathlib import Path
 
-from app.replays.ascent_features import DecodeError, invocations, MAX_ROWS
+from app.replays.ascent_features import Bits, DecodeError, fields, invocations, MAX_ROWS
 
 VERSION = 1
 CLASSES = {
@@ -24,6 +25,7 @@ MAP_PREFIXES = {'Sunset': ('WindowShield',), 'Abyss': ('RespawningWallPlate',),
                 'Summit': ('RespawningPlummetShootable',)}
 RESET_RPCS = frozenset({'MulticastRoundBegin', 'RoundBeginBroadcast', 'MulticastResetAnimation'})
 CAUSES = frozenset({'switch', 'shoot', 'activate', 'destroy', 'observed'})
+DOOR_STATE_PROPERTY = '$DoorState'  # evidence only; never a source rule or a standalone transition
 SOURCE_RULES = {
     CLASSES['WindowShield']: ({'MulticastRoundBegin'}, {'PlayDoorSounds': {'switch', 'observed'},
                                                         'HandleDoorDestroyed': {'destroy'}}),
@@ -74,7 +76,17 @@ def read_ledger(export_dir: Path, map_name: str, manifest: dict):
                 # OnDie's identity is exported by the class-net-cache. Its arguments
                 # do not decide whether destruction occurred; validate their field
                 # framing and retain unnamed handles without inventing inherited names.
-                for rpc, params in invocations(row, groups, cls, strict=True, opaque_rpcs={'OnDie'}):
+                calls = invocations(row, groups, cls, strict=True, opaque_rpcs={'OnDie'})
+                if map_name == 'Sunset' and prefix == 'WindowShield' and row.get('has_rep_layout'):
+                    # Keep an explicitly serialized state, never an absent/default value. It can
+                    # corroborate one same-clock RPC below, but cannot activate a door by itself.
+                    params = fields(Bits(base64.b64decode(row['transformed_base64'], validate=True),
+                                         row['payload_bits']), groups[cls])
+                    if 'DoorState' in params:
+                        ledger.append({'actor': actor, 'class_path': cls, 'time_ms': when,
+                                       'rpc': DOOR_STATE_PROPERTY, 'params': {'DoorState': params['DoorState']},
+                                       'line': line_number})
+                for rpc, params in calls:
                     ledger.append({'actor': actor, 'class_path': cls, 'time_ms': when,
                                    'rpc': rpc, 'params': params, 'line': line_number})
             except (ValueError, KeyError, TypeError, AttributeError) as exc:
@@ -83,7 +95,9 @@ def read_ledger(export_dir: Path, map_name: str, manifest: dict):
                     report['errors'].append({'line': line_number, 'reason': str(exc)[:160]})
     # Keep duplicate source evidence. Timeline binding deduplicates equivalent transitions.
     report.update(status='partial' if report['errors'] or ambiguous else 'framed',
-                  sha256=digest.hexdigest(), ambiguous_actors=sorted(ambiguous), calls=len(ledger))
+                  sha256=digest.hexdigest(), ambiguous_actors=sorted(ambiguous),
+                  calls=sum(e['rpc'] != DOOR_STATE_PROPERTY for e in ledger),
+                  door_state_properties=sum(e['rpc'] == DOOR_STATE_PROPERTY for e in ledger))
     return sorted(ledger, key=lambda e: (e['time_ms'], e['line'])), report
 
 
@@ -119,6 +133,26 @@ def binding_problems(source):
     return []
 
 
+def _door_parameter_evidence(row, properties):
+    """Qualify an omitted open-completion argument from explicit same-clock replication.
+
+    Observed in two Sunset captures: Old State=opening, isMoveTo=true, omitted New State,
+    and an explicitly serialized three-bit DoorState=0 on the same actor and timestamp.
+    Do not assume a protocol default, use nearby/stale snapshots, or turn a snapshot into
+    a switch. Keep the original RPC params untouched for audit and archived compatibility.
+    """
+    params = row['params']
+    if row['class_path'] != CLASSES['WindowShield'] or row['rpc'].strip() != 'PlayDoorSounds' \
+            or 'New State' in params or set(params) != {'Old State', 'isMoveTo'} \
+            or tuple(params.get('Old State', ())) != (1, 3) \
+            or tuple(params.get('isMoveTo', ())) != (1, 1):
+        return params, []
+    witnesses = properties.get((row['actor'], row['class_path'], row['time_ms']), [])
+    if not witnesses or any(tuple(e['params'].get('DoorState', ())) != (0, 3) for e in witnesses):
+        return params, []
+    return {**params, 'New State': (0, 3)}, witnesses
+
+
 def bind_round(feature, ledger, report, start_ms, end_ms, previous_end_ms=0):
     """Bind only exact actor/class/RPC/parameter matches, requiring a fresh reset.
 
@@ -143,14 +177,21 @@ def bind_round(feature, ledger, report, start_ms, end_ms, previous_end_ms=0):
         return result
     reset = max(e['time_ms'] for e in resets)
     events = {}
+    properties = {}
+    for row in rows:
+        if reset < row['time_ms'] < end_ms and row['rpc'] == DOOR_STATE_PROPERTY:
+            properties.setdefault((row['actor'], row['class_path'], row['time_ms']), []).append(row)
     for row in rows:
         if not reset < row['time_ms'] < end_ms:
             continue
         if row['rpc'].strip() in source['reset_rpcs']:
             result['reasons'] = ['unexpected reset during round']
             return result
+        if row['rpc'] == DOOR_STATE_PROPERTY:
+            continue
+        params, witnesses = _door_parameter_evidence(row, properties)
         matched = [r for r in source['rules'] if row['rpc'].strip() == r['rpc'] and
-                   all(k in row['params'] and row['params'][k][0] == v
+                   all(k in params and params[k][0] == v
                        for k, v in r.get('equals', {}).items())]
         if len(matched) > 1:
             result['reasons'] = ['ambiguous source event rules']
@@ -177,6 +218,12 @@ def bind_round(feature, ledger, report, start_ms, end_ms, previous_end_ms=0):
         if key not in events:
             events[key] = {**event, 'evidence': []}
         events[key]['evidence'].append({'actor': row['actor'], 'rpc': row['rpc'], 'line': row['line']})
+        if witnesses:
+            events[key].setdefault('parameter_evidence', []).append({
+                'parameter': 'New State', 'value': 0, 'qualification': 'same_actor_same_clock_explicit_DoorState',
+                'rpc_line': row['line'], 'property_lines': [e['line'] for e in witnesses]})
+            events[key]['evidence'].extend({'actor': e['actor'], 'rpc': e['rpc'], 'line': e['line']}
+                                          for e in witnesses)
     result.update(status='bound', initial=feature.get('initial_state'), events=list(events.values()),
                   reset_time_ms=reset, reasons=[])
     if result['initial'] is None:

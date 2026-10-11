@@ -124,7 +124,9 @@ def invocations(row, groups, class_path, *, strict=False, opaque_rpcs=()):
         opaque = name.strip() in opaque_rpcs and layout not in groups
         if strict and body.remaining and layout not in groups and not opaque:
             raise DecodeError('RPC parameter descriptor missing')
-        params = fields(body, groups.get(layout, {}), preserve_unknown=opaque) \
+        # Strict map ledgers must retain unknown parameter handles: discarding one
+        # could make an incomplete argument set look like a qualified omission.
+        params = fields(body, groups.get(layout, {}), preserve_unknown=opaque or strict) \
             if body.remaining and (layout in groups or opaque) else {}
         calls.append((name, params))
     return calls
