@@ -9,6 +9,7 @@ FROM python:3.13-slim AS source
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY webapp/replay_parser.json /pin/replay_parser.json
 COPY webapp/scripts/ascent_map_messages.patch /pin/scripts/ascent_map_messages.patch
+COPY webapp/scripts/map_pool_messages.patch /pin/scripts/map_pool_messages.patch
 COPY replay_worker/apply_parser_pin.py /pin/apply_parser_pin.py
 RUN python /pin/apply_parser_pin.py /pin/replay_parser.json /parser
 
@@ -38,6 +39,7 @@ COPY webapp/app/gaps /srv/webapp/app/gaps
 COPY webapp/app/static/data /srv/webapp/app/static/data
 COPY webapp/replay_parser.json /srv/webapp/replay_parser.json
 COPY webapp/scripts/ascent_map_messages.patch /srv/webapp/scripts/ascent_map_messages.patch
+COPY webapp/scripts/map_pool_messages.patch /srv/webapp/scripts/map_pool_messages.patch
 COPY replay_worker /srv/replay_worker
 # The smoke test: the control venv imports the engine, or the build fails here (not silently later).
 RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine, app.control.task, app.gaps.detect, app.gaps.cache, app.gaps.rows, app.gaps.backshots, replay_worker.control_job, replay_worker.height_job, app.control.height_job, app.replays.height_inputs, app.control.feature_job, app.replays.map_feature_artifacts; from app.replays.contract import load_pin; load_pin()"

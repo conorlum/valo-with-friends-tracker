@@ -45,6 +45,25 @@ $sha = [System.Security.Cryptography.SHA256]::Create()
 $patchHash = -join ($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($patchText)) | ForEach-Object { $_.ToString('x2') })
 
 $bin = Join-Path $ParserDir 'bin'
+# Patches can extend the same method. Remove recognised patches in reverse order
+# before applying the current stack; checking the first patch against the last
+# patch's modified context is not an idempotence check.
+$sourceStack = @($pin.source_patches)
+foreach ($sourcePatch in $sourceStack) {
+    $sourcePath = Join-Path (Split-Path $pinFile) $sourcePatch.file
+    $sourceText = [IO.File]::ReadAllText($sourcePath).Replace("`r`n", "`n")
+    $sourceHash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($sourceText)) | ForEach-Object { $_.ToString('x2') })
+    if ($sourceHash -ne $sourcePatch.sha256) { throw 'source patch digest mismatch' }
+}
+[array]::Reverse($sourceStack)
+foreach ($sourcePatch in $sourceStack) {
+    $sourcePath = Join-Path (Split-Path $pinFile) $sourcePatch.file
+    git -C $ParserDir apply --reverse --check $sourcePath 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        git -C $ParserDir apply --reverse $sourcePath
+        if ($LASTEXITCODE -ne 0) { throw 'source patch reverse failed' }
+    }
+}
 foreach ($sourcePatch in $pin.source_patches) {
     $sourcePath = Join-Path (Split-Path $pinFile) $sourcePatch.file
     $sourceText = [IO.File]::ReadAllText($sourcePath).Replace("`r`n", "`n")

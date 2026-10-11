@@ -939,6 +939,13 @@
     function geometry(where, g, allowed) {
       geometryProblems(g, allowed).forEach(function(p) {err(where, p.code, p.message);});
     }
+    function landing(where, l) {
+      if (!isObj(l)) {err(where, 'bad_landing', 'landing needs measured world position-z and tolerance'); return;}
+      var z = known(l.world_z), tolerance = known(l.tolerance);
+      if (z === null || !finite(z) || l.world_z.unit !== 'm' || tolerance === null ||
+          !finite(tolerance) || !(tolerance > 0 && tolerance <= .5) || l.tolerance.unit !== 'm')
+        err(where, 'bad_landing', 'world position-z and tolerance (0, 0.5] must be finite metres');
+    }
     function guard(where, g) {
       if (g === undefined || g === null) return;
       var keys = isObj(g) ? Object.keys(g) : [];
@@ -1084,6 +1091,7 @@
         names[e.id] = true;
         if (e.uv === undefined || e.uv === null) err(rid + "." + e.id, "missing_endpoint", "endpoint not placed");
         else if (!uvOk(e.uv)) err(rid + "." + e.id, "bad_coordinates", "endpoint uv must be within 0..10000");
+        if ('landing' in e) landing(rid + '.' + e.id + '.landing', e.landing);
       });
       var access = r.access === undefined ? "endpoint_only" : r.access;
       if (isObj(access)) {
@@ -1102,6 +1110,20 @@
         if (d.length !== undefined && d.length !== null) value(where + ".length", d.length, "m", false);
       });
       if (!r.directions || !r.directions.length) err(rid, "bad_route", "a route needs at least one direction");
+      (r.quiet_directions || []).forEach(function (d, i) {
+        var where = rid + '.quiet_directions[' + i + ']';
+        if (!isObj(d) || !names[d.from] || !names[d.to] || d.from === d.to) {
+          err(where, 'bad_route', 'quiet direction must join distinct route endpoints'); return;
+        }
+        ['entry', 'transit'].forEach(function (key) {value(where + '.' + key, d[key], 's');});
+      });
+      (r.quiet_cuts || []).forEach(function (cut, i) {
+        ['from', 'to'].forEach(function (key) {
+          var point = isObj(cut) ? cut[key] : null, where = rid + '.quiet_cuts[' + i + '].' + key;
+          if (!isObj(point) || !uvOk(point.uv)) err(where, 'bad_coordinates', 'quiet cut needs a placed measured landing');
+          else landing(where + '.landing', point.landing);
+        });
+      });
       var it = r.in_transit === undefined ? "unresolved" : r.in_transit;
       if (IN_TRANSIT.indexOf(it) < 0) err(rid, "bad_route", "in_transit must be one of " + IN_TRANSIT.join(", "));
       else if (r.states !== undefined && r.states !== null && it === "unresolved")
@@ -1528,7 +1550,7 @@
     }).length;
     return { annotation: { features: (mf.features || []).length, review: review, checklist: checklist },
              geometry: { errors: rep.errors.length, unresolved: open, ready: !rep.errors.length && !open },
-             replay: { decoder: false, note: "no replay decoder yet: signals are unverified for every feature" } };
+             replay: { decoder: false, note: "authoring does not qualify replay signals; check the source-binding audit" } };
   }
 
   function makeBreakable(feature) {

@@ -688,6 +688,18 @@ def _trigger(rep, t, features) -> set:
     return out
 
 
+def _landing(rep, where, landing):
+    if not isinstance(landing, dict):
+        rep.error(where, 'bad_landing', 'landing needs measured world position-z and tolerance')
+        return
+    from app.replays.map_feature_state import known
+    z, tolerance = known(landing.get('world_z')), known(landing.get('tolerance'))
+    if z is None or not math.isfinite(z) or landing['world_z'].get('unit') != 'm' \
+            or tolerance is None or not math.isfinite(tolerance) or not 0 < tolerance <= .5 \
+            or landing['tolerance'].get('unit') != 'm':
+        rep.error(where, 'bad_landing', 'world position-z and tolerance (0, 0.5] must be finite metres')
+
+
 def _route(rep, r, features, floors, specials):
     rid = r.get("id")
     if r.get("kind") not in ROUTE_KINDS:
@@ -706,6 +718,8 @@ def _route(rep, r, features, floors, specials):
             rep.error(f"{rid}.{e['id']}", "missing_endpoint", "endpoint not placed")
         elif not _uv(e["uv"]):
             rep.error(f"{rid}.{e['id']}", "bad_coordinates", "endpoint uv must be within 0..10000")
+        if 'landing' in e:
+            _landing(rep, f"{rid}.{e['id']}.landing", e['landing'])
     access = r.get("access", "endpoint_only")
     if isinstance(access, dict):
         for s in access.get("sites") or []:
@@ -729,6 +743,22 @@ def _route(rep, r, features, floors, specials):
             _value(rep, f"{where}.length", d["length"], "m", required=False)
     if not r.get("directions"):
         rep.error(rid, "bad_route", "a route needs at least one direction")
+    for i, d in enumerate(r.get('quiet_directions') or []):
+        where = f'{rid}.quiet_directions[{i}]'
+        if not isinstance(d, dict) or d.get('from') not in names or d.get('to') not in names \
+                or d.get('from') == d.get('to'):
+            rep.error(where, 'bad_route', 'quiet direction must join distinct route endpoints')
+            continue
+        for key in ('entry', 'transit'):
+            _value(rep, where + '.' + key, d.get(key), 's')
+    for i, cut in enumerate(r.get('quiet_cuts') or []):
+        for key in ('from', 'to'):
+            point = cut.get(key) if isinstance(cut, dict) else None
+            where = f'{rid}.quiet_cuts[{i}].{key}'
+            if not isinstance(point, dict) or not _uv(point.get('uv')):
+                rep.error(where, 'bad_coordinates', 'quiet cut needs a placed measured landing')
+            else:
+                _landing(rep, where + '.landing', point.get('landing'))
     if r.get("in_transit", "unresolved") not in IN_TRANSIT:
         rep.error(rid, "bad_route", f"in_transit must be one of {IN_TRANSIT}")
     elif r.get("states") is not None and r.get("in_transit", "unresolved") == "unresolved":

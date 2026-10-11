@@ -39,6 +39,16 @@ AROUND_ORDER = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1
 SPREAD_ORDER = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 
 
+def timed_links(links, straight):
+    """Legacy links cost a walk step; reviewed rope links carry explicit seconds."""
+    for link in links:
+        a, b, one_way = link[:3]
+        cost = straight if len(link) == 3 else link[3]
+        if not math.isfinite(cost) or cost <= 0:
+            raise ValueError('link cost must be finite and positive')
+        yield a, b, one_way, cost
+
+
 def _shift(a: np.ndarray, dy: int, dx: int, fill=False) -> np.ndarray:
     """`a` moved by (dy, dx) on the grid: out[y, x] = a[y - dy, x - dx], `fill` off the edge."""
     out = np.full(a.shape, fill, a.dtype)
@@ -148,10 +158,10 @@ class FlatTopology:
                 if (dy, dx) in cut:
                     src[cut[dy, dx]] = np.inf
                 np.minimum(best, np.maximum(src, f) + straight * (math.sqrt(2) if dy and dx else 1.0), out=best)
-            for a, b, one_way in links:
-                best.flat[b] = min(best.flat[b], max(g.flat[a], f.flat[b]) + straight)
+            for a, b, one_way, cost in timed_links(links, straight):
+                best.flat[b] = min(best.flat[b], max(g.flat[a], f.flat[b]) + cost)
                 if not one_way:
-                    best.flat[a] = min(best.flat[a], max(g.flat[b], f.flat[a]) + straight)
+                    best.flat[a] = min(best.flat[a], max(g.flat[b], f.flat[a]) + cost)
             best[~r | (best > t)] = np.inf
             if np.array_equal(best, g):
                 break
@@ -175,11 +185,11 @@ class FlatTopology:
             hit = todo & (par < 0) & (np.maximum(src, f) + straight * (math.sqrt(2) if dy and dx else 1.0) == best)
             par[hit] = who[hit]
         pf = par.ravel()
-        for a, b, one_way in links:
-            if np.isfinite(arr[b]) and arr[b] < reached[b] and pf[b] < 0 and max(arr[a], free[b]) + straight == arr[b]:
+        for a, b, one_way, cost in timed_links(links, straight):
+            if np.isfinite(arr[b]) and arr[b] < reached[b] and pf[b] < 0 and max(arr[a], free[b]) + cost == arr[b]:
                 pf[b] = a
             if not one_way and np.isfinite(arr[a]) and arr[a] < reached[a] and pf[a] < 0 \
-                    and max(arr[b], free[a]) + straight == arr[a]:
+                    and max(arr[b], free[a]) + cost == arr[a]:
                 pf[a] = b
         return arr, pf
 
@@ -333,10 +343,10 @@ class NodeTopology:
         while True:
             padded = np.append(g, np.inf)
             best = np.minimum(g, (np.maximum(padded[self.in_from], freed) + cost).min(1))
-            for a, b, one_way in links:
-                best[b] = min(best[b], max(g[a], free[b]) + straight)
+            for a, b, one_way, link_cost in timed_links(links, straight):
+                best[b] = min(best[b], max(g[a], free[b]) + link_cost)
                 if not one_way:
-                    best[a] = min(best[a], max(g[b], free[a]) + straight)
+                    best[a] = min(best[a], max(g[b], free[a]) + link_cost)
             best[~room | (best > t)] = np.inf
             if np.array_equal(best, g):
                 break
@@ -349,12 +359,12 @@ class NodeTopology:
         j = match.argmax(1)
         todo = np.isfinite(best) & (best < reached) & match.any(1)
         par = np.where(todo, self.in_from[rows, j], -1).astype(np.int64)
-        for a, b, one_way in links:
+        for a, b, one_way, link_cost in timed_links(links, straight):
             if np.isfinite(best[b]) and best[b] < reached[b] and par[b] < 0 \
-                    and max(best[a], free[b]) + straight == best[b]:
+                    and max(best[a], free[b]) + link_cost == best[b]:
                 par[b] = a
             if not one_way and np.isfinite(best[a]) and best[a] < reached[a] and par[a] < 0 \
-                    and max(best[b], free[a]) + straight == best[a]:
+                    and max(best[b], free[a]) + link_cost == best[a]:
                 par[a] = b
         return best, par
 

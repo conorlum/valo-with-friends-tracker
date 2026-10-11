@@ -44,7 +44,7 @@ import json
 import struct
 from pathlib import Path
 
-CONTROL_REVISION = 9     # 9: qualified Ascent map-feature sight and traversal at replay timestamps
+CONTROL_REVISION = 10    # 10: measured rope landings and explicit quiet travel seconds
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 

@@ -83,6 +83,10 @@ class FeatureRuntime:
         self._masks = {}
         self._releases = None
         self.transitions = []
+        from app.control.map_pool_runtime import MapPoolRuntime
+        self.pool = MapPoolRuntime(geo, blob)
+        self.times.update(self.pool.transitions)
+        self.transitions = sorted(self.times)
         if not geo.features:
             return
         artifact = geo.features
@@ -133,14 +137,65 @@ class FeatureRuntime:
 
     @property
     def active(self):
-        return bool(self.items)
+        return bool(self.items) or self.pool.active
+
+    def metadata(self, blob):
+        """Calculation provenance and a reducer trace for the site's existing feature layer."""
+        if not self.geo.features:
+            return None
+        mf = read_json(self.geo.features.inputs)['runtime']
+        active = set(self.geo.features.manifest['active_bundles'])
+        quiet = {m for b in mf.get('bundles', []) if b['id'] in active
+                 and b.get('runtime_consumer') == 'quiet_rope_v1' for m in b['members']}
+        keys = [f['replay_key'] for _, f, _ in self.items]
+        keys += [f['id'] for _, f, _ in self.pool.items] + sorted(quiet)
+        if not keys:
+            return None
+        payload = []
+        from app.replays.map_feature_state import evaluate
+        for _, f, timeline in self.pool.items:
+            trace = evaluate({**f, 'initial_state': timeline['initial']}, timeline['events'], until=blob['t_end'])['trace']
+            states = {s['name']: s for s in f['states']}
+            events = [{'t': e['t'], 'state': e['state'], 'moving': e['moving'],
+                       'blocks_movement': bool(states[e['state']].get('blocks_movement'))}
+                      for e in trace if e['result'] == 'applied']
+            if f.get('sliding'):
+                for event in events:
+                    sampled = evaluate({**f, 'initial_state': timeline['initial']}, timeline['events'],
+                                       until=event['t'])['state']
+                    event['motion'] = sampled.get('motion')
+            shapes = [s['footprint'] for s in f['states'] if s.get('footprint')]
+            pivot = (f.get('rotation') or {}).get('pivot')
+            uv = pivot['uv'] if pivot and pivot.get('type') == 'point' else None
+            if uv is None and shapes:
+                uv = [sum(p[i] for p in shapes[0]['uv']) / len(shapes[0]['uv']) for i in (0, 1)]
+            payload.append({'key': f['id'], 'name': f.get('name', f['id']), 'uv': uv,
+                'mode': 'reducer_trace', 'initial': timeline['initial'], 'events': events,
+                'initial_blocks_movement': bool(states[timeline['initial']].get('blocks_movement'))})
+            if f.get('sliding'):
+                from app.replays.map_feature_motion import movement_cutoff
+                payload[-1]['sliding'] = {'open_state': f['sliding']['open_state'],
+                    'closed_state': f['sliding']['closed_state'], 'movement_cutoff': movement_cutoff(f)}
+        for f in mf.get('features', []):
+            if f['id'] in quiet:
+                route = next(r for r in mf['routes'] if r.get('owner') == f['id'])
+                payload.append({'key': f['id'], 'name': f.get('name', f['id']), 'uv': route['endpoints'][0]['uv'],
+                    'mode': 'reducer_trace', 'initial': f['initial_state'], 'events': [],
+                    'initial_blocks_movement': False})
+        timeline = (blob.get('map_features') or {}).get('sha256')
+        timeline = timeline or ((blob.get('map_messages') or {}).get('report') or {}).get('sha256')
+        result = {'artifact': self.geo.features_sha, 'timeline': timeline, 'keys': keys}
+        if payload:
+            result['features'] = payload
+        return result
 
     def sample(self, t):
         from app.control import features as cf
         from app.replays.map_feature_motion import sample_effects
         if self._time == t:
             return self._sample
-        blocked, occluders = np.zeros(self.geo.n, bool), []
+        pool_blocked, pool_occluders = self.pool.sample(t)
+        blocked, occluders = pool_blocked.copy(), list(pool_occluders)
         for mf, f, timeline in self.items:
             current = state_at(timeline, t)
             from app.replays.map_feature_state import evaluate

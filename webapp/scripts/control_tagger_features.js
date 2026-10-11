@@ -713,10 +713,10 @@
   document.addEventListener("keyup", function (e) { if (e.key === " ") ui.space = false; });
 
   // ---------------------------------------------------------------- panels
-  function valueEditor(v, unit, onChange) {
+  function valueEditor(v, unit, onChange, allowNegative) {
     var known = v && v.status === "known";
     var wrap = document.createElement("span");
-    wrap.innerHTML = "<input type=\"number\" step=\"any\" min=\"0\" style=\"width:6em\"" + (known ? " value=\"" + esc(v.value) + "\"" : " disabled") + "> " +
+    wrap.innerHTML = "<input type=\"number\" step=\"any\"" + (allowNegative ? "" : " min=\"0\"") + " style=\"width:6em\"" + (known ? " value=\"" + esc(v.value) + "\"" : " disabled") + "> " +
       esc(unit) + " <label style=\"display:inline-flex\"><input type=\"checkbox\"" + (known ? "" : " checked") + "> unknown</label>";
     var num = wrap.querySelector("input[type=number]"), box = wrap.querySelector("input[type=checkbox]");
     function fire() {
@@ -1056,6 +1056,18 @@
     (r.endpoints || []).forEach(function (e, i) {
       var fs = fieldset("Landing " + e.id.toUpperCase() + (e.uv ? "" : " (not placed)"));
       fs.appendChild(button("Place " + e.id.toUpperCase(), function () { ui.placing = "endpoint:" + e.id; setTool("point"); }));
+      if (r.kind === 'rope') {
+        var landing = e.landing || {};
+        function setLanding(key, value) {
+          var next = {world_z:{status:'unresolved'}, tolerance:{status:'unresolved'}};
+          Object.keys(landing).forEach(function (k) {next[k] = landing[k];});
+          next[key] = value;
+          edit(r.id, ['endpoints', i, 'landing'], next);
+        }
+        fs.appendChild(row('Replay position Z (world metres)', valueEditor(landing.world_z, 'm', function (v) {setLanding('world_z', v);}, true)));
+        fs.appendChild(row('Height tolerance (above 0, at most 0.5 m)', valueEditor(landing.tolerance, 'm', function (v) {setLanding('tolerance', v);})));
+        fs.appendChild(document.createTextNode('Use measured boarding position Z from replay evidence, including its vertical position offset. Both ends need distinct floor nodes. A floor label does not resolve this; backend diagnostics verify the binding.'));
+      }
       box.appendChild(fs);
     });
     box.appendChild(row("Boarding", selectEl([["endpoint_only", "at the ends only"], ["sites", "also at marked sites"]],
@@ -1078,6 +1090,23 @@
       fs.appendChild(button("Remove this direction", function () { var next = r.directions.slice(); next.splice(i, 1); edit(r.id, ["directions"], next); }));
       box.appendChild(fs);
     });
+    if (r.kind === 'rope') {
+      var quiet = fieldset('Quiet unknown travel');
+      if (!r.quiet_directions) quiet.appendChild(button('Use current directions as quiet estimates', function () {
+        edit(r.id, ['quiet_directions'], JSON.parse(JSON.stringify(r.directions || [])));
+      }));
+      (r.quiet_directions || []).forEach(function (d, i) {
+        var direction = fieldset(d.from.toUpperCase() + ' → ' + d.to.toUpperCase());
+        direction.appendChild(row('Quiet entry', valueEditor(d.entry, 's', function (v) {edit(r.id, ['quiet_directions', i, 'entry'], v);} )));
+        direction.appendChild(row('Quiet ride', valueEditor(d.transit, 's', function (v) {edit(r.id, ['quiet_directions', i, 'transit'], v);} )));
+        direction.appendChild(button('Remove quiet direction', function () {
+          var next = r.quiet_directions.slice(); next.splice(i, 1); edit(r.id, ['quiet_directions'], next);
+        }));
+        quiet.appendChild(direction);
+      });
+      quiet.appendChild(document.createTextNode('These estimates affect hypothetical quiet travel. Physical directions above stay separate. Local connector bypasses must be checked before activation.'));
+      box.appendChild(quiet);
+    }
     box.appendChild(row("Closed while riding", selectEl([["unresolved", "unknown"], ["complete", "rider still arrives"], ["abort", "ride must fit"]], r.in_transit || "unresolved",
       function (v) { edit(r.id, ["in_transit"], v); })));
     if (owner && (owner.states || []).length > 1)

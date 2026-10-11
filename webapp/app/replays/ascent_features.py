@@ -68,7 +68,7 @@ class Bits:
         return Bits(self.take(length).to_bytes((length+7)//8, 'little'), length)
 
 
-def fields(bits, descriptor):
+def fields(bits, descriptor, *, preserve_unknown=False):
     names = {f['handle']: f['name'] for f in descriptor.get('fields', [])}
     result = {}
     if bits.remaining:
@@ -81,6 +81,8 @@ def fields(bits, descriptor):
         count = bits.packed()
         value = bits.take(count)
         name = names.get(handle - 1)
+        if name is None and preserve_unknown:
+            name = '#' + str(handle - 1)
         if name in result:
             raise DecodeError('duplicate parameter')
         if name:
@@ -90,7 +92,7 @@ def fields(bits, descriptor):
     return result
 
 
-def invocations(row, groups, class_path):
+def invocations(row, groups, class_path, *, strict=False, opaque_rpcs=()):
     encoded = row.get('transformed_base64')
     if row.get('diagnostic_version') != VERSION or row.get('truncated') or not isinstance(encoded, str) \
             or len(encoded) > ((MAX_BITS+7)//8+2)//3*4:
@@ -118,8 +120,12 @@ def invocations(row, groups, class_path):
         name = handles.get(handle)
         if name is None:
             raise DecodeError('unknown RPC handle')
-        params = fields(body, groups[class_path + ':' + name]) if body.remaining \
-            and class_path + ':' + name in groups else {}
+        layout = class_path + ':' + name
+        opaque = name.strip() in opaque_rpcs and layout not in groups
+        if strict and body.remaining and layout not in groups and not opaque:
+            raise DecodeError('RPC parameter descriptor missing')
+        params = fields(body, groups.get(layout, {}), preserve_unknown=opaque) \
+            if body.remaining and (layout in groups or opaque) else {}
         calls.append((name, params))
     return calls
 

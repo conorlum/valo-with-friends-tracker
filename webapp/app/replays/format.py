@@ -66,7 +66,7 @@ from pathlib import Path
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 15   # 15: bounded Ascent map-message evidence and visible state timelines
+CONDENSE_REVISION = 16   # 16: bounded map-pool RPC ledgers, with explicit source binding at calculation time
                          # 12: Killjoy turret/alarmbot `off` spans (extras.device_off_spans);
                          # 13: utility kept in full (2026-10-05): Deadlock's actors, flash explosions, paths and
                          #     activation, knife pulses, projectile flights, Blaze/Sage/Vyse walls, Omen's ult

@@ -2581,6 +2581,32 @@
   };
 
   function mapFeatureState(feature, t) {
+    if (feature.mode === 'reducer_trace') {
+      var current = { state: feature.initial || 'unknown', closure: null, modeled: false,
+        pending: !feature.initial || feature.initial === 'unknown', blocks_movement: !!feature.initial_blocks_movement };
+      var motion = null;
+      (feature.events || []).forEach(function (event) {
+        if (event.t > t) return;
+        current.state = event.state; current.modeled = !!event.moving;
+        current.blocks_movement = !!event.blocks_movement;
+        current.pending = event.state === 'unknown';
+        motion = event.motion || null;
+      });
+      if (feature.sliding) {
+        var slide = feature.sliding;
+        if (motion && motion.duration > 0 &&
+            ((motion.from === slide.open_state && motion.to === slide.closed_state) ||
+             (motion.from === slide.closed_state && motion.to === slide.open_state))) {
+          var progress = Math.min(1, Math.max(0, (t - motion.start) / motion.duration));
+          current.closure = motion.to === slide.closed_state ? progress : 1 - progress;
+        } else if (current.state === slide.open_state) current.closure = 0;
+        else if (current.state === slide.closed_state) current.closure = 1;
+        if (current.closure !== null && Number.isFinite(slide.movement_cutoff)) {
+          current.blocks_movement = current.closure > slide.movement_cutoff;
+        }
+      }
+      return current;
+    }
     var state = feature.initial || "unknown", began = null, terminal = state === "broken";
     (feature.events || []).forEach(function (event) {
       if (event.t > t || terminal) return;
@@ -2596,6 +2622,9 @@
 
   ReplayViewer.prototype.renderMapFeatureEvents = function () {
     var panel = this.ui && this.ui.featuresEvents, data = this.current.blob.map_features, rows = [];
+    var computed = this.controlCache && this.controlCache.ready(this.number);
+    var applied = computed && computed.status === 'ok' && computed.parsed.header.map_features;
+    if (applied && applied.features) data = {v: 1, status: 'decoded', features: applied.features};
     if (!panel) return;
     if (!data || data.v !== 1 || data.status === "unavailable") {
       panel.innerHTML = '<li class="replay-feed-empty">This replay needs to be parsed again with map-message capture enabled.</li>'; return;
@@ -2613,6 +2642,11 @@
     var data = this.current.blob.map_features, panel = this.ui.featuresState;
     var computed = this.controlCache && this.controlCache.ready(this.number);
     var applied = computed && computed.status === 'ok' && computed.parsed.header.map_features;
+    if (applied && applied.features) data = {v: 1, status: 'decoded', features: applied.features};
+    if (this._featureApplied !== applied) {
+      this._featureApplied = applied;
+      this.renderMapFeatureEvents();
+    }
     var appliedNames = applied && (data && data.features || []).filter(function (feature) { return applied.keys.indexOf(feature.key) >= 0; }).map(function (feature) { return feature.name; });
     var calculation = applied ? 'includes ' + (appliedNames.join(', ') || 'tagged map features') : data && data.calculation || 'pending geometry';
     if (this.ui.featuresStatus) this.ui.featuresStatus.textContent = !data || data.v !== 1 || data.status === "unavailable" ? "Map states unavailable in this stored replay." :
@@ -2621,11 +2655,13 @@
     if (data && data.v === 1 && data.status !== "unavailable") (data.features || []).forEach(function (feature) {
       var sampled = mapFeatureState(feature, t), state = sampled.state;
       var detail = state + (sampled.modeled && sampled.closure !== null ? " · " + Math.round(100 * sampled.closure) + "% closed (model)" : "") + (sampled.pending ? " · unresolved" : "");
+      if (feature.mode === 'reducer_trace') detail += sampled.blocks_movement ? ' · passage blocked' : ' · passage clear';
       stateRows.push('<p><strong>' + escapeHtml(feature.name) + '</strong>: ' + escapeHtml(detail) + '</p>');
       if (!self.layers.features || !feature.uv) return;
       var x = feature.uv[0] * scale, y = feature.uv[1] * scale;
-      var emphasized = state === "closing" || state === "closed" || state === "broken";
+      var emphasized = state === "closing" || state === "closed" || state === "broken" || sampled.blocks_movement;
       var color = state === "broken" ? "#ff4d5f" : state === "open" ? "#7dd3a8" : state === "unknown" ? "#aaa" : "#ffe54f";
+      if (feature.mode === 'reducer_trace' && !sampled.blocks_movement && !sampled.pending && state !== 'broken') color = '#7dd3a8';
       var width = Math.max(emphasized ? 3 : 2, radius / (emphasized ? 4 : 5));
       ctx.save(); ctx.globalAlpha = 1; ctx.lineJoin = "round";
       ctx.setLineDash(state === "open" || state === "unknown" ? [radius / 3, radius / 4] : []);

@@ -1900,7 +1900,8 @@ class Unknown:
 
     def __init__(self, geo: Geometry, chokes: np.ndarray | None = None):
         self.geo = geo
-        self.topo = topology.of(geo)
+        from app.control.route_runtime import topology_for
+        self.topo = topology_for(geo)
         self.cells = {"A": np.zeros(geo.n, bool), "B": np.zeros(geo.n, bool)}
         self.reached: dict[str, dict[int, np.ndarray]] = {"A": {}, "B": {}}   # side -> enemy slot -> flat
         self.seen: dict[str, dict[int, tuple[int, float]]] = {"A": {}, "B": {}}   # enemy slot -> (cell, t) last spotted
@@ -2835,9 +2836,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                         control_masks, coverage_masks, sections, players, redundant, dict(rnd.group_side), cell_m2,
                         missing, {**timings, "branches": dict(branches)}, cf_check,
                         knew_states=knew_states or None, unknown=unknown_masks, analytic=analytic, reasons=reasons,
-                        map_features={'artifact': geo.features_sha, 'timeline': blob['map_features']['sha256'],
-                                      'keys': [f['replay_key'] for _, f, _ in rnd.map_features.items]}
-                                     if rnd.map_features.active else None,
+                        map_features=rnd.map_features.metadata(blob),
                         knew_sightings={side: {s: runs for s, runs in kn.sightings.items()}
                                         for side, kn in know.items()} or None)
 
