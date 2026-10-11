@@ -605,7 +605,7 @@ def readiness(supported: np.ndarray, unresolved: np.ndarray, count: np.ndarray, 
     return share, not_ready
 
 
-def build(rounds, geo: Geometry) -> HeightBuild:
+def build(rounds, geo: Geometry, *, refinement_history=None) -> HeightBuild:
     """A map's heights from `rounds` = [(match id, round number, blob), ...]. Never refuses: `ready` says
     whether the map reaches the bar, and `report["not_ready"]` why not."""
     found, found_walks, round_match, counts = all_ground(rounds, geo)
@@ -657,14 +657,18 @@ def build(rounds, geo: Geometry) -> HeightBuild:
         "falls_closed": sum(1 for code, drop in drops if code == hc.EDGE_FALL and drop > hc.SILENT_DROP_M * DM),
         "origin_z": int(origin), **counts, "ready": not not_ready, "not_ready": not_ready,
     }
-    meta = {"origin_z": int(origin), "stands": counts["stands"], "walks": counts["walks"], "rounds": counts["rounds"],
+    meta = {"version": hc.HEIGHT_VERSION, "origin_z": int(origin), "stands": counts["stands"], "walks": counts["walks"], "rounds": counts["rounds"],
             "matches": counts["matches"],
             "walk_sha": hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12]}
     report["walk_sha"] = meta["walk_sha"]
     asset = hc.HeightAsset(asset_floors.reshape(GRID, GRID, hc.MAX_FLOORS), spread.reshape(GRID, GRID, hc.MAX_FLOORS),
                            supported.reshape(GRID, GRID), unresolved.reshape(GRID, GRID), edges, meta,
                            kind.reshape(GRID, GRID))
-    return HeightBuild(asset, report, found, why, not not_ready, found_walks)
+    result = HeightBuild(asset, report, found, why, not not_ready, found_walks)
+    if refinement_history is not None:
+        from app.control.adaptive import refine
+        result = refine(result, geo, found, found_walks, round_match, floors, reasons, refinement_history)
+    return result
 
 
 # ---------------------------------------------------------------- the report, for the user
@@ -691,6 +695,10 @@ def report_lines(name: str, report: dict) -> list[str]:
         why = ", ".join(f"{reason} {n}" for reason, n in area["why"].items())
         out.append(f"WARNING {name}: unresolved area of {area['cells']} cells at px {area['bbox']} ({why}): "
                    f"flat 2D sight and walking there")
+    if r.get('refined_parents'):
+        out.append(f"  mixed 8/4px runtime: {r['refined_parents']} refined parent cells; "
+                   f"supported physical area {r['supported_area_px2']}/{r['walkable_area_px2']} px2. "
+                   "Visited, kind, edge and region diagnostics above use the original 8px grid.")
     out.append(f"  {'READY' if r['ready'] else 'NOT READY: ' + '; '.join(r['not_ready'])}")
     return out
 
@@ -727,6 +735,16 @@ def picture(build_: HeightBuild, geo: Geometry, path) -> None:
             img[cy * CELL:(cy + 1) * CELL, (cx + 1) * CELL - 1:(cx + 1) * CELL + 1] = 0
         if cy + 1 < GRID and has[cy + 1, cx] and abs(ground[cy, cx] - ground[cy + 1, cx]) > step:
             img[(cy + 1) * CELL - 1:(cy + 1) * CELL + 1, cx * CELL:(cx + 1) * CELL] = 0
+    if asset.refinement is not None:
+        highest = max(float(asset.floors.max()), float(asset.fine_floors.max(initial=-1)), 1.)
+        for child, floors, unresolved in zip(asset.fine_cells, asset.fine_floors, asset.fine_unresolved):
+            y, x = divmod(int(child), GRID * 2)
+            f = max(float(floors[0]), 0.) / highest
+            colour = (40 + 215*f, 90 + 150*f, 200 - 170*f) if floors[0] >= 0 else \
+                (220, 40, 40) if unresolved else (70, 70, 78)
+            img[y*4:y*4+4, x*4:x*4+4] = colour
+            if (floors >= 0).sum() >= 2:
+                img[y*4, x*4:x*4+4] = (255, 255, 255)
     Image.fromarray(img).save(path)
 
 
@@ -769,7 +787,7 @@ def kill_line_check(rounds: list, geo: Geometry) -> dict:
                 excluded["no position with z near the kill"] += 1
                 continue
             (kx, ky, kz), (vx, vy, vz) = ends
-            if geo.unresolved[geo.cell_of_px(kx, ky)] or geo.unresolved[geo.cell_of_px(vx, vy)]:
+            if geo.unresolved_at_px(kx, ky) or geo.unresolved_at_px(vx, vy):
                 excluded["on an unresolved cell"] += 1
                 continue
             smokes = rnd.smokes_at(engine.snap(t))

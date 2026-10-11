@@ -69,3 +69,26 @@ def test_oversize_source_keeps_identity_and_explicit_unavailability():
     envelope = diagnostic_envelope('Summit', raw)
     assert envelope['status'] == 'error' and envelope['code'] == 'diagnostic_unavailable'
     assert len(envelope['raw_source_sha256']) == 64 and envelope['raw_source_b64'] is None
+
+
+def test_event_bound_wall_switch_does_not_require_walkable_marker_ground():
+    from map_feature_artifact_toys import source_case
+    from app.control.features import placement
+    from app.replays.map_feature_events import CLASSES
+    entry = source_case()
+    feature = entry['map_features']['features'][0]
+    entry['map_features']['triggers'] = [{
+        'id': 'switch', 'type': 'switch', 'geometry': {'type': 'point', 'uv': [100, 100]},
+        'targets': [{'feature': feature['id'], 'kind': 'switch'}]}]
+    geo = geometry_case()
+    assert not placement(geo, entry)[feature['id']].ok
+    feature['replay_source'] = {
+        'actors': ['Switch_HiddenTemple_Test'], 'class_path': CLASSES['Switch_HiddenTemple'],
+        'reset_rpcs': ['MulticastResetAnimation'],
+        'rules': [{'rpc': 'MulticastPlayAnimation', 'kind': 'switch'}]}
+    assert placement(geo, entry)[feature['id']].ok
+    entry['map_features']['triggers'][0]['geometry']['uv'][0] = -1
+    assert not placement(geo, entry)[feature['id']].ok
+    entry['map_features']['triggers'][0]['geometry']['uv'][0] = 100
+    feature['states'][0]['footprint']['uv'] = [[100, 100], [110, 100], [110, 110]]
+    assert not placement(geo, entry)[feature['id']].ok  # panel still needs ground

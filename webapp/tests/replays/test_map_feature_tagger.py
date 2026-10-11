@@ -887,6 +887,33 @@ def test_current_exact_diagnostics_replace_approximate_rope_placement_until_edit
     assert 'Placement preview:' in got['mismatched']
 
 
+def test_finer_grid_requires_current_compiler_report_and_preserves_edits():
+    data = page_data(future=False)
+    data['features']['floors']['Ascent'] = {'flat': False, 'height_sha': 'synthetic', 'mixed_grid': True,
+        'floor_counts': [1] * (128 * 128), 'unresolved': [0] * (128 * 128)}
+    features = data['tags']['maps']['Ascent']['map_features']['features']
+    data['features']['diagnostics'] = {'Ascent': {
+        'editor_entry': copy.deepcopy(data['tags']['maps']['Ascent']), 'height': 'synthetic',
+        'counts': {'pending': 0, 'total_tagged': len(features)},
+        'features': [{'id': f['id'], 'placement': 'placeable', 'reasons': []} for f in features]}}
+    got = run_page('''function run(p) {
+      const page=openPage(p.data,{map:"Ascent"}), A=page.api;
+      function note(){return page.el("featChecklist").children[0].innerHTML;}
+      const before=note(); A.commit(page.F.setField(A.fe.Ascent.mf,"feature-1",["name"],"changed"),true);
+      const edited=note(), issues=page.el("featIssues").innerHTML;
+      const saved=page.reopen().api.fe.Ascent.mf.features[0].name;
+      A.undo(); const undone=note();
+      p.data.features.diagnostics.Ascent.height="different";
+      const mismatched=openPage(p.data,{map:"Ascent"}).el("featChecklist").children[0].innerHTML;
+      return {before,edited,issues,saved,undone,mismatched};
+    }''', {'data': data})
+    assert 'Placement (attached compiler):</b> 0 features pending' in got['before']
+    assert 'fresh compiler diagnostics needed for the finer height grid' in got['edited']
+    assert 'diagnostic_required' in got['issues'] and got['saved'] == 'changed'
+    assert 'Placement (attached compiler):</b> 0 features pending' in got['undone']
+    assert 'fresh compiler diagnostics needed for the finer height grid' in got['mismatched']
+
+
 def test_measured_multifloor_issue_highlights_cells_and_edit_clears_stale_overlay():
     data = page_data(future=False)
     data['features']['floors']['Ascent'] = {'flat': False, 'height_sha': 'synthetic', 'floor_counts': [2] * (128 * 128), 'unresolved': [0] * (128 * 128)}

@@ -1,7 +1,7 @@
 # Automatic local height refinement
 
-Status: accepted-ground extraction and deterministic refinement analysis implemented on the branch;
-mixed-footprint assets and runtime remain to be built. Supersedes the
+Status: accepted-ground extraction, mixed-footprint assets, worker history transport and runtime
+consumers are implemented on the branch. Private release qualification remains incomplete. Supersedes the
 optional owner-paint step in the Lotus resolution proposal. Applies to every map, with no
 map-name exceptions. Main, deployment and live height activation require the owner's approval.
 
@@ -17,8 +17,8 @@ Keep reliable 8-pixel cells. Automatically divide eligible ambiguous cells into 
 sight and traversal. No painted guide or owner action is required. Do not introduce 2-pixel
 refinement in this implementation: the local diagnostic showed excessive sample sparsity.
 
-This decision does not enable an adaptive runtime yet. Reporting subdivisions without
-consuming them in the calculation engine does not satisfy the feature.
+The branch consumes subdivisions in the calculation engine. Deployment and activation remain
+separate owner-approved steps; private successful builds do not activate a live map.
 
 ## Candidate selection on every rebuild
 
@@ -119,7 +119,7 @@ resolved 56.25% of the area, left 31.25% insufficiently supported and 12.5% conf
 At 2 pixels, 29.69% was supported and 70.31% lacked evidence. This is an earlier local input
 set, not qualification of the latest rejected height asset or a guarantee for other maps.
 
-## Branch implementation checkpoint
+## Earlier analysis checkpoint
 
 `height_motion.py` and `height_build.py` now retain accepted 4-pixel visit footprints and walk
 height minima without reconstructing XY from a whole-run average. Platform exclusions trim the
@@ -151,8 +151,57 @@ Acceptance tests cover spatial ledges, stacked floors within children, missing h
 selection, duplicate/order-independent observations, sparse evidence, accepted walk footprints,
 platform exclusion and changed frozen inputs. Existing coarse height tests also pass.
 
-Sequence item 1 is implemented. Items 2–6 remain: versioned mixed-footprint serialization,
-archived verification, worker history transport, physical-area acceptance, node lookup/topology,
-sight, all feature/utility consumers, and real control/gaps qualification. The analysis explicitly
-reports `runtime_enabled: false`. No height/control format revision has been bumped for this
-analysis-only checkpoint, and it must not be presented as the completed adaptive runtime.
+That earlier checkpoint implemented sequence item 1 only. Its analysis output still deliberately
+reports `runtime_enabled: false`: running an offline tool never activates a map.
+
+## Runtime implementation checkpoint
+
+The height format and rules are now version 3, the immutable height manifest is version 2 and
+control is version 13. Feature compiler 10 and consumer identities invalidate affected artifacts.
+Archived coarse version-2 assets still load and verify under their original digest. New assets hash
+the explicit refinement receipt, child IDs, floors, support, refusal metadata and qualified edges.
+Parents selected previously remain selected even if later input loses all local evidence.
+
+The worker receives refinement history from the newest stored map build receipt, including rejected
+builds, rather than relying on a surviving local NPZ. The result service verifies monotone history
+and independently recomputes physical-area integrity. No schema migration is required. SQLite
+regressions exercise rejected-history recovery and service validation; worker tests exercise a fresh
+worker with no previous NPZ and disappearing evidence.
+
+`adaptive.py` builds touching coarse/fine neighbours, protects diagonal corners and retains
+qualified larger climbs/drops without inventing unsupported ones. Position lookup, sight plates,
+topology, unknown propagation, features, moving panels, rope landings, utilities, trips and gaps use
+actual leaf footprints. Control and uncertainty metrics count a child as one quarter of its parent.
+Heatmaps and viewer control remain aggregated to the existing 8-pixel display; stored gap spot and
+victim coordinates also retain that display projection. Runtime and gaps caches retain exact node
+identity. This display limitation is not finer runtime evidence.
+
+Height diagnostic pictures show the children and their remaining uncertainty. The tagger uses an
+exact compiler report while its annotation and height identities match. For a mixed grid, editing
+invalidates that report and requests regeneration; the coarse browser preview cannot qualify a
+finer-grid placement.
+
+`scripts/build_refined_height_preview.py` performs a checksum-verified frozen build and independent
+verification, requiring explicit new/prior history and private output. It performs no DB write or
+height activation. Run from `webapp`:
+
+```powershell
+.\.venv313\Scripts\python.exe scripts\build_refined_height_preview.py `
+  --frozen <private-map.frozen.json> --new-history --out <new-private-directory>
+```
+
+Five private builds on the 425 historical frozen rounds retained the earlier selections:
+
+| Map | Refined parents | Unchanged height acceptance |
+| --- | ---: | --- |
+| Lotus | 14 | Passed locally; 72.6% supported area, 1/420 kill lines blocked |
+| Haven | 37 | Passed locally; 7/708 kill lines blocked |
+| Sunset | 20 | Passed locally; 2/800 kill lines blocked |
+| Summit | 1 | Failed: 49% supported area, below 60% |
+| Ascent | 44 | Failed: 17/686 kill lines blocked (2.48%); three must-block checks unresolved |
+
+Kill-line tolerance remains 2%; must-block checks and all other gates remain unchanged. These frozen
+inputs include an older Lotus input set. Local passes do not replace current live-build qualification.
+Split and Abyss were not included in these frozen rebuilds; their height and landing evidence remain
+separate release gates. Real feature acceptance, independent-recording source stability and a Linux
+worker rehearsal remain required before an owner-approved combined release.

@@ -101,6 +101,36 @@ def test_reset_missing_partial_capture_and_wrong_map_hold_runtime():
             MapPoolRuntime(geo, bad)
 
 
+def test_unchanged_panel_pose_reuses_sight_mask_without_changing_other_poses():
+    from app.control import features as cf
+    geo, blob = runtime_case(lotus(), 'Lotus')
+    from app.control.geometry import geometry_from_masks
+    full = geometry_from_masks('Lotus', np.zeros((1024, 1024), bool), np.ones((1024, 1024), bool), 7e-5)
+    full.features = geo.features
+    geo = full
+    runtime = MapPoolRuntime(geo, blob)
+    initial = runtime.sample(0)[1][0]
+    turning = runtime.sample(3)[1][0]
+    assert initial is runtime.sample(.5)[1][0]
+    assert turning is runtime.sample(3.001)[1][0]  # Same 1/16-second physical pose.
+    assert not np.array_equal(initial.mask, turning.mask)
+    mf, feature, timeline = runtime.items[0]
+    from app.control.map_pool_runtime import rotation_fraction
+    for t in (0, 3, 6, 10, 11, 19):
+        actual = runtime.sample(t)[1][0]
+        panel = cf.rotation_pose(feature, rotation_fraction(feature, timeline, t))
+        expected, why = cf.resolve_bounds(geo, mf, {'bounds':feature['rotation']['sight_bounds']},
+                                         cf.to_px(cf.raster(panel)), feature['id'])
+        assert why is None and np.array_equal(actual.mask, expected.mask)
+        assert (actual.bottom, actual.top, actual.all_height) == (expected.bottom, expected.top, expected.all_height)
+    closed = runtime.sample(11)[1][0]
+    assert closed is runtime.sample(20)[1][0]
+
+    geo, blob = runtime_case(summit(), 'Summit')
+    runtime = MapPoolRuntime(geo, blob)
+    assert runtime.sample(2.5)[1][0] is runtime.sample(20)[1][0]
+
+
 def test_polygon_pivot_and_unresolved_panel_cannot_be_enabled():
     f = lotus(); f['rotation']['pivot'] = f['rotation']['panel']; f['rotation']['panel'] = None
     assert 'rotation needs a point pivot and physical panel' in readiness(f)
@@ -320,6 +350,11 @@ def test_site_descending_door_tracks_continuous_thirty_percent_cutoff_and_reopen
         'class_path': CLASSES['WindowShield'], 'time_ms': 10000, 'rpc': 'PlayDoorSounds', 'params': {}, 'line': 3})
     runtime = FeatureRuntime(geo, blob)
     payload = runtime.metadata(blob)['features'][0]
+    early, later = runtime.sample(2)[1][0], runtime.sample(4)[1][0]
+    assert early.mask is later.mask and early.bottom > later.bottom
+    old_bottom = early.bottom
+    runtime.sample(6)
+    assert early.bottom == old_bottom  # Reuse XY without mutating archived height bands.
     times = [0, 1, 2.49, 2.5, 2.51, 6, 9, 12.49, 12.5, 14]
     script = Path(__file__).resolve().parents[2] / 'app/static/js/replay.js'
     code = f'const r=require({json.dumps(str(script))});process.stdout.write(JSON.stringify({json.dumps(times)}.map(t=>r.mapFeatureState({json.dumps(payload)},t))));'

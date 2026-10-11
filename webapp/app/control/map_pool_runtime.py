@@ -14,9 +14,10 @@ MAPS = frozenset(events.MAP_PREFIXES)
 ROTATION_BLOCK_FRACTION = .5
 
 
-def rotation_coverage(panel):
+def rotation_coverage(panel, grid=None):
     """Exact polygon area in each movement cell, independent of paint-centre samples."""
     from app.control.geometry import GRID
+    GRID = GRID if grid is None else grid
     coverage = np.zeros((GRID, GRID), float)
     points = np.asarray(panel['uv'], dtype=float)
     step = 10000 / GRID
@@ -58,7 +59,13 @@ def rotation_effects(geo, mf, feature, panel):
     from app.control import features as cf
     # Permanent walls/void already exclude movement; only the swept walkable floor
     # needs a height binding. Ambiguous or missing walkable floors still fail closed.
-    cells = rotation_cells(panel).ravel() & geo.walk.ravel()
+    if geo.adaptive:
+        coverage = rotation_coverage(panel, 256)
+        areas = np.bincount(geo.space_grid.ravel(), weights=coverage.ravel(), minlength=len(geo.space_walk))
+        counts = np.bincount(geo.space_grid.ravel(), minlength=len(geo.space_walk))
+        cells = (areas / np.maximum(counts, 1) > ROTATION_BLOCK_FRACTION + 1e-10) & geo.space_walk
+    else:
+        cells = rotation_cells(panel).ravel() & geo.walk.ravel()
     effects = cf.empty_effects(geo)
     if cells.any():
         binding = cf.feature_floor_nodes(geo, mf, feature, cells)
@@ -144,6 +151,9 @@ class MapPoolRuntime:
         self.geo, self.items, self.transitions = geo, [], []
         self._t, self._sample = None, None
         self._rotation_masks = {}
+        self._rotation_sight = {}
+        self._fixed_sight = {}
+        self._sliding_masks = {}
         if not geo.features:
             return
         artifact = geo.features
@@ -231,6 +241,9 @@ class MapPoolRuntime:
                 if closure is None and next(s for s in f['states'] if s['name'] == state['state']).get('terminal'):
                     continue
                 effects, occ = motion.sample_effects(self.geo, mf, f, closure)
+                # Height bands change while descending, but the panel's XY mask is fixed.
+                for index, blocker in enumerate(occ):
+                    blocker.mask = self._sliding_masks.setdefault((f['id'], index), blocker.mask)
             elif f.get('rotation'):
                 fraction = rotation_fraction(f, timeline, t)
                 panel = cf.rotation_pose(f, fraction)
@@ -240,14 +253,19 @@ class MapPoolRuntime:
                 if key not in self._rotation_masks:
                     self._rotation_masks[key] = rotation_effects(self.geo, mf, f, panel)
                 effects = self._rotation_masks[key]
-                blocker, why = cf.resolve_bounds(self.geo, mf, {'bounds': f['rotation']['sight_bounds']},
-                                                 cf.to_px(cf.raster(panel)), f['id'])
-                occ = [blocker] if blocker else []
-                if why:
-                    raise FeatureArtifactCorrupt(why)
+                if key not in self._rotation_sight:
+                    blocker, why = cf.resolve_bounds(self.geo, mf, {'bounds': f['rotation']['sight_bounds']},
+                                                     cf.to_px(cf.raster(panel)), f['id'])
+                    if why:
+                        raise FeatureArtifactCorrupt(why)
+                    self._rotation_sight[key] = [blocker] if blocker else []
+                occ = self._rotation_sight[key]
             else:
                 effects = cf.movement_blocks(self.geo, single, pick)
-                occ, pending = cf.sight_occluders(self.geo, single, pick)
+                key = (f['id'], state['state'])
+                if key not in self._fixed_sight:
+                    self._fixed_sight[key] = cf.sight_occluders(self.geo, single, pick)
+                occ, pending = self._fixed_sight[key]
                 effects.pending += pending
             if effects.pending:
                 raise FeatureArtifactCorrupt('; '.join(effects.pending))

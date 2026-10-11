@@ -225,6 +225,28 @@ def stored(db, name, digest="a" * 12, report=None, manifest=None, rules=None):
 # ---------------------------------------------------------------- when a rebuild is due
 
 
+def test_refinement_manifest_uses_durable_rejected_build_after_cache_restart(db, linked):
+    name = linked.map_name
+    previous = hi.refinement_history(name)
+    current = hi.refinement_history(name, {**previous, 'parents': [200, 201]})
+    receipt = {'v': 1, 'history': current, 'history_sha256': hi.history_identity(current),
+               'previous_history_sha256': hi.history_identity(previous), 'evidence_sha256': 'a'*64}
+    manifest = hr.current_manifests(db)[name][0]
+    db.add(ControlHeight(map_name=name, digest='a'*12, asset=b'private-test',
+        report={'refinement': receipt}, match_uuids=[], rules=hc.rules(), inputs=manifest,
+        inputs_sha=hi.digest(manifest), status=ch.REJECTED))
+    db.commit()
+    db.expire_all()  # no in-process loaded report or worker filesystem needed
+    rebuilt = hr.current_manifests(db)[name][0]
+    assert rebuilt['refinement_history'] == current
+    assert hi.digest(rebuilt) != hi.digest(manifest)
+    hi.check_refinement_transition(name, current, {**receipt,
+        'previous_history_sha256': hi.history_identity(current)})
+    with pytest.raises(ValueError, match='history'):
+        hi.check_refinement_transition(name, current, {**receipt, 'history': previous,
+            'history_sha256': hi.history_identity(previous)})
+
+
 def test_tag_edit_and_web_restart_preserve_admitted_snapshot_without_rebuilding(rig, factory, db, linked, monkeypatch):
     import hashlib
     from app.replays.map_feature_diagnostics import diagnostic_envelope

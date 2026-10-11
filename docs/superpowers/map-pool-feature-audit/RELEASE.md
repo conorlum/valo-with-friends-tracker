@@ -27,14 +27,15 @@ activation and live recompute have not been changed by this work.
   a DB, activate heights, publish tags or recompute live data. Framing, binding, geometry and release
   qualification have separate outcomes.
 
-Versions: feature compiler 9, condenser 16, control 12; Ascent consumer 2, quiet rope consumer 2,
-map-pool replay consumer 3. Gaps version stays 3; changed control inputs invalidate its caches.
+Versions: feature compiler 10, condenser 16, control 13; Ascent consumer 3, quiet rope consumer 3,
+map-pool replay consumer 4; height format/rules 3 and height manifest 2.
+Gaps version stays 3; changed control inputs invalidate its caches.
 No new migration or database table is required.
 
 The compiler revision fixes vertical rope editor markers: a nonblocking point marker is not an
 object on a single floor. Its measured route landings own placement, while blocking geometry still
 requires the ordinary floor checks. Compiler/consumer identities invalidate affected feature
-artifacts; the control engine itself is unchanged by this fix.
+artifacts. Control now consumes mixed 8/4-pixel height footprints as described below.
 
 ## Geometry and evidence checkpoint
 
@@ -44,7 +45,8 @@ horizontal departures and requires repeated rounds and a dominant spatial cluste
 actual movement stream and verifies source/context identity. Output is a private coordinate proposal,
 not certification of rope attachment, travel cost or endpoint floors.
 It also produced private proposals for Summit's one and Abyss's four tagged vertical ropes. Those
-proposals are not applied automatically to their endpoint annotations or quiet-direction semantics.
+proposals were staged in a new private disabled candidate. This changes XY and marker geometry only;
+it does not certify landing floors or change reviewed travel times and quiet-direction semantics.
 
 All six Split rope coordinates were measured from the local recording and staged privately without
 changing the owner snapshot or other maps. Two A-Heaven ropes have supported stationary endpoint
@@ -54,7 +56,8 @@ evidence. Mid-ride height extrema are not substituted for boarding floors. All s
 disabled; successful placement is not full real control/gaps acceptance.
 
 The tagger now uses an exact attached placement report when the annotations and height identity
-match. Edits invalidate it and restore the approximate preview. This avoids false single-floor
+match. Edits invalidate it; coarse assets restore the approximate preview, while mixed assets require
+a regenerated compiler report. This avoids false single-floor
 warnings on the two measured vertical ropes without treating stale diagnostics as current.
 
 Known transition RPCs with missing/unmatched parameters now report the exact source row, timestamp,
@@ -66,9 +69,12 @@ B–C and the outer, farther-from-site button for A. The private candidate now i
 per door; each door binds successfully across all 24 rounds of that recording. This confirms door
 identity and button side in that recording, not independent-recording stability or new timing evidence.
 
-Accepted-ground refinement extraction and analysis are implemented; mixed-footprint assets, worker
-history integration and runtime consumers remain unfinished. The refinement spec records historical
-local evidence and the remaining implementation sequence. No rejected height asset has been activated.
+Automatic local height refinement is implemented through versioned mixed-footprint assets, durable
+worker history and runtime consumers. Unchanged acceptance gates use physical area. Independent
+private builds passed on historical Lotus, Haven and Sunset inputs; Ascent still fails kill-line and
+must-block checks, and Summit still fails supported-area coverage. Split and Abyss have not received
+these frozen rebuilds. See the refinement spec for exact local counts and limits. No rejected height
+asset has been activated.
 
 ## Current real evidence and blockers
 
@@ -79,13 +85,13 @@ the selected source actors, not comprehensive instance or second-button coverage
 20 rounds; missing transition parameters hold the remaining two. Missing/default open parameters
 must be qualified from source framing before assigning an open state.
 
-The read-only live height inventory found active assets for Split, Sunset and Haven. Ascent, Summit,
+The earlier read-only live height inventory found active assets for Split, Sunset and Haven. Ascent, Summit,
 Abyss and Lotus currently have rejected assets and no active selection. Their rejection reasons include
 insufficient supported area, unresolved areas near multiple floors and blocked known kill lines.
 Rejected assets were exported privately for diagnosis; they are ineligible for release. Do not weaken
 the acceptance checks or activate them to make feature placement pass.
 
-Current geometry checks keep Summit's four, Lotus's three, Sunset's one and four of Abyss's six tagged
+The earlier geometry checkpoint kept Summit's four, Lotus's three, Sunset's one and four of Abyss's six tagged
 features pending. Two Abyss features are placeable against the diagnostic asset, whose rejection still
 prevents a combined release. Many vertical rope endpoint cells expose only one measured floor; the
 author's coincident endpoint coordinates are retained. A separate lower landing cannot be invented.
@@ -100,6 +106,13 @@ switch sources per door are now bound in the private reviewed recording; indepen
 stability remains to be checked. The 2.75-second passage observation belongs to the old eight-second
 preview; it is retained as an angle reference, not imposed as a cutoff in the corrected ten-second model.
 Panel depth and angular speed remain model estimates pending real-scene comparison.
+
+The latest local Lotus trial compiles all three bundles against the exact locally passing refined
+asset. Explicit replay-bound switches may be mounted off walkable ground; their markers are not
+movement or sight blockers. This exemption requires a valid source binding and finite in-map
+geometry, and does not exempt the actual door panels. Summit's four features remain pending against
+its refined diagnostic asset because of sight bounds, unresolved/off-ground geometry and rope
+landings. A single supported lower rope height is insufficient to invent its upper boarding floor.
 
 ## Steps to finish, in order
 
@@ -117,8 +130,7 @@ Panel depth and angular speed remain model estimates pending real-scene comparis
 3. **Repair height evidence.** Diagnose failed global gates using source coverage and known kill lines.
    The owner selected automatic local 4-pixel refinement for mixed-height cells on every map, without
    painted guides. See `../specs/2026-10-10-automatic-local-height-refinement.md`: this is settled design,
-   with accepted-ground extraction and refinement analysis built; the mixed-resolution asset/runtime
-   still needs implementation. Keep sparse regions explicitly
+   with the mixed-resolution asset, worker history and runtime built. Keep sparse regions explicitly
    unknown, genuine stacked floors distinct, and acceptance metrics weighted by physical area.
    Build fresh local candidates and rerun the unchanged checks. Use only accepted exact assets in final
    qualification. Rebuild-dependent floor references are verified again; do not retain stale node IDs.
@@ -186,6 +198,21 @@ bounds, Summit phase boundaries, continuous passage status, measured landing reb
 directional seconds and parent attribution, quiet-only cuts, artifact verification, and synthetic fresh
 full/fresh gaps/cached gaps parity. Existing Ascent integration and schema/reference suites also pass.
 These results do not certify real map placement or the Linux worker; those remain gates above.
+
+Additional mixed-grid regressions cover exact footprint lookup, sight and topology, corner cuts,
+physical travel time and area, section-clock calculations, candidate geometry rebuilding, version-2
+compatibility, receipt tampering, missing history, rejected-build history recovery, and independent
+service integrity. Focused local suites passed, including 143 runtime/height/source tests, 110 worker/
+SQLite/artifact tests, and 125 control/storage tests (one skipped). These overlapping suite totals
+are not a unique test count. Docker is unavailable on this machine, so the Linux rehearsal remains
+unperformed. No scheduler, publication, activation or live recompute was started.
+
+The real Lotus trial exposed repeated dense sight masks in tick-cache observations. Panel sampling
+now reuses fixed-state masks and exact quantized rotating poses; descending panels reuse XY while
+preserving each observation's changing vertical band. An independent check of all 612 analytical
+instants in a real round compared 1,836 occluders exactly with uncached resolution. Retained masks
+fell from 1,925,185,536 to 314,572,800 bytes. This measures mask retention only, not total worker
+memory or Linux acceptance. The baseline full-round run predates this allocation optimization.
 
 Retain prior code/parser recipe, tags, accepted height asset digests and immutable feature artifacts.
 If a canary fails, stop expanding the recompute and hold/disable the affected bundle rather than

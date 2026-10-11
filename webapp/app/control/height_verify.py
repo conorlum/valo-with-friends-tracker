@@ -81,12 +81,23 @@ def describe(data: bytes, map_name: str, *, asset_dir: Path | None = None, must_
             asset = hc.load_asset(path)  # version check, after validation without lossy casts/reshapes
         count = asset.floor_count().ravel()
         share, reasons = hb.readiness(asset.supported.ravel(), asset.unresolved.ravel(), count, int(walk.sum()))
+        attached = cg.attach_heights(geo, asset)
+        additional = {}
+        if asset.refinement is not None:
+            if attached.adaptive:
+                from app.control.adaptive import area_readiness, leaf_counts
+                additional = {**area_readiness(attached, asset), **leaf_counts(attached, asset)}
+                share, reasons = additional['supported'], additional['not_ready']
+            else:
+                additional = {'walkable_area_px2': int(walk.sum()) * 64,
+                              'supported_area_px2': int(asset.supported.sum()) * 64}
+            additional['refinement'] = asset.refinement
         lines, sha = hi.must_block_set(must_block)
-        must = {"set": sha, **hb.must_block_check(lines, cg.attach_heights(geo, asset), map_name)}
+        must = {"set": sha, **hb.must_block_check(lines, attached, map_name)}
         return {"digest": asset.digest, "version": int(asset.meta["version"]), "map": map_name,
                 "walkable_cells": int(walk.sum()), "supported_cells": int(asset.supported.sum()),
                 "floor_cells": int((count > 0).sum()), "supported": round(share, 4),
-                "ready": not reasons, "not_ready": reasons, "must_block": must}
+                "ready": not reasons, "not_ready": reasons, "must_block": must, **additional}
     except Exception as error:  # noqa: BLE001 - unreadable asset, map or check set: trust nothing
         return {"error": f"{type(error).__name__}: {error}"[:300]}
 

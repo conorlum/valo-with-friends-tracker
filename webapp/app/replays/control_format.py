@@ -44,17 +44,17 @@ import json
 import struct
 from pathlib import Path
 
-CONTROL_REVISION = 12    # 12: majority-area movement occupancy for rotating panels
+CONTROL_REVISION = 13    # 13: mixed ground footprints, physical-area metrics and traversal
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 
 # Map heights (app/control/heights.py re-exports the first, third and fourth). Here, in a stdlib-only module,
 # so the web app can judge a stored asset and a build's report without importing numpy.
-HEIGHT_VERSION = 2            # the asset's format: an asset of another version can't be loaded
+HEIGHT_VERSION = 3            # explicit 4-pixel refinement; archived v2 assets keep their interpretation
 # The rules a build follows. Bump it for ANY change to how rounds become heights (a constant in
 # app/control/heights.py, the code of height_build.py or height_motion.py): every map's rebuild is then due.
 # tests/replays/test_height_inputs.py pins it to the constants' hash, as CONTROL_REVISION is pinned.
-HEIGHT_RULES_REVISION = 2      # 2: recheck emitted floor separation after taking each band's low percentile
+HEIGHT_RULES_REVISION = 3      # 3: automatic spatial refinement with durable per-map history
 HEIGHT_SUPPORTED_MIN = 0.60   # the bar: share of walkable cells with a supported floor
 KILL_LINE_BAR = 0.02          # the kill-line check: at most this share of real kill lines blocked
 

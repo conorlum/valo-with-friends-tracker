@@ -69,7 +69,8 @@ def prepare_geometry(geo):
     fresh = cg.geometry_from_masks(geo.name, sight, walk, geo.uv_per_unit / 10000, geo.specials)
     if geo.heights is not None:
         cg.attach_heights(fresh, geo.heights)
-    if fresh.n != geo.n or not np.array_equal(fresh.node_cell, geo.node_cell):
+    if fresh.n != geo.n or not np.array_equal(fresh.node_cell, geo.node_cell) \
+            or not np.array_equal(fresh.node_space, geo.node_space):
         raise FeatureArtifactCorrupt('feature domain changes archived node identities')
     fresh.barrier, fresh.barrier_sha = geo.barrier, geo.barrier_sha
     fresh.features, fresh.features_sha = artifact, artifact.digest

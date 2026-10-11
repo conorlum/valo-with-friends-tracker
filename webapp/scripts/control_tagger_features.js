@@ -331,6 +331,14 @@
       return result;
     }
     var walk = TG.state.masks && TG.state.masks.walk, fd = (FD.floors || {})[mapName()] || {flat:true};
+    if (fd.mixed_grid) {
+      var pending = {};
+      (mf().features || []).forEach(function(f) {
+        pending[f.id] = {ok:false, reasons:[{code:'diagnostic_required', path:'features.' + f.id,
+                                         cells:[], cell_count:0, floor_counts:[]}]};
+      });
+      return pending;
+    }
     return F.previewPlacement(mf(), {walk:F.walkableCells(walk), walk_px:walk, flat:fd.flat === true,
                                    floor_counts:fd.floor_counts || [], unresolved:fd.unresolved || []});
   }
@@ -1236,6 +1244,8 @@
       (sum.geometry.ready ? "structurally described" : sum.geometry.errors + " errors, " + sum.geometry.unresolved + " open facts") +
       ".<br><b>" + (currentPlacementDiagnostic() ? "Placement (attached compiler)" : "Placement preview") + ":</b> " + Object.keys(placement).filter(function (id) { return !placement[id].ok; }).length + " features pending; " +
       (((FD.floors || {})[mapName()] || {}).flat !== false ? "flat fallback, no measured height asset" : "measured height asset " + esc(FD.floors[mapName()].height_sha)) +
+      (!currentPlacementDiagnostic() && ((FD.floors || {})[mapName()] || {}).mixed_grid ?
+        "; fresh compiler diagnostics needed for the finer height grid. Export annotations and regenerate the report" : "") +
       ".<br><b>Compiler report:</b> " + esc(compilerNote) +
       ".<br><b>Replay signal:</b> " + esc(sum.replay.note) + ". Runtime activation requires reviewed replay evidence and a registered consumer.";
     box.appendChild(s);

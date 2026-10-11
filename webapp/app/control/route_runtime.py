@@ -12,7 +12,7 @@ CONSUMER = 'quiet_rope_v1'
 MAPS = frozenset({'Split', 'Summit', 'Abyss'})
 
 
-def landing_node(geo, cell, landing):
+def landing_node(geo, cell, landing, *, xy=None):
     from app.replays.map_feature_state import known
     if geo.heights is None:
         return None, 'rope landing requires measured heights'
@@ -23,9 +23,12 @@ def landing_node(geo, cell, landing):
             or not 0 < tolerance <= .5 or landing['world_z'].get('unit') != 'm' \
             or landing['tolerance'].get('unit') != 'm':
         return None, 'landing needs world position-z and tolerance up to 0.5 metres'
-    if not geo.walk.ravel()[cell] or geo.unresolved[cell] or geo.heights.unresolved.ravel()[cell]:
+    if geo.adaptive and xy is None:
+        return None, 'mixed-grid landing needs its exact XY'
+    unresolved = geo.unresolved_at_px(*xy) if geo.adaptive else geo.unresolved[cell] or geo.heights.unresolved.ravel()[cell]
+    if not geo.walk.ravel()[cell] or unresolved:
         return None, 'landing ground/height unresolved'
-    nodes = geo.node_of[cell]
+    nodes = geo.nodes_at_px(*xy) if geo.adaptive else geo.node_of[cell]
     nodes = nodes[nodes >= 0]
     world = geo.node_z[nodes] + geo.heights.origin_z / 10
     matches = nodes[np.isfinite(world) & (np.abs(world - value) <= tolerance)]

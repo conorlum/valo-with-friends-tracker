@@ -137,6 +137,14 @@ class HeightAsset:
     edges: np.ndarray           # K x 5 int32: cell a, floor a, cell b, floor b, EDGE_*
     meta: dict = field(default_factory=dict)
     kind: np.ndarray | None = None   # GRID x GRID int8, KIND_*; None: told from `supported`
+    refinement: dict | None = None  # v3 immutable selection/evidence receipt
+    fine_cells: np.ndarray | None = None  # selected 256-grid footprint IDs, sorted
+    fine_floors: np.ndarray | None = None
+    fine_spread: np.ndarray | None = None
+    fine_supported: np.ndarray | None = None
+    fine_unresolved: np.ndarray | None = None
+    fine_kind: np.ndarray | None = None
+    fine_edges: np.ndarray | None = None  # spatial cell IDs: parent, or 16384 + child ID
 
     def __post_init__(self) -> None:
         self.edges = np.asarray(self.edges, np.int32).reshape(-1, 5)
@@ -152,10 +160,15 @@ class HeightAsset:
     def digest(self) -> str:
         """12 hex over everything the engine reads, in a fixed order (not the file's bytes)."""
         h = hashlib.sha256()
-        h.update(json.dumps({"v": HEIGHT_VERSION, "origin_z": self.origin_z, "units": self.meta.get("units", "dm"),
+        h.update(json.dumps({"v": self.meta.get('version', HEIGHT_VERSION), "origin_z": self.origin_z, "units": self.meta.get("units", "dm"),
                              "stand_m": self.meta.get("stand_m", STAND_M)}, sort_keys=True).encode("ascii"))
         for name, kind in (("floors", "<i2"), ("unresolved", "u1"), ("edges", "<i4")):
             h.update(name.encode("ascii") + b"\0" + np.ascontiguousarray(getattr(self, name), dtype=kind).tobytes())
+        if self.refinement is not None:
+            h.update(json.dumps(self.refinement, sort_keys=True, separators=(',', ':'), allow_nan=False).encode())
+            for name, dtype in (('fine_cells', '<i4'), ('fine_floors', '<i2'), ('fine_spread', '<i2'),
+                                ('fine_supported', 'u1'), ('fine_unresolved', 'u1'), ('fine_kind', 'i1'), ('fine_edges', '<i4')):
+                h.update(name.encode() + b'\0' + np.ascontiguousarray(getattr(self, name), dtype=dtype).tobytes())
         return h.hexdigest()[:12]
 
     def floor_count(self) -> np.ndarray:
@@ -165,17 +178,30 @@ class HeightAsset:
 
 def save_asset(path: Path, asset: HeightAsset) -> None:
     meta = {"version": HEIGHT_VERSION, "units": "dm", "stand_m": STAND_M, **asset.meta}
+    extra = {}
+    if asset.refinement is not None:
+        meta['refinement'] = asset.refinement
+        extra = {name: getattr(asset, name) for name in ('fine_cells', 'fine_floors', 'fine_spread',
+            'fine_supported', 'fine_unresolved', 'fine_kind', 'fine_edges')}
     np.savez_compressed(path, floors=asset.floors.astype("<i2"), spread=asset.spread.astype("<i2"),
                         supported=asset.supported.astype(bool), unresolved=asset.unresolved.astype(bool),
                         edges=asset.edges.astype("<i4").reshape(-1, 5), kind=asset.kind.astype("i1"),
-                        meta=np.frombuffer(json.dumps(meta, sort_keys=True).encode("utf-8"), np.uint8))
+                        meta=np.frombuffer(json.dumps(meta, sort_keys=True).encode("utf-8"), np.uint8), **extra)
 
 
 def load_asset(path: Path) -> HeightAsset:
     with np.load(path) as z:
         meta = json.loads(bytes(z["meta"]).decode("utf-8"))
-        if meta.get("version") != HEIGHT_VERSION:
+        if meta.get("version") not in (2, HEIGHT_VERSION):
             raise HeightError(f"{path.name}: height asset version {meta.get('version')} is not {HEIGHT_VERSION}")
+        extra = {}
+        if meta.get('refinement') is not None:
+            if meta.get('version') != HEIGHT_VERSION:
+                raise HeightError('archived coarse format cannot contain child footprints')
+            from app.control.adaptive import validate_arrays
+            validate_arrays(z, meta['refinement'])
+            extra = {'refinement': meta['refinement'], **{name: z[name].copy() for name in ('fine_cells',
+                'fine_floors', 'fine_spread', 'fine_supported', 'fine_unresolved', 'fine_kind', 'fine_edges')}}
         return HeightAsset(z["floors"].astype(np.int16), z["spread"].astype(np.int16), z["supported"].astype(bool),
                            z["unresolved"].astype(bool), z["edges"].astype(np.int32).reshape(-1, 5), meta,
-                           z["kind"].astype(np.int8))
+                           z["kind"].astype(np.int8), **extra)

@@ -7,13 +7,13 @@ from dataclasses import dataclass
 
 from app.replays import map_feature_schema as ms, map_feature_state as state
 
-FEATURE_COMPILER_VERSION = 9
+FEATURE_COMPILER_VERSION = 10
 FEATURE_MANIFEST_VERSION = 2
 FEATURE_NORMALIZATION_VERSION = 2
 FEATURE_CANONICAL_TAG_VERSION = 2
 FEATURE_WIRE_VERSION = 1
 RUNTIME_CONSUMERS = frozenset({'ascent_replay_v1', 'quiet_rope_v1', 'map_pool_replay_v1'})
-CONSUMER_VERSIONS = {'ascent_replay_v1': 2, 'quiet_rope_v1': 2, 'map_pool_replay_v1': 3}
+CONSUMER_VERSIONS = {'ascent_replay_v1': 3, 'quiet_rope_v1': 3, 'map_pool_replay_v1': 4}
 
 
 class FeatureInputsError(ValueError):

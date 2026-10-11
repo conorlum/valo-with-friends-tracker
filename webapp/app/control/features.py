@@ -139,6 +139,11 @@ def resolve_cells(geo: Geometry, cells: list[int], path: str) -> Placement:
     """All cells must have permanent ground and exactly one real floor; never synthetic node zero."""
     from app.control.heights import MAX_FLOORS, STAND_M
     cells = sorted(set(cells))
+    if geo.adaptive:
+        if any(type(c) is not int or not 0 <= c < GRID * GRID for c in cells):
+            return Placement(reasons=(_reason('off_map', path, cells),))
+        chosen = np.isin(geo.space_grid, cells)
+        return resolve_spaces(geo, np.unique(geo.space_grid[chosen]).tolist(), path)
     if not cells:
         return Placement(reasons=(_reason('empty_geometry', path),))
     grouped, nodes, ground = {}, [], []
@@ -182,13 +187,48 @@ def resolve_cells(geo: Geometry, cells: list[int], path: str) -> Placement:
     return Placement((), (), reasons) if reasons else Placement(tuple(nodes), tuple(ground))
 
 
+def resolve_spaces(geo, spaces, path):
+    """Resolve exact mixed leaves; a sibling's floor cannot qualify this footprint."""
+    if not geo.adaptive:
+        return resolve_cells(geo, spaces, path)
+    grouped, nodes, ground = {}, [], []
+    for sid in sorted(set(spaces)):
+        row = geo.space_nodes[sid] if type(sid) is int and 0 <= sid < len(geo.space_nodes) else []
+        real = [int(n) for n in row if n >= 0 and np.isfinite(geo.node_z[n])]
+        code = ('off_map' if not len(row) else 'off_ground' if not geo.space_walk[sid] else
+                'unresolved_height' if geo.space_unresolved[sid] else
+                'missing_floor' if not real else 'multi_floor' if len(real) != 1 else None)
+        if code:
+            bucket = grouped.setdefault(code, ([], []))
+            bucket[0].append(sid); bucket[1].append(len(real))
+        else:
+            from app.control.heights import STAND_M
+            nodes.extend(real); ground.append(float(geo.node_z[real[0]]) - STAND_M)
+    if not spaces:
+        return Placement(reasons=(_reason('empty_geometry', path),))
+    reasons = tuple(_reason(code, path, *grouped[code]) for code in sorted(grouped))
+    return Placement((), (), reasons) if reasons else Placement(tuple(nodes), tuple(ground))
+
+
+def footprint_cells(geo, shape):
+    """A paint footprint reduced at the runtime's physical leaf scale."""
+    paint = raster(shape)
+    if not geo.adaptive:
+        return to_grid(paint).ravel()
+    spaces = np.unique(geo.space_grid[paint])
+    out = np.zeros(len(geo.space_walk), bool); out[spaces] = True
+    return out
+
+
 def _place_shape(geo, shape, path):
     rep = ms.Report()
     ms._geometry(rep, path, shape)
     if rep.errors:
         code = 'off_map' if any(e['code'] == 'bad_coordinates' for e in rep.errors) else 'invalid_geometry'
         return Placement(reasons=(_reason(code, path),))
-    return resolve_cells(geo, np.flatnonzero(to_grid(raster(shape))).tolist(), path)
+    cells = footprint_cells(geo, shape)
+    resolver = resolve_spaces if geo.adaptive else resolve_cells
+    return resolver(geo, np.flatnonzero(cells).tolist(), path)
 
 
 def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
@@ -233,7 +273,19 @@ def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
                 shape(f['base_edits'][key], f'features.{fid}.base_edits.{key}')
         for t in mf.get('triggers') or []:
             if any(target.get('feature') == fid for target in t.get('targets') or []):
-                shape(t.get('geometry'), f'triggers.{t.get("id")}.geometry')
+                from app.replays.map_feature_events import binding_problems
+                from app.replays.ascent_features import KEYS
+                event_bound = (f.get('replay_key') in KEYS or
+                               f.get('replay_source') is not None and not binding_problems(f['replay_source']))
+                if t.get('type') == 'switch' and event_bound:
+                    # A wall-mounted switch is a source marker, not ground a player traverses.
+                    rep = ms.Report()
+                    path = f'triggers.{t.get("id")}.geometry'
+                    ms._geometry(rep, path, t.get('geometry'))
+                    if rep.errors:
+                        pieces.append(Placement(reasons=(_reason('invalid_geometry', path),)))
+                else:
+                    shape(t.get('geometry'), f'triggers.{t.get("id")}.geometry')
         for r in mf.get('routes') or []:
             if r.get('owner') != fid:
                 continue
@@ -267,6 +319,12 @@ def _candidate_geometry(geo, mf, members):
             own = _owned(f)
             walk |= own['potential_ground']
             sight &= ~own['remove_sight']
+    if geo.adaptive:
+        from app.control.geometry import geometry_from_masks, attach_heights
+        candidate = geometry_from_masks(geo.name, sight, walk, geo.uv_per_unit / 10000, geo.specials)
+        attach_heights(candidate, geo.heights)
+        candidate.barrier, candidate.barrier_sha = geo.barrier, geo.barrier_sha
+        return candidate
     return replace(geo, walk_px=walk, sight=sight,
                    walk=walk.reshape(GRID, CELL, GRID, CELL).mean((1, 3)) > 0.5,
                    walk_n=(walk.reshape(GRID, CELL, GRID, CELL).mean((1, 3)) > 0.5).ravel())
@@ -300,7 +358,8 @@ def floor_nodes(geo: Geometry, binding: dict | None, cells: np.ndarray) -> Bindi
 
 def feature_floor_nodes(geo: Geometry, mf: dict, feature: dict, cells: np.ndarray) -> Binding:
     """The nodes a feature's footprint covers on the floors it names (the union over them)."""
-    p = resolve_cells(geo, np.flatnonzero(cells).tolist(), f'features.{feature.get("id")}.footprint')
+    resolver = resolve_spaces if geo.adaptive and len(cells) == len(geo.space_walk) else resolve_cells
+    p = resolver(geo, np.flatnonzero(cells).tolist(), f'features.{feature.get("id")}.footprint')
     return Binding(np.array(p.nodes, np.int64), [f"{r['path']}: {r['code']}" for r in p.reasons])
 
 
@@ -345,7 +404,7 @@ def movement_blocks(geo: Geometry, mf: dict, states: dict | None = None,
             continue
         if not s.get("blocks_movement") or not s.get("footprint"):
             continue
-        cells = to_grid(raster(s["footprint"])).ravel()
+        cells = footprint_cells(geo, s["footprint"])
         b = feature_floor_nodes(geo, mf, f, cells)
         blocked[b.nodes] = True
         pending += b.pending
@@ -401,7 +460,12 @@ def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owne
 
     bounds = occ.get("bounds") or {}
     cells = mask_px.reshape(GRID, CELL, GRID, CELL).any((1, 3)).ravel()
-    b = floor_nodes(geo, None, cells)
+    if geo.adaptive:
+        touched = mask_px.reshape(256, 4, 256, 4).any((1, 3))
+        placed = resolve_spaces(geo, np.unique(geo.space_grid[touched]).tolist(), 'sight bounds')
+        b = Binding(np.array(placed.nodes, np.int64), [r['code'] for r in placed.reasons])
+    else:
+        b = floor_nodes(geo, None, cells)
     if b.pending or not len(b.nodes):
         return None, f"{owner}: " + ('; '.join(b.pending) or 'no floor under the occluder')
     ref = bounds.get("ref")
@@ -661,7 +725,7 @@ def state_problems(geo: Geometry, mf: dict, feature: dict) -> list[str]:
             continue
         one = {**feature, "initial_state": s.get("name")}
         if s.get("blocks_movement") and s.get("footprint"):
-            cells = to_grid(raster(s["footprint"])).ravel()
+            cells = footprint_cells(geo, s["footprint"])
             b = feature_floor_nodes(geo, mf, one, cells)
             out += [f"state {s.get('name')!r}: {p}" for p in b.pending]
             if cells.any() and not len(b.nodes) and not b.pending:
@@ -885,13 +949,18 @@ class Arc:
 def _point_node(geo: Geometry, mf: dict, uv, floor_id=None, landing=None) -> tuple[int | None, str | None]:
     if not ms._uv(uv):
         return None, 'not placed or off map'
-    cell = geo.cell_of_px(uv[0] * PX / ms.UV_MAX, uv[1] * PX / ms.UV_MAX)
+    x, y = uv[0] * PX / ms.UV_MAX, uv[1] * PX / ms.UV_MAX
+    cell = geo.cell_of_px(x, y)
     mask = np.zeros(GRID * GRID, bool)
     mask[cell] = True
     if landing is not None:
         from app.control.route_runtime import landing_node
-        return landing_node(geo, cell, landing)
-    b = floor_nodes(geo, None, mask)
+        return landing_node(geo, cell, landing, xy=(x, y))
+    if geo.adaptive:
+        placed = resolve_spaces(geo, [geo.space_at_px(x, y)], 'route endpoint')
+        b = Binding(np.array(placed.nodes, np.int64), [r['code'] for r in placed.reasons])
+    else:
+        b = floor_nodes(geo, None, mask)
     if b.pending or len(b.nodes) != 1:
         return None, "; ".join(b.pending) or "no floor there"
     return int(b.nodes[0]), None
@@ -946,7 +1015,8 @@ def walk_edges(geo: Geometry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     topo = topology.of(geo)
     if isinstance(topo, topology.NodeTopology):
-        return topo.src, topo.dst, np.where(topo.diag, np.sqrt(2.0), 1.0) * geo.cell_m
+        costs = np.linalg.norm(geo.centres[topo.src] - geo.centres[topo.dst], axis=1) / CELL if geo.adaptive else np.where(topo.diag, np.sqrt(2.0), 1.0)
+        return topo.src, topo.dst, costs * geo.cell_m
     walk = geo.walk.ravel()
     src, dst, cost = [], [], []
     ys, xs = np.divmod(np.arange(GRID * GRID), GRID)

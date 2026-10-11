@@ -118,6 +118,7 @@ def floor_data(name: str, asset_dir: Path = cg.ASSET_DIR, heights_dir: Path | No
             return {'flat': True, 'height_sha': None}
         asset = hc.load_asset(asset_dir / f"{name}.height.npz")
     return {"flat": False, "height_sha": asset.digest, "origin_z": asset.origin_z, "max_floors": hc.MAX_FLOORS,
+            'mixed_grid': bool(asset.refinement and len(asset.fine_cells)),
             'floor_counts': (np.isfinite(asset.floors) & (asset.floors >= 0)).sum(axis=2).ravel().tolist(),
             'unresolved': asset.unresolved.astype('uint8').ravel().tolist(),
             "floors": base64.b64encode(np.ascontiguousarray(asset.floors, dtype="<i2").tobytes()).decode("ascii")}
