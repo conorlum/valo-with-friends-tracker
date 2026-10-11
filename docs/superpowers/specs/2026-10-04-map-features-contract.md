@@ -123,6 +123,7 @@ names each). **None is switched to features in this build.**
 | `control/engine:Unknown._area` | topo.dilate | `walk_only` |
 | `control/engine:Unknown._drop_pieces` | topo.label | `transport_reachability` |
 | `control/engine:Unknown._spread` | topo.spread | `transport_time`, temporal (availability history; reopened paths restart eligibility) |
+| `control/route_runtime:QuietTopology.spread` | measured walks and explicit quiet arcs | `transport_time`; seconds per directed rope, local connector cuts affect quiet propagation only |
 | `control/engine:_share_by_walk` | topo.dilate | `walk_only` |
 | `control/engine:barrier_start` | topo.around, topo.label | `walk_only` |
 | `control/engine:possible_region` | topo.dilate | `transport_time`, temporal (knowledge regions respect when passages were open) |
@@ -131,6 +132,7 @@ names each). **None is switched to features in this build.**
 | `control/height_build:geo_los` | los | `base` |
 | `control/features:verify_permanent_context` | specials | `freshness`: verify exact permanent archive context on every invocation |
 | `control/feature_diagnostics:diagnose_features` | specials | `base`: diagnostics only, exact admitted/archived permanent context, no runtime effects |
+| `control/feature_runtime:prepare_geometry` | specials, archived base domain | `base`: reconcile verified per-map masks without mutating the cached permanent map or changing node identities |
 | `control/height_job:features_pending` | specials | `base`: provisional diagnostics only, never a height gate |
 | `control/task:geometry_used` | specials | freshness: the manifest's `features` key (W17) |
 | `control/utility:_sees_point` | los | `bounded_sight` (added 2026-10-05, utility-review run: whether an enemy sees a Leer's eye) |
@@ -139,5 +141,56 @@ names each). **None is switched to features in this build.**
 | `gaps/detect:GapDetector._sight` | cast | `bounded_sight` |
 
 ## 8. Freshness
+
+Descending door annotations may choose `sliding.movement_cutoff` with a known finite value in `[0, 1)`,
+unit `fraction` and basis `conservative`. This is an explicit approximation: passage is allowed through
+the chosen closure and blocked beyond it, including crouching. The cutoff takes precedence over metric
+movement clearance; without it, the measured-clearance model remains unchanged. Invalid explicit policies
+are refused rather than falling back to another model. Approximate player heights do not resolve metre
+bounds or qualify sight geometry. This option is part of the runtime identity (compiler 5, Ascent consumer 2).
+
+### Map-pool runtime amendment (2026-10-10)
+
+Compiler 6 registers `quiet_rope_v1` and `map_pool_replay_v1`, both version 1. This is implementation
+support, not activation of the owner's private candidate annotations. Control revision 10 and condenser
+revision 16 identify the new calculations and source ledgers. Existing per-map artifacts remain the
+durable archive; no schema migration is introduced.
+
+Rope endpoints may contain `landing.world_z` and `landing.tolerance`, both known metre values. World Z
+is replay player-position Z, including its position offset, not feet height. Tolerance is greater than
+zero and at most 0.5 metres. The compiler matches exactly one resolved walkable floor node using
+`node_z + height.origin_z / 10`. This explicit measured binding is a scoped exception to automatic
+single-floor placement. Retired authoring floor IDs remain ignored. A rebuild that cannot uniquely
+resolve either landing holds the bundle pending; coincident map coordinates never imply a zero-cost
+floor change.
+
+`quiet_directions` contains explicit directed entry/transit costs separately from physical `directions`.
+Only static endpoint ropes on Split, Summit and Abyss use this consumer. Unknown propagation and its
+arrival parents pay those seconds. `quiet_cuts` are directed pairs of placed, measured landing records
+for local connectors; they remove only quiet propagation shortcuts, preserving observed movement and
+unrelated walking paths. They are rebound against the exact height asset. Qualification must inspect
+neighbouring walk/drop and legacy-special bypasses in both directions, including a forbidden quiet
+direction. Having an arc alone does not establish that every local shortcut is cut. In-transit sound,
+visibility and ability transport are outside this consumer's scope.
+
+`replay_source` binds exact native actor names and class paths to family-specific reset RPCs and event
+rules. Multiple reviewed buttons may share one feature. Conditional rules require exported named integer
+parameters; unknown parameter handles never certify state. A fresh reset must occur in that round's
+buy phase. Equivalent events at one clock are deduplicated with evidence retained. Conflicts, partial
+capture and unknown parameters hold the round. The bounded capture reports `framed` separately from
+semantic and geometry qualification. Exported `OnDie` RPC identity may establish destruction without
+assigning names to inherited parameters, whose property framing is still checked.
+
+The map-pool panel consumer supports Sunset descent, Summit's clear-halfway/blocking-slam phases,
+Abyss breakables and Lotus rotation. One activation clock runs throughout Lotus's full cycle; the
+rotating physical slab occludes sight independently of the state-defined movement aperture. Pivot must
+be a point, panel must be a valid polygon/polyline and height bounds must resolve. Crush damage is not
+synthesized. Dynamic sampling errors fail the calculation rather than removing a blocker silently.
+Source actors, each second button, panel poses and landings still require real-map qualification.
+
+The site consumes a computation-produced reducer trace for generic feature status. Descending-door
+display includes continuous closure and the selected movement cutoff. The marker is a status aid;
+full rotating-panel rendering is not claimed. Fresh full control, fresh gaps-only and cached gaps must
+agree on reviewed real scenes before publication.
 
 `features.manifest` is None when no bundle is intended for a registered runtime consumer: no `features` key appears in control inputs and legacy fingerprints remain unchanged; intended pending bundles produce a manifest recording their disabled outcome. Otherwise its digest identifies an immutable per-map database artifact covering intended runtime definitions, pending outcomes, complete compiled nodes / occluders / arcs / base edits and canonical hashes, exact height digest, relevant base/legacy inputs, and schema, normalization, compiler, reducer-semantics and consumer versions; a round records this digest, and verification rehashes loaded bytes and recompiles archived definitions against recorded geometry under the recorded compiler. Editorial edits never move it.

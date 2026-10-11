@@ -60,7 +60,23 @@ def test_patch_hash_matches_the_powershell_recipe():
     # build_replay_parser.ps1 hashes "<file>\n<find>\n<replace>\n" per patch, UTF-8.
     import hashlib
     p = PIN.patches[0]
-    assert PIN.patch_hash == hashlib.sha256(f"{p['file']}\n{p['find']}\n{p['replace']}\n".encode()).hexdigest()
+    text = f"{p['file']}\n{p['find']}\n{p['replace']}\n"
+    text += ''.join(f"{s['file']}\n{s['sha256']}\n" for s in PIN.source_patches)
+    assert PIN.patch_hash == hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_source_patch_must_ship_with_the_pin_and_match_its_digest(tmp_path):
+    import shutil
+    pin_path = tmp_path / 'replay_parser.json'
+    shutil.copyfile(contract.PIN_FILE, pin_path)
+    for patch in PIN.source_patches:
+        destination = tmp_path / patch['file']
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(contract.PIN_FILE.parent / patch['file'], destination)
+    assert contract.load_pin(pin_path).patch_hash == PIN.patch_hash
+    destination.write_bytes(destination.read_bytes() + b'changed\n')
+    with pytest.raises(ContractError, match='source patch digest'):
+        contract.load_pin(pin_path)
 
 
 def test_diagnostic_classes():

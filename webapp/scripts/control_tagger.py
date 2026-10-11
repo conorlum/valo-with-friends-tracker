@@ -63,6 +63,7 @@ from app.control import geometry as cg  # noqa: E402
 from app.control import heights as hc  # noqa: E402
 from app.replays import choke_assets  # noqa: E402
 from app.replays import map_feature_schema as ms  # noqa: E402
+from app.replays import map_feature_inputs as fi  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "control_tagger.template.html"
@@ -145,8 +146,21 @@ def build(tags: dict, lines_by_map: dict, names: list[str] | None = None, starts
     return maps
 
 
-def render(tags: dict, maps: dict, heights_dir: Path | None = None) -> str:
-    data = json.dumps({"tags": tags, "maps": maps, "features": features_data(sorted(maps), heights_dir)},
+def render(tags: dict, maps: dict, heights_dir: Path | None = None, diagnostics: dict | None = None) -> str:
+    features = features_data(sorted(maps), heights_dir)
+    if diagnostics is not None:
+        name = diagnostics.get('map')
+        if name not in maps or diagnostics.get('editor_entry') != tags.get('maps', {}).get(name):
+            raise ValueError('Diagnostic report map/annotation identity does not match this page')
+        if diagnostics.get('context', {}).get('image_sha') != maps[name]['image_sha']:
+            raise ValueError('Diagnostic report image identity does not match the page image')
+        floor = features['floors'][name]
+        if diagnostics.get('height') != (floor.get('height_sha') or 'flat'):
+            raise ValueError('Diagnostic report height does not match the page height context')
+        if (diagnostics.get('schema'), diagnostics.get('compiler'), diagnostics.get('normalization')) != (ms.SCHEMA_VERSION, fi.FEATURE_COMPILER_VERSION, fi.FEATURE_NORMALIZATION_VERSION):
+            raise ValueError('Diagnostic report versions are stale; regenerate it')
+        features['diagnostics'] = {name: diagnostics}
+    data = json.dumps({"tags": tags, "maps": maps, "features": features},
                       separators=(",", ":")).replace("</", "<\\/")
     core = CORE_JS.read_text(encoding="utf-8")
     ui = FEATURES_JS.read_text(encoding="utf-8")
@@ -163,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
                                                     "(players at t = 0 stand pressed against the barriers)")
     parser.add_argument("--heights-dir", type=Path, help="read each map's heights from an export of the database's "
                                                          "active asset (control_heights.py export)")
+    parser.add_argument('--diagnostics', type=Path, help='attach an exact compiler diagnostic report; identity/height mismatches are refused')
     args = parser.parse_args(argv)
     tags = json.loads(args.tags.read_text(encoding="utf-8"))
     lines = json.loads(KILL_LINES.read_text(encoding="utf-8"))["maps"] if KILL_LINES.is_file() else {}
@@ -170,7 +185,12 @@ def main(argv: list[str] | None = None) -> int:
     maps = build(tags, lines, args.map, starts)
     out = args.out or Path(os.environ.get("TEMP") or tempfile.gettempdir()) / "valo-control-tagger" / "control-tagger.html"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(tags, maps, args.heights_dir), encoding="utf-8")
+    diagnostics = json.loads(args.diagnostics.read_text(encoding='utf-8')) if args.diagnostics else None
+    try:
+        page = render(tags, maps, args.heights_dir, diagnostics)
+    except ValueError as exc:
+        parser.error(str(exc))
+    out.write_text(page, encoding="utf-8")
     print(f"{len(maps)} maps -> {out} ({out.stat().st_size / 1e6:.1f} MB)")
     return 0
 

@@ -41,12 +41,12 @@ RESULT_WINDOW_S = 3.0
 SHOT_LOOKBACK_S = 0.5
 BEHIND_DEG = 120.0
 ROUTE_THIN_S = 0.5
-GAPS_REVISION = 2    # 2: stack merge (R1)
+GAPS_REVISION = 3    # 3: feature occlusion in exposure and release attribution
 TURN_DEG = 1.0      # a facing change of at most this between two ticks is not a turn (aim noise)
 CAUSE_ORDER = ("route_released", "victim_turned", "victim_moved", "open_timing")
 # The engine's own locating events (Unknown.apply, _locating), gathered onto the next tick as before W09.
 LEGACY_EVENTS = frozenset({"kill", "plant", "damage", "gunfire", "footsteps", "seen", "revived"})
-REASONS = ("died", "turned", "moved", "blinded", "smoked", "utility_expired", "utility_left", "other")
+REASONS = ("died", "turned", "moved", "blinded", "smoked", "utility_expired", "utility_left", "other", "map_feature_closed")
 _CODE = {r: i for i, r in enumerate(REASONS)}
 FULL_CIRCLE = np.arange(0.0, 360.0, RAY_STEP_DEG)
 
@@ -351,10 +351,20 @@ class GapDetector:
             out[:] = _CODE["blinded"]
             return out
         rest = np.ones(len(nodes), bool)
+        from app.control.features import BoundedOccluder
+        feature_blockers = [s for s in rec.smokes if isinstance(s, BoundedOccluder)]
+        if feature_blockers:
+            regular = [s for s in rec.smokes if not isinstance(s, BoundedOccluder)]
+            with_features = self._sight(p.x, p.y, p.eye_z, p.node, rec.smokes)
+            without_features = self._sight(p.x, p.y, p.eye_z, p.node, regular)
+            feature_hidden = (without_features & ~with_features)[nodes]
+            out[feature_hidden] = _CODE['map_feature_closed']
+            rest &= ~feature_hidden
         blocked = self._smoked(p, rec)
         if blocked is not None:
-            rest = ~blocked[nodes]
-            out[~rest] = _CODE["smoked"]
+            smoke_hidden = rest & blocked[nodes]
+            out[smoke_hidden] = _CODE["smoked"]
+            rest &= ~smoke_hidden
         before = self._players_prev.get(slot)
         if before is not None and before.node != p.node:
             out[rest] = _CODE["moved"]

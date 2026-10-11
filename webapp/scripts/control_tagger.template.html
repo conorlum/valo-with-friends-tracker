@@ -163,8 +163,9 @@
           <li><b>Switch/trigger</b>: click where the switch is, then <b>Link</b> (<kbd>K</kbd>) and click each door it
             operates. One trigger can operate several doors; nothing is linked by distance.</li>
           <li><b>Zipline / Vertical rope / Teleporter</b>: click landing A, then landing B (a rope's two landings can
-            be the same spot). Placement uses measured floors automatically. Every required cell must be walkable
-            and have one floor; ambiguous or missing ground stays <b>pending</b>.</li>
+            be the same spot). Rope landings also need measured replay position Z and a small tolerance to bind
+            distinct floor nodes. Other placement uses a single measured floor automatically. Ambiguous or missing
+            ground stays <b>pending</b>; backend diagnostics qualify the final bindings.</li>
           <li>Anything you don't know stays <b>unknown</b>: times, height bounds, what a press mid-motion does.
             The checks list what is still open; that is fine to save and export.</li>
           <li>The <b>Sandbox</b> in the panel plays switches, breaks and players walking in and out, through the same

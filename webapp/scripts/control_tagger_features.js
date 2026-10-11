@@ -181,19 +181,23 @@
   function commit(next, keepSel) {
     if (readOnly()) return;
     var c = cur();
+    ui.issueCells = null;
     c.hist = F.historyPush(c.hist, next);
     c.mf = c.hist.present; c.dirty = true;
     highs[mapName()] = Math.max(highs[mapName()] || 1, c.hist.high);
     if (!keepSel && ui.sel && !F.find(c.mf, ui.sel)) ui.sel = null;
     autosave();
+    ui.slideClosure = {};
+    resimulate();
     render();
   }
   function edit(id, path, value) { commit(F.setField(mf(), id, path, value), true); }
   function step(move) {
     if (readOnly()) return;
     var c = cur();
+    ui.issueCells = null;
     c.hist = move(Object.assign({}, c.hist, { high: Math.max(c.hist.high || 1, highs[mapName()] || 1) }));
-    c.mf = c.hist.present; c.dirty = true; autosave(); render();
+    c.mf = c.hist.present; c.dirty = true; autosave(); ui.slideClosure = {}; resimulate(); render();
   }
   function doUndo() { step(F.undo); }
   function doRedo() { step(F.redo); }
@@ -233,6 +237,7 @@
     }
     if (pl === "pivot") return { path: ["rotation", "pivot"] };
     if (pl === "panel") return { path: ["rotation", "panel"] };
+    if (pl === "slide-open") return { path: ["sliding", "open_center"] };
     if (pl === "noise") return { path: ["noise", "origin"] };
     if (pl === "potential_ground" || pl === "remove_sight") return { path: ["base_edits", pl] };
     var si = stateIndex(o);
@@ -412,24 +417,46 @@
         var o = { t: e.t, kind: e.kind }; if (e.occupant) o.occupant = e.occupant; return o;
       });
       var trace = [];
-      try { trace = F.run(f, mine, s.t); } catch (err) { trace = [{ t: s.t, kind: "error", result: "rejected", reason: String(err.message), state: f.initial_state }]; }
+      s.fullStates = s.fullStates || {};
+      try { var evaluated = F.evaluate(f, mine, s.t); trace = evaluated.trace; s.fullStates[f.id] = evaluated.state; }
+      catch (err) { delete s.fullStates[f.id]; trace = [{ t: s.t, kind: "error", result: "rejected", reason: String(err.message), state: f.initial_state }]; }
       s.traces[f.id] = trace;
       if (trace.length) states[f.id] = trace[trace.length - 1].state;
     });
     ui.sim[mapName()] = states;
   }
   function simulate(fid, kind, occupant) {
+    ui.slideClosure = {};
     var s = simOf();
     s.events.push({ t: s.t, kind: kind, feature: fid, occupant: occupant });
     resimulate(); render();
   }
   function simTrigger(tid) {
+    ui.slideClosure = {};
     var t = F.find(mf(), tid), s = simOf();
     (t && t.targets || []).forEach(function (x) { s.events.push({ t: s.t, kind: x.event, feature: x.feature, occupant: x.event.indexOf("proximity") === 0 ? "sim" : undefined }); });
     resimulate(); render();
   }
-  function simAdvance(dt) { simOf().t = Math.round((simOf().t + dt) * 1000) / 1000; resimulate(); render(); }
-  function simReset() { var s = simOf(); s.events = []; s.t = 0; s.traces = {}; ui.sim[mapName()] = {}; render(); }
+  function simAdvance(dt) { ui.slideClosure = {}; simOf().t = Math.round((simOf().t + dt) * 1000) / 1000; resimulate(); render(); }
+  function simReset() { ui.slideClosure = {}; var s = simOf(); s.events = []; s.t = 0; s.traces = {}; s.fullStates = {}; ui.sim[mapName()] = {}; render(); }
+
+  function enableSliding(id) {
+    var f = F.find(mf(), id), names = f && (f.states || []).map(function(s) {return s.name;});
+    if (!names || names.indexOf("open") < 0 || names.indexOf("closed") < 0 || f.sliding) return false;
+    commit(F.setField(mf(), id, ["sliding"], {axis:"unresolved",open_state: "open", closed_state: "closed", open_center: null}), true);
+    return true;
+  }
+  function slidingPreview(f) {
+    if (!f.sliding) return null;
+    var sim = simOf(), manual = (ui.slideClosure || {})[f.id], full = (sim.fullStates || {})[f.id];
+    if (full && full.state !== shownState(f)) full = null;
+    var fraction = manual !== undefined ? manual : F.slidingClosureAt(f, full || {state: shownState(f)}, sim.t);
+    if (fraction === null) return null;
+    var cells = F.slidingCoverage(f, fraction);
+    if (!cells) return null;
+    return {fraction: fraction, cells: cells, pose: F.slidingPose(f, fraction), vertical:f.sliding.axis === "vertical",
+            bounds:F.slidingVerticalBounds(f,fraction)};
+  }
 
   // The preview's masks with every feature in its shown state (TaggerCore composeFeatures = features.py
   // compose_masks): drawn as the difference from the permanent masks.
@@ -458,15 +485,35 @@
       for (var g = 0; g <= PX; g += 8) { ctx.moveTo(g, 0); ctx.lineTo(g, PX); ctx.moveTo(0, g); ctx.lineTo(PX, g); }
       ctx.stroke();
     }
+    if (ui.issueCells) {
+      ctx.fillStyle = "rgba(255,165,0,0.55)";
+      ui.issueCells.forEach(function (cell) { ctx.fillRect((cell % 128) * 8, Math.floor(cell / 128) * 8, 8, 8); });
+    }
     (L.features ? m.features || [] : []).forEach(function (f) {
       var sel = f.id === ui.sel, name = shownState(f), st = (f.states || []).filter(function (s) { return s.name === name; })[0];
       var colour = sel ? "rgba(255,255,255,0.95)" : "rgba(76,201,240,0.9)";
       (f.states || []).forEach(function (s) {
         if (s !== st && s.footprint && sel) drawGeom(s.footprint, "rgba(76,201,240,0.35)", null, 1);
       });
-      if (st) {
+      var slide = slidingPreview(f);
+      if (st && !slide) {
         if (st.footprint) drawGeom(st.footprint, colour, st.blocks_movement ? "rgba(76,201,240,0.35)" : "rgba(76,201,240,0.08)");
         if (L.sight) (st.sight || []).forEach(function (o) { drawGeom(o.geometry, (o.bounds || {}).ref === "unresolved" ? "rgba(245,165,36,0.9)" : "rgba(229,72,77,0.95)", null, 3); });
+      }
+      if (slide) {
+        var closed = F.slidingClosed(f);
+        drawGeom(closed.footprint, "rgba(76,201,240,0.35)", null, 1);
+        if (slide.vertical) {
+          drawGeom(slide.pose,"rgba(190,110,255,0.95)",null,3);
+          if (L.sight) (closed.sight || []).forEach(function(o) {drawGeom(o.geometry,"rgba(190,110,255,0.65)",null,2);});
+        } else {
+          drawGeom(f.sliding.open_center, colour);
+          drawGeom(slide.pose, "rgba(76,201,240,0.65)", null, 2);
+          var packed = T.packPaint(slide.cells);
+          if (packed) drawGeom({type: "paint", cells: packed}, colour, "rgba(229,72,77,0.65)");
+          var centre = F.slidingCenter(f);
+          drawGeom({type:"point",uv:centre}, "rgba(255,214,0,0.9)");
+        }
       }
       var edits = f.base_edits || {};
       if (L.base && edits.potential_ground) drawGeom(edits.potential_ground, "rgba(48,164,108,0.9)", "rgba(48,164,108,0.3)", 1);
@@ -601,7 +648,7 @@
   canvas.addEventListener("pointerdown", function (e) {
     if (e.button !== 0 || ui.panning) return;
     var p = toMap(e);
-    if (ui.tool === "select") { ui.sel = hit(p); render(); return; }
+    if (ui.tool === "select") { ui.sel = hit(p); ui.issueCells = null; render(); return; }
     if (ui.tool === "link") { var f = hit(p, true); if (f) linkTo(f); return; }
     if (ui.tool === "point") { placePoint(p); return; }
     if (ui.tool === "line" || ui.tool === "polygon") {
@@ -666,10 +713,10 @@
   document.addEventListener("keyup", function (e) { if (e.key === " ") ui.space = false; });
 
   // ---------------------------------------------------------------- panels
-  function valueEditor(v, unit, onChange) {
+  function valueEditor(v, unit, onChange, allowNegative) {
     var known = v && v.status === "known";
     var wrap = document.createElement("span");
-    wrap.innerHTML = "<input type=\"number\" step=\"any\" min=\"0\" style=\"width:6em\"" + (known ? " value=\"" + esc(v.value) + "\"" : " disabled") + "> " +
+    wrap.innerHTML = "<input type=\"number\" step=\"any\"" + (allowNegative ? "" : " min=\"0\"") + " style=\"width:6em\"" + (known ? " value=\"" + esc(v.value) + "\"" : " disabled") + "> " +
       esc(unit) + " <label style=\"display:inline-flex\"><input type=\"checkbox\"" + (known ? "" : " checked") + "> unknown</label>";
     var num = wrap.querySelector("input[type=number]"), box = wrap.querySelector("input[type=checkbox]");
     function fire() {
@@ -722,6 +769,7 @@
   }
   function boundsEditor(fid, path, bounds) {
     var b = bounds || { ref: "unresolved" }, box = document.createElement("div");
+    box.id = "feat-field-" + fid + "-" + path.join("-"); box.tabIndex = -1;
     box.appendChild(row("Sight bounds", selectEl([["unresolved", "unresolved"], ["ground", "above a floor's ground"], ["world", "world height"], ["all_height", "every height (verified)"]], b.ref, function (ref) {
       var nb = { ref: ref };
       if (ref === "ground" || ref === "world") { nb.bottom = b.bottom || { status: "unresolved" }; nb.top = b.top || { status: "unresolved" }; }
@@ -768,6 +816,12 @@
   }
 
   function featureProps(box, f) {
+    if (mapName() === 'Ascent') {
+      box.appendChild(row('Replay binding', selectEl([['', 'Unbound'], ['ascent_market', 'Market Door'],
+        ['ascent_garden', 'Garden Door'], ['ascent_heaven_glass', 'Heaven Glass']], f.replay_key || '',
+        function (v) { edit(f.id, ['replay_key'], v || undefined); })));
+      box.appendChild(document.createTextNode('Binding connects decoded replay states. It does not verify the drawing or height bounds.'));
+    }
     var seeds = FD.seeds[mapName()] || [];
     box.appendChild(row("Status", selectEl([["draft", "draft"], ["needs_verification", "needs verification"], ["user_reviewed", "user reviewed"]], f.review || "draft",
       function (v) { edit(f.id, ["review"], v); })));
@@ -777,23 +831,37 @@
     box.appendChild(row("Round-start state", selectEl([["", "needs verification"]].concat(names.map(function (n) { return [n, n]; })), f.initial_state || "",
       function (v) { edit(f.id, ["initial_state"], v || null); })));
     box.appendChild(row("Drawing on state", selectEl(names.map(function (n) { return [n, n]; }), ui.editState[f.id] || f.initial_state || names[0],
-      function (v) { ui.editState[f.id] = v; render(); })));
+      function (v) { ui.editState[f.id] = v; ui.issueCells = null; render(); })));
     box.appendChild(row('Placement', document.createTextNode('Automatic: every required cell must have one measured floor.')));
     (f.states || []).forEach(function (s, si) {
       var fs = fieldset("State: " + s.name + (s.terminal ? " (terminal for the round)" : ""));
+      fs.id = "feat-state-" + f.id + "-" + si; fs.tabIndex = -1;
       fs.appendChild(row("Blocks movement", checkEl(s.blocks_movement, function (v) { edit(f.id, ["states", si, "blocks_movement"], v); })));
       fs.appendChild(row("Blocks vision", checkEl(s.blocks_sight, function (v) { edit(f.id, ["states", si, "blocks_sight"], v); })));
       fs.appendChild(row("Footprint", document.createTextNode(s.footprint ? s.footprint.type : "not drawn")));
       if (s.footprint && s.blocks_sight) fs.appendChild(boundsEditor(f.id, ["states", si, "sight_bounds"], s.sight_bounds));
       (s.sight || []).forEach(function (occ, j) {
         var sub = fieldset("Sight blocker " + (j + 1));
+        if (!s.blocks_sight) sub.appendChild(document.createTextNode("This state does not block vision. Its sight edge has no vision effect, but still needs valid geometry and placement bounds. Remove it explicitly if it is unintended."));
         sub.appendChild(boundsEditor(f.id, ["states", si, "sight", j, "bounds"], occ.bounds));
         sub.appendChild(button("Remove", function () {
           var next = s.sight.slice(); next.splice(j, 1); edit(f.id, ["states", si, "sight"], next);
         }));
         fs.appendChild(sub);
       });
-      fs.appendChild(button("Draw footprint", function () { ui.editState[f.id] = s.name; ui.placing = null; setTool("polygon"); render(); }));
+      var drawFootprint = button("Draw footprint", function () { ui.editState[f.id] = s.name; ui.placing = null; setTool("polygon"); render(); });
+      drawFootprint.id = "feat-field-" + f.id + "-states-" + si + "-footprint";
+      fs.appendChild(drawFootprint);
+      var sources = (f.states || []).filter(function (other) { return other.name !== s.name && other.footprint && !F.geometryProblems(other.footprint).length; });
+      if (sources.length) {
+        var copyBounds = button("Copy footprint and vision bounds", function () { copyFootprint(f.id, fromState.value, s.name, true); });
+        function updateCopyBounds() { var source = sources.find(function (other) { return other.name === fromState.value; }); copyBounds.disabled = !source || !source.sight_bounds; }
+        var fromState = selectEl(sources.map(function (other) { return [other.name, other.name]; }), sources[0].name, updateCopyBounds);
+        fs.appendChild(row("Copy footprint from", fromState));
+        fs.appendChild(button("Copy footprint only", function () { copyFootprint(f.id, fromState.value, s.name); }));
+        fs.appendChild(copyBounds); updateCopyBounds();
+        fs.appendChild(document.createTextNode(" Copies the shape and optional bounds. Choose motion coverage explicitly; movement/vision flags and motion behavior stay as set."));
+      }
       fs.appendChild(button("Draw sight edge", function () { ui.editState[f.id] = s.name; ui.placing = null; setTool("line"); render(); }));
       if (s.footprint) fs.appendChild(button("Clear footprint", function () { edit(f.id, ["states", si, "footprint"], undefined); }));
       box.appendChild(fs);
@@ -812,6 +880,79 @@
       if (r.follow_up) tr.appendChild(row("Then after", valueEditor(r.follow_up.after, "s", function (v) { edit(f.id, ["transitions", ri, "follow_up", "after"], v); })));
     });
     box.appendChild(tr);
+    if (f.sliding) {
+      var sliding = fieldset("Sliding panel (preview)");
+      var vertical = f.sliding.axis === "vertical";
+      var horizontal = f.sliding.axis === undefined || f.sliding.axis === "horizontal";
+      sliding.appendChild(row("Motion direction",selectEl([["unresolved","choose direction"],["horizontal","across the minimap"],["vertical","descends from above"]],f.sliding.axis || "horizontal",
+        function(v) {edit(f.id,["sliding","axis"],v);} )));
+      sliding.appendChild(document.createTextNode(vertical ? "The panel descends through a fixed doorway. The minimap outline stays fixed; the side view shows the shrinking gap. Approximate player heights do not resolve metre measurements. The flat composed overlay cannot test seeing beneath this panel." : horizontal ? "The closed footprint is the panel and doorway. Place the open centre where the yellow closed-centre marker moves when fully open. Red cells show the panel inside the doorway. This previews geometry; it does not verify placement or replay behavior." : "Choose the observed direction before describing panel travel."));
+      ["open_state", "closed_state"].forEach(function(key) {
+        sliding.appendChild(row(key === "open_state" ? "Open state" : "Closed state", selectEl(names.map(function(n) {return [n,n];}), f.sliding[key],
+          function(v) {edit(f.id, ["sliding",key],v);}))); });
+      if (horizontal) sliding.appendChild(button("Place open panel centre", function() {ui.placing = "slide-open"; setTool("point");}));
+      F.slidingProblems(f).concat(F.slidingVerticalProblems(f)).forEach(function(message) {sliding.appendChild(row("Needs input",document.createTextNode(message)));});
+      var openCoverage = horizontal && F.slidingCoverage(f,0);
+      if (openCoverage && openCoverage.some(function(cell) {return !!cell;}))
+        sliding.appendChild(row("Needs input",document.createTextNode("The panel still covers part of the doorway at fully open. Move the open centre farther along its travel direction.")));
+      var elevation, panel, gapLabel, passageLabel;
+      if (vertical) {
+        sliding.appendChild(row("Open clearance (verified metres above floor)",valueEditor(f.sliding.open_clearance,"m",function(v) {
+          edit(f.id,["sliding","open_clearance"],Object.assign({},f.sliding.open_clearance || {},v)); })));
+        var estimate = document.createElement("input"); estimate.type="number"; estimate.min="0"; estimate.step="0.1";
+        estimate.value=String((f.sliding.open_clearance || {}).estimate_player_heights || "");
+        estimate.addEventListener("change",function() {var v=+estimate.value; if (Number.isFinite(v) && v>0) edit(f.id,["sliding","open_clearance","estimate_player_heights"],v);});
+        sliding.appendChild(row("Approximate open clearance (player heights)",estimate));
+        var conservative = Object.prototype.hasOwnProperty.call(f.sliding,"movement_cutoff");
+        sliding.appendChild(row("Movement model",selectEl([["metric","Measured passage clearance"],["conservative","Conservative closure cutoff"]],conservative ? "conservative" : "metric",function(v) {
+          edit(f.id,["sliding","movement_cutoff"],v === "conservative" ? {status:"known",value:0.3,unit:"fraction",basis:"conservative"} : undefined);
+        })));
+        if (conservative) {
+          var cutoff = document.createElement("input"); cutoff.type="number"; cutoff.min="0"; cutoff.max="99.99"; cutoff.step="1"; cutoff.id="slideMovementCutoff";
+          var cutoffValue = F.slidingMovementCutoff(f); cutoff.value=cutoffValue === null ? "" : String(cutoffValue*100);
+          cutoff.addEventListener("change",function() {var v=+cutoff.value; if (cutoff.value.trim() && Number.isFinite(v) && 0<=v && v<100)
+            edit(f.id,["sliding","movement_cutoff"],{status:"known",value:v/100,unit:"fraction",basis:"conservative"}); });
+          sliding.appendChild(row("Passable through (% closed)",cutoff));
+          sliding.appendChild(document.createTextNode("Owner-selected approximation: block movement beyond this closure, including crouching. This is not a measured clearance or a model of slowed movement."));
+        } else sliding.appendChild(row("Verified movement clearance (metres)",valueEditor(f.sliding.movement_clearance,"m",function(v) {edit(f.id,["sliding","movement_clearance"],v);} )));
+        sliding.appendChild(document.createTextNode("Sight still needs verified height bounds above the floor's ground."));
+        elevation=document.createElement("div"); elevation.id="slideElevation"; elevation.style.position="relative"; elevation.style.width="180px"; elevation.style.height="120px";
+        elevation.style.background="rgba(76,201,240,0.15)"; elevation.style.border="2px solid #aaa"; elevation.setAttribute("role","img");
+        panel=document.createElement("div"); panel.style.position="absolute"; panel.style.top="0"; panel.style.width="100%"; panel.style.background="rgba(229,72,77,0.7)";
+        elevation.appendChild(panel); gapLabel=document.createElement("span"); gapLabel.id="slideGapLabel";
+        sliding.appendChild(elevation); sliding.appendChild(gapLabel);
+        passageLabel=document.createElement("span"); passageLabel.id="slidePassageLabel"; sliding.appendChild(row("Movement preview",passageLabel));
+      }
+      var closeRow = (f.transitions || []).find(function(r) {return r.motion && r.to === f.sliding.closed_state;});
+      var duration = closeRow && F.known(closeRow.motion.duration), validDuration = Number.isFinite(duration) && duration > 0;
+      var current = slidingPreview(f), fraction = current ? current.fraction : 0;
+      var slideLabel = document.createElement("span"); slideLabel.id = "slideLabel";
+      function labelClosure(frac) {
+        slideLabel.textContent = (validDuration ? (frac*duration).toFixed(2) + " / " + duration + " s — " : "") + Math.round(frac*100) + "% closed";
+        if (vertical) {
+          var band=F.slidingVerticalBounds(f,frac), estimated=(f.sliding.open_clearance || {}).estimate_player_heights;
+          var gap=band && F.known(band.bottom), top=band && F.known(band.top);
+          panel.style.height=String(band ? (1-gap/top)*100 : frac*100)+"%";
+          gapLabel.textContent=band ? "Gap above floor: "+gap.toFixed(2)+" m" :
+            (Number.isFinite(estimated) && estimated>0 ? "Approximate proportional gap: "+(estimated*(1-frac)).toFixed(2)+" player heights; metres unresolved" : "Proportional sketch only; clearance unresolved");
+          elevation.setAttribute("aria-label",gapLabel.textContent);
+          var passage = F.slidingMovementBlocked(f,frac);
+          passageLabel.textContent = (passage === null ? "Pending clearance" : passage ? "Blocked" : "Passable") +
+            (Object.prototype.hasOwnProperty.call(f.sliding,"movement_cutoff") ? " (conservative approximation)" : "");
+        }
+      }
+      labelClosure(fraction);
+      if (!current) slideLabel.textContent = "Position unknown. Scrub to preview a pose.";
+      var closeSlider = document.createElement("input"); closeSlider.type = "range"; closeSlider.min = "0"; closeSlider.max = "100"; closeSlider.step = "1";
+      closeSlider.id = "slideSlider"; closeSlider.value = String(Math.round(fraction*100)); closeSlider.disabled = F.slidingProblems(f).length > 0;
+      closeSlider.addEventListener("input",function() {ui.slideClosure = ui.slideClosure || {}; ui.slideClosure[f.id] = +closeSlider.value/100; labelClosure(+closeSlider.value/100); draw();});
+      sliding.appendChild(row("Closing preview",closeSlider)); sliding.appendChild(slideLabel);
+      sliding.appendChild(button("Follow sandbox clock",function() {ui.slideClosure = ui.slideClosure || {}; delete ui.slideClosure[f.id]; resimulate(); render();}));
+      sliding.appendChild(button("Remove sliding preview",function() {edit(f.id,["sliding"],undefined);}));
+      box.appendChild(sliding);
+    } else if (names.indexOf("open") >= 0 && names.indexOf("closed") >= 0 && !f.rotation) {
+      box.appendChild(button("Enable linear sliding preview",function() {enableSliding(f.id);}));
+    }
     var caps = fieldset("Capabilities");
     var breakable = (f.capabilities || []).indexOf("breakable") >= 0;
     if (breakable) caps.appendChild(row("Breakable", document.createTextNode("yes: destroyed until the next round")));
@@ -915,6 +1056,18 @@
     (r.endpoints || []).forEach(function (e, i) {
       var fs = fieldset("Landing " + e.id.toUpperCase() + (e.uv ? "" : " (not placed)"));
       fs.appendChild(button("Place " + e.id.toUpperCase(), function () { ui.placing = "endpoint:" + e.id; setTool("point"); }));
+      if (r.kind === 'rope') {
+        var landing = e.landing || {};
+        function setLanding(key, value) {
+          var next = {world_z:{status:'unresolved'}, tolerance:{status:'unresolved'}};
+          Object.keys(landing).forEach(function (k) {next[k] = landing[k];});
+          next[key] = value;
+          edit(r.id, ['endpoints', i, 'landing'], next);
+        }
+        fs.appendChild(row('Replay position Z (world metres)', valueEditor(landing.world_z, 'm', function (v) {setLanding('world_z', v);}, true)));
+        fs.appendChild(row('Height tolerance (above 0, at most 0.5 m)', valueEditor(landing.tolerance, 'm', function (v) {setLanding('tolerance', v);})));
+        fs.appendChild(document.createTextNode('Use measured boarding position Z from replay evidence, including its vertical position offset. Both ends need distinct floor nodes. A floor label does not resolve this; backend diagnostics verify the binding.'));
+      }
       box.appendChild(fs);
     });
     box.appendChild(row("Boarding", selectEl([["endpoint_only", "at the ends only"], ["sites", "also at marked sites"]],
@@ -937,6 +1090,23 @@
       fs.appendChild(button("Remove this direction", function () { var next = r.directions.slice(); next.splice(i, 1); edit(r.id, ["directions"], next); }));
       box.appendChild(fs);
     });
+    if (r.kind === 'rope') {
+      var quiet = fieldset('Quiet unknown travel');
+      if (!r.quiet_directions) quiet.appendChild(button('Use current directions as quiet estimates', function () {
+        edit(r.id, ['quiet_directions'], JSON.parse(JSON.stringify(r.directions || [])));
+      }));
+      (r.quiet_directions || []).forEach(function (d, i) {
+        var direction = fieldset(d.from.toUpperCase() + ' → ' + d.to.toUpperCase());
+        direction.appendChild(row('Quiet entry', valueEditor(d.entry, 's', function (v) {edit(r.id, ['quiet_directions', i, 'entry'], v);} )));
+        direction.appendChild(row('Quiet ride', valueEditor(d.transit, 's', function (v) {edit(r.id, ['quiet_directions', i, 'transit'], v);} )));
+        direction.appendChild(button('Remove quiet direction', function () {
+          var next = r.quiet_directions.slice(); next.splice(i, 1); edit(r.id, ['quiet_directions'], next);
+        }));
+        quiet.appendChild(direction);
+      });
+      quiet.appendChild(document.createTextNode('These estimates affect hypothetical quiet travel. Physical directions above stay separate. Local connector bypasses must be checked before activation.'));
+      box.appendChild(quiet);
+    }
     box.appendChild(row("Closed while riding", selectEl([["unresolved", "unknown"], ["complete", "rider still arrives"], ["abort", "ride must fit"]], r.in_transit || "unresolved",
       function (v) { edit(r.id, ["in_transit"], v); })));
     if (owner && (owner.states || []).length > 1)
@@ -953,7 +1123,7 @@
       var b = document.createElement("button");
       b.textContent = (o.name || o.label || o.id) + " · " + o.id;
       if (o.id === ui.sel) b.className = "sel";
-      b.addEventListener("click", function () { ui.sel = o.id; render(); });
+      b.addEventListener("click", function () { ui.sel = o.id; ui.issueCells = null; render(); });
       list.appendChild(b);
     });
   }
@@ -962,12 +1132,20 @@
     var m = mf(), rep = F.validate(m, FD.seeds[mapName()] || [], ((canonical.maps || {})[mapName()] || {}).specials);
     var out = [];
     if (cur().incompatible) out.push("<b class=\"issue-error\">This map's loaded annotations use another schema version: shown empty, never overwritten.</b>");
-    rep.errors.forEach(function (e) { out.push("<span class=\"issue-error\" data-where=\"" + esc(e.where) + "\">✖ " + esc(e.where) + ": " + esc(e.message) + "</span>"); });
-    rep.warnings.forEach(function (w) { out.push("<span class=\"issue-warn\" data-where=\"" + esc(w.where) + "\">⚠ " + esc(w.where) + ": " + esc(w.message) + "</span>"); });
+    rep.errors.forEach(function (e) { out.push("<button type=\"button\" class=\"issue-error\" data-where=\"" + esc(e.where) + "\">✖ " + esc(e.where) + ": " + esc(e.message) + "</button>"); });
+    rep.warnings.forEach(function (w) { out.push("<button type=\"button\" class=\"issue-warn\" data-where=\"" + esc(w.where) + "\">⚠ " + esc(w.where) + ": " + esc(w.message) + "</button>"); });
     var placed = placements();
-    Object.keys(placed).sort().forEach(function(id) { placed[id].reasons.forEach(function(r) {
-      out.push('<span class="issue-warn">' + esc(id) + ': pending ' + esc(r.code) + ' (' + r.cell_count + ' cells)</span>');
-    }); });
+    placementIssues(placed).forEach(function(r) {
+      var id = r.affected_features[0];
+      var o = F.find(m, id), location = issueLocation(r.path), owner = location && F.find(m, location.id);
+      var message = {invalid_geometry:"Draw or correct the required shape", invalid_bounds:"Choose verified vision bounds", off_map:"Move the shape inside the map",
+        missing_floor:"Required cells have no measured floor", multi_floor:"Required cells have multiple floors", unresolved_height:"Required heights are unresolved",
+        empty_geometry:"The shape covers no placement cells", off_ground:"Required cells are outside walkable ground"}[r.code] || r.code.replace(/_/g, " ");
+      var label = (owner && owner.name || o && o.name || id) + " · " + (location && location.state ? location.state + " · " : "") +
+        (location ? location.field : r.path);
+      out.push('<button type="button" class="issue-warn" data-where="' + esc(r.path) + '">' + esc(label) + ': ' + esc(message) +
+        (r.cells && r.cells.length ? ' (' + r.cell_count + ' cells)' : '') + '</button> <span class="muted">' + esc(r.code) + '</span>');
+    });
     offGround(m).forEach(function (w) {
       out.push("<span class=\"issue-warn\" data-where=\"" + esc(w) + "\">⚠ " + esc(w) + ": landing not on walkable ground (the minimap may omit it: restore ground or move the landing; nothing is snapped)</span>");
     });
@@ -977,15 +1155,71 @@
     $("featExport").disabled = false;
   }
 
+  // Validator and placement paths have different prefixes; resolve both to the actual authored object.
+  function issueLocation(path) {
+    var match = /^(?:(?:features|triggers|routes)\.)?((?:feature|trigger|route)-\d+)(?:\.|:|$)(.*)$/.exec(path || "");
+    if (!match) return null;
+    var rest = match[2], obj = F.find(mf(), match[1]);
+    var state = (obj && obj.states || []).slice().sort(function (a,b) { return b.name.length - a.name.length; }).find(function (s) {
+      return rest === "states." + s.name || rest.indexOf("states." + s.name + ".") === 0;
+    });
+    return {id:match[1], state:state ? state.name : null, field:state ? rest.slice(8 + state.name.length) : rest};
+  }
+  function focusIssue(path) {
+    var location = issueLocation(path), obj = location && F.find(mf(), location.id);
+    if (!obj) return false;
+    ui.sel = obj.id; ui.draft = null; ui.placing = null; setTool("select");
+    ui.issueCells = [];
+    var placement = placements();
+    Object.keys(placement).forEach(function (id) { placement[id].reasons.forEach(function (r) {
+      if (r.path === path) ui.issueCells = ui.issueCells.concat(r.cells || []);
+    }); });
+    ui.issueCells = Array.from(new Set(ui.issueCells));
+    var si = (obj.states || []).findIndex(function (s) { return s.name === location.state; });
+    if (si >= 0) ui.editState[obj.id] = location.state;
+    render();
+    var field = location.field.replace(/\[(\d+)\]/g, ".$1").split(".");
+    var targetId = si >= 0 ? "feat-field-" + obj.id + "-states-" + si + "-" + field.join("-") : null;
+    var targetEl = targetId && document.getElementById(targetId);
+    if (!targetEl && si >= 0) targetEl = document.getElementById("feat-state-" + obj.id + "-" + si);
+    if (!targetEl) targetEl = $("featProps");
+    targetEl.scrollIntoView({block:"nearest"}); targetEl.focus();
+    return true;
+  }
+
+  function placementIssues(placed) {
+    var grouped = {};
+    Object.keys(placed).sort().forEach(function (id) { placed[id].reasons.forEach(function (reason) {
+      var key = reason.code + ":" + reason.path;
+      var group = grouped[key] || (grouped[key] = {code:reason.code,path:reason.path,cells:[],affected_features:[]});
+      group.cells = group.cells.concat(reason.cells || []);
+      if (group.affected_features.indexOf(id) < 0) group.affected_features.push(id);
+    }); });
+    return Object.keys(grouped).sort().map(function (key) {
+      var group = grouped[key]; group.cells = Array.from(new Set(group.cells)).sort(function(a,b) {return a-b;});
+      group.cell_count = group.cells.length; return group;
+    });
+  }
+
   function renderChecklist() {
     var seeds = FD.seeds[mapName()] || [], m = mf(), box = $("featChecklist");
     box.innerHTML = "";
-    var sum = F.mapSummary(m, seeds), s = document.createElement("div");
+    var sum = F.mapSummary(m, seeds), s = document.createElement("div"), placement = placements();
+    var diagnostic = (FD.diagnostics || {})[mapName()], compilerNote = "Not attached. Use diagnose_map_features.py and rebuild this page with --diagnostics";
+    if (diagnostic) {
+      var currentEntry = (workingCatalogue().maps || {})[mapName()];
+      compilerNote = F.digest(currentEntry) === F.digest(diagnostic.editor_entry) ?
+        diagnostic.counts.pending + " of " + diagnostic.counts.total_tagged + " features pending in the exact attached " + diagnostic.height + " context; site active height unverified" :
+        "STALE after annotation edits. Export and regenerate the diagnostic report";
+    }
     s.className = "note";
     s.innerHTML = "<b>Your annotation:</b> " + sum.annotation.features + " features (" + sum.annotation.review.user_reviewed + " reviewed); checklist " +
       sum.annotation.checklist.user_reviewed + "/" + seeds.length + " reviewed.<br><b>Geometry:</b> " +
-      (sum.geometry.ready ? "fully described" : sum.geometry.errors + " errors, " + sum.geometry.unresolved + " open facts") +
-      ".<br><b>Replay signal:</b> " + esc(sum.replay.note) + ".";
+      (sum.geometry.ready ? "structurally described" : sum.geometry.errors + " errors, " + sum.geometry.unresolved + " open facts") +
+      ".<br><b>Placement preview:</b> " + Object.keys(placement).filter(function (id) { return !placement[id].ok; }).length + " features pending; " +
+      (((FD.floors || {})[mapName()] || {}).flat !== false ? "flat fallback, no measured height asset" : "measured height asset " + esc(FD.floors[mapName()].height_sha)) +
+      ".<br><b>Compiler report:</b> " + esc(compilerNote) +
+      ".<br><b>Replay signal:</b> " + esc(sum.replay.note) + ". Runtime activation requires reviewed replay evidence and a registered consumer.";
     box.appendChild(s);
     if (!seeds.length) {
       box.appendChild(document.createTextNode(FD.no_features_note || "No features reported."));
@@ -1161,8 +1395,7 @@
   $("featIssues").addEventListener("click", function (e) {
     var w = e.target.getAttribute && e.target.getAttribute("data-where");
     if (!w) return;
-    var id = w.split(/[.:]/)[0];
-    if (F.find(mf(), id)) { ui.sel = id; render(); }
+    focusIssue(w);
   });
 
   initMaps();
@@ -1172,15 +1405,29 @@
     ui.message = "Repaired " + repairedEdges + " older sight edge(s); coordinates and height facts kept.";
     autosave();
   }
+
+  function copyFootprint(id, source, destination, includeBounds) {
+    var f = F.find(mf(), id);
+    if (!f || !Array.isArray(f.states)) return false;
+    var src = f.states.find(function (s) { return s.name === source; }), di = f.states.findIndex(function (s) { return s.name === destination; });
+    if (!src || di < 0 || source === destination || !src.footprint || F.geometryProblems(src.footprint).length) return false;
+    if (includeBounds && !src.sight_bounds) return false;
+    var next = F.setField(mf(), id, ["states", di, "footprint"], clone(src.footprint));
+    if (includeBounds) next = F.setField(next, id, ["states", di, "sight_bounds"], clone(src.sight_bounds));
+    commit(next, true);
+    return true;
+  }
   TG.recompute();
   setTool("select");
   window.taggerFeatures = {
-    onMode: function () { ui.draft = null; render(); },
-    onMap: function () { ui.sel = null; ui.draft = null; ui.message = null; render(); },
+    onMode: function () { ui.draft = null; ui.issueCells = null; render(); },
+    onMap: function () { ui.sel = null; ui.draft = null; ui.message = null; ui.issueCells = null; ui.slideClosure = {}; render(); },
     simulate: simulate, simTrigger: simTrigger, simAdvance: simAdvance, simReset: simReset,
     exportAll: exportAll, importText: importText, ui: ui, fe: fe, canonical: function () { return canonical; },
     commit: commit, setTool: setTool, createPreset: createPreset, placePoint: placePoint, finishDraft: finishDraft,
-    linkTo: linkTo, undo: doUndo, redo: doRedo, zoomAt: zoomAt, render: render, autosave: autosave, drafts: drafts
+    linkTo: linkTo, undo: doUndo, redo: doRedo, zoomAt: zoomAt, render: render, autosave: autosave, drafts: drafts,
+    focusIssue: focusIssue, copyFootprint: copyFootprint, placementIssues: placementIssues,
+    enableSliding: enableSliding, slidingPreview: slidingPreview
   };
   render();
 })();

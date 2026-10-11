@@ -477,6 +477,10 @@
   }
 
   function fsRun(feature, events, until) {
+    return fsEvaluate(feature, events, until).trace;
+  }
+
+  function fsEvaluate(feature, events, until) {
     var st = fsFresh(feature, 0, 0);
     events.forEach(function (e) { if (FS_EVENTS.indexOf(e.kind) < 0) throw fsError("unknown event " + e.kind); });
     var inputs = events.map(function (e, i) { return [i, e]; }).sort(function (a, b) {
@@ -501,13 +505,14 @@
       if (!useInput) out[1].scheduled = true;
       trace.push(out[1]);
     }
-    return trace;
+    return {state: st, trace: trace};
   }
 
   Features.known = known;
   Features.initial = function (feature) { return fsFresh(feature, 0, 0); };
   Features.apply = fsApply;
   Features.run = fsRun;
+  Features.evaluate = fsEvaluate;
   Features.guardOk = guardOk;
   Features.PRIORITY = FS_PRIORITY;
 
@@ -934,6 +939,13 @@
     function geometry(where, g, allowed) {
       geometryProblems(g, allowed).forEach(function(p) {err(where, p.code, p.message);});
     }
+    function landing(where, l) {
+      if (!isObj(l)) {err(where, 'bad_landing', 'landing needs measured world position-z and tolerance'); return;}
+      var z = known(l.world_z), tolerance = known(l.tolerance);
+      if (z === null || !finite(z) || l.world_z.unit !== 'm' || tolerance === null ||
+          !finite(tolerance) || !(tolerance > 0 && tolerance <= .5) || l.tolerance.unit !== 'm')
+        err(where, 'bad_landing', 'world position-z and tolerance (0, 0.5] must be finite metres');
+    }
     function guard(where, g) {
       if (g === undefined || g === null) return;
       var keys = isObj(g) ? Object.keys(g) : [];
@@ -1018,6 +1030,11 @@
         (s.sight || []).forEach(function (occ, j) { occluder(where + ".sight[" + j + "]", occ); });
       });
       var rot = f.rotation;
+      if (f.sliding !== undefined) {
+        slidingProblems(f).concat(slidingVerticalProblems(f)).forEach(function(message) { warn(fid + ".sliding", "motion_incomplete", message); });
+        if (isObj(f.sliding) && Object.prototype.hasOwnProperty.call(f.sliding,"movement_cutoff") && slidingMovementCutoff(f) === null)
+          err(fid + ".sliding.movement_cutoff", "bad_movement_cutoff", "conservative movement cutoff must be a known fraction >= 0 and < 1");
+      }
       if ((f.capabilities || []).indexOf("rotating") >= 0) {
         if (!isObj(rot) || rot.pivot === undefined || rot.pivot === null || rot.panel === undefined || rot.panel === null)
           warn(fid, "motion_incomplete", "rotating door without a pivot and panel: motion not fully described");
@@ -1074,6 +1091,7 @@
         names[e.id] = true;
         if (e.uv === undefined || e.uv === null) err(rid + "." + e.id, "missing_endpoint", "endpoint not placed");
         else if (!uvOk(e.uv)) err(rid + "." + e.id, "bad_coordinates", "endpoint uv must be within 0..10000");
+        if ('landing' in e) landing(rid + '.' + e.id + '.landing', e.landing);
       });
       var access = r.access === undefined ? "endpoint_only" : r.access;
       if (isObj(access)) {
@@ -1092,6 +1110,20 @@
         if (d.length !== undefined && d.length !== null) value(where + ".length", d.length, "m", false);
       });
       if (!r.directions || !r.directions.length) err(rid, "bad_route", "a route needs at least one direction");
+      (r.quiet_directions || []).forEach(function (d, i) {
+        var where = rid + '.quiet_directions[' + i + ']';
+        if (!isObj(d) || !names[d.from] || !names[d.to] || d.from === d.to) {
+          err(where, 'bad_route', 'quiet direction must join distinct route endpoints'); return;
+        }
+        ['entry', 'transit'].forEach(function (key) {value(where + '.' + key, d[key], 's');});
+      });
+      (r.quiet_cuts || []).forEach(function (cut, i) {
+        ['from', 'to'].forEach(function (key) {
+          var point = isObj(cut) ? cut[key] : null, where = rid + '.quiet_cuts[' + i + '].' + key;
+          if (!isObj(point) || !uvOk(point.uv)) err(where, 'bad_coordinates', 'quiet cut needs a placed measured landing');
+          else landing(where + '.landing', point.landing);
+        });
+      });
       var it = r.in_transit === undefined ? "unresolved" : r.in_transit;
       if (IN_TRANSIT.indexOf(it) < 0) err(rid, "bad_route", "in_transit must be one of " + IN_TRANSIT.join(", "));
       else if (r.states !== undefined && r.states !== null && it === "unresolved")
@@ -1249,6 +1281,7 @@
     }
     (mf.features || []).forEach(function (f) {
       if (placement && (!placement[f.id] || !placement[f.id].ok)) return;
+      if (f.sliding !== undefined && f.sliding !== null) return; // Separate motion/height preview.
       var st = stateOf(f, states);
       if (!st) return;
       if (st.footprint) {
@@ -1379,6 +1412,117 @@
   }
 
   // The twin of features.py `rotation_pose` (coordinates agree to rounding: cos/sin may differ in the last bit).
+  function slidingClosed(feature) {
+    var name = (feature.sliding || {}).closed_state;
+    return (Array.isArray(feature.states) ? feature.states : []).find(function(s) {return isObj(s) && s.name === name;}) || null;
+  }
+  function slidingCenter(feature) {
+    var points = slidingClosed(feature).footprint.uv;
+    return [0, 1].map(function(i) {return points.reduce(function(n,p) {return n + p[i];},0) / points.length;});
+  }
+  function slidingProblems(feature) {
+    var slide = feature.sliding;
+    if (!isObj(slide)) return ["sliding definition missing"];
+    if (!Array.isArray(feature.states) || !feature.states.every(function(s) {return isObj(s) && typeof s.name === "string";}))
+      return ["sliding needs distinct existing open and closed states"];
+    var names = feature.states.map(function(s) {return s.name;});
+    if (names.indexOf(slide.open_state) < 0 || names.indexOf(slide.closed_state) < 0 || slide.open_state === slide.closed_state)
+      return ["sliding needs distinct existing open and closed states"];
+    var closed = slidingClosed(feature), panel = closed && closed.footprint;
+    if (!panel || ["polygon", "polyline"].indexOf(panel.type) < 0 || geometryProblems(panel).length)
+      return ["draw a valid closed polygon or polyline footprint first"];
+    var axis = slide.axis === undefined ? "horizontal" : slide.axis;
+    if (["horizontal", "vertical"].indexOf(axis) < 0)
+      return ["choose whether the panel slides across the map or descends from above"];
+    if (axis === "vertical") {
+      if ((closed.sight || []).some(function(o) {return !o.geometry || ["polygon","polyline"].indexOf(o.geometry.type)<0 || geometryProblems(o.geometry).length;}))
+        return ["draw valid closed sight edges for the descending panel"];
+      return [];
+    }
+    if (!slide.open_center || slide.open_center.type !== "point" || geometryProblems(slide.open_center).length)
+      return ["open panel centre unresolved"];
+    if ((closed.sight || []).length) return ["separate closed sight edges are not supported by the sliding panel preview"];
+    var centre = slidingCenter(feature);
+    if (slide.open_center.uv[0] === centre[0] && slide.open_center.uv[1] === centre[1])
+      return ["open and closed panel centres must differ"];
+    return [];
+  }
+  function slidingPose(feature, closure) {
+    if (typeof closure !== "number" || !Number.isFinite(closure) || slidingProblems(feature).length) return null;
+    closure = Math.min(Math.max(closure,0),1);
+    if (feature.sliding.axis === "vertical") return clone(slidingClosed(feature).footprint);
+    var panel = slidingClosed(feature).footprint, centre = slidingCenter(feature), opened = feature.sliding.open_center.uv;
+    var offset = [0,1].map(function(i) {return (opened[i] - centre[i]) * (1 - closure);});
+    return Object.assign({}, panel, {uv: panel.uv.map(function(p) {return [p[0]+offset[0],p[1]+offset[1]];})});
+  }
+  function slidingCoverage(feature, closure) {
+    var pose = slidingPose(feature, closure);
+    if (!pose) return null;
+    var cells = raster(pose), aperture = raster(slidingClosed(feature).footprint);
+    for (var i=0;i<cells.length;i++) cells[i] &= aperture[i];
+    return cells;
+  }
+  function slidingClosureAt(feature, state, t) {
+    var slide = feature.sliding || {}, opened = slide.open_state, closed = slide.closed_state, motion = state.motion;
+    if (!opened || !closed || opened === closed || !Number.isFinite(t)) return null;
+    if (motion) {
+      if (!Number.isFinite(motion.duration) || motion.duration <= 0 || !Number.isFinite(motion.start)) return null;
+      if (!((motion.from === opened && motion.to === closed) || (motion.from === closed && motion.to === opened))) return null;
+      var progress = Math.min(Math.max((t-motion.start)/motion.duration,0),1);
+      return motion.to === closed ? progress : 1-progress;
+    }
+    return state.state === opened ? 0 : state.state === closed ? 1 : null;
+  }
+
+  function knownMetres(value) {
+    var v = known(value);
+    return Number.isFinite(v) && value.unit === "m" ? v : null;
+  }
+  function slidingMovementCutoff(feature) {
+    var p = (feature.sliding || {}).movement_cutoff, v = known(p);
+    return Number.isFinite(v) && 0 <= v && v < 1 && p.unit === "fraction" && p.basis === "conservative" ? v : null;
+  }
+  function slidingMovementBlocked(feature, closure) {
+    if (typeof closure !== "number" || !Number.isFinite(closure)) return null;
+    closure = Math.min(Math.max(closure,0),1);
+    var slide = feature.sliding || {};
+    if (Object.prototype.hasOwnProperty.call(slide,"movement_cutoff")) {
+      var cutoff = slidingMovementCutoff(feature);
+      return cutoff === null ? null : closure > cutoff;
+    }
+    if (closure === 0) return false;
+    if (closure === 1) return true;
+    var band = slidingVerticalBounds(feature,closure), clearance = knownMetres(slide.movement_clearance);
+    return !band || clearance === null || clearance <= 0 ? null : knownMetres(band.bottom) < clearance;
+  }
+  function slidingVerticalProblems(feature) {
+    if ((feature.sliding || {}).axis !== "vertical") return [];
+    var height = knownMetres(feature.sliding.open_clearance), problems = [], closed = slidingClosed(feature);
+    if (height === null || height <= 0)
+      problems.push("open clearance in metres unresolved (player-height estimate is not a metre measurement)");
+    if (!closed) return problems;
+    var primary = closed.sight_bounds || {}, primaryLo = knownMetres(primary.bottom);
+    var entries = [primary].concat((closed.sight || []).map(function(o) {return o.bounds || {};}));
+    for (var i=0;i<entries.length;i++) {
+      var b = entries[i], lo = knownMetres(b.bottom), hi = knownMetres(b.top);
+      if (b.ref !== "ground" || lo === null || hi === null || !(0 <= lo && lo < hi)) {
+        problems.push("descending panel needs finite ground-relative bottom/top bounds"); break;
+      }
+      if (height !== null && primaryLo !== null && lo + height - primaryLo < hi) {
+        problems.push("fully open clearance must reach the top of every doorway sight blocker"); break;
+      }
+    }
+    return problems;
+  }
+  function slidingVerticalBounds(feature, closure, bounds) {
+    if (slidingProblems(feature).length || slidingVerticalProblems(feature).length || !Number.isFinite(closure) || feature.sliding.axis !== "vertical") return null;
+    var primary = slidingClosed(feature).sight_bounds, target = bounds || primary;
+    var lo = knownMetres(target.bottom), hi = knownMetres(target.top);
+    if (target.ref !== "ground" || lo === null || hi === null || !(0 <= lo && lo < hi)) return null;
+    var offset = (knownMetres(feature.sliding.open_clearance) - knownMetres(primary.bottom)) * (1 - Math.min(Math.max(closure,0),1));
+    return Object.assign({},target,{bottom:{status:"known",value:Math.min(lo+offset,hi),unit:"m"},top:{status:"known",value:hi,unit:"m"}});
+  }
+
   function rotationPose(feature, fraction) {
     var rot = feature.rotation || {};
     var phases = (rot.phases || []).filter(function (p) { return p && p.panel; }).sort(function (a, b) { return a.at - b.at; });
@@ -1406,7 +1550,7 @@
     }).length;
     return { annotation: { features: (mf.features || []).length, review: review, checklist: checklist },
              geometry: { errors: rep.errors.length, unresolved: open, ready: !rep.errors.length && !open },
-             replay: { decoder: false, note: "no replay decoder yet: signals are unverified for every feature" } };
+             replay: { decoder: false, note: "authoring does not qualify replay signals; check the source-binding audit" } };
   }
 
   function makeBreakable(feature) {
@@ -1630,6 +1774,10 @@
     resolvePlacement: resolvePlacement, previewPlacement: previewPlacement,
     stateOf: stateOf, makeBreakable: makeBreakable, CELL_UV: CELL_UV,
     rotationPose: rotationPose, mapSummary: mapSummary,
+    slidingClosed: slidingClosed, slidingCenter: slidingCenter, slidingProblems: slidingProblems,
+    slidingPose: slidingPose, slidingCoverage: slidingCoverage, slidingClosureAt: slidingClosureAt,
+    slidingVerticalProblems: slidingVerticalProblems, slidingVerticalBounds: slidingVerticalBounds,
+    slidingMovementCutoff: slidingMovementCutoff, slidingMovementBlocked: slidingMovementBlocked,
     importCatalogue: importCatalogue, diffCatalogues: diffCatalogues,
     exportCatalogue: exportCatalogue,
     SCHEMA_VERSION: SCHEMA_VERSION, UV_MAX: UV_MAX, emptyMf: emptyMf, checkVersion: checkVersion, validate: validate, nextNumber: nextNumber, allocate: allocate,

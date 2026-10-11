@@ -208,6 +208,8 @@ def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
             for i, occ in enumerate(s.get('sight') or []):
                 shape(occ.get('geometry'), f'{path}.sight[{i}].geometry')
         for s in f.get('states') or []:
+            if (f.get('replay_key') or f.get('replay_source')) and f.get('sliding') and s.get('name') in ('opening', 'closing'):
+                continue  # the moving panel is compiled from its closed aperture and sampled height band
             state_parts(s, f'features.{fid}.states.{s.get("name")}')
         rotation = f.get('rotation') or {}
         for i, phase in enumerate(rotation.get('phases') or []):
@@ -230,7 +232,13 @@ def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
                 pieces.append(Placement(reasons=(_reason('missing_endpoint', f'routes.{r.get("id")}'),)))
             sites = (r.get('access') or {}).get('sites', []) if isinstance(r.get('access'), dict) else []
             for p in ends + sites:
-                shape({'type': 'point', 'uv': p.get('uv')}, f'routes.{r.get("id")}.{p.get("id")}')
+                path = f'routes.{r.get("id")}.{p.get("id")}'
+                if p.get('landing') is None:
+                    shape({'type': 'point', 'uv': p.get('uv')}, path)
+                else:
+                    node, why = _point_node(geo, mf, p.get('uv'), landing=p['landing'])
+                    pieces.append(Placement(reasons=(_reason('invalid_landing', path),)) if why else
+                                  Placement((node,), (float(geo.node_z[node]) - STAND_M,)))
         reasons = tuple(r for p in pieces for r in p.reasons)
         nodes = sorted({n for p in pieces for n in p.nodes})
         # A behaviour-only feature is valid without a geometry claim.
@@ -303,6 +311,11 @@ class Effects:
     pending: list = field(default_factory=list)
 
 
+def empty_effects(geo: Geometry) -> Effects:
+    """Keep array allocation in the geometry runtime, out of stdlib authoring/motion helpers."""
+    return Effects(np.zeros(geo.n, bool))
+
+
 def movement_blocks(geo: Geometry, mf: dict, states: dict | None = None,
                     only: set | None = None) -> Effects:
     """The nodes the features' current states block for walking. `only` limits it to those feature ids (an
@@ -334,9 +347,12 @@ def compose_masks(sight_px: np.ndarray, walk_px: np.ndarray, mf: dict, states: d
     current state drawn in: a blocking footprint removes walking (and blocks sight when the state blocks
     sight), and each sight occluder's line is drawn as sight-blocking cells. Flat and all-floor: a picture
     for the page, which scripts/control_tagger_core.js `Features.composeFeatures` matches bit for bit; the
-    engine never reads it (it uses `movement_blocks` and bounded occluders)."""
+    engine never reads it (it uses `movement_blocks` and bounded occluders). Sliding models use a separate
+    motion preview and are excluded: flat masks cannot demonstrate seeing below a descending panel."""
     sight, walk = sight_px.copy(), walk_px.copy()
     for f in mf.get("features") or []:
+        if f.get('sliding') is not None:
+            continue  # Separate motion preview: a flat mask cannot represent seeing under a descending panel.
         s = state_of(f, states)
         if s is None:
             continue
@@ -558,6 +574,18 @@ def behaviour_problems(feature: dict) -> list[str]:
     """Why a feature's behaviour isn't runtime-ready: unresolved durations, policies, guards or delays."""
     out = []
     fid = feature.get("id")
+    if feature.get('replay_source'):
+        from app.control.map_pool_runtime import readiness as pool_readiness
+        return [f'{fid}: {p}' for p in pool_readiness(feature)]
+    if feature.get('replay_key'):
+        from app.control.feature_runtime import readiness
+        return [f'{fid}: {p}' for p in readiness(feature)]
+    if "sliding" in feature:
+        # The authoring preview is available; no engine consumer samples moving masks yet. Never silently
+        # compile a sliding door as one static "closing" footprint, even for an explicitly enabled bundle.
+        from app.replays.map_feature_motion import geometry_problems, vertical_problems
+        out += [f"{fid}: {p}" for p in geometry_problems(feature) + vertical_problems(feature)]
+        out.append(f"{fid}: sliding geometry requires a runtime motion consumer (preview only)")
     for row in feature.get("transitions") or []:
         rid = row.get("id")
         motion = row.get("motion")
@@ -586,6 +614,9 @@ def bounds_problems(geo: Geometry, mf: dict, feature: dict) -> list[dict]:
             out.append({'code': 'invalid_bounds', 'path': path, 'cells': [], 'cell_count': 0,
                         'floor_counts': [], 'reason': why})
     for state in feature.get('states') or []:
+        if (feature.get('replay_key') or feature.get('replay_source')) and feature.get('sliding') \
+                and state.get('name') in ('opening', 'closing'):
+            continue  # sampled from the closed aperture, not an authoring phase footprint
         path = f'features.{fid}.states.{state.get("name")}'
         if state.get('blocks_sight') and state.get('footprint'):
             check(state['footprint'], state.get('sight_bounds'), path + '.sight_bounds')
@@ -598,6 +629,15 @@ def bounds_problems(geo: Geometry, mf: dict, feature: dict) -> list[dict]:
             check(shape, phase.get('sight_bounds'), path + '.sight_bounds')
         for j, occ in enumerate(phase.get('sight') or []):
             check(occ.get('geometry'), occ.get('bounds'), f'{path}.sight[{j}].bounds')
+    rotation = feature.get('rotation')
+    if feature.get('replay_source') and rotation and not rotation.get('phases'):
+        # Both resting orientations and representative passable/slam poses must
+        # resolve before publication. Runtime still validates each sampled pose.
+        for fraction in (0, .1875, .5, .8125, 1, 1.1875, 1.5, 1.8125, 2):
+            panel = rotation_pose(feature, fraction) if rotation.get('panel') and \
+                (rotation.get('pivot') or {}).get('type') == 'point' else None
+            if panel is not None:
+                check(panel, rotation.get('sight_bounds'), f'features.{fid}.rotation.pose[{fraction}].bounds')
     return out
 
 
@@ -607,6 +647,8 @@ def state_problems(geo: Geometry, mf: dict, feature: dict) -> list[str]:
     sight occluder that is pending. Every state, not only the initial one: a bundle publishes for the round."""
     out = []
     for s in feature.get("states") or []:
+        if (feature.get('replay_key') or feature.get('replay_source')) and feature.get('sliding') and s.get('name') in ('opening', 'closing'):
+            continue
         one = {**feature, "initial_state": s.get("name")}
         if s.get("blocks_movement") and s.get("footprint"):
             cells = to_grid(raster(s["footprint"])).ravel()
@@ -691,6 +733,49 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
             reasons.append("not enabled")
         if b.get("runtime_consumer") not in consumers:
             reasons.append(f"no registered runtime consumer ({b.get('runtime_consumer')!r})")
+        if b.get('runtime_consumer') == 'ascent_replay_v1':
+            from app.control.feature_runtime import readiness
+            keys = [features[m].get('replay_key') for m in members if m in features]
+            all_keys = [features[m].get('replay_key') for candidate in mf.get('bundles', [])
+                        if candidate.get('enabled') and candidate.get('runtime_consumer') == 'ascent_replay_v1'
+                        for m in candidate.get('members', []) if m in features]
+            if any(all_keys.count(key) > 1 for key in keys):
+                reasons.append('duplicate Ascent replay binding')
+            if geo is not None and geo.name != 'Ascent':
+                reasons.append('Ascent consumer cannot run on another map')
+            if geo is not None and geo.heights is None and any(
+                    features[m].get('sliding') for m in members if m in features):
+                reasons.append('descending door sight requires a measured height asset')
+            if any(r.get('owner') in members for r in mf.get('routes', [])):
+                reasons.append('Ascent consumer does not implement authored route arcs')
+            for m in members:
+                if m in features:
+                    reasons += [f'{m}: {p}' for p in readiness(features[m])]
+        if b.get('runtime_consumer') == 'quiet_rope_v1':
+            if geo is None:
+                reasons.append('quiet rope placement requires measured geometry')
+            else:
+                from app.control.route_runtime import readiness as route_readiness
+                _, route_reasons = route_readiness(geo, mf, members)
+                reasons += route_reasons
+        if b.get('runtime_consumer') == 'map_pool_replay_v1':
+            from app.control.map_pool_runtime import readiness as pool_readiness, MAPS
+            if geo is not None and geo.name not in MAPS:
+                reasons.append('map-pool replay consumer cannot run on this map')
+            if geo is not None and geo.heights is None and any(features[m].get('sliding') or features[m].get('rotation')
+                                                              for m in members if m in features):
+                reasons.append('moving panel sight requires a measured height asset')
+            for m in members:
+                if m in features:
+                    reasons += [f'{m}: {p}' for p in pool_readiness(features[m])]
+            all_members = [m for other in mf.get('bundles', []) if other.get('enabled')
+                           and other.get('runtime_consumer') == 'map_pool_replay_v1' for m in other['members']]
+            claimed = [(m, actor) for m in all_members for actor in
+                       (features.get(m, {}).get('replay_source') or {}).get('actors', [])]
+            if any(sum(a == actor for _, a in claimed) > 1 for m, actor in claimed if m in members):
+                reasons.append('duplicate map-pool source actor binding')
+            if any(r.get('owner') in members for r in mf.get('routes', [])):
+                reasons.append('replay panel consumer cannot run rope routes')
         for fid in sorted(required - set(members)):
             if fid in features:
                 reasons += behaviour_problems(features[fid])
@@ -732,8 +817,10 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
                         _, why = resolve_bounds(candidate, mf, occ, to_px(raster(occ.get('geometry'))), m)
                         if why:
                             reasons.append(why)
-            _, route_pending = compile_routes(candidate, {**mf, 'routes': [r for r in mf.get('routes') or []
-                                                      if r.get('owner') in required]})
+            routes = [r for r in mf.get('routes') or [] if r.get('owner') in required]
+            if b.get('runtime_consumer') == 'quiet_rope_v1':
+                routes = [dict(r, directions=r.get('quiet_directions', [])) for r in routes]
+            _, route_pending = compile_routes(candidate, {**mf, 'routes': routes})
             reasons += route_pending
         out[bid] = BundleStatus(bid, members, not reasons, reasons,
                                 {"ground": int(ground.sum()), "sight": int(sight.sum())},
@@ -785,12 +872,15 @@ class Arc:
         return None if self.entry_s is None or self.transit_s is None else self.entry_s + self.transit_s
 
 
-def _point_node(geo: Geometry, mf: dict, uv, floor_id) -> tuple[int | None, str | None]:
+def _point_node(geo: Geometry, mf: dict, uv, floor_id=None, landing=None) -> tuple[int | None, str | None]:
     if not ms._uv(uv):
         return None, 'not placed or off map'
     cell = geo.cell_of_px(uv[0] * PX / ms.UV_MAX, uv[1] * PX / ms.UV_MAX)
     mask = np.zeros(GRID * GRID, bool)
     mask[cell] = True
+    if landing is not None:
+        from app.control.route_runtime import landing_node
+        return landing_node(geo, cell, landing)
     b = floor_nodes(geo, None, mask)
     if b.pending or len(b.nodes) != 1:
         return None, "; ".join(b.pending) or "no floor there"
@@ -811,7 +901,7 @@ def compile_routes(geo: Geometry, mf: dict) -> tuple[list, list]:
             points.update({s.get("id"): s for s in access.get("sites") or []})
         nodes = {}
         for pid, p in points.items():
-            node, why = _point_node(geo, mf, p.get("uv"), p.get("floor"))
+            node, why = _point_node(geo, mf, p.get("uv"), p.get("floor"), p.get('landing'))
             if why:
                 pending.append(f"{rid}.{pid}: {why}")
             nodes[pid] = node
@@ -1012,6 +1102,8 @@ def compile_assets(geo: Geometry, mf: dict, statuses: dict) -> dict | None:
         status = next(st for st in statuses.values() if st.publishable and f.get('id') in st.members)
         candidate = _candidate_geometry(geo, mf, set(status.members))
         for s in f.get("states") or []:
+            if (f.get('replay_key') or f.get('replay_source')) and f.get('sliding') and s.get('name') in ('opening', 'closing'):
+                continue
             pick = {f.get("id"): s.get("name")}
             one = {**sub, "features": [f]}
             blocked = movement_blocks(candidate, one, pick).blocked
@@ -1025,6 +1117,10 @@ def compile_assets(geo: Geometry, mf: dict, statuses: dict) -> dict | None:
         if st.publishable:
             candidate = _candidate_geometry(geo, mf, set(st.members))
             routes = {**sub, 'routes': [r for r in sub['routes'] if r.get('owner') in st.members]}
+            if st.id in {b['id'] for b in mf.get('bundles', [])
+                             if b.get('runtime_consumer') == 'quiet_rope_v1'}:
+                routes = {**routes, 'routes': [dict(r, directions=r.get('quiet_directions', []))
+                                             for r in routes['routes']]}
             one_arcs, _ = compile_routes(candidate, routes)
             arcs += one_arcs
     return {"states": states, "nodes": int(geo.n),

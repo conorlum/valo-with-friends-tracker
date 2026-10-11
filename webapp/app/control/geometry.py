@@ -533,6 +533,11 @@ def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list
     (default: the floor under the eye). Without `eye_z` the answer is today's 2D one: every floor of each
     cell seen. A ray that enters an unresolved cell drops the height test from there on, and `record`
     (a dict) counts those rays under "unresolved_rays"."""
+    from app.control.features import BoundedOccluder, cast_with
+    occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
+    if occluders:
+        return cast_with(geo, x, y, angles_deg, [s for s in smokes if not isinstance(s, BoundedOccluder)],
+                         occluders, eye_z=eye_z, own=own, record=record)
     if geo.heights is not None:
         if eye_z is None:
             return geo.to_nodes(_cast_flat(geo, x, y, angles_deg, smokes))
@@ -705,6 +710,10 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     the two ends' cells included: a plate blocks when the line is on one side of it where it enters the
     plate's cell (or at the eye) and on the other where it leaves (or at the target). Independent of the
     rays `cast` happens to shoot, so the two check each other."""
+    from app.control.features import BoundedOccluder, los_with
+    occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
+    if occluders:
+        return los_with(geo, a, b, [s for s in smokes if not isinstance(s, BoundedOccluder)], occluders, record)
     (ax, ay, az), (bx, by, bz) = a, b
     length = math.hypot(bx - ax, by - ay)
     if length < 1e-9:

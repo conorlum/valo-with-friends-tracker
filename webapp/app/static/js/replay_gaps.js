@@ -23,6 +23,7 @@
     moved: "moved off it",
     blinded: "was blinded",
     smoked: "was smoked off it",
+    map_feature_closed: "lost sight as a map feature closed",
     utility_expired: "their utility ended",
     utility_left: "stopped using their camera or drone",
     other: "for another reason"
