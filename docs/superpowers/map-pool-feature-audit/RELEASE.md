@@ -113,8 +113,10 @@ Staged private bounds use the owner's approximate 1.5-player descending-door hei
 2.7m model estimate, not a measured clearance. Ascent opening is five seconds per the owner.
 Enabled diagnostic trials place both Ascent doors, Sunset's door, and Summit's Cave and Mid doors.
 Ascent glass also places after removing its authored extension into a permanent wall: the exact set
-of walkable footprints covered by the glass is unchanged. Summit Heaven geometry and remaining rope
-landings are still pending. All saved owner
+of walkable footprints covered by the glass is unchanged. The same private alignment resolves
+Abyss's Heaven-breakable placement: removed pixels were already blocked by the permanent sight
+mask, and the exact walkable footprint set is unchanged. This does not clear Abyss's failed height
+gates. Summit Heaven geometry and remaining rope landings are still pending. All saved owner
 bundles remain disabled; only isolated diagnostic copies enable them.
 
 A complete fresh Sunset round on the staged bounds includes closing, fully closed, reopening and
