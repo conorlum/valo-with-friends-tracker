@@ -221,19 +221,22 @@ instants in a real round compared 1,836 occluders exactly with uncached resoluti
 fell from 1,925,185,536 to 314,572,800 bytes. This measures mask retention only, not total worker
 memory or Linux acceptance. The baseline full-round run predates this allocation optimization.
 
-The baseline real Lotus round completed with 443 viewer frames and 612 analytical instants. All
-41 fresh gap rows matched tick-cache replay and all 63 sampled full counterfactual checks matched
-incremental results exactly. Knowledge layers were excluded. The 1,846-second baseline includes
-fresh and cached gap detection; it is not a production worker timing. Barrier-start paint and
+Two baseline real Lotus rounds completed with 1,006 viewer frames and 1,356 analytical instants.
+All 106 fresh gap rows matched tick-cache replay and all 129 sampled full counterfactual checks
+matched incremental results exactly. The second scene includes four door activations and breakable
+destruction. Knowledge layers were excluded. The 1,846- and 2,079-second baselines include fresh
+and cached gap detection and predate the allocation/culling optimization; they are not production
+worker timings or cold-cache measurements. Barrier-start paint and
 unresolved terrain fallback remain input warnings. A false height-domain warning caused by cleared
 refined parents was corrected to count actual undeclared child holes, with a regression retaining
-real missing-child warnings. Parity alone does not certify those remaining input warnings.
+real missing-child warnings. The second round also reports a nearsight duration placeholder.
+Parity alone does not certify those remaining input warnings.
 
 Conservative sight-line culling uses compiler-owned panel pixel bounds to exclude impossible
 crossings before detailed sampling. It retains the original longest-target sampling interval;
 unbounded directly constructed masks retain the reference path. Random thin/vertical/clipped
 fixtures and the motion/runtime suite pass (147 tests). A reduced real window compared every one
-of 17,802 calls, covering 704,777 target lines and diagnostic counters, with the uncullled reference
+of 17,802 calls, covering 704,777 target lines and diagnostic counters, with the unculled reference
 and found no differences. Reduced-window profiling is not an archive recompute or Linux benchmark.
 
 Retain prior code/parser recipe, tags, accepted height asset digests and immutable feature artifacts.
