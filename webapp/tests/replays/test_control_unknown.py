@@ -3,6 +3,7 @@ pushed out by the enemy's players and the barrier drop, spreading at UNKNOWN_MPS
 team's live control. Positions are minimap pixels; cells are 8 px (1.12 m)."""
 
 import copy
+from collections import defaultdict
 
 import numpy as np
 import pytest
@@ -812,6 +813,30 @@ def test_the_counterfactual_applies_the_rule_full_and_incremental():
     inc = tk.compose(removed=1, base=base, full=False)["state"]
     assert (full[west] == ce.NONE).all(), "without A1, A0's memory against B's Safe is still nobody's"
     assert np.array_equal(full[west], inc[west]), "the incremental counterfactual agrees"
+
+
+def test_removed_teammate_leaves_shared_fill_membership_and_entry_way_back(monkeypatch):
+    geo = open_hall()
+    zero = np.zeros(geo.n, bool)
+    watched = _band(geo, 200, 208) | _band(geo, 300, 308)
+    tk = _lines(geo, {0: ('A', 150, 200, watched), 5: ('B', 204, 200, zero),
+                     6: ('B', 380, 200, zero), 7: ('B', 250, 200, zero)})
+    # Isolate the supplied live claims from inferred backfill. All fills and paths remain real.
+    monkeypatch.setattr(tk, 'backfill', lambda side, removed=None: {})
+    base = tk.compose()
+    assert [c[2] for c in base['fills']['B'].comps] == [[5, 7], [6]]
+    branches = defaultdict(int)
+    inc = tk.compose(removed=7, base=base, full=False, stats=branches)
+    full = tk.compose(removed=7)
+    assert branches['own_fill_same'] == 1  # Geometry survives, but its membership changes.
+    target = np.zeros(geo.n, bool)
+    for mask, _, slots in full['fills']['B'].comps:
+        if 6 in slots:
+            target |= mask
+    lane = tk.way_back(tk.holders[5], target, watched)
+    assert lane.any() and np.isin(full['state'][lane], CONTESTED).all()
+    assert np.array_equal(inc['state'], full['state'])
+    assert [c[2] for c in base['fills']['B'].comps] == [[5, 7], [6]]
 
 
 def test_a_knowledge_picture_counts_only_the_enemies_the_team_sees_as_live():

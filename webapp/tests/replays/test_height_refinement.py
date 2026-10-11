@@ -54,9 +54,23 @@ def test_prior_selection_is_explicit_and_retained_when_evidence_disappears():
             hr.analyze(GEO, [], [], [], {}, {}, prior)
 
 
-def test_missing_samples_and_neighbour_disagreement_do_not_create_empty_splits():
+def test_missing_samples_do_not_split_but_sampled_ambiguity_retains_finer_ground():
     assert analyze([], reasons={PARENT: hb.NEIGHBOURS_DISAGREE})['history']['parents'] == []
-    assert analyze(runs(90, CHILDREN[0]), reasons={PARENT: hb.NEIGHBOURS_DISAGREE})['history']['parents'] == []
+    got = analyze(runs(90, CHILDREN[0]), reasons={PARENT: hb.NEIGHBOURS_DISAGREE})
+    assert got['history']['parents'] == [PARENT]
+    assert got['area']['supported_child_px2'] == 16
+    assert got['area']['unknown_child_px2'] == 48
+    assert got['checked'][0]['ambiguous_parent'] and not got['checked'][0]['spatial_distinction']
+
+
+def test_sampled_ambiguity_keeps_sparse_children_unknown_until_more_data_arrives():
+    got = analyze(runs(90, CHILDREN[0])[:2], reasons={PARENT: hb.TOO_CLOSE})
+    assert got['history']['parents'] == [PARENT]
+    assert got['area']['supported_child_px2'] == 0
+    assert got['area']['unknown_child_px2'] == 64
+    later = analyze(runs(90, CHILDREN[0]) + runs(105, CHILDREN[1], first_slot=1), previous=got['history'])
+    assert later['history'] == got['history']
+    assert later['area']['supported_child_px2'] == 32
 
 
 def test_selection_and_hash_are_independent_of_run_order_and_duplicates_do_not_vote():

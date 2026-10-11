@@ -28,8 +28,9 @@ a `HeightBuild` out:
   averages across a drop nobody walked, and a filled cell never fills another.
 - **Connections.** Floors of neighbouring cells (all 8) within STEP_UP_M connect both ways. A bigger step connects
   only where it was walked (CONNECT_MIN_ROUNDS rounds, or the run that crossed a gradient-filled cell). Seen
-  going up it connects both ways (what is climbed can be dropped from); seen only going down it is one-way: a
-  slide when the player stayed on the ground, a fall otherwise. Unresolved cells carry no connections here: the
+  going up grants an upward step and return descent; the descent is a slide with ground evidence and a fall
+  otherwise. Seen only going down it is one-way: a slide when the player stayed on the ground, a fall otherwise.
+  Unresolved cells carry no connections here: the
   engine gives them today's 2D walking.
 - **Unresolved areas, loudly.** Unresolved cells are grouped into areas (8-connected), each with its size,
   its bounding box in minimap px and why.
@@ -500,9 +501,10 @@ def connect(heights: dict, seen: dict, geo: Geometry, ground: dict | None = None
             granted: set = frozenset()) -> np.ndarray:
     """The directed walks between resolved floors, K x 5 (cell a, floor a, cell b, floor b, EDGE_*), sorted.
     Floors within STEP_UP_M are a step, both ways. A bigger one connects only where it was walked
-    (CONNECT_MIN_ROUNDS rounds of `seen`, or a step `fill_gradient` granted): seen going up it is a step both
-    ways (what is climbed can be dropped from); seen only going down it is one-way, a slide when it was walked
-    on the ground (`ground`, or granted) and a fall otherwise."""
+    (CONNECT_MIN_ROUNDS rounds of `seen`, or a step `fill_gradient` granted): an observed climb grants
+    an upward step and a return descent. The return descent is a slide only with ground evidence,
+    and a fall otherwise; proving an upward climb does not prove a silent landing. Seen only going down
+    it is one-way, a slide when it was walked on the ground (`ground`, or granted) and a fall otherwise."""
     walk = geo.walk
     step = hc.STEP_UP_M * DM
     ground = ground or {}
@@ -524,9 +526,14 @@ def connect(heights: dict, seen: dict, geo: Geometry, ground: dict | None = None
                     if not (on_ground or len(seen.get(key, ())) >= hc.CONNECT_MIN_ROUNDS):
                         continue
                     if hb > ha:
-                        edges[key] = edges[(b, j, a, i)] = hc.EDGE_STEP     # climbed: it can be dropped from
+                        edges[key] = hc.EDGE_STEP
+                        reverse = (b, j, a, i)
+                        # Preserve a separately qualified grounded descent regardless of iteration order.
+                        kind = hc.EDGE_SLIDE if on_ground else hc.EDGE_FALL
+                        edges[reverse] = min(kind, edges.get(reverse, kind))
                     else:
-                        edges.setdefault(key, hc.EDGE_SLIDE if on_ground else hc.EDGE_FALL)
+                        kind = hc.EDGE_SLIDE if on_ground else hc.EDGE_FALL
+                        edges[key] = min(kind, edges.get(key, kind))
     return np.array(sorted((*key, kind) for key, kind in edges.items()), np.int32).reshape(-1, 5)
 
 

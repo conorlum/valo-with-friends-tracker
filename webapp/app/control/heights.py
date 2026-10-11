@@ -19,8 +19,9 @@ under a floor (what blocks a sight line) is position-z - STAND_M.
 - `unresolved`, GRID x GRID bool: a walkable cell the build couldn't resolve, which uses today's flat
   sight and walking;
 - `edges`, K x 5 int32 (cell a, floor a, cell b, floor b, EDGE_*): a walk from floor a of cell a to floor b of
-  the neighbouring cell b, one row per direction. EDGE_STEP rows come in pairs. A one-way row is a drop: an
-  EDGE_SLIDE when players went down it on the ground, an EDGE_FALL when through the air;
+  the neighbouring cell b, one row per direction. Nearby floors use paired EDGE_STEP rows. A larger
+  climb uses an upward EDGE_STEP and a return EDGE_SLIDE with ground evidence, otherwise EDGE_FALL.
+  A descent-only connection likewise distinguishes grounded slides from falls;
 - `meta`: `origin_z`, the units, STAND_M, the build's counts and the walk mask's hash it was built on.
 
 Every value here is a start value (the spec's "Open questions"): tuned on real data, each change reported

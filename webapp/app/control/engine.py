@@ -1617,7 +1617,9 @@ class Tick:
                     stats["own_fill_empty"] += 1
                     continue
                 if len(keep) == len(old.comps):
-                    fills[side] = old
+                    # Reuse geometry, but remove the player from component membership.
+                    # Q56 reads those slots when choosing an entry's way back to teammates.
+                    fills[side] = Fill(old.free, keep, old.seen)
                     stats["own_fill_same"] += 1
                 else:
                     free = np.zeros(geo.n, bool)

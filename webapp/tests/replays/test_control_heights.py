@@ -266,6 +266,39 @@ def test_a_big_step_walked_in_one_round_only_does_not_connect():
     assert (cell(20), 0, cell(21), 0) not in e and (cell(21), 0, cell(20), 0) not in e
 
 
+@pytest.mark.parametrize('reverse_order', [False, True])
+@pytest.mark.parametrize('ground_direction', [None, 'up', 'down'])
+def test_climb_return_is_a_fall_unless_grounded_descent_is_supported(reverse_order, ground_direction):
+    a, b = cell(20), cell(21)
+    floors = {a: [0], b: [12]}
+    if reverse_order:
+        floors = dict(reversed(list(floors.items())))
+    up, down = (a, 0, b, 0), (b, 0, a, 0)
+    seen = {up: {0, 1}}
+    ground = {} if ground_direction is None else {up if ground_direction == 'up' else down: {0, 1}}
+    edges = {tuple(row[:4]): row[4] for row in hb.connect(floors, seen, GEO, ground)}
+    assert edges[up] == hc.EDGE_STEP
+    assert edges[down] == (hc.EDGE_FALL if ground_direction is None else hc.EDGE_SLIDE)
+
+    # Exercise the actual unknown spread: the inferred 1.2m fall is traversable normally,
+    # but not silently. A proven ground route remains quiet in either iteration order.
+    from app.control import topology
+    pixels = np.zeros((1024, 1024), bool)
+    pixels[ROW*8:(ROW+1)*8, 160:176] = True
+    geo = cg.geometry_from_masks('Toy', ~pixels, pixels, 7e-5)
+    heights = np.full((128, 128, 3), -1, np.int16)
+    heights.reshape(-1, 3)[a, 0], heights.reshape(-1, 3)[b, 0] = 0, 12
+    asset = hc.HeightAsset(heights, np.zeros_like(heights), geo.walk.copy(),
+        np.zeros_like(geo.walk), hb.connect(floors, seen, geo, ground))
+    cg.attach_heights(geo, asset)
+    topo = topology.of(geo)
+    reached = np.full(geo.n, np.inf); reached[b] = 0
+    free = np.zeros(geo.n)
+    assert np.isfinite(topo.spread(reached, geo.walk_n, free, 5, 1, [])[a])
+    quiet = topo.spread(reached, geo.walk_n, free, 5, 1, [], quiet=True)
+    assert bool(np.isfinite(quiet[a])) == (ground_direction is not None)
+
+
 def test_neighbouring_floors_within_a_step_connect_both_ways_diagonals_too():
     b = built(lambda m, n: {0: level_walk(160, 200, 0.0), 1: level_walk(160, 200, 0.5, y=Y + 8)})
     e = edges_of(b)
@@ -784,7 +817,8 @@ def test_a_gradient_cell_connects_the_way_it_was_crossed():
     e = {tuple(row[:4]): row[4] for row in up.asset.edges.tolist()}
     assert int(up.asset.floors[ROW, 25, 0]) == 9, "0.9 m: more than a step from either side"
     for a, b in ((24, 25), (25, 26)):
-        assert e[(cell(a), 0, cell(b), 0)] == e[(cell(b), 0, cell(a), 0)] == hc.EDGE_STEP, "climbed: both ways"
+        assert e[(cell(a), 0, cell(b), 0)] == hc.EDGE_STEP
+        assert e[(cell(b), 0, cell(a), 0)] == hc.EDGE_SLIDE, "grounded climb retains a quiet grounded return"
     down = hb.build(gradient_rounds(1.8, back=True), GEO)
     e = {tuple(row[:4]): row[4] for row in down.asset.edges.tolist()}
     for a, b in ((26, 25), (25, 24)):

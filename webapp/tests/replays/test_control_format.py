@@ -56,7 +56,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # 12: majority-area rotating-cell rule; general engine constants stay unchanged.
           12: "648662a3109ca0a4",
           # 13: mixed ground footprints and physical area/travel consumers; height format 3.
-          13: "d2bec05a2551130a"}
+          13: "d2bec05a2551130a",
+          # 14: reused fill components drop removed players; constants are unchanged.
+          14: "d2bec05a2551130a"}
 
 
 def _constants_digest() -> str:

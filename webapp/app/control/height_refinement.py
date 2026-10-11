@@ -103,8 +103,13 @@ def analyze(geo, stands, walks, round_match, parent_floors, parent_reasons, prev
         # Minor quantization/tolerance changes on one flat surface do not justify splitting.
         spatial = any(len(a) != len(b) or any(abs(za - zb) > hc.FLOOR_TOL_M * 10 for za, zb in zip(a, b))
                       for a in signatures for b in signatures)
-        select = parent in chosen or spatial
-        checked.append({'parent': parent, 'selected': select, 'spatial_distinction': spatial})
+        # A known ambiguous footprint should retain finer sampling even before enough
+        # children resolve. No-sample parents are excluded above; reliable stacked
+        # floors are still kept coarse unless child evidence proves a spatial boundary.
+        ambiguous = parent in conflicts
+        select = parent in chosen or spatial or ambiguous
+        checked.append({'parent': parent, 'selected': select, 'spatial_distinction': spatial,
+                        'ambiguous_parent': ambiguous})
         if select:
             chosen.add(parent)
             records[parent] = children

@@ -300,7 +300,9 @@ def refine(build, geo, found, walks, round_match, direct_floors, reasons, previo
                     for s, fs, d, fd, zs, zd in ((a, fa, b, fb, za, zb), (b, fb, a, fa, zb, za)):
                         if len(observed.get((s, fs, d, fd), ())) >= hc.CONNECT_MIN_ROUNDS:
                             if zd > zs:
-                                edge_rows += [(s, fs, d, fd, hc.EDGE_STEP), (d, fd, s, fs, hc.EDGE_STEP)]
+                                # These observations come from accepted ground walks. The reverse is
+                                # grounded descent, not an unqualified step/fall inferred from a climb.
+                                edge_rows += [(s, fs, d, fd, hc.EDGE_STEP), (d, fd, s, fs, hc.EDGE_SLIDE)]
                             else:
                                 edge_rows.append((s, fs, d, fd, hc.EDGE_SLIDE))
                 if abs(za-zb) > hc.STEP_UP_M and pa != pb:
@@ -311,7 +313,7 @@ def refine(build, geo, found, walks, round_match, direct_floors, reasons, previo
                                                (b, fb, a, fa, (pb, ib[0], pa, ia[0]))):
                             if key in parent_edges:
                                 edge_rows.append((s, fs, d, fd, parent_edges[key]))
-    # An observed climb wins over a separately observed descent, as in the coarse builder.
+    # Direct ground evidence wins over an inferred fall, while retaining descent classification.
     unique = {}
     for a, fa, b, fb, kind in edge_rows:
         key = (a, fa, b, fb)

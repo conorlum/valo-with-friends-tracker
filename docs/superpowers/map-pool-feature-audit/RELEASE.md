@@ -27,8 +27,8 @@ activation and live recompute have not been changed by this work.
   a DB, activate heights, publish tags or recompute live data. Framing, binding, geometry and release
   qualification have separate outcomes.
 
-Versions: feature compiler 10, condenser 17, control 13; Ascent consumer 3, quiet rope consumer 3,
-map-pool replay consumer 5; height format/rules 3 and height manifest 2.
+Versions: feature compiler 10, condenser 17, control 14; Ascent consumer 3, quiet rope consumer 3,
+map-pool replay consumer 5; height format 3, height rules 4 and height manifest 2.
 Gaps version stays 3; changed control inputs invalidate its caches.
 No new migration or database table is required.
 
@@ -219,6 +219,18 @@ approved rollout step. The existing archive reparse and worker runbooks in `weba
 describe capabilities and status. This change does not start or change those schedulers.
 
 ## Verification and rollback
+
+The terrain-review follow-up uses height rules 4. Seven private candidates were rebuilt from 619
+frozen rounds, with independent structural checks and private graph audits. Sunset, Split, Haven
+and Lotus pass the combined local height and sight gates; Ascent, Summit and Abyss still fail gates.
+Large inferred return descents now distinguish falls from grounded slides, and sampled ambiguous
+parents retain finer children. This does not qualify pending feature geometry or activate inputs.
+See [TERRAIN-REVIEW.md](TERRAIN-REVIEW.md) for the audit tool, evidence limits and current gates.
+The real Haven probe found retained removed-player membership in reused fill components. The fast
+counterfactual now updates that membership while retaining the geometry; control revision 14 marks
+older calculations stale. A toy entry/teammate regression and the isolated real failure agree with
+the full calculation after the fix. Height rule changes do not replace this control invalidation.
+Earlier baseline results elsewhere in this runbook predate these rules-4 candidates.
 
 Local tests cover exact/reset/ambiguous source handling, opaque destruction property framing, global
 Lotus motion time, majority-area rotating cells, exact half-cell ties, thin panel edges, rotated area

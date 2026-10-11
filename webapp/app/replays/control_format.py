@@ -44,7 +44,7 @@ import json
 import struct
 from pathlib import Path
 
-CONTROL_REVISION = 13    # 13: mixed ground footprints, physical-area metrics and traversal
+CONTROL_REVISION = 14    # 14: remove absent players from reused fill component membership
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 
@@ -54,7 +54,7 @@ HEIGHT_VERSION = 3            # explicit 4-pixel refinement; archived v2 assets 
 # The rules a build follows. Bump it for ANY change to how rounds become heights (a constant in
 # app/control/heights.py, the code of height_build.py or height_motion.py): every map's rebuild is then due.
 # tests/replays/test_height_inputs.py pins it to the constants' hash, as CONTROL_REVISION is pinned.
-HEIGHT_RULES_REVISION = 3      # 3: automatic spatial refinement with durable per-map history
+HEIGHT_RULES_REVISION = 4      # 4: ambiguous ground refinement and directional return-descent sound
 HEIGHT_SUPPORTED_MIN = 0.60   # the bar: share of walkable cells with a supported floor
 KILL_LINE_BAR = 0.02          # the kill-line check: at most this share of real kill lines blocked
 
