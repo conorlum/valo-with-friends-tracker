@@ -14,6 +14,11 @@ coarse and mixed-footprint builds, without changing archived assets or the asset
 The height input manifest includes the rule revision. Rules 4 therefore require new builds; a page
 reload does not reinterpret a stored asset. Normal verification and activation gates still apply.
 
+Current height rules are 5. Physical kill-line checks now accept replay tracks without team labels,
+while normal control calculations still require team membership. Smoke and wall exclusions are
+unchanged. Required blocked views can be proved by an exact permanent 2D wall even when endpoint
+heights are absent; clear 2D views with absent heights still fail as unchecked. No elevation is invented.
+
 The real-round checks also exposed stale player membership in a reused control fill. Removing a
 player can leave the same reachable area, but the remaining entry must choose its path back using
 the surviving teammates. The fast counterfactual now retains the area and updates its membership,
@@ -62,8 +67,8 @@ The terrain audit has 11 passing cases, including unknown fallback exclusion and
 through known landings. Height/refinement/motion checks and worker/SQLite integrations also pass;
 their suite totals overlap rather than representing independent unique counts.
 
-Sunset, Split, Haven and Lotus pass their combined local ground, kill-line and must-block checks.
-Ascent still fails kill-line and must-block checks. Summit remains below the supported-ground bar.
+In that earlier snapshot, Sunset, Split, Haven and Lotus passed their combined local ground, kill-line
+and must-block checks. Ascent failed kill-line and must-block checks; Summit lacked supported ground.
 Abyss still fails the unresolved-overlap and kill-line checks. A successful calculation or gap-cache
 comparison does not clear these failures, qualify pending rope landings or complete the Linux worker
 rehearsal. Owner-colored regions that lack exact numeric attribution remain qualitative.
@@ -71,3 +76,11 @@ rehearsal. Owner-colored regions that lack exact numeric attribution remain qual
 Private receipts retain per-map hashes, region-level before/after graph facts, source snapshots,
 pending feature placements and fresh calculation checks. Do not publish those receipts. Use the
 release checklist in [RELEASE.md](RELEASE.md) before any activation or archive recompute.
+
+The subsequent read-only snapshot contains 131 Ascent rounds and 56 Summit rounds. Summit now
+passes with the additional evidence and team-independent physical validation. The owner reconfirmed
+all three Ascent required views as blocked and marked the permanent wall corner crossed by the first.
+A private two-cell cover-paint correction adds 24 blocking pixels on that wall outline. Rebuilding
+against that exact domain passes all three required views, supports 74.7% of walkable ground, and
+leaves the kill-line result unchanged at 16 of 863 (1.85%, below the unchanged 2% bar). This qualifies
+the private height candidate only; the corrected masks and pending features have not been published.

@@ -770,7 +770,7 @@ def kill_line_check(rounds: list, geo: Geometry) -> dict:
     qualifying = blocked = 0
     examples = []
     for match, n, blob in rounds:
-        rnd = engine.RoundInputs(blob, geo)
+        rnd = engine.RoundInputs(blob, geo, sight_check=True)
         for kill in blob.get("kills") or []:
             t, killer, victim = kill.get("t"), kill.get("killer"), kill.get("victim")
             if t is None or killer is None or victim is None or killer == victim:
@@ -824,8 +824,8 @@ def geo_los(geo: Geometry, a: tuple, b: tuple, smokes) -> bool:
 
 def must_block_check(lines: list, geo: Geometry, map_name: str) -> dict:
     """The hand-listed sightlines that are impossible in game (app/static/data/control/must_block.json):
-    each must be blocked. A line whose viewer or target height is still unknown (null) is listed as not
-    checked, never as passing: a map with one fails the check until its heights are filled in."""
+    each must be blocked. A permanent 2D wall proves blockage without endpoint heights: heights only
+    remove sight. Otherwise a null endpoint height remains unchecked and fails the gate."""
     results = []
     for line in lines:
         if line.get("map") != map_name:
@@ -833,7 +833,11 @@ def must_block_check(lines: list, geo: Geometry, map_name: str) -> dict:
         vx, vy, vz = line["viewer"]
         tx, ty, tz = line["target"]
         if vz is None or tz is None:
-            results.append({"source": line.get("source"), "checked": False})
+            if not geo_los(geo, (vx, vy, None), (tx, ty, None), []):
+                results.append({"source": line.get("source"), "checked": True,
+                                "blocked": True, "basis": "permanent_2d_wall"})
+            else:
+                results.append({"source": line.get("source"), "checked": False})
             continue
         origin = geo.heights.origin_z if geo.heights is not None else 0
         eye = (vz - origin) / 10.0 + hc.EYE_M

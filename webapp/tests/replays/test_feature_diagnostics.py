@@ -71,21 +71,27 @@ def test_oversize_source_keeps_identity_and_explicit_unavailability():
     assert len(envelope['raw_source_sha256']) == 64 and envelope['raw_source_b64'] is None
 
 
-def test_event_bound_wall_switch_does_not_require_walkable_marker_ground():
+@pytest.mark.parametrize('trigger_type', ['switch', 'shoot'])
+def test_event_bound_wall_trigger_does_not_require_walkable_marker_ground(trigger_type):
     from map_feature_artifact_toys import source_case
     from app.control.features import placement
     from app.replays.map_feature_events import CLASSES
     entry = source_case()
     feature = entry['map_features']['features'][0]
     entry['map_features']['triggers'] = [{
-        'id': 'switch', 'type': 'switch', 'geometry': {'type': 'point', 'uv': [100, 100]},
-        'targets': [{'feature': feature['id'], 'kind': 'switch'}]}]
+        'id': 'switch', 'type': trigger_type, 'geometry': {'type': 'point', 'uv': [100, 100]},
+        'targets': [{'feature': feature['id'], 'kind': trigger_type}]}]
     geo = geometry_case()
     assert not placement(geo, entry)[feature['id']].ok
     feature['replay_source'] = {
         'actors': ['Switch_HiddenTemple_Test'], 'class_path': CLASSES['Switch_HiddenTemple'],
         'reset_rpcs': ['MulticastResetAnimation'],
         'rules': [{'rpc': 'MulticastPlayAnimation', 'kind': 'switch'}]}
+    if trigger_type == 'shoot':
+        feature['replay_source'] = {
+            'actors': ['RespawningPlummetShootable_Test'],
+            'class_path': CLASSES['RespawningPlummetShootable'],
+            'reset_rpcs': ['MulticastRoundBegin'], 'rules': [{'rpc': 'OnDie', 'kind': 'shoot'}]}
     assert placement(geo, entry)[feature['id']].ok
     entry['map_features']['triggers'][0]['geometry']['uv'][0] = -1
     assert not placement(geo, entry)[feature['id']].ok

@@ -27,8 +27,8 @@ activation and live recompute have not been changed by this work.
   a DB, activate heights, publish tags or recompute live data. Framing, binding, geometry and release
   qualification have separate outcomes.
 
-Versions: feature compiler 10, condenser 17, control 14; Ascent consumer 3, quiet rope consumer 3,
-map-pool replay consumer 5; height format 3, height rules 4 and height manifest 2.
+Versions: feature compiler 11, condenser 17, control 14; Ascent consumer 3, quiet rope consumer 3,
+map-pool replay consumer 5; height format 3, height rules 5 and height manifest 2.
 Gaps version stays 3; changed control inputs invalidate its caches.
 No new migration or database table is required.
 
@@ -36,6 +36,10 @@ The compiler revision fixes vertical rope editor markers: a nonblocking point ma
 object on a single floor. Its measured route landings own placement, while blocking geometry still
 requires the ordinary floor checks. Compiler/consumer identities invalidate affected feature
 artifacts. Control now consumes mixed 8/4-pixel height footprints as described below.
+Compiler 11 also permits valid explicitly replay-bound shootable trigger markers on walls, using
+the same geometry/source checks as switches. Actual panels still require their usual placement checks.
+Height rules 5 separate physical sight validation from team attribution and allow exact permanent
+walls to prove required blocked views without fabricating missing endpoint heights.
 
 ## Geometry and evidence checkpoint
 
@@ -82,21 +86,62 @@ the pending outcomes. This resolves that source-decoding blocker without assumin
 These are source checks, not new owner-reviewed behavior or geometry evidence.
 
 Automatic local height refinement is implemented through versioned mixed-footprint assets, durable
-worker history and runtime consumers. Unchanged acceptance gates use physical area. Independent
-private builds passed on historical Lotus, Haven and Sunset inputs; Ascent still fails kill-line and
-must-block checks, and Summit still fails supported-area coverage. Split and Abyss have not received
-these frozen rebuilds. See the refinement spec for exact local counts and limits. No rejected height
-asset has been activated.
+worker history and runtime consumers. Unchanged acceptance gates use physical area. The initial
+private builds passed on historical Lotus, Haven and Sunset inputs; Ascent and Summit failed then.
+Later frozen rebuilds and the current checkpoint below supersede those outcomes. See the refinement
+spec for exact local counts and limits. No rejected height asset has been activated.
 
 The owner's follow-up Ascent terrain review distinguishes a genuinely covered lower surface,
 stairs beside a flat wall, discrete box heights, and a ledge into a pit with side-by-side levels.
 Those descriptions remain private evidence tied to the diagnostic input; they are not painted
-height overrides. The read-only sample check found both a suspect height boundary beside a wall
+height overrides. The earlier read-only sample check found both a suspect height boundary beside a wall
 and remaining multiple-floor fine cells on the nonoverlapping ledge. Diagnose sample attribution
-and footprint mixing before treating those as stacked geometry. No height asset was changed and
-Ascent's kill-line/must-block failures remain release gates.
+and footprint mixing before treating those as stacked geometry. The later wall-corner correction and
+additional data clear the current private Ascent gates without painted elevation overrides.
 
 ## Current real evidence and blockers
+
+The newest private height checkpoint clears Ascent and Summit. Additional frozen replay evidence
+and team-independent physical validation let Summit pass without changing coverage thresholds.
+The owner identified Ascent's crossed permanent wall corner; a private mask correction followed by
+an exact-domain rebuild blocks all three required views. Its kill-line share remains 1.85% and its
+supported area is 74.7%. Existing failures described below are historical checkpoints. Abyss still
+fails its unresolved-overlap and kill-line checks. These results do not publish corrected masks,
+activate heights, resolve every feature, or qualify fresh control/gaps.
+
+Staged private bounds use the owner's approximate 1.5-player descending-door height as an explicit
+2.7m model estimate, not a measured clearance. Ascent opening is five seconds per the owner.
+Enabled diagnostic trials place both Ascent doors, Sunset's door, and Summit's Cave and Mid doors.
+Ascent glass also places after removing its authored extension into a permanent wall: the exact set
+of walkable footprints covered by the glass is unchanged. Summit Heaven geometry and remaining rope
+landings are still pending. All saved owner
+bundles remain disabled; only isolated diagnostic copies enable them.
+
+A complete fresh Sunset round on the staged bounds includes closing, fully closed, reopening and
+fully open states. All 54 sampled full counterfactuals match incremental control, and all 23 gap
+rows match replay of its tick cache. The round uses condenser 17 and compiler 11, an exact private
+height asset, and the normal analytical schedule (355 instants). Knowledge layers are excluded.
+The receipt retains existing unresolved-terrain and input fallbacks; this is one reviewed recording,
+not full map-pool qualification. The separate cache-miss gaps-only run and its cached rerun produce
+the same 23 rows as the full calculation. All three paths therefore agree for this round.
+
+The activation-fix regressions pass 153 focused height/job/input/map-runtime cases and 97 feature,
+artifact and acceptance cases. Normal control still rejects missing team attribution. Source markers
+without a valid binding, invalid coordinates and off-ground panels remain pending. Repeated Split
+shaft motion was also compared with nearby accepted ground runs: mid-ride pauses are not landing
+evidence, so those pending endpoints were retained rather than bound to incidental heights.
+
+One older stored Ascent round lacks its map-feature timeline and correctly refuses computation with
+active features. Regenerate affected stored rounds through the existing native-capture/condensation
+path before recomputing control and gaps. Do not inject an assumed open state into older blobs.
+
+Fresh native condensation resolves that missing timeline in the local Ascent trial. The first 25
+seconds of a real round include Garden-door activation, destruction before full closure, and glass
+destruction. All three Ascent features compile against the corrected exact-domain height asset.
+All 60 sampled full counterfactuals match incremental control across 114 analytical instants, and
+all seven fresh gap rows match cached replay. This is a round prefix, not a full-round acceptance
+run; Market remains open in this scene. Unresolved-terrain fallback remains recorded. A fully
+closed Market-door scene and independent gaps-only parity still need their own fresh checks.
 
 Private native captures were rebuilt on the new parser pin and checked against recording hashes.
 All four captures frame without errors. Summit's three selected doors bind in 19 rounds, Abyss's two
@@ -132,12 +177,13 @@ apply; accepted estimates do not supply missing landing or ground data. Destruct
 blocker at the destruction-status event and cancels subsequent motion; ordinary damage does not
 remove it. No additional owner decision on that behavior is required.
 
-The latest local Lotus trial compiles all three bundles against the exact locally passing refined
+The local Lotus trial compiles all three bundles against the exact locally passing refined
 asset. Explicit replay-bound switches may be mounted off walkable ground; their markers are not
 movement or sight blockers. This exemption requires a valid source binding and finite in-map
-geometry, and does not exempt the actual door panels. Summit's four features remain pending against
-its refined diagnostic asset because of sight bounds, unresolved/off-ground geometry and rope
-landings. A single supported lower rope height is insufficient to invent its upper boarding floor.
+geometry, and does not exempt the actual door panels. At that earlier checkpoint, Summit's four
+features remained pending. The current staged bounds and wall-trigger correction place Cave and
+Mid against its passing asset; Heaven's permanent doorway domain and the rope landings remain
+pending. A single supported lower rope height is insufficient to invent its upper boarding floor.
 
 ## Steps to finish, in order
 
@@ -220,9 +266,11 @@ describe capabilities and status. This change does not start or change those sch
 
 ## Verification and rollback
 
-The terrain-review follow-up uses height rules 4. Seven private candidates were rebuilt from 619
+The earlier terrain-review follow-up used height rules 4. Seven private candidates were rebuilt from 619
 frozen rounds, with independent structural checks and private graph audits. Sunset, Split, Haven
-and Lotus pass the combined local height and sight gates; Ascent, Summit and Abyss still fail gates.
+and Lotus passed the combined local height and sight gates; Ascent, Summit and Abyss failed then.
+The rules-5 Ascent and Summit results above supersede those two historical failures; Abyss remains
+unqualified.
 Large inferred return descents now distinguish falls from grounded slides, and sampled ambiguous
 parents retain finer children. This does not qualify pending feature geometry or activate inputs.
 See [TERRAIN-REVIEW.md](TERRAIN-REVIEW.md) for the audit tool, evidence limits and current gates.

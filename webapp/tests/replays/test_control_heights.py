@@ -649,6 +649,33 @@ def test_a_kill_through_a_wall_or_on_unresolved_ground_does_not_qualify():
     assert result["excluded"] == {"on an unresolved cell": 1}
 
 
+@pytest.mark.parametrize("blocker", [None, "smoke", "wall"])
+def test_height_sight_check_needs_no_team_labels_and_keeps_physical_blockers(blocker):
+    import copy
+    from app.control import engine
+
+    geo = copy.copy(ledge_geo())
+    geo.sight = geo.sight.copy()
+    _, n, blob = kill_round([(2.0, 0, 5)], {
+        0: standing(256 - 2 * M_PX, 204, 4.0), 5: standing(380, 204, 0.0, "B")})
+    if blocker == "smoke":
+        blob["util"] = [toy_ability("Rift", "E_SmokeZone", 300, 204, 0)]
+    elif blocker == "wall":
+        geo.sight[96:296, 280:288] = True
+    expected = hb.kill_line_check([("m", n, blob)], geo)
+    if blocker:
+        assert expected["excluded"] == {"blocked in 2D (wall or smoke)": 1}
+    else:
+        assert expected["qualifying"] == 1 and expected["blocked"] == 0
+    missing = copy.deepcopy(blob)
+    for p in missing["players"]:
+        p["side"] = None
+    assert hb.kill_line_check([("m", n, missing)], geo) == expected
+    assert all(p["side"] is None for p in missing["players"])
+    with pytest.raises(engine.ControlError, match="no side group"):
+        engine.RoundInputs(missing, geo)
+
+
 def test_a_kill_counts_with_a_sample_a_little_before_it():
     # KILL_SAMPLE_S is 0.25 s: positions two samples (0.125 s) before the kill still count, though the
     # engine's own lookup takes only a sample and a half.
@@ -692,6 +719,19 @@ def test_a_must_block_line_that_is_not_blocked_fails_and_so_does_an_unknown_heig
                   "source": "seen"})
     result = hb.must_block_check(lines, geo, "Ledge")
     assert not result["passes"] and [r["source"] for r in result["results"] if r["checked"] and not r["blocked"]] == ["seen"]
+
+
+def test_permanent_wall_proves_required_blockage_without_fabricating_endpoint_heights():
+    from tests.replays.control_toys import toy_heights
+
+    geo = toy_heights("RequiredWall", [(96, 96, 416, 296)], walls=[(280, 96, 304, 296)],
+                      ground=[((96, 96, 256, 296), 0)], unresolved=[(320, 96, 416, 296)])
+    line = {"map": "RequiredWall", "viewer": [200, 204, None],
+            "target": [380, 204, None], "source": "owner-confirmed solid wall"}
+    result = hb.must_block_check([line], geo, "RequiredWall")
+    assert (result["checked"], result["blocked"], result["unchecked"]) == (1, 1, 0)
+    assert result["passes"] and result["results"][0]["basis"] == "permanent_2d_wall"
+    assert line["viewer"][2] is None and line["target"][2] is None
 
 
 def test_the_committed_must_block_set_is_well_formed():

@@ -277,8 +277,9 @@ def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
                 from app.replays.ascent_features import KEYS
                 event_bound = (f.get('replay_key') in KEYS or
                                f.get('replay_source') is not None and not binding_problems(f['replay_source']))
-                if t.get('type') == 'switch' and event_bound:
-                    # A wall-mounted switch is a source marker, not ground a player traverses.
+                if t.get('type') in ('switch', 'shoot') and event_bound:
+                    # A wall-mounted switch or shootable target is a source marker,
+                    # not ground a player traverses.
                     rep = ms.Report()
                     path = f'triggers.{t.get("id")}.geometry'
                     ms._geometry(rep, path, t.get('geometry'))

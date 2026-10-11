@@ -290,7 +290,8 @@ class RoundInputs:
     """One round's players, lives, positions, statuses and utility, with every interval snapped
     to the tick grid."""
 
-    def __init__(self, blob: dict, geo: Geometry, link: ControlLink | None = None, infos=None):
+    def __init__(self, blob: dict, geo: Geometry, link: ControlLink | None = None, infos=None, *,
+                 sight_check: bool = False):
         link = link or ControlLink()
         self.blob, self.geo, self.link = blob, geo, link
         self.hz = blob["hz"]
@@ -304,6 +305,10 @@ class RoundInputs:
                 side = link.sides.get(p["slot"])
                 group = {"attack": "A", "defense": "B"}.get(side)
             if group is None:
+                if sight_check:
+                    # Height validation needs physical sight blockers and tracks, not teams.
+                    # Leave membership absent; never fabricate it for control/knowledge.
+                    continue
                 raise ControlError(f"slot {p['slot']} has no side group and the link names no side")
             self.team[p["slot"]] = group
         self.group_side = {}
@@ -356,7 +361,7 @@ class RoundInputs:
         # What utility tells each team about one enemy (app/control/utility.py), at its own exact time: the
         # readers' and any given ones (tests), in engine order. Only enemies of the learning side count.
         # An Info that needs a capability the enemy is immune to at its time (Veto's Evolution) is dropped.
-        self.infos = utility.ordered([i for i in [*utility.read_all(self), *(infos or ())]
+        self.infos = [] if sight_check else utility.ordered([i for i in [*utility.read_all(self), *(infos or ())]
                                       if self.team.get(i.slot) is not None and self.team.get(i.slot) != i.side
                                       and 0.0 <= i.t < self.t_end
                                       and utility.affects(i.detail.get("needs", "sight"), self.evolution, i.slot, i.t)])
