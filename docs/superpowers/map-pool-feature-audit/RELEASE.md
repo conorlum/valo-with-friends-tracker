@@ -74,6 +74,10 @@ Panel depth and angular speed remain model estimates pending real-scene comparis
    coordinates and distinct replay position-Z floors; bind the named Choke 2 side for Abyss Mid.
    Preserve physical directions while applying the owner's quiet times and one-way restriction.
 3. **Repair height evidence.** Diagnose failed global gates using source coverage and known kill lines.
+   The owner selected automatic local 4-pixel refinement for mixed-height cells on every map, without
+   painted guides. See `../specs/2026-10-10-automatic-local-height-refinement.md`: this is settled design,
+   and the mixed-resolution builder/runtime still needs implementation. Keep sparse regions explicitly
+   unknown, genuine stacked floors distinct, and acceptance metrics weighted by physical area.
    Build fresh local candidates and rerun the unchanged checks. Use only accepted exact assets in final
    qualification. Rebuild-dependent floor references are verified again; do not retain stale node IDs.
 4. **Qualify private enabled bundles.** Separate panel and rope consumers. Resolve permanent-domain
