@@ -101,7 +101,8 @@ def test_event_bound_wall_trigger_does_not_require_walkable_marker_ground(trigge
 
 
 @pytest.mark.parametrize('flat', [False, True])
-def test_bound_door_attaches_to_wall_without_opening_ground_or_clipping_sight(flat):
+@pytest.mark.parametrize('kind', ['door', 'breakable'])
+def test_bound_panel_attaches_to_wall_without_opening_ground_or_clipping_sight(flat, kind):
     import copy
     import numpy as np
     from map_feature_artifact_toys import source_case
@@ -109,11 +110,15 @@ def test_bound_door_attaches_to_wall_without_opening_ground_or_clipping_sight(fl
     from app.replays.map_feature_events import CLASSES
     entry = source_case()
     feature = entry['map_features']['features'][0]
-    feature['kind'] = 'door'
+    feature['kind'] = kind
     feature['replay_source'] = {
         'actors': ['RespawningPlummetShootable_Test'],
         'class_path': CLASSES['RespawningPlummetShootable'],
         'reset_rpcs': ['MulticastRoundBegin'], 'rules': [{'rpc': 'OnDie', 'kind': 'shoot'}]}
+    if kind == 'breakable':
+        feature['replay_source'] = {
+            'actors': ['RespawningWallPlate_Test'], 'class_path': CLASSES['RespawningWallPlate'],
+            'reset_rpcs': ['RoundBeginBroadcast'], 'rules': [{'rpc': 'OnDie', 'kind': 'destroy'}]}
     feature['states'][0]['footprint']['uv'] = [[x*10000/1024, y*10000/1024]
         for x,y in ((316,320),(328,320),(328,328),(316,328))]
     feature['states'][0]['sight_bounds'] = {'ref':'all_height'}

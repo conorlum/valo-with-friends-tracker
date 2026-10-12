@@ -27,7 +27,7 @@ activation and live recompute have not been changed by this work.
   a DB, activate heights, publish tags or recompute live data. Framing, binding, geometry and release
   qualification have separate outcomes.
 
-Versions: feature compiler 12, condenser 17, control 14; Ascent consumer 3, quiet rope consumer 3,
+Versions: feature compiler 13, condenser 17, control 14; Ascent consumer 3, quiet rope consumer 3,
 map-pool replay consumer 5; height format 3, height rules 5 and height manifest 2.
 Gaps version stays 3; changed control inputs invalidate its caches.
 No new migration or database table is required.
@@ -45,6 +45,10 @@ one paint cell. It retains the entire sight mask, resolves every touched walkabl
 and creates no traversal node on the wall. Unbound panels, deep wall extensions, entirely off-ground
 panels, and missing or multiple ground floors remain pending. This avoids trimming a doorway's
 vision blocker merely to satisfy coarse wall-edge placement.
+Compiler 13 applies the same verified attachment rule to explicitly replay-bound breakable panels.
+This resolves Abyss's original Heaven-breakable footprint without the withdrawn trim or any loss of
+sight coverage. Its failed map-height gates still prevent release. The expanded feature/compiler,
+artifact and mixed-grid suites pass 152 tests.
 
 ## Geometry and evidence checkpoint
 
@@ -119,8 +123,9 @@ Staged private bounds use the owner's approximate 1.5-player descending-door hei
 Enabled diagnostic trials place both Ascent doors, Sunset's door, and Summit's Cave and Mid doors.
 Ascent glass also places after removing its authored extension into a permanent wall: the exact set
 of walkable footprints covered by the glass is unchanged. An earlier Abyss Heaven-breakable trim
-was withdrawn after its private sight-mask proof was found to use the opposite mask polarity;
-that geometry remains pending in the current candidate. Abyss's failed height gates also remain.
+was withdrawn after its private sight-mask proof was found to use the opposite mask polarity.
+Compiler 13 instead qualifies the complete original panel's wall attachment. Both Abyss breakables
+are placeable, while its failed height gates still hold every Abyss bundle disabled.
 The owner confirmed Summit polygons are approximate doorway guides and panels should be flush
 with surrounding walls. All three were privately aligned to the minimap wall edges. Cave and Mid
 place with compiler 12; Heaven still has ten unresolved ground leaves, and its rope landings remain

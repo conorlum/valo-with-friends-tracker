@@ -221,8 +221,8 @@ def footprint_cells(geo, shape):
 
 
 def _event_bound_panel(feature):
-    """Wall attachment is an explicit door claim, not permission to open new ground."""
-    if not feature or feature.get('kind') != 'door':
+    """Wall attachment is an explicit panel claim, not permission to open new ground."""
+    if not feature or feature.get('kind') not in ('door', 'breakable'):
         return False
     from app.replays.ascent_features import KEYS
     from app.replays.map_feature_events import binding_problems
