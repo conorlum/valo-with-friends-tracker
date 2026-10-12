@@ -115,6 +115,39 @@ class QuietTopology:
         return topo.spread(reached, room, free, t, straight, timed, parents, solid, quiet=True)
 
 
+def local_rope_cuts(geo, base, arcs):
+    """Stop unmeasured 2D neighbours from joining a vertical rope's different levels.
+
+    A shared NaN-height node otherwise gives a free lower -> unknown -> upper shortcut. In
+    the local landing neighbourhood, those unknown nodes retain the lower 2D fallback and
+    cannot enter/leave the upper level without the reviewed timed arc. This does not assign
+    ground heights, change observed movement or cut same-level approaches. Outside the local
+    rope neighbourhood, the ordinary terrain model is unchanged.
+    """
+    from app.control.geometry import CELL
+    from app.control.engine import UNKNOWN_MPS
+    cuts = set()
+    dst = np.broadcast_to(np.arange(geo.n)[:, None], base.in_from.shape)
+    valid = (base.in_from < geo.n) & np.isfinite(base.in_cost_quiet)
+    src, targets = base.in_from[valid], dst[valid]
+    for arc in arcs:
+        low, high = sorted((float(geo.node_z[arc.src]), float(geo.node_z[arc.dst])))
+        if not math.isfinite(low) or not math.isfinite(high) or high - low < 1.5:
+            continue
+        center = (geo.centres[arc.src] + geo.centres[arc.dst]) / 2
+        # An ordinary walk escaping this neighbourhood already costs at least the rope ride.
+        # Scale the radius in metres/time, rather than assuming the same minimap scale everywhere.
+        radius = max(2 * CELL, float(np.linalg.norm(geo.centres[arc.src] - geo.centres[arc.dst])) / 2 +
+                     arc.cost_s * UNKNOWN_MPS / (2 * geo.m_per_px) + CELL)
+        local = np.linalg.norm(geo.centres - center, axis=1) <= radius
+        upper = np.isfinite(geo.node_z) & (geo.node_z >= (low + high) / 2)
+        unknown = ~np.isfinite(geo.node_z[src]) | ~np.isfinite(geo.node_z[targets])
+        height_jump = np.abs(geo.node_z[src] - geo.node_z[targets]) >= 1.5
+        crosses = local[src] & local[targets] & (upper[src] != upper[targets]) & (unknown | height_jump)
+        cuts.update(zip(src[crosses].tolist(), targets[crosses].tolist()))
+    return cuts
+
+
 def topology_for(geo):
     from app.control import topology, features as cf
     from app.replays.map_feature_inputs import read_json
@@ -129,7 +162,7 @@ def topology_for(geo):
     if not members:
         return base
     arcs, reasons = readiness(geo, mf, members)
-    cuts = set()
+    cuts = local_rope_cuts(geo, base, arcs)
     # Each quiet cut is two measured endpoint/access records, not unstable node IDs.
     for r in mf.get('routes', []):
         if r.get('owner') not in members:

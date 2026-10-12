@@ -142,12 +142,13 @@ def test_bound_panel_attaches_to_wall_without_opening_ground_or_clipping_sight(f
             f['states'][0]['footprint']['uv']=[[x*10000/1024,y*10000/1024]
                 for x,y in ((x0,320),(x1,320),(x1,328),(x0,328))]
         assert not cf.placement(g,trial)[feature['id']].ok,mutate
-    for g in (geometry_case(unresolved=True),geometry_case(multi=True)):
-        assert not cf.placement(g,entry)[feature['id']].ok
+    assert cf.placement(geometry_case(unresolved=True),entry)[feature['id']].ok
+    assert not cf.placement(geometry_case(multi=True),entry)[feature['id']].ok
 
 
 @pytest.mark.parametrize('unknown_child', [False, True])
-def test_wall_attachment_keeps_exact_mixed_leaf_floor_requirements(unknown_child):
+@pytest.mark.parametrize('all_height', [False, True])
+def test_wall_attachment_uses_2d_ground_only_for_explicit_all_height_panels(unknown_child, all_height):
     from tests.replays.test_adaptive_ground import mixed
     from map_feature_artifact_toys import source_case
     from app.control import features as cf
@@ -163,10 +164,11 @@ def test_wall_attachment_keeps_exact_mixed_leaf_floor_requirements(unknown_child
         'reset_rpcs':['MulticastRoundBegin'],'rules':[{'rpc':'OnDie','kind':'shoot'}]}
     f['states'][0]['footprint']['uv']=[[x*10000/1024,y*10000/1024]
         for x,y in ((188,200),(208,200),(208,208),(188,208))]
-    f['states'][0]['sight_bounds']={'ref':'all_height'}
+    if all_height:
+        f['states'][0]['sight_bounds']={'ref':'all_height'}
     placed=cf.placement(geo,mf)[f['id']]
-    assert placed.ok is (not unknown_child)
-    if unknown_child:
+    assert placed.ok is (all_height or not unknown_child)
+    if unknown_child and not all_height:
         assert any(r['code']=='unresolved_height' for r in placed.reasons)
         assert not cf.movement_blocks(geo,mf).blocked.any()
     else:

@@ -64,3 +64,40 @@ def coordinate_cluster(rides, radius_uv=25):
     return {'status': 'coordinate_proposal', 'uv': center, 'rides': members,
             'excluded_rides': len(ordered) - len(members),
             'radius_uv': max(math.dist(r['uv'], center) for r in members)}
+
+
+def landing_pairs(rides, ground, *, max_gap_s=2, max_distance_px=22):
+    """Propose distinct measured landings from ground samples beside a vertical ride.
+
+    Callers qualify the ground samples and resolve their nodes on an exact height asset first.
+    Each sample's t0/t1 is its actual sampling interval, not the interval of a long standing run
+    whose mean XY may be far from the rope. Match/round/slot identities must all agree. Ride
+    extrema only corroborate the span: they never supply an endpoint height or a travel cost.
+    These are geometry proposals; reviewed quiet costs/directions remain separate.
+    """
+    pairs = []
+    for ride in rides:
+        ends = []
+        for edge in (ride['start_s'], ride['end_s']):
+            options = []
+            for sample in ground:
+                if any(sample.get(k) != ride.get(k) for k in ('match', 'round', 'slot')):
+                    continue
+                if any(ride.get(k) is None for k in ('match', 'round', 'slot')) or sample.get('node') is None:
+                    continue
+                gap = max(sample['t0'] - edge, edge - sample['t1'], 0)
+                distance = math.dist(sample['uv'], ride['uv']) * 1024 / 10000
+                if gap <= max_gap_s and distance <= max_distance_px:
+                    options.append({**sample, 'gap': gap, 'distance_px': distance})
+            ends.append(options)
+        for a in ends[0]:
+            for b in ends[1]:
+                if a['node'] == b['node'] or abs(a['world_z'] - b['world_z']) < 1.5:
+                    continue
+                low, high = sorted((a['world_z'], b['world_z']))
+                span = ride['run_z_range_m']
+                if span[0] < low - .5 or span[1] > high + .5 or span[1] - span[0] < (high - low) * .5:
+                    continue
+                pairs.append({'ride': ride, 'a': a, 'b': b,
+                    'score': a['gap'] + b['gap'] + (a['distance_px'] + b['distance_px']) / 100})
+    return sorted(pairs, key=lambda pair: pair['score'])
