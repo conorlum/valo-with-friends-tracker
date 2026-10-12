@@ -104,13 +104,21 @@ def test_the_standalone_page_embeds_every_round_and_no_identity(condensed, tmp_p
     assert "https://" not in page.split("<script>", 1)[1], "nothing is fetched from the network"
 
 
-def test_feature_panel_is_ascent_only(condensed):
+@pytest.mark.parametrize('name', ['Ascent', 'Sunset', 'Split', 'Summit', 'Lotus', 'Abyss', 'Haven'])
+def test_feature_panel_covers_supported_maps_in_both_viewer_modes(condensed, name):
     import copy
-    assert 'data-replay-panel="features"' in standalone.render(condensed.rounds)
     other = copy.deepcopy(condensed.rounds)
     for data in other.values():
-        data['map'] = 'Haven'
-    assert 'data-replay-panel="features"' not in standalone.render(other)
+        data['map'] = name
+    page = standalone.render(other)
+    supported = name != 'Haven'
+    assert ('data-replay-panel="features"' in page) == supported
+    assert ('data-replay-layer="features"' in page) == supported
+    template = Environment(loader=FileSystemLoader(str(WEBAPP/'app'/'templates'))).get_template('replays/_player.html')
+    page = template.render(replay={'map_name': name}, linked=True)
+    for marker in ('data-replay-panel="features"', 'data-replay-layer="features"',
+                   'data-replay-features-state', 'data-replay-features-events', 'data-replay-features-status'):
+        assert (marker in page) == supported
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")

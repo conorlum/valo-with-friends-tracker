@@ -759,6 +759,18 @@ def _route(rep, r, features, floors, specials):
                 rep.error(where, 'bad_coordinates', 'quiet cut needs a placed measured landing')
             else:
                 _landing(rep, where + '.landing', point.get('landing'))
+    connections = r.get('quiet_walk_connections', [])
+    if not isinstance(connections, list) or len(connections) > 64:
+        rep.error(rid, 'bad_route', 'quiet walk connections must be a list of at most 64 directed local walks')
+    else:
+        for i, connection in enumerate(connections):
+            for key in ('from', 'to'):
+                point = connection.get(key) if isinstance(connection, dict) else None
+                where = f'{rid}.quiet_walk_connections[{i}].{key}'
+                if not isinstance(point, dict) or not _uv(point.get('uv')):
+                    rep.error(where, 'bad_coordinates', 'quiet walk connection needs placed ground evidence')
+                else:
+                    _landing(rep, where + '.landing', point.get('landing'))
     if r.get("in_transit", "unresolved") not in IN_TRANSIT:
         rep.error(rid, "bad_route", f"in_transit must be one of {IN_TRANSIT}")
     elif r.get("states") is not None and r.get("in_transit", "unresolved") == "unresolved":

@@ -47,6 +47,8 @@ def describe(data: bytes, map_name: str, *, asset_dir: Path | None = None, must_
                 meta = json.loads(bytes(raw["meta"]).decode("utf-8"))
                 if isinstance(meta, dict) and meta.get('movement_only'):
                     raise ValueError('rope walking data cannot be activated as terrain sight heights')
+                if isinstance(meta, dict) and meta.get('feature_grid'):
+                    raise ValueError('computational panel tessellation cannot be activated as measured heights')
                 if not isinstance(meta, dict) or type(meta.get("origin_z")) is not int \
                         or meta.get("units") != "dm" or meta.get("stand_m") != hc.STAND_M:
                     raise ValueError("invalid height frame or units")

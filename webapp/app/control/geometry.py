@@ -287,6 +287,8 @@ class Geometry:
     movement_only: bool = False           # archived local rope ground; terrain sight remains flat
     movement_height_sha: str | None = None
     rope_ground_digest: str | None = None
+    panel_grid_digest: str | None = None   # computational moving-panel leaves, separate from selected heights
+    panel_height_source: object = None
     # map features (app/control/features.py): the active generation, only when index.json names one
     features_sha: str | None = None
     features: dict | None = None          # {map, manifest, assets} as published
@@ -401,6 +403,7 @@ def attach_heights(geo: Geometry, asset) -> Geometry:
     a walkable cell the asset has no floor for is unresolved (flat 2D sight and walking), whether the
     build said so or the walk mask has changed since (`height_unknown` counts those)."""
     geo.movement_only, geo.movement_height_sha, geo.rope_ground_digest = False, None, None
+    geo.panel_grid_digest, geo.panel_height_source = None, None
     # Reattachment may replace a mixed asset with archived coarse ground.
     geo.space_grid = geo.space_nodes = geo.space_walk = geo.space_unresolved = None
     geo.space_bbox = geo.node_space = geo.node_bbox = geo.topo = None
@@ -876,6 +879,7 @@ def cache_key(geo: Geometry) -> str:
     digest.update(np.packbits(geo.walk_px).tobytes())
     if geo.heights is not None:      # a flat map's key is what it always was
         digest.update(json.dumps({"height": geo.movement_height_sha or geo.height_sha,
+                                  **({'panel_grid': geo.panel_grid_digest} if geo.panel_grid_digest else {}),
                                   **({'movement_only': True} if geo.movement_only else {}),
                                   "eye": hc.EYE_M, "body": hc.BODY_M, "stand": hc.STAND_M,
                                   "ledge": hc.LEDGE_M, "snap": hc.NODE_SNAP_M, "slabs": SLAB_SLOTS},

@@ -116,13 +116,12 @@ class QuietTopology:
 
 
 def local_rope_cuts(geo, base, arcs):
-    """Stop unmeasured 2D neighbours from joining a vertical rope's different levels.
+    """Separate local rope levels without assigning every unsampled approach to the bottom.
 
-    A shared NaN-height node otherwise gives a free lower -> unknown -> upper shortcut. In
-    the local landing neighbourhood, those unknown nodes retain the lower 2D fallback and
-    cannot enter/leave the upper level without the reviewed timed arc. This does not assign
-    ground heights, change observed movement or cut same-level approaches. Outside the local
-    rope neighbourhood, the ordinary terrain model is unchanged.
+    Unknown leaves use their nearest measured walking support to choose a cut side, never
+    a fabricated height. Distance follows existing walk edges, not XY across a wall.
+    Only the local level boundary is cut. Bundle qualification also checks that this
+    approximation has not isolated a landing from its pre-existing main walking area.
     """
     from app.control.geometry import CELL
     from app.control.engine import UNKNOWN_MPS
@@ -130,6 +129,10 @@ def local_rope_cuts(geo, base, arcs):
     dst = np.broadcast_to(np.arange(geo.n)[:, None], base.in_from.shape)
     valid = (base.in_from < geo.n) & np.isfinite(base.in_cost_quiet)
     src, targets = base.in_from[valid], dst[valid]
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import dijkstra
+    graph = csr_matrix((base.in_cost_quiet[valid], (src, targets)), shape=(geo.n, geo.n))
+    sides = {}
     for arc in arcs:
         low, high = sorted((float(geo.node_z[arc.src]), float(geo.node_z[arc.dst])))
         if not math.isfinite(low) or not math.isfinite(high) or high - low < 1.5:
@@ -140,12 +143,114 @@ def local_rope_cuts(geo, base, arcs):
         radius = max(2 * CELL, float(np.linalg.norm(geo.centres[arc.src] - geo.centres[arc.dst])) / 2 +
                      arc.cost_s * UNKNOWN_MPS / (2 * geo.m_per_px) + CELL)
         local = np.linalg.norm(geo.centres - center, axis=1) <= radius
-        upper = np.isfinite(geo.node_z) & (geo.node_z >= (low + high) / 2)
+        key = (low, high)
+        if key not in sides:
+            measured = np.isfinite(geo.node_z) & getattr(geo, 'walk_n', True)
+            upper = measured & (geo.node_z >= (low + high) / 2)
+            below = measured & ~upper
+            to_high = dijkstra(graph, indices=np.flatnonzero(upper), min_only=True, directed=False)
+            to_low = dijkstra(graph, indices=np.flatnonzero(below), min_only=True, directed=False)
+            sides[key] = upper | (~measured & (to_high < to_low))
+        upper = sides[key]
         unknown = ~np.isfinite(geo.node_z[src]) | ~np.isfinite(geo.node_z[targets])
         height_jump = np.abs(geo.node_z[src] - geo.node_z[targets]) >= 1.5
         crosses = local[src] & local[targets] & (upper[src] != upper[targets]) & (unknown | height_jump)
         cuts.update(zip(src[crosses].tolist(), targets[crosses].tolist()))
     return cuts
+
+
+def qualified_cuts(geo, mf, members, base, arcs):
+    """Share compiler/runtime cuts, preserving explicitly reviewed ordinary walk edges.
+
+    A walk connection can only retain an existing quiet edge, never create one or
+    assign a floor. A single unknown leaf may be crossed from measured ground;
+    two unknown ends or an ambiguous stacked floor cannot bind. Explicit quiet
+    cuts take precedence over these exemptions.
+    """
+    from app.control import features as cf
+    from app.control.adaptive import touching
+    from app.replays.map_feature_state import known
+    from app.replays.map_feature_schema import _uv
+    cuts, reasons = local_rope_cuts(geo, base, arcs), []
+    for route in mf.get('routes', []):
+        if route.get('owner') not in members:
+            continue
+        connections = route.get('quiet_walk_connections', [])
+        if not isinstance(connections, list) or len(connections) > 64:
+            reasons.append(f"{route['id']}: too many or invalid quiet walk connections")
+            continue
+        for connection in connections:
+            nodes, heights = [], []
+            connection = connection if isinstance(connection, dict) else {}
+            for point in (connection.get('from', {}), connection.get('to', {})):
+                point = point if isinstance(point, dict) else {}
+                uv, landing = point.get('uv'), point.get('landing', {})
+                landing = landing if isinstance(landing, dict) else {}
+                z, tol = known(landing.get('world_z')), known(landing.get('tolerance'))
+                if not _uv(uv) or z is None or tol is None or not math.isfinite(z) \
+                        or not math.isfinite(tol) or not 0 < tol <= .5 \
+                        or landing['world_z'].get('unit') != 'm' or landing['tolerance'].get('unit') != 'm':
+                    nodes.append(None); continue
+                xy = np.asarray(uv, float) * 1024 / 10000
+                candidates = geo.nodes_at_px(*xy)
+                candidates = candidates[candidates >= 0]
+                world = geo.node_z[candidates] + geo.heights.origin_z / 10
+                matches = candidates[np.isfinite(world) & (np.abs(world-z) <= tol)]
+                # Unknown single-leaf ground is an existing fallback, not a measured landing.
+                if len(matches) == 1:
+                    node = int(matches[0])
+                elif len(candidates) == 1 and np.isnan(world[0]):
+                    node = int(candidates[0])
+                else:
+                    node = None
+                nodes.append(node); heights.append(z)
+            valid = None not in nodes and len(heights) == 2
+            if valid:
+                a, b = nodes
+                boxes = geo.node_bbox if geo.adaptive else np.column_stack((geo.centres-4, geo.centres+4))
+                valid = a != b and geo.walk_n[a] and geo.walk_n[b] and touching(boxes[a], boxes[b]) \
+                    and np.isfinite(base.in_cost_quiet[b, base.in_from[b] == a]).any() \
+                    and np.isfinite(geo.node_z[nodes]).any() and abs(heights[0]-heights[1]) < 1.5
+            if valid:
+                cuts.discard(tuple(nodes))
+            else:
+                reasons.append(f"{route['id']}: quiet walk connection is not an existing local supported walk")
+    for route in mf.get('routes', []):
+        if route.get('owner') not in members:
+            continue
+        for cut in route.get('quiet_cuts', []):
+            nodes = []
+            for point in (cut.get('from', {}), cut.get('to', {})):
+                node, why = cf._point_node(geo, mf, point.get('uv'), landing=point.get('landing'))
+                if why:
+                    reasons.append(f"{route['id']}: quiet cut {why}")
+                nodes.append(node)
+            if None not in nodes:
+                cuts.add(tuple(nodes))
+    return cuts, reasons
+
+
+def walking_exit_problems(geo, base, arcs, cuts):
+    """A local heuristic cannot remove an existing connection to the main walking area.
+
+    Pre-existing separate platforms are preserved as separate; timed rope arcs are
+    excluded from this check because they must not conceal a removed stair/walk exit.
+    """
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import connected_components
+    dst = np.broadcast_to(np.arange(geo.n)[:, None], base.in_from.shape)
+    valid = (base.in_from < geo.n) & np.isfinite(base.in_cost_quiet)
+    src, targets = base.in_from[valid], dst[valid]
+    def components(keep):
+        _, labels = connected_components(csr_matrix((np.ones(int(keep.sum())),
+            (src[keep], targets[keep])), shape=(geo.n, geo.n)), directed=False)
+        sizes = np.bincount(labels[geo.walk_n], minlength=geo.n)
+        return labels, int(np.argmax(sizes))
+    before, main = components(np.ones(len(src), bool))
+    after, remaining = components(np.array([(int(a), int(b)) not in cuts for a, b in zip(src, targets)]))
+    bad = {a.route for a in arcs for n in (a.src, a.dst)
+           if before[n] == main and after[n] != remaining}
+    return [f'{r}: quiet rope cuts remove the landing walking exit' for r in sorted(bad)]
 
 
 def topology_for(geo):
@@ -162,20 +267,9 @@ def topology_for(geo):
     if not members:
         return base
     arcs, reasons = readiness(geo, mf, members)
-    cuts = local_rope_cuts(geo, base, arcs)
-    # Each quiet cut is two measured endpoint/access records, not unstable node IDs.
-    for r in mf.get('routes', []):
-        if r.get('owner') not in members:
-            continue
-        for cut in r.get('quiet_cuts', []):
-            nodes = []
-            for point in (cut.get('from', {}), cut.get('to', {})):
-                node, why = cf._point_node(geo, mf, point.get('uv'), landing=point.get('landing'))
-                if why:
-                    reasons.append(f"{r['id']}: quiet cut {why}")
-                nodes.append(node)
-            if None not in nodes:
-                cuts.add(tuple(nodes))
+    cuts, cut_reasons = qualified_cuts(geo, mf, members, base, arcs)
+    reasons += cut_reasons
+    reasons += walking_exit_problems(geo, base, arcs, cuts)
     if reasons:
         raise FeatureArtifactCorrupt('; '.join(reasons))
     return QuietTopology(base, arcs, cuts)

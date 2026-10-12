@@ -1,0 +1,38 @@
+name: Replay worker Linux review
+
+on:
+  pull_request:
+    paths:
+      - 'replay_worker/**'
+      - 'webapp/app/control/**'
+      - 'webapp/app/gaps/**'
+      - 'webapp/app/replays/**'
+      - 'webapp/replay_parser.json'
+      - 'webapp/scripts/*messages.patch'
+      - 'webapp/tests/replays/**'
+      - '.github/workflows/replay-worker-review.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the production worker and pinned parser
+        run: docker build -f replay_worker/Dockerfile -t replay-worker-review .
+      - name: Exercise refined panels and archived runtime inputs in the image
+        run: |
+          docker run --rm --user root --entrypoint sh \
+            -v "$PWD/webapp/tests:/srv/webapp/tests:ro" \
+            -e PYTHONPATH=/srv/webapp:/srv:/srv/webapp/tests/replays \
+            replay-worker-review -c '
+              /opt/control-venv/bin/pip install --only-binary=:all: pytest==8.3.3 &&
+              /opt/control-venv/bin/python -m pytest -p no:cacheprovider \
+                /srv/webapp/tests/replays/test_feature_review_regressions.py \
+                /srv/webapp/tests/replays/test_panel_feature_grid.py \
+                /srv/webapp/tests/replays/test_quiet_walk_exits.py \
+                /srv/webapp/tests/replays/test_quiet_routes.py -q
+            '

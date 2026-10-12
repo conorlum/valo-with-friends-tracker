@@ -6,7 +6,7 @@ import numpy as np
 
 from app.replays import map_feature_events as events, map_feature_state as reducer
 from app.replays.map_feature_inputs import read_json
-from app.replays.map_feature_artifacts import FeatureArtifactCorrupt
+from app.replays.map_feature_artifacts import FeatureArtifactCorrupt, FeatureSourceUnavailable
 from app.replays.control_format import GRID_HZ as ROTATION_HZ
 
 CONSUMER = 'map_pool_replay_v1'
@@ -164,7 +164,7 @@ class MapPoolRuntime:
             return
         data = blob.get('map_messages') or {}
         if geo.name not in MAPS or data.get('map') != geo.name or data.get('v') != events.VERSION:
-            raise FeatureArtifactCorrupt('active map features require their matching map RPC ledger')
+            raise FeatureSourceUnavailable('active map features require their matching map RPC ledger; reparse this recording')
         times = set()
         for f in mf.get('features', []):
             if f['id'] not in members:
@@ -175,12 +175,12 @@ class MapPoolRuntime:
             timeline = events.bind_round(f, data.get('ledger', []), data.get('report', {}),
                 data['start_ms'], data['end_ms'], data['previous_end_ms'])
             if timeline['status'] != 'bound':
-                raise FeatureArtifactCorrupt('; '.join(timeline['reasons']))
+                raise FeatureSourceUnavailable('; '.join(timeline['reasons']))
             result = reducer.evaluate({**f, 'initial_state': timeline['initial']}, timeline['events'],
                                       until=blob['t_end'])
             for e in result['trace']:
                 if e.get('notes') or (e['result'] == 'rejected' and e.get('reason') not in ('terminal', 'mid_motion_ignore')):
-                    raise FeatureArtifactCorrupt('source event cannot be reduced: ' + str(e))
+                    raise FeatureSourceUnavailable('source event cannot be reduced: ' + str(e))
                 times.add(e['t'])
             # A descending panel can change movement between source events.
             if f.get('sliding'):

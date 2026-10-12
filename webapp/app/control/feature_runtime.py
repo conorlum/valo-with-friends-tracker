@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 from app.replays.ascent_features import KEYS, VERSION, state_at
-from app.replays.map_feature_artifacts import FeatureArtifactCorrupt, expanded_assets
+from app.replays.map_feature_artifacts import FeatureArtifactCorrupt, FeatureSourceUnavailable, expanded_assets
 from app.replays.map_feature_inputs import read_json
 
 CONSUMER = 'ascent_replay_v1'
@@ -60,9 +60,12 @@ def prepare_geometry(geo):
     if not isinstance(geo.features, FeatureArtifact):
         raise FeatureArtifactCorrupt('runtime needs an archived feature artifact')
     artifact = geo.features
-    from app.control.rope_ground import prepare
+    from app.control.feature_geometry import prepare
     geo = prepare(geo, read_json(artifact.inputs)['runtime'])
     assets = read_json(expanded_assets(artifact.assets))
+    if geo.panel_grid_digest and (assets.get('nodes') != geo.n or assets.get('panel_grid') !=
+            {'v': 1, 'digest': geo.panel_grid_digest, 'leaf_px': 4, 'selected_height': geo.height_sha}):
+        raise FeatureArtifactCorrupt('archived panel tessellation differs from runtime nodes')
     if geo.movement_only and (assets.get('nodes') != geo.n or assets.get('walking_model') !=
             {'kind': 'local_rope_ground', 'digest': geo.rope_ground_digest,
              'asset': geo.movement_height_sha, 'terrain_sight': 'flat'}):
@@ -77,6 +80,7 @@ def prepare_geometry(geo):
         cg.attach_heights(fresh, geo.heights)
         fresh.movement_only, fresh.movement_height_sha = geo.movement_only, geo.movement_height_sha
         fresh.height_sha, fresh.rope_ground_digest = geo.height_sha, geo.rope_ground_digest
+        fresh.panel_grid_digest, fresh.panel_height_source = geo.panel_grid_digest, geo.panel_height_source
     if fresh.n != geo.n or not np.array_equal(fresh.node_cell, geo.node_cell) \
             or not np.array_equal(fresh.node_space, geo.node_space):
         raise FeatureArtifactCorrupt('feature domain changes archived node identities')
@@ -109,7 +113,7 @@ class FeatureRuntime:
         data = blob.get('map_features') or {}
         if data.get('v') != VERSION or data.get('status') != 'decoded' or geo.name != 'Ascent':
             if members:
-                raise FeatureArtifactCorrupt('active Ascent features require a complete map-message timeline')
+                raise FeatureSourceUnavailable('active Ascent features require a complete map-message timeline; reparse this recording')
             return
         evidence = {f['key']: f for f in data.get('features', [])}
         for f in mf.get('features', []):
@@ -117,10 +121,12 @@ class FeatureRuntime:
                 continue
             key = f.get('replay_key')
             if readiness(f) or key not in evidence:
-                raise FeatureArtifactCorrupt('active feature definition/binding unsupported')
+                if readiness(f):
+                    raise FeatureArtifactCorrupt('active feature definition/binding unsupported')
+                raise FeatureSourceUnavailable('feature source binding absent from this round')
             timeline = evidence[key]
             if timeline.get('initial') == 'unknown':
-                raise FeatureArtifactCorrupt('feature round reset unobserved')
+                raise FeatureSourceUnavailable('feature round reset unobserved')
             self.items.append((mf, f, timeline))
             self.times.update(float(e['t']) for e in timeline['events'])
             if f.get('sliding'):
@@ -141,7 +147,7 @@ class FeatureRuntime:
             terminal = timeline['initial'] == 'broken'
             for event in timeline['events']:
                 if event['state'] == 'unknown' and not terminal:
-                    raise FeatureArtifactCorrupt('unverified opening/default state in active feature timeline')
+                    raise FeatureSourceUnavailable('unverified opening/default state in active feature timeline')
                 terminal |= event['state'] == 'broken'
 
     @property
@@ -214,9 +220,9 @@ class FeatureRuntime:
             reduced = evaluate(source_feature, [{'t': e['t'], 'kind': 'observed', 'state': e['state']}
                                                for e in timeline['events']], until=t)['state']
             if reduced['state'] != current['state']:
-                raise FeatureArtifactCorrupt('source timeline disagrees with the feature reducer')
+                raise FeatureSourceUnavailable('source timeline disagrees with the feature reducer')
             if current['pending']:
-                raise FeatureArtifactCorrupt('feature endpoint/state unobserved at calculation time')
+                raise FeatureSourceUnavailable('feature endpoint/state unobserved at calculation time')
             if current['state'] == 'broken':
                 continue
             if f.get('sliding'):

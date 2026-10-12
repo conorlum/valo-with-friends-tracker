@@ -215,7 +215,7 @@ def sample_effects(geo, mf: dict, feature: dict, closure: float):
         effects.pending.append("open panel still covers the doorway: open centre needs more travel")
         return effects, []
     closed = closed_state(feature)
-    placed = cf._place_shape(geo, closed["footprint"], f'features.{feature.get("id")}.sliding.aperture')
+    placed = cf._place_shape(geo, closed["footprint"], f'features.{feature.get("id")}.sliding.aperture', feature)
     if placed.reasons:
         effects.pending += [f'{r["path"]}: {r["code"]}' for r in placed.reasons]
         return effects, []
@@ -226,7 +226,7 @@ def sample_effects(geo, mf: dict, feature: dict, closure: float):
     if not cells.any():
         return effects, []
     if closed.get("blocks_movement"):
-        bound = cf.feature_floor_nodes(geo, mf, feature, cf.to_grid(cells).ravel())
+        bound = cf.feature_floor_nodes(geo, mf, feature, cf.paint_cells(geo, cells), cf.to_px(cells))
         effects.blocked[bound.nodes] = True
         effects.pending += bound.pending
     if not closed.get("blocks_sight"):
@@ -248,7 +248,7 @@ def _vertical_effects(geo, mf, feature, closure, effects):
     closed = closed_state(feature)
     entries = [{'geometry': closed['footprint'], 'bounds': closed['sight_bounds']}] + list(closed.get('sight') or [])
     for i, entry in enumerate(entries):
-        p = cf._place_shape(geo, entry['geometry'], f'features.{feature.get("id")}.sliding.aperture[{i}]')
+        p = cf._place_shape(geo, entry['geometry'], f'features.{feature.get("id")}.sliding.aperture[{i}]', feature)
         effects.pending += [f'{r["path"]}: {r["code"]}' for r in p.reasons]
     if effects.pending:
         return effects, []
@@ -257,7 +257,8 @@ def _vertical_effects(geo, mf, feature, closure, effects):
         if blocked is None:
             effects.pending.append('partial vertical movement needs a verified movement clearance')
         elif blocked:
-            bound = cf.feature_floor_nodes(geo, mf, feature, cf.to_grid(cf.raster(closed['footprint'])).ravel())
+            bound = cf.feature_floor_nodes(geo, mf, feature, cf.footprint_cells(geo, closed['footprint']),
+                                           cf.to_px(cf.raster(closed['footprint'])))
             effects.blocked[bound.nodes] = True
             effects.pending += bound.pending
     occluders = []

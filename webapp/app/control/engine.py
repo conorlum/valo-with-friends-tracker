@@ -956,8 +956,7 @@ class RoundInputs:
         z_m = self._device_z(z_dm)
         if geo.heights is not None and z_m is None:
             self.missing["approximate heights (a molly has no z: lowest floor used)"] += 1
-        cells = GRID * GRID
-        dx, dy = geo.centres[:cells, 0] - x, geo.centres[:cells, 1] - y
+        dx, dy = geo.centres[:, 0] - x, geo.centres[:, 1] - y
         a = math.radians(z.angle)
         along, across = dx * math.cos(a) + dy * math.sin(a), -dx * math.sin(a) + dy * math.cos(a)
         r = z.radius_m / geo.m_per_px
@@ -971,15 +970,17 @@ class RoundInputs:
         else:
             shape = dx ** 2 + dy ** 2 <= r * r
             reach = z.radius_m
-        near = np.flatnonzero(shape & geo.walk.ravel())
+        near = np.flatnonzero(shape & geo.walk_n)
         inside = np.zeros(geo.n, bool)
-        for c in near.tolist():
-            inside[geo.node_at(c, z_m)] = True
+        for n in near.tolist():
+            cx, cy = geo.centres[n]
+            if geo.node_at_px(cx, cy, z_m) == n:
+                inside[n] = True
         inside &= geo.walk_n
         if z.through:
             return np.flatnonzero(inside)
         seed = np.zeros(geo.n, bool)
-        seed[geo.node_at(geo.cell_of_px(x, y), z_m)] = True
+        seed[geo.node_at_px(x, y, z_m)] = True
         steps = max(1, int(math.ceil(reach / geo.cell_m)))
         grown = topology.of(geo).dilate(seed, eight=True, iterations=steps, within=inside | seed)
         return np.flatnonzero(grown & inside)

@@ -212,7 +212,11 @@ def resolve_spaces(geo, spaces, path):
 
 def footprint_cells(geo, shape):
     """A paint footprint reduced at the runtime's physical leaf scale."""
-    paint = raster(shape)
+    return paint_cells(geo, raster(shape))
+
+
+def paint_cells(geo, paint):
+    """Use one leaf reduction for authored shapes and sampled moving footprints."""
     if not geo.adaptive:
         return to_grid(paint).ravel()
     spaces = np.unique(geo.space_grid[paint])
@@ -391,7 +395,7 @@ def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
 
 
 def _candidate_geometry(geo, mf, members):
-    from app.control.rope_ground import prepare
+    from app.control.feature_geometry import prepare
     geo = prepare(geo, mf)
     if geo.heights is not None:
         return geo
@@ -835,6 +839,15 @@ def state_problems(geo: Geometry, mf: dict, feature: dict) -> list[str]:
     are unresolved, empty, stale, missing or ambiguous (it would block nothing, or not all of itself), or a
     sight occluder that is pending. Every state, not only the initial one: a bundle publishes for the round."""
     out = []
+    if feature.get('sliding') and (feature.get('replay_key') or feature.get('replay_source')):
+        from app.replays.map_feature_motion import sample_effects, movement_cutoff
+        cutoff = movement_cutoff(feature)
+        fractions = {0., .5, 1.}
+        if cutoff is not None:
+            fractions.update((cutoff, min(cutoff + .0001, 1.)))
+        for fraction in sorted(fractions):
+            effects, _ = sample_effects(geo, mf, feature, fraction)
+            out += [f'motion {fraction:g}: {p}' for p in effects.pending]
     for s in feature.get("states") or []:
         if (feature.get('replay_key') or feature.get('replay_source')) and feature.get('sliding') and s.get('name') in ('opening', 'closing'):
             continue
@@ -906,7 +919,7 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
     RUNTIME_CONSUMERS (read at call time)."""
     consumers = RUNTIME_CONSUMERS if consumers is None else consumers
     if geo is not None and 'quiet_rope_v1' in consumers:
-        from app.control.rope_ground import prepare
+        from app.control.feature_geometry import prepare
         geo = prepare(geo, mf)
     features = {f.get("id"): f for f in mf.get("features") or []}
     floors = _floors_by_id(mf)
@@ -918,6 +931,7 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
         for m in b.get("members") or []:
             bundle_of[m] = b.get("id")
     out = {}
+    quiet_plan = None
     for b in mf.get("bundles") or []:
         bid, members = b.get("id"), list(b.get("members") or [])
         required, reasons = required_features(features, members)
@@ -948,7 +962,20 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
                 reasons.append('quiet rope placement requires measured geometry')
             else:
                 from app.control.route_runtime import readiness as route_readiness
-                _, route_reasons = route_readiness(geo, mf, members)
+                from app.control.route_runtime import qualified_cuts, walking_exit_problems
+                from app.control import topology
+                if quiet_plan is None:
+                    selected = {m for bundle in mf.get('bundles', []) if bundle.get('enabled')
+                                and bundle.get('runtime_consumer') == 'quiet_rope_v1' for m in bundle.get('members', [])}
+                    all_arcs, _ = route_readiness(geo, mf, selected)
+                    base = topology.of(geo)
+                    cuts, cut_reasons = qualified_cuts(geo, mf, selected, base, all_arcs)
+                    quiet_plan = (cut_reasons, walking_exit_problems(geo, base, all_arcs, cuts))
+                cut_reasons, walk_reasons = quiet_plan
+                _, current_reasons = route_readiness(geo, mf, members)
+                route_ids = {r['id'] for r in mf.get('routes', []) if r.get('owner') in members}
+                route_reasons = current_reasons + [r for r in cut_reasons + walk_reasons
+                    if r.split(':', 1)[0] in route_ids]
                 reasons += route_reasons
         if b.get('runtime_consumer') == 'map_pool_replay_v1':
             from app.control.map_pool_runtime import readiness as pool_readiness, MAPS
@@ -1290,7 +1317,7 @@ def _enabled_projection(mf: dict, members: set) -> dict:
 def compile_assets(geo: Geometry, mf: dict, statuses: dict) -> dict | None:
     """What an engine would load for a map's enabled features (None when it has none): per enabled feature and
     state, its blocked nodes and occluders, plus the enabled routes' arcs and the reconciled base edits."""
-    from app.control.rope_ground import prepare
+    from app.control.feature_geometry import prepare
     geo = prepare(geo, mf)
     members = {m for st in statuses.values() if st.publishable for m in st.members}
     if not any(st.intended for st in statuses.values()):
@@ -1390,12 +1417,15 @@ def compile_artifact(geo: Geometry, inputs: fi.FeatureInput, code_commit: str) -
     verify_permanent_context(geo, inputs)
     mf = envelope['runtime']
     mf = {**mf, 'features': mf['features'] + envelope['outside_base_edits']}
-    from app.control.rope_ground import prepare
+    from app.control.feature_geometry import prepare
     geo = prepare(geo, mf)
     legacy = {k: _archived_mask(v, (PX, PX)) for k, v in envelope['legacy'].items()}
     statuses = bundle_status(geo, mf, legacy, consumers=frozenset(envelope['consumers']))
     active = sorted(b for b, status in statuses.items() if status.publishable)
     assets = compile_assets(geo, mf, statuses) or {'states': {}, 'nodes': int(geo.n), 'arcs': []}
+    if geo.panel_grid_digest:
+        assets['panel_grid'] = {'v': 1, 'digest': geo.panel_grid_digest, 'leaf_px': 4,
+                               'selected_height': geo.height_sha}
     if geo.movement_only:
         from app.control.rope_ground import domains_for
         domains = domains_for(mf)
