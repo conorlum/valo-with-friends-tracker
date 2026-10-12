@@ -1,5 +1,9 @@
 # Abyss rope completion
 
+The Abyss model remains supported, but [Post-review fixes](REVIEW-FIXES.md)
+supersedes the calculation identities, release selection and validation below.
+The historical all-23 claim no longer applies to the combined candidate.
+
 The earlier candidate had enough reviewed rope behavior but deferred all four routes behind a
 map-wide height gate. Existing recordings now supply the missing positions: Spawn's upper exit
 is a grounded walking sample, and Mid starts on a safe launch platform across a pit rather than
