@@ -47,6 +47,22 @@ A reviewer checked this plan against the code before anything was built. Every f
 | F11 | The brief lacked the role per round, both teams' economy and the player's utility; health was never read. | Tasks 7, 8 |
 | F12 | A one-moment `control` query answered "no ticks"; deaths only the site has were ignored. | Tasks 4, 2, 5 |
 
+## Amendments after the P4 review (2026-10-12, second pass)
+
+An independent reviewer read the parts the table above rewrote, against the code. The full findings and what was done with each are in `2026-10-12-ai-coach-amendments-review.md`. **Where a row below and a task's text disagree, the row wins.** Each row is an instruction to the task's implementer, who adds the test named; a stated pass count grows by the tests added.
+
+| Finding | Change | Where |
+| --- | --- | --- |
+| R-F9 | When the blob gives a player no side, RoundView must derive the group as the engine does, from the round's role: `{"attack": "A", "defense": "B"}.get(role)` with the role from the link's `sides[slot]` (`app/control/engine.py:319-321`), and fall back to the page context's fixed team group only when the link has no role either. Test to add: a round whose blob sides are `None`, whose link says slot 0 defends, and whose page group for slot 0 is "A": `side(0)` is "B". | Task 2 |
+| R-F9 guard | `query.knew` and `query.control` answer `{"available": False, "reason": "side_groups_disagree"}` when the control header's `group_side` contradicts the round's role for the player's group. One test. | Task 8 |
+| R-F10 | `position` for a player who is alive at `t` but has no sample at or before `t`, or whose nearest earlier sample is more than 1 s old, returns `{"alive": True, "u": None, "v": None, "area": None, "position": "unknown"}`, never `alive: False`. The test at "a living player with no sample" is rewritten to pin this (say why in the test's docstring); `where` lists such a player as alive with no place. One more test: a track with a gap mid-life answers "unknown" inside the gap. | Tasks 2, 8 |
+| R-F11 | `_stack` steps past a second the player is not alive (`continue`) instead of ending the scan (`break`). Test to add: a life that starts at second 5 is still flagged for a stack at second 20. | Task 6 |
+| R-F12 | The trade search reads `_live_kills(view)`, not `view.kills`. Test to add: the killer dying after `t_decided` is not a trade. | Task 6 |
+| R-F13 | `answer` converts the arguments inside the `try` and calls the command outside it, so a fault inside a query is a traceback, not a "wrong arguments" answer the checker would trust. | Task 8 |
+| R-F14 | The "dead: no health" assertion could not fail (round 1 had no vitals). Give slot 0 a vitals event at 13 s in round 1 and assert `"health" not in players[0]` once it is dead. | Task 8 |
+| R-F8 | Health is "a sense of low or healthy, never a number" (the owner's standing rule for the viewer; applied here as the cautious reading, `PROVISIONAL`, the owner decides). `_health` returns one word from the viewer's bands (`app/static/js/replay.js` `healthWord`): with `pct = 100 * hp / mhp`, `"healthy"` above 50, `"hurt"` above 25, else `"low"`; `None` with no event. No `hp` or `shield` key leaves `where`. The health test asserts `"healthy"` for the fixture's 61 of 100, and a second event at 20 of 100 asserts `"low"`. | Task 8 |
+| R-F15 | Not changed. If `./q` calls are slow in plan 3, move `snapshot`'s two service imports inside `snapshot.read`. | Task 8 |
+
 Not built, and said so in the spec instead: "kill lines" and "timing gaps" as data gaps. The coach reads neither source, so there is nothing to report missing.
 
 ## File Structure

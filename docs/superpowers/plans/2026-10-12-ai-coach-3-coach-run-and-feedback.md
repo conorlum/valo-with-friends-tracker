@@ -48,6 +48,21 @@ A reviewer checked this plan against the code and the installed Claude Code befo
 | F7 | The playbook told the model `knew` covered what was heard. | Playbook rule 2, the prompt's command list |
 | F12 | The run directory was per match, so a second player's run deleted the first's; the stored model name was a literal; the playbook's name test broke on `##` headings. | Task 4, Task 1 |
 
+## Amendments after the P4 review (2026-10-12, second pass)
+
+An independent reviewer read the parts the table above rewrote, against the code. The full findings and what was done with each are in `2026-10-12-ai-coach-amendments-review.md`. **Where a row below and a task's text disagree, the row wins**: rows marked "in the code" are already folded into the task; the others are instructions to the implementer, who adds the test named.
+
+| Finding | Change | Where |
+| --- | --- | --- |
+| R-F1 (blocker) | A number with its unit attached ("5m", "3s", "40hp") and "2vs1", "2 v 1", "2-v-1", "2 on 1" were never checked. New `_NUMBER`, `_VERSUS`, `_ORDINAL`, `_THOUSANDS`. Tests to add (so `test_checker.py` is 27 plus these): a body "You were 5m from help." with no 5 in the evidence is refused; "121.2m" with a cited 121.2 passes; "a 1vs4" with no such pair is refused; "12,000" with a cited 12000 passes. | Task 3, in the code |
+| R-F2 | A true negative figure ("Impact was -250") was always refused. `_matches` compares sizes. Test to add: a cited `impact` answer of -250 and that body passes. | Task 3, in the code |
+| R-F3 | A `where`, `distance` or `knew` asked for another second of the round grounded any moment. New `_in_moment`. Tests to add: a `distance` asked at second 50 cited by an instance at second 20 is refused; one asked 5 s before the instance passes. Names are still not linked to answers: listed in Step 5b as known and accepted. | Task 3, in the code |
+| R-F8 | Health is "a sense of low or healthy, never a number" (the owner's standing rule for the viewer; applied here as the cautious reading, `PROVISIONAL`, the owner decides). Plan 1's `where` returns `"health": "healthy" \| "hurt" \| "low"` (the viewer's bands), no `hp` or `shield`; both keys are dropped from `_MEASURED`. | Task 3, in the code; plan 1 Task 8 |
+| R-F4 | Step 7 item 3 gains one prompt that must end refused: with a file `probe.txt` holding the single word `outside` placed in the scratch directory's **parent**, "Run `cat ../probe.txt`" (the reply must not contain `outside`). Nothing that could print a real secret (`env`, a real dotfile) is asked. | Task 4 Step 7 |
+| R-F5 | `child_env` becomes an allow-list, so no other secret in the owner's shell reaches the model: keep only `PATH`, `PATHEXT`, `SYSTEMROOT`, `SYSTEMDRIVE`, `WINDIR`, `COMSPEC`, `USERPROFILE`, `USERNAME`, `HOME`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `PROGRAMFILES`, `PROGRAMFILES(X86)`, `TEMP`, `TMP`, `LANG`, `TERM`, and names starting `CLAUDE_` (compared upper-cased). The existing test is extended: `DATABASE_URL`, `ANTHROPIC_API_KEY` and an arbitrary `MY_SECRET` are all gone, `PATH` and `CLAUDE_CONFIG_DIR` stay. If Step 7's first probe cannot log in with this list, add the one missing name and say which in the commit message. | Task 4 |
+| R-F6 | A repair reply whose `index` is the string `"1"` was dropped silently: `fixes = {int(p["index"]): p for p in ... if str(p.get("index")).isdigit()}`. One test. | Task 4 |
+| R-F7 | `snap.slot_of(args.player)` moves inside the `try`; `snapshot.SnapshotError` returns 2 with the message. | Task 4 |
+
 ## File Structure
 
 | File | Responsibility |
@@ -654,12 +669,15 @@ _TIME_KEYS = frozenset({"t", "t0", "t1", "first_seen", "last_seen", "died_at", "
 _SHARE_KEYS = frozenset({"a", "b", "contested", "none"})
 _MEASURED = _TIME_KEYS | _SHARE_KEYS | frozenset({
     "metres", "impact", "kill_impact", "death_impact", "damage", "econ", "trade_credit", "kills", "deaths",
-    "assists", "hp", "shield", "seconds", "hits", "nearest_teammate_m", "after_s", "teammates_alive", "own",
+    "assists", "seconds", "hits", "nearest_teammate_m", "after_s", "teammates_alive", "own",
     "enemy", "enemies_seen", "hold_s"})
 
 _CLOCK = re.compile(r"(?<![\d:])(\d{1,2}):(\d{2})(?![\d:])")
-_VERSUS = re.compile(r"(?<!\w)(\d)v(\d)(?!\w)")
-_NUMBER = re.compile(r"(?<![\w.#])\d+(?:\.\d+)?(?![\w#])")
+# P4 review F1: a unit written against the digits ("5m", "3s", "2vs1") must not hide the number from the check.
+_VERSUS = re.compile(r"(?<!\w)(\d)\s?-?\s?(?:vs|v|on)\.?\s?-?\s?(\d)(?!\d)", re.IGNORECASE)
+_ORDINAL = re.compile(r"(?<![\w.#])\d+(?:st|nd|rd|th)(?!\w)", re.IGNORECASE)
+_THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+_NUMBER = re.compile(r"(?<![\w.#])\d+(?:\.\d+)?(?!\.?\d|#)")
 _TAGGED = re.compile(r"[^\s,;:()\"']*#\w+")
 
 
@@ -726,8 +744,19 @@ def _round_of(entry: dict):
         return None
 
 
+def _in_moment(entry: dict, t: float, t1) -> bool:
+    """P4 review F3: an answer asked for one second (where, distance, knew: a top-level `t`) is evidence only
+    for an instance that second belongs to, from KNEW_WINDOW_S before it starts to its end. Flags and answers
+    over a span (timeline, control) carry no single second and are tied to the round only."""
+    asked = entry["result"].get("t")
+    if entry.get("cmd") == "flag" or isinstance(asked, bool) or not isinstance(asked, (int, float)):
+        return True
+    return t - KNEW_WINDOW_S <= float(asked) <= float(t1 if t1 is not None else t)
+
+
 def _matches(x: float, numbers: list[float], shares: list[float]) -> bool:
-    return (any(abs(x - y) < 0.051 or (float(x).is_integer() and round(y) == x) for y in numbers)
+    # P4 review F2: the text's number carries no sign ("Impact of -250" reads as 250), so compare sizes.
+    return (any(abs(x - abs(y)) < 0.051 or (float(x).is_integer() and round(abs(y)) == x) for y in numbers)
             or any(abs(y * 100 - x) < 0.51 for y in shares))          # a share of 0.5 may be written 50
 
 
@@ -758,6 +787,7 @@ def _text_problems(text, numbers, shares, times, pairs, names) -> list[str]:
         if (int(match.group(1)), int(match.group(2))) not in pairs:
             problems.append(f"the count {match.group(0)} matches no cited where answer or flag")
     text = _VERSUS.sub(" ", text)
+    text = _THOUSANDS.sub("", _ORDINAL.sub(" ", text))      # "2nd" is not a measurement; "12,000" is 12000
     for match in _NUMBER.finditer(text):
         if not _matches(float(match.group(0)), numbers, shares):
             problems.append(f"the number {match.group(0)} is not a measured value in a cited answer")
@@ -820,6 +850,9 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                 problems.append(f"{label}: {log_id} is an error answer, not evidence")
             elif _round_of(entry) != n:
                 problems.append(f"{label}: {log_id} is about round {_round_of(entry)}, not round {n}")
+            elif not _in_moment(entry, t, inst.get("t1")):
+                problems.append(f"{label}: {log_id} was asked for second {entry['result']['t']}, outside this "
+                                f"moment ({max(0.0, t - KNEW_WINDOW_S)} to {inst.get('t1') or t})")
             else:
                 cited.append(entry)
                 _collect(entry["result"], None, numbers, shares, times)
@@ -845,7 +878,7 @@ Run: `$PY -m pytest tests/coach -q` — Expected: every coach test passes (plan 
 
 - [ ] **Step 5b: Try to break it**
 
-Before committing, spend ten minutes as the reviewer did: against the test fixture's log, write three points that say something no cited answer supports and see whether `check_point` passes any. A point that passes is a failing test to add and a rule to tighten, here, before any report is published. Known and accepted, so not a finding: a number equal to a cited time passes whatever unit the text gives it, and a bare word that is not a player's name is not detected.
+Before committing, spend ten minutes as the reviewer did: against the test fixture's log, write three points that say something no cited answer supports and see whether `check_point` passes any. A point that passes is a failing test to add and a rule to tighten, here, before any report is published. Known and accepted, so not a finding: a number equal to a cited time passes whatever unit the text gives it, a bare word that is not a player's name is not detected, a number is not tied to the players its answer was asked about (a `distance` between two players grounds that figure whoever the text names), an ordinal ("2nd") and a number glued to a letter before it ("x2") are not checked, and a `timeline` or `control` answer is tied to its round, not to the instance's seconds (P4 review F1, F3).
 
 - [ ] **Step 6: Commit**
 
