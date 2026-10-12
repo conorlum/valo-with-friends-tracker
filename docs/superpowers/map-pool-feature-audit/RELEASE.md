@@ -5,10 +5,10 @@ timed quiet rope arcs on measured floor nodes, and provides computation-derived 
 private owner candidate is not yet qualified for live activation. Main, deployed tags, live height
 activation and live recompute have not been changed by this work.
 
-The owner now defers unavailable replay evidence. [FIRST-PASS.md](FIRST-PASS.md) defines the
-eleven-feature first-pass selection, completed current-compiler checks, publication proposal and
-owner-controlled rollout. Deferred bundles remain disabled; the historical all-gimmick checklist
-below is retained for their later qualification rather than blocking preparation of the subset.
+The [existing-data follow-up](EXISTING-DATA-FOLLOWUP.md) supersedes the original eleven-feature
+selection with nineteen supported features. [FIRST-PASS.md](FIRST-PASS.md) retains the earlier
+receipts and owner-controlled rollout. Four Abyss ropes remain disabled; the historical
+all-gimmick checklist below is retained for their later qualification.
 
 ## What is built
 
@@ -32,7 +32,7 @@ below is retained for their later qualification rather than blocking preparation
   a DB, activate heights, publish tags or recompute live data. Framing, binding, geometry and release
   qualification have separate outcomes.
 
-Versions: feature compiler 13, condenser 17, control 14; Ascent consumer 3, quiet rope consumer 3,
+Current versions: feature compiler 14, condenser 17, control 14; Ascent consumer 3, quiet rope consumer 4,
 map-pool replay consumer 5; height format 3, height rules 5 and height manifest 2.
 Gaps version stays 3; changed control inputs invalidate its caches.
 No new migration or database table is required.

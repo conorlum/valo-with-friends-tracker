@@ -1,5 +1,10 @@
 # First release with current replay evidence
 
+The later [existing-data follow-up](EXISTING-DATA-FOLLOWUP.md) supersedes this original
+eleven-feature selection: it qualifies nineteen features, including all Split/Summit ropes,
+Summit Heaven's door and both Abyss breakables on the existing flat fallback. Keep the receipts
+below as historical evidence, rather than mixing their compiler-13 outputs with the follow-up.
+
 The owner accepts the current door geometry estimates and defers unavailable replay evidence. This
 release is an explicit subset. Missing floors, ambiguous landings and failed height gates remain
 disabled; additional replays can qualify them in a later release. No further geometry drawings or
