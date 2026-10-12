@@ -620,6 +620,10 @@ def _feature(rep, f, floors):
         for j, occ in enumerate(s.get("sight") or []):
             _occluder(rep, f"{where}.sight[{j}]", occ)
     rot = f.get("rotation")
+    if f.get('sight_source_area') is not None:
+        if not isinstance(rot, dict):
+            rep.error(fid, 'bad_source_area', 'a sight source area belongs to a rotating door')
+        _geometry(rep, f'{fid}.sight_source_area', f['sight_source_area'], ('paint',))
     if "rotating" in (f.get("capabilities") or []):
         if not isinstance(rot, dict) or rot.get("pivot") is None or rot.get("panel") is None:
             rep.warn(fid, "motion_incomplete", "rotating door without a pivot and panel: motion not fully described")

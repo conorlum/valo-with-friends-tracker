@@ -154,6 +154,7 @@ class MapPoolRuntime:
         self._rotation_sight = {}
         self._fixed_sight = {}
         self._sliding_masks = {}
+        self._source_areas = {}
         if not geo.features:
             return
         artifact = geo.features
@@ -258,6 +259,11 @@ class MapPoolRuntime:
                                                      cf.to_px(cf.raster(panel)), f['id'])
                     if why:
                         raise FeatureArtifactCorrupt(why)
+                    if blocker is not None and f.get('sight_source_area') is not None:
+                        from app.control.feature_visibility import source_area
+                        if f['id'] not in self._source_areas:
+                            self._source_areas[f['id']] = source_area(self.geo, f)
+                        blocker.source_area = self._source_areas[f['id']]
                     self._rotation_sight[key] = [blocker] if blocker else []
                 occ = self._rotation_sight[key]
             else:

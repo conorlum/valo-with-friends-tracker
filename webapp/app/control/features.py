@@ -539,12 +539,16 @@ class BoundedOccluder:
     top: float = np.inf
     all_height: bool = False
     bounds_px: tuple | None = None  # Exact enclosing pixel rectangle for compiler-owned immutable masks.
+    source_area: object | None = None  # Round-local conservative source proof; never changes a pixel answer.
+    mask_digest: bytes | None = None  # Compiler-owned read-only raster identity, shared by identical poses.
 
 
 def _bounded_occluder(owner, mask, bottom=-np.inf, top=np.inf, all_height=False):
     ys, xs = np.nonzero(mask)
     bounds = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1) if len(xs) else None
-    return BoundedOccluder(owner, mask, bottom, top, all_height, bounds)
+    mask.setflags(write=False)
+    return BoundedOccluder(owner, mask, bottom, top, all_height, bounds,
+                          mask_digest=hashlib.sha256(mask.tobytes()).digest())
 
 
 def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owner: str):
@@ -649,7 +653,8 @@ def _lines_meet_bounds(a, b, bounds):
     return enter <= leave + 1e-12
 
 
-def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None = None) -> np.ndarray:
+def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None = None,
+                  *, sampling_steps: int | None = None) -> np.ndarray:
     """Per target, is the line from `a` = (x px, y px, z) to that target (b: N x 3, z NaN or None for a 2D
     check) inside an occluder's mask at a height inside its band? One vertical-intersection rule for `cast_with`,
     `los_with` and `seen_from_with`: the line is sampled every pixel (its two ends excluded); a straight-up line
@@ -664,7 +669,7 @@ def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None 
     if record is not None and flat.any():
         record["flat_occluder_tests"] = record.get("flat_occluder_tests", 0) + int(flat.sum())
     length = np.hypot(b[:, 0] - ax, b[:, 1] - ay)
-    steps = int(np.ceil(length.max())) + 1 if n else 1
+    steps = sampling_steps if sampling_steps is not None else int(np.ceil(length.max())) + 1
     # Keep the original sampling interval even after culling: changing the longest target
     # would shift sample locations and could change a thin panel's answer.
     x0, y0 = np.clip(ax, 0, PX - 1), np.clip(ay, 0, PX - 1)
@@ -777,7 +782,7 @@ def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list
     pair counts when the line from the source's eye (node z + EYE_M) to the target's body (node z + BODY_M) is
     clear; a node with no height is tested in 2D. One clear source is enough."""
     from app.control import engine
-    from app.control import heights as hc
+    from app.control.feature_visibility import cache_for
 
     static = engine.seen_from(geo, src, smokes, skip)
     if not occluders:
@@ -788,19 +793,18 @@ def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list
         return static
     out = static.copy()
     out[targets] = False
-    tz = np.array([_eye_body(geo, int(t), hc.BODY_M) for t in targets])
-    tgt = np.column_stack([geo.centres[targets].astype(float), tz])
-    rows = np.unpackbits(geo.rows[geo.row_of[src]], axis=1)[:, : geo.n][:, targets].astype(bool)
-    for i, s in enumerate(src.tolist()):
-        cand = rows[i] & ~out[targets]
+    cache = cache_for(geo)
+    for s in src.tolist():
+        # Unpack one row on demand: the old source-by-all-node temporary can be
+        # hundreds of MB for an unknown region and is mostly unused after union.
+        cand = np.unpackbits(geo.rows[geo.row_of[s]])[targets].astype(bool) & ~out[targets]
         if not cand.any():
             continue
-        x, y = geo.centres[s]
         for smoke in smokes:                  # the pair must be clear of smoke too, as in seen_from
             cand[cand] &= ~engine.smoke_blocks(geo.centres[[s]], geo.centres[targets[cand]], smoke)[0]
         if not cand.any():
             continue
-        clear = ~blocked_lines(occluders, (float(x), float(y), _eye_body(geo, s, hc.EYE_M)), tgt[cand], record)
+        clear = ~cache.blocked(geo, s, targets[cand], occluders, record)
         idx = targets[cand]
         out[idx[clear]] = True
     return out

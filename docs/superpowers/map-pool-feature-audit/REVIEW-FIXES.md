@@ -40,13 +40,51 @@ unchanged by this work. PR #128 remains a draft stacked on #127.
   retain the complete clipped path. A representative Lotus batch of 30 sources,
   5,938 targets and three occluders gives identical answers in 0.025 s versus
   0.288 s for segment culling alone. This microbenchmark is not a whole-round
-  throughput claim. Cache experiments gave marginal gains and were not shipped.
+  throughput claim. The earlier cache experiments were not shipped. The later
+  stationary-panel/source-area follow-up is described below.
 
-Combined identities: condenser 18, control 15, gaps 3, feature compiler 17;
+Combined identities: condenser 18, control 15, gaps 3, feature compiler 18;
 Ascent consumer 4, quiet-rope consumer 7 and map-pool consumer 6. The rope-only
 policy is an archived runtime input and changes the feature identity; endpoints
 must still rebind against each selected height generation. There is no
 additional schema migration or Impact scoring change in this follow-up.
+
+## Stationary sight and owner source areas
+
+The owner supplied separate inclusive 4-pixel viewer-source paint for the two
+Lotus rotating doors (4,445 A-door cells and 5,135 BC-door cells). Each feature
+archives its `sight_source_area` as ordinary paint geometry, included in its
+runtime identity and validated by the Python and tagger JavaScript schemas.
+The compiler-18 private proposal refreshes all seven maps; its 23 features
+remain qualified with zero pending bundles. No annotation has been published.
+
+Cells outside the drawing take a fast path only when their static visibility
+row cannot intersect a rectangle enclosing the full door sweep. This proof is
+saved per source for the round. It includes the expansion from mathematical
+panels to whole paint pixels, both resting positions and custom phases.
+Otherwise the normal door test remains enabled. A coarse footprint touching
+paint is wholly included, and every floor shares that conservative source
+decision. Neither height ambiguity nor smoke can weaken the proof.
+
+Compiler-owned immutable panel rasters now have content identities. A geometry's
+bounded LRU memo reuses source/target intersection results for an unchanged
+raster and height band, including equivalent poses in separate runtime objects.
+Smoke checks and skipped-target/source-union logic remain live. The original
+batch's sample count is part of every key: target filtering cannot shift the
+pixel samples or incorrectly reuse a thin-panel crossing. Mutable/untrusted
+masks use the uncached path. The memo has a 32 MiB allocation budget with a
+per-entry overhead allowance, plus one geometry-sized target coordinate table;
+it never retains earlier rounds' large panel rasters. Height/visibility geometry
+replacement discards the memo. Dynamic sight rows are unpacked on demand rather
+than creating the entire source-by-node temporary for an unknown region.
+
+Real Lotus checks across six rotation poses, with and without smokes and with
+target skips, preserve the old visibility and diagnostics on cold and warm
+queries. A short initial stationary-door interval also preserves control,
+knowledge, unknown regions and sampled full/incremental checks. Its fresh and
+cached gaps agree with the reference. Saved timings are interval measurements,
+not a new complete-round or production throughput certification. This follow-up
+does not close the Lotus runtime gate or change worker resource limits.
 
 ## Qualified feature selection
 

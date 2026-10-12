@@ -33,6 +33,7 @@ jobs:
               /opt/control-venv/bin/python -m pytest -p no:cacheprovider \
                 /srv/webapp/tests/replays/test_feature_review_regressions.py \
                 /srv/webapp/tests/replays/test_feature_line_culling.py \
+                /srv/webapp/tests/replays/test_feature_visibility_cache.py \
                 /srv/webapp/tests/replays/test_panel_feature_grid.py \
                 /srv/webapp/tests/replays/test_rope_walking_ground.py \
                 /srv/webapp/tests/replays/test_quiet_walk_exits.py \

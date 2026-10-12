@@ -1030,6 +1030,10 @@
         (s.sight || []).forEach(function (occ, j) { occluder(where + ".sight[" + j + "]", occ); });
       });
       var rot = f.rotation;
+      if (f.sight_source_area !== undefined && f.sight_source_area !== null) {
+        if (!isObj(rot)) err(fid, "bad_source_area", "a sight source area belongs to a rotating door");
+        geometry(fid + ".sight_source_area", f.sight_source_area, ["paint"]);
+      }
       if (f.sliding !== undefined) {
         slidingProblems(f).concat(slidingVerticalProblems(f)).forEach(function(message) { warn(fid + ".sliding", "motion_incomplete", message); });
         if (isObj(f.sliding) && Object.prototype.hasOwnProperty.call(f.sliding,"movement_cutoff") && slidingMovementCutoff(f) === null)
