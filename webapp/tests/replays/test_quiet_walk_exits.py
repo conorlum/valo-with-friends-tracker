@@ -138,3 +138,17 @@ def test_rope_only_policy_is_runtime_input_and_requires_measured_binding():
     assert not rr.readiness(geo, mf, {'feature-1'})[1]
     route['endpoints'][0]['landing']['world_z'] = ms.known(99, 'm')
     assert rr.readiness(geo, mf, {'feature-1'})[1]
+
+
+def test_rope_only_declaration_rejects_even_a_slower_ordinary_walk(monkeypatch):
+    geo, base, arcs, mf = case()
+    cuts, why = rr.qualified_cuts(geo, mf, {'feature-1'}, base, arcs)
+    assert not why and not rr.walking_exit_problems(geo, base, arcs, cuts)
+    # The retained stair path is legitimate and slower than the rope, but its
+    # existence contradicts a rope-only claim. Future heights cannot reopen it.
+    route = mf['routes'][0]
+    route.update(quiet_rope_only_endpoints=['pocket'], endpoints=[
+        {'id': 'pocket', 'uv': [1, 1], 'landing': {}}])
+    monkeypatch.setattr(cf, '_point_node', lambda *a, **kw: (1, None))
+    assert rr.walking_exit_problems(geo, base, arcs, cuts, mf) == [
+        'route-1: reviewed rope-only landing retains ordinary walking access']

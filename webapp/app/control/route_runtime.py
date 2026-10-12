@@ -299,9 +299,9 @@ def walking_exit_problems(geo, base, arcs, cuts, mf=None):
     anchor = int(np.flatnonzero((labels == int(np.argmax(sizes))) & geo.walk_n)[0])
     keep = np.array([(int(a), int(b)) not in cuts for a, b in zip(src, targets)])
     trimmed = csr_matrix((np.ones(int(keep.sum())), (src[keep], targets[keep])), shape=(geo.n, geo.n))
-    def reachable(g):
+    def reachable(g, seed=anchor):
         mask = np.zeros(geo.n, bool)
-        mask[breadth_first_order(g, anchor, directed=True, return_predecessors=False)] = True
+        mask[breadth_first_order(g, seed, directed=True, return_predecessors=False)] = True
         return mask
     bad = set()
     # Preserve entry and exit separately. A remaining one-way drop must not
@@ -310,7 +310,14 @@ def walking_exit_problems(geo, base, arcs, cuts, mf=None):
                           (reachable(graph.T), reachable(trimmed.T))):
         bad.update(a.route for a in arcs for n in (a.src, a.dst)
                    if (a.route, n) not in rope_only and before[n] and not after[n])
-    return [f'{r}: quiet rope cuts remove the landing walking exit' for r in sorted(bad)]
+    rope_access = set()
+    pairs = {(a.route, min(a.src, a.dst), max(a.src, a.dst)) for a in arcs
+             if (a.route, a.src) in rope_only or (a.route, a.dst) in rope_only}
+    for route, a, b in pairs:
+        if reachable(trimmed, a)[b] or reachable(trimmed, b)[a]:
+            rope_access.add(route)
+    return ([f'{r}: quiet rope cuts remove the landing walking exit' for r in sorted(bad)] +
+            [f'{r}: reviewed rope-only landing retains ordinary walking access' for r in sorted(rope_access)])
 
 
 def topology_for(geo):
