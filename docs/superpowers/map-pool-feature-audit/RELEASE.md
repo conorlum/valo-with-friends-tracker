@@ -1,9 +1,10 @@
 # Map-pool gimmick release preparation
 
 **Current status:** [Post-review fixes](REVIEW-FIXES.md) supersedes this historical
-compiler-15 selection. The combined candidate has 19 active features; four Split
-Vent ropes remain pending under the new walking-exit gate. Main integration and
-Linux worker-image validation are complete on the feature branch.
+compiler-15 selection. The owner corrected the Vent area to a lower rope-only
+platform; the compiler-17 candidate now qualifies all 23 features. Lotus still
+has a runtime gate. Main integration and Linux worker-image validation are
+complete on the feature branch.
 
 The branch now connects bounded native replay messages to the reviewed panel state machines, adds
 timed quiet rope arcs on measured floor nodes, and provides computation-derived site status. The

@@ -15,8 +15,11 @@ unchanged by this work. PR #128 remains a draft stacked on #127.
   moving slab. Existing heights, unknowns, stacked floors and directed walking
   edges are retained; this tessellation cannot be activated as measured terrain.
 - Compiler/runtime checks reject rope cuts that remove an existing landing
-  walking entry or exit, checking both directions separately. Reviewed walk
-  exemptions cannot reopen a faster rope bypass.
+  walking entry or exit, checking both directions separately. Explicitly reviewed
+  rope-only endpoints are bound to their route and measured landing; this does
+  not waive the gate for other landings or maps. Qualification also rejects an
+  ordinary walk between a rope-only endpoint and its opposite landing, even if
+  slower than the rope. Reviewed walk exemptions cannot reopen a faster bypass.
 - Feature controls, status and seekable events are exposed for all six supported
   feature-bearing maps in linked and standalone viewers. Standalone feature
   panels do not expose linked-only Control/Gaps tabs, including when those
@@ -39,8 +42,10 @@ unchanged by this work. PR #128 remains a draft stacked on #127.
   0.288 s for segment culling alone. This microbenchmark is not a whole-round
   throughput claim. Cache experiments gave marginal gains and were not shipped.
 
-Combined identities: condenser 18, control 15, gaps 3, feature compiler 16;
-Ascent consumer 4, quiet-rope consumer 6 and map-pool consumer 6. There is no
+Combined identities: condenser 18, control 15, gaps 3, feature compiler 17;
+Ascent consumer 4, quiet-rope consumer 7 and map-pool consumer 6. The rope-only
+policy is an archived runtime input and changes the feature identity; endpoints
+must still rebind against each selected height generation. There is no
 additional schema migration or Impact scoring change in this follow-up.
 
 ## Qualified feature selection
@@ -49,32 +54,41 @@ additional schema migration or Impact scoring change in this follow-up.
 | --- | ---: | --- |
 | Ascent | 3 | None |
 | Sunset | 1 | None |
-| Split | 2 | Four Vent ropes |
+| Split | 6 | None |
 | Haven | 0 | No tagged gimmick |
 | Summit | 4 | None |
 | Abyss | 6 | None |
 | Lotus | 3 | None |
 
 These are private-candidate compilation results against local selected assets,
-not evidence that the same heights are selected live. The total is **19 active
-features, four pending**, replacing the historical all-23 claim.
+not evidence that the same heights are selected live. After the owner's Vent
+topology correction the total is **23 qualified features, zero pending bundles**.
+Lotus still has the separate runtime gate below.
 
-The owner confirmed a walking/stair exit from Split's upper Vent area. Current
-cuts isolate a 78-node area. An attempted exemption through a multiply sampled
-height cell reopened a 0.399 s shortcut around a 2 s rope. The exemption was
-removed and regression-tested. The four affected bundles remain pending; their
-cuts are not installed in the active runtime, so ordinary base walking remains.
-The necessary clarification is the location/path of the ordinary exit on the
-map. A replay is not required merely to mark it. Its support and route cost must
-then be qualified together before enabling these bundles.
+The owner clarified that the yellow Vent area is below both sides and ropes
+are its only entrances/exits. It had been mislabeled as an upper area in the
+earlier handoff. Measured lower landings are about 3.5 m and the upper landings
+about 7.5 m. The 78-node lower component separated from the 5,852-node ordinary
+walking area is therefore intentional. Routes 21, 23, 25 and 31 declare only
+their lower endpoint `a` in `quiet_rope_only_endpoints`; all upper endpoints
+retain the normal walking-entry/exit gate. The discarded 0.399 s guessed stair
+connector remains absent. All six Split ropes now qualify; the four Vent ropes
+keep the reviewed 2 s costs in both directions. No heights or walkable ground
+were invented to enable them.
 
 ## Validation
 
 Linux CI builds the production worker image and pinned patched parser, then
 executes archive restoration, adaptive panel and quiet-route regressions inside
 that image, including the walking-only archive and its preserved stair exit.
-The run at code commit `0a0fb56` passed:
-[worker image review](https://github.com/conorlum/valo-with-friends-tracker/actions/runs/38253548461).
+The run at code commit `f338f0a` passed:
+[worker image review](https://github.com/conorlum/valo-with-friends-tracker/actions/runs/38302548730).
+The endpoint-scoped correction also passes 98 focused schema, input identity,
+compiler/runtime archive, walking-exit and rope-cost tests. The default exit gate
+remains enforced; malformed declarations, wrong/unresolved landing heights and
+exceptions claimed by another route cannot waive it. The later separation guard
+passes 35 affected-file tests, including a slower walking bypass and restored
+rope-only archives.
 
 The full local replay suite recorded 2,860 passes and 22 skips, with seven
 failures subsequently corrected: a standalone panel exposed linked-only tabs,
@@ -90,15 +104,18 @@ checks use isolated SQLite; PostgreSQL suites remain skipped.
 
 Fresh combined-recipe full rounds include knowledge layers. Ascent round 16
 passes 50/50 sampled counterfactual comparisons and identical fresh/cached gaps
-(33 rows). Split round 2 passes 33/33 and identical fresh/cached gaps (8 rows),
-with only its two qualified ropes enabled. Split's sampled on/off scene has no
-control difference; independent graph checks establish the two reviewed 2 s
-arcs against longer alternative walks. Do not claim every feature affects every
-scene.
+(33 rows), recorded under compiler 16. A new compiler-17 Split round 2 run at
+`82949a3` enables all six ropes and passes 33/33 with eight identical fresh/cached
+gap rows, taking 310.93 s and about 210 MB peak locally. It uses the exact same
+recording as the earlier two-rope run. The final candidate is reverified under
+the later separation guard, which rejects additional invalid inputs without
+changing this qualified calculation. The earlier Split on/off scene had no
+control difference; independent real graph checks establish material rope
+arrival delays. Do not claim every feature affects every scene.
 
-Real-geometry unknown propagation checks also exercise all 13 enabled directed
+Real-geometry unknown propagation checks now exercise all 21 enabled directed
 rope arcs on Split, Summit and Abyss. Each destination remains unreachable just
-before its reviewed cost and arrives at that cost. Twelve prevent premature
+before its reviewed cost and arrives at that cost. Twenty prevent premature
 arrival in the unqualified base graph; Abyss Mid supplies the missing one-way
 connection instead. This is a material reachability check independent of whether
 a particular recorded scene changes its final control masks.
@@ -118,7 +135,10 @@ The final complete Lotus round at calculation commit `8317268` passes 89/89
 counterfactual checks and fresh/cached parity for 50 gap rows. Its encoded
 control, summary and gaps are byte-identical to the saved unoptimized result
 under the same recording, artifact, grid and selected height. Later commits
-change viewer presentation, docstrings, tests and CI rather than calculation.
+change viewer presentation and add the endpoint-scoped Split topology correction;
+Lotus's numerical calculation is unchanged. Its artifact identity is refreshed
+under compiler 17, so the saved full-round receipt remains compiler-16 evidence,
+not a new compiler-17 full-round certification.
 The final run took 3,848.95 s (about 64 minutes) and peaked at 1,459,228,672 bytes,
 versus 3,654.39 s and 1,455,529,984 bytes for the earlier run. These concurrent
 local timings demonstrate no whole-round speedup; the microbenchmark gains do
@@ -150,11 +170,10 @@ computer-use browser blocks local file previews.
 
 ## Owner-controlled release
 
-1. Mark and qualify Split's missing walking exit, or leave its four Vent ropes
-   pending. Separately establish Lotus's runtime on the worker through a
+1. Establish Lotus's runtime on the worker through a
    controlled canary; do not treat compilation qualification as runtime approval.
    If its runtime exceeds the configured budget, approve a separate budget
-   change or defer Lotus activation. The other 16 locally qualified features
+   change or defer Lotus activation. The other 20 locally qualified features
    can be considered separately after their release gates pass.
 2. Review the private tags/masks/index proposal, including the explicit Ascent
    corner change. Publishing annotations is separate from merging code.

@@ -2,7 +2,8 @@
 
 The Abyss model remains supported, but [Post-review fixes](REVIEW-FIXES.md)
 supersedes the calculation identities, release selection and validation below.
-The historical all-23 claim no longer applies to the combined candidate.
+The current compiler-17 candidate qualifies 23 features after the owner-reviewed
+Split topology correction; historical receipts below are not current certification.
 
 The earlier candidate had enough reviewed rope behavior but deferred all four routes behind a
 map-wide height gate. Existing recordings now supply the missing positions: Spawn's upper exit
