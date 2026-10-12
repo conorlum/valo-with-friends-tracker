@@ -619,15 +619,9 @@ def sight_occluders(geo: Geometry, mf: dict, states: dict | None = None) -> tupl
     return out, pending
 
 
-def _lines_meet_bounds(a, b, bounds):
-    """Conservative segment/rectangle rejection before the unchanged pixel sampling.
-
-    Only interior rectangles use this tighter test: masks touching the image
-    border retain the broad check because pixel clipping extends their preimage.
-    """
+def _bounds_interval(a, b, bounds):
+    """Conservative parameter interval in an interior pixel rectangle."""
     left, top, right, bottom = bounds
-    if left <= 0 or top <= 0 or right >= PX or bottom >= PX:
-        return np.ones(len(b), bool)
     enter, leave = np.zeros(len(b)), np.ones(len(b))
     for axis, low, high in ((0, left, right), (1, top, bottom)):
         delta = b[:, axis] - a[axis]
@@ -640,6 +634,18 @@ def _lines_meet_bounds(a, b, bounds):
         first[parallel], last[parallel] = (-np.inf, np.inf) if inside else (np.inf, -np.inf)
         enter = np.maximum(enter, first)
         leave = np.minimum(leave, last)
+    return enter, leave
+
+
+def _interior_bounds(bounds):
+    return bounds is not None and bounds[0] > 0 and bounds[1] > 0 and bounds[2] < PX and bounds[3] < PX
+
+
+def _lines_meet_bounds(a, b, bounds):
+    """Reject segments outside interior bounds; border clipping stays conservative."""
+    if not _interior_bounds(bounds):
+        return np.ones(len(b), bool)
+    enter, leave = _bounds_interval(a, b, bounds)
     return enter <= leave + 1e-12
 
 
@@ -681,11 +687,6 @@ def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None 
     s = np.linspace(0.0, 1.0, max(steps, 2))[1:-1]
     for lo in range(0, n, 512):
         bb, fl, ln = b[lo:lo + 512], flat[lo:lo + 512], length[lo:lo + 512]
-        xs = ax + s[None, :] * (bb[:, 0:1] - ax)
-        ys = ay + s[None, :] * (bb[:, 1:2] - ay)
-        zs = az + s[None, :] * (bb[:, 2:3] - az)
-        xi = np.clip(xs, 0, PX - 1).astype(np.int32)
-        yi = np.clip(ys, 0, PX - 1).astype(np.int32)
         hit = np.zeros(len(bb), bool)
         vertical = ln < 1e-9
         if vertical.any():
@@ -696,12 +697,37 @@ def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None 
                 z1 = np.where(vfl, np.inf, np.maximum(az, bb[vertical, 2]))
             apx = (int(min(max(ay, 0), PX - 1)), int(min(max(ax, 0), PX - 1)))
         for occ in occluders:
+            # Sample only the original linspace indices within this panel's
+            # enclosing rectangle. Rebuilding a shorter linspace would move
+            # pixel samples and change thin-wall answers. One index of padding
+            # protects rounding at the interval ends. Untrusted/border masks
+            # retain the complete clipped sampling path.
+            pick = np.arange(len(bb))
+            sample_s = s[None, :]
+            valid = None
+            if len(s) and _interior_bounds(occ.bounds_px):
+                enter, leave = _bounds_interval((ax, ay), bb, occ.bounds_px)
+                pick = np.flatnonzero(enter <= leave + 1e-12)
+                if len(pick):
+                    first = np.clip(np.floor(enter[pick] * (steps - 1)) - 1, 1, steps - 2).astype(int)
+                    last = np.clip(np.ceil(leave[pick] * (steps - 1)) + 1, 1, steps - 2).astype(int)
+                    indices_s = first[:, None] + np.arange(int((last - first).max()) + 1)
+                    valid = indices_s <= last[:, None]
+                    sample_s = s[np.minimum(indices_s - 1, len(s) - 1)]
+            targets = bb[pick]
+            xs = ax + sample_s * (targets[:, 0:1] - ax)
+            ys = ay + sample_s * (targets[:, 1:2] - ay)
+            zs = az + sample_s * (targets[:, 2:3] - az)
+            xi = np.clip(xs, 0, PX - 1).astype(np.int32)
+            yi = np.clip(ys, 0, PX - 1).astype(np.int32)
             inside = occ.mask[yi, xi]
+            if valid is not None:
+                inside &= valid
             if occ.all_height:
-                hit |= inside.any(1)
+                hit[pick] |= inside.any(1)
             else:
                 band = (zs >= occ.bottom) & (zs < occ.top)
-                hit |= (inside & (band | fl[:, None])).any(1)
+                hit[pick] |= (inside & (band | fl[pick, None])).any(1)
             if vertical.any() and occ.mask[apx]:
                 # the span [z0, z1] meets the band [bottom, top); an all-height band is every height
                 hit[vertical] |= True if occ.all_height else (z1 >= occ.bottom) & (z0 < occ.top)
