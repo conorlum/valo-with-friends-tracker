@@ -139,6 +139,20 @@ def test_only_maps_that_passed_the_kill_line_test_have_the_layer():
     assert rc.map_layer("Bind") is None, "no Bind replay has passed yet"
 
 
+def test_map_layer_exposes_current_editorial_names_by_id_and_replay_key(monkeypatch):
+    source={'map_features':{'features':[
+        {'id':'feature-1','replay_key':'ascent_market','name':'Market <door>'},
+        {'id':'feature-2','name':' '}, None]}}
+    index={'Ascent':{'kill_lines':{'passes':True}}}
+    monkeypatch.setattr(rc,'_assets',lambda:(index,{'Ascent':source},{}))
+    assert rc.map_layer('Ascent')['feature_names']=={
+        'feature-1':'Market <door>','ascent_market':'Market <door>'}
+    source['map_features']['features'][0]['name']='Renamed door'
+    assert rc.map_layer('Ascent')['feature_names']['feature-1']=='Renamed door'
+    source['map_features']='malformed editorial catalogue'
+    assert rc.map_layer('Ascent')['feature_names']=={}
+
+
 # ---------------------------------------------------------------- the plan
 
 

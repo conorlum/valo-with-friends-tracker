@@ -5,6 +5,11 @@ timed quiet rope arcs on measured floor nodes, and provides computation-derived 
 private owner candidate is not yet qualified for live activation. Main, deployed tags, live height
 activation and live recompute have not been changed by this work.
 
+The owner now defers unavailable replay evidence. [FIRST-PASS.md](FIRST-PASS.md) defines the
+eleven-feature first-pass selection, completed current-compiler checks, publication proposal and
+owner-controlled rollout. Deferred bundles remain disabled; the historical all-gimmick checklist
+below is retained for their later qualification rather than blocking preparation of the subset.
+
 ## What is built
 
 - The parser patch stack captures the additional Lotus switch and Summit shootable families. Its
@@ -109,6 +114,13 @@ and footprint mixing before treating those as stacked geometry. The later wall-c
 additional data clear the current private Ascent gates without painted elevation overrides.
 
 ## Current real evidence and blockers
+
+The current-data follow-up rebuilt private height candidates under rules 5 and independently
+verified their exact permanent domains. Six maps pass unchanged gates; Abyss remains rejected.
+Compiler 13 supports the eleven intended first-pass features. Six complete real-round checks now
+pass full control/fresh gaps-only/cached gaps parity on this generation, with 126 matching gap rows
+in total across the six scenes. See FIRST-PASS.md for scope, recorded comparison counts and
+inherited warnings. The earlier compiler-11/12 results below remain historical evidence.
 
 The newest private height checkpoint clears Ascent and Summit. Additional frozen replay evidence
 and team-independent physical validation let Summit pass without changing coverage thresholds.

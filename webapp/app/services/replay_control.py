@@ -124,12 +124,28 @@ _assets.cache_clear = _clear_assets
 
 
 def map_layer(map_name: str) -> dict | None:
-    """{"cover_reviewed": bool} when the map has the layer, else None."""
-    entry = _assets()[0].get(map_name)
+    """Layer availability and current editorial labels, independent of calculation identities."""
+    index, tags, _ = _assets()
+    entry = index.get(map_name)
     if not isinstance(entry, dict) or not isinstance(entry.get('kill_lines') or {}, dict) \
             or not (entry.get("kill_lines") or {}).get("passes"):
         return None
-    return {"cover_reviewed": bool(entry.get("cover_reviewed"))}
+    names = {}
+    source = tags.get(map_name)
+    mf = source.get('map_features') if isinstance(source, dict) else None
+    features = mf.get('features') if isinstance(mf, dict) else None
+    if not isinstance(features, list):
+        features = []
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        name = feature.get('name')
+        if not isinstance(name, str) or not name.strip():
+            continue
+        for key in (feature.get('id'), feature.get('replay_key')):
+            if isinstance(key, str) and key:
+                names[key] = name
+    return {"cover_reviewed": bool(entry.get("cover_reviewed")), "feature_names": names}
 
 
 @dataclass(frozen=True)

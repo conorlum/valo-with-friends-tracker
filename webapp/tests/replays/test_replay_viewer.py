@@ -140,6 +140,33 @@ def test_feature_panel_seek_rows_escape_labels_and_old_replays_explain_reparse()
     assert 'parsed again' in got['old'] and 'unavailable' in got['unavailable']
 
 
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_current_feature_labels_apply_to_calculated_events_without_mutating_archive():
+    script = """
+      const R=require(process.argv[1]);
+      const v=Object.create(R.ReplayViewer.prototype);
+      const f={key:'feature-1',name:'feature-1',mode:'reducer_trace',initial:'open',
+        events:[{t:1,state:'closed',moving:false,blocks_movement:true}]};
+      const original=JSON.stringify(f);
+      v.options={control:{feature_names:{'feature-1':'Cave <door>'}}};
+      v.current={blob:{}};v.number=1;v.t=2;v.layers={features:false};
+      v.ui={featuresEvents:{},featuresState:{},featuresStatus:{}};
+      v.controlCache={ready:()=>({status:'ok',parsed:{header:{map_features:{keys:['feature-1'],features:[f]}}}})};
+      v.renderMapFeatureEvents();v.drawMapFeatures({},1,1,[]);
+      const out={events:v.ui.featuresEvents.innerHTML,state:v.ui.featuresState.innerHTML,
+        status:v.ui.featuresStatus.textContent,unchanged:JSON.stringify(f)===original};
+      v.options.control.feature_names['feature-1']='Renamed door';v.renderMapFeatureEvents();
+      out.renamed=v.ui.featuresEvents.innerHTML;
+      delete v.options.control.feature_names;out.fallback=v.mapFeatureName(f);
+      process.stdout.write(JSON.stringify(out));
+    """
+    got=run_node(script,{})
+    assert 'Cave &lt;door&gt;' in got['events'] and 'Cave &lt;door&gt;' in got['state']
+    assert 'Control: includes Cave <door>' in got['status']
+    assert '<door>' not in got['events'] and got['unchanged']
+    assert 'Renamed door' in got['renamed'] and got['fallback']=='feature-1'
+
+
 def test_the_standalone_script_writes_blobs_from_a_folder(condensed, tmp_path):
     folder = tmp_path / "blobs"
     folder.mkdir()

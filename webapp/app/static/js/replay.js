@@ -2624,8 +2624,14 @@
     return { state: state, closure: closure, modeled: state === "closing", pending: state === "unknown" || (state === "closing" && closure === null) };
   }
 
+  ReplayViewer.prototype.mapFeatureName = function (feature) {
+    var names = this.options && this.options.control && this.options.control.feature_names || {};
+    var name = names[feature.key];
+    return typeof name === "string" && name.trim() ? name : feature.name || feature.key;
+  };
+
   ReplayViewer.prototype.renderMapFeatureEvents = function () {
-    var panel = this.ui && this.ui.featuresEvents, data = this.current.blob.map_features, rows = [];
+    var panel = this.ui && this.ui.featuresEvents, data = this.current.blob.map_features, rows = [], self = this;
     var computed = this.controlCache && this.controlCache.ready(this.number);
     var applied = computed && computed.status === 'ok' && computed.parsed.header.map_features;
     if (applied && applied.features) data = {v: 1, status: 'decoded', features: applied.features};
@@ -2634,7 +2640,7 @@
       panel.innerHTML = '<li class="replay-feed-empty">This replay needs to be parsed again with map-message capture enabled.</li>'; return;
     }
     (data.features || []).forEach(function (feature) {
-      (feature.events || []).forEach(function (event) { rows.push({ name: feature.name, event: event }); });
+      (feature.events || []).forEach(function (event) { rows.push({ name: self.mapFeatureName(feature), event: event }); });
     });
     rows.sort(function (a, b) { return a.event.t - b.event.t; });
     panel.innerHTML = rows.length ? rows.map(function (row) {
@@ -2643,7 +2649,7 @@
   };
 
   ReplayViewer.prototype.drawMapFeatures = function (ctx, scale, radius, hits) {
-    var data = this.current.blob.map_features, panel = this.ui.featuresState;
+    var data = this.current.blob.map_features, panel = this.ui.featuresState, self = this;
     var computed = this.controlCache && this.controlCache.ready(this.number);
     var applied = computed && computed.status === 'ok' && computed.parsed.header.map_features;
     if (applied && applied.features) data = {v: 1, status: 'decoded', features: applied.features};
@@ -2651,17 +2657,18 @@
       this._featureApplied = applied;
       this.renderMapFeatureEvents();
     }
-    var appliedNames = applied && (data && data.features || []).filter(function (feature) { return applied.keys.indexOf(feature.key) >= 0; }).map(function (feature) { return feature.name; });
+    var appliedNames = applied && (data && data.features || []).filter(function (feature) { return applied.keys.indexOf(feature.key) >= 0; }).map(function (feature) { return self.mapFeatureName(feature); });
     var calculation = applied ? 'includes ' + (appliedNames.join(', ') || 'tagged map features') : data && data.calculation || 'pending geometry';
     if (this.ui.featuresStatus) this.ui.featuresStatus.textContent = !data || data.v !== 1 || data.status === "unavailable" ? "Map states unavailable in this stored replay." :
       (data.status === "decoded" ? "Replay states recovered. " : "Replay evidence is incomplete. ") + "Control: " + calculation + ".";
-    var stateRows = [], t = this.t, self = this;
+    var stateRows = [], t = this.t;
     if (data && data.v === 1 && data.status !== "unavailable") (data.features || []).forEach(function (feature) {
       var sampled = mapFeatureState(feature, t), state = sampled.state;
       var detail = state + (sampled.modeled && sampled.closure !== null ? " · " + Math.round(100 * sampled.closure) + "% closed (model)" : "") + (sampled.pending ? " · unresolved" : "");
       if (sampled.movement_geometry) detail += ' · movement follows rotating panel';
       else if (feature.mode === 'reducer_trace') detail += sampled.blocks_movement ? ' · passage blocked' : ' · passage clear';
-      stateRows.push('<p><strong>' + escapeHtml(feature.name) + '</strong>: ' + escapeHtml(detail) + '</p>');
+      var name = self.mapFeatureName(feature);
+      stateRows.push('<p><strong>' + escapeHtml(name) + '</strong>: ' + escapeHtml(detail) + '</p>');
       if (!self.layers.features || !feature.uv) return;
       var x = feature.uv[0] * scale, y = feature.uv[1] * scale;
       var emphasized = state === "closing" || state === "closed" || state === "broken" || sampled.blocks_movement;
@@ -2681,7 +2688,7 @@
       }
       ctx.strokeStyle = "rgba(8, 10, 18, 0.95)"; ctx.lineWidth = width + 3; ctx.stroke();
       ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke();
-      ctx.restore(); hits.push({ x: x, y: y, r: radius, text: feature.name + " · " + detail + " · approximate map marker" });
+      ctx.restore(); hits.push({ x: x, y: y, r: radius, text: name + " · " + detail + " · approximate map marker" });
     });
     var html = stateRows.join("");
     if (panel && panel.innerHTML !== html) panel.innerHTML = html;
