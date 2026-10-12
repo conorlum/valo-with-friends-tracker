@@ -92,7 +92,15 @@ Small commands the model calls during a run. Every answer is computed from store
 - `impact <round>`: the player's Impact row for the round.
 
 Each call is appended to a run log with an id, its arguments and its result. A point's evidence cites log ids.
-That log is what makes grounding checkable.
+That log is what makes grounding checkable. The brief's flags are logged the same way, so they can be cited too.
+
+Two facts found while planning (2026-10-12), which the plans build on:
+
+- **The site had no named map areas.** "A Main" or "B Site" did not exist anywhere in the data. Plan 1 adds them
+  from Riot's public callout points (`app/static/data/callouts.json`); a position's area is its nearest callout.
+- **The commands read a local snapshot, not the database.** A run starts by reading the match once into a file
+  under the temp directory. The model's only permitted command reads that file, so the model never holds a
+  database credential. `impact` takes a player as well as a round.
 
 When a source is missing for a round, the command says so plainly instead of returning an empty answer.
 
