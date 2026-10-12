@@ -1,5 +1,6 @@
 import copy
 import json
+import base64
 
 import numpy as np
 import pytest
@@ -16,15 +17,34 @@ def case():
     # Keep a missing-height neighbour: this is the formerly free bypass between both levels.
     measured.heights.floors[40,41,:] = -1
     measured.heights.supported[40,41] = False
-    cg.attach_heights(measured,measured.heights)
-    flat=geometry_case(flat=True);flat.name='Abyss'
-    mf['routes'][0]['walking_domain']=rg.from_asset(flat,measured.heights,[320,320,352,328])
+    # Preserve a real stair exit around the rope. It is slower than the two-second
+    # rope, so cutting the unknown-height shortcut must not isolate the upper floor.
+    walk = measured.walk_px.copy()
+    walk[312:320,320:352] = True
+    asset = measured.heights
+    asset.floors[39,40:44,0] = [40,30,20,10]
+    asset.supported[39,40:44] = True
+    asset.unresolved[39,40:44] = False
+    from app.control.heights import KIND_STANDS
+    asset.kind[39,40:44] = KIND_STANDS
+    path = [(40*128+40,1), *[(39*128+c,0) for c in range(40,44)], (40*128+43,0)]
+    edges = list(map(tuple,asset.edges))
+    for (a,al),(b,bl) in zip(path,path[1:]):
+        edges.extend([(a,al,b,bl,0),(b,bl,a,al,0)])
+    asset.edges = np.array(edges,np.int32)
+    flat = cg.geometry_from_masks('Abyss',~walk,walk,7e-5,[])
+    measured = cg.attach_heights(cg.geometry_from_masks('Abyss',~walk,walk,7e-5,[]),asset)
+    mf['routes'][0]['walking_domain']=rg.from_asset(flat,asset,[320,312,352,328])
     return flat,measured,mf
 
 
 def artifact(flat,mf):
     raw=json.dumps({'maps':{'Abyss':{'map_features':mf,'specials':[]}}}).encode()
-    inp=fi.identify_features('Abyss','flat',fi.capture_source_snapshot('Abyss',raw),base_case())
+    base = base_case()
+    for key,mask in [('walk',flat.walk_px),('sight',flat.sight)]:
+        packed = np.packbits(mask.ravel(),bitorder='little').tobytes()
+        base[key]['data'] = base64.b64encode(packed).decode('ascii')
+    inp=fi.identify_features('Abyss','flat',fi.capture_source_snapshot('Abyss',raw),base)
     return cf.compile_artifact(flat,inp,'0'*40)
 
 
@@ -50,7 +70,7 @@ def test_walking_archive_reproduces_after_cache_loss_and_does_not_get_a_global_h
     assert item.key.height_digest=='flat' and item.manifest['active_bundles']==['bundle-3']
     fa.store_cached_artifact(tmp_path,item,lambda a:cf.verify_artifact(a,flat))
     request={'map':'Abyss','features':item.digest,'height_mode':'flat'}
-    fresh=geometry_case(flat=True);fresh.name='Abyss'
+    fresh=case()[0]
     load_task_features(request,fresh,tmp_path)
     walking=prepare_geometry(fresh)
     assert walking.movement_only and 'height' not in geometry_used(walking)
@@ -65,13 +85,17 @@ def test_quiet_rope_cost_and_reverse_policy_cannot_be_bypassed_by_unknown_ground
     from app.control.feature_runtime import prepare_geometry
     flat,_,mf=case();flat.features=artifact(flat,mf);walking=prepare_geometry(flat)
     quiet=rr.topology_for(walking);arc=quiet.arcs[0]
+    from app.control.engine import UNKNOWN_MPS
+    step = walking.cell_m / UNKNOWN_MPS
     free=np.full(walking.n,-np.inf)
     reached=np.full(walking.n,np.inf);reached[arc.src]=0
-    assert np.isinf(quiet.spread(reached,walking.walk_n,free,1.999,.1,[],quiet=True)[arc.dst])
-    after,parent=quiet.spread(reached,walking.walk_n,free,2.,.1,[],parents=True,quiet=True)
+    assert np.isinf(quiet.spread(reached,walking.walk_n,free,1.999,step,[],quiet=True)[arc.dst])
+    after,parent=quiet.spread(reached,walking.walk_n,free,2.,step,[],parents=True,quiet=True)
     assert after[arc.dst]==2. and parent[arc.dst]==arc.src
     reverse=np.full(walking.n,np.inf);reverse[arc.dst]=0
-    assert np.isinf(quiet.spread(reverse,walking.walk_n,free,20.,.1,[],quiet=True)[arc.src])
+    assert not any(a.src==arc.dst and a.dst==arc.src for a in quiet.arcs)
+    assert np.isinf(quiet.spread(reverse,walking.walk_n,free,1.999,step,[],quiet=True)[arc.src])
+    assert np.isfinite(quiet.spread(reverse,walking.walk_n,free,20.,step,[],quiet=True)[arc.src])
 
 
 @pytest.mark.parametrize('change',['version','wide','mask','off_ground','unordered','edge','unbound','foreign_map'])

@@ -9,13 +9,14 @@ from app.control import features as cf
 
 @pytest.mark.parametrize('border', [False, True])
 @pytest.mark.parametrize('all_height', [False, True])
-def test_segment_culling_matches_unculled_pixel_sampling(border, all_height):
+@pytest.mark.parametrize('target_count', [0, 4, 5, 24, 600])
+def test_segment_culling_matches_unculled_pixel_sampling(border, all_height, target_count):
     rng = np.random.default_rng(123)
     mask = np.zeros((1024, 1024), bool)
     mask[450:457, (0 if border else 490):(9 if border else 499)] = True
     mask[456:462, (5 if border else 494):(13 if border else 502)] = True
     occ = cf._bounded_occluder('panel', mask, 1, 3, all_height=all_height)
-    targets = np.column_stack((rng.uniform(-100, 1124, (600, 2)), rng.uniform(-3, 6, 600)))
+    targets = np.column_stack((rng.uniform(-100, 1124, (target_count, 2)), rng.uniform(-3, 6, target_count)))
     targets[::19, 2] = np.nan
     # Include vertical, axis-aligned, corner and near-boundary rays. The last
     # target fixes a long common sample interval even when it is culled.
