@@ -2,9 +2,9 @@
 the contract is docs/superpowers/specs/2026-10-04-map-features-contract.md).
 
 The annotations (`map_features` in tags.json, app/replays/map_feature_schema.py) are minimap u/v geometry plus
-behaviour. This module turns them into what the engine would consume, on synthetic fixtures for now: no engine
-caller uses it in this build (no feature is enabled, no CONTROL_REVISION bump), so every committed map computes
-exactly what it did.
+behaviour. This module qualifies immutable per-map artifacts and supplies their permanent domain, movement
+blocks and bounded sight to the registered engine consumers. Only qualified active bundles participate;
+pending annotations retain diagnostics and do not install their dynamic effects.
 
 - **Rasterising** (`raster`): a point, polyline (with an optional width), polygon (even-odd) or paint becomes
   PAINT_GRID x PAINT_GRID cells, tested at cell centres in u/v. Deterministic, and twinned bit for bit by
@@ -808,8 +808,8 @@ def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list
 
 # ---------------------------------------------------------------- base reconciliation and bundles
 
-# The runtime consumers this build can run features through. None: nothing is enabled until an engine
-# integration registers one (R3), so every bundle is pending and every map's base geometry is unchanged.
+# Registered consumers are part of the compiler identity. Unsupported consumers
+# remain pending rather than installing geometry the engine cannot interpret.
 RUNTIME_CONSUMERS: frozenset = fi.RUNTIME_CONSUMERS
 LEGACY_SOURCES = ("cover_paint", "cant_walk_paint", "tag", "base")
 

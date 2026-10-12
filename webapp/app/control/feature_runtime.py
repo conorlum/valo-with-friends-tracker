@@ -1,4 +1,4 @@
-"""Ascent evidence consumer. A verified artifact and complete source timeline are both required."""
+"""Shared artifact geometry and replay-state consumers, with the Ascent timeline adapter."""
 from __future__ import annotations
 
 import numpy as np

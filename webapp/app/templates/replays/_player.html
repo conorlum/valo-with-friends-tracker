@@ -128,8 +128,8 @@
         <button type="button" role="tab" class="replay-tab" data-replay-tab="analysis" aria-selected="false">Analysis</button>
         {% endif %}
         {% if feature_label %}<button type="button" role="tab" class="replay-tab{% if not linked %} is-active{% endif %}" data-replay-tab="features" aria-selected="{{ 'false' if linked else 'true' }}">{{ feature_label }}</button>{% endif %}
-        {% if control %}<button type="button" role="tab" class="replay-tab" data-replay-tab="control" aria-selected="false">Control</button>{% endif %}
-        {% if gaps %}<button type="button" role="tab" class="replay-tab" data-replay-tab="gaps" aria-selected="false">Gaps</button>{% endif %}
+        {% if linked and control %}<button type="button" role="tab" class="replay-tab" data-replay-tab="control" aria-selected="false">Control</button>{% endif %}
+        {% if linked and gaps %}<button type="button" role="tab" class="replay-tab" data-replay-tab="gaps" aria-selected="false">Gaps</button>{% endif %}
       </div>
       {% if linked %}
       <div data-replay-panel="feed" role="tabpanel">
@@ -149,7 +149,7 @@
         <ol class="replay-feed" data-replay-features-events></ol>
       </div>
       {% endif %}
-      {% if control %}
+      {% if linked and control %}
       <div data-replay-panel="control" role="tabpanel" hidden>
         <div class="replay-control-switch" role="group" aria-label="Control table scope">
           <button type="button" class="replay-button is-active" data-replay-control-scope="round" aria-pressed="true">This round</button>
@@ -161,7 +161,7 @@
         <ol class="replay-feed" data-replay-control-reasons></ol>
       </div>
       {% endif %}
-      {% if gaps %}
+      {% if linked and gaps %}
       <div data-replay-panel="gaps" role="tabpanel" hidden>
         <p class="replay-side-note">Moments a player's back was open to an enemy who could have got there unseen, and real shots from behind. Click one to jump to when it opened; hover one to see it on the map.</p>
         <p class="replay-gaps-patterns-link"><a href="/gaps/{{ replay.map_name | urlencode }}" data-replay-gaps-patterns>Patterns on this map</a></p>
