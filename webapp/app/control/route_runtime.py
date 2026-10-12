@@ -172,6 +172,7 @@ def qualified_cuts(geo, mf, members, base, arcs):
     from app.replays.map_feature_state import known
     from app.replays.map_feature_schema import _uv
     cuts, reasons = local_rope_cuts(geo, base, arcs), []
+    retained_walk = False
     for route in mf.get('routes', []):
         if route.get('owner') not in members:
             continue
@@ -213,6 +214,7 @@ def qualified_cuts(geo, mf, members, base, arcs):
                     and np.isfinite(geo.node_z[nodes]).any() and abs(heights[0]-heights[1]) < 1.5
             if valid:
                 cuts.discard(tuple(nodes))
+                retained_walk = True
             else:
                 reasons.append(f"{route['id']}: quiet walk connection is not an existing local supported walk")
     for route in mf.get('routes', []):
@@ -227,7 +229,36 @@ def qualified_cuts(geo, mf, members, base, arcs):
                 nodes.append(node)
             if None not in nodes:
                 cuts.add(tuple(nodes))
+    if retained_walk:
+        reasons += walk_bypass_problems(geo, base, arcs, cuts)
     return cuts, reasons
+
+
+def walk_bypass_problems(geo, base, arcs, cuts):
+    """A walk exemption cannot reopen a faster, unqualified rope level change.
+
+    Costs use the runtime's distance scale and unknown speed. Timed rope arcs
+    are excluded; a retained edge must stand on its ordinary walking merits.
+    Check all routes together because one exemption can bypass another rope.
+    """
+    from app.control.engine import UNKNOWN_MPS
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import dijkstra
+    dst = np.broadcast_to(np.arange(geo.n)[:, None], base.in_from.shape)
+    valid = (base.in_from < geo.n) & np.isfinite(base.in_cost_quiet)
+    src, targets = base.in_from[valid], dst[valid]
+    keep = np.array([(int(a), int(b)) not in cuts for a, b in zip(src, targets)])
+    graph = csr_matrix((base.in_cost_quiet[valid][keep] * geo.cell_m / UNKNOWN_MPS,
+                        (src[keep], targets[keep])), shape=(geo.n, geo.n))
+    distances, bad = {}, set()
+    for arc in arcs:
+        if arc.src not in distances:
+            distances[arc.src] = dijkstra(graph, indices=arc.src, directed=True,
+                                         limit=max(a.cost_s for a in arcs if a.src == arc.src))
+        walk = float(distances[arc.src][arc.dst])
+        if math.isfinite(walk) and walk + 1e-6 < arc.cost_s:
+            bad.add(arc.route)
+    return [f'{r}: retained quiet walk bypasses reviewed rope travel time' for r in sorted(bad)]
 
 
 def walking_exit_problems(geo, base, arcs, cuts):

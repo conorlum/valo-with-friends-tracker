@@ -16,7 +16,7 @@ def case():
                         (8, -8), (16, -8), (32, 8)], float) + 200
     geo = SimpleNamespace(n=8, node_z=np.array([0., 4., np.nan, 4., np.nan, 4., 4., 0.]),
         centres=centres, walk_n=np.ones(8, bool), m_per_px=.05, adaptive=False,
-        heights=SimpleNamespace(origin_z=0))
+        heights=SimpleNamespace(origin_z=0), cell_m=1.)
     geo.nodes_at_px = lambda x, y: np.flatnonzero(np.linalg.norm(centres-[x, y], axis=1) < .1)
     pairs = [(0, 2), (1, 2), (1, 5), (5, 6), (6, 3), (3, 4), (4, 7), (7, 0)]
     pairs += [(b, a) for a, b in pairs]
@@ -75,3 +75,16 @@ def test_explicit_quiet_cut_wins_over_walk_record(monkeypatch):
         (int(geo.nodes_at_px(*(np.asarray(uv)*1024/10000))[0]), None))
     cuts, reasons = rr.qualified_cuts(geo, mf, {'feature-1'}, base, arcs)
     assert not reasons and (3, 4) in cuts
+
+
+def test_retained_walk_cannot_reopen_a_shortcut_through_an_unknown_leaf():
+    geo, base, arcs, mf = case()
+    point = lambda n: dict(uv=(geo.centres[n]*10000/1024).tolist(),
+        landing=dict(world_z=ms.known(4, 'm'), tolerance=ms.known(.2, 'm')))
+    # This looks like a supported upper walk, but its unknown neighbour also
+    # joins the lower landing. Retaining it bypasses the two-second rope.
+    mf['routes'][0]['quiet_walk_connections'] = [
+        {'from': point(1), 'to': point(2)}, {'from': point(2), 'to': point(1)}]
+    cuts, reasons = rr.qualified_cuts(geo, mf, {'feature-1'}, base, arcs)
+    assert (1, 2) not in cuts
+    assert reasons == ['route-1: retained quiet walk bypasses reviewed rope travel time']

@@ -2,6 +2,7 @@
 import copy
 
 import numpy as np
+import pytest
 
 from app.control import features as cf, feature_geometry as fg, geometry as cg, map_pool_runtime as pool, topology
 from app.control.feature_runtime import prepare_geometry
@@ -97,3 +98,27 @@ def test_computational_grid_cannot_be_activated_as_measured_terrain(tmp_path):
     path = folder/'Lotus.height.npz'; heights.save_asset(path, geo.heights)
     report = height_verify.describe(path.read_bytes(), 'Lotus', asset_dir=folder)
     assert 'computational panel tessellation' in report['error']
+
+
+def test_grid_preserves_unknowns_and_distinct_stacked_floors():
+    geo, mf, _ = case()
+    asset = copy.deepcopy(geo.heights)
+    unknown, stacked = 24*128+25, 24*128+26
+    asset.floors.reshape(-1, 3)[unknown] = -1
+    asset.supported.ravel()[unknown] = False
+    asset.unresolved.ravel()[unknown] = True
+    asset.floors.reshape(-1, 3)[stacked, 1] = 40
+    for key in ('edges', 'fine_edges'):
+        edges = getattr(asset, key)
+        setattr(asset, key, edges[(edges[:, 0] != unknown) & (edges[:, 2] != unknown)])
+    # This is a geometry preservation check; no cross-floor edges are invented.
+    cg.attach_heights(geo, asset)
+    fresh = fg.prepare(geo, mf)
+    for n in fresh.node_of[unknown]:
+        if n >= 0:
+            assert np.isnan(fresh.node_z[n])
+    nodes = fresh.node_of[stacked]; nodes = nodes[nodes >= 0]
+    assert len(nodes) == 8 and set(fresh.node_z[nodes]) == {0, 4}
+    for a, _, b, _, _ in fresh.heights.fine_edges:
+        if a == b:
+            pytest.fail('computational tessellation connected two floors in one footprint')

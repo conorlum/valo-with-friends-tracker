@@ -36,14 +36,21 @@ the main walking component. Already separate platforms are not forced to grow
 an invented stair exit.
 
 The owner confirms that Split's upper Vent area has an ordinary stair exit.
-Existing accepted ground walks repeatedly cross one connector at that exit.
-The private candidate records that directed connection in both directions for
-the affected Vent routes. `quiet_walk_connections` contains two UV points with
+An attempted connector inferred from accepted ground walks reopened a 0.40 s
+shortcut around a reviewed 2 s rope. The sampled leaf contains multiple height
+bands and intermediate rope samples; crossing it is not proof of a stair exit.
+That connector is excluded from the release proposal. The four Vent bundles
+remain pending under the walking-exit gate until the real ordinary exit is
+located and qualified; preserving their ordinary base walking is preferable to
+shipping an isolated platform or a free rope shortcut.
+
+For a future qualified exit, `quiet_walk_connections` contains two UV points with
 world position-z and tolerance evidence. It can preserve only an existing local
 quiet walk edge. It cannot create a connection, assign a floor, bind two unknown
 ends or bypass an ambiguous stacked floor. A single unresolved leaf may retain
 its existing fallback connection to measured ground. Explicit `quiet_cuts` win
-over these records. Compiler and runtime use the same binding path, and all
+over these records. A further gate rejects retained walks that bypass a reviewed
+rope cost, considering all routes together. Compiler and runtime use the same binding path, and all
 records are rechecked when the selected height generation changes.
 
 These records are immutable annotation inputs, like the existing Abyss walking
