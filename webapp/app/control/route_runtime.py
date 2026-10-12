@@ -268,19 +268,28 @@ def walking_exit_problems(geo, base, arcs, cuts):
     excluded from this check because they must not conceal a removed stair/walk exit.
     """
     from scipy.sparse import csr_matrix
-    from scipy.sparse.csgraph import connected_components
+    from scipy.sparse.csgraph import connected_components, breadth_first_order
     dst = np.broadcast_to(np.arange(geo.n)[:, None], base.in_from.shape)
     valid = (base.in_from < geo.n) & np.isfinite(base.in_cost_quiet)
     src, targets = base.in_from[valid], dst[valid]
-    def components(keep):
-        _, labels = connected_components(csr_matrix((np.ones(int(keep.sum())),
-            (src[keep], targets[keep])), shape=(geo.n, geo.n)), directed=False)
-        sizes = np.bincount(labels[geo.walk_n], minlength=geo.n)
-        return labels, int(np.argmax(sizes))
-    before, main = components(np.ones(len(src), bool))
-    after, remaining = components(np.array([(int(a), int(b)) not in cuts for a, b in zip(src, targets)]))
-    bad = {a.route for a in arcs for n in (a.src, a.dst)
-           if before[n] == main and after[n] != remaining}
+    graph = csr_matrix((np.ones(len(src)), (src, targets)), shape=(geo.n, geo.n))
+    _, labels = connected_components(graph, directed=True, connection='strong')
+    sizes = np.bincount(labels[geo.walk_n], minlength=geo.n)
+    if not sizes.any():
+        return []
+    anchor = int(np.flatnonzero((labels == int(np.argmax(sizes))) & geo.walk_n)[0])
+    keep = np.array([(int(a), int(b)) not in cuts for a, b in zip(src, targets)])
+    trimmed = csr_matrix((np.ones(int(keep.sum())), (src[keep], targets[keep])), shape=(geo.n, geo.n))
+    def reachable(g):
+        mask = np.zeros(geo.n, bool)
+        mask[breadth_first_order(g, anchor, directed=True, return_predecessors=False)] = True
+        return mask
+    bad = set()
+    # Preserve entry and exit separately. A remaining one-way drop must not
+    # hide the loss of the walking way back to the main area.
+    for before, after in ((reachable(graph), reachable(trimmed)),
+                          (reachable(graph.T), reachable(trimmed.T))):
+        bad.update(a.route for a in arcs for n in (a.src, a.dst) if before[n] and not after[n])
     return [f'{r}: quiet rope cuts remove the landing walking exit' for r in sorted(bad)]
 
 

@@ -88,3 +88,13 @@ def test_retained_walk_cannot_reopen_a_shortcut_through_an_unknown_leaf():
     cuts, reasons = rr.qualified_cuts(geo, mf, {'feature-1'}, base, arcs)
     assert (1, 2) not in cuts
     assert reasons == ['route-1: retained quiet walk bypasses reviewed rope travel time']
+
+
+def test_one_way_entry_cannot_hide_a_removed_walking_exit():
+    geo = SimpleNamespace(n=3, walk_n=np.ones(3, bool))
+    base = SimpleNamespace(in_from=np.array([[1, 2], [0, 3], [0, 3]]),
+                          in_cost_quiet=np.array([[1., 1.], [1., np.inf], [1., np.inf]]))
+    arc = cf.Arc('route-1', 1, 2, 0., 2., None)
+    assert rr.walking_exit_problems(geo, base, [arc], {(1, 0)}) == [
+        'route-1: quiet rope cuts remove the landing walking exit']
+    assert not rr.walking_exit_problems(geo, base, [arc], set())

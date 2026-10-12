@@ -31,8 +31,9 @@ centres and floor binding, so the extra Lotus leaves retain that movement rule.
 Unknown-height ground is classified by walking distance to measured supports,
 rather than assigning every unknown approach to the lower level. Automatic cuts
 remain local and retain their rope shortcut protection. A compile/runtime gate
-rejects a route if those cuts disconnect a landing that previously belonged to
-the main walking component. Already separate platforms are not forced to grow
+rejects a route if those cuts remove a landing's existing directed entry or exit
+to the main walking area. A remaining one-way entry cannot conceal a lost exit.
+Already separate platforms are not forced to grow
 an invented stair exit.
 
 The owner confirms that Split's upper Vent area has an ordinary stair exit.
