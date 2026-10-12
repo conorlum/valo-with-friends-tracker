@@ -60,7 +60,13 @@ def prepare_geometry(geo):
     if not isinstance(geo.features, FeatureArtifact):
         raise FeatureArtifactCorrupt('runtime needs an archived feature artifact')
     artifact = geo.features
+    from app.control.rope_ground import prepare
+    geo = prepare(geo, read_json(artifact.inputs)['runtime'])
     assets = read_json(expanded_assets(artifact.assets))
+    if geo.movement_only and (assets.get('nodes') != geo.n or assets.get('walking_model') !=
+            {'kind': 'local_rope_ground', 'digest': geo.rope_ground_digest,
+             'asset': geo.movement_height_sha, 'terrain_sight': 'flat'}):
+        raise FeatureArtifactCorrupt('archived rope walking model differs from runtime nodes')
     base = assets['base_domain']
     sight = cf._archived_mask(base['sight'], (cg.PX, cg.PX))
     walk = cf._archived_mask(base['walk'], (cg.PX, cg.PX))
@@ -69,6 +75,8 @@ def prepare_geometry(geo):
     fresh = cg.geometry_from_masks(geo.name, sight, walk, geo.uv_per_unit / 10000, geo.specials)
     if geo.heights is not None:
         cg.attach_heights(fresh, geo.heights)
+        fresh.movement_only, fresh.movement_height_sha = geo.movement_only, geo.movement_height_sha
+        fresh.height_sha, fresh.rope_ground_digest = geo.height_sha, geo.rope_ground_digest
     if fresh.n != geo.n or not np.array_equal(fresh.node_cell, geo.node_cell) \
             or not np.array_equal(fresh.node_space, geo.node_space):
         raise FeatureArtifactCorrupt('feature domain changes archived node identities')

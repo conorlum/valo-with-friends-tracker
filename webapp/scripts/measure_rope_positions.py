@@ -2,7 +2,7 @@
 
 Explicit inputs: --tags --map --export --source --context --out PRIVATE_DIR.
 The context contains matching source_sha256, absolute round windows and pawn_slot.
-Only coordinate proposals are exported; landing heights and runtime remain separate.
+Optional --frozen and --height add qualified stand/walk landing proposals. Neither mode activates runtime.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.control.rope_positions import coordinate_cluster, vertical_runs
+from app.control.rope_positions import coordinate_cluster, vertical_runs, rope_seed
 from app.replays import contract, map_feature_schema as ms
 from app.replays.condense import load_maps
 from app.replays.feature_audit import private_output
@@ -31,7 +31,7 @@ def measure(tags, map_name, export_dir, context):
              and features.get(r.get('owner'), {}).get('preset') == 'vertical_rope']
     if not ropes:
         raise ValueError('no placed vertical ropes to measure')
-    seeds = [[sum(e['uv'][i] for e in r['endpoints']) / len(r['endpoints']) for i in (0, 1)] for r in ropes]
+    seeds = [rope_seed(r, features[r['owner']]) for r in ropes]
     windows = context['windows']
     if not isinstance(windows, list) or not windows or any(
             not isinstance(w, (list, tuple)) or len(w) != 3
@@ -115,6 +115,9 @@ def main(argv=None):
     for name in ('tags', 'export', 'source', 'context', 'out'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--map', required=True)
+    parser.add_argument('--frozen', type=Path)
+    parser.add_argument('--height', type=Path)
+    parser.add_argument('--asset-dir', type=Path)
     args = parser.parse_args(argv)
     try:
         out = private_output(args.out, args.export)
@@ -125,6 +128,38 @@ def main(argv=None):
             raise ValueError('source recording, movement export and context identities disagree')
         raw = args.tags.read_bytes()
         result = measure(json.loads(raw), args.map, args.export, context)
+        if bool(args.frozen) != bool(args.height):
+            raise ValueError('--frozen and --height must be supplied together')
+        if args.frozen:
+            import numpy as np
+            from app.control import geometry as cg, heights as hc
+            from app.control.rope_positions import ground_samples, landing_pairs
+            from app.replays.condense import read_game_state
+            from analyze_height_refinement import FrozenRounds
+            frozen = FrozenRounds(args.frozen)
+            if frozen.map_name != args.map:
+                raise ValueError('frozen recording map differs')
+            match = str(read_game_state(contract.load_export_streaming(args.export)).match_uuid)
+            geo = cg.attach_heights(cg.load_base_geometry(args.map,args.asset_dir or cg.ASSET_DIR), hc.load_asset(args.height))
+            expected_walk = hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12]
+            if geo.heights.meta.get('walk_sha', expected_walk) != expected_walk:
+                raise ValueError('height asset was built on another permanent walk mask; supply its --asset-dir')
+            for rope in result['ropes']:
+                rides = [dict(match=match, round=r['round'], slot=r['slot'], start_s=r['elapsed_s'],
+                              end_s=r['elapsed_s']+(r['t1_ms']-r['t0_ms'])/1000,
+                              uv=r['uv'], run_z_range_m=[z/100 for z in r['run_z_range_cm']])
+                         for r in rope['rides']]
+                points = []
+                for match_id, number, blob in frozen:
+                    points += ground_samples(blob, geo, match_id, number, rides,
+                                             center_uv=rope['uv'] or rope['seed_uv'])
+                pairs = landing_pairs(rides, points, max_distance_px=64)
+                rope['landing_proposals'] = pairs[:8]
+                rope['landing_proposal_count'] = len(pairs)
+            result['landing_inputs'] = {'height_sha': geo.height_sha,
+                                       'height_file_sha256': contract.sha256_file(args.height),
+                                       'frozen_sha256': contract.sha256_file(args.frozen)}
+            result['qualification'] = 'coordinate and grounded landing proposals; reviewed costs/directions and runtime remain separate'
         result.update(source_sha256=source_sha, tags_sha256=hashlib.sha256(raw).hexdigest(),
                       context_sha256=hashlib.sha256(args.context.read_bytes()).hexdigest(),
                       manifest_sha256=contract.sha256_file(args.export / 'manifest.json'),

@@ -284,6 +284,9 @@ class Geometry:
     heights: object = None                # the map's HeightAsset, or None on a flat map
     height_sha: str | None = None
     height_unknown: int = 0               # walkable cells the asset doesn't know (the walk mask changed since)
+    movement_only: bool = False           # archived local rope ground; terrain sight remains flat
+    movement_height_sha: str | None = None
+    rope_ground_digest: str | None = None
     # map features (app/control/features.py): the active generation, only when index.json names one
     features_sha: str | None = None
     features: dict | None = None          # {map, manifest, assets} as published
@@ -397,6 +400,7 @@ def attach_heights(geo: Geometry, asset) -> Geometry:
     """Gives a flat geometry its nodes from a HeightAsset (heights.py). Only walkable cells get heights:
     a walkable cell the asset has no floor for is unresolved (flat 2D sight and walking), whether the
     build said so or the walk mask has changed since (`height_unknown` counts those)."""
+    geo.movement_only, geo.movement_height_sha, geo.rope_ground_digest = False, None, None
     # Reattachment may replace a mixed asset with archived coarse ground.
     geo.space_grid = geo.space_nodes = geo.space_walk = geo.space_unresolved = None
     geo.space_bbox = geo.node_space = geo.node_bbox = geo.topo = None
@@ -598,6 +602,8 @@ def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list
     (default: the floor under the eye). Without `eye_z` the answer is today's 2D one: every floor of each
     cell seen. A ray that enters an unresolved cell drops the height test from there on, and `record`
     (a dict) counts those rays under "unresolved_rays"."""
+    if geo.movement_only:
+        eye_z = None
     from app.control.features import BoundedOccluder, cast_with
     occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
     if occluders:
@@ -783,6 +789,8 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     the two ends' cells included: a plate blocks when the line is on one side of it where it enters the
     plate's cell (or at the eye) and on the other where it leaves (or at the target). Independent of the
     rays `cast` happens to shoot, so the two check each other."""
+    if geo.movement_only:
+        a, b = (*a[:2], None), (*b[:2], None)
     from app.control.features import BoundedOccluder, los_with
     occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
     if occluders:
@@ -867,7 +875,9 @@ def cache_key(geo: Geometry) -> str:
     digest.update(np.packbits(geo.sight).tobytes())
     digest.update(np.packbits(geo.walk_px).tobytes())
     if geo.heights is not None:      # a flat map's key is what it always was
-        digest.update(json.dumps({"height": geo.height_sha, "eye": hc.EYE_M, "body": hc.BODY_M, "stand": hc.STAND_M,
+        digest.update(json.dumps({"height": geo.movement_height_sha or geo.height_sha,
+                                  **({'movement_only': True} if geo.movement_only else {}),
+                                  "eye": hc.EYE_M, "body": hc.BODY_M, "stand": hc.STAND_M,
                                   "ledge": hc.LEDGE_M, "snap": hc.NODE_SNAP_M, "slabs": SLAB_SLOTS},
                                  sort_keys=True).encode("ascii"))
     return digest.hexdigest()

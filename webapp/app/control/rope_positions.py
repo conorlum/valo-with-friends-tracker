@@ -78,13 +78,15 @@ def landing_pairs(rides, ground, *, max_gap_s=2, max_distance_px=22):
     pairs = []
     for ride in rides:
         ends = []
-        for edge in (ride['start_s'], ride['end_s']):
+        for index, edge in enumerate((ride['start_s'], ride['end_s'])):
             options = []
             for sample in ground:
                 if any(sample.get(k) != ride.get(k) for k in ('match', 'round', 'slot')):
                     continue
                 if any(ride.get(k) is None for k in ('match', 'round', 'slot')) or sample.get('node') is None:
                     continue
+                if index == 0 and sample['t0'] > edge or index == 1 and sample['t1'] < edge:
+                    continue  # Ground before boarding and after leaving, never a reversed time pairing.
                 gap = max(sample['t0'] - edge, edge - sample['t1'], 0)
                 distance = math.dist(sample['uv'], ride['uv']) * 1024 / 10000
                 if gap <= max_gap_s and distance <= max_distance_px:
@@ -101,3 +103,57 @@ def landing_pairs(rides, ground, *, max_gap_s=2, max_distance_px=22):
                 pairs.append({'ride': ride, 'a': a, 'b': b,
                     'score': a['gap'] + b['gap'] + (a['distance_px'] + b['distance_px']) / 100})
     return sorted(pairs, key=lambda pair: pair['score'])
+
+
+def rope_seed(route, feature):
+    """Keep the rope axis separate from a launch point across a gap or a walking exit."""
+    for state in feature.get('states', []):
+        shape = state.get('footprint') or {}
+        if shape.get('type') == 'point' and shape.get('uv'):
+            return list(shape['uv'])
+    return [sum(e['uv'][i] for e in route['endpoints'])/len(route['endpoints']) for i in (0, 1)]
+
+
+def ground_samples(blob, geo, match, round_number, rides, *, center_uv, radius_px=64, max_gap_s=3):
+    """Actual qualified samples near boarding/leaving, including grounded walking exits.
+
+    Uses the same ability/platform exclusions and stand/walk rules as the height builder.
+    No ground from ride extrema, a paused rope, or a run's mean XY is invented here.
+    The caller supplies an exact height asset to resolve geometry proposals, which need not
+    be accepted for global sight. Publication/runtime qualification remains a separate step.
+    """
+    import numpy as np
+    from app.control import height_build as hb, height_motion as hm, features as cf
+    from app.replays import map_feature_schema as ms
+    relevant = [r for r in rides if r['match'] == str(match) and r['round'] == round_number]
+    if not relevant:
+        return []
+    skip = hm.blackouts(blob, geo)
+    stands = hb.stands(blob, geo, skip=skip)
+    walks = hm.walks(blob, geo, found=stands, skip=skip)
+    platforms = hb.platforms(blob)
+    stands, walks = hb.off_platforms(stands, platforms, geo), hb.off_platforms(walks, platforms, geo)
+    center = np.asarray(center_uv)*.1024
+    out = []
+    for slot,t,x,y,z in hm.tracks(blob,skip):
+        mine = [r for r in relevant if r['slot'] == slot]
+        if not mine or z is None:
+            continue
+        spans = [(s, 'stand') for s in stands if s.slot == slot]+[(w, 'walk') for w in walks if w.slot == slot]
+        near = (x-center[0])**2+(y-center[1])**2 <= radius_px**2
+        times = np.zeros(len(t),bool)
+        for r in mine:
+            times |= (t>=r['start_s']-max_gap_s) & (t<=r['end_s']+max_gap_s)
+        for i in np.flatnonzero(near & times):
+            cell = geo.cell_of_px(x[i],y[i])
+            run = next(((s,kind) for s,kind in spans if s.t0-1e-6<=t[i]<=s.t1+1e-6 and cell in s.cells),None)
+            if run is None:
+                continue
+            uv = [float(x[i]/.1024),float(y[i]/.1024)]
+            node,why = cf._point_node(geo, {}, uv, landing={
+                'world_z':ms.known(float(z[i]/10),'m'),'tolerance':ms.known(.5,'m')})
+            if node is None:
+                continue
+            out.append(dict(match=str(match),round=round_number,slot=slot,t0=float(t[i]),t1=float(t[i]),
+                uv=uv,world_z=float(z[i]/10),node=node,kind=run[1]))
+    return out

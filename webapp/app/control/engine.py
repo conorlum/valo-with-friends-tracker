@@ -2891,6 +2891,8 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                     else:
                         np.add.at(sec.totals, (cells_now, cols), overlap)
     missing = dict(rnd.missing)
+    if geo.movement_only:
+        missing['local rope walking floors; terrain sight uses 2D fallback'] = 1
     for case, count in runner.unknown.ignored.items():
         missing[f"utility knowledge ignored: {case}"] = count
     return RoundControl(blob.get("round"), blob.get("map", geo.name), times, weights, walk_cells, states, control,

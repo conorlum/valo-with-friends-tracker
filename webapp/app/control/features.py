@@ -391,6 +391,8 @@ def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
 
 
 def _candidate_geometry(geo, mf, members):
+    from app.control.rope_ground import prepare
+    geo = prepare(geo, mf)
     if geo.heights is not None:
         return geo
     walk = geo.walk_px.copy()
@@ -903,6 +905,9 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
     exactly, and no member's edits overlap a feature outside the bundle. `consumers` defaults to the registered
     RUNTIME_CONSUMERS (read at call time)."""
     consumers = RUNTIME_CONSUMERS if consumers is None else consumers
+    if geo is not None and 'quiet_rope_v1' in consumers:
+        from app.control.rope_ground import prepare
+        geo = prepare(geo, mf)
     features = {f.get("id"): f for f in mf.get("features") or []}
     floors = _floors_by_id(mf)
     legacy = legacy or {}
@@ -930,7 +935,7 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
                 reasons.append('duplicate Ascent replay binding')
             if geo is not None and geo.name != 'Ascent':
                 reasons.append('Ascent consumer cannot run on another map')
-            if geo is not None and geo.heights is None and any(
+            if geo is not None and (geo.heights is None or geo.movement_only) and any(
                     features[m].get('sliding') for m in members if m in features):
                 reasons.append('descending door sight requires a measured height asset')
             if any(r.get('owner') in members for r in mf.get('routes', [])):
@@ -949,7 +954,7 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
             from app.control.map_pool_runtime import readiness as pool_readiness, MAPS
             if geo is not None and geo.name not in MAPS:
                 reasons.append('map-pool replay consumer cannot run on this map')
-            if geo is not None and geo.heights is None and any(features[m].get('sliding') or features[m].get('rotation')
+            if geo is not None and (geo.heights is None or geo.movement_only) and any(features[m].get('sliding') or features[m].get('rotation')
                                                               for m in members if m in features):
                 reasons.append('moving panel sight requires a measured height asset')
             for m in members:
@@ -1285,6 +1290,8 @@ def _enabled_projection(mf: dict, members: set) -> dict:
 def compile_assets(geo: Geometry, mf: dict, statuses: dict) -> dict | None:
     """What an engine would load for a map's enabled features (None when it has none): per enabled feature and
     state, its blocked nodes and occluders, plus the enabled routes' arcs and the reconciled base edits."""
+    from app.control.rope_ground import prepare
+    geo = prepare(geo, mf)
     members = {m for st in statuses.values() if st.publishable for m in st.members}
     if not any(st.intended for st in statuses.values()):
         return None
@@ -1365,7 +1372,7 @@ def verify_permanent_context(geo: Geometry, inputs: fi.FeatureInput) -> None:
         raise fa.FeatureArtifactCorrupt('compiler geometry/key mismatch')
     if hashlib.sha256(inputs.canonical_inputs).hexdigest() != inputs.key.tags_digest:
         raise fa.FeatureArtifactCorrupt('compiler input identity mismatch')
-    reconstructed = geometry_from_feature_inputs(inputs, geo.heights)
+    reconstructed = geometry_from_feature_inputs(inputs, None if geo.movement_only else geo.heights)
     for actual, expected in ((geo.sight, reconstructed.sight), (geo.walk_px, reconstructed.walk_px)):
         if not np.array_equal(actual, expected):
             raise fa.FeatureArtifactCorrupt('compiler permanent masks do not match archive')
@@ -1383,10 +1390,20 @@ def compile_artifact(geo: Geometry, inputs: fi.FeatureInput, code_commit: str) -
     verify_permanent_context(geo, inputs)
     mf = envelope['runtime']
     mf = {**mf, 'features': mf['features'] + envelope['outside_base_edits']}
+    from app.control.rope_ground import prepare
+    geo = prepare(geo, mf)
     legacy = {k: _archived_mask(v, (PX, PX)) for k, v in envelope['legacy'].items()}
     statuses = bundle_status(geo, mf, legacy, consumers=frozenset(envelope['consumers']))
     active = sorted(b for b, status in statuses.items() if status.publishable)
     assets = compile_assets(geo, mf, statuses) or {'states': {}, 'nodes': int(geo.n), 'arcs': []}
+    if geo.movement_only:
+        from app.control.rope_ground import domains_for
+        domains = domains_for(mf)
+        if any(not st.publishable for st in statuses.values()
+               if any(r.get('owner') in st.members for r, _ in domains)):
+            raise fa.FeatureArtifactCorrupt('walking domain belongs to an unqualified rope bundle')
+        assets['walking_model'] = {'kind': 'local_rope_ground', 'digest': geo.rope_ground_digest,
+                                   'asset': geo.movement_height_sha, 'terrain_sight': 'flat'}
     bindings, triggers, deltas, phases = {}, {}, {}, {}
     for bid in active:
         status = statuses[bid]

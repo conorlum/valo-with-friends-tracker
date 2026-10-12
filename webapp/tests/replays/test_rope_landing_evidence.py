@@ -52,6 +52,38 @@ def test_evidence_proposals_do_not_mutate_source_tracks_or_ground():
     assert (ride, ground) == before
 
 
+def test_ground_pairs_follow_boarding_and_departure_order():
+    ride,ground=evidence()
+    ground[0]['t0']=ground[0]['t1']=6.
+    assert not landing_pairs([ride],ground)
+
+
+def test_rope_axis_does_not_move_to_the_middle_of_a_gap_launch_and_top_exit():
+    from app.control.rope_positions import rope_seed
+    route={'endpoints':[{'uv':[5000,5500]},{'uv':[5000,5000]}]}
+    feature={'states':[{'footprint':{'type':'point','uv':[5000,5000]}}]}
+    assert rope_seed(route,feature)==[5000,5000]
+
+
+def test_walking_exit_can_supply_ground_but_movement_ability_samples_cannot():
+    import numpy as np
+    from map_feature_artifact_toys import geometry_case
+    from app.control import geometry as cg
+    from app.control.rope_positions import ground_samples
+    geo=geometry_case()
+    geo.heights.floors[40,40:44,0]=np.array([0,6,12,18])
+    cg.attach_heights(geo,geo.heights)
+    xy=lambda px:round(px*10000/1024)
+    blob={'hz':10,'tracks':{'0':[{'t0':0.,'u':[xy(320)]+[xy(3)]*10,
+                                'v':[xy(324)]+[0]*10,'z':[100]+[2]*10}]},
+          'movement_casts':True,'util':[]}
+    rides=[dict(match='recording-a',round=1,slot=0,start_s=0.,end_s=.5)]
+    points=ground_samples(blob,geo,'recording-a',1,rides,center_uv=[xy(328),xy(324)])
+    assert points and any(p['kind']=='walk' for p in points)
+    blob['util']=[{'k':'cast','by':0,'t':0.,'code':'Wushu_E','name':'Dash'}]
+    assert not ground_samples(blob,geo,'recording-a',1,rides,center_uv=[xy(328),xy(324)])
+
+
 def test_unknown_height_neighbor_cannot_bypass_a_vertical_rope_cost():
     import numpy as np
     from map_feature_artifact_toys import geometry_case
