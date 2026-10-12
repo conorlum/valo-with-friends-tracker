@@ -1,5 +1,9 @@
 # Enabling more features with existing replay evidence
 
+The later [Abyss rope completion](ABYSS-ROPES.md) supersedes this nineteen-feature selection.
+It enables all 23 tagged features with bounded walking-only ground on Abyss while preserving
+flat terrain sight there. Keep this checkpoint's compiler-14 results as historical evidence.
+
 This checkpoint supersedes the original eleven-feature selection in FIRST-PASS.md. It keeps
 the owner's approximate geometry, timing and quiet-travel decisions. It does not require a
 complete 3D map, change main, activate rejected heights or publish private owner annotations.

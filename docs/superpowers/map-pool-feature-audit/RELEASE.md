@@ -5,10 +5,11 @@ timed quiet rope arcs on measured floor nodes, and provides computation-derived 
 private owner candidate is not yet qualified for live activation. Main, deployed tags, live height
 activation and live recompute have not been changed by this work.
 
-The [existing-data follow-up](EXISTING-DATA-FOLLOWUP.md) supersedes the original eleven-feature
-selection with nineteen supported features. [FIRST-PASS.md](FIRST-PASS.md) retains the earlier
-receipts and owner-controlled rollout. Four Abyss ropes remain disabled; the historical
-all-gimmick checklist below is retained for their later qualification.
+The [Abyss rope completion](ABYSS-ROPES.md) supersedes the earlier eleven/nineteen-feature
+selections with all 23 tagged features. Abyss uses bounded local walking ground for its ropes
+while terrain sight remains flat; rejected global heights stay inactive. [FIRST-PASS.md](FIRST-PASS.md)
+retains the earlier receipts and owner-controlled rollout. The historical global-terrain
+checklist below remains separate from this completed feature selection.
 
 ## What is built
 
@@ -32,7 +33,7 @@ all-gimmick checklist below is retained for their later qualification.
   a DB, activate heights, publish tags or recompute live data. Framing, binding, geometry and release
   qualification have separate outcomes.
 
-Current versions: feature compiler 14, condenser 17, control 14; Ascent consumer 3, quiet rope consumer 4,
+Current versions: feature compiler 15, condenser 17, control 14; Ascent consumer 3, quiet rope consumer 5,
 map-pool replay consumer 5; height format 3, height rules 5 and height manifest 2.
 Gaps version stays 3; changed control inputs invalidate its caches.
 No new migration or database table is required.

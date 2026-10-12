@@ -1,5 +1,8 @@
 # First release with current replay evidence
 
+[Abyss rope completion](ABYSS-ROPES.md) is now the final selection: all 23 tagged features.
+This file retains the original checkpoint and the owner-controlled rollout.
+
 The later [existing-data follow-up](EXISTING-DATA-FOLLOWUP.md) supersedes this original
 eleven-feature selection: it qualifies nineteen features, including all Split/Summit ropes,
 Summit Heaven's door and both Abyss breakables on the existing flat fallback. Keep the receipts
