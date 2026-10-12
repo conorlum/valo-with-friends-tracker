@@ -27,7 +27,7 @@ activation and live recompute have not been changed by this work.
   a DB, activate heights, publish tags or recompute live data. Framing, binding, geometry and release
   qualification have separate outcomes.
 
-Versions: feature compiler 11, condenser 17, control 14; Ascent consumer 3, quiet rope consumer 3,
+Versions: feature compiler 12, condenser 17, control 14; Ascent consumer 3, quiet rope consumer 3,
 map-pool replay consumer 5; height format 3, height rules 5 and height manifest 2.
 Gaps version stays 3; changed control inputs invalidate its caches.
 No new migration or database table is required.
@@ -40,6 +40,11 @@ Compiler 11 also permits valid explicitly replay-bound shootable trigger markers
 the same geometry/source checks as switches. Actual panels still require their usual placement checks.
 Height rules 5 separate physical sight validation from team attribution and allow exact permanent
 walls to prove required blocked views without fabricating missing endpoint heights.
+Compiler 12 allows explicitly replay-bound door panels to attach to adjacent permanent walls by
+one paint cell. It retains the entire sight mask, resolves every touched walkable leaf normally,
+and creates no traversal node on the wall. Unbound panels, deep wall extensions, entirely off-ground
+panels, and missing or multiple ground floors remain pending. This avoids trimming a doorway's
+vision blocker merely to satisfy coarse wall-edge placement.
 
 ## Geometry and evidence checkpoint
 
@@ -113,11 +118,21 @@ Staged private bounds use the owner's approximate 1.5-player descending-door hei
 2.7m model estimate, not a measured clearance. Ascent opening is five seconds per the owner.
 Enabled diagnostic trials place both Ascent doors, Sunset's door, and Summit's Cave and Mid doors.
 Ascent glass also places after removing its authored extension into a permanent wall: the exact set
-of walkable footprints covered by the glass is unchanged. The same private alignment resolves
-Abyss's Heaven-breakable placement: removed pixels were already blocked by the permanent sight
-mask, and the exact walkable footprint set is unchanged. This does not clear Abyss's failed height
-gates. Summit Heaven geometry and remaining rope landings are still pending. All saved owner
+of walkable footprints covered by the glass is unchanged. An earlier Abyss Heaven-breakable trim
+was withdrawn after its private sight-mask proof was found to use the opposite mask polarity;
+that geometry remains pending in the current candidate. Abyss's failed height gates also remain.
+The owner confirmed Summit polygons are approximate doorway guides and panels should be flush
+with surrounding walls. All three were privately aligned to the minimap wall edges. Cave and Mid
+place with compiler 12; Heaven still has ten unresolved ground leaves, and its rope landings remain
+pending. The permanent masks and reviewed timing/source rules are unchanged. All saved owner
 bundles remain disabled; only isolated diagnostic copies enable them.
+The 4-pixel panel raster is rounded outward into its wall attachments, with a private check that it
+covers every pixel of the opening. It is not rounded inward to create a vision slit. The wall-edge
+follow-up passes 135 compiler/runtime/artifact and mixed-grid diagnostic tests, including rejection
+of missing child floors, unbound/off-ground panels, deep wall extensions and false wall anchors.
+The current frozen Summit evidence contains no accepted stand or walk runs in those ten pending
+Heaven-doorway cells across 56 rounds from three matches. This is missing local ground support,
+not evidence of overlapping floors. Preserve the pending outcome until source evidence resolves it.
 
 A complete fresh Sunset round on the staged bounds includes closing, fully closed, reopening and
 fully open states. All 54 sampled full counterfactuals match incremental control, and all 23 gap
@@ -126,6 +141,8 @@ height asset, and the normal analytical schedule (355 instants). Knowledge layer
 The receipt retains existing unresolved-terrain and input fallbacks; this is one reviewed recording,
 not full map-pool qualification. The separate cache-miss gaps-only run and its cached rerun produce
 the same 23 rows as the full calculation. All three paths therefore agree for this round.
+This proof uses compiler 11 and predates the wall-attachment correction; preserve its exact input
+identity rather than labeling it as fresh compiler-12 acceptance.
 
 The activation-fix regressions pass 153 focused height/job/input/map-runtime cases and 97 feature,
 artifact and acceptance cases. Normal control still rejects missing team attribution. Source markers
@@ -144,6 +161,8 @@ All 60 sampled full counterfactuals match incremental control across 114 analyti
 all seven fresh gap rows match cached replay. This is a round prefix, not a full-round acceptance
 run; Market remains open in this scene. Unresolved-terrain fallback remains recorded. A fully
 closed Market-door scene and independent gaps-only parity still need their own fresh checks.
+This Ascent calculation also predates compiler 12; its receipt remains evidence for its own exact
+compiler-11 inputs, not a new wall-attachment acceptance run.
 
 Private native captures were rebuilt on the new parser pin and checked against recording hashes.
 All four captures frame without errors. Summit's three selected doors bind in 19 rounds, Abyss's two
@@ -185,7 +204,9 @@ movement or sight blockers. This exemption requires a valid source binding and f
 geometry, and does not exempt the actual door panels. At that earlier checkpoint, Summit's four
 features remained pending. The current staged bounds and wall-trigger correction place Cave and
 Mid against its passing asset; Heaven's permanent doorway domain and the rope landings remain
-pending. A single supported lower rope height is insufficient to invent its upper boarding floor.
+pending at that checkpoint. The later flush-wall alignment preserves the existing doorway domain
+and leaves Heaven pending specifically on ground heights. A single supported lower rope height
+is insufficient to invent its upper boarding floor.
 
 ## Steps to finish, in order
 

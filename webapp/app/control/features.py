@@ -220,13 +220,55 @@ def footprint_cells(geo, shape):
     return out
 
 
-def _place_shape(geo, shape, path):
+def _event_bound_panel(feature):
+    """Wall attachment is an explicit door claim, not permission to open new ground."""
+    if not feature or feature.get('kind') != 'door':
+        return False
+    from app.replays.ascent_features import KEYS
+    from app.replays.map_feature_events import binding_problems
+    return (feature.get('replay_key') in KEYS or
+            feature.get('replay_source') is not None and not binding_problems(feature['replay_source']))
+
+
+def _panel_ground_cells(geo, cells, mask_px, feature):
+    """Keep every ground leaf; omit only a one-paint-cell attachment to an adjacent permanent wall.
+
+    The complete sight footprint is retained. No wall gains a node, and unsupported or multiple
+    floors on walkable leaves still fail ordinary placement. A panel entirely off ground still fails.
+    """
+    if mask_px is None or not _event_bound_panel(feature):
+        return cells
+    walk = geo.space_walk if geo.adaptive else geo.walk.ravel()
+    ground = cells & walk
+    if not ground.any() or not (cells & ~walk).any():
+        return cells
+    from scipy.ndimage import binary_dilation
+    grid = geo.space_grid if geo.adaptive else np.arange(GRID * GRID).reshape(GRID, GRID).repeat(2, 0).repeat(2, 1)
+    near = binary_dilation(ground[grid], structure=np.ones((3, 3), bool))
+    paint = mask_px.reshape(P, PX_PER_PAINT, P, PX_PER_PAINT).any((1, 3))
+    out = cells.copy()
+    for sid in np.flatnonzero(cells & ~walk):
+        covered = (grid == sid) & paint
+        if not covered.any() or (covered & ~near).any():
+            continue
+        if geo.adaptive:
+            x0, y0, x1, y1 = geo.space_bbox[sid]
+        else:
+            x0, y0 = int(sid % GRID) * CELL, int(sid // GRID) * CELL
+            x1, y1 = x0 + CELL, y0 + CELL
+        if geo.sight[y0:y1, x0:x1].any():
+            out[sid] = False
+    return out
+
+
+def _place_shape(geo, shape, path, panel=None):
     rep = ms.Report()
     ms._geometry(rep, path, shape)
     if rep.errors:
         code = 'off_map' if any(e['code'] == 'bad_coordinates' for e in rep.errors) else 'invalid_geometry'
         return Placement(reasons=(_reason(code, path),))
     cells = footprint_cells(geo, shape)
+    cells = _panel_ground_cells(geo, cells, to_px(raster(shape)), panel)
     resolver = resolve_spaces if geo.adaptive else resolve_cells
     return resolver(geo, np.flatnonzero(cells).tolist(), path)
 
@@ -238,8 +280,8 @@ def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
     results = {}
     for f in mf.get('features') or []:
         fid, pieces = f.get('id'), []
-        def shape(value, path):
-            pieces.append(_place_shape(geo, value, path))
+        def shape(value, path, panel=None):
+            pieces.append(_place_shape(geo, value, path, panel))
         def state_parts(s, path):
             if s.get('footprint') is not None:
                 if f.get('preset') == 'vertical_rope' and not s.get('blocks_movement') \
@@ -252,11 +294,11 @@ def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
                     if rep.errors:
                         pieces.append(Placement(reasons=(_reason('invalid_geometry', path + '.footprint'),)))
                 else:
-                    shape(s['footprint'], path + '.footprint')
+                    shape(s['footprint'], path + '.footprint', f)
             elif s.get('blocks_movement'):
                 pieces.append(Placement(reasons=(_reason('empty_geometry', path + '.footprint'),)))
             for i, occ in enumerate(s.get('sight') or []):
-                shape(occ.get('geometry'), f'{path}.sight[{i}].geometry')
+                shape(occ.get('geometry'), f'{path}.sight[{i}].geometry', f)
         for s in f.get('states') or []:
             if (f.get('replay_key') or f.get('replay_source')) and f.get('sliding') and s.get('name') in ('opening', 'closing'):
                 continue  # the moving panel is compiled from its closed aperture and sampled height band
@@ -357,8 +399,9 @@ def floor_nodes(geo: Geometry, binding: dict | None, cells: np.ndarray) -> Bindi
     return Binding(np.array(placed.nodes, np.int64), [r['code'] for r in placed.reasons])
 
 
-def feature_floor_nodes(geo: Geometry, mf: dict, feature: dict, cells: np.ndarray) -> Binding:
+def feature_floor_nodes(geo: Geometry, mf: dict, feature: dict, cells: np.ndarray, mask_px=None) -> Binding:
     """The nodes a feature's footprint covers on the floors it names (the union over them)."""
+    cells = _panel_ground_cells(geo, cells, mask_px, feature)
     resolver = resolve_spaces if geo.adaptive and len(cells) == len(geo.space_walk) else resolve_cells
     p = resolver(geo, np.flatnonzero(cells).tolist(), f'features.{feature.get("id")}.footprint')
     return Binding(np.array(p.nodes, np.int64), [f"{r['path']}: {r['code']}" for r in p.reasons])
@@ -406,7 +449,7 @@ def movement_blocks(geo: Geometry, mf: dict, states: dict | None = None,
         if not s.get("blocks_movement") or not s.get("footprint"):
             continue
         cells = footprint_cells(geo, s["footprint"])
-        b = feature_floor_nodes(geo, mf, f, cells)
+        b = feature_floor_nodes(geo, mf, f, cells, to_px(raster(s['footprint'])))
         blocked[b.nodes] = True
         pending += b.pending
     return Effects(blocked, pending)
@@ -468,11 +511,16 @@ def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owne
 
     bounds = occ.get("bounds") or {}
     cells = mask_px.reshape(GRID, CELL, GRID, CELL).any((1, 3)).ravel()
+    feature = next((f for f in mf.get('features') or [] if f.get('id') == owner), None)
     if geo.adaptive:
         touched = mask_px.reshape(256, 4, 256, 4).any((1, 3))
-        placed = resolve_spaces(geo, np.unique(geo.space_grid[touched]).tolist(), 'sight bounds')
+        cells = np.zeros(len(geo.space_walk), bool)
+        cells[np.unique(geo.space_grid[touched])] = True
+        cells = _panel_ground_cells(geo, cells, mask_px, feature)
+        placed = resolve_spaces(geo, np.flatnonzero(cells).tolist(), 'sight bounds')
         b = Binding(np.array(placed.nodes, np.int64), [r['code'] for r in placed.reasons])
     else:
+        cells = _panel_ground_cells(geo, cells, mask_px, feature)
         b = floor_nodes(geo, None, cells)
     if b.pending or not len(b.nodes):
         return None, f"{owner}: " + ('; '.join(b.pending) or 'no floor under the occluder')
@@ -752,7 +800,7 @@ def state_problems(geo: Geometry, mf: dict, feature: dict) -> list[str]:
         one = {**feature, "initial_state": s.get("name")}
         if s.get("blocks_movement") and s.get("footprint"):
             cells = footprint_cells(geo, s["footprint"])
-            b = feature_floor_nodes(geo, mf, one, cells)
+            b = feature_floor_nodes(geo, mf, one, cells, to_px(raster(s['footprint'])))
             out += [f"state {s.get('name')!r}: {p}" for p in b.pending]
             if cells.any() and not len(b.nodes) and not b.pending:
                 out.append(f"state {s.get('name')!r}: {feature.get('id')}: its footprint binds no node")
