@@ -394,11 +394,25 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 continue
             row = {"status": "ok", "data": base64.b64decode(result["data"]),
                    "summary": base64.b64decode(result["summary"]), 'geometry': result.get('geometry')}
-        elif status == "failed" and job.get("error_kind") == "engine" and not f.gaps_only:
+        elif status == 'failed' and job.get('error_kind') == 'inputs' and f.gaps_only:
+            # Source qualification fails before calculation. Keep its diagnostic under
+            # the planned gap inputs, without replacing the already stored control.
+            failure = {'gaps': {'run': {'status': 'failed',
+                'fingerprint': replay_gaps.gap_fingerprint(f.fingerprint, f.map_name),
+                'gaps_revision': replay_gaps.GAPS_REVISION,
+                'chokes_hash': choke_assets.asset_hash(f.map_name),
+                'notes': {job.get('error_code') or 'source_unavailable': 1},
+                'error': job.get('error') or 'round source unavailable; reparse this recording'}, 'rows': []}}
+            _keep_gaps(session_factory, f, failure, counts)
+            continue
+        elif status == "failed" and job.get("error_kind") in ('engine', 'inputs') and not f.gaps_only:
             # (A gaps-only task that fails as a whole says nothing about control, which is stored and ok:
             # it is asked again like a machine failure. The detector's own failure comes back inside an ok
             # result and is stored above.)
-            row = {"status": "failed", "error": job.get("error") or "failed on the replay worker"}
+            message = job.get("error") or "failed on the replay worker"
+            if job.get('error_kind') == 'inputs':
+                message = f"{job.get('error_code') or 'source_unavailable'}: {message}; reparse this recording"
+            row = {"status": "failed", "error": message, 'error_kind': job.get('error_kind')}
         else:
             if job.get('error_kind') != 'compat':
                 state.failed(key, now)

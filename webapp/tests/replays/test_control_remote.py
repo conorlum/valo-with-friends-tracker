@@ -295,6 +295,41 @@ def test_the_rounds_own_failure_is_stored_and_the_machines_is_retried_then_left(
     assert asked == remote.MAX_TRIES
 
 
+def source_failure(task):
+    return {'status': 'failed', 'error_kind': 'inputs',
+            'error_code': 'features_source_unavailable', 'error': 'reset unobserved'}
+
+
+def test_missing_feature_source_is_stored_once_and_not_retried(factory, db, linked):
+    worker, state = FakeWorker(source_failure), remote.State()
+    for i in range(6):
+        remote.cycle(factory, worker, state, now=i*(remote.BACKOFF_S+1))
+    stored = rows(db, linked)
+    assert len(stored) == linked.round_count
+    assert all(row.status == 'failed' and 'features_source_unavailable' in row.error and
+               'reparse' in row.error for row in stored.values())
+    keys = [task['key'] for task in worker.tasks.values()]
+    assert len(keys) == len(set(keys)) and not state.tries
+
+
+def test_gaps_source_failure_preserves_control_and_stops_retrying(factory, db, linked):
+    worker, state = FakeWorker(), remote.State()
+    for i in range(5):
+        remote.cycle(factory, worker, state, now=i*(remote.BACKOFF_S+1))
+    assert len(rows(db, linked)) == linked.round_count
+    before = len(worker.tasks)
+    worker.gaps, worker.answer = 1, source_failure
+    for i in range(5, 11):
+        remote.cycle(factory, worker, state, now=i*(remote.BACKOFF_S+1))
+    tasks = list(worker.tasks.values())[before:]
+    assert tasks and all(t.get('gaps_only') for t in tasks)
+    assert len(tasks) == len({t['key'] for t in tasks})
+    assert all(r.status == 'ok' for r in rows(db, linked).values())
+    runs = gap_runs(db, linked)
+    assert len(runs) == linked.round_count
+    assert all(r.status == 'failed' and r.notes.get('features_source_unavailable') == 1 for r in runs.values())
+
+
 def test_a_forgotten_job_is_asked_again_and_a_busy_worker_stops_the_cycle(factory, db, linked):
     worker, state = FakeWorker(answer=lambda task: None, busy_after=3), remote.State()
     counts = remote.cycle(factory, worker, state, now=0)
