@@ -52,6 +52,12 @@ def readiness(geo, mf, members):
         if not any(r.get('owner') == fid for r in routes):
             reasons.append(f'{fid}: route missing')
     for r in routes:
+        rope_only = r.get('quiet_rope_only_endpoints', [])
+        ends = {e.get('id') for e in r.get('endpoints', []) if isinstance(e, dict)}
+        if not isinstance(rope_only, list) or len(rope_only) > 2 \
+                or any(not isinstance(e, str) or e not in ends for e in rope_only) \
+                or len(set(rope_only)) != len(rope_only):
+            reasons.append(f"{r['id']}: invalid quiet rope-only endpoints")
         if r.get('kind') != 'rope' or r.get('states') is not None or r.get('access') != 'endpoint_only':
             reasons.append(f"{r['id']}: only unconditional endpoint ropes are supported")
         if not all(e.get('landing') for e in r.get('endpoints', [])):
@@ -261,14 +267,27 @@ def walk_bypass_problems(geo, base, arcs, cuts):
     return [f'{r}: retained quiet walk bypasses reviewed rope travel time' for r in sorted(bad)]
 
 
-def walking_exit_problems(geo, base, arcs, cuts):
+def walking_exit_problems(geo, base, arcs, cuts, mf=None):
     """A local heuristic cannot remove an existing connection to the main walking area.
 
-    Pre-existing separate platforms are preserved as separate; timed rope arcs are
-    excluded from this check because they must not conceal a removed stair/walk exit.
+    Pre-existing separate platforms are preserved as separate. An explicitly reviewed
+    rope-only endpoint may be separated from false base walking, but the exception is
+    bound to that route and its measured landing, never a whole region or map. Timed
+    arcs remain excluded because they must not conceal a removed stair/walk exit.
     """
     from scipy.sparse import csr_matrix
     from scipy.sparse.csgraph import connected_components, breadth_first_order
+    from app.control import features as cf
+    rope_only = set()
+    for route in (mf or {}).get('routes', []):
+        ids = route.get('quiet_rope_only_endpoints', [])
+        if not isinstance(ids, list):
+            continue  # Readiness/schema rejects malformed declarations.
+        for end in route.get('endpoints', []):
+            if end.get('id') in ids and end.get('landing') is not None:
+                node, why = cf._point_node(geo, mf, end.get('uv'), landing=end['landing'])
+                if not why:
+                    rope_only.add((route['id'], node))
     dst = np.broadcast_to(np.arange(geo.n)[:, None], base.in_from.shape)
     valid = (base.in_from < geo.n) & np.isfinite(base.in_cost_quiet)
     src, targets = base.in_from[valid], dst[valid]
@@ -289,7 +308,8 @@ def walking_exit_problems(geo, base, arcs, cuts):
     # hide the loss of the walking way back to the main area.
     for before, after in ((reachable(graph), reachable(trimmed)),
                           (reachable(graph.T), reachable(trimmed.T))):
-        bad.update(a.route for a in arcs for n in (a.src, a.dst) if before[n] and not after[n])
+        bad.update(a.route for a in arcs for n in (a.src, a.dst)
+                   if (a.route, n) not in rope_only and before[n] and not after[n])
     return [f'{r}: quiet rope cuts remove the landing walking exit' for r in sorted(bad)]
 
 
@@ -309,7 +329,7 @@ def topology_for(geo):
     arcs, reasons = readiness(geo, mf, members)
     cuts, cut_reasons = qualified_cuts(geo, mf, members, base, arcs)
     reasons += cut_reasons
-    reasons += walking_exit_problems(geo, base, arcs, cuts)
+    reasons += walking_exit_problems(geo, base, arcs, cuts, mf)
     if reasons:
         raise FeatureArtifactCorrupt('; '.join(reasons))
     return QuietTopology(base, arcs, cuts)

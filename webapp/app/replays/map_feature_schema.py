@@ -721,6 +721,11 @@ def _route(rep, r, features, floors, specials):
         if 'landing' in e:
             _landing(rep, f"{rid}.{e['id']}.landing", e['landing'])
     access = r.get("access", "endpoint_only")
+    rope_only = r.get('quiet_rope_only_endpoints', [])
+    if not isinstance(rope_only, list) or len(rope_only) > 2 \
+            or any(not isinstance(e, str) or e not in names for e in rope_only) \
+            or len(set(rope_only)) != len(rope_only):
+        rep.error(rid, 'bad_route', 'quiet rope-only endpoints must uniquely name this route\'s endpoints')
     if isinstance(access, dict):
         for s in access.get("sites") or []:
             if not isinstance(s, dict) or not _uv(s.get("uv")) or not isinstance(s.get("id"), str):

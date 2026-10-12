@@ -98,3 +98,43 @@ def test_one_way_entry_cannot_hide_a_removed_walking_exit():
     assert rr.walking_exit_problems(geo, base, [arc], {(1, 0)}) == [
         'route-1: quiet rope cuts remove the landing walking exit']
     assert not rr.walking_exit_problems(geo, base, [arc], set())
+
+
+def test_reviewed_rope_only_landing_does_not_require_an_ordinary_exit(monkeypatch):
+    geo = SimpleNamespace(n=3, walk_n=np.ones(3, bool))
+    base = SimpleNamespace(in_from=np.array([[1, 2], [0, 3], [0, 3]]),
+                          in_cost_quiet=np.array([[1., 1.], [1., np.inf], [1., np.inf]]))
+    arc = cf.Arc('route-1', 1, 2, 0., 2., None)
+    mf = {'routes': [{'id': 'route-1', 'quiet_rope_only_endpoints': ['lower'],
+                     'endpoints': [{'id': 'lower', 'uv': [1, 1], 'landing': {}},
+                                   {'id': 'upper', 'uv': [2, 2], 'landing': {}}]}]}
+    monkeypatch.setattr(cf, '_point_node', lambda geo, mf, uv, **kwargs: (uv[0], None))
+    assert not rr.walking_exit_problems(geo, base, [arc], {(0, 1), (1, 0)}, mf)
+    # Upper landing and another route sharing the lower node keep their own gate.
+    assert rr.walking_exit_problems(geo, base, [arc], {(0, 2), (2, 0)}, mf)
+    other = cf.Arc('route-2', 1, 2, 0., 2., None)
+    assert rr.walking_exit_problems(geo, base, [arc, other], {(0, 1), (1, 0)}, mf) == [
+        'route-2: quiet rope cuts remove the landing walking exit']
+    monkeypatch.setattr(cf, '_point_node', lambda *a, **kw: (None, 'unresolved landing'))
+    assert rr.walking_exit_problems(geo, base, [arc], {(0, 1), (1, 0)}, mf)
+
+
+@pytest.mark.parametrize('ids', [None, True, 'a', ['missing'], ['a', 'a'], [{}], ['a', 'b', 'a']])
+def test_rope_only_declarations_must_name_unique_measured_endpoints(ids):
+    from tests.replays.test_quiet_routes import rope_case
+    geo, mf = rope_case()
+    mf['routes'][0]['quiet_rope_only_endpoints'] = ids
+    assert not ms.validate(mf).ok
+    assert rr.readiness(geo, mf, {'feature-1'})[1]
+
+
+def test_rope_only_policy_is_runtime_input_and_requires_measured_binding():
+    from tests.replays.test_quiet_routes import rope_case
+    geo, mf = rope_case()
+    before = ms.runtime_digest(mf)
+    route = mf['routes'][0]
+    route['quiet_rope_only_endpoints'] = ['a']
+    assert ms.validate(mf).ok and ms.runtime_digest(mf) != before
+    assert not rr.readiness(geo, mf, {'feature-1'})[1]
+    route['endpoints'][0]['landing']['world_z'] = ms.known(99, 'm')
+    assert rr.readiness(geo, mf, {'feature-1'})[1]

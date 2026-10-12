@@ -159,3 +159,27 @@ def test_isolated_compiler_reproduces_walking_archive_without_global_height_byte
     assert reply['ok'],reply
     rebuilt=fa.decode_artifact(fi.canonical_json(reply['result']))
     assert rebuilt.digest==item.digest and rebuilt.assets==item.assets
+
+
+def test_reviewed_rope_only_platform_compiles_and_restores_without_a_walk_exemption():
+    from app.control.feature_runtime import prepare_geometry
+    measured, mf = rope_case()
+    measured.name = 'Abyss'
+    measured.heights.floors[40,41,:] = -1
+    measured.heights.supported[40,41] = False
+    cg.attach_heights(measured, measured.heights)
+    flat = geometry_case(flat=True); flat.name = 'Abyss'
+    route = mf['routes'][0]
+    route['walking_domain'] = rg.from_asset(flat, measured.heights, [320,320,352,328])
+    with pytest.raises(fa.FeatureArtifactCorrupt, match='unqualified rope bundle'):
+        artifact(flat, mf)
+    route['quiet_rope_only_endpoints'] = ['b']
+    item = artifact(flat, mf)
+    assert item.manifest['active_bundles'] == ['bundle-3']
+    restored = fa.decode_artifact(fa.encode_artifact(item))
+    fresh = geometry_case(flat=True); fresh.name = 'Abyss'; fresh.features = restored
+    cf.verify_artifact(restored, fresh)
+    walking = prepare_geometry(fresh)
+    quiet = rr.topology_for(walking)
+    assert quiet.arcs and quiet.cuts
+    assert fi.read_json(restored.inputs)['runtime']['routes'][0]['quiet_rope_only_endpoints'] == ['b']
