@@ -97,7 +97,7 @@ That log is what makes grounding checkable. The brief's flags are logged the sam
 Two facts found while planning (2026-10-12), which the plans build on:
 
 - **The site had no named map areas.** "A Main" or "B Site" did not exist anywhere in the data. Plan 1 adds them
-  from Riot's public callout points (`app/static/data/callouts.json`); a position's area is its nearest callout.
+  from the game's callout points as published by the community site valorant-api.com (`app/static/data/callouts.json`; the site is not run by Riot); a position's area is its nearest callout.
 - **The commands read a local snapshot, not the database.** A run starts by reading the match once into a file
   under the temp directory. The model's only permitted command reads that file, so the model never holds a
   database credential. `impact` takes a player as well as a round.

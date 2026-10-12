@@ -62,7 +62,7 @@
 - Consumes: `app.replays.condense.load_maps() -> dict[str, MapInfo]`; `MapInfo.to_uv(x, y) -> tuple[int, int]`. `app/static/data/maps.json` entries carry `uuid`.
 - Produces: `areas.area_at(map_name: str, u: float, v: float, table: dict | None = None) -> dict | None` returning `{"name": "A Main", "super": "A"}`; `areas.callouts(map_name, table=None) -> list[dict]`; `fetch_callouts.convert(api_maps: list[dict], maps: dict) -> dict`.
 
-Background: the site has no named map areas. Riot's public map data (`https://valorant-api.com/v1/maps`, the source `maps.json` came from) lists callouts per map as a `regionName`, a `superRegionName` (`A`, `B`, `C`, `Mid`, `Attacker Side`, `Defender Side`) and a world `location`. A point's area is its nearest callout.
+Background: the site has no named map areas. The community site valorant-api.com (`https://valorant-api.com/v1/maps`, not run by Riot; the source `maps.json` came from) publishes the game's own map data. It lists callouts per map as a `regionName`, a `superRegionName` (`A`, `B`, `C`, `Mid`, `Attacker Side`, `Defender Side`) and a world `location`. A point's area is its nearest callout.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -112,7 +112,7 @@ Expected: FAIL, `ModuleNotFoundError: No module named 'app.coach'`.
 `app/coach/areas.py`:
 
 ```python
-"""Named map areas: a point's area is its nearest Riot callout (app/static/data/callouts.json, written by
+"""Named map areas: a point's area is its nearest in-game callout (app/static/data/callouts.json, written by
 scripts/fetch_callouts.py). A map the file does not have has no areas; callers get None, never a guess."""
 
 from __future__ import annotations
@@ -149,7 +149,7 @@ def area_at(map_name: str, u: float, v: float, table: dict | None = None) -> dic
 `scripts/fetch_callouts.py`:
 
 ```python
-"""Writes app/static/data/callouts.json from Riot's public map data. Run once, and again when a map is added:
+"""Writes app/static/data/callouts.json from valorant-api.com (a community site, not Riot's) map data. Run once, and again when a map is added:
 
     $PY scripts/fetch_callouts.py
 
