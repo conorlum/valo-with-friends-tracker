@@ -8,7 +8,12 @@ import pytest
 from app.control import features as cf, heights as hc
 from app.control.feature_visibility import SightCache, SourceArea, cache_for, source_area
 from app.replays import map_feature_schema as ms
-from tests.replays.control_toys import open_hall, two_rooms
+from tests.replays.control_toys import HALL, open_hall, two_rooms, toy_heights
+
+
+def bridge():
+    return toy_heights('SightCacheBridge', [HALL], ground=[((96,96,240,296),4.)],
+                       upper=[((240,96,288,296),4.)])
 
 
 def reference(geo, src, smokes, occluders, skip=None, record=None):
@@ -117,14 +122,16 @@ def test_an_omitted_source_is_checked_when_it_could_see_the_door():
 
 def test_source_paint_touches_whole_coarse_cells_and_all_floors():
     import base64
-    geo = open_hall()
+    geo = bridge()
     paint = np.zeros((256, 256), np.uint8)
-    paint[24, 24] = 1
+    paint[49, 64] = 1
     shape = {'type': 'paint', 'cells': base64.b64encode(np.packbits(paint.ravel(), bitorder='little')).decode()}
     feature = {'sight_source_area': shape, 'rotation': {'pivot': {'uv': [2000, 2000]},
                'panel': {'uv': [[1900, 1900], [2100, 1900], [2100, 2100], [1900, 2100]]}}}
     hint = source_area(geo, feature)
-    assert hint.drawn[geo.cell_of_px(100, 100)]
+    nodes = geo.node_of[geo.cell_of_px(260,196)]
+    nodes = nodes[nodes >= 0]
+    assert len(nodes) == 2 and hint.drawn[nodes].all()
 
 
 def test_source_area_is_validated_and_is_part_of_runtime_identity():
@@ -141,7 +148,6 @@ def test_source_area_is_validated_and_is_part_of_runtime_identity():
 
 
 def test_height_bands_and_changed_poses_do_not_share_cached_answers():
-    from tests.replays.test_control_features import bridge
     geo = copy.copy(bridge())
     s, t = [int(geo.node_of[geo.cell_of_px(x, 196), 0]) for x in (300, 244)]
     mask = np.zeros((1024, 1024), bool)
