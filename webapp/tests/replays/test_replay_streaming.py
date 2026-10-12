@@ -106,6 +106,23 @@ def test_a_skipped_row_can_still_end_the_recording(tmp_path):
     assert contract.load_export_streaming(directory).end_ms == last == contract.load_export(directory).end_ms
 
 
+def test_parity_with_health_and_spike_records(tmp_path):
+    # P03: the damage notifies' LifeChangeEvents, armor items, BombState and the planted spike, shuffled among
+    # noise; one damage notify lacks `DamageKilledTarget`, so only its function name can let the line through.
+    from replay_synthetic import player_state_events
+
+    match = SyntheticMatch(shape="swiftplay")
+    match.extra_events += player_state_events(match) + noise(match)
+    events = match.events()
+    random.Random(3).shuffle(events)
+    directory = match.write(tmp_path / "export", events)
+    vrf = match.write_vrf(tmp_path / f"{MATCH_UUID}.vrf")
+    streamed, in_memory = both(directory, source_sha256=match.source_sha256, vrf_path=vrf)
+    assert_parity(streamed, in_memory)
+    assert streamed.rounds[1]["player_state"]["damage_taken"]["2"] == [4.5]
+    assert [e.get("slot") for e in streamed.rounds[1]["player_state"]["spike"]] == [None, 7, None, 6, None, None]
+
+
 @pytest.mark.skipif(not REAL_FIXTURE.exists(), reason="no Swiftplay fixture")
 def test_parity_on_the_committed_real_fixture():
     assert_parity(*both(REAL_FIXTURE, source_sha256=None))

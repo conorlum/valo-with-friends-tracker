@@ -246,6 +246,22 @@ def test_nearsight_leaves_a_bubble():
     d = np.hypot(geo.centres[body, 0] - 150, geo.centres[body, 1] - 200) * geo.m_per_px
     assert body.any() and d.max() <= ce.NEARSIGHT_RADIUS_M + geo.cell_m
     assert ce.Tick(rnd, 3.5).holders[0].body.sum() > body.sum()
+    # D11 (2026-10-09): the cap is 7 m, and a nearsighted player keeps their sight inside it
+    assert ce.NEARSIGHT_RADIUS_M == 7.0 and d.max() > 4.0 + geo.cell_m
+
+
+def test_a_nearsighted_player_is_deafened_but_still_controls():
+    """D11 (2026-10-09): "deafened players cant hear" (Omen's ult, footsteps, gunfire); only a flash is zero control."""
+    from app.control import utility
+
+    geo = open_hall()
+    players = {0: still("A", 150, 200, 0), 5: still("B", 400, 110, 90)}
+    row = {"k": "nearsight", "t": 0.9, "by": 5, "ability": "omen_paranoia", "targets": [0], "hits": [[0, 1.0, 2.0]]}
+    rnd = ce.RoundInputs(blob(players, util=[row]), geo)
+    assert not utility.listens(rnd, 0, 1.5) and utility.listens(rnd, 0, 3.5) and utility.listens(rnd, 5, 1.5)
+    assert not utility.heard(rnd, "A", 1.5, 150, 200, 50.0) and utility.heard(rnd, "A", 3.5, 150, 200, 50.0)
+    holder = ce.Tick(rnd, 1.5).holders[0]
+    assert not holder.blind and ce.credited(holder) and holder.passive.any()
 
 
 def test_flash_lasts_the_victims_recorded_duration():

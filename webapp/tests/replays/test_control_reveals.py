@@ -123,6 +123,8 @@ def test_a_smoke_up_at_the_pulse_blocks_its_sight():
 
 
 def test_the_figures_are_numbers_only_and_the_sources_are_not_consumed():
-    assert set(ut.FIGURES) == {"reveal_range_m", "skye_flash_range_m", "leer_cast_range_m", "hearing_m"}
-    assert all(isinstance(v, float) for value in ut.FIGURES.values()
-               for v in (value.values() if isinstance(value, dict) else [value]))
+    assert set(ut.FIGURES) == {"reveal_range_m", "skye_flash_range_m", "leer_cast_range_m", "hearing_m", "molly"}
+
+    def leaves(value):
+        return [x for v in value.values() for x in leaves(v)] if isinstance(value, dict) else [value]
+    assert all(isinstance(v, float) for v in leaves(ut.FIGURES))

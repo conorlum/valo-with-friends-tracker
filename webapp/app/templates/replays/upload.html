@@ -47,6 +47,75 @@
     {% endfor %}
   </ul>
 </div>
+{# How far the worker has got with every stored replay (/replays/upload/progress.json); polled every minute
+   while open, never while closed. #}
+<details class="card replay-progress" data-progress>
+  <summary>Show Replay Info</summary>
+  <p class="page-meta" data-progress-status>Loading…</p>
+  <div data-progress-body hidden>
+    <div class="replay-progress-meter">
+      <progress max="1" value="0" data-progress-meter></progress>
+      <span data-progress-headline></span>
+    </div>
+    <table class="compact-table">
+      <thead><tr><th>Step</th><th class="num">Rounds</th><th>Who does it</th></tr></thead>
+      <tbody data-progress-rows></tbody>
+    </table>
+    <p class="page-meta">A round is done when its replay is on the current parser, and its map control and timing
+      gaps are computed and up to date with the site's current rules, heights and figures. Each round that isn't is
+      counted once, at the first step it is stuck on. <span data-progress-judged></span></p>
+  </div>
+</details>
+<script>
+  // The "Show Replay Info" panel: fetches when opened, then every minute while it stays open.
+  (function () {
+    var panel = document.querySelector("[data-progress]"), POLL_MS = 60000, timer = null;
+    var status = panel.querySelector("[data-progress-status]"), body = panel.querySelector("[data-progress-body]");
+    var lastPolled = null, lastOk = null;
+
+    function when(d) { return d ? d.toLocaleTimeString() : "never"; }
+    function line() {
+      status.textContent = "Last polled " + when(lastPolled) + (lastOk ? " · counts computed " + when(lastOk) : "") +
+        " · refreshes every minute while open.";
+    }
+    function cell(row, text, cls) {
+      var td = document.createElement("td"); td.textContent = text; if (cls) td.className = cls; row.appendChild(td);
+    }
+    function render(p) {
+      var pct = p.total_rounds ? (100 * p.done / p.total_rounds) : 100;
+      panel.querySelector("[data-progress-meter]").value = p.total_rounds ? p.done / p.total_rounds : 1;
+      panel.querySelector("[data-progress-headline]").textContent = p.done + " of " + p.total_rounds +
+        " rounds fully computed (" + pct.toFixed(1) + "%) across " + p.total_replays + " replays · " +
+        p.needs_work + " need work: " + p.worker_will_do + " the worker will do on its own, " +
+        p.needs_a_person + " need a person.";
+      var rows = panel.querySelector("[data-progress-rows]");
+      rows.textContent = "";
+      var done = document.createElement("tr");
+      cell(done, "Done"); cell(done, p.done, "num"); cell(done, "–");
+      rows.appendChild(done);
+      p.steps.forEach(function (s) {
+        var tr = document.createElement("tr");
+        cell(tr, s.label); cell(tr, s.rounds, "num"); cell(tr, s.automatic ? "The worker, automatically" : "A person");
+        rows.appendChild(tr);
+      });
+      var j = p.judged_against;
+      panel.querySelector("[data-progress-judged]").textContent = "Current: parser recipe " + j.recipe +
+        ", control revision " + j.control_revision + ", gaps revision " + j.gaps_revision + ".";
+      body.hidden = false;
+    }
+    function poll() {
+      fetch("/replays/upload/progress.json", {headers: {Accept: "application/json"}})
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then(function (p) { lastPolled = new Date(); lastOk = new Date(p.checked_at); render(p); line(); })
+        .catch(function (e) { lastPolled = new Date(); line(); status.textContent += " The last poll failed (" + e.message + ")."; })
+        .then(function () { if (panel.open) timer = setTimeout(poll, POLL_MS); });
+    }
+    panel.addEventListener("toggle", function () {
+      clearTimeout(timer); timer = null;
+      if (panel.open) poll();
+    });
+  })();
+</script>
 <script>
   // Sends a batch one file at a time with XHR (so each file's progress shows), then polls each job until it is
   // stored or failed. Without JS the form posts the first file and goes to its job page, as before.

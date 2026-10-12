@@ -44,7 +44,7 @@ import json
 import struct
 from pathlib import Path
 
-CONTROL_REVISION = 14    # 14: remove absent players from reused fill component membership
+CONTROL_REVISION = 15    # combined player-state and map-feature runtime, including leaf motion fixes
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 
