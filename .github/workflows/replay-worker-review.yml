@@ -32,6 +32,7 @@ jobs:
               /opt/control-venv/bin/pip install --only-binary=:all: pytest==8.3.3 &&
               /opt/control-venv/bin/python -m pytest -p no:cacheprovider \
                 /srv/webapp/tests/replays/test_feature_review_regressions.py \
+                /srv/webapp/tests/replays/test_feature_line_culling.py \
                 /srv/webapp/tests/replays/test_panel_feature_grid.py \
                 /srv/webapp/tests/replays/test_quiet_walk_exits.py \
                 /srv/webapp/tests/replays/test_quiet_routes.py -q

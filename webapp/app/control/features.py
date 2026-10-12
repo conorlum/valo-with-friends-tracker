@@ -619,6 +619,30 @@ def sight_occluders(geo: Geometry, mf: dict, states: dict | None = None) -> tupl
     return out, pending
 
 
+def _lines_meet_bounds(a, b, bounds):
+    """Conservative segment/rectangle rejection before the unchanged pixel sampling.
+
+    Only interior rectangles use this tighter test: masks touching the image
+    border retain the broad check because pixel clipping extends their preimage.
+    """
+    left, top, right, bottom = bounds
+    if left <= 0 or top <= 0 or right >= PX or bottom >= PX:
+        return np.ones(len(b), bool)
+    enter, leave = np.zeros(len(b)), np.ones(len(b))
+    for axis, low, high in ((0, left, right), (1, top, bottom)):
+        delta = b[:, axis] - a[axis]
+        parallel = delta == 0
+        near = np.zeros(len(b)); far = np.zeros(len(b))
+        np.divide(low - 1e-9 - a[axis], delta, out=near, where=~parallel)
+        np.divide(high + 1e-9 - a[axis], delta, out=far, where=~parallel)
+        first, last = np.minimum(near, far), np.maximum(near, far)
+        inside = low - 1e-9 <= a[axis] <= high + 1e-9
+        first[parallel], last[parallel] = (-np.inf, np.inf) if inside else (np.inf, -np.inf)
+        enter = np.maximum(enter, first)
+        leave = np.minimum(leave, last)
+    return enter <= leave + 1e-12
+
+
 def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None = None) -> np.ndarray:
     """Per target, is the line from `a` = (x px, y px, z) to that target (b: N x 3, z NaN or None for a 2D
     check) inside an occluder's mask at a height inside its band? One vertical-intersection rule for `cast_with`,
@@ -646,8 +670,9 @@ def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None 
             possible[:] = True
             break
         left, top, right, bottom = bounds
-        possible |= (np.maximum(x0, x1) >= left - 1e-9) & (np.minimum(x0, x1) <= right + 1e-9) \
-                    & (np.maximum(y0, y1) >= top - 1e-9) & (np.minimum(y0, y1) <= bottom + 1e-9)
+        broad = (np.maximum(x0, x1) >= left - 1e-9) & (np.minimum(x0, x1) <= right + 1e-9) \
+                & (np.maximum(y0, y1) >= top - 1e-9) & (np.minimum(y0, y1) <= bottom + 1e-9)
+        possible |= broad & _lines_meet_bounds((ax, ay), b, bounds)
     indices = np.flatnonzero(possible)
     if not len(indices):
         return out

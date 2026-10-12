@@ -28,8 +28,10 @@ GRID = cg.GRID
 
 def test_every_committed_maps_control_inputs_and_fingerprint_are_as_recorded(monkeypatch):
     from app.replays import control_format
-    # Compare computation inputs under the captured revision; revision 9 intentionally invalidates caches.
-    monkeypatch.setattr(control_format, 'CONTROL_REVISION', 8)
+    # Current main deliberately recorded this baseline under revision 9, after
+    # its molly-figure and Abyss-barrier corrections. Preserve that independent
+    # snapshot while this feature branch has a newer calculation revision.
+    monkeypatch.setattr(control_format, 'CONTROL_REVISION', 9)
     recorded = json.loads(map_feature_legacy.PATH.read_text(encoding="utf-8"))
     assert recorded["maps"], "the snapshot should cover the committed maps"
     assert map_feature_legacy.snapshot()["maps"] == recorded["maps"]
