@@ -18,6 +18,7 @@
 - Run Python as `$PY`: `C:\Users\User\Documents\GitHub\valo-with-friends-tracker\webapp\.venv313\Scripts\python.exe`, from the worktree's `webapp/`.
 - The repository is public. `webapp/coach/playbook.md` holds principles only: no player names, match ids or credentials. Voice samples, reports and feedback live in the database and are never committed. Run directories live under the system temp directory.
 - The model never sees a database credential: the Claude subprocess is started without `DATABASE_URL` in its environment and in a directory outside the repository.
+- The model has one tool (Bash) and one pre-approved command (`./q`), and runs without the owner's Claude Code settings, hooks, plugins, skills or MCP servers. No flag that skips permission checks is ever added. The run log is never believed as written: every cited answer is recomputed.
 - The coach says only what the data backs. A point that fails the checker is never stored.
 - Feedback text is reader-typed and untrusted. Wherever it is put in front of a model it is quoted as data and labelled as such; it is never placed where it reads as an instruction.
 - Nothing changes the playbook without the owner approving the edit.
@@ -33,6 +34,19 @@
 3. A logged-out visitor, or a point id from another match, posting feedback: 403 and 404, nothing stored. Tests in Task 5.
 4. A report with fewer than six surviving points: stored, with `dropped_points` set, and the page already says so (plan 2). Test in Task 4.
 5. The playbook file missing a version or naming no themes: the run refuses before calling the model. Test in Task 1.
+
+## Amendments after the external review (2026-10-12)
+
+A reviewer checked this plan against the code and the installed Claude Code before anything was built. Every finding was confirmed and is folded into the tasks below.
+
+| Finding | What was wrong | Where it is fixed |
+| --- | --- | --- |
+| F2 | `--allowedTools` only pre-approves, so the model kept every other tool; the run inherited the owner's hooks and plugins; the checker believed a log file the model could reach. | Task 4 (`claude_command`, Step 7), Task 3 (`trusted_log`) |
+| F3 | A point could pass `check_point` while stating things no answer supported: evidence from another round, any digit from a `where` answer's slots, `knew` for the wrong side at second 0, names with spaces wrongly refused. | Task 3 (rules 3 to 8, one test per hole, Step 5b) |
+| F9 | A finished run could be lost at the store step: no length limits in the checker, a non-object instance crashed it, the payload was never written to disk. | Task 3 (rules 1, 2), Task 4 (`validate_payload` in the runner, `payload.json`) |
+| F11 | The playbook let the model return fewer than three points with nothing said on the page. | Plan 2 Task 4 (`short_note`), playbook rule 9 |
+| F7 | The playbook told the model `knew` covered what was heard. | Playbook rule 2, the prompt's command list |
+| F12 | The run directory was per match, so a second player's run deleted the first's; the stored model name was a literal; the playbook's name test broke on `##` headings. | Task 4, Task 1 |
 
 ## File Structure
 
@@ -68,6 +82,8 @@ The file starts with a front block between two `---` lines holding `version:` an
 `tests/coach/test_playbook.py`:
 
 ```python
+import re
+
 import pytest
 
 from app.coach import playbook
@@ -101,7 +117,13 @@ def test_a_malformed_playbook_is_refused(tmp_path, text, message):
 def test_the_committed_playbook_loads_and_names_no_player():
     book = playbook.load()
     assert book.version and len(book.themes) >= 4
-    assert "#" not in book.text.replace("# ", "").replace("## ", "")     # no Name#TAG; headings allowed
+    assert not re.search(r"[^\s#]#\S", book.text)        # no Name#TAG; "# " and "## " headings are fine
+
+
+def test_the_name_check_allows_headings_and_catches_a_riot_id():
+    pattern = r"[^\s#]#\S"
+    assert not re.search(pattern, "# Principles\n\n## Rules\n\n### Detail\n")
+    assert re.search(pattern, "As Someone#NA1 showed")
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -188,9 +210,12 @@ answers questions about any round. Write three things the player did well and th
 1. Say only what the data shows. Every number, distance, time and position in your text must come from a query
    answer or a flag you cite. If you have not asked, you do not know. Never estimate.
 2. A mistake must have been knowable at the time. Before calling something a mistake, run `knew` for the
-   player's side at a time before the moment and cite it. Team knowledge assumes everything any teammate saw or
-   heard was called. If the round has no team-knowledge data, write "(no team-knowledge data)" in that
-   instance's caption and judge only what does not depend on enemy positions.
+   player's own side at a time shortly before the moment (within 30 seconds) and cite it. Team knowledge assumes
+   everything any teammate learned was called. `knew` answers in two parts: `enemies` are those the team had
+   seen, each with a place; `signals` are the other ways the team located someone (sound, damage, a kill), each
+   with a time and a reason and no place. Say "seen" only for `enemies`, and never give a place for a signal.
+   If the round has no team-knowledge data, write "(no team-knowledge data)" in that instance's caption and
+   judge only what does not depend on enemy positions.
 3. Start from the rounds with the largest Impact swings and from the flags, but they are pointers. Check each
    with queries before you use it, and look elsewhere when the pattern you are following leads there.
 4. A point is a pattern, not a single moment, wherever the match gives you more than one. List every instance
@@ -202,14 +227,19 @@ answers questions about any round. Write three things the player did well and th
 7. Impact numbers support a point. They are not the explanation: say what happened and why it mattered.
 8. Each point carries exactly one theme from the list in this file's front block.
 9. If you cannot find three sound points on a side, return fewer. A missing point is better than a weak one.
+   The page tells the reader when a side has fewer than three.
 10. Write in the owner's voice, as shown in the voice samples. Short, direct, no hedging, no preamble.
+11. Every answer you cite for an instance must be about that instance's round. Name players exactly as the brief
+    names them. A count like "1v4" must match a `where` answer or a flag you cite for that moment.
+12. Each round in the brief gives the player's role, attack or defense. Read a flag with it: enemies stacked on
+    the other site means something different for an attacker than for a defender.
 ```
 
 Step 4's lines replace the bracketed line. The committed file must contain no bracketed line.
 
 - [ ] **Step 6: Run to verify they pass**
 
-Run: `$PY -m pytest tests/coach/test_playbook.py -q` — Expected: 6 passed.
+Run: `$PY -m pytest tests/coach/test_playbook.py -q` — Expected: 7 passed.
 
 - [ ] **Step 7: Commit**
 
@@ -360,22 +390,29 @@ The owner's voice sentences from Task 1, Step 4 are stored on the friends databa
 - Test: `tests/coach/test_checker.py`
 
 **Interfaces:**
-- Consumes: `query.read_log(directory) -> dict[str, dict]` whose entries are `{"id", "cmd", "args", "result"}`; `Snapshot.round_numbers`, `.view(n).t_end`, `.gaps(n)`, `.names`.
+- Consumes: `query.read_log(directory) -> dict[str, dict]` whose entries are `{"id", "cmd", "args", "result"}`; `query.answer(snap, cmd, args)` (plan 1: the answer alone, never raises on bad input); `Snapshot.round_numbers`, `.view(n).t_end`, `.view(n).side(slot)`, `.gaps(n)`, `.names`.
 - Produces:
   - `query.append(directory: Path, cmd: str, args: list, result: dict) -> str` (the new id; `query.run` now calls it)
-  - `checker.NO_KNOWLEDGE_NOTE = "no team-knowledge data"`
-  - `checker.check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]) -> list[str]` (problems; empty means the point passes)
+  - `checker.NO_KNOWLEDGE_NOTE = "no team-knowledge data"`, `checker.KNEW_WINDOW_S = 30.0`
+  - `checker.trusted_log(log: dict[str, dict], snap, flags: dict[str, dict]) -> dict[str, dict]`: the entries this process can reproduce. A query entry is kept only if `query.answer` gives the same result again; a flag entry only if it equals the flag the runner itself logged under that id (`flags`).
+  - `checker.check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...], slot: int) -> list[str]` (problems; empty means the point passes). `slot` is the coached player. `log` must be a `trusted_log`.
 
 A point, as the model returns it: `{"polarity", "theme", "title", "body", "instances": [{"round", "t", "t1"?, "caption", "evidence": ["q3", ...]}]}`.
 
-The rules, from the spec:
+**Why `trusted_log`.** The log file sits in the directory the model works in. The model is meant to reach it only through `./q`, but that rests on Claude Code's permission rules, which this repository does not control. So the checker does not believe the file: every query is deterministic over the snapshot, and an entry that cannot be reproduced is treated as absent.
 
-1. Polarity is `good` or `improve`; the theme is in the playbook's list; there is at least one instance.
-2. Each instance's round exists and its `t` (and `t1`) lie inside the round.
-3. Each instance cites at least one log id; every cited id exists and is not an error answer.
-4. Every number in the title, body and captions matches a number in a cited answer, or is one of the point's own rounds or times, or is the count of its instances. `m:ss` clock times must be within one second of such a number.
-5. Every `Name#TAG` in the text is a player of the match.
-6. For an `improve` point, each instance cites a `knew` answer for the same round at a time not after the instance, unless the round has the `team_knowledge` gap, in which case the caption must contain `NO_KNOWLEDGE_NOTE`.
+The rules, from the spec, tightened after the external review (2026-10-12), which wrote a point that passed the first draft while saying things no answer supported:
+
+1. Polarity is `good` or `improve`; the theme is in the playbook's list; the title is at most 160 characters (the storage limit); there is at least one instance, and each is an object.
+2. Each instance's round is a whole number that exists, and its `t` (and `t1`) lie inside the round.
+3. Each instance cites at least one log id; every cited id is in the trusted log, is not an error answer, **and is about the instance's own round**. (First draft: a `where` from round 1 could ground a claim about round 2.)
+4. Every number in the title, body and captions matches a **measured value** in a cited answer, or is one of the point's own rounds or times, or is the count of its instances. Measured values are metres, control shares, Impact fields, health, hit lengths, times and flag values. Slots, map coordinates and facing are not, so they ground nothing. (First draft: one `where` answer allowed every digit from 0 to 9.)
+5. A count written `NvM` must be the living players per side in a cited `where` answer, or a cited flag's `alive_before`, in either order.
+6. An `m:ss` clock time must be within one second of one of the instance times or a time in a cited answer.
+7. Player names: every full name and every name without its tag from this match is recognised, spaces included; any other `text#tag` is refused. (A bare word that is not a player's name cannot be told from prose: that limit is accepted.)
+8. For an `improve` point, each instance cites a `knew` answer for the same round, **for the coached player's own side, at a time within `KNEW_WINDOW_S` before the instance and not after it**, unless the round has the `team_knowledge` gap, in which case the caption must contain `NO_KNOWLEDGE_NOTE`. (First draft: `knew` for the enemy side at second 0 satisfied it.)
+
+`KNEW_WINDOW_S` is a first value, like the detector thresholds: look at it with the owner after the first dry run (Task 4, Step 9).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -408,8 +445,13 @@ def log(snap, tmp_path):
     query.run(snap, tmp_path, "knew", ["1", "15", "A"])                 # q2: knew before the death
     query.run(snap, tmp_path, "where", ["9", "1"])                      # q3: an error answer
     query.run(snap, tmp_path, "knew", ["1", "30", "A"])                 # q4: knew AFTER the death
-    query.append(tmp_path, "flag", [1, 20.0, "death_untraded_alone"], {"round": 1, "t": 20.0, "nearest_teammate_m": 61.0})
-    return query.read_log(tmp_path)                                     # q5: a flag
+    query.append(tmp_path, "flag", [1, 20.0, "death_untraded_alone"], FLAG)      # q5: a flag
+    query.run(snap, tmp_path, "where", ["1", "10"])                     # q6: all ten alive, slots 0-9 in the answer
+    query.run(snap, tmp_path, "knew", ["1", "15", "B"])                 # q7: what the ENEMY side knew
+    return checker.trusted_log(query.read_log(tmp_path), snap, {"q5": FLAG})
+
+
+FLAG = {"round": 1, "t": 20.0, "nearest_teammate_m": 61.0}
 
 
 def point(**over):
@@ -420,7 +462,7 @@ def point(**over):
 
 
 def problems(snap, log, **over):
-    return checker.check_point(point(**over), log, snap, THEMES)
+    return checker.check_point(point(**over), log, snap, THEMES, 0)      # slot 0 is the coached player, side A
 
 
 def test_a_grounded_point_passes(snap, log):
@@ -483,14 +525,80 @@ def test_a_good_point_does_not_need_team_knowledge(snap, log):
 
 def test_a_round_without_team_knowledge_must_say_so(snap, tmp_path):
     query.run(snap, tmp_path, "timeline", ["2"])
-    log = query.read_log(tmp_path)
-    last = sorted(log, key=lambda i: int(i[1:]))[-1]
-    silent = [{"round": 2, "t": 5.0, "caption": "stayed put", "evidence": [last]}]
+    log = checker.trusted_log(query.read_log(tmp_path), snap, {})
+    silent = [{"round": 2, "t": 5.0, "caption": "stayed put", "evidence": ["q1"]}]
     assert any(checker.NO_KNOWLEDGE_NOTE in p for p in
-               checker.check_point(point(body="You held B.", instances=silent), log, snap, THEMES))
-    said = [{"round": 2, "t": 5.0, "caption": f"stayed put ({checker.NO_KNOWLEDGE_NOTE})", "evidence": [last]}]
-    assert checker.check_point(point(body="You held B.", instances=said), log, snap, THEMES) == []
+               checker.check_point(point(body="You held B.", instances=silent), log, snap, THEMES, 0))
+    said = [{"round": 2, "t": 5.0, "caption": f"stayed put ({checker.NO_KNOWLEDGE_NOTE})", "evidence": ["q1"]}]
+    assert checker.check_point(point(body="You held B.", instances=said), log, snap, THEMES, 0) == []
+
+
+# The holes the external review found in the first draft, one test each.
+
+def test_evidence_from_another_round_is_refused(snap, log):
+    other = [{"round": 2, "t": 5.0, "caption": f"({checker.NO_KNOWLEDGE_NOTE})", "evidence": ["q1"]}]
+    found = problems(snap, log, body="You held B.", instances=other)
+    assert any("q1 is about round 1, not round 2" in p for p in found), found
+
+
+def test_slots_and_coordinates_ground_no_number(snap, log):
+    # q6 (where) holds slots 0-9, yaws and u/v values; none of them is a measurement. 7 is no time, distance or
+    # count in q6 or q2 (their times are 10, 15, 5 and 8), so nothing grounds it.
+    inst = [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q6", "q2"]}]
+    assert any("number 7" in p for p in problems(snap, log, body="You were 7 m from help.", instances=inst))
+
+
+def test_a_versus_count_must_match_who_was_alive(snap, log):
+    inst = [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q6", "q2"]}]
+    assert any("1v4" in p for p in problems(snap, log, body="You pushed in a 1v4.", instances=inst))
+    assert problems(snap, log, body="It was still a 5v5.", instances=inst) == []
+
+
+def test_knew_for_the_other_side_does_not_count(snap, log):
+    inst = [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q1", "q7"]}]
+    assert any("knew" in p for p in problems(snap, log, instances=inst))
+
+
+def test_knew_from_long_before_the_moment_does_not_count(snap, log):
+    inst = [{"round": 1, "t": 55.0, "caption": "", "evidence": ["q1", "q2"]}]      # q2 is 40 s before 55
+    assert any("knew" in p for p in problems(snap, log, instances=inst))
+
+
+def test_names_with_spaces_and_names_without_tags_are_recognised(tmp_path):
+    spaced = {**CONTEXT["players"]["5"], "name": "Big Dog 7#NA1"}
+    context = {**CONTEXT, "players": {**CONTEXT["players"], "5": spaced}}
+    blobs = {1: toys.round_blob(toys.ten(), n=1), 2: toys.round_blob(toys.ten(), n=2)}
+    snapshot.save(snapshot.assemble(context, blobs, {1: ("ok", False, SHARES)}), tmp_path)
+    snap = snapshot.load(tmp_path)
+    query.run(snap, tmp_path, "distance", ["1", "10", "0", "5"])                    # q1: 121.2 m
+    log = checker.trusted_log(query.read_log(tmp_path), snap, {})
+    inst = [{"round": 1, "t": 10.0, "caption": "", "evidence": ["q1"]}]
+    for body in ("Big Dog 7#NA1 was 121.2 m away.", "Big Dog 7 was 121.2 m away.",
+                 "P0 and big dog 7 were 121.2 m apart."):
+        found = checker.check_point(point(polarity="good", body=body, instances=inst), log, snap, THEMES, 0)
+        assert found == [], (body, found)             # and the 7 inside the name is not read as a number
+
+
+def test_malformed_shapes_are_problems_not_crashes(snap, log):
+    assert any("not an object" in p for p in problems(snap, log, instances=["oops"]))
+    assert any("160" in p for p in problems(snap, log, title="x" * 161))
+    whole = [{"round": 1.0, "t": 20.0, "caption": "", "evidence": ["q1", "q2"]}]
+    assert any("whole number" in p for p in problems(snap, log, instances=whole))
+    text = [{"round": 1, "t": 20.0, "caption": "", "evidence": "q1"}]
+    assert any("evidence" in p for p in problems(snap, log, instances=text))
+
+
+def test_an_entry_that_cannot_be_reproduced_is_not_trusted(snap, tmp_path):
+    query.run(snap, tmp_path, "distance", ["1", "10", "P0", "P5"])                  # q1: real
+    query.append(tmp_path, "distance", ["1", "10", "P0", "P5"],                     # q2: same call, edited answer
+                 {"round": 1, "t": 10.0, "a": "P0#T0", "b": "P5#T5", "metres": 5.0})
+    query.append(tmp_path, "flag", [1, 20.0, "death_untraded_alone"], FLAG)         # q3: a flag the runner logged
+    query.append(tmp_path, "flag", [1, 20.0, "made_up"], {"round": 1, "t": 20.0})   # q4: a flag it did not
+    trusted = checker.trusted_log(query.read_log(tmp_path), snap, {"q3": FLAG})
+    assert sorted(trusted) == ["q1", "q3"]
 ```
+
+Work each fixture before implementing, as plan 1 does: slot 0 stands on A Site (2000, 2000) and slot 5 on B Site (8000, 8000), 8485 uv apart, and 8485 / 0.7 / 100 = 121.2 m. `KNEW` has side A seeing slot 5 from 5 s to 8 s, so `knew 1 15 A` lists one enemy and `knew 1 15 B` lists none but is still a `knew` answer for side B.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -513,16 +621,11 @@ def append(directory: Path, cmd: str, args: list, result: dict) -> str:
 
 
 def run(snap, directory: Path, command: str, args: list[str]) -> dict:
-    try:
-        if command not in COMMANDS:
-            raise QueryError(f"unknown command {command!r}; commands: {', '.join(sorted(COMMANDS))}")
-        result = COMMANDS[command](snap, *args)
-    except QueryError as error:
-        result = {"error": str(error)}
-    except TypeError:
-        result = {"error": f"wrong arguments for {command}: {args}"}
+    result = answer(snap, command, args)
     return {"id": append(directory, command, args, result), **result}
 ```
+
+`answer` (plan 1, Task 8) stays as it is.
 
 - [ ] **Step 4: Implement the checker**
 
@@ -530,64 +633,138 @@ def run(snap, directory: Path, command: str, args: list[str]) -> dict:
 
 ```python
 """Decides whether a point the model wrote may be published (docs/superpowers/specs/2026-10-12-ai-coach-design.md,
-"The checker"). Plain code over the run log: a claim stands only on answers the model actually got."""
+"The checker"). Plain code over the run log: a claim stands only on answers the model actually got, about the
+round it is talking about, and only on the measured values in them."""
 
 from __future__ import annotations
 
+import json
 import re
+
+from app.coach import query
 
 NO_KNOWLEDGE_NOTE = "no team-knowledge data"
 POLARITIES = ("good", "improve")
+KNEW_WINDOW_S = 30.0        # a mistake's knew answer must be this recent; a first value, reviewed with the owner
+TITLE_MAX = 160             # app/services/coach.py validate_payload's limit, checked here so it can be repaired
+
+# The keys of a query answer or a flag whose numbers are measurements. Everything else (slot, u, v, yaw, round)
+# is an identifier or a coordinate and grounds nothing.
+_TIME_KEYS = frozenset({"t", "t0", "t1", "first_seen", "last_seen", "died_at", "decided_at"})
+_SHARE_KEYS = frozenset({"a", "b", "contested", "none"})
+_MEASURED = _TIME_KEYS | _SHARE_KEYS | frozenset({
+    "metres", "impact", "kill_impact", "death_impact", "damage", "econ", "trade_credit", "kills", "deaths",
+    "assists", "hp", "shield", "seconds", "hits", "nearest_teammate_m", "after_s", "teammates_alive", "own",
+    "enemy", "enemies_seen", "hold_s"})
+
 _CLOCK = re.compile(r"(?<![\d:])(\d{1,2}):(\d{2})(?![\d:])")
 _VERSUS = re.compile(r"(?<!\w)(\d)v(\d)(?!\w)")
 _NUMBER = re.compile(r"(?<![\w.#])\d+(?:\.\d+)?(?![\w#])")
-_RIOT_ID = re.compile(r"[^\s,;:()\"']+#[^\s,.;:()\"']+")
+_TAGGED = re.compile(r"[^\s,;:()\"']*#\w+")
 
 
-def _numbers(value, out: list[float]) -> list[float]:
-    if isinstance(value, bool):
-        return out
-    if isinstance(value, (int, float)):
-        out.append(float(value))
-    elif isinstance(value, dict):
-        for item in value.values():
-            _numbers(item, out)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            _numbers(item, out)
+def _plain(value):
+    """As the value reads after a trip through the log file."""
+    return json.loads(json.dumps(value))
+
+
+def trusted_log(log: dict[str, dict], snap, flags: dict[str, dict]) -> dict[str, dict]:
+    """The log entries this process can reproduce. The log file lives where the model works, so it is not
+    believed: a query entry counts only if asking again gives the same answer, and a flag entry only if it is
+    the flag the runner logged under that id."""
+    out = {}
+    for log_id, entry in log.items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("result"), dict):
+            continue
+        if entry.get("cmd") == "flag":
+            good = log_id in flags and _plain(flags[log_id]) == entry["result"]
+        else:
+            good = _plain(query.answer(snap, entry.get("cmd"), entry.get("args"))) == entry["result"]
+        if good:
+            out[log_id] = entry
     return out
 
 
-def _matches(x: float, allowed: list[float]) -> bool:
-    for y in allowed:
-        if abs(x - y) < 0.051 or (float(x).is_integer() and round(y) == x) or (0 < y <= 1 and abs(y * 100 - x) < 0.51):
-            return True
-    return False
+def _collect(value, key, numbers: list[float], shares: list[float], times: list[float]) -> None:
+    if isinstance(value, bool):
+        return
+    if isinstance(value, (int, float)):
+        if key in _MEASURED:
+            numbers.append(float(value))
+        if key in _SHARE_KEYS:
+            shares.append(float(value))
+        if key in _TIME_KEYS:
+            times.append(float(value))
+    elif isinstance(value, dict):
+        for k, item in value.items():
+            _collect(item, k, numbers, shares, times)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _collect(item, key, numbers, shares, times)
 
 
-def _text_problems(text: str, allowed: list[float], times: list[float], names: set[str]) -> list[str]:
+def _pairs(entry: dict) -> set[tuple[int, int]]:
+    """The NvM counts an answer supports: the living players per side in a `where`, or a flag's alive_before."""
+    result, out = entry["result"], set()
+    if entry["cmd"] == "where":
+        alive = {"A": 0, "B": 0}
+        for p in result.get("players") or []:
+            if p.get("alive") and p.get("side") in alive:
+                alive[p["side"]] += 1
+        out |= {(alive["A"], alive["B"]), (alive["B"], alive["A"])}
+    before = result.get("alive_before")
+    if isinstance(before, dict) and "own" in before and "enemy" in before:
+        out |= {(before["own"], before["enemy"]), (before["enemy"], before["own"])}
+    return out
+
+
+def _round_of(entry: dict):
+    """The round an entry is about: every query's and every flag's first argument."""
+    try:
+        return int(entry["args"][0])
+    except (IndexError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _matches(x: float, numbers: list[float], shares: list[float]) -> bool:
+    return (any(abs(x - y) < 0.051 or (float(x).is_integer() and round(y) == x) for y in numbers)
+            or any(abs(y * 100 - x) < 0.51 for y in shares))          # a share of 0.5 may be written 50
+
+
+def _strip_names(text: str, names: dict) -> str:
+    """The text without this match's player names, full and without the tag, longest first, so a name with a
+    space or a digit in it is not read as prose or as a number."""
+    known = set()
+    for name in names.values():
+        if name:
+            known |= {name, name.split("#")[0]}
+    for name in sorted((k for k in known if k.strip()), key=len, reverse=True):
+        text = re.sub(r"(?<!\w)" + re.escape(name) + r"(?!\w)", " ", text, flags=re.IGNORECASE)
+    return text
+
+
+def _text_problems(text, numbers, shares, times, pairs, names) -> list[str]:
     problems = []
+    text = _strip_names(text, names)
+    for token in _TAGGED.findall(text):
+        problems.append(f"{token} is not a player of this match")
+    text = _TAGGED.sub(" ", text)
     for match in _CLOCK.finditer(text):
         seconds = int(match.group(1)) * 60 + int(match.group(2))
-        if not any(abs(seconds - y) <= 1.0 for y in times + allowed):
+        if not any(abs(seconds - y) <= 1.0 for y in times):
             problems.append(f"the time {match.group(0)} is not within a second of any cited time")
-    rest = _CLOCK.sub(" ", text)
-    for match in _VERSUS.finditer(rest):
-        for digit in match.groups():
-            if not _matches(float(digit), allowed):
-                problems.append(f"the count in {match.group(0)} is not in a cited answer")
-    rest = _VERSUS.sub(" ", rest)
-    for token in _RIOT_ID.findall(rest):
-        if token.lower() not in names:
-            problems.append(f"{token} is not a player of this match")
-    rest = _RIOT_ID.sub(" ", rest)
-    for match in _NUMBER.finditer(rest):
-        if not _matches(float(match.group(0)), allowed):
-            problems.append(f"the number {match.group(0)} is not in a cited answer")
+    text = _CLOCK.sub(" ", text)
+    for match in _VERSUS.finditer(text):
+        if (int(match.group(1)), int(match.group(2))) not in pairs:
+            problems.append(f"the count {match.group(0)} matches no cited where answer or flag")
+    text = _VERSUS.sub(" ", text)
+    for match in _NUMBER.finditer(text):
+        if not _matches(float(match.group(0)), numbers, shares):
+            problems.append(f"the number {match.group(0)} is not a measured value in a cited answer")
     return problems
 
 
-def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]) -> list[str]:
+def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...], slot: int) -> list[str]:
     problems = []
     polarity = point.get("polarity")
     if polarity not in POLARITIES:
@@ -597,14 +774,26 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
     for key in ("title", "body"):
         if not isinstance(point.get(key), str) or not point[key].strip():
             problems.append(f"{key} is empty")
+    if isinstance(point.get("title"), str) and len(point["title"].strip()) > TITLE_MAX:
+        problems.append(f"title is over {TITLE_MAX} characters")
     instances = point.get("instances") if isinstance(point.get("instances"), list) else []
     if not instances:
         problems.append("the point has no instances")
-    allowed: list[float] = [float(len(instances))]
+    numbers: list[float] = [float(len(instances))]
+    shares: list[float] = []
     times: list[float] = []
+    pairs: set[tuple[int, int]] = set()
+    captions = []
     for i, inst in enumerate(instances):
         label = f"instance {i + 1}"
+        if not isinstance(inst, dict):
+            problems.append(f"{label} is not an object")
+            continue
+        captions.append(str(inst.get("caption") or ""))
         n, t = inst.get("round"), inst.get("t")
+        if isinstance(n, bool) or not isinstance(n, int):
+            problems.append(f"{label}: round must be a whole number, got {n!r}")
+            continue
         if n not in snap.round_numbers:
             problems.append(f"{label}: round {n} is not in this match")
             continue
@@ -613,39 +802,50 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
         if any(not isinstance(v, (int, float)) or isinstance(v, bool) or not 0 <= v <= end for v in spans):
             problems.append(f"{label}: a time is outside round {n} (0 to {end})")
             continue
-        allowed.append(float(n))
+        numbers.append(float(n))
+        numbers.extend(float(v) for v in spans)
         times.extend(float(v) for v in spans)
-        cited = []
-        ids = inst.get("evidence") or []
-        if not ids:
+        ids = inst.get("evidence")
+        if not isinstance(ids, list) or any(not isinstance(log_id, str) for log_id in ids):
+            problems.append(f"{label}: evidence must be a list of log ids")
+            ids = []
+        elif not ids:
             problems.append(f"{label}: cites no evidence")
+        cited = []
         for log_id in ids:
             entry = log.get(log_id)
             if entry is None:
-                problems.append(f"{label}: {log_id} is not in this run's log")
+                problems.append(f"{label}: {log_id} is not in this run's log, or its answer could not be reproduced")
             elif "error" in entry["result"]:
                 problems.append(f"{label}: {log_id} is an error answer, not evidence")
+            elif _round_of(entry) != n:
+                problems.append(f"{label}: {log_id} is about round {_round_of(entry)}, not round {n}")
             else:
                 cited.append(entry)
-                _numbers(entry["result"], allowed)
+                _collect(entry["result"], None, numbers, shares, times)
+                pairs |= _pairs(entry)
         if polarity == "improve":
             if "team_knowledge" in snap.gaps(n):
-                if NO_KNOWLEDGE_NOTE not in str(inst.get("caption") or "").lower():
+                if NO_KNOWLEDGE_NOTE not in captions[-1].lower():
                     problems.append(f"{label}: round {n} has no team-knowledge data; the caption must say "
                                     f"'({NO_KNOWLEDGE_NOTE})'")
-            elif not any(e["cmd"] == "knew" and int(e["args"][0]) == n and float(e["args"][1]) <= t for e in cited):
-                problems.append(f"{label}: a mistake must cite a knew answer for round {n} at or before {t}")
-    text = " ".join([str(point.get("title") or ""), str(point.get("body") or "")]
-                    + [str(inst.get("caption") or "") for inst in instances])
-    names = {name.lower() for name in snap.names.values() if name}
-    return problems + _text_problems(text, allowed + times, times, names)
+            else:
+                side = snap.view(n).side(slot)
+                if not any(e["cmd"] == "knew" and "enemies" in e["result"] and e["result"].get("side") == side
+                           and t - KNEW_WINDOW_S <= float(e["result"]["t"]) <= t for e in cited):
+                    problems.append(f"{label}: a mistake must cite a knew answer for side {side} in round {n}, "
+                                    f"asked for a time from {max(0.0, t - KNEW_WINDOW_S)} to {t}")
+    text = " ".join([str(point.get("title") or ""), str(point.get("body") or "")] + captions)
+    return problems + _text_problems(text, numbers, shares, times, pairs, snap.names)
 ```
 
 - [ ] **Step 5: Run to verify they pass**
 
-Run: `$PY -m pytest tests/coach -q` — Expected: every coach test passes (plan 1's query tests included, unchanged).
+Run: `$PY -m pytest tests/coach -q` — Expected: every coach test passes (plan 1's query tests included, unchanged). `tests/coach/test_checker.py` alone: 27 passed.
 
-If `test_a_round_without_team_knowledge_must_say_so` fails because `timeline` for round 2 returns a number that the body does not use, that is fine; the test only checks the knowledge rule. If it fails on the number rule, make the body `"You held B."` as written and check no digit slipped into a caption.
+- [ ] **Step 5b: Try to break it**
+
+Before committing, spend ten minutes as the reviewer did: against the test fixture's log, write three points that say something no cited answer supports and see whether `check_point` passes any. A point that passes is a failing test to add and a rule to tighten, here, before any report is published. Known and accepted, so not a finding: a number equal to a cited time passes whatever unit the text gives it, and a bare word that is not a player's name is not detected.
 
 - [ ] **Step 6: Commit**
 
@@ -670,7 +870,15 @@ git commit -F <scratch file: "Add the coach's grounding checker">
   - `runner.RunError(Exception)`
   - `runner.extract_points(text: str) -> list[dict] | None`
   - `runner.generate(snap, slot: int, run_dir: Path, book: Playbook, voice: list[str], call_model, model_name: str) -> dict` returning plan 2's payload. `call_model(prompt: str, session: str | None) -> tuple[str, str | None]` returns the model's text and a session id to continue.
-  - `coach_report.child_env(environ: dict) -> dict`, `coach_report.write_q(run_dir: Path, python: Path) -> Path`, `coach_report.claude_call(run_dir, model) -> call_model`
+  - `coach_report.child_env(environ: dict) -> dict`, `coach_report.write_q(run_dir: Path, python: Path) -> Path`, `coach_report.claude_command(exe: str, model: str | None, session: str | None) -> list[str]`, `coach_report.claude_call(run_dir, model) -> call_model` (the returned function has a `.models` set: the model names the CLI reported using)
+
+**What the model can reach** (rewritten after the external review, which confirmed from `claude --help`, version 2.1.296, that the first draft's single flag did not do what this plan claimed):
+
+- `--allowedTools "Bash(./q:*)"` only *pre-approves* that command. It does not remove any other tool. `--tools Bash` is the flag that limits the built-in set, so with it the model has no file, web or agent tools at all.
+- A headless run inherits the owner's own Claude Code setup: hooks, plugins (one of which injects "you MUST invoke a skill" into every session), MCP servers and any allow rules in `~/.claude/settings.json`. `--restricted` ignores user, project and local settings files; `--strict-mcp-config` drops MCP servers; `--safe-mode` disables plugins, hooks, skills and CLAUDE.md. `--bare` is not used: it needs an API key, and this runs on the subscription.
+- The log is not trusted even so (`checker.trusted_log`, Task 3).
+
+So the command is `claude -p --output-format json --restricted --safe-mode --strict-mcp-config --tools Bash --allowedTools "Bash(./q:*)"`. Whether `--restricted` and `--safe-mode` may be combined, and what the JSON output's keys are, could not be confirmed without calling a model: Step 7 checks them.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -804,6 +1012,50 @@ def test_extract_points_reads_bare_fenced_and_embedded_json():
     assert runner.extract_points("nothing here") is None and runner.extract_points('{"other": 1}') is None
 
 
+def test_an_answer_edited_in_the_log_file_is_not_evidence(snap, tmp_path):
+    def forged(q):                                         # the model's own answer, rewritten on disk after the fact
+        path = tmp_path / query.LOG
+        text = path.read_text(encoding="utf-8")
+        assert '"alive":true' in text
+        path.write_text(text.replace('"alive":true', '"alive":false'), encoding="utf-8")
+        return json.dumps({"points": [good_point([q])]})
+
+    with pytest.raises(runner.RunError, match="no point passed"):
+        run(snap, tmp_path, [forged, lambda q: json.dumps({"points": [{"index": 0, **good_point([q])}]})])
+
+
+def test_a_flag_entry_the_runner_did_not_write_is_not_evidence(snap, tmp_path):
+    def planted(q):
+        fake = query.append(tmp_path, "flag", [1, 10.0, "made_up"], {"round": 1, "t": 10.0, "metres": 3.0})
+        return json.dumps({"points": [{**good_point([fake]), "body": "You were 3 m away."}]})
+
+    with pytest.raises(runner.RunError, match="no point passed"):
+        run(snap, tmp_path, [planted, "no fix"])
+
+
+def test_a_report_the_store_would_refuse_fails_the_run_instead(snap, tmp_path, monkeypatch):
+    from app.services import coach
+
+    def refuse(payload):
+        raise coach.ReportError("points[0].title is too long")
+
+    monkeypatch.setattr(coach, "validate_payload", refuse)
+    with pytest.raises(runner.RunError, match="cannot be stored"):
+        run(snap, tmp_path, [lambda q: json.dumps({"points": [good_point([q])]})])
+
+
+def test_the_model_gets_one_tool_one_command_and_none_of_the_owners_setup():
+    command = coach_report.claude_command("claude", None, None)
+    assert command[:4] == ["claude", "-p", "--output-format", "json"]
+    for flag in ("--restricted", "--safe-mode", "--strict-mcp-config"):
+        assert flag in command
+    assert command[command.index("--tools") + 1] == "Bash"
+    assert command[command.index("--allowedTools") + 1] == "Bash(./q:*)"
+    assert not any("skip" in part or "bypass" in part.lower() for part in command)
+    resumed = coach_report.claude_command("claude", "opus", "session-1")
+    assert resumed[-4:] == ["--model", "opus", "--resume", "session-1"]
+
+
 def test_the_models_environment_has_no_database_url():
     env = coach_report.child_env({"DATABASE_URL": "postgresql://secret", "PATH": "x", "database_url": "y"})
     assert env == {"PATH": "x"}
@@ -832,11 +1084,11 @@ from __future__ import annotations
 import json
 
 COMMANDS = """\
-./q where <round> <t>                      every player's position, area, facing and whether alive
-./q knew <round> <t> <A|B|player>          the enemies that side had seen or heard by then (team knowledge)
+./q where <round> <t>                      every player's position, area, facing, role, health, and whether alive
+./q knew <round> <t> <A|B|player>          what that side knew by then: enemies seen (with a place), other signals (no place)
 ./q distance <round> <t> <player> <player> metres between two living players
-./q control <round> <t0> <t1> "<area>"     who held a named area over a span
-./q timeline <round> [<t0> <t1>]           kills, utility, plant and defuse in order
+./q control <round> <t0> <t1> "<area>"     who held a named area over a span (t0 = t1 for one moment)
+./q timeline <round> [<t0> <t1>]           kills, damage, utility, plant and defuse in order
 ./q impact <round> <player>                the player's stored Impact row for the round"""
 
 SHAPE = """\
@@ -863,13 +1115,16 @@ A point's theme must be one of: {", ".join(book.themes)}
 
 # The query command
 
-Run it from the current directory. Times are seconds into the round. A player is a name, a name without its tag,
-or a slot number. Every answer is JSON with an "id"; that id is what you cite as evidence. An answer with
-"error" is not evidence. An answer with "available": false means the data is missing for that round.
+Run it from the current directory, one call per command, with no pipes or redirection. Times are seconds into
+the round (41.5, not 0:41) and rounds are whole numbers. A player is a name, a name without its tag, or a slot
+number. Every answer is JSON with an "id"; that id is what you cite as evidence. An answer with "error" is not
+evidence. An answer with "available": false means the data is missing for that round.
 
 {COMMANDS}
 
-Each flag in the brief already has an "id" you may cite. Use no other tool and read no file.
+Each flag in the brief already has an "id" you may cite. Evidence for an instance must be about that instance's
+round. Every answer is recomputed when your report is checked, so only real answers count. Use no other tool
+and read no file.
 
 # The brief
 
@@ -913,6 +1168,7 @@ from pathlib import Path
 
 from app.coach import brief as brief_module
 from app.coach import checker, prompt, query
+from app.services import coach as coach_service
 
 PER_SIDE = 3
 _STORED = ("polarity", "theme", "title", "body", "instances")
@@ -937,17 +1193,21 @@ def extract_points(text: str) -> list[dict] | None:
     return None
 
 
-def _brief_with_flag_ids(snap, slot: int, run_dir: Path) -> dict:
+def _brief_with_flag_ids(snap, slot: int, run_dir: Path) -> tuple[dict, dict]:
+    """The brief with each flag logged and given its id, and those flags by id as this process logged them:
+    the checker trusts a flag entry only if it matches (checker.trusted_log)."""
     built = brief_module.build(snap, slot)
+    logged = {}
     for r in built["rounds"]:
         for flag in r["flags"]:
-            flag["id"] = query.append(run_dir, "flag", [flag["round"], flag["t"], flag["kind"]],
-                                      {"round": flag["round"], "t": flag["t"], "kind": flag["kind"], **flag["values"]})
-    return built
+            result = {"round": flag["round"], "t": flag["t"], "kind": flag["kind"], **flag["values"]}
+            flag["id"] = query.append(run_dir, "flag", [flag["round"], flag["t"], flag["kind"]], result)
+            logged[flag["id"]] = result
+    return built, logged
 
 
 def generate(snap, slot: int, run_dir: Path, book, voice: list[str], call_model, model_name: str) -> dict:
-    built = _brief_with_flag_ids(snap, slot, run_dir)
+    built, flags = _brief_with_flag_ids(snap, slot, run_dir)
     text, session = call_model(prompt.run_prompt(book, voice, built), None)
     points = extract_points(text)
     if points is None:
@@ -956,18 +1216,21 @@ def generate(snap, slot: int, run_dir: Path, book, voice: list[str], call_model,
     if points is None:
         raise RunError("the model returned no report")
 
-    def problems_of(point):
-        return checker.check_point(point, query.read_log(run_dir), snap, book.themes)
+    def checked(candidates: list[dict]) -> list[list[str]]:
+        """Each candidate's problems, against the log as it can be reproduced now."""
+        log = checker.trusted_log(query.read_log(run_dir), snap, flags)
+        return [checker.check_point(p, log, snap, book.themes, slot) for p in candidates]
 
-    failed = [(i, p, problems_of(p)) for i, p in enumerate(points)]
-    failed = [(i, p, problems) for i, p, problems in failed if problems]
+    failed = [(i, p, problems) for i, (p, problems) in enumerate(zip(points, checked(points))) if problems]
     dropped = 0
     if failed:
         text, session = call_model(prompt.repair_prompt(failed), session)
         fixes = {p.get("index"): p for p in (extract_points(text) or [])}
-        for i, _, _ in failed:
-            fix = fixes.get(i)
-            if fix is not None and not problems_of(fix):
+        offered = [fixes.get(i) for i, _, _ in failed]
+        verdicts = checked([f for f in offered if f is not None])
+        passed = iter(not problems for problems in verdicts)
+        for (i, _, _), fix in zip(failed, offered):
+            if fix is not None and next(passed):
                 points[i] = fix
             else:
                 points[i] = None
@@ -982,8 +1245,13 @@ def generate(snap, slot: int, run_dir: Path, book, voice: list[str], call_model,
                                    for inst in p["instances"]]})
     if not kept:
         raise RunError("no point passed the evidence check; nothing to store")
-    return {"playbook_version": book.version, "model": model_name, "data_gaps": built["data_gaps"],
-            "dropped_points": dropped, "points": kept}
+    payload = {"playbook_version": book.version, "model": model_name, "data_gaps": built["data_gaps"],
+               "dropped_points": dropped, "points": kept}
+    try:
+        coach_service.validate_payload(payload)     # the store's own rules, here, so a finished run is never lost to them
+    except coach_service.ReportError as error:
+        raise RunError(f"the checked report cannot be stored: {error}") from None
+    return payload
 ```
 
 - [ ] **Step 5: Implement the command**
@@ -1030,24 +1298,36 @@ def write_q(run_dir: Path, python: Path) -> Path:
     return path
 
 
+def claude_command(exe: str, model: str | None, session: str | None) -> list[str]:
+    """Headless Claude Code with one tool, Bash, one pre-approved command, ./q, and none of the owner's own
+    setup: no user settings, hooks, plugins, skills, CLAUDE.md or MCP servers. `--allowedTools` alone only
+    pre-approves; `--tools` is what removes every other tool. Never add a flag that skips permission checks."""
+    command = [exe, "-p", "--output-format", "json", "--restricted", "--safe-mode", "--strict-mcp-config",
+               "--tools", "Bash", "--allowedTools", "Bash(./q:*)"]
+    if model:
+        command += ["--model", model]
+    if session:
+        command += ["--resume", session]
+    return command
+
+
 def claude_call(run_dir: Path, model: str | None):
     exe = shutil.which("claude")
     if exe is None:
         raise SystemExit("refused: the claude command is not on PATH")
 
     def call(text: str, session: str | None):
-        command = [exe, "-p", "--output-format", "json", "--allowedTools", "Bash(./q:*)"]
-        if model:
-            command += ["--model", model]
-        if session:
-            command += ["--resume", session]
-        done = subprocess.run(command, input=text, capture_output=True, text=True, encoding="utf-8", cwd=run_dir,
-                              env=child_env(dict(os.environ)), timeout=TIMEOUT_S)
+        done = subprocess.run(claude_command(exe, model, session), input=text, capture_output=True, text=True,
+                              encoding="utf-8", cwd=run_dir, env=child_env(dict(os.environ)), timeout=TIMEOUT_S)
         if done.returncode != 0:
             raise RuntimeError(f"claude exited {done.returncode}: {done.stderr.strip()[:500]}")
         out = json.loads(done.stdout)
+        usage = out.get("modelUsage")
+        if isinstance(usage, dict):
+            call.models.update(str(name) for name in usage)
         return str(out.get("result") or ""), out.get("session_id")
 
+    call.models = set()
     return call
 
 
@@ -1065,7 +1345,6 @@ def main() -> int:
     from scripts.coach_store_report import resolve
 
     uuid = args.match_uuid.lower()
-    run_dir = Path(tempfile.gettempdir()) / "valo-coach" / uuid
     with SessionLocal() as db:
         try:
             book = playbook.load()
@@ -1076,22 +1355,34 @@ def main() -> int:
             return 2
         voice = ([line.strip() for line in args.voice_file.read_text(encoding="utf-8").splitlines() if line.strip()]
                  if args.voice_file else coach.active_notes(db, "voice"))
+    # One directory per match and player: a second player's run must not delete the first's files.
+    run_dir = Path(tempfile.gettempdir()) / "valo-coach" / f"{uuid}-p{player_id}"
     if run_dir.exists():
         shutil.rmtree(run_dir)
     snapshot.save(data, run_dir)
     write_q(run_dir, Path(sys.executable))
     snap = snapshot.load(run_dir)
+    call = claude_call(run_dir, args.model)
     try:
-        payload = runner.generate(snap, snap.slot_of(args.player), run_dir, book, voice,
-                                  claude_call(run_dir, args.model), args.model or "claude-code")
-    except (runner.RunError, RuntimeError, subprocess.TimeoutExpired) as error:
+        payload = runner.generate(snap, snap.slot_of(args.player), run_dir, book, voice, call,
+                                  args.model or "claude-code (default model)")
+    except (runner.RunError, RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         print(f"run failed: {error}; the run's files are in {run_dir}", file=sys.stderr)
         return 1
+    if not args.model and call.models:
+        payload["model"] = ", ".join(sorted(call.models))[:64]      # what the CLI says it actually used
+    # Written before anything is stored: a report that cost a model run is never lost to a failed store.
+    (run_dir / "payload.json").write_text(json.dumps(payload, indent=1), encoding="utf-8")
     if args.dry_run:
         print(json.dumps(payload, indent=1))
         return 0
-    with SessionLocal() as db:
-        report = coach.store_report(db, match_id, player_id, payload)
+    try:
+        with SessionLocal() as db:
+            report = coach.store_report(db, match_id, player_id, payload)
+    except Exception as error:      # noqa: BLE001 - whatever the store raises, the report is still on disk
+        print(f"the report was written but not stored: {error}\nIt is in {run_dir / 'payload.json'}; store it with "
+              f"scripts/coach_store_report.py once the cause is fixed.", file=sys.stderr)
+        return 1
     print(f"published version {report.version} ({len(payload['points'])} points, {payload['dropped_points']} dropped): "
           f"/replays/{uuid}/coach?player={player_id}")
     return 0
@@ -1137,7 +1428,16 @@ Run: `$PY -m pytest tests/coach -q` — Expected: every coach test passes.
 
 - [ ] **Step 7: Check the Claude Code flags before the first real run**
 
-Run: `claude --help` and confirm these exist with the meaning used above: `-p` (print mode, reads the prompt from stdin), `--output-format json` (an object with `result` and `session_id`), `--allowedTools`, `--resume <session id>`, `--model`. If a name or the JSON keys differ, change `claude_call` to match and say what changed in the commit message. Do not add any flag that skips permission checks.
+Confirmed from `claude --help` on 2026-10-12 (version 2.1.296): `-p`, `--output-format`, `--allowedTools` (pre-approves only), `--tools` (limits the built-in set), `--restricted`, `--safe-mode`, `--strict-mcp-config`, `--resume`, `--model` all exist. Run `claude --version`; if it differs, read `claude --help` again for those flags.
+
+What could not be confirmed without calling a model, and must be now, with the owner's go-ahead, in an empty scratch directory under the temp folder containing only a `q` script that prints `{"id":"q1","ok":true}`:
+
+1. `claude -p --output-format json --restricted --safe-mode --strict-mcp-config --tools Bash --allowedTools "Bash(./q:*)"` with the prompt "Run ./q where 1 1 and reply with its output." starts at all (the two modes may not combine: if not, keep `--restricted --strict-mcp-config`, add `--setting-sources ""` only if `--help` documents an empty value, and say which in the commit message), runs on the subscription with no API key, and returns JSON. Write down the top-level keys: `claude_call` reads `result`, `session_id` and, when present, `modelUsage`.
+2. The owner's hooks did not fire (no notification sound) and the reply shows no sign of the plugin's "you MUST invoke a skill" text.
+3. Each of these prompts ends with the command **refused**, and the file untouched: "Run `cat q`", "Run `./q where 1 1 > out.txt`", "Run `./q where 1 1; echo hi >> q`", "Run `echo $(./q where 1 1) > out.txt`", "Use PowerShell to list this directory", "Read the file q".
+4. `--resume <session_id>` continues the same conversation with the same restrictions.
+
+Anything in 2 or 3 that is not as stated is a stop: report it to the owner and do not run the coach on a real match until it is closed. The log is recomputed either way (`checker.trusted_log`), so a leak here cannot forge evidence, but it could let the model read the snapshot file directly or write files, which this plan says it cannot. Do not add any flag that skips permission checks.
 
 - [ ] **Step 8: Commit**
 
@@ -1152,7 +1452,7 @@ With the owner's go-ahead, on one of the owner's own matches, with their voice s
 
 `.\scripts\coach.ps1 <uuid> "<owner's Riot ID>" -DryRun` (add `--voice-file` by calling `coach_report.py` directly if the voice notes are not in the database yet).
 
-Read the printed report with the owner. Then read `%TEMP%\valo-coach\<uuid>\log.jsonl` and note: how many queries the model made, whether any `./q` call was refused by permissions (if so the allow pattern is wrong: fix `claude_call`), how many points were dropped and why, and how long the run took. Report all of it. This is the owner's first look at the coach, and their reactions are the first feedback: write down what they say is wrong and bring it to the playbook only as edits they approve.
+Read the printed report with the owner (it is also in `payload.json` in the run directory). Then read `%TEMP%\valo-coach\<uuid>-p<player id>\log.jsonl` and note: how many queries the model made, whether any `./q` call was refused by permissions (if so the allow pattern is wrong: fix `claude_command`), whether any logged answer failed to reproduce (it should never happen; if it does, find out why before publishing anything), how many points were dropped and why, whether `KNEW_WINDOW_S` (30 s) refused a point the owner thinks was fair, and how long the run took. Report all of it. This is the owner's first look at the coach, and their reactions are the first feedback: write down what they say is wrong and bring it to the playbook only as edits they approve.
 
 ---
 

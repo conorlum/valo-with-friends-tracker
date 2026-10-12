@@ -917,6 +917,16 @@ def test_the_report_states_its_version_playbook_and_gaps():
     assert 'href="/replays/abc/coach?player=11&amp;version=1"' in out
 
 
+def test_a_side_with_fewer_than_three_points_says_so():
+    out = html(coach())                                  # one good point, one to improve, none dropped on purpose
+    assert out.count("Only 1 in this version") == 2
+    full = coach()
+    full["report"]["good"] = [point(id=i) for i in (1, 2, 3)]
+    full["report"]["improve"] = []
+    out = html(full)
+    assert "Only" not in out and out.count("None in this version") == 1
+
+
 def test_the_team_toggle_is_disabled_and_says_coming_soon():
     out = html(coach())
     assert "Coming soon" in out and "data-coach-team disabled" in out
@@ -976,6 +986,8 @@ Run: `$PY -m pytest tests/coach/test_coach_panel.py -q` — Expected: FAIL, `Tem
   </div>
 </article>
 {% endmacro %}
+{# The spec: a report with fewer than three points on a side says so, whether points were dropped or never written. #}
+{% macro short_note(n) %}{% if n < 3 %}<p class="muted coach-short">{{ "None" if n == 0 else "Only " ~ n }} in this version: the coach found no more it could back up with data.</p>{% endif %}{% endmacro %}
 <section class="coach" data-coach data-coach-uuid="{{ coach.match_uuid }}"{% if coach.report %} data-coach-report="{{ coach.report.id }}"{% endif %}>
   <header class="coach-header">
     <h2>Coach</h2>
@@ -998,8 +1010,8 @@ Run: `$PY -m pytest tests/coach/test_coach_panel.py -q` — Expected: FAIL, `Tem
     {% if r.data_gaps %}Data missing when this was written: {% for key, names in r.data_gaps | dictsort %}{{ "Match" if key == "match" else "Round " ~ key }} ({{ names | join(", ") }}){{ "; " if not loop.last }}{% endfor %}.{% endif %}
   </p>{% endif %}
   <div class="coach-columns">
-    <div><h3>Did well</h3>{% for p in r.good %}{{ point_card(p) }}{% else %}<p class="muted">None in this version.</p>{% endfor %}</div>
-    <div><h3>To improve</h3>{% for p in r.improve %}{{ point_card(p) }}{% else %}<p class="muted">None in this version.</p>{% endfor %}</div>
+    <div><h3>Did well</h3>{% for p in r.good %}{{ point_card(p) }}{% endfor %}{{ short_note(r.good | length) }}</div>
+    <div><h3>To improve</h3>{% for p in r.improve %}{{ point_card(p) }}{% endfor %}{{ short_note(r.improve | length) }}</div>
   </div>
   {% endif %}
 </section>

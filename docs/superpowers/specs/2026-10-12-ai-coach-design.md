@@ -65,8 +65,9 @@ Input: a linked replay and one player. Output: one JSON document the run hands t
 - **Ranked moments**: the player's rounds ordered by the size of their Impact swing, both directions. This is
   the main list of places to look.
 - **Flags**: moments found by detectors (below), each with round, time and the measured values.
-- **Data gaps**: per round, which sources are absent or stale (control, team knowledge, player state, kill
-  lines, timing gaps). Copied into the stored report.
+- **Data gaps**: per round, which sources are absent or stale (control, team knowledge, player state, and
+  deaths the site has that the replay lacks). Copied into the stored report. (Amended 2026-10-12: an earlier
+  draft listed kill lines and timing gaps. The coach reads neither, so there is nothing to report missing.)
 
 Detectors are pure functions over one round, each with its own tests and its thresholds declared in one module.
 The first set, chosen to cover the owner's stated example and the things Impact cannot see:
@@ -84,8 +85,10 @@ at real rounds, not guessed here.
 
 Small commands the model calls during a run. Every answer is computed from stored data.
 
-- `where <round> <t>`: every living player's position, named map area and facing.
-- `knew <round> <t> <side>`: the enemies that side had seen or heard so far, with when and where.
+- `where <round> <t>`: every living player's position, named map area, facing, role and last recorded health.
+- `knew <round> <t> <side>`: the enemies that side had seen so far, with when and where, and separately the
+  other events that located an enemy for them (sound, damage, a kill), with when and why. The site stores no
+  place for those (found in review, 2026-10-12), so the coach never gives one.
 - `distance <round> <t> <player> <player>`: metres between two players.
 - `control <round> <t0> <t1> <area>`: which side held the area over the span.
 - `timeline <round> [t0 t1]`: kills, damage, utility, plant and defuse in order.
@@ -123,11 +126,16 @@ same way `matches` reaches it.
 **The checker** is plain code and decides what may be published:
 
 - Every instance's round exists in the replay and its time lies inside the round.
-- Every cited log id exists in this run's log.
-- Every number in the point's text appears in a cited result.
+- Every cited log id exists in this run's log, is about the instance's own round, and gives the same answer
+  when the checker asks the question again. The log file itself is not believed.
+- Every number in the point's text is a measured value in a cited result (a distance, a time, a share, an
+  Impact figure, health, a count of living players). Player slots and map coordinates ground nothing.
 - Every player named is in the match.
-- A point that calls something a mistake cites a `knew` result from before the moment, unless the round has no
-  team-knowledge data, in which case the point must say so.
+- A point that calls something a mistake cites a `knew` result for the player's own side from shortly before
+  the moment, unless the round has no team-knowledge data, in which case the point must say so.
+
+The model's access is one tool and one command: it can run the query command and nothing else, without the
+owner's own Claude Code settings, hooks or plugins (plan 3 gives the exact flags and the checks that prove them).
 
 **Themes.** Each point carries one theme from a short list defined in the playbook (for example trading,
 rotation, utility, post-plant). Phase 2 counts themes across matches, so the list is part of the playbook

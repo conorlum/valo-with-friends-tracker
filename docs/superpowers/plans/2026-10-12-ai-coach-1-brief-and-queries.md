@@ -31,6 +31,24 @@
 4. A map with no callouts (a map newer than `callouts.json`): areas read as `null`, nothing crashes, and the brief lists `areas` as a data gap. Tests in Tasks 1 and 7.
 5. A position asked for a dead player: the answer says `alive: false` with where they died, never a stale position presented as current. Test in Task 2.
 
+## Amendments after the external review (2026-10-12)
+
+A reviewer checked this plan against the code before anything was built. Every finding was confirmed against the source and is folded into the tasks below; this list is where to look for each.
+
+| Finding | What was wrong | Where it is fixed |
+| --- | --- | --- |
+| F1 | A survivor's `alive` interval ends in `None`; the first draft compared against it and would crash on any real round. | Task 2 (`_intervals`, the toy, a test) |
+| F4 | The blob's `plant`/`defuse` are always `None`; damage was left out of the timeline. | Task 8 (site times, `RoundView.damage`) |
+| F5 | Flags from post-decision kills, zero-second flash hits, the last player alive, and a stack flag blind to attack/defence. | Task 6 |
+| F6 | The "leaves within the hold" fixture left B before the stack was known, so it tested nothing. | Task 6 (new fixture, and its mirror) |
+| F7 | `knew` is sight only; sound and other locating events are stored elsewhere, without a place. | Tasks 3, 4, 8 (`signals`) |
+| F8 | Malformed arguments crashed the query tool unlogged; `distance` crashed with no track sample. | Task 8 (`answer`) |
+| F10 | Sides read from the blob only, which is `None` when the condenser could not resolve them. | Tasks 2, 5 (`groups`) |
+| F11 | The brief lacked the role per round, both teams' economy and the player's utility; health was never read. | Tasks 7, 8 |
+| F12 | A one-moment `control` query answered "no ticks"; deaths only the site has were ignored. | Tasks 4, 2, 5 |
+
+Not built, and said so in the spec instead: "kill lines" and "timing gaps" as data gaps. The coach reads neither source, so there is nothing to report missing.
+
 ## File Structure
 
 | File | Responsibility |
@@ -228,8 +246,9 @@ git commit -F <scratch file: "Add named map areas from Riot's callouts">
 **Interfaces:**
 - Consumes: `app.replays.format.decode_segment(segment, hz) -> list[(t, u, v, yaw)]`, `fmt.encode_segment(t0, u, v, yaw)`; `areas.area_at`.
 - Produces:
-  - `RoundView(blob: dict, names: dict[int, str], uv_per_unit: float, map_name: str, callout_table: dict | None = None)`
+  - `RoundView(blob: dict, names: dict[int, str], uv_per_unit: float, map_name: str, callout_table: dict | None = None, groups: dict[int, str] | None = None, db_deaths: list | tuple = ())`. `groups` is each slot's side group from the link, used where the blob has none; `db_deaths` is `[[slot, t], ...]` on the replay clock, deaths the site's data has and the replay lacks.
   - `.number -> int`, `.t_end -> float`, `.t_decided -> float`, `.slots -> list[int]`
+  - `.utility(by: int | None = None) -> list[dict]`, `.damage() -> list[dict]` (the blob's `util` rows with names in place of slots, for the brief and the timeline)
   - `.side(slot) -> str` (`"A"` or `"B"`), `.teammates(slot) -> list[int]` (excludes `slot`), `.enemies(slot) -> list[int]`
   - `.alive(slot, t) -> bool`, `.living(side, t) -> list[int]`
   - `.position(slot, t) -> dict` : `{"alive": True, "u", "v", "yaw", "area"}` or `{"alive": False, "died_at", "u", "v", "area"}` or `{"alive": False, "died_at": None}` when there is no track
@@ -238,7 +257,14 @@ git commit -F <scratch file: "Add named map areas from Riot's callouts">
   - `.kills -> list[dict]` sorted by `t` (the blob's `kills`)
   - `toys.round_blob(...)`, `toys.stand(...)`, `toys.NAMES`, `toys.UV_PER_UNIT` for later tests.
 
-Blob facts (from `app/replays/format.py`): `players` is `[{"slot", "agent", "side"}]`; `tracks[str(slot)]` is a list of segments; `alive[str(slot)]` is `[[t0, t1, reason], ...]`; `kills` is `[{"i", "t", "killer", "victim", "u", "v"}]`. `uv_per_unit` is `u`/`v` units per world centimetre, so metres = uv / uv_per_unit / 100.
+Blob facts (from `app/replays/format.py` and `condense.py`, checked 2026-10-12):
+
+- `players` is `[{"slot", "agent", "side"}]`. `side` is the side group `"A"`/`"B"`, and it is `None` for all ten when the condenser could not resolve sides (`condense.py:1465`). The engine then falls back to the link (`app/control/engine.py:318-324`), and so does `RoundView`, through `groups`.
+- `alive[str(slot)]` is `[[t0, t1, reason, ...], ...]`, and **a life that lasts to the end of the round has `t1 = None`** (`condense.py:1012`, `:1484`). Read `None` as "never ended", as `engine.py:388` does.
+- A death the site's data has and the replay lacks is not in `alive` or `kills`. The engine ends that life at the death (`engine.py:389-394`, `SAME_DEATH_S = 1.0`); `RoundView` does the same with `db_deaths`.
+- `tracks[str(slot)]` is a list of segments; `kills` is `[{"i", "t", "killer", "victim", "u", "v"}]`, and kills after `t_decided` stay in the list.
+- `util` rows: `flash`/`nearsight` (`hits` is `[[slot, hit t, duration s | null], ...]`, a hit kept "whatever its duration, zero included"), `ability`, `cast`, `shot`, and `damage` (`{"t", "t1", "by", "target", "src", "wall", "n"}`).
+- `uv_per_unit` is `u`/`v` units per world centimetre, so metres = uv / uv_per_unit / 100.
 
 - [ ] **Step 1: Write the toys**
 
@@ -271,7 +297,8 @@ def walk(u0, v0, u1, v1, t0, t1):
 
 
 def round_blob(positions, kills=(), util=(), t_end=60.0, t_decided=None, n=1, tracks=None, player_state=True):
-    """`positions`: {slot: (u, v)}. A killed player's track and alive interval end at their death."""
+    """`positions`: {slot: (u, v)}. A killed player's track and alive interval end at their death; a survivor's
+    interval ends in None, as the condenser stores it."""
     died = {k["victim"]: k["t"] for k in kills}
     blob = {"v": 1, "round": n, "map": "Toy", "hz": HZ, "t_start": 0.0, "t_end": t_end,
             "t_decided": t_end if t_decided is None else t_decided,
@@ -282,7 +309,7 @@ def round_blob(positions, kills=(), util=(), t_end=60.0, t_decided=None, n=1, tr
     for s, (u, v) in positions.items():
         end = died.get(s, t_end)
         blob["tracks"][str(s)] = (tracks or {}).get(s) or stand(u, v, 0.0, end)
-        blob["alive"][str(s)] = [[0.0, end, "kill" if s in died else "end"]]
+        blob["alive"][str(s)] = [[0.0, died[s], "kill"]] if s in died else [[0.0, None, "round_end"]]
     if player_state:
         blob["player_state"] = {"version": 1}      # presence is all the coach checks
     return blob
@@ -344,6 +371,44 @@ def test_distance_is_in_metres_and_needs_both_alive():
 def test_a_map_without_callouts_gives_no_area():
     v = RoundView(toys.round_blob(toys.ten()), toys.NAMES, toys.UV_PER_UNIT, "Nowhere", toys.CALLOUTS)
     assert v.position(0, 10.0)["area"] is None
+
+
+def test_a_survivor_is_alive_to_the_end_of_the_round():
+    blob = toys.round_blob(toys.ten())
+    assert blob["alive"]["1"] == [[0.0, None, "round_end"]]       # the stored shape: no end time
+    v = view(blob)
+    assert v.alive(1, 59.9) and v.position(1, 60.0)["alive"] and len(v.living("A", 60.0)) == 5
+
+
+def test_a_death_only_the_site_has_ends_the_life():
+    v = RoundView(toys.round_blob(toys.ten()), toys.NAMES, toys.UV_PER_UNIT, "Toy", toys.CALLOUTS,
+                  db_deaths=[[2, 30.0]])
+    assert v.alive(2, 29.9) and not v.alive(2, 30.0)
+    assert v.position(2, 40.0)["died_at"] == 30.0 and v.living("A", 40.0) == [0, 1, 3, 4]
+
+
+def test_sides_come_from_the_link_when_the_blob_has_none():
+    blob = toys.round_blob(toys.ten())
+    for p in blob["players"]:
+        p["side"] = None
+    groups = {s: "A" if s < 5 else "B" for s in range(10)}
+    v = RoundView(blob, toys.NAMES, toys.UV_PER_UNIT, "Toy", toys.CALLOUTS, groups=groups)
+    assert v.enemies(0) == [5, 6, 7, 8, 9]
+    with pytest.raises(ValueError, match="no side"):
+        RoundView(blob, toys.NAMES, toys.UV_PER_UNIT, "Toy", toys.CALLOUTS)
+
+
+def test_utility_and_damage_rows_carry_names():
+    util = [{"k": "flash", "t": 9.0, "by": 0, "u": 0, "v": 0, "hits": [[5, 9.5, 1.5]],
+             "activation": {"state": "completed", "targets_complete": True}},
+            {"k": "ability", "t": 3.0, "by": 1, "code": "Wraith"},
+            {"k": "damage", "t": 13.0, "t1": 13.2, "by": 5, "target": 0, "src": "gun", "wall": False, "n": 3},
+            {"k": "shot", "t": 13.0, "by": 5}]
+    v = view(toys.round_blob(toys.ten(), util=util))
+    assert v.utility(by=0) == [{"t": 9.0, "kind": "flash", "by": "P0", "hits": [{"name": "P5", "seconds": 1.5}],
+                                "hits_complete": True}]
+    assert [row["kind"] for row in v.utility()] == ["flash", "ability"] and v.utility()[1]["ability"] == "Wraith"
+    assert v.damage() == [{"t": 13.0, "kind": "damage", "by": "P5", "target": "P0", "source": "gun", "hits": 3}]
 ```
 
 - [ ] **Step 3: Run to verify they fail**
@@ -368,12 +433,24 @@ from app.coach import areas
 from app.replays import format as fmt
 
 
+SAME_DEATH_S = 1.0      # app/control/engine.py's: a site death this close to the replay's own is the same death
+_UTIL_KINDS = ("flash", "nearsight", "ability", "cast")
+
+
 class RoundView:
     def __init__(self, blob: dict, names: dict[int, str], uv_per_unit: float, map_name: str,
-                 callout_table: dict | None = None):
+                 callout_table: dict | None = None, groups: dict[int, str] | None = None, db_deaths=()):
         self.blob, self.names, self.uv_per_unit, self.map_name = blob, names, uv_per_unit, map_name
         self._table = callout_table
-        self._side = {int(p["slot"]): p["side"] for p in blob["players"]}
+        self._side = {}
+        for p in blob["players"]:
+            slot = int(p["slot"])
+            group = p.get("side") if p.get("side") is not None else (groups or {}).get(slot)
+            if group is None:
+                raise ValueError(f"round {blob.get('round')}: slot {slot} has no side group and the link names none")
+            self._side[slot] = group
+        self._db_deaths = [(int(s), float(t)) for s, t in db_deaths]
+        self._life: dict[int, list] = {}
         self._samples: dict[int, list] = {}
         self.kills = sorted(blob.get("kills", []), key=lambda k: k["t"])
 
@@ -392,10 +469,23 @@ class RoundView:
         return [s for s in self.slots if self._side[s] != self._side[slot]]
 
     def _intervals(self, slot: int) -> list:
-        return self.blob.get("alive", {}).get(str(slot), [])
+        """The slot's lives as [t0, t1]: a stored end of None (alive to the end of the round) reads as infinity,
+        and a death only the site's data has ends the life it falls in, as the control engine does."""
+        if slot not in self._life:
+            lives = [[iv[0], math.inf if iv[1] is None else iv[1]]
+                     for iv in self.blob.get("alive", {}).get(str(slot), [])]
+            for dead, t in self._db_deaths:
+                if dead != slot:
+                    continue
+                for life in lives:
+                    if life[0] <= t < life[1] - SAME_DEATH_S:
+                        life[1] = t
+                        break
+            self._life[slot] = lives
+        return self._life[slot]
 
     def alive(self, slot: int, t: float) -> bool:
-        return any(t0 <= t < t1 for t0, t1, *_ in self._intervals(slot))
+        return any(t0 <= t < t1 for t0, t1 in self._intervals(slot))
 
     def living(self, side: str, t: float) -> list[int]:
         return [s for s in self.slots if self._side[s] == side and self.alive(s, t)]
@@ -422,7 +512,7 @@ class RoundView:
             if sample is not None:
                 _, u, v, yaw = sample
                 return {"alive": True, "u": u, "v": v, "yaw": yaw, "area": self.area(u, v)}
-        ended = [t1 for _, t1, *_ in self._intervals(slot) if t1 <= t]
+        ended = [t1 for _, t1 in self._intervals(slot) if t1 <= t]
         samples = self.samples(slot)
         if not ended or not samples:
             return {"alive": False, "died_at": None}
@@ -438,11 +528,35 @@ class RoundView:
         if not (pa["alive"] and pb["alive"]):
             return None
         return self.metres(math.hypot(pa["u"] - pb["u"], pa["v"] - pb["v"]))
+
+    def utility(self, by: int | None = None) -> list[dict]:
+        """Flashes, nearsights, abilities and movement casts, in stored order, with names for slots. A flash's
+        `hits_complete` is true only when an empty or short hit list is proven to be the whole list."""
+        out = []
+        for e in self.blob.get("util", []):
+            if e.get("k") not in _UTIL_KINDS or (by is not None and e.get("by") != by):
+                continue
+            row = {"t": e["t"], "kind": e["k"], "by": self.names.get(e.get("by"))}
+            ability = e.get("name") or e.get("code") or e.get("ability")
+            if ability:
+                row["ability"] = ability
+            if e.get("hits") is not None:
+                proof = e.get("activation") or {}
+                row["hits"] = [{"name": self.names.get(h[0]), "seconds": h[2] if len(h) > 2 else None}
+                               for h in e["hits"]]
+                row["hits_complete"] = bool(proof.get("state") == "completed" and proof.get("targets_complete"))
+            out.append(row)
+        return out
+
+    def damage(self) -> list[dict]:
+        return [{"t": e["t"], "kind": "damage", "by": self.names.get(e.get("by")),
+                 "target": self.names.get(e.get("target")), "source": e.get("src"), "hits": e.get("n")}
+                for e in self.blob.get("util", []) if e.get("k") == "damage"]
 ```
 
 - [ ] **Step 5: Run to verify they pass**
 
-Run: `$PY -m pytest tests/coach/test_roundview.py -q` — Expected: 6 passed.
+Run: `$PY -m pytest tests/coach/test_roundview.py -q` — Expected: 10 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -463,7 +577,11 @@ git commit -F <scratch file: "Add the coach's per-round primitives">
 - Consumes: the control header's `knew` (from `app/control/encode.py`): `{"A": {"<enemy slot>": [[t0, t1, u, v], ...]}, "B": {...}}`, runs in time order, `u`/`v` at the run's last sighting. `RoundView.position`, `.alive`, `.area`.
 - Produces: `knowledge.known_enemies(knew: dict, side: str, t: float, view: RoundView) -> list[dict]`, one entry per enemy seen at or before `t`: `{"slot", "name", "first_seen", "last_seen", "in_view", "u", "v", "area", "alive"}` sorted by slot.
 
+  - `knowledge.signals(events: dict | None, side: str, t: float, names: dict[int, str]) -> list[dict] | None`: `[{"t", "name", "reason"}]` for the side's stored locating events at or before `t`; `None` when the round stores none.
+
 A run still open at `t` stores the position of its *end*, which is in the future. For an enemy in view at `t`, use their real position at `t` instead.
+
+**`knew` holds sightings only** (checked 2026-10-12: `app/control/engine.py:1923-1931` appends a run only for an enemy in `seen_now`, which is sight, watchers and reveals). What the team *heard* (footsteps, gunfire) or learned from a kill or damage is stored separately, as the header's `knowledge_events`: `{"A": [[t, enemy slot, reason], ...], "B": [...]}` (`app/control/encode.py:95`), with a time and a reason and **no position**. The spec's "seen or heard" is therefore answered in two parts: `known_enemies` (placed sightings) and `signals` (everything else that located an enemy, unplaced). A row stored before the events existed has no list, and `signals` returns `None` for it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -507,6 +625,19 @@ def test_a_dead_enemy_is_marked_dead():
 
 def test_the_other_side_knows_only_its_own_sightings():
     assert knowledge.known_enemies(KNEW, "B", 50.0, view(toys.round_blob(toys.ten()))) == []
+
+
+EVENTS = {"A": [[3.0, 6, "footsteps"], [12.5, 7, "gunfire"], [40.0, 6, "seen"]], "B": []}
+
+
+def test_signals_are_the_sides_locating_events_so_far():
+    assert knowledge.signals(EVENTS, "A", 20.0, toys.NAMES) == [{"t": 3.0, "name": "P6", "reason": "footsteps"},
+                                                                {"t": 12.5, "name": "P7", "reason": "gunfire"}]
+    assert knowledge.signals(EVENTS, "B", 20.0, toys.NAMES) == []
+
+
+def test_a_round_that_stores_no_events_has_no_signals_answer():
+    assert knowledge.signals(None, "A", 20.0, toys.NAMES) is None
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -518,10 +649,18 @@ Run: `$PY -m pytest tests/coach/test_knowledge.py -q` — Expected: FAIL, `No mo
 `app/coach/knowledge.py`:
 
 ```python
-"""What a side had seen or heard of each enemy by a time, from map control's stored sightings
-(app/replays/control_format.py, `header["knew"]`). The spec's "knowable": team knowledge, perfect comms."""
+"""What a side knew of each enemy by a time, from map control's stored rows: `header["knew"]` (sightings, each
+with a place) and `header["knowledge_events"]` (every locating event, sound included, with a reason and no place).
+The spec's "knowable": team knowledge, perfect comms."""
 
 from __future__ import annotations
+
+
+def signals(events: dict | None, side: str, t: float, names: dict[int, str]) -> list[dict] | None:
+    if events is None:
+        return None
+    return [{"t": row[0], "name": names.get(int(row[1])), "reason": row[2]}
+            for row in events.get(side) or [] if row[0] <= t]
 
 
 def known_enemies(knew: dict, side: str, t: float, view) -> list[dict]:
@@ -545,7 +684,7 @@ def known_enemies(knew: dict, side: str, t: float, view) -> list[dict]:
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `$PY -m pytest tests/coach/test_knowledge.py -q` — Expected: 5 passed.
+Run: `$PY -m pytest tests/coach/test_knowledge.py -q` — Expected: 7 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -565,8 +704,8 @@ git commit -F <scratch file: "Add the coach's team-knowledge read">
 **Interfaces:**
 - Consumes: `app.replays.control_format` as `cf`: `cf.unpack_data(data) -> (header, streams)`, `cf.walk_bitmap(header) -> list[int]`, `cf.decode_states(stream, ticks, cells) -> list[list[int]]`, `cf.pack_data(header, streams)`, `cf.GRID` (128), `cf.STATE_NAMES`. A flat cell `c` is column `c % GRID`, row `c // GRID`. Tick `i` is at `header["ticks"][i] / header["hz"]` seconds.
 - Produces:
-  - `control_areas.area_shares(data: bytes, map_name: str, table: dict | None = None) -> dict` : `{"t": [seconds per tick], "cells": {area: n}, "areas": {area: [[a, b, contested], ...per tick]}, "knew": header knew or None, "group_side": header value or None}`
-  - `control_areas.control_over(shares: dict, area: str, t0: float, t1: float) -> dict | None` : `{"a", "b", "contested", "none"}` as time-weighted fractions of the area's cells, rounded to 2 places; None when the area is unknown or the span has no ticks.
+  - `control_areas.area_shares(data: bytes, map_name: str, table: dict | None = None) -> dict` : `{"t": [seconds per tick], "cells": {area: n}, "areas": {area: [[a, b, contested], ...per tick]}, "knew": header knew or None, "signals": header knowledge_events or None, "group_side": header value or None}`
+  - `control_areas.control_over(shares: dict, area: str, t0: float, t1: float) -> dict | None` : `{"a", "b", "contested", "none"}` as time-weighted fractions of the area's cells, rounded to 2 places; None when the area is unknown or the span has no ticks. A single moment (`t0 == t1`) is answered from the tick in force then.
 
 State codes: 0 none; 1-3 side A; 4-6 side B; 7-8 contested.
 
@@ -595,9 +734,10 @@ def control_bytes(frames, ticks, knew=None):
     for a, b in frames:
         stream += bytes([0, (a << 4) | b])
     header = {"hz": 16, "ticks": ticks, "walk": base64.b64encode(bytes(bits)).decode("ascii"), "cells": 2,
-              "group_side": {"A": "attack", "B": "defend"}}
+              "group_side": {"A": "attack", "B": "defense"}}       # the link's words (replay_control.round_link)
     if knew is not None:
         header["knew"] = knew
+        header["knowledge_events"] = {"A": [[1.0, 5, "seen"]], "B": []}
     return cf.pack_data(header, {"states": bytes(stream), "coverage": b"", "control": b""})
 
 
@@ -607,7 +747,8 @@ def test_each_area_counts_its_cells_by_owner_per_tick():
     assert shares["cells"] == {"A Site": 1, "B Site": 1}
     assert shares["areas"]["A Site"] == [[1, 0, 0], [0, 0, 1]]
     assert shares["areas"]["B Site"] == [[0, 1, 0], [0, 0, 0]]
-    assert shares["group_side"] == {"A": "attack", "B": "defend"} and shares["knew"] is None
+    assert shares["group_side"] == {"A": "attack", "B": "defense"} and shares["knew"] is None
+    assert shares["signals"] is None
 
 
 def test_control_over_a_span_is_time_weighted():
@@ -615,19 +756,24 @@ def test_control_over_a_span_is_time_weighted():
     # A Site: side A for 0-10 s, side B for 10-20 s
     assert control_areas.control_over(shares, "A Site", 0.0, 20.0) == {"a": 0.5, "b": 0.5, "contested": 0.0, "none": 0.0}
     assert control_areas.control_over(shares, "A Site", 0.0, 5.0)["a"] == 1.0
+    # one moment is the tick in force then: side A at 4 s, side B from the tick at 10 s
+    assert control_areas.control_over(shares, "A Site", 4.0, 4.0)["a"] == 1.0
+    assert control_areas.control_over(shares, "A Site", 10.0, 10.0)["b"] == 1.0
 
 
 def test_an_unknown_area_or_empty_span_has_no_answer():
     shares = control_areas.area_shares(control_bytes([(1, 4)], [80]), "Toy", TABLE)   # the only tick is at 5 s
     assert control_areas.control_over(shares, "C Site", 0.0, 10.0) is None
     assert control_areas.control_over(shares, "A Site", 0.0, 2.0) is None
+    assert control_areas.control_over(shares, "A Site", 2.0, 2.0) is None      # a moment before the first tick
     # the last tick holds to the end of the span asked about
     assert control_areas.control_over(shares, "A Site", 50.0, 60.0)["a"] == 1.0
 
 
 def test_stored_sightings_are_carried_through():
     knew = {"A": {"5": [[1.0, 2.0, 100, 100]]}, "B": {}}
-    assert control_areas.area_shares(control_bytes([(0, 0)], [0], knew), "Toy", TABLE)["knew"] == knew
+    shares = control_areas.area_shares(control_bytes([(0, 0)], [0], knew), "Toy", TABLE)
+    assert shares["knew"] == knew and shares["signals"] == {"A": [[1.0, 5, "seen"]], "B": []}
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -643,6 +789,8 @@ Run: `$PY -m pytest tests/coach/test_control_areas.py -q` — Expected: FAIL, `N
 each named area at each tick, and the sightings each side had. Decoded once per round when a snapshot is built."""
 
 from __future__ import annotations
+
+from bisect import bisect_right
 
 from app.coach import areas
 from app.replays import control_format as cf
@@ -674,7 +822,8 @@ def area_shares(data: bytes, map_name: str, table: dict | None = None) -> dict:
             per_area[name].append(counts[name])
     return {"t": [tick / header["hz"] for tick in header["ticks"]],
             "cells": {name: labels.count(name) for name in names}, "areas": per_area,
-            "knew": header.get("knew"), "group_side": header.get("group_side")}
+            "knew": header.get("knew"), "signals": header.get("knowledge_events"),
+            "group_side": header.get("group_side")}
 
 
 def control_over(shares: dict, area: str, t0: float, t1: float) -> dict | None:
@@ -682,6 +831,12 @@ def control_over(shares: dict, area: str, t0: float, t1: float) -> dict | None:
     if rows is None or not shares["cells"].get(area):
         return None
     totals, covered = [0.0, 0.0, 0.0], 0.0
+    if t1 <= t0:                                    # one moment: the tick in force then
+        i = bisect_right(times, t0) - 1
+        if i < 0:
+            return None
+        totals, covered = [float(x) for x in rows[i]], 1.0
+        times = []
     for i, start in enumerate(times):
         end = times[i + 1] if i + 1 < len(times) else max(t1, start)
         span = min(end, t1) - max(start, t0)
@@ -720,11 +875,13 @@ git commit -F <scratch file: "Add per-area control for the coach">
 **Interfaces:**
 - Consumes: `app.services.replays.find_replay(db, uuid) -> Replay | None`, `.page_context(db, replay) -> {"match", "players", "rounds"}`, `.round_blob(db, replay, n) -> bytes | None`; `app.services.replay_control.round_control(db, replay, n) -> RoundControlAnswer(status, row, stale)` where status is `ok | not_ready | failed | no_map | old_blob` and `row.data` holds the bytes when ok; `fmt.decode_blob`; `control_areas.area_shares`; `RoundView`.
 - Produces:
-  - `snapshot.assemble(context: dict, blobs: dict[int, dict], controls: dict[int, tuple[str, bool, dict | None]]) -> dict` (pure). `controls[n]` is `(status, stale, shares or None)`.
-  - `snapshot.read(db, match_uuid: str) -> dict` (the DB read; raises `SnapshotError` for no replay or an unlinked one).
+  - `snapshot.assemble(context: dict, blobs: dict[int, dict], controls: dict[int, tuple[str, bool, dict | None]], links: dict[int, dict] | None = None) -> dict` (pure). `controls[n]` is `(status, stale, shares or None)`. `links[n]` is `replay_control.round_link(replay, groups, n)`: `{"linked", "sides": {"<slot>": "attack" | "defense"}, "db_deaths": [[slot, t on the replay clock], ...]}` (`app/services/replay_control.py:300-315`).
+  - `snapshot.read(db, match_uuid: str) -> dict` (the DB read; raises `SnapshotError` for no replay, an unlinked one, or a player with no side group anywhere).
   - `snapshot.save(data: dict, directory: Path) -> None`, `snapshot.load(directory: Path) -> Snapshot`.
-  - `Snapshot`: `.context`, `.map`, `.uuid`, `.round_numbers -> list[int]`, `.names -> dict[int, str]`, `.view(n) -> RoundView`, `.control(n) -> dict | None`, `.gaps(n) -> list[str]`, `.site(n) -> dict` (the page context's round entry), `.slot_of(token: str) -> int` (raises `SnapshotError` listing valid names).
-  - Gap names: `control_not_ready`, `control_failed`, `control_no_map`, `control_old_blob`, `control_stale`, `team_knowledge`, `player_state`. (A map with no callouts is a match-level gap the brief reports, Task 7.)
+  - `Snapshot`: `.context`, `.map`, `.uuid`, `.round_numbers -> list[int]`, `.names -> dict[int, str]`, `.view(n) -> RoundView`, `.control(n) -> dict | None`, `.gaps(n) -> list[str]`, `.site(n) -> dict` (the page context's round entry), `.role(n, slot) -> "attack" | "defense" | None`, `.slot_of(token: str) -> int` (raises `SnapshotError` listing valid names).
+  - Gap names: `control_not_ready`, `control_failed`, `control_no_map`, `control_old_blob`, `control_stale`, `team_knowledge`, `player_state`, `db_only_deaths` (the round has a death with no kill row in the replay: its life ends on time, and no killer, trade or distance is known for it). (A map with no callouts is a match-level gap the brief reports, Task 7.)
+
+Sides (checked 2026-10-12): `context["players"][slot]["side"]` is the side **group** (`"A"`/`"B"`), from `rp.side_group or team_side.get(team)` (`app/services/replays.py:119`), so it is filled when the blob's own `side` is not. Which group attacks changes at the half; `round_link(...)["sides"]` gives each slot's role for one round.
 
 The saved layout is `<dir>/snapshot.json` (one file). It contains player names and match data: it lives under the temp directory and is never committed.
 
@@ -773,6 +930,21 @@ def test_each_missing_source_is_named(tmp_path):
     assert snap.gaps(1) == ["control_not_ready", "team_knowledge"]
     assert snap.gaps(2) == ["control_stale", "team_knowledge", "player_state"]
     assert snap.control(1) is None
+
+
+def test_the_link_gives_roles_site_only_deaths_and_sides_the_blob_lacks(tmp_path):
+    blob = toys.round_blob(toys.ten(), n=1)
+    for p in blob["players"]:
+        p["side"] = None                                   # the condenser could not resolve sides
+    links = {1: {"linked": True, "sides": {str(s): "attack" if s < 5 else "defense" for s in range(10)},
+                 "db_deaths": [[3, 25.0]]}}
+    data = snapshot.assemble(CONTEXT, {1: blob, 2: toys.round_blob(toys.ten(), n=2)},
+                             {1: ("ok", False, SHARES), 2: ("ok", False, SHARES)}, links)
+    snapshot.save(data, tmp_path)
+    snap = snapshot.load(tmp_path)
+    assert snap.role(1, 0) == "attack" and snap.role(1, 7) == "defense" and snap.role(2, 0) is None
+    assert snap.view(1).enemies(0) == [5, 6, 7, 8, 9]      # groups came from the page context
+    assert not snap.view(1).alive(3, 30.0) and snap.gaps(1) == ["db_only_deaths"] and snap.gaps(2) == []
 
 
 def test_a_player_is_found_by_slot_name_or_name_without_tag(tmp_path):
@@ -833,10 +1005,12 @@ class SnapshotError(Exception):
     pass
 
 
-def assemble(context: dict, blobs: dict[int, dict], controls: dict[int, tuple]) -> dict:
+def assemble(context: dict, blobs: dict[int, dict], controls: dict[int, tuple], links: dict | None = None) -> dict:
     rounds = {}
     for n, blob in sorted(blobs.items()):
         status, stale, shares = controls.get(n, ("not_ready", False, None))
+        link = (links or {}).get(n) or {}
+        link = {"sides": dict(link.get("sides") or {}), "db_deaths": [list(d) for d in link.get("db_deaths") or []]}
         gaps = []
         if status != "ok":
             gaps.append(f"control_{status}")
@@ -846,8 +1020,14 @@ def assemble(context: dict, blobs: dict[int, dict], controls: dict[int, tuple]) 
             gaps.append("team_knowledge")
         if "player_state" not in blob:
             gaps.append("player_state")
-        rounds[str(n)] = {"blob": blob, "control": shares, "gaps": gaps}
+        if link["db_deaths"]:
+            gaps.append("db_only_deaths")
+        rounds[str(n)] = {"blob": blob, "control": shares, "link": link, "gaps": gaps}
     return {"v": VERSION, "context": context, "rounds": rounds}
+
+
+def _groups(context: dict) -> dict[int, str]:
+    return {int(slot): p["side"] for slot, p in context["players"].items() if p.get("side") is not None}
 
 
 def read(db, match_uuid: str) -> dict:
@@ -857,13 +1037,19 @@ def read(db, match_uuid: str) -> dict:
     context = replays.page_context(db, replay)
     if not context["match"].get("linked"):
         raise SnapshotError(f"replay {match_uuid} is {context['match'].get('reason') or 'not linked'}: nothing to coach")
-    blobs, controls = {}, {}
+    groups = _groups(context)
+    blobs, controls, links = {}, {}, {}
     for n in context["match"]["rounds"]:
         blobs[n] = fmt.decode_blob(replays.round_blob(db, replay, n))
+        for p in blobs[n]["players"]:
+            if p.get("side") is None and int(p["slot"]) not in groups:
+                raise SnapshotError(f"round {n}: slot {p['slot']} has no side in the replay or the link: "
+                                    "nothing can be said about teammates or enemies")
         answer = replay_control.round_control(db, replay, n)
         shares = control_areas.area_shares(answer.row.data, replay.map_name) if answer.status == "ok" else None
         controls[n] = (answer.status, bool(answer.stale), shares)
-    return assemble(context, blobs, controls)
+        links[n] = replay_control.round_link(replay, groups, n)
+    return assemble(context, blobs, controls, links)
 
 
 def save(data: dict, directory: Path) -> None:
@@ -892,9 +1078,15 @@ class Snapshot:
 
     def view(self, n: int) -> RoundView:
         if n not in self._views:
-            self._views[n] = RoundView(self._round(n)["blob"], self.names, self.context["match"]["uv_per_unit"],
-                                       self.map)
+            entry = self._round(n)
+            self._views[n] = RoundView(entry["blob"], self.names, self.context["match"]["uv_per_unit"], self.map,
+                                       groups=_groups(self.context),
+                                       db_deaths=(entry.get("link") or {}).get("db_deaths") or ())
         return self._views[n]
+
+    def role(self, n: int, slot: int) -> str | None:
+        """`attack` or `defense` for this slot in round n, from the link; None when the link names none."""
+        return ((self._round(n).get("link") or {}).get("sides") or {}).get(str(slot))
 
     def control(self, n: int) -> dict | None:
         return self._round(n)["control"]
@@ -998,9 +1190,16 @@ git commit -F <scratch file: "Add the coach's match snapshot">
 
 **Interfaces:**
 - Consumes: `RoundView`, `knowledge.known_enemies`, `areas.SITES`, `app.scoring.impact.TRADE_WINDOW_SECONDS` (6.0; imported, never changed).
-- Produces: `detectors.flags(view: RoundView, slot: int, knew: dict | None) -> list[dict]`, each `{"kind", "round", "t", "values": {...}}`, sorted by `t`. Kinds: `death_untraded_alone`, `death_traded`, `death_with_advantage`, `first_kill`, `first_death`, `flash_hit_no_enemy`, `flash_led_to_kill`, `flash_hit_teammate`, `stack_seen_elsewhere`. Thresholds are module constants.
+- Produces: `detectors.flags(view: RoundView, slot: int, knew: dict | None, role: str | None = None) -> list[dict]`, each `{"kind", "round", "t", "values": {...}}`, sorted by `t`. Kinds: `death_untraded_alone`, `death_traded`, `death_with_advantage`, `first_kill`, `first_death`, `flash_hit_no_enemy`, `flash_led_to_kill`, `flash_hit_teammate`, `stack_seen_elsewhere`. Thresholds are module constants. `role` is the player's `attack`/`defense` for the round (`Snapshot.role`).
 
 Blob facts: a flash is a `util` row `{"k": "flash", "t", "by", "hits": [[target slot, hit t, duration | null], ...], "activation": {"state", "targets_complete"}}`. An empty `hits` means "hit nobody" only when `activation.state == "completed"` and `activation.targets_complete` is true.
+
+Four rules that come from how the data is stored, each with its own test:
+
+- **Only kills up to `t_decided` count.** Later kills stay in the blob (`format.py`), and a death after the round is decided is no mistake.
+- **A flash hit counts only with a duration that is unknown (`null`) or above zero.** The blob keeps zero-second hits.
+- **The last player alive is not "alone".** With no living teammate there was nobody to trade, so `death_untraded_alone` needs at least one living teammate with a known position.
+- **A stack flag carries the player's role.** Four defenders seen on A while an attacker stays B means B is open, the opposite of the defender's case. The detector does not decide which it is: it reports `role`, and the model reads it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1012,9 +1211,9 @@ from app.coach.roundview import RoundView
 from tests.coach import toys
 
 
-def run(blob, slot=0, knew=None):
+def run(blob, slot=0, knew=None, role=None):
     view = RoundView(blob, toys.NAMES, toys.UV_PER_UNIT, "Toy", toys.CALLOUTS)
-    return detectors.flags(view, slot, knew)
+    return detectors.flags(view, slot, knew, role)
 
 
 def kinds(found):
@@ -1043,6 +1242,17 @@ def test_a_death_avenged_inside_the_window_is_a_trade():
 def test_a_kill_on_the_killer_after_the_window_is_not_a_trade():
     kills = [{"t": 20.0, "killer": 5, "victim": 0}, {"t": 27.0, "killer": 1, "victim": 5}]
     assert "death_traded" not in kinds(run(toys.round_blob(toys.ten(), kills=kills)))
+
+
+def test_the_last_player_alive_is_not_flagged_as_alone():
+    kills = [{"t": 5.0 + s, "killer": 5, "victim": s} for s in (1, 2, 3, 4)] + [{"t": 20.0, "killer": 5, "victim": 0}]
+    assert "death_untraded_alone" not in kinds(run(toys.round_blob({**toys.ten(), 0: (5000, 5000)}, kills=kills)))
+
+
+def test_a_death_after_the_round_was_decided_is_not_flagged():
+    blob = toys.round_blob({**toys.ten(), 0: (5000, 5000)}, kills=[{"t": 50.0, "killer": 5, "victim": 0}],
+                           t_decided=40.0)
+    assert kinds(run(blob)) == []                          # no death flag and no first-contact flag
 
 
 def test_dying_while_ahead_is_flagged_with_the_count():
@@ -1082,6 +1292,18 @@ def test_a_flash_on_a_teammate_is_flagged():
     assert "flash_hit_teammate" in kinds(run(toys.round_blob(toys.ten(), util=[flash(0, [[1, 10.5, 1.0]])])))
 
 
+def test_a_zero_second_hit_is_not_a_hit():
+    blob = toys.round_blob(toys.ten(), util=[flash(0, [[5, 10.5, 0], [1, 10.5, 0.0]])],
+                           kills=[{"t": 12.0, "killer": 1, "victim": 5}])
+    assert kinds(run(blob)) == ["flash_hit_no_enemy"]      # not credited with the kill, not blamed for the teammate
+
+
+def test_a_hit_of_unknown_length_still_counts():
+    blob = toys.round_blob(toys.ten(), util=[flash(0, [[5, 10.5, None]])],
+                           kills=[{"t": 12.0, "killer": 1, "victim": 5}])
+    assert "flash_led_to_kill" in kinds(run(blob))
+
+
 STACK = {"A": {str(s): [[10.0, 40.0, 2000, 2000]] for s in (5, 6, 7, 8)}, "B": {}}
 
 
@@ -1092,15 +1314,32 @@ def stack_blob(mover=None):
 
 
 def test_four_enemies_seen_on_the_other_site_while_the_player_stays_is_flagged():
-    (flag,) = [f for f in run(stack_blob(), knew=STACK) if f["kind"] == "stack_seen_elsewhere"]
+    (flag,) = [f for f in run(stack_blob(), knew=STACK, role="defense") if f["kind"] == "stack_seen_elsewhere"]
     assert flag["t"] == 10.0
     assert flag["values"]["site"] == "A" and flag["values"]["enemies_seen"] == 4
     assert flag["values"]["player_area_then"] == "B Site" and flag["values"]["player_area_after"] == "B Site"
+    assert flag["values"]["role"] == "defense"
+
+
+def test_a_stack_flag_without_a_known_role_says_so():
+    (flag,) = [f for f in run(stack_blob(), knew=STACK) if f["kind"] == "stack_seen_elsewhere"]
+    assert flag["values"]["role"] is None
 
 
 def test_a_player_who_leaves_within_the_hold_is_not_flagged():
-    mover = toys.walk(8000, 8000, 5000, 5000, 0.0, 15.0) + toys.stand(5000, 5000, 15.25, 60.0)
+    # On B Site until 12 s, so the stack (known from 10 s) is seen from B; in Mid by 17 s, inside the 8 s hold.
+    mover = (toys.stand(8000, 8000, 0.0, 12.0) + toys.walk(8000, 8000, 5000, 5000, 12.25, 17.0)
+             + toys.stand(5000, 5000, 17.25, 60.0))
+    view = RoundView(stack_blob(mover), toys.NAMES, toys.UV_PER_UNIT, "Toy", toys.CALLOUTS)
+    assert view.position(0, 10.0)["area"]["name"] == "B Site"        # the fixture's own claim, checked
+    assert view.position(0, 18.0)["area"]["name"] == "Mid Courtyard"
     assert "stack_seen_elsewhere" not in kinds(run(stack_blob(mover), knew=STACK))
+
+
+def test_a_player_who_leaves_after_the_hold_is_flagged():
+    mover = (toys.stand(8000, 8000, 0.0, 30.0) + toys.walk(8000, 8000, 5000, 5000, 30.25, 35.0)
+             + toys.stand(5000, 5000, 35.25, 60.0))
+    assert "stack_seen_elsewhere" in kinds(run(stack_blob(mover), knew=STACK))
 
 
 def test_three_enemies_are_not_a_stack():
@@ -1146,9 +1385,14 @@ def _flag(view, kind: str, t: float, **values) -> dict:
     return {"kind": kind, "round": view.number, "t": round(float(t), 2), "values": values}
 
 
+def _live_kills(view) -> list[dict]:
+    """Kills while the round was still open: later ones stay in the blob and decide nothing."""
+    return [k for k in view.kills if k["t"] <= view.t_decided]
+
+
 def _deaths(view, slot):
     out = []
-    for k in view.kills:
+    for k in _live_kills(view):
         if k["victim"] != slot:
             continue
         t, killer, before = k["t"], k.get("killer"), k["t"] - _EPS
@@ -1166,7 +1410,7 @@ def _deaths(view, slot):
         if traded_by:
             out.append(_flag(view, "death_traded", t, killer=name, traded_by=view.names.get(traded_by[0]),
                              after_s=traded_by[1], nearest_teammate_m=nearest))
-        elif nearest is None or nearest > TRADE_RANGE_M:
+        elif nearest is not None and nearest > TRADE_RANGE_M:      # None: nobody left, or no position to measure
             out.append(_flag(view, "death_untraded_alone", t, killer=name, nearest_teammate_m=nearest,
                              teammates_alive=len(mates)))
         own = len(view.living(view.side(slot), before))
@@ -1177,9 +1421,10 @@ def _deaths(view, slot):
 
 
 def _first_contact(view, slot):
-    if not view.kills:
+    kills = _live_kills(view)
+    if not kills:
         return []
-    first = view.kills[0]
+    first = kills[0]
     if first.get("killer") == slot:
         return [_flag(view, "first_kill", first["t"], victim=view.names.get(first["victim"]))]
     if first["victim"] == slot:
@@ -1193,7 +1438,8 @@ def _flashes(view, slot):
     for e in view.blob.get("util", []):
         if e.get("k") != "flash" or e.get("by") != slot:
             continue
-        hits = e.get("hits") or []
+        # a stored hit of zero seconds blinded nobody; null is a hit of unknown length
+        hits = [h for h in e.get("hits") or [] if len(h) < 3 or h[2] is None or h[2] > 0]
         on_enemy = [h for h in hits if h[0] in enemies]
         on_mate = [h for h in hits if h[0] in mates]
         proof = e.get("activation") or {}
@@ -1204,7 +1450,7 @@ def _flashes(view, slot):
                 out.append(_flag(view, "flash_hit_no_enemy", e["t"]))
             continue
         hit_at = {h[0]: h[1] for h in on_enemy}
-        followed = [k for k in view.kills if k["victim"] in hit_at
+        followed = [k for k in _live_kills(view) if k["victim"] in hit_at
                     and (k.get("killer") == slot or k.get("killer") in mates)
                     and 0 <= k["t"] - hit_at[k["victim"]] <= FLASH_FOLLOWUP_S]
         if followed:
@@ -1218,7 +1464,7 @@ def _site_of(area: dict | None) -> str | None:
     return area["super"] if area and area["super"] in areas.SITES else None
 
 
-def _stack(view, slot, knew):
+def _stack(view, slot, knew, role):
     if not knew:
         return []
     side, t = view.side(slot), 0.0
@@ -1241,19 +1487,19 @@ def _stack(view, slot, knew):
                 if _site_of(after.get("area")) == mine:
                     return [_flag(view, "stack_seen_elsewhere", t, site=site, enemies_seen=len(names), enemies=names,
                                   player_area_then=here["area"]["name"], player_area_after=after["area"]["name"],
-                                  hold_s=STACK_HOLD_S)]
+                                  hold_s=STACK_HOLD_S, role=role)]
         t += 1.0
     return []
 
 
-def flags(view, slot: int, knew: dict | None) -> list[dict]:
-    found = _deaths(view, slot) + _first_contact(view, slot) + _flashes(view, slot) + _stack(view, slot, knew)
+def flags(view, slot: int, knew: dict | None, role: str | None = None) -> list[dict]:
+    found = _deaths(view, slot) + _first_contact(view, slot) + _flashes(view, slot) + _stack(view, slot, knew, role)
     return sorted(found, key=lambda f: (f["t"], f["kind"]))
 ```
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `$PY -m pytest tests/coach/test_detectors.py -q` — Expected: 15 passed.
+Run: `$PY -m pytest tests/coach/test_detectors.py -q` — Expected: 20 passed.
 
 If `from app.scoring.impact import TRADE_WINDOW_SECONDS` fails or drags in a database at import, do not edit scoring: replace the import with `TRADE_WINDOW_S = 6.0` and add a test `assert detectors.TRADE_WINDOW_S == TRADE_WINDOW_SECONDS` guarded by `pytest.importorskip`.
 
@@ -1282,8 +1528,12 @@ git commit -F <scratch file: "Add the coach's moment detectors">
  "subject": {"slot", "name", "agent", "team", "side"},
  "players": [{"slot", "name", "agent", "team", "side"}],
  "areas": [area names on this map],
- "rounds": [{"round", "winner", "won": bool | None, "plant", "defuse", "stats": {...} | None,
-             "deaths": [t...], "kills": [{"t", "victim"}], "flags": [...], "gaps": [...]}],
+ "rounds": [{"round", "role": "attack" | "defense" | None, "winner", "won": bool | None, "decided_at",
+             "plant", "defuse", "stats": {...} | None,
+             "economy": {"<team>": {"loadout", "remaining"}} | None,     # both teams, summed over their players
+             "deaths": [t...], "kills": [{"t", "victim"}],               # up to decided_at only
+             "utility": [{"t", "kind", "ability"?, "hits"?, "hits_complete"?}],   # the subject's own
+             "flags": [...], "gaps": [...]}],
  "ranked": [{"round", "impact"}],          # by |impact|, largest first; rounds without Impact left out
  "data_gaps": {"<round>": [gap names]}}    # only rounds that have any
 ```
@@ -1330,6 +1580,23 @@ def test_a_round_carries_its_outcome_stats_and_the_players_kills_and_deaths(tmp_
     assert "first_kill" in [f["kind"] for f in r["flags"]]
 
 
+def test_a_round_carries_the_role_both_economies_and_the_players_utility(tmp_path):
+    context = {**CONTEXT, "match": {**CONTEXT["match"], "rounds": [1]}, "rounds": {"1": {
+        "db": {"winner": "team1", "plant": 31.0, "defuse": None}, "kills": {},
+        "stats": {str(s): {"loadout": 1000 * (s + 1), "remaining": 100, "impact": 0} for s in range(10)}}}}
+    util = [{"k": "flash", "t": 9.0, "by": 0, "u": 0, "v": 0, "hits": [[5, 9.5, 1.5]]},
+            {"k": "flash", "t": 11.0, "by": 1, "u": 0, "v": 0, "hits": []}]
+    blob = toys.round_blob(toys.ten(), util=util, kills=[{"t": 50.0, "killer": 5, "victim": 0}], t_decided=40.0)
+    links = {1: {"sides": {str(s): "attack" if s < 5 else "defense" for s in range(10)}, "db_deaths": []}}
+    snapshot.save(snapshot.assemble(context, {1: blob}, {1: ("ok", False, SHARES)}, links), tmp_path)
+    (r,) = brief.build(snapshot.load(tmp_path), 0)["rounds"]
+    assert r["role"] == "attack" and r["plant"] == 31.0 and r["decided_at"] == 40.0
+    assert r["economy"] == {"team1": {"loadout": 15000, "remaining": 500},     # 1000+2000+3000+4000+5000
+                            "team2": {"loadout": 40000, "remaining": 500}}     # 6000+...+10000
+    assert [u["t"] for u in r["utility"]] == [9.0] and r["utility"][0]["hits"] == [{"name": "P5#T5", "seconds": 1.5}]
+    assert r["deaths"] == []                               # the death at 50 s came after the round was decided
+
+
 def test_gaps_are_listed_per_round_and_only_where_they_exist(tmp_path):
     controls = {1: ("ok", False, SHARES), 2: ("failed", False, None)}
     b = brief.build(snap(tmp_path, {1: 10, 2: 20}, controls=controls), 0)
@@ -1365,6 +1632,19 @@ def _player(p: dict) -> dict:
     return {k: p.get(k) for k in _PLAYER_KEYS}
 
 
+def _economy(players: dict, stats: dict) -> dict | None:
+    """Each team's loadout and remaining credits, summed over the players the site has a row for."""
+    out: dict[str, dict] = {}
+    for slot, row in (stats or {}).items():
+        team = (players.get(str(slot)) or {}).get("team")
+        if team is None or row.get("loadout") is None:
+            continue
+        sums = out.setdefault(team, {"loadout": 0, "remaining": 0})
+        sums["loadout"] += row["loadout"]
+        sums["remaining"] += row.get("remaining") or 0
+    return dict(sorted(out.items())) or None
+
+
 def build(snap, slot: int) -> dict:
     players = snap.context["players"]
     subject = _player(players[str(slot)])
@@ -1374,13 +1654,17 @@ def build(snap, slot: int) -> dict:
         db = site.get("db") or {}
         stats = (site.get("stats") or {}).get(str(slot))
         winner = db.get("winner")
+        live = [k for k in view.kills if k["t"] <= view.t_decided]
+        role = snap.role(n, slot)
         rounds.append({
-            "round": n, "winner": winner, "won": None if winner is None else winner == subject["team"],
+            "round": n, "role": role, "winner": winner,
+            "won": None if winner is None else winner == subject["team"], "decided_at": view.t_decided,
             "plant": db.get("plant"), "defuse": db.get("defuse"), "stats": stats,
-            "deaths": [k["t"] for k in view.kills if k["victim"] == slot],
-            "kills": [{"t": k["t"], "victim": snap.names.get(k["victim"])} for k in view.kills
-                      if k.get("killer") == slot],
-            "flags": detectors.flags(view, slot, (control or {}).get("knew")),
+            "economy": _economy(players, site.get("stats")),
+            "deaths": [k["t"] for k in live if k["victim"] == slot],
+            "kills": [{"t": k["t"], "victim": snap.names.get(k["victim"])} for k in live if k.get("killer") == slot],
+            "utility": [{k: v for k, v in row.items() if k != "by"} for row in view.utility(by=slot)],
+            "flags": detectors.flags(view, slot, (control or {}).get("knew"), role),
             "gaps": snap.gaps(n)})
         if stats and stats.get("impact") is not None:
             ranked.append({"round": n, "impact": stats["impact"]})
@@ -1475,10 +1759,18 @@ git commit -F <scratch file: "Add the coach's match brief">
   - `query.timeline(snap, n, t0=None, t1=None) -> dict`
   - `query.impact(snap, n, player) -> dict`
   - `query.COMMANDS: dict[str, callable]`
-  - `query.run(snap, directory: Path, command: str, args: list[str]) -> dict` : parses string args, calls the command, appends `{"id", "cmd", "args", "result"}` to `<directory>/log.jsonl`, returns the result with its `"id"` (`q1`, `q2`, ...). An error is logged too, as `{"error": message}`, and gets an id.
+  - `query.answer(snap, command: str, args: list[str]) -> dict` : the answer alone, nothing written. Never raises for bad input: an unknown command, a wrong argument count, or text where a number belongs (`7.0` for a round, `0:41` for a time) gives `{"error": message}`. Plan 3's checker calls it again to confirm a logged answer.
+  - `query.run(snap, directory: Path, command: str, args: list[str]) -> dict` : calls `answer`, appends `{"id", "cmd", "args", "result"}` to `<directory>/log.jsonl`, returns the result with its `"id"` (`q1`, `q2`, ...). An error is logged too, as `{"error": message}`, and gets an id.
   - `query.read_log(directory: Path) -> dict[str, dict]` keyed by id.
 
 Every answer for a missing source is `{"available": False, "reason": "<gap name>"}` and still gets logged.
+
+Where each fact comes from (checked 2026-10-12):
+
+- **Plant and defuse** are read from the page context, `snap.site(n)["db"]["plant"]` / `["defuse"]`, which are already on the replay clock (`app/services/replays.py:161-162`). The blob's own `plant`/`defuse` are hardcoded `None` (`condense.py:1502`) and are not read.
+- **Damage** is the blob's `damage` rows, through `RoundView.damage()`.
+- **Health** is `app.replays.player_state.vitals_at(blob.get("player_state"), slot, t)`: the values after the player's latest recorded hit at or before `t`, or `None` when no hit is recorded. The replay has no heal records, so `where` labels it as such.
+- **`knew`** returns placed sightings as `enemies` and the unplaced locating events (sound, damage, kills) as `signals` (Task 3).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1493,18 +1785,22 @@ from tests.coach.test_snapshot import CONTEXT
 
 KNEW = {"A": {"5": [[5.0, 8.0, 8000, 8000]]}, "B": {}}
 SHARES = {"t": [0.0, 10.0], "cells": {"A Site": 2}, "areas": {"A Site": [[2, 0, 0], [0, 2, 0]]},
-          "knew": KNEW, "group_side": None}
+          "knew": KNEW, "signals": {"A": [[3.0, 6, "footsteps"], [40.0, 7, "gunfire"]], "B": []}, "group_side": None}
 KILLS = [{"t": 20.0, "killer": 5, "victim": 0}]
+DAMAGE = {"k": "damage", "t": 13.0, "t1": 13.2, "by": 5, "target": 0, "src": "gun", "wall": False, "n": 3}
 
 
 @pytest.fixture
 def snap(tmp_path):
     context = {**CONTEXT, "rounds": {"1": {"db": {"winner": "team1"}, "kills": {},
                                            "stats": {"0": {"impact": -250, "kill_impact": 0, "death_impact": -250}}},
-                                     "2": {"db": {}, "stats": {}, "kills": {}}}}
+                                     "2": {"db": {"plant": 12.5, "defuse": 40.0}, "stats": {}, "kills": {}}}}
+    hurt = toys.round_blob(toys.ten(), n=2, util=[DAMAGE])
+    hurt["player_state"] = {"version": 1, "vitals": {"0": [{"t": 13.0, "life": 0, "hp": 61, "sh": 0, "mhp": 100,
+                                                            "msh": 50}]}}
     blobs = {1: toys.round_blob(toys.ten(), kills=KILLS, n=1,
                                 util=[{"k": "flash", "t": 9.0, "by": 1, "u": 0, "v": 0, "hits": []}]),
-             2: toys.round_blob(toys.ten(), n=2)}
+             2: hurt}
     controls = {1: ("ok", False, SHARES), 2: ("not_ready", False, None)}
     snapshot.save(snapshot.assemble(context, blobs, controls), tmp_path)
     return snapshot.load(tmp_path)
@@ -1523,6 +1819,19 @@ def test_knew_answers_for_a_side_or_for_a_players_side(snap):
     assert by_side["side"] == "A" and [e["name"] for e in by_side["enemies"]] == ["P5#T5"]
     assert query.knew(snap, 1, 15.0, "P2")["side"] == "A"
     assert query.knew(snap, 1, 15.0, "B")["enemies"] == []
+
+
+def test_knew_lists_what_was_heard_apart_from_what_was_seen(snap):
+    out = query.knew(snap, 1, 15.0, "A")
+    assert out["signals"] == [{"t": 3.0, "name": "P6#T6", "reason": "footsteps"}]      # the 40 s one is later
+    assert "no place" in out["note"]
+
+
+def test_where_gives_health_after_the_last_recorded_hit(snap):
+    before, after = query.where(snap, 2, 5.0), query.where(snap, 2, 20.0)
+    assert before["players"][0]["health"] is None                  # no hit recorded yet: unknown, not full
+    assert after["players"][0]["health"] == {"hp": 61, "shield": 0}
+    assert query.where(snap, 1, 25.0)["players"][0].get("health") is None      # dead: no health
 
 
 def test_knew_without_team_knowledge_says_so(snap):
@@ -1549,6 +1858,20 @@ def test_timeline_orders_events_and_can_be_cut_to_a_span(snap):
     assert query.timeline(snap, 1, 15.0, 30.0)["events"] == events[1:]
 
 
+def test_timeline_has_the_plant_the_defuse_and_damage(snap):
+    events = query.timeline(snap, 2)["events"]
+    assert [(e["t"], e["kind"]) for e in events] == [(12.5, "plant"), (13.0, "damage"), (40.0, "defuse")]
+    assert events[1] == {"t": 13.0, "kind": "damage", "by": "P5#T5", "target": "P0#T0", "source": "gun", "hits": 3}
+
+
+def test_a_kill_after_the_round_was_decided_is_marked(tmp_path):
+    blob = toys.round_blob(toys.ten(), kills=[{"t": 50.0, "killer": 5, "victim": 0}], t_decided=40.0)
+    context = {**CONTEXT, "match": {**CONTEXT["match"], "rounds": [1]}, "rounds": {"1": {"db": {}, "stats": {}}}}
+    snapshot.save(snapshot.assemble(context, {1: blob}, {}), tmp_path)
+    (kill,) = query.timeline(snapshot.load(tmp_path), 1)["events"]
+    assert kill["after_decided"] is True
+
+
 def test_impact_is_the_stored_row(snap):
     assert query.impact(snap, 1, "P0")["impact"] == -250
     assert query.impact(snap, 2, "P0") == {"available": False, "reason": "no Impact row for this round"}
@@ -1572,6 +1895,27 @@ def test_every_call_is_logged_with_an_id_errors_included(snap, tmp_path):
     log = query.read_log(tmp_path)
     assert log["q1"]["cmd"] == "where" and log["q1"]["args"] == ["1", "25"]
     assert log["q1"]["result"]["players"][0]["died_at"] == 20.0
+
+
+@pytest.mark.parametrize("command, args", [
+    ("where", ["7.0", "10"]),                # a round is a whole number
+    ("where", ["1", "0:41"]),                # a time is seconds, not a clock
+    ("distance", ["1", "ten", "P0", "P5"]),
+    ("where", ["1"]),                        # too few arguments
+])
+def test_malformed_arguments_are_an_answer_not_a_crash(snap, tmp_path, command, args):
+    out = query.run(snap, tmp_path, command, args)
+    assert "error" in out and out["id"] == "q1" and query.read_log(tmp_path)["q1"]["args"] == args
+
+
+def test_answer_computes_without_logging(snap, tmp_path):
+    assert query.answer(snap, "impact", ["1", "P0"])["impact"] == -250
+    assert query.read_log(tmp_path) == {}
+
+
+def test_distance_without_a_position_says_so(snap):
+    snap.view(1).blob["tracks"]["5"] = []                  # alive, and no track sample
+    assert query.distance(snap, 1, 10.0, "P0", "P5") == {"available": False, "reason": "no position for one of them at 10.0"}
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -1594,9 +1938,9 @@ from pathlib import Path
 
 from app.coach import control_areas, knowledge
 from app.coach.snapshot import SnapshotError
+from app.replays import player_state
 
 LOG = "log.jsonl"
-_UTIL_KINDS = ("flash", "nearsight", "ability", "cast")
 
 
 class QueryError(Exception):
@@ -1625,22 +1969,40 @@ def _missing(reason: str) -> dict:
     return {"available": False, "reason": reason}
 
 
+def _health(view, slot: int, t: float) -> dict | None:
+    event = player_state.vitals_at(view.blob.get("player_state"), slot, t)
+    return None if event is None else {"hp": event["hp"], "shield": event["sh"]}
+
+
 def where(snap, n, t) -> dict:
     t = float(t)
     view = _view(snap, n, t)
-    return {"round": int(n), "t": t, "players": [
-        {"slot": s, "name": snap.names.get(s), "side": view.side(s), **view.position(s, t)} for s in view.slots]}
+    players = []
+    for s in view.slots:
+        row = {"slot": s, "name": snap.names.get(s), "side": view.side(s), "role": snap.role(int(n), s),
+               **view.position(s, t)}
+        if row["alive"]:
+            row["health"] = _health(view, s, t)
+        players.append(row)
+    return {"round": int(n), "t": t, "players": players,
+            "note": "health is hp and shield after the player's last recorded hit; null means no hit is recorded "
+                    "so far, not full health; heals are not recorded"}
 
 
 def knew(snap, n, t, side) -> dict:
     t = float(t)
     view = _view(snap, n, t)
     side = side if side in ("A", "B") else view.side(_slot(snap, side))
-    stored = (snap.control(int(n)) or {}).get("knew")
-    if not stored:
+    control = snap.control(int(n)) or {}
+    if not control.get("knew"):
         return _missing("team_knowledge")
-    return {"round": int(n), "t": t, "side": side, "enemies": knowledge.known_enemies(stored, side, t, view),
-            "note": "team knowledge: assumes everything any teammate saw or heard was called"}
+    return {"round": int(n), "t": t, "side": side,
+            "enemies": knowledge.known_enemies(control["knew"], side, t, view),
+            "signals": knowledge.signals(control.get("signals"), side, t, snap.names),
+            "note": "team knowledge, assuming everything any teammate learned was called. enemies: those the team "
+                    "had seen, with the place and time of the last sighting. signals: every stored event that "
+                    "located an enemy for the team (sight, sound, damage, a kill), with its time and reason and "
+                    "no place; null when this round stores none"}
 
 
 def distance(snap, n, t, a, b) -> dict:
@@ -1650,8 +2012,10 @@ def distance(snap, n, t, a, b) -> dict:
     for s in (sa, sb):
         if not view.alive(s, t):
             return _missing(f"{snap.names[s]} was dead at {t}")
-    return {"round": int(n), "t": t, "a": snap.names[sa], "b": snap.names[sb],
-            "metres": round(view.distance_m(sa, sb, t), 1)}
+    metres = view.distance_m(sa, sb, t)
+    if metres is None:
+        return _missing(f"no position for one of them at {t}")
+    return {"round": int(n), "t": t, "a": snap.names[sa], "b": snap.names[sb], "metres": round(metres, 1)}
 
 
 def control(snap, n, t0, t1, area) -> dict:
@@ -1677,17 +2041,11 @@ def timeline(snap, n, t0=None, t1=None) -> dict:
     name = snap.names.get
     events = [{"t": k["t"], "kind": "kill", "killer": name(k.get("killer")), "victim": name(k["victim"]),
                "after_decided": k["t"] > view.t_decided} for k in view.kills]
-    for e in view.blob.get("util", []):
-        if e.get("k") in _UTIL_KINDS:
-            row = {"t": e["t"], "kind": e["k"], "by": name(e.get("by"))}
-            if e.get("code") or e.get("ability"):
-                row["ability"] = e.get("code") or e.get("ability")
-            if e.get("hits") is not None:
-                row["hits"] = [name(h[0]) for h in e["hits"]]
-            events.append(row)
+    events += view.utility() + view.damage()
+    db = snap.site(int(n)).get("db") or {}                  # the site's times, already on the replay clock
     for key in ("plant", "defuse"):
-        if isinstance(view.blob.get(key), dict) and view.blob[key].get("t") is not None:
-            events.append({"t": view.blob[key]["t"], "kind": key})
+        if db.get(key) is not None:
+            events.append({"t": db[key], "kind": key})
     events = sorted((e for e in events if lo <= e["t"] <= hi), key=lambda e: (e["t"], e["kind"]))
     return {"round": int(n), "t0": lo, "t1": hi, "decided_at": view.t_decided, "events": events}
 
@@ -1714,15 +2072,21 @@ def read_log(directory: Path) -> dict[str, dict]:
     return {row["id"]: row for row in rows}
 
 
-def run(snap, directory: Path, command: str, args: list[str]) -> dict:
+def answer(snap, command: str, args: list[str]) -> dict:
+    """The answer alone. Bad input is an answer too, so the caller reads it instead of retrying blind."""
     try:
         if command not in COMMANDS:
             raise QueryError(f"unknown command {command!r}; commands: {', '.join(sorted(COMMANDS))}")
-        result = COMMANDS[command](snap, *args)
+        return COMMANDS[command](snap, *(args if isinstance(args, list) else []))
     except QueryError as error:
-        result = {"error": str(error)}
-    except TypeError:
-        result = {"error": f"wrong arguments for {command}: {args}"}
+        return {"error": str(error)}
+    except (TypeError, ValueError):
+        return {"error": f"wrong arguments for {command}: {args}. Rounds are whole numbers and times are "
+                         "seconds into the round (41.5, not 0:41)"}
+
+
+def run(snap, directory: Path, command: str, args: list[str]) -> dict:
+    result = answer(snap, command, args)
     path = Path(directory) / LOG
     path.parent.mkdir(parents=True, exist_ok=True)
     entry = {"id": f"q{len(read_log(directory)) + 1}", "cmd": command, "args": list(args), "result": result}
@@ -1730,8 +2094,6 @@ def run(snap, directory: Path, command: str, args: list[str]) -> dict:
         handle.write(json.dumps(entry, separators=(",", ":")) + "\n")
     return {"id": entry["id"], **result}
 ```
-
-Check the blob's `plant`/`defuse` shape in `app/replays/condense.py` before trusting the `plant`/`defuse` lines above; if they are stored as a bare number or under another key, read them as stored and add one test for a planted round.
 
 `scripts/coach_query.py`:
 
@@ -1800,6 +2162,18 @@ This task has no new code. It is the spec's "thresholds are set from a look at r
 Using the snapshot from Task 5, Step 5:
 
 `$PY scripts/coach_brief.py --run $env:TEMP\valo-coach\<uuid> --player "<owner's Riot ID>" --flags-only`
+
+- [ ] **Step 1b: Read what the real snapshot says about the things the tests could only assume**
+
+From the same snapshot, print and report to the owner (a few lines of throwaway Python over `snapshot.json`, not committed):
+
+- how many rounds have a survivor whose `alive` interval ends in `null` (expected: nearly all; this is the case that crashed the first draft of this plan),
+- whether any round's blob has `side: null` players, and how many rounds carry the `db_only_deaths` gap,
+- the distinct `reason` values in `control.signals` across the match, so the playbook (plan 3) can name them in the owner's terms,
+- one planted round's `timeline`, checked against the viewer's plant marker,
+- how many rounds have `role` filled for the owner's slot (expected: all).
+
+A surprise here is a finding: stop and report it before going on.
 
 - [ ] **Step 2: Spot-check three flags in the replay viewer**
 
