@@ -22,6 +22,7 @@ WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBAPP_ROOT))
 
 TIMEOUT_S = 1800
+MODEL_DIR = "model"   # PROVISIONAL(D12): the model's cwd holds only q; snapshot and log stay one level up, where reads are refused (probe 3g).
 
 # What the model's process may inherit. Everything else (database URL, API keys, any other secret) is dropped.
 ENV_ALLOW = frozenset({"PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "USERPROFILE",
@@ -36,7 +37,8 @@ def child_env(environ: dict) -> dict:
 def write_q(run_dir: Path, python: Path) -> Path:
     """The one command the model may run: a bash script (Claude Code's shell on Windows is Git Bash)."""
     posix = lambda p: str(p).replace("\\", "/")
-    path = Path(run_dir) / "q"
+    path = Path(run_dir) / MODEL_DIR / "q"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/usr/bin/env bash\n"
                     f'exec "{posix(python)}" "{posix(WEBAPP_ROOT / "scripts" / "coach_query.py")}" '
                     f'--run "{posix(Path(run_dir).resolve())}" "$@"\n', encoding="utf-8", newline="\n")
@@ -63,7 +65,7 @@ def claude_call(run_dir: Path, model: str | None):
 
     def call(text: str, session: str | None):
         done = subprocess.run(claude_command(exe, model, session), input=text, capture_output=True, text=True,
-                              encoding="utf-8", cwd=run_dir, env=child_env(dict(os.environ)), timeout=TIMEOUT_S)
+                              encoding="utf-8", cwd=Path(run_dir) / MODEL_DIR, env=child_env(dict(os.environ)), timeout=TIMEOUT_S)
         if done.returncode != 0:
             raise RuntimeError(f"claude exited {done.returncode}: {done.stderr.strip()[:500]}")
         out = json.loads(done.stdout)

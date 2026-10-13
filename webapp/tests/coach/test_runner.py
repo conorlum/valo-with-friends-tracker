@@ -165,6 +165,26 @@ def test_the_q_script_runs_the_query_tool_against_this_run(tmp_path):
     path = coach_report.write_q(tmp_path, tmp_path / "python.exe")
     text = path.read_text(encoding="utf-8")
     assert path.name == "q" and "coach_query.py" in text and '--run' in text and '"$@"' in text and "\\" not in text
+    assert path == tmp_path / "model" / "q"
+    assert [p.name for p in (tmp_path / "model").iterdir()] == ["q"]
+    assert f'--run "{tmp_path.resolve().as_posix()}"' in text
+
+
+def test_the_model_runs_in_the_folder_that_holds_only_q(tmp_path, monkeypatch):
+    seen = {}
+
+    class Done:
+        returncode, stdout, stderr = 0, json.dumps({"result": "hi", "session_id": "s"}), ""
+
+    def fake_run(command, **kwargs):
+        seen.update(kwargs)
+        return Done()
+
+    monkeypatch.setattr(coach_report.shutil, "which", lambda name: "claude")
+    monkeypatch.setattr(coach_report.subprocess, "run", fake_run)
+    (tmp_path / "model").mkdir()
+    assert coach_report.claude_call(tmp_path, None)("x", None) == ("hi", "s")
+    assert seen["cwd"] == tmp_path / "model"
 
 
 # --- main(): the command itself, with the database and the model replaced ---
