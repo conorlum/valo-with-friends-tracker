@@ -1,0 +1,46 @@
+{# The coach panel on the coaching page (app/routers/coach.py). Context: `coach` (app/services/coach.py
+   page_data). Each instance is a button carrying its round and second; coach.js moves the viewer there.
+   Report text is model-written: rendered escaped, never |safe. #}
+{% macro clock(i) %}R{{ i.round }}{% if i.t is not none %} {{ "%d:%02d" | format((i.t | int) // 60, (i.t | int) % 60) }}{% endif %}{% endmacro %}
+{% macro point_card(p) %}
+<article class="coach-point{% if p.disputed %} is-disputed{% endif %}" data-coach-point="{{ p.id }}">
+  <h4>{{ p.title }} <span class="coach-theme">{{ p.theme }}</span>{% if p.disputed %} <span class="coach-disputed">Disputed</span>{% endif %}</h4>
+  <p>{{ p.body }}</p>
+  {% if p.instances %}<ul class="coach-instances">
+    {% for i in p.instances %}<li><button type="button" class="coach-instance" data-coach-round="{{ i.round }}" data-coach-t="{{ i.t if i.t is not none else '' }}">{{ clock(i) }}</button>{% if i.caption %} <span>{{ i.caption }}</span>{% endif %}</li>
+    {% endfor %}</ul>{% endif %}
+  <div class="coach-feedback" data-coach-feedback>
+    {% for f in p.feedback %}<p class="coach-feedback-row"><strong>{{ f.author }}</strong>: {{ f.verdict | replace("_", " ") }}{% if f.note %} &ndash; {{ f.note }}{% endif %}{% if f.handled %} <span class="muted">(handled)</span>{% endif %}</p>
+    {% endfor %}
+  </div>
+</article>
+{% endmacro %}
+{# The spec: a report with fewer than three points on a side says so, whether points were dropped or never written. #}
+{% macro short_note(n) %}{% if n < 3 %}<p class="muted coach-short">{{ "None" if n == 0 else "Only " ~ n }} in this version: the coach found no more it could back up with data.</p>{% endif %}{% endmacro %}
+<section class="coach" data-coach data-coach-uuid="{{ coach.match_uuid }}"{% if coach.report %} data-coach-report="{{ coach.report.id }}"{% endif %}>
+  <header class="coach-header">
+    <h2>Coach</h2>
+    <div class="coach-mode" role="group" aria-label="Report type">
+      <button type="button" class="replay-button" aria-pressed="true">Player</button>
+      <button type="button" class="replay-button" data-coach-team disabled title="Coming soon">Team</button>
+      {% if coach.team_coming_soon %}<span class="coach-soon">Coming soon</span>{% endif %}
+    </div>
+    {% if coach.players %}<nav class="coach-players" aria-label="Coached players">
+      {% for p in coach.players %}<a href="/replays/{{ coach.match_uuid }}/coach?player={{ p.player_id }}"{% if p.selected %} aria-current="true"{% endif %}>{{ p.name }}</a>
+      {% endfor %}</nav>{% endif %}
+  </header>
+  {% if not coach.report %}
+  <p class="coach-empty">No coaching report for this match yet.</p>
+  {% else %}{% set r = coach.report %}
+  <p class="coach-meta">{{ r.player_name }} &middot; version {{ r.version }} &middot; playbook {{ r.playbook_version }} &middot; {{ r.created }}
+    {% for v in r.versions if v != r.version %} &middot; <a href="/replays/{{ coach.match_uuid }}/coach?player={{ r.player_id }}&amp;version={{ v }}">version {{ v }}</a>{% endfor %}</p>
+  {% if r.data_gaps or r.dropped_points %}<p class="coach-gaps">
+    {% if r.dropped_points %}{{ r.dropped_points }} point{{ " was" if r.dropped_points == 1 else "s were" }} dropped because the evidence did not check out.{% endif %}
+    {% if r.data_gaps %}Data missing when this was written: {% for key, names in r.data_gaps | dictsort %}{{ "Match" if key == "match" else "Round " ~ key }} ({{ names | join(", ") }}){{ "; " if not loop.last }}{% endfor %}.{% endif %}
+  </p>{% endif %}
+  <div class="coach-columns">
+    <div><h3>Did well</h3>{% for p in r.good %}{{ point_card(p) }}{% endfor %}{{ short_note(r.good | length) }}</div>
+    <div><h3>To improve</h3>{% for p in r.improve %}{{ point_card(p) }}{% endfor %}{{ short_note(r.improve | length) }}</div>
+  </div>
+  {% endif %}
+</section>
