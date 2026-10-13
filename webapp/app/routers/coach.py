@@ -46,6 +46,9 @@ def coach_page(request: Request, match_uuid: str, player: str | None = None, ver
 @router.get("/replays/{match_uuid}/coach/prompt")
 def prompt_out(match_uuid: str, report: str | None = None, db: Session = Depends(get_db)):
     replay = linked_replay_or_404(db, match_uuid)
+    if report is None:      # no report named: the whole match, every report with open feedback
+        reports, quiet = coach_service.match_prompt_data(db, replay)
+        return PlainTextResponse(coach_prompt.prompt_out_match(str(replay.match_uuid).lower(), reports, quiet))
     report_id = _whole(report)
     found = coach_service.report_page_data(db, report_id) if report_id is not None else None
     if found is None or found[0] != str(replay.match_uuid).lower():

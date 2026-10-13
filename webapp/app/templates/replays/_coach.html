@@ -35,6 +35,7 @@
     {% if coach.players %}<nav class="coach-players" aria-label="Coached players">
       {% for p in coach.players %}<a href="/replays/{{ coach.match_uuid }}/coach?player={{ p.player_id }}"{% if p.selected %} aria-current="true"{% endif %}>{{ p.name }}</a>
       {% endfor %}</nav>{% endif %}
+    {% if coach.players | length > 1 %}<a class="coach-prompt" data-coach-prompt href="/replays/{{ coach.match_uuid }}/coach/prompt" target="_blank" rel="noopener">Prompt out, all players</a>{% endif %}
   </header>
   {% if not coach.report %}
   <p class="coach-empty">No coaching report for this match yet.</p>

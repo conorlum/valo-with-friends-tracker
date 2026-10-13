@@ -59,3 +59,20 @@ def test_reader_text_stays_inside_its_quoted_block():
 def test_prompt_out_with_no_open_feedback_says_so():
     quiet = {**REPORT, "improve": []}
     assert "No open feedback" in prompt.prompt_out("abc", quiet)
+
+
+def test_the_match_prompt_carries_every_report_and_marks_them_all_handled_in_one_command():
+    other = {**REPORT, "id": 9, "version": 1, "player_name": "Friend#2", "data_gaps": {}}
+    text = prompt.prompt_out_match("abc", [REPORT, other], ["Third#3"])
+    assert "2 reports on one match" in text
+    assert "## Report 3 (version 2, playbook version 5) for Owner#1" in text
+    assert "## Report 9 (version 1, playbook version 5) for Friend#2" in text
+    assert text.count("### To improve: Late rotate [rotation]") == 2 and text.count("<feedback ") == 2
+    assert "&lt;/feedback&gt;" in text and 'verdict="right"' not in text       # quoted, and only what is open
+    assert "left out: Third#3." in text
+    assert "coach_snapshot.py abc" in text and text.rstrip().endswith("coach_feedback.py handled --report 3 9")
+
+
+def test_the_match_prompt_with_no_open_feedback_says_so():
+    text = prompt.prompt_out_match("abc", [], ["Owner#1", "Friend#2"])
+    assert "No open feedback on any report of this match." in text and "left out: Owner#1, Friend#2." in text
