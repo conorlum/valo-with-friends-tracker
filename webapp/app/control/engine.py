@@ -3096,6 +3096,9 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         missing['local rope walking floors; terrain sight uses 2D fallback'] = 1
     for case, count in runner.unknown.ignored.items():
         missing[f"utility knowledge ignored: {case}"] = count
+    sight_cache = getattr(geo, '_feature_sight_cache', None)
+    if sight_cache is not None:
+        sight_cache.persist()
     return RoundControl(blob.get("round"), blob.get("map", geo.name), times, weights, walk_cells, states, control,
                         control_masks, coverage_masks, sections, players, redundant, dict(rnd.group_side), cell_m2,
                         missing, {**timings, "branches": dict(branches)}, cf_check,

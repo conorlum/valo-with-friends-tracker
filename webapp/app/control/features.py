@@ -541,6 +541,7 @@ class BoundedOccluder:
     bounds_px: tuple | None = None  # Exact enclosing pixel rectangle for compiler-owned immutable masks.
     source_area: object | None = None  # Round-local conservative source proof; never changes a pixel answer.
     mask_digest: bytes | None = None  # Compiler-owned read-only raster identity, shared by identical poses.
+    cache_resting: bool = True      # Performance hint only: complete resting-pose rows may be persisted.
 
 
 def _bounded_occluder(owner, mask, bottom=-np.inf, top=np.inf, all_height=False):
@@ -786,17 +787,23 @@ def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list
 
     if not occluders:
         return engine.seen_from(geo, src, smokes, skip)
+    src = src[geo.row_of[src] >= 0]
+    cache = cache_for(geo)
+    key = cache.union_key(src, smokes, occluders, skip) if record is None else None
+    reused = cache.union_get(key)
+    if reused is not None:
+        return reused
     # Smoke is tested per pair below. A smoke-filtered union here would repeat
     # that work before any panel check. Extra smoke-hidden targets remain false;
     # the candidates reaching blocked() are identical to the old two-pass path.
     static = engine.seen_from(geo, src, [], skip)
-    src = src[geo.row_of[src] >= 0]
     targets = np.flatnonzero(static & ~skip) if skip is not None else np.flatnonzero(static)
     if not len(targets):
         return static
     out = static.copy()
     out[targets] = False
-    cache = cache_for(geo)
+    target_bits = np.packbits(static & ~skip if skip is not None else static)
+    out_bits = np.packbits(out)
     # With diagnostics requested, retain the exact logical per-pair test counts.
     unaffected = cache.unaffected(geo, src, occluders) if record is None else np.zeros(len(src), bool)
     i = 0
@@ -811,6 +818,7 @@ def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list
             # Preserve source order: later affected sources must receive the same
             # candidate set (and longest-target sampling interval) as before.
             out |= engine.seen_from(geo, src[i:stop], smokes, skip=out)
+            out_bits = np.packbits(out)
             remaining = int(np.count_nonzero(~out[targets]))
             i = stop
             continue
@@ -818,17 +826,23 @@ def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list
         i += 1
         # Unpack one row on demand: the old source-by-all-node temporary can be
         # hundreds of MB for an unknown region and is mostly unused after union.
-        cand = np.unpackbits(geo.rows[geo.row_of[s]])[targets].astype(bool) & ~out[targets]
-        if not cand.any():
+        # Most later sources contribute nothing. Reject them in packed form,
+        # instead of unpacking every map node for every candidate source.
+        bits = geo.rows[geo.row_of[s]] & target_bits & ~out_bits
+        if not bits.any():
             continue
+        idx = np.flatnonzero(np.unpackbits(bits)[:geo.n])
         for smoke in smokes:                  # the pair must be clear of smoke too, as in seen_from
-            cand[cand] &= ~engine.smoke_blocks(geo.centres[[s]], geo.centres[targets[cand]], smoke)[0]
-        if not cand.any():
+            idx = idx[~engine.smoke_blocks(geo.centres[[s]], geo.centres[idx], smoke)[0]]
+        if not len(idx):
             continue
-        clear = ~cache.blocked(geo, s, targets[cand], occluders, record)
-        idx = targets[cand]
+        row = cache.clear_row(geo, s, idx, occluders) if record is None else None
+        clear = ((row[idx // 8] & (128 >> (idx % 8))) != 0 if row is not None
+                 else ~cache.blocked(geo, s, idx, occluders, record))
         out[idx[clear]] = True
+        np.bitwise_or.at(out_bits, idx[clear] // 8, (128 >> (idx[clear] % 8)).astype(np.uint8))
         remaining -= int(np.count_nonzero(clear))
+    cache.union_put(key, out)
     return out
 
 

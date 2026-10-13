@@ -324,15 +324,10 @@ class NodeTopology:
                 costs[self.in_side[0] != GRID * GRID + 256 ** 2] = np.inf
             if solid is not None and solid.any():
                 costs[self._cut(solid)] = np.inf
-            reached = np.where(mask, 0., np.inf)
             allowed = self.walk if within is None else within | mask
             # Chebyshev dilation retains its physical reach; unknown spread below uses Euclidean time.
-            while True:
-                grown = np.minimum(reached, (np.append(reached, np.inf)[self.in_from] + costs).min(1))
-                grown[~allowed | (grown > max(1, iterations) + 1e-8)] = np.inf
-                if np.array_equal(grown, reached):
-                    break
-                reached = grown
+            reached = self._frontier(np.where(mask, 0., np.inf), costs, allowed,
+                                     max(1, iterations) + 1e-8)
             return mask | np.isfinite(reached)
         cur = mask.astype(bool)
         if solid is not None and eight and solid.any():   # through the walks `spread` may take (`_cut`)
@@ -383,22 +378,11 @@ class NodeTopology:
         """As `FlatTopology.spread`. With `parents`, a node's source is the first of its `in_from` columns
         (ascending source node id) that gives exactly its final arrival, then a link; -1 as there. With
         `quiet`, no arrival comes down a fall of more than SILENT_DROP_M (heights.py EDGE_FALL)."""
-        g = reached.copy()
         cost = (self.in_cost_quiet if quiet else self.in_cost) * straight
         if solid is not None and solid.any():
             cost = np.where(self._cut(solid), np.inf, cost)
         freed = free[:, None]
-        while True:
-            padded = np.append(g, np.inf)
-            best = np.minimum(g, (np.maximum(padded[self.in_from], freed) + cost).min(1))
-            for a, b, one_way, link_cost in timed_links(links, straight):
-                best[b] = min(best[b], max(g[a], free[b]) + link_cost)
-                if not one_way:
-                    best[a] = min(best[a], max(g[b], free[a]) + link_cost)
-            best[~room | (best > t)] = np.inf
-            if np.array_equal(best, g):
-                break
-            g = best
+        best = self._frontier(reached, cost, room, t, free, timed_links(links, straight))
         if not parents:
             return best
         rows = np.arange(self.n)
@@ -415,6 +399,48 @@ class NodeTopology:
                     and max(best[b], free[a]) + link_cost == best[a]:
                 par[a] = b
         return best, par
+
+    def _frontier(self, reached, costs, allowed, limit, free=None, links=()):
+        """The original synchronous relaxation, restricted to destinations of changed nodes.
+
+        Keep the incoming-column reduction and floating-point expressions unchanged.
+        Parent tie-breaking still uses the final arrivals in spread(). Initial seeds
+        outside the allowed domain get their original first pulse, then expire.
+        """
+        padded = np.append(reached, np.inf)
+        current = padded[:-1]
+        frontier = np.flatnonzero(np.isfinite(current))
+        links = list(links)
+        arcs = [(a, b, c) for a, b, one_way, c in links]
+        arcs += [(b, a, c) for a, b, one_way, c in links if not one_way]
+        first = True
+        while len(frontier):
+            targets = self._out[frontier].indices
+            active = np.zeros(self.n, bool)
+            active[frontier] = True
+            extra = [b for a, b, _ in arcs if active[a]]
+            if extra:
+                targets = np.concatenate((targets, extra))
+            targets = np.unique(targets)
+            targets = targets[allowed[targets]]
+            incoming = padded[self.in_from[targets]]
+            if free is not None:
+                incoming = np.maximum(incoming, free[targets, None])
+            values = np.minimum(current[targets], (incoming + costs[targets]).min(1))
+            for a, b, c in arcs:
+                if active[a] and allowed[b]:
+                    j = np.searchsorted(targets, b)
+                    values[j] = min(values[j], max(current[a], free[b]) + c)
+            values[values > limit] = np.inf
+            changed = values < current[targets]
+            # These invalid initial seeds participated once in the old relaxation.
+            if first:
+                current[~allowed | (current > limit)] = np.inf
+                first = False
+            current[targets] = values
+            frontier = targets[changed]
+        current[~allowed | (current > limit)] = np.inf
+        return current
 
 
 def of(geo: Geometry):

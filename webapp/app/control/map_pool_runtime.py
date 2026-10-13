@@ -245,6 +245,7 @@ class MapPoolRuntime:
                 # Height bands change while descending, but the panel's XY mask is fixed.
                 for index, blocker in enumerate(occ):
                     blocker.mask = self._sliding_masks.setdefault((f['id'], index), blocker.mask)
+                    blocker.cache_resting = closure in (0., 1.)
             elif f.get('rotation'):
                 fraction = rotation_fraction(f, timeline, t)
                 panel = cf.rotation_pose(f, fraction)
@@ -259,6 +260,8 @@ class MapPoolRuntime:
                                                      cf.to_px(cf.raster(panel)), f['id'])
                     if why:
                         raise FeatureArtifactCorrupt(why)
+                    if blocker is not None:
+                        blocker.cache_resting = fraction == math.floor(fraction)
                     if blocker is not None and f.get('sight_source_area') is not None:
                         from app.control.feature_visibility import source_area
                         if f['id'] not in self._source_areas:

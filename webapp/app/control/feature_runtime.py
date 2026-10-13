@@ -240,6 +240,7 @@ class FeatureRuntime:
             for index, blocker in enumerate(occ):
                 mask_key = (f['id'], index)
                 blocker.mask = self._masks.setdefault(mask_key, blocker.mask)
+                blocker.cache_resting = current['state'] != 'closing'
                 occluders.append(blocker)
         self._time, self._sample = t, (blocked, occluders)
         return self._sample
