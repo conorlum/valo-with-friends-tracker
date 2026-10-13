@@ -79,11 +79,43 @@ def claude_call(run_dir: Path, model: str | None):
             call.models.update(str(name) for name in usage)
         denials = out.get("permission_denials")
         call.denials += len(denials) if isinstance(denials, list) else 0
+        call.usage.append({key: out.get(key) for key in USAGE_KEYS})
         return str(out.get("result") or ""), out.get("session_id")
 
     call.models = set()
     call.denials = 0        # commands the model tried and was refused: a clean run has none
+    call.usage = []         # what the CLI reported for each call (the first prompt, then any follow-up)
     return call
+
+
+def plan_usage() -> dict | None:
+    """The active account's share of its plan limits used so far, in percent, from the owner's `cswap` tool
+    (`cswap status --json`). None when the tool is missing or answers anything else: the run never depends on it."""
+    exe = shutil.which("cswap")
+    if exe is None:
+        return None
+    try:
+        done = subprocess.run([exe, "status", "--json"], capture_output=True, text=True, encoding="utf-8", timeout=30)
+        usage = json.loads(done.stdout)["active"]["usage"]
+        return {"five_hour": float(usage["fiveHour"]["pct"]), "seven_day": float(usage["sevenDay"]["pct"])}
+    except Exception:       # noqa: BLE001 - a missing or changed tool must not fail a coach run
+        return None
+
+
+USAGE_KEYS = ("total_cost_usd", "duration_ms", "num_turns", "usage", "modelUsage")
+_TOKEN_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+
+
+def usage_summary(calls: list[dict]) -> dict:
+    """One run's cost over its model calls, as the CLI reported each. Tokens, minutes and turns are per call and
+    are summed. `total_cost_usd` is the session's running total (a follow-up resumes the session: the first real
+    run reported 0.29 then 0.33 for a 3 second follow-up), so the cost is the largest, not the sum. It is the
+    CLI's figure at API prices; on a subscription nothing is billed per run, so read it as a size."""
+    tokens = {key: sum(int(((c.get("usage") or {}).get(key)) or 0) for c in calls) for key in _TOKEN_KEYS}
+    return {"calls": len(calls),
+            "cost_usd": round(max((float(c.get("total_cost_usd") or 0) for c in calls), default=0.0), 4),
+            "minutes": round(sum(float(c.get("duration_ms") or 0) for c in calls) / 60000, 1),
+            "turns": sum(int(c.get("num_turns") or 0) for c in calls), "tokens": tokens, "per_call": calls}
 
 
 def main() -> int:
@@ -148,12 +180,35 @@ def main() -> int:
         print(f"{path}\n{len(text)} characters")
         return 0
     call = claude_call(run_dir, args.model)
+    plan_before = plan_usage()
+
+    def report_usage() -> None:
+        """Written for a failed run too: it cost the same."""
+        if not call.usage:
+            return
+        used = usage_summary(call.usage)
+        plan_after = plan_usage()
+        if plan_before and plan_after:
+            # Whole percents of the account's limits, and every other session on the account moves them too:
+            # a single run is only measured when nothing else is running.
+            used["plan_pct"] = {"before": plan_before, "after": plan_after}
+            print("plan usage: " + ", ".join(f"{label} {plan_before[key]:g}% -> {plan_after[key]:g}%" for key, label
+                                             in (("five_hour", "5h"), ("seven_day", "7d"))), file=sys.stderr)
+        (run_dir / "usage.json").write_text(json.dumps(used, indent=1), encoding="utf-8")
+        tokens = used["tokens"]
+        print(f"usage: {used['calls']} model call(s), {used['turns']} turns, {used['minutes']} min, "
+              f"${used['cost_usd']} at API prices; tokens: {tokens['input_tokens']} in, "
+              f"{tokens['cache_creation_input_tokens']} cache write, {tokens['cache_read_input_tokens']} cache read, "
+              f"{tokens['output_tokens']} out ({run_dir / 'usage.json'})", file=sys.stderr)
+
     try:
         payload = runner.generate(snap, slot, run_dir, book, voice, call,
                                   args.model or "claude-code (default model)")
     except (runner.RunError, RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
+        report_usage()
         print(f"run failed: {error}; the run's files are in {run_dir}", file=sys.stderr)
         return 1
+    report_usage()
     if call.denials:
         print(f"the model tried {call.denials} command(s) it is not allowed and was refused", file=sys.stderr)
     if not args.model and call.models:
@@ -167,12 +222,12 @@ def main() -> int:
         return 0
     try:
         with SessionLocal() as db:
-            report = coach.store_report(db, match_id, player_id, payload)
+            version = coach.store_report(db, match_id, player_id, payload).version     # read while the session is open
     except Exception as error:      # noqa: BLE001 - whatever the store raises, the report is still on disk
         print(f"the report was written but not stored: {error}\nIt is in {run_dir / 'payload.json'}; store it with "
               f"scripts/coach_store_report.py once the cause is fixed.", file=sys.stderr)
         return 1
-    print(f"published version {report.version} ({len(payload['points'])} points, {payload['dropped_points']} dropped): "
+    print(f"published version {version} ({len(payload['points'])} points, {payload['dropped_points']} dropped): "
           f"/replays/{uuid}/coach?player={player_id}")
     return 0
 

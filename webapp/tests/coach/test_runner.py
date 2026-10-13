@@ -394,6 +394,18 @@ def test_the_stored_title_is_trimmed_and_a_long_model_name_is_cut(snap, tmp_path
     assert payload["points"][0]["title"] == "Held" and len(payload["model"]) == 64
 
 
+def test_a_runs_usage_is_summed_over_its_model_calls():
+    calls = [{"total_cost_usd": 1.25, "duration_ms": 90000, "num_turns": 30,
+              "usage": {"input_tokens": 10, "cache_read_input_tokens": 500, "output_tokens": 40}},
+             {"total_cost_usd": 1.5, "duration_ms": 30000, "num_turns": 4, "usage": None}]
+    used = coach_report.usage_summary(calls)
+    # the cost is the session's running total, so the follow-up's 1.5 already holds the first call's 1.25
+    assert (used["calls"], used["cost_usd"], used["minutes"], used["turns"]) == (2, 1.5, 2.0, 34)
+    assert used["tokens"] == {"input_tokens": 10, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 500,
+                              "output_tokens": 40}
+    assert coach_report.usage_summary([])["calls"] == 0
+
+
 def test_parallel_appends_never_share_an_id(tmp_path):                                       # finding 6
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(8) as pool:
