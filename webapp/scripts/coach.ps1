@@ -5,8 +5,7 @@ player on that player's team (scripts/coach_team.py).
 Usage:
   .\scripts\coach.ps1 <match uuid> "Name#TAG"
   .\scripts\coach.ps1 <match uuid> "Name#TAG" -DryRun      # print the report, publish nothing
-  .\scripts\coach.ps1 <match uuid> "Name#TAG" -Team        # Name#TAG and their four teammates, all at once
-  .\scripts\coach.ps1 <match uuid> "Name#TAG" -Team -Jobs 2   # the same, two runs at a time
+  .\scripts\coach.ps1 <match uuid> "Name#TAG" -Team        # Name#TAG and their four teammates, one at a time
 
 Needs webapp/.env.remote (see scripts/with_friends_db.py) and the claude command on PATH.
 #>
@@ -16,8 +15,7 @@ param(
     [string]$Model = "",
     [switch]$DryRun,
     [switch]$PromptOnly,
-    [switch]$Team,
-    [int]$Jobs = 0
+    [switch]$Team
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,7 +25,6 @@ $python = Join-Path $webappRoot ".venv313\Scripts\python.exe"
 $entry = if ($Team) { "scripts\coach_team.py" } else { "scripts\coach_report.py" }
 $command = @("scripts\with_friends_db.py", "--expect-database", "valowithfriendsdb", $entry, $Match, $Player)
 if ($Model) { $command += @("--model", $Model) }
-if ($Team -and $Jobs -gt 0) { $command += @("--jobs", $Jobs) }
 if ($DryRun) { $command += "--dry-run" }
 if ($PromptOnly) { $command += "--prompt-only" }
 & $python @command

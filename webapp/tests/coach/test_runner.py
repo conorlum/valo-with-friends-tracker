@@ -447,7 +447,7 @@ def _team(monkeypatch, argv, results):
 
     def run_one(command):
         ran.append(command)
-        return results.get(command[3], (0, "published version 1"))
+        return results.get(command[3], 0)
 
     monkeypatch.setattr(sys, "argv", ["coach_team.py", *argv])
     monkeypatch.setattr(app.db, "SessionLocal", lambda: _Db())
@@ -456,22 +456,39 @@ def _team(monkeypatch, argv, results):
     return coach_team, ran
 
 
-def test_the_team_command_runs_every_teammate_and_passes_the_options_on(monkeypatch, capsys):
-    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1", "--model", "opus", "--dry-run", "--jobs", "2"], {})
+def test_the_team_command_runs_every_teammate_in_order_and_passes_the_options_on(monkeypatch, capsys):
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1", "--model", "opus", "--dry-run"], {})
     assert coach_team.main() == 0
-    assert sorted(command[2:] for command in ran) == [["abc", name, "--model", "opus", "--dry-run"]
-                                                      for name in ("Friend#2", "Owner#1", "Third#3")]
+    assert [command[2:] for command in ran] == [["abc", name, "--model", "opus", "--dry-run"]
+                                                for name in ("Owner#1", "Friend#2", "Third#3")]
     assert all(command[1].endswith("coach_report.py") for command in ran)
     out = capsys.readouterr().out
-    assert "3 players, 2 at a time" in out and "3 of 3 runs succeeded" in out
+    assert "3 players, one at a time" in out and "== 2 of 3: Friend#2 ==" in out and "3 of 3 runs succeeded" in out
+
+
+def test_the_team_command_never_runs_two_players_at_once(monkeypatch):
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {})
+    running = []
+
+    def run_one(command):
+        assert not running, "a second run started before the first ended"
+        running.append(command)
+        ran.append(command)
+        running.pop()
+        return 0
+
+    monkeypatch.setattr(coach_team, "run_one", run_one)
+    assert coach_team.main() == 0 and len(ran) == 3
+    with pytest.raises(SystemExit):                 # there is no option that asks for more than one at a time
+        monkeypatch.setattr(sys, "argv", ["coach_team.py", "abc", "Owner#1", "--jobs", "2"])
+        coach_team.main()
 
 
 def test_one_failed_teammate_does_not_stop_the_others_and_fails_the_command(monkeypatch, capsys):
-    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {"Friend#2": (1, "run failed: the model returned no report")})
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {"Friend#2": 1})
     assert coach_team.main() == 1 and len(ran) == 3
     out = capsys.readouterr().out
-    assert "== Friend#2: FAILED (exit 1) ==" in out and "the model returned no report" in out
-    assert "== Third#3: done ==" in out and "2 of 3 runs succeeded; failed: Friend#2" in out
+    assert "== Friend#2: FAILED (exit 1) ==" in out and "2 of 3 runs succeeded; failed: Friend#2" in out
 
 
 def test_the_team_command_refuses_a_player_who_is_not_in_the_match(monkeypatch, capsys):
