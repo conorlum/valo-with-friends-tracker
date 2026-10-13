@@ -30,10 +30,25 @@ def test_a_malformed_playbook_is_refused(tmp_path, text, message):
         playbook.load(write(tmp_path, text))
 
 
-def test_the_committed_playbook_loads_and_names_no_player():
-    book = playbook.load()
-    assert book.version and len(book.themes) >= 4
-    assert not re.search(r"[^\s#]#\S", book.text)        # no Name#TAG; "# " and "## " headings are fine
+@pytest.mark.parametrize("text", [
+    "---\nversion: 1\nthemes: a\n---\n# Principles\n\n# Rules\n1. Say only what the data shows.\n",     # none written
+    "---\nversion: 1\nthemes: a\n---\n# Rules\n1. Say only what the data shows.\n",                    # no section
+    "---\nversion: 0\nthemes: a\n---\n# Principles\n- Trade your teammate.\n",                         # still version 0
+])
+def test_a_playbook_without_the_owners_principles_is_refused(tmp_path, text):
+    with pytest.raises(playbook.PlaybookError, match="no principles yet"):
+        playbook.load(write(tmp_path, text))
+
+
+def test_the_committed_playbook_names_no_player_and_loads_once_it_has_principles(tmp_path):
+    raw = playbook.PATH.read_text(encoding="utf-8")
+    assert not re.search(r"[^\s#]#\S", raw.split("---", 2)[2])        # no Name#TAG; headings are fine
+    if re.search(r"^version: 0$", raw, re.MULTILINE):                 # as shipped: the coach refuses to run
+        with pytest.raises(playbook.PlaybookError, match="no principles yet"):
+            playbook.load()
+        raw = raw.replace("version: 0", "version: 1", 1).replace("# Principles\n", "# Principles\n\n- Trade.\n", 1)
+    book = playbook.load(write(tmp_path, raw))        # the rest of the file (themes, rules) is sound
+    assert len(book.themes) >= 4 and "# Rules" in book.text
 
 
 def test_the_name_check_allows_headings_and_catches_a_riot_id():

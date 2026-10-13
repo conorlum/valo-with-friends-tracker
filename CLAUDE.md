@@ -62,13 +62,17 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
 
 - `coach <match uuid> "Name#TAG"` (`scripts/coach.ps1`) snapshots the match from the friends DB, runs headless
   Claude Code in a temp directory with one permitted command (the logged query tool), checks every point against
-  the run log (`app/coach/checker.py`) and publishes what passes. `-DryRun` prints instead; `-PromptOnly` writes
+  the run log (`app/coach/checker.py`) and publishes three and three. A point whose evidence still fails after
+  one repair is published anyway if it can be stored, and listed with its problems in the command's output
+  (`unchecked`): the owner's choice, feedback prunes weak points. `-DryRun` prints instead; `-PromptOnly` writes
   the first prompt to `prompt.txt` in the run directory and calls no model.
 - The model's working directory is `<run dir>/model`, holding only `q`: Claude Code lets a headless session read
   files inside its working directory without asking, so the snapshot and the log stay one level up. Its
   environment is an allow-list (`coach_report.child_env`). Never add a flag that skips permission checks.
 - `webapp/coach/playbook.md` is the owner's principles and the model's rules. This repo is public: no names or
-  match ids in it. Bump its `version` on any edit; only the owner approves edits. Version 0 is a stand-in.
+  match ids in it. Bump its `version` on any edit; only the owner approves edits. It ships at version 0 with
+  no principles, and every coach command refuses to run until the owner has written theirs under `# Principles`
+  and set the version to 1. Never write stand-in principles for them.
   Voice samples live in `coach_notes` (`scripts/coach_notes.py`).
 - The page is the replay viewer with a panel: `/replays/<uuid>/coach` (`app/routers/coach.py`,
   `replays/_coach.html`). Reports are immutable; a re-run adds a version. Tables: migration `0021`.

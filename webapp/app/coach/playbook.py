@@ -1,5 +1,6 @@
 """The coach's playbook (webapp/coach/playbook.md): the owner's principles, the themes a point may carry, and
-the rules the model writes under. Its `version` is stamped on every report; bump it by hand on any edit."""
+the rules the model writes under. Its `version` is stamped on every report; bump it by hand on any edit. The
+committed file ships with no principles at version 0, and `load` refuses it until the owner has written theirs."""
 
 from __future__ import annotations
 
@@ -38,4 +39,19 @@ def load(path: Path | None = None) -> Playbook:
     text = parts[2].strip()
     if not text:
         raise PlaybookError("the playbook is empty")
+    if not _principles(text) or fields["version"] == "0":
+        # The owner's decision: the coach judges by the owner's own principles, so it does not run without them.
+        raise PlaybookError("the playbook has no principles yet: the owner writes theirs under '# Principles' in "
+                            f"{PATH.name} and sets version to 1 or higher")
     return Playbook(fields["version"], themes, text)
+
+
+def _principles(text: str) -> list[str]:
+    """The lines under the '# Principles' heading, up to the next top-level heading."""
+    lines, inside = [], False
+    for line in text.splitlines():
+        if line.startswith("# "):
+            inside = line.strip().lower() == "# principles"
+        elif inside and line.strip():
+            lines.append(line.strip())
+    return lines
