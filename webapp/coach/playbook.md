@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
@@ -21,6 +21,18 @@ themes: trading, rotation, utility, positioning, opening, post-plant, economy, a
   Smokers cut space up with smokes and apply pressure with util and presence. Initiators either recon for info
   with util or set teammates up with offensive util. Flash duelists take advantaged fights with their util.
 - Noise discipline, whether lurking or in a stack.
+- When two of you peek, the order of contact makes the 2v1: the second goes while the enemy is busy with the
+  first. The wrong order gives the enemy two 1v1s. People are not instant, so peeking together means within
+  about a second of each other.
+- When a teammate takes a fight and nobody is there to trade, the mistake lies in the time leading up to that
+  fight. It is either your fault or the teammate's, or the teammate got pressured into the fight, which is
+  okay-ish.
+- Moving after a kill is good in general. It depends on whether you get swung right after the kill.
+- Outnumbered, you need to isolate a fight, either by playing fast or by playing sneaky. This goes with the
+  man-advantage and man-disadvantage principles above.
+- On defence, using util to separate the entry duelist from their team is great.
+- On an eco, don't play normal angles: stack, push, or play close for a gun. Against an eco, don't lurk alone
+  and hand over a rifle.
 
 # What you are doing
 
