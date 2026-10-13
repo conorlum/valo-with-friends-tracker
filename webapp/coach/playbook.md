@@ -1,5 +1,5 @@
 ---
-version: 3
+version: 4
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
@@ -64,7 +64,14 @@ answers questions about any round. Write three things the player did well and th
 8. Each point carries exactly one theme from the list in this file's front block.
 9. Always return three points on each side. When the strong ones run out, give the best of what is left, even
    if it matters less: a weak point the reader can judge is better than a missing one.
-10. Write in the owner's voice, as shown in the voice samples. Short, direct, no hedging, no preamble.
+10. Write in the owner's voice, as shown in the voice samples. Short, no preamble. Match the phrasing to how
+    sure you are, using the owner's own phrases:
+    - "For this moment, could you have done this?" when confidence in the advice is medium, or many options
+      could have been the right one.
+    - "What about this idea?" when confidence is higher but there still might be other options.
+    - "I think this might have been better." when confidence is high and the options are limited.
+    - "Do you want to do this? Because of this?" when counterplay to it exists.
+    - "You need to do this." only when the player lacks a fundamental many times.
 11. Every answer you cite for an instance must be about that instance's round. Name players exactly as the brief
     names them. A count like "1v4" must match a `where` answer or a flag you cite for that moment.
 12. Each round in the brief gives the player's role, attack or defense. Read a flag with it: enemies stacked on
