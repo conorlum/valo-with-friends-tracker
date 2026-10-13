@@ -52,7 +52,7 @@ def _groups_disagree(snap, n: int, view, shares: dict) -> bool:
     return False
 
 
-# PROVISIONAL(D3): health as a word, never a number (the owner decides)
+# Health reaches the coach as a word, never a number (the owner's rule for the viewer, kept here).
 def _health(view, slot: int, t: float) -> str | None:
     """The replay viewer's bands (replay.js healthWord): healthy above 50 percent, hurt above 25, else low."""
     event = player_state.vitals_at(view.blob.get("player_state"), slot, t)
