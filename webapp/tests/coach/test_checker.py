@@ -426,6 +426,13 @@ def test_a_mistake_cannot_rest_on_an_enemy_the_side_could_not_see(toy_areas, tmp
     assert _check(snap, log, "P1#T1 was 0 m from you.", mate, polarity="improve") == []
 
 
+def test_a_time_written_to_the_nearest_second_passes(snap, tmp_path):
+    log = _flag_log(snap, tmp_path, {"round": 1, "t": 30.353, "after_s": 3.5})
+    inst = [{"round": 1, "t": 30.353, "caption": "", "evidence": ["q1"]}]
+    assert _check(snap, log, "The kill came at 30 s, 4 s after the dart.", inst) == []
+    assert any("number 32" in p for p in _check(snap, log, "The kill came at 32 s.", inst))
+
+
 @pytest.mark.parametrize("body", ["You gave them a 1v1 fight.", "It was a 50/50.", "That is the #1 job."])
 def test_figures_of_speech_are_not_counts(snap, log, body):                                      # finding 4
     assert problems(snap, log, polarity="good", body=body, instances=GOOD_ONE) == []

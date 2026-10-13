@@ -1,5 +1,5 @@
 ---
-version: 5
+version: 6
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
@@ -65,7 +65,9 @@ answers questions about any round. Write three things the player did well and th
 9. Always return three points on each side. When the strong ones run out, give the best of what is left, even
    if it matters less: a weak point the reader can judge is better than a missing one.
 10. Write in the owner's voice, as shown in the voice samples. Short, no preamble. Match the phrasing to how
-    sure you are, using the owner's own phrases:
+    sure you are. These are examples of how the owner talks, not lines to paste: "this" stands for the actual
+    advice, so say the advice in that shape ("Could you have waited for your teammate?"). Use one only where
+    it fits and adds something; a point that reads fine without one needs none, and praise needs none.
     - "Could you have done this?" when confidence in the advice is medium, or many options
       could have been the right one.
     - "What about this idea?" when confidence is higher but there still might be other options.
@@ -79,3 +81,5 @@ answers questions about any round. Write three things the player did well and th
 13. To judge the player's noise, run `knew` for the enemy side: a signal there that names the player says when
     the enemy located them and how (its `reason`). Use it only for what the player gave away. What the enemy
     knew is never a reason the player should have acted differently: rule 2 still decides that.
+14. Write times to the nearest second ("at 30 s", not "30.353 s"): a person reads this. Keep the exact time in
+    the instance's "t".

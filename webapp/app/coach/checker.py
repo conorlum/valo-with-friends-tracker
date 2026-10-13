@@ -209,7 +209,8 @@ def _strip_names(text: str, names: dict) -> str:
 
 
 def _near(x: float, pool: list[float]) -> bool:
-    return any(abs(x - abs(y)) < 0.051 or (float(x).is_integer() and round(abs(y)) == x) for y in pool)
+    # a whole number may be the cited value rounded either way at the half ("31 s" for 30.5)
+    return any(abs(x - abs(y)) < 0.051 or (float(x).is_integer() and abs(x - abs(y)) <= 0.5) for y in pool)
 
 
 def _text_problems(text, cited: _Cited, names, area_names=(), improve: bool = False) -> list[str]:
