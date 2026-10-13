@@ -1,10 +1,35 @@
-// The coaching page (app/templates/replays/_coach.html): an instance moves the replay to its round and second.
+// The coaching page: the strip above the replay (app/templates/replays/_coach.html) and the report's points, two
+// tabs beside the map (replays/_coach_points.html). An instance moves the replay to its round and second.
 // The viewer is the replay page's own (window.viewer, ready when window.viewerReady resolves).
 (function () {
   "use strict";
   var root = document.querySelector("[data-coach]");
   if (!root) return;
-  root.addEventListener("click", function (event) {
+  var side = document.querySelector("[data-replay]");
+
+  // Sending feedback reloads the page: come back to the tab the reader was on, not the first one.
+  var tabKey = "coach-tab:" + root.getAttribute("data-coach-uuid");
+  function showTab(name) {          // what the viewer's own showTab does, usable before the viewer exists
+    if (!side || !side.querySelector('[data-replay-panel="' + name + '"]')) return;
+    Array.prototype.forEach.call(side.querySelectorAll("[data-replay-tab]"), function (tab) {
+      var on = tab.getAttribute("data-replay-tab") === name;
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+      tab.classList.toggle("is-active", on);
+    });
+    Array.prototype.forEach.call(side.querySelectorAll("[data-replay-panel]"), function (panel) {
+      panel.hidden = panel.getAttribute("data-replay-panel") !== name;
+    });
+  }
+  try {
+    var saved = window.sessionStorage.getItem(tabKey);
+    if (saved === "coach-good" || saved === "coach-improve") showTab(saved);
+    if (side) side.addEventListener("click", function (event) {
+      var tab = event.target.closest("[data-replay-tab]");
+      if (tab) window.sessionStorage.setItem(tabKey, tab.getAttribute("data-replay-tab"));
+    });
+  } catch (e) { /* no session storage: the page opens on its first tab */ }
+
+  document.addEventListener("click", function (event) {
     var button = event.target.closest("[data-coach-round]");
     if (!button) return;
     var round = parseInt(button.getAttribute("data-coach-round"), 10);

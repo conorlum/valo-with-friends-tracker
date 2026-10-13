@@ -6,7 +6,9 @@
    data and starts it. #}
 {% set feature_labels = {'Ascent': 'Doors & glass', 'Sunset': 'Door', 'Summit': 'Doors & rope', 'Lotus': 'Doors & breakable', 'Split': 'Ropes', 'Abyss': 'Ropes & breakables'} %}
 {% set feature_label = feature_labels.get(replay.map_name) %}
-<section class="replay{% if linked %} is-linked{% endif %}" data-replay tabindex="0" aria-label="Replay player">
+{# The coaching page (`coach` with a report) puts the report's points in the first two tabs, beside the map. #}
+{% set coach_tabs = linked and coach is defined and coach and coach.report %}
+<section class="replay{% if linked %} is-linked{% endif %}{% if coach_tabs %} has-coach{% endif %}" data-replay tabindex="0" aria-label="Replay player">
   <header class="replay-header">
     <h1>{{ replay.map_name }} replay{% if replay.title_suffix %} <span class="replay-title-suffix">{{ replay.title_suffix }}</span>{% endif %}</h1>
     <p class="replay-note">
@@ -123,7 +125,11 @@
     <aside class="replay-side">
       <div class="replay-tabs" role="tablist" aria-label="Round events">
         {% if linked %}
-        <button type="button" role="tab" class="replay-tab is-active" data-replay-tab="feed" aria-selected="true">Kill feed</button>
+        {% if coach_tabs %}
+        <button type="button" role="tab" class="replay-tab is-active" data-replay-tab="coach-good" aria-selected="true">Did well</button>
+        <button type="button" role="tab" class="replay-tab" data-replay-tab="coach-improve" aria-selected="false">To improve</button>
+        {% endif %}
+        <button type="button" role="tab" class="replay-tab{% if not coach_tabs %} is-active{% endif %}" data-replay-tab="feed" aria-selected="{{ 'false' if coach_tabs else 'true' }}">Kill feed</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="util" aria-selected="false">Utility</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="analysis" aria-selected="false">Analysis</button>
         {% endif %}
@@ -132,7 +138,8 @@
         {% if linked and gaps %}<button type="button" role="tab" class="replay-tab" data-replay-tab="gaps" aria-selected="false">Gaps</button>{% endif %}
       </div>
       {% if linked %}
-      <div data-replay-panel="feed" role="tabpanel">
+      {% if coach_tabs %}{% include "replays/_coach_points.html" %}{% endif %}
+      <div data-replay-panel="feed" role="tabpanel"{% if coach_tabs %} hidden{% endif %}>
         <p class="replay-side-note">Impact: the killer's gain and the victim's loss from each kill (the leverage term of the live score).</p>
         <ol class="replay-feed" data-replay-feed></ol>
       </div>

@@ -2003,7 +2003,18 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 .gaps-rounds { max-height: 420px; overflow: auto; margin: 0; padding-left: 1.5rem; font-size: 0.85rem; }
 @media (max-width: 900px) { .gaps-map-card { grid-template-columns: minmax(0, 1fr); } .gaps-rounds { max-height: 260px; } }
 .replay-gaps-patterns-link { font-size: 0.85rem; margin: 0 0 0.5rem; }
-/* The coach panel (replays/_coach.html) */
+/* The coaching page: the strip above the replay (replays/_coach.html) and the report's points, two tabs of the
+   viewer's side column (replays/_coach_points.html). The points scroll in a box as tall as the map, so the advice
+   and the map are on screen together. */
+.replay.has-coach .replay-tabs { flex-wrap: wrap; }
+@media (min-width: 961px) {
+  .replay.has-coach .replay-body { grid-template-columns: minmax(0, 1fr) minmax(360px, 480px); }
+  .coach-panel { max-height: max(320px, calc(100vh - 240px)); overflow-y: auto; padding-right: 0.5rem; }
+}
+.coach-panel { margin-bottom: 1.25rem; }
+.coach-panel .coach-point:first-child { border-top: 0; padding-top: 0; }
+.coach-feedback-form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.75rem; }
+.coach-feedback-form input[type="text"] { flex: 1 1 12rem; min-width: 0; }
 .coach { margin: 0 0 1rem; }
 .coach-header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
 .coach-header h2 { margin: 0; }
@@ -2011,7 +2022,6 @@ main:has(.replay.is-linked) { max-width: 1440px; }
 .coach-players a { margin-right: 0.75rem; }
 .coach-players a[aria-current] { font-weight: 700; }
 .coach-meta, .coach-gaps { color: var(--ink-muted); margin: 0.25rem 0; }
-.coach-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 1rem; }
 .coach-point { border-top: 1px solid var(--ink-muted); padding: 0.5rem 0; }
 .coach-point h4 { margin: 0 0 0.25rem; }
 .coach-instances { list-style: none; margin: 0.25rem 0; padding: 0; }
