@@ -687,6 +687,15 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
     if geo.adaptive:
         ground[node_of[:, 0] < 0] = np.nan
     upper = hc.MAX_FLOORS - 1 if geo.n > GRID * GRID else 0      # no plate work on a map with none
+    # Adaptive subdivisions can increase node count without adding upper floors.
+    # Do not run slab bookkeeping for columns that contain no plates at all.
+    while upper and not (node_of[:, upper] >= 0).any():
+        upper -= 1
+    # Per-cast snapshots respect caller-owned, mutable terrain arrays while moving
+    # fixed arithmetic out of the sampling loop. Preserve subtraction order.
+    body_from_eye = node_z + hc.BODY_M - eye
+    plate_from_eye = node_z - hc.STAND_M - eye
+    ground_from_eye = ground - eye
     hor = np.full(rays, -np.inf)
     flat = np.zeros(rays, bool)                    # the ray met an unresolved cell: 2D from there on
     lo = np.full((rays, SLAB_SLOTS), np.inf)       # blocked slope intervals [lo, hi]; empty ones never match
@@ -712,6 +721,15 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                 live &= ~inside if solid and step > 0 else inside == inside0
             if not live.any():
                 break
+            # Ray state is independent. Compact only after a substantial loss to
+            # amortize slicing; keep original angle/sample positions and state.
+            if len(live) >= 32 and np.count_nonzero(live) * 4 <= len(live) * 3:
+                px, py, pxc, pyc = px[live], py[live], pxc[live], pyc[live]
+                dx, dy, hits, reach = dx[live], dy[live], hits[live], reach[live]
+                hor, flat, lo, hi = hor[live], flat[live], lo[live], hi[live]
+                used, pend_lo, pend_hi, cur = used[live], pend_lo[live], pend_hi[live], cur[live]
+                live = np.ones(len(cur), bool)
+                index = np.arange(len(cur))
             cell = geo.space_grid[pyc // 4, pxc // 4] if geo.adaptive else (pyc // CELL) * GRID + pxc // CELL
             entered = cell != cur
             if entered.any():
@@ -748,8 +766,9 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                     there = away & (node >= 0)
                     if not there.any():
                         continue
-                    z = node_z[np.maximum(node, 0)]
-                    slope = (z + hc.BODY_M - eye)[:, None] / d
+                    safe_node = np.maximum(node, 0)
+                    z = node_z[safe_node]
+                    slope = body_from_eye[safe_node, None] / d
                     ok = slope[:, 0] >= hor
                     if slabs:     # SLOPE_EPS: a line that grazes a plate's edge is blocked, whatever the rounding
                         ok &= ~((slope >= lo - SLOPE_EPS) & (slope <= hi + SLOPE_EPS)).any(1) \
@@ -758,13 +777,13 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                     ok |= flat | np.isnan(z)
                     seen[node[there & ok]] = True
                 # this cell's ground raises the horizon for what is beyond it
-                np.fmax(hor, np.where(away, (ground[cell] - eye) / d, np.nan), out=hor)
+                np.fmax(hor, np.where(away, ground_from_eye[cell] / d, np.nan), out=hor)
             for k in range(upper):
                 node = node_of[cell, k + 1]
                 has = live & (node >= 0)
                 if not has.any():
                     continue
-                plate = node_z[np.maximum(node, 0)] - hc.STAND_M - eye
+                plate = plate_from_eye[np.maximum(node, 0)]
                 mine = has & in_src
                 else_ = has & ~in_src
                 if mine.any():

@@ -26,10 +26,12 @@ from __future__ import annotations
 
 import math
 import time
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, OrderedDict
 from dataclasses import dataclass, field
 
 import numpy as np
+
+MAX_SIGHT_CACHE_BYTES = 32 * 1024 * 1024
 
 from app.control.engine import RAY_STEP_DEG
 from app.control.geometry import cast
@@ -156,6 +158,9 @@ class GapDetector:
         self._players_prev: dict = {}                      # slot -> the last tick's PlayerView
         self._victim_prev: dict = {}                       # slot -> what the last tick saw of them as a victim
         self._tick_cache: dict = {}
+        self._sight_cache = OrderedDict()
+        self._sight_bytes = self._sight_hits = 0
+        self._sight_geometry = None
         self.smokes_prev: list = []
         self.prev_t: float | None = None
         self.done = False
@@ -194,18 +199,31 @@ class GapDetector:
     def _sight(self, x, y, eye_z, node, smokes) -> np.ndarray:
         """Every node with a clear line from (x, y) at eye height `eye_z` (R13).
 
-        Tick records are read-only. Repeated exposure/release requests share one
-        cast only within that tick; step() clears the memo before every record.
-        Retain blocker references in the key to prevent temporary object ID reuse.
+        Exact positions, eye heights, nodes and physical blocker values can reuse
+        a cast across ticks. Mutable/untrusted panels retain the uncached path.
+        Geometry stays fixed for a detector; replacing it invalidates this memo.
         """
-        from app.control.features import BoundedOccluder
+        from app.control.feature_visibility import blocker_key
 
-        # Direct mutable feature rasters are not eligible for memoization.
-        reusable = not any(isinstance(s, BoundedOccluder) and s.mask.flags.writeable for s in smokes)
+        signature = (id(self.geo), id(self.geo.sight), id(self.geo.node_z), id(self.geo.heights),
+                     id(self.geo.space_grid), id(self.geo.space_nodes), id(self.geo.node_of),
+                     id(self.geo.unresolved), id(self.geo.space_unresolved), id(self.geo.centres),
+                     self.geo.n, self.geo.m_per_px, self.geo.tol_hits, self.geo.movement_only,
+                     self.geo.height_sha, self.geo.features_sha)
+        if signature != self._sight_geometry:
+            self._sight_cache.clear()
+            self._sight_bytes = 0
+            self._sight_geometry = signature
+        blockers = blocker_key(smokes)
+        reusable = blockers is not None
         key = ("sight", float(x).hex(), float(y).hex(),
-               None if eye_z is None else float(eye_z).hex(), int(node), tuple(smokes))
-        if reusable and key in self._tick_cache:
-            return self._tick_cache[key]
+               None if eye_z is None else float(eye_z).hex(), int(node), blockers)
+        if reusable:
+            entry = self._sight_cache.pop(key, None)
+            if entry is not None:
+                self._sight_cache[key] = entry
+                self._sight_hits += 1
+                return entry[0]
         record: dict = {}
         out = cast(self.geo, float(x), float(y), FULL_CIRCLE, smokes, eye_z=eye_z, own=int(node), record=record)
         self.timing["casts"] += 1
@@ -213,7 +231,14 @@ class GapDetector:
             self._note("exposure rays through unresolved terrain (2D sight there)")
         if reusable:
             out.setflags(write=False)
-            self._tick_cache[key] = out
+            size = out.nbytes + 1024 + sum(128 * len(k) + sum(len(v) for v in k if isinstance(v, bytes))
+                                           for k in blockers)
+            if size <= MAX_SIGHT_CACHE_BYTES:
+                self._sight_cache[key] = out, size
+                self._sight_bytes += size
+                while self._sight_bytes > MAX_SIGHT_CACHE_BYTES:
+                    _, removed = self._sight_cache.popitem(last=False)
+                    self._sight_bytes -= removed[1]
         return out
 
     def last_located(self, side: str, enemy: int, before: float, inclusive: bool = True,

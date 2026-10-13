@@ -8,6 +8,37 @@ from app.gaps import cache
 from tests.replays.control_toys import blob, door_hall, height_blob, standing, toy_heights
 
 
+def test_tick_cache_restores_only_verified_panel_immutability(tmp_path):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from app.control import features
+    from app.control.observe import TickRecord
+    from app.control.routes import RouteLog
+    mask = np.zeros((1024, 1024), bool); mask[96:296, 200:204] = True
+    trusted = features._bounded_occluder('compiled', mask, all_height=True)
+    direct = features.BoundedOccluder('direct', mask.copy())
+    altered = mask.copy(); altered[100, 200] = False
+    wrong_digest = replace(trusted, owner='altered', mask=altered)
+    # Shared storage must not make a bad enclosing bound eligible for reuse.
+    wrong_bounds = replace(trusted, owner='bounds', bounds_px=(1, 1, 4, 4))
+    geo = door_hall()
+    unknown = SimpleNamespace(geo=geo, log={'A': RouteLog(), 'B': RouteLog()})
+    writer = cache.Writer(tmp_path/'panels.pkl.gz')
+    for t in (0., 1.):
+        writer(TickRecord(t, {}, {'A': {}, 'B': {}}, {'A': [], 'B': []},
+                          [trusted, direct, wrong_digest, wrong_bounds]), unknown)
+    writer.close()
+    records = list(cache.replay(writer.path))
+    for record, _ in records:
+        good, mutable, bad_hash, bad_bounds = record.smokes
+        assert not good.mask.flags.writeable and good.mask_digest == trusted.mask_digest
+        assert np.array_equal(good.mask, trusted.mask)
+        assert mutable.mask.flags.writeable and mutable.mask_digest is None
+        assert bad_hash.mask.flags.writeable and bad_hash.mask_digest is None
+        assert bad_bounds.mask_digest is None and bad_bounds.bounds_px == (1, 1, 4, 4)
+    assert records[0][0].smokes[0] is records[1][0].smokes[0]
+
+
 def _round():
     return blob({0: ("A", [(0.0, 150, 200, 0)]), 5: ("B", [(0.0, 400, 200, 180), (6.0, 300, 270, 180)])}, t_end=6.0)
 

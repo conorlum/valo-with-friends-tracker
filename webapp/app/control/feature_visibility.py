@@ -19,8 +19,31 @@ import numpy as np
 
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_ROW_BYTES = 64 * 1024 * 1024
+MAX_MOVING_ROW_BYTES = 16 * 1024 * 1024
 MAX_UNION_BYTES = 16 * 1024 * 1024
 ROW_VERSION = 1  # Bump when row sampling/height semantics change without a geometry-key change.
+
+
+def blocker_key(blockers):
+    """Snapshot physical blockers without retaining rasters or mutable wall arrays."""
+    from app.control.geometry import Wall
+    from app.control.features import BoundedOccluder
+    keys = []
+    for s in blockers:
+        if isinstance(s, Wall):
+            segs = np.asarray(s.segs)
+            if segs.ndim != 2 or segs.shape[1] != 4 or segs.dtype.kind not in 'fiu':
+                return None
+            keys.append(('wall', segs.dtype.str, segs.shape, segs.tobytes()))
+        elif isinstance(s, BoundedOccluder):
+            if s.mask.flags.writeable or s.mask_digest is None or s.bounds_px is None:
+                return None
+            keys.append(('panel', s.mask_digest, s.bottom, s.top, s.all_height, s.bounds_px))
+        elif isinstance(s, tuple) and all(isinstance(v, (int, float, bool, np.number)) for v in s):
+            keys.append(s)
+        else:
+            return None
+    return tuple(keys)
 
 
 @dataclass
@@ -91,6 +114,11 @@ class SightCache:
         self.hits = self.misses = 0
         self.rows, self.row_requests, self.unions = OrderedDict(), OrderedDict(), OrderedDict()
         self.row_bytes = self.union_bytes = 0
+        self.moving_row_bytes = 0
+        self.moving_rows = OrderedDict()
+        self.resting_rows = OrderedDict()
+        self.row_evictions = self.row_deferred = 0
+        self.row_counts = np.full(len(geo.rows), -1, np.int32)
         self.row_hits = self.row_builds = self.union_hits = self.union_misses = 0
         self.row_path = None
         self.rows_dirty = False
@@ -111,10 +139,11 @@ class SightCache:
         return (occ.mask_digest, occ.bottom, occ.top, occ.all_height, int(source), steps)
 
     def clear_row(self, geo, source, targets, occluders):
-        """A complete static visibility row for this exact door sampling context.
+        """Packed exact sight for the requested targets and door sampling context.
 
-        Promote repeated source/pose contexts, keeping first-use moving poses cheap.
-        Each door is cached independently; combine their blocking rows on lookup.
+        Promote repeated contexts without eagerly expanding tiny initial subsets.
+        Each door is cached independently. Reuse ready rows even while another
+        panel still uses sparse checks; bits outside `targets` are then unspecified.
         Smoke was filtered before determining the original longest-target spacing.
         """
         if any(o.mask.flags.writeable or o.bounds_px is None or o.mask_digest is None for o in occluders):
@@ -125,18 +154,35 @@ class SightCache:
         occluders = [o for o in occluders if o.source_area is None or o.source_area.affects(geo, source)]
         keys = [self._key(o, source, steps) for o in occluders]
         ready = True
-        for key in keys:
-            count = self.row_requests.pop(key, 0) + 1
-            self.row_requests[key] = count
-            ready &= key in self.rows or count >= 3
+        eligible = {}
+        row_index = geo.row_of[source]
+        if self.row_counts[row_index] < 0:
+            self.row_counts[row_index] = np.count_nonzero(np.unpackbits(geo.rows[row_index])[:geo.n])
+        full_count = int(self.row_counts[row_index])
+        for key, occ in zip(keys, occluders):
+            count, demand = self.row_requests.pop(key, (0, 0))
+            count, demand = count + 1, demand + len(targets)
+            self.row_requests[key] = count, demand
+            resting = bool(getattr(occ, 'cache_resting', True))
+            # Tiny candidate sets do not justify casting an entire static row.
+            demand_floor = min(full_count, max(32, full_count // 50))
+            eligible[key] = key in self.rows or (count >= 3 and demand >= demand_floor)
+            ready &= eligible[key]
         while len(self.row_requests) > 8192:
             self.row_requests.popitem(last=False)
         if not ready:
-            return None
+            self.row_deferred += 1
+            if not any(key in self.rows for key in keys):
+                return None
         out = geo.rows[geo.row_of[source]].copy()
         full_targets = None
         for key, occ in zip(keys, occluders):
             entry = self.rows.pop(key, None)
+            if entry is None and not eligible[key]:
+                blocked = self.blocked(geo, source, targets, [occ], None)
+                selected = targets[blocked]
+                np.bitwise_and.at(out, selected // 8, ~(128 >> (selected % 8)).astype(np.uint8))
+                continue
             if entry is None:
                 from app.control import features as cf, heights as hc
                 if full_targets is None:
@@ -144,31 +190,67 @@ class SightCache:
                 a = (*geo.centres[source], cf._eye_body(geo, source, hc.EYE_M))
                 # Use the *base* row for each door, never the previous door's answer.
                 blocked = np.zeros(geo.n, bool)
-                blocked[full_targets] = cf.blocked_lines([occ], a, self.targets[full_targets], sampling_steps=steps)
+                sparse = self.entries.pop(key, None)
+                missing = full_targets
+                if sparse is not None:
+                    known, previous = sparse[:2]
+                    byte = full_targets // 8
+                    bit = (1 << (full_targets % 8)).astype(np.uint8)
+                    blocked[full_targets] = (previous[byte] & bit) != 0
+                    missing = full_targets[(known[byte] & bit) == 0]
+                    self.bytes -= sparse[2]
+                if len(missing):
+                    blocked[missing] = cf.blocked_lines([occ], a, self.targets[missing], sampling_steps=steps)
                 packed = np.packbits(blocked)
                 packed.setflags(write=False)
                 entry = (packed, packed.nbytes + 1024, bool(getattr(occ, 'cache_resting', True)))
                 self.row_bytes += entry[1]
+                self.moving_row_bytes += entry[1] if not entry[2] else 0
                 self.row_builds += 1
                 self.rows_dirty |= entry[2]
-                sparse = self.entries.pop(key, None)
-                if sparse is not None:
-                    self.bytes -= sparse[2]
             else:
                 self.row_hits += 1
+                if not entry[2] and bool(getattr(occ, 'cache_resting', True)):
+                    entry = entry[0], entry[1], True
+                    self.moving_row_bytes -= entry[1]
+                    self.moving_rows.pop(key, None)
+                    self.rows_dirty = True
             self.rows[key] = entry
+            if not entry[2]:
+                self.moving_rows.pop(key, None)
+                self.moving_rows[key] = None
+            else:
+                self.resting_rows.pop(key, None)
+                self.resting_rows[key] = None
             out &= ~entry[0]
-        while self.row_bytes > MAX_ROW_BYTES and self.rows:
-            _, removed = self.rows.popitem(last=False)
+        while (self.row_bytes > MAX_ROW_BYTES or self.moving_row_bytes > MAX_MOVING_ROW_BYTES) and self.rows:
+            # Resting rows can borrow unused moving space, but rotations need
+            # their own working set too. Reserve a quarter of the total budget
+            # for moving rows, rather than immediately discarding each new pose.
+            resting_bytes = self.row_bytes - self.moving_row_bytes
+            if self.moving_row_bytes > MAX_MOVING_ROW_BYTES:
+                victim = next(iter(self.moving_rows))
+            elif self.resting_rows and resting_bytes > MAX_ROW_BYTES - MAX_MOVING_ROW_BYTES:
+                victim = next(iter(self.resting_rows))
+            else:
+                victim = next(iter(self.moving_rows)) if self.moving_rows else next(iter(self.rows))
+            removed = self.rows.pop(victim)
+            self.moving_rows.pop(victim, None)
+            self.resting_rows.pop(victim, None)
+            # An evicted context must earn promotion again, rather than rebuilding
+            # its whole row on every subsequent lookup under memory pressure.
+            self.row_requests.pop(victim, None)
             self.row_bytes -= removed[1]
+            self.moving_row_bytes -= removed[1] if not removed[2] else 0
+            self.row_evictions += 1
             self.rows_dirty |= removed[2]
         return out
 
     def union_key(self, sources, smokes, occluders, skip):
         """Only value-stable blockers enter the complete-request memo."""
-        if any(not isinstance(s, tuple) or not all(isinstance(v, (int, float, bool, np.number)) for v in s)
-               for s in smokes):
-            return None  # Wall abilities retain their ordinary path.
+        smoke_keys = blocker_key(smokes)
+        if smoke_keys is None:
+            return None
         poses = []
         for o in occluders:
             if o.mask.flags.writeable or o.bounds_px is None or o.mask_digest is None:
@@ -177,7 +259,7 @@ class SightCache:
             hint = None if area is None else (area.sweep_bounds, np.packbits(area.drawn).tobytes())
             poses.append((o.mask_digest, o.bottom, o.top, o.all_height, o.bounds_px, hint))
         return (np.asarray(sources, np.int64).tobytes(), None if skip is None else np.packbits(skip).tobytes(),
-                tuple(smokes), tuple(poses))
+                tuple(smoke_keys), tuple(poses))
 
     def union_get(self, key):
         if key is None:
@@ -196,7 +278,8 @@ class SightCache:
         packed = np.packbits(answer)
         hint_bytes = sum(len(p[-1][1]) for p in key[3] if p[-1] is not None)
         size = (packed.nbytes + len(key[0]) + (len(key[1]) if key[1] else 0) + hint_bytes
-                + 1024 + 256 * len(key[3]) + 128 * sum(len(s) for s in key[2]))
+                + 1024 + 256 * len(key[3]) + 128 * sum(len(s) for s in key[2])
+                + sum(len(s[3]) for s in key[2] if len(s) == 4 and isinstance(s[0], str) and s[0] == 'wall'))
         old = self.unions.pop(key, None)
         self.union_bytes -= old[1] if old else 0
         if size > MAX_UNION_BYTES:
@@ -232,10 +315,14 @@ class SightCache:
                     if self.row_bytes + size > MAX_ROW_BYTES:
                         break
                     self.rows[key] = (row, size, True)
+                    self.resting_rows[key] = None
                     self.row_bytes += size
         except (OSError, ValueError, KeyError, TypeError, EOFError, zipfile.BadZipFile):
             self.rows.clear()
             self.row_bytes = 0
+            self.moving_rows.clear()
+            self.resting_rows.clear()
+            self.moving_row_bytes = 0
 
     def persist(self):
         """Best-effort atomic resting-row snapshot. Corrupt/missing caches rebuild."""

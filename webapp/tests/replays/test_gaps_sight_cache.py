@@ -1,4 +1,4 @@
-"""Repeated release/exposure casts share results only within one read-only tick."""
+"""Exact release/exposure casts reuse bounded results across read-only ticks."""
 from dataclasses import replace
 
 import numpy as np
@@ -56,7 +56,7 @@ def test_changed_sight_inputs_are_not_reused(changed, monkeypatch):
     assert len(calls) == 2
 
 
-def test_new_tick_and_mutable_rasters_do_not_reuse_sight(monkeypatch):
+def test_new_tick_reuses_exact_sight_but_mutable_rasters_do_not(monkeypatch):
     det = detector()
     calls = []
     def cast(*args, **kwargs):
@@ -67,9 +67,50 @@ def test_new_tick_and_mutable_rasters_do_not_reuse_sight(monkeypatch):
     logs = {'A': RouteLog(), 'B': RouteLog()}
     det.step(TickRecord(0, {}, {'A': {}, 'B': {}}, {'A': [], 'B': []}, []), logs)
     det._sight(124, 124, None, 0, [])
-    assert len(calls) == 2
+    assert len(calls) == 1
     mutable = features.BoundedOccluder('direct', np.zeros((1024, 1024), bool))
     det._sight(124, 124, None, 0, [mutable])
     mutable.mask[:] = True
     det._sight(124, 124, None, 0, [mutable])
+    assert len(calls) == 3
+
+
+def test_wall_geometry_changes_and_equivalent_compiler_panels(monkeypatch):
+    det = detector()
+    calls = []
+    def cast(*args, **kwargs):
+        calls.append(kwargs)
+        return np.ones(det.geo.n, bool)
+    monkeypatch.setattr(detect, 'cast', cast)
+    wall = engine.Wall.from_points([(140, 200), (300, 200)])
+    first = det._sight(124, 124, 1.7, 0, [wall])
+    assert det._sight(124, 124, 1.7, 0, [engine.Wall(wall.segs.copy())]) is first
+    wall.segs[0, 0] += 20
+    det._sight(124, 124, 1.7, 0, [wall])
+    assert len(calls) == 2
+    mask = np.zeros((1024, 1024), bool); mask[96:296, 200:204] = True
+    a = features._bounded_occluder('a', mask, all_height=True)
+    b = features._bounded_occluder('b', mask.copy(), all_height=True)
+    first = det._sight(124, 124, 1.7, 0, [a])
+    assert det._sight(124, 124, 1.7, 0, [b]) is first
+    assert len(calls) == 3
+
+
+def test_sight_lru_is_bounded_and_geometry_replacement_invalidates_it(monkeypatch):
+    import copy
+    det = detector()
+    calls = []
+    def cast(*args, **kwargs):
+        calls.append(kwargs)
+        return np.ones(det.geo.n, bool)
+    monkeypatch.setattr(detect, 'cast', cast)
+    monkeypatch.setattr(detect, 'MAX_SIGHT_CACHE_BYTES', 2 * (det.geo.n + 1024))
+    for x in (124, 125, 126):
+        det._sight(x, 124, None, 0, [])
+    assert len(det._sight_cache) == 2 and det._sight_bytes <= detect.MAX_SIGHT_CACHE_BYTES
+    det._sight(124, 124, None, 0, [])  # evicted
     assert len(calls) == 4
+    det.geo = copy.copy(det.geo)
+    det.geo.sight = det.geo.sight.copy()
+    det._sight(124, 124, None, 0, [])
+    assert len(calls) == 5 and len(det._sight_cache) == 1

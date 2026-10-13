@@ -12,6 +12,7 @@ asset and the hearing table into it), so an edit to any of them misses the cache
 from __future__ import annotations
 
 import gzip
+import hashlib
 import pickle
 from pathlib import Path
 
@@ -112,7 +113,9 @@ def replay(path: Path):
         _header(f, path)
         body = pickle.load(f)
     logs, state = body["logs"], {}
+    checked_panels = set()
     for t, players, diff, gone, events, smokes, n in body["ticks"]:
+        _restore_panel_immutability(smokes, checked_panels)
         for k in gone:
             state.pop(k, None)
         for k, (how, idx, val) in diff.items():
@@ -125,6 +128,32 @@ def replay(path: Path):
         views = {s: PlayerView(s, team, node, x, y, yaw, _mask(live, n), _mask(util, n), _mask(view, n), eye_z)
                  for s, (team, node, x, y, yaw, live, util, view, eye_z) in players.items()}
         yield TickRecord(t, views, unknown, events, smokes), logs
+
+
+def _restore_panel_immutability(smokes, checked):
+    """Pickle restores NumPy arrays writable. Re-freeze verified stored rasters.
+
+    The loaded body holds every panel alive, so IDs in `checked` cannot be reused.
+    Caller-owned or altered rasters keep their ordinary uncached sight path.
+    """
+    from app.control.features import BoundedOccluder
+    from app.control.geometry import PX
+    for panel in smokes:
+        if not isinstance(panel, BoundedOccluder) or id(panel) in checked:
+            continue
+        checked.add(id(panel))
+        mask = panel.mask
+        if (not isinstance(mask, np.ndarray) or mask.dtype != np.bool_ or mask.shape != (PX, PX)
+                or panel.mask_digest is None or panel.bounds_px is None
+                or hashlib.sha256(mask.tobytes()).digest() != panel.mask_digest):
+            panel.mask_digest = None  # Also deny reuse if a verified panel shares this array.
+            continue
+        ys, xs = np.nonzero(mask)
+        bounds = (int(xs.min()), int(ys.min()), int(xs.max())+1, int(ys.max())+1) if len(xs) else None
+        if bounds == panel.bounds_px:
+            mask.setflags(write=False)
+        else:
+            panel.mask_digest = None
 
 
 def read(path: Path) -> tuple[list[TickRecord], dict]:
