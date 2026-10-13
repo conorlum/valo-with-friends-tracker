@@ -543,6 +543,12 @@ class BoundedOccluder:
     mask_digest: bytes | None = None  # Compiler-owned read-only raster identity, shared by identical poses.
     cache_resting: bool = True      # Performance hint only: complete resting-pose rows may be persisted.
 
+    def discard_acceleration(self):
+        """Drop derived cache/culling proofs without changing the physical blocker."""
+        self.mask_digest = None
+        self.bounds_px = None
+        self.source_area = None
+
 
 def _bounded_occluder(owner, mask, bottom=-np.inf, top=np.inf, all_height=False):
     ys, xs = np.nonzero(mask)

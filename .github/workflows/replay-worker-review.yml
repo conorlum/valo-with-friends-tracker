@@ -27,6 +27,7 @@ jobs:
         run: |
           docker run --rm --user root --entrypoint sh \
             -v "$PWD/webapp/tests:/srv/webapp/tests:ro" \
+            -v "$PWD/webapp/scripts/control_reference.py:/srv/webapp/scripts/control_reference.py:ro" \
             -e PYTHONPATH=/srv/webapp:/srv:/srv/webapp/tests/replays \
             replay-worker-review -c '
               /opt/control-venv/bin/pip install --only-binary=:all: pytest==8.3.3 &&
@@ -34,6 +35,11 @@ jobs:
                 /srv/webapp/tests/replays/test_feature_review_regressions.py \
                 /srv/webapp/tests/replays/test_feature_line_culling.py \
                 /srv/webapp/tests/replays/test_feature_visibility_cache.py \
+                /srv/webapp/tests/replays/test_feature_visibility_rows.py \
+                /srv/webapp/tests/replays/test_height_cast_compaction.py \
+                /srv/webapp/tests/replays/test_gaps_observe.py \
+                /srv/webapp/tests/replays/test_gaps_sight_cache.py \
+                /srv/webapp/tests/replays/test_topology_frontier.py \
                 /srv/webapp/tests/replays/test_panel_feature_grid.py \
                 /srv/webapp/tests/replays/test_rope_walking_ground.py \
                 /srv/webapp/tests/replays/test_quiet_walk_exits.py \

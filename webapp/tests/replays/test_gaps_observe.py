@@ -1,11 +1,59 @@
 """The observer hook and the tick cache (timing-gaps spec, section 3)."""
 
 import numpy as np
+import pytest
 
 from app.control import engine as ce
 from app.control import heights as hc
 from app.gaps import cache
 from tests.replays.control_toys import blob, door_hall, height_blob, standing, toy_heights
+
+
+@pytest.mark.parametrize('rejected', ['bounds', 'digest', 'missing_digest', 'missing_bounds'])
+def test_rejected_tick_cache_panel_keeps_unculled_visibility(tmp_path, rejected):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from app.control import features
+    from app.control.observe import TickRecord
+    from app.control.routes import RouteLog
+    from app.gaps import detect
+    from tests.replays.control_toys import open_hall
+
+    geo = open_hall()
+    mask = np.zeros((1024, 1024), bool)
+    mask[96:296, 200:204] = True
+    original = features._bounded_occluder('door', mask, bottom=1, top=3, all_height=True)
+    changes = {
+        'bounds': {'bounds_px': (1, 1, 4, 4)},
+        'digest': {'mask_digest': b'wrong', 'bounds_px': (1, 1, 4, 4)},
+        'missing_digest': {'mask_digest': None, 'bounds_px': (1, 1, 4, 4)},
+        'missing_bounds': {'bounds_px': None},
+    }
+    candidate = replace(original, source_area='rejected-source-proof', **changes[rejected])
+    unknown = SimpleNamespace(geo=geo, log={'A': RouteLog(), 'B': RouteLog()})
+    writer = cache.Writer(tmp_path/'rejected-panel.pkl.gz')
+    for t in (0., 1.):
+        writer(TickRecord(t, {}, {'A': {}, 'B': {}}, {'A': [], 'B': []}, [candidate]), unknown)
+    writer.close()
+
+    # Independent fallback: retain the physical raster/band without ANY culling metadata.
+    reference = features.BoundedOccluder('door', mask.copy(), bottom=1, top=3, all_height=True)
+    source, target = geo.node_at_px(124, 196), geo.node_at_px(340, 196)
+    rnd = ce.RoundInputs(blob({}, t_end=10), geo)
+    baseline = detect.GapDetector(geo, rnd)
+    expected = baseline._sight(124, 196, 2., source, [reference])
+    assert baseline._sight(124, 196, 2., source, [])[target]
+    assert not expected[target]
+    restored = detect.GapDetector(geo, rnd)
+    for rec, _ in cache.replay(writer.path):
+        panel, = rec.smokes
+        assert np.array_equal(panel.mask, mask)
+        assert (panel.owner, panel.bottom, panel.top, panel.all_height) == ('door', 1, 3, True)
+        assert panel.bounds_px is None and panel.mask_digest is None and panel.source_area is None
+        actual = restored._sight(124, 196, 2., source, rec.smokes)
+        assert np.array_equal(actual, expected)
+        assert not restored._sight_cache
+    assert restored.timing['casts'] == 2
 
 
 def test_tick_cache_restores_only_verified_panel_immutability(tmp_path):
@@ -32,10 +80,13 @@ def test_tick_cache_restores_only_verified_panel_immutability(tmp_path):
     for record, _ in records:
         good, mutable, bad_hash, bad_bounds = record.smokes
         assert not good.mask.flags.writeable and good.mask_digest == trusted.mask_digest
+        assert good.bounds_px == trusted.bounds_px
         assert np.array_equal(good.mask, trusted.mask)
         assert mutable.mask.flags.writeable and mutable.mask_digest is None
         assert bad_hash.mask.flags.writeable and bad_hash.mask_digest is None
-        assert bad_bounds.mask_digest is None and bad_bounds.bounds_px == (1, 1, 4, 4)
+        assert bad_bounds.mask_digest is None and bad_bounds.bounds_px is None
+        assert mutable.bounds_px is None and bad_hash.bounds_px is None
+        assert all(p.source_area is None for p in (mutable, bad_hash, bad_bounds))
     assert records[0][0].smokes[0] is records[1][0].smokes[0]
 
 

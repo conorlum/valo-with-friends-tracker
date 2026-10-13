@@ -134,7 +134,8 @@ def _restore_panel_immutability(smokes, checked):
     """Pickle restores NumPy arrays writable. Re-freeze verified stored rasters.
 
     The loaded body holds every panel alive, so IDs in `checked` cannot be reused.
-    Caller-owned or altered rasters keep their ordinary uncached sight path.
+    Rejected panels lose ALL acceleration metadata: ordinary sight must not
+    trust rejected bounds either. Their physical raster and band stay unchanged.
     """
     from app.control.features import BoundedOccluder
     from app.control.geometry import PX
@@ -146,14 +147,14 @@ def _restore_panel_immutability(smokes, checked):
         if (not isinstance(mask, np.ndarray) or mask.dtype != np.bool_ or mask.shape != (PX, PX)
                 or panel.mask_digest is None or panel.bounds_px is None
                 or hashlib.sha256(mask.tobytes()).digest() != panel.mask_digest):
-            panel.mask_digest = None  # Also deny reuse if a verified panel shares this array.
+            panel.discard_acceleration()  # Also deny reuse if a verified panel shares this array.
             continue
         ys, xs = np.nonzero(mask)
         bounds = (int(xs.min()), int(ys.min()), int(xs.max())+1, int(ys.max())+1) if len(xs) else None
         if bounds == panel.bounds_px:
             mask.setflags(write=False)
         else:
-            panel.mask_digest = None
+            panel.discard_acceleration()
 
 
 def read(path: Path) -> tuple[list[TickRecord], dict]:

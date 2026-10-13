@@ -6,6 +6,11 @@ platform; the compiler-17 candidate now qualifies all 23 features. Lotus still
 has a runtime gate. Main integration and Linux worker-image validation are
 complete on the feature branch.
 
+The [rejected-panel review follow-up](../plans/2026-10-13-rejected-panel-review-followup.md)
+records the latest malformed-cache fix and local Linux image verification of the
+current optimization code. GitHub CI on the published final commit and the
+production canaries remain release gates.
+
 The branch now connects bounded native replay messages to the reviewed panel state machines, adds
 timed quiet rope arcs on measured floor nodes, and provides computation-derived site status. The
 private owner candidate is not yet qualified for live activation. Main, deployed tags, live height
