@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.services.auth import get_current_player
+from app.services.coach import coached_external_ids
 from app.services.matches import (
     get_match_or_404,
     get_match_shoutouts,
@@ -39,7 +40,8 @@ def match_list(
         request,
         "matches/list.html",
         {"matches": matches, "showing_own_matches": showing_own_matches,
-         "watchable": watchable_external_ids(db, [m.external_id for m in matches])},
+         "watchable": watchable_external_ids(db, [m.external_id for m in matches]),
+         "coached": coached_external_ids(db, [m.external_id for m in matches])},
     )
 
 

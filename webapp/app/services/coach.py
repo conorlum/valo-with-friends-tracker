@@ -6,8 +6,9 @@ from __future__ import annotations
 from sqlalchemy import case, func
 
 from app.config import settings
-from app.models import Player
+from app.models import Match, Player
 from app.models.coach import CoachFeedback, CoachPoint, CoachReport
+from app.services.replays import watchable_external_ids
 
 KIND_MATCH = "match"
 POLARITIES = ("good", "improve")
@@ -102,3 +103,62 @@ def coached_players(db, match_id: int) -> list[tuple[int, str]]:
 def points(db, report_id: int) -> list[CoachPoint]:
     order = case((CoachPoint.polarity == "good", 0), else_=1)
     return db.query(CoachPoint).filter(CoachPoint.report_id == report_id).order_by(order, CoachPoint.ordinal).all()
+
+
+def _instance(raw: dict) -> dict:
+    return {"round": raw["round"], "t": raw.get("t"), "t1": raw.get("t1"), "caption": str(raw.get("caption") or "")}
+
+
+def _point(point: CoachPoint, feedback: list[dict]) -> dict:
+    return {"id": point.id, "theme": point.theme, "title": point.title, "body": point.body,
+            "disputed": any(f["verdict"] == "wrong" for f in feedback),
+            "instances": [_instance(raw) for raw in point.instances or [] if isinstance(raw, dict) and "round" in raw],
+            "feedback": feedback}
+
+
+def _feedback_by_point(db, point_ids: list[int]) -> dict[int, list[dict]]:
+    out: dict[int, list[dict]] = {pid: [] for pid in point_ids}
+    if not point_ids:
+        return out
+    rows = (db.query(CoachFeedback, Player.display_name)
+            .join(Player, Player.id == CoachFeedback.author_player_id)
+            .filter(CoachFeedback.point_id.in_(point_ids)).order_by(CoachFeedback.id).all())
+    for row, author in rows:
+        out[row.point_id].append({"author": author, "verdict": row.verdict, "note": row.note or "",
+                                  "handled": row.handled_at is not None})
+    return out
+
+
+def page_data(db, replay, player_id: int | None, version: int | None) -> dict:
+    coached = coached_players(db, replay.match_id)
+    data = {"match_uuid": str(replay.match_uuid).lower(), "team_coming_soon": True, "players": [], "report": None}
+    if not coached:
+        return data
+    chosen = player_id if player_id in {pid for pid, _ in coached} else coached[0][0]
+    data["players"] = [{"player_id": pid, "name": name, "selected": pid == chosen} for pid, name in coached]
+    report = get_report(db, replay.match_id, chosen, version)
+    rows = points(db, report.id)
+    feedback = _feedback_by_point(db, [p.id for p in rows])
+    shown = [(p.polarity, _point(p, feedback[p.id])) for p in rows]
+    data["report"] = {
+        "id": report.id, "version": report.version, "versions": versions(db, replay.match_id, chosen),
+        "playbook_version": report.playbook_version, "model": report.model,
+        "created": report.created_at.strftime("%Y-%m-%d") if report.created_at else "",
+        "player_id": chosen, "player_name": dict(coached)[chosen],
+        "data_gaps": report.data_gaps or {}, "dropped_points": report.dropped_points,
+        "good": [p for polarity, p in shown if polarity == "good"],
+        "improve": [p for polarity, p in shown if polarity == "improve"]}
+    return data
+
+
+def coached_external_ids(db, external_ids) -> set[str]:
+    """The lower-cased external ids among these that have a report and a replay the viewer can open."""
+    if not coach_enabled():
+        return set()
+    wanted = [e for e in external_ids if e]
+    if not wanted:
+        return set()
+    with_report = {str(e).lower() for (e,) in
+                   db.query(Match.external_id).join(CoachReport, CoachReport.match_id == Match.id)
+                   .filter(Match.external_id.in_(wanted), CoachReport.kind == KIND_MATCH).distinct()}
+    return with_report & watchable_external_ids(db, sorted(with_report)) if with_report else set()
