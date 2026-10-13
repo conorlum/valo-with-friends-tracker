@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 3
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
@@ -69,3 +69,6 @@ answers questions about any round. Write three things the player did well and th
     names them. A count like "1v4" must match a `where` answer or a flag you cite for that moment.
 12. Each round in the brief gives the player's role, attack or defense. Read a flag with it: enemies stacked on
     the other site means something different for an attacker than for a defender.
+13. To judge the player's noise, run `knew` for the enemy side: a signal there that names the player says when
+    the enemy located them and how (its `reason`). Use it only for what the player gave away. What the enemy
+    knew is never a reason the player should have acted differently: rule 2 still decides that.
