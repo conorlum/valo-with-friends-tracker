@@ -150,6 +150,8 @@ def main() -> int:
         payload["model"] = ", ".join(sorted(call.models))[:64]      # what the CLI says it actually used
     # Written before anything is stored: a report that cost a model run is never lost to a failed store.
     (run_dir / "payload.json").write_text(json.dumps(payload, indent=1), encoding="utf-8")
+    for weak in payload.get("unchecked") or []:      # published anyway (three a side); the owner sees why here
+        print(f"unchecked: {weak['title']!r}: {'; '.join(weak['problems'])}", file=sys.stderr)
     if args.dry_run:
         print(json.dumps(payload, indent=1))
         return 0

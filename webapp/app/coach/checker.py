@@ -181,6 +181,46 @@ def _text_problems(text, numbers, shares, times, pairs, names) -> list[str]:
     return problems
 
 
+def shape_problems(point, snap, themes: tuple[str, ...]) -> list[str]:
+    """What stops a point from being stored and shown at all, its evidence aside. The owner wants three points a
+    side even when some are weak, so a point whose evidence fails after its repair is still published if it has
+    none of these (app/coach/runner.py)."""
+    if not isinstance(point, dict):
+        return ["the point is not an object"]
+    problems = []
+    if point.get("polarity") not in POLARITIES:
+        problems.append(f"polarity must be one of {POLARITIES}")
+    if point.get("theme") not in themes:
+        problems.append(f"theme {point.get('theme')!r} is not in the playbook's themes {themes}")
+    for key in ("title", "body"):
+        if not isinstance(point.get(key), str) or not point[key].strip():
+            problems.append(f"{key} is empty")
+    if isinstance(point.get("title"), str) and len(point["title"].strip()) > TITLE_MAX:
+        problems.append(f"title is over {TITLE_MAX} characters")
+    instances = point.get("instances")
+    if not isinstance(instances, list) or not instances:
+        return problems + ["the point has no instances"]
+    captions = []
+    for i, inst in enumerate(instances):
+        label = f"instance {i + 1}"
+        if not isinstance(inst, dict):
+            problems.append(f"{label} is not an object")
+            continue
+        captions.append(str(inst.get("caption") or ""))
+        n = inst.get("round")
+        if isinstance(n, bool) or not isinstance(n, int) or n not in snap.round_numbers:
+            problems.append(f"{label}: round {n!r} is not a round of this match")
+            continue
+        end = snap.view(n).t_end
+        spans = [inst.get("t")] + ([inst["t1"]] if inst.get("t1") is not None else [])
+        if any(not isinstance(v, (int, float)) or isinstance(v, bool) or not 0 <= v <= end for v in spans):
+            problems.append(f"{label}: a time is outside round {n} (0 to {end})")
+    text = " ".join([str(point.get("title") or ""), str(point.get("body") or "")] + captions)
+    if len(text) > BODY_MAX:
+        problems.append(f"the text is over {BODY_MAX} characters")
+    return problems
+
+
 def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...], slot: int) -> list[str]:
     if not isinstance(point, dict):
         return ["the point is not an object"]

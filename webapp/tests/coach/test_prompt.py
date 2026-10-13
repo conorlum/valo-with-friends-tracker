@@ -20,6 +20,13 @@ def test_the_run_prompt_without_voice_samples_says_so():
 def test_the_repair_prompt_lists_each_failed_point_with_its_problems():
     text = prompt.repair_prompt([(2, {"title": "Died alone"}, ["the number 35 is not in a cited answer"])])
     assert "Died alone" in text and "the number 35" in text and '"index": 2' in text
+    assert "more" not in text.split("Reply with")[0].split("ask more")[1]      # no side is short: no top-up asked
+
+
+def test_the_repair_prompt_asks_for_the_points_a_short_side_is_missing():
+    text = prompt.repair_prompt([], {"good": 0, "improve": 2}, 4)
+    assert '2 more "improve"' in text and '"good"' not in text and "starting at 4" in text
+    assert "did not pass" not in text
 
 
 REPORT = {"id": 3, "version": 2, "playbook_version": "5", "player_name": "Owner#1", "data_gaps": {"6": ["control_failed"]},

@@ -77,35 +77,66 @@ def generate(snap, slot: int, run_dir: Path, book, voice: list[str], call_model,
         log = checker.trusted_log(query.read_log(run_dir), snap, flags)
         return [check_one(p, log) for p in candidates]
 
+    def storable(p) -> bool:
+        try:
+            return not checker.shape_problems(p, snap, book.themes)
+        except Exception:               # noqa: BLE001 - a point that cannot be read cannot be shown
+            return False
+
     failed = [(i, p if isinstance(p, dict) else {}, problems)
               for i, (p, problems) in enumerate(zip(points, checked(points))) if problems]
+    # The owner wants three and three even when some are weak: a side that came back short is asked for more.
+    missing = {side: max(0, PER_SIDE - sum(1 for p in points if isinstance(p, dict) and p.get("polarity") == side))
+               for side in checker.POLARITIES}
+    unchecked: dict[int, list[str]] = {}        # points kept although their evidence did not check out
     dropped = 0
-    if failed:
+    if failed or (any(missing.values()) and session):
         _need_session(session)
-        text, session = call_model(prompt.repair_prompt(failed), session)
+        first_count = len(points)
+        text, session = call_model(prompt.repair_prompt(failed, missing, first_count), session)
         fixes = {int(p["index"]): p for p in (extract_points(text) or [])
                  if isinstance(p, dict) and re.fullmatch(r"[0-9]+", str(p.get("index")))}
         offered = [fixes.get(i) for i, _, _ in failed]
-        verdicts = checked([f for f in offered if f is not None])
-        passed = iter(not problems for problems in verdicts)
-        for (i, _, _), fix in zip(failed, offered):
-            if fix is not None and next(passed):
+        added = [fixes[i] for i in sorted(fixes) if i >= first_count]
+        verdicts = iter(checked([f for f in offered if f is not None] + added))
+        for (i, _, problems), fix in zip(failed, offered):
+            fix_problems = next(verdicts) if fix is not None else None
+            if fix is not None and not fix_problems:
                 points[i] = fix
+            elif fix is not None and storable(fix):
+                points[i], unchecked[i] = fix, fix_problems
+            elif storable(points[i]):
+                unchecked[i] = problems
             else:
                 points[i] = None
                 dropped += 1
-    kept, count = [], {"good": 0, "improve": 0}
-    for p in points:
+        for fix in added:
+            fix_problems = next(verdicts)
+            if not fix_problems or storable(fix):
+                points.append(fix)
+                if fix_problems:
+                    unchecked[len(points) - 1] = fix_problems
+    # Up to three a side, points whose evidence checked out first, shown in the order the model gave them.
+    chosen, count = set(), {side: 0 for side in checker.POLARITIES}
+    order = [i for i in range(len(points)) if i not in unchecked] + sorted(unchecked)
+    for i in order:
+        p = points[i]
         if p is None or count[p["polarity"]] >= PER_SIDE:
             continue
         count[p["polarity"]] += 1
+        chosen.add(i)
+    kept = []
+    for i in sorted(chosen):
+        p = points[i]
         kept.append({**{k: p.get(k) for k in _STORED},
                      "instances": [{k: v for k, v in inst.items() if k in ("round", "t", "t1", "caption", "evidence")}
                                    for inst in p["instances"]]})
     if not kept:
-        raise RunError("no point passed the evidence check; nothing to store")
+        raise RunError("no point could be stored; nothing to publish")
     payload = {"playbook_version": book.version, "model": model_name, "data_gaps": built["data_gaps"],
-               "dropped_points": dropped, "points": kept}
+               "dropped_points": dropped, "points": kept,
+               "unchecked": [{"title": points[i].get("title"), "problems": unchecked[i]}
+                             for i in sorted(chosen) if i in unchecked]}
     try:
         coach_service.validate_payload(payload)     # the store's own rules, here, so a finished run is never lost to them
     except coach_service.ReportError as error:

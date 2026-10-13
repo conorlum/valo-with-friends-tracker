@@ -119,8 +119,11 @@ same way `matches` reaches it.
    a body, and a list of instances. An instance is a round, a time (or span), a one-line caption and the log ids
    it rests on.
 4. The checker (below) passes or rejects each point.
-5. A rejected point is sent back once with the reason. A point that fails twice is dropped, and the report is
-   stored with fewer points and says so.
+5. A rejected point is sent back once with the reason, and a side with fewer than three points is asked for
+   more in the same follow-up. A point that fails twice is still published when it can be stored and shown
+   (the owner, 2026-10-12: three and three always, even when some are weak; readers' feedback prunes them). The
+   run lists those points and their problems for the owner (`unchecked` in the payload and in the command's
+   output). Only a point that cannot be stored at all (no round of this match, no text) is dropped and counted.
 6. Store the report as the next version for that match and player.
 
 **The checker** is plain code and decides what may be published:

@@ -54,19 +54,30 @@ and read no file.
 # What to return
 
 When you have checked your points, reply with one JSON object and nothing else, in this shape. "t" is the moment
-in the round; "t1" is optional and ends a span. Up to three "good" and up to three "improve".
+in the round; "t1" is optional and ends a span. Exactly three "good" and three "improve".
 
 {SHAPE}
 """
 
 
-def repair_prompt(failed: list[tuple[int, dict, list[str]]]) -> str:
-    blocks = []
-    for index, point, problems in failed:
-        blocks.append(json.dumps({"index": index, "title": point.get("title"), "problems": problems}, indent=1))
-    return ("These points did not pass the evidence check. For each, either fix it using query answers (ask more "
-            "if you need to) or leave it out. Reply with one JSON object {\"points\": [...]} holding only the "
-            "fixed points, each with its original \"index\" added, and nothing else.\n\n" + "\n".join(blocks))
+def repair_prompt(failed: list[tuple[int, dict, list[str]]], missing: dict | None = None, next_index: int = 0) -> str:
+    """One follow-up: fix the points that failed the check, and fill a side that came back with fewer than three
+    (`missing`: {"good": n, "improve": n}; new points are numbered from `next_index`)."""
+    parts = []
+    if failed:
+        blocks = [json.dumps({"index": index, "title": point.get("title"), "problems": problems}, indent=1)
+                  for index, point, problems in failed]
+        parts.append("These points did not pass the evidence check. Fix each one using query answers (ask more if "
+                     "you need to), and keep it in the report: return it with its original \"index\" added.\n\n"
+                     + "\n".join(blocks))
+    wanted = [f'{n} more "{side}"' for side, n in (missing or {}).items() if n]
+    if wanted:
+        parts.append(f"The report needs three points a side and is short: add {' and '.join(wanted)}. Give your best "
+                     "remaining ones, checked with queries, even if they matter less than the others. Number each "
+                     f"new point with an \"index\" starting at {next_index}.")
+    parts.append("Reply with one JSON object {\"points\": [...]} holding only the fixed and the new points, and "
+                 "nothing else.")
+    return "\n\n".join(parts)
 
 
 def _quote(text: str) -> str:

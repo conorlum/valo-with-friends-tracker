@@ -47,7 +47,7 @@ class Model:
         self.prompts.append((text, session))
         if len(self.prompts) == 1:
             self.asked = query.run(self.snap, self.run_dir, "where", ["1", "10"])["id"]
-        reply = self.replies.pop(0)
+        reply = self.replies.pop(0) if self.replies else "Nothing to add."      # the ask for a third point
         return (reply(self.asked) if callable(reply) else reply), "session-1"
 
 
@@ -86,11 +86,42 @@ def test_a_repair_reply_with_the_index_as_a_string_is_still_matched(snap, tmp_pa
     assert [p["title"] for p in payload["points"]] == ["Held your ground", "Fixed"] and payload["dropped_points"] == 0
 
 
-def test_a_point_that_fails_twice_is_dropped_and_counted(snap, tmp_path):
+def test_a_point_that_fails_twice_is_still_published_and_listed_as_unchecked(snap, tmp_path):
     payload, _ = run(snap, tmp_path, [
         lambda q: json.dumps({"points": [good_point([q]), bad_point()]}),
         lambda q: json.dumps({"points": [{"index": 1, **bad_point()}]})])
-    assert [p["title"] for p in payload["points"]] == ["Held your ground"] and payload["dropped_points"] == 1
+    assert [p["title"] for p in payload["points"]] == ["Held your ground", "Made up"]
+    assert payload["dropped_points"] == 0
+    (weak,) = payload["unchecked"]
+    assert weak["title"] == "Made up" and any("q999" in p for p in weak["problems"])
+    from app.services import coach
+    coach.validate_payload(payload)
+
+
+def test_a_point_that_cannot_be_stored_is_dropped_and_counted(snap, tmp_path):
+    nowhere = {**bad_point(), "instances": [{"round": 99, "t": 10.0, "caption": "", "evidence": []}]}
+    payload, _ = run(snap, tmp_path, [
+        lambda q: json.dumps({"points": [good_point([q]), nowhere]}),
+        lambda q: json.dumps({"points": [{"index": 1, **nowhere}]})])
+    assert [p["title"] for p in payload["points"]] == ["Held your ground"]
+    assert payload["dropped_points"] == 1 and payload["unchecked"] == []
+
+
+def test_a_side_that_comes_back_short_is_asked_for_more(snap, tmp_path):
+    payload, model = run(snap, tmp_path, [
+        lambda q: json.dumps({"points": [good_point([q])]}),
+        lambda q: json.dumps({"points": [{"index": 1, **good_point([q]), "title": "Second"},
+                                         {"index": 2, **bad_point(), "title": "Weak third"}]})])
+    ask = model.prompts[1][0]
+    assert '2 more "good"' in ask and '3 more "improve"' in ask and "starting at 1" in ask
+    assert [p["title"] for p in payload["points"]] == ["Held your ground", "Second", "Weak third"]
+    assert [w["title"] for w in payload["unchecked"]] == ["Weak third"]
+
+
+def test_checked_points_are_chosen_before_unchecked_ones(snap, tmp_path):
+    payload, _ = run(snap, tmp_path, [
+        lambda q: json.dumps({"points": [bad_point()] + [good_point([q]) for _ in range(3)]}), "no fix"])
+    assert [p["title"] for p in payload["points"]] == ["Held your ground"] * 3 and payload["unchecked"] == []
 
 
 def test_no_json_is_asked_for_once_and_then_the_run_fails(snap, tmp_path):
@@ -118,8 +149,9 @@ def test_an_answer_edited_in_the_log_file_is_not_evidence(snap, tmp_path):
         path.write_text(text.replace('"alive":true', '"alive":false'), encoding="utf-8")
         return json.dumps({"points": [good_point([q])]})
 
-    with pytest.raises(runner.RunError, match="no point passed"):
-        run(snap, tmp_path, [forged, lambda q: json.dumps({"points": [{"index": 0, **good_point([q])}]})])
+    payload, _ = run(snap, tmp_path, [forged, lambda q: json.dumps({"points": [{"index": 0, **good_point([q])}]})])
+    (weak,) = payload["unchecked"]                         # published as the owner asked, but never as checked
+    assert any("could not be reproduced" in p for p in weak["problems"])
 
 
 def test_a_flag_entry_the_runner_did_not_write_is_not_evidence(snap, tmp_path):
@@ -127,8 +159,14 @@ def test_a_flag_entry_the_runner_did_not_write_is_not_evidence(snap, tmp_path):
         fake = query.append(tmp_path, "flag", [1, 10.0, "made_up"], {"round": 1, "t": 10.0, "metres": 3.0})
         return json.dumps({"points": [{**good_point([fake]), "body": "You were 3 m away."}]})
 
-    with pytest.raises(runner.RunError, match="no point passed"):
-        run(snap, tmp_path, [planted, "no fix"])
+    payload, _ = run(snap, tmp_path, [planted, "no fix"])
+    (weak,) = payload["unchecked"]
+    assert any("could not be reproduced" in p for p in weak["problems"])
+
+
+def test_a_run_with_nothing_storable_fails(snap, tmp_path):
+    with pytest.raises(runner.RunError, match="no point could be stored"):
+        run(snap, tmp_path, [json.dumps({"points": ["junk"]}), "no fix"])
 
 
 def test_a_report_the_store_would_refuse_fails_the_run_instead(snap, tmp_path, monkeypatch):
@@ -272,7 +310,7 @@ def test_a_repair_index_of_unicode_digits_does_not_crash(snap, tmp_path):
     payload, _ = run(snap, tmp_path, [
         lambda q: json.dumps({"points": [good_point([q]), bad_point()]}),
         lambda q: json.dumps({"points": [{**good_point([q]), "index": "²"}]})])
-    assert payload["dropped_points"] == 1
+    assert payload["dropped_points"] == 0 and [w["title"] for w in payload["unchecked"]] == ["Made up"]
 
 
 def test_a_non_object_entry_keeps_its_place_and_fails_there(snap, tmp_path):
@@ -295,7 +333,8 @@ def test_a_checker_exception_fails_that_point_instead_of_the_run(snap, tmp_path,
     monkeypatch.setattr(checker, "check_point", flaky)
     payload, model = run(snap, tmp_path, [
         lambda q: json.dumps({"points": [good_point([q]), bad_point()]}), "no fix"])
-    assert "could not read this point: KeyError" in model.prompts[1][0] and payload["dropped_points"] == 1
+    assert "could not read this point: KeyError" in model.prompts[1][0]
+    assert payload["dropped_points"] == 0 and [w["title"] for w in payload["unchecked"]] == ["Made up"]
 
 
 def test_a_follow_up_without_a_session_id_raises_instead_of_starting_afresh(snap, tmp_path):
