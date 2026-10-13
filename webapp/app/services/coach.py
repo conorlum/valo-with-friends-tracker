@@ -7,7 +7,7 @@ from sqlalchemy import case, func
 
 from app.config import settings
 from app.models import Match, Player
-from app.models.coach import CoachFeedback, CoachPoint, CoachReport
+from app.models.coach import CoachFeedback, CoachNote, CoachPoint, CoachReport
 from app.services.replays import watchable_external_ids
 
 KIND_MATCH = "match"
@@ -162,3 +162,24 @@ def coached_external_ids(db, external_ids) -> set[str]:
                    db.query(Match.external_id).join(CoachReport, CoachReport.match_id == Match.id)
                    .filter(Match.external_id.in_(wanted), CoachReport.kind == KIND_MATCH).distinct()}
     return with_report & watchable_external_ids(db, sorted(with_report)) if with_report else set()
+
+
+def add_note(db, kind: str, body: str) -> CoachNote:
+    note = CoachNote(kind=_text(kind, "kind", 16), body=_text(body, "body"), active=True)
+    db.add(note)
+    db.commit()
+    return note
+
+
+def active_notes(db, kind: str) -> list[str]:
+    return [body for (body,) in db.query(CoachNote.body).filter(CoachNote.kind == kind, CoachNote.active.is_(True))
+            .order_by(CoachNote.id)]
+
+
+def set_note_active(db, note_id: int, active: bool) -> bool:
+    note = db.get(CoachNote, note_id)
+    if note is None:
+        return False
+    note.active = active
+    db.commit()
+    return True
