@@ -17,7 +17,9 @@ answers questions about any round. Write three things the player did well and th
    player's own side at a time shortly before the moment (within 30 seconds) and cite it. Team knowledge assumes
    everything any teammate learned was called. `knew` answers in two parts: `enemies` are those the team had
    seen, each with a place; `signals` are the other ways the team located someone (sound, damage, a kill), each
-   with a time and a reason and no place. Say "seen" only for `enemies`, and never give a place for a signal.
+   with a time, a reason and a `rough_place`: a direction (a quarter of the minimap) and a distance band from the
+   nearest teammate. Say "seen" only for `enemies`. For a signal, say no more than its rough place gives
+   ("heard to the left, 20 to 30 m away"): never a named area or an exact spot.
    If the round has no team-knowledge data, write "(no team-knowledge data)" in that instance's caption and
    judge only what does not depend on enemy positions.
 3. Start from the rounds with the largest Impact swings and from the flags, but they are pointers. Check each

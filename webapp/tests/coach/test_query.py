@@ -47,8 +47,11 @@ def test_knew_answers_for_a_side_or_for_a_players_side(snap):
 
 def test_knew_lists_what_was_heard_apart_from_what_was_seen(snap):
     out = query.knew(snap, 1, 15.0, "A")
-    assert out["signals"] == [{"t": 3.0, "name": "P6#T6", "reason": "footsteps"}]      # the 40 s one is later
-    assert "no place" in out["note"]
+    (signal,) = out["signals"]                                                         # the 40 s one is later
+    assert (signal["t"], signal["name"], signal["reason"]) == (3.0, "P6#T6", "footsteps")
+    # heard, so placed only roughly: a quarter direction and a 10 m band from the nearest teammate (121.2 m away)
+    assert signal["rough_place"] == {"from": "P0#T0", "direction": "right", "metres_min": 120.0, "metres_max": 130.0}
+    assert "never a spot or a named area" in out["note"]
 
 
 def test_where_gives_health_as_a_word_after_the_last_recorded_hit(snap):

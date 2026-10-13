@@ -23,7 +23,7 @@ _SHARE_KEYS = frozenset({"a", "b", "contested", "none"})
 _MEASURED = _TIME_KEYS | _SHARE_KEYS | frozenset({
     "metres", "impact", "kill_impact", "death_impact", "damage", "econ", "trade_credit", "kills", "deaths",
     "assists", "seconds", "hits", "nearest_teammate_m", "after_s", "teammates_alive", "own",
-    "enemy", "enemies_seen", "hold_s"})
+    "enemy", "enemies_seen", "hold_s", "metres_min", "metres_max"})
 
 _CLOCK = re.compile(r"(?<![\d:])(\d{1,2}):(\d{2})(?![\d:])")
 # P4 review F1: a unit written against the digits ("5m", "3s", "2vs1") must not hide the number from the check.

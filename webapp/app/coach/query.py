@@ -91,11 +91,13 @@ def knew(snap, n, t, side) -> dict:
         return _missing("side_groups_disagree")
     return {"round": int(n), "t": t, "side": side,
             "enemies": knowledge.known_enemies(control["knew"], side, t, view),
-            "signals": knowledge.signals(control.get("signals"), side, t, snap.names),
+            "signals": knowledge.signals(control.get("signals"), side, t, snap.names, view),
             "note": "team knowledge, assuming everything any teammate learned was called. enemies: those the team "
                     "had seen, with the place and time of the last sighting. signals: every stored event that "
                     "located an enemy for the team (sight, sound, damage, a kill), with its time and reason and "
-                    "no place; null when this round stores none"}
+                    "only a rough_place: from the nearest teammate, a minimap direction (up, down, left, right: "
+                    "a 90 degree quarter) and a distance band in metres. It is never a spot or a named area; "
+                    "signals is null when this round stores none"}
 
 
 def distance(snap, n, t, a, b) -> dict:
