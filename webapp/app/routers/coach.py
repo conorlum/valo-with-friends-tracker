@@ -5,8 +5,10 @@
 A linked replay only; 404 in demo mode. A match with no report renders the viewer with an empty panel."""
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from sqlalchemy.orm import Session
+
+from app.coach import prompt as coach_prompt
 
 from app.db import get_db
 from app.routers.replays import UUID_SHAPE, viewer_context
@@ -39,6 +41,16 @@ def coach_page(request: Request, match_uuid: str, player: str | None = None, ver
     context["coach"] = coach_service.page_data(db, replay, _whole(player), _whole(version))
     context["coach"]["can_feedback"] = get_current_player(request, db) is not None
     return templates.TemplateResponse(request, "replays/replay.html", context)
+
+
+@router.get("/replays/{match_uuid}/coach/prompt")
+def prompt_out(match_uuid: str, report: str | None = None, db: Session = Depends(get_db)):
+    replay = linked_replay_or_404(db, match_uuid)
+    report_id = _whole(report)
+    found = coach_service.report_page_data(db, report_id) if report_id is not None else None
+    if found is None or found[0] != str(replay.match_uuid).lower():
+        raise HTTPException(status_code=404)
+    return PlainTextResponse(coach_prompt.prompt_out(found[0], found[1]))
 
 
 @router.post("/replays/{match_uuid}/coach/points/{point_id}/feedback")

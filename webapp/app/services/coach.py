@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from sqlalchemy import case, func
 
 from app.config import settings
 from app.models import Match, Player
+from app.models.replay import Replay
 from app.models.coach import CoachFeedback, CoachNote, CoachPoint, CoachReport
 from app.services.replays import watchable_external_ids
 
@@ -207,3 +210,38 @@ def add_feedback(db, match_id: int, point_id: int, author_player_id: int, verdic
 def report_of_point(db, point_id: int) -> CoachReport | None:
     return (db.query(CoachReport).join(CoachPoint, CoachPoint.report_id == CoachReport.id)
             .filter(CoachPoint.id == point_id).one_or_none())
+
+
+def report_page_data(db, report_id: int) -> tuple[str, dict] | None:
+    report = db.get(CoachReport, report_id)
+    if report is None or report.match_id is None:
+        return None
+    replay = db.query(Replay).filter(Replay.match_id == report.match_id).one_or_none()
+    if replay is None:
+        return None
+    data = page_data(db, replay, report.player_id, report.version)
+    if data["report"] is None or data["report"]["id"] != report.id:
+        return None
+    return data["match_uuid"], data["report"]
+
+
+def mark_handled(db, report_id: int) -> int:
+    ids = [pid for (pid,) in db.query(CoachPoint.id).filter(CoachPoint.report_id == report_id)]
+    if not ids:
+        return 0
+    count = (db.query(CoachFeedback).filter(CoachFeedback.point_id.in_(ids), CoachFeedback.handled_at.is_(None))
+             .update({CoachFeedback.handled_at: datetime.now(timezone.utc)}, synchronize_session=False))
+    db.commit()
+    return count
+
+
+def open_feedback(db) -> list[dict]:
+    rows = (db.query(CoachReport.id, Replay.match_uuid, Player.display_name, func.count(CoachFeedback.id))
+            .join(CoachPoint, CoachPoint.report_id == CoachReport.id)
+            .join(CoachFeedback, CoachFeedback.point_id == CoachPoint.id)
+            .join(Player, Player.id == CoachReport.player_id)
+            .outerjoin(Replay, Replay.match_id == CoachReport.match_id)
+            .filter(CoachFeedback.handled_at.is_(None))
+            .group_by(CoachReport.id, Replay.match_uuid, Player.display_name).order_by(CoachReport.id).all())
+    return [{"report_id": rid, "match_uuid": str(uuid).lower() if uuid else None, "player": name, "open": n}
+            for rid, uuid, name, n in rows]

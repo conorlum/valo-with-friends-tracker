@@ -90,6 +90,36 @@ def test_the_route_404s_for_a_point_of_another_match_and_400s_for_a_bad_verdict(
     assert (missing.value.status_code, bad.value.status_code) == (404, 400)
 
 
+def test_marking_handled_closes_only_that_reports_open_feedback(db, world):
+    replay, ids, report, points = stored(db, world)
+    other = coach.store_report(db, replay.match_id, ids[3], payload())
+    coach.add_feedback(db, replay.match_id, points[0].id, ids[1], "wrong", "a")
+    coach.add_feedback(db, replay.match_id, points[1].id, ids[2], "right", None)
+    coach.add_feedback(db, replay.match_id, coach.points(db, other.id)[0].id, ids[1], "wrong", "b")
+    assert [(row["report_id"], row["open"]) for row in coach.open_feedback(db)] == [(report.id, 2), (other.id, 1)]
+    assert coach.mark_handled(db, report.id) == 2 and coach.mark_handled(db, report.id) == 0
+    assert [(row["report_id"], row["open"]) for row in coach.open_feedback(db)] == [(other.id, 1)]
+
+
+def test_the_prompt_route_returns_plain_text_for_a_report_of_that_match(db, world):
+    replay, ids, report, points = stored(db, world)
+    coach.add_feedback(db, replay.match_id, points[1].id, ids[1], "wrong", "not so")
+    response = routes.prompt_out(str(replay.match_uuid), report=str(report.id), db=db)
+    assert response.media_type == "text/plain" and b"not so" in response.body
+    with pytest.raises(HTTPException) as missing:
+        routes.prompt_out(str(replay.match_uuid), report="99999", db=db)
+    assert missing.value.status_code == 404
+
+
+def test_the_prompt_route_404s_in_demo_mode(db, world, monkeypatch):
+    from app.config import settings
+    replay, ids, report, points = stored(db, world)
+    monkeypatch.setattr(settings, "demo_mode", True)
+    with pytest.raises(HTTPException) as demo:
+        routes.prompt_out(str(replay.match_uuid), report=str(report.id), db=db)
+    assert demo.value.status_code == 404
+
+
 def test_the_panel_shows_the_form_only_to_a_logged_in_viewer():
     from app.templates import templates
     from tests.coach.test_coach_panel import coach as panel_data
