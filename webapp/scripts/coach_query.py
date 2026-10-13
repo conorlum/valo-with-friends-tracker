@@ -24,10 +24,14 @@ sys.path.insert(0, str(WEBAPP_ROOT))
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--run", required=True, type=Path)
+    parser.add_argument("--run", required=True, type=Path, action="append")
     parser.add_argument("command")
     parser.add_argument("args", nargs="*")
     args = parser.parse_args()
+    if len(args.run) != 1:
+        print("refused: --run may be given only once", file=sys.stderr)
+        return 2
+    args.run = args.run[0]
     from app.coach import query, snapshot
 
     print(json.dumps(query.run(snapshot.load(args.run), args.run, args.command, args.args)))

@@ -231,3 +231,75 @@ def test_a_player_not_in_the_snapshot_is_refused_with_2(tmp_path, monkeypatch, c
     _wire(monkeypatch, tmp_path, ["abcdef12-0000-4000-8000-000000000000", "nobody", "--prompt-only"], make_data())
     assert coach_report.main() == 2
     assert "refused" in capsys.readouterr().err
+
+
+# --- review fixes ---
+
+def test_q_ends_its_options_so_the_model_cannot_override_run(tmp_path):
+    text = coach_report.write_q(tmp_path, tmp_path / "python.exe").read_text(encoding="utf-8")
+    assert '"$@"' in text and '-- "$@"' in text
+
+
+def test_coach_query_refuses_a_second_run_option(tmp_path, monkeypatch, capsys):
+    from scripts import coach_query
+    monkeypatch.setattr(sys, "argv", ["coach_query.py", "--run", str(tmp_path), "--run", str(tmp_path / "x"),
+                                      "where", "1", "1"])
+    assert coach_query.main() != 0
+    assert "--run" in capsys.readouterr().err
+
+
+def test_a_rerun_keeps_an_unstored_payload(tmp_path, monkeypatch, capsys):
+    uuid = "abcdef12-0000-4000-8000-000000000000"
+    _wire(monkeypatch, tmp_path, [uuid, "0", "--prompt-only"], make_data())
+    old = tmp_path / "valo-coach" / f"{uuid}-p8"
+    old.mkdir(parents=True)
+    (old / "payload.json").write_text('{"kept": true}', encoding="utf-8")
+    assert coach_report.main() == 0
+    saved = list((tmp_path / "valo-coach").glob(f"{uuid}-p8-payload-*.json"))
+    assert len(saved) == 1 and saved[0].read_text(encoding="utf-8") == '{"kept": true}'
+    assert str(saved[0]) in capsys.readouterr().out
+    assert not (old / "payload.json").exists()
+
+
+def test_a_match_id_that_is_not_a_uuid_is_refused_with_2(tmp_path, monkeypatch, capsys):
+    _wire(monkeypatch, tmp_path, ["..\\..\\evil", "0", "--prompt-only"], make_data())
+    assert coach_report.main() == 2
+    assert "refused" in capsys.readouterr().err
+    assert not (tmp_path / "valo-coach").exists()
+
+
+def test_a_repair_index_of_unicode_digits_does_not_crash(snap, tmp_path):
+    payload, _ = run(snap, tmp_path, [
+        lambda q: json.dumps({"points": [good_point([q]), bad_point()]}),
+        lambda q: json.dumps({"points": [{**good_point([q]), "index": "²"}]})])
+    assert payload["dropped_points"] == 1
+
+
+def test_a_non_object_entry_keeps_its_place_and_fails_there(snap, tmp_path):
+    payload, model = run(snap, tmp_path, [
+        lambda q: json.dumps({"points": ["junk", bad_point(), good_point([q])]}),
+        lambda q: json.dumps({"points": [{"index": 1, **good_point([q]), "title": "Fixed"}]})])
+    assert "the point is not an object" in model.prompts[1][0] and '"index": 0' in model.prompts[1][0]
+    assert [p["title"] for p in payload["points"]] == ["Fixed", "Held your ground"] and payload["dropped_points"] == 1
+
+
+def test_a_checker_exception_fails_that_point_instead_of_the_run(snap, tmp_path, monkeypatch):
+    from app.coach import checker
+    real = checker.check_point
+
+    def flaky(point, *args, **kwargs):
+        if point.get("title") == "Made up":
+            raise KeyError("boom")
+        return real(point, *args, **kwargs)
+
+    monkeypatch.setattr(checker, "check_point", flaky)
+    payload, model = run(snap, tmp_path, [
+        lambda q: json.dumps({"points": [good_point([q]), bad_point()]}), "no fix"])
+    assert "could not read this point: KeyError" in model.prompts[1][0] and payload["dropped_points"] == 1
+
+
+def test_a_follow_up_without_a_session_id_raises_instead_of_starting_afresh(snap, tmp_path):
+    model = Model(snap, tmp_path, ["no json here"])
+    model_call = lambda text, session: (model(text, session)[0], None)
+    with pytest.raises(runner.RunError, match="session"):
+        runner.generate(snap, 0, tmp_path, BOOK, [], model_call, "test-model")

@@ -11,7 +11,8 @@ param(
     [Parameter(Mandatory = $true, Position = 0)][string]$Match,
     [Parameter(Mandatory = $true, Position = 1)][string]$Player,
     [string]$Model = "",
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$PromptOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,5 +22,6 @@ $python = Join-Path $webappRoot ".venv313\Scripts\python.exe"
 $command = @("scripts\with_friends_db.py", "--expect-database", "valowithfriendsdb", "scripts\coach_report.py", $Match, $Player)
 if ($Model) { $command += @("--model", $Model) }
 if ($DryRun) { $command += "--dry-run" }
+if ($PromptOnly) { $command += "--prompt-only" }
 & $python @command
 exit $LASTEXITCODE

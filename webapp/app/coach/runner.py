@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from app.coach import brief as brief_module
@@ -18,8 +19,13 @@ class RunError(Exception):
     pass
 
 
-def extract_points(text: str) -> list[dict] | None:
-    """The `points` list of the first JSON object in the text that has one."""
+def _need_session(session) -> None:
+    if not session:
+        raise RunError("the model gave no session id, so a follow-up would start a fresh conversation")
+
+
+def extract_points(text: str) -> list | None:
+    """The `points` list of the first JSON object in the text that has one (entries as sent, objects or not)."""
     decoder = json.JSONDecoder()
     start = text.find("{")
     while start != -1:
@@ -28,7 +34,7 @@ def extract_points(text: str) -> list[dict] | None:
         except json.JSONDecodeError:
             value = None
         if isinstance(value, dict) and isinstance(value.get("points"), list):
-            return [p for p in value["points"] if isinstance(p, dict)]
+            return list(value["points"])      # every entry keeps its place: repair indices must not shift
         start = text.find("{", start + 1)
     return None
 
@@ -52,21 +58,33 @@ def generate(snap, slot: int, run_dir: Path, book, voice: list[str], call_model,
     text, session = call_model(prompt.run_prompt(book, voice, built), None)
     points = extract_points(text)
     if points is None:
+        _need_session(session)
         text, session = call_model(prompt.json_only_prompt(), session)
         points = extract_points(text)
     if points is None:
         raise RunError("the model returned no report")
 
-    def checked(candidates: list[dict]) -> list[list[str]]:
+    def check_one(p, log) -> list[str]:
+        if not isinstance(p, dict):
+            return ["the point is not an object"]
+        try:
+            return checker.check_point(p, log, snap, book.themes, slot)
+        except Exception as error:      # noqa: BLE001 - a point the checker cannot read fails; the run goes on
+            return [f"the checker could not read this point: {type(error).__name__}"]
+
+    def checked(candidates: list) -> list[list[str]]:
         """Each candidate's problems, against the log as it can be reproduced now."""
         log = checker.trusted_log(query.read_log(run_dir), snap, flags)
-        return [checker.check_point(p, log, snap, book.themes, slot) for p in candidates]
+        return [check_one(p, log) for p in candidates]
 
-    failed = [(i, p, problems) for i, (p, problems) in enumerate(zip(points, checked(points))) if problems]
+    failed = [(i, p if isinstance(p, dict) else {}, problems)
+              for i, (p, problems) in enumerate(zip(points, checked(points))) if problems]
     dropped = 0
     if failed:
+        _need_session(session)
         text, session = call_model(prompt.repair_prompt(failed), session)
-        fixes = {int(p["index"]): p for p in (extract_points(text) or []) if str(p.get("index")).isdigit()}
+        fixes = {int(p["index"]): p for p in (extract_points(text) or [])
+                 if isinstance(p, dict) and re.fullmatch(r"[0-9]+", str(p.get("index")))}
         offered = [fixes.get(i) for i, _, _ in failed]
         verdicts = checked([f for f in offered if f is not None])
         passed = iter(not problems for problems in verdicts)

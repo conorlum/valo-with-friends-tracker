@@ -16,6 +16,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid as uuid_module
+from datetime import datetime
 from pathlib import Path
 
 WEBAPP_ROOT = Path(__file__).resolve().parents[1]
@@ -41,7 +43,7 @@ def write_q(run_dir: Path, python: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/usr/bin/env bash\n"
                     f'exec "{posix(python)}" "{posix(WEBAPP_ROOT / "scripts" / "coach_query.py")}" '
-                    f'--run "{posix(Path(run_dir).resolve())}" "$@"\n', encoding="utf-8", newline="\n")
+                    f'--run "{posix(Path(run_dir).resolve())}" -- "$@"\n', encoding="utf-8", newline="\n")
     return path
 
 
@@ -94,7 +96,11 @@ def main() -> int:
     from app.services import coach
     from scripts.coach_store_report import resolve
 
-    uuid = args.match_uuid.lower()
+    try:
+        uuid = str(uuid_module.UUID(args.match_uuid))
+    except ValueError:
+        print(f"refused: {args.match_uuid!r} is not a match uuid", file=sys.stderr)
+        return 2
     with SessionLocal() as db:
         try:
             book = playbook.load()
@@ -106,8 +112,17 @@ def main() -> int:
         voice = ([line.strip() for line in args.voice_file.read_text(encoding="utf-8").splitlines() if line.strip()]
                  if args.voice_file else coach.active_notes(db, "voice"))
     # One directory per match and player: a second player's run must not delete the first's files.
-    run_dir = Path(tempfile.gettempdir()) / "valo-coach" / f"{uuid}-p{player_id}"
+    root = Path(tempfile.gettempdir()) / "valo-coach"
+    run_dir = root / f"{uuid}-p{player_id}"
     if run_dir.exists():
+        if run_dir.resolve().parent != root.resolve():
+            print(f"refused: {run_dir} is not directly under {root}", file=sys.stderr)
+            return 2
+        stored_away = run_dir / "payload.json"
+        if stored_away.exists():       # a finished run whose store failed: never delete it
+            keep = root / f"{uuid}-p{player_id}-payload-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+            shutil.move(str(stored_away), str(keep))
+            print(f"an unstored report from an earlier run was moved to {keep}")
         shutil.rmtree(run_dir)
     snapshot.save(data, run_dir)
     write_q(run_dir, Path(sys.executable))
