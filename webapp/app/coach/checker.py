@@ -12,7 +12,9 @@ from app.coach import query
 NO_KNOWLEDGE_NOTE = "no team-knowledge data"
 POLARITIES = ("good", "improve")
 KNEW_WINDOW_S = 30.0        # a mistake's knew answer must be this recent; a first value, reviewed with the owner
-TITLE_MAX = 160             # app/services/coach.py validate_payload's limit, checked here so it can be repaired
+SPAN_MAX_S = 10.0           # PROVISIONAL(D10): the longest an instance's t..t1 may run; a first value
+BODY_MAX = 4000             # longer text is refused before the regexes run
+TITLE_MAX = 160            # app/services/coach.py validate_payload's limit, checked here so it can be repaired
 
 # The keys of a query answer or a flag whose numbers are measurements. Everything else (slot, u, v, yaw, round)
 # is an identifier or a coordinate and grounds nothing.
@@ -25,15 +27,24 @@ _MEASURED = _TIME_KEYS | _SHARE_KEYS | frozenset({
 
 _CLOCK = re.compile(r"(?<![\d:])(\d{1,2}):(\d{2})(?![\d:])")
 # P4 review F1: a unit written against the digits ("5m", "3s", "2vs1") must not hide the number from the check.
-_VERSUS = re.compile(r"(?<!\w)(\d)\s?-?\s?(?:vs|v|on)\.?\s?-?\s?(\d)(?!\d)", re.IGNORECASE)
+_COUNT_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+_COUNT = r"(\d|one|two|three|four|five)"
+_VERSUS = re.compile(r"(?<!\w)" + _COUNT + r"\s?-?\s?(?:versus|against|vs|v|on)\.?\s?-?\s?" + _COUNT + r"(?!\w)",
+                     re.IGNORECASE)
 _ORDINAL = re.compile(r"(?<![\w.#])\d+(?:st|nd|rd|th)(?!\w)", re.IGNORECASE)
 _THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
 _NUMBER = re.compile(r"(?<![\w.#])\d+(?:\.\d+)?(?!\.?\d|#)")
-_SIGNED = re.compile(r"(?<![\w.])([+\-−])(\d+(?:\.\d+)?)(?!\d)")
+# A sign counts only where it is clearly a signed figure: at the start, after ( = : or "of/was/is/at/by/gained/lost".
+# "alone -121.2 m" is a dash, not a sign.
+_SIGNED = re.compile(r"(?:^|[(=:]\s?|(?<!\w)(?:of|was|is|at|by|gained|lost)\s)([+\-−])(\d+(?:\.\d+)?)(%?)(?!\d)",
+                     re.IGNORECASE)
+_NUMBER_WORDS = (r"zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|"
+                 r"sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|"
+                 r"hundred|thousand|dozen|half\s+a")
 _WORD_UNIT = re.compile(
-    r"(?<!\w)(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|"
-    r"sixty|hundred)\s+(?:metres?|meters?|m|seconds?|secs?|s)(?!\w)", re.IGNORECASE)
-_TAGGED =re.compile(r"[^\s,;:()\"']*#\w+")
+    r"(?<!\w)(?:" + _NUMBER_WORDS + r")\s+(?:metres?|meters?|m|seconds?|secs?|s|times?|kills?|enemies|enemy|rounds?)"
+    r"(?!\w)", re.IGNORECASE)
+_TAGGED = re.compile(r"[^\s,;:()\"']*#\w+")
 
 
 def _plain(value):
@@ -49,10 +60,17 @@ def trusted_log(log: dict[str, dict], snap, flags: dict[str, dict]) -> dict[str,
     for log_id, entry in log.items():
         if not isinstance(entry, dict) or not isinstance(entry.get("result"), dict):
             continue
-        if entry.get("cmd") == "flag":
-            good = log_id in flags and _plain(flags[log_id]) == entry["result"]
+        if not isinstance(entry.get("cmd"), str):
+            continue
+        if entry["cmd"] == "flag":
+            # the whole entry must be the one the runner logged: the round is read from args, which are writable
+            ours = {key: entry.get(key) for key in ("cmd", "args", "result")}
+            good = log_id in flags and _plain(flags[log_id]) == ours
         else:
-            good = _plain(query.answer(snap, entry.get("cmd"), entry.get("args"))) == entry["result"]
+            try:
+                good = _plain(query.answer(snap, entry["cmd"], entry.get("args"))) == entry["result"]
+            except Exception:                       # a hostile line must make the entry untrusted, not crash
+                good = False
         if good:
             out[log_id] = entry
     return out
@@ -95,7 +113,7 @@ def _round_of(entry: dict):
     """The round an entry is about: every query's and every flag's first argument."""
     try:
         return int(entry["args"][0])
-    except (IndexError, KeyError, TypeError, ValueError):
+    except (IndexError, KeyError, TypeError, ValueError, OverflowError):
         return None
 
 
@@ -139,7 +157,8 @@ def _text_problems(text, numbers, shares, times, pairs, names) -> list[str]:
             problems.append(f"the time {match.group(0)} is not within a second of any cited time")
     text = _CLOCK.sub(" ", text)
     for match in _VERSUS.finditer(text):
-        if (int(match.group(1)), int(match.group(2))) not in pairs:
+        counts = tuple(int(g) if g.isdigit() else _COUNT_WORDS[g.lower()] for g in match.groups())
+        if counts not in pairs:
             problems.append(f"the count {match.group(0)} matches no cited where answer or flag")
     text = _VERSUS.sub(" ", text)
     text = _THOUSANDS.sub("", _ORDINAL.sub(" ", text))      # "2nd" is not a measurement; "12,000" is 12000
@@ -147,8 +166,13 @@ def _text_problems(text, numbers, shares, times, pairs, names) -> list[str]:
         problems.append(f"'{match.group(0)}': write the figure, so it can be checked against an answer")
     for match in _SIGNED.finditer(text):
         # Step 5b: "+250 Impact" must not ride on a cited -250; an explicit sign has to match a cited value's.
-        negative, size = match.group(1) in "-−", float(match.group(2))
-        if not any(abs(abs(y) - size) < 0.051 and (y < 0) == negative for y in numbers):
+        negative, size = match.group(1) != "+", float(match.group(2))
+        if match.group(3):                       # a signed percentage is a share, times 100
+            agrees = any(abs(abs(y) * 100 - size) < 0.51 and (y < 0) == negative for y in shares)
+        else:
+            agrees = any((abs(abs(y) - size) < 0.051 or (size.is_integer() and round(abs(y)) == size))
+                         and (y < 0) == negative for y in numbers)
+        if not agrees:
             problems.append(f"the signed number {match.group(0)} has the opposite sign in every cited answer")
     for match in _NUMBER.finditer(text):
         if not _matches(float(match.group(0)), numbers, shares):
@@ -157,6 +181,8 @@ def _text_problems(text, numbers, shares, times, pairs, names) -> list[str]:
 
 
 def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...], slot: int) -> list[str]:
+    if not isinstance(point, dict):
+        return ["the point is not an object"]
     problems = []
     polarity = point.get("polarity")
     if polarity not in POLARITIES:
@@ -194,8 +220,11 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
         if any(not isinstance(v, (int, float)) or isinstance(v, bool) or not 0 <= v <= end for v in spans):
             problems.append(f"{label}: a time is outside round {n} (0 to {end})")
             continue
+        if len(spans) > 1 and not t <= spans[1] <= t + SPAN_MAX_S:
+            problems.append(f"{label}: t1 must be within {SPAN_MAX_S:g} s after t")
+            continue
         numbers.append(float(n))
-        numbers.extend(float(v) for v in spans)
+        numbers.append(float(t))             # t1 grounds a clock time only, never a plain number
         times.extend(float(v) for v in spans)
         ids = inst.get("evidence")
         if not isinstance(ids, list) or any(not isinstance(log_id, str) for log_id in ids):
@@ -231,4 +260,6 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                     problems.append(f"{label}: a mistake must cite a knew answer for side {side} in round {n}, "
                                     f"asked for a time from {max(0.0, t - KNEW_WINDOW_S)} to {t}")
     text = " ".join([str(point.get("title") or ""), str(point.get("body") or "")] + captions)
+    if len(text) > BODY_MAX:
+        return problems + [f"the text is over {BODY_MAX} characters"]
     return problems + _text_problems(text, numbers, shares, times, pairs, snap.names)

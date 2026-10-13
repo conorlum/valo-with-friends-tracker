@@ -31,10 +31,14 @@ def log(snap, tmp_path):
     query.append(tmp_path, "flag", [1, 20.0, "death_untraded_alone"], FLAG)      # q5: a flag
     query.run(snap, tmp_path, "where", ["1", "10"])                     # q6: all ten alive, slots 0-9 in the answer
     query.run(snap, tmp_path, "knew", ["1", "15", "B"])                 # q7: what the ENEMY side knew
-    return checker.trusted_log(query.read_log(tmp_path), snap, {"q5": FLAG})
+    return checker.trusted_log(query.read_log(tmp_path), snap, {"q5": flag_entry([1, 20.0, "death_untraded_alone"], FLAG)})
 
 
 FLAG = {"round": 1, "t": 20.0, "nearest_teammate_m": 61.0}
+
+
+def flag_entry(args, result):
+    return {"cmd": "flag", "args": args, "result": result}
 
 
 def point(**over):
@@ -177,7 +181,7 @@ def test_an_entry_that_cannot_be_reproduced_is_not_trusted(snap, tmp_path):
                  {"round": 1, "t": 10.0, "a": "P0#T0", "b": "P5#T5", "metres": 5.0})
     query.append(tmp_path, "flag", [1, 20.0, "death_untraded_alone"], FLAG)         # q3: a flag the runner logged
     query.append(tmp_path, "flag", [1, 20.0, "made_up"], {"round": 1, "t": 20.0})   # q4: a flag it did not
-    trusted = checker.trusted_log(query.read_log(tmp_path), snap, {"q3": FLAG})
+    trusted = checker.trusted_log(query.read_log(tmp_path), snap, {"q3": flag_entry([1, 20.0, "death_untraded_alone"], FLAG)})
     assert sorted(trusted) == ["q1", "q3"]
 
 
@@ -203,7 +207,7 @@ def test_a_vs_count_with_no_such_pair_is_refused(snap, log):            # R-F1
 
 def test_a_number_with_a_thousands_comma_passes_when_cited(snap, tmp_path):     # R-F1
     query.append(tmp_path, "flag", [1, 10.0, "spent"], {"round": 1, "t": 10.0, "econ": 12000})
-    log = checker.trusted_log(query.read_log(tmp_path), snap, {"q1": {"round": 1, "t": 10.0, "econ": 12000}})
+    log = checker.trusted_log(query.read_log(tmp_path), snap, {"q1": flag_entry([1, 10.0, "spent"], {"round": 1, "t": 10.0, "econ": 12000})})
     inst = [{"round": 1, "t": 10.0, "caption": "", "evidence": ["q1"]}]
     assert checker.check_point(point(polarity="good", body="They held 12,000 credits.", instances=inst),
                                log, snap, THEMES, 0) == []
@@ -255,3 +259,98 @@ def test_where_reports_health_as_a_word_and_it_grounds_nothing(snap):   # R-F8
     assert row["health"] in ("healthy", "hurt", "low")
     assert "hp" not in row and "shield" not in row
     assert "health" not in checker._MEASURED and "hp" not in checker._MEASURED and "shield" not in checker._MEASURED
+
+
+# W18 fix round: the Opus review's findings 1-9.
+
+def _flag_log(snap, tmp_path, result, args=None):
+    args = args or [1, 10.0, "x"]
+    query.append(tmp_path, "flag", args, result)
+    return checker.trusted_log(query.read_log(tmp_path), snap, {"q1": flag_entry(args, result)})
+
+
+def _check(snap, log, body, inst, polarity="good"):
+    return checker.check_point(point(polarity=polarity, body=body, instances=inst), log, snap, THEMES, 0)
+
+
+def test_a_flag_whose_args_were_rewritten_is_not_trusted(snap, tmp_path):                   # fix 1
+    query.append(tmp_path, "flag", [2, 5.0, "x"], FLAG)                                      # the model moved it to round 2
+    raw = query.read_log(tmp_path)
+    assert checker.trusted_log(raw, snap, {"q1": flag_entry([1, 20.0, "x"], FLAG)}) == {}
+    assert list(checker.trusted_log(raw, snap, {"q1": flag_entry([2, 5.0, "x"], FLAG)})) == ["q1"]
+
+
+def test_hostile_log_lines_do_not_crash(snap, tmp_path):                                    # fix 2
+    path = tmp_path / query.LOG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join([
+        '{"id":"q1","cmd":["x"],"args":[],"result":{}}',
+        '{"id":"q2","cmd":"where","args":[Infinity,"10"],"result":{}}',
+        "not json at all",
+        '{"cmd":"where","args":[],"result":{}}',
+        '[1, 2]',
+        '{"id":"q3","cmd":"distance","args":["1","10","P0","P5"],"result":{"metres":121.2}}',
+    ]) + "\n", encoding="utf-8")
+    raw = query.read_log(tmp_path)
+    assert sorted(raw) == ["q1", "q2", "q3"]
+    assert checker.trusted_log(raw, snap, {}) == {}
+    assert checker._round_of({"args": [float("inf")]}) is None
+
+
+def test_t1_must_stay_within_ten_seconds_of_t(snap, log):                                   # fix 3
+    inst = [{"round": 1, "t": 20.0, "t1": 55.0, "caption": "", "evidence": ["q1"]}]
+    found = problems(snap, log, polarity="good", instances=inst)
+    assert any("t1 must be within 10 s after t" in p for p in found), found
+    backwards = [{"round": 1, "t": 20.0, "t1": 19.0, "caption": "", "evidence": ["q1"]}]
+    assert any("t1 must be within" in p for p in problems(snap, log, polarity="good", instances=backwards))
+
+
+def test_t1_grounds_a_clock_time_but_never_a_plain_number(snap, log):                        # fix 3
+    inst = [{"round": 1, "t": 20.0, "t1": 28.0, "caption": "", "evidence": ["q1"]}]
+    assert problems(snap, log, polarity="good", body="Until 0:28 it held, 121.2 m.", instances=inst) == []
+    found = problems(snap, log, polarity="good", body="It held 28 m.", instances=inst)
+    assert any("number 28" in p for p in found), found
+
+
+def test_a_sign_agrees_with_a_rounded_cited_value(snap, tmp_path):                           # fix 4
+    log = _flag_log(snap, tmp_path, {"round": 1, "t": 10.0, "impact": -249.7})
+    inst = [{"round": 1, "t": 10.0, "caption": "", "evidence": ["q1"]}]
+    assert _check(snap, log, "Impact was -250.", inst) == []
+    assert any("opposite sign" in p for p in _check(snap, log, "Impact was +250.", inst))
+
+
+def test_a_dash_and_a_signed_percentage_are_not_refused(snap, tmp_path):                     # fix 5
+    log = _flag_log(snap, tmp_path, {"round": 1, "t": 10.0, "metres": 121.2, "a": 0.5})
+    inst = [{"round": 1, "t": 10.0, "caption": "", "evidence": ["q1"]}]
+    assert _check(snap, log, "You stood alone -121.2 m from P5.", inst) == []
+    assert _check(snap, log, "Gained +50% control.", inst) == []
+    assert any("opposite sign" in p for p in _check(snap, log, "Gained -50% control.", inst))
+
+
+@pytest.mark.parametrize("body", ["You took a 1 against 1.", "It was a one v four.", "A two versus three.",
+                                  "A 1 vs. 4 fight."])
+def test_more_versus_forms_are_checked(snap, log, body):                                     # fix 6
+    inst = [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q6", "q2"]}]
+    found = problems(snap, log, body=body, instances=inst)
+    assert any("matches no cited" in p for p in found), found
+
+
+def test_a_spelled_out_versus_count_that_matches_passes(snap, log):                          # fix 6
+    inst = [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q6", "q2"]}]
+    assert problems(snap, log, body="It was five v five, a 5 against 5.", instances=inst) == []
+
+
+@pytest.mark.parametrize("body", ["You were thirteen metres away.", "Half a second later.", "About ninety seconds in.",
+                                  "He had two kills.", "A dozen rounds."])
+def test_every_spelled_out_measurement_is_refused(snap, log, body):                          # fix 7
+    found = problems(snap, log, polarity="good", body=body, instances=GOOD_ONE)
+    assert any("write the figure" in p for p in found), found
+
+
+def test_a_point_that_is_not_an_object_is_a_problem(snap, log):                              # fix 8
+    assert checker.check_point("oops", log, snap, THEMES, 0) == ["the point is not an object"]
+
+
+def test_a_very_long_body_is_refused_before_the_regexes(snap, log):                          # fix 9
+    found = problems(snap, log, polarity="good", body="x" * 5000, instances=GOOD_ONE)
+    assert any("4000" in p for p in found), found

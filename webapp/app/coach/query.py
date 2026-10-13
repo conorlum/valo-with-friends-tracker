@@ -168,8 +168,15 @@ def read_log(directory: Path) -> dict[str, dict]:
     path = Path(directory) / LOG
     if not path.exists():
         return {}
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    return {row["id"]: row for row in rows}
+    out = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line) if line.strip() else None
+        except ValueError:
+            continue                    # the file is writable by the model: a bad line is skipped, not fatal
+        if isinstance(row, dict) and isinstance(row.get("id"), str):
+            out[row["id"]] = row
+    return out
 
 
 def answer(snap, command: str, args: list[str]) -> dict:
