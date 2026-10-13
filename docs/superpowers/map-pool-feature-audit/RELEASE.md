@@ -11,6 +11,14 @@ records the latest malformed-cache fix and local Linux image verification of the
 current optimization code. GitHub CI on the published final commit and the
 production canaries remain release gates.
 
+On 2026-10-13 the owner approved a 30-minute regular-round worker timeout for the
+Lotus rollout. Both regular and initial map-warming defaults are now 1,800 seconds.
+An existing `REPLAY_CONTROL_TIMEOUT_S` environment override must also be set to
+`1800`; deploying code alone does not replace an explicit setting. Timed-out
+children still fail with the elapsed limit in their error and are killed. This
+budget change permits the runtime canary; it does not certify production runtime
+or change memory limits, feature activation or the remaining release checks.
+
 The branch now connects bounded native replay messages to the reviewed panel state machines, adds
 timed quiet rope arcs on measured floor nodes, and provides computation-derived site status. The
 private owner candidate is not yet qualified for live activation. Main, deployed tags, live height

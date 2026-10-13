@@ -115,7 +115,7 @@ Configuration (environment, all optional):
                              one beside a parse; never from the core count, which a container reports
                              for the host)
     REPLAY_CONTROL_QUEUE     waiting rounds (default 32)
-    REPLAY_CONTROL_TIMEOUT_S / REPLAY_CONTROL_WARM_TIMEOUT_S   per round (900) / a map's first (1800)
+    REPLAY_CONTROL_TIMEOUT_S / REPLAY_CONTROL_WARM_TIMEOUT_S   per round (1800) / a map's first (1800)
     REPLAY_CONTROL_MEMORY_MB child address-space cap, Linux only (default 2048)
     CONTROL_CACHE_DIR        the control children's cache; pushed height assets go in its `heights` folder
                              (default webapp/.control_cache)
@@ -182,7 +182,7 @@ class Settings:
     control_cmd: list[str] = field(default_factory=lambda: [sys.executable, "-m", "replay_worker.control_job"])
     control_workers: int = 2
     control_queue: int = 32
-    control_timeout_s: float = 900.0
+    control_timeout_s: float = 1800.0
     control_warm_timeout_s: float = 1800.0
     control_memory_mb: int = 2048
     control_max_bytes: int = 4 * 1024 * 1024
