@@ -192,11 +192,17 @@ def answer(snap, command: str, args: list[str]) -> dict:
         return {"error": str(error)}
 
 
-def run(snap, directory: Path, command: str, args: list[str]) -> dict:
-    result = answer(snap, command, args)
+def append(directory: Path, cmd: str, args: list, result: dict) -> str:
+    """Adds one entry to the run log and returns its id. Query answers and the brief's flags both go through
+    here, so a report's evidence can cite either."""
     path = Path(directory) / LOG
     path.parent.mkdir(parents=True, exist_ok=True)
-    entry = {"id": f"q{len(read_log(directory)) + 1}", "cmd": command, "args": list(args), "result": result}
+    entry = {"id": f"q{len(read_log(directory)) + 1}", "cmd": cmd, "args": list(args), "result": result}
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, separators=(",", ":")) + "\n")
-    return {"id": entry["id"], **result}
+    return entry["id"]
+
+
+def run(snap, directory: Path, command: str, args: list[str]) -> dict:
+    result = answer(snap, command, args)
+    return {"id": append(directory, command, args, result), **result}
