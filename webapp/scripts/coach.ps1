@@ -1,9 +1,11 @@
 <#
-Writes and publishes one coaching report on the friends site (scripts/coach_report.py).
+Writes and publishes one coaching report on the friends site (scripts/coach_report.py), or one for every
+player on that player's team (scripts/coach_team.py).
 
 Usage:
   .\scripts\coach.ps1 <match uuid> "Name#TAG"
   .\scripts\coach.ps1 <match uuid> "Name#TAG" -DryRun      # print the report, publish nothing
+  .\scripts\coach.ps1 <match uuid> "Name#TAG" -Team        # Name#TAG and their four teammates, one at a time
 
 Needs webapp/.env.remote (see scripts/with_friends_db.py) and the claude command on PATH.
 #>
@@ -12,14 +14,16 @@ param(
     [Parameter(Mandatory = $true, Position = 1)][string]$Player,
     [string]$Model = "",
     [switch]$DryRun,
-    [switch]$PromptOnly
+    [switch]$PromptOnly,
+    [switch]$Team
 )
 
 $ErrorActionPreference = "Stop"
 $webappRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $webappRoot
 $python = Join-Path $webappRoot ".venv313\Scripts\python.exe"
-$command = @("scripts\with_friends_db.py", "--expect-database", "valowithfriendsdb", "scripts\coach_report.py", $Match, $Player)
+$entry = if ($Team) { "scripts\coach_team.py" } else { "scripts\coach_report.py" }
+$command = @("scripts\with_friends_db.py", "--expect-database", "valowithfriendsdb", $entry, $Match, $Player)
 if ($Model) { $command += @("--model", $Model) }
 if ($DryRun) { $command += "--dry-run" }
 if ($PromptOnly) { $command += "--prompt-only" }

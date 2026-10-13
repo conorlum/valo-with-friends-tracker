@@ -120,6 +120,26 @@ def test_the_prompt_route_404s_in_demo_mode(db, world, monkeypatch):
     assert demo.value.status_code == 404
 
 
+def test_the_prompt_route_without_a_report_covers_every_report_of_the_match_with_open_feedback(db, world):
+    from app.models import Player
+    replay, ids, first, points = stored(db, world)
+    coach.add_feedback(db, replay.match_id, points[1].id, ids[1], "wrong", "on the old version")
+    coach.store_report(db, replay.match_id, ids[0], payload())                       # a newer version, no feedback
+    friend = coach.store_report(db, replay.match_id, ids[3], payload())
+    coach.add_feedback(db, replay.match_id, coach.points(db, friend.id)[0].id, ids[1], "right", "spot on")
+    done = coach.store_report(db, replay.match_id, ids[2], payload())
+    coach.add_feedback(db, replay.match_id, coach.points(db, done.id)[0].id, ids[1], "wrong", "already dealt with")
+    coach.mark_handled(db, done.id)
+    quiet = coach.store_report(db, replay.match_id, ids[4], payload())
+
+    reports, left_out = coach.match_prompt_data(db, replay)
+    assert sorted(r["id"] for r in reports) == sorted([first.id, friend.id])          # the old version is not lost
+    assert sorted(left_out) == sorted(db.get(Player, ids[i]).display_name for i in (2, 4))
+    body = routes.prompt_out(str(replay.match_uuid), db=db).body.decode()
+    assert "on the old version" in body and "spot on" in body and "already dealt with" not in body
+    assert f"handled --report" in body and str(quiet.id) not in body.rsplit("handled --report", 1)[1].split()
+
+
 def test_the_panel_shows_the_form_only_to_a_logged_in_viewer():
     from app.templates import templates
     from tests.coach.test_coach_panel import coach as panel_data

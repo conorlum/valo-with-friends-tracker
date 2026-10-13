@@ -65,7 +65,9 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
   the run log (`app/coach/checker.py`) and publishes three and three. A point whose evidence still fails after
   one repair is published anyway if it can be stored, and listed with its problems in the command's output
   (`unchecked`): the owner's choice, feedback prunes weak points. `-DryRun` prints instead; `-PromptOnly` writes
-  the first prompt to `prompt.txt` in the run directory and calls no model.
+  the first prompt to `prompt.txt` in the run directory and calls no model. `-Team` does the same for that
+  player and their four teammates (`scripts/coach_team.py`): one `coach_report.py` process each, one after another,
+  never two at once (the owner's choice); one player's failed run leaves the others' reports alone.
 - What the checker holds a point to: a figure with a unit against cited answers of that kind (metres, seconds),
   a named area against a cited answer, a count like 2v1 against who was alive, and, in a point to improve, no
   distance to or place of an enemy the player's side could not see. It does not check who did what: "X killed
@@ -82,7 +84,9 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
   `replays/_coach.html`). Reports are immutable; a re-run adds a version. Tables: migration `0021`.
 - Feedback is per point, from any logged-in viewer (login has no password, so authors are unverified). "Prompt
   out" gives text for a Claude session that checks the feedback against the data; the owner decides any playbook
-  change, then `scripts/coach_feedback.py handled --report <id>`.
+  change, then `scripts/coach_feedback.py handled --report <id> [<id> ...]`. "Prompt out" under a report covers
+  that report; "Prompt out, all players" in the panel's header covers every report of the match that has open
+  feedback, whatever its version (`/replays/<uuid>/coach/prompt` with no `report`).
 - Named areas come from `app/static/data/callouts.json` (`scripts/fetch_callouts.py`; re-run when a map is added).
 
 ### Running the webapp locally

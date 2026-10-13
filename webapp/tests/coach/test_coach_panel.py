@@ -78,3 +78,10 @@ def test_a_point_without_instances_and_an_instance_without_a_time_still_render()
 def test_no_report_shows_the_empty_state():
     out = html(coach(report=None, players=[]))
     assert "No coaching report for this match yet" in out
+
+
+def test_a_match_with_several_coached_players_offers_one_prompt_for_all_of_them():
+    whole_match = 'href="/replays/abc/coach/prompt" '
+    assert whole_match in html(coach()) and 'href="/replays/abc/coach/prompt?report=3"' in html(coach())
+    alone = coach(players=[{"player_id": 11, "name": "Owner#1", "selected": True}])
+    assert whole_match not in html(alone) and 'href="/replays/abc/coach/prompt?report=3"' in html(alone)

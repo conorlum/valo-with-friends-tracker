@@ -1,7 +1,7 @@
 """Feedback on coach reports: what is open, and marking a report's feedback handled once the owner has decided.
 
     $PY scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only scripts/coach_feedback.py list
-    $PY scripts/with_friends_db.py --expect-database valowithfriendsdb scripts/coach_feedback.py handled --report <id>"""
+    $PY scripts/with_friends_db.py --expect-database valowithfriendsdb scripts/coach_feedback.py handled --report <id> [<id> ...]"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("list")
-    sub.add_parser("handled").add_argument("--report", type=int, required=True)
+    sub.add_parser("handled").add_argument("--report", type=int, nargs="+", required=True)
     args = parser.parse_args()
     from app.db import SessionLocal
     from app.services import coach
@@ -30,7 +30,8 @@ def main() -> int:
                       f"/replays/{row['match_uuid']}/coach")
             print(f"{len(rows)} reports with open feedback")
         else:
-            print(f"marked {coach.mark_handled(db, args.report)} feedback rows handled")
+            for report_id in args.report:
+                print(f"report {report_id}: marked {coach.mark_handled(db, report_id)} feedback rows handled")
     return 0
 
 

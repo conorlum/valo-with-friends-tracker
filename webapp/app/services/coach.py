@@ -234,6 +234,21 @@ def report_page_data(db, report_id: int) -> tuple[str, dict] | None:
     return data["match_uuid"], data["report"]
 
 
+def match_prompt_data(db, replay) -> tuple[list[dict], list[str]]:
+    """For a whole match's "Prompt out": every report with open feedback, whatever its version, by player then
+    version; and the names of the coached players who have none."""
+    rows = (db.query(CoachReport.player_id, CoachReport.version)
+            .join(CoachPoint, CoachPoint.report_id == CoachReport.id)
+            .join(CoachFeedback, CoachFeedback.point_id == CoachPoint.id)
+            .filter(CoachReport.match_id == replay.match_id, CoachReport.kind == KIND_MATCH,
+                    CoachFeedback.handled_at.is_(None)).distinct().all())
+    coached = coached_players(db, replay.match_id)
+    order = {pid: i for i, (pid, _) in enumerate(coached)}
+    reports = [page_data(db, replay, pid, version)["report"]
+               for pid, version in sorted(rows, key=lambda row: (order[row[0]], row[1]))]
+    return reports, [name for pid, name in coached if pid not in {p for p, _ in rows}]
+
+
 def mark_handled(db, report_id: int) -> int:
     ids = [pid for (pid,) in db.query(CoachPoint.id).filter(CoachPoint.report_id == report_id)]
     if not ids:

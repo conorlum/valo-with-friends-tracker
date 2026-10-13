@@ -35,6 +35,18 @@ def resolve(db, match_uuid: str, player: str) -> tuple[int, int]:
     return replay.match_id, found[0]
 
 
+def team_names(db, match_uuid: str, player: str) -> list[str]:
+    """The display names of that player's team in the match, the player first."""
+    from app.models import MatchPlayer, Player
+
+    match_id, player_id = resolve(db, match_uuid, player)
+    rows = (db.query(Player.id, Player.display_name, MatchPlayer.team)
+            .join(MatchPlayer, MatchPlayer.player_id == Player.id).filter(MatchPlayer.match_id == match_id).all())
+    side = next(team for pid, _, team in rows if pid == player_id)
+    return [name for pid, name, team in sorted(rows, key=lambda row: (row[0] != player_id, row[1].lower()))
+            if team == side]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("match_uuid")

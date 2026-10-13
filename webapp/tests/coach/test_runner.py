@@ -400,3 +400,104 @@ def test_parallel_appends_never_share_an_id(tmp_path):                          
         ids = list(pool.map(lambda i: query.append(tmp_path, "where", [i], {"i": i}), range(40)))
     assert sorted(ids, key=lambda q: int(q[1:])) == [f"q{i}" for i in range(1, 41)]
     assert sorted(query.read_log(tmp_path)) == sorted(ids) and not (tmp_path / (query.LOG + ".lock")).exists()
+
+
+def test_the_published_version_is_read_while_the_session_is_open(tmp_path, monkeypatch, capsys):
+    import app.db
+    from app.services import coach
+    from tests.coach.test_coach_store import payload
+
+    _wire(monkeypatch, tmp_path, ["abcdef12-0000-4000-8000-000000000000", "0"], make_data())
+
+    class Db(_Db):
+        open = True
+
+        def __exit__(self, *exc):
+            self.open = False
+            return False
+
+    class Report:               # like a row of a closed session: its attributes can no longer be loaded
+        def __init__(self, db):
+            self.db = db
+
+        @property
+        def version(self):
+            assert self.db.open, "read after the session closed"
+            return 4
+
+    def call(text, session):
+        raise AssertionError("generate is replaced")
+
+    call.denials, call.models = 0, set()
+    monkeypatch.setattr(app.db, "SessionLocal", Db)
+    monkeypatch.setattr(coach_report, "claude_call", lambda run_dir, model: call)
+    monkeypatch.setattr(runner, "generate", lambda *args: payload())
+    monkeypatch.setattr(coach, "store_report", lambda db, match_id, player_id, body: Report(db))
+    assert coach_report.main() == 0
+    assert "published version 4 (2 points, 0 dropped)" in capsys.readouterr().out
+
+
+# --- the team command: one coach_report.py run per player of the named player's team ---
+
+def _team(monkeypatch, argv, results):
+    import app.db
+    from scripts import coach_store_report, coach_team
+
+    ran = []
+
+    def run_one(command):
+        ran.append(command)
+        return results.get(command[3], 0)
+
+    monkeypatch.setattr(sys, "argv", ["coach_team.py", *argv])
+    monkeypatch.setattr(app.db, "SessionLocal", lambda: _Db())
+    monkeypatch.setattr(coach_store_report, "team_names", lambda db, uuid, player: ["Owner#1", "Friend#2", "Third#3"])
+    monkeypatch.setattr(coach_team, "run_one", run_one)
+    return coach_team, ran
+
+
+def test_the_team_command_runs_every_teammate_in_order_and_passes_the_options_on(monkeypatch, capsys):
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1", "--model", "opus", "--dry-run"], {})
+    assert coach_team.main() == 0
+    assert [command[2:] for command in ran] == [["abc", name, "--model", "opus", "--dry-run"]
+                                                for name in ("Owner#1", "Friend#2", "Third#3")]
+    assert all(command[1].endswith("coach_report.py") for command in ran)
+    out = capsys.readouterr().out
+    assert "3 players, one at a time" in out and "== 2 of 3: Friend#2 ==" in out and "3 of 3 runs succeeded" in out
+
+
+def test_the_team_command_never_runs_two_players_at_once(monkeypatch):
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {})
+    running = []
+
+    def run_one(command):
+        assert not running, "a second run started before the first ended"
+        running.append(command)
+        ran.append(command)
+        running.pop()
+        return 0
+
+    monkeypatch.setattr(coach_team, "run_one", run_one)
+    assert coach_team.main() == 0 and len(ran) == 3
+    with pytest.raises(SystemExit):                 # there is no option that asks for more than one at a time
+        monkeypatch.setattr(sys, "argv", ["coach_team.py", "abc", "Owner#1", "--jobs", "2"])
+        coach_team.main()
+
+
+def test_one_failed_teammate_does_not_stop_the_others_and_fails_the_command(monkeypatch, capsys):
+    coach_team, ran = _team(monkeypatch, ["abc", "Owner#1"], {"Friend#2": 1})
+    assert coach_team.main() == 1 and len(ran) == 3
+    out = capsys.readouterr().out
+    assert "== Friend#2: FAILED (exit 1) ==" in out and "2 of 3 runs succeeded; failed: Friend#2" in out
+
+
+def test_the_team_command_refuses_a_player_who_is_not_in_the_match(monkeypatch, capsys):
+    from scripts import coach_store_report
+    coach_team, ran = _team(monkeypatch, ["abc", "nobody"], {})
+
+    def refuse(db, uuid, player):
+        raise ValueError("'nobody' is not a player of this match")
+
+    monkeypatch.setattr(coach_store_report, "team_names", refuse)
+    assert coach_team.main() == 2 and ran == []
+    assert "refused" in capsys.readouterr().err

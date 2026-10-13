@@ -18,15 +18,17 @@
     }).catch(function () { /* a round that fails to load shows the viewer's own error */ });
   });
 
-  // "Prompt out": copy the report's feedback prompt; a browser without clipboard access follows the link instead.
-  var promptLink = root.querySelector("[data-coach-prompt]");
-  if (promptLink && navigator.clipboard && window.fetch) {
-    promptLink.addEventListener("click", function (event) {
-      event.preventDefault();
-      fetch(promptLink.href).then(function (r) { if (!r.ok) throw new Error(String(r.status)); return r.text(); })
-        .then(function (text) { return navigator.clipboard.writeText(text); })
-        .then(function () { promptLink.textContent = "Prompt copied"; })
-        .catch(function () { window.open(promptLink.href, "_blank", "noopener"); });
+  // "Prompt out" (this report, or the whole match): copy the feedback prompt; a browser without clipboard access
+  // follows the link instead.
+  if (navigator.clipboard && window.fetch) {
+    Array.prototype.forEach.call(root.querySelectorAll("[data-coach-prompt]"), function (promptLink) {
+      promptLink.addEventListener("click", function (event) {
+        event.preventDefault();
+        fetch(promptLink.href).then(function (r) { if (!r.ok) throw new Error(String(r.status)); return r.text(); })
+          .then(function (text) { return navigator.clipboard.writeText(text); })
+          .then(function () { promptLink.textContent = "Prompt copied"; })
+          .catch(function () { window.open(promptLink.href, "_blank", "noopener"); });
+      });
     });
   }
 })();

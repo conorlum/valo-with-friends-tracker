@@ -167,12 +167,12 @@ def main() -> int:
         return 0
     try:
         with SessionLocal() as db:
-            report = coach.store_report(db, match_id, player_id, payload)
+            version = coach.store_report(db, match_id, player_id, payload).version   # read before the session closes
     except Exception as error:      # noqa: BLE001 - whatever the store raises, the report is still on disk
         print(f"the report was written but not stored: {error}\nIt is in {run_dir / 'payload.json'}; store it with "
               f"scripts/coach_store_report.py once the cause is fixed.", file=sys.stderr)
         return 1
-    print(f"published version {report.version} ({len(payload['points'])} points, {payload['dropped_points']} dropped): "
+    print(f"published version {version} ({len(payload['points'])} points, {payload['dropped_points']} dropped): "
           f"/replays/{uuid}/coach?player={player_id}")
     return 0
 
