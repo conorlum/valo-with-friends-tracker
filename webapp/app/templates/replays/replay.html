@@ -2,9 +2,10 @@
 {# The replay page (app/routers/replays.py). The page carries the site data (`replay_data`: names,
    DB outcomes, stats, the kill feed's weapons and per-kill Impact) and fetches each round's stored
    blob from /replays/<uuid>/<n>.json; `loadRound` joins the two into the round the player draws. #}
-{% block title %}{{ replay.map_name }} replay &ndash; {{ site_name }}{% endblock %}
+{% block title %}{{ replay.map_name }} {{ "coaching" if coach is defined and coach else "replay" }} &ndash; {{ site_name }}{% endblock %}
 {% block content %}
 {% if replay.match_url %}<p class="replay-crumbs"><a href="{{ replay.match_url }}">&larr; Match page</a></p>{% endif %}
+{% if coach is defined and coach %}{% include "replays/_coach.html" %}{% endif %}
 {% include "replays/_player.html" %}
 <script id="replay-data" type="application/json">{{ replay_data | tojson }}</script>
 {% if gaps %}<script src="/static/js/replay_gaps.js?v={{ static_version() }}"></script>{% endif %}
@@ -61,4 +62,5 @@
     });
   })();
 </script>
+{% if coach is defined and coach %}<script src="/static/js/coach.js?v={{ static_version() }}"></script>{% endif %}
 {% endblock %}

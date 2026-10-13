@@ -55,6 +55,36 @@ The player detail page's two heaviest computations (the round-win/kill-order sta
 - `scripts/recompute_player_views.py` — batch recompute for every player (or `--cached-only`); run after a bulk import/crawl, a manual DB fixup, or a schema/calculation version bump: `.\.venv\Scripts\python.exe scripts\recompute_player_views.py`.
 - Both tracker.gg ingest scripts (`ingest_trackergg_player.py`, `refresh_tracked_players.py`) pre-warm the cache for every player whose rows were invalidated, once each, at the end of the run — pass `--no-prewarm` to skip this (a full career recompute is several seconds per affected player).
 
+### AI coach
+
+Coaching reports for one player on one match with a replay: three things done well, three to improve, each linked
+to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-design.md`). Never on the demo.
+
+- `coach <match uuid> "Name#TAG"` (`scripts/coach.ps1`) snapshots the match from the friends DB, runs headless
+  Claude Code in a temp directory with one permitted command (the logged query tool), checks every point against
+  the run log (`app/coach/checker.py`) and publishes three and three. A point whose evidence still fails after
+  one repair is published anyway if it can be stored, and listed with its problems in the command's output
+  (`unchecked`): the owner's choice, feedback prunes weak points. `-DryRun` prints instead; `-PromptOnly` writes
+  the first prompt to `prompt.txt` in the run directory and calls no model.
+- What the checker holds a point to: a figure with a unit against cited answers of that kind (metres, seconds),
+  a named area against a cited answer, a count like 2v1 against who was alive, and, in a point to improve, no
+  distance to or place of an enemy the player's side could not see. It does not check who did what: "X killed
+  you" passes if X is in the match. Each round's economy and score are citable (`facts_id` in the brief).
+- The model's working directory is `<run dir>/model`, holding only `q`: Claude Code lets a headless session read
+  files inside its working directory without asking, so the snapshot and the log stay one level up. Its
+  environment is an allow-list of named variables (`coach_report.child_env`), never a prefix. Never add a flag that skips permission checks.
+- `webapp/coach/playbook.md` is the owner's principles and the model's rules. This repo is public: no names or
+  match ids in it. Bump its `version` on any edit; only the owner approves edits. Every coach command
+  refuses to run on a playbook at version 0 or with nothing under `# Principles`: the principles are the
+  owner's own lines. Never write stand-in principles for them.
+  Voice samples live in `coach_notes` (`scripts/coach_notes.py`).
+- The page is the replay viewer with a panel: `/replays/<uuid>/coach` (`app/routers/coach.py`,
+  `replays/_coach.html`). Reports are immutable; a re-run adds a version. Tables: migration `0021`.
+- Feedback is per point, from any logged-in viewer (login has no password, so authors are unverified). "Prompt
+  out" gives text for a Claude session that checks the feedback against the data; the owner decides any playbook
+  change, then `scripts/coach_feedback.py handled --report <id>`.
+- Named areas come from `app/static/data/callouts.json` (`scripts/fetch_callouts.py`; re-run when a map is added).
+
 ### Running the webapp locally
 
 ```

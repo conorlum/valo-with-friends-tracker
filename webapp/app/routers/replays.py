@@ -354,16 +354,15 @@ def replay_control_heatmap(request: Request, match_uuid: str, view: str = "side"
     return _json_with_etag(request, control_views.match_heatmap_for(db, replay, view, loaded), etag)
 
 
-@router.get("/replays/{match_uuid}")
-def replay_page(request: Request, match_uuid: str, db: Session = Depends(get_db)):
-    replay = _replay_or_404(db, match_uuid)
+def viewer_context(request: Request, db: Session, replay) -> dict:
+    """The context replays/replay.html renders for this replay (also the coaching page's, app/routers/coach.py)."""
     context = replay_service.page_context(db, replay)
     start_round = request.query_params.get("round")
     start = int(start_round) if start_round and start_round.isdigit() else 1
     if start not in context["match"]["rounds"]:
         start = 1
     linked = context["match"]["linked"]
-    return templates.TemplateResponse(request, "replays/replay.html", {
+    return {
         "replay": {"map_name": replay.map_name, "round_numbers": context["match"]["rounds"],
                    "title_suffix": None, "linked": context["match"]["linked"],
                    "match_url": (f"/matches/{context['match']['external_id']}" if context["match"]["linked"] else None),
@@ -371,7 +370,13 @@ def replay_page(request: Request, match_uuid: str, db: Session = Depends(get_db)
         "linked": linked, "replay_data": context, "start_round": start,
         "start_t": start_time(request.query_params.get("t")),
         "control": context["match"]["control"] if linked else None,
-        "gaps": bool(linked and context["match"].get("gaps"))})
+        "gaps": bool(linked and context["match"].get("gaps"))}
+
+
+@router.get("/replays/{match_uuid}")
+def replay_page(request: Request, match_uuid: str, db: Session = Depends(get_db)):
+    replay = _replay_or_404(db, match_uuid)
+    return templates.TemplateResponse(request, "replays/replay.html", viewer_context(request, db, replay))
 
 
 def start_time(value: str | None) -> float | None:
