@@ -20,7 +20,15 @@ def coach(**over):
 
 
 def html(data):
-    return templates.env.get_template("replays/_coach.html").render(coach=data)
+    """The strip above the replay, then (when there is a report) its points as the page's two tab panels."""
+    render = lambda name: templates.env.get_template(name).render(coach=data)
+    return render("replays/_coach.html") + (render("replays/_coach_points.html") if data["report"] else "")
+
+
+def player(data):
+    """The replay viewer as the coaching page (`data`) or the plain replay page (None) renders it."""
+    return templates.env.get_template("replays/_player.html").render(
+        replay={"map_name": "Ascent", "round_numbers": [1, 2]}, linked=True, control=None, coach=data)
 
 
 def test_every_instance_is_a_link_carrying_its_round_and_time():
@@ -78,6 +86,28 @@ def test_a_point_without_instances_and_an_instance_without_a_time_still_render()
 def test_no_report_shows_the_empty_state():
     out = html(coach(report=None, players=[]))
     assert "No coaching report for this match yet" in out
+
+
+def test_the_points_are_two_tabs_beside_the_map_with_did_well_open():
+    out = player(coach())
+    side = out.split('<aside class="replay-side">', 1)[1].split("</aside>", 1)[0]
+    tabs = side.split('role="tablist"', 1)[1].split("</div>", 1)[0]
+    assert tabs.index("Did well") < tabs.index("To improve") < tabs.index("Kill feed")
+    assert 'class="replay-tab is-active" data-replay-tab="coach-good" aria-selected="true"' in tabs
+    assert tabs.count("is-active") == 1 and tabs.count('aria-selected="true"') == 1
+    good = side.split('data-replay-panel="coach-good" role="tabpanel">', 1)[1].split('data-replay-panel="coach-improve"', 1)[0]
+    improve = side.split('data-replay-panel="coach-improve" role="tabpanel" hidden>', 1)[1].split('data-replay-panel="feed"', 1)[0]
+    assert "Good trade" in good and "Died alone on B" not in good
+    assert "Died alone on B" in improve and "Good trade" not in improve
+    assert 'data-replay-panel="feed" role="tabpanel" hidden>' in side          # one panel shows at a time
+    assert "has-coach" in out.split("data-replay", 1)[0]
+
+
+def test_the_replay_page_and_a_match_without_a_report_keep_the_kill_feed_first():
+    for out in (player(None), player(coach(report=None, players=[]))):
+        assert "coach-good" not in out and "Did well" not in out and "has-coach" not in out
+        assert 'class="replay-tab is-active" data-replay-tab="feed" aria-selected="true"' in out
+        assert 'data-replay-panel="feed" role="tabpanel">' in out
 
 
 def test_a_match_with_several_coached_players_offers_one_prompt_for_all_of_them():

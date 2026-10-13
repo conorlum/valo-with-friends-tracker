@@ -80,8 +80,9 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
   refuses to run on a playbook at version 0 or with nothing under `# Principles`: the principles are the
   owner's own lines. Never write stand-in principles for them.
   Voice samples live in `coach_notes` (`scripts/coach_notes.py`).
-- The page is the replay viewer with a panel: `/replays/<uuid>/coach` (`app/routers/coach.py`,
-  `replays/_coach.html`). Reports are immutable; a re-run adds a version. Tables: migration `0021`.
+- The page is the replay viewer: `/replays/<uuid>/coach` (`app/routers/coach.py`). A strip above it names the
+  player and version (`replays/_coach.html`); the points are the first two tabs of the viewer's side column,
+  "Did well" and "To improve", beside the map (`replays/_coach_points.html`). Reports are immutable; a re-run adds a version. Tables: migration `0021`.
 - Feedback is per point, from any logged-in viewer (login has no password, so authors are unverified). "Prompt
   out" gives text for a Claude session that checks the feedback against the data; the owner decides any playbook
   change, then `scripts/coach_feedback.py handled --report <id> [<id> ...]`. "Prompt out" under a report covers

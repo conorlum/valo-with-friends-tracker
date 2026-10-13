@@ -144,7 +144,7 @@ def test_the_panel_shows_the_form_only_to_a_logged_in_viewer():
     from app.templates import templates
     from tests.coach.test_coach_panel import coach as panel_data
 
-    render = lambda data: templates.env.get_template("replays/_coach.html").render(coach=data)
+    render = lambda data: templates.env.get_template("replays/_coach_points.html").render(coach=data)
     assert 'action="/replays/abc/coach/points/7/feedback"' in render(panel_data(can_feedback=True))
     assert "Log in to give feedback" in render(panel_data(can_feedback=False))
     assert "<form" not in render(panel_data(can_feedback=False))
