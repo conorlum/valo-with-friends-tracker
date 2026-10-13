@@ -4,12 +4,14 @@
 
 A linked replay only; 404 in demo mode. A match with no report renders the viewer with an empty panel."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.routers.replays import UUID_SHAPE, viewer_context
 from app.services import coach as coach_service
+from app.services.auth import get_current_player
 from app.services import replays as replay_service
 from app.templates import templates
 
@@ -35,4 +37,23 @@ def coach_page(request: Request, match_uuid: str, player: str | None = None, ver
     replay = linked_replay_or_404(db, match_uuid)
     context = viewer_context(request, db, replay)
     context["coach"] = coach_service.page_data(db, replay, _whole(player), _whole(version))
+    context["coach"]["can_feedback"] = get_current_player(request, db) is not None
     return templates.TemplateResponse(request, "replays/replay.html", context)
+
+
+@router.post("/replays/{match_uuid}/coach/points/{point_id}/feedback")
+def post_feedback(request: Request, match_uuid: str, point_id: int, verdict: str = Form(...), note: str = Form(""),
+                  db: Session = Depends(get_db)):
+    replay = linked_replay_or_404(db, match_uuid)
+    viewer = get_current_player(request, db)
+    if viewer is None:
+        raise HTTPException(status_code=403, detail="Log in to give feedback")
+    try:
+        coach_service.add_feedback(db, replay.match_id, point_id, viewer.id, verdict, note)
+    except LookupError:
+        raise HTTPException(status_code=404) from None
+    except coach_service.ReportError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from None
+    report = coach_service.report_of_point(db, point_id)
+    return RedirectResponse(f"/replays/{str(replay.match_uuid).lower()}/coach?player={report.player_id}"
+                            f"&version={report.version}", status_code=303)

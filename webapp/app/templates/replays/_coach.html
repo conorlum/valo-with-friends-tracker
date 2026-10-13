@@ -12,6 +12,13 @@
   <div class="coach-feedback" data-coach-feedback>
     {% for f in p.feedback %}<p class="coach-feedback-row"><strong>{{ f.author }}</strong>: {{ f.verdict | replace("_", " ") }}{% if f.note %} &ndash; {{ f.note }}{% endif %}{% if f.handled %} <span class="muted">(handled)</span>{% endif %}</p>
     {% endfor %}
+    {% if coach.can_feedback %}<form class="coach-feedback-form" method="post" action="/replays/{{ coach.match_uuid }}/coach/points/{{ p.id }}/feedback">
+      <label><input type="radio" name="verdict" value="right" required> Right</label>
+      <label><input type="radio" name="verdict" value="wrong"> Wrong</label>
+      <label><input type="radio" name="verdict" value="badly_put"> Right, badly put</label>
+      <input type="text" name="note" maxlength="2000" placeholder="What did it get wrong, or miss?" aria-label="Note">
+      <button type="submit" class="replay-button">Send</button>
+    </form>{% else %}<p class="muted">Log in to give feedback on this point.</p>{% endif %}
   </div>
 </article>
 {% endmacro %}

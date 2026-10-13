@@ -183,3 +183,27 @@ def set_note_active(db, note_id: int, active: bool) -> bool:
     note.active = active
     db.commit()
     return True
+
+
+NOTE_LIMIT = 2000
+
+
+def add_feedback(db, match_id: int, point_id: int, author_player_id: int, verdict: str, note: str | None) -> CoachFeedback:
+    if verdict not in VERDICTS:
+        raise ReportError(f"verdict must be one of {VERDICTS}")
+    note = (note or "").strip() or None
+    if note and len(note) > NOTE_LIMIT:
+        raise ReportError(f"a note is at most {NOTE_LIMIT} characters")
+    owner = (db.query(CoachReport).join(CoachPoint, CoachPoint.report_id == CoachReport.id)
+             .filter(CoachPoint.id == point_id, CoachReport.match_id == match_id).one_or_none())
+    if owner is None:
+        raise LookupError(f"point {point_id} is not in a report of match {match_id}")
+    row = CoachFeedback(point_id=point_id, author_player_id=author_player_id, verdict=verdict, note=note)
+    db.add(row)
+    db.commit()
+    return row
+
+
+def report_of_point(db, point_id: int) -> CoachReport | None:
+    return (db.query(CoachReport).join(CoachPoint, CoachPoint.report_id == CoachReport.id)
+            .filter(CoachPoint.id == point_id).one_or_none())
