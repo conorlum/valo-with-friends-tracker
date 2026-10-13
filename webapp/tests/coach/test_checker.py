@@ -340,11 +340,16 @@ def test_a_spelled_out_versus_count_that_matches_passes(snap, log):             
     assert problems(snap, log, body="It was five v five, a 5 against 5.", instances=inst) == []
 
 
-@pytest.mark.parametrize("body", ["You were thirteen metres away.", "Half a second later.", "About ninety seconds in.",
-                                  "He had two kills.", "A dozen rounds."])
+@pytest.mark.parametrize("body", ["You were thirteen metres away.", "Half a second later.", "About ninety seconds in."])
 def test_every_spelled_out_measurement_is_refused(snap, log, body):                          # fix 7
     found = problems(snap, log, polarity="good", body=body, instances=GOOD_ONE)
     assert any("write the figure" in p for p in found), found
+
+
+@pytest.mark.parametrize("body", ["He had two kills.", "A dozen rounds.", "It happened in one round.",
+                                  "You did it three times against four enemies."])
+def test_a_spelled_out_count_is_not_a_measurement_and_passes(snap, log, body):
+    assert problems(snap, log, polarity="good", body=body, instances=GOOD_ONE) == []
 
 
 def test_a_point_that_is_not_an_object_is_a_problem(snap, log):                              # fix 8

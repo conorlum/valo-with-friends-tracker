@@ -12,7 +12,7 @@ from app.coach import query
 NO_KNOWLEDGE_NOTE = "no team-knowledge data"
 POLARITIES = ("good", "improve")
 KNEW_WINDOW_S = 30.0        # a mistake's knew answer must be this recent; a first value, reviewed with the owner
-SPAN_MAX_S = 10.0           # PROVISIONAL(D10): the longest an instance's t..t1 may run; a first value
+SPAN_MAX_S = 10.0           # the longest an instance's t..t1 may run; a first value
 BODY_MAX = 4000             # longer text is refused before the regexes run
 TITLE_MAX = 160            # app/services/coach.py validate_payload's limit, checked here so it can be repaired
 
@@ -41,9 +41,10 @@ _SIGNED = re.compile(r"(?:^|[(=:]\s?|(?<!\w)(?:of|was|is|at|by|gained|lost)\s)([
 _NUMBER_WORDS = (r"zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|"
                  r"sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|"
                  r"hundred|thousand|dozen|half\s+a")
+# Only measurements (a distance, a duration) must be written as figures. A spelled-out count ("two kills", "one
+# round") passes unchecked: the owner would rather a loose point be published than an honest one refused.
 _WORD_UNIT = re.compile(
-    r"(?<!\w)(?:" + _NUMBER_WORDS + r")\s+(?:metres?|meters?|m|seconds?|secs?|s|times?|kills?|enemies|enemy|rounds?)"
-    r"(?!\w)", re.IGNORECASE)
+    r"(?<!\w)(?:" + _NUMBER_WORDS + r")\s+(?:metres?|meters?|m|seconds?|secs?|s)(?!\w)", re.IGNORECASE)
 _TAGGED = re.compile(r"[^\s,;:()\"']*#\w+")
 
 
