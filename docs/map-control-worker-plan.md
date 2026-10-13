@@ -42,8 +42,10 @@ web app (has DB)                                   replay worker (no DB, no secr
     (it reuses that function).
   - **Uploads keep priority** by never sharing a core: control children are capped at `cores - 2` (2 on the
     4-CPU plan) and run at `nice 10`, so a parse always has its own core and the scheduler favours it. A child is
-    killed after `REPLAY_CONTROL_TIMEOUT_S` (default 900 s; an average round is ~45 s of CPU, Abyss about twice
-    that) and capped at `REPLAY_CONTROL_MEMORY_MB` (default 2048; a round peaks ~0.2 GB).
+    killed after `REPLAY_CONTROL_TIMEOUT_S` (default 1800 s, increased from 900 s with owner approval
+    on 2026-10-13 for heavy Lotus rounds) and capped at `REPLAY_CONTROL_MEMORY_MB` (default 2048).
+    Explicit environment settings override the default; set `REPLAY_CONTROL_TIMEOUT_S=1800` on a
+    worker that already has a lower override. Timeout failures report `control timed out after 1800 s`.
   - Memory: a parse peaks near 3 GB at the upload cap (render.yaml's note); two control children at ~0.2-0.5 GB
     each keep the 8 GB plan's headroom.
   - `GET /health` reports control's queue and whether it is enabled. With `REPLAY_CONTROL=0` or no engine

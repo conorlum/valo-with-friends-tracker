@@ -132,8 +132,13 @@ def test_failure_kinds_and_a_machine_failure_makes_the_map_cold_again(runner):
     assert [kind for _, kind, _ in overlaps(log)[1][:2]] == ["start", "end"], "cold again: the next round warms alone"
 
 
-def test_a_round_past_its_timeout_is_killed_and_is_the_machines_failure(runner):
-    r, _ = runner(control_warm_timeout_s=0.5)
+@pytest.mark.parametrize("warming", [True, False])
+def test_a_round_past_its_timeout_is_killed_and_is_the_machines_failure(runner, warming):
+    r, _ = runner(**{"control_warm_timeout_s" if warming else "control_timeout_s": 0.5})
+    if not warming:
+        first = r.submit(task("first", "Abyss"))
+        wait_all(r, [first])
+        assert r.get(first.id).status == "done"
     job = r.submit(task("slow", "Abyss", "hang"))
     wait_all(r, [job], timeout=30)
     assert r.get(job.id).status == "failed" and r.get(job.id).error_kind == "infra"
@@ -329,6 +334,8 @@ def test_settings_from_the_environment():
     assert (s.control_enabled, s.control_workers, s.control_timeout_s, s.control_memory_mb) == (False, 3, 60.0, 1024)
     assert s.control_cmd[0] == "/opt/control-venv/bin/python"
     assert server.Settings.from_env({}).control_workers == 2      # never the core count
+    defaults = server.Settings.from_env({})
+    assert defaults.control_timeout_s == defaults.control_warm_timeout_s == 1800.0
 
 
 def test_the_image_builds_a_control_venv_with_the_web_apps_pins():
