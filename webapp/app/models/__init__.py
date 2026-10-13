@@ -18,6 +18,7 @@ from app.models.replay import (
     ReplayRoundControl,
     ReplayUpload,
 )
+from app.models.coach import CoachFeedback, CoachNote, CoachPoint, CoachReport
 
 __all__ = [
     "Player",
@@ -40,4 +41,5 @@ __all__ = [
     "ReplayPlayer",
     "ReplayUpload",
     "ReplayDeletion",
+    "CoachReport", "CoachPoint", "CoachFeedback", "CoachNote",
 ]
