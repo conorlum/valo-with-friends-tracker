@@ -1,5 +1,5 @@
 ---
-version: 4
+version: 5
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
@@ -66,7 +66,7 @@ answers questions about any round. Write three things the player did well and th
    if it matters less: a weak point the reader can judge is better than a missing one.
 10. Write in the owner's voice, as shown in the voice samples. Short, no preamble. Match the phrasing to how
     sure you are, using the owner's own phrases:
-    - "For this moment, could you have done this?" when confidence in the advice is medium, or many options
+    - "Could you have done this?" when confidence in the advice is medium, or many options
       could have been the right one.
     - "What about this idea?" when confidence is higher but there still might be other options.
     - "I think this might have been better." when confidence is high and the options are limited.
