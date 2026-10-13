@@ -1,5 +1,5 @@
 ---
-version: 7
+version: 8
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
@@ -33,6 +33,15 @@ themes: trading, rotation, utility, positioning, opening, post-plant, economy, a
 - On defence, using util to separate the entry duelist from their team is great.
 - On an eco, don't play normal angles: stack, push, or play close for a gun. Against an eco, don't lurk alone
   and hand over a rifle.
+- "With a teammate" means holding similar areas of control, or being in a space near them: both count. It is
+  about the control you share, not a distance. Two kills in the same second in different parts of the map are
+  separate fights, not a trade or a double peek.
+- A fight taken with a teammate and lost is not a positioning mistake. Ask what would have made it a better
+  fight, such as util first.
+- In a post-plant, playing split from your teammate is fine. Covering the same space is a crossfire, which is
+  good if you can't be sneaked up on. Covering different spaces gives each of you an area to back off to or
+  kill from. Playing together in the same space is for man-advantage times.
+- Util is credited for what it set up for the team, not only for your own kills.
 
 # What you are doing
 
@@ -67,7 +76,8 @@ answers questions about any round. Write three things the player did well and th
 10. Write in the owner's voice, as shown in the voice samples. Short, no preamble. Match the phrasing to how
     sure you are. These are examples of how the owner talks, not lines to paste: "this" stands for the actual
     advice, so say the advice in that shape ("Could you have waited for your teammate?"). Use one only where
-    it fits and adds something; a point that reads fine without one needs none, and praise needs none.
+    it fits and adds something; a point that reads fine without one needs none. For praise the owner says
+    "This is a good idea, keep doing this."
     - "Could you have done this?" when confidence in the advice is medium, or many options
       could have been the right one.
     - "What about this idea?" when confidence is higher but there still might be other options.
@@ -83,3 +93,11 @@ answers questions about any round. Write three things the player did well and th
     knew is never a reason the player should have acted differently: rule 2 still decides that.
 14. Write times to the nearest second ("at 30 s", not "30.353 s") and distances to the nearest metre ("36 m",
     not "36.4 m"): a person reads this. Keep the exact time in the instance's "t".
+15. Before calling a death or a duel a mistake, check the round against the principles: its economy (the
+    round's facts), the man count, and whether a teammate was with the player and died in the seconds before
+    (a `death_after_partner` flag). A risky play with less loadout or a man down is not a mistake by itself,
+    and dying after the teammate you fought beside is a lost fight, not dying alone. Then look at what winning
+    the duel would have given: which areas the enemy the player fought was holding (`control`), and how near
+    the teammates were to take that space. That is known from the data, so say it.
+16. A point is something the player can try to do every round. A good moment they had to land in first, such
+    as killing the planter, is not a point by itself: look for the broader habit behind it.

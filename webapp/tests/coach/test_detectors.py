@@ -25,6 +25,23 @@ def test_a_death_beside_a_teammate_is_not_flagged_as_alone():
     assert "death_untraded_alone" not in kinds(found)
 
 
+def test_dying_just_after_the_teammate_beside_you_is_a_lost_fight_not_a_death_alone():
+    # slots 0 and 1 stand together in mid, the other three far away on A Site; 1 dies, then 0 two seconds later
+    pos = {**toys.ten(), 0: (5000, 5000), 1: (5100, 5000)}
+    kills = [{"t": 18.0, "killer": 5, "victim": 1}, {"t": 20.0, "killer": 6, "victim": 0}]
+    found = run(toys.round_blob(pos, kills=kills))
+    (flag,) = [f for f in found if f["kind"] == "death_after_partner"]
+    assert "death_untraded_alone" not in kinds(found)
+    assert (flag["values"]["partner"], flag["values"]["after_s"]) == ("P1", 2.0)
+    assert flag["values"]["partner_m"] < detectors.TRADE_RANGE_M < flag["values"]["nearest_teammate_m"]
+    # a teammate who died long before, or far away, was not in the fight
+    late = [{"t": 5.0, "killer": 5, "victim": 1}, {"t": 20.0, "killer": 6, "victim": 0}]
+    assert "death_untraded_alone" in kinds(run(toys.round_blob(pos, kills=late)))
+    far = [{"t": 18.0, "killer": 5, "victim": 2}, {"t": 20.0, "killer": 6, "victim": 0}]
+    alone = {**toys.ten(), 0: (5000, 5000)}                     # nobody beside slot 0; slot 2 dies far away
+    assert "death_untraded_alone" in kinds(run(toys.round_blob(alone, kills=far)))
+
+
 def test_a_death_avenged_inside_the_window_is_a_trade():
     kills = [{"t": 20.0, "killer": 5, "victim": 0}, {"t": 23.0, "killer": 1, "victim": 5}]
     found = run(toys.round_blob({**toys.ten(), 0: (5000, 5000)}, kills=kills))

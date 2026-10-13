@@ -6,13 +6,14 @@ from __future__ import annotations
 import math
 from bisect import bisect_right
 
-from app.coach import areas
+from app.coach import abilities, areas
 from app.replays import format as fmt
 
 
 SAME_DEATH_S = 1.0      # app/control/engine.py's: a site death this close to the replay's own is the same death
 STALE_SAMPLE_S = 1.0    # a living player's nearest earlier sample older than this is not a position (tracks are
                         # condensed at sub-second steps, so a real track never trips it)
+SAME_CAST_S = 1.0       # objects of one ability by one player this close together are one cast
 _UTIL_KINDS = ("flash", "nearsight", "ability", "cast")
 _ROLE_GROUP = {"attack": "A", "defense": "B"}      # app/control/engine.py:321
 
@@ -126,12 +127,18 @@ class RoundView:
     def utility(self, by: int | None = None) -> list[dict]:
         """Flashes, nearsights, abilities and movement casts, in stored order, with names for slots. A flash's
         `hits_complete` is true only when an empty or short hit list is proven to be the whole list."""
-        out = []
+        out, last = [], {}
         for e in self.blob.get("util", []):
             if e.get("k") not in _UTIL_KINDS or (by is not None and e.get("by") != by):
                 continue
             row = {"t": e["t"], "kind": e["k"], "by": self.names.get(e.get("by"))}
-            ability = e.get("name") or e.get("code") or e.get("ability")
+            shown = abilities.display(e.get("code"), e.get("name"))
+            if shown and e.get("hits") is None:
+                # one cast stores several objects (a wire's two ends, a wall's segments): one row a cast
+                if e["t"] - last.get((e.get("by"), shown), -math.inf) <= SAME_CAST_S:
+                    continue
+                last[(e.get("by"), shown)] = e["t"]
+            ability = shown or e.get("name") or e.get("code") or e.get("ability")
             if ability:
                 row["ability"] = ability
             if e.get("hits") is not None:

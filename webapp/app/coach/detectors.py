@@ -10,6 +10,7 @@ from app.scoring.impact import TRADE_WINDOW_SECONDS
 
 TRADE_WINDOW_S = float(TRADE_WINDOW_SECONDS)   # the scoring formula's own trade window
 TRADE_RANGE_M = 20.0        # a teammate farther than this at the death could not have traded it
+PARTNER_WINDOW_S = 5.0      # a teammate beside the player who died this recently was in the same fight
 STACK_ENEMIES = 4           # this many enemies known on one site is a stack
 STACK_FRESH_S = 10.0        # a sighting older than this no longer places an enemy
 STACK_HOLD_S = 8.0          # still on another site this long after the stack was known
@@ -24,6 +25,24 @@ def _flag(view, kind: str, t: float, **values) -> dict:
 def _live_kills(view) -> list[dict]:
     """Kills while the round was still open: later ones stay in the blob and decide nothing."""
     return [k for k in view.kills if k["t"] <= view.t_decided]
+
+
+def _fallen_partner(view, slot, t: float, live: list[dict]):
+    """The teammate who died within PARTNER_WINDOW_S before `t` while within trading range of the player or in
+    the same named area: (slot, seconds before, metres then). The nearest in time; None when there was none."""
+    for k in sorted(live, key=lambda k: -k["t"]):
+        mate = k["victim"]
+        if mate not in view.teammates(slot) or not 0 < t - k["t"] <= PARTNER_WINDOW_S:
+            continue
+        then = k["t"] - _EPS
+        if not view.alive(slot, then):
+            continue
+        metres = view.distance_m(slot, mate, then)
+        here, there = view.position(slot, then).get("area"), view.position(mate, then).get("area")
+        same_area = bool(here and there and here["name"] == there["name"])
+        if metres is not None and (metres <= TRADE_RANGE_M or same_area):
+            return mate, round(t - k["t"], 2), round(metres, 1)
+    return None
 
 
 def _deaths(view, slot):
@@ -48,8 +67,16 @@ def _deaths(view, slot):
             out.append(_flag(view, "death_traded", t, killer=name, traded_by=view.names.get(traded_by[0]),
                              after_s=traded_by[1], nearest_teammate_m=nearest))
         elif nearest is not None and nearest > TRADE_RANGE_M:      # None: nobody left, or no position to measure
-            out.append(_flag(view, "death_untraded_alone", t, killer=name, nearest_teammate_m=nearest,
-                             teammates_alive=len(mates)))
+            partner = _fallen_partner(view, slot, t, live)
+            if partner:
+                # the teammate beside them died moments before: a fight taken together and lost, not a death
+                # alone (owner's feedback on report 1). The living teammates were still far.
+                out.append(_flag(view, "death_after_partner", t, killer=name, partner=view.names.get(partner[0]),
+                                 after_s=partner[1], partner_m=partner[2], nearest_teammate_m=nearest,
+                                 teammates_alive=len(mates)))
+            else:
+                out.append(_flag(view, "death_untraded_alone", t, killer=name, nearest_teammate_m=nearest,
+                                 teammates_alive=len(mates)))
         own = len(view.living(view.side(slot), before))
         enemy = len([e for e in view.enemies(slot) if view.alive(e, before)])
         if own > enemy:
