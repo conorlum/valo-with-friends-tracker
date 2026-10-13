@@ -195,6 +195,7 @@ def test_the_model_gets_one_tool_one_command_and_none_of_the_owners_setup():
 def test_the_models_environment_is_an_allow_list():
     env = coach_report.child_env({"DATABASE_URL": "postgresql://secret", "database_url": "y", "PATH": "x",
                                   "ANTHROPIC_API_KEY": "k", "MY_SECRET": "s", "CLAUDE_CONFIG_DIR": "c",
+                                  "CLAUDE_CODE_MESSAGING_TOKEN": "t", "CLAUDE_CODE_SESSION_ID": "i",
                                   "SystemRoot": "r", "ProgramFiles(x86)": "p"})
     assert env == {"PATH": "x", "CLAUDE_CONFIG_DIR": "c", "SystemRoot": "r", "ProgramFiles(x86)": "p"}
 
@@ -342,3 +343,60 @@ def test_a_follow_up_without_a_session_id_raises_instead_of_starting_afresh(snap
     model_call = lambda text, session: (model(text, session)[0], None)
     with pytest.raises(runner.RunError, match="session"):
         runner.generate(snap, 0, tmp_path, BOOK, [], model_call, "test-model")
+
+
+# PR 132 review.
+
+def test_each_rounds_economy_and_score_can_be_cited(snap, tmp_path):                         # finding 4
+    data = make_data()
+    data["context"]["rounds"]["1"]["stats"] = {"0": {"impact": -250, "loadout": 3900, "remaining": 100},
+                                               "5": {"loadout": 800, "remaining": 0}}
+    snapshot.save(data, tmp_path / "econ")
+    snap = snapshot.load(tmp_path / "econ")
+    point = {"polarity": "good", "theme": "trading", "title": "Bought up", "body": "3,900 against 800, at 0-0.",
+             "instances": [{"round": 1, "t": 10.0, "caption": "", "evidence": ["FACTS"]}]}
+
+    class Facts(Model):
+        def __call__(self, text, session):
+            brief = json.loads(text.split("# The brief\n\n", 1)[1].split("\n\n# What to return", 1)[0]) \
+                if "# The brief" in text else None
+            if brief:
+                self.facts = brief["rounds"][0]["facts_id"]
+            return super().__call__(text, session)
+
+    model = Facts(snap, tmp_path / "econ", [lambda q: json.dumps({"points": [
+        {**point, "instances": [{**point["instances"][0], "evidence": [model.facts]}]}]})])
+    payload = runner.generate(snap, 0, tmp_path / "econ", BOOK, [], model, "test-model")
+    assert [p["title"] for p in payload["points"]] == ["Bought up"] and payload["unchecked"] == []
+
+
+def test_fixes_returned_without_an_index_are_taken_in_order(snap, tmp_path):                 # finding 8
+    # three good points and three failing ones; the reply fixes all three but leaves out "index"
+    payload, _ = run(snap, tmp_path, [
+        lambda q: json.dumps({"points": [good_point([q])] * 3 + [{**bad_point(), "polarity": "improve"}] * 3}),
+        lambda q: json.dumps({"points": [{**good_point([q]), "title": f"Fixed {i}"} for i in range(3)]})])
+    assert "Made up" not in [p["title"] for p in payload["points"]]       # the failing originals were replaced
+    assert payload["unchecked"] == [] and payload["dropped_points"] == 0
+
+
+def test_a_report_the_store_refuses_is_kept_on_disk(snap, tmp_path, monkeypatch):            # finding 9
+    from app.services import coach
+    monkeypatch.setattr(coach, "validate_payload",
+                        lambda payload: (_ for _ in ()).throw(coach.ReportError("theme is longer than 32")))
+    with pytest.raises(runner.RunError, match=runner.REFUSED_PAYLOAD):
+        run(snap, tmp_path, [lambda q: json.dumps({"points": [good_point([q])]})])
+    assert json.loads((tmp_path / runner.REFUSED_PAYLOAD).read_text(encoding="utf-8"))["points"]
+
+
+def test_the_stored_title_is_trimmed_and_a_long_model_name_is_cut(snap, tmp_path):           # finding 9
+    model = Model(snap, tmp_path, [lambda q: json.dumps({"points": [{**good_point([q]), "title": "  Held  "}]})])
+    payload = runner.generate(snap, 0, tmp_path, BOOK, [], model, "m" * 80)
+    assert payload["points"][0]["title"] == "Held" and len(payload["model"]) == 64
+
+
+def test_parallel_appends_never_share_an_id(tmp_path):                                       # finding 6
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(8) as pool:
+        ids = list(pool.map(lambda i: query.append(tmp_path, "where", [i], {"i": i}), range(40)))
+    assert sorted(ids, key=lambda q: int(q[1:])) == [f"q{i}" for i in range(1, 41)]
+    assert sorted(query.read_log(tmp_path)) == sorted(ids) and not (tmp_path / (query.LOG + ".lock")).exists()

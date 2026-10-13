@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import re
 
-from app.coach import query
+from app.coach import knowledge, query
 
 NO_KNOWLEDGE_NOTE = "no team-knowledge data"
 POLARITIES = ("good", "improve")
@@ -23,9 +23,22 @@ _SHARE_KEYS = frozenset({"a", "b", "contested", "none"})
 _MEASURED = _TIME_KEYS | _SHARE_KEYS | frozenset({
     "metres", "impact", "kill_impact", "death_impact", "damage", "econ", "trade_credit", "kills", "deaths",
     "assists", "seconds", "hits", "nearest_teammate_m", "after_s", "teammates_alive", "own",
-    "enemy", "enemies_seen", "hold_s", "metres_min", "metres_max"})
+    "enemy", "enemies_seen", "hold_s", "metres_min", "metres_max", "loadout", "remaining"})
+# A number written with a unit is held to answers of that kind: "20 m" must be a distance, never a time or a
+# round that happens to be 20 (PR 132 review, finding 1).
+_METRE_KEYS = frozenset({"metres", "nearest_teammate_m", "metres_min", "metres_max"})
+_SECOND_KEYS = _TIME_KEYS | frozenset({"seconds", "after_s", "hold_s"})
+SEEN_SLACK_S = 1.0          # a distance to an enemy counts in a mistake if they were in view this close to it
 
 _CLOCK = re.compile(r"(?<![\d:])(\d{1,2}):(\d{2})(?![\d:])")
+_FIFTY = re.compile(r"(?<![\w/])50\s?/\s?50(?![\w/])")                 # "a 50/50" is a figure of speech
+_ROUND = re.compile(r"(?<!\w)round\s+#?(\d+)(?!\.?\d)", re.IGNORECASE)
+_ROUNDS = re.compile(r"(?<!\w)rounds\s+(\d+(?:\s*(?:,\s*(?:and\s+)?|and\s+|&\s*)\d+)*)(?!\.?\d)", re.IGNORECASE)
+_TALLY = re.compile(r"(?<![\w.#])(\d+)\s+(?:times?|instances?|moments?|rounds?)(?!\w)", re.IGNORECASE)
+_FIGURE = r"(\d+(?:\.\d+)?)"
+_UNIT = r"(m|metres?|meters?|s|secs?|seconds?)(?!\w)"
+_UNIT_RANGE = re.compile(r"(?<![\w.#])" + _FIGURE + r"\s?(?:to|and|-|–)\s?" + _FIGURE + r"\s?" + _UNIT, re.IGNORECASE)
+_UNIT_ONE = re.compile(r"(?<![\w.#])" + _FIGURE + r"\s?" + _UNIT, re.IGNORECASE)
 # P4 review F1: a unit written against the digits ("5m", "3s", "2vs1") must not hide the number from the check.
 _COUNT_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
 _COUNT = r"(\d|one|two|three|four|five)"
@@ -45,7 +58,7 @@ _NUMBER_WORDS = (r"zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|
 # round") passes unchecked: the owner would rather a loose point be published than an honest one refused.
 _WORD_UNIT = re.compile(
     r"(?<!\w)(?:" + _NUMBER_WORDS + r")\s+(?:metres?|meters?|m|seconds?|secs?|s)(?!\w)", re.IGNORECASE)
-_TAGGED = re.compile(r"[^\s,;:()\"']*#\w+")
+_TAGGED = re.compile(r"[^\s,;:()\"'#]+#\w+")          # a name before the #: "#1 job" is not a player
 
 
 def _plain(value):
@@ -77,22 +90,69 @@ def trusted_log(log: dict[str, dict], snap, flags: dict[str, dict]) -> dict[str,
     return out
 
 
-def _collect(value, key, numbers: list[float], shares: list[float], times: list[float]) -> None:
+class _Cited:
+    """What the cited answers measured, by kind. `rounds`, `tallies` and the instance times in `seconds` are the
+    point's own figures: they ground "round 7", "3 times" and "at 20 s", never a bare number or a distance."""
+
+    def __init__(self):
+        self.numbers: list[float] = []
+        self.shares: list[float] = []
+        self.times: list[float] = []
+        self.metres: list[float] = []
+        self.seconds: list[float] = []
+        self.pairs: set[tuple[int, int]] = set()
+        self.areas: set[str] = set()
+        self.rounds: set[int] = set()
+        self.tallies: set[int] = set()
+
+
+def _collect(value, key, cited: _Cited, hidden: frozenset = frozenset()) -> None:
+    """`hidden`: players whose place this answer may not ground (an enemy the side could not see)."""
     if isinstance(value, bool):
         return
     if isinstance(value, (int, float)):
         if key in _MEASURED:
-            numbers.append(float(value))
+            cited.numbers.append(float(value))
         if key in _SHARE_KEYS:
-            shares.append(float(value))
+            cited.shares.append(float(value))
         if key in _TIME_KEYS:
-            times.append(float(value))
+            cited.times.append(float(value))
+        if key in _METRE_KEYS:
+            cited.metres.append(float(value))
+        if key in _SECOND_KEYS:
+            cited.seconds.append(float(value))
+    elif isinstance(value, str):
+        if key == "area":
+            cited.areas.add(value)
     elif isinstance(value, dict):
+        if key == "area" and isinstance(value.get("name"), str):
+            cited.areas.add(value["name"])
+            return
+        place_hidden = value.get("alive") is True and value.get("name") in hidden
         for k, item in value.items():
-            _collect(item, k, numbers, shares, times)
+            if not (place_hidden and k == "area"):
+                _collect(item, k, cited, hidden)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            _collect(item, key, numbers, shares, times)
+            _collect(item, key, cited, hidden)
+
+
+def _unseen_enemy(snap, n: int, side: str, name, t: float) -> bool:
+    """True when `name` is a living enemy of `side` whom that side did not have in view around second t."""
+    try:
+        slot = snap.slot_of(name)
+    except Exception:                               # noqa: BLE001 - not a player of this match: nothing to hide
+        return False
+    view = snap.view(n)
+    if view.side(slot) == side or not view.alive(slot, t):
+        return False
+    knew = (snap.control(n) or {}).get("knew")
+    if not knew:
+        return False
+    for moment in (t, max(0.0, t - SEEN_SLACK_S), min(view.t_end, t + SEEN_SLACK_S)):
+        if any(e["slot"] == slot and e["in_view"] for e in knowledge.known_enemies(knew, side, moment, view)):
+            return False
+    return True
 
 
 def _pairs(entry: dict) -> set[tuple[int, int]]:
@@ -140,18 +200,29 @@ def _strip_names(text: str, names: dict) -> str:
     known = set()
     for name in names.values():
         if name:
-            known |= {name, name.split("#")[0]}
+            short = name.split("#")[0]
+            # a name that is only digits is left in when written without its tag: it must not hide a number
+            known |= {name} if short.strip().isdigit() else {name, short}
     for name in sorted((k for k in known if k.strip()), key=len, reverse=True):
         text = re.sub(r"(?<!\w)" + re.escape(name) + r"(?!\w)", " ", text, flags=re.IGNORECASE)
     return text
 
 
-def _text_problems(text, numbers, shares, times, pairs, names) -> list[str]:
+def _near(x: float, pool: list[float]) -> bool:
+    return any(abs(x - abs(y)) < 0.051 or (float(x).is_integer() and round(abs(y)) == x) for y in pool)
+
+
+def _text_problems(text, cited: _Cited, names, area_names=(), improve: bool = False) -> list[str]:
     problems = []
+    numbers, shares, times, pairs = cited.numbers, cited.shares, cited.times, cited.pairs
+    for area in area_names:                       # as the brief spells them, so "a site" in prose is not an area
+        if area not in cited.areas and re.search(r"(?<![\w-])" + re.escape(area) + r"(?![\w-])", text):
+            problems.append(f"the area {area} is not in a cited answer"
+                            + (" (an enemy's place counts only while your side could see them)" if improve else ""))
     text = _strip_names(text, names)
     for token in _TAGGED.findall(text):
         problems.append(f"{token} is not a player of this match")
-    text = _TAGGED.sub(" ", text)
+    text = _FIFTY.sub(" ", _TAGGED.sub(" ", text))
     for match in _CLOCK.finditer(text):
         seconds = int(match.group(1)) * 60 + int(match.group(2))
         if not any(abs(seconds - y) <= 1.0 for y in times):
@@ -159,10 +230,31 @@ def _text_problems(text, numbers, shares, times, pairs, names) -> list[str]:
     text = _CLOCK.sub(" ", text)
     for match in _VERSUS.finditer(text):
         counts = tuple(int(g) if g.isdigit() else _COUNT_WORDS[g.lower()] for g in match.groups())
-        if counts not in pairs:
+        # "a 1v1" names a duel, the playbook's own word for it, not how many were alive
+        if counts != (1, 1) and counts not in pairs:
             problems.append(f"the count {match.group(0)} matches no cited where answer or flag")
     text = _VERSUS.sub(" ", text)
     text = _THOUSANDS.sub("", _ORDINAL.sub(" ", text))      # "2nd" is not a measurement; "12,000" is 12000
+    # The point's own figures, each only in its own form: "round 7", "rounds 4, 9 and 15", "3 times".
+    for match in list(_ROUND.finditer(text)) + list(_ROUNDS.finditer(text)):
+        for digits in re.findall(r"\d+", match.group(1)):
+            if int(digits) not in cited.rounds:
+                problems.append(f"round {digits} is not the round of any instance of this point")
+    text = _ROUNDS.sub(" ", _ROUND.sub(" ", text))
+    text = _TALLY.sub(lambda m: " " if int(m.group(1)) in cited.tallies else m.group(0), text)
+
+    def unit_problem(figure: str, unit: str) -> None:
+        metres = unit.lower().startswith("m")
+        if not _near(float(figure), cited.metres if metres else cited.seconds):
+            problems.append(f"the number {figure} {unit} is not a {'distance' if metres else 'time or duration'} "
+                            "in a cited answer")
+
+    for match in _UNIT_RANGE.finditer(text):
+        unit_problem(match.group(1), match.group(3))
+        unit_problem(match.group(2), match.group(3))
+    text = _UNIT_RANGE.sub(" ", text)
+    for match in _UNIT_ONE.finditer(text):
+        unit_problem(match.group(1), match.group(2))
     for match in _WORD_UNIT.finditer(text):
         problems.append(f"'{match.group(0)}': write the figure, so it can be checked against an answer")
     for match in _SIGNED.finditer(text):
@@ -175,6 +267,7 @@ def _text_problems(text, numbers, shares, times, pairs, names) -> list[str]:
                          and (y < 0) == negative for y in numbers)
         if not agrees:
             problems.append(f"the signed number {match.group(0)} has the opposite sign in every cited answer")
+    text = _UNIT_ONE.sub(" ", text)                         # checked above, against answers of their own kind
     for match in _NUMBER.finditer(text):
         if not _matches(float(match.group(0)), numbers, shares):
             problems.append(f"the number {match.group(0)} is not a measured value in a cited answer")
@@ -238,10 +331,8 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
     instances = point.get("instances") if isinstance(point.get("instances"), list) else []
     if not instances:
         problems.append("the point has no instances")
-    numbers: list[float] = [float(len(instances))]
-    shares: list[float] = []
-    times: list[float] = []
-    pairs: set[tuple[int, int]] = set()
+    cited = _Cited()
+    cited.tallies.add(len(instances))
     captions = []
     for i, inst in enumerate(instances):
         label = f"instance {i + 1}"
@@ -264,16 +355,19 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
         if len(spans) > 1 and not t <= spans[1] <= t + SPAN_MAX_S:
             problems.append(f"{label}: t1 must be within {SPAN_MAX_S:g} s after t")
             continue
-        numbers.append(float(n))
-        numbers.append(float(t))             # t1 grounds a clock time only, never a plain number
-        times.extend(float(v) for v in spans)
+        cited.rounds.add(n)
+        cited.tallies.add(len(cited.rounds))
+        cited.times.extend(float(v) for v in spans)          # "0:20"
+        cited.seconds.extend(float(v) for v in spans)        # "at 20 s", "from 20 to 25 s": never a bare number
+        side = snap.view(n).side(slot)
+        guarded = polarity == "improve" and "team_knowledge" not in snap.gaps(n)
         ids = inst.get("evidence")
         if not isinstance(ids, list) or any(not isinstance(log_id, str) for log_id in ids):
             problems.append(f"{label}: evidence must be a list of log ids")
             ids = []
         elif not ids:
             problems.append(f"{label}: cites no evidence")
-        cited = []
+        entries = []
         for log_id in ids:
             entry = log.get(log_id)
             if entry is None:
@@ -286,21 +380,34 @@ def check_point(point: dict, log: dict[str, dict], snap, themes: tuple[str, ...]
                 problems.append(f"{label}: {log_id} was asked for second {entry['result']['t']}, outside this "
                                 f"moment ({max(0.0, t - KNEW_WINDOW_S)} to {inst.get('t1') or t})")
             else:
-                cited.append(entry)
-                _collect(entry["result"], None, numbers, shares, times)
-                pairs |= _pairs(entry)
+                entries.append(entry)
+                result, hidden = entry["result"], frozenset()
+                # A mistake is judged on what the side could know: an enemy they could not see grounds no
+                # distance and no place (PR 132 review, finding 3). `knew` gives their last sighting instead.
+                if guarded and entry["cmd"] == "distance" and "metres" in result:
+                    unseen = [name for name in (result.get("a"), result.get("b"))
+                              if _unseen_enemy(snap, n, side, name, float(result["t"]))]
+                    if unseen:
+                        problems.append(f"{label}: {log_id} measures to {unseen[0]}, whom side {side} could not "
+                                        f"see at {result['t']}; a mistake cannot rest on it")
+                        continue
+                if guarded and entry["cmd"] == "where":
+                    hidden = frozenset(p.get("name") for p in result.get("players") or [] if isinstance(p, dict)
+                                       and _unseen_enemy(snap, n, side, p.get("name"), float(result["t"])))
+                _collect(result, None, cited, hidden)
+                cited.pairs |= _pairs(entry)
         if polarity == "improve":
             if "team_knowledge" in snap.gaps(n):
                 if NO_KNOWLEDGE_NOTE not in captions[-1].lower():
                     problems.append(f"{label}: round {n} has no team-knowledge data; the caption must say "
                                     f"'({NO_KNOWLEDGE_NOTE})'")
             else:
-                side = snap.view(n).side(slot)
                 if not any(e["cmd"] == "knew" and "enemies" in e["result"] and e["result"].get("side") == side
-                           and t - KNEW_WINDOW_S <= float(e["result"]["t"]) <= t for e in cited):
+                           and t - KNEW_WINDOW_S <= float(e["result"]["t"]) <= t for e in entries):
                     problems.append(f"{label}: a mistake must cite a knew answer for side {side} in round {n}, "
                                     f"asked for a time from {max(0.0, t - KNEW_WINDOW_S)} to {t}")
     text = " ".join([str(point.get("title") or ""), str(point.get("body") or "")] + captions)
     if len(text) > BODY_MAX:
         return problems + [f"the text is over {BODY_MAX} characters"]
-    return problems + _text_problems(text, numbers, shares, times, pairs, snap.names)
+    area_names = snap.view(snap.round_numbers[0]).area_names() if snap.round_numbers else []
+    return problems + _text_problems(text, cited, snap.names, area_names, polarity == "improve")

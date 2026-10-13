@@ -43,9 +43,14 @@ evidence. An answer with "available": false means the data is missing for that r
 
 {COMMANDS}
 
-Each flag in the brief already has an "id" you may cite. Evidence for an instance must be about that instance's
-round. Every answer is recomputed when your report is checked, so only real answers count. Use no other tool
-and read no file.
+Each flag in the brief already has an "id" you may cite, and each round's "facts_id" cites that round's economy
+and the score going into it. Evidence for an instance must be about that instance's round. Every answer is
+recomputed when your report is checked, so only real answers count. Use no other tool and read no file.
+
+How figures are checked: write a distance as a figure with "m" and a time or duration as a figure with "s" (or
+a clock time, 0:41); each must be in an answer you cite for that instance. A named area must be in a cited
+answer too. In a point to improve, an enemy's distance or place counts only while the player's side could see
+them; otherwise use the last sighting or the rough place that `knew` gives.
 
 # The brief
 
@@ -81,8 +86,8 @@ def repair_prompt(failed: list[tuple[int, dict, list[str]]], missing: dict | Non
 
 
 def _quote(text: str) -> str:
-    """Reader-typed text, made unable to close its own block."""
-    return str(text).replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    """Reader-typed text, made unable to close its own block or to start a line that reads as a heading."""
+    return " ".join(str(text).split()).replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
 def prompt_out(match_uuid: str, report: dict) -> str:

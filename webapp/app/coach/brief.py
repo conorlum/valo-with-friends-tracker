@@ -30,6 +30,7 @@ def build(snap, slot: int) -> dict:
     players = snap.context["players"]
     subject = _player(players[str(slot)])
     rounds, ranked, gaps = [], [], {}
+    score = {"own": 0, "enemy": 0}          # going into each round; unknown from the first round with no winner
     for n in snap.round_numbers:
         view, site, control = snap.view(n), snap.site(n), snap.control(n)
         db = site.get("db") or {}
@@ -41,12 +42,16 @@ def build(snap, slot: int) -> dict:
             "round": n, "role": role, "winner": winner,
             "won": None if winner is None else winner == subject["team"], "decided_at": view.t_decided,
             "plant": db.get("plant"), "defuse": db.get("defuse"), "stats": stats,
-            "economy": _economy(players, site.get("stats")),
+            "economy": _economy(players, site.get("stats")), "score_before": dict(score) if score else None,
             "deaths": [k["t"] for k in live if k["victim"] == slot],
             "kills": [{"t": k["t"], "victim": snap.names.get(k["victim"])} for k in live if k.get("killer") == slot],
             "utility": [{k: v for k, v in row.items() if k != "by"} for row in view.utility(by=slot)],
             "flags": detectors.flags(view, slot, (control or {}).get("knew"), role),
             "gaps": snap.gaps(n)})
+        if score is not None and winner is not None:
+            score["own" if winner == subject["team"] else "enemy"] += 1
+        else:
+            score = None
         if stats and stats.get("impact") is not None:
             ranked.append({"round": n, "impact": stats["impact"]})
         if snap.gaps(n):

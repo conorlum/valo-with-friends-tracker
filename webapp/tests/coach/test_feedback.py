@@ -128,3 +128,37 @@ def test_the_panel_shows_the_form_only_to_a_logged_in_viewer():
     assert 'action="/replays/abc/coach/points/7/feedback"' in render(panel_data(can_feedback=True))
     assert "Log in to give feedback" in render(panel_data(can_feedback=False))
     assert "<form" not in render(panel_data(can_feedback=False))
+
+
+# PR 132 review, findings 7 and 12.
+
+def test_a_second_post_by_the_same_author_replaces_their_open_one(db, world):
+    replay, ids, report, points = stored(db, world)
+    coach.add_feedback(db, replay.match_id, points[0].id, ids[1], "wrong", "first")
+    coach.add_feedback(db, replay.match_id, points[0].id, ids[1], "right", "second")
+    coach.add_feedback(db, replay.match_id, points[0].id, ids[2], "wrong", "another reader")
+    rows = db.query(CoachFeedback).order_by(CoachFeedback.id).all()
+    assert [(r.author_player_id, r.verdict, r.note) for r in rows] == [(ids[1], "right", "second"),
+                                                                       (ids[2], "wrong", "another reader")]
+    coach.mark_handled(db, report.id)                           # handled rows are history: a new post is a new row
+    coach.add_feedback(db, replay.match_id, points[0].id, ids[1], "wrong", "after")
+    assert db.query(CoachFeedback).count() == 3
+
+
+def test_the_page_shows_only_the_newest_rows_of_a_point(db, world, monkeypatch):
+    replay, ids, report, points = stored(db, world)
+    monkeypatch.setattr(coach, "FEEDBACK_SHOWN", 2)
+    for author, note in ((ids[1], "a"), (ids[2], "b"), (ids[3], "c")):
+        coach.add_feedback(db, replay.match_id, points[0].id, author, "wrong", note)
+    shown = coach._feedback_by_point(db, [points[0].id])[points[0].id]
+    assert [f["note"] for f in shown] == ["b", "c"]
+
+
+def test_the_feedback_route_404s_in_demo_mode(db, world, monkeypatch):
+    from app.config import settings
+    replay, ids, report, points = stored(db, world)
+    monkeypatch.setattr(routes, "get_current_player", lambda req, db_: Viewer(ids[1]))
+    monkeypatch.setattr(settings, "demo_mode", True)
+    with pytest.raises(HTTPException) as demo:
+        routes.post_feedback(request(), str(replay.match_uuid), points[0].id, verdict="right", note="", db=db)
+    assert demo.value.status_code == 404 and db.query(CoachFeedback).count() == 0

@@ -5,7 +5,7 @@ from tests.coach import toys
 from tests.coach.test_snapshot import CONTEXT
 
 THEMES = ("trading", "rotation")
-KNEW = {"A": {"5": [[5.0, 8.0, 8000, 8000]]}, "B": {}}
+KNEW = {"A": {"5": [[5.0, 12.0, 8000, 8000]]}, "B": {}}     # side A has P5 in view from 5 s to 12 s
 SHARES = {"t": [0.0], "cells": {}, "areas": {}, "knew": KNEW, "group_side": None}
 
 
@@ -130,7 +130,7 @@ def test_evidence_from_another_round_is_refused(snap, log):
 
 def test_slots_and_coordinates_ground_no_number(snap, log):
     # q6 (where) holds slots 0-9, yaws and u/v values; none of them is a measurement. 7 is no time, distance or
-    # count in q6 or q2 (their times are 10, 15, 5 and 8), so nothing grounds it.
+    # count in q6 or q2 (their times are 10, 15, 5 and 12), so nothing grounds it.
     inst = [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q6", "q2"]}]
     assert any("number 7" in p for p in problems(snap, log, body="You were 7 m from help.", instances=inst))
 
@@ -327,7 +327,7 @@ def test_a_dash_and_a_signed_percentage_are_not_refused(snap, tmp_path):        
     assert any("opposite sign" in p for p in _check(snap, log, "Gained -50% control.", inst))
 
 
-@pytest.mark.parametrize("body", ["You took a 1 against 1.", "It was a one v four.", "A two versus three.",
+@pytest.mark.parametrize("body", ["You took a 2 against 1.", "It was a one v four.", "A two versus three.",
                                   "A 1 vs. 4 fight."])
 def test_more_versus_forms_are_checked(snap, log, body):                                     # fix 6
     inst = [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q6", "q2"]}]
@@ -359,3 +359,87 @@ def test_a_point_that_is_not_an_object_is_a_problem(snap, log):                 
 def test_a_very_long_body_is_refused_before_the_regexes(snap, log):                          # fix 9
     found = problems(snap, log, polarity="good", body="x" * 5000, instances=GOOD_ONE)
     assert any("4000" in p for p in found), found
+
+
+# PR 132 review: the cases its reviewer ran, one test per finding.
+
+@pytest.mark.parametrize("body, inst", [
+    ("You were 20 m from P5#T5.", [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q1", "q2"]}]),
+    ("You took 1 damage and dealt 1 kill.", [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q1", "q2"]}]),
+    ("You were 10 m from P5#T5.", [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q6", "q2"]}]),
+    ("It took 121.2 s.", [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q1", "q2"]}]),
+    ("Same as round 2.", [{"round": 1, "t": 20.0, "caption": "", "evidence": ["q1", "q2"]}]),
+])
+def test_the_points_own_round_time_and_count_ground_no_other_figure(snap, log, body, inst):      # finding 1
+    assert problems(snap, log, body=body, instances=inst) != []
+
+
+def test_the_points_own_figures_pass_in_their_own_form(snap, log):                               # findings 1, 4
+    inst = [{"round": 1, "t": 20.0, "t1": 25.0, "caption": "", "evidence": ["q1", "q2"]}]
+    for body in ("In round 1, at 20 s, 121.2 m away.", "From 20 to 25 s you stood still.", "It happened 1 time."):
+        assert problems(snap, log, body=body, instances=inst) == [], body
+
+
+@pytest.fixture
+def toy_areas(monkeypatch):
+    """The toy map's named areas, as callouts.json would hold them for a real map."""
+    from app.coach import areas
+    monkeypatch.setattr(areas, "callouts", lambda map_name, table=None: toys.CALLOUTS["Toy"])
+
+
+def test_a_named_area_must_be_in_a_cited_answer(toy_areas, snap, tmp_path):                      # finding 2
+    query.run(snap, tmp_path, "distance", ["1", "10", "P0", "P5"])      # q1: no place in it
+    query.run(snap, tmp_path, "where", ["1", "10"])                     # q2: A Site and B Site
+    log = checker.trusted_log(query.read_log(tmp_path), snap, {})
+    found = _check(snap, log, "You held Mid Courtyard.", GOOD_ONE)
+    assert any("the area Mid Courtyard" in p for p in found), found
+    where = [{"round": 1, "t": 10.0, "caption": "", "evidence": ["q2"]}]
+    assert _check(snap, log, "You held A Site, they held B Site.", where) == []
+    assert any("Mid Courtyard" in p for p in _check(snap, log, "You held Mid Courtyard.", where))
+
+
+def test_a_mistake_cannot_rest_on_an_enemy_the_side_could_not_see(toy_areas, tmp_path):          # finding 3
+    # P5 stands on B Site and is seen from 5 s to 12 s; P6-P9 stand in Mid Courtyard and are never seen.
+    places = {**toys.ten(), **{s: (5000, 5000) for s in range(6, 10)}}
+    context = {**CONTEXT, "match": {**CONTEXT["match"], "rounds": [1]}, "rounds": {"1": {"db": {}, "stats": {}}}}
+    snapshot.save(snapshot.assemble(context, {1: toys.round_blob(places, n=1)}, {1: ("ok", False, SHARES)}), tmp_path)
+    snap = snapshot.load(tmp_path)
+    query.run(snap, tmp_path, "knew", ["1", "15", "A"])                 # q1: P5 last seen at 12, on B Site
+    query.run(snap, tmp_path, "distance", ["1", "15", "P0", "P5"])      # q2: 3 s after they lost him
+    query.run(snap, tmp_path, "where", ["1", "15"])                     # q3: everyone's place
+    query.run(snap, tmp_path, "distance", ["1", "15", "P0", "P1"])      # q4: to a teammate
+    query.run(snap, tmp_path, "distance", ["1", "10", "P0", "P5"])      # q5: while P5 was in view
+    log = checker.trusted_log(query.read_log(tmp_path), snap, {})
+    hidden = [{"round": 1, "t": 15.0, "caption": "", "evidence": ["q1", "q2"]}]
+    found = _check(snap, log, "P5#T5 was 121.2 m away; rotate.", hidden, polarity="improve")
+    assert any("could not see" in p for p in found), found
+    assert _check(snap, log, "P5#T5 was 121.2 m away.", hidden) == []             # praise is not held to it
+    seen = [{"round": 1, "t": 15.0, "caption": "", "evidence": ["q1", "q5"]}]
+    assert _check(snap, log, "P5#T5 was 121.2 m away; rotate.", seen, polarity="improve") == []
+    place = [{"round": 1, "t": 15.0, "caption": "", "evidence": ["q1", "q3"]}]
+    found = _check(snap, log, "Four of them sat in Mid Courtyard.", place, polarity="improve")
+    assert any("the area Mid Courtyard" in p for p in found), found
+    assert _check(snap, log, "Four of them sat in Mid Courtyard.", place) == []   # a good point may say it
+    # the last sighting from knew, and the side's own places, still ground a mistake
+    assert _check(snap, log, "P5#T5 was last seen on B Site; you stood on A Site.", place, polarity="improve") == []
+    mate = [{"round": 1, "t": 15.0, "caption": "", "evidence": ["q1", "q4"]}]
+    assert _check(snap, log, "P1#T1 was 0 m from you.", mate, polarity="improve") == []
+
+
+@pytest.mark.parametrize("body", ["You gave them a 1v1 fight.", "It was a 50/50.", "That is the #1 job."])
+def test_figures_of_speech_are_not_counts(snap, log, body):                                      # finding 4
+    assert problems(snap, log, polarity="good", body=body, instances=GOOD_ONE) == []
+
+
+def test_a_player_named_with_digits_does_not_hide_a_number(tmp_path):                            # finding 10
+    digits = {**CONTEXT["players"]["5"], "name": "35#NA1"}
+    context = {**CONTEXT, "players": {**CONTEXT["players"], "5": digits}}
+    blobs = {1: toys.round_blob(toys.ten(), n=1), 2: toys.round_blob(toys.ten(), n=2)}
+    snapshot.save(snapshot.assemble(context, blobs, {1: ("ok", False, SHARES)}), tmp_path)
+    snap = snapshot.load(tmp_path)
+    query.run(snap, tmp_path, "distance", ["1", "10", "0", "5"])
+    log = checker.trusted_log(query.read_log(tmp_path), snap, {})
+    inst = [{"round": 1, "t": 10.0, "caption": "", "evidence": ["q1"]}]
+    found = checker.check_point(point(polarity="good", body="You were 35 metres from 35#NA1.", instances=inst),
+                                log, snap, THEMES, 0)
+    assert any("number 35" in p for p in found), found

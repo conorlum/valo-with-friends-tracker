@@ -27,13 +27,16 @@ TIMEOUT_S = 1800
 MODEL_DIR = "model"   # the model's cwd holds only q; snapshot and log stay one level up, where reads are refused (probe 3g).
 
 # What the model's process may inherit. Everything else (database URL, API keys, any other secret) is dropped.
+# Of Claude Code's own variables only where its config and its shell are: a session that launches this script
+# carries CLAUDE_CODE_* tokens and sockets of its own, which the model's process must not inherit.
 ENV_ALLOW = frozenset({"PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "USERPROFILE",
                        "USERNAME", "HOME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
-                       "PROGRAMFILES", "PROGRAMFILES(X86)", "TEMP", "TMP", "LANG", "TERM"})
+                       "PROGRAMFILES", "PROGRAMFILES(X86)", "TEMP", "TMP", "LANG", "TERM",
+                       "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_GIT_BASH_PATH"})
 
 
 def child_env(environ: dict) -> dict:
-    return {k: v for k, v in environ.items() if k.upper() in ENV_ALLOW or k.upper().startswith("CLAUDE_")}
+    return {k: v for k, v in environ.items() if k.upper() in ENV_ALLOW}
 
 
 def write_q(run_dir: Path, python: Path) -> Path:
@@ -74,9 +77,12 @@ def claude_call(run_dir: Path, model: str | None):
         usage = out.get("modelUsage")
         if isinstance(usage, dict):
             call.models.update(str(name) for name in usage)
+        denials = out.get("permission_denials")
+        call.denials += len(denials) if isinstance(denials, list) else 0
         return str(out.get("result") or ""), out.get("session_id")
 
     call.models = set()
+    call.denials = 0        # commands the model tried and was refused: a clean run has none
     return call
 
 
@@ -118,11 +124,13 @@ def main() -> int:
         if run_dir.resolve().parent != root.resolve():
             print(f"refused: {run_dir} is not directly under {root}", file=sys.stderr)
             return 2
-        stored_away = run_dir / "payload.json"
-        if stored_away.exists():       # a finished run whose store failed: never delete it
-            keep = root / f"{uuid}-p{player_id}-payload-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
-            shutil.move(str(stored_away), str(keep))
-            print(f"an unstored report from an earlier run was moved to {keep}")
+        for name in ("payload.json", runner.REFUSED_PAYLOAD):
+            stored_away = run_dir / name
+            if stored_away.exists():       # a finished run whose store failed or was refused: never delete it
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                keep = root / f"{uuid}-p{player_id}-{Path(name).stem}-{stamp}.json"
+                shutil.move(str(stored_away), str(keep))
+                print(f"an unstored report from an earlier run was moved to {keep}")
         shutil.rmtree(run_dir)
     snapshot.save(data, run_dir)
     write_q(run_dir, Path(sys.executable))
@@ -146,6 +154,8 @@ def main() -> int:
     except (runner.RunError, RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         print(f"run failed: {error}; the run's files are in {run_dir}", file=sys.stderr)
         return 1
+    if call.denials:
+        print(f"the model tried {call.denials} command(s) it is not allowed and was refused", file=sys.stderr)
     if not args.model and call.models:
         payload["model"] = ", ".join(sorted(call.models))[:64]      # what the CLI says it actually used
     # Written before anything is stored: a report that cost a model run is never lost to a failed store.

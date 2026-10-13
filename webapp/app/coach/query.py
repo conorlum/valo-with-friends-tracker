@@ -5,6 +5,9 @@ evidence cites those ids, which is how a claim is checked (app/coach/checker.py,
 from __future__ import annotations
 
 import json
+import os
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from app.coach import control_areas, knowledge
@@ -206,10 +209,40 @@ def append(directory: Path, cmd: str, args: list, result: dict) -> str:
     here, so a report's evidence can cite either."""
     path = Path(directory) / LOG
     path.parent.mkdir(parents=True, exist_ok=True)
-    entry = {"id": f"q{len(read_log(directory)) + 1}", "cmd": cmd, "args": list(args), "result": result}
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, separators=(",", ":")) + "\n")
+    with _locked(path.with_name(LOG + ".lock")):        # the model may run several ./q calls at once
+        entry = {"id": f"q{len(read_log(directory)) + 1}", "cmd": cmd, "args": list(args), "result": result}
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, separators=(",", ":")) + "\n")
     return entry["id"]
+
+
+LOCK_WAIT_S = 10.0      # longer than any honest append; a lock older than this was left by a killed process
+
+
+@contextmanager
+def _locked(lock: Path):
+    """One writer at a time, across processes: the id is the line count, so read-then-append must not interleave
+    (PR 132 review, finding 6). Creating the lock file is the lock; a stale one is taken over."""
+    deadline = time.monotonic() + LOCK_WAIT_S
+    while True:
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            break
+        except (FileExistsError, PermissionError):
+            if time.monotonic() > deadline:
+                try:
+                    lock.unlink()
+                except OSError:
+                    pass
+                deadline = time.monotonic() + LOCK_WAIT_S
+            time.sleep(0.005)
+    try:
+        yield
+    finally:
+        try:
+            lock.unlink()
+        except OSError:
+            pass
 
 
 def run(snap, directory: Path, command: str, args: list[str]) -> dict:

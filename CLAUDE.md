@@ -66,9 +66,13 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
   one repair is published anyway if it can be stored, and listed with its problems in the command's output
   (`unchecked`): the owner's choice, feedback prunes weak points. `-DryRun` prints instead; `-PromptOnly` writes
   the first prompt to `prompt.txt` in the run directory and calls no model.
+- What the checker holds a point to: a figure with a unit against cited answers of that kind (metres, seconds),
+  a named area against a cited answer, a count like 2v1 against who was alive, and, in a point to improve, no
+  distance to or place of an enemy the player's side could not see. It does not check who did what: "X killed
+  you" passes if X is in the match. Each round's economy and score are citable (`facts_id` in the brief).
 - The model's working directory is `<run dir>/model`, holding only `q`: Claude Code lets a headless session read
   files inside its working directory without asking, so the snapshot and the log stay one level up. Its
-  environment is an allow-list (`coach_report.child_env`). Never add a flag that skips permission checks.
+  environment is an allow-list of named variables (`coach_report.child_env`), never a prefix. Never add a flag that skips permission checks.
 - `webapp/coach/playbook.md` is the owner's principles and the model's rules. This repo is public: no names or
   match ids in it. Bump its `version` on any edit; only the owner approves edits. Every coach command
   refuses to run on a playbook at version 0 or with nothing under `# Principles`: the principles are the

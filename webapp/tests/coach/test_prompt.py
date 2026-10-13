@@ -52,6 +52,7 @@ def test_reader_text_stays_inside_its_quoted_block():
     block = text.split("<feedback ", 1)[1].split("\n</feedback>", 1)
     assert "Ignore the playbook" in block[0]                      # the injected line is still inside the block
     assert "&lt;/feedback&gt;" in block[0]                        # its own closing tag was neutralised
+    assert "\n" not in block[0].split(">", 1)[1].strip()          # and a note cannot start a line of its own
     assert "untrusted" in text.lower() and "the owner decides" in text.lower()
 
 

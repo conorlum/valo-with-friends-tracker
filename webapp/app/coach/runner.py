@@ -12,6 +12,7 @@ from app.coach import checker, prompt, query
 from app.services import coach as coach_service
 
 PER_SIDE = 3
+REFUSED_PAYLOAD = "payload-refused.json"    # a finished report the store's rules refuse, kept for the owner
 _STORED = ("polarity", "theme", "title", "body", "instances")
 
 
@@ -50,6 +51,15 @@ def _brief_with_flag_ids(snap, slot: int, run_dir: Path) -> tuple[dict, dict]:
             args = [flag["round"], flag["t"], flag["kind"]]
             flag["id"] = query.append(run_dir, "flag", args, result)
             logged[flag["id"]] = {"cmd": "flag", "args": args, "result": result}
+    # The round's economy and the score going into it exist only in the brief, so they are logged the same way:
+    # without an id a true economy figure could never be cited (PR 132 review, finding 4).
+    for r in built["rounds"]:
+        facts = {key: r[key] for key in ("economy", "score_before") if r.get(key)}
+        if facts:
+            result = {"round": r["round"], "kind": "round_facts", **facts}
+            args = [r["round"], 0.0, "round_facts"]
+            r["facts_id"] = query.append(run_dir, "flag", args, result)
+            logged[r["facts_id"]] = {"cmd": "flag", "args": args, "result": result}
     return built, logged
 
 
@@ -94,8 +104,11 @@ def generate(snap, slot: int, run_dir: Path, book, voice: list[str], call_model,
         _need_session(session)
         first_count = len(points)
         text, session = call_model(prompt.repair_prompt(failed, missing, first_count), session)
-        fixes = {int(p["index"]): p for p in (extract_points(text) or [])
-                 if isinstance(p, dict) and re.fullmatch(r"[0-9]+", str(p.get("index")))}
+        returned = [p for p in (extract_points(text) or []) if isinstance(p, dict)]
+        fixes = {int(p["index"]): p for p in returned if re.fullmatch(r"[0-9]+", str(p.get("index")))}
+        if not fixes and failed and len(returned) == len(failed) and not any(missing.values()):
+            # the fixes came back without their index: one for each failed point, so they are taken in order
+            fixes = {i: p for (i, _, _), p in zip(failed, returned)}
         offered = [fixes.get(i) for i, _, _ in failed]
         added = [fixes[i] for i in sorted(fixes) if i >= first_count]
         verdicts = iter(checked([f for f in offered if f is not None] + added))
@@ -128,17 +141,20 @@ def generate(snap, slot: int, run_dir: Path, book, voice: list[str], call_model,
     kept = []
     for i in sorted(chosen):
         p = points[i]
-        kept.append({**{k: p.get(k) for k in _STORED},
+        kept.append({**{k: p[k].strip() if isinstance(p.get(k), str) else p.get(k) for k in _STORED},
                      "instances": [{k: v for k, v in inst.items() if k in ("round", "t", "t1", "caption", "evidence")}
                                    for inst in p["instances"]]})
     if not kept:
         raise RunError("no point could be stored; nothing to publish")
-    payload = {"playbook_version": book.version, "model": model_name, "data_gaps": built["data_gaps"],
+    payload = {"playbook_version": book.version, "model": str(model_name)[:64], "data_gaps": built["data_gaps"],
                "dropped_points": dropped, "points": kept,
                "unchecked": [{"title": points[i].get("title"), "problems": unchecked[i]}
                              for i in sorted(chosen) if i in unchecked]}
     try:
         coach_service.validate_payload(payload)     # the store's own rules, here, so a finished run is never lost to them
     except coach_service.ReportError as error:
-        raise RunError(f"the checked report cannot be stored: {error}") from None
+        # a report that cost a model run is kept even when the store would refuse it
+        refused = Path(run_dir) / REFUSED_PAYLOAD
+        refused.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        raise RunError(f"the checked report cannot be stored: {error}; it is in {refused}") from None
     return payload

@@ -16,6 +16,7 @@ from app.services.replays import watchable_external_ids
 KIND_MATCH = "match"
 POLARITIES = ("good", "improve")
 VERDICTS = ("right", "wrong", "badly_put")
+FEEDBACK_SHOWN = 30         # rows per point on the page and in "Prompt out": anyone can pick any name to post under
 
 
 class ReportError(ValueError):
@@ -129,7 +130,7 @@ def _feedback_by_point(db, point_ids: list[int]) -> dict[int, list[dict]]:
     for row, author in rows:
         out[row.point_id].append({"author": author, "verdict": row.verdict, "note": row.note or "",
                                   "handled": row.handled_at is not None})
-    return out
+    return {pid: found[-FEEDBACK_SHOWN:] for pid, found in out.items()}      # the newest, oldest first
 
 
 def page_data(db, replay, player_id: int | None, version: int | None) -> dict:
@@ -201,8 +202,16 @@ def add_feedback(db, match_id: int, point_id: int, author_player_id: int, verdic
              .filter(CoachPoint.id == point_id, CoachReport.match_id == match_id).one_or_none())
     if owner is None:
         raise LookupError(f"point {point_id} is not in a report of match {match_id}")
-    row = CoachFeedback(point_id=point_id, author_player_id=author_player_id, verdict=verdict, note=note)
-    db.add(row)
+    # One open row per author per point: login has no password, so a second post replaces the first instead of
+    # piling up on the page and in "Prompt out" (PR 132 review, finding 7). Handled rows are history and stay.
+    row = (db.query(CoachFeedback)
+           .filter(CoachFeedback.point_id == point_id, CoachFeedback.author_player_id == author_player_id,
+                   CoachFeedback.handled_at.is_(None)).order_by(CoachFeedback.id.desc()).first())
+    if row is None:
+        row = CoachFeedback(point_id=point_id, author_player_id=author_player_id, verdict=verdict, note=note)
+        db.add(row)
+    else:
+        row.verdict, row.note = verdict, note
     db.commit()
     return row
 

@@ -34,6 +34,7 @@ def test_a_malformed_playbook_is_refused(tmp_path, text, message):
     "---\nversion: 1\nthemes: a\n---\n# Principles\n\n# Rules\n1. Say only what the data shows.\n",     # none written
     "---\nversion: 1\nthemes: a\n---\n# Rules\n1. Say only what the data shows.\n",                    # no section
     "---\nversion: 0\nthemes: a\n---\n# Principles\n- Trade your teammate.\n",                         # still version 0
+    "---\nversion: 00\nthemes: a\n---\n# Principles\n- Trade your teammate.\n",                        # zero, spelled twice
 ])
 def test_a_playbook_without_the_owners_principles_is_refused(tmp_path, text):
     with pytest.raises(playbook.PlaybookError, match="no principles yet"):

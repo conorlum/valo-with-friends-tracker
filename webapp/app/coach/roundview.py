@@ -94,6 +94,10 @@ class RoundView:
     def area(self, u: float, v: float) -> dict | None:
         return areas.area_at(self.map_name, u, v, self._table)
 
+    def area_names(self) -> list[str]:
+        """Every named area of this map, longest first."""
+        return sorted({c["name"] for c in areas.callouts(self.map_name, self._table)}, key=lambda a: (-len(a), a))
+
     def position(self, slot: int, t: float) -> dict:
         if self.alive(slot, t):
             sample = self._sample_at(slot, t)
