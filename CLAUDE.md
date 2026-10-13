@@ -70,9 +70,9 @@ to every moment in the replay (`docs/superpowers/specs/2026-10-12-ai-coach-desig
   files inside its working directory without asking, so the snapshot and the log stay one level up. Its
   environment is an allow-list (`coach_report.child_env`). Never add a flag that skips permission checks.
 - `webapp/coach/playbook.md` is the owner's principles and the model's rules. This repo is public: no names or
-  match ids in it. Bump its `version` on any edit; only the owner approves edits. It ships at version 0 with
-  no principles, and every coach command refuses to run until the owner has written theirs under `# Principles`
-  and set the version to 1. Never write stand-in principles for them.
+  match ids in it. Bump its `version` on any edit; only the owner approves edits. Every coach command
+  refuses to run on a playbook at version 0 or with nothing under `# Principles`: the principles are the
+  owner's own lines. Never write stand-in principles for them.
   Voice samples live in `coach_notes` (`scripts/coach_notes.py`).
 - The page is the replay viewer with a panel: `/replays/<uuid>/coach` (`app/routers/coach.py`,
   `replays/_coach.html`). Reports are immutable; a re-run adds a version. Tables: migration `0021`.

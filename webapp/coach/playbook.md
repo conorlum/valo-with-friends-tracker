@@ -1,8 +1,26 @@
 ---
-version: 0
+version: 1
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
+
+- Trading teammates is important. Peeking with your teammate is good. Holding with your teammate is also good
+  if it is the same line and it is an aggressive line.
+- Using util on unknown areas is good. Using util on cleared areas is bad. Using util to clear an enemy out of
+  a position is good.
+- On attack at a man disadvantage, looking for a kill before planting is good in most cases.
+- At a man advantage, not giving 1v1 fights is very good. Fighting a 1v1 at a man advantage is bad. Fighting
+  with a teammate to trade down is really good in a post-plant for the attackers. For the defenders it is not
+  great, but it is good for rooting out attackers.
+- Using util to hold space is good, and so is using it to get more space. Reclearing space an enemy could be in
+  is good: using util for this is good, using your body is also good but more risky.
+- Being risky on rounds where your team has more money is not great. Being risky on rounds where you have less
+  loadout than the other team is good.
+- Buy correctly for the pistol round, win or lose, and then for round 3.
+- Play your agent's archetype to its advantages. Entry duelists entry. Sentinels hold space and find gaps.
+  Smokers cut space up with smokes and apply pressure with util and presence. Initiators either recon for info
+  with util or set teammates up with offensive util. Flash duelists take advantaged fights with their util.
+- Noise discipline, whether lurking or in a stack.
 
 # What you are doing
 
