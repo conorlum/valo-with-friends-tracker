@@ -1,5 +1,5 @@
 ---
-version: 6
+version: 7
 themes: trading, rotation, utility, positioning, opening, post-plant, economy, advantage
 ---
 # Principles
@@ -81,5 +81,5 @@ answers questions about any round. Write three things the player did well and th
 13. To judge the player's noise, run `knew` for the enemy side: a signal there that names the player says when
     the enemy located them and how (its `reason`). Use it only for what the player gave away. What the enemy
     knew is never a reason the player should have acted differently: rule 2 still decides that.
-14. Write times to the nearest second ("at 30 s", not "30.353 s"): a person reads this. Keep the exact time in
-    the instance's "t".
+14. Write times to the nearest second ("at 30 s", not "30.353 s") and distances to the nearest metre ("36 m",
+    not "36.4 m"): a person reads this. Keep the exact time in the instance's "t".
