@@ -192,12 +192,28 @@ class GapDetector:
         return p.view if p.view is not None else p.live & ~p.utility
 
     def _sight(self, x, y, eye_z, node, smokes) -> np.ndarray:
-        """Every node with a clear line from (x, y) at eye height `eye_z`, in any direction (R13)."""
+        """Every node with a clear line from (x, y) at eye height `eye_z` (R13).
+
+        Tick records are read-only. Repeated exposure/release requests share one
+        cast only within that tick; step() clears the memo before every record.
+        Retain blocker references in the key to prevent temporary object ID reuse.
+        """
+        from app.control.features import BoundedOccluder
+
+        # Direct mutable feature rasters are not eligible for memoization.
+        reusable = not any(isinstance(s, BoundedOccluder) and s.mask.flags.writeable for s in smokes)
+        key = ("sight", float(x).hex(), float(y).hex(),
+               None if eye_z is None else float(eye_z).hex(), int(node), tuple(smokes))
+        if reusable and key in self._tick_cache:
+            return self._tick_cache[key]
         record: dict = {}
         out = cast(self.geo, float(x), float(y), FULL_CIRCLE, smokes, eye_z=eye_z, own=int(node), record=record)
         self.timing["casts"] += 1
         if record.get("unresolved_rays"):
             self._note("exposure rays through unresolved terrain (2D sight there)")
+        if reusable:
+            out.setflags(write=False)
+            self._tick_cache[key] = out
         return out
 
     def last_located(self, side: str, enemy: int, before: float, inclusive: bool = True,

@@ -784,9 +784,12 @@ def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list
     from app.control import engine
     from app.control.feature_visibility import cache_for
 
-    static = engine.seen_from(geo, src, smokes, skip)
     if not occluders:
-        return static
+        return engine.seen_from(geo, src, smokes, skip)
+    # Smoke is tested per pair below. A smoke-filtered union here would repeat
+    # that work before any panel check. Extra smoke-hidden targets remain false;
+    # the candidates reaching blocked() are identical to the old two-pass path.
+    static = engine.seen_from(geo, src, [], skip)
     src = src[geo.row_of[src] >= 0]
     targets = np.flatnonzero(static & ~skip) if skip is not None else np.flatnonzero(static)
     if not len(targets):
@@ -794,7 +797,25 @@ def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list
     out = static.copy()
     out[targets] = False
     cache = cache_for(geo)
-    for s in src.tolist():
+    # With diagnostics requested, retain the exact logical per-pair test counts.
+    unaffected = cache.unaffected(geo, src, occluders) if record is None else np.zeros(len(src), bool)
+    i = 0
+    remaining = len(targets)
+    while i < len(src):
+        if not remaining:
+            break
+        if unaffected[i]:
+            stop = i + 1
+            while stop < len(src) and unaffected[stop]:
+                stop += 1
+            # Preserve source order: later affected sources must receive the same
+            # candidate set (and longest-target sampling interval) as before.
+            out |= engine.seen_from(geo, src[i:stop], smokes, skip=out)
+            remaining = int(np.count_nonzero(~out[targets]))
+            i = stop
+            continue
+        s = int(src[i])
+        i += 1
         # Unpack one row on demand: the old source-by-all-node temporary can be
         # hundreds of MB for an unknown region and is mostly unused after union.
         cand = np.unpackbits(geo.rows[geo.row_of[s]])[targets].astype(bool) & ~out[targets]
@@ -807,6 +828,7 @@ def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list
         clear = ~cache.blocked(geo, s, targets[cand], occluders, record)
         idx = targets[cand]
         out[idx[clear]] = True
+        remaining -= int(np.count_nonzero(clear))
     return out
 
 

@@ -61,6 +61,75 @@ def test_cached_visibility_matches_original_with_smokes_skip_and_source_union(wi
             after.clear()
             assert np.array_equal(cf.seen_from_with(geo, src, smokes, blockers, skip, after), expected)
             assert after == before
+        assert np.array_equal(cf.seen_from_with(geo, src, smokes, blockers, skip), expected)
+
+
+@pytest.mark.parametrize('smokes', [[], [(328, 132, 14, False)]])
+@pytest.mark.parametrize('with_skip', [False, True])
+def test_consecutive_unaffected_sources_are_batched_without_reordering_later_panel_checks(monkeypatch, smokes, with_skip):
+    from app.control import engine
+    geo = copy.copy(two_rooms())
+    src = np.array([geo.cell_of_px(x, y) for x, y in
+                    [(124, 124), (132, 132), (324, 124), (140, 140), (364, 164)]])
+    mask = np.zeros((1024, 1024), bool)
+    mask[96:176, 344:348] = True
+    occ = cf._bounded_occluder('door', mask, all_height=True)
+    skip = np.zeros(geo.n, bool) if with_skip else None
+    if skip is not None:
+        skip[geo.cell_of_px(364, 164)] = True
+    before = reference(geo, src, smokes, [occ], skip)
+    proof = cache_for(geo).unaffected(geo, src, [occ])
+    assert proof.tolist() == [True, True, False, True, False]
+    batches = []
+    original = engine.seen_from
+    def counted(g, sources, smoke, skip=None):
+        batches.append(sources.tolist())
+        return original(g, sources, smoke, skip)
+    monkeypatch.setattr(engine, 'seen_from', counted)
+    assert np.array_equal(cf.seen_from_with(geo, src, smokes, [occ], skip), before)
+    assert src[:2].tolist() in batches
+
+
+def test_source_batch_proofs_remain_conservative_for_mutable_and_border_masks():
+    geo = copy.copy(two_rooms())
+    src = np.array([geo.cell_of_px(124, 124)])
+    mask = np.zeros((1024, 1024), bool)
+    mask[96:176, 344:348] = True
+    immutable = cf._bounded_occluder('door', mask, all_height=True)
+    memo = cache_for(geo)
+    assert memo.unaffected(geo, src, [immutable]).all()
+    assert not memo.unaffected(geo, src, [replace(immutable, mask=mask.copy())]).any()
+    border = np.zeros_like(mask)
+    border[:, 0] = True
+    assert not memo.unaffected(geo, src, [cf._bounded_occluder('border', border, all_height=True)]).any()
+
+
+def test_unaffected_proofs_do_not_mix_fixed_panel_bounds_or_source_hints():
+    geo = copy.copy(two_rooms())
+    src = np.array([geo.cell_of_px(124, 124)])
+    far = np.zeros((1024, 1024), bool)
+    far[96:176, 344:348] = True
+    near = np.zeros_like(far)
+    near[96:176, 144:148] = True
+    memo = cache_for(geo)
+    a = cf._bounded_occluder('far', far, all_height=True)
+    b = cf._bounded_occluder('near', near, all_height=True)
+    assert memo.unaffected(geo, src, [a]).all()
+    assert not memo.unaffected(geo, src, [b]).any()
+    assert not memo.unaffected(geo, src, [a, b]).any()
+    hinted = replace(a, source_area=SourceArea(np.ones(geo.n, bool), a.bounds_px, np.full(geo.n, -1, np.int8)))
+    assert not memo.unaffected(geo, src, [hinted]).any()
+
+
+def test_batched_visibility_keeps_height_band_and_thin_panel_answers():
+    geo = copy.copy(bridge())
+    rng = np.random.default_rng(21)
+    src = rng.choice(np.flatnonzero(geo.row_of >= 0), 50, replace=False)
+    skip = rng.random(geo.n) < .4
+    for smokes in ([], [(224, 200, 22, False)], [(224, 200, 22, True)]):
+        blockers = [panel(257, bottom=3.1, top=5.6), panel(185, bottom=-.9, top=2.3)]
+        before = reference(geo, src, smokes, blockers, skip)
+        assert np.array_equal(cf.seen_from_with(geo, src, smokes, blockers, skip), before)
 
 
 def test_warm_cache_avoids_intersections_and_retains_batch_step_counts(monkeypatch):

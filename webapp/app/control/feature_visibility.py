@@ -77,11 +77,46 @@ class SightCache:
     def __init__(self, geo, limit=MAX_CACHE_BYTES):
         self.limit, self.bytes = limit, 0
         self.entries = OrderedDict()
+        self.source_proofs = OrderedDict()
         self.signature = (id(geo.rows), id(geo.centres), id(geo.node_z), id(geo.heights), geo.n)
         self.hits = self.misses = 0
         from app.control import heights as hc
         body = np.full(geo.n, np.nan) if geo.heights is None else geo.node_z + hc.BODY_M
         self.targets = np.column_stack((geo.centres.astype(float), body))
+        self.proof_coordinates_valid = bool(((geo.centres >= 0) & (geo.centres <= 1023)).all())
+
+    def unaffected(self, geo, sources, occluders):
+        """Sources whose entire static row misses every trusted blocker bound.
+
+        These sources can be unioned in packed batches. An authored omission is
+        never sufficient: SourceArea proves it against the whole rotation sweep.
+        Fixed panels use their enclosing rectangle, ignoring height and smoke.
+        Mutable/untrusted masks retain the individual intersection path.
+        """
+        clear = np.ones(len(sources), bool)
+        for occ in occluders:
+            if occ.mask.flags.writeable or occ.bounds_px is None or occ.mask_digest is None:
+                return np.zeros(len(sources), bool)
+            proof = occ.source_area
+            if proof is None:
+                # Bounded proofs are only valid for the unclipped map coordinates.
+                if not self.proof_coordinates_valid:
+                    return np.zeros(len(sources), bool)
+                proof = self.source_proofs.pop(occ.bounds_px, None)
+                if proof is None:
+                    proof = SourceArea(np.zeros(geo.n, bool), occ.bounds_px,
+                                       np.full(geo.n, -1, np.int8))
+                self.source_proofs[occ.bounds_px] = proof
+                while len(self.source_proofs) > 64:
+                    self.source_proofs.popitem(last=False)
+            candidates = sources[clear]
+            unchecked = candidates[~proof.drawn[candidates] & (proof.checked[candidates] < 0)]
+            for source in unchecked.tolist():
+                proof.affects(geo, source)
+            clear &= ~proof.drawn[sources] & (proof.checked[sources] == 0)
+            if not clear.any():
+                break
+        return clear
 
     def blocked(self, geo, source, targets, occluders, record):
         from app.control import features as cf, heights as hc
