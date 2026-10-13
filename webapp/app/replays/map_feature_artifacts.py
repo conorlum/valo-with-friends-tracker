@@ -33,6 +33,10 @@ class FeatureArtifactCorrupt(FeatureArtifactError):
     pass
 
 
+class FeatureSourceUnavailable(FeatureArtifactCorrupt):
+    """The round lacks qualified source evidence; retrying an unchanged blob cannot fix it."""
+
+
 class UnsupportedFeatureCompiler(FeatureArtifactError):
     pass
 
@@ -55,7 +59,9 @@ class FeatureArtifactRef:
 
 
 def feature_failure(error: FeatureArtifactError) -> dict:
-    if isinstance(error, UnsupportedFeatureCompiler):
+    if isinstance(error, FeatureSourceUnavailable):
+        kind, code = 'inputs', 'features_source_unavailable'
+    elif isinstance(error, UnsupportedFeatureCompiler):
         kind, code = 'compat', 'features_unsupported'
     elif isinstance(error, FeatureArtifactMissing):
         kind, code = 'infra', 'features_missing'

@@ -2,9 +2,9 @@
 the contract is docs/superpowers/specs/2026-10-04-map-features-contract.md).
 
 The annotations (`map_features` in tags.json, app/replays/map_feature_schema.py) are minimap u/v geometry plus
-behaviour. This module turns them into what the engine would consume, on synthetic fixtures for now: no engine
-caller uses it in this build (no feature is enabled, no CONTROL_REVISION bump), so every committed map computes
-exactly what it did.
+behaviour. This module qualifies immutable per-map artifacts and supplies their permanent domain, movement
+blocks and bounded sight to the registered engine consumers. Only qualified active bundles participate;
+pending annotations retain diagnostics and do not install their dynamic effects.
 
 - **Rasterising** (`raster`): a point, polyline (with an optional width), polygon (even-odd) or paint becomes
   PAINT_GRID x PAINT_GRID cells, tested at cell centres in u/v. Deterministic, and twinned bit for bit by
@@ -139,6 +139,11 @@ def resolve_cells(geo: Geometry, cells: list[int], path: str) -> Placement:
     """All cells must have permanent ground and exactly one real floor; never synthetic node zero."""
     from app.control.heights import MAX_FLOORS, STAND_M
     cells = sorted(set(cells))
+    if geo.adaptive:
+        if any(type(c) is not int or not 0 <= c < GRID * GRID for c in cells):
+            return Placement(reasons=(_reason('off_map', path, cells),))
+        chosen = np.isin(geo.space_grid, cells)
+        return resolve_spaces(geo, np.unique(geo.space_grid[chosen]).tolist(), path)
     if not cells:
         return Placement(reasons=(_reason('empty_geometry', path),))
     grouped, nodes, ground = {}, [], []
@@ -182,13 +187,131 @@ def resolve_cells(geo: Geometry, cells: list[int], path: str) -> Placement:
     return Placement((), (), reasons) if reasons else Placement(tuple(nodes), tuple(ground))
 
 
-def _place_shape(geo, shape, path):
+def resolve_spaces(geo, spaces, path):
+    """Resolve exact mixed leaves; a sibling's floor cannot qualify this footprint."""
+    if not geo.adaptive:
+        return resolve_cells(geo, spaces, path)
+    grouped, nodes, ground = {}, [], []
+    for sid in sorted(set(spaces)):
+        row = geo.space_nodes[sid] if type(sid) is int and 0 <= sid < len(geo.space_nodes) else []
+        real = [int(n) for n in row if n >= 0 and np.isfinite(geo.node_z[n])]
+        code = ('off_map' if not len(row) else 'off_ground' if not geo.space_walk[sid] else
+                'unresolved_height' if geo.space_unresolved[sid] else
+                'missing_floor' if not real else 'multi_floor' if len(real) != 1 else None)
+        if code:
+            bucket = grouped.setdefault(code, ([], []))
+            bucket[0].append(sid); bucket[1].append(len(real))
+        else:
+            from app.control.heights import STAND_M
+            nodes.extend(real); ground.append(float(geo.node_z[real[0]]) - STAND_M)
+    if not spaces:
+        return Placement(reasons=(_reason('empty_geometry', path),))
+    reasons = tuple(_reason(code, path, *grouped[code]) for code in sorted(grouped))
+    return Placement((), (), reasons) if reasons else Placement(tuple(nodes), tuple(ground))
+
+
+def footprint_cells(geo, shape):
+    """A paint footprint reduced at the runtime's physical leaf scale."""
+    return paint_cells(geo, raster(shape))
+
+
+def paint_cells(geo, paint):
+    """Use one leaf reduction for authored shapes and sampled moving footprints."""
+    if not geo.adaptive:
+        return to_grid(paint).ravel()
+    spaces = np.unique(geo.space_grid[paint])
+    out = np.zeros(len(geo.space_walk), bool); out[spaces] = True
+    return out
+
+
+def _event_bound_panel(feature):
+    """Wall attachment is an explicit panel claim, not permission to open new ground."""
+    if not feature or feature.get('kind') not in ('door', 'breakable'):
+        return False
+    from app.replays.ascent_features import KEYS
+    from app.replays.map_feature_events import binding_problems
+    return (feature.get('replay_key') in KEYS or
+            feature.get('replay_source') is not None and not binding_problems(feature['replay_source']))
+
+
+def _planar_panel(feature):
+    """An explicitly source-bound, non-moving panel whose blocking states span every height.
+
+    This is the authored 2D aperture model, not a guessed height band. Missing ground can use
+    the geometry's existing 2D node; separate measured floors remain ambiguous. Sliding and
+    rotating panels still require their physical height/movement compilation.
+    """
+    if not _event_bound_panel(feature) or feature.get('sliding') or feature.get('rotation'):
+        return False
+    blocking = [s for s in feature.get('states', []) if s.get('blocks_movement') or s.get('blocks_sight')]
+    return bool(blocking) and all(s.get('blocks_sight') and
+        (s.get('sight_bounds') or {}).get('ref') == 'all_height' and
+        all((o.get('bounds') or {}).get('ref') == 'all_height' for o in s.get('sight', []))
+        for s in blocking)
+
+
+def _resolve_panel_cells(geo, cells, path, feature):
+    resolver = resolve_spaces if geo.adaptive else resolve_cells
+    placed = resolver(geo, cells, path)
+    if not placed.reasons or not _planar_panel(feature):
+        return placed
+    # Keep off-ground, invalid and genuinely stacked geometry pending. Only the absence of
+    # measured ground is irrelevant to an explicit all-height panel on existing walkable ground.
+    if any(r['code'] not in ('missing_floor', 'unresolved_height') for r in placed.reasons):
+        return placed
+    nodes, ground = [], []
+    from app.control.heights import STAND_M
+    for sid in cells:
+        row = geo.space_nodes[sid] if geo.adaptive else geo.node_of[sid]
+        live = [int(n) for n in row if n >= 0 and geo.walk_n[n]]
+        if len(live) != 1:
+            return Placement(reasons=(_reason('multi_floor', path, [sid], [len(live)]),))
+        nodes.extend(live)
+        if np.isfinite(geo.node_z[live[0]]):
+            ground.append(float(geo.node_z[live[0]]) - STAND_M)
+    return Placement(tuple(nodes), tuple(ground))
+
+
+def _panel_ground_cells(geo, cells, mask_px, feature):
+    """Keep every ground leaf; omit only a one-paint-cell attachment to an adjacent permanent wall.
+
+    The complete sight footprint is retained. No wall gains a node, and unsupported or multiple
+    floors on walkable leaves still fail ordinary placement. A panel entirely off ground still fails.
+    """
+    if mask_px is None or not _event_bound_panel(feature):
+        return cells
+    walk = geo.space_walk if geo.adaptive else geo.walk.ravel()
+    ground = cells & walk
+    if not ground.any() or not (cells & ~walk).any():
+        return cells
+    from scipy.ndimage import binary_dilation
+    grid = geo.space_grid if geo.adaptive else np.arange(GRID * GRID).reshape(GRID, GRID).repeat(2, 0).repeat(2, 1)
+    near = binary_dilation(ground[grid], structure=np.ones((3, 3), bool))
+    paint = mask_px.reshape(P, PX_PER_PAINT, P, PX_PER_PAINT).any((1, 3))
+    out = cells.copy()
+    for sid in np.flatnonzero(cells & ~walk):
+        covered = (grid == sid) & paint
+        if not covered.any() or (covered & ~near).any():
+            continue
+        if geo.adaptive:
+            x0, y0, x1, y1 = geo.space_bbox[sid]
+        else:
+            x0, y0 = int(sid % GRID) * CELL, int(sid // GRID) * CELL
+            x1, y1 = x0 + CELL, y0 + CELL
+        if geo.sight[y0:y1, x0:x1].any():
+            out[sid] = False
+    return out
+
+
+def _place_shape(geo, shape, path, panel=None):
     rep = ms.Report()
     ms._geometry(rep, path, shape)
     if rep.errors:
         code = 'off_map' if any(e['code'] == 'bad_coordinates' for e in rep.errors) else 'invalid_geometry'
         return Placement(reasons=(_reason(code, path),))
-    return resolve_cells(geo, np.flatnonzero(to_grid(raster(shape))).tolist(), path)
+    cells = footprint_cells(geo, shape)
+    cells = _panel_ground_cells(geo, cells, to_px(raster(shape)), panel)
+    return _resolve_panel_cells(geo, np.flatnonzero(cells).tolist(), path, panel)
 
 
 def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
@@ -198,16 +321,28 @@ def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
     results = {}
     for f in mf.get('features') or []:
         fid, pieces = f.get('id'), []
-        def shape(value, path):
-            pieces.append(_place_shape(geo, value, path))
+        def shape(value, path, panel=None):
+            pieces.append(_place_shape(geo, value, path, panel))
         def state_parts(s, path):
             if s.get('footprint') is not None:
-                shape(s['footprint'], path + '.footprint')
+                if f.get('preset') == 'vertical_rope' and not s.get('blocks_movement') \
+                        and not s.get('blocks_sight') and (s['footprint'] or {}).get('type') == 'point':
+                    # A vertical rope's editor marker is not a single-floor object.
+                    # Its measured lower/upper endpoints below own placement; resolving
+                    # the marker as ordinary ground would reject every genuine stack.
+                    rep = ms.Report()
+                    ms._geometry(rep, path + '.footprint', s['footprint'])
+                    if rep.errors:
+                        pieces.append(Placement(reasons=(_reason('invalid_geometry', path + '.footprint'),)))
+                else:
+                    shape(s['footprint'], path + '.footprint', f)
             elif s.get('blocks_movement'):
                 pieces.append(Placement(reasons=(_reason('empty_geometry', path + '.footprint'),)))
             for i, occ in enumerate(s.get('sight') or []):
-                shape(occ.get('geometry'), f'{path}.sight[{i}].geometry')
+                shape(occ.get('geometry'), f'{path}.sight[{i}].geometry', f)
         for s in f.get('states') or []:
+            if (f.get('replay_key') or f.get('replay_source')) and f.get('sliding') and s.get('name') in ('opening', 'closing'):
+                continue  # the moving panel is compiled from its closed aperture and sampled height band
             state_parts(s, f'features.{fid}.states.{s.get("name")}')
         rotation = f.get('rotation') or {}
         for i, phase in enumerate(rotation.get('phases') or []):
@@ -221,7 +356,20 @@ def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
                 shape(f['base_edits'][key], f'features.{fid}.base_edits.{key}')
         for t in mf.get('triggers') or []:
             if any(target.get('feature') == fid for target in t.get('targets') or []):
-                shape(t.get('geometry'), f'triggers.{t.get("id")}.geometry')
+                from app.replays.map_feature_events import binding_problems
+                from app.replays.ascent_features import KEYS
+                event_bound = (f.get('replay_key') in KEYS or
+                               f.get('replay_source') is not None and not binding_problems(f['replay_source']))
+                if t.get('type') in ('switch', 'shoot') and event_bound:
+                    # A wall-mounted switch or shootable target is a source marker,
+                    # not ground a player traverses.
+                    rep = ms.Report()
+                    path = f'triggers.{t.get("id")}.geometry'
+                    ms._geometry(rep, path, t.get('geometry'))
+                    if rep.errors:
+                        pieces.append(Placement(reasons=(_reason('invalid_geometry', path),)))
+                else:
+                    shape(t.get('geometry'), f'triggers.{t.get("id")}.geometry')
         for r in mf.get('routes') or []:
             if r.get('owner') != fid:
                 continue
@@ -230,16 +378,25 @@ def placement(geo: Geometry, source: dict) -> dict[str, Placement]:
                 pieces.append(Placement(reasons=(_reason('missing_endpoint', f'routes.{r.get("id")}'),)))
             sites = (r.get('access') or {}).get('sites', []) if isinstance(r.get('access'), dict) else []
             for p in ends + sites:
-                shape({'type': 'point', 'uv': p.get('uv')}, f'routes.{r.get("id")}.{p.get("id")}')
+                path = f'routes.{r.get("id")}.{p.get("id")}'
+                if p.get('landing') is None:
+                    shape({'type': 'point', 'uv': p.get('uv')}, path)
+                else:
+                    node, why = _point_node(geo, mf, p.get('uv'), landing=p['landing'])
+                    pieces.append(Placement(reasons=(_reason('invalid_landing', path),)) if why else
+                                  Placement((node,), (float(geo.node_z[node]) - STAND_M,)))
         reasons = tuple(r for p in pieces for r in p.reasons)
         nodes = sorted({n for p in pieces for n in p.nodes})
         # A behaviour-only feature is valid without a geometry claim.
         results[fid] = Placement((), (), reasons) if reasons else Placement(
-            tuple(nodes), tuple(float(geo.node_z[n]) - STAND_M for n in nodes) if geo.heights is not None else ())
+            tuple(nodes), tuple(float(geo.node_z[n]) - STAND_M for n in nodes
+                                if np.isfinite(geo.node_z[n])) if geo.heights is not None else ())
     return results
 
 
 def _candidate_geometry(geo, mf, members):
+    from app.control.feature_geometry import prepare
+    geo = prepare(geo, mf)
     if geo.heights is not None:
         return geo
     walk = geo.walk_px.copy()
@@ -249,6 +406,12 @@ def _candidate_geometry(geo, mf, members):
             own = _owned(f)
             walk |= own['potential_ground']
             sight &= ~own['remove_sight']
+    if geo.adaptive:
+        from app.control.geometry import geometry_from_masks, attach_heights
+        candidate = geometry_from_masks(geo.name, sight, walk, geo.uv_per_unit / 10000, geo.specials)
+        attach_heights(candidate, geo.heights)
+        candidate.barrier, candidate.barrier_sha = geo.barrier, geo.barrier_sha
+        return candidate
     return replace(geo, walk_px=walk, sight=sight,
                    walk=walk.reshape(GRID, CELL, GRID, CELL).mean((1, 3)) > 0.5,
                    walk_n=(walk.reshape(GRID, CELL, GRID, CELL).mean((1, 3)) > 0.5).ravel())
@@ -280,9 +443,11 @@ def floor_nodes(geo: Geometry, binding: dict | None, cells: np.ndarray) -> Bindi
     return Binding(np.array(placed.nodes, np.int64), [r['code'] for r in placed.reasons])
 
 
-def feature_floor_nodes(geo: Geometry, mf: dict, feature: dict, cells: np.ndarray) -> Binding:
+def feature_floor_nodes(geo: Geometry, mf: dict, feature: dict, cells: np.ndarray, mask_px=None) -> Binding:
     """The nodes a feature's footprint covers on the floors it names (the union over them)."""
-    p = resolve_cells(geo, np.flatnonzero(cells).tolist(), f'features.{feature.get("id")}.footprint')
+    cells = _panel_ground_cells(geo, cells, mask_px, feature)
+    p = _resolve_panel_cells(geo, np.flatnonzero(cells).tolist(),
+                             f'features.{feature.get("id")}.footprint', feature)
     return Binding(np.array(p.nodes, np.int64), [f"{r['path']}: {r['code']}" for r in p.reasons])
 
 
@@ -301,6 +466,11 @@ def state_of(feature: dict, states: dict | None) -> dict | None:
 class Effects:
     blocked: np.ndarray                      # geo.n bool: nodes no one may walk on
     pending: list = field(default_factory=list)
+
+
+def empty_effects(geo: Geometry) -> Effects:
+    """Keep array allocation in the geometry runtime, out of stdlib authoring/motion helpers."""
+    return Effects(np.zeros(geo.n, bool))
 
 
 def movement_blocks(geo: Geometry, mf: dict, states: dict | None = None,
@@ -322,8 +492,8 @@ def movement_blocks(geo: Geometry, mf: dict, states: dict | None = None,
             continue
         if not s.get("blocks_movement") or not s.get("footprint"):
             continue
-        cells = to_grid(raster(s["footprint"])).ravel()
-        b = feature_floor_nodes(geo, mf, f, cells)
+        cells = footprint_cells(geo, s["footprint"])
+        b = feature_floor_nodes(geo, mf, f, cells, to_px(raster(s['footprint'])))
         blocked[b.nodes] = True
         pending += b.pending
     return Effects(blocked, pending)
@@ -334,9 +504,12 @@ def compose_masks(sight_px: np.ndarray, walk_px: np.ndarray, mf: dict, states: d
     current state drawn in: a blocking footprint removes walking (and blocks sight when the state blocks
     sight), and each sight occluder's line is drawn as sight-blocking cells. Flat and all-floor: a picture
     for the page, which scripts/control_tagger_core.js `Features.composeFeatures` matches bit for bit; the
-    engine never reads it (it uses `movement_blocks` and bounded occluders)."""
+    engine never reads it (it uses `movement_blocks` and bounded occluders). Sliding models use a separate
+    motion preview and are excluded: flat masks cannot demonstrate seeing below a descending panel."""
     sight, walk = sight_px.copy(), walk_px.copy()
     for f in mf.get("features") or []:
+        if f.get('sliding') is not None:
+            continue  # Separate motion preview: a flat mask cannot represent seeing under a descending panel.
         s = state_of(f, states)
         if s is None:
             continue
@@ -365,6 +538,24 @@ class BoundedOccluder:
     bottom: float = -np.inf
     top: float = np.inf
     all_height: bool = False
+    bounds_px: tuple | None = None  # Exact enclosing pixel rectangle for compiler-owned immutable masks.
+    source_area: object | None = None  # Round-local conservative source proof; never changes a pixel answer.
+    mask_digest: bytes | None = None  # Compiler-owned read-only raster identity, shared by identical poses.
+    cache_resting: bool = True      # Performance hint only: complete resting-pose rows may be persisted.
+
+    def discard_acceleration(self):
+        """Drop derived cache/culling proofs without changing the physical blocker."""
+        self.mask_digest = None
+        self.bounds_px = None
+        self.source_area = None
+
+
+def _bounded_occluder(owner, mask, bottom=-np.inf, top=np.inf, all_height=False):
+    ys, xs = np.nonzero(mask)
+    bounds = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1) if len(xs) else None
+    mask.setflags(write=False)
+    return BoundedOccluder(owner, mask, bottom, top, all_height, bounds,
+                          mask_digest=hashlib.sha256(mask.tobytes()).digest())
 
 
 def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owner: str):
@@ -375,12 +566,23 @@ def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owne
 
     bounds = occ.get("bounds") or {}
     cells = mask_px.reshape(GRID, CELL, GRID, CELL).any((1, 3)).ravel()
-    b = floor_nodes(geo, None, cells)
+    feature = next((f for f in mf.get('features') or [] if f.get('id') == owner), None)
+    if geo.adaptive:
+        touched = mask_px.reshape(256, 4, 256, 4).any((1, 3))
+        cells = np.zeros(len(geo.space_walk), bool)
+        cells[np.unique(geo.space_grid[touched])] = True
+        cells = _panel_ground_cells(geo, cells, mask_px, feature)
+        placed = _resolve_panel_cells(geo, np.flatnonzero(cells).tolist(), 'sight bounds', feature)
+        b = Binding(np.array(placed.nodes, np.int64), [r['code'] for r in placed.reasons])
+    else:
+        cells = _panel_ground_cells(geo, cells, mask_px, feature)
+        placed = _resolve_panel_cells(geo, np.flatnonzero(cells).tolist(), 'sight bounds', feature)
+        b = Binding(np.array(placed.nodes, np.int64), [r['code'] for r in placed.reasons])
     if b.pending or not len(b.nodes):
         return None, f"{owner}: " + ('; '.join(b.pending) or 'no floor under the occluder')
     ref = bounds.get("ref")
     if ref == "all_height":
-        return BoundedOccluder(owner, mask_px, all_height=True), None
+        return _bounded_occluder(owner, mask_px, all_height=True), None
     if ref not in ("ground", "world"):
         return None, f"{owner}: sight bounds unresolved"
     lo, hi = ms_known(bounds.get("bottom")), ms_known(bounds.get("top"))
@@ -389,12 +591,12 @@ def resolve_bounds(geo: Geometry, mf: dict, occ: dict, mask_px: np.ndarray, owne
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
         return None, f"{owner}: sight bounds require a finite positive height interval"
     if geo.heights is None:
-        return BoundedOccluder(owner, mask_px, all_height=True), None
+        return _bounded_occluder(owner, mask_px, all_height=True), None
     if ref == "world":
         origin = geo.heights.origin_z / 10.0
-        return BoundedOccluder(owner, mask_px, lo - origin, hi - origin), None
+        return _bounded_occluder(owner, mask_px, lo - origin, hi - origin), None
     ground = float(np.median(geo.node_z[b.nodes])) - hc.STAND_M
-    return BoundedOccluder(owner, mask_px, ground + lo, ground + hi), None
+    return _bounded_occluder(owner, mask_px, ground + lo, ground + hi), None
 
 
 def ms_known(value) -> float | None:
@@ -428,7 +630,38 @@ def sight_occluders(geo: Geometry, mf: dict, states: dict | None = None) -> tupl
     return out, pending
 
 
-def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None = None) -> np.ndarray:
+def _bounds_interval(a, b, bounds):
+    """Conservative parameter interval in an interior pixel rectangle."""
+    left, top, right, bottom = bounds
+    enter, leave = np.zeros(len(b)), np.ones(len(b))
+    for axis, low, high in ((0, left, right), (1, top, bottom)):
+        delta = b[:, axis] - a[axis]
+        parallel = delta == 0
+        near = np.zeros(len(b)); far = np.zeros(len(b))
+        np.divide(low - 1e-9 - a[axis], delta, out=near, where=~parallel)
+        np.divide(high + 1e-9 - a[axis], delta, out=far, where=~parallel)
+        first, last = np.minimum(near, far), np.maximum(near, far)
+        inside = low - 1e-9 <= a[axis] <= high + 1e-9
+        first[parallel], last[parallel] = (-np.inf, np.inf) if inside else (np.inf, -np.inf)
+        enter = np.maximum(enter, first)
+        leave = np.minimum(leave, last)
+    return enter, leave
+
+
+def _interior_bounds(bounds):
+    return bounds is not None and bounds[0] > 0 and bounds[1] > 0 and bounds[2] < PX and bounds[3] < PX
+
+
+def _lines_meet_bounds(a, b, bounds):
+    """Reject segments outside interior bounds; border clipping stays conservative."""
+    if not _interior_bounds(bounds):
+        return np.ones(len(b), bool)
+    enter, leave = _bounds_interval(a, b, bounds)
+    return enter <= leave + 1e-12
+
+
+def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None = None,
+                  *, sampling_steps: int | None = None) -> np.ndarray:
     """Per target, is the line from `a` = (x px, y px, z) to that target (b: N x 3, z NaN or None for a 2D
     check) inside an occluder's mask at a height inside its band? One vertical-intersection rule for `cast_with`,
     `los_with` and `seen_from_with`: the line is sampled every pixel (its two ends excluded); a straight-up line
@@ -443,15 +676,29 @@ def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None 
     if record is not None and flat.any():
         record["flat_occluder_tests"] = record.get("flat_occluder_tests", 0) + int(flat.sum())
     length = np.hypot(b[:, 0] - ax, b[:, 1] - ay)
-    steps = int(np.ceil(length.max())) + 1 if n else 1
+    steps = sampling_steps if sampling_steps is not None else int(np.ceil(length.max())) + 1
+    # Keep the original sampling interval even after culling: changing the longest target
+    # would shift sample locations and could change a thin panel's answer.
+    x0, y0 = np.clip(ax, 0, PX - 1), np.clip(ay, 0, PX - 1)
+    x1, y1 = np.clip(b[:, 0], 0, PX - 1), np.clip(b[:, 1], 0, PX - 1)
+    possible = np.zeros(n, bool)
+    for occ in occluders:
+        bounds = getattr(occ, 'bounds_px', None)
+        if bounds is None:  # Legacy/directly constructed masks have no trusted bound.
+            possible[:] = True
+            break
+        left, top, right, bottom = bounds
+        broad = (np.maximum(x0, x1) >= left - 1e-9) & (np.minimum(x0, x1) <= right + 1e-9) \
+                & (np.maximum(y0, y1) >= top - 1e-9) & (np.minimum(y0, y1) <= bottom + 1e-9)
+        possible |= broad & _lines_meet_bounds((ax, ay), b, bounds)
+    indices = np.flatnonzero(possible)
+    if not len(indices):
+        return out
+    b, flat, length = b[indices], flat[indices], length[indices]
+    n = len(indices)
     s = np.linspace(0.0, 1.0, max(steps, 2))[1:-1]
     for lo in range(0, n, 512):
         bb, fl, ln = b[lo:lo + 512], flat[lo:lo + 512], length[lo:lo + 512]
-        xs = ax + s[None, :] * (bb[:, 0:1] - ax)
-        ys = ay + s[None, :] * (bb[:, 1:2] - ay)
-        zs = az + s[None, :] * (bb[:, 2:3] - az)
-        xi = np.clip(xs, 0, PX - 1).astype(np.int32)
-        yi = np.clip(ys, 0, PX - 1).astype(np.int32)
         hit = np.zeros(len(bb), bool)
         vertical = ln < 1e-9
         if vertical.any():
@@ -462,16 +709,41 @@ def blocked_lines(occluders: list, a: tuple, b: np.ndarray, record: dict | None 
                 z1 = np.where(vfl, np.inf, np.maximum(az, bb[vertical, 2]))
             apx = (int(min(max(ay, 0), PX - 1)), int(min(max(ax, 0), PX - 1)))
         for occ in occluders:
+            # Sample only the original linspace indices within this panel's
+            # enclosing rectangle. Rebuilding a shorter linspace would move
+            # pixel samples and change thin-wall answers. One index of padding
+            # protects rounding at the interval ends. Untrusted/border masks
+            # retain the complete clipped sampling path.
+            pick = np.arange(len(bb))
+            sample_s = s[None, :]
+            valid = None
+            if len(s) and _interior_bounds(occ.bounds_px):
+                enter, leave = _bounds_interval((ax, ay), bb, occ.bounds_px)
+                pick = np.flatnonzero(enter <= leave + 1e-12)
+                if len(pick):
+                    first = np.clip(np.floor(enter[pick] * (steps - 1)) - 1, 1, steps - 2).astype(int)
+                    last = np.clip(np.ceil(leave[pick] * (steps - 1)) + 1, 1, steps - 2).astype(int)
+                    indices_s = first[:, None] + np.arange(int((last - first).max()) + 1)
+                    valid = indices_s <= last[:, None]
+                    sample_s = s[np.minimum(indices_s - 1, len(s) - 1)]
+            targets = bb[pick]
+            xs = ax + sample_s * (targets[:, 0:1] - ax)
+            ys = ay + sample_s * (targets[:, 1:2] - ay)
+            zs = az + sample_s * (targets[:, 2:3] - az)
+            xi = np.clip(xs, 0, PX - 1).astype(np.int32)
+            yi = np.clip(ys, 0, PX - 1).astype(np.int32)
             inside = occ.mask[yi, xi]
+            if valid is not None:
+                inside &= valid
             if occ.all_height:
-                hit |= inside.any(1)
+                hit[pick] |= inside.any(1)
             else:
                 band = (zs >= occ.bottom) & (zs < occ.top)
-                hit |= (inside & (band | fl[:, None])).any(1)
+                hit[pick] |= (inside & (band | fl[pick, None])).any(1)
             if vertical.any() and occ.mask[apx]:
                 # the span [z0, z1] meets the band [bottom, top); an all-height band is every height
                 hit[vertical] |= True if occ.all_height else (z1 >= occ.bottom) & (z0 < occ.top)
-        out[lo:lo + 512] = hit
+        out[indices[lo:lo + 512]] = hit
     return out
 
 
@@ -517,39 +789,73 @@ def seen_from_with(geo: Geometry, src: np.ndarray, smokes: list, occluders: list
     pair counts when the line from the source's eye (node z + EYE_M) to the target's body (node z + BODY_M) is
     clear; a node with no height is tested in 2D. One clear source is enough."""
     from app.control import engine
-    from app.control import heights as hc
+    from app.control.feature_visibility import cache_for
 
-    static = engine.seen_from(geo, src, smokes, skip)
     if not occluders:
-        return static
+        return engine.seen_from(geo, src, smokes, skip)
     src = src[geo.row_of[src] >= 0]
+    cache = cache_for(geo)
+    key = cache.union_key(src, smokes, occluders, skip) if record is None else None
+    reused = cache.union_get(key)
+    if reused is not None:
+        return reused
+    # Smoke is tested per pair below. A smoke-filtered union here would repeat
+    # that work before any panel check. Extra smoke-hidden targets remain false;
+    # the candidates reaching blocked() are identical to the old two-pass path.
+    static = engine.seen_from(geo, src, [], skip)
     targets = np.flatnonzero(static & ~skip) if skip is not None else np.flatnonzero(static)
     if not len(targets):
         return static
     out = static.copy()
     out[targets] = False
-    tz = np.array([_eye_body(geo, int(t), hc.BODY_M) for t in targets])
-    tgt = np.column_stack([geo.centres[targets].astype(float), tz])
-    rows = np.unpackbits(geo.rows[geo.row_of[src]], axis=1)[:, : geo.n][:, targets].astype(bool)
-    for i, s in enumerate(src.tolist()):
-        cand = rows[i] & ~out[targets]
-        if not cand.any():
+    target_bits = np.packbits(static & ~skip if skip is not None else static)
+    out_bits = np.packbits(out)
+    # With diagnostics requested, retain the exact logical per-pair test counts.
+    unaffected = cache.unaffected(geo, src, occluders) if record is None else np.zeros(len(src), bool)
+    i = 0
+    remaining = len(targets)
+    while i < len(src):
+        if not remaining:
+            break
+        if unaffected[i]:
+            stop = i + 1
+            while stop < len(src) and unaffected[stop]:
+                stop += 1
+            # Preserve source order: later affected sources must receive the same
+            # candidate set (and longest-target sampling interval) as before.
+            out |= engine.seen_from(geo, src[i:stop], smokes, skip=out)
+            out_bits = np.packbits(out)
+            remaining = int(np.count_nonzero(~out[targets]))
+            i = stop
             continue
-        x, y = geo.centres[s]
+        s = int(src[i])
+        i += 1
+        # Unpack one row on demand: the old source-by-all-node temporary can be
+        # hundreds of MB for an unknown region and is mostly unused after union.
+        # Most later sources contribute nothing. Reject them in packed form,
+        # instead of unpacking every map node for every candidate source.
+        bits = geo.rows[geo.row_of[s]] & target_bits & ~out_bits
+        if not bits.any():
+            continue
+        idx = np.flatnonzero(np.unpackbits(bits)[:geo.n])
         for smoke in smokes:                  # the pair must be clear of smoke too, as in seen_from
-            cand[cand] &= ~engine.smoke_blocks(geo.centres[[s]], geo.centres[targets[cand]], smoke)[0]
-        if not cand.any():
+            idx = idx[~engine.smoke_blocks(geo.centres[[s]], geo.centres[idx], smoke)[0]]
+        if not len(idx):
             continue
-        clear = ~blocked_lines(occluders, (float(x), float(y), _eye_body(geo, s, hc.EYE_M)), tgt[cand], record)
-        idx = targets[cand]
+        row = cache.clear_row(geo, s, idx, occluders) if record is None else None
+        clear = ((row[idx // 8] & (128 >> (idx % 8))) != 0 if row is not None
+                 else ~cache.blocked(geo, s, idx, occluders, record))
         out[idx[clear]] = True
+        np.bitwise_or.at(out_bits, idx[clear] // 8, (128 >> (idx[clear] % 8)).astype(np.uint8))
+        remaining -= int(np.count_nonzero(clear))
+    cache.union_put(key, out)
     return out
 
 
 # ---------------------------------------------------------------- base reconciliation and bundles
 
-# The runtime consumers this build can run features through. None: nothing is enabled until an engine
-# integration registers one (R3), so every bundle is pending and every map's base geometry is unchanged.
+# Registered consumers are part of the compiler identity. Unsupported consumers
+# remain pending rather than installing geometry the engine cannot interpret.
 RUNTIME_CONSUMERS: frozenset = fi.RUNTIME_CONSUMERS
 LEGACY_SOURCES = ("cover_paint", "cant_walk_paint", "tag", "base")
 
@@ -558,6 +864,18 @@ def behaviour_problems(feature: dict) -> list[str]:
     """Why a feature's behaviour isn't runtime-ready: unresolved durations, policies, guards or delays."""
     out = []
     fid = feature.get("id")
+    if feature.get('replay_source'):
+        from app.control.map_pool_runtime import readiness as pool_readiness
+        return [f'{fid}: {p}' for p in pool_readiness(feature)]
+    if feature.get('replay_key'):
+        from app.control.feature_runtime import readiness
+        return [f'{fid}: {p}' for p in readiness(feature)]
+    if "sliding" in feature:
+        # The authoring preview is available; no engine consumer samples moving masks yet. Never silently
+        # compile a sliding door as one static "closing" footprint, even for an explicitly enabled bundle.
+        from app.replays.map_feature_motion import geometry_problems, vertical_problems
+        out += [f"{fid}: {p}" for p in geometry_problems(feature) + vertical_problems(feature)]
+        out.append(f"{fid}: sliding geometry requires a runtime motion consumer (preview only)")
     for row in feature.get("transitions") or []:
         rid = row.get("id")
         motion = row.get("motion")
@@ -586,6 +904,9 @@ def bounds_problems(geo: Geometry, mf: dict, feature: dict) -> list[dict]:
             out.append({'code': 'invalid_bounds', 'path': path, 'cells': [], 'cell_count': 0,
                         'floor_counts': [], 'reason': why})
     for state in feature.get('states') or []:
+        if (feature.get('replay_key') or feature.get('replay_source')) and feature.get('sliding') \
+                and state.get('name') in ('opening', 'closing'):
+            continue  # sampled from the closed aperture, not an authoring phase footprint
         path = f'features.{fid}.states.{state.get("name")}'
         if state.get('blocks_sight') and state.get('footprint'):
             check(state['footprint'], state.get('sight_bounds'), path + '.sight_bounds')
@@ -598,6 +919,15 @@ def bounds_problems(geo: Geometry, mf: dict, feature: dict) -> list[dict]:
             check(shape, phase.get('sight_bounds'), path + '.sight_bounds')
         for j, occ in enumerate(phase.get('sight') or []):
             check(occ.get('geometry'), occ.get('bounds'), f'{path}.sight[{j}].bounds')
+    rotation = feature.get('rotation')
+    if feature.get('replay_source') and rotation and not rotation.get('phases'):
+        # Both resting orientations and representative passable/slam poses must
+        # resolve before publication. Runtime still validates each sampled pose.
+        for fraction in (0, .1875, .5, .8125, 1, 1.1875, 1.5, 1.8125, 2):
+            panel = rotation_pose(feature, fraction) if rotation.get('panel') and \
+                (rotation.get('pivot') or {}).get('type') == 'point' else None
+            if panel is not None:
+                check(panel, rotation.get('sight_bounds'), f'features.{fid}.rotation.pose[{fraction}].bounds')
     return out
 
 
@@ -606,11 +936,22 @@ def state_problems(geo: Geometry, mf: dict, feature: dict) -> list[str]:
     are unresolved, empty, stale, missing or ambiguous (it would block nothing, or not all of itself), or a
     sight occluder that is pending. Every state, not only the initial one: a bundle publishes for the round."""
     out = []
+    if feature.get('sliding') and (feature.get('replay_key') or feature.get('replay_source')):
+        from app.replays.map_feature_motion import sample_effects, movement_cutoff
+        cutoff = movement_cutoff(feature)
+        fractions = {0., .5, 1.}
+        if cutoff is not None:
+            fractions.update((cutoff, min(cutoff + .0001, 1.)))
+        for fraction in sorted(fractions):
+            effects, _ = sample_effects(geo, mf, feature, fraction)
+            out += [f'motion {fraction:g}: {p}' for p in effects.pending]
     for s in feature.get("states") or []:
+        if (feature.get('replay_key') or feature.get('replay_source')) and feature.get('sliding') and s.get('name') in ('opening', 'closing'):
+            continue
         one = {**feature, "initial_state": s.get("name")}
         if s.get("blocks_movement") and s.get("footprint"):
-            cells = to_grid(raster(s["footprint"])).ravel()
-            b = feature_floor_nodes(geo, mf, one, cells)
+            cells = footprint_cells(geo, s["footprint"])
+            b = feature_floor_nodes(geo, mf, one, cells, to_px(raster(s['footprint'])))
             out += [f"state {s.get('name')!r}: {p}" for p in b.pending]
             if cells.any() and not len(b.nodes) and not b.pending:
                 out.append(f"state {s.get('name')!r}: {feature.get('id')}: its footprint binds no node")
@@ -674,6 +1015,9 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
     exactly, and no member's edits overlap a feature outside the bundle. `consumers` defaults to the registered
     RUNTIME_CONSUMERS (read at call time)."""
     consumers = RUNTIME_CONSUMERS if consumers is None else consumers
+    if geo is not None and 'quiet_rope_v1' in consumers:
+        from app.control.feature_geometry import prepare
+        geo = prepare(geo, mf)
     features = {f.get("id"): f for f in mf.get("features") or []}
     floors = _floors_by_id(mf)
     legacy = legacy or {}
@@ -684,6 +1028,7 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
         for m in b.get("members") or []:
             bundle_of[m] = b.get("id")
     out = {}
+    quiet_plan = None
     for b in mf.get("bundles") or []:
         bid, members = b.get("id"), list(b.get("members") or [])
         required, reasons = required_features(features, members)
@@ -691,6 +1036,62 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
             reasons.append("not enabled")
         if b.get("runtime_consumer") not in consumers:
             reasons.append(f"no registered runtime consumer ({b.get('runtime_consumer')!r})")
+        if b.get('runtime_consumer') == 'ascent_replay_v1':
+            from app.control.feature_runtime import readiness
+            keys = [features[m].get('replay_key') for m in members if m in features]
+            all_keys = [features[m].get('replay_key') for candidate in mf.get('bundles', [])
+                        if candidate.get('enabled') and candidate.get('runtime_consumer') == 'ascent_replay_v1'
+                        for m in candidate.get('members', []) if m in features]
+            if any(all_keys.count(key) > 1 for key in keys):
+                reasons.append('duplicate Ascent replay binding')
+            if geo is not None and geo.name != 'Ascent':
+                reasons.append('Ascent consumer cannot run on another map')
+            if geo is not None and (geo.heights is None or geo.movement_only) and any(
+                    features[m].get('sliding') for m in members if m in features):
+                reasons.append('descending door sight requires a measured height asset')
+            if any(r.get('owner') in members for r in mf.get('routes', [])):
+                reasons.append('Ascent consumer does not implement authored route arcs')
+            for m in members:
+                if m in features:
+                    reasons += [f'{m}: {p}' for p in readiness(features[m])]
+        if b.get('runtime_consumer') == 'quiet_rope_v1':
+            if geo is None:
+                reasons.append('quiet rope placement requires measured geometry')
+            else:
+                from app.control.route_runtime import readiness as route_readiness
+                from app.control.route_runtime import qualified_cuts, walking_exit_problems
+                from app.control import topology
+                if quiet_plan is None:
+                    selected = {m for bundle in mf.get('bundles', []) if bundle.get('enabled')
+                                and bundle.get('runtime_consumer') == 'quiet_rope_v1' for m in bundle.get('members', [])}
+                    all_arcs, _ = route_readiness(geo, mf, selected)
+                    base = topology.of(geo)
+                    cuts, cut_reasons = qualified_cuts(geo, mf, selected, base, all_arcs)
+                    quiet_plan = (cut_reasons, walking_exit_problems(geo, base, all_arcs, cuts, mf))
+                cut_reasons, walk_reasons = quiet_plan
+                _, current_reasons = route_readiness(geo, mf, members)
+                route_ids = {r['id'] for r in mf.get('routes', []) if r.get('owner') in members}
+                route_reasons = current_reasons + [r for r in cut_reasons + walk_reasons
+                    if r.split(':', 1)[0] in route_ids]
+                reasons += route_reasons
+        if b.get('runtime_consumer') == 'map_pool_replay_v1':
+            from app.control.map_pool_runtime import readiness as pool_readiness, MAPS
+            if geo is not None and geo.name not in MAPS:
+                reasons.append('map-pool replay consumer cannot run on this map')
+            if geo is not None and (geo.heights is None or geo.movement_only) and any(features[m].get('sliding') or features[m].get('rotation')
+                                                              for m in members if m in features):
+                reasons.append('moving panel sight requires a measured height asset')
+            for m in members:
+                if m in features:
+                    reasons += [f'{m}: {p}' for p in pool_readiness(features[m])]
+            all_members = [m for other in mf.get('bundles', []) if other.get('enabled')
+                           and other.get('runtime_consumer') == 'map_pool_replay_v1' for m in other['members']]
+            claimed = [(m, actor) for m in all_members for actor in
+                       (features.get(m, {}).get('replay_source') or {}).get('actors', [])]
+            if any(sum(a == actor for _, a in claimed) > 1 for m, actor in claimed if m in members):
+                reasons.append('duplicate map-pool source actor binding')
+            if any(r.get('owner') in members for r in mf.get('routes', [])):
+                reasons.append('replay panel consumer cannot run rope routes')
         for fid in sorted(required - set(members)):
             if fid in features:
                 reasons += behaviour_problems(features[fid])
@@ -732,8 +1133,10 @@ def bundle_status(geo: Geometry | None, mf: dict, legacy: dict | None = None,
                         _, why = resolve_bounds(candidate, mf, occ, to_px(raster(occ.get('geometry'))), m)
                         if why:
                             reasons.append(why)
-            _, route_pending = compile_routes(candidate, {**mf, 'routes': [r for r in mf.get('routes') or []
-                                                      if r.get('owner') in required]})
+            routes = [r for r in mf.get('routes') or [] if r.get('owner') in required]
+            if b.get('runtime_consumer') == 'quiet_rope_v1':
+                routes = [dict(r, directions=r.get('quiet_directions', [])) for r in routes]
+            _, route_pending = compile_routes(candidate, {**mf, 'routes': routes})
             reasons += route_pending
         out[bid] = BundleStatus(bid, members, not reasons, reasons,
                                 {"ground": int(ground.sum()), "sight": int(sight.sum())},
@@ -785,13 +1188,21 @@ class Arc:
         return None if self.entry_s is None or self.transit_s is None else self.entry_s + self.transit_s
 
 
-def _point_node(geo: Geometry, mf: dict, uv, floor_id) -> tuple[int | None, str | None]:
+def _point_node(geo: Geometry, mf: dict, uv, floor_id=None, landing=None) -> tuple[int | None, str | None]:
     if not ms._uv(uv):
         return None, 'not placed or off map'
-    cell = geo.cell_of_px(uv[0] * PX / ms.UV_MAX, uv[1] * PX / ms.UV_MAX)
+    x, y = uv[0] * PX / ms.UV_MAX, uv[1] * PX / ms.UV_MAX
+    cell = geo.cell_of_px(x, y)
     mask = np.zeros(GRID * GRID, bool)
     mask[cell] = True
-    b = floor_nodes(geo, None, mask)
+    if landing is not None:
+        from app.control.route_runtime import landing_node
+        return landing_node(geo, cell, landing, xy=(x, y))
+    if geo.adaptive:
+        placed = resolve_spaces(geo, [geo.space_at_px(x, y)], 'route endpoint')
+        b = Binding(np.array(placed.nodes, np.int64), [r['code'] for r in placed.reasons])
+    else:
+        b = floor_nodes(geo, None, mask)
     if b.pending or len(b.nodes) != 1:
         return None, "; ".join(b.pending) or "no floor there"
     return int(b.nodes[0]), None
@@ -811,7 +1222,7 @@ def compile_routes(geo: Geometry, mf: dict) -> tuple[list, list]:
             points.update({s.get("id"): s for s in access.get("sites") or []})
         nodes = {}
         for pid, p in points.items():
-            node, why = _point_node(geo, mf, p.get("uv"), p.get("floor"))
+            node, why = _point_node(geo, mf, p.get("uv"), p.get("floor"), p.get('landing'))
             if why:
                 pending.append(f"{rid}.{pid}: {why}")
             nodes[pid] = node
@@ -846,7 +1257,8 @@ def walk_edges(geo: Geometry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     topo = topology.of(geo)
     if isinstance(topo, topology.NodeTopology):
-        return topo.src, topo.dst, np.where(topo.diag, np.sqrt(2.0), 1.0) * geo.cell_m
+        costs = np.linalg.norm(geo.centres[topo.src] - geo.centres[topo.dst], axis=1) / CELL if geo.adaptive else np.where(topo.diag, np.sqrt(2.0), 1.0)
+        return topo.src, topo.dst, costs * geo.cell_m
     walk = geo.walk.ravel()
     src, dst, cost = [], [], []
     ys, xs = np.divmod(np.arange(GRID * GRID), GRID)
@@ -1002,6 +1414,8 @@ def _enabled_projection(mf: dict, members: set) -> dict:
 def compile_assets(geo: Geometry, mf: dict, statuses: dict) -> dict | None:
     """What an engine would load for a map's enabled features (None when it has none): per enabled feature and
     state, its blocked nodes and occluders, plus the enabled routes' arcs and the reconciled base edits."""
+    from app.control.feature_geometry import prepare
+    geo = prepare(geo, mf)
     members = {m for st in statuses.values() if st.publishable for m in st.members}
     if not any(st.intended for st in statuses.values()):
         return None
@@ -1012,6 +1426,8 @@ def compile_assets(geo: Geometry, mf: dict, statuses: dict) -> dict | None:
         status = next(st for st in statuses.values() if st.publishable and f.get('id') in st.members)
         candidate = _candidate_geometry(geo, mf, set(status.members))
         for s in f.get("states") or []:
+            if (f.get('replay_key') or f.get('replay_source')) and f.get('sliding') and s.get('name') in ('opening', 'closing'):
+                continue
             pick = {f.get("id"): s.get("name")}
             one = {**sub, "features": [f]}
             blocked = movement_blocks(candidate, one, pick).blocked
@@ -1025,6 +1441,10 @@ def compile_assets(geo: Geometry, mf: dict, statuses: dict) -> dict | None:
         if st.publishable:
             candidate = _candidate_geometry(geo, mf, set(st.members))
             routes = {**sub, 'routes': [r for r in sub['routes'] if r.get('owner') in st.members]}
+            if st.id in {b['id'] for b in mf.get('bundles', [])
+                             if b.get('runtime_consumer') == 'quiet_rope_v1'}:
+                routes = {**routes, 'routes': [dict(r, directions=r.get('quiet_directions', []))
+                                             for r in routes['routes']]}
             one_arcs, _ = compile_routes(candidate, routes)
             arcs += one_arcs
     return {"states": states, "nodes": int(geo.n),
@@ -1076,7 +1496,7 @@ def verify_permanent_context(geo: Geometry, inputs: fi.FeatureInput) -> None:
         raise fa.FeatureArtifactCorrupt('compiler geometry/key mismatch')
     if hashlib.sha256(inputs.canonical_inputs).hexdigest() != inputs.key.tags_digest:
         raise fa.FeatureArtifactCorrupt('compiler input identity mismatch')
-    reconstructed = geometry_from_feature_inputs(inputs, geo.heights)
+    reconstructed = geometry_from_feature_inputs(inputs, None if geo.movement_only else geo.heights)
     for actual, expected in ((geo.sight, reconstructed.sight), (geo.walk_px, reconstructed.walk_px)):
         if not np.array_equal(actual, expected):
             raise fa.FeatureArtifactCorrupt('compiler permanent masks do not match archive')
@@ -1094,10 +1514,23 @@ def compile_artifact(geo: Geometry, inputs: fi.FeatureInput, code_commit: str) -
     verify_permanent_context(geo, inputs)
     mf = envelope['runtime']
     mf = {**mf, 'features': mf['features'] + envelope['outside_base_edits']}
+    from app.control.feature_geometry import prepare
+    geo = prepare(geo, mf)
     legacy = {k: _archived_mask(v, (PX, PX)) for k, v in envelope['legacy'].items()}
     statuses = bundle_status(geo, mf, legacy, consumers=frozenset(envelope['consumers']))
     active = sorted(b for b, status in statuses.items() if status.publishable)
     assets = compile_assets(geo, mf, statuses) or {'states': {}, 'nodes': int(geo.n), 'arcs': []}
+    if geo.panel_grid_digest:
+        assets['panel_grid'] = {'v': 1, 'digest': geo.panel_grid_digest, 'leaf_px': 4,
+                               'selected_height': geo.height_sha}
+    if geo.movement_only:
+        from app.control.rope_ground import domains_for
+        domains = domains_for(mf)
+        if any(not st.publishable for st in statuses.values()
+               if any(r.get('owner') in st.members for r, _ in domains)):
+            raise fa.FeatureArtifactCorrupt('walking domain belongs to an unqualified rope bundle')
+        assets['walking_model'] = {'kind': 'local_rope_ground', 'digest': geo.rope_ground_digest,
+                                   'asset': geo.movement_height_sha, 'terrain_sight': 'flat'}
     bindings, triggers, deltas, phases = {}, {}, {}, {}
     for bid in active:
         status = statuses[bid]

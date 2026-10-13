@@ -302,6 +302,15 @@ def run(feature: dict, events: list[dict], until: float | None = None) -> list[d
     """Every event in order (input events and the reducer's own scheduled ones, merged by time, then
     PRIORITY, then input order; scheduled ones after input ones at a tie of both), up to `until` (inclusive;
     default: through the last pending event). Returns the trace."""
+    return evaluate(feature, events, until)["trace"]
+
+
+def evaluate(feature: dict, events: list[dict], until: float | None = None) -> dict:
+    """Return the trace and full reducer state, including motion's start/end, at a query time.
+
+    No extra clock events are inserted; callers use the retained motion to sample geometry between events.
+    `run` retains its original trace contract.
+    """
     st = initial(feature)
     for event in events:
         if event.get("kind") not in EVENTS:
@@ -327,4 +336,4 @@ def run(feature: dict, events: list[dict], until: float | None = None) -> list[d
         if not use_input:
             entry["scheduled"] = True
         trace.append(entry)
-    return trace
+    return {"state": st, "trace": trace}

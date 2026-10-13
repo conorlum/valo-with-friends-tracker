@@ -84,7 +84,7 @@ def lock_name(map_name: str) -> str:
 
 
 def _usable(rules: dict | None) -> bool:
-    return (rules or {}).get("version") == cf.HEIGHT_VERSION
+    return (rules or {}).get("version") in (2, cf.HEIGHT_VERSION)
 
 
 def active_digests(db) -> dict[str, str]:
@@ -178,7 +178,21 @@ def integrity(result_digest: str, report, verified: dict, must_block: str | None
     else:
         if not verified.get("error") and verified.get("supported_cells") != supported:
             why.append(f"the report says {supported} supported cells, the asset has {verified.get('supported_cells')}")
-        if not _share(report.get("supported")) or abs(report["supported"] - supported / walkable) > 0.001:
+        area_keys = ('walkable_area_px2', 'supported_area_px2')
+        if any(k in report for k in area_keys):
+            aw, ap = (report.get(k) for k in area_keys)
+            if not _count(aw) or not _count(ap) or aw == 0 or ap > aw:
+                why.append('the physical area counts are missing or impossible')
+                share = None
+            else:
+                share = ap / aw
+            if any(report.get(k) != verified.get(k) for k in (*area_keys, 'refinement')):
+                why.append('the physical areas or refinement history disagree with the asset')
+        else:
+            share = supported / walkable
+            if verified.get('refinement') is not None:
+                why.append('mixed ground needs physical area counts and refinement history')
+        if share is None or not _share(report.get("supported")) or abs(report["supported"] - share) > 0.001:
             why.append("the report's supported share isn't its counts'")
     if not verified.get("error"):
         if verified.get("walkable_cells") != walkable:
@@ -217,8 +231,9 @@ def gate(report: dict) -> list[str]:
     why = []
     if not report.get("ready"):
         why += list(report.get("not_ready") or ["below the bar"])
-    if report["supported_cells"] / report["walkable_cells"] < cf.HEIGHT_SUPPORTED_MIN and report.get("ready"):
-        why.append(f"supported {report['supported_cells'] / report['walkable_cells']:.1%} is under "
+    share = report['supported_area_px2'] / report['walkable_area_px2'] if 'walkable_area_px2' in report else report['supported_cells'] / report['walkable_cells']
+    if share < cf.HEIGHT_SUPPORTED_MIN and report.get("ready"):
+        why.append(f"supported {share:.1%} is under "
                    f"{cf.HEIGHT_SUPPORTED_MIN:.0%}")
     kills, must = report["kill_lines"], report["must_block"]
     if not kills["passes"]:

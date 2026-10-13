@@ -266,6 +266,39 @@ def test_a_big_step_walked_in_one_round_only_does_not_connect():
     assert (cell(20), 0, cell(21), 0) not in e and (cell(21), 0, cell(20), 0) not in e
 
 
+@pytest.mark.parametrize('reverse_order', [False, True])
+@pytest.mark.parametrize('ground_direction', [None, 'up', 'down'])
+def test_climb_return_is_a_fall_unless_grounded_descent_is_supported(reverse_order, ground_direction):
+    a, b = cell(20), cell(21)
+    floors = {a: [0], b: [12]}
+    if reverse_order:
+        floors = dict(reversed(list(floors.items())))
+    up, down = (a, 0, b, 0), (b, 0, a, 0)
+    seen = {up: {0, 1}}
+    ground = {} if ground_direction is None else {up if ground_direction == 'up' else down: {0, 1}}
+    edges = {tuple(row[:4]): row[4] for row in hb.connect(floors, seen, GEO, ground)}
+    assert edges[up] == hc.EDGE_STEP
+    assert edges[down] == (hc.EDGE_FALL if ground_direction is None else hc.EDGE_SLIDE)
+
+    # Exercise the actual unknown spread: the inferred 1.2m fall is traversable normally,
+    # but not silently. A proven ground route remains quiet in either iteration order.
+    from app.control import topology
+    pixels = np.zeros((1024, 1024), bool)
+    pixels[ROW*8:(ROW+1)*8, 160:176] = True
+    geo = cg.geometry_from_masks('Toy', ~pixels, pixels, 7e-5)
+    heights = np.full((128, 128, 3), -1, np.int16)
+    heights.reshape(-1, 3)[a, 0], heights.reshape(-1, 3)[b, 0] = 0, 12
+    asset = hc.HeightAsset(heights, np.zeros_like(heights), geo.walk.copy(),
+        np.zeros_like(geo.walk), hb.connect(floors, seen, geo, ground))
+    cg.attach_heights(geo, asset)
+    topo = topology.of(geo)
+    reached = np.full(geo.n, np.inf); reached[b] = 0
+    free = np.zeros(geo.n)
+    assert np.isfinite(topo.spread(reached, geo.walk_n, free, 5, 1, [])[a])
+    quiet = topo.spread(reached, geo.walk_n, free, 5, 1, [], quiet=True)
+    assert bool(np.isfinite(quiet[a])) == (ground_direction is not None)
+
+
 def test_neighbouring_floors_within_a_step_connect_both_ways_diagonals_too():
     b = built(lambda m, n: {0: level_walk(160, 200, 0.0), 1: level_walk(160, 200, 0.5, y=Y + 8)})
     e = edges_of(b)
@@ -616,6 +649,33 @@ def test_a_kill_through_a_wall_or_on_unresolved_ground_does_not_qualify():
     assert result["excluded"] == {"on an unresolved cell": 1}
 
 
+@pytest.mark.parametrize("blocker", [None, "smoke", "wall"])
+def test_height_sight_check_needs_no_team_labels_and_keeps_physical_blockers(blocker):
+    import copy
+    from app.control import engine
+
+    geo = copy.copy(ledge_geo())
+    geo.sight = geo.sight.copy()
+    _, n, blob = kill_round([(2.0, 0, 5)], {
+        0: standing(256 - 2 * M_PX, 204, 4.0), 5: standing(380, 204, 0.0, "B")})
+    if blocker == "smoke":
+        blob["util"] = [toy_ability("Rift", "E_SmokeZone", 300, 204, 0)]
+    elif blocker == "wall":
+        geo.sight[96:296, 280:288] = True
+    expected = hb.kill_line_check([("m", n, blob)], geo)
+    if blocker:
+        assert expected["excluded"] == {"blocked in 2D (wall or smoke)": 1}
+    else:
+        assert expected["qualifying"] == 1 and expected["blocked"] == 0
+    missing = copy.deepcopy(blob)
+    for p in missing["players"]:
+        p["side"] = None
+    assert hb.kill_line_check([("m", n, missing)], geo) == expected
+    assert all(p["side"] is None for p in missing["players"])
+    with pytest.raises(engine.ControlError, match="no side group"):
+        engine.RoundInputs(missing, geo)
+
+
 def test_a_kill_counts_with_a_sample_a_little_before_it():
     # KILL_SAMPLE_S is 0.25 s: positions two samples (0.125 s) before the kill still count, though the
     # engine's own lookup takes only a sample and a half.
@@ -659,6 +719,19 @@ def test_a_must_block_line_that_is_not_blocked_fails_and_so_does_an_unknown_heig
                   "source": "seen"})
     result = hb.must_block_check(lines, geo, "Ledge")
     assert not result["passes"] and [r["source"] for r in result["results"] if r["checked"] and not r["blocked"]] == ["seen"]
+
+
+def test_permanent_wall_proves_required_blockage_without_fabricating_endpoint_heights():
+    from tests.replays.control_toys import toy_heights
+
+    geo = toy_heights("RequiredWall", [(96, 96, 416, 296)], walls=[(280, 96, 304, 296)],
+                      ground=[((96, 96, 256, 296), 0)], unresolved=[(320, 96, 416, 296)])
+    line = {"map": "RequiredWall", "viewer": [200, 204, None],
+            "target": [380, 204, None], "source": "owner-confirmed solid wall"}
+    result = hb.must_block_check([line], geo, "RequiredWall")
+    assert (result["checked"], result["blocked"], result["unchecked"]) == (1, 1, 0)
+    assert result["passes"] and result["results"][0]["basis"] == "permanent_2d_wall"
+    assert line["viewer"][2] is None and line["target"][2] is None
 
 
 def test_the_committed_must_block_set_is_well_formed():
@@ -784,7 +857,8 @@ def test_a_gradient_cell_connects_the_way_it_was_crossed():
     e = {tuple(row[:4]): row[4] for row in up.asset.edges.tolist()}
     assert int(up.asset.floors[ROW, 25, 0]) == 9, "0.9 m: more than a step from either side"
     for a, b in ((24, 25), (25, 26)):
-        assert e[(cell(a), 0, cell(b), 0)] == e[(cell(b), 0, cell(a), 0)] == hc.EDGE_STEP, "climbed: both ways"
+        assert e[(cell(a), 0, cell(b), 0)] == hc.EDGE_STEP
+        assert e[(cell(b), 0, cell(a), 0)] == hc.EDGE_SLIDE, "grounded climb retains a quiet grounded return"
     down = hb.build(gradient_rounds(1.8, back=True), GEO)
     e = {tuple(row[:4]): row[4] for row in down.asset.edges.tolist()}
     for a, b in ((26, 25), (25, 24)):

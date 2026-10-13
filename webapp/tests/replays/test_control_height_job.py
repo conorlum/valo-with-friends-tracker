@@ -196,7 +196,8 @@ def test_reports_cannot_invent_map_size_or_hide_an_unresolved_area(tmp_path, che
     forged = {**out["report"], "supported_cells": seen["supported_cells"], "supported": seen["supported"],
               "ready": True, "not_ready": []}
     assert any("readiness" in r for r in ch.integrity(seen["digest"], forged, seen, hi.must_block_sha(checks)))
-    honest = {**forged, "ready": seen["ready"], "not_ready": seen["not_ready"]}
+    honest = {**forged, "ready": seen["ready"], "not_ready": seen["not_ready"],
+              'walkable_area_px2': seen['walkable_area_px2'], 'supported_area_px2': seen['supported_area_px2']}
     assert ch.integrity(seen["digest"], honest, seen, hi.must_block_sha(checks)) == []
     assert ch.gate(honest)  # valid failing build is rejected by policy, not treated as corrupt
 
@@ -223,14 +224,37 @@ def test_the_report_compares_with_the_asset_before(tmp_path, checks):
     raised = covered_rounds({9: level_walk(320, 328, 6.0, side="B")})        # a platform 6 m up, two cells
     after = height_job.run("Ascent", height_job.BlobDir(write_blobs(tmp_path / "b", raised), "Ascent"),
                            previous=tmp_path / "before.npz", asset_dir=assets, must_block=checks)
-    assert after["report"]["compare"] == {"previous": before["digest"], "cells_gained": 0, "cells_lost": 0,
-                                          "cells_moved": 0}, "the ground didn't move: the platform is an upper floor"
+    assert after["report"]["compare"] == {"previous": before["digest"], "cells_gained": 0, "cells_lost": .5,
+                                          "cells_moved": 0}
+    # The ground does not move, but the mixed cells now have two unsampled 4px
+    # children. Report their physical area as unknown instead of inventing floors.
     old = hc.load_asset(tmp_path / "before.npz")
     new = hc.load_asset(tmp_path / "before.npz")
     new.floors[20, 20, 0] += 6                    # the ground 0.6 m higher in one cell
     new.floors[21, 21, 0] = -1                    # one cell lost
     assert height_job.compare(new, old) == {"previous": old.digest, "cells_gained": 0, "cells_lost": 1, "cells_moved": 1}
     assert height_job.compare(new, None) is None
+
+
+def test_fresh_job_retains_selection_without_previous_asset_file(tmp_path, checks):
+    from app.control import height_refinement as hr
+    assets = toy_assets(tmp_path)
+    raised = covered_rounds({9: level_walk(320, 328, 6.0, side='B')})
+    first = height_job.run('Ascent', height_job.BlobDir(write_blobs(tmp_path/'first', raised), 'Ascent'),
+                           asset_dir=assets, must_block=checks)
+    receipt = first['report']['refinement']
+    assert receipt['history']['parents']
+    hi.check_refinement_transition('Ascent', hr.history('Ascent'), receipt)
+    # A fresh worker sees only the durable manifest history, never the old NPZ.
+    later = height_job.run('Ascent', height_job.BlobDir(write_blobs(tmp_path/'later', covered_rounds()), 'Ascent'),
+        asset_dir=assets, must_block=checks, refinement_history=receipt['history'])
+    hi.check_refinement_transition('Ascent', receipt['history'], later['report']['refinement'])
+    assert later['report']['refinement']['history'] == receipt['history']
+    seen = height_verify.describe(later['asset'], 'Ascent', asset_dir=assets, must_block=checks)
+    assert 'error' not in seen
+    assert ch.integrity(later['digest'], later['report'], seen, hi.must_block_sha(checks)) == []
+    forged = {**later['report'], 'supported_area_px2': seen['walkable_area_px2'], 'supported': 1}
+    assert ch.integrity(later['digest'], forged, seen, hi.must_block_sha(checks))
 
 
 def child_task(tmp_path, blobs, assets, checks, monkeypatch, replays=None):
@@ -251,7 +275,7 @@ def test_the_child_answers_in_json_and_proves_what_it_was_built_from(tmp_path, c
     blobs = write_blobs(tmp_path / "blobs", covered_rounds())
     task = child_task(tmp_path, blobs, assets, checks, monkeypatch)
     out = child.run(task)
-    assert out["status"] == "ok" and out["key"] == task["key"] and out["map"] == "Ascent" and out["rounds"] == 6
+    assert out["status"] == "ok" and out["key"] == task["key"] and out["map"] == "Ascent" and out["rounds"] == 6, out
     assert out["inputs_sha"] == hi.digest(task["manifest"])
     json.dumps(out)
     assert height_verify.describe(base64.b64decode(out["asset"]), "Ascent", asset_dir=assets, must_block=checks)["digest"] == out["digest"]

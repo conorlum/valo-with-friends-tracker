@@ -104,6 +104,77 @@ def test_the_standalone_page_embeds_every_round_and_no_identity(condensed, tmp_p
     assert "https://" not in page.split("<script>", 1)[1], "nothing is fetched from the network"
 
 
+@pytest.mark.parametrize('name', ['Ascent', 'Sunset', 'Split', 'Summit', 'Lotus', 'Abyss', 'Haven'])
+def test_feature_panel_covers_supported_maps_in_both_viewer_modes(condensed, name):
+    import copy
+    other = copy.deepcopy(condensed.rounds)
+    for data in other.values():
+        data['map'] = name
+    page = standalone.render(other)
+    supported = name != 'Haven'
+    assert ('data-replay-panel="features"' in page) == supported
+    assert ('data-replay-layer="features"' in page) == supported
+    template = Environment(loader=FileSystemLoader(str(WEBAPP/'app'/'templates'))).get_template('replays/_player.html')
+    page = template.render(replay={'map_name': name}, linked=True)
+    for marker in ('data-replay-panel="features"', 'data-replay-layer="features"',
+                   'data-replay-features-state', 'data-replay-features-events', 'data-replay-features-status'):
+        assert (marker in page) == supported
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_feature_panel_seek_rows_escape_labels_and_old_replays_explain_reparse():
+    feature = {'key':'ascent_market','name':'<img src=x>', 'initial':'open', 'closing_s':5,
+               'events':[{'t':1,'state':'closing'}]}
+    script = """
+    const R = require(process.argv[1]);
+    let text=''; process.stdin.on('data',d=>text+=d).on('end',()=>{
+      const viewer=Object.create(R.ReplayViewer.prototype);
+      viewer.ui={featuresEvents:{},featuresState:{},featuresStatus:{}};
+      viewer.current={blob:{map_features:{v:1,status:'decoded',features:[JSON.parse(text)]}}};
+      viewer.layers={features:false}; viewer.t=3.5; viewer.number=1;
+      viewer.controlCache={ready:()=>({status:'ok',parsed:{header:{map_features:{keys:['ascent_market']}}}})};
+      viewer.renderMapFeatureEvents(); viewer.drawMapFeatures({},1,1,[]);
+      const out={events:viewer.ui.featuresEvents.innerHTML,state:viewer.ui.featuresState.innerHTML,
+                 status:viewer.ui.featuresStatus.textContent};
+      viewer.current={blob:{}}; viewer.renderMapFeatureEvents(); viewer.drawMapFeatures({},1,1,[]);
+      out.old=viewer.ui.featuresEvents.innerHTML; out.unavailable=viewer.ui.featuresStatus.textContent;
+      process.stdout.write(JSON.stringify(out));
+    });"""
+    got = run_node(script, feature)
+    assert 'data-seek-t="1"' in got['events'] and '1.000s' in got['events']
+    assert '&lt;img src=x&gt;' in got['events'] and '<img' not in got['events']
+    assert '50% closed (model)' in got['state'] and '<img' not in got['state']
+    assert 'Control: includes <img src=x>' in got['status']  # textContent, never HTML
+    assert 'parsed again' in got['old'] and 'unavailable' in got['unavailable']
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_current_feature_labels_apply_to_calculated_events_without_mutating_archive():
+    script = """
+      const R=require(process.argv[1]);
+      const v=Object.create(R.ReplayViewer.prototype);
+      const f={key:'feature-1',name:'feature-1',mode:'reducer_trace',initial:'open',
+        events:[{t:1,state:'closed',moving:false,blocks_movement:true}]};
+      const original=JSON.stringify(f);
+      v.options={control:{feature_names:{'feature-1':'Cave <door>'}}};
+      v.current={blob:{}};v.number=1;v.t=2;v.layers={features:false};
+      v.ui={featuresEvents:{},featuresState:{},featuresStatus:{}};
+      v.controlCache={ready:()=>({status:'ok',parsed:{header:{map_features:{keys:['feature-1'],features:[f]}}}})};
+      v.renderMapFeatureEvents();v.drawMapFeatures({},1,1,[]);
+      const out={events:v.ui.featuresEvents.innerHTML,state:v.ui.featuresState.innerHTML,
+        status:v.ui.featuresStatus.textContent,unchanged:JSON.stringify(f)===original};
+      v.options.control.feature_names['feature-1']='Renamed door';v.renderMapFeatureEvents();
+      out.renamed=v.ui.featuresEvents.innerHTML;
+      delete v.options.control.feature_names;out.fallback=v.mapFeatureName(f);
+      process.stdout.write(JSON.stringify(out));
+    """
+    got=run_node(script,{})
+    assert 'Cave &lt;door&gt;' in got['events'] and 'Cave &lt;door&gt;' in got['state']
+    assert 'Control: includes Cave <door>' in got['status']
+    assert '<door>' not in got['events'] and got['unchanged']
+    assert 'Renamed door' in got['renamed'] and got['fallback']=='feature-1'
+
+
 def test_the_standalone_script_writes_blobs_from_a_folder(condensed, tmp_path):
     folder = tmp_path / "blobs"
     folder.mkdir()

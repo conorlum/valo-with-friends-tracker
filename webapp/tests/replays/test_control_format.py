@@ -56,7 +56,9 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # as those steps land. P08 added app/control/mollies.py (the molly allow-list) to the digest. The
           # 2026-10-09 review re-pinned it for D6's wiki figures and D11's 7 m nearsight, then for the owner's
           # full list of zones that stop the unknown (shapes and wall-piercing in mollies.py).
-          9: "782eba74fa70b2a1"}
+          9: "782eba74fa70b2a1",
+          # 15: combined player-state constants and adaptive ground/runtime rules.
+          15: "b3c6e0438e897969"}
 
 
 def _constants_digest() -> str:

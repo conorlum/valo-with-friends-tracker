@@ -69,3 +69,110 @@ def test_oversize_source_keeps_identity_and_explicit_unavailability():
     envelope = diagnostic_envelope('Summit', raw)
     assert envelope['status'] == 'error' and envelope['code'] == 'diagnostic_unavailable'
     assert len(envelope['raw_source_sha256']) == 64 and envelope['raw_source_b64'] is None
+
+
+@pytest.mark.parametrize('trigger_type', ['switch', 'shoot'])
+def test_event_bound_wall_trigger_does_not_require_walkable_marker_ground(trigger_type):
+    from map_feature_artifact_toys import source_case
+    from app.control.features import placement
+    from app.replays.map_feature_events import CLASSES
+    entry = source_case()
+    feature = entry['map_features']['features'][0]
+    entry['map_features']['triggers'] = [{
+        'id': 'switch', 'type': trigger_type, 'geometry': {'type': 'point', 'uv': [100, 100]},
+        'targets': [{'feature': feature['id'], 'kind': trigger_type}]}]
+    geo = geometry_case()
+    assert not placement(geo, entry)[feature['id']].ok
+    feature['replay_source'] = {
+        'actors': ['Switch_HiddenTemple_Test'], 'class_path': CLASSES['Switch_HiddenTemple'],
+        'reset_rpcs': ['MulticastResetAnimation'],
+        'rules': [{'rpc': 'MulticastPlayAnimation', 'kind': 'switch'}]}
+    if trigger_type == 'shoot':
+        feature['replay_source'] = {
+            'actors': ['RespawningPlummetShootable_Test'],
+            'class_path': CLASSES['RespawningPlummetShootable'],
+            'reset_rpcs': ['MulticastRoundBegin'], 'rules': [{'rpc': 'OnDie', 'kind': 'shoot'}]}
+    assert placement(geo, entry)[feature['id']].ok
+    entry['map_features']['triggers'][0]['geometry']['uv'][0] = -1
+    assert not placement(geo, entry)[feature['id']].ok
+    entry['map_features']['triggers'][0]['geometry']['uv'][0] = 100
+    feature['states'][0]['footprint']['uv'] = [[100, 100], [110, 100], [110, 110]]
+    assert not placement(geo, entry)[feature['id']].ok  # panel still needs ground
+
+
+@pytest.mark.parametrize('flat', [False, True])
+@pytest.mark.parametrize('kind', ['door', 'breakable'])
+def test_bound_panel_attaches_to_wall_without_opening_ground_or_clipping_sight(flat, kind):
+    import copy
+    import numpy as np
+    from map_feature_artifact_toys import source_case
+    from app.control import features as cf
+    from app.replays.map_feature_events import CLASSES
+    entry = source_case()
+    feature = entry['map_features']['features'][0]
+    feature['kind'] = kind
+    feature['replay_source'] = {
+        'actors': ['RespawningPlummetShootable_Test'],
+        'class_path': CLASSES['RespawningPlummetShootable'],
+        'reset_rpcs': ['MulticastRoundBegin'], 'rules': [{'rpc': 'OnDie', 'kind': 'shoot'}]}
+    if kind == 'breakable':
+        feature['replay_source'] = {
+            'actors': ['RespawningWallPlate_Test'], 'class_path': CLASSES['RespawningWallPlate'],
+            'reset_rpcs': ['RoundBeginBroadcast'], 'rules': [{'rpc': 'OnDie', 'kind': 'destroy'}]}
+    feature['states'][0]['footprint']['uv'] = [[x*10000/1024, y*10000/1024]
+        for x,y in ((316,320),(328,320),(328,328),(316,328))]
+    feature['states'][0]['sight_bounds'] = {'ref':'all_height'}
+    geo = geometry_case(flat=flat)
+    before = geo.walk_px.copy()
+    assert cf.placement(geo, entry)[feature['id']].ok
+    blocks = cf.movement_blocks(geo, entry['map_features'])
+    assert not blocks.pending and blocks.blocked[5160]
+    assert not blocks.blocked[5159]  # wall has no traversal node
+    assert np.array_equal(before, geo.walk_px)
+    occluders, pending = cf.sight_occluders(geo, entry['map_features'])
+    assert not pending and occluders[0].mask[324,316]  # full wall attachment retained
+    for mutate in ('unbound', 'not_wall', 'deep_wall', 'entire_wall'):
+        trial=copy.deepcopy(entry)
+        f=trial['map_features']['features'][0]
+        g=copy.deepcopy(geo)
+        if mutate=='unbound':f.pop('replay_source')
+        elif mutate=='not_wall':g.sight[320:328,312:320]=False
+        else:
+            x0,x1=(312,328) if mutate=='deep_wall' else (312,320)
+            f['states'][0]['footprint']['uv']=[[x*10000/1024,y*10000/1024]
+                for x,y in ((x0,320),(x1,320),(x1,328),(x0,328))]
+        assert not cf.placement(g,trial)[feature['id']].ok,mutate
+    assert cf.placement(geometry_case(unresolved=True),entry)[feature['id']].ok
+    assert not cf.placement(geometry_case(multi=True),entry)[feature['id']].ok
+
+
+@pytest.mark.parametrize('unknown_child', [False, True])
+@pytest.mark.parametrize('all_height', [False, True])
+def test_wall_attachment_uses_2d_ground_only_for_explicit_all_height_panels(unknown_child, all_height):
+    from tests.replays.test_adaptive_ground import mixed
+    from map_feature_artifact_toys import source_case
+    from app.control import features as cf
+    from app.replays.map_feature_events import CLASSES
+    geo=mixed((0,None if unknown_child else 0,0,0),name='Summit')
+    mf=source_case()['map_features']
+    f=mf['features'][0]
+    mf['features']=[f]
+    f['kind']='door'
+    f['replay_source']={
+        'actors':['RespawningPlummetShootable_Test'],
+        'class_path':CLASSES['RespawningPlummetShootable'],
+        'reset_rpcs':['MulticastRoundBegin'],'rules':[{'rpc':'OnDie','kind':'shoot'}]}
+    f['states'][0]['footprint']['uv']=[[x*10000/1024,y*10000/1024]
+        for x,y in ((188,200),(208,200),(208,208),(188,208))]
+    if all_height:
+        f['states'][0]['sight_bounds']={'ref':'all_height'}
+    placed=cf.placement(geo,mf)[f['id']]
+    assert placed.ok is (all_height or not unknown_child)
+    if unknown_child and not all_height:
+        assert any(r['code']=='unresolved_height' for r in placed.reasons)
+        assert not cf.movement_blocks(geo,mf).blocked.any()
+    else:
+        effects=cf.movement_blocks(geo,mf)
+        assert not effects.pending and effects.blocked[geo.node_at_px(206,202,0)]
+        occ,pending=cf.sight_occluders(geo,mf)
+        assert not pending and occ[0].mask[202,188]

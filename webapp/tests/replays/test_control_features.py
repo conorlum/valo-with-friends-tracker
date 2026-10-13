@@ -26,7 +26,12 @@ from tests.replays.control_toys import HALL, open_hall, toy_geometry, toy_height
 GRID = cg.GRID
 
 
-def test_every_committed_maps_control_inputs_and_fingerprint_are_as_recorded():
+def test_every_committed_maps_control_inputs_and_fingerprint_are_as_recorded(monkeypatch):
+    from app.replays import control_format
+    # Current main deliberately recorded this baseline under revision 9, after
+    # its molly-figure and Abyss-barrier corrections. Preserve that independent
+    # snapshot while this feature branch has a newer calculation revision.
+    monkeypatch.setattr(control_format, 'CONTROL_REVISION', 9)
     recorded = json.loads(map_feature_legacy.PATH.read_text(encoding="utf-8"))
     assert recorded["maps"], "the snapshot should cover the committed maps"
     assert map_feature_legacy.snapshot()["maps"] == recorded["maps"]
@@ -1007,3 +1012,28 @@ def test_legacy_pointer_is_explicit_conversion_failure_for_current_feature_work(
     with pytest.raises(ValueError, match='conversion'):
         rc.geometry_inputs('Ascent')
     assert not hasattr(cf, 'active_sha') and not hasattr(cf, 'load_generation') and not hasattr(cf, 'publish_generation')
+
+
+@pytest.mark.parametrize('all_height', [False, True])
+def test_panel_bounds_culling_matches_unculled_sampling_for_clipped_and_vertical_lines(all_height):
+    rng = np.random.default_rng(41)
+    masks = [mask_px(300, 300, 303, 316), mask_px(0, 8, 1, 14)]
+    optimized = [cf._bounded_occluder(str(i), m, .25, 2., all_height) for i, m in enumerate(masks)]
+    reference = [cf.BoundedOccluder(o.owner, o.mask, o.bottom, o.top, o.all_height) for o in optimized]
+    targets = np.column_stack((rng.uniform(-20, 1044, (1100, 2)), rng.uniform(-2, 4, 1100)))
+    targets[::19, 2] = np.nan
+    for source in [(40., 40., 1.), (301., 305., 1.), (1023., 20., None), (-30., 10., 1.)]:
+        batch = targets.copy()
+        batch[:4] = [[source[0], source[1], z] for z in (-2., 1., 4., np.nan)]
+        batch[-1] = [-2000., 1044., 1.]  # Excluded long targets must not change other rays' sample grid.
+        before, after = {}, {}
+        expected = cf.blocked_lines(reference, source, batch, before)
+        actual = cf.blocked_lines(optimized, source, batch, after)
+        assert np.array_equal(actual, expected) and before == after
+
+
+def test_panel_bounds_culling_leaves_direct_mutable_masks_on_reference_path():
+    mask = mask_px(300, 300, 303, 316)
+    direct = cf.BoundedOccluder('direct', mask, all_height=True)
+    mask[10, 10] = True
+    assert cf.blocked_lines([direct], (10., 10., 0.), np.array([[10., 10., 4.]]))[0]

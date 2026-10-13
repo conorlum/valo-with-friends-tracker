@@ -14,6 +14,10 @@
     }
   ],
   "cli_project": "src/CliReader/CliReader.csproj",
+  "source_patches": [
+    {"file": "scripts/ascent_map_messages.patch", "sha256": "483e6e27992e3d78d5dda4bd9d2d80426658ef6f26dcb33945204d06d88dfe8d"},
+    {"file": "scripts/map_pool_messages.patch", "sha256": "c8f8a44523551746102a1019592d010ae7e648fff08b6444b45a5b997d52db43"}
+  ],
   "export_schema_version": 8,
   "supported_replay_builds": [
     "++Ares-Core+release-13.06"

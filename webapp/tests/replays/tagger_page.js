@@ -55,7 +55,11 @@ function element(doc, id, tag) {
     classList: { set: new Set(), add(c) { this.set.add(c); }, remove(c) { this.set.delete(c); },
                  toggle(c, on) { if (on === undefined ? !this.set.has(c) : on) this.set.add(c); else this.set.delete(c); },
                  contains(c) { return this.set.has(c); } },
-    appendChild(c) { this.children.push(c); return c; },
+    appendChild(c) {
+      this.children.push(c);
+      if (this.tagName === "SELECT" && c.tagName === "OPTION" && (c.selected || this.children.length === 1)) this.value = c.value;
+      return c;
+    },
     removeChild(c) { this.children = this.children.filter(x => x !== c); return c; },
     insertBefore(c) { this.children.push(c); return c; },
     replaceChildren() { this.children = Array.from(arguments); },
@@ -84,10 +88,12 @@ function element(doc, id, tag) {
     closest() { return null; },
     getContext() { return this._ctx || (this._ctx = context2d()); },
     getBoundingClientRect() { return { left: 0, top: 0, right: 800, bottom: 800, width: 800, height: 800 }; },
-    setPointerCapture() {}, releasePointerCapture() {}, focus() {}, blur() {}, select() {}, scrollIntoView() {},
+    setPointerCapture() {}, releasePointerCapture() {}, focus() { doc.activeElement = this; }, blur() {}, select() {}, scrollIntoView() { this.scrolled = true; },
     showModal() { this.open = true; }, close() { this.open = false; },
     click() { if (!this.disabled) this.dispatch("click"); },       // a disabled button takes no click
   };
+  // Assigning markup removes prior children in a browser; stale nodes would hide render regressions.
+  Object.defineProperty(el, "innerHTML", {get() {return this._html || "";}, set(value) {this._html = value; this.children = [];}});
   if (el.tagName === "A") el.click = function () { doc._downloads.push({ name: this.download, text: doc._blobs[this.href] }); };
   return el;
 }
@@ -154,4 +160,4 @@ function openPage(data, opts) {
   return page;
 }
 
-module.exports = { openPage: openPage, memoryStorage: memoryStorage };
+module.exports = { openPage: openPage, memoryStorage: memoryStorage, element: element };

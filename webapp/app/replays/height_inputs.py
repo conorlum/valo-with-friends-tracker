@@ -38,7 +38,7 @@ CONTROL_DIR = fmt.STATIC_DIR / "data" / "control"
 MAPS_JSON = fmt.STATIC_DIR / "data" / "maps.json"
 MUST_BLOCK = CONTROL_DIR / "must_block.json"
 MIN_CONDENSE_REVISION = 11       # blobs from before it carry no heights
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
 
 
 class CheckSetError(ValueError):
@@ -82,12 +82,42 @@ def geometry_identity(map_name: str, control_dir: Path | None = None, maps_json:
     return {"sight": entry["sight_sha"], "walk": entry["walk_sha"], "scale": scale}
 
 
-def manifest(map_name: str, replays: list, geometry: dict, must_block: str | None) -> dict:
+def refinement_history(map_name, value=None):
+    """Durable canonical input, validated without importing the numerical runtime."""
+    empty = {'v': 1, 'map': map_name, 'child_px': 4, 'parents': []}
+    if value is None:
+        return empty
+    if not isinstance(value, dict) or set(value) != set(empty) or value.get('v') != 1 \
+            or value.get('map') != map_name or value.get('child_px') != 4 \
+            or not isinstance(value.get('parents'), list) \
+            or any(type(c) is not int or not 0 <= c < 128**2 for c in value['parents']) \
+            or value['parents'] != sorted(set(value['parents'])):
+        raise ValueError('invalid durable refinement history')
+    return {**empty, 'parents': list(value['parents'])}
+
+
+def history_identity(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+
+def check_refinement_transition(map_name, prior, receipt):
+    prior = refinement_history(map_name, prior)
+    if not isinstance(receipt, dict) or receipt.get('v') != 1:
+        raise ValueError('refinement receipt missing')
+    current = refinement_history(map_name, receipt.get('history'))
+    if receipt.get('previous_history_sha256') != history_identity(prior) \
+            or receipt.get('history_sha256') != history_identity(current) \
+            or not set(prior['parents']) <= set(current['parents']):
+        raise ValueError('refinement receipt lost or changed durable history')
+
+
+def manifest(map_name: str, replays: list, geometry: dict, must_block: str | None, *, history=None) -> dict:
     """`replays` = [[match uuid, recipe, source sha256, round count], ...], in any order."""
     return {"v": MANIFEST_VERSION, "map": map_name, "height_version": cf.HEIGHT_VERSION,
             "height_rules": cf.HEIGHT_RULES_REVISION, "min_condense_revision": MIN_CONDENSE_REVISION,
             "geometry": {"sight": geometry.get("sight"), "walk": geometry.get("walk"), "scale": geometry.get("scale")},
             "must_block": must_block,
+            "refinement_history": refinement_history(map_name, history),
             "replays": sorted([str(u).lower(), str(recipe), str(source), int(count)]
                               for u, recipe, source, count in replays)}
 

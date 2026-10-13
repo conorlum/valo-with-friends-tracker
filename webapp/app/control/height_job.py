@@ -87,6 +87,20 @@ def compare(new: hc.HeightAsset, old: hc.HeightAsset | None) -> dict | None:
     moved by more than MOVED_M. For looking at afterwards; never a gate."""
     if old is None:
         return None
+    if old.refinement is not None or new.refinement is not None:
+        def ground(asset):
+            values = asset.floors[..., 0].astype(float)
+            values[values < 0] = np.nan
+            values = np.repeat(np.repeat(values + asset.origin_z, 2, 0), 2, 1)
+            if asset.refinement is not None:
+                for c, floors in zip(asset.fine_cells, asset.fine_floors):
+                    values.ravel()[int(c)] = floors[0] + asset.origin_z if floors[0] >= 0 else np.nan
+            return values
+        was, now = ground(old), ground(new)
+        had, has = np.isfinite(was), np.isfinite(now)
+        return {'previous': old.digest, 'cells_gained': float((has & ~had).sum()) / 4,
+                'cells_lost': float((had & ~has).sum()) / 4,
+                'cells_moved': float((had & has & (np.abs(now-was) > MOVED_M*10)).sum()) / 4}
     had, has = old.floors[..., 0] >= 0, new.floors[..., 0] >= 0
     both = had & has
     shift = (new.floors[..., 0].astype(int) + new.origin_z) - (old.floors[..., 0].astype(int) + old.origin_z)
@@ -116,12 +130,13 @@ def features_pending(map_name: str, geo, asset_dir: Path | None = None, diagnost
 
 
 def run(map_name: str, rounds, *, previous: Path | None = None, asset_dir: Path | None = None,
-        must_block: Path | None = None, diagnostic=None) -> dict:
+        must_block: Path | None = None, diagnostic=None, refinement_history=None) -> dict:
     """Builds `map_name` from `rounds` (re-iterable [(match, n, blob)]) and checks it. `previous` is the asset
     file it replaces, for the comparison; `must_block` another check file than the committed one (tests)."""
     started = time.time()
     flat_geo = cg.load_base_geometry(map_name, asset_dir or cg.ASSET_DIR)
-    build = hb.build(rounds, flat_geo)
+    history = height_inputs.refinement_history(map_name, refinement_history)
+    build = hb.build(rounds, flat_geo, refinement_history=history)
     run_checks(map_name, flat_geo, build, rounds, must_block)
     old = None
     if previous is not None and Path(previous).is_file():

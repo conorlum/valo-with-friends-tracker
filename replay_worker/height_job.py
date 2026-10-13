@@ -40,7 +40,9 @@ def run(task: dict) -> dict:
         if not isinstance(theirs, dict) or theirs.get("map") != name or not isinstance(theirs.get("replays"), list):
             return {"status": "failed", "error_kind": "inputs", "error": "the task has no manifest for this map",
                     "key": task.get("key")}
-        mine = hi.manifest(name, theirs["replays"], hi.geometry_identity(name) or {}, hi.must_block_sha())
+        if 'refinement_history' not in theirs:
+            return {'status': 'failed', 'error_kind': 'inputs', 'error': 'explicit refinement history missing', 'key': task.get('key')}
+        mine = hi.manifest(name, theirs["replays"], hi.geometry_identity(name) or {}, hi.must_block_sha(), history=theirs['refinement_history'])
         if hi.digest(mine) != hi.digest(theirs):
             differ = sorted(k for k in mine if mine[k] != theirs.get(k))
             return {"status": "failed", "error_kind": "inputs", "key": task.get("key"),
@@ -53,7 +55,8 @@ def run(task: dict) -> dict:
         previous = geometry.height_cache_path(name, task["previous"]) if task.get("previous") else None
         from app.replays.map_feature_diagnostics import diagnostic_error
         diagnostic = task.get('diagnostic') or diagnostic_error(name, 'worker diagnostic snapshot unavailable', code='diagnostic_unavailable')
-        result = height_job.run(name, source, previous=previous, diagnostic=diagnostic)
+        result = height_job.run(name, source, previous=previous, diagnostic=diagnostic,
+                               refinement_history=mine['refinement_history'])
         expected = {row[0]: int(row[3]) for row in theirs["replays"]}
         if source.per_match() != expected:
             return {"status": "failed", "error_kind": "inputs", "key": task.get("key"),

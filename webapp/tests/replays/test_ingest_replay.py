@@ -28,7 +28,7 @@ def link_match():
 
 
 @pytest.fixture
-def export(tmp_path):
+def export(tmp_path, monkeypatch):
     match = link_match()
     directory = match.write(tmp_path / "export")
     vrf = tmp_path / "archive" / f"{MATCH_UUID}.vrf"
@@ -38,6 +38,10 @@ def export(tmp_path):
     (parser_dir / "bin").mkdir(parents=True)
     pin = load_pin()
     (parser_dir / "bin" / "BUILD.json").write_text(json.dumps({"commit": pin.commit, "patch_hash": pin.patch_hash}))
+    # Preview tests without explicit paths must not inspect a developer's
+    # installed parser or replay archive, whose recipe/data may be unrelated.
+    monkeypatch.setattr(ingest_replay, "default_parser_dir", lambda: parser_dir)
+    monkeypatch.setattr(ingest_replay, "default_archive", lambda: tmp_path / "absent-default-archive")
     return {"dir": directory, "vrf": vrf, "parser": parser_dir, "match": match, "tmp": tmp_path}
 
 

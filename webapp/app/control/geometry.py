@@ -284,9 +284,65 @@ class Geometry:
     heights: object = None                # the map's HeightAsset, or None on a flat map
     height_sha: str | None = None
     height_unknown: int = 0               # walkable cells the asset doesn't know (the walk mask changed since)
+    movement_only: bool = False           # archived local rope ground; terrain sight remains flat
+    movement_height_sha: str | None = None
+    rope_ground_digest: str | None = None
+    panel_grid_digest: str | None = None   # computational moving-panel leaves, separate from selected heights
+    panel_height_source: object = None
     # map features (app/control/features.py): the active generation, only when index.json names one
     features_sha: str | None = None
     features: dict | None = None          # {map, manifest, assets} as published
+    node_area: np.ndarray = None          # physical area in coarse-cell equivalents
+    space_grid: np.ndarray = None         # optional 256-grid lookup of mixed footprint IDs
+    space_nodes: np.ndarray = None
+    space_walk: np.ndarray = None
+    space_unresolved: np.ndarray = None
+    space_bbox: np.ndarray = None
+    node_space: np.ndarray = None
+    node_bbox: np.ndarray = None
+
+    @property
+    def adaptive(self):
+        return self.space_grid is not None
+
+    def space_at_px(self, x, y):
+        if not self.adaptive:
+            return self.cell_of_px(x, y)
+        return int(self.space_grid[int(np.clip(y, 0, PX - 1)) // 4, int(np.clip(x, 0, PX - 1)) // 4])
+
+    def nodes_at_px(self, x, y):
+        sid = self.space_at_px(x, y)
+        row = self.space_nodes[sid] if self.adaptive else self.node_of[sid]
+        return row[row >= 0]
+
+    def unresolved_at_px(self, x, y):
+        return bool(self.space_unresolved[self.space_at_px(x, y)]) if self.adaptive else bool(self.unresolved[self.cell_of_px(x, y)])
+
+    def node_at_px(self, x, y, z_m=None):
+        if not self.adaptive:
+            return self.node_at(self.cell_of_px(x, y), z_m)
+        nodes = self.nodes_at_px(x, y)
+        if not len(nodes):
+            return self.cell_of_px(x, y)  # off ground; disabled base node
+        best = int(nodes[0])
+        if z_m is not None:
+            for node in nodes:
+                if self.node_z[node] <= z_m + hc.NODE_SNAP_M:
+                    best = int(node)
+        return best
+
+    def area(self, mask):
+        return float(np.sum(np.asarray(mask) * self.node_area))
+
+    def nodes_from_pixels(self, pixels):
+        """Exact leaf footprint reduction for fine utility/door masks; any touched leaf."""
+        if not self.adaptive:
+            return self.to_nodes(pixels.reshape(GRID, CELL, GRID, CELL).any((1, 3)).ravel())
+        touched = pixels.reshape(256, 4, 256, 4).any((1, 3))
+        spaces = np.unique(self.space_grid[touched])
+        nodes = self.space_nodes[spaces].ravel()
+        out = np.zeros(self.n, bool); out[nodes[nodes >= 0]] = True
+        return out
 
     @property
     def cell_m(self) -> float:
@@ -311,6 +367,10 @@ class Geometry:
         """A node mask as a flat cell mask: a cell is set when any of its floors is."""
         if self.n == GRID * GRID:
             return nodes
+        if self.adaptive:
+            out = np.zeros(GRID * GRID, bool)
+            out[self.node_cell[np.asarray(nodes, bool) & self.walk_n]] = True
+            return out
         out = nodes[: GRID * GRID].copy()
         out[self.node_cell[GRID * GRID:][nodes[GRID * GRID:]]] = True
         return out
@@ -334,6 +394,7 @@ def geometry_from_masks(name: str, sight: np.ndarray, walk_px: np.ndarray, scale
     geo.centres = np.stack([xs * CELL + CELL / 2, ys * CELL + CELL / 2], 1).astype(np.float32)
     geo.node_cell = np.arange(GRID * GRID, dtype=np.int32)
     geo.walk_n = geo.walk.ravel().copy()
+    geo.node_area = np.ones(geo.n, float)
     return geo
 
 
@@ -341,6 +402,13 @@ def attach_heights(geo: Geometry, asset) -> Geometry:
     """Gives a flat geometry its nodes from a HeightAsset (heights.py). Only walkable cells get heights:
     a walkable cell the asset has no floor for is unresolved (flat 2D sight and walking), whether the
     build said so or the walk mask has changed since (`height_unknown` counts those)."""
+    geo.movement_only, geo.movement_height_sha, geo.rope_ground_digest = False, None, None
+    geo.panel_grid_digest, geo.panel_height_source = None, None
+    # Reattachment may replace a mixed asset with archived coarse ground.
+    geo.space_grid = geo.space_nodes = geo.space_walk = geo.space_unresolved = None
+    geo.space_bbox = geo.node_space = geo.node_bbox = geo.topo = None
+    ys, xs = np.divmod(np.arange(GRID * GRID), GRID)
+    geo.centres = np.stack([xs * CELL + CELL / 2, ys * CELL + CELL / 2], 1).astype(np.float32)
     walk = geo.walk.ravel()
     floors = asset.floors.reshape(GRID * GRID, hc.MAX_FLOORS).astype(np.int32)
     floors[~walk] = -1
@@ -363,6 +431,10 @@ def attach_heights(geo: Geometry, asset) -> Geometry:
     geo.centres = geo.centres[geo.node_cell]
     geo.heights, geo.height_sha = asset, asset.digest
     geo.rows = geo.row_of = None
+    geo.node_area = np.ones(geo.n, float)
+    if asset.refinement is not None and len(asset.fine_cells):
+        from app.control.adaptive import attach
+        return attach(geo, asset)
     return geo
 
 
@@ -533,8 +605,17 @@ def cast(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes: list
     (default: the floor under the eye). Without `eye_z` the answer is today's 2D one: every floor of each
     cell seen. A ray that enters an unresolved cell drops the height test from there on, and `record`
     (a dict) counts those rays under "unresolved_rays"."""
+    if geo.movement_only:
+        eye_z = None
+    from app.control.features import BoundedOccluder, cast_with
+    occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
+    if occluders:
+        return cast_with(geo, x, y, angles_deg, [s for s in smokes if not isinstance(s, BoundedOccluder)],
+                         occluders, eye_z=eye_z, own=own, record=record)
     if geo.heights is not None:
         if eye_z is None:
+            if geo.adaptive:
+                return _cast_flat(geo, x, y, angles_deg, smokes)
             return geo.to_nodes(_cast_flat(geo, x, y, angles_deg, smokes))
         return _cast_heights(geo, x, y, angles_deg, smokes, float(eye_z), own, record)
     return _cast_flat(geo, x, y, angles_deg, smokes)
@@ -544,7 +625,7 @@ def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes
     """`cast` on cells, in 2D: the whole of it on a flat map."""
     a = np.deg2rad(angles_deg)
     dx, dy = np.cos(a), np.sin(a)
-    seen = np.zeros(GRID * GRID, bool)
+    seen = np.zeros(geo.n if geo.adaptive else GRID * GRID, bool)
     live = np.ones(len(a), bool)
     hits = np.zeros(len(a), np.int16)
     reach = np.full(len(a), np.inf)
@@ -567,7 +648,11 @@ def _cast_flat(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smokes
             live &= ~inside if solid and step > 0 else inside == inside0
         if not live.any():
             break
-        seen[(pyc[live] // CELL) * GRID + pxc[live] // CELL] = True
+        if geo.adaptive:
+            nodes = geo.space_nodes[geo.space_grid[pyc[live] // 4, pxc[live] // 4]].ravel()
+            seen[nodes[nodes >= 0]] = True
+        else:
+            seen[(pyc[live] // CELL) * GRID + pxc[live] // CELL] = True
     return seen
 
 
@@ -594,12 +679,23 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
             reach = np.minimum(reach, wall_hit_px(s, x, y, dx, dy))
     smokes = [s for s in smokes if not isinstance(s, Wall)]
     started_in = [(x - s[0]) ** 2 + (y - s[1]) ** 2 < s[2] ** 2 for s in smokes]
-    src = geo.cell_of_px(x, y)
-    own = geo.node_at(src, eye - hc.EYE_M) if own is None else own
+    src = geo.space_at_px(x, y)
+    own = geo.node_at_px(x, y, eye - hc.EYE_M) if own is None else own
     seen[own] = True
-    node_of, node_z, unresolved = geo.node_of, geo.node_z, geo.unresolved
-    ground = node_z[: GRID * GRID] - hc.STAND_M - hc.LEDGE_M          # NaN where there is no floor
+    node_of, node_z, unresolved = (geo.space_nodes if geo.adaptive else geo.node_of), geo.node_z, (geo.space_unresolved if geo.adaptive else geo.unresolved)
+    ground = (node_z[np.maximum(node_of[:, 0], 0)] if geo.adaptive else node_z[: GRID * GRID]) - hc.STAND_M - hc.LEDGE_M
+    if geo.adaptive:
+        ground[node_of[:, 0] < 0] = np.nan
     upper = hc.MAX_FLOORS - 1 if geo.n > GRID * GRID else 0      # no plate work on a map with none
+    # Adaptive subdivisions can increase node count without adding upper floors.
+    # Do not run slab bookkeeping for columns that contain no plates at all.
+    while upper and not (node_of[:, upper] >= 0).any():
+        upper -= 1
+    # Per-cast snapshots respect caller-owned, mutable terrain arrays while moving
+    # fixed arithmetic out of the sampling loop. Preserve subtraction order.
+    body_from_eye = node_z + hc.BODY_M - eye
+    plate_from_eye = node_z - hc.STAND_M - eye
+    ground_from_eye = ground - eye
     hor = np.full(rays, -np.inf)
     flat = np.zeros(rays, bool)                    # the ray met an unresolved cell: 2D from there on
     lo = np.full((rays, SLAB_SLOTS), np.inf)       # blocked slope intervals [lo, hi]; empty ones never match
@@ -625,7 +721,16 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                 live &= ~inside if solid and step > 0 else inside == inside0
             if not live.any():
                 break
-            cell = (pyc // CELL) * GRID + pxc // CELL
+            # Ray state is independent. Compact only after a substantial loss to
+            # amortize slicing; keep original angle/sample positions and state.
+            if len(live) >= 32 and np.count_nonzero(live) * 4 <= len(live) * 3:
+                px, py, pxc, pyc = px[live], py[live], pxc[live], pyc[live]
+                dx, dy, hits, reach = dx[live], dy[live], hits[live], reach[live]
+                hor, flat, lo, hi = hor[live], flat[live], lo[live], hi[live]
+                used, pend_lo, pend_hi, cur = used[live], pend_lo[live], pend_hi[live], cur[live]
+                live = np.ones(len(cur), bool)
+                index = np.arange(len(cur))
+            cell = geo.space_grid[pyc // 4, pxc // 4] if geo.adaptive else (pyc // CELL) * GRID + pxc // CELL
             entered = cell != cur
             if entered.any():
                 # the plates of the cell each ray just left now block what lies beyond it
@@ -661,8 +766,9 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                     there = away & (node >= 0)
                     if not there.any():
                         continue
-                    z = node_z[np.maximum(node, 0)]
-                    slope = (z + hc.BODY_M - eye)[:, None] / d
+                    safe_node = np.maximum(node, 0)
+                    z = node_z[safe_node]
+                    slope = body_from_eye[safe_node, None] / d
                     ok = slope[:, 0] >= hor
                     if slabs:     # SLOPE_EPS: a line that grazes a plate's edge is blocked, whatever the rounding
                         ok &= ~((slope >= lo - SLOPE_EPS) & (slope <= hi + SLOPE_EPS)).any(1) \
@@ -671,13 +777,13 @@ def _cast_heights(geo: Geometry, x: float, y: float, angles_deg: np.ndarray, smo
                     ok |= flat | np.isnan(z)
                     seen[node[there & ok]] = True
                 # this cell's ground raises the horizon for what is beyond it
-                np.fmax(hor, np.where(away, (ground[cell] - eye) / d, np.nan), out=hor)
+                np.fmax(hor, np.where(away, ground_from_eye[cell] / d, np.nan), out=hor)
             for k in range(upper):
                 node = node_of[cell, k + 1]
                 has = live & (node >= 0)
                 if not has.any():
                     continue
-                plate = node_z[np.maximum(node, 0)] - hc.STAND_M - eye
+                plate = plate_from_eye[np.maximum(node, 0)]
                 mine = has & in_src
                 else_ = has & ~in_src
                 if mine.any():
@@ -705,15 +811,21 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
     the two ends' cells included: a plate blocks when the line is on one side of it where it enters the
     plate's cell (or at the eye) and on the other where it leaves (or at the target). Independent of the
     rays `cast` happens to shoot, so the two check each other."""
+    if geo.movement_only:
+        a, b = (*a[:2], None), (*b[:2], None)
+    from app.control.features import BoundedOccluder, los_with
+    occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
+    if occluders:
+        return los_with(geo, a, b, [s for s in smokes if not isinstance(s, BoundedOccluder)], occluders, record)
     (ax, ay, az), (bx, by, bz) = a, b
     length = math.hypot(bx - ax, by - ay)
     if length < 1e-9:
         # straight up or down: only the cell's own plates can be in the way
-        cell = geo.cell_of_px(ax, ay)
-        if geo.heights is None or az is None or bz is None or geo.unresolved[cell]:
+        cell = geo.space_at_px(ax, ay)
+        if geo.heights is None or az is None or bz is None or geo.unresolved_at_px(ax, ay):
             return True
         return not any(node >= 0 and (az - (geo.node_z[node] - hc.STAND_M)) * (bz - (geo.node_z[node] - hc.STAND_M)) < 0
-                       for node in geo.node_of[cell, 1:])
+                       for node in (geo.space_nodes if geo.adaptive else geo.node_of)[cell, 1:])
     ux, uy = (bx - ax) / length, (by - ay) / length
     circles = [s for s in smokes if not isinstance(s, Wall)]
     for wall in (s for s in smokes if isinstance(s, Wall)):
@@ -721,7 +833,7 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
             return False
     started_in = [(ax - s[0]) ** 2 + (ay - s[1]) ** 2 < s[2] ** 2 for s in circles]
     heights = geo.heights is not None and az is not None and bz is not None
-    src, dst = geo.cell_of_px(ax, ay), geo.cell_of_px(bx, by)
+    src, dst = geo.space_at_px(ax, ay), geo.space_at_px(bx, by)
     total = length * geo.m_per_px
     slope = (bz - az) / total if heights else 0.0
     step_m = RAY_STEP_PX * geo.m_per_px
@@ -740,10 +852,10 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
                 return False
         if not heights or flat:
             continue
-        cell = (pyc // CELL) * GRID + pxc // CELL
+        cell = geo.space_at_px(pxc, pyc)
         d = step * geo.m_per_px
         if not spans or spans[-1][0] != cell:
-            if geo.unresolved[cell]:
+            if (geo.space_unresolved if geo.adaptive else geo.unresolved)[cell]:
                 flat = True                      # 2D from here on, as `cast`
                 if record is not None:
                     record["unresolved_rays"] = record.get("unresolved_rays", 0) + 1
@@ -751,23 +863,25 @@ def los(geo: Geometry, a: tuple, b: tuple, smokes: list = (), record: dict | Non
             spans.append([cell, d, d])
         spans[-1][2] = d
         if cell not in (src, dst) and d > 0:
-            ground = geo.node_z[cell] - hc.STAND_M - hc.LEDGE_M
+            ground_node = geo.space_nodes[cell, 0] if geo.adaptive else cell
+            ground = geo.node_z[max(int(ground_node), 0)] - hc.STAND_M - hc.LEDGE_M if ground_node >= 0 else math.nan
             if not math.isnan(ground) and (ground - az) / d > slope:
                 return False
     for cell, first, last in spans:
         # where the line is inside the plate's own cell, exactly: the same both ways along the line, and
         # never past the cell's edge (a sample step of padding once blocked a crossing beside a slab)
         t0, t1 = 0.0, length
-        for p, u, c in ((ax, ux, cell % GRID), (ay, uy, cell // GRID)):
+        bbox = geo.space_bbox[cell] if geo.adaptive else [cell % GRID * CELL, cell // GRID * CELL, (cell % GRID + 1) * CELL, (cell // GRID + 1) * CELL]
+        for p, u, near_edge, far_edge in ((ax, ux, bbox[0], bbox[2]), (ay, uy, bbox[1], bbox[3])):
             if abs(u) > 1e-12:
-                near, far = sorted(((c * CELL - p) / u, ((c + 1) * CELL - p) / u))
+                near, far = sorted(((near_edge - p) / u, (far_edge - p) / u))
                 t0, t1 = max(t0, near), min(t1, far)
         if t1 < t0:
             t0, t1 = first / geo.m_per_px, last / geo.m_per_px     # a clipped sample off the map's edge
         d0 = 0.0 if cell == src else t0 * geo.m_per_px
         d1 = total if cell == dst else t1 * geo.m_per_px
         h0, h1 = az + slope * d0, az + slope * d1
-        for node in geo.node_of[cell, 1:]:
+        for node in (geo.space_nodes if geo.adaptive else geo.node_of)[cell, 1:]:
             if node >= 0:
                 plate = geo.node_z[node] - hc.STAND_M
                 if (h0 - plate) * (h1 - plate) < 0:
@@ -783,7 +897,10 @@ def cache_key(geo: Geometry) -> str:
     digest.update(np.packbits(geo.sight).tobytes())
     digest.update(np.packbits(geo.walk_px).tobytes())
     if geo.heights is not None:      # a flat map's key is what it always was
-        digest.update(json.dumps({"height": geo.height_sha, "eye": hc.EYE_M, "body": hc.BODY_M, "stand": hc.STAND_M,
+        digest.update(json.dumps({"height": geo.movement_height_sha or geo.height_sha,
+                                  **({'panel_grid': geo.panel_grid_digest} if geo.panel_grid_digest else {}),
+                                  **({'movement_only': True} if geo.movement_only else {}),
+                                  "eye": hc.EYE_M, "body": hc.BODY_M, "stand": hc.STAND_M,
                                   "ledge": hc.LEDGE_M, "snap": hc.NODE_SNAP_M, "slabs": SLAB_SLOTS},
                                  sort_keys=True).encode("ascii"))
     return digest.hexdigest()

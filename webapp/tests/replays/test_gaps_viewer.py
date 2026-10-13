@@ -196,18 +196,22 @@ def test_replay_js_loads_and_draws_open_gaps_on_a_stub_canvas():
     assert got["arcs"] >= 4, "rings and the rear wedge"
 
 
-def render_player(**context):
+def render_player(map_name="Ascent", **context):
     env = Environment(loader=FileSystemLoader(str(WEBAPP / "app" / "templates")))
-    return env.get_template("replays/_player.html").render(replay={"map_name": "Ascent", "round_numbers": [1, 2]},
+    return env.get_template("replays/_player.html").render(replay={"map_name": map_name, "round_numbers": [1, 2]},
                                                            **context)
 
 
-def test_the_partial_has_no_gaps_parts_unless_asked():
+@pytest.mark.parametrize("map_name", ["Ascent", "Sunset", "Split", "Summit", "Lotus", "Abyss", "Haven"])
+def test_the_partial_has_no_gaps_parts_unless_asked(map_name):
     for context in ({"linked": False}, {"linked": True}, {"linked": True, "control": {"cover_reviewed": True}},
-                    {"linked": False, "gaps": True}):
-        html = render_player(**context)
+                    {"linked": False, "gaps": True},
+                    {"linked": False, "gaps": True, "control": {"cover_reviewed": True}}):
+        html = render_player(map_name=map_name, **context)
         assert 'data-replay-tab="gaps"' not in html and 'data-replay-layer="gaps"' not in html
         assert "data-replay-gaps-legend" not in html
+        if not context["linked"]:
+            assert 'data-replay-tab="control"' not in html and 'data-replay-panel="control"' not in html
 
 
 def test_the_partial_with_gaps_has_the_tab_checkbox_legend_and_headings():

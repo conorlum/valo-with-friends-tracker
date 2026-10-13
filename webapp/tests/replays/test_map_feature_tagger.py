@@ -778,6 +778,159 @@ def run_page(body: str, payload):
     return json.loads(completed.stdout)
 
 
+def test_guided_placement_issue_selects_exact_state_and_field_without_editing():
+    data = page_data(future=False)
+    feature = data['tags']['maps']['Ascent']['map_features']['features'][0]
+    feature['name'] = 'Market door'
+    feature['states'] = [{'name': 'open', 'blocks_movement': False, 'blocks_sight': False},
+                         {'name': 'closing', 'blocks_movement': True, 'blocks_sight': False}]
+    feature['initial_state'] = 'open'
+    got = run_page('''function run(p) {
+      const page = openPage(p.data,{map:"Ascent"}), A = page.api;
+      const before = JSON.stringify(A.fe.Ascent.mf), issues = page.el("featIssues").innerHTML;
+      page.el("featIssues").dispatch("click", {target:{getAttribute:() => "features.feature-1.states.closing.footprint"}});
+      return {issues, sel:A.ui.sel,state:A.ui.editState["feature-1"],
+        focused:page.el("feat-field-feature-1-states-1-footprint").scrolled,
+        unchanged:before === JSON.stringify(A.fe.Ascent.mf), dirty:A.fe.Ascent.dirty,
+        summary:page.el("featChecklist").children[0].innerHTML};
+    }''', {'data': data})
+    assert 'Market door · closing · footprint' in got['issues']
+    assert 'Draw or correct the required shape' in got['issues']
+    assert '(0 cells)' not in got['issues']
+    assert got['sel'] == 'feature-1' and got['state'] == 'closing' and got['focused']
+    assert got['unchanged'] and not got['dirty']
+    assert 'features pending' in got['summary'] and 'flat fallback' in got['summary']
+
+
+@pytest.mark.parametrize('include_bounds', [False, True])
+def test_copy_state_footprint_is_one_undoable_persistent_shape_only_edit(include_bounds):
+    data = page_data(future=False)
+    feature = data['tags']['maps']['Ascent']['map_features']['features'][0]
+    feature['states'] = [
+        {'name': 'closed', 'footprint': {'type': 'polygon', 'uv': [[1, 1], [100, 1], [100, 100]], 'x_note': 'keep'},
+         'blocks_movement': True, 'blocks_sight': True, 'sight_bounds': {'ref': 'all_height'}},
+        {'name': 'closing', 'blocks_movement': True, 'blocks_sight': False, 'x_note': 'destination'}]
+    got = run_page('''function run(p) {
+      const page = openPage(p.data,{map:"Ascent"}), A = page.api;
+      const before = JSON.stringify(A.fe.Ascent.mf);
+      A.ui.sel = "feature-1"; A.render();
+      function buttons(el) {return [el,...(el.children || []).flatMap(buttons)];}
+      const copy = buttons(page.el("featProps")).find(el => el.textContent === (p.bounds ? "Copy footprint and vision bounds" : "Copy footprint only"));
+      copy.click(); const copied = JSON.stringify(A.fe.Ascent.mf);
+      const reopened = JSON.stringify(page.reopen().api.fe.Ascent.mf);
+      A.undo(); const undone = JSON.stringify(A.fe.Ascent.mf); A.redo();
+      return {before,copied,reopened,undone,redone:JSON.stringify(A.fe.Ascent.mf),
+        invalid:A.copyFootprint("feature-1","missing","closing")};
+    }''', {'data': data, 'bounds': include_bounds})
+    before, after = json.loads(got['before']), json.loads(got['copied'])
+    expected = copy.deepcopy(before)
+    expected['features'][0]['states'][1]['footprint'] = expected['features'][0]['states'][0]['footprint']
+    if include_bounds:
+        expected['features'][0]['states'][1]['sight_bounds'] = expected['features'][0]['states'][0]['sight_bounds']
+    assert after == expected
+    assert got['copied'] == got['reopened'] == got['redone']
+    assert got['before'] == got['undone'] and got['invalid'] is False
+
+
+def test_placement_issue_groups_union_cells_and_selects_state_with_dots():
+    data = page_data(future=False)
+    data['tags']['maps']['Ascent']['map_features']['features'][0]['states'][0]['name'] = 'half.closed'
+    got = run_page('''function run(p) {
+      const page = openPage(p.data,{map:"Ascent"}), A = page.api;
+      const reason = {code:"multi_floor",path:"features.feature-1.states.half.closed.footprint"};
+      const grouped = A.placementIssues({"feature-1":{reasons:[{...reason,cells:[1,2]}]},"feature-2":{reasons:[{...reason,cells:[2,3]}]}});
+      A.focusIssue(reason.path);
+      return {grouped,state:A.ui.editState["feature-1"],focused:page.el("feat-field-feature-1-states-0-footprint").scrolled};
+    }''', {'data': data})
+    assert got['grouped'] == [{'code': 'multi_floor', 'path': 'features.feature-1.states.half.closed.footprint',
+                              'cells': [1, 2, 3], 'affected_features': ['feature-1', 'feature-2'], 'cell_count': 3}]
+    assert got['state'] == 'half.closed' and got['focused']
+
+
+def test_attached_compiler_report_becomes_stale_after_edit_and_recovers_on_undo():
+    data = page_data(future=False)
+    data['features']['diagnostics'] = {'Ascent': {'editor_entry': copy.deepcopy(data['tags']['maps']['Ascent']),
+        'height': 'flat', 'counts': {'pending': 6, 'total_tagged': 6}}}
+    got = run_page('''function run(p) {
+      const page=openPage(p.data,{map:"Ascent"}),A=page.api;
+      function note(){return page.el("featChecklist").children[0].innerHTML;}
+      const before=note(); A.commit(page.F.setField(A.fe.Ascent.mf,"feature-1",["name"],"changed"),true);
+      const edited=note(); A.undo(); const undone=note();
+      return {before,edited,undone};
+    }''', {'data': data})
+    assert '6 of 6 features pending in the exact attached flat context' in got['before']
+    assert 'STALE after annotation edits' in got['edited']
+    assert 'STALE' not in got['undone']
+
+
+def test_current_exact_diagnostics_replace_approximate_rope_placement_until_edited():
+    data = page_data(future=False)
+    data['features']['floors']['Ascent'] = {'flat': False, 'height_sha': 'synthetic',
+        'floor_counts': [2] * (128 * 128), 'unresolved': [0] * (128 * 128)}
+    features = data['tags']['maps']['Ascent']['map_features']['features']
+    data['features']['diagnostics'] = {'Ascent': {
+        'editor_entry': copy.deepcopy(data['tags']['maps']['Ascent']), 'height': 'synthetic',
+        'counts': {'pending': 0, 'total_tagged': len(features)},
+        'features': [{'id': f['id'], 'placement': 'placeable', 'reasons': []} for f in features]}}
+    got = run_page('''function run(p) {
+      const page=openPage(p.data,{map:"Ascent"}), A=page.api;
+      function note(){return page.el("featChecklist").children[0].innerHTML;}
+      const before=note(); A.commit(page.F.setField(A.fe.Ascent.mf,"feature-1",["name"],"changed"),true);
+      const edited=note(); A.undo(); const undone=note();
+      p.data.features.diagnostics.Ascent.height="different";
+      const mismatched=openPage(p.data,{map:"Ascent"}).el("featChecklist").children[0].innerHTML;
+      return {before,edited,undone,mismatched};
+    }''', {'data': data})
+    assert 'Placement (attached compiler):</b> 0 features pending' in got['before']
+    assert 'Placement preview:' in got['edited'] and 'STALE after annotation edits' in got['edited']
+    assert 'Placement (attached compiler):</b> 0 features pending' in got['undone']
+    assert 'Placement preview:' in got['mismatched']
+
+
+def test_finer_grid_requires_current_compiler_report_and_preserves_edits():
+    data = page_data(future=False)
+    data['features']['floors']['Ascent'] = {'flat': False, 'height_sha': 'synthetic', 'mixed_grid': True,
+        'floor_counts': [1] * (128 * 128), 'unresolved': [0] * (128 * 128)}
+    features = data['tags']['maps']['Ascent']['map_features']['features']
+    data['features']['diagnostics'] = {'Ascent': {
+        'editor_entry': copy.deepcopy(data['tags']['maps']['Ascent']), 'height': 'synthetic',
+        'counts': {'pending': 0, 'total_tagged': len(features)},
+        'features': [{'id': f['id'], 'placement': 'placeable', 'reasons': []} for f in features]}}
+    got = run_page('''function run(p) {
+      const page=openPage(p.data,{map:"Ascent"}), A=page.api;
+      function note(){return page.el("featChecklist").children[0].innerHTML;}
+      const before=note(); A.commit(page.F.setField(A.fe.Ascent.mf,"feature-1",["name"],"changed"),true);
+      const edited=note(), issues=page.el("featIssues").innerHTML;
+      const saved=page.reopen().api.fe.Ascent.mf.features[0].name;
+      A.undo(); const undone=note();
+      p.data.features.diagnostics.Ascent.height="different";
+      const mismatched=openPage(p.data,{map:"Ascent"}).el("featChecklist").children[0].innerHTML;
+      return {before,edited,issues,saved,undone,mismatched};
+    }''', {'data': data})
+    assert 'Placement (attached compiler):</b> 0 features pending' in got['before']
+    assert 'fresh compiler diagnostics needed for the finer height grid' in got['edited']
+    assert 'diagnostic_required' in got['issues'] and got['saved'] == 'changed'
+    assert 'Placement (attached compiler):</b> 0 features pending' in got['undone']
+    assert 'fresh compiler diagnostics needed for the finer height grid' in got['mismatched']
+
+
+def test_measured_multifloor_issue_highlights_cells_and_edit_clears_stale_overlay():
+    data = page_data(future=False)
+    data['features']['floors']['Ascent'] = {'flat': False, 'height_sha': 'synthetic', 'floor_counts': [2] * (128 * 128), 'unresolved': [0] * (128 * 128)}
+    state = data['tags']['maps']['Ascent']['map_features']['features'][0]['states'][0]['name']
+    got = run_page('''function run(p) {
+      const page=openPage(p.data,{map:"Ascent"}),A=page.api;
+      page.TG.state.masks={walk:Uint8Array.from({length:1024*1024},()=>1),sight:new Uint8Array(1024*1024)};
+      A.focusIssue("features.feature-1.states."+p.state+".footprint");
+      const cells=A.ui.issueCells.slice(),issues=page.el("featIssues").innerHTML;
+      A.commit(page.F.setField(A.fe.Ascent.mf,"feature-1",["name"],"edit"),true);
+      return {cells,issues,cleared:A.ui.issueCells===null};
+    }''', {'data': data, 'state': state})
+    assert got['cells'] and got['cleared']
+    assert all(0 <= c < 128 * 128 for c in got['cells'])
+    assert 'Required cells have multiple floors' in got['issues']
+
+
 def page_data(future=True, **extra_tags):
     """The page's embedded data (control_tagger.render's DATA) for Ascent and Bind, from the committed tags with
     the fixture's annotations on Ascent and (`future`) annotations of a newer schema on Bind."""
@@ -1059,6 +1212,63 @@ def test_drawn_sight_edge_exports_and_reimports_as_a_valid_polyline():
                            "bounds": {"ref": "unresolved"}}
     assert ms.validate(got["mf"], "Ascent").errors == []
     assert got["accepted"] and got["restored"] == got["mf"]
+
+
+@pytest.mark.parametrize("source", ["autosave", "download", "embedded"])
+def test_existing_line_drafts_repair_without_losing_edits(source):
+    got = run_page("""
+      function run(p) {
+        const page = openPage(p.data, {map: "Ascent"}), A = page.api;
+        const old = page.plain(A.fe.Ascent.mf);
+        const f = old.features.find(f => f.id === "feature-1");
+        f.name = "My edited door";
+        f.states.find(s => s.name === "closed").sight = [{
+          geometry: {type: "line", uv: [[3125, 3125], [3437.5, 3125]], custom: "keep"},
+          bounds: {ref: "unresolved"}, notes: "keep bounds unresolved"
+        }];
+        A.commit(old, true);
+        page.click("featDownload");
+        const file = page.downloads[page.downloads.length - 1];
+        let fresh;
+        if (p.source === "autosave") fresh = page.reopen();
+        else if (p.source === "download") {
+          fresh = openPage(p.data, {map: "Ascent"});
+          fresh.api.importText(file.text, file.name);
+          fresh.click("featImportReplace");
+        } else {
+          const data = JSON.parse(JSON.stringify(p.data));
+          data.tags.maps.Ascent.map_features = old;
+          fresh = openPage(data, {map: "Ascent"});
+        }
+        const expected = JSON.parse(JSON.stringify(old));
+        expected.features.find(f => f.id === "feature-1").states.find(s => s.name === "closed").sight[0].geometry.type = "polyline";
+        fresh.click("featExport");
+        return {expected: expected, actual: fresh.plain(fresh.api.fe.Ascent.mf),
+                persisted: fresh.plain(fresh.reopen().api.fe.Ascent.mf),
+                exported: fresh.downloads.length > 0, saved: fresh.el("featSaved").textContent};
+      }
+    """, {"data": page_data(future=False), "source": source})
+    assert got["actual"] == got["expected"], "repair only the tool's old geometry type"
+    assert got["persisted"] == got["expected"] and got["saved"] == "saved"
+    assert got["exported"] and ms.validate(got["actual"], "Ascent").errors == []
+
+
+@pytest.mark.parametrize("uv", [[[3125, 3125]], [[3125, 3125], [10001, 3125]]])
+def test_legacy_line_repair_leaves_malformed_geometry_pending(uv):
+    got = run_page("""
+      function run(p) {
+        const page = openPage(p.data, {map: "Ascent"});
+        const old = page.plain(page.api.fe.Ascent.mf);
+        old.features.find(f => f.id === "feature-1").states.find(s => s.name === "closed").sight = [
+          {geometry: {type: "line", uv: p.uv}, bounds: {ref: "unresolved"}}
+        ];
+        page.api.commit(old, true);
+        const fresh = page.reopen();
+        fresh.click("featExport");
+        return {expected: old, actual: fresh.plain(fresh.api.fe.Ascent.mf), exported: fresh.downloads.length > 0};
+      }
+    """, {"data": page_data(future=False), "uv": uv})
+    assert got["actual"] == got["expected"] and not got["exported"]
 
 
 def test_the_tagger_reads_a_maps_heights_from_an_export_when_given_one(tmp_path):

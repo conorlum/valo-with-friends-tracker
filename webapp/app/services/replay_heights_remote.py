@@ -142,6 +142,11 @@ def current_manifests(db) -> dict[str, tuple[dict, list]]:
         if replay.id in valid and (replay_control.condense_revision(replay.recipe) or 0) >= hi.MIN_CONDENSE_REVISION:
             by_map.setdefault(replay.map_name, []).append(replay)
     must_block = hi.must_block_sha()
+    histories = {}
+    for row in control_heights.rows(db):
+        receipt = (row.report or {}).get('refinement')
+        if receipt is not None and row.map_name not in histories:
+            histories[row.map_name] = hi.refinement_history(row.map_name, receipt['history'])
     out = {}
     for name, rows in by_map.items():
         geometry = hi.geometry_identity(name)
@@ -149,7 +154,7 @@ def current_manifests(db) -> dict[str, tuple[dict, list]]:
             continue
         uuids = [str(r.match_uuid).lower() for r in rows]
         out[name] = (hi.manifest(name, [[u, r.recipe, r.source_sha256, r.round_count] for u, r in zip(uuids, rows)],
-                                 geometry, must_block),
+                                 geometry, must_block, history=histories.get(name)),
                      [(r.id, u, r.round_count) for u, r in zip(uuids, rows)])
     return out
 
@@ -250,6 +255,8 @@ def _finish(session_factory, session, build: Build, job: dict, counts: dict) -> 
         if result.get("rounds") != hi.rounds_expected(build.manifest):
             raise ValueError(f"it read {result.get('rounds')} rounds, the manifest has {hi.rounds_expected(build.manifest)}")
         digest, report, rules = result["digest"], result["report"], result["rules"]
+        if report.get('refinement') is not None or build.manifest['refinement_history']['parents']:
+            hi.check_refinement_transition(build.map_name, build.manifest['refinement_history'], report['refinement'])
         if not isinstance(digest, str) or len(digest) != 12 or not isinstance(rules, dict):
             raise ValueError("its digest or its rules are malformed")
         if (rules.get("version"), rules.get("revision")) != (cf.HEIGHT_VERSION, cf.HEIGHT_RULES_REVISION):

@@ -130,6 +130,8 @@ def encode_data(rc: RoundControl, blob: dict) -> bytes:
               "checkpoints": [[t, a, b, c] for t, a, b, c in zip(checkpoints, s_off, v_off, c_off)],
               "states": list(cf.STATE_NAMES), "group_side": rc.group_side, "control_m2": control_m2}
     streams = {"states": states, "coverage": coverage, "control": control}
+    if rc.map_features:
+        header['map_features'] = rc.map_features
     if rc.knew_states:
         # What each side group knew (R3.3): optional streams, so rows without them read as before.
         offsets = {}
@@ -174,4 +176,6 @@ def encode_summary(rc: RoundControl, blob: dict, *, provenance=None) -> bytes:
         "missing_inputs": dict(rc.missing_inputs)}
     if provenance is not None:
         summary['provenance'] = provenance
+    if rc.map_features:
+        summary['map_features'] = rc.map_features
     return cf.pack_summary(summary)

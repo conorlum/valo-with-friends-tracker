@@ -44,17 +44,17 @@ import json
 import struct
 from pathlib import Path
 
-CONTROL_REVISION = 9     # 9: player state (the molly figures; blinded players and active mollies, unreleased)
+CONTROL_REVISION = 15    # combined player-state and map-feature runtime, including leaf motion fixes
 DATA_VERSION = 1
 SUMMARY_VERSION = 1
 
 # Map heights (app/control/heights.py re-exports the first, third and fourth). Here, in a stdlib-only module,
 # so the web app can judge a stored asset and a build's report without importing numpy.
-HEIGHT_VERSION = 2            # the asset's format: an asset of another version can't be loaded
+HEIGHT_VERSION = 3            # explicit 4-pixel refinement; archived v2 assets keep their interpretation
 # The rules a build follows. Bump it for ANY change to how rounds become heights (a constant in
 # app/control/heights.py, the code of height_build.py or height_motion.py): every map's rebuild is then due.
 # tests/replays/test_height_inputs.py pins it to the constants' hash, as CONTROL_REVISION is pinned.
-HEIGHT_RULES_REVISION = 2      # 2: recheck emitted floor separation after taking each band's low percentile
+HEIGHT_RULES_REVISION = 5      # 5: physical sight checks also accept tracks without team membership
 HEIGHT_SUPPORTED_MIN = 0.60   # the bar: share of walkable cells with a supported floor
 KILL_LINE_BAR = 0.02          # the kill-line check: at most this share of real kill lines blocked
 

@@ -1,0 +1,242 @@
+diff --git a/global.json b/global.json
+index a0e9d0e..7c8e277 100644
+--- a/global.json
++++ b/global.json
+@@ -1,7 +1,7 @@
+ {
+   "sdk": {
+     "version": "10.0.301",
+-    "rollForward": "latestPatch",
++    "rollForward": "latestFeature",
+     "allowPrerelease": false
+   }
+ }
+diff --git a/src/CliReader/JsonExport/ReplayEventJsonWriter.cs b/src/CliReader/JsonExport/ReplayEventJsonWriter.cs
+index 6821f8f..44f2d21 100644
+--- a/src/CliReader/JsonExport/ReplayEventJsonWriter.cs
++++ b/src/CliReader/JsonExport/ReplayEventJsonWriter.cs
+@@ -18,6 +18,24 @@ internal sealed class ReplayEventJsonWriter
+         _normalizer = normalizer;
+     }
+ 
++    public void WriteMapAudit(Utf8JsonWriter writer, MapAuditRawContent raw)
++    {
++        WriteEventStart(writer, "map_audit_raw_content", raw);
++        writer.WriteNumber("diagnostic_version", 1);
++        WriteObjectIdentity(writer, raw.ActorNetGuid, raw.ObjectNetGuid, raw.ChannelIndex);
++        writer.WriteString("actor_path", raw.ActorPath);
++        WriteNullableString(writer, "export_group_path", raw.ExportGroupPath);
++        WriteNullableString(writer, "class_path", raw.ClassPath);
++        writer.WriteBoolean("is_actor", raw.IsActor);
++        writer.WriteBoolean("has_rep_layout", raw.HasRepLayout);
++        writer.WriteNumber("payload_bits", raw.PayloadBits);
++        writer.WriteBoolean("truncated", raw.Truncated);
++        writer.WriteBoolean("was_decoded", false);
++        writer.WriteBase64String("wire_base64", raw.WireBytes);
++        writer.WriteBase64String("transformed_base64", raw.TransformedBytes);
++        writer.WriteEndObject();
++    }
++
+     public void WriteActorSpawned(Utf8JsonWriter writer, ActorSpawned spawned)
+     {
+         WriteEventStart(writer, "actor_spawned", spawned);
+diff --git a/src/CliReader/JsonExport/ReplayExportSink.cs b/src/CliReader/JsonExport/ReplayExportSink.cs
+index 7f66630..e61d962 100644
+--- a/src/CliReader/JsonExport/ReplayExportSink.cs
++++ b/src/CliReader/JsonExport/ReplayExportSink.cs
+@@ -15,6 +15,7 @@ internal sealed class ReplayExportSink :
+     private readonly NdjsonWriter _events;
+     private readonly NdjsonWriter _movement;
+     private readonly ReplayEventJsonWriter _eventWriter;
++    private NdjsonWriter? _mapAudit;
+ 
+     internal ReplayExportSink(
+         NdjsonWriter events,
+@@ -35,10 +36,11 @@ internal sealed class ReplayExportSink :
+         try
+         {
+             var movement = NdjsonWriter.Create(Path.Combine(outputDirectory, "movement.ndjson"));
+-            return new ReplayExportSink(
+-                events,
+-                movement,
++            var sink = new ReplayExportSink(events, movement,
+                 new ReplayEventJsonWriter(new ReplayJsonNormalizer()));
++            if (Environment.GetEnvironmentVariable("VALO_MAP_AUDIT_RAW") == "1")
++                sink._mapAudit = NdjsonWriter.Create(Path.Combine(outputDirectory, "map-audit.ndjson"));
++            return sink;
+         }
+         catch
+         {
+@@ -51,6 +53,9 @@ internal sealed class ReplayExportSink :
+     {
+         switch (replayEvent)
+         {
++            case MapAuditRawContent raw:
++                _mapAudit?.Write(writer => _eventWriter.WriteMapAudit(writer, raw));
++                break;
+             case ActorSpawned spawned:
+                 _events.Write(writer => _eventWriter.WriteActorSpawned(writer, spawned));
+                 Statistics.ActorSpawnedCount++;
+@@ -146,7 +151,7 @@ internal sealed class ReplayExportSink :
+         }
+         finally
+         {
+-            _movement.Dispose();
++            try { _movement.Dispose(); } finally { _mapAudit?.Dispose(); }
+         }
+     }
+ 
+diff --git a/src/Replay.Models/Events/MapAuditRawContent.cs b/src/Replay.Models/Events/MapAuditRawContent.cs
+new file mode 100644
+index 0000000..c9c61aa
+--- /dev/null
++++ b/src/Replay.Models/Events/MapAuditRawContent.cs
+@@ -0,0 +1,8 @@
++namespace Replay.Models.Events;
++
++// Diagnostic evidence only. Payload transforms remove wire encoding, not semantic ambiguity.
++public sealed record MapAuditRawContent(
++    float TimeSeconds, int PacketId, uint ActorNetGuid, uint ObjectNetGuid,
++    uint ChannelIndex, string ActorPath, string? ExportGroupPath, string? ClassPath,
++    bool IsActor, bool HasRepLayout, int PayloadBits, bool Truncated,
++    byte[] WireBytes, byte[] TransformedBytes) : ReplayEvent(TimeSeconds, PacketId);
+diff --git a/src/Replay.Unreal/Bunches/ContentBlockFramer.cs b/src/Replay.Unreal/Bunches/ContentBlockFramer.cs
+index 714fc23..f2f6170 100644
+--- a/src/Replay.Unreal/Bunches/ContentBlockFramer.cs
++++ b/src/Replay.Unreal/Bunches/ContentBlockFramer.cs
+@@ -104,6 +104,8 @@ internal sealed class ContentBlockFramer
+             }
+ 
+             var contentPayloadBitCount = ReadContentPayloadBitCount(payload);
++            CaptureMapAudit(payload, contentPayloadBitCount, header, channel, timeSeconds,
++                packetId, replayVersionBranch);
+ 
+             if (header.HasRepLayout)
+             {
+@@ -120,6 +122,41 @@ internal sealed class ContentBlockFramer
+         }
+     }
+ 
++    internal bool MapAuditEnabled { get; set; } =
++        Environment.GetEnvironmentVariable("VALO_MAP_AUDIT_RAW") == "1";
++
++    private void CaptureMapAudit(FBitArchive payload, int bits, ContentBlockHeader header,
++        ActorChannelState channel, float time, int packet, string branch)
++    {
++        var path = channel.ActorPath;
++        if (!MapAuditEnabled || path is null || !(
++            path.StartsWith("WindowShield", StringComparison.Ordinal) ||
++            path.StartsWith("Switch_BlackMarket", StringComparison.Ordinal) ||
++            path.StartsWith("B_Site_Door_Switch", StringComparison.Ordinal) ||
++            path.StartsWith("RespawningDestructible", StringComparison.Ordinal) ||
++            path.StartsWith("RespawningWallPlate", StringComparison.Ordinal))) return;
++        // This allowlist scopes evidence retention; it does not bind actors to authored features.
++        var position = payload.Position;
++        byte[] wire = [], transformed = [];
++        var truncated = bits > 65536;
++        try
++        {
++            if (!truncated)
++            {
++                wire = payload.ReadBits(bits).ToArray();
++                payload.SeekBits(position);
++                using var decoded = DecodeContentPayload(payload, bits, channel, branch);
++                transformed = decoded.ReadBits(bits).ToArray();
++            }
++        }
++        finally { payload.SeekBits(position); }
++        _eventSink.Emit(new MapAuditRawContent(time, packet, channel.ActorNetGuid.Value,
++            GetObjectNetGuid(header, channel).Value, channel.ChannelIndex, path,
++            _pathResolver.ResolveExportGroupPath(header, channel),
++            _pathResolver.ResolveClassPath(header, channel), header.IsActor, header.HasRepLayout,
++            bits, truncated, wire, transformed));
++    }
++
+     private FBitArchive DecodeContentPayload(
+         FBitArchive payload,
+         int bitCount,
+diff --git a/tests/Replay.Unreal.Tests/Bunches/ContentBlockFramerTests.cs b/tests/Replay.Unreal.Tests/Bunches/ContentBlockFramerTests.cs
+index 2df0e79..efe0ecd 100644
+--- a/tests/Replay.Unreal.Tests/Bunches/ContentBlockFramerTests.cs
++++ b/tests/Replay.Unreal.Tests/Bunches/ContentBlockFramerTests.cs
+@@ -124,6 +124,67 @@ public class ContentBlockFramerTests
+         });
+     }
+ 
++    [Test]
++    public void MapAudit_CapturesUnknownOddBitBlocksWithoutConsumingNormalStream()
++    {
++        var decoder = new PassthroughPropertyPayloadDecoder();
++        var sink = new CapturingReplayEventSink();
++        var framer = CreateFramer(new NetGuidCache(), new ExportBindingRegistry(), decoder, sink);
++        framer.MapAuditEnabled = true;
++        var payload = BuildContentBlockPayload((true, 8), (false, 13));
++        var channel = new ActorChannelState { ActorNetGuid = new NetworkGuid(100), ActorPath = "WindowShieldA1", ChannelIndex = 66 };
++        var stats = new BunchPayloadStats();
++        framer.FrameContentBlocks(payload, channel, stats, 55, 7, ReplayVersion);
++        var raw = sink.Events.OfType<MapAuditRawContent>().ToArray();
++        Assert.Multiple(() =>
++        {
++            Assert.That(raw.Length, Is.EqualTo(2));
++            Assert.That(raw.Select(x => x.PayloadBits), Is.EqualTo(new[] { 8, 13 }));
++            Assert.That(raw.Select(x => x.WireBytes.Length), Is.EqualTo(new[] { 1, 2 }));
++            Assert.That(raw.All(x => !x.Truncated), Is.True);
++            Assert.That(raw.All(x => x.ActorNetGuid == 100 && x.ChannelIndex == 66), Is.True);
++            Assert.That(sink.Events.OfType<ExportGroupReceived>().All(x => !x.WasDecoded), Is.True);
++            Assert.That(stats.ContentPayloadBitsSkipped, Is.EqualTo(21));
++            Assert.That(stats.ContentBlockCount, Is.EqualTo(2));
++            Assert.That(payload.AtEnd, Is.True);
++        });
++    }
++
++    [Test]
++    public void MapAudit_OversizedPayloadIsExplicitlyTruncatedAndStillSkipped()
++    {
++        var sink = new CapturingReplayEventSink();
++        var decoder = new CountingPropertyPayloadDecoder();
++        var framer = CreateFramer(new NetGuidCache(), new ExportBindingRegistry(), decoder, sink);
++        framer.MapAuditEnabled = true;
++        var payload = BuildContentBlockPayload(true, 65537);
++        var channel = new ActorChannelState { ActorNetGuid = new NetworkGuid(100), ActorPath = "WindowShieldA1" };
++        var stats = new BunchPayloadStats();
++        framer.FrameContentBlocks(payload, channel, stats, 0, 0, ReplayVersion);
++        var raw = sink.Events.OfType<MapAuditRawContent>().Single();
++        Assert.Multiple(() =>
++        {
++            Assert.That(raw.Truncated, Is.True);
++            Assert.That(raw.WireBytes, Is.Empty);
++            Assert.That(raw.TransformedBytes, Is.Empty);
++            Assert.That(decoder.DecodeCount, Is.Zero);
++            Assert.That(stats.ContentPayloadBitsSkipped, Is.EqualTo(65537));
++            Assert.That(payload.AtEnd, Is.True);
++        });
++    }
++
++    [Test]
++    public void MapAudit_NonMapActorsAreNotCaptured()
++    {
++        var sink = new CapturingReplayEventSink();
++        var framer = CreateFramer(new NetGuidCache(), new ExportBindingRegistry(), new CountingPropertyPayloadDecoder(), sink);
++        framer.MapAuditEnabled = true;
++        var payload = BuildContentBlockPayload(true, 8);
++        framer.FrameContentBlocks(payload, new ActorChannelState { ActorNetGuid = new NetworkGuid(100), ActorPath = "Player_0" }, new BunchPayloadStats(), 0, 0, ReplayVersion);
++        Assert.That(sink.Events.OfType<MapAuditRawContent>(), Is.Empty);
++        Assert.That(payload.AtEnd, Is.True);
++    }
++
+     private static ContentBlockFramer CreateFramer(
+         NetGuidCache netGuidCache,
+         ExportBindingRegistry registry,
+@@ -236,6 +297,12 @@ public class ContentBlockFramerTests
+         return bytes;
+     }
+ 
++    private sealed class PassthroughPropertyPayloadDecoder : IPropertyPayloadDecoder
++    {
++        public FBitArchive Decode(FBitArchive payload, int bitCount, uint actorNetGuid, string replayVersion)
++            => payload.ReadSubArchive(bitCount);
++    }
++
+     private sealed class CountingPropertyPayloadDecoder : IPropertyPayloadDecoder
+     {
+         public int DecodeCount { get; private set; }

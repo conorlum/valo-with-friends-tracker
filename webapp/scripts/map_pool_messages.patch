@@ -1,0 +1,9 @@
+diff --git a/src/Replay.Unreal/Bunches/ContentBlockFramer.cs b/src/Replay.Unreal/Bunches/ContentBlockFramer.cs
+--- a/src/Replay.Unreal/Bunches/ContentBlockFramer.cs
++++ b/src/Replay.Unreal/Bunches/ContentBlockFramer.cs
+@@ -135,3 +135,5 @@
+             path.StartsWith("B_Site_Door_Switch", StringComparison.Ordinal) ||
++            path.StartsWith("Switch_HiddenTemple", StringComparison.Ordinal) ||
++            path.StartsWith("RespawningPlummetShootable", StringComparison.Ordinal) ||
+             path.StartsWith("RespawningDestructible", StringComparison.Ordinal) ||
+             path.StartsWith("RespawningWallPlate", StringComparison.Ordinal))) return;

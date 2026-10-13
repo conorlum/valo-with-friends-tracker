@@ -26,10 +26,12 @@ from __future__ import annotations
 
 import math
 import time
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, OrderedDict
 from dataclasses import dataclass, field
 
 import numpy as np
+
+MAX_SIGHT_CACHE_BYTES = 32 * 1024 * 1024
 
 from app.control.engine import RAY_STEP_DEG
 from app.control.geometry import cast
@@ -41,12 +43,12 @@ RESULT_WINDOW_S = 3.0
 SHOT_LOOKBACK_S = 0.5
 BEHIND_DEG = 120.0
 ROUTE_THIN_S = 0.5
-GAPS_REVISION = 2    # 2: stack merge (R1)
+GAPS_REVISION = 3    # 3: feature occlusion in exposure and release attribution
 TURN_DEG = 1.0      # a facing change of at most this between two ticks is not a turn (aim noise)
 CAUSE_ORDER = ("route_released", "victim_turned", "victim_moved", "open_timing")
 # The engine's own locating events (Unknown.apply, _locating), gathered onto the next tick as before W09.
 LEGACY_EVENTS = frozenset({"kill", "plant", "damage", "gunfire", "footsteps", "seen", "revived"})
-REASONS = ("died", "turned", "moved", "blinded", "smoked", "utility_expired", "utility_left", "other")
+REASONS = ("died", "turned", "moved", "blinded", "smoked", "utility_expired", "utility_left", "other", "map_feature_closed")
 _CODE = {r: i for i, r in enumerate(REASONS)}
 FULL_CIRCLE = np.arange(0.0, 360.0, RAY_STEP_DEG)
 
@@ -156,6 +158,9 @@ class GapDetector:
         self._players_prev: dict = {}                      # slot -> the last tick's PlayerView
         self._victim_prev: dict = {}                       # slot -> what the last tick saw of them as a victim
         self._tick_cache: dict = {}
+        self._sight_cache = OrderedDict()
+        self._sight_bytes = self._sight_hits = 0
+        self._sight_geometry = None
         self.smokes_prev: list = []
         self.prev_t: float | None = None
         self.done = False
@@ -192,12 +197,48 @@ class GapDetector:
         return p.view if p.view is not None else p.live & ~p.utility
 
     def _sight(self, x, y, eye_z, node, smokes) -> np.ndarray:
-        """Every node with a clear line from (x, y) at eye height `eye_z`, in any direction (R13)."""
+        """Every node with a clear line from (x, y) at eye height `eye_z` (R13).
+
+        Exact positions, eye heights, nodes and physical blocker values can reuse
+        a cast across ticks. Mutable/untrusted panels retain the uncached path.
+        Geometry stays fixed for a detector; replacing it invalidates this memo.
+        """
+        from app.control.feature_visibility import blocker_key
+
+        signature = (id(self.geo), id(self.geo.sight), id(self.geo.node_z), id(self.geo.heights),
+                     id(self.geo.space_grid), id(self.geo.space_nodes), id(self.geo.node_of),
+                     id(self.geo.unresolved), id(self.geo.space_unresolved), id(self.geo.centres),
+                     self.geo.n, self.geo.m_per_px, self.geo.tol_hits, self.geo.movement_only,
+                     self.geo.height_sha, self.geo.features_sha)
+        if signature != self._sight_geometry:
+            self._sight_cache.clear()
+            self._sight_bytes = 0
+            self._sight_geometry = signature
+        blockers = blocker_key(smokes)
+        reusable = blockers is not None
+        key = ("sight", float(x).hex(), float(y).hex(),
+               None if eye_z is None else float(eye_z).hex(), int(node), blockers)
+        if reusable:
+            entry = self._sight_cache.pop(key, None)
+            if entry is not None:
+                self._sight_cache[key] = entry
+                self._sight_hits += 1
+                return entry[0]
         record: dict = {}
         out = cast(self.geo, float(x), float(y), FULL_CIRCLE, smokes, eye_z=eye_z, own=int(node), record=record)
         self.timing["casts"] += 1
         if record.get("unresolved_rays"):
             self._note("exposure rays through unresolved terrain (2D sight there)")
+        if reusable:
+            out.setflags(write=False)
+            size = out.nbytes + 1024 + sum(128 * len(k) + sum(len(v) for v in k if isinstance(v, bytes))
+                                           for k in blockers)
+            if size <= MAX_SIGHT_CACHE_BYTES:
+                self._sight_cache[key] = out, size
+                self._sight_bytes += size
+                while self._sight_bytes > MAX_SIGHT_CACHE_BYTES:
+                    _, removed = self._sight_cache.popitem(last=False)
+                    self._sight_bytes -= removed[1]
         return out
 
     def last_located(self, side: str, enemy: int, before: float, inclusive: bool = True,
@@ -351,10 +392,20 @@ class GapDetector:
             out[:] = _CODE["blinded"]
             return out
         rest = np.ones(len(nodes), bool)
+        from app.control.features import BoundedOccluder
+        feature_blockers = [s for s in rec.smokes if isinstance(s, BoundedOccluder)]
+        if feature_blockers:
+            regular = [s for s in rec.smokes if not isinstance(s, BoundedOccluder)]
+            with_features = self._sight(p.x, p.y, p.eye_z, p.node, rec.smokes)
+            without_features = self._sight(p.x, p.y, p.eye_z, p.node, regular)
+            feature_hidden = (without_features & ~with_features)[nodes]
+            out[feature_hidden] = _CODE['map_feature_closed']
+            rest &= ~feature_hidden
         blocked = self._smoked(p, rec)
         if blocked is not None:
-            rest = ~blocked[nodes]
-            out[~rest] = _CODE["smoked"]
+            smoke_hidden = rest & blocked[nodes]
+            out[smoke_hidden] = _CODE["smoked"]
+            rest &= ~smoke_hidden
         before = self._players_prev.get(slot)
         if before is not None and before.node != p.node:
             out[rest] = _CODE["moved"]

@@ -28,8 +28,9 @@ a `HeightBuild` out:
   averages across a drop nobody walked, and a filled cell never fills another.
 - **Connections.** Floors of neighbouring cells (all 8) within STEP_UP_M connect both ways. A bigger step connects
   only where it was walked (CONNECT_MIN_ROUNDS rounds, or the run that crossed a gradient-filled cell). Seen
-  going up it connects both ways (what is climbed can be dropped from); seen only going down it is one-way: a
-  slide when the player stayed on the ground, a fall otherwise. Unresolved cells carry no connections here: the
+  going up grants an upward step and return descent; the descent is a slide with ground evidence and a fall
+  otherwise. Seen only going down it is one-way: a slide when the player stayed on the ground, a fall otherwise.
+  Unresolved cells carry no connections here: the
   engine gives them today's 2D walking.
 - **Unresolved areas, loudly.** Unresolved cells are grouped into areas (8-connected), each with its size,
   its bounding box in minimap px and why.
@@ -78,6 +79,7 @@ class Stand:
     cells: tuple          # flat cells its samples pass through, in order (no repeats in a row)
     x: float              # mean position, px
     y: float
+    fine_cells: tuple = ()  # accepted half-cell footprints, never reconstructed from whole-run mean XY
 
 
 _tracks = hm.tracks
@@ -125,8 +127,11 @@ def stands(blob: dict, geo: Geometry, round_index: int = 0, skip: dict | None = 
             cells = (np.clip(y[i:j], 0, PX - 1).astype(int) // (PX // GRID)) * GRID \
                 + np.clip(x[i:j], 0, PX - 1).astype(int) // (PX // GRID)
             keep = np.r_[True, cells[1:] != cells[:-1]]
+            fine = hm.fine_cells_of(x[i:j], y[i:j])
+            fine_keep = np.r_[True, fine[1:] != fine[:-1]]
             out.append(Stand(round_index, slot, float(t[i]), float(t[j - 1]), int(round(med)),
-                             tuple(int(c) for c in cells[keep]), float(x[i:j].mean()), float(y[i:j].mean())))
+                             tuple(int(c) for c in cells[keep]), float(x[i:j].mean()), float(y[i:j].mean()),
+                             tuple(int(c) for c in fine[fine_keep])))
     out.sort(key=lambda s: (s.slot, s.t0))
     return out
 
@@ -159,8 +164,12 @@ def off_platforms(found: list[Stand], plats: list, geo: Geometry) -> list[Stand]
             continue
         for i, j in hm._runs_of(np.array(keep)):      # each stretch that is left is a run of its own
             cut = {"cells": s.cells[i:j]}
+            allowed = set(cut['cells'])
+            fine_keep = [hm.coarse_of_fine(c) in allowed for c in s.fine_cells]
+            cut['fine_cells'] = tuple(c for c, ok in zip(s.fine_cells, fine_keep) if ok)
             if isinstance(s, Walk):
                 cut["low"] = s.low[i:j]
+                cut['fine_low'] = tuple(z for z, ok in zip(s.fine_low, fine_keep) if ok)
             out.append(replace(s, **cut))
     return out
 
@@ -492,9 +501,10 @@ def connect(heights: dict, seen: dict, geo: Geometry, ground: dict | None = None
             granted: set = frozenset()) -> np.ndarray:
     """The directed walks between resolved floors, K x 5 (cell a, floor a, cell b, floor b, EDGE_*), sorted.
     Floors within STEP_UP_M are a step, both ways. A bigger one connects only where it was walked
-    (CONNECT_MIN_ROUNDS rounds of `seen`, or a step `fill_gradient` granted): seen going up it is a step both
-    ways (what is climbed can be dropped from); seen only going down it is one-way, a slide when it was walked
-    on the ground (`ground`, or granted) and a fall otherwise."""
+    (CONNECT_MIN_ROUNDS rounds of `seen`, or a step `fill_gradient` granted): an observed climb grants
+    an upward step and a return descent. The return descent is a slide only with ground evidence,
+    and a fall otherwise; proving an upward climb does not prove a silent landing. Seen only going down
+    it is one-way, a slide when it was walked on the ground (`ground`, or granted) and a fall otherwise."""
     walk = geo.walk
     step = hc.STEP_UP_M * DM
     ground = ground or {}
@@ -516,9 +526,14 @@ def connect(heights: dict, seen: dict, geo: Geometry, ground: dict | None = None
                     if not (on_ground or len(seen.get(key, ())) >= hc.CONNECT_MIN_ROUNDS):
                         continue
                     if hb > ha:
-                        edges[key] = edges[(b, j, a, i)] = hc.EDGE_STEP     # climbed: it can be dropped from
+                        edges[key] = hc.EDGE_STEP
+                        reverse = (b, j, a, i)
+                        # Preserve a separately qualified grounded descent regardless of iteration order.
+                        kind = hc.EDGE_SLIDE if on_ground else hc.EDGE_FALL
+                        edges[reverse] = min(kind, edges.get(reverse, kind))
                     else:
-                        edges.setdefault(key, hc.EDGE_SLIDE if on_ground else hc.EDGE_FALL)
+                        kind = hc.EDGE_SLIDE if on_ground else hc.EDGE_FALL
+                        edges[key] = min(kind, edges.get(key, kind))
     return np.array(sorted((*key, kind) for key, kind in edges.items()), np.int32).reshape(-1, 5)
 
 
@@ -597,7 +612,7 @@ def readiness(supported: np.ndarray, unresolved: np.ndarray, count: np.ndarray, 
     return share, not_ready
 
 
-def build(rounds, geo: Geometry) -> HeightBuild:
+def build(rounds, geo: Geometry, *, refinement_history=None) -> HeightBuild:
     """A map's heights from `rounds` = [(match id, round number, blob), ...]. Never refuses: `ready` says
     whether the map reaches the bar, and `report["not_ready"]` why not."""
     found, found_walks, round_match, counts = all_ground(rounds, geo)
@@ -649,14 +664,18 @@ def build(rounds, geo: Geometry) -> HeightBuild:
         "falls_closed": sum(1 for code, drop in drops if code == hc.EDGE_FALL and drop > hc.SILENT_DROP_M * DM),
         "origin_z": int(origin), **counts, "ready": not not_ready, "not_ready": not_ready,
     }
-    meta = {"origin_z": int(origin), "stands": counts["stands"], "walks": counts["walks"], "rounds": counts["rounds"],
+    meta = {"version": hc.HEIGHT_VERSION, "origin_z": int(origin), "stands": counts["stands"], "walks": counts["walks"], "rounds": counts["rounds"],
             "matches": counts["matches"],
             "walk_sha": hashlib.sha256(np.packbits(geo.walk_px).tobytes()).hexdigest()[:12]}
     report["walk_sha"] = meta["walk_sha"]
     asset = hc.HeightAsset(asset_floors.reshape(GRID, GRID, hc.MAX_FLOORS), spread.reshape(GRID, GRID, hc.MAX_FLOORS),
                            supported.reshape(GRID, GRID), unresolved.reshape(GRID, GRID), edges, meta,
                            kind.reshape(GRID, GRID))
-    return HeightBuild(asset, report, found, why, not not_ready, found_walks)
+    result = HeightBuild(asset, report, found, why, not not_ready, found_walks)
+    if refinement_history is not None:
+        from app.control.adaptive import refine
+        result = refine(result, geo, found, found_walks, round_match, floors, reasons, refinement_history)
+    return result
 
 
 # ---------------------------------------------------------------- the report, for the user
@@ -683,6 +702,10 @@ def report_lines(name: str, report: dict) -> list[str]:
         why = ", ".join(f"{reason} {n}" for reason, n in area["why"].items())
         out.append(f"WARNING {name}: unresolved area of {area['cells']} cells at px {area['bbox']} ({why}): "
                    f"flat 2D sight and walking there")
+    if r.get('refined_parents'):
+        out.append(f"  mixed 8/4px runtime: {r['refined_parents']} refined parent cells; "
+                   f"supported physical area {r['supported_area_px2']}/{r['walkable_area_px2']} px2. "
+                   "Visited, kind, edge and region diagnostics above use the original 8px grid.")
     out.append(f"  {'READY' if r['ready'] else 'NOT READY: ' + '; '.join(r['not_ready'])}")
     return out
 
@@ -719,6 +742,16 @@ def picture(build_: HeightBuild, geo: Geometry, path) -> None:
             img[cy * CELL:(cy + 1) * CELL, (cx + 1) * CELL - 1:(cx + 1) * CELL + 1] = 0
         if cy + 1 < GRID and has[cy + 1, cx] and abs(ground[cy, cx] - ground[cy + 1, cx]) > step:
             img[(cy + 1) * CELL - 1:(cy + 1) * CELL + 1, cx * CELL:(cx + 1) * CELL] = 0
+    if asset.refinement is not None:
+        highest = max(float(asset.floors.max()), float(asset.fine_floors.max(initial=-1)), 1.)
+        for child, floors, unresolved in zip(asset.fine_cells, asset.fine_floors, asset.fine_unresolved):
+            y, x = divmod(int(child), GRID * 2)
+            f = max(float(floors[0]), 0.) / highest
+            colour = (40 + 215*f, 90 + 150*f, 200 - 170*f) if floors[0] >= 0 else \
+                (220, 40, 40) if unresolved else (70, 70, 78)
+            img[y*4:y*4+4, x*4:x*4+4] = colour
+            if (floors >= 0).sum() >= 2:
+                img[y*4, x*4:x*4+4] = (255, 255, 255)
     Image.fromarray(img).save(path)
 
 
@@ -737,7 +770,7 @@ def kill_line_check(rounds: list, geo: Geometry) -> dict:
     qualifying = blocked = 0
     examples = []
     for match, n, blob in rounds:
-        rnd = engine.RoundInputs(blob, geo)
+        rnd = engine.RoundInputs(blob, geo, sight_check=True)
         for kill in blob.get("kills") or []:
             t, killer, victim = kill.get("t"), kill.get("killer"), kill.get("victim")
             if t is None or killer is None or victim is None or killer == victim:
@@ -761,7 +794,7 @@ def kill_line_check(rounds: list, geo: Geometry) -> dict:
                 excluded["no position with z near the kill"] += 1
                 continue
             (kx, ky, kz), (vx, vy, vz) = ends
-            if geo.unresolved[geo.cell_of_px(kx, ky)] or geo.unresolved[geo.cell_of_px(vx, vy)]:
+            if geo.unresolved_at_px(kx, ky) or geo.unresolved_at_px(vx, vy):
                 excluded["on an unresolved cell"] += 1
                 continue
             smokes = rnd.smokes_at(engine.snap(t))
@@ -791,8 +824,8 @@ def geo_los(geo: Geometry, a: tuple, b: tuple, smokes) -> bool:
 
 def must_block_check(lines: list, geo: Geometry, map_name: str) -> dict:
     """The hand-listed sightlines that are impossible in game (app/static/data/control/must_block.json):
-    each must be blocked. A line whose viewer or target height is still unknown (null) is listed as not
-    checked, never as passing: a map with one fails the check until its heights are filled in."""
+    each must be blocked. A permanent 2D wall proves blockage without endpoint heights: heights only
+    remove sight. Otherwise a null endpoint height remains unchecked and fails the gate."""
     results = []
     for line in lines:
         if line.get("map") != map_name:
@@ -800,7 +833,11 @@ def must_block_check(lines: list, geo: Geometry, map_name: str) -> dict:
         vx, vy, vz = line["viewer"]
         tx, ty, tz = line["target"]
         if vz is None or tz is None:
-            results.append({"source": line.get("source"), "checked": False})
+            if not geo_los(geo, (vx, vy, None), (tx, ty, None), []):
+                results.append({"source": line.get("source"), "checked": True,
+                                "blocked": True, "basis": "permanent_2d_wall"})
+            else:
+                results.append({"source": line.get("source"), "checked": False})
             continue
         origin = geo.heights.origin_z if geo.heights is not None else 0
         eye = (vz - origin) / 10.0 + hc.EYE_M

@@ -306,7 +306,8 @@ class RoundInputs:
     """One round's players, lives, positions, statuses and utility, with every interval snapped
     to the tick grid."""
 
-    def __init__(self, blob: dict, geo: Geometry, link: ControlLink | None = None, infos=None):
+    def __init__(self, blob: dict, geo: Geometry, link: ControlLink | None = None, infos=None, *,
+                 sight_check: bool = False):
         link = link or ControlLink()
         self.blob, self.geo, self.link = blob, geo, link
         self.hz = blob["hz"]
@@ -320,6 +321,10 @@ class RoundInputs:
                 side = link.sides.get(p["slot"])
                 group = {"attack": "A", "defense": "B"}.get(side)
             if group is None:
+                if sight_check:
+                    # Height validation needs physical sight blockers and tracks, not teams.
+                    # Leave membership absent; never fabricate it for control/knowledge.
+                    continue
                 raise ControlError(f"slot {p['slot']} has no side group and the link names no side")
             self.team[p["slot"]] = group
         self.group_side = {}
@@ -368,10 +373,13 @@ class RoundInputs:
         # Veto's Evolution (W10): while it's on, enemy blinds, suppression, reveals and statuses don't touch him
         self.evolution = utility.evolution_spans(blob)
         self._read_util()
+        from app.control.feature_runtime import FeatureRuntime
+        self.map_features = FeatureRuntime(geo, blob)
+        self.transitions += self.map_features.transitions
         # What utility tells each team about one enemy (app/control/utility.py), at its own exact time: the
         # readers' and any given ones (tests), in engine order. Only enemies of the learning side count.
         # An Info that needs a capability the enemy is immune to at its time (Veto's Evolution) is dropped.
-        self.infos = utility.ordered([i for i in [*utility.read_all(self), *(infos or ())]
+        self.infos = [] if sight_check else utility.ordered([i for i in [*utility.read_all(self), *(infos or ())]
                                       if self.team.get(i.slot) is not None and self.team.get(i.slot) != i.side
                                       and 0.0 <= i.t < self.t_end
                                       and utility.affects(i.detail.get("needs", "sight"), self.evolution, i.slot, i.t)])
@@ -456,7 +464,7 @@ class RoundInputs:
 
     def node(self, s: int, t: float, x: float, y: float) -> int:
         """The node slot s stands on at t: the floor of their cell under their z (the lowest without z)."""
-        return self.geo.node_at(self.geo.cell_of_px(x, y), self.height(s, t))
+        return self.geo.node_at_px(x, y, self.height(s, t))
 
     def movement(self, s: int, t: float, now) -> str:
         before = self.pos(s, t - SPEED_WINDOW_S)
@@ -675,7 +683,7 @@ class RoundInputs:
         z = self._device_z(e.get("z"))
         node = eye = None
         if geo.heights is not None:
-            node = geo.node_at(geo.cell_of_px(x, y), None if z is None else z + hc.STAND_M)
+            node = geo.node_at_px(x, y, None if z is None else z + hc.STAND_M)
             eye = None if z is None or np.isnan(geo.node_z[node]) else z + hc.DEVICE_EYE_M
         if key == TRIPWIRE and e.get("end"):
             a = np.array([x, y])
@@ -774,9 +782,11 @@ class RoundInputs:
         ys = np.linspace(a[1], b[1], n)
         cells = (ys // CELL).astype(int).clip(0, GRID - 1) * GRID + (xs // CELL).astype(int).clip(0, GRID - 1)
         if not heights:
+            if geo.adaptive:
+                return np.unique(np.concatenate([geo.nodes_at_px(x, y) for x, y in zip(xs, ys)]))
             return _every_floor(geo, np.unique(cells))
         zs = np.linspace(za, zb, n)
-        return np.unique([geo.node_at(int(c), float(z) + hc.STAND_M) for c, z in zip(cells, zs)])
+        return np.unique([geo.node_at_px(x, y, float(z) + hc.STAND_M) for x, y, z in zip(xs, ys, zs)])
 
     def _join_wall(self, end: np.ndarray) -> np.ndarray | None:
         """The nearest 2D wall point (the centre of a sight-blocking pixel) within TRIP_FLAT_REACH_M of a wire's end
@@ -807,9 +817,9 @@ class RoundInputs:
         ux, uy = (end - other) / span
         slope = (z_end - z_other) / (span * geo.m_per_px)
         cell = geo.cell_of_px(end[0], end[1])
-        if geo.unresolved[cell]:
+        if geo.unresolved_at_px(*end):
             return end
-        node = geo.node_at(cell, z_end + hc.STAND_M)
+        node = geo.node_at_px(*end, z_end + hc.STAND_M)
         for step in range(1, int(hc.TRIP_REACH_M / geo.m_per_px) + 1):
             x, y = end[0] + ux * step, end[1] + uy * step
             if not (0 <= x < PX and 0 <= y < PX):
@@ -818,10 +828,11 @@ class RoundInputs:
             if geo.sight[int(y), int(x)]:
                 return np.array([x - ux, y - uy])             # a 2D wall: the last open point before it
             cell = geo.cell_of_px(x, y)
-            if cell != geo.node_cell[node]:
-                if geo.unresolved[cell]:
+            crossed = geo.space_at_px(x, y) != geo.node_space[node] if geo.adaptive else cell != geo.node_cell[node]
+            if crossed:
+                if geo.unresolved_at_px(x, y):
                     return end                                # uncertain terrain: no extension
-                onward = [int(m) for m in geo.node_of[cell] if m >= 0 and int(m) in topo.around(node)]
+                onward = [int(m) for m in geo.nodes_at_px(x, y) if int(m) in topo.around(node)]
                 if not onward:
                     return np.array([x - ux, y - uy])         # the anchor's floor ends: its last point
                 node = min(onward, key=lambda m: abs(geo.node_z[m] - geo.node_z[node]))
@@ -886,11 +897,14 @@ class RoundInputs:
     def _line_nodes(self, points) -> np.ndarray:
         """Every floor of the cells under a polyline in px: what a wall there stops walking through."""
         cells = []
+        leaves = []
         for (x0, y0), (x1, y1) in zip(points, points[1:]):
             n = int(max(abs(x1 - x0), abs(y1 - y0))) + 1
             xs, ys = np.linspace(x0, x1, n), np.linspace(y0, y1, n)
+            if self.geo.adaptive:
+                leaves.extend(self.geo.nodes_at_px(x, y) for x, y in zip(xs, ys))
             cells.append((ys // CELL).astype(int).clip(0, GRID - 1) * GRID + (xs // CELL).astype(int).clip(0, GRID - 1))
-        nodes = _every_floor(self.geo, np.unique(np.concatenate(cells)))
+        nodes = np.unique(np.concatenate(leaves)) if self.geo.adaptive else _every_floor(self.geo, np.unique(np.concatenate(cells)))
         return nodes[self.geo.walk_n[nodes]]
 
     def blocked_at(self, t: float) -> np.ndarray:
@@ -899,6 +913,7 @@ class RoundInputs:
         for a, b, nodes in self.blockers:
             if a <= t < b:
                 out[nodes] = True
+        out |= self.map_features.sample(t)[0]
         return out
 
     def reopened_by(self, t: float) -> np.ndarray:
@@ -908,6 +923,8 @@ class RoundInputs:
         for _, b, nodes in self.blockers:
             if b <= t:
                 out[nodes] = np.maximum(out[nodes], b)
+        if self.map_features.active:
+            out = np.maximum(out, self.map_features.reopened_by(t))
         return out
 
     def _mollies(self, util: list) -> None:
@@ -939,8 +956,7 @@ class RoundInputs:
         z_m = self._device_z(z_dm)
         if geo.heights is not None and z_m is None:
             self.missing["approximate heights (a molly has no z: lowest floor used)"] += 1
-        cells = GRID * GRID
-        dx, dy = geo.centres[:cells, 0] - x, geo.centres[:cells, 1] - y
+        dx, dy = geo.centres[:, 0] - x, geo.centres[:, 1] - y
         a = math.radians(z.angle)
         along, across = dx * math.cos(a) + dy * math.sin(a), -dx * math.sin(a) + dy * math.cos(a)
         r = z.radius_m / geo.m_per_px
@@ -954,15 +970,17 @@ class RoundInputs:
         else:
             shape = dx ** 2 + dy ** 2 <= r * r
             reach = z.radius_m
-        near = np.flatnonzero(shape & geo.walk.ravel())
+        near = np.flatnonzero(shape & geo.walk_n)
         inside = np.zeros(geo.n, bool)
-        for c in near.tolist():
-            inside[geo.node_at(c, z_m)] = True
+        for n in near.tolist():
+            cx, cy = geo.centres[n]
+            if geo.node_at_px(cx, cy, z_m) == n:
+                inside[n] = True
         inside &= geo.walk_n
         if z.through:
             return np.flatnonzero(inside)
         seed = np.zeros(geo.n, bool)
-        seed[geo.node_at(geo.cell_of_px(x, y), z_m)] = True
+        seed[geo.node_at_px(x, y, z_m)] = True
         steps = max(1, int(math.ceil(reach / geo.cell_m)))
         grown = topology.of(geo).dilate(seed, eight=True, iterations=steps, within=inside | seed)
         return np.flatnonzero(grown & inside)
@@ -988,7 +1006,8 @@ class RoundInputs:
     def smokes_at(self, t: float) -> list:
         """What blocks sight at t: the smokes as (x, y, r, solid), then the walls that are up."""
         return ([(x, y, r, solid) for t0, t1, x, y, r, solid in self.smokes if t0 <= t < t1]
-                + [w for t0, t1, w in self.walls if t0 <= t < t1])
+                + [w for t0, t1, w in self.walls if t0 <= t < t1]
+                + self.map_features.sample(t)[1])
 
     # --- ticks
 
@@ -1152,6 +1171,10 @@ def smoke_blocks(p: np.ndarray, q: np.ndarray, smoke) -> np.ndarray:
 def seen_from(geo: Geometry, src: np.ndarray, smokes: list, skip: np.ndarray | None = None) -> np.ndarray:
     """Flat cells any of the source cells sees (their static rows), minus pairs a smoke blocks.
     `skip` (flat) marks targets that needn't be rechecked (the free space itself)."""
+    from app.control.features import BoundedOccluder, seen_from_with
+    occluders = [s for s in smokes if isinstance(s, BoundedOccluder)]
+    if occluders:
+        return seen_from_with(geo, src, [s for s in smokes if not isinstance(s, BoundedOccluder)], occluders, skip)
     src = src[geo.row_of[src] >= 0]
     if not len(src):
         return np.zeros(geo.n, bool)
@@ -1195,7 +1218,8 @@ def special_links(geo: Geometry) -> list[tuple[int, int, bool]]:
             out.append((a, b, bool(sp.get("one_way"))))
         else:   # the 2D specials apply to every floor of their cells (the spec: "Walking per floor")
             out += [(int(na), int(nb), bool(sp.get("one_way")))
-                    for na in geo.node_of[a] if na >= 0 for nb in geo.node_of[b] if nb >= 0]
+                    for na in geo.nodes_at_px(*geo.px_of_uv(*sp['a']))
+                    for nb in geo.nodes_at_px(*geo.px_of_uv(*sp['b']))]
     return out
 
 
@@ -1214,6 +1238,19 @@ def collapse_states(geo: Geometry, state: np.ndarray) -> np.ndarray:
     A flat map's states are returned as they are."""
     if geo.n == GRID * GRID:
         return state
+    if geo.adaptive:
+        out = np.full(GRID * GRID, NONE, state.dtype)
+        lo = np.full(GRID * GRID, N_STATES, state.dtype)
+        hi = np.zeros(GRID * GRID, state.dtype)
+        walk = geo.walk_n
+        np.minimum.at(lo, geo.node_cell[walk], state[walk])
+        np.maximum.at(hi, geo.node_cell[walk], state[walk])
+        valid = lo < N_STATES
+        out[valid] = lo[valid]
+        disagree = valid & (lo != hi)
+        active = geo.to_cells(np.isin(state, (A_ACTIVE, B_ACTIVE, CONTESTED_ACTIVE)))
+        out[disagree] = np.where(active[disagree], CONTESTED_ACTIVE, CONTESTED)
+        return out
     out = state[: GRID * GRID].copy()
     cells = geo.node_cell[GRID * GRID:]
     upper = state[GRID * GRID:]
@@ -1448,7 +1485,7 @@ class Tick:
                 z_dm = path_z(w.path, t) if geo.heights is not None else None
                 if z_dm is not None:      # a drone watches from its path's own height, over the floor below it
                     z = (z_dm - w.origin) / 10.0
-                    own = geo.node_at(geo.cell_of_px(dx_, dy_), z + hc.STAND_M)
+                    own = geo.node_at_px(dx_, dy_, z + hc.STAND_M)
                     eye = None if np.isnan(geo.node_z[own]) else z + hc.DEVICE_EYE_M
                 dv = cast(geo, dx_, dy_, heading + np.arange(-w.half, w.half + 1e-9, RAY_STEP_DEG), self.smokes,
                           eye_z=eye, own=own, record=self.fallbacks)
@@ -1718,7 +1755,9 @@ class Tick:
                     stats["own_fill_empty"] += 1
                     continue
                 if len(keep) == len(old.comps):
-                    fills[side] = old
+                    # Reuse geometry, but remove the player from component membership.
+                    # Q56 reads those slots when choosing an entry's way back to teammates.
+                    fills[side] = Fill(old.free, keep, old.seen)
                     stats["own_fill_same"] += 1
                 else:
                     free = np.zeros(geo.n, bool)
@@ -1855,8 +1894,8 @@ class Tick:
             n_pas = sum((h.passive | h.watch | back.get(h.slot, none)).astype(np.int8) for h in hs)
             for h in hs:
                 pas = (h.passive | h.watch | back.get(h.slot, none)) & ~h.active
-                act = float((1 / n_act[h.active]).sum()) if h.active.any() else 0.0
-                psv = float((1 / n_pas[pas]).sum()) if pas.any() else 0.0
+                act = float((self.geo.node_area[h.active] / n_act[h.active]).sum()) if h.active.any() else 0.0
+                psv = float((self.geo.node_area[pas] / n_pas[pas]).sum()) if pas.any() else 0.0
                 out[h.slot] = (act, psv, h.active, pas)
         return out
 
@@ -1939,9 +1978,9 @@ class Knowledge:
         remembered = np.zeros(geo.n, bool)
         # an ability wall up now is not somewhere an unseen enemy walked (W14; its route at earlier times isn't
         # replayed here: the knowledge picture is the reach at this instant, as before)
-        walls = self.rnd.blocked_at(t) if getattr(self.rnd, "blockers", None) else np.zeros(geo.n, bool)
+        walls = self.rnd.blocked_at(t)
         if getattr(self.rnd, "mollies", None):
-            walls = walls | self.rnd.hazard_at(self.side, t)    # nor through the team's own burning molly (P07a)
+            walls = walls | self.rnd.hazard_at(self.side, t)
         for s, team in self.rnd.team.items():
             if team != self.enemy or s in seen or not self.rnd.alive(s, t):
                 continue
@@ -2028,7 +2067,8 @@ class Unknown:
 
     def __init__(self, geo: Geometry, chokes: np.ndarray | None = None):
         self.geo = geo
-        self.topo = topology.of(geo)
+        from app.control.route_runtime import topology_for
+        self.topo = topology_for(geo)
         self.cells = {"A": np.zeros(geo.n, bool), "B": np.zeros(geo.n, bool)}
         self.reached: dict[str, dict[int, np.ndarray]] = {"A": {}, "B": {}}   # side -> enemy slot -> flat
         self.seen: dict[str, dict[int, tuple[int, float]]] = {"A": {}, "B": {}}   # enemy slot -> (cell, t) last spotted
@@ -2080,7 +2120,9 @@ class Unknown:
         any wall: a segment hugging a wall's face, where a screen meets a door's jamb, spans nothing). The
         cells it crosses are sealed, two cells thick so no diagonal step slips between them. The gas itself
         stays walkable: a screen across a door or a smoke filling a corridor seals nothing."""
-        key = tuple(repr(s) for s in smokes or ())
+        from app.control.features import BoundedOccluder
+        smokes = [s for s in smokes or () if not isinstance(s, BoundedOccluder)]
+        key = tuple(repr(s) for s in smokes)
         if key == self._sealed_key:
             return self._sealed
         out = np.zeros(GRID * GRID, bool)
@@ -2140,7 +2182,8 @@ class Unknown:
         # step (every wall goes up or down at a tick of its own, so they're constant in between), then the ground
         # under a wall up now is cleared: a route open earlier in the step stays crossed, and nothing tunnels a wall
         # that was up all along (its cells are also `solid`: no diagonal step past them).
-        blocking = rnd is not None and getattr(rnd, "blockers", None)
+        blocking = rnd is not None and (getattr(rnd, 'blockers', None) or
+                                       getattr(getattr(rnd, 'map_features', None), 'active', False))
         if blocking:
             mid = t if since == -math.inf else (since + t) / 2
             blocked_step, blocked_now = rnd.blocked_at(mid), rnd.blocked_at(t)
@@ -2319,7 +2362,7 @@ class Unknown:
                 if info.x is None or info.y is None:
                     self.ignored["locate without a place"] += 1
                     continue
-                node = self.geo.node_at(self.geo.cell_of_px(info.x, info.y), info.z)
+                node = self.geo.node_at_px(info.x, info.y, info.z)
                 reached = np.full(self.geo.n, np.inf)
                 reached[node] = te
                 before = np.full(self.geo.n, np.inf)
@@ -2344,7 +2387,7 @@ class Unknown:
                 if info.x is None or info.y is None:
                     self.ignored["hypothesis without a place"] += 1
                     continue
-                node = self.geo.node_at(self.geo.cell_of_px(info.x, info.y), info.z)
+                node = self.geo.node_at_px(info.x, info.y, info.z)
                 if te < reached[node]:
                     reached[node] = te
                     sources[node] = te
@@ -2457,7 +2500,7 @@ class Unknown:
         if not cells.any():
             return cells
         lab = self.topo.label(cells, eight=True)
-        size = np.bincount(lab)
+        size = np.bincount(lab, weights=self.geo.node_area)
         small = size <= DROP_PIECE_CELLS
         small[0] = False
         small |= self._narrow(lab, size)
@@ -2489,6 +2532,24 @@ class Unknown:
         cells are measured, and never one on a cell with more than one floor: the walk mask is 2D, so it says
         nothing about how wide one floor is (a tunnel under a bridge)."""
         out = np.zeros(len(size), bool)
+        if self.geo.adaptive:
+            geo = self.geo
+            layered = (geo.space_nodes >= 0).sum(1) > 1
+            stacked = set(lab[geo.walk_n & layered[geo.node_space]].tolist())
+            spatial_lab = np.zeros(len(geo.space_walk), np.int32)
+            spatial_lab[geo.node_space[geo.walk_n & (lab > 0)]] = lab[geo.walk_n & (lab > 0)]
+            fine = spatial_lab[geo.space_grid]
+            for j in np.flatnonzero(size > DROP_PIECE_CELLS):
+                if j == 0 or j in stacked:
+                    continue
+                ys, xs = np.nonzero(fine == j)
+                if not len(ys):
+                    continue
+                y0, x0, y1, x1 = ys.min()*4, xs.min()*4, (ys.max()+1)*4, (xs.max()+1)*4
+                pixels = (fine[ys.min():ys.max()+1, xs.min():xs.max()+1] == j).repeat(4, 0).repeat(4, 1)
+                pixels &= geo.walk_px[y0:y1, x0:x1]
+                out[j] = ndimage.distance_transform_edt(np.pad(pixels, 1)).max() < NARROW_ROOM_CELLS * CELL
+            return out
         layered = np.zeros(GRID * GRID, bool)
         layered[self.geo.node_cell[GRID * GRID:]] = True
         stacked = np.zeros(len(size), bool)
@@ -2802,6 +2863,7 @@ class RoundControl:
     # side group -> [(t, enemy slot, operation, reason, source)]: why each enemy's unknown changed, at the change's own
     # time, every analytical instant's display reasons in order (W21). Never the gap detector's input.
     reasons: dict | None = None
+    map_features: dict | None = None   # active artifact/timeline identities, visible in the replay header
 
 
 def _section_bounds(rnd: RoundInputs) -> list[tuple[str, float, float]]:
@@ -2851,7 +2913,8 @@ class TickRunner:
         tick.unknown = {side: cells.copy() for side, cells in self.unknown.cells.items()}
         tick.sealed = self.unknown.sealed(tick.smokes)   # cached per smokes: the one apply just used
         rnd = getattr(tick, "rnd", None)
-        if rnd is not None and getattr(rnd, "blockers", None):
+        if rnd is not None and (getattr(rnd, 'blockers', None) or
+                                getattr(getattr(rnd, 'map_features', None), 'active', False)):
             # a wall up now stays shut in the counterfactual's unknown too (W14)
             tick.sealed = tick.sealed | rnd.blocked_at(tick.t)
         if rnd is not None and getattr(rnd, "mollies", None):
@@ -2876,6 +2939,8 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
     exact time (`RoundInputs.analytic_times`), and every total is integrated over the analytical step that
     follows it; an instant between frames is evaluated, observed and integrated, never stored. A round with no
     Info has only its frames, so its result is unchanged. `infos` adds Infos to the readers' (tests)."""
+    from app.control.feature_runtime import prepare_geometry
+    geo = prepare_geometry(geo)
     visibility(geo)
     rnd = RoundInputs(blob, geo, link, infos)
     times = rnd.tick_times() if ticks is None else np.asarray(ticks, float)
@@ -2944,7 +3009,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
         if n is not None:
             states[n] = collapse_states(geo, state)[walk_flat]
         if prev_state is not None and rnd.t_start < t <= rnd.t_decided:
-            _credit_taken(tick, cov, prev_state, state, players, cell_m2)
+            _credit_taken(tick, cov, prev_state, state, players, cell_m2, node_area=geo.node_area)
         prev_state = state
         if know:
             k0 = time.perf_counter()
@@ -2954,7 +3019,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                     knew_states[side][n] = collapse_states(geo, picture)[walk_flat]
             timings["knowledge"] += time.perf_counter() - k0
         live_w =max(0.0, min(t + w, rnd.t_decided) - max(t, rnd.t_start))
-        owned = {s: float((score(state, s) > 0).sum()) for s in ("A", "B")}
+        owned = {s: geo.area(score(state, s) > 0) for s in ("A", "B")}
         ctl_sum = {"A": 0.0, "B": 0.0}
         dying = {slot: t_death for slot, t_death in death_ticks.get(n, [])} if n is not None else {}
         for s, h in tick.holders.items():
@@ -2982,7 +3047,7 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                 drop = (base_score > 0).astype(np.int8)
             else:
                 drop = base_score - score(cf["state"], side)
-            value = float(drop.sum())
+            value = geo.area(drop)
             if n is not None:
                 control[n, s] = value * cell_m2
                 control_masks[n, s] = geo.to_cells(drop > 0)[walk_flat]
@@ -3009,20 +3074,42 @@ def compute_round(blob: dict, geo: Geometry, link: ControlLink | None = None, *,
                 overlap = min(hi, sec.t1) - max(lo, sec.t0)
                 if overlap > 0:
                     sec.seconds += overlap
-                    np.add.at(sec.totals, (cells_now, cols), overlap)
+                    if geo.adaptive:
+                        # Pictures keep their parent projection; section totals retain each leaf's area.
+                        low_state = np.full(len(geo.space_walk), N_STATES, np.uint8)
+                        high_state = np.zeros(len(geo.space_walk), np.uint8)
+                        active = np.zeros(len(geo.space_walk), bool)
+                        walk = geo.walk_n
+                        np.minimum.at(low_state, geo.node_space[walk], state[walk])
+                        np.maximum.at(high_state, geo.node_space[walk], state[walk])
+                        np.logical_or.at(active, geo.node_space[walk], np.isin(state[walk], (A_ACTIVE, B_ACTIVE, CONTESTED_ACTIVE)))
+                        code = np.where(low_state == high_state, low_state, np.where(active, CONTESTED_ACTIVE, CONTESTED))
+                        grid = geo.space_grid
+                        selected = geo.space_walk[grid]
+                        parent = np.arange(GRID*GRID).reshape(GRID, GRID).repeat(2, 0).repeat(2, 1)
+                        columns = np.searchsorted(walk_cells, parent[selected])
+                        np.add.at(sec.totals, (code[grid[selected]], columns), overlap / 4)
+                    else:
+                        np.add.at(sec.totals, (cells_now, cols), overlap)
     missing = dict(rnd.missing)
+    if geo.movement_only:
+        missing['local rope walking floors; terrain sight uses 2D fallback'] = 1
     for case, count in runner.unknown.ignored.items():
         missing[f"utility knowledge ignored: {case}"] = count
+    sight_cache = getattr(geo, '_feature_sight_cache', None)
+    if sight_cache is not None:
+        sight_cache.persist()
     return RoundControl(blob.get("round"), blob.get("map", geo.name), times, weights, walk_cells, states, control,
                         control_masks, coverage_masks, sections, players, redundant, dict(rnd.group_side), cell_m2,
                         missing, {**timings, "branches": dict(branches)}, cf_check,
                         knew_states=knew_states or None, unknown=unknown_masks, analytic=analytic, reasons=reasons,
+                        map_features=rnd.map_features.metadata(blob),
                         knew_sightings={side: {s: runs for s, runs in kn.sightings.items()}
                                         for side, kn in know.items()} or None)
 
 
 def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, players: dict, cell_m2: float,
-                  already: dict | None = None) -> None:
+                  already: dict | None = None, *, node_area=None) -> None:
     """Space taken (the plan's stretch stat; docs/map-control-space-taken-impl.md): cells that were the
     enemy's or nobody's at the previous tick and are the team's now, shared evenly among the team's
     players whose coverage (active, passive or own utility) includes them at this tick. Ground that
@@ -3048,7 +3135,8 @@ def _credit_taken(tick: Tick, cov: dict, prev: np.ndarray, state: np.ndarray, pl
                 mine &= ~done
                 done |= mine
             if mine.any():
-                players[h.slot].taken_m2 += float((1.0 / count[mine]).sum()) * cell_m2
+                weights = 1. if node_area is None else node_area[mine]
+                players[h.slot].taken_m2 += float((weights / count[mine]).sum()) * cell_m2
 
 
 def _lost(state: np.ndarray, cf_state: np.ndarray, side: str, drop: np.ndarray, last: bool, owned: float,
@@ -3056,18 +3144,18 @@ def _lost(state: np.ndarray, cf_state: np.ndarray, side: str, drop: np.ndarray, 
     """Lost control at a real death: what the team lost, by the level it held and where it went."""
     lost = drop > 0
     lv = level_of(state, side)
-    by_level = {name: float((lost & (lv == code)).sum()) * cell_m2
+    by_level = {name: rnd.geo.area(lost & (lv == code)) * cell_m2
                 for name, code in (("active", 3), ("safe", 2), ("passive", 1))}
-    by_level["not_held"] = float((lost & (lv == 0)).sum()) * cell_m2
+    by_level["not_held"] = rnd.geo.area(lost & (lv == 0)) * cell_m2
     theirs = score(cf_state, side) < 0
     contested = (cf_state == CONTESTED) | (cf_state == CONTESTED_ACTIVE)
     if last:  # Q63: the enemy's gain doesn't count, so what the last player held goes to nobody
-        went = {"enemy": 0.0, "contested": 0.0, "nobody": float(lost.sum()) * cell_m2}
+        went = {"enemy": 0.0, "contested": 0.0, "nobody": rnd.geo.area(lost) * cell_m2}
     else:
-        went = {"enemy": float((lost & theirs).sum()) * cell_m2,
-                "contested": float((lost & contested).sum()) * cell_m2,
-                "nobody": float((lost & ~theirs & ~contested).sum()) * cell_m2}
-    value = float(drop.sum()) * cell_m2
+        went = {"enemy": rnd.geo.area(lost & theirs) * cell_m2,
+                "contested": rnd.geo.area(lost & contested) * cell_m2,
+                "nobody": rnd.geo.area(lost & ~theirs & ~contested) * cell_m2}
+    value = rnd.geo.area(drop) * cell_m2
     return {"t": round(t_death, 3), "live": rnd.t_start <= t_death <= rnd.t_decided,
             "control_m2": round(value, 1),
             "share_of_team": round(value / (owned * cell_m2), 4) if owned > 0 else None,

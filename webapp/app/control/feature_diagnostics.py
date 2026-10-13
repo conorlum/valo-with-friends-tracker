@@ -8,6 +8,8 @@ def diagnose_features(geo, source_snapshot, previous=None, *, consumers=None):
     versions = fi.CONSUMER_VERSIONS if consumers is None else consumers
     entry = fi._entry(source_snapshot)
     mf = schema.without_floor_selectors(entry.get('map_features') or schema.empty())
+    from app.control.feature_geometry import prepare
+    geo = prepare(geo, mf)
     catalogue, raw_sha, _ = fi.diagnostic_identity(source_snapshot)
     legacy = compiler.legacy_masks(entry)
     statuses = compiler.bundle_status(geo, mf, legacy, frozenset(versions))
