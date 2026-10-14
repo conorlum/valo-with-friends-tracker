@@ -157,6 +157,7 @@ class Archive:
         self.log = log
         self.lock = threading.RLock()
         self.boot_id = uuid.uuid4().hex
+        self.held_bytes = lambda: 0   # the server's held uploads (in jobs/), which the archive must leave room for
         self.jobs = self.root / "jobs"
         self.pending = self.root / "pending"
         self.files = self.root / "archive"
@@ -196,7 +197,8 @@ class Archive:
         return _tree_bytes(self.attempts)
 
     def budget(self) -> int:
-        return self.total - self.parse_reserve - ARCHIVE_SLACK - self.pending_bytes() - self.receipt_bytes()
+        return (self.total - self.parse_reserve - ARCHIVE_SLACK - self.pending_bytes() - self.receipt_bytes()
+                - self.held_bytes())
 
     def intake_ok(self, size: int) -> bool:
         """Room for one more upload: what jobs/, pending/ and attempts/ hold plus it must leave the running

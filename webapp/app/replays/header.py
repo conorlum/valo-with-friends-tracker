@@ -120,6 +120,19 @@ def read_header(path: Path) -> Header:
         return parse_header(handle.read(MAX_HEADER_BYTES))
 
 
+GAME_BUILD = re.compile(rb"\+\+Ares-Core\+release-(?:china-)?[0-9]{1,3}\.[0-9]{1,3}")
+GAME_BUILD_BYTES = 64 * 1024   # the replay header chunk that names the branch; 13.08 files have it before byte 4096
+
+
+def game_build(path: Path) -> str | None:
+    """The game branch the file was recorded on ("++Ares-Core+release-13.08"), as upstream's ReplayVersion.Branch
+    names it, or None when the start of the file doesn't name one. Read before any parse, so an upload from a patch
+    the pinned parser doesn't support can be told apart from a parse that failed."""
+    with path.open("rb") as handle:
+        found = GAME_BUILD.search(handle.read(GAME_BUILD_BYTES))
+    return found.group(0).decode("ascii") if found else None
+
+
 def ascii_copies(path: Path, match_uuid: str) -> int:
     """How many times the header's UUID appears in ASCII in the file (any case)."""
     needle = match_uuid.lower().encode("ascii")

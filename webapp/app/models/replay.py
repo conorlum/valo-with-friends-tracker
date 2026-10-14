@@ -238,7 +238,7 @@ class ReplayPlayer(Base):
 class ReplayUpload(Base):
     __tablename__ = "replay_uploads"
     __table_args__ = (
-        CheckConstraint("status IN ('queued', 'parsing', 'stored', 'failed')", name="ck_replay_uploads_status"),
+        CheckConstraint("status IN ('queued', 'parsing', 'held', 'stored', 'failed')", name="ck_replay_uploads_status"),
     )
 
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)

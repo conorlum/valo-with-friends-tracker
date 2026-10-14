@@ -35,6 +35,12 @@ if mode == "hang":
     time.sleep(120)
 if mode == "fail":
     sys.exit(1)
+if mode == "fail-loud":
+    print("[INF] Reading replay.")
+    print("[ERR] Failed to parse replay.")
+    print("Replay.Models.Errors.InvalidReplayInfoException: no payload transform for this branch")
+    print("   at Replay.Valorant.ValorantReplayReader.Read(Stream stream)")
+    sys.exit(1)
 data = open(vrf, "rb").read()
 match = SyntheticMatch(shape="swiftplay", vrf_bytes=data)
 if mode == "wrong-hash":

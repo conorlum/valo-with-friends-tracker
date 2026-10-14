@@ -14,13 +14,36 @@ web-service side are Stage 3's PR.
 | Request | Answer |
 | --- | --- |
 | `POST /jobs` (body: the `.vrf` bytes) | `202 {"id", "status": "queued"}`; `400` not a replay (magic), `411` no length, `413` over the size cap, `503` queue full |
-| `GET /jobs/{id}` | `{"id", "status", "error"?, "result"?, "parse_seconds"?}`; `status` is `queued`, `parsing`, `done` or `failed` |
+| `GET /jobs/{id}` | `{"id", "status", "error"?, "detail"?, "game_build"?, "result"?, "parse_seconds"?}`; `status` is `queued`, `parsing`, `held`, `done` or `failed` |
 | `GET /health` | `{"ok": true, "queued", "limits", "recipe", "control": {...}, "archive": {...}, "idle", "heights": {...}}`; `recipe` is what a parse here stamps (null if it can't be read); `idle` and `heights` are under "Height builds" |
 
 `result` holds `match_uuid` (from the file's header, never its name), `map_name`, `game_branch`,
 `source_sha256`, `recipe`, `hz`, `round_count`, `rounds` (`{"n": base64 of the gzipped JSON v1 blob}`),
 `players`, `link_inputs` and a small report. A failed job's `error` is a short user-facing reason:
-`parse timed out`, `parse failed`, or `not condensable: <reason>`.
+`parse timed out`, `parse failed`, `not condensable: <reason>`, or one naming an unsupported game version (below).
+After `parse failed`, `detail` holds the parser's last few lines of output (stack frames left out, at most 300
+characters), when it wrote any; the output itself is deleted with the job.
+
+## Unsupported game versions (held uploads)
+
+Every Valorant patch changes how replay data is scrambled, and the pinned parser reads only the builds listed in
+`supported_replay_builds` (`webapp/replay_parser.json`). The game build is in the first few KB of the
+file (`app/replays/header.py`, `game_build`), so the worker reads it before any parse:
+
+- **Supported, or no build found**: parsed as always.
+- **Unsupported, archive on**: the job is `held`. The file stays in its job folder, the job's `error` says which
+  version and that it is kept, and nothing is parsed. Held files count against the archive's budget (it evicts
+  to make room) and together are capped at 10 GB (`HELD_MAX_BYTES`); one past the cap fails as below.
+- **Unsupported, archive off**: the job fails at once, telling the uploader to keep the file.
+- **After a parser update**: when an image whose pin lists the build starts, its held jobs are parsed one at a
+  time under their own job ids, only while no upload or reparse waits, so held files never fill the queue. From
+  there each is an ordinary upload: the web app's poll stores it and acks it into the archive.
+- **Never supported**: a job held for 60 days (`HELD_TTL_S`) fails and its file is deleted.
+
+`/health`'s `archive` block gains `held`, `held_bytes` and `held_builds`. The web app shows a held upload as
+"waiting for a parser update", never times it out and doesn't count it in a session's batch
+(`webapp/app/services/replay_upload.py`, `HELD`). Tests: `webapp/tests/replays/test_replay_worker_held.py` and
+`test_replay_upload_held.py`.
 
 ## Behaviour
 

@@ -4,9 +4,13 @@ Standard library only. It holds no DB credentials and no secrets; it only parses
 web service streams an uploaded file to it over Render's private network and polls for the
 result, then stores and links it itself (docs/replay-viewer-plan.md, "Upload").
 
-    POST /jobs        body: the .vrf bytes. 202 {"id", "status": "queued"}; 400 not a replay,
+    POST /jobs        body: the .vrf bytes. 202 {"id", "status": "queued" (or "held"/"failed", below)}; 400 not a replay,
                       411 no length, 413 over the size cap, 503 the queue is full.
-    GET  /jobs/{id}   {"id", "status": "queued" | "parsing" | "done" | "failed", "error"?, "result"?}
+    GET  /jobs/{id}   {"id", "status": "queued" | "parsing" | "held" | "done" | "failed", "error"?, "result"?,
+                      "detail"? (the parser's last lines when a parse failed), "game_build"? (held uploads)}
+                      "held": recorded on a game build the pinned parser doesn't support (read from the file's
+                      header before any parse). Archive on only; parsed under the same id once an image whose
+                      parser supports the build starts. Archive off, or over HELD_MAX_BYTES, it fails at once.
     GET  /health      {"ok": true, "queued", "limits", "recipe" (what a parse here stamps; null if unknown),
                        "control": {"enabled", "gaps_protocol", "queued", "running", "warm", "preempted"},
                        "archive": {"enabled", ..., "reparse_protocol" (archive on only)},
@@ -152,7 +156,8 @@ if str(WEBAPP) not in sys.path:
     sys.path.insert(0, str(WEBAPP))
 
 from app.replays.condense import condense_export_dir  # noqa: E402
-from app.replays.contract import ContractError, current_recipe  # noqa: E402
+from app.replays.contract import ContractError, current_recipe, load_pin  # noqa: E402
+from app.replays.header import game_build  # noqa: E402
 
 try:  # run as `python -m replay_worker.server` (the container) or imported by the tests
     from replay_worker import archive as archive_store  # noqa: E402
@@ -166,6 +171,38 @@ FINISHED_KEPT = 50  # finished jobs whose results stay readable (oldest dropped 
 # User-facing reasons (the web service shows them as they are).
 REASON_TIMEOUT = "parse timed out"
 REASON_PARSE = "parse failed"
+
+# An upload recorded on a game build the pinned parser doesn't list (replay_parser.json) is never parsed: with the
+# archive on it is held on the disk as status "held" under the same job id, and parsed once an image whose parser
+# supports the build starts (a held job runs only when no upload or reparse waits). With the archive off it fails
+# at once. Held files count against the archive's budget and are capped here.
+HELD_MAX_BYTES = 10 * 1024 ** 3
+HELD_TTL_S = 60 * 86400
+DETAIL_MAX_CHARS = 300   # the parser's last words on a failed parse, kept as the job's `detail`
+
+
+def _version(build: str) -> str:
+    """"++Ares-Core+release-13.08" as people say it: "13.08"."""
+    return build.rsplit("release-", 1)[-1]
+
+
+def held_reason(build: str) -> str:
+    return (f"recorded on game version {_version(build)}, which the replay parser doesn't support yet: the file is "
+            f"kept and will be parsed when the parser is updated")
+
+
+def parser_detail(log: Path) -> str | None:
+    """The last few lines the parser wrote, without stack frames, for a failed parse: None when it wrote nothing."""
+    try:
+        with log.open("rb") as handle:
+            handle.seek(max(0, log.stat().st_size - 8192))
+            text = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = [re.sub(r"\x1b\[[0-9;]*m", "", line).strip() for line in text.splitlines()]
+    lines = [line for line in lines if line and not line.startswith(("at ", "---"))]
+    detail = " | ".join(lines[-3:])
+    return detail[-DETAIL_MAX_CHARS:] or None
 
 
 @dataclass
@@ -199,6 +236,7 @@ class Settings:
     archive_dir: Path | None = None
     archive_require_mount: bool = True
     archive_total_bytes: int | None = None  # tests only; the disk's own size otherwise
+    supported_builds: frozenset | None = None  # tests only; the pin's supported_replay_builds otherwise
 
     @classmethod
     def from_env(cls, env=os.environ) -> "Settings":
@@ -249,6 +287,9 @@ class Job:
     match_uuid: str | None = None   # known once parsed (a reparse knows it from the start)
     map: str | None = None
     attempt_id: str | None = None   # a reparse the automatic queue asked for (its receipt names this job)
+    game_build: str | None = None   # set only for an upload from a build the parser doesn't support (held)
+    detail: str | None = None       # the parser's own last lines when a parse failed
+    released: bool = False          # a held job taken straight to the parse thread, not from a queue (not saved)
 
     def public(self) -> dict:
         body = {"id": self.id, "status": self.status}
@@ -256,6 +297,10 @@ class Job:
             body["kind"] = self.kind
         if self.error:
             body["error"] = self.error
+        if self.detail:
+            body["detail"] = self.detail
+        if self.game_build:
+            body["game_build"] = self.game_build
         if self.result is not None:
             body["result"] = self.result
         if self.parse_seconds is not None:
@@ -323,6 +368,12 @@ class Worker:
         except Exception:  # noqa: BLE001 - a worker that can't name its recipe still parses uploads
             traceback.print_exc()
             self.recipe = None
+        self.supported_builds = settings.supported_builds
+        if self.supported_builds is None:
+            try:
+                self.supported_builds = load_pin().supported_builds
+            except Exception:  # noqa: BLE001 - without the list nothing is held: every upload is parsed as before
+                traceback.print_exc()
         self.archive, self.archive_reason = None, "REPLAY_ARCHIVE_DIR is not set"
         if settings.archive_dir is not None:
             self.archive, self.archive_reason = archive_store.open_archive(
@@ -331,6 +382,8 @@ class Worker:
                 queue_size=settings.queue_size, log=_log)
             if self.archive is None:
                 _log(f"archive off: {self.archive_reason}")
+            else:
+                self.archive.held_bytes = self.held_bytes
         self.last_sweep = 0.0
         if self.archive is not None:
             self._recover()
@@ -347,7 +400,14 @@ class Worker:
     def archive_status(self) -> dict:
         if self.archive is None:
             return {"enabled": False, "reason": self.archive_reason}
-        return self.archive.status()
+        with self.lock:
+            held = [j.game_build for j in self.jobs.values() if j.status == "held"]
+        return {**self.archive.status(), "held": len(held), "held_bytes": self.held_bytes(),
+                "held_builds": sorted(set(held))}
+
+    def held_bytes(self) -> int:
+        with self.lock:
+            return sum(j.size for j in self.jobs.values() if j.status == "held")
 
     def idle(self) -> bool:
         """No parse running and none waiting: map control may use its whole pool; otherwise one child.
@@ -377,14 +437,48 @@ class Worker:
             folder.mkdir(parents=True)
             (folder / "upload.vrf").write_bytes(body)
             job = Job(job_id, folder, hashlib.sha256(body).hexdigest(), len(body))
-            self._save(job)
-            try:
-                self.queue.put_nowait(job)
-            except queue.Full:
-                shutil.rmtree(folder, ignore_errors=True)
-                raise
+            job.game_build = self._unsupported_build(folder / "upload.vrf")
+            if job.game_build is not None:
+                self._hold(job)
+            else:
+                self._save(job)
+                try:
+                    self.queue.put_nowait(job)
+                except queue.Full:
+                    shutil.rmtree(folder, ignore_errors=True)
+                    raise
+        if job.status != "queued":
+            with self.lock:
+                self.jobs[job.id] = job
+            return job
         self._admitted(job)
         return job
+
+    def _unsupported_build(self, vrf: Path) -> str | None:
+        """The file's game build when the parser is known not to support it, else None (supported, or unknown)."""
+        if not self.supported_builds:
+            return None
+        try:
+            build = game_build(vrf)
+        except OSError:
+            return None
+        return build if build is not None and build not in self.supported_builds else None
+
+    def _hold(self, job: Job) -> None:
+        """Keeps an upload the parser can't read yet (archive on, under the cap), else fails it without a parse."""
+        version = _version(job.game_build)
+        if self.archive is not None and self.held_bytes() + job.size <= HELD_MAX_BYTES:
+            job.status, job.error = "held", held_reason(job.game_build)
+            _log(f"job {job.id} held: {job.game_build} is not supported by the pinned parser")
+        else:
+            job.status, job.finished = "failed", time.time()
+            job.error = (f"recorded on game version {version}, which the replay parser doesn't support yet: keep the "
+                         f"file and upload it again when the parser is updated")
+            if self.archive is None:
+                shutil.rmtree(job.folder, ignore_errors=True)
+            else:
+                (job.folder / "upload.vrf").unlink(missing_ok=True)
+        self._save(job)
 
     def _admitted(self, job: Job) -> None:
         """A job that is in its queue: tell map control, make it readable, wake the parse thread."""
@@ -624,7 +718,7 @@ class Worker:
         else:  # forgotten from memory (FINISHED_KEPT) or from before a restart: its record on disk
             folder = self.archive.jobs / job_id
             record = archive_store.read_json(folder / "job.json", None) if job_id.isalnum() else None
-        if record is not None and record.get("status") in ("queued", "parsing"):
+        if record is not None and record.get("status") in ("queued", "parsing", "held"):
             return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "the job isn't finished; ack it again later"}
         meta = None
         if record is not None and record.get("status") == "done":
@@ -634,7 +728,8 @@ class Worker:
     # -------------------------------------------------------------- the job
 
     def _next(self) -> Job:
-        """Uploads first, then reparses. With the archive off, exactly the old blocking get."""
+        """Uploads first, then reparses, then a held upload the parser now supports. With the archive off,
+        exactly the old blocking get."""
         if self.archive is None:
             job = self.queue.get()
             self.parsing = True
@@ -647,10 +742,29 @@ class Worker:
                     return job
                 except queue.Empty:
                     pass
+            job = self._release_held()
+            if job is not None:
+                self.parsing = True
+                return job
             if time.time() - self.last_sweep > self.SWEEP_EVERY_S:
                 self._sweep()
             self.wake.wait(timeout=1.0)
             self.wake.clear()
+
+    def _release_held(self) -> Job | None:
+        """The oldest held upload whose build this parser supports, now queued; None when there is none. Held
+        jobs never sit in a queue, so however many there are, new uploads are never turned away for them."""
+        with self.lock:
+            ready = sorted((j for j in self.jobs.values()
+                            if j.status == "held" and j.game_build in (self.supported_builds or ())),
+                           key=lambda j: j.created)
+        if not ready:
+            return None
+        job = ready[0]
+        job.status, job.error, job.released = "queued", None, True
+        self._save(job)
+        _log(f"job {job.id} released: the parser now supports {job.game_build}")
+        return job
 
     def _run(self) -> None:
         while True:
@@ -681,7 +795,8 @@ class Worker:
                 job.status = status
                 self._save(job)
                 self._forget_old()
-                (self.queue if job.kind == "upload" else self.reparse_queue).task_done()
+                if not job.released:
+                    (self.queue if job.kind == "upload" else self.reparse_queue).task_done()
                 self.parsing = False
 
     def _settle(self, job: Job, status: str, result: dict | None) -> None:
@@ -704,21 +819,28 @@ class Worker:
         out = job.folder / "export"
         command = [part.replace("{vrf}", str(vrf)).replace("{out}", str(out)) for part in self.settings.parser_cmd]
         started = time.perf_counter()
-        kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "cwd": str(job.folder),
-                  "env": {**os.environ, "VALO_MAP_AUDIT_RAW": "1"}}
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            kwargs["preexec_fn"] = _limit_memory(self.settings.memory_cap_mb)
-        process = subprocess.Popen(command, **kwargs)
+        # The parser's own output goes to a file in the job folder, read back only if the parse fails.
+        log = job.folder / "parser.log"
         try:
-            code = process.wait(timeout=self.settings.timeout_s)
-        except subprocess.TimeoutExpired:
-            kill_tree(process)
-            raise _JobFailed(REASON_TIMEOUT)
-        job.parse_seconds = round(time.perf_counter() - started, 1)
-        if code != 0 or not (out / "manifest.json").exists():
-            raise _JobFailed(REASON_PARSE)
+            with log.open("wb") as output:
+                kwargs = {"stdout": output, "stderr": subprocess.STDOUT, "cwd": str(job.folder),
+                          "env": {**os.environ, "VALO_MAP_AUDIT_RAW": "1"}}
+                if os.name == "nt":
+                    kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                else:
+                    kwargs["preexec_fn"] = _limit_memory(self.settings.memory_cap_mb)
+                process = subprocess.Popen(command, **kwargs)
+                try:
+                    code = process.wait(timeout=self.settings.timeout_s)
+                except subprocess.TimeoutExpired:
+                    kill_tree(process)
+                    raise _JobFailed(REASON_TIMEOUT)
+            job.parse_seconds = round(time.perf_counter() - started, 1)
+            if code != 0 or not (out / "manifest.json").exists():
+                job.detail = parser_detail(log)
+                raise _JobFailed(REASON_PARSE)
+        finally:
+            log.unlink(missing_ok=True)
         build = None
         if self.settings.parser_build is not None:
             build = json.loads(self.settings.parser_build.read_text(encoding="utf-8-sig"))
@@ -777,6 +899,9 @@ class Worker:
                   "parse_seconds": job.parse_seconds, "match_uuid": job.match_uuid, "map": job.map}
         if job.attempt_id:
             record["attempt_id"] = job.attempt_id
+        for key in ("game_build", "detail"):
+            if getattr(job, key):
+                record[key] = getattr(job, key)
         try:
             archive_store.write_json(job.folder / "job.json", record)
         except OSError:
@@ -808,9 +933,19 @@ class Worker:
                       error=record.get("error"), created=record.get("created") or time.time(),
                       finished=record.get("finished"), parse_seconds=record.get("parse_seconds"),
                       kind=record.get("kind") or "upload", match_uuid=record.get("match_uuid"), map=record.get("map"),
-                      attempt_id=record.get("attempt_id"))
+                      attempt_id=record.get("attempt_id"), game_build=record.get("game_build"),
+                      detail=record.get("detail"))
             shutil.rmtree(folder / "export", ignore_errors=True)
-            if job.status in ("queued", "parsing"):
+            if job.status == "held":
+                if not (folder / "upload.vrf").exists():
+                    job.status, job.finished = "failed", time.time()
+                    job.error = "the kept file is gone from the worker: please upload it again"
+                    self._save(job)
+            elif job.game_build and job.status in ("queued", "parsing"):
+                # A held job released just before the restart: held again, released by _next when its turn comes.
+                job.status, job.error = "held", held_reason(job.game_build)
+                self._save(job)
+            elif job.status in ("queued", "parsing"):
                 job.status = "queued"
                 target = self.queue if job.kind == "upload" else self.reparse_queue
                 try:
@@ -827,8 +962,10 @@ class Worker:
                     job.status, job.error = "failed", REASON_PARSE
             with self.lock:
                 self.jobs[job.id] = job
+        with self.lock:
+            held = sum(j.status == "held" for j in self.jobs.values())
         _log(f"archive on: recovered {len(records)} job(s); {self.queue.qsize()} upload(s) and "
-             f"{self.reparse_queue.qsize()} reparse(s) queued again")
+             f"{self.reparse_queue.qsize()} reparse(s) queued again, {held} held for an unsupported game build")
         self._sweep()
 
     def _sweep(self) -> None:
@@ -836,6 +973,15 @@ class Worker:
         self.last_sweep = time.time()
         try:
             self.archive.sweep()
+            with self.lock:
+                expired = [j for j in self.jobs.values() if j.status == "held" and j.created < time.time() - HELD_TTL_S]
+            for job in expired:
+                (job.folder / "upload.vrf").unlink(missing_ok=True)
+                job.status, job.finished = "failed", time.time()
+                job.error = (f"recorded on game version {_version(job.game_build)}: the replay parser still didn't "
+                             f"support it after {HELD_TTL_S // 86400} days, so the kept file was deleted")
+                self._save(job)
+                _log(f"job {job.id} was held for {HELD_TTL_S // 86400} days; its file is deleted")
             cutoff = time.time() - archive_store.UNCOLLECTED_TTL_S
             with self.lock:
                 stale = [j for j in self.jobs.values() if j.finished and j.finished < cutoff]
