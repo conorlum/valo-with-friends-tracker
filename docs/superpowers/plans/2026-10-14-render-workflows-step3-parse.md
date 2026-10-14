@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - The `parse` task: plan `flex` (D7), `Retry(max_retries=0)` (D9). The parser keeps its own 240 s timeout (`REPLAY_TIMEOUT_S`) inside the run; the run as a whole (download, parse, condense, post) gets `REPLAY_PARSE_RUN_TIMEOUT_S` = 1200 s, the site's `STUCK_AFTER` (20 min). The task's `timeout_seconds` is 1260.
-- `REPLAY_PARSE_PARALLEL` = 15 and `REPLAY_QUEUE_SIZE` = 15 (spec D15), so the worker admits and runs 15 at once. The site's per-uploader `MAX_UNFINISHED` (5) is unchanged. With 15 parses and 40 control rounds wanting to start together, the 40/min start limit spreads them over about a minute and a half.
+- `REPLAY_PARSE_PARALLEL` = 15 and `REPLAY_QUEUE_SIZE` = 15 (spec D15), so the worker admits and runs 15 at once. The site's per-uploader `MAX_UNFINISHED` goes from 5 to 10 (Task 4).
 - Deploy skew (D11): a run whose `current_recipe()` differs from the worker's answers `error_kind: "deploy"`; the worker waits 60 s and starts a new run, at most 10 times.
 - The site, the receipts and the archive behave exactly as today; a job's outcomes and user-facing reasons are unchanged (`parse timed out`, `parse failed`, `not condensable: <reason>`, `the archived file is another match`).
 - `REPLAY_PARSE_RUNNER` stays `local` in `render.yaml` at merge.
@@ -698,10 +698,31 @@ git commit -m "replay worker: parses as workflow runs, five at once, reconnectin
 
 ---
 
-### Task 4: Settings on Render and the switch-over
+### Task 4: Ten uploads per uploader, settings on Render, and the switch-over
 
 **Files:**
-- Modify: `render.yaml`, `replay_worker/README.md`, `webapp/RENDER_DEPLOY.md`
+- Modify: `webapp/app/services/replay_upload.py`, `render.yaml`, `replay_worker/README.md`, `webapp/RENDER_DEPLOY.md`
+- Test: `webapp/tests/replays/test_replay_upload.py`, `webapp/tests/replays/test_replay_upload_held.py` (unchanged; they read the constant)
+
+- [ ] **Step 0: Ten uploads per uploader (spec D15)**
+
+In `replay_upload.py`:
+
+```python
+MAX_UNFINISHED = 10  # a batch: one session's uploads in progress at once (spec 2026-10-14, D15); the worker admits 15
+```
+
+The upload page (`max_files` in `routers/replays.py` and `templates/replays/upload.html`) and the limit's
+message both read this constant. The comment above `QUEUED_STUCK_AFTER` says "a batch of MAX_UNFINISHED at the
+cap is several parses": it still holds.
+
+Run: `.\.venv\Scripts\python.exe -m pytest tests/replays/test_replay_upload.py tests/replays/test_replay_upload_held.py -q`
+Expected: all pass.
+
+```bash
+git add webapp/app/services/replay_upload.py
+git commit -m "uploads: ten in progress per uploader"
+```
 
 - [ ] **Step 1: `render.yaml`** (on `replay-worker`; `REPLAY_PARSE_RUNNER` stays `local`)
 
@@ -726,8 +747,8 @@ them one at a time, as today, which the site already tolerates (its `QUEUED_STUC
 
 1. Note today's `parse_seconds` for three recent uploads (the job page's report, or `/admin` → replays).
 2. `replay-worker` → Environment → `REPLAY_PARSE_RUNNER=workflow` → save.
-3. Upload several replays at once (up to 15, from more than one browser session: one session's batch is 5): the
-   workflow's Runs page shows that many `parse` runs running together.
+3. Upload 10 replays at once from one browser session (its batch), and a few more from a second one: the
+   workflow's Runs page shows up to 15 `parse` runs running together.
 4. Restart test: upload one, and while its run is running, `replay-worker` → Manual Deploy → Restart. The upload
    still finishes, and the Runs page shows one `parse` run for it, not two.
 5. Compare `parse_seconds` with step 1's. If clearly slower, change the `parse` task's plan to `2c-4g` in

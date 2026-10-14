@@ -13,7 +13,7 @@ Render's docs: https://render.com/docs/workflows (and `-defining`, `-running`, `
 | O1 | Move upload parsing, map control and height builds to Render Workflows, for speed. |
 | O2 | The number of map-control runs is tunable. For now: one match at a time, and at most 40 runs. |
 | O3 | Keep the replay worker's disk rather than adding object storage (no outside account, no early-access product). |
-| O4 | Up to 15 parses at once. |
+| O4 | Up to 15 parses at once; one uploader may have 10 in progress. |
 | O5 | A map's height build starts as soon as it is due (no waiting for the worker to be idle); the limit is how many builds run at once. |
 
 ## Decisions
@@ -29,11 +29,11 @@ Render's docs: https://render.com/docs/workflows (and `-defining`, `-running`, `
 | D7 | **Machine size: every task on `flex`** (up to 1 CPU, up to 4 GB). Control and height children are single-threaded and capped at 2 GB today. Parse is compared against today's `parse_seconds` after the switch and moved to `2c-4g` only if clearly slower. | The owner's choice; nothing here uses a second core that we know of. |
 | D8 | **Timeouts as today**: parse 240 s, control 1800 s, heights 3600 s (`timeout_seconds` on each task; the worker keeps its own deadline too). | Same limits, same failure reasons. |
 | D9 | **Retries**: parse 0 (the worker decides), control 1, heights 0 (the site resends builds). | A parse must never run twice for one attempt id. |
-| D10 | **The start rate is limited** by `REPLAY_TASK_STARTS_PER_MIN` (40). A 429 means wait and start again; it is never a failure. | Render limits root-level run starts per workspace (50/min on Hobby). |
+| D10 | **Starts are not throttled in practice**: `REPLAY_TASK_STARTS_PER_MIN` defaults to 1000, a safety valve only. A 429 still means wait and start again; it is never a failure. | The owner's workspace tier allows far more root-level starts than this site makes (2026-10-14). |
 | D11 | **Deploy skew**: the worker passes its parser recipe to every parse run (control results already carry revisions the site checks). A parse run whose image has another recipe refuses with `error_kind: "deploy"`; the worker puts the job back and tries again after 60 s, within the job's existing stuck deadline. | The worker and the workflow deploy separately. |
 | D12 | **Runs never touch the database.** The workflow service gets only the worker's address. | The worker was designed with no DB credentials; keep it. |
 | D13 | **The worker calls Render's REST API with the standard library** (`urllib`), like the rest of `server.py`. The workflow image uses the `render` SDK (`render>=1.0.1`) for task definitions only. | `server.py` is standard library only. |
-| D15 | **Parses: 15 at once** (`REPLAY_PARSE_PARALLEL=15`, and the worker's queue `REPLAY_QUEUE_SIZE=15` so it admits that many). The site's per-uploader batch (`MAX_UNFINISHED`, 5) is unchanged: 15 is reached by several friends uploading together. | O4. |
+| D15 | **Parses: 15 at once** (`REPLAY_PARSE_PARALLEL=15`, and the worker's queue `REPLAY_QUEUE_SIZE=15` so it admits that many). The site's per-uploader batch (`MAX_UNFINISHED`) goes from 5 to 10. | O4; the owner's choice, 2026-10-14. |
 | D16 | **Height builds: the unit is one map** (all of that map's stored rounds → its heights). On the site, `HeightState.build` becomes `builds` (one per map, keyed by input manifest), and `HEIGHTS_MAX_BUILDS` (4) caps how many are open at once; a due map starts as soon as there is room. On the worker, `HEIGHT_COLLECTING_MAX` becomes `REPLAY_HEIGHT_BUILDS_MAX` (4) and the spool cap `REPLAY_HEIGHT_SPOOL_BYTES` (2 GiB), with the spool on the disk inside the reserve. With builds on Workflows, `/health`'s `idle` reads true, so nothing waits for parses. | O5. A map is due only after 5 new matches, so usually 0-1 are due; a rules or masks change makes every map due at once, and the cap keeps that from opening a dozen spools. |
 | D14 | **Step 5 slims the worker** but keeps the control venv for feature verification (`verify_feature_upload`, a short synchronous child). Moving that to a task is out of scope. | Keep step 5 small. |
 

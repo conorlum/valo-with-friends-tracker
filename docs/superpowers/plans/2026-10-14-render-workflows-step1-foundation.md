@@ -14,7 +14,7 @@
 
 - `replay_worker/` stays standard library only (D13). The SDK is installed only in the image's control venv and imported only by `replay_tasks/main.py`.
 - Render REST API (read from the SDK's generated client, render 1.0.1): base `https://api.render.com/v1`; `POST /task-runs` body `{"task": "<workflow-slug>/<task>", "input": [args]}`; `GET /task-runs/{id}`; `DELETE /task-runs/{id}` (cancel); `GET /task-runs?taskSlug=&limit=&cursor=` returning `[{"taskRun": {...}, "cursor"}]`; header `Authorization: Bearer <key>`. Run fields: `id` (`trn-...`), `status` in `pending | running | paused | completed | succeeded | failed | canceled`.
-- `REPLAY_TASK_STARTS_PER_MIN` defaults to 40 (D10). A 429 is never a failure.
+- `REPLAY_TASK_STARTS_PER_MIN` defaults to 1000, a safety valve only (D10). A 429 is never a failure.
 - Runs never touch the database (D12). The workflow service has only `REPLAY_WORKER_URL`.
 - Each kind's switch (`REPLAY_PARSE_RUNNER`, `REPLAY_CONTROL_RUNNER`, `REPLAY_HEIGHTS_RUNNER`) is `local` by default and stays `local` in this step.
 - Every run route streams in 1 MB chunks; nothing holds a whole file in memory.
@@ -24,7 +24,7 @@
 
 - A result posted twice, or by a run whose token is wrong, must change nothing (`409`) — a Render retry must never overwrite the first answer.
 - A run that dies on Render without posting must settle (as `infra`) within reconcile interval + grace, not hang its caller until the deadline.
-- A 429 from Render while starting must delay the start, not fail the job, and must stop retrying at the run's deadline.
+- A 429 from Render while starting must delay the start, not fail the job, and must stop retrying at the run's deadline (rare on the owner's tier, but the handling stays).
 - `REPLAY_*_RUNNER=workflow` without `RENDER_API_KEY` or `REPLAY_WORKFLOW_SLUG` must stop the worker at startup with a clear message, not fail later per job.
 - A request for an input name the run wasn't given (e.g. `../job.json`) must be `404`, never a path outside the run's files.
 
@@ -696,7 +696,7 @@ from replay_worker import server  # noqa: E402
 def test_settings_from_env_defaults_local():
     s = server.Settings.from_env({})
     assert (s.parse_runner, s.control_runner, s.heights_runner) == ("local", "local", "local")
-    assert s.task_starts_per_min == 40 and not s.workflow_wanted()
+    assert s.task_starts_per_min == 1000 and not s.workflow_wanted()
 
 
 def test_settings_refuse_an_unknown_runner():
@@ -792,7 +792,7 @@ Add to `Settings` (after `archive_total_bytes`):
     workflow_slug: str | None = None              # the workflow service's slug, e.g. "replay-tasks"
     render_api_key: str | None = None
     render_api_base: str = runs_mod.API
-    task_starts_per_min: int = 40
+    task_starts_per_min: int = 1000               # a safety valve only (spec D10)
     run_result_max_bytes: int = 1024 ** 3
 
     def workflow_wanted(self) -> bool:
@@ -965,7 +965,7 @@ and to the configuration list:
     REPLAY_PARSE_RUNNER / REPLAY_CONTROL_RUNNER / REPLAY_HEIGHTS_RUNNER   "local" (default) or "workflow"
     REPLAY_WORKFLOW_SLUG     the workflow service's slug (e.g. replay-tasks)
     RENDER_API_KEY           a Render API key (set by hand in the dashboard, never in render.yaml)
-    REPLAY_TASK_STARTS_PER_MIN  run starts per minute (default 40; Render allows 50 root starts/min on Hobby)
+    REPLAY_TASK_STARTS_PER_MIN  run starts per minute (default 1000: a safety valve; a 429 waits and retries)
 ```
 
 - [ ] **Step 7: Run the tests, then the whole worker suite**
@@ -1188,7 +1188,7 @@ In `render.yaml`, under `replay-worker`'s `envVars`, add:
       - key: REPLAY_WORKFLOW_SLUG
         value: replay-tasks
       - key: REPLAY_TASK_STARTS_PER_MIN
-        value: "40"
+        value: "1000"
       - key: REPLAY_PARSE_RUNNER
         value: local
       - key: REPLAY_CONTROL_RUNNER
