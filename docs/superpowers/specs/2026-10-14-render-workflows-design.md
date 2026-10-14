@@ -71,7 +71,12 @@ site ──HTTP (unchanged)──> replay-worker (disk: archive, jobs, control_c
 - **Run routes** (private, like every route there): `GET /runs/{id}/input[/{name}]`, `POST /runs/{id}/result`
   (header `X-Run-Token`), `GET /control_cache/{map}` (a list) and `/control_cache/{map}/{file}`,
   `POST /control_cache/{map}/{file}`. A result with a wrong token, for an unknown run or for a run already
-  settled is refused (`409`) and changes nothing.
+  settled is refused (`409`) and changes nothing. **Every run route streams** from and to disk in chunks (1 MB),
+  never holding a whole file in memory: 40 control runs fetching a 15 MB cache and five parse runs fetching a
+  200 MB `.vrf` at once must keep the worker's memory flat.
+- **Load**: in workflow mode the worker only serves files and keeps records; its CPU and memory use drop
+  well below today's. It stays on `2c-4g` through step 4 (the `local` rollback needs it) and moves to
+  1 CPU / 2 GB in step 5, after checking Render's metrics for the worker during steps 2 and 3.
 - **Reconciliation**: every 60 s, `GET /v1/task-runs` (paged, newest first) for the worker's open runs; a run
   that ended `failed` or `canceled` with no result posted settles as `infra` (control, heights) or as
   `parse failed` (parse). A run past its deadline is cancelled and settles as a timeout.
@@ -103,7 +108,8 @@ site ──HTTP (unchanged)──> replay-worker (disk: archive, jobs, control_c
 | 2 | **Map control on Workflows.** `WorkflowRunner` for control; visibility caches on the disk; the site's two limits. | `REPLAY_CONTROL_RUNNER=workflow` on Render; a new match's rounds computed with byte-identical results to local for a sample; the switch back to `local` still works. |
 | 3 | **Parsing on Workflows.** `WorkflowRunner` for parse with re-attach on restart; the deploy-skew refusal; uploads and automatic re-parses unchanged on the site. | `REPLAY_PARSE_RUNNER=workflow`; five uploads parse in parallel; a restart mid-parse re-attaches; `parse_seconds` compared with today's (D7). |
 | 4 | **Height builds on Workflows.** The spool served as a tar; `WorkflowRunner` for heights. | `REPLAY_HEIGHTS_RUNNER=workflow`; one rebuild accepted by the site's checks. |
-| 5 | **Slim the worker.** Remove `LocalRunner` for parse, control and heights, the preemption and idle code, and the .NET parser from the worker image; smaller plan. Keep the control venv for feature verification (D14). | The worker image has no parser; all three kinds run on Workflows only; the plan in `render.yaml` is smaller. |
+| 5 | **Slim the worker.** Remove `LocalRunner` for parse, control and heights, the preemption and idle code, and the .NET parser from the worker image; `POST /jobs` streams the upload to disk instead of reading it whole;
+1 CPU / 2 GB plan. Keep the control venv for feature verification (D14). | The worker image has no parser; all three kinds run on Workflows only; the plan in `render.yaml` is smaller. |
 
 Each step is its own PR and its own plan. Steps 2-4 merge with their switch `local`; the owner flips it on Render.
 
