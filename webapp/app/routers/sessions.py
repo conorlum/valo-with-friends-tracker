@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.services.coach import coached_external_ids
+from app.services.replay_progress import match_states
 from app.services.replays import watchable_external_ids
 from app.services.auth import get_current_player
 from app.services.friends import list_friend_ids
@@ -67,6 +68,7 @@ def session_detail(
     )
     t4 = time.perf_counter()
 
+    watchable = watchable_external_ids(db, [m.external_id for m in session.matches])
     response = templates.TemplateResponse(
         request,
         "sessions/detail.html",
@@ -76,7 +78,8 @@ def session_detail(
             "matches_by_id": matches_by_id,
             "friends_enabled": friends,
             "other_session_index": other_session_index,
-            "watchable": watchable_external_ids(db, [m.external_id for m in session.matches]),
+            "watchable": watchable,
+            "replay_states": match_states(db, watchable),
             "coached": coached_external_ids(db, [m.external_id for m in session.matches]),
         },
     )

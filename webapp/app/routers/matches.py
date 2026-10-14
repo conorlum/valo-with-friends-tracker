@@ -19,6 +19,7 @@ from app.services.matches import (
 )
 from app.services.economy_graphs import build_pistol_stats, build_tier_matrix, match_econ_rounds, match_econ_samples
 from app.services.player_graphs import build_match_round_win_diagrams
+from app.services.replay_progress import match_states
 from app.services.replays import replay_url_for_match, watchable_external_ids
 from app.templates import templates
 
@@ -36,11 +37,12 @@ def match_list(
     matches = (
         list_matches_for_player(db, current_player.id) if showing_own_matches else list_matches(db)
     )
+    watchable = watchable_external_ids(db, [m.external_id for m in matches])
     return templates.TemplateResponse(
         request,
         "matches/list.html",
         {"matches": matches, "showing_own_matches": showing_own_matches,
-         "watchable": watchable_external_ids(db, [m.external_id for m in matches]),
+         "watchable": watchable, "replay_states": match_states(db, watchable),
          "coached": coached_external_ids(db, [m.external_id for m in matches])},
     )
 

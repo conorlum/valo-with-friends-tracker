@@ -66,6 +66,45 @@ def test_an_older_recipe_needs_a_reparse_before_anything_else(factory, db, linke
     assert steps(progress.compute(db)) == {"reparse": linked.round_count}
 
 
+def test_a_match_is_up_to_date_only_when_every_round_is_done(factory, db, linked, monkeypatch):
+    n, uuid = linked.round_count, str(linked.match_uuid).lower()
+    for r in range(1, n + 1):
+        put_row(db, linked, r)
+        if r > 1:
+            _gap_run(factory, linked, r)
+    db.expire_all()
+    monkeypatch.setattr(progress, "_cached", None)
+    assert progress.match_states(db, [uuid.upper(), "other", None]) == {
+        uuid: {"done": n - 1, "total": n, "label": "Timing gaps never computed", "automatic": True}}
+    _gap_run(factory, linked, 1)
+    db.expire_all()
+    monkeypatch.setattr(progress, "_cached", None)
+    assert progress.match_states(db, [uuid]) == {uuid: {"done": n, "total": n, "label": None, "automatic": None}}
+    put_row(db, linked, 2, status="failed")   # the earliest stuck step names the match, not the commonest
+    linked.recipe = "000000000000.c9.f1.000000000"
+    db.commit()
+    monkeypatch.setattr(progress, "_cached", None)
+    assert progress.match_states(db, [uuid])[uuid]["label"] == "Needs a re-ingest (older condenser, local file)"
+    monkeypatch.setattr(settings, "demo_mode", True)
+    assert progress.match_states(db, [uuid]) == {}
+
+
+def test_the_match_list_has_the_column_beside_watch():
+    from app.templates import templates
+    from types import SimpleNamespace as NS
+    uuid = "0f452716-1e90-4782-afba-29229fdab922"
+    match = NS(external_id=uuid, team1_rounds_won=13, team2_rounds_won=7, map_name="Sunset", played_at=None)
+
+    def page(states):
+        return templates.env.get_template("matches/list.html").render(
+            matches=[match], showing_own_matches=False, current_player=None, watchable={uuid}, replay_states=states)
+
+    assert "&#10003; Yes" in page({uuid: {"done": 20, "total": 20, "label": None, "automatic": None}})
+    stuck = page({uuid: {"done": 3, "total": 20, "label": "Map control out of date", "automatic": True}})
+    assert "3/20 rounds" in stuck and "Map control out of date" in stuck and "the worker will do it" in stuck
+    assert "<th>Watch</th>" in stuck and stuck.index("<th>Watch</th>") < stuck.index("Up to date</th>")
+
+
 def test_the_count_is_shared_for_ttl(db, linked, monkeypatch):
     calls = []
     monkeypatch.setattr(progress, "_cached", None)
