@@ -12,11 +12,13 @@ Read only. One computation serves every viewer for `TTL_S`: it plans every round
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import Counter
 from datetime import datetime, timezone
 
+from app.config import settings
 from app.models.replay import Replay, ReplayRound, ReplayRoundGapRun
 from app.replays import control_format as cf
 from app.services import replay_control, replay_gaps
@@ -42,6 +44,7 @@ STEPS = (
 )
 _LABELS = {key: (label, automatic) for key, label, automatic in STEPS}
 
+log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _cached: tuple[float, dict] | None = None
 
@@ -91,7 +94,17 @@ def compute(db) -> dict:
             return gaps_state(key)
         return "done"
 
-    counts = Counter(state(key) for key in rounds)
+    states = {key: state(key) for key in rounds}
+    order = {key: i for i, (key, _, _) in enumerate(STEPS)}
+    matches: dict[str, dict] = {}
+    for (replay_id, _), found in states.items():
+        row = matches.setdefault(str(replays[replay_id].match_uuid).lower(), {"done": 0, "total": 0, "first": None})
+        row["total"] += 1
+        if found == "done":
+            row["done"] += 1
+        elif row["first"] is None or order[found] < order[row["first"]]:
+            row["first"] = found
+    counts = Counter(states.values())
     total = len(rounds)
     done = counts.pop("done", 0)
     steps = [{"key": key, "label": label, "automatic": automatic, "rounds": counts[key]}
@@ -104,6 +117,7 @@ def compute(db) -> dict:
         "worker_will_do": sum(s["rounds"] for s in steps if s["automatic"]),
         "needs_a_person": sum(s["rounds"] for s in steps if not s["automatic"]),
         "steps": steps,
+        "matches": matches,
         "judged_against": {"recipe": recipe, "control_revision": cf.CONTROL_REVISION,
                            "gaps_revision": replay_gaps.GAPS_REVISION},
         "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -118,3 +132,24 @@ def cached(db, now: float | None = None) -> dict:
         if _cached is None or now - _cached[0] >= TTL_S:
             _cached = (now, compute(db))
         return _cached[1]
+
+
+def match_states(db, external_ids) -> dict[str, dict]:
+    """The match lists' "Up to date" column: per lower-cased external ID (= match UUID) with a stored replay,
+    `{"done", "total", "label", "automatic"}`; `label` is its earliest stuck step, None when every round is
+    done. From the panel's shared count, so it is as old as that. Best-effort: a list page never fails on it."""
+    if settings.demo_mode:
+        return {}
+    wanted = {str(e).lower() for e in external_ids if e}
+    try:
+        matches = cached(db)["matches"] if wanted else {}
+    except Exception:
+        log.exception("replay progress could not be computed for a match list")
+        db.rollback()
+        return {}
+    out = {}
+    for uuid in wanted & matches.keys():
+        row = matches[uuid]
+        label, automatic = _LABELS.get(row["first"], (None, None))
+        out[uuid] = {"done": row["done"], "total": row["total"], "label": label, "automatic": automatic}
+    return out
