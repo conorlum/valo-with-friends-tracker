@@ -1,6 +1,6 @@
 # Map streaks over the real map pool: design
 
-Status: P1 draft (AFK run 2026-10-14-map-pool-streaks). Register answers R1-R6 are settled; `D<n>` are the run's
+Status: revised after the P2 review (AFK run 2026-10-14-map-pool-streaks; review in the run folder, PLAN-REVIEW.md). Register answers R1-R6 are settled; `D<n>` are the run's
 decisions (in the run's `DECISIONS.md`).
 
 ## Goal
@@ -41,8 +41,9 @@ The pool is stored as dated changes, not per-patch snapshots: patch notes only s
 snapshot is a fold over the deltas. `pool_at(t)` = every map whose latest change at or before `t` is IN.
 
 Pre-rotation history (before patch 5.0, 2022-06-22) is one IN change per map at that map's release (R2: before 5.0
-every released map was in the pool). Our matches start 2022-10-10, so only the 5.0 pool and later matter in practice,
-but the release rows make `pool_at` total.
+every released map was in the pool), dated from the wiki's release dates (Bind/Haven/Split at the 1.0 launch,
+2020-06-02, the beta being out of scope). Our matches start 2022-10-10, so only the 5.0 pool and later matter in
+practice, but the release rows make `pool_at` total. (P2 #8)
 
 Tables (migration `0023_map_pool.py`):
 
@@ -50,12 +51,23 @@ Tables (migration `0023_map_pool.py`):
   `in_pool` boolean; `effective_at` timestamptz; `patch` text ("12.08", or "release" for pre-5.0 rows);
   `source` text, check in (`seed`, `patch_notes`); `source_url` text null; `created_at` timestamptz default now().
   Unique (`map_name`, `effective_at`, `in_pool`). Index on `effective_at`.
-- `map_pool_patch_notes`: `url` text PK; `patch` text; `published_at` timestamptz; `read_at` timestamptz;
-  `change_count` integer. One row per patch-notes page the refresh has read, including pages that changed nothing,
-  so a page is fetched once. The seed's own patch pages are inserted too, so the refresh never re-reads history.
+- `map_pool_patch_notes`: `url` text PK; `patch` text; `published_at` timestamptz; `first_seen_at` and `read_at`
+  timestamptz (`read_at` null while unread); `change_count` integer null; `miss_count` integer default 0;
+  `last_error` text null. One row per patch-notes page the refresh has looked at, including pages that changed
+  nothing, so a read page is fetched once. The seed's own patch pages are inserted too, so the refresh never
+  re-reads history.
 
-The upgrade inserts the seed (`app/data/map_pool_seed.json`, read at migration time) with `ON CONFLICT DO NOTHING`.
-The downgrade drops both tables. The migration is additive: nothing existing reads or changes.
+**Where the reader takes the history from (D11, tier 2; P2 #2):** the committed seed JSON is folded with the DB's
+`source='patch_notes'` rows. The migration still inserts the seed as `source='seed'` rows (R4: the table is seeded
+with the full history; `scripts/map_pool.py show` and plain SQL see the whole history), but the reader does not use
+them, so a later seed correction ships on merge to both sites without a migration or a hand-run against Render.
+`scripts/map_pool.py seed` replaces every `source='seed'` row with the current JSON (delete + insert in one
+transaction) to keep the copy in step. Duplicates between the seed and a fetched row (the same map, direction and
+time) fold to one.
+
+The upgrade inserts the seed rows with `ON CONFLICT DO NOTHING`, from a copy of the seed frozen into the migration
+module (`SEED_AT_0023`), so the migration never depends on a file that changes later. The downgrade drops both
+tables. The migration is additive: nothing existing reads or changes.
 
 ### Seed: `app/data/map_pool_seed.json` + `scripts/build_map_pool_seed.py` (R2)
 
@@ -105,9 +117,10 @@ before 6.0, which is the draft's missing "Pearl after 5.0" entry, fixed by the c
 
 - **Bleed:** a match on map X within `BLEED_DAYS` = 3 days after X's OUT change (observed max 19 h) is old-pool play in a late region.
   It does not put X back in the pool. (It still resets X's streak: a play is a play, R1.)
-- **Missing IN:** a map with at least `SAFETY_NET_MIN_MATCHES` = 3 matches (population-wide) outside the stored pool
-  and outside the bleed window counts as in the pool from the first of those matches until its next stored change.
-  This covers a patch the parser missed. It never removes a map.
+- **Missing IN:** counted per out-of-pool interval of a map (from an OUT change, or from before its first IN, to the
+  next IN or now). If one interval holds at least `SAFETY_NET_MIN_MATCHES` = 3 matches on the map (population-wide)
+  outside the bleed window, the map counts as in the pool from the first of those matches to the interval's end.
+  Strays in different intervals never add up (P2 #3). This covers a patch the parser missed. It never removes a map.
 
 Both constants are first values (tier 2, grouped on one card).
 
@@ -115,10 +128,12 @@ Both constants are first values (tier 2, grouped on one card).
 
 - `PoolHistory` (frozen): sorted changes. `pool_at(t) -> frozenset[str]`; `intervals(map) -> list[(start, end|None)]`;
   `current_pool() -> frozenset[str]`; `with_safety_net(population_matches)` returns a corrected history.
-- `load_pool_history(db) -> PoolHistory`: DB rows if the table has any, else the committed seed (tests, a DB not yet
-  migrated); then the safety net over `(map_name, played_at)` of all matches. Process-memoized with the existing
-  300 s TTL pattern (`map_streaks._get_acts_and_pools`), cleared by the refresh when it stores a change (D6, tier 1).
-  A DB error falls back to the seed and logs; it never errors a page (R4).
+- `load_pool_history(db) -> PoolHistory`: the committed seed plus the DB's `patch_notes` rows (D11); then the safety
+  net over `(map_name, played_at)` of all matches. Process-memoized with the existing 300 s TTL pattern
+  (`map_streaks._get_acts_and_pools`), cleared by the refresh when it stores a change (D6, tier 1). The DB reads run
+  inside a SAVEPOINT (`db.begin_nested()`) that is rolled back on error, so a missing table or a failed query falls
+  back to the seed alone, logs, and leaves the request's session usable for its next query (P2 #5). A test drops
+  the table (or points at a DB without it) and still renders streaks and predictions.
 - Map names compare case-insensitively against patch notes ("ASCENT") and are stored in the title case used by
   `matches.map_name`.
 
@@ -128,9 +143,15 @@ Both constants are first values (tier 2, grouped on one card).
 order: a match on the map resets the run to 0; a match on another map while the map is in the pool adds 1; a match
 while the map is out is skipped (neither counts nor resets). `current` = the trailing run; `record` = the longest run,
 with the dates of its first and last counted match. A map row is shown when the player has at least one match while
-that map was in the pool (or on the map). `record_is_current` keeps its meaning (the record is the live run).
-The record's label becomes a date range ("Jun 2025 - Aug 2026") instead of act labels (D4, tier 1: `season_acts.json`
-no longer feeds this section). `MapStreakWindow.act_labels` becomes `first_at`/`last_at`; the template formats them.
+that map was in the pool (or on the map).
+
+Output fields (P2 #4): `MapStreakWindow(gap, first_at, last_at)` (`act_labels` and `ongoing` go: the template never
+read `ongoing`). `first_at`/`last_at` are the first and last counted match of the run, both None when `gap` is 0.
+`record` is the longest run, the latest one on a tie. `record_is_current = current.gap >= record.gap and current.gap
+> 0` (a tie with an older record is shown as record-equalling, as "record breaking" today; a 0/0 row is never a
+record). The record's label becomes a date range ("Jun 2025 - Aug 2026") instead of act labels (D4, tier 1:
+`season_acts.json` no longer feeds this section); no date line when the record is 0. The empty state ("No
+current-act match data yet") becomes "No matches yet while these maps were in the pool".
 
 The section copy becomes, plainly: for each map in the current pool, the longest run of your matches without it,
 counting only matches played while it was in the pool; matches while it was out are skipped and the run carries on
@@ -142,7 +163,9 @@ Map streaks are not in `player_view_cache` (computed live in `routers/players.py
 
 `get_current_map_pool(db)`: the pool is `current_pool()`. Popularity weights come from our matches since the current
 pool began (the latest change's `effective_at`), restricted to pool maps, with add-one smoothing so a map just added
-(no matches yet) gets a small, non-zero weight instead of disappearing. `MIN_POOL_MATCHES` and `_current_act_start`
+(no matches yet) gets a small, non-zero weight instead of disappearing. Right after a pool change (13.08 is a day
+old) the weights are close to uniform until matches come in; that is accepted under R3 (P2 #12, on D7's card).
+`MIN_POOL_MATCHES` and `_current_act_start`
 go; `SEASON_ACTS_PATH` stays only if something else imports it.
 
 ### Refresh: `app/services/map_pool_refresh.py` (R4, R5)
@@ -152,14 +175,22 @@ go; `SEASON_ACTS_PATH` stays only if something else imports it.
 - Trigger (D8, tier 1): a daemon thread started in `main.lifespan` beside the archive sync. It runs one check soon after
   start (after a short delay) and then every 24 h; a check is skipped if this process checked under 24 h ago. Never on a
   request path, so it never slows a page.
-- A check: GET the game-updates listing (honest User-Agent, 20 s timeout); collect patch-notes URLs; for each one not in
-  `map_pool_patch_notes` and published after the seed's newest patch (at most 5 a check, oldest first): GET it, parse
-  `datePublished` and the pool lines, insert changes and the read row in one transaction. A page that mentions the
-  pool (a "map rotation" heading, or "Competitive" near "queue" with a map name) but yields no parsed line is not marked
-  read and is logged as a parser miss, so a wording change is retried tomorrow and visible in the log instead of being
-  swallowed. Any network or parse error: log, keep the last known pool.
+- A check: GET the game-updates listing (honest User-Agent, 20 s timeout); take the items whose URL path contains
+  `patch-notes` (P2 #10; pinned by a trimmed listing fixture); keep those published after the seed's newest patch and
+  not yet read (`read_at` null or no row); fetch at most 5 a check, **newest first** (P2 #1); for each: GET it, parse
+  `datePublished` and the pool lines, and in one transaction insert the changes and mark the page read.
+- **Parser miss** (one definition, P2 #1): a page whose text has a block (heading or list item) containing "map pool
+  updates" or "map rotation" but yields no pool line. 13.06 ("the active map pool", a lobby feature) is not a miss; a
+  test pins that. A miss is stored (`miss_count` + 1, `last_error`), logged as a warning, and retried on later checks
+  for 7 days after the page's publish date, then left unread and logged once as given up. A page with no such block
+  and no pool line is read with `change_count` 0.
+- Writes use `INSERT … ON CONFLICT DO NOTHING` on both tables, so two instances checking at once during a deploy
+  never fail (P2 #6). Once a day per process means one fetch of the listing per deploy, which is fine.
+- Any network or parse error: log, keep the last known pool.
 - `scripts/map_pool.py refresh` runs one check by hand (same code, ignores the switch), `show [--at ISO]` prints the
-  pool, `seed` upserts the committed seed.
+  pool, `seed` replaces the DB's `seed` rows with the committed JSON.
+- Supporting edits (P2 #13): `map_pool_auto` in `app/config.py` with a comment like its neighbours, a line in
+  `webapp/.env.example`, and a CLAUDE.md note beside the other switches.
 
 ### Parser: `app/services/patch_notes.py` (standard library)
 
@@ -174,11 +205,39 @@ accepted as written and stored title-cased. Parser miss: a page whose text has "
 no pool line. Tests: trimmed saved copies of 12.08, 13.00, 13.04 and 13.06 (no pool change) under
 `webapp/tests/fixtures/patch_notes/`, plus one-line cases for the other wordings and a trimmed listing.
 
+Text extraction splits at element boundaries (each `h1-h6`, `li`, `p` is its own block; a nested `ul` closes the
+parent's text), so "Map Pool Updates" never runs into "ASCENT is IN" and the map list never picks up "Updates"
+(P2 #11, tested).
+
+## Tests (P2 #7)
+
+Each rule gets a test that fails when the rule is removed:
+
+- R1: an out-of-pool match is skipped (neither counts nor resets); the run carries on when the map returns; a play
+  resets to 0; current = trailing run; record = longest, latest on a tie; `record_is_current` on ties and on 0/0;
+  first/last dates; a row for a player with no matches since a map was added is omitted; maps outside the current
+  pool get no row.
+- Safety net: a bleed play resets the map's streak but doesn't restore it to the pool; 3 strays in one interval add
+  the map from the first stray, 2 don't; strays in separate intervals don't add up.
+- Pool history: `pool_at` before, at and after a change; seed + fetched rows fold; a duplicate folds to one.
+- Prediction: the pool is the real pool; a map with zero matches gets the add-one weight; a non-pool map gets none.
+- Reader: a DB without the tables still renders streaks and predictions, and the session stays usable.
+- Parser: the four fixtures (12.08, 13.00, 13.04, 13.06 as no change and not a miss), one-line wording cases, the
+  miss rule, element-boundary splitting, the listing filter.
+- Refresh: newest first, the 5-page cap, a miss stored and retried, given up after 7 days, ON CONFLICT on a second
+  writer, off in demo mode and when unset, the memo cleared on a stored change. No test touches the network (a fake
+  fetcher).
+- Migration 0023: up, down, up on the throwaway `afk_map_pool_test` (`VALO_TEST_DATABASE_URL`), with the row counts.
+
+Old tests removed: `tests/test_map_streaks.py` tests of `_map_windows`, `_act_pools`, `_gap_in_window` and the
+act-pool cache (`_get_acts_and_pools`), replaced by the R1 tests above and by memo tests (TTL hit, cleared on store).
+
 ## Decisions (summary; full entries in DECISIONS.md)
 
 - D1 change events, two tables (tier 1, R4's agent-decides).
 - D2 effective time = `datePublished` (tier 2).
-- D3 bleed 7 days, safety net 3 matches (tier 2).
+- D3 bleed 3 days, safety net 3 matches per out-of-pool interval (tier 2).
+- D11 the reader takes history from the committed seed plus fetched DB rows (tier 2).
 - D4 record label as a date range (tier 1).
 - D5 section copy (tier 1, judgment).
 - D6 cache: 300 s memo cleared by the refresh (tier 1).
