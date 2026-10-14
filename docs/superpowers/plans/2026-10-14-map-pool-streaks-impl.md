@@ -6,6 +6,48 @@ they differ, this plan wins and says so. All commands run from `webapp/` with
 Research files (trimmed real pages, the draft history) are in the AFK run folder
 `C:/Users/User/.claude/afk/2026-10-14-map-pool-streaks/research/` (`RES` below).
 
+## Amendments after the P4 review (they win over the step text below)
+
+- **S1 (P4 #2, #3):** split each block into sentences on `[.!?]\s+` before matching; split names with
+  `re.split(r"\s*,\s*|\s+and\s+", maps, flags=re.I)`, strip a leading "and ", drop empties. A name not in
+  `KNOWN_MAPS` (Abyss, Ascent, Bind, Breeze, Corrode, Fracture, Haven, Icebox, Lotus, Pearl, Split, Summit, Sunset)
+  is accepted only when its block is nested under a "Map Pool Updates" item/heading; otherwise the line is dropped and
+  the page counts as a miss if it `mentions_pool`. One-line tests: "Abyss, Corrode, and Bind are IN the Competitive
+  queue." → three maps; "Welcome back. Abyss is IN the Competitive queue." → [Abyss]; "Premier is IN the Competitive
+  queue." outside a Map Pool Updates block → nothing. The listing test expects **4** items (3 game-updates patch notes
+  plus `https://playvalorant.com/en-us/news/valorant-patch-notes-10-07/`, with the fixture's real URL) and asserts the
+  YouTube "Patch 11.08 Gameplay Updates" item is excluded.
+- **S2 (P4 #6, #14):** `PoolHistory` and `with_safety_net` treat naive datetimes as UTC (`.replace(tzinfo=UTC)`), with a
+  test. `latest_change_at()` takes an `official_only=True` parameter that ignores `safety_net` changes.
+- **S3 → S3a + S3b (P4 #8, #13).** S3a: pure `parse_wiki_history`, corrections, the pools-to-changes diff and their
+  offline tests. S3b: fetching, dating, the run, the committed seed and the seed-history test. Cache naming in
+  `RES/raw`: `sha1(url.encode()).hexdigest()[:12]` (see `RUN/tmp_fetch.py`); the script's `--cache DIR` reads and
+  writes that naming. URL exceptions to the `valorant-patch-notes-<maj>-<min>/` pattern: `-811`, `-901`, `-902`, `-906`
+  (no hyphen), 10.07 at `/en-us/news/valorant-patch-notes-10-07/`, `5-0`/`6-0`/`8-0`/`9-0` single zero; prefer listing
+  URLs. Pearl: one IN at 2022-06-22 (5.0 live day, the wiki's column; the patch notes say two weeks later; both before
+  our first match 2022-10-10, so no result changes). No separate Pearl correction.
+- **S4 (P4 #4, #9):** the PG test uses `postgres_url_or_skip(writes=True)` and, in its rolled-back transaction, probes
+  whether `map_pool_changes` exists: if so it starts with `downgrade()`. Expected counts are after de-duplication on
+  (map, effective_at, in_pool). Seed `map_pool_patch_notes` rows are inserted with `read_at` = `published_at` and
+  `change_count` set. The manual run starts with `alembic current` on the throwaway DB.
+- **S5 (P4 #5, #6, #15):** add a Postgres case (`postgres_url_or_skip(writes=True)`, one outer transaction rolled back)
+  where the tables are absent (drop them inside the transaction, or before the migration) and the same session then
+  runs a successful query. Naive times as UTC. A `threading.Lock` around the memo fill; every new test module has an
+  autouse fixture calling `clear_pool_cache()`.
+- **S6 (P4 #16):** a play on the map always resets its run, whether or not the map is listed in the pool at that time
+  (a play is a play: R1, D3).
+- **S7 (P4 #14):** the weight window starts at `latest_change_at(official_only=True)`.
+- **S8 → S8a + S8b (P4 #9, #10, #11, #12).** S8a: `map_pool_refresh.py`, config, lifespan, its tests. S8b: the CLI,
+  `render.yaml`, `.env.example`, CLAUDE.md, and a new small test that `MAP_POOL_AUTO` is `"true"` under
+  `valowithfriendstracker` in `render.yaml` and appears nowhere else (replaces the heights_remote pin, which doesn't
+  read render.yaml). Listing URL: `https://playvalorant.com/en-us/news/game-updates/`. Writes: insert ON CONFLICT DO
+  NOTHING, then `UPDATE … WHERE url = :url` for `miss_count`, `last_error`, `read_at`, `change_count`, in the same
+  transaction; pick `insert` by dialect (`sqlalchemy.dialects.postgresql` or `.sqlite`, by `bind.dialect.name`).
+  Pages already given up (`last_error` starting "given up") are filtered out before the 5-page cap. The CLI's
+  `refresh` and `seed` refuse when `settings.demo_mode`; `seed` prints the database name it will write to first.
+- **S9 (P4 #7):** load the base's `map_streaks.py` and `map_prediction.py` (`git show 571e656:webapp/app/services/…`)
+  into a temporary package in the run folder (rewriting the one import), not from the branch's modules.
+
 Map names everywhere are title case as in `matches.map_name` ("Abyss"); patch notes' capitals are title-cased.
 Times are timezone-aware UTC `datetime`s; `matches.played_at` is `timestamptz`.
 
@@ -221,7 +263,7 @@ is cleared on a stored change.
 Check: `$PY -m pytest tests/test_map_pool_refresh.py -q` and the pin test `tests/replays/test_heights_remote.py`
 (reads `render.yaml`).
 
-## S9. Real-data before/after check (run folder only, no repo commit except none)
+## S9. Real-data before/after check (run folder only, no repo commit)
 
 Files: `RUN/realdata_check.py` (run folder, not the repo). Depends: S6.
 

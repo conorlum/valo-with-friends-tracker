@@ -201,8 +201,8 @@ The date is JSON-LD `datePublished`; the text is the article HTML (`ArticleRichT
 contains "competitive". This covers every form from 9.08 to 13.08 ("SUMMIT and SUNSET are IN the COMPETITIVE and
 DEATHMATCH queues.", "ABYSS and CORRODE are OUT of Competitive …", "is back IN the", "are BACK in the COMPETITIVE
 QUEUE"). Older free-form wordings (pre-9.08) are not parsed: that history comes from the wiki. A new map's name is
-accepted as written and stored title-cased. Parser miss: a page whose text has "map pool" or "map rotation" but yields
-no pool line. Tests: trimmed saved copies of 12.08, 13.00, 13.04 and 13.06 (no pool change) under
+accepted as written and stored title-cased only under a "Map Pool Updates" block (P4 #2). Parser miss: as defined in
+the Refresh section ("map pool updates" or "map rotation" block, no pool line). Tests: trimmed saved copies of 12.08, 13.00, 13.04 and 13.06 (no pool change) under
 `webapp/tests/fixtures/patch_notes/`, plus one-line cases for the other wordings and a trimmed listing.
 
 Text extraction splits at element boundaries (each `h1-h6`, `li`, `p` is its own block; a nested `ul` closes the
