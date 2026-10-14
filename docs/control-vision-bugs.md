@@ -5,26 +5,10 @@ what should happen. Leads are guesses until checked.
 
 ## Open
 
-### 1. Sight passes through a closed door
-
-- **Where:** https://valowithfriendstracker.onrender.com/replays/3b29b5e9-ba26-4b0b-bca3-8eda8d150215,
-  round 3, about 9.5 s (5v5).
-- **Seen:** the door marker in mid-map is drawn closed (yellow), but Chamber's (orange) sight still
-  reaches through it and colours the far side.
-- **Should be:** a closed door blocks all vision. No sight through it at any height.
-- **Leads (unchecked):**
-  - Door sight uses a descending height band with estimated metre bounds (PR #128, "Record accepted door
-    estimates"). If the closed band's bottom/top doesn't cover the eye-to-eye line, the ray passes
-    under or over the panel.
-  - The marker may be reading "closed" while the sight sampler still has the door as moving/partial.
-  - Door sight row caching ("Reuse unchanged door sight") could be serving a row from before the close.
-- **Cause (checked 2026-10-14):** none of the leads. The closed panel's raster covers px rows 448-479 but the
-  doorway is open 446-482: slits at both ends, and Chamber's sight goes through the south one. See
-  `docs/superpowers/specs/2026-10-14-hearing-attribution-design.md` section 4.1.
-
 ### 2. Clove's sight reaches an area she can't see
 
-- **Where:** same replay, round 7, 33.2 s (3v3, after the 30.4 s kill).
+- **Where:** https://valowithfriendstracker.onrender.com/replays/3b29b5e9-ba26-4b0b-bca3-8eda8d150215,
+  round 7, 33.2 s (3v3, after the 30.4 s kill).
 - **Seen:** Clove (blue, bottom of mid) gets a diagonal band of sight running up-left into the
   bottom-left corridor/room by the orange camera, and the engine treats that area as seen by blue.
   From where Clove stands she has no line of sight to it.
@@ -35,7 +19,29 @@ what should happen. Leads are guesses until checked.
   - A height-aware ray may be clearing a wall whose top height is wrong in the height asset.
 - **Cause (checked 2026-10-14):** not a sight leak. Clove saw down that diagonal at 30.25-31.5 s; memory keeps the
   thin strip and backfill fills the pocket it closes off. Whether that should count is an open rule question
-  (design section 4.2).
+  (design section 4.2). Not changed by the 2026-10-14 run: it waits for the owner's rule.
+
+### Other doors with end slits (found 2026-10-14, not yet seen by eye)
+
+The same end-slit test that found bug 1, run over every published closed gimmick on a flat sight test:
+Lotus feature-2 (a rotating door) leaks 766 cell pairs and Abyss feature-1 (breakable) 108. Ascent features
+9 and 11 and Lotus feature-1 have 2-6 px slits but no leaking pair under the strict test. Summit's are sealed.
+Each is to be looked at as one case before any fix.
+
+## Fixed (on branch `afk/2026-10-14-hearing-and-vision-bugs`, not yet merged; CONTROL_REVISION 16)
+
+### 1. Sight passes through a closed door
+
+- **Where:** same replay, round 3, about 9.5 s (5v5).
+- **Seen:** the door marker in mid-map is drawn closed (yellow), but Chamber's (orange) sight still
+  reaches through it and colours the far side.
+- **Should be:** a closed door blocks all vision. No sight through it at any height.
+- **Cause (checked 2026-10-14):** none of the leads (height band, marker state, sight row cache). The closed
+  panel's raster covered px rows 448-479 but the doorway is open 446-482: slits at both ends, and Chamber's
+  sight went through them. Design section 4.1.
+- **Fix:** commit 4de02df moves the closed footprint's ends out to rows 444-483 in
+  `webapp/app/static/data/control/tags.json`. Chamber's cast through the door at 9.5 s: 13 cells before, 0 after;
+  leaking cell pairs around the door 1,849 -> 0.
 
 ### 3. Area marked contested with no one contesting it
 
@@ -44,11 +50,11 @@ what should happen. Leads are guesses until checked.
   stripes and a few orange flecks. No orange player sees it or is near it.
 - **Should be:** blue's. Contested needs a live claim from both sides; bullets passing through the
   area are not a claim.
-- **Leads (unchecked):** the owner suspects tracers fired through the area are being counted as an
-  orange claim (or as orange sight). Check what source the orange cells there come from.
 - **Cause (checked 2026-10-14):** not tracers (control never reads bullets). Storing a cell with several height
-  nodes calls it contested whenever the nodes' states differ, even blue against blue (`collapse_states`).
+  nodes called it contested whenever the nodes' states differed, even blue against blue (`collapse_states`).
   Design section 4.3.
+- **Fix:** commits cfa9877, adae8ae: one team's nodes give that team's strongest state; contested needs both
+  teams. Judged case `sunset-r13-blue-room-not-contested`.
 
 ### 4. Hearing footsteps wipes out an area's unknown
 
@@ -57,18 +63,11 @@ what should happen. Leads are guesses until checked.
   26.5 s team 1 on NPrightdolphin and Deemo).
 - **Seen:** the right side of the map (B side, top right down to the trip) turns grey, as if the
   unknown there was resolved, right after footsteps were heard.
-- **Should be:** footsteps tell the listener where *a* player is, not *which* player. They can't be
-  used to pin one named enemy and so clear the ground that enemy could have been on. Hearing alone
-  should not shrink the unknown over this area.
-- **Leads (unchecked):** the hearing engine attributes each footstep to a named player and shrinks
-  that player's unknown to the sound. The ground that player could otherwise have held becomes safe
-  for the listener, and that safe ground against blue's remembered ground turns into nobody's (the
-  D5 rule, `project_control_bugs_2026_10_04`). If so, the fix is in how hearing is attributed. The
-  rule that turns safe-against-memory into nobody's is working as intended.
-- **Cause (checked 2026-10-14):** confirmed. Team 2's (group A) unknown over B side falls from 1,670 cells to
-  120 when 有没有可能我是萌新 (27.188 s) and 没天分的小孩 (27.5 s) are heard; with heard sounds not naming anyone it
-  stays at 1,611. Five enemies were alive and none in sight, so under the new rule neither sound names anyone.
-
-## Fixed
-
-(none yet)
+- **Should be:** footsteps tell the listener where *a* player is, not *which* player.
+- **Cause (checked 2026-10-14):** confirmed. Team 2's (group A) unknown over B side fell from 1,670 cells to
+  120 when 有没有可能我是萌新 (27.188 s) and 没天分的小孩 (27.5 s) were heard. Five enemies were alive and none in
+  sight.
+- **Fix:** commits 4cbbecb, ad460b3: heard footsteps and gunfire name an enemy only when just one enemy could
+  have made them (the only one alive, every other living enemy in sight, or for gunfire the only living enemy
+  who has fired that gun). The unknown there now stays at 1,611 cells. Judged case
+  `sunset-r13-footsteps-name-nobody`; three older cases re-recorded (commit 4cb813a).
