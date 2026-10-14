@@ -18,6 +18,9 @@ what should happen. Leads are guesses until checked.
     under or over the panel.
   - The marker may be reading "closed" while the sight sampler still has the door as moving/partial.
   - Door sight row caching ("Reuse unchanged door sight") could be serving a row from before the close.
+- **Cause (checked 2026-10-14):** none of the leads. The closed panel's raster covers px rows 448-479 but the
+  doorway is open 446-482: slits at both ends, and Chamber's sight goes through the south one. See
+  `docs/superpowers/specs/2026-10-14-hearing-attribution-design.md` section 4.1.
 
 ### 2. Clove's sight reaches an area she can't see
 
@@ -30,6 +33,9 @@ what should happen. Leads are guesses until checked.
   - The band looks like it threads a wall corner. That could be a diagonal ray slipping between two
     blocked grid cells, or a gap/missing wall in the sight geometry there.
   - A height-aware ray may be clearing a wall whose top height is wrong in the height asset.
+- **Cause (checked 2026-10-14):** not a sight leak. Clove saw down that diagonal at 30.25-31.5 s; memory keeps the
+  thin strip and backfill fills the pocket it closes off. Whether that should count is an open rule question
+  (design section 4.2).
 
 ### 3. Area marked contested with no one contesting it
 
@@ -40,6 +46,9 @@ what should happen. Leads are guesses until checked.
   area are not a claim.
 - **Leads (unchecked):** the owner suspects tracers fired through the area are being counted as an
   orange claim (or as orange sight). Check what source the orange cells there come from.
+- **Cause (checked 2026-10-14):** not tracers (control never reads bullets). Storing a cell with several height
+  nodes calls it contested whenever the nodes' states differ, even blue against blue (`collapse_states`).
+  Design section 4.3.
 
 ### 4. Hearing footsteps wipes out an area's unknown
 
@@ -56,6 +65,9 @@ what should happen. Leads are guesses until checked.
   for the listener, and that safe ground against blue's remembered ground turns into nobody's (the
   D5 rule, `project_control_bugs_2026_10_04`). If so, the fix is in how hearing is attributed. The
   rule that turns safe-against-memory into nobody's is working as intended.
+- **Cause (checked 2026-10-14):** confirmed. Team 2's (group A) unknown over B side falls from 1,670 cells to
+  120 when 有没有可能我是萌新 (27.188 s) and 没天分的小孩 (27.5 s) are heard; with heard sounds not naming anyone it
+  stays at 1,611. Five enemies were alive and none in sight, so under the new rule neither sound names anyone.
 
 ## Fixed
 

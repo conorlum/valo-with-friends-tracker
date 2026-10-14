@@ -108,15 +108,51 @@ only if clear and contained, otherwise a card with the evidence. Filled in after
 
 ### 4.1 Bug 1: sight through a closed door (round 3, ~9.5 s)
 
-(pending W3)
+**Cause (found).** The closed Sunset Door (`feature-1`, bundle-5, `map_pool_replay_v1`; footprint in
+`app/static/data/control/tags.json` around lines 54383-54395) is rasterised by `features.py:70-105`, which keeps a
+4 px paint cell only when its centre is inside the polygon. The panel covers px rows 448-479 at x 412-415, while
+the doorway in `Sunset.sight.png` is open from y 446 to 482: a 2 px slit at the north end and a 3 px slit at the
+south end. Chamber (slot 7, group B) sees 4 cells west of the door at 9.5 s, all through the south slit
+((356,484), (364,484), (372,484), (260,492)). The door's state (closed since 6.783 s), its height band and the
+sight cache are ruled out. A sweep from every walkable cell east of the door to 674 west targets: 1,849 leaking
+pairs today, 0 with the panel over rows 444-483.
+
+**Fix (tier 2, contained).** Extend the closed door's footprint in `tags.json` so it reaches the doorway's walls
+at both ends (top edge to uv y <= ~4340 at x 4028-4061, bottom edge to uv y >= ~4715), checked by a test that
+loads the Sunset masks, rasterises the closed footprint and asserts that no 8-connected open path crosses the
+doorway (west (400,465) to east (420,465) inside x 396-431, y 430-500). Data, not code: the general fix (a
+"touched" raster for closed door masks, `map_feature_motion.py:274`) also moves Ascent's doors and is left as a
+note on the card. P3 must find how a `tags.json` change reaches production (the feature artifact is compiled
+against the height build on the worker): if it needs an owner step, the card gives it.
 
 ### 4.2 Bug 2: Clove's sight through a wall corner (round 7, 33.2 s)
 
-(pending W3)
+**Cause (found): not a sight leak.** Clove is slot 3, group B. At the stored 33.0 s tick, 49 of her cells sit in
+the circled area: 0 active, 30 passive, 19 none, and a flat cast from her 33.0 s spot sees none of them. She did
+see down that diagonal at 30.25-31.5 s (39 of the 49 cells reachable then, 26 with a clear straight line). Memory
+(D6) keeps the thin strip she saw (34 cells), and backfill fills the room pocket the strip closes off (14 cells).
+Gone by 35 s.
+
+**Fix: none in this run (tier 3 question).** Whether a strip remembered from a ray a cell or two wide should count,
+or should be able to seal a pocket for backfill, is a rule of the owner's (D6 memory, backfill). Card with the
+pictures; nothing built.
 
 ### 4.3 Bug 3: contested room with no orange claim (round 13, 11.2 s)
 
-(pending W3)
+**Cause (found): not tracers.** The stored 11.0 s frame marks 3 cells ([52,388], [60,388], [68,388]) as
+`contested_active`; only Chamber (slot 7, group B) covers them, and they are in A's unknown. Bullets never feed
+control (`geometry.py:233-237`: the bullet mask is the viewer's only). The contest comes from `collapse_states`
+(`engine.py:1234-1261`), which turns a cell's several nodes (floors, or the adaptive height grid's sub-nodes) into
+one stored state and calls the cell contested whenever the codes differ, even when every node is blue (here
+`b_active` on the edge of Chamber's cone, `b_safe` beside it). 884 such cell-frames in round 13 alone. The local
+flat engine can't show it (no Sunset height asset locally).
+
+**Fix (tier 2, contained).** In both branches of `collapse_states`, a cell whose nodes all belong to one team takes
+the highest of their states (the same max rule `compose` uses for a team's level); nodes of both teams, or a
+contested node, or nobody's against held stay contested as today. This changes a rule pinned by
+`test_control_floors.py:271-272` ("two agree, one doesn't" -> contested, from the heights spec's two-floor rule,
+`2026-10-01-control-heights-design.md:464`, marked proposed). It follows D5 (contested needs a claim from both
+sides). Card as built.
 
 ## 5. Decisions
 
@@ -127,6 +163,10 @@ only if clear and contained, otherwise a card with the evidence. Filled in after
 | 3 | "Carries" a gun | Fired it at any time in the round | No loadout in the replay; card |
 | 4 | Reason for a dropped sound | None | It changed nothing |
 | 5 | Gaps detector | No code change, follows the engine | It reads the engine's events; card on the Gaps change |
+| 6 | Bug 1 | Data fix to the closed door's footprint, provisional | Cause clear; edits reviewed geometry, so a card |
+| 7 | Bug 2 | Nothing built; a question card | It is the memory/backfill rule, the owner's |
+| 8 | Bug 3 | Same-team nodes collapse to the highest state, provisional | Follows D5; reverses a proposed pin, so a card |
+| 9 | Judged cases | Bug 4 (unknown, side A, 6 cells) and bug 3 (state, 4 cells) into `unknown_cases.json` | R6. Bug 3's passes locally even today (flat map); bug 1's needs the feature artifact, so its check is the raster test |
 
 ## 6. Risks
 
