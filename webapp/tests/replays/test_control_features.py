@@ -28,9 +28,8 @@ GRID = cg.GRID
 
 def test_every_committed_maps_control_inputs_and_fingerprint_are_as_recorded(monkeypatch):
     from app.replays import control_format
-    # Current main deliberately recorded this baseline under revision 9, after
-    # its molly-figure and Abyss-barrier corrections. Preserve that independent
-    # snapshot while this feature branch has a newer calculation revision.
+    # Keep the independent revision-9 baseline. The publication updates only
+    # Ascent's reviewed Catwalk mask identities; other maps retain their snapshot.
     monkeypatch.setattr(control_format, 'CONTROL_REVISION', 9)
     recorded = json.loads(map_feature_legacy.PATH.read_text(encoding="utf-8"))
     assert recorded["maps"], "the snapshot should cover the committed maps"
@@ -740,12 +739,35 @@ def manifest_mf():
 TEST = frozenset({"test"})
 
 
-def test_the_manifest_is_absent_without_enabled_features_and_for_every_committed_map():
+def test_the_manifest_is_absent_without_enabled_features_and_selection_is_reviewed():
     geo = open_hall()
     assert cf.manifest(geo, None) is None and cf.manifest(geo, ms.empty()) is None
     assert cf.manifest(geo, manifest_mf()) is None, "no registered consumer in this build: nothing is enabled"
+    disabled = manifest_mf()
+    for bundle in disabled["bundles"]:
+        bundle["enabled"] = False
+    assert cf.manifest(geo, disabled, consumers=TEST) is None
     tags = cg.load_tags()
-    assert all(cf.manifest(geo, (e or {}).get("map_features")) is None for e in tags["maps"].values())
+    # Publication intentionally adds these bundles. This checks the approved
+    # selection, not placement against this unrelated toy hall or live heights.
+    expected = {
+        "Ascent": {f"bundle-{n}": "ascent_replay_v1" for n in (13, 14, 15)},
+        "Sunset": {"bundle-5": "map_pool_replay_v1"},
+        "Split": {f"bundle-{n}": "quiet_rope_v1" for n in range(32, 38)},
+        "Summit": {**{f"bundle-{n}": "map_pool_replay_v1" for n in (9, 10, 11)},
+                   "bundle-12": "quiet_rope_v1"},
+        "Abyss": {**{f"bundle-{n}": "map_pool_replay_v1" for n in (13, 14)},
+                  **{f"bundle-{n}": "quiet_rope_v1" for n in (15, 16, 17, 18)}},
+        "Lotus": {f"bundle-{n}": "map_pool_replay_v1" for n in (8, 9, 10)},
+    }
+    assert set(expected) <= set(tags["maps"])
+    for name, entry in tags["maps"].items():
+        mf = (entry or {}).get("map_features")
+        enabled = {b["id"]: b.get("runtime_consumer") for b in (mf or {}).get("bundles", [])
+                   if b.get("enabled")}
+        assert enabled == expected.get(name, {}), name
+        if not enabled:
+            assert cf.manifest(geo, mf) is None, name
 
 
 def test_the_manifest_tracks_runtime_inputs_and_ignores_editorial_ones(monkeypatch):
