@@ -1,6 +1,6 @@
 """The Competitive map pool over time: which maps were in the queue at a given moment.
 
-Pure code (no network, no DB; a later item adds a loader).
+Pure core (no network, no DB) plus one cached loader, `load_pool_history`, at the bottom.
 
 - `Change`: one map going IN or OUT of the pool at `effective_at` (`source` is "seed", "patch_notes" or
   "safety_net").
@@ -10,11 +10,16 @@ Pure code (no network, no DB; a later item adds a loader).
   `SAFETY_NET_MIN_MATCHES` times inside one out-of-pool interval (ignoring the first `BLEED_DAYS` after the OUT
   change, when games still bleed over) is put back in from the first such match. It never adds an OUT.
 
-Standard library only. Map names are title case, as in `matches.map_name`. Times are timezone-aware UTC;
+Standard library only (the loader imports SQLAlchemy models lazily). Map names are title case, as in `matches.map_name`. Times are timezone-aware UTC;
 naive datetimes are taken to be UTC.
 """
 
+import json
+import logging
+import threading
+import time
 from collections import defaultdict
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
@@ -132,3 +137,84 @@ class PoolHistory:
                 if len(inside) >= SAFETY_NET_MIN_MATCHES:
                     added.append(Change(name, True, inside[0], SAFETY_NET_PATCH, SAFETY_NET_SOURCE))
         return PoolHistory(list(self.changes) + added)
+
+
+# --- Loader: the committed seed, the DB's patch_notes rows and the safety net, process-memoized. ---
+
+_log = logging.getLogger(__name__)
+
+SEED_PATH = Path(__file__).resolve().parent.parent / "data" / "map_pool_seed.json"
+_POOL_TTL_SECONDS = 300
+
+_seed_cache: PoolHistory | None = None
+_pool_cache: tuple[float, PoolHistory] | None = None
+_pool_lock = threading.Lock()
+
+
+def seed_history() -> PoolHistory:
+    """The committed seed as a PoolHistory (every change has source "seed"). Read once per process."""
+    global _seed_cache
+    if _seed_cache is None:
+        data = json.loads(SEED_PATH.read_text(encoding="utf-8"))
+        _seed_cache = PoolHistory(
+            Change(
+                c["map"],
+                bool(c["in_pool"]),
+                datetime.fromisoformat(c["effective_at"].replace("Z", "+00:00")),
+                c["patch"],
+                "seed",
+            )
+            for c in data["changes"]
+        )
+    return _seed_cache
+
+
+def clear_pool_cache() -> None:
+    global _pool_cache
+    with _pool_lock:
+        _pool_cache = None
+
+
+def _compute_pool_history(db) -> PoolHistory:
+    from sqlalchemy import select
+
+    from app.models.map_pool import MapPoolChange
+    from app.models.match import Match
+
+    history = seed_history()
+    try:
+        with db.begin_nested():
+            rows = db.execute(
+                select(MapPoolChange.map_name, MapPoolChange.in_pool, MapPoolChange.effective_at, MapPoolChange.patch)
+                .where(MapPoolChange.source == "patch_notes")
+            ).all()
+        history = PoolHistory(
+            list(history.changes) + [Change(r[0], bool(r[1]), r[2], r[3], "patch_notes") for r in rows]
+        )
+    except Exception:
+        _log.warning("map pool: reading fetched changes failed; using the seed alone", exc_info=True)
+    try:
+        with db.begin_nested():
+            matches = db.execute(
+                select(Match.map_name, Match.played_at).where(
+                    Match.map_name.is_not(None), Match.played_at.is_not(None)
+                )
+            ).all()
+        history = history.with_safety_net([(m[0], m[1]) for m in matches])
+    except Exception:
+        _log.warning("map pool: reading matches failed; safety net skipped", exc_info=True)
+    return history
+
+
+def load_pool_history(db) -> PoolHistory:
+    global _pool_cache
+    cached = _pool_cache
+    if cached is not None and time.monotonic() - cached[0] < _POOL_TTL_SECONDS:
+        return cached[1]
+    with _pool_lock:
+        cached = _pool_cache
+        if cached is not None and time.monotonic() - cached[0] < _POOL_TTL_SECONDS:
+            return cached[1]
+        history = _compute_pool_history(db)
+        _pool_cache = (time.monotonic(), history)
+        return history
