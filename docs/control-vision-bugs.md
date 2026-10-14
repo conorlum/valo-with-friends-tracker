@@ -20,13 +20,16 @@ what should happen. Leads are guesses until checked.
 - **Cause (checked 2026-10-14):** not a sight leak. Clove saw down that diagonal at 30.25-31.5 s; memory keeps the
   thin strip and backfill fills the pocket it closes off. Whether that should count is an open rule question
   (design section 4.2). Not changed by the 2026-10-14 run: it waits for the owner's rule.
+- **Wrong area (owner, 2026-10-14 review):** that check covered only a 49-cell strip near the corridor's mouth.
+  The area the owner means is wider: the whole bottom-left corridor/room by the orange camera (circled in the
+  review's screenshot of round 7 at 33.2 s, x ~60-330, y ~560-700 px on the 1024 map). Re-investigate that area
+  before any rule is chosen.
 
-### Other doors with end slits (found 2026-10-14, not yet seen by eye)
+### Lotus feature-2 still leaks past one end (found 2026-10-14)
 
-The same end-slit test that found bug 1, run over every published closed gimmick on a flat sight test:
-Lotus feature-2 (a rotating door) leaks 766 cell pairs and Abyss feature-1 (breakable) 108. Ascent features
-9 and 11 and Lotus feature-1 have 2-6 px slits but no leaking pair under the strict test. Summit's are sealed.
-Each is to be looked at as one case before any fix.
+With the touched raster (bug 1's fix), Lotus feature-2 (a rotating door) goes from 766 leaking cell pairs to
+30: its footprint stops a pixel short of the wall at one end, so no raster rule closes it. Fix the footprint in
+the tagger. Lotus feature-1 keeps a 2 px slit with no leaking pair.
 
 ## Fixed (on branch `afk/2026-10-14-hearing-and-vision-bugs`, not yet merged; CONTROL_REVISION 16)
 
@@ -39,9 +42,10 @@ Each is to be looked at as one case before any fix.
 - **Cause (checked 2026-10-14):** none of the leads (height band, marker state, sight row cache). The closed
   panel's raster covered px rows 448-479 but the doorway is open 446-482: slits at both ends, and Chamber's
   sight went through them. Design section 4.1.
-- **Fix:** commit 4de02df moves the closed footprint's ends out to rows 444-483 in
-  `webapp/app/static/data/control/tags.json`. Chamber's cast through the door at 9.5 s: 13 cells before, 0 after;
-  leaking cell pairs around the door 1,849 -> 0.
+- **Fix:** a sight occluder blocks every cell its footprint touches, not only the cells whose centre is inside
+  (`raster_touched` in `webapp/app/control/features.py`; the owner chose this over a Sunset-only data edit,
+  2026-10-14 review). Leaking cell pairs around the door 1,849 -> 0, and on every map: Abyss feature-1 108 -> 0,
+  Ascent 9/11's slits closed. FEATURE_COMPILER_VERSION 19.
 
 ### 3. Area marked contested with no one contesting it
 
@@ -68,6 +72,6 @@ Each is to be looked at as one case before any fix.
   120 when 有没有可能我是萌新 (27.188 s) and 没天分的小孩 (27.5 s) were heard. Five enemies were alive and none in
   sight.
 - **Fix:** commits 4cbbecb, ad460b3: heard footsteps and gunfire name an enemy only when just one enemy could
-  have made them (the only one alive, every other living enemy in sight, or for gunfire the only living enemy
-  who has fired that gun). The unknown there now stays at 1,611 cells. Judged case
+  have made them (the only one alive, or every other living enemy in sight). The gun heard is no clue (the
+  owner dropped it in the 2026-10-14 review: the replay records no loadouts). The unknown there now stays at 1,611 cells. Judged case
   `sunset-r13-footsteps-name-nobody`; three older cases re-recorded (commit 4cb813a).
