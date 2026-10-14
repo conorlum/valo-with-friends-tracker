@@ -161,6 +161,112 @@ def test_release_changes_pre_5_0():
     assert {m for m in bmps.pre_5_0_pool(releases)} == {"Ascent", "Icebox", "Breeze", "Fracture"}
 
 
-def test_main_stub_raises_s3b(tmp_path):
-    with pytest.raises(NotImplementedError, match="S3b"):
-        bmps.main(["--cache", str(tmp_path), "--out", str(tmp_path / "x.json")])
+def _pool(s):
+    return frozenset(s.split())
+
+
+# (patch, effective time, pool right after it), from the patch notes; 6.0 to 13.08.
+EXPECTED = [
+    ("6.0", "2023-01-10T14:00:00Z", "Ascent Fracture Haven Icebox Pearl Split"),
+    ("6.01", "2023-01-18T14:00:00Z", "Ascent Fracture Haven Icebox Lotus Pearl Split"),
+    ("6.08", "2023-04-25T14:00:00Z", "Ascent Bind Fracture Haven Lotus Pearl Split"),
+    ("7.04", "2023-08-29T13:00:00Z", "Ascent Bind Breeze Haven Lotus Split"),
+    ("7.05", "2023-09-06T13:00:00Z", "Ascent Bind Breeze Haven Lotus Split Sunset"),
+    ("8.0", "2024-01-09T14:00:00Z", "Ascent Bind Breeze Icebox Lotus Split Sunset"),
+    ("8.11", "2024-06-11T13:00:00Z", "Ascent Bind Haven Icebox Lotus Sunset"),
+    ("9.0", "2024-06-25T13:00:00Z", "Abyss Ascent Bind Haven Sunset"),
+    ("9.01", "2024-07-16T13:00:00Z", "Abyss Ascent Bind Haven Lotus Sunset"),
+    ("9.02", "2024-07-30T13:00:00Z", "Abyss Ascent Bind Haven Icebox Lotus Sunset"),
+    ("9.08", "2024-10-22T13:00:00Z", "Abyss Ascent Bind Haven Pearl Split Sunset"),
+    ("10.00", "2025-01-07T14:00:00Z", "Abyss Bind Fracture Haven Lotus Pearl Split"),
+    ("10.04", "2025-03-04T14:00:00Z", "Ascent Fracture Haven Icebox Lotus Pearl Split"),
+    ("10.08", "2025-04-29T13:00:00Z", "Ascent Haven Icebox Lotus Pearl Split Sunset"),
+    ("11.00", "2025-06-24T13:00:00Z", "Ascent Bind Corrode Haven Icebox Lotus Sunset"),
+    ("11.04", "2025-08-19T13:00:00Z", "Abyss Ascent Bind Corrode Haven Lotus Sunset"),
+    ("11.08", "2025-10-14T13:00:00Z", "Abyss Bind Corrode Haven Pearl Split Sunset"),
+    ("12.00", "2026-01-06T14:00:00Z", "Abyss Bind Breeze Corrode Haven Pearl Split"),
+    ("12.05", "2026-03-17T13:00:00Z", "Bind Breeze Fracture Haven Lotus Pearl Split"),
+    ("12.08", "2026-04-28T13:00:00Z", "Ascent Breeze Fracture Haven Lotus Pearl Split"),
+    ("13.00", "2026-06-23T13:00:00Z", "Ascent Breeze Haven Lotus Split Summit Sunset"),
+    ("13.04", "2026-08-18T13:00:00Z", "Abyss Ascent Haven Lotus Split Summit Sunset"),
+    ("13.08", "2026-10-13T13:00:00Z", "Abyss Bind Corrode Haven Lotus Summit Sunset"),
+]
+
+
+def _seed_history():
+    from datetime import timedelta  # noqa: F401
+    from app.services.map_pool import Change, PoolHistory
+
+    seed = json.loads((WEBAPP / "app" / "data" / "map_pool_seed.json").read_text(encoding="utf-8"))
+    return seed, PoolHistory(
+        Change(c["map"], c["in_pool"], datetime.fromisoformat(c["effective_at"].replace("Z", "+00:00")), c["patch"], "seed")
+        for c in seed["changes"]
+    )
+
+
+@pytest.mark.parametrize("patch,at,pool", EXPECTED)
+def test_committed_seed_pool_at_each_patch(patch, at, pool):
+    from datetime import timedelta
+
+    _, hist = _seed_history()
+    t = datetime.fromisoformat(at.replace("Z", "+00:00")) + timedelta(minutes=1)
+    assert hist.pool_at(t) == _pool(pool), patch
+
+
+def test_committed_seed_current_pool_and_shape():
+    seed, hist = _seed_history()
+    assert hist.current_pool(now=datetime(2026, 10, 14, tzinfo=UTC)) == _pool("Abyss Bind Corrode Haven Lotus Summit Sunset")
+    assert seed["changes"] and seed["patch_notes"]
+    assert all(c["source_url"].startswith("https://") for c in seed["changes"])
+    assert {r["patch"] for r in seed["patch_notes"]} >= {p for p, _, _ in EXPECTED}
+
+
+def test_patch_url_prefers_listing_then_exceptions_then_pattern():
+    base = "https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-"
+    listing = {"13.08": "https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-13-08"}
+    assert bmps.patch_url("13.08", listing) == listing["13.08"]
+    assert bmps.patch_url("8.11", listing) == base + "811/"
+    assert bmps.patch_url("9.02", listing) == base + "902/"
+    assert bmps.patch_url("10.07", listing) == "https://playvalorant.com/en-us/news/valorant-patch-notes-10-07/"
+    assert bmps.patch_url("5.0", listing) == base + "5-0/"
+    assert bmps.patch_url("7.04", listing) == base + "7-04/"
+
+
+def test_fetcher_cache_makes_no_request(tmp_path):
+    import hashlib
+
+    url = "https://example.invalid/page"
+    (tmp_path / hashlib.sha1(url.encode()).hexdigest()[:12]).write_text("cached body", encoding="utf-8")
+    f = bmps.Fetcher(tmp_path)
+    assert f(url) == "cached body"
+    assert f.requests == 0
+
+
+def _page(date, lines):
+    body = "".join(f"<p>{l}</p>" for l in lines)
+    ld = json.dumps({"@type": "NewsArticle", "datePublished": date})
+    return f'<html><head><script type="application/ld+json">{ld}</script></head><body>{body}</body></html>'
+
+
+def test_build_seed_with_fake_fetch():
+    wiki = FIXTURE.read_text(encoding="utf-8")
+    pages = {bmps.WIKI_URL: json.dumps({"parse": {"wikitext": {"*": wiki}}}), bmps.LISTING_URL: "<html></html>"}
+    asked = []
+
+    def fake(url):
+        asked.append(url)
+        if url in pages:
+            return pages[url]
+        return _page("2023-05-05T14:00:00.000Z", ["nothing"])
+
+    seed = bmps.build_seed(fake, corrections=[], built_at=datetime(2026, 10, 14, tzinfo=UTC))
+    assert seed["built_at"] == "2026-10-14T00:00:00Z"
+    assert seed["sources"] == [bmps.WIKI_URL, bmps.LISTING_URL]
+    by_patch = {r["patch"]: r for r in seed["patch_notes"]}
+    assert by_patch["8.11"]["url"].endswith("valorant-patch-notes-811/")
+    assert by_patch["6.0"]["published_at"] == "2023-05-05T14:00:00Z"
+    ins = [c for c in seed["changes"] if c["patch"] == "5.0" and c["in_pool"]]
+    assert ins and all(c["effective_at"] == "2022-06-22T00:00:00Z" for c in ins)
+    assert {"url", "patch", "published_at"} == set(seed["patch_notes"][0])
+    assert {"map", "in_pool", "effective_at", "patch", "source_url"} == set(seed["changes"][0])
+    assert len(asked) == len(set(asked))

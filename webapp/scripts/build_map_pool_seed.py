@@ -9,8 +9,12 @@ the later patch notes and writing the seed are S3b (see main()).
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import re
 import sys
+import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -151,15 +155,165 @@ def pools_to_changes(dated_pools, prior=frozenset(), source: str = "seed") -> li
     return changes
 
 
+# ---------------------------------------------------------------- S3b: fetching and dating
+
+USER_AGENT = "valo-with-friends-tracker map-pool seed (+https://valowithfriendstracker.onrender.com)"
+TIMEOUT_S = 20
+PAUSE_S = 1.0
+WIKI_URL = "https://valorant.fandom.com/api.php?action=parse&page=Maps&prop=wikitext&section=8&format=json"
+LISTING_URL = "https://playvalorant.com/en-us/news/game-updates/"
+PATCH_URL_BASE = "https://playvalorant.com/en-us/news/game-updates/valorant-patch-notes-"
+DEFAULT_OUT = WEBAPP_ROOT / "app" / "data" / "map_pool_seed.json"
+# 5.0 went live on the wiki's day, not on its patch-notes page date (Pearl rule).
+LIVE_DATE_OVERRIDES = {"5.0": datetime(2022, 6, 22, tzinfo=timezone.utc)}
+# Patch label -> URL, where the pattern valorant-patch-notes-<maj>-<min>/ does not hold.
+URL_EXCEPTIONS = {
+    "8.11": PATCH_URL_BASE + "811/",
+    "9.01": PATCH_URL_BASE + "901/",
+    "9.02": PATCH_URL_BASE + "902/",
+    "9.06": PATCH_URL_BASE + "906/",
+    "10.07": "https://playvalorant.com/en-us/news/valorant-patch-notes-10-07/",
+}
+_TITLE_PATCH = re.compile(r"patch notes\s+(\d+\.\d+)", re.I)
+
+
+class Fetcher:
+    """fetch(url) -> text.  With a cache dir, a saved page makes no request."""
+
+    def __init__(self, cache: Path | None = None):
+        self.cache = cache
+        self.requests = 0
+        self._last = 0.0
+
+    def __call__(self, url: str) -> str:
+        path = None
+        if self.cache is not None:
+            path = Path(self.cache) / hashlib.sha1(url.encode()).hexdigest()[:12]
+            if path.exists():
+                return path.read_text(encoding="utf-8", errors="replace")
+        wait = PAUSE_S - (time.monotonic() - self._last)
+        if self.requests and wait > 0:
+            time.sleep(wait)
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:
+            body = r.read().decode("utf-8", "replace")
+        self._last = time.monotonic()
+        self.requests += 1
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+        return body
+
+
+def patch_key(label: str) -> tuple[int, int]:
+    major, minor = label.split(".")
+    return int(major), int(minor)
+
+
+def patch_url(label: str, listing_urls: dict[str, str]) -> str:
+    """URL of a patch's notes: the listing's, else the exception table, else the pattern."""
+    if label in listing_urls:
+        return listing_urls[label]
+    if label in URL_EXCEPTIONS:
+        return URL_EXCEPTIONS[label]
+    major, minor = label.split(".")
+    return f"{PATCH_URL_BASE}{major}-{minor}/"
+
+
+def listing_patch_urls(items) -> dict[str, str]:
+    """Patch label -> URL from the game-updates listing items (titles 'VALORANT Patch Notes 13.08')."""
+    out: dict[str, str] = {}
+    for it in items:
+        m = _TITLE_PATCH.search(it.title or "")
+        if m:
+            out.setdefault(m.group(1), it.url)
+    return out
+
+
+def wikitext_from_api(body: str) -> str:
+    return json.loads(body)["parse"]["wikitext"]["*"]
+
+
+def _iso(t: datetime) -> str:
+    return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def build_seed(fetch, built_at: datetime | None = None, corrections=None) -> dict:
+    """Run the whole build through `fetch(url) -> text`; return the seed dict."""
+    from app.services.patch_notes import parse_listing, parse_patch_notes
+
+    if corrections is None:
+        corrections = json.loads(CORRECTIONS_PATH.read_text(encoding="utf-8"))
+    columns, pools, releases = parse_wiki_history(wikitext_from_api(fetch(WIKI_URL)))
+    wiki_last = columns[-1]
+    columns, pools = apply_corrections(columns, pools, corrections)
+    listing_urls = listing_patch_urls(parse_listing(fetch(LISTING_URL)))
+    corr_dates = {
+        c["patch"]: datetime.fromisoformat(c["published_at"].replace("Z", "+00:00"))
+        for c in corrections
+        if c.get("published_at")
+    }
+    patch_rows: list[dict] = []
+    urls: dict[str, str] = {}
+
+    def read(label: str):
+        url = patch_url(label, listing_urls)
+        notes = parse_patch_notes(fetch(url))
+        urls[label] = url
+        when = notes.published_at or corr_dates.get(label)
+        if when is None:
+            raise ValueError(f"no publish date for patch {label} ({url})")
+        patch_rows.append({"url": url, "patch": label, "published_at": _iso(when)})
+        return notes, when
+
+    dated = []
+    for label in columns:
+        notes, when = read(label)
+        when = corr_dates.get(label, LIVE_DATE_OVERRIDES.get(label, when))
+        dated.append((label, when, set(pools[label])))
+    # Patches after the wiki's last filled column: parse the notes and apply in order.
+    later = sorted((p for p in listing_urls if patch_key(p) > patch_key(wiki_last)), key=patch_key)
+    pool = set(dated[-1][2])
+    for label in later:
+        notes, when = read(label)
+        if notes.is_miss:
+            print(f"warning: patch {label} mentions the pool but nothing parsed", file=sys.stderr)
+        for ch in notes.changes:
+            (pool.add if ch.in_pool else pool.discard)(ch.map_name)
+        dated.append((label, when, set(pool)))
+    changes = release_changes(releases)
+    changes += pools_to_changes(dated, prior=pre_5_0_pool(releases))
+    rows = []
+    for c in changes:
+        rows.append({
+            "map": c.map_name,
+            "in_pool": c.in_pool,
+            "effective_at": _iso(c.effective_at),
+            "patch": c.patch,
+            "source_url": urls.get(c.patch, "") if c.patch in urls else WIKI_URL,
+        })
+    rows.sort(key=lambda r: (r["effective_at"], r["map"], r["in_pool"]))
+    patch_rows.sort(key=lambda r: patch_key(r["patch"]))
+    return {
+        "built_at": _iso(built_at or datetime.now(timezone.utc)),
+        "sources": [WIKI_URL, LISTING_URL],
+        "changes": rows,
+        "patch_notes": patch_rows,
+    }
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache", type=Path, help="directory of saved pages (sha1(url)[:12] names)")
-    parser.add_argument("--out", type=Path, help="seed JSON to write")
-    parser.parse_args(argv)
-    # --- S3b stub: fetch the wiki section and patch pages, date the columns from the
-    # patch pages' datePublished, parse the patch notes after the wiki's last column,
-    # build the Changes with release_changes/pools_to_changes, write the seed JSON.
-    raise NotImplementedError("S3b")
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="seed JSON to write")
+    args = parser.parse_args(argv)
+    fetcher = Fetcher(args.cache)
+    seed = build_seed(fetcher)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(seed, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"wrote {args.out}: {len(seed['changes'])} changes, {len(seed['patch_notes'])} patch pages, "
+          f"{fetcher.requests} network requests")
+    return 0
 
 
 if __name__ == "__main__":
