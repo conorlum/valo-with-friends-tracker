@@ -126,6 +126,8 @@ def match_detail(request: Request, external_id: str, db: Session = Depends(get_d
             "team1_econ_pistol_stats": team1_econ_pistol_stats,
             "team2_econ_pistol_stats": team2_econ_pistol_stats,
             "replay_url": replay_url_for_match(db, match),
+            "coach_url": (f"/replays/{match.external_id.lower()}/coach"
+                          if coached_external_ids(db, [match.external_id]) else None),
         },
     )
 
